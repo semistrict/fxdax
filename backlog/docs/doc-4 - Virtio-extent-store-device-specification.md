@@ -3,7 +3,7 @@ id: doc-4
 title: Virtio extent-store device specification
 type: specification
 created_date: '2026-10-13 22:18'
-updated_date: '2026-10-20 21:13'
+updated_date: '2026-10-23 19:49'
 ---
 # The virtio extent-store device
 
@@ -86,6 +86,7 @@ Settled in a design review on 2026-10-13:
 | 4 | `VIRTIO_EXTENT_F_FREEZE` | `FREEZE` works, and `INFO` says the `branch` (Snapshots). |
 | 5 | `VIRTIO_EXTENT_F_READ_ONLY` | The device follows a store another VM writes, read-only (Followers): `ADVANCE`, `LET_GO`, `PIN` and `UNPIN` work, and the configuration holds `committed`, which changes while the device runs. Excludes `DAX_WRITE`, `WRITE_COMMIT` and `RESIZE`. |
 | 6 | `VIRTIO_EXTENT_F_FREE_MANY` | `FREE` takes `FREE_MANY`: its data names more extents to free (TASK-41). Excludes `READ_ONLY`. |
+| 7 | `VIRTIO_EXTENT_F_MAP_MANY` | `MAP` takes `MAP_MANY`: its data holds more maps (TASK-91.4). Needs `DAX`. |
 | 29 | `VIRTIO_RING_F_EVENT_IDX` | The ring's notification suppression: the device offers it, so that a guest's requests queued while it takes them, and its completions while the driver takes them, cost no exit each. |
 | 32 | `VIRTIO_F_VERSION_1` | Required. |
 
@@ -171,7 +172,7 @@ struct virtio_extent_resp {
 | 1 | `READ` | `struct virtio_extent_id id; le64 offset; le32 len; le32 reserved;` | device writes `len` bytes |
 | 2 | `WRITE` | `struct virtio_extent_id id; le64 offset; le32 len; le32 reserved;` | device reads `len` bytes |
 | 3 | `FREE` | `struct virtio_extent_id id;` | none; with `FREE_MANY`, device reads `struct virtio_extent_id`s |
-| 4 | `MAP` | `struct virtio_extent_id id; le64 offset; le64 len; le64 window_offset;` | none |
+| 4 | `MAP` | `struct virtio_extent_id id; le64 offset; le64 len; le64 window_offset;` | none; with `MAP_MANY`, device reads `struct virtio_extent_map_entry`s |
 | 5 | `UNMAP` | `le64 window_offset; le64 len;` | none |
 | 6 | `COMMIT` | `le32 root_len; le32 reserved;` | device reads `root_len` bytes: the new root, if `COMMIT_ROOT` |
 | 7 | `ROOT` | none | device writes `max_root` bytes, and `struct virtio_extent_root_len` |
@@ -252,6 +253,14 @@ multiples of `map_alignment`, and the range lies within the window.
   makes its writable mappings read-only; they keep its contents.
 - `MAP_WRITE` of a sealed extent, or of another branch's, fails with `EPERM`.
 - A `MAP` replaces whatever the window held there.
+
+With `MAP_MANY` (bit 1, `F_MAP_MANY`), the data holds more maps, each a
+`struct virtio_extent_map_entry { struct virtio_extent_map map; le32 flags; le32 reserved; }`: the
+arguments of a `MAP` and its flags, `MAP_WRITE` alone, each mapped as a `MAP` of its own would be,
+in any order. The first that fails fails the request, whichever others mapped, and the guest maps
+them all again, one by one, to learn which failed. A guest maps the pieces of a file's chunk it
+reads, scattered across extents as rewrites move its blocks, in one request rather than one each:
+each request a round trip, which nested virtualization makes dear.
 
 `UNMAP` makes `len` bytes of the window at `window_offset` inaccessible.
 

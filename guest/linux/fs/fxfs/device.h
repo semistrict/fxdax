@@ -141,6 +141,23 @@ struct dax_device *fxfs_device_dax(struct fxfs_device *dev, u64 *window_len);
  */
 int fxfs_device_map(struct fxfs_device *dev, u64 branch, u64 sequence, u64 offset, u64 len,
 		    u64 window_offset, bool writable);
+
+/* fxdax: one of fxfs_device_map_many's maps, as fxfs_device_map's arguments say it. */
+struct fxfs_device_map {
+	u64 branch;
+	u64 sequence;
+	u64 offset;
+	u64 len;
+	u64 window_offset;
+	bool writable;
+};
+
+/*
+ * fxdax: the `count` maps `maps`, in as few requests as the device takes (MAP_MANY), or one each:
+ * a chunk's pieces (TASK-91.4). The first error fails them, whichever others the device mapped.
+ */
+int fxfs_device_map_many(struct fxfs_device *dev, const struct fxfs_device_map *maps,
+			 size_t count);
 int fxfs_device_unmap(struct fxfs_device *dev, u64 window_offset, u64 len);
 /*
  * fxdax: shows what the window's requests took, and the stores seals held off, as lines of a name

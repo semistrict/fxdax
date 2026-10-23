@@ -42,6 +42,11 @@
  * after the one its arguments do: a flush's dead extents in one request (fxdax's TASK-41).
  */
 #define VIRTIO_EXTENT_F_FREE_MANY 6
+/*
+ * MAP takes MAP_MANY: its data holds more maps, each a struct virtio_extent_map_entry, after the
+ * one its arguments say: the pieces of a file's chunk mapped in one request (fxdax's TASK-91.4).
+ */
+#define VIRTIO_EXTENT_F_MAP_MANY 7
 
 #define VIRTIO_EXTENT_T_READ 1
 #define VIRTIO_EXTENT_T_WRITE 2
@@ -73,8 +78,9 @@
 /* COMMIT: it completes once durable; it sets the root. */
 #define VIRTIO_EXTENT_COMMIT_DURABLE (1 << 0)
 #define VIRTIO_EXTENT_COMMIT_ROOT (1 << 1)
-/* MAP: writable. */
+/* MAP: writable; its data holds more maps (F_MAP_MANY). */
 #define VIRTIO_EXTENT_MAP_WRITE (1 << 0)
+#define VIRTIO_EXTENT_MAP_MANY (1 << 1)
 /* FREE: its data names more extents (F_FREE_MANY). */
 #define VIRTIO_EXTENT_FREE_MANY (1 << 0)
 /* RESIZED: the guest took the size it was asked to shrink to. */
@@ -130,6 +136,13 @@ struct virtio_extent_map {
 	__le64 offset;
 	__le64 len;
 	__le64 window_offset;
+};
+
+/* One of a MAP_MANY's further maps: its flags MAP_WRITE alone. */
+struct virtio_extent_map_entry {
+	struct virtio_extent_map map;
+	__le32 flags;
+	__le32 reserved;
 };
 
 struct virtio_extent_unmap {
@@ -201,6 +214,8 @@ struct vext_config {
  * Requests and their data must be memory the device can address: kmalloc'd, or vmalloc'd for
  * data, not on the stack.
  */
+struct vext_queue;
+
 struct vext_request {
 	/* The request: one of VIRTIO_EXTENT_T_*, and its flags. */
 	u32 type;
@@ -232,6 +247,8 @@ struct vext_request {
 	struct virtio_extent_req hdr;
 	/* When it was queued, for the device's `request_ns`. */
 	u64 queued_ns;
+	/* fxdax: the queue it went to, which its caller may poll for it (virtio_extent_call). */
+	struct vext_queue *queue;
 	union {
 		struct virtio_extent_io io;
 		struct virtio_extent_id id;
@@ -271,6 +288,8 @@ bool virtio_extent_write_commit(struct virtio_extent *vext);
 bool virtio_extent_freeze(struct virtio_extent *vext);
 /* Whether a FREE may carry FREE_MANY (F_FREE_MANY). */
 bool virtio_extent_free_many(struct virtio_extent *vext);
+/* Whether a MAP may carry MAP_MANY (F_MAP_MANY). */
+bool virtio_extent_map_many(struct virtio_extent *vext);
 /*
  * Whether the device follows a store another VM writes, read-only (F_READ_ONLY): the driver
  * refuses what would write (-EROFS), and the filesystem mounts read-only.

@@ -39,6 +39,16 @@ struct vext_queue {
 	wait_queue_head_t room;
 	/* The requests it has taken. */
 	atomic64_t requests;
+	/*
+	 * fxdax: the callers polling it for their requests, while it has any of which the device
+	 * signals no completions (vext_wait). Guarded by `lock`.
+	 */
+	unsigned int pollers;
+	/*
+	 * fxdax: its interrupts, and the requests it completed, which those callers did without one:
+	 * each interrupt costs exits to read and acknowledge it (TASK-91.15).
+	 */
+	atomic64_t interrupts, polled;
 } ____cacheline_aligned_in_smp;
 
 struct virtio_extent {
@@ -60,6 +70,11 @@ struct virtio_extent {
 	atomic64_t requests[VIRTIO_EXTENT_T_LAST + 1];
 	/* The time the requests it has completed took, queued to completed, by type. */
 	atomic64_t request_ns[VIRTIO_EXTENT_T_LAST + 1];
+	/*
+	 * fxdax: the time recent requests of each type took, a moving average, to wait for one on
+	 * the CPU only if it takes less than that is worth (vext_wait).
+	 */
+	u64 recent_ns[VIRTIO_EXTENT_T_LAST + 1];
 	/* What its configuration's changes go to (virtio_extent_set_config_changed). */
 	spinlock_t changed_lock;
 	vext_config_changed_t changed;
@@ -129,6 +144,12 @@ bool virtio_extent_free_many(struct virtio_extent *vext)
 	return virtio_has_feature(vext->vdev, VIRTIO_EXTENT_F_FREE_MANY);
 }
 EXPORT_SYMBOL_GPL(virtio_extent_free_many);
+
+bool virtio_extent_map_many(struct virtio_extent *vext)
+{
+	return virtio_has_feature(vext->vdev, VIRTIO_EXTENT_F_MAP_MANY);
+}
+EXPORT_SYMBOL_GPL(virtio_extent_map_many);
 
 bool virtio_extent_read_only(struct virtio_extent *vext)
 {
@@ -261,6 +282,10 @@ static void vext_data_len(struct vext_request *req, size_t *out, size_t *in)
 		if (req->flags & VIRTIO_EXTENT_FREE_MANY)
 			*out = req->data_len;
 		break;
+	case VIRTIO_EXTENT_T_MAP:
+		if (req->flags & VIRTIO_EXTENT_MAP_MANY)
+			*out = req->data_len;
+		break;
 	case VIRTIO_EXTENT_T_ROOT:
 	case VIRTIO_EXTENT_T_INFO:
 	case VIRTIO_EXTENT_T_ADVANCE:
@@ -330,6 +355,7 @@ int virtio_extent_submit(struct virtio_extent *vext, struct vext_request *req)
 
 			atomic64_inc(&vext->requests[req->type]);
 			atomic64_inc(&queue->requests);
+			req->queue = queue;
 			spin_unlock_irqrestore(&queue->lock, flags);
 			if (notify)
 				virtqueue_notify(queue->vq);
@@ -352,26 +378,104 @@ static void vext_call_done(struct vext_request *req)
 }
 
 /*
+ * Completes the requests the device has done of `queue`, with its lock held: how many there were.
+ * The time each took goes to its type's average (vext_wait).
+ */
+static unsigned int vext_reap(struct virtio_extent *vext, struct vext_queue *queue)
+{
+	struct vext_request *req;
+	unsigned int len, reaped = 0;
+	u64 took, *recent;
+
+	while ((req = virtqueue_get_buf(queue->vq, &len))) {
+		took = ktime_get_ns() - req->queued_ns;
+		atomic64_add(took, &vext->request_ns[req->type]);
+		/* An eighth of the latest, as TCP's smoothed round trip time. */
+		recent = &vext->recent_ns[req->type];
+		WRITE_ONCE(*recent, READ_ONCE(*recent) - (READ_ONCE(*recent) >> 3) + (took >> 3));
+		req->status = -(int)le32_to_cpu(req->resp.status);
+		sg_free_table(&req->data_sgt);
+		req->done(req);
+		reaped++;
+	}
+	return reaped;
+}
+
+/*
+ * Has the device signal `queue`'s completions again, unless callers poll it, completing those it
+ * did meanwhile: with its lock held. How many there were.
+ */
+static unsigned int vext_signal(struct virtio_extent *vext, struct vext_queue *queue)
+{
+	unsigned int reaped = 0;
+
+	while (!queue->pollers && !virtqueue_enable_cb(queue->vq)) {
+		virtqueue_disable_cb(queue->vq);
+		reaped += vext_reap(vext, queue);
+	}
+	return reaped;
+}
+
+/*
  * How long a caller waits for its request on the CPU before sleeping: a request's reply comes
  * back in tens to hundreds of microseconds, and sleeping costs halting the vCPU, which in a nested
- * VM exits to the outer host, and an interrupt to wake it.
+ * VM exits to the outer host, and an interrupt to wake it. fxdax: only for requests of a type
+ * that recently took less (TASK-91.13): MAPs taking 260-490 us spun their 100 us for nothing,
+ * a quarter to half of the guest's time.
  */
 #define VEXT_SPIN_NS (100 * NSEC_PER_USEC)
 
-/* Waits for `done`: spinning first, unless another task wants the CPU (VEXT_SPIN_NS). */
-static void vext_wait(struct completion *done)
+/*
+ * Waits for `req`, whose completion is `done`: on the CPU first, if requests of its type
+ * recently took less than VEXT_SPIN_NS, and no other task wants the CPU. fxdax: polling its
+ * queue meanwhile, of which the device signals no completions: each interrupt costs exits to
+ * read and acknowledge it, which a request done in time saves (TASK-91.15).
+ */
+static void vext_wait(struct virtio_extent *vext, struct vext_request *req, struct completion *done)
 {
+	struct vext_queue *queue = req->queue;
 	u64 deadline = local_clock() + VEXT_SPIN_NS;
-	unsigned int spins = 0;
+	unsigned int spins = 0, reaped;
+	unsigned long flags;
+	bool completed;
 
-	while (!try_wait_for_completion(done)) {
+	if (READ_ONCE(vext->recent_ns[req->type]) >= VEXT_SPIN_NS) {
+		wait_for_completion(done);
+		return;
+	}
+	/* Not preempted while the device signals no completions of the queue, which it polls. */
+	preempt_disable();
+	spin_lock_irqsave(&queue->lock, flags);
+	if (!queue->pollers++)
+		virtqueue_disable_cb(queue->vq);
+	spin_unlock_irqrestore(&queue->lock, flags);
+	/* Taken here, the completion isn't there for wait_for_completion. */
+	while (!(completed = try_wait_for_completion(done))) {
 		/* The clock, a paravirtual one, is costly to read: every 64 spins. */
-		if (need_resched() || (++spins % 64 == 0 && local_clock() > deadline)) {
-			wait_for_completion(done);
-			return;
+		if (need_resched() || (++spins % 64 == 0 && local_clock() > deadline))
+			break;
+		/* The used ring, in the guest's memory, every 16. */
+		if (spins % 16 == 0 && spin_trylock_irqsave(&queue->lock, flags)) {
+			reaped = vext_reap(vext, queue);
+			spin_unlock_irqrestore(&queue->lock, flags);
+			if (reaped) {
+				atomic64_add(reaped, &queue->polled);
+				wake_up_all(&queue->room);
+			}
 		}
 		cpu_relax();
 	}
+	spin_lock_irqsave(&queue->lock, flags);
+	queue->pollers--;
+	reaped = vext_signal(vext, queue);
+	spin_unlock_irqrestore(&queue->lock, flags);
+	preempt_enable();
+	if (reaped) {
+		atomic64_add(reaped, &queue->polled);
+		wake_up_all(&queue->room);
+	}
+	if (!completed)
+		wait_for_completion(done);
 }
 
 int virtio_extent_call(struct virtio_extent *vext, struct vext_request *req)
@@ -384,30 +488,26 @@ int virtio_extent_call(struct virtio_extent *vext, struct vext_request *req)
 	err = virtio_extent_submit(vext, req);
 	if (err)
 		return err;
-	vext_wait(&done);
+	vext_wait(vext, req, &done);
 	return req->status;
 }
 EXPORT_SYMBOL_GPL(virtio_extent_call);
 
-/* A queue's interrupt: completes the requests the device has of it. */
+/*
+ * A queue's interrupt: completes the requests the device has of it. fxdax: and has the device
+ * signal it again, unless callers poll it (vext_wait).
+ */
 static void vext_done(struct virtqueue *vq)
 {
 	struct virtio_extent *vext = vq->vdev->priv;
 	struct vext_queue *queue = &vext->queues[vq->index];
-	struct vext_request *req;
 	unsigned long flags;
-	unsigned int len;
 
+	atomic64_inc(&queue->interrupts);
 	spin_lock_irqsave(&queue->lock, flags);
-	do {
-		virtqueue_disable_cb(vq);
-		while ((req = virtqueue_get_buf(vq, &len))) {
-			atomic64_add(ktime_get_ns() - req->queued_ns, &vext->request_ns[req->type]);
-			req->status = -(int)le32_to_cpu(req->resp.status);
-			sg_free_table(&req->data_sgt);
-			req->done(req);
-		}
-	} while (!virtqueue_enable_cb(vq));
+	virtqueue_disable_cb(vq);
+	vext_reap(vext, queue);
+	vext_signal(vext, queue);
 	spin_unlock_irqrestore(&queue->lock, flags);
 	wake_up_all(&queue->room);
 }
@@ -502,10 +602,29 @@ static ssize_t queues_show(struct device *dev, struct device_attribute *attr, ch
 }
 static DEVICE_ATTR_RO(queues);
 
+/*
+ * fxdax: the `completions` attribute: the queues' interrupts, and the requests their callers
+ * completed polling them, without one (vext_wait), all told.
+ */
+static ssize_t completions_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct virtio_extent *vext = dev_to_virtio(dev)->priv;
+	s64 interrupts = 0, polled = 0;
+	unsigned int i;
+
+	for (i = 0; i < vext->nr_queues; i++) {
+		interrupts += atomic64_read(&vext->queues[i].interrupts);
+		polled += atomic64_read(&vext->queues[i].polled);
+	}
+	return sysfs_emit(buf, "interrupts %lld\npolled %lld\n", interrupts, polled);
+}
+static DEVICE_ATTR_RO(completions);
+
 static struct attribute *vext_attrs[] = {
 	&dev_attr_requests.attr,
 	&dev_attr_request_ns.attr,
 	&dev_attr_queues.attr,
+	&dev_attr_completions.attr,
 	NULL,
 };
 
@@ -757,6 +876,7 @@ static const unsigned int vext_features[] = {
 	VIRTIO_EXTENT_F_FREEZE,
 	VIRTIO_EXTENT_F_READ_ONLY,
 	VIRTIO_EXTENT_F_FREE_MANY,
+	VIRTIO_EXTENT_F_MAP_MANY,
 };
 
 static struct virtio_driver vext_driver = {

@@ -473,71 +473,143 @@ static void fxfs_dax_prune(struct fxfs_dax *dax, struct fxfs_dax_range *range)
 }
 
 /*
+ * fxdax: has `range` say piece `e` of its chunk is mapped, as mapping it did (`err`): writably if
+ * it is open. A sealed extent the device doesn't hold was never written: its blocks read as zeros,
+ * a hole, as Fxfs reads them. (Blocks a write allocated before a seal sealed their extent
+ * unwritten, which the write then moves.) Whether it is writable, or the error.
+ */
+static int fxfs_dax_mapped(struct fxfs_dax_range *range, const struct fxfs_dax_extent *e,
+			   int err)
+{
+	loff_t start = fxfs_dax_chunk_start(range);
+	unsigned long page = (e->offset - start) >> PAGE_SHIFT;
+	unsigned long pages = e->len >> PAGE_SHIFT;
+
+	if (err == -ENOENT && !e->open)
+		return 0;
+	if (err) {
+		pr_warn("fxfs: mapping %llu bytes at %llu of extent %llx:%llu, %s, at %llu of the DAX window failed: %d\n",
+			e->len, e->extent_offset, e->branch, e->sequence,
+			e->open ? "writably" : "read-only",
+			range->window_offset + (e->offset - start), err);
+		return err;
+	}
+	bitmap_set(range->mapped, page, pages);
+	if (e->open)
+		bitmap_set(range->writable, page, pages);
+	else
+		bitmap_clear(range->writable, page, pages);
+	return e->open;
+}
+
+/* fxdax: maps piece `e` of `range`'s chunk in the range's own space, alone. */
+static int fxfs_dax_map_own(struct fxfs_dax *dax, struct fxfs_dax_range *range,
+			    const struct fxfs_dax_extent *e)
+{
+	loff_t start = fxfs_dax_chunk_start(range);
+	int err;
+
+	err = fxfs_device_map(dax->dev, e->branch, e->sequence, e->extent_offset, e->len,
+			      range->window_offset + (e->offset - start), e->open);
+	atomic64_inc(&dax->maps[FXFS_DAX_RANGE]);
+	atomic64_add(e->len, &dax->map_bytes[FXFS_DAX_RANGE]);
+	if (!err)
+		fxfs_dax_relocate(range, (e->offset - start) >> PAGE_SHIFT, e->len >> PAGE_SHIFT,
+				  NULL, 0);
+	return err;
+}
+
+/*
  * Maps the pieces `extents` of the chunk `range` maps, at their places in it: open extents
  * writably. A range of its own maps a piece of part of an extent no larger than a chunk, as files
  * share the staging extents, where the extent's region does, if it can (fxfs_dax_move). fxdax: a
  * whole extent, the file's own, it maps in its own space, in a row with the rest of the chunk,
- * which a fault then maps at once (fxfs_dax_huge_fault, TASK-26.18.8). In the gate if any is open,
- * with the file's DAX semaphore held for writing.
+ * which a fault then maps at once (fxfs_dax_huge_fault, TASK-26.18.8); those pieces all in one
+ * request, if the device takes them so (fxfs_device_map_many, TASK-91.4), or one by one if that
+ * fails, to say which did. In the gate if any is open, with the file's DAX semaphore held for
+ * writing.
  */
 static int fxfs_dax_map_extents(struct fxfs_dax *dax, struct fxfs_dax_range *range,
 				const struct fxfs_dax_extent *extents, ssize_t count)
 {
 	loff_t start = fxfs_dax_chunk_start(range);
+	/* The pieces the range's own space maps, and which they are, if it can gather them. */
+	struct fxfs_device_map *maps = NULL;
+	unsigned int *own = NULL;
 	bool writable = false;
-	ssize_t i;
-	int err;
+	ssize_t i, nr_own = 0;
+	int err, many;
 
 	if (range->region)
 		return fxfs_dax_map_slice(dax, range, extents, count);
 	fxfs_dax_prune(dax, range);
+	if (count > 1) {
+		maps = kmalloc_array(count, sizeof(*maps), GFP_NOFS);
+		own = kmalloc_array(count, sizeof(*own), GFP_NOFS);
+		if (!maps || !own) {
+			kfree(maps);
+			kfree(own);
+			maps = NULL;
+		}
+	}
 	for (i = 0; i < count; i++) {
 		const struct fxfs_dax_extent *e = &extents[i];
-		unsigned long page = (e->offset - start) >> PAGE_SHIFT;
-		unsigned long pages = e->len >> PAGE_SHIFT;
 
 		err = -EXDEV;
 		if (e->extent_size && e->extent_size <= FXFS_DAX_SIZE &&
 		    PAGE_ALIGNED(e->extent_offset) && (e->extent_offset || e->len < e->extent_size))
-			err = fxfs_dax_move(dax, range, e, page, pages);
+			err = fxfs_dax_move(dax, range, e, (e->offset - start) >> PAGE_SHIFT,
+					    e->len >> PAGE_SHIFT);
 		/*
 		 * No room for the region now, nor memory to track the page there, or it can't map the
-		 * piece: the range's own space does.
+		 * piece: the range's own space does, with the others, if it gathers them.
 		 */
 		if (err == -EXDEV || err == -EAGAIN || err == -ENOSPC || err == -ENOMEM) {
-			err = fxfs_device_map(dax->dev, e->branch, e->sequence, e->extent_offset,
-					      e->len, range->window_offset + (e->offset - start),
-					      e->open);
-			atomic64_inc(&dax->maps[FXFS_DAX_RANGE]);
+			if (maps) {
+				maps[nr_own] = (struct fxfs_device_map) {
+					.branch = e->branch, .sequence = e->sequence,
+					.offset = e->extent_offset, .len = e->len,
+					.window_offset = range->window_offset + (e->offset - start),
+					.writable = e->open,
+				};
+				own[nr_own++] = i;
+				continue;
+			}
+			err = fxfs_dax_map_own(dax, range, e);
+		}
+		err = fxfs_dax_mapped(range, e, err);
+		if (err < 0)
+			goto out;
+		writable |= err;
+	}
+	if (nr_own) {
+		many = fxfs_device_map_many(dax->dev, maps, nr_own);
+		atomic64_add(nr_own, &dax->maps[FXFS_DAX_RANGE]);
+		for (i = 0; i < nr_own; i++) {
+			const struct fxfs_dax_extent *e = &extents[own[i]];
+
 			atomic64_add(e->len, &dax->map_bytes[FXFS_DAX_RANGE]);
-			if (!err)
-				fxfs_dax_relocate(range, page, pages, NULL, 0);
-		}
-		/*
-		 * A sealed extent the device doesn't hold was never written: its blocks read as
-		 * zeros, a hole, as Fxfs reads them. (Blocks a write allocated before a seal sealed
-		 * their extent unwritten, which the write then moves.)
-		 */
-		if (err == -ENOENT && !e->open)
-			continue;
-		if (err) {
-			pr_warn("fxfs: mapping %llu bytes at %llu of extent %llx:%llu, %s, at %llu of the DAX window failed: %d\n",
-				e->len, e->extent_offset, e->branch, e->sequence,
-				e->open ? "writably" : "read-only",
-				range->window_offset + (e->offset - start), err);
-			return err;
-		}
-		bitmap_set(range->mapped, page, pages);
-		if (e->open) {
-			bitmap_set(range->writable, page, pages);
-			writable = true;
-		} else {
-			bitmap_clear(range->writable, page, pages);
+			/* If they failed, mapped again one by one, to say which, and why. */
+			if (many) {
+				err = fxfs_dax_map_own(dax, range, e);
+			} else {
+				fxfs_dax_relocate(range, (e->offset - start) >> PAGE_SHIFT,
+						  e->len >> PAGE_SHIFT, NULL, 0);
+				err = 0;
+			}
+			err = fxfs_dax_mapped(range, e, err);
+			if (err < 0)
+				goto out;
+			writable |= err;
 		}
 	}
+	err = 0;
+out:
 	if (writable)
 		fxfs_dax_add_writable(dax, range->file);
-	return 0;
+	kfree(maps);
+	kfree(own);
+	return err;
 }
 
 /* Whether any of the pieces `extents` is of an open extent. */

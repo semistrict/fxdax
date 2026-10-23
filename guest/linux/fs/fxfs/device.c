@@ -34,6 +34,8 @@ struct fxfs_device {
 	void *sealer_arg;
 	/* fxdax: what the window's requests took, and the stores seals held off (TASK-91.7). */
 	atomic64_t maps, map_ns, unmaps, unmap_ns, stores_held, stores_held_ns;
+	/* fxdax: the requests the maps took, fewer than the maps with MAP_MANY (TASK-91.4). */
+	atomic64_t map_requests;
 };
 
 struct fxfs_device_request {
@@ -271,8 +273,75 @@ int fxfs_device_map(struct fxfs_device *dev, u64 branch, u64 sequence, u64 offse
 	began = ktime_get_ns();
 	err = virtio_extent_call(dev->vext, req);
 	atomic64_inc(&dev->maps);
+	atomic64_inc(&dev->map_requests);
 	atomic64_add(ktime_get_ns() - began, &dev->map_ns);
 	kfree(req);
+	return err;
+}
+
+/* fxdax: the most maps one MAP_MANY request holds: its further ones a page's worth. */
+#define FXFS_DEVICE_MAP_MANY (PAGE_SIZE / sizeof(struct virtio_extent_map_entry) + 1)
+
+/* fxdax: `count` maps, from `maps`, in one MAP_MANY request; `count` at most FXFS_DEVICE_MAP_MANY. */
+static int fxfs_device_map_one_request(struct fxfs_device *dev, const struct fxfs_device_map *maps,
+				       size_t count, struct virtio_extent_map_entry *entries)
+{
+	struct vext_request *req = kzalloc(sizeof(*req), GFP_NOFS);
+	u64 began;
+	size_t i;
+	int err;
+
+	if (!req)
+		return -ENOMEM;
+	for (i = 1; i < count; i++)
+		entries[i - 1] = (struct virtio_extent_map_entry) {
+			.map = {
+				.id = { cpu_to_le64(maps[i].branch), cpu_to_le64(maps[i].sequence) },
+				.offset = cpu_to_le64(maps[i].offset),
+				.len = cpu_to_le64(maps[i].len),
+				.window_offset = cpu_to_le64(maps[i].window_offset),
+			},
+			.flags = cpu_to_le32(maps[i].writable ? VIRTIO_EXTENT_MAP_WRITE : 0),
+		};
+	req->type = VIRTIO_EXTENT_T_MAP;
+	req->flags = VIRTIO_EXTENT_MAP_MANY | (maps[0].writable ? VIRTIO_EXTENT_MAP_WRITE : 0);
+	req->id = (struct vext_id) { maps[0].branch, maps[0].sequence };
+	req->offset = maps[0].offset;
+	req->len = maps[0].len;
+	req->window_offset = maps[0].window_offset;
+	req->data = entries;
+	req->data_len = (count - 1) * sizeof(*entries);
+	began = ktime_get_ns();
+	err = virtio_extent_call(dev->vext, req);
+	atomic64_add(count, &dev->maps);
+	atomic64_inc(&dev->map_requests);
+	atomic64_add(ktime_get_ns() - began, &dev->map_ns);
+	kfree(req);
+	return err;
+}
+
+int fxfs_device_map_many(struct fxfs_device *dev, const struct fxfs_device_map *maps,
+			 size_t count)
+{
+	struct virtio_extent_map_entry *entries;
+	size_t done, n;
+	int err = 0;
+
+	if (count == 1 || !virtio_extent_map_many(dev->vext)) {
+		for (done = 0; done < count && !err; done++)
+			err = fxfs_device_map(dev, maps[done].branch, maps[done].sequence,
+					      maps[done].offset, maps[done].len,
+					      maps[done].window_offset, maps[done].writable);
+		return err;
+	}
+	entries = kmalloc_array(FXFS_DEVICE_MAP_MANY - 1, sizeof(*entries), GFP_NOFS);
+	if (!entries)
+		return -ENOMEM;
+	for (done = 0; done < count && !err; done += n) {
+		n = min_t(size_t, count - done, FXFS_DEVICE_MAP_MANY);
+		err = fxfs_device_map_one_request(dev, maps + done, n, entries);
+	}
+	kfree(entries);
 	return err;
 }
 
@@ -299,6 +368,7 @@ void fxfs_device_show_stats(struct fxfs_device *dev, struct seq_file *m)
 {
 	seq_printf(m, "window_maps %lld\nwindow_maps_ns %lld\n", atomic64_read(&dev->maps),
 		   atomic64_read(&dev->map_ns));
+	seq_printf(m, "window_map_requests %lld\n", atomic64_read(&dev->map_requests));
 	seq_printf(m, "window_unmaps %lld\nwindow_unmaps_ns %lld\n", atomic64_read(&dev->unmaps),
 		   atomic64_read(&dev->unmap_ns));
 	seq_printf(m, "stores_held_by_seals %lld\nstores_held_by_seals_ns %lld\n",
