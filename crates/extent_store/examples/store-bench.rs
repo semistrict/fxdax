@@ -29,7 +29,8 @@
 //! - `burst`: a guest writing N MiB (256) of extents of 256 KiB after a commit, and committing,
 //!   in a directory of the host's: more than a segment and an extent hold, so that the open
 //!   segment fills between commits, and closes, again and again: how long the writes take, the
-//!   longest, and the commit after them, and what it seals in files of their own (TASK-79.2).
+//!   longest, and the commit after them, and what it seals in files of their own (TASK-79.2),
+//!   which its flush syncs at once (TASK-92.42).
 //!
 //! The stores of all but `close-now` and `burst` are in memory ([`MemDir`]), so that what is timed
 //! is the store's own work.

@@ -10,8 +10,10 @@
 //! durable commits, reads.
 
 use crate::dir::{Dir, File};
+use crate::sync::{Mutex, thread};
 use anyhow::{Context as _, Error};
 use std::collections::{BTreeSet, HashSet, VecDeque};
+use std::io;
 use std::sync::Arc;
 
 /// A branch's commits, as they become durable: each `T`, what a flush needs of it, from the time
@@ -76,6 +78,16 @@ impl<T> Durability<T> {
     }
 }
 
+/// fxdax: how many of a flush's files it syncs at once, and of its directories (TASK-92.42). One at
+/// a time, each sync waited for those before it, though none needs another: store-bench's `burst`,
+/// whose commit seals 640 extents in files of their own, spent 2.0 s syncing them on macOS (APFS),
+/// nearly all of its flush, about 3 ms a file. Synced at once, their writes go to the host's disk
+/// together, and on Linux the `fdatasync`s of files just written share the commits of the file
+/// system's journal they wait for. Sixteen at once took that flush to about 0.9 s, and more barely
+/// shortened it (64: about 0.75 s); while each is a thread the flush starts, but for its own, and a
+/// file's writes put on the host's disk at once, which the host's other stores' commits wait behind.
+const AT_ONCE: usize = 16;
+
 /// What a flush makes durable of the commits it takes: the files their data is in, and the
 /// directories whose entries they changed.
 pub(crate) struct Syncs<F> {
@@ -117,22 +129,18 @@ impl<F: File> Syncs<F> {
     }
 
     /// Syncs them, in `dir`: each file once, however many commits wrote it, then the directories.
+    /// fxdax: [`AT_ONCE`] of the files at a time, then of the directories (TASK-92.42).
     pub fn sync<D: Dir<File = F>>(&self, dir: &D) -> Result<(), Error> {
-        let mut synced = HashSet::new();
-        for file in &self.files {
-            if synced.insert(Arc::as_ptr(file)) {
-                file.sync().context("syncing extents' data")?;
-            }
-        }
-        for file in &self.cached {
-            if synced.insert(Arc::as_ptr(file)) {
-                file.sync_cached().context("syncing extents' data")?;
-            }
-        }
-        for path in &self.dirs {
-            dir.sync_dir(path).with_context(|| format!("syncing {path}"))?;
-        }
-        Ok(())
+        let sync: fn(&F) -> io::Result<()> = F::sync;
+        let sync_cached: fn(&F) -> io::Result<()> = F::sync_cached;
+        let mut seen = HashSet::new();
+        let files: Vec<_> = (self.files.iter().map(|file| (file, sync)))
+            .chain(self.cached.iter().map(|file| (file, sync_cached)))
+            .filter(|(file, _)| seen.insert(Arc::as_ptr(file)))
+            .collect();
+        at_once(&files, |(file, sync)| sync(file).context("syncing extents' data"))?;
+        let dirs: Vec<&String> = self.dirs.iter().collect();
+        at_once(&dirs, |path| dir.sync_dir(path).with_context(|| format!("syncing {path}")))
     }
 
     /// The files it syncs, in order: those whose pages leave the host's page cache, and those whose
@@ -147,6 +155,40 @@ impl<F: File> Syncs<F> {
     pub fn dirs(&self) -> &BTreeSet<String> {
         &self.dirs
     }
+}
+
+/// fxdax: `sync`s each of `items`, [`AT_ONCE`] at a time, on as many threads, the caller's one of
+/// them, each taking the next as it is done with one; and returns once each is synced, or one
+/// failed: then those not begun are not, and it returns that failure, logging any other
+/// (TASK-92.42).
+fn at_once<T: Sync>(
+    items: &[T],
+    sync: impl Fn(&T) -> Result<(), Error> + Sync,
+) -> Result<(), Error> {
+    let queue = Mutex::new(items.iter());
+    let syncing = || {
+        loop {
+            let Some(item) = queue.lock().unwrap().next() else { return Ok(()) };
+            if let Err(error) = sync(item) {
+                // The flush fails, making nothing more durable.
+                *queue.lock().unwrap() = Default::default();
+                return Err(error);
+            }
+        }
+    };
+    thread::scope(|scope| {
+        let others: Vec<_> = (1..items.len().min(AT_ONCE)).map(|_| scope.spawn(syncing)).collect();
+        let mut synced = syncing();
+        for other in others {
+            let joined = other.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+            let Err(error) = joined else { continue };
+            match synced {
+                Ok(()) => synced = Err(error),
+                Err(_) => log::warn!("extent store: {error:#} too"),
+            }
+        }
+        synced
+    })
 }
 
 #[cfg(test)]
@@ -212,5 +254,223 @@ mod tests {
         dir.fail_after(Some(2));
         first.sync(&dir).unwrap();
         assert!(dir.has_failed());
+    }
+
+    /// fxdax: a flush's syncs under Shuttle (the `shuttle` feature), whose waits that can't end
+    /// are deadlocks it reports, which only it can run:
+    /// `cargo nextest run -p extent_store --features shuttle --lib shuttle_tests::` (TASK-92.42).
+    #[cfg(feature = "shuttle")]
+    mod shuttle_tests {
+        use super::*;
+        use crate::sync::{Condvar, Mutex};
+        use shuttle::scheduler::{PctScheduler, RandomScheduler};
+        use shuttle::{Config, Runner};
+        use std::collections::BTreeMap;
+        use std::io;
+
+        /// The files a test's flush syncs, more than twice as many as it syncs at once, and the
+        /// directories.
+        const FILES: usize = 2 * AT_ONCE + 3;
+        const DIRS: usize = 3;
+
+        /// What the syncs of a [`Probe`]'s files, or of its directories, saw: how many are in
+        /// flight, the most that were at once, and how many are done.
+        #[derive(Default)]
+        struct Syncing {
+            in_flight: usize,
+            most: usize,
+            done: usize,
+        }
+
+        #[derive(Default)]
+        struct Seen {
+            files: Syncing,
+            dirs: Syncing,
+            /// How each file was synced, each time: keeping its pages in the page cache or not.
+            synced: BTreeMap<usize, Vec<bool>>,
+        }
+
+        /// A store's directory whose files' and directories' syncs say what they saw, and fail if
+        /// a directory's comes before the files are synced; and, if `gathering`, each waits until
+        /// as many syncs are in flight as may be: as many as a flush syncs at once, or all those
+        /// left. One at a time, or fewer at once, the first waits for ever.
+        #[derive(Clone)]
+        struct Probe {
+            gathering: bool,
+            /// The file whose sync fails, if any.
+            failing: Option<usize>,
+            seen: Arc<(Mutex<Seen>, Condvar)>,
+        }
+
+        struct ProbeFile {
+            probe: Probe,
+            number: usize,
+        }
+
+        impl Probe {
+            fn new(gathering: bool, failing: Option<usize>) -> Self {
+                Self { gathering, failing, seen: Default::default() }
+            }
+
+            /// A sync, of one of `total` files or directories, whose counts `of` picks.
+            fn sync(&self, of: fn(&mut Seen) -> &mut Syncing, total: usize) {
+                let (seen, changed) = &*self.seen;
+                let mut seen = seen.lock().unwrap();
+                let syncing = of(&mut seen);
+                syncing.in_flight += 1;
+                syncing.most = syncing.most.max(syncing.in_flight);
+                assert!(syncing.in_flight <= AT_ONCE, "{} syncs at once", syncing.in_flight);
+                changed.notify_all();
+                let gathered = |syncing: &Syncing| {
+                    !self.gathering || syncing.in_flight == AT_ONCE.min(total - syncing.done)
+                };
+                while !gathered(of(&mut seen)) {
+                    seen = changed.wait(seen).unwrap();
+                }
+                let syncing = of(&mut seen);
+                syncing.in_flight -= 1;
+                syncing.done += 1;
+            }
+
+            /// File `number`'s sync, keeping its pages in the page cache if `cached`.
+            fn sync_file(&self, number: usize, cached: bool) -> io::Result<()> {
+                self.seen.0.lock().unwrap().synced.entry(number).or_default().push(cached);
+                if self.failing == Some(number) {
+                    return Err(io::Error::other(format!("file {number} fails")));
+                }
+                self.sync(|seen| &mut seen.files, FILES);
+                Ok(())
+            }
+        }
+
+        impl Dir for Probe {
+            type File = ProbeFile;
+
+            fn create(&self, _: &str, _: bool) -> io::Result<ProbeFile> {
+                unreachable!("a flush syncs")
+            }
+
+            fn open(&self, _: &str, _: bool) -> io::Result<ProbeFile> {
+                unreachable!("a flush syncs")
+            }
+
+            fn remove(&self, _: &str) -> io::Result<()> {
+                unreachable!("a flush syncs")
+            }
+
+            fn create_dir(&self, _: &str) -> io::Result<()> {
+                unreachable!("a flush syncs")
+            }
+
+            fn list(&self, _: &str) -> io::Result<Vec<String>> {
+                unreachable!("a flush syncs")
+            }
+
+            fn sync_dir(&self, path: &str) -> io::Result<()> {
+                let files = {
+                    let seen = self.seen.0.lock().unwrap();
+                    (seen.files.in_flight, seen.files.done)
+                };
+                assert_eq!(files, (0, FILES), "{path} synced before the files");
+                self.sync(|seen| &mut seen.dirs, DIRS);
+                Ok(())
+            }
+
+            fn barrier(&self) -> io::Result<()> {
+                unreachable!("a flush syncs")
+            }
+        }
+
+        impl File for ProbeFile {
+            fn read_at(&self, _: &mut [u8], _: u64) -> io::Result<()> {
+                unreachable!("a flush syncs")
+            }
+
+            fn write_at(&self, _: &[u8], _: u64) -> io::Result<()> {
+                unreachable!("a flush syncs")
+            }
+
+            fn size(&self) -> io::Result<u64> {
+                unreachable!("a flush syncs")
+            }
+
+            fn sync(&self) -> io::Result<()> {
+                self.probe.sync_file(self.number, false)
+            }
+
+            fn sync_cached(&self) -> io::Result<()> {
+                self.probe.sync_file(self.number, true)
+            }
+        }
+
+        /// What a flush of `FILES` files of `probe`'s syncs: the last two kept in the page cache,
+        /// as the open segment's raw file is; the first written by two commits, and the second
+        /// kept in the page cache by one of them, which syncs it as the other does; and `DIRS`
+        /// directories, two commits' changes in the first.
+        fn syncs(probe: &Probe) -> Syncs<ProbeFile> {
+            let files: Vec<_> = (0..FILES)
+                .map(|number| Arc::new(ProbeFile { probe: probe.clone(), number }))
+                .collect();
+            let mut syncs = Syncs::default();
+            for file in &files[..FILES - 2] {
+                syncs.file(file.clone());
+            }
+            syncs.file(files[0].clone());
+            syncs.cached(files[1].clone());
+            for file in &files[FILES - 2..] {
+                syncs.cached(file.clone());
+            }
+            for path in ["a", "b", "c", "a"] {
+                syncs.dir(path.to_owned());
+            }
+            syncs
+        }
+
+        fn config() -> Config {
+            let mut config = Config::new();
+            config.stack_size = 4 << 20;
+            config
+        }
+
+        /// Runs `test` on random schedules, and on PCT's.
+        fn schedules(test: fn()) {
+            Runner::new(RandomScheduler::new(300), config()).run(test);
+            Runner::new(PctScheduler::new(3, 300), config()).run(test);
+        }
+
+        /// A flush syncs its files `AT_ONCE` at a time, each once, as it was asked to, then its
+        /// directories at once, each once.
+        #[test]
+        fn syncs_sync_the_files_at_once_then_the_directories() {
+            schedules(|| {
+                let probe = Probe::new(true, None);
+                syncs(&probe).sync(&probe).unwrap();
+                let seen = probe.seen.0.lock().unwrap();
+                assert_eq!((seen.files.most, seen.files.done), (AT_ONCE, FILES));
+                assert_eq!((seen.dirs.most, seen.dirs.done), (DIRS, DIRS));
+                let cached = |number| number >= FILES - 2;
+                let expected: BTreeMap<_, _> =
+                    (0..FILES).map(|number| (number, vec![cached(number)])).collect();
+                assert_eq!(seen.synced, expected);
+            });
+        }
+
+        /// A flush one of whose files fails to sync says so, and syncs no directory: the files
+        /// not synced may be in their entries.
+        #[test]
+        fn a_failing_sync_syncs_no_directory() {
+            schedules(|| {
+                let probe = Probe::new(false, Some(AT_ONCE + 1));
+                let error = syncs(&probe).sync(&probe).expect_err("a file failed to sync");
+                assert_eq!(
+                    format!("{error:#}"),
+                    format!("syncing extents' data: file {} fails", AT_ONCE + 1)
+                );
+                let seen = probe.seen.0.lock().unwrap();
+                assert_eq!((seen.files.in_flight, seen.dirs.most, seen.dirs.done), (0, 0, 0));
+                assert_eq!(seen.synced[&(AT_ONCE + 1)], [false]);
+                assert!(seen.synced.values().all(|syncs| syncs.len() == 1), "a file synced twice");
+            });
+        }
     }
 }
