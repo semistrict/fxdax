@@ -381,9 +381,9 @@ mod tests {
         })
     }
 
-    /// Stops this thread's deletions' removals after `steps` more steps, or never if `None`.
-    fn stop_after(steps: Option<usize>) {
-        STEPS.with_borrow_mut(|taken| taken.left = steps);
+    /// Stops this thread's deletions' removals after `left` more steps, or never if `None`.
+    fn stop_after(left: Option<usize>) {
+        STEPS.with_borrow_mut(|steps| steps.left = left);
     }
 
     /// The steps this thread's deletions' removals took since this was last asked.
