@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@main-session'
 created_date: '2026-10-22 22:01'
-updated_date: '2026-10-22 23:01'
+updated_date: '2026-10-23 00:03'
 labels: []
 dependencies: []
 parent_task_id: TASK-91
@@ -23,7 +23,7 @@ Measured with a guest kernel logging the window every 5 s (pgbench -s 50 on fxfs
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Window use under pgbench -s 50 with a 2 GiB window stays below its size, or reclaiming keeps up without remap storms, shown by a window-usage measurement
+- [x] #1 Window use under pgbench -s 50 with a 2 GiB window stays below its size, or reclaiming keeps up without remap storms, shown by a window-usage measurement
 - [ ] #2 fxfs-guest-pgbench-dax's third run within 10% of its first
 <!-- AC:END -->
 
@@ -33,3 +33,9 @@ Measured with a guest kernel logging the window every 5 s (pgbench -s 50 on fxfs
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+a8e2e02c: regions have the window's last half to themselves, reclaiming nothing (full: -EAGAIN, the piece mapped in a range's own space). Fragmentation was the cause, not fullness: with one pool the largest free run stayed ~2 MiB with 180-590 MiB free; failed allocations ~300,000 in a run, ~2,000 after. A quarter held run 3 but slowed the load to 35 s; half keeps it at 23-24 s. GCE, full guest suite passes (defaults, both pgbench, crash, follow, daemon-lost, live-fork); DAX pgbench 1,035 / 862 / 807 tps (was 1,002 / 859 / 29-171). AC2 not met: run 3 is 78% of run 1, the fall being between runs 1 and 2 (seen with every window layout; without DAX the runs hold ~1,000), still to explain.
+<!-- SECTION:NOTES:END -->
