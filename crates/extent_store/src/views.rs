@@ -24,7 +24,7 @@
 
 use crate::sync::{Condvar, Mutex, rules};
 use anyhow::{Error, bail};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use storage_device::ExtentId;
@@ -224,9 +224,15 @@ impl Keeping {
         self.oldest
     }
 
-    /// The extents they pin.
-    pub fn pins(&self) -> impl Iterator<Item = ExtentId> + '_ {
-        self.pins.iter().copied()
+    /// The epoch of the commit whose frees after it they keep, every one: the oldest live view's,
+    /// if any.
+    pub fn keeps_after(&self) -> Option<u64> {
+        self.oldest.filter(|_| rules().keep_frees_for_views)
+    }
+
+    /// The extents they keep pinned, whenever freed.
+    pub fn pinned(&self) -> impl Iterator<Item = ExtentId> + '_ {
+        self.pins.iter().copied().filter(|_| rules().keep_pins)
     }
 
     /// What no view keeps.
@@ -243,7 +249,7 @@ impl Keeping {
 
     /// Whether they keep `extent`, freed by the commit `freed`.
     pub fn keeps(&self, extent: ExtentId, freed: u64) -> bool {
-        (rules().keep_frees_for_views && self.oldest.is_some_and(|oldest| oldest < freed))
+        self.keeps_after().is_some_and(|oldest| oldest < freed)
             || (rules().keep_pins && self.pins.contains(&extent))
     }
 }
@@ -257,9 +263,16 @@ pub(crate) struct Limits {
 
 /// The epochs of the commits that sealed extents, held or kept, since the oldest live view's: a
 /// view refuses those sealed after its own, which its commit doesn't hold. Those sealed by then,
-/// or while no view lived, are sealed as of every view.
+/// or while no view lived, are sealed as of every view. Kept in the order they were sealed too,
+/// so that what all the views were sealed by goes as they move on, a commit taking the time of
+/// what goes, not of all a lagging view refuses (TASK-92.29).
 #[derive(Default)]
-pub(crate) struct Sealed(HashMap<ExtentId, u64>);
+pub(crate) struct Sealed {
+    epochs: HashMap<ExtentId, u64>,
+    /// Each extent sealed, by its seal's epoch, oldest first: but those forgotten since, which go
+    /// as the others sealed with them do.
+    by_epoch: VecDeque<(u64, ExtentId)>,
+}
 
 impl Sealed {
     /// Commit `epoch`, which sealed `sealing`, is published, `oldest` the epoch of the oldest view
@@ -268,21 +281,35 @@ impl Sealed {
     pub fn published(&mut self, oldest: Option<u64>, sealing: &[ExtentId], epoch: u64) {
         match oldest {
             Some(oldest) if rules().views_refuse_later_extents => {
-                self.0.retain(|_, sealed| *sealed > oldest);
-                self.0.extend(sealing.iter().map(|extent| (*extent, epoch)));
+                while let Some(&(sealed, extent)) = self.by_epoch.front()
+                    && sealed <= oldest
+                {
+                    self.by_epoch.pop_front();
+                    // Unless forgotten, and sealed again since.
+                    if self.epochs.get(&extent) == Some(&sealed) {
+                        self.epochs.remove(&extent);
+                    }
+                }
+                for &extent in sealing {
+                    self.epochs.insert(extent, epoch);
+                    self.by_epoch.push_back((epoch, extent));
+                }
             }
-            _ => self.0.clear(),
+            _ => {
+                self.epochs.clear();
+                self.by_epoch.clear();
+            }
         }
     }
 
     /// Whether `extent` was sealed after commit `epoch`.
     pub fn after(&self, extent: ExtentId, epoch: u64) -> bool {
-        self.0.get(&extent).is_some_and(|sealed| *sealed > epoch)
+        self.epochs.get(&extent).is_some_and(|sealed| *sealed > epoch)
     }
 
     /// `extent`'s data goes: freed.
     pub fn forget(&mut self, extent: ExtentId) {
-        self.0.remove(&extent);
+        self.epochs.remove(&extent);
     }
 }
 
@@ -359,7 +386,7 @@ impl Views {
         epoch: u64,
         root: &[u8],
         limits: Limits,
-        kept_bytes: impl Fn(&Keeping) -> u64,
+        mut kept_bytes: impl FnMut(&Keeping) -> u64,
     ) -> Keeping {
         let mut views = self.inner.lock().unwrap();
         views.epoch = epoch;
@@ -394,5 +421,33 @@ impl Views {
             oldest: live().map(|follower| follower.since).min(),
             pins: live().flat_map(|follower| follower.pins.iter().copied()).collect(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// What a commit sealed, views as of earlier commits refuse, until every view is as of it or
+    /// later; an extent forgotten, freed, and sealed again since, as of its later seal
+    /// (TASK-92.29).
+    #[test]
+    fn views_refuse_what_was_sealed_after_them() {
+        let extent = |sequence| ExtentId::new(1, sequence);
+        let mut sealed = Sealed::default();
+        sealed.published(Some(1), &[extent(1)], 2);
+        sealed.published(Some(1), &[extent(2)], 3);
+        assert_eq!((sealed.after(extent(1), 1), sealed.after(extent(1), 2)), (true, false));
+        sealed.forget(extent(1));
+        sealed.published(Some(2), &[extent(1)], 4);
+        assert_eq!((sealed.after(extent(1), 3), sealed.after(extent(2), 2)), (true, true));
+        sealed.published(Some(3), &[], 5);
+        assert_eq!((sealed.after(extent(1), 3), sealed.after(extent(2), 2)), (true, false));
+        sealed.published(Some(4), &[], 6);
+        assert!(!sealed.after(extent(1), 3));
+        // With no view, none.
+        sealed.published(Some(4), &[extent(3)], 7);
+        sealed.published(None, &[extent(4)], 8);
+        assert_eq!((sealed.after(extent(3), 4), sealed.after(extent(4), 4)), (false, false));
     }
 }

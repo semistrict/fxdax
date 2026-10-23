@@ -3,12 +3,14 @@
 // found in the LICENSE file.
 
 //! fxdax: the extents freed whose data stays ([`Kept`]), for the uploader and for views, indexed so
-//! that what a commit does with them takes the time of what it lets go of and of what views keep,
-//! not of all of them: the uploader keeps every free until it has uploaded the commit, thousands of
-//! them behind object storage (TASK-41).
+//! that what a commit does with them takes the time of what it lets go of, not of all of them: the
+//! uploader keeps every free until it has uploaded the commit, thousands of them behind object
+//! storage (TASK-41); nor of what views keep, which a view lagging behind keeps of every commit
+//! since its own, counted on as views move on rather than again (TASK-92.29).
 
 use crate::layout::Extent;
 use crate::views::Keeping;
+use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashMap};
 use storage_device::ExtentId;
 
@@ -38,6 +40,11 @@ pub(crate) struct KeptExtents {
     bytes: u64,
     /// The bytes of the data of those views keep, as of the last trim, which count as used.
     for_views: u64,
+    /// The epoch of the oldest view's commit as of the last count of what views keep, and the bytes
+    /// of the data of those freed after it, which views keep: counted on from there as the oldest
+    /// view moves on, rather than counted again by every commit.
+    counted_after: u64,
+    after_bytes: u64,
 }
 
 impl KeptExtents {
@@ -66,6 +73,9 @@ impl KeptExtents {
             self.released.insert((kept.freed, extent));
         }
         self.bytes += kept.entry.len;
+        if kept.freed > self.counted_after {
+            self.after_bytes += kept.entry.len;
+        }
         self.kept.insert(extent, kept);
     }
 
@@ -87,19 +97,19 @@ impl KeptExtents {
     }
 
     /// Takes out those the commits up to `published` freed that the uploader needs no more, and
-    /// views don't keep, as `keeping` says, and returns them; and counts what views keep.
+    /// views don't keep, as `keeping` says, and returns them; and counts what views keep. Those
+    /// freed after the oldest view's commit views keep, which are not looked at again.
     pub fn trim(&mut self, keeping: &Keeping, published: u64) -> Vec<(ExtentId, Kept)> {
-        let last = (published, ExtentId::new(u64::MAX, u64::MAX));
-        let gone: Vec<(u64, ExtentId)> = (self.released.range(..=last))
+        let upto = keeping.keeps_after().map_or(published, |oldest| oldest.min(published));
+        let last = (upto, ExtentId::new(u64::MAX, u64::MAX));
+        let gone: Vec<ExtentId> = (self.released.range(..=last))
             .filter(|(_, extent)| !Self::views_keep(keeping, *extent, &self.kept[extent]))
-            .copied()
+            .map(|(_, extent)| *extent)
             .collect();
         let trimmed = (gone.into_iter())
-            .map(|(freed, extent)| {
-                self.released.remove(&(freed, extent));
-                self.by_freed.remove(&(freed, extent));
+            .map(|extent| {
                 let kept = self.kept.remove(&extent).unwrap();
-                self.bytes -= kept.entry.len;
+                self.unindex(extent, &kept);
                 (extent, kept)
             })
             .collect();
@@ -109,22 +119,36 @@ impl KeptExtents {
 
     /// The bytes of the data of those views keep, as `keeping` says: those freed after the oldest
     /// view's commit, and those they pin.
-    pub fn views_bytes(&self, keeping: &Keeping) -> u64 {
-        let after_oldest = keeping.oldest().into_iter().flat_map(|oldest| {
-            let first = (oldest + 1, ExtentId::new(0, 0));
-            self.by_freed.range(first..).map(|(_, extent)| *extent)
-        });
+    pub fn views_bytes(&mut self, keeping: &Keeping) -> u64 {
+        let after = keeping.keeps_after();
+        let after_bytes = after.map_or(0, |oldest| self.bytes_after(oldest));
         // Those pinned it doesn't count already.
-        let pinned = keeping.pins().filter(|extent| {
-            self.kept
-                .get(extent)
-                .is_some_and(|kept| keeping.oldest().is_none_or(|oldest| kept.freed <= oldest))
-        });
-        (after_oldest.chain(pinned))
-            .map(|extent| (extent, &self.kept[&extent]))
-            .filter(|(extent, kept)| Self::views_keep(keeping, *extent, kept))
-            .map(|(_, kept)| kept.entry.len)
-            .sum()
+        let pinned: u64 = (keeping.pinned())
+            .filter_map(|extent| self.kept.get(&extent))
+            .filter(|kept| after.is_none_or(|oldest| kept.freed <= oldest))
+            .map(|kept| kept.entry.len)
+            .sum();
+        after_bytes + pinned
+    }
+
+    /// The bytes of the data of those freed after commit `epoch`: counted on from the last count,
+    /// over the frees between the two epochs, as the oldest view moves on, or one opens when none
+    /// lived.
+    fn bytes_after(&mut self, epoch: u64) -> u64 {
+        let between = |from: u64, to: u64| {
+            (from + 1, ExtentId::new(0, 0))..=(to, ExtentId::new(u64::MAX, u64::MAX))
+        };
+        let bytes = |range| -> u64 {
+            let extents = self.by_freed.range(range);
+            extents.map(|(_, extent)| self.kept[extent].entry.len).sum()
+        };
+        match epoch.cmp(&self.counted_after) {
+            Ordering::Greater => self.after_bytes -= bytes(between(self.counted_after, epoch)),
+            Ordering::Less => self.after_bytes += bytes(between(epoch, self.counted_after)),
+            Ordering::Equal => {}
+        }
+        self.counted_after = epoch;
+        self.after_bytes
     }
 
     /// Whether views keep `extent`, kept as `kept` says.
@@ -132,10 +156,14 @@ impl KeptExtents {
         keeping.keeps(extent, kept.freed)
     }
 
+    /// `extent`, kept as `kept` says, is kept no more.
     fn unindex(&mut self, extent: ExtentId, kept: &Kept) {
         self.by_freed.remove(&(kept.freed, extent));
         self.released.remove(&(kept.freed, extent));
         self.bytes -= kept.entry.len;
+        if kept.freed > self.counted_after {
+            self.after_bytes -= kept.entry.len;
+        }
     }
 }
 
@@ -210,5 +238,33 @@ mod tests {
         assert_eq!(extents.for_views(), (2 + 4) << 12);
         assert_eq!(trimmed(&mut extents, &Keeping::none(), 4), [extent(2), extent(3)]);
         assert_eq!(extents.for_views(), 0);
+    }
+
+    /// What views keep, counted on from the last count as the oldest view moves on, or one opens
+    /// when none lived, is what counting it again gives: the frees after the oldest's commit, and
+    /// those pinned, as the uploader releases its commits and trims let the rest go (TASK-92.29).
+    #[test]
+    fn what_views_keep_is_counted_on_as_they_move_on() {
+        let mut extents = KeptExtents::default();
+        let again = |extents: &KeptExtents, keeping: &Keeping| -> u64 {
+            (extents.kept.iter())
+                .filter(|(extent, kept)| keeping.keeps(**extent, kept.freed))
+                .map(|(_, kept)| kept.entry.len)
+                .sum()
+        };
+        for epoch in 1..=40 {
+            extents.insert(extent(epoch), freed(epoch, epoch % 3 == 0, epoch << 12));
+            if epoch % 4 == 0 {
+                extents.release(epoch - 2);
+            }
+            let oldest = match epoch {
+                1..=12 => Some(epoch / 2),
+                13..=20 => None,
+                _ => Some(epoch - 5),
+            };
+            let keeping = Keeping::of(oldest, [extent(2), extent(30)]);
+            extents.trim(&keeping, epoch);
+            assert_eq!(extents.for_views(), again(&extents, &keeping), "at {epoch}");
+        }
     }
 }

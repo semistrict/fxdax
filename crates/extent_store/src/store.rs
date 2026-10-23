@@ -1165,14 +1165,14 @@ impl<D: Dir> Store<D> {
         let limits =
             Limits { lag: self.options.view_lag, kept_bytes: self.options.view_kept_bytes };
         let keeping = if rules().decide_at_publish {
-            let kept = &state.kept;
+            let kept = &mut state.kept;
             let keeping =
                 self.views.publish(epoch, &published, limits, |keeping| kept.views_bytes(keeping));
             state.trim_kept(&keeping, epoch);
             keeping
         } else {
             state.trim_kept(&self.views.keeping(), epoch);
-            let kept = &state.kept;
+            let kept = &mut state.kept;
             self.views.publish(epoch, &published, limits, |keeping| kept.views_bytes(keeping))
         };
         // What it sealed, as views older than it, if any lives, must refuse; what all of them
