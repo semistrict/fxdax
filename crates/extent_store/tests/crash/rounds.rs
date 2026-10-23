@@ -16,8 +16,10 @@ use storage_device::{ExtentId, SealedExtent};
 
 const BLOCK: usize = 4096;
 const BRANCH: u64 = 3;
-/// How many recovering rounds the tests run; of forks', a third as many.
+/// How many recovering rounds the tests run.
 pub const ROUNDS: u64 = 300;
+/// How many forks' rounds they run: a third as many, each running workloads on two branches.
+pub const FORK_ROUNDS: u64 = ROUNDS / 3;
 const STEPS: usize = 200;
 
 /// Small segments, large extents and index files, so that workloads make many of each.
@@ -217,6 +219,15 @@ fn digest(dir: &MemDir) -> Digest {
 /// The directories a round left, each named, in order: those its crashes left, and the one it
 /// ended with.
 pub type Left = Vec<(&'static str, Digest)>;
+
+/// What `run` returned, run twice at once, on two threads: a round's two runs, in the time of one,
+/// whose directories [`same`] compares.
+pub fn twice<T: Send>(run: impl Fn() -> T + Sync) -> (T, T) {
+    std::thread::scope(|scope| {
+        let other = scope.spawn(&run);
+        (run(), other.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic)))
+    })
+}
 
 /// Checks that round `round`, run twice, left the same directories, `first` and `second`.
 pub fn same(round: u64, first: &Left, second: &Left) {

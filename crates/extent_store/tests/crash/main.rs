@@ -17,17 +17,7 @@
 mod rounds;
 
 use extent_store::MemDir;
-use rounds::{Left, ROUNDS, forking, recovering, same};
-
-/// Round `round`, run twice, at once, on two threads, in serial directories: the directories each
-/// run left.
-fn twice(round: u64, run: fn(u64, MemDir) -> Left) -> (Left, Left) {
-    std::thread::scope(|scope| {
-        let other = scope.spawn(|| run(round, MemDir::serial()));
-        let left = run(round, MemDir::serial());
-        (left, other.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic)))
-    })
-}
+use rounds::{FORK_ROUNDS, ROUNDS, forking, recovering, same, twice};
 
 /// TASK-79.79: a round is a function of its seed alone: run twice, its crashes leave the same
 /// directories, and it ends with the same, so that a round that failed fails again, and a round
@@ -35,7 +25,7 @@ fn twice(round: u64, run: fn(u64, MemDir) -> Left) -> (Left, Left) {
 #[test]
 fn crashes_are_functions_of_their_rounds() {
     for round in 0..ROUNDS {
-        let (first, second) = twice(round, |round, dir| recovering(round, dir).0);
+        let (first, second) = twice(|| recovering(round, MemDir::serial()).0);
         same(round, &first, &second);
     }
 }
@@ -54,7 +44,7 @@ fn recovers_a_prefix_of_its_commits() {
 /// cleaned since.
 #[test]
 fn forks_recover_prefixes_of_their_commits() {
-    for round in 0..ROUNDS / 3 {
+    for round in 0..FORK_ROUNDS {
         forking(round, MemDir::serial());
     }
 }
@@ -62,8 +52,8 @@ fn forks_recover_prefixes_of_their_commits() {
 /// TASK-79.79: so is a round of [`forks_recover_prefixes_of_their_commits`].
 #[test]
 fn forks_crashes_are_functions_of_their_rounds() {
-    for round in 0..ROUNDS / 3 {
-        let (first, second) = twice(round, forking);
+    for round in 0..FORK_ROUNDS {
+        let (first, second) = twice(|| forking(round, MemDir::serial()));
         same(round, &first, &second);
     }
 }

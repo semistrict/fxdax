@@ -16,7 +16,7 @@ mod rounds;
 
 use super::config;
 use extent_store::{MemDir, Rules, set_rules};
-use rounds::{ROUNDS, forking, recovering, same};
+use rounds::{FORK_ROUNDS, ROUNDS, forking, recovering, same, twice};
 use shuttle::Runner;
 use shuttle::scheduler::RandomScheduler;
 use std::sync::{Arc, Mutex};
@@ -34,23 +34,16 @@ fn concurrently<T: Send + 'static>(round: u64, run: fn(u64, MemDir) -> T) -> T {
     returned.lock().unwrap().take().expect("the round ran")
 }
 
-/// Round `round` of `run`, run twice so, at once, on two threads: what each returned.
-fn twice<T: Send + 'static>(round: u64, run: fn(u64, MemDir) -> T) -> (T, T) {
-    std::thread::scope(|scope| {
-        let other = scope.spawn(|| concurrently(round, run));
-        let returned = concurrently(round, run);
-        (returned, other.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic)))
-    })
-}
-
 #[test]
 fn crashes_recover_prefixes_of_their_commits_concurrently() {
     set_rules(Rules::ALL);
     let (mut crashes_mid_commit, mut crashes_elsewhere) = (0, 0);
     for round in 0..ROUNDS {
-        let ((first, mid_commit, elsewhere), (second, _, _)) = twice(round, |round, dir| {
-            let (left, mid_commit) = recovering(round, dir.clone());
-            (left, mid_commit, dir.failed_elsewhere())
+        let ((first, mid_commit, elsewhere), (second, _, _)) = twice(|| {
+            concurrently(round, |round, dir| {
+                let (left, mid_commit) = recovering(round, dir.clone());
+                (left, mid_commit, dir.failed_elsewhere())
+            })
         });
         same(round, &first, &second);
         crashes_mid_commit += mid_commit as u64;
@@ -66,12 +59,16 @@ fn crashes_recover_prefixes_of_their_commits_concurrently() {
 fn forks_recover_prefixes_of_their_commits_concurrently() {
     set_rules(Rules::ALL);
     let mut crashes_elsewhere = 0;
-    for round in 0..ROUNDS / 3 {
-        let ((first, elsewhere), (second, _)) =
-            twice(round, |round, dir| (forking(round, dir.clone()), dir.failed_elsewhere()));
+    for round in 0..FORK_ROUNDS {
+        let ((first, elsewhere), (second, _)) = twice(|| {
+            concurrently(round, |round, dir| (forking(round, dir.clone()), dir.failed_elsewhere()))
+        });
         same(round, &first, &second);
         crashes_elsewhere += elsewhere as u64;
     }
     // The crashes hit the store's own threads' I/O, as well as the workloads'.
-    assert!(crashes_elsewhere > ROUNDS / 90, "{crashes_elsewhere} crashes in the store's threads");
+    assert!(
+        crashes_elsewhere > FORK_ROUNDS / 30,
+        "{crashes_elsewhere} crashes in the store's threads"
+    );
 }
