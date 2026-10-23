@@ -18,6 +18,11 @@ use std::sync::{Arc, Mutex, Weak};
 /// The first line of a handle's `store` file.
 const HANDLE: &str = "fxdax extent store handle";
 
+/// fxdax: the error of a fork to a path something is at already ([`fork_host`], TASK-79.83).
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("{} is there already", .0.display())]
+pub struct Taken(pub PathBuf);
+
 /// The stores this process has open, by their directories' canonical paths.
 static OPEN: Mutex<Vec<(PathBuf, Weak<Lineage<HostDir>>)>> = Mutex::new(Vec::new());
 
@@ -100,7 +105,10 @@ pub fn fork_host_with(
     child: u64,
     before: impl FnOnce() -> Result<(), Error>,
 ) -> Result<u64, Error> {
-    std::fs::create_dir(path).with_context(|| format!("creating {}", path.display()))?;
+    std::fs::create_dir(path).map_err(|err| match err.kind() {
+        std::io::ErrorKind::AlreadyExists => Error::new(err).context(Taken(path.to_owned())),
+        _ => Error::new(err).context(format!("creating {}", path.display())),
+    })?;
     // The handle first, then the fork: a host crashing between them leaves a handle naming a
     // branch the store has not, which deleting it removes, never a branch no handle names, which
     // would keep what it inherited for ever.
@@ -438,6 +446,20 @@ mod tests {
     /// The steps this thread's deletions' removals took since this was last asked.
     fn taken() -> Vec<(Change, PathBuf)> {
         STEPS.with_borrow_mut(|steps| std::mem::take(&mut steps.taken))
+    }
+
+    /// fxdax: a fork to a path something is at fails so ([`Taken`], TASK-79.83), leaving it.
+    #[test]
+    fn forks_to_paths_taken_fail_so() {
+        let temp = tempfile::tempdir().unwrap();
+        let (path, fork) = (temp.path().join("store"), temp.path().join("fork"));
+        std::fs::create_dir(&path).unwrap();
+        let description = Description { block_size: BLOCK as u32, capacity: 1 << 20, branch: 3 };
+        let store = create_host(&path, description, true, Options::default()).unwrap();
+        std::fs::create_dir(&fork).unwrap();
+        let taken = fork_host(&store, &fork, 4).unwrap_err();
+        assert_eq!(taken.downcast_ref::<Taken>(), Some(&Taken(fork.clone())), "{taken:#}");
+        assert!(fork.exists(), "the fork took away what was at its path");
     }
 
     /// TASK-79.84: a fork's handle marked failed reads so, opening as before, and is deleted as any
