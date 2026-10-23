@@ -26,9 +26,10 @@ pub(crate) const BLOCK_SIZE: u32 = 4096;
 /// in-process kernel caches their pages already.
 const DIRECT: bool = true;
 
-/// The bytes no extent is in, of a store's segments that cleaning takes, past which cleaning it is
-/// due: or any, once what the store's files take that no extent holds is past its capacity's
-/// worth, as for a store whose capacity is short of this ([`Store::cleaning_due`], TASK-79.2).
+/// The bytes of the host's disk that what no extent is in takes, of a store's segments that
+/// cleaning takes, past which cleaning it is due: as their files hold it, framed, compressed; or
+/// any, once what the store's files take that no extent holds is past its capacity's worth, as for
+/// a store whose capacity is short of this ([`Store::cleaning_due`], TASK-79.2).
 const CLEAN_PAST: u64 = 64 << 20;
 
 /// The fraction of a segment its extents must hold for cleaning to leave it be.
@@ -138,10 +139,10 @@ pub(crate) fn clean_after_commit(store: &Store<HostDir>) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// fxdax: whether cleaning `store` is due: the segments whose extents hold less than
-/// `CLEAN_BELOW` of them hold more than `CLEAN_PAST` bytes no extent is in, or any, once what the
-/// store's files take that no extent holds is past its capacity's worth; and, behind its commits
-/// ([`clean_behind`]), no copy of the last pass waits for a commit (TASK-79.2).
+/// fxdax: whether cleaning `store` is due: what no extent is in takes more than `CLEAN_PAST` bytes
+/// of the host's disk in the segments whose extents hold less than `CLEAN_BELOW` of them, or any,
+/// once what the store's files take that no extent holds is past its capacity's worth; and,
+/// behind its commits ([`clean_behind`]), no copy of the last pass waits for a commit (TASK-79.2).
 pub(crate) fn cleaning_due(store: &Store<HostDir>) -> anyhow::Result<bool> {
     store.cleaning_due(CLEAN_PAST, CLEAN_BELOW)
 }
@@ -173,6 +174,20 @@ mod tests {
 
     const MIB: u64 = 1 << 20;
 
+    /// A MiB of extent `sequence`'s, from a xorshift generator, which does not compress: framed,
+    /// what of it no extent is in takes as much of the disk as it is, as `CLEAN_PAST` counts.
+    fn noise(sequence: u64) -> Vec<u8> {
+        let mut state = sequence.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
+        (0..MIB)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                state as u8
+            })
+            .collect()
+    }
+
     /// A store is cleaned after a commit once the segments cleaning takes hold more than
     /// `CLEAN_PAST` freed bytes, and then holds in segments only what is live.
     #[test]
@@ -184,7 +199,7 @@ mod tests {
         // A segment of their data, closed by the commit, as it is past a segment's size.
         let extents = CLEAN_PAST / MIB + 8;
         for sequence in 0..extents {
-            store.write(extent(sequence), 0, &vec![sequence as u8; MIB as usize]).unwrap();
+            store.write(extent(sequence), 0, &noise(sequence)).unwrap();
         }
         store.commit(None).unwrap();
 
@@ -205,7 +220,7 @@ mod tests {
         assert_eq!((after.segment_bytes, after.live_bytes), (7 * MIB, 7 * MIB));
         let mut data = vec![0; MIB as usize];
         store.read(extent(extents - 1), 0, &mut data).unwrap();
-        assert_eq!(data, vec![(extents - 1) as u8; MIB as usize]);
+        assert!(data == noise(extents - 1), "extent {} differs", extents - 1);
     }
 
     /// fxdax: a store is cleaned behind its commits once its segments hold more than `CLEAN_PAST`
@@ -220,7 +235,7 @@ mod tests {
         let extent = |sequence| ExtentId::new(branch, sequence);
         let extents = CLEAN_PAST / MIB + 8;
         for sequence in 0..extents {
-            store.write(extent(sequence), 0, &vec![sequence as u8; MIB as usize]).unwrap();
+            store.write(extent(sequence), 0, &noise(sequence)).unwrap();
         }
         store.commit(None).unwrap();
         for sequence in 0..CLEAN_PAST / MIB {
@@ -242,7 +257,7 @@ mod tests {
         assert!(!cleaning_due(&store).unwrap());
         let mut data = vec![0; MIB as usize];
         store.read(extent(extents - 1), 0, &mut data).unwrap();
-        assert_eq!(data, vec![(extents - 1) as u8; MIB as usize]);
+        assert!(data == noise(extents - 1), "extent {} differs", extents - 1);
     }
 
     /// The logs name a fork by its own branch, of the store it was forked from, whose directory

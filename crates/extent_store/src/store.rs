@@ -1655,11 +1655,15 @@ impl<D: Dir> Store<D> {
         self.changes.load(Ordering::Relaxed) + self.lineage.unshared()
     }
 
-    /// fxdax: whether cleaning behind the commits is due ([`Store::clean_behind`]): the segments
-    /// it would take, at `live_fraction`, hold more than `past` bytes no extent is in, or any, once
-    /// what the branch's files take that no extent holds is past its capacity's worth, the
-    /// capacity being short of `past` maybe; and no copy of an earlier pass's waits for a commit
-    /// (TASK-79.2). Found as the segments count what they hold, not going through the extents.
+    /// fxdax: whether cleaning behind the commits is due ([`Store::clean_behind`]): what no extent
+    /// is in takes more than `past` bytes of the host's disk in the segments it would take, at
+    /// `live_fraction`, or any, once what the branch's files take that no extent holds is past its
+    /// capacity's worth, the capacity being short of `past` maybe; and no copy of an earlier
+    /// pass's waits for a commit (TASK-79.2). Found as the segments count what they hold, not
+    /// going through the extents. What their files take, framed, compressed: counted as the bytes
+    /// of data it is, a guest's zeros, freed, made cleaning due as often as other data would,
+    /// though they took next to none of the disk, and the passes copied out what was live with
+    /// them, a quarter of the guest's throughput under pgbench.
     pub fn cleaning_due(&self, past: u64, live_fraction: f64) -> Result<bool, Error> {
         let mut state = self.writable()?;
         if !state.uncommitted.copies().is_empty() {

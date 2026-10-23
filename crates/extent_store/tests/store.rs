@@ -425,9 +425,10 @@ fn cleaning<D: Dir>(dir: D, reopen: impl Fn(&D) -> D) {
 fn cleaning_behind_the_commits() {
     let dir = MemDir::new();
     let store = create(dir.clone(), 64 << 20);
-    // 8 segments of 16 extents: of the first four, one extent in four kept, of the rest half.
+    // 8 segments of 16 extents: of the first four, one extent in four kept, of the rest half. Of
+    // data that does not compress, so that what no extent is in takes as much of the disk.
     for sequence in 0..128 {
-        store.write(extent(sequence), 0, &pattern(sequence as u8, 0, BLOCK)).unwrap();
+        store.write(extent(sequence), 0, &noise(sequence, BLOCK)).unwrap();
         if sequence % 16 == 15 {
             store.commit(None).unwrap();
         }
@@ -442,7 +443,7 @@ fn cleaning_behind_the_commits() {
     let check = |store: &Store<MemDir>| {
         for sequence in &kept {
             let data = read(store, extent(*sequence), 0, BLOCK);
-            assert!(data == pattern(*sequence as u8, 0, BLOCK), "{sequence}");
+            assert!(data == noise(*sequence, BLOCK), "{sequence}");
         }
     };
     let epoch = store.epoch().unwrap();
@@ -475,9 +476,10 @@ fn cleaning_behind_the_commits() {
 #[test]
 fn cleaning_is_due_for_what_it_takes_back_alone() {
     let store = create(MemDir::new(), 64 << 20);
-    // 4 segments of 16 blocks, 6 of each freed: five eighths live.
+    // 4 segments of 16 blocks, 6 of each freed: five eighths live. Of data that does not
+    // compress, so that what no extent is in takes as much of the disk.
     for sequence in 0..64 {
-        store.write(extent(sequence), 0, &pattern(sequence as u8, 0, BLOCK)).unwrap();
+        store.write(extent(sequence), 0, &noise(sequence, BLOCK)).unwrap();
         if sequence % 16 == 15 {
             store.commit(None).unwrap();
         }
@@ -499,6 +501,34 @@ fn cleaning_is_due_for_what_it_takes_back_alone() {
     store.commit(None).unwrap();
     assert!(!store.cleaning_due(0, 0.5).unwrap());
     assert_eq!(store.usage().unwrap().dead_bytes, 18 * BLOCK as u64);
+}
+
+/// fxdax: cleaning is due for what it takes back of the host's disk: of the segments it would
+/// take, what their files take of what no extent is in, framed, compressed, which may be next to
+/// nothing of the data it is. Counted as that data, the zeros of a guest's files, freed, made it
+/// due as often as other data would, and the passes copied out what was live of segments taking
+/// next to none of the disk: under pgbench, a pass a second, a quarter of the guest's throughput
+/// (TASK-79.2).
+#[test]
+fn cleaning_is_due_for_the_disk_it_takes_back() {
+    let due = |block: fn(u64) -> Vec<u8>| {
+        let store = create(MemDir::new(), 64 << 20);
+        // 4 segments of 16 blocks, three in four of each freed: 48 blocks no extent is in.
+        for sequence in 0..64 {
+            store.write(extent(sequence), 0, &block(sequence)).unwrap();
+            if sequence % 16 == 15 {
+                store.commit(None).unwrap();
+            }
+        }
+        for sequence in (0..64).filter(|sequence| sequence % 4 != 0) {
+            store.free(extent(sequence)).unwrap();
+        }
+        store.commit(None).unwrap();
+        assert_eq!(store.usage().unwrap().dead_bytes, 48 * BLOCK as u64);
+        store.cleaning_due(16 * BLOCK as u64, 0.5).unwrap()
+    };
+    assert!(due(|sequence| noise(sequence, BLOCK)));
+    assert!(!due(|_| vec![0; BLOCK]));
 }
 
 /// fxdax: cleaning finds the extents it copies out of the segments it takes as the segments name
@@ -1263,9 +1293,11 @@ fn closed_segments_reopen_on_the_host() {
     assert_eq!(store.rebuild().unwrap(), state);
 }
 
-/// Bytes from a xorshift generator, which do not compress.
+/// Bytes from a xorshift generator, which do not compress: each seed's its own, the generator's
+/// state, which must not be zero, made of all of the seed's bits, so that no two seeds, as 2 and
+/// 3 did, give the same bytes, which compression would make one of.
 fn noise(seed: u64, len: usize) -> Vec<u8> {
-    let mut state = seed | 1;
+    let mut state = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
     (0..len)
         .map(|_| {
             state ^= state << 13;
@@ -2217,9 +2249,10 @@ fn dead_space_the_uploader_lets_go_takes_none_of_the_room() {
 #[test]
 fn forks_deleted_leave_the_branch_its_dead_space() {
     let store = create(MemDir::new(), 1 << 20);
-    // Four segments of 16 blocks.
+    // Four segments of 16 blocks, of data that does not compress, so that what no extent is in
+    // takes as much of the disk.
     for sequence in 0..64 {
-        store.write(extent(sequence), 0, &pattern(sequence as u8, 0, BLOCK)).unwrap();
+        store.write(extent(sequence), 0, &noise(sequence, BLOCK)).unwrap();
         if sequence % 16 == 15 {
             store.commit(None).unwrap();
         }

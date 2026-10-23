@@ -90,6 +90,19 @@ impl<F> Segment<F> {
         }
     }
 
+    /// fxdax: the bytes of the host's disk its data no extent is in takes, as far as it knows: as
+    /// much of its file as that data is of its data, but no more than that data. Its file holds its
+    /// data framed, compressed, once it closed, or as it is, open, being framed or set aside; and a
+    /// guest's zeros, freed, take next to none of it (TASK-79.2).
+    fn dead_on_disk(&self) -> u64 {
+        let dead = self.dead();
+        if dead == 0 {
+            return 0;
+        }
+        let on_disk = u128::from(dead) * u128::from(self.size.min(self.len));
+        on_disk.div_ceil(u128::from(self.len)) as u64
+    }
+
     /// fxdax: whether cleaning takes it, as far as it knows (TASK-79.2): not open, nor taken for
     /// shared, no write in progress in it, its extents' data less than `live_fraction` of it, and
     /// sealed extents in it, which make it the branch's own, to copy out, after which it goes.
@@ -608,12 +621,14 @@ impl<F: File> Segments<F> {
             .collect()
     }
 
-    /// fxdax: the bytes no extent is in of the segments cleaning would take, as it knows them,
-    /// which it takes back ([`Segments::victims`], TASK-79.2).
+    /// fxdax: the bytes of the host's disk that what no extent is in takes, of the segments
+    /// cleaning would take, as it knows them, which it takes back ([`Segments::victims`],
+    /// TASK-79.2): what their files take of it ([`Segment::dead_on_disk`]), not the bytes of data
+    /// it is, which framing may have compressed to next to nothing.
     pub fn reclaimable(&self, live_fraction: f64) -> u64 {
         (self.tracked.values())
             .filter(|segment| segment.is_victim(live_fraction))
-            .map(Segment::dead)
+            .map(Segment::dead_on_disk)
             .sum()
     }
 
