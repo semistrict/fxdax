@@ -153,6 +153,12 @@ impl<F: File> State<F> {
         self.segments.dead() + self.uncommitted.overwritten()
     }
 
+    /// fxdax: whether what the branch's files take that no extent holds counts as used, past the
+    /// capacity's worth: writes are refused room for it (TASK-79.2).
+    pub fn garbage_counts(&self) -> bool {
+        self.space.past_slack(self.garbage()) > 0
+    }
+
     /// Fails with [`NoSpace`] unless a write may add `grows` bytes, and write over `overwrites`.
     pub fn check_room(&self, grows: u64, overwrites: u64) -> Result<(), NoSpace> {
         self.space.check(grows, self.kept.for_views(), self.garbage() + overwrites)

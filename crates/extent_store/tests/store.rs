@@ -553,6 +553,27 @@ fn cleaning_finds_the_extents_sealed_in_its_segments() {
     }
 }
 
+/// fxdax: cleaning is due once what no extent holds counts as used, past the capacity's worth,
+/// whatever the mark it is due past otherwise: a branch whose capacity is short of that mark,
+/// refused room for its garbage, has it taken back, and its room again (TASK-79.2).
+#[test]
+fn cleaning_is_due_once_garbage_counts_as_used() {
+    let capacity = 64 * BLOCK as u64;
+    let store = create(MemDir::new(), capacity);
+    for cycle in 0..4 {
+        churn(&store, 16 * cycle);
+    }
+    // 240 KiB freed: within the capacity's worth, and short of the mark.
+    assert!(!store.cleaning_due(64 << 20, 0.5).unwrap());
+    churn(&store, 64);
+    assert_eq!(store.info().unwrap().available, capacity - 16 * BLOCK as u64);
+    assert!(store.cleaning_due(64 << 20, 0.5).unwrap());
+    assert_eq!(store.clean_behind(0.5, u64::MAX).unwrap(), 5 * BLOCK as u64);
+    store.commit(None).unwrap();
+    assert_eq!(store.info().unwrap().available, capacity - 5 * BLOCK as u64);
+    assert!(!store.cleaning_due(0, 0.5).unwrap());
+}
+
 #[test]
 fn cleaning_in_memory() {
     cleaning(MemDir::new(), MemDir::clone);

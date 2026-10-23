@@ -27,7 +27,8 @@ pub(crate) const BLOCK_SIZE: u32 = 4096;
 const DIRECT: bool = true;
 
 /// The bytes no extent is in, of a store's segments that cleaning takes, past which cleaning it is
-/// due ([`Store::cleaning_due`], TASK-79.2).
+/// due: or any, once they count as used, past the store's capacity's worth, as a store whose
+/// capacity is short of this is refused room for them ([`Store::cleaning_due`], TASK-79.2).
 const CLEAN_PAST: u64 = 64 << 20;
 
 /// The fraction of a segment its extents must hold for cleaning to leave it be.
@@ -134,8 +135,9 @@ pub(crate) fn clean_after_commit(store: &Store<HostDir>) -> anyhow::Result<()> {
 }
 
 /// fxdax: whether cleaning `store` is due: the segments whose extents hold less than
-/// `CLEAN_BELOW` of them hold more than `CLEAN_PAST` bytes no extent is in; and, behind its commits
-/// ([`clean_behind`]), no copy of the last pass waits for a commit (TASK-79.2).
+/// `CLEAN_BELOW` of them hold more than `CLEAN_PAST` bytes no extent is in, or any, once those
+/// count as used; and, behind its commits ([`clean_behind`]), no copy of the last pass waits for a
+/// commit (TASK-79.2).
 pub(crate) fn cleaning_due(store: &Store<HostDir>) -> anyhow::Result<bool> {
     store.cleaning_due(CLEAN_PAST, CLEAN_BELOW)
 }
