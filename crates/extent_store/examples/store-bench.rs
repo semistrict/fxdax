@@ -26,9 +26,13 @@
 //!   each segment's freed, which leaves cleaning nothing to take; then with most of four segments'
 //!   freed besides: whether cleaning is due, how long a pass that copies nothing holds the store,
 //!   as extentd's does each time it is due, and how long a pass copying them takes (TASK-79.2).
+//! - `burst`: a guest writing N MiB (256) of extents of 256 KiB after a commit, and committing,
+//!   in a directory of the host's: more than a segment and an extent hold, so that the open
+//!   segment fills between commits, and closes, again and again: how long the writes take, the
+//!   longest, and the commit after them, and what it seals in files of their own (TASK-79.2).
 //!
-//! The stores of all but `close-now` are in memory ([`MemDir`]), so that what is timed is the
-//! store's own work.
+//! The stores of all but `close-now` and `burst` are in memory ([`MemDir`]), so that what is timed
+//! is the store's own work.
 
 use extent_store::{Description, Dir, HostDir, MemDir, Options, Store};
 use std::sync::Arc;
@@ -260,6 +264,34 @@ fn cleaning(count: u64) {
     );
 }
 
+fn burst(mib: u64) {
+    const EXTENT: usize = 256 << 10;
+    let temp = tempfile::tempdir().unwrap();
+    let store = create(HostDir::new(temp.path(), true).unwrap(), Options::default());
+    store.write(extent(0), 0, &data(0, BLOCK)).unwrap();
+    store.commit(None).unwrap();
+    let mut writes = Waits::default();
+    for sequence in 1..=mib * 4 {
+        let started = Instant::now();
+        store.write(extent(sequence), 0, &data(sequence, EXTENT)).unwrap();
+        writes.add(started.elapsed());
+    }
+    let started = Instant::now();
+    store.commit_ordered(None).unwrap();
+    let ordered = started.elapsed();
+    store.flush().unwrap();
+    let durable = started.elapsed();
+    let own = std::fs::read_dir(temp.path().join(format!("extents/{BRANCH:016x}"))).unwrap();
+    writes.print("writes");
+    println!(
+        "the commit: ordered in {:.1} ms, durable in {:.1} ms, sealing {} extents in files of \
+         their own",
+        ordered.as_secs_f64() * 1e3,
+        durable.as_secs_f64() * 1e3,
+        own.count()
+    );
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let n = |default| args.get(2).map_or(default, |n| n.parse().expect("N is a number"));
@@ -268,8 +300,9 @@ fn main() {
         Some("segments") => segments(n(2_000)),
         Some("close-now") => close_now(n(32)),
         Some("cleaning") => cleaning(n(400_000)),
+        Some("burst") => burst(n(256)),
         _ => {
-            eprintln!("usage: store-bench lagging-view|segments|close-now|cleaning [N]");
+            eprintln!("usage: store-bench lagging-view|segments|close-now|cleaning|burst [N]");
             std::process::exit(2);
         }
     }

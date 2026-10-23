@@ -17,7 +17,7 @@ use crate::index::IndexLog;
 use crate::kept::{Kept, KeptExtents};
 use crate::layers::Extents;
 use crate::layout::{Change, Data, EXTENTS, Extent, FileKey, Piece, branch_dir, extent_path};
-use crate::segments::Segments;
+use crate::segments::{Closing, Segments};
 use crate::store::{Info, NoSpace, TooSmall};
 use crate::sync::rules;
 use crate::uploads::Uploads;
@@ -67,6 +67,11 @@ pub(crate) struct State<F> {
     /// ([`Store::close_now`](crate::Store::close_now)): a fork, and the branch's closing, wait for
     /// them (TASK-41.1).
     pub framings: usize,
+    /// fxdax: the segments closed since the last commit, being framed behind, which the next
+    /// commit's flush waits for: those closed for want of room, full between commits (TASK-79.2),
+    /// and one a commit that failed closed. The branch's closing waits for them, if no commit
+    /// comes after.
+    pub closings: Vec<Closing<F>>,
 }
 
 /// Whom a read is for: the store's own, of what it holds; the uploader's, of what it holds or

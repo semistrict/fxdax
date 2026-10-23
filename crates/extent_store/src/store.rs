@@ -231,18 +231,11 @@ struct Pending<F> {
     /// Its record in the index.
     write: IndexWrite<F>,
     /// The files of the branch's alone it made unreferenced ([`Unreferenced::doomed`]), and the
-    /// raw file of the segment it closed, once framed: they go once it is durable.
+    /// raw files of the segments it closed, once framed: they go once it is durable.
     doomed: Vec<String>,
-    /// fxdax: the segment it closed, if any, being framed, whose framed file it waits for and
-    /// syncs.
-    closing: Option<Closing<F>>,
-}
-
-/// fxdax: the state, the open segment having room for a write ([`Store::room_for`]), or locked
-/// again, for what was found of it to be found again.
-enum Room<'a, F> {
-    Made(MutexGuard<'a, State<F>>),
-    Again(MutexGuard<'a, State<F>>),
+    /// fxdax: the segment it closed, if any, and those closed for want of room since the last
+    /// commit ([`State::closings`]), being framed, whose framed files it waits for and syncs.
+    closings: Vec<Closing<F>>,
 }
 
 /// A write in progress (see [`Store::begin_write`]): its data goes to `file()` at `offset()`.
@@ -471,6 +464,7 @@ impl<D: Dir> Store<D> {
                 failed: false,
                 closed: false,
                 framings: 0,
+                closings: Vec::new(),
             }),
             committing: Mutex::new(()),
             durability: Mutex::new(Durability::new(epoch)),
@@ -608,12 +602,23 @@ impl<D: Dir> Store<D> {
         let mut state = self.state.lock().unwrap();
         if !state.closed {
             // fxdax: once the segments closed between commits are framed, which another store,
-            // opening the branch, would close again meanwhile (TASK-41.1).
+            // opening the branch, would close again meanwhile (TASK-41.1); and those closed for
+            // want of room since the last commit, or by a commit that failed, which no flush waited
+            // for: the opening keeps their framed files, if whole, or frames their raw files anew
+            // (TASK-79.2).
             if rules().close_waits_for_framings {
                 state = self.framed(state);
             }
+            let closings = std::mem::take(&mut state.closings);
             state.closed = true;
             drop(state);
+            if rules().close_waits_for_framings {
+                for closing in &closings {
+                    if let Err(err) = closing.wait() {
+                        log::warn!("extent store: {err:#}, which opening the branch does again");
+                    }
+                }
+            }
             self.lineage.closed(self.branch, self.token);
         }
         flushed
@@ -678,36 +683,27 @@ impl<D: Dir> Store<D> {
             bail!(OtherBranch(extent));
         }
         let mut state = self.writable()?;
+        // Not while a commit, or a closing between commits, waits for the writes in progress.
+        while state.gate.is_held() {
+            state = self.idle.wait(state).unwrap();
+        }
+        let mut state = self.still_writable(state)?;
         let end = offset + len;
-        let grows = loop {
-            // Not while a commit, or a closing between commits, waits for the writes in progress.
-            while state.gate.is_held() {
-                state = self.idle.wait(state).unwrap();
-            }
-            state = self.still_writable(state)?;
-            let current = state.extents.get(&extent).map(|entry| entry.len);
-            if current.is_some() && !state.uncommitted.is_open(extent) {
-                bail!(SealedExtent(extent));
-            }
-            let grows = end.saturating_sub(current.unwrap_or(0));
-            let to_segment = match state.uncommitted.placement(extent) {
-                Some(placement) => matches!(placement, Placement::Segment),
-                None => end < self.options.large_extent,
-            };
-            // fxdax: what it writes over, in a segment, takes room too (TASK-79.2).
-            let overwrites = if to_segment { len - grows.min(len) } else { 0 };
-            state.check_room(grows, overwrites)?;
-            if !to_segment {
-                break grows;
-            }
-            match self.room_for(state, len)? {
-                Room::Made(made) => {
-                    state = made;
-                    break grows;
-                }
-                Room::Again(again) => state = again,
-            }
+        let current = state.extents.get(&extent).map(|entry| entry.len);
+        if current.is_some() && !state.uncommitted.is_open(extent) {
+            bail!(SealedExtent(extent));
+        }
+        let grows = end.saturating_sub(current.unwrap_or(0));
+        let to_segment = match state.uncommitted.placement(extent) {
+            Some(placement) => matches!(placement, Placement::Segment),
+            None => end < self.options.large_extent,
         };
+        // fxdax: what it writes over, in a segment, takes room too (TASK-79.2).
+        let overwrites = if to_segment { len - grows.min(len) } else { 0 };
+        state.check_room(grows, overwrites)?;
+        if to_segment {
+            self.make_room(&mut state, len)?;
+        }
         let (placement, opening) = match state.uncommitted.opening(extent) {
             Some(opened) => opened,
             None => {
@@ -759,29 +755,28 @@ impl<D: Dir> Store<D> {
         created.with_context(|| format!("creating {path}"))
     }
 
-    /// fxdax: the state, once the open segment has room for a write of `len` bytes: if it has
-    /// none, writes go to the next (TASK-79.2). The open segment, full, is set aside, holding no
-    /// commit's data, or else closed as between commits, which takes the commits' lock, the state
-    /// let go of meanwhile: then the state is locked again, for what was found of it to be found
-    /// again ([`Room::Again`]).
-    fn room_for<'a>(
-        &'a self,
-        mut state: MutexGuard<'a, State<D::File>>,
-        len: u64,
-    ) -> Result<Room<'a, D::File>, Error> {
+    /// fxdax: makes room in the open segment for a write of `len` bytes, if it has none: writes
+    /// go to the next (TASK-79.2). The open segment, full, is set aside, holding no commit's data,
+    /// or else closed, as between commits, and framed behind, which the next commit's flush waits
+    /// for, as for its own closing ([`State::closings`]): holding the state alone, so that the
+    /// write waits neither for a commit in progress, nor for the writes in the segment, nor for
+    /// the framing, as the uploader's closing between commits does ([`Store::close_now`]). Those
+    /// writes go on: their extents are open, which the next commit copies out, from the segment's
+    /// raw file, which reads read until its flush has the framed file.
+    fn make_room(&self, state: &mut State<D::File>, len: u64) -> Result<(), Error> {
         if state.segments.fits(len, self.options.segment_limit()) {
-            return Ok(Room::Made(state));
+            return Ok(());
         }
-        if !state.segments.has_commits(state.epoch) {
-            let retired = state.segments.open_segment();
+        let full = state.segments.open_segment();
+        if state.segments.has_commits(state.epoch) {
+            let unframed = self.close_open_segment(state, state.epoch)?;
+            state.closings.push(unframed.frame_behind(self.lineage.clone()));
+        } else {
             state.segments.retire(&self.lineage.dir)?;
-            state.index.set_aside(retired.number);
+            state.index.set_aside(full.number);
             self.lineage.claim(self.branch, [FileKey::Segment(state.segments.open_segment())]);
-            return Ok(Room::Made(state));
         }
-        drop(state);
-        self.close_now()?;
-        Ok(Room::Again(self.writable()?))
+        Ok(())
     }
 
     fn finish_write(&self, write: &Write<'_, D>) {
@@ -1123,9 +1118,12 @@ impl<D: Dir> Store<D> {
         if let Some(uploads) = &mut state.uploads {
             uploads.record(epoch, &changes, &state.extents);
         }
-        // The open segment's footer records them, before the segment closes.
+        // The open segment's footer records them, before the segment closes. fxdax: with those
+        // closed for want of room since the last commit, which it waits for, framed, too.
         state.segments.record(&changes, root, &state.extents);
-        let closing = self.close_if_due(state, epoch)?;
+        if let Some(closing) = self.close_if_due(state, epoch)? {
+            state.closings.push(closing);
+        }
         // What its flush syncs, after the closing, whose directories its flush must sync: the
         // framed file's entry is durable before its raw file goes.
         let mut syncs = Syncs::default();
@@ -1164,7 +1162,8 @@ impl<D: Dir> Store<D> {
             Forked { layer, origin }
         });
         // Queued while the state is locked, so that commits queue in their order.
-        let pending = Pending { syncs, write: appended.write, doomed, closing };
+        let closings = std::mem::take(&mut state.closings);
+        let pending = Pending { syncs, write: appended.write, doomed, closings };
         self.durability.lock().unwrap().push(epoch, pending);
         Ok(forked)
     }
@@ -1552,8 +1551,12 @@ impl<D: Dir> Store<D> {
         // going once the commits are durable.
         let mut syncs = Syncs::default();
         for pending in commits.iter_mut() {
-            if let Some(closing) = pending.closing.take() {
-                let (number, framed) = closing.wait()?;
+            // Each waited for, before any failure is said, so that none goes on framing as the
+            // branch is opened again.
+            let closings = std::mem::take(&mut pending.closings);
+            let framed: Vec<_> = closings.iter().map(Closing::wait).collect();
+            for framed in framed {
+                let (number, framed) = framed?;
                 pending.syncs.file(framed.file.clone());
                 pending.doomed.push(open_segment_path(number));
                 self.state.lock().unwrap().segments.framed(number, framed);
@@ -1688,20 +1691,15 @@ impl<D: Dir> Store<D> {
             Err(error) => return Err(error),
         }
         let mut state = self.writable()?;
-        let mut state = loop {
-            // Not while a commit, or a closing between commits, waits for the writes in progress.
-            while state.gate.is_held() {
-                state = self.idle.wait(state).unwrap();
-            }
-            state = self.still_writable(state)?;
-            if state.extents.get(&extent) != Some(&entry) {
-                return Ok(0);
-            }
-            match self.room_for(state, len)? {
-                Room::Made(made) => break made,
-                Room::Again(again) => state = again,
-            }
-        };
+        // Not while a commit, or a closing between commits, waits for the writes in progress.
+        while state.gate.is_held() {
+            state = self.idle.wait(state).unwrap();
+        }
+        let mut state = self.still_writable(state)?;
+        if state.extents.get(&extent) != Some(&entry) {
+            return Ok(0);
+        }
+        self.make_room(&mut state, len)?;
         let (number, file, at) = state.segments.reserve(len);
         let gated = rules().commits_wait_for_copies;
         if gated {

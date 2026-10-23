@@ -1832,9 +1832,9 @@ fn segment_data(dir: &MemDir) -> Vec<u64> {
 /// and `Options::max_extent`, between commits: then the next goes to another, which no segment
 /// grows past, however much is written between commits (TASK-79.2). One holding no commit's data
 /// is set aside raw, the extents in it copied out by the next commit, to the open segment while it
-/// has room and to files of their own after; one holding commits' closes as it would between
-/// commits ([`Store::close_now`]). Every extent reads as written meanwhile, and once committed,
-/// and so after opening the store again.
+/// has room and to files of their own after; one holding commits' closes, framed behind the
+/// write, as the next commit's flush has it. Every extent reads as written meanwhile, and once
+/// committed, and so after opening the store again.
 #[test]
 fn segments_hold_a_segment_and_an_extent_at_most() {
     let dir = MemDir::new();

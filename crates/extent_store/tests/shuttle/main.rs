@@ -1036,6 +1036,75 @@ fn forking_during_a_framing() {
     forking.join().unwrap();
 }
 
+/// A store of the branch, segments laid out as [`ROLLING`] says, whose open segment, its first,
+/// holds a commit's extent, and is full, in a directory that stalls the creation of the segment's
+/// framed file: so that a write finding no room in it closes it, and its framing stalls, as on a
+/// slow disk (TASK-79.2).
+fn framing_for_room_stalls() -> (Stalling, Arc<Store<Stalling>>) {
+    let dir = Stalling::new();
+    let description = Description { block_size: BLOCK as u32, capacity: 1 << 20, branch: BRANCH };
+    let store = Arc::new(Store::create(dir.clone(), description, ROLLING).unwrap());
+    store.write(extent(1), 0, &pattern(1, BLOCK)).unwrap();
+    store.commit(None).unwrap();
+    // Six blocks more: the seven it holds at most.
+    for sequence in 2..5 {
+        store.write(extent(sequence), 0, &pattern(sequence as u8, 2 * BLOCK)).unwrap();
+    }
+    dir.arm(Op::Create, &format!("segments/{BRANCH:016x}/{:016x}", 0));
+    (dir, store)
+}
+
+/// Reads extents 1 to `last` of a store [`framing_for_room_stalls`] made, and wrote to, through
+/// `store`, which must be as written.
+fn check_rolled(store: &Store<Stalling>, last: u64, failure: &str) {
+    for sequence in 1..=last {
+        let len = if sequence == 1 { BLOCK } else { 2 * BLOCK };
+        let mut read = vec![0; len];
+        let reading = store.read(extent(sequence), 0, &mut read);
+        reading.unwrap_or_else(|error| panic!("{failure}: extent {sequence}: {error:#}"));
+        assert!(read == pattern(sequence as u8, len), "{failure}: extent {sequence} differs");
+    }
+}
+
+/// One run of a write finding no room in the open segment, which holds a commit's data, and
+/// closes it (TASK-79.2): the segment's framing stalls, but the write waits not for it, nor do the
+/// reads after; the commit after, whose flush waits for it, seals the extents in the segment
+/// elsewhere. Shuttle, whose waits that can't end are deadlocks it reports, finds so.
+fn serving_during_a_framing_for_room() {
+    let (dir, store) = framing_for_room_stalls();
+    store.write(extent(5), 0, &pattern(5, 2 * BLOCK)).unwrap();
+    dir.wait_until_stalled();
+    check_rolled(&store, 5, "a read while a closing for room frames");
+    dir.let_go(Ok(()));
+    store.commit(None).unwrap();
+    check_rolled(&store, 5, "a read once a closing for room framed");
+    let lineage = store.lineage().clone();
+    drop(store);
+    check_rolled(&lineage.open_branch(BRANCH).unwrap(), 5, "the branch opened again");
+}
+
+/// One run of the branch closing while the framing of a segment a write closed for want of room
+/// stalls (TASK-79.2): the branch's closing waits for it, though no commit came after; another
+/// store, opening the branch, finds it framed, and holds what the commit made.
+fn closing_during_a_framing_for_room() {
+    let (dir, store) = framing_for_room_stalls();
+    store.write(extent(5), 0, &pattern(5, 2 * BLOCK)).unwrap();
+    dir.wait_until_stalled();
+    let reopening = {
+        let store = store.clone();
+        thread::spawn(move || {
+            store.close().unwrap();
+            let reopened = store.lineage().open_branch(BRANCH).unwrap();
+            check_rolled(&reopened, 1, "a closing for room raced the branch's closing");
+            let mut read = vec![0; BLOCK];
+            let error = reopened.read(extent(2), 0, &mut read).expect_err("an extent not sealed");
+            assert!(error.downcast_ref::<NoExtent>().is_some(), "{error:#}");
+        })
+    };
+    dir.let_go(Ok(()));
+    reopening.join().unwrap();
+}
+
 /// Shuttle's configuration: threads' stacks large enough for the store's (Shuttle runs each on a
 /// stack of its own, of 60 KiB by default).
 fn config() -> Config {
@@ -1149,6 +1218,18 @@ fn closing_during_a_framing_by_pct() {
 fn forking_during_a_framing_by_pct() {
     set_rules(Rules::ALL);
     Runner::new(PctScheduler::new(3, runs()), config()).run(forking_during_a_framing);
+}
+
+#[test]
+fn requests_served_during_a_framing_for_room_by_pct() {
+    set_rules(Rules::ALL);
+    Runner::new(PctScheduler::new(3, runs()), config()).run(serving_during_a_framing_for_room);
+}
+
+#[test]
+fn closing_during_a_framing_for_room_by_pct() {
+    set_rules(Rules::ALL);
+    Runner::new(PctScheduler::new(3, runs()), config()).run(closing_during_a_framing_for_room);
 }
 
 #[test]

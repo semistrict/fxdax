@@ -24,10 +24,12 @@
 //!   with zstd, with its footer: what the commits since it opened changed. fxdax: framed on a
 //!   thread of its own, which the commit's flush waits for, not the commit, nor the writes behind
 //!   it; read from its raw file until then. Its raw file goes once that commit is durable. Between
-//!   commits, full, holding a segment and an extent (`Options::max_extent`), it closes, or, holding
-//!   no commit's data, is set aside, raw, until the next commit has copied what is in it out; and
+//!   commits, full, holding a segment and an extent (`Options::max_extent`), it closes, framed so,
+//!   behind the write that found it full, which the next commit's flush waits for; or, holding no
+//!   commit's data, is set aside, raw, until the next commit has copied what is in it out; and
 //!   writes go to the next, so that no segment holds more, however much is written between
-//!   commits;
+//!   commits. The next commit copies the extents written since the last out of either, to the open
+//!   segment while it has room, and to files of their own after;
 //! - `extents/<branch>/<sequence>`: the branch's extents sealed at `Options::large_extent` or more,
 //!   fxdax: or with no room left in the open segment, in files of their own, framed so; written raw
 //!   in `open-extents/<branch>/<sequence>` until sealed, if large from their first write;
