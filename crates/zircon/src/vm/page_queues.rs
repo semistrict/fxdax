@@ -31,6 +31,8 @@
 //! - No loaned page sweeping, compression or debug compressor, so `LruAction::CompressOnly`
 //!   reclaims nothing.
 //! - No kcounters or console dump formatting.
+//! - fxdax: eviction on demand ages the queues as it finds no page old enough to evict
+//!   (`rotate_reclaim_queues`, TASK-79.70).
 
 use crate::kernel::deadline::{Deadline, current_mono_time};
 use crate::kernel::event::{AutounsignalEvent, Event};
@@ -621,7 +623,9 @@ impl PageQueues {
         self.maybe_trigger_lru_processing_locked();
     }
 
-    /// Performs a manually requested aging event. Only for tests and debugging.
+    /// Performs a manually requested aging event. Only for tests and debugging; fxdax: and for
+    /// eviction on demand (`EvictionLevel::OnDemand`), of pages too new for aging to have made them
+    /// old enough to evict, as an allocation finds memory out (TASK-79.70).
     pub fn rotate_reclaim_queues(&self) {
         let mut locked = self.lock.lock();
         // 'Force' aging to happen by processing the lru queue until we are able to increment the

@@ -8,19 +8,21 @@
 //! arena starved asks for relief, and one that can wait waits for it: the PMM's relief thread
 //! frees pages for each arena asked for since its last pass, with the evictor the kernel's user
 //! gives it ([`relieve_with`]), the arena's own past its own cap, any arena's past the total's or
-//! out of chunks. A pass that frees nothing for an arena starved still exhausts it: its
-//! allocations fail rather than wait for ever, until a page of it is freed, a cap changes, or a
-//! later pass, which each of them still asks for, frees something.
+//! out of chunks; and then, of any arena's, with the kernel's own, on demand
+//! (`EvictionLevel::OnDemand`), those the user's leaves, such as files' (TASK-79.70). A pass that
+//! frees nothing for an arena starved still exhausts it: its allocations fail rather than wait for
+//! ever, until a page of it is freed, a cap changes, or a later pass, which each of them still asks
+//! for, frees something.
 //!
-//! Without relief, the kernel's evictor is asked to free a chunk's worth, of any arena's, for each
-//! allocation that finds its arena starved, as the kernel without arenas would for an allocation
-//! that finds no free page.
+//! Without relief, the kernel's evictor is asked to free a chunk's worth, of any arena's, on demand
+//! (`EvictionLevel::OnDemand`), whatever their age, for each allocation that finds its arena
+//! starved, or, memory never out, no free page at all (TASK-79.70), as nothing else makes room.
 
 use super::arenas::Starved;
 use super::{ALLOC_FLAG_CAN_WAIT, NodeGuard, PmmNode, node};
 use crate::kernel::deadline::Deadline;
 use crate::kernel::event::AutounsignalEvent;
-use crate::vm::evictor::{EvictionLevel, Output};
+use crate::vm::evictor::{EvictionLevel, Output, TriggerReason};
 use crate::vm::physmap::{ArenaId, CHUNK_SIZE};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -55,7 +57,7 @@ pub(super) fn started() -> bool {
 /// with `evict`: given the arena whose pages to free, or none for any arena's, and how many bytes
 /// at least, it frees what it may of them and returns the bytes it freed. It is called without the
 /// PMM's lock, and must not wait for an allocation that waits for relief, as its own thread
-/// relieves them.
+/// relieves them. What it leaves of any arena's, the kernel's evictor frees on demand.
 ///
 /// Relief starts once: a later call fails with `AlreadyExists`, whether or not the first started
 /// its thread. Under Shuttle no thread starts, as none of the kernel's does (`crate::sync`), and
@@ -83,8 +85,9 @@ pub fn relieve_with(
 }
 
 /// The relief thread: frees pages with `evict` for each arena asked for since its last pass,
-/// without the PMM's lock, the arena's own at its own cap, any arena's at the total's, and records
-/// what it freed, which the arena's allocations waiting then try again with.
+/// without the PMM's lock, the arena's own at its own cap, any arena's at the total's, those
+/// `evict` leaves with the kernel's evictor, and records what it freed, which the arena's
+/// allocations waiting then try again with.
 fn relieve(reliever: &Reliever, mut evict: impl FnMut(Option<ArenaId>, u64) -> u64) {
     let _gone = Gone(reliever);
     loop {
@@ -99,7 +102,17 @@ fn relieve(reliever: &Reliever, mut evict: impl FnMut(Option<ArenaId>, u64) -> u
                 Starved::Total => None,
                 Starved::Removed => unreachable!("relief asked for {arena:?}, removed"),
             };
-            let freed = evict(from, RELIEF_BYTES);
+            let mut freed = evict(from, RELIEF_BYTES);
+            if from.is_none() && freed < RELIEF_BYTES {
+                let evicted = node.evictor.evict_synchronous(
+                    RELIEF_BYTES - freed,
+                    0,
+                    EvictionLevel::OnDemand,
+                    Output::NoPrint,
+                    TriggerReason::Other,
+                );
+                freed += evicted.counts.non_loaned_total() * page::SIZE as u64;
+            }
             node.locked().arenas.relieved(arena, freed);
             node.room.pulse();
         }
@@ -140,7 +153,7 @@ impl PmmNode {
             self.evictor.evict_asynchronous(
                 CHUNK_SIZE as u64,
                 0,
-                EvictionLevel::IncludeNewest,
+                EvictionLevel::OnDemand,
                 Output::NoPrint,
             );
             return if can_wait { Status::SHOULD_WAIT } else { Status::NO_MEMORY };

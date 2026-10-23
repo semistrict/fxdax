@@ -9,6 +9,9 @@ use fxdax::import::testing::{Entry, Kind, MTIME, gzip, layer, oci_layout, opaque
 use fxdax::import::{Importer, OciImage};
 use fxdax::{Attr, Errno, FileType, Filesystem, Node, Storage};
 use std::path::Path;
+use std::pin::pin;
+use std::sync::Arc;
+use std::task::{Context, Poll, Wake, Waker};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// The size of the filesystems the tests format.
@@ -167,6 +170,54 @@ fn files_longer_than_a_chunk_are_written_whole() {
         // Of the data's pages, the last holds 100 bytes.
         let page_size = fxdax::kernel::page_size();
         assert_eq!(attr.blocks * 512, (4 << 20) - (64 << 10) + page_size);
+        drop(file);
+        close(fs).await;
+    })
+}
+
+/// Runs `future` to completion on this thread, as `block_on` does, but fails as soon as the kernel
+/// has failed an allocation for want of memory, rather than wait on a future that may never
+/// complete: a write whose pages the kernel failed to allocate asked for them again, and again
+/// (TASK-79.70).
+fn unless_memory_fails<T>(future: impl Future<Output = T>) -> T {
+    struct Unpark(std::thread::Thread);
+    impl Wake for Unpark {
+        fn wake(self: Arc<Self>) {
+            self.0.unpark();
+        }
+    }
+    let waker = Waker::from(Arc::new(Unpark(std::thread::current())));
+    let mut cx = Context::from_waker(&waker);
+    let mut future = pin!(future);
+    loop {
+        if let Poll::Ready(output) = future.as_mut().poll(&mut cx) {
+            return output;
+        }
+        let failed = zircon::vm::pmm::node().has_alloc_failed_no_mem();
+        assert!(!failed, "the kernel failed an allocation for want of memory");
+        std::thread::park();
+    }
+}
+
+/// TASK-79.70: a file larger than the kernel's memory is imported whole, and read back: as its
+/// pages fill memory, those written back are evicted for the rest, and, as it is read, for those
+/// paged in. They stayed, and the import's writes waited for pages to dirty for ever.
+#[test]
+fn files_larger_than_the_kernels_memory_are_imported_whole() {
+    const MEMORY: u64 = 64 << 20;
+    fxdax::kernel::configure(fxdax::kernel::Config::with_memory(MEMORY)).unwrap();
+    let large: Vec<u8> = (0..2 * MEMORY).map(|at| (at / 4096 % 251 + 1) as u8).collect();
+    let layer = layer(&[Entry::new("large", Kind::File(&large))]).unwrap();
+    unless_memory_fails(async {
+        let fs = Filesystem::format(Storage::memory(4 * MEMORY)).await.unwrap();
+        let mut importer = Importer::new(&fs);
+        importer.apply(layer.as_slice()).await.expect("applying the layer failed");
+        importer.finish().await.expect("finishing failed");
+        let (file, attr) = at(&fs, "large").await.unwrap();
+        assert_eq!(attr.size, large.len() as u64);
+        let read = contents(&file).await;
+        let differs = read.iter().zip(&large).position(|(read, written)| read != written);
+        assert_eq!(differs, None, "the file read back differs from what was written");
         drop(file);
         close(fs).await;
     })

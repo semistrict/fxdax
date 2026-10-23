@@ -13,12 +13,15 @@
 //!   takes each directory's new attributes, and one that whites each file out (TASK-92.37).
 //!
 //! ```sh
-//! cargo run --release -p fxdax --example import-bench [FILES [LARGE_MIB]]
+//! cargo run --release -p fxdax --example import-bench [FILES [LARGE_MIB [KERNEL_MIB]]]
 //! ```
 //!
-//! FILES is how many small files there are (default 20000), and LARGE_MIB the large file's size
-//! (default 256). Prints each layer's rate, of bytes for the large file's and of entries for the
-//! others', and the time setting the directories' times takes.
+//! FILES is how many small files there are (default 20000), LARGE_MIB the large file's size
+//! (default 256), and KERNEL_MIB the kernel's memory (default `kernel::Config::default`'s 1 GiB,
+//! which `fxdaxctl import` runs with), its pressure levels scaled to it: a large file larger than
+//! it is written back and evicted as it is written (TASK-79.70). Prints each layer's rate, of bytes
+//! for the large file's and of entries for the others', and the time setting the directories'
+//! times takes.
 
 use futures::executor::block_on;
 use fxdax::import::Importer;
@@ -51,6 +54,10 @@ fn main() {
     let mut args = std::env::args().skip(1);
     let files: usize = args.next().map_or(20_000, |n| n.parse().unwrap());
     let large_mib: usize = args.next().map_or(256, |n| n.parse().unwrap());
+    if let Some(kernel_mib) = args.next().map(|n| n.parse::<u64>().unwrap()) {
+        let config = fxdax::kernel::Config::with_memory(kernel_mib << 20);
+        fxdax::kernel::configure(config).unwrap();
+    }
 
     let contents = vec![0x5a; large_mib << 20];
     let large = layer(&[Entry::new("large", Kind::File(&contents))]).unwrap();

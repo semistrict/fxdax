@@ -20,11 +20,15 @@
 //! - The eviction thread is a host thread holding a reference to the evictor, which is shared as
 //!   an `Arc`, and counters are plain atomics.
 //! - No printing of page queues on a possible livelock.
+//! - fxdax: eviction on demand (`EvictionLevel::OnDemand`) takes pages too new for the others'
+//!   levels too, for an allocation that finds memory out, with memory never out (TASK-79.70).
 
 use crate::kernel::deadline::Deadline;
 use crate::kernel::event::AutounsignalEvent;
 use crate::vm::page::VmPagePtr;
-use crate::vm::page_queues::{NUM_ACTIVE_QUEUES, NUM_OLDEST_QUEUES, NUM_RECLAIM};
+use crate::vm::page_queues::{
+    NUM_ACTIVE_QUEUES, NUM_OLDEST_QUEUES, NUM_RECLAIM, PageQueues, VmoBacklink,
+};
 use crate::vm::pmm;
 use crate::vm::vm_cow_pages::{
     EvictionAction, ReclaimType, VmCowReclaimFailure, VmCowReclaimResult, VmCowReclaimSuccess,
@@ -48,6 +52,11 @@ pub enum EvictionLevel {
     #[default]
     OnlyOldest = 0,
     IncludeNewest = 1,
+    /// fxdax: as `IncludeNewest`, and with no page old enough for it, the oldest of those too
+    /// new, the active ones, which the queues are aged for: what an allocation that finds no free
+    /// page asks for, with memory never out (`OomBehavior::Evict`), as nothing else makes it room,
+    /// and pages written as fast as memory takes them are all active (TASK-79.70).
+    OnDemand = 2,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -159,24 +168,45 @@ fn reclaim_from_global_page_queues(
     eviction_level: EvictionLevel,
 ) -> Option<(VmCowReclaimResult, VmPagePtr)> {
     // Avoid evicting from the newest queue to prevent thrashing.
-    let lowest_evict_queue = if eviction_level == EvictionLevel::IncludeNewest {
+    let lowest_evict_queue = if eviction_level >= EvictionLevel::IncludeNewest {
         NUM_ACTIVE_QUEUES
     } else {
         NUM_RECLAIM - NUM_OLDEST_QUEUES
     };
     // If we're going to include newest pages, ignore eviction hints as well, i.e. also consider
     // evicting pages with always_need set if we encounter them in LRU order.
-    let hint_action = if eviction_level == EvictionLevel::IncludeNewest {
+    let hint_action = if eviction_level >= EvictionLevel::IncludeNewest {
         EvictionAction::IgnoreHint
     } else {
         EvictionAction::FollowHint
     };
 
-    let backlink = pmm::node().page_queues().peek_isolate(lowest_evict_queue)?;
+    let page_queues = pmm::node().page_queues();
+    let backlink = if eviction_level == EvictionLevel::OnDemand {
+        peek_on_demand(page_queues, lowest_evict_queue)?
+    } else {
+        page_queues.peek_isolate(lowest_evict_queue)?
+    };
     // A valid backlink always has a valid cow
     let cow = backlink.cow.expect("isolated page has a cow");
     let reclaimed = cow.reclaim_page(backlink.page, backlink.offset, hint_action);
     Some((reclaimed, backlink.page))
+}
+
+/// fxdax: the oldest page to reclaim on demand (`EvictionLevel::OnDemand`): the oldest old enough
+/// to, as with `IncludeNewest`, or, with none, the oldest active one, the queues aged, at most until
+/// the newest pages are old enough, rather than when time does (TASK-79.70).
+fn peek_on_demand(page_queues: &PageQueues, lowest_evict_queue: usize) -> Option<VmoBacklink> {
+    for _ in 0..NUM_ACTIVE_QUEUES {
+        if let Some(backlink) = page_queues.peek_isolate(lowest_evict_queue) {
+            return Some(backlink);
+        }
+        if page_queues.get_active_inactive_counts().active == 0 {
+            return None;
+        }
+        page_queues.rotate_reclaim_queues();
+    }
+    page_queues.peek_isolate(lowest_evict_queue)
 }
 
 #[derive(Default)]

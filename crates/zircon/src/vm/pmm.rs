@@ -31,6 +31,10 @@
 //!   nothing makes the arena room, so a page's waits for nothing, even as the node delays
 //!   allocations (TASK-79.36). So does one the host maps no chunk for, as the process makes as
 //!   many mappings as it may (`physmap`, TASK-79.37), reported as the node's failure.
+//! - fxdax: with memory never out (`OomBehavior::Evict`), an allocation that finds no free page
+//!   at all is starved too, while eviction may free pages, which it frees on demand, whatever
+//!   their age: upstream's fails at once, as its watchdog delays the allocations that can wait,
+//!   and reclaims, before memory runs out (TASK-79.70).
 //! - fxdax: a chunk given back goes back to the host as the node's lock is dropped, outside it
 //!   (`NodeGuard`, TASK-92.35), as its system calls would hold every allocation up for as long
 //!   under it; an allocation that it would make room for waits for it.
@@ -39,7 +43,7 @@
 //! - `set_free_memory_signal` takes an `Arc<Event>` rather than a raw
 //!   pointer the caller must keep alive.
 
-use crate::boot_options::BootOptions;
+use crate::boot_options::{BootOptions, OomBehavior};
 use crate::kernel::deadline::Deadline;
 use crate::kernel::event::{AutounsignalEvent, Event, Pulse};
 use crate::kernel::types::PAddr;
@@ -328,8 +332,9 @@ impl PmmNode {
                     let free_count = self.free_count.load(Ordering::Relaxed);
                     // Free pages, but of other arenas' chunks: one goes back once eviction frees
                     // all of its pages. fxdax: none, and the arena is relieved, by evicting any
-                    // arena's (TASK-50.3).
-                    if free_count > 0 || relief::started() {
+                    // arena's (TASK-50.3); or, memory never out, eviction frees pages of any
+                    // arena's for it on demand (TASK-79.70).
+                    if free_count > 0 || relief::started() || self.evicts_when_out() {
                         return Err(self.starved_status(locked, arena, starved, alloc_flags));
                     }
                     // Allocation failures from the regular free list are likely to become
@@ -423,9 +428,10 @@ impl PmmNode {
         loop {
             let mut locked = self.locked();
             let free_count = self.free_count.load(Ordering::Relaxed);
-            if count as u64 > free_count && relief::started() {
+            if count as u64 > free_count && (relief::started() || self.evicts_when_out()) {
                 // fxdax: a page at a time, so that the arena, once it has none, is relieved
-                // (`relief`), and the allocation waits for that, or fails, as one page's.
+                // (`relief`), or eviction frees pages for it (TASK-79.70), and the allocation
+                // waits for that, or fails, as one page's.
                 drop(locked);
                 let mut taken = VmPageDoublyLinkedList::new();
                 for _ in 0..count {
@@ -794,6 +800,19 @@ impl PmmNode {
             }
         }
         false
+    }
+
+    /// fxdax: whether an allocation that finds no free page, of any arena's, asks eviction for
+    /// room, as one of an arena starved while other arenas have free pages does
+    /// (`starved_status`): with memory never out (`OomBehavior::Evict`), whose watchdog neither
+    /// delays allocations nor reclaims memory for them, while the page queues hold pages eviction
+    /// on demand may free (TASK-79.70). Otherwise it fails at once: as upstream's, whose watchdog
+    /// delays those that can wait, and reclaims, as memory runs out; or as nothing would make it
+    /// room.
+    fn evicts_when_out(&self) -> bool {
+        let reclaimable = self.page_queues.get_active_inactive_counts();
+        BootOptions::get().oom_behavior == OomBehavior::Evict
+            && reclaimable.active + reclaimable.inactive > 0
     }
 
     /// fxdax: what an allocation of `size` pages fails with that the host mapped no chunk for
