@@ -2832,6 +2832,37 @@ mod tests {
         assert_eq!(ended, (taken(failed.child), Some(record(true)), false));
     }
 
+    /// TASK-79.78: a fork that failed whose deletion in object storage fails keeps its handle,
+    /// naming its branch, and its branch here, as any store whose deletion stopped does: no branch
+    /// kept in object storage alone. Here a later placement takes the child's branch as the
+    /// deletion's first write, of its lease, goes, so that the deletion, as this host's placement,
+    /// refuses (`ESTALE`), changing nothing there: the parent's next writer gives the child its
+    /// record, live.
+    #[test]
+    fn forks_failed_whose_deletion_failed_keep_their_handle_and_branch() {
+        let dir = tempfile::tempdir().unwrap();
+        let (failed, fork, taking) = FailedFork::new(dir.path());
+        let lease = extent_remote::layout::lease(failed.child);
+        failed.land(Hold::Key(lease.clone()));
+        failed.gated.wait_held(1);
+        let later =
+            futures::executor::block_on(branch::take_lease(&*failed.bucket(), &lease, 5, 5));
+        assert_eq!(later, Ok(1));
+        failed.gated.hold.send_replace(Hold::Nothing);
+        let forked = fork.join().unwrap().map_err(|err| err.to_string());
+        let handle = dir.path().join("child");
+        let named = extent_store::resolve_host(&handle);
+        let named = named.map(|(_, branch)| branch).map_err(|err| err.to_string());
+        assert_eq!((forked, named), (taken(failed.child), Ok(failed.child)));
+        failed.next.hold.send_replace(Hold::Nothing);
+        assert_eq!(taking.join().unwrap(), Ok(()));
+
+        let origin = Some(extent_remote::layout::Origin { parent: failed.branch, at: 2 });
+        let live = extent_remote::layout::Record { origin, forked: true, deleted: false };
+        assert_eq!(failed.record(), Some(live));
+        assert_eq!(ExtentStore::open(&handle).unwrap().root(), Ok(b"root".to_vec()));
+    }
+
     /// A marker names the last commit uploaded, or none, and those uploading, and reads back so;
     /// with none written, it names nothing.
     #[test]
