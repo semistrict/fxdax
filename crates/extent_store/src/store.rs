@@ -556,7 +556,16 @@ impl<D: Dir> Store<D> {
 
     /// The state, to change: unless the branch is closed.
     fn writable(&self) -> Result<MutexGuard<'_, State<D::File>>, Error> {
-        let state = self.state()?;
+        self.still_writable(self.state.lock().unwrap())
+    }
+
+    /// `state`, to change, as found again after waiting, its lock let go of meanwhile: unless the
+    /// store failed, or the branch closed, since (TASK-83).
+    fn still_writable<'a>(
+        &self,
+        state: MutexGuard<'a, State<D::File>>,
+    ) -> Result<MutexGuard<'a, State<D::File>>, Error> {
+        ensure!(!state.failed, "the extent store failed");
         ensure!(!state.closed, "branch {:#x} is closed", self.branch);
         Ok(state)
     }
@@ -648,7 +657,7 @@ impl<D: Dir> Store<D> {
             while state.gate.is_held() {
                 state = self.idle.wait(state).unwrap();
             }
-            ensure!(!state.failed, "the extent store failed");
+            state = self.still_writable(state)?;
             let current = state.extents.get(&extent).map(|entry| entry.len);
             if current.is_some() && !state.uncommitted.is_open(extent) {
                 bail!(SealedExtent(extent));
@@ -1042,6 +1051,10 @@ impl<D: Dir> Store<D> {
         // must be in them, not after. New ones wait for it.
         if rules().commit_waits_for_writes {
             state = self.hold_writes(state, |state| state.gate.is_writing());
+            // fxdax: as before it waited, which let the state go meanwhile (TASK-83).
+            if rules().recheck_after_waiting {
+                state = self.still_writable(state)?;
+            }
         }
         // From its first seal on, the state runs ahead of the files: a commit failing part way
         // fails the store.
@@ -1112,7 +1125,7 @@ impl<D: Dir> Store<D> {
 
     /// Holds new writes back ([`Store::begin_write`]) while the writes in progress are `busy`, as
     /// a commit, or a closing between commits, waits for them, and returns the state once they
-    /// are not.
+    /// are not: which its caller finds again, as it let it go meanwhile.
     fn hold_writes<'a>(
         &self,
         mut state: MutexGuard<'a, State<D::File>>,
@@ -1335,6 +1348,13 @@ impl<D: Dir> Store<D> {
         let mut state = self.hold_writes(state, |state| {
             rules().close_waits_for_writers && state.segments.open_writers() > 0
         });
+        // fxdax: as before it waited, which let the state go meanwhile (TASK-83).
+        if rules().recheck_after_waiting {
+            ensure!(!state.failed, "the extent store failed");
+            if state.closed {
+                return Ok(false);
+            }
+        }
         let epoch = state.epoch;
         // Framed now, and durable, or the store fails.
         let closed = state.failing(|state| {
@@ -1559,7 +1579,7 @@ impl<D: Dir> Store<D> {
             while state.gate.is_held() {
                 state = self.idle.wait(state).unwrap();
             }
-            ensure!(!state.failed, "the extent store failed");
+            state = self.still_writable(state)?;
             if state.extents.get(&extent) != Some(&entry) {
                 return Ok(0);
             }

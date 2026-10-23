@@ -29,6 +29,9 @@ pub struct Rules {
     pub close_waits_for_writers: bool,
     /// A commit waits for the writes in progress to finish before it seals the open extents.
     pub commit_waits_for_writes: bool,
+    /// A commit, or a closing between commits, that waited for the writes in progress goes on
+    /// only if the store did not fail, nor the branch close, meanwhile (TASK-83).
+    pub recheck_after_waiting: bool,
     /// A write to an extent freed since it began is dropped as it finishes (TASK-79.1).
     pub drop_writes_to_freed_extents: bool,
     /// A commit waits for cleaning's copies in progress, as for writes, so that the segment it
@@ -63,6 +66,7 @@ impl Rules {
         keep_frees: true,
         close_waits_for_writers: true,
         commit_waits_for_writes: true,
+        recheck_after_waiting: true,
         drop_writes_to_freed_extents: true,
         commits_wait_for_copies: true,
         moves_into_the_open_segment: true,

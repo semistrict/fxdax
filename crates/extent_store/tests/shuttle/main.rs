@@ -28,7 +28,8 @@
 //! durable, and the branch, closed, holds its last commit durably. A free races a write in flight,
 //! too, which is dropped, whenever it finishes; and writes fill segments between commits, which
 //! go to the next as each is full. A cleaner cleans behind the commits, too, whose copies the
-//! commits after make the extents' places.
+//! commits after make the extents' places. And the store fails, and the branch closes, while a
+//! commit waits for a write in progress, which fails then.
 //!
 //! So are a lineage's branches, while a fork's or a deletion's I/O stalls (lineage.rs).
 //!
@@ -813,6 +814,110 @@ fn uploading_during_flushes() {
     }
 }
 
+/// One run of the store failing while a commit waits for a write in progress (TASK-83): a writer
+/// begins a write, which it finishes once the store failed; a committer commits, which waits for
+/// it; and a flush fails the store meanwhile. The commit fails then, as all after a failure do:
+/// the store's state may differ from its files.
+fn failing_during_a_commit() {
+    let dir = MemDir::new();
+    let description = Description { block_size: BLOCK as u32, capacity: 1 << 20, branch: BRANCH };
+    let store = Arc::new(Store::create(dir.clone(), description, OPTIONS).unwrap());
+    store.write(extent(1), 0, &pattern(1, BLOCK)).unwrap();
+    store.commit_ordered(None).unwrap();
+    let (begun, failed) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
+    let writer = {
+        let (store, begun, failed) = (store.clone(), begun.clone(), failed.clone());
+        thread::spawn(move || {
+            let write = store.begin_write(extent(2), 0, BLOCK as u64).unwrap();
+            write.file().write_at(&pattern(2, BLOCK), write.offset()).unwrap();
+            begun.store(true, Ordering::SeqCst);
+            while !failed.load(Ordering::SeqCst) {
+                thread::yield_now();
+            }
+            write.finish();
+        })
+    };
+    let committer = {
+        let (store, begun) = (store.clone(), begun.clone());
+        thread::spawn(move || {
+            while !begun.load(Ordering::SeqCst) {
+                thread::yield_now();
+            }
+            store.commit_ordered(None)
+        })
+    };
+    let flusher = {
+        let store = store.clone();
+        thread::spawn(move || {
+            // Once the commit waits for the write.
+            while !store.holding_writes() {
+                thread::yield_now();
+            }
+            dir.fail_after(Some(0));
+            let flushed = store.flush();
+            dir.fail_after(None);
+            failed.store(true, Ordering::SeqCst);
+            flushed
+        })
+    };
+    writer.join().unwrap();
+    assert!(flusher.join().unwrap().is_err(), "a flush failing succeeded");
+    let committed = committer.join().unwrap().map_err(|error| error.to_string());
+    assert!(
+        committed == Err("the extent store failed".to_owned()),
+        "a commit went on over a store that failed: {committed:?}"
+    );
+}
+
+/// One run of the branch closing while a commit waits for a write in progress (TASK-83): a writer
+/// begins a write, which it finishes once the branch closed; a committer commits, which waits for
+/// it; and the branch closes meanwhile, after which another store may open it. The commit fails
+/// then, changing nothing, as all changes of a closed branch do.
+fn closing_during_a_commit() {
+    let dir = MemDir::new();
+    let description = Description { block_size: BLOCK as u32, capacity: 1 << 20, branch: BRANCH };
+    let store = Arc::new(Store::create(dir.clone(), description, OPTIONS).unwrap());
+    let (begun, closed) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
+    let writer = {
+        let (store, begun, closed) = (store.clone(), begun.clone(), closed.clone());
+        thread::spawn(move || {
+            let write = store.begin_write(extent(1), 0, BLOCK as u64).unwrap();
+            write.file().write_at(&pattern(1, BLOCK), write.offset()).unwrap();
+            begun.store(true, Ordering::SeqCst);
+            while !closed.load(Ordering::SeqCst) {
+                thread::yield_now();
+            }
+            write.finish();
+        })
+    };
+    let committer = {
+        let (store, begun) = (store.clone(), begun.clone());
+        thread::spawn(move || {
+            while !begun.load(Ordering::SeqCst) {
+                thread::yield_now();
+            }
+            store.commit_ordered(None)
+        })
+    };
+    let closer = {
+        let store = store.clone();
+        thread::spawn(move || {
+            while !store.holding_writes() {
+                thread::yield_now();
+            }
+            store.close().unwrap();
+            closed.store(true, Ordering::SeqCst);
+        })
+    };
+    writer.join().unwrap();
+    closer.join().unwrap();
+    let committed = committer.join().unwrap().map_err(|error| error.to_string());
+    assert!(
+        committed == Err(format!("branch {BRANCH:#x} is closed")),
+        "a commit went on over a branch closed: {committed:?}"
+    );
+}
+
 /// One run of the branch closing while a flush makes its commits durable: once closed, it holds
 /// its last commit durably, as another store opening it, or a crash, finds.
 fn closing_during_a_flush() {
@@ -896,6 +1001,18 @@ fn uploads_begun_during_flushes_by_pct() {
 }
 
 #[test]
+fn failing_during_a_commit_by_pct() {
+    set_rules(Rules::ALL);
+    Runner::new(PctScheduler::new(3, runs()), config()).run(failing_during_a_commit);
+}
+
+#[test]
+fn closing_during_a_commit_by_pct() {
+    set_rules(Rules::ALL);
+    Runner::new(PctScheduler::new(3, runs()), config()).run(closing_during_a_commit);
+}
+
+#[test]
 fn closing_during_a_flush_by_pct() {
     set_rules(Rules::ALL);
     Runner::new(PctScheduler::new(3, runs()), config()).run(closing_during_a_flush);
@@ -950,6 +1067,7 @@ fn replay() {
             "keep_frees" => rules.keep_frees = false,
             "close_waits_for_writers" => rules.close_waits_for_writers = false,
             "commit_waits_for_writes" => rules.commit_waits_for_writes = false,
+            "recheck_after_waiting" => rules.recheck_after_waiting = false,
             "drop_writes_to_freed_extents" => rules.drop_writes_to_freed_extents = false,
             "commits_wait_for_copies" => rules.commits_wait_for_copies = false,
             "moves_into_the_open_segment" => rules.moves_into_the_open_segment = false,
@@ -980,6 +1098,8 @@ fn replay() {
         Ok("freeing_during_a_write") => freeing_during_a_write,
         Ok("uploading_during_flushes") => uploading_during_flushes,
         Ok("closing_during_a_flush") => closing_during_a_flush,
+        Ok("failing_during_a_commit") => failing_during_a_commit,
+        Ok("closing_during_a_commit") => closing_during_a_commit,
         Ok("deleting_stalled_marking") => lineage::deleting_stalled_marking,
         Ok("deleting_stalled_removing_its_index") => lineage::deleting_stalled_removing_its_index,
         Ok("forking_stalled") => lineage::forking_stalled,
@@ -1065,6 +1185,21 @@ fn needs_closes_to_wait_for_writers() {
 fn needs_commits_to_wait_for_writes() {
     let rules = Rules { commit_waits_for_writes: false, ..Rules::ALL };
     fails_without(rules, &["a write raced a commit"], racing);
+}
+
+/// Commits that waited for the writes in progress going on over a store that failed meanwhile.
+#[test]
+fn needs_rechecks_after_waiting_for_failures() {
+    let rules = Rules { recheck_after_waiting: false, ..Rules::ALL };
+    fails_without(rules, &["a commit went on over a store that failed"], failing_during_a_commit);
+}
+
+/// Commits that waited for the writes in progress going on over a branch closed meanwhile, which
+/// another store may have opened since.
+#[test]
+fn needs_rechecks_after_waiting_for_closings() {
+    let rules = Rules { recheck_after_waiting: false, ..Rules::ALL };
+    fails_without(rules, &["a commit went on over a branch closed"], closing_during_a_commit);
 }
 
 /// Writes to extents freed since they began recorded as they finish: the extent holds the
