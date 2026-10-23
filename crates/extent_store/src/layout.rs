@@ -294,6 +294,14 @@ impl FileKey {
             Self::Own(extent) => [extent_path(*extent), open_extent_path(*extent)],
         }
     }
+
+    /// fxdax: the branch that made it, among whose files it is.
+    pub(crate) fn branch(&self) -> u64 {
+        match self {
+            Self::Segment(segment) => segment.branch,
+            Self::Own(extent) => extent.branch,
+        }
+    }
 }
 
 /// The files `extents`' data is in.

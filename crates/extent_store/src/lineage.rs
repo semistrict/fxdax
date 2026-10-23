@@ -435,6 +435,12 @@ impl<D: Dir> Lineage<D> {
         self.ledger().shared(branch, file)
     }
 
+    /// fxdax: how often a branch let go of files another made (TASK-79.2): once it changed, a
+    /// branch's files found shared may be its alone.
+    pub(crate) fn unshared(&self) -> u64 {
+        self.ledger().unshared()
+    }
+
     /// Records that `branch`'s commits up to `epoch` are durable, and removes the files that can go
     /// now.
     pub(crate) fn durable(&self, branch: u64, epoch: u64) {

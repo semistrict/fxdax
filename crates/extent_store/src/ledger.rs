@@ -39,6 +39,10 @@ pub(crate) struct Ledger {
     claims: HashMap<FileKey, Claim>,
     /// The files no branch holds, which go once the commits that let them go are durable.
     doomed: Vec<Doomed>,
+    /// fxdax: how often a branch let go of files another made, as a fork lets go of its parent's,
+    /// and a deletion of what it inherited: each time, those files' makers may hold them alone
+    /// ([`Ledger::shared`]), which they find out once it changed (TASK-79.2).
+    unshared: u64,
 }
 
 /// A branch, as the ledger knows it.
@@ -128,6 +132,7 @@ impl Ledger {
             layers: HashMap::new(),
             claims: HashMap::new(),
             doomed: Vec::new(),
+            unshared: 0,
         };
         for Live { branch, over, recovered } in live {
             ledger.insert(branch, over);
@@ -169,6 +174,9 @@ impl Ledger {
         for file in files {
             if !self.let_go_of_own(branch, file) && !self.let_go_of_inherited(branch, file) {
                 continue;
+            }
+            if file.branch() != branch {
+                self.unshared += 1;
             }
             self.claims.entry(file).or_default().releases.push(Release { branch, epoch });
             self.doom_unless_held(file);
@@ -290,6 +298,12 @@ impl Ledger {
             || self.layers.values().any(|inherited| inherited.holds(file, Some(branch)))
     }
 
+    /// fxdax: how often a branch let go of files another made: once it changed, a branch's files
+    /// it found shared may be its alone (TASK-79.2).
+    pub(crate) fn unshared(&self) -> u64 {
+        self.unshared
+    }
+
     /// The layer `branch` is over, its parent's state at the fork, if a fork's over it.
     pub(crate) fn base(&self, branch: u64) -> Option<Arc<Layer>> {
         Some(self.branches.get(&branch)?.over.as_ref()?.layer.clone())
@@ -357,6 +371,7 @@ impl Ledger {
         let key = layer_key(layer);
         let Some(inherited) = self.layers.get_mut(&key) else { return };
         inherited.holders.remove(&branch);
+        self.unshared += 1;
         let let_go: BTreeSet<FileKey> = (inherited.dropped.iter())
             .filter(|(_, by)| by.contains(&branch))
             .map(|(file, _)| *file)
@@ -718,6 +733,28 @@ mod tests {
         assert_eq!(ledger.removable(), [next]);
         assert!(ledger.held(shared) && ledger.held(theirs));
         assert!(!ledger.shared(3, shared) && !ledger.shared(3, theirs));
+    }
+
+    /// fxdax: a branch's lettings go of files another made are counted, which tell those files'
+    /// makers they may hold them alone: a fork's of its layer's, and a deletion's; not a branch's
+    /// of its own (TASK-79.2).
+    #[test]
+    fn lettings_go_of_others_files_are_counted() {
+        let base = layer(&[0, 1]);
+        let (zero, one, own) = (segment(PARENT, 0), segment(PARENT, 1), segment(2, 0));
+        let mut ledger = Ledger::opened(vec![
+            live(PARENT, None, 1, &[zero, one], &[]),
+            live(2, Some(over(&base, 1)), 1, &[own], &[]),
+        ]);
+        ledger.release(2, 2, vec![own]);
+        ledger.release(PARENT, 2, vec![zero]);
+        assert_eq!(ledger.unshared(), 0);
+        assert!(ledger.shared(PARENT, one));
+        ledger.release(2, 3, vec![one]);
+        assert_eq!(ledger.unshared(), 1);
+        assert!(!ledger.shared(PARENT, one));
+        ledger.detach(2);
+        assert_eq!(ledger.unshared(), 2);
     }
 
     /// A branch's latest state its live forks are over, whichever forks were deleted.

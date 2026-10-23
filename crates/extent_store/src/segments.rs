@@ -127,6 +127,9 @@ pub(crate) struct Segments<F> {
     /// fxdax: the bytes of the branch's own segments' data no extent is in, but those another
     /// branch may hold ([`Segment::dead`]).
     dead: u64,
+    /// fxdax: how often branches had let go of files others made, as the lineage counts it, when
+    /// it last took its segments shared for shared no more ([`Segments::unshare`]).
+    unshared: u64,
 }
 
 /// A segment cleaning takes: the bytes of its data, and of extents' data in it.
@@ -194,6 +197,7 @@ impl<F: File> Segments<F> {
             written: false,
             closed_since: false,
             dead,
+            unshared: 0,
         })
     }
 
@@ -305,9 +309,13 @@ impl<F: File> Segments<F> {
     }
 
     /// fxdax: takes the branch's own segments shared for shared no more, but those `shared` says
-    /// another branch may still hold extents in, as cleaning finds (TASK-79.2).
-    pub fn unshare(&mut self, shared: impl Fn(SegmentId) -> bool) {
-        self.set_shared(|segment| segment.shared, shared);
+    /// another branch may still hold extents in, if branches let go of files others made since it
+    /// last did: as `unshared`, the lineage's count of those, says (TASK-79.2). So that what a
+    /// fork, deleted, held of them is the branch's again, without asking of each at each commit.
+    pub fn unshare(&mut self, unshared: u64, shared: impl Fn(SegmentId) -> bool) {
+        if std::mem::replace(&mut self.unshared, unshared) != unshared {
+            self.set_shared(|segment| segment.shared, shared);
+        }
     }
 
     /// Sets which of the branch's own segments `which` takes are shared, as `shared` says.

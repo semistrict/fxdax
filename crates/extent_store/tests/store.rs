@@ -1832,6 +1832,29 @@ fn freed_space_past_the_capacity_counts_as_used() {
     assert_eq!(store.usage().unwrap().dead_bytes, 75 * BLOCK as u64);
 }
 
+/// A fork made and deleted holds the branch's segments no more: what the branch frees in them
+/// after is dead space, which counts as the branch commits, and which cleaning is due for, though
+/// nothing cleaned first (TASK-79.2).
+#[test]
+fn forks_deleted_leave_the_branch_its_dead_space() {
+    let store = create(MemDir::new(), 1 << 20);
+    // Four segments of 16 blocks.
+    for sequence in 0..64 {
+        store.write(extent(sequence), 0, &pattern(sequence as u8, 0, BLOCK)).unwrap();
+        if sequence % 16 == 15 {
+            store.commit(None).unwrap();
+        }
+    }
+    store.fork(BRANCH + 1).unwrap();
+    store.lineage().delete(BRANCH + 1).unwrap();
+    for sequence in (0..64).filter(|sequence| sequence % 16 != 0) {
+        store.free(extent(sequence)).unwrap();
+    }
+    store.commit(None).unwrap();
+    assert_eq!(store.usage().unwrap().dead_bytes, 60 * BLOCK as u64);
+    assert!(store.cleaning_due(8 * BLOCK as u64).unwrap());
+}
+
 /// fxdax: a segment a fork inherited and let go of goes, though a segment of its own numbered as
 /// it is waits for its uploader: what the uploader keeps is the fork's own (TASK-85).
 #[test]

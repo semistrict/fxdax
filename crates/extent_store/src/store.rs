@@ -1101,6 +1101,7 @@ impl<D: Dir> Store<D> {
         fork: bool,
     ) -> Result<Option<Forked>, Error> {
         let epoch = state.epoch + 1;
+        self.unshare(state);
         self.make_moves(state);
         let sealing = self.seal_open(state)?;
         self.publish(state, epoch, root, &sealing);
@@ -1152,6 +1153,14 @@ impl<D: Dir> Store<D> {
         let pending = Pending { syncs, write: appended.write, doomed, closing };
         self.durability.lock().unwrap().push(epoch, pending);
         Ok(forked)
+    }
+
+    /// fxdax: takes the branch's own segments that forks held for its alone again, once they let
+    /// go of what they held in them, or were deleted (TASK-79.2): what is freed in them is then
+    /// dead space, which counts, and which cleaning takes back.
+    fn unshare(&self, state: &mut State<D::File>) {
+        let shared = |segment| self.lineage.shared(self.branch, FileKey::Segment(segment));
+        state.segments.unshare(self.lineage.unshared(), shared);
     }
 
     /// Holds new writes back ([`Store::begin_write`]) while the writes in progress are `busy`, as
@@ -1615,9 +1624,8 @@ impl<D: Dir> Store<D> {
         live_fraction: f64,
     ) -> Result<(BTreeMap<SegmentId, Victim>, Vec<(ExtentId, Extent)>), Error> {
         let mut state = self.writable()?;
+        self.unshare(&mut state);
         let shared = |segment| self.lineage.shared(self.branch, FileKey::Segment(segment));
-        // fxdax: what the forks that held them let go of since is the branch's again (TASK-79.2).
-        state.segments.unshare(shared);
         let victims = state.segments.victims(live_fraction, shared);
         let copying: HashSet<ExtentId> =
             state.uncommitted.copies().iter().map(|copied| copied.extent).collect();
