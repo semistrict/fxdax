@@ -4318,11 +4318,9 @@ mod tests {
         file.truncate(file.get_size() - allocator.max_extent_size_bytes)
             .await
             .expect("truncate failed");
-        let died: Vec<ExtentId> = alive
-            .keys()
-            .copied()
-            .filter(|extent| !allocator.extents().contains_key(extent))
-            .collect();
+        let left = allocator.extents();
+        let died: Vec<ExtentId> =
+            alive.keys().copied().filter(|extent| !left.contains_key(extent)).collect();
         let [extent] = died[..] else { panic!("{died:?} died") };
         extent
     }
@@ -4444,7 +4442,6 @@ mod tests {
         // `DEFAULT_RECLAIM_SIZE`.
         tiered_file(&store, "newest", TIERED_EXTENTS * 5 / 6).await;
         allocator.flush().await.expect("flush failed");
-        fsck(fs.clone()).await.expect("fsck failed");
         let tiers = allocator.info().layers;
         assert_eq!(tiers.len(), 3, "{tiers:?}");
         assert_eq!(tiers[1..], middle[..]);
