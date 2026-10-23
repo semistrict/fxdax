@@ -1290,7 +1290,7 @@ fn compressible_data_takes_less_disk() {
 #[test]
 fn segments_closed_by_commits_not_durable_close_again() {
     for seed in 0..16 {
-        let dir = MemDir::new();
+        let dir = MemDir::serial();
         let store = create(dir.clone(), 64 << 20);
         store.write(extent(1), 0, &pattern(1, 0, 3 * BLOCK)).unwrap();
         store.commit(Some(b"one")).unwrap();
@@ -1314,7 +1314,7 @@ fn segments_closed_by_commits_not_durable_close_again() {
 #[test]
 fn segments_closed_between_commits_survive_crashes_closing_them_again() {
     for seed in 0..64 {
-        let dir = MemDir::new();
+        let dir = MemDir::serial();
         let store = create(dir.clone(), 1 << 20);
         store.write(extent(1), 0, &pattern(1, 0, BLOCK)).unwrap();
         store.commit(None).unwrap();
@@ -1348,7 +1348,7 @@ fn segments_closed_between_commits_survive_crashes_closing_them_again() {
 #[test]
 fn segments_closed_between_commits_survive_crashes_framing_them() {
     for seed in 0..64 {
-        let dir = MemDir::new();
+        let dir = MemDir::serial();
         let store = create(dir.clone(), 1 << 20);
         for sequence in 0..4 {
             store.write(extent(sequence), 0, &noise(sequence, BLOCK)).unwrap();
@@ -1374,7 +1374,7 @@ fn segments_closed_between_commits_survive_crashes_framing_them() {
 #[test]
 fn segments_closed_between_commits_survive_failures_framing_them() {
     for seed in 0..64 {
-        let dir = MemDir::new();
+        let dir = MemDir::serial();
         let store = create(dir.clone(), 1 << 20);
         for sequence in 0..4 {
             store.write(extent(sequence), 0, &noise(sequence, BLOCK)).unwrap();
@@ -1403,7 +1403,7 @@ fn segments_closed_between_commits_survive_failures_framing_them() {
 fn segments_closed_between_commits_keep_their_raw_files_until_a_commit_after_is_durable() {
     let path = |kind| format!("{}/{:016x}", of(kind, BRANCH), 0);
     for seed in 0..16 {
-        let dir = MemDir::new();
+        let dir = MemDir::serial();
         let store = create(dir.clone(), 1 << 20);
         store.write(extent(1), 0, &pattern(1, 0, BLOCK)).unwrap();
         store.commit(None).unwrap();
