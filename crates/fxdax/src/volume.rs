@@ -10,10 +10,10 @@
 //! volume from its image's volumes directory, on Fxfs's executor, where it completes whoever waits
 //! for it. Whichever begins it, of the filesystem's [`unmount`](crate::Filesystem::unmount), its
 //! drop, or its image's close, the others wait for that one unmount. The work that operations
-//! under way when it begins run on Fxfs's executor ([`Volume::run`]), and an image's clone or
-//! snapshot writing the volume back ([`Volume::fx_volume_guarded`]), hold it off from writing the
-//! volume back until they complete, as the volume's fuchsia.io requests do; reads and writes,
-//! which copy through files' streams instead, don't.
+//! under way when it begins run on Fxfs's executor ([`Volume::run`]), the reads and writes
+//! copying through files' streams ([`Volume::open_guarded`]), and an image's clone or snapshot
+//! writing the volume back ([`Volume::fx_volume_guarded`]), hold it off from writing the volume
+//! back until they complete, as the volume's fuchsia.io requests do.
 
 use crate::connection::Connection;
 use crate::error::{Errno, Error, Result};
@@ -110,6 +110,21 @@ impl Drop for Hold {
     }
 }
 
+/// A node of a volume opened under a guard on Fxfs's volume's scope ([`Volume::open_guarded`]),
+/// which a read or write of a file holds while it copies through the file's stream. The guard
+/// holds the unmount off from writing the volume back until it is dropped, so that what a write
+/// copies is written back: a write extending a file extends it only once it has copied, and the
+/// volume's last write-back leaves a dirty page past a file's end for a later one, which never
+/// comes. The node keeps the file open meanwhile, though the unmount closes the node and the
+/// connection that handles hold, so that Fxfs's pager answers the copy's page requests, as the
+/// guard keeps the scope it answers them in from finishing: one for a file closed goes
+/// unanswered, and the copy would wait for it, and the unmount for the copy.
+pub(crate) struct OpenGuarded {
+    /// Closed first, under the guard: closing a file may leave it to be written back, or purged.
+    _node: OpenedNode<dyn FxNode>,
+    _guard: ActiveGuard,
+}
+
 impl Volume {
     /// The volume `name` of `image`, `volume`, just mounted, and the hold on its root directory,
     /// which `root` connects to.
@@ -182,6 +197,23 @@ impl Volume {
     /// writing the volume back until it is dropped.
     pub fn fx_volume_guarded(&self) -> Result<(Arc<FxVolume>, ActiveGuard)> {
         Ok((self.fx_volume()?, self.guard()?))
+    }
+
+    /// Runs `f` on the node that `hold`, one of the volume's holds, holds, as
+    /// [`with_held`](Self::with_held) does, and opens the node again, under a guard on Fxfs's
+    /// volume's scope (see [`OpenGuarded`]), until the unmount begins (`ENOTCONN`): for a read or
+    /// write of a file's, which copies through the file's stream on the caller's thread rather
+    /// than in [`run`](Self::run)'s work, and finds the stream with `f`, under the same hold of
+    /// the volume's lock.
+    pub fn open_guarded<T>(
+        &self,
+        hold: &Hold,
+        f: impl FnOnce(&mut HeldNode) -> T,
+    ) -> Result<(T, OpenGuarded)> {
+        // The guard first, so that the node opened closes under it.
+        let guard = self.guard()?;
+        let (found, node) = self.with_held(hold, |held| (f(held), held.node.dup()))?;
+        Ok((found, OpenGuarded { _node: node, _guard: guard }))
     }
 
     /// A new hold on `node`, until the unmount begins (`ENOTCONN`), keeping `connection`, if
