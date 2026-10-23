@@ -176,6 +176,12 @@ pub struct Evictor {
     test_free_pages_function: Option<FreePagesFunction>,
 }
 
+/// The most pages an eviction evicts at a time holding the eviction lock, but for an OOM's, so
+/// that parallel attempts at different eviction outcomes do not unnecessarily block each other.
+/// fxdax: named, as eviction of an arena's own pages holds it for as many too
+/// (`Evictor::evict_arena_on_demand`, TASK-79.76).
+const EVICTION_LOCK_PAGES: u64 = 128;
+
 /// fxdax: how many times eviction on demand (`EvictionLevel::OnDemand`) ages the queues, finding
 /// no page old enough to evict, before it reclaims one: twice as many times as age the newest pages
 /// past the active queues. A page whose reclaim failed is the newest again, and so each is tried
@@ -267,6 +273,25 @@ fn arena_pages_oldest_first(arena: ArenaId, target_pages: u64) -> impl Iterator<
     }
     ARENA_PAGES_VISITED.fetch_add(visited, Ordering::Relaxed);
     by_age.into_iter().rev().flatten()
+}
+
+/// fxdax: evicts `page` alone, on demand, if it is a clean page of an object of `arena`'s in the
+/// reclaim queues still, and returns how many pages it evicted, for `Evictor::evict_arena_on_demand`
+/// (TASK-79.76). Alone, rather than with its batch of 16 as `VmCowPages::reclaim_page` evicts it,
+/// whose pages on demand would go however new.
+fn evict_arena_page(arena: ArenaId, page: VmPagePtr) -> u64 {
+    // It may have been evicted since, or freed; or its chunk gone back, and come to another arena,
+    // whose object's it is now.
+    let Some(VmoBacklink { cow: Some(cow), offset, .. }) =
+        pmm::node().page_queues().reclaim_backlink(page)
+    else {
+        return 0;
+    };
+    if cow.arena() != arena || !cow.can_evict() {
+        return 0;
+    }
+    let evicted = cow.reclaim_range_for_eviction(offset, PAGE_SIZE, EvictionAction::Demand);
+    evicted.map_or(0, |success| success.num_pages)
 }
 
 #[derive(Default)]
@@ -703,7 +728,7 @@ impl Evictor {
             // For OOM evictions we do not cap the number of pages so that we can evict as fast as
             // possible to resolve the OOM condition quickly.
             if !oom_trigger {
-                pages_to_free = pages_to_free.min(128);
+                pages_to_free = pages_to_free.min(EVICTION_LOCK_PAGES);
             }
 
             let pages_freed = self.evict_page_queues(pages_to_free, level);
@@ -770,39 +795,30 @@ impl Evictor {
     /// evicted: for relief of an arena starved at its own cap, which only pages of its own make
     /// room for, and for which no other arena's page, however old, is evicted (TASK-79.76). It
     /// finds them by the arena's chunks (`arena_pages_oldest_first`), rather than in the queues,
-    /// which hold every arena's, and ages none. It evicts each page alone, rather than with its
-    /// batch of 16 as `VmCowPages::reclaim_page` does, whose pages on demand would go however new.
+    /// which hold every arena's, and ages none; and evicts each alone (`evict_arena_page`).
     pub fn evict_arena_on_demand(&self, arena: ArenaId, min_mem_to_free: u64) -> EvictedPageCounts {
         let mut counts = EvictedPageCounts::default();
         if !self.is_eviction_enabled() {
             return counts;
         }
         let target_pages = min_mem_to_free.div_ceil(PAGE_SIZE);
-        let page_queues = pmm::node().page_queues();
-        let oldest = arena_pages_oldest_first(arena, target_pages);
-
-        // One eviction at a time, as `evict_until_targets_met`'s.
-        let mut total_evicted = self.eviction_lock.lock();
-        for page in oldest {
+        // One eviction at a time, as `evict_until_targets_met`'s, and as there, the eviction lock
+        // held for at most `EVICTION_LOCK_PAGES` evicted at a time: `hold` is the lock while it is
+        // held, and the pages evicted holding it.
+        let mut hold = None;
+        for page in arena_pages_oldest_first(arena, target_pages) {
             if counts.non_loaned_total() >= target_pages {
                 break;
             }
-            // A page may have been evicted since, or freed; or its chunk gone back, and come to
-            // another arena, whose object's it is now.
-            let Some(VmoBacklink { cow: Some(cow), offset, .. }) =
-                page_queues.reclaim_backlink(page)
-            else {
-                continue;
-            };
-            if cow.arena() != arena || !cow.can_evict() {
-                continue;
-            }
-            let evicted = cow.reclaim_range_for_eviction(offset, PAGE_SIZE, EvictionAction::Demand);
-            if let Ok(success) = evicted {
-                counts.pager_backed += success.num_pages;
+            let (total_evicted, held) = hold.get_or_insert_with(|| (self.eviction_lock.lock(), 0));
+            let evicted = EvictedPageCounts { pager_backed: evict_arena_page(arena, page) };
+            **total_evicted += evicted;
+            counts += evicted;
+            *held += evicted.non_loaned_total();
+            if *held >= EVICTION_LOCK_PAGES {
+                hold = None;
             }
         }
-        *total_evicted += counts;
         PAGER_BACKED_PAGES_EVICTED.fetch_add(counts.pager_backed, Ordering::Relaxed);
         counts
     }
