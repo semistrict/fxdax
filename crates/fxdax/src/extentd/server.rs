@@ -187,6 +187,7 @@ async fn run_connection(stream: UnixStream, tenant: Option<Arc<Tenant>>) {
         closing: AtomicBool::new(false),
         requests: Mutex::new(Requests::default()),
         drained: Arc::new(event_listener::Event::new()),
+        stage_counts: Default::default(),
     });
     match AsyncReceiver::new(stream) {
         Ok(receiver) => {
@@ -233,8 +234,14 @@ fn receive(
     Box::pin(async move {
         loop {
             match receiver.receive().await {
+                // fxdax: what the stage operations cost, counted before what waits for them goes
+                // on (TASK-91.16).
                 Ok(Some(message)) if message.header.kind == ACK => {
+                    connection.stage_counted(message.header.args);
                     connection.acks.acked(message.header.id)
+                }
+                Ok(Some(message)) if message.header.kind == STAGE_COUNTS => {
+                    connection.stage_counted(message.header.args)
                 }
                 Ok(Some(message)) => {
                     let Some(message) = connection.admit(message) else { continue };
@@ -377,6 +384,8 @@ pub(super) struct Connection {
     /// Its requests received and not done (TASK-34), and what says when none is left.
     requests: Mutex<Requests>,
     drained: Arc<event_listener::Event>,
+    /// fxdax: what its VM process last said its stage operations cost it ([`STAGE_COUNTS`]).
+    stage_counts: [std::sync::atomic::AtomicU64; 2],
 }
 
 impl Connection {
@@ -400,6 +409,20 @@ impl Connection {
         let (stop, stopped) = tokio::sync::oneshot::channel();
         let task = IO.spawn(work(stopped));
         *self.behind.lock().unwrap() = Some((stop, task));
+    }
+
+    /// fxdax: counts what its VM process says its stage operations have cost it so far, `args`
+    /// as [`STAGE_COUNTS`] has them, as the daemon's (`Stats::stage_ops`): what it didn't say
+    /// before. A count only grows: one said again, or smaller, adds nothing.
+    fn stage_counted(&self, args: [u64; 5]) {
+        use crate::stats::Counter;
+        let said = [(args[0], Counter::StageOps), (args[1], Counter::StageNs)];
+        for (before, (count, counter)) in self.stage_counts.iter().zip(said) {
+            crate::stats::add(
+                counter,
+                count.saturating_sub(before.fetch_max(count, Ordering::Relaxed)),
+            );
+        }
     }
 
     /// `message`, a request, to serve now, unless [`WORKERS`] of the connection's run, when it

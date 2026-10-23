@@ -91,7 +91,8 @@ pub(crate) const WINDOW: u32 = 10;
 /// Resolves the guest's fault at `args[0]` in the window: a store if [`FAULT_WRITE`], on that page
 /// alone if [`FAULT_PAGE`]. The stage operations it takes come before the reply.
 pub(crate) const FAULT: u32 = 11;
-/// Acknowledges stage operation `id`, which the VM process has made.
+/// Acknowledges stage operation `id`, which the VM process has made; and says, as
+/// [`STAGE_COUNTS`] does, what its stage operations have cost it so far.
 pub(crate) const ACK: u32 = 12;
 /// Forks the store, as of its last commit made durable, to a new branch `args[0]`, whose handle
 /// is a new directory at the path the payload holds ([`ExtentStore::fork`](crate::ExtentStore)):
@@ -130,6 +131,15 @@ pub(crate) const UNPIN: u32 = 24;
 pub(crate) const TRANSFER: u32 = 25;
 /// The most bytes a transfer area holds.
 pub(crate) const MAX_TRANSFER_AREA: u64 = 64 << 20;
+/// fxdax: the stage operations the VM process has made of the connection's, `args[0]`, and the
+/// nanoseconds they took it, `args[1]`, so far, which the daemon counts as its own
+/// (`Stats::stage_ops`, TASK-91.16): said with each [`ACK`]; otherwise once [`STAGE_COUNTS_EVERY`]
+/// has passed since it last said, as it makes them; and as it closes the connection. Nothing
+/// replies.
+pub(crate) const STAGE_COUNTS: u32 = 26;
+/// fxdax: how long a VM process's stage operations go uncounted at most while it makes them
+/// ([`STAGE_COUNTS`]): within a sample of the daemon's stats file (`FXDAX_EXTENTD_STATS`).
+pub(crate) const STAGE_COUNTS_EVERY: std::time::Duration = std::time::Duration::from_millis(500);
 
 pub(crate) const OPEN_CREATE: u32 = 1 << 0;
 pub(crate) const OPEN_FORK_FROM: u32 = 1 << 1;

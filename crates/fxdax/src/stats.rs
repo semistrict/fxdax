@@ -2,8 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-//! What serving extent stores cost this process, counted since it started: the extent daemon's,
-//! which it reports to whoever asks ([`crate::extentd::stats`]), for benchmarks to compare.
+//! What serving extent stores cost this process, counted since it started, and what its VM
+//! processes' changes to their windows cost them, as they told it: the extent daemon's, which it
+//! reports to whoever asks ([`crate::extentd::stats`]), for benchmarks to compare.
 //! Counters only grow; a measurement is the difference of two snapshots ([`Stats::since`]).
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -38,10 +39,11 @@ pub struct Stats {
     pub prefetches: u64,
     /// The parts of extents stored compressed decompressed (`extent_store::unpacks`).
     pub unpacks: u64,
-    /// The changes to a DAX window the extent daemon sent this process, a VMM's, which it made
-    /// (`extentd::client`'s stage operations: maps, protections, unmaps).
+    /// The changes to their DAX windows the extent daemon sent its VM processes, which they made
+    /// (`extentd::client`'s stage operations: maps, protections, unmaps), as they told it
+    /// (`extentd::wire::STAGE_COUNTS`, TASK-91.16).
     pub stage_ops: u64,
-    /// The nanoseconds they took.
+    /// The nanoseconds they took the VM processes.
     pub stage_ns: u64,
     /// Commits: `COMMIT` requests, and `WRITE`s' barriers and commits.
     pub commits: u64,

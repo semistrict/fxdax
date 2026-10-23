@@ -528,6 +528,13 @@ impl RemoteExtentStore {
         self.client.call(header, &[]).await.map(drop)
     }
 
+    /// fxdax: the stage operations this process made of the store's window so far, and the
+    /// nanoseconds they took, which it tells the daemon ([`STAGE_COUNTS`]).
+    #[cfg(test)]
+    pub(super) fn stage_counts(&self) -> [u64; 2] {
+        self.client.stage_counts.counts()
+    }
+
     /// Has `lost` called once the daemon goes, closing the connection: at once if it went already.
     /// Nothing the store asks is served from then on, its window's faults included, and it doesn't
     /// connect again: a VMM stops its VM, which can't go on, visibly to its host (TASK-50.2).
@@ -576,6 +583,8 @@ impl Drop for RemoteExtentStore {
     fn drop(&mut self) {
         // The faults stop being served first: the daemon stops serving them once disconnected.
         self.faults.get_mut().unwrap().take();
+        // fxdax: what the window's changes cost, all of it, which the daemon counts (TASK-91.16).
+        self.client.tell_stage_counts();
         self.client.closing.store(true, Ordering::Release);
         self.client.sender.shutdown();
     }
@@ -619,6 +628,9 @@ struct Client {
     /// The requests waiting for replies, by ID; `None` once the connection is gone.
     waiting: Mutex<Option<HashMap<u64, oneshot::Sender<Reply>>>>,
     stage: OnceLock<Arc<UffdSecondStage>>,
+    /// fxdax: what making the stage operations cost this process, which it tells the daemon
+    /// (TASK-91.16).
+    stage_counts: StageCounts,
     /// What the daemon's changes of the store's capacity go to ([`RemoteExtentStore::on_capacity`]).
     capacity: OnceLock<Box<dyn Fn(u64, bool) + Send + Sync>>,
     /// fxdax: the latest commit of a follower's writer heard of, and what hears of the next
@@ -641,6 +653,7 @@ impl Client {
             next: AtomicU64::new(1),
             waiting: Mutex::new(Some(HashMap::new())),
             stage: OnceLock::new(),
+            stage_counts: StageCounts::default(),
             capacity: OnceLock::new(),
             committed: AtomicU64::new(0),
             on_committed: OnceLock::new(),
@@ -688,9 +701,12 @@ impl Client {
     }
 
     /// Receives from the daemon until it closes the connection: makes the stage operations, in
-    /// order, and hands replies to their requests.
+    /// order, and hands replies to their requests. fxdax: it tells the daemon what they cost, with
+    /// each acknowledgement, and otherwise once [`STAGE_COUNTS_EVERY`] has passed since it last
+    /// did, as it makes them (TASK-91.16).
     fn receive(&self, mut receiver: Receiver) {
         RECEIVING.set(true);
+        let mut told = std::time::Instant::now();
         loop {
             let message = match receiver.receive() {
                 Ok(Some(message)) => message,
@@ -737,21 +753,23 @@ impl Client {
             }
             let start = std::time::Instant::now();
             let made = self.make(&header);
-            crate::stats::count_since(
-                crate::stats::Counter::StageOps,
-                crate::stats::Counter::StageNs,
-                start,
-            );
+            let counts = self.stage_counts.count_since(start);
             if let Err(err) = made {
                 log::error!("making the extent daemon's change to the window: {err}");
                 break;
             }
-            if header.flags & STAGE_ACK != 0 {
-                if let Err(err) = self.sender.send(Header::new(ACK, header.id), &[], &[]) {
-                    log::error!("acknowledging to the extent daemon: {err}");
-                    break;
-                }
+            let tell = if header.flags & STAGE_ACK != 0 {
+                Header::new(ACK, header.id)
+            } else if told.elapsed() >= STAGE_COUNTS_EVERY {
+                Header::new(STAGE_COUNTS, 0)
+            } else {
+                continue;
+            };
+            if let Err(err) = self.sender.send(tell.with_args(&counts), &[], &[]) {
+                log::error!("telling the extent daemon of the window's changes made: {err}");
+                break;
             }
+            told = std::time::Instant::now();
         }
         // The requests waiting fail, as do those made from now on.
         self.waiting.lock().unwrap().take();
@@ -763,6 +781,22 @@ impl Client {
             if let Some(lost) = self.on_lost.get() {
                 lost();
             }
+        }
+    }
+
+    /// fxdax: tells the daemon what the stage operations made so far cost, if any were made
+    /// ([`STAGE_COUNTS`]).
+    fn tell_stage_counts(&self) {
+        let counts = self.stage_counts.counts();
+        if counts[0] == 0 {
+            return;
+        }
+        let told = self.sender.send(Header::new(STAGE_COUNTS, 0).with_args(&counts), &[], &[]);
+        // A daemon gone counts nothing more.
+        if let Err(err) = told
+            && !self.lost.load(Ordering::Acquire)
+        {
+            log::warn!("telling the extent daemon what the window's changes cost: {err}");
         }
     }
 
@@ -783,6 +817,29 @@ impl Client {
             kind => return Err(std::io::Error::other(format!("an unknown message, {kind}"))),
         }
         Ok(())
+    }
+}
+
+/// fxdax: the stage operations a VM process made of a window, and the nanoseconds they took, as
+/// [`STAGE_COUNTS`] tells them: the receiving thread counts them, which makes them.
+#[derive(Default)]
+struct StageCounts {
+    ops: AtomicU64,
+    ns: AtomicU64,
+}
+
+impl StageCounts {
+    /// Counts an operation made since `start`, and returns the counts.
+    fn count_since(&self, start: std::time::Instant) -> [u64; 2] {
+        let ns = start.elapsed().as_nanos() as u64;
+        [
+            self.ops.fetch_add(1, Ordering::Relaxed) + 1,
+            self.ns.fetch_add(ns, Ordering::Relaxed) + ns,
+        ]
+    }
+
+    fn counts(&self) -> [u64; 2] {
+        [self.ops.load(Ordering::Relaxed), self.ns.load(Ordering::Relaxed)]
     }
 }
 

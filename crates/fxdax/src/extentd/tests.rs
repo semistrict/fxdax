@@ -721,6 +721,81 @@ fn two_processes_map_the_same_pages() {
     }
 }
 
+/// The connection a VM process of [`vm_processes_tell_the_daemon_what_their_windows_cost`] is
+/// given: its descriptor's number.
+const CHILD_CONNECTION: &str = "FXDAX_EXTENTD_TEST_CONNECTION";
+
+/// A VM process, for [`vm_processes_tell_the_daemon_what_their_windows_cost`]: changes its window
+/// five times, each a stage operation, and closes its store; then prints what they cost it.
+#[test]
+#[ignore = "run by vm_processes_tell_the_daemon_what_their_windows_cost"]
+fn child_changes_its_window() {
+    let (Ok(connection), Ok(store)) = (std::env::var(CHILD_CONNECTION), std::env::var(CHILD_STORE))
+    else {
+        return;
+    };
+    let ps = page_size();
+    // SAFETY: The connection the parent left this process, which nothing else here owns.
+    let stream =
+        unsafe { <UnixStream as std::os::fd::FromRawFd>::from_raw_fd(connection.parse().unwrap()) };
+    let store = RemoteExtentStore::over(stream, Path::new(&store), Opening::Create(1 << 24));
+    let store = store.unwrap();
+    let memory = memory(1);
+    // SAFETY: The memory is this function's, and outlives the store.
+    unsafe { store.create_dax_window_in_host_memory(memory, ps, None) }.unwrap();
+    let extent = ExtentId { branch: store.branch(), sequence: 1 };
+    write(&store, extent, 0, &pattern(3, ps as usize)).unwrap();
+    store.commit(None).unwrap();
+    // The window maps the extent anew, with none of its pages in memory yet.
+    store.map(extent, 0, ps, 0, false).unwrap();
+    // A load faults its page in, which the window maps.
+    // SAFETY: The window's memory, whose faults the store serves.
+    assert_eq!(unsafe { memory.as_ptr().read_volatile() }, pattern(3, 1)[0]);
+    // Unmapped, which the daemon waits for.
+    store.unmap(0, ps).unwrap();
+    // Mapped anew, with its page in memory, which the window maps at once.
+    store.map(extent, 0, ps, 0, false).unwrap();
+    let [ops, ns] = store.stage_counts();
+    drop(store);
+    println!("STAGE {ops} {ns}");
+}
+
+/// TASK-91.16: what its VM processes' changes to their windows cost them, which they make, the
+/// daemon counts as its own (`Stats::stage_ops`): as they tell it, all of it once they close
+/// their stores. A VM process is another process, whose own counters the daemon never sees.
+#[test]
+fn vm_processes_tell_the_daemon_what_their_windows_cost() {
+    use std::os::fd::AsRawFd;
+    host();
+    let dir = tempfile::tempdir().unwrap();
+    let (ours, theirs) = UnixStream::pair().unwrap();
+    // The child's end, which it inherits.
+    // SAFETY: Clears the close-on-exec flag of a descriptor this test owns.
+    assert_eq!(unsafe { libc::fcntl(theirs.as_raw_fd(), libc::F_SETFD, 0) }, 0);
+    let before = crate::stats::stats();
+    let served = std::thread::spawn(move || serve_connection(ours, None));
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "extentd::tests::child_changes_its_window", "--ignored", "--nocapture"])
+        .env(CHILD_CONNECTION, theirs.as_raw_fd().to_string())
+        .env(CHILD_STORE, dir.path().join("store"))
+        .output()
+        .unwrap();
+    drop(theirs);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{stdout}\n{}", String::from_utf8_lossy(&output.stderr));
+    let stage = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("STAGE "))
+        .unwrap_or_else(|| panic!("the child changed nothing: {stdout}"));
+    let (ops, ns) = stage.split_once(' ').unwrap();
+    let (ops, ns): (u64, u64) = (ops.parse().unwrap(), ns.parse().unwrap());
+    assert_eq!(ops, 5, "{stdout}");
+    // Once the daemon is done with the connection, which the child closed.
+    served.join().unwrap();
+    let counted = crate::stats::stats().since(&before);
+    assert_eq!((counted.stage_ops, counted.stage_ns), (ops, ns));
+}
+
 /// A store the daemon serves forks to a new branch the daemon serves too, whose window maps the
 /// pages the parent's maps: the daemon's counters count the maps, the faults and the reads. The
 /// extent is paged in once, for both windows and the fork's READ, which reads nothing from the
