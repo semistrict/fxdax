@@ -13,20 +13,24 @@
 //!   takes each directory's new attributes, and one that whites each file out (TASK-92.37).
 //!
 //! ```sh
-//! cargo run --release -p fxdax --example import-bench [FILES [LARGE_MIB [KERNEL_MIB]]]
+//! cargo run --release -p fxdax --example import-bench [FILES [LARGE_MIB [KERNEL_MIB [THREADS]]]]
 //! ```
 //!
 //! FILES is how many small files there are (default 20000), LARGE_MIB the large file's size
-//! (default 256), and KERNEL_MIB the kernel's memory (default `kernel::Config::default`'s 1 GiB,
+//! (default 256), KERNEL_MIB the kernel's memory (default `kernel::Config::default`'s 1 GiB,
 //! which `fxdaxctl import` runs with), its pressure levels scaled to it: a large file larger than
-//! it is written back and evicted as it is written (TASK-79.70). Prints each layer's rate, of bytes
-//! for the large file's and of entries for the others', and the time setting the directories'
-//! times takes.
+//! it is written back and evicted as it is written (TASK-79.70); and THREADS the threads Fxfs runs
+//! on (`Options::executor_threads`, default 1, as `fxdaxctl import`'s). On one, its compactions run
+//! between the import's requests: the allocator's, of its whole tree, cost more for each file the
+//! more files there are, and so does each small file (TASK-92.44). Prints each layer's rate, of
+//! bytes for the large file's and of entries for the others', and the time setting the
+//! directories' times takes.
 
 use futures::executor::block_on;
 use fxdax::import::Importer;
 use fxdax::import::testing::{Entry, Kind, layer, whiteout};
-use fxdax::{Filesystem, Storage};
+use fxdax::{Options, Storage};
+use std::num::NonZeroU8;
 use std::time::{Duration, Instant};
 
 /// How many small files a directory holds.
@@ -57,6 +61,10 @@ fn main() {
     if let Some(kernel_mib) = args.next().map(|n| n.parse::<u64>().unwrap()) {
         let config = fxdax::kernel::Config::with_memory(kernel_mib << 20);
         fxdax::kernel::configure(config).unwrap();
+    }
+    let mut options = Options::new();
+    if let Some(threads) = args.next().map(|n| n.parse::<NonZeroU8>().unwrap()) {
+        options.executor_threads(threads);
     }
 
     let contents = vec![0x5a; large_mib << 20];
@@ -94,7 +102,7 @@ fn main() {
     let capacity = ((large_mib as u64 + 256) << 20) + small_files_bytes;
     let capacity = capacity.next_multiple_of(Storage::BLOCK_SIZE as u64);
     block_on(async {
-        let fs = Filesystem::format(Storage::memory(capacity)).await.unwrap();
+        let fs = options.format(Storage::memory(capacity)).await.unwrap();
         let mut importer = Importer::new(&fs);
         apply(&mut importer, "large file", &large, large_mib, "MiB").await;
         apply(&mut importer, "small files", &small_files, entries, "entry").await;
