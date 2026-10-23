@@ -1735,11 +1735,12 @@ fn serves_hundreds_of_forks_of_a_base() {
     println!("per fork: {files:.1} files, {} KiB resident", resident >> 10);
     // The daemon's threads: its runtimes', and the requests' running, not a set per connection.
     assert!(after.threads < 64, "{} threads: {:?}", after.threads, thread_names());
-    // Each fork's: the connection's two ends here, and the client's, with its kernel's memory;
-    // its store's index and open segment. And those the forks share: the files of the base's
-    // segments they read, the most `Options::open_files` (64) of them.
+    // Each fork's: the connection's two ends here, and the client's, with its kernel's memory, its
+    // arena and the default one, read-only (TASK-79.17); its store's index and open segment. And
+    // those the forks share: the files of the base's segments they read, the most
+    // `Options::open_files` (64) of them.
     let opened = after.files - before.files;
-    assert!(opened <= 8 * FORKS + 64, "{opened} files for {FORKS} forks");
+    assert!(opened <= 9 * FORKS + 64, "{opened} files for {FORKS} forks");
     assert!(resident < 1 << 20, "{resident} bytes a fork");
     drop(stores);
 }
