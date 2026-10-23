@@ -492,10 +492,10 @@ async fn set_xattrs(node: &Node, xattrs: &[(Vec<u8>, Vec<u8>)]) -> anyhow::Resul
 /// recursing, which takes a poll frame of the thread's stack for each level of the tree. However
 /// deep the tree, removing it takes as much of the thread's stack as removing one node does.
 async fn remove(dir: &Node, name: Vec<u8>) -> anyhow::Result<()> {
-    let mut steps = vec![Removal::Node { dir: dir.clone(), name }];
+    let mut steps = vec![Removal::Entry { dir: dir.clone(), name }];
     while let Some(step) = steps.pop() {
         match step {
-            Removal::Node { dir, name } => {
+            Removal::Entry { dir, name } => {
                 let (node, attr) = dir.lookup(&name).await?;
                 if attr.file_type != FileType::Directory {
                     drop(node);
@@ -506,7 +506,7 @@ async fn remove(dir: &Node, name: Vec<u8>) -> anyhow::Result<()> {
                 steps.push(Removal::Directory { parent: dir, name });
                 // Popped in the order the directory lists them.
                 let children = children.into_iter().rev();
-                steps.extend(children.map(|name| Removal::Node { dir: node.clone(), name }));
+                steps.extend(children.map(|name| Removal::Entry { dir: node.clone(), name }));
             }
             // Its entries are removed, and with them the handles to it that their steps held.
             Removal::Directory { parent, name } => parent.rmdir(&name).await?,
@@ -517,9 +517,9 @@ async fn remove(dir: &Node, name: Vec<u8>) -> anyhow::Result<()> {
 
 /// A step of [`remove`]'s.
 enum Removal {
-    /// Removes `name` from directory `dir`: a non-directory, or the entries of a directory, then
-    /// the directory.
-    Node { dir: Node, name: Vec<u8> },
+    /// Removes the entry `name` of directory `dir`, whatever its type: a non-directory, or the
+    /// entries of a directory, then the directory.
+    Entry { dir: Node, name: Vec<u8> },
     /// Removes the directory `name` from `parent`, once its entries are removed.
     Directory { parent: Node, name: Vec<u8> },
 }
