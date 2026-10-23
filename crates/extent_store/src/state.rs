@@ -158,20 +158,21 @@ impl<F: File> State<F> {
         self.segments.dead() + self.uncommitted.overwritten()
     }
 
-    /// fxdax: whether what the branch's files take that no extent holds counts as used, past the
-    /// capacity's worth: writes are refused room for it (TASK-79.2).
-    pub fn garbage_counts(&self) -> bool {
-        self.space.past_slack(self.garbage()) > 0
+    /// fxdax: whether what the branch's files take that no extent holds is past the capacity's
+    /// worth: cleaning is due then for whatever it takes back (TASK-79.2).
+    pub fn garbage_past_capacity(&self) -> bool {
+        self.garbage() > self.space.capacity()
     }
 
     /// Fails with [`NoSpace`] unless a write may add `grows` bytes, and write over `overwrites`.
     pub fn check_room(&self, grows: u64, overwrites: u64) -> Result<(), NoSpace> {
-        self.space.check(grows, self.kept.for_views(), self.garbage() + overwrites)
+        let wasted = self.uncommitted.wasted() + overwrites;
+        self.space.check(grows, self.kept.for_views(), wasted)
     }
 
     /// What the store holds, as doc-4's `INFO` reports it.
     pub fn info(&self) -> Info {
-        self.space.info(self.next_sequence, self.kept.for_views(), self.garbage())
+        self.space.info(self.next_sequence, self.kept.for_views(), self.uncommitted.wasted())
     }
 
     /// Lets the kept extents freed by commits up to `published`, the last published to views, go
@@ -188,11 +189,21 @@ impl<F: File> State<F> {
 /// The room a branch's extents take: the most they may hold, as its record says
 /// ([`Store::set_capacity`](crate::Store::set_capacity)), the bytes they hold, and those writes
 /// in progress may add. A write takes room only if what they hold and may add, with what views
-/// keep of the frees, which counts as used, fits. fxdax: and with what the branch's files take
-/// that no extent holds (garbage: data freed, or written over, which cleaning has yet to take
-/// back) past the capacity's worth, which counts as used too (TASK-79.2): so that the branch's
-/// files take about twice its capacity at most, however fast its writer frees and writes again,
-/// which then writes no faster than cleaning takes back what is past that.
+/// keep of the frees, which counts as used, fits. fxdax: and with what writes since the last
+/// commit wasted past the capacity's worth, which counts as used too (TASK-79.2): what they wrote
+/// over, in segments, and what frees of extents open let go of, and writes dropped, of what they
+/// wrote. That is its writer's own, which no commit held, and which its next commit takes back:
+/// so that a writer that never commits takes twice the capacity of the host's disk at most,
+/// rewriting, or writing extents and freeing them. Past it, the writes a commit comes with are
+/// refused too (doc-4's `WRITE_COMMIT`'s, and those of the extents a DAX guest maps writably,
+/// which its commits write first), so that a writer past it may be unable to commit: a guest's
+/// filesystem comes nowhere near it, Fxfs freeing an extent only once a flush has committed it,
+/// and writing over little between commits. What the commits leave in the branch's segments
+/// that no extent is in, freed, takes none of the room, however much: cleaning takes it back,
+/// behind the commits that come with the writer's writes, which a writer refused room for it
+/// could neither make nor know to. Counted as used past the capacity's worth, it found a guest's
+/// store full with a tenth of it used (`ENOSPC`), which the guest's filesystem did not survive.
+/// What the host's disk holds of it is bounded by cleaning's pace alone.
 pub(crate) struct Space {
     capacity: u64,
     /// The bytes extents hold.
@@ -215,18 +226,19 @@ impl Space {
     }
 
     /// Fails with [`NoSpace`] unless a write may add `grows` bytes, views keeping `kept_for_views`
-    /// of the frees, and the branch's files taking `garbage` bytes no extent holds.
-    pub fn check(&self, grows: u64, kept_for_views: u64, garbage: u64) -> Result<(), NoSpace> {
-        let used = self.stored + kept_for_views + self.past_slack(garbage);
+    /// of the frees, and writes since the last commit, this one's included, wasting `wasted`
+    /// bytes.
+    pub fn check(&self, grows: u64, kept_for_views: u64, wasted: u64) -> Result<(), NoSpace> {
+        let used = self.stored + kept_for_views + self.past_slack(wasted);
         if used + self.reserved + grows > self.capacity {
             return Err(NoSpace);
         }
         Ok(())
     }
 
-    /// fxdax: of `garbage`, what is past the capacity's worth, which counts as used (TASK-79.2).
-    fn past_slack(&self, garbage: u64) -> u64 {
-        garbage.saturating_sub(self.capacity)
+    /// fxdax: of `wasted`, what is past the capacity's worth, which counts as used (TASK-79.2).
+    fn past_slack(&self, wasted: u64) -> u64 {
+        wasted.saturating_sub(self.capacity)
     }
 
     /// Reserves `grows` bytes for a write in progress, which may add them.
@@ -271,11 +283,11 @@ impl Space {
 
     /// What the store holds, as doc-4's `INFO` reports it: `next_sequence` its next sequence
     /// number, views keeping `kept_for_views` of the frees, which take room as the extents did,
-    /// and the branch's files `garbage` bytes no extent holds, what is past the capacity's worth
+    /// and writes since the last commit wasting `wasted` bytes, what is past the capacity's worth
     /// of which room is not available either.
-    pub fn info(&self, next_sequence: u64, kept_for_views: u64, garbage: u64) -> Info {
+    pub fn info(&self, next_sequence: u64, kept_for_views: u64, wasted: u64) -> Info {
         let used = self.stored + kept_for_views;
-        let unavailable = used + self.past_slack(garbage) + self.reserved;
+        let unavailable = used + self.past_slack(wasted) + self.reserved;
         Info {
             capacity: self.capacity,
             used,
@@ -312,6 +324,10 @@ pub(crate) struct Uncommitted<F> {
     changes: Vec<Change>,
     /// fxdax: the bytes the open extents' writes wrote over, in segments (TASK-79.2).
     overwritten: u64,
+    /// fxdax: the bytes writes since the last commit wrote that no extent holds any more, which
+    /// no commit held: of the extents freed while open, in segments, what they wrote over too, or
+    /// in raw files of their own; and of the writes dropped, in segments (TASK-79.2).
+    let_go: u64,
     /// fxdax: cleaning's copies, which the next commit makes their extents' places (TASK-79.2).
     copies: Vec<Copied>,
 }
@@ -336,7 +352,7 @@ struct Open<F> {
 impl<F> Default for Uncommitted<F> {
     fn default() -> Self {
         let (open, changes, copies) = (HashMap::new(), Vec::new(), Vec::new());
-        Self { open, openings: 0, changes, overwritten: 0, copies }
+        Self { open, openings: 0, changes, overwritten: 0, let_go: 0, copies }
     }
 }
 
@@ -389,7 +405,22 @@ impl<F> Uncommitted<F> {
         self.overwritten
     }
 
-    /// `extent`, freed, is open no more: where its data went, if it was.
+    /// fxdax: `bytes` that writes since the last commit wrote are no extent's any more: of an
+    /// extent freed while open, or of a write dropped (TASK-79.2).
+    pub fn let_go(&mut self, bytes: u64) {
+        self.let_go += bytes;
+    }
+
+    /// fxdax: the bytes writes since the last commit wasted: what the open extents' writes wrote
+    /// over, and what those freed, and writes dropped, let go of (TASK-79.2). The next commit takes
+    /// them back: of segments set aside, which it removes, or as dead space, which cleaning takes
+    /// back behind the commits; and of raw files, which its flush removes.
+    pub fn wasted(&self) -> u64 {
+        self.overwritten + self.let_go
+    }
+
+    /// `extent`, freed, is open no more: where its data went, if it was. fxdax: what its writes
+    /// wrote over is let go of with the rest of what they wrote, which its free lets go of.
     pub fn remove(&mut self, extent: ExtentId) -> Option<Placement<F>> {
         let open = self.open.remove(&extent)?;
         self.overwritten -= open.overwritten;
@@ -429,6 +460,7 @@ impl<F> Uncommitted<F> {
     pub fn take(&mut self) -> Vec<Change> {
         self.open.clear();
         self.overwritten = 0;
+        self.let_go = 0;
         std::mem::take(&mut self.changes)
     }
 }

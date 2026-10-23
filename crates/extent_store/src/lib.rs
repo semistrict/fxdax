@@ -101,11 +101,15 @@
 //! which commits wait for, and commits nothing: the next commit makes the copies their extents'
 //! places, if they are as they were, and the copies in the open segment (TASK-79.2). It finds them
 //! as each segment names the sealed extents in it; and it is due ([`Store::cleaning_due`]) as the
-//! segments it would take hold enough no extent is in, or any once that counts as used. What the
-//! branch's files take that no extent holds, freed or written over, counts as used once it is past
-//! the capacity's worth: so that they take about twice the capacity at most, however fast the
-//! branch's writer frees and writes again, which writes no faster than cleaning takes back what
-//! is past that. What a fork holds of the branch's segments is not the branch's to take back.
+//! segments it would take hold enough no extent is in, or any once what the branch's files take
+//! that no extent holds is past the capacity's worth. What writes since the last commit wasted,
+//! writing over what they wrote, or writing extents freed before the commit, counts as used once
+//! it is past the capacity's worth, which the commit takes back: a writer's that never commits.
+//! What the commits leave freed takes none of the branch's room, however much, being the host's
+//! to take back, behind the commits that come with the writer's writes, which the writer could
+//! neither make room for nor know of: the host's disk holds as much of it as cleaning, a pass
+//! between commits, leaves. What a fork holds of the branch's segments is not the branch's to
+//! take back.
 //!
 //! **Views.** [`Store::view`] gives a [`View`] of the branch as of its latest commit, which a
 //! follower reads through ([`Store::read_view`]) while the writer goes on (doc-8, TASK-42.2): the

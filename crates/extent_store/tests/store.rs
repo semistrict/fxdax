@@ -553,11 +553,11 @@ fn cleaning_finds_the_extents_sealed_in_its_segments() {
     }
 }
 
-/// fxdax: cleaning is due once what no extent holds counts as used, past the capacity's worth,
-/// whatever the mark it is due past otherwise: a branch whose capacity is short of that mark,
-/// refused room for its garbage, has it taken back, and its room again (TASK-79.2).
+/// fxdax: cleaning is due once what no extent holds is past the capacity's worth, whatever the
+/// mark it is due past otherwise: a branch whose capacity is short of that mark has it taken
+/// back, its room what its extents leave it throughout (TASK-79.2).
 #[test]
-fn cleaning_is_due_once_garbage_counts_as_used() {
+fn cleaning_is_due_once_garbage_is_past_the_capacity() {
     let capacity = 64 * BLOCK as u64;
     let store = create(MemDir::new(), capacity);
     for cycle in 0..4 {
@@ -566,10 +566,11 @@ fn cleaning_is_due_once_garbage_counts_as_used() {
     // 240 KiB freed: within the capacity's worth, and short of the mark.
     assert!(!store.cleaning_due(64 << 20, 0.5).unwrap());
     churn(&store, 64);
-    assert_eq!(store.info().unwrap().available, capacity - 16 * BLOCK as u64);
+    assert_eq!(store.info().unwrap().available, capacity - 5 * BLOCK as u64);
     assert!(store.cleaning_due(64 << 20, 0.5).unwrap());
     assert_eq!(store.clean_behind(0.5, u64::MAX).unwrap(), 5 * BLOCK as u64);
     store.commit(None).unwrap();
+    assert_eq!(store.usage().unwrap().dead_bytes, 0);
     assert_eq!(store.info().unwrap().available, capacity - 5 * BLOCK as u64);
     assert!(!store.cleaning_due(0, 0.5).unwrap());
 }
@@ -1943,9 +1944,10 @@ fn rewrites_take_no_segment_past_a_segment_and_an_extent() {
 }
 
 /// Rewrites of an open extent take room in segments, which no extent holds once the extent is
-/// sealed: past the capacity's worth, they count as used, until the commit sealing the extent,
-/// then cleaning, takes them back (TASK-79.2). So a guest rewriting a block between commits fills
-/// the host's disk with twice its capacity at most.
+/// sealed: past the capacity's worth, they count as used, until the commit sealing the extent
+/// takes them back, which is the writer's to make (TASK-79.2); then they are dead space, which
+/// takes no room, and which cleaning takes back. So a guest rewriting a block between commits
+/// fills the host's disk with twice its capacity at most.
 #[test]
 fn rewrites_past_the_capacity_count_as_used() {
     let capacity = 64 * BLOCK as u64;
@@ -1960,11 +1962,46 @@ fn rewrites_past_the_capacity_count_as_used() {
     assert_eq!(read(&store, extent(1), 0, BLOCK), pattern(127, 0, BLOCK));
     // Sealed, the extent leaves them in a segment no extent holds but it, which cleaning removes.
     store.commit(None).unwrap();
-    error_is(store.write(extent(2), 0, &pattern(2, 0, BLOCK)), NoSpace);
-    store.clean(0.5).unwrap();
+    assert_eq!(store.usage().unwrap().dead_bytes, 128 * BLOCK as u64);
     assert_eq!(store.info().unwrap().available, capacity - BLOCK as u64);
+    store.clean(0.5).unwrap();
+    assert_eq!(store.usage().unwrap().dead_bytes, 0);
     store.write(extent(2), 0, &pattern(2, 0, BLOCK)).unwrap();
     assert_eq!(read(&store, extent(1), 0, BLOCK), pattern(127, 0, BLOCK));
+}
+
+/// fxdax: what frees of extents open let go of, of what writes since the last commit wrote,
+/// written over or not, in segments or in raw files of their own, counts as used past the
+/// capacity's worth, as what writes wrote over does, until the commit takes it back (TASK-79.2):
+/// so that a writer writing extents and freeing them, never committing, takes twice the capacity
+/// of the host's disk at most, though its extents hold nothing.
+#[test]
+fn frees_of_open_extents_past_the_capacity_count_as_used() {
+    let capacity = 64 * BLOCK as u64;
+    let store = create(MemDir::new(), capacity);
+    // Blocks written and freed; blocks written, written over and freed; and extents in raw files
+    // of their own, of 8 blocks, written and freed: twice the capacity's worth, 512 KiB.
+    for sequence in 0..32 {
+        store.write(extent(sequence), 0, &pattern(sequence as u8, 0, BLOCK)).unwrap();
+        store.free(extent(sequence)).unwrap();
+    }
+    for sequence in 32..48 {
+        store.write(extent(sequence), 0, &pattern(1, 0, BLOCK)).unwrap();
+        store.write(extent(sequence), 0, &pattern(2, 0, BLOCK)).unwrap();
+        store.free(extent(sequence)).unwrap();
+    }
+    for sequence in 48..56 {
+        store.write(extent(sequence), 0, &pattern(sequence as u8, 0, 8 * BLOCK)).unwrap();
+        store.free(extent(sequence)).unwrap();
+    }
+    error_is(store.write(extent(56), 0, &pattern(56, 0, BLOCK)), NoSpace);
+    assert_eq!(store.info().unwrap().available, 0);
+    // The commit takes it back: nothing holds it, as no commit did.
+    store.commit(None).unwrap();
+    assert_eq!(store.info().unwrap().available, capacity);
+    store.write(extent(56), 0, &pattern(56, 0, BLOCK)).unwrap();
+    store.commit(None).unwrap();
+    assert_eq!(read(&store, extent(56), 0, BLOCK), pattern(56, 0, BLOCK));
 }
 
 /// Writes, a commit, and frees of all but one of the extents written, and a commit: a segment
@@ -1980,12 +2017,12 @@ fn churn(store: &Store<MemDir>, first: u64) {
     store.commit(None).unwrap();
 }
 
-/// What the branch's segments hold that no extent is in, freed, counts as used past the
-/// capacity's worth, until cleaning takes it back (TASK-79.2): so that a guest freeing all but a
-/// block of each segment it writes fills the host's disk with twice its capacity at most. What a
-/// fork shares of it, the branch alone can't take back, nor counts.
+/// What the branch's segments hold that no extent is in, freed, is dead space until cleaning
+/// takes it back, which takes none of the branch's room, past the capacity's worth too: the
+/// host's to take back, which the branch's writer can't make room for (TASK-79.2). What a fork
+/// shares of it, the branch alone can't take back, nor counts.
 #[test]
-fn freed_space_past_the_capacity_counts_as_used() {
+fn freed_space_is_dead_space_taking_no_room() {
     let capacity = 64 * BLOCK as u64;
     let store = create(MemDir::new(), capacity);
     for cycle in 0..4 {
@@ -1997,9 +2034,9 @@ fn freed_space_past_the_capacity_counts_as_used() {
     churn(&store, 64);
     // 300 KiB freed, 44 KiB past it.
     assert_eq!(store.usage().unwrap().dead_bytes, 75 * BLOCK as u64);
-    assert_eq!(store.info().unwrap().available, capacity - 5 * BLOCK as u64 - 11 * BLOCK as u64);
-    error_is(store.write(extent(100), 0, &vec![1; 49 * BLOCK]), NoSpace);
-    store.write(extent(100), 0, &vec![1; 48 * BLOCK]).unwrap();
+    assert_eq!(store.info().unwrap().available, capacity - 5 * BLOCK as u64);
+    error_is(store.write(extent(100), 0, &vec![1; 60 * BLOCK]), NoSpace);
+    store.write(extent(100), 0, &vec![1; 59 * BLOCK]).unwrap();
     store.free(extent(100)).unwrap();
     store.commit(None).unwrap();
     // A fork holds the segments, and what is freed in them.
@@ -2010,6 +2047,38 @@ fn freed_space_past_the_capacity_counts_as_used() {
     store.lineage().delete(BRANCH + 1).unwrap();
     store.clean(0.0).unwrap();
     assert_eq!(store.usage().unwrap().dead_bytes, 75 * BLOCK as u64);
+}
+
+/// fxdax: what the branch's segments hold that no extent is in, freed, takes none of the room the
+/// branch's writes need, however much it is: it is the host's to take back, cleaning behind the
+/// commits, whose copies wait for the branch's next commit, which comes with its writer's next
+/// write. Counted as used past the capacity's worth, it found the store of a guest writing and
+/// freeing files full, its extents holding a tenth of it: the guest's journal write, which its
+/// commit came with, refused (ENOSPC), the guest's filesystem failed, and the commit that would
+/// have let the dead space go never came (TASK-79.2).
+#[test]
+fn dead_space_takes_none_of_the_room_writes_need() {
+    let capacity = 64 * BLOCK as u64;
+    let store = create(MemDir::new(), capacity);
+    // Ten segments, each pinned by one extent: 600 KiB freed, more than twice the capacity.
+    for cycle in 0..10 {
+        churn(&store, 16 * cycle);
+    }
+    assert_eq!(store.usage().unwrap().dead_bytes, 150 * BLOCK as u64);
+    assert_eq!(store.info().unwrap().available, capacity - 10 * BLOCK as u64);
+    // Cleaning copies the ten out, behind the commits.
+    assert!(store.cleaning_due(64 << 20, 0.5).unwrap());
+    assert_eq!(store.clean_behind(0.5, u64::MAX).unwrap(), 10 * BLOCK as u64);
+    // The write the next commit comes with, of all the room left.
+    store.write(extent(200), 0, &pattern(200, 0, 54 * BLOCK)).unwrap();
+    store.commit(None).unwrap();
+    assert_eq!(store.usage().unwrap().dead_bytes, 0);
+    assert_eq!(store.info().unwrap().available, 0);
+    error_is(store.write(extent(201), 0, &pattern(201, 0, BLOCK)), NoSpace);
+    for sequence in (0..160).step_by(16) {
+        assert_eq!(read(&store, extent(sequence), 0, BLOCK), pattern(sequence as u8, 0, BLOCK));
+    }
+    assert_eq!(read(&store, extent(200), 0, 54 * BLOCK), pattern(200, 0, 54 * BLOCK));
 }
 
 /// A fork made and deleted holds the branch's segments no more: what the branch frees in them

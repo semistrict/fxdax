@@ -27,8 +27,8 @@ pub(crate) const BLOCK_SIZE: u32 = 4096;
 const DIRECT: bool = true;
 
 /// The bytes no extent is in, of a store's segments that cleaning takes, past which cleaning it is
-/// due: or any, once they count as used, past the store's capacity's worth, as a store whose
-/// capacity is short of this is refused room for them ([`Store::cleaning_due`], TASK-79.2).
+/// due: or any, once what the store's files take that no extent holds is past its capacity's
+/// worth, as for a store whose capacity is short of this ([`Store::cleaning_due`], TASK-79.2).
 const CLEAN_PAST: u64 = 64 << 20;
 
 /// The fraction of a segment its extents must hold for cleaning to leave it be.
@@ -150,8 +150,7 @@ pub(crate) fn cleaning_due(store: &Store<HostDir>) -> anyhow::Result<bool> {
 /// extents hold less than `CLEAN_BELOW` of them, `CLEAN_PASS` bytes at most, which its next
 /// commit makes the extents' places, and whose flush lets the segments go. Its commits wait for
 /// one extent's copy at most, as for a write: so the extent daemon cleans its stores, as their
-/// guests write and commit, which, writing faster than cleaning takes back what they free, are
-/// refused room ([`extent_store::NoSpace`]).
+/// guests write and commit, whose room what they free takes none of.
 pub(crate) fn clean_behind(store: &Store<HostDir>) -> anyhow::Result<()> {
     let copied = store.clean_behind(CLEAN_BELOW, CLEAN_PASS)?;
     if copied > 0 {

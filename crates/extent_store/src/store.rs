@@ -840,13 +840,15 @@ impl<D: Dir> Store<D> {
     }
 
     /// `write` is done, and holds nothing: abandoned, or to an extent freed since it began. What it
-    /// wrote to a segment, if anything, is dead space.
+    /// wrote to a segment, if anything, is dead space; fxdax: which its writer wasted, until the
+    /// next commit (TASK-79.2).
     fn drop_write(&self, state: &mut State<D::File>, write: &Write<'_, D>) {
         state.space.unreserve(write.grows);
-        if let Some(number) = write.segment
-            && state.segments.dropped(number, write.len)
-        {
-            self.idle.notify_all();
+        if let Some(number) = write.segment {
+            state.uncommitted.let_go(write.len);
+            if state.segments.dropped(number, write.len) {
+                self.idle.notify_all();
+            }
         }
         self.written(state);
     }
@@ -979,16 +981,24 @@ impl<D: Dir> Store<D> {
         // space, counted so (TASK-79.2). Of a file of its own it has none, which its seal would
         // have made, but its raw file, which goes with the next commit: the lineage has nothing to
         // let go of, which would take the file the extent's next opening seals at that path
-        // (TASK-79.1).
+        // (TASK-79.1). What it took of either its writer wasted, until the next commit
+        // (TASK-79.2).
         if placement.is_none() {
             state.segments.displace(extent, &entry.data);
             let uploader = state.uploads.is_some() && rules().keep_frees;
             let freed = state.epoch + 1;
             state.kept.insert(extent, Kept { entry, freed, uploader });
-        } else if let Data::Pieces(pieces) = &entry.data {
-            for piece in pieces {
-                state.segments.let_go(piece);
+            return Ok(());
+        }
+        match &entry.data {
+            Data::Pieces(pieces) => {
+                for piece in pieces {
+                    state.segments.let_go(piece);
+                    state.uncommitted.let_go(piece.len);
+                }
             }
+            Data::Own => state.uncommitted.let_go(entry.len),
+            Data::Remote => unreachable!("an open extent's data is in segments or a raw file"),
         }
         Ok(())
     }
@@ -1616,10 +1626,9 @@ impl<D: Dir> Store<D> {
 
     /// fxdax: whether cleaning behind the commits is due ([`Store::clean_behind`]): the segments
     /// it would take, at `live_fraction`, hold more than `past` bytes no extent is in, or any, once
-    /// what the branch's files take that no extent holds counts as used, which writes are then
-    /// refused room for, the branch's capacity being short of `past` maybe; and no copy of an
-    /// earlier pass's waits for a commit (TASK-79.2). Found as the segments count what they hold,
-    /// not going through the extents.
+    /// what the branch's files take that no extent holds is past its capacity's worth, the
+    /// capacity being short of `past` maybe; and no copy of an earlier pass's waits for a commit
+    /// (TASK-79.2). Found as the segments count what they hold, not going through the extents.
     pub fn cleaning_due(&self, past: u64, live_fraction: f64) -> Result<bool, Error> {
         let mut state = self.writable()?;
         if !state.uncommitted.copies().is_empty() {
@@ -1627,7 +1636,7 @@ impl<D: Dir> Store<D> {
         }
         self.unshare(&mut state);
         let reclaimable = state.segments.reclaimable(live_fraction);
-        Ok(reclaimable > past || reclaimable > 0 && state.garbage_counts())
+        Ok(reclaimable > past || reclaimable > 0 && state.garbage_past_capacity())
     }
 
     /// fxdax: cleans behind the commits, holding none back but as a write does (TASK-79.2):
