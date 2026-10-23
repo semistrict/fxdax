@@ -1854,3 +1854,35 @@ fn metrics_are_served_beside_slow_clients() {
     assert!(scraped.starts_with("HTTP/1.1 200 OK\r\n"), "{scraped}");
     drop(slow);
 }
+
+/// TASK-79.35: the daemon goes on accepting VM processes' connections through a failure to accept
+/// one, as with as many files open as it may (EMFILE): it accepts them once files close.
+#[test]
+fn the_daemon_accepts_on_after_failing_to() {
+    host();
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("extentd.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let mut limit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+    // SAFETY: Reads the process's limit into `limit`.
+    assert_eq!(unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) }, 0);
+    // No file opens: the daemon's accept fails as it begins.
+    let none = libc::rlimit { rlim_cur: 0, ..limit };
+    // SAFETY: Lowers the process's own limit, which this test sets back.
+    assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &none) }, 0);
+    let (serving, stopped) = std::sync::mpsc::channel::<()>();
+    std::thread::spawn(move || {
+        // Dropped as serving stops.
+        let _serving = serving;
+        serve(listener)
+    });
+    let served = stopped.recv_timeout(std::time::Duration::from_secs(1));
+    // SAFETY: As above.
+    assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limit) }, 0);
+    assert_eq!(served, Err(std::sync::mpsc::RecvTimeoutError::Timeout), "serving stopped");
+    let path = dir.path().join("store");
+    let opened = within(std::time::Duration::from_secs(10), move || {
+        RemoteExtentStore::connect(&socket, path, 1 << 20).map(|store| store.branch())
+    });
+    assert!(matches!(opened, Ok(Ok(_))), "the daemon accepts no more: {opened:?}");
+}

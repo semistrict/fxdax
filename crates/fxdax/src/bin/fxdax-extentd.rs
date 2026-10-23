@@ -112,7 +112,7 @@ fn main() -> anyhow::Result<()> {
             }
         })?;
     }
-    fxdax::extentd::serve(listener).context("accepting connections")?;
+    fxdax::extentd::serve(listener);
     Ok(())
 }
 

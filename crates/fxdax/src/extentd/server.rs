@@ -45,27 +45,52 @@ const FLUSH_EVERY: std::time::Duration = std::time::Duration::from_millis(50);
 /// going: how long its going may take.
 const COMMITS_POLL: std::time::Duration = std::time::Duration::from_millis(100);
 
-/// Serves the VM processes that connect to `listener`, until accepting a connection fails: of no
-/// tenant, their stores' pages of the default arena of the kernel's physical memory, which they
+/// Serves the VM processes that connect to `listener`, for as long as it listens ([`serve_as`]): of
+/// no tenant, their stores' pages of the default arena of the kernel's physical memory, which they
 /// hold, as when the daemon serves one tenant alone. Their requests run on threads every
 /// connection shares (TASK-34).
-pub fn serve(listener: UnixListener) -> std::io::Result<()> {
+pub fn serve(listener: UnixListener) {
     super::SERVING.send_replace(true);
-    let served = serve_as(listener, None);
+    serve_as(listener, None);
     super::SERVING.send_replace(false);
-    served
 }
 
-/// Serves the VM processes of `tenant` that connect to `listener`, as [`serve`] does (TASK-43).
-pub fn serve_tenant(listener: UnixListener, tenant: Arc<Tenant>) -> std::io::Result<()> {
+/// Serves the VM processes of `tenant` that connect to `listener`, as [`serve`] does (TASK-43):
+/// until its grant is revoked, which shuts the listener down.
+pub fn serve_tenant(listener: UnixListener, tenant: Arc<Tenant>) {
     serve_as(listener, Some(tenant))
 }
 
-fn serve_as(listener: UnixListener, tenant: Option<Arc<Tenant>>) -> std::io::Result<()> {
-    for stream in listener.incoming() {
-        drop(start_connection(stream?, tenant.clone()));
+/// fxdax: how long an accept that failed waits to be tried again, as files close (TASK-79.35).
+const ACCEPT_AGAIN: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// Serves the VM processes of `tenant`, if any, that connect to `listener`, until it listens no
+/// more, shut down (`EINVAL`). An accept that fails otherwise, as with as many files open as the
+/// daemon may, is tried again after [`ACCEPT_AGAIN`], and its connection served then: given up on,
+/// it would leave every VM process that connects to it unserved, a tenant's socket bound still
+/// (TASK-79.35).
+fn serve_as(listener: UnixListener, tenant: Option<Arc<Tenant>>) {
+    let mut failing = false;
+    loop {
+        match listener.accept() {
+            Ok((stream, _)) => {
+                failing = false;
+                drop(start_connection(stream, tenant.clone()));
+            }
+            Err(err) if err.raw_os_error() == Some(libc::EINVAL) => return,
+            // That connection's, gone before it was accepted.
+            Err(err) if err.kind() == std::io::ErrorKind::ConnectionAborted => {}
+            Err(err) => {
+                if !failing {
+                    log::error!(
+                        "extentd: accepting a VM process's connection: {err}: trying again"
+                    );
+                    failing = true;
+                }
+                std::thread::sleep(ACCEPT_AGAIN);
+            }
+        }
     }
-    Ok(())
 }
 
 /// A tenant of the daemon (TASK-43): its VM processes' stores' pages are of an arena of the
