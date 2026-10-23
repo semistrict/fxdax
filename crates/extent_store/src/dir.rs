@@ -117,15 +117,17 @@ const TAKE_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 /// flushes the drive's cache too. fxdax: on macOS each is an `F_BARRIERFSYNC`, which leaves the
 /// drive's cache to `barrier`, an `F_FULLFSYNC`, but orders what it synced before what is written
 /// after (TASK-92.48). They were std's `sync_data` and `sync_all`, each an `F_FULLFSYNC` there,
-/// which flushed the drive's cache at every sync: store-bench's `burst`, whose commit seals 640
-/// extents in files of their own, flushed in 545-669 ms, and 59-121 ms since; `durable`'s commits
-/// of one in 7.8-8.8 ms, and 3.8-4.0 ms since. The trade-off: a sync on macOS is durable as it
-/// returns against the store's process or the host's kernel crashing, as on Linux, but against the
-/// drive losing power only once a barrier follows; and each point at which the store says that
-/// what it wrote is durable ends in one: a flush, a closing between commits, a branch's record, an
-/// index's first checkpoint. A plain `fsync` would leave the order to the drive as well, so that a
-/// power loss could keep a commit's record, synced after its data, without the data. macOS is a
-/// development host: stores run on Linux.
+/// which flushed the drive's cache at every sync. Run interleaved, twenty runs of each, by their
+/// medians and quartiles, store-bench's `burst`, whose commit seals 640 extents in files of their
+/// own, flushed in 620 ms (572-664 ms), and 175 ms since (168-209 ms), the host's load average
+/// 4.7-6.4; `durable`'s commits of one in 9.8 ms (7.7-14.9 ms), and 4.1 ms since (3.6-5.2 ms), the
+/// load 6.7-18: measured with `AT_ONCE`'s at those loads. The trade-off: a sync on macOS is durable
+/// as it returns against the store's process or the host's kernel crashing, as on Linux, but
+/// against the drive losing power only once a barrier follows; and each point at which the store
+/// says that what it wrote is durable ends in one: a flush, a closing between commits, a branch's
+/// record, an index's first checkpoint. A plain `fsync` would leave the order to the drive as well,
+/// so that a power loss could keep a commit's record, synced after its data, without the data.
+/// macOS is a development host: stores run on Linux.
 pub struct HostDir {
     path: PathBuf,
     /// Whether extents' files are to bypass the page cache.
