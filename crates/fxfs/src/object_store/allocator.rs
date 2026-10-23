@@ -2365,7 +2365,7 @@ mod tests {
         FuzzyHash as _, Item, ItemRef, LayerIterator, LayerKey as _, LayerWriter as _,
     };
     use crate::lsm_tree::{LSMTree, Query};
-    use crate::object_handle::{ObjectHandle, WriteObjectHandle};
+    use crate::object_handle::{ObjectHandle, ReadObjectHandle, WriteObjectHandle};
     use crate::object_store::allocator::merge::merge;
     use crate::object_store::allocator::{
         Allocator, AllocatorKey, AllocatorValue, CoalescingIterator, EXTENT_HASH_BUCKET_SIZE,
@@ -2376,10 +2376,10 @@ mod tests {
     use crate::object_store::transaction::{
         Mutation, Options, TRANSACTION_METADATA_MAX_AMOUNT, Transaction, lock_keys,
     };
-    use crate::object_store::volume::root_volume;
+    use crate::object_store::volume::{RootVolume, root_volume};
     use crate::object_store::{
         DataObjectHandle, DirectWriter, Directory, HandleOptions, LockKey, NewChildStoreOptions,
-        ObjectStore,
+        ObjectStore, tree,
     };
     use crate::serialized_types::{LATEST_VERSION, Version, Versioned};
     use crate::testing;
@@ -2387,7 +2387,7 @@ mod tests {
     use fuchsia_async as fasync;
     use futures::channel::oneshot;
     use std::cmp::{max, min};
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::ops::Bound;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
@@ -4194,19 +4194,61 @@ mod tests {
         fs.close().await.expect("close failed");
     }
 
-    /// fxdax: how many extents `tiered_fs`'s file has.
+    /// fxdax: how many extents `tiered_fs`'s file has: their records make a layer larger than a
+    /// journal's reclaim size.
     const TIERED_EXTENTS: u64 = 96;
+
+    /// fxdax: a file `name` of `extents` extents, in `store`'s root directory, each deallocated
+    /// every other block, which leaves a record per block in the allocator's tree. A transaction
+    /// allocates `TIERED_EXTENTS` of them at most.
+    async fn tiered_file(
+        store: &Arc<ObjectStore>,
+        name: &str,
+        extents: u64,
+    ) -> DataObjectHandle<ObjectStore> {
+        let fs = store.filesystem();
+        let directory =
+            Directory::open(store, store.root_directory_object_id()).await.expect("open failed");
+        let mut transaction = fs
+            .root_store()
+            .new_transaction(
+                lock_keys![LockKey::object(store.store_object_id(), directory.object_id())],
+                Options::default(),
+            )
+            .await
+            .expect("new_transaction failed");
+        let file =
+            directory.create_child_file(&mut transaction, name).await.expect("create failed");
+        transaction.commit().await.expect("commit failed");
+        let extent_size = fs.allocator().max_extent_size_bytes;
+        for start in (0..extents).step_by(TIERED_EXTENTS as usize) {
+            let end = min(start + TIERED_EXTENTS, extents);
+            file.allocate(start * extent_size..end * extent_size).await.expect("allocate failed");
+        }
+        let bs = fs.block_size().get();
+        let blocks = extents * extent_size / bs;
+        for batch in (1..blocks).step_by(2).collect::<Vec<_>>().chunks(64) {
+            let mut transaction = file.new_transaction().await.expect("new_transaction failed");
+            for block in batch {
+                file.zero(&mut transaction, block * bs..(block + 1) * bs)
+                    .await
+                    .expect("zero failed");
+            }
+            transaction.commit().await.expect("commit failed");
+        }
+        file
+    }
 
     /// fxdax: a filesystem, opened by `builder`, whose allocator's tree is one layer larger than a
     /// journal's reclaim size (`journal::DEFAULT_RECLAIM_SIZE`), which a compaction of newer layers
     /// keeps (see "Compactions"), as tens of thousands of files make it over an extent store: the
-    /// records of a file of `TIERED_EXTENTS` extents, in a volume of its own, each deallocated
-    /// every other block, which leaves a record per block. Its journal is compacted, and too large
-    /// to compact again on its own while a test runs. Returns the volume and the file.
+    /// records of a `tiered_file` of `TIERED_EXTENTS` extents, in a volume of its own. Its device
+    /// has room for a few times as many, and its journal is compacted, and too large to compact
+    /// again on its own while a test runs. Returns the volume and the file.
     async fn tiered_fs(
         builder: FxFilesystemBuilder,
     ) -> (OpenFxFilesystem, Arc<ObjectStore>, DataObjectHandle<ObjectStore>) {
-        let device = DeviceHolder::new(FakeDevice::new(1 << 17, 4096));
+        let device = DeviceHolder::new(FakeDevice::new(1 << 19, 4096));
         let fs = builder
             .format(true)
             .journal_options(JournalOptions { reclaim_size: 32 << 20, ..Default::default() })
@@ -4219,31 +4261,7 @@ mod tests {
             .new_volume("vol", NewChildStoreOptions::default())
             .await
             .expect("new_volume failed");
-        let directory =
-            Directory::open(&store, store.root_directory_object_id()).await.expect("open failed");
-        let mut transaction = fs
-            .root_store()
-            .new_transaction(
-                lock_keys![LockKey::object(store.store_object_id(), directory.object_id())],
-                Options::default(),
-            )
-            .await
-            .expect("new_transaction failed");
-        let file =
-            directory.create_child_file(&mut transaction, "file").await.expect("create failed");
-        transaction.commit().await.expect("commit failed");
-        let bs = fs.block_size().get();
-        let blocks = TIERED_EXTENTS * fs.allocator().max_extent_size_bytes / bs;
-        file.allocate(0..blocks * bs).await.expect("allocate failed");
-        for batch in (1..blocks).step_by(2).collect::<Vec<_>>().chunks(64) {
-            let mut transaction = file.new_transaction().await.expect("new_transaction failed");
-            for block in batch {
-                file.zero(&mut transaction, block * bs..(block + 1) * bs)
-                    .await
-                    .expect("zero failed");
-            }
-            transaction.commit().await.expect("commit failed");
-        }
+        let file = tiered_file(&store, "file", TIERED_EXTENTS).await;
         fs.journal().force_compact().await.expect("compact failed");
         let layer_set = fs.allocator().tree().immutable_layer_set();
         let [layer] = &layer_set.layers[..] else {
@@ -4268,6 +4286,55 @@ mod tests {
         let device = fs.take_device().await;
         device.reopen(false);
         FxFilesystemBuilder::new().open(device).await.expect("open failed")
+    }
+
+    /// fxdax: truncates the last extent of `file`, a `tiered_file`, which dies. Returns it.
+    async fn truncate_last_extent(
+        allocator: &Allocator,
+        file: &DataObjectHandle<ObjectStore>,
+    ) -> ExtentId {
+        let alive = allocator.extents();
+        file.truncate(file.get_size() - allocator.max_extent_size_bytes)
+            .await
+            .expect("truncate failed");
+        let died: Vec<ExtentId> = alive
+            .keys()
+            .copied()
+            .filter(|extent| !allocator.extents().contains_key(extent))
+            .collect();
+        let [extent] = died[..] else { panic!("{died:?} died") };
+        extent
+    }
+
+    /// fxdax: the ranges of `extent` that the allocator's tree holds allocated.
+    async fn allocated_in(allocator: &Allocator, extent: ExtentId) -> Vec<ExtentRange> {
+        collect_allocations(allocator)
+            .await
+            .into_iter()
+            .filter(|range| range.extent == extent)
+            .collect()
+    }
+
+    /// fxdax: deletes `root_volume`'s volume `name`, whose store is `owner`.
+    async fn delete_volume(
+        fs: &OpenFxFilesystem,
+        root_volume: &RootVolume,
+        name: &str,
+        owner: u64,
+    ) {
+        let directory = root_volume.volume_directory();
+        let transaction = fs
+            .root_store()
+            .new_transaction(
+                lock_keys![
+                    LockKey::object(directory.store().store_object_id(), directory.object_id()),
+                    LockKey::flush(owner)
+                ],
+                Options { borrow_metadata_space: true, ..Default::default() },
+            )
+            .await
+            .expect("new_transaction failed");
+        root_volume.delete_volume(name, transaction, || {}).await.expect("delete failed");
     }
 
     /// fxdax: a compaction of the allocator's tree merges its newer layers, and keeps a layer much
@@ -4310,30 +4377,94 @@ mod tests {
         let allocator = fs.allocator();
         let base = allocator.info().layers;
         // The file's last extent, which the base records, dies.
-        let alive = allocator.extents();
-        let bs = fs.block_size().get();
-        let extent_blocks = allocator.max_extent_size_bytes / bs;
-        file.truncate((TIERED_EXTENTS - 1) * extent_blocks * bs).await.expect("truncate failed");
-        let died: Vec<ExtentId> = alive
-            .keys()
-            .copied()
-            .filter(|extent| !allocator.extents().contains_key(extent))
-            .collect();
-        assert_eq!(died.len(), 1, "{died:?}");
+        let died = truncate_last_extent(&allocator, &file).await;
         allocator.flush().await.expect("flush failed");
         fsck(fs.clone()).await.expect("fsck failed");
         let layers = allocator.info().layers;
         assert_eq!(layers.len(), 2, "{layers:?}");
         assert_eq!(layers[1], base[0]);
-        let allocated = |allocations: Vec<ExtentRange>| {
-            allocations.into_iter().filter(|range| range.extent == died[0]).collect::<Vec<_>>()
-        };
-        assert_eq!(allocated(collect_allocations(&allocator).await), vec![]);
+        assert_eq!(allocated_in(&allocator, died).await, vec![]);
 
         let fs = remount(fs).await;
-        assert!(!fs.allocator().extents().contains_key(&died[0]));
-        assert_eq!(allocated(collect_allocations(&fs.allocator()).await), vec![]);
+        assert!(!fs.allocator().extents().contains_key(&died));
+        assert_eq!(allocated_in(&fs.allocator(), died).await, vec![]);
         fsck(fs.clone()).await.expect("fsck failed");
+        fs.close().await.expect("close failed");
+    }
+
+    /// fxdax: a compaction that merges the allocator's middle layer with the newer, and keeps the
+    /// oldest, keeps the removals the middle layer holds, of records the oldest holds. A layer is
+    /// kept while it is larger than a journal's reclaim size and the newer layers are less than
+    /// three quarters of it (`tree::layers_to_merge`): the test's files are sized for that.
+    #[fuchsia::test]
+    async fn test_compaction_of_middle_layer_keeps_its_removals() {
+        let (fs, store, file) = tiered_fs(FxFilesystemBuilder::new()).await;
+        let allocator = fs.allocator();
+        // The oldest layer, three times as large as the middle, which a major compaction writes.
+        tiered_file(&store, "oldest", 2 * TIERED_EXTENTS).await;
+        JournalingObject::flush(&*allocator, FlushReason::Journal(ForceMajor::True))
+            .await
+            .expect("flush failed");
+        let oldest = allocator.info().layers;
+        assert_eq!(oldest.len(), 1, "{oldest:?}");
+
+        // The middle layer, with the removal of the records of the file's last extent, which the
+        // oldest holds.
+        tiered_file(&store, "middle", TIERED_EXTENTS).await;
+        let died = truncate_last_extent(&allocator, &file).await;
+        allocator.flush().await.expect("flush failed");
+        let middle = allocator.info().layers;
+        assert_eq!(middle.len(), 2, "{middle:?}");
+        assert_eq!(middle[1], oldest[0]);
+
+        // The newest, which the next compaction writes, keeping the middle, larger than a
+        // journal's reclaim size.
+        tiered_file(&store, "newest", TIERED_EXTENTS * 5 / 6).await;
+        allocator.flush().await.expect("flush failed");
+        fsck(fs.clone()).await.expect("fsck failed");
+        let tiers = allocator.info().layers;
+        assert_eq!(tiers.len(), 3, "{tiers:?}");
+        assert_eq!(tiers[1..], middle[..]);
+
+        // The newest is more than three quarters of the middle: the next compaction merges them,
+        // and keeps the oldest.
+        zero_block(&file, 0).await;
+        allocator.flush().await.expect("flush failed");
+        fsck(fs.clone()).await.expect("fsck failed");
+        let merged = allocator.info().layers;
+        assert_eq!(merged.len(), 2, "{merged:?}");
+        assert!(!tiers.contains(&merged[0]), "{merged:?} after {tiers:?}");
+        assert_eq!(merged[1], oldest[0]);
+        assert_eq!(allocated_in(&allocator, died).await, vec![]);
+
+        let fs = remount(fs).await;
+        assert!(!fs.allocator().extents().contains_key(&died));
+        assert_eq!(allocated_in(&fs.allocator(), died).await, vec![]);
+        fsck(fs.clone()).await.expect("fsck failed");
+        fs.close().await.expect("close failed");
+    }
+
+    /// fxdax: a compaction of the allocator's newer layers reserves the metadata space to compact
+    /// all the layers it leaves, the one it writes and those it keeps, as a mount does.
+    #[fuchsia::test]
+    async fn test_compaction_of_newer_layers_reserves_for_all_layers() {
+        let (fs, _store, file) = tiered_fs(FxFilesystemBuilder::new()).await;
+        let allocator = fs.allocator();
+        zero_block(&file, 0).await;
+        allocator.flush().await.expect("flush failed");
+        assert_eq!(allocator.info().layers.len(), 2);
+        let size = allocator
+            .tree
+            .immutable_layer_set()
+            .layers
+            .iter()
+            .map(|layer| layer.handle().expect("the layer is in memory").get_size())
+            .sum();
+        let reserved = Some(tree::reservation_amount_from_layer_size(size));
+        assert_eq!(fs.object_manager().reservation(allocator.object_id()), reserved);
+
+        let fs = remount(fs).await;
+        assert_eq!(fs.object_manager().reservation(fs.allocator().object_id()), reserved);
         fs.close().await.expect("close failed");
     }
 
@@ -4356,21 +4487,7 @@ mod tests {
         fsck(fs.clone()).await.expect("fsck failed");
         assert_eq!(allocator.info().layers.len(), 2);
 
-        let transaction = fs
-            .root_store()
-            .new_transaction(
-                lock_keys![
-                    LockKey::object(
-                        root_volume.volume_directory().store().store_object_id(),
-                        root_volume.volume_directory().object_id(),
-                    ),
-                    LockKey::flush(owner)
-                ],
-                Options { borrow_metadata_space: true, ..Default::default() },
-            )
-            .await
-            .expect("new_transaction failed");
-        root_volume.delete_volume("doomed", transaction, || {}).await.expect("delete failed");
+        delete_volume(&fs, &root_volume, "doomed", owner).await;
         drop(doomed);
         assert!(allocator.inner.lock().extents.holds_dead_of(owner));
         allocator.flush().await.expect("flush failed");
@@ -4391,6 +4508,66 @@ mod tests {
         let fs = remount(fs).await;
         assert_eq!(fs.allocator().info().marked_for_deletion, [].into());
         fsck(fs.clone()).await.expect("fsck failed");
+        fs.close().await.expect("close failed");
+    }
+
+    /// fxdax: a mount, after a compaction of the allocator's newer layers kept a deleted volume's
+    /// owner marked for deletion, kills the owner's extents, whose records are in the layer the
+    /// compaction wrote and in the one it kept; once they are freed, the next compaction merges
+    /// all the layers, without their records.
+    #[fuchsia::test]
+    async fn test_mount_kills_owners_marked_for_deletion_in_layers_kept() {
+        let (fs, _store, _file) = tiered_fs(FxFilesystemBuilder::new()).await;
+        let allocator = fs.allocator();
+        let root_volume = root_volume(fs.clone()).await.expect("root_volume failed");
+        let doomed = root_volume
+            .new_volume("doomed", NewChildStoreOptions::default())
+            .await
+            .expect("new_volume failed");
+        let owner = doomed.store_object_id();
+        // A file of the volume's in the base, which a major compaction writes, and one after.
+        let bs = fs.block_size().get() as usize;
+        create_file(&doomed, 3 * bs).await;
+        JournalingObject::flush(&*allocator, FlushReason::Journal(ForceMajor::True))
+            .await
+            .expect("flush failed");
+        let base = allocator.info().layers;
+        assert_eq!(base.len(), 1, "{base:?}");
+        create_file(&doomed, 5 * bs).await;
+        let extents: HashSet<ExtentId> = extents_of(&allocator, owner).into_keys().collect();
+        assert_eq!(extents.len(), 2, "{extents:?}");
+
+        delete_volume(&fs, &root_volume, "doomed", owner).await;
+        drop(doomed);
+        allocator.flush().await.expect("flush failed");
+        let layers = allocator.info().layers;
+        assert_eq!(layers.len(), 2, "{layers:?}");
+        assert_eq!(layers[1], base[0]);
+        assert_eq!(allocator.info().marked_for_deletion, [owner].into());
+
+        drop(root_volume);
+        let fs = remount(fs).await;
+        let allocator = fs.allocator();
+        assert_eq!(allocator.info().layers, layers);
+        assert_eq!(allocator.info().marked_for_deletion, [owner].into());
+        assert_eq!(extents_of(&allocator, owner), HashMap::new());
+        let dead: HashSet<ExtentId> = allocator
+            .dead_extents()
+            .into_iter()
+            .filter(|extent| extents.contains(extent))
+            .collect();
+        assert_eq!(dead, extents);
+        fsck(fs.clone()).await.expect("fsck failed");
+
+        // They are freed once the device is flushed past the mount, with a record of it
+        // (`FreeAfter::RecordedFlush`): a transaction, and a sync.
+        create_file(&fs.root_store(), bs).await;
+        flush_device(&fs).await;
+        assert!(!allocator.inner.lock().extents.holds_dead_of(owner));
+        allocator.flush().await.expect("flush failed");
+        fsck(fs.clone()).await.expect("fsck failed");
+        assert_eq!(allocator.info().layers.len(), 1);
+        assert_eq!(allocator.info().marked_for_deletion, [].into());
         fs.close().await.expect("close failed");
     }
 
