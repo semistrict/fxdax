@@ -2036,3 +2036,135 @@ fn window_mappings_past_a_messages_payload_arrive() {
     drop(store);
     answering.join().unwrap();
 }
+
+/// A VM process's connection to the daemon at `socket`, made by hand, as one that keeps to no
+/// protocol makes it: its store at `path` opened, created with `capacity` bytes, and its branch.
+fn raw_connection(
+    socket: &Path,
+    path: &Path,
+    capacity: u64,
+) -> (super::wire::Sender, super::wire::Receiver, UnixStream, u64) {
+    use super::wire::*;
+    let stream = UnixStream::connect(socket).unwrap();
+    let (sender, mut receiver) =
+        (Sender::new(stream.try_clone().unwrap()), Receiver::new(stream.try_clone().unwrap()));
+    let open = Header::new(OPEN, 1).with_args(&[capacity]).with_flags(OPEN_CREATE);
+    sender.send(open, std::os::unix::ffi::OsStrExt::as_bytes(path.as_os_str()), &[]).unwrap();
+    let opened = receiver.receive(|| 0).unwrap().unwrap();
+    assert_eq!(opened.header.status, 0);
+    (sender, receiver, stream, opened.header.args[0])
+}
+
+/// How many bytes `stream` has received that are not read yet.
+fn unread(stream: &UnixStream) -> usize {
+    use std::os::fd::AsRawFd;
+    let mut unread: libc::c_int = 0;
+    // SAFETY: Reads the count into `unread`.
+    assert_eq!(unsafe { libc::ioctl(stream.as_raw_fd(), libc::FIONREAD, &mut unread) }, 0);
+    unread as usize
+}
+
+/// TASK-79.16: a VM process that stops reading what the daemon sends it holds up no other: as the
+/// daemon's reply to it waits for room in its socket, another VM process opening its store is
+/// refused at once (`EBUSY`), and another's store opens.
+#[test]
+fn vm_processes_that_stop_reading_hold_up_no_other() {
+    use super::wire::*;
+    host();
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("extentd.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || serve(listener));
+    let path = dir.path().join("store");
+    let (sender, mut receiver, stream, branch) = raw_connection(&socket, &path, 1 << 24);
+    // An extent, read back whole in one reply, many times what the socket holds, which it never
+    // reads.
+    let len = 4 << 20;
+    let written = Header::new(WRITE, 2).with_args(&[branch, 1, 0]);
+    sender.send(written, &pattern(1, len), &[]).unwrap();
+    assert_eq!(receiver.receive(|| 0).unwrap().unwrap().header.status, 0);
+    let read = Header::new(READ, 3).with_args(&[branch, 1, 0, len as u64]);
+    sender.send(read, &[], &[]).unwrap();
+    while unread(&stream) == 0 {
+        std::thread::yield_now();
+    }
+
+    let wait = std::time::Duration::from_secs(10);
+    let opening = path.clone();
+    let (busy_socket, other_socket) = (socket.clone(), socket.clone());
+    let busy = within(wait, move || {
+        RemoteExtentStore::connect(&busy_socket, &opening, 1 << 24).err().and_then(|e| e.errno())
+    });
+    assert_eq!(busy, Ok(Some(Errno::EBUSY)), "opening the store waited for its VM process");
+    let other = dir.path().join("other");
+    let opened = within(wait, move || {
+        RemoteExtentStore::connect(&other_socket, &other, 1 << 24).map(|store| store.branch())
+    });
+    assert!(matches!(opened, Ok(Ok(_))), "another store's opening waited: {opened:?}");
+    drop((sender, receiver, stream));
+}
+
+/// TASK-79.16: a VM process that leaves what the daemon sends it unread, past what a connection
+/// may hold, is let go, rather than held without end in the daemon's memory, or its threads: here
+/// replies to its reads, half a gibibyte of them.
+#[test]
+fn vm_processes_that_leave_replies_unread_are_let_go() {
+    use super::wire::*;
+    host();
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("extentd.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || serve(listener));
+    let (sender, mut receiver, stream, branch) =
+        raw_connection(&socket, &dir.path().join("store"), 1 << 24);
+    let len = 8 << 20;
+    let written = Header::new(WRITE, 2).with_args(&[branch, 1, 0]);
+    sender.send(written, &pattern(1, len), &[]).unwrap();
+    assert_eq!(receiver.receive(|| 0).unwrap().unwrap().header.status, 0);
+    for id in 3..67 {
+        let read = Header::new(READ, id).with_args(&[branch, 1, 0, len as u64]);
+        sender.send(read, &[], &[]).unwrap();
+    }
+    use std::os::fd::AsRawFd;
+    let mut hung_up = libc::pollfd { fd: stream.as_raw_fd(), events: libc::POLLRDHUP, revents: 0 };
+    // SAFETY: Polls the stream, which the test keeps open, for 10 s at most.
+    let ready = unsafe { libc::poll(&mut hung_up, 1, 10_000) };
+    assert_eq!(ready, 1, "the daemon holds what the VM process leaves unread");
+    assert_ne!(hung_up.revents & libc::POLLRDHUP, 0, "{:#x}", hung_up.revents);
+    drop((sender, receiver, stream));
+}
+
+/// TASK-79.16: a tenant's VM processes, the default tenant's too, have so many connections at
+/// most: one past them is closed as it comes; once one goes, another is served.
+#[test]
+fn tenants_connections_are_bounded() {
+    use std::io::Read as _;
+    host();
+    super::raise_open_files_limit().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("extentd.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || serve(listener));
+    let mut connected: Vec<UnixStream> = (0..super::server::MAX_CONNECTIONS)
+        .map(|_| UnixStream::connect(&socket).unwrap())
+        .collect();
+    let past = UnixStream::connect(&socket).unwrap();
+    let closed = within(std::time::Duration::from_secs(10), move || {
+        (&past).read(&mut [0]).map_err(|err| err.kind())
+    });
+    assert_eq!(closed, Ok(Ok(0)), "a connection past the tenant's was served");
+
+    drop(connected.pop());
+    let path = dir.path().join("store");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let store = loop {
+        match RemoteExtentStore::connect(&socket, &path, 1 << 20) {
+            Ok(store) => break store,
+            Err(error) => {
+                assert!(std::time::Instant::now() < deadline, "no connection served: {error:#}");
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+    };
+    drop((store, connected));
+}
