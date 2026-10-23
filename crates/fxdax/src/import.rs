@@ -68,7 +68,8 @@ pub async fn store(
 }
 
 /// Makes a store at `path`, which must not exist, of `capacity` bytes, which `fill` fills. A store
-/// that `fill` fails to fill, or panics filling, is deleted.
+/// that `fill` fails to fill, or panics filling, is deleted, as is one whose making is given up
+/// on, its future dropped as `fill` fills it.
 async fn make_store<F: Future<Output = anyhow::Result<()>>>(
     path: &Path,
     capacity: u64,
@@ -82,8 +83,9 @@ async fn make_store<F: Future<Output = anyhow::Result<()>>>(
 }
 
 /// A store being made, at the path it holds, which is deleted as this drops unless it is
-/// [`finish`](Self::finish)ed: as filling it fails, or panics. The future filling it, which owns
-/// its storage, is made after this, so it is dropped first, closing the storage.
+/// [`finish`](Self::finish)ed: as filling it fails, or panics, or the future making it is dropped.
+/// The future filling it, which owns its storage, is made after this, so it is dropped first,
+/// closing the storage, which [`Storage::delete`] needs closed.
 struct Unfinished<'a>(&'a Path);
 
 impl Unfinished<'_> {
@@ -801,7 +803,9 @@ fn check_digest(digest: &str, sha256: &[u8]) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::channel::oneshot;
     use futures::executor::block_on;
+    use futures::future::{Either, select};
     use std::panic::{AssertUnwindSafe, catch_unwind};
 
     /// A store whose filling panics is deleted as the panic unwinds, as one whose filling fails
@@ -818,6 +822,29 @@ mod tests {
         }));
         let panic = made.expect_err("filling the store did not panic");
         assert_eq!(panic.downcast_ref::<&str>(), Some(&"filling the store panicked"));
+        assert!(!path.exists(), "the store is left half made");
+    }
+
+    /// A store whose making is given up on, its future dropped as a filesystem fills it, is
+    /// deleted, once the filesystem filling it has dropped, closing it: one closed after would
+    /// leave the store half made.
+    #[test]
+    fn a_store_given_up_on_is_deleted() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("store");
+        block_on(async {
+            let (formatted, filling) = oneshot::channel();
+            let made = Box::pin(make_store(&path, 64 << 20, |storage| async {
+                let _fs = Filesystem::format(storage).await?;
+                formatted.send(()).unwrap();
+                std::future::pending().await
+            }));
+            let Either::Right((formatted, made)) = select(made, filling).await else {
+                panic!("the store was made");
+            };
+            formatted.unwrap();
+            drop(made);
+        });
         assert!(!path.exists(), "the store is left half made");
     }
 
