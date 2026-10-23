@@ -45,15 +45,17 @@ struct Fs {
     dir_changes: BTreeMap<String, Vec<DirChange>>,
     /// How many more operations that change the file system succeed, if limited.
     budget: Option<u64>,
-    /// The bytes read and written since it was made, or crashed.
+    /// The bytes read and written since it was made, or crashed, and the files opened.
     io: Io,
 }
 
-/// The bytes a [`MemDir`]'s files were read and written.
+/// The bytes a [`MemDir`]'s files were read and written; fxdax: and how many times its files were
+/// opened (TASK-92.2).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Io {
     pub read: u64,
     pub written: u64,
+    pub opened: u64,
 }
 
 #[derive(Clone, Default)]
@@ -221,7 +223,9 @@ impl Dir for MemDir {
     }
 
     fn open(&self, path: &str, _data: bool) -> io::Result<MemFile> {
-        let inode = self.0.lock().unwrap().lookup(path)?;
+        let mut fs = self.0.lock().unwrap();
+        let inode = fs.lookup(path)?;
+        fs.io.opened += 1;
         Ok(MemFile { fs: self.0.clone(), inode })
     }
 

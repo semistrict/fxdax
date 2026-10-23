@@ -10,6 +10,7 @@ use crate::sync::Mutex;
 use anyhow::{Error, bail};
 use extent_frame::{ALIGN, Corrupt, Encoding, Frame, PART, Parts, Stored, TRAILER};
 use std::collections::{BTreeMap, HashMap};
+use std::hash::Hash;
 use std::io;
 use std::ops::Range;
 use std::sync::Arc;
@@ -85,6 +86,26 @@ pub(crate) fn read_frame<F: File>(file: &F) -> Result<Option<(Parts, Vec<u8>)>, 
     Ok(Some((Parts { frame, stored }, footer.to_vec())))
 }
 
+/// fxdax: the parts of the framed file `file`, if its trailer and table pass their checks: read
+/// from the blocks they are in alone, the last, but for a table that begins before them, and not
+/// its footer, which reading its data needs not (TASK-92.2). Its parts are checked as they are
+/// read.
+pub(crate) fn read_parts<F: File>(file: &F) -> Result<Option<Parts>, Error> {
+    let size = file.size()?;
+    let Some(trailer) = size.checked_sub(TRAILER) else { return Ok(None) };
+    let last = trailer / ALIGN * ALIGN;
+    let suffix = read_aligned(file, last, (size - last) as usize)?;
+    let Ok(frame) = Frame::of_trailer(suffix.as_slice()) else { return Ok(None) };
+    if frame.size() != size {
+        return Ok(None);
+    }
+    let table = frame.table().start;
+    let suffix =
+        if table >= last { suffix } else { read_aligned(file, table, (size - table) as usize)? };
+    let Ok(stored) = frame.stored_in(suffix.as_slice()) else { return Ok(None) };
+    Ok(Some(Parts { frame, stored }))
+}
+
 /// Numbers the framed files opened, for the parts unpacked to name them by.
 static OPENED: AtomicU64 = AtomicU64::new(0);
 
@@ -101,10 +122,11 @@ impl<F: File> Framed<F> {
         Self { file, parts, id: OPENED.fetch_add(1, Ordering::Relaxed) }
     }
 
-    /// The framed file `file`, which must be whole; `path` names it.
+    /// The framed file `file`, which must be whole, as far as its trailer and table say; `path`
+    /// names it.
     pub(crate) fn open(file: F, path: &str) -> Result<Self, Error> {
-        match read_frame(&file)? {
-            Some((parts, _)) => Ok(Self::new(Arc::new(file), parts)),
+        match read_parts(&file)? {
+            Some(parts) => Ok(Self::new(Arc::new(file), parts)),
             None => bail!("{path} is not a whole framed file"),
         }
     }
@@ -112,6 +134,74 @@ impl<F: File> Framed<F> {
     /// The bytes the file takes.
     pub(crate) fn size(&self) -> u64 {
         self.parts.frame.size()
+    }
+
+    /// Whether no read uses it: only what keeps it open holds it.
+    fn is_idle(self: &Arc<Self>) -> bool {
+        Arc::strong_count(self) == 1 && Arc::strong_count(&self.file) == 1
+    }
+}
+
+/// fxdax: framed files kept open, by their keys: at most `limit` of them, but for those reads use,
+/// the least lately read of the others closing as more open; not all of them, which reads would
+/// open again, each opening anew a file whose parts unpacked no read finds then (TASK-92.2).
+pub(crate) struct Files<K, F> {
+    /// Each file, and when it was last read.
+    files: HashMap<K, (Arc<Framed<F>>, u64)>,
+    by_use: BTreeMap<u64, K>,
+    clock: u64,
+    limit: usize,
+}
+
+impl<K: Copy + Eq + Hash, F: File> Files<K, F> {
+    pub(crate) fn new(limit: usize) -> Self {
+        Self { files: HashMap::new(), by_use: BTreeMap::new(), clock: 0, limit }
+    }
+
+    /// The file of `key`, if open, read now.
+    pub(crate) fn get(&mut self, key: K) -> Option<Arc<Framed<F>>> {
+        let (file, used) = self.files.get_mut(&key)?;
+        self.clock += 1;
+        self.by_use.remove(used);
+        *used = self.clock;
+        self.by_use.insert(self.clock, key);
+        Some(file.clone())
+    }
+
+    /// Keeps `file` open, the file of `key`, read now, unless one is open already, as one opened
+    /// meanwhile: returns the one kept. The least lately read of those no read uses close, while
+    /// more than `limit` are open.
+    pub(crate) fn insert(&mut self, key: K, file: Arc<Framed<F>>) -> Arc<Framed<F>> {
+        if let Some(open) = self.get(key) {
+            return open;
+        }
+        self.clock += 1;
+        self.files.insert(key, (file.clone(), self.clock));
+        self.by_use.insert(self.clock, key);
+        let excess = self.files.len().saturating_sub(self.limit);
+        let idle: Vec<(u64, K)> = (self.by_use.iter())
+            .filter(|(_, key)| self.files[*key].0.is_idle())
+            .take(excess)
+            .map(|(used, key)| (*used, *key))
+            .collect();
+        for (used, key) in idle {
+            self.by_use.remove(&used);
+            self.files.remove(&key);
+        }
+        file
+    }
+
+    /// Closes the file of `key`, if open.
+    pub(crate) fn remove(&mut self, key: K) {
+        if let Some((_, used)) = self.files.remove(&key) {
+            self.by_use.remove(&used);
+        }
+    }
+
+    /// Closes them all.
+    pub(crate) fn clear(&mut self) {
+        self.files.clear();
+        self.by_use.clear();
     }
 }
 
@@ -354,5 +444,42 @@ mod tests {
         assert_eq!(parts.len(), 0);
         source.locate(0, 4096, &Unpacked::default(), &mut parts).unwrap();
         assert_eq!(parts.len(), 1);
+    }
+
+    /// fxdax: of the files kept open, the least lately read closes as one more opens past the
+    /// limit, but for those reads use; and a file opened again meanwhile is not kept, but the one
+    /// kept already (TASK-92.2).
+    #[test]
+    fn files_close_the_least_lately_read_first() {
+        let (dir, made) = (MemDir::new(), std::cell::Cell::new(0));
+        // A file of its own each time, opened anew.
+        let framed = |key: u64| {
+            made.set(made.get() + 1);
+            let file = dir.create(&made.get().to_string(), true).unwrap();
+            let bytes = extent_frame::framed(&[key as u8; 4096], &[]);
+            file.write_at(&bytes, 0).unwrap();
+            Arc::new(Framed::new(Arc::new(file), Parts::of(&bytes).unwrap()))
+        };
+        let open = |files: &Files<u64, _>| {
+            let mut open: Vec<u64> = files.files.keys().copied().collect();
+            open.sort();
+            open
+        };
+        let mut files = Files::new(2);
+        files.insert(1, framed(1));
+        files.insert(2, framed(2));
+        files.get(1);
+        files.insert(3, framed(3));
+        assert_eq!(open(&files), [1, 3]);
+        // 1, read last but for 3, is in use.
+        let reading = files.get(1).unwrap().file.clone();
+        files.get(3);
+        files.insert(4, framed(4));
+        assert_eq!(open(&files), [1, 4]);
+        drop(reading);
+        let again = framed(4);
+        assert!(!Arc::ptr_eq(&files.insert(4, again.clone()), &again));
+        files.insert(5, framed(5));
+        assert_eq!(open(&files), [4, 5]);
     }
 }

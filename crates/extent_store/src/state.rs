@@ -12,7 +12,7 @@
 
 use crate::dir::{Dir, File};
 use crate::durability::Syncs;
-use crate::framed::Framed;
+use crate::framed::{Files, Framed};
 use crate::index::IndexLog;
 use crate::kept::{Kept, KeptExtents};
 use crate::layers::Extents;
@@ -460,25 +460,23 @@ impl Gate {
 }
 
 /// The files of a branch's extents stored on their own, sealed: those open, at most
-/// `Options::open_files` but for those reads use; the bytes each takes; those written since the
-/// last commit, which its flush syncs, with their directory.
+/// `Options::open_files` but for those reads use, the least lately read closing as more open; the
+/// bytes each takes; those written since the last commit, which its flush syncs, with their
+/// directory.
 pub(crate) struct OwnFiles<F> {
-    open: HashMap<ExtentId, Arc<Framed<F>>>,
+    open: Files<ExtentId, F>,
     sizes: HashMap<ExtentId, u64>,
     unsynced: HashMap<ExtentId, Arc<F>>,
     /// Their directory, the branch's, and whether its entries changed since the last commit.
     dir: String,
     written: bool,
-    /// The most that stay open.
-    limit: usize,
 }
 
 impl<F: File> OwnFiles<F> {
     /// `branch`'s, whose files take `sizes`, of which `limit` stay open.
     pub fn new(branch: u64, sizes: HashMap<ExtentId, u64>, limit: usize) -> Self {
         let dir = branch_dir(EXTENTS, branch);
-        let (open, unsynced) = (HashMap::new(), HashMap::new());
-        Self { open, sizes, unsynced, dir, written: false, limit }
+        Self { open: Files::new(limit), sizes, unsynced: HashMap::new(), dir, written: false }
     }
 
     /// `extent`'s file, opened in `dir` if it isn't.
@@ -487,16 +485,12 @@ impl<F: File> OwnFiles<F> {
         dir: &D,
         extent: ExtentId,
     ) -> Result<Arc<Framed<F>>, Error> {
-        if let Some(file) = self.open.get(&extent) {
-            return Ok(file.clone());
+        if let Some(file) = self.open.get(extent) {
+            return Ok(file);
         }
         let path = extent_path(extent);
         let file = Arc::new(Framed::open(dir.open(&path, true)?, &path)?);
-        if self.open.len() >= self.limit {
-            self.open.retain(|_, file| Arc::strong_count(&file.file) > 1);
-        }
-        self.open.insert(extent, file.clone());
-        Ok(file)
+        Ok(self.open.insert(extent, file))
     }
 
     /// `extent`'s file is `framed`, just written: its commit's flush syncs it, and its directory.
@@ -509,7 +503,7 @@ impl<F: File> OwnFiles<F> {
 
     /// `extent`'s file goes: the extent was freed.
     pub fn forget(&mut self, extent: ExtentId) {
-        self.open.remove(&extent);
+        self.open.remove(extent);
         self.sizes.remove(&extent);
         self.unsynced.remove(&extent);
     }

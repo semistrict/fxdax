@@ -1224,6 +1224,7 @@ fn replay() {
         }
         Ok("forks_to_one_branch") => lineage::forks_to_one_branch,
         Ok("listing_during_a_deletion") => lineage::listing_during_a_deletion,
+        Ok("reading_while_an_opening_stalls") => lineage::reading_while_an_opening_stalls,
         _ => run,
     };
     Runner::new(scheduler, config()).run(scenario);

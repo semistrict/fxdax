@@ -285,6 +285,50 @@ pub(super) fn listing_during_a_deletion() {
     assert_eq!(listed, []);
 }
 
+/// The parent's extent `sequence`, which its forks inherit, in its segment `sequence - 1`.
+fn inherited_in(sequence: u64) -> ExtentId {
+    ExtentId::new(PARENT, sequence)
+}
+
+/// The fork and the sibling, open, of a store of the parent, closed, which wrote two extents
+/// ([`inherited_in`]), each in a segment of its own, and forked to them.
+fn reading_forks(dir: &Stalling) -> (Store<Stalling>, Store<Stalling>) {
+    let description = Description { block_size: BLOCK as u32, capacity: 1 << 20, branch: PARENT };
+    let lineage = Lineage::create(dir.clone(), description, OPTIONS).unwrap();
+    let parent = lineage.open_branch(PARENT).unwrap();
+    for sequence in 1..=2 {
+        parent.write(inherited_in(sequence), 0, &[sequence as u8; BLOCK]).unwrap();
+        parent.close_segment().unwrap();
+        parent.commit(None).unwrap();
+    }
+    parent.fork(FORK).unwrap();
+    parent.fork(SIBLING).unwrap();
+    drop(parent);
+    (lineage.open_branch(FORK).unwrap(), lineage.open_branch(SIBLING).unwrap())
+}
+
+/// What `store` reads of the parent's extent `sequence`.
+fn read_inherited(store: &Store<Stalling>, sequence: u64) -> Vec<u8> {
+    let mut data = vec![0; BLOCK];
+    store.read(inherited_in(sequence), 0, &mut data).unwrap();
+    data
+}
+
+/// Two forks reading what they inherited, the fork's opening of the parent's segment it reads
+/// stalled, as on a slow disk (TASK-92.2): the sibling reads the other meanwhile, as the lineage
+/// opens the files of the segments its branches inherited holding no lock of its own; and both read
+/// what the parent wrote.
+pub(super) fn reading_while_an_opening_stalls() {
+    let dir = Stalling::new();
+    let (fork, sibling) = reading_forks(&dir);
+    dir.arm(Op::Open, &format!("segments/{PARENT:016x}/{:016x}", 0));
+    let reading = thread::spawn(move || read_inherited(&fork, 1));
+    dir.wait_until_stalled();
+    assert_eq!(read_inherited(&sibling, 2), [2; BLOCK], "the sibling reads other data");
+    dir.let_go(Ok(()));
+    assert_eq!(reading.join().unwrap(), [1; BLOCK], "the fork reads other data");
+}
+
 /// Runs `scenario` in schedules by PCT, which runs a thread as far as it goes before those of
 /// lower priority, as a thread that waits for a fork or deletion in flight needs to before the
 /// scenario lets it go; then in random ones.
@@ -321,6 +365,13 @@ fn first_openings_stall_no_other_branch() {
 fn capacity_changes_stall_no_other_branch() {
     set_rules(Rules::ALL);
     explore(capacity_change_stalled);
+}
+
+/// A segment's file opening for a fork's read stalls no other fork's read.
+#[test]
+fn openings_of_inherited_segments_stall_no_other_read() {
+    set_rules(Rules::ALL);
+    explore(reading_while_an_opening_stalls);
 }
 
 #[test]

@@ -15,6 +15,7 @@ use std::sync::Arc;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Op {
     Create,
+    Open,
     SyncDir,
 }
 
@@ -91,6 +92,7 @@ impl Dir for Stalling {
     }
 
     fn open(&self, path: &str, data: bool) -> io::Result<MemFile> {
+        self.pass(Op::Open, path)?;
         self.dir.open(path, data)
     }
 

@@ -1949,6 +1949,48 @@ fn branches_opened_again_after_a_failed_flush_keep_what_they_hold() {
     assert_eq!(read(&store, extent(1), 0, 40 << 10), pattern(1, 0, 40 << 10));
 }
 
+/// fxdax: a store of eight closed segments, an extent in each, which keeps the files of
+/// `open_files` of them open; and a fork of it, open.
+fn eight_segments(open_files: usize) -> (MemDir, Store<MemDir>, Store<MemDir>) {
+    let dir = MemDir::new();
+    let options = Options { open_files, ..OPTIONS };
+    let description = Description { block_size: BLOCK as u32, capacity: 1 << 20, branch: BRANCH };
+    let store = Store::create(dir.clone(), description, options).unwrap();
+    for sequence in 0..8 {
+        store.write(extent(sequence), 0, &pattern(sequence as u8, 0, BLOCK)).unwrap();
+        store.close_segment().unwrap();
+        store.commit(None).unwrap();
+    }
+    store.fork(BRANCH + 1).unwrap();
+    let child = store.lineage().open_branch(BRANCH + 1).unwrap();
+    (dir, store, child)
+}
+
+/// The files opened, and the bytes read, reading, through `store`, the extents of a store
+/// [`eight_segments`] made: three again and again, and each of the others once between.
+fn opened_reading(dir: &MemDir, store: &Store<MemDir>) -> (u64, u64) {
+    let before = dir.io();
+    for other in 3..8 {
+        for sequence in [0, 1, 2, other] {
+            assert_eq!(read(store, extent(sequence), 0, BLOCK), pattern(sequence as u8, 0, BLOCK));
+        }
+    }
+    let after = dir.io();
+    (after.opened - before.opened, after.read - before.read)
+}
+
+/// fxdax: a branch reading what it holds in more closed segments than it keeps the files of open,
+/// inherited or its own, opens each of them once: as one more opens, the least lately read closes,
+/// not all of them, which reads would open again; and opening one reads its table and trailer,
+/// not its footer, a block, as each part's first read does (TASK-92.2).
+#[test]
+fn closed_segments_files_close_least_lately_read_first() {
+    let (dir, store, child) = eight_segments(4);
+    let expected = (8, 16 * BLOCK as u64);
+    assert_eq!(opened_reading(&dir, &child), expected, "inherited");
+    assert_eq!(opened_reading(&dir, &store), expected, "the branch's own");
+}
+
 /// A segment the lineage's forks read, removed once no branch holds it, is read no more from the
 /// file it was: a fork of a branch whose ID is taken again reads its new segments, though numbered
 /// as the old ones were (TASK-79.38).

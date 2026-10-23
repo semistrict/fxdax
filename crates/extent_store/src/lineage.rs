@@ -12,14 +12,15 @@
 //! The records' lock and the ledger's each cover what they guard, in memory: neither is held for
 //! I/O, nor taken holding the other. A store takes them holding its own state's lock, never the
 //! other way round, so that no branch's commit waits for another's records, or its index files, to
-//! be written or removed. Two other locks of the lineage's are held across I/O: `holds` while the
-//! store's directory is taken ([`Dir::take`]), as its count and the taking change together, and
-//! fxdax: the branches are read again, if another process changed them meanwhile (TASK-79.5); and
-//! `files` while a segment's file opens (the 2026-10-21 review's performance issue 4).
+//! be written or removed. fxdax: nor is `files`, the segments' files open that the branches read
+//! what they inherited from, while one opens: so that no branch's read waits for another's opening
+//! (TASK-92.2). One other lock of the lineage's is held across I/O: `holds` while the store's
+//! directory is taken ([`Dir::take`]), as its count and the taking change together, and fxdax: the
+//! branches are read again, if another process changed them meanwhile (TASK-79.5).
 
 use crate::branch_records::{BranchRecords, write_record};
 use crate::dir::{Dir, File as _, read_file};
-use crate::framed::Framed;
+use crate::framed::{Files, Framed};
 use crate::index::{layers_at, recover, write_checkpoint};
 use crate::layers::{Holdings, Layer};
 use crate::layout::{
@@ -53,7 +54,7 @@ pub struct Lineage<D: Dir> {
     pub(crate) unpacked: crate::framed::Unpacked,
     /// The closed segments' files its branches read what they inherited from, open: one for all
     /// the forks reading it, the most `Options::open_files` but for those reads use (TASK-34).
-    files: Mutex<HashMap<SegmentId, Arc<Framed<D::File>>>>,
+    files: Mutex<Files<SegmentId, D::File>>,
 }
 
 /// The layers forks are over, by where they were forked: the parent, its index file, and its
@@ -116,7 +117,7 @@ impl<D: Dir> Lineage<D> {
             ledger: Mutex::new(ledger),
             holds: Mutex::new(0),
             unpacked: Default::default(),
-            files: Mutex::new(HashMap::new()),
+            files: Mutex::new(Files::new(options.open_files)),
         }))
     }
 
@@ -219,20 +220,18 @@ impl<D: Dir> Lineage<D> {
         &self.dir
     }
 
-    /// The framed file of `segment`, closed, which its branches share: opened if it isn't; the
-    /// files no read uses closing, once more than `Options::open_files` are open.
+    /// The framed file of `segment`, closed, which its branches share: opened if it isn't, holding
+    /// no lock of the lineage's meanwhile, and kept, but for one opened meanwhile; the least lately
+    /// read of the files no read uses closing, once more than `Options::open_files` are open.
+    /// fxdax: the segment is not removed meanwhile (`Lineage::remove`), as the branch reading it
+    /// holds an extent in it.
     pub(crate) fn segment_file(&self, segment: SegmentId) -> Result<Arc<Framed<D::File>>, Error> {
-        let mut files = self.files.lock().unwrap();
-        if let Some(file) = files.get(&segment) {
-            return Ok(file.clone());
+        if let Some(file) = self.files.lock().unwrap().get(segment) {
+            return Ok(file);
         }
         let path = segment_path(segment);
         let file = Arc::new(Framed::open(self.dir.open(&path, true)?, &path)?);
-        if files.len() >= self.options.open_files {
-            files.retain(|_, file| Arc::strong_count(file) > 1);
-        }
-        files.insert(segment, file.clone());
-        Ok(file)
+        Ok(self.files.lock().unwrap().insert(segment, file))
     }
 
     /// The branch opening the store, rather than one of its branches, opens.
@@ -466,7 +465,7 @@ impl<D: Dir> Lineage<D> {
         let mut open = self.files.lock().unwrap();
         for file in &files {
             if let FileKey::Segment(segment) = file {
-                open.remove(segment);
+                open.remove(*segment);
             }
         }
     }
