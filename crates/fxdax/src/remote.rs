@@ -3008,6 +3008,8 @@ mod tests {
         let named = extent_store::resolve_host(&handle);
         let named = named.map(|(_, branch)| branch).map_err(|err| err.to_string());
         assert_eq!((forked, named), (taken(failed.child), Ok(failed.child)));
+        // Its handle says it failed (TASK-79.84).
+        assert!(ExtentStore::fork_failed(&handle), "the handle left reads as a fork made");
         failed.next.hold.send_replace(Hold::Nothing);
         assert_eq!(taking.join().unwrap(), Ok(()));
 

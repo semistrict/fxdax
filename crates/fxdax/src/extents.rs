@@ -887,12 +887,22 @@ impl ExtentStore {
         // branch no store holds (TASK-79.78). A child opened before the deletion found it open
         // nowhere stays, with its branch; one opened after, while its branch is deleted in object
         // storage, finds it deleted there (`EROFS`), and keeps its handle, and its branch here,
-        // while it is open.
+        // while it is open. Its handle says it failed, first, so that a deletion stopping partway
+        // leaves no handle taken for a fork made ([`ExtentStore::fork_failed`], TASK-79.84).
+        if let Err(why) = extent_store::fail_fork(path) {
+            log::warn!("fxdax: marking the fork to {} failed: {why:#}", path.display());
+        }
         let unfork = |_: &Path, child| remote.map_or(Ok(()), |remote| remote.unfork(child));
         if let Err(why) = host_store::delete_with(path, unfork) {
             log::warn!("fxdax: leaving branch {branch:x}, whose fork failed: {why:#}");
         }
         Err(Error::new(failed))
+    }
+
+    /// fxdax: whether `path` is the handle of a fork that failed ([`ExtentStore::fork`]), whose
+    /// deletion stopped partway: no store, but what deleting it finishes (TASK-79.84).
+    pub fn fork_failed(path: impl AsRef<Path>) -> bool {
+        extent_store::fork_failed(path.as_ref())
     }
 
     /// fxdax: places the store at `path`, or the fork whose handle `path` is, at the placement

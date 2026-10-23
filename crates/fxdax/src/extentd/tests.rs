@@ -2168,3 +2168,32 @@ fn tenants_connections_are_bounded() {
     };
     drop((store, connected));
 }
+
+/// TASK-79.84: a VM restored from a snapshot to where a fork of its point failed before, whose
+/// deletion stopped partway, leaving the fork's handle, marked failed, gets a fork made anew, of a
+/// branch of its own, holding what the point holds: not the failed fork, which goes.
+#[test]
+fn restores_fork_anew_over_forks_that_failed() {
+    host();
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("extentd.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || serve(listener));
+    let store = RemoteExtentStore::connect(&socket, dir.path().join("store"), 1 << 24).unwrap();
+    let extent = ExtentId { branch: store.branch(), sequence: 1 };
+    write(&store, extent, 0, &pattern(8, BLOCK)).unwrap();
+    store.commit(Some(b"root")).unwrap();
+    let point = dir.path().join("point");
+    store.fork_quiescent(&point, store.branch() + 1).unwrap();
+    drop(store);
+
+    // A fork of the point there, as one that failed leaves it.
+    let restored = dir.path().join("restored");
+    let failed = fork_store(&point, &restored).unwrap();
+    extent_store::fail_fork(&restored).unwrap();
+    let ours = RemoteExtentStore::connect_forked(&socket, &restored, &point, 0, 0).unwrap();
+    assert_ne!(ours.branch(), failed, "the restored VM opened the failed fork");
+    assert_eq!(ours.root(), Ok(b"root".to_vec()));
+    assert_eq!(read(&ours, extent, 0, BLOCK), Ok(pattern(8, BLOCK)));
+    assert!(!ExtentStore::fork_failed(&restored), "the new fork's handle reads as failed");
+}
