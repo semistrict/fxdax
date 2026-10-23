@@ -13,9 +13,29 @@ use std::thread::JoinHandle;
 
 const BLOCK: usize = ExtentStore::BLOCK_SIZE as usize;
 
+/// The daemon's log, on standard error, which nextest shows of a test that fails.
+struct Stderr;
+
+impl log::Log for Stderr {
+    fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+        metadata.level() <= log::Level::Info
+    }
+
+    fn log(&self, record: &log::Record<'_>) {
+        if self.enabled(record.metadata()) {
+            eprintln!("{} {}: {}", record.level(), record.target(), record.args());
+        }
+    }
+
+    fn flush(&self) {}
+}
+
 /// Makes this process a host of the multi-node system, as the daemon's must be: its stores'
-/// branches in a bucket in its memory, as of placement 1.
+/// branches in a bucket in its memory, as of placement 1; its log on standard error.
 fn host() {
+    if log::set_logger(&Stderr).is_ok() {
+        log::set_max_level(log::LevelFilter::Info);
+    }
     // SAFETY: nextest runs each test in a process of its own, whose other threads don't read the
     // environment yet.
     unsafe {
@@ -613,19 +633,17 @@ fn maps_a_window_in_the_vm_process() {
     assert_eq!(unsafe { libc::munmap(memory.as_ptr().cast(), 4 * ps) }, 0);
 }
 
-/// The environment a child process of [`two_processes_map_the_same_pages`] is told what to map in.
+/// The environment a child process of [`two_processes_map_the_same_pages`] is told what to map in;
+/// and, if set, that it runs on once it has, until its input closes.
 const CHILD_SOCKET: &str = "FXDAX_EXTENTD_TEST_SOCKET";
 const CHILD_STORE: &str = "FXDAX_EXTENTD_TEST_STORE";
 const CHILD_EXTENT: &str = "FXDAX_EXTENTD_TEST_EXTENT";
+const CHILD_RUNS_ON: &str = "FXDAX_EXTENTD_TEST_RUNS_ON";
 
 /// Maps `extent`'s first page into a new window of the store at `store` the daemon at `socket`
-/// serves, checks it holds the pattern written, and returns the store, mapping it still, and where
-/// the page is mapped from.
-fn map_first_page(
-    socket: &Path,
-    store: &Path,
-    extent: ExtentId,
-) -> (RemoteExtentStore, (String, u64)) {
+/// serves, checks it holds the pattern written, and returns the store, mapping it still, and the
+/// page's address.
+fn map_first_page(socket: &Path, store: &Path, extent: ExtentId) -> (RemoteExtentStore, usize) {
     let ps = page_size() as usize;
     // Once the daemon has seen a connection that had the store open go.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -648,10 +666,12 @@ fn map_first_page(
     let page = unsafe { std::slice::from_raw_parts(memory.as_ptr(), ps) };
     assert!(*page == pattern(9, ps)[..], "the window maps other data");
     // The memory is leaked: the store's window maps it until the process exits.
-    (store, mapped_from(memory.as_ptr() as usize))
+    (store, memory.as_ptr() as usize)
 }
 
-/// A VM process, for [`two_processes_map_the_same_pages`]: prints where it maps the extent from.
+/// A VM process, for [`two_processes_map_the_same_pages`] and
+/// [`frozen_vm_processes_hold_nothing_up`]: prints where it maps the extent from; then exits, or,
+/// told to run on, runs on until its input closes.
 #[test]
 #[ignore = "run by two_processes_map_the_same_pages"]
 fn child_maps_an_extent() {
@@ -662,9 +682,13 @@ fn child_maps_an_extent() {
     };
     let (branch, sequence) = extent.split_once(':').unwrap();
     let extent = ExtentId { branch: branch.parse().unwrap(), sequence: sequence.parse().unwrap() };
-    let (_store, (file, offset)) = map_first_page(Path::new(&socket), Path::new(&store), extent);
+    let (_store, page) = map_first_page(Path::new(&socket), Path::new(&store), extent);
+    let (file, offset) = mapped_from(page);
     println!("MAPPED {file} {offset}");
     std::io::Write::flush(&mut std::io::stdout()).unwrap();
+    if std::env::var_os(CHILD_RUNS_ON).is_some() {
+        std::io::copy(&mut std::io::stdin(), &mut std::io::sink()).unwrap();
+    }
     // As a VMM that dies does: with its store and window still open.
     std::process::exit(0);
 }
@@ -689,7 +713,8 @@ fn two_processes_map_the_same_pages() {
     let listener = UnixListener::bind(&socket).unwrap();
     std::thread::spawn(move || serve(listener));
 
-    let (_store, ours) = map_first_page(&socket, &parent, extent);
+    let (_store, page) = map_first_page(&socket, &parent, extent);
+    let ours = mapped_from(page);
     let output = std::process::Command::new(std::env::current_exe().unwrap())
         .args(["--exact", "extentd::tests::child_maps_an_extent", "--ignored", "--nocapture"])
         .env(CHILD_SOCKET, &socket)
@@ -721,6 +746,112 @@ fn two_processes_map_the_same_pages() {
     }
 }
 
+/// What `work` returns, run on a thread of its own, unless it takes longer than `wait`: what a
+/// test that would otherwise hang for good waits for.
+fn within<T: Send + 'static>(
+    wait: std::time::Duration,
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, std::sync::mpsc::RecvTimeoutError> {
+    let (done, finished) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        // Unheard if the test stopped waiting.
+        let _ = done.send(work());
+    });
+    finished.recv_timeout(wait)
+}
+
+/// A child process, killed and reaped once dropped, as a test that fails leaves it.
+struct Reaped(std::process::Child);
+
+impl Drop for Reaped {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// TASK-79.9: a VM process that stops answering, frozen as SIGSTOP or a cgroup's freezer freezes
+/// it, holds nothing up: the daemon takes its access to the pages it maps away without waiting for
+/// it, as it evicts them, as the kernel's relief does, while another VM process's requests and
+/// faults on them are served; and once it has acknowledged nothing it was sent for a while, the
+/// daemon kills it, and lets its store go.
+#[test]
+fn frozen_vm_processes_hold_nothing_up() {
+    use std::io::BufRead as _;
+    use std::os::unix::process::ExitStatusExt as _;
+    host();
+    let ps = page_size() as usize;
+    let dir = tempfile::tempdir().unwrap();
+    let (parent, child) = (dir.path().join("parent"), dir.path().join("child"));
+    let extent = {
+        let store = ExtentStore::create(&parent, 1 << 24).unwrap();
+        let extent = ExtentId { branch: store.branch(), sequence: 1 };
+        store.write(extent, 0, &[VolatileSlice::from(&pattern(9, ps)[..])]).unwrap();
+        store.commit(None).unwrap();
+        store.fork(&child, extent.branch + 1).unwrap();
+        extent
+    };
+    let socket = dir.path().join("extentd.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || serve(listener));
+    let (ours, page) = map_first_page(&socket, &parent, extent);
+
+    let mut theirs = Reaped(
+        std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "extentd::tests::child_maps_an_extent", "--ignored", "--nocapture"])
+            .env(CHILD_SOCKET, &socket)
+            .env(CHILD_STORE, &child)
+            .env(CHILD_EXTENT, format!("{}:{}", extent.branch, extent.sequence))
+            .env(CHILD_RUNS_ON, "1")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let stdout = std::io::BufReader::new(theirs.0.stdout.take().unwrap());
+    let mapped = stdout.lines().map(Result::unwrap).find(|line| line.starts_with("MAPPED "));
+    let (file, offset) = mapped_from(page);
+    assert_eq!(mapped, Some(format!("MAPPED {file} {offset}")));
+    // SAFETY: Signals the child this test made.
+    assert_eq!(unsafe { libc::kill(theirs.0.id() as libc::pid_t, libc::SIGSTOP) }, 0);
+
+    // The extent's page evicted: its mappings taken away, ours and the frozen child's.
+    let wait = std::time::Duration::from_secs(10);
+    let evicted = within(wait, || crate::extents::evict_least_used(None, |_| false));
+    assert_eq!(evicted, Ok(ps as u64), "the eviction waited for the frozen VM process");
+    let ours = std::sync::Arc::new(ours);
+    let reading = ours.clone();
+    let served = within(wait, move || read(&reading, extent, 0, BLOCK));
+    assert_eq!(served, Ok(Ok(pattern(9, BLOCK))), "our read waited for the frozen VM process");
+    // SAFETY: The window's memory, whose faults our store serves.
+    let loaded =
+        within(wait, move || unsafe { std::slice::from_raw_parts(page as *const u8, ps) }.to_vec());
+    assert_eq!(loaded, Ok(pattern(9, ps)), "our fault waited for the frozen VM process");
+
+    // Killed, once it has acknowledged nothing for a while.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let status = loop {
+        if let Some(status) = theirs.0.try_wait().unwrap() {
+            break status;
+        }
+        assert!(std::time::Instant::now() < deadline, "the frozen VM process lives on");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
+    assert_eq!(status.signal(), Some(libc::SIGKILL), "{status}");
+    // Its store goes with it, for another VM process to open, once the daemon has seen it go.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        match RemoteExtentStore::connect(&socket, &child, 1 << 24) {
+            Ok(_) => break,
+            Err(error) if std::time::Instant::now() < deadline => {
+                assert_eq!(error.errno(), Some(Errno::EBUSY), "{error:#}");
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(error) => panic!("the frozen VM process's store is still open: {error:#}"),
+        }
+    }
+}
+
 /// A store the daemon serves forks to a new branch the daemon serves too, whose window maps the
 /// pages the parent's maps: the daemon's counters count the maps, the faults and the reads. The
 /// extent is paged in once, for both windows and the fork's READ, which reads nothing from the
@@ -745,12 +876,13 @@ fn the_daemon_forks_stores_it_serves() {
     // A fork to a path that is there already fails.
     assert_eq!(store.fork(&child, branch + 1), Err(Errno::EIO));
     drop(store);
-    let (ours, ours_from) = map_first_page(&socket, &parent, extent);
+    let (ours, page) = map_first_page(&socket, &parent, extent);
+    let ours_from = mapped_from(page);
     drop(ours);
 
-    let (theirs, theirs_from) = map_first_page(&socket, &child, extent);
+    let (theirs, page) = map_first_page(&socket, &child, extent);
     assert_eq!(theirs.branch(), branch);
-    assert_eq!(theirs_from, ours_from);
+    assert_eq!(mapped_from(page), ours_from);
     assert_eq!(read(&theirs, extent, 0, ps).unwrap(), pattern(9, ps));
     let counted = crate::stats::stats().since(&before);
     assert_eq!((counted.maps, counted.reads, counted.read_bytes), (2, 1, ps as u64));

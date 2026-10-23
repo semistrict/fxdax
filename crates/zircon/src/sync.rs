@@ -37,6 +37,10 @@ pub(crate) struct Rules {
     /// under an object's lock only the pages it chose, not another found in one's place
     /// (`VmCowPages::evict_pages_on_demand`, TASK-79.76).
     pub evictions_take_only_the_pages_chosen: bool,
+    /// A page a second stage mapped since it was allocated, freed, waits for every second stage
+    /// to have made the changes taking it away before it is free (`pmm::quarantine_with`,
+    /// TASK-79.9).
+    pub staged_pages_wait_for_their_stages: bool,
 }
 
 impl Rules {
@@ -44,6 +48,7 @@ impl Rules {
         arena_failures_pass_the_gate: true,
         allocations_wait_for_chunks_going_back: true,
         evictions_take_only_the_pages_chosen: true,
+        staged_pages_wait_for_their_stages: true,
     };
 }
 

@@ -77,9 +77,11 @@ pub trait SecondStage: Send + Sync {
     /// back, so that accesses to them fault again.
     fn window_mapped(&self, _offset: u64, _len: u64) {}
 
-    /// fxdax: the changes this thread makes from now on that take access away, until
-    /// [`end_deferring`](Self::end_deferring), return before they are made. Only a stage that
-    /// waits for them, as one in another process does, defers.
+    /// fxdax: gathers what waits for the changes this thread makes from now on that take access
+    /// away, until [`end_deferring`](Self::end_deferring). Only a stage that makes them after it
+    /// returns, as one in another process does (`crate::extentd`), defers: the pages it took away,
+    /// the guest may reach still, which mustn't be shared with another guest until then. Freed,
+    /// they wait for it themselves (`zircon::vm::pmm::quarantine_with`, TASK-79.9).
     fn begin_deferring(&self) {}
 
     /// fxdax: ends [`begin_deferring`](Self::begin_deferring): what waits for the changes it
@@ -90,7 +92,7 @@ pub trait SecondStage: Send + Sync {
 }
 
 /// fxdax: changes to a [`SecondStage`] that take access away, deferred: until they are made, the
-/// guest may still reach the pages, which mustn't be freed, or shared with another guest, until
+/// guest may still reach the pages, which mustn't be shared with another guest, or freed, until
 /// then.
 pub trait Deferred: Send + Sync {
     /// Waits for the changes to be made.
