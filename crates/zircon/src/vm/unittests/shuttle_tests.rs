@@ -7,17 +7,22 @@
 //! Mappings under Shuttle (awslabs/shuttle, the `shuttle` feature): mapping a mapping's pages
 //! (`VmMapping::map_range`) on a thread of its own, racing a change to the mapping on another, in
 //! the interleavings Shuttle's schedulers choose; an allocation of an arena's pages racing the
-//! arena's removal; and a chunk going back, outside the PMM's lock, racing an allocation it makes
-//! room for, and its arena's removal.
+//! arena's removal; a chunk going back, outside the PMM's lock, racing an allocation it makes room
+//! for, and its arena's removal; and eviction of an arena's own pages racing a page it chose
+//! supplied again.
 
+use super::test_helper::StubPageProvider;
 use crate::hypervisor::aspace::GuestPhysicalAspace;
 use crate::kernel::deadline::Deadline;
 use crate::sync::{Rules, set_rules};
 use crate::vm::arch_vm_aspace::{ARCH_MMU_FLAG_PERM_READ, ARCH_MMU_FLAG_PERM_WRITE, ArchMmuFlags};
+use crate::vm::page_source::PageSource;
 use crate::vm::pmm;
 use crate::vm::vm_address_region::{VMAR_FLAG_SPECIFIC, VmAddressRegionOpChildren};
+use crate::vm::vm_cow_pages::SupplyOptions;
 use crate::vm::vm_mapping::VmMapping;
 use crate::vm::vm_object_paged::VmObjectPaged;
+use crate::vm::vm_page_list::VmPageSpliceList;
 use shuttle::scheduler::{PctScheduler, RandomScheduler};
 use shuttle::{Config, Runner, thread};
 use std::sync::Arc;
@@ -192,6 +197,48 @@ fn freeing_races_removing_the_arena_in_any_order() {
     check(freeing_races_removing_the_arena);
 }
 
+/// Pages of the current arena, `len` bytes of them, taken from an anonymous VMO, for a pager to
+/// supply.
+fn pages_to_supply(len: u64) -> VmPageSpliceList {
+    let anonymous = VmObjectPaged::create(0, 0, len).unwrap();
+    anonymous.commit_range(0, len).unwrap();
+    let mut pages = VmPageSpliceList::new();
+    anonymous.take_pages(0, len, &mut pages).unwrap();
+    pages
+}
+
+/// TASK-79.76: eviction of an arena's own pages, racing another eviction of the page it chose, as
+/// relief's evictor makes, and the page's supplying again, as its pager does as it is faulted on,
+/// evicts not the page supplied in its place, the newest: the page it chose gone, it evicts the
+/// oldest left, or nothing. Here the arena's pages are a pager-backed VMO's two, a queue older than
+/// the page supplied again in the first's place, which is there at the end, whatever the order.
+fn evicting_an_arenas_own_pages_races_a_page_supplied_again() {
+    let node = pmm::node();
+    let arena = pmm::create_arena();
+    let len = PAGE_SIZE as u64;
+    let source = PageSource::new(Arc::new(StubPageProvider::new(false, false)));
+    let vmo =
+        pmm::with_arena(arena, || VmObjectPaged::create_external(source, 0, 2 * len)).unwrap();
+    let mut pages = pmm::with_arena(arena, || pages_to_supply(2 * len));
+    vmo.supply_pages(0, 2 * len, &mut pages, SupplyOptions::PagerSupply).unwrap();
+    node.page_queues().rotate_reclaim_queues();
+    node.evictor().enable_eviction(false);
+    let mut again = pmm::with_arena(arena, || pages_to_supply(len));
+
+    let evictor = thread::spawn(move || pmm::node().evictor().evict_arena_on_demand(arena, len));
+    vmo.evict_range(0, len).unwrap();
+    vmo.supply_pages(0, len, &mut again, SupplyOptions::PagerSupply).unwrap();
+    evictor.join().unwrap();
+    assert!(vmo.debug_get_page(0).is_some(), "the page supplied again stays");
+    drop(vmo);
+    pmm::remove_arena(arena);
+}
+
+#[test]
+fn evicting_an_arenas_own_pages_races_a_page_supplied_again_in_any_order() {
+    check(evicting_an_arenas_own_pages_races_a_page_supplied_again);
+}
+
 /// The batches of schedules [`fails_without`] runs at most to find one that fails.
 const BATCHES: usize = 8;
 
@@ -237,4 +284,13 @@ fn needs_arena_failures_to_pass_the_gate() {
 fn needs_allocations_to_wait_for_chunks_going_back() {
     let rules = Rules { allocations_wait_for_chunks_going_back: false, ..Rules::ALL };
     fails_without(rules, "a page, as the chunk went back", allocating_races_a_chunk_going_back);
+}
+
+/// Eviction of an arena's own pages that evicts whatever page it finds where it chose one evicts
+/// the page supplied again in its place.
+#[test]
+fn needs_evictions_to_take_only_the_pages_chosen() {
+    let rules = Rules { evictions_take_only_the_pages_chosen: false, ..Rules::ALL };
+    let test = evicting_an_arenas_own_pages_races_a_page_supplied_again;
+    fails_without(rules, "the page supplied again stays", test);
 }

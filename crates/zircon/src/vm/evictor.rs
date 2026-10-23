@@ -336,7 +336,8 @@ impl OldestPages {
 /// fxdax: evicts `page` alone, on demand, if it is a clean page of an object of `arena`'s in the
 /// reclaim queues still, and returns how many pages it evicted, for `Evictor::evict_arena_on_demand`
 /// (TASK-79.76). Alone, rather than with its batch of 16 as `VmCowPages::reclaim_page` evicts it,
-/// whose pages on demand would go however new.
+/// whose pages on demand would go however new; and it alone, not another found in its place
+/// (`VmCowPages::evict_pages_on_demand`).
 fn evict_arena_page(arena: ArenaId, page: VmPagePtr) -> u64 {
     // It may have been evicted since, or freed; or its chunk gone back, and come to another arena,
     // whose object's it is now.
@@ -348,8 +349,7 @@ fn evict_arena_page(arena: ArenaId, page: VmPagePtr) -> u64 {
     if cow.arena() != arena || !cow.can_evict() {
         return 0;
     }
-    let evicted = cow.reclaim_range_for_eviction(offset, PAGE_SIZE, EvictionAction::Demand);
-    evicted.map_or(0, |success| success.num_pages)
+    cow.evict_pages_on_demand(offset, &[page])
 }
 
 #[derive(Default)]

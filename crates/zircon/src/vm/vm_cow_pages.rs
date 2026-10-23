@@ -47,7 +47,7 @@
 
 use crate::debug::ltracef;
 use crate::ensure;
-use crate::sync::LockId;
+use crate::sync::{LockId, rules};
 use crate::vm::anonymous_page_request::AnonymousPageRequest;
 use crate::vm::page::{VmPageDoublyLinkedList, VmPagePtr};
 use crate::vm::page_queues::PageQueues;
@@ -3652,6 +3652,35 @@ impl VmCowPages {
         length: u64,
         eviction_action: EvictionAction,
     ) -> VmCowReclaimResult {
+        self.reclaim_chosen_for_eviction(offset, length, eviction_action, |_, _| true)
+    }
+
+    /// fxdax: evicts on demand (`EvictionAction::Demand`) those of `pages`, at consecutive offsets
+    /// from `offset`, that are there still, and returns how many it evicted: for eviction of an
+    /// arena's own pages, which chooses them by their age without this object's lock
+    /// (`Evictor::evict_arena_on_demand`, TASK-79.76). A page found in one's place, as it was
+    /// evicted or freed since and another supplied there, newer, is left.
+    pub fn evict_pages_on_demand(self: &Arc<Self>, offset: u64, pages: &[VmPagePtr]) -> u64 {
+        let length = pages.len() as u64 * PAGE_SIZE;
+        let chosen = |page_offset: u64, page: VmPagePtr| {
+            !rules().evictions_take_only_the_pages_chosen
+                || pages[((page_offset - offset) / PAGE_SIZE) as usize] == page
+        };
+        let evicted =
+            self.reclaim_chosen_for_eviction(offset, length, EvictionAction::Demand, chosen);
+        evicted.map_or(0, |evicted| evicted.num_pages)
+    }
+
+    /// Evicts the clean, reclaimable pages in the range that `chosen`, given each one's offset,
+    /// chooses. fxdax: every one, for `reclaim_range_for_eviction`, or those an eviction of an
+    /// arena's own pages chose (`evict_pages_on_demand`, TASK-79.76).
+    fn reclaim_chosen_for_eviction(
+        self: &Arc<Self>,
+        offset: u64,
+        length: u64,
+        eviction_action: EvictionAction,
+        chosen: impl Fn(u64, VmPagePtr) -> bool,
+    ) -> VmCowReclaimResult {
         debug_assert!(self.can_evict());
         let mut deferred = DeferredOps::new(self);
         let mut locked = self.lock();
@@ -3709,8 +3738,8 @@ impl VmCowPages {
         let mut num_failed_pages = 0u32;
         let _ = locked.page_list.remove_pages(offset, offset + length, |p, off| {
             // Borrowed pages are aged and evicted by their lender, and giving one back would not
-            // free it.
-            if p.is_page() && !self.is_borrowed(p.page()) {
+            // free it. fxdax: and a page not chosen is left as it is.
+            if p.is_page() && !self.is_borrowed(p.page()) && chosen(off, p.page()) {
                 if !can_reclaim_page(p.page(), &mut num_failed_queue) {
                     num_failed_pages += 1;
                     return Status::NEXT;

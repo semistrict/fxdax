@@ -33,11 +33,18 @@ pub(crate) struct Rules {
     /// An allocation that chunks going back would make room for, as the host takes them back
     /// outside the PMM's lock, waits for them (`Arenas::take`, TASK-92.35).
     pub allocations_wait_for_chunks_going_back: bool,
+    /// Eviction of an arena's own pages, which chooses them without their objects' locks, evicts
+    /// under an object's lock only the pages it chose, not another found in one's place
+    /// (`VmCowPages::evict_pages_on_demand`, TASK-79.76).
+    pub evictions_take_only_the_pages_chosen: bool,
 }
 
 impl Rules {
-    pub(crate) const ALL: Self =
-        Self { arena_failures_pass_the_gate: true, allocations_wait_for_chunks_going_back: true };
+    pub(crate) const ALL: Self = Self {
+        arena_failures_pass_the_gate: true,
+        allocations_wait_for_chunks_going_back: true,
+        evictions_take_only_the_pages_chosen: true,
+    };
 }
 
 /// The rules in force: all of them, but in a Shuttle test that turned one off.
