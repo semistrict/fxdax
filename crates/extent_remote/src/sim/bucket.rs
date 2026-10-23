@@ -264,12 +264,14 @@ impl Inner {
                 }))
             }
             Op::Delete(key) => {
-                self.objects.remove(&key);
-                let (unparked, parked) = std::mem::take(&mut self.parked)
-                    .into_iter()
-                    .partition(|request| matches!(&request.op, Op::Put(at, ..) if *at == key));
-                self.parked = parked;
-                self.queue.extend::<Vec<_>>(unparked);
+                // The creates held at its key wait again once an object there is deleted.
+                if self.objects.remove(&key).is_some() {
+                    let (unparked, parked) = std::mem::take(&mut self.parked)
+                        .into_iter()
+                        .partition(|request| matches!(&request.op, Op::Put(at, ..) if *at == key));
+                    self.parked = parked;
+                    self.queue.extend::<Vec<_>>(unparked);
+                }
                 Ok(Reply::Done)
             }
         }
@@ -405,6 +407,31 @@ mod tests {
         assert_eq!(sim.read("key", &ByteRange::Suffix(200)), Ok((0..100).collect()));
         assert_eq!(sim.read("key", &ByteRange::Suffix(0)), Err(Error::Unavailable));
         assert_eq!(sim.read("empty", &ByteRange::Suffix(10)), Err(Error::Unavailable));
+    }
+
+    /// TASK-79.73: a create of a branch's segment, its writer's creates held, waits until a delete
+    /// of an object at its key takes effect, then waits as any request does; a delete of none
+    /// lets it go no more than any other request does.
+    #[test]
+    fn held_creates_wait_for_objects_at_their_keys_to_be_deleted() {
+        let bucket = SimBucket::new();
+        bucket.hold(2, 1);
+        let key = layout::segment(2, 4);
+        let footer = layout::Chain::new(2, 1, 4, None, 0).close(layout::Contents::default());
+        let stale = layout::Segment { data: Vec::new(), footer }.encode();
+        let created = bucket.put(&key, stale, PutMode::Create);
+        assert_eq!(bucket.waiting(), 0);
+        let deleted = bucket.delete(&key);
+        bucket.complete(0, Fault::None);
+        assert_eq!((block_on(deleted), bucket.waiting()), (Ok(()), 0));
+
+        block_on(Direct(bucket.clone()).put(&key, vec![1], PutMode::Create)).unwrap();
+        let deleted = bucket.delete(&key);
+        bucket.complete(0, Fault::None);
+        assert_eq!((block_on(deleted), bucket.describe(0)), (Ok(()), format!("put {key}")));
+        bucket.complete(0, Fault::None);
+        let version = Version { e_tag: Some("2".to_owned()), version: None };
+        assert_eq!(block_on(created), Ok(version));
     }
 
     /// A bucket the test above reads ranges of, at once.
