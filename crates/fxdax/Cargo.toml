@@ -52,6 +52,8 @@ shuttle = { workspace = true, optional = true }
 
 [dev-dependencies]
 async-trait.workspace = true
+# Its packet receivers, which the filesystem's tests hold Fxfs's pager off with.
+fuchsia-async-kernel = { path = "../fuchsia-async-kernel" }
 fxdax = { path = ".", features = ["testing"] }
 object_store.workspace = true
 tempfile.workspace = true

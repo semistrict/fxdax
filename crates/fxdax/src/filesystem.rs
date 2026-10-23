@@ -868,6 +868,7 @@ mod tests {
     use super::*;
     use crate::kernel::page_size;
     use fuchsia_async::ScopeHandle;
+    use fuchsia_async_kernel::{EHandle, PacketReceiver};
     use futures::FutureExt as _;
     use futures::channel::oneshot;
     use futures::executor::block_on;
@@ -1020,10 +1021,40 @@ mod tests {
         zircon::syscalls::stream_writev_at_async(stream.raw_handle(), offset, &bufs).await
     }
 
-    /// Polls `future`, a read's or a write's, once, which leaves it waiting on a page request, and
-    /// waits until it is woken: until Fxfs's pager has answered the request, supplying the pages
-    /// it asked for, or letting it dirty them. It has copied nothing to or from them yet.
-    async fn woken(future: &mut (impl Future + Unpin)) {
+    /// Holds Fxfs's pager off from answering page requests until the sender returned is sent on or
+    /// dropped. The requests' packets arrive on the process's port, whose packets one thread hands
+    /// to their receivers (fuchsia-async-kernel's `packets`), so a receiver of the test's own that
+    /// waits on that thread keeps the pager's packets waiting too. Fxfs's executor registers it, as
+    /// a receiver is registered through the handle of a runtime, which the test's thread lacks.
+    async fn hold_pager(volume: &Volume) -> oneshot::Sender<()> {
+        /// Receives one packet, and waits on the receiving thread until it is released.
+        struct Waiting(std::sync::Mutex<Option<(oneshot::Sender<()>, oneshot::Receiver<()>)>>);
+        impl PacketReceiver for Waiting {
+            fn receive_packet(&self, _: zx::Packet) {
+                let (waiting, released) = self.0.lock().unwrap().take().expect("a second packet");
+                waiting.send(()).unwrap();
+                let _ = block_on(released);
+            }
+        }
+        let (waiting, held) = oneshot::channel();
+        let (release, released) = oneshot::channel();
+        let receiver = Waiting(std::sync::Mutex::new(Some((waiting, released))));
+        let registered = async move { EHandle::local().register_receiver(receiver) };
+        let registration = volume.image.executor.run(registered).await;
+        let user = zx::UserPacket::from_u8_array([0; 32]);
+        let packet = zx::Packet::from_user_packet(registration.key(), 0, user);
+        registration.port().queue(&packet).unwrap();
+        held.await.unwrap();
+        release
+    }
+
+    /// Polls `future`, a read's or a write's, of a file of `volume`, once, which leaves it waiting
+    /// on a page request, and waits until it is woken: until Fxfs's pager has answered the
+    /// request, supplying the pages it asked for, or letting it dirty them. It has copied nothing
+    /// to or from them yet. The pager is held off for the poll (see [`hold_pager`]), as an answer
+    /// that comes before the future begins to wait for it, later in the poll that made the
+    /// request, lets the future copy in that poll.
+    async fn woken(volume: &Volume, future: &mut (impl Future + Unpin)) {
         struct Woken(std::sync::Mutex<Option<oneshot::Sender<()>>>);
         impl ArcWake for Woken {
             fn wake_by_ref(woken: &Arc<Self>) {
@@ -1034,8 +1065,10 @@ mod tests {
         }
         let (sender, receiver) = oneshot::channel();
         let waker = futures::task::waker(Arc::new(Woken(std::sync::Mutex::new(Some(sender)))));
+        let release = hold_pager(volume).await;
         let polled = future.poll_unpin(&mut Context::from_waker(&waker));
         assert!(polled.is_pending(), "it needed no page request");
+        release.send(()).unwrap();
         receiver.await.unwrap();
     }
 
@@ -1145,9 +1178,9 @@ mod tests {
 
             let data = vec![2; page];
             let mut overwrite = Box::pin(overwritten.write(0, &data));
-            woken(&mut overwrite).await;
+            woken(&volume, &mut overwrite).await;
             let mut extend = Box::pin(extended.write(page as u64, &data));
-            woken(&mut extend).await;
+            woken(&volume, &mut extend).await;
             let mut unmounted = Box::pin(volume.image.unmount_volume(&volume).wait());
             scope.on_no_tasks().await;
             assert!(!scope_finished(&fx_volume), "the scope finished with writes under way");
@@ -1193,7 +1226,7 @@ mod tests {
 
             let data = vec![2; page];
             let mut write = Box::pin(file.write(0, &data));
-            woken(&mut write).await;
+            woken(&volume, &mut write).await;
             let mut unmounted = Box::pin(volume.image.unmount_volume(&volume).wait());
             scope.on_no_tasks().await;
             assert!(!scope_finished(&fx_volume), "the scope finished with a write under way");
@@ -1284,7 +1317,7 @@ mod tests {
 
             let mut contents = vec![0; data.len()];
             let mut read = Box::pin(file.read(0, &mut contents));
-            woken(&mut read).await;
+            woken(&volume, &mut read).await;
             let mut unmounted = Box::pin(volume.image.unmount_volume(&volume).wait());
             scope.on_no_tasks().await;
             assert!(!scope_finished(&fx_volume), "the scope finished with a read under way");
