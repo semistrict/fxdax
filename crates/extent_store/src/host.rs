@@ -156,9 +156,9 @@ pub fn delete_host_with(
         }
         // A fork's handle that names no branch is empty but for its description not in place, if
         // any.
-        remove(std::fs::remove_file(path.join(new_description())))?;
+        remove(removals::remove_file(&path.join(new_description())))?;
         if std::fs::read_dir(path)?.next().is_none() {
-            std::fs::remove_dir(path)?;
+            removals::remove_dir(path)?;
             return Ok(());
         }
     }
@@ -206,8 +206,8 @@ fn remove_store(store: &Path) -> Result<(), Error> {
     let name = deleted_description();
     let deleted = store.join(&name);
     let removing = || -> std::io::Result<()> {
-        match std::fs::rename(store.join(DESCRIPTION), &deleted) {
-            Ok(()) => std::fs::File::open(store)?.sync_all()?,
+        match removals::rename(&store.join(DESCRIPTION), &deleted) {
+            Ok(()) => removals::sync_dir(store)?,
             // Going already, or gone: another deletion of its last branches, or one that stopped,
             // renamed it first.
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
@@ -224,13 +224,13 @@ fn remove_store(store: &Path) -> Result<(), Error> {
                     continue;
                 }
                 remove(match entry.file_type()?.is_dir() {
-                    true => std::fs::remove_dir_all(entry.path()),
-                    false => std::fs::remove_file(entry.path()),
+                    true => removals::remove_dir_all(&entry.path()),
+                    false => removals::remove_file(&entry.path()),
                 })?;
             }
-            remove(std::fs::remove_file(&deleted))?;
+            remove(removals::remove_file(&deleted))?;
         }
-        remove(std::fs::remove_dir(store))
+        remove(removals::remove_dir(store))
     };
     removing().with_context(|| format!("removing {}", store.display()))
 }
@@ -238,8 +238,66 @@ fn remove_store(store: &Path) -> Result<(), Error> {
 /// Removes the fork's handle at `path`, unless it went already: its description, then its
 /// directory.
 fn remove_handle(path: &Path) -> Result<(), Error> {
-    remove(std::fs::remove_file(path.join(DESCRIPTION)))?;
-    Ok(remove(std::fs::remove_dir(path))?)
+    remove(removals::remove_file(&path.join(DESCRIPTION)))?;
+    Ok(remove(removals::remove_dir(path))?)
+}
+
+/// The changes a deletion makes to the host's file system as it removes a store's directory or a
+/// fork's handle ([`remove_store`], [`remove_handle`]): std's, each a step, which a test records,
+/// and stops after a number of, as a crash would stop them (TASK-79.77).
+mod removals {
+    use std::io;
+    use std::path::Path;
+
+    /// What a step changes.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(super) enum Change {
+        /// A file renamed to the path.
+        Renamed,
+        /// The file or directory at the path removed.
+        Removed,
+        /// The directory at the path's entries made durable.
+        Synced,
+    }
+
+    /// Renames the file at `from` to `to`.
+    pub(super) fn rename(from: &Path, to: &Path) -> io::Result<()> {
+        step(Change::Renamed, to)?;
+        std::fs::rename(from, to)
+    }
+
+    /// Removes the file at `path`.
+    pub(super) fn remove_file(path: &Path) -> io::Result<()> {
+        step(Change::Removed, path)?;
+        std::fs::remove_file(path)
+    }
+
+    /// Removes the empty directory at `path`.
+    pub(super) fn remove_dir(path: &Path) -> io::Result<()> {
+        step(Change::Removed, path)?;
+        std::fs::remove_dir(path)
+    }
+
+    /// Removes the directory at `path`, and all it holds.
+    pub(super) fn remove_dir_all(path: &Path) -> io::Result<()> {
+        step(Change::Removed, path)?;
+        std::fs::remove_dir_all(path)
+    }
+
+    /// Makes the entries of the directory at `path` durable.
+    pub(super) fn sync_dir(path: &Path) -> io::Result<()> {
+        step(Change::Synced, path)?;
+        std::fs::File::open(path)?.sync_all()
+    }
+
+    /// Goes on to the step that makes `change` at `path`: at once, but in a test.
+    #[cfg(not(test))]
+    fn step(_: Change, _: &Path) -> io::Result<()> {
+        Ok(())
+    }
+
+    #[cfg(test)]
+    use super::tests::step;
 }
 
 /// What removing something gave, but for its being gone already.
@@ -280,9 +338,47 @@ pub fn is_handle(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use removals::Change;
+    use std::cell::RefCell;
     use storage_device::ExtentId;
 
     const BLOCK: usize = 4096;
+
+    /// The steps of this thread's deletions' removals ([`removals`]): those taken, and how many
+    /// more may be, if limited.
+    #[derive(Default)]
+    struct Steps {
+        taken: Vec<(Change, PathBuf)>,
+        left: Option<usize>,
+    }
+
+    thread_local! {
+        static STEPS: RefCell<Steps> = RefCell::default();
+    }
+
+    /// Takes the step that makes `change` at `path`, recording it; or fails, as a crash would stop
+    /// it, once the steps allowed are taken ([`stop_after`]).
+    pub(super) fn step(change: Change, path: &Path) -> std::io::Result<()> {
+        STEPS.with_borrow_mut(|steps| {
+            match &mut steps.left {
+                Some(0) => return Err(std::io::Error::other("stopped")),
+                Some(left) => *left -= 1,
+                None => {}
+            }
+            steps.taken.push((change, path.to_owned()));
+            Ok(())
+        })
+    }
+
+    /// Stops this thread's deletions' removals after `steps` more steps, or never if `None`.
+    fn stop_after(steps: Option<usize>) {
+        STEPS.with_borrow_mut(|taken| taken.left = steps);
+    }
+
+    /// The steps this thread's deletions' removals took since this was last asked.
+    fn taken() -> Vec<(Change, PathBuf)> {
+        STEPS.with_borrow_mut(|steps| std::mem::take(&mut steps.taken))
+    }
 
     #[test]
     fn forks_open_through_their_handles() {
@@ -414,45 +510,40 @@ mod tests {
 
     /// TASK-79.77: a deletion of a store's last branch by its fork's handle that stopped at any
     /// step is finished by deleting again, which leaves nothing of the store, nor of the handle:
-    /// one stopped before the store deleted the branch, or after; and one stopped after any of the
-    /// removals that follow, of the store's directory, then of the handle, in their order
-    /// ([`remove_store`], [`remove_handle`]), which each step makes, as a crash would leave them.
+    /// one stopped before the store deleted the branch, or after; and one stopped before each step
+    /// of the removals that follow, of the store's directory, then of the handle ([`removals`]),
+    /// as a crash would stop them.
     #[test]
     fn deletions_of_last_branches_stopped_at_any_step_finish() {
+        let finished = |temp: &Path, fork: &Path, stopped: &str| {
+            delete_host(fork, Options::default())
+                .unwrap_or_else(|err| panic!("stopped {stopped}: {err:#}"));
+            let left: Vec<_> = std::fs::read_dir(temp).unwrap().collect();
+            assert_eq!(left.len(), 0, "stopped {stopped}: {left:?} left");
+        };
         let stopping = |_: &Path, _| Err(anyhow!("stopped"));
-        let removals: [fn(&Path, &Path); 5] = [
-            |store, _| {
-                std::fs::rename(store.join(DESCRIPTION), store.join(deleted_description())).unwrap()
-            },
-            |store, _| {
-                for entry in std::fs::read_dir(store).unwrap() {
-                    let entry = entry.unwrap();
-                    match entry.file_type().unwrap().is_dir() {
-                        true => std::fs::remove_dir_all(entry.path()).unwrap(),
-                        false if entry.file_name() == *deleted_description() => {}
-                        false => std::fs::remove_file(entry.path()).unwrap(),
-                    }
-                }
-            },
-            |store, _| std::fs::remove_file(store.join(deleted_description())).unwrap(),
-            |store, _| std::fs::remove_dir(store).unwrap(),
-            |_, fork| std::fs::remove_file(fork.join(DESCRIPTION)).unwrap(),
-        ];
-        for step in 0..removals.len() + 2 {
+        let temp = tempfile::tempdir().unwrap();
+        let (_, fork) = last_fork(temp.path());
+        delete_host_with(&fork, Options::default(), stopping, |_, _| Ok(())).unwrap_err();
+        finished(temp.path(), &fork, "before the branch went");
+        let temp = tempfile::tempdir().unwrap();
+        let (_, fork) = last_fork(temp.path());
+        delete_host_with(&fork, Options::default(), |_, _| Ok(()), stopping).unwrap_err();
+        finished(temp.path(), &fork, "after the branch went");
+        // The removals' steps, as a deletion stopped at none takes them.
+        let temp = tempfile::tempdir().unwrap();
+        let (_, fork) = last_fork(temp.path());
+        taken();
+        delete_host(&fork, Options::default()).unwrap();
+        for (stop, (change, path)) in taken().into_iter().enumerate() {
+            let at = format!("before step {stop}, {change:?} {:?}", path.file_name().unwrap());
             let temp = tempfile::tempdir().unwrap();
-            let (path, fork) = last_fork(temp.path());
-            match step {
-                0 => delete_host_with(&fork, Options::default(), stopping, |_, _| Ok(())),
-                _ => delete_host_with(&fork, Options::default(), |_, _| Ok(()), stopping),
-            }
-            .unwrap_err();
-            for removal in &removals[..step.saturating_sub(1)] {
-                removal(&path, &fork);
-            }
-            delete_host(&fork, Options::default())
-                .unwrap_or_else(|err| panic!("step {step}: {err:#}"));
-            let left: Vec<_> = std::fs::read_dir(temp.path()).unwrap().collect();
-            assert_eq!(left.len(), 0, "step {step}: {left:?} left");
+            let (_, fork) = last_fork(temp.path());
+            stop_after(Some(stop));
+            let stopped = delete_host(&fork, Options::default());
+            stop_after(None);
+            stopped.expect_err(&format!("went on {at}"));
+            finished(temp.path(), &fork, &at);
         }
     }
 
