@@ -394,6 +394,28 @@ impl RemoteExtentStore {
         self.client.call(header, &[]).await.map(drop)
     }
 
+    /// fxdax: frees `extents`, each as [`RemoteExtentStore::free`] does, in order: the first that
+    /// fails fails the call, those before it freed. In as few requests as their payloads hold
+    /// (`FREE` with `FREE_MANY`), a flush's dead extents in one round trip, rather than one each
+    /// (TASK-92.13).
+    pub fn free_many(&self, extents: &[ExtentId]) -> Result<()> {
+        blocking(self.free_many_async(extents))
+    }
+
+    /// [`RemoteExtentStore::free_many`], waiting for the daemon holding no thread.
+    pub async fn free_many_async(&self, extents: &[ExtentId]) -> Result<()> {
+        // Each request names its first extent in its arguments, and those after it its payload.
+        let most = 1 + MAX_PAYLOAD as usize / EXTENT_ID_BYTES;
+        for extents in extents.chunks(most) {
+            let (first, rest) = extents.split_first().expect("chunks aren't empty");
+            let flags = if rest.is_empty() { 0 } else { FREE_MANY };
+            let args = [first.branch, first.sequence];
+            let header = Header::new(FREE, 0).with_args(&args).with_flags(flags);
+            self.client.call(header, &extent_ids_payload(rest)).await?;
+        }
+        Ok(())
+    }
+
     /// Commits, and sets the root to `root` if given, durably (`COMMIT` with `COMMIT_DURABLE`).
     pub fn commit(&self, root: Option<&[u8]>) -> Result<()> {
         blocking(self.commit_async(root, Commit::Durable))

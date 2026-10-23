@@ -71,7 +71,10 @@ pub(crate) const READ: u32 = 2;
 /// [`WRITE_BARRIER`], and followed by a commit if [`WRITE_COMMIT`]; or, with [`WRITE_TRANSFER`],
 /// the `args[4]` bytes at `args[3]` in the connection's transfer area ([`TRANSFER`]).
 pub(crate) const WRITE: u32 = 3;
-/// Frees extent `args[0..2]` (`FREE`).
+/// Frees extent `args[0..2]` (`FREE`). fxdax: with [`FREE_MANY`], and those the payload names
+/// after it ([`extent_ids`]), each freed as it is, in order: the first that fails fails the
+/// request, those before it freed, as a guest's `FREE` with doc-4's `FREE_MANY` does, a flush's
+/// dead extents in one round trip, not one each (TASK-92.13).
 pub(crate) const FREE: u32 = 4;
 /// Maps `args[3]` bytes at `args[2]` in extent `args[0..2]` into the window at `args[4]`
 /// (`MAP`), writably if [`MAP_WRITABLE`]; or zeros there, read-only, with [`MAP_ZEROS`], as a
@@ -155,6 +158,33 @@ pub(crate) const WRITE_TRANSFER: u32 = 1 << 3;
 pub(crate) const READ_TRANSFER: u32 = 1 << 0;
 pub(crate) const FAULT_WRITE: u32 = 1 << 0;
 pub(crate) const FAULT_PAGE: u32 = 1 << 1;
+/// fxdax: a `FREE`'s payload names more extents to free.
+pub(crate) const FREE_MANY: u32 = 1 << 0;
+
+/// fxdax: the bytes an extent's ID takes in a [`FREE_MANY`]'s payload: its branch and its
+/// sequence, little-endian words.
+pub(crate) const EXTENT_ID_BYTES: usize = 16;
+
+/// fxdax: `extents`, as a [`FREE_MANY`]'s payload names them.
+pub(crate) fn extent_ids_payload(extents: &[crate::ExtentId]) -> Vec<u8> {
+    (extents.iter())
+        .flat_map(|extent| [extent.branch, extent.sequence])
+        .flat_map(u64::to_le_bytes)
+        .collect()
+}
+
+/// fxdax: the extents a [`FREE_MANY`]'s payload names: `EINVAL` unless it is whole IDs.
+pub(crate) fn extent_ids(
+    payload: &[u8],
+) -> Result<impl Iterator<Item = crate::ExtentId> + '_, crate::Errno> {
+    let (ids, []) = payload.as_chunks::<EXTENT_ID_BYTES>() else {
+        return Err(crate::Errno::EINVAL);
+    };
+    let word = |bytes: &[u8]| u64::from_le_bytes(bytes.try_into().expect("a word's bytes"));
+    Ok(ids
+        .iter()
+        .map(move |id| crate::ExtentId { branch: word(&id[..8]), sequence: word(&id[8..]) }))
+}
 
 // From the daemon.
 
@@ -730,5 +760,19 @@ mod tests {
         drop(receiver);
         let gone = sender.send(Header::new(READ, 8), Vec::new(), &[]);
         assert_eq!(gone.map_err(|err| err.kind()), Err(io::ErrorKind::BrokenPipe));
+    }
+
+    /// fxdax: the extents a `FREE_MANY`'s payload names are those put in it, in order; one that
+    /// holds part of an ID is refused (TASK-92.13).
+    #[test]
+    fn free_many_payloads_name_their_extents() {
+        let extents = [
+            crate::ExtentId { branch: 1, sequence: 2 },
+            crate::ExtentId { branch: u64::MAX, sequence: 1 << 40 },
+        ];
+        let payload = extent_ids_payload(&extents);
+        assert_eq!(payload.len(), 2 * EXTENT_ID_BYTES);
+        assert_eq!(extent_ids(&payload).unwrap().collect::<Vec<_>>(), extents);
+        assert_eq!(extent_ids(&payload[..EXTENT_ID_BYTES + 8]).err(), Some(crate::Errno::EINVAL));
     }
 }
