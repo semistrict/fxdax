@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-22 18:22'
-updated_date: '2026-10-23 09:50'
+updated_date: '2026-10-23 18:01'
 labels: []
 dependencies: []
 priority: high
@@ -32,4 +32,6 @@ The sandbox team's report of 2026-10-22, at fxdax 853803e, one GCE n2-standard-1
 Round 4 (sandbox team, 2026-10-22, at b2f11cf): TASK-91.1/91.9 hold (no 'is sealed', no PANIC in 4 VMs, 12 runs). COMMITs no longer freeze the guest; at 25 ms tps still decayed (dax 1,050/532/410; nodax 867/495/420), the wait in WRITE_COMMITs stalled at the lag bound: the checkpoint pauses fixed after b2f11cf in 4317177 and fd7a384 (our nodax at 25 ms then held 979/1,010/1,014). At 0 ms nodax held 1,263/1,145/1,170. New: dax at 0 ms fell to 29 tps in run 3, 108,704 UNMAPs: the window filling, TASK-91.10. Their asks: runs within 10% at 25 ms (TASK-91.2/91.3), upload-lag metrics (ed66287), five DAX runs within 10% (TASK-91.10), the load gap (TASK-91.4), and TASK-91.5-91.8.
 
 Round 5 (a8e2e02, 2026-10-23, five runs): object store off the critical path (25 ms and 0 ms match; lag bounded, stalls 0, commit wait <0.6 s a run); nodax 1,293 to 1,095 tps at 25 ms (3.7x their runtime by run 5); no 'is sealed', no PANIC, no DAX collapse in 20 runs. Open: DAX falls 27-31% over five runs (TASK-91.10), nodax WRITE time grows with the store (TASK-91.11), the load gap (TASK-91.4), TASK-91.5-91.8; TASK-91.3 closed; TASK-91.2 open for sync/unmount's durable wait in the seal.
+
+Round 6 (sandbox team, 'why the load is slow and why DAX is slower', 66d56a4, 2026-10-23, GCE n2-standard-16 at 25 ms; experiments fsync=off, synchronous_commit=off, 8 GiB window). No-DAX load: 206 fsync commits at ~41 ms, 6.34 of 8.37 s closing segments in the commit; fsync=off 12.4 s = their runtime. DAX load: the 2 GiB window fills (62,455 MAPs, 55,436 range MAPs, 56,568 full); 8 GiB: 10,008 MAPs, 16.3 s. DAX runs: ~82k MAPs a run at ~490 us guest-side, stores held by seals 15-16 s; synchronous_commit=off: no DAX 3.7-4.2k tps, DAX 1.6-1.9k. 8 GiB window still 'full' 49-110k a run with 2.37 GB free and ~30k regions. Per MAP: extentd 59 us, VMM 216 us, guest 259-490 us, VMM reply thread 92-165 us host system time; guest spins up to 100 us (VEXT_SPIN_NS), 25-47% of guest samples in virtio_extent_call/try_wait_for_completion; 134,886 MMIO exits in the DAX load. No-DAX writes 13 GB to the device a 60 s run (121,391 WRITEs, ~107 KB each); __pv_queued_spin_lock_slowpath 20-42% of guest samples without DAX. Asks 1-9 filed as TASK-91.12-91.18, and in TASK-91.4/91.10.
 <!-- SECTION:NOTES:END -->
