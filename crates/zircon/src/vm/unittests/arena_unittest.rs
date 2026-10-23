@@ -15,7 +15,7 @@ use crate::vm::page_queues::{NUM_RECLAIM, PageQueues};
 use crate::vm::physmap::{ArenaId, CHUNK_SIZE};
 use crate::vm::pmm::{self, ALLOC_FLAG_CAN_WAIT};
 use crate::vm::scanner::AutoVmScannerDisable;
-use crate::vm::vm_object_paged::VmObjectPaged;
+use crate::vm::vm_object_paged::{EvictionHint, VmObjectPaged};
 use futures::executor::block_on;
 use std::os::fd::AsRawFd;
 use std::pin::pin;
@@ -1181,6 +1181,33 @@ fn eviction_of_an_arenas_own_young_pages_visits_as_many_as_it_evicts() {
     let evicted = evict_arena_counting_visits(arena, 2 * CHUNK_SIZE as u64);
     assert_eq!(evicted, [2 * CHUNK_PAGES as u64; 2]);
     assert_eq!([pages_of(&older).count(), pages_of(&newer).count()], [0, 4 * CHUNK_PAGES]);
+}
+
+/// TASK-79.76: eviction of an arena's own pages evicts pages hinted DONT_NEED before other isolated
+/// pages, as the evictor of the queues does: here those of its highest chunks, above isolated pages
+/// as many.
+#[test]
+fn eviction_of_an_arenas_own_pages_takes_those_hinted_dont_need_first() {
+    let _scanner = AutoVmScannerDisable::new();
+    let node = pmm::node();
+    node.keep_spare_chunks(false);
+    let arena = pmm::create_arena();
+    let pager_vmo = || make_committed_pager_vmo(2 * CHUNK_PAGES, false, false).unwrap().0;
+    let (isolated, hinted) = (pmm::with_arena(arena, pager_vmo), pmm::with_arena(arena, pager_vmo));
+    assert!(
+        chunks_of(&isolated).max() < chunks_of(&hinted).min(),
+        "the hinted in the higher chunks"
+    );
+    // Both aged past every queue, into the isolate queue, and the hinted then hinted.
+    (0..NUM_RECLAIM).for_each(|_| node.page_queues().rotate_reclaim_queues());
+    let len = 2 * CHUNK_SIZE as u64;
+    hinted.hint_range(0, len, EvictionHint::DontNeed).unwrap();
+    assert!(pages_of(&isolated).chain(pages_of(&hinted)).all(PageQueues::is_page_reclaimable));
+    node.evictor().enable_eviction(false);
+
+    let evicted = node.evictor().evict_arena_on_demand(arena, len);
+    assert_eq!(evicted.pager_backed, 2 * CHUNK_PAGES as u64);
+    assert_eq!([pages_of(&isolated).count(), pages_of(&hinted).count()], [2 * CHUNK_PAGES, 0]);
 }
 
 /// TASK-79.76: pages that leave the reclaim queues and come back, as a pager-backed VMO's are

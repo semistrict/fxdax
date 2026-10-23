@@ -33,10 +33,11 @@
 //! - No kcounters or console dump formatting.
 //! - fxdax: eviction on demand ages the queues as it finds no page old enough to evict
 //!   (`rotate_reclaim_queues`, TASK-79.70).
-//! - fxdax: a page's age and backlink can be read by the page (`reclaim_age`, `reclaim_backlink`),
-//!   and the pages each chunk of physical memory has in each of the reclaim queues' lists are
-//!   counted, which say how old the oldest of them may be (`chunk_oldest_age`), for eviction of an
-//!   arena's own pages, which finds them by its chunks, the oldest first (TASK-79.76).
+//! - fxdax: pages' ages and backlinks can be read by the pages (`visit_reclaim_ages`,
+//!   `reclaim_backlink`), and the pages each chunk of physical memory has in each of the reclaim
+//!   queues' lists are counted, which say how old the oldest of them may be (`chunk_oldest_age`),
+//!   for eviction of an arena's own pages, which finds them by its chunks, the oldest first
+//!   (TASK-79.76).
 
 use crate::kernel::deadline::{Deadline, current_mono_time};
 use crate::kernel::event::{AutounsignalEvent, Event};
@@ -71,10 +72,16 @@ const ISOLATE_QUEUE_DONT_NEED: usize = 0;
 const ISOLATE_QUEUE_STANDARD: usize = 1;
 const NUM_ISOLATE_QUEUES: usize = 2;
 
-/// fxdax: the ages a page in the reclaim queues has, as `reclaim_age` gives them, and
+/// fxdax: the ages a page in the reclaim queues has, as `visit_reclaim_ages` gives them, and
 /// `chunk_oldest_age` the oldest of a chunk's: those of the generations' queues, 0 the newest's,
-/// and the isolated pages', older than any (TASK-79.76).
-pub const RECLAIM_AGES: usize = NUM_RECLAIM + 1;
+/// and then the isolate queues', older than any, each older than those after it, as they are
+/// evicted in order (`peek_isolate_list`), the DONT_NEED hint's the oldest (TASK-79.76).
+pub const RECLAIM_AGES: usize = NUM_RECLAIM + NUM_ISOLATE_QUEUES;
+
+/// fxdax: how old the pages of isolate queue `index` are (`RECLAIM_AGES`).
+const fn isolate_age(index: usize) -> usize {
+    RECLAIM_AGES - 1 - index
+}
 
 pub const DEFAULT_MIN_MRU_ROTATE_TIME: zx_duration_mono_t = 5_000_000_000;
 pub const DEFAULT_MAX_MRU_ROTATE_TIME: zx_duration_mono_t = 5_000_000_000;
@@ -134,10 +141,9 @@ fn reclaim_list(tag: u8) -> Option<usize> {
 /// fxdax: how old the pages of reclaim queues' list `list` are (`RECLAIM_AGES`), with `mru` the
 /// newest generation's queue.
 fn list_age(list: usize, mru: u8) -> usize {
-    if list < NUM_RECLAIM {
-        queue_age(RECLAIM_BASE + list as u8, mru) as usize
-    } else {
-        NUM_RECLAIM
+    match list.checked_sub(NUM_RECLAIM) {
+        None => queue_age(RECLAIM_BASE + list as u8, mru) as usize,
+        Some(index) => isolate_age(index),
     }
 }
 
@@ -1194,17 +1200,30 @@ impl PageQueues {
         page.page_queue().load(Ordering::Relaxed) == QUEUE_PAGER_BACKED_DIRTY
     }
 
-    /// fxdax: how old `page` is, if it is in a reclaim queue: older than any queue's, isolated, or
-    /// else its queue's age, 0 the newest's. Read without the lock, it may be out of date at once,
-    /// but serves eviction of an arena's own pages, which finds them by their chunks rather than in
-    /// the queues, to take the oldest first (`Evictor::evict_arena_on_demand`, TASK-79.76).
-    pub fn reclaim_age(&self, page: VmPagePtr) -> Option<usize> {
-        match page.page_queue().load(Ordering::Relaxed) {
-            QUEUE_RECLAIM_ISOLATE => Some(NUM_RECLAIM),
-            queue if queue >= RECLAIM_BASE => {
-                Some(queue_age(queue, self.mru_gen_to_queue()) as usize)
-            }
-            _ => None,
+    /// fxdax: calls `visit` with each of `pages` in the reclaim queues and how old it is
+    /// (`RECLAIM_AGES`): an isolated page its isolate queue's age, older than any generation's, and
+    /// another its queue's. They are read under the list lock, which shows which isolate queue a
+    /// page is in, and which `visit` must not take. For eviction of an arena's own pages, which
+    /// finds them by their chunks rather than in the queues, to take the oldest first
+    /// (`Evictor::evict_arena_on_demand`, TASK-79.76).
+    pub fn visit_reclaim_ages(
+        &self,
+        pages: impl Iterator<Item = VmPagePtr>,
+        mut visit: impl FnMut(VmPagePtr, usize),
+    ) {
+        let _lists = self.list_lock.lock();
+        let mru = self.mru_gen_to_queue();
+        for page in pages {
+            let age = match page.page_queue().load(Ordering::Relaxed) {
+                QUEUE_RECLAIM_ISOLATE => {
+                    // SAFETY: The list lock is held.
+                    let tag = unsafe { page.list_tag() };
+                    isolate_age(tag as usize - NUM_QUEUES)
+                }
+                queue if queue >= RECLAIM_BASE => queue_age(queue, mru) as usize,
+                _ => continue,
+            };
+            visit(page, age);
         }
     }
 

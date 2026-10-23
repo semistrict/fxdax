@@ -252,9 +252,10 @@ fn peek_on_demand(
 }
 
 /// fxdax: the `target_pages` oldest pages of `arena` in the reclaim queues, at most, the oldest
-/// first by their queues' ages (`PageQueues::reclaim_age`; the isolated, older than any, first of
-/// all), and within an age in the order it visits them: for eviction of the arena's own pages on
-/// demand (`Evictor::evict_arena_on_demand`, TASK-79.76).
+/// first by their queues' ages (`PageQueues::visit_reclaim_ages`: those hinted DONT_NEED first of
+/// all, as the evictor of the queues takes them, and then the other isolated, older than any
+/// generation's), and within an age in the order it visits them: for eviction of the arena's own
+/// pages on demand (`Evictor::evict_arena_on_demand`, TASK-79.76).
 ///
 /// It visits the arena's chunks the oldest first, by how old their oldest page may be
 /// (`PageQueues::chunk_oldest_age`), and those holding none not at all, and stops once it holds
@@ -284,11 +285,7 @@ fn arena_pages_oldest_first(arena: ArenaId, target_pages: u64) -> Vec<VmPagePtr>
             break;
         }
         visited += CHUNK_PAGES;
-        for page in node.chunk_pages(chunk) {
-            if let Some(age) = page_queues.reclaim_age(page) {
-                oldest.push(page, age);
-            }
-        }
+        page_queues.visit_reclaim_ages(node.chunk_pages(chunk), |page, age| oldest.push(page, age));
     }
     ARENA_PAGES_VISITED.fetch_add(visited, Ordering::Relaxed);
     oldest.into_oldest_first()
