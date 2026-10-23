@@ -2394,3 +2394,192 @@ fn extents_freed_together_are_freed_in_one_request() {
     drop(store);
     serving.join().unwrap();
 }
+
+/// An object store in memory whose reads wait while they are held ([`GatedReads::hold`]): what
+/// makes a page-in's fetch from object storage wait as long as a test needs.
+#[derive(Debug)]
+struct GatedReads {
+    store: object_store::memory::InMemory,
+    held: tokio::sync::watch::Sender<bool>,
+    /// The reads waiting.
+    waiting: std::sync::atomic::AtomicUsize,
+}
+
+impl std::fmt::Display for GatedReads {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "gated reads")
+    }
+}
+
+impl GatedReads {
+    fn new() -> Self {
+        Self {
+            store: object_store::memory::InMemory::new(),
+            held: tokio::sync::watch::channel(false).0,
+            waiting: Default::default(),
+        }
+    }
+
+    /// Holds the reads from now on, if `held`, or lets them go.
+    fn hold(&self, held: bool) {
+        self.held.send_replace(held);
+    }
+
+    fn waiting(&self) -> usize {
+        self.waiting.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+#[async_trait::async_trait]
+impl object_store::ObjectStore for GatedReads {
+    async fn put_opts(
+        &self,
+        location: &object_store::path::Path,
+        payload: object_store::PutPayload,
+        opts: object_store::PutOptions,
+    ) -> object_store::Result<object_store::PutResult> {
+        self.store.put_opts(location, payload, opts).await
+    }
+
+    async fn put_multipart_opts(
+        &self,
+        location: &object_store::path::Path,
+        opts: object_store::PutMultipartOptions,
+    ) -> object_store::Result<Box<dyn object_store::MultipartUpload>> {
+        self.store.put_multipart_opts(location, opts).await
+    }
+
+    async fn get_opts(
+        &self,
+        location: &object_store::path::Path,
+        options: object_store::GetOptions,
+    ) -> object_store::Result<object_store::GetResult> {
+        use std::sync::atomic::Ordering;
+        if *self.held.borrow() {
+            let mut held = self.held.subscribe();
+            self.waiting.fetch_add(1, Ordering::Relaxed);
+            let _ = held.wait_for(|held| !*held).await;
+            self.waiting.fetch_sub(1, Ordering::Relaxed);
+        }
+        self.store.get_opts(location, options).await
+    }
+
+    fn delete_stream(
+        &self,
+        locations: futures::stream::BoxStream<
+            'static,
+            object_store::Result<object_store::path::Path>,
+        >,
+    ) -> futures::stream::BoxStream<'static, object_store::Result<object_store::path::Path>> {
+        self.store.delete_stream(locations)
+    }
+
+    fn list(
+        &self,
+        prefix: Option<&object_store::path::Path>,
+    ) -> futures::stream::BoxStream<'static, object_store::Result<object_store::ObjectMeta>> {
+        self.store.list(prefix)
+    }
+
+    async fn list_with_delimiter(
+        &self,
+        prefix: Option<&object_store::path::Path>,
+    ) -> object_store::Result<object_store::ListResult> {
+        self.store.list_with_delimiter(prefix).await
+    }
+
+    async fn copy_opts(
+        &self,
+        from: &object_store::path::Path,
+        to: &object_store::path::Path,
+        options: object_store::CopyOptions,
+    ) -> object_store::Result<()> {
+        self.store.copy_opts(from, to, options).await
+    }
+}
+
+/// TASK-92.20: a VM's faults that wait for the pager, which fetches what they fault on from
+/// object storage, hold up none of its requests: here 12 of them, more than the 8 requests the
+/// daemon serves of a connection at once, wait while the bucket answers no reads, and the VM's
+/// `INFO` is answered meanwhile. Each held a thread of the daemon's and one of those 8 while it
+/// waited, as for a part from GCS, 30-100 ms, and the requests after them waited their turn.
+#[test]
+fn faults_waiting_for_object_storage_hold_up_no_request() {
+    use std::sync::Arc;
+    const FAULTS: usize = 12;
+    host();
+    let ps = page_size() as usize;
+    let gated = Arc::new(GatedReads::new());
+    super::stores::use_bucket(extent_remote::store::Store::new(gated.clone(), "branches"));
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("extentd.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || serve(listener));
+    // A store of an extent a page for each fault, written here, whose pages are of an arena no
+    // VM process's connection has, made a snapshot's point through the daemon, which keeps its
+    // branch in the bucket.
+    let (path, point) = (dir.path().join("store"), dir.path().join("point"));
+    let branch = {
+        let store = ExtentStore::create(&path, 1 << 24).unwrap();
+        let branch = store.branch();
+        for sequence in 1..=FAULTS as u64 {
+            let data = pattern(sequence as u8, ps);
+            store
+                .write(ExtentId { branch, sequence }, 0, &[VolatileSlice::from(&data[..])])
+                .unwrap();
+        }
+        store.commit(None).unwrap();
+        branch
+    };
+    let store = RemoteExtentStore::connect(&socket, &path, 1 << 24).unwrap();
+    store.fork_quiescent(&point, branch + 1).unwrap();
+    drop(store);
+    // Its VM restored on another host, which has the point's extents in the bucket alone.
+    let elsewhere = dir.path().join("elsewhere");
+    std::fs::create_dir(&elsewhere).unwrap();
+    let restored = elsewhere.join("store");
+    let ours = RemoteExtentStore::connect_forked(
+        &socket,
+        &restored,
+        elsewhere.join("point"),
+        branch + 1,
+        1 << 24,
+    )
+    .unwrap();
+    let memory = memory(FAULTS);
+    // SAFETY: The memory is the test's, and outlives the store.
+    unsafe { ours.create_dax_window_in_host_memory(memory, (FAULTS * ps) as u64, None) }.unwrap();
+    for n in 0..FAULTS {
+        let extent = ExtentId { branch, sequence: n as u64 + 1 };
+        ours.map(extent, 0, ps as u64, (n * ps) as u64, false).unwrap();
+    }
+    gated.hold(true);
+    let base = memory.as_ptr() as usize;
+    let faulting: Vec<_> = (0..FAULTS)
+        .map(|n| {
+            // SAFETY: The window's memory, whose faults the store serves.
+            std::thread::spawn(move || unsafe {
+                std::slice::from_raw_parts((base + n * ps) as *const u8, ps).to_vec()
+            })
+        })
+        .collect();
+    // Every fault received, each waiting for a fetch.
+    let connection =
+        super::stores::open_paths().holder(&super::stores::store_key(&restored)).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while connection.unanswered() < FAULTS || gated.waiting() == 0 {
+        assert!(std::time::Instant::now() < deadline, "{} faults", connection.unanswered());
+        std::thread::yield_now();
+    }
+    let ours = Arc::new(ours);
+    let asking = ours.clone();
+    let info = within(std::time::Duration::from_secs(10), move || asking.info());
+    let answered = connection.unanswered();
+    gated.hold(false);
+    assert!(matches!(info, Ok(Ok(_))), "the VM's INFO waited for its faults: {info:?}");
+    assert_eq!(answered, FAULTS, "the faults were answered as the INFO was");
+    for (n, faulting) in faulting.into_iter().enumerate() {
+        let page = faulting.join().unwrap();
+        assert!(page == pattern(n as u8 + 1, ps), "page {n} holds other data");
+    }
+}

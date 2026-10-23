@@ -38,8 +38,9 @@
 //!   stores: commits made durable within 50 ms, on threads every store's flushes share, 32 at
 //!   most (TASK-92.49), followers told of commits. Requests run on a pool of threads every
 //!   connection shares, as many as run at once, up to 16 a processor (`pool`), a connection's 8
-//!   at most, the rest waiting their turn. Every store's uploader and fetches run on one runtime
-//!   more (`crate::remote`), its disk work in `block_in_place`.
+//!   at most, the rest waiting their turn; a fault waiting for the pager holds neither a thread
+//!   nor one of the 8 (TASK-92.20). Every store's uploader and fetches run on one runtime more
+//!   (`crate::remote`), its disk work in `block_in_place`.
 //! - **Files.** A store keeps its own segments' and extents' files open, the most
 //!   `extent_store::Options::open_files` of each (64) but for those reads use: a fork, which writes
 //!   little, few; and its index file, and the open segment's. The files of the segments a fork
