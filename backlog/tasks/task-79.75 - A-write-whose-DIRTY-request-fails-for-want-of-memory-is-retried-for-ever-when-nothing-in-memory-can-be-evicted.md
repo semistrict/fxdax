@@ -3,9 +3,11 @@ id: TASK-79.75
 title: >-
   A write whose DIRTY request fails for want of memory is retried for ever when
   nothing in memory can be evicted
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@review-session'
 created_date: '2026-10-23 06:12'
+updated_date: '2026-10-23 06:48'
 labels:
   - review-2026-10-21
 dependencies: []

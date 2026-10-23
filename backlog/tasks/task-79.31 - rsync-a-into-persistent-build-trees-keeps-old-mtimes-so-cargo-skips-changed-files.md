@@ -3,9 +3,11 @@ id: TASK-79.31
 title: >-
   rsync -a into persistent build trees keeps old mtimes, so cargo skips changed
   files
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@review-session'
 created_date: '2026-10-21 20:58'
+updated_date: '2026-10-23 06:48'
 labels:
   - review-2026-10-21
 dependencies: []

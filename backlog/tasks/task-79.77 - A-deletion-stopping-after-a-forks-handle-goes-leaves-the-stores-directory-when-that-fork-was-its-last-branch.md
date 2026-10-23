@@ -3,9 +3,11 @@ id: TASK-79.77
 title: >-
   A deletion stopping after a fork's handle goes leaves the store's directory
   when that fork was its last branch
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@review-session'
 created_date: '2026-10-23 06:12'
+updated_date: '2026-10-23 06:48'
 labels:
   - review-2026-10-21
 dependencies: []

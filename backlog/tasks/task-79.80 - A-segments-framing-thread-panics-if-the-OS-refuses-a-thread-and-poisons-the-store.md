@@ -3,9 +3,11 @@ id: TASK-79.80
 title: >-
   A segment's framing thread panics if the OS refuses a thread, and poisons the
   store
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@review-session'
 created_date: '2026-10-23 06:12'
+updated_date: '2026-10-23 06:48'
 labels:
   - review-2026-10-21
 dependencies: []

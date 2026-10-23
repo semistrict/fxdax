@@ -1,9 +1,11 @@
 ---
 id: TASK-79.56
 title: 'A crafted container image can abort extentd, or leave its store path unusable'
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@review-session'
 created_date: '2026-10-21 21:00'
+updated_date: '2026-10-23 06:48'
 labels:
   - review-2026-10-21
 dependencies: []

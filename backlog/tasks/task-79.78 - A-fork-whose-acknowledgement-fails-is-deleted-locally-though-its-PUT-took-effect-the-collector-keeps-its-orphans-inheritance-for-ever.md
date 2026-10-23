@@ -3,9 +3,11 @@ id: TASK-79.78
 title: >-
   A fork whose acknowledgement fails is deleted locally though its PUT took
   effect: the collector keeps its orphan's inheritance for ever
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@review-session'
 created_date: '2026-10-23 06:12'
+updated_date: '2026-10-23 06:48'
 labels:
   - review-2026-10-21
 dependencies: []

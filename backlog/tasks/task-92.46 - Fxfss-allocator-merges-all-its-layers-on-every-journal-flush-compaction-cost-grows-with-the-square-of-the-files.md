@@ -3,9 +3,11 @@ id: TASK-92.46
 title: >-
   Fxfs's allocator merges all its layers on every journal flush: compaction cost
   grows with the square of the files
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@review-session'
 created_date: '2026-10-23 06:12'
+updated_date: '2026-10-23 06:48'
 labels:
   - review-2026-10-21
 dependencies: []

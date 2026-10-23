@@ -3,9 +3,11 @@ id: TASK-79.74
 title: >-
   Legacy Filesystem: a read or write under way as its volume unmounts isn't
   waited for: a write may be lost, a page request after may hang
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@review-session'
 created_date: '2026-10-23 04:40'
+updated_date: '2026-10-23 06:48'
 labels:
   - review-2026-10-21
 dependencies: []

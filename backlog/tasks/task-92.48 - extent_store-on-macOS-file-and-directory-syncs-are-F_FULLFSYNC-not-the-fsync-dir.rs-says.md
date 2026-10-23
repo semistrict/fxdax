@@ -3,9 +3,11 @@ id: TASK-92.48
 title: >-
   extent_store on macOS: file and directory syncs are F_FULLFSYNC, not the fsync
   dir.rs says
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@review-session'
 created_date: '2026-10-23 06:12'
+updated_date: '2026-10-23 06:48'
 labels:
   - review-2026-10-21
 dependencies: []

@@ -3,9 +3,11 @@ id: TASK-79.79
 title: >-
   extent_store crash tests: a crash round is not a function of its seed, so a
   failing round may not reproduce
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@review-session'
 created_date: '2026-10-23 06:12'
+updated_date: '2026-10-23 06:48'
 labels:
   - review-2026-10-21
 dependencies: []
