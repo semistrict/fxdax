@@ -1010,6 +1010,39 @@ fn arenas_own_pages_are_evicted_on_demand_the_oldest_first() {
     assert_eq!(pages.resident(), [2 * CHUNK_PAGES, 0, CHUNK_PAGES]);
 }
 
+/// The pages `vmo` has of the last 8 of every 16, if `newer`, or else of the first 8.
+fn half_pages_of(vmo: &VmObjectPaged, newer: bool) -> impl Iterator<Item = VmPagePtr> + '_ {
+    (0..vmo.size() / PAGE_SIZE)
+        .filter(move |i| (i % 16 >= 8) == newer)
+        .filter_map(|i| vmo.debug_get_page(i * PAGE_SIZE))
+}
+
+/// TASK-79.76: eviction of an arena's own pages on demand evicts the oldest pages alone, and none
+/// of the newer next to them, which an eviction of their batch of 16, as the evictor's of the
+/// queues makes, took too, whatever their age. A VMO's pages, in chunks below another VMO's as
+/// old, are made half of them newer, the last 8 of every 16; asked for two chunks' worth, the
+/// eviction takes its older half, and as many of the other's.
+#[test]
+fn eviction_of_an_arenas_own_pages_takes_the_oldest_alone() {
+    let _scanner = AutoVmScannerDisable::new();
+    let node = pmm::node();
+    node.keep_spare_chunks(false);
+    let arena = pmm::create_arena();
+    let pager_vmo = || make_committed_pager_vmo(2 * CHUNK_PAGES, false, false).unwrap().0;
+    let (mixed, old) = (pmm::with_arena(arena, pager_vmo), pmm::with_arena(arena, pager_vmo));
+    assert!(chunks_of(&mixed).max() < chunks_of(&old).min(), "the mixed in the lower chunks");
+    let queues = node.page_queues();
+    queues.rotate_reclaim_queues();
+    half_pages_of(&mixed, true).for_each(|page| queues.mark_accessed(page));
+    node.evictor().enable_eviction(false);
+
+    let evicted = node.evictor().evict_arena_on_demand(arena, 2 * CHUNK_SIZE as u64);
+    assert_eq!(evicted.pager_backed, 2 * CHUNK_PAGES as u64);
+    let newer = half_pages_of(&mixed, true).count();
+    let older = half_pages_of(&mixed, false).count();
+    assert_eq!([newer, older, pages_of(&old).count()], [CHUNK_PAGES, 0, CHUNK_PAGES]);
+}
+
 /// Evicts `bytes` of `arena`'s own pages on demand, and returns how many pages it evicted and how
 /// many it visited to find them (`EvictorStats::arena_pages_visited`).
 fn evict_arena_counting_visits(arena: ArenaId, bytes: u64) -> [u64; 2] {

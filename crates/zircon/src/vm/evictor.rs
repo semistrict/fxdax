@@ -24,8 +24,8 @@
 //!   levels too, for an allocation that finds memory out, with memory never out, aging the queues
 //!   for them, a bounded number of times before it reclaims a page (`ON_DEMAND_AGINGS`,
 //!   TASK-79.70).
-//! - fxdax: an arena's own clean pages are evicted on demand, found by those of its chunks holding
-//!   pages in the reclaim queues, for the relief of an arena starved at its own cap
+//! - fxdax: an arena's own clean pages are evicted on demand, each alone, found by those of its
+//!   chunks holding pages in the reclaim queues, for the relief of an arena starved at its own cap
 //!   (`evict_arena_on_demand`, TASK-79.76); the pages it visits to find them are counted
 //!   (`EvictorStats::arena_pages_visited`).
 
@@ -770,7 +770,8 @@ impl Evictor {
     /// evicted: for relief of an arena starved at its own cap, which only pages of its own make
     /// room for, and for which no other arena's page, however old, is evicted (TASK-79.76). It
     /// finds them by the arena's chunks (`arena_pages_oldest_first`), rather than in the queues,
-    /// which hold every arena's, and ages none.
+    /// which hold every arena's, and ages none. It evicts each page alone, rather than with its
+    /// batch of 16 as `VmCowPages::reclaim_page` does, whose pages on demand would go however new.
     pub fn evict_arena_on_demand(&self, arena: ArenaId, min_mem_to_free: u64) -> EvictedPageCounts {
         let mut counts = EvictedPageCounts::default();
         if !self.is_eviction_enabled() {
@@ -786,23 +787,19 @@ impl Evictor {
             if counts.non_loaned_total() >= target_pages {
                 break;
             }
-            // A page may have been evicted since, with another's batch, or freed; or its chunk
-            // gone back, and come to another arena, whose object's it is now.
-            let Some(VmoBacklink { cow: Some(cow), page, offset }) =
+            // A page may have been evicted since, or freed; or its chunk gone back, and come to
+            // another arena, whose object's it is now.
+            let Some(VmoBacklink { cow: Some(cow), offset, .. }) =
                 page_queues.reclaim_backlink(page)
             else {
                 continue;
             };
-            if cow.arena() != arena {
+            if cow.arena() != arena || !cow.can_evict() {
                 continue;
             }
-            if let Ok(success) = cow.reclaim_page(page, offset, EvictionAction::Demand) {
-                match success.r#type {
-                    ReclaimType::Evict => counts.pager_backed += success.num_pages,
-                    ReclaimType::Discard | ReclaimType::Compress => {
-                        unreachable!("no discardable VMOs or compression")
-                    }
-                }
+            let evicted = cow.reclaim_range_for_eviction(offset, PAGE_SIZE, EvictionAction::Demand);
+            if let Ok(success) = evicted {
+                counts.pager_backed += success.num_pages;
             }
         }
         *total_evicted += counts;
