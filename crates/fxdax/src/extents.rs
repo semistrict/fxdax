@@ -418,9 +418,6 @@ pub struct ExtentStore {
     /// The open extents mapped writably, until the next commit. Locked before `dax`.
     open: Mutex<HashMap<ExtentId, OpenExtent>>,
     dax: Mutex<Option<Dax<Mapped>>>,
-    /// fxdax: zeros, the window's size of them, which the window maps where it mapped an extent
-    /// freed since: made once one is.
-    zeros: std::sync::OnceLock<Arc<zx::Vmo>>,
     /// fxdax: the arenas of the kernel's physical memory its extents' pages are of (TASK-43).
     arenas: Arenas,
     /// fxdax: the uploader of the store's branch to object storage, if it has one: durable
@@ -617,7 +614,6 @@ impl ExtentStore {
             store,
             open: Mutex::new(HashMap::new()),
             dax: Mutex::new(None),
-            zeros: Default::default(),
             remote: Default::default(),
             opening: Default::default(),
             following: None,
@@ -638,7 +634,6 @@ impl ExtentStore {
             store: self.store.clone(),
             open: Mutex::new(HashMap::new()),
             dax: Mutex::new(None),
-            zeros: Default::default(),
             remote: Default::default(),
             opening: Default::default(),
             following: Some(following),
@@ -1120,7 +1115,7 @@ impl ExtentStore {
     fn replace_kept(&self, kept: usize) -> Result<()> {
         let mut dax = self.dax.lock().unwrap();
         let Some(dax) = dax.as_mut() else { return Ok(()) };
-        let zeros = self.zeros(dax)?;
+        let zeros = dax.zeros()?;
         dax.replace_kept(kept, Mapped::zeros(&zeros), &zeros)
     }
 
@@ -1333,7 +1328,7 @@ impl ExtentStore {
                 }
                 if within < len {
                     let past = window_offset + within;
-                    let zeros = self.zeros(dax)?;
+                    let zeros = dax.zeros()?;
                     dax.make_read_only(
                         past,
                         len - within,
@@ -1490,22 +1485,14 @@ impl ExtentStore {
         self.map_zeros(dax, window_offset + (within - offset), end - within)
     }
 
-    /// Maps zeros, read-only, at `len` bytes of the window at `window_offset`, if any.
+    /// Maps zeros, read-only, at `len` bytes of the window at `window_offset`, if any: the
+    /// window's own ([`Dax::zeros`]).
     fn map_zeros(&self, dax: &mut Dax<Mapped>, window_offset: u64, len: u64) -> Result<()> {
         if len == 0 {
             return Ok(());
         }
-        let zeros = self.zeros(dax)?;
+        let zeros = dax.zeros()?;
         dax.map(window_offset, Mapped::zeros(&zeros), &zeros, window_offset, len, false)
-    }
-
-    /// The window's size of zeros, which it maps where nothing else is to be read.
-    fn zeros(&self, dax: &Dax<Mapped>) -> Result<Arc<zx::Vmo>> {
-        if let Some(zeros) = self.zeros.get() {
-            return Ok(zeros.clone());
-        }
-        let zeros = Arc::new(zx::Vmo::create(dax.size()).errno()?);
-        Ok(self.zeros.get_or_init(|| zeros).clone())
     }
 
     /// Maps an open extent's memory, which the commit that seals it maps the sealed pages in place
@@ -2735,6 +2722,25 @@ mod tests {
         assert_eq!(take(), [("map", 3 * ps, Read)]);
         store.unmap(0, 2 * ps).unwrap();
         assert_eq!(take(), [("unmap", 0, Protection::None), ("unmap", ps, Protection::None)]);
+    }
+
+    /// TASK-79.45: a writer taking a store over maps zeros through a window of its own, however
+    /// much larger than the window of the writer before it: zeros as many as its own window's.
+    #[test]
+    fn writers_taking_over_map_zeros_across_windows_of_their_own() {
+        let (store, _dir) = store(1 << 20);
+        let ps = page_size();
+        let _window = store.create_dax_window(2 * ps, None).unwrap();
+        store.map_zeros_at(0, ps).unwrap();
+        store.take_over().unwrap();
+        let window = store.create_dax_window(8 * ps, None).unwrap();
+        store.map_zeros_at(6 * ps, 2 * ps).unwrap();
+        block_on(window.fault(7 * ps, Access::Read)).unwrap();
+        // SAFETY: The test faulted the page in, and nothing else accesses it.
+        let page = unsafe {
+            std::slice::from_raw_parts(window.host_base().add(7 * ps as usize), ps as usize)
+        };
+        assert!(page.iter().all(|byte| *byte == 0), "the window's last page isn't zeros");
     }
 
     /// fxdax: freeing an extent maps zeros where the window mapped it, read-only, rather than
