@@ -845,18 +845,30 @@ pub(crate) fn segment_footer(bytes: &[u8]) -> Result<Option<Footer>, Error> {
 /// file and the commits its footer names are durable, with a commit after them (TASK-92.16): so
 /// one whose footer names a commit not durable has its raw file still, holding what the durable
 /// commits wrote to it, which their flushes synced; what its framed file holds besides is of
-/// commits lost (TASK-79.33). Those whose raw files are gone it reads not.
+/// commits lost. And one whose footer names durable commits alone, closed between commits, may
+/// have a framed file torn, or not durable, a crash, or a failure, having stopped its framing
+/// before its sync: it is framed anew unless whole, and made durable before its raw file goes
+/// (TASK-79.33). Those whose raw files are gone it reads not.
 pub(crate) fn close_left_open<D: Dir>(dir: &D, branch: u64, epoch: u64) -> Result<(), Error> {
     for number in list_numbers(dir, &branch_dir(OPEN_SEGMENTS, branch))? {
         let segment = SegmentId { branch, number };
         let (path, raw_path) = (segment_path(segment), open_segment_path(segment));
-        // Closed for good if its framed file is whole, its footer naming durable commits alone:
-        // by a commit made durable, or a closing between commits ([`Store::close_now`]). One an
-        // opening before framed again, with none, is framed again, its raw file being there still.
+        // Closed for good if its framed file is whole, in its data too, its footer naming durable
+        // commits alone: by a commit made durable, or a closing between commits
+        // ([`Store::close_now`]). One an opening before framed again, with no footer, is framed
+        // again, its raw file being there still.
         let closed = match dir.open(&path, true) {
-            Ok(file) => read_frame(&file)?.is_some_and(|(_, footer)| {
-                matches!(segment_footer(&footer), Ok(Some(footer)) if footer_last(&footer) <= epoch)
-            }),
+            Ok(file) => {
+                let durable = read_frame(&file)?.is_some_and(|(_, footer)| {
+                    matches!(segment_footer(&footer),
+                        Ok(Some(footer)) if footer_last(&footer) <= epoch)
+                });
+                let whole = durable && extent_frame::data(&read_whole(&file)?).is_ok();
+                if whole {
+                    file.sync()?;
+                }
+                whole
+            }
             Err(err) if not_found(&err) => false,
             Err(err) => return Err(err.into()),
         };
@@ -869,9 +881,9 @@ pub(crate) fn close_left_open<D: Dir>(dir: &D, branch: u64, epoch: u64) -> Resul
             let file = dir.create(&path, true)?;
             file.write_at(&extent_frame::framed(&data, &[]), 0)?;
             file.sync()?;
-            dir.sync_dir(&branch_dir(SEGMENTS, branch))?;
-            dir.barrier()?;
         }
+        dir.sync_dir(&branch_dir(SEGMENTS, branch))?;
+        dir.barrier()?;
         match dir.remove(&raw_path) {
             Err(err) if !not_found(&err) => return Err(err.into()),
             _ => {}

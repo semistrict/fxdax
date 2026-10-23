@@ -1341,6 +1341,60 @@ fn segments_closed_between_commits_survive_crashes_closing_them_again() {
     }
 }
 
+/// fxdax: a segment closed between commits, the commits its footer names durable, whose framing a
+/// crash stopped before its framed file was synced, is framed again by the branch's next opening,
+/// from its raw file: its framed file may be whole in its trailer and footer, and torn in its data
+/// (TASK-79.33).
+#[test]
+fn segments_closed_between_commits_survive_crashes_framing_them() {
+    for seed in 0..64 {
+        let dir = MemDir::new();
+        let store = create(dir.clone(), 1 << 20);
+        for sequence in 0..4 {
+            store.write(extent(sequence), 0, &noise(sequence, BLOCK)).unwrap();
+        }
+        store.commit(None).unwrap();
+        // The next segment's raw file made, the framed file written, then its sync fails.
+        dir.fail_after(Some(3));
+        assert!(store.close_now().is_err(), "seed {seed}: the closing went on");
+        dir.fail_after(None);
+        let crashed = dir.crash(seed);
+        drop(store);
+        let store = Store::open(crashed, OPTIONS).unwrap();
+        for sequence in 0..4 {
+            let data = read(&store, extent(sequence), 0, BLOCK);
+            assert!(data == noise(sequence, BLOCK), "seed {seed}: extent {sequence} differs");
+        }
+    }
+}
+
+/// fxdax: so too if the branch is opened again in the same process, its store failed as the
+/// framed file's sync did: the opening makes the framed file durable before its raw file goes,
+/// whatever a crash after it then keeps (TASK-79.33).
+#[test]
+fn segments_closed_between_commits_survive_failures_framing_them() {
+    for seed in 0..64 {
+        let dir = MemDir::new();
+        let store = create(dir.clone(), 1 << 20);
+        for sequence in 0..4 {
+            store.write(extent(sequence), 0, &noise(sequence, BLOCK)).unwrap();
+        }
+        store.commit(None).unwrap();
+        dir.fail_after(Some(3));
+        assert!(store.close_now().is_err(), "seed {seed}: the closing went on");
+        dir.fail_after(None);
+        let lineage = store.lineage().clone();
+        drop(store);
+        drop(lineage.open_branch(BRANCH).unwrap());
+        drop(lineage);
+        let store = Store::open(dir.crash(seed), OPTIONS).unwrap();
+        for sequence in 0..4 {
+            let data = read(&store, extent(sequence), 0, BLOCK);
+            assert!(data == noise(sequence, BLOCK), "seed {seed}: extent {sequence} differs");
+        }
+    }
+}
+
 /// fxdax: a segment closed between commits keeps its raw file until a commit after it is durable,
 /// with the commits its footer names: so that the branch's next opening, a crash having lost them,
 /// finds it, and closes it again, with no footer; and reads no segment whose raw file is gone
