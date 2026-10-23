@@ -231,7 +231,8 @@ impl Volume {
     /// Begins unmounting the volume, unless that has begun: closes the nodes held, and unmounts
     /// the volume from `volumes_directory`, its image's, given while the image is open: once it is
     /// closed, so are its volumes. The unmount runs on Fxfs's executor, where it completes even
-    /// if no one waits for it.
+    /// if no one waits for it. It waits for the work under way on the volume, which holds guards
+    /// on its scope, before it locks the volumes directory.
     pub fn begin_unmount(&self, volumes_directory: Option<Arc<VolumesDirectory>>) -> Unmount {
         let mut state = self.state.lock().unwrap();
         if let State::Unmounting(unmounted) = &*state {
@@ -245,6 +246,7 @@ impl Volume {
         };
         drop(state);
         let (result, began) = oneshot::channel();
+        let scope = self.scope.clone();
         self.image.executor.spawn(async move {
             let unmounted = async {
                 // Closing every connection lets the volume's nodes be dropped.
@@ -253,6 +255,13 @@ impl Volume {
                         let _ = proxy.close().await;
                     }
                 }
+                // Fxfs's volume shuts its scope down and waits for it to finish as it terminates,
+                // under the volumes directory's lock (`VolumesDirectory::unmount`); but work under
+                // a guard on the scope may need the lock, as dirtying a page under critical memory
+                // pressure does (`VolumesDirectory::report_pager_dirty`), which a write under way
+                // waits for. So the scope is finished first, and the termination finds it so.
+                scope.shutdown();
+                scope.wait().await;
                 let store_id = volume.volume().store().store_object_id();
                 drop(volume);
                 if let Some(volumes_directory) = volumes_directory {

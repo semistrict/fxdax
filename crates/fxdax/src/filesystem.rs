@@ -1036,11 +1036,13 @@ mod tests {
         volume.scope().try_active_guard().is_none()
     }
 
-    /// Unmounting waits for an operation under way, as for the volume's fuchsia.io requests:
-    /// Fxfs's volume shuts its scope down, then waits for the scope to finish, with its guards
-    /// gone, before it writes the volume back, and the operation holds one. An rmdir held by the
-    /// lock of Fxfs's that it takes keeps the scope, shut down and with no tasks left, from
-    /// finishing; let go, it removes the directory, and the unmount completes.
+    /// Unmounting waits for an operation under way, as for the volume's fuchsia.io requests: the
+    /// unmount shuts the scope of Fxfs's volume down, then waits for the scope to finish, with its
+    /// guards gone, before it writes the volume back, and the operation holds one. An rmdir held
+    /// by the lock of Fxfs's that it takes keeps the scope, shut down and with no tasks left, from
+    /// finishing; let go, it removes the directory, and the unmount completes. Meanwhile, the
+    /// image's volumes directory is free, as work under a guard may need it: dirtying a page under
+    /// critical memory pressure does (`VolumesDirectory::report_pager_dirty`).
     #[test]
     fn unmounting_waits_for_an_operation_under_way() {
         block_on(async {
@@ -1056,13 +1058,18 @@ mod tests {
             let mut unmounted = Box::pin(volume.image.unmount_volume(&volume).wait());
             scope.on_no_tasks().await;
             assert!(!scope_finished(&fx_volume), "the scope finished with an rmdir under way");
-            // So the unmount waits for it still.
+            // So the unmount waits for it still, with the volumes directory free.
             assert!(futures::poll!(&mut unmounted).is_pending(), "unmounted under an rmdir");
+            let volumes_directory = volume.image.volumes_directory().unwrap();
+            assert!(
+                volumes_directory.lock().now_or_never().is_some(),
+                "the volumes directory is locked while the unmount waits for the scope"
+            );
 
             release.send(()).unwrap();
             assert_eq!(rmdir.await, Ok(()));
             unmounted.await.expect("unmounting failed");
-            drop((scope, fx_volume, volume));
+            drop((scope, fx_volume, volumes_directory, volume));
             let fs = Filesystem::mount(fs.close().await.unwrap()).await.unwrap();
             assert_eq!(fs.root().lookup(b"dir").await.err(), Some(Errno::ENOENT));
             fs.close().await.unwrap().check().await.unwrap();
