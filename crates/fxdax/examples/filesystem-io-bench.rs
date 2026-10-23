@@ -3,10 +3,12 @@
 // found in the LICENSE file.
 
 //! What a filesystem's read or write of a page in memory costs ([`Node::read`] and
-//! [`Node::write`], TASK-79.74): the work each does around copying through the file's stream,
-//! which copying a page dwarfs little. Each thread reads, then writes, a file of its own, a page at
-//! a time, round and round its pages, which are in memory and dirty, so that no read or write waits
-//! for Fxfs's pager; on 1 thread, then on 8 at once, all on one volume, whose locks they share.
+//! [`Node::write`], TASK-79.74): each call's overhead, the locks it takes and the file it holds
+//! open under a guard on the volume's scope, beside its copy of one page through the file's
+//! stream, which is too small to hide the overhead. Each thread reads, then writes, a file of its
+//! own, a page at a time, round and round its pages, which are in memory and dirty, so that no
+//! read or write waits for Fxfs's pager; on 1 thread, then on 8 at once, all on one volume, whose
+//! locks they share.
 //!
 //! ```sh
 //! cargo run --release -p fxdax --example filesystem-io-bench [OPS [ROUNDS]]
@@ -25,12 +27,12 @@ const PAGES: u64 = 64;
 /// The threads the second run reads and writes on.
 const THREADS: usize = 8;
 
-/// Reads or writes `ops` pages of `file` on the calling thread, round and round its pages.
-fn ops(file: &Node, ops: u64, write: bool) {
+/// Reads or writes `count` pages of `file` on the calling thread, round and round its pages.
+fn ops(file: &Node, count: u64, write: bool) {
     let page = fxdax::kernel::page_size();
     let mut buf = vec![0x5a; page as usize];
     block_on(async {
-        for op in 0..ops {
+        for op in 0..count {
             let offset = op % PAGES * page;
             let done = if write {
                 file.write(offset, &buf).await
