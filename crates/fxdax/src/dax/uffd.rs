@@ -1062,7 +1062,7 @@ mod tests {
         let pager = TestPager::new(2);
         // SAFETY: Only the test uses the memory, which outlives the window.
         let stage = unsafe { UffdSecondStage::in_process(base, 2 * ps as u64, None) }.unwrap();
-        let (dax, _window) = Dax::<()>::in_host_memory(stage).unwrap();
+        let (dax, window) = Dax::<()>::in_host_memory(stage).unwrap();
         dax.window.map(0, &pager.vmo, 0, 2 * ps as u64, false).unwrap();
 
         // SAFETY: The memory is the window's, whose faults the fault thread serves.
@@ -1079,7 +1079,9 @@ mod tests {
         pager.supply(0, 1);
         assert_eq!(first.join().unwrap(), 1);
 
-        drop(dax);
+        // The window goes, and its stage, which changes the memory as it does, before the
+        // memory: the process may map something else there once it is unmapped.
+        drop((dax, window));
         // SAFETY: Unmaps the memory, which nothing uses any more.
         assert_eq!(unsafe { libc::munmap(memory, 2 * ps) }, 0);
     }
@@ -1111,7 +1113,7 @@ mod tests {
         pager.supply_pages(&vmo, 0..4 * ps as u64, &aux, 0).unwrap();
         // SAFETY: Only the test uses the memory, which outlives the window.
         let stage = unsafe { UffdSecondStage::in_process(base, 4 * ps as u64, None) }.unwrap();
-        let (dax, _window) = Dax::<()>::in_host_memory(stage).unwrap();
+        let (dax, window) = Dax::<()>::in_host_memory(stage).unwrap();
         dax.window.map(0, &vmo, 0, 4 * ps as u64, true).unwrap();
 
         // SAFETY: The memory is the window's, whose faults the fault thread serves.
@@ -1139,7 +1141,9 @@ mod tests {
         vmo.read(&mut bytes[1..], ps as u64).unwrap();
         assert_eq!(bytes, [9, 9]);
 
-        drop(dax);
+        // The window goes, and its stage, which changes the memory as it does, before the
+        // memory: the process may map something else there once it is unmapped.
+        drop((dax, window));
         // SAFETY: Unmaps the memory, which nothing uses any more.
         assert_eq!(unsafe { libc::munmap(memory, 4 * ps) }, 0);
     }
@@ -1185,7 +1189,7 @@ mod tests {
             )
         }
         .unwrap();
-        let (dax, _window) = Dax::<()>::in_host_memory(stage.clone()).unwrap();
+        let (dax, window) = Dax::<()>::in_host_memory(stage.clone()).unwrap();
         dax.window.map(0, &file, 0, (PAGES * ps) as u64, false).unwrap();
 
         // The mappings in the window's memory: its runs installed, and what lies between them.
@@ -1228,7 +1232,9 @@ mod tests {
             }
         }
 
-        drop(dax);
+        // The window goes, and its stage, which changes the memory as it does, before the
+        // memory: the process may map something else there once it is unmapped.
+        drop((dax, window));
         // SAFETY: Unmaps the memory, which nothing uses any more.
         assert_eq!(unsafe { libc::munmap(memory, PAGES * ps) }, 0);
     }
@@ -1273,7 +1279,7 @@ mod tests {
         let stage =
             unsafe { UffdSecondStage::new(base, (pages * ps) as u64, Memories::InProcess, None) }
                 .unwrap();
-        let (dax, _window) = Dax::<()>::in_host_memory(stage.clone()).unwrap();
+        let (dax, dax_window) = Dax::<()>::in_host_memory(stage.clone()).unwrap();
         dax.window.map(0, &file, 0, (pages * ps) as u64, false).unwrap();
         // SAFETY: The memory is the window's, whose faults the fault thread serves.
         let load = |page: usize| unsafe { ((base + page * ps) as *const u8).read_volatile() };
@@ -1284,7 +1290,9 @@ mod tests {
             let runs = stage.pages.lock().unwrap().runs;
             assert!(runs <= default_budget(), "round {round}: {runs} runs installed");
         }
-        drop(dax);
+        // The window goes, and its stage, which changes the memory as it does, before the
+        // memory: the process may map something else there once it is unmapped.
+        drop((dax, dax_window));
         // SAFETY: Unmaps the memory, which nothing uses any more.
         assert_eq!(unsafe { libc::munmap(window, pages * ps) }, 0);
     }
@@ -1312,7 +1320,7 @@ mod tests {
         let base = memory as usize;
         // SAFETY: Only the test uses the memory, which outlives the window.
         let stage = unsafe { UffdSecondStage::in_process(base, ps as u64, None) }.unwrap();
-        let (dax, _window) = Dax::<()>::in_host_memory(stage).unwrap();
+        let (dax, window) = Dax::<()>::in_host_memory(stage).unwrap();
         let mut pipe = [0; 2];
         // SAFETY: Creates a pipe, which the test closes.
         assert_eq!(unsafe { libc::pipe(pipe.as_mut_ptr()) }, 0);
@@ -1331,7 +1339,9 @@ mod tests {
         assert_eq!(unsafe { libc::read(pipe[0], read.as_mut_ptr().cast(), ps) }, ps as isize);
         assert!(read.iter().all(|byte| *byte == 0), "the page mapped again reads otherwise");
 
-        drop(dax);
+        // The window goes, and its stage, which changes the memory as it does, before the
+        // memory: the process may map something else there once it is unmapped.
+        drop((dax, window));
         // SAFETY: Closes the pipe and unmaps the memory, which nothing uses any more.
         unsafe {
             libc::close(pipe[0]);

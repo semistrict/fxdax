@@ -3042,8 +3042,8 @@ mod tests {
         };
         assert_ne!(memory, libc::MAP_FAILED);
         let prefault = Arc::new(RecordingPrefault::default());
-        // SAFETY: The memory is the test's, and outlives the store, whose window is leaked with it.
-        let _window = unsafe {
+        // SAFETY: The memory is the test's, and outlives the store and its window.
+        let window = unsafe {
             store.create_dax_window_in_host_memory(
                 std::ptr::NonNull::new(memory.cast()).unwrap(),
                 4 * ps,
@@ -3053,7 +3053,9 @@ mod tests {
         .unwrap();
         store.map(id(&store, 1), 0, 2 * ps, ps, true).unwrap();
         assert_eq!(*prefault.0.lock().unwrap(), [ps, 2 * ps]);
-        drop(store);
+        // The window goes, and its stage, which changes the memory as it does, before the memory:
+        // the process may map something else there once it is unmapped.
+        drop((store, window));
         // SAFETY: Unmaps the memory, which nothing uses any more.
         assert_eq!(unsafe { libc::munmap(memory, 4 * ps as usize) }, 0);
     }
