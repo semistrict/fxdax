@@ -229,9 +229,9 @@ pub fn twice<T: Send>(run: impl Fn() -> T + Sync) -> (T, T) {
     })
 }
 
-/// Checks that round `round`, run twice, left the same directories, `first` and `second`.
+/// Checks that round `round`, run twice, left the same directories, `first` and `second`, of which
+/// each run leaves as many: a round that stops early panics rather than return.
 pub fn same(round: u64, first: &Left, second: &Left) {
-    assert_eq!(first.len(), second.len(), "round {round}: one ran longer");
     for ((name, first), (_, second)) in first.iter().zip(second) {
         let paths: BTreeSet<_> = first.keys().chain(second.keys()).collect();
         let differing: Vec<_> =
