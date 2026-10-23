@@ -392,6 +392,42 @@ impl Firecracker {
         Ok(self.child.try_wait()?.is_none())
     }
 
+    /// The connection the VM's guest makes to `listener`: an error, rather than a wait for ever,
+    /// once the VM exits without making it, as one whose guest panics, resetting it, does, which
+    /// Firecracker exits from well (TASK-79.59). Its guest's console, which says why, goes to this
+    /// process's output then.
+    pub fn accept(
+        &mut self,
+        listener: &std::os::unix::net::UnixListener,
+    ) -> anyhow::Result<std::os::unix::net::UnixStream> {
+        listener.set_nonblocking(true)?;
+        let accepted = |listener: &std::os::unix::net::UnixListener| match listener.accept() {
+            Ok((stream, _)) => Ok(Some(stream)),
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
+            Err(err) => Err(err),
+        };
+        let stream = loop {
+            if let Some(stream) = accepted(listener)? {
+                break stream;
+            }
+            if let Some(status) = self.child.try_wait()? {
+                // A guest connects, then its VM exits, between the two looks.
+                if let Some(stream) = accepted(listener)? {
+                    break stream;
+                }
+                split_console(std::fs::File::open(&self.console)?)?;
+                anyhow::bail!(
+                    "the VM exited {status} before its guest connected: see {}",
+                    self.console.display()
+                );
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        };
+        listener.set_nonblocking(false)?;
+        stream.set_nonblocking(false)?;
+        Ok(stream)
+    }
+
     /// Waits for the VM to end, and returns its exit status and its console.
     pub fn wait(mut self) -> anyhow::Result<(std::process::ExitStatus, PathBuf)> {
         Ok((self.child.wait()?, self.console))
@@ -647,4 +683,45 @@ fn tree_size(dir: &Path) -> anyhow::Result<u64> {
         }
     }
     Ok(size)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::os::unix::net::{UnixListener, UnixStream};
+
+    /// A Firecracker of the test's: `program`, as its process, with a console of its own.
+    fn firecracker(dir: &Path, program: &[&str]) -> Firecracker {
+        let console = dir.join(format!("{}.console.txt", program[0]));
+        std::fs::write(&console, "the guest's panic\n").unwrap();
+        let child = std::process::Command::new(program[0]).args(&program[1..]).spawn().unwrap();
+        Firecracker { child, api: dir.join("api"), console }
+    }
+
+    /// TASK-79.59: a VM that exits before its guest connects is an error at once, which names its
+    /// console, not a wait for ever; one whose guest connects, its connection.
+    #[test]
+    fn accepts_end_once_their_vms_do() {
+        let dir = tempdir::TempDir::new("accept").unwrap();
+        let path = dir.path().join("vsock");
+        let listener = UnixListener::bind(&path).unwrap();
+        let mut gone = firecracker(dir.path(), &["true"]);
+        let refused = gone.accept(&listener).map(drop).map_err(|err| err.to_string());
+        let console = dir.path().join("true.console.txt");
+        let said = format!(
+            "the VM exited exit status: 0 before its guest connected: see {}",
+            console.display()
+        );
+        assert_eq!(refused, Err(said));
+
+        let mut running = firecracker(dir.path(), &["sleep", "60"]);
+        let mut connecting = UnixStream::connect(&path).unwrap();
+        let mut accepted = running.accept(&listener).unwrap();
+        connecting.write_all(b"ready\n").unwrap();
+        let mut said = [0; 6];
+        accepted.read_exact(&mut said).unwrap();
+        assert_eq!(&said, b"ready\n");
+        running.kill().unwrap();
+    }
 }

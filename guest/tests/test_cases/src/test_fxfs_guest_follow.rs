@@ -90,8 +90,9 @@ mod host {
     }
 
     impl Guest {
-        fn accept(listener: &UnixListener) -> anyhow::Result<Self> {
-            let (stream, _) = listener.accept()?;
+        /// The connection `firecracker`'s guest makes to `listener` (`Firecracker::accept`).
+        fn accept(firecracker: &mut Firecracker, listener: &UnixListener) -> anyhow::Result<Self> {
+            let stream = firecracker.accept(listener)?;
             Ok(Self { answers: stream.try_clone()?, said: BufReader::new(stream) })
         }
 
@@ -120,12 +121,12 @@ mod host {
             let listen = |role: &str| UnixListener::bind(format!("{}_{PORT}", uds(role).display()));
             let (writers, followers) = (listen("writer")?, listen("follower")?);
 
-            let writer = run(self, test_setup, &root, "writer", &store, false, &uds("writer"))?;
-            let mut w = Guest::accept(&writers)?;
+            let mut writer = run(self, test_setup, &root, "writer", &store, false, &uds("writer"))?;
+            let mut w = Guest::accept(&mut writer, &writers)?;
             w.expect("ready")?;
-            let follower =
+            let mut follower =
                 run(self, test_setup, &root, "follower", &store, true, &uds("follower"))?;
-            let mut f = Guest::accept(&followers)?;
+            let mut f = Guest::accept(&mut follower, &followers)?;
             f.expect("following")?;
             w.tell("change")?;
             w.expect("changed")?;

@@ -168,23 +168,32 @@ mod host {
             let history = Arc::new(Mutex::new(History::new()));
             let listener = UnixListener::bind(format!("{}_{PORT}", uds("writer").display()))?;
             let records = |role: &str| root.parent().unwrap().join(format!("history-{role}.txt"));
-            let writing = histories(
-                &uds("writer"),
-                &records("writer"),
-                history.clone(),
-                Some(store.clone()),
-            )?;
-            let writer = self.spawn(test_setup, &root, "writer", &store, &uds("writer"))?;
-            let (stream, _) = listener.accept()?;
+            // Each VM's history, which its guest sends first, accepted here, as its VM may end
+            // without sending it (`Firecracker::accept`), then taken on a thread of its own.
+            let listen =
+                |role: &str| UnixListener::bind(format!("{}_{HISTORY_PORT}", uds(role).display()));
+            let writing = listen("writer")?;
+            let mut writer = self.spawn(test_setup, &root, "writer", &store, &uds("writer"))?;
+            let writing = writer.accept(&writing)?;
+            let mut recording =
+                vec![histories(writing, &records("writer"), history.clone(), Some(store.clone()))?];
+            let stream = writer.accept(&listener)?;
             let mut said = String::new();
             BufReader::new(stream).read_line(&mut said)?;
             anyhow::ensure!(said == "ready\n", "the writer said {said:?}");
-            let mut recording = vec![writing];
             let followers = FOLLOWERS
                 .iter()
                 .map(|role| {
-                    recording.push(histories(&uds(role), &records(role), history.clone(), None)?);
-                    self.spawn(test_setup, &root, role, &store, &uds(role))
+                    Ok((listen(role)?, self.spawn(test_setup, &root, role, &store, &uds(role))?))
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            let followers = FOLLOWERS
+                .iter()
+                .zip(followers)
+                .map(|(role, (following, mut follower))| {
+                    let following = follower.accept(&following)?;
+                    recording.push(histories(following, &records(role), history.clone(), None)?);
+                    Ok(follower)
                 })
                 .collect::<anyhow::Result<Vec<_>>>()?;
             self.ended("writer", writer)?;
@@ -242,20 +251,18 @@ mod host {
         }
     }
 
-    /// Takes the history a VM sends over its vsock at `uds` into `history`, and to the file at
+    /// Takes the history a VM sends on `stream`, from its vsock, into `history`, and to the file at
     /// `records` as it was sent, on a thread of its own, until the VM is done: the writer's,
     /// answering its syncs with the latest commit of the store at `store`, or a follower's. Whole
     /// lines alone: a VM ended at once may have sent half of its last.
     fn histories(
-        uds: &Path,
+        stream: std::os::unix::net::UnixStream,
         records: &Path,
         history: Arc<Mutex<History<String, u64>>>,
         store: Option<PathBuf>,
     ) -> anyhow::Result<std::thread::JoinHandle<anyhow::Result<()>>> {
-        let listener = UnixListener::bind(format!("{}_{HISTORY_PORT}", uds.display()))?;
         let mut records = std::io::BufWriter::new(std::fs::File::create(records)?);
         Ok(std::thread::spawn(move || {
-            let (stream, _) = listener.accept()?;
             let control = match &store {
                 Some(_) => {
                     let extentd = std::env::var_os("FXDAX_EXTENTD").expect("FXDAX_EXTENTD set");

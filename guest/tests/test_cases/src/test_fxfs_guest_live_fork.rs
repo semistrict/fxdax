@@ -73,8 +73,8 @@ mod host {
             let uds = std::env::temp_dir().join(format!("fxdax-fork-{}.vsock", std::process::id()));
             let listener = UnixListener::bind(format!("{}_{PORT}", uds.display()))?;
 
-            let source = run(test_setup, &root, "source", &store, Some(&uds))?;
-            let (stream, _) = listener.accept()?;
+            let mut source = run(test_setup, &root, "source", &store, Some(&uds))?;
+            let stream = source.accept(&listener)?;
             let mut said = String::new();
             let mut answers = stream.try_clone()?;
             BufReader::new(stream).read_line(&mut said)?;

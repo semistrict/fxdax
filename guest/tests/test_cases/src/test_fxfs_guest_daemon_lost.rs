@@ -69,8 +69,8 @@ mod host {
                 let listener = UnixListener::bind(format!("{}_{PORT}", uds.display()))?;
                 vms.push((name, boot(test_setup, &root, name, &extentd, &uds)?, listener));
             }
-            for (name, _, listener) in &vms {
-                let (stream, _) = listener.accept()?;
+            for (name, firecracker, listener) in &mut vms {
+                let stream = firecracker.accept(listener)?;
                 let mut said = String::new();
                 BufReader::new(stream).read_line(&mut said)?;
                 anyhow::ensure!(said == "loading\n", "{name}'s guest said {said:?}");
