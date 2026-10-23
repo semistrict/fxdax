@@ -1749,6 +1749,52 @@ fn serves_hundreds_of_forks_of_a_base() {
     drop(stores);
 }
 
+/// TASK-92.17: what the daemon says of followers, which its stats poll looks at every 200 ms and
+/// each scrape of its metrics counts, costs nothing of what a fork's base holds: here, of 100
+/// forks open of a base of 32768 extents, none followed, the followers' views are counted within
+/// a few milliseconds, as of forks of an empty base. Counting them walked each fork's whole
+/// extent map, its base's with it, under its state lock: 3.3 million extents a count.
+#[test]
+fn counting_followers_walks_no_extents() {
+    const FORKS: u64 = 100;
+    const EXTENTS: u64 = 32768;
+    host();
+    super::raise_open_files_limit().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("extentd.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || serve(listener));
+    let base = RemoteExtentStore::connect(&socket, dir.path().join("base"), 1 << 30).unwrap();
+    let branch = base.branch();
+    for sequence in 1..=EXTENTS {
+        write(&base, ExtentId { branch, sequence }, 0, &pattern(sequence as u8, BLOCK)).unwrap();
+    }
+    base.commit(None).unwrap();
+    let forks: Vec<_> = (1..=FORKS)
+        .map(|n| {
+            let fork = dir.path().join(format!("fork-{n}"));
+            base.fork(&fork, branch + n).unwrap();
+            fork
+        })
+        .collect();
+    drop(base);
+    let stores: Vec<_> = (forks.iter())
+        .map(|fork| RemoteExtentStore::connect(&socket, fork, 1 << 30).unwrap())
+        .collect();
+    // The quickest of a few counts: what counting itself costs.
+    let took = (0..5)
+        .map(|_| {
+            let start = std::time::Instant::now();
+            assert_eq!(super::stores::follower_views(), 0);
+            start.elapsed()
+        })
+        .min()
+        .unwrap();
+    println!("{FORKS} forks of a base of {EXTENTS} extents: their followers counted in {took:?}");
+    assert!(took < std::time::Duration::from_millis(10), "counting them took {took:?}");
+    drop(stores);
+}
+
 /// TASK-47: the daemon's metrics, scraped over HTTP as Prometheus scrapes them, count each kind of
 /// request as it is served, and say how many VM processes are connected and stores open.
 #[test]

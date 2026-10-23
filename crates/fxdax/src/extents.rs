@@ -745,11 +745,16 @@ impl ExtentStore {
         }
     }
 
-    /// fxdax: what the store's followers are (TASK-42.7): their views, how far behind, and the
-    /// bytes of frees they keep, which count as used.
-    pub fn follower_stats(&self) -> Result<(extent_store::ViewStats, u64)> {
-        let kept = self.store.usage().map_err(errno)?.kept_for_views;
-        Ok((self.store.view_stats(), kept))
+    /// fxdax: what the store's followers are (TASK-42.7): their views, how far behind, found
+    /// without the store's state (TASK-92.17).
+    pub fn view_stats(&self) -> extent_store::ViewStats {
+        self.store.view_stats()
+    }
+
+    /// fxdax: the bytes of frees the store's followers' views keep, which count as used
+    /// (TASK-42.7).
+    pub fn kept_for_views(&self) -> Result<u64> {
+        self.store.kept_for_views().map_err(errno)
     }
 
     /// fxdax: the store's uploader, which a follower's writer's is.

@@ -64,9 +64,11 @@ fn error_is<E: std::error::Error + PartialEq + Send + Sync + 'static, T>(
     assert_eq!(error.downcast_ref::<E>(), Some(&expected), "{error:?}");
 }
 
-/// The bytes of frees views keep, which count as used.
+/// The bytes of frees views keep, which count as used: as the store's usage says, and its
+/// `kept_for_views` alone (TASK-92.17).
 fn kept(store: &Store<MemDir>) -> u64 {
     let kept = store.usage().unwrap().kept_for_views;
+    assert_eq!(store.kept_for_views().unwrap(), kept);
     assert_eq!(store.info().unwrap().used, store_bytes(store) + kept);
     kept
 }
