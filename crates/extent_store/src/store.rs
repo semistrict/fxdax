@@ -960,13 +960,18 @@ impl<D: Dir> Store<D> {
         // A sealed one's data stays until the uploader has what it needs of it, and until the
         // commit that frees it decides whether views keep it. fxdax: an open one's goes at once:
         // no commit held it, so that no reader needs it, and what it took of segments is dead
-        // space, counted so (TASK-79.2).
+        // space, counted so (TASK-79.2). Of a file of its own it has none, which its seal would
+        // have made, but its raw file, which goes with the next commit: the lineage has nothing to
+        // let go of, which would take the file the extent's next opening seals at that path
+        // (TASK-79.1).
         if placement.is_none() {
             let uploader = state.uploads.is_some() && rules().keep_frees;
             let freed = state.epoch + 1;
             state.kept.insert(extent, Kept { entry, freed, uploader });
-        } else {
-            state.forget(extent, entry);
+        } else if let Data::Pieces(pieces) = &entry.data {
+            for piece in pieces {
+                state.segments.let_go(piece);
+            }
         }
         Ok(())
     }

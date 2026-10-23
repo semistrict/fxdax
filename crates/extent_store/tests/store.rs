@@ -1986,6 +1986,24 @@ fn abandoned_writes_leave_no_raw_files_to_writes_before_the_flush() {
     assert!(read(&store, extent(1), 0, 40 << 10) == pattern(1, 0, 40 << 10), "other data");
 }
 
+/// A large extent freed while open is written anew, large again, before any commit: the raw file
+/// it had, which the free left to the next commit's flush to remove, makes way for another
+/// (TASK-79.5).
+#[test]
+fn large_extents_freed_open_are_written_anew_at_once() {
+    let dir = MemDir::new();
+    let store = create(dir.clone(), 1 << 20);
+    store.write(extent(1), 0, &pattern(1, 0, 40 << 10)).unwrap();
+    store.free(extent(1)).unwrap();
+    store.write(extent(1), 0, &pattern(2, 0, 40 << 10)).unwrap();
+    assert!(read(&store, extent(1), 0, 40 << 10) == pattern(2, 0, 40 << 10), "other data");
+    store.commit(None).unwrap();
+    assert_eq!(store.place(extent(1)).unwrap(), Some(Place::Own));
+    let store = reopened(store, &dir);
+    assert!(read(&store, extent(1), 0, 40 << 10) == pattern(2, 0, 40 << 10), "other data");
+    assert_eq!(dir.list(&of("open-extents", BRANCH)).unwrap(), Vec::<String>::new());
+}
+
 /// A write in flight to a large extent freed meanwhile, which the extent's next write placed in a
 /// file of its own again, is dropped as it finishes: the extent holds what was written after the
 /// free, in a raw file of its own, not the one the write in flight wrote to (TASK-79.1,
