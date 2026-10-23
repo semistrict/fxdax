@@ -666,29 +666,24 @@ pub(super) fn open_count() -> usize {
     open_paths().held_by_holders()
 }
 
+/// fxdax: the stores open for connections, writers' and followers'.
+fn open_instances() -> Vec<Arc<ExtentStore>> {
+    let instances = instances().lock().unwrap();
+    instances.values().filter_map(|(store, _)| store.upgrade()).collect()
+}
+
 /// The branches of the stores open for connections whose commits upload now, and what their
 /// uploaders have left to do (`metrics`, TASK-91.3).
 pub(super) fn upload_statuses() -> Vec<(u64, crate::remote::UploadStatus)> {
-    let stores: Vec<Arc<ExtentStore>> = {
-        let instances = instances().lock().unwrap();
-        instances.values().filter_map(|(store, _)| store.upgrade()).collect()
-    };
-    (stores.iter())
+    (open_instances().iter())
         .filter_map(|store| Some((store.branch(), store.upload_status().ok()??)))
         .collect()
 }
 
-/// How many views followers have of the stores open for connections (`metrics`).
+/// How many views followers have of the stores open for connections (`metrics`): counted of the
+/// views alone, which hold none of the stores' state, their guests' (TASK-92.17).
 pub(super) fn follower_views() -> usize {
-    let stores: Vec<Arc<ExtentStore>> = {
-        let instances = instances().lock().unwrap();
-        instances.values().filter_map(|(store, _)| store.upgrade()).collect()
-    };
-    stores
-        .iter()
-        .filter_map(|store| store.follower_stats().ok())
-        .map(|(views, _)| views.views)
-        .sum()
+    open_instances().iter().map(|store| store.view_stats().views).sum()
 }
 
 /// fxdax: the bucket `FXDAX_EXTENTD_REMOTE` names, which the stores opened keep their branches in:
@@ -732,19 +727,22 @@ struct FollowerStats {
 }
 
 impl FollowerStats {
-    /// Takes the stores open for connections as they are now.
+    /// Takes the stores open for connections as they are now: those followers view alone, as
+    /// those no follower views keep nothing for them, whose state their guests' requests hold is
+    /// then taken for the bytes of frees views keep alone, which it counts (TASK-92.17).
     fn update(&mut self) {
-        let stores: Vec<Arc<ExtentStore>> = {
-            let instances = instances().lock().unwrap();
-            instances.values().filter_map(|(store, _)| store.upgrade()).collect()
-        };
         self.views = 0;
-        for store in stores {
-            let Ok((views, kept)) = store.follower_stats() else { continue };
+        for store in open_instances() {
+            let views = store.view_stats();
+            if views.views == 0 {
+                continue;
+            }
             self.views += views.views;
             self.max_behind = self.max_behind.max(views.behind);
             self.max_stale_ms = self.max_stale_ms.max(views.stale_for.as_millis() as u64);
-            self.max_kept = self.max_kept.max(kept);
+            if let Ok(kept) = store.kept_for_views() {
+                self.max_kept = self.max_kept.max(kept);
+            }
         }
         self.max_views = self.max_views.max(self.views);
     }
@@ -763,7 +761,8 @@ impl FollowerStats {
 /// (`super::metrics::requests_line`), while it lives: in the file `FXDAX_EXTENTD_STATS` names, if
 /// it names one, a line each, rewritten whole within [`STATS_POLL`] of each change, which the
 /// bench reports (`scripts/bench-report.py`); and the bucket's in the log every [`STATS_EVERY`]
-/// that it changed.
+/// that it changed. fxdax: what it keeps but the bucket's, it looks at only to keep it in the file
+/// (TASK-92.17).
 fn watch_stats(bucket: std::sync::Weak<extent_remote::store::Store>) {
     let file = std::env::var_os("FXDAX_EXTENTD_STATS").filter(|file| !file.is_empty());
     let file = file.map(PathBuf::from);
@@ -776,16 +775,20 @@ fn watch_stats(bucket: std::sync::Weak<extent_remote::store::Store>) {
             std::thread::sleep(STATS_POLL);
             let Some(bucket) = bucket.upgrade() else { return };
             let stats = bucket.stats();
-            followers.update();
-            let lines =
-                [stats.line(), followers.line(), daemon_line(), super::metrics::requests_line()];
-            if lines[..] != written[..] {
-                if let Some(file) = &file
-                    && let Err(err) = write_stats(file, &lines)
-                {
-                    log::warn!("extentd: writing {}: {err}", file.display());
+            if let Some(file) = &file {
+                followers.update();
+                let lines = [
+                    stats.line(),
+                    followers.line(),
+                    daemon_line(),
+                    super::metrics::requests_line(),
+                ];
+                if lines[..] != written[..] {
+                    if let Err(err) = write_stats(file, &lines) {
+                        log::warn!("extentd: writing {}: {err}", file.display());
+                    }
+                    written = lines.to_vec();
                 }
-                written = lines.to_vec();
             }
             if stats != logged && at.elapsed() >= STATS_EVERY {
                 log::info!("extentd: {}", stats.line());

@@ -1938,6 +1938,14 @@ impl<D: Dir> Store<D> {
         })
     }
 
+    /// fxdax: the bytes of frees views keep, which count as used ([`Usage::kept_for_views`]):
+    /// found as [`Store::info`] finds what it says, at once, without [`Store::usage`]'s walk of
+    /// every extent the branch holds, its base's with them, which holds the state meanwhile
+    /// (TASK-92.17).
+    pub fn kept_for_views(&self) -> Result<u64, Error> {
+        Ok(self.state()?.kept.for_views())
+    }
+
     /// fxdax: a view of the branch as of its latest commit, which a follower reads through
     /// ([`Store::read_view`]) while the writer goes on. It waits for no commit.
     pub fn view(&self) -> View {
