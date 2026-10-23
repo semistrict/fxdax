@@ -3,9 +3,11 @@ id: TASK-79.70
 title: >-
   Importing a file of about 1 GiB with the kernel's default 1 GiB of memory
   never finishes
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@review-session'
 created_date: '2026-10-23 03:10'
+updated_date: '2026-10-23 03:14'
 labels:
   - review-2026-10-21
 dependencies: []

@@ -3,9 +3,11 @@ id: TASK-92.44
 title: >-
   Importing many small files costs more per file as the layer grows, inside
   Fxfs/Zircon
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@review-session'
 created_date: '2026-10-23 03:10'
+updated_date: '2026-10-23 03:14'
 labels:
   - review-2026-10-21
 dependencies: []

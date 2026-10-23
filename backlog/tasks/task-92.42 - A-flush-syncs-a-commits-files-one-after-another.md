@@ -1,9 +1,11 @@
 ---
 id: TASK-92.42
 title: A flush syncs a commit's files one after another
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@review-session'
 created_date: '2026-10-23 03:10'
+updated_date: '2026-10-23 03:14'
 labels:
   - review-2026-10-21
 dependencies: []

@@ -3,9 +3,11 @@ id: TASK-79.72
 title: >-
   A dead writer's fork segment landing after the child checked the parent's
   state leaves the child a branch of its own
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@review-session'
 created_date: '2026-10-23 03:10'
+updated_date: '2026-10-23 03:14'
 labels:
   - review-2026-10-21
 dependencies: []

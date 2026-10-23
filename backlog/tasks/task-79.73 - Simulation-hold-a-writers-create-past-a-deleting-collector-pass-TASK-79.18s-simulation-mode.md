@@ -3,9 +3,11 @@ id: TASK-79.73
 title: >-
   Simulation: hold a writer's create past a deleting collector pass
   (TASK-79.18's simulation mode)
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@review-session'
 created_date: '2026-10-23 03:10'
+updated_date: '2026-10-23 03:14'
 labels:
   - review-2026-10-21
 dependencies: []

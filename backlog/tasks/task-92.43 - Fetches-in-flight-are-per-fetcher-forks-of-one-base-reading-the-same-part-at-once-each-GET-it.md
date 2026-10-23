@@ -3,9 +3,11 @@ id: TASK-92.43
 title: >-
   Fetches in flight are per fetcher: forks of one base reading the same part at
   once each GET it
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@review-session'
 created_date: '2026-10-23 03:10'
+updated_date: '2026-10-23 03:14'
 labels:
   - review-2026-10-21
 dependencies: []

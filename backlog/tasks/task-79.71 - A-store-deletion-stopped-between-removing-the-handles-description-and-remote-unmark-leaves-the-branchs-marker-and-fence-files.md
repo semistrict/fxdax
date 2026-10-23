@@ -3,9 +3,11 @@ id: TASK-79.71
 title: >-
   A store deletion stopped between removing the handle's description and
   remote::unmark leaves the branch's marker and fence files
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@review-session'
 created_date: '2026-10-23 03:10'
+updated_date: '2026-10-23 03:14'
 labels:
   - review-2026-10-21
 dependencies: []
