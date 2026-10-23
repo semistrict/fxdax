@@ -1095,12 +1095,15 @@ impl ExtentStore {
     }
 
     /// Maps zeros where the window maps what keeps a freed extent's pages, which has the identity
-    /// `kept` (`Dax::replace_kept`).
+    /// `kept` (`Dax::replace_kept`). fxdax: without waiting for the window's second stage to make
+    /// the change, as a `MAP` doesn't (see `map`): the guest's `FREE` completes once its VM
+    /// process has made it, and the freed extent's memory the guest may reach until then is held
+    /// until then.
     fn replace_kept(&self, kept: usize) -> Result<()> {
         let mut dax = self.dax.lock().unwrap();
         let Some(dax) = dax.as_mut() else { return Ok(()) };
         let zeros = self.zeros(dax)?;
-        dax.replace_kept(kept, Mapped::zeros(&zeros), &zeros)
+        dax.deferring(|dax| dax.replace_kept(kept, Mapped::zeros(&zeros), &zeros)).0
     }
 
     /// Commits what was written and freed, and `root` as the store's root if given, durably
@@ -2911,6 +2914,40 @@ mod tests {
         assert_eq!(Arc::strong_count(&cached), references - 1, "kept once the change was made");
         evict();
         assert_eq!(held(), 0, "held from eviction once the change was made");
+    }
+
+    /// fxdax (TASK-92.50): a `FREE` maps zeros where the window maps the extent freed without
+    /// waiting for the change to be made, as a `MAP` does: the extent's memory, cached, is kept
+    /// until then, its pages held from eviction.
+    #[test]
+    fn frees_hold_what_they_replace_until_the_change_is_made() {
+        let (store, _dir) = store(1 << 20);
+        let ps = page_size();
+        let stage = Arc::new(DeferringStage::default());
+        let _window = store.create_dax_window(ps, Some(stage.clone())).unwrap();
+        let freed = id(&store, 1);
+        write(&store, freed, 0, &pattern(1, BLOCK)).unwrap();
+        store.commit(None).unwrap();
+        store.map(freed, 0, ps, 0, false).unwrap();
+        let cached = {
+            let extents = extent_cache().extents.lock().unwrap();
+            extents[&(store.arenas.of(freed), freed)].extent.clone()
+        };
+        cached.vmo().read(&mut [0], 0).unwrap();
+        let held = || cached.vmo().info().unwrap().committed_bytes;
+        let evict = || cached.vmo().op_range(zx::VmoOp::from_raw(VMO_OP_EVICT), 0, ps).unwrap();
+        let kept = || stage.deferral.state.lock().unwrap().1.len();
+        let before = kept();
+
+        store.free(freed).unwrap();
+        assert_eq!(kept(), before + 1, "the FREE kept nothing until its change is made");
+        assert_eq!(stage.deferral.waiting(), 0, "the FREE waited for its change");
+        assert_eq!(Arc::strong_count(&cached), 2, "the freed extent's memory went");
+        evict();
+        assert_eq!(held(), ps, "evicted before the change was made");
+
+        stage.deferral.make();
+        assert_eq!(Arc::strong_count(&cached), 1, "kept once the change was made");
     }
 
     /// fxdax (TASK-92.50): a commit sealing an open extent that a `MAP` stopped mapping, whose
