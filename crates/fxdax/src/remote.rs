@@ -2532,12 +2532,6 @@ mod tests {
             (Self { dir: dir.to_owned(), gated, bucket, branch, child }, fork)
         }
 
-        /// The host, restarted, its disk as the crash left it at `to` ([`restart`]). The parent's
-        /// writer is in flight still, as a dead host's PUT is, which may land.
-        fn restart(&self, to: &std::path::Path) {
-            restart(&self.dir, to);
-        }
-
         /// Takes the parent's branch, as the parent's next writer.
         fn take(&self) -> Result<(), extent_remote::Error> {
             let next = extent_remote::Writer::open(self.bucket.clone(), self.branch, 3, 0);
@@ -2561,11 +2555,6 @@ mod tests {
             self.gated.hold.send_replace(Hold::Nothing);
             fork.join().unwrap().map_err(|err| err.to_string())
         }
-
-        /// Why the fork fails, its writer finding its branch taken ([`taken`]).
-        fn taken(&self) -> Result<(), String> {
-            taken(self.child)
-        }
     }
 
     /// Why a fork to `child` fails, its writer finding its branch taken.
@@ -2575,7 +2564,8 @@ mod tests {
 
     /// The host whose disk is at `from`, crashed, restarted with its disk as the crash left it at
     /// `to`: the parent's store and the fork's handle, copied there, the handle naming the copy;
-    /// no store of them open.
+    /// no store of them open. What the crashed host's writes had in flight may land still, as a
+    /// dead host's PUTs may.
     fn restart(from: &std::path::Path, to: &std::path::Path) {
         std::fs::create_dir(to).unwrap();
         for name in ["parent", "child"] {
@@ -2609,7 +2599,7 @@ mod tests {
         let origin = extent_remote::layout::Origin { parent: crashed.branch, at: 2 };
         assert_eq!(record.unwrap().map(|record| record.origin), Some(Some(origin)));
         assert_eq!(forked.root(), Ok(b"root".to_vec()));
-        assert_eq!(crashed.end(fork), crashed.taken());
+        assert_eq!(crashed.end(fork), taken(crashed.child));
     }
 
     /// TASK-79.72: so does a fork's child whose segment never lands, its parent's store open here,
@@ -2623,7 +2613,7 @@ mod tests {
         let forked = ExtentStore::open(dir.path().join("child")).unwrap();
         let refused = forked.attach_remote(crashed.bucket.clone(), 2, idle());
         assert_eq!((refused, crashed.take()), (Err(crashed.refusal()), Ok(())));
-        assert_eq!(crashed.end(fork), crashed.taken());
+        assert_eq!(crashed.end(fork), taken(crashed.child));
 
         assert_eq!(forked.attach_remote(crashed.bucket.clone(), 4, idle()), Ok(()));
         let record = futures::executor::block_on(branch::record(&*crashed.bucket, crashed.child));
@@ -2656,9 +2646,9 @@ mod tests {
         let (crashed, restarted) = (dir.path().join("crashed"), dir.path().join("restarted"));
         std::fs::create_dir(&crashed).unwrap();
         let (crashed, fork) = CrashedFork::new(&crashed);
-        crashed.restart(&restarted);
+        restart(&crashed.dir, &restarted);
         let attached = attached_after_restart(&crashed, fork, &restarted);
-        assert_eq!(attached, (Ok(()), crashed.taken()));
+        assert_eq!(attached, (Ok(()), taken(crashed.child)));
         let record = futures::executor::block_on(branch::record(&*crashed.bucket, crashed.child));
         assert_eq!(record.unwrap().map(|record| record.origin), Some(None));
         let inherited = (vec![(1, pattern(1, BLOCK))], Some(b"root".to_vec()));
@@ -2679,10 +2669,10 @@ mod tests {
         let (crashed, restarted) = (dir.path().join("crashed"), dir.path().join("restarted"));
         std::fs::create_dir(&crashed).unwrap();
         let (crashed, fork) = CrashedFork::new(&crashed);
-        crashed.restart(&restarted);
+        restart(&crashed.dir, &restarted);
         ExtentStore::delete(restarted.join("parent"), None).unwrap();
         let attached = attached_after_restart(&crashed, fork, &restarted);
-        assert_eq!(attached, (Ok(()), crashed.taken()));
+        assert_eq!(attached, (Ok(()), taken(crashed.child)));
         let record = futures::executor::block_on(branch::record(&*crashed.bucket, crashed.child));
         assert_eq!(record.unwrap().map(|record| record.origin), Some(None));
         let inherited = (vec![(1, pattern(1, BLOCK))], Some(b"root".to_vec()));
