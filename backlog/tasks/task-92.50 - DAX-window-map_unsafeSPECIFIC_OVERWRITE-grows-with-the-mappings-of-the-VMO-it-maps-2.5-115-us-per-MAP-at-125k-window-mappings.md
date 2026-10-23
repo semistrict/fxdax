@@ -3,9 +3,11 @@ id: TASK-92.50
 title: >-
   DAX window map_unsafe(SPECIFIC_OVERWRITE) grows with the mappings of the VMO
   it maps: 2.5 -> 115 us per MAP at 125k window mappings
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@review-session'
 created_date: '2026-10-23 18:12'
+updated_date: '2026-10-23 18:12'
 labels:
   - review-2026-10-21
 dependencies: []
