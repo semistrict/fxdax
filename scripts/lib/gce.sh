@@ -99,13 +99,14 @@ gce_listed() {
 
 # gce_check_owner [mine] succeeds if the host carries this script's labels;
 # with `mine`, only if this run made it too, which no host without a maker
-# label, as those made before hosts had one, was.
+# label, as those made before hosts had one, was. gcloud prints a label the
+# host lacks as empty, after its tab.
 gce_check_owner() {
     local labels
     labels=$("${cloud[@]}" compute instances describe "$instance" --zone="$zone" \
         --format='value(labels.purpose,labels.lifecycle,labels.maker)') || return
     case $labels in
-        "$purpose"$'\t'temporary | "$purpose"$'\t'temporary$'\t'*) ;;
+        "$purpose"$'\t'temporary$'\t'*) ;;
         *)
             echo "Refusing to operate on $instance, which lacks the $purpose labels." >&2
             return 1

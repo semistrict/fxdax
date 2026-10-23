@@ -323,6 +323,20 @@ class Hosts(unittest.TestCase):
         )
         self.assertEqual(project.state(), {"instances": {}, "disks": []})
 
+    def test_a_host_made_before_hosts_had_a_maker_is_deleted_by_hand_alone(self):
+        # gcloud prints a label a host lacks as empty: "fxdax-test<TAB>temporary<TAB>".
+        made = {"zone": "us-east4-a", "labels": {"purpose": "fxdax-test", "lifecycle": "temporary"}}
+        project = Project({"instances": {"fxdax-test-x": made}, "disks": ["fxdax-test-x"]})
+        self.assertEqual(
+            project.run("status=0; gce_delete mine || status=$?; echo status $status"),
+            (0, "status 1\n", "Refusing to delete fxdax-test-x, which another run made.\n"),
+        )
+        self.assertEqual(
+            project.run("gce_delete"),
+            (0, "", "Verified deletion of fxdax-test-x and its boot disk.\n"),
+        )
+        self.assertEqual(project.state()["instances"], {})
+
     def test_a_host_of_another_purpose_is_not_deleted(self):
         other = host("earlier", purpose="someone-else")
         project = Project({"instances": {"fxdax-test-x": other}, "disks": ["fxdax-test-x"]})
