@@ -10,7 +10,7 @@
 
 use crate::dir::{Dir, File, not_found};
 use crate::durability::Syncs;
-use crate::framed::{Aligned, Files, Framed, Source, read_frame, read_whole};
+use crate::framed::{Aligned, Files, Framed, Source, read_frame, read_parts, read_whole};
 use crate::layers::Extents;
 use crate::layout::{
     Change, Data, Extent, OPEN_SEGMENTS, Piece, SEGMENTS, SegmentId, branch_dir, list_numbers,
@@ -67,6 +67,14 @@ impl<F> Segment<F> {
         Self { phase, len: 0, size: 0, live, writers: 0, pending: 0, shared: false }
     }
 
+    /// Whether reaping lets it go: no extent's data is in it, nor write in progress, and it takes
+    /// none, closed, set aside or inherited.
+    fn is_empty(&self) -> bool {
+        matches!(self.phase, Phase::Closed { .. } | Phase::Retired(_) | Phase::Inherited)
+            && self.live == 0
+            && self.writers == 0
+    }
+
     /// fxdax: the bytes of its data no extent is in, which the branch may take back, cleaning:
     /// none but the branch's own segments', and those no other branch may hold extents in.
     fn dead(&self) -> u64 {
@@ -90,6 +98,10 @@ impl<F> Segment<F> {
 /// the one closed before it, as the chain of the footers' writer stamps it.
 pub(crate) struct Segments<F> {
     tracked: BTreeMap<SegmentId, Segment<F>>,
+    /// fxdax: those reaping lets go of ([`Segment::is_empty`]), but for those kept: so that a commit
+    /// looks over them alone, not every segment the branch tracks, thousands as it grows
+    /// (TASK-92.16).
+    empty: BTreeSet<SegmentId>,
     /// The segment taking writes.
     open: SegmentId,
     /// When it opened.
@@ -148,7 +160,8 @@ impl<F: File> Segments<F> {
             let path = segment_path(id);
             let file = dir.open(&path, true).with_context(|| format!("segment {path}"))?;
             let segment = if id.branch == branch {
-                let (parts, _) = read_frame(&file)?
+                // fxdax: its trailer and table, a block, not its footer (TASK-92.16).
+                let parts = read_parts(&file)?
                     .ok_or_else(|| anyhow!("{path} is not a whole framed file"))?;
                 let closed = Phase::Closed { last: None };
                 Segment {
@@ -170,6 +183,7 @@ impl<F: File> Segments<F> {
         let dead = segments.values().map(Segment::dead).sum();
         Ok(Self {
             tracked: segments,
+            empty: BTreeSet::new(),
             open,
             opened: Instant::now(),
             close_wanted: false,
@@ -193,13 +207,24 @@ impl<F: File> Segments<F> {
         self.tracked[&self.open].len + len <= limit
     }
 
-    /// Changes segment `number` as `change` says, keeping count of the bytes no extent is in.
+    /// Changes segment `number` as `change` says, keeping count of the bytes no extent is in, and
+    /// of whether it is empty.
     fn change<T>(&mut self, number: SegmentId, change: impl FnOnce(&mut Segment<F>) -> T) -> T {
         let segment = self.tracked.get_mut(&number).unwrap();
         let dead = segment.dead();
         let changed = change(segment);
         self.dead = self.dead + segment.dead() - dead;
+        self.note(number);
         changed
+    }
+
+    /// Notes whether segment `number`, tracked, is empty ([`Segment::is_empty`]), as it changed.
+    fn note(&mut self, number: SegmentId) {
+        if self.tracked[&number].is_empty() {
+            self.empty.insert(number);
+        } else {
+            self.empty.remove(&number);
+        }
     }
 
     /// Reserves `len` bytes of the open segment for a write: the segment, its raw file, and where
@@ -309,6 +334,7 @@ impl<F: File> Segments<F> {
             debug_assert_ne!(segment.branch, own, "the branch's own segments are tracked");
             Segment::new(Phase::Inherited, live())
         });
+        self.note(segment);
     }
 
     /// Whether it tracks `segment`.
@@ -424,6 +450,7 @@ impl<F: File> Segments<F> {
         let segment = self.tracked.get_mut(&number).unwrap();
         let Phase::Open(raw) = &segment.phase else { unreachable!("the open segment is open") };
         segment.phase = Phase::Retired(raw.clone());
+        self.note(number);
         self.tracked.insert(next, Segment::new(Phase::Open(file), 0));
         self.open = next;
         self.opened = Instant::now();
@@ -443,6 +470,7 @@ impl<F: File> Segments<F> {
         };
         segment.size = framed.size();
         segment.phase = Phase::Closed { last: Some(last) };
+        self.note(number);
         self.files.insert(number, framed);
     }
 
@@ -495,17 +523,11 @@ impl<F: File> Segments<F> {
     /// Lets go of the segments no extent's data is in any more, closed, set aside or inherited,
     /// which no write is in progress in, but those `keep` says to keep, and returns them.
     pub fn reap(&mut self, keep: impl Fn(SegmentId) -> bool) -> Vec<Reaped> {
-        let dead: Vec<SegmentId> = (self.tracked.iter())
-            .filter(|(number, segment)| {
-                matches!(segment.phase, Phase::Closed { .. } | Phase::Retired(_) | Phase::Inherited)
-                    && segment.live == 0
-                    && segment.writers == 0
-                    && !keep(**number)
-            })
-            .map(|(number, _)| *number)
-            .collect();
+        let dead: Vec<SegmentId> =
+            self.empty.iter().filter(|number| !keep(**number)).copied().collect();
         let mut reaped = Vec::with_capacity(dead.len());
         for number in dead {
+            self.empty.remove(&number);
             let segment = self.tracked.remove(&number).unwrap();
             self.dead -= segment.dead();
             self.files.remove(number);
@@ -755,12 +777,11 @@ pub(crate) fn segment_footer(bytes: &[u8]) -> Result<Option<Footer>, Error> {
 /// Closes `branch`'s segments left open, whose data its state as of `epoch` may need, and those
 /// closed whose footers name commits after it, which were not durable: framed, with no footer.
 /// fxdax: a crash meanwhile leaves the next opening the data whole, in the framed file or the raw
-/// one, which goes once the framed file is (TASK-79.33).
+/// one, which goes once the framed file is (TASK-79.33). Those whose raw files are gone it reads
+/// not: a raw file goes only once its segment is framed, durably, and the commits its footer names
+/// are durable, with a commit after them (TASK-92.16).
 pub(crate) fn close_left_open<D: Dir>(dir: &D, branch: u64, epoch: u64) -> Result<(), Error> {
-    let open = list_numbers(dir, &branch_dir(OPEN_SEGMENTS, branch))?;
-    let closed = list_numbers(dir, &branch_dir(SEGMENTS, branch))?;
-    let numbers: BTreeSet<u64> = open.iter().chain(&closed).copied().collect();
-    for number in numbers {
+    for number in list_numbers(dir, &branch_dir(OPEN_SEGMENTS, branch))? {
         let segment = SegmentId { branch, number };
         let (path, raw_path) = (segment_path(segment), open_segment_path(segment));
         let raw = || -> Result<Option<Vec<u8>>, Error> {
@@ -773,7 +794,7 @@ pub(crate) fn close_left_open<D: Dir>(dir: &D, branch: u64, epoch: u64) -> Resul
         let whole_raw = || raw()?.ok_or_else(|| anyhow!("segment {segment:?} has no whole file"));
         // Its data, if it is to be framed again, and whether from the framed file: the framed
         // file's, if it is whole, which a commit made durable, or a closing between commits
-        // ([`Store::close_now`]), which removed the raw file; or else the raw file's.
+        // ([`Store::close_now`]); or else the raw file's.
         let data = match dir.open(&path, true) {
             Ok(file) => match read_frame(&file)? {
                 Some((_, footer)) => match segment_footer(&footer) {

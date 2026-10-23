@@ -1354,7 +1354,9 @@ impl<D: Dir> Store<D> {
     /// so far without waiting for the next. Writes wait for the closing alone: it frames the
     /// segment, and makes it durable, holding no lock, as a commit's closing does, so that the
     /// store serves its writes, reads and commits meanwhile, which read the segment from its raw
-    /// file (TASK-41.1). Its framed file is durable when this returns; its raw file is gone.
+    /// file (TASK-41.1). Its framed file is durable when this returns; its raw file goes with the
+    /// next commit, once durable, as the commits its footer names are then, as a commit's closing
+    /// does: so that opening the branch reads no segment whose raw file is gone (TASK-92.16).
     /// Returns whether it closed.
     pub fn close_now(&self) -> Result<bool, Error> {
         let Some(unframed) = self.close_between_commits()? else { return Ok(false) };
@@ -1362,7 +1364,10 @@ impl<D: Dir> Store<D> {
         let framed = self.frame_durably(unframed);
         let mut state = self.state.lock().unwrap();
         match &framed {
-            Ok(framed) => state.segments.framed(number, framed.clone()),
+            Ok(framed) => {
+                state.segments.framed(number, framed.clone());
+                state.unreferenced.doomed.push(open_segment_path(number));
+            }
             // Framed, and durable, or the store fails.
             Err(_) => state.failed = true,
         }
@@ -1403,23 +1408,15 @@ impl<D: Dir> Store<D> {
     }
 
     /// fxdax: frames `unframed`, a segment closed between commits, holding no lock, and makes its
-    /// framed file durable, and its entry, then removes its raw file: the segment's data is in its
-    /// framed file, which opening the branch closes again with no footer if its commits are not
-    /// durable then.
+    /// framed file durable, and its entry.
     fn frame_durably(&self, unframed: Unframed<D::File>) -> Result<Arc<Framed<D::File>>, Error> {
-        let (dir, number) = (&self.lineage.dir, unframed.number());
+        let dir = &self.lineage.dir;
         let framed = unframed.frame(dir)?;
         framed.file.sync()?;
         for kind in [SEGMENTS, OPEN_SEGMENTS] {
             dir.sync_dir(&branch_dir(kind, self.branch))?;
         }
         dir.barrier()?;
-        let raw = open_segment_path(number);
-        if let Err(err) = dir.remove(&raw)
-            && !not_found(&err)
-        {
-            log::warn!("extent store: failed to remove {raw}: {err}");
-        }
         Ok(framed)
     }
 

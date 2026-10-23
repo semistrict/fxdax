@@ -532,9 +532,9 @@ impl<F: File> OwnFiles<F> {
 #[derive(Default)]
 pub(crate) struct Unreferenced {
     /// Raw files whose extents were sealed from them, or freed, and index files a checkpoint
-    /// replaced: no other branch holds them, so they wait for the branch's commits alone, in its
-    /// queue of them, and are forgotten with a failed store's, as its next opening removes what
-    /// nothing refers to.
+    /// replaced; fxdax: and the raw files of segments closed between commits, framed: no other
+    /// branch holds them, so they wait for the branch's commits alone, in its queue of them, and
+    /// are forgotten with a failed store's, as its next opening removes what nothing refers to.
     pub doomed: Vec<String>,
     pub released: Vec<FileKey>,
 }

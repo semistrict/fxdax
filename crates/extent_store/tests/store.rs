@@ -1201,9 +1201,9 @@ fn segments_closed_by_commits_not_durable_close_again() {
     }
 }
 
-/// fxdax: a segment closed between commits, its raw file gone, the last of whose commits is not
-/// durable, is closed again with no footer by the branch's next opening: which, crashing as it
-/// does, leaves its data whole, for the opening after (TASK-79.33).
+/// fxdax: a segment closed between commits, the last of whose commits is not durable, is closed
+/// again with no footer by the branch's next opening: which, crashing as it does, leaves its data
+/// whole, for the opening after (TASK-79.33).
 #[test]
 fn segments_closed_between_commits_survive_crashes_closing_them_again() {
     for seed in 0..64 {
@@ -1231,6 +1231,35 @@ fn segments_closed_between_commits_survive_crashes_closing_them_again() {
                 break;
             }
         }
+    }
+}
+
+/// fxdax: a segment closed between commits keeps its raw file until a commit after it is durable,
+/// with the commits its footer names: so that the branch's next opening, a crash having lost them,
+/// finds it, and closes it again, with no footer; and reads no segment whose raw file is gone
+/// (TASK-92.16).
+#[test]
+fn segments_closed_between_commits_keep_their_raw_files_until_a_commit_after_is_durable() {
+    let path = |kind| format!("{}/{:016x}", of(kind, BRANCH), 0);
+    for seed in 0..16 {
+        let dir = MemDir::new();
+        let store = create(dir.clone(), 1 << 20);
+        store.write(extent(1), 0, &pattern(1, 0, BLOCK)).unwrap();
+        store.commit(None).unwrap();
+        store.write(extent(2), 0, &pattern(2, 0, BLOCK)).unwrap();
+        store.commit_ordered(None).unwrap();
+        assert!(store.close_now().unwrap());
+        let crashed = dir.crash(seed);
+        assert!(dir.open(&path("open-segments"), true).is_ok(), "seed {seed}: the raw file went");
+        store.commit(None).unwrap();
+        assert!(dir.open(&path("open-segments"), true).is_err(), "seed {seed}: the raw file stays");
+        drop(store);
+        let store = Store::open(crashed.clone(), OPTIONS).unwrap();
+        assert_eq!(store.epoch().unwrap(), 1, "seed {seed}");
+        assert_eq!(read(&store, extent(1), 0, BLOCK), pattern(1, 0, BLOCK));
+        let framed = extent_store::read_whole(&crashed.open(&path("segments"), true).unwrap());
+        let footer = extent_frame::footer(&framed.unwrap()).unwrap().to_vec();
+        assert_eq!(footer, b"", "seed {seed}: its footer names commits lost");
     }
 }
 
@@ -1431,43 +1460,54 @@ fn closed_segments_keep_no_more_files_open_than_allowed() {
     assert_eq!(read(&store, extent(40), 0, BLOCK), pattern(40, 0, BLOCK));
 }
 
-/// The syncs that let a file's pages go from the host's page cache, by the directory the file is
-/// in.
-type Drops = Arc<std::sync::Mutex<BTreeMap<String, u64>>>;
+/// What a store's files did, by the directory each is in: their syncs that let their pages go
+/// from the host's page cache, of those of extents' data, as a host's do, written through it
+/// (`HostFile::sync`); and the bytes read.
+#[derive(Default)]
+struct Counts {
+    drops: BTreeMap<String, u64>,
+    read: BTreeMap<String, u64>,
+}
 
-/// fxdax: a store's directory in memory whose files of extents' data count their syncs that let
-/// their pages go from the host's page cache, as a host's do, written through it
-/// (`HostFile::sync`), by the directory each is in.
-#[derive(Clone, Default)]
-struct Dropping {
+/// fxdax: a store's directory in memory whose files count what they do ([`Counts`]).
+#[derive(Clone)]
+struct Counting {
     dir: MemDir,
-    drops: Drops,
+    counts: Arc<std::sync::Mutex<Counts>>,
 }
 
-struct DroppingFile {
+struct CountedFile {
     file: MemFile,
-    /// The directory it is in, if it holds extents' data.
-    data: Option<String>,
-    drops: Drops,
+    /// The directory it is in, and whether it holds extents' data.
+    kind: String,
+    data: bool,
+    counts: Arc<std::sync::Mutex<Counts>>,
 }
 
-impl Dropping {
+impl Counting {
     fn new() -> Self {
-        Self { dir: MemDir::new(), drops: Drops::default() }
+        Self { dir: MemDir::new(), counts: Default::default() }
     }
 
-    fn file(&self, file: MemFile, path: &str, data: bool) -> DroppingFile {
-        let data = data.then(|| path.split('/').next().unwrap().to_owned());
-        DroppingFile { file, data, drops: self.drops.clone() }
+    fn file(&self, file: MemFile, path: &str, data: bool) -> CountedFile {
+        let kind = path.split('/').next().unwrap().to_owned();
+        CountedFile { file, kind, data, counts: self.counts.clone() }
     }
 
+    /// The syncs that let files' pages go, so far.
     fn drops(&self) -> BTreeMap<String, u64> {
-        self.drops.lock().unwrap().clone()
+        self.counts.lock().unwrap().drops.clone()
+    }
+
+    /// The bytes read so far.
+    fn read(&self) -> BTreeMap<String, u64> {
+        self.counts.lock().unwrap().read.clone()
     }
 }
 
-impl extent_store::File for DroppingFile {
+impl extent_store::File for CountedFile {
     fn read_at(&self, buf: &mut [u8], offset: u64) -> std::io::Result<()> {
+        *self.counts.lock().unwrap().read.entry(self.kind.clone()).or_default() += buf.len() as u64;
         self.file.read_at(buf, offset)
     }
 
@@ -1480,8 +1520,8 @@ impl extent_store::File for DroppingFile {
     }
 
     fn sync(&self) -> std::io::Result<()> {
-        if let Some(kind) = &self.data {
-            *self.drops.lock().unwrap().entry(kind.clone()).or_default() += 1;
+        if self.data {
+            *self.counts.lock().unwrap().drops.entry(self.kind.clone()).or_default() += 1;
         }
         self.file.sync()
     }
@@ -1491,14 +1531,14 @@ impl extent_store::File for DroppingFile {
     }
 }
 
-impl Dir for Dropping {
-    type File = DroppingFile;
+impl Dir for Counting {
+    type File = CountedFile;
 
-    fn create(&self, path: &str, data: bool) -> std::io::Result<DroppingFile> {
+    fn create(&self, path: &str, data: bool) -> std::io::Result<CountedFile> {
         Ok(self.file(self.dir.create(path, data)?, path, data))
     }
 
-    fn open(&self, path: &str, data: bool) -> std::io::Result<DroppingFile> {
+    fn open(&self, path: &str, data: bool) -> std::io::Result<CountedFile> {
         Ok(self.file(self.dir.open(path, data)?, path, data))
     }
 
@@ -1528,7 +1568,7 @@ impl Dir for Dropping {
 /// framed file, written once, lets them go once synced (TASK-92.23).
 #[test]
 fn durable_commits_keep_the_open_segments_pages_cached() {
-    let dir = Dropping::new();
+    let dir = Counting::new();
     let store = create(dir.clone(), 1 << 20);
     for sequence in 1..=8 {
         store.write(extent(sequence), 0, &pattern(sequence as u8, 0, BLOCK)).unwrap();
@@ -1537,6 +1577,27 @@ fn durable_commits_keep_the_open_segments_pages_cached() {
     store.close_segment().unwrap();
     store.commit(None).unwrap();
     assert_eq!(dir.drops(), BTreeMap::from([("segments".to_owned(), 1)]));
+}
+
+/// fxdax: a branch opening again reads of its closed segments but a block of each whose extents it
+/// holds, its trailer and table, which say how much data it holds: not the footers of those whose
+/// commits are durable, which it needs not close again, their raw files gone (TASK-92.16).
+#[test]
+fn branches_open_reading_a_block_of_each_closed_segment() {
+    let dir = Counting::new();
+    let store = create(dir.clone(), 1 << 20);
+    for sequence in 0..16 {
+        store.write(extent(sequence), 0, &pattern(sequence as u8, 0, BLOCK)).unwrap();
+        store.close_segment().unwrap();
+        store.commit(None).unwrap();
+    }
+    drop(store);
+    // None yet: commits closed them, from their raw files.
+    let segments_read = || dir.read().get("segments").copied().unwrap_or(0);
+    assert_eq!(segments_read(), 0);
+    let store = Store::open(dir.clone(), OPTIONS).unwrap();
+    assert_eq!(segments_read(), 16 * BLOCK as u64);
+    assert_eq!(store.extents().unwrap().len(), 16);
 }
 
 /// The host's page size.

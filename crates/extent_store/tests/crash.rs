@@ -4,7 +4,8 @@
 
 //! A store crashes at random points of random workloads, and recovers to a prefix of its commits:
 //! exactly the extents and root of an epoch at least as late as the last commit made durable, by
-//! a durable commit or a flush of commits only ordered.
+//! a durable commit or a flush of commits only ordered; fxdax: as its open segment closes between
+//! commits too, as an uploader has it close.
 
 use extent_store::{Description, Lineage, MemDir, Options, Store};
 use rand::rngs::StdRng;
@@ -73,7 +74,7 @@ fn workload(
     let mut open: Vec<ExtentId> = Vec::new();
     let mut next_sequence = store.info().unwrap().next_sequence;
     for _ in 0..STEPS {
-        let result = match rng.random_range(0..13) {
+        let result = match rng.random_range(0..14) {
             // A new extent, small or large.
             0..=3 => {
                 let extent = ExtentId::new(branch, next_sequence);
@@ -145,6 +146,9 @@ fn workload(
                 }
                 result
             }
+            // fxdax: the open segment closed between commits, as an uploader has it closed: its
+            // footer names commits only ordered, maybe (TASK-92.16).
+            13 => store.close_now().map(drop),
             _ => Ok(()),
         };
         if result.is_err() {
