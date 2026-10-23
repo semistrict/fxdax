@@ -331,17 +331,21 @@ fn shrinks_dropped_by_their_callers_stop_waiting() {
         let mut client = super::control::connect(&socket).await.unwrap();
         let request =
             ResizeStoreRequest { path: path.to_str().unwrap().to_owned(), capacity: 1 << 20 };
-        let asked = tokio::task::spawn_blocking(move || asked.recv().unwrap());
-        tokio::select! {
+        let asking = tokio::task::spawn_blocking(move || (asked.recv().unwrap(), asked));
+        let asked = tokio::select! {
             shrunk = client.resize_store(request) => panic!("{shrunk:?}"),
-            asked = asked => assert_eq!(asked.unwrap(), (1 << 20, true)),
-        }
+            asked = asking => asked.unwrap(),
+        };
+        assert_eq!(asked.0, (1 << 20, true));
         // Dropped, the call is reset, and the daemon drops its wait.
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
         while connection.shrink_awaited() {
             assert!(tokio::time::Instant::now() < deadline, "the shrink still waits");
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
+        // TASK-79.41: and tells the guest the capacity the store keeps.
+        let told = tokio::task::spawn_blocking(move || asked.1.recv().unwrap()).await.unwrap();
+        assert_eq!(told, (2 << 20, false));
     });
     store.resized(1 << 20, true).unwrap();
     assert_eq!(store.info().unwrap().capacity, 2 << 20);
