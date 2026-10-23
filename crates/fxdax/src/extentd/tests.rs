@@ -873,8 +873,8 @@ fn the_daemon_forks_stores_it_serves() {
     store.commit(None).unwrap();
     let branch = extent.branch + 1;
     store.fork(&child, branch).unwrap();
-    // A fork to a path that is there already fails.
-    assert_eq!(store.fork(&child, branch + 1), Err(Errno::EIO));
+    // A fork to a path that is there already fails, as making a store there does (TASK-79.83).
+    assert_eq!(store.fork(&child, branch + 1), Err(Errno::EEXIST));
     drop(store);
     let (ours, page) = map_first_page(&socket, &parent, extent);
     let ours_from = mapped_from(page);
@@ -1885,4 +1885,19 @@ fn the_daemon_accepts_on_after_failing_to() {
         RemoteExtentStore::connect(&socket, path, 1 << 20).map(|store| store.branch())
     });
     assert!(matches!(opened, Ok(Ok(_))), "the daemon accepts no more: {opened:?}");
+}
+
+/// TASK-79.83: a fork of a store, as the control API makes it (`ForkStore`), to a path a store is
+/// at already, fails with `EEXIST`, as making a store there does (`CreateStore`).
+#[test]
+fn forks_to_stores_there_already_fail_with_eexist() {
+    host();
+    let dir = tempfile::tempdir().unwrap();
+    let (path, fork) = (dir.path().join("store"), dir.path().join("fork"));
+    let store = ExtentStore::create(&path, 1 << 20).unwrap();
+    store.commit(None).unwrap();
+    drop(store);
+    fork_store(&path, &fork).unwrap();
+    let again = fork_store(&path, &fork);
+    assert_eq!(again.err().and_then(|error| error.errno()), Some(Errno::EEXIST));
 }
