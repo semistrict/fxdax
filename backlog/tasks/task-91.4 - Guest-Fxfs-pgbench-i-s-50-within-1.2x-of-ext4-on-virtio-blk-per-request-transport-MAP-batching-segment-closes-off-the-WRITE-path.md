@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@main-session'
 created_date: '2026-10-22 18:22'
-updated_date: '2026-10-23 10:16'
+updated_date: '2026-10-23 10:33'
 labels: []
 dependencies: []
 parent_task_id: TASK-91
@@ -33,3 +33,9 @@ The load takes 26 s on fxdax against 13.7 s on ext4 on virtio-blk, whatever the 
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Load step with DAX (pgbench -i -s 50, GCE, /proc/fs/fxfs counters, ba..): ~40,300 MAPs taking ~10.8 s of the 23 s step. By why: 32,399 pieces mapped in ranges' own space (974 MB, ~30 KB each), each after the regions' half of the window had no room (33,496 'full'); 5,227 background grows and 2,604 reaches (2 GB together); 94 restages. Tried: reclaiming ranges that hold regions in the background when the regions' space ran low: the load fell to 19.6 s (MAPs 10,923, 405 in ranges) but the runs collapsed again (897 / 563 / 55 tps, regions to 20,000, unmaps ~58k a run): reverted. The underlying issue: under fsync-heavy load every seal leaves a region (a staging extent's), file ranges slice them and keep them, and they crowd the window; regions save MAPs when an extent is written in bulk, not when it holds a few pages of an fsync's epoch. A design question: e.g. map pieces of sealed, small staging extents in ranges' space rather than in regions, or regions per bulk writer only.
+<!-- SECTION:NOTES:END -->

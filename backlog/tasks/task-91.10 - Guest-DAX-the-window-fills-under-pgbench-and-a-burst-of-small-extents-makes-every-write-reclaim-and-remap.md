@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@main-session'
 created_date: '2026-10-22 22:01'
-updated_date: '2026-10-23 09:50'
+updated_date: '2026-10-23 10:33'
 labels: []
 dependencies: []
 parent_task_id: TASK-91
@@ -40,4 +40,6 @@ Measured with a guest kernel logging the window every 5 s (pgbench -s 50 on fxfs
 a8e2e02c: regions have the window's last half to themselves, reclaiming nothing (full: -EAGAIN, the piece mapped in a range's own space). Fragmentation was the cause, not fullness: with one pool the largest free run stayed ~2 MiB with 180-590 MiB free; failed allocations ~300,000 in a run, ~2,000 after. A quarter held run 3 but slowed the load to 35 s; half keeps it at 23-24 s. GCE, full guest suite passes (defaults, both pgbench, crash, follow, daemon-lost, live-fork); DAX pgbench 1,035 / 862 / 807 tps (was 1,002 / 859 / 29-171). AC2 not met: run 3 is 78% of run 1, the fall being between runs 1 and 2 (seen with every window layout; without DAX the runs hold ~1,000), still to explain.
 
 Round 5 (sandbox team, a8e2e02, 2026-10-23): no collapse in 20 runs; DAX tps still falls 27-31% over five runs at 25 ms and 0 ms alike (1,081 / 856 / 793 / 744 / 742). MAP requests flat at 79-87k a run, so MAPs per transaction rise from ~1.3 to ~1.9; MAP time 12 to 15 s; Postgres user time -8.6 s, guest system time +4 s; UNMAPs 1-4k a run (not the window collapse). Their ask: find why MAPs per transaction rise; done when five DAX runs at 25 ms hold within 10% of the first.
+
+With /proc/fs/fxfs (263a3c34), DAX pgbench runs 1-3: commits 0.58 / 0.70 / 0.77 ms, MAPs per commit 1.96 / 2.49 / 2.64 (MAP 482-569 us as the guest sees it, 189-271 us in extentd), DAX stores held by seals 7.5 / 12.6 / 15.4 s a run, the window 'full' ~100k times a run, of which most are the regions' space (pieces then map in ranges' own space: ~80k such MAPs a run). The host side's growth (extent store commit 20 to 98 us, MAP 189 to 271 us) is the review session's extent_store work (review-r1: TASK-92.16 and others), to remeasure once on main.
 <!-- SECTION:NOTES:END -->
