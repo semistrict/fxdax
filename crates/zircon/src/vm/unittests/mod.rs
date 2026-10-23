@@ -12,6 +12,7 @@ mod aspace_unittest;
 mod evictor_unittest;
 mod mapping_unittest;
 mod memory_out_unittest;
+mod range_change_unittest;
 mod shared_pages_unittest;
 #[cfg(feature = "shuttle")]
 mod shuttle_tests;

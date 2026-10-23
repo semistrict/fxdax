@@ -352,19 +352,6 @@ fn mapping_key(mapping: &Arc<dyn RangeChangeListener>, object_offset: u64) -> Ma
     MappingKey { object_offset, id: Arc::as_ptr(mapping).cast::<()>() as usize }
 }
 
-#[cfg(test)]
-thread_local! {
-    /// fxdax: the mappings this thread's range changes have updated ([`mappings_updated`]).
-    static MAPPINGS_UPDATED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
-/// fxdax: how many mappings the range changes this thread made have updated, each once for each
-/// range change that reached it, so that tests can count what a range change visits (TASK-92.50).
-#[cfg(test)]
-pub(crate) fn mappings_updated() -> usize {
-    MAPPINGS_UPDATED.get()
-}
-
 /// The pages of a VMO.
 pub struct VmCowPages {
     pmm_alloc_flags: u32,
@@ -3615,8 +3602,6 @@ impl VmCowPages {
         let update = |range: VmCowRange| {
             // The mappings of part of the range, each of which finds what of it it maps.
             locked.mappings.for_each_in_range(range.offset, range.len, |mapping| {
-                #[cfg(test)]
-                MAPPINGS_UPDATED.set(MAPPINGS_UPDATED.get() + 1);
                 mapping.range_change_update(locked, range, op);
             });
         };
