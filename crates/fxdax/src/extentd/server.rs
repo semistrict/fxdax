@@ -736,6 +736,11 @@ impl Connection {
                 };
                 store.write_with_barriers(extent, args[2], &[data], barriers)
             }
+            // fxdax: and those its payload names after it, in order (TASK-92.13).
+            FREE if flags & FREE_MANY != 0 => {
+                let more = extent_ids(&message.payload)?;
+                std::iter::once(extent).chain(more).try_for_each(|extent| store.free(extent))
+            }
             FREE => store.free(extent),
             MAP if flags & MAP_ZEROS != 0 => store.map_zeros_at(args[4], args[3]),
             MAP => store.map(extent, args[2], args[3], args[4], flags & MAP_WRITABLE != 0),

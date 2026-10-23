@@ -2363,3 +2363,34 @@ fn restores_fork_anew_over_forks_that_failed() {
     assert_eq!(read(&ours, extent, 0, BLOCK), Ok(pattern(8, BLOCK)));
     assert!(!ExtentStore::fork_failed(&restored), "the new fork's handle reads as failed");
 }
+
+/// How many requests of `kind` the daemon has served, as its metrics count them.
+fn served(kind: &str) -> u64 {
+    let metrics = super::metrics::render();
+    let name = format!("fxdax_extentd_requests_total{{kind=\"{kind}\"}} ");
+    let line = metrics.lines().find_map(|line| line.strip_prefix(&name));
+    line.unwrap_or_else(|| panic!("no {kind} requests counted in {metrics}")).parse().unwrap()
+}
+
+/// TASK-92.13: a flush's dead extents, as many as a guest's `FREE` names with `FREE_MANY` (257),
+/// freed together, are freed in one request of the daemon's, not one each, each a round trip.
+#[test]
+fn extents_freed_together_are_freed_in_one_request() {
+    host();
+    let dir = tempfile::tempdir().unwrap();
+    let (store, serving) = connect(&dir.path().join("store"), 1 << 24);
+    let branch = store.branch();
+    let extents: Vec<_> = (1..=257).map(|sequence| ExtentId { branch, sequence }).collect();
+    for extent in &extents {
+        write(&store, *extent, 0, &pattern(extent.sequence as u8, BLOCK)).unwrap();
+    }
+    store.commit(None).unwrap();
+    let before = served("free");
+    store.free_many(&extents).unwrap();
+    assert_eq!(served("free") - before, 1);
+    for extent in [extents[0], extents[128], extents[256]] {
+        assert_eq!(read(&store, extent, 0, BLOCK), Err(Errno::ENOENT), "{extent:?}");
+    }
+    drop(store);
+    serving.join().unwrap();
+}
