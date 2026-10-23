@@ -1054,6 +1054,7 @@ fn evict_arena_counting_visits(arena: ArenaId, bytes: u64) -> [u64; 2] {
 /// TASK-79.76: eviction of an arena's own pages visits only the arena's chunks holding pages in
 /// the reclaim queues, and none of those of pages nothing evicts, such as anonymous ones: a pass
 /// costs what it may evict rather than the arena's size, and with nothing left to evict, nothing.
+/// The pages evicted are counted out of their chunks, which go back, for another arena to take.
 #[test]
 fn eviction_of_an_arenas_own_pages_visits_its_chunks_holding_some_to_evict() {
     let _scanner = AutoVmScannerDisable::new();
@@ -1066,12 +1067,39 @@ fn eviction_of_an_arenas_own_pages_visits_its_chunks_holding_some_to_evict() {
     let pager_vmo = || make_committed_pager_vmo(2 * CHUNK_PAGES, false, false).unwrap().0;
     let clean = pmm::with_arena(arena, pager_vmo);
     assert_eq!(node.arena_bytes(arena), 6 * CHUNK_SIZE as u64);
+    let mut clean_chunks: Vec<usize> = chunks_of(&clean).collect();
+    clean_chunks.dedup();
     node.evictor().enable_eviction(false);
 
     let bytes = 2 * CHUNK_SIZE as u64;
     assert_eq!(evict_arena_counting_visits(arena, bytes), [2 * CHUNK_PAGES as u64; 2]);
     assert_eq!(pages_of(&clean).count(), 0);
+    let counts = clean_chunks.iter().map(|&chunk| node.page_queues().chunk_reclaim_count(chunk));
+    assert_eq!(counts.collect::<Vec<_>>(), [0, 0], "the evicted pages counted out");
     assert_eq!(evict_arena_counting_visits(arena, bytes), [0, 0], "nothing left to evict");
+}
+
+/// TASK-79.76: pages of a chunk the arena keeps, freed out of the reclaim queues, are counted out
+/// of it: eviction of the arena's own pages visits it no more, as nothing in it is left to evict.
+#[test]
+fn eviction_of_an_arenas_own_pages_passes_by_a_chunk_whose_pages_were_freed() {
+    let _scanner = AutoVmScannerDisable::new();
+    let node = pmm::node();
+    node.keep_spare_chunks(false);
+    let arena = pmm::create_arena();
+    // A chunk of clean pages but its last, an anonymous page, which keeps the chunk the arena's.
+    let pager_vmo = || make_committed_pager_vmo(CHUNK_PAGES - 1, false, false).unwrap().0;
+    let clean = pmm::with_arena(arena, pager_vmo);
+    let anonymous = pmm::with_arena(arena, || VmObjectPaged::create(0, 0, PAGE_SIZE)).unwrap();
+    anonymous.commit_range(0, PAGE_SIZE).unwrap();
+    let chunk = node.phys_memory().chunk_of(anonymous.debug_get_page(0).unwrap().paddr());
+    assert!(chunks_of(&clean).all(|of| of == chunk), "one chunk");
+    node.evictor().enable_eviction(false);
+
+    drop(clean);
+    assert_eq!(node.phys_memory().chunk_arena(chunk), Some(arena), "the chunk kept");
+    assert_eq!(node.page_queues().chunk_reclaim_count(chunk), 0, "the freed pages counted out");
+    assert_eq!(evict_arena_counting_visits(arena, CHUNK_SIZE as u64), [0, 0]);
 }
 
 /// TASK-79.76: eviction of an arena's own pages stops visiting its chunks once it has found as many
