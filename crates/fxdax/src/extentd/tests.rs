@@ -1671,12 +1671,14 @@ impl Held {
 
 /// The names of this process's threads alive as they are read: one that ends between the listing of
 /// `/proc/self/task` and the read of its name, as an idle blocking thread of the daemon's runtimes
-/// does, is gone, and holds nothing.
+/// does, is gone, and holds nothing: its name not found, or, as it exits, its process no more
+/// (`ESRCH`), as for the threads a store's flush syncs its files on (`extent_store`'s `AT_ONCE`).
 fn thread_comms() -> impl Iterator<Item = String> {
     std::fs::read_dir("/proc/self/task").unwrap().filter_map(|task| {
         match std::fs::read_to_string(task.unwrap().path().join("comm")) {
             Ok(comm) => Some(comm.trim().to_owned()),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+            Err(err) if err.raw_os_error() == Some(libc::ESRCH) => None,
             Err(err) => panic!("reading a thread's name: {err}"),
         }
     })
@@ -1792,6 +1794,124 @@ fn counting_followers_walks_no_extents() {
         .unwrap();
     println!("{FORKS} forks of a base of {EXTENTS} extents: their followers counted in {took:?}");
     assert!(took < std::time::Duration::from_millis(10), "counting them took {took:?}");
+    drop(stores);
+}
+
+/// TASK-92.49: the daemon makes the ordered commits of 300 stores' guests durable on threads they
+/// share, a bounded number, rather than a blocking thread for each store whose flush is due at
+/// its turn, which hundreds of guests committing together kept as many of as their syncs' waits
+/// took, each idle 10 s after: here each guest commits, ordered, again and again for a second,
+/// and, once their commits are durable, the daemon's runtime and the threads its stores' flushes
+/// and passes of cleaning run on keep no more threads than it serves 300 forks' reads on
+/// (`serves_hundreds_of_forks_of_a_base`). The most seen at once is told too: those a flush syncs
+/// its files on beside its own, as many as 15 (`extent_store`'s `AT_ONCE`, TASK-92.42), which go
+/// with it, count as its. One guest's commits are durable within a few turns of 50 ms each, and
+/// the flushes' time: the most one waited, its lag, is measured. The stores are on a disk, in
+/// `/var/tmp`, as a host's are: `/tmp` may be memory (tmpfs), whose syncs cost nothing.
+#[test]
+fn hundreds_of_writers_flush_on_threads_they_share() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    const STORES: usize = 300;
+    const WRITERS: usize = 8;
+    // The runtime's, and those flushing and cleaning.
+    const NAMES: [&str; 3] = ["extentd io", "extentd flush", "extentd clean"];
+    host();
+    super::raise_open_files_limit().unwrap();
+    let dir = tempfile::tempdir_in("/var/tmp").unwrap();
+    let socket = dir.path().join("extentd.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || serve(listener));
+    let paths: Vec<_> = (0..STORES).map(|n| dir.path().join(format!("store-{n}"))).collect();
+    let stores: Vec<_> = (paths.iter())
+        .map(|path| Arc::new(RemoteExtentStore::connect(&socket, path, 1 << 30).unwrap()))
+        .collect();
+    // The daemon's side of each store, which says whether its commits wait to be made durable;
+    // and the guest whose commits' lag is measured.
+    let theirs: Vec<_> = (paths.iter())
+        .map(|path| {
+            let key = super::stores::store_key(path);
+            super::stores::open_paths().holder(&key).unwrap().store().unwrap().clone()
+        })
+        .collect();
+    let ((probe, others), probed) = (stores.split_first().unwrap(), theirs[0].clone());
+    // The most of them seen at once, and how many of each kind then.
+    let sampling = Arc::new(AtomicBool::new(true));
+    let sampler = {
+        let sampling = sampling.clone();
+        std::thread::spawn(move || {
+            let mut most = [0; NAMES.len()];
+            while sampling.load(Ordering::Relaxed) {
+                let names = thread_names();
+                let threads = NAMES.map(|name| names.get(name).copied().unwrap_or(0));
+                if threads.iter().sum::<usize>() > most.iter().sum() {
+                    most = threads;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            most
+        })
+    };
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    let writers: Vec<_> = (others.chunks(others.len().div_ceil(WRITERS)))
+        .map(|stores| {
+            let stores = stores.to_vec();
+            std::thread::spawn(move || {
+                let mut sequence = 0;
+                while std::time::Instant::now() < until {
+                    sequence += 1;
+                    for store in &stores {
+                        let extent = ExtentId { branch: store.branch(), sequence };
+                        write(store, extent, 0, &pattern(sequence as u8, BLOCK)).unwrap();
+                        store.commit_ordered(None).unwrap();
+                    }
+                }
+            })
+        })
+        .collect();
+    let lagging = {
+        let probe = probe.clone();
+        std::thread::spawn(move || {
+            let (mut lags, mut sequence) = (Vec::new(), 0);
+            while std::time::Instant::now() < until {
+                sequence += 1;
+                let extent = ExtentId { branch: probe.branch(), sequence };
+                write(&probe, extent, 0, &pattern(sequence as u8, BLOCK)).unwrap();
+                probe.commit_ordered(None).unwrap();
+                let committed = std::time::Instant::now();
+                while probed.flush_pending() {
+                    std::thread::yield_now();
+                }
+                lags.push(committed.elapsed());
+            }
+            lags.sort();
+            lags
+        })
+    };
+    for writer in writers {
+        writer.join().unwrap();
+    }
+    let lags = lagging.join().unwrap();
+    // Every guest's commits durable, what the flushes took and kept.
+    while theirs.iter().any(|store| store.flush_pending()) {
+        std::thread::yield_now();
+    }
+    let names = thread_names();
+    sampling.store(false, Ordering::Relaxed);
+    let most = sampler.join().unwrap();
+    let kept = NAMES.map(|name| names.get(name).copied().unwrap_or(0));
+    let threads: usize = kept.iter().sum();
+    let (median, lag) = (lags[lags.len() / 2], lags[lags.len() - 1]);
+    println!(
+        "{STORES} stores' guests committing: {threads} threads kept, {kept:?} named {NAMES:?}, \
+         at most {} at once, {most:?}; a guest's {} ordered commits durable within {median:?}, \
+         the median, and {lag:?}",
+        most.iter().sum::<usize>(),
+        lags.len()
+    );
+    assert!(threads < 64, "{threads} threads kept: {kept:?} named {NAMES:?}, of {names:?}");
+    // Four turns.
+    assert!(lag < std::time::Duration::from_millis(200), "ordered commits durable {lag:?} after");
     drop(stores);
 }
 
