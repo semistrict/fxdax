@@ -55,9 +55,10 @@ struct Fs {
     dir_changes: BTreeMap<String, Vec<DirChange>>,
     /// How many more operations that change the file system succeed, if limited.
     budget: Option<u64>,
-    /// fxdax: the thread that last limited them ([`MemDir::fail_after`]), and the one whose
-    /// operation failed first since, if any.
+    /// fxdax: the thread that last set the budget ([`MemDir::fail_after`]), if any.
     limited_on: Option<thread::ThreadId>,
+    /// fxdax: the thread whose operation the file system failed first since the budget was last
+    /// set, if any.
     failed_on: Option<thread::ThreadId>,
     /// The bytes read and written since it was made, or crashed, and the files opened.
     io: Io,
