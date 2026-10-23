@@ -1130,25 +1130,40 @@ fn wait_for_uploader(path: &Path) {
 
 /// Waits for `bytes` to be in the files of the open segments of `branch` of the store at `path`
 /// (`open-segments/<branch>/<number>`, doc-7), as cleaning's copies write them, and returns what
-/// those hold then.
+/// those hold then. It waits 10 s at most, ample for a pass, which begins within a turn of what
+/// made it due: so a daemon whose passes waited for the guest's next commit, which the tests make
+/// none of first, fails them rather than hangs them.
 fn wait_for_open_segments(path: &Path, branch: u64, bytes: u64) -> u64 {
     let open = path.join("open-segments").join(format!("{branch:016x}"));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
         let entries = std::fs::read_dir(&open).unwrap();
         let held = entries.map(|entry| entry.unwrap().metadata().unwrap().len()).sum();
         if held >= bytes {
             return held;
         }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{held} bytes in the open segments, not {bytes}, 10 s on, no commit since"
+        );
         std::thread::yield_now();
     }
 }
 
+/// The dead space of the store at `path`, which a connection has open
+/// ([`ExtentStore::dead_bytes`]): the bytes of its segments' data no extent is in, which cleaning
+/// takes back, but those another branch may hold extents in, as a fork's.
+fn dead_bytes(path: &Path) -> u64 {
+    let connection = super::stores::open_paths().holder(&super::stores::store_key(path)).unwrap();
+    connection.store().unwrap().dead_bytes().unwrap()
+}
+
 /// TASK-79.2: the daemon cleans a store behind its guest's commits. What the guest frees of what
 /// it committed, the store keeps for its uploader, until the uploader has uploaded the commit
-/// that freed it: let go of then, between the guest's commits, it is what no extent holds, which
-/// counts as used past the capacity's worth, and refuses the guest room. A pass copies what is
-/// live of the segments it is in, with no commit of the guest's, and the guest's next commit
-/// takes their room back.
+/// that freed it: let go of then, between the guest's commits, it is dead space, the host's to
+/// take back, which takes none of the guest's room, as the guest can neither make room for it nor
+/// know of it. Once it is past the capacity's worth, a pass copies what is live of the segments it
+/// is in, with no commit of the guest's, and the guest's next commit lets those segments go.
 #[test]
 fn stores_are_cleaned_behind_their_guests_commits() {
     let extent_bytes = EXTENT as u64;
@@ -1167,17 +1182,22 @@ fn stores_are_cleaned_behind_their_guests_commits() {
     store.commit(None).unwrap();
     free_extents(&store, 18..=31);
     store.commit_ordered(None).unwrap();
-    // 29 extents' worth no extent holds, 13 of them past the capacity's.
+    // 29 extents' worth no extent holds, 13 of them past the capacity's: the guest's room is what
+    // its two extents leave.
     wait_for_uploader(&path);
-    assert_eq!(info().available, extent_bytes);
-    let refused = ExtentId { branch, sequence: 32 };
-    assert_eq!(write(&store, refused, 0, &pattern(32, 2 * EXTENT)), Err(Errno::ENOSPC));
-    // The two extents live copied, no commit having come since.
-    assert_eq!(wait_for_open_segments(&path, branch, 2 * extent_bytes), 2 * extent_bytes);
-    assert_eq!(info().available, extent_bytes);
-    store.commit(None).unwrap();
+    assert_eq!(dead_bytes(&path), 29 * extent_bytes);
     assert_eq!(info().available, 14 * extent_bytes);
-    write(&store, refused, 0, &pattern(32, 2 * EXTENT)).unwrap();
+    // The two extents live copied, no commit having come since: the dead space stays until one
+    // comes, and the guest's writes have their room meanwhile.
+    assert_eq!(wait_for_open_segments(&path, branch, 2 * extent_bytes), 2 * extent_bytes);
+    assert_eq!(dead_bytes(&path), 29 * extent_bytes);
+    assert_eq!(info().available, 14 * extent_bytes);
+    write(&store, ExtentId { branch, sequence: 32 }, 0, &pattern(32, 2 * EXTENT)).unwrap();
+    // The commit makes the copies their extents' places: the segments no extent is in any more
+    // go, and their dead space with them.
+    store.commit(None).unwrap();
+    assert_eq!(dead_bytes(&path), 0);
+    assert_eq!(info().available, 12 * extent_bytes);
     for sequence in [1, 17] {
         let extent = ExtentId { branch, sequence };
         assert_eq!(read(&store, extent, 0, EXTENT), Ok(pattern(sequence as u8, EXTENT)));
@@ -1186,10 +1206,11 @@ fn stores_are_cleaned_behind_their_guests_commits() {
     served.join().unwrap();
 }
 
-/// TASK-79.2: a fork deleted leaves the store it was forked from the room of what that store
-/// freed since in the segments they shared, which the fork held: once that is past the capacity's
-/// worth, a pass copies what is live of them, with no commit of the store's guest, and the guest's
-/// next commit takes their room back.
+/// TASK-79.2: a fork deleted leaves the store it was forked from what that store freed since in
+/// the segments they shared, which the fork held, as dead space of its own, which takes none of
+/// its guest's room either: once the store's dead space in all is past the capacity's worth, a
+/// pass copies what is live of the segments it is in, with no commit of the store's guest, and the
+/// guest's next commit lets them go.
 #[test]
 fn stores_are_cleaned_once_the_forks_sharing_their_segments_go() {
     let extent_bytes = EXTENT as u64;
@@ -1211,13 +1232,18 @@ fn stores_are_cleaned_once_the_forks_sharing_their_segments_go() {
     // 14 extents' worth no extent holds, within the capacity's worth: what the store freed of
     // those the fork holds is none of its own.
     wait_for_uploader(&path);
+    assert_eq!(dead_bytes(&path), 14 * extent_bytes);
     assert_eq!(info().available, 14 * extent_bytes);
     delete_store(&fork).unwrap();
     // The two extents live copied, no commit having come since: the fork gone, 29 extents' worth
-    // no extent holds, 13 past the capacity's.
+    // no extent holds, 13 past the capacity's, which stay until one comes.
     assert_eq!(wait_for_open_segments(&path, branch, 2 * extent_bytes), 2 * extent_bytes);
-    assert_eq!(info().available, extent_bytes);
+    assert_eq!(dead_bytes(&path), 29 * extent_bytes);
+    assert_eq!(info().available, 14 * extent_bytes);
+    // The commit makes the copies their extents' places: the segments no extent is in any more
+    // go, and their dead space with them.
     store.commit(None).unwrap();
+    assert_eq!(dead_bytes(&path), 0);
     assert_eq!(info().available, 14 * extent_bytes);
     for sequence in [1, 17] {
         let extent = ExtentId { branch, sequence };

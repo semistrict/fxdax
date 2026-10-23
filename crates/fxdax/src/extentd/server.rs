@@ -886,7 +886,8 @@ impl Drop for TransferArea {
 /// a fork's letting go of what it shared. So a pass begins within a turn of what made it due, as
 /// when every turn looked, and the guest's next commit takes back what it copied. Looking only as
 /// the guest committed, what came after a commit waited for the next, whose copies the commit
-/// after took back: a guest refused room for what it freed was refused for a commit more.
+/// after took back: what the guest freed held the host's disk a commit longer, and for good if
+/// the guest committed but once more.
 /// Looking at every turn, every store open took a blocking thread at every turn, which hundreds
 /// of stores, their turns coming at once, kept as many of, each idle for a while after (TASK-34).
 async fn flush_behind(store: Arc<ExtentStore>, mut stopped: tokio::sync::oneshot::Receiver<()>) {

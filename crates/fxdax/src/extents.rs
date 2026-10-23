@@ -1191,6 +1191,15 @@ impl ExtentStore {
         host_store::clean_behind(&self.store).map_err(errno)
     }
 
+    /// fxdax: the store's dead space (`extent_store::Usage::dead_bytes`, TASK-79.2): the bytes of
+    /// its segments' data no extent is in, which cleaning takes back, but those another branch may
+    /// hold extents in, as a fork's. What the commits left of it takes none of the guest's room;
+    /// what writes since the last commit wasted counts as used past the capacity's worth.
+    #[cfg(all(test, target_os = "linux"))]
+    pub(crate) fn dead_bytes(&self) -> Result<u64> {
+        Ok(self.store.usage().map_err(errno)?.dead_bytes)
+    }
+
     fn commit_with(&self, root: Option<&[u8]>, durable: bool) -> Result<()> {
         let started = std::time::Instant::now();
         let committed = self.commit_and_seal(root, durable);
