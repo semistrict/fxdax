@@ -1290,6 +1290,34 @@ fn without_relief_an_arena_at_its_cap_has_its_own_pages_evicted() {
     unsafe { pmm::free_page(page) };
 }
 
+/// TASK-79.76: without relief, an ask to evict an arena's own pages that the eviction thread takes
+/// once the arena is starved at its cap no more, as an allocation asked as an eviction ran that
+/// then made it room, evicts none of them: an eviction would evict a chunk's worth more for no
+/// allocation. Another arena, starved at its cap, asked for after, and so evicted for after, shows
+/// when the eviction would have run.
+#[test]
+fn without_relief_an_ask_made_stale_by_an_eviction_evicts_nothing() {
+    let pages = AgedPages::new();
+    let (node, arena) = (pmm::node(), pages.arena);
+    let after = pmm::create_arena();
+    assert!(arena < after, "the arena's ask taken first");
+    node.set_arena_cap(after, Some(CHUNK_SIZE as u64));
+    let pager_vmo = || make_committed_pager_vmo(CHUNK_PAGES, false, false).unwrap().0;
+    let _after_pages = pmm::with_arena(after, pager_vmo);
+
+    assert_eq!(node.alloc_page_in(arena, ALLOC_FLAG_CAN_WAIT).err(), Some(Status::SHOULD_WAIT));
+    let page = wait_for_page(arena).expect("a page of the arena's, evicted");
+    // An ask the allocation made as the eviction ran, before it made room.
+    node.evictor().evict_arena_asynchronous(arena, CHUNK_SIZE as u64);
+    assert_eq!(node.alloc_page_in(after, ALLOC_FLAG_CAN_WAIT).err(), Some(Status::SHOULD_WAIT));
+    let after_page = wait_for_page(after).expect("a page of the other arena's, evicted");
+    assert_eq!(pages.resident(), [2 * CHUNK_PAGES, CHUNK_PAGES, 2 * CHUNK_PAGES]);
+    for page in [page, after_page] {
+        // SAFETY: The test owns the pages.
+        unsafe { pmm::free_page(page) };
+    }
+}
+
 /// TASK-79.76: relief asked for an arena again as its pass runs, by an allocation the pass then
 /// makes room for, runs no pass of its own, as the arena is starved no longer: one would evict as
 /// much again of the arena's pages, its newer, for no allocation. Another arena, starved at its

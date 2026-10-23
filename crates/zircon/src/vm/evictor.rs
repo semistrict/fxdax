@@ -927,10 +927,16 @@ impl Evictor {
             // Process an eviction target if there is one. This is a no-op and no pages are evicted
             // if no target is pending.
             self.evict_from_preloaded_target();
-            // fxdax: and the arenas' own asked for (TASK-79.76).
+            // fxdax: and the arenas' own asked for (TASK-79.76), of an arena starved at its own
+            // cap still: an ask made stale, by an eviction that made the arena room since, as its
+            // allocations asked again while it ran, has nothing to make room for, and would evict
+            // as much again for no allocation. Those waiting were woken as the pages were freed,
+            // and ask again if they must.
             let arena_targets = std::mem::take(&mut self.lock.lock().arena_targets);
             for (arena, min_mem_to_free) in arena_targets {
-                self.evict_arena_on_demand(arena, min_mem_to_free);
+                if pmm::node().starved_at_its_own_cap(arena) {
+                    self.evict_arena_on_demand(arena, min_mem_to_free);
+                }
             }
         }
     }

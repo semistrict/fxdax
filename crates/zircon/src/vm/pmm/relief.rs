@@ -198,6 +198,14 @@ impl PmmNode {
         status
     }
 
+    /// fxdax: whether `arena` is starved at its own cap, as an allocation found it that asked,
+    /// without relief, for its own pages to be evicted (`Evictor::evict_arena_asynchronous`): for
+    /// the eviction thread to evict none for an ask made stale since, as relief's pass checks its
+    /// own (TASK-79.76).
+    pub(crate) fn starved_at_its_own_cap(&self, arena: ArenaId) -> bool {
+        self.locked().arenas.starved(arena) == Some(Starved::Arena)
+    }
+
     /// fxdax: fails an allocation of `size` pages that found its arena starved, under the node's
     /// lock, `locked`: with `NO_MEMORY`, reported as the node's failure if there is no free page at
     /// all, of any arena's, as memory is out, as upstream's is (TASK-79.70); otherwise the
