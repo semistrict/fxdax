@@ -20,7 +20,8 @@
 #
 # Needs what scripts/test-e2e.sh needs, and podman to build the guests' Alpine
 # root filesystem. The measurements and the guests' logs are kept under
-# $FXDAX_BENCH_RESULTS (default: a new temporary directory).
+# $FXDAX_BENCH_RESULTS (default: a new temporary directory), which holds no
+# earlier run's.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 iterations=${1:-3}
@@ -29,6 +30,12 @@ cases=${FXDAX_BENCH_CASES:-bench-fs-ext4-guest-kernel bench-fs-ext4-dax-pmem
 results=${FXDAX_BENCH_RESULTS:-$(mktemp -d "${TMPDIR:-/tmp}/fxdax-bench.XXXXXX")}
 mkdir -p "$results"
 results=$(cd "$results" && pwd)
+# The report is of every measurement and log there: an earlier run's would be
+# this one's, those of a case that failed now, which writes none, among them.
+if compgen -G "$results/bench-*.json" > /dev/null || [[ -e $results/logs ]]; then
+    echo "$results holds an earlier run's results: name a new directory in FXDAX_BENCH_RESULTS." >&2
+    exit 2
+fi
 
 status=0 report=0
 # shellcheck disable=SC2086 # The cases are names separated by spaces.

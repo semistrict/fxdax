@@ -33,10 +33,14 @@ exit "$FAKE_STATUS"
 
 
 class Bench(unittest.TestCase):
-    def bench(self, measured, status):
+    def bench(self, measured, status, earlier=None):
         """Runs bench.sh, its cases measuring `measured` (each case's report) and ending with
-        `status`: its status, output and errors, by line."""
+        `status`, in a results directory that holds `earlier`'s files, by name: its status, output
+        and errors, by line."""
         self.tree = tree = Path(tempfile.mkdtemp())
+        for name, text in (earlier or {}).items():
+            (tree / "results" / name).parent.mkdir(parents=True, exist_ok=True)
+            (tree / "results" / name).write_text(text)
         (tree / "scripts").mkdir()
         for name in ["bench.sh", "bench-report.py"]:
             (tree / "scripts" / name).symlink_to(SCRIPTS / name)
@@ -78,6 +82,34 @@ class Bench(unittest.TestCase):
         status, report, errors = self.bench([], 2)
         self.assertEqual((status, report), (2, ""))
         self.assertEqual(errors[-1:], [f"{self.tree / 'results'}: no results"])
+
+    def test_an_earlier_runs_results_are_not_reported_as_this_ones(self):
+        # A case writes its measurements only when it passes: those of one that failed in this run
+        # would be the earlier run's.
+        for earlier in [{"bench-fs-ext4-dax-pmem.json": json.dumps(PGBENCH)}, {"logs/x.log": ""}]:
+            with self.subTest(earlier):
+                status, report, errors = self.bench([], 1, earlier)
+                self.assertEqual(
+                    (status, report, errors),
+                    (
+                        2,
+                        "",
+                        [
+                            f"{self.tree / 'results'} holds an earlier run's results: name a new "
+                            "directory in FXDAX_BENCH_RESULTS."
+                        ],
+                    ),
+                )
+
+    def test_a_directory_of_what_the_host_records_is_new(self):
+        # bench-linux-host.sh records the host there, and has bench.sh's output and errors written
+        # there, before bench.sh runs.
+        made = {"host.txt": "Linux\n", "comparison.md": "", "bench.log": ""}
+        status, report, _ = self.bench([PGBENCH], 0, made)
+        self.assertEqual(
+            (status, report.split("\n\n")[0]),
+            (0, "Host: linux. VMM: firecracker. Iterations: ext4-dax-pmem 1."),
+        )
 
     def test_cases_that_passed_are_compared(self):
         status, report, _ = self.bench([PGBENCH], 0)
