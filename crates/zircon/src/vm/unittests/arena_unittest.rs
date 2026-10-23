@@ -942,9 +942,12 @@ fn relief_frees_an_arenas_pages_then_fails_its_allocations() {
     }
 }
 
-/// Pager-backed VMOs' clean pages, two chunks of each: another arena's and an arena's older ones,
-/// aged, and then the arena's newer ones, which fill the arena to its cap, as no arena keeps a
-/// spare chunk. The scanner, which ages pages, is disabled while the test lives, and eviction on.
+/// Pager-backed VMOs' clean pages, two chunks of each: another arena's, aged, and then an arena's
+/// newer and older ones, which fill the arena to its cap, as no arena keeps a spare chunk. The
+/// newer are committed first, in chunks below the older's, and made the newer by being accessed
+/// once both have aged: an eviction that took the arena's pages in the order of its chunks, rather
+/// than of their age, would take them first. The scanner, which ages pages, is disabled while the
+/// test lives, and eviction on.
 struct AgedPages {
     arena: ArenaId,
     others: Arc<VmObjectPaged>,
@@ -961,21 +964,28 @@ impl AgedPages {
         let (arena, other) = (pmm::create_arena(), pmm::create_arena());
         node.set_arena_cap(arena, Some(4 * CHUNK_SIZE as u64));
         let pager_vmo = || make_committed_pager_vmo(2 * CHUNK_PAGES, false, false).unwrap().0;
+        let queues = node.page_queues();
         let others = pmm::with_arena(other, pager_vmo);
-        let older = pmm::with_arena(arena, pager_vmo);
-        node.page_queues().rotate_reclaim_queues();
+        queues.rotate_reclaim_queues();
         let newer = pmm::with_arena(arena, pager_vmo);
+        let older = pmm::with_arena(arena, pager_vmo);
+        queues.rotate_reclaim_queues();
+        Self::pages(&newer).for_each(|page| queues.mark_accessed(page));
+        let chunks = |vmo| Self::pages(vmo).map(|page| node.phys_memory().chunk_of(page.paddr()));
+        assert!(chunks(&newer).max() < chunks(&older).min(), "the newer in the lower chunks");
         assert_eq!(node.arena_bytes(arena), 4 * CHUNK_SIZE as u64);
         node.evictor().enable_eviction(false);
         Self { arena, others, older, newer, _scanner: scanner }
     }
 
+    /// The pages `vmo` has of the two chunks' worth it was committed.
+    fn pages(vmo: &VmObjectPaged) -> impl Iterator<Item = VmPagePtr> + '_ {
+        (0..2 * CHUNK_PAGES as u64).filter_map(|i| vmo.debug_get_page(i * PAGE_SIZE))
+    }
+
     /// The pages left of the other arena's, the arena's older and its newer.
     fn resident(&self) -> [usize; 3] {
-        [&self.others, &self.older, &self.newer].map(|vmo| {
-            let pages = 0..2 * CHUNK_PAGES as u64;
-            pages.filter(|i| vmo.debug_get_page(i * PAGE_SIZE).is_some()).count()
-        })
+        [&self.others, &self.older, &self.newer].map(|vmo| Self::pages(vmo).count())
     }
 }
 
