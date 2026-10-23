@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@main-session'
 created_date: '2026-10-22 22:01'
-updated_date: '2026-10-23 10:33'
+updated_date: '2026-10-23 19:40'
 labels: []
 dependencies: []
 parent_task_id: TASK-91
@@ -42,4 +42,6 @@ a8e2e02c: regions have the window's last half to themselves, reclaiming nothing 
 Round 5 (sandbox team, a8e2e02, 2026-10-23): no collapse in 20 runs; DAX tps still falls 27-31% over five runs at 25 ms and 0 ms alike (1,081 / 856 / 793 / 744 / 742). MAP requests flat at 79-87k a run, so MAPs per transaction rise from ~1.3 to ~1.9; MAP time 12 to 15 s; Postgres user time -8.6 s, guest system time +4 s; UNMAPs 1-4k a run (not the window collapse). Their ask: find why MAPs per transaction rise; done when five DAX runs at 25 ms hold within 10% of the first.
 
 With /proc/fs/fxfs (263a3c34), DAX pgbench runs 1-3: commits 0.58 / 0.70 / 0.77 ms, MAPs per commit 1.96 / 2.49 / 2.64 (MAP 482-569 us as the guest sees it, 189-271 us in extentd), DAX stores held by seals 7.5 / 12.6 / 15.4 s a run, the window 'full' ~100k times a run, of which most are the regions' space (pieces then map in ranges' own space: ~80k such MAPs a run). The host side's growth (extent store commit 20 to 98 us, MAP 189 to 271 us) is the review session's extent_store work (review-r1: TASK-92.16 and others), to remeasure once on main.
+
+590e1cef: ranges let go of regions their pages left. DAX pgbench (GCE r63): regions bounded ~1,450 over five runs (was growing to 5,400-20,000), 30,336 pruned; tps unchanged 922/777/736/725/634. New stats show why: the regions' half (1 GiB of a 2 GiB window) is full from the load step on, ~1,450 regions of ~0.6 MB of the load's data, largest free run 2 MiB; window_regions_full ~100k a run, writes fall back to range MAPs (~70k a run); the ranges' half full too (largest free 1.3 MB, ~150-400 reclaims a run). Remaining DAX cost is likely per-MAP: TASK-92.50 (host map_unsafe O(n) in the VMO's mappings) is being fixed by the review session; re-measure after it before more window work. Part 2 of option 1 (moving small sealed regions' pages into ranges) would add range MAPs, so held until then.
 <!-- SECTION:NOTES:END -->
