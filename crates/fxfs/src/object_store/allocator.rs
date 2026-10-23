@@ -138,9 +138,10 @@
 //!   of the tree, go at once;
 //! - a layer is of an older version, which it writes again in the latest, as upstream's do. There
 //!   is none yet: a mount reads no version older than the latest (`EARLIEST_SUPPORTED_VERSION` is
-//!   `LATEST_VERSION`). A minor bump of the latest would leave older layers that a mount still
-//!   reads, which only this writes again: the filesystem asks only stores to upgrade theirs
-//!   (`FlushReason::UpgradeVersion`).
+//!   `LATEST_VERSION`). A bump of the latest that leaves `EARLIEST_SUPPORTED_VERSION` where it is
+//!   would leave older layers that a mount still reads, which only this writes again: the
+//!   filesystem asks only stores to upgrade theirs (`FlushReason::UpgradeVersion`), and flushes the
+//!   allocator only for the journal (`FlushReason::Journal`).
 //!
 //! The tree's layers are the allocator's own: snapshots share stores' layers, not these.
 mod extent_table;
@@ -2220,12 +2221,11 @@ impl<'a> Flusher<'a> {
         // fxdax: the compaction merges the newer layers, as an object store's does, unless it is to
         // merge them all (see "Compactions"): a major compaction, which gives back what removals
         // took; one that filters out the allocations of owners freed, which older layers hold too;
-        // or one that writes layers of older versions again, which only a bump of the latest
-        // version will leave.
-        let full_compaction =
-            matches!(reason, FlushReason::UpgradeVersion | FlushReason::Journal(ForceMajor::True))
-                || !freed_owners.is_empty()
-                || self.allocator.tree.get_earliest_version() < LATEST_VERSION;
+        // or one that writes layers of older versions again, for any reason, as the filesystem
+        // asks only stores to upgrade theirs.
+        let full_compaction = reason == FlushReason::Journal(ForceMajor::True)
+            || !freed_owners.is_empty()
+            || self.allocator.tree.get_earliest_version() < LATEST_VERSION;
         let (layer_set, layers_to_keep) =
             tree::layers_to_merge(&self.allocator.tree, full_compaction);
         let total_len = layer_set.sum_len();
