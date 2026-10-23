@@ -1165,8 +1165,10 @@ impl InFlight {
     /// with every one uploading, the last uploaded being `writer`'s last commit, and the marker of
     /// each child of the forks made at their ends names the fork's commit, which the child
     /// inherits, as uploading: so a child whose record its parent's host crashed before giving it
-    /// knows that the fork may land yet (TASK-79.72). Nothing changes if a marker cannot be
-    /// written.
+    /// knows that the fork may land yet (TASK-79.72). No upload goes if a marker cannot be
+    /// written, but the children's markers written before it stay, naming a commit that does not
+    /// land: harmless, as the uploader fails then, and with it the forks, whose children go, and
+    /// their markers with them (`ExtentStore::fork`).
     fn upload(
         &mut self,
         writer: &Arc<Writer<Bucket>>,
@@ -2410,10 +2412,12 @@ mod tests {
         assert_eq!(forked.root(), Ok(b"root".to_vec()));
     }
 
-    /// TASK-79.20: a fork's child whose record, and so marker, was lost, its parent's host crashing
-    /// once the fork's segment landed, before it gave the child its record, takes its record from
-    /// its parent's state, as the parent's next writer would: a fork still, which the parent,
-    /// attaching again, finds so.
+    /// TASK-79.20: a fork's child whose record was lost, its parent's host crashing once the fork's
+    /// segment landed, before it gave the child its record, takes its record from its parent's
+    /// state, as the parent's next writer would: a fork still, which the parent, attaching again,
+    /// finds so. Its marker, which names the fork's commit from before the segment went
+    /// (TASK-79.72), and which such a crash leaves, is lost here too: the child takes its record
+    /// so whether its marker names the fork or nothing.
     #[test]
     fn forks_whose_record_was_lost_record_themselves() {
         let dir = tempfile::tempdir().unwrap();
