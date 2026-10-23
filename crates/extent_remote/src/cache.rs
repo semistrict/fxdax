@@ -9,7 +9,7 @@
 //! floor of free space. They are copies of what is in the bucket, so none is data the bucket lacks;
 //! a host starts with none.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::File;
 use std::io;
 use std::os::unix::fs::FileExt as _;
@@ -19,6 +19,9 @@ use std::sync::Mutex;
 /// A part of an object, by its key and number.
 type Id = (String, u64);
 
+/// The cache's lock is held only to change what it keeps, not across its files' I/O: a part's write,
+/// or its eviction, is done outside it, the part busy meanwhile, and an object's file removed with
+/// its last part so too, the object busy; neither is kept or read until done (TASK-92.21).
 #[derive(Debug)]
 pub struct Cache {
     dir: PathBuf,
@@ -33,10 +36,23 @@ struct Kept {
     parts: HashMap<Id, (u64, u64, u64)>,
     /// The parts by when they were last read.
     by_use: BTreeMap<u64, Id>,
-    /// How many parts each object has kept.
+    /// How many parts each object has kept, or is being written.
     objects: HashMap<String, usize>,
+    /// The parts being written, or evicted.
+    busy: HashSet<Id>,
+    /// The objects whose files are being removed.
+    removing: HashSet<String>,
     clock: u64,
+    /// The bytes of the parts kept, and being written.
     bytes: u64,
+}
+
+/// What evicting a part leaves to do with its object's file, outside the cache's lock.
+enum Evicted {
+    /// Punch the part's hole: its offset and length.
+    Punch(Id, u64, u64),
+    /// Remove the file of the object, whose last part it was.
+    Remove(String),
 }
 
 impl Kept {
@@ -48,6 +64,30 @@ impl Kept {
             *used = clock;
             self.by_use.insert(clock, id.clone());
         }
+    }
+
+    /// Drops `id`, no longer in `by_use`: it, or its object, is busy until [`Cache::evict`] has
+    /// done with its file what this leaves to do.
+    fn evict(&mut self, id: Id) -> Evicted {
+        let (offset, len, _) = self.parts.remove(&id).expect("a part kept");
+        self.bytes -= len;
+        if self.release(&id.0) {
+            self.removing.insert(id.0.clone());
+            return Evicted::Remove(id.0);
+        }
+        self.busy.insert(id.clone());
+        Evicted::Punch(id, offset, len)
+    }
+
+    /// Counts a part of the object at `key` gone. Returns whether it was its last.
+    fn release(&mut self, key: &str) -> bool {
+        let left = self.objects.get_mut(key).expect("its object kept");
+        *left -= 1;
+        if *left > 0 {
+            return false;
+        }
+        self.objects.remove(key);
+        true
     }
 }
 
@@ -91,7 +131,7 @@ impl Cache {
 
     /// Keeps `bytes`, the stored bytes of part `part` of the object at `key`, of `size` bytes, at
     /// `offset` in it, evicting what was read least recently to make room: unless no room can be
-    /// made.
+    /// made, or it, or its object, is busy.
     pub fn put(
         &self,
         key: &str,
@@ -102,14 +142,63 @@ impl Cache {
     ) -> io::Result<()> {
         let id = (key.to_owned(), part);
         let len = bytes.len() as u64;
-        let mut kept = self.kept.lock().unwrap();
-        if kept.parts.contains_key(&id) || len > self.capacity {
+        if len > self.capacity {
             return Ok(());
         }
-        while kept.bytes + len > self.capacity || self.free()? < self.floor + len {
-            let Some((_, oldest)) = kept.by_use.pop_first() else { return Ok(()) };
-            self.evict(&mut kept, &oldest)?;
+        let free = self.free()?;
+        let (fits, evicted) = {
+            let mut kept = self.kept.lock().unwrap();
+            if kept.parts.contains_key(&id)
+                || kept.busy.contains(&id)
+                || kept.removing.contains(key)
+            {
+                return Ok(());
+            }
+            let (mut evicted, mut freed) = (Vec::new(), 0);
+            let fits = loop {
+                if kept.bytes + len <= self.capacity && free + freed >= self.floor + len {
+                    break true;
+                }
+                let Some((_, oldest)) = kept.by_use.pop_first() else { break false };
+                freed += kept.parts[&oldest].1;
+                evicted.push(kept.evict(oldest));
+            };
+            if fits {
+                kept.bytes += len;
+                *kept.objects.entry(key.to_owned()).or_default() += 1;
+                kept.busy.insert(id.clone());
+            }
+            (fits, evicted)
+        };
+        // Its object's file, if one of those evicted was its last part, goes first.
+        let written = self.evict(evicted);
+        if !fits {
+            return written;
         }
+        let written = written.and_then(|()| self.write(key, size, offset, bytes));
+        let mut kept = self.kept.lock().unwrap();
+        kept.busy.remove(&id);
+        if written.is_ok() {
+            kept.clock += 1;
+            let clock = kept.clock;
+            kept.parts.insert(id.clone(), (offset, len, clock));
+            kept.by_use.insert(clock, id);
+            return written;
+        }
+        kept.bytes -= len;
+        // What it wrote is no part kept: with no other of its object's, its file goes.
+        if kept.release(key) {
+            kept.removing.insert(key.to_owned());
+            drop(kept);
+            if let Err(err) = self.evict(vec![Evicted::Remove(key.to_owned())]) {
+                log::warn!("fxdax: removing {key} from the cache: {err}");
+            }
+        }
+        written
+    }
+
+    /// Writes `bytes` at `offset` in the file of the object at `key`, of `size` bytes.
+    fn write(&self, key: &str, size: u64, offset: u64, bytes: &[u8]) -> io::Result<()> {
         let path = self.path(key);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -118,28 +207,22 @@ impl Cache {
             std::fs::OpenOptions::new().create(true).write(true).truncate(false).open(path)?;
         // Its file is the object's size from the first, so that what is not written to it is a
         // hole: some filesystems (APFS) fill what a write past the end skips.
-        if !kept.objects.contains_key(key) {
+        if file.metadata()?.len() < size {
             file.set_len(size)?;
         }
-        file.write_all_at(bytes, offset)?;
-        kept.clock += 1;
-        let clock = kept.clock;
-        kept.parts.insert(id.clone(), (offset, len, clock));
-        kept.by_use.insert(clock, id);
-        *kept.objects.entry(key.to_owned()).or_default() += 1;
-        kept.bytes += len;
-        Ok(())
+        file.write_all_at(bytes, offset)
     }
 
     /// Drops part `part` of the object at `key`: one that failed its check.
     pub fn forget(&self, key: &str, part: u64) -> io::Result<()> {
         let id = (key.to_owned(), part);
-        let mut kept = self.kept.lock().unwrap();
-        if let Some(&(.., used)) = kept.parts.get(&id) {
+        let evicted = {
+            let mut kept = self.kept.lock().unwrap();
+            let Some(&(.., used)) = kept.parts.get(&id) else { return Ok(()) };
             kept.by_use.remove(&used);
-            self.evict(&mut kept, &id)?;
-        }
-        Ok(())
+            vec![kept.evict(id)]
+        };
+        self.evict(evicted)
     }
 
     /// How many bytes of parts are kept.
@@ -147,19 +230,33 @@ impl Cache {
         self.kept.lock().unwrap().bytes
     }
 
-    /// Removes `id`, no longer in `by_use`: punches its hole, or removes its object's file with its
-    /// last part.
-    fn evict(&self, kept: &mut Kept, id: &Id) -> io::Result<()> {
-        let (offset, len, _) = kept.parts.remove(id).expect("a part kept");
-        kept.bytes -= len;
-        let path = self.path(&id.0);
-        let left = kept.objects.get_mut(&id.0).expect("its object kept");
-        *left -= 1;
-        if *left == 0 {
-            kept.objects.remove(&id.0);
-            return std::fs::remove_file(path);
+    /// Does with the files of the parts evicted what evicting them left to do ([`Kept::evict`]),
+    /// holding no lock: punches their holes, or removes their objects' files with their last
+    /// parts; then they are no longer busy.
+    fn evict(&self, evicted: Vec<Evicted>) -> io::Result<()> {
+        let mut done = Ok(());
+        for evicted in &evicted {
+            let evicting = match evicted {
+                Evicted::Punch(id, offset, len) => (File::options().write(true))
+                    .open(self.path(&id.0))
+                    .and_then(|file| punch(&file, *offset, *len)),
+                Evicted::Remove(key) => std::fs::remove_file(self.path(key)),
+            };
+            match evicting {
+                // Its object's file removed meanwhile, with the object's last part, which another
+                // put evicted: its hole with it.
+                Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+                evicting => done = done.and(evicting),
+            }
         }
-        punch(&File::options().write(true).open(path)?, offset, len)
+        let mut kept = self.kept.lock().unwrap();
+        for evicted in evicted {
+            match evicted {
+                Evicted::Punch(id, ..) => kept.busy.remove(&id),
+                Evicted::Remove(key) => kept.removing.remove(&key),
+            };
+        }
+        done
     }
 
     /// The bytes free to unprivileged users on the cache's filesystem.
@@ -358,6 +455,120 @@ mod tests {
         // Within a few blocks of it: other processes write meanwhile.
         let free = cache.free().unwrap();
         assert!(free.abs_diff(blocks * size) < 1024 * size, "{free} bytes, {blocks} of {size}");
+    }
+
+    /// A part whose write fails is neither kept nor counted; the cache keeps others after it.
+    #[test]
+    fn parts_whose_writes_fail_are_not_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = Cache::new(dir.path(), 3 * PART, 0).unwrap();
+        let other = "segments/0000000000000001/0000000000000003";
+        std::fs::create_dir_all(cache.path(other)).unwrap();
+        let failed = cache.put(other, PART, 0, 0, &part(1)).unwrap_err();
+        assert_eq!(failed.raw_os_error(), Some(libc::EISDIR), "{failed}");
+        assert_eq!((cache.get(other, 0).unwrap(), cache.bytes()), (None, 0));
+        cache.put(KEY, PART, 0, 0, &part(2)).unwrap();
+        assert_eq!((cache.get(KEY, 0).unwrap(), cache.bytes()), (Some(part(2)), PART));
+    }
+
+    /// TASK-92.21: a part dropped whose object's file went meanwhile, as one does that another
+    /// put's eviction of the object's last part removes outside the cache's lock, is dropped, its
+    /// hole gone with the file; and so is the object's last part.
+    #[test]
+    fn parts_dropped_whose_files_went_are_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = Cache::new(dir.path(), 3 * PART, 0).unwrap();
+        cache.put(KEY, 2 * PART, 0, 0, &part(1)).unwrap();
+        cache.put(KEY, 2 * PART, 1, PART, &part(2)).unwrap();
+        std::fs::remove_file(cache.path(KEY)).unwrap();
+        cache.forget(KEY, 0).unwrap();
+        assert_eq!(cache.bytes(), PART);
+        cache.forget(KEY, 1).unwrap();
+        assert_eq!(cache.bytes(), 0);
+    }
+
+    /// TASK-92.21: puts, reads and drops of a few objects' parts, in threads at once, evicting one
+    /// another's, keep the cache whole: no put or drop fails, and, once they are done, what the
+    /// cache counts it keeps, it keeps, each part kept read whole.
+    #[test]
+    fn parts_kept_read_and_dropped_at_once_keep_the_cache_whole() {
+        const OBJECTS: u64 = 3;
+        const PARTS: u64 = 4;
+        let dir = tempfile::tempdir().unwrap();
+        let cache = std::sync::Arc::new(Cache::new(dir.path(), 6 * PART, 0).unwrap());
+        let key = |object: u64| format!("segments/0000000000000001/{object:016x}");
+        let fill = |object: u64, part: u64| (object * PARTS + part + 1) as u8;
+        let threads: Vec<_> = (0..4u64)
+            .map(|thread| {
+                let cache = cache.clone();
+                std::thread::spawn(move || {
+                    let mut state = 0x9e37_79b9_7f4a_7c15_u64 ^ thread;
+                    for _ in 0..500 {
+                        state ^= state << 13;
+                        state ^= state >> 7;
+                        state ^= state << 17;
+                        let (object, number) = (state % OBJECTS, state / OBJECTS % PARTS);
+                        let (key, at) = (key(object), number * PART);
+                        match state / (OBJECTS * PARTS) % 4 {
+                            0 | 1 => {
+                                let bytes = part(fill(object, number));
+                                cache.put(&key, PARTS * PART, number, at, &bytes).unwrap();
+                            }
+                            2 => drop(cache.get(&key, number).unwrap()),
+                            _ => cache.forget(&key, number).unwrap(),
+                        }
+                    }
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        let mut kept = 0;
+        for object in 0..OBJECTS {
+            for number in 0..PARTS {
+                if let Some(bytes) = cache.get(&key(object), number).unwrap() {
+                    assert_eq!(bytes, part(fill(object, number)), "part {number} of {object}");
+                    kept += PART;
+                }
+            }
+        }
+        assert_eq!(cache.bytes(), kept);
+        let held = cache.kept.lock().unwrap();
+        assert_eq!((held.busy.len(), held.removing.len()), (0, 0));
+    }
+
+    /// TASK-92.21: a benchmark of reads of a part kept while others are kept, each evicting one,
+    /// in another thread: how long the reads took, the most and in all, which wait for the
+    /// cache's lock. `cargo nextest run -p extent_remote --run-ignored only
+    /// bench_reads_while_parts_are_kept --no-capture`.
+    #[test]
+    #[ignore]
+    fn bench_reads_while_parts_are_kept() {
+        const PUTS: u64 = 2048;
+        let dir = tempfile::tempdir().unwrap();
+        let cache = std::sync::Arc::new(Cache::new(dir.path(), 16 * PART, 0).unwrap());
+        cache.put(KEY, PART, 0, 0, &part(1)).unwrap();
+        let keeping = {
+            let cache = cache.clone();
+            std::thread::spawn(move || {
+                for number in 0..PUTS {
+                    let key = format!("segments/0000000000000002/{:016x}", number / 8);
+                    let at = number % 8 * PART;
+                    cache.put(&key, 8 * PART, number % 8, at, &part(number as u8)).unwrap();
+                }
+            })
+        };
+        let (mut most, mut all, mut reads) =
+            (std::time::Duration::ZERO, std::time::Duration::ZERO, 0);
+        while !keeping.is_finished() {
+            let started = std::time::Instant::now();
+            assert_eq!(cache.get(KEY, 0).unwrap(), Some(part(1)));
+            let took = started.elapsed();
+            (most, all, reads) = (most.max(took), all + took, reads + 1);
+        }
+        keeping.join().unwrap();
+        println!("{reads} reads while {PUTS} parts were kept: at most {most:?}, {all:?} in all");
     }
 
     /// A cache starts empty, whatever an earlier one left.
