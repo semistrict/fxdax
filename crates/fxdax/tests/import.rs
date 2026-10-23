@@ -469,6 +469,42 @@ fn paths_stay_in_the_image() {
     })
 }
 
+/// An image a thousand directories deep makes a store on a thread with the stack an extent
+/// daemon's blocking threads have, tokio's 2 MiB, though its whiteout removes a tree as deep:
+/// removal kept a poll frame on the thread's stack for each directory it was emptying, and
+/// overflowed it, aborting the process. Making the rest of the store, and checking it, take no
+/// more of the stack for a deeper tree either.
+#[test]
+fn deep_images_make_stores_on_a_daemons_thread() {
+    const DEPTH: usize = 1000;
+    const STACK: usize = 2 << 20;
+    let deep = vec!["d"; DEPTH].join("/");
+    let base = layer(&[
+        Entry::new(&format!("{deep}/file"), Kind::File(b"removed")),
+        Entry::new(&format!("kept/{deep}/file"), Kind::File(b"kept")),
+    ])
+    .unwrap();
+    let top = layer(&[Entry::new(&whiteout("d"), Kind::File(b""))]).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let layout = dir.path().join("image");
+    oci_layout(&layout, "deep:1", &[base, top]).unwrap();
+    let store = dir.path().join("store");
+    std::thread::scope(|scope| {
+        let made = std::thread::Builder::new().stack_size(STACK).spawn_scoped(scope, || {
+            block_on(fxdax::import::store(&store, STORAGE_SIZE, &layout, Some("deep:1")))
+        });
+        made.unwrap().join().unwrap().expect("making the store failed");
+    });
+    block_on(async {
+        let fs = Filesystem::mount(Storage::open(&store).unwrap()).await.unwrap();
+        assert_eq!(names(&fs, "").await, ["kept"]);
+        let (file, _) = at(&fs, &format!("kept/{deep}/file")).await.unwrap();
+        assert_eq!(contents(&file).await, b"kept");
+        drop(file);
+        close(fs).await;
+    })
+}
+
 /// Runs fxdaxctl with `args`, and returns whether it succeeded, and what it printed to stderr.
 fn fxdaxctl(args: &[&str]) -> (bool, String) {
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_fxdaxctl")).args(args).output();

@@ -33,8 +33,6 @@ use crate::filesystem::{Filesystem, Node};
 use crate::node::{FileType, Owner, SetAttr, SetTime, XattrMode};
 use crate::storage::Storage;
 use anyhow::{Context as _, bail, ensure};
-use futures::FutureExt as _;
-use futures::future::BoxFuture;
 use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -460,26 +458,41 @@ async fn set_xattrs(node: &Node, xattrs: &[(Vec<u8>, Vec<u8>)]) -> anyhow::Resul
     Ok(())
 }
 
-/// Removes `name` from directory `dir`, with everything in it, if it is a directory.
-fn remove(dir: &Node, name: Vec<u8>) -> BoxFuture<'_, anyhow::Result<()>> {
-    async move {
-        let (node, attr) = dir.lookup(&name).await?;
-        if attr.file_type != FileType::Directory {
-            drop(node);
-            return Ok(dir.unlink(&name).await?);
-        }
-        let emptied = async {
-            for child in entries(&node).await? {
-                remove(&node, child).await?;
+/// Removes `name` from directory `dir`, with everything in it, if it is a directory: depth first,
+/// a directory's entries before it, from a stack of the steps left to take rather than by
+/// recursing, which takes a poll frame of the thread's stack for each level of the tree. However
+/// deep the tree, removing it takes as much of the thread's stack as removing one node does.
+async fn remove(dir: &Node, name: Vec<u8>) -> anyhow::Result<()> {
+    let mut steps = vec![Removal::Node { dir: dir.clone(), name }];
+    while let Some(step) = steps.pop() {
+        match step {
+            Removal::Node { dir, name } => {
+                let (node, attr) = dir.lookup(&name).await?;
+                if attr.file_type != FileType::Directory {
+                    drop(node);
+                    dir.unlink(&name).await?;
+                    continue;
+                }
+                let children = entries(&node).await?;
+                steps.push(Removal::Directory { parent: dir, name });
+                // Popped in the order the directory lists them.
+                let children = children.into_iter().rev();
+                steps.extend(children.map(|name| Removal::Node { dir: node.clone(), name }));
             }
-            anyhow::Ok(())
+            // Its entries are removed, and with them the handles to it that their steps held.
+            Removal::Directory { parent, name } => parent.rmdir(&name).await?,
         }
-        .await;
-        drop(node);
-        emptied?;
-        Ok(dir.rmdir(&name).await?)
     }
-    .boxed()
+    Ok(())
+}
+
+/// A step of [`remove`]'s.
+enum Removal {
+    /// Removes `name` from directory `dir`: a non-directory, or the entries of a directory, then
+    /// the directory.
+    Node { dir: Node, name: Vec<u8> },
+    /// Removes the directory `name` from `parent`, once its entries are removed.
+    Directory { parent: Node, name: Vec<u8> },
 }
 
 /// The names of the entries of directory `dir`.
