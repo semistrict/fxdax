@@ -1519,13 +1519,7 @@ struct Held {
 
 impl Held {
     fn now() -> Self {
-        let threads = std::fs::read_dir("/proc/self/task")
-            .unwrap()
-            .filter(|task| {
-                let comm = task.as_ref().unwrap().path().join("comm");
-                std::fs::read_to_string(comm).unwrap().trim() != "extentd client"
-            })
-            .count();
+        let threads = thread_comms().filter(|comm| comm != "extentd client").count();
         let files = std::fs::read_dir("/proc/self/fd").unwrap().count();
         let status = std::fs::read_to_string("/proc/self/status").unwrap();
         let kib = status
@@ -1537,12 +1531,24 @@ impl Held {
     }
 }
 
+/// The names of this process's threads alive as they are read: one that ends between the listing of
+/// `/proc/self/task` and the read of its name, as an idle blocking thread of the daemon's runtimes
+/// does, is gone, and holds nothing.
+fn thread_comms() -> impl Iterator<Item = String> {
+    std::fs::read_dir("/proc/self/task").unwrap().filter_map(|task| {
+        match std::fs::read_to_string(task.unwrap().path().join("comm")) {
+            Ok(comm) => Some(comm.trim().to_owned()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+            Err(err) => panic!("reading a thread's name: {err}"),
+        }
+    })
+}
+
 /// This process's threads, by name, and how many of each.
 fn thread_names() -> std::collections::BTreeMap<String, usize> {
     let mut names = std::collections::BTreeMap::new();
-    for task in std::fs::read_dir("/proc/self/task").unwrap() {
-        let comm = std::fs::read_to_string(task.unwrap().path().join("comm")).unwrap();
-        *names.entry(comm.trim().to_owned()).or_default() += 1;
+    for comm in thread_comms() {
+        *names.entry(comm).or_default() += 1;
     }
     names
 }
