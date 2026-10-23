@@ -46,6 +46,11 @@ pub struct Rules {
     pub durable_once_synced: bool,
     /// Closing a branch waits for a flush in flight to finish.
     pub close_waits_for_flushes: bool,
+    /// Closing a branch waits for the segments closed between commits to be framed (TASK-41.1).
+    pub close_waits_for_framings: bool,
+    /// A fork waits for the segments closed between commits to be framed, which its child reads
+    /// from their framed files (TASK-41.1).
+    pub forks_wait_for_framings: bool,
     /// A free of an extent sealed before keeps its data while a view older than the free lives.
     pub keep_frees_for_views: bool,
     /// A free of an extent a view pins keeps its data while it does.
@@ -73,6 +78,8 @@ impl Rules {
         durable_only: true,
         durable_once_synced: true,
         close_waits_for_flushes: true,
+        close_waits_for_framings: true,
+        forks_wait_for_framings: true,
         keep_frees_for_views: true,
         keep_pins: true,
         decide_at_publish: true,

@@ -863,8 +863,9 @@ static SEGMENT_CLOSES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU
 static SEGMENT_CLOSE_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// fxdax: how many segments this process's stores closed since it started, and the nanoseconds
-/// framing them took: their data read, framed and written, off the commits that closed them but
-/// for [`Store::close_now`](crate::Store::close_now)'s.
+/// framing them took: their data read, framed and written, off the commits that closed them, and
+/// off the store's locks for those closed between commits
+/// ([`Store::close_now`](crate::Store::close_now)'s).
 pub fn segment_closes() -> (u64, u64) {
     let load =
         |count: &std::sync::atomic::AtomicU64| count.load(std::sync::atomic::Ordering::Relaxed);

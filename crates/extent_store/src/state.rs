@@ -63,6 +63,10 @@ pub(crate) struct State<F> {
     /// Whether it was closed ([`Store::close`](crate::Store::close)): it reads what it holds, and
     /// changes nothing.
     pub closed: bool,
+    /// fxdax: the segments closed between commits being framed, holding no lock
+    /// ([`Store::close_now`](crate::Store::close_now)): a fork, and the branch's closing, wait for
+    /// them (TASK-41.1).
+    pub framings: usize,
 }
 
 /// Whom a read is for: the store's own, of what it holds; the uploader's, of what it holds or

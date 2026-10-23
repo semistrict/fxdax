@@ -87,7 +87,8 @@
 //! chain is, each following the one before, their commits tagged with the writer's lease epoch,
 //! their extents of their own at the writer's keys; and it keeps each closed segment for the
 //! uploader until it is uploaded ([`Store::closed`], [`Store::uploaded`]). The uploader may have
-//! it close its open segment between commits ([`Store::close_now`]).
+//! it close its open segment between commits ([`Store::close_now`]): fxdax: framed holding none of
+//! the store's locks, as a commit's closing is, which the branch's closing and forks wait for.
 //!
 //! **Cleaning.** [`Store::clean`] copies the data of extents in the branch's segments mostly freed,
 //! which no other branch claims, to the open segment, and commits, which removes those segments.
