@@ -526,21 +526,28 @@ mod tests {
     /// as a crash would stop them.
     #[test]
     fn deletions_of_last_branches_stopped_at_any_step_finish() {
-        let finished = |temp: &Path, fork: &Path, stopped: &str| {
+        // Stopped where it was stopped, and not before, by anything else.
+        let stopped = |deleted: Result<(), Error>, at: &str| {
+            let err = deleted.expect_err(&format!("went on {at}"));
+            assert_eq!(err.root_cause().to_string(), "stopped", "stopped {at}: {err:#}");
+        };
+        let finished = |temp: &Path, fork: &Path, at: &str| {
             delete_host(fork, Options::default())
-                .unwrap_or_else(|err| panic!("stopped {stopped}: {err:#}"));
+                .unwrap_or_else(|err| panic!("stopped {at}: {err:#}"));
             let left: Vec<_> = std::fs::read_dir(temp).unwrap().collect();
-            assert_eq!(left.len(), 0, "stopped {stopped}: {left:?} left");
+            assert_eq!(left.len(), 0, "stopped {at}: {left:?} left");
         };
         let stopping = |_: &Path, _| Err(anyhow!("stopped"));
+        let at = "before the branch went";
         let temp = tempfile::tempdir().unwrap();
         let (_, fork) = last_fork(temp.path());
-        delete_host_with(&fork, Options::default(), stopping, |_, _| Ok(())).unwrap_err();
-        finished(temp.path(), &fork, "before the branch went");
+        stopped(delete_host_with(&fork, Options::default(), stopping, |_, _| Ok(())), at);
+        finished(temp.path(), &fork, at);
+        let at = "after the branch went";
         let temp = tempfile::tempdir().unwrap();
         let (_, fork) = last_fork(temp.path());
-        delete_host_with(&fork, Options::default(), |_, _| Ok(()), stopping).unwrap_err();
-        finished(temp.path(), &fork, "after the branch went");
+        stopped(delete_host_with(&fork, Options::default(), |_, _| Ok(()), stopping), at);
+        finished(temp.path(), &fork, at);
         // The removals' steps, as a deletion stopped at none takes them.
         let temp = tempfile::tempdir().unwrap();
         let (_, fork) = last_fork(temp.path());
@@ -551,9 +558,9 @@ mod tests {
             let temp = tempfile::tempdir().unwrap();
             let (_, fork) = last_fork(temp.path());
             stop_after(Some(stop));
-            let stopped = delete_host(&fork, Options::default());
+            let deleted = delete_host(&fork, Options::default());
             stop_after(None);
-            stopped.expect_err(&format!("went on {at}"));
+            stopped(deleted, &at);
             finished(temp.path(), &fork, &at);
         }
     }
