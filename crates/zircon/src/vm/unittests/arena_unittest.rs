@@ -556,12 +556,17 @@ fn spares_the_host_does_not_map_are_done_without() {
 }
 
 /// The mappings the process may make beside those it has (`vm.max_map_count`), taken while this
-/// lives: pages of a shared mapping of its own, which merges with none, every other one made
-/// readable, each so a mapping of its own, until the host makes no more.
+/// lives, until the host maps nothing more: pages of a shared mapping of its own, which merges with
+/// none, every other one made readable, each so a mapping of its own, until the host splits it no
+/// more; then a page each, shared memory of its own, until it maps no more, as Linux may map one
+/// mapping more than it splits one for (`do_mmap` refusing past its limit, `split_vma` at it). The
+/// host then maps no chunk, whether its reservation is split around it or shortened, nor reserves
+/// one again in the middle of its arena's mapping.
 #[cfg(target_os = "linux")]
 struct MappingsTaken {
-    addr: *mut libc::c_void,
+    split: *mut libc::c_void,
     len: usize,
+    pages: Vec<*mut libc::c_void>,
 }
 
 #[cfg(target_os = "linux")]
@@ -570,38 +575,65 @@ impl MappingsTaken {
         let max = std::fs::read_to_string("/proc/sys/vm/max_map_count").unwrap();
         // Two pages a mapping: more than the process may make.
         let len = 2 * max.trim().parse::<usize>().unwrap() * page::SIZE;
-        // SAFETY: Maps memory of its own, never touched, with no address hint.
-        let addr = unsafe {
-            libc::mmap(
-                std::ptr::null_mut(),
-                len,
-                libc::PROT_NONE,
-                libc::MAP_SHARED | libc::MAP_ANONYMOUS | libc::MAP_NORESERVE,
-                -1,
-                0,
-            )
-        };
-        assert_ne!(addr, libc::MAP_FAILED, "mmap: {}", std::io::Error::last_os_error());
+        let split = map_shared(len).expect("a mapping to split");
+        // The thread's heap grown, and its memory freed, before the mappings run out: what the
+        // thread allocates meanwhile, as the PMM logs, it takes from the heap as it is, rather than
+        // grow it, which the host would refuse, and the process abort.
+        drop(std::hint::black_box((0..16).map(|_| vec![1u8; 64 << 10]).collect::<Vec<_>>()));
         // Each page made readable splits what is left of the mapping: two mappings more, until the
         // host refuses, at its limit.
         let mut offset = page::SIZE;
         // SAFETY: Changes the protection of a page of the mapping, which this owns.
-        while unsafe { libc::mprotect(addr.byte_add(offset), page::SIZE, libc::PROT_READ) } == 0 {
+        while unsafe { libc::mprotect(split.byte_add(offset), page::SIZE, libc::PROT_READ) } == 0 {
             offset += 2 * page::SIZE;
         }
         let error = std::io::Error::last_os_error();
         assert_eq!(error.raw_os_error(), Some(libc::ENOMEM), "mprotect: {error}");
         assert!(offset < len, "the mapping is too small to take every mapping");
-        Self { addr, len }
+        // Room for the few the host may map still, so that none grows the heap.
+        let mut pages = Vec::with_capacity(16);
+        let refused = (0..pages.capacity()).find_map(|_| match map_shared(page::SIZE) {
+            Ok(page) => {
+                pages.push(page);
+                None
+            }
+            Err(error) => Some(error),
+        });
+        let refused = refused.unwrap_or_else(|| panic!("the host maps on: {} pages", pages.len()));
+        assert_eq!(refused.raw_os_error(), Some(libc::ENOMEM), "mmap: {refused}");
+        Self { split, len, pages }
     }
+}
+
+/// A new shared mapping of `len` bytes, of memory of its own, which merges with no other, never
+/// touched.
+#[cfg(target_os = "linux")]
+fn map_shared(len: usize) -> std::io::Result<*mut libc::c_void> {
+    // SAFETY: Maps memory of its own, with no address hint.
+    let addr = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            len,
+            libc::PROT_NONE,
+            libc::MAP_SHARED | libc::MAP_ANONYMOUS | libc::MAP_NORESERVE,
+            -1,
+            0,
+        )
+    };
+    if addr == libc::MAP_FAILED { Err(std::io::Error::last_os_error()) } else { Ok(addr) }
 }
 
 #[cfg(target_os = "linux")]
 impl Drop for MappingsTaken {
     fn drop(&mut self) {
-        // SAFETY: Unmaps the mapping, which nothing else uses: whole mappings, none split.
-        let status = unsafe { libc::munmap(self.addr, self.len) };
+        // SAFETY: Unmaps the mappings, which nothing else uses: whole mappings, none split.
+        let status = unsafe { libc::munmap(self.split, self.len) };
         assert_eq!(status, 0, "munmap: {}", std::io::Error::last_os_error());
+        for &page in &self.pages {
+            // SAFETY: As above.
+            let status = unsafe { libc::munmap(page, page::SIZE) };
+            assert_eq!(status, 0, "munmap: {}", std::io::Error::last_os_error());
+        }
     }
 }
 
