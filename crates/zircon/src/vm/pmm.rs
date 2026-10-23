@@ -256,6 +256,17 @@ impl PmmNode {
         &self.pages.memory
     }
 
+    /// fxdax: the pages of the chunks `arena` has, allocated or free, as the chunk table shows them
+    /// without the node's lock, which may change as they are read: for the evictor to find the
+    /// arena's own pages by (`Evictor::evict_arena_on_demand`, TASK-79.76), which checks each.
+    pub(crate) fn arena_pages(&self, arena: ArenaId) -> impl Iterator<Item = VmPagePtr> + '_ {
+        let memory = &self.pages.memory;
+        (0..memory.chunk_count())
+            .filter(move |&chunk| memory.chunk_arena(chunk) == Some(arena))
+            .flat_map(arenas::chunk_pages)
+            .map(|index| self.pages.page(index))
+    }
+
     /// Acquires the node's lock (`NodeGuard`).
     fn locked(&self) -> NodeGuard<'_> {
         NodeGuard { node: self, locked: self.lock.lock() }

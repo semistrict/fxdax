@@ -8,11 +8,11 @@
 //! arena starved asks for relief, and one that can wait waits for it: the PMM's relief thread
 //! frees pages for each arena asked for since its last pass, with the evictor the kernel's user
 //! gives it ([`relieve_with`]), the arena's own past its own cap, any arena's past the total's or
-//! out of chunks; and then, of any arena's, with the kernel's own, on demand
-//! (`EvictionLevel::OnDemand`), those the user's leaves, such as files' (TASK-79.70). A pass that
-//! frees nothing for an arena starved still exhausts it: its allocations fail rather than wait for
-//! ever, until a page of it is freed, a cap changes, or a later pass, which each of them still asks
-//! for, frees something.
+//! out of chunks; and then, with the kernel's own, on demand, those the user's leaves, such as
+//! files', of the same: the arena's own (`Evictor::evict_arena_on_demand`, TASK-79.76), or any
+//! arena's (`EvictionLevel::OnDemand`, TASK-79.70). A pass that frees nothing for an arena starved
+//! still exhausts it: its allocations fail rather than wait for ever, until a page of it is freed,
+//! a cap changes, or a later pass, which each of them still asks for, frees something.
 //!
 //! Without relief, the kernel's evictor is asked to free a chunk's worth, of any arena's, on demand
 //! (`EvictionLevel::OnDemand`), whatever their age, for each allocation that finds its arena
@@ -59,7 +59,7 @@ pub(super) fn started() -> bool {
 /// with `evict`: given the arena whose pages to free, or none for any arena's, and how many bytes
 /// at least, it frees what it may of them and returns the bytes it freed. It is called without the
 /// PMM's lock, and must not wait for an allocation that waits for relief, as its own thread
-/// relieves them. What it leaves of any arena's, the kernel's evictor frees on demand.
+/// relieves them. What it leaves, the kernel's evictor frees on demand, of the same arenas.
 ///
 /// Relief starts once: a later call fails with `AlreadyExists`, whether or not the first started
 /// its thread. Under Shuttle no thread starts, as none of the kernel's does (`crate::sync`), and
@@ -105,15 +105,19 @@ fn relieve(reliever: &Reliever, mut evict: impl FnMut(Option<ArenaId>, u64) -> u
                 Starved::Removed => unreachable!("relief asked for {arena:?}, removed"),
             };
             let mut freed = evict(from, RELIEF_BYTES);
-            if from.is_none() && freed < RELIEF_BYTES {
-                let evicted = node.evictor.evict_synchronous(
-                    RELIEF_BYTES - freed,
-                    0,
-                    EvictionLevel::OnDemand,
-                    Output::NoPrint,
-                    TriggerReason::Other,
-                );
-                freed += evicted.counts.non_loaned_total() * page::SIZE as u64;
+            if freed < RELIEF_BYTES {
+                let rest = RELIEF_BYTES - freed;
+                let evicted = match from {
+                    // Its own pages alone make it room, and no other arena's are evicted for it.
+                    Some(arena) => node.evictor.evict_arena_on_demand(arena, rest),
+                    None => {
+                        let (level, reason) = (EvictionLevel::OnDemand, TriggerReason::Other);
+                        let evicted =
+                            node.evictor.evict_synchronous(rest, 0, level, Output::NoPrint, reason);
+                        evicted.counts
+                    }
+                };
+                freed += evicted.non_loaned_total() * page::SIZE as u64;
             }
             node.locked().arenas.relieved(arena, freed);
             node.room.pulse();

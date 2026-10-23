@@ -900,6 +900,77 @@ fn relief_frees_an_arenas_pages_then_fails_its_allocations() {
     }
 }
 
+/// Pager-backed VMOs' clean pages, two chunks of each: another arena's and an arena's older ones,
+/// aged, and then the arena's newer ones, which fill the arena to its cap, as no arena keeps a
+/// spare chunk. The scanner, which ages pages, is disabled while the test lives, and eviction on.
+struct AgedPages {
+    arena: ArenaId,
+    others: Arc<VmObjectPaged>,
+    older: Arc<VmObjectPaged>,
+    newer: Arc<VmObjectPaged>,
+    _scanner: crate::vm::scanner::AutoVmScannerDisable,
+}
+
+impl AgedPages {
+    fn new() -> Self {
+        let scanner = crate::vm::scanner::AutoVmScannerDisable::new();
+        let node = pmm::node();
+        node.keep_spare_chunks(false);
+        let (arena, other) = (pmm::create_arena(), pmm::create_arena());
+        node.set_arena_cap(arena, Some(4 * CHUNK_SIZE as u64));
+        let pager_vmo = || make_committed_pager_vmo(2 * CHUNK_PAGES, false, false).unwrap().0;
+        let others = pmm::with_arena(other, pager_vmo);
+        let older = pmm::with_arena(arena, pager_vmo);
+        node.page_queues().rotate_reclaim_queues();
+        let newer = pmm::with_arena(arena, pager_vmo);
+        assert_eq!(node.arena_bytes(arena), 4 * CHUNK_SIZE as u64);
+        node.evictor().enable_eviction(false);
+        Self { arena, others, older, newer, _scanner: scanner }
+    }
+
+    /// The pages left of the other arena's, the arena's older and its newer.
+    fn resident(&self) -> [usize; 3] {
+        [&self.others, &self.older, &self.newer].map(|vmo| {
+            let pages = 0..2 * CHUNK_PAGES as u64;
+            pages.filter(|i| vmo.debug_get_page(i * PAGE_SIZE).is_some()).count()
+        })
+    }
+}
+
+/// TASK-79.76: eviction of an arena's pages on demand evicts its own, the oldest first, as many as
+/// it is asked for, whatever their age, and none of another arena's, older though they are.
+#[test]
+fn arenas_own_pages_are_evicted_on_demand_the_oldest_first() {
+    let pages = AgedPages::new();
+    let evictor = pmm::node().evictor();
+    let evicted = evictor.evict_arena_on_demand(pages.arena, 2 * CHUNK_SIZE as u64);
+    assert_eq!(evicted.pager_backed, 2 * CHUNK_PAGES as u64);
+    assert_eq!(pages.resident(), [2 * CHUNK_PAGES, 0, 2 * CHUNK_PAGES]);
+    let evicted = evictor.evict_arena_on_demand(pages.arena, CHUNK_SIZE as u64);
+    assert_eq!(evicted.pager_backed, CHUNK_PAGES as u64);
+    assert_eq!(pages.resident(), [2 * CHUNK_PAGES, 0, CHUNK_PAGES]);
+}
+
+/// TASK-79.76: an arena at its cap, full of clean pages of its own, which relief's evictor leaves,
+/// is relieved by the kernel's evictor freeing them on demand, the oldest first (relief's pass
+/// frees two chunks' worth, as many as the older), and none of another arena's, older still. It
+/// was exhausted, and its allocation failed.
+#[test]
+fn relief_evicts_an_arenas_own_clean_pages_its_evictor_leaves() {
+    let pages = AgedPages::new();
+    let node = pmm::node();
+    pmm::relieve_with(|_, _| 0).unwrap();
+
+    let allocated = node.alloc_page_in(pages.arena, ALLOC_FLAG_CAN_WAIT);
+    assert_eq!(allocated.err(), Some(Status::SHOULD_WAIT));
+    let page = wait_for_page(pages.arena).expect("a page of the arena's, evicted");
+    // The older pages, the pass's, may be evicting still.
+    let [others, _, newer] = pages.resident();
+    assert_eq!([others, newer], [2 * CHUNK_PAGES; 2]);
+    // SAFETY: The test owns the page.
+    unsafe { pmm::free_page(page) };
+}
+
 /// TASK-50.3: relief gone, as its evictor panicked, the allocations it would make room for fail,
 /// those waiting for it too.
 #[test]

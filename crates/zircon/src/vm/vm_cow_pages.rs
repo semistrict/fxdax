@@ -1190,6 +1190,11 @@ impl VmCowPages {
         self.page_source.as_ref().is_some_and(|s| s.properties().is_user_pager)
     }
 
+    /// fxdax: the arena its pages are of, the one current when it was created (`pmm::with_arena`).
+    pub fn arena(&self) -> ArenaId {
+        self.arena
+    }
+
     pub fn is_discardable(&self) -> bool {
         false
     }

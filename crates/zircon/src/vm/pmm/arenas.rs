@@ -37,7 +37,7 @@ use std::ops::Range;
 const CHUNK_PAGES: usize = CHUNK_SIZE / page::SIZE;
 
 /// The indices of chunk `chunk`'s pages.
-fn chunk_pages(chunk: usize) -> Range<usize> {
+pub(super) fn chunk_pages(chunk: usize) -> Range<usize> {
     chunk * CHUNK_PAGES..(chunk + 1) * CHUNK_PAGES
 }
 

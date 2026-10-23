@@ -33,6 +33,8 @@
 //! - No kcounters or console dump formatting.
 //! - fxdax: eviction on demand ages the queues as it finds no page old enough to evict
 //!   (`rotate_reclaim_queues`, TASK-79.70).
+//! - fxdax: a page's age and backlink can be read by the page (`reclaim_age`, `reclaim_backlink`),
+//!   for eviction of an arena's own pages, which finds them by their chunks (TASK-79.76).
 
 use crate::kernel::deadline::{Deadline, current_mono_time};
 use crate::kernel::event::{AutounsignalEvent, Event};
@@ -1101,6 +1103,34 @@ impl PageQueues {
 
     pub fn debug_page_is_pager_backed_dirty(&self, page: VmPagePtr) -> bool {
         page.page_queue().load(Ordering::Relaxed) == QUEUE_PAGER_BACKED_DIRTY
+    }
+
+    /// fxdax: how old `page` is, if it is in a reclaim queue: older than any queue's, isolated, or
+    /// else its queue's age, 0 the newest's. Read without the lock, it may be out of date at once,
+    /// but serves eviction of an arena's own pages, which finds them by their chunks rather than in
+    /// the queues, to take the oldest first (`Evictor::evict_arena_on_demand`, TASK-79.76).
+    pub fn reclaim_age(&self, page: VmPagePtr) -> Option<u32> {
+        match page.page_queue().load(Ordering::Relaxed) {
+            QUEUE_RECLAIM_ISOLATE => Some(NUM_RECLAIM as u32),
+            queue if queue >= RECLAIM_BASE => Some(queue_age(queue, self.mru_gen_to_queue())),
+            _ => None,
+        }
+    }
+
+    /// fxdax: the backlink of `page`, if it is in a reclaim queue still, acquired under the list
+    /// lock, as `peek_isolate`'s is: for eviction of an arena's own pages, which finds them by
+    /// their chunks rather than in the queues (`Evictor::evict_arena_on_demand`, TASK-79.76).
+    pub fn reclaim_backlink(&self, page: VmPagePtr) -> Option<VmoBacklink> {
+        let lists = self.list_lock.lock();
+        // A page cannot leave the reclaim queues without the lock.
+        if !queue_is_reclaim(page.page_queue().load(Ordering::Relaxed)) {
+            return None;
+        }
+        let cow = upgrade_backlink(page);
+        // SAFETY: The list lock is held.
+        let offset = unsafe { page.object().get_page_offset() };
+        drop(lists);
+        Some(VmoBacklink { cow, page, offset })
     }
 
     /// Returns true if the page is in an isolate queue.
