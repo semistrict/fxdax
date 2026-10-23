@@ -13,12 +13,15 @@
 #   scripts/mutants.sh [CRATE...]   (default: extent_frame extent_store extent_remote fxdax)
 #
 # Each crate's report goes to $FXDAX_MUTANTS/<crate>/mutants.out (default:
-# ~/.cache/fxdax/mutants): caught.txt, missed.txt, timeout.txt, unviable.txt.
-# FXDAX_MUTANTS_JOBS mutants build and run at once (default 3). It takes about a
-# day for all four crates: extent_remote's simulation takes some 77 s a mutant,
-# and the whole sweep has some 3,600 mutants. Run it on a host of its own
-# (scripts/mutants-gce.sh), in shards: FXDAX_MUTANTS_SHARD=K/N runs the Kth of N
-# (cargo-mutants' --shard), and the Shuttle pass over its missed.
+# ~/.cache/fxdax/mutants): caught.txt, missed.txt, timeout.txt, unviable.txt;
+# the Shuttle pass's, of the mutants it ran again, to
+# <crate>/shuttle/mutants.out. A rerun keeps each report it replaces as
+# mutants.out.old, as cargo-mutants does. Each pass's counts follow it, a line
+# a pass. FXDAX_MUTANTS_JOBS mutants build and run at once (default 3). It
+# takes about a day for all four crates: extent_remote's simulation takes some
+# 77 s a mutant, and the whole sweep has some 3,600 mutants. Run it on a host of
+# its own (scripts/mutants-gce.sh), in shards: FXDAX_MUTANTS_SHARD=K/N runs the
+# Kth of N (cargo-mutants' --shard), and the Shuttle pass over its missed.
 # FXDAX_MUTANTS_LIST names a file of mutants, one a line as `cargo mutants --list`
 # names them, to run alone: a sweep's survivors, again, once tests for them came.
 set -euo pipefail
@@ -45,6 +48,17 @@ command -v cargo-mutants > /dev/null || {
 result() {
     (( $1 == 2 || $1 == 3 ))
 }
+# The counts of each kind of mutant in the report a pass wrote, with its --output $1.
+counts() {
+    local kind file count line=
+    for kind in caught missed timeout unviable; do
+        file="$1/mutants.out/$kind.txt"
+        count=0
+        if [[ -f $file ]]; then count=$(( $(wc -l < "$file") )); fi
+        line+="${line:+, }$kind $count"
+    done
+    echo "$line"
+}
 # The regex that picks exactly the mutants the file $1 lists, for cargo-mutants' -F.
 exactly() {
     python3 -c 'import re, sys
@@ -62,19 +76,18 @@ for crate in "${crates[@]}"; do
     echo "== $crate" >&2
     cargo mutants -p "$crate" --test-tool nextest --jobs "$jobs" --output "$out/$crate" \
         ${shard[@]+"${shard[@]}"} ${listed[@]+"${listed[@]}"} || result $? || status=1
+    echo "$crate: $(counts "$out/$crate")"
     if grep -q '^shuttle' "crates/$crate/Cargo.toml" &&
         [[ -s "$out/$crate/mutants.out/missed.txt" ]]; then
         echo "== $crate, the missed under Shuttle" >&2
-        # Exactly the missed: --iterate alone would also run every mutant of the crate a shard
-        # never tried.
+        # Exactly the sweep's missed (--iterate would also run every mutant of the crate a shard
+        # never tried), into a report of their own: in the sweep's directory, cargo-mutants would
+        # move the sweep's report aside for this one's.
         missed=$(exactly "$out/$crate/mutants.out/missed.txt")
-        cargo mutants -p "$crate" --test-tool nextest --jobs "$jobs" --output "$out/$crate" \
-            --iterate --features shuttle -F "$missed" \
+        cargo mutants -p "$crate" --test-tool nextest --jobs "$jobs" --output "$out/$crate/shuttle" \
+            --features shuttle -F "$missed" \
             -- -E 'test(/shuttle/) | binary(shuttle)' || result $? || status=1
+        echo "$crate, the missed under Shuttle: $(counts "$out/$crate/shuttle")"
     fi
-    for kind in caught missed timeout unviable; do
-        file="$out/$crate/mutants.out/$kind.txt"
-        echo "$crate $kind $( [[ -f $file ]] && wc -l < "$file" || echo 0)"
-    done
 done
 exit "$status"
