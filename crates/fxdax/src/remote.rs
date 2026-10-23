@@ -265,6 +265,8 @@ impl Default for Options {
 /// A store's uploader. Dropping it uploads what the store made durable, then stops.
 pub struct Remote {
     shared: Arc<Shared>,
+    /// The bucket the store's branch is kept in.
+    bucket: Arc<Bucket>,
     /// Says the uploader stopped, once it has.
     stopped: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
 }
@@ -444,14 +446,14 @@ impl Remote {
         });
         let (started, start) = std::sync::mpsc::channel();
         let (stop, stopped) = std::sync::mpsc::channel();
-        let uploader = shared.clone();
+        let (uploader, uploads) = (shared.clone(), bucket.clone());
         // A task, not a thread of its own (TASK-34).
         RUNTIME.spawn(async move {
-            uploader.run(bucket, holder, started).await;
+            uploader.run(uploads, holder, started).await;
             let _ = stop.send(());
         });
         match start.recv() {
-            Ok(Ok(())) => Ok(Self { shared, stopped: Mutex::new(Some(stopped)) }),
+            Ok(Ok(())) => Ok(Self { shared, bucket, stopped: Mutex::new(Some(stopped)) }),
             Ok(Err(err)) => {
                 let _ = stopped.recv();
                 Err(err)
@@ -532,6 +534,16 @@ impl Remote {
             true => Some(Ok(())),
             false => progress.failed.clone().map(Err),
         })
+    }
+
+    /// Deletes the branch of `child` in object storage, a fork the store made that
+    /// [`Remote::forked`] failed to make a fork of its branch too, and whose handle went: the
+    /// fork's segment may have landed after all, its writer taken over before acknowledging it,
+    /// and the branch's next writer gives the child a record then, which would keep what it
+    /// inherited for ever, no store holding it. Deleted first, the child takes none. Its copy was
+    /// never placed: it is deleted as this host's placement (`Options::token`).
+    pub fn unfork(&self, child: u64) -> Result<(), Failure> {
+        delete_branch(&self.bucket, child, self.shared.options.token)
     }
 
     /// The lowest sequence number the store's guest may mint extents' IDs from, which the writer's
@@ -2662,6 +2674,54 @@ mod tests {
         assert_eq!(record.unwrap().map(|record| record.origin), Some(None));
         let inherited = (vec![(1, pattern(1, BLOCK))], Some(b"root".to_vec()));
         assert_eq!(uploaded(&crashed.bucket, crashed.child), inherited);
+    }
+
+    /// A fork that failed, its writer taken over once the fork's segment landed, before it
+    /// acknowledged it, leaves its child no branch in object storage, as it leaves it no handle:
+    /// the child's branch there is deleted, once the handle went, so that the parent's next
+    /// writer, recording the fork, finds it deleted, and the collector keeps nothing the child
+    /// inherited for it. Here the next writer's fence waits for the fork's segment, which it goes
+    /// after, through a gate of its own, `next`.
+    #[test]
+    fn forks_failed_once_their_segment_landed_leave_their_child_no_branch() {
+        let dir = tempfile::tempdir().unwrap();
+        let memory: Arc<dyn object_store::ObjectStore> = Arc::new(InMemory::new());
+        let (gated, next) = (Gated::over(memory.clone()), Gated::over(memory.clone()));
+        let (gated, next) = (Arc::new(gated), Arc::new(next));
+        let parent = Arc::new(ExtentStore::create(dir.path().join("parent"), 1 << 30).unwrap());
+        parent.attach_remote(Arc::new(Bucket::new(gated.clone(), "")), 1, idle()).unwrap();
+        let branch = parent.branch();
+        write(&parent, 1, &pattern(1, BLOCK));
+        parent.commit(Some(b"root")).unwrap();
+        let forking = extent_remote::layout::segment(branch, 2);
+        gated.hold.send_replace(Hold::Key(forking.clone()));
+        next.hold.send_replace(Hold::Key(forking));
+        let child = branch + 1;
+        let fork = {
+            let (parent, path) = (parent.clone(), dir.path().join("child"));
+            std::thread::spawn(move || parent.fork(path, child))
+        };
+        gated.wait_held(1);
+        let taking = {
+            let bucket = Arc::new(Bucket::new(next.clone(), ""));
+            let taking = extent_remote::Writer::open(bucket, branch, 3, 0);
+            std::thread::spawn(move || futures::executor::block_on(taking).map(drop))
+        };
+        next.wait_held(1);
+        gated.hold.send_replace(Hold::Nothing);
+        let failed = fork.join().unwrap().map_err(|err| err.to_string());
+        let taken = format!("forking branch {child:x}: another writer took the branch");
+        assert_eq!((failed, dir.path().join("child").exists()), (Err(taken), false));
+        next.hold.send_replace(Hold::Nothing);
+        assert_eq!(taking.join().unwrap(), Ok(()));
+
+        let bucket = Bucket::new(memory, "");
+        let record = futures::executor::block_on(branch::record(&bucket, child)).unwrap();
+        let deleted = extent_remote::layout::Record { origin: None, forked: true, deleted: true };
+        assert_eq!(record, Some(deleted));
+        let parents = futures::executor::block_on(recover(&bucket, branch, None)).unwrap().state;
+        let fork = extent_remote::layout::Fork { child, at: 2 };
+        assert_eq!(parents.forks, [fork]);
     }
 
     /// A marker names the last commit uploaded, or none, and those uploading, and reads back so;
