@@ -13,9 +13,10 @@
 //! fetched last in memory too, as fetched, which the first read that wants one unpacks: a part
 //! read ahead is unpacked once, by the read it was read ahead of, not read back from the cache and
 //! unpacked again (TASK-92.21). What its fetchers keep in memory, those parts and objects' tails,
-//! the host's fetchers share ([`Memory`]), as they share its budget and its cache: they keep each
-//! once, however many of the host's stores read it, as the forks of one base read its parts, and
-//! within bounds that hold for the host, however many stores it serves.
+//! and the GETs in flight, the host's fetchers share ([`Memory`]), as they share its budget and its
+//! cache: they keep each once, and send one GET of each, however many of the host's stores read
+//! it, as the forks of one base read its parts, and within bounds that hold for the host, however
+//! many stores it serves.
 //!
 //! A checkpoint's extents are looked up a block at a time ([`Fetcher::lookup`]): its tail holds its
 //! table, which says where the block that would hold an extent's entry is, read by the parts it is
@@ -236,13 +237,15 @@ impl Tail {
 /// What a host's fetchers keep in memory, which they share, as they share its budget and its
 /// cache: objects' tails, and the parts fetched last, each kept once for the host however many of
 /// its stores read it, within bounds that hold for the host, not for each store (TASK-92.21,
-/// TASK-92.22). The host's fetchers read one bucket, as they share one cache: what is kept is kept
-/// by key, as the cache keeps it; a part is taken only by a tail that says it is stored as it was,
-/// and a tail goes once a part fails the CRC it gives.
+/// TASK-92.22); and the GETs of parts in flight, which the reads of all of them that want a part
+/// while its GET is in flight share (TASK-92.43). The host's fetchers read one bucket, as they
+/// share one cache: what is kept is kept by key, as the cache keeps it; a part is taken only by a
+/// tail that says it is stored as it was, and a tail goes once a part fails the CRC it gives.
 #[derive(Default)]
 pub struct Memory {
     tails: Mutex<Tails>,
     recent: Mutex<Recent>,
+    parts: Mutex<Parts>,
 }
 
 impl Memory {
@@ -438,14 +441,16 @@ enum Found {
     Changed(u64),
 }
 
-/// The GETs of parts that reads wait for, each until its last reader leaves it.
+/// The GETs of parts that reads wait for, the reads of a host's fetchers, by the parts' objects'
+/// keys and numbers, each until its last reader leaves it.
 #[derive(Default)]
 struct Parts {
     flights: HashMap<(String, u64), Waited>,
 }
 
 struct Waited {
-    /// Its place in the budget.
+    /// The budget it has its place in, the fetcher's that sent it, and its place there.
+    budget: Arc<Budget>,
     ticket: u64,
     readers: usize,
     flight: Flight<Part>,
@@ -454,7 +459,6 @@ struct Waited {
 /// Reads extents from a bucket by parts, under a budget.
 pub struct Fetcher<B: Bucket> {
     shared: Arc<Fetching<B>>,
-    parts: Arc<Mutex<Parts>>,
     /// Where reads of each object stopped, and how far ahead of them parts are read.
     streams: Arc<Mutex<HashMap<String, Stream>>>,
     /// Runs read-ahead, which no read waits for.
@@ -468,7 +472,6 @@ impl<B: Bucket> Clone for Fetcher<B> {
     fn clone(&self) -> Self {
         Self {
             shared: self.shared.clone(),
-            parts: self.parts.clone(),
             streams: self.streams.clone(),
             spawn: self.spawn.clone(),
         }
@@ -512,7 +515,7 @@ impl<B: Bucket> Fetcher<B> {
         cache: Option<Arc<Cache>>,
     ) -> Self {
         let shared = Arc::new(Fetching { bucket, budget, memory, cache });
-        Self { shared, parts: Arc::default(), streams: Arc::default(), spawn: None }
+        Self { shared, streams: Arc::default(), spawn: None }
     }
 
     /// Reads ahead of reads that wait for their data, by `spawn`, into the cache: with none, it
@@ -689,8 +692,9 @@ impl<B: Bucket> Fetcher<B> {
         }));
     }
 
-    /// Part `part` of the object at `key`, whose tail is `tail`: the GET for it in flight, or a new
-    /// one. The GET goes, and gives up its place in the budget, once no read waits for it.
+    /// Part `part` of the object at `key`, whose tail is `tail`: the GET for it in flight, this
+    /// fetcher's or another of the host's, or a new one. The GET goes, and gives up its place in
+    /// the budget, once no read waits for it.
     async fn part(
         &self,
         key: &str,
@@ -699,22 +703,23 @@ impl<B: Bucket> Fetcher<B> {
         priority: Priority,
     ) -> Result<Part, Error> {
         let id = (key.to_owned(), part);
+        let parts = &self.shared.memory.parts;
         let flight = {
-            let mut parts = self.parts.lock().unwrap();
-            let parts = &mut *parts;
+            let mut parts = parts.lock().unwrap();
             let waited = parts.flights.entry(id.clone()).or_insert_with(|| {
-                let (ticket, granted) = self.shared.budget.enter(priority, PART);
+                let budget = self.shared.budget.clone();
+                let (ticket, granted) = budget.enter(priority, PART);
                 let (shared, tail) = (self.shared.clone(), tail.clone());
                 let flight = async move { shared.part(&id.0, id.1, &tail, granted).await };
-                Waited { ticket, readers: 0, flight: flight.boxed().shared() }
+                Waited { budget, ticket, readers: 0, flight: flight.boxed().shared() }
             });
             if priority == Priority::Demand {
-                self.shared.budget.promote(waited.ticket);
+                waited.budget.promote(waited.ticket);
             }
             waited.readers += 1;
             waited.flight.clone()
         };
-        let _reading = Reading { parts: &self.parts, id: (key.to_owned(), part) };
+        let _reading = Reading { parts, id: (key.to_owned(), part) };
         flight.await
     }
 }
@@ -1166,7 +1171,7 @@ mod tests {
         let requests = complete_all(&bucket, &mut reads);
         assert_eq!(requests, [format!("get {KEY} {}..{}", 2 * PART, 2 * PART + 300)]);
         assert_eq!(reads.result(read), Some(Ok(data[(2 * PART + 200) as usize..].to_vec())));
-        assert!(fetcher.parts.lock().unwrap().flights.is_empty());
+        assert!(fetcher.shared.memory.parts.lock().unwrap().flights.is_empty());
     }
 
     /// Reads of one part while its GET is in flight share it.
@@ -1232,15 +1237,15 @@ mod tests {
         let waiting = reads.read(&fetcher, location.clone(), PART, 1, Priority::Ahead);
         let granted = reads.read(&fetcher, location.clone(), 2 * PART, 1, Priority::Ahead);
         reads.abandon(waiting);
-        assert_eq!(fetcher.parts.lock().unwrap().flights.len(), 2);
+        assert_eq!(fetcher.shared.memory.parts.lock().unwrap().flights.len(), 2);
         // The first's GET went, and its answer comes to none; its place goes to the next.
         reads.abandon(first);
-        assert_eq!(fetcher.parts.lock().unwrap().flights.len(), 1);
+        assert_eq!(fetcher.shared.memory.parts.lock().unwrap().flights.len(), 1);
         let order = complete_all(&bucket, &mut reads);
         let get = |part: u64| format!("get {KEY} {}..{}", part * PART, (part + 1) * PART);
         assert_eq!(order, [get(0), get(2)]);
         assert_eq!(reads.result(granted), Some(Ok(data[2 * PART as usize..][..1].to_vec())));
-        assert!(fetcher.parts.lock().unwrap().flights.is_empty());
+        assert!(fetcher.shared.memory.parts.lock().unwrap().flights.is_empty());
     }
 
     /// A part that fails its CRC is fetched again, once, by its object's tail fetched anew;
@@ -1887,16 +1892,70 @@ mod tests {
         })
     }
 
-    /// `count` fetchers of one host, as its stores' are, sharing its memory and `cache`.
+    /// `count` fetchers of one host, as its stores' are, sharing its budget, its memory and
+    /// `cache`.
     fn host(
         bucket: &Arc<SimBucket>,
         cache: &Arc<Cache>,
         count: usize,
     ) -> Vec<Rc<Fetcher<SimBucket>>> {
-        let memory = Memory::new();
+        let (budget, memory) = (limits(8), Memory::new());
         let fetcher =
-            || Fetcher::new(bucket.clone(), limits(8), memory.clone(), Some(cache.clone()));
+            || Fetcher::new(bucket.clone(), budget.clone(), memory.clone(), Some(cache.clone()));
         (0..count).map(|_| Rc::new(fetcher())).collect()
+    }
+
+    /// TASK-92.43: a host's fetchers reading one part at once, as the forks of a base booting
+    /// together read it, send one GET of it, as they send one of its object's tail.
+    #[test]
+    fn fetchers_of_a_host_reading_a_part_at_once_send_one_get_of_it() {
+        let data = noise(PART);
+        let bucket = bucket(&data);
+        let dir = tempfile::tempdir().unwrap();
+        let cache = Arc::new(Cache::new(dir.path(), 8 * PART, 0).unwrap());
+        let fetchers = host(&bucket, &cache, 4);
+        let mut reads = Reads::new();
+        let all: Vec<_> = (fetchers.iter())
+            .map(|fetcher| reads.read(fetcher, location(PART), 0, 10, Priority::Demand))
+            .collect();
+        let mut asked = complete_all(&bucket, &mut reads);
+        asked.sort();
+        assert_eq!(asked, [format!("get {KEY} 0..{PART}"), format!("get {KEY} last {TAIL}")]);
+        for read in all {
+            assert_eq!(reads.result(read), Some(Ok(data[..10].to_vec())));
+        }
+    }
+
+    /// TASK-92.43: a read of a part another of the host's fetchers is reading ahead, its GET
+    /// waiting in that fetcher's budget, moves it up to demand there, where it waits: here a
+    /// budget of one GET, which the read the other reads ahead of holds.
+    #[test]
+    fn reads_of_a_part_another_fetcher_reads_ahead_move_its_get_up_where_it_waits() {
+        let data = noise(2 * PART);
+        let bucket = bucket(&data);
+        let dir = tempfile::tempdir().unwrap();
+        let cache = Arc::new(Cache::new(dir.path(), 8 * PART, 0).unwrap());
+        let (memory, budget) = (Memory::new(), limits(1));
+        let mut reads = Reads::new();
+        let ahead =
+            Fetcher::new(bucket.clone(), budget.clone(), memory.clone(), Some(cache.clone()));
+        let ahead = Rc::new(ahead.reading_ahead(reads.spawn()));
+        let other = Rc::new(Fetcher::new(bucket.clone(), limits(8), memory, Some(cache)));
+        let first = reads.read(&ahead, location(2 * PART), 0, 10, Priority::Demand);
+        // The tail; then the first part's GET goes, and the second's, read ahead, waits.
+        assert_eq!((bucket.waiting(), bucket.describe(0)), (1, format!("get {KEY} last {TAIL}")));
+        bucket.complete(0, Fault::None);
+        reads.run();
+        let waiting = |priority| budget.queues.lock().unwrap().waiting[priority as usize].len();
+        assert_eq!((waiting(Priority::Demand), waiting(Priority::Ahead)), (0, 1));
+        let second = reads.read(&other, location(2 * PART), PART, 10, Priority::Demand);
+        assert_eq!((waiting(Priority::Demand), waiting(Priority::Ahead)), (1, 0));
+        let mut asked = complete_all(&bucket, &mut reads);
+        asked.sort();
+        let parts = [format!("get {KEY} 0..{PART}"), format!("get {KEY} {PART}..{}", 2 * PART)];
+        assert_eq!(asked, parts);
+        assert_eq!(reads.result(first), Some(Ok(data[..10].to_vec())));
+        assert_eq!(reads.result(second), Some(Ok(data[PART as usize..][..10].to_vec())));
     }
 
     /// TASK-92.21: a host's fetchers, one for each of its stores, keep no more than [`RECENT`]
