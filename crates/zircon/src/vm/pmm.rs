@@ -335,7 +335,7 @@ impl PmmNode {
                     // arena's (TASK-50.3); or, memory never out, eviction frees pages of any
                     // arena's for it on demand (TASK-79.70).
                     if free_count > 0 || relief::started() || self.evicts_when_out() {
-                        return Err(self.starved_status(locked, arena, starved, alloc_flags));
+                        return Err(self.starved_status(locked, arena, starved, alloc_flags, 1));
                     }
                     // Allocation failures from the regular free list are likely to become
                     // user-visible.
@@ -488,7 +488,7 @@ impl PmmNode {
             self.increment_free_count_locked(&mut locked, count as u64);
             match refused {
                 Refused::Starved(starved) => {
-                    return Err(self.starved_status(locked, arena, starved, alloc_flags));
+                    return Err(self.starved_status(locked, arena, starved, alloc_flags, count));
                 }
                 Refused::Unmapped => return Err(self.unmapped_status_locked(&mut locked, count)),
                 Refused::GoingBack => self.wait_for_chunks_going_back(locked),

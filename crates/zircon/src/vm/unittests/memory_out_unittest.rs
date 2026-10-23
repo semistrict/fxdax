@@ -20,7 +20,7 @@ use crate::kernel::deadline::Deadline;
 use crate::vm::evictor::{EvictionLevel, Output, TriggerReason};
 use crate::vm::page::{VmPageDoublyLinkedList, VmPagePtr};
 use crate::vm::physmap::CHUNK_SIZE;
-use crate::vm::pmm::{self, ALLOC_FLAG_CAN_WAIT};
+use crate::vm::pmm::{self, ALLOC_FLAG_CAN_WAIT, AllocFailureType};
 use crate::vm::scanner::AutoVmScannerDisable;
 use crate::vm::vm_object_paged::VmObjectPaged;
 use std::sync::Arc;
@@ -162,6 +162,38 @@ fn allocations_that_find_memory_out_fail_with_eviction_off() {
 
     assert_eq!(node.alloc_page(0).err(), Some(Status::NO_MEMORY));
     assert_eq!(node.alloc_page(ALLOC_FLAG_CAN_WAIT).err(), Some(Status::NO_MEMORY));
+}
+
+/// An allocation that cannot wait, finding every free page taken by clean pages, fails, having
+/// asked eviction for room for those after it: the node's failure, as memory is out, which it
+/// records (`has_alloc_failed_no_mem`), as it does with nothing to evict. It recorded none.
+#[test]
+fn failures_finding_memory_out_are_the_nodes() {
+    boot();
+    let node = pmm::node();
+    let _scanner = AutoVmScannerDisable::new();
+    let _vmo = fill_with_clean_pages();
+    node.evictor().enable_eviction(false);
+
+    assert_eq!(node.alloc_page(0).err(), Some(Status::NO_MEMORY));
+    assert!(node.has_alloc_failed_no_mem(), "the failure was not recorded");
+    let failure = node.get_first_alloc_failure();
+    assert_eq!((failure.r#type, failure.size, failure.free_count), (AllocFailureType::Pmm, 1, 0));
+}
+
+/// With relief, an allocation that finds every free page taken by pages nothing evicts waits for
+/// relief's pass, and then fails, its arena exhausted: the node's failure, as memory is out, which
+/// it records. It recorded none, as for an arena's own failure.
+#[test]
+fn relief_failures_finding_memory_out_are_the_nodes() {
+    boot();
+    let node = pmm::node();
+    let _vmo = fill_with_anonymous_pages();
+    pmm::relieve_with(|_, _| 0).unwrap();
+
+    assert_eq!(node.alloc_page(ALLOC_FLAG_CAN_WAIT).err(), Some(Status::SHOULD_WAIT));
+    assert_eq!(wait_for_page().err(), Some(Status::NO_MEMORY));
+    assert!(node.has_alloc_failed_no_mem(), "the failure was not recorded");
 }
 
 /// An allocation of many pages that can wait, finding too few free, is told to wait at once,

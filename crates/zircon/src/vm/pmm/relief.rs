@@ -19,7 +19,9 @@
 //! starved, or, memory never out, no free page at all (TASK-79.70), as nothing else makes room.
 
 use super::arenas::Starved;
-use super::{ALLOC_FLAG_CAN_WAIT, NodeGuard, PmmNode, node};
+use super::{
+    ALLOC_FLAG_CAN_WAIT, AllocFailure, AllocFailureType, NodeGuard, PmmNode, PmmNodeLocked, node,
+};
 use crate::kernel::deadline::Deadline;
 use crate::kernel::event::AutounsignalEvent;
 use crate::vm::evictor::{EvictionLevel, Output, TriggerReason};
@@ -131,24 +133,31 @@ impl Drop for Gone<'_> {
 }
 
 impl PmmNode {
-    /// fxdax: what an allocation of `arena`'s fails with, which found it starved, held to
-    /// `starved`, as the node's lock, `locked`, shows it still. With relief, it asks for it, and
-    /// one that can wait waits for it (`wait_for_single_page_allocation_in`), unless the arena is
-    /// exhausted, or relief gone, when it fails. Without, eviction is asked to free a chunk's
-    /// worth, which one that can wait waits for. Both are asked for without the lock. One of an
-    /// arena removed, which nothing makes room, fails, asking for neither.
+    /// fxdax: what an allocation of `size` pages of `arena`'s fails with, which found it starved,
+    /// held to `starved`, as the node's lock, `locked`, shows it still. With relief, it asks for
+    /// it, and one that can wait waits for it (`wait_for_single_page_allocation_in`), unless the
+    /// arena is exhausted, or relief gone, when it fails. Without, eviction is asked to free a
+    /// chunk's worth, which one that can wait waits for. Both are asked for without the lock. A
+    /// failure with no free page at all is the node's (`starved_failure_locked`). One of an arena
+    /// removed, which nothing makes room, fails, asking for neither.
     pub(super) fn starved_status(
         &self,
         mut locked: NodeGuard<'_>,
         arena: ArenaId,
         starved: Starved,
         alloc_flags: u32,
+        size: usize,
     ) -> Status {
         if starved == Starved::Removed {
             return Status::NO_MEMORY;
         }
         let can_wait = alloc_flags & ALLOC_FLAG_CAN_WAIT != 0;
         let Some(reliever) = reliever() else {
+            let status = if can_wait {
+                Status::SHOULD_WAIT
+            } else {
+                self.starved_failure_locked(&mut locked, size)
+            };
             drop(locked);
             self.evictor.evict_asynchronous(
                 CHUNK_SIZE as u64,
@@ -156,14 +165,32 @@ impl PmmNode {
                 EvictionLevel::OnDemand,
                 Output::NoPrint,
             );
-            return if can_wait { Status::SHOULD_WAIT } else { Status::NO_MEMORY };
+            return status;
         };
         if !reliever.running.load(Ordering::Acquire) {
-            return Status::NO_MEMORY;
+            return self.starved_failure_locked(&mut locked, size);
         }
-        let fails = locked.arenas.ask_relief(arena, starved);
+        let fails = locked.arenas.ask_relief(arena, starved) || !can_wait;
+        let status = if fails {
+            self.starved_failure_locked(&mut locked, size)
+        } else {
+            Status::SHOULD_WAIT
+        };
         drop(locked);
         reliever.wanted.signal();
-        if can_wait && !fails { Status::SHOULD_WAIT } else { Status::NO_MEMORY }
+        status
+    }
+
+    /// fxdax: fails an allocation of `size` pages that found its arena starved, under the node's
+    /// lock, `locked`: with `NO_MEMORY`, reported as the node's failure if there is no free page at
+    /// all, of any arena's, as memory is out, as upstream's is (TASK-79.70); otherwise the
+    /// arena's own, as other arenas' chunks hold the free pages.
+    fn starved_failure_locked(&self, locked: &mut PmmNodeLocked, size: usize) -> Status {
+        let free_count = self.free_count.load(Ordering::Relaxed);
+        if free_count == 0 {
+            let failure = AllocFailure { r#type: AllocFailureType::Pmm, size, free_count };
+            self.report_alloc_failure_locked(locked, failure);
+        }
+        Status::NO_MEMORY
     }
 }
