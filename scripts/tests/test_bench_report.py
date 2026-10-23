@@ -219,10 +219,10 @@ class Workloads(unittest.TestCase):
     def test_what_failed_is_failed_and_what_was_not_run_is_not(self):
         directory = measured(
             {
-                # Its every iteration of seq-read failed.
-                "fxfs-guest-dax": ([("pgbench-tps", "tps", True, [1600.0])], {"seq-read": 3}),
+                # Its every iteration of setxattr failed, which the guest records by its name.
+                "fxfs-guest-dax": ([("pgbench-tps", "tps", True, [1600.0])], {"setxattr": 3}),
                 "fxfs-guest-dax-followed": (
-                    [("pgbench-tps", "tps", True, [1200.0]), ("seq-read", "MiB/s", True, [450.0])],
+                    [("pgbench-tps", "tps", True, [1200.0]), ("setxattr", "ops/s", True, [450.0])],
                     {},
                 ),
                 "fxfs-guest-dax-followed-idle": ([("pgbench-tps", "tps", True, [1500.0])], {}),
@@ -234,7 +234,36 @@ class Workloads(unittest.TestCase):
 | fxfs-guest-dax-followed vs fxfs-guest-dax | fxfs-guest-dax-followed-idle vs fxfs-guest-dax |
 |---|---|---|---|---|---|---|
 | pgbench-tps | tps | 1,600 (1,600–1,600) | 1,200 (1,200–1,200) | 1,500 (1,500–1,500) | 1.33× | 1.07× |
-| seq-read | MiB/s | failed | 450 (450–450) | – | – | – |""",
+| setxattr | ops/s | failed | 450 (450–450) | – | – | – |""",
+        )
+
+    def test_a_group_that_failed_fails_its_workloads(self):
+        # The guest records a failed build or pgbench by its group (test_fs_bench.rs): in
+        # fxfs-guest-dax's iteration, make failed, after untar, and so did pgbench.
+        directory = measured(
+            {
+                "ext4-dax-pmem": (
+                    [
+                        ("untar", "s", False, [1.0]),
+                        ("make", "s", False, [20.0]),
+                        ("build-total", "s", False, [21.0]),
+                        ("pgbench-init", "s", False, [5.0]),
+                        ("pgbench-tps", "tps", True, [1000.0]),
+                    ],
+                    {},
+                ),
+                "fxfs-guest-dax": ([("untar", "s", False, [2.0])], {"build": 1, "pgbench": 1}),
+            }
+        )
+        self.assertEqual(
+            table(directory),
+            """| Workload | Unit | ext4-dax-pmem | fxfs-guest-dax | fxfs-guest-dax vs ext4-dax-pmem |
+|---|---|---|---|---|
+| untar | s | 1.00 (1.00–1.00) | 2.00 (2.00–2.00) | 2.00× |
+| make | s | 20.0 (20.0–20.0) | failed | – |
+| build-total | s | 21.0 (21.0–21.0) | failed | – |
+| pgbench-init | s | 5.00 (5.00–5.00) | failed | – |
+| pgbench-tps | tps | 1,000 (1,000–1,000) | failed | – |""",
         )
 
 

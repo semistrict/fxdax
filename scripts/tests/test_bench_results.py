@@ -46,6 +46,29 @@ class Registry(unittest.TestCase):
         )
         self.assertEqual([name for name in names if name not in bench.ORDER], [])
 
+    def test_the_groups_the_cases_fail_whole_are_their_workloads(self):
+        source = CASES.read_text()
+        measured = r'\b(?:result|timed)\("([a-z0-9-]+)"'
+        # What each function GROUP_workload measures, by GROUP.
+        functions = re.findall(r"\n    fn (\w+)_workload\(\) \{\n(.*?)\n    \}\n", source, re.S)
+        measures = {group: re.findall(measured, body) for group, body in functions}
+        failures = re.findall(r'println!\("FAILED ([a-z0-9-]+)"\)', source)
+        self.assertEqual(failures, ["setxattr", "build", "pgbench"])
+        groups = {name: measures[name] for name in failures if name in measures}
+        self.assertEqual(groups, bench.GROUPS)
+        # Any other failure names its workload.
+        workloads = set(re.findall(measured, source))
+        self.assertEqual(
+            [name for name in failures if name not in bench.GROUPS and name not in workloads], []
+        )
+
+    def test_a_failure_names_its_workload_or_its_group(self):
+        self.assertTrue(bench.failed("setxattr", {"setxattr": 3}))
+        self.assertTrue(bench.failed("make", {"build": 1}))
+        self.assertTrue(bench.failed("pgbench-tps", {"setxattr": 1, "pgbench": 2}))
+        self.assertFalse(bench.failed("pgbench-tps", {"build": 1}))
+        self.assertFalse(bench.failed("seq-write", {}))
+
     def test_every_baseline_is_named(self):
         named = set(bench.BASELINES) | {base for bases in bench.BASELINES.values() for base in bases}
         self.assertEqual(sorted(named - set(bench.ORDER)), [])

@@ -49,11 +49,25 @@ BASELINES = {
 }
 # A filesystem more times slower than its baseline than this is in bold.
 LIMIT = 2.0
+# The workloads of each group the benchmark's guest records a failure of as a whole: an iteration
+# whose build or pgbench failed has `FAILED build` or `FAILED pgbench` (test_fs_bench.rs), and none
+# of the group's measurements from the one that failed on. Any other failure names its workload
+# (setxattr, on a filesystem without extended attributes).
+GROUPS = {
+    "build": ["untar", "make", "build-total"],
+    "pgbench": ["pgbench-init", "pgbench-tps"],
+}
 
 
 def baselines(backend):
     """What `backend` compares with, in order of preference."""
     return BASELINES.get(backend, [BASELINE])
+
+
+def failed(workload, failures):
+    """Whether `failures`, a case's iterations that failed by what the guest named, name `workload`
+    or its group."""
+    return any(workload in GROUPS.get(name, [name]) for name in failures)
 
 
 def ordered(backends):

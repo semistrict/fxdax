@@ -201,7 +201,7 @@ def main():
             values = by_workload[backend].get(workload, {}).get("values")
             if not values:
                 # Failed, or not one of the workloads of its case.
-                failed = workload in cases[backend].get("failures", {})
+                failed = bench.failed(workload, cases[backend].get("failures", {}))
                 row.append("failed" if failed else "–")
                 medians[backend] = None
                 continue
