@@ -753,6 +753,11 @@ impl PmmNode {
 
     /// Attempts an allocation after waiting for the system to exit low memory state.
     fn allocate_after_wait(&self, arena: ArenaId) -> Result<VmPagePtr, Status> {
+        // fxdax: a test's, run past the gate as another thread might change the node there.
+        #[cfg(test)]
+        if let Some(f) = PAST_THE_GATE.take() {
+            f();
+        }
         // Try to allocate the page now, it may fail sporadically, since there is no guarantee that
         // by the time we attempt to allocate the pages are still available.
         let res = self.alloc_page_in(arena, ALLOC_FLAG_CAN_WAIT);
@@ -947,6 +952,22 @@ pub fn node() -> &'static PmmNode {
     });
     INIT_HOOKS.call_once(|| crate::init::init_hooks(node));
     node
+}
+
+/// fxdax: runs `f` on this thread as its next allocation that waited passes the node's gate,
+/// before it tries (`PmmNode::allocate_after_wait`), as another thread might change the node
+/// there: a window no test reaches otherwise, between the gate and the node's delay, but by
+/// chance (TASK-79.81).
+#[cfg(test)]
+pub(crate) fn past_the_gate(f: impl FnOnce() + 'static) {
+    PAST_THE_GATE.set(Some(Box::new(f)));
+}
+
+#[cfg(test)]
+thread_local! {
+    /// fxdax: what [`past_the_gate`] runs.
+    static PAST_THE_GATE: std::cell::Cell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::Cell::new(None) };
 }
 
 thread_local! {

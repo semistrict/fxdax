@@ -842,6 +842,48 @@ fn starved_arenas_wait_at_the_gate_while_the_node_delays_allocations() {
     }
 }
 
+/// TASK-79.81: an allocation of an arena starved at its cap that passes the node's gate as the
+/// node starts delaying allocations, delayed before its arena is found starved, is told to wait,
+/// and waits at the gate as it tries again, rather than for room of its own: room that the level's
+/// reset makes none of, and that it asked neither relief nor eviction for. The level is tripped
+/// past the gate, as another thread might trip it, by the test's seam (`pmm::past_the_gate`); the
+/// async wait likewise.
+#[test]
+fn allocations_delayed_past_the_gate_wait_at_it_again() {
+    boot_without_watchdog_thread();
+    let node = pmm::node();
+    let arena = pmm::create_arena();
+    node.set_arena_cap(arena, Some(CHUNK_SIZE as u64));
+    let pages: Vec<VmPagePtr> =
+        (0..CHUNK_PAGES).map(|_| node.alloc_page_in(arena, 0).unwrap()).collect();
+    let event = Arc::new(Event::new(false));
+    let delay_past_the_gate = || {
+        let event = event.clone();
+        pmm::past_the_gate(move || {
+            assert!(pmm::node().set_free_memory_signal(0, u64::MAX, u64::MAX, event));
+        });
+    };
+    // Passed: a wait times out.
+    let now = Deadline::after_mono(0);
+
+    delay_past_the_gate();
+    let waited = node.wait_for_single_page_allocation_in(arena, now);
+    assert_eq!(waited.err(), Some(Status::SHOULD_WAIT), "it waited for room");
+    // Until its level is reset, the node delays allocations that may wait, at its gate.
+    let waited = node.wait_for_single_page_allocation_in(arena, now);
+    assert_eq!(waited.err(), Some(Status::TIMED_OUT));
+    assert!(node.set_free_memory_signal(0, u64::MAX, 0, event.clone()));
+
+    delay_past_the_gate();
+    let waited = block_on(node.wait_for_single_page_allocation_async(arena, now));
+    assert_eq!(waited.err(), Some(Status::SHOULD_WAIT), "it waited for room");
+    assert!(node.set_free_memory_signal(0, u64::MAX, 0, event));
+    for page in pages {
+        // SAFETY: The test owns the page.
+        unsafe { pmm::free_page(page) };
+    }
+}
+
 /// Waits for a page of `arena`, as an anonymous page request does, trying again as told to.
 fn wait_for_page(arena: ArenaId) -> Result<VmPagePtr, Status> {
     let deadline = Deadline::after_mono(10_000_000_000);
