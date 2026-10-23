@@ -700,13 +700,7 @@ impl<D: Dir> Store<D> {
             None => {
                 let placement = if end >= self.options.large_extent {
                     // Raw until it is sealed, when it is framed in its own file.
-                    let path = open_extent_path(extent);
-                    let file = self
-                        .lineage
-                        .dir
-                        .create(&path, true)
-                        .with_context(|| format!("creating {path}"))?;
-                    Placement::Own(Arc::new(file))
+                    Placement::Own(Arc::new(self.create_raw(extent)?))
                 } else {
                     Placement::Segment
                 };
@@ -735,6 +729,21 @@ impl<D: Dir> Store<D> {
             grows,
             finished: false,
         })
+    }
+
+    /// The raw file of `extent`, not open, made for its writes until it is sealed. fxdax: one left
+    /// at its path holds nothing the extent does, as no open extent's writes go to it: a free's, of
+    /// the extent while it was open, which the next commit's flush removes. It makes way, so that
+    /// the extent may be written anew before that flush (TASK-79.5).
+    fn create_raw(&self, extent: ExtentId) -> Result<D::File, Error> {
+        let (dir, path) = (&self.lineage.dir, open_extent_path(extent));
+        let created = match dir.create(&path, true) {
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
+                dir.remove(&path).and_then(|()| dir.create(&path, true))
+            }
+            created => created,
+        };
+        created.with_context(|| format!("creating {path}"))
     }
 
     /// fxdax: the state, once the open segment has room for a write of `len` bytes: if it has
@@ -1237,9 +1246,14 @@ impl<D: Dir> Store<D> {
     fn seal(&self, state: &mut State<D::File>, extent: ExtentId) -> Result<(), Error> {
         let Some(entry) = state.extents.get(&extent).cloned() else {
             // fxdax: opened by a write abandoned, none since: its raw file, if it has one, holds
-            // nothing, and goes, as a free's does (TASK-79.5).
+            // nothing, and goes now, as the commit waited for the writes in progress; not with the
+            // commit's flush, which the extent's next write, making another, may come before
+            // (TASK-79.5). Opening the store removes it, failing here.
             if let Some(Placement::Own(_)) = state.uncommitted.placement(extent) {
-                state.unreferenced.doomed.push(open_extent_path(extent));
+                let path = open_extent_path(extent);
+                if let Err(err) = self.lineage.dir.remove(&path) {
+                    log::warn!("extent store: failed to remove {path}: {err}");
+                }
             }
             return Ok(());
         };

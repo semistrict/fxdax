@@ -1969,6 +1969,42 @@ fn abandoned_writes_leave_no_raw_files() {
     assert_eq!(read(&store, extent(1), 0, 40 << 10), pattern(1, 0, 40 << 10));
 }
 
+/// An abandoned write to a large extent, never written since, then a commit only ordered: the
+/// extent may be written anew before the commit's flush, as the guest's next commit is, its raw
+/// file gone with the commit's seal, not its flush (TASK-79.5).
+#[test]
+fn abandoned_writes_leave_no_raw_files_to_writes_before_the_flush() {
+    let dir = MemDir::new();
+    let store = create(dir.clone(), 1 << 20);
+    drop(store.begin_write(extent(1), 0, 40 << 10).unwrap());
+    store.commit_ordered(None).unwrap();
+    assert_eq!(dir.list(&of("open-extents", BRANCH)).unwrap(), Vec::<String>::new());
+    store.write(extent(1), 0, &pattern(1, 0, 40 << 10)).unwrap();
+    store.commit(None).unwrap();
+    assert!(read(&store, extent(1), 0, 40 << 10) == pattern(1, 0, 40 << 10), "other data");
+    let store = reopened(store, &dir);
+    assert!(read(&store, extent(1), 0, 40 << 10) == pattern(1, 0, 40 << 10), "other data");
+}
+
+/// A write in flight to a large extent freed meanwhile, which the extent's next write placed in a
+/// file of its own again, is dropped as it finishes: the extent holds what was written after the
+/// free, in a raw file of its own, not the one the write in flight wrote to (TASK-79.1,
+/// TASK-79.5).
+#[test]
+fn writes_finishing_after_their_large_extents_free_and_rewrite_are_dropped() {
+    let dir = MemDir::new();
+    let store = create(dir.clone(), 1 << 20);
+    let freed = in_flight(&store, extent(1), 0, &pattern(1, 0, 40 << 10));
+    store.free(extent(1)).unwrap();
+    store.write(extent(1), 0, &pattern(2, 0, 40 << 10)).unwrap();
+    freed.finish();
+    assert!(read(&store, extent(1), 0, 40 << 10) == pattern(2, 0, 40 << 10), "other data");
+    store.commit(None).unwrap();
+    assert_eq!(store.place(extent(1)).unwrap(), Some(Place::Own));
+    let store = reopened(store, &dir);
+    assert!(read(&store, extent(1), 0, 40 << 10) == pattern(2, 0, 40 << 10), "other data");
+}
+
 /// A branch whose store failed, opened again in the same process, takes writes to the extents the
 /// failed store had open, whose raw files go as it opens (TASK-79.5).
 #[test]
