@@ -3,9 +3,10 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-# Runs one of fxdax's examples, an optimized build, on a disposable x86-64 GCE
-# host, optionally under perf: such as extentd-mapbench, which times the extent
-# daemon's requests without a VM (TASK-26.18.3). Its output, the host and the
+# Runs one of the workspace's examples, an optimized build, on a disposable x86-64
+# GCE host, optionally under perf: such as fxdax's extentd-mapbench, which times
+# the extent daemon's requests without a VM (TASK-26.18.3), or zircon's pmm-bench,
+# what chunks going back cost the PMM (TASK-92.35). Its output, the host and the
 # source run go to the results directory (default:
 # docs/measurements/gce-<example>-<time>), with what the run was for (note.md).
 #

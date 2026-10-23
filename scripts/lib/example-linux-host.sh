@@ -3,8 +3,8 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-# Runs one of fxdax's examples, an optimized build, on a disposable x86-64 Linux
-# host, as root, into RESULTS/output.txt (scripts/example-gce.sh). With
+# Runs one of the workspace's examples, an optimized build, on a disposable x86-64
+# Linux host, as root, into RESULTS/output.txt (scripts/example-gce.sh). With
 # FXDAX_PERF=record, perf samples it, and RESULTS/perf.txt says where its
 # threads' time went.
 #
@@ -33,7 +33,7 @@ if [[ ${FXDAX_PERF:-} == record ]]; then
     export RUSTFLAGS="-C force-frame-pointers=yes" CARGO_PROFILE_RELEASE_DEBUG=line-tables-only
 fi
 CARGO_TARGET_DIR="$target" \
-    cargo build --release --manifest-path "$tree/Cargo.toml" -p fxdax --example "$example"
+    cargo build --release --manifest-path "$tree/Cargo.toml" --example "$example"
 binary="$target/release/examples/$example"
 if [[ ${FXDAX_PERF:-} != record ]]; then
     # FXDAX_EXAMPLE_RUNS times, one after another, to see how much runs differ.
