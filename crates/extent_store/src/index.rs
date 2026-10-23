@@ -420,11 +420,11 @@ impl<F: File> IndexLog<F> {
         pinned: impl FnOnce() -> BTreeSet<u64>,
     ) -> Result<Appended<F>, Error> {
         // A checkpoint once the index holds enough deltas, or the closed segments only footers need
-        // take a segment's room.
+        // take a segment's room, or the branch wants one: which any answers (TASK-84).
         let uncovered: u64 = self.uncovered.iter().map(|(_, _, size)| size).sum();
-        let due = self.deltas >= options.checkpoint_after
-            || uncovered >= options.segment_size
-            || std::mem::take(&mut self.wanted);
+        let wanted = std::mem::take(&mut self.wanted);
+        let due =
+            wanted || self.deltas >= options.checkpoint_after || uncovered >= options.segment_size;
         if !due {
             // After the records before it.
             let record = encode(&Record::Delta(delta));
@@ -628,6 +628,20 @@ mod tests {
         index.want_checkpoint();
         let new_files: Vec<_> =
             (1..=2).map(|epoch| commit(&mut index, &dir, epoch, &options).write.new_file).collect();
+        assert_eq!(new_files, [true, false]);
+    }
+
+    /// A checkpoint, whatever called for it, answers a wish for one: the deltas being many, the
+    /// next record after it is a delta (TASK-84).
+    #[test]
+    fn a_checkpoint_due_answers_a_wish_for_one() {
+        let dir = holding(&[]);
+        let mut index = IndexLog::open(&dir, BRANCH, &state(0), None, BTreeSet::new).unwrap();
+        let options = options(len(Record::Delta(delta(1))));
+        commit(&mut index, &dir, 1, &options);
+        index.want_checkpoint();
+        let new_files: Vec<_> =
+            (2..=3).map(|epoch| commit(&mut index, &dir, epoch, &options).write.new_file).collect();
         assert_eq!(new_files, [true, false]);
     }
 
