@@ -8,10 +8,9 @@ use futures::executor::block_on;
 use fxdax::import::testing::{Entry, Kind, MTIME, gzip, layer, oci_layout, opaque, whiteout};
 use fxdax::import::{Importer, OciImage};
 use fxdax::{Attr, Errno, FileType, Filesystem, Node, Storage};
+use std::future::poll_fn;
 use std::path::Path;
 use std::pin::pin;
-use std::sync::Arc;
-use std::task::{Context, Poll, Wake, Waker};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// The size of the filesystems the tests format.
@@ -176,27 +175,16 @@ fn files_longer_than_a_chunk_are_written_whole() {
 }
 
 /// Runs `future` to completion on this thread, as `block_on` does, but fails as soon as the kernel
-/// has failed an allocation for want of memory, rather than wait on a future that may never
-/// complete: a write whose pages the kernel failed to allocate asked for them again, and again
-/// (TASK-79.70).
+/// has failed an allocation for want of memory (`has_alloc_failed_no_mem`), rather than wait on a
+/// future that may never complete: a write whose pages the kernel failed to allocate asked for them
+/// again, and again (TASK-79.70).
 fn unless_memory_fails<T>(future: impl Future<Output = T>) -> T {
-    struct Unpark(std::thread::Thread);
-    impl Wake for Unpark {
-        fn wake(self: Arc<Self>) {
-            self.0.unpark();
-        }
-    }
-    let waker = Waker::from(Arc::new(Unpark(std::thread::current())));
-    let mut cx = Context::from_waker(&waker);
     let mut future = pin!(future);
-    loop {
-        if let Poll::Ready(output) = future.as_mut().poll(&mut cx) {
-            return output;
-        }
+    block_on(poll_fn(|cx| {
         let failed = zircon::vm::pmm::node().has_alloc_failed_no_mem();
         assert!(!failed, "the kernel failed an allocation for want of memory");
-        std::thread::park();
-    }
+        future.as_mut().poll(cx)
+    }))
 }
 
 /// TASK-79.70: a file larger than the kernel's memory is imported whole, and read back: as its
