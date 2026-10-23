@@ -222,9 +222,12 @@ impl Filesystem {
     ///
     /// Operations under way as it begins complete before it writes the volume back, as Fxfs's
     /// volume waits for the work they run on its executor; but reads and writes copy to and from
-    /// files' pages through their streams, on the caller's thread, which it doesn't wait for. A
-    /// write under way may complete after the volume is written back, and what it wrote then is
-    /// lost.
+    /// files' pages through their streams, on the caller's thread, which it doesn't wait for. What
+    /// a write copies is written back all the same: it copies only to pages that Fxfs's pager has
+    /// let it dirty, under the lock of the file's VMO that the write-back takes to begin cleaning
+    /// them. To have a page dirtied, or read in, a read or write needs the pager, which refuses
+    /// once the volume's work is done, before the write-back: one under way that needs a page then
+    /// fails with `EPIPE`, or returns how much it copied, if it copied some.
     ///
     /// Once unmounting begins, the volume's unmount completes even if the future is dropped.
     /// Concurrent calls wait for the same unmount, and only the first gives its error.
@@ -654,13 +657,15 @@ impl Node {
     }
 
     /// Reads from this file at `offset` into `buf`, and returns how much was read: less than asked
-    /// only at the end of the file.
+    /// only at the end of the file, or if the filesystem is unmounted under it (see
+    /// [`Filesystem::unmount`]).
     pub async fn read(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
         self.read_vectored(offset, &mut [VolatileSliceMut::from(buf)]).await
     }
 
     /// Reads from this file at `offset` into `bufs` in turn, memory that may change meanwhile, and
-    /// returns how much was read: less than asked only at the end of the file.
+    /// returns how much was read: less than asked only at the end of the file, or if the
+    /// filesystem is unmounted under it (see [`Filesystem::unmount`]).
     ///
     /// The file's pages are copied straight into the buffers. Waiting for pages not yet in memory
     /// holds no thread: the future is woken once Fxfs's pager has supplied them. Dropping the
@@ -849,14 +854,17 @@ async fn attributes(node: &Arc<dyn FxNode>) -> Result<fio::Attributes> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::kernel::page_size;
     use fuchsia_async::ScopeHandle;
     use futures::FutureExt as _;
     use futures::channel::oneshot;
     use futures::executor::block_on;
+    use futures::task::ArcWake;
     use fxfs::object_store::transaction::{LockKey, lock_keys};
-    use fxfs_platform::volume::FxVolume;
+    use fxfs_platform::volume::{FxVolume, READ_AHEAD_SIZE};
     use std::collections::BTreeMap;
-    use std::task::Poll;
+    use std::future::Future;
+    use std::task::{Context, Poll};
 
     const OWNER: Owner = Owner { uid: 1000, gid: 100 };
 
@@ -979,15 +987,44 @@ mod tests {
 
     /// Leaves `file`, of `volume`, dirty but with no connection, whose close would write it back:
     /// closes the file's connection, which writes the file back, then writes `data` at its start
-    /// through the stream the connection gave, as a write under way as it closed would.
-    async fn dirty_unconnected(volume: &Volume, file: &Node, data: &[u8]) {
+    /// through the stream the connection gave, as a write under way as it closed would. Returns
+    /// the stream, as such a write has it still.
+    async fn dirty_unconnected(volume: &Volume, file: &Node, data: &[u8]) -> Arc<zx::Stream> {
         let connection = volume.with_held(&file.0, |held| held.connection.take()).unwrap();
         let (proxy, stream) = connection.as_ref().unwrap().file().unwrap();
         let (proxy, stream) = (Clone::clone(proxy), stream.clone());
         volume.image.executor.run(async move { proxy.close().await }).await.unwrap().unwrap();
+        assert_eq!(write_stream(&stream, 0, data).await, Ok(data.len()));
+        stream
+    }
+
+    /// Writes `data` at `offset` through `stream`, a file's, as the file's writes do.
+    async fn write_stream(
+        stream: &zx::Stream,
+        offset: u64,
+        data: &[u8],
+    ) -> Result<usize, zx::Status> {
         let bufs = [VolatileSlice::from(data).host_buffer()];
-        let written = zircon::syscalls::stream_writev_at_async(stream.raw_handle(), 0, &bufs).await;
-        assert_eq!(written, Ok(data.len()));
+        zircon::syscalls::stream_writev_at_async(stream.raw_handle(), offset, &bufs).await
+    }
+
+    /// Polls `future`, a read's or a write's, once, which leaves it waiting on a page request, and
+    /// waits until it is woken: until Fxfs's pager has answered the request, supplying the pages
+    /// it asked for, or letting it dirty them. It has copied nothing to or from them yet.
+    async fn woken(future: &mut (impl Future + Unpin)) {
+        struct Woken(std::sync::Mutex<Option<oneshot::Sender<()>>>);
+        impl ArcWake for Woken {
+            fn wake_by_ref(woken: &Arc<Self>) {
+                if let Some(sender) = woken.0.lock().unwrap().take() {
+                    let _ = sender.send(());
+                }
+            }
+        }
+        let (sender, receiver) = oneshot::channel();
+        let waker = futures::task::waker(Arc::new(Woken(std::sync::Mutex::new(Some(sender)))));
+        let polled = future.poll_unpin(&mut Context::from_waker(&waker));
+        assert!(polled.is_pending(), "it needed no page request");
+        receiver.await.unwrap();
     }
 
     /// Whether the scope of `volume`, Fxfs's, has finished: shut down with no guard left, which
@@ -1049,6 +1086,109 @@ mod tests {
             drop(scope);
             let fs = Filesystem::mount(fs.close().await.unwrap()).await.unwrap();
             assert_eq!(fs.root().lookup(b"dir").await.unwrap().1.file_type, FileType::Directory);
+            fs.close().await.unwrap().check().await.unwrap();
+        })
+    }
+
+    /// A write under way as its volume unmounts, which Fxfs's pager let dirty its page, but which
+    /// copies to it only once the volume is unmounted, fails, and writes nothing: the volume's
+    /// last write-back cleaned the page, and a clean page needs the pager to let it be dirtied
+    /// again, which it no longer can. The page is the file's written back already, so the write
+    /// needs only to dirty it.
+    #[test]
+    fn a_write_copying_once_its_volume_is_unmounted_fails() {
+        let page = page_size() as usize;
+        block_on(async {
+            let fs = Filesystem::format(Storage::memory(8 << 20)).await.unwrap();
+            let (file, _) = fs.root().create(b"file", 0o644, OWNER).await.unwrap();
+            assert_eq!(file.write(0, &vec![1; page]).await, Ok(page));
+            file.fsync().await.unwrap();
+            let data = vec![2; page];
+            let mut write = Box::pin(file.write(0, &data));
+            woken(&mut write).await;
+            fs.unmount().await.unwrap();
+            assert_eq!(write.await, Err(Errno::EPIPE));
+
+            drop(file);
+            let fs = Filesystem::mount(fs.close().await.unwrap()).await.unwrap();
+            let (file, _) = fs.root().lookup(b"file").await.unwrap();
+            let mut contents = vec![0; page];
+            assert_eq!(file.read(0, &mut contents).await, Ok(page));
+            assert_eq!(contents, vec![1; page]);
+            drop(file);
+            fs.close().await.unwrap().check().await.unwrap();
+        })
+    }
+
+    /// A write that copies once the volume's scope has finished, before the volume's last
+    /// write-back reaches its file, is written back if its page is dirty already, and fails
+    /// otherwise: what a write copies to a dirty page it copies under the lock of the file's VMO
+    /// that the write-back takes to begin cleaning it, and to dirty a page it needs Fxfs's pager,
+    /// which refuses once the scope has finished. The file is dirty and has no connection, whose
+    /// close as the unmount begins would write it back, and the writes go through its stream, as
+    /// writes under way have it; the lock of Fxfs's that writing the file back takes holds the
+    /// write-back off until they are done.
+    #[test]
+    fn writes_copying_once_the_scope_finishes_are_written_back_or_fail() {
+        let page = page_size() as usize;
+        block_on(async {
+            let fs = Filesystem::format(Storage::memory(8 << 20)).await.unwrap();
+            let (file, _) = fs.root().create(b"file", 0o644, OWNER).await.unwrap();
+            assert_eq!(file.write(0, &vec![1; 2 * page]).await, Ok(2 * page));
+            let volume = fs.volume().clone();
+            let stream = dirty_unconnected(&volume, &file, &vec![2; page]).await;
+            let fx_volume = volume.fx_volume().unwrap();
+            let scope = watch_shutdown(&volume).await;
+
+            let release = hold_lock(&volume, file.inode().0).await;
+            let mut unmounted = Box::pin(volume.image.unmount_volume(&volume).wait());
+            scope.on_no_tasks().await;
+            assert!(scope_finished(&fx_volume), "the scope is held");
+            // The first page is dirty, the second clean.
+            let data = vec![3; page];
+            assert_eq!(write_stream(&stream, 0, &data).await, Ok(page));
+            assert_eq!(write_stream(&stream, page as u64, &data).await, Err(zx::Status::BAD_STATE));
+            assert!(futures::poll!(&mut unmounted).is_pending(), "unmounted under the lock");
+
+            release.send(()).unwrap();
+            unmounted.await.expect("unmounting failed");
+            drop((file, stream, scope, fx_volume, volume));
+            let fs = Filesystem::mount(fs.close().await.unwrap()).await.unwrap();
+            let (file, _) = fs.root().lookup(b"file").await.unwrap();
+            let mut contents = vec![0; 2 * page];
+            assert_eq!(file.read(0, &mut contents).await, Ok(2 * page));
+            assert_eq!(contents, [vec![3; page], vec![1; page]].concat());
+            drop(file);
+            fs.close().await.unwrap().check().await.unwrap();
+        })
+    }
+
+    /// A read under way as its volume unmounts, which needs a page once the volume is unmounted,
+    /// returns what it read up to it, rather than waiting for a page that Fxfs's pager can no
+    /// longer supply. Fxfs's pager reads in the whole window of `READ_AHEAD_SIZE` that a page it
+    /// is asked for is in; the file's second window is in memory, its first and third not, so the
+    /// read asks for the first, and, once it has copied the second, for the third.
+    #[test]
+    fn a_read_needing_a_page_once_its_volume_is_unmounted_returns_what_it_read() {
+        const WINDOW: usize = READ_AHEAD_SIZE as usize;
+        block_on(async {
+            let fs = Filesystem::format(Storage::memory(8 << 20)).await.unwrap();
+            let (file, _) = fs.root().create(b"file", 0o644, OWNER).await.unwrap();
+            let data: Vec<u8> = (0..3 * WINDOW).map(|at| (at / 4096) as u8).collect();
+            assert_eq!(file.write(0, &data).await, Ok(data.len()));
+            drop(file);
+            let fs = Filesystem::mount(fs.close().await.unwrap()).await.unwrap();
+            let (file, _) = fs.root().lookup(b"file").await.unwrap();
+            let mut byte = [0];
+            assert_eq!(file.read(WINDOW as u64, &mut byte).await, Ok(1));
+
+            let mut contents = vec![0; data.len()];
+            let mut read = Box::pin(file.read(0, &mut contents));
+            woken(&mut read).await;
+            fs.unmount().await.unwrap();
+            assert_eq!(read.await, Ok(2 * WINDOW));
+            assert_eq!(contents[..2 * WINDOW], data[..2 * WINDOW]);
+            drop(file);
             fs.close().await.unwrap().check().await.unwrap();
         })
     }
