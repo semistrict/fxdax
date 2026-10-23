@@ -1624,6 +1624,29 @@ fn inherited_segments_go_though_own_ones_numbered_so_are_kept() {
     assert_eq!(forked.footprint().unwrap().segments, 2);
 }
 
+/// fxdax: a branch opened again in the same process lets go of the segments its last store set
+/// aside, full, or left open, holding only what writes after its last commit wrote: they go, as
+/// opening the store would remove them (TASK-79.2).
+#[test]
+fn segments_no_branch_holds_go_as_branches_open() {
+    let dir = MemDir::new();
+    let description = Description { block_size: BLOCK as u32, capacity: 64 << 20, branch: BRANCH };
+    let store = Store::create(dir.clone(), description, SMALL_SEGMENTS).unwrap();
+    store.write(extent(1), 0, &pattern(1, 0, BLOCK)).unwrap();
+    store.commit(None).unwrap();
+    // Two segments' worth after the commit, the first set aside.
+    for sequence in 2..50 {
+        store.write(extent(sequence), 0, &pattern(sequence as u8, 0, BLOCK)).unwrap();
+    }
+    let lineage = store.lineage().clone();
+    drop(store);
+    let store = lineage.open_branch(BRANCH).unwrap();
+    assert_eq!(store.extents().unwrap(), [(extent(1), BLOCK as u64)]);
+    let segments = dir.list(&of("segments", BRANCH)).unwrap();
+    assert_eq!(segments, ["0000000000000000"]);
+    assert_eq!(read(&store, extent(1), 0, BLOCK), pattern(1, 0, BLOCK));
+}
+
 /// A write in progress reserves the room it may take, which counts against the capacity until it
 /// is finished or abandoned; an abandoned write holds no commit back; and the capacity is room
 /// enough to the byte (TASK-44.1).
