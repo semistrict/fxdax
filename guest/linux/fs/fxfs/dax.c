@@ -177,6 +177,20 @@ struct fxfs_dax_range {
 	struct rcu_head rcu;
 };
 
+/*
+ * fxdax: why the window maps: a region as far as a write or a fault needs, ahead of the writes
+ * in the background, the staging extent's spare, or a piece in a range's own space (TASK-91.4).
+ */
+enum fxfs_dax_why {
+	FXFS_DAX_REACH,
+	FXFS_DAX_GROW,
+	FXFS_DAX_RESTAGE,
+	FXFS_DAX_RANGE,
+	FXFS_DAX_WHYS,
+};
+
+static const char *const fxfs_dax_whys[FXFS_DAX_WHYS] = { "reach", "grow", "restage", "range" };
+
 struct fxfs_dax {
 	struct super_block *sb;
 	struct fxfs *fs;
@@ -195,6 +209,8 @@ struct fxfs_dax {
 	 * reclaimed for room, and how many regions there are (TASK-91.7, TASK-91.10).
 	 */
 	atomic_long_t window_full, reclaims, region_count;
+	/* fxdax: the window's MAPs, and the bytes they mapped, by why (`enum fxfs_dax_why`). */
+	atomic64_t maps[FXFS_DAX_WHYS], map_bytes[FXFS_DAX_WHYS];
 	/* The files with ranges, or inodes using the window, by inode number. */
 	struct xarray files;
 	/* Guards `files`, and files' inodes. */
@@ -441,6 +457,8 @@ static int fxfs_dax_map_extents(struct fxfs_dax *dax, struct fxfs_dax_range *ran
 			err = fxfs_device_map(dax->dev, e->branch, e->sequence, e->extent_offset,
 					      e->len, range->window_offset + (e->offset - start),
 					      e->open);
+			atomic64_inc(&dax->maps[FXFS_DAX_RANGE]);
+			atomic64_add(e->len, &dax->map_bytes[FXFS_DAX_RANGE]);
 			if (!err)
 				fxfs_dax_relocate(range, page, pages, NULL, 0);
 		}
@@ -990,7 +1008,8 @@ static void fxfs_dax_region_open(struct fxfs_dax *dax, struct fxfs_dax_region *r
  * FXFS_DAX_REGION_FIRST, so that the next blocks it hands out need no MAP. -EXDEV if the region's
  * space doesn't reach so far: sealed, it shrinks to what it mapped.
  */
-static int fxfs_dax_map_to(struct fxfs_dax *dax, struct fxfs_dax_region *region, unsigned long end)
+static int fxfs_dax_map_to(struct fxfs_dax *dax, struct fxfs_dax_region *region, unsigned long end,
+			   enum fxfs_dax_why why)
 {
 	unsigned long from, to;
 	int err = 0;
@@ -1011,6 +1030,8 @@ static int fxfs_dax_map_to(struct fxfs_dax *dax, struct fxfs_dax_region *region,
 				      (u64)from << PAGE_SHIFT, (u64)(to - from) << PAGE_SHIFT,
 				      region->window_offset + ((u64)from << PAGE_SHIFT),
 				      region->writable);
+		atomic64_inc(&dax->maps[why]);
+		atomic64_add((u64)(to - from) << PAGE_SHIFT, &dax->map_bytes[why]);
 		/* A sealed extent may end before what was allocated of it: past what was written. */
 		if (!err || region->writable || to == end)
 			break;
@@ -1068,7 +1089,7 @@ static void fxfs_dax_grow(struct work_struct *work)
 	/* In the gate, no seal makes it read-only, or shrinks it. */
 	mapped = READ_ONCE(region->mapped);
 	if (READ_ONCE(region->writable) && mapped < region->pages)
-		fxfs_dax_map_to(dax, region, mapped + 1);
+		fxfs_dax_map_to(dax, region, mapped + 1, FXFS_DAX_GROW);
 	fxfs_device_store_end(dax->dev);
 	atomic_set(&region->growing, 0);
 	fxfs_dax_grow_ahead(dax, region);
@@ -1085,7 +1106,7 @@ static int fxfs_dax_reach(struct fxfs_dax *dax, struct fxfs_dax_region *region, 
 	unsigned long reached;
 	int err;
 
-	err = fxfs_dax_map_to(dax, region, end);
+	err = fxfs_dax_map_to(dax, region, end, FXFS_DAX_REACH);
 	if (err || !READ_ONCE(region->writable))
 		return err;
 	reached = atomic_long_read(&region->reached);
@@ -2062,7 +2083,7 @@ static void fxfs_dax_restage_work(struct work_struct *work)
 	if (fxfs_device_store_begin(dax->dev) == seals) {
 		fxfs_dax_region_open(dax, region);
 		if (READ_ONCE(region->writable))
-			fxfs_dax_map_to(dax, region, 1);
+			fxfs_dax_map_to(dax, region, 1, FXFS_DAX_RESTAGE);
 	}
 	fxfs_device_store_end(dax->dev);
 	spin_lock(&dax->regions_lock);
@@ -2077,11 +2098,17 @@ out:
 
 void fxfs_dax_show_stats(struct fxfs_dax *dax, struct seq_file *m)
 {
+	int why;
+
 	seq_printf(m, "window_free_bytes %zu\n", gen_pool_avail(dax->pool) +
 		   (dax->region_pool != dax->pool ? gen_pool_avail(dax->region_pool) : 0));
 	seq_printf(m, "window_full %ld\nwindow_reclaims %ld\nwindow_regions %ld\n",
 		   atomic_long_read(&dax->window_full), atomic_long_read(&dax->reclaims),
 		   atomic_long_read(&dax->region_count));
+	for (why = 0; why < FXFS_DAX_WHYS; why++)
+		seq_printf(m, "window_maps_%s %lld\nwindow_map_bytes_%s %lld\n", fxfs_dax_whys[why],
+			   atomic64_read(&dax->maps[why]), fxfs_dax_whys[why],
+			   atomic64_read(&dax->map_bytes[why]));
 }
 
 /* Destroys the window's pools: the ranges', and the regions', if apart. */
