@@ -1199,6 +1199,39 @@ fn segments_closed_by_commits_not_durable_close_again() {
     }
 }
 
+/// fxdax: a segment closed between commits, its raw file gone, the last of whose commits is not
+/// durable, is closed again with no footer by the branch's next opening: which, crashing as it
+/// does, leaves its data whole, for the opening after (TASK-79.33).
+#[test]
+fn segments_closed_between_commits_survive_crashes_closing_them_again() {
+    for seed in 0..64 {
+        let dir = MemDir::new();
+        let store = create(dir.clone(), 1 << 20);
+        store.write(extent(1), 0, &pattern(1, 0, BLOCK)).unwrap();
+        store.commit(None).unwrap();
+        store.write(extent(2), 0, &pattern(2, 0, BLOCK)).unwrap();
+        store.commit_ordered(None).unwrap();
+        assert!(store.close_now().unwrap());
+        let crashed = dir.crash(seed);
+        drop(store);
+        // An opening stopped after each of its first operations, as by a crash, then another.
+        for operations in 0.. {
+            let opening = crashed.crash(seed);
+            opening.fail_after(Some(operations));
+            let opened = Store::open(opening.clone(), OPTIONS).map(drop);
+            opening.fail_after(None);
+            let reopened = Store::open(opening.crash(seed + operations), OPTIONS);
+            let reopened = reopened.unwrap_or_else(|error| {
+                panic!("seed {seed}, stopped after {operations} operations: {error:#}")
+            });
+            assert_eq!(read(&reopened, extent(1), 0, BLOCK), pattern(1, 0, BLOCK));
+            if opened.is_ok() {
+                break;
+            }
+        }
+    }
+}
+
 /// Reads find a part stored compressed packed, to be unpacked from its stored bytes, then, once
 /// read, unpacked; a part stored raw, in place.
 #[test]

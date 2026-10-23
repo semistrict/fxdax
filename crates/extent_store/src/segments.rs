@@ -786,34 +786,59 @@ pub(crate) fn segment_footer(bytes: &[u8]) -> Result<Option<Footer>, Error> {
 
 /// Closes `branch`'s segments left open, whose data its state as of `epoch` may need, and those
 /// closed whose footers name commits after it, which were not durable: framed, with no footer.
+/// fxdax: a crash meanwhile leaves the next opening the data whole, in the framed file or the raw
+/// one, which goes once the framed file is (TASK-79.33).
 pub(crate) fn close_left_open<D: Dir>(dir: &D, branch: u64, epoch: u64) -> Result<(), Error> {
     let open = list_numbers(dir, &branch_dir(OPEN_SEGMENTS, branch))?;
     let closed = list_numbers(dir, &branch_dir(SEGMENTS, branch))?;
     let numbers: BTreeSet<u64> = open.iter().chain(&closed).copied().collect();
     for number in numbers {
         let segment = SegmentId { branch, number };
-        let path = segment_path(segment);
-        let raw = || -> Result<Vec<u8>, Error> {
-            Ok(read_whole(&dir.open(&open_segment_path(segment), true)?)?)
+        let (path, raw_path) = (segment_path(segment), open_segment_path(segment));
+        let raw = || -> Result<Option<Vec<u8>>, Error> {
+            match dir.open(&raw_path, true) {
+                Ok(file) => Ok(Some(read_whole(&file)?)),
+                Err(err) if not_found(&err) => Ok(None),
+                Err(err) => Err(err.into()),
+            }
         };
-        // Its data, if it is to be framed again: the framed file's, if it is whole, which a commit
-        // made durable, or a closing between commits ([`Store::close_now`]), which removed the
-        // raw file; or else the raw file's.
+        let whole_raw = || raw()?.ok_or_else(|| anyhow!("segment {segment:?} has no whole file"));
+        // Its data, if it is to be framed again, and whether from the framed file: the framed
+        // file's, if it is whole, which a commit made durable, or a closing between commits
+        // ([`Store::close_now`]), which removed the raw file; or else the raw file's.
         let data = match dir.open(&path, true) {
             Ok(file) => match read_frame(&file)? {
                 Some((_, footer)) => match segment_footer(&footer) {
-                    Ok(footer) if footer.as_ref().is_none_or(|f| footer_last(f) <= epoch) => None,
+                    Ok(Some(footer)) if footer_last(&footer) <= epoch => None,
+                    // fxdax: framed again so by an opening before, from its raw file, which went
+                    // once it was: its framing whole only if the raw file is gone (TASK-79.33).
+                    Ok(None) => raw()?.map(|data| (data, false)),
                     _ => match extent_frame::data(&read_whole(&file)?) {
-                        Ok(data) => Some(data),
-                        Err(_) => Some(raw()?),
+                        Ok(data) => Some((data, true)),
+                        Err(_) => Some((whole_raw()?, false)),
                     },
                 },
-                None => Some(raw()?),
+                None => Some((whole_raw()?, false)),
             },
-            Err(err) if not_found(&err) => Some(raw()?),
+            Err(err) if not_found(&err) => Some((whole_raw()?, false)),
             Err(err) => return Err(err.into()),
         };
-        if let Some(data) = data {
+        if let Some((data, framed)) = data {
+            // fxdax: from the framed file, its one copy surely whole, as a closing between commits
+            // removed the raw file, and a crash may have torn what was written to it since its
+            // last sync: its data goes to the raw file anew, durably, before the framed file goes
+            // (TASK-79.33).
+            if framed {
+                match dir.remove(&raw_path) {
+                    Err(err) if !not_found(&err) => return Err(err.into()),
+                    _ => {}
+                }
+                let file = dir.create(&raw_path, true)?;
+                file.write_at(&data, 0)?;
+                file.sync()?;
+                dir.sync_dir(&branch_dir(OPEN_SEGMENTS, branch))?;
+                dir.barrier()?;
+            }
             match dir.remove(&path) {
                 Err(err) if !not_found(&err) => return Err(err.into()),
                 _ => {}
@@ -824,7 +849,7 @@ pub(crate) fn close_left_open<D: Dir>(dir: &D, branch: u64, epoch: u64) -> Resul
             dir.sync_dir(&branch_dir(SEGMENTS, branch))?;
             dir.barrier()?;
         }
-        match dir.remove(&open_segment_path(segment)) {
+        match dir.remove(&raw_path) {
             Err(err) if !not_found(&err) => return Err(err.into()),
             _ => {}
         }
