@@ -105,10 +105,13 @@ pub(crate) const FORK: u32 = 13;
 /// took that size, `args[1]` 1, or not, 0.
 pub(crate) const RESIZED: u32 = 16;
 /// The window's mappings ([`ExtentStore::window_mappings`](crate::ExtentStore::window_mappings)):
-/// the reply's payload, each six little-endian words: its offset in the window, its length, the
-/// extent's branch and sequence and the offset in it, and [`MAPPING_WRITABLE`] or
-/// [`MAPPING_ZEROS`].
+/// the reply's payload, each six little-endian words ([`MAPPING_BYTES`]): its offset in the
+/// window, its length, the extent's branch and sequence and the offset in it, and
+/// [`MAPPING_WRITABLE`] or [`MAPPING_ZEROS`]. As many as a window of its size holds, a mapping a
+/// page at most, which may be more than [`MAX_PAYLOAD`] holds (TASK-79.43).
 pub(crate) const MAPPINGS: u32 = 17;
+/// The bytes of a mapping in a [`MAPPINGS`] reply.
+pub(crate) const MAPPING_BYTES: u64 = 6 * 8;
 // 14, 15 and 18 to 20 were requests the host's tools made, of the daemon's stats, and to resize,
 // fork, delete and sync stores by path: the control API's now (TASK-43.5), not reused.
 /// fxdax: moves a follower's view to the writer's latest commit, whose epoch is the reply's
@@ -483,8 +486,10 @@ impl Receiver {
         Self(stream)
     }
 
-    /// The next message, or `None` once the other end has closed the connection.
-    pub fn receive(&mut self) -> io::Result<Option<Message>> {
+    /// The next message, or `None` once the other end has closed the connection: one whose payload
+    /// is past [`MAX_PAYLOAD`] only if `most`, asked then, allows that many bytes, as a reply to
+    /// [`MAPPINGS`] of a large window may hold (TASK-79.43).
+    pub fn receive(&mut self, most: impl FnOnce() -> u64) -> io::Result<Option<Message>> {
         let mut header = Header::default();
         let bytes = header.as_mut_bytes();
         let (received, fds) = receive_with_fds(&self.0, bytes)?;
@@ -492,7 +497,7 @@ impl Receiver {
             return Ok(None);
         }
         self.0.read_exact(&mut bytes[received..])?;
-        if header.len > MAX_PAYLOAD + size_of::<Header>() as u64 {
+        if header.len > MAX_PAYLOAD + size_of::<Header>() as u64 && header.len > most() {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "a message too large"));
         }
         let mut payload = vec![0; header.len as usize];
@@ -515,7 +520,7 @@ impl AsyncReceiver {
     }
 
     /// The next message, or `None` once the other end has closed the connection, as
-    /// [`Receiver::receive`] gives it.
+    /// [`Receiver::receive`] gives it, a payload of [`MAX_PAYLOAD`] at most.
     pub async fn receive(&mut self) -> io::Result<Option<Message>> {
         let mut header = Header::default();
         let mut fds = Vec::new();
@@ -637,13 +642,13 @@ mod tests {
             let fds = [file.as_fd(), other.as_fd()];
             sender.send(Header::new(WRITE, 2).with_flags(5), &big, &fds).unwrap();
         });
-        let first = receiver.receive().unwrap().unwrap();
+        let first = receiver.receive(|| 0).unwrap().unwrap();
         assert_eq!(
             first.header,
             Header { kind: READ, id: 1, args: [1, 2, 3, 0, 0], ..Default::default() }
         );
         assert!(first.payload.is_empty() && first.fds.is_empty());
-        let second = receiver.receive().unwrap().unwrap();
+        let second = receiver.receive(|| 0).unwrap().unwrap();
         assert_eq!((second.header.kind, second.header.id, second.header.flags), (WRITE, 2, 5));
         assert_eq!(second.payload, vec![7u8; 3 << 20]);
         assert_eq!(second.fds.len(), 2, "the descriptors didn't arrive");
@@ -673,7 +678,7 @@ mod tests {
         }
         let mut receiver = Receiver::new(theirs);
         for id in 0..8 {
-            let message = receiver.receive().unwrap().unwrap();
+            let message = receiver.receive(|| 0).unwrap().unwrap();
             assert_eq!((message.header.id, message.payload.len()), (id, big.len()));
             assert!(message.payload == big, "message {id} holds other bytes");
             assert_eq!(message.fds.len(), usize::from(id == 5), "message {id}'s descriptors");

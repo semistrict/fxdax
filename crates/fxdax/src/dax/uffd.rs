@@ -608,9 +608,9 @@ impl<H: HostMemory> UffdSecondStage<H> {
         }
     }
 
-    /// The size of the memory, which a test's window in it takes
-    /// ([`Dax::in_host_memory`](crate::dax::Dax::in_host_memory)).
-    #[cfg(test)]
+    /// The size of the memory: its window's, as a test's window in it takes it
+    /// ([`Dax::in_host_memory`](crate::dax::Dax::in_host_memory)), or a VM process's of the
+    /// extent daemon's.
     pub fn size(&self) -> u64 {
         self.size as u64
     }

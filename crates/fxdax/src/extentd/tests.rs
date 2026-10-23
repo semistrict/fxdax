@@ -1950,3 +1950,84 @@ fn stores_synced_here_are_closed_before_they_are_let_go() {
         assert_eq!(deleted, Ok(()), "round {round}");
     }
 }
+
+/// A memory object of `len` bytes, as a daemon hands its VM processes its arenas.
+fn memfd(len: u64) -> std::fs::File {
+    // SAFETY: The name is a C string.
+    let fd = unsafe { libc::memfd_create(c"memory".as_ptr(), libc::MFD_CLOEXEC) };
+    assert!(fd >= 0);
+    // SAFETY: Just created, and owned here.
+    let file = std::fs::File::from(unsafe {
+        <std::os::fd::OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(fd)
+    });
+    file.set_len(len).unwrap();
+    file
+}
+
+/// TASK-79.43: a window's mappings, a snapshot's, more of them than one message's most bytes of
+/// payload hold, arrive whole: a daemon's reply holds as many as a window of its size can have,
+/// which its VM process takes. Here a daemon of the test's answers the store's opening, its
+/// window's, and its mappings', a page each, past `MAX_PAYLOAD`.
+#[test]
+fn window_mappings_past_a_messages_payload_arrive() {
+    use super::wire::*;
+    use std::os::fd::AsFd;
+    let ps = page_size();
+    // More than a message's payload, and its header's room past it, hold.
+    let count = (MAX_PAYLOAD + size_of::<Header>() as u64) / 48 + 1;
+    let (client, daemon) = UnixStream::pair().unwrap();
+    let answering = std::thread::spawn(move || {
+        let (sender, mut receiver) =
+            (Sender::new(daemon.try_clone().unwrap()), Receiver::new(daemon));
+        let (own, public) = (memfd(ps), memfd(ps));
+        while let Ok(Some(request)) = receiver.receive(|| 0) {
+            let mut reply = Header::new(REPLY, request.header.id);
+            let (mut payload, mut fds) = (Vec::new(), Vec::new());
+            match request.header.kind {
+                OPEN => {
+                    reply.args[0] = 7;
+                    reply.args[1] = 1;
+                    fds = vec![own.as_fd(), public.as_fd()];
+                }
+                MAPPINGS => {
+                    payload = (0..count)
+                        .flat_map(|page| [page * ps, ps, 0, 0, 0, MAPPING_ZEROS])
+                        .flat_map(u64::to_le_bytes)
+                        .collect();
+                }
+                WINDOW => {}
+                _ => reply.status = -Errno::EINVAL.raw(),
+            }
+            sender.send(reply, &payload, &fds).unwrap();
+        }
+    });
+    let store = RemoteExtentStore::over(client, Path::new("store"), Opening::Create(1 << 20));
+    let store = store.unwrap();
+    let size = count * ps;
+    // SAFETY: Reserves the window's memory, which the test leaks: the window maps it while the
+    // process lives.
+    let memory = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            size as usize,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_NORESERVE,
+            -1,
+            0,
+        )
+    };
+    assert_ne!(memory, libc::MAP_FAILED);
+    let memory = NonNull::new(memory.cast()).unwrap();
+    // SAFETY: The memory is the test's, and outlives the store.
+    unsafe { store.create_dax_window_in_host_memory(memory, size, None) }.unwrap();
+    let mappings = store.window_mappings().unwrap();
+    assert_eq!(mappings.len() as u64, count);
+    let last = crate::WindowMapping {
+        window_offset: (count - 1) * ps,
+        len: ps,
+        contents: crate::MappingContents::Zeros,
+    };
+    assert_eq!(mappings.last(), Some(&last));
+    drop(store);
+    answering.join().unwrap();
+}
