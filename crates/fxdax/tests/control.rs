@@ -210,7 +210,10 @@ fn imports_that_fail_leave_no_store() {
     let whole = image("whole.tar", Entry::new("f", Kind::File(b"f")));
     let store = dir.path().join("store");
 
-    assert_eq!(failure(daemon.import(&store, &out_of_range)), (Code::Internal, Errno::EIO));
+    assert_eq!(
+        failure(daemon.import(&store, &out_of_range)),
+        (Code::InvalidArgument, Errno::EINVAL)
+    );
     assert!(!store.exists(), "the store is left half made");
     let branch = daemon.import(&store, &whole).unwrap();
     assert_eq!(daemon.stat(&store).unwrap().branch, branch);

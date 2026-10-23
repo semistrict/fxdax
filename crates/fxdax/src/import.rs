@@ -572,10 +572,11 @@ fn pax_time(value: &str) -> anyhow::Result<SystemTime> {
     since_epoch(Duration::new(secs, nanos))
 }
 
-/// The time `since` after the Unix epoch, unless it is past what a `SystemTime` holds: a header
-/// holds its seconds in 64 bits, and the host's time may hold fewer.
+/// The time `since` after the Unix epoch, unless it is past what a `SystemTime` holds (`EINVAL`,
+/// as for a time past what Fxfs's nanoseconds hold): a header holds its seconds in 64 bits, and
+/// the host's time may hold fewer.
 fn since_epoch(since: Duration) -> anyhow::Result<SystemTime> {
-    let time = UNIX_EPOCH.checked_add(since);
+    let time = UNIX_EPOCH.checked_add(since).ok_or(Errno::EINVAL);
     time.with_context(|| format!("the time {since:?} since the Unix epoch is out of range"))
 }
 
