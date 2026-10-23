@@ -6,13 +6,14 @@
 
 //! fxdax's own: the relief of starved arenas (`arenas`, TASK-50.3). An allocation that finds its
 //! arena starved asks for relief, and one that can wait waits for it: the PMM's relief thread
-//! frees pages for each arena asked for since its last pass, with the evictor the kernel's user
-//! gives it ([`relieve_with`]), the arena's own past its own cap, any arena's past the total's or
-//! out of chunks; and then, with the kernel's own, on demand, those the user's leaves, such as
-//! files', of the same: the arena's own (`Evictor::evict_arena_on_demand`, TASK-79.76), or any
-//! arena's (`EvictionLevel::OnDemand`, TASK-79.70). A pass that frees nothing for an arena starved
-//! still exhausts it: its allocations fail rather than wait for ever, until a page of it is freed,
-//! a cap changes, or a later pass, which each of them still asks for, frees something.
+//! frees pages for each arena asked for since its last pass, and starved still (TASK-79.76), with
+//! the evictor the kernel's user gives it ([`relieve_with`]), the arena's own past its own cap, any
+//! arena's past the total's or out of chunks; and then, with the kernel's own, on demand, those
+//! the user's leaves, such as files', of the same: the arena's own
+//! (`Evictor::evict_arena_on_demand`, TASK-79.76), or any arena's (`EvictionLevel::OnDemand`,
+//! TASK-79.70). A pass that frees nothing for an arena starved still exhausts it: its allocations
+//! fail rather than wait for ever, until a page of it is freed, a cap changes, or a later pass,
+//! which each of them still asks for, frees something.
 //!
 //! Without relief, the kernel's evictor is asked to free a chunk's worth, of any arena's, on demand
 //! (`EvictionLevel::OnDemand`), whatever their age, for each allocation that finds its arena
@@ -86,10 +87,10 @@ pub fn relieve_with(
     started
 }
 
-/// The relief thread: frees pages with `evict` for each arena asked for since its last pass,
-/// without the PMM's lock, the arena's own at its own cap, any arena's at the total's, those
-/// `evict` leaves with the kernel's evictor, and records what it freed, which the arena's
-/// allocations waiting then try again with.
+/// The relief thread: frees pages with `evict` for each arena asked for since its last pass, and
+/// starved still at the cap it was asked at, without the PMM's lock, the arena's own at its own
+/// cap, any arena's at the total's, those `evict` leaves with the kernel's evictor, and records what
+/// it freed, which the arena's allocations waiting then try again with.
 fn relieve(reliever: &Reliever, mut evict: impl FnMut(Option<ArenaId>, u64) -> u64) {
     let _gone = Gone(reliever);
     loop {
@@ -99,6 +100,13 @@ fn relieve(reliever: &Reliever, mut evict: impl FnMut(Option<ArenaId>, u64) -> u
         let node = node();
         let asked = node.locked().arenas.take_asked();
         for (arena, starved) in asked {
+            // An ask made stale, by a pass that relieved the arena since, as its allocations asked
+            // again while it ran (TASK-79.76), or by a cap changed, has nothing to relieve: a pass
+            // would evict as much again for no allocation. Those waiting were woken as the arena
+            // changed, and ask again if they must.
+            if node.locked().arenas.starved(arena) != Some(starved) {
+                continue;
+            }
             let from = match starved {
                 Starved::Arena => Some(arena),
                 Starved::Total => None,

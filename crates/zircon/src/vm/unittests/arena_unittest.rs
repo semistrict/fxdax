@@ -20,6 +20,7 @@ use std::pin::pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Wake, Waker};
+use std::time::Duration;
 use zx_status::Status;
 
 const PAGE_SIZE: u64 = page::SIZE as u64;
@@ -1021,6 +1022,51 @@ fn relief_evicts_an_arenas_own_clean_pages_its_evictor_leaves() {
     assert_eq!([others, newer], [2 * CHUNK_PAGES; 2]);
     // SAFETY: The test owns the page.
     unsafe { pmm::free_page(page) };
+}
+
+/// TASK-79.76: relief asked for an arena again as its pass runs, by an allocation the pass then
+/// makes room for, runs no pass of its own, as the arena is starved no longer: one would evict as
+/// much again of the arena's pages, its newer, for no allocation. Another arena, starved at its
+/// cap, asked for after, and so relieved after, shows when the pass would have run.
+#[test]
+fn relief_asked_for_as_a_pass_relieves_the_arena_runs_no_pass_more() {
+    let pages = AgedPages::new();
+    let (node, arena) = (pmm::node(), pages.arena);
+    let after = pmm::create_arena();
+    node.set_arena_cap(after, Some(CHUNK_SIZE as u64));
+    let held: Vec<VmPagePtr> =
+        (0..CHUNK_PAGES).map(|_| node.alloc_page_in(after, 0).unwrap()).collect();
+    // The arenas relief's evictor is called for; and what the arena's allocation asking again, as
+    // its first pass runs, the arena's pages not yet evicted, was told.
+    let (called, calls) = std::sync::mpsc::channel();
+    let asked_again = Arc::new(Mutex::new(None));
+    pmm::relieve_with({
+        let asked_again = asked_again.clone();
+        move |from, _| {
+            let mut asked = asked_again.lock().unwrap();
+            if from == Some(arena) && asked.is_none() {
+                *asked = Some(pmm::node().alloc_page_in(arena, ALLOC_FLAG_CAN_WAIT).err());
+            }
+            called.send(from).unwrap();
+            0
+        }
+    })
+    .unwrap();
+
+    assert_eq!(node.alloc_page_in(arena, ALLOC_FLAG_CAN_WAIT).err(), Some(Status::SHOULD_WAIT));
+    let page = wait_for_page(arena).expect("a page of the arena's, evicted");
+    assert_eq!(node.alloc_page_in(after, ALLOC_FLAG_CAN_WAIT).err(), Some(Status::SHOULD_WAIT));
+    let mut called_for = Vec::new();
+    while called_for.last() != Some(&Some(after)) {
+        called_for.push(calls.recv_timeout(Duration::from_secs(10)).expect("relief's pass"));
+    }
+    assert_eq!(*asked_again.lock().unwrap(), Some(Some(Status::SHOULD_WAIT)));
+    assert_eq!(called_for, [Some(arena), Some(after)]);
+    assert_eq!(pages.resident(), [2 * CHUNK_PAGES, 0, 2 * CHUNK_PAGES]);
+    for page in held.into_iter().chain([page]) {
+        // SAFETY: The test owns the pages.
+        unsafe { pmm::free_page(page) };
+    }
 }
 
 /// TASK-50.3: relief gone, as its evictor panicked, the allocations it would make room for fail,
