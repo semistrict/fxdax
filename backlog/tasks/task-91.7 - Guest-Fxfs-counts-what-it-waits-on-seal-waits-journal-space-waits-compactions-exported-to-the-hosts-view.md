@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@main-session'
 created_date: '2026-10-22 18:22'
-updated_date: '2026-10-23 09:26'
+updated_date: '2026-10-23 10:15'
 labels: []
 dependencies: []
 parent_task_id: TASK-91
@@ -23,7 +23,7 @@ Fxfs waits on the device in block_on, so the guest reports those waits as idle w
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Seal waits (count, time), journal-space waits and compactions are readable from the guest (debugfs or /sys)
+- [x] #1 Seal waits (count, time), journal-space waits and compactions are readable from the guest (debugfs or /sys)
 - [ ] #2 fs-bench reports them per step
 <!-- AC:END -->
 
@@ -33,3 +33,9 @@ Fxfs waits on the device in block_on, so the guest reports those waits as idle w
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+263a3c34: /proc/fs/fxfs/<tag> (device requests, seal waits and holds, writes and DAX stores held by seals, journal-space waits, compactions, window MAP/UNMAP time, window full/reclaims/regions). fxfs-guest-pgbench prints them after each step; fs-bench doesn't yet (AC2 open).
+<!-- SECTION:NOTES:END -->
