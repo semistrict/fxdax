@@ -133,7 +133,7 @@ pub(crate) fn delete_with(
 pub(crate) fn clean_after_commit(store: &Store<HostDir>) -> anyhow::Result<()> {
     if cleaning_due(store)? {
         let cleaned = store.clean(CLEAN_BELOW)?;
-        log::info!("fxdax: cleaned {}: {cleaned:?}", store.dir().path().display());
+        log::info!("fxdax: cleaned {}: {cleaned:?}", named(store));
     }
     Ok(())
 }
@@ -154,9 +154,16 @@ pub(crate) fn cleaning_due(store: &Store<HostDir>) -> anyhow::Result<bool> {
 pub(crate) fn clean_behind(store: &Store<HostDir>) -> anyhow::Result<()> {
     let copied = store.clean_behind(CLEAN_BELOW, CLEAN_PASS)?;
     if copied > 0 {
-        log::info!("fxdax: cleaning {}: copied {copied} bytes", store.dir().path().display());
+        log::info!("fxdax: cleaning {}: copied {copied} bytes", named(store));
     }
     Ok(())
+}
+
+/// What the logs name `store` by: its branch, and the directory of the store it is a branch of.
+/// The directory alone names a fork as the store it was forked from, whose directory holds the
+/// fork's files too: so a fork's cleaning read as its base's, which nothing writes (TASK-79.2).
+fn named(store: &Store<HostDir>) -> String {
+    format!("branch {:x} of {}", store.description().branch, store.dir().path().display())
 }
 
 #[cfg(test)]
@@ -236,6 +243,21 @@ mod tests {
         let mut data = vec![0; MIB as usize];
         store.read(extent(extents - 1), 0, &mut data).unwrap();
         assert_eq!(data, vec![(extents - 1) as u8; MIB as usize]);
+    }
+
+    /// The logs name a fork by its own branch, of the store it was forked from, whose directory
+    /// holds its files too: not by that directory alone, which names the store it was forked
+    /// from, as a fork's cleaning, logged so, read as its base's (TASK-79.2).
+    #[test]
+    fn forks_are_named_by_their_branch() {
+        let dir = tempfile::tempdir().unwrap();
+        let (path, fork) = (dir.path().join("store"), dir.path().join("fork"));
+        let store = create(&path, MIB, 3).unwrap();
+        extent_store::fork_host(&store, &fork, 4).unwrap();
+        let forked = open(&fork).unwrap();
+        assert_eq!(forked.dir().path(), path);
+        assert_eq!(named(&forked), format!("branch 4 of {}", path.display()));
+        assert_eq!(named(&store), format!("branch 3 of {}", path.display()));
     }
 
     /// Deleting a fork removes the record of its branch's placement, whichever stack deletes it.
