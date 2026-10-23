@@ -208,7 +208,7 @@ mod tests {
     /// data the one block that would hold the extent's entry is in: not the checkpoint whole.
     #[test]
     fn lookups_read_one_block() {
-        use crate::fetch::{Budget, Fetcher, Limits};
+        use crate::fetch::{Budget, Fetcher, Limits, Memory};
         use crate::object::TAIL;
         let state = state(100_000);
         let bytes = encode(&state);
@@ -219,7 +219,8 @@ mod tests {
             read: AtomicU64::new(0),
         };
         let bucket = std::sync::Arc::new(bucket);
-        let fetcher = Fetcher::new(bucket.clone(), Budget::new(Limits::UNBOUNDED), None);
+        let budget = Budget::new(Limits::UNBOUNDED);
+        let fetcher = Fetcher::new(bucket.clone(), budget, Memory::new(), None);
         let frame = extent_frame::Frame::of(&bytes).unwrap();
         let (tail, stored) = (frame.tail(), extent_frame::Parts::of(&bytes).unwrap().stored);
         let table = Table::decode(extent_frame::footer(&bytes).unwrap()).unwrap();

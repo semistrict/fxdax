@@ -652,7 +652,8 @@ mod tests {
         let table = crate::checkpoint::Table::decode(tail.footer()).unwrap();
         assert_eq!(table.state().last_commit, Some(2));
         let budget = crate::fetch::Budget::new(crate::fetch::Limits::UNBOUNDED);
-        let fetcher = crate::fetch::Fetcher::new(bucket.clone(), budget, None);
+        let fetcher =
+            crate::fetch::Fetcher::new(bucket.clone(), budget, crate::fetch::Memory::new(), None);
         assert!(fetcher.lookup(&checkpoint, large).await.unwrap().is_some());
         assert_eq!(fetcher.lookup(&checkpoint, small).await, Ok(None));
 

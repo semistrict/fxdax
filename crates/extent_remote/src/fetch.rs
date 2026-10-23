@@ -12,7 +12,10 @@
 //! A host's fetcher keeps the parts it fetches in the host's cache, as stored, and those it
 //! fetched last in memory too, as fetched, which the first read that wants one unpacks: a part
 //! read ahead is unpacked once, by the read it was read ahead of, not read back from the cache and
-//! unpacked again (TASK-92.21).
+//! unpacked again (TASK-92.21). What its fetchers keep in memory, those parts and objects' tails,
+//! the host's fetchers share ([`Memory`]), as they share its budget and its cache: they keep each
+//! once, however many of the host's stores read it, as the forks of one base read its parts, and
+//! within bounds that hold for the host, however many stores it serves.
 //!
 //! A checkpoint's extents are looked up a block at a time ([`Fetcher::lookup`]): its tail holds its
 //! table, which says where the block that would hold an extent's entry is, read by the parts it is
@@ -37,7 +40,7 @@ use futures::channel::oneshot;
 use futures::future::{BoxFuture, FutureExt as _, Shared};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::ops::Range;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use storage_device::ExtentId;
 
 /// Whether a read waits for its data.
@@ -68,7 +71,7 @@ pub async fn read<B: Bucket>(
     extent: ExtentId,
     location: &Location,
 ) -> Result<Vec<u8>, Error> {
-    let fetcher = Fetcher::new(bucket.clone(), Budget::new(Limits::UNBOUNDED), None);
+    let fetcher = Fetcher::new(bucket.clone(), Budget::new(Limits::UNBOUNDED), Memory::new(), None);
     fetcher.read(extent, location, 0, location.len, Priority::Demand).await
 }
 
@@ -217,16 +220,45 @@ impl Tail {
             .map_err(|_| Error::Corrupt(format!("part {part} of {key}, past its end")))?;
         Ok((stored, place.end - place.start))
     }
+
+    /// About the bytes it takes in memory: where its parts are stored, where its extents are, and
+    /// a checkpoint's table, which takes about what its footer does as read.
+    fn size(&self) -> u64 {
+        use std::mem::size_of;
+        // A map's entries, and a byte of control each, in a table an eighth larger than they fill.
+        let extents = self.extents.capacity() * (size_of::<(ExtentId, (u64, u64))>() + 1) * 8 / 7;
+        let parts = self.parts.stored.capacity() * size_of::<extent_frame::Stored>();
+        let table = self.table.as_ref().map_or(0, |_| self.parts.frame.footer_len as usize);
+        (size_of::<Self>() + extents + parts + table) as u64
+    }
 }
 
-/// How many bytes of objects' tails, as read, a fetcher keeps in memory, those used least recently
-/// going first: and kept in the cache, if it keeps one, from which they are read again
+/// What a host's fetchers keep in memory, which they share, as they share its budget and its
+/// cache: objects' tails, and the parts fetched last, each kept once for the host however many of
+/// its stores read it, within bounds that hold for the host, not for each store (TASK-92.21,
+/// TASK-92.22). The host's fetchers read one bucket, as they share one cache: what is kept is kept
+/// by key, as the cache keeps it; a part is taken only by a tail that says it is stored as it was,
+/// and a tail goes once a part fails the CRC it gives.
+#[derive(Default)]
+pub struct Memory {
+    tails: Mutex<Tails>,
+    recent: Mutex<Recent>,
+}
+
+impl Memory {
+    pub fn new() -> Arc<Self> {
+        Arc::default()
+    }
+}
+
+/// How many bytes of objects' tails a host's fetchers keep in memory, those used least recently
+/// going first: and kept in the cache, if they keep one, from which they are read again
 /// (TASK-92.22).
 const TAILS: u64 = 64 << 20;
 
-/// Objects' tails a fetcher keeps in memory, or the reads of them in flight, by key, least
-/// recently used first, and the bytes they take: [`TAIL`] for a read in flight, which reads as
-/// many at first. None is the tail of an object gone.
+/// Objects' tails the host's fetchers keep in memory, or the reads of them in flight, by key, least
+/// recently used first, and the bytes they take ([`Tail::size`]): [`TAIL`] for a read in flight,
+/// which reads as many at first. None is the tail of an object gone.
 #[derive(Default)]
 struct Tails {
     kept: HashMap<String, KeptTail>,
@@ -347,8 +379,9 @@ impl Fetched {
     }
 }
 
-/// How many bytes of the parts fetched last a fetcher keeps in memory, for the reads after: a
-/// read ahead's, until the read that wants it, and a part a reader reads a little of at a time.
+/// How many bytes of the parts fetched last a host's fetchers keep in memory, for the reads after:
+/// a read ahead's, until the read that wants it, a part a reader reads a little of at a time, and
+/// one a fork's store reads after its base's did.
 const RECENT: u64 = 64 << 20;
 
 /// The parts fetched last, least recently used first, by their objects' keys and numbers, and the
@@ -462,24 +495,23 @@ const STREAMS: usize = 1024;
 struct Fetching<B: Bucket> {
     bucket: Arc<B>,
     budget: Arc<Budget>,
-    /// Where it keeps the parts it fetches, if it does.
-    keeping: Option<Keeping>,
-    /// Objects' tails, or the reads of them, by key.
-    tails: Mutex<Tails>,
-}
-
-/// Where a fetcher keeps the parts it fetches: those it fetched last in memory, as fetched, and
-/// the rest in its cache, as stored.
-struct Keeping {
-    cache: Arc<Cache>,
-    recent: Mutex<Recent>,
+    /// Objects' tails, or the reads of them, and, if it keeps the parts it fetches, those it
+    /// fetched last, as fetched.
+    memory: Arc<Memory>,
+    /// Where it keeps the parts it fetches, as stored, and their objects' tails, if it does.
+    cache: Option<Arc<Cache>>,
 }
 
 impl<B: Bucket> Fetcher<B> {
-    /// Reads `bucket` under `budget`, keeping the parts it fetches in `cache`, if any.
-    pub fn new(bucket: Arc<B>, budget: Arc<Budget>, cache: Option<Arc<Cache>>) -> Self {
-        let keeping = cache.map(|cache| Keeping { cache, recent: Mutex::default() });
-        let shared = Arc::new(Fetching { bucket, budget, keeping, tails: Mutex::default() });
+    /// Reads `bucket` under `budget`, keeping objects' tails in `memory`; and, with a `cache`, the
+    /// parts it fetches there, those it fetched last in `memory` too.
+    pub fn new(
+        bucket: Arc<B>,
+        budget: Arc<Budget>,
+        memory: Arc<Memory>,
+        cache: Option<Arc<Cache>>,
+    ) -> Self {
+        let shared = Arc::new(Fetching { bucket, budget, memory, cache });
         Self { shared, parts: Arc::default(), streams: Arc::default(), spawn: None }
     }
 
@@ -609,7 +641,7 @@ impl<B: Bucket> Fetcher<B> {
     /// and twice as many as the time before, up to [`AHEAD`], while reads go on where the last
     /// stopped, so that a sequential reader finds its parts kept, and a random one their neighbours.
     fn read_ahead(&self, key: &str, first: u64, last: u64) {
-        let Some(spawn) = self.spawn.as_ref().filter(|_| self.shared.keeping.is_some()) else {
+        let Some(spawn) = self.spawn.as_ref().filter(|_| self.shared.cache.is_some()) else {
             return;
         };
         let parts = {
@@ -711,9 +743,7 @@ impl<B: Bucket> Fetching<B> {
         granted: impl Future<Output = Grant>,
     ) -> Result<Part, Error> {
         let (stored, len) = tail.stored(key, part)?;
-        if let Some(keeping) = &self.keeping
-            && let Some(fetched) = keeping.recent.lock().unwrap().get(key, part, &stored)
-        {
+        if let Some(fetched) = self.recent().and_then(|mut recent| recent.get(key, part, &stored)) {
             return Ok(Part::Data(fetched));
         }
         let bytes = match self.kept(key, part, &stored) {
@@ -736,16 +766,22 @@ impl<B: Bucket> Fetching<B> {
             }
         };
         let fetched = Arc::new(Fetched::new(stored, len, bytes));
-        if let Some(keeping) = &self.keeping {
-            keeping.recent.lock().unwrap().put(key, part, fetched.clone());
+        if let Some(mut recent) = self.recent() {
+            recent.put(key, part, fetched.clone());
         }
         Ok(Part::Data(fetched))
+    }
+
+    /// The parts fetched last, in the host's memory, if it keeps the parts it fetches.
+    fn recent(&self) -> Option<MutexGuard<'_, Recent>> {
+        self.cache.as_ref()?;
+        Some(self.memory.recent.lock().unwrap())
     }
 
     /// The stored bytes of part `part` of the object at `key`, stored as `stored` says, if the
     /// cache has them and they pass its check: those that fail are dropped from the cache.
     fn kept(&self, key: &str, part: u64, stored: &extent_frame::Stored) -> Option<Vec<u8>> {
-        let cache = &self.keeping.as_ref()?.cache;
+        let cache = self.cache.as_ref()?;
         let bytes = match cache.get(key, part) {
             Ok(bytes) => bytes?,
             Err(err) => {
@@ -767,8 +803,8 @@ impl<B: Bucket> Fetching<B> {
     fn keep(&self, key: &str, tail: &Tail, part: u64, bytes: &[u8]) {
         let size = tail.parts.frame.size();
         let offset = tail.parts.stored[part as usize].offset;
-        if let Some(keeping) = &self.keeping
-            && let Err(err) = keeping.cache.put(key, size, part, offset, bytes)
+        if let Some(cache) = &self.cache
+            && let Err(err) = cache.put(key, size, part, offset, bytes)
         {
             log::warn!("fxdax: keeping part {part} of {key} in the cache: {err}");
         }
@@ -777,14 +813,14 @@ impl<B: Bucket> Fetching<B> {
     /// The tail of the object at `key`: kept, or in flight, or fetched now, under a place in the
     /// budget.
     fn tail(self: &Arc<Self>, key: &str) -> Flight<Option<Arc<Tail>>> {
-        let mut tails = self.tails.lock().unwrap();
+        let mut tails = self.memory.tails.lock().unwrap();
         if let Some(tail) = tails.get(key) {
             return tail;
         }
         let (shared, key_owned, read) = (self.clone(), key.to_owned(), tails.next_read());
         let tail = async move {
             let fetched = shared.read_tail(&key_owned).await;
-            let mut tails = shared.tails.lock().unwrap();
+            let mut tails = shared.memory.tails.lock().unwrap();
             match &fetched {
                 Ok(Some((_, size))) => tails.settle(&key_owned, read, *size),
                 // What failed, or found the object gone, is not kept.
@@ -797,7 +833,7 @@ impl<B: Bucket> Fetching<B> {
         tail
     }
 
-    /// The tail of the object at `key`, if there is one, and the bytes it takes, as read: the
+    /// The tail of the object at `key`, if there is one, and the bytes it takes in memory: the
     /// cache's copy of it, or one read from the bucket, under a place in the budget, and kept in
     /// the cache then.
     async fn read_tail(&self, key: &str) -> Result<Option<(Arc<Tail>, u64)>, Error> {
@@ -812,14 +848,15 @@ impl<B: Bucket> Fetching<B> {
                 tail
             }
         };
-        let size = tail.bytes.len() as u64;
-        Ok(Some((Arc::new(Tail::of(key, tail)?), size)))
+        let tail = Tail::of(key, tail)?;
+        let size = tail.size();
+        Ok(Some((Arc::new(tail), size)))
     }
 
     /// The tail of the object at `key`, if the cache has it and it passes its checks: one that
     /// fails is dropped from the cache.
     fn kept_tail(&self, key: &str) -> Option<object::Tail> {
-        let cache = &self.keeping.as_ref()?.cache;
+        let cache = self.cache.as_ref()?;
         let bytes = match cache.get(key, Cache::TAIL) {
             Ok(bytes) => bytes?,
             Err(err) => {
@@ -843,8 +880,8 @@ impl<B: Bucket> Fetching<B> {
     fn keep_tail(&self, key: &str, tail: &object::Tail) {
         let size = tail.parts.frame.size();
         let offset = size - tail.bytes.len() as u64;
-        if let Some(keeping) = &self.keeping
-            && let Err(err) = keeping.cache.put(key, size, Cache::TAIL, offset, &tail.bytes)
+        if let Some(cache) = &self.cache
+            && let Err(err) = cache.put(key, size, Cache::TAIL, offset, &tail.bytes)
         {
             log::warn!("fxdax: keeping the tail of {key} in the cache: {err}");
         }
@@ -853,12 +890,12 @@ impl<B: Bucket> Fetching<B> {
     /// Forgets `tail`, kept as the tail of the object at `key`, if it still is: the object is read
     /// by its tail fetched anew. The cache's copy goes first, so that no read after finds it there.
     fn forget(&self, key: &str, tail: &Arc<Tail>) {
-        if let Some(keeping) = &self.keeping
-            && let Err(err) = keeping.cache.forget(key, Cache::TAIL)
+        if let Some(cache) = &self.cache
+            && let Err(err) = cache.forget(key, Cache::TAIL)
         {
             log::warn!("fxdax: dropping the tail of {key} from the cache: {err}");
         }
-        let mut tails = self.tails.lock().unwrap();
+        let mut tails = self.memory.tails.lock().unwrap();
         let kept = tails.kept.get(key).map(|kept| (kept.read, kept.flight.peek()));
         if let Some((read, Some(Ok(Some(kept))))) = kept
             && Arc::ptr_eq(kept, tail)
@@ -1094,7 +1131,7 @@ mod tests {
     fn reads_fetch_whole_parts() {
         let data = noise(2 * PART + 300);
         let bucket = bucket(&data);
-        let fetcher = Rc::new(Fetcher::new(bucket.clone(), limits(8), None));
+        let fetcher = Rc::new(Fetcher::new(bucket.clone(), limits(8), Memory::new(), None));
         let mut reads = Reads::new();
         let location = location(data.len() as u64);
         let read = reads.read(&fetcher, location.clone(), PART - 10, 20, Priority::Demand);
@@ -1120,7 +1157,7 @@ mod tests {
     fn reads_of_a_part_share_its_get() {
         let data = noise(PART);
         let bucket = bucket(&data);
-        let fetcher = Rc::new(Fetcher::new(bucket.clone(), limits(8), None));
+        let fetcher = Rc::new(Fetcher::new(bucket.clone(), limits(8), Memory::new(), None));
         let mut reads = Reads::new();
         let location = location(PART);
         let all: Vec<_> = (0..5)
@@ -1139,7 +1176,7 @@ mod tests {
     fn demand_goes_before_read_ahead_within_the_budget() {
         let data = noise(6 * PART);
         let bucket = bucket(&data);
-        let fetcher = Rc::new(Fetcher::new(bucket.clone(), limits(1), None));
+        let fetcher = Rc::new(Fetcher::new(bucket.clone(), limits(1), Memory::new(), None));
         let mut reads = Reads::new();
         let location = location(6 * PART);
         let first = reads.read(&fetcher, location.clone(), 0, 1, Priority::Demand);
@@ -1168,7 +1205,7 @@ mod tests {
     fn gets_no_read_waits_for_go() {
         let data = noise(3 * PART);
         let bucket = bucket(&data);
-        let fetcher = Rc::new(Fetcher::new(bucket.clone(), limits(1), None));
+        let fetcher = Rc::new(Fetcher::new(bucket.clone(), limits(1), Memory::new(), None));
         let mut reads = Reads::new();
         let location = location(3 * PART);
         reads.read(&fetcher, location.clone(), 0, 1, Priority::Demand);
@@ -1195,7 +1232,7 @@ mod tests {
     fn parts_failing_their_crcs_are_fetched_again_once() {
         let data = noise(PART + 100);
         let bucket = bucket(&data);
-        let fetcher = Rc::new(Fetcher::new(bucket.clone(), limits(8), None));
+        let fetcher = Rc::new(Fetcher::new(bucket.clone(), limits(8), Memory::new(), None));
         let mut reads = Reads::new();
         let location = location(PART + 100);
         let good = whole(&data);
@@ -1233,7 +1270,8 @@ mod tests {
         let bucket = bucket(&data);
         let dir = tempfile::tempdir().unwrap();
         let cache = Arc::new(Cache::new(dir.path(), 8 * PART, 0).unwrap());
-        let fetcher = Rc::new(Fetcher::new(bucket.clone(), limits(8), Some(cache.clone())));
+        let fetcher =
+            Rc::new(Fetcher::new(bucket.clone(), limits(8), Memory::new(), Some(cache.clone())));
         let mut reads = Reads::new();
         let read = reads.read(&fetcher, location(2 * PART), PART + 5, 10, Priority::Demand);
         assert_eq!(complete_all(&bucket, &mut reads).len(), 2);
@@ -1247,16 +1285,17 @@ mod tests {
     }
 
     /// A part kept that fails its CRC is dropped and fetched; fetched twice failing it, the second
-    /// time by its object's tail fetched anew, the read fails. Read by a fetcher of another of the
-    /// host's stores each time, which holds none of it in memory: the part, and its object's
-    /// tail, are in the cache only.
+    /// time by its object's tail fetched anew, the read fails. Read by a fetcher with a memory of
+    /// its own each time, which holds none of it: the part, and its object's tail, are in the
+    /// cache only.
     #[test]
     fn parts_kept_failing_their_crcs_are_fetched() {
         let data = noise(PART);
         let bucket = bucket(&data);
         let dir = tempfile::tempdir().unwrap();
         let cache = Arc::new(Cache::new(dir.path(), 8 * PART, 0).unwrap());
-        let fetcher = || Rc::new(Fetcher::new(bucket.clone(), limits(8), Some(cache.clone())));
+        let fetcher =
+            || Rc::new(Fetcher::new(bucket.clone(), limits(8), Memory::new(), Some(cache.clone())));
         let mut reads = Reads::new();
         reads.read(&fetcher(), location(PART), 0, 10, Priority::Demand);
         complete_all(&bucket, &mut reads);
@@ -1296,7 +1335,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cache = Arc::new(Cache::new(dir.path(), 64 * PART, 0).unwrap());
         let mut reads = Reads::new();
-        let fetcher = Fetcher::new(bucket.clone(), limits(8), Some(cache.clone()));
+        let fetcher = Fetcher::new(bucket.clone(), limits(8), Memory::new(), Some(cache.clone()));
         let fetcher = Rc::new(fetcher.reading_ahead(reads.spawn()));
         let location = location(12 * PART);
         let get = |part: u64| format!("get {KEY} {}..{}", part * PART, (part + 1) * PART);
@@ -1328,7 +1367,8 @@ mod tests {
         assert_eq!(stored.encoding, extent_frame::Encoding::Zstd);
         let dir = tempfile::tempdir().unwrap();
         let cache = Arc::new(Cache::new(dir.path(), 8 * PART, 0).unwrap());
-        let fetcher = Rc::new(Fetcher::new(bucket.clone(), limits(8), Some(cache.clone())));
+        let fetcher =
+            Rc::new(Fetcher::new(bucket.clone(), limits(8), Memory::new(), Some(cache.clone())));
         let mut reads = Reads::new();
         let read = reads.read(&fetcher, location(2 * PART), PART + 5, 10, Priority::Demand);
         let range = stored.range();
@@ -1374,7 +1414,7 @@ mod tests {
         let data = pattern(3000);
         let bucket = holding_moved(&data);
         compacted(&bucket, &data);
-        let fetcher = Rc::new(Fetcher::new(bucket.clone(), limits(8), None));
+        let fetcher = Rc::new(Fetcher::new(bucket.clone(), limits(8), Memory::new(), None));
         assert_eq!(read_moved(&bucket, &fetcher), Some(Ok(data[1100..1150].to_vec())));
     }
 
@@ -1406,7 +1446,7 @@ mod tests {
         let data = noise(3000);
         let bucket = holding_moved(&data);
         compacted_and_recreated(&bucket, &data);
-        let fetcher = Rc::new(Fetcher::new(bucket.clone(), limits(8), None));
+        let fetcher = Rc::new(Fetcher::new(bucket.clone(), limits(8), Memory::new(), None));
         assert_eq!(read_moved(&bucket, &fetcher), Some(Ok(data[1100..1150].to_vec())));
     }
 
@@ -1416,23 +1456,24 @@ mod tests {
     fn reads_by_tails_kept_follow_moves_past_objects_recreated_at_their_keys() {
         let data = noise(3000);
         let bucket = holding_moved(&data);
-        let fetcher = Rc::new(Fetcher::new(bucket.clone(), limits(8), None));
+        let fetcher = Rc::new(Fetcher::new(bucket.clone(), limits(8), Memory::new(), None));
         assert_eq!(read_moved(&bucket, &fetcher), Some(Ok(data[1100..1150].to_vec())));
         compacted_and_recreated(&bucket, &data);
         assert_eq!(read_moved(&bucket, &fetcher), Some(Ok(data[1100..1150].to_vec())));
     }
 
-    /// TASK-92.22: so does a read by a fetcher of another of the host's stores, which finds the
-    /// tail of the object deleted in the cache, but not the part holding the extent: the part of
-    /// the object recreated fails the tail's CRC, and the tail, forgotten in the cache too, is
-    /// read anew, from the bucket.
+    /// TASK-92.22: so does a read by a fetcher whose memory holds none of the object, as once the
+    /// host's let it go, which finds the tail of the object deleted in the cache, but not the part
+    /// holding the extent: the part of the object recreated fails the tail's CRC, and the tail,
+    /// forgotten in the cache too, is read anew, from the bucket.
     #[test]
     fn reads_by_tails_kept_in_the_cache_follow_moves_past_objects_recreated_at_their_keys() {
         let data = noise(3000);
         let bucket = holding_moved(&data);
         let dir = tempfile::tempdir().unwrap();
         let cache = Arc::new(Cache::new(dir.path(), 8 * PART, 0).unwrap());
-        let fetcher = || Rc::new(Fetcher::new(bucket.clone(), limits(8), Some(cache.clone())));
+        let fetcher =
+            || Rc::new(Fetcher::new(bucket.clone(), limits(8), Memory::new(), Some(cache.clone())));
         assert_eq!(read_moved(&bucket, &fetcher()), Some(Ok(data[1100..1150].to_vec())));
         cache.forget(KEY, 0).unwrap();
         compacted_and_recreated(&bucket, &data);
@@ -1463,7 +1504,7 @@ mod tests {
         let data = noise(PART + 3000);
         let at = (PART + 1000, 1000);
         let bucket = holding(segment(&data, vec![(EXTENT, at.0, at.1)]));
-        let fetcher = Rc::new(Fetcher::new(bucket.clone(), limits(8), None));
+        let fetcher = Rc::new(Fetcher::new(bucket.clone(), limits(8), Memory::new(), None));
         let location = Location { key: KEY.into(), offset: at.0, len: at.1 };
         let read = || {
             let mut reads = Reads::new();
@@ -1523,7 +1564,7 @@ mod tests {
     fn data_is_read_by_the_parts_a_range_touches() {
         let data = pattern(2 * PART + 100);
         let bucket = bucket(&data);
-        let fetcher = Fetcher::new(bucket.clone(), limits(8), None);
+        let fetcher = Fetcher::new(bucket.clone(), limits(8), Memory::new(), None);
         let tail = bucket.served(fetcher.shared.tail(KEY)).0.unwrap().unwrap();
         let read = |range| bucket.served(fetcher.data(KEY, &tail, range, Priority::Demand));
 
@@ -1553,7 +1594,7 @@ mod tests {
         block_on(Direct(bucket.clone()).put(&checkpoint, bytes.clone(), PutMode::Create)).unwrap();
         let dir = tempfile::tempdir().unwrap();
         let cache = Arc::new(Cache::new(dir.path(), 8 * PART, 0).unwrap());
-        let fetcher = Fetcher::new(bucket.clone(), limits(8), Some(cache));
+        let fetcher = Fetcher::new(bucket.clone(), limits(8), Memory::new(), Some(cache));
         let lookup = |key: &str, extent| bucket.served(fetcher.lookup(key, extent));
 
         let stored = extent_frame::Parts::of(&bytes).unwrap().stored[0].range();
@@ -1564,7 +1605,7 @@ mod tests {
         assert_eq!(lookup(&checkpoint, ExtentId::new(1, 0)), (Ok(None), Vec::new()));
 
         block_on(Direct(bucket.clone()).delete(&checkpoint)).unwrap();
-        let fetcher = Fetcher::new(bucket.clone(), limits(8), None);
+        let fetcher = Fetcher::new(bucket.clone(), limits(8), Memory::new(), None);
         let (gone, _) = bucket.served(fetcher.lookup(&checkpoint, EXTENT));
         assert_eq!(gone, Err(Error::Lost(checkpoint)));
         block_on(Direct(bucket.clone()).put(KEY, whole(&noise(100)), PutMode::Create)).unwrap();
@@ -1577,7 +1618,7 @@ mod tests {
     fn reads_ending_with_a_part_fetch_none_after_it() {
         let data = noise(2 * PART + 300);
         let bucket = bucket(&data);
-        let fetcher = Rc::new(Fetcher::new(bucket.clone(), limits(8), None));
+        let fetcher = Rc::new(Fetcher::new(bucket.clone(), limits(8), Memory::new(), None));
         let mut reads = Reads::new();
         let read = reads.read(&fetcher, location(2 * PART + 300), PART - 10, 10, Priority::Demand);
         assert_eq!(
@@ -1604,7 +1645,7 @@ mod tests {
         let table = frame.table();
         assert!(table.end - table.start + layout::TRAILER > TAIL);
         let bucket = holding(bytes);
-        let fetcher = Rc::new(Fetcher::new(bucket.clone(), limits(8), None));
+        let fetcher = Rc::new(Fetcher::new(bucket.clone(), limits(8), Memory::new(), None));
         let mut reads = Reads::new();
         let at = parts * PART - 10;
         let read = reads.read(&fetcher, location(parts * PART), at, 10, Priority::Demand);
@@ -1625,7 +1666,7 @@ mod tests {
         let mut longer = vec![0; 10];
         longer.extend_from_slice(&whole(&data));
         block_on(Direct(bucket.clone()).put(KEY, longer, PutMode::Overwrite)).unwrap();
-        let fetcher = Rc::new(Fetcher::new(bucket.clone(), limits(8), None));
+        let fetcher = Rc::new(Fetcher::new(bucket.clone(), limits(8), Memory::new(), None));
         let mut reads = Reads::new();
         let read = reads.read(&fetcher, location(100), 0, 10, Priority::Demand);
         complete_all(&bucket, &mut reads);
@@ -1641,7 +1682,7 @@ mod tests {
         let bucket = bucket(&data);
         let other = "segments/0000000000000001/0000000000000001";
         block_on(Direct(bucket.clone()).put(other, whole(&data), PutMode::Create)).unwrap();
-        let fetcher = Rc::new(Fetcher::new(bucket.clone(), limits(8), None));
+        let fetcher = Rc::new(Fetcher::new(bucket.clone(), limits(8), Memory::new(), None));
         let mut reads = Reads::new();
         let mut read = |key: &str| {
             let location = Location { key: key.into(), offset: 0, len: 100 };
@@ -1661,7 +1702,7 @@ mod tests {
         // Reads in flight of nearly as many bytes as are kept; this one's tail read again, used
         // last; then another read in flight: the other's tail, used least recently, goes, then
         // the first read in flight.
-        let kept = |key: &str| fetcher.shared.tails.lock().unwrap().kept.contains_key(key);
+        let kept = |key: &str| fetcher.shared.memory.tails.lock().unwrap().kept.contains_key(key);
         let key = |number: u64| format!("segments/0000000000000002/{number:016x}");
         let reading = TAILS / TAIL;
         for number in 0..reading - 1 {
@@ -1688,7 +1729,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cache = Arc::new(Cache::new(dir.path(), 64 * PART, 0).unwrap());
         let mut reads = Reads::new();
-        let fetcher = Fetcher::new(bucket.clone(), limits(8), Some(cache.clone()));
+        let fetcher = Fetcher::new(bucket.clone(), limits(8), Memory::new(), Some(cache.clone()));
         let fetcher = Rc::new(fetcher.reading_ahead(reads.spawn()));
         let location = location(4 * PART);
         let parts = extent_frame::Parts::of(&whole(&data)).unwrap();
@@ -1728,7 +1769,8 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let cache = Arc::new(Cache::new(dir.path(), 2 * LEN, 0).unwrap());
             let mut reads = Reads::new();
-            let fetcher = Fetcher::new(bucket.clone(), limits(64), Some(cache.clone()));
+            let fetcher =
+                Fetcher::new(bucket.clone(), limits(64), Memory::new(), Some(cache.clone()));
             let fetcher = Rc::new(fetcher.reading_ahead(reads.spawn()));
             let location = location(LEN);
             let started = std::time::Instant::now();
@@ -1743,16 +1785,17 @@ mod tests {
         }
     }
 
-    /// TASK-92.22: a fetcher reading parts another fetcher of the host kept in their cache, as a
-    /// fork's store's reads those its base's kept, reads them, and the tails of their objects,
-    /// from it: it asks the bucket for nothing.
+    /// TASK-92.22: a fetcher reading parts another kept in the cache they share, which its memory
+    /// holds not, as once the host's memory let them go, reads them, and the tails of their
+    /// objects, from the cache: it asks the bucket for nothing.
     #[test]
     fn fetchers_sharing_a_cache_read_the_tails_kept_there() {
         let data = noise(2 * PART);
         let bucket = bucket(&data);
         let dir = tempfile::tempdir().unwrap();
         let cache = Arc::new(Cache::new(dir.path(), 8 * PART, 0).unwrap());
-        let fetcher = || Rc::new(Fetcher::new(bucket.clone(), limits(8), Some(cache.clone())));
+        let fetcher =
+            || Rc::new(Fetcher::new(bucket.clone(), limits(8), Memory::new(), Some(cache.clone())));
         let mut reads = Reads::new();
         let want = Some(Ok(data[(PART + 5) as usize..][..10].to_vec()));
         let read = reads.read(&fetcher(), location(2 * PART), PART + 5, 10, Priority::Demand);
@@ -1780,7 +1823,8 @@ mod tests {
         }
         let dir = tempfile::tempdir().unwrap();
         let cache = Arc::new(Cache::new(dir.path(), 64 * PART, 0).unwrap());
-        let fetcher = Rc::new(Fetcher::new(bucket.clone(), limits(8), Some(cache.clone())));
+        let fetcher =
+            Rc::new(Fetcher::new(bucket.clone(), limits(8), Memory::new(), Some(cache.clone())));
         let mut reads = Reads::new();
         let mut read_all = || -> usize {
             let mut asked = 0;
@@ -1796,6 +1840,103 @@ mod tests {
         assert_eq!(read_all(), 0);
     }
 
+    /// The bytes of parts, and of tails, `fetchers` hold in memory, each memory they keep them in
+    /// counted once.
+    fn held(fetchers: &[Rc<Fetcher<SimBucket>>]) -> (u64, u64) {
+        let mut counted = std::collections::HashSet::new();
+        let memories = fetchers.iter().map(|fetcher| &fetcher.shared.memory);
+        let memories = memories.filter(|memory| counted.insert(Arc::as_ptr(memory)));
+        memories.fold((0, 0), |(parts, tails), memory| {
+            let held = (memory.recent.lock().unwrap().bytes, memory.tails.lock().unwrap().bytes);
+            (parts + held.0, tails + held.1)
+        })
+    }
+
+    /// `count` fetchers of one host, as its stores' are, sharing its memory and `cache`.
+    fn host(
+        bucket: &Arc<SimBucket>,
+        cache: &Arc<Cache>,
+        count: usize,
+    ) -> Vec<Rc<Fetcher<SimBucket>>> {
+        let memory = Memory::new();
+        let fetcher =
+            || Fetcher::new(bucket.clone(), limits(8), memory.clone(), Some(cache.clone()));
+        (0..count).map(|_| Rc::new(fetcher())).collect()
+    }
+
+    /// TASK-92.21: a host's fetchers, one for each of its stores, keep no more than [`RECENT`]
+    /// bytes of parts in memory in all, however many of them there are: here four, each reading
+    /// 24 MiB of an object of its own.
+    #[test]
+    fn fetchers_of_a_host_hold_no_more_parts_in_memory_than_its_bound() {
+        const PARTS: u64 = 24;
+        let data = noise(PARTS * PART);
+        let bucket = SimBucket::new();
+        let key = |object: u64| format!("segments/0000000000000001/{object:016x}");
+        for object in 0..4 {
+            block_on(Direct(bucket.clone()).put(&key(object), whole(&data), PutMode::Create))
+                .unwrap();
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let cache = Arc::new(Cache::new(dir.path(), 8 * PART, 0).unwrap());
+        let fetchers = host(&bucket, &cache, 4);
+        let mut reads = Reads::new();
+        for (object, fetcher) in (0..).zip(&fetchers) {
+            let location = Location { key: key(object), offset: 0, len: PARTS * PART };
+            for part in 0..PARTS {
+                let read = reads.read(fetcher, location.clone(), part * PART, 10, Priority::Demand);
+                complete_all(&bucket, &mut reads);
+                let at = (part * PART) as usize;
+                assert_eq!(reads.result(read), Some(Ok(data[at..at + 10].to_vec())));
+            }
+        }
+        let (parts, _) = held(&fetchers);
+        assert!(parts <= RECENT, "{} MiB of parts held, past {} MiB", parts >> 20, RECENT >> 20);
+    }
+
+    /// TASK-92.22: a host's fetchers keep no more than [`TAILS`] bytes of tails in memory in all,
+    /// however many of them there are: here two, each reading [`TAILS`] bytes of them, as reads in
+    /// flight, which count the bytes they read at first.
+    #[test]
+    fn fetchers_of_a_host_hold_no_more_tails_in_memory_than_its_bound() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = Arc::new(Cache::new(dir.path(), 8 * PART, 0).unwrap());
+        let fetchers = host(&SimBucket::new(), &cache, 2);
+        for (fetcher, branch) in fetchers.iter().zip(2..) {
+            for number in 0..TAILS / TAIL {
+                drop(fetcher.shared.tail(&format!("segments/{branch:016x}/{number:016x}")));
+            }
+        }
+        let (_, tails) = held(&fetchers);
+        assert!(tails <= TAILS, "{} MiB of tails held, past {} MiB", tails >> 20, TAILS >> 20);
+    }
+
+    /// TASK-92.21, TASK-92.22: a fetcher of another of the host's stores, as a fork's store's of
+    /// its base's, reads what one read last from the host's memory: the parts, and their object's
+    /// tail, the cache's copies of them removed here, so that reading them anew would show as GETs.
+    #[test]
+    fn fetchers_of_a_host_share_what_they_hold_in_memory() {
+        let data = pattern(2 * PART);
+        let bucket = bucket(&data);
+        let dir = tempfile::tempdir().unwrap();
+        let cache = Arc::new(Cache::new(dir.path(), 8 * PART, 0).unwrap());
+        let fetchers = host(&bucket, &cache, 2);
+        let (base, fork) = (&fetchers[0], &fetchers[1]);
+        let mut reads = Reads::new();
+        let want = Some(Ok(data[(PART - 5) as usize..][..10].to_vec()));
+        let read = reads.read(base, location(2 * PART), PART - 5, 10, Priority::Demand);
+        assert_eq!(complete_all(&bucket, &mut reads).len(), 3);
+        assert_eq!(reads.result(read), want);
+        std::fs::remove_file(cache.path(KEY)).unwrap();
+
+        let read = reads.read(fork, location(2 * PART), PART - 5, 10, Priority::Demand);
+        assert_eq!(complete_all(&bucket, &mut reads), Vec::<String>::new());
+        assert_eq!(reads.result(read), want);
+        // One copy of the parts, each as stored and unpacked.
+        let stored = extent_frame::Parts::of(&whole(&data)).unwrap().stored;
+        assert_eq!(held(&fetchers).0, stored.iter().map(|stored| stored.len + PART).sum::<u64>());
+    }
+
     /// Reads within the part the last read ended in go on from it, and read further ahead; a read
     /// elsewhere, after it or before, reads only the part after it ahead.
     #[test]
@@ -1805,7 +1946,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cache = Arc::new(Cache::new(dir.path(), 64 * PART, 0).unwrap());
         let mut reads = Reads::new();
-        let fetcher = Fetcher::new(bucket.clone(), limits(8), Some(cache));
+        let fetcher = Fetcher::new(bucket.clone(), limits(8), Memory::new(), Some(cache));
         let fetcher = Rc::new(fetcher.reading_ahead(reads.spawn()));
         let location = location(12 * PART);
         let get = |part: u64| format!("get {KEY} {}..{}", part * PART, (part + 1) * PART);
@@ -1829,7 +1970,8 @@ mod tests {
         let bucket = SimBucket::new();
         let dir = tempfile::tempdir().unwrap();
         let cache = Arc::new(Cache::new(dir.path(), PART, 0).unwrap());
-        let fetcher = Fetcher::new(bucket, limits(8), Some(cache)).reading_ahead(reads.spawn());
+        let fetcher = Fetcher::new(bucket, limits(8), Memory::new(), Some(cache))
+            .reading_ahead(reads.spawn());
         let streams = || fetcher.streams.lock().unwrap().len();
         let key = |number: usize| format!("segments/0000000000000001/{number:016x}");
         for number in 0..STREAMS {

@@ -266,6 +266,12 @@ struct Shared {
 static BUDGET: std::sync::LazyLock<Arc<Budget>> =
     std::sync::LazyLock::new(|| Budget::new(Limits { requests: 64, bytes: 64 << 20 }));
 
+/// What a host's stores' reads keep in memory, objects' tails and the parts fetched last: once for
+/// the host, however many of its stores read them, as the forks of one base read its parts, within
+/// bounds that hold for the host, not for each store (TASK-92.21, TASK-92.22).
+static MEMORY: std::sync::LazyLock<Arc<fetch::Memory>> =
+    std::sync::LazyLock::new(fetch::Memory::new);
+
 /// The PUTs of objects a host's stores upload, each holding its object's bytes while it goes:
 /// bounded in bytes, so that a host whose stores are far behind, object storage out of reach for a
 /// while, holds no more than these at once, whatever their number (TASK-79.19); and in number, as
@@ -405,8 +411,8 @@ impl Remote {
         let cache = options.cache.clone();
         let runs = runtime.clone();
         let spawn: fetch::Spawn = Arc::new(move |future| drop(runs.spawn(future)));
-        let parts = fetch::Fetcher::new(bucket.clone(), BUDGET.clone(), cache).reading_ahead(spawn);
-        let parts = Arc::new(parts);
+        let parts = fetch::Fetcher::new(bucket.clone(), BUDGET.clone(), MEMORY.clone(), cache);
+        let parts = Arc::new(parts.reading_ahead(spawn));
         let fetcher = Arc::new(Fetcher { runtime, parts, writer: Default::default() });
         let shared = Arc::new(Shared {
             store,
