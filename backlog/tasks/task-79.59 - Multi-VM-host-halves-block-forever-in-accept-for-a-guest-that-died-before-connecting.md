@@ -3,9 +3,11 @@ id: TASK-79.59
 title: >-
   Multi-VM host halves block forever in accept() for a guest that died before
   connecting
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@review-session'
 created_date: '2026-10-21 21:00'
+updated_date: '2026-10-23 16:10'
 labels:
   - review-2026-10-21
 dependencies: []

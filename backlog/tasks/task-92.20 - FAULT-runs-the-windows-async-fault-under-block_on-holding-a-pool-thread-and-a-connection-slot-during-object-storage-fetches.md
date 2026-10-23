@@ -3,9 +3,11 @@ id: TASK-92.20
 title: >-
   FAULT runs the window's async fault under block_on, holding a pool thread and
   a connection slot during object-storage fetches
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@review-session'
 created_date: '2026-10-22 21:06'
+updated_date: '2026-10-23 16:10'
 labels:
   - review-2026-10-21
 dependencies: []

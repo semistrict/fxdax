@@ -3,9 +3,11 @@ id: TASK-92.5
 title: >-
   Restores and forks of a store no connection holds reopen, re-attach and close
   it for every fork, serialized on a pool thread
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@review-session'
 created_date: '2026-10-22 21:06'
+updated_date: '2026-10-23 16:10'
 labels:
   - review-2026-10-21
 dependencies: []

@@ -1,9 +1,11 @@
 ---
 id: TASK-79.84
 title: An OPEN with `from` opens a leftover fork handle instead of forking
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@review-session'
 created_date: '2026-10-23 09:16'
+updated_date: '2026-10-23 16:10'
 labels:
   - review-2026-10-21
 dependencies: []

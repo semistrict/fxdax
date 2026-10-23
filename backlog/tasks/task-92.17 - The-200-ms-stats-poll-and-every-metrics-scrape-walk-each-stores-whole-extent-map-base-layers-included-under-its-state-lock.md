@@ -3,9 +3,11 @@ id: TASK-92.17
 title: >-
   The 200 ms stats poll and every metrics scrape walk each store's whole extent
   map, base layers included, under its state lock
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@review-session'
 created_date: '2026-10-22 21:06'
+updated_date: '2026-10-23 16:10'
 labels:
   - review-2026-10-21
 dependencies: []

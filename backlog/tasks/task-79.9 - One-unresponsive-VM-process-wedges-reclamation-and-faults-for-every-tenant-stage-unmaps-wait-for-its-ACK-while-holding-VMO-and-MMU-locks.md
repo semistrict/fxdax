@@ -3,9 +3,11 @@ id: TASK-79.9
 title: >-
   One unresponsive VM process wedges reclamation and faults for every tenant:
   stage unmaps wait for its ACK while holding VMO and MMU locks
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@review-session'
 created_date: '2026-10-21 20:58'
+updated_date: '2026-10-23 16:10'
 labels:
   - review-2026-10-21
 dependencies: []

@@ -3,9 +3,11 @@ id: TASK-79.27
 title: >-
   The metrics HTTP server reads request lines with no length limit, one
   connection at a time
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@review-session'
 created_date: '2026-10-21 20:58'
+updated_date: '2026-10-23 16:10'
 labels:
   - review-2026-10-21
 dependencies: []

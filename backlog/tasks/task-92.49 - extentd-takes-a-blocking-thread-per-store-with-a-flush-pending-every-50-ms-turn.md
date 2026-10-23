@@ -3,9 +3,11 @@ id: TASK-92.49
 title: >-
   extentd takes a blocking thread per store with a flush pending, every 50 ms
   turn
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@review-session'
 created_date: '2026-10-23 13:18'
+updated_date: '2026-10-23 16:10'
 labels:
   - review-2026-10-21
 dependencies: []

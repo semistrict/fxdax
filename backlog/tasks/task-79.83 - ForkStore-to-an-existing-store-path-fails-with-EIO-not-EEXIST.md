@@ -1,9 +1,11 @@
 ---
 id: TASK-79.83
 title: 'ForkStore to an existing store path fails with EIO, not EEXIST'
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@review-session'
 created_date: '2026-10-23 09:16'
+updated_date: '2026-10-23 16:10'
 labels:
   - review-2026-10-21
 dependencies: []

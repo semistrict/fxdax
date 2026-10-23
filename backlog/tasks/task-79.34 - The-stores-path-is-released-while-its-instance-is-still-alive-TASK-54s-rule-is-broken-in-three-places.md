@@ -3,9 +3,11 @@ id: TASK-79.34
 title: >-
   The store's path is released while its instance is still alive: TASK-54's rule
   is broken in three places
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@review-session'
 created_date: '2026-10-21 20:58'
+updated_date: '2026-10-23 16:10'
 labels:
   - review-2026-10-21
 dependencies: []

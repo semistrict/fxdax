@@ -1,9 +1,11 @@
 ---
 id: TASK-79.43
 title: A MAPPINGS reply over MAX_PAYLOAD tears down the connection and kills the VM
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@review-session'
 created_date: '2026-10-21 20:58'
+updated_date: '2026-10-23 16:10'
 labels:
   - review-2026-10-21
 dependencies: []
