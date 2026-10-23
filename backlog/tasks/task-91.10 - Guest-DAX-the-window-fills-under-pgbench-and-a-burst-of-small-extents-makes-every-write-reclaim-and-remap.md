@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@main-session'
 created_date: '2026-10-22 22:01'
-updated_date: '2026-10-23 00:03'
+updated_date: '2026-10-23 09:50'
 labels: []
 dependencies: []
 parent_task_id: TASK-91
@@ -38,4 +38,6 @@ Measured with a guest kernel logging the window every 5 s (pgbench -s 50 on fxfs
 
 <!-- SECTION:NOTES:BEGIN -->
 a8e2e02c: regions have the window's last half to themselves, reclaiming nothing (full: -EAGAIN, the piece mapped in a range's own space). Fragmentation was the cause, not fullness: with one pool the largest free run stayed ~2 MiB with 180-590 MiB free; failed allocations ~300,000 in a run, ~2,000 after. A quarter held run 3 but slowed the load to 35 s; half keeps it at 23-24 s. GCE, full guest suite passes (defaults, both pgbench, crash, follow, daemon-lost, live-fork); DAX pgbench 1,035 / 862 / 807 tps (was 1,002 / 859 / 29-171). AC2 not met: run 3 is 78% of run 1, the fall being between runs 1 and 2 (seen with every window layout; without DAX the runs hold ~1,000), still to explain.
+
+Round 5 (sandbox team, a8e2e02, 2026-10-23): no collapse in 20 runs; DAX tps still falls 27-31% over five runs at 25 ms and 0 ms alike (1,081 / 856 / 793 / 744 / 742). MAP requests flat at 79-87k a run, so MAPs per transaction rise from ~1.3 to ~1.9; MAP time 12 to 15 s; Postgres user time -8.6 s, guest system time +4 s; UNMAPs 1-4k a run (not the window collapse). Their ask: find why MAPs per transaction rise; done when five DAX runs at 25 ms hold within 10% of the first.
 <!-- SECTION:NOTES:END -->
