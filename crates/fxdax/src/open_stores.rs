@@ -80,20 +80,39 @@ pub(crate) trait Holder: Send + Sync {
 /// The stores held, by the paths that name them (`server::store_key`). A holder of none is the
 /// daemon's own, which goes once its work is done.
 pub(crate) struct Paths<H> {
-    held: Mutex<HashMap<PathBuf, Weak<H>>>,
-    /// Notified as a store's holder lets it go.
-    released: Condvar,
-    /// Likewise, for what waits to hold a store without a thread ([`Paths::hold_async`]).
-    released_async: event_listener::Event,
+    held: Mutex<Held<H>>,
+}
+
+/// The stores' holders, and what waits to hold them.
+struct Held<H> {
+    holders: HashMap<PathBuf, Weak<H>>,
+    /// Those waiting to hold a store, by its key: woken as its holder lets it go, and none of
+    /// another's, as every store's were, at each store's letting go (TASK-92.5). From the first
+    /// that waits until then.
+    waiting: HashMap<PathBuf, Arc<Released>>,
+}
+
+/// What says a store is let go, to those waiting to hold it.
+struct Released {
+    /// To those waiting on a thread ([`Paths::hold`]).
+    threads: Condvar,
+    /// To those waiting without one ([`Paths::hold_async`]).
+    tasks: event_listener::Event,
+}
+
+impl<H> Held<H> {
+    /// What says the store `key` names is let go.
+    fn released(&mut self, key: &Path) -> Arc<Released> {
+        let released = self.waiting.entry(key.to_owned()).or_insert_with(|| {
+            Arc::new(Released { threads: Condvar::new(), tasks: event_listener::Event::new() })
+        });
+        released.clone()
+    }
 }
 
 impl<H: Holder> Paths<H> {
     pub fn new() -> Self {
-        Self {
-            held: Mutex::new(HashMap::new()),
-            released: Condvar::new(),
-            released_async: event_listener::Event::new(),
-        }
+        Self { held: Mutex::new(Held { holders: HashMap::new(), waiting: HashMap::new() }) }
     }
 
     /// Has `holder` hold the store `key` names: once its holder, if it has one, lets it go, if
@@ -102,23 +121,24 @@ impl<H: Holder> Paths<H> {
     pub fn hold(&self, key: &Path, holder: Weak<H>, wait: Option<Duration>) -> Result<(), Errno> {
         let deadline = wait.map(|wait| Instant::now() + wait);
         let mut held = self.held.lock().unwrap();
-        while let Some(other) = held.get(key).filter(|_| rules().one_holder) {
+        while let Some(other) = held.holders.get(key).filter(|_| rules().one_holder) {
             let going = other.upgrade().is_none_or(|other| other.going());
             if !going {
                 return Err(Errno::EBUSY);
             }
+            let released = held.released(key);
             held = match deadline {
-                None => self.released.wait(held).unwrap(),
+                None => released.threads.wait(held).unwrap(),
                 Some(deadline) => {
                     let left = deadline.saturating_duration_since(Instant::now());
                     if left.is_zero() {
                         return Err(Errno::EBUSY);
                     }
-                    self.released.wait_timeout(held, left).unwrap().0
+                    released.threads.wait_timeout(held, left).unwrap().0
                 }
             };
         }
-        held.insert(key.to_owned(), holder);
+        held.holders.insert(key.to_owned(), holder);
         Ok(())
     }
 
@@ -134,14 +154,14 @@ impl<H: Holder> Paths<H> {
         loop {
             let released = {
                 let mut held = self.held.lock().unwrap();
-                let Some(other) = held.get(key).filter(|_| rules().one_holder) else {
-                    held.insert(key.to_owned(), holder);
+                let Some(other) = held.holders.get(key).filter(|_| rules().one_holder) else {
+                    held.holders.insert(key.to_owned(), holder);
                     return Ok(());
                 };
                 if !other.upgrade().is_none_or(|other| other.going()) {
                     return Err(Errno::EBUSY);
                 }
-                self.released_async.listen()
+                held.released(key).tasks.listen()
             };
             self.released_within(deadline, released).await?;
         }
@@ -159,14 +179,14 @@ impl<H: Holder> Paths<H> {
         loop {
             let released = {
                 let mut held = self.held.lock().unwrap();
-                let Some(other) = held.get(key) else {
-                    held.insert(key.to_owned(), Weak::new());
+                let Some(other) = held.holders.get(key) else {
+                    held.holders.insert(key.to_owned(), Weak::new());
                     return Ok(None);
                 };
                 if let Some(holder) = other.upgrade().filter(|holder| !holder.going()) {
                     return Ok(Some(holder));
                 }
-                self.released_async.listen()
+                held.released(key).tasks.listen()
             };
             self.released_within(deadline, released).await?;
         }
@@ -187,23 +207,28 @@ impl<H: Holder> Paths<H> {
         within(left, released).await.ok_or(Errno::EBUSY)
     }
 
-    /// Lets the store `key` names go, which the next waiting to hold it then may.
+    /// Lets the store `key` names go, which the next waiting to hold it then may: those waiting
+    /// for it alone are woken.
     pub fn release(&self, key: &Path) {
-        self.held.lock().unwrap().remove(key);
-        if rules().release_wakes {
-            self.released.notify_all();
-            self.released_async.notify(usize::MAX);
+        let mut held = self.held.lock().unwrap();
+        held.holders.remove(key);
+        if rules().release_wakes
+            && let Some(released) = held.waiting.remove(key)
+        {
+            released.threads.notify_all();
+            released.tasks.notify(usize::MAX);
         }
     }
 
     /// How many stores holders hold: not the daemon's.
     pub fn held_by_holders(&self) -> usize {
-        self.held.lock().unwrap().values().filter(|holder| holder.upgrade().is_some()).count()
+        let held = self.held.lock().unwrap();
+        held.holders.values().filter(|holder| holder.upgrade().is_some()).count()
     }
 
     /// The connection holding the store `key` names, if one does.
     pub fn holder(&self, key: &Path) -> Option<Arc<H>> {
-        self.held.lock().unwrap().get(key).and_then(Weak::upgrade)
+        self.held.lock().unwrap().holders.get(key).and_then(Weak::upgrade)
     }
 
     /// The connection holding the store `key` names, if one does; or, if none does, the daemon
@@ -211,15 +236,21 @@ impl<H: Holder> Paths<H> {
     /// daemon's: one going would carry out no request of its guest's, which is gone (TASK-79.34).
     pub fn holder_or_hold(&self, key: &Path) -> Result<Option<Arc<H>>, Errno> {
         let mut held = self.held.lock().unwrap();
-        match held.get(key) {
+        match held.holders.get(key) {
             Some(holder) => {
                 Ok(Some(holder.upgrade().filter(|holder| !holder.going()).ok_or(Errno::EBUSY)?))
             }
             None => {
-                held.insert(key.to_owned(), Weak::new());
+                held.holders.insert(key.to_owned(), Weak::new());
                 Ok(None)
             }
         }
+    }
+
+    /// How many stores those waiting to hold wait for.
+    #[cfg(all(test, not(feature = "shuttle")))]
+    fn waited_for(&self) -> usize {
+        self.held.lock().unwrap().waiting.len()
     }
 }
 
@@ -373,6 +404,34 @@ mod tests {
         assert_eq!(paths.holder_or_hold(key).err(), Some(Errno::EBUSY));
         paths.release(key);
         assert!(matches!(paths.holder_or_hold(key), Ok(None)));
+    }
+
+    /// TASK-92.5: a store let go wakes those waiting to hold it, whose wait goes with it: those
+    /// waiting for another store wait on.
+    #[test]
+    fn releases_wake_those_waiting_for_their_store() {
+        let paths = Paths::new();
+        let going = connection(true);
+        let (first, second) = (Path::new("first"), Path::new("second"));
+        paths.hold(first, Arc::downgrade(&going), None).unwrap();
+        paths.hold(second, Arc::downgrade(&going), None).unwrap();
+        let (ours, theirs) = (connection(false), connection(false));
+        let wait = Duration::from_secs(60);
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+        runtime.block_on(async {
+            let mut holding_first =
+                std::pin::pin!(paths.hold_async(first, Arc::downgrade(&ours), wait));
+            let mut holding_second =
+                std::pin::pin!(paths.hold_async(second, Arc::downgrade(&theirs), wait));
+            assert!(futures::poll!(&mut holding_first).is_pending());
+            assert!(futures::poll!(&mut holding_second).is_pending());
+            assert_eq!(paths.waited_for(), 2);
+            paths.release(first);
+            assert_eq!(paths.waited_for(), 1);
+            assert_eq!(holding_first.await, Ok(()));
+            assert!(futures::poll!(&mut holding_second).is_pending());
+        });
+        assert!(Arc::ptr_eq(&paths.holder(first).unwrap(), &ours));
     }
 
     /// The stores holders hold are counted, not the daemon's, nor those of holders gone.
