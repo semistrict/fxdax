@@ -833,8 +833,11 @@ impl ExtentStore {
         {
             // Leave no fork its branch doesn't have behind, deleted as any store is: in object
             // storage, where its segment may have landed after all (`Remote::unfork`), then here,
-            // so that a crash in between leaves its handle, which deleting again finishes, not a
-            // branch no store holds (TASK-79.78). A child opened meanwhile stays, with its branch.
+            // so that a crash or a failure in between leaves its handle, which deleting again
+            // finishes, not a branch no store holds (TASK-79.78). A child opened before the
+            // deletion found it open nowhere stays, with its branch; one opened after, while its
+            // branch is deleted in object storage, finds it deleted there (`EROFS`), and keeps its
+            // handle, and its branch here, while it is open.
             if let Err(why) = host_store::delete_with(path, |_, child| remote.unfork(child)) {
                 log::warn!("fxdax: leaving branch {branch:x}, whose fork failed: {why:#}");
             }

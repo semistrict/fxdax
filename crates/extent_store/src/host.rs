@@ -133,7 +133,9 @@ pub fn delete_host(path: &Path, options: Options) -> Result<(), Error> {
 /// taken for this process meanwhile ([`Lineage::holding`]). `before` goes once the branch is found
 /// open nowhere, before the store deletes it: to delete what keeps it elsewhere, as a bucket does.
 /// `after` goes once the store has deleted it, before the handle naming it goes: to remove what
-/// else of it the store's directory holds, as the records of its uploads. A deletion that stopped
+/// else of it the store's directory holds, as the records of its uploads. A store of this process
+/// that opens the branch as `before` goes keeps it here: the deletion fails then, `before` done,
+/// and deleting again, once the branch is closed, finishes it. A deletion that stopped
 /// partway, deleted again, calls `before` again unless the branch went, and `after` unless the
 /// handle did, so that each sees its work done (TASK-79.71). The store's directory goes with its
 /// last branch before the handle naming it, so that a deletion that stopped in between finds it by
