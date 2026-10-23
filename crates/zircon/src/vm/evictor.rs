@@ -27,7 +27,8 @@
 //! - fxdax: an arena's own clean pages are evicted on demand, each alone, found by those of its
 //!   chunks holding pages in the reclaim queues, for the relief of an arena starved at its own cap
 //!   (`evict_arena_on_demand`, TASK-79.76); the pages it visits to find them are counted
-//!   (`EvictorStats::arena_pages_visited`).
+//!   (`EvictorStats::arena_pages_visited`). The eviction thread evicts them too, for an arena's
+//!   allocations without relief (`evict_arena_asynchronous`).
 
 use crate::kernel::deadline::Deadline;
 use crate::kernel::event::AutounsignalEvent;
@@ -41,6 +42,7 @@ use crate::vm::vm_cow_pages::{
     EvictionAction, ReclaimType, VmCowReclaimFailure, VmCowReclaimResult, VmCowReclaimSuccess,
 };
 use parking_lot::Mutex;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::JoinHandle;
@@ -157,6 +159,9 @@ struct EvictorLocked {
     eviction_enabled: bool,
     /// Whether eviction should attempt compression.
     use_compression: bool,
+    /// fxdax: the bytes at least of each arena's own pages to evict on demand, as asked of the
+    /// eviction thread (`Evictor::evict_arena_asynchronous`, TASK-79.76), until it takes them.
+    arena_targets: BTreeMap<ArenaId, u64>,
 }
 
 /// Frees pages belonging to the PMM under memory pressure. This type is thread-safe.
@@ -465,6 +470,7 @@ impl Evictor {
                 eviction_thread: None,
                 eviction_enabled: false,
                 use_compression: false,
+                arena_targets: BTreeMap::new(),
             }),
             eviction_lock: Mutex::new(EvictedPageCounts::default()),
             eviction_thread_exiting: AtomicBool::new(false),
@@ -676,6 +682,24 @@ impl Evictor {
         self.eviction_signal.signal();
     }
 
+    /// fxdax: evicts at least `min_mem_to_free` bytes of `arena`'s own clean pages on demand, as
+    /// `evict_arena_on_demand` does, on the eviction thread, and returns at once: for an allocation
+    /// of an arena starved at its own cap without relief, which only pages of its own make room
+    /// for (TASK-79.76). Calls for an arena before the thread takes them merge, taking the most of
+    /// their `min_mem_to_free`, rather than add up as `evict_asynchronous`'s do: the arena's
+    /// allocations each ask as they find it starved, and as they try again, and what one asks for
+    /// makes room for many; those it leaves short ask again.
+    pub fn evict_arena_asynchronous(&self, arena: ArenaId, min_mem_to_free: u64) {
+        let mut locked = self.lock.lock();
+        if !locked.eviction_enabled {
+            return;
+        }
+        let target = locked.arena_targets.entry(arena).or_default();
+        *target = (*target).max(min_mem_to_free);
+        drop(locked);
+        self.eviction_signal.signal();
+    }
+
     /// Evict until `min_pages_to_evict` have been evicted and there are at least
     /// `free_pages_target` free pages on the system. Note that the eviction operation here is
     /// one-shot, i.e. as soon as the targets are met, eviction will stop and the function will
@@ -836,6 +860,11 @@ impl Evictor {
             // Process an eviction target if there is one. This is a no-op and no pages are evicted
             // if no target is pending.
             self.evict_from_preloaded_target();
+            // fxdax: and the arenas' own asked for (TASK-79.76).
+            let arena_targets = std::mem::take(&mut self.lock.lock().arena_targets);
+            for (arena, min_mem_to_free) in arena_targets {
+                self.evict_arena_on_demand(arena, min_mem_to_free);
+            }
         }
     }
 

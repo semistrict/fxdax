@@ -1142,6 +1142,24 @@ fn relief_evicts_an_arenas_own_clean_pages_its_evictor_leaves() {
     unsafe { pmm::free_page(page) };
 }
 
+/// TASK-79.76: without relief, an allocation of an arena at its cap, full of clean pages of its
+/// own, waits for the kernel's evictor to free some of them on demand, the oldest first, and none
+/// of another arena's, older still, whose eviction would make it no room.
+#[test]
+fn without_relief_an_arena_at_its_cap_has_its_own_pages_evicted() {
+    let pages = AgedPages::new();
+    let node = pmm::node();
+
+    let allocated = node.alloc_page_in(pages.arena, ALLOC_FLAG_CAN_WAIT);
+    assert_eq!(allocated.err(), Some(Status::SHOULD_WAIT));
+    let page = wait_for_page(pages.arena).expect("a page of the arena's, evicted");
+    // The older pages, the eviction's, may be evicting still.
+    let [others, _, newer] = pages.resident();
+    assert_eq!([others, newer], [2 * CHUNK_PAGES; 2]);
+    // SAFETY: The test owns the page.
+    unsafe { pmm::free_page(page) };
+}
+
 /// TASK-79.76: relief asked for an arena again as its pass runs, by an allocation the pass then
 /// makes room for, runs no pass of its own, as the arena is starved no longer: one would evict as
 /// much again of the arena's pages, its newer, for no allocation. Another arena, starved at its

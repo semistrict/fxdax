@@ -15,9 +15,11 @@
 //! fail rather than wait for ever, until a page of it is freed, a cap changes, or a later pass,
 //! which each of them still asks for, frees something.
 //!
-//! Without relief, the kernel's evictor is asked to free a chunk's worth, of any arena's, on demand
-//! (`EvictionLevel::OnDemand`), whatever their age, for each allocation that finds its arena
-//! starved, or, memory never out, no free page at all (TASK-79.70), as nothing else makes room.
+//! Without relief, the kernel's evictor is asked to free a chunk's worth on demand, whatever their
+//! age, for each allocation that finds its arena starved, or, memory never out, no free page at all
+//! (TASK-79.70), as nothing else makes room: of the same as relief's, the arena's own past its own
+//! cap (`Evictor::evict_arena_asynchronous`, TASK-79.76), or else any arena's
+//! (`EvictionLevel::OnDemand`).
 
 use super::arenas::Starved;
 use super::{
@@ -149,9 +151,10 @@ impl PmmNode {
     /// held to `starved`, as the node's lock, `locked`, shows it still. With relief, it asks for
     /// it, and one that can wait waits for it (`wait_for_single_page_allocation_in`), unless the
     /// arena is exhausted, or relief gone, when it fails. Without, eviction is asked to free a
-    /// chunk's worth, which one that can wait waits for. Both are asked for without the lock. A
-    /// failure with no free page at all is the node's (`starved_failure_locked`). One of an arena
-    /// removed, which nothing makes room, fails, asking for neither.
+    /// chunk's worth, of the arena's own at its own cap, which one that can wait waits for. Both
+    /// are asked for without the lock. A failure with no free page at all is the node's
+    /// (`starved_failure_locked`). One of an arena removed, which nothing makes room, fails, asking
+    /// for neither.
     pub(super) fn starved_status(
         &self,
         mut locked: NodeGuard<'_>,
@@ -171,12 +174,13 @@ impl PmmNode {
                 self.starved_failure_locked(&mut locked, size)
             };
             drop(locked);
-            self.evictor.evict_asynchronous(
-                CHUNK_SIZE as u64,
-                0,
-                EvictionLevel::OnDemand,
-                Output::NoPrint,
-            );
+            let (bytes, level) = (CHUNK_SIZE as u64, EvictionLevel::OnDemand);
+            match starved {
+                // Its own pages alone make it room, and no other arena's are evicted for it.
+                Starved::Arena => self.evictor.evict_arena_asynchronous(arena, bytes),
+                Starved::Total => self.evictor.evict_asynchronous(bytes, 0, level, Output::NoPrint),
+                Starved::Removed => unreachable!("{arena:?}, removed, has no pages evicted"),
+            }
             return status;
         };
         if !reliever.running.load(Ordering::Acquire) {
