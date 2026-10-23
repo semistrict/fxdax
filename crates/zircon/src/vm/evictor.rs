@@ -21,7 +21,9 @@
 //!   an `Arc`, and counters are plain atomics.
 //! - No printing of page queues on a possible livelock.
 //! - fxdax: eviction on demand (`EvictionLevel::OnDemand`) takes pages too new for the others'
-//!   levels too, for an allocation that finds memory out, with memory never out (TASK-79.70).
+//!   levels too, for an allocation that finds memory out, with memory never out, aging the queues
+//!   for them, a bounded number of times before it reclaims a page (`ON_DEMAND_AGINGS`,
+//!   TASK-79.70).
 
 use crate::kernel::deadline::Deadline;
 use crate::kernel::event::AutounsignalEvent;
@@ -163,11 +165,22 @@ pub struct Evictor {
     test_free_pages_function: Option<FreePagesFunction>,
 }
 
-/// Reclaims from the oldest page in the global page queues.
+/// fxdax: how many times eviction on demand (`EvictionLevel::OnDemand`) ages the queues, finding
+/// no page old enough to evict, before it reclaims one: twice as many times as age the newest pages
+/// past the active queues. A page whose reclaim failed is the newest again, and so each is tried
+/// twice: the second time, its mappings gone with the first, it fails only if it is in use still,
+/// and eviction ends rather than age the queues for it for ever (TASK-79.70).
+const ON_DEMAND_AGINGS: usize = 2 * NUM_ACTIVE_QUEUES;
+
+/// Reclaims from the oldest page in the global page queues. fxdax: eviction on demand ages the
+/// queues for pages too new for it while `agings`, which each aging takes one of, lets it.
 fn reclaim_from_global_page_queues(
     eviction_level: EvictionLevel,
+    agings: &mut usize,
 ) -> Option<(VmCowReclaimResult, VmPagePtr)> {
-    // Avoid evicting from the newest queue to prevent thrashing.
+    // Avoid evicting from the newest queue to prevent thrashing. fxdax: eviction on demand evicts
+    // the newest pages too, once it has aged the queues for them (`peek_on_demand`), as nothing
+    // else makes room.
     let lowest_evict_queue = if eviction_level >= EvictionLevel::IncludeNewest {
         NUM_ACTIVE_QUEUES
     } else {
@@ -182,8 +195,9 @@ fn reclaim_from_global_page_queues(
     };
 
     let page_queues = pmm::node().page_queues();
+    // fxdax: on demand, with the queues aged for pages too new.
     let backlink = if eviction_level == EvictionLevel::OnDemand {
-        peek_on_demand(page_queues, lowest_evict_queue)?
+        peek_on_demand(page_queues, lowest_evict_queue, agings)?
     } else {
         page_queues.peek_isolate(lowest_evict_queue)?
     };
@@ -194,19 +208,24 @@ fn reclaim_from_global_page_queues(
 }
 
 /// fxdax: the oldest page to reclaim on demand (`EvictionLevel::OnDemand`): the oldest old enough
-/// to, as with `IncludeNewest`, or, with none, the oldest active one, the queues aged, at most until
-/// the newest pages are old enough, rather than when time does (TASK-79.70).
-fn peek_on_demand(page_queues: &PageQueues, lowest_evict_queue: usize) -> Option<VmoBacklink> {
-    for _ in 0..NUM_ACTIVE_QUEUES {
+/// to, as with `IncludeNewest`, or, with none, the oldest active one, the queues aged for it rather
+/// than when time ages them, as long as `agings`, which each aging takes one of, lets them be
+/// (TASK-79.70).
+fn peek_on_demand(
+    page_queues: &PageQueues,
+    lowest_evict_queue: usize,
+    agings: &mut usize,
+) -> Option<VmoBacklink> {
+    loop {
         if let Some(backlink) = page_queues.peek_isolate(lowest_evict_queue) {
             return Some(backlink);
         }
-        if page_queues.get_active_inactive_counts().active == 0 {
+        if *agings == 0 || page_queues.get_active_inactive_counts().active == 0 {
             return None;
         }
+        *agings -= 1;
         page_queues.rotate_reclaim_queues();
     }
-    page_queues.peek_isolate(lowest_evict_queue)
 }
 
 #[derive(Default)]
@@ -674,12 +693,15 @@ impl Evictor {
         }
 
         let mut failure_stats = ReclaimFailureStats::new();
+        // fxdax: the agings eviction on demand may make before it next reclaims a page, so that it
+        // ends, as the others do, once every page it may evict has failed (TASK-79.70).
+        let mut agings = ON_DEMAND_AGINGS;
         // Evict until we've counted enough pages to hit the target_pages.
         while counts.non_loaned_total() < target_pages {
             // Use the helper to perform a single 'step' of eviction.
             // An empty return from the helper indicates that there are no more eviction
             // candidates, so regardless of our desired target we must give up.
-            let Some(reclaimed) = self.evict_page_queues_helper(eviction_level) else {
+            let Some(reclaimed) = self.evict_page_queues_helper(eviction_level, &mut agings) else {
                 break;
             };
 
@@ -687,6 +709,7 @@ impl Evictor {
             diagnose_reclamation_failure(reclaimed, &mut failure_stats);
 
             if let Ok(success) = reclaimed.0 {
+                agings = ON_DEMAND_AGINGS;
                 match success.r#type {
                     ReclaimType::Evict => counts.pager_backed += success.num_pages,
                     ReclaimType::Discard | ReclaimType::Compress => {
@@ -733,13 +756,16 @@ impl Evictor {
     /// test instance.
     /// The page that reclamation was attempted on is also returned for debug purposes. This is
     /// only populated for a real reclamation, not a fake one from a test instance.
+    /// fxdax: eviction on demand ages the queues while `agings` lets it (`peek_on_demand`).
     fn evict_page_queues_helper(
         &self,
         eviction_level: EvictionLevel,
+        agings: &mut usize,
     ) -> Option<(VmCowReclaimResult, Option<VmPagePtr>)> {
         if let Some(test_reclaim_function) = &self.test_reclaim_function {
             return test_reclaim_function(eviction_level).map(|result| (result, None));
         }
-        reclaim_from_global_page_queues(eviction_level).map(|(result, page)| (result, Some(page)))
+        reclaim_from_global_page_queues(eviction_level, agings)
+            .map(|(result, page)| (result, Some(page)))
     }
 }

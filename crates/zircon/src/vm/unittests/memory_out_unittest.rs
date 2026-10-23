@@ -16,12 +16,15 @@
 
 use super::test_helper::make_committed_pager_vmo;
 use crate::boot_options::{BootOptions, OomBehavior};
+use crate::hypervisor::aspace::GuestPhysicalAspace;
 use crate::kernel::deadline::Deadline;
+use crate::vm::arch_vm_aspace::ARCH_MMU_FLAG_PERM_READ;
 use crate::vm::evictor::{EvictionLevel, Output, TriggerReason};
 use crate::vm::page::{VmPageDoublyLinkedList, VmPagePtr};
 use crate::vm::physmap::CHUNK_SIZE;
 use crate::vm::pmm::{self, ALLOC_FLAG_CAN_WAIT, AllocFailureType};
 use crate::vm::scanner::AutoVmScannerDisable;
+use crate::vm::vm_address_region::VMAR_FLAG_SPECIFIC;
 use crate::vm::vm_object_paged::VmObjectPaged;
 use std::sync::Arc;
 use zx_status::Status;
@@ -214,4 +217,33 @@ fn commits_that_find_memory_out_wait_for_each_page() {
     let committed = VmObjectPaged::create(ALLOC_FLAG_CAN_WAIT, 0, len).unwrap();
     committed.commit_range(0, len).unwrap();
     assert!(vmo.debug_get_page(0).is_none(), "the oldest page was not evicted first");
+}
+
+/// Eviction on demand evicts the pages a mapping has accessed: their first reclaim finds them
+/// accessed, as it unmaps them, and fails, and the next, the queues aged for them again, evicts
+/// them.
+#[test]
+fn eviction_on_demand_takes_pages_mappings_accessed() {
+    boot();
+    let _scanner = AutoVmScannerDisable::new();
+    let (vmo, _) = make_committed_pager_vmo(CHUNK_PAGES, false, false).unwrap();
+    let gpas = GuestPhysicalAspace::create(CHUNK_SIZE).unwrap();
+    let flags = ARCH_MMU_FLAG_PERM_READ;
+    let (mapping, _) = (gpas.root_vmar())
+        .create_vm_mapping(0, CHUNK_SIZE, 0, VMAR_FLAG_SPECIFIC, vmo, 0, flags, "vmo")
+        .unwrap();
+    mapping.map_range(0, CHUNK_SIZE, false, true).unwrap();
+    assert!(gpas.arch_aspace().query(0).is_ok(), "the pages are not mapped");
+    let evictor = pmm::node().evictor();
+    evictor.enable_eviction(false);
+
+    let result = evictor.evict_synchronous(
+        CHUNK_SIZE as u64,
+        0,
+        EvictionLevel::OnDemand,
+        Output::NoPrint,
+        TriggerReason::Other,
+    );
+    assert_eq!(result.counts.pager_backed, CHUNK_PAGES as u64);
+    assert_eq!(gpas.arch_aspace().query(0).err(), Some(Status::NOT_FOUND));
 }
