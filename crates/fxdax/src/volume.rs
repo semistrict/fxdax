@@ -18,6 +18,7 @@
 use crate::connection::Connection;
 use crate::error::{Errno, Error, Result};
 use crate::image::ImageShared;
+use fuchsia_async::ScopeHandle;
 use futures::FutureExt as _;
 use futures::channel::oneshot;
 use futures::future::Shared;
@@ -39,6 +40,10 @@ pub(crate) struct Volume {
     /// Fxfs's volume's scope, which work on the volume runs in ([`run`](Self::run)), kept from the
     /// mount on, so that running some takes neither the state's lock nor Fxfs's volume.
     scope: ExecutionScope,
+    /// A handle to the scope, which [`guard`](Self::guard) takes guards through: `ExecutionScope`
+    /// gives one under a lock of its own as well as the scope's, which reads and writes on many
+    /// threads at once contend for.
+    scope_handle: ScopeHandle,
     state: Mutex<State>,
 }
 
@@ -137,6 +142,11 @@ impl Volume {
     ) -> (Arc<Self>, Hold) {
         let object_id = volume.volume().store().root_directory_object_id();
         let scope = volume.volume().scope().clone();
+        // `ExecutionScope` gives a handle to its scope only through a guard, dropped at once.
+        let scope_handle = scope
+            .try_active_guard()
+            .expect("the scope of a volume just mounted finished")
+            .to_handle();
         let held = HeldNode {
             node: OpenedNode::new(volume.root().clone().as_node()),
             connection: Some(root),
@@ -147,6 +157,7 @@ impl Volume {
             image,
             name: name.to_owned(),
             scope,
+            scope_handle,
             state: Mutex::new(State::Mounted(mounted)),
         });
         let root = Hold { volume: Arc::downgrade(&volume), object_id };
@@ -184,7 +195,7 @@ impl Volume {
     /// A guard on Fxfs's volume's scope, which holds the unmount off from writing the volume back
     /// until it is dropped, unless the scope has finished (`ENOTCONN`).
     fn guard(&self) -> Result<ActiveGuard> {
-        self.scope.try_active_guard().ok_or(Errno::ENOTCONN)
+        self.scope_handle.active_guard().ok_or(Errno::ENOTCONN)
     }
 
     /// Fxfs's volume, until the unmount begins.
