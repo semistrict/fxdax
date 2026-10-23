@@ -5,6 +5,7 @@
 """Tests of scripts/bench-history.py, the benchmark's results over time."""
 
 import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -84,8 +85,8 @@ source; its note says what it was for. Medians of the iterations.
 | Run | Revision | Filesystems | Iterations | Took | Note |
 |---|---|---|---|---|---|
 | [2026-10-10T1652Z](gce-fs-bench-2026-10-10T1652Z/) |  | ext4-virtio-blk, zz-future | 1 | – | – |
-| [followed-2026-10-19T0828Z](gce-fs-bench-followed-2026-10-19T0828Z/) | 584459ba0 + changes | fxfs-guest-dax, fxfs-guest-dax-followed, fxfs-guest-dax-followed-idle | 1 | 494 s | A writer with followers. Iterations: 1. |
 | [fork-2026-10-17T1609Z](gce-fs-bench-fork-2026-10-17T1609Z/) |  | fxfs-guest-dax-fork-cold, fxfs-guest-dax-fork-profiled, fxfs-guest-dax-fork-warm | 3, 5 | – | – |
+| [followed-2026-10-19T0828Z](gce-fs-bench-followed-2026-10-19T0828Z/) | 584459ba0 + changes | fxfs-guest-dax, fxfs-guest-dax-followed, fxfs-guest-dax-followed-idle | 1 | 494 s | A writer with followers. Iterations: 1. |
 
 ## ext4-virtio-blk
 
@@ -165,6 +166,30 @@ source; its note says what it was for. Medians of the iterations.
 |---|---|---|
 | pgbench-tps | tps | **2.50×** |
 """,
+        )
+
+    def test_runs_are_in_the_order_they_started(self):
+        measurements = Path(tempfile.mkdtemp())
+        # When bench-gce.sh's run began, as the run's directory on the host is named, in the
+        # log of bench.sh there; or else the time the run is named for.
+        run(measurements, "zstd-0", {"fxfs-guest-dax": 1500.0},
+            files={"bench.log": "Results: /home/u/run-20261019T045755Z/results\n"})
+        run(measurements, "2026-10-19T0500Z", {"fxfs-guest-dax": 1550.0})
+        run(measurements, "followed-2026-10-19T0828Z", {"fxfs-guest-dax": 1600.0},
+            files={"bench.log": "Logs: /home/u/run-20261019T083012Z/results/logs\n"})
+        run(measurements, "2026-10-10T1652Z", {"fxfs-guest-dax": 1400.0})
+        # Neither: last, by name.
+        run(measurements, "pgbench-local", {"fxfs-guest-dax": 1450.0})
+        page = bench_history.history(measurements)
+        self.assertEqual(
+            re.findall(r"^\| \[([^]]+)\]", page, re.M),
+            ["2026-10-10T1652Z", "zstd-0", "2026-10-19T0500Z", "followed-2026-10-19T0828Z",
+             "pgbench-local"],
+        )
+        self.assertIn(
+            "| Workload | Unit | 2026-10-10T1652Z | zstd-0 | 2026-10-19T0500Z "
+            "| followed-2026-10-19T0828Z | pgbench-local |\n",
+            page,
         )
 
 

@@ -176,25 +176,33 @@ def main():
         backend: {result["workload"]: result for result in report["results"]}
         for backend, report in cases.items()
     }
-    baseline = cases[backends[0]]
+    first = cases[backends[0]]
     iterations = {backend: cases[backend]["iterations"] for backend in backends}
     print(
-        f"Host: {baseline['host_os']}. VMM: {baseline.get('vmm', 'libkrun')}. Iterations: "
+        f"Host: {first['host_os']}. VMM: {first.get('vmm', 'libkrun')}. Iterations: "
         + ", ".join(f"{backend} {n}" for backend, n in iterations.items())
         + ".\n"
     )
     header = ["Workload", "Unit"] + backends + [f"{b} vs {baseline_of(b, cases)}" for b in others]
     print("| " + " | ".join(header) + " |")
     print("|" + "---|" * len(header))
+    # Every workload a filesystem measured, in the order the filesystems are shown in and, within
+    # each, its own: the first to measure it says what it measures. A workload that failed in
+    # every iteration of every filesystem has no row; its failures are listed below.
+    workloads = {}
+    for backend in backends:
+        for result in cases[backend]["results"]:
+            workloads.setdefault(result["workload"], result)
     over = []
-    for result in baseline["results"]:
-        workload = result["workload"]
+    for workload, result in workloads.items():
         row = [workload, result["unit"]]
         medians = {}
         for backend in backends:
             values = by_workload[backend].get(workload, {}).get("values")
             if not values:
-                row.append("failed")
+                # Failed, or not one of the workloads of its case.
+                failed = workload in cases[backend].get("failures", {})
+                row.append("failed" if failed else "–")
                 medians[backend] = None
                 continue
             medians[backend] = statistics.median(values)

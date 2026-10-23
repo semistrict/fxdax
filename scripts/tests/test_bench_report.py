@@ -148,6 +148,27 @@ def pgbench(tps):
     return directory
 
 
+def measured(cases):
+    """A run's results directory: each filesystem of `cases` with its workloads, as (workload,
+    unit, higher is better, values), and the iterations of each that failed."""
+    directory = Path(tempfile.mkdtemp())
+    for backend, (workloads, failures) in cases.items():
+        case = {
+            "case": f"bench-fs-{backend}",
+            "backend": backend,
+            "host_os": "linux",
+            "vmm": "firecracker",
+            "iterations": 1,
+            "results": [
+                {"workload": workload, "unit": unit, "higher_is_better": higher, "values": values}
+                for workload, unit, higher, values in workloads
+            ],
+            "failures": failures,
+        }
+        (directory / f"bench-fs-{backend}.json").write_text(json.dumps(case))
+    return directory
+
+
 def table(directory):
     """The report's table of the run in `directory`."""
     return report(directory).split("\n\n", 1)[1].split("\n\n", 1)[0]
@@ -172,6 +193,48 @@ class Followed(unittest.TestCase):
             """| Workload | Unit | fxfs-guest-dax-followed |
 |---|---|---|
 | pgbench-tps | tps | 1,200 (1,200–1,200) |""",
+        )
+
+
+class Workloads(unittest.TestCase):
+    """The table's rows: every workload a filesystem measured, though others did not."""
+
+    def test_filesystems_of_other_workloads_share_the_table(self):
+        directory = measured(
+            {
+                "ext4-dax-pmem": ([("pgbench-tps", "tps", True, [1000.0])], {}),
+                "fxfs-guest-dax-fork-cold": ([("fork-boot", "s", False, [2.0])], {}),
+                "fxfs-guest-dax-fork-warm": ([("fork-boot", "s", False, [1.0])], {}),
+            }
+        )
+        self.assertEqual(
+            table(directory),
+            """| Workload | Unit | ext4-dax-pmem | fxfs-guest-dax-fork-cold | fxfs-guest-dax-fork-warm \
+| fxfs-guest-dax-fork-warm vs fxfs-guest-dax-fork-cold |
+|---|---|---|---|---|---|
+| pgbench-tps | tps | 1,000 (1,000–1,000) | – | – | – |
+| fork-boot | s | – | 2.00 (2.00–2.00) | 1.00 (1.00–1.00) | 0.50× |""",
+        )
+
+    def test_what_failed_is_failed_and_what_was_not_run_is_not(self):
+        directory = measured(
+            {
+                # Its every iteration of seq-read failed.
+                "fxfs-guest-dax": ([("pgbench-tps", "tps", True, [1600.0])], {"seq-read": 3}),
+                "fxfs-guest-dax-followed": (
+                    [("pgbench-tps", "tps", True, [1200.0]), ("seq-read", "MiB/s", True, [450.0])],
+                    {},
+                ),
+                "fxfs-guest-dax-followed-idle": ([("pgbench-tps", "tps", True, [1500.0])], {}),
+            }
+        )
+        self.assertEqual(
+            table(directory),
+            """| Workload | Unit | fxfs-guest-dax | fxfs-guest-dax-followed | fxfs-guest-dax-followed-idle \
+| fxfs-guest-dax-followed vs fxfs-guest-dax | fxfs-guest-dax-followed-idle vs fxfs-guest-dax |
+|---|---|---|---|---|---|---|
+| pgbench-tps | tps | 1,600 (1,600–1,600) | 1,200 (1,200–1,200) | 1,500 (1,500–1,500) | 1.33× | 1.07× |
+| seq-read | MiB/s | failed | 450 (450–450) | – | – | – |""",
         )
 
 

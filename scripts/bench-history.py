@@ -8,9 +8,9 @@
 Reads every run under docs/measurements (gce-fs-bench-<time>/, as scripts/bench-gce.sh keeps
 them): the measurements each case wrote, the source measured (source.txt), how long the run took
 (host.txt) and what it was for (note.md). Writes docs/measurements/fs-bench-history.md: the runs,
-then for each filesystem each workload's median in every run, and for each filesystem how many
-times slower than what it compares with (scripts/bench_results.py) it was, in the runs that
-measured both.
+in the order they started (`started`), then for each filesystem each workload's median in every
+run, and for each filesystem how many times slower than what it compares with
+(scripts/bench_results.py) it was, in the runs that measured both.
 
 Usage: scripts/bench-history.py
 """
@@ -18,6 +18,7 @@ Usage: scripts/bench-history.py
 import importlib.util
 import re
 import statistics
+from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -30,6 +31,19 @@ bench = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(bench)
 
 
+def started(directory):
+    """When the run in `directory` started, if it says: when bench-gce.sh named the run's directory
+    on the host (run-<time>, which the log of bench.sh there names), or else the time the run is
+    named for, to the minute."""
+    log = directory / "bench.log"
+    if log.exists():
+        stamp = re.search(r"/run-(\d{8}T\d{6}Z)/", log.read_text(errors="replace"))
+        if stamp:
+            return datetime.strptime(stamp.group(1), "%Y%m%dT%H%M%SZ")
+    stamp = re.search(r"\d{4}-\d{2}-\d{2}T\d{4}Z$", directory.name)
+    return datetime.strptime(stamp.group(0), "%Y-%m-%dT%H%MZ") if stamp else None
+
+
 def load_run(directory):
     source = (directory / "source.txt").read_text() if (directory / "source.txt").exists() else ""
     revision = re.search(r"^revision (\w+)", source, re.M)
@@ -40,6 +54,7 @@ def load_run(directory):
     return {
         "name": directory.name.removeprefix("gce-fs-bench-"),
         "directory": directory.name,
+        "started": started(directory),
         "cases": bench.load(directory),
         "revision": (revision.group(1)[:9] + (" + changes" if dirty else "")) if revision else "",
         "took": f"{took.group(1)} s" if took else "",
@@ -65,7 +80,11 @@ def main():
 
 def history(measurements):
     """The page, of the runs under the directory `measurements`."""
-    runs = [load_run(path) for path in sorted(measurements.glob("gce-fs-bench-*")) if path.is_dir()]
+    runs = sorted(
+        (load_run(path) for path in measurements.glob("gce-fs-bench-*") if path.is_dir()),
+        # Those that do not say when they started last, by name.
+        key=lambda run: (run["started"] is None, run["started"] or datetime.min, run["name"]),
+    )
     lines = [
         "# Filesystem benchmark history",
         "",

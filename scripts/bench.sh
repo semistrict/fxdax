@@ -9,7 +9,8 @@
 # serves, with a DAX window and without, and on ext4 on the same kernel, on
 # virtio-blk and with DAX on writable virtio-pmem
 # (guest/tests/test_cases/src/test_fs_bench.rs), then scripts/bench-report.py
-# compares them.
+# compares what they measured: what the cases that passed did, if others failed.
+# It fails if a case or the report did, with the cases' status if they did.
 #
 # Usage: scripts/bench.sh [ITERATIONS]   (default 3)
 #
@@ -29,8 +30,10 @@ results=${FXDAX_BENCH_RESULTS:-$(mktemp -d "${TMPDIR:-/tmp}/fxdax-bench.XXXXXX")
 mkdir -p "$results"
 results=$(cd "$results" && pwd)
 
+status=0 report=0
 # shellcheck disable=SC2086 # The cases are names separated by spaces.
 FXDAX_BENCH_ITERATIONS=$iterations FXDAX_BENCH_RESULTS=$results \
-    FXDAX_E2E_RESULTS=$results/logs "$root/scripts/test-e2e.sh" $cases >&2
+    FXDAX_E2E_RESULTS=$results/logs "$root/scripts/test-e2e.sh" $cases >&2 || status=$?
 echo "Results: $results" >&2
-"$root/scripts/bench-report.py" "$results"
+"$root/scripts/bench-report.py" "$results" || report=$?
+exit $(( status ? status : report ))
