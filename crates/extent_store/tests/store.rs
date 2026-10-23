@@ -1597,6 +1597,33 @@ fn freed_space_past_the_capacity_counts_as_used() {
     assert_eq!(store.usage().unwrap().dead_bytes, 75 * BLOCK as u64);
 }
 
+/// fxdax: a segment a fork inherited and let go of goes, though a segment of its own numbered as
+/// it is waits for its uploader: what the uploader keeps is the fork's own (TASK-85).
+#[test]
+fn inherited_segments_go_though_own_ones_numbered_so_are_kept() {
+    let child = BRANCH + 1;
+    let store = create(MemDir::new(), 1 << 20);
+    // The parent's segment 0, holding extent 1.
+    store.write(extent(1), 0, &pattern(1, 0, BLOCK)).unwrap();
+    store.close_segment().unwrap();
+    store.commit(None).unwrap();
+    store.fork(child).unwrap();
+    let forked = store.lineage().open_branch(child).unwrap();
+    assert!(forked.upload(Chain::new(child, 1, 0, None, 0), 0).unwrap());
+    // The fork's own segment 0, closed, which its uploader has yet to upload.
+    forked.write(ExtentId::new(child, 0), 0, &pattern(2, 0, BLOCK)).unwrap();
+    forked.close_segment().unwrap();
+    forked.commit(None).unwrap();
+    assert_eq!(forked.footprint().unwrap().segments, 2);
+    // Freed, and its free released by the uploader, which keeps its data no more.
+    forked.free(extent(1)).unwrap();
+    forked.commit(None).unwrap();
+    forked.release(forked.epoch().unwrap()).unwrap();
+    forked.commit(None).unwrap();
+    // Its own two, the one kept for its uploader and the open one.
+    assert_eq!(forked.footprint().unwrap().segments, 2);
+}
+
 /// A write in progress reserves the room it may take, which counts against the capacity until it
 /// is finished or abandoned; an abandoned write holds no commit back; and the capacity is room
 /// enough to the byte (TASK-44.1).

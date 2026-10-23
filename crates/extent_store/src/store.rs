@@ -1088,11 +1088,12 @@ impl<D: Dir> Store<D> {
         state.segments.take_syncs(&mut syncs);
         // The segments none of its extents' data is in any more, by this commit, if not before:
         // the branch lets them go; those it closed, once a checkpoint covers their footers. fxdax:
-        // but those the uploader has yet to upload.
+        // but those the uploader has yet to upload, which are the branch's own (TASK-85).
         let uploads = &state.uploads;
-        let reaped = state
-            .segments
-            .reap(|segment| uploads.as_ref().is_some_and(|uploads| uploads.holds(segment.number)));
+        let reaped = state.segments.reap(|segment| {
+            segment.branch == self.branch
+                && uploads.as_ref().is_some_and(|uploads| uploads.holds(segment.number))
+        });
         let released = state.index.let_go(reaped);
         state.unreferenced.released.extend(released);
         let appended = self.append_record(state, epoch, root, changes)?;
