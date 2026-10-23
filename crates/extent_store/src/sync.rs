@@ -2,10 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-//! The store's locks and condition variables: std's, or with the `shuttle` feature Shuttle's
-//! (awslabs/shuttle), whose scheduler then chooses every interleaving of the threads using a store,
-//! and replays a failing one from its seed (tests/shuttle/, TASK-44.4). Arcs are std's either
-//! way.
+//! The store's locks, condition variables and threads: std's, or with the `shuttle` feature
+//! Shuttle's (awslabs/shuttle), whose scheduler then chooses every interleaving of the threads
+//! using a store, and replays a failing one from its seed (tests/shuttle/, TASK-44.4). Arcs are
+//! std's either way.
 //!
 //! And the rules the store's concurrency relies on, which those tests turn off one at a time to
 //! see a test fail: a test that never fails proves nothing.
@@ -18,6 +18,41 @@ pub(crate) use shuttle::thread;
 pub(crate) use std::sync::{Condvar, Mutex, MutexGuard};
 #[cfg(not(feature = "shuttle"))]
 pub(crate) use std::thread;
+
+/// Starts a thread of `scope`'s running `f`, as `Scope::spawn` does, but returns the host's refusal
+/// of one, where that panics: for a caller that can do without it.
+#[cfg(not(feature = "shuttle"))]
+pub(crate) fn spawn_scoped<'scope, T: Send + 'scope>(
+    scope: &'scope thread::Scope<'scope, '_>,
+    f: impl FnOnce() -> T + Send + 'scope,
+) -> std::io::Result<thread::ScopedJoinHandle<'scope, T>> {
+    thread::Builder::new().spawn_scoped(scope, f)
+}
+
+/// Starts a thread of `scope`'s running `f`, as `Scope::spawn` does, but returns the host's refusal
+/// of one, where that panics: for a caller that can do without it. Shuttle's are refused only as a
+/// test has them be (`refuse_threads`), with the host's `EAGAIN`.
+#[cfg(feature = "shuttle")]
+pub(crate) fn spawn_scoped<'scope, T: Send + 'scope>(
+    scope: &'scope thread::Scope<'scope, '_>,
+    f: impl FnOnce() -> T + Send + 'scope,
+) -> std::io::Result<thread::ScopedJoinHandle<'scope, T>> {
+    if REFUSING.load(std::sync::atomic::Ordering::Relaxed) {
+        return Err(std::io::Error::from_raw_os_error(libc::EAGAIN));
+    }
+    Ok(scope.spawn(f))
+}
+
+/// Whether the host refuses the threads [`spawn_scoped`] would start.
+#[cfg(feature = "shuttle")]
+static REFUSING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Has the host refuse the threads [`spawn_scoped`] would start, or start them again: for the
+/// Shuttle tests of a host short of threads.
+#[cfg(all(feature = "shuttle", test))]
+pub(crate) fn refuse_threads(refusing: bool) {
+    REFUSING.store(refusing, std::sync::atomic::Ordering::Relaxed);
+}
 
 /// The rules the store's concurrency relies on, each of which its Shuttle tests show to be needed
 /// by turning it off.

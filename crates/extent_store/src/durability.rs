@@ -10,7 +10,7 @@
 //! durable commits, reads.
 
 use crate::dir::{Dir, File};
-use crate::sync::{Mutex, thread};
+use crate::sync::{Mutex, spawn_scoped, thread};
 use anyhow::{Context as _, Error};
 use std::collections::{BTreeSet, HashSet, VecDeque};
 use std::io;
@@ -159,8 +159,9 @@ impl<F: File> Syncs<F> {
 
 /// fxdax: `sync`s each of `items`, [`AT_ONCE`] at a time, on as many threads, the caller's one of
 /// them, each taking the next as it is done with one; and returns once each is synced, or one
-/// failed: then those not begun are not, and it returns that failure, logging any other
-/// (TASK-92.42).
+/// failed: then those not begun are not, and it returns that failure, logging any other. A thread
+/// the host refuses is one fewer: the caller's syncs whatever the others don't, so that a flush
+/// never fails for want of threads (TASK-92.42).
 fn at_once<T: Sync>(
     items: &[T],
     sync: impl Fn(&T) -> Result<(), Error> + Sync,
@@ -177,7 +178,15 @@ fn at_once<T: Sync>(
         }
     };
     thread::scope(|scope| {
-        let others: Vec<_> = (1..items.len().min(AT_ONCE)).map(|_| scope.spawn(syncing)).collect();
+        let others: Vec<_> = (1..items.len().min(AT_ONCE))
+            .map_while(|_| match spawn_scoped(scope, syncing) {
+                Ok(other) => Some(other),
+                Err(error) => {
+                    log::warn!("extent store: syncing on fewer threads: {error}");
+                    None
+                }
+            })
+            .collect();
         let mut synced = syncing();
         for other in others {
             let joined = other.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic));
@@ -262,7 +271,7 @@ mod tests {
     #[cfg(feature = "shuttle")]
     mod shuttle_tests {
         use super::*;
-        use crate::sync::{Condvar, Mutex};
+        use crate::sync::{Condvar, Mutex, refuse_threads};
         use shuttle::scheduler::{PctScheduler, RandomScheduler};
         use shuttle::{Config, Runner};
         use std::collections::BTreeMap;
@@ -292,13 +301,15 @@ mod tests {
         }
 
         /// A store's directory whose files' and directories' syncs say what they saw, and fail if
-        /// a directory's comes before the files are synced, or more than a flush syncs at once are
-        /// in flight; and, if `gathering`, go in groups, as many as a flush syncs at once, or all
-        /// those left, in the order they begin: each waits until all of its group have begun. One
-        /// at a time, or fewer at once, the first waits for ever; more at once, one may begin
-        /// while all of a group are still in flight.
+        /// a directory's comes before the files are synced, or more than `at_once` are in flight,
+        /// as each lets others begin before it ends; and, if `gathering`, go in groups of
+        /// `at_once`, or all those left, in the order they begin: each waits until all of its
+        /// group have begun. One at a time, or fewer at once, the first waits for ever; more at
+        /// once, one may begin while all of a group are still in flight.
         #[derive(Clone)]
         struct Probe {
+            /// How many syncs the flush is to have in flight at once.
+            at_once: usize,
             gathering: bool,
             /// The file whose sync fails, if any.
             failing: Option<usize>,
@@ -311,8 +322,8 @@ mod tests {
         }
 
         impl Probe {
-            fn new(gathering: bool, failing: Option<usize>) -> Self {
-                Self { gathering, failing, seen: Default::default() }
+            fn new(at_once: usize, gathering: bool, failing: Option<usize>) -> Self {
+                Self { at_once, gathering, failing, seen: Default::default() }
             }
 
             /// A sync, of one of `total` files or directories, whose counts `of` picks.
@@ -321,15 +332,19 @@ mod tests {
                 let mut seen = seen.lock().unwrap();
                 let syncing = of(&mut seen);
                 // Its group is whole once this many syncs have begun.
-                let whole = (syncing.begun + 1).next_multiple_of(AT_ONCE).min(total);
+                let whole = (syncing.begun + 1).next_multiple_of(self.at_once).min(total);
                 syncing.begun += 1;
                 syncing.in_flight += 1;
                 syncing.most = syncing.most.max(syncing.in_flight);
-                assert!(syncing.in_flight <= AT_ONCE, "{} syncs at once", syncing.in_flight);
+                assert!(syncing.in_flight <= self.at_once, "{} syncs at once", syncing.in_flight);
                 changed.notify_all();
                 while self.gathering && of(&mut seen).begun < whole {
                     seen = changed.wait(seen).unwrap();
                 }
+                // In flight still, while others may begin, as a sync of the host's takes a while.
+                drop(seen);
+                thread::yield_now();
+                let mut seen = self.seen.0.lock().unwrap();
                 let syncing = of(&mut seen);
                 syncing.in_flight -= 1;
                 syncing.done += 1;
@@ -429,6 +444,12 @@ mod tests {
             syncs
         }
 
+        /// How each of [`syncs`]' files is to be synced: once, the last two keeping their pages in
+        /// the page cache.
+        fn synced_once() -> BTreeMap<usize, Vec<bool>> {
+            (0..FILES).map(|number| (number, vec![number >= FILES - 2])).collect()
+        }
+
         fn config() -> Config {
             let mut config = Config::new();
             config.stack_size = 4 << 20;
@@ -446,15 +467,12 @@ mod tests {
         #[test]
         fn syncs_sync_the_files_at_once_then_the_directories() {
             schedules(|| {
-                let probe = Probe::new(true, None);
+                let probe = Probe::new(AT_ONCE, true, None);
                 syncs(&probe).sync(&probe).unwrap();
                 let seen = probe.seen.0.lock().unwrap();
                 assert_eq!((seen.files.most, seen.files.done), (AT_ONCE, FILES));
                 assert_eq!((seen.dirs.most, seen.dirs.done), (DIRS, DIRS));
-                let cached = |number| number >= FILES - 2;
-                let expected: BTreeMap<_, _> =
-                    (0..FILES).map(|number| (number, vec![cached(number)])).collect();
-                assert_eq!(seen.synced, expected);
+                assert_eq!(seen.synced, synced_once());
             });
         }
 
@@ -463,7 +481,7 @@ mod tests {
         #[test]
         fn a_failing_sync_syncs_no_directory() {
             schedules(|| {
-                let probe = Probe::new(false, Some(AT_ONCE + 1));
+                let probe = Probe::new(AT_ONCE, false, Some(AT_ONCE + 1));
                 let error = syncs(&probe).sync(&probe).expect_err("a file failed to sync");
                 assert_eq!(
                     format!("{error:#}"),
@@ -473,6 +491,24 @@ mod tests {
                 assert_eq!((seen.files.in_flight, seen.dirs.most, seen.dirs.done), (0, 0, 0));
                 assert_eq!(seen.synced[&(AT_ONCE + 1)], [false]);
                 assert!(seen.synced.values().all(|syncs| syncs.len() == 1), "a file synced twice");
+            });
+        }
+
+        /// A flush the host refuses threads syncs its files on its own, one at a time, each once,
+        /// then its directories, rather than panic as `Scope::spawn` does: on random schedules
+        /// alone, as PCT's refuse a test that starts no thread.
+        #[test]
+        fn a_host_refusing_threads_syncs_on_the_flushs_own() {
+            Runner::new(RandomScheduler::new(300), config()).run(|| {
+                refuse_threads(true);
+                let probe = Probe::new(1, false, None);
+                let synced = syncs(&probe).sync(&probe);
+                refuse_threads(false);
+                synced.unwrap();
+                let seen = probe.seen.0.lock().unwrap();
+                assert_eq!((seen.files.most, seen.files.done), (1, FILES));
+                assert_eq!((seen.dirs.most, seen.dirs.done), (1, DIRS));
+                assert_eq!(seen.synced, synced_once());
             });
         }
     }
