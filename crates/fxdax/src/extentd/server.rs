@@ -46,9 +46,9 @@ const FLUSH_EVERY: std::time::Duration = std::time::Duration::from_millis(50);
 const COMMITS_POLL: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// Serves the VM processes that connect to `listener`, for as long as it listens ([`serve_as`]): of
-/// no tenant, their stores' pages of the default arena of the kernel's physical memory, which they
-/// hold, as when the daemon serves one tenant alone. Their requests run on threads every
-/// connection shares (TASK-34).
+/// no tenant, the default tenant's, their stores' pages of its arena of the kernel's physical
+/// memory, which they hold, as a tenant's do ([`default_memory`]). Their requests run on threads
+/// every connection shares (TASK-34).
 pub fn serve(listener: UnixListener) {
     super::SERVING.send_replace(true);
     serve_as(listener, None);
@@ -106,20 +106,50 @@ pub struct Tenant {
     name: String,
     /// Its stores' directory, canonical.
     dir: PathBuf,
+    memory: Memory,
+}
+
+/// The memory a tenant's VM processes hold (TASK-43): its arena of the kernel's physical memory,
+/// which its stores' own pages are of, and the default arena, read-only, whose pages are public
+/// bases'. The default tenant's, of the VM processes of no tenant, is as any other's
+/// ([`default_memory`], TASK-79.17).
+struct Memory {
     arena: Arc<crate::kernel::Arena>,
     memory: Arc<std::os::fd::OwnedFd>,
     /// The default arena's memory, reopened read-only.
     public: std::os::fd::OwnedFd,
 }
 
+impl Memory {
+    /// An arena of its own, and the default one, read-only.
+    fn new() -> std::io::Result<Self> {
+        let public = reopen_read_only(crate::kernel::physical_memory())?;
+        let arena = crate::kernel::Arena::new();
+        let memory = crate::kernel::arena_memory(arena.id()).expect("a new arena");
+        Ok(Self { arena, memory, public })
+    }
+}
+
+/// fxdax: the default tenant's memory, of the VM processes of no tenant (TASK-79.17): an arena of
+/// its own, as a tenant's, for as long as the daemon runs, so that the default arena holds public
+/// bases' pages, which every VM process holds read-only, and nothing of a VM process's own.
+fn default_memory() -> Result<&'static Memory, Errno> {
+    static DEFAULT: OnceLock<Memory> = OnceLock::new();
+    if let Some(memory) = DEFAULT.get() {
+        return Ok(memory);
+    }
+    let memory = Memory::new().map_err(|err| {
+        log::error!("extentd: the default tenant's memory: {err}");
+        Errno::EIO
+    })?;
+    Ok(DEFAULT.get_or_init(|| memory))
+}
+
 impl Tenant {
     /// A new tenant named `name`, whose stores are in `dir`, with an arena of its own.
     pub fn new(name: impl Into<String>, dir: impl AsRef<Path>) -> std::io::Result<Arc<Self>> {
         let dir = dir.as_ref().canonicalize()?;
-        let public = reopen_read_only(crate::kernel::physical_memory())?;
-        let arena = crate::kernel::Arena::new();
-        let memory = crate::kernel::arena_memory(arena.id()).expect("a new arena");
-        let tenant = Arc::new(Self { name: name.into(), dir, arena, memory, public });
+        let tenant = Arc::new(Self { name: name.into(), dir, memory: Memory::new()? });
         super::memory::register(&tenant);
         Ok(tenant)
     }
@@ -136,7 +166,7 @@ impl Tenant {
 
     /// Its arena of the kernel's physical memory.
     pub fn arena(&self) -> crate::kernel::ArenaId {
-        self.arena.id()
+        self.memory.arena.id()
     }
 
     /// Whether its VM processes may name the store at `path`: `EACCES` unless it is in its
@@ -418,10 +448,18 @@ impl Connection {
         self.store.get()
     }
 
-    /// The arena of the kernel's physical memory its store's own pages are of: its tenant's, or,
-    /// without one, the default.
-    fn arena(&self) -> Option<&Arc<crate::kernel::Arena>> {
-        self.tenant.as_ref().map(|tenant| &tenant.arena)
+    /// The memory its VM process holds: its tenant's, or, without one, the default tenant's
+    /// ([`default_memory`]).
+    fn memory(&self) -> Result<&Memory, Errno> {
+        match &self.tenant {
+            Some(tenant) => Ok(&tenant.memory),
+            None => default_memory(),
+        }
+    }
+
+    /// The arena of the kernel's physical memory its store's own pages are of: its tenant's.
+    fn arena(&self) -> Result<&Arc<crate::kernel::Arena>, Errno> {
+        Ok(&self.memory()?.arena)
     }
 
     /// Runs `work` behind its store, a task on the daemon's runtime, until it is told to stop: the
@@ -548,8 +586,7 @@ impl Connection {
             }
             reply.args[0] = self.follow(&message.payload)?;
             reply.args[2] = self.store.get().ok_or(Errno::EBADF)?.epoch()?;
-            self.memories(reply, fds);
-            return Ok(());
+            return self.memories(reply, fds);
         }
         if kind == OPEN {
             let (path, from) = if flags & OPEN_FORK_FROM != 0 {
@@ -562,8 +599,7 @@ impl Connection {
             let from = from.map(|from| (from, args[1]));
             let branch = self.open(path, args[0], flags & OPEN_CREATE != 0, from)?;
             reply.args[0] = branch;
-            self.memories(reply, fds);
-            return Ok(());
+            return self.memories(reply, fds);
         }
         let store = self.store.get().ok_or(Errno::EBADF)?;
         match kind {
@@ -686,17 +722,18 @@ impl Connection {
         }
     }
 
-    /// Hands the VM process its kernel's memory, in `reply`: the tenant's arena, and the default
-    /// one, read-only; or the default arena alone.
-    fn memories<'a>(&'a self, reply: &mut Header, fds: &mut Vec<std::os::fd::BorrowedFd<'a>>) {
+    /// Hands the VM process its kernel's memory, in `reply`: its tenant's arena, and the default
+    /// one, read-only (TASK-43); the default tenant's as any other's (TASK-79.17).
+    fn memories<'a>(
+        &'a self,
+        reply: &mut Header,
+        fds: &mut Vec<std::os::fd::BorrowedFd<'a>>,
+    ) -> Result<(), Errno> {
         use std::os::fd::AsFd;
-        match &self.tenant {
-            Some(tenant) => {
-                reply.args[1] = tenant.arena().0.into();
-                fds.extend([tenant.memory.as_fd(), tenant.public.as_fd()]);
-            }
-            None => fds.push(crate::kernel::physical_memory()),
-        }
+        let memory = self.memory()?;
+        reply.args[1] = memory.arena.id().0.into();
+        fds.extend([memory.memory.as_fd(), memory.public.as_fd()]);
+        Ok(())
     }
 
     /// fxdax: opens a follower of the store at the path `path` holds (backlog doc-8), of the store
@@ -709,7 +746,7 @@ impl Connection {
         if self.store.get().is_some() {
             return Err(Errno::EBUSY);
         }
-        let followed = stores::followed(&path, self.arena())?;
+        let followed = stores::followed(&path, self.arena()?)?;
         // A tenant's VM process opens no public base, only forks of it (TASK-43).
         if self.tenant.is_some() && followed.is_public() {
             return Err(Errno::EPERM);
@@ -778,16 +815,17 @@ impl Connection {
         create: bool,
         from: Option<(&[u8], u64)>,
     ) -> Result<Arc<ExtentStore>, Errno> {
-        if let Some(store) = stores::take_over(key, self.arena())? {
+        let arena = self.arena()?;
+        if let Some(store) = stores::take_over(key, arena)? {
             return Ok(store);
         }
         let opened = match from {
             Some((from, branch)) if !path.exists() => {
                 let from: &Path = std::ffi::OsStr::from_bytes(from).as_ref();
                 stores::fork_from(from, branch, capacity, path)
-                    .and_then(|()| open_store(path, None, self.arena()))
+                    .and_then(|()| open_store(path, None, Some(arena)))
             }
-            _ => open_store(path, create.then_some(capacity), self.arena()),
+            _ => open_store(path, create.then_some(capacity), Some(arena)),
         };
         let store = Arc::new(opened?);
         stores::register(key, &store);

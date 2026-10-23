@@ -584,7 +584,7 @@ impl ExtentStore {
         arena: Option<Arc<Arena>>,
     ) -> Result<Self, Error> {
         let store = host_store::create(path.as_ref(), capacity, branch).map_err(Error::new)?;
-        Ok(Self::new(store, arena))
+        Ok(Self::new(store, arena, true))
     }
 
     /// The store at `path`, or the fork whose handle `path` is ([`ExtentStore::fork`]), as of its
@@ -601,15 +601,27 @@ impl ExtentStore {
     /// forks of them share, are of the default arena.
     pub fn open_in(path: impl AsRef<Path>, arena: Option<Arc<Arena>>) -> Result<Self, Error> {
         let store = host_store::open(path.as_ref()).map_err(Error::new)?;
-        Ok(Self::new(store, arena))
+        Ok(Self::new(store, arena, true))
     }
 
-    fn new(store: Store<HostDir>, arena: Option<Arc<Arena>>) -> Self {
+    /// fxdax: the store at `path`, as [`ExtentStore::open`] has it, for work on it that boots no
+    /// guest, as the extent daemon's forks, syncs and resizes of stores no VM has open: the boot
+    /// profile of the base it is a fork of is neither read into the extent cache, which would put
+    /// the pages of what it names, tenants' too, in the default arena, which every VM process
+    /// holds, nor recorded (TASK-79.17).
+    pub fn open_without_profile(path: impl AsRef<Path>) -> Result<Self, Error> {
+        let store = host_store::open(path.as_ref()).map_err(Error::new)?;
+        Ok(Self::new(store, None, false))
+    }
+
+    /// The store `store`, its own extents' pages of `arena`, or the default arena without one;
+    /// its base's boot profile read or recorded if `profiled` ([`ExtentStore::profile`]).
+    fn new(store: Store<HostDir>, arena: Option<Arc<Arena>>, profiled: bool) -> Self {
         relieve_pressure();
         let store = Arc::new(store);
         let arenas = Arenas { own: arena, public: Arc::new(public_branches(store.dir().path())) };
         Self {
-            profiling: Self::profile(&store, &arenas),
+            profiling: profiled.then(|| Self::profile(&store, &arenas)).flatten(),
             arenas,
             store,
             open: Mutex::new(HashMap::new()),

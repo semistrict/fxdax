@@ -29,7 +29,8 @@ pub struct RemoteExtentStore {
     client: Arc<Client>,
     branch: u64,
     /// The daemon's kernel's physical memory, which the window maps pages of, by arena: its
-    /// tenant's, and the default arena, read-only (TASK-43); or the default arena alone.
+    /// tenant's, the default tenant's if of none, and the default arena, read-only (TASK-43,
+    /// TASK-79.17).
     memories: Vec<(crate::kernel::ArenaId, OwnedFd)>,
     /// The thread serving the guest's faults on the window, once it is created.
     faults: Mutex<Option<FaultThread>>,
@@ -130,17 +131,14 @@ impl RemoteExtentStore {
             )
         })?;
         let mut fds = reply.fds.into_iter();
-        let own = fds.next().ok_or_else(|| Error::msg("the daemon sent no physical memory"))?;
+        let (Some(own), Some(public)) = (fds.next(), fds.next()) else {
+            return Err(Error::msg("the daemon sent no physical memory"));
+        };
         let arena = u32::try_from(reply.header.args[1])
             .map_err(|_| Error::msg("the daemon named no arena"))?;
-        let memories = match fds.next() {
-            // A tenant's arena, and the default one, read-only.
-            Some(public) => vec![
-                (crate::kernel::ArenaId(arena), own),
-                (crate::kernel::ArenaId::DEFAULT, public),
-            ],
-            None => vec![(crate::kernel::ArenaId::DEFAULT, own)],
-        };
+        // Its tenant's arena, and the default one, read-only.
+        let memories =
+            vec![(crate::kernel::ArenaId(arena), own), (crate::kernel::ArenaId::DEFAULT, public)];
         // A follower's view's commit, which it has heard of.
         client.committed.fetch_max(reply.header.args[2], Ordering::AcqRel);
         let branch = reply.header.args[0];
@@ -245,17 +243,16 @@ impl RemoteExtentStore {
     }
 
     /// The daemon's kernel's physical memory, which it handed this VM process as it connected,
-    /// and which its window maps pages of: its tenant's arena of it, or the default arena, if it
-    /// is of no tenant (TASK-43).
+    /// and which its window maps pages of: its tenant's arena of it (TASK-43), the default
+    /// tenant's if it is of none (TASK-79.17).
     pub fn physical_memory(&self) -> std::os::fd::BorrowedFd<'_> {
         self.memories[0].1.as_fd()
     }
 
     /// The default arena of the daemon's kernel's physical memory, which public bases' pages are
-    /// of, as a tenant's VM process holds it: read-only (TASK-43). `None` for a VM process of no
-    /// tenant, whose [`physical_memory`](Self::physical_memory) it is.
-    pub fn public_memory(&self) -> Option<std::os::fd::BorrowedFd<'_>> {
-        self.memories.get(1).map(|(_, fd)| fd.as_fd())
+    /// of, as every VM process holds it: read-only (TASK-43, TASK-79.17).
+    pub fn public_memory(&self) -> std::os::fd::BorrowedFd<'_> {
+        self.memories[1].1.as_fd()
     }
 
     /// What the store holds (`INFO`).

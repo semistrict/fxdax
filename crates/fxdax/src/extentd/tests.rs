@@ -1901,3 +1901,35 @@ fn forks_to_stores_there_already_fail_with_eexist() {
     let again = fork_store(&path, &fork);
     assert_eq!(again.err().and_then(|error| error.errno()), Some(Errno::EEXIST));
 }
+
+/// TASK-79.17: a store the daemon opens to work on, as no VM process has it open, boots no guest:
+/// the boot profile of the base it is a fork of is not read into the extent cache, as its pages
+/// would be the default arena's, which every VM process holds, a tenant's base's too. Here the
+/// fork is synced.
+#[test]
+fn stores_worked_on_here_read_no_boot_profile() {
+    host();
+    let ps = page_size() as usize;
+    let dir = tempfile::tempdir().unwrap();
+    let (base, fork) = (dir.path().join("base"), dir.path().join("fork"));
+    let store = ExtentStore::create(&base, 1 << 24).unwrap();
+    let extent = ExtentId { branch: store.branch(), sequence: 1 };
+    store.write(extent, 0, &[VolatileSlice::from(&pattern(7, ps)[..])]).unwrap();
+    store.commit(None).unwrap();
+    store.fork(&fork, extent.branch + 1).unwrap();
+    drop(store);
+    // The base's profile, as its first fork to boot recorded it.
+    let profile = crate::profile::path(&base.canonicalize().unwrap(), extent.branch);
+    let recorder = crate::profile::Recorder::new(profile, extent.branch + 1);
+    recorder.record(extent, 0, ps as u64);
+    recorder.write().unwrap();
+
+    let before = crate::stats::stats();
+    wait_uploaded(&fork).unwrap();
+    // A profile's replay is done once its threads are.
+    while thread_comms().any(|comm| comm == "fxdax replay") {
+        std::thread::yield_now();
+    }
+    let counted = crate::stats::stats().since(&before);
+    assert_eq!((counted.prefetches, counted.page_ins), (0, 0));
+}

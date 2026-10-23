@@ -70,11 +70,8 @@ pub(super) fn retire(key: &Path, store: &ExtentStore) {
 
 /// fxdax: the store open at `key` for followers, or a writer that went, which the writer holding
 /// it takes over ([`ExtentStore::take_over`]), if one is: `EBUSY` if it is open in an arena not
-/// `arena`, or the default without one ([`in_arena`]), retired, or something is open in it.
-pub(super) fn take_over(
-    key: &Path,
-    arena: Option<&Arc<Arena>>,
-) -> Result<Option<Arc<ExtentStore>>, Errno> {
+/// `arena` ([`in_arena`]), retired, or something is open in it.
+pub(super) fn take_over(key: &Path, arena: &Arc<Arena>) -> Result<Option<Arc<ExtentStore>>, Errno> {
     let Some((store, retired)) = instance(key) else { return Ok(None) };
     if let Err(errno) = in_arena(&store, arena) {
         log::warn!("extentd: {} is open for followers in another arena: {errno}", key.display());
@@ -94,10 +91,9 @@ pub(super) fn take_over(
 
 /// fxdax: the store at `path` for a follower to follow (backlog doc-8): the one a writer's
 /// connection, or followers', have open; or, if none has, the store opened as of its last commit,
-/// as a writer opens it, its pages of `arena`, or of the default arena without one, which a writer
-/// opening it then takes over. `EBUSY` while a writer is opening it, or it is retired, or open in
-/// another arena ([`in_arena`]).
-pub(super) fn followed(path: &Path, arena: Option<&Arc<Arena>>) -> Result<Arc<ExtentStore>, Errno> {
+/// as a writer opens it, its pages of `arena`, which a writer opening it then takes over. `EBUSY`
+/// while a writer is opening it, or it is retired, or open in another arena ([`in_arena`]).
+pub(super) fn followed(path: &Path, arena: &Arc<Arena>) -> Result<Arc<ExtentStore>, Errno> {
     let open = |key: &Path| match instance(key) {
         Some((_, true)) => Err(Errno::EBUSY),
         Some((store, false)) => in_arena(&store, arena).map(|()| Some(store)),
@@ -114,17 +110,16 @@ pub(super) fn followed(path: &Path, arena: Option<&Arc<Arena>>) -> Result<Arc<Ex
     if !path.exists() {
         return Err(Errno::ENOENT);
     }
-    let store = Arc::new(open_store(path, None, arena)?);
+    let store = Arc::new(open_store(path, None, Some(arena))?);
     register(&held.0, &store);
     Ok(store)
 }
 
-/// fxdax: `EBUSY` unless `store`'s own pages are of `arena`, or of the default arena without one:
-/// the connection's, which its VM process holds (TASK-79.36). Its window maps no other arena's
-/// pages, and the default's read-only alone, its tenant's being its own.
-fn in_arena(store: &ExtentStore, arena: Option<&Arc<Arena>>) -> Result<(), Errno> {
-    let own = arena.map_or(crate::kernel::ArenaId::DEFAULT, |arena| arena.id());
-    if store.arena() == own { Ok(()) } else { Err(Errno::EBUSY) }
+/// fxdax: `EBUSY` unless `store`'s own pages are of `arena`: the connection's, which its VM
+/// process holds (TASK-79.36). Its window maps no other arena's pages, and the default's read-only
+/// alone, its tenant's being its own.
+fn in_arena(store: &ExtentStore, arena: &Arc<Arena>) -> Result<(), Errno> {
+    if store.arena() == arena.id() { Ok(()) } else { Err(Errno::EBUSY) }
 }
 
 /// How long holding a store waits for a connection whose VM process is gone to let it go: as a VM
@@ -306,15 +301,22 @@ pub(super) fn open_store(
     capacity: Option<u64>,
     arena: Option<&Arc<Arena>>,
 ) -> Result<ExtentStore, Errno> {
-    let bucket = remote_bucket()?;
     let arena = arena.cloned();
-    let opened = match capacity {
+    attached(path, || match capacity {
         Some(capacity) if !path.exists() => {
             ExtentStore::create_in(path, capacity, crate::host_store::new_branch(), arena)
         }
         _ => ExtentStore::open_in(path, arena),
-    };
-    let store = opened.map_err(|err| errno_of(format_args!("opening {}", path.display()), err))?;
+    })
+}
+
+/// The store at `path`, as `open` opens it, keeping its branch in the daemon's bucket.
+fn attached(
+    path: &Path,
+    open: impl FnOnce() -> Result<ExtentStore, crate::Error>,
+) -> Result<ExtentStore, Errno> {
+    let bucket = remote_bucket()?;
+    let store = open().map_err(|err| errno_of(format_args!("opening {}", path.display()), err))?;
     let token = crate::remote::host_token().map_err(|err| {
         log::error!("extentd: {err}");
         Errno::EINVAL
@@ -331,9 +333,9 @@ pub(super) fn open_store(
 }
 
 /// The store at `path` as the daemon opens it to work on it, not a VM: its pages of the default
-/// arena.
+/// arena, which reads no boot profile into the cache ([`ExtentStore::open_without_profile`]).
 fn open_here(path: &Path) -> Result<ExtentStore, Errno> {
-    open_store(path, None, None)
+    attached(path, || ExtentStore::open_without_profile(path))
 }
 
 /// The errno of `err`, which doing `what` failed with: its own; `EBUSY` if it gave up waiting for
@@ -502,7 +504,7 @@ pub(super) async fn resize(path: PathBuf, capacity: u64) -> Result<(), Errno> {
             // fxdax: open for followers, it grows as it is.
             let store = match instance(&key) {
                 Some((store, _)) => store,
-                None => Arc::new(ExtentStore::open(&key).map_err(|err| {
+                None => Arc::new(ExtentStore::open_without_profile(&key).map_err(|err| {
                     let path = key.display();
                     log::warn!("extentd: opening the store at {path} to resize it: {err:#}");
                     Errno::ENOENT
@@ -532,7 +534,7 @@ pub(super) async fn place(path: PathBuf, token: u64) -> Result<(), Errno> {
 pub(super) async fn make_public(path: PathBuf) -> Result<(), Errno> {
     let _held = Held::alone(&path).await?;
     blocking(move || {
-        let store = ExtentStore::open(&path)
+        let store = ExtentStore::open_without_profile(&path)
             .map_err(|err| errno_of(format_args!("opening {}", path.display()), err))?;
         store.make_public()
     })
@@ -591,7 +593,7 @@ pub(super) async fn stat(path: PathBuf) -> Result<StoreState, Errno> {
         if !path.exists() {
             return Err(Errno::ENOENT);
         }
-        let store = ExtentStore::open(&path)
+        let store = ExtentStore::open_without_profile(&path)
             .map_err(|err| errno_of(format_args!("opening {}", path.display()), err))?;
         state_of(&store, false)
     })
