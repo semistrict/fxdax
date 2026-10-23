@@ -31,9 +31,13 @@
 //!   segment fills between commits, and closes, again and again: how long the writes take, the
 //!   longest, and the commit after them, and what it seals in files of their own (TASK-79.2),
 //!   which its flush syncs at once (TASK-92.42).
+//! - `durable`: a guest's durable commits, a hundred of them one after another, each sealing N
+//!   extents (2) in files of their own, in a directory of the host's: how long each commit's flush
+//!   takes, which syncs their files and their directory, as many at once as there are of each,
+//!   up to sixteen; and with N 1, one at a time (TASK-92.42).
 //!
-//! The stores of all but `close-now` and `burst` are in memory ([`MemDir`]), so that what is timed
-//! is the store's own work.
+//! The stores of all but `close-now`, `burst` and `durable` are in memory ([`MemDir`]), so that
+//! what is timed is the store's own work.
 
 use extent_store::{Description, Dir, HostDir, MemDir, Options, Store};
 use std::sync::Arc;
@@ -293,6 +297,32 @@ fn burst(mib: u64) {
     );
 }
 
+fn durable(files: u64) {
+    const COMMITS: u64 = 100;
+    // Each extent's one write ends where an extent takes a file of its own, the rest of it a hole,
+    // so that its file is quick to write, and the flush's syncs are most of what it takes.
+    const WRITE: usize = 64 << 10;
+    let temp = tempfile::tempdir().unwrap();
+    let options = Options::default();
+    let store = create(HostDir::new(temp.path(), true).unwrap(), options);
+    let mut flushes = Waits::default();
+    let mut sequence = 0;
+    for _ in 0..COMMITS {
+        for _ in 0..files {
+            sequence += 1;
+            let offset = options.large_extent - WRITE as u64;
+            store.write(extent(sequence), offset, &data(sequence, WRITE)).unwrap();
+        }
+        store.commit_ordered(None).unwrap();
+        let started = Instant::now();
+        store.flush().unwrap();
+        flushes.add(started.elapsed());
+    }
+    let own = std::fs::read_dir(temp.path().join(format!("extents/{BRANCH:016x}"))).unwrap();
+    flushes.print(&format!("flushes of commits sealing {files} extents in files of their own"));
+    println!("{} extents in files of their own", own.count());
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let n = |default| args.get(2).map_or(default, |n| n.parse().expect("N is a number"));
@@ -302,8 +332,11 @@ fn main() {
         Some("close-now") => close_now(n(32)),
         Some("cleaning") => cleaning(n(400_000)),
         Some("burst") => burst(n(256)),
+        Some("durable") => durable(n(2)),
         _ => {
-            eprintln!("usage: store-bench lagging-view|segments|close-now|cleaning|burst [N]");
+            eprintln!(
+                "usage: store-bench lagging-view|segments|close-now|cleaning|burst|durable [N]"
+            );
             std::process::exit(2);
         }
     }
