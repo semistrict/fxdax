@@ -112,9 +112,13 @@ fn handle(store: &Store<HostDir>, path: &Path, child: u64) -> Result<(), Error> 
     std::fs::rename(path.join(new_description()), path.join(DESCRIPTION))?;
     std::fs::File::open(path)?.sync_all()?;
     // The handle's directory entry is as durable as the fork.
-    let parent = path.parent().filter(|parent| !parent.as_os_str().is_empty());
-    std::fs::File::open(parent.unwrap_or(Path::new(".")))?.sync_all()?;
+    std::fs::File::open(parent(path))?.sync_all()?;
     Ok(())
+}
+
+/// The directory the file or directory at `path` is in.
+fn parent(path: &Path) -> &Path {
+    path.parent().filter(|parent| !parent.as_os_str().is_empty()).unwrap_or(Path::new("."))
 }
 
 /// Deletes the store at `path`, which no store of this process has open: a fork's, whose handle
@@ -201,7 +205,10 @@ fn deleted_description() -> String {
 /// whole, or so that removing it again finishes it. Its description goes first, renamed to
 /// [`deleted_description`], durably, so that the directory is no store from then on, but one
 /// going, which a deletion resumed finds so; then the rest, then that, then the directory. A
-/// directory neither a store nor going is removed only if it is empty.
+/// directory neither a store nor going is removed only if it is empty. Then the directory it was
+/// in is synced, so that it is gone durably before the handle naming it goes: a host losing power,
+/// its file system keeping the handle's removal and not the directory's, would leave the directory
+/// with nothing naming it (TASK-79.77).
 fn remove_store(store: &Path) -> Result<(), Error> {
     let name = deleted_description();
     let deleted = store.join(&name);
@@ -230,7 +237,9 @@ fn remove_store(store: &Path) -> Result<(), Error> {
             }
             remove(removals::remove_file(&deleted))?;
         }
-        remove(removals::remove_dir(store))
+        remove(removals::remove_dir(store))?;
+        // Gone durably, the directory it was in synced.
+        remove(removals::sync_dir(parent(store)))
     };
     removing().with_context(|| format!("removing {}", store.display()))
 }
@@ -545,6 +554,36 @@ mod tests {
             stopped.expect_err(&format!("went on {at}"));
             finished(temp.path(), &fork, &at);
         }
+    }
+
+    /// TASK-79.77: a deletion of a store's last branch by its fork's handle removes the store's
+    /// directory durably, the directory it was in synced, before the handle's description goes: a
+    /// host losing power, its file system keeping the handle's removal and not the directory's,
+    /// would leave the store's directory with nothing naming it.
+    #[test]
+    fn deletions_of_last_branches_remove_the_stores_directory_durably_before_the_handle() {
+        let temp = tempfile::tempdir().unwrap();
+        let (path, fork) = last_fork(temp.path());
+        let store = path.canonicalize().unwrap();
+        let parent = store.parent().unwrap().to_owned();
+        // None but the deletion's.
+        taken();
+        delete_host(&fork, Options::default()).unwrap();
+        // Those of the store's directory itself, of the directory it was in, and of the handle.
+        let steps: Vec<_> = taken()
+            .into_iter()
+            .filter(|(_, at)| *at == store || *at == parent || at.starts_with(&fork))
+            .collect();
+        assert_eq!(
+            steps,
+            [
+                (Change::Synced, store.clone()),
+                (Change::Removed, store),
+                (Change::Synced, parent),
+                (Change::Removed, fork.join(DESCRIPTION)),
+                (Change::Removed, fork),
+            ]
+        );
     }
 
     /// A store deleted while a fork of it lives keeps its directory, which holds what the fork
