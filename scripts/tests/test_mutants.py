@@ -128,14 +128,42 @@ class Mutants(unittest.TestCase):
         self.assertEqual(len(self.calls()), 1)
 
     def test_a_pass_that_failed_fails_the_run(self):
+        # A report of a pass that failed is not of every mutant it had: it has no counts.
         self.assertEqual(
             self.mutants({"sweep": SWEEP, "shuttle": {"status": 101}}, "extent_store"),
             (
                 1,
                 "extent_store: caught 3, missed 2, timeout 1, unviable 1\n"
-                "extent_store, the missed under Shuttle: caught 0, missed 0, timeout 0, unviable 0\n",
+                "extent_store, the missed under Shuttle: failed with status 101\n",
             ),
         )
+
+    def test_a_shuttle_pass_that_failed_early_has_no_counts_of_the_earlier_runs(self):
+        self.mutants({"sweep": SWEEP, "shuttle": SHUTTLE}, "extent_store")
+        self.assertEqual(
+            self.mutants({"sweep": SWEEP, "shuttle": {"status": 1, "early": True}}, "extent_store"),
+            (
+                1,
+                "extent_store: caught 3, missed 2, timeout 1, unviable 1\n"
+                "extent_store, the missed under Shuttle: failed with status 1\n",
+            ),
+        )
+
+    def test_a_sweep_that_failed_early_has_no_shuttle_pass_over_the_earlier_runs_missed(self):
+        self.mutants({"sweep": SWEEP, "shuttle": SHUTTLE}, "extent_store")
+        early = {"status": 1, "early": True}
+        self.assertEqual(
+            self.mutants({"sweep": early, "shuttle": SHUTTLE}, "extent_store"),
+            (1, "extent_store: failed with status 1\n"),
+        )
+        self.assertEqual(len(self.calls()), 1)
+
+    def test_a_failed_crate_leaves_the_next_to_run(self):
+        self.assertEqual(
+            self.mutants({"sweep": {"status": 4}}, "extent_frame", "extent_remote"),
+            (1, "extent_frame: failed with status 4\nextent_remote: failed with status 4\n"),
+        )
+        self.assertEqual(len(self.calls()), 2)
 
 
 if __name__ == "__main__":

@@ -8,8 +8,9 @@ $FAKE_CARGO_MUTANTS/passes.json holds each pass's outcome: "sweep" for a run wit
 "shuttle" for one with --features shuttle, each the mutants it caught, missed, timed out on and
 found unviable, by kind, and the status it ends with. A pass writes them where cargo-mutants 27.1.0
 writes its report, in mutants.out of the --output directory, after it moves the report there to
-mutants.out.old, deleting the older one (OutputDir::new). Each call's arguments are appended to
-$FAKE_CARGO_MUTANTS/calls, a line of JSON each.
+mutants.out.old, deleting the older one (OutputDir::new); one that fails "early" ends before that,
+as cargo-mutants does when it cannot open the workspace, take its options or find the mutants
+(main.rs). Each call's arguments are appended to $FAKE_CARGO_MUTANTS/calls, a line of JSON each.
 
 Usage: python3 fake_cargo_mutants.py mutants ARG...
 """
@@ -31,6 +32,8 @@ def main(argv):
         print(json.dumps(argv[1:]), file=calls)
     shuttle = "--features" in argv and argv[argv.index("--features") + 1] == "shuttle"
     outcome = json.loads((STATE / "passes.json").read_text())["shuttle" if shuttle else "sweep"]
+    if outcome.get("early"):
+        sys.exit(outcome["status"])
     parent = Path(argv[argv.index("--output") + 1])
     parent.mkdir(exist_ok=True)
     report, rotated = parent / "mutants.out", parent / "mutants.out.old"
