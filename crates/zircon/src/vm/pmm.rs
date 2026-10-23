@@ -38,6 +38,9 @@
 //! - fxdax: a chunk given back goes back to the host as the node's lock is dropped, outside it
 //!   (`NodeGuard`, TASK-92.35), as its system calls would hold every allocation up for as long
 //!   under it; an allocation that it would make room for waits for it.
+//! - fxdax: a page a hypervisor's second stage mapped since it was allocated, freed, is
+//!   quarantined until every second stage has made the changes taking it away
+//!   (`quarantine`, TASK-79.9), as the kernel waits for none.
 //! - No loaned pages, free-page fill checking, phys hand-off lists or
 //!   compression.
 //! - `set_free_memory_signal` takes an `Arc<Event>` rather than a raw
@@ -62,8 +65,10 @@ use std::sync::{Arc, Once, OnceLock};
 use zx_status::Status;
 
 mod arenas;
+mod quarantine;
 mod relief;
 
+pub use quarantine::{Quarantined, quarantine_with};
 pub use relief::{RELIEF_BYTES, relieve_with};
 
 /// No restrictions on which arena to allocate from.
@@ -545,6 +550,10 @@ impl PmmNode {
     ///
     /// Caller guarantees that page is valid and they are the owner.
     pub unsafe fn free_page(&self, page: VmPagePtr, delay_reuse: PmmOptDelayReuse) {
+        // fxdax: unless quarantined, as a second stage may map it still.
+        if quarantine::sift_page(page, delay_reuse) {
+            return;
+        }
         let mut locked = self.locked();
         // pages freed individually shouldn't be in a queue.
         // SAFETY: The caller owns the page.
@@ -568,6 +577,8 @@ impl PmmNode {
         list: &mut VmPageDoublyLinkedList,
         delay_reuse: PmmOptDelayReuse,
     ) {
+        // fxdax: but those quarantined, as a second stage may map them still.
+        quarantine::sift(list, delay_reuse);
         let mut locked = self.locked();
         let mut count = 0;
         for page in list.iter() {
@@ -935,6 +946,8 @@ impl PmmNode {
             //    dropping lock
             page.set_state(VmPageState::Free);
         }
+        // fxdax: allocated again, it is no second stage's yet.
+        page.take_staged();
     }
 }
 

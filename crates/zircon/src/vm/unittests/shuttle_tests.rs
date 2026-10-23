@@ -8,8 +8,8 @@
 //! (`VmMapping::map_range`) on a thread of its own, racing a change to the mapping on another, in
 //! the interleavings Shuttle's schedulers choose; an allocation of an arena's pages racing the
 //! arena's removal; a chunk going back, outside the PMM's lock, racing an allocation it makes room
-//! for, and its arena's removal; and eviction of an arena's own pages racing a page it chose
-//! supplied again.
+//! for, and its arena's removal; eviction of an arena's own pages racing a page it chose
+//! supplied again; and a page freed racing its second stage's unmapping it, and its reuse.
 
 use super::test_helper::StubPageProvider;
 use crate::hypervisor::aspace::GuestPhysicalAspace;
@@ -17,6 +17,7 @@ use crate::kernel::deadline::Deadline;
 use crate::sync::{Rules, set_rules};
 use crate::vm::arch_vm_aspace::{ARCH_MMU_FLAG_PERM_READ, ARCH_MMU_FLAG_PERM_WRITE, ArchMmuFlags};
 use crate::vm::page_source::PageSource;
+use crate::vm::physmap::PhysLocation;
 use crate::vm::pmm;
 use crate::vm::vm_address_region::{VMAR_FLAG_SPECIFIC, VmAddressRegionOpChildren};
 use crate::vm::vm_cow_pages::SupplyOptions;
@@ -239,6 +240,175 @@ fn evicting_an_arenas_own_pages_races_a_page_supplied_again_in_any_order() {
     check(evicting_an_arenas_own_pages_races_a_page_supplied_again);
 }
 
+/// A second stage of another process, as the extent daemon's connection to a VM process is: it maps
+/// pages as the kernel maps them, but makes the changes taking them away later, on a thread of its
+/// own ([`LaggingStage::make`]), as the VM process makes them: what a guest reads through it
+/// meanwhile is what the pages hold.
+#[derive(Default)]
+struct LaggingStage(parking_lot::Mutex<Lagging>);
+
+#[derive(Default)]
+struct Lagging {
+    /// What the guest reaches: where each page's memory is.
+    mapped: std::collections::BTreeMap<usize, PhysLocation>,
+    /// The unmaps sent, not made yet, and how many were sent, and made.
+    unmaps: std::collections::VecDeque<(usize, usize)>,
+    sent: u64,
+    made: u64,
+    /// The pages freed, quarantined until the unmaps sent before are made.
+    parked: Vec<(u64, pmm::Quarantined)>,
+}
+
+impl crate::arch::host::mmu::SecondStage for LaggingStage {
+    fn map(&self, vaddr: usize, phys: PhysLocation, len: usize, _prot: libc::c_int) {
+        let mut stage = self.0.lock();
+        for at in (0..len).step_by(PAGE_SIZE) {
+            let page = PhysLocation { arena: phys.arena, offset: phys.offset + at as u64 };
+            stage.mapped.insert(vaddr + at, page);
+        }
+    }
+
+    fn protect(&self, _vaddr: usize, _len: usize, _prot: libc::c_int) {}
+
+    fn unmap(&self, vaddr: usize, len: usize) {
+        let mut stage = self.0.lock();
+        stage.unmaps.push_back((vaddr, len));
+        stage.sent += 1;
+    }
+}
+
+impl LaggingStage {
+    /// Makes the oldest unmap not made yet, and lets go of the pages that waited for it: whether
+    /// there was one.
+    fn make(&self) -> bool {
+        let released: Vec<_> = {
+            let mut stage = self.0.lock();
+            let Some((vaddr, len)) = stage.unmaps.pop_front() else { return false };
+            for at in (0..len).step_by(PAGE_SIZE) {
+                stage.mapped.remove(&(vaddr + at));
+            }
+            stage.made += 1;
+            let made = stage.made;
+            stage.parked.extract_if(.., |(sent, _)| *sent <= made).collect()
+        };
+        // Freed without the stage's lock, which a quarantine takes.
+        drop(released);
+        true
+    }
+
+    /// Quarantines `pages` until the unmaps sent so far are made.
+    fn park(&self, pages: pmm::Quarantined) {
+        let mut stage = self.0.lock();
+        if stage.made < stage.sent {
+            let sent = stage.sent;
+            stage.parked.push((sent, pages));
+            return;
+        }
+        drop(stage);
+        drop(pages);
+    }
+
+    /// The first word of what the guest reads at `vaddr` through the stage, if anything is mapped
+    /// there, read as its VM process maps the page.
+    fn read(&self, vaddr: usize) -> Option<u64> {
+        use std::os::fd::AsRawFd;
+        let stage = self.0.lock();
+        let page = stage.mapped.get(&vaddr)?;
+        let arena = pmm::node().phys_memory().arena_fd(page.arena).expect("the page's arena");
+        let (len, prot) = (PAGE_SIZE, libc::PROT_READ);
+        // SAFETY: A new mapping of the page's memory, which outlives it.
+        let mapped = unsafe {
+            let offset = page.offset as libc::off_t;
+            libc::mmap(std::ptr::null_mut(), len, prot, libc::MAP_SHARED, arena.as_raw_fd(), offset)
+        };
+        assert_ne!(mapped, libc::MAP_FAILED, "{}", std::io::Error::last_os_error());
+        // SAFETY: The mapping's first word, which the guest reads at once.
+        let word = unsafe { mapped.cast::<u64>().read_volatile() };
+        // SAFETY: The mapping made above.
+        assert_eq!(unsafe { libc::munmap(mapped, len) }, 0);
+        Some(word)
+    }
+}
+
+/// The stage of the schedule running, which the quarantine parks the pages freed on.
+static LAGGING: std::sync::Mutex<Option<Arc<LaggingStage>>> = std::sync::Mutex::new(None);
+
+/// What a page freed of [`freeing_races_the_second_stage`] holds, and what its next owner writes.
+const FREED: u64 = 0xf7ee_d000_f7ee_d000;
+const REUSED: u64 = 0x0e05_ed00_0e05_ed00;
+
+/// TASK-79.9: a page a second stage of another process maps, which makes the kernel's changes
+/// after they return, freed, is no other object's until the stage has taken it away: a guest
+/// reading it through the stage meanwhile reads what it held, never what an object made after
+/// holds. A VMO's page mapped through a [`LaggingStage`], the mapping unmapped and the VMO
+/// dropped, and another made and written, as its VM process makes the unmap and its guest reads.
+fn freeing_races_the_second_stage() {
+    static QUARANTINE: std::sync::Once = std::sync::Once::new();
+    QUARANTINE.call_once(|| {
+        pmm::quarantine_with(|pages| {
+            LAGGING.lock().unwrap().as_ref().expect("a schedule's stage").park(pages)
+        })
+    });
+    let stage = Arc::new(LaggingStage::default());
+    *LAGGING.lock().unwrap() = Some(stage.clone());
+    let gpas = GuestPhysicalAspace::create_with_second_stage(PAGE_SIZE, stage.clone()).unwrap();
+    let page = || VmObjectPaged::create(pmm::ALLOC_FLAG_ANY, 0, PAGE_SIZE as u64).unwrap();
+    // A page of the chunk the next is of, which keeps it the arena's as the next is freed, and
+    // so that page the one allocated next.
+    let keeper = page();
+    keeper.commit_range(0, PAGE_SIZE as u64).unwrap();
+    let vmo = page();
+    vmo.write(&FREED.to_ne_bytes(), 0).unwrap();
+    let (mapping, _) = (gpas.root_vmar())
+        .create_vm_mapping(
+            0,
+            PAGE_SIZE,
+            0,
+            VMAR_FLAG_SPECIFIC,
+            vmo,
+            0,
+            ARCH_MMU_FLAG_PERM_READ,
+            "vmo",
+        )
+        .unwrap();
+    mapping.map_range(0, PAGE_SIZE, false, true).unwrap();
+    assert_eq!(stage.read(0), Some(FREED));
+
+    let vmm = {
+        let stage = stage.clone();
+        thread::spawn(move || {
+            while !stage.make() {
+                thread::yield_now();
+            }
+        })
+    };
+    let guest = {
+        let stage = stage.clone();
+        thread::spawn(move || {
+            for _ in 0..3 {
+                if let Some(read) = stage.read(0) {
+                    assert_eq!(read, FREED, "the guest read a page another object holds");
+                }
+                thread::yield_now();
+            }
+        })
+    };
+    gpas.unmap_range(0, PAGE_SIZE).unwrap();
+    drop(mapping);
+    let next = page();
+    next.write(&REUSED.to_ne_bytes(), 0).unwrap();
+    guest.join().unwrap();
+    vmm.join().unwrap();
+    assert!(stage.0.lock().parked.is_empty(), "pages quarantined once the stage made the unmap");
+    LAGGING.lock().unwrap().take();
+    drop((keeper, next));
+}
+
+#[test]
+fn freeing_races_the_second_stage_in_any_order() {
+    check(freeing_races_the_second_stage);
+}
+
 /// The batches of schedules [`fails_without`] runs at most to find one that fails.
 const BATCHES: usize = 8;
 
@@ -293,4 +463,13 @@ fn needs_evictions_to_take_only_the_pages_chosen() {
     let rules = Rules { evictions_take_only_the_pages_chosen: false, ..Rules::ALL };
     let test = evicting_an_arenas_own_pages_races_a_page_supplied_again;
     fails_without(rules, "the page supplied again stays", test);
+}
+
+/// A page freed at once, though a second stage of another process may map it still, is another
+/// object's that the guest reads.
+#[test]
+fn needs_staged_pages_to_wait_for_their_stages() {
+    let rules = Rules { staged_pages_wait_for_their_stages: false, ..Rules::ALL };
+    let test = freeing_races_the_second_stage;
+    fails_without(rules, "the guest read a page another object holds", test);
 }

@@ -23,12 +23,14 @@
 //!   slab and MMU pages are not supported.
 //! - `VmPageDoublyLinkedList` is a small intrusive list over `queue_node`
 //!   rather than `fbl::DoublyLinkedList`.
+//! - fxdax: a page knows whether a hypervisor's second stage has mapped it since it was allocated
+//!   (`VmPage::stage`), which freeing it quarantines it for (`pmm::quarantine_with`, TASK-79.9).
 
 use crate::kernel::types::PAddr;
 use crate::vm::page_state::VmPageState;
 use std::cell::UnsafeCell;
 use std::ptr::{self, NonNull};
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 pub mod object {
     pub const PIN_COUNT_BITS: u32 = 5;
@@ -138,6 +140,9 @@ pub struct VmPage {
     paddr: PAddr,
     object: UnsafeCell<VmPageObjectState>,
     state: AtomicU8,
+    /// fxdax: whether a hypervisor's second stage has mapped the page since it was allocated
+    /// (`arch::host::mmu`), which may map it still as it is freed (`pmm::quarantine_with`).
+    staged: AtomicBool,
 }
 
 // SAFETY: Access to the interior mutable fields is serialized by the locks
@@ -152,7 +157,19 @@ impl VmPage {
             paddr,
             object: UnsafeCell::new(VmPageObjectState::new()),
             state: AtomicU8::new(VmPageState::Free as u8),
+            staged: AtomicBool::new(false),
         }
+    }
+
+    /// fxdax: a hypervisor's second stage maps the page: it may map it still as it is freed.
+    pub fn stage(&self) {
+        self.staged.store(true, Ordering::Relaxed);
+    }
+
+    /// fxdax: whether a second stage has mapped the page since it was allocated, or since this
+    /// was last asked; which it forgets.
+    pub fn take_staged(&self) -> bool {
+        self.staged.swap(false, Ordering::Relaxed)
     }
 
     pub fn paddr(&self) -> PAddr {

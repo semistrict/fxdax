@@ -24,7 +24,9 @@
 //! tables. A hypervisor may not follow host mappings as they change, and the guest's memory may be
 //! another process's, so a window can have a [`SecondStage`] instead of a reservation, to which
 //! its mappings are made: making them in host memory too would cost each change a system call
-//! more, for memory nothing accesses (TASK-26.18.3).
+//! more, for memory nothing accesses (TASK-26.18.3). fxdax: a second stage of another process
+//! makes the changes after they return, so each page it maps is marked (`VmPage::stage`): freed,
+//! it waits for the stages to have made them (`pmm::quarantine_with`, TASK-79.9).
 //!
 //! The host's page tables cannot be queried, so each mapping is also recorded here. The host also
 //! does not expose accessed flags, so they are emulated as architectures without hardware accessed
@@ -46,7 +48,8 @@ const PAGE_SIZE: usize = page::SIZE;
 
 /// A hypervisor's second stage translation of a window's addresses, such as a guest's physical
 /// addresses, in which the window's pages are mapped rather than in host memory. Protections are
-/// the host's (`PROT_*`).
+/// the host's (`PROT_*`). fxdax: a change may be made after it returns, as another process's
+/// stage makes it: a page it maps, freed, is quarantined until then (`pmm::quarantine_with`).
 pub trait SecondStage: Send + Sync {
     /// Maps the `len` bytes at `vaddr`, where nothing is mapped, to the physical pages at `phys`
     /// (`vm::physmap`), consecutive in one arena's object, from which another process can map
@@ -229,6 +232,12 @@ impl HostArchVmAspace {
                     self.install_host(*host_base, vaddr + done, phys, piece, pte.host_prot());
                 }
                 Translation::SecondStage(second_stage) => {
+                    // fxdax: once freed, the pages wait for the stage to take them away
+                    // (`pmm::quarantine_with`, TASK-79.9).
+                    for page in (0..piece).step_by(PAGE_SIZE) {
+                        let page = pmm::paddr_to_vm_page(PAddr(paddr.0 + page));
+                        page.expect("a mapped page is physical memory's").stage();
+                    }
                     second_stage.map(vaddr + done, phys, piece, pte.host_prot());
                 }
             }
@@ -673,6 +682,57 @@ mod tests {
 
         let aspace = HostArchVmAspace::new(PAGE_SIZE);
         assert_eq!(aspace.host_base(), Some(aspace.base()));
+    }
+
+    /// fxdax: a page a second stage mapped, freed, is quarantined, not free until what the
+    /// kernel's user gave the quarantine lets it go (TASK-79.9); one only host memory mapped, or
+    /// mapped by a second stage before it was last freed, is freed at once.
+    #[test]
+    fn pages_second_stages_mapped_are_quarantined_as_they_are_freed() {
+        let (quarantine, quarantined) = std::sync::mpsc::channel::<pmm::Quarantined>();
+        let quarantine = Mutex::new(quarantine);
+        pmm::quarantine_with(move |pages| quarantine.lock().send(pages).unwrap());
+        let stage = Arc::new(RecordingSecondStage::default());
+        let staged = HostArchVmAspace::new_window(0, PAGE_SIZE, Some(stage));
+        let host = HostArchVmAspace::new(PAGE_SIZE);
+        let ((ours, our_paddr), (theirs, their_paddr)) =
+            (pmm::alloc_page(0).unwrap(), pmm::alloc_page(0).unwrap());
+        host.map(host.base(), &[our_paddr], RW, ExistingEntryAction::Error).unwrap();
+        staged.map(0, &[their_paddr], RW, ExistingEntryAction::Error).unwrap();
+        host.unmap(host.base(), 1, ARCH_UNMAP_OPTION_NONE).unwrap();
+        staged.unmap(0, 1, ARCH_UNMAP_OPTION_NONE).unwrap();
+
+        // SAFETY: The pages are unmapped and owned by this test.
+        unsafe { pmm::free_page(ours) };
+        assert!(ours.is_free());
+        assert!(quarantined.try_recv().is_err(), "a page host memory mapped is quarantined");
+        // SAFETY: As above.
+        unsafe { pmm::free_page(theirs) };
+        assert!(!theirs.is_free(), "a page a second stage mapped is free");
+        let pages = quarantined.try_recv().unwrap();
+        assert_eq!(pages.len(), 1);
+        drop(pages);
+        assert!(theirs.is_free(), "a page the quarantine let go of isn't free");
+
+        // Allocated again, it is no second stage's.
+        let mut list = crate::vm::page::VmPageDoublyLinkedList::new();
+        let mut taken = Vec::new();
+        while let Ok((page, _)) = pmm::alloc_page(0) {
+            taken.push(page);
+            if page == theirs {
+                break;
+            }
+        }
+        assert_eq!(taken.last(), Some(&theirs), "the page freed is never allocated again");
+        for page in taken {
+            list.push_back(page);
+        }
+        // SAFETY: As above.
+        unsafe { pmm::free_list(&mut list) };
+        assert!(theirs.is_free());
+        assert!(quarantined.try_recv().is_err(), "a page no second stage mapped is quarantined");
+        staged.destroy().unwrap();
+        host.destroy().unwrap();
     }
 
     /// Each change to a window's mappings is made to its second stage, at the window's addresses:

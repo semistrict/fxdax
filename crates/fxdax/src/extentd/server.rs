@@ -166,18 +166,23 @@ pub(super) fn connections() -> usize {
 /// Receives the VM process's messages, serving its requests ([`receive`]), until it is gone; then,
 /// once its requests are done, lets its store go.
 async fn run_connection(stream: UnixStream, tenant: Option<Arc<Tenant>>) {
-    let sender = match stream.try_clone() {
-        Ok(clone) => Arc::new(Sender::new(clone)),
+    let sender = match stream.try_clone().and_then(|clone| {
+        clone.set_nonblocking(true)?;
+        AsyncSender::new(clone)
+    }) {
+        Ok(sender) => Arc::new(sender),
         Err(err) => {
             log::error!("extentd: cloning a connection: {err}");
             return;
         }
     };
+    let acks = Arc::new(Acks::default());
+    let peer = Peer::connected(&stream, sender.clone(), acks.clone());
     let connection = Arc::new_cyclic(|this| Connection {
         this: this.clone(),
         tenant,
         sender: sender.clone(),
-        acks: Arc::new(Acks::default()),
+        acks,
         store: OnceLock::new(),
         path: OnceLock::new(),
         window: Mutex::new(None),
@@ -198,7 +203,9 @@ async fn run_connection(stream: UnixStream, tenant: Option<Arc<Tenant>>) {
         Err(err) => log::error!("extentd: receiving from a VM process: {err}"),
     }
     // The VM process is gone, and its mappings of the window with it: nothing waits for it.
+    // fxdax: one the daemon let go, once it has exited (TASK-79.9).
     connection.closing.store(true, Ordering::Release);
+    peer.gone().await;
     connection.acks.close();
     // Its requests received are served still, as they were before it went.
     loop {
@@ -218,6 +225,7 @@ async fn run_connection(stream: UnixStream, tenant: Option<Arc<Tenant>>) {
     if let Err(err) = finished.await {
         log::error!("extentd: letting a connection's store go: {err}");
     }
+    peer.forget();
 }
 
 /// Receives `connection`'s messages from `receiver` until its VM process is gone, and says so
@@ -255,7 +263,7 @@ fn receive(
 
 /// Lets the store of `connection`, whose VM process is gone and whose requests are done, go: once
 /// what it committed is durable.
-fn finish_connection(connection: Arc<Connection>, sender: Arc<Sender>) {
+fn finish_connection(connection: Arc<Connection>, sender: Arc<AsyncSender>) {
     let path = connection.path.get().cloned();
     if let Some(store) = connection.store.get().filter(|store| !store.is_follower()) {
         if let Err(err) = store.flush() {
@@ -358,7 +366,7 @@ pub(super) struct Connection {
     this: Weak<Connection>,
     /// fxdax: the tenant it is of, if any (TASK-43).
     tenant: Option<Arc<Tenant>>,
-    sender: Arc<Sender>,
+    sender: Arc<AsyncSender>,
     acks: Arc<Acks>,
     /// Its store: fxdax: a follower's, if read-only (backlog doc-8).
     store: OnceLock<Arc<ExtentStore>>,
@@ -495,7 +503,7 @@ impl Connection {
         }
         // Counted before its reply, which its VM process may then count on.
         super::metrics::served(header.kind, started.elapsed(), reply.status != 0);
-        if let Err(err) = self.sender.send(reply, &payload, &fds) {
+        if let Err(err) = self.sender.send(reply, payload, &fds) {
             log::warn!("extentd: replying to a VM process: {err}");
         }
     }
@@ -785,7 +793,7 @@ impl Guest for Connection {
     fn tell(&self, capacity: u64, ask: bool) -> Result<(), Errno> {
         let flags = if ask { CAPACITY_ASK } else { 0 };
         let header = Header::new(CAPACITY, 0).with_args(&[capacity]).with_flags(flags);
-        self.sender.send(header, &[], &[]).map_err(|err| {
+        self.sender.send(header, Vec::new(), &[]).map_err(|err| {
             log::warn!("extentd: telling a VM process its capacity: {err}");
             Errno::EIO
         })
@@ -946,7 +954,7 @@ async fn flush_behind(store: Arc<ExtentStore>, mut stopped: tokio::sync::oneshot
 async fn tell_commits(
     store: Arc<ExtentStore>,
     mut epoch: u64,
-    sender: Arc<Sender>,
+    sender: Arc<AsyncSender>,
     mut stopped: tokio::sync::oneshot::Receiver<()>,
 ) {
     use tokio::sync::oneshot::error::TryRecvError;
@@ -957,20 +965,11 @@ async fn tell_commits(
             continue;
         };
         epoch = latest;
-        let sending = sender.clone();
-        let sent = tokio::task::spawn_blocking(move || {
-            sending.send(Header::new(COMMITTED, 0).with_args(&[latest]), &[], &[])
-        });
-        match sent.await {
-            Ok(Ok(())) => {}
-            Ok(Err(err)) => {
-                log::warn!("extentd: telling a VM process of a commit: {err}");
-                return;
-            }
-            Err(err) => {
-                log::warn!("extentd: telling a VM process of a commit: {err}");
-                return;
-            }
+        // Sent holding no thread, as a send never waits (TASK-79.9).
+        let told = Header::new(COMMITTED, 0).with_args(&[latest]);
+        if let Err(err) = sender.send(told, Vec::new(), &[]) {
+            log::warn!("extentd: telling a VM process of a commit: {err}");
+            return;
         }
     }
 }
@@ -987,20 +986,29 @@ struct Acks {
 struct AckState {
     /// The last stage operation sent.
     sent: u64,
+    /// fxdax: the last sent that takes access to pages away, which the VM process may reach until
+    /// it has made it (TASK-79.9).
+    last_taking: u64,
     /// The last acknowledged.
     acked: u64,
     /// The VM process is gone, and nothing it acknowledges is waited for.
     closed: bool,
-    /// fxdax: what is kept until stage operations are acknowledged (`Deferred::keep_until_made`),
-    /// with their IDs.
+    /// fxdax: what is kept until stage operations are acknowledged (`Deferred::keep_until_made`,
+    /// [`Acks::park`]), with their IDs.
     kept: Vec<(u64, Box<dyn Send>)>,
+    /// fxdax: the operation taking access away the watchdog found unacknowledged, and when it
+    /// first did ([`Acks::unanswered`]).
+    watched: Option<(u64, std::time::Instant)>,
 }
 
 impl Acks {
-    /// The ID of the next stage operation.
-    fn next(&self) -> u64 {
+    /// The ID of the next stage operation, which takes access to pages away if `taking`.
+    fn next(&self, taking: bool) -> u64 {
         let mut state = self.state.lock().unwrap();
         state.sent += 1;
+        if taking {
+            state.last_taking = state.sent;
+        }
         state.sent
     }
 
@@ -1021,9 +1029,44 @@ impl Acks {
 
     /// Keeps `keep` until stage operation `id` is acknowledged, or the VM process is gone.
     fn keep(&self, id: u64, keep: Box<dyn Send>) {
+        let refused = {
+            let mut state = self.state.lock().unwrap();
+            if state.acked < id && !state.closed {
+                state.kept.push((id, keep));
+                None
+            } else {
+                Some(keep)
+            }
+        };
+        // Dropped without holding the lock, as what it frees may park here (`quarantine`).
+        drop(refused);
+    }
+
+    /// fxdax: keeps `pages`, freed, until the VM process has made the stage operations sent it so
+    /// far that take access to pages away, any of which may have been of them (TASK-79.9).
+    fn park(&self, pages: &Arc<dyn Send + Sync>) {
         let mut state = self.state.lock().unwrap();
-        if state.acked < id && !state.closed {
-            state.kept.push((id, keep));
+        if state.acked < state.last_taking && !state.closed {
+            let id = state.last_taking;
+            state.kept.push((id, Box::new(pages.clone())));
+        }
+    }
+
+    /// fxdax: how long, as of `now`, the VM process has left an operation taking access away
+    /// unacknowledged, as the watchdog looks every so often (TASK-79.9): since it first found it
+    /// so, or none.
+    fn unanswered(&self, now: std::time::Instant) -> std::time::Duration {
+        let mut state = self.state.lock().unwrap();
+        if state.closed || state.acked >= state.last_taking {
+            state.watched = None;
+            return std::time::Duration::ZERO;
+        }
+        match state.watched {
+            Some((id, since)) if state.acked < id => now.saturating_duration_since(since),
+            _ => {
+                state.watched = Some((state.last_taking, now));
+                std::time::Duration::ZERO
+            }
         }
     }
 
@@ -1046,35 +1089,203 @@ impl Acks {
     }
 }
 
+/// fxdax: how long a VM process may leave a stage operation that takes access to pages away
+/// unacknowledged before the daemon takes it to have stopped answering, and lets it go
+/// ([`Peer::let_go`], TASK-79.9): long past what making one takes, and well within what an
+/// allocation waits for the pages freed meanwhile, which wait for it, before it fails
+/// (`zircon::vm::anonymous_page_request`, 30 s).
+const UNRESPONSIVE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// fxdax: how often the watchdog looks for VM processes that stopped answering ([`watch`]).
+const WATCH_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// fxdax: a connection's VM process, as the daemon depends on it (TASK-79.9): the stage
+/// operations it acknowledges, which the pages it may reach wait for, freed ([`quarantine`]); and
+/// the process itself, which the daemon lets go once it has left one unacknowledged for
+/// [`UNRESPONSIVE`] ([`watch`]): its connection shut down, it is killed as the connection goes,
+/// which waits for it to have exited, its mappings of the window gone, before the pages it may
+/// reach go back ([`Peer::gone`]).
+struct Peer {
+    acks: Arc<Acks>,
+    sender: Arc<AsyncSender>,
+    /// Its process, as a pidfd: none if it is this one, as tests' are, whose code the daemon's own
+    /// is; or if it could not be told.
+    process: Option<std::os::fd::OwnedFd>,
+    /// Whether the daemon let it go ([`Peer::let_go`]).
+    let_go: AtomicBool,
+}
+
+/// fxdax: the VM processes connected ([`Peer`]).
+static PEERS: Mutex<Vec<Arc<Peer>>> = Mutex::new(Vec::new());
+
+impl Peer {
+    /// The VM process at the other end of `stream`, which `sender` sends to and acknowledges to
+    /// `acks`, among those connected, until [`Peer::forget`]; with the quarantine of the pages
+    /// freed that it, or another, may reach, and the watchdog, started first.
+    fn connected(stream: &UnixStream, sender: Arc<AsyncSender>, acks: Arc<Acks>) -> Arc<Self> {
+        static WATCHING: std::sync::Once = std::sync::Once::new();
+        WATCHING.call_once(|| {
+            zircon::vm::pmm::quarantine_with(quarantine);
+            IO.spawn(watch());
+        });
+        let process = peer_process(stream)
+            .inspect_err(|err| log::warn!("extentd: a VM process's pidfd: {err}"))
+            .ok()
+            .flatten();
+        let peer = Arc::new(Self { acks, sender, process, let_go: AtomicBool::new(false) });
+        PEERS.lock().unwrap().push(peer.clone());
+        peer
+    }
+
+    /// Its connection is gone: no page waits for it from now on.
+    fn forget(self: &Arc<Self>) {
+        let forgotten: Vec<_> =
+            PEERS.lock().unwrap().extract_if(.., |peer| Arc::ptr_eq(peer, self)).collect();
+        // Dropped without holding the lock, as what it frees may be quarantined.
+        drop(forgotten);
+    }
+
+    /// Lets it go, `why`: shuts its connection down, whose going kills it ([`Peer::gone`]).
+    fn let_go(&self, why: std::fmt::Arguments<'_>) {
+        if !self.let_go.swap(true, Ordering::AcqRel) {
+            log::error!("extentd: letting a VM process go, as it {why}");
+            self.sender.shutdown();
+        }
+    }
+
+    /// Lets it go if it has left an operation taking access away unacknowledged for
+    /// [`UNRESPONSIVE`], as of `now`.
+    fn watch(&self, now: std::time::Instant) {
+        if self.acks.unanswered(now) >= UNRESPONSIVE {
+            self.let_go(format_args!("left a stage operation unacknowledged for {UNRESPONSIVE:?}"));
+        }
+    }
+
+    /// Its connection is gone: if the daemon let it go, kills it and returns once it has exited,
+    /// holding no thread, its memory gone, and its mappings of the window.
+    async fn gone(&self) {
+        use std::os::fd::{AsFd, AsRawFd};
+        let Some(process) = self.process.as_ref().filter(|_| self.let_go.load(Ordering::Acquire))
+        else {
+            return;
+        };
+        // SAFETY: Signals the process the pidfd, which the peer keeps open, names.
+        let killed = unsafe {
+            libc::syscall(
+                libc::SYS_pidfd_send_signal,
+                process.as_raw_fd(),
+                libc::SIGKILL,
+                std::ptr::null::<libc::siginfo_t>(),
+                0,
+            )
+        };
+        if killed != 0 {
+            log::error!("extentd: killing a VM process: {}", std::io::Error::last_os_error());
+        }
+        // A pidfd is readable once its process has exited.
+        let exited =
+            tokio::io::unix::AsyncFd::with_interest(process.as_fd(), tokio::io::Interest::READABLE);
+        if let Err(err) = async { exited?.readable().await.map(drop) }.await {
+            log::error!("extentd: waiting for a VM process to exit: {err}");
+        }
+    }
+}
+
+/// fxdax: the process at the other end of `stream`, as a pidfd, unless it is this one.
+fn peer_process(stream: &UnixStream) -> std::io::Result<Option<std::os::fd::OwnedFd>> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+    let fd = stream.as_raw_fd();
+    let mut credentials = libc::ucred { pid: 0, uid: 0, gid: 0 };
+    let mut len = size_of::<libc::ucred>() as libc::socklen_t;
+    // SAFETY: Reads the peer's credentials into `credentials`, of `len` bytes.
+    let read = unsafe {
+        libc::getsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            (&raw mut credentials).cast(),
+            &mut len,
+        )
+    };
+    if read != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    if credentials.pid == std::process::id() as libc::pid_t {
+        return Ok(None);
+    }
+    let mut pidfd: libc::c_int = -1;
+    let mut len = size_of::<libc::c_int>() as libc::socklen_t;
+    // SAFETY: Reads the peer's pidfd into `pidfd`, of `len` bytes.
+    let read = unsafe {
+        libc::getsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_PEERPIDFD,
+            (&raw mut pidfd).cast(),
+            &mut len,
+        )
+    };
+    if read != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: A new descriptor, which the call gave this process.
+    Ok(Some(unsafe { std::os::fd::OwnedFd::from_raw_fd(pidfd) }))
+}
+
+/// fxdax: quarantines `pages`, freed, which a VM process may still reach, as a stage operation
+/// taking them away may be unacknowledged (`zircon::vm::pmm::quarantine_with`, TASK-79.9): until
+/// every VM process connected has made those it was sent so far, or gone. The pages are freed as
+/// the last of them lets go.
+fn quarantine(pages: zircon::vm::pmm::Quarantined) {
+    let pages: Arc<dyn Send + Sync> = Arc::new(pages);
+    for peer in PEERS.lock().unwrap().iter() {
+        peer.acks.park(&pages);
+    }
+}
+
+/// fxdax: lets the VM processes that stopped answering go ([`Peer::watch`]), looking every
+/// [`WATCH_EVERY`], for as long as the daemon runs.
+async fn watch() {
+    let mut every = tokio::time::interval(WATCH_EVERY);
+    loop {
+        every.tick().await;
+        let now = std::time::Instant::now();
+        for peer in PEERS.lock().unwrap().iter() {
+            peer.watch(now);
+        }
+    }
+}
+
 /// A window's second stage in a VM process's memory: its changes go to the VM process, which makes
-/// them in order before it takes the replies that follow them. One that takes access to pages away
-/// is waited for, so that the guest has no access to a page the kernel frees, reuses or shares
-/// next.
+/// them in order before it takes the replies that follow them. fxdax: none is waited for, as the
+/// kernel makes them with its locks held, which a VM process that stopped answering would hold for
+/// good (TASK-79.9): one that takes access to pages away is acknowledged, and the guest has no
+/// access to a page the kernel frees, reuses or shares next, as what was freed waits for it
+/// ([`quarantine`]), and a seal's sharing too (`end_deferring`).
 struct RemoteStage {
-    sender: Arc<Sender>,
+    sender: Arc<AsyncSender>,
     acks: Arc<Acks>,
 }
 
 thread_local! {
-    /// fxdax: while this thread defers waiting for stage operations
-    /// (`SecondStage::begin_deferring`), the last one it would have waited for.
+    /// fxdax: while this thread defers what waits for stage operations
+    /// (`SecondStage::begin_deferring`), the last one it sent that takes access away.
     static DEFERRED: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
 }
 
 impl RemoteStage {
-    fn send(&self, kind: u32, args: &[u64], wait: bool) {
-        let id = self.acks.next();
+    /// Sends a stage operation of `kind`, with `args`, which the VM process acknowledges if it
+    /// takes access to pages away (`taking`).
+    fn send(&self, kind: u32, args: &[u64], taking: bool) {
+        let id = self.acks.next(taking);
         let header =
-            Header::new(kind, id).with_args(args).with_flags(if wait { STAGE_ACK } else { 0 });
-        if self.sender.send(header, &[], &[]).is_err() {
+            Header::new(kind, id).with_args(args).with_flags(if taking { STAGE_ACK } else { 0 });
+        if self.sender.send(header, Vec::new(), &[]).is_err() {
             // The VM process is gone, and its mappings with it.
             return;
         }
-        if wait {
-            match DEFERRED.get() {
-                Some(last) => DEFERRED.set(Some(last.max(id))),
-                None => self.acks.wait(id),
-            }
+        if taking && let Some(last) = DEFERRED.get() {
+            DEFERRED.set(Some(last.max(id)));
         }
     }
 }
@@ -1108,8 +1319,8 @@ impl SecondStage for RemoteStage {
     }
 
     fn protect(&self, offset: u64, len: u64, protection: Protection) {
-        let wait = protection != Protection::ReadWrite;
-        self.send(STAGE_PROTECT, &[offset, len, protection_code(protection)], wait);
+        let taking = protection != Protection::ReadWrite;
+        self.send(STAGE_PROTECT, &[offset, len, protection_code(protection)], taking);
     }
 
     fn begin_deferring(&self) {
@@ -1141,7 +1352,7 @@ mod acks_tests {
     fn kept_until_acknowledged() {
         let acks = Acks::default();
         let (first, second, third) = (Arc::new(()), Arc::new(()), Arc::new(()));
-        let ids: Vec<u64> = (0..3).map(|_| acks.next()).collect();
+        let ids: Vec<u64> = (0..3).map(|_| acks.next(true)).collect();
         acks.keep(ids[1], Box::new(first.clone()));
         acks.keep(ids[2], Box::new(second.clone()));
         acks.acked(ids[0]);
@@ -1153,6 +1364,52 @@ mod acks_tests {
         assert_eq!(Arc::strong_count(&third), 1);
         acks.close();
         assert_eq!(Arc::strong_count(&second), 1);
+    }
+
+    /// TASK-79.9: pages freed are parked until the VM process has made what it was sent so far
+    /// that takes access to pages away, not what it was sent after, nor what gives access; and
+    /// not at all with none of that unacknowledged, or once the VM process is gone.
+    #[test]
+    fn parked_until_what_takes_access_away_is_acknowledged() {
+        let acks = Acks::default();
+        let pages: Arc<dyn Send + Sync> = Arc::new(());
+        let mapped = acks.next(false);
+        acks.park(&pages);
+        assert_eq!(Arc::strong_count(&pages), 1, "parked behind a map");
+        let unmapped = acks.next(true);
+        acks.park(&pages);
+        let after = acks.next(true);
+        assert_eq!(Arc::strong_count(&pages), 2);
+        acks.acked(mapped);
+        assert_eq!(Arc::strong_count(&pages), 2);
+        acks.acked(unmapped);
+        assert_eq!(Arc::strong_count(&pages), 1, "parked behind what came after");
+        acks.park(&pages);
+        assert_eq!(Arc::strong_count(&pages), 2);
+        acks.close();
+        assert_eq!(Arc::strong_count(&pages), 1, "parked once the VM process is gone");
+        acks.park(&pages);
+        assert_eq!(Arc::strong_count(&pages), 1);
+        assert!(after > unmapped);
+    }
+
+    /// TASK-79.9: what the watchdog finds unacknowledged counts from when it first found it so,
+    /// anew once the VM process acknowledges it, and not at all with nothing unacknowledged.
+    #[test]
+    fn unanswered_from_when_first_found_so() {
+        let acks = Acks::default();
+        let start = std::time::Instant::now();
+        let at = |seconds| start + std::time::Duration::from_secs(seconds);
+        assert_eq!(acks.unanswered(at(0)), std::time::Duration::ZERO);
+        let first = acks.next(true);
+        assert_eq!(acks.unanswered(at(1)), std::time::Duration::ZERO);
+        assert_eq!(acks.unanswered(at(3)), std::time::Duration::from_secs(2));
+        let second = acks.next(true);
+        acks.acked(first);
+        assert_eq!(acks.unanswered(at(4)), std::time::Duration::ZERO);
+        assert_eq!(acks.unanswered(at(9)), std::time::Duration::from_secs(5));
+        acks.acked(second);
+        assert_eq!(acks.unanswered(at(10)), std::time::Duration::ZERO);
     }
 }
 

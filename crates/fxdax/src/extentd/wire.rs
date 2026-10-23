@@ -10,7 +10,7 @@
 //! read-only (TASK-43).
 
 use std::io::{self, Read, Write};
-use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
 use std::sync::Mutex;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
@@ -208,23 +208,13 @@ pub(crate) struct Message {
     pub fds: Vec<OwnedFd>,
 }
 
-/// The sending half of a connection, which any thread sends whole messages through.
+/// The sending half of a VM process's connection, which any of its threads sends whole messages
+/// through, each waiting for room as the socket fills: the daemon's is an [`AsyncSender`].
 pub(crate) struct Sender(Mutex<UnixStream>);
 
 impl Sender {
     pub fn new(stream: UnixStream) -> Self {
         Self(Mutex::new(stream))
-    }
-
-    /// Whether the other end hung up, as a VM process that went does, though the receiving end
-    /// may not have read so yet.
-    pub fn peer_gone(&self) -> bool {
-        use std::os::fd::AsRawFd;
-        let stream = self.0.lock().unwrap();
-        let mut poll = libc::pollfd { fd: stream.as_raw_fd(), events: libc::POLLRDHUP, revents: 0 };
-        // SAFETY: Polls the stream's descriptor, which it keeps open, without waiting.
-        let ready = unsafe { libc::poll(&mut poll, 1, 0) };
-        ready > 0 && poll.revents & (libc::POLLRDHUP | libc::POLLHUP | libc::POLLERR) != 0
     }
 
     /// Sends `header`, with `payload` as its payload, and `fds`, at most [`MAX_FDS`].
@@ -253,6 +243,159 @@ impl Sender {
     /// Shuts the connection down, which ends its receiver's messages.
     pub fn shutdown(&self) {
         let _ = self.0.lock().unwrap().shutdown(std::net::Shutdown::Both);
+    }
+}
+
+/// fxdax: the sending half of one of the daemon's connections, which any thread sends whole
+/// messages through, in order, none waiting for the VM process to take them (TASK-79.9): the
+/// kernel sends its stage operations with its locks held, and a VM process that stops reading
+/// would hold them for good. What the socket has no room for waits in a queue, which a task on the
+/// runtime it was made on writes as the socket takes it; what is sent meanwhile queues behind.
+pub(crate) struct AsyncSender {
+    stream: tokio::io::unix::AsyncFd<UnixStream>,
+    queue: Mutex<Queue>,
+    runtime: tokio::runtime::Handle,
+}
+
+/// What an [`AsyncSender`]'s socket has not taken yet.
+#[derive(Default)]
+struct Queue {
+    /// The messages, and their descriptors, which they carry with their first bytes.
+    messages: std::collections::VecDeque<(Queued, Vec<OwnedFd>)>,
+    /// Whether a task writes them.
+    draining: bool,
+    /// Why the socket takes no more, once it doesn't.
+    failed: Option<io::ErrorKind>,
+}
+
+/// A message, as much of it as the socket has not taken.
+struct Queued {
+    header: [u8; size_of::<Header>()],
+    payload: Vec<u8>,
+    /// How many of its bytes, its header's then its payload's, were sent.
+    sent: usize,
+}
+
+impl Queued {
+    /// Sends what of it `stream` takes, `fds` with its first bytes: whether it is all sent.
+    fn send(&mut self, stream: &UnixStream, fds: &[BorrowedFd<'_>]) -> io::Result<bool> {
+        let len = self.header.len() + self.payload.len();
+        while self.sent < len {
+            let (header, payload) = match self.sent.checked_sub(self.header.len()) {
+                None => (&self.header[self.sent..], &self.payload[..]),
+                Some(at) => (&[][..], &self.payload[at..]),
+            };
+            let fds = if self.sent == 0 { fds } else { &[] };
+            match send_parts(stream, [header, payload], fds) {
+                Ok(sent) => self.sent += sent,
+                Err(err) if err.kind() == io::ErrorKind::WouldBlock => return Ok(false),
+                Err(err) => return Err(err),
+            }
+        }
+        Ok(true)
+    }
+}
+
+impl AsyncSender {
+    /// Sends through `stream`, which the caller made non-blocking, on the runtime it is made on.
+    pub fn new(stream: UnixStream) -> io::Result<Self> {
+        let stream =
+            tokio::io::unix::AsyncFd::with_interest(stream, tokio::io::Interest::WRITABLE)?;
+        let runtime = tokio::runtime::Handle::current();
+        Ok(Self { stream, queue: Mutex::default(), runtime })
+    }
+
+    /// Whether the other end hung up, as a VM process that went does, though the receiving end
+    /// may not have read so yet.
+    pub fn peer_gone(&self) -> bool {
+        let fd = self.stream.get_ref().as_raw_fd();
+        let mut poll = libc::pollfd { fd, events: libc::POLLRDHUP, revents: 0 };
+        // SAFETY: Polls the stream's descriptor, which it keeps open, without waiting.
+        let ready = unsafe { libc::poll(&mut poll, 1, 0) };
+        ready > 0 && poll.revents & (libc::POLLRDHUP | libc::POLLHUP | libc::POLLERR) != 0
+    }
+
+    /// Sends `header`, with `payload` as its payload, and `fds`, at most [`MAX_FDS`], after what
+    /// was sent before: at once, what the socket takes, and the rest as it takes it. Fails once
+    /// the socket failed, as the other end gone.
+    pub fn send(
+        self: &std::sync::Arc<Self>,
+        mut header: Header,
+        payload: Vec<u8>,
+        fds: &[BorrowedFd<'_>],
+    ) -> io::Result<()> {
+        assert!(fds.len() <= MAX_FDS, "too many descriptors for a message");
+        header.len = payload.len() as u64;
+        let header = header.as_bytes().try_into().unwrap();
+        let mut message = Queued { header, payload, sent: 0 };
+        let mut queue = self.queue.lock().unwrap();
+        if let Some(failed) = queue.failed {
+            return Err(failed.into());
+        }
+        if queue.messages.is_empty() {
+            match message.send(self.stream.get_ref(), fds) {
+                Ok(true) => return Ok(()),
+                Ok(false) => {}
+                Err(err) => {
+                    queue.failed = Some(err.kind());
+                    return Err(err);
+                }
+            }
+        }
+        // The descriptors, unless sent with its first bytes, are the queue's until it sends them.
+        let fds = match message.sent {
+            0 => fds.iter().map(|fd| fd.try_clone_to_owned()).collect::<io::Result<_>>()?,
+            _ => Vec::new(),
+        };
+        queue.messages.push_back((message, fds));
+        if !queue.draining {
+            queue.draining = true;
+            self.runtime.spawn(self.clone().drain());
+        }
+        Ok(())
+    }
+
+    /// Writes the messages queued as the socket takes them, until none is left, or it fails.
+    async fn drain(self: std::sync::Arc<Self>) {
+        loop {
+            let mut ready = match self.stream.writable().await {
+                Ok(ready) => ready,
+                Err(err) => return self.fail(err),
+            };
+            let mut queue = self.queue.lock().unwrap();
+            while let Some((message, fds)) = queue.messages.front_mut() {
+                let fds: Vec<BorrowedFd<'_>> = fds.iter().map(AsFd::as_fd).collect();
+                match message.send(self.stream.get_ref(), &fds) {
+                    Ok(true) => drop(queue.messages.pop_front()),
+                    Ok(false) => break,
+                    Err(err) => {
+                        drop(queue);
+                        return self.fail(err);
+                    }
+                }
+            }
+            if queue.messages.is_empty() {
+                queue.draining = false;
+                return;
+            }
+            ready.clear_ready();
+        }
+    }
+
+    /// The socket failed with `err`: what is queued goes, and nothing is sent from now on.
+    fn fail(&self, err: io::Error) {
+        log::warn!("extentd: sending to a VM process: {err}");
+        let mut queue = self.queue.lock().unwrap();
+        queue.failed = Some(err.kind());
+        queue.draining = false;
+        let dropped = std::mem::take(&mut queue.messages);
+        drop(queue);
+        drop(dropped);
+    }
+
+    /// Shuts the connection down, which ends its receiver's messages.
+    pub fn shutdown(&self) {
+        let _ = self.stream.get_ref().shutdown(std::net::Shutdown::Both);
     }
 }
 
@@ -287,15 +430,22 @@ fn write_all(stream: &UnixStream, mut bytes: &[u8]) -> io::Result<()> {
 
 /// Sends what of `bytes` one `sendmsg` does, with `fds`: how many bytes it sent, at least one.
 fn send_with_fds(stream: &UnixStream, bytes: &[u8], fds: &[BorrowedFd<'_>]) -> io::Result<usize> {
-    let mut iov = libc::iovec { iov_base: bytes.as_ptr() as *mut _, iov_len: bytes.len() };
+    send_parts(stream, [bytes, &[]], fds)
+}
+
+/// Sends what of `parts`, in order, one `sendmsg` does, with `fds`: how many bytes it sent, at
+/// least one.
+fn send_parts(stream: &UnixStream, parts: [&[u8]; 2], fds: &[BorrowedFd<'_>]) -> io::Result<usize> {
+    let mut iov =
+        parts.map(|part| libc::iovec { iov_base: part.as_ptr() as *mut _, iov_len: part.len() });
     let len = (fds.len() * size_of::<RawFd>()) as u32;
     // SAFETY: CMSG_SPACE only computes a size.
     let space = unsafe { libc::CMSG_SPACE(len) } as usize;
     let mut control = vec![0u8; space];
     // SAFETY: A zeroed msghdr is a valid empty one.
     let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
-    msg.msg_iov = &mut iov;
-    msg.msg_iovlen = 1;
+    msg.msg_iov = iov.as_mut_ptr();
+    msg.msg_iovlen = iov.len() as _;
     if !fds.is_empty() {
         msg.msg_control = control.as_mut_ptr().cast();
         msg.msg_controllen = space as _;
@@ -497,5 +647,38 @@ mod tests {
         assert_eq!(second.payload, vec![7u8; 3 << 20]);
         assert_eq!(second.fds.len(), 2, "the descriptors didn't arrive");
         sent.join().unwrap();
+    }
+
+    /// fxdax: the daemon's sends wait for no room (TASK-79.9): what its socket has none for
+    /// queues, and arrives as the other end reads, whole and in order, with its descriptors; once
+    /// the other end is gone, sends fail.
+    #[test]
+    fn async_sends_queue_what_the_socket_has_no_room_for() {
+        let runtime =
+            tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build();
+        let runtime = runtime.unwrap();
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        ours.set_nonblocking(true).unwrap();
+        let sender = std::sync::Arc::new({
+            let _entered = runtime.enter();
+            AsyncSender::new(ours).unwrap()
+        });
+        let file = tempfile::tempfile().unwrap();
+        // Many times what the socket holds, none read meanwhile.
+        let big = vec![7u8; 4 << 20];
+        for id in 0..8 {
+            let fds = if id == 5 { vec![file.as_fd()] } else { Vec::new() };
+            sender.send(Header::new(READ, id), big.clone(), &fds).unwrap();
+        }
+        let mut receiver = Receiver::new(theirs);
+        for id in 0..8 {
+            let message = receiver.receive().unwrap().unwrap();
+            assert_eq!((message.header.id, message.payload.len()), (id, big.len()));
+            assert!(message.payload == big, "message {id} holds other bytes");
+            assert_eq!(message.fds.len(), usize::from(id == 5), "message {id}'s descriptors");
+        }
+        drop(receiver);
+        let gone = sender.send(Header::new(READ, 8), Vec::new(), &[]);
+        assert_eq!(gone.map_err(|err| err.kind()), Err(io::ErrorKind::BrokenPipe));
     }
 }
