@@ -131,9 +131,11 @@ pub enum OomBehavior {
     JobKill,
     /// Stop the system, which here is the host process.
     Reboot,
-    /// fxdax: memory is never out: the PMM's arenas' pressure evicts what was read longest ago, or
-    /// fails what it cannot make room for with `NO_MEMORY` (`pmm::relieve_with`), and the
-    /// process keeps serving (TASK-50.3).
+    /// fxdax: memory is never out: the PMM's arenas' pressure, and an allocation that finds no free
+    /// page at all, evict clean pages, the oldest first but of any age, the newest included, which
+    /// an allocation that can wait waits for, or fail what nothing makes room for with `NO_MEMORY`
+    /// (`pmm::relieve_with`, `EvictionLevel::OnDemand`), and the process keeps serving (TASK-50.3,
+    /// TASK-79.70).
     Evict,
 }
 

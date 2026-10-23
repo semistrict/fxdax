@@ -20,9 +20,10 @@
 //!   there is no user mode to acknowledge it or debuglog to flush.
 //! - No kcounters, page queue dumps or memory stall statistics.
 //! - fxdax: by default memory is never out (`OomBehavior::Evict`): the level above OutOfMemory is
-//!   the lowest, allocations are never delayed, and the PMM's arenas' pressure evicts the pages
-//!   read longest ago, or fails what it cannot make room for, rather than the process stopping
-//!   (TASK-50.3).
+//!   the lowest, allocations are never delayed, and the PMM's arenas' pressure, and an allocation
+//!   that finds no free page at all, evict clean pages, the oldest first but of any age, which
+//!   those that can wait wait for, or fail what nothing makes room for, rather than the process
+//!   stopping (TASK-50.3, TASK-79.70).
 
 use super::dispatcher::Dispatcher;
 use super::event_dispatcher::EventDispatcher;
