@@ -17,7 +17,7 @@
 # (Image for arm64, vmlinux for x86-64, as Firecracker loads them) and what builds it elsewhere,
 # on the same release: patches/, the series (git am); libfxfs_linux.a, the Rust, for fs/fxfs; and
 # fxdax.config, fxdax's options over the configuration. FXDAX_GUEST_KERNEL_PROFILE (below) builds
-# one for profiling.
+# one for profiling, FXDAX_GUEST_KERNEL_LOCK_STAT one counting locks' contention.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -111,7 +111,18 @@ if [[ ${FXDAX_GUEST_KERNEL_DEBUG:-} == 1 ]]; then
     "$src/scripts/config" --file "$src/.config" --enable DEBUG_KERNEL --enable PROVE_LOCKING \
         --enable DEBUG_ATOMIC_SLEEP --enable DEBUG_LIST --enable KCSAN
 fi
+# fxdax: with FXDAX_GUEST_KERNEL_LOCK_STAT=1, a kernel that counts each lock's contention, in
+# /proc/lock_stat, which names a hot lock where a sampling profile can't see it, taken with
+# interrupts off (fxfs-guest-pgbench-locks, TASK-91.14): slow, so built with its own
+# FXDAX_GUEST_KERNEL_WORK.
+if [[ ${FXDAX_GUEST_KERNEL_LOCK_STAT:-} == 1 ]]; then
+    "$src/scripts/config" --file "$src/.config" --enable DEBUG_KERNEL --enable LOCK_STAT
+fi
 make -C "$src" "${make_args[@]}" olddefconfig
+if [[ ${FXDAX_GUEST_KERNEL_LOCK_STAT:-} == 1 ]]; then
+    grep -q '^CONFIG_LOCK_STAT=y' "$src/.config" ||
+        { echo "the lock_stat kernel has no CONFIG_LOCK_STAT" >&2; exit 1; }
+fi
 if [[ ${FXDAX_GUEST_KERNEL_DEBUG:-} == 1 ]]; then
     for option in PROVE_LOCKING DEBUG_ATOMIC_SLEEP KCSAN; do
         grep -q "^CONFIG_$option=y" "$src/.config" ||

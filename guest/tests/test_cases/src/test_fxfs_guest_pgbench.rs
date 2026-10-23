@@ -10,14 +10,26 @@
 //! the fork, makes the database, and checks it: every account there once. Then pgbench runs on it,
 //! as theirs did, where Fxfs's journal shut down on a write to a sealed extent (TASK-91.1). With
 //! a DAX window (fxfs-guest-pgbench-dax) or without (fxfs-guest-pgbench); and without, its first
-//! run profiled, the guest's time by symbol and the callers of its hot spinlock on the console
-//! (fxfs-guest-pgbench-profile, TASK-91.14).
+//! run probed (TASK-91.14): profiled, the guest's time by symbol and the callers of its hot
+//! spinlock on the console (fxfs-guest-pgbench-profile); or, as the sandbox team's CPU-bound run,
+//! with synchronous_commit off, its locks' contention, on a kernel that counts it
+//! (fxfs-guest-pgbench-locks, scripts/build-guest-kernel.sh's FXDAX_GUEST_KERNEL_LOCK_STAT).
 
 use macros::{guest, host};
 
 pub struct TestFxfsGuestPgbench {
     pub dax: bool,
-    pub profile: bool,
+    pub probe: Probe,
+}
+
+/// What a run of pgbench's first is probed for (TASK-91.14).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Probe {
+    None,
+    /// The guest's CPUs sampled, with their call chains.
+    Profile,
+    /// Its locks' contention, with synchronous_commit off, which the guest's kernel counts.
+    Locks,
 }
 
 /// pgbench's scale: 100,000 accounts a unit.
@@ -249,6 +261,22 @@ mod guest {
         text.lines().map(str::to_owned).collect()
     }
 
+    /// Has the kernel count its locks' contention from now on, from nothing (`on`), or stop, and
+    /// prints the most contended (/proc/lock_stat, CONFIG_LOCK_STAT).
+    fn count_locks(on: bool) {
+        if on {
+            fs::write("/proc/lock_stat", "0").expect("a kernel counting locks (LOCK_STAT)");
+            fs::write("/proc/sys/kernel/lock_stat", "1").unwrap();
+            return;
+        }
+        fs::write("/proc/sys/kernel/lock_stat", "0").unwrap();
+        let stat = fs::read_to_string("/proc/lock_stat").unwrap();
+        eprintln!("locks: the most contended");
+        for line in stat.lines().take(120) {
+            eprintln!("{line}");
+        }
+    }
+
     /// The guest's CPUs sampled, with their call chains, for most of a run.
     fn profile() -> std::process::Child {
         Command::new("perf")
@@ -326,12 +354,22 @@ mod guest {
                     let written = "select (select wal_bytes from pg_stat_wal), \
                         (select sum(writes * op_bytes) from pg_stat_io)";
                     for i in 0..RUNS {
-                        let profiler = (self.profile && i == 0).then(profile);
+                        let probe = if i == 0 { self.probe } else { Probe::None };
+                        let profiler = (probe == Probe::Profile).then(profile);
+                        let options = if probe == Probe::Locks {
+                            count_locks(true);
+                            "PGOPTIONS='-c synchronous_commit=off' "
+                        } else {
+                            ""
+                        };
                         let run = as_postgres(&format!(
-                            "pgbench -h {socket} -c 4 -j 2 -T {RUN_SECS} bench"
+                            "{options}pgbench -h {socket} -c 4 -j 2 -T {RUN_SECS} bench"
                         ));
                         if let Some(profiler) = profiler {
                             report(profiler);
+                        }
+                        if probe == Probe::Locks {
+                            count_locks(false);
                         }
                         eprint!("{}", String::from_utf8_lossy(&run.stdout));
                         let written =
