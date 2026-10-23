@@ -146,14 +146,24 @@ def served(requests, daemon):
         def each(name):
             return daemon[name] / commits / 1e3
 
+        # The phases the daemon counted: an older one did not count the writing apart.
+        phases = []
+        if "commit-write-ns" in daemon:
+            written = daemon["commit-written-bytes"] / commits / 1024
+            phases.append(
+                f"writing the open extents' {written:,.1f} KiB {each('commit-write-ns'):,.1f} µs"
+            )
+        phases += [
+            f"{phase} {each(name):,.1f} µs"
+            for phase, name in [
+                ("committing the store", "commit-store-ns"),
+                ("sealing the windows' mappings", "commit-seal-ns"),
+                ("waiting for object storage", "commit-wait-ns"),
+            ]
+        ]
         lines += [
             "",
-            f"Commits: {commits:,}, {each('commit-ns'):,.1f} µs each: writing the open extents' "
-            f"{daemon['commit-written-bytes'] / commits / 1024:,.1f} KiB "
-            f"{each('commit-write-ns'):,.1f} µs, committing the store "
-            f"{each('commit-store-ns'):,.1f} µs, sealing the windows' mappings "
-            f"{each('commit-seal-ns'):,.1f} µs, waiting for object storage "
-            f"{each('commit-wait-ns'):,.1f} µs.",
+            f"Commits: {commits:,}, {each('commit-ns'):,.1f} µs each: " + ", ".join(phases) + ".",
         ]
     closes = daemon.get("segment-closes", 0)
     if closes:
