@@ -136,7 +136,11 @@
 //! - the journal asks for a major compaction, as the metadata reservation runs low;
 //! - an owner marked for deletion has had its extents freed, so that its records, which may be much
 //!   of the tree, go at once;
-//! - a layer is of an older version, which it writes again in the latest, as upstream's do.
+//! - a layer is of an older version, which it writes again in the latest, as upstream's do. There
+//!   is none yet: a mount reads no version older than the latest (`EARLIEST_SUPPORTED_VERSION` is
+//!   `LATEST_VERSION`). A minor bump of the latest would leave older layers that a mount still
+//!   reads, which only this writes again: the filesystem asks only stores to upgrade theirs
+//!   (`FlushReason::UpgradeVersion`).
 //!
 //! The tree's layers are the allocator's own: snapshots share stores' layers, not these.
 mod extent_table;
@@ -2216,7 +2220,8 @@ impl<'a> Flusher<'a> {
         // fxdax: the compaction merges the newer layers, as an object store's does, unless it is to
         // merge them all (see "Compactions"): a major compaction, which gives back what removals
         // took; one that filters out the allocations of owners freed, which older layers hold too;
-        // or one that writes layers of older versions again.
+        // or one that writes layers of older versions again, which only a bump of the latest
+        // version will leave.
         let full_compaction =
             matches!(reason, FlushReason::UpgradeVersion | FlushReason::Journal(ForceMajor::True))
                 || !freed_owners.is_empty()
@@ -4603,6 +4608,7 @@ mod tests {
 
     /// fxdax: a compaction merges all the allocator's layers while any is of an older version,
     /// which it writes again in the latest, as upstream's compactions, which always merge all, do.
+    /// No mount opens such a layer yet (see "Compactions"): the test writes one.
     #[fuchsia::test]
     async fn test_compaction_merges_layers_of_older_versions() {
         const OLDER: Version = Version { major: LATEST_VERSION.major - 1, minor: 0 };
