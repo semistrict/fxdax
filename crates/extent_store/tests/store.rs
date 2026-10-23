@@ -575,6 +575,63 @@ fn cleaning_is_due_once_garbage_is_past_the_capacity() {
     assert!(!store.cleaning_due(0, 0.5).unwrap());
 }
 
+/// fxdax: what may make cleaning behind the commits due moves the branch's cleaning changes,
+/// which what cleans behind them finds before it looks whether a pass is due, holding the state:
+/// the uploader's release of what the commits freed, which makes it due with no commit after;
+/// and a write, a free, a commit, a closing between commits, a new capacity, a fork deleted that
+/// held the branch's segments. Reads, and looks, do not: a branch only read is looked at once
+/// (TASK-79.2).
+#[test]
+fn cleaning_changes_move_with_what_may_make_cleaning_due() {
+    let capacity = 64 * BLOCK as u64;
+    let store = create(MemDir::new(), capacity);
+    assert!(store.upload(WRITER, 0).unwrap());
+    let moves = |change: &dyn Fn()| {
+        let before = store.cleaning_changes();
+        change();
+        store.cleaning_changes() != before
+    };
+    // 300 KiB freed, which the uploader keeps until it releases the commits that freed them.
+    for cycle in 0..5 {
+        churn(&store, 16 * cycle);
+    }
+    assert!(!store.cleaning_due(64 << 20, 0.5).unwrap());
+    assert!(moves(&|| store.release(store.epoch().unwrap()).unwrap()));
+    assert!(store.cleaning_due(64 << 20, 0.5).unwrap());
+
+    store.fork(BRANCH + 1).unwrap();
+    let moved = [
+        ("a read", moves(&|| assert!(read(&store, extent(0), 0, BLOCK) == pattern(0, 0, BLOCK)))),
+        ("a look", moves(&|| assert!(!store.cleaning_due(64 << 20, 0.5).unwrap()))),
+        ("what it holds", moves(&|| assert_eq!(store.info().unwrap().capacity, capacity))),
+        ("a write", moves(&|| store.write(extent(100), 0, &[1; BLOCK]).unwrap())),
+        (
+            "a write abandoned",
+            moves(&|| drop(in_flight(&store, extent(100), BLOCK as u64, &[2; BLOCK]))),
+        ),
+        ("a free", moves(&|| store.free(extent(100)).unwrap())),
+        ("a commit", moves(&|| store.commit(None).unwrap())),
+        ("a closing between commits", moves(&|| assert!(store.close_now().unwrap()))),
+        ("a new capacity", moves(&|| store.set_capacity(2 * capacity).unwrap())),
+        ("a fork deleted", moves(&|| store.lineage().delete(BRANCH + 1).unwrap())),
+    ];
+    assert_eq!(
+        moved,
+        [
+            ("a read", false),
+            ("a look", false),
+            ("what it holds", false),
+            ("a write", true),
+            ("a write abandoned", true),
+            ("a free", true),
+            ("a commit", true),
+            ("a closing between commits", true),
+            ("a new capacity", true),
+            ("a fork deleted", true),
+        ]
+    );
+}
+
 #[test]
 fn cleaning_in_memory() {
     cleaning(MemDir::new(), MemDir::clone);

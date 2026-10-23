@@ -30,6 +30,7 @@ use extent_frame::segment::Chain;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use storage_device::{ExtentId, NoExtent, OtherBranch, SealedExtent};
 
@@ -208,6 +209,9 @@ pub struct Store<D: Dir> {
     idle: Condvar,
     /// fxdax: its views, which followers read it through ([`Store::view`]).
     views: Arc<Views>,
+    /// fxdax: how often the branch changed as may make cleaning behind its commits due, each
+    /// counted holding its state ([`Store::cleaning_changes`], TASK-79.2).
+    changes: AtomicU64,
 }
 
 /// What cleaning takes: the branch's segments whose extents' data takes less than a fraction of
@@ -471,6 +475,7 @@ impl<D: Dir> Store<D> {
             flushing: Mutex::new(()),
             idle: Condvar::new(),
             views,
+            changes: AtomicU64::new(0),
         })
     }
 
@@ -858,6 +863,13 @@ impl<D: Dir> Store<D> {
         if state.gate.done() {
             self.idle.notify_all();
         }
+        self.changed(state);
+    }
+
+    /// fxdax: the branch changed as may make cleaning behind its commits due, as `state`, which
+    /// its caller holds, has it ([`Store::cleaning_changes`], TASK-79.2).
+    fn changed(&self, _state: &State<D::File>) {
+        self.changes.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Where the `len` bytes at `offset` in `extent` are: in files, or zeros, where nothing was
@@ -1000,6 +1012,7 @@ impl<D: Dir> Store<D> {
             Data::Own => state.uncommitted.let_go(entry.len),
             Data::Remote => unreachable!("an open extent's data is in segments or a raw file"),
         }
+        self.changed(state);
         Ok(())
     }
 
@@ -1061,6 +1074,7 @@ impl<D: Dir> Store<D> {
         uploads.release(epoch);
         state.kept.release(epoch);
         state.trim_kept(&self.views.keeping(), state.epoch);
+        self.changed(state);
         Ok(())
     }
 
@@ -1181,6 +1195,7 @@ impl<D: Dir> Store<D> {
         let closings = std::mem::take(&mut state.closings);
         let pending = Pending { syncs, write: appended.write, doomed, closings };
         self.durability.lock().unwrap().push(epoch, pending);
+        self.changed(state);
         Ok(forked)
     }
 
@@ -1465,6 +1480,7 @@ impl<D: Dir> Store<D> {
         let unframed = state.failing(|state| self.close_open_segment(state, epoch));
         let unframed = unframed.context("closing the open segment")?;
         state.framings += 1;
+        self.changed(&state);
         Ok(Some(unframed))
     }
 
@@ -1622,6 +1638,21 @@ impl<D: Dir> Store<D> {
             bytes: removed.iter().map(|(_, victim)| victim.len).sum(),
             copied,
         })
+    }
+
+    /// fxdax: a count that moves with each change of the branch's that may make cleaning behind
+    /// its commits due ([`Store::cleaning_due`]): its commits, its writes done and its frees, its
+    /// uploader's releases of what its commits freed, its closings between commits, a new
+    /// capacity; and with each time a branch let go of files another made, as a fork deleted does
+    /// of the segments it shared with the branch. Found without the branch's state, and moved by
+    /// none of its reads, nor by looking whether cleaning is due: so that what cleans behind the
+    /// commits looks, holding the state, only once it moved, as soon as it did, and a branch only
+    /// read is looked at once (TASK-79.2).
+    pub fn cleaning_changes(&self) -> u64 {
+        // Each counted holding the state, after what it counts, which a look then takes: a look
+        // begun once the count is found moved finds what moved it. And the lineage's, holding
+        // its ledger, which the look reads again.
+        self.changes.load(Ordering::Relaxed) + self.lineage.unshared()
     }
 
     /// fxdax: whether cleaning behind the commits is due ([`Store::clean_behind`]): the segments
@@ -1807,6 +1838,7 @@ impl<D: Dir> Store<D> {
         // Held while the record changes, so that no write grows past the capacity meanwhile.
         self.lineage.set_capacity(self.branch, self.token, capacity)?;
         state.space.set_capacity(capacity);
+        self.changed(&state);
         Ok(())
     }
 
