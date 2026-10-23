@@ -4,6 +4,9 @@
 
 //! The store's behaviour, in memory and in a directory of the host's.
 
+mod common;
+
+use common::noise;
 use extent_frame::segment::Chain;
 use extent_store::{
     Closed, Description, Dir, File as _, Footprint, HostDir, Lineage, MemDir, MemFile, NoSpace,
@@ -1365,21 +1368,6 @@ fn closed_segments_reopen_on_the_host() {
     assert_eq!((rebuilt.epoch, rebuilt.extents), (store.epoch().unwrap(), store.places().unwrap()));
     let state = closed_state(&store);
     assert_eq!(store.rebuild().unwrap(), state);
-}
-
-/// Bytes from a xorshift generator, which do not compress: each seed's its own, the generator's
-/// state, which must not be zero, made of all of the seed's bits, so that no two seeds, as 2 and
-/// 3 did, give the same bytes, which compression would make one of.
-fn noise(seed: u64, len: usize) -> Vec<u8> {
-    let mut state = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
-    (0..len)
-        .map(|_| {
-            state ^= state << 13;
-            state ^= state >> 7;
-            state ^= state << 17;
-            state as u8
-        })
-        .collect()
 }
 
 /// Closed segments and sealed extents are stored compressed, but for parts that do not compress,

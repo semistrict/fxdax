@@ -22,10 +22,12 @@
 //!   each N MiB (32), as fxdax's uploader has the store do, while a guest writes a block and
 //!   commits, again and again, in a directory of the host's: how long the guest's writes and
 //!   commits take, the longest of them, and how long each closing takes (TASK-41.1).
-//! - `cleaning`: a branch of N extents of a block (400,000), in segments: with three in eight of
-//!   each segment's freed, which leaves cleaning nothing to take; then with most of four segments'
-//!   freed besides: whether cleaning is due, how long a pass that copies nothing holds the store,
-//!   as extentd's does each time it is due, and how long a pass copying them takes (TASK-79.2).
+//! - `cleaning`: a branch of N extents of a block (400,000), in segments, the first four's of data
+//!   that does not compress: with three in eight of each segment's freed, which leaves cleaning
+//!   nothing to take; then with most of the first four's freed besides, which takes as much of the
+//!   host's disk as it is, as cleaning counts it: whether cleaning is due, how long a pass that
+//!   copies nothing holds the store, as extentd's does each time it is due, and how long a pass
+//!   copying them takes (TASK-79.2).
 //! - `burst`: a guest writing N MiB (256) of extents of 256 KiB after a commit, and committing,
 //!   in a directory of the host's: more than a segment and an extent hold, so that the open
 //!   segment fills between commits, and closes, again and again: how long the writes take, the
@@ -39,6 +41,10 @@
 //! The stores of all but `close-now`, `burst` and `durable` are in memory ([`MemDir`]), so that
 //! what is timed is the store's own work.
 
+#[path = "../tests/common/mod.rs"]
+mod common;
+
+use common::noise;
 use extent_store::{Description, Dir, HostDir, MemDir, Options, Store};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -210,16 +216,20 @@ fn close_now(mib: u64) {
     commits.print("the guest's commits");
 }
 
-/// The freed bytes past which extentd's cleaning is due, the fraction of a segment its extents
-/// must hold for cleaning to leave it be, and the most a pass copies: `fxdax::host_store`'s.
+/// The bytes of the host's disk that what is freed takes, of the segments cleaning takes, past
+/// which extentd's cleaning is due, the fraction of a segment its extents must hold for cleaning
+/// to leave it be, and the most a pass copies: `fxdax::host_store`'s.
 const CLEAN_PAST: u64 = 64 << 20;
 const CLEAN_BELOW: f64 = 0.5;
 const CLEAN_PASS: u64 = 64 << 20;
 
 fn cleaning(count: u64) {
     let store = create(MemDir::new(), Options::default());
+    // The first four segments' blocks of data that does not compress, the rest of data that does.
+    let first = 4 * Options::default().segment_size / BLOCK as u64;
     for sequence in 0..count {
-        store.write(extent(sequence), 0, &data(sequence, BLOCK)).unwrap();
+        let block = if sequence < first { noise(sequence, BLOCK) } else { data(sequence, BLOCK) };
+        store.write(extent(sequence), 0, &block).unwrap();
         if sequence % 1000 == 999 {
             store.commit(None).unwrap();
         }
@@ -249,7 +259,6 @@ fn cleaning(count: u64) {
     store.commit(None).unwrap();
     pass("no segment to clean");
     // Most of the first four segments' freed besides: seven eighths of each.
-    let first = 4 * Options::default().segment_size / BLOCK as u64;
     for sequence in (0..first).filter(|sequence| (3..7).contains(&(sequence % 8))) {
         store.free(extent(sequence)).unwrap();
     }
