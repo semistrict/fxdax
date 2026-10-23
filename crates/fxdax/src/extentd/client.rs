@@ -445,7 +445,7 @@ impl RemoteExtentStore {
     /// The window's mappings, which a snapshot of the VM records (`MAPPINGS`).
     pub fn window_mappings(&self) -> Result<Vec<WindowMapping>> {
         let payload = self.client.call_blocking(Header::new(MAPPINGS, 0), &[])?.payload;
-        if !payload.len().is_multiple_of(6 * 8) {
+        if !payload.len().is_multiple_of(MAPPING_BYTES as usize) {
             return Err(Errno::EIO);
         }
         let words: Vec<u64> = payload
@@ -688,8 +688,15 @@ impl Client {
     /// order, and hands replies to their requests.
     fn receive(&self, mut receiver: Receiver) {
         RECEIVING.set(true);
+        // What a reply to MAPPINGS holds at most, past a message's most otherwise: a mapping a page
+        // of its window (TASK-79.43).
+        let mappings = || {
+            let pages =
+                self.stage.get().map_or(0, |stage| stage.size() / crate::kernel::page_size());
+            pages * MAPPING_BYTES
+        };
         loop {
-            let message = match receiver.receive() {
+            let message = match receiver.receive(mappings) {
                 Ok(Some(message)) => message,
                 Ok(None) => break,
                 Err(err) => {
