@@ -22,7 +22,8 @@ static REGISTRY: Mutex<Registry> = Mutex::new(Registry { tenants: Vec::new(), li
 
 struct Registry {
     /// The tenants alive, which may outlive their grants, while their VM processes do: a tenant
-    /// revoked and granted again is two at once for a while, each limited.
+    /// revoked and granted again goes on as it was ([`alive`]), but with another directory, when
+    /// it is two at once for a while, each limited.
     tenants: Vec<Weak<Tenant>>,
     /// The tenants' limits, in bytes, by name: those granted later, or again, are limited as they
     /// are made.
@@ -46,6 +47,13 @@ pub fn label(name: &str) -> String {
     use sha2::Digest as _;
     let digest = sha2::Sha256::digest(name.as_bytes());
     digest[..8].iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// The tenant named `name`, whose stores are in `dir`, alive, if one is: one revoked whose VM
+/// processes live on, which a grant of it again goes on with (TASK-79.36).
+pub(super) fn alive(name: &str, dir: &std::path::Path) -> Option<Arc<Tenant>> {
+    let registry = REGISTRY.lock().unwrap();
+    registry.alive().find(|tenant| tenant.name() == name && tenant.dir() == dir)
 }
 
 /// Counts `tenant`, new, among those alive, limited as its name is.
@@ -121,8 +129,8 @@ pub struct TenantMemory {
     pub limit: Option<u64>,
 }
 
-/// The memory of each tenant alive, by label: a tenant alive twice, revoked and granted again, is
-/// counted once, with both its arenas'.
+/// The memory of each tenant alive, by label: a tenant alive twice, revoked and granted again with
+/// another directory, is counted once, with both its arenas'.
 pub fn tenants() -> Vec<TenantMemory> {
     let node = pmm::node();
     let registry = REGISTRY.lock().unwrap();

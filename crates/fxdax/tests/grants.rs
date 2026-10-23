@@ -12,7 +12,7 @@
 mod common;
 
 use common::daemon::{CAPACITY, Daemon, failure, write};
-use common::pattern;
+use common::{cache, copies, pattern};
 use fxdax::{Errno, RemoteExtentStore};
 use std::path::Path;
 use tonic::Code;
@@ -93,6 +93,26 @@ fn revoked_tenants_take_no_new_connections() {
     let socket = daemon.grant("acme", &acme, None).unwrap();
     let vm = RemoteExtentStore::connect(&socket, acme.join("vm"), CAPACITY).unwrap();
     assert_eq!(vm.root().unwrap(), b"after");
+}
+
+/// TASK-79.36: a tenant revoked whose VM processes live on, granted again, is the tenant they are
+/// of: the VM processes it connects share its arena with them, and with it the pages of the stores
+/// they have open, which they follow.
+#[test]
+fn tenants_granted_again_while_alive_go_on() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut daemon = Daemon::new(dir.path());
+    let acme = dir.path().join("acme");
+    std::fs::create_dir(&acme).unwrap();
+    let socket = daemon.grant("acme", &acme, None).unwrap();
+    let vm = RemoteExtentStore::connect(&socket, acme.join("vm"), CAPACITY).unwrap();
+    let bytes = pattern(4);
+    cache(&vm, &bytes);
+
+    daemon.revoke("acme").unwrap();
+    let socket = daemon.grant("acme", &acme, None).unwrap();
+    let follower = RemoteExtentStore::connect_read_only(&socket, acme.join("vm")).unwrap();
+    assert_eq!(copies(follower.physical_memory(), &bytes), 1, "the VM's pages, in its memory");
 }
 
 /// The environment of this test's process run in a jail ([`jailed`]): the socket's path there,

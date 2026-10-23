@@ -43,7 +43,9 @@ impl Grants {
     /// Grants the tenant `name`, whose stores are in `dir`, its socket, given to `uid` and `gid`
     /// (the daemon's own, where not given), and returns its path: a new tenant's, which a thread
     /// of its own serves; or, granted already, its socket, given again (`EEXIST` with another
-    /// directory).
+    /// directory). A tenant revoked whose VM processes live on is the one granted again, its
+    /// socket new: those it connects then share its arena with them, and the stores they have open
+    /// (TASK-79.36), which, another tenant's, they could not.
     pub fn grant(
         &self,
         name: &str,
@@ -61,7 +63,10 @@ impl Grants {
             give(&grant.socket, uid, gid)?;
             return Ok(grant.socket.clone());
         }
-        let tenant = Tenant::new(name, &dir).map_err(errno)?;
+        let tenant = match super::memory::alive(name, &dir) {
+            Some(tenant) => tenant,
+            None => Tenant::new(name, &dir).map_err(errno)?,
+        };
         let socket = self.sockets.join(format!("{name}.sock"));
         remove_stale(&socket)?;
         let listener = UnixListener::bind(&socket).map_err(errno)?;
