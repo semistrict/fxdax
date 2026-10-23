@@ -108,13 +108,12 @@ impl Fs {
         let (dir, _) = split(path);
         let entries = self.dirs.get_mut(dir).ok_or_else(|| not_found(dir))?;
         match &change {
+            // Not over an entry there, which stays as it was.
+            DirChange::Add(name, _) if entries.contains_key(name) => {
+                return Err(io::Error::new(io::ErrorKind::AlreadyExists, format!("{path} exists")));
+            }
             DirChange::Add(name, inode) => {
-                if entries.insert(name.clone(), *inode).is_some() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::AlreadyExists,
-                        format!("{path} exists"),
-                    ));
-                }
+                entries.insert(name.clone(), *inode);
             }
             DirChange::Remove(name) => {
                 entries.remove(name).ok_or_else(|| not_found(path))?;
@@ -361,6 +360,19 @@ mod tests {
         }
         assert_eq!(seen_unsynced, [true, true]);
         assert!(lens.len() > 2, "{lens:?}");
+    }
+
+    /// Creating a file where one is fails, as a host's `create_new` does, leaving the one there as
+    /// it was, and those made after it their own.
+    #[test]
+    fn creating_where_a_file_is_leaves_it() {
+        let dir = MemDir::new();
+        dir.create("f", false).unwrap().write_at(b"a", 0).unwrap();
+        let error = dir.create("f", false).err().expect("created over a file");
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        dir.create("g", false).unwrap().write_at(b"b", 0).unwrap();
+        let read_at = |path| read(&dir.open(path, false).unwrap());
+        assert_eq!((read_at("f"), read_at("g")), (b"a".to_vec(), b"b".to_vec()));
     }
 
     #[test]
