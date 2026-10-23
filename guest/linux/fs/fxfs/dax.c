@@ -159,9 +159,9 @@ struct fxfs_dax_range {
 	 */
 	u64 *moved;
 	/*
-	 * The regions its pages moved to, each of which it holds a reference to while it is: iomaps
-	 * may use a page where it was until they end, and the kernel's mappings of it until the
-	 * kernel replaces them.
+	 * The regions its pages moved to, each of which it holds a reference to while any page is
+	 * there, or may be used there: iomaps may use a page where it was until they end, and the
+	 * kernel's mappings of it until the kernel replaces them (fxfs_dax_prune).
 	 */
 	struct fxfs_dax_region **regions;
 	unsigned int nr_regions;
@@ -205,10 +205,11 @@ struct fxfs_dax {
 	struct gen_pool *region_pool;
 	u64 regions_at;
 	/*
-	 * fxdax: how often the window had no room for a range or a region, how many ranges were
-	 * reclaimed for room, and how many regions there are (TASK-91.7, TASK-91.10).
+	 * fxdax: how often the window had no room for a range, or for a region in their own space,
+	 * how many ranges were reclaimed for room, how many regions there are, and how many ranges
+	 * let go of were (TASK-91.7, TASK-91.10).
 	 */
-	atomic_long_t window_full, reclaims, region_count;
+	atomic_long_t window_full, regions_full, reclaims, region_count, regions_pruned;
 	/* fxdax: the window's MAPs, and the bytes they mapped, by why (`enum fxfs_dax_why`). */
 	atomic64_t maps[FXFS_DAX_WHYS], map_bytes[FXFS_DAX_WHYS];
 	/* The files with ranges, or inodes using the window, by inode number. */
@@ -249,6 +250,7 @@ static const struct address_space_operations fxfs_dax_aops;
 static const struct file_operations fxfs_dax_file_operations;
 static int fxfs_dax_break_layouts(struct inode *inode, loff_t start);
 static int fxfs_dax_reach(struct fxfs_dax *dax, struct fxfs_dax_region *region, unsigned long end);
+static void fxfs_dax_put_region(struct fxfs_dax *dax, struct fxfs_dax_region *region);
 static void fxfs_dax_grow(struct work_struct *work);
 static void fxfs_dax_restage_work(struct work_struct *work);
 static int fxfs_dax_move(struct fxfs_dax *dax, struct fxfs_dax_range *range,
@@ -423,6 +425,54 @@ static void fxfs_dax_cow(struct inode *inode, struct fxfs_dax_range *range, unsi
 }
 
 /*
+ * fxdax: lets go of the regions none of the range of its own `range`'s pages is in any more, as
+ * pages written again move to the staging extent's region after every seal: the range held every
+ * region its pages were ever in, and under a database fsyncing at each transaction, the window
+ * filled with thousands of them (TASK-91.10). Only while no other iomap uses the range, which
+ * may use a page where it was, and the kernel's mappings are of where its pages are, none
+ * relocated (fxfs_dax_cow). With the file's DAX semaphore held for writing, and an iomap's use
+ * of the range.
+ */
+static void fxfs_dax_prune(struct fxfs_dax *dax, struct fxfs_dax_range *range)
+{
+	unsigned int i, kept = 0, nr = range->nr_regions;
+	unsigned long page, *used;
+	u64 moved;
+
+	if (!nr || atomic_read(&range->users) != 1 ||
+	    !bitmap_empty(range->relocated, range->pages))
+		return;
+	used = bitmap_zalloc(nr, GFP_NOFS);
+	if (!used)
+		return;
+	for (page = 0; page < range->pages; page++) {
+		if (range->moved[page])
+			__set_bit((range->moved[page] >> 32) - 1, used);
+	}
+	if (bitmap_full(used, nr)) {
+		bitmap_free(used);
+		return;
+	}
+	/* Its pages' regions' indices, as those before them it lets go of go. */
+	for (page = 0; page < range->pages; page++) {
+		moved = range->moved[page];
+		if (moved)
+			range->moved[page] = ((u64)(bitmap_weight(used, (moved >> 32) - 1) + 1) << 32) |
+					     (moved & U32_MAX);
+	}
+	for (i = 0; i < nr; i++) {
+		if (test_bit(i, used)) {
+			range->regions[kept++] = range->regions[i];
+		} else {
+			fxfs_dax_put_region(dax, range->regions[i]);
+			atomic_long_inc(&dax->regions_pruned);
+		}
+	}
+	range->nr_regions = kept;
+	bitmap_free(used);
+}
+
+/*
  * Maps the pieces `extents` of the chunk `range` maps, at their places in it: open extents
  * writably. A range of its own maps a piece of part of an extent no larger than a chunk, as files
  * share the staging extents, where the extent's region does, if it can (fxfs_dax_move). fxdax: a
@@ -440,6 +490,7 @@ static int fxfs_dax_map_extents(struct fxfs_dax *dax, struct fxfs_dax_range *ran
 
 	if (range->region)
 		return fxfs_dax_map_slice(dax, range, extents, count);
+	fxfs_dax_prune(dax, range);
 	for (i = 0; i < count; i++) {
 		const struct fxfs_dax_extent *e = &extents[i];
 		unsigned long page = (e->offset - start) >> PAGE_SHIFT;
@@ -614,7 +665,7 @@ static long fxfs_dax_take_region_window(struct fxfs_dax *dax, unsigned long page
 	unsigned long addr = gen_pool_alloc(dax->region_pool, pages << PAGE_SHIFT);
 
 	if (!addr)
-		atomic_long_inc(&dax->window_full);
+		atomic_long_inc(&dax->regions_full);
 	return addr ? addr - FXFS_DAX_POOL_BASE : -EAGAIN;
 }
 
@@ -2096,15 +2147,45 @@ out:
 	atomic_dec(&dax->growing);
 }
 
+/*
+ * fxdax: the longest run of `pool`'s free space, in bytes: of a window free in pieces, the most a
+ * range or a region can take (TASK-91.10). Read as it changes.
+ */
+static size_t fxfs_dax_largest_free(struct gen_pool *pool)
+{
+	unsigned long nbits, start, end, largest = 0;
+	struct gen_pool_chunk *chunk;
+
+	rcu_read_lock();
+	list_for_each_entry_rcu(chunk, &pool->chunks, next_chunk) {
+		nbits = (chunk->end_addr - chunk->start_addr + 1) >> pool->min_alloc_order;
+		for (start = find_first_zero_bit(chunk->bits, nbits); start < nbits;
+		     start = find_next_zero_bit(chunk->bits, nbits, end)) {
+			end = find_next_bit(chunk->bits, nbits, start);
+			largest = max(largest, end - start);
+		}
+	}
+	rcu_read_unlock();
+	return (size_t)largest << pool->min_alloc_order;
+}
+
 void fxfs_dax_show_stats(struct fxfs_dax *dax, struct seq_file *m)
 {
+	bool apart = dax->region_pool != dax->pool;
 	int why;
 
 	seq_printf(m, "window_free_bytes %zu\n", gen_pool_avail(dax->pool) +
-		   (dax->region_pool != dax->pool ? gen_pool_avail(dax->region_pool) : 0));
-	seq_printf(m, "window_full %ld\nwindow_reclaims %ld\nwindow_regions %ld\n",
-		   atomic_long_read(&dax->window_full), atomic_long_read(&dax->reclaims),
-		   atomic_long_read(&dax->region_count));
+		   (apart ? gen_pool_avail(dax->region_pool) : 0));
+	seq_printf(m, "window_largest_free_bytes %zu\n", fxfs_dax_largest_free(dax->pool));
+	if (apart)
+		seq_printf(m, "window_regions_free_bytes %zu\nwindow_regions_largest_free_bytes %zu\n",
+			   gen_pool_avail(dax->region_pool),
+			   fxfs_dax_largest_free(dax->region_pool));
+	seq_printf(m, "window_full %ld\nwindow_regions_full %ld\nwindow_reclaims %ld\n",
+		   atomic_long_read(&dax->window_full), atomic_long_read(&dax->regions_full),
+		   atomic_long_read(&dax->reclaims));
+	seq_printf(m, "window_regions %ld\nwindow_regions_pruned %ld\n",
+		   atomic_long_read(&dax->region_count), atomic_long_read(&dax->regions_pruned));
 	for (why = 0; why < FXFS_DAX_WHYS; why++)
 		seq_printf(m, "window_maps_%s %lld\nwindow_map_bytes_%s %lld\n", fxfs_dax_whys[why],
 			   atomic64_read(&dax->maps[why]), fxfs_dax_whys[why],

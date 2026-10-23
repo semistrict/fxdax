@@ -1638,6 +1638,39 @@ mod guest {
         fs::remove_file(&name).unwrap();
     }
 
+    /// fxdax: a file's pages written again and fsynced, again and again, as a database's are: each
+    /// write moves its page to the staging extent's region, a new one after every seal, and the
+    /// file's range held every region its pages were ever in, so that the window filled with
+    /// them (TASK-91.10). It lets go of those its pages left: as many regions as pages, at most.
+    fn test_regions_pruned() {
+        use std::os::unix::fs::FileExt;
+        const PAGE: usize = 4096;
+        const PAGES: usize = 16;
+        const ROUNDS: usize = 400;
+        let name = path("regions-pruned");
+        fs::write(&name, vec![1; 1 << 20]).unwrap();
+        let file = fs::OpenOptions::new().read(true).write(true).open(&name).unwrap();
+        file.sync_all().unwrap();
+        let before = stats()["window_regions"];
+        let mut expected = vec![1; 1 << 20];
+        for round in 0..ROUNDS {
+            let at = (round % PAGES) * 2 * PAGE;
+            let data = vec![(round % 251) as u8 + 2; PAGE];
+            file.write_all_at(&data, at as u64).unwrap();
+            expected[at..at + PAGE].copy_from_slice(&data);
+            file.sync_data().unwrap();
+        }
+        let after = stats();
+        let regions = after["window_regions"] as i64 - before as i64;
+        assert!(
+            regions <= 2 * PAGES as i64,
+            "{regions} regions more after {ROUNDS} fsyncs: {after:?}"
+        );
+        drop(file);
+        assert!(fs::read(&name).unwrap() == expected, "the file differs from what was written");
+        fs::remove_file(&name).unwrap();
+    }
+
     /// File handles: name_to_handle_at, and open_by_handle_at with the inode cached and evicted.
     fn test_file_handles() {
         fs::write(path("handled"), b"by handle").unwrap();
@@ -1716,6 +1749,9 @@ mod guest {
                 ("cache_shrinks", &test_cache_shrinks),
                 ("direct_io", &test_direct_io),
             ];
+            if dax {
+                tests.push(("regions_pruned", &test_regions_pruned));
+            }
             // Files on DAX are in no page cache.
             if !dax {
                 tests.push(("large_folios", &test_large_folios));
