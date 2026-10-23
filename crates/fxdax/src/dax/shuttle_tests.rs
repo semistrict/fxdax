@@ -13,6 +13,7 @@
 //! (`uffd::shuttle_tests`).
 
 use super::tests::TestPager;
+use super::unmapped::{Change, Unmapped};
 use super::*;
 use crate::kernel::PhysLocation;
 use crate::shuttle_testing::{BATCHES, config, fails_with, runs};
@@ -148,11 +149,14 @@ pub(super) enum Event {
     ReadReplaced,
     /// fxdax: the page that replaced it read.
     ReadReplacing,
+    /// fxdax: a fault mapped a page that a thread deferring its waits had unmapped, before the VM
+    /// process was told of the unmap (TASK-91.16).
+    FaultedUnmapped,
 }
 
 /// How often each event happened, over a test's runs (each test is a process of its own).
-static REACHED: [std::sync::atomic::AtomicUsize; 8] =
-    [const { std::sync::atomic::AtomicUsize::new(0) }; 8];
+static REACHED: [std::sync::atomic::AtomicUsize; 9] =
+    [const { std::sync::atomic::AtomicUsize::new(0) }; 9];
 
 fn reached(event: Event) {
     REACHED[event as usize].fetch_add(1, Ordering::Relaxed);
@@ -400,13 +404,6 @@ impl Keep for Kept {
     }
 }
 
-/// fxdax: a change to a window's second stage, as the extent daemon sends a VM process one.
-enum Change {
-    Map(u64, PhysLocation, u64, Protection),
-    Protect(u64, u64, Protection),
-    Unmap(u64, u64),
-}
-
 /// fxdax: the changes sent to a [`RemoteFakeStage`], and what waits for them.
 #[derive(Default)]
 struct Sent {
@@ -418,40 +415,84 @@ struct Sent {
     kept: Vec<(u64, Box<dyn Send>)>,
     /// Whether the VM process stops once it has made those sent.
     stopping: bool,
+    /// The last change sent that takes access away.
+    last_taking: u64,
+    /// The pages unmapped while a thread deferred its waits, which the VM process still maps, as
+    /// the extent daemon's stage keeps them (`dax::unmapped`).
+    unmapped: Unmapped,
 }
 
 shuttle::thread_local! {
     /// While this thread defers its waits, the last change it would have waited for.
     static DEFERRING: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+    /// The pages this thread unmapped while it deferred its waits, kept per thread rather than
+    /// per stage, as de7a0d2b kept them ([`RemoteFakeStage::per_thread`]).
+    static UNMAPPED_HERE: std::cell::RefCell<Unmapped> = std::cell::RefCell::new(Unmapped::default());
 }
 
 /// fxdax: a window's second stage in another process, as the extent daemon's connection to a VM
 /// process is (`extentd`'s `RemoteStage`): its changes are made in order, by the VM process's own
 /// thread ([`RemoteFakeStage::serve`]), into a [`FakeStage`], what the guest's vCPUs access; one
-/// that takes access away is waited for, but while the thread sending it defers its waits.
+/// that takes access away is waited for, but while the thread sending it defers its waits, whose
+/// unmaps it tells of only as the kernel maps their pages again, or as the thread stops deferring
+/// ([`Unmapped`]), deciding what to send and sending it holding one lock.
 struct RemoteFakeStage {
     this: std::sync::Weak<Self>,
     made: Arc<FakeStage>,
     sent: shuttle::sync::Mutex<Sent>,
     changed: shuttle::sync::Condvar,
+    /// Whether it keeps the pages unmapped per thread, as de7a0d2b did: a fault's map on another
+    /// thread then reaches the VM process before the deferring thread's unmap of the page.
+    per_thread: bool,
 }
 
 impl RemoteFakeStage {
     fn new() -> Arc<Self> {
+        Self::keeping_unmapped(false)
+    }
+
+    fn keeping_unmapped(per_thread: bool) -> Arc<Self> {
         Arc::new_cyclic(|this| Self {
             this: this.clone(),
             made: Arc::default(),
             sent: shuttle::sync::Mutex::new(Sent::default()),
             changed: shuttle::sync::Condvar::new(),
+            per_thread,
         })
+    }
+
+    /// Sends `change`, its ID.
+    fn push(&self, sent: &mut Sent, change: Change) -> u64 {
+        let taking = change.takes_access();
+        sent.changes.push_back(change);
+        sent.sent += 1;
+        if taking {
+            sent.last_taking = sent.sent;
+        }
+        self.changed.notify_all();
+        sent.sent
+    }
+
+    /// What the pages unmapped decide, `decide` of them, sent: none waited for.
+    fn decided(&self, decide: impl FnOnce(&mut Unmapped) -> Vec<Change>) {
+        let mut sent = self.sent.lock().unwrap();
+        let changes = if self.per_thread {
+            UNMAPPED_HERE.with(|unmapped| decide(&mut unmapped.borrow_mut()))
+        } else {
+            decide(&mut sent.unmapped)
+        };
+        let deferring = DEFERRING.with(std::cell::Cell::get).is_some();
+        if !deferring && changes.iter().any(Change::takes_access) {
+            reached(Event::FaultedUnmapped);
+        }
+        for change in changes {
+            self.push(&mut sent, change);
+        }
     }
 
     fn send(&self, change: Change, wait: bool) {
         let mut sent = self.sent.lock().unwrap();
-        sent.changes.push_back(change);
-        sent.sent += 1;
-        let id = sent.sent;
-        self.changed.notify_all();
+        let id = self.push(&mut sent, change);
         if !wait {
             return;
         }
@@ -477,9 +518,13 @@ impl RemoteFakeStage {
             let Some(change) = sent.changes.pop_front() else { return };
             drop(sent);
             match change {
-                Change::Map(offset, phys, len, prot) => self.made.map(offset, phys, len, prot),
-                Change::Protect(offset, len, prot) => self.made.protect(offset, len, prot),
-                Change::Unmap(offset, len) => self.made.unmap(offset, len),
+                Change::Map { offset, phys, len, protection } => {
+                    self.made.map(offset, phys, len, protection)
+                }
+                Change::Protect { offset, len, protection } => {
+                    self.made.protect(offset, len, protection)
+                }
+                Change::Unmap { offset, len } => self.made.unmap(offset, len),
             }
             let mut sent = self.sent.lock().unwrap();
             sent.made += 1;
@@ -501,16 +546,29 @@ impl RemoteFakeStage {
 }
 
 impl SecondStage for RemoteFakeStage {
-    fn map(&self, offset: u64, phys: PhysLocation, len: u64, prot: Protection) {
-        self.send(Change::Map(offset, phys, len, prot), false);
+    fn map(&self, offset: u64, phys: PhysLocation, len: u64, protection: Protection) {
+        self.decided(|unmapped| unmapped.map(offset, phys, len, protection));
     }
 
-    fn protect(&self, offset: u64, len: u64, prot: Protection) {
-        self.send(Change::Protect(offset, len, prot), prot != Protection::ReadWrite);
+    fn protect(&self, offset: u64, len: u64, protection: Protection) {
+        self.decided(|unmapped| unmapped.take_within(offset..offset + len));
+        let change = Change::Protect { offset, len, protection };
+        self.send(change, protection != Protection::ReadWrite);
     }
 
     fn unmap(&self, offset: u64, len: u64) {
-        self.send(Change::Unmap(offset, len), true);
+        self.decided(|unmapped| unmapped.take_within(offset..offset + len));
+        self.send(Change::Unmap { offset, len }, true);
+    }
+
+    fn unmap_pages(&self, offset: u64, len: u64, phys: &[PhysLocation]) {
+        if DEFERRING.with(std::cell::Cell::get).is_none() {
+            return self.unmap(offset, len);
+        }
+        self.decided(|unmapped| {
+            unmapped.unmapped(offset, phys);
+            Vec::new()
+        });
     }
 
     fn begin_deferring(&self) {
@@ -518,9 +576,13 @@ impl SecondStage for RemoteFakeStage {
     }
 
     fn end_deferring(&self) -> Option<Arc<dyn Deferred>> {
-        let id = DEFERRING.with(std::cell::Cell::take)?;
+        DEFERRING.with(std::cell::Cell::get)?;
+        self.decided(Unmapped::take);
+        DEFERRING.with(std::cell::Cell::take);
         let stage = self.this.upgrade().unwrap();
-        (id > self.sent.lock().unwrap().made).then(|| Arc::new(RemoteDeferral { stage, id }) as _)
+        let sent = self.sent.lock().unwrap();
+        let id = sent.last_taking;
+        (id > sent.made).then(|| Arc::new(RemoteDeferral { stage, id }) as _)
     }
 }
 
@@ -635,5 +697,85 @@ fn needs_deferred_changes_to_hold_what_they_replace() {
     *RULES.lock().unwrap() = Rules { deferred_changes_hold_what_they_replace: false, ..Rules::ALL };
     fails_with("a page reused", || {
         Runner::new(PctScheduler::new(3, runs(10 * RUNS)), config()).run(maps_race_evictions);
+    });
+}
+
+/// fxdax (TASK-91.16): a fault served on a thread of its own, as a vCPU's store to a page its VM
+/// process write-protects, or the prefetch of the page after a miss, maps a page of the window
+/// while the store maps another over it, deferring the change, as a `MAP` does; the VM process
+/// makes the changes in its own time. Once it has made them all it maps what the kernel maps, the
+/// page that replaced the first, which the vCPU then loads without a fault.
+fn faults_race_deferred_unmaps(stage: Arc<RemoteFakeStage>) {
+    let ps = page_size();
+    let (mut dax, window) = Dax::<Kept>::new(ps, Some(stage.clone())).unwrap();
+    let vm = thread::spawn({
+        let stage = stage.clone();
+        move || stage.serve()
+    });
+    let replaced = Arc::new(zx::Vmo::create(ps).unwrap());
+    replaced.write(&vec![REPLACED; ps as usize], 0).unwrap();
+    let replacing = Arc::new(zx::Vmo::create(ps).unwrap());
+    replacing.write(&vec![REPLACING; ps as usize], 0).unwrap();
+    dax.map(0, Kept(replaced.clone()), &replaced, 0, ps, false).unwrap();
+    // The page mapped, as the guest's first load maps it.
+    future::block_on(window.fault(0, Access::Read)).unwrap();
+
+    let fault = thread::spawn({
+        let window = window.clone();
+        move || future::block_on(window.fault(0, Access::Read)).unwrap()
+    });
+    let store = thread::spawn(move || {
+        let is = Kept(replacing.clone());
+        let (mapping, _) = dax.deferring(|dax| dax.map(0, is, &replacing, 0, ps, false));
+        mapping.unwrap();
+        dax
+    });
+    fault.join().unwrap();
+    let dax = store.join().unwrap();
+    // Once the VM process has made every change sent.
+    let sent = stage.sent.lock().unwrap();
+    let last = sent.sent;
+    stage.wait_made(sent, last);
+    let guest = StageGuest { stage: stage.made.clone(), window };
+    let Outcome::Made(read) = guest.access(0, Access::Read, None) else {
+        panic!("the VM process maps nothing where the kernel maps a page")
+    };
+    assert_eq!(read, REPLACING, "the VM process maps another page than the kernel");
+    // The window goes, and its mappings with it, while the VM process still makes the changes.
+    drop((dax, guest));
+    stage.stop();
+    vm.join().unwrap();
+}
+
+fn faults_race_deferred_unmaps_per_stage() {
+    faults_race_deferred_unmaps(RemoteFakeStage::new());
+}
+
+#[test]
+fn faults_race_deferred_unmaps_randomly() {
+    reaching(
+        || RandomScheduler::new(runs(RUNS)),
+        faults_race_deferred_unmaps_per_stage,
+        &[Event::FaultedUnmapped],
+    );
+}
+
+#[test]
+fn faults_race_deferred_unmaps_by_pct() {
+    reaching(
+        || PctScheduler::new(3, runs(RUNS)),
+        faults_race_deferred_unmaps_per_stage,
+        &[Event::FaultedUnmapped],
+    );
+}
+
+/// fxdax (TASK-91.16): the pages unmapped kept per thread, as de7a0d2b kept them, a fault's map on
+/// another thread reaches the VM process before the deferring thread's unmap of the page it
+/// replaced, which it maps over.
+#[test]
+fn needs_deferred_unmaps_kept_per_stage() {
+    fails_with("mapped over the page", || {
+        Runner::new(PctScheduler::new(3, runs(10 * RUNS)), config())
+            .run(|| faults_race_deferred_unmaps(RemoteFakeStage::keeping_unmapped(true)));
     });
 }

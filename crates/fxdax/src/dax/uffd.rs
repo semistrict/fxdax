@@ -741,6 +741,7 @@ impl<H: HostMemory> SecondStage for UffdSecondStage<H> {
             }
             installed
         };
+        let mut prefaulted = Vec::new();
         self.change(addr, len, installed, |installed| {
             for run in installed {
                 let addr = self.base + run.start * page_size;
@@ -749,8 +750,17 @@ impl<H: HostMemory> SecondStage for UffdSecondStage<H> {
                     run.len() * page_size,
                     protection == Protection::Read,
                 );
+                prefaulted.push(run);
             }
         });
+        // fxdax: the pages made read-only are mapped for the guest again ahead of its loads, as
+        // pages mapped read-only are (`map`): the change unmapped them for it, as a commit's seal
+        // makes an open extent's pages read-only in place (TASK-91.16).
+        if let Some(prefault) = self.prefault.as_ref().filter(|_| protection == Protection::Read) {
+            for run in prefaulted {
+                prefault.prefault((run.start * page_size) as u64, (run.len() * page_size) as u64);
+            }
+        }
     }
 
     fn unmap(&self, offset: u64, len: u64) {

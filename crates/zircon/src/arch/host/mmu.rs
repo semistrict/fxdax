@@ -58,6 +58,15 @@ pub trait SecondStage: Send + Sync {
 
     /// Unmaps the mapped `len` bytes at `vaddr`.
     fn unmap(&self, vaddr: usize, len: usize);
+
+    /// fxdax: unmaps the mapped `len` bytes at `vaddr`, whose pages were the physical pages
+    /// `phys`, one a page, as [`unmap`](Self::unmap) does: a second stage in another process,
+    /// which defers telling it of an unmapping, may tell it of a page unmapped and mapped again
+    /// where it was, the same page, as of its protection changed (TASK-91.16).
+    fn unmap_pages(&self, vaddr: usize, len: usize, phys: &[PhysLocation]) {
+        debug_assert_eq!(phys.len(), len / PAGE_SIZE);
+        self.unmap(vaddr, len);
+    }
 }
 
 /// A mapped page.
@@ -445,17 +454,23 @@ impl ArchVmAspace for HostArchVmAspace {
             Translation::Host { host_base } => {
                 reserve(self.host_addr(*host_base, vaddr), end - vaddr, true);
             }
-            // Unmap each run of mapped pages.
+            // Unmap each run of mapped pages. fxdax: with the physical pages they were, which a
+            // second stage in another process that defers telling it of the unmap may tell it of
+            // as a page made read-only in place, mapped again where it was (TASK-91.16).
             Translation::SecondStage(second_stage) => {
-                let mut runs: Vec<(usize, usize)> = Vec::new();
+                let memory = pmm::node().phys_memory();
+                let mut runs: Vec<(usize, Vec<PhysLocation>)> = Vec::new();
                 for &va in &unmapped {
+                    let phys = memory.location(locked.ptes[&va].paddr);
                     match runs.last_mut() {
-                        Some((start, len)) if *start + *len == va => *len += PAGE_SIZE,
-                        _ => runs.push((va, PAGE_SIZE)),
+                        Some((start, pages)) if *start + pages.len() * PAGE_SIZE == va => {
+                            pages.push(phys)
+                        }
+                        _ => runs.push((va, vec![phys])),
                     }
                 }
-                for (start, len) in runs {
-                    second_stage.unmap(start, len);
+                for (start, pages) in runs {
+                    second_stage.unmap_pages(start, pages.len() * PAGE_SIZE, &pages);
                 }
             }
         }

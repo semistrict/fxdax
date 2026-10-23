@@ -613,6 +613,51 @@ fn maps_a_window_in_the_vm_process() {
     assert_eq!(unsafe { libc::munmap(memory.as_ptr().cast(), 4 * ps) }, 0);
 }
 
+/// TASK-91.16: a commit's seal makes the window's writable mapping of the extent it seals
+/// read-only in place in the VM process: its page, which the sealed extent takes, has its
+/// protection changed, rather than its memory unmapped and mapped again, each a flush of the
+/// host's and the guest's TLBs. Its contents are as written, and a store to it fails.
+#[test]
+fn seals_make_the_windows_pages_read_only_in_place() {
+    host();
+    let ps = page_size() as usize;
+    let dir = tempfile::tempdir().unwrap();
+    let (store, served) = connect(&dir.path().join("store"), 1 << 24);
+    let memory = memory(1);
+    // SAFETY: The memory is the test's, and outlives the store.
+    unsafe { store.create_dax_window_in_host_memory(memory, ps as u64, None) }.unwrap();
+    let extent = ExtentId { branch: store.branch(), sequence: 1 };
+    store.map(extent, 0, ps as u64, 0, true).unwrap();
+    // SAFETY: The window's memory, whose faults the store serves.
+    unsafe { std::ptr::copy_nonoverlapping(pattern(4, ps).as_ptr(), memory.as_ptr(), ps) };
+    let [before, _] = store.stage_counts();
+    store.commit(None).unwrap();
+    // The window's change that the seal's remap begins with, and the protection.
+    let [after, _] = store.stage_counts();
+    assert_eq!(after - before, 2, "the seal changed the window's page otherwise");
+    // SAFETY: As above.
+    let page = unsafe { std::slice::from_raw_parts(memory.as_ptr(), ps) };
+    assert!(*page == pattern(4, ps)[..], "the sealed page holds other data");
+    let mut pipe = [0; 2];
+    // SAFETY: Creates a pipe, which the test closes.
+    assert_eq!(unsafe { libc::pipe(pipe.as_mut_ptr()) }, 0);
+    // SAFETY: Writes a byte from the test to the pipe.
+    assert_eq!(unsafe { libc::write(pipe[1], [9u8].as_ptr().cast(), 1) }, 1);
+    // A store to the page, the kernel's for this process, from the pipe.
+    // SAFETY: Reads into the window's memory, whose faults the store serves.
+    let stored = unsafe { libc::read(pipe[0], memory.as_ptr().cast(), 1) };
+    assert_eq!((stored, std::io::Error::last_os_error().raw_os_error()), (-1, Some(libc::EFAULT)));
+    // SAFETY: Closes the pipe.
+    unsafe {
+        libc::close(pipe[0]);
+        libc::close(pipe[1]);
+    }
+    drop(store);
+    served.join().unwrap();
+    // SAFETY: Unmaps the memory, which nothing uses any more.
+    assert_eq!(unsafe { libc::munmap(memory.as_ptr().cast(), ps) }, 0);
+}
+
 /// The environment a child process of [`two_processes_map_the_same_pages`] is told what to map in.
 const CHILD_SOCKET: &str = "FXDAX_EXTENTD_TEST_SOCKET";
 const CHILD_STORE: &str = "FXDAX_EXTENTD_TEST_STORE";

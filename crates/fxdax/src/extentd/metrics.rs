@@ -10,9 +10,10 @@
 //!   kind, as the daemon served them, from their dispatch to their reply's sending.
 //! - `fxdax_extentd_connections`, `fxdax_extentd_stores_open` and `fxdax_extentd_follower_views`:
 //!   the VM processes connected, the stores their connections write, and the followers' views.
-//! - `fxdax_extentd_<counter>_total`: the counters the control API's `GetStats` reports
+//! - `fxdax_extentd_<counter>_total`: the daemon's counters, as its stats file reports them
 //!   (`crate::stats::Stats::named`, its dashes underscores): maps, faults, page-ins, reads and
-//!   their nanoseconds and bytes.
+//!   their nanoseconds and bytes, the control API's `GetStats` too; and the VM processes' stage
+//!   operations, as they told the daemon, which `GetStats` doesn't report (TASK-91.16).
 //! - `fxdax_extentd_memory_bytes`, `fxdax_extentd_memory_limit_bytes` and
 //!   `fxdax_extentd_memory_capacity_bytes`: the memory the daemon's cached and open extents' pages
 //!   hold, every tenant's together, its limit, if any, and the most the daemon's kernel has
@@ -200,7 +201,7 @@ pub fn render() -> String {
 
     for (name, value) in crate::stats::stats().named() {
         let name = format!("fxdax_extentd_{}_total", name.replace('-', "_"));
-        let _ = writeln!(out, "# HELP {name} As the control API's GetStats reports it.");
+        let _ = writeln!(out, "# HELP {name} As the daemon's stats file reports it.");
         let _ = writeln!(out, "# TYPE {name} counter");
         let _ = writeln!(out, "{name} {value}");
     }

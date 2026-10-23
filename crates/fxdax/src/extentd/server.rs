@@ -8,6 +8,8 @@
 use super::pool::Pool;
 use super::stores::{self, CLOSING_WAIT, open_paths, open_store, store_key};
 use super::wire::*;
+use crate::dax::unmapped::{Change, Unmapped};
+use crate::kernel::PhysLocation;
 use crate::open_stores::Holder;
 use crate::store_requests::{self, Guest, Resizes, Shrinking};
 use crate::{Access, DaxWindow, Deferred, Errno, ExtentId, ExtentStore, Protection, SecondStage};
@@ -649,7 +651,7 @@ impl Connection {
             }),
             WINDOW => {
                 let stage =
-                    Arc::new(RemoteStage { sender: self.sender.clone(), acks: self.acks.clone() });
+                    Arc::new(RemoteStage::new(self.sender.clone(), self.acks.clone()));
                 let window = store.create_dax_window(args[0], Some(stage)).map_err(|err| {
                     log::warn!("extentd: creating a window: {err:#}");
                     Errno::EINVAL
@@ -1004,12 +1006,20 @@ async fn tell_commits(
 struct Acks {
     state: Mutex<AckState>,
     acked: Condvar,
+    /// fxdax: held while a stage operation takes its ID and is sent, so that IDs reach the VM
+    /// process in order, as an acknowledgement of one says it made those before it
+    /// ([`Acks::acked`]): a later one sent first would have its acknowledgement say so of an
+    /// earlier one still to be made.
+    sending: Mutex<()>,
 }
 
 #[derive(Default)]
 struct AckState {
     /// The last stage operation sent.
     sent: u64,
+    /// fxdax: the last sent that takes access to pages away, which the VM process may reach until
+    /// it has made it.
+    last_taking: u64,
     /// The last acknowledged.
     acked: u64,
     /// The VM process is gone, and nothing it acknowledges is waited for.
@@ -1017,15 +1027,16 @@ struct AckState {
     /// fxdax: what is kept until stage operations are acknowledged (`Deferred::keep_until_made`),
     /// with their IDs.
     kept: Vec<(u64, Box<dyn Send>)>,
-    /// fxdax: the last stage operation whose wait was deferred (`SecondStage::begin_deferring`).
-    deferred: u64,
 }
 
 impl Acks {
-    /// The ID of the next stage operation.
-    fn next(&self) -> u64 {
+    /// The ID of the next stage operation, which takes access to pages away if `taking`.
+    fn next(&self, taking: bool) -> u64 {
         let mut state = self.state.lock().unwrap();
         state.sent += 1;
+        if taking {
+            state.last_taking = state.sent;
+        }
         state.sent
     }
 
@@ -1052,14 +1063,12 @@ impl Acks {
         }
     }
 
-    /// fxdax: the stage operation a deferral ending is to wait for, of those up to `id` whose
-    /// waits it deferred: the last of all deferred, if not yet acknowledged, as a deferral that
-    /// deferred nothing of its own may still have to wait for others'
-    /// (`RemoteStage::end_deferring`); or none.
-    fn deferred(&self, id: u64) -> Option<u64> {
-        let mut state = self.state.lock().unwrap();
-        state.deferred = state.deferred.max(id);
-        (state.deferred > state.acked && !state.closed).then_some(state.deferred)
+    /// fxdax: the last stage operation sent that takes access to pages away, if the VM process has
+    /// yet to make it: what a deferral ending waits for, any thread's, as one that deferred
+    /// nothing of its own may still have to wait for others' (`RemoteStage::end_deferring`).
+    fn unmade_taking(&self) -> Option<u64> {
+        let state = self.state.lock().unwrap();
+        (state.last_taking > state.acked && !state.closed).then_some(state.last_taking)
     }
 
     /// Waits for stage operation `id` to be acknowledged, or the VM process to be gone.
@@ -1083,33 +1092,74 @@ impl Acks {
 
 /// A window's second stage in a VM process's memory: its changes go to the VM process, which makes
 /// them in order before it takes the replies that follow them. One that takes access to pages away
-/// is waited for, so that the guest has no access to a page the kernel frees, reuses or shares
-/// next.
+/// is acknowledged, and waited for unless the thread making it defers its waits
+/// (`SecondStage::begin_deferring`), so that the guest has no access to a page the kernel frees,
+/// reuses or shares next. fxdax: a thread that defers them has what the changes it defers replace
+/// held until they are made (`Dax::deferring`, TASK-92.50), and a seal's sharing waits for them
+/// (`end_deferring`).
 struct RemoteStage {
     sender: Arc<Sender>,
     acks: Arc<Acks>,
+    /// fxdax: the pages unmapped while a thread deferred its waits, which the VM process still
+    /// maps (`dax::unmapped`, TASK-91.16). Every change is decided and sent holding it, in the
+    /// order the kernel, which changes the stage holding its page tables' lock, changes them.
+    unmapped: Mutex<Unmapped>,
 }
 
 thread_local! {
-    /// fxdax: while this thread defers waiting for stage operations
-    /// (`SecondStage::begin_deferring`), the last one it would have waited for.
-    static DEFERRED: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+    /// fxdax: whether this thread defers waiting for stage operations
+    /// (`SecondStage::begin_deferring`).
+    static DEFERRING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 impl RemoteStage {
-    fn send(&self, kind: u32, args: &[u64], wait: bool) {
-        let id = self.acks.next();
+    fn new(sender: Arc<Sender>, acks: Arc<Acks>) -> Self {
+        Self { sender, acks, unmapped: Mutex::default() }
+    }
+
+    /// Sends a stage operation of `kind`, with `args`, which the VM process acknowledges if it
+    /// takes access to pages away (`taking`): its ID, unless the VM process is gone.
+    fn send(&self, kind: u32, args: &[u64], taking: bool) -> Option<u64> {
+        let _sending = self.acks.sending.lock().unwrap();
+        let id = self.acks.next(taking);
         let header =
-            Header::new(kind, id).with_args(args).with_flags(if wait { STAGE_ACK } else { 0 });
-        if self.sender.send(header, &[], &[]).is_err() {
-            // The VM process is gone, and its mappings with it.
-            return;
+            Header::new(kind, id).with_args(args).with_flags(if taking { STAGE_ACK } else { 0 });
+        // The VM process gone, its mappings went with it.
+        self.sender.send(header, &[], &[]).ok().map(|()| id)
+    }
+
+    /// fxdax: sends `changes`, which the pages unmapped decided ([`Unmapped`]): those taking
+    /// access away are not waited for, as they are what a deferral, still or since ended, waits
+    /// for.
+    fn send_changes(&self, changes: Vec<Change>) {
+        for change in changes {
+            let taking = change.takes_access();
+            match change {
+                Change::Map { offset, phys, len, protection } => {
+                    let code = protection_code(protection);
+                    self.send(STAGE_MAP, &[offset, phys.offset, len, code, phys.arena.0.into()], false)
+                }
+                Change::Protect { offset, len, protection } => {
+                    self.send(STAGE_PROTECT, &[offset, len, protection_code(protection)], taking)
+                }
+                Change::Unmap { offset, len } => self.send(STAGE_UNMAP, &[offset, len], taking),
+            };
         }
-        if wait {
-            match DEFERRED.get() {
-                Some(last) => DEFERRED.set(Some(last.max(id))),
-                None => self.acks.wait(id),
-            }
+    }
+
+    /// Sends what takes access to pages away, and waits for the VM process to make it, unless
+    /// this thread defers its waits. fxdax: holding the pages unmapped, the VM process is first
+    /// told of those within the range.
+    fn send_taking(&self, kind: u32, args: &[u64], range: std::ops::Range<u64>) {
+        let id = {
+            let mut unmapped = self.unmapped.lock().unwrap();
+            self.send_changes(unmapped.take_within(range));
+            self.send(kind, args, true)
+        };
+        if let Some(id) = id
+            && !DEFERRING.get()
+        {
+            self.acks.wait(id);
         }
     }
 }
@@ -1131,6 +1181,12 @@ impl Deferred for Deferral {
 }
 
 impl SecondStage for RemoteStage {
+    /// fxdax: of the pages unmapped while a thread deferred its waits, each mapped again
+    /// read-only where it was, the same page, has its protection changed alone, rather than its
+    /// memory replaced twice, each change a flush of the host's and the guest's TLBs: as a
+    /// commit's seal remaps an open extent's pages, which the sealed extent takes, read-only
+    /// (TASK-91.16). The others are unmapped first; and so whichever thread maps them, a fault's
+    /// too (`dax::unmapped`).
     fn map(
         &self,
         offset: u64,
@@ -1138,33 +1194,62 @@ impl SecondStage for RemoteStage {
         len: u64,
         protection: Protection,
     ) {
-        let args = [offset, phys.offset, len, protection_code(protection), phys.arena.0.into()];
-        self.send(STAGE_MAP, &args, false);
+        let mut unmapped = self.unmapped.lock().unwrap();
+        self.send_changes(unmapped.map(offset, phys, len, protection));
     }
 
     fn protect(&self, offset: u64, len: u64, protection: Protection) {
-        let wait = protection != Protection::ReadWrite;
-        self.send(STAGE_PROTECT, &[offset, len, protection_code(protection)], wait);
+        let args = [offset, len, protection_code(protection)];
+        if protection == Protection::ReadWrite {
+            let mut unmapped = self.unmapped.lock().unwrap();
+            self.send_changes(unmapped.take_within(offset..offset + len));
+            self.send(STAGE_PROTECT, &args, false);
+        } else {
+            self.send_taking(STAGE_PROTECT, &args, offset..offset + len);
+        }
     }
 
     fn begin_deferring(&self) {
-        DEFERRED.set(Some(0));
+        // fxdax: a deferral nested in another, or pages left unmapped by one ended, would be
+        // told of as another's.
+        debug_assert!(!DEFERRING.get(), "deferring while deferring");
+        debug_assert!(self.unmapped.lock().unwrap().is_empty(), "pages left unmapped");
+        DEFERRING.set(true);
     }
 
-    /// fxdax: what waits for the changes this thread deferred, and for those deferred before
-    /// them, if any are still to be made: a commit sealing an open extent a `MAP` stopped mapping
+    /// fxdax: what waits for the changes this thread deferred, and for any deferred before them,
+    /// if any are still to be made: a commit sealing an open extent a `MAP` stopped mapping
     /// had another store share its pages, which the guest may still store to until that `MAP`'s
     /// change is made, as soon as it sealed it otherwise (`ExtentStore::map`, TASK-92.50).
     fn end_deferring(&self) -> Option<Arc<dyn Deferred>> {
-        let id = self.acks.deferred(DEFERRED.take()?)?;
+        if !DEFERRING.replace(false) {
+            return None;
+        }
+        // fxdax: the pages it unmapped and nothing mapped again, which it tells of now.
+        {
+            let mut unmapped = self.unmapped.lock().unwrap();
+            self.send_changes(unmapped.take());
+        }
+        let id = self.acks.unmade_taking()?;
         Some(Arc::new(Deferral { acks: self.acks.clone(), id }))
     }
 
     fn unmap(&self, offset: u64, len: u64) {
-        self.send(STAGE_UNMAP, &[offset, len], true);
+        self.send_taking(STAGE_UNMAP, &[offset, len], offset..offset + len);
+    }
+
+    /// fxdax: while this thread defers its waits, the VM process is told of the pages unmapped
+    /// only once the kernel maps a page at one of their offsets, or once the thread stops
+    /// deferring (`map`).
+    fn unmap_pages(&self, offset: u64, len: u64, phys: &[PhysLocation]) {
+        if !DEFERRING.get() {
+            return self.unmap(offset, len);
+        }
+        self.unmapped.lock().unwrap().unmapped(offset, phys);
     }
 
     fn window_mapped(&self, offset: u64, len: u64) {
+        let _unmapped = self.unmapped.lock().unwrap();
         self.send(STAGE_MAPPED, &[offset, len], false);
     }
 }
@@ -1180,7 +1265,7 @@ mod acks_tests {
     fn kept_until_acknowledged() {
         let acks = Acks::default();
         let (first, second, third) = (Arc::new(()), Arc::new(()), Arc::new(()));
-        let ids: Vec<u64> = (0..3).map(|_| acks.next()).collect();
+        let ids: Vec<u64> = (0..3).map(|_| acks.next(true)).collect();
         acks.keep(ids[1], Box::new(first.clone()));
         acks.keep(ids[2], Box::new(second.clone()));
         acks.acked(ids[0]);
@@ -1194,6 +1279,11 @@ mod acks_tests {
         assert_eq!(Arc::strong_count(&second), 1);
     }
 }
+
+/// fxdax (TASK-91.16, TASK-92.50): how a remote stage tells its VM process of the changes made.
+#[cfg(test)]
+#[path = "stage_tests.rs"]
+mod stage_tests;
 
 /// TASK-43.4: which paths name stores in a directory.
 #[cfg(test)]

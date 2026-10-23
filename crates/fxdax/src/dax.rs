@@ -24,6 +24,9 @@
 mod shuttle_tests;
 #[cfg(target_os = "linux")]
 pub(crate) mod uffd;
+// The extent daemon's (Linux), and its tests' everywhere.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) mod unmapped;
 
 use crate::error::{Errno, IntoErrno, Result};
 use crate::kernel::page_size;
@@ -71,6 +74,15 @@ pub trait SecondStage: Send + Sync {
     /// Unmaps the mapped `len` bytes at `offset`.
     fn unmap(&self, offset: u64, len: u64);
 
+    /// fxdax: unmaps the mapped `len` bytes at `offset`, whose pages were `phys`, one a page, of
+    /// the kernel's physical memory, as [`unmap`](Self::unmap) does: a stage in another process,
+    /// which defers telling it of an unmapping, may tell it of a page unmapped and mapped again
+    /// where it was, the same page, as of its protection changed (TASK-91.16).
+    fn unmap_pages(&self, offset: u64, len: u64, phys: &[crate::kernel::PhysLocation]) {
+        debug_assert_eq!(phys.len() as u64, len / page_size());
+        self.unmap(offset, len);
+    }
+
     /// fxdax: the window maps the `len` bytes at `offset` anew; called once it has, before any of
     /// the pages it maps there now are mapped here, as the kernel maps a page here only once it is
     /// in memory. A stage that withholds pages a fault found nothing at (`dax::uffd`) gives them
@@ -83,7 +95,8 @@ pub trait SecondStage: Send + Sync {
     fn begin_deferring(&self) {}
 
     /// fxdax: ends [`begin_deferring`](Self::begin_deferring): what waits for the changes it
-    /// deferred, if there were any.
+    /// deferred, and for any deferred before them still to be made, if there are any: a deferral
+    /// that deferred nothing of its own may still have to wait for others' (TASK-92.50).
     fn end_deferring(&self) -> Option<Arc<dyn Deferred>> {
         None
     }
@@ -176,6 +189,10 @@ impl zircon::hypervisor::aspace::SecondStage for KernelSecondStage {
 
     fn unmap(&self, vaddr: usize, len: usize) {
         self.0.unmap(vaddr as u64, len as u64);
+    }
+
+    fn unmap_pages(&self, vaddr: usize, len: usize, phys: &[crate::kernel::PhysLocation]) {
+        self.0.unmap_pages(vaddr as u64, len as u64, phys);
     }
 }
 
@@ -558,6 +575,8 @@ impl<K: Keep> Dax<K> {
                 }
             }
         }
+        // fxdax: a deferral nested in another would take over the other's holds.
+        debug_assert!(self.held.is_none(), "deferring while deferring");
         let deferring = Deferring(self.stage.clone());
         if let Some(stage) = &deferring.0 {
             stage.begin_deferring();
