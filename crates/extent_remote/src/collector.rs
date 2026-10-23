@@ -20,14 +20,33 @@
 //! written whole, before the object goes, a grace period later. Writers record moves in their next
 //! checkpoints, after which the moves go too, unless a state's way to its extents still goes through
 //! them.
+//!
+//! A pass reads records, recovers branches and deletes objects many at once; what forks inherited
+//! together, their parent's state where they were forked, it reads once and takes once for them
+//! all; and a collector reads a record again only once it changed ([`Collector`], TASK-92.7).
 
 use crate::bucket::{self, Bucket, Meta};
 use crate::layout::{self, Kind, Location, Moves, Origin, Record};
 use crate::moves::{Moved, MovesMaps};
-use crate::recovery::{self, Recovered};
+use crate::recovery::{self, Checkpoints, Layers, Recovered, State};
 use crate::{Error, branch, rules};
+use futures::StreamExt as _;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 use storage_device::ExtentId;
+
+/// How many branches' records a pass reads at once.
+const RECORDS_AT_ONCE: usize = 32;
+
+/// How many branches a pass recovers at once.
+const RECOVERIES_AT_ONCE: usize = 16;
+
+/// How many of the checkpoints a pass read whole it keeps for the recoveries after: those of forks
+/// of a base, recovered one after another, which start from the base's.
+const CHECKPOINTS_KEPT: usize = 4;
+
+/// How many objects a pass deletes at once.
+const DELETES_AT_ONCE: usize = 32;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Options {
@@ -45,104 +64,243 @@ pub struct Report {
     pub compacted: usize,
 }
 
-/// One pass of the collector, as `holder`, which must differ from every other pass's.
+/// One pass of the collector, as `holder`, which must differ from every other pass's: of a
+/// collector of its own, which remembers nothing of it ([`Collector`]).
 pub async fn collect(
     bucket: &impl Bucket,
     holder: u64,
     options: &Options,
 ) -> Result<Report, Error> {
-    let epoch = branch::take_lease(bucket, layout::GC_LEASE, holder, 0).await?;
-    let early = rules().candidates_first;
-    let mut objects = if early { listing(bucket).await } else { BTreeMap::new() };
-    let records = records(bucket).await?;
-    let live = live(bucket, &records).await?;
-    if !early {
-        objects = listing(bucket).await;
+    Collector::new(*options).collect(bucket, holder).await
+}
+
+/// The collector, from one pass to the next: it remembers the branches' records it read, with the
+/// versions it read them at, and reads one again only once it changed: few do, and those of
+/// deleted forks, which stay, never do (TASK-92.7).
+pub struct Collector {
+    options: Options,
+    /// The records read, by their keys, with the versions they were read at.
+    records: BTreeMap<String, (String, Record)>,
+}
+
+impl Collector {
+    pub fn new(options: Options) -> Self {
+        Self { options, records: BTreeMap::new() }
     }
-    let pass = Pass::new(bucket, objects, records, live).await?;
-    let mut report = Report::default();
-    pass.compact(bucket, options, &mut report).await?;
-    let doomed = pass.doomed(bucket, options).await?;
-    // A pass a later one took the lease from stops.
-    if branch::lease_epoch(bucket, layout::GC_LEASE).await? != epoch {
-        return Ok(report);
+
+    /// One pass, as `holder`, which must differ from every other pass's.
+    pub async fn collect(&mut self, bucket: &impl Bucket, holder: u64) -> Result<Report, Error> {
+        let epoch = branch::take_lease(bucket, layout::GC_LEASE, holder, 0).await?;
+        let early = rules().candidates_first;
+        let mut objects = if early { listing(bucket).await } else { BTreeMap::new() };
+        let records = self.records(bucket).await?;
+        let live = live(bucket, &records).await?;
+        if !early {
+            objects = listing(bucket).await;
+        }
+        let pass = Pass::new(bucket, objects, records, live).await?;
+        let mut report = Report::default();
+        pass.compact(bucket, &self.options, &mut report).await?;
+        let doomed = pass.doomed(bucket, &self.options).await?;
+        // A pass a later one took the lease from stops.
+        if branch::lease_epoch(bucket, layout::GC_LEASE).await? != epoch {
+            return Ok(report);
+        }
+        // Many at once, in any order: none of it is what a live branch needs, whatever else goes.
+        let deletes = futures::stream::iter(&doomed).map(|key| bucket::delete(bucket, key));
+        report.deleted += deletes.buffer_unordered(DELETES_AT_ONCE).count().await;
+        Ok(report)
     }
-    for key in doomed {
-        bucket::delete(bucket, &key).await;
-        report.deleted += 1;
+
+    /// The branches' records, read many at once, but those read before at the versions listed. A
+    /// deleted branch's children got theirs before it was marked deleted, so listing them again
+    /// after reading them finds those of any it read deleted.
+    async fn records(&mut self, bucket: &impl Bucket) -> Result<BTreeMap<u64, Record>, Error> {
+        let mut records = BTreeMap::new();
+        loop {
+            let listed =
+                bucket::list(bucket, layout::BRANCHES).await.into_iter().filter_map(|meta| {
+                    match layout::kind(&meta.key) {
+                        Kind::Record { branch } if !records.contains_key(&branch) => {
+                            Some((branch, meta))
+                        }
+                        _ => None,
+                    }
+                });
+            let known = &self.records;
+            let reads = futures::stream::iter(listed)
+                .map(|(branch, meta)| async move {
+                    (branch, read_record(bucket, known, &meta).await, meta.key)
+                })
+                .buffered(RECORDS_AT_ONCE)
+                .collect::<Vec<_>>()
+                .await;
+            let mut new = false;
+            for (branch, read, key) in reads {
+                let Some((version, record)) = read? else { continue };
+                match version {
+                    Some(version) => self.records.insert(key, (version, record)),
+                    None => self.records.remove(&key),
+                };
+                records.insert(branch, record);
+                new = true;
+            }
+            if !new {
+                // Those gone, which the collector deleted, it forgets.
+                self.records.retain(|key, _| match layout::kind(key) {
+                    Kind::Record { branch } => records.contains_key(&branch),
+                    _ => false,
+                });
+                return Ok(records);
+            }
+        }
     }
-    Ok(report)
+}
+
+/// The record at the key of `meta`, which a listing gave, if there is one, and the version read:
+/// as `known` has it, if it read it at the version listed; or read now.
+async fn read_record(
+    bucket: &impl Bucket,
+    known: &BTreeMap<String, (String, Record)>,
+    meta: &Meta,
+) -> Result<Option<(Option<String>, Record)>, Error> {
+    if let Some(listed) = &meta.version.e_tag
+        && let Some((version, record)) = known.get(&meta.key)
+        && version == listed
+    {
+        return Ok(Some((Some(version.clone()), *record)));
+    }
+    let Some(object) = bucket::get(bucket, &meta.key).await else { return Ok(None) };
+    Ok(Some((object.meta.version.e_tag, layout::decode(&object.bytes)?)))
 }
 
 async fn listing(bucket: &impl Bucket) -> BTreeMap<String, Meta> {
     bucket::list(bucket, "").await.into_iter().map(|meta| (meta.key.clone(), meta)).collect()
 }
 
-/// The branches' records. A deleted branch's children got theirs before it was marked deleted, so
-/// listing them again after reading them finds those of any it read deleted.
-async fn records(bucket: &impl Bucket) -> Result<BTreeMap<u64, Record>, Error> {
-    let mut records = BTreeMap::new();
-    loop {
-        let mut new = false;
-        for meta in bucket::list(bucket, layout::BRANCHES).await {
-            if let Kind::Record { branch } = layout::kind(&meta.key)
-                && !records.contains_key(&branch)
-                && let Some(object) = bucket::get(bucket, &meta.key).await
-            {
-                records.insert(branch, layout::decode::<Record>(&object.bytes)?);
-                new = true;
-            }
-        }
-        if !new {
-            return Ok(records);
-        }
-    }
-}
-
-/// The live branches, recovered: those whose records are not deleted, and the children of forks
-/// in their states that have no records yet.
-async fn live(
-    bucket: &impl Bucket,
-    records: &BTreeMap<u64, Record>,
-) -> Result<BTreeMap<u64, Recovered>, Error> {
-    let mut live = BTreeMap::new();
-    let mut queue: Vec<(u64, Option<Origin>)> = records
+/// The live branches, recovered, several at once: those whose records are not deleted, and the
+/// children of forks in their states that have no records yet. Forks of a branch at one segment
+/// are recovered together, those without checkpoints of their own starting from the branch's
+/// state there, read once for them ([`Checkpoints`]); and the states are folded into what the
+/// pass needs of them as they are recovered, what forks inherited together once for them all,
+/// rather than each fork's copy of it ([`Layers`]).
+async fn live(bucket: &impl Bucket, records: &BTreeMap<u64, Record>) -> Result<Live, Error> {
+    let checkpoints = Checkpoints::new(bucket, CHECKPOINTS_KEPT);
+    let mut live = Live::default();
+    let origin = |origin: Option<Origin>| origin.map(|origin| (origin.parent, origin.at));
+    // Forks made at the same segment next to each other, in the same rounds.
+    let mut queue: BTreeSet<(Option<(u64, u64)>, u64)> = records
         .iter()
         .filter(|(_, record)| !record.deleted)
-        .map(|(&branch, record)| (branch, record.origin))
+        .map(|(&branch, record)| (origin(record.origin), branch))
         .collect();
-    while let Some((branch, origin)) = queue.pop() {
-        if live.contains_key(&branch) {
-            continue;
-        }
-        let recovered = match recovery::recover(bucket, branch, origin).await {
-            Ok(recovered) => recovered,
-            // Deleted since its record was read, what it needed may be gone: it is not live.
-            Err(Error::Lost(lost)) => match branch::record(bucket, branch).await? {
-                Some(record) if !record.deleted => return Err(Error::Lost(lost)),
-                _ => continue,
-            },
-            Err(error) => return Err(error),
-        };
-        for fork in &recovered.state.forks {
-            let record = records.get(&fork.child);
-            if record.is_some_and(|record| record.deleted)
-                || (record.is_none() && !rules().forks_from_states)
-            {
-                continue;
+    let mut taken = BTreeSet::new();
+    while !queue.is_empty() {
+        // Each once, queued by its record, or by its parent's state, or both.
+        let round: Vec<_> = std::iter::from_fn(|| queue.pop_first())
+            .filter(|&(_, branch)| taken.insert(branch))
+            .take(RECOVERIES_AT_ONCE)
+            .collect();
+        let recoveries = round.into_iter().map(|(origin, branch)| {
+            let origin = origin.map(|(parent, at)| Origin { parent, at });
+            let checkpoints = &checkpoints;
+            async move { (branch, recovery::recover_layers(checkpoints, branch, origin).await) }
+        });
+        let mut inherited = Inherited::default();
+        for (branch, recovered) in futures::future::join_all(recoveries).await {
+            let recovered = match recovered {
+                Ok(recovered) => recovered,
+                // Deleted since its record was read, what it needed may be gone: it is not live.
+                Err(Error::Lost(lost)) => match branch::record(bucket, branch).await? {
+                    Some(record) if !record.deleted => return Err(Error::Lost(lost)),
+                    _ => continue,
+                },
+                Err(error) => return Err(error),
+            };
+            for fork in &recovered.state.own.forks {
+                let record = records.get(&fork.child);
+                if record.is_some_and(|record| record.deleted)
+                    || (record.is_none() && !rules().forks_from_states)
+                    || taken.contains(&fork.child)
+                {
+                    continue;
+                }
+                queue.insert((Some((branch, fork.at)), fork.child));
             }
-            queue.push((fork.child, Some(Origin { parent: branch, at: fork.at })));
+            live.add(recovered, &mut inherited);
         }
-        live.insert(branch, recovered);
+        live.inherit(inherited);
     }
     Ok(live)
+}
+
+/// What a pass needs of the live branches' states, folded in as they are recovered.
+#[derive(Default)]
+struct Live {
+    branches: BTreeMap<u64, Ended>,
+    /// What recovering them read.
+    touched: BTreeSet<String>,
+    /// Where the extents they name are: each place once, however many of them name it there.
+    located: BTreeMap<ExtentId, BTreeSet<Location>>,
+}
+
+/// What deciding what goes needs of a live branch's state, its extents but: where its segments end,
+/// and the highest epoch of those applied.
+struct Ended {
+    end: u64,
+    epoch: u64,
+}
+
+/// The states forks inherited, as their recoveries read them, each with the extents of it every
+/// fork inheriting it holds no longer where it inherited it: what no fork of a round recovered
+/// needs of it.
+#[derive(Default)]
+struct Inherited {
+    states: Vec<(Arc<State>, BTreeSet<ExtentId>)>,
+}
+
+impl Live {
+    /// Folds in `recovered`, a live branch's: its own layer, and what it inherited into
+    /// `inherited`, its round's, which [`Live::inherit`] folds in once for all its forks.
+    fn add(&mut self, recovered: Recovered<Layers>, inherited: &mut Inherited) {
+        let Recovered { state: Layers { inherited: from, own, shadowed }, end, touched, .. } =
+            recovered;
+        self.touched.extend(touched);
+        for (extent, location) in own.extents {
+            self.located.entry(extent).or_default().insert(location);
+        }
+        if let Some(from) = from {
+            match inherited.states.iter_mut().find(|(state, _)| Arc::ptr_eq(state, &from)) {
+                Some((_, unheld)) => unheld.retain(|extent| shadowed.contains(extent)),
+                None => inherited.states.push((from, shadowed)),
+            }
+        }
+        let ended = Ended { end, epoch: own.epoch };
+        self.branches.insert(own.branch, ended);
+    }
+
+    /// Folds in what forks inherited, `inherited`: each state once, but the extents of it none of
+    /// them holds where they inherited them.
+    fn inherit(&mut self, inherited: Inherited) {
+        for (state, unheld) in inherited.states {
+            for (extent, location) in &state.extents {
+                if unheld.contains(extent) {
+                    continue;
+                }
+                let located = self.located.entry(*extent).or_default();
+                if !located.contains(location) {
+                    located.insert(location.clone());
+                }
+            }
+        }
+    }
 }
 
 /// What a pass found: every object listed, and what the live branches need of them.
 struct Pass {
     objects: BTreeMap<String, Meta>,
     records: BTreeMap<u64, Record>,
-    live: BTreeMap<u64, Recovered>,
+    branches: BTreeMap<u64, Ended>,
     /// What recovering the live branches read.
     touched: BTreeSet<String>,
     /// The objects holding the extents the live branches name, and those extents in them.
@@ -157,15 +315,15 @@ impl Pass {
         bucket: &impl Bucket,
         objects: BTreeMap<String, Meta>,
         records: BTreeMap<u64, Record>,
-        live: BTreeMap<u64, Recovered>,
+        live: Live,
     ) -> Result<Self, Error> {
-        let touched =
-            live.values().flat_map(|recovered| recovered.touched.iter().cloned()).collect();
+        let Live { branches, touched, located } = live;
         let mut named: BTreeMap<String, BTreeMap<ExtentId, Location>> = BTreeMap::new();
         let mut hops = BTreeSet::new();
         let mut maps = MovesMaps::default();
-        for recovered in live.values() {
-            for (&extent, location) in &recovered.state.extents {
+        // Each place once, however many branches name it.
+        for (&extent, locations) in &located {
+            for location in locations {
                 let mut location = location.clone();
                 loop {
                     if objects.contains_key(&location.key) {
@@ -186,12 +344,12 @@ impl Pass {
                 }
             }
         }
-        Ok(Self { objects, records, live, touched, named, hops })
+        Ok(Self { objects, records, branches, touched, named, hops })
     }
 
     /// Whether `seq` of `branch`, live, is at or past its end: perhaps uploaded and not yet in it.
     fn in_flight(&self, branch: u64, seq: u64) -> bool {
-        self.live.get(&branch).is_some_and(|recovered| seq >= recovered.end)
+        self.branches.get(&branch).is_some_and(|ended| seq >= ended.end)
     }
 
     /// Compacts the objects mostly freed: copies the live extents of each to its moves.
@@ -263,11 +421,9 @@ impl Pass {
                 }
                 Kind::Extent { branch, epoch, seq, .. } => {
                     !named
-                        && match self.live.get(&branch) {
+                        && match self.branches.get(&branch) {
                             None => true,
-                            Some(recovered) => {
-                                orphan(bucket, branch, recovered, epoch, seq).await?
-                            }
+                            Some(ended) => orphan(bucket, branch, ended, epoch, seq).await?,
                         }
                 }
                 // Moves go once no state's way goes through them, and they are compacted in turn,
@@ -299,7 +455,7 @@ impl Pass {
     }
 }
 
-/// Whether an extent object of `branch`, `recovered`, uploaded by the writer of epoch `of` before
+/// Whether an extent object of `branch`, `state`, uploaded by the writer of epoch `of` before
 /// its segment `seq`, if its key names that, that its state does not name, is one no segment will
 /// name: an earlier writer's, once a later one's segment is in the branch; or one whose segment,
 /// the writer's, is in the branch, whose state has freed it since, or which is void. fxdax: not one
@@ -308,17 +464,16 @@ impl Pass {
 async fn orphan(
     bucket: &impl Bucket,
     branch: u64,
-    recovered: &Recovered,
+    state: &Ended,
     of: u64,
     seq: Option<u64>,
 ) -> Result<bool, Error> {
-    let state = &recovered.state;
     let current = if rules().orphans_after_successor {
         state.epoch
     } else {
         branch::lease_epoch(bucket, &layout::lease(branch)).await?
     };
-    Ok(of < current || (of == state.epoch && seq.is_some_and(|seq| seq < recovered.end)))
+    Ok(of < current || (of == state.epoch && seq.is_some_and(|seq| seq < state.end)))
 }
 
 #[cfg(test)]
@@ -478,6 +633,188 @@ mod tests {
             collect(&*bucket, 3, &now).await.unwrap();
             assert!(!keys(&*bucket).await.contains(&layout::moves(&segment)));
         });
+    }
+
+    /// What a pass asked, round by round, as [`SimBucket::served_in_rounds`] serves it: the reads
+    /// of branches' records, the reads of checkpoints whole, and the deletes, how many in each
+    /// round that asked for any.
+    fn asked(rounds: &[Vec<String>]) -> [Vec<usize>; 3] {
+        let counted = |asking: &dyn Fn(&str) -> bool| -> Vec<usize> {
+            let counts = rounds.iter().map(|round| round.iter().filter(|r| asking(r)).count());
+            counts.filter(|&count| count > 0).collect()
+        };
+        let whole = |asked: &str| asked.split(' ').count() == 2;
+        [
+            counted(&|asked| asked.starts_with("get branches/")),
+            counted(&|asked| asked.starts_with("get checkpoints/") && whole(asked)),
+            counted(&|asked| asked.starts_with("delete ")),
+        ]
+    }
+
+    /// A base, branch 1: a segment of extents, some stored on their own, which the next frees,
+    /// then a segment forking it to `forks` children, and a checkpoint at it, the children's
+    /// recoveries' start; the last `deleted` children deleted. Its requests served by `bucket`.
+    fn forked_base(bucket: &Arc<SimBucket>, forks: u64, deleted: u64) {
+        use crate::layout::{Chain, Contents, Segment};
+        use crate::writer::Objects;
+        let (writer, _) = bucket.served(async {
+            branch::create(&**bucket, 1).await.unwrap();
+            Writer::open(bucket.clone(), 1, 10, 0).await.unwrap()
+        });
+        let first = writer.chain().next_sequence();
+        let extents = (0..20).map(|n| (ExtentId::new(1, first + n), vec![n as u8; 8])).collect();
+        let own: Vec<_> =
+            (20..23).map(|n| (ExtentId::new(1, first + n), vec![n as u8; 16])).collect();
+        let frees = own.iter().map(|(extent, _)| *extent).collect();
+        let children = (2..2 + forks + deleted).collect();
+        let segments: [Box<dyn FnOnce(&mut Chain) -> Objects>; 3] = [
+            Box::new(|chain| {
+                let commit = Commit { tag: 1, extents, own, ..Commit::default() };
+                Batch::from(commit).close(chain).frame()
+            }),
+            Box::new(|chain| {
+                Batch::from(Commit { tag: 2, frees, ..Commit::default() }).close(chain).frame()
+            }),
+            Box::new(|chain| {
+                let footer = chain.close(Contents { forks: children, ..Contents::default() });
+                let segment = Segment { data: Vec::new(), footer: footer.clone() };
+                Objects { footer, segment: segment.encode().into(), own: Vec::new() }
+            }),
+        ];
+        for segment in segments {
+            let seq = writer.add_segment(segment(&mut writer.chain())).unwrap();
+            bucket.served(writer.upload(seq)).0.unwrap();
+            bucket.served(writer.acknowledge()).0.unwrap();
+        }
+        bucket.served(writer.checkpoint()).0.unwrap();
+        for child in 2 + forks..2 + forks + deleted {
+            bucket.served(branch::delete(&**bucket, child, 20, 0)).0.unwrap();
+        }
+    }
+
+    /// TASK-92.7: a pass of the collector over a base and its forks reads the branches' records
+    /// many at once, the checkpoint the base's recovery and its forks' start from once, and
+    /// deletes what goes many at once; a second pass of the same collector reads no record it
+    /// read unchanged, and one that changed again.
+    #[test]
+    fn passes_read_records_and_checkpoints_once_and_delete_at_once() {
+        let bucket = SimBucket::new();
+        forked_base(&bucket, 6, 2);
+        let mut collector = Collector::new(KEEP);
+        let mut passes = Vec::new();
+        for holder in 1..=2 {
+            let (report, rounds) = bucket.served_in_rounds(collector.collect(&*bucket, holder));
+            report.unwrap();
+            passes.push(asked(&rounds));
+        }
+        // Its record, its children's, the deleted ones' too; its checkpoint; the segments the
+        // checkpoint covers that hold no extent its branches hold, its extents freed, and the
+        // leases of its children deleted.
+        assert_eq!(passes, [[vec![9], vec![1], vec![8]], [vec![], vec![1], vec![]]]);
+
+        bucket.served(branch::delete(&*bucket, 2, 20, 0)).0.unwrap();
+        let (report, rounds) = bucket.served_in_rounds(collector.collect(&*bucket, 3));
+        report.unwrap();
+        assert_eq!(asked(&rounds), [vec![1], vec![1], vec![1]]);
+    }
+
+    /// TASK-92.7: what forks inherited together, taken once for them all, goes only once none of
+    /// them holds it, whichever round of the pass recovered them. A base's three extents stored
+    /// on their own, which the base frees after forking more children than a pass recovers at
+    /// once: all of them free the first; the first child, which the first round recovers, keeps
+    /// the second; and the last, which the last round recovers, the third. The first goes; the
+    /// second and the third stay.
+    #[test]
+    fn what_forks_inherited_goes_once_none_holds_it() {
+        use crate::layout::{Contents, Segment};
+        use crate::writer::Objects;
+        let bucket = store();
+        let children = 2..2 + RECOVERIES_AT_ONCE as u64 + 1;
+        let (extents, held_in) = block_on(async {
+            branch::create(&*bucket, 1).await.unwrap();
+            let base = Writer::open(bucket.clone(), 1, 10, 0).await.unwrap();
+            let sequence = base.chain().next_sequence();
+            let extents: Vec<_> = (0..3).map(|n| ExtentId::new(1, sequence + n)).collect();
+            let own = extents.iter().map(|&extent| (extent, b"held".to_vec())).collect();
+            let held_in = base.chain().next_seq();
+            commit(&base, Commit { tag: 1, own, ..Commit::default() }).await;
+            let forks = Contents { forks: children.clone().collect(), ..Contents::default() };
+            let footer = base.chain().close(forks);
+            let segment = Segment { data: Vec::new(), footer: footer.clone() }.encode().into();
+            let seq = base.add_segment(Objects { footer, segment, own: Vec::new() }).unwrap();
+            base.upload(seq).await.unwrap();
+            base.acknowledge().await.unwrap();
+            assert_eq!(base.checkpoint().await, Ok(Some(seq)));
+            commit(&base, Commit { tag: 2, frees: extents.clone(), ..Commit::default() }).await;
+            base.checkpoint().await.unwrap();
+            for child in children.clone() {
+                let writer = Writer::open(bucket.clone(), child, 10 + child, 0).await.unwrap();
+                let held = match child {
+                    _ if child == children.start => Some(extents[1]),
+                    _ if child == children.end - 1 => Some(extents[2]),
+                    _ => None,
+                };
+                let frees = extents.iter().copied().filter(|&extent| Some(extent) != held);
+                let commit_frees = Commit { tag: 1, frees: frees.collect(), ..Commit::default() };
+                commit(&writer, commit_frees).await;
+            }
+            (extents, held_in)
+        });
+        let kept = |keys: &[String]| -> Vec<bool> {
+            extents.iter().map(|&extent| keys.contains(&layout::extent(1, held_in, extent))).collect()
+        };
+        assert_eq!(kept(&block_on(keys(&*bucket))), [true, true, true]);
+        block_on(collect(&*bucket, 1, &KEEP)).unwrap();
+        assert_eq!(kept(&block_on(keys(&*bucket))), [false, true, true]);
+    }
+
+    /// TASK-92.7: a benchmark of a pass over a base of 100,000 extents and 100 forks of it, none
+    /// with a checkpoint of its own: how long the pass takes, and the most memory the process
+    /// held. `cargo nextest run -p extent_remote --run-ignored only bench_passes_over_many_forks
+    /// --no-capture`, in a process of its own, which nextest gives each test.
+    #[test]
+    #[ignore]
+    fn bench_passes_over_many_forks() {
+        use crate::layout::{Contents, Segment};
+        use crate::writer::Objects;
+        const EXTENTS: u64 = 100_000;
+        const FORKS: u64 = 100;
+        let bucket = Arc::new(Direct(SimBucket::new()));
+        block_on(async {
+            branch::create(&*bucket, 1).await.unwrap();
+            let writer = Writer::open(bucket.clone(), 1, 10, 0).await.unwrap();
+            let first = writer.chain().next_sequence();
+            let extents =
+                (0..EXTENTS).map(|n| (ExtentId::new(1, first + n), n.to_le_bytes().to_vec()));
+            let commit = Commit { tag: 1, extents: extents.collect(), ..Commit::default() };
+            let objects = Batch::from(commit).close(&mut writer.chain()).frame();
+            let seq = writer.add_segment(objects).unwrap();
+            writer.upload(seq).await.unwrap();
+            writer.acknowledge().await.unwrap();
+            let footer = writer
+                .chain()
+                .close(Contents { forks: (2..2 + FORKS).collect(), ..Contents::default() });
+            let segment = Segment { data: Vec::new(), footer: footer.clone() };
+            let objects = Objects { footer, segment: segment.encode().into(), own: Vec::new() };
+            let seq = writer.add_segment(objects).unwrap();
+            writer.upload(seq).await.unwrap();
+            writer.acknowledge().await.unwrap();
+            writer.checkpoint().await.unwrap();
+        });
+        let started = std::time::Instant::now();
+        let report = block_on(collect(&*bucket, 1, &KEEP)).unwrap();
+        let took = started.elapsed();
+        let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+        // SAFETY: a getrusage of this process, into `usage`.
+        assert_eq!(unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) }, 0);
+        // In bytes on macOS, in KiB on Linux.
+        let most =
+            if cfg!(target_os = "macos") { usage.ru_maxrss >> 20 } else { usage.ru_maxrss >> 10 };
+        println!(
+            "a pass over a base of {EXTENTS} extents and {FORKS} forks: {took:?}, deleting {}; \
+             at most {most} MiB held",
+            report.deleted
+        );
     }
 
     /// A bucket that marks branch `child`'s record deleted just before the first read of `key`.

@@ -16,7 +16,7 @@
 //! compacted object goes, and moves no state names, a grace period after (60 s by default); objects
 //! whose live extents take less than FRACTION of them (0.5) are compacted.
 
-use extent_remote::collector::{Options, collect};
+use extent_remote::collector::{Collector, Options};
 use extent_remote::store::{Store, probe};
 use std::time::Duration;
 
@@ -60,8 +60,10 @@ fn main() -> Result<(), String> {
         // Each pass's holder differs from every other's.
         let holder = rand::random::<u64>;
         probe(&bucket, holder()).await?;
+        // What it read of branches' records it reads again only once they change.
+        let mut collector = Collector::new(options);
         loop {
-            match collect(&bucket, holder(), &options).await {
+            match collector.collect(&bucket, holder()).await {
                 Ok(report) => {
                     eprintln!(
                         "fxdax-gc: deleted {}, compacted {}",
