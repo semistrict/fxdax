@@ -761,7 +761,10 @@ mod tests {
             (extents, held_in)
         });
         let kept = |keys: &[String]| -> Vec<bool> {
-            extents.iter().map(|&extent| keys.contains(&layout::extent(1, held_in, extent))).collect()
+            extents
+                .iter()
+                .map(|&extent| keys.contains(&layout::extent(1, held_in, extent)))
+                .collect()
         };
         assert_eq!(kept(&block_on(keys(&*bucket))), [true, true, true]);
         block_on(collect(&*bucket, 1, &KEEP)).unwrap();

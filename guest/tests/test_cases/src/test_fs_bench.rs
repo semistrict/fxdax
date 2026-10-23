@@ -1642,7 +1642,10 @@ mod guest {
         let _server = Server(&data, &as_postgres);
         let start = Instant::now();
         let scale = pgbench_scale();
-        check("pgbench -i", &as_postgres(&format!("pgbench -h {socket} -i -s {scale} -q postgres")));
+        check(
+            "pgbench -i",
+            &as_postgres(&format!("pgbench -h {socket} -i -s {scale} -q postgres")),
+        );
         result("pgbench-init", "s", false, start.elapsed().as_secs_f64());
         // Observed per transaction, at about the rate ext4 commits them.
         let expected = secs as usize * 1600;
