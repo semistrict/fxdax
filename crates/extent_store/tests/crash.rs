@@ -189,9 +189,12 @@ fn crashed_round(round: u64) -> (MemDir, Vec<Model>, usize, StdRng) {
     (dir.crash(round), epochs, durable, rng)
 }
 
-/// What `dir` holds: each file's path, with its length and a hash of its contents; and each
+/// What a directory holds: each file's path, with its length and a hash of its contents; and each
 /// directory's, with neither.
-fn digest(dir: &MemDir) -> BTreeMap<String, Option<(u64, u64)>> {
+type Digest = BTreeMap<String, Option<(u64, u64)>>;
+
+/// What `dir` holds.
+fn digest(dir: &MemDir) -> Digest {
     let mut digest = BTreeMap::new();
     let mut paths = vec![String::new()];
     while let Some(path) = paths.pop() {
@@ -214,66 +217,96 @@ fn digest(dir: &MemDir) -> BTreeMap<String, Option<(u64, u64)>> {
     digest
 }
 
-/// TASK-79.79: a round's crash is a function of its seed alone: run twice, it leaves the same
-/// directory, so that a round that failed fails again, and a round that passed says what it seems.
-#[test]
-fn crashes_are_functions_of_their_rounds() {
-    for round in 0..ROUNDS {
-        let (first, second) = (digest(&crashed_round(round).0), digest(&crashed_round(round).0));
+/// The directories a round left, each named, in order: those its crashes left, and the one it
+/// ended with.
+type Left = Vec<(&'static str, Digest)>;
+
+/// Checks that round `round`, run twice, left the same directories, `first` and `second`.
+fn same(round: u64, first: &Left, second: &Left) {
+    assert_eq!(first.len(), second.len(), "round {round}: one ran longer");
+    for ((name, first), (_, second)) in first.iter().zip(second) {
         let paths: BTreeSet<_> = first.keys().chain(second.keys()).collect();
         let differing: Vec<_> =
             paths.into_iter().filter(|path| first.get(*path) != second.get(*path)).collect();
-        assert_eq!(differing, Vec::<&String>::new(), "round {round}: the crashes differ");
+        assert_eq!(differing, Vec::<&String>::new(), "round {round}: {name} differs");
+    }
+}
+
+/// Round `round` of [`recovers_a_prefix_of_its_commits`]: its store crashes in a random workload,
+/// recovers a prefix of its commits, carries on, and crashes again after a flush, keeping what it
+/// committed. Returns the directories it left, and whether its first crash was in a commit.
+fn recovering(round: u64) -> (Left, bool) {
+    let (crashed, epochs, durable, mut rng) = crashed_round(round);
+    let mut left = vec![("its first crash", digest(&crashed))];
+    let mid_commit = durable + 1 < epochs.len();
+
+    let store = Store::open(crashed.clone(), OPTIONS)
+        .unwrap_or_else(|e| panic!("round {round}: the store doesn't open: {e:?}"));
+    let epoch = store.epoch().unwrap() as usize;
+    assert!(
+        (durable..epochs.len()).contains(&epoch),
+        "round {round}: recovered epoch {epoch}, of {durable}..{}",
+        epochs.len()
+    );
+    assert_eq!(contents(&store), epochs[epoch], "round {round}: epoch {epoch} differs");
+    // What it recovered is sealed, and minting resumes past it.
+    let info = store.info().unwrap();
+    for (extent, _) in store.extents().unwrap() {
+        assert!(extent.sequence < info.next_sequence, "round {round}");
+        let error = store.write(extent, 0, &[0; BLOCK]).expect_err("rewrote a sealed extent");
+        assert_eq!(error.downcast_ref::<SealedExtent>(), Some(&SealedExtent(extent)));
+    }
+
+    // Its closed segments' footers are its history up to their last commit, none past it.
+    let rebuilt = store.rebuild().unwrap();
+    assert!(rebuilt.epoch <= epoch as u64, "round {round}: footers past epoch {epoch}");
+
+    // It carries on, and crashing again after a flush keeps what it committed.
+    let recovered = epochs[epoch].clone();
+    let mut epochs = vec![recovered.clone()];
+    workload(&mut rng, &store, &mut epochs, recovered, 0);
+    store.flush().unwrap_or_else(|e| panic!("round {round}: a commit failed: {e:?}"));
+    let durable = epochs.len() - 1;
+    drop(store);
+    let crashed = crashed.crash(round + ROUNDS);
+    left.push(("its second crash", digest(&crashed)));
+    let store = Store::open(crashed.clone(), OPTIONS).unwrap();
+    assert_eq!(contents(&store), epochs[durable], "round {round}: carrying on");
+    // And closing its open segment, its footers say what it holds.
+    store.close_segment().unwrap();
+    store.commit(None).unwrap();
+    let rebuilt = store.rebuild().unwrap();
+    assert_eq!(rebuilt.epoch, store.epoch().unwrap(), "round {round}");
+    assert_eq!(rebuilt.extents, store.places().unwrap(), "round {round}");
+    assert_eq!(rebuilt.root, store.root().unwrap(), "round {round}");
+    drop(store);
+    left.push(("its last directory", digest(&crashed)));
+    (left, mid_commit)
+}
+
+/// Round `round`, run twice, at once, on two threads: the directories each run left.
+fn twice(round: u64, run: fn(u64) -> Left) -> (Left, Left) {
+    std::thread::scope(|scope| {
+        let other = scope.spawn(|| run(round));
+        let left = run(round);
+        (left, other.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic)))
+    })
+}
+
+/// TASK-79.79: a round is a function of its seed alone: run twice, its crashes leave the same
+/// directories, and it ends with the same, so that a round that failed fails again, and a round
+/// that passed says what it seems.
+#[test]
+fn crashes_are_functions_of_their_rounds() {
+    for round in 0..ROUNDS {
+        let (first, second) = twice(round, |round| recovering(round).0);
+        same(round, &first, &second);
     }
 }
 
 #[test]
 fn recovers_a_prefix_of_its_commits() {
-    let mut crashes_mid_commit = 0;
-    for round in 0..ROUNDS {
-        let (crashed, epochs, durable, mut rng) = crashed_round(round);
-        if durable + 1 < epochs.len() {
-            crashes_mid_commit += 1;
-        }
-
-        let store = Store::open(crashed.clone(), OPTIONS)
-            .unwrap_or_else(|e| panic!("round {round}: the store doesn't open: {e:?}"));
-        let epoch = store.epoch().unwrap() as usize;
-        assert!(
-            (durable..epochs.len()).contains(&epoch),
-            "round {round}: recovered epoch {epoch}, of {durable}..{}",
-            epochs.len()
-        );
-        assert_eq!(contents(&store), epochs[epoch], "round {round}: epoch {epoch} differs");
-        // What it recovered is sealed, and minting resumes past it.
-        let info = store.info().unwrap();
-        for (extent, _) in store.extents().unwrap() {
-            assert!(extent.sequence < info.next_sequence, "round {round}");
-            let error = store.write(extent, 0, &[0; BLOCK]).expect_err("rewrote a sealed extent");
-            assert_eq!(error.downcast_ref::<SealedExtent>(), Some(&SealedExtent(extent)));
-        }
-
-        // Its closed segments' footers are its history up to their last commit, none past it.
-        let rebuilt = store.rebuild().unwrap();
-        assert!(rebuilt.epoch <= epoch as u64, "round {round}: footers past epoch {epoch}");
-
-        // It carries on, and crashing again after a flush keeps what it committed.
-        let recovered = epochs[epoch].clone();
-        let mut epochs = vec![recovered.clone()];
-        workload(&mut rng, &store, &mut epochs, recovered, 0);
-        store.flush().unwrap_or_else(|e| panic!("round {round}: a commit failed: {e:?}"));
-        let durable = epochs.len() - 1;
-        drop(store);
-        let store = Store::open(crashed.crash(round + ROUNDS), OPTIONS).unwrap();
-        assert_eq!(contents(&store), epochs[durable], "round {round}: carrying on");
-        // And closing its open segment, its footers say what it holds.
-        store.close_segment().unwrap();
-        store.commit(None).unwrap();
-        let rebuilt = store.rebuild().unwrap();
-        assert_eq!(rebuilt.epoch, store.epoch().unwrap(), "round {round}");
-        assert_eq!(rebuilt.extents, store.places().unwrap(), "round {round}");
-        assert_eq!(rebuilt.root, store.root().unwrap(), "round {round}");
-    }
+    let crashes_mid_commit = (0..ROUNDS).filter(|&round| recovering(round).1).count() as u64;
     // The crashes hit commits as well as what came between them.
     assert!(crashes_mid_commit > ROUNDS / 10, "{crashes_mid_commit} crashes in commits");
 }
@@ -290,54 +323,73 @@ fn check(round: u64, name: &str, store: &Store<MemDir>, epochs: &[Model], durabl
     assert_eq!(contents(store), epochs[epoch], "round {round}: {name}'s epoch {epoch} differs");
 }
 
+/// Round `round` of [`forks_recover_prefixes_of_their_commits`]: a parent and its fork run
+/// workloads by turns, and crash, and each recovers a prefix of its own commits. Returns the
+/// directories it left.
+fn forking(round: u64) -> Left {
+    const CHILD: u64 = BRANCH + 1;
+    let mut rng = StdRng::seed_from_u64(round);
+    let dir = MemDir::serial();
+    let description = Description { block_size: BLOCK as u32, capacity: 4 << 20, branch: BRANCH };
+    let parent = Store::create(dir.clone(), description, OPTIONS).unwrap();
+    let mut parent_epochs = vec![Model::default()];
+    let (_, held) = workload(&mut rng, &parent, &mut parent_epochs, Model::default(), 0);
+    // The fork commits, durably, what the parent held, which the child starts from.
+    parent_epochs.push(held.clone());
+    parent.fork(CHILD).unwrap();
+    let lineage = parent.lineage().clone();
+    let opened = rng.random_bool(0.5);
+    let child = opened.then(|| lineage.open_branch(CHILD).unwrap());
+    let mut child_epochs = vec![held.clone()];
+    let (mut parent_durable, mut child_durable) = (parent_epochs.len() - 1, 0);
+    // What each holds, committed or not, from turn to turn.
+    let (mut parent_held, mut child_held) = (held.clone(), held);
+
+    dir.fail_after(Some(rng.random_range(0..1200)));
+    for turn in 0..6 {
+        let (store, epochs, durable, held) = match (turn % 2, &child) {
+            (0, _) => (&parent, &mut parent_epochs, &mut parent_durable, &mut parent_held),
+            (_, Some(child)) => (child, &mut child_epochs, &mut child_durable, &mut child_held),
+            (_, None) => continue,
+        };
+        let (last_durable, now) = workload(&mut rng, store, epochs, held.clone(), *durable);
+        *durable = last_durable;
+        *held = now;
+        if dir.has_failed() {
+            break;
+        }
+    }
+    drop((parent, child, lineage));
+
+    let crashed = dir.crash(round);
+    let mut left = vec![("its crash", digest(&crashed))];
+    let lineage = Lineage::open(crashed.clone(), OPTIONS)
+        .unwrap_or_else(|e| panic!("round {round}: the store doesn't open: {e:?}"));
+    let parent = lineage.open_branch(BRANCH).unwrap();
+    check(round, "the parent", &parent, &parent_epochs, parent_durable);
+    let child = lineage.open_branch(CHILD).unwrap();
+    check(round, "the child", &child, &child_epochs, child_durable);
+    drop((parent, child, lineage));
+    left.push(("its last directory", digest(&crashed)));
+    left
+}
+
 /// A parent and its fork, which inherited its extents, run workloads by turns and crash, and each
 /// recovers a prefix of its own commits, whatever the other freed; or the fork is opened only
 /// after the crash, and holds what its parent held at the fork, whatever its parent freed and
 /// cleaned since.
 #[test]
 fn forks_recover_prefixes_of_their_commits() {
-    const CHILD: u64 = BRANCH + 1;
     for round in 0..ROUNDS / 3 {
-        let mut rng = StdRng::seed_from_u64(round);
-        let dir = MemDir::serial();
-        let description =
-            Description { block_size: BLOCK as u32, capacity: 4 << 20, branch: BRANCH };
-        let parent = Store::create(dir.clone(), description, OPTIONS).unwrap();
-        let mut parent_epochs = vec![Model::default()];
-        let (_, held) = workload(&mut rng, &parent, &mut parent_epochs, Model::default(), 0);
-        // The fork commits, durably, what the parent held, which the child starts from.
-        parent_epochs.push(held.clone());
-        parent.fork(CHILD).unwrap();
-        let lineage = parent.lineage().clone();
-        let opened = rng.random_bool(0.5);
-        let child = opened.then(|| lineage.open_branch(CHILD).unwrap());
-        let mut child_epochs = vec![held.clone()];
-        let (mut parent_durable, mut child_durable) = (parent_epochs.len() - 1, 0);
-        // What each holds, committed or not, from turn to turn.
-        let (mut parent_held, mut child_held) = (held.clone(), held);
+        forking(round);
+    }
+}
 
-        dir.fail_after(Some(rng.random_range(0..1200)));
-        for turn in 0..6 {
-            let (store, epochs, durable, held) = match (turn % 2, &child) {
-                (0, _) => (&parent, &mut parent_epochs, &mut parent_durable, &mut parent_held),
-                (_, Some(child)) => (child, &mut child_epochs, &mut child_durable, &mut child_held),
-                (_, None) => continue,
-            };
-            let (last_durable, now) = workload(&mut rng, store, epochs, held.clone(), *durable);
-            *durable = last_durable;
-            *held = now;
-            if dir.has_failed() {
-                break;
-            }
-        }
-        drop((parent, child, lineage));
-
-        let crashed = dir.crash(round);
-        let lineage = Lineage::open(crashed, OPTIONS)
-            .unwrap_or_else(|e| panic!("round {round}: the store doesn't open: {e:?}"));
-        let parent = lineage.open_branch(BRANCH).unwrap();
-        check(round, "the parent", &parent, &parent_epochs, parent_durable);
-        let child = lineage.open_branch(CHILD).unwrap();
-        check(round, "the child", &child, &child_epochs, child_durable);
+/// TASK-79.79: so is a round of [`forks_recover_prefixes_of_their_commits`].
+#[test]
+fn forks_crashes_are_functions_of_their_rounds() {
+    for round in 0..ROUNDS / 3 {
+        let (first, second) = twice(round, forking);
+        same(round, &first, &second);
     }
 }
