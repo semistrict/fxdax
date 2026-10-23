@@ -625,45 +625,51 @@ impl Shared {
         };
         let mut segments = 0;
         let mut in_flight = InFlight::new(self.marker());
-        let (mut wanted, mut due) = (false, false);
+        // Whether the next gather closes the store's open segment: for a commit waiting for its
+        // upload, or a fork, or as the interval is up; and whether the last took segments, after
+        // which the store may hold more closed, which the next takes, closing none for them
+        // (TASK-92.15).
+        let (mut close, mut more) = (false, false);
         loop {
             if let Err(err) = self.observe() {
                 return self.fail(&writer, err);
             }
             let stop = {
                 let mut progress = self.progress.lock().unwrap();
-                wanted |= std::mem::take(&mut progress.wanted);
+                close |= std::mem::take(&mut progress.wanted);
                 progress.stop
             };
-            if (wanted || due || stop) && in_flight.len() < IN_FLIGHT {
-                (wanted, due) = (false, false);
-                match blocking(|| self.gather(&writer, &mut in_flight)) {
-                    // More may have been made durable meanwhile.
-                    Ok(true) => {
-                        wanted = true;
-                        continue;
-                    }
-                    Ok(false) if stop && in_flight.is_empty() => {
-                        // A checkpoint on clean shutdown (doc-7, Checkpoints).
-                        if let Err(err) = writer.checkpoint().await {
-                            log::warn!("fxdax: checkpointing branch {:x}: {err}", writer.branch());
-                        }
-                        return self.fail(&writer, Failure::Other("the uploader stopped".into()));
-                    }
-                    Ok(false) => {}
+            if (close || more || stop) && in_flight.len() < IN_FLIGHT {
+                let gathered = blocking(|| self.gather(&writer, &mut in_flight, close || stop));
+                let gathered = match gathered {
+                    Ok(gathered) => gathered,
                     Err(err) => return self.fail(&writer, err),
+                };
+                // Done with once closed; the segments the store had closed taking the room, it
+                // closes the next time.
+                close &= !gathered.closed;
+                more = gathered.took;
+                if more {
+                    continue;
+                }
+                if stop && in_flight.is_empty() {
+                    // A checkpoint on clean shutdown (doc-7, Checkpoints).
+                    if let Err(err) = writer.checkpoint().await {
+                        log::warn!("fxdax: checkpointing branch {:x}: {err}", writer.branch());
+                    }
+                    return self.fail(&writer, Failure::Other("the uploader stopped".into()));
                 }
             }
             let woken = tokio::time::timeout(interval, self.wake.notified());
             if in_flight.is_empty() {
-                due = woken.await.is_err();
+                close |= woken.await.is_err();
                 continue;
             }
             let uploaded =
                 match futures::future::select(in_flight.next(), std::pin::pin!(woken)).await {
                     Either::Left((uploaded, _)) => uploaded.expect("an upload in flight"),
                     Either::Right((woken, _)) => {
-                        due = woken.is_err();
+                        close |= woken.is_err();
                         continue;
                     }
                 };
@@ -859,19 +865,23 @@ impl Shared {
 
     /// Adds the segments the store closed whose commits are durable to the writer, to be uploaded
     /// as they are, after those uploading (`in_flight`), as many as may upload at once with them:
-    /// the rest stay in the store, unread, until those are uploaded. The store closes its open
-    /// segment first if fewer wait. Returns whether there were any.
+    /// the rest stay in the store, unread, until those are uploaded. If `close`, the store closes
+    /// its open segment first if fewer wait: for a commit waiting for its upload, a fork, the
+    /// interval up, or the uploader stopping; for no other, as the commits no one waits for wait
+    /// in it for those, rather than each go in a segment of its own (TASK-92.15).
     fn gather(
         &self,
         writer: &Arc<Writer<Bucket>>,
         in_flight: &mut InFlight,
-    ) -> Result<bool, Failure> {
+        close: bool,
+    ) -> Result<Gathered, Failure> {
         let room = IN_FLIGHT.saturating_sub(in_flight.len());
         // What a waiter wants is durable; then closed, if fewer segments wait than may upload, and
         // what the closing closed durable too.
         self.store.flush()?;
         let mut closed = self.store.closed(room)?;
-        if closed.len() < room {
+        let closing = close && closed.len() < room;
+        if closing {
             self.store.close_now()?;
             self.store.flush()?;
             closed.extend(self.store.closed(room - closed.len())?);
@@ -885,9 +895,9 @@ impl Shared {
             let seq = writer.add_segment(objects)?;
             segments.push(Uploading { seq, number: closed.number, tag, forks });
         }
-        let gathered = !segments.is_empty();
+        let took = !segments.is_empty();
         in_flight.upload(writer, segments)?;
-        Ok(gathered)
+        Ok(Gathered { took, closed: closing })
     }
 
     /// Acknowledges what the writer has uploaded: the commits of the segments it acknowledges are
@@ -983,6 +993,15 @@ fn stored(file: &Arc<HostFile>) -> Result<Body, Failure> {
     let size = file.size().map_err(|err| Failure::Other(format!("a file to upload: {err}")))?;
     let file = file.clone();
     Ok(Body::new(size, move || blocking(|| read_whole(&*file))))
+}
+
+/// What a gather did ([`Shared::gather`]).
+struct Gathered {
+    /// Whether it took segments the store closed: the store may have closed more meanwhile.
+    took: bool,
+    /// Whether it closed the store's open segment, as asked: what was committed before is in the
+    /// segments the store closed, taken, or to be taken next.
+    closed: bool,
 }
 
 /// What attaching a store does with its branch ([`Shared::plan`]).
@@ -1298,7 +1317,7 @@ mod tests {
         let writer = shared.fetcher.writer.get().unwrap().clone();
         let mut in_flight = super::InFlight::new(shared.marker());
         let mut taken = Vec::new();
-        while shared.gather(&writer, &mut in_flight).unwrap() {
+        while shared.gather(&writer, &mut in_flight, true).unwrap().took {
             taken.push(in_flight.len());
             super::RUNTIME.block_on(async {
                 while let Some(uploaded) = in_flight.next().await {
@@ -1512,15 +1531,21 @@ mod tests {
         Nothing,
         /// The writes of segments.
         Segments,
+        /// The writes of segments of this number or more.
+        SegmentsFrom(u64),
         /// The write of the object at this key.
         Key(String),
     }
 
     impl Hold {
         fn holds(&self, key: &str) -> bool {
+            use extent_remote::layout::{Kind, kind};
             match self {
                 Hold::Nothing => false,
                 Hold::Segments => key.starts_with("segments/"),
+                Hold::SegmentsFrom(from) => {
+                    matches!(kind(key), Kind::Segment { seq, .. } if seq >= *from)
+                }
                 Hold::Key(held) => held == key,
             }
         }
@@ -1710,6 +1735,54 @@ mod tests {
         }
         let (extents, _) = uploaded(&bucket, store.branch());
         assert_eq!(extents.iter().map(|(sequence, _)| *sequence).collect::<Vec<_>>(), [1, 2, 3]);
+    }
+
+    /// TASK-92.15: an ordered commit that no one waits for stays in the store's open segment while
+    /// the uploader takes the segments that commits waiting for their uploads closed: it closes
+    /// the open segment for those waiting, or when it is due, not each time an upload is done.
+    /// Here four segments, one for each commit waiting, upload, held in the bucket; a commit is
+    /// made that no one waits for; then they land, one after another: the store closes none for
+    /// it, which uploads once one waits for it.
+    #[test]
+    fn uploads_done_close_no_segment_for_commits_no_one_waits_for() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(ExtentStore::create(dir.path().join("store"), 1 << 30).unwrap());
+        let branch = store.branch();
+        let gated = Arc::new(Gated::new());
+        let bucket = Arc::new(Bucket::new(gated.clone(), ""));
+        store.attach_remote(bucket.clone(), 1, idle()).unwrap();
+        // The writer's fence is segment 0; the commits' are 1 to 4.
+        gated.hold.send_replace(Hold::SegmentsFrom(1));
+        let waiting: Vec<_> = (1..=super::IN_FLIGHT as u64)
+            .map(|sequence| {
+                let committing = store.clone();
+                let commit = std::thread::spawn(move || {
+                    write(&committing, sequence, &pattern(sequence as u8, BLOCK));
+                    committing.commit(None)
+                });
+                gated.wait_held(sequence as usize);
+                commit
+            })
+            .collect();
+        let ordered = super::IN_FLIGHT as u64 + 1;
+        write(&store, ordered, &pattern(ordered as u8, BLOCK));
+        store.commit_ordered(None).unwrap();
+        // The first lands alone: its commit is acknowledged; then the rest.
+        let mut waiting = waiting.into_iter();
+        gated.hold.send_replace(Hold::SegmentsFrom(2));
+        assert_eq!(waiting.next().unwrap().join().unwrap(), Ok(()));
+        gated.hold.send_replace(Hold::Nothing);
+        for commit in waiting {
+            assert_eq!(commit.join().unwrap(), Ok(()));
+        }
+        // The store's segments closed, framed: those of the commits waiting.
+        let closed =
+            std::fs::read_dir(dir.path().join("store/segments").join(format!("{branch:016x}")));
+        assert_eq!(closed.unwrap().count(), super::IN_FLIGHT);
+        store.wait_uploaded().unwrap();
+        let (extents, _) = uploaded(&bucket, branch);
+        let sequences: Vec<_> = extents.iter().map(|(sequence, _)| *sequence).collect();
+        assert_eq!(sequences, (1..=ordered).collect::<Vec<_>>());
     }
 
     /// A branch survives the loss of its host. Cut off from object storage, the host's store goes
