@@ -64,7 +64,7 @@ use zx_status::Status;
 mod arenas;
 mod relief;
 
-pub use relief::relieve_with;
+pub use relief::{RELIEF_BYTES, relieve_with};
 
 /// No restrictions on which arena to allocate from.
 pub const ALLOC_FLAG_ANY: u32 = 0;

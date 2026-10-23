@@ -34,8 +34,9 @@ use std::sync::{Arc, OnceLock};
 use zx_status::Status;
 
 /// What a pass frees for an arena at least: a chunk's worth twice over, so that the next
-/// allocations find room.
-const RELIEF_BYTES: u64 = 2 * CHUNK_SIZE as u64;
+/// allocations find room. What it asks of [`relieve_with`]'s evictor, and of the kernel's for what
+/// that leaves.
+pub const RELIEF_BYTES: u64 = 2 * CHUNK_SIZE as u64;
 
 /// The relief thread's: what wakes it, and whether it runs.
 struct Reliever {
