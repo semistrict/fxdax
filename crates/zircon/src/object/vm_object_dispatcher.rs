@@ -20,6 +20,8 @@
 //! - Pages a VMO shares with another that counts them (`VmObjectPaged::supply_shared_pages`) are
 //!   populated but not committed, private or scaled bytes, as Zircon counts a parent's pages in a
 //!   child.
+//! - fxdax: `zx_vmo_op_range` has ops of its own: to evict a range now (`ZX_VMO_OP_FXDAX_EVICT`),
+//!   and to hold a VMO's pages from eviction (`ZX_VMO_OP_FXDAX_HOLD`, `ZX_VMO_OP_FXDAX_RELEASE`).
 
 use super::dispatcher::{Dispatcher, DispatcherBase, solo_dispatcher};
 use super::handle::KernelHandle;
@@ -39,6 +41,10 @@ use zx_types::*;
 /// fxdax: `zx_vmo_op_range`'s op that evicts the clean pages of a range of a pager-backed VMO now,
 /// as the evictor would, whatever their age (`VmObjectPaged::evict_range`, TASK-50.3).
 pub const ZX_VMO_OP_FXDAX_EVICT: u32 = 0x8000_0001;
+/// fxdax: `zx_vmo_op_range`'s ops that hold a VMO's pages from eviction, and let go of a hold,
+/// whatever the range (`VmObjectPaged::hold_from_eviction`, TASK-92.50).
+pub const ZX_VMO_OP_FXDAX_HOLD: u32 = 0x8000_0002;
+pub const ZX_VMO_OP_FXDAX_RELEASE: u32 = 0x8000_0003;
 
 const PAGE_SIZE: u64 = page::SIZE as u64;
 
@@ -367,6 +373,8 @@ impl VmObjectDispatcher {
             ZX_VMO_OP_ALWAYS_NEED => self.vmo.hint_range(offset, size, EvictionHint::AlwaysNeed),
             ZX_VMO_OP_DONT_NEED => self.vmo.hint_range(offset, size, EvictionHint::DontNeed),
             ZX_VMO_OP_FXDAX_EVICT => self.vmo.evict_range(offset, size).map(drop),
+            ZX_VMO_OP_FXDAX_HOLD => self.vmo.hold_from_eviction(true),
+            ZX_VMO_OP_FXDAX_RELEASE => self.vmo.hold_from_eviction(false),
             ZX_VMO_OP_PREFETCH => {
                 ensure!((rights & ZX_RIGHT_READ) != 0, Status::ACCESS_DENIED);
                 self.vmo.prefetch_range(offset, size)

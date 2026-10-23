@@ -8,8 +8,9 @@
 //! (`VmMapping::map_range`) on a thread of its own, racing a change to the mapping on another, in
 //! the interleavings Shuttle's schedulers choose; an allocation of an arena's pages racing the
 //! arena's removal; a chunk going back, outside the PMM's lock, racing an allocation it makes room
-//! for, and its arena's removal; and eviction of an arena's own pages racing a page it chose
-//! supplied again.
+//! for, and its arena's removal; eviction of an arena's own pages racing a page it chose
+//! supplied again; and, fxdax, a VMO's hold from eviction let go of while another thread waits
+//! holding the VMO's lock.
 
 use super::test_helper::StubPageProvider;
 use crate::hypervisor::aspace::GuestPhysicalAspace;
@@ -35,6 +36,34 @@ const PAGES: usize = 4;
 
 /// The schedules a test runs with each scheduler.
 const RUNS: usize = 100;
+
+/// fxdax (TASK-92.50): a thread lets go of a VMO's hold from eviction while another waits for it,
+/// holding the VMO's lock, as an eviction unmapping the VMO's pages from a second stage in
+/// another process waits for the thread that lets go: the hold is let go of without the lock.
+fn letting_go_of_a_hold_races_a_wait_under_the_lock() {
+    let len = PAGE_SIZE as u64;
+    let source = PageSource::new(Arc::new(StubPageProvider::new(false, false)));
+    let vmo = VmObjectPaged::create_external(source, 0, len).unwrap();
+    vmo.supply_pages(0, len, &mut pages_to_supply(len), SupplyOptions::PagerSupply).unwrap();
+    vmo.hold_from_eviction(true).unwrap();
+    let (let_go, waited) = shuttle::sync::mpsc::channel();
+    let waiting = thread::spawn({
+        let vmo = vmo.clone();
+        move || {
+            let _locked = vmo.cow_pages().lock();
+            waited.recv().unwrap();
+        }
+    });
+    vmo.hold_from_eviction(false).unwrap();
+    let_go.send(()).unwrap();
+    waiting.join().unwrap();
+    assert_eq!(vmo.evict_range(0, len), Ok(1));
+}
+
+#[test]
+fn letting_go_of_a_hold_races_a_wait_under_the_lock_in_any_order() {
+    check(letting_go_of_a_hold_races_a_wait_under_the_lock);
+}
 
 /// Runs `test` in schedules of each scheduler's, with threads' stacks as large as the kernel's
 /// calls need.

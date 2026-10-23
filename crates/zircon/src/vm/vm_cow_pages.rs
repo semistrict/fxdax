@@ -44,6 +44,9 @@
 //! - fxdax: the DIRTY requests of pages that could not be dirtied for want of memory fail with
 //!   `NO_MEMORY`, rather than being resolved for their writers to try again for ever
 //!   (`dirty_pages_failed_locked`, TASK-79.75).
+//! - fxdax: an object can be held from eviction (`hold_from_eviction`), as a high priority count
+//!   holds it, but without moving its pages between page queues, and without its lock
+//!   (TASK-92.50).
 
 use crate::debug::ltracef;
 use crate::ensure;
@@ -65,7 +68,7 @@ use crate::vm::vm_page_list::{
 use parking_lot::{ArcMutexGuard, Mutex, MutexGuard, RawMutex};
 use std::collections::{BTreeMap, HashMap};
 use std::mem::ManuallyDrop;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
 use zx_status::Status;
 
@@ -363,6 +366,12 @@ pub struct VmCowPages {
     /// The number of loans in `loans`, so that changing a page need not lock them when there are
     /// none. Loans are only made with our lock held, so with it held this can only decrease.
     loan_count: AtomicUsize,
+    /// fxdax: how many holds keep its pages from eviction ([`VmCowPages::hold_from_eviction`]):
+    /// while any is held, eviction takes none of them, as with a high priority count, but its pages
+    /// stay in the page queues they are in. Counted without the lock, which a thread letting go of
+    /// a hold may not take: one waiting with it held, as an eviction unmapping the pages from a
+    /// second stage in another process does, may wait for the thread itself (TASK-92.50).
+    eviction_holds: AtomicU64,
     lock: Mutex<VmCowPagesLocked>,
 }
 
@@ -1125,6 +1134,7 @@ impl VmCowPages {
             sharing: AtomicU8::new(Sharing::None as u8),
             loans: Mutex::new(Loans::default()),
             loan_count: AtomicUsize::new(0),
+            eviction_holds: AtomicU64::new(0),
             lock: Mutex::new(VmCowPagesLocked {
                 size,
                 pinned_page_count: 0,
@@ -3645,6 +3655,34 @@ impl VmCowPages {
         }
     }
 
+    /// fxdax: holds the object's pages from eviction, or, unless `hold`, lets go of a hold
+    /// (`VmCowPages::eviction_holds`): `BAD_STATE` if none is held. A DAX window's second stage
+    /// still mapping pages the window has stopped mapping, as a VM process does until it makes the
+    /// change, holds their object so until then: its pages, which the guest may still reach, are
+    /// neither freed nor reused meanwhile (TASK-92.50). An object that evicts none is held all the
+    /// same. A hold taken before the window stops mapping the pages, which takes the lock, is seen
+    /// by every eviction that finds them no longer mapped there, which takes it after.
+    pub fn hold_from_eviction(&self, hold: bool) -> Result<(), Status> {
+        if hold {
+            self.eviction_holds.fetch_add(1, Ordering::SeqCst);
+            return Ok(());
+        }
+        let mut holds = self.eviction_holds.load(Ordering::SeqCst);
+        loop {
+            ensure!(holds > 0, Status::BAD_STATE);
+            let let_go = self.eviction_holds.compare_exchange_weak(
+                holds,
+                holds - 1,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            );
+            match let_go {
+                Ok(_) => return Ok(()),
+                Err(now) => holds = now,
+            }
+        }
+    }
+
     /// Evicts the clean, reclaimable pages in the range.
     pub fn reclaim_range_for_eviction(
         self: &Arc<Self>,
@@ -3698,11 +3736,12 @@ impl VmCowPages {
         );
 
         let high_priority_count = locked.high_priority_count;
+        let eviction_holds = self.eviction_holds.load(Ordering::SeqCst);
         let mut num_failed_queue = 0u32;
         let can_reclaim_page = |page: VmPagePtr, num_failed_queue: &mut u32| {
             debug_assert!(is_page_dirty_tracked(page));
-            // Not allowed to reclaim range if high priority.
-            if high_priority_count != 0 {
+            // Not allowed to reclaim range if high priority. fxdax: nor while held from eviction.
+            if high_priority_count != 0 || eviction_holds != 0 {
                 page_queues().mark_accessed(page);
                 return false;
             }

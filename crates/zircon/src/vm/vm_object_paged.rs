@@ -276,6 +276,12 @@ impl VmObjectPaged {
         Ok(reclaimed.map_or(0, |reclaimed| reclaimed.num_pages))
     }
 
+    /// fxdax: holds the object's pages from eviction, or, unless `hold`, lets go of a hold
+    /// (`VmCowPages::hold_from_eviction`, TASK-92.50).
+    pub fn hold_from_eviction(&self, hold: bool) -> Result<(), Status> {
+        self.cow_pages.hold_from_eviction(hold)
+    }
+
     pub fn hint_range(&self, offset: u64, len: u64, hint: EvictionHint) -> Result<(), Status> {
         // Ignore hints for non user-pager-backed VMOs. We choose to silently ignore hints for
         // incompatible combinations instead of failing. This is because the kernel does not make

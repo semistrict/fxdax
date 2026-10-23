@@ -1392,3 +1392,19 @@ fn clean_pages_of_pager_vmos_are_evicted_on_demand() {
     let anonymous = VmObjectPaged::create(0, 0, PAGE_SIZE).unwrap();
     assert_eq!(anonymous.evict_range(0, PAGE_SIZE), Err(Status::NOT_SUPPORTED));
 }
+
+/// fxdax (TASK-92.50): a VMO held from eviction keeps its clean pages, however often it is held,
+/// until every hold is let go of; letting go of one not held fails.
+#[test]
+fn vmos_held_from_eviction_keep_their_pages() {
+    let (vmo, _pages) = make_committed_pager_vmo(2, false, false).unwrap();
+    vmo.hold_from_eviction(true).unwrap();
+    vmo.hold_from_eviction(true).unwrap();
+    assert_eq!(vmo.evict_range(0, 2 * PAGE_SIZE), Ok(0));
+    vmo.hold_from_eviction(false).unwrap();
+    assert_eq!(vmo.evict_range(0, 2 * PAGE_SIZE), Ok(0));
+    vmo.hold_from_eviction(false).unwrap();
+    assert_eq!(vmo.evict_range(0, 2 * PAGE_SIZE), Ok(2));
+    assert!(vmo.debug_get_page(0).is_none());
+    assert_eq!(vmo.hold_from_eviction(false), Err(Status::BAD_STATE));
+}
