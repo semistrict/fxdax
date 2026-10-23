@@ -3,9 +3,11 @@ id: TASK-91.12
 title: >-
   Guest Fxfs without DAX writes 13 GB to the device in a 60 s pgbench run
   (121,391 WRITEs, ~107 KB each)
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@main-session'
 created_date: '2026-10-23 18:01'
+updated_date: '2026-10-23 18:01'
 labels: []
 dependencies: []
 parent_task_id: TASK-91
