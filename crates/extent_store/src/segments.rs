@@ -729,6 +729,9 @@ impl Window {
             }
         }
         for extent in touched {
+            // Held as of it, though freed before it, or in it: freed while open, and written anew
+            // (TASK-79.1). It is no free of the footer's, which readers apply after its extents.
+            self.freed.remove(&extent);
             self.touched.insert(extent, extents.get(&extent).expect("touched and held").clone());
         }
         if let Some(root) = root {

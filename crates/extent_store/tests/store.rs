@@ -1937,6 +1937,26 @@ fn writes_finishing_after_their_extents_free_are_dropped() {
     assert_eq!(dir.list(&of("extents", BRANCH)).unwrap(), Vec::<String>::new());
 }
 
+/// Extents freed while open, and written anew, are held by the commit that seals them: the footer
+/// of its segment names them among the extents it seals, in the segment or in files of their own,
+/// and not among those it frees, which readers of footers apply after those, rebuilding the branch
+/// here or in object storage (TASK-79.1).
+#[test]
+fn footers_hold_extents_freed_open_and_written_anew() {
+    let store = create(MemDir::new(), 1 << 20);
+    let lens = [BLOCK, 40 << 10];
+    for (sequence, len) in (1..).zip(lens) {
+        store.write(extent(sequence), 0, &pattern(1, 0, len)).unwrap();
+        store.free(extent(sequence)).unwrap();
+        store.write(extent(sequence), 0, &pattern(2, 0, len)).unwrap();
+    }
+    store.close_segment().unwrap();
+    store.commit(None).unwrap();
+    let places = store.places().unwrap();
+    assert_eq!(places.len(), 2);
+    assert_eq!(store.rebuild().unwrap().extents, places);
+}
+
 /// A write in flight to an extent freed meanwhile, written again in the open segment as it was
 /// before, lands none of its bytes in the extent written again (TASK-79.1).
 #[test]
