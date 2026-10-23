@@ -181,8 +181,14 @@ struct fxfs_dax {
 	struct fxfs *fs;
 	struct fxfs_device *dev;
 	struct dax_device *dax_dev;
-	/* The window's free space. */
+	/* The window's free space for ranges of their own; regions' too, unless they have theirs. */
 	struct gen_pool *pool;
+	/*
+	 * fxdax: the window's free space for regions: its last part, from `regions_at`, apart from the
+	 * ranges' (TASK-91.10), or `pool`, in a window too small to split.
+	 */
+	struct gen_pool *region_pool;
+	u64 regions_at;
 	/* The files with ranges, or inodes using the window, by inode number. */
 	struct xarray files;
 	/* Guards `files`, and files' inodes. */
@@ -571,11 +577,26 @@ static long fxfs_dax_take_window(struct fxfs_dax *dax, unsigned long pages, bool
 	return addr ? addr - FXFS_DAX_POOL_BASE : -ENOSPC;
 }
 
+/*
+ * fxdax: `pages` pages of the window's space for regions: their offset in the window, or -EAGAIN
+ * if it has no room now, as fxfs_dax_get_region says. Regions map extents of any length at any
+ * offset: in the ranges' space, they left it free in pieces too small for a chunk's range, and
+ * every range reclaimed others, and mapped its chunk again (TASK-91.10).
+ */
+static long fxfs_dax_take_region_window(struct fxfs_dax *dax, unsigned long pages)
+{
+	unsigned long addr = gen_pool_alloc(dax->region_pool, pages << PAGE_SHIFT);
+
+	return addr ? addr - FXFS_DAX_POOL_BASE : -EAGAIN;
+}
+
 /* Frees `pages` pages of the window at `window_offset`, which nothing maps. */
 static void fxfs_dax_give_window(struct fxfs_dax *dax, u64 window_offset, unsigned long pages)
 {
+	struct gen_pool *pool = window_offset < dax->regions_at ? dax->pool : dax->region_pool;
+
 	if (pages)
-		gen_pool_free(dax->pool, window_offset + FXFS_DAX_POOL_BASE, pages << PAGE_SHIFT);
+		gen_pool_free(pool, window_offset + FXFS_DAX_POOL_BASE, pages << PAGE_SHIFT);
 }
 
 /*
@@ -875,7 +896,9 @@ static struct fxfs_dax_range *fxfs_dax_alloc_range(struct fxfs_dax *dax, unsigne
 /*
  * The region mapping extent `e`'s, made, unmapped, if there is none: with a reference more, the
  * caller's. -EAGAIN if the window has no room for it now, reclaiming ranges for it if `reclaim`
- * says: the caller holds a file's DAX semaphore, and can't wait for room.
+ * says and regions share the ranges' space: the caller holds a file's DAX semaphore, and can't
+ * wait for room. fxdax: in a space of their own, regions reclaim nothing: their callers map what
+ * they would have in ranges' (TASK-91.10).
  */
 static struct fxfs_dax_region *fxfs_dax_get_region(struct fxfs_dax *dax,
 						   const struct fxfs_dax_extent *e, bool reclaim)
@@ -896,8 +919,11 @@ static struct fxfs_dax_region *fxfs_dax_get_region(struct fxfs_dax *dax,
 	if (!new)
 		return ERR_PTR(-ENOMEM);
 	/* A region maps an extent at any offset: its space needs no alignment. */
-	window_offset = reclaim ? fxfs_dax_alloc_window(dax, pages, false, true) :
-				  fxfs_dax_take_window(dax, pages, false);
+	if (dax->region_pool != dax->pool)
+		window_offset = fxfs_dax_take_region_window(dax, pages);
+	else
+		window_offset = reclaim ? fxfs_dax_alloc_window(dax, pages, false, true) :
+					  fxfs_dax_take_window(dax, pages, false);
 	if (window_offset < 0) {
 		kfree(new);
 		return ERR_PTR(window_offset);
@@ -2034,6 +2060,15 @@ out:
 	atomic_dec(&dax->growing);
 }
 
+/* Destroys the window's pools: the ranges', and the regions', if apart. */
+static void fxfs_dax_destroy_pools(struct fxfs_dax *dax)
+{
+	if (dax->region_pool && dax->region_pool != dax->pool)
+		gen_pool_destroy(dax->region_pool);
+	if (dax->pool)
+		gen_pool_destroy(dax->pool);
+}
+
 struct fxfs_dax *fxfs_dax_create(struct super_block *sb, struct fxfs *fs)
 {
 	struct fxfs_device *dev = fxfs_dax_device(fs);
@@ -2048,9 +2083,20 @@ struct fxfs_dax *fxfs_dax_create(struct super_block *sb, struct fxfs *fs)
 	if (!dax)
 		return ERR_PTR(-ENOMEM);
 	dax->pool = gen_pool_create(PAGE_SHIFT, -1);
-	if (!dax->pool || gen_pool_add(dax->pool, FXFS_DAX_POOL_BASE, window_len, -1)) {
-		if (dax->pool)
-			gen_pool_destroy(dax->pool);
+	/*
+	 * fxdax: half a window of four chunks or more, in chunks, for regions (TASK-91.10): a quarter
+	 * filled as pgbench -i -s 50 loaded its tables, whose writes then mapped their pieces in
+	 * ranges' space, the load half as slow again.
+	 */
+	dax->regions_at = window_len < 4 * FXFS_DAX_SIZE ? window_len :
+			  window_len - rounddown(window_len / 2, FXFS_DAX_SIZE);
+	dax->region_pool = dax->regions_at < window_len ? gen_pool_create(PAGE_SHIFT, -1) : dax->pool;
+	if (!dax->pool || !dax->region_pool ||
+	    gen_pool_add(dax->pool, FXFS_DAX_POOL_BASE, dax->regions_at, -1) ||
+	    (dax->region_pool != dax->pool &&
+	     gen_pool_add(dax->region_pool, FXFS_DAX_POOL_BASE + dax->regions_at,
+			  window_len - dax->regions_at, -1))) {
+		fxfs_dax_destroy_pools(dax);
 		kfree(dax);
 		return ERR_PTR(-ENOMEM);
 	}
@@ -2072,7 +2118,7 @@ struct fxfs_dax *fxfs_dax_create(struct super_block *sb, struct fxfs *fs)
 	atomic_set(&dax->growing, 0);
 	dax->grow_wq = alloc_workqueue("fxfs_dax_grow", WQ_UNBOUND | WQ_MEM_RECLAIM, 0);
 	if (!dax->grow_wq) {
-		gen_pool_destroy(dax->pool);
+		fxfs_dax_destroy_pools(dax);
 		kfree(dax);
 		return ERR_PTR(-ENOMEM);
 	}
@@ -2159,7 +2205,7 @@ void fxfs_dax_destroy(struct fxfs_dax *dax)
 	}
 	xa_destroy(&dax->files);
 	destroy_workqueue(dax->grow_wq);
-	gen_pool_destroy(dax->pool);
+	fxfs_dax_destroy_pools(dax);
 	kfree(dax);
 }
 
