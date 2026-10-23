@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@main-session'
 created_date: '2026-10-23 18:01'
-updated_date: '2026-10-23 19:45'
+updated_date: '2026-10-23 22:12'
 labels: []
 dependencies: []
 parent_task_id: TASK-91
@@ -23,7 +23,7 @@ Round 6: vext_wait spins up to VEXT_SPIN_NS = 100 us before sleeping; with MAPs 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The driver spins only for requests whose recent latency is under its spin budget
+- [x] #1 The driver spins only for requests whose recent latency is under its spin budget
 - [ ] #2 Guest system time in fxfs-guest-pgbench-dax's load and runs lower, tps not lower
 <!-- AC:END -->
 
@@ -39,3 +39,9 @@ Round 6: vext_wait spins up to VEXT_SPIN_NS = 100 us before sleeping; with MAPs 
 <!-- SECTION:PLAN:BEGIN -->
 1. Per-type moving average of request latency (an eighth of the latest, as TCP's SRTT), updated as requests complete. 2. virtio_extent_call spins only if its type's average is under VEXT_SPIN_NS. 3. Verify: guest checks/crash pass; fxfs-guest-pgbench(-dax) tps not lower.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+06dd6a64: per-type moving average; spins only under VEXT_SPIN_NS. GCE: every type now averages ~400 us, so nothing spins (polled 0); no-DAX tps unchanged 1304/1294/1207/1246/1247. AC2's guest system time not measured yet: fxfs-guest-pgbench-profile's run shows the spin gone from the profile (virtio_extent_call / try_wait_for_completion absent from the symbols over 1%).
+<!-- SECTION:NOTES:END -->

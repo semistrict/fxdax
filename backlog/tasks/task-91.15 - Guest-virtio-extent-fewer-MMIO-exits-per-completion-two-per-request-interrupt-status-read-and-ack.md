@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@main-session'
 created_date: '2026-10-23 18:01'
-updated_date: '2026-10-23 19:45'
+updated_date: '2026-10-23 22:12'
 labels: []
 dependencies: []
 parent_task_id: TASK-91
@@ -38,3 +38,9 @@ Round 6: 134,886 MMIO exits to the VMM in the DAX load (JuiceFS: 2,646), ~12 us 
 <!-- SECTION:PLAN:BEGIN -->
 1. A caller spinning for its request polls its queue's used ring, with the queue's callbacks disabled while any caller polls it (EVENT_IDX: the device signals nothing then), so a request done within the spin costs no interrupt and none of its MMIO exits. 2. Count interrupts and polled completions per device (sysfs completions), printed per pgbench step. 3. Verify: interrupts per request lower in fxfs-guest-pgbench(-dax).
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+06dd6a64: callers spinning poll the used ring with completions unsignalled; sysfs completions counts interrupts and polled. GCE: polled 0, ~1 interrupt per request (732,555 in five no-DAX runs), as no request type completes within the 100 us spin. Fewer exits per interrupt needs MSI-X (virtio-pci): Firecracker's PCI transport lacks the shared-memory capability the DAX window needs. Estimated cost of the exits: ~3-6% of vCPU time. Held.
+<!-- SECTION:NOTES:END -->
