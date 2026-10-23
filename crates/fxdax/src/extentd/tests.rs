@@ -1808,3 +1808,49 @@ fn metrics_count_requests_as_they_are_served() {
     drop(store);
     served.join().unwrap();
 }
+
+/// TASK-79.27: the daemon's metrics server answers a request line longer than it reads with `431`,
+/// having read no more of it, and closes the connection.
+#[test]
+fn metrics_refuse_requests_too_long() {
+    use std::io::{Read as _, Write as _};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    std::thread::spawn(move || super::serve_metrics(listener));
+    let mut stream = std::net::TcpStream::connect(address).unwrap();
+    let mut writing = stream.try_clone().unwrap();
+    // A line of a mebibyte, which a server reading lines whole holds whole.
+    std::thread::spawn(move || {
+        writing.write_all(&vec![b'G'; 1 << 20]).unwrap();
+        writing.shutdown(std::net::Shutdown::Write).unwrap();
+    });
+    let response = within(std::time::Duration::from_secs(10), move || {
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        response
+    });
+    let response = response.unwrap();
+    assert!(response.starts_with("HTTP/1.1 431 Request Header Fields Too Large\r\n"), "{response}");
+}
+
+/// TASK-79.27: a scrape is answered while another client, slow, has sent but part of its request:
+/// the daemon's metrics server waits for neither on the other.
+#[test]
+fn metrics_are_served_beside_slow_clients() {
+    use std::io::{Read as _, Write as _};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    std::thread::spawn(move || super::serve_metrics(listener));
+    let mut slow = std::net::TcpStream::connect(address).unwrap();
+    write!(slow, "GET /metrics HTTP/1.1\r\n").unwrap();
+    let scraped = within(std::time::Duration::from_secs(2), move || {
+        let mut stream = std::net::TcpStream::connect(address).unwrap();
+        write!(stream, "GET /metrics HTTP/1.1\r\nHost: extentd\r\n\r\n").unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        response
+    });
+    let scraped = scraped.expect("the scrape waited for the slow client");
+    assert!(scraped.starts_with("HTTP/1.1 200 OK\r\n"), "{scraped}");
+    drop(slow);
+}
