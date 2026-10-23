@@ -1094,6 +1094,139 @@ fn the_daemon_waits_for_uploads() {
     assert_eq!(uploaded(), Some(b"closed".to_vec()));
 }
 
+/// The extents the cleaning tests write: 16 of them a store's capacity.
+const EXTENT: usize = 64 * BLOCK;
+
+/// Writes `store`'s extents `sequences`, of `EXTENT` bytes each, their own patterns.
+fn write_extents(store: &RemoteExtentStore, sequences: std::ops::RangeInclusive<u64>) {
+    for sequence in sequences {
+        let extent = ExtentId { branch: store.branch(), sequence };
+        write(store, extent, 0, &pattern(sequence as u8, EXTENT)).unwrap();
+    }
+}
+
+/// Frees `store`'s extents `sequences`.
+fn free_extents(store: &RemoteExtentStore, sequences: std::ops::RangeInclusive<u64>) {
+    for sequence in sequences {
+        store.free(ExtentId { branch: store.branch(), sequence }).unwrap();
+    }
+}
+
+/// Waits for the uploader of the store at `path`, which a connection has open, to have uploaded
+/// its latest commit as its interval ran out, and let go of what the commits up to it freed: as
+/// the daemon's control API says (`StatStore`), which makes nothing durable, as waiting for the
+/// uploads would (`SyncStore`).
+fn wait_for_uploader(path: &Path) {
+    control(async {
+        loop {
+            let state = super::stores::stat(path.to_owned()).await.unwrap();
+            if state.upload.unwrap().uploaded == state.committed {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+}
+
+/// Waits for `bytes` to be in the files of the open segments of `branch` of the store at `path`
+/// (`open-segments/<branch>/<number>`, doc-7), as cleaning's copies write them, and returns what
+/// those hold then.
+fn wait_for_open_segments(path: &Path, branch: u64, bytes: u64) -> u64 {
+    let open = path.join("open-segments").join(format!("{branch:016x}"));
+    loop {
+        let entries = std::fs::read_dir(&open).unwrap();
+        let held = entries.map(|entry| entry.unwrap().metadata().unwrap().len()).sum();
+        if held >= bytes {
+            return held;
+        }
+        std::thread::yield_now();
+    }
+}
+
+/// TASK-79.2: the daemon cleans a store behind its guest's commits. What the guest frees of what
+/// it committed, the store keeps for its uploader, until the uploader has uploaded the commit
+/// that freed it: let go of then, between the guest's commits, it is what no extent holds, which
+/// counts as used past the capacity's worth, and refuses the guest room. A pass copies what is
+/// live of the segments it is in, with no commit of the guest's, and the guest's next commit
+/// takes their room back.
+#[test]
+fn stores_are_cleaned_behind_their_guests_commits() {
+    let extent_bytes = EXTENT as u64;
+    host();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("store");
+    let (store, served) = connect(&path, 16 * extent_bytes);
+    let branch = store.branch();
+    let info = || store.info().unwrap();
+    // A segment of the capacity's worth, freed but its first extent; another of all but one of
+    // what that left room for, freed but its first too, the last frees ordered.
+    write_extents(&store, 1..=16);
+    store.commit(None).unwrap();
+    free_extents(&store, 2..=16);
+    write_extents(&store, 17..=31);
+    store.commit(None).unwrap();
+    free_extents(&store, 18..=31);
+    store.commit_ordered(None).unwrap();
+    // 29 extents' worth no extent holds, 13 of them past the capacity's.
+    wait_for_uploader(&path);
+    assert_eq!(info().available, extent_bytes);
+    let refused = ExtentId { branch, sequence: 32 };
+    assert_eq!(write(&store, refused, 0, &pattern(32, 2 * EXTENT)), Err(Errno::ENOSPC));
+    // The two extents live copied, no commit having come since.
+    assert_eq!(wait_for_open_segments(&path, branch, 2 * extent_bytes), 2 * extent_bytes);
+    assert_eq!(info().available, extent_bytes);
+    store.commit(None).unwrap();
+    assert_eq!(info().available, 14 * extent_bytes);
+    write(&store, refused, 0, &pattern(32, 2 * EXTENT)).unwrap();
+    for sequence in [1, 17] {
+        let extent = ExtentId { branch, sequence };
+        assert_eq!(read(&store, extent, 0, EXTENT), Ok(pattern(sequence as u8, EXTENT)));
+    }
+    drop(store);
+    served.join().unwrap();
+}
+
+/// TASK-79.2: a fork deleted leaves the store it was forked from the room of what that store
+/// freed since in the segments they shared, which the fork held: once that is past the capacity's
+/// worth, a pass copies what is live of them, with no commit of the store's guest, and the guest's
+/// next commit takes their room back.
+#[test]
+fn stores_are_cleaned_once_the_forks_sharing_their_segments_go() {
+    let extent_bytes = EXTENT as u64;
+    host();
+    let dir = tempfile::tempdir().unwrap();
+    let (path, fork) = (dir.path().join("store"), dir.path().join("fork"));
+    let (store, served) = connect(&path, 16 * extent_bytes);
+    let branch = store.branch();
+    let info = || store.info().unwrap();
+    // As above, the fork holding the first segment.
+    write_extents(&store, 1..=16);
+    store.commit(None).unwrap();
+    store.fork(&fork, branch + 1).unwrap();
+    free_extents(&store, 2..=16);
+    write_extents(&store, 17..=31);
+    store.commit(None).unwrap();
+    free_extents(&store, 18..=31);
+    store.commit_ordered(None).unwrap();
+    // 14 extents' worth no extent holds, within the capacity's worth: what the store freed of
+    // those the fork holds is none of its own.
+    wait_for_uploader(&path);
+    assert_eq!(info().available, 14 * extent_bytes);
+    delete_store(&fork).unwrap();
+    // The two extents live copied, no commit having come since: the fork gone, 29 extents' worth
+    // no extent holds, 13 past the capacity's.
+    assert_eq!(wait_for_open_segments(&path, branch, 2 * extent_bytes), 2 * extent_bytes);
+    assert_eq!(info().available, extent_bytes);
+    store.commit(None).unwrap();
+    assert_eq!(info().available, 14 * extent_bytes);
+    for sequence in [1, 17] {
+        let extent = ExtentId { branch, sequence };
+        assert_eq!(read(&store, extent, 0, EXTENT), Ok(pattern(sequence as u8, EXTENT)));
+    }
+    drop(store);
+    served.join().unwrap();
+}
+
 /// TASK-45: the daemon keeps every store's branch in its bucket, and opens none without one.
 #[test]
 fn stores_open_only_with_a_bucket() {

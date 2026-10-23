@@ -877,9 +877,29 @@ impl Drop for TransferArea {
 /// the store behind them as it is due, a pass at a time, on another of those, which commits
 /// nothing, so that its guest's commits wait for one extent's copy at most (TASK-79.2): until the
 /// last pass is done, holding the store.
+///
+/// It takes a blocking thread only for work: to flush, or to look whether a pass is due, which
+/// holds the store's state, once the store changed as may make one due since it last looked
+/// ([`ExtentStore::cleaning_changes`]), or until a pass in progress ends: the guest's commits,
+/// writes and frees, a resize, and what comes between commits, the uploader's letting go of what
+/// a commit freed, which it keeps until it uploaded the commit, its closing of the open segment,
+/// a fork's letting go of what it shared. So a pass begins within a turn of what made it due, as
+/// when every turn looked, and the guest's next commit takes back what it copied. Looking only as
+/// the guest committed, what came after a commit waited for the next, whose copies the commit
+/// after took back: a guest refused room for what it freed was refused for a commit more.
+/// Looking at every turn, every store open took a blocking thread at every turn, which hundreds
+/// of stores, their turns coming at once, kept as many of, each idle for a while after (TASK-34).
 async fn flush_behind(store: Arc<ExtentStore>, mut stopped: tokio::sync::oneshot::Receiver<()>) {
     let mut cleaning: Option<tokio::task::JoinHandle<()>> = None;
+    // The store's changes as of which a pass was found not due, or one began; none before the
+    // store is first looked at.
+    let mut looked = None;
     while tokio::time::timeout(FLUSH_EVERY, &mut stopped).await.is_err() {
+        // Found before the look, which then finds what they count.
+        let changes = store.cleaning_changes();
+        if !store.flush_pending() && looked == Some(changes) {
+            continue;
+        }
         let behind = store.clone();
         let flushed = tokio::task::spawn_blocking(move || {
             if behind.flush_pending() {
@@ -889,7 +909,8 @@ async fn flush_behind(store: Arc<ExtentStore>, mut stopped: tokio::sync::oneshot
         });
         match flushed.await {
             Ok(Ok(due)) => {
-                if due && cleaning.as_ref().is_none_or(tokio::task::JoinHandle::is_finished) {
+                let idle = cleaning.as_ref().is_none_or(tokio::task::JoinHandle::is_finished);
+                if due && idle {
                     let cleaned = store.clone();
                     cleaning = Some(tokio::task::spawn_blocking(move || {
                         if let Err(err) = cleaned.clean_behind() {
@@ -897,6 +918,8 @@ async fn flush_behind(store: Arc<ExtentStore>, mut stopped: tokio::sync::oneshot
                         }
                     }));
                 }
+                // Due as a pass goes on, it is looked for again until that pass is done.
+                looked = (!due || idle).then_some(changes);
             }
             Ok(Err(err)) => {
                 log::error!("extentd: making a store's commits durable: {err:?}");

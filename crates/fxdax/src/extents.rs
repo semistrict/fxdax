@@ -1167,6 +1167,14 @@ impl ExtentStore {
         self.store.flush_pending()
     }
 
+    /// fxdax: a count that moves with each change of the store's that may make cleaning it behind
+    /// its commits due ([`ExtentStore::cleaning_due`]): found without the store's state, which a
+    /// thread of a runtime's would wait for, and moved by none of its reads
+    /// (`extent_store::Store::cleaning_changes`, TASK-79.2).
+    pub fn cleaning_changes(&self) -> u64 {
+        self.store.cleaning_changes()
+    }
+
     /// fxdax: whether cleaning the store behind its commits is due ([`host_store::cleaning_due`],
     /// TASK-79.2): a follower's never is, which its writer cleans.
     pub fn cleaning_due(&self) -> Result<bool> {
