@@ -300,6 +300,29 @@ class Hosts(unittest.TestCase):
         )
         self.assertEqual(project.state()["instances"], {})
 
+    def test_a_failed_listing_of_zones_makes_no_host(self):
+        project = Project({"failing": ["zones"]})
+        self.assertEqual(
+            project.run("status=0; gce_create || status=$?; echo status $status"),
+            (0, "status 1\n", "ERROR: (gcloud.compute.zones.list) listing the zones failed\n"),
+        )
+        self.assertEqual(project.calls(), ["compute zones list"])
+
+    def test_a_run_whose_create_failed_runs_nothing(self):
+        # Under `||`, where errexit stops nothing.
+        project = Project({"exhausted": ["us-east4-a"]})
+        self.assertEqual(
+            project.run("(gce_all echo ran) || echo status $?"),
+            (
+                0,
+                "status 1\n",
+                "us-east4-a has no room for this machine; trying the next zone.\n"
+                "ERROR: (gcloud.compute.instances.create) The zone 'us-east4-a' does not have "
+                "enough resources available to fulfill the request.\n"
+                "Verified deletion of fxdax-test-x and its boot disk.\n",
+            ),
+        )
+
     def test_a_run_deletes_no_host_another_run_made_at_once(self):
         # Two runs of one name, at once: both found no host, and the other's create came first.
         project = Project({"create": "taken"})
@@ -445,6 +468,91 @@ class Jobs(unittest.TestCase):
         )
         self.assertEqual(
             self.fetch({"ssh": 2, "failing": ["scp"]})[:3], ("status 2\n", failed, ["remote.log"])
+        )
+
+
+class Source(unittest.TestCase):
+    """gce_push_source, which copies this machine's working tree to a host, under a driver's
+    `|| status=$?`: here a checkout of one file, and Firecracker's of another."""
+
+    def setUp(self):
+        self.repo = Path(tempfile.mkdtemp())
+        home = tempfile.mkdtemp()
+        for tree, files in [
+            (self.repo, {".gitignore": "/vendor/\n", "README": "fxdax\n"}),
+            (self.repo / "vendor" / "firecracker", {"README": "firecracker\n"}),
+        ]:
+            tree.mkdir(parents=True, exist_ok=True)
+            for name, text in files.items():
+                (tree / name).write_text(text)
+            git = ["git", "-C", str(tree), "-c", "user.name=t", "-c", "user.email=t@t"]
+            for args in [["init", "-q"], ["add", "."], ["commit", "-q", "-m", "a"]]:
+                subprocess.run(
+                    [*git, *args], env={"PATH": "/usr/bin:/bin", "HOME": home}, check=True
+                )
+
+    def push(self, state):
+        """Runs `gce_push_source run-x` on a project as `state` has it, with the host: its
+        status and errors, the calls of gcloud, its copy's staging directory as STAGING, and the
+        project."""
+        project = Project({"instances": {"fxdax-test-x": host("earlier")}, **state})
+        returncode, out, err = project.run(
+            f"repo={shlex.quote(str(self.repo))}\n"
+            "status=0; gce_push_source run-x || status=$?; echo status $status"
+        )
+        self.assertEqual(returncode, 0)
+        staging = r"\S*fxdax-gce-source\.\w+"
+        for call in project.calls():
+            for directory in re.findall(staging, call):
+                self.assertFalse(Path(directory).exists())
+        return out, err, [re.sub(staging, "STAGING", call) for call in project.calls()], project
+
+    def revision(self, tree):
+        return subprocess.run(
+            ["git", "-C", str(tree), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+        ).stdout.strip()
+
+    def test_the_source_is_copied_and_recorded(self):
+        out, err, calls, project = self.push({})
+        self.assertEqual(
+            (out, err, calls),
+            (
+                "status 0\n",
+                "",
+                [
+                    "compute instances describe fxdax-test-x",
+                    "compute scp STAGING/source.tar.gz fxdax-test-x:source.tar.gz",
+                    "compute ssh fxdax-test-x",
+                ],
+            ),
+        )
+        results = project.directory / "results"
+        recorded = (results / "source.txt").read_text().splitlines()
+        self.assertEqual(
+            recorded[:2],
+            [
+                f"revision {self.revision(self.repo)}",
+                f"firecracker {self.revision(self.repo / 'vendor' / 'firecracker')}",
+            ],
+        )
+        self.assertRegex(recorded[2], r"^[0-9a-f]{64}  source\.tar\.gz$")
+        self.assertEqual(len(recorded), 3)
+        self.assertEqual(
+            json.loads((results / "instance.json").read_text()),
+            {"name": "fxdax-test-x", "zone": "us-east4-a"},
+        )
+
+    def test_a_copy_that_failed_is_not_unpacked(self):
+        self.assertEqual(
+            self.push({"failing": ["scp"]})[:3],
+            (
+                "status 1\n",
+                "ERROR: (gcloud.compute.scp) copying failed\n",
+                [
+                    "compute instances describe fxdax-test-x",
+                    "compute scp STAGING/source.tar.gz fxdax-test-x:source.tar.gz",
+                ],
+            ),
         )
 
 

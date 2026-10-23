@@ -42,13 +42,15 @@ fi
 # as its create is tried: a create that fails may have made the host there all
 # the same, which gce_all's trap then finds there.
 gce_create() {
-    local region candidates candidate log
+    local region zones candidates candidate log
     region=${zone%-*}
+    zones=$("${cloud[@]}" compute zones list --filter="region:$region" --format='value(name)') ||
+        return
     candidates=("$zone")
     while read -r candidate; do
         [[ "$candidate" == "$zone" ]] || candidates+=("$candidate")
-    done < <("${cloud[@]}" compute zones list --filter="region:$region" --format='value(name)' | sort)
-    log=$(mktemp)
+    done < <(sort <<< "$zones")
+    log=$(mktemp) || return
     for candidate in "${candidates[@]}"; do
         zone=$candidate
         if gce_create_in "$zone" 2> "$log"; then
@@ -196,9 +198,24 @@ gce_wait_ready() {
 # file times, which the trees the host builds in do not go by (host_tree,
 # scripts/lib/linux-host-setup.sh).
 gce_push_source() {
-    local run=$1 staging
-    staging=$(mktemp -d "${TMPDIR:-/tmp}/fxdax-gce-source.XXXXXX")
-    python3 - "$repo" "$staging/source.tar.gz" <<'PY'
+    local run=$1 staging staged=0
+    staging=$(mktemp -d "${TMPDIR:-/tmp}/fxdax-gce-source.XXXXXX") || return
+    gce_stage_source "$staging" || staged=$?
+    rm -r -- "$staging"
+    (( staged == 0 )) || return "$staged"
+    gce_remote "set -eu; mkdir -p $run/source $run/results; tar -xzf source.tar.gz -C $run/source" ||
+        return
+    if [[ -n ${FXDAX_GUEST_KERNEL:-} ]]; then
+        "${cloud[@]}" compute scp --zone="$zone" "$FXDAX_GUEST_KERNEL" "$instance:$run/guest-kernel"
+    fi
+}
+
+# gce_stage_source STAGING makes the archive of the source in the directory
+# STAGING, records it and the host (gce_push_source), and copies it to the
+# host's home.
+gce_stage_source() {
+    local staging=$1 revision firecracker kernel
+    python3 - "$repo" "$staging/source.tar.gz" <<'PY' || return
 import io, pathlib, subprocess, sys, tarfile
 root = pathlib.Path(sys.argv[1])
 def files(directory):
@@ -218,24 +235,22 @@ with tarfile.open(sys.argv[2], 'w:gz') as archive:
     entry.size = len(data)
     archive.addfile(entry, io.BytesIO(data))
 PY
+    revision=$(git -C "$repo" rev-parse HEAD) || return
+    firecracker=$(git -C "$repo/vendor/firecracker" rev-parse HEAD) || return
     {
-        echo "revision $(git -C "$repo" rev-parse HEAD)"
-        echo "firecracker $(git -C "$repo/vendor/firecracker" rev-parse HEAD)"
-        git -C "$repo" status --porcelain=v1 | sed 's/^/changed /'
-        (cd "$staging" && shasum -a 256 source.tar.gz)
+        echo "revision $revision"
+        echo "firecracker $firecracker"
+        git -C "$repo" status --porcelain=v1 | sed 's/^/changed /' || return
+        (cd "$staging" && shasum -a 256 source.tar.gz) || return
         if [[ -n ${FXDAX_GUEST_KERNEL:-} ]]; then
-            echo "guest kernel $(shasum -a 256 < "$FXDAX_GUEST_KERNEL" | cut -d' ' -f1)"
+            kernel=$(shasum -a 256 < "$FXDAX_GUEST_KERNEL") || return
+            echo "guest kernel ${kernel%% *}"
         fi
-    } > "$results/source.txt"
+    } > "$results/source.txt" || return
     "${cloud[@]}" compute instances describe "$instance" --zone="$zone" \
         --format='json(name,zone,machineType,cpuPlatform,scheduling,advancedMachineFeatures)' \
-        > "$results/instance.json"
+        > "$results/instance.json" || return
     "${cloud[@]}" compute scp --zone="$zone" "$staging/source.tar.gz" "$instance:source.tar.gz"
-    rm -r -- "$staging"
-    gce_remote "set -eu; mkdir -p $run/source $run/results; tar -xzf source.tar.gz -C $run/source"
-    if [[ -n ${FXDAX_GUEST_KERNEL:-} ]]; then
-        "${cloud[@]}" compute scp --zone="$zone" "$FXDAX_GUEST_KERNEL" "$instance:$run/guest-kernel"
-    fi
 }
 
 # gce_host_command RUN [NAME=VALUE...] SCRIPT [ARG...] prints the command, for
@@ -356,6 +371,6 @@ gce_all() {
         exit 1
     fi
     trap 'status=$?; trap - EXIT; if ! gce_delete mine; then exit 1; fi; exit "$status"' EXIT
-    gce_create
+    gce_create || exit
     "$@"
 }
