@@ -9,6 +9,8 @@ use extent_store::{
     Closed, Description, Dir, File as _, Footprint, HostDir, Lineage, MemDir, MemFile, NoSpace,
     Options, Part, Place, RemoteData, Store, TooLong, TooSmall,
 };
+use std::collections::BTreeMap;
+use std::sync::Arc;
 use storage_device::{ExtentId, NoExtent, OtherBranch, SealedExtent};
 
 const BLOCK: usize = 4096;
@@ -1427,6 +1429,159 @@ fn closed_segments_keep_no_more_files_open_than_allowed() {
     assert_eq!(open[39], open[9], "{open:?}");
     assert_eq!(read(&store, extent(1), 0, BLOCK), pattern(1, 0, BLOCK));
     assert_eq!(read(&store, extent(40), 0, BLOCK), pattern(40, 0, BLOCK));
+}
+
+/// The syncs that let a file's pages go from the host's page cache, by the directory the file is
+/// in.
+type Drops = Arc<std::sync::Mutex<BTreeMap<String, u64>>>;
+
+/// fxdax: a store's directory in memory whose files of extents' data count their syncs that let
+/// their pages go from the host's page cache, as a host's do, written through it
+/// (`HostFile::sync`), by the directory each is in.
+#[derive(Clone, Default)]
+struct Dropping {
+    dir: MemDir,
+    drops: Drops,
+}
+
+struct DroppingFile {
+    file: MemFile,
+    /// The directory it is in, if it holds extents' data.
+    data: Option<String>,
+    drops: Drops,
+}
+
+impl Dropping {
+    fn new() -> Self {
+        Self { dir: MemDir::new(), drops: Drops::default() }
+    }
+
+    fn file(&self, file: MemFile, path: &str, data: bool) -> DroppingFile {
+        let data = data.then(|| path.split('/').next().unwrap().to_owned());
+        DroppingFile { file, data, drops: self.drops.clone() }
+    }
+
+    fn drops(&self) -> BTreeMap<String, u64> {
+        self.drops.lock().unwrap().clone()
+    }
+}
+
+impl extent_store::File for DroppingFile {
+    fn read_at(&self, buf: &mut [u8], offset: u64) -> std::io::Result<()> {
+        self.file.read_at(buf, offset)
+    }
+
+    fn write_at(&self, buf: &[u8], offset: u64) -> std::io::Result<()> {
+        self.file.write_at(buf, offset)
+    }
+
+    fn size(&self) -> std::io::Result<u64> {
+        self.file.size()
+    }
+
+    fn sync(&self) -> std::io::Result<()> {
+        if let Some(kind) = &self.data {
+            *self.drops.lock().unwrap().entry(kind.clone()).or_default() += 1;
+        }
+        self.file.sync()
+    }
+
+    fn sync_cached(&self) -> std::io::Result<()> {
+        self.file.sync_cached()
+    }
+}
+
+impl Dir for Dropping {
+    type File = DroppingFile;
+
+    fn create(&self, path: &str, data: bool) -> std::io::Result<DroppingFile> {
+        Ok(self.file(self.dir.create(path, data)?, path, data))
+    }
+
+    fn open(&self, path: &str, data: bool) -> std::io::Result<DroppingFile> {
+        Ok(self.file(self.dir.open(path, data)?, path, data))
+    }
+
+    fn remove(&self, path: &str) -> std::io::Result<()> {
+        self.dir.remove(path)
+    }
+
+    fn create_dir(&self, path: &str) -> std::io::Result<()> {
+        self.dir.create_dir(path)
+    }
+
+    fn list(&self, path: &str) -> std::io::Result<Vec<String>> {
+        self.dir.list(path)
+    }
+
+    fn sync_dir(&self, path: &str) -> std::io::Result<()> {
+        self.dir.sync_dir(path)
+    }
+
+    fn barrier(&self) -> std::io::Result<()> {
+        self.dir.barrier()
+    }
+}
+
+/// fxdax: durable commits let none of the open segment's pages go from the host's page cache: its
+/// raw file, written and synced again and again, takes them with it once framed and removed; its
+/// framed file, written once, lets them go once synced (TASK-92.23).
+#[test]
+fn durable_commits_keep_the_open_segments_pages_cached() {
+    let dir = Dropping::new();
+    let store = create(dir.clone(), 1 << 20);
+    for sequence in 1..=8 {
+        store.write(extent(sequence), 0, &pattern(sequence as u8, 0, BLOCK)).unwrap();
+        store.commit(None).unwrap();
+    }
+    store.close_segment().unwrap();
+    store.commit(None).unwrap();
+    assert_eq!(dir.drops(), BTreeMap::from([("segments".to_owned(), 1)]));
+}
+
+/// The host's page size.
+#[cfg(target_os = "linux")]
+fn page_size() -> usize {
+    // SAFETY: Reads a configuration value.
+    unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize }
+}
+
+/// The pages of the file at `path` that the host's page cache holds.
+#[cfg(target_os = "linux")]
+fn cached_pages(path: &std::path::Path) -> usize {
+    use std::os::fd::AsRawFd as _;
+    let file = std::fs::File::open(path).unwrap();
+    let len = file.metadata().unwrap().len() as usize;
+    let (prot, flags) = (libc::PROT_READ, libc::MAP_SHARED);
+    // SAFETY: Maps the file, unread, to ask the kernel which of its pages it caches, into a byte
+    // for each, and unmaps it.
+    unsafe {
+        let addr = libc::mmap(std::ptr::null_mut(), len, prot, flags, file.as_raw_fd(), 0);
+        assert_ne!(addr, libc::MAP_FAILED, "{}", std::io::Error::last_os_error());
+        let mut cached = vec![0u8; len.div_ceil(page_size())];
+        assert_eq!(libc::mincore(addr, len, cached.as_mut_ptr()), 0);
+        libc::munmap(addr, len);
+        cached.iter().filter(|page| **page & 1 == 1).count()
+    }
+}
+
+/// fxdax: on Linux, durable commits leave the pages of the open segment's raw file, written through
+/// the host's page cache, in it; its framed file, once synced, lets them go (TASK-92.23).
+#[cfg(target_os = "linux")]
+#[test]
+fn durable_commits_keep_the_open_segments_pages_cached_on_the_host() {
+    let temp = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let store = create(HostDir::new(temp.path(), true).unwrap(), 64 << 20);
+    assert!(store.dir().is_direct(), "the host's file system bypasses no page cache");
+    for sequence in 1..=8 {
+        store.write(extent(sequence), 0, &pattern(sequence as u8, 0, BLOCK)).unwrap();
+        store.commit(None).unwrap();
+    }
+    let path = |kind| temp.path().join(of(kind, BRANCH)).join(format!("{:016x}", 0));
+    assert_eq!(cached_pages(&path("open-segments")), (8 * BLOCK).div_ceil(page_size()));
+    store.close_segment().unwrap();
+    store.commit(None).unwrap();
+    assert_eq!(cached_pages(&path("segments")), 0);
 }
 
 /// Segments of 64 KiB and extents of 64 KiB at most, so that a segment holds 128 KiB at most.

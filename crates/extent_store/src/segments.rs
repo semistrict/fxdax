@@ -500,14 +500,15 @@ impl<F: File> Segments<F> {
     }
 
     /// Adds to `syncs` what the next commit's flush syncs of the segments': the open segment's
-    /// file, if it was written since the last commit; and if one closed since, the directories of
-    /// segments and of open ones.
+    /// file, if it was written since the last commit, keeping its pages in the host's page cache,
+    /// as they go with it once it is framed and removed (TASK-92.23); and if one closed since, the
+    /// directories of segments and of open ones.
     pub fn take_syncs(&mut self, syncs: &mut Syncs<F>) {
         if std::mem::take(&mut self.written) {
             let Phase::Open(file) = &self.tracked[&self.open].phase else {
                 unreachable!("the open segment is open")
             };
-            syncs.file(file.clone());
+            syncs.cached(file.clone());
         }
         if std::mem::take(&mut self.closed_since) {
             for kind in [SEGMENTS, OPEN_SEGMENTS] {
@@ -1047,8 +1048,9 @@ mod tests {
         assert_eq!(segments.open_files, 1);
     }
 
-    /// A commit syncs the open segment's file if it was written since the last commit, and the
-    /// directories of segments and of open ones if one closed, whose data its framed file holds.
+    /// A commit syncs the open segment's file if it was written since the last commit, keeping
+    /// its pages cached (TASK-92.23), and the directories of segments and of open ones if one
+    /// closed, whose data its framed file holds.
     #[test]
     fn only_written_open_segments_are_synced() {
         let dir = MemDir::new();
@@ -1056,17 +1058,18 @@ mod tests {
         let syncs = |segments: &mut Segments<MemFile>| {
             let mut syncs = Syncs::default();
             segments.take_syncs(&mut syncs);
-            (syncs.files().len(), syncs.dirs().iter().cloned().collect::<Vec<_>>())
+            let (files, cached) = syncs.files();
+            ((files.len(), cached.len()), syncs.dirs().iter().cloned().collect::<Vec<_>>())
         };
-        assert_eq!(syncs(&mut segments), (0, vec![]));
+        assert_eq!(syncs(&mut segments), ((0, 0), vec![]));
         write(&mut segments, 1);
-        assert_eq!(syncs(&mut segments), (1, vec![]));
-        assert_eq!(syncs(&mut segments), (0, vec![]));
+        assert_eq!(syncs(&mut segments), ((0, 1), vec![]));
+        assert_eq!(syncs(&mut segments), ((0, 0), vec![]));
         write(&mut segments, 2);
         segments.close(&dir, 1, 0).unwrap();
         let dirs = vec![branch_dir(OPEN_SEGMENTS, BRANCH), branch_dir(SEGMENTS, BRANCH)];
-        assert_eq!(syncs(&mut segments), (0, dirs));
+        assert_eq!(syncs(&mut segments), ((0, 0), dirs));
         segments.append(BLOCK);
-        assert_eq!(syncs(&mut segments), (1, vec![]));
+        assert_eq!(syncs(&mut segments), ((0, 1), vec![]));
     }
 }

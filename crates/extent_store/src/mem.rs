@@ -310,6 +310,11 @@ impl File for MemFile {
         inode.writes.clear();
         Ok(())
     }
+
+    /// As [`MemFile::sync`]: it caches nothing of its own.
+    fn sync_cached(&self) -> io::Result<()> {
+        self.sync()
+    }
 }
 
 #[cfg(test)]

@@ -80,12 +80,15 @@ impl<T> Durability<T> {
 /// directories whose entries they changed.
 pub(crate) struct Syncs<F> {
     files: Vec<Arc<F>>,
+    /// fxdax: those of them written and synced again and again, as the open segment's raw file
+    /// is, which keep their pages in the host's page cache ([`File::sync_cached`]).
+    cached: Vec<Arc<F>>,
     dirs: BTreeSet<String>,
 }
 
 impl<F> Default for Syncs<F> {
     fn default() -> Self {
-        Self { files: Vec::new(), dirs: BTreeSet::new() }
+        Self { files: Vec::new(), cached: Vec::new(), dirs: BTreeSet::new() }
     }
 }
 
@@ -93,6 +96,12 @@ impl<F: File> Syncs<F> {
     /// Syncs `file`.
     pub fn file(&mut self, file: Arc<F>) {
         self.files.push(file);
+    }
+
+    /// fxdax: syncs `file`, written and synced again and again, keeping its pages in the host's
+    /// page cache.
+    pub fn cached(&mut self, file: Arc<F>) {
+        self.cached.push(file);
     }
 
     /// Syncs the directory at `path`.
@@ -103,6 +112,7 @@ impl<F: File> Syncs<F> {
     /// Syncs what `other` does, too.
     pub fn extend(&mut self, other: Syncs<F>) {
         self.files.extend(other.files);
+        self.cached.extend(other.cached);
         self.dirs.extend(other.dirs);
     }
 
@@ -114,16 +124,22 @@ impl<F: File> Syncs<F> {
                 file.sync().context("syncing extents' data")?;
             }
         }
+        for file in &self.cached {
+            if synced.insert(Arc::as_ptr(file)) {
+                file.sync_cached().context("syncing extents' data")?;
+            }
+        }
         for path in &self.dirs {
             dir.sync_dir(path).with_context(|| format!("syncing {path}"))?;
         }
         Ok(())
     }
 
-    /// The files it syncs, in order.
+    /// The files it syncs, in order: those whose pages leave the host's page cache, and those whose
+    /// stay.
     #[cfg(test)]
-    pub fn files(&self) -> &[Arc<F>] {
-        &self.files
+    pub fn files(&self) -> (&[Arc<F>], &[Arc<F>]) {
+        (&self.files, &self.cached)
     }
 
     /// The directories it syncs.
@@ -192,7 +208,7 @@ mod tests {
         second.file(file);
         second.dir("d".to_owned());
         first.extend(second);
-        assert_eq!((first.files().len(), first.dirs().len()), (2, 1));
+        assert_eq!((first.files().0.len(), first.dirs().len()), (2, 1));
         dir.fail_after(Some(2));
         first.sync(&dir).unwrap();
         assert!(dir.has_failed());

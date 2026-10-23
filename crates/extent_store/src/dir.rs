@@ -25,6 +25,12 @@ pub trait File: Send + Sync + 'static {
 
     /// Makes what was written to the file durable.
     fn sync(&self) -> io::Result<()>;
+
+    /// fxdax: makes what was written to the file durable, as [`File::sync`] does, but leaves its
+    /// pages in the host's page cache, if they are there: for a file written and synced again and
+    /// again, as the open segment's raw file is, whose pages go with it once it is removed
+    /// (TASK-92.23).
+    fn sync_cached(&self) -> io::Result<()>;
 }
 
 /// The directory a store lives in, with what the store needs of its file system. Paths are
@@ -92,9 +98,13 @@ const TAKE_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 /// blocks. fxdax: on Linux, they are written through it, so that a write doesn't wait for the
 /// host's disk, which a commit doesn't need (`Store::flush` makes it durable), and its pages leave
 /// the cache once synced: written directly, every `WRITE`, and every commit of an extent written
-/// through a DAX window, waited half a millisecond for a network disk. A read bypassing the cache
-/// writes back what it reads first. Syncing a file is `fdatasync` on Linux; on macOS it is
-/// `fsync`, which leaves the drive's cache to `barrier`, an `F_FULLFSYNC`.
+/// through a DAX window, waited half a millisecond for a network disk. But the open segment's raw
+/// file's, which every durable commit syncs, and whose pages go with it once it is framed and
+/// removed ([`File::sync_cached`]): letting the whole file's go at each sync had the kernel look
+/// over all of them again for every commit, and maybe drain every CPU's pages yet to be put on its
+/// lists, under a global lock (TASK-92.23). A read bypassing the cache writes back what it reads
+/// first. Syncing a file is `fdatasync` on
+/// Linux; on macOS it is `fsync`, which leaves the drive's cache to `barrier`, an `F_FULLFSYNC`.
 pub struct HostDir {
     path: PathBuf,
     /// Whether extents' files are to bypass the page cache.
@@ -286,16 +296,20 @@ impl File for HostFile {
     }
 
     fn sync(&self) -> io::Result<()> {
-        let file = self.written();
-        if cfg!(target_os = "macos") { file.sync_all() } else { file.sync_data() }?;
+        self.sync_cached()?;
         // What was written through the page cache leaves it, now clean: the store's pages are
         // its users' to cache.
         #[cfg(target_os = "linux")]
-        if self.written.is_some() {
+        if let Some(written) = &self.written {
             // SAFETY: Advises the kernel about an open file descriptor's file.
-            unsafe { libc::posix_fadvise(file.as_raw_fd(), 0, 0, libc::POSIX_FADV_DONTNEED) };
+            unsafe { libc::posix_fadvise(written.as_raw_fd(), 0, 0, libc::POSIX_FADV_DONTNEED) };
         }
         Ok(())
+    }
+
+    fn sync_cached(&self) -> io::Result<()> {
+        let file = self.written();
+        if cfg!(target_os = "macos") { file.sync_all() } else { file.sync_data() }
     }
 }
 
