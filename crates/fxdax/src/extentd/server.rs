@@ -994,6 +994,8 @@ struct AckState {
     /// fxdax: what is kept until stage operations are acknowledged (`Deferred::keep_until_made`),
     /// with their IDs.
     kept: Vec<(u64, Box<dyn Send>)>,
+    /// fxdax: the last stage operation whose wait was deferred (`SecondStage::begin_deferring`).
+    deferred: u64,
 }
 
 impl Acks {
@@ -1025,6 +1027,16 @@ impl Acks {
         if state.acked < id && !state.closed {
             state.kept.push((id, keep));
         }
+    }
+
+    /// fxdax: the stage operation a deferral ending is to wait for, of those up to `id` whose
+    /// waits it deferred: the last of all deferred, if not yet acknowledged, as a deferral that
+    /// deferred nothing of its own may still have to wait for others'
+    /// (`RemoteStage::end_deferring`); or none.
+    fn deferred(&self, id: u64) -> Option<u64> {
+        let mut state = self.state.lock().unwrap();
+        state.deferred = state.deferred.max(id);
+        (state.deferred > state.acked && !state.closed).then_some(state.deferred)
     }
 
     /// Waits for stage operation `id` to be acknowledged, or the VM process to be gone.
@@ -1116,8 +1128,12 @@ impl SecondStage for RemoteStage {
         DEFERRED.set(Some(0));
     }
 
+    /// fxdax: what waits for the changes this thread deferred, and for those deferred before
+    /// them, if any are still to be made: a commit sealing an open extent a `MAP` stopped mapping
+    /// had another store share its pages, which the guest may still store to until that `MAP`'s
+    /// change is made, as soon as it sealed it otherwise (`ExtentStore::map`, TASK-92.50).
     fn end_deferring(&self) -> Option<Arc<dyn Deferred>> {
-        let id = DEFERRED.take().filter(|id| *id > 0)?;
+        let id = self.acks.deferred(DEFERRED.take()?)?;
         Some(Arc::new(Deferral { acks: self.acks.clone(), id }))
     }
 

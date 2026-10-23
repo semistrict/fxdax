@@ -392,10 +392,14 @@ pub(crate) struct Rules {
     /// A freed extent's mappings map zeros rather than nothing: a store racing the free faults on
     /// them as on any read-only page.
     pub free_maps_zeros: bool,
+    /// fxdax: a change deferred holds what the mappings it replaces keep, alive and from eviction,
+    /// until it is made: the guest may still reach their pages until then (TASK-92.50).
+    pub deferred_changes_hold_what_they_replace: bool,
 }
 
 impl Rules {
-    pub const ALL: Self = Self { free_maps_zeros: true };
+    pub const ALL: Self =
+        Self { free_maps_zeros: true, deferred_changes_hold_what_they_replace: true };
 }
 
 #[cfg(not(feature = "shuttle"))]
@@ -416,17 +420,69 @@ pub(crate) trait Keep: Clone {
     /// Which memory it keeps alive, the same for each of its clones: what `Dax` finds the
     /// mappings it keeps by.
     fn identity(&self) -> usize;
+
+    /// fxdax: what keeps the memory alive while a change deferred that replaced its mapping is
+    /// made (`Dax::deferring`), as the guest may still reach its pages until then: they must not
+    /// be freed, or reused, meanwhile. Dropped once the change is made.
+    fn hold(&self) -> Box<dyn Send>;
 }
 
-impl<T: ?Sized> Keep for Arc<T> {
+impl<T: ?Sized + Send + Sync + 'static> Keep for Arc<T> {
     fn identity(&self) -> usize {
         Arc::as_ptr(self) as *const () as usize
+    }
+
+    fn hold(&self) -> Box<dyn Send> {
+        Box::new(self.clone())
     }
 }
 
 impl Keep for () {
     fn identity(&self) -> usize {
         0
+    }
+
+    fn hold(&self) -> Box<dyn Send> {
+        Box::new(())
+    }
+}
+
+/// fxdax: what a window's mapping keeps alive, which holds the VMO it maps.
+pub(crate) trait Pages: Send + Sync + 'static {
+    fn vmo(&self) -> &zx::Vmo;
+}
+
+impl Pages for zx::Vmo {
+    fn vmo(&self) -> &zx::Vmo {
+        self
+    }
+}
+
+/// zircon's `ZX_VMO_OP_FXDAX_HOLD` and `ZX_VMO_OP_FXDAX_RELEASE`: a VMO's pages held from
+/// eviction, and a hold let go of
+/// (`zircon::vm::vm_object_paged::VmObjectPaged::hold_from_eviction`).
+const VMO_OP_HOLD: u32 = 0x8000_0002;
+const VMO_OP_RELEASE: u32 = 0x8000_0003;
+
+/// fxdax: what a window's mapping kept, held while a change deferred that replaced the mapping is
+/// made ([`Keep::hold`]): kept alive, and its VMO's pages held from eviction, which would free
+/// them without the window's second stage, as the window maps them no more (TASK-92.50).
+pub(crate) struct Held(Arc<dyn Pages>);
+
+impl Held {
+    pub fn new(pages: Arc<dyn Pages>) -> Self {
+        // Unheld, the guest could reach pages freed and reused.
+        let hold = zx::VmoOp::from_raw(VMO_OP_HOLD);
+        pages.vmo().op_range(hold, 0, 0).expect("holding a window's pages from eviction");
+        Self(pages)
+    }
+}
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        if let Err(status) = self.0.vmo().op_range(zx::VmoOp::from_raw(VMO_OP_RELEASE), 0, 0) {
+            log::error!("fxdax: letting go of a window's pages held from eviction: {status}");
+        }
     }
 }
 
@@ -441,6 +497,9 @@ pub(crate) struct Dax<K: Keep> {
     kept: HashMap<usize, BTreeSet<u64>>,
     /// The second stage, if the window has one.
     stage: Option<Arc<dyn SecondStage>>,
+    /// fxdax: while its changes are deferred ([`Dax::deferring`]), what the mappings they replace
+    /// keep, held until they are made ([`Keep::hold`]).
+    held: Option<Vec<Box<dyn Send>>>,
     /// The thread serving the faults on the host memory a test's window was created in
     /// ([`Dax::in_host_memory`]), which runs until the window is dropped.
     #[cfg(all(test, target_os = "linux"))]
@@ -457,6 +516,7 @@ impl<K: Keep> Dax<K> {
             mappings: BTreeMap::new(),
             kept: HashMap::new(),
             stage: second_stage,
+            held: None,
             #[cfg(all(test, target_os = "linux"))]
             _faults: None,
         };
@@ -477,7 +537,9 @@ impl<K: Keep> Dax<K> {
 
     /// fxdax: runs `f`, whose changes to the second stage that take access away aren't waited for:
     /// returns what waits for them, if any. Until they are made, the guest may still reach the
-    /// pages they take away, which the caller mustn't free or share meanwhile.
+    /// pages they take away, which the caller mustn't share meanwhile; what the mappings they
+    /// replace keep is held until then ([`Keep::hold`]), so that their pages are neither freed nor
+    /// evicted, which would free them without the second stage, as the window maps them no more.
     pub fn deferring<T>(
         &mut self,
         f: impl FnOnce(&mut Self) -> T,
@@ -500,8 +562,40 @@ impl<K: Keep> Dax<K> {
         if let Some(stage) = &deferring.0 {
             stage.begin_deferring();
         }
+        // Only a second stage defers changes, and only while they are deferred is anything held.
+        self.held = deferring.0.is_some().then(Vec::new);
         let result = f(self);
-        (result, deferring.end())
+        let held = self.held.take().unwrap_or_default();
+        let deferred = deferring.end();
+        // With nothing deferred, the changes were made as they returned.
+        if let Some(deferred) = &deferred
+            && !held.is_empty()
+        {
+            deferred.keep_until_made(Box::new(held));
+        }
+        (result, deferred)
+    }
+
+    /// fxdax: while its changes are deferred, holds `held` until they are made, memory the guest
+    /// may reach until then through the second stage, as [`Keep::hold`]'s; otherwise, the changes
+    /// made, it drops it.
+    pub fn hold_while_deferred(&mut self, held: Box<dyn Send>) {
+        if let Some(holds) = &mut self.held
+            && rules().deferred_changes_hold_what_they_replace
+        {
+            holds.push(held);
+        }
+    }
+
+    /// fxdax: while its changes are deferred, holds what the mappings of the window's range
+    /// `start..end` keep, which a change is to replace ([`Keep::hold`]): before the change, after
+    /// which their pages may be evicted at once.
+    fn hold_overlapping(&mut self, start: u64, end: u64) {
+        if self.held.is_none() || !rules().deferred_changes_hold_what_they_replace {
+            return;
+        }
+        let holds: Vec<_> = self.overlapping(start, end).map(|(_, _, keep)| keep.hold()).collect();
+        self.held.as_mut().unwrap().extend(holds);
     }
 
     /// Checks the window's range for a mapping of `len` bytes at `offset`.
@@ -520,8 +614,9 @@ impl<K: Keep> Dax<K> {
         len: u64,
         writable: bool,
     ) -> Result<()> {
-        self.window.map(offset, vmo, vmo_offset, len, writable)?;
         let end = offset + len;
+        self.hold_overlapping(offset, end);
+        self.window.map(offset, vmo, vmo_offset, len, writable)?;
         self.forget(offset, end);
         self.insert(offset, end, keep);
         Ok(())
@@ -557,6 +652,7 @@ impl<K: Keep> Dax<K> {
 
     /// Unmaps `len` bytes of the window at `offset`.
     pub fn unmap(&mut self, offset: u64, len: u64) -> Result<()> {
+        self.hold_overlapping(offset, offset + len);
         self.window.unmap(offset, len)?;
         self.forget(offset, offset + len);
         Ok(())
@@ -577,6 +673,7 @@ impl<K: Keep> Dax<K> {
             self.kept.get(&kept).map(|starts| starts.iter().copied().collect()).unwrap_or_default();
         for start in starts {
             let end = self.mappings[&start].0;
+            self.hold_overlapping(start, end);
             if rules().free_maps_zeros {
                 self.window.map(start, zeros, start, end - start, false)?;
             } else {

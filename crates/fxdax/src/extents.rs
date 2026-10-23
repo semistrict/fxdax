@@ -24,7 +24,7 @@
 //! to the store, seals it, maps the window's mappings of it to its VMO in the cache, and moves its
 //! memory's pages there.
 
-use crate::dax::{Dax, DaxWindow, Deferred, Keep, SecondStage};
+use crate::dax::{Dax, DaxWindow, Deferred, Held, Keep, Pages, SecondStage};
 use crate::error::{Errno, Error, IntoErrno, Result};
 use crate::executor::Executor;
 use crate::host_store;
@@ -318,8 +318,14 @@ impl ExtentSource for StoredExtent {
 /// ([`ExtentStore::window_mappings`]).
 #[derive(Clone)]
 struct Mapped {
-    pages: Arc<dyn Send + Sync>,
+    pages: Arc<dyn Pages>,
     maps: Maps,
+}
+
+impl Pages for FxExtent {
+    fn vmo(&self) -> &zx::Vmo {
+        FxExtent::vmo(self)
+    }
 }
 
 /// What a window's mapping maps.
@@ -338,7 +344,7 @@ enum Maps {
 
 impl Mapped {
     fn extent(
-        pages: Arc<dyn Send + Sync>,
+        pages: Arc<dyn Pages>,
         extent: ExtentId,
         window_offset: u64,
         offset: u64,
@@ -371,6 +377,10 @@ impl Mapped {
 impl Keep for Mapped {
     fn identity(&self) -> usize {
         self.pages.identity()
+    }
+
+    fn hold(&self) -> Box<dyn Send> {
+        Box::new(Held::new(self.pages.clone()))
     }
 }
 
@@ -1313,6 +1323,11 @@ impl ExtentStore {
                     )?;
                 }
             }
+            // fxdax: its pages, which the guest may still reach where its VM process has yet to
+            // make the changes deferred so far, this seal's or a `MAP`'s that stopped mapping the
+            // open extent: held from eviction until then, which would free them without the
+            // second stage where the window maps them no more (TASK-92.50).
+            dax.hold_while_deferred(Box::new(Held::new(sealed.clone())));
             // Its memory is the sealed extent's pages, but for those paged in meanwhile.
             sealed.supply_pages(0..pages, &extent_open.vmo, 0);
             // Mapped again, read-only, so that the guest's next loads of them do not fault one
@@ -1405,6 +1420,19 @@ impl ExtentStore {
     /// A writable mapping is of an extent of the store's branch that is open or new
     /// (`DAX_WRITE`), within `MAX_EXTENT`, which it grows to hold the range: of another branch's,
     /// or a sealed one, it fails with `EPERM`.
+    ///
+    /// fxdax: the guest's access to what the mapping replaces is taken away without waiting for
+    /// the window's second stage, a VM process, to make the change (`Dax::deferring`), as a
+    /// commit's seal takes it away (TASK-92.50): waiting held the window, the window's and the
+    /// replaced memory's locks for a round trip to the VM process, behind whatever changes it had
+    /// yet to make, in each `MAP` of a window filled. The guest's `MAP` completes as its VM process
+    /// takes the reply (doc-4), which comes after the change: the VM process makes the changes in
+    /// order, before the replies after them (`crate::extentd`). So the guest maps the new contents
+    /// from then on, as before; only a vCPU racing the `MAP` reaches what it replaces, until the
+    /// change is made, whose pages are neither freed nor reused before then: what the mappings
+    /// replaced kept is held, alive and from eviction, until then (`Keep::hold`). A commit sealing
+    /// an open extent whose pages the guest may still reach so has another store wait to share
+    /// them, as for its own seal (`extentd`'s `RemoteStage::end_deferring`).
     pub fn map(
         &self,
         extent: ExtentId,
@@ -1452,11 +1480,16 @@ impl ExtentStore {
         let mut dax = self.dax.lock().unwrap();
         let dax = dax.as_mut().ok_or(Errno::ENOSYS)?;
         let within = end.min(extent_len.next_multiple_of(page_size())).max(offset);
-        if within > offset {
-            let keep = Mapped::extent(cached.clone(), extent, window_offset, offset, false);
-            dax.map(window_offset, keep, cached.vmo(), offset, within - offset, false)?;
-        }
-        self.map_zeros(dax, window_offset + (within - offset), end - within)
+        // fxdax: the guest's access to what the mapping replaces taken away without waiting for
+        // its VM process (see `map`).
+        dax.deferring(|dax| {
+            if within > offset {
+                let keep = Mapped::extent(cached.clone(), extent, window_offset, offset, false);
+                dax.map(window_offset, keep, cached.vmo(), offset, within - offset, false)?;
+            }
+            self.map_zeros(dax, window_offset + (within - offset), end - within)
+        })
+        .0
     }
 
     /// Maps zeros, read-only, at `len` bytes of the window at `window_offset`, if any.
@@ -1534,7 +1567,8 @@ impl ExtentStore {
             })?;
         }
         let keep = Mapped::extent(vmo.clone(), extent, window_offset, offset, writable);
-        dax.map(window_offset, keep, vmo, offset, len, writable)?;
+        // fxdax: as in `map_counted`.
+        dax.deferring(|dax| dax.map(window_offset, keep, vmo, offset, len, writable)).0?;
         Ok(true)
     }
 
@@ -1544,7 +1578,8 @@ impl ExtentStore {
         let mut dax = self.dax.lock().unwrap();
         let dax = dax.as_mut().ok_or(Errno::ENOSYS)?;
         dax.check_range(window_offset, len)?;
-        self.map_zeros(dax, window_offset, len)
+        // fxdax: as in `map_counted`.
+        dax.deferring(|dax| self.map_zeros(dax, window_offset, len)).0
     }
 
     /// The DAX window's mappings, in order: what a snapshot of the VM records, to map them again
@@ -2806,7 +2841,8 @@ mod tests {
         store.map(extent, 0, ps, 0, true).unwrap();
         write(&store, extent, 0, &pattern(6, BLOCK)).unwrap();
         store.commit(None).unwrap();
-        assert!(stage.deferral.state.lock().unwrap().1.len() == 1, "nothing kept");
+        // The open extent sealed, and what the window's mapping of it kept, held.
+        assert!(stage.deferral.state.lock().unwrap().1.len() == 2, "nothing kept");
         store.map(extent, 0, ps, ps, false).unwrap();
         assert_eq!(stage.deferral.waiting(), 0, "the sealing store waited");
 
@@ -2836,6 +2872,76 @@ mod tests {
         mapping.join().unwrap();
         assert!(mapped.load(std::sync::atomic::Ordering::SeqCst));
         assert!(deferral.state.lock().unwrap().1.is_empty(), "kept after the seal was made");
+    }
+
+    /// fxdax (TASK-92.50): a `MAP` over what the window maps takes the guest's access to it away
+    /// without waiting for the change to be made, as a commit's seal does: what the mapping it
+    /// replaced kept, a sealed extent cached, is kept until then, its pages held from eviction.
+    #[test]
+    fn maps_hold_what_they_replace_until_the_change_is_made() {
+        let (store, _dir) = store(1 << 20);
+        let ps = page_size();
+        let stage = Arc::new(DeferringStage::default());
+        let _window = store.create_dax_window(2 * ps, Some(stage.clone())).unwrap();
+        let (replaced, replacing) = (id(&store, 1), id(&store, 2));
+        write(&store, replaced, 0, &pattern(1, BLOCK)).unwrap();
+        write(&store, replacing, 0, &pattern(2, BLOCK)).unwrap();
+        store.commit(None).unwrap();
+        store.map(replaced, 0, ps, 0, false).unwrap();
+        let cached = {
+            let extents = extent_cache().extents.lock().unwrap();
+            extents[&(store.arenas.of(replaced), replaced)].extent.clone()
+        };
+        // Its page in memory.
+        cached.vmo().read(&mut [0], 0).unwrap();
+        let held = || cached.vmo().info().unwrap().committed_bytes;
+        let evict = || cached.vmo().op_range(zx::VmoOp::from_raw(VMO_OP_EVICT), 0, ps).unwrap();
+        assert_eq!(held(), ps);
+        let kept = || stage.deferral.state.lock().unwrap().1.len();
+        let before = kept();
+
+        store.map(replacing, 0, ps, 0, false).unwrap();
+        assert_eq!(kept(), before + 1, "the MAP kept nothing until its change is made");
+        assert_eq!(stage.deferral.waiting(), 0, "the MAP waited for its change");
+        let references = Arc::strong_count(&cached);
+        evict();
+        assert_eq!(held(), ps, "evicted before the change was made");
+
+        stage.deferral.make();
+        assert_eq!(Arc::strong_count(&cached), references - 1, "kept once the change was made");
+        evict();
+        assert_eq!(held(), 0, "held from eviction once the change was made");
+    }
+
+    /// fxdax (TASK-92.50): a commit sealing an open extent that a `MAP` stopped mapping, whose
+    /// change is still to be made, holds the sealed extent's pages, the open extent's memory the
+    /// guest may still reach, from eviction until then.
+    #[test]
+    fn seals_hold_what_the_guest_may_reach_until_the_changes_are_made() {
+        let (store, _dir) = store(1 << 20);
+        let ps = page_size();
+        let stage = Arc::new(DeferringStage::default());
+        let _window = store.create_dax_window(ps, Some(stage.clone())).unwrap();
+        let (sealed, other) = (id(&store, 1), id(&store, 2));
+        store.map(sealed, 0, ps, 0, true).unwrap();
+        write(&store, sealed, 0, &pattern(1, BLOCK)).unwrap();
+        write(&store, other, 0, &pattern(2, BLOCK)).unwrap();
+        // The open extent's mapping replaced, its change deferred; then the extent sealed.
+        store.map(other, 0, ps, 0, false).unwrap();
+        store.commit(None).unwrap();
+        let cached = {
+            let extents = extent_cache().extents.lock().unwrap();
+            extents[&(store.arenas.of(sealed), sealed)].extent.clone()
+        };
+        let held = || cached.vmo().info().unwrap().committed_bytes;
+        let evict = || cached.vmo().op_range(zx::VmoOp::from_raw(VMO_OP_EVICT), 0, ps).unwrap();
+        assert_eq!(held(), ps, "the open extent's page did not become the sealed extent's");
+        evict();
+        assert_eq!(held(), ps, "evicted before the changes were made");
+
+        stage.deferral.make();
+        evict();
+        assert_eq!(held(), 0, "held from eviction once the changes were made");
     }
 
     /// A window in host memory takes whole pages.

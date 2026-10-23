@@ -143,11 +143,16 @@ pub(super) enum Event {
     Failed,
     /// A store failed once the seal began.
     StoreRefused,
+    /// fxdax: a page a `MAP` replaced read once the `MAP` returned, before its VM process made the
+    /// change (TASK-92.50).
+    ReadReplaced,
+    /// fxdax: the page that replaced it read.
+    ReadReplacing,
 }
 
 /// How often each event happened, over a test's runs (each test is a process of its own).
-static REACHED: [std::sync::atomic::AtomicUsize; 6] =
-    [const { std::sync::atomic::AtomicUsize::new(0) }; 6];
+static REACHED: [std::sync::atomic::AtomicUsize; 8] =
+    [const { std::sync::atomic::AtomicUsize::new(0) }; 8];
 
 fn reached(event: Event) {
     REACHED[event as usize].fetch_add(1, Ordering::Relaxed);
@@ -365,9 +370,270 @@ fn stores_race_seals_and_frees_by_pct() {
 /// on a page the window maps nothing at.
 #[test]
 fn needs_frees_to_map_zeros() {
-    *RULES.lock().unwrap() = Rules { free_maps_zeros: false };
+    *RULES.lock().unwrap() = Rules { free_maps_zeros: false, ..Rules::ALL };
     fails_with("ENOENT", || {
         Runner::new(PctScheduler::new(3, runs(10 * RUNS)), config())
             .run(seals_and_frees_on_a_fake_stage);
+    });
+}
+
+/// fxdax: zircon's `ZX_VMO_OP_FXDAX_EVICT`, which evicts a range's clean pages now.
+const VMO_OP_EVICT: u32 = 0x8000_0001;
+
+/// fxdax: what a page a `MAP` replaces, its replacement, and a page reused once freed hold.
+const REPLACED: u8 = 0x1a;
+const REPLACING: u8 = 0x1b;
+const REUSED: u8 = 0x1c;
+
+/// fxdax: what a test's window's mapping keeps alive: the VMO it maps, held from eviction while a
+/// change deferred that replaced the mapping is made, as an extent store's mappings are.
+#[derive(Clone)]
+struct Kept(Arc<zx::Vmo>);
+
+impl Keep for Kept {
+    fn identity(&self) -> usize {
+        self.0.identity()
+    }
+
+    fn hold(&self) -> Box<dyn Send> {
+        Box::new(Held::new(self.0.clone()))
+    }
+}
+
+/// fxdax: a change to a window's second stage, as the extent daemon sends a VM process one.
+enum Change {
+    Map(u64, PhysLocation, u64, Protection),
+    Protect(u64, u64, Protection),
+    Unmap(u64, u64),
+}
+
+/// fxdax: the changes sent to a [`RemoteFakeStage`], and what waits for them.
+#[derive(Default)]
+struct Sent {
+    changes: std::collections::VecDeque<Change>,
+    /// How many were sent, and how many made.
+    sent: u64,
+    made: u64,
+    /// What is kept until the change of each ID is made (`Deferred::keep_until_made`).
+    kept: Vec<(u64, Box<dyn Send>)>,
+    /// Whether the VM process stops once it has made those sent.
+    stopping: bool,
+}
+
+shuttle::thread_local! {
+    /// While this thread defers its waits, the last change it would have waited for.
+    static DEFERRING: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+}
+
+/// fxdax: a window's second stage in another process, as the extent daemon's connection to a VM
+/// process is (`extentd`'s `RemoteStage`): its changes are made in order, by the VM process's own
+/// thread ([`RemoteFakeStage::serve`]), into a [`FakeStage`], what the guest's vCPUs access; one
+/// that takes access away is waited for, but while the thread sending it defers its waits.
+struct RemoteFakeStage {
+    this: std::sync::Weak<Self>,
+    made: Arc<FakeStage>,
+    sent: shuttle::sync::Mutex<Sent>,
+    changed: shuttle::sync::Condvar,
+}
+
+impl RemoteFakeStage {
+    fn new() -> Arc<Self> {
+        Arc::new_cyclic(|this| Self {
+            this: this.clone(),
+            made: Arc::default(),
+            sent: shuttle::sync::Mutex::new(Sent::default()),
+            changed: shuttle::sync::Condvar::new(),
+        })
+    }
+
+    fn send(&self, change: Change, wait: bool) {
+        let mut sent = self.sent.lock().unwrap();
+        sent.changes.push_back(change);
+        sent.sent += 1;
+        let id = sent.sent;
+        self.changed.notify_all();
+        if !wait {
+            return;
+        }
+        match DEFERRING.with(std::cell::Cell::get) {
+            Some(last) => DEFERRING.with(|deferring| deferring.set(Some(last.max(id)))),
+            None => self.wait_made(sent, id),
+        }
+    }
+
+    fn wait_made(&self, mut sent: shuttle::sync::MutexGuard<'_, Sent>, id: u64) {
+        while sent.made < id {
+            sent = self.changed.wait(sent).unwrap();
+        }
+    }
+
+    /// The VM process: makes the changes sent, in order, until stopped once it made them all.
+    fn serve(&self) {
+        loop {
+            let mut sent = self.sent.lock().unwrap();
+            while sent.changes.is_empty() && !sent.stopping {
+                sent = self.changed.wait(sent).unwrap();
+            }
+            let Some(change) = sent.changes.pop_front() else { return };
+            drop(sent);
+            match change {
+                Change::Map(offset, phys, len, prot) => self.made.map(offset, phys, len, prot),
+                Change::Protect(offset, len, prot) => self.made.protect(offset, len, prot),
+                Change::Unmap(offset, len) => self.made.unmap(offset, len),
+            }
+            let mut sent = self.sent.lock().unwrap();
+            sent.made += 1;
+            let made = sent.made;
+            let (released, kept): (Vec<_>, Vec<_>) =
+                std::mem::take(&mut sent.kept).into_iter().partition(|(id, _)| *id <= made);
+            sent.kept = kept;
+            self.changed.notify_all();
+            drop(sent);
+            drop(released);
+        }
+    }
+
+    /// Stops the VM process once it has made the changes sent.
+    fn stop(&self) {
+        self.sent.lock().unwrap().stopping = true;
+        self.changed.notify_all();
+    }
+}
+
+impl SecondStage for RemoteFakeStage {
+    fn map(&self, offset: u64, phys: PhysLocation, len: u64, prot: Protection) {
+        self.send(Change::Map(offset, phys, len, prot), false);
+    }
+
+    fn protect(&self, offset: u64, len: u64, prot: Protection) {
+        self.send(Change::Protect(offset, len, prot), prot != Protection::ReadWrite);
+    }
+
+    fn unmap(&self, offset: u64, len: u64) {
+        self.send(Change::Unmap(offset, len), true);
+    }
+
+    fn begin_deferring(&self) {
+        DEFERRING.with(|deferring| deferring.set(Some(0)));
+    }
+
+    fn end_deferring(&self) -> Option<Arc<dyn Deferred>> {
+        let id = DEFERRING.with(std::cell::Cell::take)?;
+        let stage = self.this.upgrade().unwrap();
+        (id > self.sent.lock().unwrap().made).then(|| Arc::new(RemoteDeferral { stage, id }) as _)
+    }
+}
+
+/// fxdax: the changes a [`RemoteFakeStage`] deferred, up to `id`.
+struct RemoteDeferral {
+    stage: Arc<RemoteFakeStage>,
+    id: u64,
+}
+
+impl Deferred for RemoteDeferral {
+    fn wait(&self) {
+        self.stage.wait_made(self.stage.sent.lock().unwrap(), self.id);
+    }
+
+    fn keep_until_made(&self, keep: Box<dyn Send>) {
+        let mut sent = self.stage.sent.lock().unwrap();
+        if sent.made < self.id {
+            sent.kept.push((self.id, keep));
+        }
+    }
+}
+
+/// fxdax (TASK-92.50): a vCPU reads a page of the window while the store maps another over it,
+/// deferring the change, as a `MAP` does, whose VM process makes it in its own time; then evicts
+/// what the replaced mapping mapped, a pager-backed page, and reuses what that frees for another
+/// page at once, written. The vCPU reads the page replaced until the VM process unmaps it, then its
+/// replacement, never the page reused: what the mapping replaced is held until the change is
+/// made, from eviction too, which would free it without the second stage, as the window maps it
+/// no more.
+fn maps_race_evictions() {
+    let ps = page_size();
+    let stage = RemoteFakeStage::new();
+    let (mut dax, window) = Dax::<Kept>::new(ps, Some(stage.clone())).unwrap();
+    let vm = thread::spawn({
+        let stage = stage.clone();
+        move || stage.serve()
+    });
+    let replaced = TestPager::new(1);
+    replaced.supply(0, REPLACED);
+    let replacing = Arc::new(zx::Vmo::create(ps).unwrap());
+    replacing.write(&vec![REPLACING; ps as usize], 0).unwrap();
+    let was = Kept(Arc::new(replaced.vmo.duplicate_handle(zx::Rights::SAME_RIGHTS).unwrap()));
+    dax.map(0, was, &replaced.vmo, 0, ps, false).unwrap();
+    let mapped = Arc::new(shuttle::sync::atomic::AtomicBool::new(false));
+
+    let vcpu = thread::spawn({
+        let guest = StageGuest { stage: stage.made.clone(), window };
+        let mapped = mapped.clone();
+        move || {
+            for _ in 0..ATTEMPTS {
+                match guest.access(0, Access::Read, None) {
+                    Outcome::Made(REPLACING) => return reached(Event::ReadReplacing),
+                    Outcome::Made(REPLACED) => {
+                        if mapped.load(Ordering::SeqCst) {
+                            reached(Event::ReadReplaced);
+                        }
+                    }
+                    Outcome::Made(other) => panic!("the guest read {other:#x}, a page reused"),
+                    Outcome::Faulted(fault) => future::block_on(fault).unwrap(),
+                    Outcome::Failed => unreachable!("a fake stage's accesses fault"),
+                }
+                thread::yield_now();
+            }
+            panic!("the guest never read the page that replaced the first");
+        }
+    });
+    let store = thread::spawn(move || {
+        let is = Kept(replacing.clone());
+        let (mapping, _) = dax.deferring(|dax| dax.map(0, is, &replacing, 0, ps, false));
+        mapping.unwrap();
+        mapped.store(true, Ordering::SeqCst);
+        replaced.vmo.op_range(zx::VmoOp::from_raw(VMO_OP_EVICT), 0, ps).unwrap();
+        // What eviction freed, taken at once by another page, written.
+        let reused = zx::Vmo::create(ps).unwrap();
+        reused.write(&vec![REUSED; ps as usize], 0).unwrap();
+        (dax, replaced, reused)
+    });
+    vcpu.join().unwrap();
+    let (dax, replaced, _reused) = store.join().unwrap();
+    // The window goes, and its mappings with it, while the VM process still makes the changes.
+    drop(dax);
+    stage.stop();
+    vm.join().unwrap();
+    // Once the change is made, nothing holds what the mapping replaced.
+    replaced.vmo.op_range(zx::VmoOp::from_raw(VMO_OP_EVICT), 0, ps).unwrap();
+    assert_eq!(
+        replaced.vmo.info().unwrap().committed_bytes,
+        0,
+        "still held once the change was made"
+    );
+}
+
+const MAP_EVENTS: [Event; 2] = [Event::ReadReplaced, Event::ReadReplacing];
+
+/// Random schedules seldom have the VM process wait out the rest of a `MAP` once it has the change
+/// to make: the guest reads what the `MAP` replaced once it returned in those PCT's priorities
+/// give.
+#[test]
+fn maps_race_evictions_randomly() {
+    reaching(|| RandomScheduler::new(runs(RUNS)), maps_race_evictions, &MAP_EVENTS[1..]);
+}
+
+#[test]
+fn maps_race_evictions_by_pct() {
+    reaching(|| PctScheduler::new(3, runs(RUNS)), maps_race_evictions, &MAP_EVENTS);
+}
+
+/// fxdax (TASK-92.50): what a deferred change replaces not held, eviction frees the page the guest
+/// still reaches, which another page takes, and the guest reads it.
+#[test]
+fn needs_deferred_changes_to_hold_what_they_replace() {
+    *RULES.lock().unwrap() = Rules { deferred_changes_hold_what_they_replace: false, ..Rules::ALL };
+    fails_with("a page reused", || {
+        Runner::new(PctScheduler::new(3, runs(10 * RUNS)), config()).run(maps_race_evictions);
     });
 }
