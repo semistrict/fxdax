@@ -33,11 +33,17 @@ pub(crate) struct Rules {
     /// A fork of a store a connection holds forks the connection's store, rather than the store
     /// opened here, which the daemon holds while it forks it.
     pub fork_through_holder: bool,
+    /// A connection's resizes of its store run one at a time (TASK-79.41).
+    pub resizes_one_at_a_time: bool,
 }
 
 impl Rules {
-    pub const ALL: Self =
-        Self { through_holder: true, guest_agrees: true, fork_through_holder: true };
+    pub const ALL: Self = Self {
+        through_holder: true,
+        guest_agrees: true,
+        fork_through_holder: true,
+        resizes_one_at_a_time: true,
+    };
 }
 
 #[cfg(not(feature = "shuttle"))]
@@ -80,18 +86,22 @@ pub(crate) trait Resizes: Holder {
     fn resize(&self, capacity: u64) -> impl Future<Output = Result<(), Errno>> + Send;
 }
 
-/// The shrink a connection's guest was asked to take, and where its answer goes.
-pub(crate) struct Shrinking(Mutex<Option<(u64, futures::channel::oneshot::Sender<bool>)>>);
+/// The shrink a connection's guest was asked to take, and where its answer goes; and the resize of
+/// its store under way, which the next waits for ([`resize_held`], TASK-79.41).
+pub(crate) struct Shrinking {
+    asked: Mutex<Option<(u64, futures::channel::oneshot::Sender<bool>)>>,
+    resizing: futures::lock::Mutex<()>,
+}
 
 impl Shrinking {
     pub fn new() -> Self {
-        Self(Mutex::new(None))
+        Self { asked: Mutex::new(None), resizing: futures::lock::Mutex::new(()) }
     }
 
     /// The guest's answer to the shrink to `capacity`: whether it took it. An answer to a shrink
     /// no longer waited for goes nowhere.
     pub fn answered(&self, capacity: u64, took: bool) {
-        let mut shrinking = self.0.lock().unwrap();
+        let mut shrinking = self.asked.lock().unwrap();
         if shrinking.as_ref().is_some_and(|(asked, _)| *asked == capacity) {
             let (_, answer) = shrinking.take().unwrap();
             let _ = answer.send(took);
@@ -101,14 +111,14 @@ impl Shrinking {
     /// Stops waiting for the guest's answer, its connection gone: the shrink fails as unanswered
     /// (TASK-79.34).
     pub fn stop(&self) {
-        let stopped = self.0.lock().unwrap().take();
+        let stopped = self.asked.lock().unwrap().take();
         drop(stopped);
     }
 
     /// Whether a shrink waits for the guest's answer.
     #[cfg(test)]
     pub fn awaited(&self) -> bool {
-        self.0.lock().unwrap().is_some()
+        self.asked.lock().unwrap().is_some()
     }
 }
 
@@ -122,14 +132,14 @@ struct Waiting<'a> {
 impl<'a> Waiting<'a> {
     fn new(shrinking: &'a Shrinking, capacity: u64) -> Self {
         let (answer, answered) = futures::channel::oneshot::channel();
-        *shrinking.0.lock().unwrap() = Some((capacity, answer));
+        *shrinking.asked.lock().unwrap() = Some((capacity, answer));
         Self { shrinking, answered }
     }
 }
 
 impl Drop for Waiting<'_> {
     fn drop(&mut self) {
-        let mut shrinking = self.shrinking.0.lock().unwrap();
+        let mut shrinking = self.shrinking.asked.lock().unwrap();
         // Unless a later shrink took its place.
         if shrinking.as_ref().is_some_and(|(_, answer)| answer.is_connected_to(&self.answered)) {
             shrinking.take();
@@ -137,10 +147,31 @@ impl Drop for Waiting<'_> {
     }
 }
 
+/// A shrink the guest was asked to take, which, unless the store took it or the guest refused it,
+/// tells the guest the capacity the store keeps as it is dropped, however it ends: unanswered in
+/// time, its call dropped, or the store's new capacity failing; so that the guest, having taken it
+/// late, grows back (TASK-79.41).
+struct Asked<'a, G: Guest> {
+    guest: &'a G,
+    kept: u64,
+    settled: bool,
+}
+
+impl<G: Guest> Drop for Asked<'_, G> {
+    fn drop(&mut self) {
+        if !self.settled {
+            // Which fails, logged, once the guest is gone.
+            let _ = self.guest.tell(self.kept, false);
+        }
+    }
+}
+
 /// Sets `store`'s capacity to `capacity` bytes, as the connection holding it does, whose guest is
 /// `guest`: grows it, and tells the guest; or asks the guest to shrink, through `shrinking`, and
 /// shrinks it if the guest does (`ENOSPC` if it doesn't), waiting `wait` at most for its answer
-/// (`ETIMEDOUT`), holding no thread meanwhile. Never below what the store holds (`ENOSPC`).
+/// (`ETIMEDOUT`), holding no thread meanwhile. Never below what the store holds (`ENOSPC`). One at
+/// a time: a grow landing between a shrink's answer and the store's taking it would leave the
+/// store smaller than its guest was told (TASK-79.41).
 pub(crate) async fn resize_held(
     store: &impl Capacity,
     guest: &impl Guest,
@@ -148,6 +179,10 @@ pub(crate) async fn resize_held(
     capacity: u64,
     wait: Duration,
 ) -> Result<(), Errno> {
+    let _resizing = match rules().resizes_one_at_a_time {
+        true => Some(shrinking.resizing.lock().await),
+        false => None,
+    };
     let (current, held) = store.capacity()?;
     if capacity < held {
         return Err(Errno::ENOSPC);
@@ -156,13 +191,21 @@ pub(crate) async fn resize_held(
         store.set_capacity(capacity).await?;
         return guest.tell(capacity, false);
     }
+    let mut asked = Asked { guest, kept: current, settled: false };
     let mut waiting = Waiting::new(shrinking, capacity);
     guest.tell(capacity, true)?;
     let took = within(wait, &mut waiting.answered).await;
     drop(waiting);
     match took {
-        Some(Ok(true)) => store.set_capacity(capacity).await,
-        Some(Ok(false)) => Err(Errno::ENOSPC),
+        Some(Ok(true)) => {
+            store.set_capacity(capacity).await?;
+            asked.settled = true;
+            Ok(())
+        }
+        Some(Ok(false)) => {
+            asked.settled = true;
+            Err(Errno::ENOSPC)
+        }
         // No answer in time, or its VM process gone without one.
         Some(Err(_)) | None => {
             log::warn!("extentd: no answer from the guest to a shrink to {capacity} bytes");
@@ -529,6 +572,66 @@ mod shuttle_tests {
         Runner::new(RandomScheduler::new(runs(2000)), config()).run(run);
     }
 
+    /// TASK-79.41: two resizes at once of a store a connection holds, a grow and a shrink its
+    /// guest agrees to, both through the connection, end with the store's capacity and its guest's
+    /// view agreeing.
+    fn resizes_at_once() {
+        let key = Path::new(KEY);
+        let paths = Arc::new(Paths::<Conn>::new());
+        let model = Arc::new(Model {
+            capacity: CAPACITY.into(),
+            ordered: 0.into(),
+            durable: 0.into(),
+            open: 0.into(),
+            most_open: 0.into(),
+        });
+        let (asks_tx, asks) = mpsc::channel();
+        let conn = Conn::new(model.clone(), Some(asks_tx));
+        paths.hold(key, Arc::downgrade(&conn), None).unwrap();
+        let guest = {
+            let conn = conn.clone();
+            thread::spawn(move || answer(conn, asks))
+        };
+        let resizers: Vec<_> = [12, 6]
+            .into_iter()
+            .map(|capacity| {
+                let (paths, model) = (paths.clone(), model.clone());
+                thread::spawn(move || block_on(resize(&paths, key, capacity, here(&model))))
+            })
+            .collect();
+        for resizer in resizers {
+            assert_eq!(resizer.join().unwrap(), Ok(()));
+        }
+        conn.guest.asks.lock().unwrap().take();
+        guest.join().unwrap();
+        let capacity = model.capacity.load(Ordering::SeqCst);
+        let view = conn.guest.view.load(Ordering::SeqCst);
+        assert_eq!(capacity, view, "the store's capacity and its guest's view differ");
+        paths.release(key);
+    }
+
+    #[test]
+    fn resizes_at_once_agree_randomly() {
+        *RULES.lock().unwrap() = Rules::ALL;
+        Runner::new(RandomScheduler::new(runs(2000)), config()).run(resizes_at_once);
+    }
+
+    #[test]
+    fn resizes_at_once_agree_by_pct() {
+        *RULES.lock().unwrap() = Rules::ALL;
+        Runner::new(PctScheduler::new(3, runs(2000)), config()).run(resizes_at_once);
+    }
+
+    /// A grow landing between a shrink's answer and its new capacity leaves the store smaller than
+    /// its guest was told.
+    #[test]
+    fn needs_resizes_one_at_a_time() {
+        *RULES.lock().unwrap() = Rules { resizes_one_at_a_time: false, ..Rules::ALL };
+        fails_with("the store's capacity and its guest's view differ", || {
+            Runner::new(RandomScheduler::new(runs(2000)), config()).run(resizes_at_once);
+        });
+    }
+
     #[test]
     fn requests_race_opens_and_closes_randomly() {
         *RULES.lock().unwrap() = Rules::ALL;
@@ -575,5 +678,50 @@ mod shuttle_tests {
             ..crate::open_stores::Rules::ALL
         });
         fails_with("open twice at once", randomly);
+    }
+}
+
+#[cfg(all(test, not(feature = "shuttle")))]
+mod tests {
+    use super::*;
+
+    /// A store of 8 bytes, holding 1.
+    struct Store;
+
+    impl Close for Store {
+        async fn close(self) {}
+    }
+
+    impl Capacity for Store {
+        fn capacity(&self) -> Result<(u64, u64), Errno> {
+            Ok((8, 1))
+        }
+
+        async fn set_capacity(&self, _capacity: u64) -> Result<(), Errno> {
+            panic!("the guest never took the shrink")
+        }
+    }
+
+    /// A guest that answers nothing, and what it was told.
+    #[derive(Default)]
+    struct Silent(std::sync::Mutex<Vec<(u64, bool)>>);
+
+    impl Guest for Silent {
+        fn tell(&self, capacity: u64, ask: bool) -> Result<(), Errno> {
+            self.0.lock().unwrap().push((capacity, ask));
+            Ok(())
+        }
+    }
+
+    /// TASK-79.41: a shrink its guest leaves unanswered tells the guest the store's capacity as it
+    /// stays, as an answer coming after, the guest having taken the shrink, shrinks nothing.
+    #[test]
+    fn shrinks_unanswered_tell_the_guest_the_capacity_kept() {
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+        let (guest, shrinking) = (Silent::default(), Shrinking::new());
+        let wait = Duration::from_millis(10);
+        let resized = runtime.block_on(resize_held(&Store, &guest, &shrinking, 6, wait));
+        assert_eq!(resized, Err(Errno::ETIMEDOUT));
+        assert_eq!(*guest.0.lock().unwrap(), [(6, true), (8, false)]);
     }
 }
