@@ -101,6 +101,7 @@ fn one() {
             "orphans_after_successor" => rules.orphans_after_successor = false,
             "tokens" => rules.tokens = false,
             "delete_tokens" => rules.delete_tokens = false,
+            "footers" => rules.footers = false,
             other => panic!("no rule {other}"),
         }
     }
@@ -112,6 +113,7 @@ fn one() {
         "stale" => stale_placements(),
         "collected" => collected(),
         "takeovers" => takeovers(),
+        "recreated" => recreated(),
         "crashes" => crashes(),
         "collectors" => collectors(),
         "taken" => taken(),
@@ -229,6 +231,31 @@ test_needs!(takeovers_need_acks_after_lease, acks_after_lease, Profile::default(
 test_needs!(takeovers_need_fences, fence, Profile::default());
 
 test_needs!(takeovers_need_continuity, continuity, takeovers());
+
+/// Case 9: a stale writer's create of a segment in flight while a later writer's takes its place,
+/// which the collector compacts and deletes, landing then: it recreates the segment, holding other
+/// extents than readers whose indexes are older than the compaction look for there (TASK-79.18).
+/// Takeovers hold the creates of the writers they take branches from ([`Profile::hold`]), and
+/// requests complete often, so that passes of the collector finish while a branch's writer lives.
+fn recreated() -> Profile {
+    let mut profile = weights(|weights| {
+        weights.complete = 200;
+        weights.takeover = 6;
+        weights.open = 6;
+        weights.close = 10;
+        weights.checkpoint = 6;
+        weights.collect = 8;
+        weights.tick = 6;
+    });
+    profile.hold = 1.0;
+    profile.options.compact_below = 0.9;
+    profile.options.grace = 1;
+    profile
+}
+
+test_holds!(stale_creates_landing_past_deletions, recreated());
+
+test_needs!(stale_creates_need_reads_by_footers, footers, recreated());
 
 /// Takeovers while collectors run: an extent of the writer taken over, uploaded, its segment not
 /// yet.

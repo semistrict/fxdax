@@ -110,6 +110,9 @@ pub(crate) struct Rules {
     pub tokens: bool,
     /// A branch is deleted only with a fencing token as high as its lease's (TASK-45.1).
     pub delete_tokens: bool,
+    /// Readers read an extent where the footer of the object at its key says it is, not where
+    /// their index does (TASK-79.18).
+    pub footers: bool,
 }
 
 impl Rules {
@@ -125,6 +128,7 @@ impl Rules {
         orphans_after_successor: true,
         tokens: true,
         delete_tokens: true,
+        footers: true,
     };
 }
 

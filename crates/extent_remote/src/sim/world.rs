@@ -61,6 +61,9 @@ pub struct Profile {
     /// The chances that a request fails before, or after, taking effect.
     pub fail_before: f64,
     pub fail_after: f64,
+    /// The chance that a takeover holds the creates of segments of the writer it takes the branch
+    /// from, each until an object at its key is deleted ([`SimBucket::hold`], TASK-79.18).
+    pub hold: f64,
     pub weights: Weights,
     pub options: Options,
 }
@@ -72,6 +75,7 @@ impl Default for Profile {
             hosts: 3,
             fail_before: 0.05,
             fail_after: 0.05,
+            hold: 0.0,
             weights: Weights {
                 complete: 60,
                 commit: 12,
@@ -685,6 +689,13 @@ impl World {
         let pool =
             if !with_disk.is_empty() && self.rng.random_bool(0.7) { with_disk } else { elsewhere };
         let host = pool[self.rng.random_range(0..pool.len())];
+        if takeover && self.profile.hold > 0.0 && self.rng.random_bool(self.profile.hold) {
+            let writers =
+                self.hosts.iter().filter_map(|host| host.sessions.get(&branch)?.writer.clone());
+            if let Some(epoch) = writers.map(|writer| writer.epoch()).max() {
+                self.bucket.hold(branch, epoch);
+            }
+        }
         self.start_session(host, branch, None);
     }
 
@@ -972,8 +983,9 @@ impl World {
 
     // The end.
 
-    /// Requests complete, without failing, until none is left.
+    /// Requests complete, without failing, until none is left, those held too.
     fn settle(&mut self) {
+        self.bucket.release();
         loop {
             self.settle_tasks();
             if self.bucket.waiting() == 0 {

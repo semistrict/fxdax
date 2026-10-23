@@ -29,13 +29,13 @@
 //! moves say. The footer and the table are tied to one version of an object by their CRCs, which
 //! the trailer and the table hold, and the parts by theirs, which the table holds.
 
-use crate::Error;
 use crate::bucket::{self, Bucket, ByteRange};
 use crate::cache::Cache;
 use crate::checkpoint::Table;
 use crate::layout::{self, Footer, Kind, Location, Moves, PART};
 use crate::moves::MOVES;
 use crate::object::{self, TAIL};
+use crate::{Error, rules};
 use futures::channel::oneshot;
 use futures::future::{BoxFuture, FutureExt as _, Shared};
 use std::collections::{BTreeMap, HashMap, VecDeque};
@@ -535,9 +535,15 @@ impl<B: Bucket> Fetcher<B> {
     ) -> Result<Vec<u8>, Error> {
         let mut key = location.key.clone();
         let mut again = true;
+        // Where the object at a key, by its tail, holds the extent: where its footer says; but for
+        // the rule's test, where the reader's index does, as readers read before TASK-79.18.
+        let place = |key: &str, tail: &Tail| match rules().footers || key != location.key {
+            true => tail.extents.get(&extent).copied(),
+            false => Some((location.offset, location.len)),
+        };
         for _ in 0..MOVES {
             if let Some(tail) = self.shared.tail(&key).await?
-                && let Some(&(at, held)) = tail.extents.get(&extent)
+                && let Some((at, held)) = place(&key, &tail)
             {
                 let range = at + offset.min(held)..at + offset.saturating_add(len).min(held);
                 if priority == Priority::Demand && !range.is_empty() {

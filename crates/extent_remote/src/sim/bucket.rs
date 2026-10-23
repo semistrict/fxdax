@@ -3,9 +3,11 @@
 // found in the LICENSE file.
 
 //! A bucket whose requests take effect when the simulation says: in any order, failing before or
-//! after taking effect, or after whoever made them has gone.
+//! after taking effect, or after whoever made them has gone; a writer's creates of segments, if it
+//! says, only once an object at their keys was deleted.
 
 use crate::bucket::{Bucket, ByteRange, Error, Meta, Object, PutMode, Version};
+use crate::layout::{self, Kind};
 use futures::channel::oneshot;
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -47,6 +49,11 @@ struct Inner {
     versions: u64,
     clock: u64,
     queue: Vec<Request>,
+    /// The writers whose creates of segments are held ([`SimBucket::hold`]): of each branch, those
+    /// of this lease epoch and before.
+    held: BTreeMap<u64, u64>,
+    /// The creates held, out of the queue, each until an object at its key is deleted.
+    parked: Vec<Request>,
 }
 
 /// How a request the simulation completes fails.
@@ -71,14 +78,35 @@ impl SimBucket {
 
     fn request(&self, op: Op) -> impl Future<Output = Result<Reply, Error>> + Send + use<> {
         let (reply, receiver) = oneshot::channel();
-        self.inner.lock().unwrap().queue.push(Request { op, reply });
+        self.inner.lock().unwrap().enqueue(Request { op, reply });
         // A request dropped unanswered failed.
         async move { receiver.await.unwrap_or(Err(Error::Unavailable)) }
     }
 
-    /// How many requests wait.
+    /// How many requests wait, but for those held.
     pub fn waiting(&self) -> usize {
         self.inner.lock().unwrap().queue.len()
+    }
+
+    /// Holds the creates of segments of `branch` by its writers of lease epoch `epoch` and before,
+    /// those waiting and those to come, each until a delete of an object at its key takes effect,
+    /// when it waits again: a writer taken over, whose creates are in flight while the next one's
+    /// segments take their places, which the collector compacts and deletes, landing then
+    /// (TASK-79.18).
+    pub fn hold(&self, branch: u64, epoch: u64) {
+        let inner = &mut *self.inner.lock().unwrap();
+        let held = inner.held.entry(branch).or_default();
+        *held = (*held).max(epoch);
+        for request in std::mem::take(&mut inner.queue) {
+            inner.enqueue(request);
+        }
+    }
+
+    /// Lets every create held wait again, and holds none from now on.
+    pub fn release(&self) {
+        let inner = &mut *self.inner.lock().unwrap();
+        inner.held.clear();
+        inner.queue.append(&mut inner.parked);
     }
 
     /// Completes waiting request `index`, failing it as `fault` says.
@@ -161,6 +189,20 @@ impl SimBucket {
 }
 
 impl Inner {
+    /// Queues `request`, or holds it, if it is a create of a segment by a writer whose creates are
+    /// held ([`SimBucket::hold`]).
+    fn enqueue(&mut self, request: Request) {
+        let held = |key: &str, bytes: &[u8]| {
+            let Kind::Segment { branch, .. } = layout::kind(key) else { return false };
+            let epoch = layout::Segment::footer(bytes).map(|footer| footer.epoch);
+            self.held.get(&branch).is_some_and(|&held| epoch.is_ok_and(|epoch| epoch <= held))
+        };
+        match &request.op {
+            Op::Put(key, bytes, PutMode::Create) if held(key, bytes) => self.parked.push(request),
+            _ => self.queue.push(request),
+        }
+    }
+
     fn meta(&self, key: &str) -> Option<Meta> {
         self.objects.get(key).map(|stored| Meta {
             key: key.to_owned(),
@@ -221,6 +263,11 @@ impl Inner {
             }
             Op::Delete(key) => {
                 self.objects.remove(&key);
+                let (unparked, parked) = std::mem::take(&mut self.parked)
+                    .into_iter()
+                    .partition(|request| matches!(&request.op, Op::Put(at, ..) if *at == key));
+                self.parked = parked;
+                self.queue.extend::<Vec<_>>(unparked);
                 Ok(Reply::Done)
             }
         }
