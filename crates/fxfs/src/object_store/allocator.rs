@@ -126,11 +126,14 @@
 //! removals, and those owners' records, as they are, and keeps the owners marked, so that the older
 //! records stay hidden. A mount finds no records of the extents that died, as before: those whose
 //! frees the device might not hold are in AllocatorInfo (`dying`, see "Dead extents"), whatever
-//! the compaction merged. A compaction merges all the layers, leaving out removals and the records
-//! of owners whose extents are freed, when:
+//! the compaction merged. Only a compaction of all the layers leaves out removals, and the records
+//! of owners whose extents are freed, which gives back what they took of the metadata reservation.
+//! `tree::layers_to_merge` picks all the layers by itself while the tree is no larger than a
+//! journal's reclaim size (`journal::DEFAULT_RECLAIM_SIZE`), as a layer is kept only once it is
+//! larger than that, and once each layer's newer layers together reach three quarters of its size.
+//! A compaction merges all the layers, whatever their sizes, when:
 //!
-//! - the journal asks for a major compaction, as the metadata reservation runs low: only that gives
-//!   back what removals took of it;
+//! - the journal asks for a major compaction, as the metadata reservation runs low;
 //! - an owner marked for deletion has had its extents freed, so that its records, which may be much
 //!   of the tree, go at once;
 //! - a layer is of an older version, which it writes again in the latest, as upstream's do.
@@ -4578,7 +4581,8 @@ mod tests {
     }
 
     /// fxdax: a major compaction, which the journal asks for once the metadata reservation runs
-    /// low, merges all the allocator's layers, as only that gives back what the removals took.
+    /// low, merges all the allocator's layers, whatever their sizes, which gives back what the
+    /// removals took of it.
     #[fuchsia::test]
     async fn test_major_compaction_merges_all_layers() {
         let (fs, _store, file) = tiered_fs(FxFilesystemBuilder::new()).await;
