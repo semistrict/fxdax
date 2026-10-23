@@ -1887,7 +1887,12 @@ impl Allocator {
         let filesystem = self.filesystem.upgrade().unwrap();
         let object_manager = filesystem.object_manager();
         let earliest_version = self.tree.get_earliest_version();
-        if !object_manager.needs_flush(self.object_id()) && earliest_version == LATEST_VERSION {
+        // fxdax: but for a major compaction, which merges all the layers whatever there is to flush
+        // (see "Compactions"), as an object store's does.
+        if reason != FlushReason::Journal(ForceMajor::True)
+            && !object_manager.needs_flush(self.object_id())
+            && earliest_version == LATEST_VERSION
+        {
             // Early exit, but still return the earliest version used by a struct in the tree
             return Ok(earliest_version);
         }
