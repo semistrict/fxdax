@@ -113,8 +113,19 @@ const TAKE_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 /// removed ([`File::sync_cached`]): letting the whole file's go at each sync had the kernel look
 /// over all of them again for every commit, and maybe drain every CPU's pages yet to be put on its
 /// lists, under a global lock (TASK-92.23). A read bypassing the cache writes back what it reads
-/// first. Syncing a file is `fdatasync` on
-/// Linux; on macOS it is `fsync`, which leaves the drive's cache to `barrier`, an `F_FULLFSYNC`.
+/// first. Syncing a file is `fdatasync` on Linux, and a directory's entries `fsync`, each of which
+/// flushes the drive's cache too. fxdax: on macOS each is an `F_BARRIERFSYNC`, which leaves the
+/// drive's cache to `barrier`, an `F_FULLFSYNC`, but orders what it synced before what is written
+/// after (TASK-92.48). They were std's `sync_data` and `sync_all`, each an `F_FULLFSYNC` there,
+/// which flushed the drive's cache at every sync: store-bench's `burst`, whose commit seals 640
+/// extents in files of their own, flushed in 545-669 ms, and 59-121 ms since; `durable`'s commits
+/// of one in 7.8-8.8 ms, and 3.8-4.0 ms since. The trade-off: a sync on macOS is durable as it
+/// returns against the store's process or the host's kernel crashing, as on Linux, but against the
+/// drive losing power only once a barrier follows; and each point at which the store says that
+/// what it wrote is durable ends in one: a flush, a closing between commits, a branch's record, an
+/// index's first checkpoint. A plain `fsync` would leave the order to the drive as well, so that a
+/// power loss could keep a commit's record, synced after its data, without the data. macOS is a
+/// development host: stores run on Linux.
 pub struct HostDir {
     path: PathBuf,
     /// Whether extents' files are to bypass the page cache.
@@ -205,7 +216,15 @@ impl Dir for HostDir {
     }
 
     fn sync_dir(&self, path: &str) -> io::Result<()> {
-        std::fs::File::open(self.path.join(path))?.sync_all()
+        let dir = std::fs::File::open(self.path.join(path))?;
+        #[cfg(target_os = "macos")]
+        {
+            sync_with(&dir, &[libc::F_BARRIERFSYNC, libc::F_FULLFSYNC])
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            dir.sync_all()
+        }
     }
 
     /// Takes the directory with an exclusive `flock` of it, which the open directory holds until
@@ -242,20 +261,13 @@ impl Dir for HostDir {
     fn barrier(&self) -> io::Result<()> {
         #[cfg(target_os = "macos")]
         {
-            // SAFETY: Flushes an open file descriptor's file, and the drive's cache.
-            if unsafe { libc::fcntl(self.handle.as_raw_fd(), libc::F_FULLFSYNC) } < 0 {
-                let err = io::Error::last_os_error();
-                // Not every file system supports it, where syncing is all there is.
-                if !matches!(err.raw_os_error(), Some(libc::ENOTSUP | libc::ENOTTY | libc::EINVAL))
-                {
-                    return Err(err);
-                }
-                self.handle.sync_all()?;
-            }
+            sync_with(&self.handle, &[libc::F_FULLFSYNC])
         }
         #[cfg(not(target_os = "macos"))]
-        let _ = &self.handle;
-        Ok(())
+        {
+            let _ = &self.handle;
+            Ok(())
+        }
     }
 }
 
@@ -318,8 +330,51 @@ impl File for HostFile {
     }
 
     fn sync_cached(&self) -> io::Result<()> {
-        let file = self.written();
-        if cfg!(target_os = "macos") { file.sync_all() } else { file.sync_data() }
+        #[cfg(target_os = "macos")]
+        {
+            sync_with(self.written(), &[libc::F_BARRIERFSYNC, libc::F_FULLFSYNC])
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            self.written().sync_data()
+        }
+    }
+}
+
+/// fxdax: syncs `file` on macOS by the first of `syncs`, `fcntl`s of macOS's, that its file system
+/// supports; or, if none, by an `fsync`, which is all there is then (TASK-92.48). Not std's
+/// `sync_all`, which is an `F_FULLFSYNC` there.
+#[cfg(target_os = "macos")]
+fn sync_with(file: &std::fs::File, syncs: &[libc::c_int]) -> io::Result<()> {
+    let fd = file.as_raw_fd();
+    for &sync in syncs {
+        // SAFETY: Flushes an open file descriptor's file, as `sync` says.
+        let synced = again_if_interrupted(|| unsafe { libc::fcntl(fd, sync) });
+        // A file system without it says so.
+        let unsupported = matches!(
+            synced.as_ref().map_err(io::Error::raw_os_error),
+            Err(Some(libc::ENOTSUP | libc::ENOTTY | libc::EINVAL))
+        );
+        if !unsupported {
+            return synced;
+        }
+    }
+    // SAFETY: Syncs an open file descriptor's file.
+    again_if_interrupted(|| unsafe { libc::fsync(fd) })
+}
+
+/// fxdax: what `call`, a system call that returns -1 if it fails, gave, called again while a
+/// signal interrupts it, as std's own calls are.
+#[cfg(target_os = "macos")]
+fn again_if_interrupted(call: impl Fn() -> libc::c_int) -> io::Result<()> {
+    loop {
+        if call() != -1 {
+            return Ok(());
+        }
+        let err = io::Error::last_os_error();
+        if err.kind() != io::ErrorKind::Interrupted {
+            return Err(err);
+        }
     }
 }
 
