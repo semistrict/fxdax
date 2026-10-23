@@ -338,21 +338,16 @@ impl Node {
         directory.map_err(|_| Errno::ENOTDIR)
     }
 
-    /// A new connection to the node.
-    async fn connect(&self, volume: &Volume) -> Result<Connection> {
-        let node = self.fx_node(volume)?;
-        let fx_volume = volume.fx_volume()?;
-        volume
-            .run(async move { connection::connect(OpenedNode::new(node), &fx_volume).await })
-            .await
-    }
-
     /// A connection to the node, which is opened the first time one is needed.
     async fn connection(&self, volume: &Volume) -> Result<Connection> {
         if let Some(connection) = volume.with_held(&self.0, |held| held.connection.clone())? {
             return Ok(connection);
         }
-        let connection = self.connect(volume).await?;
+        let node = self.fx_node(volume)?;
+        let fx_volume = volume.fx_volume()?;
+        let connection = volume
+            .run(async move { connection::connect(OpenedNode::new(node), &fx_volume).await })
+            .await?;
         // Another operation may have connected meanwhile, whose connection is kept.
         volume.with_held(&self.0, |held| held.connection.get_or_insert(connection).clone())
     }
@@ -644,12 +639,8 @@ impl Node {
     /// The entries of this directory, but `.` and `..`, as it holds them now.
     pub async fn entries(&self) -> Result<Vec<DirEntry>> {
         let volume = self.volume()?;
-        // Each listing reads through a connection of its own: a connection has one position in
-        // its directory, which listings sharing it would move under one another.
-        let connection = self.connect(&volume).await?;
-        let entries = volume
-            .run(async move { connection::read_entries(connection.directory()?).await })
-            .await?;
+        let directory = self.fx_directory(&volume)?;
+        let entries = volume.run(connection::read_entries(directory)).await?;
         // Fxfs lists a directory's `.`, and no `..`.
         Ok(entries
             .into_iter()

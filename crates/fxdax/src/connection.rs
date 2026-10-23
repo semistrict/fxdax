@@ -9,7 +9,7 @@ use crate::node::FileType;
 use fidl::endpoints::{Proxy, create_proxy};
 use fidl_fuchsia_io as fio;
 use futures::StreamExt;
-use fxfs_platform::directory;
+use fxfs_platform::directory::{self, FxDirectory};
 use fxfs_platform::node::{FxNode, OpenedNode};
 use fxfs_platform::volume::FxVolume;
 use std::sync::Arc;
@@ -150,12 +150,16 @@ pub(crate) async fn token(directory: &fio::DirectoryProxy) -> Result<zx::Event> 
     Ok(zx::Event::from(token.ok_or(Errno::EIO)?))
 }
 
-/// The entries of `directory`: object ids, types and names. It must be a new connection, which
-/// nothing else reads from: a connection reads its directory from one position, its start once
-/// connected, which each read moves on.
+/// The entries of `directory`: object ids, types and names. They are read through a connection of
+/// their own, closed once they are read: a connection reads its directory from one position, its
+/// start once connected, which each read moves on, and listings sharing one would move it under
+/// one another.
 pub(crate) async fn read_entries(
-    directory: &fio::DirectoryProxy,
+    directory: Arc<FxDirectory>,
 ) -> Result<Vec<(u64, FileType, Vec<u8>)>> {
+    let volume = directory.volume().clone();
+    let connection = connect(OpenedNode::<dyn FxNode>::new(directory), &volume).await?;
+    let directory = connection.directory()?;
     let mut entries = Vec::new();
     loop {
         let (status, buf) = directory.read_dirents(fio::MAX_BUF).await.errno()?;
