@@ -15,10 +15,11 @@
 // fxdax adds `FxDirectory::lookup_child`, `get_attributes`, `connect` and `serve`, so that fxdax
 // can look nodes up and read their attributes without opening connections to them, and connect to
 // a node it has; `open_async` connects with `connect`. It adds `remove_child` and `rename_child`,
-// which unlink as unlink(2) and rmdir(2) do and rename as rename(2) does: unlink's and rename's
-// `must_be_directory` is `Requires`, which can also require that a node unlinked is not a
-// directory, or that a rename replaces nothing; unlink's body is `unlink_impl`, and
-// `rename_impl`'s, past its checks of its names, `move_child`.
+// which unlink as unlink(2) and rmdir(2) do and rename as rename(2) does: `replace_child_with_purge`
+// takes a `Replace`, an unlink's or a rename's, for its `src` and `must_be_directory`, which can
+// also require that the node an unlink removes is not a directory, or that a rename replaces
+// nothing; unlink's body is `unlink_impl`, and `rename_impl`'s, past its checks of its names,
+// `move_child`.
 
 use crate::fuchsia::dirent_cache::DirentCacheKey;
 use crate::fuchsia::errors::map_to_status;
@@ -51,21 +52,17 @@ use vfs::execution_scope::ExecutionScope;
 use vfs::path::Path;
 use vfs::{ObjectRequest, ObjectRequestRef, ProtocolsExt, ToObjectRequest, attributes, symlink};
 
-/// fxdax: what an unlink or a rename requires, besides what each requires of any, checked in the
-/// transaction that changes the name, so that no other change of it comes between. Upstream's
-/// `must_be_directory` says `Directory` or `Nothing`, all that fuchsia.io asks; unlink(2), which
-/// removes no directory, asks for `NotDirectory`, and rename(2)'s `RENAME_NOREPLACE` for
-/// `NoReplace`.
+/// fxdax: what an unlink requires of the type of the node it unlinks, besides what any requires.
+/// Upstream's `must_be_directory` says `Directory` or `Nothing`, all that fuchsia.io asks;
+/// unlink(2), which removes no directory, asks for `NotDirectory`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Requires {
     Nothing,
-    /// That the node unlinked or moved is a directory: fuchsia.io's `MUST_BE_DIRECTORY`, or a name
-    /// with a trailing slash.
+    /// That the node is a directory: fuchsia.io's `MUST_BE_DIRECTORY`, or a name with a trailing
+    /// slash.
     Directory,
-    /// That the node unlinked is not a directory, or the unlink fails with `NOT_FILE`.
+    /// That the node is not a directory, or the unlink fails with `NOT_FILE`.
     NotDirectory,
-    /// That the rename's new name holds nothing, or the rename fails with `ALREADY_EXISTS`.
-    NoReplace,
 }
 
 impl Requires {
@@ -73,6 +70,38 @@ impl Requires {
     /// otherwise.
     fn from_must_be_directory(must_be_directory: bool) -> Self {
         if must_be_directory { Self::Directory } else { Self::Nothing }
+    }
+}
+
+/// fxdax: what `replace_child_with_purge` replaces `dst` with, for upstream's `src` and
+/// `must_be_directory`: a rename's node or an unlink's nothing, and what each requires, which it
+/// checks in the transaction that changes the names, so that no other change of them comes
+/// between.
+#[derive(Clone, Copy)]
+enum Replace<'a> {
+    /// A rename's: the node `name` of `dir` names, which must be a directory if
+    /// `must_be_directory`, as upstream's says. If `no_replace`, `dst` must hold nothing, or the
+    /// rename fails with `ALREADY_EXISTS`, as with rename(2)'s `RENAME_NOREPLACE`.
+    Move { dir: &'a Arc<FxDirectory>, name: &'a str, must_be_directory: bool, no_replace: bool },
+    /// An unlink's: nothing, where `dst`'s node must be as `Requires` says.
+    Unlink(Requires),
+}
+
+impl<'a> Replace<'a> {
+    /// Upstream's `src`: the directory and name of the node moved, if one is.
+    fn src(self) -> Option<(&'a Arc<FxDirectory>, &'a str)> {
+        match self {
+            Self::Move { dir, name, .. } => Some((dir, name)),
+            Self::Unlink(_) => None,
+        }
+    }
+
+    /// Upstream's `must_be_directory`: whether the node moved or unlinked must be a directory.
+    fn must_be_directory(self) -> bool {
+        match self {
+            Self::Move { must_be_directory, .. } => must_be_directory,
+            Self::Unlink(requires) => requires == Requires::Directory,
+        }
     }
 }
 
@@ -199,8 +228,8 @@ impl FxDirectory {
     ) -> Result<(), zx::Status> {
         vfs::name::validate_name(src_name)?;
         vfs::name::validate_name(dst_name)?;
-        let requires = if no_replace { Requires::NoReplace } else { Requires::Nothing };
-        self.move_child(src_dir, src_name, dst_name, requires).await
+        // Its names, with no trailing slash, require no directory.
+        self.move_child(src_dir, src_name, dst_name, false, no_replace).await
     }
 
     async fn lookup(
@@ -601,10 +630,12 @@ impl FxDirectory {
     /// a concurrent lookup opens the target file during the I/O window.
     async fn replace_child_with_purge<'a>(
         self: &'a Arc<Self>,
-        src: Option<(&'a Arc<FxDirectory>, &'a str)>,
+        // fxdax: `replace`, for upstream's `src` and `must_be_directory`.
+        replace: Replace<'a>,
         dst: &'a str,
-        requires: Requires,
     ) -> Result<Option<ReplaceWithPurgeResult<'a>>, zx::Status> {
+        // fxdax: upstream's arguments, which `replace` says.
+        let (src, must_be_directory) = (replace.src(), replace.must_be_directory());
         let mut allow_purge = true;
         loop {
             let borrow_metadata_space = src.is_none();
@@ -629,19 +660,20 @@ impl FxDirectory {
                 let (moved_id, moved_descriptor) =
                     replace_context.src_id_and_descriptor.clone().ok_or(zx::Status::NOT_FOUND)?;
 
-                // Make sure the dst path is compatible with the moved node.
-                if let ObjectDescriptor::File = moved_descriptor {
-                    if requires == Requires::Directory {
-                        return Err(zx::Status::NOT_DIR);
-                    }
-                }
-
                 // fxdax: as Linux's renameat2 does, a rename that must not replace fails once the
-                // source is found if dst holds anything, the source itself too.
-                if requires == Requires::NoReplace
+                // source is found if dst holds anything, the source itself too, before it checks
+                // the source's type.
+                if matches!(replace, Replace::Move { no_replace: true, .. })
                     && replace_context.dst_id_and_descriptor.is_some()
                 {
                     return Err(zx::Status::ALREADY_EXISTS);
+                }
+
+                // Make sure the dst path is compatible with the moved node.
+                if let ObjectDescriptor::File = moved_descriptor {
+                    if must_be_directory {
+                        return Err(zx::Status::NOT_DIR);
+                    }
                 }
 
                 // Now that we've ensured that the dst path is compatible with the moved node, we
@@ -692,10 +724,12 @@ impl FxDirectory {
                 let (_child_id, object_descriptor) =
                     replace_context.dst_id_and_descriptor.clone().ok_or(zx::Status::NOT_FOUND)?;
                 if let ObjectDescriptor::Directory = object_descriptor {
-                    if requires == Requires::NotDirectory {
+                    // fxdax: an unlink of a node that must not be a directory fails, as unlink(2)
+                    // does.
+                    if matches!(replace, Replace::Unlink(Requires::NotDirectory)) {
                         return Err(zx::Status::NOT_FILE);
                     }
-                } else if requires == Requires::Directory {
+                } else if must_be_directory {
                     return Err(zx::Status::NOT_DIR);
                 }
                 (None, String::new())
@@ -763,19 +797,22 @@ impl FxDirectory {
         let (src, dst) = (src_name.peek().unwrap(), dst_name.peek().unwrap());
         let src_dir =
             src_dir.into_any().downcast::<FxDirectory>().map_err(|_| zx::Status::NOT_DIR)?;
-        let requires = Requires::from_must_be_directory(src_name.is_dir() || dst_name.is_dir());
-        self.move_child(&src_dir, src, dst, requires).await
+        // fxdax: the rest is `move_child`'s; fuchsia.io's rename replaces what `dst` holds.
+        self.move_child(&src_dir, src, dst, src_name.is_dir() || dst_name.is_dir(), false).await
     }
 
     /// fxdax: the rest of upstream's `rename_impl`, once its names are found to be single
-    /// components: moves `src` of `src_dir` to `dst` here, as `requires` says.
+    /// components: moves `src` of `src_dir`, which must be a directory if `must_be_directory`, to
+    /// `dst` here, which must hold nothing if `no_replace`.
     async fn move_child(
         self: &Arc<Self>,
         src_dir: &Arc<FxDirectory>,
         src: &str,
         dst: &str,
-        requires: Requires,
+        must_be_directory: bool,
+        no_replace: bool,
     ) -> Result<(), zx::Status> {
+        let replace = Replace::Move { dir: src_dir, name: src, must_be_directory, no_replace };
         let Some(ReplaceWithPurgeResult {
             transaction,
             truncate_guard,
@@ -783,7 +820,7 @@ impl FxDirectory {
             moved_node,
             actual_src_name,
             actual_dst_name,
-        }) = self.replace_child_with_purge(Some((src_dir, src)), dst, requires).await?
+        }) = self.replace_child_with_purge(replace, dst).await?
         else {
             return Ok(());
         };
@@ -838,7 +875,7 @@ impl FxDirectory {
             actual_dst_name,
             ..
         } = self
-            .replace_child_with_purge(None, name, requires)
+            .replace_child_with_purge(Replace::Unlink(requires), name)
             .await?
             .expect("unlink cannot be a trivial rename");
 
@@ -927,6 +964,7 @@ impl MutableDirectory for FxDirectory {
         name: &str,
         must_be_directory: bool,
     ) -> Result<(), zx::Status> {
+        // fxdax: the body is `unlink_impl`'s.
         self.unlink_impl(name, Requires::from_must_be_directory(must_be_directory)).await
     }
 
@@ -4930,6 +4968,40 @@ mod tests {
                 .is_some()
         );
         close_file_checked(open_file).await;
+
+        drop(root_dir);
+        fixture.close().await;
+    }
+
+    /// fxdax: a rename that must not replace, of a node that must be a directory, fails with
+    /// `ALREADY_EXISTS` if its new name holds anything before it finds the node moved a file, as
+    /// Linux's renameat2 checks `RENAME_NOREPLACE` before a trailing slash; with its new name
+    /// free, it fails with `NOT_DIR`.
+    #[fuchsia::test]
+    async fn test_rename_no_replace_before_must_be_directory() {
+        let fixture = TestFixture::new().await;
+        let root = fixture.root();
+        for name in ["file", "other"] {
+            let flags = fio::Flags::FLAG_MAYBE_CREATE | fio::PERM_READABLE;
+            close_file_checked(open_file_checked(root, name, flags, &Default::default()).await)
+                .await;
+        }
+        let root_dir = fixture
+            .volume()
+            .root()
+            .clone()
+            .into_any()
+            .downcast::<FxDirectory>()
+            .expect("Not a directory");
+
+        assert_eq!(
+            root_dir.move_child(&root_dir, "file", "other", true, true).await,
+            Err(zx::Status::ALREADY_EXISTS)
+        );
+        assert_eq!(
+            root_dir.move_child(&root_dir, "file", "new", true, true).await,
+            Err(zx::Status::NOT_DIR)
+        );
 
         drop(root_dir);
         fixture.close().await;
