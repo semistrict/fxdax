@@ -110,17 +110,19 @@ host_need() {
 # keeps Firecracker's build: in none that another tree builds in too. Git's
 # files, which a checkout has, are not the tree's.
 #
-# A tree copied by times before, as with rsync -a, may hold content newer than
-# its times, beside what was built from what it replaced: its first copy by
-# content writes every file again, once, which NAME.by-content beside it
-# records.
+# A tree copied by times, as with rsync -a, may hold content newer than its
+# times, beside what was built from what it replaced: so a copy by content
+# writes every file again unless the tree's last copy was by content too, which
+# .by-content in the tree records. A copy into the tree by other means that
+# deletes what the source lacks, as the scripts' own before (rsync -a --delete),
+# deletes it.
 host_tree() {
     local tree="$work/$1" compare=--checksum
     mkdir -p "$tree"
-    if [[ ! -e $tree.by-content ]]; then compare=--ignore-times; fi
+    if [[ ! -e $tree/.by-content ]]; then compare=--ignore-times; fi
     rsync -rlpD "$compare" --delete --exclude target --exclude .git \
-        --exclude /vendor/firecracker/build "$repo/" "$tree/"
-    touch "$tree.by-content"
+        --exclude /vendor/firecracker/build --exclude /.by-content "$repo/" "$tree/"
+    touch "$tree/.by-content"
     repo=$tree
 }
 

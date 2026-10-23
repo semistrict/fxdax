@@ -66,6 +66,7 @@ class Synced:
         self.assertEqual(
             [file for file in files(tree) if not file.startswith("scripts/")],
             [
+                ".by-content",
                 "crates/c/build/build.rs",
                 "guest/tests/target/debug/x",
                 "src/changed.rs",
@@ -102,7 +103,7 @@ class Tree(Synced, unittest.TestCase):
         work, source = Path(tempfile.mkdtemp()), Path(tempfile.mkdtemp())
         built(work / "t", source)
         # Synced by content before.
-        (work / "t.by-content").touch()
+        (work / "t" / ".by-content").touch()
         start = int(time.time())
         self.host_tree(work, source)
         self.assertSynced(work / "t", start)
@@ -119,6 +120,23 @@ class Tree(Synced, unittest.TestCase):
         self.host_tree(work, source)
         self.assertEqual((work / "t" / "src" / "same.rs").stat().st_mtime, BUILT)
 
+    def test_a_tree_copied_by_times_since_is_written_whole_again(self):
+        # Copied by content, then by times, as the scripts before did (rsync -a --delete): the
+        # changed file has the checkout's time again, older than the tree's build, and the content
+        # the copy by content wrote.
+        work, source = Path(tempfile.mkdtemp()), Path(tempfile.mkdtemp())
+        built(work / "t", source)
+        self.host_tree(work, source)
+        subprocess.run(
+            ["rsync", "-a", "--delete", "--exclude", "target", "--exclude", ".git",
+             f"{source}/", f"{work / 't'}/"],
+            check=True,
+        )
+        self.assertEqual((work / "t" / "src" / "changed.rs").stat().st_mtime, CHECKED_OUT)
+        start = int(time.time())
+        self.host_tree(work, source)
+        self.assertGreaterEqual(int((work / "t" / "src" / "changed.rs").stat().st_mtime), start)
+
 
 class Lima(Synced, unittest.TestCase):
     """The Lima VM's tree, ~/fxdax-test, which scripts/lib/lima.sh syncs before it runs a script
@@ -129,7 +147,7 @@ class Lima(Synced, unittest.TestCase):
         built() has them, the tree synced by content before: its status, output and errors."""
         self.vm, checkout = Path(tempfile.mkdtemp()), Path(tempfile.mkdtemp())
         built(self.vm / "fxdax-test", checkout)
-        (self.vm / "fxdax-test.by-content").touch()
+        (self.vm / "fxdax-test" / ".by-content").touch()
         for name in ["lib/lima.sh", "lib/linux-host-setup.sh", "test-linux.sh"]:
             (checkout / "scripts" / name).parent.mkdir(parents=True, exist_ok=True)
             (checkout / "scripts" / name).symlink_to(SCRIPTS / name)
