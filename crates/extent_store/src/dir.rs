@@ -73,6 +73,16 @@ pub trait Dir: Send + Sync + 'static {
 
     /// Lets the directory go, once taken ([`Dir::take`]).
     fn let_go(&self) {}
+
+    /// fxdax: whether the store may do I/O in the directory on threads of its own, alongside its
+    /// callers': framing a closed segment off the commit that closed it (TASK-41), and syncing a
+    /// flush's files at once (TASK-92.42). Without, its callers' threads do all of it, one
+    /// operation at a time, in an order their calls alone decide: as a directory needs that fails
+    /// from a number of operations on, as a crash would, at the same point each time it is run
+    /// ([`MemDir::serial`](crate::MemDir::serial), TASK-79.79).
+    fn concurrent(&self) -> bool {
+        true
+    }
 }
 
 /// The whole of `file`, read as it is: a store's file that holds no extents' data, whose reads

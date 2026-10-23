@@ -23,7 +23,7 @@ use crate::sync::rules;
 use crate::uploads::Uploads;
 use crate::views::{Keeping, NotHeld, Sealed};
 use anyhow::{Error, bail};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use storage_device::{ExtentId, NoExtent};
 
@@ -396,9 +396,14 @@ impl<F> Uncommitted<F> {
         Some(open.placement)
     }
 
-    /// The extents open, which the next commit seals.
+    /// The extents open, which the next commit seals, in the order they were opened. fxdax: an
+    /// order the branch's writes decide, not the map's, which differs from one run to the next,
+    /// so that where a commit seals each, and what its record says, do not (TASK-79.79).
     pub fn open_extents(&self) -> Vec<ExtentId> {
-        self.open.keys().copied().collect()
+        let mut open: Vec<_> =
+            self.open.iter().map(|(extent, open)| (open.opening, *extent)).collect();
+        open.sort_unstable();
+        open.into_iter().map(|(_, extent)| extent).collect()
     }
 
     pub fn push(&mut self, change: Change) {
@@ -477,7 +482,9 @@ impl Gate {
 pub(crate) struct OwnFiles<F> {
     open: Files<ExtentId, F>,
     sizes: HashMap<ExtentId, u64>,
-    unsynced: HashMap<ExtentId, Arc<F>>,
+    /// fxdax: in order, which their flush syncs them in, rather than the order of a map that
+    /// differs from one run to the next (TASK-79.79).
+    unsynced: BTreeMap<ExtentId, Arc<F>>,
     /// Their directory, the branch's, and whether its entries changed since the last commit.
     dir: String,
     written: bool,
@@ -487,7 +494,7 @@ impl<F: File> OwnFiles<F> {
     /// `branch`'s, whose files take `sizes`, of which `limit` stay open.
     pub fn new(branch: u64, sizes: HashMap<ExtentId, u64>, limit: usize) -> Self {
         let dir = branch_dir(EXTENTS, branch);
-        Self { open: Files::new(limit), sizes, unsynced: HashMap::new(), dir, written: false }
+        Self { open: Files::new(limit), sizes, unsynced: BTreeMap::new(), dir, written: false }
     }
 
     /// `extent`'s file, opened in `dir` if it isn't.

@@ -6,11 +6,16 @@
 //! exactly the extents and root of an epoch at least as late as the last commit made durable, by
 //! a durable commit or a flush of commits only ordered; fxdax: as its open segment closes between
 //! commits too, as an uploader has it close.
+//!
+//! fxdax: a round is a function of its seed (TASK-79.79): its store does its I/O on the test's
+//! thread alone, none on threads of its own ([`MemDir::serial`]), so that the operation its file
+//! system fails from, and what the crash keeps, are the same each time it is run. How the store's
+//! threads interleave with its callers' is the Shuttle tests' to try (tests/shuttle/).
 
-use extent_store::{Description, Lineage, MemDir, Options, Store};
+use extent_store::{Description, Dir as _, File as _, Lineage, MemDir, Options, Store};
 use rand::rngs::StdRng;
 use rand::{RngExt as _, SeedableRng as _};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use storage_device::{ExtentId, SealedExtent};
 
 const BLOCK: usize = 4096;
@@ -169,25 +174,68 @@ fn contents(store: &Store<MemDir>) -> Model {
     Model { extents, root: store.root().unwrap() }
 }
 
+/// Round `round`'s first crash: a store made, a random workload run on it until its file system
+/// fails, from a random point on, as the host crashes, and the directory that crash leaves. Returns
+/// that, what each commit began with, the last made durable, and the round's RNG, to carry on.
+fn crashed_round(round: u64) -> (MemDir, Vec<Model>, usize, StdRng) {
+    let mut rng = StdRng::seed_from_u64(round);
+    let dir = MemDir::serial();
+    let description = Description { block_size: BLOCK as u32, capacity: 4 << 20, branch: BRANCH };
+    let store = Store::create(dir.clone(), description, OPTIONS).unwrap();
+    let mut epochs = vec![Model::default()];
+    dir.fail_after(Some(rng.random_range(0..600)));
+    let (durable, _) = workload(&mut rng, &store, &mut epochs, Model::default(), 0);
+    drop(store);
+    (dir.crash(round), epochs, durable, rng)
+}
+
+/// What `dir` holds: each file's path, with its length and a hash of its contents; and each
+/// directory's, with neither.
+fn digest(dir: &MemDir) -> BTreeMap<String, Option<(u64, u64)>> {
+    let mut digest = BTreeMap::new();
+    let mut paths = vec![String::new()];
+    while let Some(path) = paths.pop() {
+        // A directory lists, a file opens.
+        let held = match dir.list(&path) {
+            Ok(names) => {
+                let child = |name| if path.is_empty() { name } else { format!("{path}/{name}") };
+                paths.extend(names.into_iter().map(child));
+                None
+            }
+            Err(_) => {
+                let file = dir.open(&path, false).unwrap();
+                let mut data = vec![0; file.size().unwrap() as usize];
+                file.read_at(&mut data, 0).unwrap();
+                Some((data.len() as u64, rapidhash::rapidhash(&data)))
+            }
+        };
+        digest.insert(path, held);
+    }
+    digest
+}
+
+/// TASK-79.79: a round's crash is a function of its seed alone: run twice, it leaves the same
+/// directory, so that a round that failed fails again, and a round that passed says what it seems.
+#[test]
+fn crashes_are_functions_of_their_rounds() {
+    for round in 0..ROUNDS {
+        let (first, second) = (digest(&crashed_round(round).0), digest(&crashed_round(round).0));
+        let paths: BTreeSet<_> = first.keys().chain(second.keys()).collect();
+        let differing: Vec<_> =
+            paths.into_iter().filter(|path| first.get(*path) != second.get(*path)).collect();
+        assert_eq!(differing, Vec::<&String>::new(), "round {round}: the crashes differ");
+    }
+}
+
 #[test]
 fn recovers_a_prefix_of_its_commits() {
     let mut crashes_mid_commit = 0;
     for round in 0..ROUNDS {
-        let mut rng = StdRng::seed_from_u64(round);
-        let dir = MemDir::new();
-        let description =
-            Description { block_size: BLOCK as u32, capacity: 4 << 20, branch: BRANCH };
-        let store = Store::create(dir.clone(), description, OPTIONS).unwrap();
-        let mut epochs = vec![Model::default()];
-        // The file system fails from a random point on, as the host crashes.
-        dir.fail_after(Some(rng.random_range(0..600)));
-        let (durable, _) = workload(&mut rng, &store, &mut epochs, Model::default(), 0);
-        drop(store);
+        let (crashed, epochs, durable, mut rng) = crashed_round(round);
         if durable + 1 < epochs.len() {
             crashes_mid_commit += 1;
         }
 
-        let crashed = dir.crash(round);
         let store = Store::open(crashed.clone(), OPTIONS)
             .unwrap_or_else(|e| panic!("round {round}: the store doesn't open: {e:?}"));
         let epoch = store.epoch().unwrap() as usize;
@@ -251,7 +299,7 @@ fn forks_recover_prefixes_of_their_commits() {
     const CHILD: u64 = BRANCH + 1;
     for round in 0..ROUNDS / 3 {
         let mut rng = StdRng::seed_from_u64(round);
-        let dir = MemDir::new();
+        let dir = MemDir::serial();
         let description =
             Description { block_size: BLOCK as u32, capacity: 4 << 20, branch: BRANCH };
         let parent = Store::create(dir.clone(), description, OPTIONS).unwrap();

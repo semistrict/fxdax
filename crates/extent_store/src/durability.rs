@@ -131,8 +131,10 @@ impl<F: File> Syncs<F> {
     }
 
     /// Syncs them, in `dir`: each file once, however many commits wrote it, then the directories.
-    /// fxdax: [`AT_ONCE`] of the files at a time, then of the directories (TASK-92.42).
+    /// fxdax: [`AT_ONCE`] of the files at a time, then of the directories (TASK-92.42); one at a
+    /// time, if the directory's I/O is its callers' alone ([`Dir::concurrent`], TASK-79.79).
     pub fn sync<D: Dir<File = F>>(&self, dir: &D) -> Result<(), Error> {
+        let most = if dir.concurrent() { AT_ONCE } else { 1 };
         let sync: fn(&F) -> io::Result<()> = F::sync;
         let sync_cached: fn(&F) -> io::Result<()> = F::sync_cached;
         let mut seen = HashSet::new();
@@ -140,9 +142,9 @@ impl<F: File> Syncs<F> {
             .chain(self.cached.iter().map(|file| (file, sync_cached)))
             .filter(|(file, _)| seen.insert(Arc::as_ptr(file)))
             .collect();
-        at_once(&files, |(file, sync)| sync(file).context("syncing extents' data"))?;
+        at_once(&files, most, |(file, sync)| sync(file).context("syncing extents' data"))?;
         let dirs: Vec<&String> = self.dirs.iter().collect();
-        at_once(&dirs, |path| dir.sync_dir(path).with_context(|| format!("syncing {path}")))
+        at_once(&dirs, most, |path| dir.sync_dir(path).with_context(|| format!("syncing {path}")))
     }
 
     /// The files it syncs, in order: those whose pages leave the host's page cache, and those whose
@@ -159,8 +161,8 @@ impl<F: File> Syncs<F> {
     }
 }
 
-/// fxdax: `sync`s each of `items`, [`AT_ONCE`] at a time, on as many threads, the caller's one of
-/// them, each taking the next as it is done with one; and returns once each is synced, or once one
+/// fxdax: `sync`s each of `items`, `most` at a time, on as many threads, the caller's one of them,
+/// each taking the next as it is done with one; and returns once each is synced, or once one
 /// failed and those in flight returned, with that failure, logging any other. A failure empties the
 /// queue, so that no sync begins once it has, though other threads may take one before: what they
 /// sync then does no harm, as the flush fails. A thread the host refuses is one fewer: the
@@ -168,6 +170,7 @@ impl<F: File> Syncs<F> {
 /// (TASK-92.42).
 fn at_once<T: Sync>(
     items: &[T],
+    most: usize,
     sync: impl Fn(&T) -> Result<(), Error> + Sync,
 ) -> Result<(), Error> {
     let queue = Mutex::new(items.iter());
@@ -182,7 +185,7 @@ fn at_once<T: Sync>(
         }
     };
     thread::scope(|scope| {
-        let others: Vec<_> = (1..items.len().min(AT_ONCE))
+        let others: Vec<_> = (1..items.len().min(most))
             .map_while(|_| match spawn_scoped(scope, syncing) {
                 Ok(other) => Some(other),
                 Err(error) => {

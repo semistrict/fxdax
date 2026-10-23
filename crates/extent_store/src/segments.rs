@@ -662,7 +662,8 @@ impl<F: File> Unframed<F> {
     }
 
     /// Frames it on a thread of its own, in its framed file in `lineage`'s directory, which the
-    /// flush of the commit that closed it waits for.
+    /// flush of the commit that closed it waits for; fxdax: or now, if the directory's I/O is its
+    /// callers' alone ([`Dir::concurrent`], TASK-79.79).
     pub fn frame_behind<D: Dir<File = F>>(self, lineage: Arc<Lineage<D>>) -> Closing<F> {
         let (path, footer) = (segment_path(self.number), self.footer.encode());
         let framing = Framing::start(lineage, path, self.raw, self.len, footer);
@@ -695,7 +696,9 @@ struct Framing<F> {
 
 impl<F: File> Framing<F> {
     /// Frames, on a thread of its own, the `len` bytes of data of the segment whose raw file is
-    /// `raw`, with `footer`, into the framed file at `path` in `dir`.
+    /// `raw`, with `footer`, into the framed file at `path` in `lineage`'s directory; fxdax: on
+    /// the caller's, if the directory's I/O is its callers' alone ([`Dir::concurrent`],
+    /// TASK-79.79).
     fn start<D: Dir<File = F>>(
         lineage: Arc<Lineage<D>>,
         path: String,
@@ -705,12 +708,18 @@ impl<F: File> Framing<F> {
     ) -> Arc<Self> {
         let framing = Arc::new(Self { framed: Mutex::new(None), done: Condvar::new() });
         let framing_here = framing.clone();
-        thread::spawn(move || {
+        let concurrent = lineage.dir.concurrent();
+        let frame = move || {
             let framed = frame_segment(&lineage.dir, &path, &raw, len, &footer);
             *framing_here.framed.lock().unwrap() =
                 Some(framed.map_err(|error| format!("{error:#}")));
             framing_here.done.notify_all();
-        });
+        };
+        if concurrent {
+            thread::spawn(frame);
+        } else {
+            frame();
+        }
         framing
     }
 

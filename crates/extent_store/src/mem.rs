@@ -10,6 +10,9 @@
 //! and each file created or removed since the directory's last sync, in order. Directories
 //! themselves are durable once created. [`MemDir::fail_after`] makes the file system fail every
 //! operation that would change it after a number of them, as a crash would interrupt them.
+//! fxdax: which of them fails, and so what a crash keeps, is a function of the store's calls, and
+//! of the crash's seed, only if the store does no I/O on threads of its own: in a directory made
+//! [`MemDir::serial`] (TASK-79.79).
 
 use crate::dir::{Dir, File};
 use crate::sync::Mutex;
@@ -45,6 +48,9 @@ struct Fs {
     dir_changes: BTreeMap<String, Vec<DirChange>>,
     /// How many more operations that change the file system succeed, if limited.
     budget: Option<u64>,
+    /// fxdax: whether the store does all of its I/O in it on its callers' threads
+    /// ([`MemDir::serial`]).
+    serial: bool,
     /// The bytes read and written since it was made, or crashed, and the files opened.
     io: Io,
 }
@@ -136,6 +142,16 @@ impl MemDir {
         dir
     }
 
+    /// fxdax: an empty directory in which the store does all of its I/O on its callers' threads,
+    /// none on threads of its own ([`Dir::concurrent`]): so that its operations come in an order
+    /// the store's calls alone decide, and so where it fails ([`MemDir::fail_after`]), and what a
+    /// crash of a seed keeps; as do the directories its crashes leave (TASK-79.79).
+    pub fn serial() -> Self {
+        let dir = Self::new();
+        dir.0.lock().unwrap().serial = true;
+        dir
+    }
+
     /// Makes every operation that changes the file system fail after `operations` more of them,
     /// or none if `None`.
     pub fn fail_after(&self, operations: Option<u64>) {
@@ -202,6 +218,7 @@ impl MemDir {
             dirs,
             dir_changes: BTreeMap::new(),
             budget: None,
+            serial: fs.serial,
             io: Io::default(),
         })))
     }
@@ -272,6 +289,10 @@ impl Dir for MemDir {
 
     fn barrier(&self) -> io::Result<()> {
         self.0.lock().unwrap().spend()
+    }
+
+    fn concurrent(&self) -> bool {
+        !self.0.lock().unwrap().serial
     }
 }
 
