@@ -217,7 +217,8 @@ impl ExtentCache {
         (allocators.entry(arena))
             .or_insert_with(|| {
                 let block_size = ExtentStore::BLOCK_SIZE as usize;
-                let source = with_arena(arena, || BufferSource::new(PAGER_BUFFERS));
+                // Trusted: the kernel's alone, read into in place (`FxExtent::aligned_read`).
+                let source = with_arena(arena, || BufferSource::new_trusted(PAGER_BUFFERS));
                 Arc::new(BufferAllocator::new(block_size, source))
             })
             .clone()

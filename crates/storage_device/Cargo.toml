@@ -27,6 +27,8 @@ zx.workspace = true
 [dev-dependencies]
 fuchsia.workspace = true
 fuchsia-async.workspace = true
+# fxdax: what a buffer source's mapping maps, for its tests.
+libc.workspace = true
 
 # The workspace's lints.
 [lints.rust]

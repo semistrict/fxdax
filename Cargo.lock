@@ -3349,6 +3349,7 @@ dependencies = [
  "fuchsia-runtime",
  "fuchsia-sync",
  "futures",
+ "libc",
  "log",
  "num",
  "rand 0.10.3",

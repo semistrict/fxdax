@@ -20,6 +20,7 @@ use std::task::{Context, Poll};
 
 #[cfg(not(target_os = "none"))]
 mod buffer_source {
+    use crate::buffer::{round_down, round_up};
     use fuchsia_runtime::vmar_root_self;
     use std::ops::Range;
     use std::sync::Arc;
@@ -129,8 +130,15 @@ mod buffer_source {
         }
 
         /// Commits the range in memory to avoid future page faults.
+        ///
+        /// fxdax: the pages the range is in, through the source's mapping, which maps them too, as
+        /// upstream's commit of the VMO alone does not (TASK-92.19): writing them would fault each
+        /// few in, each fault the host's signal and system call (`zircon::arch::host`).
         pub fn commit_range(&self, range: Range<usize>) -> Result<(), zx::Status> {
-            self.vmo.op_range(zx::VmoOp::COMMIT, range.start as u64, range.len() as u64)
+            let page_size = zx::system_get_page_size() as usize;
+            let start = round_down(range.start, page_size);
+            let len = round_up(range.end, page_size) - start;
+            vmar_root_self().op_range(zx::VmarOp::COMMIT, self.base as usize + start, len)
         }
 
         /// Zeroes out the range so the kerne can reclaim the pages.
@@ -940,6 +948,25 @@ mod tests {
             std::mem::drop(buf2);
             bufs_dropped.store(true, Ordering::Relaxed);
         });
+    }
+
+    /// fxdax (TASK-92.19): committing a range of a source maps the pages it is in, in the source's
+    /// mapping, so that writing them takes no fault, each of which the host makes a signal and a
+    /// system call of; and maps those alone. The host holds a page of the mapping only once the
+    /// in-process kernel has mapped it there.
+    #[fuchsia::test]
+    async fn committed_ranges_are_mapped() {
+        let page_size = zx::system_get_page_size() as usize;
+        let source = BufferSource::new(4 * page_size);
+        source.commit_range(page_size + 512..3 * page_size - 512).unwrap();
+        let mut held = [0u8; 4];
+        // SAFETY: Asks the host which pages of the source's mapping it holds, into `held`, a byte
+        // a page.
+        let status = unsafe {
+            libc::mincore(source.slice().cast(), 4 * page_size, held.as_mut_ptr().cast())
+        };
+        assert_eq!(status, 0, "mincore: {}", std::io::Error::last_os_error());
+        assert_eq!(held.map(|page| page & 1), [0, 1, 1, 0]);
     }
 
     #[fuchsia::test]

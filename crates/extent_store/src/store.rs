@@ -795,7 +795,7 @@ impl<D: Dir> Store<D> {
     /// A part stored compressed, read and unpacked.
     pub fn read_packed(&self, part: &Packed<D::File>) -> Result<Arc<[u8]>, Error> {
         let stored = read_aligned(&*part.file, part.stored.offset, part.stored.len as usize)?;
-        self.unpack(part, &stored)
+        self.unpack(part, stored.as_slice())
     }
 
     /// A part stored compressed, unpacked from `bytes`, its stored bytes and any after them, read

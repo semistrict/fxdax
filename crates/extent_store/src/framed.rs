@@ -39,22 +39,31 @@ impl Aligned {
     pub fn as_mut_slice(&mut self) -> &mut [u8] {
         &mut self.bytes[self.start..self.start + self.len]
     }
+
+    /// Its `len` bytes from `skip`, in the buffer still.
+    fn within(mut self, skip: usize, len: usize) -> Self {
+        assert!(skip + len <= self.len, "{len} bytes from {skip} of {}", self.len);
+        self.start += skip;
+        self.len = len;
+        self
+    }
 }
 
 /// `len` bytes at `at` in `file`, read in whole aligned blocks, as reads of extents' files that
-/// bypass the host's page cache must be (`O_DIRECT` on Linux).
-pub(crate) fn read_aligned<F: File>(file: &F, at: u64, len: usize) -> io::Result<Vec<u8>> {
+/// bypass the host's page cache must be (`O_DIRECT` on Linux), and left in them: a part's stored
+/// bytes are read on each page-in that unpacks it (TASK-92.19).
+pub(crate) fn read_aligned<F: File>(file: &F, at: u64, len: usize) -> io::Result<Aligned> {
     let align = ALIGNMENT as u64;
     let start = at / align * align;
     let end = (at + len as u64).div_ceil(align) * align;
     let mut buf = Aligned::new((end - start) as usize);
     file.read_at(buf.as_mut_slice(), start)?;
-    Ok(buf.as_slice()[(at - start) as usize..][..len].to_vec())
+    Ok(buf.within((at - start) as usize, len))
 }
 
 /// The whole of `file`, read in aligned blocks.
 pub fn read_whole<F: File>(file: &F) -> io::Result<Vec<u8>> {
-    read_aligned(file, 0, file.size()? as usize)
+    Ok(read_aligned(file, 0, file.size()? as usize)?.as_slice().to_vec())
 }
 
 /// The parts of the framed file `file`, and its footer, if it is whole: its trailer, table and
@@ -63,12 +72,13 @@ pub(crate) fn read_frame<F: File>(file: &F) -> Result<Option<(Parts, Vec<u8>)>, 
     let size = file.size()?;
     let Some(at) = size.checked_sub(TRAILER) else { return Ok(None) };
     let trailer = read_aligned(file, at, TRAILER as usize)?;
-    let Ok(frame) = Frame::of_trailer(&trailer) else { return Ok(None) };
+    let Ok(frame) = Frame::of_trailer(trailer.as_slice()) else { return Ok(None) };
     if frame.size() != size {
         return Ok(None);
     }
     let tail = read_aligned(file, frame.stored_len, (size - frame.stored_len) as usize)?;
-    let Ok(stored) = frame.stored_in(&tail) else { return Ok(None) };
+    let tail = tail.as_slice();
+    let Ok(stored) = frame.stored_in(tail) else { return Ok(None) };
     let Ok(footer) = frame.check_footer(&tail[..frame.footer_len as usize]) else {
         return Ok(None);
     };
@@ -234,13 +244,16 @@ impl<F> Packed<F> {
     }
 
     /// The part, unpacked from `bytes`, its stored bytes and any after them, checked against its
-    /// CRC, and kept in `unpacked`.
+    /// CRC, and kept in `unpacked`: unpacked into what keeps it, rather than copied there
+    /// (TASK-92.19).
     pub(crate) fn unpack(&self, bytes: &[u8], unpacked: &Unpacked) -> Result<Arc<[u8]>, Error> {
         debug_assert!(self.len <= PART);
-        let bytes: Arc<[u8]> = self.stored.unpack(bytes, self.len)?.into();
+        let mut part: Arc<[u8]> = std::iter::repeat_n(0, self.len as usize).collect();
+        let out = Arc::get_mut(&mut part).expect("a part just made is its own");
+        self.stored.unpack_into(bytes, out)?;
         UNPACKS.fetch_add(1, Ordering::Relaxed);
-        unpacked.put(self.key, bytes.clone());
-        Ok(bytes)
+        unpacked.put(self.key, part.clone());
+        Ok(part)
     }
 }
 

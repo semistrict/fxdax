@@ -6,7 +6,7 @@
 // immutable extent of an extent store (backlog doc-4) rather than a blob of a volume: without the
 // blob's merkle tree, compression, child VMOs, purging and metrics, reading its contents from an
 // `ExtentSource` rather than an Fxfs object, in the units the source reads in, ahead of a reader
-// reading on (`FxExtent::page_in`).
+// reading on (`FxExtent::page_in`), straight into its buffers (`FxExtent::aligned_read`).
 
 //! This module contains the [`FxExtent`] node type used to represent an immutable extent whose
 //! contents the pager supplies to its VMO as it is read: one copy of each page, in the in-process
@@ -42,6 +42,10 @@ pub trait ExtentSource: Send + Sync + 'static {
     /// Reads `buf.len()` bytes of the extent at `offset`, which is block-aligned. A page-in
     /// waiting for the read holds no thread: a read from object storage may take tens of
     /// milliseconds, and the pager pages in on a few threads.
+    ///
+    /// `buf` is a pager buffer's, memory the in-process kernel maps, which the source writes with
+    /// the CPU, as it would any memory, the kernel resolving its faults should a page of it be
+    /// unmapped meanwhile; not by a system call, which would fail on such a page.
     fn read<'a>(&'a self, offset: u64, buf: &'a mut [u8]) -> BoxFuture<'a, Result<(), Error>>;
 
     /// How much a page-in reads at once, a power of two of pages: what a read of the source costs
@@ -86,7 +90,8 @@ pub struct FxExtent {
 
 impl FxExtent {
     /// An extent of `size` bytes, read from `source` by `pager` into buffers from `allocator`,
-    /// identified as `id`.
+    /// identified as `id`. The buffers must be trusted (`BufferSource::new_trusted`), as `source`
+    /// reads into them.
     pub fn new(
         pager: Arc<Pager>,
         allocator: Arc<BufferAllocator>,
@@ -94,6 +99,7 @@ impl FxExtent {
         size: u64,
         id: u64,
     ) -> Arc<Self> {
+        assert!(allocator.buffer_source().is_trusted(), "an extent's buffers are shared");
         Arc::new_cyclic(|weak| {
             let (vmo, pager_packet_receiver_registration) =
                 pager.create_vmo(weak.clone(), size, zx::VmoOptions::empty()).unwrap();
@@ -206,14 +212,17 @@ impl PagerBacked for FxExtent {
         let mut buffer = self.allocator.allocate_buffer(len).await;
         // fxdax: the buffer's pages, which move into the extent's VMO, taken at once: a run of
         // physical memory, which a window maps with one host mapping (`HostArchVmAspace::map`),
-        // where pages taken as the copy below faults them in, while other page-ins take theirs,
-        // are scattered, one mapping each.
+        // where pages taken as the read below faults them in, while other page-ins take theirs,
+        // are scattered, one mapping each. Mapped as they are taken, the read faults none of them
+        // in (TASK-92.19).
         buffer.allocator().buffer_source().commit_range(buffer.range())?;
         let read = (self.size - range.start).min(len as u64) as usize;
-        let mut data = vec![0; read];
-        self.source.read(range.start, &mut data).await?;
-        buffer.subslice_mut(..read).copy_from_slice(&data);
-        buffer.subslice_mut(read..).fill(0);
+        // fxdax: read into the buffer itself, as upstream reads a blob's blocks, which its buffers'
+        // being trusted lets the source write as a slice.
+        let data = buffer.try_as_mut_slice().expect("the extent's buffers are trusted");
+        let (data, past) = data.split_at_mut(read);
+        self.source.read(range.start, data).await?;
+        past.fill(0);
         Ok(buffer)
     }
 }
