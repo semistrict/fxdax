@@ -7,12 +7,17 @@
 # scripts/test-gce.sh, bench-gce.sh, gets-gce.sh, example-gce.sh,
 # mutants-gce.sh and migrate-gce.sh. A host carries the labels
 # purpose=$purpose,lifecycle=temporary, and nothing here operates on one
-# without them. It deletes itself $lifetime after it was created, whatever
-# becomes of the shell that made it, and powers off after a day without a
-# command from here (scripts/lib/gce-host-startup.sh). What a script runs there,
-# one of the host scripts (scripts/lib/*-linux-host.sh), runs in this machine's
-# environment, but for what sets up this machine's own builds and daemons
-# (gce_host_command).
+# without them, and maker, the mark of the run that made it: a run deletes, as
+# it ends, only a host it made (gce_all), as another run at once may have made
+# one of the same name. A host deletes itself $lifetime after it was created,
+# whatever becomes of the shell that made it, and powers off after a day
+# without a command from here (scripts/lib/gce-host-startup.sh). What a script
+# runs there, one of the host scripts (scripts/lib/*-linux-host.sh), runs in
+# this machine's environment, but for what sets up this machine's own builds
+# and daemons (gce_host_command).
+#
+# The drivers run these functions under `||` and `if !`, where errexit stops
+# nothing, so each checks the status of its every step itself.
 #
 # The sourcing script sets project, zone (the zone to try first), instance,
 # machine, purpose, lifetime, limit (the longest a run may take on the host,
@@ -24,6 +29,8 @@
 # an extent daemon keeping its stores' branches in a bucket (doc-7).
 
 cloud=(gcloud --quiet --project="$project")
+# This run's mark, which the hosts it makes carry as their maker label.
+gce_maker=$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')
 if [[ -n ${FXDAX_GCE_STORAGE:-} ]]; then
     account_flags=(--scopes=storage-rw)
 else
@@ -67,7 +74,7 @@ gce_create_in() {
         "${account_flags[@]}" \
         --metadata=block-project-ssh-keys=TRUE \
         --metadata-from-file="startup-script=$repo/scripts/lib/gce-host-startup.sh" \
-        --labels="purpose=$purpose,lifecycle=temporary" \
+        --labels="purpose=$purpose,lifecycle=temporary,maker=$gce_maker" \
         --maintenance-policy=TERMINATE --no-restart-on-failure \
         --max-run-duration="$lifetime" --instance-termination-action=DELETE
 }
@@ -76,37 +83,58 @@ gce_create_in() {
 # chosen: every other action finds the host by its name.
 gce_locate() {
     local found
-    found=$("${cloud[@]}" compute instances list --filter="name=$instance" --format='value(zone.basename())')
+    found=$("${cloud[@]}" compute instances list --filter="name=$instance" \
+        --format='value(zone.basename())') || return
     if [[ -n "$found" ]]; then zone=$found; fi
 }
 
-gce_exists() {
-    [[ -n $("${cloud[@]}" compute instances list --filter="name=$instance" --format='value(name)') ]]
+# gce_listed KIND prints the name of the host, with KIND instances, or of its
+# boot disk, with KIND disks, if there is one. It fails if the listing does,
+# which says nothing of whether there is one.
+gce_listed() {
+    "${cloud[@]}" compute "$1" list --filter="name=$instance" --format='value(name)'
 }
 
+# gce_check_owner [mine] succeeds if the host carries this script's labels;
+# with `mine`, only if this run made it too, which no host without a maker
+# label, as those made before hosts had one, was.
 gce_check_owner() {
     local labels
     labels=$("${cloud[@]}" compute instances describe "$instance" --zone="$zone" \
-        --format='value(labels.purpose,labels.lifecycle)')
-    [[ "$labels" == "$purpose"$'\ttemporary' ]] || {
-        echo "Refusing to operate on $instance, which lacks the $purpose labels." >&2
+        --format='value(labels.purpose,labels.lifecycle,labels.maker)') || return
+    case $labels in
+        "$purpose"$'\t'temporary | "$purpose"$'\t'temporary$'\t'*) ;;
+        *)
+            echo "Refusing to operate on $instance, which lacks the $purpose labels." >&2
+            return 1
+            ;;
+    esac
+    if [[ ${1:-} == mine && $labels != "$purpose"$'\t'temporary$'\t'"$gce_maker" ]]; then
+        echo "Refusing to delete $instance, which another run made." >&2
         return 1
-    }
+    fi
 }
 
+# gce_delete [mine] deletes the host and its boot disk, if it is there and
+# carries this script's labels (gce_check_owner; with `mine`, if this run made
+# it), and succeeds once the listings say both are gone.
 gce_delete() {
-    if gce_exists; then
-        gce_check_owner
-        "${cloud[@]}" compute instances delete "$instance" --zone="$zone" --delete-disks=all
+    local listed
+    listed=$(gce_listed instances) || return
+    if [[ -n $listed ]]; then
+        gce_check_owner "$@" || return
+        "${cloud[@]}" compute instances delete "$instance" --zone="$zone" --delete-disks=all || return
     fi
-    if gce_exists; then
+    listed=$(gce_listed instances) || return
+    if [[ -n $listed ]]; then
         echo "Instance still exists: $instance" >&2
         return 1
     fi
-    [[ -z $("${cloud[@]}" compute disks list --filter="name=$instance" --format='value(name)') ]] || {
+    listed=$(gce_listed disks) || return
+    if [[ -n $listed ]]; then
         echo "Boot disk still exists: $instance" >&2
         return 1
-    }
+    fi
     echo "Verified deletion of $instance and its boot disk." >&2
 }
 
@@ -130,13 +158,12 @@ gce_remote_detached() {
     shift
     job="\$HOME/$name.job"
     gce_remote "mkdir -p $job && rm -f $job/status && setsid nohup bash -c \
-        $(printf %q "$*; echo \$? > $job/status") > $job/log 2>&1 < /dev/null &"
+        $(printf %q "$*; echo \$? > $job/status") > $job/log 2>&1 < /dev/null &" || return
     while [[ -z $status ]]; do
         sleep 30
         status=$(gce_remote "cat $job/status 2>/dev/null" 2> /dev/null) || status=
         # Gone only if the listing says so: a listing that fails says nothing.
-        if [[ -z $status ]] && listed=$("${cloud[@]}" compute instances list \
-            --filter="name=$instance" --format='value(name)') && [[ -z $listed ]]; then
+        if [[ -z $status ]] && listed=$(gce_listed instances) && [[ -z $listed ]]; then
             echo "$instance is gone: $name did not finish." >&2
             return 1
         fi
@@ -303,19 +330,22 @@ gce_env_local() {
 gce_fetch() {
     local run=$1
     gce_remote "sudo chown -R \"\$(id -u):\$(id -g)\" $run/results &&
-        tar -czf $run/results.tar.gz --exclude=rootfs --exclude='*rootfs.ext4' -C $run/results ." >> "$results/remote.log" 2>&1
-    "${cloud[@]}" compute scp --zone="$zone" "$instance:$run/results.tar.gz" "$results/results.tar.gz" &&
+        tar -czf $run/results.tar.gz --exclude=rootfs --exclude='*rootfs.ext4' -C $run/results ." >> "$results/remote.log" 2>&1 &&
+        "${cloud[@]}" compute scp --zone="$zone" "$instance:$run/results.tar.gz" "$results/results.tar.gz" &&
         tar -xzf "$results/results.tar.gz" -C "$results" && rm "$results/results.tar.gz"
 }
 
 # gce_all runs the given command on a new host and deletes the host whatever
-# happens. The trap is set before creation, to cover ambiguous responses.
+# happens, if this run made it. The trap is set before creation, to cover
+# ambiguous responses: a host made though its create failed is this run's too.
 gce_all() {
-    if gce_exists; then
+    local listed
+    listed=$(gce_listed instances) || exit
+    if [[ -n $listed ]]; then
         echo "Instance already exists: $instance" >&2
         exit 1
     fi
-    trap 'status=$?; trap - EXIT; if ! gce_delete; then exit 1; fi; exit "$status"' EXIT
+    trap 'status=$?; trap - EXIT; if ! gce_delete mine; then exit 1; fi; exit "$status"' EXIT
     gce_create
     "$@"
 }

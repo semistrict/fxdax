@@ -31,7 +31,6 @@ bucket=${FXDAX_MIGRATE_BUCKET:?FXDAX_MIGRATE_BUCKET names the bucket: gs://bucke
 : "${FXDAX_GUEST_KERNEL:?FXDAX_GUEST_KERNEL names the x86-64 guest kernel}"
 [[ -n "$project" && "$project" != '(unset)' ]] || { echo 'Set FXDAX_GCE_PROJECT.' >&2; exit 2; }
 [[ "$bucket" =~ ^gs://[a-z0-9._-]+(/[A-Za-z0-9._/-]*)?$ ]] || { echo 'FXDAX_MIGRATE_BUCKET is gs://bucket/prefix' >&2; exit 2; }
-stamp=$(date -u +%Y%m%d-%H%M%S)
 top=${1:-$(mktemp -d "${TMPDIR:-/tmp}/fxdax-migrate.XXXXXX")}
 mkdir -p "$top"
 top=$(cd "$top" && pwd)
@@ -45,6 +44,9 @@ FXDAX_GCE_STORAGE=1
 results=$top
 source "$repo/scripts/lib/gce.sh"
 default_zone=$zone
+# The run's own names, and prefix of the bucket, which it deletes as it ends: its
+# mark tells them from another's made in the same second.
+stamp=$(date -u +%Y%m%d-%H%M%S)-$gce_maker
 hosts=("fxdax-test-migrate-a-$stamp" "fxdax-test-migrate-b-$stamp")
 # The same on both hosts: the test's paths, the root filesystem's among them, are too.
 run="run-$stamp"
@@ -62,9 +64,9 @@ on() {
 cleanup() {
     local status=$? host
     trap - EXIT
+    # Each host, though another fails.
     for host in "${hosts[@]}"; do
-        on "$host"
-        gce_delete || status=1
+        { on "$host" && gce_delete mine; } || status=1
     done
     gcloud storage rm --recursive --quiet "$remote" > /dev/null 2>&1 || true
     echo "Results: $top" >&2
