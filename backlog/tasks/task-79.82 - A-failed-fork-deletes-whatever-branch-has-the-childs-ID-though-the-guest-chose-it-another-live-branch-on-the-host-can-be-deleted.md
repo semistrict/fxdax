@@ -3,8 +3,9 @@ id: TASK-79.82
 title: >-
   A failed fork deletes whatever branch has the child's ID, though the guest
   chose it: another live branch on the host can be deleted
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@review-session'
 created_date: '2026-10-23 09:16'
 updated_date: '2026-10-23 23:09'
 labels:

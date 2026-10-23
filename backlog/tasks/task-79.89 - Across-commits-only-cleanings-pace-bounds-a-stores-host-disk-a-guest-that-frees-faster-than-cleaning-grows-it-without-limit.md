@@ -3,8 +3,9 @@ id: TASK-79.89
 title: >-
   Across commits only cleaning's pace bounds a store's host disk: a guest that
   frees faster than cleaning grows it without limit
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@review-session'
 created_date: '2026-10-23 13:18'
 updated_date: '2026-10-23 23:09'
 labels:
