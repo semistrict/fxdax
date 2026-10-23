@@ -412,6 +412,50 @@ mod tests {
         assert!(!path.exists());
     }
 
+    /// TASK-79.77: a deletion of a store's last branch by its fork's handle that stopped at any
+    /// step is finished by deleting again, which leaves nothing of the store, nor of the handle:
+    /// one stopped before the store deleted the branch, or after; and one stopped after any of the
+    /// removals that follow, of the store's directory, then of the handle, in their order
+    /// ([`remove_store`], [`remove_handle`]), which each step makes, as a crash would leave them.
+    #[test]
+    fn deletions_of_last_branches_stopped_at_any_step_finish() {
+        let stopping = |_: &Path, _| Err(anyhow!("stopped"));
+        let removals: [fn(&Path, &Path); 5] = [
+            |store, _| {
+                std::fs::rename(store.join(DESCRIPTION), store.join(deleted_description())).unwrap()
+            },
+            |store, _| {
+                for entry in std::fs::read_dir(store).unwrap() {
+                    let entry = entry.unwrap();
+                    match entry.file_type().unwrap().is_dir() {
+                        true => std::fs::remove_dir_all(entry.path()).unwrap(),
+                        false if entry.file_name() == *deleted_description() => {}
+                        false => std::fs::remove_file(entry.path()).unwrap(),
+                    }
+                }
+            },
+            |store, _| std::fs::remove_file(store.join(deleted_description())).unwrap(),
+            |store, _| std::fs::remove_dir(store).unwrap(),
+            |_, fork| std::fs::remove_file(fork.join(DESCRIPTION)).unwrap(),
+        ];
+        for step in 0..removals.len() + 2 {
+            let temp = tempfile::tempdir().unwrap();
+            let (path, fork) = last_fork(temp.path());
+            match step {
+                0 => delete_host_with(&fork, Options::default(), stopping, |_, _| Ok(())),
+                _ => delete_host_with(&fork, Options::default(), |_, _| Ok(()), stopping),
+            }
+            .unwrap_err();
+            for removal in &removals[..step.saturating_sub(1)] {
+                removal(&path, &fork);
+            }
+            delete_host(&fork, Options::default())
+                .unwrap_or_else(|err| panic!("step {step}: {err:#}"));
+            let left: Vec<_> = std::fs::read_dir(temp.path()).unwrap().collect();
+            assert_eq!(left.len(), 0, "step {step}: {left:?} left");
+        }
+    }
+
     /// A store deleted while a fork of it lives keeps its directory, which holds what the fork
     /// shares, until the fork goes too (TASK-39.4).
     #[test]
