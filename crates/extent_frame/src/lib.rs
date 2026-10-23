@@ -74,14 +74,14 @@ fn u32_at(bytes: &[u8], at: usize) -> u32 {
 }
 
 /// How a part is stored.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Encoding {
     Raw,
     Zstd,
 }
 
 /// Where and how a part is stored.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Stored {
     pub offset: u64,
     pub len: u64,
