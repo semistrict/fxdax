@@ -192,10 +192,12 @@ impl Inner {
     /// Queues `request`, or holds it, if it is a create of a segment by a writer whose creates are
     /// held ([`SimBucket::hold`]).
     fn enqueue(&mut self, request: Request) {
+        // A create's footer is read only for a branch whose creates are held, as only the
+        // recreated profile's are.
         let held = |key: &str, bytes: &[u8]| {
             let Kind::Segment { branch, .. } = layout::kind(key) else { return false };
-            let epoch = layout::Segment::footer(bytes).map(|footer| footer.epoch);
-            self.held.get(&branch).is_some_and(|&held| epoch.is_ok_and(|epoch| epoch <= held))
+            let Some(&held) = self.held.get(&branch) else { return false };
+            layout::Segment::footer(bytes).is_ok_and(|footer| footer.epoch <= held)
         };
         match &request.op {
             Op::Put(key, bytes, PutMode::Create) if held(key, bytes) => self.parked.push(request),
