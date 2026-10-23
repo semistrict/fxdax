@@ -2052,10 +2052,7 @@ fn freed_space_is_dead_space_taking_no_room() {
 /// fxdax: what the branch's segments hold that no extent is in, freed, takes none of the room the
 /// branch's writes need, however much it is: it is the host's to take back, cleaning behind the
 /// commits, whose copies wait for the branch's next commit, which comes with its writer's next
-/// write. Counted as used past the capacity's worth, it found the store of a guest writing and
-/// freeing files full, its extents holding a tenth of it: the guest's journal write, which its
-/// commit came with, refused (ENOSPC), the guest's filesystem failed, and the commit that would
-/// have let the dead space go never came (TASK-79.2).
+/// write. Here it gathers commit by commit, past twice the capacity (TASK-79.2).
 #[test]
 fn dead_space_takes_none_of_the_room_writes_need() {
     let capacity = 64 * BLOCK as u64;
@@ -2075,6 +2072,44 @@ fn dead_space_takes_none_of_the_room_writes_need() {
     assert_eq!(store.usage().unwrap().dead_bytes, 0);
     assert_eq!(store.info().unwrap().available, 0);
     error_is(store.write(extent(201), 0, &pattern(201, 0, BLOCK)), NoSpace);
+    for sequence in (0..160).step_by(16) {
+        assert_eq!(read(&store, extent(sequence), 0, BLOCK), pattern(sequence as u8, 0, BLOCK));
+    }
+    assert_eq!(read(&store, extent(200), 0, 54 * BLOCK), pattern(200, 0, 54 * BLOCK));
+}
+
+/// fxdax: an uploader keeps the frees of a guest writing and freeing files until it has uploaded
+/// the segments holding them, and lets go of them at once, the branch's dead space past twice its
+/// capacity of a sudden. Cleaning copies what is live of the segments out behind the commits; the
+/// guest's next write, which its next commit comes with (doc-4's `WRITE_COMMIT`), takes the room
+/// its extents leave it; and the commit makes the copies the extents' places, taking the dead
+/// space back. Counted as used past the capacity's worth, the dead space found that write, a
+/// journal write of Fxfs's, refused (`ENOSPC`), the store a tenth used: the guest's filesystem
+/// failed, and the commit that would have taken the dead space back never came (TASK-79.2).
+#[test]
+fn dead_space_the_uploader_lets_go_takes_none_of_the_room() {
+    let capacity = 64 * BLOCK as u64;
+    let store = create(MemDir::new(), capacity);
+    assert!(store.upload(WRITER, 0).unwrap());
+    // Ten segments, each pinned by one extent, what is freed in them kept for the uploader.
+    for cycle in 0..10 {
+        churn(&store, 16 * cycle);
+    }
+    assert_eq!(store.usage().unwrap().dead_bytes, 0);
+    // Uploaded, and released: 600 KiB let go of at once, more than twice the capacity.
+    for closed in store.closed(usize::MAX).unwrap() {
+        store.uploaded(closed.number).unwrap();
+    }
+    store.release(store.epoch().unwrap()).unwrap();
+    assert_eq!(store.usage().unwrap().dead_bytes, 150 * BLOCK as u64);
+    assert!(store.cleaning_due(64 << 20, 0.5).unwrap());
+    assert_eq!(store.clean_behind(0.5, u64::MAX).unwrap(), 10 * BLOCK as u64);
+    // The write the next commit comes with, of all the room the extents leave.
+    store.write(extent(200), 0, &pattern(200, 0, 54 * BLOCK)).unwrap();
+    store.commit(None).unwrap();
+    assert_eq!(store.usage().unwrap().dead_bytes, 0);
+    assert_eq!(store.usage().unwrap().segments, 1);
+    assert_eq!(store.info().unwrap().available, 0);
     for sequence in (0..160).step_by(16) {
         assert_eq!(read(&store, extent(sequence), 0, BLOCK), pattern(sequence as u8, 0, BLOCK));
     }
