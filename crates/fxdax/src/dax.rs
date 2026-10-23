@@ -443,6 +443,8 @@ pub(crate) struct Dax<K: Keep> {
     kept: HashMap<usize, BTreeSet<u64>>,
     /// The second stage, if the window has one.
     stage: Option<Arc<dyn SecondStage>>,
+    /// fxdax: zeros, the window's size of them, once asked for ([`Dax::zeros`]).
+    zeros: Option<Arc<zx::Vmo>>,
     /// The thread serving the faults on the host memory a test's window was created in
     /// ([`Dax::in_host_memory`]), which runs until the window is dropped.
     #[cfg(all(test, target_os = "linux"))]
@@ -459,6 +461,7 @@ impl<K: Keep> Dax<K> {
             mappings: BTreeMap::new(),
             kept: HashMap::new(),
             stage: second_stage,
+            zeros: None,
             #[cfg(all(test, target_os = "linux"))]
             _faults: None,
         };
@@ -606,6 +609,18 @@ impl<K: Keep> Dax<K> {
     /// The window's size.
     pub fn size(&self) -> u64 {
         self.window.size()
+    }
+
+    /// fxdax: zeros, the window's size of them, which it maps where nothing else is to be read:
+    /// made as first asked for, and gone with the window, as large as it, however large the window
+    /// before it on its store was (TASK-79.45).
+    pub fn zeros(&mut self) -> Result<Arc<zx::Vmo>> {
+        if let Some(zeros) = &self.zeros {
+            return Ok(zeros.clone());
+        }
+        let zeros = Arc::new(zx::Vmo::create(self.size()).errno()?);
+        self.zeros = Some(zeros.clone());
+        Ok(zeros)
     }
 
     /// The window's mappings, in order, as their starts, ends and what keeps them alive.
