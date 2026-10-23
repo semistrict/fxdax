@@ -28,7 +28,7 @@ use crate::dax::{Dax, DaxWindow, Deferred, Keep, SecondStage};
 use crate::error::{Errno, Error, IntoErrno, Result};
 use crate::executor::Executor;
 use crate::host_store;
-use crate::kernel::{ArenaId, page_size};
+use crate::kernel::{Arena, ArenaId, page_size};
 use crate::memory::{VolatileSlice, VolatileSliceMut};
 use crate::profile::{self, Recorder};
 use crate::stats::{self, Counter};
@@ -197,9 +197,8 @@ fn extent_cache() -> &'static ExtentCache {
 }
 
 /// fxdax: lets go of the extents cached in `arena`, and of the buffers the pager reads into for it:
-/// a tenant's whose VM processes are gone (TASK-43.4). Their pages are freed as the last holders
-/// of the extents, page-ins in flight, let them go.
-#[cfg(target_os = "linux")]
+/// a tenant's, which nothing holds now (`crate::kernel::Arena`, TASK-43.4). Their pages are freed
+/// as the last holders of the extents, page-ins in flight, let them go.
 pub(crate) fn evict_arena(arena: ArenaId) {
     let Some(cache) = EXTENT_CACHE.get() else { return };
     let evicted: Vec<Cached> = {
@@ -574,7 +573,7 @@ impl ExtentStore {
         capacity: u64,
         branch: u64,
     ) -> Result<Self, Error> {
-        Self::create_in(path, capacity, branch, ArenaId::DEFAULT)
+        Self::create_in(path, capacity, branch, None)
     }
 
     /// fxdax: a new store at `path`, as [`ExtentStore::create_for_branch`] makes, a tenant's,
@@ -583,7 +582,7 @@ impl ExtentStore {
         path: impl AsRef<Path>,
         capacity: u64,
         branch: u64,
-        arena: ArenaId,
+        arena: Option<Arc<Arena>>,
     ) -> Result<Self, Error> {
         let store = host_store::create(path.as_ref(), capacity, branch).map_err(Error::new)?;
         Ok(Self::new(store, arena))
@@ -592,19 +591,21 @@ impl ExtentStore {
     /// The store at `path`, or the fork whose handle `path` is ([`ExtentStore::fork`]), as of its
     /// last commit.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, Error> {
-        Self::open_in(path, ArenaId::DEFAULT)
+        Self::open_in(path, None)
     }
 
     /// fxdax: the store at `path`, as [`ExtentStore::open`] has it, a tenant's (TASK-43): the
     /// pages of its own extents, and of those it inherited from other branches but public ones
-    /// ([`ExtentStore::make_public`]), are of `arena` of the kernel's physical memory; those of
-    /// public branches' extents, which every tenant's forks of them share, of the default arena.
-    pub fn open_in(path: impl AsRef<Path>, arena: ArenaId) -> Result<Self, Error> {
+    /// ([`ExtentStore::make_public`]), are of `arena` of the kernel's physical memory, which it
+    /// holds, and what reads into the extent cache for it, until they are gone (TASK-79.36); or of
+    /// the default arena, without one. Those of public branches' extents, which every tenant's
+    /// forks of them share, are of the default arena.
+    pub fn open_in(path: impl AsRef<Path>, arena: Option<Arc<Arena>>) -> Result<Self, Error> {
         let store = host_store::open(path.as_ref()).map_err(Error::new)?;
         Ok(Self::new(store, arena))
     }
 
-    fn new(store: Store<HostDir>, arena: ArenaId) -> Self {
+    fn new(store: Store<HostDir>, arena: Option<Arc<Arena>>) -> Self {
         relieve_pressure();
         let store = Arc::new(store);
         let arenas = Arenas { own: arena, public: Arc::new(public_branches(store.dir().path())) };
@@ -1459,7 +1460,8 @@ impl ExtentStore {
                 None if writable => 0,
                 None => return Err(Errno::ENOENT),
             };
-            let vmo = with_arena(self.arenas.own, || zx::Vmo::create(Self::MAX_EXTENT)).errno()?;
+            let vmo =
+                with_arena(self.arenas.own(), || zx::Vmo::create(Self::MAX_EXTENT)).errno()?;
             if len > 0 {
                 let mut data = vec![0; len as usize];
                 self.store.read(extent.into(), 0, &mut data).map_err(errno)?;
@@ -1586,21 +1588,33 @@ impl ExtentStore {
     pub fn is_public(&self) -> bool {
         self.arenas.public.contains(&self.branch())
     }
+
+    /// fxdax: the arena of the kernel's physical memory its own extents' pages are of
+    /// ([`ExtentStore::open_in`]): its tenant's, or the default.
+    pub fn arena(&self) -> ArenaId {
+        self.arenas.own()
+    }
 }
 
 /// fxdax: the arenas of the kernel's physical memory a store's extents' pages are of (TASK-43).
 #[derive(Clone)]
 struct Arenas {
-    /// The store's: its tenant's, or the default.
-    own: ArenaId,
+    /// The store's, its tenant's, held for as long as the store and what reads into the extent
+    /// cache for it, which clone these, allocate in it (TASK-79.36); or none, the default.
+    own: Option<Arc<Arena>>,
     /// The public branches of its lineage, whose extents' pages are of the default arena.
     public: Arc<std::collections::BTreeSet<u64>>,
 }
 
 impl Arenas {
+    /// The store's arena.
+    fn own(&self) -> ArenaId {
+        self.own.as_ref().map_or(ArenaId::DEFAULT, |arena| arena.id())
+    }
+
     /// The arena `extent`'s pages are of.
     fn of(&self, extent: ExtentId) -> ArenaId {
-        if self.public.contains(&extent.branch) { ArenaId::DEFAULT } else { self.own }
+        if self.public.contains(&extent.branch) { ArenaId::DEFAULT } else { self.own() }
     }
 }
 
@@ -2090,7 +2104,7 @@ mod tests {
 
     /// TASK-50.3: makes a store at `path` of `extents` sealed extents of a MiB each, and opens it
     /// in `arena`, with a window mapping them all, read-only.
-    fn mapped_extents(path: &Path, extents: u64, arena: ArenaId) -> (ExtentStore, DaxWindow) {
+    fn mapped_extents(path: &Path, extents: u64, arena: &Arc<Arena>) -> (ExtentStore, DaxWindow) {
         const EXTENT: u64 = 1 << 20;
         let store = ExtentStore::create(path, 1 << 30).unwrap();
         for sequence in 1..=extents {
@@ -2099,7 +2113,7 @@ mod tests {
         }
         store.commit(None).unwrap();
         drop(store);
-        let store = ExtentStore::open_in(path, arena).unwrap();
+        let store = ExtentStore::open_in(path, Some(arena.clone())).unwrap();
         let window = store.create_dax_window(extents * EXTENT, None).unwrap();
         for sequence in 1..=extents {
             store.map(id(&store, sequence), 0, EXTENT, (sequence - 1) * EXTENT, false).unwrap();
@@ -2135,10 +2149,11 @@ mod tests {
     fn capped_arenas_evict_their_least_used_extents() {
         let chunk = 2u64 << 20;
         let dir = tempfile::tempdir().unwrap();
-        let arena = zircon::vm::pmm::create_arena();
+        let held = Arena::new();
+        let arena = held.id();
         let node = zircon::vm::pmm::node();
         node.set_arena_cap(arena, Some(4 * chunk));
-        let (store, window) = mapped_extents(&dir.path().join("store"), 16, arena);
+        let (store, window) = mapped_extents(&dir.path().join("store"), 16, &held);
         let first = id(&store, 1);
         // What the cache holds of extent 1.
         let cached = || {
@@ -2163,9 +2178,8 @@ mod tests {
         let memory = 48u64 << 20;
         crate::kernel::configure(crate::kernel::Config::with_memory(memory)).unwrap();
         let dir = tempfile::tempdir().unwrap();
-        let arena = zircon::vm::pmm::create_arena();
         let node = zircon::vm::pmm::node();
-        let (_store, window) = mapped_extents(&dir.path().join("store"), 64, arena);
+        let (_store, window) = mapped_extents(&dir.path().join("store"), 64, &Arena::new());
         read_twice(&window, 64, |_, _| ());
         assert_eq!(node.count_free_chunks(), 0, "the kernel never ran out");
     }
@@ -2179,10 +2193,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("store");
         drop(ExtentStore::create(&path, 1 << 30).unwrap());
-        let arena = zircon::vm::pmm::create_arena();
+        let held = Arena::new();
+        let arena = held.id();
         let node = zircon::vm::pmm::node();
         node.set_arena_cap(arena, Some(2 * chunk));
-        let store = ExtentStore::open_in(&path, arena).unwrap();
+        let store = ExtentStore::open_in(&path, Some(held)).unwrap();
         let len = 4 * chunk;
         let _window = store.create_dax_window(len, None).unwrap();
         assert_eq!(store.map(id(&store, 1), 0, len, 0, true), Err(Errno::ENOMEM));

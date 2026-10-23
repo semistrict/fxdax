@@ -19,6 +19,7 @@
 //! followers are cut off, and neither a writer nor a follower opens it until they are gone.
 
 use super::server::Connection;
+use crate::kernel::Arena;
 use crate::open_stores::{Holder, Paths};
 use crate::store_requests::{self, Capacity, Close};
 use crate::{Errno, ExtentInfo, ExtentStore};
@@ -86,12 +87,9 @@ pub(super) fn take_over(key: &Path) -> Result<Option<Arc<ExtentStore>>, Errno> {
 
 /// fxdax: the store at `path` for a follower to follow (backlog doc-8): the one a writer's
 /// connection, or followers', have open; or, if none has, the store opened as of its last commit,
-/// as a writer opens it, its pages of `arena`, which a writer opening it then takes over.
-/// `EBUSY` while a writer is opening it, or it is retired.
-pub(super) fn followed(
-    path: &Path,
-    arena: crate::kernel::ArenaId,
-) -> Result<Arc<ExtentStore>, Errno> {
+/// as a writer opens it, its pages of `arena`, or of the default arena without one, which a writer
+/// opening it then takes over. `EBUSY` while a writer is opening it, or it is retired.
+pub(super) fn followed(path: &Path, arena: Option<&Arc<Arena>>) -> Result<Arc<ExtentStore>, Errno> {
     let open = |key: &Path| match instance(key) {
         Some((_, true)) => Err(Errno::EBUSY),
         Some((store, false)) => Ok(Some(store)),
@@ -285,13 +283,15 @@ fn open_by_connection(path: &Path) -> Option<Arc<ExtentStore>> {
 }
 
 /// The store at `path`, created with `capacity` bytes if given and it doesn't exist, keeping its
-/// branch in the daemon's bucket, and its own extents' pages in `arena` ([`ExtentStore::open_in`]).
+/// branch in the daemon's bucket, and its own extents' pages in `arena`, which it holds, or in the
+/// default arena, without one ([`ExtentStore::open_in`]).
 pub(super) fn open_store(
     path: &Path,
     capacity: Option<u64>,
-    arena: crate::kernel::ArenaId,
+    arena: Option<&Arc<Arena>>,
 ) -> Result<ExtentStore, Errno> {
     let bucket = remote_bucket()?;
+    let arena = arena.cloned();
     let opened = match capacity {
         Some(capacity) if !path.exists() => {
             ExtentStore::create_in(path, capacity, crate::host_store::new_branch(), arena)
@@ -317,7 +317,7 @@ pub(super) fn open_store(
 /// The store at `path` as the daemon opens it to work on it, not a VM: its pages of the default
 /// arena.
 fn open_here(path: &Path) -> Result<ExtentStore, Errno> {
-    open_store(path, None, crate::kernel::ArenaId::DEFAULT)
+    open_store(path, None, None)
 }
 
 /// The errno of `err`, which doing `what` failed with: its own; `EBUSY` if it gave up waiting for

@@ -75,12 +75,13 @@ fn serve_as(listener: UnixListener, tenant: Option<Arc<Tenant>>) -> std::io::Res
 /// This is defence in depth: a VM process escaped from its guest reaches its tenant's pages and
 /// stores alone. Guest isolation is the security boundary, which nothing relies on tenants for.
 ///
-/// Dropped, once its VM processes are gone, its arena goes, and the extents cached in it.
+/// Its arena goes, and the extents cached in it, once it is gone, as its VM processes are, and the
+/// stores opened in its arena, and what reads into the extent cache for them (`kernel::Arena`).
 pub struct Tenant {
     name: String,
     /// Its stores' directory, canonical.
     dir: PathBuf,
-    arena: crate::kernel::ArenaId,
+    arena: Arc<crate::kernel::Arena>,
     memory: Arc<std::os::fd::OwnedFd>,
     /// The default arena's memory, reopened read-only.
     public: std::os::fd::OwnedFd,
@@ -91,8 +92,8 @@ impl Tenant {
     pub fn new(name: impl Into<String>, dir: impl AsRef<Path>) -> std::io::Result<Arc<Self>> {
         let dir = dir.as_ref().canonicalize()?;
         let public = reopen_read_only(crate::kernel::physical_memory())?;
-        let arena = zircon::vm::pmm::create_arena();
-        let memory = crate::kernel::arena_memory(arena).expect("a new arena");
+        let arena = crate::kernel::Arena::new();
+        let memory = crate::kernel::arena_memory(arena.id()).expect("a new arena");
         let tenant = Arc::new(Self { name: name.into(), dir, arena, memory, public });
         super::memory::register(&tenant);
         Ok(tenant)
@@ -110,22 +111,13 @@ impl Tenant {
 
     /// Its arena of the kernel's physical memory.
     pub fn arena(&self) -> crate::kernel::ArenaId {
-        self.arena
+        self.arena.id()
     }
 
     /// Whether its VM processes may name the store at `path`: `EACCES` unless it is in its
     /// directory, whichever way `path` names it.
     fn holds(&self, path: &Path) -> Result<(), Errno> {
         if in_dir(path, &self.dir) { Ok(()) } else { Err(Errno::EACCES) }
-    }
-}
-
-impl Drop for Tenant {
-    fn drop(&mut self) {
-        crate::extents::evict_arena(self.arena);
-        // Its memory goes once the pages of it still allocated, the evicted extents' that page-ins
-        // in flight hold, are freed.
-        zircon::vm::pmm::remove_arena(self.arena);
     }
 }
 
@@ -375,9 +367,10 @@ impl Connection {
         self.store.get()
     }
 
-    /// The arena of the kernel's physical memory its store's own pages are of: its tenant's.
-    fn arena(&self) -> crate::kernel::ArenaId {
-        self.tenant.as_ref().map_or(crate::kernel::ArenaId::DEFAULT, |tenant| tenant.arena)
+    /// The arena of the kernel's physical memory its store's own pages are of: its tenant's, or,
+    /// without one, the default.
+    fn arena(&self) -> Option<&Arc<crate::kernel::Arena>> {
+        self.tenant.as_ref().map(|tenant| &tenant.arena)
     }
 
     /// Runs `work` behind its store, a task on the daemon's runtime, until it is told to stop: the
@@ -641,7 +634,7 @@ impl Connection {
         use std::os::fd::AsFd;
         match &self.tenant {
             Some(tenant) => {
-                reply.args[1] = tenant.arena.0.into();
+                reply.args[1] = tenant.arena().0.into();
                 fds.extend([tenant.memory.as_fd(), tenant.public.as_fd()]);
             }
             None => fds.push(crate::kernel::physical_memory()),

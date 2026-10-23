@@ -128,6 +128,35 @@ pub fn arena_memory(arena: ArenaId) -> Option<std::sync::Arc<std::os::fd::OwnedF
     zircon::vm::pmm::node().phys_memory().arena_fd(arena)
 }
 
+/// An arena of the kernel's physical memory of its own (TASK-43), a tenant's, held by what
+/// allocates in it: its tenant, the stores opened in it ([`ExtentStore::open_in`]), and what reads
+/// into the extent cache for them, as a fork's boot profile does (TASK-79.36). Once none of them
+/// holds it, the extents cached in it go, and it goes, its memory once the pages of it still
+/// allocated, those page-ins in flight hold, are freed: nothing allocates in it after, which would
+/// fail.
+///
+/// [`ExtentStore::open_in`]: crate::ExtentStore::open_in
+pub struct Arena(ArenaId);
+
+impl Arena {
+    /// A new arena, which holds no page.
+    pub fn new() -> std::sync::Arc<Self> {
+        std::sync::Arc::new(Self(zircon::vm::pmm::create_arena()))
+    }
+
+    /// Its id, which its pages' locations name ([`PhysLocation`]).
+    pub fn id(&self) -> ArenaId {
+        self.0
+    }
+}
+
+impl Drop for Arena {
+    fn drop(&mut self) {
+        crate::extents::evict_arena(self.0);
+        zircon::vm::pmm::remove_arena(self.0);
+    }
+}
+
 /// The kernel's page size, which DAX windows and mappings are aligned to: the host's, such as 16
 /// KiB on Apple silicon.
 pub fn page_size() -> u64 {
