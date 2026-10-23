@@ -201,10 +201,10 @@ mod host {
                 vm.vsock(&source_uds);
                 let frozen = listen(&source_uds)?;
                 let api = Vm::api_socket("source");
-                let source = vm.spawn_api(&root, &test_setup.test_case, "source", &api)?;
+                let mut source = vm.spawn_api(&root, &test_setup.test_case, "source", &api)?;
 
                 // Once the guest's filesystem is frozen, the snapshot, and the VM goes.
-                let (stream, _) = frozen.accept()?;
+                let stream = source.accept(&frozen)?;
                 let mut said = String::new();
                 BufReader::new(stream).read_line(&mut said)?;
                 anyhow::ensure!(said == "frozen\n", "the guest said {said:?}");

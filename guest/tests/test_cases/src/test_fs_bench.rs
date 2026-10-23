@@ -446,20 +446,9 @@ RUN wget -q -O /opt/lua-5.4.7.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz \\
                 std::env::temp_dir().join(format!("fxdax-followed-{}.vsock", std::process::id()));
             let ready = format!("{}_{FOLLOW_READY_PORT}", uds.display());
             let listener = UnixListener::bind(&ready)?;
-            listener.set_nonblocking(true)?;
             let mut writer = spawn(test_setup, &root, "writer", &store, Some(&uds), &writers)?;
             // Until the writer says its filesystem is mounted, unless it is gone first.
-            let stream = loop {
-                match listener.accept() {
-                    Ok((stream, _)) => break stream,
-                    Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                        anyhow::ensure!(writer.running()?, "the writer exited before it was ready");
-                        std::thread::sleep(std::time::Duration::from_millis(50));
-                    }
-                    Err(err) => return Err(err.into()),
-                }
-            };
-            stream.set_nonblocking(false)?;
+            let stream = writer.accept(&listener)?;
             let mut said = String::new();
             BufReader::new(stream).read_line(&mut said)?;
             anyhow::ensure!(said == "ready\n", "the writer said {said:?}");
