@@ -17,7 +17,8 @@ use crate::vm::arch_vm_aspace::{
 use crate::vm::pmm;
 use crate::vm::scanner::AutoVmScannerDisable;
 use crate::vm::vm_address_region::{
-    VMAR_FLAG_SPECIFIC, VmAddressRegion, VmAddressRegionOpChildren, VmAddressRegionOrMapping,
+    RangeOpType, VMAR_FLAG_SPECIFIC, VMAR_FLAG_SPECIFIC_OVERWRITE, VmAddressRegion,
+    VmAddressRegionOpChildren, VmAddressRegionOrMapping,
 };
 use crate::vm::vm_object_paged::VmObjectPaged;
 use std::sync::Arc;
@@ -306,4 +307,72 @@ fn guest_physical_aspace_many_mappings_of_one_vmo() {
     drop(vmar);
     drop(gpa);
     assert_eq!(vmo.num_mappings(), 0);
+}
+
+/// fxdax (TASK-92.50): a DAX window's MAP maps a VMO over what the window maps there
+/// (`SPECIFIC_OVERWRITE`) and populates it (`MAP_RANGE`), and what that changes in the window's
+/// second stage is the same however many mappings the VMO has: where nothing was mapped, a map of
+/// the page; where its populated page was, an unmap of it, then a map of the page in its place.
+/// Each change is a message to the VM process, and each unmap a wait for its answer, so the MAPs
+/// that replace populated pages, as a full window's do, cost a round trip more than those that
+/// replace nothing. The kernel's own part looks the mappings up by address, in the window's and in
+/// the VMO's, as Zircon's looks the VMO's up by offset (`vmar-overwrite-bench` times it).
+#[test]
+fn guest_physical_aspace_overwrites_among_many_mappings_of_one_vmo() {
+    use crate::arch::host::mmu::recording::{RecordingSecondStage, SecondStageOp};
+    const MAPPINGS: usize = 30_000;
+    const FEW: usize = 1_000;
+    const RW: libc::c_int = libc::PROT_READ | libc::PROT_WRITE;
+    let _scanner_disable = AutoVmScannerDisable::new();
+    let second_stage = Arc::new(RecordingSecondStage::default());
+    let gpa =
+        GuestPhysicalAspace::create_with_second_stage(MAPPINGS * PAGE_SIZE, second_stage.clone())
+            .expect("Failed to create aspace");
+    let vmo = create_vmo(PAGE_SIZE).expect("Failed to create VMO");
+    commit_vmo(&vmo).expect("Failed to commit VMO");
+    let vmar = gpa.root_vmar();
+    // Maps the VMO's page over what is mapped at `addr`, and populates it, as `Window::map` does.
+    let overwrite = |addr: usize| {
+        vmar.create_vm_mapping(
+            addr,
+            PAGE_SIZE,
+            0,
+            VMAR_FLAG_SPECIFIC_OVERWRITE,
+            vmo.clone(),
+            0,
+            ARCH_MMU_FLAG_PERM_READ | ARCH_MMU_FLAG_PERM_WRITE,
+            "vmo",
+        )
+        .expect("Failed to map");
+        vmar.range_op(RangeOpType::MapRange, addr, PAGE_SIZE, VmAddressRegionOpChildren::Yes)
+            .expect("Failed to populate");
+    };
+    overwrite(0);
+    let (paddr, _) = gpa.arch_aspace().query(0).expect("Failed to query the mapped page");
+    let phys = pmm::node().phys_memory().location(paddr);
+    let map = |vaddr| SecondStageOp::Map { vaddr, phys, len: PAGE_SIZE, prot: RW };
+    // What mapping the pages `mappings` where nothing was mapped changes.
+    let fresh = |mappings: std::ops::Range<usize>| -> Vec<SecondStageOp> {
+        mappings.map(|mapping| map(mapping * PAGE_SIZE)).collect()
+    };
+    // What mapping the page at `vaddr` over its populated mapping changes.
+    let replaced = |vaddr| vec![SecondStageOp::Unmap { vaddr, len: PAGE_SIZE }, map(vaddr)];
+
+    for mapping in 1..FEW {
+        overwrite(mapping * PAGE_SIZE);
+    }
+    assert_eq!(second_stage.take(), fresh(0..FEW));
+    overwrite(FEW / 2 * PAGE_SIZE);
+    assert_eq!(second_stage.take(), replaced(FEW / 2 * PAGE_SIZE));
+    assert_eq!(vmo.num_mappings(), FEW as u32);
+
+    for mapping in FEW..MAPPINGS {
+        overwrite(mapping * PAGE_SIZE);
+    }
+    assert_eq!(second_stage.take(), fresh(FEW..MAPPINGS));
+    overwrite(FEW / 2 * PAGE_SIZE);
+    assert_eq!(second_stage.take(), replaced(FEW / 2 * PAGE_SIZE));
+    overwrite(MAPPINGS / 2 * PAGE_SIZE);
+    assert_eq!(second_stage.take(), replaced(MAPPINGS / 2 * PAGE_SIZE));
+    assert_eq!(vmo.num_mappings(), MAPPINGS as u32);
 }
