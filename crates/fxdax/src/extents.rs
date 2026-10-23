@@ -822,7 +822,10 @@ impl ExtentStore {
     /// sharing the store's files rather than copying them (`extent_store::fork_host`). With a
     /// remote, the fork's branch is a fork of the store's in object storage too, made once the
     /// fork's commit is uploaded, which inherits its extents rather than uploads them again (doc-7,
-    /// Forks).
+    /// Forks). A fork not made there fails, and its child is deleted as [`ExtentStore::delete`]
+    /// deletes a store, there first: a deletion that stops partway, failing there, as for a branch
+    /// a later placement holds, or its host crashing, leaves the handle at `path`, naming the
+    /// child, which deleting it finishes, as any store's; until then, no fork to `path` is made.
     pub fn fork(&self, path: impl AsRef<Path>, branch: u64) -> Result<(), Error> {
         self.writable()?;
         let path = path.as_ref();
