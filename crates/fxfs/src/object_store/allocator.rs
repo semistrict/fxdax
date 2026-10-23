@@ -128,10 +128,17 @@
 //! frees the device might not hold are in AllocatorInfo (`dying`, see "Dead extents"), whatever
 //! the compaction merged. Only a compaction of all the layers leaves out removals, and the records
 //! of owners whose extents are freed, which gives back what they took of the metadata reservation.
-//! `tree::layers_to_merge` picks all the layers by itself while the tree is no larger than a
-//! journal's reclaim size (`journal::DEFAULT_RECLAIM_SIZE`), as a layer is kept only once it is
-//! larger than that, and once each layer's newer layers together reach three quarters of its size.
-//! A compaction merges all the layers, whatever their sizes, when:
+//!
+//! `tree::layers_to_merge` counts only the layers on disk. It merges the layer sealed in memory with
+//! the newest on disk, and with each older one while those newer than it together reach three
+//! quarters of its size; but with none on disk when that is the newest alone, and it is larger than
+//! `journal::DEFAULT_RECLAIM_SIZE` (a constant: the reclaim size a journal is configured with may be
+//! larger). So it picks all the layers by itself while those on disk are together no larger than
+//! that constant, as there is then one at most: a layer is first kept only when it is the only one
+//! on disk, and larger. Of two or more on disk, it picks all once each but the newest has newer
+//! layers that together reach three quarters of its size. It never picks a lone layer on disk that
+//! is larger than the constant by itself, however large the layer sealed in memory is. A compaction
+//! merges all the layers, whatever their sizes, when:
 //!
 //! - the journal asks for a major compaction, as the metadata reservation runs low;
 //! - an owner marked for deletion has had its extents freed, so that its records, which may be much
@@ -4208,8 +4215,8 @@ mod tests {
         fs.close().await.expect("close failed");
     }
 
-    /// fxdax: how many extents `tiered_fs`'s file has: their records make a layer larger than a
-    /// journal's reclaim size.
+    /// fxdax: how many extents `tiered_fs`'s file has: their records make a layer larger than
+    /// `journal::DEFAULT_RECLAIM_SIZE`.
     const TIERED_EXTENTS: u64 = 96;
 
     /// fxdax: a file `name` of `extents` extents, in `store`'s root directory, each deallocated
@@ -4253,12 +4260,12 @@ mod tests {
         file
     }
 
-    /// fxdax: a filesystem, opened by `builder`, whose allocator's tree is one layer larger than a
-    /// journal's reclaim size (`journal::DEFAULT_RECLAIM_SIZE`), which a compaction of newer layers
-    /// keeps (see "Compactions"), as tens of thousands of files make it over an extent store: the
-    /// records of a `tiered_file` of `TIERED_EXTENTS` extents, in a volume of its own. Its device
-    /// has room for a few times as many, and its journal is compacted, and too large to compact
-    /// again on its own while a test runs. Returns the volume and the file.
+    /// fxdax: a filesystem, opened by `builder`, whose allocator's tree is one layer larger than
+    /// `journal::DEFAULT_RECLAIM_SIZE`, which a compaction of newer layers keeps (see
+    /// "Compactions"), as tens of thousands of files make it over an extent store: the records of a
+    /// `tiered_file` of `TIERED_EXTENTS` extents, in a volume of its own. Its device has room for a
+    /// few times as many, and its journal is compacted, and too large to compact again on its own
+    /// while a test runs. Returns the volume and the file.
     async fn tiered_fs(
         builder: FxFilesystemBuilder,
     ) -> (OpenFxFilesystem, Arc<ObjectStore>, DataObjectHandle<ObjectStore>) {
@@ -4407,9 +4414,10 @@ mod tests {
     }
 
     /// fxdax: a compaction that merges the allocator's middle layer with the newer, and keeps the
-    /// oldest, keeps the removals the middle layer holds, of records the oldest holds. A layer is
-    /// kept while it is larger than a journal's reclaim size and the newer layers are less than
-    /// three quarters of it (`tree::layers_to_merge`): the test's files are sized for that.
+    /// oldest, keeps the removals the middle layer holds, of records the oldest holds. A layer on
+    /// disk is kept while those newer than it are together less than three quarters of it, and the
+    /// newest, alone, while it is larger than `journal::DEFAULT_RECLAIM_SIZE` (see "Compactions"):
+    /// the test's files are sized for that.
     #[fuchsia::test]
     async fn test_compaction_of_middle_layer_keeps_its_removals() {
         let (fs, store, file) = tiered_fs(FxFilesystemBuilder::new()).await;
@@ -4431,8 +4439,9 @@ mod tests {
         assert_eq!(middle.len(), 2, "{middle:?}");
         assert_eq!(middle[1], oldest[0]);
 
-        // The newest, which the next compaction writes, keeping the middle, larger than a
-        // journal's reclaim size.
+        // The newest, which the next compaction writes on its own: the middle, less than three
+        // quarters of the oldest, is the newest on disk alone, and larger than
+        // `DEFAULT_RECLAIM_SIZE`.
         tiered_file(&store, "newest", TIERED_EXTENTS * 5 / 6).await;
         allocator.flush().await.expect("flush failed");
         fsck(fs.clone()).await.expect("fsck failed");
