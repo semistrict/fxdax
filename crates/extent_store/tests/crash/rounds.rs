@@ -2,15 +2,11 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-//! A store crashes at random points of random workloads, and recovers to a prefix of its commits:
-//! exactly the extents and root of an epoch at least as late as the last commit made durable, by
-//! a durable commit or a flush of commits only ordered; fxdax: as its open segment closes between
-//! commits too, as an uploader has it close.
-//!
-//! fxdax: a round is a function of its seed (TASK-79.79): its store does its I/O on the test's
-//! thread alone, none on threads of its own ([`MemDir::serial`]), so that the operation its file
-//! system fails from, and what the crash keeps, are the same each time it is run. How the store's
-//! threads interleave with its callers' is the Shuttle tests' to try (tests/shuttle/).
+//! The crash tests' rounds: a store's random workloads, crashing at random points, and what it
+//! recovers checked; each a function of its seed and of the directory it is given, as long as the
+//! directory's file system fails, and its crashes keep, what the store's calls decide alone. The
+//! crash tests run them in a serial directory ([`MemDir::serial`]); the Shuttle tests with the
+//! store's threads, on schedules of Shuttle's seeded by the rounds (tests/shuttle/crash.rs).
 
 use extent_store::{Description, Dir as _, File as _, Lineage, MemDir, Options, Store};
 use rand::rngs::StdRng;
@@ -20,7 +16,8 @@ use storage_device::{ExtentId, SealedExtent};
 
 const BLOCK: usize = 4096;
 const BRANCH: u64 = 3;
-const ROUNDS: u64 = 300;
+/// How many recovering rounds the tests run; of forks', a third as many.
+pub const ROUNDS: u64 = 300;
 const STEPS: usize = 200;
 
 /// Small segments, large extents and index files, so that workloads make many of each.
@@ -174,12 +171,12 @@ fn contents(store: &Store<MemDir>) -> Model {
     Model { extents, root: store.root().unwrap() }
 }
 
-/// Round `round`'s first crash: a store made, a random workload run on it until its file system
-/// fails, from a random point on, as the host crashes, and the directory that crash leaves. Returns
-/// that, what each commit began with, the last made durable, and the round's RNG, to carry on.
-fn crashed_round(round: u64) -> (MemDir, Vec<Model>, usize, StdRng) {
+/// Round `round`'s first crash: a store made in `dir`, a random workload run on it until its file
+/// system fails, from a random point on, as the host crashes, and the directory that crash leaves.
+/// Returns that, what each commit began with, the last made durable, and the round's RNG, to carry
+/// on.
+fn crashed_round(round: u64, dir: MemDir) -> (MemDir, Vec<Model>, usize, StdRng) {
     let mut rng = StdRng::seed_from_u64(round);
-    let dir = MemDir::serial();
     let description = Description { block_size: BLOCK as u32, capacity: 4 << 20, branch: BRANCH };
     let store = Store::create(dir.clone(), description, OPTIONS).unwrap();
     let mut epochs = vec![Model::default()];
@@ -219,10 +216,10 @@ fn digest(dir: &MemDir) -> Digest {
 
 /// The directories a round left, each named, in order: those its crashes left, and the one it
 /// ended with.
-type Left = Vec<(&'static str, Digest)>;
+pub type Left = Vec<(&'static str, Digest)>;
 
 /// Checks that round `round`, run twice, left the same directories, `first` and `second`.
-fn same(round: u64, first: &Left, second: &Left) {
+pub fn same(round: u64, first: &Left, second: &Left) {
     assert_eq!(first.len(), second.len(), "round {round}: one ran longer");
     for ((name, first), (_, second)) in first.iter().zip(second) {
         let paths: BTreeSet<_> = first.keys().chain(second.keys()).collect();
@@ -232,11 +229,11 @@ fn same(round: u64, first: &Left, second: &Left) {
     }
 }
 
-/// Round `round` of [`recovers_a_prefix_of_its_commits`]: its store crashes in a random workload,
+/// Round `round` of the recovering rounds, its store in `dir`: it crashes in a random workload,
 /// recovers a prefix of its commits, carries on, and crashes again after a flush, keeping what it
 /// committed. Returns the directories it left, and whether its first crash was in a commit.
-fn recovering(round: u64) -> (Left, bool) {
-    let (crashed, epochs, durable, mut rng) = crashed_round(round);
+pub fn recovering(round: u64, dir: MemDir) -> (Left, bool) {
+    let (crashed, epochs, durable, mut rng) = crashed_round(round, dir);
     let mut left = vec![("its first crash", digest(&crashed))];
     let mid_commit = durable + 1 < epochs.len();
 
@@ -284,33 +281,6 @@ fn recovering(round: u64) -> (Left, bool) {
     (left, mid_commit)
 }
 
-/// Round `round`, run twice, at once, on two threads: the directories each run left.
-fn twice(round: u64, run: fn(u64) -> Left) -> (Left, Left) {
-    std::thread::scope(|scope| {
-        let other = scope.spawn(|| run(round));
-        let left = run(round);
-        (left, other.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic)))
-    })
-}
-
-/// TASK-79.79: a round is a function of its seed alone: run twice, its crashes leave the same
-/// directories, and it ends with the same, so that a round that failed fails again, and a round
-/// that passed says what it seems.
-#[test]
-fn crashes_are_functions_of_their_rounds() {
-    for round in 0..ROUNDS {
-        let (first, second) = twice(round, |round| recovering(round).0);
-        same(round, &first, &second);
-    }
-}
-
-#[test]
-fn recovers_a_prefix_of_its_commits() {
-    let crashes_mid_commit = (0..ROUNDS).filter(|&round| recovering(round).1).count() as u64;
-    // The crashes hit commits as well as what came between them.
-    assert!(crashes_mid_commit > ROUNDS / 10, "{crashes_mid_commit} crashes in commits");
-}
-
 /// The epoch `store` recovered, which must be one of `epochs` from `durable` on, and what it holds
 /// must be what that epoch began with.
 fn check(round: u64, name: &str, store: &Store<MemDir>, epochs: &[Model], durable: usize) {
@@ -323,13 +293,13 @@ fn check(round: u64, name: &str, store: &Store<MemDir>, epochs: &[Model], durabl
     assert_eq!(contents(store), epochs[epoch], "round {round}: {name}'s epoch {epoch} differs");
 }
 
-/// Round `round` of [`forks_recover_prefixes_of_their_commits`]: a parent and its fork run
-/// workloads by turns, and crash, and each recovers a prefix of its own commits. Returns the
-/// directories it left.
-fn forking(round: u64) -> Left {
+/// Round `round` of the forks' rounds, its store in `dir`: a parent and its fork, which inherited
+/// its extents, run workloads by turns, and crash, and each recovers a prefix of its own commits,
+/// whatever the other freed; or the fork is opened only after the crash, and holds what its parent
+/// held at the fork, whatever its parent freed and cleaned since. Returns the directories it left.
+pub fn forking(round: u64, dir: MemDir) -> Left {
     const CHILD: u64 = BRANCH + 1;
     let mut rng = StdRng::seed_from_u64(round);
-    let dir = MemDir::serial();
     let description = Description { block_size: BLOCK as u32, capacity: 4 << 20, branch: BRANCH };
     let parent = Store::create(dir.clone(), description, OPTIONS).unwrap();
     let mut parent_epochs = vec![Model::default()];
@@ -372,24 +342,4 @@ fn forking(round: u64) -> Left {
     drop((parent, child, lineage));
     left.push(("its last directory", digest(&crashed)));
     left
-}
-
-/// A parent and its fork, which inherited its extents, run workloads by turns and crash, and each
-/// recovers a prefix of its own commits, whatever the other freed; or the fork is opened only
-/// after the crash, and holds what its parent held at the fork, whatever its parent freed and
-/// cleaned since.
-#[test]
-fn forks_recover_prefixes_of_their_commits() {
-    for round in 0..ROUNDS / 3 {
-        forking(round);
-    }
-}
-
-/// TASK-79.79: so is a round of [`forks_recover_prefixes_of_their_commits`].
-#[test]
-fn forks_crashes_are_functions_of_their_rounds() {
-    for round in 0..ROUNDS / 3 {
-        let (first, second) = twice(round, forking);
-        same(round, &first, &second);
-    }
 }

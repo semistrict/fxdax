@@ -11,11 +11,12 @@
 //! themselves are durable once created. [`MemDir::fail_after`] makes the file system fail every
 //! operation that would change it after a number of them, as a crash would interrupt them.
 //! fxdax: which of them fails, and so what a crash keeps, is a function of the store's calls, and
-//! of the crash's seed, only if the store does no I/O on threads of its own: in a directory made
-//! [`MemDir::serial`] (TASK-79.79).
+//! of the crash's seed, only if the store does no I/O on threads of its own, in a directory made
+//! [`MemDir::serial`], or if a seeded schedule orders that I/O, as Shuttle's do; it says whether
+//! the first that failed was a thread's of the store's ([`MemDir::failed_elsewhere`], TASK-79.79).
 
 use crate::dir::{Dir, File};
-use crate::sync::Mutex;
+use crate::sync::{Mutex, thread};
 use rand::rngs::StdRng;
 use rand::{RngExt as _, SeedableRng as _};
 use std::collections::{BTreeMap, HashMap};
@@ -54,6 +55,10 @@ struct Fs {
     dir_changes: BTreeMap<String, Vec<DirChange>>,
     /// How many more operations that change the file system succeed, if limited.
     budget: Option<u64>,
+    /// fxdax: the thread that last limited them ([`MemDir::fail_after`]), and the one whose
+    /// operation failed first since, if any.
+    limited_on: Option<thread::ThreadId>,
+    failed_on: Option<thread::ThreadId>,
     /// The bytes read and written since it was made, or crashed, and the files opened.
     io: Io,
 }
@@ -95,7 +100,10 @@ impl Fs {
     /// Spends one of the operations the budget allows, failing if none are left.
     fn spend(&mut self) -> io::Result<()> {
         match &mut self.budget {
-            Some(0) => Err(io::Error::other("the file system crashed")),
+            Some(0) => {
+                self.failed_on.get_or_insert_with(|| thread::current().id());
+                Err(io::Error::other("the file system crashed"))
+            }
             Some(budget) => {
                 *budget -= 1;
                 Ok(())
@@ -156,7 +164,9 @@ impl MemDir {
     /// Makes every operation that changes the file system fail after `operations` more of them,
     /// or none if `None`.
     pub fn fail_after(&self, operations: Option<u64>) {
-        self.fs.lock().unwrap().budget = operations;
+        let mut fs = self.fs.lock().unwrap();
+        fs.budget = operations;
+        (fs.limited_on, fs.failed_on) = (Some(thread::current().id()), None);
     }
 
     /// The bytes its files were read and written so far.
@@ -168,6 +178,15 @@ impl MemDir {
     /// budget (see `fail_after`).
     pub fn has_failed(&self) -> bool {
         self.fs.lock().unwrap().budget == Some(0)
+    }
+
+    /// fxdax: whether the first operation the file system failed, since its budget was last set
+    /// ([`MemDir::fail_after`]), was another thread's than the one that set it: in a test whose
+    /// thread runs the store, and sets the budget, one of the store's own, framing a segment or
+    /// syncing a flush's files, which a crash then interrupted (TASK-79.79).
+    pub fn failed_elsewhere(&self) -> bool {
+        let fs = self.fs.lock().unwrap();
+        fs.failed_on.is_some() && fs.failed_on != fs.limited_on
     }
 
     /// The directory as a crash would leave it: what was durable, and any of what happened since,
@@ -219,6 +238,8 @@ impl MemDir {
             dirs,
             dir_changes: BTreeMap::new(),
             budget: None,
+            limited_on: None,
+            failed_on: None,
             io: Io::default(),
         };
         MemDir { fs: Arc::new(Mutex::new(crashed)), serial: self.serial }
@@ -409,5 +430,22 @@ mod tests {
         assert!(dir.has_failed());
         // Reads still work.
         assert_eq!(read(&file), b"a");
+    }
+
+    /// fxdax: it says whether the first operation it failed, since its budget was set, was another
+    /// thread's than the one that set it (TASK-79.79).
+    #[test]
+    fn says_whose_operation_failed_first() {
+        let dir = MemDir::new();
+        let elsewhere = |name| std::thread::scope(|scope| scope.spawn(|| dir.remove(name)).join());
+        dir.fail_after(Some(0));
+        assert!(!dir.failed_elsewhere(), "nothing failed");
+        assert!(elsewhere("f").unwrap().is_err());
+        assert!(dir.remove("g").is_err());
+        assert!(dir.failed_elsewhere());
+        dir.fail_after(Some(0));
+        assert!(dir.remove("f").is_err());
+        assert!(elsewhere("g").unwrap().is_err());
+        assert!(!dir.failed_elsewhere());
     }
 }

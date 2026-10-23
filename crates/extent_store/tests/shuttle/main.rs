@@ -31,7 +31,10 @@
 //! commits after make the extents' places. And the store fails, and the branch closes, while a
 //! commit waits for a write in progress, which fails then.
 //!
-//! So are a lineage's branches, while a fork's or a deletion's I/O stalls (lineage.rs).
+//! So are a lineage's branches, while a fork's or a deletion's I/O stalls (lineage.rs); and the
+//! crash tests' rounds, the store framing segments and syncing flushes on threads of its own while
+//! their workloads go on, crashing as those interleave, on schedules seeded by the rounds
+//! (crash.rs).
 //!
 //! Each rule the store relies on for these ([`Rules`]) is turned off by a test that expects a
 //! failure: a check that never fails proves nothing. Run with the `shuttle` feature:
@@ -50,6 +53,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use storage_device::{ExtentId, NoExtent};
 
+mod crash;
 mod lineage;
 mod stalling;
 
