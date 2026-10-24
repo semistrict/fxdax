@@ -6,7 +6,7 @@ title: >-
 status: In Progress
 assignee: []
 created_date: '2026-10-21 09:06'
-updated_date: '2026-10-24 12:28'
+updated_date: '2026-10-24 12:30'
 labels:
   - followers
   - perf
@@ -44,4 +44,6 @@ Measured again on main 0a3015b (GCE c3-standard-8 us-central1-a, 2026-10-21; doc
 2026-10-21/22 diagnosis (GCE c3-standard-8, pgbench, counters in a scratch tree): (1) Not the pinning: the followed case with no followers started (the writer pinned to 3 of 4 cores) ran 1,636 tps, as alone. (2) The uploader (remote.rs) re-gathers at once after each gather that found segments: 1,000 gathers with idle followers (917 re-gathers) against 200 alone; each Store::close_now holds the committing lock and the state while it frames and syncs; filed as TASK-41.1. Without the re-gather, segments 146 as alone, but tps only 1,206 -> 1,278 (alone 1,632). (3) Followers' READs (~180k, ~430 us each) bypass the extent cache and read the store's O_DIRECT files; reading them through the cache instead (as followers' maps do) made it worse, 1,041 tps (page-ins read whole parts), and was reverted. (4) Per commit, 'waiting for object storage' is 365 us with followers against 44 alone, with no lag stall logged: wait_lag's ask takes the store's state lock twice (epoch, unreleased_bytes) on every ordered commit, so the writer's commits wait on that lock. Next: time wait_lag's parts and the state lock's holders with followers.
 
 2026-10-24, handed back (unassigned): state: mechanism found, not fixed. The writer waits on the store's state lock, held by the uploader's Store::close_now as it frames and syncs the open segment; with followers it gathers back to back, seven times as often (TASK-41.1, which the review session took). Left: once TASK-41.1 lands, measure pgbench alone / followed / followed-idle again (bench-gce.sh, cases bench-fs-fxfs-guest-dax{,-followed,-followed-idle}, pgbench and io, 3 iterations; scripts/bench-ab.py), and check the AC. Followers reading through the extent cache was tried and reverted (worse).
+
+From the review session (2026-10-24): TASK-41.1's close_now part is on main (round 1: 'a closing between commits frames its segment holding none of the store's locks'), and 7112b50d (TASK-91.17/79.93) reads raw files through the page cache, so a close takes ~25 ms instead of 160-270 ms. Re-measure the followers' slowdown on current main before blocking on 41.1.
 <!-- SECTION:NOTES:END -->
