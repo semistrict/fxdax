@@ -2154,6 +2154,32 @@ mod tests {
         survives_its_hosts_loss(Arc::new(InMemory::new()), "");
     }
 
+    /// TASK-79.68: an extent freed while open and written anew before the commit is the branch's
+    /// still once a store taking the branch recovers it from object storage: its segment's footer
+    /// named it among the commit's frees too, which recovery applies after its extents, and the
+    /// branch recovered lacked it.
+    #[test]
+    fn extents_freed_and_written_anew_survive_recovery() {
+        let dir = tempfile::tempdir().unwrap();
+        let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
+        let lost = ExtentStore::create(dir.path().join("lost"), 1 << 30).unwrap();
+        let branch = lost.branch();
+        lost.attach_remote(bucket.clone(), 1, idle()).unwrap();
+        let extent = write(&lost, 1, &pattern(1, BLOCK));
+        lost.free(extent).unwrap();
+        write(&lost, 1, &pattern(2, BLOCK));
+        lost.commit(None).unwrap();
+        // The host is lost, what it committed in object storage.
+        std::mem::forget(lost);
+
+        let taken = ExtentStore::create_for_branch(dir.path().join("taken"), 1 << 30, branch);
+        let taken = taken.unwrap();
+        taken.attach_remote(bucket, 2, idle()).unwrap();
+        let mut data = vec![0; BLOCK];
+        taken.read(extent, 0, &mut [crate::VolatileSliceMut::from(&mut data[..])]).unwrap();
+        assert!(data == pattern(2, BLOCK), "the extent read back is not its second write");
+    }
+
     /// TASK-92.6: a store taking a branch its host lost, the branch's segments since its last
     /// checkpoint many, recovers the branch once, its lease taken between the start and the rest:
     /// by the tails of its segments, which hold their footers, a window of them at once, not by
