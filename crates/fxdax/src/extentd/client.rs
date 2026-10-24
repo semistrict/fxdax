@@ -637,7 +637,8 @@ struct Client {
     next: AtomicU64,
     /// The requests waiting for replies; `None` once the connection is gone.
     waiting: Mutex<Option<Waiting>>,
-    /// fxdax: signaled as replies come, making room for requests ([`Waiting::has_room`]).
+    /// fxdax: signaled as replies come, making room for requests ([`Waiting::has_room`]), to those
+    /// waiting for it ([`Waiting::for_room`]).
     room: std::sync::Condvar,
     stage: OnceLock<Arc<UffdSecondStage>>,
     /// What the daemon's changes of the store's capacity go to ([`RemoteExtentStore::on_capacity`]).
@@ -695,8 +696,15 @@ impl Client {
         let (reply, replied) = oneshot::channel();
         {
             let mut waiting = self.waiting.lock().unwrap();
-            while !RECEIVING.get() && waiting.as_ref().is_some_and(|w| !w.has_room(bytes)) {
+            while !RECEIVING.get()
+                && let Some(full) = waiting.as_mut().filter(|w| !w.has_room(bytes))
+            {
+                full.for_room += 1;
                 waiting = self.room.wait(waiting).unwrap();
+                // Unless the connection went meanwhile, and what waited with it.
+                if let Some(waiting) = waiting.as_mut() {
+                    waiting.for_room -= 1;
+                }
             }
             match waiting.as_mut() {
                 Some(waiting) => waiting.insert(header.id, reply, bytes),
@@ -711,10 +719,19 @@ impl Client {
         Box::pin(async move { replied.await.unwrap_or(Err(Errno::EIO)) })
     }
 
-    /// Takes the request `id` from those waiting, as it is answered, making room for others.
+    /// Takes the request `id` from those waiting, as it is answered, making room for others: those
+    /// waiting for room told, if any are, but no system call made otherwise, as with none, the
+    /// reply of every request.
     fn answered(&self, id: u64) -> Option<oneshot::Sender<Reply>> {
-        let answered = self.waiting.lock().unwrap().as_mut().and_then(|w| w.remove(id));
-        self.room.notify_all();
+        let (answered, told) = {
+            let mut waiting = self.waiting.lock().unwrap();
+            let waiting = waiting.as_mut();
+            let told = waiting.as_ref().is_some_and(|w| w.for_room > 0);
+            (waiting.and_then(|w| w.remove(id)), told)
+        };
+        if told {
+            self.room.notify_all();
+        }
         answered
     }
 
@@ -833,6 +850,8 @@ impl Client {
 struct Waiting {
     replies: HashMap<u64, (oneshot::Sender<Reply>, u64)>,
     stream_bytes: u64,
+    /// fxdax: how many requests wait for room ([`Waiting::has_room`]).
+    for_room: usize,
 }
 
 impl Waiting {
