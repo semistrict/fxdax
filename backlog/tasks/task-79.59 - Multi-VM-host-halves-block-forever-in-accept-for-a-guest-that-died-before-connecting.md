@@ -3,11 +3,11 @@ id: TASK-79.59
 title: >-
   Multi-VM host halves block forever in accept() for a guest that died before
   connecting
-status: In Progress
+status: Done
 assignee:
   - '@main-session'
 created_date: '2026-10-21 21:00'
-updated_date: '2026-10-24 15:21'
+updated_date: '2026-10-24 16:46'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -31,15 +31,15 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity low): docs/reviews/2
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A test reproduces the failure on the code before the fix
-- [ ] #2 Fixed, and the test passes on macOS and on Linux (GCE)
+- [x] #1 A test reproduces the failure on the code before the fix
+- [x] #2 Fixed, and the test passes on macOS and on Linux (GCE)
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Notes
@@ -52,4 +52,12 @@ On main (2026-10-24): round 2b rebased onto main and pushed with the guest batch
 Round 2b audit (2026-10-24): on main and green (Verified on main at 043d413da (2026-10-24): macOS scripts/test.sh (2508 workspace tests and the Shuttle and scripts suites), Linux on GCE r65 (workspace 2620, Firecracker extent tests, 17 guest cases), scripts/upstream-changes.py --check. Failing-first evidence: the fix commit's message records the test failing on its parent on GCE (round 2b audit, 2026-10-24). minus the failing-first part). Left:
 
 a reproduction on 0345d1274^ (a multi-VM host half whose guest dies before connecting, hanging in accept until TIMEOUT); the helper's test cannot fail on the old code.
+
+Red/green on GCE r68 (2026-10-24, us-east1-b), fxfs-guest-follow with every guest dying before it connects (FXDAX_GUEST_CMDLINE=init=/bin/false: 'Kernel panic - not syncing: Requested init /bin/false failed'): on 0345d1274^ the host half blocked in accept until the runner's 'TIMEOUT (120s)'; on main it failed at once, the writer's console with its panic in the test's log.txt. Workspace green on Linux (r65, 2621) and macOS.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Multi-VM host halves wait for a guest's connection no longer than its VM runs (Firecracker::accept, 0345d1274): a guest dead before connecting fails the test at once with its console, where it hung until the runner's timeout; shown red/green on GCE.
+<!-- SECTION:FINAL_SUMMARY:END -->
