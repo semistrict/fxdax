@@ -395,37 +395,41 @@ impl Firecracker {
     /// The connection the VM's guest makes to `listener`: an error, rather than a wait for ever,
     /// once the VM exits without making it, as one whose guest panics, resetting it, does, which
     /// Firecracker exits from well (TASK-79.59). Its guest's console, which says why, goes to this
-    /// process's output then.
+    /// process's output then. It waits for the one or the other, the listener's connection or the
+    /// VM process's exit, which its pidfd says.
     pub fn accept(
         &mut self,
         listener: &std::os::unix::net::UnixListener,
     ) -> anyhow::Result<std::os::unix::net::UnixStream> {
-        listener.set_nonblocking(true)?;
-        let accepted = |listener: &std::os::unix::net::UnixListener| match listener.accept() {
-            Ok((stream, _)) => Ok(Some(stream)),
-            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
-            Err(err) => Err(err),
-        };
-        let stream = loop {
-            if let Some(stream) = accepted(listener)? {
-                break stream;
+        use nix::libc;
+        use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+        // SAFETY: Opens a pidfd of the VM's process, this one's child, which it hasn't waited for.
+        let pidfd = unsafe { libc::syscall(libc::SYS_pidfd_open, self.child.id(), 0) };
+        ensure!(pidfd >= 0, "the VM process's pidfd: {}", std::io::Error::last_os_error());
+        // SAFETY: Just opened, and owned here.
+        let pidfd = unsafe { OwnedFd::from_raw_fd(pidfd as libc::c_int) };
+        let ready = |fd: libc::c_int| libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+        let mut polled = [ready(listener.as_raw_fd()), ready(pidfd.as_raw_fd())];
+        loop {
+            // SAFETY: Polls the two descriptors, which outlive the call.
+            if unsafe { libc::poll(polled.as_mut_ptr(), 2, -1) } < 0 {
+                let err = std::io::Error::last_os_error();
+                ensure!(err.kind() == std::io::ErrorKind::Interrupted, "polling: {err}");
+                continue;
             }
-            if let Some(status) = self.child.try_wait()? {
-                // A guest connects, then its VM exits, between the two looks.
-                if let Some(stream) = accepted(listener)? {
-                    break stream;
-                }
+            // A guest that connected, then its VM exited, is told of with the exit: it is first.
+            if polled[0].revents != 0 {
+                return Ok(listener.accept()?.0);
+            }
+            if polled[1].revents != 0 {
+                let status = self.child.wait()?;
                 split_console(std::fs::File::open(&self.console)?)?;
                 anyhow::bail!(
                     "the VM exited {status} before its guest connected: see {}",
                     self.console.display()
                 );
             }
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        };
-        listener.set_nonblocking(false)?;
-        stream.set_nonblocking(false)?;
-        Ok(stream)
+        }
     }
 
     /// Waits for the VM to end, and returns its exit status and its console.
