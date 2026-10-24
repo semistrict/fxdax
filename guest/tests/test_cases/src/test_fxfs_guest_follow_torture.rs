@@ -60,8 +60,8 @@ pub enum Mutant {
     /// kernel keeps of what it changes and applying it, and between its apply and its attributes
     /// set. A reader's fault maps an extent of the state before a batch after the batch let its
     /// commit go: extentd refuses the window's map of the extent released (doc-8, testing 1), and
-    /// the follower's VMM, which can't resolve the fault, aborts; what its readers found before is
-    /// a wrong history.
+    /// the follower's VMM, which can't resolve the fault, aborts; or a reader finds a name the
+    /// batch half applied; what its readers found is a wrong history.
     Barrier,
     /// Their read(2)s' copies without page faults: a copy that faults in a page of a follower's
     /// file, filling it under the barrier the read(2) holds, waits behind a batch waiting for the
@@ -456,13 +456,24 @@ mod host {
             let output = String::from_utf8(stdout).unwrap();
             let expected = match self.mutant {
                 None => "OK writer\nOK follower1\nOK follower2\nOK history\n",
-                Some(Mutant::Invalidation | Mutant::InvalidationFaults) => {
-                    "OK writer\nSTALE follower1\nSTALE follower2\nWRONG history\n"
-                }
-                Some(Mutant::Barrier) => {
-                    "OK writer\nABORTED follower1\nABORTED follower2\nWRONG history\n"
-                }
                 Some(Mutant::Nested) => "OK writer\nHUNG follower1\nHUNG follower2\nOK history\n",
+                // How a mutant's followers fail depends on the schedule: a reader finds a page
+                // stale (STALE), a fault maps an extent a batch let go of, which extentd refuses
+                // and the VMM aborts on (ABORTED), or a reader finds what it can't, and stops (no
+                // line). Caught, none passes, and what they read is a wrong history.
+                Some(Mutant::Invalidation | Mutant::InvalidationFaults | Mutant::Barrier) => {
+                    let lines: Vec<&str> = output.lines().collect();
+                    let caught = lines.first() == Some(&"OK writer")
+                        && lines.last() == Some(&"WRONG history")
+                        && !lines.iter().any(|line| line.starts_with("OK follower"));
+                    return match caught {
+                        true => TestOutcome::Pass,
+                        false => TestOutcome::Fail(format!(
+                            "expected the writer OK, no follower OK and a wrong history, got \
+                             {output:?}"
+                        )),
+                    };
+                }
             };
             if output == expected {
                 TestOutcome::Pass
