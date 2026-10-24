@@ -774,6 +774,60 @@ impl Drop for Reaped {
     }
 }
 
+/// Has this process's threads, those it makes and the processes it starts find the system call
+/// `call` failing with `errno` where its arguments are as `args` say, each the index of one and
+/// the low word it is: as a kernel without what the call asks for, or a daemon without the right
+/// to it, answers, for tests of the daemon on such hosts. For as long as the process lives, which
+/// nextest gives each test of its own.
+fn refuse_system_call(call: libc::c_long, args: &[(usize, u32)], errno: u16) {
+    use libc::{BPF_ABS, BPF_JEQ, BPF_JMP, BPF_K, BPF_LD, BPF_RET, BPF_W, sock_filter};
+    #[cfg(target_arch = "x86_64")]
+    const ARCH: u32 = 0xc000_003e;
+    #[cfg(target_arch = "aarch64")]
+    const ARCH: u32 = 0xc000_00b7;
+    let load = |offset: usize| sock_filter {
+        code: (BPF_LD | BPF_W | BPF_ABS) as u16,
+        jt: 0,
+        jf: 0,
+        k: offset as u32,
+    };
+    // Each test, unless it holds, jumps to the last instruction, which allows the call.
+    let tests = 2 + args.len();
+    let mut program = Vec::new();
+    let test = |program: &mut Vec<sock_filter>, offset: usize, value: u32| {
+        program.push(load(offset));
+        let left = 2 * tests - program.len();
+        let skip = u8::try_from(left).expect("a short filter");
+        program.push(sock_filter {
+            code: (BPF_JMP | BPF_JEQ | BPF_K) as u16,
+            jt: 0,
+            jf: skip,
+            k: value,
+        });
+    };
+    test(&mut program, std::mem::offset_of!(libc::seccomp_data, arch), ARCH);
+    test(&mut program, std::mem::offset_of!(libc::seccomp_data, nr), call as u32);
+    for (arg, value) in args {
+        // The argument's low word, which comes first, little-endian.
+        test(&mut program, std::mem::offset_of!(libc::seccomp_data, args) + 8 * arg, *value);
+    }
+    let ret = |k: u32| sock_filter { code: (BPF_RET | BPF_K) as u16, jt: 0, jf: 0, k };
+    program.push(ret(libc::SECCOMP_RET_ERRNO | u32::from(errno)));
+    program.push(ret(libc::SECCOMP_RET_ALLOW));
+    let filter = libc::sock_fprog { len: program.len() as u16, filter: program.as_mut_ptr() };
+    // SAFETY: Plain system calls: the filter, which they copy, outlives them.
+    unsafe {
+        assert_eq!(libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0), 0);
+        let set = libc::syscall(
+            libc::SYS_seccomp,
+            libc::SECCOMP_SET_MODE_FILTER,
+            libc::SECCOMP_FILTER_FLAG_TSYNC,
+            &filter,
+        );
+        assert_eq!(set, 0, "{}", std::io::Error::last_os_error());
+    }
+}
+
 /// TASK-79.9: a VM process that stops answering, frozen as SIGSTOP or a cgroup's freezer freezes
 /// it, holds nothing up: the daemon takes its access to the pages it maps away without waiting for
 /// it, as it evicts them, as the kernel's relief does, while another VM process's requests and
@@ -854,6 +908,45 @@ fn frozen_vm_processes_hold_nothing_up() {
             Err(error) => panic!("the frozen VM process's store is still open: {error:#}"),
         }
     }
+}
+
+/// A VM process, for [`vm_processes_the_daemon_may_not_kill_are_refused`]: opens the store
+/// [`CHILD_STORE`] names through the daemon at [`CHILD_SOCKET`], and says whether it did.
+#[test]
+#[ignore = "run by vm_processes_the_daemon_may_not_kill_are_refused"]
+fn child_opens_a_store() {
+    let (Ok(socket), Ok(store)) = (std::env::var(CHILD_SOCKET), std::env::var(CHILD_STORE)) else {
+        return;
+    };
+    match RemoteExtentStore::connect(socket, store, 1 << 24) {
+        Ok(_) => println!("OPENED"),
+        Err(error) => println!("REFUSED {:?}", error.errno()),
+    }
+}
+
+/// TASK-79.9: a VM process the daemon may not kill, as it may not signal it (`EPERM`, as a daemon
+/// of another user without `CAP_KILL` may not, which the system call refused here stands for), it
+/// refuses as it connects: one that stopped answering it could not let go of, and the pages it may
+/// reach, freed, would wait for it for good.
+#[test]
+fn vm_processes_the_daemon_may_not_kill_are_refused() {
+    refuse_system_call(libc::SYS_pidfd_send_signal, &[], libc::EPERM as u16);
+    host();
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("extentd.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || serve(listener));
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "extentd::tests::child_opens_a_store", "--ignored", "--nocapture"])
+        .env(CHILD_SOCKET, &socket)
+        .env(CHILD_STORE, dir.path().join("store"))
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let said =
+        stdout.lines().find(|line| line.starts_with("OPENED") || line.starts_with("REFUSED"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(said, Some("REFUSED Some(Errno(EIO))"), "{stdout}{stderr}");
 }
 
 /// A store the daemon serves forks to a new branch the daemon serves too, whose window maps the
