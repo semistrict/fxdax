@@ -69,9 +69,26 @@ mod host {
     /// The fork's VM's DAX window: FXDAX_PGBENCH_WINDOW_MIB's, or [`WINDOW`]. The sandbox team's
     /// runs decay more in 8 GiB than in 2.
     fn window() -> anyhow::Result<u64> {
-        match std::env::var("FXDAX_PGBENCH_WINDOW_MIB") {
-            Ok(mib) => Ok(mib.parse::<u64>()? << 20),
-            Err(_) => Ok(WINDOW),
+        Ok(setting("FXDAX_PGBENCH_WINDOW_MIB", WINDOW >> 20)? << 20)
+    }
+
+    /// The VMs' vCPUs: FXDAX_PGBENCH_VCPUS, or 2.
+    fn vcpus() -> anyhow::Result<u8> {
+        Ok(u8::try_from(setting("FXDAX_PGBENCH_VCPUS", 2)?)?)
+    }
+
+    /// The loading VM's memory, in MiB: FXDAX_PGBENCH_MEMORY_MIB, or 4096. Less of it makes the
+    /// guest short of memory as the database loads, where the sandbox team's 2 GiB DAX VM failed
+    /// (TASK-99).
+    fn load_memory() -> anyhow::Result<u32> {
+        Ok(u32::try_from(setting("FXDAX_PGBENCH_MEMORY_MIB", 4096)?)?)
+    }
+
+    /// The environment's `name`, a count, or `default`.
+    fn setting(name: &str, default: u64) -> anyhow::Result<u64> {
+        match std::env::var(name) {
+            Ok(value) => Ok(value.parse()?),
+            Err(_) => Ok(default),
         }
     }
 
@@ -91,7 +108,7 @@ RUN apk add --no-cache postgresql postgresql-contrib perf
         memory: u32,
         window: u64,
     ) -> anyhow::Result<Firecracker> {
-        let mut vm = Vm::new(2, memory)?;
+        let mut vm = Vm::new(vcpus()?, memory)?;
         vm.guest_kernel()?;
         vm.extent_store_served("extents", store, CAPACITY, window, extentd);
         vm.env(&CString::new(format!("FXDAX_PGBENCH_ROLE={role}"))?);
@@ -165,7 +182,7 @@ RUN apk add --no-cache postgresql postgresql-contrib perf
             let stop = Arc::new(AtomicBool::new(false));
             let samples = dir.join("samples.txt");
             let sampler = sample(socket.clone(), fork.clone(), stats, samples, stop.clone());
-            let loaded = wait(run(test_setup, &root, "load", &fork, &socket, 4096, window)?);
+            let loaded = wait(run(test_setup, &root, "load", &fork, &socket, load_memory()?, window)?);
             stop.store(true, Ordering::Relaxed);
             sampler.join().expect("the sampler panicked")?;
             loaded

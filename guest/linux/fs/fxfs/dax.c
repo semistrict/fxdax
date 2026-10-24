@@ -54,6 +54,7 @@
 #include <linux/iomap.h>
 #include <linux/log2.h>
 #include <linux/mm.h>
+#include <linux/moduleparam.h>
 #include <linux/pagemap.h>
 #include <linux/seq_file.h>
 #include <linux/slab.h>
@@ -83,6 +84,15 @@
  * write waits for, so more than a page, though they make the extent at least that long.
  */
 #define FXFS_DAX_REGION_FIRST 16UL
+
+/*
+ * fxdax: fault injection: a fault's copy of the page it holds fails to allocate, as it may when
+ * memory is short, and Fxfs keeps the page's contents through the device instead (keep, in
+ * fxfs_dax_iomap_write; TASK-79.107, TASK-99).
+ */
+static bool fxfs_dax_fail_held;
+module_param_named(dax_fail_held, fxfs_dax_fail_held, bool, 0644);
+MODULE_PARM_DESC(dax_fail_held, "Fail every DAX fault's held copy of its page (fault injection)");
 
 /* The window's mapping of a whole extent, from its start, which slices of files share. */
 struct fxfs_dax_region {
@@ -1155,16 +1165,21 @@ static struct fxfs_dax_region *fxfs_dax_get_region(struct fxfs_dax *dax,
 
 /*
  * Makes `region`, of an open extent, writable, unless it is mapped already. In the gate, where only
- * writable regions are mapped further.
+ * writable regions are mapped further. fxdax: under the region's lock, which a MAP of it holds: a
+ * read-only one in flight, outside the gate, by a reader that found the extent sealed, ended after
+ * this had made the region writable and claimed its pages mapped, read-only, where writers took
+ * them for writable: the host refused their stores, and the VM stopped (TASK-99).
  */
 static void fxfs_dax_region_open(struct fxfs_dax *dax, struct fxfs_dax_region *region)
 {
+	mutex_lock(&region->lock);
 	spin_lock(&dax->regions_lock);
-	if (!region->writable && !READ_ONCE(region->mapped)) {
+	if (!region->writable && !region->mapped) {
 		region->writable = true;
 		list_add_tail(&region->writable_list, &dax->writable_regions);
 	}
 	spin_unlock(&dax->regions_lock);
+	mutex_unlock(&region->lock);
 }
 
 /*
@@ -1178,9 +1193,15 @@ static int fxfs_dax_map_to(struct fxfs_dax *dax, struct fxfs_dax_region *region,
 			   enum fxfs_dax_why why)
 {
 	unsigned long from, to;
+	/*
+	 * As the region's lock, held, keeps it: fxfs_dax_region_open sets it under that lock, and a
+	 * seal clears it with no store in progress, so during no writable MAP.
+	 */
+	bool writable;
 	int err = 0;
 
 	mutex_lock(&region->lock);
+	writable = READ_ONCE(region->writable);
 	from = region->mapped;
 	if (end <= from)
 		goto out;
@@ -1189,17 +1210,16 @@ static int fxfs_dax_map_to(struct fxfs_dax *dax, struct fxfs_dax_region *region,
 		goto out;
 	}
 	to = region->pages;
-	if (region->writable)
+	if (writable)
 		to = min(to, max(end, from + clamp(from, FXFS_DAX_REGION_FIRST, FXFS_DAX_REGION_STEP)));
 	for (;;) {
 		err = fxfs_device_map(dax->dev, region->branch, region->sequence,
 				      (u64)from << PAGE_SHIFT, (u64)(to - from) << PAGE_SHIFT,
-				      region->window_offset + ((u64)from << PAGE_SHIFT),
-				      region->writable);
+				      region->window_offset + ((u64)from << PAGE_SHIFT), writable);
 		atomic64_inc(&dax->maps[why]);
 		atomic64_add((u64)(to - from) << PAGE_SHIFT, &dax->map_bytes[why]);
 		/* A sealed extent may end before what was allocated of it: past what was written. */
-		if (!err || region->writable || to == end)
+		if (!err || writable || to == end)
 			break;
 		to = end;
 	}
@@ -1213,7 +1233,7 @@ static int fxfs_dax_map_to(struct fxfs_dax *dax, struct fxfs_dax_region *region,
 	else if (err != -ENOENT)
 		pr_warn("fxfs: mapping pages %lu to %lu of extent %llx:%llu, of %lu pages, %s, at %llu of the DAX window failed: %d\n",
 			from, to, region->branch, region->sequence, region->pages,
-			region->writable ? "writably" : "read-only", region->window_offset, err);
+			writable ? "writably" : "read-only", region->window_offset, err);
 out:
 	mutex_unlock(&region->lock);
 	return err;
@@ -1849,7 +1869,7 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 		if (fault && pages == 1 && test_bit(first, range->mapped) && !held) {
 			void *page = fxfs_dax_window_page(dax, fxfs_dax_page_offset(range, first));
 
-			held = page ? kmalloc(PAGE_SIZE, GFP_NOFS) : NULL;
+			held = page && !fxfs_dax_fail_held ? kmalloc(PAGE_SIZE, GFP_NOFS) : NULL;
 			if (held)
 				memcpy(held, page, PAGE_SIZE);
 		}

@@ -1861,6 +1861,19 @@ mod guest {
         fs::remove_file(&name).unwrap();
     }
 
+    /// fxdax: as `faults_writes_compaction`, with every fault's copy of the page it holds failing to
+    /// allocate (the fxfs.dax_fail_held fault injection), as when memory is short: Fxfs keeps the
+    /// page's contents through the device, whose write puts the new block's extent in the store
+    /// before the guest takes it for open, and a reader mapped the extent's region read-only while
+    /// a writer made it writable; the host refused the writer's stores, and the VM stopped with
+    /// only KVM_RUN's EFAULT to say so (TASK-99, the sandbox team's 2 GiB DAX VM).
+    fn test_faults_unheld() {
+        const FAIL_HELD: &str = "/sys/module/fxfs/parameters/dax_fail_held";
+        fs::write(FAIL_HELD, "Y").unwrap();
+        test_faults_writes_compaction();
+        fs::write(FAIL_HELD, "N").unwrap();
+    }
+
     /// fxdax: stores through a mapping of a file, write(2)s into its holes, and other files made,
     /// written and removed meanwhile, which make the journal compact, for a few seconds: a write
     /// in the gate waited for a fault's DAX entry, the fault for Fxfs, Fxfs for compaction, and
@@ -2094,6 +2107,7 @@ mod guest {
                 tests.push(("regions_evacuated", &test_regions_evacuated));
                 tests.push(("evacuate_dropped", &test_evacuate_dropped));
                 tests.push(("faults_writes_compaction", &test_faults_writes_compaction));
+                tests.push(("faults_unheld", &test_faults_unheld));
                 tests.push(("append_while_mapped", &test_append_while_mapped));
             }
             // Files on DAX are in no page cache.

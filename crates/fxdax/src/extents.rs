@@ -1623,6 +1623,30 @@ impl ExtentStore {
             .collect()
     }
 
+    /// fxdax: what the window maps at `window_offset`, and the extent's state here and in the
+    /// store, said for a log: why a store there was refused (TASK-99).
+    pub fn describe_window_offset(&self, window_offset: u64) -> String {
+        let mapping = self.window_mappings().into_iter().find(|mapping| {
+            (mapping.window_offset..mapping.window_offset + mapping.len).contains(&window_offset)
+        });
+        let Some(mapping) = mapping else { return "nothing mapped".into() };
+        let MappingContents::Extent { extent, offset, writable } = mapping.contents else {
+            return format!("zeros, {:#x} bytes from {:#x}", mapping.len, mapping.window_offset);
+        };
+        let open_here = self.open.lock().unwrap().contains_key(&extent);
+        let stored = self.store.extent(extent.into()).map(|stored| {
+            stored.map(|(len, open)| format!("{len:#x} bytes, {}", if open { "open" } else { "sealed" }))
+        });
+        format!(
+            "{extent:?} from {offset:#x}, {:#x} bytes from {:#x}, {}; {} in the window; in the \
+             store: {stored:?}",
+            mapping.len,
+            mapping.window_offset,
+            if writable { "writable" } else { "read-only" },
+            if open_here { "open" } else { "not open" },
+        )
+    }
+
     /// Forks the store as [`ExtentStore::fork`] does, but only once nothing is open
     /// ([`ExtentStore::is_quiescent`]), and no write or writable mapping comes between that and the
     /// fork, which would seal it under its writer: `EBUSY` otherwise. So a running VM's store forks,

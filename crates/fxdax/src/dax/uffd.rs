@@ -178,6 +178,17 @@ fn default_budget() -> usize {
     (max.saturating_sub(MAPPINGS_RESERVED) / 2).max(1)
 }
 
+/// Logs a fault the window refused, `what` at window offset `offset`, the 1st, 2nd, 4th, 8th...
+/// of them: a vCPU whose access stays refused for a second stops its VM with only `EFAULT` to say
+/// so, from `KVM_RUN` (TASK-99).
+fn refused(what: &str, offset: u64) {
+    static REFUSED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let count = REFUSED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    if count.is_power_of_two() {
+        log::warn!("fxdax: the DAX window refused {what}, at offset {offset:#x} ({count} so far)");
+    }
+}
+
 /// What the window has done to a page of a second stage, as the faults on it see it, and what it
 /// maps there.
 #[derive(Clone, Copy, Default)]
@@ -647,6 +658,7 @@ impl<H: HostMemory> UffdSecondStage<H> {
             // here too, so that the write fails in the kernel rather than faulting here again. A
             // store from the guest then fails as KVM's would.
             Err(Errno::EACCES) if access == Access::Write => {
+                refused("a store to a page the window maps read-only", offset);
                 if rules().refused_store_read_only {
                     self.restrict(addr, seen, libc::PROT_READ);
                 }
@@ -655,6 +667,7 @@ impl<H: HostMemory> UffdSecondStage<H> {
             // Where the window maps nothing, the fault is KVM's, for a page the guest has
             // unmapped (see the module docs): it is withheld, so that the fault fails.
             Err(Errno::ENOENT) => {
+                refused("an access to a page the window maps nothing at", offset);
                 self.restrict(addr, seen, libc::PROT_NONE);
                 Ok(())
             }
