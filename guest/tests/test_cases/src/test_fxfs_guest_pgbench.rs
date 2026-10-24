@@ -21,9 +21,12 @@
 use macros::{guest, host};
 
 pub struct TestFxfsGuestPgbench {
+    #[cfg_attr(feature = "guest", allow(dead_code))]
     pub dax: bool,
+    #[cfg_attr(feature = "host", allow(dead_code))]
     pub probe: Probe,
     /// Whether PostgreSQL fsyncs, as it does by default.
+    #[cfg_attr(feature = "host", allow(dead_code))]
     pub fsync: bool,
 }
 
@@ -62,6 +65,15 @@ mod host {
     /// The stores' capacity, and the fork's VM's DAX window if it has one, as the sandbox team's.
     const CAPACITY: u64 = 16 << 30;
     const WINDOW: u64 = 2 << 30;
+
+    /// The fork's VM's DAX window: FXDAX_PGBENCH_WINDOW_MIB's, or [`WINDOW`]. The sandbox team's
+    /// runs decay more in 8 GiB than in 2.
+    fn window() -> anyhow::Result<u64> {
+        match std::env::var("FXDAX_PGBENCH_WINDOW_MIB") {
+            Ok(mib) => Ok(mib.parse::<u64>()? << 20),
+            Err(_) => Ok(WINDOW),
+        }
+    }
 
     const CONTAINERFILE: &str = "\
 FROM alpine:3.22
@@ -149,7 +161,7 @@ RUN apk add --no-cache postgresql postgresql-contrib perf
             let (base, fork) = (dir.join("base"), dir.join("fork"));
             wait(run(test_setup, &root, "base", &base, &socket, 512, 0)?)?;
             crate::common::control(&socket)?.fork_store(&base, &fork)?;
-            let window = if self.dax { WINDOW } else { 0 };
+            let window = if self.dax { window()? } else { 0 };
             let stop = Arc::new(AtomicBool::new(false));
             let samples = dir.join("samples.txt");
             let sampler = sample(socket.clone(), fork.clone(), stats, samples, stop.clone());
