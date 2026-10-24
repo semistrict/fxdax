@@ -333,6 +333,14 @@ impl LaggingStage {
 /// The stage of the schedule running, which the quarantine parks the pages freed on.
 static LAGGING: std::sync::Mutex<Option<Arc<LaggingStage>>> = std::sync::Mutex::new(None);
 
+/// The quarantine of the tests of [`freeing_races_the_second_stage`], which parks the pages freed
+/// on the stage of the schedule running, held for as long as the test runs.
+fn lagging_quarantine() -> pmm::QuarantineForTest {
+    pmm::quarantine_for_test(|pages| {
+        LAGGING.lock().unwrap().as_ref().expect("a schedule's stage").park(pages)
+    })
+}
+
 /// What a page freed of [`freeing_races_the_second_stage`] holds, and what its next owner writes.
 const FREED: u64 = 0xf7ee_d000_f7ee_d000;
 const REUSED: u64 = 0x0e05_ed00_0e05_ed00;
@@ -343,12 +351,6 @@ const REUSED: u64 = 0x0e05_ed00_0e05_ed00;
 /// holds. A VMO's page mapped through a [`LaggingStage`], the mapping unmapped and the VMO
 /// dropped, and another made and written, as its VM process makes the unmap and its guest reads.
 fn freeing_races_the_second_stage() {
-    static QUARANTINE: std::sync::Once = std::sync::Once::new();
-    QUARANTINE.call_once(|| {
-        pmm::quarantine_with(|pages| {
-            LAGGING.lock().unwrap().as_ref().expect("a schedule's stage").park(pages)
-        })
-    });
     let stage = Arc::new(LaggingStage::default());
     *LAGGING.lock().unwrap() = Some(stage.clone());
     let gpas = GuestPhysicalAspace::create_with_second_stage(PAGE_SIZE, stage.clone()).unwrap();
@@ -406,6 +408,7 @@ fn freeing_races_the_second_stage() {
 
 #[test]
 fn freeing_races_the_second_stage_in_any_order() {
+    let _quarantine = lagging_quarantine();
     check(freeing_races_the_second_stage);
 }
 
@@ -470,6 +473,6 @@ fn needs_evictions_to_take_only_the_pages_chosen() {
 #[test]
 fn needs_staged_pages_to_wait_for_their_stages() {
     let rules = Rules { staged_pages_wait_for_their_stages: false, ..Rules::ALL };
-    let test = freeing_races_the_second_stage;
+    let (_quarantine, test) = (lagging_quarantine(), freeing_races_the_second_stage);
     fails_without(rules, "the guest read a page another object holds", test);
 }
