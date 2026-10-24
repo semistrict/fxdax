@@ -4,10 +4,9 @@ title: >-
   Allocations from a removed tenant arena are not refused: 'no arena' panics,
   lost chunks, VMs aborting
 status: In Progress
-assignee:
-  - '@review-session'
+assignee: []
 created_date: '2026-10-21 20:58'
-updated_date: '2026-10-23 16:07'
+updated_date: '2026-10-24 12:29'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -46,4 +45,6 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity low): docs/reviews/2
 
 <!-- SECTION:NOTES:BEGIN -->
 Finalization check (after the push of 47b7a348): not done. AC#1 is not proven for the 'VMs aborting' failure the task names: a re-granted tenant's VMs are handed store instances opened in the old arena, and their first STAGE_MAP aborts the VMM. Its two Linux-only tests have pass-after evidence only. stores_open_in_another_arena_are_busy (4249f9b5) and tenants_granted_again_while_alive_go_on (1f93178a) were type-checked, never run against the code before their fixes; the r1-929x.txt plan's step 3 before-runs never happened. Needed: a GCE run of stores_open_in_another_arena_are_busy at 04d0f609 with crates/fxdax/src/extentd/tests.rs from 4249f9b5 (expected to fail with left None, right Some(Some(EBUSY))). Also a GCE run of tenants_granted_again_while_alive_go_on at 4249f9b5 with crates/fxdax/tests/grants.rs from 1f93178a (expected EBUSY at connect_read_only). Keep both failures' output. The 'no arena' panic and the lease failure (EPIPE) do have before evidence. Audit: Agree it is not done. AC#1 is unproven for the 'VMs aborting' failure: a re-granted tenant's VMs are handed old-arena instances and abort at STAGE_MAP. The messages of 4249f9b5 and 1f93178a both say 'Type-checked ... not run: no Linux host was reachable'. A search of every scratchpad log and task output finds only PASS lines for stores_open_in_another_arena_are_busy and tenants_granted_again_while_alive_go_on, never a run before their fixes. Step 3 of r1-929x.txt (the before-runs) never happened. Needed: a GCE run of stores_open_in_another_arena_are_busy at 04d0f609 with 4249f9b5's extentd/tests.rs (expect left None, right Some(Some(EBUSY))), and one of tenants_granted_again_while_alive_go_on at 4249f9b5 with 1f93178a's tests/grants.rs (expect EBUSY at connect_read_only), with both outputs kept. The 'no arena' panic (run_7936_before.log) and the EPIPE lease failure (7936-lease-before.log) do have before-evidence. AC#2 holds: every named test PASSes in L, and in M where it is portable, and the two Shuttle tests PASS in F:115/109 and M:2999/2993 (L holds no Shuttle runs). DoD#3 holds: pmm.rs changes carry fxdax: markers and a module-doc note naming TASK-79.36, and the rest is fxdax's own code.
+
+Handed over (2026-10-24): fixed on main. Left: a Linux run of the new tests against the code before the fix (test-first evidence); the tests pass on Linux.
 <!-- SECTION:NOTES:END -->

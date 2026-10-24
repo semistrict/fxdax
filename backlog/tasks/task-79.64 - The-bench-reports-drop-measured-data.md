@@ -2,10 +2,9 @@
 id: TASK-79.64
 title: The bench reports drop measured data
 status: In Progress
-assignee:
-  - '@review-session'
+assignee: []
 created_date: '2026-10-21 21:00'
-updated_date: '2026-10-23 16:07'
+updated_date: '2026-10-24 12:29'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -44,4 +43,6 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity low): docs/reviews/2
 
 <!-- SECTION:NOTES:BEGIN -->
 Finalization check (after the push of 47b7a348): not done. AC#1: no test was shown to fail on the old code for one of the task's bugs: bench-history.py dropping the fork and followed backends. That part was fixed in 661b227f (the shared registry). Its test, test_every_filesystem_measured_and_what_it_compares_with, calls history(), which bench-history.py did not have before 661b227f, so it never ran on the old script. The only before-evidence is the old committed fs-bench-history.md. What's needed: run that test's fixture (a followed run plus an unknown filesystem) through the pre-661b227f bench-history.py and show the backends missing. The other three bugs (bench.sh stopping, report rows from the first backend, history ordered by name) each have a test that failed first. Audit: The claimed AC#2 and DoD items hold. The fixes are on main: e64256cd, 6537fa37, 05e200b8, and 661b227f (the shared registry). The tests are on main and pass on macOS and on Linux GCE (79 OK). Only scripts/ and docs/measurements changed. The not-done verdict is correct, because AC#1 is unproven for one described bug: bench-history.py dropping the fork and followed backends. Its fix, 661b227f, came with test_every_filesystem_measured_and_what_it_compares_with, which calls history(), a function that commit added. No report (round2c G5 item, fixed/revised items[3]) shows that test, or any other, failing on the old bench-history.py. The only before-evidence is the old committed fs-bench-history.md, which is a generated document, not a test. What is needed: a run of that test's fixture through the pre-661b227f bench-history.py showing the backends missing. The other parts each have a test that failed before: bench.sh stopping before the report, rows taken from the first backend only, the name order, failed groups, and a reused results directory.
+
+Handed over (2026-10-24): partly done in round 2c (scripts). Left: a test that fails on the old report code.
 <!-- SECTION:NOTES:END -->

@@ -4,10 +4,9 @@ title: >-
   GCE drivers name results directories to the minute: two runs started in one
   minute write into one directory
 status: In Progress
-assignee:
-  - '@review-session'
+assignee: []
 created_date: '2026-10-23 09:16'
-updated_date: '2026-10-23 16:07'
+updated_date: '2026-10-24 12:29'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -40,4 +39,6 @@ Found reviewing TASK-79.62 (round 2c), pre-existing. bench-gce.sh, example-gce.s
 
 <!-- SECTION:NOTES:BEGIN -->
 Finalization check (after the push of 47b7a348): not done. AC#1 and AC#2: the bucket prefixes are not proven. Missing is a scripts/tests test that runs test-gce.sh `run` (with FXDAX_EXTENTD_REMOTE) and gets-gce.sh `run` twice within one second against fake_gcloud, and asserts that the two runs' bucket prefixes are distinct and end in their marks. The results-directory half is proven and pinned by test_runs_at_once_have_names_of_their_own. Audit: Agree that it is not done; the proposal claims no AC. cbe33d60 appends -$gce_maker to the bucket prefixes in test-gce.sh (FXDAX_EXTENTD_REMOTE/$run-$gce_maker) and gets-gce.sh ($bucket/$run-$gce_maker). No test in scripts/tests checks either: rg finds FXDAX_EXTENTD_REMOTE only in the host_command tests (test_gce.py:121-194), which pass prefixes in by hand, and no test runs test-gce.sh's or gets-gce.sh's `run`. Names.test_runs_at_once_have_names_of_their_own covers only host names and results directories, for bench, example, gets and mutants. So AC#1's bucket-prefix half and AC#2 lack a scripts/tests test that runs test-gce.sh `run` (with FXDAX_EXTENTD_REMOTE set) and gets-gce.sh `run` twice against fake_gcloud and asserts distinct prefixes ending in each run's mark. The DoD items hold: workspace logs, --check exit 0, and the change touches only scripts, no ported code.
+
+Handed over (2026-10-24): not finished; nothing pending on a branch.
 <!-- SECTION:NOTES:END -->

@@ -4,10 +4,9 @@ title: >-
   DAX window map_unsafe(SPECIFIC_OVERWRITE) grows with the mappings of the VMO
   it maps: 2.5 -> 115 us per MAP at 125k window mappings
 status: In Progress
-assignee:
-  - '@review-session'
+assignee: []
 created_date: '2026-10-23 18:12'
-updated_date: '2026-10-23 20:43'
+updated_date: '2026-10-24 12:29'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -42,4 +41,6 @@ Found by a probe of extentd's MAP under pgbench with DAX (TASK-79.90's investiga
 r6/zircon-map: the kernel's map and overwrite path is log-time throughout (the VMAR's subregions, the VMO's mappings and the ptes are trees keyed by address), as upstream's. The premise that one open-extent VMO is mapped ~100k times does not hold: each open extent gets a VMO of its own, and commit_and_seal remaps its window mappings onto the sealed extent at every commit; what grows is the window's mapping count. A real deviation was found on the way and is being fixed on that branch: the port kept a VMO's mappings by pointer, so a range change (zero-fork commit, page-in, supply, eviction, writeback) visited every mapping of the VMO, where upstream keeps them by offset in an augmented tree and visits the range's alone (371 us -> 1.65 us per range change at 100k mappings). The MAP growth itself fits a waited STAGE_UNMAP per overwrite of a populated window page (map_unsafe us = -194 + 99 x sends per MAP, r = 0.96; sends per MAP rise from 2.06 to 3.0-3.3 when the guest's window fills), a round trip to the VM process inside map_unsafe under the aspace, VMO and MMU locks; seals' and frees' remaps defer that wait. Not measured yet: Acks::wait's time per Window::map (probe in the review session's scratchpad, r6/probe-map-wait.patch). AC #1 as worded (the kernel's cost growing) is not what was found.
 
 The range-change walk found on the way is fixed and pushed as TASK-92.53. MAP's own growth is being measured and fixed as a waited STAGE_UNMAP per overwrite of a populated window page, on branch r7/dax with TASK-91.16.
+
+Handed over (2026-10-24): 7 commits on branch review/r7-dax-unverified (on main da7726d8), not to be landed as they are. Their review found three ordering races: a deferred STAGE_UNMAP sent after another thread's fault mapped the same offset; STAGE_PROTECT not undoing a restriction the fault thread made with mprotect; ack IDs reaching the wire out of order once waited unmaps go out outside the MMU lock. They also clash by design with review/r2b-extentd, whose RemoteStage never waits and parks/quarantines replaced pages. Redo on top of r2b once it lands: what still pays is 91fc372f's seal reprotecting pages in place (STAGE_PROTECT, not munmap+mmap: the VM process's munmap cost 45 us an unmap in TLB shootdowns) and 491d3838's VM-process stage counters reported to extentd. GCE measurement on the branch: 'extentd client' sys us/MAP 189 -> 158. The kernel's map path is log-time (r6/zircon-map's bench); MAP's growth fits a waited STAGE_UNMAP per overwrite of a populated window page, which r2b removes.
 <!-- SECTION:NOTES:END -->
