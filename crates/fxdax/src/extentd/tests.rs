@@ -2434,7 +2434,8 @@ fn vm_processes_that_leave_replies_unread_are_let_go() {
 }
 
 /// TASK-79.16: a tenant's VM processes, the default tenant's too, have so many connections at
-/// most: one past them is closed as it comes; once one goes, another is served.
+/// most: one past them is closed as it comes; once one goes, another is served. The first of them
+/// is served here, as tests' connections are, which says when it is done ([`serve_connection`]).
 #[test]
 fn tenants_connections_are_bounded() {
     use std::io::Read as _;
@@ -2444,7 +2445,12 @@ fn tenants_connections_are_bounded() {
     let socket = dir.path().join("extentd.sock");
     let listener = UnixListener::bind(&socket).unwrap();
     std::thread::spawn(move || serve(listener));
-    let mut connected: Vec<UnixStream> = (0..super::server::MAX_CONNECTIONS)
+    // Served once its store is open.
+    let (ours, theirs) = UnixStream::pair().unwrap();
+    let serving = std::thread::spawn(move || serve_connection(theirs, None));
+    let first = RemoteExtentStore::over(ours, &dir.path().join("first"), Opening::Create(1 << 20));
+    let first = first.unwrap();
+    let connected: Vec<UnixStream> = (1..super::server::MAX_CONNECTIONS)
         .map(|_| UnixStream::connect(&socket).unwrap())
         .collect();
     let past = UnixStream::connect(&socket).unwrap();
@@ -2453,19 +2459,11 @@ fn tenants_connections_are_bounded() {
     });
     assert_eq!(closed, Ok(Ok(0)), "a connection past the tenant's was served");
 
-    drop(connected.pop());
-    let path = dir.path().join("store");
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    let store = loop {
-        match RemoteExtentStore::connect(&socket, &path, 1 << 20) {
-            Ok(store) => break store,
-            Err(error) => {
-                assert!(std::time::Instant::now() < deadline, "no connection served: {error:#}");
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-        }
-    };
-    drop((store, connected));
+    drop(first);
+    serving.join().unwrap();
+    let opened = RemoteExtentStore::connect(&socket, dir.path().join("store"), 1 << 20);
+    assert_eq!(opened.map(drop).map_err(|error| error.errno()), Ok(()), "no connection served");
+    drop(connected);
 }
 
 /// TASK-79.84: a VM restored from a snapshot to where a fork of its point failed before, whose
