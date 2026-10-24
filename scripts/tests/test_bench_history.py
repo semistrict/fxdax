@@ -194,6 +194,16 @@ source; its note says what it was for. Medians of the iterations.
             [True, True],
         )
 
+    def test_empty_directories_are_no_runs(self):
+        """A run's directory left empty, as a run that copied nothing back leaves it, is no row."""
+        measurements = Path(tempfile.mkdtemp())
+        run(measurements, "2026-10-17T1609Z", {"fxfs-guest-dax": 1500.0})
+        (measurements / "gce-fs-bench-2026-10-17T1415Z").mkdir()
+        page = bench_history.history(measurements)
+        self.assertEqual(
+            ["2026-10-17T1609Z" in page, "2026-10-17T1415Z" in page], [True, False]
+        )
+
     def test_runs_are_in_the_order_they_started(self):
         measurements = Path(tempfile.mkdtemp())
         # When bench-gce.sh's run began, as the run's directory on the host is named, in the

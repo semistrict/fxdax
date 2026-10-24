@@ -81,7 +81,12 @@ def main():
 def history(measurements):
     """The page, of the runs under the directory `measurements`."""
     runs = sorted(
-        (load_run(path) for path in measurements.glob("gce-fs-bench-*") if path.is_dir()),
+        # A directory left empty, by a run that copied nothing back, is none.
+        (
+            load_run(path)
+            for path in measurements.glob("gce-fs-bench-*")
+            if path.is_dir() and any(path.iterdir())
+        ),
         # Those that do not say when they started last, by name.
         key=lambda run: (run["started"] is None, run["started"] or datetime.min, run["name"]),
     )
