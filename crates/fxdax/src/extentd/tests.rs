@@ -2759,6 +2759,61 @@ fn a_zygotes_restores_open_its_point_once() {
     assert_eq!(taken, 1, "the point's branch was taken by more writers than one");
 }
 
+/// TASK-79.9: a follower's VM process that stops reading, frozen as SIGSTOP freezes it, holds as
+/// much of the daemon's memory as a message telling it of its writer's commits, whatever the
+/// writer commits meanwhile: told of the latest once it reads again, rather than of each, which the
+/// daemon kept for it without end, as it sends without waiting (TASK-79.9).
+#[test]
+fn followers_that_stop_reading_are_told_of_the_latest_commit() {
+    use super::wire::*;
+    const ROUNDS: u8 = 200;
+    host();
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("extentd.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || serve(listener));
+    let path = dir.path().join("store");
+    let writer = RemoteExtentStore::connect(&socket, &path, 1 << 24).unwrap();
+    // The follower's VM process, by hand, which reads its opening's reply, and nothing more until
+    // its writer is done.
+    let stream = UnixStream::connect(&socket).unwrap();
+    let (sender, mut receiver) = (Sender::new(stream.try_clone().unwrap()), Receiver::new(stream));
+    let open = Header::new(OPEN, 1).with_flags(OPEN_READ_ONLY);
+    sender.send(open, std::os::unix::ffi::OsStrExt::as_bytes(path.as_os_str()), &[]).unwrap();
+    let opened = receiver.receive(|| 0).unwrap().unwrap();
+    assert_eq!(opened.header.status, 0);
+    let mut epoch = opened.header.args[2];
+
+    // Commits, many times what its socket holds, each told of as the writer makes it, each of an
+    // extent of its own.
+    let mut sequence = 0;
+    for round in 0..ROUNDS {
+        for _ in 0..16 {
+            sequence += 1;
+            let extent = ExtentId { branch: writer.branch(), sequence };
+            write(&writer, extent, 0, &pattern(round, BLOCK)).unwrap();
+            writer.commit_ordered(None).unwrap();
+        }
+        let queued = super::server::most_queued();
+        assert!(queued <= size_of::<Header>() as u64, "{queued} bytes queued for VM processes");
+    }
+    let key = super::stores::store_key(&path);
+    let holder = super::stores::open_paths().holder(&key).unwrap();
+    let latest = holder.store().unwrap().committed().unwrap();
+    // Each commit it is told of after the last, the latest last.
+    let told = within(std::time::Duration::from_secs(10), move || {
+        while epoch < latest {
+            let told = receiver.receive(|| 0).unwrap().unwrap();
+            assert_eq!(told.header.kind, COMMITTED);
+            assert!(told.header.args[0] > epoch, "told of {} after {epoch}", told.header.args[0]);
+            epoch = told.header.args[0];
+        }
+        epoch
+    });
+    assert_eq!(told, Ok(latest), "the follower wasn't told of its writer's latest commit");
+    drop((sender, writer));
+}
+
 /// Sends `header` and `payload`, a request, through `sender`, and returns its reply, which
 /// `receiver` receives, the stage operations before it acknowledged, as a VM process makes them.
 fn call(
