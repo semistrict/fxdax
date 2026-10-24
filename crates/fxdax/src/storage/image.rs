@@ -183,6 +183,12 @@ impl Device for ImageDevice {
         let mut at = 0;
         for part in self.store.locate(extent, offset, buffer.len() as u64)? {
             match part {
+                // Through the descriptor bypassing the host's page cache even for a raw file's
+                // part (`unframed`), which the store's own reads take through the cache
+                // (`File::read_cached`, TASK-91.17): such a read writes back first what it reads
+                // that is dirty yet, which is slower, not other bytes. This device is an
+                // in-process image's, which imports, host tools and tests use; guests' reads are
+                // extentd's, through the store's.
                 Part::Data { file, offset, len, .. } => {
                     let mut part = buffer.reborrow().subslice_mut(at..at + len as usize);
                     let addr = part.as_mut_ptr() as usize;
