@@ -42,4 +42,6 @@ Left by fixing TASK-79.2's ENOSPC regression on Linux (the space fix on review-r
 User decision (2026-10-23): a hard cap on a store's host files at a multiple of its capacity (3x), past which writes are refused (ENOSPC); honest guests never near it. Consider making cleaning's 64 MiB mark relative to capacity too (TASK-79.91, after it is measured again on main).
 
 User decision (2026-10-24): the 4x effective ceiling is accepted: 3x capacity, plus a credit of at most one capacity's worth for the writes a commit comes with, which lets the commit land cleaning's copies, so commits never get stuck at the cap (r8/diskcap, 09463ca0).
+
+User decision (2026-10-24): what the uploader holds (frees kept until uploaded, segments not yet uploaded) is left out of the cap; it is bounded by the upload lag bound, which makes commits wait rather than fail.
 <!-- SECTION:NOTES:END -->
