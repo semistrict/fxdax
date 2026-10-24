@@ -590,14 +590,38 @@ pub(super) fn deleted_if_failed(path: &Path) -> Result<(), Errno> {
 /// TASK-92.5); a connection having it open makes it busy (`EBUSY`), unless its VM process is gone.
 /// A point that doesn't exist is taken from the daemon's bucket, a store of `branch` of
 /// `capacity` bytes, as on another host than the snapshot's. Its waits hold no thread; its fork
-/// blocks.
+/// blocks. A point kept open since an earlier restore whose fork fails, as once another host, or
+/// this one's fxdaxctl, took its branch, which fences it, is let go of, and opened anew for a fork
+/// once more, which takes the branch back, as each restore's did before points were kept: a
+/// restore fails only if the point it opened fails it.
 pub(super) async fn fork_from(
     from: &Path,
     branch: u64,
     capacity: u64,
     path: &Path,
 ) -> Result<(), Errno> {
-    let point = point(from, branch, capacity).await?;
+    match fork_point(from, branch, capacity, path).await {
+        (Err(errno), Opened::Before) if errno != Errno::EEXIST => {
+            // What the failed fork left at `path` goes first, as before any restore's.
+            deleted_if_failed(path)?;
+            fork_point(from, branch, capacity, path).await.0
+        }
+        (forked, _) => forked,
+    }
+}
+
+/// fxdax: forks the point at `from` to `path`, as [`fork_from`] does, once: and says when the
+/// point was opened. A point whose fork fails is let go of ([`let_go_failed`]).
+async fn fork_point(
+    from: &Path,
+    branch: u64,
+    capacity: u64,
+    path: &Path,
+) -> (Result<(), Errno>, Opened) {
+    let (point, opened) = match point(from, branch, capacity).await {
+        Ok(point) => point,
+        Err(errno) => return (Err(errno), Opened::Now),
+    };
     let forked = point.store.fork(path, crate::host_store::new_branch()).map_err(|err| {
         errno_of(format_args!("forking {} to {}", from.display(), path.display()), err)
     });
@@ -607,28 +631,37 @@ pub(super) async fn fork_from(
     if forked.as_ref().is_err_and(|errno| *errno != Errno::EEXIST) {
         let_go_failed(&store_key(from), failed).await;
     }
-    forked
+    (forked, opened)
+}
+
+/// fxdax: when a restore's point was opened ([`point`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Opened {
+    /// For it, or for the restores beside it.
+    Now,
+    /// For a restore before it, kept open since ([`keep`]).
+    Before,
 }
 
 /// fxdax: the point at `from` for a restore to fork, of `branch` and `capacity` bytes if the
 /// daemon takes it from its bucket ([`take_store`]), which forks fork at once (TASK-92.5): the
 /// point kept open, if one is ([`kept`]); or, under the daemon's hold of its path, which no
 /// connection opens it meanwhile, the store followers have open, forked as it is, held until the
-/// fork is done; or the point opened, kept open from then on ([`keep`]). A restore waiting for
-/// another's opening of it holds no thread.
-async fn point(from: &Path, branch: u64, capacity: u64) -> Result<Arc<HeldStore>, Errno> {
+/// fork is done; or the point opened, kept open from then on ([`keep`]). And when it was opened.
+/// A restore waiting for another's opening of it holds no thread.
+async fn point(from: &Path, branch: u64, capacity: u64) -> Result<(Arc<HeldStore>, Opened), Errno> {
     if let Some(point) = kept(&store_key(from)) {
-        return Ok(point);
+        return Ok((point, Opened::Before));
     }
     let held = Held::to_fork(from).await?;
-    // Opened by a restore that held it before.
+    // Opened by a restore that held it before, beside this one.
     if let Some(point) = kept(&held.0) {
-        return Ok(point);
+        return Ok((point, Opened::Now));
     }
     if let Some((store, _)) = instance(&held.0) {
-        return Ok(Arc::new(HeldStore { store, _held: Some(Box::new(held)) }));
+        return Ok((Arc::new(HeldStore { store, _held: Some(Box::new(held)) }), Opened::Now));
     }
-    Ok(keep(&held.0, take_store(from, branch, capacity)?))
+    Ok((keep(&held.0, take_store(from, branch, capacity)?), Opened::Now))
 }
 
 /// Forks the store at `from` to a new branch, `branch`, at `to`: live, if a connection has it

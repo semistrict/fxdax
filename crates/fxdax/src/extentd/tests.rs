@@ -2950,6 +2950,40 @@ fn shrinks_return_once_the_pages_they_evict_are_free() {
     assert_eq!((shrinking.join().unwrap(), unmapped), (Ok(CHUNK), vec![vec![0, CHUNK]]));
 }
 
+/// TASK-92.5: a restore of a snapshot whose point the daemon keeps open, once another writer of
+/// the point's branch has taken it, of this host's placement, as fxdaxctl's `take` of it is, or a
+/// VM's opening of a copy of it, forks the point opened anew, taking the branch back, as each
+/// restore did before points were kept: not the point kept open, whose fork fails, its writer
+/// fenced.
+#[test]
+fn restores_fork_their_point_anew_once_another_writer_took_its_branch() {
+    host();
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("extentd.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || serve(listener));
+    let store = RemoteExtentStore::connect(&socket, dir.path().join("store"), 1 << 24).unwrap();
+    let extent = ExtentId { branch: store.branch(), sequence: 1 };
+    write(&store, extent, 0, &pattern(5, BLOCK)).unwrap();
+    store.commit(Some(b"point")).unwrap();
+    let (point, point_branch) = (dir.path().join("point"), store.branch() + 1);
+    store.fork_quiescent(&point, point_branch).unwrap();
+    drop(store);
+    let restore = |name: &str| {
+        let restored =
+            RemoteExtentStore::connect_forked(&socket, dir.path().join(name), &point, 0, 0);
+        restored.map_err(|error| error.errno()).and_then(|store| store.root().map_err(Some))
+    };
+    assert_eq!(restore("first"), Ok(b"point".to_vec()));
+    // Another copy of the point's branch, which a VM opens, taking the branch.
+    let taken = dir.path().join("taken");
+    control(super::stores::create(taken.clone(), 1 << 24, Some(point_branch), None)).unwrap();
+    let taking = RemoteExtentStore::connect(&socket, &taken, 1 << 24).unwrap();
+    assert_eq!(read(&taking, extent, 0, BLOCK), Ok(pattern(5, BLOCK)));
+    drop(taking);
+    assert_eq!(restore("second"), Ok(b"point".to_vec()));
+}
+
 /// TASK-79.34: a store whose VM process goes while the daemon's work through its connection holds
 /// the connection, here a shrink waiting for its guest's answer, is let go once that work is done,
 /// which its VM process's going ends, not before: deleted once its connection is done, it is open
