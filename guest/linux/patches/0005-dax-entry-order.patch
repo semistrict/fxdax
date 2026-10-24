@@ -1,0 +1,29 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+dax: keep nrpages when replacing entries of another order
+
+A shared fault can replace a real PMD entry with a PTE entry, as when
+Fxfs moves a page whose 2 MiB mapping was read before one page was
+written. The replacement kept mapping->nrpages unchanged: eviction then
+removed the PTE's one page and found the other 511 still counted,
+hitting BUG_ON(inode->i_data.nrpages) in clear_inode. Account for the
+orders exchanged.
+
+diff --git a/fs/dax.c b/fs/dax.c
+--- a/fs/dax.c
++++ b/fs/dax.c
+@@ -1070,6 +1070,14 @@ static void *dax_insert_entry(struct xa_state *xas, struct vm_fault *vmf,
+ 		dax_disassociate_entry(entry, mapping, false);
+ 		dax_associate_entry(new_entry, mapping, vmf->vma,
+ 					vmf->address, shared);
++		/*
++		 * A shared fault may replace a real PMD with a PTE. Keep
++		 * nrpages equal to the pages the new entry represents, so
++		 * that eviction does not leave the old order's other pages
++		 * counted after it removes the new entry.
++		 */
++		mapping->nrpages -= 1UL << dax_entry_order(entry);
++		mapping->nrpages += 1UL << dax_entry_order(new_entry);
+ 
+ 		/*
+ 		 * Only swap our new entry into the page cache if the current

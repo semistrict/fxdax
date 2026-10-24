@@ -1,0 +1,16 @@
+memory-pressure: memory watermarks - OutOfMemory: 50MB, Critical: 150MB, Warning: 300MB, Debounce: 1MB
+memory-pressure: hysteresis interval - 10 seconds
+memory-pressure: eviction: level - Critical, strategy - one-shot, delay - 5000 ms
+memory-pressure: ImminentOutOfMemory watermark - 60MB
+memory-pressure: memory availability state - Normal
+INFO fxdax::host_store: fxdax: cleaning branch 335868aff159e29f of /home/ramon/sqlite-io-fixed/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 3768320 bytes
+INFO fxdax::host_store: fxdax: cleaning branch 335868aff159e29f of /home/ramon/sqlite-io-fixed/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 3817472 bytes
+INFO fxdax::host_store: fxdax: cleaning branch 335868aff159e29f of /home/ramon/sqlite-io-fixed/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 3944448 bytes
+INFO fxdax::host_store: fxdax: cleaning branch 335868aff159e29f of /home/ramon/sqlite-io-fixed/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 3670016 bytes
+INFO fxdax::host_store: fxdax: cleaning branch 335868aff159e29f of /home/ramon/sqlite-io-fixed/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 2961408 bytes
+INFO fxdax::host_store: fxdax: cleaning branch 335868aff159e29f of /home/ramon/sqlite-io-fixed/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 5718016 bytes
+INFO fxdax::host_store: fxdax: cleaning branch 335868aff159e29f of /home/ramon/sqlite-io-fixed/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 8130560 bytes
+INFO fxdax::extentd::stores: extentd: object-store: get=42 get-range=1 head=0 list=3 create=552 update=2 overwrite=0 delete=1 up-segments=849025955 up-extents=504138978 up-checkpoints=0 up-moves=0 up-other=39 down=918
+INFO fxdax::host_store: fxdax: cleaning branch 335868aff159e29f of /home/ramon/sqlite-io-fixed/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 11223040 bytes
+INFO fxdax::host_store: fxdax: cleaning branch 335868aff159e29f of /home/ramon/sqlite-io-fixed/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 249856 bytes
+INFO fxdax_extentd: extentd: stopping, on SIGTERM

@@ -1,0 +1,5 @@
+[    0.084439] PCI: Fatal: No config space access function found
+[    0.112680] PCI: System does not support PCI
+[    0.243605] check access for rdinit=/init failed: -2, ignoring
+OK
+[    0.984580] reboot: Restarting system

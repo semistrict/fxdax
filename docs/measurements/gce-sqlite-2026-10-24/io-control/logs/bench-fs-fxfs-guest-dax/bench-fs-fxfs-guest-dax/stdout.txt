@@ -1,0 +1,51 @@
+OBSERVED mtime-ahead-of-guest-ms -5.929
+RESULT seq-write MiB/s higher 133.530
+RESULT rand-read-cold IOPS higher 76204.651
+RESULT seq-read-cold MiB/s higher 486.692
+RESULT seq-read-warm MiB/s higher 8301.349
+RESULT rand-read-warm IOPS higher 815032.984
+RESULT mmap-seq-read MiB/s higher 7757.576
+OBSERVED mmap-seq-read-faults-per-mib 5.5
+RESULT rand-write IOPS higher 18442.915
+RESULT mmap-rand-read IOPS higher 319659.170
+RESULT mmap-rand-write IOPS higher 18312.948
+RESULT fsync-append IOPS higher 385.024
+RESULT sqlite-pread-scan MiB/s higher 827.331
+OBSERVED sqlite-pread-scan-faults-per-mib 2.7
+RESULT sqlite-pread-scan-warm MiB/s higher 2716.578
+OBSERVED sqlite-pread-scan-warm-faults-per-mib 2.6
+RESULT sqlite-mmap-scan MiB/s higher 3291.114
+OBSERVED sqlite-mmap-scan-faults-per-mib 5.7
+RESULT sqlite-mmap-scan-warm MiB/s higher 3656.747
+OBSERVED sqlite-mmap-scan-warm-faults-per-mib 5.6
+OBSERVED mtime-ahead-of-guest-ms -11.274
+RESULT seq-write MiB/s higher 155.252
+RESULT rand-read-cold IOPS higher 88086.022
+RESULT seq-read-cold MiB/s higher 572.707
+RESULT seq-read-warm MiB/s higher 8411.294
+RESULT rand-read-warm IOPS higher 810881.559
+RESULT mmap-seq-read MiB/s higher 7529.412
+OBSERVED mmap-seq-read-faults-per-mib 5.5
+RESULT rand-write IOPS higher 18441.171
+RESULT mmap-rand-read IOPS higher 476417.791
+RESULT mmap-rand-write IOPS higher 10009.725
+RESULT fsync-append IOPS higher 391.133
+RESULT sqlite-pread-scan MiB/s higher 814.285
+OBSERVED sqlite-pread-scan-faults-per-mib 2.7
+RESULT sqlite-pread-scan-warm MiB/s higher 2643.566
+OBSERVED sqlite-pread-scan-warm-faults-per-mib 2.6
+RESULT sqlite-mmap-scan MiB/s higher 3379.372
+OBSERVED sqlite-mmap-scan-faults-per-mib 5.7
+RESULT sqlite-mmap-scan-warm MiB/s higher 3668.908
+OBSERVED sqlite-mmap-scan-warm-faults-per-mib 5.6
+OBSERVED mtime-ahead-of-guest-ms -4.236
+RESULT seq-write MiB/s higher 152.395
+RESULT rand-read-cold IOPS higher 77649.289
+RESULT seq-read-cold MiB/s higher 503.937
+RESULT seq-read-warm MiB/s higher 8558.221
+RESULT rand-read-warm IOPS higher 810782.609
+RESULT mmap-seq-read MiB/s higher 8000.000
+OBSERVED mmap-seq-read-faults-per-mib 5.5
+RESULT rand-write IOPS higher 14396.175
+RESULT mmap-rand-read IOPS higher 671952.524
+RESULT mmap-rand-write IOPS higher 18269.303

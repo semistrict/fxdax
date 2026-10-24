@@ -1,0 +1,136 @@
+[    0.165375] PCI: Fatal: No config space access function found
+[    0.193870] PCI: System does not support PCI
+[    0.497335] check access for rdinit=/init failed: -2, ignoring
+iteration 1/3
+OBSERVED mtime-ahead-of-guest-ms -5.929
+FXFS seq-write: device_commits 1, device_commits_ns 985410817, device_write_bytes 36864, device_writes 9, device_writes_ns 1000763047, fsyncs 1, seal_waits 1, seal_waits_ns 18191, seals 1, seals_ns 985429790, window_map_bytes_range 268435456, window_map_bytes_restage 65536, window_map_requests 257, window_maps 257, window_maps_ns 186197754, window_maps_range 256, window_maps_restage 1, window_regions 1
+RESULT seq-write MiB/s higher 133.530
+REQUESTS seq-write: write 0.00 (111165 µs each), free 0.00 (350 µs each), map 0.00 (678 µs each) per operation
+FXFS rand-read-cold: 
+RESULT rand-read-cold IOPS higher 76204.651
+REQUESTS rand-read-cold:  per operation
+RESULT seq-read-cold MiB/s higher 486.692
+RESULT seq-read-warm MiB/s higher 8301.349
+RESULT rand-read-warm IOPS higher 815032.984
+RESULT mmap-seq-read MiB/s higher 7757.576
+OBSERVED mmap-seq-read-faults-per-mib 5.5
+FXFS rand-write: device_commits 1, device_commits_ns 83792819, device_write_bytes 1863680, device_writes 455, device_writes_ns 1237821935, fsyncs 1, seal_waits 1, seal_waits_ns 18120, seals 1, seals_ns 83814703, window_map_bytes_grow 64880640, window_map_bytes_reach 2228224, window_map_bytes_restage 65536, window_map_requests 355, window_maps 3245, window_maps_grow 287, window_maps_ns 231948100, window_maps_reach 33, window_maps_restage 1, window_regions 32, window_unmaps 1, window_unmaps_ns 238059
+REQUESTS rand-write: write 0.03 (594 µs each), free 0.00 (383 µs each), map 0.02 (677 µs each), unmap 0.00 (200 µs each) per operation
+RESULT rand-write IOPS higher 18442.915
+RESULT mmap-rand-read IOPS higher 319659.170
+FXFS mmap-rand-write: device_commits 1, device_commits_ns 69048737, device_write_bytes 1867776, device_writes 456, device_writes_ns 1898706490, fsyncs 1, seal_waits 1, seal_waits_ns 269778, seals 1, seals_ns 69073065, window_map_bytes_grow 64290816, window_map_bytes_reach 2752512, window_map_bytes_restage 65536, window_map_requests 320, window_maps 320, window_maps_grow 284, window_maps_ns 119400795, window_maps_reach 35, window_maps_restage 1, window_regions_pruned 4016, window_unmaps 32, window_unmaps_ns 15672820
+REQUESTS mmap-rand-write: write 0.03 (424 µs each), free 0.00 (0 µs each), map 0.02 (353 µs each), unmap 0.00 (483 µs each) per operation
+RESULT mmap-rand-write IOPS higher 18312.948
+FXFS fsync-append: device_commits 257, device_commits_ns 90990455, device_read_bytes 184320, device_reads 13, device_reads_ns 5896641, device_write_bytes 2334720, device_writes 490, device_writes_ns 427746370, fsyncs 255, journal_compaction_ns 31359677, journal_compactions 1, seal_waits 257, seal_waits_ns 554820, seals 257, seals_ns 93729344, window_map_bytes_evacuate 1363968, window_map_bytes_reach 393216, window_map_bytes_restage 16384000, window_map_requests 523, window_maps 589, window_maps_evacuate 333, window_maps_ns 142819859, window_maps_reach 6, window_maps_restage 250, window_regions 1, window_regions_largest_free_bytes 15859712, window_regions_pruned 254, window_unmaps 255, window_unmaps_ns 72443059
+REQUESTS fsync-append: read 0.05 (409 µs each), write 1.91 (464 µs each), free 0.01 (17146 µs each), map 2.04 (229 µs each), unmap 1.00 (237 µs each), commit 0.01 (421 µs each) per operation
+RESULT fsync-append IOPS higher 385.024
+RESULT sqlite-pread-scan MiB/s higher 827.331
+OBSERVED sqlite-pread-scan-faults-per-mib 2.7
+RESULT sqlite-pread-scan-warm MiB/s higher 2716.578
+OBSERVED sqlite-pread-scan-warm-faults-per-mib 2.6
+RESULT sqlite-mmap-scan MiB/s higher 3291.114
+OBSERVED sqlite-mmap-scan-faults-per-mib 5.7
+RESULT sqlite-mmap-scan-warm MiB/s higher 3656.747
+OBSERVED sqlite-mmap-scan-warm-faults-per-mib 5.6
+iteration 2/3
+OBSERVED mtime-ahead-of-guest-ms -11.274
+FXFS seq-write: device_commits 3, device_commits_ns 894098512, device_read_bytes 303104, device_reads 15, device_reads_ns 8162995, device_write_bytes 1077248, device_writes 138, device_writes_ns 1013959781, fsyncs 1, journal_compaction_ns 83693356, journal_compactions 1, seal_waits 3, seal_waits_ns 21820, seals 3, seals_ns 894143119, window_map_bytes_range 268435456, window_map_bytes_restage 65536, window_map_requests 257, window_maps 257, window_maps_ns 181464560, window_maps_range 256, window_maps_restage 1, window_regions_largest_free_bytes 4026368, window_unmaps 1, window_unmaps_ns 335573
+RESULT seq-write MiB/s higher 155.252
+REQUESTS seq-write: read 0.00 (504 µs each), write 0.00 (7149 µs each), free 0.00 (6347 µs each), map 0.00 (663 µs each), unmap 0.00 (331 µs each), commit 0.00 (630 µs each) per operation
+FXFS rand-read-cold: 
+REQUESTS rand-read-cold:  per operation
+RESULT rand-read-cold IOPS higher 88086.022
+RESULT seq-read-cold MiB/s higher 572.707
+RESULT seq-read-warm MiB/s higher 8411.294
+RESULT rand-read-warm IOPS higher 810881.559
+RESULT mmap-seq-read MiB/s higher 7529.412
+OBSERVED mmap-seq-read-faults-per-mib 5.5
+FXFS rand-write: device_commits 1, device_commits_ns 69860023, device_write_bytes 1863680, device_writes 455, device_writes_ns 2641162418, fsyncs 1, seal_waits 1, seal_waits_ns 25603, seals 1, seals_ns 69884695, window_map_bytes_grow 64225280, window_map_bytes_reach 2883584, window_map_bytes_restage 65536, window_map_requests 360, window_maps 3675, window_maps_grow 285, window_maps_ns 240908194, window_maps_reach 35, window_maps_restage 1, window_regions 32, window_unmaps 1, window_unmaps_ns 327465
+REQUESTS rand-write: write 0.03 (565 µs each), free 0.00 (348 µs each), map 0.02 (692 µs each), unmap 0.00 (323 µs each) per operation
+RESULT rand-write IOPS higher 18441.171
+RESULT mmap-rand-read IOPS higher 476417.791
+FXFS mmap-rand-write: device_commits 3, device_commits_ns 339405562, device_read_bytes 364544, device_reads 15, device_reads_ns 4746184, device_write_bytes 3760128, device_writes 474, device_writes_ns 1451257883, fsyncs 1, journal_compaction_ns 477706641, journal_compactions 1, seal_waits 3, seal_waits_ns 2359010, seals 3, seals_ns 339453914, window_map_bytes_evacuate 47407104, window_map_bytes_grow 64618496, window_map_bytes_reach 2883584, window_map_bytes_restage 196608, window_map_requests 501, window_maps 15425, window_maps_evacuate 11574, window_maps_grow 287, window_maps_ns 898219357, window_maps_reach 35, window_maps_restage 3, window_regions 34
+RESULT mmap-rand-write IOPS higher 10009.725
+REQUESTS mmap-rand-write: read 0.00 (306 µs each), write 0.03 (786 µs each), free 0.00 (82034 µs each), map 0.03 (1750 µs each), commit 0.00 (159270 µs each) per operation
+FXFS fsync-append: device_commits 255, device_commits_ns 91525997, device_write_bytes 1974272, device_writes 482, device_writes_ns 1567477807, fsyncs 255, seal_waits 255, seal_waits_ns 656560, seals 255, seals_ns 94855234, window_map_bytes_evacuate 1384448, window_map_bytes_reach 327680, window_map_bytes_restage 16384000, window_map_requests 522, window_maps 593, window_maps_evacuate 338, window_maps_ns 137911493, window_maps_reach 5, window_maps_restage 250, window_regions_largest_free_bytes 134086656, window_regions_pruned 255, window_unmaps 255, window_unmaps_ns 70156390
+RESULT fsync-append IOPS higher 391.133
+REQUESTS fsync-append: write 1.88 (284 µs each), free 0.01 (21006 µs each), map 2.04 (226 µs each), unmap 1.00 (233 µs each) per operation
+RESULT sqlite-pread-scan MiB/s higher 814.285
+OBSERVED sqlite-pread-scan-faults-per-mib 2.7
+RESULT sqlite-pread-scan-warm MiB/s higher 2643.566
+OBSERVED sqlite-pread-scan-warm-faults-per-mib 2.6
+RESULT sqlite-mmap-scan MiB/s higher 3379.372
+OBSERVED sqlite-mmap-scan-faults-per-mib 5.7
+RESULT sqlite-mmap-scan-warm MiB/s higher 3668.908
+OBSERVED sqlite-mmap-scan-warm-faults-per-mib 5.6
+iteration 3/3
+OBSERVED mtime-ahead-of-guest-ms -4.236
+FXFS seq-write: device_commits 1, device_commits_ns 852196038, device_write_bytes 1036288, device_writes 253, device_writes_ns 2833966967, fsyncs 1, seal_waits 1, seal_waits_ns 21793, seals 1, seals_ns 852219103, window_map_bytes_range 268435456, window_map_bytes_restage 65536, window_map_requests 257, window_maps 257, window_maps_ns 187934026, window_maps_range 256, window_maps_restage 1, window_regions_largest_free_bytes 3633152, window_unmaps 1, window_unmaps_ns 744151
+RESULT seq-write MiB/s higher 152.395
+REQUESTS seq-write: write 0.00 (3505 µs each), free 0.00 (37767 µs each), map 0.00 (686 µs each), unmap 0.00 (737 µs each) per operation
+FXFS rand-read-cold: 
+RESULT rand-read-cold IOPS higher 77649.289
+REQUESTS rand-read-cold:  per operation
+RESULT seq-read-cold MiB/s higher 503.937
+RESULT seq-read-warm MiB/s higher 8558.221
+RESULT rand-read-warm IOPS higher 810782.609
+RESULT mmap-seq-read MiB/s higher 8000.000
+OBSERVED mmap-seq-read-faults-per-mib 5.5
+FXFS rand-write: device_commits 3, device_commits_ns 74219156, device_read_bytes 311296, device_reads 16, device_reads_ns 4333158, device_write_bytes 3575808, device_writes 473, device_writes_ns 811269696, fsyncs 1, journal_compaction_ns 112620423, journal_compactions 1, seal_waits 3, seal_waits_ns 51556, seals 3, seals_ns 74255995, stores_held_by_seals 1, stores_held_by_seals_ns 64780795, window_map_bytes_grow 64421888, window_map_bytes_reach 3211264, window_map_bytes_restage 131072, window_map_requests 445, window_maps 10560, window_maps_grow 285, window_maps_ns 586681997, window_maps_reach 39, window_maps_restage 2, window_regions 34, window_unmaps 1, window_unmaps_ns 285323
+REQUESTS rand-write: read 0.00 (240 µs each), write 0.03 (661 µs each), free 0.00 (1775 µs each), map 0.03 (1319 µs each), unmap 0.00 (278 µs each), commit 0.00 (32566 µs each) per operation
+RESULT rand-write IOPS higher 14396.175
+RESULT mmap-rand-read IOPS higher 671952.524
+FXFS mmap-rand-write: device_commits 1, device_commits_ns 62220014, device_write_bytes 1867776, device_writes 456, device_writes_ns 819178835, fsyncs 1, seal_waits 1, seal_waits_ns 464496, seals 1, seals_ns 62240739, window_map_bytes_grow 65011712, window_map_bytes_reach 2031616, window_map_bytes_restage 65536, window_map_requests 320, window_maps 320, window_maps_grow 288, window_maps_ns 119859923, window_maps_reach 31, window_maps_restage 1, window_regions 32
+REQUESTS mmap-rand-write: write 0.03 (711 µs each), free 0.00 (0 µs each), map 0.02 (348 µs each) per operation
+RESULT mmap-rand-write IOPS higher 18269.303
+[   60.547892] ------------[ cut here ]------------
+[   60.549389] kernel BUG at fs/inode.c:753!
+[   60.550682] Oops: invalid opcode: 0000 [#1] SMP NOPTI
+[   60.552231] CPU: 0 UID: 0 PID: 1 Comm: guest-agent Not tainted 6.18.54+ #1 PREEMPT(none) 
+[   60.554702] RIP: 0010:clear_inode+0x75/0x80
+[   60.556085] Code: c4 02 75 2c 48 8b 93 20 01 00 00 48 8d 83 20 01 00 00 48 39 c2 75 1b c7 83 90 00 00 00 00 03 00 00 5b 41 5c 5d e9 5b 9d b0 00 <0f> 0b 0f 0b 0f 0b 0f 0b 0f 0b 90 55 48 89 e5 41 55 49 89 f5 41 54
+[   60.561553] RSP: 0018:ffffc9000001fdb0 EFLAGS: 00010002
+[   60.563138] RAX: 0000000000000000 RBX: ffff888003453198 RCX: 0000000000200001
+[   60.565278] RDX: 0000000000000001 RSI: ffffea00001c82c0 RDI: ffff888003453310
+[   60.567462] RBP: ffffc9000001fdc0 R08: 0000000000000000 R09: 0000000000000000
+[   60.569645] R10: 0000000000200001 R11: ffff88800720ba00 R12: ffff888003453218
+[   60.571833] R13: ffff8880034532a8 R14: ffffffff8224bde0 R15: 0000000000000000
+[   60.573989] FS:  00007f7bc79210b8(0000) GS:ffff8880fb0c7000(0000) knlGS:0000000000000000
+[   60.576443] CS:  0010 DS: 0000 ES: 0000 CR0: 0000000080050033
+[   60.578213] CR2: 00007f7bc7907000 CR3: 000000000728b004 CR4: 0000000000370eb0
+[   60.580438] Call Trace:
+[   60.581262]  <TASK>
+[   60.581983]  fxfs_vfs_evict_inode+0x2d/0x80
+[   60.583352]  evict+0x102/0x280
+[   60.584387]  ? dentry_unlink_inode+0xc7/0x130
+[   60.585779]  ? d_delete+0xa1/0xb0
+[   60.586854]  iput+0xfc/0x230
+[   60.587802]  do_unlinkat+0x250/0x2a0
+[   60.588962]  __x64_sys_unlink+0x3a/0x70
+[   60.590203]  x64_sys_call+0x19d6/0x1d90
+[   60.591471]  do_syscall_64+0x4a/0x1d0
+[   60.592648]  entry_SYSCALL_64_after_hwframe+0x6c/0x74
+[   60.594213] RIP: 0033:0x7f7bc766cfa0
+[   60.595364] Code: 83 ec 08 b8 58 00 00 00 0f 05 48 89 c7 e8 80 82 ff ff 48 83 c4 08 c3 b8 a2 00 00 00 0f 05 c3 48 83 ec 08 b8 57 00 00 00 0f 05 <48> 89 c7 e8 60 82 ff ff 48 83 c4 08 c3 48 83 ec 08 48 63 ff 48 63
+[   60.600800] RSP: 002b:00007ffc851dc560 EFLAGS: 00000206 ORIG_RAX: 0000000000000057
+[   60.603052] RAX: ffffffffffffffda RBX: 0000000000000010 RCX: 00007f7bc766cfa0
+[   60.605182] RDX: 0000000000000010 RSI: 00007ffc851dc578 RDI: 00007ffc851dc578
+[   60.607322] RBP: 00007ffc851dc720 R08: 8080808080808080 R09: 0101010101010100
+[   60.609457] R10: 00fffcfffcfff8ff R11: 0000000000000206 R12: 0000000000000002
+[   60.611614] R13: 0000000000000000 R14: 00007ffc851dc578 R15: 00007ffc851dd4d8
+[   60.613772]  </TASK>
+[   60.614494] Modules linked in: fips140
+[   60.615686] ---[ end trace 0000000000000000 ]---
+[   60.617107] RIP: 0010:clear_inode+0x75/0x80
+[   60.618397] Code: c4 02 75 2c 48 8b 93 20 01 00 00 48 8d 83 20 01 00 00 48 39 c2 75 1b c7 83 90 00 00 00 00 03 00 00 5b 41 5c 5d e9 5b 9d b0 00 <0f> 0b 0f 0b 0f 0b 0f 0b 0f 0b 90 55 48 89 e5 41 55 49 89 f5 41 54
+[   60.623897] RSP: 0018:ffffc9000001fdb0 EFLAGS: 00010002
+[   60.625495] RAX: 0000000000000000 RBX: ffff888003453198 RCX: 0000000000200001
+[   60.627663] RDX: 0000000000000001 RSI: ffffea00001c82c0 RDI: ffff888003453310
+[   60.629828] RBP: ffffc9000001fdc0 R08: 0000000000000000 R09: 0000000000000000
+[   60.632036] R10: 0000000000200001 R11: ffff88800720ba00 R12: ffff888003453218
+[   60.634195] R13: ffff8880034532a8 R14: ffffffff8224bde0 R15: 0000000000000000
+[   60.636364] FS:  00007f7bc79210b8(0000) GS:ffff8880fb0c7000(0000) knlGS:0000000000000000
+[   60.638806] CS:  0010 DS: 0000 ES: 0000 CR0: 0000000080050033
+[   60.640580] CR2: 00007f7bc7907000 CR3: 000000000728b004 CR4: 0000000000370eb0
+[   60.642783] note: guest-agent[1] exited with irqs disabled
+[   60.644540] note: guest-agent[1] exited with preempt_count 1

@@ -1,0 +1,61 @@
+OBSERVED mtime-ahead-of-guest-ms -4.438
+RESULT seq-write MiB/s higher 133.776
+RESULT rand-read-cold IOPS higher 76920.188
+RESULT seq-read-cold MiB/s higher 493.256
+RESULT seq-read-warm MiB/s higher 8313.343
+RESULT rand-read-warm IOPS higher 814319.840
+RESULT mmap-seq-read MiB/s higher 7529.412
+OBSERVED mmap-seq-read-faults-per-mib 5.5
+RESULT rand-write IOPS higher 18434.519
+RESULT mmap-rand-read IOPS higher 333054.500
+RESULT mmap-rand-write IOPS higher 13960.303
+RESULT fsync-append IOPS higher 385.005
+RESULT sqlite-pread-scan MiB/s higher 824.910
+OBSERVED sqlite-pread-scan-faults-per-mib 2.7
+RESULT sqlite-pread-scan-warm MiB/s higher 2633.944
+OBSERVED sqlite-pread-scan-warm-faults-per-mib 2.6
+RESULT sqlite-mmap-scan MiB/s higher 3430.494
+OBSERVED sqlite-mmap-scan-faults-per-mib 3.7
+RESULT sqlite-mmap-scan-warm MiB/s higher 3731.049
+OBSERVED sqlite-mmap-scan-warm-faults-per-mib 3.7
+OBSERVED mtime-ahead-of-guest-ms -4.250
+RESULT seq-write MiB/s higher 152.849
+RESULT rand-read-cold IOPS higher 92564.972
+RESULT seq-read-cold MiB/s higher 609.524
+RESULT seq-read-warm MiB/s higher 8582.209
+RESULT rand-read-warm IOPS higher 812930.000
+RESULT mmap-seq-read MiB/s higher 8258.065
+OBSERVED mmap-seq-read-faults-per-mib 5.5
+RESULT rand-write IOPS higher 18431.203
+RESULT mmap-rand-read IOPS higher 515683.658
+RESULT mmap-rand-write IOPS higher 11808.271
+RESULT fsync-append IOPS higher 391.551
+RESULT sqlite-pread-scan MiB/s higher 817.439
+OBSERVED sqlite-pread-scan-faults-per-mib 2.7
+RESULT sqlite-pread-scan-warm MiB/s higher 2639.845
+OBSERVED sqlite-pread-scan-warm-faults-per-mib 2.6
+RESULT sqlite-mmap-scan MiB/s higher 3352.172
+OBSERVED sqlite-mmap-scan-faults-per-mib 5.6
+RESULT sqlite-mmap-scan-warm MiB/s higher 3682.827
+OBSERVED sqlite-mmap-scan-warm-faults-per-mib 5.6
+OBSERVED mtime-ahead-of-guest-ms -3.319
+RESULT seq-write MiB/s higher 155.639
+RESULT rand-read-cold IOPS higher 105703.226
+RESULT seq-read-cold MiB/s higher 699.454
+RESULT seq-read-warm MiB/s higher 8526.237
+RESULT rand-read-warm IOPS higher 805432.784
+RESULT mmap-seq-read MiB/s higher 8258.065
+OBSERVED mmap-seq-read-faults-per-mib 5.5
+RESULT rand-write IOPS higher 14306.865
+RESULT mmap-rand-read IOPS higher 728670.665
+RESULT mmap-rand-write IOPS higher 13843.737
+RESULT fsync-append IOPS higher 390.141
+RESULT sqlite-pread-scan MiB/s higher 791.460
+OBSERVED sqlite-pread-scan-faults-per-mib 2.7
+RESULT sqlite-pread-scan-warm MiB/s higher 2648.887
+OBSERVED sqlite-pread-scan-warm-faults-per-mib 2.6
+RESULT sqlite-mmap-scan MiB/s higher 3311.635
+OBSERVED sqlite-mmap-scan-faults-per-mib 7.6
+RESULT sqlite-mmap-scan-warm MiB/s higher 3577.914
+OBSERVED sqlite-mmap-scan-warm-faults-per-mib 7.6
+DONE

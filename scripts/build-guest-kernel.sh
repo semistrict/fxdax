@@ -85,6 +85,7 @@ commit 0001-sched-fxfs-tls.patch include/linux/fxfs_tls.h
 commit 0002-stack-size.patch
 commit 0003-virtio-extent.patch drivers/virtio_extent include/linux/virtio_extent.h
 commit 0004-fxfs.patch fs/fxfs
+commit 0005-dax-entry-order.patch
 rm -f "$index"
 kgit reset -q --hard "$series"
 rm -f "$out"/patches/*.patch

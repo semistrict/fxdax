@@ -330,6 +330,36 @@ mod guest {
         }
     }
 
+    /// A shared mapping read as one PMD, then written one page at a time, leaves no DAX entry
+    /// behind when its file is unlinked.
+    fn test_pmd_write_unlink() {
+        let name = path("pmd-write-unlinked");
+        let data: Vec<u8> = (0..CHUNK).map(|offset| pattern(offset)).collect();
+        fs::write(&name, data).unwrap();
+        evict(&name);
+
+        let file = fs::OpenOptions::new().read(true).write(true).open(&name).unwrap();
+        let map = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                CHUNK,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                file.as_raw_fd(),
+                0,
+            )
+        };
+        assert_ne!(map, libc::MAP_FAILED, "mmap: {}", std::io::Error::last_os_error());
+        let bytes = map.cast::<u8>();
+        assert_eq!(unsafe { bytes.read_volatile() }, pattern(0));
+        unsafe { bytes.write_volatile(b'X') };
+        assert_eq!(unsafe { libc::msync(map, CHUNK, libc::MS_SYNC) }, 0);
+        file.sync_all().unwrap();
+        assert_eq!(unsafe { libc::munmap(map, CHUNK) }, 0);
+        drop(file);
+        fs::remove_file(&name).unwrap();
+    }
+
     fn test_regular_write() {
         let mut file = fs::File::create(path("written")).unwrap();
         file.write_all(WRITTEN).unwrap();
@@ -2059,6 +2089,7 @@ mod guest {
                 ("direct_io", &test_direct_io),
             ];
             if dax {
+                tests.push(("pmd_write_unlink", &test_pmd_write_unlink));
                 tests.push(("regions_pruned", &test_regions_pruned));
                 tests.push(("regions_evacuated", &test_regions_evacuated));
                 tests.push(("evacuate_dropped", &test_evacuate_dropped));

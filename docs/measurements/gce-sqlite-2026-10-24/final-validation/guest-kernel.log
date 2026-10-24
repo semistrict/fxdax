@@ -1,0 +1,88 @@
+make: Entering directory '/var/lib/fxdax-test/guest-kernel-release/kernel6.18-6.18.54-121.166.amzn2023-x86_64'
+.config:3762:warning: override: reassigning to symbol IKCONFIG
+.config:3764:warning: override: reassigning to symbol MSDOS_PARTITION
+.config:3766:warning: override: reassigning to symbol DEVMEM
+.config:3767:warning: override: reassigning to symbol STRICT_DEVMEM
+.config:3769:warning: override: reassigning to symbol SERIO
+.config:3774:warning: override: reassigning to symbol INPUT_KEYBOARD
+.config:3779:warning: override: reassigning to symbol GPIOLIB
+.config:3790:warning: override: reassigning to symbol VIRTIO_PMEM
+.config:3793:warning: override: reassigning to symbol MAGIC_SYSRQ
+.config:3794:warning: override: reassigning to symbol MAGIC_SYSRQ_DEFAULT_ENABLE
+.config:3796:warning: override: reassigning to symbol SERIAL_8250
+.config:3797:warning: override: reassigning to symbol SERIAL_8250_CONSOLE
+
+WARNING: unmet direct dependencies detected for CRYPTO_FIPS
+  Depends on [n]: CRYPTO [=y] && (CRYPTO_ANSI_CPRNG [=n] || CRYPTO_DRBG [=y]) && CRYPTO_SELFTESTS [=y] && (MODULE_SIG [=n] || !MODULES [=y])
+  Selected by [y]:
+  - CRYPTO_FIPS140_EXTMOD [=y] && CRYPTO [=y] && (X86_64 [=y] || ARM64) && MODULES [=y]
+#
+# configuration written to .config
+#
+make: Leaving directory '/var/lib/fxdax-test/guest-kernel-release/kernel6.18-6.18.54-121.166.amzn2023-x86_64'
+    Finished `release` profile [optimized] target(s) in 0.07s
+warning: the following packages contain code that will be rejected by a future version of Rust: aes v0.9.3, chacha20 v0.10.2, memchr v2.8.3, sha2 v0.11.0
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+make: Entering directory '/var/lib/fxdax-test/guest-kernel-release/kernel6.18-6.18.54-121.166.amzn2023-x86_64'
+  SYNC    include/config/auto.conf
+
+WARNING: unmet direct dependencies detected for CRYPTO_FIPS
+  Depends on [n]: CRYPTO [=y] && (CRYPTO_ANSI_CPRNG [=n] || CRYPTO_DRBG [=y]) && CRYPTO_SELFTESTS [=y] && (MODULE_SIG [=n] || !MODULES [=y])
+  Selected by [y]:
+  - CRYPTO_FIPS140_EXTMOD [=y] && CRYPTO [=y] && (X86_64 [=y] || ARM64) && MODULES [=y]
+
+WARNING: unmet direct dependencies detected for CRYPTO_FIPS
+  Depends on [n]: CRYPTO [=y] && (CRYPTO_ANSI_CPRNG [=n] || CRYPTO_DRBG [=y]) && CRYPTO_SELFTESTS [=y] && (MODULE_SIG [=n] || !MODULES [=y])
+  Selected by [y]:
+  - CRYPTO_FIPS140_EXTMOD [=y] && CRYPTO [=y] && (X86_64 [=y] || ARM64) && MODULES [=y]
+  DESCEND objtool
+  CALL    scripts/checksyscalls.sh
+  INSTALL libsubcmd_headers
+  LD      fs/fxfs/fxfs_rust.o
+  CC      fs/fxfs/dax.o
+  AR      fs/fxfs/built-in.a
+  AR      fs/built-in.a
+  AR      built-in.a
+  AR      vmlinux.a
+  LD      vmlinux.o
+  MODPOST vmlinux.symvers
+WARNING: modpost: crypto/fips140/fips140: load_module_cert: EXPORT_SYMBOL used for init symbol. Remove __init or EXPORT_SYMBOL.
+  MODPOST Module.symvers
+WARNING: modpost: crypto/fips140/fips140: load_module_cert: EXPORT_SYMBOL used for init symbol. Remove __init or EXPORT_SYMBOL.
+  MODPOST Module.symvers
+WARNING: modpost: crypto/fips140/fips140: load_module_cert: EXPORT_SYMBOL used for init symbol. Remove __init or EXPORT_SYMBOL.
+  LD      crypto/fips140/fips140-embedded.o
+  HMAC    crypto/fips140/.fips140.hmac
+  LD      crypto/fips140/fips140-digest.o
+  UPD     include/generated/utsversion.h
+  CC      init/version-timestamp.o
+  KSYMS   .tmp_vmlinux0.kallsyms.S
+  AS      .tmp_vmlinux0.kallsyms.o
+  LD      .tmp_vmlinux1
+  NM      .tmp_vmlinux1.syms
+  KSYMS   .tmp_vmlinux1.kallsyms.S
+Symbol _RINvNtCs2RzmApnEpjJ_4core3ptr9drop_glueNCNCINvNtCs2g9MBgr0Qow_4fxfs8lsm_tree21compact_with_iteratorNtNtNtBK_12object_store13object_record12ObjectKeyV54NtB1B_14ObjectValueV60INtNtBI_16persistent_layer10KeptWriterINtNtB1D_18data_object_handle12DirectWriterNtB1D_11ObjectStoreEEINtNtBI_5types19FilterLayerIteratorINtNtBI_5merge14MergerIteratorB1z_B2p_ENCNCINvXNtB1D_5flushINtBI_7LSMTreeB1z_B2p_EINtNtB1D_4tree16MajorCompactableB1z_B2p_E10major_iterB4Y_E00B1z_B2p_ENtNtNtB1D_7journal7yielder17CompactionYielderE00ECsCCSOmqGbDd_10fxfs_linux too long for kallsyms (536 >= 512).
+Please increase KSYM_NAME_LEN both in kernel and kallsyms.c
+Symbol _RINvXs3_NtCslaoSmfS0x5U_10serde_core2deINtNtCs2RzmApnEpjJ_4core6marker11PhantomDataINtNtNtCs2g9MBgr0Qow_4fxfs8lsm_tree5types4ItemNtNtNtB1q_12object_store13object_record12ObjectKeyV54NtB25_14ObjectValueV60EENtB6_15DeserializeSeed11deserializeQINtNtCsjr86reHQuqA_7bincode2de12DeserializerINtNtB3V_4read8IoReaderQINtNtCshuP6zn3CkNr_3std2io6CursorRShEEINtNtB3X_6config14WithOtherLimitINtB5D_17WithOtherTrailingNtB5D_14DefaultOptionsNtNtB5D_8trailing13AllowTrailingENtNtB5D_5limit7BoundedEEECsCCSOmqGbDd_10fxfs_linux too long for kallsyms (512 >= 512).
+Please increase KSYM_NAME_LEN both in kernel and kallsyms.c
+Symbol _RINvNtCs2RzmApnEpjJ_4core3ptr9drop_glueNCNCINvNtCs2g9MBgr0Qow_4fxfs8lsm_tree21compact_with_iteratorNtNtNtBK_12object_store13object_record12ObjectKeyV54NtB1B_14ObjectValueV60INtNtBI_16persistent_layer10KeptWriterINtNtB1D_18data_object_handle12DirectWriterNtB1D_11ObjectStoreEEINtNtBI_5types19FilterLayerIteratorINtNtBI_5merge14MergerIteratorB1z_B2p_ENCNCINvXNtB1D_5flushINtBI_7LSMTreeB1z_B2p_EINtNtB1D_4tree16MajorCompactableB1z_B2p_E10major_iterB4Y_E00B1z_B2p_ENtNtNtB1D_7journal7yielder17CompactionYielderE00EBK_ too long for kallsyms (514 >= 512).
+Please increase KSYM_NAME_LEN both in kernel and kallsyms.c
+  AS      .tmp_vmlinux1.kallsyms.o
+  LD      .tmp_vmlinux2
+  NM      .tmp_vmlinux2.syms
+  KSYMS   .tmp_vmlinux2.kallsyms.S
+Symbol _RINvNtCs2RzmApnEpjJ_4core3ptr9drop_glueNCNCINvNtCs2g9MBgr0Qow_4fxfs8lsm_tree21compact_with_iteratorNtNtNtBK_12object_store13object_record12ObjectKeyV54NtB1B_14ObjectValueV60INtNtBI_16persistent_layer10KeptWriterINtNtB1D_18data_object_handle12DirectWriterNtB1D_11ObjectStoreEEINtNtBI_5types19FilterLayerIteratorINtNtBI_5merge14MergerIteratorB1z_B2p_ENCNCINvXNtB1D_5flushINtBI_7LSMTreeB1z_B2p_EINtNtB1D_4tree16MajorCompactableB1z_B2p_E10major_iterB4Y_E00B1z_B2p_ENtNtNtB1D_7journal7yielder17CompactionYielderE00ECsCCSOmqGbDd_10fxfs_linux too long for kallsyms (536 >= 512).
+Please increase KSYM_NAME_LEN both in kernel and kallsyms.c
+Symbol _RINvXs3_NtCslaoSmfS0x5U_10serde_core2deINtNtCs2RzmApnEpjJ_4core6marker11PhantomDataINtNtNtCs2g9MBgr0Qow_4fxfs8lsm_tree5types4ItemNtNtNtB1q_12object_store13object_record12ObjectKeyV54NtB25_14ObjectValueV60EENtB6_15DeserializeSeed11deserializeQINtNtCsjr86reHQuqA_7bincode2de12DeserializerINtNtB3V_4read8IoReaderQINtNtCshuP6zn3CkNr_3std2io6CursorRShEEINtNtB3X_6config14WithOtherLimitINtB5D_17WithOtherTrailingNtB5D_14DefaultOptionsNtNtB5D_8trailing13AllowTrailingENtNtB5D_5limit7BoundedEEECsCCSOmqGbDd_10fxfs_linux too long for kallsyms (512 >= 512).
+Please increase KSYM_NAME_LEN both in kernel and kallsyms.c
+Symbol _RINvNtCs2RzmApnEpjJ_4core3ptr9drop_glueNCNCINvNtCs2g9MBgr0Qow_4fxfs8lsm_tree21compact_with_iteratorNtNtNtBK_12object_store13object_record12ObjectKeyV54NtB1B_14ObjectValueV60INtNtBI_16persistent_layer10KeptWriterINtNtB1D_18data_object_handle12DirectWriterNtB1D_11ObjectStoreEEINtNtBI_5types19FilterLayerIteratorINtNtBI_5merge14MergerIteratorB1z_B2p_ENCNCINvXNtB1D_5flushINtBI_7LSMTreeB1z_B2p_EINtNtB1D_4tree16MajorCompactableB1z_B2p_E10major_iterB4Y_E00B1z_B2p_ENtNtNtB1D_7journal7yielder17CompactionYielderE00EBK_ too long for kallsyms (514 >= 512).
+Please increase KSYM_NAME_LEN both in kernel and kallsyms.c
+  AS      .tmp_vmlinux2.kallsyms.o
+  LD      vmlinux.unstripped
+  NM      System.map
+  SORTTAB vmlinux.unstripped
+  OBJCOPY vmlinux
+  GEN     modules.builtin.modinfo
+  GEN     modules.builtin
+make: Leaving directory '/var/lib/fxdax-test/guest-kernel-release/kernel6.18-6.18.54-121.166.amzn2023-x86_64'
+/var/lib/fxdax-test/guest-kernel-release/out/x86_64/vmlinux

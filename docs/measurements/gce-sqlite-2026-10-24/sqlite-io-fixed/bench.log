@@ -1,0 +1,45 @@
+    Finished `release` profile [optimized] target(s) in 0.18s
+warning: firecracker@1.16.1: No default seccomp policy for target: x86_64-unknown-linux-gnu. Defaulting to `resources/seccomp/unimplemented.json`.
+    Finished `release` profile [optimized] target(s) in 0.23s
+
+running 4 tests
+....
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.69s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[bench-fs-fxfs-guest-dax] ... WARNING: buildah not available, running without namespace isolation.
+Tests may fail if the required network ports are already in use.
+REPORT
+  fxfs-guest-dax (3 iterations)
+
+  workload                     median          min          max  unit
+  seq-write                     152.8        133.8        155.6  MiB/s
+  rand-read-cold              92565.0      76920.2     105703.2  IOPS
+  seq-read-cold                 609.5        493.3        699.5  MiB/s
+  seq-read-warm                8526.2       8313.3       8582.2  MiB/s
+  rand-read-warm             812930.0     805432.8     814319.8  IOPS
+  mmap-seq-read                8258.1       7529.4       8258.1  MiB/s
+  rand-write                  18431.2      14306.9      18434.5  IOPS
+  mmap-rand-read             515683.7     333054.5     728670.7  IOPS
+  mmap-rand-write             13843.7      11808.3      13960.3  IOPS
+  fsync-append                  390.1        385.0        391.6  IOPS
+  sqlite-pread-scan             817.4        791.5        824.9  MiB/s
+  sqlite-pread-scan-warm       2639.8       2633.9       2648.9  MiB/s
+  sqlite-mmap-scan             3352.2       3311.6       3430.5  MiB/s
+  sqlite-mmap-scan-warm        3682.8       3577.9       3731.0  MiB/s
+  mmap-seq-read-faults-per-mib: [5.5, 5.5, 5.5]
+  mtime-ahead-of-guest-ms: [-4.438, -4.25, -3.319]
+  sqlite-mmap-scan-faults-per-mib: [3.7, 5.6, 7.6]
+  sqlite-mmap-scan-warm-faults-per-mib: [3.7, 5.6, 7.6]
+  sqlite-pread-scan-faults-per-mib: [2.7, 2.7, 2.7]
+  sqlite-pread-scan-warm-faults-per-mib: [2.6, 2.6, 2.6]
+
+(See test artifacts at: /home/ramon/sqlite-io-fixed/logs/bench-fs-fxfs-guest-dax)
+
+OK - 0/0 passed (1 reports)
+Logs: /home/ramon/sqlite-io-fixed/logs
+Results: /home/ramon/sqlite-io-fixed
