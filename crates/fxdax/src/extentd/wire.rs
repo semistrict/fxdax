@@ -466,9 +466,14 @@ impl AsyncSender {
         drop(dropped);
     }
 
-    /// Shuts the connection down, which ends its receiver's messages.
+    /// Shuts the connection down, which ends its receiver's messages: a failure logged, but for
+    /// the connection's being gone already (`ENOTCONN`).
     pub fn shutdown(&self) {
-        let _ = self.stream.get_ref().shutdown(std::net::Shutdown::Both);
+        if let Err(err) = self.stream.get_ref().shutdown(std::net::Shutdown::Both)
+            && err.kind() != io::ErrorKind::NotConnected
+        {
+            log::warn!("extentd: shutting a VM process's connection down: {err}");
+        }
     }
 }
 
