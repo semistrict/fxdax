@@ -1305,18 +1305,20 @@ async fn flush_behind(store: Arc<ExtentStore>, mut stopped: tokio::sync::oneshot
 
 /// fxdax: how many threads every store's flushes, and its looks whether a pass of cleaning is
 /// due, run on, at most ([`flush_behind`], TASK-92.49): as many syncs at once as a host's disk
-/// takes, those past them waiting a few milliseconds for their turn, holding no thread. A
+/// takes, those past them waiting a few milliseconds for their turn, holding no thread; and the
+/// 15 a flush of many files syncs them on beside its own, which every flush shares
+/// (`extent_store`'s `HELPERS`), 47 threads at most at once, those 15 none once idle. A
 /// blocking thread each, for every store whose flush came due at its turn, hundreds of stores'
 /// guests committing together kept as many as their syncs' waits took, each idle 10 s after,
 /// and made no store durable sooner: on a GCE host's disk, 300 stores' guests committing at once
 /// kept 297, their commits durable within 54 ms, the median, as with these; half as many took
 /// twice as long (`hundreds_of_writers_flush_on_threads_they_share`).
-const FLUSHES: usize = 32;
+pub(super) const FLUSHES: usize = 32;
 
 /// fxdax: how many threads every store's passes of cleaning run on, at most ([`flush_behind`],
 /// TASK-92.49): the host's work behind its guests, each pass copying what is live of a store's
 /// segments, which waits its turn.
-const CLEANINGS: usize = 4;
+pub(super) const CLEANINGS: usize = 4;
 
 /// fxdax: the threads stores' flushes run on ([`FLUSHES`]).
 static FLUSHERS: std::sync::LazyLock<Pool> =

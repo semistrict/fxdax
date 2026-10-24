@@ -92,10 +92,38 @@ impl<T> Durability<T> {
 /// (345-1284 ms), and 175 ms (168-209 ms); `durable`'s flushes of fifteen files, each run's the
 /// mean of a hundred, 35.6 ms (34.8-36.6 ms), and 24.1 ms (23.2-25.5 ms), the load 5.7-18. On
 /// Linux, where each is an `fdatasync`, neither the gain nor the bound is measured yet. Each sync
-/// but the flush's own is on a thread the flush starts, and the bound is each flush's, not the
-/// host's: stores flushing together each put up to sixteen syncs on the host's disk at once, which
-/// other stores' commits may wait behind.
+/// but the flush's own is on a thread the flush starts, of [`HELPERS`], which every flush shares.
 const AT_ONCE: usize = 16;
+
+/// fxdax: how many threads, beside the flushes' own, every flush of the process syncs on at once,
+/// at most (TASK-92.49): as many as one flush syncs on beside its own ([`AT_ONCE`]), which a flush
+/// alone gets, and flushes together share. Were they each flush's, the extent daemon's 32 threads
+/// of flushes would sync on as many as 512 threads at once, and its stores' commits wait behind as
+/// many syncs.
+const HELPERS: usize = AT_ONCE - 1;
+
+/// fxdax: how many of [`HELPERS`] sync now.
+static HELPING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// fxdax: some of [`HELPERS`], taken for a flush's syncs until dropped.
+struct Helpers(usize);
+
+impl Helpers {
+    /// As many of them as are free, `wanted` at most.
+    fn take(wanted: usize) -> Self {
+        use std::sync::atomic::Ordering;
+        let helping = HELPING.update(Ordering::AcqRel, Ordering::Acquire, |helping| {
+            helping + wanted.min(HELPERS - helping)
+        });
+        Self(wanted.min(HELPERS - helping))
+    }
+}
+
+impl Drop for Helpers {
+    fn drop(&mut self) {
+        HELPING.fetch_sub(self.0, std::sync::atomic::Ordering::AcqRel);
+    }
+}
 
 /// What a flush makes durable of the commits it takes: the files their data is in, and the
 /// directories whose entries they changed.
@@ -174,7 +202,7 @@ impl<F: File> Syncs<F> {
 /// queue, so that no sync begins once it has, though other threads may take one before: what they
 /// sync then does no harm, as the flush fails. A thread the host refuses is one fewer: the
 /// caller's syncs whatever the others don't, so that a flush never fails for want of threads
-/// (TASK-92.42).
+/// (TASK-92.42); as do those of [`HELPERS`] other flushes have (TASK-92.49).
 fn at_once<T: Sync>(
     items: &[T],
     most: usize,
@@ -191,8 +219,9 @@ fn at_once<T: Sync>(
             }
         }
     };
+    let helpers = Helpers::take(items.len().min(most).saturating_sub(1));
     thread::scope(|scope| {
-        let others: Vec<_> = (1..items.len().min(most))
+        let others: Vec<_> = (0..helpers.0)
             .map_while(|_| match thread::Builder::new().spawn_scoped(scope, syncing) {
                 Ok(other) => Some(other),
                 Err(error) => {
@@ -328,6 +357,8 @@ mod tests {
             /// The file whose sync fails, if any.
             failing: Option<usize>,
             seen: Arc<(Mutex<Seen>, Condvar)>,
+            /// The syncs of its files, and of other probes' that share it, which flush beside it.
+            together: Arc<Mutex<Syncing>>,
         }
 
         struct ProbeFile {
@@ -337,7 +368,13 @@ mod tests {
 
         impl Probe {
             fn new(at_once: usize, gathering: bool, failing: Option<usize>) -> Self {
-                Self { at_once, gathering, failing, seen: Default::default() }
+                let (seen, together) = Default::default();
+                Self { at_once, gathering, failing, seen, together }
+            }
+
+            /// A probe as [`Probe::new`] makes, whose files' syncs are counted with `other`'s.
+            fn beside(other: &Probe) -> Self {
+                Self { together: other.together.clone(), ..Self::new(other.at_once, false, None) }
             }
 
             /// A sync, of one of `total` files or directories, whose counts `of` picks.
@@ -370,7 +407,13 @@ mod tests {
                 if self.failing == Some(number) {
                     return Err(io::Error::other(format!("file {number} fails")));
                 }
+                {
+                    let mut together = self.together.lock().unwrap();
+                    together.in_flight += 1;
+                    together.most = together.most.max(together.in_flight);
+                }
                 self.sync(|seen| &mut seen.files, FILES);
+                self.together.lock().unwrap().in_flight -= 1;
                 Ok(())
             }
         }
@@ -487,6 +530,30 @@ mod tests {
                 assert_eq!((seen.files.most, seen.files.done), (AT_ONCE, FILES));
                 assert_eq!((seen.dirs.most, seen.dirs.done), (DIRS, DIRS));
                 assert_eq!(seen.synced, synced_once());
+            });
+        }
+
+        /// TASK-92.49: flushes syncing at once sync on their own threads and [`HELPERS`] at most,
+        /// which they share: not as many as [`AT_ONCE`] each, as every store's flushes would, many
+        /// at once. Each syncs each of its files once.
+        #[test]
+        fn flushes_together_share_their_helpers() {
+            const FLUSHES: usize = 3;
+            schedules(|| {
+                let first = Probe::new(AT_ONCE, false, None);
+                let probes: Vec<_> = std::iter::once(first.clone())
+                    .chain((1..FLUSHES).map(|_| Probe::beside(&first)))
+                    .collect();
+                thread::scope(|scope| {
+                    for probe in &probes {
+                        scope.spawn(move || syncs(probe).sync(probe).unwrap());
+                    }
+                });
+                let most = first.together.lock().unwrap().most;
+                assert!(most <= FLUSHES + HELPERS, "{most} syncs at once");
+                for probe in &probes {
+                    assert_eq!(probe.seen.0.lock().unwrap().synced, synced_once());
+                }
             });
         }
 

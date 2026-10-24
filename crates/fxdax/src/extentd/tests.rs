@@ -1919,14 +1919,15 @@ fn counting_followers_walks_no_extents() {
 /// TASK-92.49: the daemon makes the ordered commits of 300 stores' guests durable on threads they
 /// share, a bounded number, rather than a blocking thread for each store whose flush is due at
 /// its turn, which hundreds of guests committing together kept as many of as their syncs' waits
-/// took, each idle 10 s after: here each guest commits, ordered, again and again for a second,
-/// and, once their commits are durable, the daemon's runtime and the threads its stores' flushes
-/// and passes of cleaning run on keep no more threads than it serves 300 forks' reads on
-/// (`serves_hundreds_of_forks_of_a_base`). The most seen at once is told too: those a flush syncs
-/// its files on beside its own, as many as 15 (`extent_store`'s `AT_ONCE`, TASK-92.42), which go
-/// with it, count as its. One guest's commits are durable within a few turns of 50 ms each, and
-/// the flushes' time: the most one waited, its lag, is measured. The stores are on a disk, in
-/// `/var/tmp`, as a host's are: `/tmp` may be memory (tmpfs), whose syncs cost nothing.
+/// took, each idle 10 s after: here each guest commits, ordered, again and again for a second.
+/// At once, the stores' flushes run on `FLUSHES` threads at most, and the 15 they share to sync
+/// their files on beside their own (`extent_store`'s `HELPERS`, which count as theirs, named as
+/// they are), and their passes of cleaning on `CLEANINGS`: the most of each seen at once, looking
+/// every millisecond, is no more. Once their commits are durable, the daemon's runtime and those
+/// threads keep no more threads than it serves 300 forks' reads on
+/// (`serves_hundreds_of_forks_of_a_base`). One guest's commits are durable within a few turns of
+/// 50 ms each, and the flushes' time: the most one waited, its lag, is measured. The stores are on
+/// a disk, in `/var/tmp`, as a host's are: `/tmp` may be memory (tmpfs), whose syncs cost nothing.
 #[test]
 fn hundreds_of_writers_flush_on_threads_they_share() {
     use std::sync::Arc;
@@ -2028,6 +2029,8 @@ fn hundreds_of_writers_flush_on_threads_they_share() {
         most.iter().sum::<usize>(),
         lags.len()
     );
+    let (flushing, cleaning) = (super::server::FLUSHES + 15, super::server::CLEANINGS);
+    assert!(most[1] <= flushing && most[2] <= cleaning, "{most:?} named {NAMES:?} at once");
     assert!(threads < 64, "{threads} threads kept: {kept:?} named {NAMES:?}, of {names:?}");
     // Four turns.
     assert!(lag < std::time::Duration::from_millis(200), "ordered commits durable {lag:?} after");
