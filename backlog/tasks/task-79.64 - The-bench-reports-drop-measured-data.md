@@ -1,10 +1,10 @@
 ---
 id: TASK-79.64
 title: The bench reports drop measured data
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-21 21:00'
-updated_date: '2026-10-24 12:29'
+updated_date: '2026-10-24 16:13'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -28,7 +28,7 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity low): docs/reviews/2
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A test reproduces the failure on the code before the fix
+- [x] #1 A test reproduces the failure on the code before the fix
 - [x] #2 Fixed, and the test passes on macOS and on Linux (GCE)
 <!-- AC:END -->
 
@@ -45,4 +45,12 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity low): docs/reviews/2
 Finalization check (after the push of 47b7a348): not done. AC#1: no test was shown to fail on the old code for one of the task's bugs: bench-history.py dropping the fork and followed backends. That part was fixed in 661b227f (the shared registry). Its test, test_every_filesystem_measured_and_what_it_compares_with, calls history(), which bench-history.py did not have before 661b227f, so it never ran on the old script. The only before-evidence is the old committed fs-bench-history.md. What's needed: run that test's fixture (a followed run plus an unknown filesystem) through the pre-661b227f bench-history.py and show the backends missing. The other three bugs (bench.sh stopping, report rows from the first backend, history ordered by name) each have a test that failed first. Audit: The claimed AC#2 and DoD items hold. The fixes are on main: e64256cd, 6537fa37, 05e200b8, and 661b227f (the shared registry). The tests are on main and pass on macOS and on Linux GCE (79 OK). Only scripts/ and docs/measurements changed. The not-done verdict is correct, because AC#1 is unproven for one described bug: bench-history.py dropping the fork and followed backends. Its fix, 661b227f, came with test_every_filesystem_measured_and_what_it_compares_with, which calls history(), a function that commit added. No report (round2c G5 item, fixed/revised items[3]) shows that test, or any other, failing on the old bench-history.py. The only before-evidence is the old committed fs-bench-history.md, which is a generated document, not a test. What is needed: a run of that test's fixture through the pre-661b227f bench-history.py showing the backends missing. The other parts each have a test that failed before: bench.sh stopping before the report, rows taken from the first backend only, the name order, failed groups, and a reused results directory.
 
 Handed over (2026-10-24): partly done in round 2c (scripts). Left: a test that fails on the old report code.
+
+AC1: test_the_script_writes_every_filesystem_a_run_measured (311638a1e) run against 661b227fd^'s scripts: FAIL, 'Lists differ: [False, False] != [True, True]' (the fork's and the followed writer's rows missing); passes on main. Linux: GCE r65 (2026-10-24, us-east1-b) workspace 2621/2621 passed, guest checks, checks-dax and pgbench-dax OK on kernel b4 (main's guest code); macOS: scripts/test.sh green (2508 workspace tests, Shuttle and scripts suites), scripts/tests 84 OK; scripts/upstream-changes.py --check passes.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The bench reports keep every measured row: bench.sh reports after a failed case, rows from every backend, history in start order, every filesystem a run measured (shared registry, 661b227fd). Each part pinned by a scripts/tests test shown failing on the code before.
+<!-- SECTION:FINAL_SUMMARY:END -->

@@ -1,11 +1,11 @@
 ---
 id: TASK-79.53
 title: Bytes an mmap stores past EOF become file data when the file grows
-status: In Progress
+status: Done
 assignee:
   - '@main-session'
 created_date: '2026-10-21 21:00'
-updated_date: '2026-10-24 15:11'
+updated_date: '2026-10-24 16:13'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -29,19 +29,27 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity low): docs/reviews/2
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A test reproduces the failure on the code before the fix
-- [ ] #2 Fixed, and the test passes on macOS and on Linux (GCE)
+- [x] #1 A test reproduces the failure on the code before the fix
+- [x] #2 Fixed, and the test passes on macOS and on Linux (GCE)
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
 Fix in 075723b80 (the EOF folio's tail zeroed on growth); store_past_end passes on GCE. Not yet seen failing on the kernel before: that kernel oopses at short_copy, earlier in the same check run.
+
+Red: fxfs-guest-checks with FXDAX_CHECKS=store_past_end on the kernel before 075723b80 (vmlinux-evac2), GCE r65: 'expected exactly "OK\n", got "FAILED: store_past_end\n"'. Green on main's kernel (b4) in the same round, every check. Linux: GCE r65 (2026-10-24, us-east1-b) workspace 2621/2621 passed, guest checks, checks-dax and pgbench-dax OK on kernel b4 (main's guest code); macOS: scripts/test.sh green (2508 workspace tests, Shuttle and scripts suites), scripts/tests 84 OK; scripts/upstream-changes.py --check passes.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Bytes an mmap stored past EOF are zeroed before the file grows over them (fxfs_vfs_zero_past_end in resize and write_begin, 075723b80). Pinned by fxfs-guest-checks' store_past_end: red on the kernel before, green on main's (GCE r65).
+<!-- SECTION:FINAL_SUMMARY:END -->

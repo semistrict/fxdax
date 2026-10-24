@@ -3,11 +3,11 @@ id: TASK-92.9
 title: >-
   Cold sequential reads without DAX: readahead stays at 128 KiB and blocks the
   reader for each window
-status: In Progress
+status: Done
 assignee:
   - '@main-session'
 created_date: '2026-10-22 21:06'
-updated_date: '2026-10-24 15:11'
+updated_date: '2026-10-24 16:45'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -31,19 +31,29 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity high): docs/reviews/
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A measurement or a test shows the cost before the change (requests, copies, lock hold or time on the workload named)
-- [ ] #2 The change removes or bounds it, shown by the same measurement, and the macOS and Linux (GCE) suites pass
+- [x] #1 A measurement or a test shows the cost before the change (requests, copies, lock hold or time on the workload named)
+- [x] #2 The change removes or bounds it, shown by the same measurement, and the macOS and Linux (GCE) suites pass
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
 075723b80: ra_pages and io_pages at FXFS_IO_MAX (1 MiB). Not measured yet (seq-read-cold in fs-bench); the synchronous readahead (one READ in flight) and its copies remain.
+
+Measured (bench-fs-fxfs-guest, io group, c3-standard-8 us-east1-b, 3 iterations, one host): seq-read-cold 865 MiB/s (661-928) with the kernel before 075723b80 (128 KiB windows) against 677 (544-694) with 1 MiB windows: larger windows alone made it slower, each one a synchronous read through two window-sized kvmalloc buffers (a Vec in read_bytes, the C bounce) and three copies. Next: fxfs_read_into, the device's transfer buffer straight into the folios, and the read on a workqueue off the reader (kernel b5, round r67).
+
+After (3957baae7, kernel b5), GCE us-west1-a c3-standard-8, same host as its before (b4, 1 MiB synchronous bounced readahead), 3 iterations each: seq-read-cold 660 (518-698) -> 1,274 (970-1,306) MiB/s, against 865 with 128 KiB windows on another host; rand-read-cold 3,364 -> 3,233 IOPS (-4%); seq-write, warm reads, mmap flat. Guest cases on b5 (GCE r67): extent-guest, fxfs-guest, -dax, -checks, -checks-dax, -pgbench OK. Linux workspace green (r65, 2621), macOS scripts/test.sh green; upstream-changes --check passes.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Readahead reads from the device's transfer buffer straight into its folios (fxfs_read_into), on a workqueue off the reader, in 1 MiB windows: cold sequential reads 660 -> 1,274 MiB/s on GCE (865 at the old 128 KiB), guest suites green.
+<!-- SECTION:FINAL_SUMMARY:END -->
