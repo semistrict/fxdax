@@ -24,7 +24,7 @@ Measured with a guest kernel logging the window every 5 s (pgbench -s 50 on fxfs
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [x] #1 Window use under pgbench -s 50 with a 2 GiB window stays below its size, or reclaiming keeps up without remap storms, shown by a window-usage measurement
-- [x] #2 fxfs-guest-pgbench-dax's third run within 10% of its first
+- [ ] #2 fxfs-guest-pgbench-dax's third run within 10% of its first
 <!-- AC:END -->
 
 ## Definition of Done
@@ -56,4 +56,6 @@ With /proc/fs/fxfs (263a3c34), DAX pgbench runs 1-3: commits 0.58 / 0.70 / 0.77 
 2026-10-23, sandbox round 7 at beedb64 (DAX 2 GiB 975->802 tps, 8 GiB 1021->801; ~92k MAPs a run) and our runs at vmlinux-drv3 (GCE r63). Their 'window full' counts the ranges' pool alone; the regions' pool is full 75-99k times a run here, and 54-72k of a run's 66-73k MAPs are range MAPs. With an 8 GiB window (experiment, not committed): the load seals ~200 times; run 1 seals 38,960 times and makes ~30,000 regions (869 -> 28,568; regions' pool 4 GiB -> 351 MB free), pinned by pages written once (accounts rows, history), which pruning can't free; from run 2 the regions' pool is full and writes MAP their pages into ranges (44-67k a run), tps 1018/802/750/759/725. A larger window delays the fall-back, no more: regions save a write's MAP only while the pool has room, and moving cold pages out of small sealed regions (option 1's second half) costs the same MAPs. Next: the per-MAP cost (TASK-92.50, TASK-91.16: ~40-60 us in extentd against ~400 us the guest waits); then, if needed, the device moving a seal's staging pages to their ranges' addresses as part of the seal's remap, so a written page takes no MAP of its own.
 
 30407e2a: evacuation. DAX pgbench (GCE r63, vmlinux-evac1): regions 360-540, regions' pool full 0-1 a run, range MAPs 66-143 a run; tps 890/780/758/727/698, run 5 -22% (was -29%). Per run: commits 630-731 us (no DAX 363-410 us), MAP requests 614-793 us, 58-72k a run (restage ~28k + evacuation ~30k, off the write path, 44-46 s), stores held by seals 7-13 s. Left: one MAP request per seal (restage and evacuation in one MAP_MANY), and the DAX commit's extra ~300 us (the host's seal remap, the review session's seal-in-place reprotect on round 2b).
+
+AC2 not met yet: run 3 758 tps is 15% below run 1's 890.
 <!-- SECTION:NOTES:END -->
