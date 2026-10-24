@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@main-session'
 created_date: '2026-10-21 20:58'
-updated_date: '2026-10-24 15:21'
+updated_date: '2026-10-24 20:55'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -52,4 +52,6 @@ On main (2026-10-24): round 2b rebased onto main and pushed with the guest batch
 Round 2b audit (2026-10-24): on main and green (Verified on main at 043d413da (2026-10-24): macOS scripts/test.sh (2508 workspace tests and the Shuttle and scripts suites), Linux on GCE r65 (workspace 2620, Firecracker extent tests, 17 guest cases), scripts/upstream-changes.py --check. Failing-first evidence: the fix commit's message records the test failing on its parent on GCE (round 2b audit, 2026-10-24). minus the failing-first part). Left:
 
 the SyncStore early release has no failing-first test (99e00fe92: its test passes on the base); the holder_or_hold and teardown/cancelled-ForkStore paths were red before (c0153b197, 99e00fe92).
+
+Tried again (2026-10-24, GCE r70, r73): a sync then, on the same long-lived runtime, (a) a second sync, (b) holding the path and probing the store directory's flock without waiting: both pass on c0153b197^ too. After a sync everything is uploaded, so the close the old code left to a blocking thread finishes before the next holder looks; the early release shows only with a close slower than that, which nothing in the store makes so (latency 200 ms didn't). A red needs a hook slowing Here's close in the test build, on both trees. Left at that: low severity, the fix's mechanism (HeldStore) is the cancelled fork's, which the Shuttle tests show red.
 <!-- SECTION:NOTES:END -->
