@@ -1,9 +1,11 @@
 ---
 id: TASK-79.96
 title: 'Guest Fxfs: chmod leaves named-user ACL permissions unchanged'
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@main-session'
 created_date: '2026-10-24 00:53'
+updated_date: '2026-10-24 12:48'
 labels:
   - review-2026-10-23
 dependencies: []

@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-21 20:58'
+updated_date: '2026-10-24 14:08'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -39,3 +40,9 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity high): docs/reviews/
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-10-24 attempt, reverted: txn_map_write took the fault's page ('held') and Fxfs wrote it into the moved block in the moving transaction. On GCE, fxfs-guest-checks-dax's new faults_writes_compaction then killed the VM (Firecracker: vcpu run: Bad address), bisected to this change (variant without it passes). The device WRITE of the page into a staging extent races the window's view of that extent: a fault's block can land in a staging extent the restage hasn't mapped (opened) yet, whose WRITE then goes to the store rather than the open extent's memory the window maps, and the writable MAP after finds it in another state. The keep=true fault path (used when the held copy can't be allocated) writes the same way: filed as TASK-79.107. A fix needs the host to take device writes to a not-yet-opened staging extent as the open extent's (or the guest to write only after the window opened it).
+<!-- SECTION:NOTES:END -->

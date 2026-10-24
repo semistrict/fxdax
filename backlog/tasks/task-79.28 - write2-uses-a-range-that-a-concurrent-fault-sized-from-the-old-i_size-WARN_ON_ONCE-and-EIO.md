@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-21 20:58'
+updated_date: '2026-10-24 14:08'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -39,3 +40,9 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity medium): docs/review
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-10-24 attempt, reverted with TASK-79.12's change: write_iter fitted the ranges inside the invalidate_lock hold across the copy; that hold hung fxfs-guest-crash-dax. A fix needs the fit and the write under one hold without that hang. The check append_while_mapped passes on old and new kernels (the race is narrow).
+<!-- SECTION:NOTES:END -->

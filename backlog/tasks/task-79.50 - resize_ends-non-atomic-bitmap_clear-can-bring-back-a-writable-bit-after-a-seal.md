@@ -3,9 +3,11 @@ id: TASK-79.50
 title: >-
   resize_end's non-atomic bitmap_clear can bring back a writable bit after a
   seal
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@main-session'
 created_date: '2026-10-21 20:59'
+updated_date: '2026-10-24 12:48'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -39,3 +41,9 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity low): docs/reviews/2
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+No deterministic seam: the race is a seal's lockless bitmap_zero of range->writable against resize_end's non-atomic bitmap_clear of the same word. Fixed by clearing writable bits atomically outside the gate (fxfs_dax_clear_writable), in resize_end and fxfs_dax_mapped.
+<!-- SECTION:NOTES:END -->

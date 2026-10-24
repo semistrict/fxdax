@@ -1,9 +1,11 @@
 ---
 id: TASK-92.3
 title: A guest DAX range never drops the regions its pages moved out of
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@main-session'
 created_date: '2026-10-22 21:06'
+updated_date: '2026-10-24 12:48'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -37,3 +39,15 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity high): docs/reviews/
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Fixed by TASK-91.10's work: ranges let go of regions their pages left (009ae677, fxfs_dax_prune), and after each seal the pages ranges moved into the staging extents' regions move to the ranges' own space and the emptied regions go (cb43345f, fxfs_dax_evacuate_work; f859553d1 for evict/truncate). Evidence: fxfs-guest-checks-dax regions_pruned (400 fsynced rewrites: 399 regions more before, <= 32 after) and regions_evacuated (400 single writes: 400 more before, <= 32 after); DAX pgbench on GCE: regions 360-540 (was 1,150-1,750, or 5,400-20,000 before pruning), the regions' pool full 0-1 times a run (was 75-99k), range MAPs 66-143 a run (was 54-72k).
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A DAX range now drops the regions its pages leave (pruning, 009ae677) and after each seal its pages leave the staging regions (evacuation, cb43345f): the window no longer fills with regions; verified by regions_pruned and regions_evacuated (red then green) and DAX pgbench's counters on GCE.
+<!-- SECTION:FINAL_SUMMARY:END -->

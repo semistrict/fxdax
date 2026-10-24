@@ -1,9 +1,11 @@
 ---
 id: TASK-79.14
 title: A short copy into a folio that was never read zeroes the file's existing data
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@main-session'
 created_date: '2026-10-21 20:58'
+updated_date: '2026-10-24 12:27'
 labels:
   - review-2026-10-21
 dependencies: []

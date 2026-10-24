@@ -1,9 +1,11 @@
 ---
 id: TASK-79.53
 title: Bytes an mmap stores past EOF become file data when the file grows
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@main-session'
 created_date: '2026-10-21 21:00'
+updated_date: '2026-10-24 12:48'
 labels:
   - review-2026-10-21
 dependencies: []

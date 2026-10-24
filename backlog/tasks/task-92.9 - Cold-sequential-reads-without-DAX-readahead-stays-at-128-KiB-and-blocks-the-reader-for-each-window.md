@@ -3,9 +3,11 @@ id: TASK-92.9
 title: >-
   Cold sequential reads without DAX: readahead stays at 128 KiB and blocks the
   reader for each window
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@main-session'
 created_date: '2026-10-22 21:06'
+updated_date: '2026-10-24 12:48'
 labels:
   - review-2026-10-21
 dependencies: []

@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-21 20:58'
+updated_date: '2026-10-24 14:08'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -39,3 +40,9 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity high): docs/reviews/
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-10-24 attempt, reverted: DAX write(2) held the invalidate_lock (exclusive) across dax_iomap_rw, so no fault holds a DAX entry the write waits for in the gate. On GCE fxfs-guest-crash-dax then hung at its first step (no output in 15 s); bisected to the write_iter change (without it crash-dax passes). Not diagnosed further. The check faults_writes_compaction (on main with this batch) passes on old and new kernels alike: the cycle needs compaction to land during a fault, rare.
+<!-- SECTION:NOTES:END -->

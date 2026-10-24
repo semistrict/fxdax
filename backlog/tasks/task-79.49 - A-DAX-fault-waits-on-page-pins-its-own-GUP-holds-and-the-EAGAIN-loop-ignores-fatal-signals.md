@@ -3,9 +3,11 @@ id: TASK-79.49
 title: >-
   A DAX fault waits on page pins its own GUP holds, and the -EAGAIN loop ignores
   fatal signals
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@main-session'
 created_date: '2026-10-21 20:59'
+updated_date: '2026-10-24 12:48'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -39,3 +41,9 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity low): docs/reviews/2
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+The fault loop now gives up on a fatal signal (VM_FAULT_SIGBUS), and a fault's slice drop no longer waits for pinned pages (fxfs_dax_drop_pinned with pinned=false returns -EBUSY), so a GUP pinning its own pages fails instead of sleeping. dax_break_layout's wait is interruptible already. No deterministic seam for the self-pin (an O_DIRECT read into a mapping of the file whose slice must drop mid-GUP).
+<!-- SECTION:NOTES:END -->

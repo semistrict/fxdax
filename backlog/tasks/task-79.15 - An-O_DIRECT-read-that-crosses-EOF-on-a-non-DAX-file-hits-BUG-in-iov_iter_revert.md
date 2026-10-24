@@ -3,9 +3,11 @@ id: TASK-79.15
 title: >-
   An O_DIRECT read that crosses EOF on a non-DAX file hits BUG() in
   iov_iter_revert
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@main-session'
 created_date: '2026-10-21 20:58'
+updated_date: '2026-10-24 12:27'
 labels:
   - review-2026-10-21
 dependencies: []

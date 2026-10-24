@@ -1,9 +1,11 @@
 ---
 id: TASK-79.29
 title: Inherited ACLs are written in a later transaction than the inode's creation
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@main-session'
 created_date: '2026-10-21 20:58'
+updated_date: '2026-10-24 12:48'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -37,3 +39,9 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity medium): docs/review
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Fix: fxfs_create takes the inherited ACLs as extended attributes and adds them inline (<= MAX_INLINE_XATTR_SIZE, as ACLs are) to the creating transaction; larger ones are written back with the inode as before. mknod uses it; tmpfile still writes its ACLs with write_inode (an unnamed file until linked). No deterministic seam: the failure needs a crash between the creation's commit and write_inode's.
+<!-- SECTION:NOTES:END -->
