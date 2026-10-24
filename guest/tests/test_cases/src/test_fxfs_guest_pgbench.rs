@@ -13,13 +13,18 @@
 //! run probed (TASK-91.14): profiled, the guest's time by symbol and the callers of its hot
 //! spinlock on the console (fxfs-guest-pgbench-profile); or, as the sandbox team's CPU-bound run,
 //! with synchronous_commit off, its locks' contention, on a kernel that counts it
-//! (fxfs-guest-pgbench-locks, scripts/build-guest-kernel.sh's FXDAX_GUEST_KERNEL_LOCK_STAT).
+//! (fxfs-guest-pgbench-locks, scripts/build-guest-kernel.sh's FXDAX_GUEST_KERNEL_LOCK_STAT). Or,
+//! without DAX, with PostgreSQL's fsync off (fxfs-guest-pgbench-nofsync): the load as fast as it
+//! goes when nothing waits for the store's commits, which the load with fsync on is measured
+//! against on the same host (TASK-91.17).
 
 use macros::{guest, host};
 
 pub struct TestFxfsGuestPgbench {
     pub dax: bool,
     pub probe: Probe,
+    /// Whether PostgreSQL fsyncs, as it does by default.
+    pub fsync: bool,
 }
 
 /// What a run of pgbench's first is probed for (TASK-91.14).
@@ -329,8 +334,10 @@ mod guest {
                         .status()
                         .unwrap();
                     as_postgres(&format!("initdb -D {data} -A trust"));
-                    let options =
-                        format!("-c shared_buffers=256MB -k {socket} -c listen_addresses=''");
+                    let fsync = if self.fsync { "" } else { " -c fsync=off" };
+                    let options = format!(
+                        "-c shared_buffers=256MB -k {socket} -c listen_addresses=''{fsync}"
+                    );
                     // The server's output to a log of its own: it would hold `as_postgres`'s pipe
                     // open, which waits for its end.
                     as_postgres(&format!(

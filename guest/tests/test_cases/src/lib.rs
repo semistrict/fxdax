@@ -79,19 +79,23 @@ pub fn test_cases() -> Vec<TestCase> {
         TestCase::new("fxfs-guest-live-fork", Box::new(TestFxfsGuestLiveFork)),
         TestCase::new(
             "fxfs-guest-pgbench",
-            Box::new(TestFxfsGuestPgbench { dax: false, probe: Probe::None }),
+            Box::new(TestFxfsGuestPgbench { dax: false, probe: Probe::None, fsync: true }),
         ),
         TestCase::new(
             "fxfs-guest-pgbench-dax",
-            Box::new(TestFxfsGuestPgbench { dax: true, probe: Probe::None }),
+            Box::new(TestFxfsGuestPgbench { dax: true, probe: Probe::None, fsync: true }),
         ),
         TestCase::new(
             "fxfs-guest-pgbench-profile",
-            Box::new(TestFxfsGuestPgbench { dax: false, probe: Probe::Profile }),
+            Box::new(TestFxfsGuestPgbench { dax: false, probe: Probe::Profile, fsync: true }),
         ),
         TestCase::new(
             "fxfs-guest-pgbench-locks",
-            Box::new(TestFxfsGuestPgbench { dax: false, probe: Probe::Locks }),
+            Box::new(TestFxfsGuestPgbench { dax: false, probe: Probe::Locks, fsync: true }),
+        ),
+        TestCase::new(
+            "fxfs-guest-pgbench-nofsync",
+            Box::new(TestFxfsGuestPgbench { dax: false, probe: Probe::None, fsync: false }),
         ),
         TestCase::new("fxfs-guest-daemon-lost", Box::new(TestFxfsGuestDaemonLost)),
         TestCase::new("fxfs-guest-follow", Box::new(TestFxfsGuestFollow { dax: false })),
