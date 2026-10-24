@@ -738,7 +738,50 @@ impl<D: Dir> Store<D> {
         while state.gate.is_held() {
             state = self.idle.wait(state).unwrap();
         }
-        let mut state = self.still_writable(state)?;
+        let state = self.still_writable(state)?;
+        self.begin_write_locked(state, extent, offset, len)
+    }
+
+    /// fxdax: begins a write as [`Store::begin_write`] does, or, while a commit, or a closing
+    /// between commits, holds writes back, returns `None` at once rather than wait on the
+    /// caller's thread (TASK-98): an executor's thread waiting there may be the one the writes in
+    /// progress need to end, as futures of the same task, and the commit waits for them for
+    /// ever. Such a caller waits elsewhere ([`Store::wait_until_writes_resume`]) and tries again.
+    pub fn try_begin_write(
+        &self,
+        extent: ExtentId,
+        offset: u64,
+        len: u64,
+    ) -> Result<Option<Write<'_, D>>, Error> {
+        self.check_io(offset, len)?;
+        if extent.branch != self.branch {
+            bail!(OtherBranch(extent));
+        }
+        let state = self.writable()?;
+        if state.gate.is_held() {
+            return Ok(None);
+        }
+        self.begin_write_locked(state, extent, offset, len).map(Some)
+    }
+
+    /// fxdax: waits, blocking the calling thread, until no commit, nor closing between commits,
+    /// holds writes back ([`Store::try_begin_write`]).
+    pub fn wait_until_writes_resume(&self) {
+        let mut state = self.state.lock().unwrap();
+        while state.gate.is_held() {
+            state = self.idle.wait(state).unwrap();
+        }
+    }
+
+    /// Begins a write, as [`Store::begin_write`] says, with `state`, writable, held, and no commit
+    /// holding writes back.
+    fn begin_write_locked(
+        &self,
+        mut state: MutexGuard<'_, State<D::File>>,
+        extent: ExtentId,
+        offset: u64,
+        len: u64,
+    ) -> Result<Write<'_, D>, Error> {
         let end = offset + len;
         let current = state.extents.get(&extent).map(|entry| entry.len);
         if current.is_some() && !state.uncommitted.is_open(extent) {
