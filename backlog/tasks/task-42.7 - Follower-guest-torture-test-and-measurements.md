@@ -2,10 +2,9 @@
 id: TASK-42.7
 title: Follower guest torture test and measurements
 status: In Progress
-assignee:
-  - '@claude'
+assignee: []
 created_date: '2026-10-17 22:17'
-updated_date: '2026-10-24 10:27'
+updated_date: '2026-10-24 12:28'
 labels: []
 dependencies:
   - TASK-42.6
@@ -52,4 +51,6 @@ The only test of the kernel side under real concurrency (doc-8 testing 6 and 7),
 2026-10-21/24 (GCE). AC1: fxfs-guest-follow-torture(-dax), a writer and two followers, histories checked by follower_history; OK 10/10 on the release kernel. AC2: debug kernel (lockdep, KCSAN, DEBUG_ATOMIC_SLEEP) with the delay points widened (apply 200 us, iomap 50 us): torture and torture-dax 5/5 with no complaint of the followers' code; KCSAN fails the test on reports naming fs/fxfs, virtio_extent or their Rust, but for PF_MEMALLOC_NOFS-only changes (the NOFS scopes' own task flags); the kernel's own races it leaves (each seen, looked into, listed in the test's docs). AC3: each delay point with its invalidation skipped fails the test: fxfs-guest-follow-torture-mutant (no DAX, apply window), -mutant-dax (apply window), -mutant-faults-dax (iomap window), 3/3 each, with the barrier and nested mutants. AC5: a writer alone before and after the fill barrier, alternating, twice each: within noise on every workload (docs/measurements/gce-fs-bench-ac5-barrier-2026-10-21.md), and the earlier check against the commit before the follower code. AC4 open: the hour-long soak found TASK-42.12 (the workload's buffered writes reaching the journal out of order, without DAX), fixed and running again; and the writer is not yet unchanged with followers attached (TASK-42.11, waiting on TASK-41.1).
 
 AC4, in part: an hour each with and without DAX, OK history (docs/measurements/gce-follow-soak-2026-10-24); followers' lag and pinned bytes recorded in docs/measurements (gce-fs-bench-followed-main-2026-10-21T1016Z: at most 409 commits and 2.4 s behind, 436 MiB of frees kept). Left: the writer unchanged with followers attached (TASK-42.11).
+
+2026-10-24, handed back (unassigned): AC1-3 and 5 checked; AC4 left only for the writer unchanged with followers attached, which waits on TASK-42.11 / TASK-41.1 (the hours on GCE and the lag and pinned bytes are recorded).
 <!-- SECTION:NOTES:END -->

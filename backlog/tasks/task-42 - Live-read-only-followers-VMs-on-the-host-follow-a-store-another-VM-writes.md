@@ -2,10 +2,9 @@
 id: TASK-42
 title: 'Live read-only followers: VMs on the host follow a store another VM writes'
 status: In Progress
-assignee:
-  - '@claude'
+assignee: []
 created_date: '2026-10-17 22:17'
-updated_date: '2026-10-24 10:27'
+updated_date: '2026-10-24 12:28'
 labels: []
 dependencies: []
 documentation:
@@ -41,4 +40,6 @@ Other VMs on the writer's host mount a store read-only while a VM has it mounted
 2026-10-24. AC2, each layer of doc-8's testing with its mutation check: 0, TLA+: each of the spec's rules removed (barrier, invalidate, keepFrees, graveyard, cutOff) gives a counterexample (scripts/check-tla.sh); 1, loud failures: extentd's EIO for reads outside a view (extentd tests), and the torture test's Barrier mutant, whose followers' maps of extents let go of extentd refuses; 2, Shuttle: needs_the_barrier, needs_invalidation; 3, the followers' simulation: catches_followers_reading_past_their_views, _splitting_commits, _skipping_changes, needs_flushed_layers_swapped, needs_held_files_kept, needs_changes_told_whole, needs_released_files_let_go; 4, history checking: follower_history's tests of reads past their commits, going back, and held files, and the torture mutants' WRONG histories; 5, comparing each batch: the simulation's compare, which catches skipped changes and unswapped layers; 6, guest torture: the invalidation mutants (DAX, no DAX, the fault window), the barrier and the nested mutants, each caught 3/3 on GCE. AC4: scripts/mutants-followers.sh (cargo-mutants 27.1.0) over the store's views, the Fxfs follower, the protocol and the history checker; tests kill what it left but three equivalent mutants, recorded in doc-8 (Testing). Open: AC1, the hours-long soak (TASK-42.12 found and fixed, running again); AC3, the writer unchanged with followers attached (TASK-42.11, TASK-41.1).
 
 AC1: an hour of the torture test each, with and without DAX, OK history on GCE (2026-10-24, docs/measurements/gce-follow-soak-2026-10-24), after TASK-42.12's fix; two hours in all.
+
+2026-10-24, handed back (unassigned): AC1, 2, 4 checked, everything on main (8cbb99159). Left: AC3, the writer's commit latency and pgbench unchanged with followers attached (TASK-42.11, waiting on TASK-41.1); then TASK-42.7 AC4 and this task's DoD.
 <!-- SECTION:NOTES:END -->
