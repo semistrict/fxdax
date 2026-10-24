@@ -40,6 +40,8 @@ struct fxfs_vfs_info {
 	struct fxfs_dax *dax;
 	/* fxdax: /proc/fs/fxfs/<its device's tag>, what it waited on (fxfs_vfs_stats_show). */
 	struct proc_dir_entry *stats;
+	/* fxdax: readahead's reads, off their readers (fxfs_vfs_readahead); a follower has none. */
+	struct workqueue_struct *readahead;
 	/* fxdax: takes the size the host resizes the store to (fxfs_resize), off the interrupt. */
 	struct work_struct resize;
 	/*

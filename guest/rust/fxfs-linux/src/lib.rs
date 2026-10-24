@@ -897,6 +897,38 @@ pub unsafe extern "C" fn fxfs_write(
     }
 }
 
+/// One of `fxfs_read_into`'s buffers: `struct fxfs_read_part`.
+#[repr(C)]
+pub struct ReadPart {
+    buf: *mut u8,
+    len: usize,
+}
+
+/// # Safety
+///
+/// `fs` is mounted, `parts` holds `count` parts, and each part's `buf` has room for its `len`
+/// bytes, none of them another's.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fxfs_read_into(
+    fs: *const Fxfs,
+    ino: u64,
+    offset: u64,
+    parts: *const ReadPart,
+    count: usize,
+) -> isize {
+    // SAFETY: As the caller promises.
+    let (fs, parts) = unsafe { (&*fs, core::slice::from_raw_parts(parts, count)) };
+    let mut bufs: Vec<&mut [u8]> = parts
+        .iter()
+        // SAFETY: As the caller promises.
+        .map(|part| unsafe { core::slice::from_raw_parts_mut(part.buf, part.len) })
+        .collect();
+    match block_on(fs.read_into(ino, offset, &mut bufs)) {
+        Ok(read) => read as isize,
+        Err(error) => -(errno(&error) as isize),
+    }
+}
+
 /// One of `fxfs_write_many`'s writes: `struct fxfs_write_part`.
 #[repr(C)]
 pub struct WritePart {

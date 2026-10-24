@@ -296,6 +296,19 @@ void fxfs_evict(struct fxfs *fs, u64 ino, bool unlinked);
 
 /* Reads up to `len` bytes of file `ino` at `offset` into `buf`, returning how many it read. */
 ssize_t fxfs_read(struct fxfs *fs, u64 ino, u64 offset, void *buf, size_t len);
+/* One of fxfs_read_into's buffers: room for `len` bytes at `buf`. */
+struct fxfs_read_part {
+	void *buf;
+	size_t len;
+};
+
+/*
+ * fxdax: reads file `ino` from `offset` into the `count` buffers `parts`, one after another, as
+ * fxfs_read into one, but from the device's transfer buffer straight into them: readahead's folios
+ * (TASK-92.9). Returns how many bytes it read.
+ */
+ssize_t fxfs_read_into(struct fxfs *fs, u64 ino, u64 offset, const struct fxfs_read_part *parts,
+		       size_t count);
 /*
  * Writes the `len` bytes of `buf` to file `ino` at `offset`, growing the file if it ends before
  * them. The file's times are the kernel's to set (fxfs_setattr).

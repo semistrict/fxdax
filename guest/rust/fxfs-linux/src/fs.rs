@@ -763,6 +763,52 @@ impl Fxfs {
         Ok(data.len())
     }
 
+    /// Reads the file `ino` from `offset` into `parts`, one after another, as `read` reads into
+    /// one buffer, but from the device's transfer buffer straight into them, a megabyte at a time:
+    /// the kernel's readahead, into its folios, which `read` copied three times, through two
+    /// buffers as large as the window (TASK-92.9). Returns how many bytes it read: fewer only at
+    /// the end of the file.
+    pub async fn read_into(
+        &self,
+        ino: u64,
+        offset: u64,
+        parts: &mut [&mut [u8]],
+    ) -> Result<usize, Error> {
+        const CHUNK: u64 = 1 << 20;
+        self.filling();
+        let file = self.file(ino).await?;
+        let len = parts.iter().map(|part| part.len() as u64).sum::<u64>();
+        let end = file.get_size().min(offset.saturating_add(len));
+        if offset >= end {
+            return Ok(0);
+        }
+        let block_size = file.block_size();
+        let start = block_size.align_down(offset);
+        let chunk = block_size.align_up((end - start).min(CHUNK)).ok_or(FxfsError::TooBig)?;
+        let mut buf = file.allocate_buffer(chunk as usize).await;
+        let (mut part, mut part_at, mut at) = (0, 0, start);
+        while at < end {
+            let read = file.read_aligned(at, buf.as_mut()).await?;
+            if read == 0 {
+                break;
+            }
+            // What of the chunk read is the caller's: from `offset` on, up to `end`.
+            let mut from = (offset.max(at) - at) as usize;
+            let to = (end.min(at + read as u64) - at) as usize;
+            while from < to {
+                let dest = &mut parts[part][part_at..];
+                let n = dest.len().min(to - from);
+                buf.subslice(from..from + n).copy_to_slice(&mut dest[..n]);
+                (from, part_at) = (from + n, part_at + n);
+                if part_at == parts[part].len() {
+                    (part, part_at) = (part + 1, 0);
+                }
+            }
+            at += read as u64;
+        }
+        Ok((at.min(end) - offset) as usize)
+    }
+
     /// Writes `data` to the file `ino` at `offset`, growing the file if it ends before the data
     /// does. The kernel keeps the file's times (`setattr`).
     pub async fn write(&self, ino: u64, offset: u64, data: &[u8]) -> Result<(), Error> {

@@ -1333,33 +1333,89 @@ static int fxfs_vfs_read_folio(struct file *file, struct folio *folio)
 }
 
 /*
- * Reads the folios of `rac` with one read, if it can have the memory for it. Folios it doesn't
- * read are read one at a time (fxfs_vfs_read_folio).
+ * fxdax: a readahead's read: its folios, locked, filled from file `ino` from `pos` on, the parts
+ * fxfs_read_into reads them into. Each holds its folios until it unlocks them: truncation and
+ * eviction wait for those locks.
  */
-static void fxfs_vfs_readahead(struct readahead_control *rac)
-{
-	struct inode *inode = rac->mapping->host;
-	size_t len = readahead_length(rac);
-	loff_t pos = readahead_pos(rac);
-	unsigned int nofs = memalloc_nofs_save();
-	void *buf = len <= FXFS_IO_MAX ? kvmalloc(len, GFP_KERNEL) : NULL;
-	ssize_t n = buf ? fxfs_read(fxfs_vfs_fs(inode->i_sb), inode->i_ino, pos, buf, len) : -ENOMEM;
-	struct folio *folio;
+struct fxfs_vfs_read {
+	struct work_struct work;
+	struct fxfs *fs;
+	u64 ino;
+	loff_t pos;
+	unsigned int nr;
+	struct folio **folios;
+	struct fxfs_read_part parts[];
+};
 
-	fxfs_vfs_assert_filling(inode);
-	while ((folio = readahead_folio(rac))) {
-		size_t at = folio_pos(folio) - pos, size = folio_size(folio);
+/* Fills `read`'s folios straight from the device, zeros past the file's end, and unlocks them. */
+static void fxfs_vfs_read_folios(struct fxfs_vfs_read *read)
+{
+	ssize_t n = fxfs_nofs(fxfs_read_into(read->fs, read->ino, read->pos, read->parts, read->nr));
+	size_t at = 0;
+	unsigned int i;
+
+	for (i = 0; i < read->nr; i++) {
+		struct folio *folio = read->folios[i];
+		size_t size = folio_size(folio);
 		size_t have = n > (ssize_t)at ? min_t(size_t, n - at, size) : 0;
 
+		/* A folio left not uptodate is read again, alone (fxfs_vfs_read_folio). */
 		if (n >= 0) {
-			memcpy(folio_address(folio), buf + at, have);
 			memset(folio_address(folio) + have, 0, size - have);
 			folio_mark_uptodate(folio);
 		}
 		folio_unlock(folio);
+		at += size;
 	}
-	kvfree(buf);
-	memalloc_nofs_restore(nofs);
+}
+
+static void fxfs_vfs_read_work(struct work_struct *work)
+{
+	struct fxfs_vfs_read *read = container_of(work, struct fxfs_vfs_read, work);
+
+	fxfs_vfs_read_folios(read);
+	kfree(read);
+}
+
+/*
+ * Reads the folios of `rac` with one read, from the device's transfer buffer straight into them.
+ * fxdax: off the reader, on the filesystem's readahead workqueue, which `rac`'s reader then waits
+ * for only on reaching a folio it hasn't filled yet: before, each window blocked the reader for
+ * a round trip, and two copies through buffers as large as it (TASK-92.9). A follower's in its
+ * reader, under its fill barrier. Folios it can't have the memory for are read one at a time
+ * (fxfs_vfs_read_folio).
+ */
+static void fxfs_vfs_readahead(struct readahead_control *rac)
+{
+	struct inode *inode = rac->mapping->host;
+	struct fxfs_vfs_info *info = fxfs_vfs_info(inode->i_sb);
+	unsigned int nr = readahead_count(rac), i = 0;
+	struct fxfs_vfs_read *read;
+	struct folio *folio;
+
+	fxfs_vfs_assert_filling(inode);
+	/* Folios at least a page each: room for as many folios as pages. */
+	read = kmalloc(struct_size(read, parts, nr) + nr * sizeof(*read->folios), GFP_NOFS);
+	if (!read)
+		return;
+	read->fs = info->fs;
+	read->ino = inode->i_ino;
+	read->pos = readahead_pos(rac);
+	read->folios = (struct folio **)&read->parts[nr];
+	while ((folio = readahead_folio(rac))) {
+		read->folios[i] = folio;
+		read->parts[i].buf = folio_address(folio);
+		read->parts[i].len = folio_size(folio);
+		i++;
+	}
+	read->nr = i;
+	if (!info->readahead) {
+		fxfs_vfs_read_folios(read);
+		kfree(read);
+		return;
+	}
+	INIT_WORK(&read->work, fxfs_vfs_read_work);
+	queue_work(info->readahead, &read->work);
 }
 
 /*
@@ -2617,6 +2673,12 @@ static int fxfs_vfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	} else {
 		fxfs_device_set_resized(fxfs_dax_device(fs), fxfs_vfs_resized, info);
 	}
+	/* fxdax: readahead off the reader; a follower's in it (fxfs_vfs_readahead). */
+	if (!info->follows) {
+		info->readahead = alloc_workqueue("fxfs-read", WQ_UNBOUND, 0);
+		if (!info->readahead)
+			return -ENOMEM;
+	}
 	fxfs_vfs_info(sb)->dax = fxfs_dax_create(sb, fs);
 	if (IS_ERR(fxfs_vfs_info(sb)->dax)) {
 		err = PTR_ERR(fxfs_vfs_info(sb)->dax);
@@ -2744,6 +2806,9 @@ static void fxfs_vfs_kill_sb(struct super_block *sb)
 		cancel_work_sync(&info->follow);
 	}
 	kill_anon_super(sb);
+	/* Its inodes evicted, their folios' reads unlocked them: what's left of each is its free. */
+	if (info->readahead)
+		destroy_workqueue(info->readahead);
 	if (info->dax)
 		fxfs_dax_quiesce(info->dax);
 	if (info->fs) {
