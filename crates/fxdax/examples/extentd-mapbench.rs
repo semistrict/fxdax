@@ -16,12 +16,15 @@
 //! phases timed (`Stats::commits`). For profiling, with perf on Linux (scripts/example-gce.sh):
 //!
 //! ```sh
-//! cargo run --release -p fxdax --example extentd-mapbench [MAPS [PAGES [MAPS_PER_COMMIT [maps|fsyncs]]]]
+//! cargo run --release -p fxdax --example extentd-mapbench [MAPS [PAGES [MAPS_PER_COMMIT [maps|fsyncs|all [CONNECTIONS]]]]]
 //! ```
 //!
 //! PAGES is the pages each map maps (default 32), MAPS_PER_COMMIT how many maps a commit
 //! follows (default 8); `maps` times the maps alone, and `fsyncs` the fsyncs alone, to profile
-//! them, PAGES then the pages of the staging extent each stores to.
+//! them, PAGES then the pages of the staging extent each stores to, and `all` everything.
+//! CONNECTIONS is how many other VM processes' connections, each of a store of its own, the daemon
+//! serves meanwhile, idle, as a host's hundreds of VMs (default 0). The stores to the pages of a
+//! writable map are timed too, each page's first a fault the daemon resolves (`FAULT`).
 
 #[cfg(target_os = "linux")]
 fn main() {
@@ -60,6 +63,7 @@ mod bench {
         max: Duration,
         daemon_ns: u64,
         stage_ns: u64,
+        faults: u64,
         commit_write_ns: u64,
         commit_written_bytes: u64,
         commit_store_ns: u64,
@@ -76,6 +80,7 @@ mod bench {
             let counted = fxdax::stats::stats().since(&before);
             self.daemon_ns += counted.map_ns;
             self.stage_ns += counted.stage_ns;
+            self.faults += counted.faults;
             self.commit_write_ns += counted.commit_write_ns;
             self.commit_written_bytes += counted.commit_written_bytes;
             self.commit_store_ns += counted.commit_store_ns;
@@ -101,6 +106,11 @@ mod bench {
             if self.stage_ns > 0 {
                 line += &format!(" {:>8.1} µs window", self.stage_ns as f64 / 1e3 / count);
             }
+            if self.faults > 0 {
+                let faults = self.faults as f64;
+                let each = self.total.as_secs_f64() * 1e6 / faults;
+                line += &format!(" {:>8.1} faults {each:>8.1} µs a fault", faults / count);
+            }
             let phases = [
                 ("write", self.commit_write_ns),
                 ("store", self.commit_store_ns),
@@ -123,10 +133,11 @@ mod bench {
         let number =
             |at: usize, default: u64| args.get(at).map_or(default, |arg| arg.parse().unwrap());
         let (maps, pages, maps_per_commit) = (number(0, 2000), number(1, 32), number(2, 8));
-        let only = args.get(3).map(String::as_str);
+        let only = args.get(3).map(String::as_str).filter(|only| *only != "all");
         if let Some(other) = only.filter(|only| !["maps", "fsyncs"].contains(only)) {
-            panic!("{other}: the fourth argument is `maps`, `fsyncs`, or none");
+            panic!("{other}: the fourth argument is `maps`, `fsyncs`, `all`, or none");
         }
+        let connections = number(4, 0);
         // A host of the multi-node system, as the daemon is (TASK-45): a bucket in its memory,
         // and placement 1, unless the environment names others.
         for (var, default) in
@@ -144,6 +155,14 @@ mod bench {
         std::thread::spawn(move || extentd::serve(listener));
         let store =
             RemoteExtentStore::connect(&socket, dir.path().join("store"), 64 << 30).unwrap();
+        // The other VM processes' connections, idle.
+        extentd::raise_open_files_limit().unwrap();
+        let _others: Vec<_> = (0..connections)
+            .map(|n| {
+                let path = dir.path().join(format!("other-{n}"));
+                RemoteExtentStore::connect(&socket, path, 1 << 30).unwrap()
+            })
+            .collect();
 
         // SAFETY: Maps anonymous memory, which the window takes over.
         let memory = unsafe {
@@ -170,18 +189,21 @@ mod bench {
         let slots = WINDOW / len / 2;
         let (mut writable, mut commit, mut read_only, mut unmap) =
             (Timer::default(), Timer::default(), Timer::default(), Timer::default());
+        let mut stores = Timer::default();
         let mut sealed = Vec::new();
         for i in 0..maps {
             let extent = ExtentId { branch: store.branch(), sequence: i + 1 };
             let offset = (i % slots) * len;
             writable.time(|| store.map(extent, 0, len, offset, true)).unwrap();
             // The guest stores a small file's data in each page.
-            for page in 0..pages {
-                // SAFETY: The window's memory, mapped writably.
-                unsafe {
-                    memory.as_ptr().add((offset + page * page_size) as usize).write(page as u8)
-                };
-            }
+            stores.time(|| {
+                for page in 0..pages {
+                    // SAFETY: The window's memory, mapped writably.
+                    unsafe {
+                        memory.as_ptr().add((offset + page * page_size) as usize).write(page as u8)
+                    };
+                }
+            });
             sealed.push((extent, offset));
             if (i + 1) % maps_per_commit == 0 {
                 commit.time(|| store.commit(None)).unwrap();
@@ -194,6 +216,7 @@ mod bench {
             }
         }
         writable.print("map writable");
+        stores.print("stores");
         commit.print("commit");
         read_only.print("map read-only");
         unmap.print("unmap");
