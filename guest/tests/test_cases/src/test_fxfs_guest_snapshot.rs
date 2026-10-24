@@ -314,6 +314,17 @@ mod host {
                 Mode::Suspend => vec![(restores[0], store(&test_setup.tmp_dir, "source"))],
                 Mode::Migrate => vec![],
             };
+            // The daemon keeps the snapshot's point open for the restores after these (TASK-92.5),
+            // and with it the directory of the stores forked from it, which this process may not
+            // open meanwhile: a look at the point through the daemon's control API, which works
+            // on the point alone, closes it first.
+            if !stores.is_empty() {
+                let extentd = std::env::var_os("FXDAX_EXTENTD").expect("FXDAX_EXTENTD");
+                let mut point = test_setup.tmp_dir.join("snapshot").into_os_string();
+                point.push(".extent-extents");
+                let control = crate::common::control(Path::new(&extentd)).expect("control API");
+                control.stat_store(Path::new(&point)).expect("the snapshot's point");
+            }
             for (name, path) in stores {
                 let storage = Storage::open(path).expect("open store");
                 let fs = block_on(async { Filesystem::mount(storage.check().await?).await })
