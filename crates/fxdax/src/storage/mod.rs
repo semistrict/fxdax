@@ -195,6 +195,14 @@ pub(crate) async fn clone_image(
             let _paused = writes.pause();
             let forked = extent_store::fork_host(&store, &path, host_store::new_branch());
             let cloned = forked.map_err(|error| {
+                // A fork that failed once its commit was made leaves its handle, naming a branch
+                // the store has not (`extent_store::ForkCommitted`): an image's is kept nowhere
+                // else, so it goes at once, leaving nothing of the clone.
+                if error.downcast_ref::<extent_store::ForkCommitted>().is_some()
+                    && let Err(why) = host_store::delete(&path, None)
+                {
+                    log::warn!("fxdax: leaving {}, a clone that failed: {why:#}", path.display());
+                }
                 Error::new(error.context(format!("cloning to {}", path.display())))
             });
             let _ = done.send(cloned.map(|_| path));

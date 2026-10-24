@@ -826,27 +826,58 @@ impl ExtentStore {
     /// deletes a store, there first: a deletion that stops partway, failing there, as for a branch
     /// a later placement holds, or its host crashing, leaves the handle at `path`, naming the
     /// child, which deleting it finishes, as any store's; until then, no fork to `path` is made.
+    /// So is one that fails once its commit was made, before it is made here
+    /// (`extent_store::ForkCommitted`), as the commit's segment, naming the fork, uploads after.
+    ///
+    /// The guest names the child: with a remote, a fork to a child whose ID another branch has in
+    /// object storage fails with `EEXIST`, making nothing, as the parent's writers would find the
+    /// child's record another's, failing on it for ever; and the deletion of a fork that failed
+    /// deletes there only the branch it made (`Remote::claim`, TASK-79.82).
     pub fn fork(&self, path: impl AsRef<Path>, branch: u64) -> Result<(), Error> {
         self.writable()?;
         let path = path.as_ref();
         self.make_durable()?;
-        let epoch = extent_store::fork_host(&self.store, path, branch).map_err(Error::new)?;
-        if let Some(remote) = self.remote.get()
-            && let Err(err) = remote.forked(epoch)
-        {
-            // Leave no fork its branch doesn't have behind, deleted as any store is: in object
-            // storage, where its segment may have landed after all (`Remote::unfork`), then here,
-            // so that a crash or a failure in between leaves its handle, which deleting again
-            // finishes, not a branch no store holds (TASK-79.78). A child opened before the
-            // deletion found it open nowhere stays, with its branch; one opened after, while its
-            // branch is deleted in object storage, finds it deleted there (`EROFS`), and keeps its
-            // handle, and its branch here, while it is open.
-            if let Err(why) = host_store::delete_with(path, |_, child| remote.unfork(child)) {
-                log::warn!("fxdax: leaving branch {branch:x}, whose fork failed: {why:#}");
+        let remote = self.remote.get();
+        let claimed = std::cell::Cell::new(false);
+        let claim = || -> anyhow::Result<()> {
+            let Some(remote) = remote else { return Ok(()) };
+            if !remote.claim(branch)? {
+                return Err(anyhow::Error::new(Errno::EEXIST)
+                    .context(format!("forking to branch {branch:x}: another branch has its ID")));
             }
-            return Err(Error::new(anyhow::anyhow!("forking branch {branch:x}: {err}")));
+            claimed.set(true);
+            Ok(())
+        };
+        let failed = match extent_store::fork_host_with(&self.store, path, branch, claim) {
+            Ok(epoch) => match remote.map(|remote| remote.forked(epoch)) {
+                None | Some(Ok(())) => return Ok(()),
+                Some(Err(err)) => anyhow::anyhow!("forking branch {branch:x}: {err}"),
+            },
+            Err(err) if err.downcast_ref::<extent_store::ForkCommitted>().is_some() => {
+                err.context(format!("forking branch {branch:x}"))
+            }
+            Err(err) => {
+                // It made nothing: its claim goes with it.
+                if let Some(remote) = remote.filter(|_| claimed.get())
+                    && let Err(why) = remote.disclaim(branch)
+                {
+                    log::warn!("fxdax: keeping the claim of branch {branch:x}: {why}");
+                }
+                return Err(Error::new(err));
+            }
+        };
+        // Leave no fork its branch doesn't have behind, deleted as any store is: in object storage,
+        // where its segment may have landed after all (`Remote::unfork`), then here, so that a
+        // crash or a failure in between leaves its handle, which deleting again finishes, not a
+        // branch no store holds (TASK-79.78). A child opened before the deletion found it open
+        // nowhere stays, with its branch; one opened after, while its branch is deleted in object
+        // storage, finds it deleted there (`EROFS`), and keeps its handle, and its branch here,
+        // while it is open.
+        let unfork = |_: &Path, child| remote.map_or(Ok(()), |remote| remote.unfork(child));
+        if let Err(why) = host_store::delete_with(path, unfork) {
+            log::warn!("fxdax: leaving branch {branch:x}, whose fork failed: {why:#}");
         }
-        Ok(())
+        Err(Error::new(failed))
     }
 
     /// fxdax: places the store at `path`, or the fork whose handle `path` is, at the placement

@@ -94,7 +94,7 @@ pub(crate) fn delete(
         Some(bucket) => {
             let placed = crate::remote::placed_token(dir, branch)?;
             let token = placed.map_or_else(crate::remote::host_token, Ok)?;
-            crate::remote::delete_branch(bucket, branch, token)
+            crate::remote::delete_branch(bucket, dir, branch, token)
         }
         None => Ok(()),
     })
@@ -104,19 +104,32 @@ pub(crate) fn delete(
 /// deleting its branch where else it is kept, given the store's directory and the branch: once the
 /// branch is found open nowhere here, before it goes here, so that a deletion that stopped partway,
 /// the host crashing or `elsewhere` failing, leaves the branch named by its handle still, which
-/// deleting again finishes, never kept elsewhere alone.
+/// deleting again finishes, never kept elsewhere alone. A fork's child the store has not, its fork
+/// failing, or its host crashing, once the fork's commit was made, before its record was written,
+/// is deleted elsewhere too if its fork claimed it there (`crate::remote::claim`), before its
+/// handle goes: there the commit's segment, naming the fork, may have landed (TASK-79.82).
 pub(crate) fn delete_with(
     path: &Path,
-    elsewhere: impl FnOnce(&Path, u64) -> Result<(), crate::remote::Failure>,
+    elsewhere: impl Fn(&Path, u64) -> Result<(), crate::remote::Failure>,
 ) -> Result<(), Error> {
     if !path.exists() {
         return Err(Errno::ENOENT.into());
     }
+    // Whether `elsewhere` went before the store deleted the branch, which it had then.
+    let went = std::cell::Cell::new(false);
     extent_store::delete_host_with(
         path,
         options(),
-        |dir, branch| Ok(elsewhere(dir, branch)?),
-        crate::remote::unmark,
+        |dir, branch| {
+            went.set(true);
+            Ok(elsewhere(dir, branch)?)
+        },
+        |dir, branch| {
+            if !went.get() && crate::remote::is_claimed(dir, branch)? {
+                elsewhere(dir, branch)?;
+            }
+            crate::remote::unmark(dir, branch)
+        },
     )
     .map_err(|err| {
         let stale = err.chain().any(|cause| {
