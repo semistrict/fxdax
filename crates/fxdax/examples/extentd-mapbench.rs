@@ -16,15 +16,18 @@
 //! phases timed (`Stats::commits`). For profiling, with perf on Linux (scripts/example-gce.sh):
 //!
 //! ```sh
-//! cargo run --release -p fxdax --example extentd-mapbench [MAPS [PAGES [MAPS_PER_COMMIT [maps|fsyncs|all [CONNECTIONS]]]]]
+//! cargo run --release -p fxdax --example extentd-mapbench [MAPS [PAGES [MAPS_PER_COMMIT [maps|fsyncs|faults|all [CONNECTIONS]]]]]
 //! ```
 //!
 //! PAGES is the pages each map maps (default 32), MAPS_PER_COMMIT how many maps a commit
-//! follows (default 8); `maps` times the maps alone, and `fsyncs` the fsyncs alone, to profile
-//! them, PAGES then the pages of the staging extent each stores to, and `all` everything.
+//! follows (default 8); `maps` times the maps alone, `fsyncs` the fsyncs alone, PAGES then the
+//! pages of the staging extent each stores to, and `faults` the faults alone, to profile them, and
+//! `all` everything.
 //! CONNECTIONS is how many other VM processes' connections, each of a store of its own, the daemon
 //! serves meanwhile, idle, as a host's hundreds of VMs (default 0). The stores to the pages of a
-//! writable map are timed too, each page's first a fault the daemon resolves (`FAULT`).
+//! writable map are timed too. And, last, or alone with `faults`, the loads of extents mapped
+//! read-only whose pages were evicted, each extent's first a fault the daemon resolves (`FAULT`),
+//! paging it in.
 
 #[cfg(target_os = "linux")]
 fn main() {
@@ -134,8 +137,8 @@ mod bench {
             |at: usize, default: u64| args.get(at).map_or(default, |arg| arg.parse().unwrap());
         let (maps, pages, maps_per_commit) = (number(0, 2000), number(1, 32), number(2, 8));
         let only = args.get(3).map(String::as_str).filter(|only| *only != "all");
-        if let Some(other) = only.filter(|only| !["maps", "fsyncs"].contains(only)) {
-            panic!("{other}: the fourth argument is `maps`, `fsyncs`, `all`, or none");
+        if let Some(other) = only.filter(|only| !["maps", "fsyncs", "faults"].contains(only)) {
+            panic!("{other}: the fourth argument is `maps`, `fsyncs`, `faults`, `all`, or none");
         }
         let connections = number(4, 0);
         // A host of the multi-node system, as the daemon is (TASK-45): a bucket in its memory,
@@ -183,6 +186,10 @@ mod bench {
         let page_size = 4096u64;
         if only == Some("fsyncs") {
             fsyncs(&store, memory, maps, pages, 1);
+            return;
+        }
+        if only == Some("faults") {
+            faults(&store, memory, maps, pages, 1);
             return;
         }
         let len = pages * page_size;
@@ -249,6 +256,49 @@ mod bench {
             free.print("free");
         }
         fsyncs(&store, memory, maps, 1, sequence + 1);
+        faults(&store, memory, maps, pages, sequence + 2 * maps + 1);
+    }
+
+    /// Makes `count` extents of `pages` pages each, from `sequence` on, mapped read-only, as the
+    /// guest's Fxfs maps the extents of files it reads, and has their pages evicted, as a host whose
+    /// memory runs low evicts them (`ShrinkMemory`): the loads of each extent's pages after that,
+    /// timed, take FAULTs, which the daemon resolves, paging the extent in from the store
+    /// (TASK-92.20).
+    fn faults(
+        store: &RemoteExtentStore,
+        memory: NonNull<u8>,
+        count: u64,
+        pages: u64,
+        sequence: u64,
+    ) {
+        let page_size = 4096u64;
+        let len = pages * page_size;
+        let slots = WINDOW / len;
+        let data = vec![7u8; len as usize];
+        let extents: Vec<_> = (0..count)
+            .map(|i| {
+                let extent = ExtentId { branch: store.branch(), sequence: sequence + i };
+                store.write(extent, 0, &[VolatileSlice::from(&data[..])]).unwrap();
+                (extent, (i % slots) * len)
+            })
+            .collect();
+        store.commit(None).unwrap();
+        for (extent, at) in &extents {
+            store.map(*extent, 0, len, *at, false).unwrap();
+        }
+        extentd::memory::shrink(None, 0).unwrap();
+        let mut loads = Timer::default();
+        for (_, at) in &extents {
+            loads.time(|| {
+                for page in 0..pages {
+                    // SAFETY: The window's memory, mapped read-only.
+                    let at = unsafe { memory.as_ptr().add((at + page * page_size) as usize) };
+                    // SAFETY: As above.
+                    assert_eq!(unsafe { at.read_volatile() }, 7);
+                }
+            });
+        }
+        loads.print(&format!("faults: loads {pages}"));
     }
 
     /// Makes `count` fsyncs of a database's, as the guest's Fxfs makes them, of extents from
