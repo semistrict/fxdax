@@ -402,7 +402,9 @@ fn receive(
 
 /// fxdax: what of what a VM process sends past what it was answered the daemon holds, besides its
 /// requests': what it queued for the VM process that is no reply, as stage operations and commits
-/// it is told of, which the protocol's bound on stream data leaves room for (TASK-79.16).
+/// it is told of, which the protocol's bound on stream data leaves room for (TASK-79.16). And, its
+/// window's, a reply to `MAPPINGS` (TASK-79.43), as many mappings as the window may hold, which
+/// [`Peer::room`] leaves room for besides.
 const QUEUED_ROOM: u64 = 16 << 20;
 
 /// Lets the store of `connection`, whose VM process is gone and whose requests are done, go: once
@@ -711,9 +713,9 @@ impl Connection {
     /// fxdax: admits a message of `header`, before its payload is read, as the protocol's bounds
     /// allow what its VM process keeps in flight (TASK-79.16): its requests not answered
     /// ([`MAX_REQUESTS`]), and their stream data ([`MAX_STREAM_BYTES`]), with what the connection
-    /// has queued for the VM process ([`QUEUED_ROOM`]). Counted in, a request's, until its reply is
-    /// queued ([`Answer`]). Past them, `QuotaExceeded`: the VM process broke the protocol, and is
-    /// let go, rather than held without end in the daemon's memory.
+    /// has queued for the VM process, in its room ([`Peer::room`]). Counted in, a request's, until
+    /// its reply is queued ([`Answer`]). Past them, `QuotaExceeded`: the VM process broke the
+    /// protocol, and is let go, rather than held without end in the daemon's memory.
     fn within_bounds(&self, header: &Header) -> std::io::Result<()> {
         if header.kind == ACK {
             return Ok(());
@@ -722,7 +724,7 @@ impl Connection {
         let mut requests = self.requests.lock().unwrap();
         let in_flight = requests.in_flight();
         let held = requests.stream_bytes + bytes + self.peer.sender.queued();
-        if in_flight >= MAX_REQUESTS || held > MAX_STREAM_BYTES + QUEUED_ROOM {
+        if in_flight >= MAX_REQUESTS || held > self.peer.room() {
             let what = format!("{} requests, and {held} bytes, in flight", in_flight + 1);
             return Err(std::io::Error::new(std::io::ErrorKind::QuotaExceeded, what));
         }
@@ -939,6 +941,9 @@ impl Connection {
                     log::warn!("extentd: creating a window: {err:#}");
                     Errno::EINVAL
                 })?;
+                // fxdax: its mappings' reply, as many as it may have, its VM process's room
+                // holds (TASK-79.43).
+                self.peer.set_window(window.size());
                 *self.window.lock().unwrap() = Some(window);
                 Ok(())
             }
@@ -1115,6 +1120,12 @@ impl Connection {
     #[cfg(test)]
     pub(super) fn unanswered(&self) -> usize {
         self.requests.lock().unwrap().in_flight()
+    }
+
+    /// How many bytes it has queued for its VM process, which its socket has not taken.
+    #[cfg(test)]
+    pub(super) fn queued(&self) -> u64 {
+        self.peer.sender.queued()
     }
 }
 
@@ -1483,6 +1494,9 @@ struct Peer {
     process: Option<std::os::fd::OwnedFd>,
     /// Whether the daemon let it go ([`Peer::let_go`]).
     let_go: AtomicBool,
+    /// The bytes a reply to `MAPPINGS` of its window takes at most, once it has one (TASK-79.43):
+    /// a mapping a page of it ([`Peer::room`]).
+    mappings: std::sync::atomic::AtomicU64,
 }
 
 /// fxdax: the VM processes connected ([`Peer`]).
@@ -1512,9 +1526,25 @@ impl Peer {
             sender,
             process,
             let_go: AtomicBool::new(false),
+            mappings: Default::default(),
         });
         PEERS.lock().unwrap().push(peer.clone());
         Ok(peer)
+    }
+
+    /// What of what it sends past what it was answered the daemon holds at most (TASK-79.16): its
+    /// requests' stream data, as the protocol bounds it ([`MAX_STREAM_BYTES`]), and what the
+    /// daemon queued for it besides ([`QUEUED_ROOM`]), its window's mappings among them, as many
+    /// as the window may have ([`Peer::set_window`]).
+    fn room(&self) -> u64 {
+        MAX_STREAM_BYTES + QUEUED_ROOM + self.mappings.load(Ordering::Relaxed)
+    }
+
+    /// Its window is of `size` bytes, whose mappings, a page each at most, a reply to `MAPPINGS`
+    /// holds (TASK-79.43).
+    fn set_window(&self, size: u64) {
+        let mappings = size / crate::kernel::page_size() * MAPPING_BYTES;
+        self.mappings.store(mappings, Ordering::Relaxed);
     }
 
     /// Its connection is gone: no page waits for it from now on.
