@@ -1874,7 +1874,9 @@ fn serves_hundreds_of_forks_of_a_base() {
 /// each scrape of its metrics counts, costs nothing of what a fork's base holds: here, of 100
 /// forks open of a base of 32768 extents, none followed, the followers' views are counted within
 /// a few milliseconds, as of forks of an empty base. Counting them walked each fork's whole
-/// extent map, its base's with it, under its state lock: 3.3 million extents a count.
+/// extent map, its base's with it, under its state lock: 3.3 million extents a count, 160 ms on a
+/// GCE host. The base is made here, its extents' writes no round trips to the daemon, and
+/// committed a thousand at a time, as a guest's are.
 #[test]
 fn counting_followers_walks_no_extents() {
     const FORKS: u64 = 100;
@@ -1885,12 +1887,15 @@ fn counting_followers_walks_no_extents() {
     let socket = dir.path().join("extentd.sock");
     let listener = UnixListener::bind(&socket).unwrap();
     std::thread::spawn(move || serve(listener));
-    let base = RemoteExtentStore::connect(&socket, dir.path().join("base"), 1 << 30).unwrap();
+    let base = ExtentStore::create(dir.path().join("base"), 1 << 30).unwrap();
     let branch = base.branch();
     for sequence in 1..=EXTENTS {
-        write(&base, ExtentId { branch, sequence }, 0, &pattern(sequence as u8, BLOCK)).unwrap();
+        let data = pattern(sequence as u8, BLOCK);
+        base.write(ExtentId { branch, sequence }, 0, &[VolatileSlice::from(&data[..])]).unwrap();
+        if sequence % 1024 == 0 {
+            base.commit(None).unwrap();
+        }
     }
-    base.commit(None).unwrap();
     let forks: Vec<_> = (1..=FORKS)
         .map(|n| {
             let fork = dir.path().join(format!("fork-{n}"));
