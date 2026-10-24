@@ -353,7 +353,10 @@ impl<F> Packed<F> {
     /// (TASK-92.19).
     pub(crate) fn unpack(&self, bytes: &[u8], unpacked: &Unpacked) -> Result<Arc<[u8]>, Error> {
         debug_assert!(self.len <= PART);
-        let mut part: Arc<[u8]> = std::iter::repeat_n(0, self.len as usize).collect();
+        // Zeroed as it is allocated, not a byte at a time, as collecting an iterator is in a debug
+        // build, where a fork's opening spent seconds unpacking its base's parts so (TASK-92.17).
+        // SAFETY: Zeroed bytes are bytes.
+        let mut part: Arc<[u8]> = unsafe { Arc::new_zeroed_slice(self.len as usize).assume_init() };
         let out = Arc::get_mut(&mut part).expect("a part just made is its own");
         self.stored.unpack_into(bytes, out)?;
         UNPACKS.fetch_add(1, Ordering::Relaxed);
