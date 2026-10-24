@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@review-session'
 created_date: '2026-10-23 13:18'
-updated_date: '2026-10-24 00:43'
+updated_date: '2026-10-24 01:41'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -44,4 +44,6 @@ User decision (2026-10-23): a hard cap on a store's host files at a multiple of 
 User decision (2026-10-24): the 4x effective ceiling is accepted: 3x capacity, plus a credit of at most one capacity's worth for the writes a commit comes with, which lets the commit land cleaning's copies, so commits never get stuck at the cap (r8/diskcap, 09463ca0).
 
 User decision (2026-10-24): what the uploader holds (frees kept until uploaded, segments not yet uploaded) is left out of the cap; it is bounded by the upload lag bound, which makes commits wait rather than fail.
+
+r8/diskcap cf3d4322: what the uploader holds (segments not yet uploaded, their whole files; frees kept, by their part's stored share; kept own files) is left out of the cap, counted in disk bytes. Tests what_an_uploader_keeps_counts_not_towards_the_bound and frees_an_uploader_keeps_count_not_towards_the_bound fail before ('the extent store is full') and pass after. Left: extentd's 'found the store full' log prints only used/capacity, so a refusal by the files' bound reads as a contradiction there; it should name which bound refused.
 <!-- SECTION:NOTES:END -->
