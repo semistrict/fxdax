@@ -37,7 +37,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 /// The kinds of request metrics are kept of, and their names.
-const KINDS: [(u32, &str); 19] = [
+const KINDS: [(u32, &str); 20] = [
     (OPEN, "open"),
     (READ, "read"),
     (WRITE, "write"),
@@ -57,6 +57,7 @@ const KINDS: [(u32, &str); 19] = [
     (PIN, "pin"),
     (UNPIN, "unpin"),
     (TRANSFER, "transfer"),
+    (FREE_MANY, "free_many"),
 ];
 
 /// The upper bounds of the requests' duration histograms' buckets, in seconds: from what the

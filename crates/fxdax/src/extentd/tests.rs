@@ -2504,14 +2504,55 @@ fn extents_freed_together_are_freed_in_one_request() {
         write(&store, *extent, 0, &pattern(extent.sequence as u8, BLOCK)).unwrap();
     }
     store.commit(None).unwrap();
-    let before = served("free");
+    let before = (served("free"), served("free_many"));
     store.free_many(&extents).unwrap();
-    assert_eq!(served("free") - before, 1);
+    assert_eq!((served("free") - before.0, served("free_many") - before.1), (0, 1));
     for extent in [extents[0], extents[128], extents[256]] {
         assert_eq!(read(&store, extent, 0, BLOCK), Err(Errno::ENOENT), "{extent:?}");
     }
     drop(store);
     serving.join().unwrap();
+}
+
+/// TASK-92.13: a VM process's frees of many extents in one request, against a daemon older than
+/// that request, which knows `FREE` alone, fail (`EINVAL`), none freed: not the first freed alone,
+/// its request taken for a `FREE`, the rest leaked, and success said. The daemon here is one by
+/// hand, as a daemon before TASK-92.13 serves: it frees what a `FREE` names, ignoring the flags and
+/// payload it doesn't know, and refuses requests it doesn't know.
+#[test]
+fn frees_of_many_extents_fail_against_daemons_without_them() {
+    use super::wire::*;
+    use std::os::fd::AsFd;
+    let ps = page_size();
+    let (client, daemon) = UnixStream::pair().unwrap();
+    let answering = std::thread::spawn(move || {
+        let (sender, mut receiver) =
+            (Sender::new(daemon.try_clone().unwrap()), Receiver::new(daemon));
+        let (own, public) = (memfd(ps), memfd(ps));
+        let mut freed = Vec::new();
+        while let Ok(Some(request)) = receiver.receive(|| 0) {
+            let mut reply = Header::new(REPLY, request.header.id);
+            let mut fds = Vec::new();
+            let args = request.header.args;
+            match request.header.kind {
+                OPEN => {
+                    reply.args[0] = 7;
+                    reply.args[1] = 1;
+                    fds = vec![own.as_fd(), public.as_fd()];
+                }
+                FREE => freed.push(ExtentId { branch: args[0], sequence: args[1] }),
+                _ => reply.status = -Errno::EINVAL.raw(),
+            }
+            sender.send(reply, &[], &fds).unwrap();
+        }
+        freed
+    });
+    let store = RemoteExtentStore::over(client, Path::new("store"), Opening::Create(1 << 20));
+    let store = store.unwrap();
+    let extents: Vec<_> = (1..=3).map(|sequence| ExtentId { branch: 7, sequence }).collect();
+    let freeing = store.free_many(&extents);
+    drop(store);
+    assert_eq!((freeing, answering.join().unwrap()), (Err(Errno::EINVAL), Vec::new()));
 }
 
 /// An object store in memory whose reads wait while they are held ([`GatedReads::hold`]): what

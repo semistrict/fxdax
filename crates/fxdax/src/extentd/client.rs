@@ -397,7 +397,7 @@ impl RemoteExtentStore {
 
     /// fxdax: frees `extents`, each as [`RemoteExtentStore::free`] does, in order: the first that
     /// fails fails the call, those before it freed. In as few requests as their payloads hold
-    /// (`FREE` with `FREE_MANY`), a flush's dead extents in one round trip, rather than one each
+    /// (`FREE_MANY`), a flush's dead extents in one round trip, rather than one each
     /// (TASK-92.13).
     pub fn free_many(&self, extents: &[ExtentId]) -> Result<()> {
         blocking(self.free_many_async(extents))
@@ -409,9 +409,8 @@ impl RemoteExtentStore {
         let most = 1 + MAX_PAYLOAD as usize / EXTENT_ID_BYTES;
         for extents in extents.chunks(most) {
             let (first, rest) = extents.split_first().expect("chunks aren't empty");
-            let flags = if rest.is_empty() { 0 } else { FREE_MANY };
-            let args = [first.branch, first.sequence];
-            let header = Header::new(FREE, 0).with_args(&args).with_flags(flags);
+            let kind = if rest.is_empty() { FREE } else { FREE_MANY };
+            let header = Header::new(kind, 0).with_args(&[first.branch, first.sequence]);
             self.client.call(header, &extent_ids_payload(rest)).await?;
         }
         Ok(())
