@@ -137,11 +137,10 @@ message ForkStoreRequest {
   // The store to fork.
   string from = 1;
   // Where the fork goes: a directory that must not exist (ALREADY_EXISTS), a handle naming
-  // `from`'s store, which
-  // holds the fork's data, and which must stay while forks of it live. A fork that fails once the
-  // handle is made deletes it, with the fork's branch in the daemon's bucket, there first: a
-  // deletion that stops, the bucket refusing it or the daemon's host crashing, leaves the handle,
-  // which DeleteStore of `to` deletes, finishing it.
+  // `from`'s store, which holds the fork's data, and which must stay while forks of it live. A
+  // fork that fails once the handle is made deletes it, with the fork's branch in the daemon's
+  // bucket, there first: a deletion that stops, the bucket refusing it or the daemon's host
+  // crashing, leaves the handle, which DeleteStore of `to` deletes, finishing it.
   string to = 2;
   // The fork's branch, or 0 for a new one.
   uint64 branch = 3;
