@@ -243,6 +243,10 @@ mod guest {
         eprintln!("fxfs stats: {}", stats.lines().collect::<Vec<_>>().join(" "));
         // And the device's interrupts and the requests completed without one (TASK-91.15).
         eprintln!("device completions: {}", device_completions().join(" "));
+        // And the guest's CPU time so far, in USER_HZ ticks: user nice system idle iowait irq
+        // softirq steal (proc(5)), its system time what spinning for requests took (TASK-91.13).
+        let stat = fs::read_to_string("/proc/stat").unwrap_or_default();
+        eprintln!("guest cpu: {}", stat.lines().next().unwrap_or_default());
         assert!(
             output.status.success(),
             "{command}: {}\n{}",

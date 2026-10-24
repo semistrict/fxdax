@@ -1094,10 +1094,22 @@ mod guest {
     /// device's requests per operation logged.
     fn observed<T>(workload: &str, count: usize, f: impl FnOnce() -> T) -> T {
         let requests = device_requests().zip(device_request_ns());
+        let waited = fxfs_stats();
         let profiler = Profiler::start();
         let value = f();
         if let Some(profiler) = profiler {
             profiler.report(workload);
+        }
+        // fxdax: what the guest's Fxfs waited on and did meanwhile, those that changed
+        // (/proc/fs/fxfs/<tag>, TASK-91.7).
+        if let (Some(before), Some(after)) = (waited, fxfs_stats()) {
+            let changed: Vec<String> = (after.iter())
+                .filter_map(|(name, after)| {
+                    let delta = after.checked_sub(*before.get(name)?)?;
+                    (delta > 0).then(|| format!("{name} {delta}"))
+                })
+                .collect();
+            eprintln!("FXFS {workload}: {}", changed.join(", "));
         }
         if let (Some((before, before_ns)), Some(after), Some(after_ns)) =
             (requests, device_requests(), device_request_ns())
@@ -1119,6 +1131,21 @@ mod guest {
             eprintln!("REQUESTS {workload}: {} per operation", per_op.join(", "));
         }
         value
+    }
+
+    /// fxdax: what the guest's Fxfs counts (/proc/fs/fxfs/<tag>, TASK-91.7), by name, if a
+    /// filesystem of it is mounted: the first's.
+    fn fxfs_stats() -> Option<std::collections::BTreeMap<String, u64>> {
+        let stats = fs::read_dir("/proc/fs/fxfs").ok()?.find_map(|entry| entry.ok())?.path();
+        let text = fs::read_to_string(stats).ok()?;
+        Some(
+            (text.lines())
+                .filter_map(|line| {
+                    let (name, value) = line.split_once(' ')?;
+                    Some((name.to_owned(), value.parse().ok()?))
+                })
+                .collect(),
+        )
     }
 
     /// The extent-store device's count of the requests it has taken, by type, if the guest's
