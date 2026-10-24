@@ -119,6 +119,8 @@ u64 fxfs_device_store_begin(struct fxfs_device *dev);
 bool fxfs_device_store_try_begin(struct fxfs_device *dev, u64 *seals);
 void fxfs_device_wait_unsealed(struct fxfs_device *dev);
 void fxfs_device_store_end(struct fxfs_device *dev);
+/* fxdax: with lockdep, warns unless this task is in the gate (TASK-44.9). */
+void fxfs_device_assert_in_gate(struct fxfs_device *dev);
 /*
  * The seal count: how many seals have begun and ended, odd while one is in progress, whose request
  * may seal extents opened meanwhile. The gate never returns an odd count.

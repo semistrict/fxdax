@@ -6,6 +6,7 @@
  * through the DAX window's writable mappings and the requests that seal what they map.
  */
 
+#include <linux/lockdep.h>
 #include <linux/minmax.h>
 #include <linux/seq_file.h>
 #include <linux/slab.h>
@@ -16,6 +17,9 @@
 #include <linux/wait.h>
 
 #include "device.h"
+
+/* fxdax: the gate's class, as lockdep has it (gate_map). */
+static struct lock_class_key fxfs_device_gate_key;
 
 struct fxfs_device {
 	struct virtio_extent *vext;
@@ -29,6 +33,15 @@ struct fxfs_device {
 	u64 seals;
 	/* Woken as stores end and seals do. */
 	wait_queue_head_t wait;
+	/*
+	 * fxdax: the gate as lockdep sees it, a read-write semaphore's: a store holds it shared, from
+	 * fxfs_device_store_begin to fxfs_device_store_end (not recursively: a store entering it
+	 * again would wait for a seal waiting for itself), and a seal takes it whole as it waits for
+	 * the stores. So lockdep learns what the gate is taken around, a seal waiting for stores
+	 * that wait for what the sealer holds among it, and fxfs_device_assert_in_gate has something
+	 * to check (TASK-44.9). Nothing without lockdep.
+	 */
+	struct lockdep_map gate_map;
 	fxfs_device_sealer_t sealer;
 	fxfs_device_sealed_t sealed;
 	void *sealer_arg;
@@ -65,6 +78,7 @@ struct fxfs_device *fxfs_device_find(const char *tag, size_t len, struct fxfs_de
 	dev->vext = vext;
 	spin_lock_init(&dev->lock);
 	init_waitqueue_head(&dev->wait);
+	lockdep_init_map(&dev->gate_map, "fxfs_device_gate", &fxfs_device_gate_key, 0);
 	config = virtio_extent_config(vext);
 	/* Memory not aligned to pages spans one more page than its length needs. */
 	max_io = min_t(u64, config->max_transfer, (u64)(config->max_segments - 1) * PAGE_SIZE);
@@ -162,6 +176,7 @@ u64 fxfs_device_store_begin(struct fxfs_device *dev)
 	dev->stores++;
 	seals = dev->seals;
 	spin_unlock(&dev->lock);
+	rwsem_acquire_read(&dev->gate_map, 0, 0, _RET_IP_);
 	return seals;
 }
 
@@ -176,6 +191,8 @@ bool fxfs_device_store_try_begin(struct fxfs_device *dev, u64 *seals)
 		*seals = dev->seals;
 	}
 	spin_unlock(&dev->lock);
+	if (entered)
+		rwsem_acquire_read(&dev->gate_map, 0, 1, _RET_IP_);
 	return entered;
 }
 
@@ -188,11 +205,19 @@ void fxfs_device_store_end(struct fxfs_device *dev)
 {
 	bool last;
 
+	rwsem_release(&dev->gate_map, _RET_IP_);
 	spin_lock(&dev->lock);
 	last = !--dev->stores && dev->sealing;
 	spin_unlock(&dev->lock);
 	if (last)
 		wake_up_all(&dev->wait);
+}
+
+void fxfs_device_assert_in_gate(struct fxfs_device *dev)
+{
+#ifdef CONFIG_LOCKDEP
+	lockdep_assert(lock_is_held(&dev->gate_map));
+#endif
 }
 
 u64 fxfs_device_seals(struct fxfs_device *dev)
@@ -221,7 +246,10 @@ void fxfs_device_seal_begin(struct fxfs_device *dev)
 	sealer = dev->sealer;
 	arg = dev->sealer_arg;
 	spin_unlock(&dev->lock);
+	/* Whole, as a seal takes it waiting for the stores, until they have left it. */
+	rwsem_acquire(&dev->gate_map, 0, 0, _RET_IP_);
 	wait_event(dev->wait, !READ_ONCE(dev->stores));
+	rwsem_release(&dev->gate_map, _RET_IP_);
 	if (sealer)
 		sealer(arg);
 }
