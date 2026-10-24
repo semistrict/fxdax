@@ -142,13 +142,9 @@ pub(super) const MAX_CONNECTIONS: usize = 1024;
 struct Counted(Arc<std::sync::atomic::AtomicUsize>);
 
 impl Counted {
-    /// A connection of `tenant`'s, or the default tenant's, counted: none past
+    /// A connection of the tenant whose memory is `memory`, counted: none past
     /// [`MAX_CONNECTIONS`].
-    fn new(tenant: Option<&Tenant>) -> Option<Self> {
-        let memory = match tenant {
-            Some(tenant) => &tenant.memory,
-            None => default_memory().ok()?,
-        };
+    fn new(memory: &Memory) -> Option<Self> {
         let connections = memory.connections.clone();
         if connections.fetch_add(1, Ordering::AcqRel) >= MAX_CONNECTIONS {
             connections.fetch_sub(1, Ordering::AcqRel);
@@ -236,7 +232,16 @@ pub(crate) fn serve_connection(stream: UnixStream, tenant: Option<Arc<Tenant>>) 
 /// fxdax: one of a tenant past [`MAX_CONNECTIONS`] it closes at once.
 fn start_connection(stream: UnixStream, tenant: Option<Arc<Tenant>>) -> mpsc::Receiver<()> {
     let (done, finished) = mpsc::channel();
-    let Some(counted) = Counted::new(tenant.as_deref()) else {
+    // fxdax: of no tenant, the default tenant's, made as its first VM process connects, which
+    // may fail, logged (`default_memory`).
+    let memory = match &tenant {
+        Some(tenant) => &tenant.memory,
+        None => match default_memory() {
+            Ok(memory) => memory,
+            Err(_) => return finished,
+        },
+    };
+    let Some(counted) = Counted::new(memory) else {
         log::error!(
             "extentd: refusing a VM process's connection: its tenant has {MAX_CONNECTIONS}"
         );
