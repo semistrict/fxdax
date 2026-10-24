@@ -278,14 +278,19 @@ async fn run_connection(stream: UnixStream, tenant: Option<Arc<Tenant>>) {
             return;
         }
     };
-    let acks = Arc::new(Acks::default());
-    let peer = Peer::connected(&stream, sender.clone(), acks.clone());
+    // fxdax: one the daemon could not let go of, once it stopped answering, it refuses (TASK-79.9).
+    let peer = match Peer::connected(&stream, sender) {
+        Ok(peer) => peer,
+        Err(err) => {
+            log::error!("extentd: refusing a VM process's connection: {err}");
+            return;
+        }
+    };
     let (alive, gone_for_good) = tokio::sync::oneshot::channel::<std::convert::Infallible>();
     let connection = Arc::new_cyclic(|this| Connection {
         this: this.clone(),
         tenant,
-        sender: sender.clone(),
-        acks,
+        peer: peer.clone(),
         store: OnceLock::new(),
         path: OnceLock::new(),
         window: Mutex::new(None),
@@ -313,7 +318,7 @@ async fn run_connection(stream: UnixStream, tenant: Option<Arc<Tenant>>) {
     // fxdax: one the daemon let go, once it has exited (TASK-79.9).
     connection.closing.store(true, Ordering::Release);
     peer.gone().await;
-    connection.acks.close();
+    peer.acks.close();
     // A resize waiting for its guest's answer, which none will give, stops waiting, and holds the
     // connection no more (TASK-79.34).
     connection.shrinking.stop();
@@ -332,7 +337,7 @@ async fn run_connection(stream: UnixStream, tenant: Option<Arc<Tenant>>) {
         let _ = behind.await;
     }
     let path = connection.path.get().cloned();
-    let finished = tokio::task::spawn_blocking(move || finish_connection(connection, sender));
+    let finished = tokio::task::spawn_blocking(move || finish_connection(connection));
     if let Err(err) = finished.await {
         log::error!("extentd: letting a connection's store go: {err}");
     }
@@ -371,7 +376,7 @@ fn receive(
         loop {
             match receiver.receive(|header| connection.within_bounds(header)).await {
                 Ok(Some(message)) if message.header.kind == ACK => {
-                    connection.acks.acked(message.header.id)
+                    connection.peer.acks.acked(message.header.id)
                 }
                 Ok(Some(message)) => {
                     let Some(message) = connection.admit(message) else { continue };
@@ -402,7 +407,7 @@ const QUEUED_ROOM: u64 = 16 << 20;
 
 /// Lets the store of `connection`, whose VM process is gone and whose requests are done, go: once
 /// what it committed is durable.
-fn finish_connection(connection: Arc<Connection>, sender: Arc<AsyncSender>) {
+fn finish_connection(connection: Arc<Connection>) {
     let path = connection.path.get().cloned();
     if let Some(store) = connection.store.get().filter(|store| !store.is_follower()) {
         if let Err(err) = store.flush() {
@@ -415,7 +420,7 @@ fn finish_connection(connection: Arc<Connection>, sender: Arc<AsyncSender>) {
             stores::retire(path, store);
         }
     }
-    sender.shutdown();
+    connection.peer.sender.shutdown();
     drop(connection);
 }
 
@@ -515,7 +520,7 @@ fn serve_future(turn: Turn, serving: impl std::future::Future<Output = ()> + Sen
 
 impl Holder for Connection {
     fn going(&self) -> bool {
-        self.closing.load(Ordering::Acquire) || self.sender.peer_gone()
+        self.closing.load(Ordering::Acquire) || self.peer.sender.peer_gone()
     }
 }
 
@@ -562,8 +567,8 @@ pub(super) struct Connection {
     this: Weak<Connection>,
     /// fxdax: the tenant it is of, if any (TASK-43).
     tenant: Option<Arc<Tenant>>,
-    sender: Arc<AsyncSender>,
-    acks: Arc<Acks>,
+    /// Its VM process, which it sends to: fxdax: as the daemon depends on it (TASK-79.9).
+    peer: Arc<Peer>,
     /// Its store: fxdax: a follower's, if read-only (backlog doc-8).
     store: OnceLock<Arc<ExtentStore>>,
     /// The path of the store it writes, which it holds.
@@ -630,7 +635,7 @@ impl Connection {
         let bytes = stream_bytes(header);
         let mut requests = self.requests.lock().unwrap();
         let in_flight = requests.in_flight();
-        let held = requests.stream_bytes + bytes + self.sender.queued();
+        let held = requests.stream_bytes + bytes + self.peer.sender.queued();
         if in_flight >= MAX_REQUESTS || held > MAX_STREAM_BYTES + QUEUED_ROOM {
             let what = format!("{} requests, and {held} bytes, in flight", in_flight + 1);
             return Err(std::io::Error::new(std::io::ErrorKind::QuotaExceeded, what));
@@ -771,7 +776,7 @@ impl Connection {
         }
         // Counted before its reply, which its VM process may then count on.
         super::metrics::served(header.kind, started.elapsed(), reply.status != 0);
-        if let Err(err) = self.sender.send(reply, payload, &fds) {
+        if let Err(err) = self.peer.sender.send(reply, payload, &fds) {
             log::warn!("extentd: replying to a VM process: {err}");
         }
     }
@@ -891,8 +896,8 @@ impl Connection {
                 ];
             }),
             WINDOW => {
-                let stage =
-                    Arc::new(RemoteStage { sender: self.sender.clone(), acks: self.acks.clone() });
+                let (sender, acks) = (self.peer.sender.clone(), self.peer.acks.clone());
+                let stage = Arc::new(RemoteStage { sender, acks });
                 let window = store.create_dax_window(args[0], Some(stage)).map_err(|err| {
                     log::warn!("extentd: creating a window: {err:#}");
                     Errno::EINVAL
@@ -958,7 +963,7 @@ impl Connection {
             return Err(Errno::EPERM);
         }
         let store = Arc::new(followed.follow());
-        let (epoch, sender, told) = (store.epoch()?, self.sender.clone(), store.clone());
+        let (epoch, sender, told) = (store.epoch()?, self.peer.sender.clone(), store.clone());
         self.start_behind(move |stopped| tell_commits(told, epoch, sender, stopped));
         let branch = store.branch();
         let _ = self.store.set(store);
@@ -1096,7 +1101,7 @@ impl Guest for Connection {
     fn tell(&self, capacity: u64, ask: bool) -> Result<(), Errno> {
         let flags = if ask { CAPACITY_ASK } else { 0 };
         let header = Header::new(CAPACITY, 0).with_args(&[capacity]).with_flags(flags);
-        self.sender.send(header, Vec::new(), &[]).map_err(|err| {
+        self.peer.sender.send(header, Vec::new(), &[]).map_err(|err| {
             log::warn!("extentd: telling a VM process its capacity: {err}");
             Errno::EIO
         })
@@ -1432,12 +1437,14 @@ const WATCH_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
 /// the process itself, which the daemon lets go once it has left one unacknowledged for
 /// [`UNRESPONSIVE`] ([`watch`]): its connection shut down, it is killed as the connection goes,
 /// which waits for it to have exited, its mappings of the window gone, before the pages it may
-/// reach go back ([`Peer::gone`]).
+/// reach go back ([`Peer::gone`]). One the daemon could not kill it refuses as it connects
+/// ([`Peer::connected`]): let go, it would map pages the daemon gives others; kept, every page
+/// freed would wait for it.
 struct Peer {
     acks: Arc<Acks>,
     sender: Arc<AsyncSender>,
     /// Its process, as a pidfd: none if it is this one, as tests' are, whose code the daemon's own
-    /// is; or if it could not be told.
+    /// is.
     process: Option<std::os::fd::OwnedFd>,
     /// Whether the daemon let it go ([`Peer::let_go`]).
     let_go: AtomicBool,
@@ -1447,22 +1454,32 @@ struct Peer {
 static PEERS: Mutex<Vec<Arc<Peer>>> = Mutex::new(Vec::new());
 
 impl Peer {
-    /// The VM process at the other end of `stream`, which `sender` sends to and acknowledges to
-    /// `acks`, among those connected, until [`Peer::forget`]; with the quarantine of the pages
-    /// freed that it, or another, may reach, and the watchdog, started first.
-    fn connected(stream: &UnixStream, sender: Arc<AsyncSender>, acks: Arc<Acks>) -> Arc<Self> {
+    /// The VM process at the other end of `stream`, which `sender` sends to, among those
+    /// connected, until [`Peer::forget`]; with the quarantine of the pages freed that it, or
+    /// another, may reach, and the watchdog, started first. An error if the daemon may not kill
+    /// it, as it would once it stopped answering: its process unknown, or the daemon not allowed
+    /// to signal it, as one of another user is unless the daemon has `CAP_KILL`.
+    fn connected(stream: &UnixStream, sender: Arc<AsyncSender>) -> std::io::Result<Arc<Self>> {
         static WATCHING: std::sync::Once = std::sync::Once::new();
         WATCHING.call_once(|| {
             zircon::vm::pmm::quarantine_with(quarantine);
             IO.spawn(watch());
         });
-        let process = peer_process(stream)
-            .inspect_err(|err| log::warn!("extentd: a VM process's pidfd: {err}"))
-            .ok()
-            .flatten();
-        let peer = Arc::new(Self { acks, sender, process, let_go: AtomicBool::new(false) });
+        let process = peer_process(stream)?;
+        if let Some(process) = &process {
+            // Signal 0, which checks the right to signal it, and sends nothing.
+            signal(process, 0).map_err(|err| {
+                std::io::Error::new(err.kind(), format!("the daemon may not kill it: {err}"))
+            })?;
+        }
+        let peer = Arc::new(Self {
+            acks: Arc::default(),
+            sender,
+            process,
+            let_go: AtomicBool::new(false),
+        });
         PEERS.lock().unwrap().push(peer.clone());
-        peer
+        Ok(peer)
     }
 
     /// Its connection is gone: no page waits for it from now on.
@@ -1492,23 +1509,14 @@ impl Peer {
     /// Its connection is gone: if the daemon let it go, kills it and returns once it has exited,
     /// holding no thread, its memory gone, and its mappings of the window.
     async fn gone(&self) {
-        use std::os::fd::{AsFd, AsRawFd};
+        use std::os::fd::AsFd;
         let Some(process) = self.process.as_ref().filter(|_| self.let_go.load(Ordering::Acquire))
         else {
             return;
         };
-        // SAFETY: Signals the process the pidfd, which the peer keeps open, names.
-        let killed = unsafe {
-            libc::syscall(
-                libc::SYS_pidfd_send_signal,
-                process.as_raw_fd(),
-                libc::SIGKILL,
-                std::ptr::null::<libc::siginfo_t>(),
-                0,
-            )
-        };
-        if killed != 0 {
-            log::error!("extentd: killing a VM process: {}", std::io::Error::last_os_error());
+        // Which the daemon may, as it checked as the process connected (`Peer::connected`).
+        if let Err(err) = signal(process, libc::SIGKILL) {
+            log::error!("extentd: killing a VM process: {err}");
         }
         // A pidfd is readable once its process has exited.
         let exited =
@@ -1517,6 +1525,26 @@ impl Peer {
             log::error!("extentd: waiting for a VM process to exit: {err}");
         }
     }
+}
+
+/// fxdax: sends `signal` to the process `process`, a pidfd, names: 0 sends none, but checks that
+/// this process may signal it.
+fn signal(process: &std::os::fd::OwnedFd, signal: libc::c_int) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+    // SAFETY: Signals the process the pidfd, which the caller keeps open, names.
+    let sent = unsafe {
+        libc::syscall(
+            libc::SYS_pidfd_send_signal,
+            process.as_raw_fd(),
+            signal,
+            std::ptr::null::<libc::siginfo_t>(),
+            0,
+        )
+    };
+    if sent != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 /// fxdax: the process at the other end of `stream`, as a pidfd, unless it is this one.
