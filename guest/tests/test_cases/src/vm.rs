@@ -42,9 +42,11 @@ pub struct Vm {
 
 /// The guest kernel's command line, before the guest's environment and the test's name: the
 /// console on the serial port, saying what is a warning or worse (to the test's standard error:
-/// `split_console`); a reset on a panic, which ends the VM; and the guest agent as init.
+/// `split_console`); a reset on a panic, which ends the VM; and the guest agent as init. fxdax: a
+/// task blocked for 10 s says so, with its stack, on the console, before the runner's timeout
+/// kills a hung test (TASK-44.13).
 const CMDLINE: &str = "console=ttyS0 loglevel=5 reboot=k panic=-1 8250.nr_uarts=1 i8042.noaux i8042.nomux \
-     i8042.dumbkbd init=/guest-agent";
+     i8042.dumbkbd sysctl.kernel.hung_task_timeout_secs=10 init=/guest-agent";
 
 impl Vm {
     /// A VM of `cpus` vCPUs and `ram_mib` MiB of memory.
@@ -728,4 +730,125 @@ mod tests {
         assert_eq!(&said, b"ready\n");
         running.kill().unwrap();
     }
+    /// TASK-44.8: a console's complaints fail its test: a WARN_ON's, lockdep's, a KCSAN report of
+    /// a race in fxdax's code; not KCSAN's of a race of the rest of the kernel's, nor of the race
+    /// looked into (KCSAN_REVIEWED_CHANGE).
+    #[test]
+    fn consoles_fail_on_their_kernels_complaints() {
+        let dir = tempdir::TempDir::new("console").unwrap();
+        let checked = |name: &str, console: &str| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, console).unwrap();
+            complaints(&path).map_err(|err| err.to_string())
+        };
+        let kcsan = |functions: &str, change: &str| {
+            format!(
+                "[ 1.0] ==================================================================\n\
+                 [ 1.0] BUG: KCSAN: data-race in {functions}\n\
+                 [ 1.0] value changed: {change}\n\
+                 [ 1.0] ==================================================================\n"
+            )
+        };
+        assert_eq!(checked("quiet.console.txt", "[ 0.1] Linux version 6.18\n"), Ok(()));
+        let warned = "[ 2.0] WARNING: CPU: 1 PID: 7 at fs/fxfs/dax.c:120 fxfs_dax_seal+0x1/0x2\n";
+        assert_eq!(
+            checked("warned.console.txt", warned),
+            Err(format!("a kernel complained: {:#?}", vec![warned.trim_end()]))
+        );
+        let theirs = kcsan("alloc_pid / copy_process", "0x1 -> 0x2");
+        assert_eq!(checked("theirs.console.txt", &theirs), Ok(()));
+        let reviewed = kcsan("fxfs_dax_seal+0x10/0x20 / kthread_is_per_cpu", "0x40000 -> 0x0");
+        assert_eq!(checked("reviewed.console.txt", &reviewed), Ok(()));
+        let ours =
+            kcsan("fxfs_dax_region_open+0x10/0x20 / fxfs_dax_map_to+0x30/0x40", "0x0 -> 0x1");
+        assert_eq!(
+            checked("ours.console.txt", &ours),
+            Err(format!(
+                "a kernel complained: {:#?}",
+                vec![
+                    "[ 1.0] BUG: KCSAN: data-race in fxfs_dax_region_open+0x10/0x20 / fxfs_dax_map_to+0x30/0x40"
+                ]
+            ))
+        );
+    }
+}
+
+// fxdax: what a guest's kernel says of itself on its console (TASK-44.8).
+
+/// The change of a word in a race of fxdax's code that KCSAN reports, looked into: a task's
+/// flags, its PF_MEMALLOC_NOFS set or cleared, as fs/fxfs's NOFS scopes around its calls into its
+/// Rust do (memalloc_nofs_save and restore, inlined), which other tasks read for other bits of the
+/// word, read whole (the scheduler's kthread_is_per_cpu, for PF_KTHREAD; mem_cgroup_from_task).
+const KCSAN_REVIEWED_CHANGE: u64 = 0x0004_0000;
+
+/// Whether the kernel's function `function` is fxdax's code's: fs/fxfs's, its Rust's
+/// (whose mangled names name its crates, fxfs and fxfs_linux), or virtio_extent's.
+///
+/// A debug kernel's KCSAN reports races in all of the kernel; a test fails on those of fxdax's
+/// code: a report naming a function of fs/fxfs's, virtio_extent's or their Rust's,
+/// whether both of its accesses are, or one is at unknown origin (one KCSAN doesn't
+/// see: uninstrumented, as the Rust and the scheduler are, or the host's, writing shared memory).
+/// But for its races whose change is KCSAN_REVIEWED_CHANGE's, looked into. The others are the
+/// kernel's, which the tests leave to it. Those seen, each looked into: two of
+/// the kernel's accesses, alloc_pid / copy_process (a PID namespace's flags), _find_next_bit /
+/// gen_pool_alloc_algo_owner (genalloc's lockless bitmap, of fs/fxfs's DAX window),
+/// folio_batch_move_lru / folios_put_refs (a folio's flags); at unknown origin,
+/// kthread_is_per_cpu, wq_worker_running and kick_pool (a task's flags, CPU time and wake CPU,
+/// which the scheduler writes), process_one_work (a work item of fs/fxfs's Rust runtime, rt.c, as
+/// the Rust writes it: looked into apart from the followers' torture test), virtqueue_enable_cb,
+/// virtqueue_get_buf_ctx_split and vring_interrupt (the used ring's index, which the device, the
+/// host, writes as virtio has it).
+fn ours(function: &str) -> bool {
+    function.contains("fxfs")
+        || function.starts_with("vext_")
+        || function.starts_with("virtio_extent")
+}
+
+/// What a kernel says as it finds itself wrong: a WARN_ON's, a BUG's, lockdep's, KCSAN's, and
+/// a sleep in atomic context.
+const COMPLAINTS: [&str; 7] = [
+    "WARNING:",
+    "BUG:",
+    "possible circular locking",
+    "possible recursive locking",
+    "inconsistent lock state",
+    "suspicious RCU usage",
+    "sleeping function called from invalid context",
+];
+
+/// Fails with the lines of the console at `console` in which its kernel complains, but for
+/// KCSAN's reports of races that aren't fxdax's code's, or were reviewed (see [`ours`]). The
+/// runner checks every test's consoles so (TASK-44.8): a release kernel's WARN_ON in fs/fxfs, which
+/// once hid a bug a stress test alone found (TASK-44.2), fails its test as a debug kernel's
+/// lockdep, KCSAN and atomic-sleep reports do.
+pub fn complaints(console: &Path) -> anyhow::Result<()> {
+    let console = String::from_utf8_lossy(&std::fs::read(console)?).into_owned();
+    let lines: Vec<&str> = console.lines().collect();
+    let mut complained = Vec::new();
+    for (at, line) in lines.iter().enumerate() {
+        if !COMPLAINTS.iter().any(|complaint| line.contains(complaint)) {
+            continue;
+        }
+        // "BUG: KCSAN: data-race in FUNCTION[+OFFSET/LENGTH][ / FUNCTION[+...]]", then the
+        // report, to a line of '='s, which says "value changed: 0xOLD -> 0xNEW".
+        if let Some((_, functions)) = line.split_once("BUG: KCSAN: data-race in ") {
+            let of_ours = (functions.split(" / "))
+                .any(|function| ours(function.trim().split('+').next().unwrap_or_default()));
+            let report = lines[at + 1..].iter().take_while(|line| !line.contains("=========="));
+            let changed = report.filter_map(|line| line.split_once("value changed: ")).find_map(
+                |(_, change)| {
+                    let (old, new) = change.split_once(" -> ")?;
+                    let word =
+                        |hex: &str| u64::from_str_radix(hex.trim().strip_prefix("0x")?, 16).ok();
+                    Some(word(old)? ^ word(new)?)
+                },
+            );
+            if !of_ours || changed == Some(KCSAN_REVIEWED_CHANGE) {
+                continue;
+            }
+        }
+        complained.push(*line);
+    }
+    anyhow::ensure!(complained.is_empty(), "a kernel complained: {complained:#?}");
+    Ok(())
 }

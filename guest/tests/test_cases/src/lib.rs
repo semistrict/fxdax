@@ -32,6 +32,8 @@ mod test_fxfs_guest_snapshot;
 use test_fxfs_guest_snapshot::{Mode as SnapshotMode, TestFxfsGuestSnapshot};
 mod test_extent_guest;
 use test_extent_guest::TestExtentGuest;
+mod test_runner_deadlock;
+use test_runner_deadlock::TestRunnerDeadlock;
 
 #[cfg(any(feature = "host", target_os = "linux"))]
 mod test_fxfs_guest_checks;
@@ -100,6 +102,7 @@ pub fn test_cases() -> Vec<TestCase> {
             Box::new(TestFxfsGuestPgbench { dax: false, probe: Probe::None, fsync: false }),
         ),
         TestCase::new("fxfs-guest-daemon-lost", Box::new(TestFxfsGuestDaemonLost)),
+        TestCase::new("runner-deadlock", Box::new(TestRunnerDeadlock)),
         TestCase::new("fxfs-guest-follow", Box::new(TestFxfsGuestFollow { dax: false })),
         TestCase::new("fxfs-guest-follow-dax", Box::new(TestFxfsGuestFollow { dax: true })),
         TestCase::new(
@@ -327,6 +330,12 @@ pub trait Test {
     /// Per-test timeout in seconds. The runner kills the test if it exceeds this.
     fn timeout_secs(&self) -> u64 {
         15
+    }
+
+    /// fxdax: whether the runner fails the test, once it passed, on its VMs' kernels complaining
+    /// on their consoles (`vm::complaints`, TASK-44.8): unless it means them to.
+    fn checks_console(&self) -> bool {
+        true
     }
 }
 

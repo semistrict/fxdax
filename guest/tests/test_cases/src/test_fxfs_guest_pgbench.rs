@@ -182,7 +182,8 @@ RUN apk add --no-cache postgresql postgresql-contrib perf
             let stop = Arc::new(AtomicBool::new(false));
             let samples = dir.join("samples.txt");
             let sampler = sample(socket.clone(), fork.clone(), stats, samples, stop.clone());
-            let loaded = wait(run(test_setup, &root, "load", &fork, &socket, load_memory()?, window)?);
+            let loaded =
+                wait(run(test_setup, &root, "load", &fork, &socket, load_memory()?, window)?);
             stop.store(true, Ordering::Relaxed);
             sampler.join().expect("the sampler panicked")?;
             loaded
