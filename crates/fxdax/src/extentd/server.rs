@@ -1329,8 +1329,9 @@ struct AckState {
     /// The VM process is gone, and nothing it acknowledges is waited for.
     closed: bool,
     /// fxdax: what is kept until stage operations are acknowledged (`Deferred::keep_until_made`,
-    /// [`Acks::park`]), with their IDs.
-    kept: Vec<(u64, Box<dyn Send>)>,
+    /// [`Acks::park`]), by their IDs: what an acknowledgement lets go of taken off at once, however
+    /// much waits for those after it.
+    kept: std::collections::BTreeMap<u64, Vec<Box<dyn Send>>>,
     /// fxdax: the operation taking access away the watchdog found unacknowledged, and when it
     /// first did ([`Acks::unanswered`]).
     watched: Option<(u64, std::time::Instant)>,
@@ -1348,15 +1349,13 @@ impl Acks {
     }
 
     fn acked(&self, id: u64) {
-        let released: Vec<_> = {
+        let released = {
             let mut state = self.state.lock().unwrap();
             state.acked = state.acked.max(id);
             self.acked.notify_all();
-            let acked = state.acked;
-            let (released, kept) =
-                std::mem::take(&mut state.kept).into_iter().partition(|(id, _)| *id <= acked);
-            state.kept = kept;
-            released
+            let after = state.acked.saturating_add(1);
+            let kept = state.kept.split_off(&after);
+            std::mem::replace(&mut state.kept, kept)
         };
         // What the VM process no longer reaches, dropped without holding the lock.
         drop(released);
@@ -1367,7 +1366,7 @@ impl Acks {
         let refused = {
             let mut state = self.state.lock().unwrap();
             if state.acked < id && !state.closed {
-                state.kept.push((id, keep));
+                state.kept.entry(id).or_default().push(keep);
                 None
             } else {
                 Some(keep)
@@ -1383,7 +1382,7 @@ impl Acks {
         let mut state = self.state.lock().unwrap();
         if state.acked < state.last_taking && !state.closed {
             let id = state.last_taking;
-            state.kept.push((id, Box::new(pages.clone())));
+            state.kept.entry(id).or_default().push(Box::new(pages.clone()));
         }
     }
 
@@ -1500,12 +1499,10 @@ impl Peer {
         }
     }
 
-    /// Lets it go if it has left an operation taking access away unacknowledged for
-    /// [`UNRESPONSIVE`], as of `now`.
-    fn watch(&self, now: std::time::Instant) {
-        if self.acks.unanswered(now) >= UNRESPONSIVE {
-            self.let_go(format_args!("left a stage operation unacknowledged for {UNRESPONSIVE:?}"));
-        }
+    /// Whether it has left an operation taking access away unacknowledged for [`UNRESPONSIVE`],
+    /// as of `now`, and is to be let go.
+    fn unresponsive(&self, now: std::time::Instant) -> bool {
+        self.acks.unanswered(now) >= UNRESPONSIVE
     }
 
     /// Its connection is gone: if the daemon let it go, kills it and returns once it has exited,
@@ -1701,8 +1698,11 @@ async fn watch() {
     loop {
         every.tick().await;
         let now = std::time::Instant::now();
-        for peer in PEERS.lock().unwrap().iter() {
-            peer.watch(now);
+        let unresponsive: Vec<_> =
+            PEERS.lock().unwrap().iter().filter(|peer| peer.unresponsive(now)).cloned().collect();
+        // Let go without holding the VM processes connected, which every page freed takes.
+        for peer in unresponsive {
+            peer.let_go(format_args!("left a stage operation unacknowledged for {UNRESPONSIVE:?}"));
         }
     }
 }
