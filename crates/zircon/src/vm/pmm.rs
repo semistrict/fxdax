@@ -69,6 +69,10 @@ mod quarantine;
 mod relief;
 
 pub use quarantine::{Quarantined, quarantine_with};
+#[cfg(all(test, feature = "shuttle"))]
+pub(crate) use quarantine::QuarantineForTest;
+#[cfg(test)]
+pub(crate) use quarantine::quarantine_for_test;
 pub use relief::{RELIEF_BYTES, relieve_with};
 
 /// No restrictions on which arena to allocate from.

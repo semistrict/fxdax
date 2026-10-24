@@ -690,8 +690,8 @@ mod tests {
     #[test]
     fn pages_second_stages_mapped_are_quarantined_as_they_are_freed() {
         let (quarantine, quarantined) = std::sync::mpsc::channel::<pmm::Quarantined>();
-        let quarantine = Mutex::new(quarantine);
-        pmm::quarantine_with(move |pages| quarantine.lock().send(pages).unwrap());
+        // Dropped before what it sends to.
+        let _quarantine = pmm::quarantine_for_test(move |pages| quarantine.send(pages).unwrap());
         let stage = Arc::new(RecordingSecondStage::default());
         let staged = HostArchVmAspace::new_window(0, PAGE_SIZE, Some(stage));
         let host = HostArchVmAspace::new(PAGE_SIZE);
