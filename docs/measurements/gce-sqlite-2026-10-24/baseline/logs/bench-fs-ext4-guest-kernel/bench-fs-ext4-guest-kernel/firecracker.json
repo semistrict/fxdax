@@ -1,0 +1,27 @@
+{
+  "boot-source": {
+    "boot_args": "console=ttyS0 loglevel=5 reboot=k panic=-1 8250.nr_uarts=1 i8042.noaux i8042.nomux i8042.dumbkbd init=/guest-agent FXDAX_BENCH_DEVICE=/dev/vdb FXDAX_BENCH_ITERATIONS=3 FXDAX_BENCH_GROUPS=sqlite FXDAX_BENCH_GUEST_PERF= PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME=/root -- bench-fs-ext4-guest-kernel",
+    "kernel_image_path": "/var/lib/fxdax-test/guest-kernel-release/out/x86_64/vmlinux"
+  },
+  "drives": [
+    {
+      "drive_id": "rootfs",
+      "is_read_only": false,
+      "is_root_device": true,
+      "path_on_host": "/home/ramon/sqlite-benchmark/logs/bench-fs-ext4-guest-kernel/bench-fs-ext4-guest-kernel/rootfs.ext4"
+    },
+    {
+      "cache_type": "Writeback",
+      "drive_id": "bench",
+      "is_read_only": false,
+      "is_root_device": false,
+      "path_on_host": "/home/ramon/sqlite-benchmark/logs/bench-fs-ext4-guest-kernel/bench-fs-ext4-guest-kernel/ext4.img"
+    }
+  ],
+  "extent": [],
+  "machine-config": {
+    "mem_size_mib": 2048,
+    "vcpu_count": 2
+  },
+  "pmem": []
+}

@@ -1,0 +1,119 @@
+[    0.165185] PCI: Fatal: No config space access function found
+[    0.193455] PCI: System does not support PCI
+[    0.498101] check access for rdinit=/init failed: -2, ignoring
+iteration 1/3
+OBSERVED mtime-ahead-of-guest-ms -7.158
+RESULT sqlite-pread-scan MiB/s higher 805.790
+OBSERVED sqlite-pread-scan-faults-per-mib 2.7
+RESULT sqlite-pread-scan-warm MiB/s higher 2666.811
+OBSERVED sqlite-pread-scan-warm-faults-per-mib 2.6
+RESULT sqlite-mmap-scan MiB/s higher 3260.718
+OBSERVED sqlite-mmap-scan-faults-per-mib 3.7
+RESULT sqlite-mmap-scan-warm MiB/s higher 3690.042
+OBSERVED sqlite-mmap-scan-warm-faults-per-mib 3.7
+FXFS sqlite-delete-full-batch1: device_commits 609, device_commits_ns 239911260, device_read_bytes 987136, device_reads 219, device_reads_ns 48928996, device_write_bytes 3813376, device_writes 881, device_writes_ns 300640648, fsyncs 808, journal_compaction_ns 16196018, journal_compactions 1, seal_waits 609, seal_waits_ns 2222063, seals 609, seals_ns 249110402, stores_held_by_seals 1, stores_held_by_seals_ns 333125, window_map_bytes_evacuate 9363456, window_map_bytes_grow 4849664, window_map_bytes_reach 2957312, window_map_bytes_restage 39780352, window_map_requests 1262, window_maps 1493, window_maps_evacuate 835, window_maps_grow 21, window_maps_ns 433447141, window_maps_reach 30, window_maps_restage 607, window_regions_largest_free_bytes 8851456, window_regions_pruned 687, window_unmaps 1046, window_unmaps_ns 274345099, writes_held_by_seals 3, writes_held_by_seals_ns 680135
+REQUESTS sqlite-delete-full-batch1: read 1.09 (191 µs each), write 4.41 (303 µs each), free 1.07 (259 µs each), map 6.31 (287 µs each), unmap 5.23 (234 µs each), commit 0.01 (270 µs each) per operation
+RESULT sqlite-delete-full-batch1 txn/s higher 250.403
+OBSERVED sqlite-delete-full-batch1-updates-per-second 250.4
+FXFS sqlite-delete-full-batch100: device_commits 610, device_commits_ns 596519748, device_read_bytes 1298432, device_reads 236, device_reads_ns 60093874, device_write_bytes 10141696, device_writes 2340, device_writes_ns 1483196502, fsyncs 808, journal_compaction_ns 48504187, journal_compactions 2, seal_waits 610, seal_waits_ns 2769793, seals 610, seals_ns 606977500, stores_held_by_seals 3, stores_held_by_seals_ns 2595954, window_map_bytes_evacuate 204091392, window_map_bytes_grow 293535744, window_map_bytes_reach 3354624, window_map_bytes_restage 39976960, window_map_requests 3076, window_maps 22957, window_maps_evacuate 20690, window_maps_grow 1625, window_maps_ns 2080412626, window_maps_reach 32, window_maps_restage 610, window_regions_pruned 869, window_unmaps 2049, window_unmaps_ns 964229713, writes_held_by_seals 1, writes_held_by_seals_ns 38449
+REQUESTS sqlite-delete-full-batch100: read 1.18 (232 µs each), write 11.70 (583 µs each), free 1.90 (1807 µs each), map 15.38 (642 µs each), unmap 10.24 (439 µs each), commit 0.02 (724 µs each) per operation
+RESULT sqlite-delete-full-batch100 txn/s higher 43.367
+OBSERVED sqlite-delete-full-batch100-updates-per-second 4336.7
+FXFS sqlite-wal-full-batch1: device_commits 212, device_commits_ns 102847099, device_read_bytes 831488, device_reads 203, device_reads_ns 50813299, device_write_bytes 2318336, device_writes 566, device_writes_ns 222410290, fsyncs 213, seal_waits 212, seal_waits_ns 6963791, seals 212, seals_ns 106260214, window_free_bytes 1802240, window_map_bytes_evacuate 20484096, window_map_bytes_grow 10485760, window_map_bytes_reach 2830336, window_map_bytes_restage 13828096, window_map_requests 516, window_maps 1991, window_maps_evacuate 1689, window_maps_grow 49, window_maps_ns 251312798, window_maps_reach 42, window_maps_restage 211, window_regions_free_bytes 1835008, window_regions_pruned 658, window_unmaps 294, window_unmaps_ns 70509022
+REQUESTS sqlite-wal-full-batch1: read 1.01 (232 µs each), write 2.83 (308 µs each), free 0.04 (1116 µs each), map 2.58 (448 µs each), unmap 1.47 (232 µs each) per operation
+RESULT sqlite-wal-full-batch1 txn/s higher 591.050
+OBSERVED sqlite-wal-full-batch1-updates-per-second 591.0
+RESULT sqlite-wal-full-batch1-checkpoint ms lower 19.100
+FXFS sqlite-wal-full-batch100: device_commits 215, device_commits_ns 251211931, device_read_bytes 1269760, device_reads 231, device_reads_ns 59016111, device_write_bytes 7155712, device_writes 1567, device_writes_ns 1818972110, fsyncs 213, journal_compaction_ns 76025480, journal_compactions 2, seal_waits 215, seal_waits_ns 10039707, seals 215, seals_ns 255127484, window_free_bytes 1572864, window_map_bytes_evacuate 143409152, window_map_bytes_grow 157483008, window_map_bytes_reach 16449536, window_map_bytes_restage 13959168, window_map_requests 1354, window_maps 2258, window_maps_evacuate 1114, window_maps_grow 861, window_maps_ns 586785204, window_maps_reach 70, window_maps_restage 213, window_regions 2, window_regions_free_bytes 1835008, window_regions_pruned 450, window_unmaps 675, window_unmaps_ns 202977492
+REQUESTS sqlite-wal-full-batch100: read 1.16 (227 µs each), write 7.83 (534 µs each), free 0.07 (2525 µs each), map 6.77 (407 µs each), unmap 3.38 (267 µs each), commit 0.02 (497 µs each) per operation
+RESULT sqlite-wal-full-batch100 txn/s higher 95.547
+OBSERVED sqlite-wal-full-batch100-updates-per-second 9554.7
+RESULT sqlite-wal-full-batch100-checkpoint ms lower 103.366
+FXFS sqlite-wal-normal-batch1: device_commits 10, device_commits_ns 25046408, device_read_bytes 12288, device_reads 3, device_reads_ns 875475, device_write_bytes 708608, device_writes 173, device_writes_ns 122338835, fsyncs 11, seal_waits 10, seal_waits_ns 490605, seals 10, seals_ns 25234102, window_free_bytes 1802240, window_map_bytes_evacuate 14446592, window_map_bytes_grow 11141120, window_map_bytes_reach 2949120, window_map_bytes_restage 589824, window_map_requests 99, window_maps 315, window_maps_evacuate 225, window_maps_grow 52, window_maps_ns 57387982, window_maps_reach 29, window_maps_restage 9, window_regions_free_bytes 1835008, window_regions_pruned 20, window_unmaps 78, window_unmaps_ns 34828630
+REQUESTS sqlite-wal-normal-batch1: read 0.01 (258 µs each), write 0.86 (611 µs each), free 0.04 (1235 µs each), map 0.49 (537 µs each), unmap 0.39 (417 µs each) per operation
+RESULT sqlite-wal-normal-batch1 txn/s higher 11533.054
+OBSERVED sqlite-wal-normal-batch1-updates-per-second 11533.1
+RESULT sqlite-wal-normal-batch1-checkpoint ms lower 18.050
+FXFS sqlite-wal-normal-batch100: device_commits 12, device_commits_ns 106348297, device_read_bytes 282624, device_reads 20, device_reads_ns 5025286, device_write_bytes 5177344, device_writes 1044, device_writes_ns 2110318333, fsyncs 11, journal_compaction_ns 113867078, journal_compactions 1, seal_waits 12, seal_waits_ns 1821074, seals 12, seals_ns 106555973, stores_held_by_seals 2, stores_held_by_seals_ns 63674754, window_map_bytes_evacuate 95383552, window_map_bytes_grow 93650944, window_map_bytes_reach 14090240, window_map_bytes_restage 720896, window_map_requests 511, window_maps 620, window_maps_evacuate 118, window_maps_grow 417, window_maps_ns 265575692, window_maps_reach 74, window_maps_restage 11, window_regions 1, window_regions_pruned 99, window_unmaps 476, window_unmaps_ns 119982610
+REQUESTS sqlite-wal-normal-batch100: read 0.10 (228 µs each), write 5.22 (672 µs each), free 0.07 (1348 µs each), map 2.56 (487 µs each), unmap 2.38 (239 µs each), commit 0.01 (31185 µs each) per operation
+RESULT sqlite-wal-normal-batch100 txn/s higher 177.088
+OBSERVED sqlite-wal-normal-batch100-updates-per-second 17708.8
+RESULT sqlite-wal-normal-batch100-checkpoint ms lower 129.520
+iteration 2/3
+OBSERVED mtime-ahead-of-guest-ms -5.425
+RESULT sqlite-pread-scan MiB/s higher 721.588
+OBSERVED sqlite-pread-scan-faults-per-mib 2.7
+RESULT sqlite-pread-scan-warm MiB/s higher 2673.270
+OBSERVED sqlite-pread-scan-warm-faults-per-mib 2.6
+RESULT sqlite-mmap-scan MiB/s higher 3261.264
+OBSERVED sqlite-mmap-scan-faults-per-mib 9.6
+RESULT sqlite-mmap-scan-warm MiB/s higher 3605.565
+OBSERVED sqlite-mmap-scan-warm-faults-per-mib 9.6
+FXFS sqlite-delete-full-batch1: device_commits 607, device_commits_ns 236987186, device_read_bytes 827392, device_reads 202, device_reads_ns 42552361, device_write_bytes 3538944, device_writes 864, device_writes_ns 297538798, fsyncs 808, seal_waits 607, seal_waits_ns 2505193, seals 607, seals_ns 246709783, window_map_bytes_evacuate 9433088, window_map_bytes_grow 4849664, window_map_bytes_reach 2818048, window_map_bytes_restage 39714816, window_map_requests 1258, window_maps 1498, window_maps_evacuate 844, window_maps_grow 21, window_maps_ns 433381092, window_maps_reach 27, window_maps_restage 606, window_regions_largest_free_bytes 7241728, window_regions_pruned 686, window_unmaps 1042, window_unmaps_ns 280976538
+REQUESTS sqlite-delete-full-batch1: read 1.01 (178 µs each), write 4.32 (305 µs each), free 1.03 (262 µs each), map 6.29 (290 µs each), unmap 5.21 (240 µs each) per operation
+RESULT sqlite-delete-full-batch1 txn/s higher 250.373
+OBSERVED sqlite-delete-full-batch1-updates-per-second 250.4
+FXFS sqlite-delete-full-batch100: device_commits 612, device_commits_ns 560073484, device_read_bytes 1228800, device_reads 236, device_reads_ns 55857338, device_write_bytes 10137600, device_writes 2348, device_writes_ns 1678283838, fsyncs 808, journal_compaction_ns 44054031, journal_compactions 2, seal_waits 612, seal_waits_ns 3172967, seals 612, seals_ns 570341573, stores_held_by_seals 5, stores_held_by_seals_ns 3517676, window_map_bytes_evacuate 207757312, window_map_bytes_grow 293208064, window_map_bytes_reach 3325952, window_map_bytes_restage 39845888, window_map_requests 3068, window_maps 22958, window_maps_evacuate 20697, window_maps_grow 1621, window_maps_ns 2032591561, window_maps_reach 32, window_maps_restage 608, window_regions_largest_free_bytes 1048576, window_regions_pruned 869, window_unmaps 2047, window_unmaps_ns 940564517, writes_held_by_seals 1, writes_held_by_seals_ns 60528
+REQUESTS sqlite-delete-full-batch100: read 1.18 (215 µs each), write 11.74 (671 µs each), free 1.91 (1805 µs each), map 15.34 (629 µs each), unmap 10.23 (428 µs each), commit 0.02 (656 µs each) per operation
+RESULT sqlite-delete-full-batch100 txn/s higher 43.419
+OBSERVED sqlite-delete-full-batch100-updates-per-second 4341.9
+FXFS sqlite-wal-full-batch1: device_commits 212, device_commits_ns 118049701, device_read_bytes 831488, device_reads 203, device_reads_ns 45453569, device_write_bytes 2314240, device_writes 565, device_writes_ns 276593140, fsyncs 213, seal_waits 212, seal_waits_ns 7332032, seals 212, seals_ns 121583303, window_free_bytes 1802240, window_map_bytes_evacuate 18796544, window_map_bytes_grow 10747904, window_map_bytes_reach 2568192, window_map_bytes_restage 13828096, window_map_requests 518, window_maps 1580, window_maps_evacuate 1278, window_maps_grow 50, window_maps_ns 253551025, window_maps_reach 41, window_maps_restage 211, window_regions_free_bytes 1835008, window_regions_pruned 654, window_unmaps 294, window_unmaps_ns 91466997
+REQUESTS sqlite-wal-full-batch1: read 1.01 (200 µs each), write 2.83 (342 µs each), free 0.04 (1074 µs each), map 2.59 (449 µs each), unmap 1.47 (279 µs each) per operation
+RESULT sqlite-wal-full-batch1 txn/s higher 560.089
+OBSERVED sqlite-wal-full-batch1-updates-per-second 560.1
+RESULT sqlite-wal-full-batch1-checkpoint ms lower 20.182
+FXFS sqlite-wal-full-batch100: device_commits 214, device_commits_ns 243826509, device_read_bytes 1060864, device_reads 218, device_reads_ns 54778003, device_write_bytes 6385664, device_writes 1396, device_writes_ns 840976841, fsyncs 213, journal_compaction_ns 24401447, journal_compactions 1, seal_waits 214, seal_waits_ns 7325641, seals 214, seals_ns 247503492, stores_held_by_seals 3, stores_held_by_seals_ns 1674078, window_map_bytes_evacuate 142725120, window_map_bytes_grow 157286400, window_map_bytes_reach 17813504, window_map_bytes_restage 13959168, window_map_requests 1358, window_maps 2263, window_maps_evacuate 1116, window_maps_grow 861, window_maps_ns 563277297, window_maps_reach 73, window_maps_restage 213, window_regions 1, window_regions_pruned 452, window_unmaps 679, window_unmaps_ns 181042258
+RESULT sqlite-wal-full-batch100 txn/s higher 96.459
+OBSERVED sqlite-wal-full-batch100-updates-per-second 9645.9
+RESULT sqlite-wal-full-batch100-checkpoint ms lower 95.379
+REQUESTS sqlite-wal-full-batch100: read 1.09 (223 µs each), write 6.98 (556 µs each), free 0.07 (1058 µs each), map 6.79 (389 µs each), unmap 3.40 (243 µs each), commit 0.01 (392 µs each) per operation
+FXFS sqlite-wal-normal-batch1: device_commits 10, device_commits_ns 24233129, device_read_bytes 245760, device_reads 18, device_reads_ns 10486344, device_write_bytes 1024000, device_writes 179, device_writes_ns 152965748, fsyncs 11, seal_waits 10, seal_waits_ns 305595, seals 10, seals_ns 24412948, window_free_bytes 1802240, window_map_bytes_evacuate 14446592, window_map_bytes_grow 10878976, window_map_bytes_reach 3211264, window_map_bytes_restage 589824, window_map_requests 99, window_maps 315, window_maps_evacuate 225, window_maps_grow 51, window_maps_ns 55204918, window_maps_reach 30, window_maps_restage 9, window_regions_free_bytes 1835008, window_regions_pruned 20, window_unmaps 78, window_unmaps_ns 39761207
+RESULT sqlite-wal-normal-batch1 txn/s higher 12308.098
+OBSERVED sqlite-wal-normal-batch1-updates-per-second 12308.1
+RESULT sqlite-wal-normal-batch1-checkpoint ms lower 18.346
+REQUESTS sqlite-wal-normal-batch1: read 0.09 (557 µs each), write 0.90 (368 µs each), free 0.04 (1249 µs each), map 0.49 (508 µs each), unmap 0.39 (494 µs each) per operation
+FXFS sqlite-wal-normal-batch100: device_commits 13, device_commits_ns 162965340, device_read_bytes 286720, device_reads 19, device_reads_ns 25466322, device_write_bytes 5767168, device_writes 1109, device_writes_ns 2626837984, fsyncs 11, journal_compaction_ns 118164064, journal_compactions 2, seal_waits 12, seal_waits_ns 417554, seals 13, seals_ns 163124248, window_map_bytes_evacuate 95326208, window_map_bytes_grow 92864512, window_map_bytes_reach 6225920, window_map_bytes_restage 720896, window_map_requests 506, window_maps 607, window_maps_evacuate 110, window_maps_grow 413, window_maps_ns 262118867, window_maps_reach 73, window_maps_restage 11, window_regions 2, window_regions_pruned 97, window_unmaps 473, window_unmaps_ns 132169066
+RESULT sqlite-wal-normal-batch100 txn/s higher 192.649
+REQUESTS sqlite-wal-normal-batch100: read 0.10 (1300 µs each), write 5.54 (580 µs each), free 0.07 (3312 µs each), map 2.53 (481 µs each), unmap 2.37 (259 µs each), commit 0.01 (423 µs each) per operation
+OBSERVED sqlite-wal-normal-batch100-updates-per-second 19264.9
+RESULT sqlite-wal-normal-batch100-checkpoint ms lower 318.342
+iteration 3/3
+OBSERVED mtime-ahead-of-guest-ms -3.637
+RESULT sqlite-pread-scan MiB/s higher 784.210
+OBSERVED sqlite-pread-scan-faults-per-mib 2.7
+RESULT sqlite-pread-scan-warm MiB/s higher 2676.405
+OBSERVED sqlite-pread-scan-warm-faults-per-mib 2.6
+RESULT sqlite-mmap-scan MiB/s higher 3423.908
+OBSERVED sqlite-mmap-scan-faults-per-mib 5.6
+RESULT sqlite-mmap-scan-warm MiB/s higher 3590.993
+OBSERVED sqlite-mmap-scan-warm-faults-per-mib 5.6
+FXFS sqlite-delete-full-batch1: device_commits 612, device_commits_ns 252796294, device_read_bytes 1024000, device_reads 218, device_reads_ns 48644060, device_write_bytes 3813376, device_writes 883, device_writes_ns 339422815, fsyncs 808, journal_compaction_ns 17797458, journal_compactions 1, seal_waits 612, seal_waits_ns 4629965, seals 612, seals_ns 262144766, stores_held_by_seals 2, stores_held_by_seals_ns 962679, window_map_bytes_evacuate 9457664, window_map_bytes_grow 4849664, window_map_bytes_reach 3022848, window_map_bytes_restage 39714816, window_map_requests 1263, window_maps 1503, window_maps_evacuate 845, window_maps_grow 21, window_maps_ns 461959918, window_maps_reach 31, window_maps_restage 606, window_regions_largest_free_bytes 9142272, window_regions_pruned 688, window_unmaps 1046, window_unmaps_ns 291007168
+REQUESTS sqlite-delete-full-batch1: read 1.09 (188 µs each), write 4.42 (318 µs each), free 1.07 (270 µs each), map 6.32 (307 µs each), unmap 5.23 (246 µs each), commit 0.01 (268 µs each) per operation
+RESULT sqlite-delete-full-batch1 txn/s higher 243.242
+OBSERVED sqlite-delete-full-batch1-updates-per-second 243.2
+FXFS sqlite-delete-full-batch100: device_commits 611, device_commits_ns 590984275, device_read_bytes 1224704, device_reads 234, device_reads_ns 52431398, device_write_bytes 10153984, device_writes 2350, device_writes_ns 1397875350, fsyncs 808, journal_compaction_ns 42936817, journal_compactions 2, seal_waits 611, seal_waits_ns 2778459, seals 611, seals_ns 601429327, stores_held_by_seals 4, stores_held_by_seals_ns 3032822, window_map_bytes_evacuate 209039360, window_map_bytes_grow 292683776, window_map_bytes_range 32768, window_map_bytes_reach 3117056, window_map_bytes_restage 39911424, window_map_requests 3078, window_maps 22986, window_maps_evacuate 20715, window_maps_grow 1619, window_maps_ns 2103183208, window_maps_range 4, window_maps_reach 39, window_maps_restage 609, window_regions_pruned 870, window_unmaps 2056, window_unmaps_ns 963378959, writes_held_by_seals 1, writes_held_by_seals_ns 95670
+REQUESTS sqlite-delete-full-batch100: read 1.17 (197 µs each), write 11.75 (554 µs each), free 1.92 (1821 µs each), map 15.39 (650 µs each), unmap 10.28 (435 µs each), commit 0.02 (564 µs each) per operation
+RESULT sqlite-delete-full-batch100 txn/s higher 42.520
+OBSERVED sqlite-delete-full-batch100-updates-per-second 4252.0
+FXFS sqlite-wal-full-batch1: device_commits 214, device_commits_ns 111133039, device_read_bytes 1085440, device_reads 218, device_reads_ns 59606386, device_write_bytes 2678784, device_writes 581, device_writes_ns 259102989, fsyncs 213, journal_compaction_ns 31854505, journal_compactions 1, seal_waits 214, seal_waits_ns 9724245, seals 214, seals_ns 114551025, window_free_bytes 1802240, window_map_bytes_evacuate 19156992, window_map_bytes_grow 10420224, window_map_bytes_reach 2961408, window_map_bytes_restage 13828096, window_map_requests 518, window_maps 1669, window_maps_evacuate 1366, window_maps_grow 48, window_maps_ns 265461072, window_maps_reach 44, window_maps_restage 211, window_regions_free_bytes 1835008, window_regions_pruned 660, window_unmaps 295, window_unmaps_ns 78224889, writes_held_by_seals 2, writes_held_by_seals_ns 548362
+REQUESTS sqlite-wal-full-batch1: read 1.09 (255 µs each), write 2.90 (300 µs each), free 0.09 (960 µs each), map 2.59 (472 µs each), unmap 1.48 (254 µs each), commit 0.01 (250 µs each) per operation
+RESULT sqlite-wal-full-batch1 txn/s higher 570.380
+OBSERVED sqlite-wal-full-batch1-updates-per-second 570.4
+RESULT sqlite-wal-full-batch1-checkpoint ms lower 15.877
+FXFS sqlite-wal-full-batch100: device_commits 214, device_commits_ns 250741296, device_read_bytes 1081344, device_reads 218, device_reads_ns 54110564, device_write_bytes 6610944, device_writes 1394, device_writes_ns 877999421, fsyncs 213, journal_compaction_ns 30573502, journal_compactions 1, seal_waits 214, seal_waits_ns 8129975, seals 214, seals_ns 254488883, stores_held_by_seals 2, stores_held_by_seals_ns 1631990, window_map_bytes_evacuate 142778368, window_map_bytes_grow 157614080, window_map_bytes_reach 18354176, window_map_bytes_restage 13959168, window_map_requests 1367, window_maps 2274, window_maps_evacuate 1118, window_maps_grow 864, window_maps_ns 576663385, window_maps_reach 79, window_maps_restage 213, window_regions 1, window_regions_pruned 448, window_unmaps 685, window_unmaps_ns 178849307
+REQUESTS sqlite-wal-full-batch100: read 1.09 (223 µs each), write 6.97 (541 µs each), free 0.07 (862 µs each), map 6.83 (397 µs each), unmap 3.42 (241 µs each), commit 0.01 (713 µs each) per operation
+RESULT sqlite-wal-full-batch100 txn/s higher 96.942
+OBSERVED sqlite-wal-full-batch100-updates-per-second 9694.2
+RESULT sqlite-wal-full-batch100-checkpoint ms lower 90.152
+FXFS sqlite-wal-normal-batch1: device_commits 10, device_commits_ns 24165624, device_read_bytes 12288, device_reads 3, device_reads_ns 922070, device_write_bytes 708608, device_writes 173, device_writes_ns 131465498, fsyncs 11, seal_waits 10, seal_waits_ns 336465, seals 10, seals_ns 24331958, window_free_bytes 1802240, window_map_bytes_evacuate 14446592, window_map_bytes_grow 11141120, window_map_bytes_reach 2949120, window_map_bytes_restage 589824, window_map_requests 99, window_maps 315, window_maps_evacuate 225, window_maps_grow 52, window_maps_ns 53640591, window_maps_reach 29, window_maps_restage 9, window_regions_free_bytes 1835008, window_regions_pruned 20, window_unmaps 78, window_unmaps_ns 32746987
+REQUESTS sqlite-wal-normal-batch1: read 0.01 (266 µs each), write 0.86 (484 µs each), free 0.04 (1320 µs each), map 0.49 (512 µs each), unmap 0.39 (387 µs each) per operation
+RESULT sqlite-wal-normal-batch1 txn/s higher 12254.929
+OBSERVED sqlite-wal-normal-batch1-updates-per-second 12254.9
+RESULT sqlite-wal-normal-batch1-checkpoint ms lower 15.279
+FXFS sqlite-wal-normal-batch100: device_commits 12, device_commits_ns 121756271, device_read_bytes 196608, device_reads 21, device_reads_ns 13705018, device_write_bytes 4698112, device_writes 1044, device_writes_ns 2154584091, fsyncs 11, journal_compaction_ns 61236769, journal_compactions 1, seal_waits 12, seal_waits_ns 603952, seals 12, seals_ns 122006516, stores_held_by_seals 1, stores_held_by_seals_ns 21953199, window_map_bytes_evacuate 95395840, window_map_bytes_grow 96075776, window_map_bytes_reach 12713984, window_map_bytes_restage 720896, window_map_requests 574, window_maps 686, window_maps_evacuate 121, window_maps_grow 441, window_maps_ns 286619096, window_maps_reach 113, window_maps_restage 11, window_regions 1, window_regions_pruned 100, window_unmaps 501, window_unmaps_ns 139867314
+REQUESTS sqlite-wal-normal-batch100: read 0.10 (637 µs each), write 5.22 (599 µs each), free 0.07 (2831 µs each), map 2.87 (472 µs each), unmap 2.50 (254 µs each), commit 0.01 (11179 µs each) per operation
+RESULT sqlite-wal-normal-batch100 txn/s higher 167.363
+OBSERVED sqlite-wal-normal-batch100-updates-per-second 16736.3
+RESULT sqlite-wal-normal-batch100-checkpoint ms lower 225.268
+DONE
+[   57.243483] reboot: Restarting system

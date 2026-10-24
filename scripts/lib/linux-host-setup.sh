@@ -34,7 +34,7 @@ host_setup() {
     local packages packages_ready
     packages=(build-essential clang libclang-dev llvm pkg-config musl-tools python3
         curl ca-certificates e2fsprogs podman rsync libseccomp-dev busybox-static
-        git flex bison bc cpio libelf-dev libssl-dev)
+        git flex bison bc cpio libelf-dev libssl-dev sqlite3)
     packages_ready="$work/tools/packages-$(printf '%s\n' "${packages[@]}" | sha256sum | cut -c1-16)"
     if [[ ! -f "$packages_ready" ]]; then
         apt-get -o DPkg::Lock::Timeout=600 update -qq

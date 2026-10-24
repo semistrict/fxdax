@@ -1,0 +1,207 @@
+{
+  "case": "bench-fs-fxfs-guest-dax",
+  "backend": "fxfs-guest-dax",
+  "host_os": "linux",
+  "vmm": "firecracker",
+  "iterations": 3,
+  "results": [
+    {
+      "workload": "sqlite-pread-scan",
+      "unit": "MiB/s",
+      "higher_is_better": true,
+      "values": [
+        790.402,
+        819.053,
+        793.943
+      ]
+    },
+    {
+      "workload": "sqlite-pread-scan-warm",
+      "unit": "MiB/s",
+      "higher_is_better": true,
+      "values": [
+        2649.116,
+        2691.445,
+        2621.731
+      ]
+    },
+    {
+      "workload": "sqlite-mmap-scan",
+      "unit": "MiB/s",
+      "higher_is_better": true,
+      "values": [
+        3332.102,
+        3375.826,
+        3214.374
+      ]
+    },
+    {
+      "workload": "sqlite-mmap-scan-warm",
+      "unit": "MiB/s",
+      "higher_is_better": true,
+      "values": [
+        3555.86,
+        3694.957,
+        3611.579
+      ]
+    },
+    {
+      "workload": "sqlite-delete-full-batch1",
+      "unit": "txn/s",
+      "higher_is_better": true,
+      "values": [
+        252.294,
+        264.513,
+        253.545
+      ]
+    },
+    {
+      "workload": "sqlite-delete-full-batch100",
+      "unit": "txn/s",
+      "higher_is_better": true,
+      "values": [
+        43.51,
+        43.207,
+        42.821
+      ]
+    },
+    {
+      "workload": "sqlite-wal-full-batch1",
+      "unit": "txn/s",
+      "higher_is_better": true,
+      "values": [
+        615.59,
+        556.323,
+        588.964
+      ]
+    },
+    {
+      "workload": "sqlite-wal-full-batch1-checkpoint",
+      "unit": "ms",
+      "higher_is_better": false,
+      "values": [
+        15.196,
+        19.831,
+        20.266
+      ]
+    },
+    {
+      "workload": "sqlite-wal-full-batch100",
+      "unit": "txn/s",
+      "higher_is_better": true,
+      "values": [
+        94.363,
+        93.711,
+        95.901
+      ]
+    },
+    {
+      "workload": "sqlite-wal-full-batch100-checkpoint",
+      "unit": "ms",
+      "higher_is_better": false,
+      "values": [
+        143.004,
+        95.016,
+        111.137
+      ]
+    },
+    {
+      "workload": "sqlite-wal-normal-batch1",
+      "unit": "txn/s",
+      "higher_is_better": true,
+      "values": [
+        12692.226,
+        11981.796,
+        12155.96
+      ]
+    },
+    {
+      "workload": "sqlite-wal-normal-batch1-checkpoint",
+      "unit": "ms",
+      "higher_is_better": false,
+      "values": [
+        33.225,
+        16.94,
+        38.42
+      ]
+    },
+    {
+      "workload": "sqlite-wal-normal-batch100",
+      "unit": "txn/s",
+      "higher_is_better": true,
+      "values": [
+        171.495,
+        170.263,
+        169.546
+      ]
+    },
+    {
+      "workload": "sqlite-wal-normal-batch100-checkpoint",
+      "unit": "ms",
+      "higher_is_better": false,
+      "values": [
+        160.698,
+        98.201,
+        221.388
+      ]
+    }
+  ],
+  "failures": {},
+  "observations": {
+    "mtime-ahead-of-guest-ms": [
+      -4.845,
+      -5.09,
+      -4.151
+    ],
+    "sqlite-delete-full-batch1-updates-per-second": [
+      252.3,
+      264.5,
+      253.5
+    ],
+    "sqlite-delete-full-batch100-updates-per-second": [
+      4351.0,
+      4320.7,
+      4282.1
+    ],
+    "sqlite-mmap-scan-faults-per-mib": [
+      5.7,
+      5.6,
+      7.6
+    ],
+    "sqlite-mmap-scan-warm-faults-per-mib": [
+      5.6,
+      5.6,
+      7.6
+    ],
+    "sqlite-pread-scan-faults-per-mib": [
+      2.7,
+      2.6,
+      2.7
+    ],
+    "sqlite-pread-scan-warm-faults-per-mib": [
+      2.6,
+      2.6,
+      2.6
+    ],
+    "sqlite-wal-full-batch1-updates-per-second": [
+      615.6,
+      556.3,
+      589.0
+    ],
+    "sqlite-wal-full-batch100-updates-per-second": [
+      9436.3,
+      9371.1,
+      9590.1
+    ],
+    "sqlite-wal-normal-batch1-updates-per-second": [
+      12692.2,
+      11981.8,
+      12156.0
+    ],
+    "sqlite-wal-normal-batch100-updates-per-second": [
+      17149.5,
+      17026.3,
+      16954.6
+    ]
+  }
+}

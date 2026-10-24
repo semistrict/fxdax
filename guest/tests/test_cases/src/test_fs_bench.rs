@@ -18,7 +18,10 @@
 // The cases only run when FXDAX_BENCH_ITERATIONS is set. FXDAX_BENCH_GROUPS limits them to some
 // of the groups of workloads: io, metadata and build, separated by commas, or parts of metadata:
 // files, fsync, tree, large-dir and concurrent; pgbench, PostgreSQL's benchmark, runs only when it
-// names it. FXDAX_BENCH_FILES sets how many files the metadata workloads make (2000), and
+// names it. The sqlite group adds rollback-journal and WAL commits, batches, checkpoints,
+// process recovery and reader isolation; it also runs the mmap scan independently of io.
+// FXDAX_BENCH_SQLITE_TXNS sizes each transaction workload (200 commits).
+// FXDAX_BENCH_FILES sets how many files the metadata workloads make (2000), and
 // FXDAX_BENCH_PGBENCH_SECS how long pgbench's transactions run (20), and FXDAX_BENCH_PGBENCH_SCALE
 // the scale of its database (10, about 160 MiB). With
 // FXDAX_BENCH_RESULTS set to a directory, the host also writes each case's measurements there as
@@ -404,6 +407,7 @@ RUN wget -q -O /opt/lua-5.4.7.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz \\
         }
         for var in [
             "FXDAX_BENCH_FILES",
+            "FXDAX_BENCH_SQLITE_TXNS",
             "FXDAX_BENCH_PGBENCH_SECS",
             "FXDAX_BENCH_PGBENCH_SCALE",
             "FXDAX_BENCH_WATCHDOG_SECS",
@@ -1055,21 +1059,67 @@ mod guest {
              INSERT INTO t SELECT i, randomblob(1000) FROM n;"
         );
         run("sqlite3", &[&db, &make]);
-        drop_caches();
         let bytes = fs::metadata(&db).unwrap().len();
-        let faults = page_faults();
-        let start = Instant::now();
-        let scan = "PRAGMA mmap_size = 1073741824; SELECT count(*), sum(length(payload)) FROM t;";
-        let output = Command::new("sqlite3").args([&db, scan]).output().unwrap();
-        let secs = start.elapsed().as_secs_f64();
-        assert!(output.status.success(), "sqlite3: {output:?}");
-        // The pragma prints the size it set, then the scan its row.
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let expected = format!("1073741824\n{SQLITE_ROWS}|{}", SQLITE_ROWS * 1000);
-        assert_eq!(stdout.trim(), expected);
-        result("sqlite-mmap-scan", "MiB/s", true, bytes as f64 / MIB / secs);
-        faults_per_mib("sqlite-mmap-scan", page_faults() - faults, bytes);
+        for (engine, mmap) in [("pread", 0), ("mmap", 1073741824)] {
+            drop_caches();
+            for warm in [false, true] {
+                let workload = format!("sqlite-{engine}-scan{}", if warm { "-warm" } else { "" });
+                let scan = format!(
+                    "PRAGMA mmap_size={mmap}; PRAGMA cache_size=-2048;
+                     SELECT count(*),sum(length(payload)) FROM t;"
+                );
+                let faults = page_faults();
+                let profiler = Profiler::start();
+                let start = Instant::now();
+                let output =
+                    Command::new("sqlite3").args(["-batch", "-bail", &db, &scan]).output().unwrap();
+                let secs = start.elapsed().as_secs_f64();
+                let faults = page_faults() - faults;
+                if let Some(profiler) = profiler {
+                    profiler.report(&workload);
+                }
+                assert!(output.status.success(), "sqlite3: {output:?}");
+                // The pragma prints the size it set, then the scan its row.
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let expected = format!("{mmap}\n{SQLITE_ROWS}|{}", SQLITE_ROWS * 1000);
+                assert_eq!(stdout.trim(), expected);
+                result(&workload, "MiB/s", true, bytes as f64 / MIB / secs);
+                faults_per_mib(&workload, faults, bytes);
+            }
+        }
         fs::remove_file(&db).unwrap();
+    }
+
+    fn sqlite_transactions() {
+        use crate::sqlite::{self, Mode, Phase};
+        let count: usize = std::env::var("FXDAX_BENCH_SQLITE_TXNS")
+            .map_or(200, |n| n.parse().expect("FXDAX_BENCH_SQLITE_TXNS is a count"));
+        assert!((1..=100_000).contains(&count), "SQLite transaction count must be 1..=100000");
+        // Keep sidecars isolated, including those SQLite leaves after a killed writer.
+        let root = tempdir::TempDir::new_in(MNT, "sqlite").unwrap();
+        for mode in Mode::ALL {
+            sqlite::recovery(root.path(), mode);
+            for batch in [1, 100] {
+                let workload = format!("sqlite-{}-batch{batch}", mode.name());
+                let measurement =
+                    sqlite::transactions(root.path(), mode, count, batch, |phase, run| {
+                        let (name, operations) = match phase {
+                            Phase::Commits => (workload.clone(), count),
+                            Phase::Checkpoint => (format!("{workload}-checkpoint"), 1),
+                        };
+                        observed(&name, operations, run)
+                    });
+                result(&workload, "txn/s", true, count as f64 / measurement.commit_seconds);
+                println!(
+                    "OBSERVED {workload}-updates-per-second {:.1}",
+                    (count * batch) as f64 / measurement.commit_seconds
+                );
+                if let Some(seconds) = measurement.checkpoint_seconds {
+                    result(&format!("{workload}-checkpoint"), "ms", false, seconds * 1000.0);
+                }
+            }
+        }
+        sqlite::snapshot(root.path());
     }
 
     /// Reports the rate of `count` operations done in `secs`.
@@ -1811,7 +1861,12 @@ mod guest {
                 observe_mtime();
                 if runs("io") {
                     io_workloads();
+                }
+                if runs("io") || runs("sqlite") {
                     sqlite_workload();
+                }
+                if groups.split(',').any(|g| g == "sqlite") {
+                    sqlite_transactions();
                 }
                 metadata_workloads(runs);
                 // A failed build is recorded, and the other iterations still run.

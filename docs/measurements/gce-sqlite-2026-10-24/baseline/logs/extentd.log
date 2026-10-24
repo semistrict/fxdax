@@ -1,0 +1,42 @@
+memory-pressure: memory watermarks - OutOfMemory: 50MB, Critical: 150MB, Warning: 300MB, Debounce: 1MB
+memory-pressure: hysteresis interval - 10 seconds
+memory-pressure: eviction: level - Critical, strategy - one-shot, delay - 5000 ms
+memory-pressure: ImminentOutOfMemory watermark - 60MB
+memory-pressure: memory availability state - Normal
+INFO fxdax::host_store: fxdax: cleaning branch 7cb1cc20c36bb0b4 of /home/ramon/sqlite-benchmark/logs/bench-fs-fxfs-guest/bench-fs-fxfs-guest/extents: copied 8192 bytes
+INFO fxdax::host_store: fxdax: cleaning branch 7cb1cc20c36bb0b4 of /home/ramon/sqlite-benchmark/logs/bench-fs-fxfs-guest/bench-fs-fxfs-guest/extents: copied 5279744 bytes
+INFO fxdax::host_store: fxdax: cleaning branch 7cb1cc20c36bb0b4 of /home/ramon/sqlite-benchmark/logs/bench-fs-fxfs-guest/bench-fs-fxfs-guest/extents: copied 4177920 bytes
+INFO fxdax::host_store: fxdax: cleaning branch 7cb1cc20c36bb0b4 of /home/ramon/sqlite-benchmark/logs/bench-fs-fxfs-guest/bench-fs-fxfs-guest/extents: copied 2469888 bytes
+INFO fxdax::host_store: fxdax: cleaning branch 7cb1cc20c36bb0b4 of /home/ramon/sqlite-benchmark/logs/bench-fs-fxfs-guest/bench-fs-fxfs-guest/extents: copied 5505024 bytes
+INFO fxdax::host_store: fxdax: cleaning branch 7cb1cc20c36bb0b4 of /home/ramon/sqlite-benchmark/logs/bench-fs-fxfs-guest/bench-fs-fxfs-guest/extents: copied 5550080 bytes
+INFO fxdax::host_store: fxdax: cleaning branch 7cb1cc20c36bb0b4 of /home/ramon/sqlite-benchmark/logs/bench-fs-fxfs-guest/bench-fs-fxfs-guest/extents: copied 5533696 bytes
+INFO fxdax::host_store: fxdax: cleaning branch 7cb1cc20c36bb0b4 of /home/ramon/sqlite-benchmark/logs/bench-fs-fxfs-guest/bench-fs-fxfs-guest/extents: copied 11509760 bytes
+INFO fxdax::host_store: fxdax: cleaning branch 7cb1cc20c36bb0b4 of /home/ramon/sqlite-benchmark/logs/bench-fs-fxfs-guest/bench-fs-fxfs-guest/extents: copied 5165056 bytes
+INFO fxdax::host_store: fxdax: cleaning branch 7cb1cc20c36bb0b4 of /home/ramon/sqlite-benchmark/logs/bench-fs-fxfs-guest/bench-fs-fxfs-guest/extents: copied 4714496 bytes
+INFO fxdax::host_store: fxdax: cleaning branch 7cb1cc20c36bb0b4 of /home/ramon/sqlite-benchmark/logs/bench-fs-fxfs-guest/bench-fs-fxfs-guest/extents: copied 6123520 bytes
+INFO fxdax::host_store: fxdax: cleaning branch 7cb1cc20c36bb0b4 of /home/ramon/sqlite-benchmark/logs/bench-fs-fxfs-guest/bench-fs-fxfs-guest/extents: copied 6168576 bytes
+INFO fxdax::host_store: fxdax: cleaning branch 7cb1cc20c36bb0b4 of /home/ramon/sqlite-benchmark/logs/bench-fs-fxfs-guest/bench-fs-fxfs-guest/extents: copied 5435392 bytes
+INFO fxdax::host_store: fxdax: cleaning branch 7cb1cc20c36bb0b4 of /home/ramon/sqlite-benchmark/logs/bench-fs-fxfs-guest/bench-fs-fxfs-guest/extents: copied 7159808 bytes
+INFO fxdax::host_store: fxdax: cleaning branch 7cb1cc20c36bb0b4 of /home/ramon/sqlite-benchmark/logs/bench-fs-fxfs-guest/bench-fs-fxfs-guest/extents: copied 2043904 bytes
+INFO fxdax::host_store: fxdax: cleaning branch 7cb1cc20c36bb0b4 of /home/ramon/sqlite-benchmark/logs/bench-fs-fxfs-guest/bench-fs-fxfs-guest/extents: copied 5476352 bytes
+INFO fxdax::host_store: fxdax: cleaning branch da7bb632f028465e of /home/ramon/sqlite-benchmark/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 1949696 bytes
+INFO fxdax::extentd::stores: extentd: object-store: get=84 get-range=2 head=0 list=7 create=607 update=2 overwrite=0 delete=1 up-segments=2559893495 up-extents=299007847 up-checkpoints=5859 up-moves=0 up-other=66 down=1836
+INFO fxdax::host_store: fxdax: cleaning branch da7bb632f028465e of /home/ramon/sqlite-benchmark/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 10215424 bytes
+INFO fxdax::host_store: fxdax: cleaning branch da7bb632f028465e of /home/ramon/sqlite-benchmark/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 5943296 bytes
+INFO fxdax::host_store: fxdax: cleaning branch da7bb632f028465e of /home/ramon/sqlite-benchmark/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 14135296 bytes
+INFO fxdax::host_store: fxdax: cleaning branch da7bb632f028465e of /home/ramon/sqlite-benchmark/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 6430720 bytes
+INFO fxdax::host_store: fxdax: cleaning branch da7bb632f028465e of /home/ramon/sqlite-benchmark/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 3444736 bytes
+INFO fxdax::host_store: fxdax: cleaning branch da7bb632f028465e of /home/ramon/sqlite-benchmark/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 11853824 bytes
+INFO fxdax::host_store: fxdax: cleaning branch da7bb632f028465e of /home/ramon/sqlite-benchmark/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 12013568 bytes
+INFO fxdax::host_store: fxdax: cleaning branch da7bb632f028465e of /home/ramon/sqlite-benchmark/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 15368192 bytes
+INFO fxdax::host_store: fxdax: cleaning branch da7bb632f028465e of /home/ramon/sqlite-benchmark/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 15368192 bytes
+INFO fxdax::host_store: fxdax: cleaning branch da7bb632f028465e of /home/ramon/sqlite-benchmark/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 9449472 bytes
+INFO fxdax::host_store: fxdax: cleaning branch da7bb632f028465e of /home/ramon/sqlite-benchmark/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 9379840 bytes
+INFO fxdax::host_store: fxdax: cleaning branch da7bb632f028465e of /home/ramon/sqlite-benchmark/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 9596928 bytes
+INFO fxdax::host_store: fxdax: cleaning branch da7bb632f028465e of /home/ramon/sqlite-benchmark/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 3751936 bytes
+INFO fxdax::host_store: fxdax: cleaning branch da7bb632f028465e of /home/ramon/sqlite-benchmark/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 15437824 bytes
+INFO fxdax::host_store: fxdax: cleaning branch da7bb632f028465e of /home/ramon/sqlite-benchmark/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 5603328 bytes
+INFO fxdax::host_store: fxdax: cleaning branch da7bb632f028465e of /home/ramon/sqlite-benchmark/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 14086144 bytes
+INFO fxdax::host_store: fxdax: cleaning branch da7bb632f028465e of /home/ramon/sqlite-benchmark/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 14987264 bytes
+INFO fxdax::host_store: fxdax: cleaning branch da7bb632f028465e of /home/ramon/sqlite-benchmark/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 3026944 bytes
+INFO fxdax_extentd: extentd: stopping, on SIGTERM

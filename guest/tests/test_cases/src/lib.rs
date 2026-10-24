@@ -42,6 +42,8 @@ use test_fxfs_guest_checks::TestFxfsGuestChecks;
 #[cfg(feature = "guest")]
 mod kernel_log;
 
+#[cfg(any(feature = "guest", test))]
+mod sqlite;
 #[cfg(any(feature = "host", target_os = "linux"))]
 mod test_fs_bench;
 #[cfg(any(feature = "host", target_os = "linux"))]

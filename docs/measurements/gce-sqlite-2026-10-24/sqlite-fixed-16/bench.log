@@ -1,0 +1,50 @@
+    Finished `release` profile [optimized] target(s) in 0.18s
+warning: firecracker@1.16.1: No default seccomp policy for target: x86_64-unknown-linux-gnu. Defaulting to `resources/seccomp/unimplemented.json`.
+    Finished `release` profile [optimized] target(s) in 0.26s
+
+running 4 tests
+....
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.67s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[bench-fs-fxfs-guest-dax] ... WARNING: buildah not available, running without namespace isolation.
+Tests may fail if the required network ports are already in use.
+REPORT
+  fxfs-guest-dax (3 iterations)
+
+  workload                     median          min          max  unit
+  sqlite-pread-scan             793.9        790.4        819.1  MiB/s
+  sqlite-pread-scan-warm       2649.1       2621.7       2691.4  MiB/s
+  sqlite-mmap-scan             3332.1       3214.4       3375.8  MiB/s
+  sqlite-mmap-scan-warm        3611.6       3555.9       3695.0  MiB/s
+  sqlite-delete-full-batch1        253.5        252.3        264.5  txn/s
+  sqlite-delete-full-batch100         43.2         42.8         43.5  txn/s
+  sqlite-wal-full-batch1        589.0        556.3        615.6  txn/s
+  sqlite-wal-full-batch1-checkpoint         19.8         15.2         20.3  ms
+  sqlite-wal-full-batch100         94.4         93.7         95.9  txn/s
+  sqlite-wal-full-batch100-checkpoint        111.1         95.0        143.0  ms
+  sqlite-wal-normal-batch1      12156.0      11981.8      12692.2  txn/s
+  sqlite-wal-normal-batch1-checkpoint         33.2         16.9         38.4  ms
+  sqlite-wal-normal-batch100        170.3        169.5        171.5  txn/s
+  sqlite-wal-normal-batch100-checkpoint        160.7         98.2        221.4  ms
+  mtime-ahead-of-guest-ms: [-4.845, -5.09, -4.151]
+  sqlite-delete-full-batch1-updates-per-second: [252.3, 264.5, 253.5]
+  sqlite-delete-full-batch100-updates-per-second: [4351.0, 4320.7, 4282.1]
+  sqlite-mmap-scan-faults-per-mib: [5.7, 5.6, 7.6]
+  sqlite-mmap-scan-warm-faults-per-mib: [5.6, 5.6, 7.6]
+  sqlite-pread-scan-faults-per-mib: [2.7, 2.6, 2.7]
+  sqlite-pread-scan-warm-faults-per-mib: [2.6, 2.6, 2.6]
+  sqlite-wal-full-batch1-updates-per-second: [615.6, 556.3, 589.0]
+  sqlite-wal-full-batch100-updates-per-second: [9436.3, 9371.1, 9590.1]
+  sqlite-wal-normal-batch1-updates-per-second: [12692.2, 11981.8, 12156.0]
+  sqlite-wal-normal-batch100-updates-per-second: [17149.5, 17026.3, 16954.6]
+
+(See test artifacts at: /home/ramon/sqlite-fixed-16/logs/bench-fs-fxfs-guest-dax)
+
+OK - 0/0 passed (1 reports)
+Logs: /home/ramon/sqlite-fixed-16/logs
+Results: /home/ramon/sqlite-fixed-16

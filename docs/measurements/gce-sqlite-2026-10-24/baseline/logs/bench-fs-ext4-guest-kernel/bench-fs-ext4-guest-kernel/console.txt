@@ -1,0 +1,83 @@
+[    0.170122] PCI: Fatal: No config space access function found
+[    0.199153] PCI: System does not support PCI
+[    0.348720] check access for rdinit=/init failed: -2, ignoring
+iteration 1/3
+OBSERVED mtime-ahead-of-guest-ms -4.046
+RESULT sqlite-pread-scan MiB/s higher 502.148
+OBSERVED sqlite-pread-scan-faults-per-mib 2.7
+RESULT sqlite-pread-scan-warm MiB/s higher 3021.229
+OBSERVED sqlite-pread-scan-warm-faults-per-mib 2.6
+RESULT sqlite-mmap-scan MiB/s higher 1275.328
+OBSERVED sqlite-mmap-scan-faults-per-mib 2.1
+RESULT sqlite-mmap-scan-warm MiB/s higher 3772.377
+OBSERVED sqlite-mmap-scan-warm-faults-per-mib 2.1
+RESULT sqlite-delete-full-batch1 txn/s higher 107.388
+OBSERVED sqlite-delete-full-batch1-updates-per-second 107.4
+RESULT sqlite-delete-full-batch100 txn/s higher 48.935
+OBSERVED sqlite-delete-full-batch100-updates-per-second 4893.5
+RESULT sqlite-wal-full-batch1 txn/s higher 324.709
+OBSERVED sqlite-wal-full-batch1-updates-per-second 324.7
+RESULT sqlite-wal-full-batch1-checkpoint ms lower 6.946
+RESULT sqlite-wal-full-batch100 txn/s higher 169.515
+OBSERVED sqlite-wal-full-batch100-updates-per-second 16951.5
+RESULT sqlite-wal-full-batch100-checkpoint ms lower 17.568
+RESULT sqlite-wal-normal-batch1 txn/s higher 27572.060
+OBSERVED sqlite-wal-normal-batch1-updates-per-second 27572.1
+RESULT sqlite-wal-normal-batch1-checkpoint ms lower 13.288
+RESULT sqlite-wal-normal-batch100 txn/s higher 940.038
+OBSERVED sqlite-wal-normal-batch100-updates-per-second 94003.8
+RESULT sqlite-wal-normal-batch100-checkpoint ms lower 406.171
+iteration 2/3
+OBSERVED mtime-ahead-of-guest-ms -0.636
+RESULT sqlite-pread-scan MiB/s higher 2708.643
+OBSERVED sqlite-pread-scan-faults-per-mib 2.7
+RESULT sqlite-pread-scan-warm MiB/s higher 3067.340
+OBSERVED sqlite-pread-scan-warm-faults-per-mib 2.6
+RESULT sqlite-mmap-scan MiB/s higher 3220.670
+OBSERVED sqlite-mmap-scan-faults-per-mib 2.1
+RESULT sqlite-mmap-scan-warm MiB/s higher 3757.621
+OBSERVED sqlite-mmap-scan-warm-faults-per-mib 2.1
+RESULT sqlite-delete-full-batch1 txn/s higher 105.658
+OBSERVED sqlite-delete-full-batch1-updates-per-second 105.7
+RESULT sqlite-delete-full-batch100 txn/s higher 49.095
+OBSERVED sqlite-delete-full-batch100-updates-per-second 4909.5
+RESULT sqlite-wal-full-batch1 txn/s higher 247.899
+OBSERVED sqlite-wal-full-batch1-updates-per-second 247.9
+RESULT sqlite-wal-full-batch1-checkpoint ms lower 10.710
+RESULT sqlite-wal-full-batch100 txn/s higher 168.416
+OBSERVED sqlite-wal-full-batch100-updates-per-second 16841.6
+RESULT sqlite-wal-full-batch100-checkpoint ms lower 21.458
+RESULT sqlite-wal-normal-batch1 txn/s higher 28715.465
+OBSERVED sqlite-wal-normal-batch1-updates-per-second 28715.5
+RESULT sqlite-wal-normal-batch1-checkpoint ms lower 13.785
+RESULT sqlite-wal-normal-batch100 txn/s higher 910.267
+OBSERVED sqlite-wal-normal-batch100-updates-per-second 91026.7
+RESULT sqlite-wal-normal-batch100-checkpoint ms lower 362.428
+iteration 3/3
+OBSERVED mtime-ahead-of-guest-ms -3.065
+RESULT sqlite-pread-scan MiB/s higher 1114.950
+OBSERVED sqlite-pread-scan-faults-per-mib 2.7
+RESULT sqlite-pread-scan-warm MiB/s higher 3068.792
+OBSERVED sqlite-pread-scan-warm-faults-per-mib 2.6
+RESULT sqlite-mmap-scan MiB/s higher 1381.030
+OBSERVED sqlite-mmap-scan-faults-per-mib 2.1
+RESULT sqlite-mmap-scan-warm MiB/s higher 3609.223
+OBSERVED sqlite-mmap-scan-warm-faults-per-mib 2.1
+RESULT sqlite-delete-full-batch1 txn/s higher 77.915
+OBSERVED sqlite-delete-full-batch1-updates-per-second 77.9
+RESULT sqlite-delete-full-batch100 txn/s higher 48.899
+OBSERVED sqlite-delete-full-batch100-updates-per-second 4889.9
+RESULT sqlite-wal-full-batch1 txn/s higher 294.773
+OBSERVED sqlite-wal-full-batch1-updates-per-second 294.8
+RESULT sqlite-wal-full-batch1-checkpoint ms lower 8.468
+RESULT sqlite-wal-full-batch100 txn/s higher 168.860
+OBSERVED sqlite-wal-full-batch100-updates-per-second 16886.0
+RESULT sqlite-wal-full-batch100-checkpoint ms lower 19.419
+RESULT sqlite-wal-normal-batch1 txn/s higher 29056.409
+OBSERVED sqlite-wal-normal-batch1-updates-per-second 29056.4
+RESULT sqlite-wal-normal-batch1-checkpoint ms lower 12.748
+RESULT sqlite-wal-normal-batch100 txn/s higher 980.255
+OBSERVED sqlite-wal-normal-batch100-updates-per-second 98025.5
+RESULT sqlite-wal-normal-batch100-checkpoint ms lower 408.176
+DONE
+[   44.537273] reboot: Restarting system

@@ -555,6 +555,16 @@ scripts/bench-linux.sh     # Linux, in a Lima VM
 `scripts/bench-gce.sh` keeps its results in `docs/measurements`, with the host
 and the source it measured.
 
+For SQLite, set `FXDAX_BENCH_GROUPS=sqlite`. This compares cold and warm scans
+through pread and mmap, single-update commits and batches of 100 updates in
+DELETE/FULL, WAL/FULL and WAL/NORMAL modes, and explicit WAL checkpoints.
+`FXDAX_BENCH_SQLITE_TXNS` sets the commits per workload (default 200).
+The group also checks database integrity after reopening, recovery from a
+killed writer, and a WAL reader's snapshot during a concurrent writer's commit.
+Process recovery does not test power-loss durability. WAL/NORMAL commit rates
+exclude the separately reported checkpoint and have different durability
+semantics from WAL/FULL.
+
 On Linux, DAX windows take KVM's faults through userfaultfd, which needs
 access to `/dev/userfaultfd` (or `vm.unprivileged_userfaultfd=1`). To grant it
 to the `kvm` group:
