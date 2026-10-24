@@ -2991,6 +2991,29 @@ fn metrics_are_served_on_after_failing_to_accept() {
     assert!(scraped.starts_with("HTTP/1.1 200 OK\r\n"), "{scraped}");
 }
 
+/// TASK-79.17: a VM process opens no public base to write it, of no tenant as of any (`EPERM`):
+/// what it wrote would be every VM's that forks it, its pages the default arena's, which every VM
+/// process holds. Its forks it opens.
+#[test]
+fn vm_processes_of_no_tenant_write_no_public_base() {
+    host();
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("extentd.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || serve(listener));
+    let (base, fork) = (dir.path().join("base"), dir.path().join("fork"));
+    let store = ExtentStore::create(&base, 1 << 24).unwrap();
+    store.commit(None).unwrap();
+    store.make_public().unwrap();
+    let forked = store.branch() + 1;
+    drop(store);
+    ExtentStore::open(&base).unwrap().fork(&fork, forked).unwrap();
+    let refused = RemoteExtentStore::connect(&socket, &base, 1 << 24);
+    assert_eq!(refused.err().and_then(|error| error.errno()), Some(Errno::EPERM));
+    let opened = RemoteExtentStore::connect(&socket, &fork, 1 << 24).map(|store| store.branch());
+    assert_eq!(opened.map_err(|error| error.errno()), Ok(forked));
+}
+
 /// TASK-92.5: a restore of a snapshot whose point the daemon keeps open, once another writer of
 /// the point's branch has taken it, of this host's placement, as fxdaxctl's `take` of it is, or a
 /// VM's opening of a copy of it, forks the point opened anew, taking the branch back, as each

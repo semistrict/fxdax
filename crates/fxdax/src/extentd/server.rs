@@ -1056,10 +1056,11 @@ impl Connection {
         let key = store_key(&path);
         open_paths().hold_async(&key, self.this.clone(), CLOSING_WAIT).await?;
         let opened = self.open_held(&path, &key, capacity, create, from).await;
-        // A tenant's VM process opens no public base, only forks of it (TASK-43): what it wrote
-        // would be every tenant's.
+        // A VM process opens no public base to write it, only forks of it (TASK-43): what it
+        // wrote would be every tenant's; fxdax: of no tenant as of any, as its pages would be the
+        // default arena's, which every VM process holds (TASK-79.17).
         let opened = match opened {
-            Ok(store) if self.tenant.is_some() && store.is_public() => Err(Errno::EPERM),
+            Ok(store) if store.is_public() => Err(Errno::EPERM),
             opened => opened,
         };
         let started = opened.map(|store| {
