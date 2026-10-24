@@ -71,7 +71,7 @@ run() {
     # Each run unpacks into a directory of its own, so that nothing of an
     # earlier run carries over.
     local run status=0
-    run="run-$(date -u +%Y%m%dT%H%M%SZ)"
+    run=$(gce_run_name)
     gce_push_source "$run"
     gce_remote_detached "$run" "$(gce_host_command "$run" bench-linux-host.sh "$iterations")" \
         > "$results/remote.log" 2>&1 || status=$?

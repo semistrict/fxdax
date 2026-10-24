@@ -49,10 +49,10 @@ run() {
     echo "Results: $results" >&2
     gce_wait_ready
     local run status=0
-    run="run-$(date -u +%Y%m%dT%H%M%SZ)"
+    run=$(gce_run_name)
     gce_push_source "$run"
     gce_remote_detached "$run" \
-        "$(gce_host_command "$run" gets-linux-host.sh "$bucket/$run-$gce_maker" "$mib" "$secs")" \
+        "$(gce_host_command "$run" gets-linux-host.sh "$bucket/$run" "$mib" "$secs")" \
         > "$results/remote.log" 2>&1 || status=$?
     gce_fetch "$run" || status=$?
     {

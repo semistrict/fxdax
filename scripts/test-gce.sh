@@ -59,11 +59,11 @@ run() {
     # Each run unpacks into a directory of its own, so that no earlier run's
     # files or recorded times carry over.
     local run status=0
-    run="run-$(date -u +%Y%m%dT%H%M%SZ)"
+    run=$(gce_run_name)
     gce_push_source "$run"
     # The run's own prefix of the bucket, if one is named.
     local remote=
-    if [[ -n ${FXDAX_EXTENTD_REMOTE:-} ]]; then remote=${FXDAX_EXTENTD_REMOTE%/}/$run-$gce_maker; fi
+    if [[ -n ${FXDAX_EXTENTD_REMOTE:-} ]]; then remote=${FXDAX_EXTENTD_REMOTE%/}/$run; fi
     # shellcheck disable=SC2086 # The tests are names separated by spaces.
     gce_remote_detached "$run" "$(gce_host_command "$run" "FXDAX_EXTENTD_REMOTE=$remote" \
         test-linux-host.sh ${FXDAX_E2E_TEST:-})" > "$results/remote.log" 2>&1 || status=$?

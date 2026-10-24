@@ -34,6 +34,13 @@
 cloud=(gcloud --quiet --project="$project")
 # This run's mark, which the hosts it makes carry as their maker label.
 gce_maker=$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')
+
+# The name of a run on a host, its directory there and its prefix of a bucket: when it started, to
+# the second, and this driver's mark, so that two drivers started in the same second keep apart
+# (TASK-79.86).
+gce_run_name() {
+    echo "run-$(date -u +%Y%m%dT%H%M%SZ)-$gce_maker"
+}
 if [[ -n ${FXDAX_GCE_STORAGE:-} ]]; then
     account_flags=(--scopes=storage-rw)
 else

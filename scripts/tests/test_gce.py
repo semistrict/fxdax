@@ -255,6 +255,24 @@ def host(maker, purpose="fxdax-test"):
     }
 
 
+class RunNames(unittest.TestCase):
+    """Each run's name, its directory on the host and its prefix of a bucket (gce_run_name)."""
+
+    def test_two_drivers_started_at_once_name_their_runs_apart(self):
+        # Two drivers, in the same second: each sources gce.sh, with a mark of its own.
+        project = Project({})
+        status, output, errors = project.run(
+            'first=$(gce_run_name); echo "$first"; bash -c \'source "$0"; gce_run_name\' "$0"'
+        )
+        self.assertEqual((status, errors), (0, ""))
+        first, second = output.splitlines()
+        name = r"run-\d{8}T\d{6}Z-[0-9a-f]{8}"
+        self.assertRegex(first, f"^{name}$")
+        self.assertRegex(second, f"^{name}$")
+        # Apart whatever second each started in: by their marks.
+        self.assertNotEqual(first.rsplit("-", 1)[1], second.rsplit("-", 1)[1])
+
+
 class Hosts(unittest.TestCase):
     """A host's life: gce_all makes one and deletes it whatever happens, and gce_delete deletes one
     by hand (a driver's `delete`)."""
