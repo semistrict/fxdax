@@ -2746,10 +2746,10 @@ fn faults_waiting_for_object_storage_hold_up_no_request() {
     let ours = Arc::new(ours);
     let asking = ours.clone();
     let info = within(std::time::Duration::from_secs(10), move || asking.info());
-    let answered = connection.unanswered();
+    let waiting = faulting.iter().filter(|faulting| !faulting.is_finished()).count();
     gated.hold(false);
     assert!(matches!(info, Ok(Ok(_))), "the VM's INFO waited for its faults: {info:?}");
-    assert_eq!(answered, FAULTS, "the faults were answered as the INFO was");
+    assert_eq!(waiting, FAULTS, "the faults were answered as the INFO was");
     for (n, faulting) in faulting.into_iter().enumerate() {
         let page = faulting.join().unwrap();
         assert!(page == pattern(n as u8 + 1, ps), "page {n} holds other data");
