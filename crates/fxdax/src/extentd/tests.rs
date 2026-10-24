@@ -2100,7 +2100,9 @@ fn metrics_count_requests_as_they_are_served() {
 }
 
 /// TASK-79.27: the daemon's metrics server answers a request line longer than it reads with `431`,
-/// having read no more of it, and closes the connection.
+/// holding no more of it than it reads (`HEAD_MAX`): what the client sends after that it reads and
+/// drops, until the client is done, as the connection, closed with bytes unread, would be reset,
+/// the answer lost; then it closes the connection.
 #[test]
 fn metrics_refuse_requests_too_long() {
     use std::io::{Read as _, Write as _};
@@ -2124,7 +2126,9 @@ fn metrics_refuse_requests_too_long() {
 }
 
 /// TASK-79.27: a scrape is answered while another client, slow, has sent but part of its request:
-/// the daemon's metrics server waits for neither on the other.
+/// the daemon's metrics server waits for neither on the other. The slow client is answered
+/// nothing, its connection open, once the scrape is done: a server serving one at a time would have
+/// answered the scrape only once the slow client's time was up, and it closed.
 #[test]
 fn metrics_are_served_beside_slow_clients() {
     use std::io::{Read as _, Write as _};
@@ -2133,16 +2137,18 @@ fn metrics_are_served_beside_slow_clients() {
     std::thread::spawn(move || super::serve_metrics(listener));
     let mut slow = std::net::TcpStream::connect(address).unwrap();
     write!(slow, "GET /metrics HTTP/1.1\r\n").unwrap();
-    let scraped = within(std::time::Duration::from_secs(2), move || {
+    let scraped = within(std::time::Duration::from_secs(30), move || {
         let mut stream = std::net::TcpStream::connect(address).unwrap();
         write!(stream, "GET /metrics HTTP/1.1\r\nHost: extentd\r\n\r\n").unwrap();
         let mut response = String::new();
         stream.read_to_string(&mut response).unwrap();
         response
     });
-    let scraped = scraped.expect("the scrape waited for the slow client");
+    let scraped = scraped.expect("the scrape is answered never");
     assert!(scraped.starts_with("HTTP/1.1 200 OK\r\n"), "{scraped}");
-    drop(slow);
+    slow.set_nonblocking(true).unwrap();
+    let answered = slow.read(&mut [0; 64]).map_err(|err| err.kind());
+    assert_eq!(answered, Err(std::io::ErrorKind::WouldBlock), "the slow client was let go first");
 }
 
 /// TASK-79.35: the daemon goes on accepting VM processes' connections through a failure to accept
