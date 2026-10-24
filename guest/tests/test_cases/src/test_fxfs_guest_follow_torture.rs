@@ -18,6 +18,9 @@
 //! - files the writer creates and deletes: one a follower opens before its deletion reads whole
 //!   after it, as POSIX has it.
 //!
+//! Each of the writer's writes is written back before its next operation, so that its operations
+//! reach its store in the order it makes them, as the history checker's model has it (below).
+//!
 //! Once the writer is done, it writes what it left (the token's N, the blocks' generations), and
 //! the followers, once they find it, must hold exactly that.
 //!
@@ -748,6 +751,23 @@ mod guest {
         }
     }
 
+    /// Writes back `file`'s `len` bytes at `offset`, written, before the writer's next operation:
+    /// so that its operations reach its store's journal in the order it makes them, as the history
+    /// checker's model has it, a prefix of them in each commit. Written only to the page cache,
+    /// without DAX, a write reaches the journal as it is written back, after the operations made
+    /// meanwhile: a size changed since commits before a page written before it, and a file deleted
+    /// before its writeback never had what it held (TASK-42.12). A writeback, not a sync: it waits
+    /// for no commit.
+    fn written(file: &fs::File, offset: u64, len: usize) {
+        let flags = libc::SYNC_FILE_RANGE_WAIT_BEFORE
+            | libc::SYNC_FILE_RANGE_WRITE
+            | libc::SYNC_FILE_RANGE_WAIT_AFTER;
+        // SAFETY: a system call on the file's descriptor, which it holds open.
+        let ret =
+            unsafe { libc::sync_file_range(file.as_raw_fd(), offset as i64, len as i64, flags) };
+        assert_eq!(ret, 0, "sync_file_range: {}", std::io::Error::last_os_error());
+    }
+
     /// The writer: changes its filesystem for `seconds()`, syncing every few changes, then
     /// writes what it left, in `done`.
     fn writer() {
@@ -761,7 +781,9 @@ mod guest {
         let blocks = fs::OpenOptions::new().create(true).write(true).open(path("blocks")).unwrap();
         let mut generations = vec![0u64; BLOCKS];
         for (index, generation) in generations.iter().enumerate() {
-            blocks.write_all_at(&page(*generation, index as u64), (index * BLOCK) as u64).unwrap();
+            let offset = (index * BLOCK) as u64;
+            blocks.write_all_at(&page(*generation, index as u64), offset).unwrap();
+            written(&blocks, offset, BLOCK);
             let block = (BLOCK_OBJECTS | index as u64, *generation);
             history.op(after, &[(format!("block.{index}"), Some(block))]);
         }
@@ -791,6 +813,7 @@ mod guest {
             let index = (step * 7) % BLOCKS as u64;
             generations[index as usize] = generation;
             blocks.write_all_at(&page(generation, index), index * BLOCK as u64).unwrap();
+            written(&blocks, index * BLOCK as u64, BLOCK);
             let block = (BLOCK_OBJECTS | index, generation);
             history.op(after, &[(format!("block.{index}"), Some(block))]);
             // The shaped file: truncated, extended, rewritten. Pages it is extended over are
@@ -805,6 +828,7 @@ mod guest {
             shaped.resize(pages as usize, 0);
             let at = (step * 5) % pages;
             shape.write_all_at(&page(generation, at), at * BLOCK as u64).unwrap();
+            written(&shape, at * BLOCK as u64, BLOCK);
             shaped[at as usize] = generation;
             history.op(after, &[(format!("shape.{at}"), Some((SHAPE_OBJECTS | at, generation)))]);
             // A victim, made, written, and an older one deleted.
@@ -812,7 +836,9 @@ mod guest {
             let mut made = fs::File::create(path(&name)).unwrap();
             let object = made.metadata().unwrap().ino();
             history.op(after, &[(name.clone(), Some((object, EMPTY)))]);
-            made.write_all(&victim(victims)).unwrap();
+            let contents = victim(victims);
+            made.write_all(&contents).unwrap();
+            written(&made, 0, contents.len());
             drop(made);
             history.op(after, &[(name, Some((object, victims)))]);
             if victims >= 3 {
