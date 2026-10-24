@@ -95,7 +95,8 @@ fn metric(name: &str) -> u64 {
 /// A tenant whose VM reads through its window twice what its limit holds keeps within it, its
 /// pages read longest ago evicted, read again as they are touched; its metrics name it by a hash.
 /// Mapping more for its guest to write than it can evict fails with ENOMEM, and the daemon goes
-/// on. ShrinkMemory frees its pages at once.
+/// on. ShrinkMemory frees its pages, and returns once they are, its VM's window having unmapped
+/// them.
 #[test]
 fn tenants_past_their_limits_evict_then_refuse() {
     let dir = tempfile::tempdir().unwrap();

@@ -2759,6 +2759,79 @@ fn a_zygotes_restores_open_its_point_once() {
     assert_eq!(taken, 1, "the point's branch was taken by more writers than one");
 }
 
+/// Sends `header` and `payload`, a request, through `sender`, and returns its reply, which
+/// `receiver` receives, the stage operations before it acknowledged, as a VM process makes them.
+fn call(
+    sender: &super::wire::Sender,
+    receiver: &mut super::wire::Receiver,
+    header: super::wire::Header,
+    payload: &[u8],
+) -> super::wire::Message {
+    use super::wire::*;
+    sender.send(header, payload, &[]).unwrap();
+    loop {
+        let message = receiver.receive(|| 0).unwrap().expect("the daemon let the VM process go");
+        match message.header.kind {
+            REPLY => {
+                assert_eq!(message.header.id, header.id, "a reply out of order");
+                return message;
+            }
+            _ if message.header.flags & STAGE_ACK != 0 => {
+                sender.send(Header::new(ACK, message.header.id), &[], &[]).unwrap();
+            }
+            _ => {}
+        }
+    }
+}
+
+/// TASK-79.9: a shrink of a tenant's memory evicts what it must, and returns what the tenant holds,
+/// once the pages it evicted are free: a window's, which wait, freed, for its VM process to
+/// acknowledge their unmapping, or for the daemon to let go of it, as here of one that acknowledges
+/// nothing. Of two extents of a chunk each, read and mapped, it evicts the one asked for longest
+/// ago, which leaves the tenant the other's chunk alone.
+#[test]
+fn shrinks_return_once_the_pages_they_evict_are_free() {
+    use super::wire::*;
+    const CHUNK: u64 = zircon::vm::physmap::CHUNK_SIZE as u64;
+    host();
+    let dir = tempfile::tempdir().unwrap();
+    let tenant = super::server::Tenant::new("shrunk", dir.path()).unwrap();
+    let socket = dir.path().join("extentd.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || super::server::serve_tenant(listener, tenant));
+    let (sender, mut receiver, _stream, branch) =
+        raw_connection(&socket, &dir.path().join("store"), 1 << 26);
+    let mut served = |header: Header, payload: &[u8]| {
+        let reply = call(&sender, &mut receiver, header, payload);
+        assert_eq!(reply.header.status, 0, "request {}", header.kind);
+        reply
+    };
+    for sequence in 1..=2 {
+        let written = Header::new(WRITE, sequence).with_args(&[branch, sequence, 0]);
+        served(written, &pattern(sequence as u8, CHUNK as usize));
+    }
+    served(Header::new(COMMIT, 3).with_flags(COMMIT_DURABLE), &[]);
+    for sequence in 1..=2 {
+        let read = Header::new(READ, 3 + sequence).with_args(&[branch, sequence, 0, CHUNK]);
+        assert_eq!(served(read, &[]).payload, pattern(sequence as u8, CHUNK as usize));
+    }
+    served(Header::new(WINDOW, 6).with_args(&[2 * CHUNK]), &[]);
+    for sequence in 1..=2 {
+        let at = (sequence - 1) * CHUNK;
+        served(Header::new(MAP, 6 + sequence).with_args(&[branch, sequence, 0, CHUNK, at]), &[]);
+    }
+    assert_eq!(super::memory::shrink(Some("shrunk"), u64::MAX), Ok(2 * CHUNK));
+
+    let shrinking = std::thread::spawn(|| super::memory::shrink(Some("shrunk"), CHUNK));
+    // The unmaps it is sent, which it never acknowledges, until the daemon lets it go.
+    let mut unmapped = Vec::new();
+    while let Ok(Some(message)) = receiver.receive(|| 0) {
+        assert_eq!(message.header.kind, STAGE_UNMAP, "{:?}", message.header);
+        unmapped.push(message.header.args[..2].to_vec());
+    }
+    assert_eq!((shrinking.join().unwrap(), unmapped), (Ok(CHUNK), vec![vec![0, CHUNK]]));
+}
+
 /// TASK-79.34: a store whose VM process goes while the daemon's work through its connection holds
 /// the connection, here a shrink waiting for its guest's answer, is let go once that work is done,
 /// which its VM process's going ends, not before: deleted once its connection is done, it is open

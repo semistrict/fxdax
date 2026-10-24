@@ -9,7 +9,7 @@
 //! evict, what would take more fails with `ENOMEM` (the kernel's relief, with `crate::extents`'
 //! evictor), and the daemon goes on. Its metrics name tenants by [`label`]s.
 
-use super::server::Tenant;
+use super::server::{Parking, Tenant};
 use crate::Errno;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, Weak};
@@ -95,13 +95,21 @@ pub fn set_limit(tenant: Option<&str>, bytes: Option<u64>) -> Result<(), Errno> 
 /// Evicts clean pages, those asked for longest ago first, of the tenant `tenant`'s, or of any, until
 /// it, or the daemon, holds at most `target` bytes, or nothing is left to evict; and returns what it
 /// holds then. `ENOENT` if no tenant `tenant` is alive. Memory is held in chunks of 2 MiB, which go
-/// back once the last of their pages does.
+/// back once the last of their pages does. fxdax: a page a VM process's window maps, evicted, is
+/// free once the VM process has unmapped it, or the daemon let it go (TASK-79.9): each extent's
+/// pages free before what is held is looked at again ([`Parking`]), so that it evicts no more than
+/// it must, and returns what is held once they are, not before.
 pub fn shrink(tenant: Option<&str>, target: u64) -> Result<u64, Errno> {
     let node = pmm::node();
+    let parking = Parking::start();
     let Some(name) = tenant else {
         // Free memory first: the arenas' spare chunks.
         node.release_spares(None);
-        crate::extents::evict_least_used(None, |_| node.arenas_bytes() <= target);
+        crate::extents::evict_least_used(None, |_| {
+            parking.wait();
+            node.arenas_bytes() <= target
+        });
+        parking.wait();
         return Ok(node.arenas_bytes());
     };
     let arenas: Vec<_> = (REGISTRY.lock().unwrap().alive())
@@ -114,8 +122,12 @@ pub fn shrink(tenant: Option<&str>, target: u64) -> Result<u64, Errno> {
     let held = || arenas.iter().map(|arena| node.arena_bytes(*arena)).sum::<u64>();
     for arena in &arenas {
         node.release_spares(Some(*arena));
-        crate::extents::evict_least_used(Some(*arena), |_| held() <= target);
+        crate::extents::evict_least_used(Some(*arena), |_| {
+            parking.wait();
+            held() <= target
+        });
     }
+    parking.wait();
     Ok(held())
 }
 
