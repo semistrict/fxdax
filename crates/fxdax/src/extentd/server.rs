@@ -1613,11 +1613,75 @@ fn peer_process(stream: &UnixStream) -> std::io::Result<Option<std::os::fd::Owne
 /// fxdax: quarantines `pages`, freed, which a VM process may still reach, as a stage operation
 /// taking them away may be unacknowledged (`zircon::vm::pmm::quarantine_with`, TASK-79.9): until
 /// every VM process connected has made those it was sent so far, or gone. The pages are freed as
-/// the last of them lets go.
+/// the last of them lets go: at once, if none waits for any.
 fn quarantine(pages: zircon::vm::pmm::Quarantined) {
-    let pages: Arc<dyn Send + Sync> = Arc::new(pages);
+    let waiting = PARKING.with_borrow(Clone::clone);
+    if let Some(waiting) = &waiting {
+        *waiting.parked.lock().unwrap() += 1;
+    }
+    let pages: Arc<dyn Send + Sync> = Arc::new(Parked { pages: Some(pages), waiting });
     for peer in PEERS.lock().unwrap().iter() {
         peer.acks.park(&pages);
+    }
+}
+
+/// fxdax: pages quarantined ([`quarantine`]), freed as they are dropped; and, if they were freed
+/// on a thread waiting for what it frees, what it waits on ([`Parking`]).
+struct Parked {
+    pages: Option<zircon::vm::pmm::Quarantined>,
+    waiting: Option<Arc<Waiting>>,
+}
+
+impl Drop for Parked {
+    fn drop(&mut self) {
+        drop(self.pages.take());
+        if let Some(waiting) = &self.waiting {
+            *waiting.parked.lock().unwrap() -= 1;
+            waiting.freed.notify_all();
+        }
+    }
+}
+
+/// fxdax: how many batches of the pages a thread freed are quarantined still ([`Parking`]).
+#[derive(Default)]
+struct Waiting {
+    parked: Mutex<usize>,
+    freed: Condvar,
+}
+
+thread_local! {
+    /// fxdax: while this thread waits for the pages it frees ([`Parking`]), what it waits on.
+    static PARKING: std::cell::RefCell<Option<Arc<Waiting>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// fxdax: while held, has the pages this thread frees, quarantined ([`quarantine`]), counted until
+/// they are free, which [`Parking::wait`] waits for (TASK-79.9): as a shrink of the daemon's
+/// memory, which evicts until it holds no more than it is asked to, finds what it holds once what
+/// it evicted is free, rather than at once, the pages a window mapped waiting for its VM process.
+pub(super) struct Parking(Arc<Waiting>);
+
+impl Parking {
+    /// Counts what this thread frees from now on, until dropped.
+    pub(super) fn start() -> Self {
+        let waiting = Arc::new(Waiting::default());
+        PARKING.set(Some(waiting.clone()));
+        Self(waiting)
+    }
+
+    /// Waits until the pages this thread freed are free: once every VM process that may reach
+    /// them has made the stage operations taking them away, or the daemon let it go, which it does
+    /// once it has left one unacknowledged for [`UNRESPONSIVE`].
+    pub(super) fn wait(&self) {
+        let mut parked = self.0.parked.lock().unwrap();
+        while *parked > 0 {
+            parked = self.0.freed.wait(parked).unwrap();
+        }
+    }
+}
+
+impl Drop for Parking {
+    fn drop(&mut self) {
+        PARKING.set(None);
     }
 }
 
