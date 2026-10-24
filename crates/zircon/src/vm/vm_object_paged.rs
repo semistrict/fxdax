@@ -30,6 +30,9 @@
 //! - fxdax: dirtying pages (`dirty_pages`) whose wait for a page fails resolves their DIRTY
 //!   requests, or fails them, as dirtying them otherwise failing does, rather than leave them
 //!   outstanding (`VmCowPages::dirty_pages_failed`, TASK-79.75).
+//! - fxdax: a VMO's pages may be held from eviction (`hold_from_eviction`, TASK-92.50), as a DAX
+//!   window's second stage that still maps them holds them, without moving them between page
+//!   queues as a high priority VMO's are.
 
 use crate::arch::host::user_copy::{FaultInfo, UserCopyCaptureFaultsError};
 use crate::ensure;

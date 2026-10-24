@@ -146,7 +146,11 @@ pub(crate) fn evict_least_used(arena: Option<ArenaId>, mut enough: impl FnMut(u6
         }
         let size = vmo.get_size().unwrap_or(0);
         match vmo.op_range(zx::VmoOp::from_raw(VMO_OP_EVICT), 0, size) {
-            Ok(()) => evicted += held,
+            // fxdax: what it freed, which is nothing of a VMO held from eviction (TASK-92.50).
+            Ok(()) => {
+                let left = vmo.info().map_or(held, |info| info.committed_bytes);
+                evicted += held.saturating_sub(left);
+            }
             Err(status) => log::warn!("fxdax: evicting a cached extent's pages: {status}"),
         }
     }
@@ -2845,7 +2849,7 @@ mod tests {
         write(&store, extent, 0, &pattern(6, BLOCK)).unwrap();
         store.commit(None).unwrap();
         // The open extent sealed, and what the window's mapping of it kept, held.
-        assert!(stage.deferral.state.lock().unwrap().1.len() == 2, "nothing kept");
+        assert_eq!(stage.deferral.state.lock().unwrap().1.len(), 2, "not both kept");
         store.map(extent, 0, ps, ps, false).unwrap();
         assert_eq!(stage.deferral.waiting(), 0, "the sealing store waited");
 

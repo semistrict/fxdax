@@ -3661,7 +3661,9 @@ impl VmCowPages {
     /// change, holds their object so until then: its pages, which the guest may still reach, are
     /// neither freed nor reused meanwhile (TASK-92.50). An object that evicts none is held all the
     /// same. A hold taken before the window stops mapping the pages, which takes the lock, is seen
-    /// by every eviction that finds them no longer mapped there, which takes it after.
+    /// by every eviction that finds them no longer mapped there, which takes it after. It doesn't
+    /// hold pages the object borrowed, which their lender takes back without it: fxdax's extents
+    /// borrow none, as it supplies none shared (`VmObjectPaged::supply_shared_pages`).
     pub fn hold_from_eviction(&self, hold: bool) -> Result<(), Status> {
         if hold {
             self.eviction_holds.fetch_add(1, Ordering::SeqCst);
@@ -3726,17 +3728,22 @@ impl VmCowPages {
         if length == 0 {
             return Err(VmCowReclaimFailure::IncorrectPage);
         }
+        // fxdax: read with the lock held, before the range is unmapped: a held object's pages
+        // stay mapped, as none is evicted, rather than each mapping's second stage waited for
+        // (TASK-92.50).
+        let eviction_holds = self.eviction_holds.load(Ordering::SeqCst);
         // Remove any mappings to the range and harvest accessed bits to get up-to-date page queue
         // info.
-        self.range_change_update_locked(
-            &mut locked,
-            VmCowRange::new(offset, length),
-            RangeChangeOp::UnmapAndHarvest,
-            Some(&mut deferred),
-        );
+        if eviction_holds == 0 {
+            self.range_change_update_locked(
+                &mut locked,
+                VmCowRange::new(offset, length),
+                RangeChangeOp::UnmapAndHarvest,
+                Some(&mut deferred),
+            );
+        }
 
         let high_priority_count = locked.high_priority_count;
-        let eviction_holds = self.eviction_holds.load(Ordering::SeqCst);
         let mut num_failed_queue = 0u32;
         let can_reclaim_page = |page: VmPagePtr, num_failed_queue: &mut u32| {
             debug_assert!(is_page_dirty_tracked(page));
