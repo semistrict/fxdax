@@ -995,9 +995,13 @@ impl<D: Dir> Store<D> {
             let len = part.len() as usize;
             let out = &mut buf[at..at + len];
             match part {
-                Part::Data { file, offset, len } => {
+                Part::Data { file, offset, len, raw } => {
                     let mut data = Aligned::new(len as usize);
-                    file.read_at(data.as_mut_slice(), offset)?;
+                    if raw {
+                        file.read_cached(data.as_mut_slice(), offset)?;
+                    } else {
+                        file.read_at(data.as_mut_slice(), offset)?;
+                    }
                     out.copy_from_slice(data.as_slice());
                 }
                 Part::Packed { part, skip, .. } => {
@@ -1378,7 +1382,7 @@ impl<D: Dir> Store<D> {
             // Written to a raw file of its own, which it is framed from.
             (Data::Own, Some(Placement::Own(raw))) => {
                 let raw = raw.clone();
-                self.write_own(state, extent, entry.len, |at, buf| raw.read_at(buf, at))?;
+                self.write_own(state, extent, entry.len, |at, buf| raw.read_cached(buf, at))?;
                 state.unreferenced.doomed.push(open_extent_path(extent));
                 return Ok(());
             }

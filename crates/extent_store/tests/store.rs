@@ -1822,11 +1822,13 @@ fn closed_segments_keep_no_more_files_open_than_allowed() {
 
 /// What a store's files did, by the directory each is in: their syncs that let their pages go
 /// from the host's page cache, of those of extents' data, as a host's do, written through it
-/// (`HostFile::sync`); and the bytes read.
+/// (`HostFile::sync`); the bytes read; and of those, the bytes read of extents' data, which a
+/// host's read bypassing its page cache.
 #[derive(Default)]
 struct Counts {
     drops: BTreeMap<String, u64>,
     read: BTreeMap<String, u64>,
+    direct: BTreeMap<String, u64>,
 }
 
 /// fxdax: a store's directory in memory whose files count what they do ([`Counts`]).
@@ -1863,12 +1865,28 @@ impl Counting {
     fn read(&self) -> BTreeMap<String, u64> {
         self.counts.lock().unwrap().read.clone()
     }
+
+    /// The bytes read so far of files of extents' data, which a host's read bypassing its page
+    /// cache.
+    fn direct(&self) -> BTreeMap<String, u64> {
+        self.counts.lock().unwrap().direct.clone()
+    }
 }
 
 impl extent_store::File for CountedFile {
     fn read_at(&self, buf: &mut [u8], offset: u64) -> std::io::Result<()> {
-        *self.counts.lock().unwrap().read.entry(self.kind.clone()).or_default() += buf.len() as u64;
+        let mut counts = self.counts.lock().unwrap();
+        *counts.read.entry(self.kind.clone()).or_default() += buf.len() as u64;
+        if self.data {
+            *counts.direct.entry(self.kind.clone()).or_default() += buf.len() as u64;
+        }
+        drop(counts);
         self.file.read_at(buf, offset)
+    }
+
+    fn read_cached(&self, buf: &mut [u8], offset: u64) -> std::io::Result<()> {
+        *self.counts.lock().unwrap().read.entry(self.kind.clone()).or_default() += buf.len() as u64;
+        self.file.read_cached(buf, offset)
     }
 
     fn write_at(&self, buf: &[u8], offset: u64) -> std::io::Result<()> {
@@ -1937,6 +1955,43 @@ fn durable_commits_keep_the_open_segments_pages_cached() {
     store.close_segment().unwrap();
     store.commit(None).unwrap();
     assert_eq!(dir.drops(), BTreeMap::from([("segments".to_owned(), 1)]));
+}
+
+/// fxdax: a store reads its raw files, the open segment's, those of segments being framed or set
+/// aside, and open extents' own, through the host's page cache, which holds what was just written
+/// to them: a read bypassing it writes them back first, waiting for the host's disk. Under
+/// pgbench's load, a commit copying the extents written in pieces waited about 4 ms a MiB for it,
+/// and up to 400 ms, under the store's state, holding every write back; and framing each closed
+/// segment of 32 MiB took 70-400 ms (TASK-91.17, TASK-79.93). Here a commit copies two extents
+/// written in pieces, one after the other's, frames the segment it closes, and frames an extent
+/// written in a file of its own; then reopened, the branch frames the open segment left raw.
+#[test]
+fn raw_files_are_read_through_the_page_cache() {
+    let dir = Counting::new();
+    let store = create(dir.clone(), 1 << 20);
+    let raw = |dir: &Counting| {
+        let direct = dir.direct().into_iter();
+        direct.filter(|(kind, _)| kind.starts_with("open-")).collect::<BTreeMap<_, _>>()
+    };
+    for half in 0..2 {
+        for sequence in 1..=2 {
+            let data = pattern(sequence as u8, half * BLOCK, BLOCK);
+            store.write(extent(sequence), (half * BLOCK) as u64, &data).unwrap();
+        }
+    }
+    let large = OPTIONS.large_extent as usize;
+    store.write(extent(3), 0, &pattern(3, 0, large)).unwrap();
+    store.close_segment().unwrap();
+    store.commit(None).unwrap();
+    assert_eq!(raw(&dir), BTreeMap::new());
+    store.write(extent(4), 0, &pattern(4, 0, BLOCK)).unwrap();
+    store.commit(None).unwrap();
+    drop(store);
+    let store = Store::open(dir.clone(), OPTIONS).unwrap();
+    assert_eq!(raw(&dir), BTreeMap::new());
+    for (sequence, len) in [(1, 2 * BLOCK), (2, 2 * BLOCK), (3, large), (4, BLOCK)] {
+        assert!(read(&store, extent(sequence), 0, len) == pattern(sequence as u8, 0, len));
+    }
 }
 
 /// fxdax: a branch opening again reads of its closed segments but a block of each whose extents it

@@ -242,7 +242,7 @@ impl<F: File> Source<F> {
     ) -> Result<(), Corrupt> {
         let framed = match self {
             Self::Raw(file) => {
-                push_data(parts, file, at, len);
+                push_data(parts, file, at, len, true);
                 return Ok(());
             }
             Self::Framed(framed) => framed,
@@ -258,7 +258,7 @@ impl<F: File> Source<F> {
             let (from, to) = (at.max(place.start), (at + len).min(place.end));
             let (skip, len) = (from - place.start, to - from);
             match stored.encoding {
-                Encoding::Raw => push_data(parts, &framed.file, stored.offset + skip, len),
+                Encoding::Raw => push_data(parts, &framed.file, stored.offset + skip, len, false),
                 Encoding::Zstd => {
                     let key = (framed.id, part);
                     parts.push(match unpacked.get(key) {
@@ -281,16 +281,18 @@ impl<F: File> Source<F> {
     }
 }
 
-/// Adds `len` bytes at `offset` in `file` to `parts`, extending the last if they follow it.
-fn push_data<F>(parts: &mut Vec<Part<F>>, file: &Arc<F>, offset: u64, len: u64) {
-    if let Some(Part::Data { file: last, offset: last_offset, len: last_len }) = parts.last_mut()
+/// Adds `len` bytes at `offset` in `file`, raw if `raw`, to `parts`, extending the last if they
+/// follow it.
+fn push_data<F>(parts: &mut Vec<Part<F>>, file: &Arc<F>, offset: u64, len: u64, raw: bool) {
+    if let Some(Part::Data { file: last, offset: last_offset, len: last_len, .. }) =
+        parts.last_mut()
         && Arc::ptr_eq(last, file)
         && *last_offset + *last_len == offset
     {
         *last_len += len;
         return;
     }
-    parts.push(Part::Data { file: file.clone(), offset, len });
+    parts.push(Part::Data { file: file.clone(), offset, len, raw });
 }
 
 /// A part of a range of an extent: bytes of a file, raw; bytes of a part of a file stored
@@ -301,6 +303,9 @@ pub enum Part<F> {
         file: Arc<F>,
         offset: u64,
         len: u64,
+        /// fxdax: whether its file is raw, written lately through the host's page cache, which
+        /// reads of it go through ([`File::read_cached`](crate::File::read_cached)).
+        raw: bool,
     },
     /// `len` bytes from `skip` in the part.
     Packed {

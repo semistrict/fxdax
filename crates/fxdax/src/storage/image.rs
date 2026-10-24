@@ -183,7 +183,7 @@ impl Device for ImageDevice {
         let mut at = 0;
         for part in self.store.locate(extent, offset, buffer.len() as u64)? {
             match part {
-                Part::Data { file, offset, len } => {
+                Part::Data { file, offset, len, .. } => {
                     let mut part = buffer.reborrow().subslice_mut(at..at + len as usize);
                     let addr = part.as_mut_ptr() as usize;
                     // The host writes the buffer.

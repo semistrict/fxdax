@@ -1026,7 +1026,7 @@ fn frame_segment<D: Dir>(
 ) -> Result<Arc<Framed<D::File>>, Error> {
     let started = Instant::now();
     let mut data = Aligned::new(len as usize);
-    raw.read_at(data.as_mut_slice(), 0)?;
+    raw.read_cached(data.as_mut_slice(), 0)?;
     let bytes = extent_frame::framed(data.as_slice(), footer);
     let file = dir.create(path, true)?;
     file.write_at(&bytes, 0)?;
@@ -1161,13 +1161,15 @@ pub(crate) fn close_left_open<D: Dir>(dir: &D, branch: u64, epoch: u64) -> Resul
             Err(err) => return Err(err.into()),
         };
         if !closed {
-            let data = read_whole(&dir.open(&raw_path, true)?)?;
+            let raw = dir.open(&raw_path, true)?;
+            let mut data = Aligned::new(raw.size()? as usize);
+            raw.read_cached(data.as_mut_slice(), 0)?;
             match dir.remove(&path) {
                 Err(err) if !not_found(&err) => return Err(err.into()),
                 _ => {}
             }
             let file = dir.create(&path, true)?;
-            file.write_at(&extent_frame::framed(&data, &[]), 0)?;
+            file.write_at(&extent_frame::framed(data.as_slice(), &[]), 0)?;
             file.sync()?;
         }
         dir.sync_dir(&branch_dir(SEGMENTS, branch))?;

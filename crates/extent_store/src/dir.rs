@@ -17,6 +17,17 @@ pub trait File: Send + Sync + 'static {
     /// Reads `buf.len()` bytes at `offset`. Bytes past the file's end read as zeros.
     fn read_at(&self, buf: &mut [u8], offset: u64) -> io::Result<()>;
 
+    /// fxdax: reads as [`File::read_at`] does, but through the host's page cache, if reads bypass
+    /// it: for a raw file, an open segment's, one's being framed or set aside, an open extent's
+    /// own, what the store reads of which it wrote lately, through that cache, which holds it
+    /// still. A read bypassing the cache writes those pages back first, waiting for the host's
+    /// disk: under pgbench's load, a commit copying the extents written in pieces waited about
+    /// 4 ms a MiB for it, and up to 400 ms, holding every write back, and framing each closed
+    /// segment of 32 MiB took 70-400 ms (TASK-91.17, TASK-79.93).
+    fn read_cached(&self, buf: &mut [u8], offset: u64) -> io::Result<()> {
+        self.read_at(buf, offset)
+    }
+
     /// Writes `buf` at `offset`.
     fn write_at(&self, buf: &[u8], offset: u64) -> io::Result<()>;
 
@@ -105,7 +116,8 @@ const TAKE_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 ///
 /// Extents' files are read bypassing the host's page cache where its file system allows
 /// (`O_DIRECT` on Linux, `F_NOCACHE` on macOS), so their reads must be in buffers aligned to
-/// blocks. fxdax: on Linux, they are written through it, so that a write doesn't wait for the
+/// blocks; fxdax: but where the store reads raw files, written lately, through it
+/// ([`File::read_cached`]). fxdax: on Linux, they are written through it, so that a write doesn't wait for the
 /// host's disk, which a commit doesn't need (`Store::flush` makes it durable), and its pages leave
 /// the cache once synced: written directly, every `WRITE`, and every commit of an extent written
 /// through a DAX window, waited half a millisecond for a network disk. But the open segment's raw
@@ -163,10 +175,11 @@ impl HostDir {
         // The same file again, through the page cache, for writes.
         let written = file.try_clone()?;
         // A file descriptor of its own, whose flags the clone doesn't share. On macOS, the clone
-        // shares `F_NOCACHE`: its writes bypass the cache too.
+        // shares `F_NOCACHE`: its writes bypass the cache too. fxdax: and its reads, which raw
+        // files' are through it (`File::read_cached`).
         let path = format!("/proc/self/fd/{}", written.as_raw_fd());
         let written = if cfg!(target_os = "linux") {
-            OpenOptions::new().write(true).custom_flags(libc::O_CLOEXEC).open(path)?
+            OpenOptions::new().read(true).write(true).custom_flags(libc::O_CLOEXEC).open(path)?
         } else {
             written
         };
@@ -274,7 +287,7 @@ impl Dir for HostDir {
 }
 
 /// A file of a [`HostDir`]: read through `file`, which bypasses the page cache if `written` is
-/// given, through which it is written.
+/// given, through which it is written; fxdax: and read, by [`File::read_cached`].
 pub struct HostFile {
     file: std::fs::File,
     written: Option<std::fs::File>,
@@ -293,22 +306,12 @@ impl AsRawFd for HostFile {
 }
 
 impl File for HostFile {
-    fn read_at(&self, mut buf: &mut [u8], mut offset: u64) -> io::Result<()> {
-        while !buf.is_empty() {
-            match self.file.read_at(buf, offset) {
-                Ok(0) => {
-                    buf.fill(0);
-                    return Ok(());
-                }
-                Ok(read) => {
-                    buf = &mut buf[read..];
-                    offset += read as u64;
-                }
-                Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
-                Err(err) => return Err(err),
-            }
-        }
-        Ok(())
+    fn read_at(&self, buf: &mut [u8], offset: u64) -> io::Result<()> {
+        read_fully(&self.file, buf, offset)
+    }
+
+    fn read_cached(&self, buf: &mut [u8], offset: u64) -> io::Result<()> {
+        read_fully(self.written(), buf, offset)
     }
 
     fn write_at(&self, buf: &[u8], offset: u64) -> io::Result<()> {
@@ -341,6 +344,25 @@ impl File for HostFile {
             self.written().sync_data()
         }
     }
+}
+
+/// Reads `buf.len()` bytes at `offset` in `file`, zeros past its end.
+fn read_fully(file: &std::fs::File, mut buf: &mut [u8], mut offset: u64) -> io::Result<()> {
+    while !buf.is_empty() {
+        match file.read_at(buf, offset) {
+            Ok(0) => {
+                buf.fill(0);
+                return Ok(());
+            }
+            Ok(read) => {
+                buf = &mut buf[read..];
+                offset += read as u64;
+            }
+            Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(())
 }
 
 /// fxdax: syncs `file` on macOS by the first of `syncs`, `fcntl`s of macOS's, that its file system
