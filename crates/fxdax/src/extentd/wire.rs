@@ -71,10 +71,7 @@ pub(crate) const READ: u32 = 2;
 /// [`WRITE_BARRIER`], and followed by a commit if [`WRITE_COMMIT`]; or, with [`WRITE_TRANSFER`],
 /// the `args[4]` bytes at `args[3]` in the connection's transfer area ([`TRANSFER`]).
 pub(crate) const WRITE: u32 = 3;
-/// Frees extent `args[0..2]` (`FREE`). fxdax: with [`FREE_MANY`], and those the payload names
-/// after it ([`extent_ids`]), each freed as it is, in order: the first that fails fails the
-/// request, those before it freed, as a guest's `FREE` with doc-4's `FREE_MANY` does, a flush's
-/// dead extents in one round trip, not one each (TASK-92.13).
+/// Frees extent `args[0..2]` (`FREE`).
 pub(crate) const FREE: u32 = 4;
 /// Maps `args[3]` bytes at `args[2]` in extent `args[0..2]` into the window at `args[4]`
 /// (`MAP`), writably if [`MAP_WRITABLE`]; or zeros there, read-only, with [`MAP_ZEROS`], as a
@@ -136,6 +133,13 @@ pub(crate) const UNPIN: u32 = 24;
 /// rather than the stream, whose sending and receiving copy it twice more (TASK-26.18.6). The VM
 /// process says which part of it each uses, which it has no other use for meanwhile.
 pub(crate) const TRANSFER: u32 = 25;
+/// fxdax: frees extent `args[0..2]`, and those the payload names after it ([`extent_ids`]), each
+/// as [`FREE`] frees it, in order: the first that fails fails the request, those before it freed,
+/// as a guest's `FREE` with doc-4's `FREE_MANY` does, a flush's dead extents in one round trip, not
+/// one each (TASK-92.13). A request of its own, not a flag of `FREE`'s: a daemon older than it,
+/// which ignores flags it doesn't know, would free the first alone and succeed, the rest leaked,
+/// where it refuses a request it doesn't know (`EINVAL`).
+pub(crate) const FREE_MANY: u32 = 26;
 /// The most bytes a transfer area holds.
 pub(crate) const MAX_TRANSFER_AREA: u64 = 64 << 20;
 
@@ -158,9 +162,6 @@ pub(crate) const WRITE_TRANSFER: u32 = 1 << 3;
 pub(crate) const READ_TRANSFER: u32 = 1 << 0;
 pub(crate) const FAULT_WRITE: u32 = 1 << 0;
 pub(crate) const FAULT_PAGE: u32 = 1 << 1;
-/// fxdax: a `FREE`'s payload names more extents to free.
-pub(crate) const FREE_MANY: u32 = 1 << 0;
-
 /// fxdax: the bytes an extent's ID takes in a [`FREE_MANY`]'s payload: its branch and its
 /// sequence, little-endian words.
 pub(crate) const EXTENT_ID_BYTES: usize = 16;
