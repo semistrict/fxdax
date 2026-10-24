@@ -144,6 +144,13 @@ struct fxfs_dax_file {
 	 * lock.
 	 */
 	struct list_head evacuating;
+	/*
+	 * fxdax: how many of its ranges an evacuation holds (fxfs_dax_evacuee_gather): ranges that
+	 * the paths dropping them whatever uses them, evict and truncate, wait for, so that what the
+	 * evacuation maps doesn't land in window space another range took (fxfs_dax_lock_unheld).
+	 * Changed under its semaphore.
+	 */
+	atomic_t held;
 };
 
 /* A range of the window. */
@@ -2352,8 +2359,10 @@ static void fxfs_dax_evacuee_gather(struct fxfs_dax_file *file, struct fxfs_dax_
 					.window_offset = range->window_offset + ((u64)page << PAGE_SHIFT),
 				}))
 				goto out;
-			if (!held)
+			if (!held) {
 				atomic_inc(&range->users);
+				atomic_inc(&file->held);
+			}
 			held = true;
 		}
 	}
@@ -2399,9 +2408,28 @@ static void fxfs_dax_evacuee_place(struct fxfs_dax *dax, struct fxfs_dax_file *f
 		if (run->file != file || !run->holds)
 			continue;
 		fxfs_dax_prune(dax, run->range);
+		atomic_dec(&file->held);
 		fxfs_dax_put_range(dax, run->range);
 	}
 	up_write(&file->sem);
+	/* Those waiting to drop its ranges (fxfs_dax_lock_unheld). */
+	wake_up_all(&dax->wait);
+}
+
+/*
+ * fxdax: takes `file`'s semaphore for writing once no evacuation holds its ranges: for the paths
+ * that drop them whatever uses them, as an evicted unlinked file's and a truncate's, which no
+ * iomap can use meanwhile, but an evacuation may (fxfs_dax_evacuee_gather).
+ */
+static void fxfs_dax_lock_unheld(struct fxfs_dax *dax, struct fxfs_dax_file *file)
+{
+	for (;;) {
+		down_write(&file->sem);
+		if (!atomic_read(&file->held))
+			return;
+		up_write(&file->sem);
+		wait_event(dax->wait, !atomic_read(&file->held));
+	}
 }
 
 /*
@@ -2725,7 +2753,7 @@ void fxfs_dax_evict(struct inode *inode)
 	if (!dax || !IS_DAX(inode) || !file)
 		return;
 	if (!inode->i_nlink) {
-		down_write(&file->sem);
+		fxfs_dax_lock_unheld(dax, file);
 		xa_for_each(&file->ranges, chunk, range)
 			fxfs_dax_unmap_range(dax, range);
 		up_write(&file->sem);
@@ -2939,7 +2967,7 @@ void fxfs_dax_resize_end(struct inode *inode, loff_t size)
 	struct fxfs_dax_range *range;
 	int err;
 
-	down_write(&file->sem);
+	fxfs_dax_lock_unheld(dax, file);
 	xa_for_each_start(&file->ranges, chunk, range, size >> FXFS_DAX_SHIFT) {
 		loff_t start = fxfs_dax_chunk_start(range);
 

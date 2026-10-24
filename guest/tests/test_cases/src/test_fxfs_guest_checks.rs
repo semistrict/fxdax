@@ -1704,6 +1704,46 @@ mod guest {
         fs::remove_file(&name).unwrap();
     }
 
+    /// fxdax: files written and fsynced, then truncated or removed at once, again and again: each
+    /// seal's evacuation holds the files' ranges while it maps their pages, which an unlinked
+    /// file's eviction, or a truncate, dropped under it (a GPF in fxfs_dax_relocate, TASK-91.10).
+    /// The filesystem stays whole: the last file reads back.
+    fn test_evacuate_dropped() {
+        use std::os::unix::fs::FileExt;
+        const PAGE: usize = 4096;
+        for round in 0..300 {
+            let name = path(&format!("evacuate-dropped-{}", round % 4));
+            let file = fs::OpenOptions::new()
+                .create(true)
+                .truncate(true)
+                .read(true)
+                .write(true)
+                .open(&name)
+                .unwrap();
+            file.write_all_at(&vec![1; 64 * PAGE], 0).unwrap();
+            file.sync_data().unwrap();
+            file.write_all_at(&vec![(round % 251) as u8 + 2; PAGE], (round % 64 * PAGE) as u64)
+                .unwrap();
+            file.sync_data().unwrap();
+            if round % 2 == 0 {
+                file.set_len(PAGE as u64).unwrap();
+            } else {
+                drop(file);
+                fs::remove_file(&name).unwrap();
+            }
+        }
+        let name = path("evacuate-dropped-last");
+        let data = vec![0x3c; 64 * PAGE];
+        fs::write(&name, &data).unwrap();
+        evict(&name);
+        assert!(fs::read(&name).unwrap() == data, "the last file differs from what was written");
+        // The even rounds' files, truncated, are left: the odd rounds' were removed.
+        for n in [0, 2] {
+            fs::remove_file(path(&format!("evacuate-dropped-{n}"))).unwrap();
+        }
+        fs::remove_file(&name).unwrap();
+    }
+
     /// File handles: name_to_handle_at, and open_by_handle_at with the inode cached and evicted.
     fn test_file_handles() {
         fs::write(path("handled"), b"by handle").unwrap();
@@ -1785,6 +1825,7 @@ mod guest {
             if dax {
                 tests.push(("regions_pruned", &test_regions_pruned));
                 tests.push(("regions_evacuated", &test_regions_evacuated));
+                tests.push(("evacuate_dropped", &test_evacuate_dropped));
             }
             // Files on DAX are in no page cache.
             if !dax {
