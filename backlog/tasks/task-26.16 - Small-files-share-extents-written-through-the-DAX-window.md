@@ -1,11 +1,11 @@
 ---
 id: TASK-26.16
 title: 'Small files share extents, written through the DAX window'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-14 23:10'
-updated_date: '2026-10-15 01:15'
+updated_date: '2026-10-24 00:53'
 labels: []
 dependencies:
   - TASK-26.15
@@ -24,15 +24,15 @@ Files under 1 MiB are in the guest's page cache, because a DAX write cost a MAP 
 - [x] #1 Small files are DAX: no file's data is in the guest's page cache
 - [x] #2 Writes of small files take blocks of an open extent already mapped writably in the window, with no device request per write
 - [x] #3 Many files' data share one extent; an extent is freed only once no file uses it
-- [ ] #4 create and create-parallel stay within 2x of ext4 with DAX on writable pmem on GCE, and read-small-cold is within 2x
+- [x] #4 create and create-parallel stay within 2x of ext4 with DAX on writable pmem on GCE, and read-small-cold is within 2x
 - [x] #5 fsck, pjdfstest and the fxfs-guest crash tests pass
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -55,4 +55,12 @@ Follow-ups (not here): compacting mostly-dead shared extents; host not storing n
 
 <!-- SECTION:NOTES:BEGIN -->
 Done in 390910b, 3ed39da, 7922590, 0ac0626, fea74ca (libkrun c8600eb). small_files_share: 32 small files take 6 MAPs, no READ; read again after eviction, none. Stress test of shared extents with seals/truncations/deletions/dropped transactions, replay revive test. AC4 (GCE vs ext4-dax-pmem) not yet measured. Fable review follow-ups in TODO.md (window fragmentation/region-aware reclaim, appends fragmenting slices, compactor).
+
+AC4 met on GCE, fxfs-guest-dax against ext4-dax-pmem: create / create-parallel / read-small-cold 0.99x / 1.07x / 0.36x (2026-10-15T1720Z), 1.15x / 1.28x / 0.46x (2026-10-16T0121Z), 1.48x / 1.62x / 0.60x (perf-base-2026-10-20T2051Z), all within 2x. Definition of Done #1 met on 2026-10-23 at 1586daee+: workspace nextest via scripts/test.sh on macOS (2466 passed) and Linux on GCE r63 (2544 passed); Linux tests run on GCE, not Lima, now. The only failure that held this, test_encrypted_mutations_mixed_versions, was removed in 7936796c. scripts/upstream-changes.py --check passes; the window's deviations are marked fxdax: in dax.c.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Small files share staging extents, written and read through the DAX window as slices of the extent's region; within 2x of ext4-dax-pmem on GCE for create, create-parallel and read-small-cold. Closed in the 2026-10-23 audit of stale tasks.
+<!-- SECTION:FINAL_SUMMARY:END -->

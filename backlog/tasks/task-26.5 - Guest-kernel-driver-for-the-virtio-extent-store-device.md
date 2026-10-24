@@ -1,11 +1,11 @@
 ---
 id: TASK-26.5
 title: Guest kernel driver for the virtio extent-store device
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-13 19:54'
-updated_date: '2026-10-14 03:47'
+updated_date: '2026-10-24 00:53'
 labels: []
 milestone: m-3
 dependencies:
@@ -34,7 +34,7 @@ The guest side of the extent-store device (doc-2): a driver in libkrunfw's kerne
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
 - [x] #2 scripts/upstream-changes.py --check passes
 - [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
@@ -51,4 +51,12 @@ The guest side of the extent-store device (doc-2): a driver in libkrunfw's kerne
 
 <!-- SECTION:NOTES:BEGIN -->
 Landed on branch object-store (local): b852fc0 guest/linux/drivers/virtio_extent (driver, in-kernel API in include/linux/virtio_extent.h, sysfs self-test) built in by build-guest-kernel.sh; libkrun 14e17d7 test extent-guest. Evidence: extent-guest passes on macOS HVF arm64: the self-test issues INFO, 32 concurrent WRITEs, COMMIT+ROOT, ROOT, 32 concurrent READs, sealed-write EPERM, WRITE_BARRIER, MAP + reading the DAX window in place with zero padding, UNMAP, FREE + ENOENT, final durable COMMIT; the host then reopens the store and finds the root, used bytes and next sequence the guest committed. fxfs-guest still passes on that kernel. Not yet run on x86-64 KVM. DoD #1 waits on the obsolete Fxfs test, as TASK-26.3's.
+
+Definition of Done #1 met on 2026-10-23 at 1586daee+: workspace nextest via scripts/test.sh on macOS (2466 passed) and Linux on GCE r63 (2544 passed); Linux tests run on GCE, not Lima, now. The only failure that held this, test_encrypted_mutations_mixed_versions, was removed in 7936796c.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The guest virtio_extent driver is in the guest kernel series and runs on Firecracker/KVM (test_extent_guest); all acceptance criteria met as noted. Closed in the 2026-10-23 audit of stale tasks once the workspace suite passed on macOS and Linux.
+<!-- SECTION:FINAL_SUMMARY:END -->

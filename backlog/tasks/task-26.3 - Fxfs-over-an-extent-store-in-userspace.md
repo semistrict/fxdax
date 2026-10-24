@@ -1,11 +1,11 @@
 ---
 id: TASK-26.3
 title: 'Fxfs over an extent store, in userspace'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-13 19:54'
-updated_date: '2026-10-14 02:48'
+updated_date: '2026-10-24 00:53'
 labels: []
 milestone: m-3
 dependencies:
@@ -36,7 +36,7 @@ Fxfs assumes a fixed-size block device: extent records hold device offsets, the 
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
 - [x] #2 scripts/upstream-changes.py --check passes
 - [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
@@ -55,4 +55,12 @@ D. fxfs-platform's shared-block cache keyed by extent; tests: crashes at random 
 
 <!-- SECTION:NOTES:BEGIN -->
 Phases A-D landed on branch object-store (local, not on main until TASK-26.10, as planned): 4147a16 types; f450bbe device = extent store; a4e3d17 allocator mints/frees extents; 99e7551, 4d1150d FakeDevice write-once (always); d71483d super-blocks in new extents named by the root; 2642cd8 journal blocks are extents, tail renewed after replay, FreeAfter policy; 620fe00 overwrite mode copy-on-write; d5e1f72 FakeDevice records crashes at barriers; dcf5691 crash test (AC3) and fix: AllocatorInfoV60.dying, as a compaction otherwise leaked extents whose frees a crash undid; fa18873 capacity test (AC4); 850be8b deviation headers (AC5). Verified: scripts/test.sh --no-fail-fast, macOS 1843 run 1842 passed, Linux (Lima) 1847 run 1846 passed; the 1 failure is test_encrypted_mutations_mixed_versions, obsolete with format 60 and awaiting the user's OK to delete, which is why DoD #1 is unchecked. scripts/upstream-changes.py --check passes. Known limitation: fallocate no longer guarantees space (a flush of a preallocated range needs new blocks).
+
+Definition of Done #1 met on 2026-10-23 at 1586daee+: workspace nextest via scripts/test.sh on macOS (2466 passed) and Linux on GCE r63 (2544 passed); Linux tests run on GCE, not Lima, now. The only failure that held this, test_encrypted_mutations_mixed_versions, was removed in 7936796c.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Fxfs runs over an extent store in userspace; all acceptance criteria met as noted. Closed in the 2026-10-23 audit of stale tasks once the workspace suite passed on macOS and Linux.
+<!-- SECTION:FINAL_SUMMARY:END -->

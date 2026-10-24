@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-17 22:17'
-updated_date: '2026-10-18 12:24'
+updated_date: '2026-10-24 00:53'
 labels: []
 dependencies:
   - TASK-42.3
@@ -30,8 +30,8 @@ The guest side (doc-8, Concurrency 2): fs/fxfs honours -o ro and a read-only dev
 <!-- AC:BEGIN -->
 - [ ] #1 fs/fxfs mounts read-only on -o ro or a read-only device, writing nothing; the driver refuses writes on a read-only device
 - [ ] #2 After a batch, changed DAX ranges' user mappings and DAX entries are broken under the inode's invalidate_lock, page-cache ranges invalidated, sizes and attributes refreshed, directory generations bumped and stale dentries dropped by d_revalidate
-- [ ] #3 No kernel cache is filled from a read before it validates against the seqcount
-- [ ] #4 WARN_ON invariants in debug builds (doc-8 testing 1); the kernel patch series in guest/linux/patches carries the change
+- [ ] #3 WARN_ON invariants in debug builds (doc-8 testing 1); the kernel patch series in guest/linux/patches carries the change
+- [ ] #4 No kernel cache is filled from a read outside the follower's fill barrier (vfs.h), which replaced the seqcount by TASK-42.10's decision
 <!-- AC:END -->
 
 ## Definition of Done
@@ -51,4 +51,6 @@ The guest side (doc-8, Concurrency 2): fs/fxfs honours -o ro and a read-only dev
 
 <!-- SECTION:NOTES:BEGIN -->
 Progress (2026-10-18): driver, device glue, Rust (follow.rs, fs.rs, lib.rs, device.rs) and C (super.c, dax.c, vfs.h, fxfs.h) written; the guest Rust checks locally against the sysroot (scratch: build-guest-sysroot + cargo check); the x86-64 guest kernel builds clean on GCE (6.18 dropped sb->s_d_op: set_default_d_op). Writer regressions fxfs-guest and fxfs-guest-dax pass on it. First fxfs-guest-follow run: the follower's mount failed, its journal replay reading the writer's next journal extent, which extentd answered EIO; fixed by 7a36a35 (ENOENT for extents written after the view, EIO for what it let go of).
+
+2026-10-23 audit: AC3 reworded from the seqcount, which TASK-42.10 replaced with the fill barrier (a17eb735); its index is now #4. Evidence found for the others, unchecked until a follower run on the current tree: driver.c returns -EROFS on writes of a read-only device and fxfs-guest-follow checks an MS_RDONLY mount gets EROFS (AC1); d_revalidate and invalidate_lock in super.c, c0c0f672, befc9c14 (AC2); WARN_ON_ONCE invariants in super.c and dax.c, and 0004-fxfs.patch carries fs/fxfs (AC4). Open follow-ups: TASK-79.23, 79.54, 79.30, 92.31.
 <!-- SECTION:NOTES:END -->

@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-10 19:08'
-updated_date: '2026-10-10 21:32'
+updated_date: '2026-10-24 00:53'
 labels: []
 dependencies: []
 references:
@@ -49,4 +49,6 @@ C. Lookups and getattrs from Fxfs's nodes rather than fuchsia.io connections, op
 Done so far, each measured on GCE (fxdax without DAX): A. jobs spawned straight onto the executor's runtime, and 1 executor thread by default; B. libkrun's fxdax device loop runs on fxdax's executor (Spawner), waiting on the queues' eventfds there, handling requests concurrently; C. lookups and getattrs from Fxfs's nodes, connections opened when first needed (FxDirectory::lookup_child, get_attributes, serve in fxfs-platform), and Fxfs's directory entry cache at 16,384. 3-iteration result (gce-fs-bench-2026-10-10T1939Z against T1823Z): cold stats 2,572 -> 4,806/s (1.87x; single runs reached 5,239), creates 1,184 -> 1,488 (passthrough 1,452), unlinks 2,835 -> 3,537, I/O unchanged. AC #1 (2x cold stats) not met yet. Where the rest goes (gce-fs-bench-2026-10-10T1943Z, per-opcode timing inside fxdax): a LOOKUP takes ~29 µs in fxdax, of ~208 µs a cold stat; ~180 µs is outside fxdax, against ~80 µs for passthrough's whole request. KVM halt polling is on (up to 200 µs). Next to look at: what in the device path or the guest makes fxdax's requests slower outside fxdax than passthrough's.
 
 3 iterations after TASK-25.3 to 25.6 (T2124Z): cold stats 4,958/s without DAX, 1.97x the baseline's 2,518 (AC #1 wants 2x); single runs since reach 5,050 to 5,399. TASK-25.7 found why fxdax's requests cost ~90 µs more than passthrough's outside fxdax: its replies come after the waiting vCPU's halt-poll window, so the vCPU sleeps and is woken each time; making replies quicker (17-22 µs in the device against passthrough's 7-10) is what is left.
+
+Obsolete (2026-10-23 audit of stale tasks, the user agreeing): fxdax's FUSE/virtio-fs server and files' DAX windows were removed in fda9d7d2, fxdax-extentd became the only store server in 537c7eb4, and libkrun went with TASK-40 (5ba39497). Guest Fxfs over the virtio extent device replaced them; its benchmark against ext4-dax-pmem continues under TASK-26.8 and TASK-91/92. AC1 stopped at 1.97x of its 2x target.
 <!-- SECTION:NOTES:END -->

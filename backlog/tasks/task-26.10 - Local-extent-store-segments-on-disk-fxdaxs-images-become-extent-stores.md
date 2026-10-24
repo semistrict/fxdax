@@ -1,11 +1,11 @@
 ---
 id: TASK-26.10
 title: 'Local extent store: segments on disk; fxdax''s images become extent stores'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-13 22:51'
-updated_date: '2026-10-14 03:24'
+updated_date: '2026-10-24 00:53'
 labels: []
 milestone: m-3
 dependencies:
@@ -30,7 +30,7 @@ With Fxfs storing extents only (TASK-26.3), fxdax's image files must become an e
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
 - [x] #2 scripts/upstream-changes.py --check passes
 - [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
@@ -51,4 +51,12 @@ On branch object-store, after TASK-26.3 (merged to main together).
 
 <!-- SECTION:NOTES:BEGIN -->
 Landed on branch object-store (local, with TASK-26.3; not on main until test_encrypted_mutations_mixed_versions, obsolete with format 60, is deleted with the user's OK): 04d267e crates/extent_store (segments in commit order, large extents' own files, index of checkpoints + hashed per-commit deltas, durable commits, recovery to a prefix of commits, cleaning; HostDir and MemDir with crash simulation); f90b791 copy_store for forks; 4e9c364 fxdax's ImageDevice on it, clones via copy_store, and Journal::renew_tail renews a fork's inherited journal tail; 0439f59 OtherBranch errors, FakeDevice refuses other branches' writes, Device::fork and Fxfs's test_fork. Evidence: AC1 extent_store tests (reads, pieces, large extents, roots, write-once, capacity, frees, checkpoints, copies); AC2 recovers_a_prefix_of_its_commits (300 random crash points, exact epoch match; skipping data or directory syncs makes it fail); AC3 cleaning_in_memory/cleaning_on_the_host; AC4 fxdax's tests (clones of closed and mounted images, remounts) and the libkrun guest e2e tests (4/4 on HVF). Suites: macOS 1859 run 1858 passed, Linux 1863 run 1862 passed; the 1 is the obsolete test, so DoD #1 waits. upstream-changes.py --check passes.
+
+Definition of Done #1 met on 2026-10-23 at 1586daee+: workspace nextest via scripts/test.sh on macOS (2466 passed) and Linux on GCE r63 (2544 passed); Linux tests run on GCE, not Lima, now. The only failure that held this, test_encrypted_mutations_mixed_versions, was removed in 7936796c.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The local extent store keeps its data in segments on disk; crash recovery to a prefix (crates/extent_store/tests/crash recovers_a_prefix_of_its_commits) and cleaning (tests/store.rs) are tested. Closed in the 2026-10-23 audit of stale tasks once the workspace suite passed on macOS and Linux.
+<!-- SECTION:FINAL_SUMMARY:END -->

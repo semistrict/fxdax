@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-10 14:53'
-updated_date: '2026-10-10 18:41'
+updated_date: '2026-10-24 00:53'
 labels: []
 dependencies: []
 type: chore
@@ -48,4 +48,6 @@ macOS is not benchmarked here: the user asked not to benchmark locally, and ther
 
 <!-- SECTION:NOTES:BEGIN -->
 Ran on GCE (c3-standard-8, nested KVM) in 481 s with scripts/bench-gce.sh: docs/measurements/gce-fs-bench-2026-10-10.md. A libkrun virtio-fs passthrough case shows most of the metadata and mmap-read cost is libkrun's virtio-fs transport under nested KVM. fxdax-specific gaps: DAX cold reads (18x), DAX sequential writes (3x) and mmap writes (4x), cold stat (4x passthrough's). Not measured on macOS: the user asked not to benchmark locally. Run time cut from 1.7 h to under 10 min at the user's request: persistent build tree on the host, prebuilt libkrunfw, Alpine rootfs, smaller workloads, 3 iterations.
+
+Obsolete (2026-10-23 audit of stale tasks, the user agreeing): fxdax's FUSE/virtio-fs server and files' DAX windows were removed in fda9d7d2, fxdax-extentd became the only store server in 537c7eb4, and libkrun went with TASK-40 (5ba39497). Guest Fxfs over the virtio extent device replaced them; its benchmark against ext4-dax-pmem continues under TASK-26.8 and TASK-91/92. Its virtio-fs results stay in docs/measurements (gce-fs-bench-2026-10-10T1823Z.md, fs-bench-history.md).
 <!-- SECTION:NOTES:END -->

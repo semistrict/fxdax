@@ -4,6 +4,7 @@ title: 'DAX: reply to FUSE_SETUPMAPPING before KVM pre-faults the range'
 status: To Do
 assignee: []
 created_date: '2026-10-10 20:23'
+updated_date: '2026-10-24 00:53'
 labels: []
 dependencies: []
 parent_task_id: TASK-25
@@ -28,3 +29,9 @@ After TASK-25.3, a 2 MiB FUSE_SETUPMAPPING takes ~580 µs in fxdax while the gue
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Obsolete (2026-10-23 audit of stale tasks, the user agreeing): fxdax's FUSE/virtio-fs server and files' DAX windows were removed in fda9d7d2, fxdax-extentd became the only store server in 537c7eb4, and libkrun went with TASK-40 (5ba39497). Guest Fxfs over the virtio extent device replaced them; its benchmark against ext4-dax-pmem continues under TASK-26.8 and TASK-91/92. FUSE_SETUPMAPPING is gone with it.
+<!-- SECTION:NOTES:END -->

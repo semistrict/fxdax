@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-09 21:58'
-updated_date: '2026-10-10 00:30'
+updated_date: '2026-10-24 00:53'
 labels: []
 dependencies: []
 type: feature
@@ -55,4 +55,6 @@ fxdax is consumed only by libkrun, and its API shows it: it leaks storage_device
 fxdax restructured into connection, dax (+uffd), error, executor, filesystem, kernel, node, storage; flat re-exports, deny(missing_docs). Errno/IntoErrno replace the public From<zx::Status>/From<fidl::Error> impls. Inode/DirHandle convert to and from u64 (FUSE servers such as libkrun require From<u64> + Into<u64> handle types). After unmount operations fail with ENOTCONN; the uffd fault thread lives until the Filesystem drops so a late guest fault fails loudly rather than hanging. Tests moved to tests/filesystem.rs on the public API; added vectored_io, storage_errors, dax_unmount_unmaps_the_window, errno_names, file_types, readdir past the end, tests/kernel.rs. open() and fallocate(mode) removed: the libkrun adapter does O_TRUNC as setattr size 0 and returns ENOTSUP for nonzero fallocate modes. libkrun adapter + virtiofs-fxdax test ported; macOS e2e: virtiofs-fxdax and virtiofs-fxdax-nodax pass.
 
 Validation: fxdax 42 tests pass (macOS); clippy and rustdoc -D warnings clean for fxdax; scripts/test.sh macOS 1764 passed; scripts/test-e2e.sh macOS virtiofs-fxdax and -nodax pass; Lima scripts/test.sh 1765/1766 passed, contents_survive_remount hung. The hang is pre-existing: under cargo nextest run -p fxdax -j 24 --stress-duration, HEAD (df29131) hangs the same test at round 196, and this change hung it at rounds 590 and (in readdir) 20 and not at all in 1909 rounds. Diagnosis so far: the test thread waits in unmount, inside VolumesDirectory::terminate (FxVolume::terminate), with every executor thread idle. Linux libkrun e2e (scripts/test-e2e-linux.sh) not yet run, so the Linux adapter path is not yet compiled or verified; DoD #1 open until then.
+
+Obsolete (2026-10-23 audit of stale tasks, the user agreeing): fxdax's FUSE/virtio-fs server and files' DAX windows were removed in fda9d7d2, fxdax-extentd became the only store server in 537c7eb4, and libkrun went with TASK-40 (5ba39497). Guest Fxfs over the virtio extent device replaced them; its benchmark against ext4-dax-pmem continues under TASK-26.8 and TASK-91/92. The public API's FUSE and VMM parts no longer exist; fxdax's Filesystem now only formats, fills and checks images.
 <!-- SECTION:NOTES:END -->
