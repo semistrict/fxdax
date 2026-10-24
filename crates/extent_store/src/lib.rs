@@ -113,16 +113,17 @@
 //!
 //! **The host's disk.** fxdax: what the branch's files take of the host's disk, framed and
 //! compressed as they are, is bounded apart from the room (TASK-79.89): a write is refused
-//! ([`NoSpace`]) once the files would take more than three times the capacity, less what the next
-//! commit takes back of them as cleaning's copies land, a capacity's worth at most. That the
-//! writes the commit comes with may take, so that the commit gets through, and the copies, which
-//! wait for it, land: refused, a guest whose commits come with writes (doc-4's `WRITE_COMMIT`, a
-//! DAX guest's extents mapped writably) would never commit again, nor the store take anything
-//! back. An honest writer's files come nowhere near it, cleaning taking back what no extent is in
-//! once it takes the capacity's worth; a writer freeing faster than cleaning takes back, whose
-//! files only cleaning's pace bounded across commits, is held to it. Commits and cleaning's copies
-//! are never refused: the files take more by what those copy, until the commits after take it
-//! back, and by the frames of the segments closed, which say what they hold.
+//! ([`NoSpace`]) once they would take more than three times the capacity, less what the next
+//! commit takes back of them as cleaning's copies land, a capacity's worth at most, which the
+//! writes that commit comes with may take: refused, a guest whose commits come with writes
+//! (doc-4's `WRITE_COMMIT`, a DAX guest's extents mapped writably) could never commit again, and
+//! the copies, which wait for its commit, would never land. So the files take four times the
+//! capacity at most as each write begins. An honest writer's come nowhere near it, cleaning taking
+//! back what no extent is in once it takes the capacity's worth, but for what an uploader keeps as
+//! far as it lags; a writer freeing faster than cleaning takes back, whose files only cleaning's
+//! pace bounded across commits, is held to it. Commits and cleaning's copies are never refused:
+//! the files take more by what they copy, until the commits after take it back, and by the frames
+//! of the segments closed, which say what they hold.
 //!
 //! **Views.** [`Store::view`] gives a [`View`] of the branch as of its latest commit, which a
 //! follower reads through ([`Store::read_view`]) while the writer goes on (doc-8, TASK-42.2): the
