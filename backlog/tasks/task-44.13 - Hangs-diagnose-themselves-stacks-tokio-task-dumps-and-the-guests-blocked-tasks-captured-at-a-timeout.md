@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-24 21:31'
+updated_date: '2026-10-24 23:57'
 labels: []
 dependencies: []
 parent_task_id: TASK-44
@@ -21,9 +22,9 @@ TASK-98's import deadlock took the sandbox team installing gdb on a box to see; 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The guest test runner, at a test's timeout, saves every host process's thread stacks and the guest's blocked tasks (sysrq) before killing it
+- [x] #1 The guest test runner, at a test's timeout, saves every host process's thread stacks and the guest's blocked tasks (sysrq) before killing it
 - [ ] #2 extentd and fxdaxctl dump their tokio tasks and threads on a signal
-- [ ] #3 A deliberate deadlock in a test produces the cycle's stacks in its results
+- [x] #3 A deliberate deadlock in a test produces the cycle's stacks in its results
 <!-- AC:END -->
 
 ## Definition of Done
@@ -32,3 +33,9 @@ TASK-98's import deadlock took the sandbox team installing gdb on a box to see; 
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Committed with 44.8: the runner saves eu-stack stacks of a timed-out test's processes; the guest reports tasks blocked 10 s. runner-deadlock (FXDAX_RUNNER_DEADLOCK=1), GCE r81: TIMEOUT, stacks-<pid>.txt naming holds_first_then_second and holds_second_then_first. AC2 left: tokio task dumps of extentd/fxdaxctl on a signal.
+<!-- SECTION:NOTES:END -->

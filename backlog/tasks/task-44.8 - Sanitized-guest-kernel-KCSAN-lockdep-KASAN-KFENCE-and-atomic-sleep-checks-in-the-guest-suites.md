@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-24 21:31'
+updated_date: '2026-10-24 23:57'
 labels: []
 dependencies: []
 parent_task_id: TASK-44
@@ -32,3 +33,9 @@ TASK-99 was a guest data race: fxfs_dax_region_open read region->mapped under an
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Committed: the runner fails a passed test whose consoles complain (vm::complaints, release and debug kernels alike), parser pinned by consoles_fail_on_their_kernels_complaints. The debug kernel (lockdep, KCSAN, DEBUG_ATOMIC_SLEEP: FXDAX_GUEST_KERNEL_BUILD=debug, existing) found fxfs_dax_window_page's dax_direct_access without dax_read_lock (fixed, 2c... this round); the DAX suites then pass on it (GCE r81). Left: a KASAN/KFENCE variant (KASAN excludes KCSAN), and TASK-99's race put back reported by it.
+<!-- SECTION:NOTES:END -->
