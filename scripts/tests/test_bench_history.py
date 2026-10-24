@@ -168,6 +168,32 @@ source; its note says what it was for. Medians of the iterations.
 """,
         )
 
+    def test_the_script_writes_every_filesystem_a_run_measured(self):
+        """TASK-79.64: run as the script is, its paths a measurements directory of its own,
+        bench-history.py writes each filesystem a run measured, a fork's and a followed writer's
+        among them, which its list of filesystems left out."""
+        root = Path(tempfile.mkdtemp())
+        measurements = root / "docs" / "measurements"
+        measurements.mkdir(parents=True)
+        run(
+            measurements,
+            "2026-10-17T1609Z",
+            {
+                "ext4-virtio-blk": 1000.0,
+                "fxfs-guest-dax-fork-warm": 300.0,
+                "fxfs-guest-dax-followed": 1200.0,
+            },
+        )
+        module = script.load("bench-history")
+        module.ROOT, module.MEASUREMENTS = root, measurements
+        module.OUTPUT = measurements / "fs-bench-history.md"
+        module.main()
+        written = module.OUTPUT.read_text()
+        self.assertEqual(
+            [backend in written for backend in ["fxfs-guest-dax-fork-warm", "fxfs-guest-dax-followed"]],
+            [True, True],
+        )
+
     def test_runs_are_in_the_order_they_started(self):
         measurements = Path(tempfile.mkdtemp())
         # When bench-gce.sh's run began, as the run's directory on the host is named, in the
