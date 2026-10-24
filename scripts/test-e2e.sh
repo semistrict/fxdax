@@ -12,7 +12,9 @@
 # logs are kept under $FXDAX_E2E_RESULTS (default: a new temporary directory).
 # FXDAX_E2E_ROUNDS runs each case that many times (default 1), as a soak: it stops
 # at a case's first failing round, whose logs it keeps, in ROUND-K under the
-# case's, and drops the passing rounds'. FXDAX_FIRECRACKER_SECCOMP (real, log) runs
+# case's, and drops the passing rounds' but for what their guests said, in
+# round-K.log there, which measurements repeated round by round need (pgbench's
+# tps). FXDAX_FIRECRACKER_SECCOMP (real, log) runs
 # Firecracker under its production seccomp filter, and FXDAX_FIRECRACKER_JAIL=1 in its jailer's
 # jail, as an unprivileged user (see below).
 #
@@ -171,6 +173,7 @@ for test in "${tests[@]}"; do
             status=1
             break
         fi
+        find "$base" -name log.txt -exec cp {} "$results/$test/round-$round.log" \;
         rm -r "$base"
         if (( round == rounds )); then
             echo "$test: $rounds rounds passed" >&2
