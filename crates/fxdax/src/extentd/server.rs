@@ -63,7 +63,7 @@ pub fn serve_tenant(listener: UnixListener, tenant: Arc<Tenant>) {
 }
 
 /// fxdax: how long an accept that failed waits to be tried again, as files close (TASK-79.35).
-const ACCEPT_AGAIN: std::time::Duration = std::time::Duration::from_millis(50);
+pub(super) const ACCEPT_AGAIN: std::time::Duration = std::time::Duration::from_millis(50);
 
 /// Serves the VM processes of `tenant`, if any, that connect to `listener`, until it listens no
 /// more, shut down (`EINVAL`). An accept that fails otherwise, as with as many files open as the
