@@ -432,6 +432,7 @@ mod tests {
     /// executor of one thread, goes on once that write ends: it does not hold the thread the write
     /// would end on, which the commit would wait for for ever.
     #[test]
+    #[allow(clippy::disallowed_methods, reason = "a write in progress, as a commit waits for")]
     fn writes_held_back_by_a_commit_leave_the_executor_running() {
         let (device, _, _dir) = device(16 * MIB as u64);
         let store = device.store.clone();
@@ -472,6 +473,7 @@ mod tests {
     /// ends on. fxdaxctl import hung so, every executor thread waiting in `begin_write` for a
     /// commit that waited for the writes those threads had begun.
     #[test]
+    #[allow(clippy::disallowed_methods, reason = "a write in progress, as a commit waits for")]
     fn writes_held_back_by_a_commit_leave_their_own_task_running() {
         let (device, _, _dir) = device(16 * MIB as u64);
         let store = device.store.clone();

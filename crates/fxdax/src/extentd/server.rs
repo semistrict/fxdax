@@ -381,6 +381,10 @@ fn receive(
                 Ok(Some(message)) => {
                     let Some(message) = connection.admit(message) else { continue };
                     IO.spawn(receive(connection.clone(), receiver, gone));
+                    #[allow(
+                        clippy::disallowed_methods,
+                        reason = "the task does nothing more: its receiving goes on in another"
+                    )]
                     tokio::task::block_in_place(move || connection.serve_in_turn(message));
                     return;
                 }

@@ -51,6 +51,8 @@ host_setup() {
             --no-modify-path
     fi
     rustup target add x86_64-unknown-linux-musl
+    # scripts/test.sh checks clippy's rules first (TASK-44.20).
+    rustup component add clippy
 
     # The guest tests' runner isolates each test with `buildah unshare` where
     # buildah is installed, as podman installs it, and buildah's re-execution fails
