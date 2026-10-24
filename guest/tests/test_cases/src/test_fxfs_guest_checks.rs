@@ -95,7 +95,8 @@ mod host {
         }
 
         fn timeout_secs(&self) -> u64 {
-            60
+            // fxdax: the evacuation's and the fault, write and compaction checks run for seconds.
+            120
         }
 
         fn start_vm(self: Box<Self>, test_setup: TestSetup) -> anyhow::Result<()> {
@@ -806,7 +807,7 @@ mod guest {
         // The group's bits are the mask's.
         assert_eq!(fs::metadata(path("acl-file")).unwrap().mode() & 0o777, 0o660);
         // The ACL is enforced: user 1234, which it names, may read; user 1236 may not.
-        let may_read = |uid: u32| {
+        let may_open = |uid: u32, flags: libc::c_int| {
             let file = CString::new(path("acl-file")).unwrap();
             let pid = unsafe { libc::fork() };
             assert!(pid >= 0, "fork: {}", std::io::Error::last_os_error());
@@ -819,7 +820,7 @@ mod guest {
                     {
                         2
                     } else {
-                        let fd = libc::open(file.as_ptr(), libc::O_RDONLY);
+                        let fd = libc::open(file.as_ptr(), flags);
                         if fd >= 0 { 0 } else { 1 }
                     }
                 };
@@ -830,8 +831,22 @@ mod guest {
             assert!(libc::WIFEXITED(status), "child {status:#x}");
             libc::WEXITSTATUS(status)
         };
-        assert_eq!(may_read(1234), 0, "the user the ACL names can't read");
-        assert_eq!(may_read(1236), 1, "another user could read");
+        assert_eq!(may_open(1234, libc::O_RDONLY), 0, "the user the ACL names can't read");
+        assert_eq!(may_open(1236, libc::O_RDONLY), 1, "another user could read");
+        assert_eq!(may_open(1234, libc::O_WRONLY), 0, "the user the ACL names can't write");
+        // fxdax: a chmod takes the group's write away, and the mask's with it, so the user the
+        // ACL names may no longer write (TASK-79.96): chmod left the ACL as it was.
+        fs::set_permissions(path("acl-file"), fs::Permissions::from_mode(0o640)).unwrap();
+        assert_eq!(may_open(1234, libc::O_WRONLY), 1, "the user the ACL names can still write");
+        assert_eq!(may_open(1234, libc::O_RDONLY), 0, "the user the ACL names can't read");
+        let masked = acl(&[
+            (USER_OBJ, 6, UNDEFINED),
+            (USER, 6, 1234),
+            (GROUP_OBJ, 4, UNDEFINED),
+            (MASK, 4, UNDEFINED),
+            (OTHER, 0, UNDEFINED),
+        ]);
+        assert_eq!(get_xattr(&path("acl-file"), "system.posix_acl_access"), masked);
 
         let old_umask = unsafe { libc::umask(0o077) };
         fs::create_dir(path("acl-dir")).unwrap();
@@ -1744,6 +1759,227 @@ mod guest {
         fs::remove_file(&name).unwrap();
     }
 
+    /// A write(2) of a whole page over a file's data not cached, from a buffer that faults after
+    /// its first 100 bytes: it writes those, and the rest of the page keeps the file's data. The
+    /// page, never read as the write was to cover it, took zeros where the copy fell short
+    /// (TASK-79.14).
+    fn test_short_copy() {
+        use std::os::unix::fs::FileExt;
+        const PAGE: usize = 4096;
+        let name = path("short-copy");
+        fs::write(&name, vec![b'A'; 2 * PAGE]).unwrap();
+        evict(&name);
+        // Two pages, the second inaccessible: the buffer is the first's last 100 bytes, and on.
+        let map = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                2 * PAGE,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                -1,
+                0,
+            )
+        };
+        assert_ne!(map, libc::MAP_FAILED, "mmap: {}", std::io::Error::last_os_error());
+        let map = map.cast::<u8>();
+        unsafe { std::ptr::write_bytes(map, b'B', PAGE) };
+        let second = unsafe { map.add(PAGE) }.cast();
+        assert_eq!(unsafe { libc::mprotect(second, PAGE, libc::PROT_NONE) }, 0);
+        let file = fs::OpenOptions::new().write(true).open(&name).unwrap();
+        let buf = unsafe { map.add(PAGE - 100) };
+        let written = unsafe { libc::pwrite(file.as_raw_fd(), buf.cast(), PAGE, 0) };
+        assert_eq!(written, 100, "pwrite: {}", std::io::Error::last_os_error());
+        assert_eq!(unsafe { libc::munmap(map.cast(), 2 * PAGE) }, 0);
+        file.sync_all().unwrap();
+        drop(file);
+        evict(&name);
+        let mut expected = vec![b'A'; 2 * PAGE];
+        expected[..100].fill(b'B');
+        let mut read = vec![0; 2 * PAGE];
+        fs::File::open(&name).unwrap().read_exact_at(&mut read, 0).unwrap();
+        assert!(read == expected, "the page's first bytes past the copy: {:?}", &read[96..110]);
+        fs::remove_file(&name).unwrap();
+    }
+
+    /// An O_DIRECT read(2) of a page from a file of 100 bytes: it reads the 100. The iterator cut
+    /// at the file's end was reverted past its start, a BUG() (TASK-79.15).
+    fn test_direct_read_past_end() {
+        use std::os::unix::fs::OpenOptionsExt;
+        const PAGE: usize = 4096;
+        let name = path("direct-past-end");
+        fs::write(&name, vec![b'C'; 100]).unwrap();
+        let file =
+            fs::OpenOptions::new().read(true).custom_flags(libc::O_DIRECT).open(&name).unwrap();
+        // Aligned, as O_DIRECT's buffers are.
+        let map = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                PAGE,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                -1,
+                0,
+            )
+        };
+        assert_ne!(map, libc::MAP_FAILED, "mmap: {}", std::io::Error::last_os_error());
+        let read = unsafe { libc::read(file.as_raw_fd(), map, PAGE) };
+        assert_eq!(read, 100, "read: {}", std::io::Error::last_os_error());
+        let got = unsafe { std::slice::from_raw_parts(map.cast::<u8>(), 100) }.to_vec();
+        assert_eq!(unsafe { libc::munmap(map, PAGE) }, 0);
+        assert!(got == vec![b'C'; 100], "read {got:?}");
+        drop(file);
+        fs::remove_file(&name).unwrap();
+    }
+
+    /// fxdax: stores through a mapping of a file, write(2)s into its holes, and other files made,
+    /// written and removed meanwhile, which make the journal compact, for a few seconds: a write
+    /// in the gate waited for a fault's DAX entry, the fault for Fxfs, Fxfs for compaction, and
+    /// compaction's seal for the write, and the filesystem hung (TASK-79.12). Each finishes.
+    fn test_faults_writes_compaction() {
+        use std::os::unix::fs::FileExt;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        const PAGE: usize = 4096;
+        const SIZE: usize = 4 << 20;
+        let name = path("faults-writes");
+        let file = fs::OpenOptions::new().create(true).read(true).write(true).open(&name).unwrap();
+        file.set_len(SIZE as u64).unwrap();
+        let stop = AtomicBool::new(false);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+        std::thread::scope(|scope| {
+            // Stores through a mapping, a page at a time, holes and pages mapped already.
+            scope.spawn(|| {
+                let map = unsafe {
+                    libc::mmap(
+                        std::ptr::null_mut(),
+                        SIZE,
+                        libc::PROT_READ | libc::PROT_WRITE,
+                        libc::MAP_SHARED,
+                        file.as_raw_fd(),
+                        0,
+                    )
+                };
+                assert_ne!(map, libc::MAP_FAILED, "mmap: {}", std::io::Error::last_os_error());
+                let mut n = 0usize;
+                while !stop.load(Ordering::Relaxed) {
+                    let page = (n * 7919) % (SIZE / PAGE);
+                    unsafe { map.cast::<u8>().add(page * PAGE + n % PAGE).write_volatile(n as u8) };
+                    n += 1;
+                }
+                assert_eq!(unsafe { libc::munmap(map, SIZE) }, 0);
+            });
+            // write(2)s into the file's holes, fsynced now and then: a seal each.
+            scope.spawn(|| {
+                let mut n = 0usize;
+                while !stop.load(Ordering::Relaxed) {
+                    let page = (n * 104_729 + 3) % (SIZE / PAGE);
+                    file.write_all_at(&[n as u8; PAGE], (page * PAGE) as u64).unwrap();
+                    if n % 16 == 0 {
+                        file.sync_data().unwrap();
+                    }
+                    n += 1;
+                }
+            });
+            // Files made, written, synced and removed: the journal fills, and compacts.
+            scope.spawn(|| {
+                let mut n = 0usize;
+                while std::time::Instant::now() < deadline {
+                    let other = path(&format!("faults-writes-{}", n % 32));
+                    fs::write(&other, [n as u8; 512]).unwrap();
+                    if n % 8 == 0 {
+                        fs::File::open(&other).unwrap().sync_all().unwrap();
+                    }
+                    fs::remove_file(&other).unwrap();
+                    n += 1;
+                }
+                stop.store(true, Ordering::Relaxed);
+            });
+        });
+        file.sync_all().unwrap();
+        drop(file);
+        fs::remove_file(&name).unwrap();
+    }
+
+    /// A store through a mapping past a file's end, then the file grown over it: it reads zeros
+    /// there. Writeback wrote no more than the file held, and the folio's tail, never zeroed,
+    /// became the file's data (TASK-79.53).
+    fn test_store_past_end() {
+        use std::os::unix::fs::FileExt;
+        const PAGE: usize = 4096;
+        let name = path("store-past-end");
+        fs::write(&name, vec![b'D'; 100]).unwrap();
+        let file = fs::OpenOptions::new().read(true).write(true).open(&name).unwrap();
+        let map = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                PAGE,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                file.as_raw_fd(),
+                0,
+            )
+        };
+        assert_ne!(map, libc::MAP_FAILED, "mmap: {}", std::io::Error::last_os_error());
+        unsafe { map.cast::<u8>().add(1000).write_volatile(b'X') };
+        assert_eq!(unsafe { libc::msync(map, PAGE, libc::MS_SYNC) }, 0);
+        file.set_len(2 * PAGE as u64).unwrap();
+        let mut read = vec![0xff; 2 * PAGE];
+        file.read_exact_at(&mut read, 0).unwrap();
+        let mut expected = vec![0; 2 * PAGE];
+        expected[..100].fill(b'D');
+        assert!(read == expected, "past the old end: {:?}", &read[996..1004]);
+        assert_eq!(unsafe { libc::munmap(map, PAGE) }, 0);
+        drop(file);
+        fs::remove_file(&name).unwrap();
+    }
+
+    /// fxdax: a file appended to across its chunks while another thread maps it and reads it
+    /// all, again and again, for a few seconds: each append writes. A fault mapped the chunk again
+    /// as small as the file was, between the write making room for it and writing, which the write
+    /// found too small: EIO, and a WARN (TASK-79.28).
+    fn test_append_while_mapped() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        const STEP: usize = 192 << 10;
+        let name = path("append-mapped");
+        let file = fs::OpenOptions::new().create(true).read(true).write(true).open(&name).unwrap();
+        let stop = AtomicBool::new(false);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(4);
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                while !stop.load(Ordering::Relaxed) {
+                    let len = file.metadata().unwrap().len() as usize;
+                    if len == 0 {
+                        continue;
+                    }
+                    let map = unsafe {
+                        libc::mmap(
+                            std::ptr::null_mut(),
+                            len,
+                            libc::PROT_READ,
+                            libc::MAP_SHARED,
+                            file.as_raw_fd(),
+                            0,
+                        )
+                    };
+                    assert_ne!(map, libc::MAP_FAILED, "mmap: {}", std::io::Error::last_os_error());
+                    for page in (0..len).step_by(4096) {
+                        unsafe { map.cast::<u8>().add(page).read_volatile() };
+                    }
+                    assert_eq!(unsafe { libc::munmap(map, len) }, 0);
+                }
+            });
+            // Up to 32 MiB, of the image's 256.
+            let mut appender = &file;
+            let mut n = 0u8;
+            while std::time::Instant::now() < deadline && (n as usize) * STEP < 32 << 20 {
+                appender.write_all(&vec![n; STEP]).unwrap();
+                n += 1;
+            }
+            stop.store(true, Ordering::Relaxed);
+        });
+        drop(file);
+        fs::remove_file(&name).unwrap();
+    }
+
     /// File handles: name_to_handle_at, and open_by_handle_at with the inode cached and evicted.
     fn test_file_handles() {
         fs::write(path("handled"), b"by handle").unwrap();
@@ -1826,12 +2062,17 @@ mod guest {
                 tests.push(("regions_pruned", &test_regions_pruned));
                 tests.push(("regions_evacuated", &test_regions_evacuated));
                 tests.push(("evacuate_dropped", &test_evacuate_dropped));
+                tests.push(("faults_writes_compaction", &test_faults_writes_compaction));
+                tests.push(("append_while_mapped", &test_append_while_mapped));
             }
             // Files on DAX are in no page cache.
             if !dax {
                 tests.push(("large_folios", &test_large_folios));
                 tests.push(("scattered_writeback", &test_scattered_writeback));
                 tests.push(("partial_writeback", &test_partial_writeback));
+                tests.push(("short_copy", &test_short_copy));
+                tests.push(("direct_read_past_end", &test_direct_read_past_end));
+                tests.push(("store_past_end", &test_store_past_end));
             }
             let only = std::env::var("FXDAX_CHECKS").unwrap_or_default();
             let only: Vec<&str> = only.split(',').filter(|name| !name.is_empty()).collect();
