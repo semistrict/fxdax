@@ -1757,7 +1757,11 @@ static int fxfs_dax_iomap_read(struct inode *inode, loff_t pos, loff_t length, u
 	return 0;
 }
 
-/* The guest's memory of the window's page at `window_offset`. */
+/*
+ * The guest's memory of the window's page at `window_offset`. fxdax: with dax_read_lock held, as
+ * dax_direct_access needs, for as long as the caller uses the memory; a debug kernel's lockdep
+ * found faults taking it without (TASK-44.8).
+ */
 static void *fxfs_dax_window_page(struct fxfs_dax *dax, u64 window_offset)
 {
 	void *kaddr;
@@ -1867,11 +1871,13 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 		}
 		fresh |= find_next_zero_bit(range->mapped, first + pages, first) != first + pages;
 		if (fault && pages == 1 && test_bit(first, range->mapped) && !held) {
+			int id = dax_read_lock();
 			void *page = fxfs_dax_window_page(dax, fxfs_dax_page_offset(range, first));
 
 			held = page && !fxfs_dax_fail_held ? kmalloc(PAGE_SIZE, GFP_NOFS) : NULL;
 			if (held)
 				memcpy(held, page, PAGE_SIZE);
+			dax_read_unlock(id);
 		}
 		/* As in fxfs_dax_map_chunk: unless a seal was in progress, or began since. */
 		seals = fxfs_device_seals(dax->dev);
@@ -1909,10 +1915,12 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 	}
 	/* In the gate. The page held, now in its new block, which Fxfs left zeros. */
 	if (held) {
+		int id = dax_read_lock();
 		void *page = fxfs_dax_window_page(dax, fxfs_dax_page_offset(range, first));
 
 		if (page)
 			memcpy(page, held, PAGE_SIZE);
+		dax_read_unlock(id);
 		kfree(held);
 	}
 	kvfree(extents);
