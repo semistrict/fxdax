@@ -21,6 +21,7 @@ use crate::lineage::Lineage;
 use crate::segments::{Closing, Segments, Unframed, Victim, close_left_open};
 use crate::state::{
     Copied, Gate, OwnFiles, Placement, Reader, Space, State, Uncommitted, Unreferenced,
+    uploader_keeps,
 };
 use crate::sync::{Condvar, Mutex, MutexGuard, rules};
 use crate::uploads::{Closed, Snapshot, Uploads};
@@ -1202,10 +1203,7 @@ impl<D: Dir> Store<D> {
         // the branch lets them go; those it closed, once a checkpoint covers their footers. fxdax:
         // but those the uploader has yet to upload, which are the branch's own (TASK-85).
         let uploads = &state.uploads;
-        let reaped = state.segments.reap(|segment| {
-            segment.branch == self.branch
-                && uploads.as_ref().is_some_and(|uploads| uploads.holds(segment.number))
-        });
+        let reaped = state.segments.reap(|segment| uploader_keeps(uploads, self.branch, segment));
         let released = state.index.let_go(reaped);
         state.unreferenced.released.extend(released);
         let appended = self.append_record(state, epoch, root, changes)?;
@@ -1828,13 +1826,13 @@ impl<D: Dir> Store<D> {
     /// what the others copied is dead space (TASK-79.2).
     fn make_moves(&self, state: &mut State<D::File>) {
         let open = state.segments.open_segment();
-        for Copied { extent, entry, piece } in state.uncommitted.take_copies() {
-            let placed = piece.segment == open || !rules().moves_into_the_open_segment;
-            let current = state.extents.get_mut(&extent).filter(|current| **current == entry);
-            let Some(current) = current.filter(|_| placed) else {
-                state.segments.let_go(&piece);
+        for copied in state.uncommitted.take_copies() {
+            let current = state.extents.get_mut(&copied.extent);
+            let Some(current) = current.filter(|current| copied.lands(open, Some(current))) else {
+                state.segments.let_go(&copied.piece);
                 continue;
             };
+            let Copied { extent, entry, piece } = copied;
             current.data = Data::Pieces(vec![piece]);
             state.segments.displace(extent, &entry.data);
             state.segments.place(extent, &current.data);

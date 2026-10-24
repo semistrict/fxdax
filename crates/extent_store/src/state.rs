@@ -16,7 +16,9 @@ use crate::framed::{Files, Framed};
 use crate::index::IndexLog;
 use crate::kept::{Kept, KeptExtents};
 use crate::layers::Extents;
-use crate::layout::{Change, Data, EXTENTS, Extent, FileKey, Piece, branch_dir, extent_path};
+use crate::layout::{
+    Change, Data, EXTENTS, Extent, FileKey, Piece, SegmentId, branch_dir, extent_path,
+};
 use crate::segments::{Closing, Segments};
 use crate::store::{Info, NoSpace, TooSmall};
 use crate::sync::rules;
@@ -344,6 +346,16 @@ pub(crate) struct Copied {
     pub piece: Piece,
 }
 
+impl Copied {
+    /// Whether the next commit makes it its extent's place, the extent being `current`, if held,
+    /// and `open` the open segment: if it is in the open segment, whose footer names it then, and
+    /// the extent is as it was copied. What the others copied is dead space.
+    pub fn lands(&self, open: SegmentId, current: Option<&Extent>) -> bool {
+        let placed = self.piece.segment == open || !rules().moves_into_the_open_segment;
+        placed && current == Some(&self.entry)
+    }
+}
+
 /// An extent open: where its data goes, and its opening's number, which the writes to it carry;
 /// fxdax: and the bytes its writes wrote over, in segments, which its pieces hold until it is
 /// sealed, or freed.
@@ -518,6 +530,9 @@ impl Gate {
 pub(crate) struct OwnFiles<F> {
     open: Files<ExtentId, F>,
     sizes: HashMap<ExtentId, u64>,
+    /// fxdax: what they take in all, kept as `sizes` changes, so that a write may count it as it
+    /// begins, not going through every file (TASK-79.89).
+    bytes: u64,
     /// fxdax: in order, which their flush syncs them in, rather than the order of a map that
     /// differs from one run to the next (TASK-79.79).
     unsynced: BTreeMap<ExtentId, Arc<F>>,
@@ -529,8 +544,9 @@ pub(crate) struct OwnFiles<F> {
 impl<F: File> OwnFiles<F> {
     /// `branch`'s, whose files take `sizes`, of which `limit` stay open.
     pub fn new(branch: u64, sizes: HashMap<ExtentId, u64>, limit: usize) -> Self {
-        let dir = branch_dir(EXTENTS, branch);
-        Self { open: Files::new(limit), sizes, unsynced: BTreeMap::new(), dir, written: false }
+        let (dir, bytes) = (branch_dir(EXTENTS, branch), sizes.values().sum());
+        let (open, unsynced) = (Files::new(limit), BTreeMap::new());
+        Self { open, sizes, bytes, unsynced, dir, written: false }
     }
 
     /// `extent`'s file, opened in `dir` if it isn't.
@@ -549,7 +565,8 @@ impl<F: File> OwnFiles<F> {
 
     /// `extent`'s file is `framed`, just written: its commit's flush syncs it, and its directory.
     pub fn sealed(&mut self, extent: ExtentId, framed: Arc<Framed<F>>) {
-        self.sizes.insert(extent, framed.size());
+        let replaced = self.sizes.insert(extent, framed.size());
+        self.bytes = self.bytes - replaced.unwrap_or(0) + framed.size();
         self.unsynced.insert(extent, framed.file.clone());
         self.open.insert(extent, framed);
         self.written = true;
@@ -558,7 +575,7 @@ impl<F: File> OwnFiles<F> {
     /// `extent`'s file goes: the extent was freed.
     pub fn forget(&mut self, extent: ExtentId) {
         self.open.remove(extent);
-        self.sizes.remove(&extent);
+        self.bytes -= self.sizes.remove(&extent).unwrap_or(0);
         self.unsynced.remove(&extent);
     }
 
@@ -575,8 +592,15 @@ impl<F: File> OwnFiles<F> {
 
     /// The bytes they take.
     pub fn bytes(&self) -> u64 {
-        self.sizes.values().sum()
+        self.bytes
     }
+}
+
+/// fxdax: whether `branch`'s uploader, if `uploads` say it has one, keeps `segment`, the branch's
+/// own, which it has yet to upload: the branch lets go of it no sooner (TASK-85).
+pub(crate) fn uploader_keeps(uploads: &Option<Uploads>, branch: u64, segment: SegmentId) -> bool {
+    segment.branch == branch
+        && uploads.as_ref().is_some_and(|uploads| uploads.holds(segment.number))
 }
 
 /// What a branch's next commit makes unreferenced: files of the branch's alone, which it removes
