@@ -3,10 +3,10 @@ id: TASK-42.3
 title: >-
   Followers in extentd, doc-4 and Firecracker: read-only opens, ADVANCE, PIN,
   commit notifications
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-17 22:17'
-updated_date: '2026-10-24 00:53'
+updated_date: '2026-10-24 08:23'
 labels: []
 dependencies:
   - TASK-42.2
@@ -35,9 +35,9 @@ The host side of a follower (doc-8, extentd and the device protocol): a second c
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -56,4 +56,12 @@ Verified (GCE x86-64, 2026-10-18): extentd tests followers_follow_their_writer_s
 Refined by 7a36a35 (found by the first guest follower, TASK-42.6): AC3's loud EIO is for reads of extents the view let go of (freed before the commit it holds since, unpinned: NotHeld); an extent written after the view's commit reads as ENOENT, as Fxfs's journal replay reads on to the first extent its commit doesn't hold. doc-4 updated.
 
 2026-10-23 audit: AC5 reworded: the submodule tracks fxdax-v1.16.1, where a7433cfd6 (read_only, vmm_config extent) is and is pushed; the branch fxdax stopped at cf70a721b on 10-17 and is no longer used. AC4's evidence: doc-4's F_READ_ONLY and committed, extentd's COMMITTED (followers_follow_their_writer_side_by_side, extentd/tests.rs), fxfs-guest-follow 10/10 (TASK-42.10's notes).
+
+2026-10-24: AC4's device side end to end: fxfs-guest-follow(-dax) and the torture test pass on GCE (the follower's guest sees each of its writer's commits through the device's configuration change, without remounting), 10/10 on the release kernel before the rebase, 2/2 after it. AC6: the follower commit (a7433cfd6) is in fxdax-v1.16.1, which vendor/firecracker tracks; branch fxdax, superseded, noted so in README and doc-8. Workspace on macOS and on Linux (GCE, the user's rule), 2575/2575; upstream-changes.py --check passes.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Followers in extentd, doc-4 and Firecracker: a read-only OPEN gets a view of a store another connection holds (or of its last commit), served READ, MAP, ROOT and INFO from the view, EROFS for changes, ADVANCE/LET_GO/PIN/UNPIN; reads outside the view and pins fail loudly (EIO, logged); the writer's commits are told to read-only connections (COMMITTED) and the device tells its guest by a configuration change; doc-4 specifies it with the read-only feature bit; Firecracker's extent configuration takes read_only (fxdax-v1.16.1). Verified by extentd's tests (writer and followers side by side, the writer never waiting), Firecracker's extent tests, and the guest follower tests on GCE.
+<!-- SECTION:FINAL_SUMMARY:END -->

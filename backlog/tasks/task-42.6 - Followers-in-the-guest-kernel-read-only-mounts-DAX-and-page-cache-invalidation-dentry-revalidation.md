@@ -3,11 +3,11 @@ id: TASK-42.6
 title: >-
   Followers in the guest kernel: read-only mounts, DAX and page-cache
   invalidation, dentry revalidation
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-17 22:17'
-updated_date: '2026-10-24 00:53'
+updated_date: '2026-10-24 08:23'
 labels: []
 dependencies:
   - TASK-42.3
@@ -28,17 +28,17 @@ The guest side (doc-8, Concurrency 2): fs/fxfs honours -o ro and a read-only dev
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 fs/fxfs mounts read-only on -o ro or a read-only device, writing nothing; the driver refuses writes on a read-only device
-- [ ] #2 After a batch, changed DAX ranges' user mappings and DAX entries are broken under the inode's invalidate_lock, page-cache ranges invalidated, sizes and attributes refreshed, directory generations bumped and stale dentries dropped by d_revalidate
-- [ ] #3 WARN_ON invariants in debug builds (doc-8 testing 1); the kernel patch series in guest/linux/patches carries the change
-- [ ] #4 No kernel cache is filled from a read outside the follower's fill barrier (vfs.h), which replaced the seqcount by TASK-42.10's decision
+- [x] #1 fs/fxfs mounts read-only on -o ro or a read-only device, writing nothing; the driver refuses writes on a read-only device
+- [x] #2 After a batch, changed DAX ranges' user mappings and DAX entries are broken under the inode's invalidate_lock, page-cache ranges invalidated, sizes and attributes refreshed, directory generations bumped and stale dentries dropped by d_revalidate
+- [x] #3 WARN_ON invariants in debug builds (doc-8 testing 1); the kernel patch series in guest/linux/patches carries the change
+- [x] #4 No kernel cache is filled from a read outside the follower's fill barrier (vfs.h), which replaced the seqcount by TASK-42.10's decision
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -53,4 +53,12 @@ The guest side (doc-8, Concurrency 2): fs/fxfs honours -o ro and a read-only dev
 Progress (2026-10-18): driver, device glue, Rust (follow.rs, fs.rs, lib.rs, device.rs) and C (super.c, dax.c, vfs.h, fxfs.h) written; the guest Rust checks locally against the sysroot (scratch: build-guest-sysroot + cargo check); the x86-64 guest kernel builds clean on GCE (6.18 dropped sb->s_d_op: set_default_d_op). Writer regressions fxfs-guest and fxfs-guest-dax pass on it. First fxfs-guest-follow run: the follower's mount failed, its journal replay reading the writer's next journal extent, which extentd answered EIO; fixed by 7a36a35 (ENOENT for extents written after the view, EIO for what it let go of).
 
 2026-10-23 audit: AC3 reworded from the seqcount, which TASK-42.10 replaced with the fill barrier (a17eb735); its index is now #4. Evidence found for the others, unchecked until a follower run on the current tree: driver.c returns -EROFS on writes of a read-only device and fxfs-guest-follow checks an MS_RDONLY mount gets EROFS (AC1); d_revalidate and invalidate_lock in super.c, c0c0f672, befc9c14 (AC2); WARN_ON_ONCE invariants in super.c and dax.c, and 0004-fxfs.patch carries fs/fxfs (AC4). Open follow-ups: TASK-79.23, 79.54, 79.30, 92.31.
+
+Verified (GCE, 2026-10-21/24). AC1: fxfs-guest-follow's writer mounts -o ro, reads, gets EROFS for a write, and its store's latest commit doesn't move (StatStore's committed, before and after; it did before TASK-42.6.1's fix); the follower's mount on a read-only device refuses writes (EROFS) and its device's driver refuses write requests with a WARN (-EROFS). AC2: fxfs-guest-follow(-dax): a new file, a rename, a deletion (the open file still reading as it was) and an overwrite through read(2) and a mapping, seen without remounting; the torture test's histories OK, and its invalidation mutants (DAX, no DAX, the fault window) caught. AC3: WARN_ONs on a write request to a follower's device, a write fault on a follower's window, a follower's epochs going back or settling past what it applied, and invalidation off a follower's mount; lockdep asserts the barrier; the series in guest/linux/patches (0004-fxfs.patch carries fs/fxfs, built as commits by scripts/build-guest-kernel.sh). AC4: the fill barrier (TASK-42.10): tree reads and cache fills hold it (lockdep_assert_held in the debug kernel, clean over torture 5/5 with and without DAX), the Barrier mutant is caught (3/3), Shuttle's needs_the_barrier. Release kernel 10/10 (follow, follow-dax, torture, torture-dax), and 2/2 after the rebase onto main ff83e8bc1.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+fs/fxfs mounts read-only on -o ro or a follower's device, writing nothing (not even at unmount, TASK-42.6.1); the driver refuses writes on a read-only device. A follower's batches, under the fill barrier, drop what the kernel caches of what they change (DAX ranges under the invalidate_lock, page cache pages), apply, and settle inodes' sizes and attributes; directories' generations go up and d_revalidate drops stale dentries. Its inodes have operation tables of their own, its other paths are behind a static key, and its invariants WARN. Verified on GCE: the follower guest tests and the torture test, with and without DAX, on release and debug (lockdep, KCSAN) kernels, and its mutants caught.
+<!-- SECTION:FINAL_SUMMARY:END -->

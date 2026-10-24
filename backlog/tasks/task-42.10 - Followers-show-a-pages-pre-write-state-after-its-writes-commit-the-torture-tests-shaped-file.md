@@ -3,11 +3,11 @@ id: TASK-42.10
 title: >-
   Followers show a page's pre-write state after its write's commit: the torture
   test's shaped file
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-19 05:48'
-updated_date: '2026-10-19 11:33'
+updated_date: '2026-10-24 08:23'
 labels:
   - followers
   - dax
@@ -25,16 +25,16 @@ The followers' history checker (TASK-42.7, follower_history) finds, in fxfs-gues
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The mechanism by which a follower shows the page's pre-write state after the write's commit is identified, with evidence
-- [ ] #2 Fixed, or shown to be the history model's error (e.g. the writer's operations reaching its journal in another order than its syscalls), with the model or the workload corrected
-- [ ] #3 fxfs-guest-follow-torture and -dax report OK history in 10 runs of 10 on GCE
+- [x] #1 The mechanism by which a follower shows the page's pre-write state after the write's commit is identified, with evidence
+- [x] #2 Fixed, or shown to be the history model's error (e.g. the writer's operations reaching its journal in another order than its syscalls), with the model or the workload corrected
+- [x] #3 fxfs-guest-follow-torture and -dax report OK history in 10 runs of 10 on GCE
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -62,4 +62,12 @@ GCE, dax10: debug kernel (lockdep, KCSAN), once: follow, follow-dax, torture-dax
 Barrier waits (FXFS_IOC_FOLLOW_STATS, torture, release kernel): non-DAX, 160-210 ms over ~770 batches, 8 ms at most, readers as fast as before (~200k reads checked); DAX, 9.8-13.3 s over 430-590 batches, 22 ms on average, 41 ms at most, readers 2 to 8 times slower (7.5k-33k reads checked against 57k-67k before): faults remap what a batch dropped holding the barrier. Not looked into further: the user paused the follower work (2026-10-19).
 
 Last change, unbuilt (GCE stopped by the user's priority call): a follower's inodes get operation tables of their own (getattr, read_iter, mmap, fadvise, splice_read under the barrier); a writer's are as before the barrier, per the user's rule that followers cost a writer nothing when not enabled. The writer-alone benches (AC5 of TASK-42.7, clean builds, 2026-10-19) predate the barrier; they need rerunning on this tree.
+
+Verified (2026-10-21/24): the follower's own operation tables built and tested; release guest kernel on GCE, fxfs-guest-follow-torture and -dax OK history 10 runs of 10 (with fxfs-guest(-dax) and fxfs-guest-follow(-dax) 10/10 too); after the rebase onto main ff83e8bc1, 2/2 again, and the Barrier mutant caught 3/3; the writer alone unchanged by the barrier (docs/measurements/gce-fs-bench-ac5-barrier-2026-10-21.md). Workspace: macOS scripts/test.sh, Linux on GCE (the user's rule: GCE, not Lima), 2575/2575. scripts/upstream-changes.py --check passes. An hour's run later found writer-side reordering of buffered writes without DAX, a different mechanism (the workload's): TASK-42.12.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A follower's batch applied its writer's commits, then invalidated what they changed: in between, a reader's fresh read found the new tree while its caches of other files were the old one's, a state no commit had. As the user decided, a fill barrier (an rwsem per follower) keeps readers' cache fills out from before a batch drops what the kernel caches until it has applied and settled, replacing the seqcount, its fallback and SRCU (with their mutation tests, replaced by the barrier's); a follower's inodes have operation tables of their own, so a writer takes none of it. Verified: TLC models and mutations, Shuttle, follower_sim, and the torture test with and without DAX 10 of 10 on GCE, the Barrier mutant caught; a writer alone unchanged in the fs bench.
+<!-- SECTION:FINAL_SUMMARY:END -->

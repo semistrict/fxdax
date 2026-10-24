@@ -1,10 +1,11 @@
 ---
 id: TASK-42.7
 title: Follower guest torture test and measurements
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-10-17 22:17'
-updated_date: '2026-10-24 00:53'
+updated_date: '2026-10-24 10:27'
 labels: []
 dependencies:
   - TASK-42.6
@@ -23,11 +24,11 @@ The only test of the kernel side under real concurrency (doc-8 testing 6 and 7),
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 fxfs-guest-follow: a writer and two or more followers, DAX on and off, with self-checking workloads (a token renamed between directories, per-block generations and checksums, mmapped readers under truncate/extend/rewrite, files deleted while open), histories checked by TASK-42.1's checker
-- [ ] #2 A debug guest kernel (KCSAN, lockdep, DEBUG_ATOMIC_SLEEP) and delay injection points (between apply and invalidation; between iomap_begin and the PTE insert) run it clean
-- [ ] #3 Mutation checks: each delay point with its invalidation skipped makes it fail
+- [x] #1 fxfs-guest-follow: a writer and two or more followers, DAX on and off, with self-checking workloads (a token renamed between directories, per-block generations and checksums, mmapped readers under truncate/extend/rewrite, files deleted while open), histories checked by TASK-42.1's checker
+- [x] #2 A debug guest kernel (KCSAN, lockdep, DEBUG_ATOMIC_SLEEP) and delay injection points (between apply and invalidation; between iomap_begin and the PTE insert) run it clean
+- [x] #3 Mutation checks: each delay point with its invalidation skipped makes it fail
 - [ ] #4 Hours on GCE pass; the writer's commit latency and pgbench tps unchanged with followers attached; followers' lag and pinned bytes recorded in docs/measurements
-- [ ] #5 A writer mount with no followers runs pgbench, the fs bench's metadata and io groups, and commits as fast as on the commit before the follower code (within noise), the follower paths gated per mount at run time (a static key), not compiled out
+- [x] #5 A writer mount with no followers runs pgbench, the fs bench's metadata and io groups, and commits as fast as on the commit before the follower code (within noise), the follower paths gated per mount at run time (a static key), not compiled out
 <!-- AC:END -->
 
 ## Definition of Done
@@ -47,4 +48,8 @@ The only test of the kernel side under real concurrency (doc-8 testing 6 and 7),
 
 <!-- SECTION:NOTES:BEGIN -->
 2026-10-23 audit: back to To Do, followers paused by the user on 2026-10-19. AC1 met (c315b4fb, 20bcea95). Left: a clean debug-kernel run (AC2, one KCSAN report reviewed and blacklisted), the mutants re-confirmed (AC3), a multi-hour soak and pgbench with followers unchanged (AC4: 1.28x and 1.44x slower in 5982e569, before the fill barrier), the noise check again (AC5). TASK-79.58 open.
+
+2026-10-21/24 (GCE). AC1: fxfs-guest-follow-torture(-dax), a writer and two followers, histories checked by follower_history; OK 10/10 on the release kernel. AC2: debug kernel (lockdep, KCSAN, DEBUG_ATOMIC_SLEEP) with the delay points widened (apply 200 us, iomap 50 us): torture and torture-dax 5/5 with no complaint of the followers' code; KCSAN fails the test on reports naming fs/fxfs, virtio_extent or their Rust, but for PF_MEMALLOC_NOFS-only changes (the NOFS scopes' own task flags); the kernel's own races it leaves (each seen, looked into, listed in the test's docs). AC3: each delay point with its invalidation skipped fails the test: fxfs-guest-follow-torture-mutant (no DAX, apply window), -mutant-dax (apply window), -mutant-faults-dax (iomap window), 3/3 each, with the barrier and nested mutants. AC5: a writer alone before and after the fill barrier, alternating, twice each: within noise on every workload (docs/measurements/gce-fs-bench-ac5-barrier-2026-10-21.md), and the earlier check against the commit before the follower code. AC4 open: the hour-long soak found TASK-42.12 (the workload's buffered writes reaching the journal out of order, without DAX), fixed and running again; and the writer is not yet unchanged with followers attached (TASK-42.11, waiting on TASK-41.1).
+
+AC4, in part: an hour each with and without DAX, OK history (docs/measurements/gce-follow-soak-2026-10-24); followers' lag and pinned bytes recorded in docs/measurements (gce-fs-bench-followed-main-2026-10-21T1016Z: at most 409 commits and 2.4 s behind, 436 MiB of frees kept). Left: the writer unchanged with followers attached (TASK-42.11).
 <!-- SECTION:NOTES:END -->

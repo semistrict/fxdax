@@ -1,0 +1,4 @@
+OK writer
+STALE follower1
+STALE follower2
+WRONG history

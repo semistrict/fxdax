@@ -3,7 +3,7 @@ id: doc-8
 title: Live read-only followers of a mounted Fxfs
 type: specification
 created_date: '2026-10-17 22:17'
-updated_date: '2026-10-19 11:33'
+updated_date: '2026-10-24 08:22'
 ---
 # Live read-only followers of a mounted Fxfs
 
@@ -116,7 +116,8 @@ client}.rs`), doc-4's Followers.
   tells the guest with a configuration change (doc-4's `committed`).
 - A read-only feature bit: the driver offers no write, and Fxfs mounts read-only.
 - Firecracker's `extent` configuration takes `read_only: true` (a commit in the fxdax-v1.16.1
-  series, and on branch fxdax).
+  series, the branch vendor/firecracker tracks; branch fxdax, on Firecracker's main, is
+  superseded by it and has none of the changes since TASK-37).
 
 ### The follower in Fxfs (crates/fxfs, guest/rust/fxfs-linux)
 
@@ -190,6 +191,9 @@ Built (TASK-42.6):
   as it was until the last close.
 - An extent written after the view's commit reads as ENOENT (Fxfs's journal replay reads on to the
   first extent its commit doesn't hold); one the view let go of, as EIO, logged (`NotHeld`).
+- A filesystem mounted read-only, `-o ro` on a writer's device or a follower's, commits nothing,
+  not even as it unmounts: its device knows it writes nothing (`ExtentDevice::writing_nothing`,
+  TASK-42.6.1).
 
 ### Concurrency (the heart of it)
 
@@ -258,6 +262,13 @@ Mutation testing covers the real code too, two ways:
   a default, a call removed) and runs the tests against each; a mutant no test kills is code the
   tests don't check. It runs over the follower's crates (store views, the follower, the protocol),
   its surviving mutants reviewed: each gets a test that kills it, or a reason it is equivalent.
+  `scripts/mutants-followers.sh` runs it, each part against the tests that check it (the store's
+  views against extent_store's tests and then its Shuttle tests; the Fxfs follower against the
+  followers' simulation; the protocol under Shuttle; the history checker with the simulation's).
+  Of what its first run left (TASK-42), tests kill all but three, which are equivalent: kept frees'
+  release ranging from the commit released rather than after it (no free of a released commit is
+  kept after its release), `Views::publish`'s `<` as `<=` (each commit's epoch is past every live
+  view's), and a view's Debug (logs only).
   The kernel's C has no such tool: its rules are switched off by debug options in the torture
   test (6).
 
@@ -308,7 +319,11 @@ TLC trace validation, so the spec stays the implementation's, not a separate sto
   else is EIO and an error logged, never a silent stale read.
 - The follower asserts it never advances past an epoch an operation in flight still uses.
 - Code shape: reads return values; only validated values reach caches.
-- Guest debug builds: WARN_ON on each invariant; extentd's checks always on.
+- Guest builds: WARN_ON on each invariant: a write request on a follower's device (the driver
+  refuses it, -EROFS), a write fault through a follower's DAX window, a follower's epochs going
+  back or settling past what it applied, a batch's invalidation off the follower's mounts; lockdep
+  asserts the fill barrier held where the trees are read and batches change the kernel's caches.
+  extentd's checks always on.
 
 ### 2. Shuttle: controlled schedules of the real code
 
@@ -409,10 +424,34 @@ which extentd refuses, and the follower's VMM aborts on the fault), the read(2)s
 page faults (a reader reading into a private mapping of a follower's file hangs). Hours on GCE, several followers; the follower's lag and pinned bytes
 recorded.
 
+Built (TASK-42.7): `fxfs-guest-follow-torture(-dax)`, a writer and two followers, and its
+mutants: the batches' drops off (with DAX and without, and at the fault window), the barrier off,
+read(2)'s copies faulting. How a mutant's followers fail depends on the schedule (a stale page, a
+VMM's abort on an extent let go of, a reader stopping on what it can't find); one is caught when
+no follower passes and the history is wrong. The writer writes back each data write before its
+next operation, so that its operations reach the journal in the order it makes them, as the
+history checker's model assumes: written only to the page cache, a write reaches the journal at
+writeback, after the operations since (a size changed after it commits before it; a file deleted
+before its writeback never held it), which an hour's run found without DAX (TASK-42.12). On a
+debug kernel, KCSAN's reports fail the test when they name the followers' code (fs/fxfs,
+virtio_extent, their Rust), but for a race whose change is PF_MEMALLOC_NOFS alone (fs/fxfs's
+NOFS scopes writing their own task's flags); the kernel's own races, each seen looked into, it
+leaves to the kernel.
+
 ### 7. The writer never waits, measured
 
 The writer's commit latency and pgbench tps with followers attached, against none: no
 difference beyond noise.
+
+Measured (docs/measurements): a writer alone runs as it did before the follower code, and before
+the fill barrier, within noise (gce-fs-bench-ac5-*, TASK-42.7). With followers attached it does
+not yet: pgbench 1.28x slower with two reading, 1.43x with two idle (TASK-42.11). Not the
+followers' CPUs (the followed case's writer pinned alike, no followers started, runs as fast as
+alone), nor their reads' disk I/O (reading through the extent cache made it worse): the store's
+state lock, which the writer's writes, frees and commits take, waited on ~10 s in a run with
+idle followers against 0.5 s alone, held meanwhile by the uploader's closes of the open segment
+(`Store::close_now`, framing and syncing under the lock), which it makes back to back, seven
+times as often, with followers (TASK-41.1).
 
 ## Open questions
 

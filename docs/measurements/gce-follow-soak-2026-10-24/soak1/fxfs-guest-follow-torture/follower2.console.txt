@@ -1,0 +1,16 @@
+[    0.112939] PCI: Fatal: No config space access function found
+[    0.145561] PCI: System does not support PCI
+[    0.314447] check access for rdinit=/init failed: -2, ignoring
+follower2: 195933 batches, which waited for the fill barrier 93652 ms all told, 14 ms at most
+STALE follower2
+follower2: victim.3964, deleted while open, reads otherwise
+follower2: victim.129500, deleted while open, reads otherwise
+follower2: victim.141256, deleted while open, reads otherwise
+follower2: victim.168684, deleted while open, reads otherwise
+follower2: victim.329276, deleted while open, reads otherwise
+follower2: victim.333196, deleted while open, reads otherwise
+follower2: victim.395868, deleted while open, reads otherwise
+follower2: victim.485968, deleted while open, reads otherwise
+follower2: victim.536908, deleted while open, reads otherwise
+follower2: victim.634848, deleted while open, reads otherwise
+[ 3599.838638] reboot: Restarting system
