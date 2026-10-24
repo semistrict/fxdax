@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@main-session'
 created_date: '2026-10-22 22:01'
-updated_date: '2026-10-23 19:40'
+updated_date: '2026-10-24 01:18'
 labels: []
 dependencies: []
 parent_task_id: TASK-91
@@ -46,4 +46,6 @@ With /proc/fs/fxfs (263a3c34), DAX pgbench runs 1-3: commits 0.58 / 0.70 / 0.77 
 590e1cef: ranges let go of regions their pages left. DAX pgbench (GCE r63): regions bounded ~1,450 over five runs (was growing to 5,400-20,000), 30,336 pruned; tps unchanged 922/777/736/725/634. New stats show why: the regions' half (1 GiB of a 2 GiB window) is full from the load step on, ~1,450 regions of ~0.6 MB of the load's data, largest free run 2 MiB; window_regions_full ~100k a run, writes fall back to range MAPs (~70k a run); the ranges' half full too (largest free 1.3 MB, ~150-400 reclaims a run). Remaining DAX cost is likely per-MAP: TASK-92.50 (host map_unsafe O(n) in the VMO's mappings) is being fixed by the review session; re-measure after it before more window work. Part 2 of option 1 (moving small sealed regions' pages into ranges) would add range MAPs, so held until then.
 
 (The commit above is 009ae677.)
+
+2026-10-23, sandbox round 7 at beedb64 (DAX 2 GiB 975->802 tps, 8 GiB 1021->801; ~92k MAPs a run) and our runs at vmlinux-drv3 (GCE r63). Their 'window full' counts the ranges' pool alone; the regions' pool is full 75-99k times a run here, and 54-72k of a run's 66-73k MAPs are range MAPs. With an 8 GiB window (experiment, not committed): the load seals ~200 times; run 1 seals 38,960 times and makes ~30,000 regions (869 -> 28,568; regions' pool 4 GiB -> 351 MB free), pinned by pages written once (accounts rows, history), which pruning can't free; from run 2 the regions' pool is full and writes MAP their pages into ranges (44-67k a run), tps 1018/802/750/759/725. A larger window delays the fall-back, no more: regions save a write's MAP only while the pool has room, and moving cold pages out of small sealed regions (option 1's second half) costs the same MAPs. Next: the per-MAP cost (TASK-92.50, TASK-91.16: ~40-60 us in extentd against ~400 us the guest waits); then, if needed, the device moving a seal's staging pages to their ranges' addresses as part of the seal's remap, so a written page takes no MAP of its own.
 <!-- SECTION:NOTES:END -->
