@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@main-session'
 created_date: '2026-10-21 20:59'
-updated_date: '2026-10-24 12:48'
+updated_date: '2026-10-24 15:11'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -46,4 +46,6 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity low): docs/reviews/2
 
 <!-- SECTION:NOTES:BEGIN -->
 No deterministic seam: the race is a seal's lockless bitmap_zero of range->writable against resize_end's non-atomic bitmap_clear of the same word. Fixed by clearing writable bits atomically outside the gate (fxfs_dax_clear_writable), in resize_end and fxfs_dax_mapped.
+
+Fix landed in 075723b80; no deterministic test (see the notes above). GCE r65, 2026-10-24, batch on main+round 2b: Linux workspace 2620 passed, Firecracker extent tests, and 17 guest cases (checks, crash, fxfs-guest, follow, follow-torture, snapshot with and without DAX; extent-guest, live-fork, daemon-lost, pgbench both) green on vmlinux-b3/b4; macOS scripts/test.sh 2508 passed.
 <!-- SECTION:NOTES:END -->

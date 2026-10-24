@@ -3,11 +3,11 @@ id: TASK-91.10
 title: >-
   Guest DAX: the window fills under pgbench, and a burst of small extents makes
   every write reclaim and remap
-status: In Progress
+status: Done
 assignee:
   - '@main-session'
 created_date: '2026-10-22 22:01'
-updated_date: '2026-10-24 01:53'
+updated_date: '2026-10-24 15:11'
 labels: []
 dependencies: []
 parent_task_id: TASK-91
@@ -24,7 +24,7 @@ Measured with a guest kernel logging the window every 5 s (pgbench -s 50 on fxfs
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [x] #1 Window use under pgbench -s 50 with a 2 GiB window stays below its size, or reclaiming keeps up without remap storms, shown by a window-usage measurement
-- [ ] #2 fxfs-guest-pgbench-dax's third run within 10% of its first
+- [x] #2 fxfs-guest-pgbench-dax's third run within 10% of its first
 <!-- AC:END -->
 
 ## Definition of Done
@@ -58,4 +58,12 @@ With /proc/fs/fxfs (263a3c34), DAX pgbench runs 1-3: commits 0.58 / 0.70 / 0.77 
 30407e2a: evacuation. DAX pgbench (GCE r63, vmlinux-evac1): regions 360-540, regions' pool full 0-1 a run, range MAPs 66-143 a run; tps 890/780/758/727/698, run 5 -22% (was -29%). Per run: commits 630-731 us (no DAX 363-410 us), MAP requests 614-793 us, 58-72k a run (restage ~28k + evacuation ~30k, off the write path, 44-46 s), stores held by seals 7-13 s. Left: one MAP request per seal (restage and evacuation in one MAP_MANY), and the DAX commit's extra ~300 us (the host's seal remap, the review session's seal-in-place reprotect on round 2b).
 
 AC2 not met yet: run 3 758 tps is 15% below run 1's 890.
+
+AC2 met: DAX pgbench on GCE (vmlinux-b4, main+round 2b+guest batch) 987/897/895/825/841 tps, run 3 9.3% below run 1. Regions bounded (pruning 009ae677, evacuation cb43345f, evict/truncate holds f859553d1).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The DAX window no longer fills under pgbench: ranges let go of regions their pages leave, and after each seal the staging pages move to their ranges' own space, so writes stop paying a MAP each; pgbench-dax 987/897/895/825/841 tps, run 3 within 10% of run 1. The per-MAP and per-commit host cost remain (TASK-92.50, 91.16).
+<!-- SECTION:FINAL_SUMMARY:END -->

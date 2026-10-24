@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@main-session'
 created_date: '2026-10-21 21:00'
-updated_date: '2026-10-24 12:48'
+updated_date: '2026-10-24 15:11'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -39,3 +39,9 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity low): docs/reviews/2
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Fix in 075723b80 (the EOF folio's tail zeroed on growth); store_past_end passes on GCE. Not yet seen failing on the kernel before: that kernel oopses at short_copy, earlier in the same check run.
+<!-- SECTION:NOTES:END -->

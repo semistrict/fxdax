@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@main-session'
 created_date: '2026-10-24 12:33'
-updated_date: '2026-10-24 12:48'
+updated_date: '2026-10-24 15:11'
 labels:
   - bug
 dependencies: []
@@ -39,4 +39,6 @@ Split from TASK-79.11 (its second half). fxfs_dax_iomap_write's map_write commit
 
 <!-- SECTION:NOTES:BEGIN -->
 Fix: iomap_write turns a map_extents failure after map_write (other than -EXDEV) into -ESTALE; write_iter and the fault loop drop the chunk's range (fxfs_dax_drop_slice) and try once more, then fail with EIO. No deterministic seam: needs a device MAP failure after map_write (fault injection).
+
+Fix landed in 075723b80; no deterministic test (see the notes above). GCE r65, 2026-10-24, batch on main+round 2b: Linux workspace 2620 passed, Firecracker extent tests, and 17 guest cases (checks, crash, fxfs-guest, follow, follow-torture, snapshot with and without DAX; extent-guest, live-fork, daemon-lost, pgbench both) green on vmlinux-b3/b4; macOS scripts/test.sh 2508 passed.
 <!-- SECTION:NOTES:END -->

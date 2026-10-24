@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@main-session'
 created_date: '2026-10-21 20:58'
-updated_date: '2026-10-24 12:48'
+updated_date: '2026-10-24 15:11'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -44,4 +44,6 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity medium): docs/review
 
 <!-- SECTION:NOTES:BEGIN -->
 Fix: fxfs_create takes the inherited ACLs as extended attributes and adds them inline (<= MAX_INLINE_XATTR_SIZE, as ACLs are) to the creating transaction; larger ones are written back with the inode as before. mknod uses it; tmpfile still writes its ACLs with write_inode (an unnamed file until linked). No deterministic seam: the failure needs a crash between the creation's commit and write_inode's.
+
+Fix landed in 075723b80; no deterministic test (see the notes above). GCE r65, 2026-10-24, batch on main+round 2b: Linux workspace 2620 passed, Firecracker extent tests, and 17 guest cases (checks, crash, fxfs-guest, follow, follow-torture, snapshot with and without DAX; extent-guest, live-fork, daemon-lost, pgbench both) green on vmlinux-b3/b4; macOS scripts/test.sh 2508 passed.
 <!-- SECTION:NOTES:END -->

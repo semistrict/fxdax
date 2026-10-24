@@ -3,10 +3,10 @@ id: TASK-79.28
 title: >-
   write(2) uses a range that a concurrent fault sized from the old i_size:
   WARN_ON_ONCE and -EIO
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-21 20:58'
-updated_date: '2026-10-24 14:08'
+updated_date: '2026-10-24 15:11'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -30,8 +30,8 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity medium): docs/review
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A test reproduces the failure on the code before the fix
-- [ ] #2 Fixed, and the test passes on macOS and on Linux (GCE)
+- [x] #1 A test reproduces the failure on the code before the fix
+- [x] #2 Fixed, and the test passes on macOS and on Linux (GCE)
 <!-- AC:END -->
 
 ## Definition of Done
@@ -45,4 +45,12 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity medium): docs/review
 
 <!-- SECTION:NOTES:BEGIN -->
 2026-10-24 attempt, reverted with TASK-79.12's change: write_iter fitted the ranges inside the invalidate_lock hold across the copy; that hold hung fxfs-guest-crash-dax. A fix needs the fit and the write under one hold without that hang. The check append_while_mapped passes on old and new kernels (the race is narrow).
+
+Fixed by 97e9fa8ee: a range too small for the write is dropped and mapped again (-EXDEV), not WARN and EIO. append_while_mapped hit the WARN and EIO on vmlinux-b3 and passes on vmlinux-b4, with the DAX checks, crash, fxfs-guest, follow, follow-torture, snapshot and pgbench cases.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+iomap_write drops a range a fault mapped again too small for the write and has it mapped again, instead of WARN and EIO; append_while_mapped red then green on GCE.
+<!-- SECTION:FINAL_SUMMARY:END -->

@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@main-session'
 created_date: '2026-10-22 21:06'
-updated_date: '2026-10-24 12:48'
+updated_date: '2026-10-24 15:11'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -41,3 +41,9 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity high): docs/reviews/
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+075723b80: ra_pages and io_pages at FXFS_IO_MAX (1 MiB). Not measured yet (seq-read-cold in fs-bench); the synchronous readahead (one READ in flight) and its copies remain.
+<!-- SECTION:NOTES:END -->
