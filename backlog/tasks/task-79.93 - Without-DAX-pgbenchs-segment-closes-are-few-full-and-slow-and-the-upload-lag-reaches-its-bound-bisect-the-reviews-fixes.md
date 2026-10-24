@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@review-session'
 created_date: '2026-10-23 19:35'
-updated_date: '2026-10-23 19:39'
+updated_date: '2026-10-24 07:32'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -35,3 +35,9 @@ Found fixing TASK-79.90 (r5/regress). On main after the review's fixes, no-DAX p
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Landed (7112b50d). Bisect: the step is 7a600784 (TASK-41.1: framing between commits holds no locks); before it the uploader's framing held the store's locks and throttled the guest's writes, after it writes outran the uploader's serial framing. A close was slow because framing read the raw segment with O_DIRECT, which writes back its dirty pages and waits for the disk (95% of framing). Raw files are now read through the host's page cache: closes 159-274 ms -> 25-27 ms; on the current guest kernel (TASK-91.12's writeback) main no longer reaches the lag bound (max 36-268 MB a run). Not fixed: on the old kernel the guest still outruns the uploader (AC #2 there), and nothing shows the 1 GiB bound is the uploader's real limit at 25 ms latency. Linux (GCE fxdax-test-r7-closes): workspace 2559 passed; Shuttle suites; guest fxfs-guest-pgbench, -pgbench-nofsync, -dax, -checks, extent-guest, -follow, -live-fork, -snapshot-dax OK (pgbench-dax hit TASK-79.104's guest crash in DAX evacuation, not this change). macOS workspace 2481. Pushed ff83e8bc..7112b50d.
+<!-- SECTION:NOTES:END -->
