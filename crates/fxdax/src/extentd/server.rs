@@ -1547,7 +1547,12 @@ fn signal(process: &std::os::fd::OwnedFd, signal: libc::c_int) -> std::io::Resul
     Ok(())
 }
 
-/// fxdax: the process at the other end of `stream`, as a pidfd, unless it is this one.
+/// fxdax: the process at the other end of `stream`, as a pidfd, unless it is this one: the socket's
+/// (`SO_PEERPIDFD`, Linux 6.5); or, on a kernel without it, the process that connected, opened by
+/// the pid the socket keeps of it (`SO_PEERCRED`, `pidfd_open`, 5.3). A process that exited before
+/// it was opened may have left its pid to another, which the daemon would kill in its place: so,
+/// the socket's other end hung up by then, the connection is refused. That leaves a race, on a
+/// kernel before 6.5, with a VM process that exits leaving the socket to another, as its child.
 fn peer_process(stream: &UnixStream) -> std::io::Result<Option<std::os::fd::OwnedFd>> {
     use std::os::fd::{AsRawFd, FromRawFd};
     let fd = stream.as_raw_fd();
@@ -1581,11 +1586,28 @@ fn peer_process(stream: &UnixStream) -> std::io::Result<Option<std::os::fd::Owne
             &mut len,
         )
     };
-    if read != 0 {
+    if read == 0 {
+        // SAFETY: A new descriptor, which the call gave this process.
+        return Ok(Some(unsafe { std::os::fd::OwnedFd::from_raw_fd(pidfd) }));
+    }
+    let err = std::io::Error::last_os_error();
+    if err.raw_os_error() != Some(libc::ENOPROTOOPT) {
+        return Err(err);
+    }
+    // SAFETY: Opens a pidfd of the pid, taking the new descriptor.
+    let pidfd = unsafe { libc::syscall(libc::SYS_pidfd_open, credentials.pid, 0) };
+    if pidfd < 0 {
         return Err(std::io::Error::last_os_error());
     }
-    // SAFETY: A new descriptor, which the call gave this process.
-    Ok(Some(unsafe { std::os::fd::OwnedFd::from_raw_fd(pidfd) }))
+    // SAFETY: As above.
+    let process = unsafe { std::os::fd::OwnedFd::from_raw_fd(pidfd as libc::c_int) };
+    if hung_up(stream.as_fd()) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::ConnectionAborted,
+            "the VM process went as it connected",
+        ));
+    }
+    Ok(Some(process))
 }
 
 /// fxdax: quarantines `pages`, freed, which a VM process may still reach, as a stage operation

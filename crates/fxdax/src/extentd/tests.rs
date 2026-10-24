@@ -854,6 +854,21 @@ fn page_at(arena: crate::kernel::ArenaId, offset: u64) -> zircon::vm::page::VmPa
 /// free, but the quarantine's, until it has exited; free once it has.
 #[test]
 fn frozen_vm_processes_hold_nothing_up() {
+    frozen_vm_processes_are_killed();
+}
+
+/// TASK-79.9: as [`frozen_vm_processes_hold_nothing_up`], on a kernel without `SO_PEERPIDFD`
+/// (Linux 6.1 to 6.4), as the system call is refused here: the daemon kills the frozen VM process,
+/// which it knows by the process that connected, and keeps the page it maps until it has exited.
+#[test]
+fn frozen_vm_processes_are_killed_without_peer_pidfds() {
+    let (level, option) = (libc::SOL_SOCKET as u32, libc::SO_PEERPIDFD as u32);
+    refuse_system_call(libc::SYS_getsockopt, &[(1, level), (2, option)], libc::ENOPROTOOPT as u16);
+    frozen_vm_processes_are_killed();
+}
+
+/// What [`frozen_vm_processes_hold_nothing_up`] shows.
+fn frozen_vm_processes_are_killed() {
     use std::io::BufRead as _;
     use std::os::unix::process::ExitStatusExt as _;
     host();

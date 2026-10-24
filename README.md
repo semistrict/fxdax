@@ -359,7 +359,9 @@ The daemon must be able to kill each VM process (it is the daemon's user's, or
 the daemon has `CAP_KILL`), and refuses a connection whose process it could
 not kill: one that stops acknowledging the daemon's changes to its window,
 frozen, holds the pages it may still map until the daemon has killed it
-(TASK-79.9).
+(TASK-79.9). It knows the process by the socket's pidfd (`SO_PEERPIDFD`, Linux
+6.5), or, on an older kernel, by the pid of the process that connected
+(`pidfd_open`).
 
 **The daemon's memory.** DAX moves the guests' file pages out of their RAM into
 the daemon's (TASK-50.3). Its kernel's physical memory is at most

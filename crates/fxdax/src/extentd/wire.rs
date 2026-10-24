@@ -375,11 +375,7 @@ impl AsyncSender {
     /// Whether the other end hung up, as a VM process that went does, though the receiving end
     /// may not have read so yet.
     pub fn peer_gone(&self) -> bool {
-        let fd = self.stream.get_ref().as_raw_fd();
-        let mut poll = libc::pollfd { fd, events: libc::POLLRDHUP, revents: 0 };
-        // SAFETY: Polls the stream's descriptor, which it keeps open, without waiting.
-        let ready = unsafe { libc::poll(&mut poll, 1, 0) };
-        ready > 0 && poll.revents & (libc::POLLRDHUP | libc::POLLHUP | libc::POLLERR) != 0
+        hung_up(self.stream.get_ref().as_fd())
     }
 
     /// Sends `header`, with `payload` as its payload, and `fds`, at most [`MAX_FDS`], after what
@@ -475,6 +471,15 @@ impl AsyncSender {
             log::warn!("extentd: shutting a VM process's connection down: {err}");
         }
     }
+}
+
+/// Whether the other end of the stream `fd` hung up, though its receiving end may not have read so
+/// yet.
+pub(crate) fn hung_up(fd: BorrowedFd<'_>) -> bool {
+    let mut poll = libc::pollfd { fd: fd.as_raw_fd(), events: libc::POLLRDHUP, revents: 0 };
+    // SAFETY: Polls a descriptor the caller keeps open, without waiting.
+    let ready = unsafe { libc::poll(&mut poll, 1, 0) };
+    ready > 0 && poll.revents & (libc::POLLRDHUP | libc::POLLHUP | libc::POLLERR) != 0
 }
 
 /// Waits until `stream` takes more bytes.
