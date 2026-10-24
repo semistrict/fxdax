@@ -1,11 +1,11 @@
 ---
 id: TASK-26.4
 title: libkrun extent-store device backed by host memory and local disk
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-13 19:54'
-updated_date: '2026-10-14 13:26'
+updated_date: '2026-10-24 01:05'
 labels: []
 milestone: m-3
 dependencies:
@@ -29,14 +29,14 @@ The host side of milestone 1 (doc-2, doc-4): a virtio device in libkrun serving 
 <!-- AC:BEGIN -->
 - [x] #1 The device implements doc-4's protocol over the local extent store, so a guest's filesystem survives restarting the VM
 - [x] #2 Sealed extents map read-only into the DAX window from the shared page cache, and two windows in one VMM process mapping the same extent map the same host pages
-- [ ] #3 Commits are durable in order: after a crash the store recovers to a prefix of the committed history, shown by a test
+- [x] #3 Commits are durable in order: after a crash the store recovers to a prefix of the committed history, shown by a test
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -57,4 +57,12 @@ extent-guest (libkrun 14e17d7) exercises the device from a real guest kernel: ev
 AC2 narrowed (user, 2026-10-14): sharing within a VMM process is enough for now; it is met (fxdax 6f33b11: windows share an extent's cached pages). Across VMs, which libkrun runs as separate processes, would need shared-memory backing for the in-process kernel's pages or several VMs per process: deferred, not milestone 1.
 
 AC1 met (2026-10-14): libkrun fxfs-guest and fxfs-guest-format (dbbd5ef, fxdax ca1113e): the guest's kernel Fxfs writes, unmounts and mounts again; after the VM exits a new process opens the store and the host's Fxfs finds the guest's files. Also the guest formats an empty store, which the host's Fxfs mounts.
+
+2026-10-23 audit, the user agreeing: libkrun's device is now Firecracker's extent device over fxdax-extentd (libkrun removed, TASK-40). AC3: crates/extent_store/tests/crash recovers_a_prefix_of_its_commits; COMMIT replies once durable. GCE r63, 2026-10-23, kernel vmlinux-drv3 at main 2428910c+ (guest code unchanged since): extent-guest, fxfs-guest, fxfs-guest-dax, fxfs-guest-checks, fxfs-guest-checks-dax, fxfs-guest-crash, fxfs-guest-crash-dax, pjdfstest-fxfs-guest, pjdfstest-fxfs-guest-dax: 9/9 OK, every device served by fxdax-extentd (daemon mode, the only one since 537c7eb4). Workspace nextest: macOS 2466 passed (scripts/test.sh), Linux 2544 passed (GCE). scripts/upstream-changes.py --check passes.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The extent-store device, first in libkrun and now Firecracker's over fxdax-extentd, keeps extents in host memory and on local disk, durable in commit order (recovers_a_prefix_of_its_commits). Closed in the 2026-10-23 audit of stale tasks.
+<!-- SECTION:FINAL_SUMMARY:END -->
