@@ -1,9 +1,10 @@
 ---
 id: TASK-44.20
 title: Clippy forbids blocking calls in async code
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-24 21:31'
+updated_date: '2026-10-24 22:23'
 labels: []
 dependencies: []
 parent_task_id: TASK-44
@@ -19,9 +20,9 @@ TASK-98: the image device waited on a condvar inside an async task (through bloc
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 clippy.toml disallows the blocking calls, and the workspace's clippy run is clean
-- [ ] #2 Each remaining use is allowed explicitly, with why it can't deadlock
-- [ ] #3 TASK-98's old block_in_place wait, put back, fails clippy
+- [x] #1 clippy.toml disallows the blocking calls, and the workspace's clippy run is clean
+- [x] #2 Each remaining use is allowed explicitly, with why it can't deadlock
+- [x] #3 TASK-98's old block_in_place wait, put back, fails clippy
 <!-- AC:END -->
 
 ## Definition of Done
@@ -30,3 +31,9 @@ TASK-98: the image device waited on a condvar inside an async task (through bloc
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+clippy.toml disallows block_in_place and Store::begin_write outside extent_store; the remaining uses are allowed with reasons; scripts/test.sh checks it first on macOS and Linux. TASK-98's old wait put back fails it; main passes on both (GCE r77).
+<!-- SECTION:FINAL_SUMMARY:END -->
