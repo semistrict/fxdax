@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@main-session'
 created_date: '2026-10-23 18:01'
-updated_date: '2026-10-23 22:12'
+updated_date: '2026-10-24 00:46'
 labels: []
 dependencies: []
 parent_task_id: TASK-91
@@ -43,4 +43,6 @@ Round 6: 134,886 MMIO exits to the VMM in the DAX load (JuiceFS: 2,646), ~12 us 
 
 <!-- SECTION:NOTES:BEGIN -->
 06dd6a64: callers spinning poll the used ring with completions unsignalled; sysfs completions counts interrupts and polled. GCE: polled 0, ~1 interrupt per request (732,555 in five no-DAX runs), as no request type completes within the 100 us spin. Fewer exits per interrupt needs MSI-X (virtio-pci): Firecracker's PCI transport lacks the shared-memory capability the DAX window needs. Estimated cost of the exits: ~3-6% of vCPU time. Held.
+
+MSI-X (virtio-pci with the window as a shared-memory capability) left by the user until the DAX host-side fixes land (2026-10-23).
 <!-- SECTION:NOTES:END -->
