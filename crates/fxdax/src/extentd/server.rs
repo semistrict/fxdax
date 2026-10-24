@@ -426,7 +426,7 @@ fn finish_connection(connection: Arc<Connection>) {
 
 /// A connection's requests: those waiting, and how many run (TASK-34); fxdax: how many wait for
 /// what they are served on, deferred, their turns over (TASK-92.20), and the bytes of stream data
-/// of those received whose replies are not queued yet (TASK-79.16).
+/// of those received whose replies are not queued yet ([`Answer`], TASK-79.16).
 #[derive(Default)]
 struct Requests {
     waiting: std::collections::VecDeque<Message>,
@@ -448,19 +448,17 @@ impl Requests {
 }
 
 /// A connection's turn at serving a request ([`Connection::serve_in_turn`]), which ends, the
-/// request served or its serving panicking, with the connection's next ([`Connection::next_turn`]):
-/// and the request's bytes of stream data, its reply queued then. fxdax: or, its request deferred,
-/// its serving waiting for what it is served on, which the connection's next is served beside,
-/// ends as it is answered at last (TASK-92.20).
+/// request served or its serving panicking, with the connection's next ([`Connection::next_turn`]).
+/// fxdax: or, its request deferred, its serving waiting for what it is served on, which the
+/// connection's next is served beside, ends as it is answered at last (TASK-92.20).
 struct Turn {
     connection: Option<Arc<Connection>>,
-    stream_bytes: u64,
     deferred: bool,
 }
 
 impl Turn {
-    fn new(connection: Arc<Connection>, stream_bytes: u64) -> Self {
-        Self { connection: Some(connection), stream_bytes, deferred: false }
+    fn new(connection: Arc<Connection>) -> Self {
+        Self { connection: Some(connection), deferred: false }
     }
 
     fn connection(&self) -> &Arc<Connection> {
@@ -469,11 +467,11 @@ impl Turn {
 
     /// fxdax: defers its request, which waits for what it is served on (TASK-92.20): the
     /// connection's next request waiting, if any, is served in its place, and it is counted in
-    /// flight, with its bytes of stream data, until the turn ends.
+    /// flight until the turn ends.
     fn defer(&mut self) {
         let connection = self.connection().clone();
         connection.requests.lock().unwrap().deferred += 1;
-        connection.next_turn(0);
+        connection.next_turn();
         self.deferred = true;
     }
 }
@@ -482,8 +480,96 @@ impl Drop for Turn {
     fn drop(&mut self) {
         let Some(connection) = self.connection.take() else { return };
         match self.deferred {
-            false => connection.next_turn(self.stream_bytes),
-            true => connection.answered_deferred(self.stream_bytes),
+            false => connection.next_turn(),
+            true => connection.answered_deferred(),
+        }
+    }
+}
+
+/// A request's answer, which it is owed until sent ([`Answer::send`]): its reply, or its error.
+/// fxdax: its bytes of stream data counted in its connection's requests until its reply is queued,
+/// and not after, as its VM process's room counts it then ([`Peer::room`]), rather than both for
+/// a while, which held a VM process keeping to the protocol's bounds past them (TASK-79.16); and,
+/// its serving panicking, it answers `EIO` as it is dropped, rather than leave its VM process
+/// waiting for good, those bytes counted for good.
+struct Answer {
+    connection: Arc<Connection>,
+    request: Header,
+    started: std::time::Instant,
+    sent: bool,
+}
+
+impl Answer {
+    /// The answer owed to `request`, which `connection` received.
+    fn new(connection: &Arc<Connection>, request: Header) -> Self {
+        let started = std::time::Instant::now();
+        Self { connection: connection.clone(), request, started, sent: false }
+    }
+
+    /// Replies with `reply`, `payload` and `fds`, if `result` says the request succeeded, or its
+    /// error.
+    fn send(
+        mut self,
+        result: Result<(), Errno>,
+        reply: Header,
+        payload: Vec<u8>,
+        fds: Vec<std::os::fd::BorrowedFd<'_>>,
+    ) {
+        self.reply(result, reply, payload, fds);
+    }
+
+    fn reply(
+        &mut self,
+        result: Result<(), Errno>,
+        mut reply: Header,
+        mut payload: Vec<u8>,
+        mut fds: Vec<std::os::fd::BorrowedFd<'_>>,
+    ) {
+        self.sent = true;
+        let header = self.request;
+        if let Err(errno) = result {
+            // A full store: which request found it so, and how full.
+            if errno == Errno::ENOSPC
+                && let Some(store) = self.connection.store.get()
+            {
+                let used = store.info().map(|info| (info.used, info.capacity));
+                log::warn!(
+                    "extentd: request {} (flags {:#x}, args {:#x?}) found the store full: {used:?}",
+                    header.kind,
+                    header.flags,
+                    header.args
+                );
+            }
+            // A request the store refuses as malformed is the guest's mistake: which it was.
+            if errno == Errno::EINVAL {
+                log::warn!(
+                    "extentd: request {} refused with EINVAL: flags {:#x}, args {:#x?}",
+                    header.kind,
+                    header.flags,
+                    header.args
+                );
+            }
+            reply.status = -errno.raw();
+            payload.clear();
+            fds.clear();
+        }
+        // Counted before its reply, which its VM process may then count on.
+        super::metrics::served(header.kind, self.started.elapsed(), reply.status != 0);
+        let bytes = stream_bytes(&header);
+        if bytes > 0 {
+            self.connection.requests.lock().unwrap().stream_bytes -= bytes;
+        }
+        if let Err(err) = self.connection.peer.sender.send(reply, payload, &fds) {
+            log::warn!("extentd: replying to a VM process: {err}");
+        }
+    }
+}
+
+impl Drop for Answer {
+    fn drop(&mut self) {
+        if !self.sent {
+            let reply = Header::new(REPLY, self.request.id);
+            self.reply(Err(Errno::EIO), reply, Vec::new(), Vec::new());
         }
     }
 }
@@ -626,8 +712,8 @@ impl Connection {
     /// allow what its VM process keeps in flight (TASK-79.16): its requests not answered
     /// ([`MAX_REQUESTS`]), and their stream data ([`MAX_STREAM_BYTES`]), with what the connection
     /// has queued for the VM process ([`QUEUED_ROOM`]). Counted in, a request's, until its reply is
-    /// queued. Past them, `QuotaExceeded`: the VM process broke the protocol, and is let go, rather
-    /// than held without end in the daemon's memory.
+    /// queued ([`Answer`]). Past them, `QuotaExceeded`: the VM process broke the protocol, and is
+    /// let go, rather than held without end in the daemon's memory.
     fn within_bounds(&self, header: &Header) -> std::io::Result<()> {
         if header.kind == ACK {
             return Ok(());
@@ -663,21 +749,20 @@ impl Connection {
     /// (TASK-92.20), and for a connection going to let the store go, or a restore's point
     /// (TASK-92.5).
     fn serve_in_turn(self: Arc<Self>, message: Message) {
-        let turn = Turn::new(self.clone(), stream_bytes(&message.header));
+        let (turn, answer) = (Turn::new(self.clone()), Answer::new(&self, message.header));
         match message.header.kind {
-            FAULT => serve_future(turn, self.fault(message)),
+            FAULT => serve_future(turn, self.fault(message, answer)),
             OPEN if message.header.flags & OPEN_READ_ONLY == 0 => {
-                serve_future(turn, self.serve_open(message))
+                serve_future(turn, self.serve_open(message, answer))
             }
-            _ => self.serve(message),
+            _ => self.serve(message, answer),
         }
     }
 
-    /// Serves the next request waiting, if any, on the [`Pool`], the last having been served, of
-    /// `stream_bytes` of stream data; or, with none, counts one fewer running.
-    fn next_turn(self: Arc<Self>, stream_bytes: u64) {
+    /// Serves the next request waiting, if any, on the [`Pool`], the last having been served; or,
+    /// with none, counts one fewer running.
+    fn next_turn(self: Arc<Self>) {
         let mut requests = self.requests.lock().unwrap();
-        requests.stream_bytes -= stream_bytes;
         match requests.waiting.pop_front() {
             Some(next) => {
                 drop(requests);
@@ -698,12 +783,10 @@ impl Connection {
         }
     }
 
-    /// fxdax: counts a request deferred ([`Turn::defer`]), of `stream_bytes` of stream data,
-    /// answered.
-    fn answered_deferred(self: Arc<Self>, stream_bytes: u64) {
+    /// fxdax: counts a request deferred ([`Turn::defer`]) answered.
+    fn answered_deferred(self: Arc<Self>) {
         let mut requests = self.requests.lock().unwrap();
         requests.deferred -= 1;
-        requests.stream_bytes -= stream_bytes;
         let drained = requests.is_done().then(|| self.drained.clone());
         drop(requests);
         // Told once this holds the connection no more, as at the end of a turn.
@@ -726,59 +809,13 @@ impl Connection {
         }
     }
 
-    /// Serves `message`, a request, and replies.
-    fn serve(&self, message: Message) {
-        let started = std::time::Instant::now();
-        let header = message.header;
-        let mut reply = Header::new(REPLY, header.id);
+    /// Serves `message`, a request, and replies, as `answer` owes.
+    fn serve(&self, message: Message, answer: Answer) {
+        let mut reply = Header::new(REPLY, message.header.id);
         let mut payload = Vec::new();
         let mut fds = Vec::new();
         let result = self.handle(&message, &mut reply, &mut payload, &mut fds);
-        self.answer(header, started, result, reply, payload, fds);
-    }
-
-    /// Replies to the request of `header`, served since `started`: with `reply`, `payload` and
-    /// `fds`, if `result` says it succeeded, or its error.
-    fn answer(
-        &self,
-        header: Header,
-        started: std::time::Instant,
-        result: Result<(), Errno>,
-        mut reply: Header,
-        mut payload: Vec<u8>,
-        mut fds: Vec<std::os::fd::BorrowedFd<'_>>,
-    ) {
-        if let Err(errno) = result {
-            // A full store: which request found it so, and how full.
-            if errno == Errno::ENOSPC
-                && let Some(store) = self.store.get()
-            {
-                let used = store.info().map(|info| (info.used, info.capacity));
-                log::warn!(
-                    "extentd: request {} (flags {:#x}, args {:#x?}) found the store full: {used:?}",
-                    header.kind,
-                    header.flags,
-                    header.args
-                );
-            }
-            // A request the store refuses as malformed is the guest's mistake: which it was.
-            if errno == Errno::EINVAL {
-                log::warn!(
-                    "extentd: request {} refused with EINVAL: flags {:#x}, args {:#x?}",
-                    header.kind,
-                    header.flags,
-                    header.args
-                );
-            }
-            reply.status = -errno.raw();
-            payload.clear();
-            fds.clear();
-        }
-        // Counted before its reply, which its VM process may then count on.
-        super::metrics::served(header.kind, started.elapsed(), reply.status != 0);
-        if let Err(err) = self.peer.sender.send(reply, payload, &fds) {
-            log::warn!("extentd: replying to a VM process: {err}");
-        }
+        answer.send(result, reply, payload, fds);
     }
 
     fn handle<'a>(
@@ -916,8 +953,7 @@ impl Connection {
     /// fxdax: resolves the guest's fault `message` asks for ([`FAULT`]), and replies: a future,
     /// which holds no thread while it waits for the pager (TASK-92.20), served so
     /// ([`serve_future`]).
-    async fn fault(self: Arc<Self>, message: Message) {
-        let started = std::time::Instant::now();
+    async fn fault(self: Arc<Self>, message: Message, answer: Answer) {
         let Header { flags, args, .. } = message.header;
         let faulted = async {
             let window = self.window.lock().unwrap().clone().ok_or(Errno::EBADF)?;
@@ -929,8 +965,7 @@ impl Connection {
             }
         };
         let faulted = faulted.await;
-        let reply = Header::new(REPLY, message.header.id);
-        self.answer(message.header, started, faulted, reply, Vec::new(), Vec::new());
+        answer.send(faulted, Header::new(REPLY, message.header.id), Vec::new(), Vec::new());
     }
 
     /// Hands the VM process its kernel's memory, in `reply`: its tenant's arena, and the default
@@ -973,8 +1008,7 @@ impl Connection {
     /// fxdax: serves `message`, an [`OPEN`] of a store to write ([`Connection::open`]), and
     /// replies with its branch and the kernel's memory: a future, which holds no thread while it
     /// waits (TASK-92.5), served so ([`serve_future`]).
-    async fn serve_open(self: Arc<Self>, message: Message) {
-        let started = std::time::Instant::now();
+    async fn serve_open(self: Arc<Self>, message: Message, answer: Answer) {
         let Header { flags, args, id, .. } = message.header;
         let mut reply = Header::new(REPLY, id);
         let mut fds = Vec::new();
@@ -990,7 +1024,7 @@ impl Connection {
             self.memories(&mut reply, &mut fds)
         };
         let opened = opened.await;
-        self.answer(message.header, started, opened, reply, Vec::new(), fds);
+        answer.send(opened, reply, Vec::new(), fds);
     }
 
     /// Opens the store at the path `path` holds, creating it with `capacity` bytes if `create` and
