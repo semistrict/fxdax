@@ -828,11 +828,30 @@ fn refuse_system_call(call: libc::c_long, args: &[(usize, u32)], errno: u16) {
     }
 }
 
+/// The page of the daemon's kernel's physical memory at `offset` in the memory of `arena`, as a VM
+/// process maps it from its tenant's arena.
+fn page_at(arena: crate::kernel::ArenaId, offset: u64) -> zircon::vm::page::VmPagePtr {
+    use zircon::kernel::types::PAddr;
+    use zircon::vm::physmap::{CHUNK_SIZE, PHYS_BASE};
+    let memory = zircon::vm::pmm::node().phys_memory();
+    let chunk_at = |chunk: usize| PAddr(PHYS_BASE.0 + chunk * CHUNK_SIZE);
+    let within = offset % CHUNK_SIZE as u64;
+    let chunk = (0..memory.chunk_count())
+        .find(|chunk| {
+            memory.chunk_arena(*chunk) == Some(arena)
+                && memory.location(chunk_at(*chunk)).offset == offset - within
+        })
+        .unwrap_or_else(|| panic!("no chunk of {arena:?} holds {offset:#x}"));
+    let paddr = PAddr(chunk_at(chunk).0 + within as usize);
+    zircon::vm::pmm::paddr_to_vm_page(paddr).expect("a page of physical memory")
+}
+
 /// TASK-79.9: a VM process that stops answering, frozen as SIGSTOP or a cgroup's freezer freezes
 /// it, holds nothing up: the daemon takes its access to the pages it maps away without waiting for
 /// it, as it evicts them, as the kernel's relief does, while another VM process's requests and
 /// faults on them are served; and once it has acknowledged nothing it was sent for a while, the
-/// daemon kills it, and lets its store go.
+/// daemon kills it, and lets its store go. The page it maps, evicted, is no other's until then: not
+/// free, but the quarantine's, until it has exited; free once it has.
 #[test]
 fn frozen_vm_processes_hold_nothing_up() {
     use std::io::BufRead as _;
@@ -840,6 +859,8 @@ fn frozen_vm_processes_hold_nothing_up() {
     host();
     let ps = page_size() as usize;
     let dir = tempfile::tempdir().unwrap();
+    // A tenant's VM processes, whose pages are of its arena alone.
+    let tenant = super::server::Tenant::new("frozen", dir.path()).unwrap();
     let (parent, child) = (dir.path().join("parent"), dir.path().join("child"));
     let extent = {
         let store = ExtentStore::create(&parent, 1 << 24).unwrap();
@@ -851,7 +872,8 @@ fn frozen_vm_processes_hold_nothing_up() {
     };
     let socket = dir.path().join("extentd.sock");
     let listener = UnixListener::bind(&socket).unwrap();
-    std::thread::spawn(move || serve(listener));
+    let serving = tenant.clone();
+    std::thread::spawn(move || super::server::serve_tenant(listener, serving));
     let (ours, page) = map_first_page(&socket, &parent, extent);
 
     let mut theirs = Reaped(
@@ -874,9 +896,11 @@ fn frozen_vm_processes_hold_nothing_up() {
     assert_eq!(unsafe { libc::kill(theirs.0.id() as libc::pid_t, libc::SIGSTOP) }, 0);
 
     // The extent's page evicted: its mappings taken away, ours and the frozen child's.
+    let mapped = page_at(tenant.arena(), offset);
     let wait = std::time::Duration::from_secs(10);
     let evicted = within(wait, || crate::extents::evict_least_used(None, |_| false));
     assert_eq!(evicted, Ok(ps as u64), "the eviction waited for the frozen VM process");
+    assert!(!mapped.is_free(), "the page the frozen VM process maps is free");
     let ours = std::sync::Arc::new(ours);
     let reading = ours.clone();
     let served = within(wait, move || read(&reading, extent, 0, BLOCK));
@@ -887,27 +911,14 @@ fn frozen_vm_processes_hold_nothing_up() {
     assert_eq!(loaded, Ok(pattern(9, ps)), "our fault waited for the frozen VM process");
 
     // Killed, once it has acknowledged nothing for a while.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    let status = loop {
-        if let Some(status) = theirs.0.try_wait().unwrap() {
-            break status;
-        }
-        assert!(std::time::Instant::now() < deadline, "the frozen VM process lives on");
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    };
+    let killed = within(std::time::Duration::from_secs(30), move || theirs.0.wait().unwrap());
+    let status = killed.expect("the frozen VM process lives on");
     assert_eq!(status.signal(), Some(libc::SIGKILL), "{status}");
-    // Its store goes with it, for another VM process to open, once the daemon has seen it go.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    loop {
-        match RemoteExtentStore::connect(&socket, &child, 1 << 24) {
-            Ok(_) => break,
-            Err(error) if std::time::Instant::now() < deadline => {
-                assert_eq!(error.errno(), Some(Errno::EBUSY), "{error:#}");
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-            Err(error) => panic!("the frozen VM process's store is still open: {error:#}"),
-        }
-    }
+    // Its store goes with it, for another VM process to open once the daemon lets it go, which
+    // the opening waits for (`CLOSING_WAIT`); and its page, free by then.
+    let reopened = RemoteExtentStore::connect(&socket, &child, 1 << 24).map(|store| store.branch());
+    assert_eq!(reopened.map_err(|error| error.errno()), Ok(extent.branch + 1));
+    assert!(mapped.is_free(), "the page the frozen VM process mapped isn't free once it's gone");
 }
 
 /// A VM process, for [`vm_processes_the_daemon_may_not_kill_are_refused`]: opens the store
