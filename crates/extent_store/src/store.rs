@@ -774,7 +774,7 @@ impl<D: Dir> Store<D> {
         };
         // fxdax: its raw file, if it has one, takes what it writes from now on, which the writes
         // begun after it count (TASK-79.89).
-        if let Placement::Own(_) = placement {
+        if matches!(placement, Placement::Own(_)) && rules().raw_files_count_as_writes_begin {
             state.uncommitted.raw_to(extent, end);
         }
         let (file, file_offset, segment) = match placement {
@@ -881,7 +881,10 @@ impl<D: Dir> Store<D> {
             }
             // Its file is the branch's to claim once it is sealed, and framed.
             (None, Data::Own) => {
-                state.uncommitted.push(Change::WriteOwn { extent, len: entry.len })
+                state.uncommitted.push(Change::WriteOwn { extent, len: entry.len });
+                if !rules().raw_files_count_as_writes_begin {
+                    state.uncommitted.raw_to(extent, end);
+                }
             }
             _ => unreachable!("an extent's data is in segments or its own file"),
         }

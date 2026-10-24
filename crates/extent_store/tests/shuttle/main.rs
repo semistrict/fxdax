@@ -29,7 +29,8 @@
 //! too, which is dropped, whenever it finishes; and writes fill segments between commits, which
 //! go to the next as each is full. A cleaner cleans behind the commits, too, whose copies the
 //! commits after make the extents' places. And the store fails, and the branch closes, while a
-//! commit waits for a write in progress, which fails then.
+//! commit waits for a write in progress, which fails then. Two writes race at the bound on what
+//! the branch's files take of the host's disk, too, of which one is refused (TASK-79.89).
 //!
 //! So are a lineage's branches, while a fork's or a deletion's I/O stalls (lineage.rs); and the
 //! crash tests' rounds, the store framing segments and syncing flushes on threads of its own while
@@ -43,7 +44,9 @@
 #![cfg(feature = "shuttle")]
 
 use extent_frame::segment::Chain;
-use extent_store::{Description, File as _, MemDir, Options, Rules, Store, set_rules};
+use extent_store::{
+    Description, Dir as _, File as _, MemDir, NoSpace, Options, Rules, Store, set_rules,
+};
 use shuttle::scheduler::{PctScheduler, RandomScheduler, ReplayScheduler};
 use shuttle::sync::Mutex;
 use shuttle::sync::atomic::{AtomicBool, Ordering};
@@ -770,6 +773,69 @@ fn freeing_during_a_write() {
     check(&Store::open(dir, OPTIONS).expect("a write to a freed extent landed: no store opens"));
 }
 
+/// fxdax: the bytes the branch's files of extents' data in `dir` take of the host's disk: its
+/// segments', open and closed, and its extents' own files and raw files (TASK-79.89).
+fn data_files(dir: &MemDir) -> u64 {
+    let mut bytes = 0;
+    for kind in ["segments", "open-segments", "extents", "open-extents"] {
+        let kind = format!("{kind}/{BRANCH:016x}");
+        for name in dir.list(&kind).unwrap() {
+            bytes += dir.open(&format!("{kind}/{name}"), true).unwrap().size().unwrap();
+        }
+    }
+    bytes
+}
+
+/// Segments that never close, so that what is freed in the open one takes the host's disk as it
+/// is, raw, which no framing changes; and extents of four blocks in files of their own.
+const OPEN_ONLY: Options = Options { segment_size: 1 << 30, ..OPTIONS };
+
+/// fxdax: one run of writes racing at the bound on the branch's files (TASK-79.89): what three
+/// commits freed in the open segment, 39 blocks, takes the branch's files near three times its
+/// capacity of the host's disk, 48 blocks, its extents holding none of it; then two writers each
+/// write an extent of six blocks in a raw file of its own, which the room takes both of. One is
+/// refused (`ENOSPC`), whichever begins last, as each counts what the other's raw file is to take
+/// as it begins; and the files are within the bound.
+fn writing_at_the_bound() {
+    let dir = MemDir::new();
+    let capacity = 16 * BLOCK as u64;
+    let description = Description { block_size: BLOCK as u32, capacity, branch: BRANCH };
+    let store = Arc::new(Store::create(dir.clone(), description, OPEN_ONLY).unwrap());
+    // Each commit frees what the one before wrote.
+    let mut written = 0..0;
+    for extents in [5, 5, 3, 0] {
+        for sequence in written.clone() {
+            store.free(extent(sequence)).unwrap();
+        }
+        written = written.end..written.end + extents;
+        for sequence in written.clone() {
+            store.write(extent(sequence), 0, &pattern(sequence as u8, 3 * BLOCK)).unwrap();
+        }
+        store.commit(None).unwrap();
+    }
+    let bound = 3 * capacity;
+    assert_eq!(data_files(&dir), 39 * BLOCK as u64);
+    let writers: Vec<_> = (0..2)
+        .map(|writer| {
+            let store = store.clone();
+            thread::spawn(move || {
+                let sequence = 100 + writer;
+                store.write(extent(sequence), 0, &pattern(sequence as u8, 6 * BLOCK))
+            })
+        })
+        .collect();
+    let written: Vec<_> = writers.into_iter().map(|writer| writer.join().unwrap()).collect();
+    let files = data_files(&dir);
+    assert!(files <= bound, "writes took the branch's files past their bound: {files} of {bound}");
+    let refused = (written.iter())
+        .filter(|written| {
+            written.as_ref().is_err_and(|error| error.downcast_ref::<NoSpace>().is_some())
+        })
+        .count();
+    let ok = written.iter().filter(|written| written.is_ok()).count();
+    assert!((refused, ok) == (1, 1), "of two writes, {ok} written, {refused} refused");
+}
+
 /// One run of an uploader beginning while commits are made durable: a writer orders commits, a
 /// flusher makes them durable, and the uploader begins, as fxdax's does, as of the store's latest
 /// commit, closes the open segment between commits, and takes the segments closed. A crash
@@ -1207,6 +1273,12 @@ fn cleaning_during_closings_by_pct() {
 }
 
 #[test]
+fn writes_racing_at_the_bound_by_pct() {
+    set_rules(Rules::ALL);
+    Runner::new(PctScheduler::new(3, runs()), config()).run(writing_at_the_bound);
+}
+
+#[test]
 fn requests_served_during_a_framing_by_pct() {
     set_rules(Rules::ALL);
     Runner::new(PctScheduler::new(3, runs()), config()).run(serving_during_a_framing);
@@ -1265,6 +1337,7 @@ fn replay() {
             "drop_writes_to_freed_extents" => rules.drop_writes_to_freed_extents = false,
             "commits_wait_for_copies" => rules.commits_wait_for_copies = false,
             "moves_into_the_open_segment" => rules.moves_into_the_open_segment = false,
+            "raw_files_count_as_writes_begin" => rules.raw_files_count_as_writes_begin = false,
             "durable_only" => rules.durable_only = false,
             "durable_once_synced" => rules.durable_once_synced = false,
             "close_waits_for_flushes" => rules.close_waits_for_flushes = false,
@@ -1292,6 +1365,7 @@ fn replay() {
         Ok("racing") => racing,
         Ok("rolling_over") => rolling_over,
         Ok("freeing_during_a_write") => freeing_during_a_write,
+        Ok("writing_at_the_bound") => writing_at_the_bound,
         Ok("uploading_during_flushes") => uploading_during_flushes,
         Ok("closing_during_a_flush") => closing_during_a_flush,
         Ok("failing_during_a_commit") => failing_during_a_commit,
@@ -1429,6 +1503,19 @@ fn needs_commits_to_wait_for_copies() {
 fn needs_moves_into_the_open_segment() {
     let rules = Rules { moves_into_the_open_segment: false, ..Rules::ALL };
     fails_without(rules, &["sealed in another segment"], cleaning_during_closings);
+}
+
+/// Writes to raw files counting what they add to the branch's files only as they finish: two
+/// begun together each find room for itself below the bound, and both take the files past it
+/// (TASK-79.89).
+#[test]
+fn needs_raw_files_counted_as_writes_begin() {
+    let rules = Rules { raw_files_count_as_writes_begin: false, ..Rules::ALL };
+    fails_without(
+        rules,
+        &["writes took the branch's files past their bound"],
+        writing_at_the_bound,
+    );
 }
 
 #[test]
