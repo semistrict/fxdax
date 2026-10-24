@@ -281,9 +281,13 @@ const HEAD_MAX: u64 = 8 << 10;
 const AT_ONCE: usize = 4;
 
 /// Serves the metrics to whoever connects to `listener` and asks for `/metrics` over HTTP, until
-/// accepting fails: each client on a thread of its own, [`AT_ONCE`] at most, within [`EXCHANGE`].
+/// it listens no more (`EINVAL`): each client on a thread of its own, [`AT_ONCE`] at most, within
+/// [`EXCHANGE`]. An accept that fails otherwise, as with as many files open as the daemon may, is
+/// tried again after a while (`server::ACCEPT_AGAIN`), as the daemon's VM sockets' are: given up
+/// on, the daemon's metrics would be served no more, the daemon serving on (TASK-79.35).
 pub fn serve_metrics(listener: TcpListener) -> std::io::Result<()> {
     let serving = std::sync::Arc::new((std::sync::Mutex::new(0usize), std::sync::Condvar::new()));
+    let mut failing = false;
     loop {
         {
             let (count, done) = &*serving;
@@ -293,7 +297,25 @@ pub fn serve_metrics(listener: TcpListener) -> std::io::Result<()> {
             }
             *count += 1;
         }
-        let (stream, _) = listener.accept()?;
+        let accepted = listener.accept();
+        if accepted.is_err() {
+            *serving.0.lock().unwrap() -= 1;
+        }
+        let stream = match accepted {
+            Ok((stream, _)) => stream,
+            Err(err) if err.raw_os_error() == Some(libc::EINVAL) => return Err(err),
+            // That client's, gone before it was accepted.
+            Err(err) if err.kind() == std::io::ErrorKind::ConnectionAborted => continue,
+            Err(err) => {
+                if !failing {
+                    log::error!("extentd: accepting a metrics client: {err}: trying again");
+                    failing = true;
+                }
+                std::thread::sleep(super::server::ACCEPT_AGAIN);
+                continue;
+            }
+        };
+        failing = false;
         let served = serving.clone();
         let spawned = std::thread::Builder::new().name("extentd metrics".into()).spawn(move || {
             if let Err(err) = answer(stream) {

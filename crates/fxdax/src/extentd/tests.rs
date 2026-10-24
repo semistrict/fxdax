@@ -2950,6 +2950,41 @@ fn shrinks_return_once_the_pages_they_evict_are_free() {
     assert_eq!((shrinking.join().unwrap(), unmapped), (Ok(CHUNK), vec![vec![0, CHUNK]]));
 }
 
+/// TASK-79.35: the daemon's metrics are served on through a failure to accept a scrape's
+/// connection, as with as many files open as it may (EMFILE): once files close.
+#[test]
+fn metrics_are_served_on_after_failing_to_accept() {
+    use std::io::{Read as _, Write as _};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let mut limit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+    // SAFETY: Reads the process's limit into `limit`.
+    assert_eq!(unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) }, 0);
+    // No file opens: the server's accept fails as it begins.
+    let none = libc::rlimit { rlim_cur: 0, ..limit };
+    // SAFETY: Lowers the process's own limit, which this test sets back.
+    assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &none) }, 0);
+    let (serving, stopped) = std::sync::mpsc::channel::<()>();
+    std::thread::spawn(move || {
+        // Dropped as serving stops.
+        let _serving = serving;
+        super::serve_metrics(listener)
+    });
+    let served = stopped.recv_timeout(std::time::Duration::from_secs(1));
+    // SAFETY: As above.
+    assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limit) }, 0);
+    assert_eq!(served, Err(std::sync::mpsc::RecvTimeoutError::Timeout), "serving stopped");
+    let scraped = within(std::time::Duration::from_secs(10), move || {
+        let mut stream = std::net::TcpStream::connect(address).unwrap();
+        write!(stream, "GET /metrics HTTP/1.1\r\nHost: extentd\r\n\r\n").unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        response
+    });
+    let scraped = scraped.expect("the metrics are served no more");
+    assert!(scraped.starts_with("HTTP/1.1 200 OK\r\n"), "{scraped}");
+}
+
 /// TASK-92.5: a restore of a snapshot whose point the daemon keeps open, once another writer of
 /// the point's branch has taken it, of this host's placement, as fxdaxctl's `take` of it is, or a
 /// VM's opening of a copy of it, forks the point opened anew, taking the branch back, as each
