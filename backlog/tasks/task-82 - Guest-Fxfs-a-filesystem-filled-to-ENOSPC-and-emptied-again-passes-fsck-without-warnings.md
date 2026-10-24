@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-22 13:13'
+updated_date: '2026-10-24 00:54'
 labels: []
 dependencies: []
 priority: high
@@ -30,3 +31,9 @@ The 'enospc' guest check (TASK-60, uncommitted in the main checkout's guest/test
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+The enospc guest check is on branch enospc-check (66f6d20b, pushed), off main at bb562d8c: test_fxfs_guest_checks.rs's test_enospc, DAX only, timeout 180 s. Not yet compiled on that branch; merge it with this task's fix and run fxfs-guest-checks-dax.
+<!-- SECTION:NOTES:END -->

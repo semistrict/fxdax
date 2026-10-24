@@ -6,7 +6,7 @@ title: >-
 status: In Progress
 assignee: []
 created_date: '2026-10-21 19:54'
-updated_date: '2026-10-22 13:13'
+updated_date: '2026-10-24 00:54'
 labels: []
 dependencies: []
 priority: high
@@ -36,4 +36,6 @@ Hold branch ('Transaction was larger than metadata reservation'): now commits on
 Audit of the rest: allocator.rs's remaining release asserts (move_to, forget, release_reservation, remove_reservation) and fxfs-linux's unwraps (lock poisoning, invariants) are internal-consistency checks, not exhaustion paths. Dynamic check: the guest check 'enospc' (fxfs-guest-checks[-dax], FXDAX_CHECKS=enospc) fills the filesystem with one large file, many small files, a sparse file then truncated, fallocate and mkdir, each to ENOSPC, then frees and writes again.
 
 6dbc848: Hold-branch borrow; a shrinking truncate borrows metadata space (guest setattr), so a full filesystem's files can be cut. The enospc check (DAX only: buffered writes reserve nothing, TASK-80; fallocate reserves nothing by design) passes in the guest, but the image's fsck then warns once: TASK-82. The check stays uncommitted until TASK-82 is fixed.
+
+The enospc guest check is kept on branch enospc-check (66f6d20b) until TASK-82's fix.
 <!-- SECTION:NOTES:END -->
