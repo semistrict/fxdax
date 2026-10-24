@@ -2814,6 +2814,28 @@ fn followers_that_stop_reading_are_told_of_the_latest_commit() {
     drop((sender, writer));
 }
 
+/// TASK-79.16: a `READ` asking for more bytes than a message holds is refused (`EINVAL`), and its
+/// VM process served on, whatever it asks for: here more than what a request's bytes of stream
+/// data count, the payload it carries and what it asks for, may add up to.
+#[test]
+fn reads_past_a_messages_payload_are_refused() {
+    use super::wire::*;
+    host();
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("extentd.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || serve(listener));
+    let (sender, mut receiver, _stream, branch) =
+        raw_connection(&socket, &dir.path().join("store"), 1 << 24);
+    let read = Header::new(READ, 2).with_args(&[branch, 1, 0, u64::MAX]);
+    sender.send(read, &[0; 8], &[]).unwrap();
+    let refused = receiver.receive(|| 0).unwrap().expect("the daemon let the VM process go");
+    assert_eq!((refused.header.id, refused.header.status), (2, -Errno::EINVAL.raw()));
+    sender.send(Header::new(INFO, 3), &[], &[]).unwrap();
+    let info = receiver.receive(|| 0).unwrap().expect("the daemon let the VM process go");
+    assert_eq!((info.header.id, info.header.status), (3, 0));
+}
+
 /// Sends `header` and `payload`, a request, through `sender`, and returns its reply, which
 /// `receiver` receives, the stage operations before it acknowledged, as a VM process makes them.
 fn call(
