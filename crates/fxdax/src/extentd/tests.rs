@@ -2639,3 +2639,30 @@ fn a_zygotes_restores_open_its_point_once() {
     }
     assert_eq!(taken, 1, "the point's branch was taken by more writers than one");
 }
+
+/// TASK-79.34: a store whose VM process goes while the daemon's work through its connection holds
+/// the connection, here a shrink waiting for its guest's answer, is let go once that work is done,
+/// which its VM process's going ends, not before: deleted once its connection is done, it is open
+/// no more.
+#[test]
+fn stores_held_through_their_connections_are_let_go_once_they_are() {
+    host();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("store");
+    let (store, served) = connect(&path, 2 << 20);
+    let (asks, asked) = std::sync::mpsc::channel();
+    store.on_capacity(move |capacity, ask| {
+        // Unheard once the test has its answer.
+        let _ = asks.send((capacity, ask));
+    });
+    let resizing = {
+        let path = path.clone();
+        std::thread::spawn(move || resize(&path, 1 << 20))
+    };
+    assert_eq!(asked.recv().unwrap(), (1 << 20, true));
+    // Its VM process goes, answering nothing.
+    drop(store);
+    served.join().unwrap();
+    assert_eq!(delete_store(&path).map_err(|error| error.errno()), Ok(()));
+    assert_eq!(resizing.join().unwrap(), Err(Errno::ETIMEDOUT));
+}
