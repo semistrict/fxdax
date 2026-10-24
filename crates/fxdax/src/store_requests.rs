@@ -35,6 +35,9 @@ pub(crate) struct Rules {
     pub fork_through_holder: bool,
     /// A connection's resizes of its store run one at a time (TASK-79.41).
     pub resizes_one_at_a_time: bool,
+    /// A fork's store opened here keeps what holds its path, let go once the store is closed,
+    /// rather than the fork's call, which, cancelled, lets it go before then (TASK-79.34).
+    pub forks_hold_their_paths: bool,
 }
 
 impl Rules {
@@ -43,6 +46,7 @@ impl Rules {
         guest_agrees: true,
         fork_through_holder: true,
         resizes_one_at_a_time: true,
+        forks_hold_their_paths: true,
     };
 }
 
@@ -287,7 +291,12 @@ where
     if let Some(holder) = paths.holder_or_hold_async(key, wait).await? {
         return live(&holder).ok_or(Errno::EBUSY);
     }
-    open(Some(Released { paths, key: key.to_owned() })).await
+    let held = Released { paths, key: key.to_owned() };
+    if !rules().forks_hold_their_paths {
+        // Let go of as the call returns.
+        return open(None).await;
+    }
+    open(Some(held)).await
 }
 
 /// The requests under Shuttle: a VM's connection opening a store, committing, its guest
@@ -325,6 +334,17 @@ mod shuttle_tests {
     }
 
     impl Model {
+        /// A store of [`CAPACITY`], which nothing has open, nor committed to.
+        fn new() -> Arc<Self> {
+            Arc::new(Model {
+                capacity: CAPACITY.into(),
+                ordered: 0.into(),
+                durable: 0.into(),
+                open: 0.into(),
+                most_open: 0.into(),
+            })
+        }
+
         /// One more has it open, which none other may: checked by the tasks before what they check
         /// that follows from it, and once the run is done ([`Model::opened_once_at_a_time`]), not
         /// here, where a request may hold the holders' lock. A task panicking with a Shuttle lock
@@ -468,13 +488,7 @@ mod shuttle_tests {
     fn run() {
         let key = Path::new(KEY);
         let paths = Arc::new(Paths::<Conn>::new());
-        let model = Arc::new(Model {
-            capacity: CAPACITY.into(),
-            ordered: 0.into(),
-            durable: 0.into(),
-            open: 0.into(),
-            most_open: 0.into(),
-        });
+        let model = Model::new();
         // The commits made, as the guest saw them return.
         let committed = Arc::new(AtomicU64::new(0));
         let (opened_tx, opened) = mpsc::channel::<()>();
@@ -572,19 +586,98 @@ mod shuttle_tests {
         Runner::new(RandomScheduler::new(runs(2000)), config()).run(run);
     }
 
+    /// A store opened here whose closing, its call cancelled, is left to a thread of its own, as
+    /// `extentd::stores::Here`'s is to a blocking thread, with what holds it, which it lets go once
+    /// the store is closed.
+    struct ClosedBehind(Option<(Arc<Model>, Option<Released<'static, Conn>>)>);
+
+    impl Close for ClosedBehind {
+        async fn close(mut self) {
+            if let Some((model, held)) = self.0.take() {
+                model.close();
+                drop(held);
+            }
+        }
+    }
+
+    impl Drop for ClosedBehind {
+        fn drop(&mut self) {
+            if let Some((model, held)) = self.0.take() {
+                thread::spawn(move || {
+                    model.close();
+                    drop(held);
+                });
+            }
+        }
+    }
+
+    /// TASK-79.34: a fork of the store opened here, its call cancelled once it has the store,
+    /// whose closing is left to a thread of its own, lets the store's path go once it is closed:
+    /// a connection opening it at once finds it closed.
+    fn cancelled_fork() {
+        let key = Path::new(KEY);
+        // As the daemon's are, which outlive what the closing thread holds of them.
+        let paths: &'static Paths<Conn> = Box::leak(Box::new(Paths::new()));
+        let model = Model::new();
+        let (forked_tx, forked) = mpsc::channel::<()>();
+        let fork = {
+            let model = model.clone();
+            thread::spawn(move || {
+                let here = move |held| {
+                    model.open();
+                    std::future::ready(Ok(ClosedBehind(Some((model, held)))))
+                };
+                let live = |_: &Conn| None;
+                let forking = block_on(forking(paths, key, live, Duration::MAX, here)).unwrap();
+                forked_tx.send(()).unwrap();
+                // Its call cancelled.
+                drop(forking);
+            })
+        };
+        let opening = {
+            let model = model.clone();
+            thread::spawn(move || {
+                forked.recv().unwrap();
+                let conn = Conn::new(model.clone(), None);
+                paths.hold(key, Arc::downgrade(&conn), None).unwrap();
+                model.open();
+                model.close();
+                paths.release(key);
+            })
+        };
+        fork.join().unwrap();
+        opening.join().unwrap();
+        model.opened_once_at_a_time();
+    }
+
+    #[test]
+    fn cancelled_forks_let_their_paths_go_once_closed_randomly() {
+        *RULES.lock().unwrap() = Rules::ALL;
+        Runner::new(RandomScheduler::new(runs(2000)), config()).run(cancelled_fork);
+    }
+
+    #[test]
+    fn cancelled_forks_let_their_paths_go_once_closed_by_pct() {
+        *RULES.lock().unwrap() = Rules::ALL;
+        Runner::new(PctScheduler::new(3, runs(2000)), config()).run(cancelled_fork);
+    }
+
+    /// Let go of as its call returns, a fork's store's path is opened as the store is still open.
+    #[test]
+    fn needs_forks_to_hold_their_paths() {
+        *RULES.lock().unwrap() = Rules { forks_hold_their_paths: false, ..Rules::ALL };
+        fails_with("open twice at once", || {
+            Runner::new(RandomScheduler::new(runs(2000)), config()).run(cancelled_fork);
+        });
+    }
+
     /// TASK-79.41: two resizes at once of a store a connection holds, a grow and a shrink its
     /// guest agrees to, both through the connection, end with the store's capacity and its guest's
     /// view agreeing.
     fn resizes_at_once() {
         let key = Path::new(KEY);
         let paths = Arc::new(Paths::<Conn>::new());
-        let model = Arc::new(Model {
-            capacity: CAPACITY.into(),
-            ordered: 0.into(),
-            durable: 0.into(),
-            open: 0.into(),
-            most_open: 0.into(),
-        });
+        let model = Model::new();
         let (asks_tx, asks) = mpsc::channel();
         let conn = Conn::new(model.clone(), Some(asks_tx));
         paths.hold(key, Arc::downgrade(&conn), None).unwrap();
