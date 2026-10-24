@@ -245,10 +245,12 @@ pub(crate) const MAX_REQUESTS: usize = 4096;
 pub(crate) const MAX_STREAM_BYTES: u64 = 4 * MAX_PAYLOAD;
 
 /// fxdax: the bytes of data the request `header` is of moves through the stream: its payload, and,
-/// a `READ`'s, its reply's.
+/// a `READ`'s, its reply's: [`MAX_PAYLOAD`] at most, as one asking for more is refused (`EINVAL`),
+/// its reply's payload empty, whatever the VM process asks for: so a word that would overflow the
+/// bytes counted is counted as no more (TASK-79.16).
 pub(crate) fn stream_bytes(header: &Header) -> u64 {
     match header.kind {
-        READ if header.flags & READ_TRANSFER == 0 => header.len + header.args[3],
+        READ if header.flags & READ_TRANSFER == 0 => header.len + header.args[3].min(MAX_PAYLOAD),
         _ => header.len,
     }
 }
