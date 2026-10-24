@@ -1,0 +1,11 @@
+memory-pressure: memory watermarks - OutOfMemory: 50MB, Critical: 150MB, Warning: 300MB, Debounce: 1MB
+memory-pressure: hysteresis interval - 10 seconds
+memory-pressure: eviction: level - Critical, strategy - one-shot, delay - 5000 ms
+memory-pressure: ImminentOutOfMemory watermark - 60MB
+memory-pressure: memory availability state - Normal
+INFO fxdax::host_store: fxdax: cleaning branch c17893ccf35392c1 of /home/ramon/run-20261024T210616Z-07519990/results/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 1945600 bytes
+INFO fxdax::host_store: fxdax: cleaning branch c17893ccf35392c1 of /home/ramon/run-20261024T210616Z-07519990/results/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 10305536 bytes
+INFO fxdax::host_store: fxdax: cleaning branch c17893ccf35392c1 of /home/ramon/run-20261024T210616Z-07519990/results/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 11964416 bytes
+INFO fxdax::host_store: fxdax: cleaning branch c17893ccf35392c1 of /home/ramon/run-20261024T210616Z-07519990/results/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 9437184 bytes
+INFO fxdax::host_store: fxdax: cleaning branch c17893ccf35392c1 of /home/ramon/run-20261024T210616Z-07519990/results/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 15253504 bytes
+INFO fxdax_extentd: extentd: stopping, on SIGTERM

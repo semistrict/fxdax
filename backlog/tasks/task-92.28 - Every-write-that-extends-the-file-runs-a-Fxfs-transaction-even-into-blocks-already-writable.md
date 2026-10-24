@@ -3,9 +3,10 @@ id: TASK-92.28
 title: >-
   Every write that extends the file runs a Fxfs transaction, even into blocks
   already writable
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-10-22 21:06'
+updated_date: '2026-10-24 21:20'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -39,3 +40,9 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity medium): docs/review
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-10-24: SQLite WAL/NORMAL batch1 supplies the clean reproducer: almost no device I/O, with fxfs_dax_map_write at 19.44% and transaction commit at 9.72% of guest workload samples (docs/measurements/gce-fs-bench-2026-10-24T2105Z-07519990). Tracked as the first step of TASK-92.58.
+<!-- SECTION:NOTES:END -->

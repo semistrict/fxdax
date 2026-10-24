@@ -36,7 +36,9 @@
 # FXDAX_REMOTE_LATENCY_MS adds that many milliseconds to each of the bucket's
 # requests (extent_remote's object_store_at), as a farther object store would.
 # FXDAX_GUEST_CMDLINE adds to the guest kernel's arguments (such as
-# cpuidle_haltpoll.force=1), to measure them. FXDAX_GCE_LIMIT caps a run's time on the host (timeout's DURATION, default 6h).
+# cpuidle_haltpoll.force=1), to measure them. FXDAX_GUEST_KERNEL_BUILD (release or
+# debug) builds the guest kernel from the source on the host. FXDAX_GCE_LIMIT caps
+# a run's time on the host (timeout's DURATION, default 6h).
 # FXDAX_BENCH_NOTE says what the run is for. The results go to
 # docs/measurements/gce-fs-bench-<time>-<mark>, the run's mark
 # (scripts/lib/gce.sh), unless named. Every other FXDAX_* and

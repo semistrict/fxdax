@@ -1,0 +1,418 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 5K of event 'cpu-clock:ppp'
+# Event count (approx.): 5636636631
+#
+# Children      Self  Symbol                                                                                                                               
+# ........  ........  .....................................................................................................................................
+#
+    99.77%     0.11%  [.] <vmm::vstate::vcpu::Vcpu>::running
+            |          
+             --1.97%--0x58
+                       0xf020478b48fb8948
+
+    99.56%     2.33%  [.] ioctl
+            |
+            ---<vmm::vstate::vcpu::Vcpu>::running
+               |          
+                --1.97%--0x58
+                          0xf020478b48fb8948
+
+    97.23%     0.00%  [.] entry_SYSCALL_64_after_hwframe
+            |
+            ---ioctl
+               <vmm::vstate::vcpu::Vcpu>::running
+               |          
+                --1.92%--0x58
+                          0xf020478b48fb8948
+
+    97.23%     0.05%  [.] do_syscall_64
+            |
+            ---entry_SYSCALL_64_after_hwframe
+               ioctl
+               <vmm::vstate::vcpu::Vcpu>::running
+               |          
+                --1.92%--0x58
+                          0xf020478b48fb8948
+
+    97.18%     0.00%  [.] 0xf020478b48fb8948
+    97.18%     0.00%  [.] 0x0000000000000058
+            |
+            ---0xf020478b48fb8948
+
+    97.16%     0.00%  [.] x64_sys_call
+            |
+            ---do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+               <vmm::vstate::vcpu::Vcpu>::running
+               |          
+                --1.92%--0x58
+                          0xf020478b48fb8948
+
+    97.11%     0.04%  [.] __x64_sys_ioctl
+            |
+            ---x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+               <vmm::vstate::vcpu::Vcpu>::running
+               |          
+                --1.92%--0x58
+                          0xf020478b48fb8948
+
+    96.98%     0.05%  [.] kvm_vcpu_ioctl
+            |          
+             --1.97%--__x64_sys_ioctl
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       ioctl
+                       <vmm::vstate::vcpu::Vcpu>::running
+                       |          
+                        --1.92%--0x58
+                                  0xf020478b48fb8948
+
+    96.91%     0.05%  [.] kvm_arch_vcpu_ioctl_run
+            |
+            ---kvm_vcpu_ioctl
+               __x64_sys_ioctl
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+               <vmm::vstate::vcpu::Vcpu>::running
+               |          
+                --1.92%--0x58
+                          0xf020478b48fb8948
+
+    96.06%     0.16%  [.] vcpu_run
+            |
+            ---kvm_arch_vcpu_ioctl_run
+               kvm_vcpu_ioctl
+               __x64_sys_ioctl
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+               <vmm::vstate::vcpu::Vcpu>::running
+               |          
+                --1.90%--0x58
+                          0xf020478b48fb8948
+
+    81.35%    11.19%  [.] kvm_vcpu_halt
+            |
+            ---vcpu_run
+               kvm_arch_vcpu_ioctl_run
+               kvm_vcpu_ioctl
+               __x64_sys_ioctl
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+               <vmm::vstate::vcpu::Vcpu>::running
+               |          
+                --1.62%--0x58
+                          0xf020478b48fb8948
+
+    44.22%     2.43%  [.] kvm_vcpu_check_block
+            |          
+             --0.89%--kvm_vcpu_halt
+                       vcpu_run
+                       kvm_arch_vcpu_ioctl_run
+                       kvm_vcpu_ioctl
+                       __x64_sys_ioctl
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       ioctl
+                       <vmm::vstate::vcpu::Vcpu>::running
+                       |          
+                        --0.87%--0x58
+                                  0xf020478b48fb8948
+
+    24.65%     1.30%  [.] kvm_arch_vcpu_runnable
+            |          
+             --0.48%--kvm_vcpu_check_block
+                       |          
+                        --0.48%--kvm_vcpu_halt
+                                  vcpu_run
+                                  kvm_arch_vcpu_ioctl_run
+                                  kvm_vcpu_ioctl
+                                  __x64_sys_ioctl
+                                  x64_sys_call
+                                  do_syscall_64
+                                  entry_SYSCALL_64_after_hwframe
+                                  ioctl
+                                  <vmm::vstate::vcpu::Vcpu>::running
+                                  |          
+                                   --0.47%--0x58
+                                             0xf020478b48fb8948
+
+    22.94%     3.85%  [.] kvm_vcpu_has_events
+            |          
+             --0.45%--kvm_arch_vcpu_runnable
+                       |          
+                        --0.45%--kvm_vcpu_check_block
+                                  |          
+                                   --0.45%--kvm_vcpu_halt
+                                             vcpu_run
+                                             kvm_arch_vcpu_ioctl_run
+                                             kvm_vcpu_ioctl
+                                             __x64_sys_ioctl
+                                             x64_sys_call
+                                             do_syscall_64
+                                             entry_SYSCALL_64_after_hwframe
+                                             ioctl
+                                             <vmm::vstate::vcpu::Vcpu>::running
+                                             |          
+                                              --0.44%--0x58
+                                                        0xf020478b48fb8948
+
+    19.32%    19.27%  [k] read_tsc
+            |
+            ---kvm_vcpu_halt
+               vcpu_run
+               kvm_arch_vcpu_ioctl_run
+               kvm_vcpu_ioctl
+               __x64_sys_ioctl
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+               <vmm::vstate::vcpu::Vcpu>::running
+               |          
+                --0.38%--0x58
+                          0xf020478b48fb8948
+
+     9.70%     0.82%  [.] vt_interrupt_allowed
+            |          
+             --0.18%--kvm_vcpu_has_events
+                       kvm_arch_vcpu_runnable
+                       |          
+                        --0.18%--kvm_vcpu_check_block
+                                  kvm_vcpu_halt
+                                  vcpu_run
+                                  kvm_arch_vcpu_ioctl_run
+                                  kvm_vcpu_ioctl
+                                  __x64_sys_ioctl
+                                  x64_sys_call
+                                  do_syscall_64
+                                  entry_SYSCALL_64_after_hwframe
+                                  ioctl
+                                  <vmm::vstate::vcpu::Vcpu>::running
+                                  |          
+                                   --0.18%--0x58
+                                             0xf020478b48fb8948
+
+     9.64%     1.49%  [k] vmx_interrupt_allowed
+            |          
+             --0.17%--vt_interrupt_allowed
+                       |          
+                        --0.17%--kvm_vcpu_has_events
+                                  kvm_arch_vcpu_runnable
+                                  |          
+                                   --0.17%--kvm_vcpu_check_block
+                                             kvm_vcpu_halt
+                                             vcpu_run
+                                             kvm_arch_vcpu_ioctl_run
+                                             kvm_vcpu_ioctl
+                                             __x64_sys_ioctl
+                                             x64_sys_call
+                                             do_syscall_64
+                                             entry_SYSCALL_64_after_hwframe
+                                             ioctl
+                                             <vmm::vstate::vcpu::Vcpu>::running
+                                             |          
+                                              --0.17%--0x58
+                                                        0xf020478b48fb8948
+
+     9.07%     0.36%  [.] vcpu_enter_guest
+            |
+            ---vcpu_run
+               kvm_arch_vcpu_ioctl_run
+               kvm_vcpu_ioctl
+               __x64_sys_ioctl
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+               <vmm::vstate::vcpu::Vcpu>::running
+               |          
+                --0.17%--0x58
+                          0xf020478b48fb8948
+
+     8.81%     8.79%  [k] __srcu_read_lock
+            |          
+             --0.16%--kvm_vcpu_check_block
+                       |          
+                        --0.16%--kvm_vcpu_halt
+                                  vcpu_run
+                                  kvm_arch_vcpu_ioctl_run
+                                  kvm_vcpu_ioctl
+                                  __x64_sys_ioctl
+                                  x64_sys_call
+                                  do_syscall_64
+                                  entry_SYSCALL_64_after_hwframe
+                                  ioctl
+                                  <vmm::vstate::vcpu::Vcpu>::running
+                                  |          
+                                   --0.16%--0x58
+                                             0xf020478b48fb8948
+
+     8.58%     1.37%  [.] kvm_cpu_has_interrupt
+            |          
+             --0.16%--kvm_vcpu_has_events
+                       kvm_arch_vcpu_runnable
+                       |          
+                        --0.16%--kvm_vcpu_check_block
+                                  kvm_vcpu_halt
+                                  vcpu_run
+                                  kvm_arch_vcpu_ioctl_run
+                                  kvm_vcpu_ioctl
+                                  __x64_sys_ioctl
+                                  x64_sys_call
+                                  do_syscall_64
+                                  entry_SYSCALL_64_after_hwframe
+                                  ioctl
+                                  <vmm::vstate::vcpu::Vcpu>::running
+                                  |          
+                                   --0.16%--0x58
+                                             0xf020478b48fb8948
+
+     7.80%     7.78%  [k] __vmx_interrupt_blocked
+            |          
+             --0.15%--vmx_interrupt_allowed
+                       vt_interrupt_allowed
+                       |          
+                        --0.15%--kvm_vcpu_has_events
+                                  kvm_arch_vcpu_runnable
+                                  kvm_vcpu_check_block
+                                  kvm_vcpu_halt
+                                  vcpu_run
+                                  kvm_arch_vcpu_ioctl_run
+                                  kvm_vcpu_ioctl
+                                  __x64_sys_ioctl
+                                  x64_sys_call
+                                  do_syscall_64
+                                  entry_SYSCALL_64_after_hwframe
+                                  ioctl
+                                  <vmm::vstate::vcpu::Vcpu>::running
+                                  |          
+                                   --0.15%--0x58
+                                             0xf020478b48fb8948
+
+     7.49%     7.46%  [k] ktime_get
+            |          
+            |--0.08%--kvm_vcpu_halt
+            |          vcpu_run
+            |          kvm_arch_vcpu_ioctl_run
+            |          kvm_vcpu_ioctl
+            |          __x64_sys_ioctl
+            |          x64_sys_call
+            |          do_syscall_64
+            |          entry_SYSCALL_64_after_hwframe
+            |          ioctl
+            |          <vmm::vstate::vcpu::Vcpu>::running
+            |          |          
+            |           --0.08%--0x58
+            |                     0xf020478b48fb8948
+            |          
+             --0.07%--vcpu_run
+                       kvm_arch_vcpu_ioctl_run
+                       kvm_vcpu_ioctl
+                       __x64_sys_ioctl
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       ioctl
+                       <vmm::vstate::vcpu::Vcpu>::running
+                       |          
+                        --0.07%--0x58
+                                  0xf020478b48fb8948
+
+     7.00%     7.00%  [k] __srcu_read_unlock
+            |          
+             --0.13%--kvm_vcpu_check_block
+                       kvm_vcpu_halt
+                       vcpu_run
+                       kvm_arch_vcpu_ioctl_run
+                       kvm_vcpu_ioctl
+                       __x64_sys_ioctl
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       ioctl
+                       <vmm::vstate::vcpu::Vcpu>::running
+                       |          
+                        --0.13%--0x58
+                                  0xf020478b48fb8948
+
+     3.87%     3.87%  [k] kvm_apic_accept_pic_intr
+            |          
+             --0.06%--kvm_cpu_has_interrupt
+                       kvm_vcpu_has_events
+                       kvm_arch_vcpu_runnable
+                       kvm_vcpu_check_block
+                       kvm_vcpu_halt
+                       vcpu_run
+                       kvm_arch_vcpu_ioctl_run
+                       kvm_vcpu_ioctl
+                       __x64_sys_ioctl
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       ioctl
+                       <vmm::vstate::vcpu::Vcpu>::running
+
+     3.64%     0.05%  [.] vt_handle_exit
+            |          
+             --0.07%--vcpu_enter_guest
+                       vcpu_run
+                       kvm_arch_vcpu_ioctl_run
+                       kvm_vcpu_ioctl
+                       __x64_sys_ioctl
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       ioctl
+                       <vmm::vstate::vcpu::Vcpu>::running
+
+     3.59%     0.02%  [.] vmx_handle_exit
+            |
+            ---vt_handle_exit
+               vcpu_enter_guest
+               vcpu_run
+               kvm_arch_vcpu_ioctl_run
+               kvm_vcpu_ioctl
+               __x64_sys_ioctl
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+               <vmm::vstate::vcpu::Vcpu>::running
+
+     3.57%     0.09%  [.] __vmx_handle_exit
+            |
+            ---vmx_handle_exit
+               vt_handle_exit
+               vcpu_enter_guest
+               vcpu_run
+               kvm_arch_vcpu_ioctl_run
+               kvm_vcpu_ioctl
+               __x64_sys_ioctl
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+               <vmm::vstate::vcpu::Vcpu>::running
+
+     3.14%     0.02%  [.] kvm_mmu_page_fault
+
+
+#
+# (Cannot load tips.txt file, please install perf!)
+#

@@ -1,0 +1,1993 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 5K of event 'cpu-clock:ppp'
+# Event count (approx.): 5229229224
+#
+# Children      Self  Symbol                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             
+# ........  ........  ...................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................
+#
+    99.94%     0.00%  [.] 0x000075f82d73f55c
+    99.92%     0.00%  [.] 0x000075f82d6abe6b
+            |
+            ---0x75f82d73f55c
+
+    99.92%     0.00%  [.] <std::sys::thread::unix::Thread>::new::thread_start
+            |
+            ---0x75f82d6abe6b
+               0x75f82d73f55c
+
+    68.36%     0.00%  [.] <std::thread::lifecycle::spawn_unchecked<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+            |
+            ---<std::sys::thread::unix::Thread>::new::thread_start
+               0x75f82d6abe6b
+               0x75f82d73f55c
+
+    68.36%     0.00%  [.] std::sys::backtrace::__rust_begin_short_backtrace::<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>
+            |
+            ---<std::thread::lifecycle::spawn_unchecked<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <std::sys::thread::unix::Thread>::new::thread_start
+               0x75f82d6abe6b
+               0x75f82d73f55c
+
+    68.19%     0.27%  [.] <tokio::runtime::blocking::pool::Inner>::run
+            |
+            ---std::sys::backtrace::__rust_begin_short_backtrace::<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>
+               <std::thread::lifecycle::spawn_unchecked<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <std::sys::thread::unix::Thread>::new::thread_start
+               0x75f82d6abe6b
+               0x75f82d73f55c
+
+    64.51%     0.06%  [.] <tokio::runtime::task::harness::Harness<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<fxdax::extentd::server::receive::{closure#0}::{closure#1}, ()>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+            |          
+             --1.22%--<tokio::runtime::blocking::pool::Inner>::run
+                       std::sys::backtrace::__rust_begin_short_backtrace::<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>
+                       <std::thread::lifecycle::spawn_unchecked<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       <std::sys::thread::unix::Thread>::new::thread_start
+                       0x75f82d6abe6b
+                       0x75f82d73f55c
+
+    64.30%     0.11%  [.] <tokio::runtime::task::core::Core<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<<extent_remote::fetch::Fetching<extent_remote::store::Store>>::cached<core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>, <extent_remote::fetch::Fetching<extent_remote::store::Store>>::kept_tail::{closure#0}>::{closure#0}, core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+            |
+            ---<tokio::runtime::task::harness::Harness<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<fxdax::extentd::server::receive::{closure#0}::{closure#1}, ()>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+               <tokio::runtime::blocking::pool::Inner>::run
+               std::sys::backtrace::__rust_begin_short_backtrace::<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>
+               <std::thread::lifecycle::spawn_unchecked<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <std::sys::thread::unix::Thread>::new::thread_start
+               0x75f82d6abe6b
+               0x75f82d73f55c
+
+    64.18%     0.17%  [.] tokio::runtime::scheduler::multi_thread::worker::run
+            |          
+             --1.21%--<tokio::runtime::task::core::Core<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<<extent_remote::fetch::Fetching<extent_remote::store::Store>>::cached<core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>, <extent_remote::fetch::Fetching<extent_remote::store::Store>>::kept_tail::{closure#0}>::{closure#0}, core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+                       <tokio::runtime::task::harness::Harness<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<fxdax::extentd::server::receive::{closure#0}::{closure#1}, ()>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+                       <tokio::runtime::blocking::pool::Inner>::run
+                       std::sys::backtrace::__rust_begin_short_backtrace::<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>
+                       <std::thread::lifecycle::spawn_unchecked<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       <std::sys::thread::unix::Thread>::new::thread_start
+                       0x75f82d6abe6b
+                       0x75f82d73f55c
+
+    63.82%     0.02%  [.] tokio::runtime::context::runtime::enter_runtime::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}, ()>
+            |
+            ---tokio::runtime::scheduler::multi_thread::worker::run
+               |          
+                --1.20%--<tokio::runtime::task::core::Core<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<<extent_remote::fetch::Fetching<extent_remote::store::Store>>::cached<core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>, <extent_remote::fetch::Fetching<extent_remote::store::Store>>::kept_tail::{closure#0}>::{closure#0}, core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+                          <tokio::runtime::task::harness::Harness<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<fxdax::extentd::server::receive::{closure#0}::{closure#1}, ()>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+                          <tokio::runtime::blocking::pool::Inner>::run
+                          std::sys::backtrace::__rust_begin_short_backtrace::<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>
+                          <std::thread::lifecycle::spawn_unchecked<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          <std::sys::thread::unix::Thread>::new::thread_start
+                          0x75f82d6abe6b
+                          0x75f82d73f55c
+
+    63.74%     0.02%  [.] <tokio::runtime::context::scoped::Scoped<tokio::runtime::scheduler::Context>>::set::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}::{closure#0}, ()>
+            |          
+             --1.20%--tokio::runtime::context::runtime::enter_runtime::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}, ()>
+                       tokio::runtime::scheduler::multi_thread::worker::run
+                       |          
+                        --1.20%--<tokio::runtime::task::core::Core<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<<extent_remote::fetch::Fetching<extent_remote::store::Store>>::cached<core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>, <extent_remote::fetch::Fetching<extent_remote::store::Store>>::kept_tail::{closure#0}>::{closure#0}, core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+                                  <tokio::runtime::task::harness::Harness<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<fxdax::extentd::server::receive::{closure#0}::{closure#1}, ()>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+                                  <tokio::runtime::blocking::pool::Inner>::run
+                                  std::sys::backtrace::__rust_begin_short_backtrace::<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>
+                                  <std::thread::lifecycle::spawn_unchecked<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                  <std::sys::thread::unix::Thread>::new::thread_start
+                                  0x75f82d6abe6b
+                                  0x75f82d73f55c
+
+    63.34%     0.63%  [.] <tokio::runtime::scheduler::multi_thread::worker::Context>::run
+            |
+            ---<tokio::runtime::context::scoped::Scoped<tokio::runtime::scheduler::Context>>::set::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}::{closure#0}, ()>
+               tokio::runtime::context::runtime::enter_runtime::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}, ()>
+               tokio::runtime::scheduler::multi_thread::worker::run
+               |          
+                --1.19%--<tokio::runtime::task::core::Core<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<<extent_remote::fetch::Fetching<extent_remote::store::Store>>::cached<core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>, <extent_remote::fetch::Fetching<extent_remote::store::Store>>::kept_tail::{closure#0}>::{closure#0}, core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+                          <tokio::runtime::task::harness::Harness<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<fxdax::extentd::server::receive::{closure#0}::{closure#1}, ()>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+                          <tokio::runtime::blocking::pool::Inner>::run
+                          std::sys::backtrace::__rust_begin_short_backtrace::<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>
+                          <std::thread::lifecycle::spawn_unchecked<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          <std::sys::thread::unix::Thread>::new::thread_start
+                          0x75f82d6abe6b
+                          0x75f82d73f55c
+
+    53.91%     0.15%  [.] <tokio::runtime::scheduler::multi_thread::worker::Context>::run_task
+            |          
+             --1.02%--<tokio::runtime::scheduler::multi_thread::worker::Context>::run
+                       <tokio::runtime::context::scoped::Scoped<tokio::runtime::scheduler::Context>>::set::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}::{closure#0}, ()>
+                       tokio::runtime::context::runtime::enter_runtime::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}, ()>
+                       tokio::runtime::scheduler::multi_thread::worker::run
+                       |          
+                        --1.01%--<tokio::runtime::task::core::Core<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<<extent_remote::fetch::Fetching<extent_remote::store::Store>>::cached<core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>, <extent_remote::fetch::Fetching<extent_remote::store::Store>>::kept_tail::{closure#0}>::{closure#0}, core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+                                  <tokio::runtime::task::harness::Harness<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<fxdax::extentd::server::receive::{closure#0}::{closure#1}, ()>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+                                  <tokio::runtime::blocking::pool::Inner>::run
+                                  std::sys::backtrace::__rust_begin_short_backtrace::<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>
+                                  <std::thread::lifecycle::spawn_unchecked<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                  <std::sys::thread::unix::Thread>::new::thread_start
+                                  0x75f82d6abe6b
+                                  0x75f82d73f55c
+
+    53.54%     0.21%  [.] <tokio::runtime::task::harness::Harness<core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = ()> + core::marker::Send>>, alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>>::poll
+            |          
+             --1.01%--<tokio::runtime::scheduler::multi_thread::worker::Context>::run_task
+                       <tokio::runtime::scheduler::multi_thread::worker::Context>::run
+                       <tokio::runtime::context::scoped::Scoped<tokio::runtime::scheduler::Context>>::set::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}::{closure#0}, ()>
+                       tokio::runtime::context::runtime::enter_runtime::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}, ()>
+                       tokio::runtime::scheduler::multi_thread::worker::run
+                       |          
+                        --1.01%--<tokio::runtime::task::core::Core<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<<extent_remote::fetch::Fetching<extent_remote::store::Store>>::cached<core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>, <extent_remote::fetch::Fetching<extent_remote::store::Store>>::kept_tail::{closure#0}>::{closure#0}, core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+                                  <tokio::runtime::task::harness::Harness<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<fxdax::extentd::server::receive::{closure#0}::{closure#1}, ()>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+                                  <tokio::runtime::blocking::pool::Inner>::run
+                                  std::sys::backtrace::__rust_begin_short_backtrace::<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>
+                                  <std::thread::lifecycle::spawn_unchecked<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                  <std::sys::thread::unix::Thread>::new::thread_start
+                                  0x75f82d6abe6b
+                                  0x75f82d73f55c
+
+    52.76%     0.06%  [.] <tokio::runtime::task::core::Core<core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = ()> + core::marker::Send>>, alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>>::poll
+            |
+            ---<tokio::runtime::task::harness::Harness<core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = ()> + core::marker::Send>>, alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>>::poll
+               <tokio::runtime::scheduler::multi_thread::worker::Context>::run_task
+               <tokio::runtime::scheduler::multi_thread::worker::Context>::run
+               <tokio::runtime::context::scoped::Scoped<tokio::runtime::scheduler::Context>>::set::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}::{closure#0}, ()>
+               tokio::runtime::context::runtime::enter_runtime::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}, ()>
+               tokio::runtime::scheduler::multi_thread::worker::run
+               |          
+                --0.99%--<tokio::runtime::task::core::Core<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<<extent_remote::fetch::Fetching<extent_remote::store::Store>>::cached<core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>, <extent_remote::fetch::Fetching<extent_remote::store::Store>>::kept_tail::{closure#0}>::{closure#0}, core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+                          <tokio::runtime::task::harness::Harness<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<fxdax::extentd::server::receive::{closure#0}::{closure#1}, ()>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+                          <tokio::runtime::blocking::pool::Inner>::run
+                          std::sys::backtrace::__rust_begin_short_backtrace::<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>
+                          <std::thread::lifecycle::spawn_unchecked<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          <std::sys::thread::unix::Thread>::new::thread_start
+                          0x75f82d6abe6b
+                          0x75f82d73f55c
+
+    51.36%     0.54%  [.] fxdax::extentd::server::receive::{closure#0}
+            |          
+             --0.97%--<tokio::runtime::task::core::Core<core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = ()> + core::marker::Send>>, alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>>::poll
+                       <tokio::runtime::task::harness::Harness<core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = ()> + core::marker::Send>>, alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>>::poll
+                       <tokio::runtime::scheduler::multi_thread::worker::Context>::run_task
+                       <tokio::runtime::scheduler::multi_thread::worker::Context>::run
+                       <tokio::runtime::context::scoped::Scoped<tokio::runtime::scheduler::Context>>::set::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}::{closure#0}, ()>
+                       tokio::runtime::context::runtime::enter_runtime::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}, ()>
+                       tokio::runtime::scheduler::multi_thread::worker::run
+                       |          
+                        --0.97%--<tokio::runtime::task::core::Core<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<<extent_remote::fetch::Fetching<extent_remote::store::Store>>::cached<core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>, <extent_remote::fetch::Fetching<extent_remote::store::Store>>::kept_tail::{closure#0}>::{closure#0}, core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+                                  <tokio::runtime::task::harness::Harness<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<fxdax::extentd::server::receive::{closure#0}::{closure#1}, ()>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+                                  <tokio::runtime::blocking::pool::Inner>::run
+                                  std::sys::backtrace::__rust_begin_short_backtrace::<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>
+                                  <std::thread::lifecycle::spawn_unchecked<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                  <std::sys::thread::unix::Thread>::new::thread_start
+                                  0x75f82d6abe6b
+                                  0x75f82d73f55c
+
+    43.87%     0.08%  [.] tokio::runtime::scheduler::multi_thread::worker::block_in_place::<fxdax::extentd::server::receive::{closure#0}::{closure#1}, ()>
+            |
+            ---fxdax::extentd::server::receive::{closure#0}
+               <tokio::runtime::task::core::Core<core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = ()> + core::marker::Send>>, alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>>::poll
+               <tokio::runtime::task::harness::Harness<core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = ()> + core::marker::Send>>, alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>>::poll
+               <tokio::runtime::scheduler::multi_thread::worker::Context>::run_task
+               <tokio::runtime::scheduler::multi_thread::worker::Context>::run
+               <tokio::runtime::context::scoped::Scoped<tokio::runtime::scheduler::Context>>::set::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}::{closure#0}, ()>
+               tokio::runtime::context::runtime::enter_runtime::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}, ()>
+               tokio::runtime::scheduler::multi_thread::worker::run
+               |          
+                --0.83%--<tokio::runtime::task::core::Core<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<<extent_remote::fetch::Fetching<extent_remote::store::Store>>::cached<core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>, <extent_remote::fetch::Fetching<extent_remote::store::Store>>::kept_tail::{closure#0}>::{closure#0}, core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+                          <tokio::runtime::task::harness::Harness<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<fxdax::extentd::server::receive::{closure#0}::{closure#1}, ()>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+                          <tokio::runtime::blocking::pool::Inner>::run
+                          std::sys::backtrace::__rust_begin_short_backtrace::<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>
+                          <std::thread::lifecycle::spawn_unchecked<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          <std::sys::thread::unix::Thread>::new::thread_start
+                          0x75f82d6abe6b
+                          0x75f82d73f55c
+
+    41.23%     0.29%  [.] <fxdax::extentd::server::Connection>::serve_in_turn
+            |
+            ---tokio::runtime::scheduler::multi_thread::worker::block_in_place::<fxdax::extentd::server::receive::{closure#0}::{closure#1}, ()>
+               fxdax::extentd::server::receive::{closure#0}
+               <tokio::runtime::task::core::Core<core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = ()> + core::marker::Send>>, alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>>::poll
+               <tokio::runtime::task::harness::Harness<core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = ()> + core::marker::Send>>, alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>>::poll
+               <tokio::runtime::scheduler::multi_thread::worker::Context>::run_task
+               <tokio::runtime::scheduler::multi_thread::worker::Context>::run
+               <tokio::runtime::context::scoped::Scoped<tokio::runtime::scheduler::Context>>::set::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}::{closure#0}, ()>
+               tokio::runtime::context::runtime::enter_runtime::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}, ()>
+               tokio::runtime::scheduler::multi_thread::worker::run
+               |          
+                --0.78%--<tokio::runtime::task::core::Core<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<<extent_remote::fetch::Fetching<extent_remote::store::Store>>::cached<core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>, <extent_remote::fetch::Fetching<extent_remote::store::Store>>::kept_tail::{closure#0}>::{closure#0}, core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+                          <tokio::runtime::task::harness::Harness<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<fxdax::extentd::server::receive::{closure#0}::{closure#1}, ()>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+                          <tokio::runtime::blocking::pool::Inner>::run
+                          std::sys::backtrace::__rust_begin_short_backtrace::<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>
+                          <std::thread::lifecycle::spawn_unchecked<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          <std::sys::thread::unix::Thread>::new::thread_start
+                          0x75f82d6abe6b
+                          0x75f82d73f55c
+
+    35.03%     0.00%  [.] entry_SYSCALL_64_after_hwframe
+            |          
+            |--0.51%--0x75f82d6b4792
+            |          |          
+            |          |--0.17%--__libc_pwrite
+            |          |          <std::fs::File as std::os::unix::fs::FileExt>::write_at
+            |          |          <std::fs::File as std::os::unix::fs::FileExt>::write_all_at
+            |          |          |          
+            |          |           --0.11%--<extent_store::store::Store<extent_store::dir::HostDir>>::write
+            |          |                     |          
+            |          |                      --0.08%--<fxdax::extents::ExtentStore>::commit_with
+            |          |          
+            |          |--0.10%--epoll_wait
+            |          |          <mio::poll::Poll>::poll
+            |          |          <tokio::runtime::io::driver::Driver>::turn
+            |          |          <tokio::runtime::time::Driver>::park_internal
+            |          |          |          
+            |          |           --0.10%--<tokio::runtime::scheduler::multi_thread::worker::Context>::park_internal
+            |          |                     <tokio::runtime::scheduler::multi_thread::worker::Context>::run
+            |          |                     <tokio::runtime::context::scoped::Scoped<tokio::runtime::scheduler::Context>>::set::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}::{closure#0}, ()>
+            |          |                     tokio::runtime::context::runtime::enter_runtime::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}, ()>
+            |          |                     tokio::runtime::scheduler::multi_thread::worker::run
+            |          |                     <tokio::runtime::task::core::Core<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<<extent_remote::fetch::Fetching<extent_remote::store::Store>>::cached<core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>, <extent_remote::fetch::Fetching<extent_remote::store::Store>>::kept_tail::{closure#0}>::{closure#0}, core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+            |          |                     <tokio::runtime::task::harness::Harness<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<fxdax::extentd::server::receive::{closure#0}::{closure#1}, ()>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+            |          |                     <tokio::runtime::blocking::pool::Inner>::run
+            |          |                     std::sys::backtrace::__rust_begin_short_backtrace::<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>
+            |          |                     <std::thread::lifecycle::spawn_unchecked<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+            |          |                     <std::sys::thread::unix::Thread>::new::thread_start
+            |          |                     0x75f82d6abe6b
+            |          |                     0x75f82d73f55c
+            |          |          
+            |          |--0.09%--__libc_pread
+            |          |          <std::fs::File as std::os::unix::fs::FileExt>::read_at
+            |          |          |          
+            |          |           --0.08%--extent_store::segments::frame_segment::<extent_store::dir::HostDir>
+            |          |                     <<extent_store::segments::Framing<extent_store::dir::HostFile>>::start<extent_store::dir::HostDir>::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+            |          |                     std::sys::backtrace::__rust_begin_short_backtrace::<extent_store::sync::spawn_or_run<<extent_store::segments::Framing<extent_store::dir::HostFile>>::start<extent_store::dir::HostDir>::{closure#0}>::{closure#0}, ()>
+            |          |                     <std::thread::lifecycle::spawn_unchecked<extent_store::sync::spawn_or_run<<extent_store::segments::Framing<extent_store::dir::HostFile>>::start<extent_store::dir::HostDir>::{closure#0}>::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+            |          |                     <std::sys::thread::unix::Thread>::new::thread_start
+            |          |                     0x75f82d6abe6b
+            |          |                     0x75f82d73f55c
+            |          |          
+            |          |--0.07%--sendmsg
+            |          |          fxdax::extentd::wire::send_parts
+            |          |          <fxdax::extentd::wire::Queued>::send
+            |          |          |          
+            |          |           --0.06%--<fxdax::extentd::wire::AsyncSender>::queue
+            |          |          
+            |           --0.06%--recvmsg
+            |                     fxdax::extentd::wire::receive_with_fds
+            |                     <fxdax::extentd::wire::AsyncReceiver>::read::{closure#0}
+            |                     fxdax::extentd::server::receive::{closure#0}
+            |                     <tokio::runtime::task::core::Core<core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = ()> + core::marker::Send>>, alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>>::poll
+            |                     <tokio::runtime::task::harness::Harness<core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = ()> + core::marker::Send>>, alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>>::poll
+            |                     <tokio::runtime::scheduler::multi_thread::worker::Context>::run_task
+            |                     <tokio::runtime::scheduler::multi_thread::worker::Context>::run
+            |                     <tokio::runtime::context::scoped::Scoped<tokio::runtime::scheduler::Context>>::set::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}::{closure#0}, ()>
+            |                     tokio::runtime::context::runtime::enter_runtime::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}, ()>
+            |                     tokio::runtime::scheduler::multi_thread::worker::run
+            |                     <tokio::runtime::task::core::Core<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<<extent_remote::fetch::Fetching<extent_remote::store::Store>>::cached<core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>, <extent_remote::fetch::Fetching<extent_remote::store::Store>>::kept_tail::{closure#0}>::{closure#0}, core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+            |                     <tokio::runtime::task::harness::Harness<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<fxdax::extentd::server::receive::{closure#0}::{closure#1}, ()>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+            |                     <tokio::runtime::blocking::pool::Inner>::run
+            |                     std::sys::backtrace::__rust_begin_short_backtrace::<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>
+            |                     <std::thread::lifecycle::spawn_unchecked<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+            |                     <std::sys::thread::unix::Thread>::new::thread_start
+            |                     0x75f82d6abe6b
+            |                     0x75f82d73f55c
+            |          
+             --0.12%--syscall
+
+    34.99%     0.98%  [.] do_syscall_64
+            |
+            ---entry_SYSCALL_64_after_hwframe
+               |          
+               |--0.51%--0x75f82d6b4792
+               |          |          
+               |          |--0.17%--__libc_pwrite
+               |          |          <std::fs::File as std::os::unix::fs::FileExt>::write_at
+               |          |          <std::fs::File as std::os::unix::fs::FileExt>::write_all_at
+               |          |          |          
+               |          |           --0.11%--<extent_store::store::Store<extent_store::dir::HostDir>>::write
+               |          |                     |          
+               |          |                      --0.08%--<fxdax::extents::ExtentStore>::commit_with
+               |          |          
+               |          |--0.10%--epoll_wait
+               |          |          <mio::poll::Poll>::poll
+               |          |          <tokio::runtime::io::driver::Driver>::turn
+               |          |          <tokio::runtime::time::Driver>::park_internal
+               |          |          |          
+               |          |           --0.10%--<tokio::runtime::scheduler::multi_thread::worker::Context>::park_internal
+               |          |                     <tokio::runtime::scheduler::multi_thread::worker::Context>::run
+               |          |                     <tokio::runtime::context::scoped::Scoped<tokio::runtime::scheduler::Context>>::set::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}::{closure#0}, ()>
+               |          |                     tokio::runtime::context::runtime::enter_runtime::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}, ()>
+               |          |                     tokio::runtime::scheduler::multi_thread::worker::run
+               |          |                     <tokio::runtime::task::core::Core<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<<extent_remote::fetch::Fetching<extent_remote::store::Store>>::cached<core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>, <extent_remote::fetch::Fetching<extent_remote::store::Store>>::kept_tail::{closure#0}>::{closure#0}, core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+               |          |                     <tokio::runtime::task::harness::Harness<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<fxdax::extentd::server::receive::{closure#0}::{closure#1}, ()>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+               |          |                     <tokio::runtime::blocking::pool::Inner>::run
+               |          |                     std::sys::backtrace::__rust_begin_short_backtrace::<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>
+               |          |                     <std::thread::lifecycle::spawn_unchecked<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               |          |                     <std::sys::thread::unix::Thread>::new::thread_start
+               |          |                     0x75f82d6abe6b
+               |          |                     0x75f82d73f55c
+               |          |          
+               |          |--0.09%--__libc_pread
+               |          |          <std::fs::File as std::os::unix::fs::FileExt>::read_at
+               |          |          |          
+               |          |           --0.08%--extent_store::segments::frame_segment::<extent_store::dir::HostDir>
+               |          |                     <<extent_store::segments::Framing<extent_store::dir::HostFile>>::start<extent_store::dir::HostDir>::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+               |          |                     std::sys::backtrace::__rust_begin_short_backtrace::<extent_store::sync::spawn_or_run<<extent_store::segments::Framing<extent_store::dir::HostFile>>::start<extent_store::dir::HostDir>::{closure#0}>::{closure#0}, ()>
+               |          |                     <std::thread::lifecycle::spawn_unchecked<extent_store::sync::spawn_or_run<<extent_store::segments::Framing<extent_store::dir::HostFile>>::start<extent_store::dir::HostDir>::{closure#0}>::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               |          |                     <std::sys::thread::unix::Thread>::new::thread_start
+               |          |                     0x75f82d6abe6b
+               |          |                     0x75f82d73f55c
+               |          |          
+               |          |--0.07%--sendmsg
+               |          |          fxdax::extentd::wire::send_parts
+               |          |          <fxdax::extentd::wire::Queued>::send
+               |          |          |          
+               |          |           --0.06%--<fxdax::extentd::wire::AsyncSender>::queue
+               |          |          
+               |           --0.06%--recvmsg
+               |                     fxdax::extentd::wire::receive_with_fds
+               |                     <fxdax::extentd::wire::AsyncReceiver>::read::{closure#0}
+               |                     fxdax::extentd::server::receive::{closure#0}
+               |                     <tokio::runtime::task::core::Core<core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = ()> + core::marker::Send>>, alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>>::poll
+               |                     <tokio::runtime::task::harness::Harness<core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = ()> + core::marker::Send>>, alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>>::poll
+               |                     <tokio::runtime::scheduler::multi_thread::worker::Context>::run_task
+               |                     <tokio::runtime::scheduler::multi_thread::worker::Context>::run
+               |                     <tokio::runtime::context::scoped::Scoped<tokio::runtime::scheduler::Context>>::set::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}::{closure#0}, ()>
+               |                     tokio::runtime::context::runtime::enter_runtime::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}, ()>
+               |                     tokio::runtime::scheduler::multi_thread::worker::run
+               |                     <tokio::runtime::task::core::Core<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<<extent_remote::fetch::Fetching<extent_remote::store::Store>>::cached<core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>, <extent_remote::fetch::Fetching<extent_remote::store::Store>>::kept_tail::{closure#0}>::{closure#0}, core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+               |                     <tokio::runtime::task::harness::Harness<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<fxdax::extentd::server::receive::{closure#0}::{closure#1}, ()>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+               |                     <tokio::runtime::blocking::pool::Inner>::run
+               |                     std::sys::backtrace::__rust_begin_short_backtrace::<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>
+               |                     <std::thread::lifecycle::spawn_unchecked<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               |                     <std::sys::thread::unix::Thread>::new::thread_start
+               |                     0x75f82d6abe6b
+               |                     0x75f82d73f55c
+               |          
+                --0.12%--syscall
+
+    33.96%     0.13%  [k] x64_sys_call
+            |          
+             --0.64%--do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       |          
+                       |--0.50%--0x75f82d6b4792
+                       |          |          
+                       |          |--0.17%--__libc_pwrite
+                       |          |          <std::fs::File as std::os::unix::fs::FileExt>::write_at
+                       |          |          <std::fs::File as std::os::unix::fs::FileExt>::write_all_at
+                       |          |          |          
+                       |          |           --0.11%--<extent_store::store::Store<extent_store::dir::HostDir>>::write
+                       |          |                     |          
+                       |          |                      --0.08%--<fxdax::extents::ExtentStore>::commit_with
+                       |          |          
+                       |          |--0.09%--epoll_wait
+                       |          |          <mio::poll::Poll>::poll
+                       |          |          <tokio::runtime::io::driver::Driver>::turn
+                       |          |          <tokio::runtime::time::Driver>::park_internal
+                       |          |          |          
+                       |          |           --0.09%--<tokio::runtime::scheduler::multi_thread::worker::Context>::park_internal
+                       |          |                     <tokio::runtime::scheduler::multi_thread::worker::Context>::run
+                       |          |                     <tokio::runtime::context::scoped::Scoped<tokio::runtime::scheduler::Context>>::set::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}::{closure#0}, ()>
+                       |          |                     tokio::runtime::context::runtime::enter_runtime::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}, ()>
+                       |          |                     tokio::runtime::scheduler::multi_thread::worker::run
+                       |          |                     <tokio::runtime::task::core::Core<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<<extent_remote::fetch::Fetching<extent_remote::store::Store>>::cached<core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>, <extent_remote::fetch::Fetching<extent_remote::store::Store>>::kept_tail::{closure#0}>::{closure#0}, core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+                       |          |                     <tokio::runtime::task::harness::Harness<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<fxdax::extentd::server::receive::{closure#0}::{closure#1}, ()>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+                       |          |                     <tokio::runtime::blocking::pool::Inner>::run
+                       |          |                     std::sys::backtrace::__rust_begin_short_backtrace::<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>
+                       |          |                     <std::thread::lifecycle::spawn_unchecked<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       |          |                     <std::sys::thread::unix::Thread>::new::thread_start
+                       |          |                     0x75f82d6abe6b
+                       |          |                     0x75f82d73f55c
+                       |          |          
+                       |          |--0.09%--__libc_pread
+                       |          |          <std::fs::File as std::os::unix::fs::FileExt>::read_at
+                       |          |          |          
+                       |          |           --0.08%--extent_store::segments::frame_segment::<extent_store::dir::HostDir>
+                       |          |                     <<extent_store::segments::Framing<extent_store::dir::HostFile>>::start<extent_store::dir::HostDir>::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+                       |          |                     std::sys::backtrace::__rust_begin_short_backtrace::<extent_store::sync::spawn_or_run<<extent_store::segments::Framing<extent_store::dir::HostFile>>::start<extent_store::dir::HostDir>::{closure#0}>::{closure#0}, ()>
+                       |          |                     <std::thread::lifecycle::spawn_unchecked<extent_store::sync::spawn_or_run<<extent_store::segments::Framing<extent_store::dir::HostFile>>::start<extent_store::dir::HostDir>::{closure#0}>::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       |          |                     <std::sys::thread::unix::Thread>::new::thread_start
+                       |          |                     0x75f82d6abe6b
+                       |          |                     0x75f82d73f55c
+                       |          |          
+                       |          |--0.06%--sendmsg
+                       |          |          fxdax::extentd::wire::send_parts
+                       |          |          <fxdax::extentd::wire::Queued>::send
+                       |          |          |          
+                       |          |           --0.06%--<fxdax::extentd::wire::AsyncSender>::queue
+                       |          |          
+                       |           --0.06%--recvmsg
+                       |                     fxdax::extentd::wire::receive_with_fds
+                       |                     <fxdax::extentd::wire::AsyncReceiver>::read::{closure#0}
+                       |                     fxdax::extentd::server::receive::{closure#0}
+                       |                     <tokio::runtime::task::core::Core<core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = ()> + core::marker::Send>>, alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>>::poll
+                       |                     <tokio::runtime::task::harness::Harness<core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = ()> + core::marker::Send>>, alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>>::poll
+                       |                     <tokio::runtime::scheduler::multi_thread::worker::Context>::run_task
+                       |                     <tokio::runtime::scheduler::multi_thread::worker::Context>::run
+                       |                     <tokio::runtime::context::scoped::Scoped<tokio::runtime::scheduler::Context>>::set::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}::{closure#0}, ()>
+                       |                     tokio::runtime::context::runtime::enter_runtime::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}, ()>
+                       |                     tokio::runtime::scheduler::multi_thread::worker::run
+                       |                     <tokio::runtime::task::core::Core<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<<extent_remote::fetch::Fetching<extent_remote::store::Store>>::cached<core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>, <extent_remote::fetch::Fetching<extent_remote::store::Store>>::kept_tail::{closure#0}>::{closure#0}, core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+                       |                     <tokio::runtime::task::harness::Harness<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<fxdax::extentd::server::receive::{closure#0}::{closure#1}, ()>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+                       |                     <tokio::runtime::blocking::pool::Inner>::run
+                       |                     std::sys::backtrace::__rust_begin_short_backtrace::<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>
+                       |                     <std::thread::lifecycle::spawn_unchecked<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       |                     <std::sys::thread::unix::Thread>::new::thread_start
+                       |                     0x75f82d6abe6b
+                       |                     0x75f82d73f55c
+                       |          
+                        --0.11%--syscall
+
+    28.12%     0.00%  [.] 0x000075f82d6b4792
+            |          
+            |--0.17%--__libc_pwrite
+            |          <std::fs::File as std::os::unix::fs::FileExt>::write_at
+            |          <std::fs::File as std::os::unix::fs::FileExt>::write_all_at
+            |          |          
+            |           --0.11%--<extent_store::store::Store<extent_store::dir::HostDir>>::write
+            |                     |          
+            |                      --0.08%--<fxdax::extents::ExtentStore>::commit_with
+            |          
+            |--0.10%--epoll_wait
+            |          <mio::poll::Poll>::poll
+            |          <tokio::runtime::io::driver::Driver>::turn
+            |          <tokio::runtime::time::Driver>::park_internal
+            |          |          
+            |           --0.10%--<tokio::runtime::scheduler::multi_thread::worker::Context>::park_internal
+            |                     <tokio::runtime::scheduler::multi_thread::worker::Context>::run
+            |                     <tokio::runtime::context::scoped::Scoped<tokio::runtime::scheduler::Context>>::set::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}::{closure#0}, ()>
+            |                     tokio::runtime::context::runtime::enter_runtime::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}, ()>
+            |                     tokio::runtime::scheduler::multi_thread::worker::run
+            |                     <tokio::runtime::task::core::Core<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<<extent_remote::fetch::Fetching<extent_remote::store::Store>>::cached<core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>, <extent_remote::fetch::Fetching<extent_remote::store::Store>>::kept_tail::{closure#0}>::{closure#0}, core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+            |                     <tokio::runtime::task::harness::Harness<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<fxdax::extentd::server::receive::{closure#0}::{closure#1}, ()>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+            |                     <tokio::runtime::blocking::pool::Inner>::run
+            |                     std::sys::backtrace::__rust_begin_short_backtrace::<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>
+            |                     <std::thread::lifecycle::spawn_unchecked<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+            |                     <std::sys::thread::unix::Thread>::new::thread_start
+            |                     0x75f82d6abe6b
+            |                     0x75f82d73f55c
+            |          
+            |--0.09%--__libc_pread
+            |          <std::fs::File as std::os::unix::fs::FileExt>::read_at
+            |          |          
+            |           --0.08%--extent_store::segments::frame_segment::<extent_store::dir::HostDir>
+            |                     <<extent_store::segments::Framing<extent_store::dir::HostFile>>::start<extent_store::dir::HostDir>::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+            |                     std::sys::backtrace::__rust_begin_short_backtrace::<extent_store::sync::spawn_or_run<<extent_store::segments::Framing<extent_store::dir::HostFile>>::start<extent_store::dir::HostDir>::{closure#0}>::{closure#0}, ()>
+            |                     <std::thread::lifecycle::spawn_unchecked<extent_store::sync::spawn_or_run<<extent_store::segments::Framing<extent_store::dir::HostFile>>::start<extent_store::dir::HostDir>::{closure#0}>::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+            |                     <std::sys::thread::unix::Thread>::new::thread_start
+            |                     0x75f82d6abe6b
+            |                     0x75f82d73f55c
+            |          
+            |--0.07%--sendmsg
+            |          fxdax::extentd::wire::send_parts
+            |          <fxdax::extentd::wire::Queued>::send
+            |          |          
+            |           --0.07%--<fxdax::extentd::wire::AsyncSender>::queue
+            |          
+             --0.07%--recvmsg
+                       fxdax::extentd::wire::receive_with_fds
+                       <fxdax::extentd::wire::AsyncReceiver>::read::{closure#0}
+                       fxdax::extentd::server::receive::{closure#0}
+                       <tokio::runtime::task::core::Core<core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = ()> + core::marker::Send>>, alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>>::poll
+                       <tokio::runtime::task::harness::Harness<core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = ()> + core::marker::Send>>, alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>>::poll
+                       <tokio::runtime::scheduler::multi_thread::worker::Context>::run_task
+                       <tokio::runtime::scheduler::multi_thread::worker::Context>::run
+                       <tokio::runtime::context::scoped::Scoped<tokio::runtime::scheduler::Context>>::set::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}::{closure#0}, ()>
+                       tokio::runtime::context::runtime::enter_runtime::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}, ()>
+                       tokio::runtime::scheduler::multi_thread::worker::run
+                       <tokio::runtime::task::core::Core<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<<extent_remote::fetch::Fetching<extent_remote::store::Store>>::cached<core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>, <extent_remote::fetch::Fetching<extent_remote::store::Store>>::kept_tail::{closure#0}>::{closure#0}, core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+                       <tokio::runtime::task::harness::Harness<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<fxdax::extentd::server::receive::{closure#0}::{closure#1}, ()>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+                       <tokio::runtime::blocking::pool::Inner>::run
+                       std::sys::backtrace::__rust_begin_short_backtrace::<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>
+                       <std::thread::lifecycle::spawn_unchecked<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       <std::sys::thread::unix::Thread>::new::thread_start
+                       0x75f82d6abe6b
+                       0x75f82d73f55c
+
+    18.22%     0.00%  [.] <alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>> as alloc::vec::spec_from_iter_nested::SpecFromIterNested<core::option::Option<alloc::vec::Vec<u8>>, core::iter::adapters::map::Map<core::slice::iter::Iter<&[u8]>, extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}::{closure#0}>>>::from_iter
+            |          
+             --0.34%--std::sys::backtrace::__rust_begin_short_backtrace::<extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}, alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>>>
+                       <std::thread::lifecycle::spawn_unchecked<extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}, alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>>>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       <std::sys::thread::unix::Thread>::new::thread_start
+                       0x75f82d6abe6b
+                       0x75f82d73f55c
+
+    18.22%     0.00%  [.] extent_frame::pack_part
+            |
+            ---<alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>> as alloc::vec::spec_from_iter_nested::SpecFromIterNested<core::option::Option<alloc::vec::Vec<u8>>, core::iter::adapters::map::Map<core::slice::iter::Iter<&[u8]>, extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}::{closure#0}>>>::from_iter
+               |          
+                --0.34%--std::sys::backtrace::__rust_begin_short_backtrace::<extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}, alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>>>
+                          <std::thread::lifecycle::spawn_unchecked<extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}, alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>>>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          <std::sys::thread::unix::Thread>::new::thread_start
+                          0x75f82d6abe6b
+                          0x75f82d73f55c
+
+    18.20%     0.00%  [.] <std::thread::lifecycle::spawn_unchecked<extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}, alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>>>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+            |
+            ---<std::sys::thread::unix::Thread>::new::thread_start
+               0x75f82d6abe6b
+               0x75f82d73f55c
+
+    18.20%     0.00%  [.] std::sys::backtrace::__rust_begin_short_backtrace::<extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}, alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>>>
+            |
+            ---<std::thread::lifecycle::spawn_unchecked<extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}, alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>>>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <std::sys::thread::unix::Thread>::new::thread_start
+               0x75f82d6abe6b
+               0x75f82d73f55c
+
+    18.17%     0.00%  [.] ZSTD_compress2
+            |
+            ---extent_frame::pack_part
+               <alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>> as alloc::vec::spec_from_iter_nested::SpecFromIterNested<core::option::Option<alloc::vec::Vec<u8>>, core::iter::adapters::map::Map<core::slice::iter::Iter<&[u8]>, extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}::{closure#0}>>>::from_iter
+               |          
+                --0.34%--std::sys::backtrace::__rust_begin_short_backtrace::<extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}, alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>>>
+                          <std::thread::lifecycle::spawn_unchecked<extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}, alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>>>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          <std::sys::thread::unix::Thread>::new::thread_start
+                          0x75f82d6abe6b
+                          0x75f82d73f55c
+
+    18.13%     0.00%  [.] ZSTD_compressStream_generic
+            |
+            ---ZSTD_compress2
+               extent_frame::pack_part
+               <alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>> as alloc::vec::spec_from_iter_nested::SpecFromIterNested<core::option::Option<alloc::vec::Vec<u8>>, core::iter::adapters::map::Map<core::slice::iter::Iter<&[u8]>, extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}::{closure#0}>>>::from_iter
+               |          
+                --0.34%--std::sys::backtrace::__rust_begin_short_backtrace::<extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}, alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>>>
+                          <std::thread::lifecycle::spawn_unchecked<extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}, alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>>>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          <std::sys::thread::unix::Thread>::new::thread_start
+                          0x75f82d6abe6b
+                          0x75f82d73f55c
+
+    18.13%     0.00%  [.] ZSTD_compressEnd_public
+            |
+            ---ZSTD_compressStream_generic
+               ZSTD_compress2
+               extent_frame::pack_part
+               <alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>> as alloc::vec::spec_from_iter_nested::SpecFromIterNested<core::option::Option<alloc::vec::Vec<u8>>, core::iter::adapters::map::Map<core::slice::iter::Iter<&[u8]>, extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}::{closure#0}>>>::from_iter
+               |          
+                --0.34%--std::sys::backtrace::__rust_begin_short_backtrace::<extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}, alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>>>
+                          <std::thread::lifecycle::spawn_unchecked<extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}, alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>>>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          <std::sys::thread::unix::Thread>::new::thread_start
+                          0x75f82d6abe6b
+                          0x75f82d73f55c
+
+    17.94%     0.00%  [.] ZSTD_compress_frameChunk
+            |
+            ---ZSTD_compressEnd_public
+               ZSTD_compressStream_generic
+               ZSTD_compress2
+               extent_frame::pack_part
+               <alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>> as alloc::vec::spec_from_iter_nested::SpecFromIterNested<core::option::Option<alloc::vec::Vec<u8>>, core::iter::adapters::map::Map<core::slice::iter::Iter<&[u8]>, extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}::{closure#0}>>>::from_iter
+               std::sys::backtrace::__rust_begin_short_backtrace::<extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}, alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>>>
+               <std::thread::lifecycle::spawn_unchecked<extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}, alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>>>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <std::sys::thread::unix::Thread>::new::thread_start
+               0x75f82d6abe6b
+               0x75f82d73f55c
+
+    17.84%     0.00%  [.] ZSTD_compressBlock_internal
+            |
+            ---ZSTD_compress_frameChunk
+               ZSTD_compressEnd_public
+               ZSTD_compressStream_generic
+               ZSTD_compress2
+               extent_frame::pack_part
+               <alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>> as alloc::vec::spec_from_iter_nested::SpecFromIterNested<core::option::Option<alloc::vec::Vec<u8>>, core::iter::adapters::map::Map<core::slice::iter::Iter<&[u8]>, extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}::{closure#0}>>>::from_iter
+               std::sys::backtrace::__rust_begin_short_backtrace::<extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}, alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>>>
+               <std::thread::lifecycle::spawn_unchecked<extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}, alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>>>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <std::sys::thread::unix::Thread>::new::thread_start
+               0x75f82d6abe6b
+               0x75f82d73f55c
+
+    16.06%     0.15%  [.] <fxdax::extents::ExtentStore>::commit_with
+            |          
+            |--0.19%--<fxdax::extents::ExtentStore>::write_with_barriers
+            |          <fxdax::extentd::server::Connection>::serve_in_turn
+            |          tokio::runtime::scheduler::multi_thread::worker::block_in_place::<fxdax::extentd::server::receive::{closure#0}::{closure#1}, ()>
+            |          fxdax::extentd::server::receive::{closure#0}
+            |          <tokio::runtime::task::core::Core<core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = ()> + core::marker::Send>>, alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>>::poll
+            |          <tokio::runtime::task::harness::Harness<core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = ()> + core::marker::Send>>, alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>>::poll
+            |          <tokio::runtime::scheduler::multi_thread::worker::Context>::run_task
+            |          <tokio::runtime::scheduler::multi_thread::worker::Context>::run
+            |          <tokio::runtime::context::scoped::Scoped<tokio::runtime::scheduler::Context>>::set::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}::{closure#0}, ()>
+            |          tokio::runtime::context::runtime::enter_runtime::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}, ()>
+            |          tokio::runtime::scheduler::multi_thread::worker::run
+            |          <tokio::runtime::task::core::Core<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<<extent_remote::fetch::Fetching<extent_remote::store::Store>>::cached<core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>, <extent_remote::fetch::Fetching<extent_remote::store::Store>>::kept_tail::{closure#0}>::{closure#0}, core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+            |          <tokio::runtime::task::harness::Harness<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<fxdax::extentd::server::receive::{closure#0}::{closure#1}, ()>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+            |          <tokio::runtime::blocking::pool::Inner>::run
+            |          std::sys::backtrace::__rust_begin_short_backtrace::<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>
+            |          <std::thread::lifecycle::spawn_unchecked<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+            |          <std::sys::thread::unix::Thread>::new::thread_start
+            |          0x75f82d6abe6b
+            |          0x75f82d73f55c
+            |          
+             --0.11%--<fxdax::extentd::server::Connection>::serve_in_turn
+                       tokio::runtime::scheduler::multi_thread::worker::block_in_place::<fxdax::extentd::server::receive::{closure#0}::{closure#1}, ()>
+                       fxdax::extentd::server::receive::{closure#0}
+                       <tokio::runtime::task::core::Core<core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = ()> + core::marker::Send>>, alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>>::poll
+                       <tokio::runtime::task::harness::Harness<core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = ()> + core::marker::Send>>, alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>>::poll
+                       <tokio::runtime::scheduler::multi_thread::worker::Context>::run_task
+                       <tokio::runtime::scheduler::multi_thread::worker::Context>::run
+                       <tokio::runtime::context::scoped::Scoped<tokio::runtime::scheduler::Context>>::set::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}::{closure#0}, ()>
+                       tokio::runtime::context::runtime::enter_runtime::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}, ()>
+                       tokio::runtime::scheduler::multi_thread::worker::run
+                       <tokio::runtime::task::core::Core<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<<extent_remote::fetch::Fetching<extent_remote::store::Store>>::cached<core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>, <extent_remote::fetch::Fetching<extent_remote::store::Store>>::kept_tail::{closure#0}>::{closure#0}, core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+                       <tokio::runtime::task::harness::Harness<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<fxdax::extentd::server::receive::{closure#0}::{closure#1}, ()>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+                       <tokio::runtime::blocking::pool::Inner>::run
+                       std::sys::backtrace::__rust_begin_short_backtrace::<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>
+                       <std::thread::lifecycle::spawn_unchecked<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       <std::sys::thread::unix::Thread>::new::thread_start
+                       0x75f82d6abe6b
+                       0x75f82d73f55c
+
+    13.86%     0.06%  [.] <fxdax::extents::ExtentStore>::write_with_barriers
+            |          
+             --0.26%--<fxdax::extentd::server::Connection>::serve_in_turn
+                       tokio::runtime::scheduler::multi_thread::worker::block_in_place::<fxdax::extentd::server::receive::{closure#0}::{closure#1}, ()>
+                       fxdax::extentd::server::receive::{closure#0}
+                       <tokio::runtime::task::core::Core<core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = ()> + core::marker::Send>>, alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>>::poll
+                       <tokio::runtime::task::harness::Harness<core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = ()> + core::marker::Send>>, alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>>::poll
+                       <tokio::runtime::scheduler::multi_thread::worker::Context>::run_task
+                       <tokio::runtime::scheduler::multi_thread::worker::Context>::run
+                       <tokio::runtime::context::scoped::Scoped<tokio::runtime::scheduler::Context>>::set::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}::{closure#0}, ()>
+                       tokio::runtime::context::runtime::enter_runtime::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}, ()>
+                       tokio::runtime::scheduler::multi_thread::worker::run
+                       <tokio::runtime::task::core::Core<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<<extent_remote::fetch::Fetching<extent_remote::store::Store>>::cached<core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>, <extent_remote::fetch::Fetching<extent_remote::store::Store>>::kept_tail::{closure#0}>::{closure#0}, core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+                       <tokio::runtime::task::harness::Harness<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<fxdax::extentd::server::receive::{closure#0}::{closure#1}, ()>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+                       <tokio::runtime::blocking::pool::Inner>::run
+                       std::sys::backtrace::__rust_begin_short_backtrace::<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>
+                       <std::thread::lifecycle::spawn_unchecked<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       <std::sys::thread::unix::Thread>::new::thread_start
+                       0x75f82d6abe6b
+                       0x75f82d73f55c
+
+    13.42%     0.29%  [.] <fxdax::extents::ExtentStore>::map
+            |          
+             --0.25%--<fxdax::extentd::server::Connection>::serve_in_turn
+                       tokio::runtime::scheduler::multi_thread::worker::block_in_place::<fxdax::extentd::server::receive::{closure#0}::{closure#1}, ()>
+                       fxdax::extentd::server::receive::{closure#0}
+                       <tokio::runtime::task::core::Core<core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = ()> + core::marker::Send>>, alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>>::poll
+                       <tokio::runtime::task::harness::Harness<core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = ()> + core::marker::Send>>, alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>>::poll
+                       <tokio::runtime::scheduler::multi_thread::worker::Context>::run_task
+                       <tokio::runtime::scheduler::multi_thread::worker::Context>::run
+                       <tokio::runtime::context::scoped::Scoped<tokio::runtime::scheduler::Context>>::set::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}::{closure#0}, ()>
+                       tokio::runtime::context::runtime::enter_runtime::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}, ()>
+                       tokio::runtime::scheduler::multi_thread::worker::run
+                       <tokio::runtime::task::core::Core<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<<extent_remote::fetch::Fetching<extent_remote::store::Store>>::cached<core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>, <extent_remote::fetch::Fetching<extent_remote::store::Store>>::kept_tail::{closure#0}>::{closure#0}, core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+                       <tokio::runtime::task::harness::Harness<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<fxdax::extentd::server::receive::{closure#0}::{closure#1}, ()>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+                       <tokio::runtime::blocking::pool::Inner>::run
+                       std::sys::backtrace::__rust_begin_short_backtrace::<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>
+                       <std::thread::lifecycle::spawn_unchecked<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       <std::sys::thread::unix::Thread>::new::thread_start
+                       0x75f82d6abe6b
+                       0x75f82d73f55c
+
+    13.25%     0.00%  [.] <std::thread::lifecycle::spawn_unchecked<extent_store::sync::spawn_or_run<<extent_store::segments::Framing<extent_store::dir::HostFile>>::start<extent_store::dir::HostDir>::{closure#0}>::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+            |
+            ---<std::sys::thread::unix::Thread>::new::thread_start
+               0x75f82d6abe6b
+               0x75f82d73f55c
+
+    13.25%     0.00%  [.] std::sys::backtrace::__rust_begin_short_backtrace::<extent_store::sync::spawn_or_run<<extent_store::segments::Framing<extent_store::dir::HostFile>>::start<extent_store::dir::HostDir>::{closure#0}>::{closure#0}, ()>
+            |
+            ---<std::thread::lifecycle::spawn_unchecked<extent_store::sync::spawn_or_run<<extent_store::segments::Framing<extent_store::dir::HostFile>>::start<extent_store::dir::HostDir>::{closure#0}>::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <std::sys::thread::unix::Thread>::new::thread_start
+               0x75f82d6abe6b
+               0x75f82d73f55c
+
+    13.25%     0.00%  [.] <<extent_store::segments::Framing<extent_store::dir::HostFile>>::start<extent_store::dir::HostDir>::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+            |
+            ---std::sys::backtrace::__rust_begin_short_backtrace::<extent_store::sync::spawn_or_run<<extent_store::segments::Framing<extent_store::dir::HostFile>>::start<extent_store::dir::HostDir>::{closure#0}>::{closure#0}, ()>
+               <std::thread::lifecycle::spawn_unchecked<extent_store::sync::spawn_or_run<<extent_store::segments::Framing<extent_store::dir::HostFile>>::start<extent_store::dir::HostDir>::{closure#0}>::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <std::sys::thread::unix::Thread>::new::thread_start
+               0x75f82d6abe6b
+               0x75f82d73f55c
+
+    13.25%     0.00%  [.] extent_store::segments::frame_segment::<extent_store::dir::HostDir>
+            |
+            ---<<extent_store::segments::Framing<extent_store::dir::HostFile>>::start<extent_store::dir::HostDir>::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+               std::sys::backtrace::__rust_begin_short_backtrace::<extent_store::sync::spawn_or_run<<extent_store::segments::Framing<extent_store::dir::HostFile>>::start<extent_store::dir::HostDir>::{closure#0}>::{closure#0}, ()>
+               <std::thread::lifecycle::spawn_unchecked<extent_store::sync::spawn_or_run<<extent_store::segments::Framing<extent_store::dir::HostFile>>::start<extent_store::dir::HostDir>::{closure#0}>::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <std::sys::thread::unix::Thread>::new::thread_start
+               0x75f82d6abe6b
+               0x75f82d73f55c
+
+    10.32%     0.00%  [.] asm_exc_page_fault
+            |          
+             --0.12%--0x75f82d7bc512
+                       |          
+                        --0.06%--extent_frame::framed
+                                  extent_store::segments::frame_segment::<extent_store::dir::HostDir>
+                                  <<extent_store::segments::Framing<extent_store::dir::HostFile>>::start<extent_store::dir::HostDir>::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+                                  std::sys::backtrace::__rust_begin_short_backtrace::<extent_store::sync::spawn_or_run<<extent_store::segments::Framing<extent_store::dir::HostFile>>::start<extent_store::dir::HostDir>::{closure#0}>::{closure#0}, ()>
+                                  <std::thread::lifecycle::spawn_unchecked<extent_store::sync::spawn_or_run<<extent_store::segments::Framing<extent_store::dir::HostFile>>::start<extent_store::dir::HostDir>::{closure#0}>::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                  <std::sys::thread::unix::Thread>::new::thread_start
+                                  0x75f82d6abe6b
+                                  0x75f82d73f55c
+
+    10.32%     0.00%  [.] exc_page_fault
+            |
+            ---asm_exc_page_fault
+               |          
+                --0.12%--0x75f82d7bc512
+                          |          
+                           --0.06%--extent_frame::framed
+                                     extent_store::segments::frame_segment::<extent_store::dir::HostDir>
+                                     <<extent_store::segments::Framing<extent_store::dir::HostFile>>::start<extent_store::dir::HostDir>::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+                                     std::sys::backtrace::__rust_begin_short_backtrace::<extent_store::sync::spawn_or_run<<extent_store::segments::Framing<extent_store::dir::HostFile>>::start<extent_store::dir::HostDir>::{closure#0}>::{closure#0}, ()>
+                                     <std::thread::lifecycle::spawn_unchecked<extent_store::sync::spawn_or_run<<extent_store::segments::Framing<extent_store::dir::HostFile>>::start<extent_store::dir::HostDir>::{closure#0}>::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                     <std::sys::thread::unix::Thread>::new::thread_start
+                                     0x75f82d6abe6b
+                                     0x75f82d73f55c
+
+    10.32%     3.92%  [.] do_user_addr_fault
+            |
+            ---exc_page_fault
+               asm_exc_page_fault
+               |          
+                --0.12%--0x75f82d7bc512
+                          |          
+                           --0.06%--extent_frame::framed
+                                     extent_store::segments::frame_segment::<extent_store::dir::HostDir>
+                                     <<extent_store::segments::Framing<extent_store::dir::HostFile>>::start<extent_store::dir::HostDir>::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+                                     std::sys::backtrace::__rust_begin_short_backtrace::<extent_store::sync::spawn_or_run<<extent_store::segments::Framing<extent_store::dir::HostFile>>::start<extent_store::dir::HostDir>::{closure#0}>::{closure#0}, ()>
+                                     <std::thread::lifecycle::spawn_unchecked<extent_store::sync::spawn_or_run<<extent_store::segments::Framing<extent_store::dir::HostFile>>::start<extent_store::dir::HostDir>::{closure#0}>::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                     <std::sys::thread::unix::Thread>::new::thread_start
+                                     0x75f82d6abe6b
+                                     0x75f82d73f55c
+
+     9.88%     0.02%  [.] ZSTD_buildSeqStore
+            |
+            ---ZSTD_compressBlock_internal
+               ZSTD_compress_frameChunk
+               ZSTD_compressEnd_public
+               ZSTD_compressStream_generic
+               ZSTD_compress2
+               extent_frame::pack_part
+               <alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>> as alloc::vec::spec_from_iter_nested::SpecFromIterNested<core::option::Option<alloc::vec::Vec<u8>>, core::iter::adapters::map::Map<core::slice::iter::Iter<&[u8]>, extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}::{closure#0}>>>::from_iter
+               std::sys::backtrace::__rust_begin_short_backtrace::<extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}, alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>>>
+               <std::thread::lifecycle::spawn_unchecked<extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}, alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>>>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <std::sys::thread::unix::Thread>::new::thread_start
+               0x75f82d6abe6b
+               0x75f82d73f55c
+
+     9.86%     9.80%  [.] ZSTD_compressBlock_fast
+            |
+            ---ZSTD_buildSeqStore
+               ZSTD_compressBlock_internal
+               ZSTD_compress_frameChunk
+               ZSTD_compressEnd_public
+               ZSTD_compressStream_generic
+               ZSTD_compress2
+               extent_frame::pack_part
+               <alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>> as alloc::vec::spec_from_iter_nested::SpecFromIterNested<core::option::Option<alloc::vec::Vec<u8>>, core::iter::adapters::map::Map<core::slice::iter::Iter<&[u8]>, extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}::{closure#0}>>>::from_iter
+               std::sys::backtrace::__rust_begin_short_backtrace::<extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}, alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>>>
+               <std::thread::lifecycle::spawn_unchecked<extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}, alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>>>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <std::sys::thread::unix::Thread>::new::thread_start
+               0x75f82d6abe6b
+               0x75f82d73f55c
+
+     9.28%     0.00%  [.] 0x000075f82d7bc512
+            |          
+             --0.07%--extent_frame::framed
+                       extent_store::segments::frame_segment::<extent_store::dir::HostDir>
+                       <<extent_store::segments::Framing<extent_store::dir::HostFile>>::start<extent_store::dir::HostDir>::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+                       std::sys::backtrace::__rust_begin_short_backtrace::<extent_store::sync::spawn_or_run<<extent_store::segments::Framing<extent_store::dir::HostFile>>::start<extent_store::dir::HostDir>::{closure#0}>::{closure#0}, ()>
+                       <std::thread::lifecycle::spawn_unchecked<extent_store::sync::spawn_or_run<<extent_store::segments::Framing<extent_store::dir::HostFile>>::start<extent_store::dir::HostDir>::{closure#0}>::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       <std::sys::thread::unix::Thread>::new::thread_start
+                       0x75f82d6abe6b
+                       0x75f82d73f55c
+
+     9.25%     0.00%  [.] <std::fs::File as std::os::unix::fs::FileExt>::write_all_at
+            |          
+             --0.11%--<extent_store::store::Store<extent_store::dir::HostDir>>::write
+                       |          
+                        --0.08%--<fxdax::extents::ExtentStore>::commit_with
+
+     9.25%     0.00%  [.] <std::fs::File as std::os::unix::fs::FileExt>::write_at
+            |
+            ---<std::fs::File as std::os::unix::fs::FileExt>::write_all_at
+               |          
+                --0.11%--<extent_store::store::Store<extent_store::dir::HostDir>>::write
+                          |          
+                           --0.08%--<fxdax::extents::ExtentStore>::commit_with
+
+     9.25%     0.02%  [.] __libc_pwrite
+            |
+            ---<std::fs::File as std::os::unix::fs::FileExt>::write_at
+               <std::fs::File as std::os::unix::fs::FileExt>::write_all_at
+               |          
+                --0.11%--<extent_store::store::Store<extent_store::dir::HostDir>>::write
+                          |          
+                           --0.08%--<fxdax::extents::ExtentStore>::commit_with
+
+     9.21%     0.04%  [.] <fxdax::dax::Dax<fxdax::extents::Mapped>>::map
+            |          
+             --0.14%--<fxdax::extents::ExtentStore>::map
+                       <fxdax::extentd::server::Connection>::serve_in_turn
+                       tokio::runtime::scheduler::multi_thread::worker::block_in_place::<fxdax::extentd::server::receive::{closure#0}::{closure#1}, ()>
+                       fxdax::extentd::server::receive::{closure#0}
+                       <tokio::runtime::task::core::Core<core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = ()> + core::marker::Send>>, alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>>::poll
+                       <tokio::runtime::task::harness::Harness<core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = ()> + core::marker::Send>>, alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>>::poll
+                       <tokio::runtime::scheduler::multi_thread::worker::Context>::run_task
+                       <tokio::runtime::scheduler::multi_thread::worker::Context>::run
+                       <tokio::runtime::context::scoped::Scoped<tokio::runtime::scheduler::Context>>::set::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}::{closure#0}, ()>
+                       tokio::runtime::context::runtime::enter_runtime::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}, ()>
+                       tokio::runtime::scheduler::multi_thread::worker::run
+                       <tokio::runtime::task::core::Core<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<<extent_remote::fetch::Fetching<extent_remote::store::Store>>::cached<core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>, <extent_remote::fetch::Fetching<extent_remote::store::Store>>::kept_tail::{closure#0}>::{closure#0}, core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+                       <tokio::runtime::task::harness::Harness<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<fxdax::extentd::server::receive::{closure#0}::{closure#1}, ()>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+                       <tokio::runtime::blocking::pool::Inner>::run
+                       std::sys::backtrace::__rust_begin_short_backtrace::<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>
+                       <std::thread::lifecycle::spawn_unchecked<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       <std::sys::thread::unix::Thread>::new::thread_start
+                       0x75f82d6abe6b
+                       0x75f82d73f55c
+
+     9.11%     0.00%  [.] __x64_sys_pwrite64
+            |
+            ---x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x75f82d6b4792
+               __libc_pwrite
+               <std::fs::File as std::os::unix::fs::FileExt>::write_at
+               <std::fs::File as std::os::unix::fs::FileExt>::write_all_at
+               |          
+                --0.11%--<extent_store::store::Store<extent_store::dir::HostDir>>::write
+                          |          
+                           --0.08%--<fxdax::extents::ExtentStore>::commit_with
+
+     9.09%     0.04%  [.] vfs_write
+            |          
+             --0.17%--__x64_sys_pwrite64
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x75f82d6b4792
+                       __libc_pwrite
+                       <std::fs::File as std::os::unix::fs::FileExt>::write_at
+                       <std::fs::File as std::os::unix::fs::FileExt>::write_all_at
+                       |          
+                        --0.11%--<extent_store::store::Store<extent_store::dir::HostDir>>::write
+                                  |          
+                                   --0.08%--<fxdax::extents::ExtentStore>::commit_with
+
+     9.04%     0.02%  [.] ext4_file_write_iter
+            |          
+             --0.17%--vfs_write
+                       __x64_sys_pwrite64
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x75f82d6b4792
+                       __libc_pwrite
+                       <std::fs::File as std::os::unix::fs::FileExt>::write_at
+                       <std::fs::File as std::os::unix::fs::FileExt>::write_all_at
+                       |          
+                        --0.11%--<extent_store::store::Store<extent_store::dir::HostDir>>::write
+                                  |          
+                                   --0.08%--<fxdax::extents::ExtentStore>::commit_with
+
+     9.02%     0.00%  [.] ext4_buffered_write_iter
+            |
+            ---ext4_file_write_iter
+               vfs_write
+               __x64_sys_pwrite64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x75f82d6b4792
+               __libc_pwrite
+               <std::fs::File as std::os::unix::fs::FileExt>::write_at
+               <std::fs::File as std::os::unix::fs::FileExt>::write_all_at
+               |          
+                --0.11%--<extent_store::store::Store<extent_store::dir::HostDir>>::write
+                          |          
+                           --0.08%--<fxdax::extents::ExtentStore>::commit_with
+
+     8.75%     0.02%  [.] generic_perform_write
+            |
+            ---ext4_buffered_write_iter
+               ext4_file_write_iter
+               vfs_write
+               __x64_sys_pwrite64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x75f82d6b4792
+               __libc_pwrite
+               <std::fs::File as std::os::unix::fs::FileExt>::write_at
+               <std::fs::File as std::os::unix::fs::FileExt>::write_all_at
+               |          
+                --0.10%--<extent_store::store::Store<extent_store::dir::HostDir>>::write
+                          |          
+                           --0.08%--<fxdax::extents::ExtentStore>::commit_with
+
+     8.42%     0.08%  [.] <fxdax::dax::Window>::map
+            |          
+             --0.16%--<fxdax::dax::Dax<fxdax::extents::Mapped>>::map
+                       |          
+                        --0.13%--<fxdax::extents::ExtentStore>::map
+                                  <fxdax::extentd::server::Connection>::serve_in_turn
+                                  tokio::runtime::scheduler::multi_thread::worker::block_in_place::<fxdax::extentd::server::receive::{closure#0}::{closure#1}, ()>
+                                  fxdax::extentd::server::receive::{closure#0}
+                                  <tokio::runtime::task::core::Core<core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = ()> + core::marker::Send>>, alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>>::poll
+                                  <tokio::runtime::task::harness::Harness<core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = ()> + core::marker::Send>>, alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>>::poll
+                                  <tokio::runtime::scheduler::multi_thread::worker::Context>::run_task
+                                  <tokio::runtime::scheduler::multi_thread::worker::Context>::run
+                                  <tokio::runtime::context::scoped::Scoped<tokio::runtime::scheduler::Context>>::set::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}::{closure#0}, ()>
+                                  tokio::runtime::context::runtime::enter_runtime::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}, ()>
+                                  tokio::runtime::scheduler::multi_thread::worker::run
+                                  <tokio::runtime::task::core::Core<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<<extent_remote::fetch::Fetching<extent_remote::store::Store>>::cached<core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>, <extent_remote::fetch::Fetching<extent_remote::store::Store>>::kept_tail::{closure#0}>::{closure#0}, core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+                                  <tokio::runtime::task::harness::Harness<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<fxdax::extentd::server::receive::{closure#0}::{closure#1}, ()>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+                                  <tokio::runtime::blocking::pool::Inner>::run
+                                  std::sys::backtrace::__rust_begin_short_backtrace::<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>
+                                  <std::thread::lifecycle::spawn_unchecked<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                  <std::sys::thread::unix::Thread>::new::thread_start
+                                  0x75f82d6abe6b
+                                  0x75f82d73f55c
+
+     8.10%     0.21%  [.] <tokio::runtime::scheduler::multi_thread::worker::Context>::park_internal
+            |          
+             --0.15%--<tokio::runtime::scheduler::multi_thread::worker::Context>::run
+                       <tokio::runtime::context::scoped::Scoped<tokio::runtime::scheduler::Context>>::set::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}::{closure#0}, ()>
+                       tokio::runtime::context::runtime::enter_runtime::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}, ()>
+                       tokio::runtime::scheduler::multi_thread::worker::run
+                       <tokio::runtime::task::core::Core<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<<extent_remote::fetch::Fetching<extent_remote::store::Store>>::cached<core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>, <extent_remote::fetch::Fetching<extent_remote::store::Store>>::kept_tail::{closure#0}>::{closure#0}, core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+                       <tokio::runtime::task::harness::Harness<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<fxdax::extentd::server::receive::{closure#0}::{closure#1}, ()>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+                       <tokio::runtime::blocking::pool::Inner>::run
+                       std::sys::backtrace::__rust_begin_short_backtrace::<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>
+                       <std::thread::lifecycle::spawn_unchecked<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       <std::sys::thread::unix::Thread>::new::thread_start
+                       0x75f82d6abe6b
+                       0x75f82d73f55c
+
+     7.48%     0.25%  [.] <tokio::runtime::time::Driver>::park_internal
+            |          
+             --0.14%--<tokio::runtime::scheduler::multi_thread::worker::Context>::park_internal
+                       <tokio::runtime::scheduler::multi_thread::worker::Context>::run
+                       <tokio::runtime::context::scoped::Scoped<tokio::runtime::scheduler::Context>>::set::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}::{closure#0}, ()>
+                       tokio::runtime::context::runtime::enter_runtime::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}, ()>
+                       tokio::runtime::scheduler::multi_thread::worker::run
+                       <tokio::runtime::task::core::Core<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<<extent_remote::fetch::Fetching<extent_remote::store::Store>>::cached<core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>, <extent_remote::fetch::Fetching<extent_remote::store::Store>>::kept_tail::{closure#0}>::{closure#0}, core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+                       <tokio::runtime::task::harness::Harness<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<fxdax::extentd::server::receive::{closure#0}::{closure#1}, ()>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+                       <tokio::runtime::blocking::pool::Inner>::run
+                       std::sys::backtrace::__rust_begin_short_backtrace::<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>
+                       <std::thread::lifecycle::spawn_unchecked<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       <std::sys::thread::unix::Thread>::new::thread_start
+                       0x75f82d6abe6b
+                       0x75f82d73f55c
+
+     7.39%     1.11%  [.] syscall
+     7.16%     0.02%  [.] <extent_store::store::Store<extent_store::dir::HostDir>>::write
+            |          
+             --0.10%--<fxdax::extents::ExtentStore>::commit_with
+                       |          
+                        --0.06%--<fxdax::extents::ExtentStore>::write_with_barriers
+                                  <fxdax::extentd::server::Connection>::serve_in_turn
+                                  tokio::runtime::scheduler::multi_thread::worker::block_in_place::<fxdax::extentd::server::receive::{closure#0}::{closure#1}, ()>
+                                  fxdax::extentd::server::receive::{closure#0}
+                                  <tokio::runtime::task::core::Core<core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = ()> + core::marker::Send>>, alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>>::poll
+                                  <tokio::runtime::task::harness::Harness<core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = ()> + core::marker::Send>>, alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>>::poll
+                                  <tokio::runtime::scheduler::multi_thread::worker::Context>::run_task
+                                  <tokio::runtime::scheduler::multi_thread::worker::Context>::run
+                                  <tokio::runtime::context::scoped::Scoped<tokio::runtime::scheduler::Context>>::set::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}::{closure#0}, ()>
+                                  tokio::runtime::context::runtime::enter_runtime::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}, ()>
+                                  tokio::runtime::scheduler::multi_thread::worker::run
+                                  <tokio::runtime::task::core::Core<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<<extent_remote::fetch::Fetching<extent_remote::store::Store>>::cached<core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>, <extent_remote::fetch::Fetching<extent_remote::store::Store>>::kept_tail::{closure#0}>::{closure#0}, core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+                                  <tokio::runtime::task::harness::Harness<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<fxdax::extentd::server::receive::{closure#0}::{closure#1}, ()>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+                                  <tokio::runtime::blocking::pool::Inner>::run
+                                  std::sys::backtrace::__rust_begin_short_backtrace::<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>
+                                  <std::thread::lifecycle::spawn_unchecked<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                  <std::sys::thread::unix::Thread>::new::thread_start
+                                  0x75f82d6abe6b
+                                  0x75f82d73f55c
+
+     6.68%     0.23%  [.] <tokio::runtime::io::driver::Driver>::turn
+            |          
+             --0.13%--<tokio::runtime::time::Driver>::park_internal
+                       |          
+                        --0.12%--<tokio::runtime::scheduler::multi_thread::worker::Context>::park_internal
+                                  <tokio::runtime::scheduler::multi_thread::worker::Context>::run
+                                  <tokio::runtime::context::scoped::Scoped<tokio::runtime::scheduler::Context>>::set::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}::{closure#0}, ()>
+                                  tokio::runtime::context::runtime::enter_runtime::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}, ()>
+                                  tokio::runtime::scheduler::multi_thread::worker::run
+                                  <tokio::runtime::task::core::Core<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<<extent_remote::fetch::Fetching<extent_remote::store::Store>>::cached<core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>, <extent_remote::fetch::Fetching<extent_remote::store::Store>>::kept_tail::{closure#0}>::{closure#0}, core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+                                  <tokio::runtime::task::harness::Harness<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<fxdax::extentd::server::receive::{closure#0}::{closure#1}, ()>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+                                  <tokio::runtime::blocking::pool::Inner>::run
+                                  std::sys::backtrace::__rust_begin_short_backtrace::<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>
+                                  <std::thread::lifecycle::spawn_unchecked<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                  <std::sys::thread::unix::Thread>::new::thread_start
+                                  0x75f82d6abe6b
+                                  0x75f82d73f55c
+
+     6.57%     0.02%  [.] ext4_da_write_begin
+            |
+            ---generic_perform_write
+               ext4_buffered_write_iter
+               ext4_file_write_iter
+               vfs_write
+               __x64_sys_pwrite64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x75f82d6b4792
+               __libc_pwrite
+               <std::fs::File as std::os::unix::fs::FileExt>::write_at
+               <std::fs::File as std::os::unix::fs::FileExt>::write_all_at
+               |          
+                --0.08%--<extent_store::store::Store<extent_store::dir::HostDir>>::write
+                          |          
+                           --0.07%--<fxdax::extents::ExtentStore>::commit_with
+
+     6.05%     0.00%  [.] extent_frame::framed
+            |          
+             --0.11%--extent_store::segments::frame_segment::<extent_store::dir::HostDir>
+                       <<extent_store::segments::Framing<extent_store::dir::HostFile>>::start<extent_store::dir::HostDir>::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+                       std::sys::backtrace::__rust_begin_short_backtrace::<extent_store::sync::spawn_or_run<<extent_store::segments::Framing<extent_store::dir::HostFile>>::start<extent_store::dir::HostDir>::{closure#0}>::{closure#0}, ()>
+                       <std::thread::lifecycle::spawn_unchecked<extent_store::sync::spawn_or_run<<extent_store::segments::Framing<extent_store::dir::HostFile>>::start<extent_store::dir::HostDir>::{closure#0}>::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       <std::sys::thread::unix::Thread>::new::thread_start
+                       0x75f82d6abe6b
+                       0x75f82d73f55c
+
+     6.03%     0.02%  [.] handle_mm_fault
+            |
+            ---do_user_addr_fault
+               exc_page_fault
+               asm_exc_page_fault
+               |          
+                --0.06%--0x75f82d7bc512
+
+     5.97%     0.19%  [.] __handle_mm_fault
+            |          
+             --0.11%--handle_mm_fault
+                       do_user_addr_fault
+                       exc_page_fault
+                       asm_exc_page_fault
+                       |          
+                        --0.06%--0x75f82d7bc512
+
+     5.84%     0.25%  [.] <mio::poll::Poll>::poll
+            |          
+             --0.11%--<tokio::runtime::io::driver::Driver>::turn
+                       <tokio::runtime::time::Driver>::park_internal
+                       |          
+                        --0.11%--<tokio::runtime::scheduler::multi_thread::worker::Context>::park_internal
+                                  <tokio::runtime::scheduler::multi_thread::worker::Context>::run
+                                  <tokio::runtime::context::scoped::Scoped<tokio::runtime::scheduler::Context>>::set::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}::{closure#0}, ()>
+                                  tokio::runtime::context::runtime::enter_runtime::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}, ()>
+                                  tokio::runtime::scheduler::multi_thread::worker::run
+                                  <tokio::runtime::task::core::Core<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<<extent_remote::fetch::Fetching<extent_remote::store::Store>>::cached<core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>, <extent_remote::fetch::Fetching<extent_remote::store::Store>>::kept_tail::{closure#0}>::{closure#0}, core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+                                  <tokio::runtime::task::harness::Harness<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<fxdax::extentd::server::receive::{closure#0}::{closure#1}, ()>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+                                  <tokio::runtime::blocking::pool::Inner>::run
+                                  std::sys::backtrace::__rust_begin_short_backtrace::<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>
+                                  <std::thread::lifecycle::spawn_unchecked<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                  <std::sys::thread::unix::Thread>::new::thread_start
+                                  0x75f82d6abe6b
+                                  0x75f82d73f55c
+
+     5.84%     0.06%  [.] __x64_sys_futex
+            |
+            ---x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               |          
+                --0.11%--syscall
+
+     5.78%     0.04%  [.] handle_pte_fault
+            |
+            ---__handle_mm_fault
+               handle_mm_fault
+               do_user_addr_fault
+               exc_page_fault
+               asm_exc_page_fault
+               |          
+                --0.06%--0x75f82d7bc512
+
+     5.76%     0.06%  [.] do_futex
+            |          
+             --0.11%--__x64_sys_futex
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       |          
+                        --0.11%--syscall
+
+     5.69%     0.10%  [.] epoll_wait
+            |          
+             --0.11%--<mio::poll::Poll>::poll
+                       <tokio::runtime::io::driver::Driver>::turn
+                       <tokio::runtime::time::Driver>::park_internal
+                       |          
+                        --0.10%--<tokio::runtime::scheduler::multi_thread::worker::Context>::park_internal
+                                  <tokio::runtime::scheduler::multi_thread::worker::Context>::run
+                                  <tokio::runtime::context::scoped::Scoped<tokio::runtime::scheduler::Context>>::set::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}::{closure#0}, ()>
+                                  tokio::runtime::context::runtime::enter_runtime::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}, ()>
+                                  tokio::runtime::scheduler::multi_thread::worker::run
+                                  <tokio::runtime::task::core::Core<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<<extent_remote::fetch::Fetching<extent_remote::store::Store>>::cached<core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>, <extent_remote::fetch::Fetching<extent_remote::store::Store>>::kept_tail::{closure#0}>::{closure#0}, core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+                                  <tokio::runtime::task::harness::Harness<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<fxdax::extentd::server::receive::{closure#0}::{closure#1}, ()>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+                                  <tokio::runtime::blocking::pool::Inner>::run
+                                  std::sys::backtrace::__rust_begin_short_backtrace::<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>
+                                  <std::thread::lifecycle::spawn_unchecked<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                  <std::sys::thread::unix::Thread>::new::thread_start
+                                  0x75f82d6abe6b
+                                  0x75f82d73f55c
+
+     5.36%     0.36%  [.] <fxdax::extentd::wire::AsyncReceiver>::read::{closure#0}
+            |
+            ---fxdax::extentd::server::receive::{closure#0}
+               <tokio::runtime::task::core::Core<core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = ()> + core::marker::Send>>, alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>>::poll
+               <tokio::runtime::task::harness::Harness<core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = ()> + core::marker::Send>>, alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>>::poll
+               <tokio::runtime::scheduler::multi_thread::worker::Context>::run_task
+               <tokio::runtime::scheduler::multi_thread::worker::Context>::run
+               <tokio::runtime::context::scoped::Scoped<tokio::runtime::scheduler::Context>>::set::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}::{closure#0}, ()>
+               tokio::runtime::context::runtime::enter_runtime::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}, ()>
+               tokio::runtime::scheduler::multi_thread::worker::run
+               <tokio::runtime::task::core::Core<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<<extent_remote::fetch::Fetching<extent_remote::store::Store>>::cached<core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>, <extent_remote::fetch::Fetching<extent_remote::store::Store>>::kept_tail::{closure#0}>::{closure#0}, core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+               <tokio::runtime::task::harness::Harness<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<fxdax::extentd::server::receive::{closure#0}::{closure#1}, ()>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+               <tokio::runtime::blocking::pool::Inner>::run
+               std::sys::backtrace::__rust_begin_short_backtrace::<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>
+               <std::thread::lifecycle::spawn_unchecked<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <std::sys::thread::unix::Thread>::new::thread_start
+               0x75f82d6abe6b
+               0x75f82d73f55c
+
+     5.25%     0.57%  [.] do_anonymous_page
+            |
+            ---handle_pte_fault
+               __handle_mm_fault
+               handle_mm_fault
+               do_user_addr_fault
+               exc_page_fault
+               asm_exc_page_fault
+               |          
+                --0.06%--0x75f82d7bc512
+
+     5.13%     0.00%  [.] alloc_pages_mpol
+            |          
+             --0.07%--folio_alloc_noprof
+                       filemap_alloc_folio_noprof
+                       __filemap_get_folio_mpol
+                       ext4_da_write_begin
+                       generic_perform_write
+                       ext4_buffered_write_iter
+                       ext4_file_write_iter
+                       vfs_write
+                       __x64_sys_pwrite64
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x75f82d6b4792
+                       __libc_pwrite
+                       <std::fs::File as std::os::unix::fs::FileExt>::write_at
+                       <std::fs::File as std::os::unix::fs::FileExt>::write_all_at
+
+     5.13%     0.11%  [.] __alloc_frozen_pages_noprof
+            |          
+             --0.10%--alloc_pages_mpol
+                       |          
+                        --0.07%--folio_alloc_noprof
+                                  filemap_alloc_folio_noprof
+                                  __filemap_get_folio_mpol
+                                  ext4_da_write_begin
+                                  generic_perform_write
+                                  ext4_buffered_write_iter
+                                  ext4_file_write_iter
+                                  vfs_write
+                                  __x64_sys_pwrite64
+                                  x64_sys_call
+                                  do_syscall_64
+                                  entry_SYSCALL_64_after_hwframe
+                                  0x75f82d6b4792
+                                  __libc_pwrite
+                                  <std::fs::File as std::os::unix::fs::FileExt>::write_at
+                                  <std::fs::File as std::os::unix::fs::FileExt>::write_all_at
+
+     4.96%     0.08%  [.] get_page_from_freelist
+            |
+            ---__alloc_frozen_pages_noprof
+               alloc_pages_mpol
+               |          
+                --0.07%--folio_alloc_noprof
+                          filemap_alloc_folio_noprof
+                          __filemap_get_folio_mpol
+                          ext4_da_write_begin
+                          generic_perform_write
+                          ext4_buffered_write_iter
+                          ext4_file_write_iter
+                          vfs_write
+                          __x64_sys_pwrite64
+                          x64_sys_call
+                          do_syscall_64
+                          entry_SYSCALL_64_after_hwframe
+                          0x75f82d6b4792
+                          __libc_pwrite
+                          <std::fs::File as std::os::unix::fs::FileExt>::write_at
+                          <std::fs::File as std::os::unix::fs::FileExt>::write_all_at
+
+     4.90%     0.13%  [.] <zircon::vm::vm_address_region::VmAddressRegion>::unmap_internal_locked
+     4.86%     0.08%  [.] __x64_sys_epoll_wait
+            |
+            ---x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x75f82d6b4792
+               epoll_wait
+               <mio::poll::Poll>::poll
+               <tokio::runtime::io::driver::Driver>::turn
+               <tokio::runtime::time::Driver>::park_internal
+               |          
+                --0.09%--<tokio::runtime::scheduler::multi_thread::worker::Context>::park_internal
+                          <tokio::runtime::scheduler::multi_thread::worker::Context>::run
+                          <tokio::runtime::context::scoped::Scoped<tokio::runtime::scheduler::Context>>::set::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}::{closure#0}, ()>
+                          tokio::runtime::context::runtime::enter_runtime::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}, ()>
+                          tokio::runtime::scheduler::multi_thread::worker::run
+                          <tokio::runtime::task::core::Core<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<<extent_remote::fetch::Fetching<extent_remote::store::Store>>::cached<core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>, <extent_remote::fetch::Fetching<extent_remote::store::Store>>::kept_tail::{closure#0}>::{closure#0}, core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+                          <tokio::runtime::task::harness::Harness<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<fxdax::extentd::server::receive::{closure#0}::{closure#1}, ()>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+                          <tokio::runtime::blocking::pool::Inner>::run
+                          std::sys::backtrace::__rust_begin_short_backtrace::<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>
+                          <std::thread::lifecycle::spawn_unchecked<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          <std::sys::thread::unix::Thread>::new::thread_start
+                          0x75f82d6abe6b
+                          0x75f82d73f55c
+
+     4.79%     1.78%  [k] _copy_to_iter
+            |          
+             --0.09%--copy_page_to_iter
+                       filemap_read
+                       generic_file_read_iter
+                       ext4_file_read_iter
+                       vfs_read
+                       __x64_sys_pread64
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x75f82d6b4792
+                       __libc_pread
+                       <std::fs::File as std::os::unix::fs::FileExt>::read_at
+                       |          
+                        --0.08%--extent_store::segments::frame_segment::<extent_store::dir::HostDir>
+                                  <<extent_store::segments::Framing<extent_store::dir::HostFile>>::start<extent_store::dir::HostDir>::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+                                  std::sys::backtrace::__rust_begin_short_backtrace::<extent_store::sync::spawn_or_run<<extent_store::segments::Framing<extent_store::dir::HostFile>>::start<extent_store::dir::HostDir>::{closure#0}>::{closure#0}, ()>
+                                  <std::thread::lifecycle::spawn_unchecked<extent_store::sync::spawn_or_run<<extent_store::segments::Framing<extent_store::dir::HostFile>>::start<extent_store::dir::HostDir>::{closure#0}>::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                  <std::sys::thread::unix::Thread>::new::thread_start
+                                  0x75f82d6abe6b
+                                  0x75f82d73f55c
+
+     4.65%     0.02%  [.] __libc_pread
+            |          
+             --0.09%--<std::fs::File as std::os::unix::fs::FileExt>::read_at
+                       |          
+                        --0.08%--extent_store::segments::frame_segment::<extent_store::dir::HostDir>
+                                  <<extent_store::segments::Framing<extent_store::dir::HostFile>>::start<extent_store::dir::HostDir>::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+                                  std::sys::backtrace::__rust_begin_short_backtrace::<extent_store::sync::spawn_or_run<<extent_store::segments::Framing<extent_store::dir::HostFile>>::start<extent_store::dir::HostDir>::{closure#0}>::{closure#0}, ()>
+                                  <std::thread::lifecycle::spawn_unchecked<extent_store::sync::spawn_or_run<<extent_store::segments::Framing<extent_store::dir::HostFile>>::start<extent_store::dir::HostDir>::{closure#0}>::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                  <std::sys::thread::unix::Thread>::new::thread_start
+                                  0x75f82d6abe6b
+                                  0x75f82d73f55c
+
+     4.65%     0.02%  [.] do_epoll_wait
+            |
+            ---__x64_sys_epoll_wait
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x75f82d6b4792
+               epoll_wait
+               <mio::poll::Poll>::poll
+               <tokio::runtime::io::driver::Driver>::turn
+               <tokio::runtime::time::Driver>::park_internal
+               |          
+                --0.09%--<tokio::runtime::scheduler::multi_thread::worker::Context>::park_internal
+                          <tokio::runtime::scheduler::multi_thread::worker::Context>::run
+                          <tokio::runtime::context::scoped::Scoped<tokio::runtime::scheduler::Context>>::set::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}::{closure#0}, ()>
+                          tokio::runtime::context::runtime::enter_runtime::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}, ()>
+                          tokio::runtime::scheduler::multi_thread::worker::run
+                          <tokio::runtime::task::core::Core<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<<extent_remote::fetch::Fetching<extent_remote::store::Store>>::cached<core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>, <extent_remote::fetch::Fetching<extent_remote::store::Store>>::kept_tail::{closure#0}>::{closure#0}, core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+                          <tokio::runtime::task::harness::Harness<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<fxdax::extentd::server::receive::{closure#0}::{closure#1}, ()>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+                          <tokio::runtime::blocking::pool::Inner>::run
+                          std::sys::backtrace::__rust_begin_short_backtrace::<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>
+                          <std::thread::lifecycle::spawn_unchecked<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          <std::sys::thread::unix::Thread>::new::thread_start
+                          0x75f82d6abe6b
+                          0x75f82d73f55c
+
+     4.65%     0.02%  [.] vfs_read
+            |          
+             --0.09%--__x64_sys_pread64
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x75f82d6b4792
+                       __libc_pread
+                       <std::fs::File as std::os::unix::fs::FileExt>::read_at
+                       |          
+                        --0.08%--extent_store::segments::frame_segment::<extent_store::dir::HostDir>
+                                  <<extent_store::segments::Framing<extent_store::dir::HostFile>>::start<extent_store::dir::HostDir>::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+                                  std::sys::backtrace::__rust_begin_short_backtrace::<extent_store::sync::spawn_or_run<<extent_store::segments::Framing<extent_store::dir::HostFile>>::start<extent_store::dir::HostDir>::{closure#0}>::{closure#0}, ()>
+                                  <std::thread::lifecycle::spawn_unchecked<extent_store::sync::spawn_or_run<<extent_store::segments::Framing<extent_store::dir::HostFile>>::start<extent_store::dir::HostDir>::{closure#0}>::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                  <std::sys::thread::unix::Thread>::new::thread_start
+                                  0x75f82d6abe6b
+                                  0x75f82d73f55c
+
+     4.63%     0.00%  [.] <std::fs::File as std::os::unix::fs::FileExt>::read_at
+            |          
+             --0.08%--extent_store::segments::frame_segment::<extent_store::dir::HostDir>
+                       <<extent_store::segments::Framing<extent_store::dir::HostFile>>::start<extent_store::dir::HostDir>::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+                       std::sys::backtrace::__rust_begin_short_backtrace::<extent_store::sync::spawn_or_run<<extent_store::segments::Framing<extent_store::dir::HostFile>>::start<extent_store::dir::HostDir>::{closure#0}>::{closure#0}, ()>
+                       <std::thread::lifecycle::spawn_unchecked<extent_store::sync::spawn_or_run<<extent_store::segments::Framing<extent_store::dir::HostFile>>::start<extent_store::dir::HostDir>::{closure#0}>::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       <std::sys::thread::unix::Thread>::new::thread_start
+                       0x75f82d6abe6b
+                       0x75f82d73f55c
+
+     4.63%     0.00%  [.] __x64_sys_pread64
+            |
+            ---x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x75f82d6b4792
+               __libc_pread
+               <std::fs::File as std::os::unix::fs::FileExt>::read_at
+               |          
+                --0.08%--extent_store::segments::frame_segment::<extent_store::dir::HostDir>
+                          <<extent_store::segments::Framing<extent_store::dir::HostFile>>::start<extent_store::dir::HostDir>::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+                          std::sys::backtrace::__rust_begin_short_backtrace::<extent_store::sync::spawn_or_run<<extent_store::segments::Framing<extent_store::dir::HostFile>>::start<extent_store::dir::HostDir>::{closure#0}>::{closure#0}, ()>
+                          <std::thread::lifecycle::spawn_unchecked<extent_store::sync::spawn_or_run<<extent_store::segments::Framing<extent_store::dir::HostFile>>::start<extent_store::dir::HostDir>::{closure#0}>::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          <std::sys::thread::unix::Thread>::new::thread_start
+                          0x75f82d6abe6b
+                          0x75f82d73f55c
+
+     4.61%     0.00%  [.] ext4_file_read_iter
+            |
+            ---vfs_read
+               __x64_sys_pread64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x75f82d6b4792
+               __libc_pread
+               <std::fs::File as std::os::unix::fs::FileExt>::read_at
+               |          
+                --0.08%--extent_store::segments::frame_segment::<extent_store::dir::HostDir>
+                          <<extent_store::segments::Framing<extent_store::dir::HostFile>>::start<extent_store::dir::HostDir>::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+                          std::sys::backtrace::__rust_begin_short_backtrace::<extent_store::sync::spawn_or_run<<extent_store::segments::Framing<extent_store::dir::HostFile>>::start<extent_store::dir::HostDir>::{closure#0}>::{closure#0}, ()>
+                          <std::thread::lifecycle::spawn_unchecked<extent_store::sync::spawn_or_run<<extent_store::segments::Framing<extent_store::dir::HostFile>>::start<extent_store::dir::HostDir>::{closure#0}>::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          <std::sys::thread::unix::Thread>::new::thread_start
+                          0x75f82d6abe6b
+                          0x75f82d73f55c
+
+     4.61%     0.00%  [.] generic_file_read_iter
+            |
+            ---ext4_file_read_iter
+               vfs_read
+               __x64_sys_pread64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x75f82d6b4792
+               __libc_pread
+               <std::fs::File as std::os::unix::fs::FileExt>::read_at
+               |          
+                --0.08%--extent_store::segments::frame_segment::<extent_store::dir::HostDir>
+                          <<extent_store::segments::Framing<extent_store::dir::HostFile>>::start<extent_store::dir::HostDir>::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+                          std::sys::backtrace::__rust_begin_short_backtrace::<extent_store::sync::spawn_or_run<<extent_store::segments::Framing<extent_store::dir::HostFile>>::start<extent_store::dir::HostDir>::{closure#0}>::{closure#0}, ()>
+                          <std::thread::lifecycle::spawn_unchecked<extent_store::sync::spawn_or_run<<extent_store::segments::Framing<extent_store::dir::HostFile>>::start<extent_store::dir::HostDir>::{closure#0}>::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          <std::sys::thread::unix::Thread>::new::thread_start
+                          0x75f82d6abe6b
+                          0x75f82d73f55c
+
+     4.61%     0.02%  [.] filemap_read
+            |
+            ---generic_file_read_iter
+               ext4_file_read_iter
+               vfs_read
+               __x64_sys_pread64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x75f82d6b4792
+               __libc_pread
+               <std::fs::File as std::os::unix::fs::FileExt>::read_at
+               |          
+                --0.08%--extent_store::segments::frame_segment::<extent_store::dir::HostDir>
+                          <<extent_store::segments::Framing<extent_store::dir::HostFile>>::start<extent_store::dir::HostDir>::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+                          std::sys::backtrace::__rust_begin_short_backtrace::<extent_store::sync::spawn_or_run<<extent_store::segments::Framing<extent_store::dir::HostFile>>::start<extent_store::dir::HostDir>::{closure#0}>::{closure#0}, ()>
+                          <std::thread::lifecycle::spawn_unchecked<extent_store::sync::spawn_or_run<<extent_store::segments::Framing<extent_store::dir::HostFile>>::start<extent_store::dir::HostDir>::{closure#0}>::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          <std::sys::thread::unix::Thread>::new::thread_start
+                          0x75f82d6abe6b
+                          0x75f82d73f55c
+
+     4.56%     0.04%  [.] copy_page_to_iter
+            |
+            ---filemap_read
+               generic_file_read_iter
+               ext4_file_read_iter
+               vfs_read
+               __x64_sys_pread64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x75f82d6b4792
+               __libc_pread
+               <std::fs::File as std::os::unix::fs::FileExt>::read_at
+               |          
+                --0.08%--extent_store::segments::frame_segment::<extent_store::dir::HostDir>
+                          <<extent_store::segments::Framing<extent_store::dir::HostFile>>::start<extent_store::dir::HostDir>::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+                          std::sys::backtrace::__rust_begin_short_backtrace::<extent_store::sync::spawn_or_run<<extent_store::segments::Framing<extent_store::dir::HostFile>>::start<extent_store::dir::HostDir>::{closure#0}>::{closure#0}, ()>
+                          <std::thread::lifecycle::spawn_unchecked<extent_store::sync::spawn_or_run<<extent_store::segments::Framing<extent_store::dir::HostFile>>::start<extent_store::dir::HostDir>::{closure#0}>::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          <std::sys::thread::unix::Thread>::new::thread_start
+                          0x75f82d6abe6b
+                          0x75f82d73f55c
+
+     4.48%     0.34%  [.] <fxdax::extentd::wire::AsyncSender>::queue
+            |          
+             --0.06%--<fxdax::extentd::server::RemoteStage>::send
+
+     4.48%     0.00%  [.] ZSTD_compressLiterals
+            |
+            ---ZSTD_compressBlock_internal
+               ZSTD_compress_frameChunk
+               ZSTD_compressEnd_public
+               ZSTD_compressStream_generic
+               ZSTD_compress2
+               extent_frame::pack_part
+               <alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>> as alloc::vec::spec_from_iter_nested::SpecFromIterNested<core::option::Option<alloc::vec::Vec<u8>>, core::iter::adapters::map::Map<core::slice::iter::Iter<&[u8]>, extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}::{closure#0}>>>::from_iter
+               std::sys::backtrace::__rust_begin_short_backtrace::<extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}, alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>>>
+               <std::thread::lifecycle::spawn_unchecked<extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}, alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>>>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <std::sys::thread::unix::Thread>::new::thread_start
+               0x75f82d6abe6b
+               0x75f82d73f55c
+
+     4.48%     0.00%  [.] HUF_compress4X_repeat
+            |
+            ---ZSTD_compressLiterals
+               ZSTD_compressBlock_internal
+               ZSTD_compress_frameChunk
+               ZSTD_compressEnd_public
+               ZSTD_compressStream_generic
+               ZSTD_compress2
+               extent_frame::pack_part
+               <alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>> as alloc::vec::spec_from_iter_nested::SpecFromIterNested<core::option::Option<alloc::vec::Vec<u8>>, core::iter::adapters::map::Map<core::slice::iter::Iter<&[u8]>, extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}::{closure#0}>>>::from_iter
+               std::sys::backtrace::__rust_begin_short_backtrace::<extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}, alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>>>
+               <std::thread::lifecycle::spawn_unchecked<extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}, alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>>>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <std::sys::thread::unix::Thread>::new::thread_start
+               0x75f82d6abe6b
+               0x75f82d73f55c
+
+     4.48%     0.04%  [.] HUF_compress_internal
+            |
+            ---HUF_compress4X_repeat
+               ZSTD_compressLiterals
+               ZSTD_compressBlock_internal
+               ZSTD_compress_frameChunk
+               ZSTD_compressEnd_public
+               ZSTD_compressStream_generic
+               ZSTD_compress2
+               extent_frame::pack_part
+               <alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>> as alloc::vec::spec_from_iter_nested::SpecFromIterNested<core::option::Option<alloc::vec::Vec<u8>>, core::iter::adapters::map::Map<core::slice::iter::Iter<&[u8]>, extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}::{closure#0}>>>::from_iter
+               std::sys::backtrace::__rust_begin_short_backtrace::<extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}, alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>>>
+               <std::thread::lifecycle::spawn_unchecked<extent_frame::pack_parts::{closure#3}::{closure#0}::{closure#0}, alloc::vec::Vec<core::option::Option<alloc::vec::Vec<u8>>>>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <std::sys::thread::unix::Thread>::new::thread_start
+               0x75f82d6abe6b
+               0x75f82d73f55c
+
+     4.35%     0.33%  [.] ep_poll
+            |
+            ---do_epoll_wait
+               __x64_sys_epoll_wait
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x75f82d6b4792
+               epoll_wait
+               <mio::poll::Poll>::poll
+               <tokio::runtime::io::driver::Driver>::turn
+               <tokio::runtime::time::Driver>::park_internal
+               <tokio::runtime::scheduler::multi_thread::worker::Context>::park_internal
+               <tokio::runtime::scheduler::multi_thread::worker::Context>::run
+               <tokio::runtime::context::scoped::Scoped<tokio::runtime::scheduler::Context>>::set::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}::{closure#0}, ()>
+               tokio::runtime::context::runtime::enter_runtime::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}, ()>
+               tokio::runtime::scheduler::multi_thread::worker::run
+               <tokio::runtime::task::core::Core<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<<extent_remote::fetch::Fetching<extent_remote::store::Store>>::cached<core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>, <extent_remote::fetch::Fetching<extent_remote::store::Store>>::kept_tail::{closure#0}>::{closure#0}, core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+               <tokio::runtime::task::harness::Harness<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<fxdax::extentd::server::receive::{closure#0}::{closure#1}, ()>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+               <tokio::runtime::blocking::pool::Inner>::run
+               std::sys::backtrace::__rust_begin_short_backtrace::<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>
+               <std::thread::lifecycle::spawn_unchecked<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <std::sys::thread::unix::Thread>::new::thread_start
+               0x75f82d6abe6b
+               0x75f82d73f55c
+
+     4.35%     0.04%  [.] zx_vmar_op_range
+            |          
+             --0.06%--<fxdax::dax::Window>::map
+                       <fxdax::dax::Dax<fxdax::extents::Mapped>>::map
+                       |          
+                        --0.06%--<fxdax::extents::ExtentStore>::map
+                                  <fxdax::extentd::server::Connection>::serve_in_turn
+                                  tokio::runtime::scheduler::multi_thread::worker::block_in_place::<fxdax::extentd::server::receive::{closure#0}::{closure#1}, ()>
+                                  fxdax::extentd::server::receive::{closure#0}
+                                  <tokio::runtime::task::core::Core<core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = ()> + core::marker::Send>>, alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>>::poll
+                                  <tokio::runtime::task::harness::Harness<core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = ()> + core::marker::Send>>, alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>>::poll
+                                  <tokio::runtime::scheduler::multi_thread::worker::Context>::run_task
+                                  <tokio::runtime::scheduler::multi_thread::worker::Context>::run
+                                  <tokio::runtime::context::scoped::Scoped<tokio::runtime::scheduler::Context>>::set::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}::{closure#0}, ()>
+                                  tokio::runtime::context::runtime::enter_runtime::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}, ()>
+                                  tokio::runtime::scheduler::multi_thread::worker::run
+                                  <tokio::runtime::task::core::Core<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<<extent_remote::fetch::Fetching<extent_remote::store::Store>>::cached<core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>, <extent_remote::fetch::Fetching<extent_remote::store::Store>>::kept_tail::{closure#0}>::{closure#0}, core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+                                  <tokio::runtime::task::harness::Harness<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<fxdax::extentd::server::receive::{closure#0}::{closure#1}, ()>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+                                  <tokio::runtime::blocking::pool::Inner>::run
+                                  std::sys::backtrace::__rust_begin_short_backtrace::<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>
+                                  <std::thread::lifecycle::spawn_unchecked<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                  <std::sys::thread::unix::Thread>::new::thread_start
+                                  0x75f82d6abe6b
+                                  0x75f82d73f55c
+
+     4.33%     0.02%  [.] __filemap_get_folio_mpol
+            |
+            ---ext4_da_write_begin
+               generic_perform_write
+               ext4_buffered_write_iter
+               ext4_file_write_iter
+               vfs_write
+               __x64_sys_pwrite64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x75f82d6b4792
+               __libc_pwrite
+               <std::fs::File as std::os::unix::fs::FileExt>::write_at
+               <std::fs::File as std::os::unix::fs::FileExt>::write_all_at
+
+     4.31%     0.04%  [.] post_alloc_hook
+            |          
+             --0.08%--get_page_from_freelist
+                       __alloc_frozen_pages_noprof
+                       alloc_pages_mpol
+                       |          
+                        --0.06%--folio_alloc_noprof
+                                  filemap_alloc_folio_noprof
+                                  __filemap_get_folio_mpol
+                                  ext4_da_write_begin
+                                  generic_perform_write
+                                  ext4_buffered_write_iter
+                                  ext4_file_write_iter
+                                  vfs_write
+                                  __x64_sys_pwrite64
+                                  x64_sys_call
+                                  do_syscall_64
+                                  entry_SYSCALL_64_after_hwframe
+                                  0x75f82d6b4792
+                                  __libc_pwrite
+                                  <std::fs::File as std::os::unix::fs::FileExt>::write_at
+                                  <std::fs::File as std::os::unix::fs::FileExt>::write_all_at
+
+     4.31%     4.31%  [k] kernel_init_pages
+            |          
+             --0.08%--post_alloc_hook
+                       get_page_from_freelist
+                       __alloc_frozen_pages_noprof
+                       alloc_pages_mpol
+                       |          
+                        --0.06%--folio_alloc_noprof
+                                  filemap_alloc_folio_noprof
+                                  __filemap_get_folio_mpol
+                                  ext4_da_write_begin
+                                  generic_perform_write
+                                  ext4_buffered_write_iter
+                                  ext4_file_write_iter
+                                  vfs_write
+                                  __x64_sys_pwrite64
+                                  x64_sys_call
+                                  do_syscall_64
+                                  entry_SYSCALL_64_after_hwframe
+                                  0x75f82d6b4792
+                                  __libc_pwrite
+                                  <std::fs::File as std::os::unix::fs::FileExt>::write_at
+                                  <std::fs::File as std::os::unix::fs::FileExt>::write_all_at
+
+     4.31%     0.06%  [.] <zircon::vm::vm_address_region::VmAddressRegion>::range_op
+            |          
+             --0.08%--zx_vmar_op_range
+                       |          
+                        --0.06%--<fxdax::dax::Window>::map
+                                  <fxdax::dax::Dax<fxdax::extents::Mapped>>::map
+                                  |          
+                                   --0.06%--<fxdax::extents::ExtentStore>::map
+                                             <fxdax::extentd::server::Connection>::serve_in_turn
+                                             tokio::runtime::scheduler::multi_thread::worker::block_in_place::<fxdax::extentd::server::receive::{closure#0}::{closure#1}, ()>
+                                             fxdax::extentd::server::receive::{closure#0}
+                                             <tokio::runtime::task::core::Core<core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = ()> + core::marker::Send>>, alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>>::poll
+                                             <tokio::runtime::task::harness::Harness<core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = ()> + core::marker::Send>>, alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>>::poll
+                                             <tokio::runtime::scheduler::multi_thread::worker::Context>::run_task
+                                             <tokio::runtime::scheduler::multi_thread::worker::Context>::run
+                                             <tokio::runtime::context::scoped::Scoped<tokio::runtime::scheduler::Context>>::set::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}::{closure#0}, ()>
+                                             tokio::runtime::context::runtime::enter_runtime::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}, ()>
+                                             tokio::runtime::scheduler::multi_thread::worker::run
+                                             <tokio::runtime::task::core::Core<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<<extent_remote::fetch::Fetching<extent_remote::store::Store>>::cached<core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>, <extent_remote::fetch::Fetching<extent_remote::store::Store>>::kept_tail::{closure#0}>::{closure#0}, core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+                                             <tokio::runtime::task::harness::Harness<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<fxdax::extentd::server::receive::{closure#0}::{closure#1}, ()>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+                                             <tokio::runtime::blocking::pool::Inner>::run
+                                             std::sys::backtrace::__rust_begin_short_backtrace::<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>
+                                             <std::thread::lifecycle::spawn_unchecked<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                             <std::sys::thread::unix::Thread>::new::thread_start
+                                             0x75f82d6abe6b
+                                             0x75f82d73f55c
+
+     4.23%     0.00%  [.] <fxdax::extentd::wire::Queued>::send
+            |          
+             --0.08%--<fxdax::extentd::wire::AsyncSender>::queue
+                       |          
+                        --0.06%--<fxdax::extentd::server::RemoteStage>::send
+
+     4.06%     0.06%  [.] <zircon::vm::vm_mapping::VmMapping>::destroy_locked
+            |
+            ---<zircon::vm::vm_address_region::VmAddressRegion>::unmap_internal_locked
+
+     4.02%     0.23%  [.] <zircon::vm::vm_mapping::VmMapping>::destroy_locked_object
+            |          
+             --0.08%--<zircon::vm::vm_mapping::VmMapping>::destroy_locked
+                       <zircon::vm::vm_address_region::VmAddressRegion>::unmap_internal_locked
+
+     4.02%     0.10%  [.] fxdax::extentd::wire::receive_with_fds
+            |          
+             --0.08%--<fxdax::extentd::wire::AsyncReceiver>::read::{closure#0}
+                       fxdax::extentd::server::receive::{closure#0}
+                       <tokio::runtime::task::core::Core<core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = ()> + core::marker::Send>>, alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>>::poll
+                       <tokio::runtime::task::harness::Harness<core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = ()> + core::marker::Send>>, alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>>::poll
+                       <tokio::runtime::scheduler::multi_thread::worker::Context>::run_task
+                       <tokio::runtime::scheduler::multi_thread::worker::Context>::run
+                       <tokio::runtime::context::scoped::Scoped<tokio::runtime::scheduler::Context>>::set::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}::{closure#0}, ()>
+                       tokio::runtime::context::runtime::enter_runtime::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}, ()>
+                       tokio::runtime::scheduler::multi_thread::worker::run
+                       <tokio::runtime::task::core::Core<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<<extent_remote::fetch::Fetching<extent_remote::store::Store>>::cached<core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>, <extent_remote::fetch::Fetching<extent_remote::store::Store>>::kept_tail::{closure#0}>::{closure#0}, core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+                       <tokio::runtime::task::harness::Harness<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<fxdax::extentd::server::receive::{closure#0}::{closure#1}, ()>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+                       <tokio::runtime::blocking::pool::Inner>::run
+                       std::sys::backtrace::__rust_begin_short_backtrace::<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>
+                       <std::thread::lifecycle::spawn_unchecked<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       <std::sys::thread::unix::Thread>::new::thread_start
+                       0x75f82d6abe6b
+                       0x75f82d73f55c
+
+     4.00%     0.06%  [.] fxdax::extentd::wire::send_parts
+            |
+            ---<fxdax::extentd::wire::Queued>::send
+               |          
+                --0.07%--<fxdax::extentd::wire::AsyncSender>::queue
+
+     4.00%     0.00%  [.] <zx::vmar::Vmar>::map_unsafe
+            |
+            ---<fxdax::dax::Window>::map
+               |          
+                --0.07%--<fxdax::dax::Dax<fxdax::extents::Mapped>>::map
+
+     3.98%     0.31%  [.] <zircon::vm::vm_mapping::VmMapping>::map_range
+            |
+            ---<zircon::vm::vm_address_region::VmAddressRegion>::range_op
+               zx_vmar_op_range
+
+     3.98%     0.11%  [.] zx_vmar_map
+            |
+            ---<zx::vmar::Vmar>::map_unsafe
+               <fxdax::dax::Window>::map
+               |          
+                --0.07%--<fxdax::dax::Dax<fxdax::extents::Mapped>>::map
+
+     3.98%     0.04%  [.] sendmsg
+            |          
+             --0.07%--fxdax::extentd::wire::send_parts
+                       <fxdax::extentd::wire::Queued>::send
+                       |          
+                        --0.07%--<fxdax::extentd::wire::AsyncSender>::queue
+
+     3.87%     0.08%  [.] recvmsg
+            |          
+             --0.07%--fxdax::extentd::wire::receive_with_fds
+                       <fxdax::extentd::wire::AsyncReceiver>::read::{closure#0}
+                       fxdax::extentd::server::receive::{closure#0}
+                       <tokio::runtime::task::core::Core<core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = ()> + core::marker::Send>>, alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>>::poll
+                       <tokio::runtime::task::harness::Harness<core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = ()> + core::marker::Send>>, alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>>::poll
+                       <tokio::runtime::scheduler::multi_thread::worker::Context>::run_task
+                       <tokio::runtime::scheduler::multi_thread::worker::Context>::run
+                       <tokio::runtime::context::scoped::Scoped<tokio::runtime::scheduler::Context>>::set::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}::{closure#0}, ()>
+                       tokio::runtime::context::runtime::enter_runtime::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}, ()>
+                       tokio::runtime::scheduler::multi_thread::worker::run
+                       <tokio::runtime::task::core::Core<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<<extent_remote::fetch::Fetching<extent_remote::store::Store>>::cached<core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>, <extent_remote::fetch::Fetching<extent_remote::store::Store>>::kept_tail::{closure#0}>::{closure#0}, core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+                       <tokio::runtime::task::harness::Harness<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<fxdax::extentd::server::receive::{closure#0}::{closure#1}, ()>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+                       <tokio::runtime::blocking::pool::Inner>::run
+                       std::sys::backtrace::__rust_begin_short_backtrace::<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>
+                       <std::thread::lifecycle::spawn_unchecked<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       <std::sys::thread::unix::Thread>::new::thread_start
+                       0x75f82d6abe6b
+                       0x75f82d73f55c
+
+     3.75%     0.00%  [.] <zircon::object::vm_address_region_dispatcher::VmAddressRegionDispatcher>::map
+            |
+            ---zx_vmar_map
+               <zx::vmar::Vmar>::map_unsafe
+               <fxdax::dax::Window>::map
+               |          
+                --0.07%--<fxdax::dax::Dax<fxdax::extents::Mapped>>::map
+
+     3.75%     0.06%  [.] <zircon::vm::vm_address_region::VmAddressRegion>::create_vm_mapping
+            |
+            ---<zircon::object::vm_address_region_dispatcher::VmAddressRegionDispatcher>::map
+               zx_vmar_map
+               <zx::vmar::Vmar>::map_unsafe
+               <fxdax::dax::Window>::map
+               |          
+                --0.07%--<fxdax::dax::Dax<fxdax::extents::Mapped>>::map
+
+     3.71%     0.00%  [.] filemap_alloc_folio_noprof
+            |
+            ---__filemap_get_folio_mpol
+               ext4_da_write_begin
+               generic_perform_write
+               ext4_buffered_write_iter
+               ext4_file_write_iter
+               vfs_write
+               __x64_sys_pwrite64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x75f82d6b4792
+               __libc_pwrite
+               <std::fs::File as std::os::unix::fs::FileExt>::write_at
+               <std::fs::File as std::os::unix::fs::FileExt>::write_all_at
+
+     3.71%     0.04%  [.] folio_alloc_noprof
+            |
+            ---filemap_alloc_folio_noprof
+               __filemap_get_folio_mpol
+               ext4_da_write_begin
+               generic_perform_write
+               ext4_buffered_write_iter
+               ext4_file_write_iter
+               vfs_write
+               __x64_sys_pwrite64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x75f82d6b4792
+               __libc_pwrite
+               <std::fs::File as std::os::unix::fs::FileExt>::write_at
+               <std::fs::File as std::os::unix::fs::FileExt>::write_all_at
+
+     3.69%     0.04%  [.] <zircon::vm::vm_address_region::VmAddressRegion>::create_sub_vmar_internal
+            |
+            ---<zircon::vm::vm_address_region::VmAddressRegion>::create_vm_mapping
+               <zircon::object::vm_address_region_dispatcher::VmAddressRegionDispatcher>::map
+               zx_vmar_map
+               <zx::vmar::Vmar>::map_unsafe
+               <fxdax::dax::Window>::map
+               |          
+                --0.07%--<fxdax::dax::Dax<fxdax::extents::Mapped>>::map
+
+     3.58%     0.00%  [.] <extent_store::store::Store<extent_store::dir::HostDir>>::commit_ordered
+            |
+            ---<fxdax::extents::ExtentStore>::commit_with
+
+     3.56%     3.56%  [k] _raw_spin_unlock_irqrestore
+     3.54%     0.02%  [.] <extent_store::store::Store<extent_store::dir::HostDir>>::commit_locked
+            |
+            ---<extent_store::store::Store<extent_store::dir::HostDir>>::commit_ordered
+               <fxdax::extents::ExtentStore>::commit_with
+
+     3.52%     0.10%  [.] <zircon::arch::host::mmu::HostArchVmAspace as zircon::vm::arch_vm_aspace::ArchVmAspace>::unmap
+            |          
+             --0.06%--<zircon::vm::vm_mapping::VmMapping>::destroy_locked_object
+                       <zircon::vm::vm_mapping::VmMapping>::destroy_locked
+                       <zircon::vm::vm_address_region::VmAddressRegion>::unmap_internal_locked
+
+     3.48%     0.00%  [.] zx_vmo_op_range
+            |
+            ---<fxdax::extents::ExtentStore>::map
+               <fxdax::extentd::server::Connection>::serve_in_turn
+               tokio::runtime::scheduler::multi_thread::worker::block_in_place::<fxdax::extentd::server::receive::{closure#0}::{closure#1}, ()>
+               fxdax::extentd::server::receive::{closure#0}
+               <tokio::runtime::task::core::Core<core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = ()> + core::marker::Send>>, alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>>::poll
+               <tokio::runtime::task::harness::Harness<core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = ()> + core::marker::Send>>, alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>>::poll
+               <tokio::runtime::scheduler::multi_thread::worker::Context>::run_task
+               <tokio::runtime::scheduler::multi_thread::worker::Context>::run
+               <tokio::runtime::context::scoped::Scoped<tokio::runtime::scheduler::Context>>::set::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}::{closure#0}, ()>
+               tokio::runtime::context::runtime::enter_runtime::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}, ()>
+               tokio::runtime::scheduler::multi_thread::worker::run
+               <tokio::runtime::task::core::Core<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<<extent_remote::fetch::Fetching<extent_remote::store::Store>>::cached<core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>, <extent_remote::fetch::Fetching<extent_remote::store::Store>>::kept_tail::{closure#0}>::{closure#0}, core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+               <tokio::runtime::task::harness::Harness<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<fxdax::extentd::server::receive::{closure#0}::{closure#1}, ()>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+               <tokio::runtime::blocking::pool::Inner>::run
+               std::sys::backtrace::__rust_begin_short_backtrace::<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>
+               <std::thread::lifecycle::spawn_unchecked<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <std::sys::thread::unix::Thread>::new::thread_start
+               0x75f82d6abe6b
+               0x75f82d73f55c
+
+     3.45%     0.08%  [.] <extent_store::store::Store<extent_store::dir::HostDir>>::commit_in
+            |          
+             --0.06%--<extent_store::store::Store<extent_store::dir::HostDir>>::commit_locked
+                       <extent_store::store::Store<extent_store::dir::HostDir>>::commit_ordered
+                       <fxdax::extents::ExtentStore>::commit_with
+
+     3.43%     0.06%  [.] <zircon::vm::vm_object_paged::VmObjectPaged>::commit_range_internal
+            |
+            ---zx_vmo_op_range
+               <fxdax::extents::ExtentStore>::map
+               <fxdax::extentd::server::Connection>::serve_in_turn
+               tokio::runtime::scheduler::multi_thread::worker::block_in_place::<fxdax::extentd::server::receive::{closure#0}::{closure#1}, ()>
+               fxdax::extentd::server::receive::{closure#0}
+               <tokio::runtime::task::core::Core<core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = ()> + core::marker::Send>>, alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>>::poll
+               <tokio::runtime::task::harness::Harness<core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = ()> + core::marker::Send>>, alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>>::poll
+               <tokio::runtime::scheduler::multi_thread::worker::Context>::run_task
+               <tokio::runtime::scheduler::multi_thread::worker::Context>::run
+               <tokio::runtime::context::scoped::Scoped<tokio::runtime::scheduler::Context>>::set::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}::{closure#0}, ()>
+               tokio::runtime::context::runtime::enter_runtime::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}, ()>
+               tokio::runtime::scheduler::multi_thread::worker::run
+               <tokio::runtime::task::core::Core<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<<extent_remote::fetch::Fetching<extent_remote::store::Store>>::cached<core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>, <extent_remote::fetch::Fetching<extent_remote::store::Store>>::kept_tail::{closure#0}>::{closure#0}, core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+               <tokio::runtime::task::harness::Harness<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<fxdax::extentd::server::receive::{closure#0}::{closure#1}, ()>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+               <tokio::runtime::blocking::pool::Inner>::run
+               std::sys::backtrace::__rust_begin_short_backtrace::<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>
+               <std::thread::lifecycle::spawn_unchecked<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <std::sys::thread::unix::Thread>::new::thread_start
+               0x75f82d6abe6b
+               0x75f82d73f55c
+
+     3.41%     0.11%  [.] <fxdax::extentd::server::RemoteStage>::send
+     3.35%     0.00%  [.] <zircon::vm::vm_cow_pages::VmCowPages>::commit_range_locked
+            |
+            ---<zircon::vm::vm_object_paged::VmObjectPaged>::commit_range_internal
+               zx_vmo_op_range
+               <fxdax::extents::ExtentStore>::map
+               <fxdax::extentd::server::Connection>::serve_in_turn
+               tokio::runtime::scheduler::multi_thread::worker::block_in_place::<fxdax::extentd::server::receive::{closure#0}::{closure#1}, ()>
+               fxdax::extentd::server::receive::{closure#0}
+               <tokio::runtime::task::core::Core<core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = ()> + core::marker::Send>>, alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>>::poll
+               <tokio::runtime::task::harness::Harness<core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = ()> + core::marker::Send>>, alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>>::poll
+               <tokio::runtime::scheduler::multi_thread::worker::Context>::run_task
+               <tokio::runtime::scheduler::multi_thread::worker::Context>::run
+               <tokio::runtime::context::scoped::Scoped<tokio::runtime::scheduler::Context>>::set::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}::{closure#0}, ()>
+               tokio::runtime::context::runtime::enter_runtime::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}, ()>
+               tokio::runtime::scheduler::multi_thread::worker::run
+               <tokio::runtime::task::core::Core<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<<extent_remote::fetch::Fetching<extent_remote::store::Store>>::cached<core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>, <extent_remote::fetch::Fetching<extent_remote::store::Store>>::kept_tail::{closure#0}>::{closure#0}, core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+               <tokio::runtime::task::harness::Harness<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<fxdax::extentd::server::receive::{closure#0}::{closure#1}, ()>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+               <tokio::runtime::blocking::pool::Inner>::run
+               std::sys::backtrace::__rust_begin_short_backtrace::<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>
+               <std::thread::lifecycle::spawn_unchecked<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <std::sys::thread::unix::Thread>::new::thread_start
+               0x75f82d6abe6b
+               0x75f82d73f55c
+
+     3.35%     0.00%  [.] __x64_sys_sendmsg
+            |
+            ---x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x75f82d6b4792
+               sendmsg
+               fxdax::extentd::wire::send_parts
+               <fxdax::extentd::wire::Queued>::send
+               |          
+                --0.06%--<fxdax::extentd::wire::AsyncSender>::queue
+
+     3.33%     0.78%  [.] <zircon::arch::host::mmu::HostArchVmAspace as zircon::vm::arch_vm_aspace::ArchVmAspace>::map
+            |
+            ---<zircon::vm::vm_mapping::VmMapping>::map_range
+               <zircon::vm::vm_address_region::VmAddressRegion>::range_op
+               zx_vmar_op_range
+
+     3.31%     0.00%  [.] __sys_sendmsg
+            |
+            ---__x64_sys_sendmsg
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x75f82d6b4792
+               sendmsg
+               fxdax::extentd::wire::send_parts
+               <fxdax::extentd::wire::Queued>::send
+               |          
+                --0.06%--<fxdax::extentd::wire::AsyncSender>::queue
+
+     3.24%     0.21%  [.] schedule
+     3.20%     0.02%  [.] __x64_sys_recvmsg
+            |          
+             --0.06%--x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x75f82d6b4792
+                       recvmsg
+                       fxdax::extentd::wire::receive_with_fds
+                       <fxdax::extentd::wire::AsyncReceiver>::read::{closure#0}
+                       fxdax::extentd::server::receive::{closure#0}
+                       <tokio::runtime::task::core::Core<core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = ()> + core::marker::Send>>, alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>>::poll
+                       <tokio::runtime::task::harness::Harness<core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = ()> + core::marker::Send>>, alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>>::poll
+                       <tokio::runtime::scheduler::multi_thread::worker::Context>::run_task
+                       <tokio::runtime::scheduler::multi_thread::worker::Context>::run
+                       <tokio::runtime::context::scoped::Scoped<tokio::runtime::scheduler::Context>>::set::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}::{closure#0}, ()>
+                       tokio::runtime::context::runtime::enter_runtime::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}, ()>
+                       tokio::runtime::scheduler::multi_thread::worker::run
+                       <tokio::runtime::task::core::Core<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<<extent_remote::fetch::Fetching<extent_remote::store::Store>>::cached<core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>, <extent_remote::fetch::Fetching<extent_remote::store::Store>>::kept_tail::{closure#0}>::{closure#0}, core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+                       <tokio::runtime::task::harness::Harness<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<fxdax::extentd::server::receive::{closure#0}::{closure#1}, ()>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+                       <tokio::runtime::blocking::pool::Inner>::run
+                       std::sys::backtrace::__rust_begin_short_backtrace::<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>
+                       <std::thread::lifecycle::spawn_unchecked<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       <std::sys::thread::unix::Thread>::new::thread_start
+                       0x75f82d6abe6b
+                       0x75f82d73f55c
+
+     3.06%     0.04%  [.] <zircon::vm::vm_address_region::VmAddressRegion>::overwrite_vm_mapping_locked
+            |
+            ---<zircon::vm::vm_address_region::VmAddressRegion>::create_sub_vmar_internal
+               <zircon::vm::vm_address_region::VmAddressRegion>::create_vm_mapping
+               <zircon::object::vm_address_region_dispatcher::VmAddressRegionDispatcher>::map
+               zx_vmar_map
+               <zx::vmar::Vmar>::map_unsafe
+               <fxdax::dax::Window>::map
+               |          
+                --0.06%--<fxdax::dax::Dax<fxdax::extents::Mapped>>::map
+
+     3.06%     0.00%  [.] 0x000075f82d7bcad8
+     3.02%     0.06%  [.] __schedule
+            |
+            ---schedule
+
+     3.02%     0.02%  [.] __sys_recvmsg
+            |
+            ---__x64_sys_recvmsg
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x75f82d6b4792
+               recvmsg
+               fxdax::extentd::wire::receive_with_fds
+               <fxdax::extentd::wire::AsyncReceiver>::read::{closure#0}
+               fxdax::extentd::server::receive::{closure#0}
+               <tokio::runtime::task::core::Core<core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = ()> + core::marker::Send>>, alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>>::poll
+               <tokio::runtime::task::harness::Harness<core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = ()> + core::marker::Send>>, alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>>::poll
+               <tokio::runtime::scheduler::multi_thread::worker::Context>::run_task
+               <tokio::runtime::scheduler::multi_thread::worker::Context>::run
+               <tokio::runtime::context::scoped::Scoped<tokio::runtime::scheduler::Context>>::set::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}::{closure#0}, ()>
+               tokio::runtime::context::runtime::enter_runtime::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}, ()>
+               tokio::runtime::scheduler::multi_thread::worker::run
+               <tokio::runtime::task::core::Core<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<<extent_remote::fetch::Fetching<extent_remote::store::Store>>::cached<core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>, <extent_remote::fetch::Fetching<extent_remote::store::Store>>::kept_tail::{closure#0}>::{closure#0}, core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, std::io::error::Error>>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+               <tokio::runtime::task::harness::Harness<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::block_in_place<fxdax::extentd::server::receive::{closure#0}::{closure#1}, ()>::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
+               <tokio::runtime::blocking::pool::Inner>::run
+               std::sys::backtrace::__rust_begin_short_backtrace::<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>
+               <std::thread::lifecycle::spawn_unchecked<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <std::sys::thread::unix::Thread>::new::thread_start
+               0x75f82d6abe6b
+               0x75f82d73f55c
+
+     3.01%     3.01%  [.] 0x00000000001bc512
+     3.01%     0.06%  [.] ___sys_sendmsg
+            |
+            ---__sys_sendmsg
+               __x64_sys_sendmsg
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x75f82d6b4792
+               sendmsg
+               fxdax::extentd::wire::send_parts
+               <fxdax::extentd::wire::Queued>::send
+
+
+
+#
+# (Cannot load tips.txt file, please install perf!)
+#

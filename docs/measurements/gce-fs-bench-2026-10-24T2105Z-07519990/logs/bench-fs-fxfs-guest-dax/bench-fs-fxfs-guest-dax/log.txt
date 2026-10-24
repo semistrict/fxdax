@@ -1,0 +1,1911 @@
+[    0.103201] PCI: Fatal: No config space access function found
+[    0.130625] PCI: System does not support PCI
+[    0.345337] check access for rdinit=/init failed: -2, ignoring
+iteration 1/1
+PROFILE sqlite-pread-scan
+    49.33%  [k] pv_native_safe_halt
+    30.40%  [k] _copy_to_iter
+     3.02%  [.] memcpy
+     1.12%  [k] clear_page_erms
+
+
+
+INCLUSIVE sqlite-pread-scan
+    49.41%    49.33%  swapper      [k] pv_native_safe_halt
+    49.41%     0.00%  swapper      [k] arch_cpu_idle
+    49.41%     0.00%  swapper      [k] common_startup_64
+    49.41%     0.00%  swapper      [k] cpu_startup_entry
+    49.41%     0.00%  swapper      [k] default_idle_call
+    49.41%     0.00%  swapper      [k] do_idle
+    49.13%     0.00%  swapper      [k] do_initcalls
+    49.13%     0.00%  swapper      [k] kernel_init
+    49.13%     0.00%  swapper      [k] x86_64_start_kernel
+    49.13%     0.00%  swapper      [k] x86_64_start_reservations
+    36.67%     0.00%  sqlite3      [k] 0x00007f1f48788aa0
+    36.56%     0.00%  sqlite3      [.] 0x00007f1f4874c341
+    35.89%     0.00%  sqlite3      [k] entry_SYSCALL_64_after_hwframe
+    35.78%     0.64%  sqlite3      [k] do_syscall_64
+    35.25%     0.22%  sqlite3      [k] x64_sys_call
+    34.85%     0.11%  sqlite3      [k] __x64_sys_pread64
+    34.66%     0.28%  sqlite3      [k] vfs_read
+    34.32%     0.22%  sqlite3      [k] fxfs_dax_read_iter
+    33.65%     0.14%  sqlite3      [k] dax_iomap_rw
+    30.85%     0.17%  sqlite3      [k] dax_iomap_iter
+    30.52%     0.11%  sqlite3      [k] dax_copy_to_iter
+    30.40%    30.40%  sqlite3      [k] _copy_to_iter
+     4.45%     0.00%  sqlite3      [.] 0x0000000500000001
+     3.02%     3.02%  sqlite3      [.] memcpy
+     2.30%     0.25%  sqlite3      [k] iomap_iter
+     1.48%     0.25%  sqlite3      [k] fxfs_dax_iomap_begin
+     1.40%     0.00%  sqlite3      [k] __handle_mm_fault
+     1.40%     0.00%  sqlite3      [k] asm_exc_page_fault
+     1.40%     0.00%  sqlite3      [k] do_user_addr_fault
+     1.40%     0.00%  sqlite3      [k] exc_page_fault
+     1.40%     0.00%  sqlite3      [k] handle_mm_fault
+     1.40%     0.00%  sqlite3      [k] handle_pte_fault
+     1.20%     0.00%  sqlite3      [k] do_anonymous_page
+     1.18%     0.11%  sqlite3      [k] fxfs_dax_iomap_read.constprop.0
+     1.18%     0.00%  sqlite3      [k] alloc_anon_folio
+     1.18%     0.00%  sqlite3      [k] vma_alloc_folio_noprof
+     1.15%     0.03%  sqlite3      [k] __alloc_frozen_pages_noprof
+     1.15%     0.00%  sqlite3      [k] alloc_pages_mpol
+     1.12%     1.12%  sqlite3      [k] clear_page_erms
+     1.12%     0.00%  sqlite3      [k] get_page_from_freelist
+     0.90%     0.00%  sqlite3      [.] 0x00007f1f4871ed34
+     0.87%     0.00%  sqlite3      [.] 0x0000000000000004
+     0.87%     0.00%  sqlite3      [.] 0x0000000000000200
+     0.87%     0.00%  sqlite3      [.] 0x0a02000100010000
+     0.84%     0.00%  perf         [k] do_syscall_64
+     0.84%     0.00%  perf         [k] entry_SYSCALL_64_after_hwframe
+     0.84%     0.00%  perf         [k] x64_sys_call
+     0.84%     0.00%  perf         [k] 0x00007fec57c10090
+     0.84%     0.00%  perf         [.] 0x00007fec57c81341
+     0.81%     0.81%  perf         [k] copy_folio_from_iter_atomic
+     0.81%     0.00%  perf         [k] __x64_sys_write
+     0.81%     0.00%  perf         [k] generic_perform_write
+     0.81%     0.00%  perf         [k] ksys_write
+     0.81%     0.00%  perf         [k] shmem_file_write_iter
+     0.81%     0.00%  perf         [k] vfs_write
+     0.81%     0.00%  sqlite3      [k] 0000000000000000
+     0.78%     0.78%  sqlite3      [.] 0x0000000000068341
+     0.78%     0.42%  sqlite3      [k] fxfs_dax_iomap_end
+     0.76%     0.00%  sqlite3      [.] 0x3c002d041e080f0c
+     0.73%     0.22%  sqlite3      [k] fxfs_dax_get_range
+     0.73%     0.00%  sqlite3      [.] 0x0000000200000000
+
+
+
+CALLERS sqlite-pread-scan
+    49.33%  [k] pv_native_safe_halt
+            |
+            ---arch_cpu_idle
+               default_idle_call
+               do_idle
+               cpu_startup_entry
+               |          
+                --49.13%--kernel_init
+                          do_initcalls
+                          x86_64_start_reservations
+                          x86_64_start_kernel
+                          common_startup_64
+
+    30.40%  [k] _copy_to_iter
+            |
+            ---dax_copy_to_iter
+               dax_iomap_iter
+               dax_iomap_rw
+               fxfs_dax_read_iter
+               |          
+                --30.38%--vfs_read
+                          __x64_sys_pread64
+                          x64_sys_call
+                          do_syscall_64
+                          entry_SYSCALL_64_after_hwframe
+                          0x7f1f4874c341
+                          0x7f1f48788aa0
+                          0x7f1f48788aa0
+                          0x7f1f48788aa0
+                          0x7f1f48788aa0
+                          0x7f1f48788aa0
+                          0x7f1f48788aa0
+                          0x7f1f48788aa0
+                          0x7f1f48788aa0
+                          0x7f1f48788aa0
+                          0x7f1f48788aa0
+                          0x7f1f48788aa0
+                          0x7f1f48788aa0
+                          0x7f1f48788aa0
+
+
+
+
+PROFILE sqlite-pread-scan-warm
+    49.26%  [k] pv_native_safe_halt
+    14.80%  [k] _copy_to_iter
+     7.44%  [.] memcpy
+     1.56%  [k] do_syscall_64
+
+
+
+INCLUSIVE sqlite-pread-scan-warm
+    49.36%     0.00%  swapper      [k] common_startup_64
+    49.36%     0.00%  swapper      [k] cpu_startup_entry
+    49.26%    49.26%  swapper      [k] pv_native_safe_halt
+    49.26%     0.00%  swapper      [k] arch_cpu_idle
+    49.26%     0.00%  swapper      [k] default_idle_call
+    49.26%     0.00%  swapper      [k] do_idle
+    49.17%     0.00%  swapper      [k] do_initcalls
+    49.17%     0.00%  swapper      [k] kernel_init
+    49.17%     0.00%  swapper      [k] x86_64_start_kernel
+    49.17%     0.00%  swapper      [k] x86_64_start_reservations
+    26.56%     0.00%  sqlite3      [k] 0x00007ffb03708aa0
+    26.19%     0.00%  sqlite3      [.] 0x00007ffb036cc341
+    26.01%     1.56%  sqlite3      [k] do_syscall_64
+    26.01%     0.00%  sqlite3      [k] entry_SYSCALL_64_after_hwframe
+    24.45%     0.09%  sqlite3      [k] x64_sys_call
+    23.99%     0.28%  sqlite3      [k] vfs_read
+    23.99%     0.09%  sqlite3      [k] __x64_sys_pread64
+    23.35%     0.09%  sqlite3      [k] fxfs_dax_read_iter
+    22.24%     0.18%  sqlite3      [k] dax_iomap_rw
+    16.54%     0.55%  sqlite3      [k] dax_iomap_iter
+    14.98%     0.18%  sqlite3      [k] dax_copy_to_iter
+    14.80%    14.80%  sqlite3      [k] _copy_to_iter
+    10.29%     0.00%  sqlite3      [.] 0x0000000500000001
+     7.44%     7.44%  sqlite3      [.] memcpy
+     4.96%     0.46%  sqlite3      [k] iomap_iter
+     3.49%     0.46%  sqlite3      [k] fxfs_dax_iomap_begin
+     2.76%     0.09%  sqlite3      [k] fxfs_dax_iomap_read.constprop.0
+     1.84%     0.37%  sqlite3      [k] fxfs_dax_get_range
+     1.75%     0.00%  sqlite3      [k] 0000000000000000
+     1.75%     0.00%  sqlite3      [.] 0x0000000000000004
+     1.75%     0.00%  sqlite3      [.] 0x0000000000000200
+     1.75%     0.00%  sqlite3      [.] 0x0a02000100010000
+     1.65%     0.00%  sqlite3      [.] 0x0000000400000005
+     1.29%     0.64%  sqlite3      [k] fxfs_dax_iomap_end
+     1.19%     0.00%  sqlite3      [.] 0x00007ffb037092b8
+     1.01%     0.00%  sqlite3      [.] 0x00007ffb037098a8
+     1.01%     0.00%  sqlite3      [.] 0x3c002d041e080f0c
+     0.92%     0.00%  sqlite3      [.] 0x0000000200000000
+     0.83%     0.83%  sqlite3      [k] __srcu_read_unlock
+     0.83%     0.83%  sqlite3      [k] down_read
+     0.74%     0.18%  sqlite3      [k] touch_atime
+     0.64%     0.64%  sqlite3      [k] _raw_spin_unlock_irqrestore
+     0.64%     0.64%  sqlite3      [k] up_read
+     0.64%     0.64%  sqlite3      [.] 0x0000000000042713
+     0.64%     0.00%  sqlite3      [k] __wake_up
+     0.64%     0.00%  sqlite3      [.] 0x0000000300000004
+     0.64%     0.00%  sqlite3      [.] 0x0000556405019713
+     0.55%     0.55%  perf         [k] copy_folio_from_iter_atomic
+     0.55%     0.55%  sqlite3      [.] 0x0000000000068341
+     0.55%     0.18%  sqlite3      [k] do_user_addr_fault
+     0.55%     0.00%  perf         [k] __x64_sys_write
+     0.55%     0.00%  perf         [k] do_syscall_64
+     0.55%     0.00%  perf         [k] entry_SYSCALL_64_after_hwframe
+     0.55%     0.00%  perf         [k] generic_perform_write
+     0.55%     0.00%  perf         [k] ksys_write
+     0.55%     0.00%  perf         [k] shmem_file_write_iter
+     0.55%     0.00%  perf         [k] vfs_write
+     0.55%     0.00%  perf         [k] x64_sys_call
+     0.55%     0.00%  perf         [k] 0x00007f30ec2b4090
+     0.55%     0.00%  perf         [.] 0x00007f30ec325341
+     0.55%     0.00%  sqlite3      [k] asm_exc_page_fault
+     0.55%     0.00%  sqlite3      [k] exc_page_fault
+     0.55%     0.00%  sqlite3      [.] 0x00007ffb0369ed34
+
+
+
+CALLERS sqlite-pread-scan-warm
+    49.26%  [k] pv_native_safe_halt
+            |
+            ---arch_cpu_idle
+               default_idle_call
+               do_idle
+               cpu_startup_entry
+               |          
+                --49.08%--kernel_init
+                          do_initcalls
+                          x86_64_start_reservations
+                          x86_64_start_kernel
+                          common_startup_64
+
+    14.80%  [k] _copy_to_iter
+            |
+            ---dax_copy_to_iter
+               dax_iomap_iter
+               dax_iomap_rw
+               fxfs_dax_read_iter
+               vfs_read
+               __x64_sys_pread64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x7ffb036cc341
+               0x7ffb03708aa0
+               0x7ffb03708aa0
+               0x7ffb03708aa0
+               0x7ffb03708aa0
+               0x7ffb03708aa0
+               0x7ffb03708aa0
+               0x7ffb03708aa0
+               0x7ffb03708aa0
+               0x7ffb03708aa0
+               0x7ffb03708aa0
+               0x7ffb03708aa0
+               0x7ffb03708aa0
+               0x7ffb03708aa0
+
+     7.44%  [.] memcpy
+            |
+            ---0x500000001
+
+
+
+
+PROFILE sqlite-mmap-scan
+    50.10%  [k] pv_native_safe_halt
+    32.78%  [.] memcpy
+     6.43%  [.] 0x0000000000042713
+
+
+
+INCLUSIVE sqlite-mmap-scan
+    50.62%     0.00%  swapper          [k] common_startup_64
+    50.62%     0.00%  swapper          [k] cpu_startup_entry
+    50.62%     0.00%  swapper          [k] do_idle
+    50.52%    50.10%  swapper          [k] pv_native_safe_halt
+    50.52%     0.00%  swapper          [k] arch_cpu_idle
+    50.52%     0.00%  swapper          [k] default_idle_call
+    49.59%     0.00%  swapper          [k] start_secondary
+    41.29%     0.00%  sqlite3          [.] 0x0000000500000001
+    32.78%    32.78%  sqlite3          [.] memcpy
+     6.43%     6.43%  sqlite3          [.] 0x0000000000042713
+     6.43%     0.00%  sqlite3          [.] 0x0000564e28922713
+     1.76%     0.00%  sqlite3          [k] 0000000000000000
+     1.66%     0.10%  sqlite3          [k] do_user_addr_fault
+     1.66%     0.00%  sqlite3          [k] asm_exc_page_fault
+     1.66%     0.00%  sqlite3          [k] exc_page_fault
+     1.45%     0.21%  sqlite3          [k] handle_mm_fault
+     1.24%     0.10%  sqlite3          [k] __handle_mm_fault
+     1.04%     0.00%  sqlite3          [k] do_syscall_64
+     1.04%     0.00%  sqlite3          [k] entry_SYSCALL_64_after_hwframe
+     1.04%     0.00%  sqlite3          [k] handle_pte_fault
+     1.04%     0.00%  sqlite3          [k] x64_sys_call
+     1.04%     0.00%  swapper          [k] do_initcalls
+     1.04%     0.00%  swapper          [k] kernel_init
+     1.04%     0.00%  swapper          [k] x86_64_start_kernel
+     1.04%     0.00%  swapper          [k] x86_64_start_reservations
+     0.83%     0.00%  sqlite3          [.] 0x0000564e2896a963
+     0.62%     0.00%  sqlite3          [k] __do_fault
+     0.62%     0.00%  sqlite3          [k] do_fault
+     0.62%     0.00%  sqlite3          [k] page_cache_ra_order
+     0.62%     0.00%  sqlite3          [.] 0x0000000400000005
+     0.62%     0.00%  sqlite3          [.] 0x3c002d041e080f0c
+     0.52%     0.52%  sqlite3          [.] 0x000000000008a967
+     0.52%     0.00%  sqlite3          [k] __alloc_frozen_pages_noprof
+     0.52%     0.00%  sqlite3          [k] __x64_sys_execve
+     0.52%     0.00%  sqlite3          [k] alloc_pages_mpol
+     0.52%     0.00%  sqlite3          [k] bprm_execve
+     0.52%     0.00%  sqlite3          [k] bprm_execve.part.0
+     0.52%     0.00%  sqlite3          [k] do_execveat_common.isra.0
+     0.52%     0.00%  sqlite3          [k] elf_load
+     0.52%     0.00%  sqlite3          [k] exec_binprm
+     0.52%     0.00%  sqlite3          [.] execve
+     0.52%     0.00%  sqlite3          [k] get_page_from_freelist
+     0.52%     0.00%  sqlite3          [k] load_elf_binary
+     0.52%     0.00%  sqlite3          [k] read_pages
+     0.52%     0.00%  sqlite3          [.] 0x0000564e2896a967
+
+
+
+CALLERS sqlite-mmap-scan
+    50.10%  [k] pv_native_safe_halt
+            |
+            ---arch_cpu_idle
+               default_idle_call
+               do_idle
+               cpu_startup_entry
+               |          
+                --49.17%--start_secondary
+                          common_startup_64
+
+    32.78%  [.] memcpy
+            |
+            ---0x500000001
+
+     6.43%  [.] 0x0000000000042713
+            |
+            ---0x500000001
+
+
+
+
+PROFILE sqlite-mmap-scan-warm
+    49.45%  [k] pv_native_safe_halt
+    33.70%  [.] memcpy
+     9.08%  [.] 0x0000000000042713
+
+
+
+INCLUSIVE sqlite-mmap-scan-warm
+    49.67%    49.45%  swapper          [k] pv_native_safe_halt
+    49.67%     0.00%  swapper          [k] arch_cpu_idle
+    49.67%     0.00%  swapper          [k] common_startup_64
+    49.67%     0.00%  swapper          [k] cpu_startup_entry
+    49.67%     0.00%  swapper          [k] default_idle_call
+    49.67%     0.00%  swapper          [k] do_idle
+    49.45%     0.00%  swapper          [k] do_initcalls
+    49.45%     0.00%  swapper          [k] kernel_init
+    49.45%     0.00%  swapper          [k] x86_64_start_kernel
+    49.45%     0.00%  swapper          [k] x86_64_start_reservations
+    44.09%     0.00%  sqlite3          [.] 0x0000000500000001
+    33.70%    33.70%  sqlite3          [.] memcpy
+     9.08%     9.08%  sqlite3          [.] 0x0000000000042713
+     9.08%     0.00%  sqlite3          [.] 0x0000562e7bfff713
+     1.42%     0.00%  sqlite3          [.] 0000000000000000
+     1.20%     0.66%  sqlite3          [k] do_user_addr_fault
+     1.20%     0.00%  sqlite3          [k] asm_exc_page_fault
+     1.20%     0.00%  sqlite3          [k] exc_page_fault
+     0.88%     0.00%  sqlite3          [.] 0x0000562e7c047963
+     0.55%     0.11%  sqlite3          [k] __handle_mm_fault
+     0.55%     0.00%  sqlite3          [k] handle_mm_fault
+     0.55%     0.00%  sqlite3          [.] 0x00007f5764d0c2b8
+     0.55%     0.00%  sqlite3          [.] 0x3c002d041e080f0c
+
+
+
+CALLERS sqlite-mmap-scan-warm
+    49.45%  [k] pv_native_safe_halt
+            |
+            ---arch_cpu_idle
+               default_idle_call
+               do_idle
+               cpu_startup_entry
+               |          
+                --49.23%--kernel_init
+                          do_initcalls
+                          x86_64_start_reservations
+                          x86_64_start_kernel
+                          common_startup_64
+
+    33.70%  [.] memcpy
+            |
+            ---0x500000001
+
+     9.08%  [.] 0x0000000000042713
+            |
+            ---0x500000001
+
+
+
+
+PROFILE sqlite-delete-full-batch1
+    74.11%  [k] pv_native_safe_halt
+     3.71%  [k] vm_notify
+     3.26%  [k] queue_work_on
+     1.85%  [k] finish_task_switch.isra.0
+     1.57%  [k] fxfs_rt_park
+
+
+
+INCLUSIVE sqlite-delete-full-batch1
+    75.81%     0.00%  swapper          [k] common_startup_64
+    75.81%     0.00%  swapper          [k] cpu_startup_entry
+    75.65%     0.14%  swapper          [k] do_idle
+    74.75%     0.13%  swapper          [k] default_idle_call
+    74.62%     0.00%  swapper          [k] arch_cpu_idle
+    74.61%    74.11%  swapper          [k] pv_native_safe_halt
+    38.52%     0.00%  swapper          [k] do_initcalls
+    38.52%     0.00%  swapper          [k] kernel_init
+    38.52%     0.00%  swapper          [k] x86_64_start_kernel
+    38.52%     0.00%  swapper          [k] x86_64_start_reservations
+    37.29%     0.00%  swapper          [k] start_secondary
+    14.09%     0.05%  sqlite3          [k] do_syscall_64
+    14.09%     0.00%  sqlite3          [k] entry_SYSCALL_64_after_hwframe
+    14.03%     0.00%  sqlite3          [k] x64_sys_call
+    13.52%     0.00%  sqlite3          [k] 0x00007fa28d6c3aa0
+    13.47%     0.00%  sqlite3          [.] 0x00007fa28d687341
+     8.01%     0.03%  sqlite3          [k] __x64_sys_pwrite64
+     7.98%     0.06%  sqlite3          [k] vfs_write
+     7.90%     0.00%  sqlite3          [k] fxfs_dax_write_iter
+     7.67%     0.03%  sqlite3          [k] dax_iomap_rw
+     6.81%     0.02%  sqlite3          [k] iomap_iter
+     6.79%     0.00%  sqlite3          [k] fxfs_dax_iomap_begin
+     6.77%     0.02%  sqlite3          [k] fxfs_dax_iomap_write.constprop.0
+     5.87%     0.10%  sqlite3          [k] fxfs_dax_map_write
+     5.25%     0.21%  sqlite3          [k] _RNCNvMso_NtNtCskdHmogqv138_4fxfs12object_store11transactionNtB7_11Transaction6commit0CsgeVujVTwtAM_10fxfs_linux
+     4.80%     0.11%  sqlite3          [k] _RNCNvMso_NtNtCskdHmogqv138_4fxfs12object_store7journalNtB7_7Journal6commit0CsgeVujVTwtAM_10fxfs_linux
+     4.46%     0.14%  sqlite3          [k] _RNvMso_NtNtCskdHmogqv138_4fxfs12object_store7journalNtB5_7Journal25write_and_apply_mutations
+     2.89%     0.00%  sqlite3          [k] __x64_sys_fsync
+     2.86%     0.00%  sqlite3          [k] do_fsync
+     2.86%     0.00%  sqlite3          [k] vfs_fsync_range
+     2.84%     0.00%  sqlite3          [k] fxfs_vfs_fsync
+     2.47%     2.46%  sqlite3          [k] queue_work_on
+     2.30%     0.00%  sqlite3          [k] __x64_sys_open
+     2.30%     0.00%  sqlite3          [k] do_filp_open
+     2.30%     0.00%  sqlite3          [k] do_sys_openat2
+     2.30%     0.00%  sqlite3          [k] path_openat
+     2.26%     0.00%  kworker/u8:2-fx  [k] kthread
+     2.26%     0.00%  kworker/u8:2-fx  [k] ret_from_fork
+     2.26%     0.00%  kworker/u8:2-fx  [k] ret_from_fork_asm
+     2.26%     0.00%  kworker/u8:2-fx  [k] worker_thread
+     2.18%     0.00%  sqlite3          [k] fxfs_vfs_create
+     2.18%     0.00%  sqlite3          [k] fxfs_vfs_mknod
+     2.18%     0.00%  sqlite3          [k] lookup_open.isra.0
+     2.18%     0.00%  sqlite3          [k] open_last_lookups
+     2.10%     0.03%  sqlite3          [k] _RNvMs1_NtCs8WWmacacxHO_10async_task3rawINtB5_7RawTaskINtNtCs2RzmApnEpjJ_4core3pin3PinINtNtCs1R8tEabxR5k_5alloc5boxed3BoxINtNtCsa4Wcd7wDxpd_12futures_util9abortable9AbortableNCINvMs2_NtNtNtCshY9N03A7Id3_13fuchsia_async7runtime5guest5scopeNtB2U_11ScopeHandle11mk_task_futuNCNCNvMNtNtCskdHmogqv138_4fxfs12object_store6volumeNtB4r_10RootVolume6volume00E0EEEINtNtBU_6result6ResultuNtB1X_7AbortedENvNtCshRwtkNAyQY8_8linux_rt8executor8scheduleuE4wakeCsgeVujVTwtAM_10fxfs_linux
+     2.07%     0.03%  sqlite3          [k] fxfs_create
+     2.05%     0.02%  sqlite3          [k] fxfs_fsync
+     2.05%     0.00%  kworker/u8:2-fx  [k] process_one_work
+     1.94%     0.00%  kworker/u8:6-fx  [k] kthread
+     1.94%     0.00%  kworker/u8:6-fx  [k] ret_from_fork
+     1.94%     0.00%  kworker/u8:6-fx  [k] ret_from_fork_asm
+     1.93%     0.00%  kworker/u8:6-fx  [k] worker_thread
+     1.83%     0.02%  kworker/u8:1-fx  [k] worker_thread
+     1.83%     0.00%  kworker/u8:1-fx  [k] kthread
+     1.83%     0.00%  kworker/u8:1-fx  [k] ret_from_fork
+     1.83%     0.00%  kworker/u8:1-fx  [k] ret_from_fork_asm
+     1.75%     1.57%  sqlite3          [k] fxfs_rt_park
+     1.70%     0.03%  kworker/u8:6-fx  [k] process_one_work
+     1.64%     0.03%  sqlite3          [k] _RNvMs0_NtNtCskdHmogqv138_4fxfs12object_store14object_managerNtB5_13ObjectManager17apply_transaction
+     1.57%     0.08%  sqlite3          [k] _RNvMs0_NtNtCskdHmogqv138_4fxfs12object_store14object_managerNtB5_13ObjectManager14apply_mutation
+     1.56%     0.00%  kworker/u8:1-fx  [k] process_one_work
+     1.46%     0.00%  sqlite3          [k] _RNCNvMs2_NtCsgeVujVTwtAM_10fxfs_linux2fsNtB7_4Fxfs5drain0B9_
+     1.43%     0.05%  sqlite3          [k] _RNCNvMs2_NtCsgeVujVTwtAM_10fxfs_linux2fsNtB7_4Fxfs11apply_batch0B9_
+     1.43%     0.02%  kworker/u8:7-fx  [k] worker_thread
+     1.43%     0.00%  kworker/u8:7-fx  [k] kthread
+     1.43%     0.00%  kworker/u8:7-fx  [k] ret_from_fork
+     1.43%     0.00%  kworker/u8:7-fx  [k] ret_from_fork_asm
+     1.30%     0.00%  kworker/u8:7-fx  [k] process_one_work
+     1.20%     0.00%  kworker/u8:8-fx  [k] kthread
+     1.20%     0.00%  kworker/u8:8-fx  [k] ret_from_fork
+     1.20%     0.00%  kworker/u8:8-fx  [k] ret_from_fork_asm
+     1.20%     0.00%  kworker/u8:8-fx  [k] worker_thread
+     1.11%     0.00%  kworker/u8:8-fx  [k] process_one_work
+     0.96%     0.02%  kworker/u8:2-fx  [k] fxfs_rt_work_run
+     0.93%     0.00%  kworker/u8:1-fx  [k] fxfs_rt_work_run
+     0.87%     0.02%  sqlite3          [k] virtio_extent_submit
+     0.85%     0.02%  swapper          [k] schedule_idle
+     0.85%     0.00%  kworker/u8:6-fx  [k] fxfs_rt_work_run
+     0.83%     0.83%  swapper          [k] finish_task_switch.isra.0
+     0.83%     0.02%  kworker/u8:2-fx  [k] virtio_extent_submit
+     0.83%     0.00%  swapper          [k] __schedule
+     0.82%     0.08%  sqlite3          [k] _RNvXs14_NtNtCskdHmogqv138_4fxfs12object_store9allocatorNtB6_9AllocatorNtNtBa_10filesystem16JournalingObject14apply_mutation
+     0.82%     0.03%  sqlite3          [k] dax_iomap_iter
+     0.80%     0.80%  sqlite3          [k] vm_notify
+     0.79%     0.08%  kworker/u8:2-fx  [k] _RNvMs1_NtCs8WWmacacxHO_10async_task3rawINtB5_7RawTaskINtNtCsa4Wcd7wDxpd_12futures_util9abortable9AbortableNCNvMso_NtNtCskdHmogqv138_4fxfs12object_store7journalNtB1O_7Journal10flush_task0EINtNtCs2RzmApnEpjJ_4core6result6ResultuNtBS_7AbortedENvNtCshRwtkNAyQY8_8linux_rt8executor8scheduleuE3runB1S_
+     0.79%     0.03%  kworker/u8:1-fx  [k] _RNvMs1_NtCs8WWmacacxHO_10async_task3rawINtB5_7RawTaskINtNtCsa4Wcd7wDxpd_12futures_util9abortable9AbortableNCNvMso_NtNtCskdHmogqv138_4fxfs12object_store7journalNtB1O_7Journal10flush_task0EINtNtCs2RzmApnEpjJ_4core6result6ResultuNtBS_7AbortedENvNtCshRwtkNAyQY8_8linux_rt8executor8scheduleuE3runB1S_
+     0.74%     0.74%  kworker/u8:2-fx  [k] vm_notify
+     0.74%     0.03%  sqlite3          [k] _RNCNvMsm_NtCskdHmogqv138_4fxfs10filesystemNtB7_12FxFilesystem4sync0CsgeVujVTwtAM_10fxfs_linux
+     0.74%     0.00%  sqlite3          [k] sync_inode_metadata
+     0.74%     0.00%  sqlite3          [k] writeback_single_inode
+     0.71%     0.02%  kworker/u8:6-fx  [k] virtio_extent_submit
+     0.71%     0.02%  sqlite3          [k] _RNCNvMso_NtNtCskdHmogqv138_4fxfs12object_store7journalNtB7_7Journal4sync0CsgeVujVTwtAM_10fxfs_linux
+     0.71%     0.02%  sqlite3          [k] fxfs_vfs_write_attr
+     0.71%     0.00%  sqlite3          [k] __writeback_single_inode
+     0.69%     0.03%  kworker/u8:6-fx  [k] _RNvMs1_NtCs8WWmacacxHO_10async_task3rawINtB5_7RawTaskINtNtCsa4Wcd7wDxpd_12futures_util9abortable9AbortableNCNvMso_NtNtCskdHmogqv138_4fxfs12object_store7journalNtB1O_7Journal10flush_task0EINtNtCs2RzmApnEpjJ_4core6result6ResultuNtBS_7AbortedENvNtCshRwtkNAyQY8_8linux_rt8executor8scheduleuE3runB1S_
+     0.69%     0.03%  sqlite3          [k] fxfs_write_inode
+     0.69%     0.00%  kworker/u8:7-fx  [k] virtio_extent_call
+     0.69%     0.00%  sqlite3          [k] fxfs_vfs_write_inode
+     0.67%     0.66%  kworker/u8:6-fx  [k] vm_notify
+     0.67%     0.02%  sqlite3          [k] kvfree
+     0.67%     0.00%  kworker/u8:2-fx  [k] virtio_extent_call
+     0.66%     0.40%  sqlite3          [k] kfree
+     0.64%     0.06%  sqlite3          [k] _RNvXsz_NtCskdHmogqv138_4fxfs12object_storeNtB5_11ObjectStoreNtNtB7_10filesystem16JournalingObject14apply_mutation
+     0.64%     0.00%  kworker/u8:7-fx  [k] virtio_extent_submit
+     0.64%     0.00%  sqlite3          [k] _RNCNvMs2_NtCsgeVujVTwtAM_10fxfs_linux2fsNtB7_4Fxfs7setattr0B9_
+     0.61%     0.61%  sqlite3          [k] _copy_from_iter
+     0.61%     0.00%  sqlite3          [k] dax_copy_from_iter
+     0.59%     0.59%  kworker/u8:7-fx  [k] vm_notify
+     0.59%     0.00%  kworker/u8:8-fx  [k] fxfs_rt_work_run
+     0.56%     0.02%  sqlite3          [k] _RNCNvMs2_NtNtCskdHmogqv138_4fxfs12object_store19store_object_handleINtB7_17StoreObjectHandleNtB9_11ObjectStoreE12read_aligned0CsgeVujVTwtAM_10fxfs_linux
+     0.56%     0.02%  sqlite3          [k] _RNCNvMs7_NtNtCskdHmogqv138_4fxfs8lsm_tree5mergeINtB7_14MergerIteratorNtNtNtBb_12object_store13object_record12ObjectKeyV54NtB17_14ObjectValueV60E14push_iterators0CsgeVujVTwtAM_10fxfs_linux
+     0.56%     0.00%  kworker/u8:1-fx  [k] virtio_extent_submit
+     0.55%     0.02%  kworker/u8:2-fx  [k] _RNCNvMs2_NtNtCskdHmogqv138_4fxfs12object_store19store_object_handleINtB7_17StoreObjectHandleNtB9_11ObjectStoreE13write_aligned0Bb_
+     0.55%     0.02%  kworker/u8:6-fx  [k] virtio_extent_call
+     0.55%     0.00%  kworker/u8:2-fx  [k] _RNCNvMs2_NtNtCskdHmogqv138_4fxfs12object_store18data_object_handleINtB7_16DataObjectHandleNtB9_11ObjectStoreE9overwrite0Bb_
+     0.53%     0.00%  kworker/u8:2-fx  [k] _RNCNvMs2_NtNtCskdHmogqv138_4fxfs12object_store18data_object_handleINtB7_16DataObjectHandleNtB9_11ObjectStoreE8write_at0Bb_
+     0.53%     0.00%  kworker/u8:6-fx  [k] _RNCNvMs2_NtNtCskdHmogqv138_4fxfs12object_store18data_object_handleINtB7_16DataObjectHandleNtB9_11ObjectStoreE9overwrite0Bb_
+     0.51%     0.50%  kworker/u8:1-fx  [k] vm_notify
+     0.51%     0.05%  sqlite3          [k] _RNvMsi_NtNtCskdHmogqv138_4fxfs12object_store9allocatorNtB5_9Allocator6record
+     0.51%     0.02%  kworker/u8:2-fx  [k] _RNCNvXsG_NtCsgeVujVTwtAM_10fxfs_linux6deviceNtB7_12ExtentDeviceNtCs1eeVmMdRDvf_14storage_device6Device15write_with_opts0B9_
+     0.51%     0.00%  sqlite3          [k] fxfs_rt_free
+
+
+
+CALLERS sqlite-delete-full-batch1
+    74.11%  [k] pv_native_safe_halt
+            |
+            ---arch_cpu_idle
+               default_idle_call
+               do_idle
+               cpu_startup_entry
+               |          
+               |--37.34%--kernel_init
+               |          do_initcalls
+               |          x86_64_start_reservations
+               |          x86_64_start_kernel
+               |          common_startup_64
+               |          
+                --36.77%--start_secondary
+                          common_startup_64
+
+
+
+
+FXFS sqlite-delete-full-batch1: device_commits 603, device_commits_ns 165869298, device_read_bytes 974848, device_reads 215, device_reads_ns 36804437, device_write_bytes 3547136, device_writes 816, device_writes_ns 193436592, fsyncs 800, journal_compaction_ns 14045162, journal_compactions 1, seal_waits 603, seal_waits_ns 2698260, seals 603, seals_ns 172937956, window_free_bytes 65536, window_map_bytes_evacuate 5185536, window_map_bytes_reach 65536, window_map_bytes_restage 39321600, window_map_requests 1201, window_maps 1435, window_maps_evacuate 834, window_maps_ns 306093441, window_maps_reach 1, window_maps_restage 600, window_regions_free_bytes 65536, window_regions_largest_free_bytes 4456448, window_regions_pruned 681, window_unmaps 1002, window_unmaps_ns 195412348, writes_held_by_seals 1, writes_held_by_seals_ns 158048
+REQUESTS sqlite-delete-full-batch1: read 1.07 (150 µs each), write 4.08 (220 µs each), free 1.03 (148 µs each), map 6.00 (207 µs each), unmap 5.01 (167 µs each), commit 0.01 (271 µs each) per operation
+PROFILE sqlite-delete-full-batch100
+    69.98%  [k] pv_native_safe_halt
+     1.96%  [k] _copy_from_iter
+     1.83%  [k] queue_work_on
+     1.32%  [k] vm_notify
+     1.20%  [k] __pi_memcpy
+
+
+
+INCLUSIVE sqlite-delete-full-batch100
+    70.75%     0.00%  swapper          [k] common_startup_64
+    70.74%     0.00%  swapper          [k] cpu_startup_entry
+    70.72%     0.04%  swapper          [k] do_idle
+    70.34%     0.02%  swapper          [k] default_idle_call
+    70.32%     0.00%  swapper          [k] arch_cpu_idle
+    70.31%    69.98%  swapper          [k] pv_native_safe_halt
+    37.08%     0.00%  swapper          [k] start_secondary
+    33.66%     0.00%  swapper          [k] do_initcalls
+    33.66%     0.00%  swapper          [k] kernel_init
+    33.66%     0.00%  swapper          [k] x86_64_start_kernel
+    33.66%     0.00%  swapper          [k] x86_64_start_reservations
+    21.76%     0.00%  sqlite3          [k] entry_SYSCALL_64_after_hwframe
+    21.75%     0.08%  sqlite3          [k] do_syscall_64
+    21.66%     0.05%  sqlite3          [k] x64_sys_call
+    21.61%     0.00%  sqlite3          [k] 0x00007f6878561aa0
+    21.55%     0.00%  sqlite3          [.] 0x00007f6878525341
+    17.71%     0.02%  sqlite3          [k] __x64_sys_pwrite64
+    17.68%     0.06%  sqlite3          [k] vfs_write
+    17.57%     0.05%  sqlite3          [k] fxfs_dax_write_iter
+    16.96%     0.03%  sqlite3          [k] dax_iomap_rw
+    14.67%     0.04%  sqlite3          [k] iomap_iter
+    14.53%     0.03%  sqlite3          [k] fxfs_dax_iomap_begin
+    14.48%     0.04%  sqlite3          [k] fxfs_dax_iomap_write.constprop.0
+    12.28%     0.44%  sqlite3          [k] fxfs_dax_map_write
+     8.78%     0.15%  sqlite3          [k] _RNCNvMso_NtNtCskdHmogqv138_4fxfs12object_store11transactionNtB7_11Transaction6commit0CsgeVujVTwtAM_10fxfs_linux
+     8.10%     0.06%  sqlite3          [k] _RNCNvMso_NtNtCskdHmogqv138_4fxfs12object_store7journalNtB7_7Journal6commit0CsgeVujVTwtAM_10fxfs_linux
+     7.90%     0.28%  sqlite3          [k] _RNvMso_NtNtCskdHmogqv138_4fxfs12object_store7journalNtB5_7Journal25write_and_apply_mutations
+     5.03%     0.08%  sqlite3          [k] _RNvMs0_NtNtCskdHmogqv138_4fxfs12object_store14object_managerNtB5_13ObjectManager17apply_transaction
+     4.80%     0.16%  sqlite3          [k] _RNvMs0_NtNtCskdHmogqv138_4fxfs12object_store14object_managerNtB5_13ObjectManager14apply_mutation
+     2.97%     0.00%  sqlite3          [k] __x64_sys_open
+     2.96%     0.00%  sqlite3          [k] do_sys_openat2
+     2.95%     0.00%  sqlite3          [k] path_openat
+     2.95%     0.00%  sqlite3          [k] do_filp_open
+     2.92%     0.00%  sqlite3          [k] open_last_lookups
+     2.91%     0.00%  sqlite3          [k] lookup_open.isra.0
+     2.91%     0.00%  sqlite3          [k] fxfs_vfs_create
+     2.91%     0.00%  sqlite3          [k] fxfs_vfs_mknod
+     2.86%     0.01%  sqlite3          [k] fxfs_create
+     2.75%     0.06%  sqlite3          [k] _RNvXs14_NtNtCskdHmogqv138_4fxfs12object_store9allocatorNtB6_9AllocatorNtNtBa_10filesystem16JournalingObject14apply_mutation
+     2.72%     0.00%  sqlite3          [k] _RNCNvMs2_NtCsgeVujVTwtAM_10fxfs_linux2fsNtB7_4Fxfs5drain0B9_
+     2.70%     0.01%  sqlite3          [k] _RNCNvMs2_NtCsgeVujVTwtAM_10fxfs_linux2fsNtB7_4Fxfs11apply_batch0B9_
+     2.28%     0.05%  sqlite3          [k] _RNvMsi_NtNtCskdHmogqv138_4fxfs12object_store9allocatorNtB5_9Allocator6record
+     2.21%     0.04%  sqlite3          [k] dax_iomap_iter
+     2.10%     0.48%  sqlite3          [k] _RNvMs8_NtNtCskdHmogqv138_4fxfs8lsm_tree15skip_list_layerINtB5_13SkipListLayerNtNtNtB9_12object_store9allocator15AllocatorKeyV60NtB1f_17AllocatorValueV32E10merge_intoB9_
+     1.97%     0.00%  sqlite3          [k] dax_copy_from_iter
+     1.97%     1.95%  sqlite3          [k] _copy_from_iter
+     1.82%     0.13%  sqlite3          [k] _RNCNvMs7_NtNtCskdHmogqv138_4fxfs8lsm_tree5mergeINtB7_14MergerIteratorNtNtNtBb_12object_store13object_record12ObjectKeyV54NtB17_14ObjectValueV60E14push_iterators0CsgeVujVTwtAM_10fxfs_linux
+     1.71%     0.24%  sqlite3          [k] _RNvXsz_NtCskdHmogqv138_4fxfs12object_storeNtB5_11ObjectStoreNtNtB7_10filesystem16JournalingObject14apply_mutation
+     1.55%     1.54%  sqlite3          [k] queue_work_on
+     1.54%     0.13%  sqlite3          [k] _RNCNvXs8_NtNtCskdHmogqv138_4fxfs8lsm_tree5mergeINtB7_14MergerIteratorNtNtNtBb_12object_store13object_record12ObjectKeyV54NtB17_14ObjectValueV60EINtNtB9_5types13LayerIteratorB15_B1V_E7advance0CsgeVujVTwtAM_10fxfs_linux
+     1.43%     0.95%  sqlite3          [k] __kvmalloc_node_noprof
+     1.42%     0.04%  sqlite3          [k] _RNvMs1_NtCs8WWmacacxHO_10async_task3rawINtB5_7RawTaskINtNtCs2RzmApnEpjJ_4core3pin3PinINtNtCs1R8tEabxR5k_5alloc5boxed3BoxINtNtCsa4Wcd7wDxpd_12futures_util9abortable9AbortableNCINvMs2_NtNtNtCshY9N03A7Id3_13fuchsia_async7runtime5guest5scopeNtB2U_11ScopeHandle11mk_task_futuNCNCNvMNtNtCskdHmogqv138_4fxfs12object_store6volumeNtB4r_10RootVolume6volume00E0EEEINtNtBU_6result6ResultuNtB1X_7AbortedENvNtCshRwtkNAyQY8_8linux_rt8executor8scheduleuE4wakeCsgeVujVTwtAM_10fxfs_linux
+     1.30%     0.07%  sqlite3          [k] kvfree
+     1.29%     0.91%  sqlite3          [k] kfree
+     1.23%     0.04%  sqlite3          [k] fxfs_rt_alloc
+     1.18%     0.13%  sqlite3          [k] _RNCNvMsn_NtNtCskdHmogqv138_4fxfs8lsm_tree5mergeINtB7_6MergerNtNtNtBb_12object_store13object_record12ObjectKeyV54NtBY_14ObjectValueV60E5query0CsgeVujVTwtAM_10fxfs_linux
+     1.17%     0.04%  sqlite3          [k] fxfs_rt_free
+     1.14%     1.14%  sqlite3          [k] __pi_memcpy
+     1.09%     0.01%  sqlite3          [k] _RNCNvXst_NtNtCskdHmogqv138_4fxfs8lsm_tree16persistent_layerINtB7_15PersistentLayerNtNtNtBb_12object_store13object_record12ObjectKeyV54NtB1k_14ObjectValueV60EINtNtB9_5types5LayerB1i_B28_E4seek0Bb_
+     0.96%     0.18%  sqlite3          [k] _RNCNvMsb_NtNtCskdHmogqv138_4fxfs8lsm_tree16persistent_layerINtB7_15PersistentLayerNtNtNtBb_12object_store13object_record12ObjectKeyV54NtB1k_14ObjectValueV60E4seek0Bb_
+     0.89%     0.02%  sqlite3          [k] fxfs_dax_map_extents
+     0.86%     0.02%  sqlite3          [k] _RNCNvMs2_NtNtCskdHmogqv138_4fxfs12object_store19store_object_handleINtB7_17StoreObjectHandleNtB9_11ObjectStoreE22deallocate_old_extents0CsgeVujVTwtAM_10fxfs_linux
+     0.76%     0.00%  kworker/u8:1-fx  [k] worker_thread
+     0.76%     0.00%  kworker/u8:1-fx  [k] kthread
+     0.76%     0.00%  kworker/u8:1-fx  [k] ret_from_fork
+     0.76%     0.00%  kworker/u8:1-fx  [k] ret_from_fork_asm
+     0.71%     0.00%  kworker/u8:1-fx  [k] process_one_work
+     0.67%     0.01%  sqlite3          [k] fxfs_dax_get_range
+     0.63%     0.01%  sqlite3          [k] _RINvXNvNtNtCskdHmogqv138_4fxfs12object_store11transaction1__NtB5_11MutationV60NtNtCslaoSmfS0x5U_10serde_core3ser9Serialize9serializeQINtNtCsjr86reHQuqA_7bincode3ser10SerializerQINtNtCs1R8tEabxR5k_5alloc3vec3VechEINtNtB2c_6config14WithOtherLimitINtB3r_17WithOtherTrailingNtB3r_14DefaultOptionsNtNtB3r_8trailing13AllowTrailingENtNtB3r_5limit7BoundedEEEB9_
+     0.63%     0.00%  kworker/u8:2-fx  [k] kthread
+     0.63%     0.00%  kworker/u8:2-fx  [k] ret_from_fork
+     0.63%     0.00%  kworker/u8:2-fx  [k] ret_from_fork_asm
+     0.63%     0.00%  kworker/u8:2-fx  [k] worker_thread
+     0.63%     0.00%  sqlite3          [.] 0000000000000000
+     0.62%     0.19%  sqlite3          [k] _RNvXsi_NtNtCskdHmogqv138_4fxfs8lsm_tree15skip_list_layerINtB5_20SkipListLayerIterMutNtNtNtB9_12object_store9allocator15AllocatorKeyV60NtB1m_17AllocatorValueV32EINtNtB7_5types16LayerIteratorMutB1k_B28_E6insertB9_
+     0.61%     0.00%  kworker/u8:7-fx  [k] kthread
+     0.61%     0.00%  kworker/u8:7-fx  [k] ret_from_fork
+     0.61%     0.00%  kworker/u8:7-fx  [k] ret_from_fork_asm
+     0.61%     0.00%  kworker/u8:7-fx  [k] worker_thread
+     0.58%     0.00%  kworker/u8:2-fx  [k] process_one_work
+     0.56%     0.00%  kworker/u8:7-fx  [k] process_one_work
+     0.53%     0.00%  sqlite3          [.] 0x0000000000000200
+     0.50%     0.00%  sqlite3          [k] __x64_sys_fsync
+     0.50%     0.00%  sqlite3          [k] vfs_fsync_range
+
+
+
+CALLERS sqlite-delete-full-batch100
+    69.98%  [k] pv_native_safe_halt
+            |
+            ---arch_cpu_idle
+               default_idle_call
+               do_idle
+               cpu_startup_entry
+               |          
+               |--36.74%--start_secondary
+               |          common_startup_64
+               |          
+                --33.24%--kernel_init
+                          do_initcalls
+                          x86_64_start_reservations
+                          x86_64_start_kernel
+                          common_startup_64
+
+
+
+
+FXFS sqlite-delete-full-batch100: device_commits 604, device_commits_ns 505312889, device_read_bytes 1277952, device_reads 232, device_reads_ns 44344246, device_write_bytes 9920512, device_writes 2286, device_writes_ns 1520001475, fsyncs 800, journal_compaction_ns 41511926, journal_compactions 2, seal_waits 604, seal_waits_ns 3953296, seals 604, seals_ns 512012697, stores_held_by_seals 3, stores_held_by_seals_ns 2146800, window_map_bytes_evacuate 182009856, window_map_bytes_grow 288096256, window_map_bytes_reach 1978368, window_map_bytes_restage 39387136, window_map_requests 3025, window_maps 22860, window_maps_evacuate 20638, window_maps_grow 1599, window_maps_ns 1634528919, window_maps_reach 22, window_maps_restage 601, window_regions_full 1, window_regions_largest_free_bytes 2228224, window_regions_pruned 864, window_unmaps 2012, window_unmaps_ns 763326467, writes_held_by_seals 1, writes_held_by_seals_ns 39268
+REQUESTS sqlite-delete-full-batch100: read 1.16 (170 µs each), write 11.43 (641 µs each), free 1.88 (1414 µs each), map 15.12 (517 µs each), unmap 10.06 (354 µs each), commit 0.02 (533 µs each) per operation
+PROFILE sqlite-wal-full-batch1
+    73.31%  [k] pv_native_safe_halt
+     4.01%  [k] queue_work_on
+     2.73%  [k] fxfs_rt_park
+     2.11%  [k] vm_notify
+     1.89%  [k] finish_task_switch.isra.0
+
+
+
+INCLUSIVE sqlite-wal-full-batch1
+    74.98%     0.00%  swapper          [k] common_startup_64
+    74.98%     0.00%  swapper          [k] cpu_startup_entry
+    74.87%     0.07%  swapper          [k] do_idle
+    73.60%     0.04%  swapper          [k] default_idle_call
+    73.56%    73.31%  swapper          [k] pv_native_safe_halt
+    73.56%     0.00%  swapper          [k] arch_cpu_idle
+    43.55%     0.00%  swapper          [k] start_secondary
+    31.43%     0.00%  swapper          [k] do_initcalls
+    31.43%     0.00%  swapper          [k] kernel_init
+    31.43%     0.00%  swapper          [k] x86_64_start_kernel
+    31.43%     0.00%  swapper          [k] x86_64_start_reservations
+    13.84%     0.00%  sqlite3          [k] fxfs_dax_iomap_begin
+    13.84%     0.00%  sqlite3          [k] iomap_iter
+    13.80%     0.95%  sqlite3          [k] fxfs_dax_iomap_write.constprop.0
+    11.91%     0.22%  sqlite3          [k] fxfs_dax_map_write
+    10.05%     0.07%  sqlite3          [k] do_syscall_64
+    10.05%     0.00%  sqlite3          [k] entry_SYSCALL_64_after_hwframe
+     9.91%     0.00%  sqlite3          [k] x64_sys_call
+     9.87%     0.00%  sqlite3          [.] 0x00007ff06d289341
+     9.87%     0.00%  sqlite3          [k] 0x00007ff06d2c5aa0
+     8.12%     0.04%  sqlite3          [k] vfs_write
+     8.12%     0.00%  sqlite3          [k] __x64_sys_pwrite64
+     8.08%     0.00%  sqlite3          [k] fxfs_dax_write_iter
+     7.79%     0.00%  sqlite3          [k] dax_iomap_rw
+     6.99%     0.15%  sqlite3          [k] do_user_addr_fault
+     6.99%     0.00%  sqlite3          [k] asm_exc_page_fault
+     6.99%     0.00%  sqlite3          [k] exc_page_fault
+     6.85%     0.04%  sqlite3          [k] handle_mm_fault
+     6.74%     0.00%  sqlite3          [k] __handle_mm_fault
+     6.70%     0.00%  sqlite3          [k] dax_iomap_fault
+     6.70%     0.00%  sqlite3          [k] dax_iomap_pte_fault
+     6.70%     0.00%  sqlite3          [k] do_wp_page
+     6.70%     0.00%  sqlite3          [k] fxfs_dax_do_fault
+     6.70%     0.00%  sqlite3          [k] fxfs_dax_mkwrite
+     6.70%     0.00%  sqlite3          [k] handle_pte_fault
+     5.68%     0.11%  sqlite3          [k] _RNCNvMso_NtNtCskdHmogqv138_4fxfs12object_store11transactionNtB7_11Transaction6commit0CsgeVujVTwtAM_10fxfs_linux
+     5.39%     0.07%  sqlite3          [k] _RNCNvMso_NtNtCskdHmogqv138_4fxfs12object_store7journalNtB7_7Journal6commit0CsgeVujVTwtAM_10fxfs_linux
+     5.03%     0.07%  sqlite3          [k] _RNvMso_NtNtCskdHmogqv138_4fxfs12object_store7journalNtB5_7Journal25write_and_apply_mutations
+     4.44%     0.00%  sqlite3          [.] 0x00005556948f863b
+     3.57%     3.57%  sqlite3          [k] queue_work_on
+     2.95%     2.73%  sqlite3          [k] fxfs_rt_park
+     2.77%     0.04%  sqlite3          [k] _RNvMs1_NtCs8WWmacacxHO_10async_task3rawINtB5_7RawTaskINtNtCs2RzmApnEpjJ_4core3pin3PinINtNtCs1R8tEabxR5k_5alloc5boxed3BoxINtNtCsa4Wcd7wDxpd_12futures_util9abortable9AbortableNCINvMs2_NtNtNtCshY9N03A7Id3_13fuchsia_async7runtime5guest5scopeNtB2U_11ScopeHandle11mk_task_futuNCNCNvMNtNtCskdHmogqv138_4fxfs12object_store6volumeNtB4r_10RootVolume6volume00E0EEEINtNtBU_6result6ResultuNtB1X_7AbortedENvNtCshRwtkNAyQY8_8linux_rt8executor8scheduleuE4wakeCsgeVujVTwtAM_10fxfs_linux
+     2.44%     0.00%  sqlite3          [.] 0x00005556948f863e
+     1.78%     0.04%  sqlite3          [k] _RNCNvMs2_NtNtCskdHmogqv138_4fxfs12object_store19store_object_handleINtB7_17StoreObjectHandleNtB9_11ObjectStoreE12read_aligned0CsgeVujVTwtAM_10fxfs_linux
+     1.75%     0.04%  sqlite3          [k] _RNCNvMs2_NtNtCskdHmogqv138_4fxfs12object_store19store_object_handleINtB7_17StoreObjectHandleNtB9_11ObjectStoreE22read_aligned_unchecked0CsgeVujVTwtAM_10fxfs_linux
+     1.71%     0.00%  kworker/u8:2-fx  [k] kthread
+     1.71%     0.00%  kworker/u8:2-fx  [k] ret_from_fork
+     1.71%     0.00%  kworker/u8:2-fx  [k] ret_from_fork_asm
+     1.71%     0.00%  kworker/u8:2-fx  [k] worker_thread
+     1.71%     0.00%  sqlite3          [k] _RNCNvMs2_NtNtCskdHmogqv138_4fxfs12object_store19store_object_handleINtB7_17StoreObjectHandleNtB9_11ObjectStoreE17read_aligned_impl0CsgeVujVTwtAM_10fxfs_linux
+     1.68%     0.07%  sqlite3          [k] _RNCNvMs2_NtNtCskdHmogqv138_4fxfs12object_store19store_object_handleINtB7_17StoreObjectHandleNtB9_11ObjectStoreE16read_and_decrypt0CsgeVujVTwtAM_10fxfs_linux
+     1.68%     0.00%  sqlite3          [k] _RNCNCNvMs2_NtNtCskdHmogqv138_4fxfs12object_store19store_object_handleINtB9_17StoreObjectHandleNtBb_11ObjectStoreE17read_aligned_impl00CsgeVujVTwtAM_10fxfs_linux
+     1.64%     0.04%  kworker/u8:8-fx  [k] worker_thread
+     1.64%     0.00%  kworker/u8:8-fx  [k] kthread
+     1.64%     0.00%  kworker/u8:8-fx  [k] ret_from_fork
+     1.64%     0.00%  kworker/u8:8-fx  [k] ret_from_fork_asm
+     1.60%     0.00%  kworker/u8:2-fx  [k] process_one_work
+     1.60%     0.00%  sqlite3          [k] __x64_sys_fsync
+     1.60%     0.00%  sqlite3          [k] do_fsync
+     1.60%     0.00%  sqlite3          [k] fxfs_vfs_fsync
+     1.60%     0.00%  sqlite3          [k] vfs_fsync_range
+     1.49%     0.00%  kworker/u8:8-fx  [k] process_one_work
+     1.35%     0.07%  sqlite3          [k] _RNvMs0_NtNtCskdHmogqv138_4fxfs12object_store14object_managerNtB5_13ObjectManager17apply_transaction
+     1.27%     0.15%  sqlite3          [k] _RNvMs0_NtNtCskdHmogqv138_4fxfs12object_store14object_managerNtB5_13ObjectManager14apply_mutation
+     1.27%     0.07%  swapper          [k] schedule_idle
+     1.27%     0.00%  sqlite3          [k] virtio_extent_submit
+     1.24%     0.00%  sqlite3          [k] _RNvMsg_NtCsgeVujVTwtAM_10fxfs_linux6deviceNtB5_12ExtentDevice11io_requests
+     1.24%     0.00%  sqlite3          [k] _RNvNtCsgeVujVTwtAM_10fxfs_linux6device6submit
+     1.24%     0.00%  sqlite3          [k] fxfs_device_submit
+     1.24%     0.00%  sqlite3          [k] fxfs_fsync
+     1.20%     0.04%  swapper          [k] __schedule
+     1.17%     1.17%  sqlite3          [k] vm_notify
+     1.17%     1.17%  swapper          [k] finish_task_switch.isra.0
+     0.95%     0.00%  kworker/u8:1-fx  [k] kthread
+     0.95%     0.00%  kworker/u8:1-fx  [k] ret_from_fork
+     0.95%     0.00%  kworker/u8:1-fx  [k] ret_from_fork_asm
+     0.95%     0.00%  kworker/u8:1-fx  [k] worker_thread
+     0.87%     0.04%  sqlite3          [k] _RNCNvXsG_NtCsgeVujVTwtAM_10fxfs_linux6deviceNtB7_12ExtentDeviceNtCs1eeVmMdRDvf_14storage_device6Device14read_with_opts0B9_
+     0.80%     0.04%  kworker/u8:1-fx  [k] process_one_work
+     0.80%     0.04%  kworker/u8:2-fx  [k] _RNvMs1_NtCs8WWmacacxHO_10async_task3rawINtB5_7RawTaskINtNtCsa4Wcd7wDxpd_12futures_util9abortable9AbortableNCNvMso_NtNtCskdHmogqv138_4fxfs12object_store7journalNtB1O_7Journal10flush_task0EINtNtCs2RzmApnEpjJ_4core6result6ResultuNtBS_7AbortedENvNtCshRwtkNAyQY8_8linux_rt8executor8scheduleuE3runB1S_
+     0.80%     0.00%  kworker/u8:2-fx  [k] fxfs_rt_work_run
+     0.76%     0.00%  kworker/u8:8-fx  [k] fxfs_rt_work_run
+     0.73%     0.07%  kworker/u8:8-fx  [k] _RNvMs1_NtCs8WWmacacxHO_10async_task3rawINtB5_7RawTaskINtNtCsa4Wcd7wDxpd_12futures_util9abortable9AbortableNCNvMso_NtNtCskdHmogqv138_4fxfs12object_store7journalNtB1O_7Journal10flush_task0EINtNtCs2RzmApnEpjJ_4core6result6ResultuNtBS_7AbortedENvNtCshRwtkNAyQY8_8linux_rt8executor8scheduleuE3runB1S_
+     0.73%     0.00%  kworker/u8:2-fx  [k] _RNCNvMs2_NtNtCskdHmogqv138_4fxfs12object_store18data_object_handleINtB7_16DataObjectHandleNtB9_11ObjectStoreE9overwrite0Bb_
+     0.69%     0.04%  sqlite3          [k] _RNvXs14_NtNtCskdHmogqv138_4fxfs12object_store9allocatorNtB6_9AllocatorNtNtBa_10filesystem16JournalingObject14apply_mutation
+     0.66%     0.04%  kworker/u8:2-fx  [k] _RNCNvMs2_NtNtCskdHmogqv138_4fxfs12object_store19store_object_handleINtB7_17StoreObjectHandleNtB9_11ObjectStoreE13write_aligned0Bb_
+     0.66%     0.00%  kworker/u8:2-fx  [k] _RNCNvMs2_NtNtCskdHmogqv138_4fxfs12object_store18data_object_handleINtB7_16DataObjectHandleNtB9_11ObjectStoreE8write_at0Bb_
+     0.62%     0.00%  sqlite3          [k] _RNCNvXsG_NtCsgeVujVTwtAM_10fxfs_linux6deviceNtB7_12ExtentDeviceNtCs1eeVmMdRDvf_14storage_device6Device15write_with_opts0B9_
+     0.58%     0.40%  sqlite3          [k] kfree
+     0.58%     0.04%  sqlite3          [k] kvfree
+     0.58%     0.00%  kworker/u8:0-fx  [k] kthread
+     0.58%     0.00%  kworker/u8:0-fx  [k] ret_from_fork
+     0.58%     0.00%  kworker/u8:0-fx  [k] ret_from_fork_asm
+     0.58%     0.00%  kworker/u8:0-fx  [k] worker_thread
+     0.55%     0.04%  sqlite3          [k] _RNCNvXs8_NtNtCskdHmogqv138_4fxfs8lsm_tree5mergeINtB7_14MergerIteratorNtNtNtBb_12object_store13object_record12ObjectKeyV54NtB17_14ObjectValueV60EINtNtB9_5types13LayerIteratorB15_B1V_E7advance0CsgeVujVTwtAM_10fxfs_linux
+     0.55%     0.04%  sqlite3          [k] _RNvMsi_NtNtCskdHmogqv138_4fxfs12object_store9allocatorNtB5_9Allocator6record
+     0.55%     0.00%  kworker/u8:2-fx  [k] _RNCNvXsG_NtCsgeVujVTwtAM_10fxfs_linux6deviceNtB7_12ExtentDeviceNtCs1eeVmMdRDvf_14storage_device6Device15write_with_opts0B9_
+     0.51%     0.51%  sqlite3          [k] __kvmalloc_node_noprof
+     0.51%     0.15%  sqlite3          [k] _RNvMs8_NtNtCskdHmogqv138_4fxfs8lsm_tree15skip_list_layerINtB5_13SkipListLayerNtNtNtB9_12object_store9allocator15AllocatorKeyV60NtB1f_17AllocatorValueV32E10merge_intoB9_
+     0.51%     0.04%  sqlite3          [k] _RNCNvMs2_NtNtCskdHmogqv138_4fxfs12object_store19store_object_handleINtB7_17StoreObjectHandleNtB9_11ObjectStoreE22deallocate_old_extents0CsgeVujVTwtAM_10fxfs_linux
+     0.51%     0.00%  kworker/u8:0-fx  [k] process_one_work
+     0.51%     0.00%  sqlite3          [k] fxfs_rt_alloc
+     0.51%     0.00%  sqlite3          [k] fxfs_rt_free
+
+
+
+CALLERS sqlite-wal-full-batch1
+    73.31%  [k] pv_native_safe_halt
+            |
+            ---arch_cpu_idle
+               default_idle_call
+               do_idle
+               cpu_startup_entry
+               |          
+               |--42.72%--start_secondary
+               |          common_startup_64
+               |          
+                --30.59%--kernel_init
+                          do_initcalls
+                          x86_64_start_reservations
+                          x86_64_start_kernel
+                          common_startup_64
+
+     4.01%  [k] queue_work_on
+
+
+
+FXFS sqlite-wal-full-batch1: device_commits 201, device_commits_ns 57908744, device_read_bytes 819200, device_reads 200, device_reads_ns 44253553, device_write_bytes 1679360, device_writes 410, device_writes_ns 82969173, fsyncs 201, seal_waits 201, seal_waits_ns 4386929, seals 201, seals_ns 60135681, window_map_bytes_evacuate 8228864, window_map_bytes_grow 65536, window_map_bytes_reach 57344, window_map_bytes_restage 13172736, window_map_requests 411, window_maps 2005, window_maps_evacuate 1796, window_maps_grow 1, window_maps_ns 168691886, window_maps_reach 7, window_maps_restage 201, window_regions 201, window_regions_pruned 440, window_unmaps 14, window_unmaps_ns 6026169
+REQUESTS sqlite-wal-full-batch1: read 1.00 (203 µs each), write 2.05 (186 µs each), free 0.01 (531 µs each), map 2.06 (374 µs each), unmap 0.07 (416 µs each) per operation
+PROFILE sqlite-wal-full-batch1-checkpoint
+    77.57%  [k] pv_native_safe_halt
+     3.27%  [k] _copy_to_iter
+     1.40%  [k] _copy_from_iter
+
+
+
+INCLUSIVE sqlite-wal-full-batch1-checkpoint
+    78.50%     0.47%  swapper          [k] do_idle
+    78.50%     0.00%  swapper          [k] common_startup_64
+    78.50%     0.00%  swapper          [k] cpu_startup_entry
+    78.04%    77.57%  swapper          [k] pv_native_safe_halt
+    78.04%     0.00%  swapper          [k] arch_cpu_idle
+    78.04%     0.00%  swapper          [k] default_idle_call
+    40.19%     0.00%  swapper          [k] do_initcalls
+    40.19%     0.00%  swapper          [k] kernel_init
+    40.19%     0.00%  swapper          [k] x86_64_start_kernel
+    40.19%     0.00%  swapper          [k] x86_64_start_reservations
+    38.32%     0.00%  swapper          [k] start_secondary
+    18.69%     0.00%  sqlite3          [k] do_syscall_64
+    18.69%     0.00%  sqlite3          [k] entry_SYSCALL_64_after_hwframe
+    18.22%     0.00%  sqlite3          [k] x64_sys_call
+    13.08%     0.00%  sqlite3          [.] 0x00007ff06d289341
+    13.08%     0.00%  sqlite3          [k] 0x00007ff06d2c5aa0
+    11.21%     0.00%  sqlite3          [k] dax_iomap_rw
+     6.54%     0.00%  sqlite3          [k] __x64_sys_pwrite64
+     6.54%     0.00%  sqlite3          [k] fxfs_dax_write_iter
+     6.54%     0.00%  sqlite3          [k] vfs_write
+     6.07%     0.47%  sqlite3          [k] iomap_iter
+     6.07%     0.00%  sqlite3          [k] _RNCNvMso_NtNtCskdHmogqv138_4fxfs12object_store7journalNtB7_7Journal6commit0CsgeVujVTwtAM_10fxfs_linux
+     5.61%     0.00%  sqlite3          [k] _RNvMso_NtNtCskdHmogqv138_4fxfs12object_store7journalNtB5_7Journal25write_and_apply_mutations
+     5.61%     0.00%  sqlite3          [k] __x64_sys_ftruncate
+     5.61%     0.00%  sqlite3          [k] do_ftruncate
+     5.61%     0.00%  sqlite3          [k] do_sys_ftruncate
+     5.61%     0.00%  sqlite3          [k] do_truncate
+     5.61%     0.00%  sqlite3          [.] ftruncate
+     5.61%     0.00%  sqlite3          [k] fxfs_dax_iomap_begin
+     5.61%     0.00%  sqlite3          [k] fxfs_vfs_resize
+     5.61%     0.00%  sqlite3          [k] fxfs_vfs_setattr
+     5.61%     0.00%  sqlite3          [k] notify_change
+     5.14%     0.47%  sqlite3          [k] dax_iomap_iter
+     5.14%     0.00%  sqlite3          [k] _RNCNvMs2_NtCsgeVujVTwtAM_10fxfs_linux2fsNtB7_4Fxfs7setattr0B9_
+     5.14%     0.00%  sqlite3          [k] _RNCNvMs2_NtNtCskdHmogqv138_4fxfs12object_store18data_object_handleINtB7_16DataObjectHandleNtB9_11ObjectStoreE21truncate_with_options0CsgeVujVTwtAM_10fxfs_linux
+     5.14%     0.00%  sqlite3          [k] __x64_sys_pread64
+     5.14%     0.00%  sqlite3          [k] fxfs_dax_iomap_write.constprop.0
+     5.14%     0.00%  sqlite3          [k] fxfs_dax_read_iter
+     5.14%     0.00%  sqlite3          [k] fxfs_vfs_write_attr
+     5.14%     0.00%  sqlite3          [k] fxfs_write_inode
+     5.14%     0.00%  sqlite3          [k] vfs_read
+     4.67%     0.00%  sqlite3          [k] _RNvMs0_NtNtCskdHmogqv138_4fxfs12object_store14object_managerNtB5_13ObjectManager14apply_mutation
+     4.67%     0.00%  sqlite3          [k] _RNvMs0_NtNtCskdHmogqv138_4fxfs12object_store14object_managerNtB5_13ObjectManager17apply_transaction
+     4.21%     0.47%  sqlite3          [k] _RNvXs14_NtNtCskdHmogqv138_4fxfs12object_store9allocatorNtB6_9AllocatorNtNtBa_10filesystem16JournalingObject14apply_mutation
+     4.21%     0.00%  sqlite3          [k] fxfs_dax_map_write
+     3.74%     0.00%  sqlite3          [k] _RNCNvMso_NtNtCskdHmogqv138_4fxfs12object_store11transactionNtB7_11Transaction19commit_and_continue0CsgeVujVTwtAM_10fxfs_linux
+     3.27%     3.27%  sqlite3          [k] _copy_to_iter
+     3.27%     0.00%  sqlite3          [k] dax_copy_to_iter
+     2.34%     0.93%  sqlite3          [k] _RNvMs8_NtNtCskdHmogqv138_4fxfs8lsm_tree15skip_list_layerINtB5_13SkipListLayerNtNtNtB9_12object_store9allocator15AllocatorKeyV60NtB1f_17AllocatorValueV32E10merge_intoB9_
+     2.34%     0.00%  sqlite3          [k] _RNCNvMso_NtNtCskdHmogqv138_4fxfs12object_store11transactionNtB7_11Transaction6commit0CsgeVujVTwtAM_10fxfs_linux
+     2.34%     0.00%  sqlite3          [k] _RNvMsi_NtNtCskdHmogqv138_4fxfs12object_store9allocatorNtB5_9Allocator6record
+     1.40%     1.40%  sqlite3          [k] _copy_from_iter
+     1.40%     0.00%  sqlite3          [k] _RNCNvXs8_NtNtCskdHmogqv138_4fxfs8lsm_tree5mergeINtB7_14MergerIteratorNtNtNtBb_12object_store13object_record12ObjectKeyV54NtB17_14ObjectValueV60EINtNtB9_5types13LayerIteratorB15_B1V_E7advance0CsgeVujVTwtAM_10fxfs_linux
+     1.40%     0.00%  sqlite3          [k] _RNvMs5_NtNtNtCskdHmogqv138_4fxfs12object_store9allocator12extent_tableNtB5_11ExtentTable7recount
+     1.40%     0.00%  sqlite3          [k] _RNvMse_NtNtCskdHmogqv138_4fxfs12object_store9allocatorNtB5_5Inner7recount
+     1.40%     0.00%  sqlite3          [k] dax_copy_from_iter
+     0.93%     0.93%  sqlite3          [k] fxfs_dax_prune
+     0.93%     0.47%  sqlite3          [k] _RINvMNtNtCsjr86reHQuqA_7bincode6config3intNtB3_14VarintEncoding16serialize_varintQINtNtCs1R8tEabxR5k_5alloc3vec3VechEINtB5_14WithOtherLimitINtB5_17WithOtherTrailingNtB5_14DefaultOptionsNtNtB5_8trailing13AllowTrailingENtNtB5_5limit7BoundedEECsgeVujVTwtAM_10fxfs_linux
+     0.93%     0.47%  sqlite3          [k] _RNvMsb_NtCskdHmogqv138_4fxfs8lsm_treeINtB5_7LSMTreeNtNtNtB7_12object_store13object_record12ObjectKeyV54NtBP_14ObjectValueV60E9layer_setCsgeVujVTwtAM_10fxfs_linux
+     0.93%     0.47%  sqlite3          [k] _RNvXsi_NtNtCskdHmogqv138_4fxfs8lsm_tree15skip_list_layerINtB5_20SkipListLayerIterMutNtNtNtB9_12object_store9allocator15AllocatorKeyV60NtB1m_17AllocatorValueV32EINtNtB7_5types16LayerIteratorMutB1k_B28_E6commitB9_
+     0.93%     0.47%  sqlite3          [k] kvfree
+     0.93%     0.00%  sqlite3          [k] _RNCNvMs2_NtNtCskdHmogqv138_4fxfs12object_store19store_object_handleINtB7_17StoreObjectHandleNtB9_11ObjectStoreE22deallocate_old_extents0CsgeVujVTwtAM_10fxfs_linux
+     0.93%     0.00%  sqlite3          [k] _RNCNvMs2_NtNtCskdHmogqv138_4fxfs12object_store19store_object_handleINtB7_17StoreObjectHandleNtB9_11ObjectStoreE6shrink0CsgeVujVTwtAM_10fxfs_linux
+     0.93%     0.00%  sqlite3          [k] _RNCNvMs8_NtCskdHmogqv138_4fxfs12object_storeNtB7_11ObjectStore9trim_some0CsgeVujVTwtAM_10fxfs_linux
+     0.93%     0.00%  sqlite3          [k] fxfs_dax_map_extents
+     0.93%     0.00%  sqlite3          [k] fxfs_rt_free
+
+
+
+CALLERS sqlite-wal-full-batch1-checkpoint
+    77.57%  [k] pv_native_safe_halt
+            |
+            ---arch_cpu_idle
+               default_idle_call
+               do_idle
+               cpu_startup_entry
+               |          
+               |--39.72%--kernel_init
+               |          do_initcalls
+               |          x86_64_start_reservations
+               |          x86_64_start_kernel
+               |          common_startup_64
+               |          
+                --37.85%--start_secondary
+                          common_startup_64
+
+
+
+
+FXFS sqlite-wal-full-batch1-checkpoint: device_commits 2, device_commits_ns 1973619, device_write_bytes 28672, device_writes 7, device_writes_ns 2704307, fsyncs 2, seal_waits 2, seal_waits_ns 32902, seals 2, seals_ns 1991934, window_free_bytes 991232, window_map_bytes_evacuate 839680, window_map_bytes_grow 983040, window_map_bytes_restage 131072, window_map_requests 11, window_maps 212, window_maps_evacuate 205, window_maps_grow 5, window_maps_ns 15877585, window_maps_restage 2, window_regions_pruned 2, window_unmaps 3, window_unmaps_ns 9681282
+REQUESTS sqlite-wal-full-batch1-checkpoint: write 7.00 (366 µs each), map 11.00 (1406 µs each), unmap 3.00 (3194 µs each) per operation
+PROFILE sqlite-wal-full-batch100
+    66.49%  [k] pv_native_safe_halt
+     2.72%  [k] queue_work_on
+     1.89%  [k] _copy_from_iter
+     1.55%  [k] __pi_memcpy
+
+
+
+INCLUSIVE sqlite-wal-full-batch100
+    67.41%     0.00%  swapper          [k] common_startup_64
+    67.40%     0.01%  swapper          [k] cpu_startup_entry
+    67.38%     0.04%  swapper          [k] do_idle
+    66.82%     0.02%  swapper          [k] default_idle_call
+    66.80%     0.00%  swapper          [k] arch_cpu_idle
+    66.78%    66.49%  swapper          [k] pv_native_safe_halt
+    35.19%     0.00%  swapper          [k] start_secondary
+    32.22%     0.00%  swapper          [k] do_initcalls
+    32.22%     0.00%  swapper          [k] kernel_init
+    32.22%     0.00%  swapper          [k] x86_64_start_kernel
+    32.22%     0.00%  swapper          [k] x86_64_start_reservations
+    21.52%     0.00%  sqlite3          [k] entry_SYSCALL_64_after_hwframe
+    21.51%     0.10%  sqlite3          [k] do_syscall_64
+    21.49%     0.00%  sqlite3          [k] 0x00007fd7752c1aa0
+    21.45%     0.00%  sqlite3          [.] 0x00007fd775285341
+    21.42%     0.04%  sqlite3          [k] x64_sys_call
+    20.95%     0.03%  sqlite3          [k] __x64_sys_pwrite64
+    20.90%     0.05%  sqlite3          [k] vfs_write
+    20.85%     0.06%  sqlite3          [k] fxfs_dax_write_iter
+    20.35%     0.04%  sqlite3          [k] dax_iomap_rw
+    20.03%     0.04%  sqlite3          [k] iomap_iter
+    19.91%     0.03%  sqlite3          [k] fxfs_dax_iomap_begin
+    19.85%     0.33%  sqlite3          [k] fxfs_dax_iomap_write.constprop.0
+    16.90%     0.46%  sqlite3          [k] fxfs_dax_map_write
+     7.98%     0.23%  sqlite3          [k] _RNCNvMso_NtNtCskdHmogqv138_4fxfs12object_store11transactionNtB7_11Transaction6commit0CsgeVujVTwtAM_10fxfs_linux
+     7.21%     0.11%  sqlite3          [k] _RNCNvMso_NtNtCskdHmogqv138_4fxfs12object_store7journalNtB7_7Journal6commit0CsgeVujVTwtAM_10fxfs_linux
+     6.97%     0.27%  sqlite3          [k] _RNvMso_NtNtCskdHmogqv138_4fxfs12object_store7journalNtB5_7Journal25write_and_apply_mutations
+     3.51%     0.14%  sqlite3          [k] _RNCNvMs7_NtNtCskdHmogqv138_4fxfs8lsm_tree5mergeINtB7_14MergerIteratorNtNtNtBb_12object_store13object_record12ObjectKeyV54NtB17_14ObjectValueV60E14push_iterators0CsgeVujVTwtAM_10fxfs_linux
+     3.26%     0.12%  sqlite3          [k] _RNvMs0_NtNtCskdHmogqv138_4fxfs12object_store14object_managerNtB5_13ObjectManager17apply_transaction
+     3.05%     0.09%  sqlite3          [k] _RNvMs0_NtNtCskdHmogqv138_4fxfs12object_store14object_managerNtB5_13ObjectManager14apply_mutation
+     2.95%     0.10%  sqlite3          [k] _RNCNvXs8_NtNtCskdHmogqv138_4fxfs8lsm_tree5mergeINtB7_14MergerIteratorNtNtNtBb_12object_store13object_record12ObjectKeyV54NtB17_14ObjectValueV60EINtNtB9_5types13LayerIteratorB15_B1V_E7advance0CsgeVujVTwtAM_10fxfs_linux
+     2.73%     0.03%  sqlite3          [k] _RNCNvXst_NtNtCskdHmogqv138_4fxfs8lsm_tree16persistent_layerINtB7_15PersistentLayerNtNtNtBb_12object_store13object_record12ObjectKeyV54NtB1k_14ObjectValueV60EINtNtB9_5types5LayerB1i_B28_E4seek0Bb_
+     2.54%     0.46%  sqlite3          [k] _RNCNvMsb_NtNtCskdHmogqv138_4fxfs8lsm_tree16persistent_layerINtB7_15PersistentLayerNtNtNtBb_12object_store13object_record12ObjectKeyV54NtB1k_14ObjectValueV60E4seek0Bb_
+     2.40%     2.39%  sqlite3          [k] queue_work_on
+     2.25%     0.03%  sqlite3          [k] _RNvMs1_NtCs8WWmacacxHO_10async_task3rawINtB5_7RawTaskINtNtCs2RzmApnEpjJ_4core3pin3PinINtNtCs1R8tEabxR5k_5alloc5boxed3BoxINtNtCsa4Wcd7wDxpd_12futures_util9abortable9AbortableNCINvMs2_NtNtNtCshY9N03A7Id3_13fuchsia_async7runtime5guest5scopeNtB2U_11ScopeHandle11mk_task_futuNCNCNvMNtNtCskdHmogqv138_4fxfs12object_store6volumeNtB4r_10RootVolume6volume00E0EEEINtNtBU_6result6ResultuNtB1X_7AbortedENvNtCshRwtkNAyQY8_8linux_rt8executor8scheduleuE4wakeCsgeVujVTwtAM_10fxfs_linux
+     2.17%     0.04%  sqlite3          [k] do_user_addr_fault
+     2.17%     0.00%  sqlite3          [k] asm_exc_page_fault
+     2.17%     0.00%  sqlite3          [k] exc_page_fault
+     2.14%     0.04%  sqlite3          [k] dax_iomap_iter
+     2.13%     0.01%  sqlite3          [k] handle_mm_fault
+     2.12%     0.01%  sqlite3          [k] __handle_mm_fault
+     2.12%     0.00%  sqlite3          [k] handle_pte_fault
+     2.10%     0.01%  sqlite3          [k] fxfs_dax_do_fault
+     2.10%     0.00%  sqlite3          [k] do_wp_page
+     2.10%     0.00%  sqlite3          [k] fxfs_dax_mkwrite
+     2.07%     0.00%  sqlite3          [k] dax_iomap_fault
+     2.07%     0.00%  sqlite3          [k] dax_iomap_pte_fault
+     2.01%     0.15%  sqlite3          [k] _RNCNvMsn_NtNtCskdHmogqv138_4fxfs8lsm_tree5mergeINtB7_6MergerNtNtNtBb_12object_store13object_record12ObjectKeyV54NtBY_14ObjectValueV60E5query0CsgeVujVTwtAM_10fxfs_linux
+     1.90%     1.89%  sqlite3          [k] _copy_from_iter
+     1.90%     0.01%  sqlite3          [k] dax_copy_from_iter
+     1.85%     0.31%  sqlite3          [k] _RNvXsz_NtCskdHmogqv138_4fxfs12object_storeNtB5_11ObjectStoreNtNtB7_10filesystem16JournalingObject14apply_mutation
+     1.71%     0.04%  sqlite3          [k] _RNCNvMs2_NtNtCskdHmogqv138_4fxfs12object_store19store_object_handleINtB7_17StoreObjectHandleNtB9_11ObjectStoreE22deallocate_old_extents0CsgeVujVTwtAM_10fxfs_linux
+     1.53%     1.52%  sqlite3          [k] __pi_memcpy
+     1.34%     0.03%  sqlite3          [k] fxfs_dax_map_extents
+     1.18%     0.00%  sqlite3          [.] 0x000055fcf5ddb63e
+     1.07%     0.78%  sqlite3          [k] __kvmalloc_node_noprof
+     1.04%     0.82%  sqlite3          [k] kfree
+     0.99%     0.03%  sqlite3          [k] kvfree
+     0.94%     0.05%  sqlite3          [k] _RNvXs14_NtNtCskdHmogqv138_4fxfs12object_store9allocatorNtB6_9AllocatorNtNtBa_10filesystem16JournalingObject14apply_mutation
+     0.91%     0.04%  sqlite3          [k] fxfs_rt_free
+     0.88%     0.00%  kworker/u8:0-fx  [k] kthread
+     0.88%     0.00%  kworker/u8:0-fx  [k] ret_from_fork
+     0.88%     0.00%  kworker/u8:0-fx  [k] ret_from_fork_asm
+     0.88%     0.00%  kworker/u8:0-fx  [k] worker_thread
+     0.86%     0.03%  sqlite3          [k] fxfs_rt_alloc
+     0.82%     0.00%  kworker/u8:0-fx  [k] process_one_work
+     0.77%     0.17%  sqlite3          [k] _RNCNvMs7_NtNtCskdHmogqv138_4fxfs8lsm_tree5mergeINtB7_14MergerIteratorNtNtNtBb_12object_store13object_record12ObjectKeyV54NtB17_14ObjectValueV60E12advance_impl0CsgeVujVTwtAM_10fxfs_linux
+     0.76%     0.71%  sqlite3          [k] fxfs_dax_prune
+     0.76%     0.12%  sqlite3          [k] _RNvMs3_NtNtCskdHmogqv138_4fxfs8lsm_tree16persistent_layerINtB5_15KeyOnlyIteratorNtNtNtB9_12object_store13object_record12ObjectKeyV54NtB1i_14ObjectValueV60NtB5_11ChunkBufferE9take_itemB9_
+     0.73%     0.11%  sqlite3          [k] _RNCNvMs4_NtNtCskdHmogqv138_4fxfs8lsm_tree16persistent_layerINtB7_15KeyOnlyIteratorNtNtNtBb_12object_store13object_record12ObjectKeyV54NtB1k_14ObjectValueV60NtB7_11ChunkBufferE7advance0Bb_
+     0.71%     0.00%  kworker/u8:8-fx  [k] kthread
+     0.71%     0.00%  kworker/u8:8-fx  [k] ret_from_fork
+     0.71%     0.00%  kworker/u8:8-fx  [k] ret_from_fork_asm
+     0.71%     0.00%  kworker/u8:8-fx  [k] worker_thread
+     0.71%     0.02%  sqlite3          [k] _RNvMsi_NtNtCskdHmogqv138_4fxfs12object_store9allocatorNtB5_9Allocator6record
+     0.68%     0.00%  sqlite3          [.] 0x000055fcf5ddb63b
+     0.64%     0.13%  sqlite3          [k] _RNvMs8_NtNtCskdHmogqv138_4fxfs8lsm_tree15skip_list_layerINtB5_13SkipListLayerNtNtNtB9_12object_store9allocator15AllocatorKeyV60NtB1f_17AllocatorValueV32E10merge_intoB9_
+     0.64%     0.01%  kworker/u8:8-fx  [k] process_one_work
+     0.61%     0.03%  sqlite3          [k] fxfs_dax_get_range
+     0.61%     0.02%  sqlite3          [k] _RINvXNvNtNtCskdHmogqv138_4fxfs12object_store11transaction1__NtB5_11MutationV60NtNtCslaoSmfS0x5U_10serde_core3ser9Serialize9serializeQINtNtCsjr86reHQuqA_7bincode3ser10SerializerQINtNtCs1R8tEabxR5k_5alloc3vec3VechEINtNtB2c_6config14WithOtherLimitINtB3r_17WithOtherTrailingNtB3r_14DefaultOptionsNtNtB3r_8trailing13AllowTrailingENtNtB3r_5limit7BoundedEEEB9_
+     0.55%     0.00%  kworker/u8:2-fx  [k] kthread
+     0.55%     0.00%  kworker/u8:2-fx  [k] ret_from_fork
+     0.55%     0.00%  kworker/u8:2-fx  [k] ret_from_fork_asm
+     0.55%     0.00%  kworker/u8:2-fx  [k] worker_thread
+     0.54%     0.00%  kworker/u8:1-fx  [k] kthread
+     0.54%     0.00%  kworker/u8:1-fx  [k] ret_from_fork
+     0.54%     0.00%  kworker/u8:1-fx  [k] ret_from_fork_asm
+     0.54%     0.00%  kworker/u8:1-fx  [k] worker_thread
+     0.52%     0.17%  sqlite3          [k] _RINvMs9_NtNtCskdHmogqv138_4fxfs8lsm_tree16persistent_layerINtB6_9SearchKeyNtNtNtBa_12object_store13object_record12ObjectKeyV54E7compareNtB1c_14ObjectValueV60NtB6_11ChunkBufferEBa_
+     0.51%     0.01%  kworker/u8:0-fx  [k] fxfs_rt_work_run
+     0.51%     0.00%  kworker/u8:2-fx  [k] process_one_work
+
+
+
+CALLERS sqlite-wal-full-batch100
+    66.49%  [k] pv_native_safe_halt
+            |
+            ---arch_cpu_idle
+               default_idle_call
+               do_idle
+               cpu_startup_entry
+               |          
+               |--34.81%--start_secondary
+               |          common_startup_64
+               |          
+                --31.68%--kernel_init
+                          do_initcalls
+                          x86_64_start_reservations
+                          x86_64_start_kernel
+                          common_startup_64
+
+
+
+
+FXFS sqlite-wal-full-batch100: device_commits 203, device_commits_ns 208148730, device_read_bytes 1052672, device_reads 216, device_reads_ns 37044869, device_write_bytes 5525504, device_writes 1257, device_writes_ns 913005507, fsyncs 201, journal_compaction_ns 17562773, journal_compactions 1, seal_waits 203, seal_waits_ns 6299614, seals 203, seals_ns 210480157, stores_held_by_seals 2, stores_held_by_seals_ns 1110310, window_map_bytes_evacuate 130543616, window_map_bytes_grow 144244736, window_map_bytes_reach 13213696, window_map_bytes_restage 13303808, window_map_requests 1243, window_maps 2142, window_maps_evacuate 1102, window_maps_grow 802, window_maps_ns 395245002, window_maps_reach 35, window_maps_restage 203, window_regions 55, window_regions_pruned 386, window_unmaps 504, window_unmaps_ns 94725608
+REQUESTS sqlite-wal-full-batch100: read 1.08 (154 µs each), write 6.29 (704 µs each), free 0.04 (410 µs each), map 6.21 (300 µs each), unmap 2.52 (176 µs each), commit 0.01 (503 µs each) per operation
+PROFILE sqlite-wal-full-batch100-checkpoint
+    52.84%  [k] pv_native_safe_halt
+     3.88%  [k] __pi_memcpy
+     3.03%  [k] _copy_to_iter
+     2.84%  [k] __kvmalloc_node_noprof
+     2.08%  [k] vm_notify
+     1.89%  [k] _RNvMs8_NtNtCskdHmogqv138_4fxfs8lsm_tree15skip_list_layerINtB5_13SkipListLayerNtNtNtB9_12object_store9allocator15AllocatorKeyV60NtB1f_17AllocatorValueV32E10merge_intoB9_
+     1.70%  [k] kfree
+     1.52%  [k] _RNvXsi_NtNtCskdHmogqv138_4fxfs8lsm_tree15skip_list_layerINtB5_20SkipListLayerIterMutNtNtNtB9_12object_store9allocator15AllocatorKeyV60NtB1m_17AllocatorValueV32EINtNtB7_5types16LayerIteratorMutB1k_B28_E6insertB9_
+     1.33%  [k] __slab_free
+     1.33%  [k] _copy_from_iter
+     1.23%  [k] _RNvXsg_NtNtCskdHmogqv138_4fxfs12object_store11transactionNtB5_11TxnMutationNtNtCs2RzmApnEpjJ_4core3cmp3Ord3cmp
+
+
+
+INCLUSIVE sqlite-wal-full-batch100-checkpoint
+    53.03%     0.00%  swapper          [k] common_startup_64
+    53.03%     0.00%  swapper          [k] cpu_startup_entry
+    53.03%     0.00%  swapper          [k] do_idle
+    52.94%    52.84%  swapper          [k] pv_native_safe_halt
+    52.94%     0.00%  swapper          [k] arch_cpu_idle
+    52.94%     0.00%  swapper          [k] default_idle_call
+    39.87%     0.00%  swapper          [k] do_initcalls
+    39.87%     0.00%  swapper          [k] kernel_init
+    39.87%     0.00%  swapper          [k] x86_64_start_kernel
+    39.87%     0.00%  swapper          [k] x86_64_start_reservations
+    33.24%     0.09%  sqlite3          [k] x64_sys_call
+    33.24%     0.00%  sqlite3          [k] entry_SYSCALL_64_after_hwframe
+    33.14%     0.00%  sqlite3          [k] do_syscall_64
+    20.45%     0.09%  sqlite3          [k] notify_change
+    20.45%     0.00%  sqlite3          [k] __x64_sys_ftruncate
+    20.45%     0.00%  sqlite3          [k] do_ftruncate
+    20.45%     0.00%  sqlite3          [k] do_sys_ftruncate
+    20.45%     0.00%  sqlite3          [k] do_truncate
+    20.45%     0.00%  sqlite3          [.] ftruncate
+    20.36%     0.00%  sqlite3          [k] fxfs_vfs_resize
+    20.36%     0.00%  sqlite3          [k] fxfs_vfs_setattr
+    19.51%     0.00%  sqlite3          [k] _RNCNvMs2_NtCsgeVujVTwtAM_10fxfs_linux2fsNtB7_4Fxfs7setattr0B9_
+    19.51%     0.00%  sqlite3          [k] _RNCNvMs2_NtNtCskdHmogqv138_4fxfs12object_store18data_object_handleINtB7_16DataObjectHandleNtB9_11ObjectStoreE21truncate_with_options0CsgeVujVTwtAM_10fxfs_linux
+    19.51%     0.00%  sqlite3          [k] fxfs_vfs_write_attr
+    19.51%     0.00%  sqlite3          [k] fxfs_write_inode
+    17.23%     0.00%  sqlite3          [k] _RNCNvMso_NtNtCskdHmogqv138_4fxfs12object_store7journalNtB7_7Journal6commit0CsgeVujVTwtAM_10fxfs_linux
+    17.14%     0.28%  sqlite3          [k] _RNvMso_NtNtCskdHmogqv138_4fxfs12object_store7journalNtB5_7Journal25write_and_apply_mutations
+    14.68%     0.00%  sqlite3          [k] _RNvMs0_NtNtCskdHmogqv138_4fxfs12object_store14object_managerNtB5_13ObjectManager17apply_transaction
+    14.58%     0.09%  sqlite3          [k] _RNCNvMso_NtNtCskdHmogqv138_4fxfs12object_store11transactionNtB7_11Transaction19commit_and_continue0CsgeVujVTwtAM_10fxfs_linux
+    14.39%     0.76%  sqlite3          [k] _RNvMs0_NtNtCskdHmogqv138_4fxfs12object_store14object_managerNtB5_13ObjectManager14apply_mutation
+    13.16%     0.00%  swapper          [k] start_secondary
+    12.88%     0.00%  sqlite3          [.] 0x00007fd775285341
+    12.88%     0.00%  sqlite3          [k] 0x00007fd7752c1aa0
+    12.41%     0.09%  sqlite3          [k] _RNvXs14_NtNtCskdHmogqv138_4fxfs12object_store9allocatorNtB6_9AllocatorNtNtBa_10filesystem16JournalingObject14apply_mutation
+    12.41%     0.09%  sqlite3          [k] dax_iomap_rw
+    10.23%     0.00%  sqlite3          [k] _RNvMsi_NtNtCskdHmogqv138_4fxfs12object_store9allocatorNtB5_9Allocator6record
+     9.38%     1.89%  sqlite3          [k] _RNvMs8_NtNtCskdHmogqv138_4fxfs8lsm_tree15skip_list_layerINtB5_13SkipListLayerNtNtNtB9_12object_store9allocator15AllocatorKeyV60NtB1f_17AllocatorValueV32E10merge_intoB9_
+     9.38%     0.09%  sqlite3          [k] fxfs_dax_write_iter
+     9.38%     0.00%  sqlite3          [k] __x64_sys_pwrite64
+     9.38%     0.00%  sqlite3          [k] vfs_write
+     7.48%     0.00%  sqlite3          [k] iomap_iter
+     7.39%     0.00%  sqlite3          [k] fxfs_dax_iomap_begin
+     7.39%     0.00%  sqlite3          [k] fxfs_dax_iomap_write.constprop.0
+     6.25%     0.00%  sqlite3          [k] fxfs_dax_map_write
+     4.83%     0.00%  sqlite3          [k] _RNCNvMs8_NtCskdHmogqv138_4fxfs12object_storeNtB7_11ObjectStore9trim_some0CsgeVujVTwtAM_10fxfs_linux
+     4.64%     0.00%  kworker/u8:6-fx  [k] kthread
+     4.64%     0.00%  kworker/u8:6-fx  [k] ret_from_fork
+     4.64%     0.00%  kworker/u8:6-fx  [k] ret_from_fork_asm
+     4.64%     0.00%  kworker/u8:6-fx  [k] worker_thread
+     4.64%     0.00%  sqlite3          [k] dax_iomap_iter
+     4.55%     0.00%  kworker/u8:6-fx  [k] process_one_work
+     4.45%     0.00%  kworker/u8:6-fx  [k] fxfs_rt_work_run
+     4.36%     0.00%  kworker/u8:6-fx  [k] _RNvMs1_NtCs8WWmacacxHO_10async_task3rawINtB5_7RawTaskINtNtCsa4Wcd7wDxpd_12futures_util9abortable9AbortableNCNvMso_NtNtCskdHmogqv138_4fxfs12object_store7journalNtB1O_7Journal10flush_task0EINtNtCs2RzmApnEpjJ_4core6result6ResultuNtBS_7AbortedENvNtCshRwtkNAyQY8_8linux_rt8executor8scheduleuE3runB1S_
+     4.07%     0.00%  kworker/u8:1-fx  [k] kthread
+     4.07%     0.00%  kworker/u8:1-fx  [k] ret_from_fork
+     4.07%     0.00%  kworker/u8:1-fx  [k] ret_from_fork_asm
+     4.07%     0.00%  kworker/u8:1-fx  [k] worker_thread
+     3.98%     0.00%  kworker/u8:1-fx  [k] process_one_work
+     3.69%     2.75%  sqlite3          [k] __kvmalloc_node_noprof
+     3.60%     0.00%  kworker/u8:1-fx  [k] fxfs_rt_work_run
+     3.50%     0.09%  sqlite3          [k] fxfs_rt_alloc
+     3.31%     0.00%  sqlite3          [k] __x64_sys_pread64
+     3.31%     0.00%  sqlite3          [k] fxfs_dax_read_iter
+     3.31%     0.00%  sqlite3          [k] vfs_read
+     3.22%     0.00%  kworker/u8:1-fx  [k] _RNvMs1_NtCs8WWmacacxHO_10async_task3rawINtB5_7RawTaskINtNtCsa4Wcd7wDxpd_12futures_util9abortable9AbortableNCNvMso_NtNtCskdHmogqv138_4fxfs12object_store7journalNtB1O_7Journal10flush_task0EINtNtCs2RzmApnEpjJ_4core6result6ResultuNtBS_7AbortedENvNtCshRwtkNAyQY8_8linux_rt8executor8scheduleuE3runB1S_
+     3.12%     0.09%  sqlite3          [k] _RNCNvMso_NtNtCskdHmogqv138_4fxfs12object_store11transactionNtB7_11Transaction6commit0CsgeVujVTwtAM_10fxfs_linux
+     3.03%     3.03%  sqlite3          [k] _copy_to_iter
+     3.03%     0.00%  sqlite3          [k] dax_copy_to_iter
+     2.94%     0.00%  kworker/u8:1-fx  [k] _RNCNvMs_NtNtCskdHmogqv138_4fxfs12object_store5flushNtB8_11ObjectStore14flush_unlocked0Ba_
+     2.94%     0.00%  kworker/u8:1-fx  [k] _RNCNvXsz_NtCskdHmogqv138_4fxfs12object_storeNtB7_11ObjectStoreNtNtB9_10filesystem16JournalingObject5flush0B9_
+     2.75%     0.00%  sqlite3          [k] _RNCNvMs13_NtNtCskdHmogqv138_4fxfs12object_store9allocatorNtB8_9Allocator10deallocate0CsgeVujVTwtAM_10fxfs_linux
+     2.65%     0.00%  kworker/u8:0-fx  [k] kthread
+     2.65%     0.00%  kworker/u8:0-fx  [k] process_one_work
+     2.65%     0.00%  kworker/u8:0-fx  [k] ret_from_fork
+     2.65%     0.00%  kworker/u8:0-fx  [k] ret_from_fork_asm
+     2.65%     0.00%  kworker/u8:0-fx  [k] worker_thread
+     2.56%     1.52%  sqlite3          [k] _RNvXsi_NtNtCskdHmogqv138_4fxfs8lsm_tree15skip_list_layerINtB5_20SkipListLayerIterMutNtNtNtB9_12object_store9allocator15AllocatorKeyV60NtB1m_17AllocatorValueV32EINtNtB7_5types16LayerIteratorMutB1k_B28_E6insertB9_
+     2.46%     0.09%  kworker/u8:0-fx  [k] _RNvMs1_NtCs8WWmacacxHO_10async_task3rawINtB5_7RawTaskINtNtCsa4Wcd7wDxpd_12futures_util9abortable9AbortableNCNvMso_NtNtCskdHmogqv138_4fxfs12object_store7journalNtB1O_7Journal10flush_task0EINtNtCs2RzmApnEpjJ_4core6result6ResultuNtBS_7AbortedENvNtCshRwtkNAyQY8_8linux_rt8executor8scheduleuE3runB1S_
+     2.46%     0.00%  kworker/u8:0-fx  [k] fxfs_rt_work_run
+     2.37%     2.37%  sqlite3          [k] __pi_memcpy
+     2.37%     0.47%  sqlite3          [k] _RNCNvXs8_NtNtCskdHmogqv138_4fxfs8lsm_tree5mergeINtB7_14MergerIteratorNtNtNtBb_12object_store13object_record12ObjectKeyV54NtB17_14ObjectValueV60EINtNtB9_5types13LayerIteratorB15_B1V_E7advance0CsgeVujVTwtAM_10fxfs_linux
+     1.99%     0.09%  sqlite3          [k] fxfs_rt_free
+     1.99%     0.09%  sqlite3          [k] kvfree
+     1.89%     1.23%  sqlite3          [k] kfree
+     1.89%     0.09%  sqlite3          [k] _RNvMse_NtNtCskdHmogqv138_4fxfs12object_store9allocatorNtB5_5Inner7recount
+     1.89%     0.00%  sqlite3          [k] _RNCNvMsn_NtNtCskdHmogqv138_4fxfs8lsm_tree5mergeINtB7_6MergerNtNtNtBb_12object_store13object_record12ObjectKeyV54NtBY_14ObjectValueV60E5query0CsgeVujVTwtAM_10fxfs_linux
+     1.80%     0.00%  sqlite3          [k] _RNCNvMs7_NtNtCskdHmogqv138_4fxfs8lsm_tree5mergeINtB7_14MergerIteratorNtNtNtBb_12object_store13object_record12ObjectKeyV54NtB17_14ObjectValueV60E14push_iterators0CsgeVujVTwtAM_10fxfs_linux
+     1.61%     0.19%  sqlite3          [k] _RNvMs5_NtNtNtCskdHmogqv138_4fxfs12object_store9allocator12extent_tableNtB5_11ExtentTable7recount
+     1.52%     0.00%  kworker/u8:6-fx  [k] _RNCNvMsl_NtNtCskdHmogqv138_4fxfs12object_store9allocatorNtB7_7Flusher6finish0Bb_
+     1.52%     0.00%  kworker/u8:6-fx  [k] _RNCNvXs14_NtNtCskdHmogqv138_4fxfs12object_store9allocatorNtB8_9AllocatorNtNtBc_10filesystem16JournalingObject5flush0Bc_
+     1.42%     0.76%  sqlite3          [k] _RNvXsi_NtNtCskdHmogqv138_4fxfs8lsm_tree15skip_list_layerINtB5_20SkipListLayerIterMutNtNtNtB9_12object_store9allocator15AllocatorKeyV60NtB1m_17AllocatorValueV32EINtNtB7_5types16LayerIteratorMutB1k_B28_E6commitB9_
+     1.42%     0.19%  sqlite3          [k] _RINvXNvNtNtCskdHmogqv138_4fxfs12object_store11transaction1__NtB5_11MutationV60NtNtCslaoSmfS0x5U_10serde_core3ser9Serialize9serializeQINtNtCsjr86reHQuqA_7bincode3ser10SerializerQINtNtCs1R8tEabxR5k_5alloc3vec3VechEINtNtB2c_6config14WithOtherLimitINtB3r_17WithOtherTrailingNtB3r_14DefaultOptionsNtNtB3r_8trailing13AllowTrailingENtNtB3r_5limit7BoundedEEEB9_
+     1.42%     0.09%  kworker/u8:6-fx  [k] _RNCNvMs2_NtNtCskdHmogqv138_4fxfs12object_store18data_object_handleINtB7_16DataObjectHandleNtB9_11ObjectStoreE9overwrite0Bb_
+     1.42%     0.00%  kworker/u8:6-fx  [k] _RNCNvMs2_NtNtCskdHmogqv138_4fxfs12object_store19store_object_handleINtB7_17StoreObjectHandleNtB9_11ObjectStoreE13write_aligned0Bb_
+     1.42%     0.00%  kworker/u8:8-fx  [k] kthread
+     1.42%     0.00%  kworker/u8:8-fx  [k] process_one_work
+     1.42%     0.00%  kworker/u8:8-fx  [k] ret_from_fork
+     1.42%     0.00%  kworker/u8:8-fx  [k] ret_from_fork_asm
+     1.42%     0.00%  kworker/u8:8-fx  [k] worker_thread
+     1.33%     1.33%  sqlite3          [k] _copy_from_iter
+     1.33%     0.09%  kworker/u8:6-fx  [k] _RNCNvXsG_NtCsgeVujVTwtAM_10fxfs_linux6deviceNtB7_12ExtentDeviceNtCs1eeVmMdRDvf_14storage_device6Device15write_with_opts0B9_
+     1.33%     0.00%  kworker/u8:6-fx  [k] _RNCNvMs2_NtNtCskdHmogqv138_4fxfs12object_store18data_object_handleINtB7_16DataObjectHandleNtB9_11ObjectStoreE8write_at0Bb_
+     1.33%     0.00%  kworker/u8:6-fx  [k] _RNvMsn_NtNtCs1R8tEabxR5k_5alloc3rcs3arcINtB5_3ArcDG0_INtNtNtCs2RzmApnEpjJ_4core3ops8function2FnTRL1_INtNtNtCskdHmogqv138_4fxfs12object_store11transaction11TransactionL0_EEEp6OutputINtNtBW_6result6ResultuNtCs1ldHOCgi55O_6anyhow5ErrorENtNtBW_6marker4SendNtB3L_4SyncEL_E9drop_slowB1H_
+     1.33%     0.00%  kworker/u8:8-fx  [k] _RNvMs1_NtCs8WWmacacxHO_10async_task3rawINtB5_7RawTaskINtNtCsa4Wcd7wDxpd_12futures_util9abortable9AbortableNCNvMso_NtNtCskdHmogqv138_4fxfs12object_store7journalNtB1O_7Journal10flush_task0EINtNtCs2RzmApnEpjJ_4core6result6ResultuNtBS_7AbortedENvNtCshRwtkNAyQY8_8linux_rt8executor8scheduleuE3runB1S_
+     1.33%     0.00%  kworker/u8:8-fx  [k] fxfs_rt_work_run
+     1.33%     0.00%  sqlite3          [k] _RNCNvXst_NtNtCskdHmogqv138_4fxfs8lsm_tree16persistent_layerINtB7_15PersistentLayerNtNtNtBb_12object_store13object_record12ObjectKeyV54NtB1k_14ObjectValueV60EINtNtB9_5types5LayerB1i_B28_E4seek0Bb_
+     1.33%     0.00%  sqlite3          [k] dax_copy_from_iter
+     1.23%     1.23%  sqlite3          [k] _RNvXsg_NtNtCskdHmogqv138_4fxfs12object_store11transactionNtB5_11TxnMutationNtNtCs2RzmApnEpjJ_4core3cmp3Ord3cmp
+     1.23%     0.28%  kworker/u8:6-fx  [k] _RINvNtCs2RzmApnEpjJ_4core3ptr9drop_glueINtNtNtCskdHmogqv138_4fxfs8lsm_tree15skip_list_layer13SkipListLayerNtNtNtBI_12object_store9allocator15AllocatorKeyV60NtB1I_17AllocatorValueV32EEBI_
+     1.23%     0.19%  sqlite3          [k] _RNCNvMs_NtNtCskdHmogqv138_4fxfs8lsm_tree5mergeINtB6_18MergeLayerIteratorNtNtNtBa_12object_store13object_record12ObjectKeyV54NtB1a_14ObjectValueV60E7advance0CsgeVujVTwtAM_10fxfs_linux
+     1.23%     0.09%  sqlite3          [k] _RINvMNtNtCsjr86reHQuqA_7bincode6config3intNtB3_14VarintEncoding16serialize_varintQINtNtCs1R8tEabxR5k_5alloc3vec3VechEINtB5_14WithOtherLimitINtB5_17WithOtherTrailingNtB5_14DefaultOptionsNtNtB5_8trailing13AllowTrailingENtNtB5_5limit7BoundedEECsgeVujVTwtAM_10fxfs_linux
+     1.14%     0.66%  sqlite3          [k] _RNvMso_NtNtCskdHmogqv138_4fxfs12object_store11transactionNtB5_11Transaction24add_with_object_internal
+     1.14%     0.28%  sqlite3          [k] _RNvMs3_NtNtCskdHmogqv138_4fxfs8lsm_tree16persistent_layerINtB5_15KeyOnlyIteratorNtNtNtB9_12object_store13object_record12ObjectKeyV54NtB1i_14ObjectValueV60NtB5_11ChunkBufferE9take_itemB9_
+     1.14%     0.09%  kworker/u8:6-fx  [k] fxfs_rt_free
+     1.14%     0.09%  sqlite3          [k] _RNCNvMsb_NtNtCskdHmogqv138_4fxfs8lsm_tree16persistent_layerINtB7_15PersistentLayerNtNtNtBb_12object_store13object_record12ObjectKeyV54NtB1k_14ObjectValueV60E4seek0Bb_
+     1.14%     0.00%  kworker/u8:0-fx  [k] _RNCNvMsl_NtNtCskdHmogqv138_4fxfs12object_store9allocatorNtB7_7Flusher6finish0Bb_
+     1.14%     0.00%  kworker/u8:0-fx  [k] _RNCNvXs14_NtNtCskdHmogqv138_4fxfs12object_store9allocatorNtB8_9AllocatorNtNtBc_10filesystem16JournalingObject5flush0Bc_
+     1.14%     0.00%  kworker/u8:6-fx  [k] _RNCNvMso_NtNtCskdHmogqv138_4fxfs12object_store7journalNtB7_7Journal17write_super_block0Bb_
+     1.14%     0.00%  kworker/u8:8-fx  [k] _RNCNvMso_NtNtCskdHmogqv138_4fxfs12object_store7journalNtB7_7Journal17write_super_block0Bb_
+     1.04%     0.47%  sqlite3          [k] _RNvNtNtNtCskdHmogqv138_4fxfs12object_store9allocator5merge5merge
+     1.04%     0.19%  kworker/u8:1-fx  [k] _RNCNvXsh_NtNtCskdHmogqv138_4fxfs8lsm_tree16persistent_layerINtB7_21PersistentLayerWriterINtB7_10KeptWriterINtNtNtBb_12object_store18data_object_handle12DirectWriterNtB1L_11ObjectStoreEENtNtB1L_13object_record12ObjectKeyV54NtB2Z_14ObjectValueV60EINtNtB9_5types11LayerWriterB2X_B3y_E5write0Bb_
+     1.04%     0.19%  kworker/u8:6-fx  [k] _RNvNtNtNtCskdHmogqv138_4fxfs12object_store7journal11super_block19compact_root_parent
+     1.04%     0.09%  kworker/u8:6-fx  [k] virtio_extent_submit
+     1.04%     0.09%  sqlite3          [k] _RNvMs8_NtCs1R8tEabxR5k_5alloc7raw_vecNtB5_11RawVecInner11finish_growCskdHmogqv138_4fxfs
+     1.04%     0.00%  kworker/u8:1-fx  [k] _RNCNvXs8_NtNtCskdHmogqv138_4fxfs8lsm_tree5mergeINtB7_14MergerIteratorNtNtNtBb_12object_store13object_record12ObjectKeyV54NtB17_14ObjectValueV60EINtNtB9_5types13LayerIteratorB15_B1V_E7advance0Bb_
+     1.04%     0.00%  kworker/u8:6-fx  [k] _RNvMsg_NtCsgeVujVTwtAM_10fxfs_linux6deviceNtB5_12ExtentDevice11io_requests
+     1.04%     0.00%  kworker/u8:6-fx  [k] _RNvNtCsgeVujVTwtAM_10fxfs_linux6device6submit
+     1.04%     0.00%  kworker/u8:6-fx  [k] fxfs_device_submit
+     1.04%     0.00%  sqlite3          [k] _RNvXs7_NtNtCskdHmogqv138_4fxfs8lsm_tree16persistent_layerINtB5_8IteratorNtNtNtB9_12object_store13object_record12ObjectKeyV54NtB1a_14ObjectValueV60NtB5_11ChunkBufferEINtNtB7_5types13LayerIteratorB18_B1Y_E11advance_dynB9_
+     1.04%     0.00%  sqlite3          [k] _RNvXsz_NtCskdHmogqv138_4fxfs12object_storeNtB5_11ObjectStoreNtNtB7_10filesystem16JournalingObject14apply_mutation
+     0.95%     0.95%  kworker/u8:1-fx  [k] __pi_memcpy
+     0.95%     0.19%  kworker/u8:6-fx  [k] kfree
+     0.95%     0.00%  kworker/u8:6-fx  [k] kvfree
+     0.85%     0.85%  kworker/u8:6-fx  [k] vm_notify
+     0.85%     0.09%  kworker/u8:0-fx  [k] _RNCNvMs2_NtNtCskdHmogqv138_4fxfs12object_store19store_object_handleINtB7_17StoreObjectHandleNtB9_11ObjectStoreE13write_aligned0Bb_
+     0.85%     0.09%  kworker/u8:1-fx  [k] _RNCNvMs7_NtNtCskdHmogqv138_4fxfs8lsm_tree5mergeINtB7_14MergerIteratorNtNtNtBb_12object_store13object_record12ObjectKeyV54NtB17_14ObjectValueV60E12advance_impl0Bb_
+     0.85%     0.00%  kworker/u8:0-fx  [k] _RNCNvMs2_NtNtCskdHmogqv138_4fxfs12object_store18data_object_handleINtB7_16DataObjectHandleNtB9_11ObjectStoreE8write_at0Bb_
+     0.85%     0.00%  kworker/u8:0-fx  [k] _RNCNvMs2_NtNtCskdHmogqv138_4fxfs12object_store18data_object_handleINtB7_16DataObjectHandleNtB9_11ObjectStoreE9overwrite0Bb_
+     0.85%     0.00%  sqlite3          [k] _RNCNvMs2_NtNtCskdHmogqv138_4fxfs12object_store19store_object_handleINtB7_17StoreObjectHandleNtB9_11ObjectStoreE22deallocate_old_extents0CsgeVujVTwtAM_10fxfs_linux
+     0.85%     0.00%  sqlite3          [k] __slab_alloc.isra.0
+     0.85%     0.00%  sqlite3          [k] fxfs_dax_resize_end
+     0.85%     0.00%  sqlite3          [k] fxfs_dax_unmap_range
+     0.76%     0.76%  kworker/u8:6-fx  [k] __slab_free
+     0.76%     0.76%  sqlite3          [k] ___slab_alloc
+     0.76%     0.28%  kworker/u8:0-fx  [k] _RNCNvMsb_NtNtCskdHmogqv138_4fxfs8lsm_tree5typesINtB7_19FilterLayerIteratorINtNtB9_5merge14MergerIteratorNtNtNtBb_12object_store9allocator15AllocatorKeyV60NtB1G_17AllocatorValueV32ENCINvNtB1G_5merge17filter_tombstonesB1a_E0B1E_B2s_E13skip_filtered0Bb_
+     0.76%     0.00%  kworker/u8:0-fx  [k] _RNCNvXsk_NtNtCskdHmogqv138_4fxfs12object_store9allocatorINtB7_18CoalescingIteratorINtNtNtBb_8lsm_tree5types19FilterLayerIteratorIB1j_INtNtB1n_5merge14MergerIteratorNtB7_15AllocatorKeyV60NtB7_17AllocatorValueV32ENCINvNtB7_5merge17filter_tombstonesB27_E0B2C_B2Y_ENCINvB3s_26filter_marked_for_deletionB22_E0B2C_B2Y_EEINtB1l_13LayerIteratorB2C_B2Y_E7advance0Bb_
+     0.76%     0.00%  kworker/u8:1-fx  [k] _RNvMsg_NtNtCskdHmogqv138_4fxfs8lsm_tree16persistent_layerINtB5_21PersistentLayerWriterINtB5_10KeptWriterINtNtNtB9_12object_store18data_object_handle12DirectWriterNtB1J_11ObjectStoreEENtNtB1J_13object_record12ObjectKeyV54NtB2X_14ObjectValueV60E14serialize_itemB9_
+     0.76%     0.00%  sqlite3          [k] fxfs_device_unmap
+     0.76%     0.00%  sqlite3          [k] virtio_extent_call
+     0.76%     0.00%  sqlite3          [k] virtio_extent_submit
+     0.66%     0.66%  sqlite3          [k] __pi_memset
+     0.66%     0.66%  sqlite3          [k] vm_notify
+     0.66%     0.00%  sqlite3          [k] _RNvMs7_NtCs1R8tEabxR5k_5alloc7raw_vecINtB5_6RawVecINtNtCskdHmogqv138_4fxfs8lsm_tree11LockedLayerNtNtNtBR_12object_store13object_record12ObjectKeyV54NtB1y_14ObjectValueV60EE8grow_oneBR_
+     0.66%     0.00%  sqlite3          [k] fxfs_dax_map_extents
+     0.57%     0.57%  sqlite3          [k] __slab_free
+     0.57%     0.38%  sqlite3          [k] _RINvMs1_NtCs7wMb6rctvtn_9hashbrown3mapINtB6_7HashMapNtNtCs1eeVmMdRDvf_14storage_device6extent8ExtentIdNtNtNtNtCskdHmogqv138_4fxfs12object_store9allocator12extent_table11ExtentStateNtNtCshuP6zn3CkNr_3std4hash11RandomStateE3getBO_EB1K_
+     0.57%     0.28%  sqlite3          [k] _RINvMNtNtCsjr86reHQuqA_7bincode6config3intNtB3_14VarintEncoding18deserialize_varintINtNtNtB7_2de4read8IoReaderQINtNtNtCskdHmogqv138_4fxfs8lsm_tree16persistent_layer12BufferCursorNtB1O_11ChunkBufferEEINtB5_14WithOtherLimitINtB5_17WithOtherTrailingNtB5_14DefaultOptionsNtNtB5_8trailing13AllowTrailingENtNtB5_5limit7BoundedEEB1S_
+     0.57%     0.28%  sqlite3          [k] _RNCNvMs4_NtNtCskdHmogqv138_4fxfs8lsm_tree16persistent_layerINtB7_15KeyOnlyIteratorNtNtNtBb_12object_store13object_record12ObjectKeyV54NtB1k_14ObjectValueV60NtB7_11ChunkBufferE7advance0Bb_
+     0.57%     0.19%  sqlite3          [k] _RNvMsd_NtNtCskdHmogqv138_4fxfs12object_store9allocatorNtB5_11RangeCounts6counts
+     0.57%     0.09%  kworker/u8:0-fx  [k] _RNCNvXs8_NtNtCskdHmogqv138_4fxfs8lsm_tree5mergeINtB7_14MergerIteratorNtNtNtBb_12object_store9allocator15AllocatorKeyV60NtB17_17AllocatorValueV32EINtNtB9_5types13LayerIteratorB15_B1T_E7advance0Bb_
+     0.57%     0.09%  kworker/u8:1-fx  [k] _RNvXs1_NtNtCsa4Wcd7wDxpd_12futures_util6future10maybe_doneINtB5_9MaybeDoneNCNvMs_NtNtCskdHmogqv138_4fxfs8lsm_tree5mergeINtB1h_18MergeLayerIteratorNtNtNtB1l_12object_store13object_record12ObjectKeyV54NtB2m_14ObjectValueV60E13maybe_advance0ENtNtNtCs2RzmApnEpjJ_4core6future6future6Future4pollB1l_
+     0.57%     0.00%  kworker/u8:8-fx  [k] _RINvXNvNtNtCskdHmogqv138_4fxfs8lsm_tree5typess_1__INtB5_4ItemNtNtNtB9_12object_store13object_record12ObjectKeyV54NtBZ_14ObjectValueV60ENtNtCslaoSmfS0x5U_10serde_core3ser9Serialize9serializeQINtNtCsjr86reHQuqA_7bincode3ser10SerializerQNtNtNtB11_7journal6writer13JournalWriterINtNtB37_6config14WithOtherLimitINtB4r_17WithOtherTrailingNtB4r_14DefaultOptionsNtNtB4r_8trailing13AllowTrailingENtNtB4r_5limit7BoundedEEEB9_
+     0.57%     0.00%  kworker/u8:8-fx  [k] _RINvYNtNtNtNtCskdHmogqv138_4fxfs12object_store7journal11super_block19SuperBlockRecordV60NtNtNtBb_16serialized_types6traits9Versioned14serialize_intoNtNtB7_6writer13JournalWriterEBb_
+
+
+
+CALLERS sqlite-wal-full-batch100-checkpoint
+    52.84%  [k] pv_native_safe_halt
+            |
+            ---arch_cpu_idle
+               default_idle_call
+               do_idle
+               cpu_startup_entry
+               |          
+               |--39.77%--kernel_init
+               |          do_initcalls
+               |          x86_64_start_reservations
+               |          x86_64_start_kernel
+               |          common_startup_64
+               |          
+                --13.07%--start_secondary
+                          common_startup_64
+
+
+
+
+FXFS sqlite-wal-full-batch100-checkpoint: device_commits 4, device_commits_ns 5948836, device_read_bytes 229376, device_reads 15, device_reads_ns 4917155, device_write_bytes 1421312, device_writes 206, device_writes_ns 228002172, fsyncs 2, journal_compaction_ns 30001097, journal_compactions 1, seal_waits 4, seal_waits_ns 167335, seals 4, seals_ns 6024895, window_free_bytes 87293952, window_largest_free_bytes 77594624, window_map_bytes_evacuate 4222976, window_map_bytes_grow 4063232, window_map_bytes_reach 65536, window_map_bytes_restage 196608, window_map_requests 25, window_maps 32, window_maps_evacuate 10, window_maps_grow 18, window_maps_ns 7738848, window_maps_reach 1, window_maps_restage 3, window_regions_free_bytes 4456448, window_regions_pruned 4, window_unmaps 49, window_unmaps_ns 23997012
+REQUESTS sqlite-wal-full-batch100-checkpoint: read 15.00 (294 µs each), write 206.00 (307 µs each), free 2.00 (8915 µs each), map 25.00 (295 µs each), unmap 49.00 (461 µs each), commit 2.00 (430 µs each) per operation
+PROFILE sqlite-wal-normal-batch1
+    56.94%  [k] pv_native_safe_halt
+     3.47%  [k] queue_work_on
+     2.08%  [k] __kvmalloc_node_noprof
+     2.08%  [k] _copy_from_iter
+     1.39%  [k] _RNvMsg_NtNtCskdHmogqv138_4fxfs8lsm_tree15skip_list_layerINtB5_20SkipListLayerIterMutNtNtNtB9_12object_store13object_record12ObjectKeyV54NtB1m_14ObjectValueV60E3newB9_
+     1.39%  [k] __pi_memcpy
+     1.39%  [k] vm_notify
+
+
+
+INCLUSIVE sqlite-wal-normal-batch1
+    56.94%    56.94%  swapper          [k] pv_native_safe_halt
+    56.94%     0.00%  swapper          [k] arch_cpu_idle
+    56.94%     0.00%  swapper          [k] common_startup_64
+    56.94%     0.00%  swapper          [k] cpu_startup_entry
+    56.94%     0.00%  swapper          [k] default_idle_call
+    56.94%     0.00%  swapper          [k] do_idle
+    45.83%     0.00%  swapper          [k] start_secondary
+    25.00%     0.00%  sqlite3          [k] do_syscall_64
+    25.00%     0.00%  sqlite3          [k] entry_SYSCALL_64_after_hwframe
+    25.00%     0.00%  sqlite3          [k] x64_sys_call
+    22.92%     0.00%  sqlite3          [.] 0x00007f40398eb341
+    22.92%     0.00%  sqlite3          [k] 0x00007f4039927aa0
+    22.22%     0.00%  sqlite3          [k] __x64_sys_pwrite64
+    22.22%     0.00%  sqlite3          [k] fxfs_dax_write_iter
+    22.22%     0.00%  sqlite3          [k] vfs_write
+    21.53%     0.00%  sqlite3          [k] dax_iomap_rw
+    21.53%     0.00%  sqlite3          [k] iomap_iter
+    20.83%     0.00%  sqlite3          [k] fxfs_dax_iomap_begin
+    20.83%     0.00%  sqlite3          [k] fxfs_dax_iomap_write.constprop.0
+    19.44%     0.69%  sqlite3          [k] fxfs_dax_map_write
+    11.11%     0.00%  swapper          [k] do_initcalls
+    11.11%     0.00%  swapper          [k] kernel_init
+    11.11%     0.00%  swapper          [k] x86_64_start_kernel
+    11.11%     0.00%  swapper          [k] x86_64_start_reservations
+     9.72%     0.00%  sqlite3          [k] _RNCNvMso_NtNtCskdHmogqv138_4fxfs12object_store11transactionNtB7_11Transaction6commit0CsgeVujVTwtAM_10fxfs_linux
+     8.33%     0.00%  sqlite3          [k] _RNCNvMso_NtNtCskdHmogqv138_4fxfs12object_store7journalNtB7_7Journal6commit0CsgeVujVTwtAM_10fxfs_linux
+     7.64%     0.00%  sqlite3          [k] _RNvMso_NtNtCskdHmogqv138_4fxfs12object_store7journalNtB5_7Journal25write_and_apply_mutations
+     4.86%     0.00%  sqlite3          [k] _RNvMs0_NtNtCskdHmogqv138_4fxfs12object_store14object_managerNtB5_13ObjectManager14apply_mutation
+     4.86%     0.00%  sqlite3          [k] _RNvMs0_NtNtCskdHmogqv138_4fxfs12object_store14object_managerNtB5_13ObjectManager17apply_transaction
+     3.47%     3.47%  sqlite3          [k] queue_work_on
+     2.78%     0.69%  sqlite3          [k] _RNvMs1_NtCs8WWmacacxHO_10async_task3rawINtB5_7RawTaskINtNtCs2RzmApnEpjJ_4core3pin3PinINtNtCs1R8tEabxR5k_5alloc5boxed3BoxINtNtCsa4Wcd7wDxpd_12futures_util9abortable9AbortableNCINvMs2_NtNtNtCshY9N03A7Id3_13fuchsia_async7runtime5guest5scopeNtB2U_11ScopeHandle11mk_task_futuNCNCNvMNtNtCskdHmogqv138_4fxfs12object_store6volumeNtB4r_10RootVolume6volume00E0EEEINtNtBU_6result6ResultuNtB1X_7AbortedENvNtCshRwtkNAyQY8_8linux_rt8executor8scheduleuE4wakeCsgeVujVTwtAM_10fxfs_linux
+     2.78%     0.00%  sqlite3          [.] 0000000000000000
+     2.08%     2.08%  sqlite3          [k] __kvmalloc_node_noprof
+     2.08%     2.08%  sqlite3          [k] _copy_from_iter
+     2.08%     0.69%  sqlite3          [k] _RNCNvMs7_NtNtCskdHmogqv138_4fxfs8lsm_tree5mergeINtB7_14MergerIteratorNtNtNtBb_12object_store13object_record12ObjectKeyV54NtB17_14ObjectValueV60E14push_iterators0CsgeVujVTwtAM_10fxfs_linux
+     2.08%     0.69%  sqlite3          [k] _RNvXs14_NtNtCskdHmogqv138_4fxfs12object_store9allocatorNtB6_9AllocatorNtNtBa_10filesystem16JournalingObject14apply_mutation
+     2.08%     0.69%  sqlite3          [k] _RNvXsz_NtCskdHmogqv138_4fxfs12object_storeNtB5_11ObjectStoreNtNtB7_10filesystem16JournalingObject14apply_mutation
+     2.08%     0.69%  sqlite3          [.] fcntl
+     2.08%     0.00%  kworker/u8:8-fx  [k] kthread
+     2.08%     0.00%  kworker/u8:8-fx  [k] process_one_work
+     2.08%     0.00%  kworker/u8:8-fx  [k] ret_from_fork
+     2.08%     0.00%  kworker/u8:8-fx  [k] ret_from_fork_asm
+     2.08%     0.00%  kworker/u8:8-fx  [k] worker_thread
+     2.08%     0.00%  sqlite3          [k] _RNCNvMs2_NtNtCskdHmogqv138_4fxfs12object_store18data_object_handleINtB7_16DataObjectHandleNtB9_11ObjectStoreE15txn_update_size0CsgeVujVTwtAM_10fxfs_linux
+     2.08%     0.00%  sqlite3          [k] _RNCNvMs2_NtNtCskdHmogqv138_4fxfs12object_store19store_object_handleINtB7_17StoreObjectHandleNtB9_11ObjectStoreE22deallocate_old_extents0CsgeVujVTwtAM_10fxfs_linux
+     2.08%     0.00%  sqlite3          [k] _RNCNvXs8_NtNtCskdHmogqv138_4fxfs8lsm_tree5mergeINtB7_14MergerIteratorNtNtNtBb_12object_store13object_record12ObjectKeyV54NtB17_14ObjectValueV60EINtNtB9_5types13LayerIteratorB15_B1V_E7advance0CsgeVujVTwtAM_10fxfs_linux
+     2.08%     0.00%  sqlite3          [k] __handle_mm_fault
+     2.08%     0.00%  sqlite3          [k] asm_exc_page_fault
+     2.08%     0.00%  sqlite3          [k] dax_copy_from_iter
+     2.08%     0.00%  sqlite3          [k] dax_iomap_fault
+     2.08%     0.00%  sqlite3          [k] dax_iomap_iter
+     2.08%     0.00%  sqlite3          [k] dax_iomap_pte_fault
+     2.08%     0.00%  sqlite3          [k] do_user_addr_fault
+     2.08%     0.00%  sqlite3          [k] do_wp_page
+     2.08%     0.00%  sqlite3          [k] exc_page_fault
+     2.08%     0.00%  sqlite3          [k] fxfs_dax_do_fault
+     2.08%     0.00%  sqlite3          [k] fxfs_dax_mkwrite
+     2.08%     0.00%  sqlite3          [k] fxfs_rt_alloc
+     2.08%     0.00%  sqlite3          [k] handle_mm_fault
+     2.08%     0.00%  sqlite3          [k] handle_pte_fault
+     2.08%     0.00%  sqlite3          [.] memset
+     1.39%     1.39%  sqlite3          [k] _RNvMsg_NtNtCskdHmogqv138_4fxfs8lsm_tree15skip_list_layerINtB5_20SkipListLayerIterMutNtNtNtB9_12object_store13object_record12ObjectKeyV54NtB1m_14ObjectValueV60E3newB9_
+     1.39%     1.39%  sqlite3          [k] __pi_memcpy
+     1.39%     0.69%  sqlite3          [k] _RNCNvMs4_NtNtCskdHmogqv138_4fxfs8lsm_tree16persistent_layerINtB7_15KeyOnlyIteratorNtNtNtBb_12object_store13object_record12ObjectKeyV54NtB1k_14ObjectValueV60NtB7_11ChunkBufferE7advance0Bb_
+     1.39%     0.00%  kworker/u8:1-fx  [k] kthread
+     1.39%     0.00%  kworker/u8:1-fx  [k] process_one_work
+     1.39%     0.00%  kworker/u8:1-fx  [k] ret_from_fork
+     1.39%     0.00%  kworker/u8:1-fx  [k] ret_from_fork_asm
+     1.39%     0.00%  kworker/u8:1-fx  [k] worker_thread
+     1.39%     0.00%  kworker/u8:8-fx  [k] fxfs_rt_work_run
+     1.39%     0.00%  sqlite3          [k] _RNCINvMsb_NtCskdHmogqv138_4fxfs8lsm_treeINtB8_7LSMTreeNtNtNtBa_12object_store13object_record12ObjectKeyV54NtBS_14ObjectValueV60E8find_mapINtNtB8_5types4ItemBQ_B1G_ENCNvB4_4find0E0CsgeVujVTwtAM_10fxfs_linux
+     1.39%     0.00%  sqlite3          [k] _RNCNvMs2_NtNtCskdHmogqv138_4fxfs12object_store18data_object_handleINtB7_16DataObjectHandleNtB9_11ObjectStoreE28new_transaction_with_options0CsgeVujVTwtAM_10fxfs_linux
+     1.39%     0.00%  sqlite3          [k] _RNCNvMs8_NtCskdHmogqv138_4fxfs12object_storeNtB7_11ObjectStore15new_transaction0CsgeVujVTwtAM_10fxfs_linux
+     1.39%     0.00%  sqlite3          [k] _RNCNvMsb_NtNtCskdHmogqv138_4fxfs8lsm_tree16persistent_layerINtB7_15PersistentLayerNtNtNtBb_12object_store13object_record12ObjectKeyV54NtB1k_14ObjectValueV60E4seek0Bb_
+     1.39%     0.00%  sqlite3          [k] _RNCNvXst_NtNtCskdHmogqv138_4fxfs8lsm_tree16persistent_layerINtB7_15PersistentLayerNtNtNtBb_12object_store13object_record12ObjectKeyV54NtB1k_14ObjectValueV60EINtNtB9_5types5LayerB1i_B28_E4seek0Bb_
+     1.39%     0.00%  sqlite3          [k] _RNvMs8_NtNtCskdHmogqv138_4fxfs8lsm_tree15skip_list_layerINtB5_13SkipListLayerNtNtNtB9_12object_store9allocator15AllocatorKeyV60NtB1f_17AllocatorValueV32E10merge_intoB9_
+     1.39%     0.00%  sqlite3          [k] _RNvMsi_NtNtCskdHmogqv138_4fxfs12object_store9allocatorNtB5_9Allocator6record
+     1.39%     0.00%  sqlite3          [k] __x64_sys_fcntl
+     1.39%     0.00%  sqlite3          [k] do_fcntl
+     1.39%     0.00%  sqlite3          [k] fcntl_setlk
+     1.39%     0.00%  sqlite3          [k] posix_lock_inode
+     1.39%     0.00%  sqlite3          [.] 0x0000000000000200
+     0.69%     0.69%  kworker/u8:0-fx  [k] _RNvMs9_NtNtCskdHmogqv138_4fxfs8lsm_tree15skip_list_layerINtB5_13SkipListLayerNtNtNtB9_12object_store13object_record12ObjectKeyV54NtB1f_14ObjectValueV60E4seekB9_
+     0.69%     0.69%  kworker/u8:1-fx  [k] __mutex_unlock_slowpath.isra.0
+     0.69%     0.69%  kworker/u8:1-fx  [k] __slab_free
+     0.69%     0.69%  kworker/u8:8-fx  [k] _RNvMs1_NtCs8WWmacacxHO_10async_task3rawINtB5_7RawTaskINtNtCsa4Wcd7wDxpd_12futures_util9abortable9AbortableNCINvMs1_NtNtCskdHmogqv138_4fxfs12object_store19store_object_handleNtB1P_8Watchdog3newNCNCNvMs2_B1P_INtB1P_17StoreObjectHandleNtB1R_11ObjectStoreE13write_aligned00E0EINtNtCs2RzmApnEpjJ_4core6result6ResultuNtBS_7AbortedENvNtCshRwtkNAyQY8_8linux_rt8executor8scheduleuE3runB1T_
+     0.69%     0.69%  kworker/u8:8-fx  [k] _RNvNtCshRwtkNAyQY8_8linux_rt8executor3run
+     0.69%     0.69%  kworker/u8:8-fx  [k] vm_notify
+     0.69%     0.69%  sqlite3          [k] _RINvXs1r_NtNtCskdHmogqv138_4fxfs12object_store13object_recordNtB7_12ObjectKeyV54NtNtCs2RzmApnEpjJ_4core4hash4Hash4hashNtCs5t8wfrOWwBm_10rustc_hash8FxHasherEBb_
+     0.69%     0.69%  sqlite3          [k] _RNCNvMs2_NtCsgeVujVTwtAM_10fxfs_linux2fsNtB7_4Fxfs4file0B9_
+     0.69%     0.69%  sqlite3          [k] _RNCNvMs6_NtNtCskdHmogqv138_4fxfs12object_store21caching_object_handleINtB7_19CachingObjectHandleINtNtNtCs1R8tEabxR5k_5alloc3rcs3arc3ArcDNtNtBb_13object_handle11LayerObjectEL_EE4read0Bb_
+     0.69%     0.69%  sqlite3          [k] _RNCNvMsA_NtNtCskdHmogqv138_4fxfs12object_store11transactionNtB7_11LockManager14commit_prepare0CsgeVujVTwtAM_10fxfs_linux
+     0.69%     0.69%  sqlite3          [k] _RNCNvMsA_NtNtCskdHmogqv138_4fxfs12object_store11transactionNtB7_11LockManager4lock0CsgeVujVTwtAM_10fxfs_linux
+     0.69%     0.69%  sqlite3          [k] _RNvMsb_NtCskdHmogqv138_4fxfs8lsm_treeINtB5_7LSMTreeNtNtNtB7_12object_store13object_record12ObjectKeyV54NtBP_14ObjectValueV60E9layer_setCsgeVujVTwtAM_10fxfs_linux
+     0.69%     0.69%  sqlite3          [k] _RNvMsm_NtCskdHmogqv138_4fxfs10filesystemNtB5_12FxFilesystem22maybe_start_flush_task
+     0.69%     0.69%  sqlite3          [k] _RNvXs2M_NtNtCskdHmogqv138_4fxfs12object_store13object_recordNtB6_14ObjectValueV60NtNtCs2RzmApnEpjJ_4core5clone5Clone5clone
+     0.69%     0.69%  sqlite3          [k] _RNvXs2_NtCs1eeVmMdRDvf_14storage_device16buffer_allocatorNtB5_15BufferAllocatorNtB5_17TryAllocateBuffer19try_allocate_buffer
+     0.69%     0.69%  sqlite3          [k] _RNvXs3_NtCshuP6zn3CkNr_3std4hashNtB5_13DefaultHasherNtNtCs2RzmApnEpjJ_4core4hash6Hasher5write
+     0.69%     0.69%  sqlite3          [k] _RNvXsQ_NtNtCskdHmogqv138_4fxfs12object_store13object_recordNtB5_16ObjectKeyDataV54NtNtCs2RzmApnEpjJ_4core3cmp3Ord3cmp
+     0.69%     0.69%  sqlite3          [k] _RNvYQINtNtCs1R8tEabxR5k_5alloc3vec3VechENtNtCshuP6zn3CkNr_3std2io5Write9write_allCsgeVujVTwtAM_10fxfs_linux
+     0.69%     0.69%  sqlite3          [k] __lock_text_start
+     0.69%     0.69%  sqlite3          [k] __pi_memset
+     0.69%     0.69%  sqlite3          [k] _copy_to_iter
+     0.69%     0.69%  sqlite3          [k] kfree
+     0.69%     0.69%  sqlite3          [k] kmem_cache_alloc_noprof
+     0.69%     0.69%  sqlite3          [.] memcpy
+     0.69%     0.69%  sqlite3          [k] vm_notify
+     0.69%     0.69%  sqlite3          [.] 0x0000000000040571
+     0.69%     0.69%  sqlite3          [.] 0x00000000000438c0
+     0.69%     0.69%  sqlite3          [.] 0x000000000004adc9
+     0.69%     0.69%  sqlite3          [.] 0x000000000005a860
+     0.69%     0.69%  sqlite3          [.] 0x000000000005d47e
+     0.69%     0.69%  sqlite3          [.] 0x00000000000a4b62
+     0.69%     0.69%  sqlite3          [.] 0x00000000000a4b65
+     0.69%     0.69%  sqlite3          [.] 0x00000000000a4bb4
+     0.69%     0.69%  sqlite3          [.] 0x00000000000a4c0c
+     0.69%     0.69%  sqlite3          [.] 0x00000000000a4cde
+     0.69%     0.69%  sqlite3          [.] 0x00000000000f96a0
+     0.69%     0.69%  sqlite3          [.] 0x0000000000116bb9
+     0.69%     0.69%  sqlite3          [.] 0x0000000000121650
+     0.69%     0.69%  sqlite3          [.] 0x00000000001216a1
+     0.69%     0.69%  sqlite3          [.] 0x0000000000125f73
+     0.69%     0.00%  kworker/u8:0-fx  [k] _RNCNvMs2_NtNtCskdHmogqv138_4fxfs12object_store18data_object_handleINtB7_16DataObjectHandleNtB9_11ObjectStoreE9overwrite0Bb_
+     0.69%     0.00%  kworker/u8:0-fx  [k] _RNCNvMs7_NtNtCskdHmogqv138_4fxfs8lsm_tree5mergeINtB7_14MergerIteratorNtNtNtBb_12object_store13object_record12ObjectKeyV54NtB17_14ObjectValueV60E14push_iterators0Bb_
+     0.69%     0.00%  kworker/u8:0-fx  [k] _RNCNvMsn_NtNtCskdHmogqv138_4fxfs8lsm_tree5mergeINtB7_6MergerNtNtNtBb_12object_store13object_record12ObjectKeyV54NtBY_14ObjectValueV60E5query0Bb_
+     0.69%     0.00%  kworker/u8:0-fx  [k] _RNCNvXsj_NtNtCskdHmogqv138_4fxfs8lsm_tree15skip_list_layerINtB7_13SkipListLayerNtNtNtBb_12object_store13object_record12ObjectKeyV54NtB1h_14ObjectValueV60EINtNtB9_5types5LayerB1f_B25_E4seek0Bb_
+     0.69%     0.00%  kworker/u8:0-fx  [k] _RNvMs1_NtCs8WWmacacxHO_10async_task3rawINtB5_7RawTaskINtNtCsa4Wcd7wDxpd_12futures_util9abortable9AbortableNCNvMso_NtNtCskdHmogqv138_4fxfs12object_store7journalNtB1O_7Journal10flush_task0EINtNtCs2RzmApnEpjJ_4core6result6ResultuNtBS_7AbortedENvNtCshRwtkNAyQY8_8linux_rt8executor8scheduleuE3runB1S_
+     0.69%     0.00%  kworker/u8:0-fx  [k] fxfs_rt_work_run
+     0.69%     0.00%  kworker/u8:0-fx  [k] kthread
+     0.69%     0.00%  kworker/u8:0-fx  [k] process_one_work
+     0.69%     0.00%  kworker/u8:0-fx  [k] ret_from_fork
+     0.69%     0.00%  kworker/u8:0-fx  [k] ret_from_fork_asm
+     0.69%     0.00%  kworker/u8:0-fx  [k] worker_thread
+     0.69%     0.00%  kworker/u8:1-fx  [k] fxfs_dax_grow
+     0.69%     0.00%  kworker/u8:1-fx  [k] fxfs_dax_map_to
+     0.69%     0.00%  kworker/u8:1-fx  [k] fxfs_rt_work_run
+     0.69%     0.00%  kworker/u8:1-fx  [k] kfree
+     0.69%     0.00%  kworker/u8:8-fx  [k] fxfs_dax_grow
+     0.69%     0.00%  kworker/u8:8-fx  [k] fxfs_dax_map_to
+     0.69%     0.00%  kworker/u8:8-fx  [k] fxfs_device_map
+     0.69%     0.00%  kworker/u8:8-fx  [k] virtio_extent_call
+     0.69%     0.00%  kworker/u8:8-fx  [k] virtio_extent_submit
+     0.69%     0.00%  sqlite3          [k] _RINvNtCs2RzmApnEpjJ_4core3ptr9drop_glueNtNtNtCskdHmogqv138_4fxfs12object_store11transaction11TransactionECsgeVujVTwtAM_10fxfs_linux
+     0.69%     0.00%  sqlite3          [k] _RINvXNvNtNtCskdHmogqv138_4fxfs12object_store11transaction1__NtB5_11MutationV60NtNtCslaoSmfS0x5U_10serde_core3ser9Serialize9serializeQINtNtCsjr86reHQuqA_7bincode3ser10SerializerQINtNtCs1R8tEabxR5k_5alloc3vec3VechEINtNtB2c_6config14WithOtherLimitINtB3r_17WithOtherTrailingNtB3r_14DefaultOptionsNtNtB3r_8trailing13AllowTrailingENtNtB3r_5limit7BoundedEEEB9_
+     0.69%     0.00%  sqlite3          [k] _RNCNCNvMs2_NtNtCskdHmogqv138_4fxfs12object_store19store_object_handleINtB9_17StoreObjectHandleNtBb_11ObjectStoreE17read_aligned_impl00CsgeVujVTwtAM_10fxfs_linux
+     0.69%     0.00%  sqlite3          [k] _RNCNvMs2_NtCsgeVujVTwtAM_10fxfs_linux2fsNtB7_4Fxfs7setattr0B9_
+     0.69%     0.00%  sqlite3          [k] _RNCNvMs2_NtNtCskdHmogqv138_4fxfs12object_store19store_object_handleINtB7_17StoreObjectHandleNtB9_11ObjectStoreE12read_aligned0CsgeVujVTwtAM_10fxfs_linux
+     0.69%     0.00%  sqlite3          [k] _RNCNvMs2_NtNtCskdHmogqv138_4fxfs12object_store19store_object_handleINtB7_17StoreObjectHandleNtB9_11ObjectStoreE16read_and_decrypt0CsgeVujVTwtAM_10fxfs_linux
+     0.69%     0.00%  sqlite3          [k] _RNCNvMs2_NtNtCskdHmogqv138_4fxfs12object_store19store_object_handleINtB7_17StoreObjectHandleNtB9_11ObjectStoreE17read_aligned_impl0CsgeVujVTwtAM_10fxfs_linux
+     0.69%     0.00%  sqlite3          [k] _RNCNvMs2_NtNtCskdHmogqv138_4fxfs12object_store19store_object_handleINtB7_17StoreObjectHandleNtB9_11ObjectStoreE17update_attributes0CsgeVujVTwtAM_10fxfs_linux
+     0.69%     0.00%  sqlite3          [k] _RNCNvMs2_NtNtCskdHmogqv138_4fxfs12object_store19store_object_handleINtB7_17StoreObjectHandleNtB9_11ObjectStoreE22read_aligned_unchecked0CsgeVujVTwtAM_10fxfs_linux
+     0.69%     0.00%  sqlite3          [k] _RNCNvMs8_NtCskdHmogqv138_4fxfs12object_storeNtB7_11ObjectStore17update_attributes0CsgeVujVTwtAM_10fxfs_linux
+     0.69%     0.00%  sqlite3          [k] _RNCNvMs8_NtCskdHmogqv138_4fxfs12object_storeNtB7_11ObjectStore23txn_get_object_mutation0CsgeVujVTwtAM_10fxfs_linux
+     0.69%     0.00%  sqlite3          [k] _RNCNvMsn_NtNtCskdHmogqv138_4fxfs8lsm_tree5mergeINtB7_6MergerNtNtNtBb_12object_store13object_record12ObjectKeyV54NtBY_14ObjectValueV60E5query0CsgeVujVTwtAM_10fxfs_linux
+     0.69%     0.00%  sqlite3          [k] _RNvMs13_NtNtCskdHmogqv138_4fxfs12object_store9allocatorNtB6_9Allocator12frozen_owner
+     0.69%     0.00%  sqlite3          [k] _RNvNtNtNtCskdHmogqv138_4fxfs12object_store9allocator5merge5merge
+     0.69%     0.00%  sqlite3          [k] _RNvXs2_NtNtCskdHmogqv138_4fxfs12object_store10tree_cacheNtB5_9TreeCacheINtNtNtB9_8lsm_tree5cache11ObjectCacheNtNtB7_13object_record12ObjectKeyV54NtB1L_14ObjectValueV60E17lookup_or_reserve
+     0.69%     0.00%  sqlite3          [k] _RNvXsi_NtNtCskdHmogqv138_4fxfs8lsm_tree15skip_list_layerINtB5_20SkipListLayerIterMutNtNtNtB9_12object_store9allocator15AllocatorKeyV60NtB1m_17AllocatorValueV32EINtNtB7_5types16LayerIteratorMutB1k_B28_E6insertB9_
+     0.69%     0.00%  sqlite3          [k] _RNvXsp_NtNtCskdHmogqv138_4fxfs12object_store11transactionNtB5_11TransactionNtNtNtCs2RzmApnEpjJ_4core3ops4drop4Drop4drop
+     0.69%     0.00%  sqlite3          [k] __wake_up
+     0.69%     0.00%  sqlite3          [k] __writeback_single_inode
+     0.69%     0.00%  sqlite3          [k] __x64_sys_fsync
+     0.69%     0.00%  sqlite3          [k] __x64_sys_read
+     0.69%     0.00%  sqlite3          [k] anon_pipe_read
+     0.69%     0.00%  sqlite3          [k] copy_page_to_iter
+     0.69%     0.00%  sqlite3          [k] do_fsync
+     0.69%     0.00%  sqlite3          [k] fxfs_dax_drop_pinned
+     0.69%     0.00%  sqlite3          [k] fxfs_dax_extents
+     0.69%     0.00%  sqlite3          [k] fxfs_dax_get_range
+     0.69%     0.00%  sqlite3          [k] fxfs_dax_iomap_end
+     0.69%     0.00%  sqlite3          [k] fxfs_dax_map_extents
+     0.69%     0.00%  sqlite3          [k] fxfs_dax_move
+     0.69%     0.00%  sqlite3          [k] fxfs_dax_new_slice
+     0.69%     0.00%  sqlite3          [k] fxfs_dax_reach
+     0.69%     0.00%  sqlite3          [k] fxfs_dax_unmap_range
+     0.69%     0.00%  sqlite3          [k] fxfs_device_unmap
+     0.69%     0.00%  sqlite3          [k] fxfs_rt_free
+     0.69%     0.00%  sqlite3          [k] fxfs_vfs_fsync
+     0.69%     0.00%  sqlite3          [k] fxfs_vfs_write_attr
+     0.69%     0.00%  sqlite3          [k] fxfs_vfs_write_inode
+     0.69%     0.00%  sqlite3          [k] fxfs_write_inode
+     0.69%     0.00%  sqlite3          [k] ksys_read
+     0.69%     0.00%  sqlite3          [k] kvfree
+     0.69%     0.00%  sqlite3          [k] sync_inode_metadata
+     0.69%     0.00%  sqlite3          [k] vfs_fsync_range
+     0.69%     0.00%  sqlite3          [k] vfs_read
+     0.69%     0.00%  sqlite3          [k] virtio_extent_call
+     0.69%     0.00%  sqlite3          [k] virtio_extent_submit
+     0.69%     0.00%  sqlite3          [k] writeback_single_inode
+     0.69%     0.00%  sqlite3          [.] 0x0000000200000001
+     0.69%     0.00%  sqlite3          [.] 0x000055e3d3604571
+     0.69%     0.00%  sqlite3          [.] 0x000055e3d36078c0
+     0.69%     0.00%  sqlite3          [.] 0x000055e3d360edc9
+     0.69%     0.00%  sqlite3          [.] 0x000055e3d361e860
+     0.69%     0.00%  sqlite3          [.] 0x000055e3d362147e
+     0.69%     0.00%  sqlite3          [.] 0x000055e3d3668b62
+     0.69%     0.00%  sqlite3          [.] 0x000055e3d3668b65
+     0.69%     0.00%  sqlite3          [.] 0x000055e3d3668bb4
+     0.69%     0.00%  sqlite3          [.] 0x000055e3d3668c0c
+     0.69%     0.00%  sqlite3          [.] 0x000055e3d3668cde
+     0.69%     0.00%  sqlite3          [.] 0x000055e3d36bd6a0
+     0.69%     0.00%  sqlite3          [.] 0x000055e3d36dabb9
+     0.69%     0.00%  sqlite3          [.] 0x000055e3d36e5650
+     0.69%     0.00%  sqlite3          [.] 0x000055e3d36e56a1
+     0.69%     0.00%  sqlite3          [.] 0x000055e3d36e9f73
+     0.69%     0.00%  sqlite3          [.] 0x00007f40397d23e8
+     0.69%     0.00%  sqlite3          [.] 0x00007f40397d39c8
+     0.69%     0.00%  sqlite3          [.] 0x00007f40397de728
+     0.69%     0.00%  sqlite3          [.] 0x00007f403987ad30
+     0.69%     0.00%  sqlite3          [.] 0x00007f403987ad66
+     0.69%     0.00%  sqlite3          [.] 0x00007f40398e2398
+     0.69%     0.00%  sqlite3          [.] 0x00010000cd014400
+     0.69%     0.00%  sqlite3          [.] 0x006c6c612d657465
+
+
+
+CALLERS sqlite-wal-normal-batch1
+    56.94%  [k] pv_native_safe_halt
+            |
+            ---arch_cpu_idle
+               default_idle_call
+               do_idle
+               cpu_startup_entry
+               |          
+               |--45.83%--start_secondary
+               |          common_startup_64
+               |          
+                --11.11%--kernel_init
+                          do_initcalls
+                          x86_64_start_reservations
+                          x86_64_start_kernel
+                          common_startup_64
+
+
+
+
+FXFS sqlite-wal-normal-batch1: device_commits 1, device_commits_ns 485110, device_read_bytes 4096, device_reads 1, device_reads_ns 273372, device_write_bytes 40960, device_writes 10, device_writes_ns 2633651, fsyncs 1, seal_waits 1, seal_waits_ns 21491, seals 1, seals_ns 490253, window_map_bytes_evacuate 4096, window_map_bytes_grow 983040, window_map_bytes_restage 65536, window_map_requests 7, window_maps 7, window_maps_evacuate 1, window_maps_grow 5, window_maps_ns 1599516, window_maps_restage 1, window_regions 1, window_unmaps 7, window_unmaps_ns 905881
+REQUESTS sqlite-wal-normal-batch1: read 0.01 (120 µs each), write 0.05 (235 µs each), free 0.01 (299 µs each), map 0.04 (216 µs each), unmap 0.04 (118 µs each) per operation
+PROFILE sqlite-wal-normal-batch1-checkpoint
+    66.07%  [k] pv_native_safe_halt
+     3.57%  [k] _copy_from_iter
+     3.57%  [k] _copy_to_iter
+     1.79%  [k] __pi_memcpy
+     1.79%  [k] _raw_spin_unlock_irqrestore
+     1.79%  [k] vm_notify
+     1.79%  [.] 0x0000000000068341
+
+
+
+INCLUSIVE sqlite-wal-normal-batch1-checkpoint
+    66.07%    66.07%  swapper          [k] pv_native_safe_halt
+    66.07%     0.00%  swapper          [k] arch_cpu_idle
+    66.07%     0.00%  swapper          [k] common_startup_64
+    66.07%     0.00%  swapper          [k] cpu_startup_entry
+    66.07%     0.00%  swapper          [k] default_idle_call
+    66.07%     0.00%  swapper          [k] do_idle
+    66.07%     0.00%  swapper          [k] do_initcalls
+    66.07%     0.00%  swapper          [k] kernel_init
+    66.07%     0.00%  swapper          [k] x86_64_start_kernel
+    66.07%     0.00%  swapper          [k] x86_64_start_reservations
+    24.11%     0.00%  sqlite3          [k] do_syscall_64
+    24.11%     0.00%  sqlite3          [k] entry_SYSCALL_64_after_hwframe
+    24.11%     0.00%  sqlite3          [k] x64_sys_call
+    22.32%     0.00%  sqlite3          [.] 0x00007f40398eb341
+    22.32%     0.00%  sqlite3          [k] 0x00007f4039927aa0
+    20.54%     0.00%  sqlite3          [k] dax_iomap_rw
+    16.96%     0.00%  sqlite3          [k] __x64_sys_pwrite64
+    16.96%     0.00%  sqlite3          [k] fxfs_dax_write_iter
+    16.96%     0.00%  sqlite3          [k] vfs_write
+    13.39%     0.00%  sqlite3          [k] fxfs_dax_iomap_begin
+    13.39%     0.00%  sqlite3          [k] fxfs_dax_iomap_write.constprop.0
+    13.39%     0.00%  sqlite3          [k] fxfs_dax_map_write
+    13.39%     0.00%  sqlite3          [k] iomap_iter
+     8.93%     0.00%  sqlite3          [k] _RNCNvMso_NtNtCskdHmogqv138_4fxfs12object_store7journalNtB7_7Journal6commit0CsgeVujVTwtAM_10fxfs_linux
+     8.93%     0.00%  sqlite3          [k] _RNvMso_NtNtCskdHmogqv138_4fxfs12object_store7journalNtB5_7Journal25write_and_apply_mutations
+     8.04%     0.00%  sqlite3          [k] _RNCNvMso_NtNtCskdHmogqv138_4fxfs12object_store11transactionNtB7_11Transaction6commit0CsgeVujVTwtAM_10fxfs_linux
+     7.14%     0.00%  sqlite3          [k] dax_iomap_iter
+     4.46%     0.00%  sqlite3          [k] _RNvMs0_NtNtCskdHmogqv138_4fxfs12object_store14object_managerNtB5_13ObjectManager17apply_transaction
+     3.57%     3.57%  sqlite3          [k] _copy_from_iter
+     3.57%     3.57%  sqlite3          [k] _copy_to_iter
+     3.57%     0.00%  sqlite3          [k] _RNvMs0_NtNtCskdHmogqv138_4fxfs12object_store14object_managerNtB5_13ObjectManager14apply_mutation
+     3.57%     0.00%  sqlite3          [k] _RNvXs14_NtNtCskdHmogqv138_4fxfs12object_store9allocatorNtB6_9AllocatorNtNtBa_10filesystem16JournalingObject14apply_mutation
+     3.57%     0.00%  sqlite3          [k] __x64_sys_pread64
+     3.57%     0.00%  sqlite3          [k] dax_copy_from_iter
+     3.57%     0.00%  sqlite3          [k] dax_copy_to_iter
+     3.57%     0.00%  sqlite3          [k] fxfs_dax_read_iter
+     3.57%     0.00%  sqlite3          [k] vfs_read
+     2.68%     0.00%  kworker/u8:1-fx  [k] kthread
+     2.68%     0.00%  kworker/u8:1-fx  [k] process_one_work
+     2.68%     0.00%  kworker/u8:1-fx  [k] ret_from_fork
+     2.68%     0.00%  kworker/u8:1-fx  [k] ret_from_fork_asm
+     2.68%     0.00%  kworker/u8:1-fx  [k] worker_thread
+     2.68%     0.00%  sqlite3          [k] _RNCNvMs2_NtCsgeVujVTwtAM_10fxfs_linux2fsNtB7_4Fxfs7setattr0B9_
+     2.68%     0.00%  sqlite3          [k] _RNCNvMs2_NtNtCskdHmogqv138_4fxfs12object_store18data_object_handleINtB7_16DataObjectHandleNtB9_11ObjectStoreE21truncate_with_options0CsgeVujVTwtAM_10fxfs_linux
+     2.68%     0.00%  sqlite3          [k] _RNvMs8_NtNtCskdHmogqv138_4fxfs8lsm_tree15skip_list_layerINtB5_13SkipListLayerNtNtNtB9_12object_store9allocator15AllocatorKeyV60NtB1f_17AllocatorValueV32E10merge_intoB9_
+     2.68%     0.00%  sqlite3          [k] _RNvMsi_NtNtCskdHmogqv138_4fxfs12object_store9allocatorNtB5_9Allocator6record
+     2.68%     0.00%  sqlite3          [k] __x64_sys_ftruncate
+     2.68%     0.00%  sqlite3          [k] do_ftruncate
+     2.68%     0.00%  sqlite3          [k] do_sys_ftruncate
+     2.68%     0.00%  sqlite3          [k] do_truncate
+     2.68%     0.00%  sqlite3          [.] ftruncate
+     2.68%     0.00%  sqlite3          [k] fxfs_vfs_resize
+     2.68%     0.00%  sqlite3          [k] fxfs_vfs_setattr
+     2.68%     0.00%  sqlite3          [k] fxfs_vfs_write_attr
+     2.68%     0.00%  sqlite3          [k] fxfs_write_inode
+     2.68%     0.00%  sqlite3          [k] notify_change
+     1.79%     1.79%  guest-agent      [k] _raw_spin_unlock_irqrestore
+     1.79%     1.79%  kworker/u8:1-fx  [k] vm_notify
+     1.79%     1.79%  sqlite3          [k] __pi_memcpy
+     1.79%     1.79%  sqlite3          [.] 0x0000000000068341
+     1.79%     0.89%  kworker/u8:1-fx  [k] _RNvMs1_NtCs8WWmacacxHO_10async_task3rawINtB5_7RawTaskINtNtCsa4Wcd7wDxpd_12futures_util9abortable9AbortableNCNvMso_NtNtCskdHmogqv138_4fxfs12object_store7journalNtB1O_7Journal10flush_task0EINtNtCs2RzmApnEpjJ_4core6result6ResultuNtBS_7AbortedENvNtCshRwtkNAyQY8_8linux_rt8executor8scheduleuE3runB1S_
+     1.79%     0.89%  sqlite3          [k] _RINvMNtNtCsjr86reHQuqA_7bincode6config3intNtB3_14VarintEncoding16serialize_varintQINtNtCs1R8tEabxR5k_5alloc3vec3VechEINtB5_14WithOtherLimitINtB5_17WithOtherTrailingNtB5_14DefaultOptionsNtNtB5_8trailing13AllowTrailingENtNtB5_5limit7BoundedEECsgeVujVTwtAM_10fxfs_linux
+     1.79%     0.89%  sqlite3          [k] _RNCNvMs13_NtNtCskdHmogqv138_4fxfs12object_store9allocatorNtB8_9Allocator11allocate_in0CsgeVujVTwtAM_10fxfs_linux
+     1.79%     0.89%  sqlite3          [k] __kvmalloc_node_noprof
+     1.79%     0.00%  guest-agent      [.] _RINvNtCs268jdzri8zx_3std2rt10lang_startINtNtCs7x1JxYRm7tp_4core6result6ResultuNtCscikDJ3LbBdg_6anyhow5ErrorEECsaAwpwIvAodY_11guest_agent
+     1.79%     0.00%  guest-agent      [.] _RNvYNtNtCs268jdzri8zx_3std2fs4FileNtNtB6_2io5Write9write_allCs476JVdP3sg_10test_cases
+     1.79%     0.00%  guest-agent      [k] __x64_sys_write
+     1.79%     0.00%  guest-agent      [k] do_syscall_64
+     1.79%     0.00%  guest-agent      [k] entry_SYSCALL_64_after_hwframe
+     1.79%     0.00%  guest-agent      [k] file_tty_write.isra.0
+     1.79%     0.00%  guest-agent      [k] iterate_tty_write
+     1.79%     0.00%  guest-agent      [k] ksys_write
+     1.79%     0.00%  guest-agent      [k] n_tty_write
+     1.79%     0.00%  guest-agent      [k] redirected_tty_write
+     1.79%     0.00%  guest-agent      [.] sccp
+     1.79%     0.00%  guest-agent      [.] start
+     1.79%     0.00%  guest-agent      [k] uart_write
+     1.79%     0.00%  guest-agent      [k] vfs_write
+     1.79%     0.00%  guest-agent      [k] x64_sys_call
+     1.79%     0.00%  kworker/u8:1-fx  [k] fxfs_rt_work_run
+     1.79%     0.00%  kworker/u8:1-fx  [k] virtio_extent_submit
+     1.79%     0.00%  sqlite3          [k] _RINvXNvNtNtCskdHmogqv138_4fxfs12object_store11transaction1__NtB5_11MutationV60NtNtCslaoSmfS0x5U_10serde_core3ser9Serialize9serializeQINtNtCsjr86reHQuqA_7bincode3ser10SerializerQINtNtCs1R8tEabxR5k_5alloc3vec3VechEINtNtB2c_6config14WithOtherLimitINtB3r_17WithOtherTrailingNtB3r_14DefaultOptionsNtNtB3r_8trailing13AllowTrailingENtNtB3r_5limit7BoundedEEEB9_
+     1.79%     0.00%  sqlite3          [k] _RNCNvMs7_NtNtCskdHmogqv138_4fxfs8lsm_tree5mergeINtB7_14MergerIteratorNtNtNtBb_12object_store13object_record12ObjectKeyV54NtB17_14ObjectValueV60E14push_iterators0CsgeVujVTwtAM_10fxfs_linux
+     1.79%     0.00%  sqlite3          [k] _RNCNvMsn_NtNtCskdHmogqv138_4fxfs8lsm_tree5mergeINtB7_6MergerNtNtNtBb_12object_store13object_record12ObjectKeyV54NtBY_14ObjectValueV60E5query0CsgeVujVTwtAM_10fxfs_linux
+     1.79%     0.00%  sqlite3          [k] _RNCNvMso_NtNtCskdHmogqv138_4fxfs12object_store11transactionNtB7_11Transaction19commit_and_continue0CsgeVujVTwtAM_10fxfs_linux
+     1.79%     0.00%  sqlite3          [k] fxfs_rt_alloc
+     0.89%     0.89%  guest-agent      [.] _RINvNtCs268jdzri8zx_3std2io18default_read_exactNtNtB4_2fs4FileECs3LuMwi9DwoQ_4rand
+     0.89%     0.89%  guest-agent      [.] _RINvNtNtCs7x1JxYRm7tp_4core3str11validations23next_code_point_reverseINtNtNtB6_5slice4iter4IterhEECs2HQfgXjID6a_3nix
+     0.89%     0.89%  kworker/u8:8-ev  [k] _RNCNvMs1_NtCsgeVujVTwtAM_10fxfs_linux6deviceNtB7_4Gate9pass_held0B9_
+     0.89%     0.89%  sqlite3          [k] _RINvMNtNtNtCskdHmogqv138_4fxfs12object_store7journal6writerNtB3_13JournalWriter12write_recordNtB5_16JournalRecordV60EB9_
+     0.89%     0.89%  sqlite3          [k] _RINvMs1_NtCs7wMb6rctvtn_9hashbrown3mapINtB6_7HashMapNtNtCs1eeVmMdRDvf_14storage_device6extent8ExtentIdNtNtNtNtCskdHmogqv138_4fxfs12object_store9allocator12extent_table11ExtentStateNtNtCshuP6zn3CkNr_3std4hash11RandomStateE7get_mutBO_EB1K_
+     0.89%     0.89%  sqlite3          [k] _RINvMs_NtNtCskdHmogqv138_4fxfs12object_store9allocatorINtB5_15ReservationImplINtNtNtCs1R8tEabxR5k_5alloc3rcs3arc3ArcDNtB5_16ReservationOwnerEL_EB1Q_E7move_toB1d_B1Q_EB9_
+     0.89%     0.89%  sqlite3          [k] _RNCNvXsj_NtNtCskdHmogqv138_4fxfs8lsm_tree15skip_list_layerINtB7_13SkipListLayerNtNtNtBb_12object_store13object_record12ObjectKeyV54NtB1h_14ObjectValueV60EINtNtB9_5types5LayerB1f_B25_E4seek0CsgeVujVTwtAM_10fxfs_linux
+     0.89%     0.89%  sqlite3          [k] _RNvMs5_NtNtNtCskdHmogqv138_4fxfs12object_store9allocator12extent_tableNtB5_11ExtentTable7recount
+     0.89%     0.89%  sqlite3          [k] _RNvMs8_NtCskdHmogqv138_4fxfs12object_storeNtB5_11ObjectStore9allocator
+     0.89%     0.89%  sqlite3          [k] _RNvMsz_NtNtNtCs1R8tEabxR5k_5alloc11collections5btree3mapINtB5_8IntoIterNtNtNtCskdHmogqv138_4fxfs12object_store11transaction11TxnMutationNtNtB7_7set_val9SetValZSTE10dying_nextB1d_
+     0.89%     0.89%  sqlite3          [k] _RNvNtNtNtCskdHmogqv138_4fxfs12object_store9allocator5merge5merge
+     0.89%     0.89%  sqlite3          [k] _RNvXsf_NtNtCskdHmogqv138_4fxfs8lsm_tree15skip_list_layerINtB5_17SkipListLayerIterNtNtNtB9_12object_store13object_record12ObjectKeyV54NtB1j_14ObjectValueV60EINtNtB7_5types13LayerIteratorB1h_B27_E3getB9_
+     0.89%     0.89%  sqlite3          [k] _RNvXsi_NtNtCskdHmogqv138_4fxfs8lsm_tree15skip_list_layerINtB5_20SkipListLayerIterMutNtNtNtB9_12object_store9allocator15AllocatorKeyV60NtB1m_17AllocatorValueV32EINtNtB7_5types16LayerIteratorMutB1k_B28_E6commitB9_
+     0.89%     0.89%  sqlite3          [k] _RNvXsp_NtNtCskdHmogqv138_4fxfs12object_store11transactionNtB5_11TransactionNtNtNtCs2RzmApnEpjJ_4core3ops4drop4Drop4drop
+     0.89%     0.89%  sqlite3          [k] ___slab_alloc
+     0.89%     0.89%  sqlite3          [k] kvfree
+     0.89%     0.89%  sqlite3          [k] locks_dispose_list
+     0.89%     0.89%  sqlite3          [.] 0x0000000000054288
+     0.89%     0.00%  kworker/u8:1-fx  [k] _RNCNvMs2_NtNtCskdHmogqv138_4fxfs12object_store18data_object_handleINtB7_16DataObjectHandleNtB9_11ObjectStoreE8write_at0Bb_
+     0.89%     0.00%  kworker/u8:1-fx  [k] _RNCNvMs2_NtNtCskdHmogqv138_4fxfs12object_store18data_object_handleINtB7_16DataObjectHandleNtB9_11ObjectStoreE9overwrite0Bb_
+     0.89%     0.00%  kworker/u8:1-fx  [k] _RNCNvMs2_NtNtCskdHmogqv138_4fxfs12object_store19store_object_handleINtB7_17StoreObjectHandleNtB9_11ObjectStoreE13write_aligned0Bb_
+     0.89%     0.00%  kworker/u8:1-fx  [k] _RNCNvXsG_NtCsgeVujVTwtAM_10fxfs_linux6deviceNtB7_12ExtentDeviceNtCs1eeVmMdRDvf_14storage_device6Device15write_with_opts0B9_
+     0.89%     0.00%  kworker/u8:1-fx  [k] _RNvMsg_NtCsgeVujVTwtAM_10fxfs_linux6deviceNtB5_12ExtentDevice11io_requests
+     0.89%     0.00%  kworker/u8:1-fx  [k] _RNvNtCsgeVujVTwtAM_10fxfs_linux6device6submit
+     0.89%     0.00%  kworker/u8:1-fx  [k] fxfs_dax_map_to
+     0.89%     0.00%  kworker/u8:1-fx  [k] fxfs_dax_restage_work
+     0.89%     0.00%  kworker/u8:1-fx  [k] fxfs_device_map
+     0.89%     0.00%  kworker/u8:1-fx  [k] fxfs_device_submit
+     0.89%     0.00%  kworker/u8:1-fx  [k] virtio_extent_call
+     0.89%     0.00%  kworker/u8:8-ev  [k] _RNCNvMs2_NtNtCskdHmogqv138_4fxfs12object_store18data_object_handleINtB7_16DataObjectHandleNtB9_11ObjectStoreE8write_at0Bb_
+     0.89%     0.00%  kworker/u8:8-ev  [k] _RNCNvMs2_NtNtCskdHmogqv138_4fxfs12object_store18data_object_handleINtB7_16DataObjectHandleNtB9_11ObjectStoreE9overwrite0Bb_
+     0.89%     0.00%  kworker/u8:8-ev  [k] _RNCNvMs2_NtNtCskdHmogqv138_4fxfs12object_store19store_object_handleINtB7_17StoreObjectHandleNtB9_11ObjectStoreE13write_aligned0Bb_
+     0.89%     0.00%  kworker/u8:8-ev  [k] _RNvMs1_NtCs8WWmacacxHO_10async_task3rawINtB5_7RawTaskINtNtCsa4Wcd7wDxpd_12futures_util9abortable9AbortableNCNvMso_NtNtCskdHmogqv138_4fxfs12object_store7journalNtB1O_7Journal10flush_task0EINtNtCs2RzmApnEpjJ_4core6result6ResultuNtBS_7AbortedENvNtCshRwtkNAyQY8_8linux_rt8executor8scheduleuE3runB1S_
+     0.89%     0.00%  kworker/u8:8-ev  [k] fxfs_rt_work_run
+     0.89%     0.00%  kworker/u8:8-ev  [k] kthread
+     0.89%     0.00%  kworker/u8:8-ev  [k] process_one_work
+     0.89%     0.00%  kworker/u8:8-ev  [k] ret_from_fork
+     0.89%     0.00%  kworker/u8:8-ev  [k] ret_from_fork_asm
+     0.89%     0.00%  kworker/u8:8-ev  [k] worker_thread
+     0.89%     0.00%  sqlite3          [k] _RINvNtCs2RzmApnEpjJ_4core3ptr9drop_glueNtNtNtCskdHmogqv138_4fxfs12object_store11transaction11TransactionECsgeVujVTwtAM_10fxfs_linux
+     0.89%     0.00%  sqlite3          [k] _RNCNvMs13_NtNtCskdHmogqv138_4fxfs12object_store9allocatorNtB8_9Allocator10deallocate0CsgeVujVTwtAM_10fxfs_linux
+     0.89%     0.00%  sqlite3          [k] _RNCNvMs2_NtNtCskdHmogqv138_4fxfs12object_store18data_object_handleINtB7_16DataObjectHandleNtB9_11ObjectStoreE28new_transaction_with_options0CsgeVujVTwtAM_10fxfs_linux
+     0.89%     0.00%  sqlite3          [k] _RNCNvMs2_NtNtCskdHmogqv138_4fxfs12object_store19store_object_handleINtB7_17StoreObjectHandleNtB9_11ObjectStoreE6shrink0CsgeVujVTwtAM_10fxfs_linux
+     0.89%     0.00%  sqlite3          [k] _RNCNvMs8_NtCskdHmogqv138_4fxfs12object_storeNtB7_11ObjectStore15new_transaction0CsgeVujVTwtAM_10fxfs_linux
+     0.89%     0.00%  sqlite3          [k] _RNCNvMs8_NtCskdHmogqv138_4fxfs12object_storeNtB7_11ObjectStore9trim_some0CsgeVujVTwtAM_10fxfs_linux
+     0.89%     0.00%  sqlite3          [k] _RNCNvMsA_NtNtCskdHmogqv138_4fxfs12object_store11transactionNtB7_11LockManager4lock0CsgeVujVTwtAM_10fxfs_linux
+     0.89%     0.00%  sqlite3          [k] _RNvMs0_NtNtCskdHmogqv138_4fxfs12object_store14object_managerNtB5_13ObjectManager22did_commit_transaction
+     0.89%     0.00%  sqlite3          [k] _RNvMs5_NtNtNtCskdHmogqv138_4fxfs12object_store9allocator12extent_tableNtB5_11ExtentTable5stage
+     0.89%     0.00%  sqlite3          [k] _RNvMse_NtNtCskdHmogqv138_4fxfs12object_store9allocatorNtB5_5Inner7recount
+     0.89%     0.00%  sqlite3          [k] _RNvXsi_NtNtCskdHmogqv138_4fxfs8lsm_tree15skip_list_layerINtB5_20SkipListLayerIterMutNtNtNtB9_12object_store9allocator15AllocatorKeyV60NtB1m_17AllocatorValueV32EINtNtB7_5types16LayerIteratorMutB1k_B28_E6insertB9_
+     0.89%     0.00%  sqlite3          [k] __slab_alloc.isra.0
+     0.89%     0.00%  sqlite3          [k] __x64_sys_fcntl
+     0.89%     0.00%  sqlite3          [k] do_fcntl
+     0.89%     0.00%  sqlite3          [.] fcntl
+     0.89%     0.00%  sqlite3          [k] fcntl_setlk
+     0.89%     0.00%  sqlite3          [.] 0x000055e3d3618288
+
+
+
+CALLERS sqlite-wal-normal-batch1-checkpoint
+    66.07%  [k] pv_native_safe_halt
+            |
+            ---arch_cpu_idle
+               default_idle_call
+               do_idle
+               cpu_startup_entry
+               kernel_init
+               do_initcalls
+               x86_64_start_reservations
+               x86_64_start_kernel
+               common_startup_64
+
+
+
+
+FXFS sqlite-wal-normal-batch1-checkpoint: device_commits 2, device_commits_ns 6120889, device_write_bytes 61440, device_writes 15, device_writes_ns 9353491, fsyncs 2, seal_waits 2, seal_waits_ns 11105, seals 2, seals_ns 6127328, window_map_bytes_evacuate 1679360, window_map_bytes_grow 655360, window_map_bytes_reach 327680, window_map_bytes_restage 131072, window_map_requests 11, window_maps 211, window_maps_evacuate 204, window_maps_grow 3, window_maps_ns 16260055, window_maps_reach 2, window_maps_restage 2, window_regions 1, window_regions_pruned 3, window_unmaps 2, window_unmaps_ns 815740
+REQUESTS sqlite-wal-normal-batch1-checkpoint: write 15.00 (596 µs each), free 1.00 (927 µs each), map 11.00 (1400 µs each), unmap 2.00 (404 µs each) per operation
+PROFILE sqlite-wal-normal-batch100
+    59.23%  [k] pv_native_safe_halt
+     3.45%  [k] _copy_from_iter
+     2.34%  [k] __pi_memcpy
+     1.88%  [k] fxfs_dax_prune
+     1.31%  [k] __kvmalloc_node_noprof
+     1.09%  [k] kfree
+
+
+
+INCLUSIVE sqlite-wal-normal-batch100
+    59.43%     0.00%  swapper          [k] common_startup_64
+    59.43%     0.00%  swapper          [k] cpu_startup_entry
+    59.43%     0.00%  swapper          [k] do_idle
+    59.35%     0.00%  swapper          [k] arch_cpu_idle
+    59.35%     0.00%  swapper          [k] default_idle_call
+    59.33%    59.23%  swapper          [k] pv_native_safe_halt
+    45.62%     0.00%  swapper          [k] start_secondary
+    29.89%     0.00%  sqlite3          [k] entry_SYSCALL_64_after_hwframe
+    29.82%     0.16%  sqlite3          [k] do_syscall_64
+    29.77%     0.00%  sqlite3          [k] 0x00007f8544f10aa0
+    29.73%     0.08%  sqlite3          [k] x64_sys_call
+    29.69%     0.00%  sqlite3          [.] 0x00007f8544ed4341
+    29.34%     0.06%  sqlite3          [k] __x64_sys_pwrite64
+    29.27%     0.11%  sqlite3          [k] vfs_write
+    29.14%     0.11%  sqlite3          [k] fxfs_dax_write_iter
+    28.00%     0.04%  sqlite3          [k] dax_iomap_rw
+    24.05%     0.04%  sqlite3          [k] iomap_iter
+    23.84%     0.01%  sqlite3          [k] fxfs_dax_iomap_begin
+    23.78%     0.02%  sqlite3          [k] fxfs_dax_iomap_write.constprop.0
+    19.02%     0.68%  sqlite3          [k] fxfs_dax_map_write
+    13.81%     0.00%  swapper          [k] do_initcalls
+    13.81%     0.00%  swapper          [k] kernel_init
+    13.81%     0.00%  swapper          [k] x86_64_start_kernel
+    13.81%     0.00%  swapper          [k] x86_64_start_reservations
+     7.76%     0.16%  sqlite3          [k] _RNCNvMso_NtNtCskdHmogqv138_4fxfs12object_store11transactionNtB7_11Transaction6commit0CsgeVujVTwtAM_10fxfs_linux
+     6.77%     0.04%  sqlite3          [k] _RNCNvMso_NtNtCskdHmogqv138_4fxfs12object_store7journalNtB7_7Journal6commit0CsgeVujVTwtAM_10fxfs_linux
+     6.53%     0.30%  sqlite3          [k] _RNvMso_NtNtCskdHmogqv138_4fxfs12object_store7journalNtB5_7Journal25write_and_apply_mutations
+     4.28%     0.12%  sqlite3          [k] _RNCNvMs7_NtNtCskdHmogqv138_4fxfs8lsm_tree5mergeINtB7_14MergerIteratorNtNtNtBb_12object_store13object_record12ObjectKeyV54NtB17_14ObjectValueV60E14push_iterators0CsgeVujVTwtAM_10fxfs_linux
+     4.17%     0.10%  sqlite3          [k] _RNvMs0_NtNtCskdHmogqv138_4fxfs12object_store14object_managerNtB5_13ObjectManager17apply_transaction
+     3.99%     0.17%  sqlite3          [k] _RNvMs0_NtNtCskdHmogqv138_4fxfs12object_store14object_managerNtB5_13ObjectManager14apply_mutation
+     3.93%     0.05%  sqlite3          [k] dax_iomap_iter
+     3.56%     0.22%  sqlite3          [k] _RNCNvXs8_NtNtCskdHmogqv138_4fxfs8lsm_tree5mergeINtB7_14MergerIteratorNtNtNtBb_12object_store13object_record12ObjectKeyV54NtB17_14ObjectValueV60EINtNtB9_5types13LayerIteratorB15_B1V_E7advance0CsgeVujVTwtAM_10fxfs_linux
+     3.44%     3.42%  sqlite3          [k] _copy_from_iter
+     3.44%     0.00%  sqlite3          [k] dax_copy_from_iter
+     3.13%     0.02%  sqlite3          [k] _RNCNvXst_NtNtCskdHmogqv138_4fxfs8lsm_tree16persistent_layerINtB7_15PersistentLayerNtNtNtBb_12object_store13object_record12ObjectKeyV54NtB1k_14ObjectValueV60EINtNtB9_5types5LayerB1i_B28_E4seek0Bb_
+     2.94%     0.57%  sqlite3          [k] _RNCNvMsb_NtNtCskdHmogqv138_4fxfs8lsm_tree16persistent_layerINtB7_15PersistentLayerNtNtNtBb_12object_store13object_record12ObjectKeyV54NtB1k_14ObjectValueV60E4seek0Bb_
+     2.81%     0.02%  sqlite3          [k] fxfs_dax_map_extents
+     2.44%     0.43%  sqlite3          [k] _RNvXsz_NtCskdHmogqv138_4fxfs12object_storeNtB5_11ObjectStoreNtNtB7_10filesystem16JournalingObject14apply_mutation
+     2.13%     0.19%  sqlite3          [k] _RNCNvMsn_NtNtCskdHmogqv138_4fxfs8lsm_tree5mergeINtB7_6MergerNtNtNtBb_12object_store13object_record12ObjectKeyV54NtBY_14ObjectValueV60E5query0CsgeVujVTwtAM_10fxfs_linux
+     2.05%     2.05%  sqlite3          [k] __pi_memcpy
+     1.98%     1.88%  sqlite3          [k] fxfs_dax_prune
+     1.79%     0.03%  sqlite3          [k] _RNCNvMs2_NtNtCskdHmogqv138_4fxfs12object_store19store_object_handleINtB7_17StoreObjectHandleNtB9_11ObjectStoreE22deallocate_old_extents0CsgeVujVTwtAM_10fxfs_linux
+     1.61%     1.30%  sqlite3          [k] __kvmalloc_node_noprof
+     1.42%     0.06%  sqlite3          [k] fxfs_rt_alloc
+     1.34%     1.09%  sqlite3          [k] kfree
+     1.21%     0.02%  sqlite3          [k] kvfree
+     1.17%     0.04%  sqlite3          [k] fxfs_dax_get_range
+     1.15%     0.04%  sqlite3          [k] fxfs_rt_free
+     1.15%     0.00%  sqlite3          [k] _RINvXNvNtNtCskdHmogqv138_4fxfs12object_store11transaction1__NtB5_11MutationV60NtNtCslaoSmfS0x5U_10serde_core3ser9Serialize9serializeQINtNtCsjr86reHQuqA_7bincode3ser10SerializerQINtNtCs1R8tEabxR5k_5alloc3vec3VechEINtNtB2c_6config14WithOtherLimitINtB3r_17WithOtherTrailingNtB3r_14DefaultOptionsNtNtB3r_8trailing13AllowTrailingENtNtB3r_5limit7BoundedEEEB9_
+     1.03%     0.02%  sqlite3          [k] _RNvXs14_NtNtCskdHmogqv138_4fxfs12object_store9allocatorNtB6_9AllocatorNtNtBa_10filesystem16JournalingObject14apply_mutation
+     0.88%     0.10%  sqlite3          [k] _RINvMNtNtCsjr86reHQuqA_7bincode6config3intNtB3_14VarintEncoding16serialize_varintQINtNtCs1R8tEabxR5k_5alloc3vec3VechEINtB5_14WithOtherLimitINtB5_17WithOtherTrailingNtB5_14DefaultOptionsNtNtB5_8trailing13AllowTrailingENtNtB5_5limit7BoundedEECsgeVujVTwtAM_10fxfs_linux
+     0.87%     0.05%  sqlite3          [k] _RNCNvMs2_NtNtCskdHmogqv138_4fxfs12object_store18data_object_handleINtB7_16DataObjectHandleNtB9_11ObjectStoreE28new_transaction_with_options0CsgeVujVTwtAM_10fxfs_linux
+     0.85%     0.04%  sqlite3          [k] _RNvMsi_NtNtCskdHmogqv138_4fxfs12object_store9allocatorNtB5_9Allocator6record
+     0.84%     0.11%  sqlite3          [k] fxfs_dax_extents
+     0.79%     0.42%  sqlite3          [k] _RNCNvMs8_NtCskdHmogqv138_4fxfs12object_storeNtB7_11ObjectStore15new_transaction0CsgeVujVTwtAM_10fxfs_linux
+     0.78%     0.03%  sqlite3          [k] fxfs_dax_drop_pinned
+     0.75%     0.30%  sqlite3          [k] _RNvMs8_NtNtCskdHmogqv138_4fxfs8lsm_tree15skip_list_layerINtB5_13SkipListLayerNtNtNtB9_12object_store9allocator15AllocatorKeyV60NtB1f_17AllocatorValueV32E10merge_intoB9_
+     0.75%     0.00%  kworker/u8:0-fx  [k] kthread
+     0.75%     0.00%  kworker/u8:0-fx  [k] ret_from_fork
+     0.75%     0.00%  kworker/u8:0-fx  [k] ret_from_fork_asm
+     0.75%     0.00%  kworker/u8:0-fx  [k] worker_thread
+     0.74%     0.30%  sqlite3          [k] _RINvMs9_NtNtCskdHmogqv138_4fxfs8lsm_tree16persistent_layerINtB6_9SearchKeyNtNtNtBa_12object_store13object_record12ObjectKeyV54E7compareNtB1c_14ObjectValueV60NtB6_11ChunkBufferEBa_
+     0.73%     0.17%  sqlite3          [k] _RNCNvMs4_NtNtCskdHmogqv138_4fxfs8lsm_tree16persistent_layerINtB7_15KeyOnlyIteratorNtNtNtBb_12object_store13object_record12ObjectKeyV54NtB1k_14ObjectValueV60NtB7_11ChunkBufferE7advance0Bb_
+     0.73%     0.00%  kworker/u8:0-fx  [k] process_one_work
+     0.70%     0.00%  kworker/u8:0-fx  [k] fxfs_rt_work_run
+     0.70%     0.00%  sqlite3          [.] 0000000000000000
+     0.69%     0.00%  kworker/u8:0-fx  [k] _RNvMs1_NtCs8WWmacacxHO_10async_task3rawINtB5_7RawTaskINtNtCsa4Wcd7wDxpd_12futures_util9abortable9AbortableNCNvMso_NtNtCskdHmogqv138_4fxfs12object_store7journalNtB1O_7Journal10flush_task0EINtNtCs2RzmApnEpjJ_4core6result6ResultuNtBS_7AbortedENvNtCshRwtkNAyQY8_8linux_rt8executor8scheduleuE3runB1S_
+     0.68%     0.68%  sqlite3          [.] memcpy
+     0.67%     0.03%  sqlite3          [k] fxfs_dax_move
+     0.67%     0.00%  sqlite3          [k] virtio_extent_call
+     0.65%     0.00%  sqlite3          [k] fxfs_dax_unmap_range
+     0.63%     0.00%  sqlite3          [k] fxfs_device_unmap
+     0.61%     0.00%  kworker/u8:2-fx  [k] kthread
+     0.61%     0.00%  kworker/u8:2-fx  [k] process_one_work
+     0.61%     0.00%  kworker/u8:2-fx  [k] ret_from_fork
+     0.61%     0.00%  kworker/u8:2-fx  [k] ret_from_fork_asm
+     0.61%     0.00%  kworker/u8:2-fx  [k] worker_thread
+     0.61%     0.00%  sqlite3          [.] 0x0000000000000200
+     0.58%     0.52%  sqlite3          [k] _RNCNvXsj_NtNtCskdHmogqv138_4fxfs8lsm_tree15skip_list_layerINtB7_13SkipListLayerNtNtNtBb_12object_store13object_record12ObjectKeyV54NtB1h_14ObjectValueV60EINtNtB9_5types5LayerB1f_B25_E4seek0CsgeVujVTwtAM_10fxfs_linux
+     0.58%     0.07%  sqlite3          [k] _RNCNvMs2_NtNtCskdHmogqv138_4fxfs12object_store18data_object_handleINtB7_16DataObjectHandleNtB9_11ObjectStoreE15txn_update_size0CsgeVujVTwtAM_10fxfs_linux
+     0.56%     0.53%  sqlite3          [k] _RNvMsg_NtNtCskdHmogqv138_4fxfs8lsm_tree15skip_list_layerINtB5_20SkipListLayerIterMutNtNtNtB9_12object_store13object_record12ObjectKeyV54NtB1m_14ObjectValueV60E3newB9_
+     0.55%     0.01%  sqlite3          [k] fxfs_dax_map_chunk
+     0.54%     0.00%  kworker/u8:0-fx  [k] _RNCNvMs_NtNtCskdHmogqv138_4fxfs12object_store5flushNtB8_11ObjectStore14flush_unlocked0Ba_
+     0.54%     0.00%  kworker/u8:0-fx  [k] _RNCNvXsz_NtCskdHmogqv138_4fxfs12object_storeNtB7_11ObjectStoreNtNtB9_10filesystem16JournalingObject5flush0B9_
+     0.51%     0.00%  kworker/u8:1-fx  [k] kthread
+     0.51%     0.00%  kworker/u8:1-fx  [k] ret_from_fork
+     0.51%     0.00%  kworker/u8:1-fx  [k] ret_from_fork_asm
+     0.51%     0.00%  kworker/u8:1-fx  [k] worker_thread
+     0.50%     0.14%  sqlite3          [k] _RNCNvMs7_NtNtCskdHmogqv138_4fxfs8lsm_tree5mergeINtB7_14MergerIteratorNtNtNtBb_12object_store13object_record12ObjectKeyV54NtB17_14ObjectValueV60E12advance_impl0CsgeVujVTwtAM_10fxfs_linux
+     0.50%     0.00%  kworker/u8:1-fx  [k] process_one_work
+
+
+
+CALLERS sqlite-wal-normal-batch100
+    59.23%  [k] pv_native_safe_halt
+            |
+            ---arch_cpu_idle
+               default_idle_call
+               do_idle
+               cpu_startup_entry
+               |          
+               |--45.55%--start_secondary
+               |          common_startup_64
+               |          
+                --13.68%--kernel_init
+                          do_initcalls
+                          x86_64_start_reservations
+                          x86_64_start_kernel
+                          common_startup_64
+
+
+
+
+FXFS sqlite-wal-normal-batch100: device_commits 3, device_commits_ns 70608278, device_read_bytes 282624, device_reads 19, device_reads_ns 29018615, device_write_bytes 4415488, device_writes 869, device_writes_ns 1354861415, fsyncs 1, journal_compaction_ns 101313378, journal_compactions 1, seal_waits 3, seal_waits_ns 95291, seals 3, seals_ns 70691423, stores_held_by_seals 2, stores_held_by_seals_ns 70228465, window_map_bytes_evacuate 55701504, window_map_bytes_grow 81199104, window_map_bytes_reach 13824000, window_map_bytes_restage 196608, window_map_requests 438, window_maps 500, window_maps_evacuate 65, window_maps_grow 367, window_maps_ns 155978997, window_maps_reach 65, window_maps_restage 3, window_regions 16, window_regions_pruned 53, window_unmaps 365, window_unmaps_ns 66866247
+REQUESTS sqlite-wal-normal-batch100: read 0.10 (1500 µs each), write 4.34 (378 µs each), free 0.01 (1977 µs each), map 2.19 (341 µs each), unmap 1.82 (174 µs each), commit 0.01 (35052 µs each) per operation
+PROFILE sqlite-wal-normal-batch100-checkpoint
+    72.85%  [k] pv_native_safe_halt
+     2.31%  [k] _copy_to_iter
+     2.23%  [k] __pi_memcpy
+     1.46%  [k] kfree
+     1.31%  [k] _copy_from_iter
+     1.23%  [k] _RNvMs8_NtNtCskdHmogqv138_4fxfs8lsm_tree15skip_list_layerINtB5_13SkipListLayerNtNtNtB9_12object_store9allocator15AllocatorKeyV60NtB1f_17AllocatorValueV32E10merge_intoB9_
+     1.23%  [k] __kvmalloc_node_noprof
+     1.08%  [k] _RNvXsg_NtNtCskdHmogqv138_4fxfs12object_store11transactionNtB5_11TxnMutationNtNtCs2RzmApnEpjJ_4core3cmp3Ord3cmp
+     1.08%  [k] vm_notify
+
+
+
+INCLUSIVE sqlite-wal-normal-batch100-checkpoint
+    73.00%     0.00%  swapper          [k] common_startup_64
+    73.00%     0.00%  swapper          [k] cpu_startup_entry
+    73.00%     0.00%  swapper          [k] do_idle
+    72.85%    72.85%  swapper          [k] pv_native_safe_halt
+    72.85%     0.00%  swapper          [k] arch_cpu_idle
+    72.85%     0.00%  swapper          [k] default_idle_call
+    48.08%     0.00%  swapper          [k] do_initcalls
+    48.08%     0.00%  swapper          [k] kernel_init
+    48.08%     0.00%  swapper          [k] x86_64_start_kernel
+    48.08%     0.00%  swapper          [k] x86_64_start_reservations
+    24.92%     0.00%  swapper          [k] start_secondary
+    24.77%     0.00%  sqlite3          [k] do_syscall_64
+    24.77%     0.00%  sqlite3          [k] entry_SYSCALL_64_after_hwframe
+    24.77%     0.00%  sqlite3          [k] x64_sys_call
+    14.46%     0.00%  sqlite3          [k] __x64_sys_ftruncate
+    14.46%     0.00%  sqlite3          [k] do_ftruncate
+    14.46%     0.00%  sqlite3          [k] do_sys_ftruncate
+    14.46%     0.00%  sqlite3          [k] do_truncate
+    14.46%     0.00%  sqlite3          [.] ftruncate
+    14.38%     0.00%  sqlite3          [k] fxfs_vfs_resize
+    14.38%     0.00%  sqlite3          [k] fxfs_vfs_setattr
+    14.38%     0.00%  sqlite3          [k] notify_change
+    13.85%     0.00%  sqlite3          [k] _RNCNvMs2_NtCsgeVujVTwtAM_10fxfs_linux2fsNtB7_4Fxfs7setattr0B9_
+    13.85%     0.00%  sqlite3          [k] _RNCNvMs2_NtNtCskdHmogqv138_4fxfs12object_store18data_object_handleINtB7_16DataObjectHandleNtB9_11ObjectStoreE21truncate_with_options0CsgeVujVTwtAM_10fxfs_linux
+    13.85%     0.00%  sqlite3          [k] fxfs_vfs_write_attr
+    13.85%     0.00%  sqlite3          [k] fxfs_write_inode
+    11.00%     0.00%  sqlite3          [k] _RNCNvMso_NtNtCskdHmogqv138_4fxfs12object_store7journalNtB7_7Journal6commit0CsgeVujVTwtAM_10fxfs_linux
+    10.92%     0.38%  sqlite3          [k] _RNvMso_NtNtCskdHmogqv138_4fxfs12object_store7journalNtB5_7Journal25write_and_apply_mutations
+    10.38%     0.00%  sqlite3          [.] 0x00007f8544ed4341
+    10.38%     0.00%  sqlite3          [k] 0x00007f8544f10aa0
+    10.15%     0.00%  sqlite3          [k] dax_iomap_rw
+     8.38%     0.00%  sqlite3          [k] _RNCNvMso_NtNtCskdHmogqv138_4fxfs12object_store11transactionNtB7_11Transaction19commit_and_continue0CsgeVujVTwtAM_10fxfs_linux
+     8.38%     0.00%  sqlite3          [k] _RNvMs0_NtNtCskdHmogqv138_4fxfs12object_store14object_managerNtB5_13ObjectManager17apply_transaction
+     8.15%     0.08%  sqlite3          [k] _RNvMs0_NtNtCskdHmogqv138_4fxfs12object_store14object_managerNtB5_13ObjectManager14apply_mutation
+     7.85%     0.00%  sqlite3          [k] __x64_sys_pwrite64
+     7.85%     0.00%  sqlite3          [k] vfs_write
+     7.77%     0.00%  sqlite3          [k] fxfs_dax_write_iter
+     7.69%     0.38%  sqlite3          [k] _RNvXs14_NtNtCskdHmogqv138_4fxfs12object_store9allocatorNtB6_9AllocatorNtNtBa_10filesystem16JournalingObject14apply_mutation
+     6.31%     0.00%  sqlite3          [k] iomap_iter
+     6.23%     0.08%  sqlite3          [k] fxfs_dax_iomap_write.constprop.0
+     6.23%     0.00%  sqlite3          [k] fxfs_dax_iomap_begin
+     6.00%     0.08%  sqlite3          [k] _RNvMsi_NtNtCskdHmogqv138_4fxfs12object_store9allocatorNtB5_9Allocator6record
+     5.62%     1.23%  sqlite3          [k] _RNvMs8_NtNtCskdHmogqv138_4fxfs8lsm_tree15skip_list_layerINtB5_13SkipListLayerNtNtNtB9_12object_store9allocator15AllocatorKeyV60NtB1f_17AllocatorValueV32E10merge_intoB9_
+     5.31%     0.00%  sqlite3          [k] _RNCNvMs8_NtCskdHmogqv138_4fxfs12object_storeNtB7_11ObjectStore9trim_some0CsgeVujVTwtAM_10fxfs_linux
+     5.31%     0.00%  sqlite3          [k] fxfs_dax_map_write
+     3.92%     0.08%  sqlite3          [k] dax_iomap_iter
+     2.85%     0.15%  sqlite3          [k] _RNCNvMso_NtNtCskdHmogqv138_4fxfs12object_store11transactionNtB7_11Transaction6commit0CsgeVujVTwtAM_10fxfs_linux
+     2.77%     0.15%  sqlite3          [k] _RNCNvMs13_NtNtCskdHmogqv138_4fxfs12object_store9allocatorNtB8_9Allocator10deallocate0CsgeVujVTwtAM_10fxfs_linux
+     2.69%     0.38%  sqlite3          [k] _RNCNvXs8_NtNtCskdHmogqv138_4fxfs8lsm_tree5mergeINtB7_14MergerIteratorNtNtNtBb_12object_store13object_record12ObjectKeyV54NtB17_14ObjectValueV60EINtNtB9_5types13LayerIteratorB15_B1V_E7advance0CsgeVujVTwtAM_10fxfs_linux
+     2.46%     0.08%  sqlite3          [k] __x64_sys_pread64
+     2.38%     0.00%  sqlite3          [k] fxfs_dax_read_iter
+     2.38%     0.00%  sqlite3          [k] vfs_read
+     2.31%     2.31%  sqlite3          [k] _copy_to_iter
+     2.31%     0.00%  sqlite3          [k] dax_copy_to_iter
+     2.23%     2.23%  sqlite3          [k] __pi_memcpy
+     2.00%     0.08%  sqlite3          [k] _RNCNvMs_NtNtCskdHmogqv138_4fxfs8lsm_tree5mergeINtB6_18MergeLayerIteratorNtNtNtBa_12object_store13object_record12ObjectKeyV54NtB1a_14ObjectValueV60E7advance0CsgeVujVTwtAM_10fxfs_linux
+     1.92%     0.23%  sqlite3          [k] _RNvXs7_NtNtCskdHmogqv138_4fxfs8lsm_tree16persistent_layerINtB5_8IteratorNtNtNtB9_12object_store13object_record12ObjectKeyV54NtB1a_14ObjectValueV60NtB5_11ChunkBufferEINtNtB7_5types13LayerIteratorB18_B1Y_E11advance_dynB9_
+     1.77%     0.08%  sqlite3          [k] fxfs_rt_free
+     1.69%     1.46%  sqlite3          [k] kfree
+     1.69%     0.08%  sqlite3          [k] kvfree
+     1.54%     1.23%  sqlite3          [k] __kvmalloc_node_noprof
+     1.38%     0.15%  sqlite3          [k] _RNvMs3_NtNtCskdHmogqv138_4fxfs8lsm_tree16persistent_layerINtB5_15KeyOnlyIteratorNtNtNtB9_12object_store13object_record12ObjectKeyV54NtB1i_14ObjectValueV60NtB5_11ChunkBufferE9take_itemB9_
+     1.38%     0.08%  sqlite3          [k] fxfs_rt_alloc
+     1.31%     1.31%  sqlite3          [k] _copy_from_iter
+     1.31%     0.77%  sqlite3          [k] _RINvMNtNtCsjr86reHQuqA_7bincode6config3intNtB3_14VarintEncoding18deserialize_varintINtNtNtB7_2de4read8IoReaderQINtNtNtCskdHmogqv138_4fxfs8lsm_tree16persistent_layer12BufferCursorNtB1O_11ChunkBufferEEINtB5_14WithOtherLimitINtB5_17WithOtherTrailingNtB5_14DefaultOptionsNtNtB5_8trailing13AllowTrailingENtNtB5_5limit7BoundedEEB1S_
+     1.31%     0.08%  sqlite3          [k] _RINvXNvNtNtCskdHmogqv138_4fxfs12object_store11transaction1__NtB5_11MutationV60NtNtCslaoSmfS0x5U_10serde_core3ser9Serialize9serializeQINtNtCsjr86reHQuqA_7bincode3ser10SerializerQINtNtCs1R8tEabxR5k_5alloc3vec3VechEINtNtB2c_6config14WithOtherLimitINtB3r_17WithOtherTrailingNtB3r_14DefaultOptionsNtNtB3r_8trailing13AllowTrailingENtNtB3r_5limit7BoundedEEEB9_
+     1.31%     0.00%  sqlite3          [k] _RINvMNtNtCsjr86reHQuqA_7bincode6config3intNtB3_14VarintEncoding16serialize_varintQINtNtCs1R8tEabxR5k_5alloc3vec3VechEINtB5_14WithOtherLimitINtB5_17WithOtherTrailingNtB5_14DefaultOptionsNtNtB5_8trailing13AllowTrailingENtNtB5_5limit7BoundedEECsgeVujVTwtAM_10fxfs_linux
+     1.31%     0.00%  sqlite3          [k] dax_copy_from_iter
+     1.08%     1.08%  sqlite3          [k] _RNvXsg_NtNtCskdHmogqv138_4fxfs12object_store11transactionNtB5_11TxnMutationNtNtCs2RzmApnEpjJ_4core3cmp3Ord3cmp
+     1.08%     0.00%  sqlite3          [k] _RNvMse_NtNtCskdHmogqv138_4fxfs12object_store9allocatorNtB5_5Inner7recount
+     1.00%     0.23%  sqlite3          [k] _RNvMs5_NtNtNtCskdHmogqv138_4fxfs12object_store9allocator12extent_tableNtB5_11ExtentTable7recount
+     1.00%     0.00%  sqlite3          [k] _RNCNvMsn_NtNtCskdHmogqv138_4fxfs8lsm_tree5mergeINtB7_6MergerNtNtNtBb_12object_store13object_record12ObjectKeyV54NtBY_14ObjectValueV60E5query0CsgeVujVTwtAM_10fxfs_linux
+     0.92%     0.46%  sqlite3          [k] _RNvXsi_NtNtCskdHmogqv138_4fxfs8lsm_tree15skip_list_layerINtB5_20SkipListLayerIterMutNtNtNtB9_12object_store9allocator15AllocatorKeyV60NtB1m_17AllocatorValueV32EINtNtB7_5types16LayerIteratorMutB1k_B28_E6insertB9_
+     0.92%     0.00%  sqlite3          [k] _RNCNvMs7_NtNtCskdHmogqv138_4fxfs8lsm_tree5mergeINtB7_14MergerIteratorNtNtNtBb_12object_store13object_record12ObjectKeyV54NtB17_14ObjectValueV60E14push_iterators0CsgeVujVTwtAM_10fxfs_linux
+     0.85%     0.54%  sqlite3          [k] _RNvXsi_NtNtCskdHmogqv138_4fxfs8lsm_tree15skip_list_layerINtB5_20SkipListLayerIterMutNtNtNtB9_12object_store9allocator15AllocatorKeyV60NtB1m_17AllocatorValueV32EINtNtB7_5types16LayerIteratorMutB1k_B28_E6commitB9_
+     0.77%     0.00%  kworker/u8:6-fx  [k] kthread
+     0.77%     0.00%  kworker/u8:6-fx  [k] process_one_work
+     0.77%     0.00%  kworker/u8:6-fx  [k] ret_from_fork
+     0.77%     0.00%  kworker/u8:6-fx  [k] ret_from_fork_asm
+     0.77%     0.00%  kworker/u8:6-fx  [k] worker_thread
+     0.69%     0.46%  sqlite3          [k] _RNvMso_NtNtCskdHmogqv138_4fxfs12object_store11transactionNtB5_11Transaction24add_with_object_internal
+     0.69%     0.23%  sqlite3          [k] _RNCNvMsb_NtNtCskdHmogqv138_4fxfs8lsm_tree16persistent_layerINtB7_15PersistentLayerNtNtNtBb_12object_store13object_record12ObjectKeyV54NtB1k_14ObjectValueV60E4seek0Bb_
+     0.69%     0.00%  sqlite3          [k] _RNCNvXst_NtNtCskdHmogqv138_4fxfs8lsm_tree16persistent_layerINtB7_15PersistentLayerNtNtNtBb_12object_store13object_record12ObjectKeyV54NtB1k_14ObjectValueV60EINtNtB9_5types5LayerB1i_B28_E4seek0Bb_
+     0.62%     0.62%  sqlite3          [k] vm_notify
+     0.62%     0.00%  kworker/u8:6-fx  [k] fxfs_rt_work_run
+     0.62%     0.00%  sqlite3          [k] _RNCNvMs2_NtNtCskdHmogqv138_4fxfs12object_store19store_object_handleINtB7_17StoreObjectHandleNtB9_11ObjectStoreE22deallocate_old_extents0CsgeVujVTwtAM_10fxfs_linux
+     0.62%     0.00%  sqlite3          [k] fxfs_dax_map_extents
+     0.62%     0.00%  sqlite3          [k] virtio_extent_call
+     0.62%     0.00%  sqlite3          [k] virtio_extent_submit
+     0.54%     0.46%  sqlite3          [k] _RNvYQINtNtCs1R8tEabxR5k_5alloc3vec3VechENtNtCshuP6zn3CkNr_3std2io5Write9write_allCsgeVujVTwtAM_10fxfs_linux
+     0.54%     0.23%  sqlite3          [k] _RNvNtNtNtCskdHmogqv138_4fxfs12object_store9allocator5merge5merge
+     0.54%     0.00%  kworker/u8:6-fx  [k] _RNCNvMs2_NtNtCskdHmogqv138_4fxfs12object_store18data_object_handleINtB7_16DataObjectHandleNtB9_11ObjectStoreE9overwrite0Bb_
+     0.54%     0.00%  kworker/u8:6-fx  [k] _RNvMs1_NtCs8WWmacacxHO_10async_task3rawINtB5_7RawTaskINtNtCsa4Wcd7wDxpd_12futures_util9abortable9AbortableNCNvMso_NtNtCskdHmogqv138_4fxfs12object_store7journalNtB1O_7Journal10flush_task0EINtNtCs2RzmApnEpjJ_4core6result6ResultuNtBS_7AbortedENvNtCshRwtkNAyQY8_8linux_rt8executor8scheduleuE3runB1S_
+     0.54%     0.00%  sqlite3          [k] fxfs_dax_resize_end
+     0.54%     0.00%  sqlite3          [k] fxfs_dax_unmap_range
+     0.54%     0.00%  sqlite3          [k] fxfs_device_unmap
+
+
+
+CALLERS sqlite-wal-normal-batch100-checkpoint
+    72.85%  [k] pv_native_safe_halt
+            |
+            ---arch_cpu_idle
+               default_idle_call
+               do_idle
+               cpu_startup_entry
+               |          
+               |--47.92%--kernel_init
+               |          do_initcalls
+               |          x86_64_start_reservations
+               |          x86_64_start_kernel
+               |          common_startup_64
+               |          
+                --24.92%--start_secondary
+                          common_startup_64
+
+
+
+
+FXFS sqlite-wal-normal-batch100-checkpoint: device_commits 2, device_commits_ns 36501088, device_write_bytes 294912, device_writes 72, device_writes_ns 74529089, fsyncs 2, seal_waits 2, seal_waits_ns 29454, seals 2, seals_ns 36561669, window_free_bytes 100790272, window_largest_free_bytes 77594624, window_map_bytes_evacuate 31105024, window_map_bytes_grow 4063232, window_map_bytes_reach 65536, window_map_bytes_restage 131072, window_map_requests 23, window_maps 62, window_maps_evacuate 41, window_maps_grow 18, window_maps_ns 20557015, window_maps_reach 1, window_maps_restage 2, window_regions_free_bytes 17952768, window_regions_pruned 30, window_unmaps 53, window_unmaps_ns 14744232
+REQUESTS sqlite-wal-normal-batch100-checkpoint: write 72.00 (839 µs each), free 5.00 (1945 µs each), map 23.00 (884 µs each), unmap 53.00 (267 µs each) per operation
+[   38.942152] reboot: Restarting system
+[ perf record: Woken up 146 times to write data ]
+[ perf record: Captured and wrote 37.328 MB /home/ramon/run-20261024T210616Z-07519990/results/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/perf.data (277262 samples) ]

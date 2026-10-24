@@ -10,6 +10,7 @@
 # Usage: bench-linux-host.sh SOURCE RESULTS [ITERATIONS]
 #
 # FXDAX_BENCH_CASES and FXDAX_BENCH_GROUPS choose what runs (scripts/bench.sh).
+# FXDAX_GUEST_KERNEL_BUILD (release or debug) builds the guest kernel from SOURCE.
 set -euo pipefail
 repo=$(cd "${1:?source required}" && pwd)
 results=${2:?results directory required}
@@ -17,6 +18,23 @@ iterations=${3:-3}
 source "$(dirname "${BASH_SOURCE[0]}")/linux-host-setup.sh"
 host_setup
 host_tree bench-tree
+# Build the guest kernel from this source when asked, as test-linux-host.sh does.
+case ${FXDAX_GUEST_KERNEL_BUILD:-} in
+    '') ;;
+    release | debug)
+        kernel_work="$work/guest-kernel-$FXDAX_GUEST_KERNEL_BUILD"
+        kernel_debug=0
+        [[ $FXDAX_GUEST_KERNEL_BUILD == debug ]] && kernel_debug=1
+        channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' "$repo/guest/rust/rust-toolchain.toml")
+        rustup toolchain install "$channel" --component rust-src --profile minimal > /dev/null
+        env -u RUSTUP_TOOLCHAIN FXDAX_GUEST_KERNEL_WORK="$kernel_work" \
+            FXDAX_GUEST_KERNEL_DEBUG=$kernel_debug "$repo/scripts/build-guest-kernel.sh" x86_64 \
+            > "$results/guest-kernel.log" 2>&1
+        export FXDAX_GUEST_KERNEL="$kernel_work/out/x86_64/vmlinux"
+        sha256sum "$FXDAX_GUEST_KERNEL" > "$results/guest-kernel.txt"
+        ;;
+    *) echo "FXDAX_GUEST_KERNEL_BUILD is release or debug" >&2; exit 2 ;;
+esac
 # With FXDAX_BENCH_PERF=record, perf samples each case's VMM, its threads'
 # stacks (record-all: the whole host's, the extent daemon's too), and
 # perf-CASE.txt says where their time went, and perf-CASE-THREAD.txt each busy
