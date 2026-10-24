@@ -79,10 +79,12 @@ impl KeptExtents {
         self.kept.insert(extent, kept);
     }
 
-    /// The uploader needs those the commits up to `epoch` freed no more.
-    pub fn release(&mut self, epoch: u64) {
+    /// The uploader needs those the commits up to `epoch` freed no more: returns them. fxdax: so
+    /// that what they take of the host's disk counts as the branch's again (TASK-79.89).
+    pub fn release(&mut self, epoch: u64) -> Vec<ExtentId> {
+        let mut released = Vec::new();
         if epoch <= self.released_to {
-            return;
+            return released;
         }
         let first = (self.released_to + 1, ExtentId::new(0, 0));
         let last = (epoch, ExtentId::new(u64::MAX, u64::MAX));
@@ -91,9 +93,11 @@ impl KeptExtents {
             if kept.uploader {
                 kept.uploader = false;
                 self.released.insert((freed, extent));
+                released.push(extent);
             }
         }
         self.released_to = epoch;
+        released
     }
 
     /// Takes out those the commits up to `published` freed that the uploader needs no more, and

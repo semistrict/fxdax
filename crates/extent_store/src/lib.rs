@@ -111,19 +111,22 @@
 //! neither make room for nor know of. What a fork holds of the branch's segments is not the
 //! branch's to take back.
 //!
-//! **The host's disk.** fxdax: what the branch's files take of the host's disk, framed and
+//! **The host's disk.** fxdax: what the branch's own files take of the host's disk, framed and
 //! compressed as they are, is bounded apart from the room (TASK-79.89): a write is refused
 //! ([`NoSpace`]) once they would take more than three times the capacity, less what the next
 //! commit takes back of them as cleaning's copies land, a capacity's worth at most, which the
 //! writes that commit comes with may take: refused, a guest whose commits come with writes
 //! (doc-4's `WRITE_COMMIT`, a DAX guest's extents mapped writably) could never commit again, and
-//! the copies, which wait for its commit, would never land. So the files take four times the
-//! capacity at most as each write begins. An honest writer's come nowhere near it, cleaning taking
-//! back what no extent is in once it takes the capacity's worth, but for what an uploader keeps as
-//! far as it lags; a writer freeing faster than cleaning takes back, whose files only cleaning's
-//! pace bounded across commits, is held to it. Commits and cleaning's copies are never refused:
-//! the files take more by what they copy, until the commits after take it back, and by the frames
-//! of the segments closed, which say what they hold.
+//! the copies, which wait for its commit, would never land. What an uploader keeps counts not
+//! towards it, as the disk it takes: the segments it has yet to upload, and what the frees it
+//! keeps take of the files, which the upload lag bound bounds, having commits wait rather than
+//! fail. So the branch's files take three to four times the capacity at most as each write
+//! begins, and what the upload lag bound lets its uploader keep. An honest writer's own come
+//! nowhere near it, cleaning taking back what no extent is in once it takes the capacity's worth;
+//! a writer freeing faster than cleaning takes back, whose files only cleaning's pace bounded
+//! across commits, is held to it. Commits and cleaning's copies are never refused: the files take
+//! more by what they copy, until the commits after take it back, and by the frames of the segments
+//! closed, which say what they hold.
 //!
 //! **Views.** [`Store::view`] gives a [`View`] of the branch as of its latest commit, which a
 //! follower reads through ([`Store::read_view`]) while the writer goes on (doc-8, TASK-42.2): the

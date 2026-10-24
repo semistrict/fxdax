@@ -2471,6 +2471,59 @@ fn the_write_a_commit_comes_with_takes_what_the_commit_takes_back() {
     assert!(read(&store, extent(200), 0, 17 * BLOCK) == data);
 }
 
+/// fxdax: an honest guest whose uploader lags (TASK-79.89): forty commits, each of sixteen blocks
+/// in segments and an extent of eight in a file of its own, of data that does not compress, all of
+/// it freed by the next, its extents holding a third of its capacity at most. The uploader keeps
+/// what the frees let go of until it releases their commits, and the segments until it uploads
+/// them, if it does as it goes (`uploads`): the branch's files take ten times the capacity, which
+/// the upload lag bound bounds, making commits wait (fxdax's `max_lag_bytes`), and none of it
+/// counts towards the bound on what the branch's own take. Once the uploader catches up, the
+/// next commit lets it all go.
+fn uploader_lagging(uploads: bool) {
+    let capacity = 64 * BLOCK as u64;
+    let dir = MemDir::new();
+    let store = create(dir.clone(), capacity);
+    assert!(store.upload(WRITER, 0).unwrap());
+    for cycle in 0..40 {
+        let first = 17 * cycle;
+        for sequence in first..first + 16 {
+            store.write(extent(sequence), 0, &noise(sequence, BLOCK)).unwrap();
+        }
+        store.write(extent(first + 16), 0, &noise(first + 16, 8 * BLOCK)).unwrap();
+        store.commit(None).unwrap();
+        for sequence in first..first + 17 {
+            store.free(extent(sequence)).unwrap();
+        }
+        store.commit(None).unwrap();
+        if uploads {
+            for closed in store.closed(usize::MAX).unwrap() {
+                store.uploaded(closed.number).unwrap();
+            }
+        }
+    }
+    let files = data_files(&dir);
+    assert!(files > 10 * capacity, "{files} bytes of files");
+    for closed in store.closed(usize::MAX).unwrap() {
+        store.uploaded(closed.number).unwrap();
+    }
+    store.release(store.epoch().unwrap()).unwrap();
+    store.commit(None).unwrap();
+    assert_eq!(data_files(&dir), 0);
+}
+
+/// fxdax: `uploader_lagging`, its uploader uploading nothing, nor releasing anything (TASK-79.89).
+#[test]
+fn what_an_uploader_keeps_counts_not_towards_the_bound() {
+    uploader_lagging(false);
+}
+
+/// fxdax: `uploader_lagging`, its uploader uploading the segments as the store closes them, and
+/// releasing nothing: the frees it keeps alone hold them (TASK-79.89).
+#[test]
+fn frees_an_uploader_keeps_count_not_towards_the_bound() {
+    uploader_lagging(true);
+}
+
 /// A fork made and deleted holds the branch's segments no more: what the branch frees in them
 /// after is dead space, which counts as the branch commits, and which cleaning is due for, though
 /// nothing cleaned first (TASK-79.2).

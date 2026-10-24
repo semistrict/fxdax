@@ -1051,6 +1051,11 @@ impl<D: Dir> Store<D> {
             state.segments.displace(extent, &entry.data);
             let uploader = state.uploads.is_some() && rules().keep_frees;
             let freed = state.epoch + 1;
+            // fxdax: what the uploader keeps of it takes none of the bound on the branch's files
+            // (TASK-79.89).
+            if uploader {
+                state.keep_for_uploader(extent, &entry, true);
+            }
             state.kept.insert(extent, Kept { entry, freed, uploader });
             return Ok(());
         }
@@ -1124,7 +1129,7 @@ impl<D: Dir> Store<D> {
         let state = &mut *state;
         let Some(uploads) = &mut state.uploads else { return Ok(()) };
         uploads.release(epoch);
-        state.kept.release(epoch);
+        state.release_kept(epoch);
         state.trim_kept(&self.views.keeping(), state.epoch);
         self.changed(state);
         Ok(())
@@ -1463,6 +1468,9 @@ impl<D: Dir> Store<D> {
         self.lineage.claim(self.branch, [FileKey::Segment(state.segments.open_segment())]);
         if let Some(uploads) = &mut state.uploads {
             uploads.closed_segment(unframed.number().number, unframed.footer.clone());
+            // fxdax: what its file takes is the uploader's to keep until it has uploaded it, which
+            // the upload lag bound bounds (TASK-79.89).
+            state.segments.uploading(unframed.number(), true);
         }
         Ok(unframed)
     }
@@ -1586,8 +1594,12 @@ impl<D: Dir> Store<D> {
     /// fxdax: segment `number`, which [`Store::closed`] gave, is uploaded: it may go once no
     /// extent is in it.
     pub fn uploaded(&self, number: u64) -> Result<(), Error> {
-        if let Some(uploads) = &mut self.state()?.uploads {
+        let mut state = self.state()?;
+        let state = &mut *state;
+        if let Some(uploads) = &mut state.uploads {
             uploads.uploaded(number);
+            // fxdax: what its file takes is the branch's again, until it goes (TASK-79.89).
+            state.segments.uploading(SegmentId { branch: self.branch, number }, false);
         }
         Ok(())
     }

@@ -68,12 +68,31 @@ struct Segment<F> {
     /// fxdax: what each part of its data holds, and takes of the host's disk once framed, if it
     /// is the branch's own (TASK-79.2).
     parts: PartCounts,
+    /// fxdax: the bytes of its data, of extents freed, that an uploader keeps until it releases
+    /// the commits that freed them, if it is the branch's own; and whether the uploader keeps it,
+    /// closed, until it has uploaded it (TASK-79.89).
+    for_uploader: u64,
+    uploading: bool,
 }
 
 impl<F> Segment<F> {
     fn new(phase: Phase<F>, live: u64) -> Self {
         let (sealed, parts) = (HashSet::new(), PartCounts::default());
-        Self { phase, len: 0, size: 0, live, writers: 0, pending: 0, shared: false, sealed, parts }
+        let (len, size, writers, pending, shared) = (0, 0, 0, 0, false);
+        let (for_uploader, uploading) = (0, false);
+        Self {
+            phase,
+            len,
+            size,
+            live,
+            writers,
+            pending,
+            shared,
+            sealed,
+            parts,
+            for_uploader,
+            uploading,
+        }
     }
 
     /// Counts the `len` bytes at `at` of its data as extents' data's or a write's in progress, if
@@ -123,14 +142,30 @@ impl<F> Segment<F> {
         }
     }
 
-    /// fxdax: the bytes of the host's disk its file takes that the branch alone holds: none of
-    /// another branch's, nor of one another may hold extents in, which is that branch's to let go
-    /// of (TASK-79.89).
+    /// fxdax: the bytes of the host's disk its data an uploader keeps of extents freed takes
+    /// (TASK-79.89): once it closed, as much of each part's stored bytes as that data is of the
+    /// part's ([`PartCounts`]); open, being framed or set aside, as many as it is.
+    fn for_uploader_on_disk(&self) -> u64 {
+        match self.phase {
+            Phase::Closed { .. } => self.parts.for_uploader_on_disk,
+            _ => self.for_uploader,
+        }
+    }
+
+    /// fxdax: the bytes of the host's disk its file takes that the branch alone holds, and that its
+    /// uploader, if any, does not keep (TASK-79.89): none of another branch's, nor of one another
+    /// may hold extents in, which is that branch's to let go of; nor of one the uploader keeps
+    /// until it has uploaded it; nor what it keeps of extents freed. What the uploader keeps the
+    /// upload lag bound bounds, which has commits wait for the uploader, rather than fail.
     fn file_bytes(&self) -> u64 {
         match self.phase {
             Phase::Inherited => 0,
-            _ if self.shared => 0,
-            _ => self.size,
+            _ if self.shared || self.uploading => 0,
+            _ => {
+                let kept = self.for_uploader_on_disk();
+                debug_assert!(kept <= self.size, "what the uploader keeps of it is in its file");
+                self.size.saturating_sub(kept)
+            }
         }
     }
 
@@ -164,6 +199,10 @@ struct PartCounts {
     stored: Vec<u64>,
     /// What the parts' data no extent is in takes of their stored bytes, in all.
     dead_on_disk: u64,
+    /// fxdax: the bytes of each part that extents freed take, which an uploader keeps; and what
+    /// they take of the parts' stored bytes, in all (TASK-79.89).
+    for_uploader: Vec<u64>,
+    for_uploader_on_disk: u64,
 }
 
 impl PartCounts {
@@ -181,6 +220,22 @@ impl PartCounts {
         }
     }
 
+    /// fxdax: counts the `len` bytes at `at` of the segment's `data` bytes of data, of extents
+    /// freed, as an uploader's to keep, if `kept`, or no more (TASK-79.89).
+    fn count_for_uploader(&mut self, data: u64, at: u64, len: u64, kept: bool) {
+        let end = at + len;
+        let parts = data.div_ceil(PART) as usize;
+        self.for_uploader.resize(self.for_uploader.len().max(parts), 0);
+        for part in at / PART..end.div_ceil(PART) {
+            let bytes = end.min((part + 1) * PART) - at.max(part * PART);
+            let before = self.for_uploader_on_disk_of(data, part);
+            let count = &mut self.for_uploader[part as usize];
+            *count = if kept { *count + bytes } else { *count - bytes };
+            self.for_uploader_on_disk =
+                self.for_uploader_on_disk - before + self.for_uploader_on_disk_of(data, part);
+        }
+    }
+
     /// The segment of `data` bytes of data is framed: `stored` says where in its file each part is
     /// stored, the parts taking its first `stored_len` bytes.
     fn framed(&mut self, data: u64, stored: &[Stored], stored_len: u64) {
@@ -189,8 +244,21 @@ impl PartCounts {
         self.stored = stored.iter().zip(ends).map(|(part, end)| end - part.offset).collect();
         debug_assert!(self.taken.len() <= stored.len(), "no part counted past the data");
         self.taken.resize(stored.len(), 0);
+        self.for_uploader.resize(stored.len(), 0);
         let parts = 0..stored.len() as u64;
-        self.dead_on_disk = parts.map(|part| self.dead_on_disk_of(data, part)).sum();
+        self.dead_on_disk = parts.clone().map(|part| self.dead_on_disk_of(data, part)).sum();
+        self.for_uploader_on_disk =
+            parts.map(|part| self.for_uploader_on_disk_of(data, part)).sum();
+    }
+
+    /// fxdax: what the data of part `part` that an uploader keeps takes of the part's stored bytes,
+    /// of the segment's `data` bytes: as much as it is of the part's data, rounded down, so that it
+    /// takes no more than the part does; none before the segment is framed (TASK-79.89).
+    fn for_uploader_on_disk_of(&self, data: u64, part: u64) -> u64 {
+        let Some(&stored) = self.stored.get(part as usize) else { return 0 };
+        let len = PART.min(data - part * PART);
+        let kept = self.for_uploader[part as usize];
+        (u128::from(kept) * u128::from(stored) / u128::from(len)) as u64
     }
 
     /// What the data of part `part` that no extent is in takes of the part's stored bytes, of the
@@ -484,6 +552,33 @@ impl<F: File> Segments<F> {
         moved.iter().filter_map(emptied).sum()
     }
 
+    /// fxdax: `piece`'s data, of an extent freed, is for the uploader to keep, if `kept`, or no
+    /// more, until it releases the commit that freed it: what it takes of the host's disk counts
+    /// not towards what the branch's files take, if the segment is the branch's own (TASK-79.89).
+    pub fn keep_for_uploader(&mut self, piece: &Piece, kept: bool) {
+        if piece.segment.branch != self.open.branch {
+            return;
+        }
+        self.change(piece.segment, |segment| {
+            let len = segment.len;
+            segment.parts.count_for_uploader(len, piece.offset, piece.len, kept);
+            segment.for_uploader = if kept {
+                segment.for_uploader + piece.len
+            } else {
+                segment.for_uploader - piece.len
+            };
+        });
+    }
+
+    /// fxdax: segment `number`, the branch's own, closed, is for the uploader to keep until it has
+    /// uploaded it, if `uploading`, or no more: what its file takes of the host's disk counts not
+    /// towards what the branch's files take meanwhile (TASK-79.89).
+    pub fn uploading(&mut self, number: SegmentId, uploading: bool) {
+        if self.tracked.contains_key(&number) {
+            self.change(number, |segment| segment.uploading = uploading);
+        }
+    }
+
     /// fxdax: `extent`, sealed, holds `data` from now on: in the branch's own segments, if in any,
     /// which cleaning may copy it out of (TASK-79.2).
     pub fn place(&mut self, extent: ExtentId, data: &Data) {
@@ -751,6 +846,7 @@ impl<F: File> Segments<F> {
         for number in dead {
             self.empty.remove(&number);
             let segment = self.tracked.remove(&number).unwrap();
+            debug_assert_eq!(segment.for_uploader, 0, "{number:?}, reaped, kept for the uploader");
             self.dead -= segment.dead();
             self.dead_on_disk -= segment.dead_on_disk();
             self.file_bytes -= segment.file_bytes();

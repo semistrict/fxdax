@@ -25,7 +25,7 @@ use crate::sync::rules;
 use crate::uploads::Uploads;
 use crate::views::{Keeping, NotHeld, Sealed};
 use anyhow::{Error, bail};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use storage_device::{ExtentId, NoExtent};
 
@@ -179,12 +179,37 @@ impl<F: File> State<F> {
         self.space.check_files(self.file_bytes() + adds, || self.taken_back())
     }
 
-    /// fxdax: the bytes of the host's disk the branch's files take that it alone holds
-    /// (TASK-79.89): its segments', but those another branch may hold extents in, which are that
-    /// branch's to let go of ([`Segments::file_bytes`]); its extents' own files; and the raw files
-    /// of those open, written in place.
+    /// fxdax: the bytes of the host's disk the branch's files take that it alone holds, but what
+    /// its uploader keeps (TASK-79.89): its segments', but those another branch may hold extents
+    /// in, which are that branch's to let go of ([`Segments::file_bytes`]); its extents' own files;
+    /// and the raw files of those open, written in place.
     pub fn file_bytes(&self) -> u64 {
-        self.segments.file_bytes() + self.own_files.bytes() + self.uncommitted.raw_bytes()
+        let own_files = self.own_files.bytes() - self.own_files.for_uploader();
+        self.segments.file_bytes() + own_files + self.uncommitted.raw_bytes()
+    }
+
+    /// fxdax: `entry`'s data, of an extent freed, is for the uploader to keep, if `kept`, or no
+    /// more: what it takes of the host's disk counts not towards what the branch's files take
+    /// meanwhile, as the upload lag bound bounds it (TASK-79.89).
+    pub fn keep_for_uploader(&mut self, extent: ExtentId, entry: &Extent, kept: bool) {
+        match &entry.data {
+            Data::Pieces(pieces) => {
+                for piece in pieces {
+                    self.segments.keep_for_uploader(piece, kept);
+                }
+            }
+            Data::Own => self.own_files.keep_for_uploader(extent, kept),
+            Data::Remote => {}
+        }
+    }
+
+    /// fxdax: the uploader needs the frees of the commits up to `epoch` no more: what their data
+    /// takes of the host's disk is the branch's again, until trims let it go (TASK-79.89).
+    pub fn release_kept(&mut self, epoch: u64) {
+        for extent in self.kept.release(epoch) {
+            let entry = self.kept.get(&extent).expect("an extent released is kept").entry.clone();
+            self.keep_for_uploader(extent, &entry, false);
+        }
     }
 
     /// fxdax: the bytes of the host's disk the next commit takes back of the branch's files as
@@ -247,24 +272,29 @@ pub(crate) const FILES_PER_CAPACITY: u64 = 3;
 /// could neither make nor know to. Counted as used past the capacity's worth, it found a guest's
 /// store full with a tenth of it used (`ENOSPC`), which the guest's filesystem did not survive.
 ///
-/// fxdax: what the branch's files take of the host's disk is bounded apart from the room
-/// (TASK-79.89): a write is refused once the files ([`State::file_bytes`]), with what it adds to
-/// them, would take more than [`FILES_PER_CAPACITY`] times the capacity, counted as they take the
-/// disk, framed and compressed, less what the next commit takes back of them as cleaning's copies
-/// land ([`State::taken_back`]), a capacity's worth at most. Bounded by cleaning's pace alone
-/// across commits, they grew without bound under a writer freeing faster than cleaning took back.
-/// An honest writer's files come nowhere near it: its extents hold its capacity at most, and what
-/// no extent is in, about as much again, cleaning being due once it takes the capacity's worth
-/// ([`State::garbage_past_capacity`]); but for what an uploader keeps of its frees, and of its
-/// segments, as far as it lags, which counts too. What the next commit takes back counts as taken
-/// back for the writes it comes with, which the bound would refuse otherwise, and so the commit:
-/// the copies, which wait for it, would never land, and the store would stay at the bound for
-/// good. A capacity's worth is the most those writes need, as the room bounds them; and what
-/// bounds the files should the copies not land, a segment closed between commits taking them,
-/// which no footer names as their extents' places: four times the capacity, as each write begins.
-/// Commits, and cleaning's copies, are never refused: the files take more by what cleaning copies,
-/// until the commits after take it back, by what a commit writes again sealing the extents written
-/// in pieces, and by the frames of the segments it closes, which say what they hold.
+/// fxdax: what the branch's own files take of the host's disk is bounded apart from the room
+/// (TASK-79.89): a write is refused once they ([`State::file_bytes`]), with what it adds to them,
+/// would take more than [`FILES_PER_CAPACITY`] times the capacity, counted as they take the disk,
+/// framed and compressed, less what the next commit takes back of them as cleaning's copies land
+/// ([`State::taken_back`]), a capacity's worth at most. Bounded by cleaning's pace alone across
+/// commits, they grew without bound under a writer freeing faster than cleaning took back. What
+/// an uploader keeps counts not towards it, as the disk it takes: the segments it has yet to
+/// upload, and of extents freed, what their data takes of the segments' files and their own, until
+/// it releases the commits that freed them. The upload lag bound bounds that, having commits wait
+/// for the uploader rather than fail: counted, it found an honest guest's writes refused as its
+/// uploader lagged, its extents holding a third of its capacity. An honest writer's own files come
+/// nowhere near the bound: its extents hold its capacity at most, and what no extent is in, about
+/// as much again, cleaning being due once it takes the capacity's worth
+/// ([`State::garbage_past_capacity`]). What the next commit takes back counts as taken back for
+/// the writes it comes with, which the bound would refuse otherwise, and so the commit: the
+/// copies, which wait for it, would never land, and the store would stay at the bound for good. A
+/// capacity's worth is the most those writes need, as the room bounds them; and what bounds the
+/// files should the copies not land, a segment closed between commits taking them, which no footer
+/// names as their extents' places. So the branch's files take three to four times the capacity at
+/// most, as each write begins, and what the upload lag bound lets its uploader keep. Commits, and
+/// cleaning's copies, are never refused: the files take more by what cleaning copies, until the
+/// commits after take it back, by what a commit writes again sealing the extents written in
+/// pieces, and by the frames of the segments it closes, which say what they hold.
 pub(crate) struct Space {
     capacity: u64,
     /// The bytes extents hold.
@@ -633,6 +663,10 @@ pub(crate) struct OwnFiles<F> {
     /// fxdax: what they take in all, kept as `sizes` changes, so that a write may count it as it
     /// begins, not going through every file (TASK-79.89).
     bytes: u64,
+    /// fxdax: those of extents freed that an uploader keeps, until it releases the commits that
+    /// freed them, and what they take in all (TASK-79.89).
+    for_uploader: HashSet<ExtentId>,
+    for_uploader_bytes: u64,
     /// fxdax: in order, which their flush syncs them in, rather than the order of a map that
     /// differs from one run to the next (TASK-79.79).
     unsynced: BTreeMap<ExtentId, Arc<F>>,
@@ -646,7 +680,8 @@ impl<F: File> OwnFiles<F> {
     pub fn new(branch: u64, sizes: HashMap<ExtentId, u64>, limit: usize) -> Self {
         let (dir, bytes) = (branch_dir(EXTENTS, branch), sizes.values().sum());
         let (open, unsynced) = (Files::new(limit), BTreeMap::new());
-        Self { open, sizes, bytes, unsynced, dir, written: false }
+        let (for_uploader, for_uploader_bytes) = (HashSet::new(), 0);
+        Self { open, sizes, bytes, for_uploader, for_uploader_bytes, unsynced, dir, written: false }
     }
 
     /// `extent`'s file, opened in `dir` if it isn't.
@@ -675,7 +710,11 @@ impl<F: File> OwnFiles<F> {
     /// `extent`'s file goes: the extent was freed.
     pub fn forget(&mut self, extent: ExtentId) {
         self.open.remove(extent);
-        self.bytes -= self.sizes.remove(&extent).unwrap_or(0);
+        let size = self.sizes.remove(&extent).unwrap_or(0);
+        self.bytes -= size;
+        if self.for_uploader.remove(&extent) {
+            self.for_uploader_bytes -= size;
+        }
         self.unsynced.remove(&extent);
     }
 
@@ -693,6 +732,23 @@ impl<F: File> OwnFiles<F> {
     /// The bytes they take.
     pub fn bytes(&self) -> u64 {
         self.bytes
+    }
+
+    /// fxdax: `extent`'s file, of an extent freed, is for the uploader to keep, if `kept`, or no
+    /// more (TASK-79.89).
+    pub fn keep_for_uploader(&mut self, extent: ExtentId, kept: bool) {
+        let Some(&size) = self.sizes.get(&extent) else { return };
+        let changed =
+            if kept { self.for_uploader.insert(extent) } else { self.for_uploader.remove(&extent) };
+        if changed {
+            self.for_uploader_bytes =
+                if kept { self.for_uploader_bytes + size } else { self.for_uploader_bytes - size };
+        }
+    }
+
+    /// fxdax: the bytes of those an uploader keeps (TASK-79.89).
+    pub fn for_uploader(&self) -> u64 {
+        self.for_uploader_bytes
     }
 }
 
