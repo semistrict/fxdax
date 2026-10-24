@@ -1635,7 +1635,9 @@ impl ExtentStore {
         };
         let open_here = self.open.lock().unwrap().contains_key(&extent);
         let stored = self.store.extent(extent.into()).map(|stored| {
-            stored.map(|(len, open)| format!("{len:#x} bytes, {}", if open { "open" } else { "sealed" }))
+            stored.map(|(len, open)| {
+                format!("{len:#x} bytes, {}", if open { "open" } else { "sealed" })
+            })
         });
         format!(
             "{extent:?} from {offset:#x}, {:#x} bytes from {:#x}, {}; {} in the window; in the \

@@ -22,6 +22,10 @@ if [ ! -f "$zip" ]; then
 fi
 echo "$SHA256  $zip" | shasum -a 256 -c - >/dev/null
 
+# glibc's fatal errors (a heap found corrupted, a stack smashed) on standard error, which the tests
+# keep, rather than the terminal they have none of: an abort said nothing else (TASK-100).
+export LIBC_FATAL_STDERR_=1
+
 # Clippy's rules the code keeps (clippy.toml): no blocking call in async code unless allowed, with
 # why (TASK-44.20). First, as it fails at once.
 UCD_ZIP="$zip" cargo clippy --manifest-path "$root/Cargo.toml" --workspace --tests -- \

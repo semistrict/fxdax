@@ -13,6 +13,10 @@ pub mod daemon;
 /// Makes this process a host of the multi-node system, as an extent daemon's must be: its stores'
 /// branches in a bucket in its memory, as of placement 1, unless the test named others.
 pub fn host() {
+    // The daemon's log, and the VM processes', on standard error, which a test that fails shows.
+    if log::set_logger(&Stderr).is_ok() {
+        log::set_max_level(log::LevelFilter::Info);
+    }
     for (name, value) in
         [("FXDAX_EXTENTD_REMOTE", "memory:///branches"), ("FXDAX_EXTENTD_TOKEN", "1")]
     {
@@ -22,6 +26,23 @@ pub fn host() {
             unsafe { std::env::set_var(name, value) };
         }
     }
+}
+
+/// A log on standard error, of what is as grave as information or more.
+struct Stderr;
+
+impl log::Log for Stderr {
+    fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+        metadata.level() <= log::Level::Info
+    }
+
+    fn log(&self, record: &log::Record<'_>) {
+        if self.enabled(record.metadata()) {
+            eprintln!("{} {}: {}", record.level(), record.target(), record.args());
+        }
+    }
+
+    fn flush(&self) {}
 }
 
 use fxdax::{ExtentId, RemoteExtentStore, VolatileSlice};

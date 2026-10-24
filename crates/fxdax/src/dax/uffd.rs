@@ -674,7 +674,12 @@ impl<H: HostMemory> UffdSecondStage<H> {
             resolved => resolved,
         };
         if let Err(err) = resolved {
-            log::error!("unresolved DAX window fault at offset {offset:#x} ({access:?}): {err}");
+            let why =
+                format!("unresolved DAX window fault at offset {offset:#x} ({access:?}): {err}");
+            log::error!("{why}");
+            // fxdax: on standard error too, which a process without a logger, a test's, keeps:
+            // its abort said nothing else (TASK-100).
+            eprintln!("fxdax: {why}");
             std::process::abort();
         }
         self.host.wake(addr, page_size);
