@@ -1976,11 +1976,11 @@ fn durable_commits_keep_the_open_segments_pages_cached() {
 /// aside, and open extents' own, through the host's page cache, which holds what was just written
 /// to them: a read bypassing it writes the dirty pages it reads back first, waiting for the host's
 /// disk. Under pgbench's load, a commit copying the extents written in pieces waited about 4 ms a
-/// MiB for it, and up to 400 ms, under the store's state, holding every write back; and the
-/// uploader's closings, framing their segments so, came fewer and slower (TASK-91.17,
-/// TASK-79.93). Here a commit copies two extents written in pieces, one after the other's, frames
-/// the segment it closes, and frames an extent written in a file of its own; then reopened, the
-/// branch frames the open segment left raw. Each reads its raw file through the cache.
+/// MiB for it, and up to 400 ms, under the store's state, holding every write back; and a closed
+/// segment's framing took a median 100-190 ms to read it (TASK-91.17, TASK-79.93). Here a commit
+/// copies two extents written in pieces, one after the other's, frames the segment it closes, and
+/// frames an extent written in a file of its own; then reopened, the branch frames the open
+/// segment left raw. Each reads its raw file through the cache.
 #[test]
 fn raw_files_are_read_through_the_page_cache() {
     let dir = Counting::new();

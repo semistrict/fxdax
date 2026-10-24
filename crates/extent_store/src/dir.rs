@@ -17,13 +17,16 @@ pub trait File: Send + Sync + 'static {
     /// Reads `buf.len()` bytes at `offset`. Bytes past the file's end read as zeros.
     fn read_at(&self, buf: &mut [u8], offset: u64) -> io::Result<()>;
 
-    /// fxdax: reads as [`File::read_at`] does, but through the host's page cache, if reads bypass
-    /// it: for a raw file, an open segment's, one's being framed or set aside, an open extent's
-    /// own, what the store reads of which it wrote lately, through that cache, which holds it
-    /// still. A read bypassing the cache writes those pages back first, waiting for the host's
-    /// disk: under pgbench's load, a commit copying the extents written in pieces waited about
-    /// 4 ms a MiB for it, and up to 400 ms, holding every write back, and framing each closed
-    /// segment of 32 MiB took 70-400 ms (TASK-91.17, TASK-79.93).
+    /// fxdax: reads as [`File::read_at`] does, but, on Linux, through the host's page cache, which
+    /// `read_at` bypasses. The store reads its raw files so: the open segment's, those of segments
+    /// being framed or set aside, and open extents' own. It wrote them lately, through the cache,
+    /// which holds their pages still, dirty or not yet let go; a read bypassing the cache writes
+    /// back the dirty ones it reads first, waiting for the host's disk. Under pgbench's load, a
+    /// commit copying the extents written in pieces waited about 4 ms a MiB for it, up to 400 ms,
+    /// holding every write back; and a closed segment's framing, reading its 20-35 MiB, took a
+    /// median 100-190 ms to read them, 6-19 ms through the cache (TASK-91.17, TASK-79.93). On
+    /// macOS this reads around the cache as `read_at` does: a file's two descriptors there share
+    /// `F_NOCACHE`.
     fn read_cached(&self, buf: &mut [u8], offset: u64) -> io::Result<()> {
         self.read_at(buf, offset)
     }
@@ -116,8 +119,7 @@ const TAKE_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 ///
 /// Extents' files are read bypassing the host's page cache where its file system allows
 /// (`O_DIRECT` on Linux, `F_NOCACHE` on macOS), so their reads must be in buffers aligned to
-/// blocks; fxdax: but where the store reads raw files, written lately, through it
-/// ([`File::read_cached`]). fxdax: on Linux, they are written through it, so that a write doesn't wait for the
+/// blocks. fxdax: on Linux, they are written through it, so that a write doesn't wait for the
 /// host's disk, which a commit doesn't need (`Store::flush` makes it durable), and its pages leave
 /// the cache once synced: written directly, every `WRITE`, and every commit of an extent written
 /// through a DAX window, waited half a millisecond for a network disk. But the open segment's raw
@@ -140,6 +142,10 @@ const TAKE_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 /// record, an index's first checkpoint. A plain `fsync` would leave the order to the drive as well,
 /// so that a power loss could keep a commit's record, synced after its data, without the data.
 /// macOS is a development host: stores run on Linux.
+///
+/// fxdax: raw files, which the store reads soon after writing them, are read through the cache on
+/// Linux ([`File::read_cached`]): a read bypassing it would write back the dirty pages it reads
+/// first, waiting for the host's disk (TASK-91.17, TASK-79.93).
 pub struct HostDir {
     path: PathBuf,
     /// Whether extents' files are to bypass the page cache.
@@ -176,7 +182,7 @@ impl HostDir {
         let written = file.try_clone()?;
         // A file descriptor of its own, whose flags the clone doesn't share. On macOS, the clone
         // shares `F_NOCACHE`: its writes bypass the cache too. fxdax: and its reads, which raw
-        // files' are through it (`File::read_cached`).
+        // files' are (`File::read_cached`), so that only on Linux they go through the cache.
         let path = format!("/proc/self/fd/{}", written.as_raw_fd());
         let written = if cfg!(target_os = "linux") {
             OpenOptions::new().read(true).write(true).custom_flags(libc::O_CLOEXEC).open(path)?
