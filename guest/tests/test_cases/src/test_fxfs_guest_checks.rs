@@ -1671,6 +1671,39 @@ mod guest {
         fs::remove_file(&name).unwrap();
     }
 
+    /// fxdax: a file's pages each written once and fsynced, as a database's rows a run updates
+    /// once and its history it appends: each write moves its page to the staging extent's region,
+    /// a new one after every seal, which the page, written no more, kept, until the window's
+    /// regions filled and every write mapped its page alone (TASK-91.10). After each seal its
+    /// pages move to the file's range's own space, and the regions they emptied go.
+    fn test_regions_evacuated() {
+        use std::os::unix::fs::FileExt;
+        const PAGE: usize = 4096;
+        const ROUNDS: usize = 400;
+        let name = path("regions-evacuated");
+        fs::write(&name, vec![1; 4 << 20]).unwrap();
+        let file = fs::OpenOptions::new().read(true).write(true).open(&name).unwrap();
+        file.sync_all().unwrap();
+        let before = stats();
+        let mut expected = vec![1; 4 << 20];
+        for round in 0..ROUNDS {
+            let at = round * 2 * PAGE;
+            let data = vec![(round % 251) as u8 + 2; PAGE];
+            file.write_all_at(&data, at as u64).unwrap();
+            expected[at..at + PAGE].copy_from_slice(&data);
+            file.sync_data().unwrap();
+        }
+        let after = stats();
+        let regions = after["window_regions"] as i64 - before["window_regions"] as i64;
+        assert!(regions <= 32, "{regions} regions more after {ROUNDS} fsyncs: {after:?}");
+        let evacuated = after["window_maps_evacuate"] - before["window_maps_evacuate"];
+        assert!(evacuated > 0, "no pages evacuated: {after:?}");
+        drop(file);
+        evict(&name);
+        assert!(fs::read(&name).unwrap() == expected, "the file differs from what was written");
+        fs::remove_file(&name).unwrap();
+    }
+
     /// File handles: name_to_handle_at, and open_by_handle_at with the inode cached and evicted.
     fn test_file_handles() {
         fs::write(path("handled"), b"by handle").unwrap();
@@ -1751,6 +1784,7 @@ mod guest {
             ];
             if dax {
                 tests.push(("regions_pruned", &test_regions_pruned));
+                tests.push(("regions_evacuated", &test_regions_evacuated));
             }
             // Files on DAX are in no page cache.
             if !dax {

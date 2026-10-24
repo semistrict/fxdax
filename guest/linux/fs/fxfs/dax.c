@@ -118,6 +118,11 @@ struct fxfs_dax_region {
 	atomic_t growing;
 	/* The furthest page writes reached, which the region grows ahead of. */
 	atomic_long_t reached;
+	/*
+	 * fxdax: whether a seal sealed it writable, a staging extent's: the pages ranges moved there
+	 * move to the ranges' own space after (fxfs_dax_evacuate_work). Set under the regions lock.
+	 */
+	bool evacuate;
 };
 
 /* A file's ranges of the window, which outlive its inodes. */
@@ -133,6 +138,12 @@ struct fxfs_dax_file {
 	struct xarray ranges;
 	/* On the filesystem's list of files with writable window pages, if it has some. */
 	struct list_head writable;
+	/*
+	 * fxdax: on the filesystem's list of files whose pages a seal sealed in staging extents'
+	 * regions, which hold a reference to them (fxfs_dax_evacuate_work). Guarded by its writable
+	 * lock.
+	 */
+	struct list_head evacuating;
 };
 
 /* A range of the window. */
@@ -179,17 +190,21 @@ struct fxfs_dax_range {
 
 /*
  * fxdax: why the window maps: a region as far as a write or a fault needs, ahead of the writes
- * in the background, the staging extent's spare, or a piece in a range's own space (TASK-91.4).
+ * in the background, the staging extent's spare, a piece in a range's own space (TASK-91.4), or
+ * pages a seal sealed in a staging extent's region in their ranges' own space (TASK-91.10).
  */
 enum fxfs_dax_why {
 	FXFS_DAX_REACH,
 	FXFS_DAX_GROW,
 	FXFS_DAX_RESTAGE,
 	FXFS_DAX_RANGE,
+	FXFS_DAX_EVACUATE,
 	FXFS_DAX_WHYS,
 };
 
-static const char *const fxfs_dax_whys[FXFS_DAX_WHYS] = { "reach", "grow", "restage", "range" };
+static const char *const fxfs_dax_whys[FXFS_DAX_WHYS] = {
+	"reach", "grow", "restage", "range", "evacuate",
+};
 
 struct fxfs_dax {
 	struct super_block *sb;
@@ -241,6 +256,12 @@ struct fxfs_dax {
 	 */
 	struct fxfs_dax_region *spare;
 	struct work_struct restage;
+	/*
+	 * fxdax: the files whose pages seals sealed in staging extents' regions, which move to their
+	 * ranges' own space once a seal ends (fxfs_dax_evacuate_work). Guarded by the writable lock.
+	 */
+	struct list_head evacuating;
+	struct work_struct evacuate;
 	/* Whether seals restage: until the filesystem unmounts. */
 	bool restaging;
 };
@@ -253,6 +274,7 @@ static int fxfs_dax_reach(struct fxfs_dax *dax, struct fxfs_dax_region *region, 
 static void fxfs_dax_put_region(struct fxfs_dax *dax, struct fxfs_dax_region *region);
 static void fxfs_dax_grow(struct work_struct *work);
 static void fxfs_dax_restage_work(struct work_struct *work);
+static void fxfs_dax_evacuate_work(struct work_struct *work);
 static int fxfs_dax_move(struct fxfs_dax *dax, struct fxfs_dax_range *range,
 			 const struct fxfs_dax_extent *e, unsigned long page, unsigned long pages);
 
@@ -2148,6 +2170,7 @@ static void fxfs_dax_seal(void *arg)
 	spin_lock(&dax->regions_lock);
 	list_for_each_entry_safe(region, next_region, &dax->writable_regions, writable_list) {
 		region->writable = false;
+		region->evacuate = true;
 		list_del_init(&region->writable_list);
 		fxfs_dax_give_window(dax, region->window_offset + ((u64)region->mapped << PAGE_SHIFT),
 				     region->pages - region->mapped);
@@ -2168,6 +2191,10 @@ static void fxfs_dax_seal(void *arg)
 			bitmap_zero(range->writable, range->pages);
 		rcu_read_unlock();
 		list_del_init(&file->writable);
+		/* fxdax: its pages in the staging extent's region move once the seal ends. */
+		if (READ_ONCE(dax->restaging) && list_empty(&file->evacuating) &&
+		    refcount_inc_not_zero(&file->refs))
+			list_add_tail(&file->evacuating, &dax->evacuating);
 	}
 	mutex_unlock(&dax->writable_lock);
 }
@@ -2182,6 +2209,8 @@ static void fxfs_dax_sealed(void *arg)
 
 	if (READ_ONCE(dax->restaging) && queue_work(dax->grow_wq, &dax->restage))
 		atomic_inc(&dax->growing);
+	if (READ_ONCE(dax->restaging))
+		queue_work(dax->grow_wq, &dax->evacuate);
 }
 
 /*
@@ -2239,6 +2268,217 @@ static size_t fxfs_dax_largest_free(struct gen_pool *pool)
 	}
 	rcu_read_unlock();
 	return (size_t)largest << pool->min_alloc_order;
+}
+
+/*
+ * fxdax: a run of a range's pages in a sealed staging extent's region, moving to the range's own
+ * space (fxfs_dax_evacuate_work): `moved` its first page's place there, the rest following it.
+ */
+struct fxfs_dax_evacuee {
+	struct fxfs_dax_file *file;
+	struct fxfs_dax_range *range;
+	unsigned long page, pages;
+	u64 moved;
+	/* Whether it holds the range for the evacuation, its first run; and whether it was mapped. */
+	bool holds, mapped;
+};
+
+/* fxdax: the runs of an evacuation, and their maps, as many of each. */
+struct fxfs_dax_evacuation {
+	struct fxfs_dax_evacuee *runs;
+	struct fxfs_device_map *maps;
+	size_t count, capacity;
+};
+
+/* fxdax: one more run in `ev`, room made for it: false without memory. */
+static bool fxfs_dax_evacuee_add(struct fxfs_dax_evacuation *ev, struct fxfs_dax_evacuee run,
+				 struct fxfs_device_map map)
+{
+	if (ev->count == ev->capacity) {
+		size_t capacity = max_t(size_t, 16, 2 * ev->capacity);
+		struct fxfs_dax_evacuee *runs;
+		struct fxfs_device_map *maps;
+
+		runs = krealloc_array(ev->runs, capacity, sizeof(*runs), GFP_NOFS);
+		if (!runs)
+			return false;
+		ev->runs = runs;
+		maps = krealloc_array(ev->maps, capacity, sizeof(*maps), GFP_NOFS);
+		if (!maps)
+			return false;
+		ev->maps = maps;
+		ev->capacity = capacity;
+	}
+	ev->runs[ev->count] = run;
+	ev->maps[ev->count++] = map;
+	return true;
+}
+
+/*
+ * fxdax: gathers `file`'s runs of pages in sealed staging extents' regions into `ev`, holding each
+ * range that has some for the evacuation (its users), as an iomap does, so that it isn't freed nor
+ * its space taken by another before the evacuation ends.
+ */
+static void fxfs_dax_evacuee_gather(struct fxfs_dax_file *file, struct fxfs_dax_evacuation *ev)
+{
+	struct fxfs_dax_region *region;
+	struct fxfs_dax_range *range;
+	unsigned long chunk, page, end;
+	bool held;
+	u64 moved;
+
+	down_read(&file->sem);
+	xa_for_each(&file->ranges, chunk, range) {
+		if (range->region || !range->moved)
+			continue;
+		held = false;
+		for (page = 0; page < range->pages; page = end) {
+			end = page + 1;
+			moved = range->moved[page];
+			if (!moved)
+				continue;
+			region = range->regions[(moved >> 32) - 1];
+			if (!READ_ONCE(region->evacuate))
+				continue;
+			while (end < range->pages && range->moved[end] == moved + (end - page))
+				end++;
+			if (!fxfs_dax_evacuee_add(ev, (struct fxfs_dax_evacuee) {
+					.file = file, .range = range, .page = page,
+					.pages = end - page, .moved = moved, .holds = !held,
+				}, (struct fxfs_device_map) {
+					.branch = region->branch, .sequence = region->sequence,
+					.offset = (moved & U32_MAX) << PAGE_SHIFT,
+					.len = (u64)(end - page) << PAGE_SHIFT,
+					.window_offset = range->window_offset + ((u64)page << PAGE_SHIFT),
+				}))
+				goto out;
+			if (!held)
+				atomic_inc(&range->users);
+			held = true;
+		}
+	}
+out:
+	up_read(&file->sem);
+}
+
+/*
+ * fxdax: has `file`'s runs in `ev` that were mapped in their ranges' own space be there, unless a
+ * write moved them meanwhile, or another iomap uses their range, which may use a page where it
+ * was; and lets go of the ranges, and of the regions they emptied (fxfs_dax_prune). Pages nothing
+ * but the window maps aren't relocated for the kernel: there is nothing of them to replace.
+ */
+static void fxfs_dax_evacuee_place(struct fxfs_dax *dax, struct fxfs_dax_file *file,
+				   struct fxfs_dax_evacuation *ev)
+{
+	struct fxfs_dax_evacuee *run;
+	pgoff_t index;
+	unsigned long i;
+	bool moved;
+	size_t r;
+
+	down_write(&file->sem);
+	mutex_lock(&dax->files_lock);
+	for (r = 0; r < ev->count; r++) {
+		run = &ev->runs[r];
+		if (run->file != file || !run->mapped || atomic_read(&run->range->users) != 1)
+			continue;
+		moved = true;
+		for (i = 0; i < run->pages; i++)
+			moved &= run->range->moved[run->page + i] == run->moved + i;
+		if (!moved)
+			continue;
+		fxfs_dax_relocate(run->range, run->page, run->pages, NULL, 0);
+		index = (fxfs_dax_chunk_start(run->range) >> PAGE_SHIFT) + run->page;
+		if (!file->inode || !xa_find(&file->inode->i_mapping->i_pages, &index,
+					     index + run->pages - 1, XA_PRESENT))
+			bitmap_clear(run->range->relocated, run->page, run->pages);
+	}
+	mutex_unlock(&dax->files_lock);
+	for (r = 0; r < ev->count; r++) {
+		run = &ev->runs[r];
+		if (run->file != file || !run->holds)
+			continue;
+		fxfs_dax_prune(dax, run->range);
+		fxfs_dax_put_range(dax, run->range);
+	}
+	up_write(&file->sem);
+}
+
+/*
+ * fxdax: once a seal ends, maps the pages ranges moved to the staging extents it sealed in the
+ * ranges' own space, all in one request (MAP_MANY), and has them be there, so that the regions
+ * they emptied go: the window kept every staging extent's region a page written once was in, a
+ * new one each seal, until its regions' space filled and every write mapped its page alone
+ * (TASK-91.10). The files whose pages a seal sealed meanwhile are evacuated again.
+ */
+static void fxfs_dax_evacuate_work(struct work_struct *work)
+{
+	struct fxfs_dax *dax = container_of(work, struct fxfs_dax, evacuate);
+	struct fxfs_dax_evacuation ev = {};
+	struct fxfs_dax_file *file, *next;
+	u64 seals = fxfs_device_seals(dax->dev);
+	bool again = false;
+	LIST_HEAD(files);
+	size_t r;
+	int err;
+
+	/* Off the filesystem's list, onto this one: a seal meanwhile doesn't add them again. */
+	mutex_lock(&dax->writable_lock);
+	list_splice_init(&dax->evacuating, &files);
+	mutex_unlock(&dax->writable_lock);
+	list_for_each_entry(file, &files, evacuating)
+		fxfs_dax_evacuee_gather(file, &ev);
+	if (ev.count) {
+		err = fxfs_nofs(fxfs_device_map_many(dax->dev, ev.maps, ev.count));
+		for (r = 0; r < ev.count; r++) {
+			/* If they failed, mapped one by one, to place those that did. */
+			if (err)
+				ev.runs[r].mapped = !fxfs_nofs(fxfs_device_map(
+					dax->dev, ev.maps[r].branch, ev.maps[r].sequence,
+					ev.maps[r].offset, ev.maps[r].len, ev.maps[r].window_offset,
+					false));
+			else
+				ev.runs[r].mapped = true;
+			atomic64_inc(&dax->maps[FXFS_DAX_EVACUATE]);
+			atomic64_add(ev.maps[r].len, &dax->map_bytes[FXFS_DAX_EVACUATE]);
+		}
+	}
+	list_for_each_entry(file, &files, evacuating)
+		fxfs_dax_evacuee_place(dax, file, &ev);
+	list_for_each_entry_safe(file, next, &files, evacuating) {
+		mutex_lock(&dax->writable_lock);
+		list_del_init(&file->evacuating);
+		/* A seal since may have sealed more of its pages in a staging extent's region. */
+		if (fxfs_device_seals(dax->dev) != seals && READ_ONCE(dax->restaging)) {
+			list_add_tail(&file->evacuating, &dax->evacuating);
+			again = true;
+			file = NULL;
+		}
+		mutex_unlock(&dax->writable_lock);
+		if (file)
+			fxfs_dax_put_file(dax, file);
+	}
+	kfree(ev.runs);
+	kfree(ev.maps);
+	if (again)
+		queue_work(dax->grow_wq, &dax->evacuate);
+}
+
+/* fxdax: lets go of the files left to evacuate, as the filesystem quiesces or goes. */
+static void fxfs_dax_forget_evacuating(struct fxfs_dax *dax)
+{
+	struct fxfs_dax_file *file;
+
+	for (;;) {
+		mutex_lock(&dax->writable_lock);
+		file = list_first_entry_or_null(&dax->evacuating, struct fxfs_dax_file, evacuating);
+		if (file)
+			list_del_init(&file->evacuating);
+		mutex_unlock(&dax->writable_lock);
+		if (!file)
+			return;
+		fxfs_dax_put_file(dax, file);
+	}
 }
 
 void fxfs_dax_show_stats(struct fxfs_dax *dax, struct seq_file *m)
@@ -2327,6 +2567,8 @@ struct fxfs_dax *fxfs_dax_create(struct super_block *sb, struct fxfs *fs)
 		return ERR_PTR(-ENOMEM);
 	}
 	INIT_WORK(&dax->restage, fxfs_dax_restage_work);
+	INIT_LIST_HEAD(&dax->evacuating);
+	INIT_WORK(&dax->evacuate, fxfs_dax_evacuate_work);
 	dax->restaging = true;
 	fxfs_device_set_sealer(dev, fxfs_dax_seal, fxfs_dax_sealed, dax);
 	return dax;
@@ -2358,7 +2600,9 @@ void fxfs_dax_quiesce(struct fxfs_dax *dax)
 	WRITE_ONCE(dax->restaging, false);
 	if (cancel_work_sync(&dax->restage))
 		atomic_dec(&dax->growing);
+	cancel_work_sync(&dax->evacuate);
 	drain_workqueue(dax->grow_wq);
+	fxfs_dax_forget_evacuating(dax);
 	spin_lock(&dax->regions_lock);
 	spare = dax->spare;
 	dax->spare = NULL;
@@ -2390,6 +2634,8 @@ void fxfs_dax_destroy(struct fxfs_dax *dax)
 	WRITE_ONCE(dax->restaging, false);
 	if (cancel_work_sync(&dax->restage))
 		atomic_dec(&dax->growing);
+	cancel_work_sync(&dax->evacuate);
+	fxfs_dax_forget_evacuating(dax);
 	list_for_each_entry_safe(range, next, &dax->used, list) {
 		xa_erase(&range->file->ranges, range->chunk);
 		list_del(&range->list);
@@ -2437,6 +2683,7 @@ static struct fxfs_dax_file *fxfs_dax_attach(struct fxfs_dax *dax, struct inode 
 		init_rwsem(&file->sem);
 		xa_init(&file->ranges);
 		INIT_LIST_HEAD(&file->writable);
+		INIT_LIST_HEAD(&file->evacuating);
 		if (xa_err(xa_store(&dax->files, inode->i_ino, file, GFP_NOFS))) {
 			kfree(file);
 			file = NULL;
