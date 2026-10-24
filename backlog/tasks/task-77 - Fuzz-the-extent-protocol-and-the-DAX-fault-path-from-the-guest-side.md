@@ -4,6 +4,7 @@ title: Fuzz the extent protocol and the DAX fault path from the guest side
 status: To Do
 assignee: []
 created_date: '2026-10-21 19:54'
+updated_date: '2026-10-24 21:31'
 labels: []
 dependencies: []
 priority: low
@@ -22,3 +23,9 @@ Concurrency is covered by Shuttle and TLA+; nothing fuzzes the guest-facing prot
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-10-24: with it, syzkaller over the guest Fxfs's syscalls (DAX and not), under the fault and delay injection of TASK-44.10/44.11, and cargo-fuzz over extentd's wire protocol as a malicious guest.
+<!-- SECTION:NOTES:END -->
