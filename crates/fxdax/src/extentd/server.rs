@@ -1283,7 +1283,9 @@ static CLEANERS: std::sync::LazyLock<Pool> =
 /// fxdax: tells the VM process at the other end of `sender` of each commit of its follower's
 /// store after the commit of `epoch` ([`COMMITTED`]): the latest, of each run of them; until
 /// `stopped` says to stop. It waits for the writer's commits holding no thread (TASK-34), or
-/// [`COMMITS_POLL`] at most, for commits made otherwise.
+/// [`COMMITS_POLL`] at most, for commits made otherwise. What it tells a VM process that stopped
+/// reading waits for it as one message, the latest commit's, rather than one for each, which the
+/// daemon would hold for it without end, the writer's commits going on (TASK-79.9).
 async fn tell_commits(
     store: Arc<ExtentStore>,
     mut epoch: u64,
@@ -1300,7 +1302,7 @@ async fn tell_commits(
         epoch = latest;
         // Sent holding no thread, as a send never waits (TASK-79.9).
         let told = Header::new(COMMITTED, 0).with_args(&[latest]);
-        if let Err(err) = sender.send(told, Vec::new(), &[]) {
+        if let Err(err) = sender.send_latest(told) {
             log::warn!("extentd: telling a VM process of a commit: {err}");
             return;
         }
@@ -1683,6 +1685,13 @@ impl Drop for Parking {
     fn drop(&mut self) {
         PARKING.set(None);
     }
+}
+
+/// The most bytes the daemon has queued for a VM process connected, which its socket has not
+/// taken.
+#[cfg(test)]
+pub(super) fn most_queued() -> u64 {
+    PEERS.lock().unwrap().iter().map(|peer| peer.sender.queued()).max().unwrap_or(0)
 }
 
 /// fxdax: lets the VM processes that stopped answering go ([`Peer::watch`]), looking every

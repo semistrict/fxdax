@@ -331,6 +331,9 @@ struct Queued {
     payload: Vec<u8>,
     /// How many of its bytes, its header's then its payload's, were sent.
     sent: usize,
+    /// fxdax: its kind, if it says the latest of what its kind says, which one of its kind sent
+    /// after it replaces, unless its sending began ([`AsyncSender::send_latest`]).
+    latest: Option<u32>,
 }
 
 impl Queued {
@@ -383,17 +386,45 @@ impl AsyncSender {
     /// the socket failed, as the other end gone.
     pub fn send(
         self: &std::sync::Arc<Self>,
-        mut header: Header,
+        header: Header,
         payload: Vec<u8>,
         fds: &[BorrowedFd<'_>],
     ) -> io::Result<()> {
+        self.queue(header, payload, fds, false)
+    }
+
+    /// fxdax: sends `header`, a message of no payload that says the latest of what its kind says,
+    /// as [`AsyncSender::send`] does: or, one of its kind waiting in the queue, its sending not
+    /// begun, in its place (TASK-79.9). So what the other end, not reading, is told of again and
+    /// again takes one message of the queue, the latest, not one each time.
+    pub fn send_latest(self: &std::sync::Arc<Self>, header: Header) -> io::Result<()> {
+        self.queue(header, Vec::new(), &[], true)
+    }
+
+    /// Sends `header`, `payload` and `fds`, as [`AsyncSender::send`] does, in place of a message
+    /// of its kind waiting if it is the `latest` of what its kind says.
+    fn queue(
+        self: &std::sync::Arc<Self>,
+        mut header: Header,
+        payload: Vec<u8>,
+        fds: &[BorrowedFd<'_>],
+        latest: bool,
+    ) -> io::Result<()> {
         assert!(fds.len() <= MAX_FDS, "too many descriptors for a message");
         header.len = payload.len() as u64;
+        let latest = latest.then_some(header.kind);
         let header = header.as_bytes().try_into().unwrap();
-        let mut message = Queued { header, payload, sent: 0 };
+        let mut message = Queued { header, payload, sent: 0, latest };
         let mut queue = self.queue.lock().unwrap();
         if let Some(failed) = queue.failed {
             return Err(failed.into());
+        }
+        if latest.is_some()
+            && let Some((queued, _)) = (queue.messages.iter_mut().rev())
+                .find(|(queued, _)| queued.latest == latest && queued.sent == 0)
+        {
+            queued.header = message.header;
+            return Ok(());
         }
         if queue.messages.is_empty() {
             match message.send(self.stream.get_ref(), fds) {
