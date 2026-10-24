@@ -39,6 +39,18 @@ use storage_device::{ExtentId, NoExtent, OtherBranch, SealedExtent};
 #[error("the extent store is full")]
 pub struct NoSpace;
 
+/// fxdax: the context of a fork's failure once its commit was made ([`Store::fork`]): the store
+/// has not the child, but the commit stands, the segment it ends naming the fork in its footer,
+/// which what keeps the branch's segments elsewhere, as an uploader does, may have taken, and
+/// whose fork it makes there, so that the child is to be deleted there as a fork made is
+/// (TASK-79.82).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("the fork to branch {child:#x} failed once its commit was made")]
+pub struct ForkCommitted {
+    /// The fork's child.
+    pub child: u64,
+}
+
 /// The error of a capacity smaller than what the store holds: its extents' bytes, and those that
 /// writes in progress may add.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
@@ -534,31 +546,53 @@ impl<D: Dir> Store<D> {
     /// and, in memory, the branch's state as of the fork, a layer it shares with the branch, which
     /// goes on over it, and with the branch's other forks of the same point (TASK-31). Returns the
     /// epoch of the fork's commit, which ends the segment that names the fork. A fork to a branch
-    /// the store has fails, committing nothing.
+    /// the store has fails, committing nothing. fxdax: one that fails once its commit was made
+    /// fails with [`ForkCommitted`]: the store has not the child, but the commit's segment names
+    /// it, as a host crashing then would leave it.
     pub fn fork(&self, child: u64) -> Result<u64, Error> {
+        self.fork_with(child, || Ok(()))
+    }
+
+    /// fxdax: forks the branch as [`Store::fork`] does, calling `before` once the child is
+    /// reserved, before the fork's commit: as no other fork, opening or deletion of the child here
+    /// comes between them, to claim the child where else it is kept, as an uploader does
+    /// (TASK-79.82). A fork whose `before` fails commits nothing. The commits of the branch wait
+    /// for `before`, as they do for the fork's own.
+    pub fn fork_with(
+        &self,
+        child: u64,
+        before: impl FnOnce() -> Result<(), Error>,
+    ) -> Result<u64, Error> {
         let committing = self.committing.lock().unwrap();
         // fxdax: the child reserved before the commit that names it: else a fork to a branch the
         // store has would fail once its footer, durable, named the branch again, from another
         // point, which the uploader uploads, and the branch's writers in object storage find
         // forked twice, failing for ever (TASK-79.78).
         let forking = self.lineage.forking(child)?;
+        before()?;
         // At the end of its segment, which the commit closes, and whose footer names it (doc-7,
         // Forks).
         self.writable()?.segments.close_for_fork(child);
         let forked = self.commit_locked(&committing, None, true)?;
         let Forked { layer, origin } = forked.expect("a fork's commit freezes the branch's state");
-        self.flush()?;
-        // fxdax: and the segments closed between commits framed, from whose framed files the child
-        // reads what it inherited of them (TASK-41.1).
-        let mut state = self.state()?;
-        if rules().forks_wait_for_framings {
-            state = self.framed(state);
-        }
-        let capacity = state.space.capacity();
-        drop(state);
-        let epoch = origin.epoch;
-        self.lineage.fork(forking, origin, capacity, layer)?;
-        Ok(epoch)
+        // fxdax: from here on the commit stands, naming the fork, though the fork fails: a failure
+        // says so, so that what else keeps the branch's segments deletes the child there too
+        // (TASK-79.82).
+        let made = || -> Result<u64, Error> {
+            self.flush()?;
+            // fxdax: and the segments closed between commits framed, from whose framed files the
+            // child reads what it inherited of them (TASK-41.1).
+            let mut state = self.state()?;
+            if rules().forks_wait_for_framings {
+                state = self.framed(state);
+            }
+            let capacity = state.space.capacity();
+            drop(state);
+            let epoch = origin.epoch;
+            self.lineage.fork(forking, origin, capacity, layer)?;
+            Ok(epoch)
+        };
+        made().context(ForkCommitted { child })
     }
 
     /// The branch the branch was forked from, if it is a fork.

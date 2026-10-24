@@ -9,7 +9,7 @@
 use crate::dir::{Dir, File as _, HostDir};
 use crate::layout::{DESCRIPTION, Description, StoreFile};
 use crate::lineage::Lineage;
-use crate::store::{Options, Store};
+use crate::store::{ForkCommitted, Options, Store};
 use anyhow::{Context as _, Error, anyhow, ensure};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -81,16 +81,36 @@ pub fn create_host(
 
 /// Forks `store`'s branch ([`Store::fork`]) to `child`, a new branch whose handle is a new
 /// directory at `path`, which opening `path` opens: returns the epoch of the fork's commit. The
-/// store's directory must stay where it is for as long as the fork is.
+/// store's directory must stay where it is for as long as the fork is. A fork that fails leaves
+/// no handle, but for one that fails once its commit was made ([`ForkCommitted`]), which leaves
+/// it as a host crashing then would, naming the branch the store has not, so that deleting it
+/// deletes the child where else the store's segments are kept ([`delete_host_with`]'s `after`).
 pub fn fork_host(store: &Store<HostDir>, path: &Path, child: u64) -> Result<u64, Error> {
+    fork_host_with(store, path, child, || Ok(()))
+}
+
+/// fxdax: forks `store`'s branch as [`fork_host`] does, calling `before` once the fork's handle
+/// is in place and the child reserved, before the fork's commit ([`Store::fork_with`]): to claim
+/// the child where else the store's segments are kept, so that a host crashing after leaves the
+/// handle, whose deletion finds the claim (TASK-79.82). A fork whose `before` fails leaves
+/// nothing.
+pub fn fork_host_with(
+    store: &Store<HostDir>,
+    path: &Path,
+    child: u64,
+    before: impl FnOnce() -> Result<(), Error>,
+) -> Result<u64, Error> {
     std::fs::create_dir(path).with_context(|| format!("creating {}", path.display()))?;
     // The handle first, then the fork: a host crashing between them leaves a handle naming a
     // branch the store has not, which deleting it removes, never a branch no handle names, which
     // would keep what it inherited for ever.
-    let forked = handle(store, path, child).and_then(|()| store.fork(child));
-    // Leave no handle of a fork not made behind.
-    forked.inspect_err(|_| {
-        let _ = std::fs::remove_dir_all(path);
+    let forked = handle(store, path, child).and_then(|()| store.fork_with(child, before));
+    // Leave no handle of a fork not made behind, but of one whose commit was made, whose
+    // deletion deletes the child elsewhere (TASK-79.82).
+    forked.inspect_err(|err| {
+        if err.downcast_ref::<ForkCommitted>().is_none() {
+            let _ = std::fs::remove_dir_all(path);
+        }
     })
 }
 
@@ -741,5 +761,72 @@ mod tests {
         assert!(fork_host(&store, &temp.path().join("again"), 4).is_err());
         assert!(!temp.path().join("again").exists());
         assert_eq!(store.lineage().branches(), vec![(3, None), (4, Some(3))]);
+    }
+
+    /// TASK-79.82: a fork that fails once its commit was made, here as its record cannot be
+    /// written, its place taken by a directory, keeps its handle, naming the branch the store has
+    /// not, as its host crashing then would: the commit's segment names the fork in its footer,
+    /// which what keeps the store's segments elsewhere, as an uploader does, may have taken, and
+    /// deleting the handle has `after` delete it there. Deleting it leaves nothing of the fork.
+    #[test]
+    fn forks_failed_once_committed_keep_their_handles() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("store");
+        std::fs::create_dir(&path).unwrap();
+        let description = Description { block_size: BLOCK as u32, capacity: 1 << 20, branch: 3 };
+        let store = create_host(&path, description, true, Options::default()).unwrap();
+        store.write(ExtentId::new(3, 0), 0, &[7; BLOCK]).unwrap();
+        let record = path.join(format!("{}/{:016x}.{:016x}", crate::layout::BRANCHES, 4, 0));
+        std::fs::create_dir(&record).unwrap();
+        let fork = temp.path().join("fork");
+        let epoch = store.epoch().unwrap();
+        let failed = fork_host(&store, &fork, 4).map(drop).map_err(|err| format!("{err:#}"));
+        std::fs::remove_dir(&record).unwrap();
+        let named = resolve_host(&fork).map(|(_, branch)| branch).map_err(|err| err.to_string());
+        let made = (store.epoch().unwrap(), store.lineage().has(4));
+        assert_eq!((named, made), (Ok(4), (epoch + 1, false)));
+
+        let called = std::cell::RefCell::new(Vec::new());
+        let call = |name: &'static str| {
+            let called = &called;
+            move |_: &Path, branch: u64| -> Result<(), Error> {
+                called.borrow_mut().push((name, branch));
+                Ok(())
+            }
+        };
+        delete_host_with(&fork, Options::default(), call("before"), call("after")).unwrap();
+        assert_eq!((called.into_inner(), fork.exists()), (vec![("after", 4)], false));
+        let unwritten = format!(
+            "the fork to branch 0x4 failed once its commit was made: creating {}/{:016x}.{:016x}: \
+             File exists (os error 17)",
+            crate::layout::BRANCHES,
+            4,
+            0
+        );
+        assert_eq!(failed, Err(unwritten));
+    }
+
+    /// TASK-79.82: a fork's `before` goes once its handle is in place and its child reserved,
+    /// before its commit: one failing fails the fork, which leaves nothing, having committed
+    /// nothing; and the child is free for a fork after.
+    #[test]
+    fn forks_call_before_ahead_of_their_commits() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("store");
+        std::fs::create_dir(&path).unwrap();
+        let description = Description { block_size: BLOCK as u32, capacity: 1 << 20, branch: 3 };
+        let store = create_host(&path, description, true, Options::default()).unwrap();
+        let fork = temp.path().join("fork");
+        let epoch = store.epoch().unwrap();
+        let seen = std::cell::Cell::new(None);
+        let refusing = || {
+            seen.set(Some((is_handle(&fork), store.lineage().has(4), store.epoch().unwrap())));
+            Err(anyhow!("refused"))
+        };
+        let refused = fork_host_with(&store, &fork, 4, refusing).map_err(|err| err.to_string());
+        assert_eq!((refused, seen.get()), (Err("refused".to_owned()), Some((true, false, epoch))));
+        let left = (fork.exists(), store.epoch().unwrap(), store.lineage().has(4));
+        assert_eq!(left, (false, epoch, false));
+        assert_eq!(fork_host(&store, &fork, 4).map_err(|err| err.to_string()), Ok(epoch + 1));
     }
 }

@@ -153,15 +153,16 @@ mod views;
 pub use dir::{Dir, File, HostDir, HostFile, bypass_page_cache};
 pub use framed::{Aligned, Packed, Part, read_whole, unpacks};
 pub use host::{
-    create_host, delete_host, delete_host_with, fork_host, is_handle, open_host, resolve_host,
+    create_host, delete_host, delete_host_with, fork_host, fork_host_with, is_handle, open_host,
+    resolve_host,
 };
 pub use layout::{Description, Place};
 pub use lineage::Lineage;
 pub use mem::{Io, MemDir, MemFile};
 pub use segments::segment_closes;
 pub use store::{
-    Cleaned, Footprint, Info, NoSpace, Options, Rebuilt, RemoteData, Store, TooLong, TooSmall,
-    Unaligned, Usage, Write,
+    Cleaned, Footprint, ForkCommitted, Info, NoSpace, Options, Rebuilt, RemoteData, Store, TooLong,
+    TooSmall, Unaligned, Usage, Write,
 };
 pub use sync::Rules;
 #[cfg(feature = "shuttle")]

@@ -236,19 +236,24 @@ fn spawn_opening(lineage: &Arc<Lineage<Stalling>>) -> thread::JoinHandle<Result<
 }
 
 /// Two forks to one branch, from two branches: the first stalls, writing the fork's record, and
-/// fails; the second waits for it, and is made.
+/// fails, its commit made (TASK-79.82); the second waits for it, and is made.
 pub(super) fn forks_to_one_branch() {
     let dir = Stalling::new();
     let lineage = forked(&dir, &[SIBLING, OTHER]);
     let sibling = lineage.open_branch(SIBLING).unwrap();
     let other = lineage.open_branch(OTHER).unwrap();
     dir.arm(Op::Create, &record(CHILD, 0));
-    let first = thread::spawn(move || sibling.fork(CHILD).map_err(|error| error.to_string()));
+    let first = thread::spawn(move || sibling.fork(CHILD).map_err(|error| format!("{error:#}")));
     dir.wait_until_stalled();
     let second = thread::spawn(move || other.fork(CHILD).map_err(|error| error.to_string()));
     dir.let_go(Err(io::Error::other("the disk failed")));
     let failed = first.join().unwrap().unwrap_err();
-    assert_eq!(failed, format!("creating {}", record(CHILD, 0)));
+    let unwritten = format!(
+        "the fork to branch {CHILD:#x} failed once its commit was made: creating {}: the disk \
+         failed",
+        record(CHILD, 0)
+    );
+    assert_eq!(failed, unwritten);
     second.join().unwrap().unwrap();
     assert_eq!(
         lineage.branches(),
