@@ -619,7 +619,8 @@ pub unsafe extern "C" fn fxfs_write_inode(fs: *const Fxfs, ino: u64, set: *const
 
 /// # Safety
 ///
-/// `fs` is mounted, `name` holds `len` bytes, and `attr` and `dir_attr` are writable.
+/// `fs` is mounted, `name` holds `len` bytes, `xattrs` `nr_xattrs` extended attributes, each
+/// holding the bytes it says, and `attr` and `dir_attr` are writable.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fxfs_create(
     fs: *const Fxfs,
@@ -630,14 +631,32 @@ pub unsafe extern "C" fn fxfs_create(
     rdev: u64,
     uid: u32,
     gid: u32,
+    xattrs: *const Xattr,
+    nr_xattrs: usize,
     attr: *mut Attr,
     dir_attr: *mut Attr,
 ) -> c_int {
     // SAFETY: As the caller promises.
     unsafe {
-        let created = block_on((*fs).create(dir, bytes(name, len), mode, rdev, uid, gid));
+        let xattrs: Vec<(&[u8], &[u8])> = (0..nr_xattrs)
+            .map(|i| {
+                let xattr = &*xattrs.add(i);
+                (bytes(xattr.name, xattr.name_len), bytes(xattr.value.cast(), xattr.value_len))
+            })
+            .collect();
+        let created = block_on((*fs).create(dir, bytes(name, len), mode, rdev, uid, gid, &xattrs));
         write_attrs(created.map(|attrs| (0, attrs)), [attr, dir_attr])
     }
+}
+
+/// fxdax: an extended attribute a new object is made with (`fxfs_create`), as C has it
+/// (`struct fxfs_xattr`).
+#[repr(C)]
+pub struct Xattr {
+    name: *const c_char,
+    name_len: usize,
+    value: *const core::ffi::c_void,
+    value_len: usize,
 }
 
 /// # Safety

@@ -475,12 +475,41 @@ static int fxfs_vfs_init_acls(struct inode *inode, struct posix_acl *default_acl
 	return err;
 }
 
+/*
+ * fxdax: `acl` as an extended attribute of an inode of `mode`, in `xattrs[*nr]`, its value in
+ * `*value`, which the caller frees: the default ACL for directories alone.
+ */
+static int fxfs_vfs_acl_xattr(struct posix_acl *acl, int type, umode_t mode,
+			      struct fxfs_xattr *xattrs, size_t *nr, void **value)
+{
+	const char *name = fxfs_vfs_acl_name(type);
+	size_t size;
+	int err;
+
+	if (!acl || (type == ACL_TYPE_DEFAULT && !S_ISDIR(mode)))
+		return 0;
+	size = posix_acl_xattr_size(acl->a_count);
+	*value = kmalloc(size, GFP_KERNEL);
+	if (!*value)
+		return -ENOMEM;
+	err = posix_acl_to_xattr(&init_user_ns, acl, *value, size);
+	if (err < 0)
+		return err;
+	xattrs[(*nr)++] = (struct fxfs_xattr) {
+		.name = name, .name_len = strlen(name), .value = *value, .value_len = size,
+	};
+	return 0;
+}
+
 /* Creates `dentry` in `dir` as `mode` says, owned by the caller. */
 static int fxfs_vfs_mknod(struct mnt_idmap *idmap, struct inode *dir, struct dentry *dentry,
 			  umode_t mode, dev_t rdev)
 {
 	struct posix_acl *default_acl, *acl;
 	struct fxfs_attr attr, dir_attr;
+	struct fxfs_xattr xattrs[2];
+	void *values[2] = {};
+	size_t nr_xattrs = 0;
 	u32 gid;
 	int err;
 
@@ -488,10 +517,18 @@ static int fxfs_vfs_mknod(struct mnt_idmap *idmap, struct inode *dir, struct den
 	if (err)
 		return err;
 	gid = fxfs_vfs_new_gid(idmap, dir, &mode);
-	err = fxfs_nofs(fxfs_create(fxfs_vfs_fs(dir->i_sb), dir->i_ino, dentry->d_name.name,
-				    dentry->d_name.len, mode, new_encode_dev(rdev),
-				    fxfs_vfs_new_uid(idmap, dir), gid, &attr,
-				    &dir_attr));
+	/* fxdax: the ACLs it inherits, made with it (TASK-79.29). */
+	err = fxfs_vfs_acl_xattr(default_acl, ACL_TYPE_DEFAULT, mode, xattrs, &nr_xattrs,
+				 &values[0]);
+	if (!err)
+		err = fxfs_vfs_acl_xattr(acl, ACL_TYPE_ACCESS, mode, xattrs, &nr_xattrs, &values[1]);
+	if (!err)
+		err = fxfs_nofs(fxfs_create(fxfs_vfs_fs(dir->i_sb), dir->i_ino, dentry->d_name.name,
+					    dentry->d_name.len, mode, new_encode_dev(rdev),
+					    fxfs_vfs_new_uid(idmap, dir), gid, xattrs, nr_xattrs,
+					    &attr, &dir_attr));
+	kfree(values[0]);
+	kfree(values[1]);
 	/* A directory's times Fxfs sets as it creates a directory, which counts in its links. */
 	if (!err)
 		err = fxfs_vfs_instantiate(dir, dentry, &attr, S_ISDIR(mode) ? &dir_attr : NULL);
@@ -505,7 +542,14 @@ static int fxfs_vfs_mknod(struct mnt_idmap *idmap, struct inode *dir, struct den
 	 * look for one (file_remove_privs). Setting one clears S_NOSEC.
 	 */
 	inode_has_no_xattr(d_inode(dentry));
-	return fxfs_vfs_init_acls(d_inode(dentry), default_acl, acl);
+	/* fxdax: its ACLs, written with it, cached as fxfs_vfs_store_acl caches them. */
+	if (default_acl && S_ISDIR(mode))
+		set_cached_acl(d_inode(dentry), ACL_TYPE_DEFAULT, default_acl);
+	if (acl)
+		set_cached_acl(d_inode(dentry), ACL_TYPE_ACCESS, acl);
+	posix_acl_release(default_acl);
+	posix_acl_release(acl);
+	return 0;
 }
 
 /* Creates an unnamed regular file in `dir`, which a link may name later (O_TMPFILE). */
@@ -699,6 +743,8 @@ static int fxfs_vfs_rename(struct mnt_idmap *idmap, struct inode *old_dir,
  * Makes `inode` `size` bytes long, with the attributes `iattr` sets, if any, and writes them back.
  * Its inode lock held.
  */
+static void fxfs_vfs_zero_past_end(struct inode *inode, loff_t size, loff_t to);
+
 static int fxfs_vfs_resize(struct inode *inode, loff_t size, struct mnt_idmap *idmap,
 			   struct iattr *iattr)
 {
@@ -708,6 +754,8 @@ static int fxfs_vfs_resize(struct inode *inode, loff_t size, struct mnt_idmap *i
 		err = fxfs_dax_resize_begin(inode, size);
 		if (err)
 			return err;
+	} else if (size > i_size_read(inode)) {
+		fxfs_vfs_zero_past_end(inode, i_size_read(inode), size);
 	}
 	/* The page cache past the size goes first, so writeback can't write it back. */
 	truncate_setsize(inode, size);
@@ -730,15 +778,22 @@ static int fxfs_vfs_setattr(struct mnt_idmap *idmap, struct dentry *dentry, stru
 	if (!(iattr->ia_valid & ATTR_SIZE) || size == i_size_read(inode)) {
 		setattr_copy(idmap, inode, iattr);
 		mark_inode_dirty(inode);
-		return 0;
+	} else {
+		/* truncate(2) leaves the times to the filesystem, which changing the size changes. */
+		if (!(iattr->ia_valid & (ATTR_MTIME | ATTR_CTIME))) {
+			iattr->ia_ctime = current_time(inode);
+			iattr->ia_mtime = iattr->ia_ctime;
+			iattr->ia_valid |= ATTR_MTIME | ATTR_CTIME;
+		}
+		err = fxfs_vfs_resize(inode, size, idmap, iattr);
 	}
-	/* truncate(2) leaves the times to the filesystem, which changing the size changes. */
-	if (!(iattr->ia_valid & (ATTR_MTIME | ATTR_CTIME))) {
-		iattr->ia_ctime = current_time(inode);
-		iattr->ia_mtime = iattr->ia_ctime;
-		iattr->ia_valid |= ATTR_MTIME | ATTR_CTIME;
-	}
-	return fxfs_vfs_resize(inode, size, idmap, iattr);
+	/*
+	 * fxdax: the access ACL's entries follow the mode, as ext4's: the mask, or the group's, as
+	 * the group's bits; a chmod left a named user what the mode took away (TASK-79.96).
+	 */
+	if (!err && iattr->ia_valid & ATTR_MODE)
+		err = posix_acl_chmod(idmap, dentry, inode->i_mode);
+	return err;
 }
 
 /* FS_IOC_GETFLAGS and FS_IOC_FSGETXATTR (lsattr): the inode's attribute flags. */
@@ -1315,11 +1370,14 @@ static int fxfs_vfs_write_begin(const struct kiocb *iocb, struct address_space *
 				loff_t pos, unsigned int len, struct folio **foliop, void **fsdata)
 {
 	struct inode *inode = mapping->host;
-	struct folio *folio = __filemap_get_folio(mapping, pos >> PAGE_SHIFT,
-						  FGP_WRITEBEGIN | fgf_set_order(len),
-						  mapping_gfp_mask(mapping));
+	struct folio *folio;
 	int err;
 
+	/* fxdax: what a mapping stored past the end isn't the data between it and the write. */
+	if (pos > i_size_read(inode))
+		fxfs_vfs_zero_past_end(inode, i_size_read(inode), pos);
+	folio = __filemap_get_folio(mapping, pos >> PAGE_SHIFT, FGP_WRITEBEGIN | fgf_set_order(len),
+				    mapping_gfp_mask(mapping));
 	if (IS_ERR(folio))
 		return PTR_ERR(folio);
 	if (!folio_test_uptodate(folio) &&
@@ -1415,6 +1473,31 @@ static bool fxfs_vfs_release_folio(struct folio *folio, gfp_t gfp)
 	return true;
 }
 
+/*
+ * fxdax: zeroes what the cached folio holding the file's end, `size`, holds past it, up to `to`,
+ * as the file grows: writeback writes no more than the file holds, and stores through a mapping
+ * past its end became its data as it grew (TASK-79.53). The bytes zeroed are written back, now
+ * the file's.
+ */
+static void fxfs_vfs_zero_past_end(struct inode *inode, loff_t size, loff_t to)
+{
+	struct folio *folio;
+	size_t from, end;
+
+	/* The folio holding the byte at `size`: if it starts there, nothing of it is past the end. */
+	folio = filemap_lock_folio(inode->i_mapping, size >> PAGE_SHIFT);
+	if (IS_ERR(folio))
+		return;
+	from = offset_in_folio(folio, size);
+	end = min_t(loff_t, folio_size(folio), to - folio_pos(folio));
+	if (from && from < end && folio_test_uptodate(folio)) {
+		folio_zero_range(folio, from, end - from);
+		fxfs_vfs_dirty_range(folio, from, end - from);
+	}
+	folio_unlock(folio);
+	folio_put(folio);
+}
+
 /* fxdax: as does a folio's dropped whole; one truncated within keeps its, past the file's end. */
 static void fxfs_vfs_invalidate_folio(struct folio *folio, size_t offset, size_t len)
 {
@@ -1424,7 +1507,10 @@ static void fxfs_vfs_invalidate_folio(struct folio *folio, size_t offset, size_t
 
 /*
  * As libfs's simple_write_end: the folio dirty, and the file grown to hold the write. fxdax: the
- * pages it wrote alone dirty (`fxfs_vfs_folio_state`), unless it zeroed the rest of the folio.
+ * pages it wrote alone dirty (`fxfs_vfs_folio_state`). A folio never read, which the write was to
+ * cover whole (fxfs_vfs_write_begin), takes nothing of a short copy, as block_write_end has it:
+ * ramfs's zeroed the rest, which on a file's existing data wrote zeros over it (TASK-79.14), and
+ * generic_perform_write writes what was copied again, the folio read first.
  */
 static int fxfs_vfs_write_end(const struct kiocb *iocb, struct address_space *mapping,
 			      loff_t pos, unsigned int len, unsigned int copied,
@@ -1433,8 +1519,10 @@ static int fxfs_vfs_write_end(const struct kiocb *iocb, struct address_space *ma
 	struct inode *inode = mapping->host;
 
 	if (!folio_test_uptodate(folio)) {
-		if (copied < len)
-			folio_zero_range(folio, offset_in_folio(folio, pos) + copied, len - copied);
+		if (copied < len) {
+			copied = 0;
+			goto out;
+		}
 		folio_mark_uptodate(folio);
 		folio_mark_dirty(folio);
 	} else if (copied) {
@@ -1442,6 +1530,7 @@ static int fxfs_vfs_write_end(const struct kiocb *iocb, struct address_space *ma
 	}
 	if (pos + copied > inode->i_size)
 		i_size_write(inode, pos + copied);
+out:
 	folio_unlock(folio);
 	folio_put(folio);
 	return copied;
@@ -1574,6 +1663,7 @@ static ssize_t fxfs_vfs_direct_IO(struct kiocb *iocb, struct iov_iter *iter)
 	bool write = iov_iter_rw(iter) == WRITE;
 	loff_t pos = iocb->ki_pos, size = i_size_read(inode);
 	ssize_t done = 0, err = 0;
+	size_t past_end = 0;
 	void *buf;
 
 	if (fxfs_vfs_follows(inode->i_sb))
@@ -1581,11 +1671,18 @@ static ssize_t fxfs_vfs_direct_IO(struct kiocb *iocb, struct iov_iter *iter)
 	if (!write) {
 		if (pos >= size)
 			return 0;
+		/*
+		 * fxdax: what is past the file's end is given back as it returns, as the caller reverts
+		 * the iterator by what it took: past its start, a BUG(), otherwise (TASK-79.15).
+		 */
+		past_end = iov_iter_count(iter) - min_t(u64, iov_iter_count(iter), size - pos);
 		iov_iter_truncate(iter, size - pos);
 	}
 	buf = kvmalloc(min_t(size_t, iov_iter_count(iter), FXFS_IO_MAX), GFP_KERNEL);
-	if (!buf)
+	if (!buf) {
+		iov_iter_reexpand(iter, iov_iter_count(iter) + past_end);
 		return -ENOMEM;
+	}
 	while (iov_iter_count(iter)) {
 		size_t len = min_t(size_t, iov_iter_count(iter), FXFS_IO_MAX);
 		ssize_t n;
@@ -1614,6 +1711,7 @@ static ssize_t fxfs_vfs_direct_IO(struct kiocb *iocb, struct iov_iter *iter)
 			break;
 	}
 	kvfree(buf);
+	iov_iter_reexpand(iter, iov_iter_count(iter) + past_end);
 	return done ?: err;
 }
 
@@ -2490,6 +2588,12 @@ static int fxfs_vfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	err = super_setup_bdi(sb);
 	if (err)
 		return err;
+	/*
+	 * fxdax: readahead as far as one call to Fxfs reads: at the default 128 KiB, a cold
+	 * sequential read waited for one round trip each 128 KiB (TASK-92.9).
+	 */
+	sb->s_bdi->ra_pages = FXFS_IO_MAX / PAGE_SIZE;
+	sb->s_bdi->io_pages = FXFS_IO_MAX / PAGE_SIZE;
 	/* fxdax: what a follower's batches and readers keep, readied before it mounts. */
 	init_rwsem(&info->follow_barrier);
 	INIT_WORK(&info->follow, fxfs_vfs_follow_work);

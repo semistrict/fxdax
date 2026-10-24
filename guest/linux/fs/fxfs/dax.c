@@ -502,6 +502,20 @@ static void fxfs_dax_prune(struct fxfs_dax *dax, struct fxfs_dax_range *range)
 }
 
 /*
+ * fxdax: makes `range`'s `pages` pages from `page` on not writable, a bit at a time, atomically:
+ * outside the gate, as the sealer clears them all locklessly (fxfs_dax_seal), a word written back
+ * whole could set again bits it had just cleared, and a store went to a sealed page (TASK-79.50).
+ */
+static void fxfs_dax_clear_writable(struct fxfs_dax_range *range, unsigned long page,
+				    unsigned long pages)
+{
+	unsigned long i;
+
+	for (i = page; i < page + pages; i++)
+		clear_bit(i, range->writable);
+}
+
+/*
  * fxdax: has `range` say piece `e` of its chunk is mapped, as mapping it did (`err`): writably if
  * it is open. A sealed extent the device doesn't hold was never written: its blocks read as zeros,
  * a hole, as Fxfs reads them. (Blocks a write allocated before a seal sealed their extent
@@ -527,7 +541,7 @@ static int fxfs_dax_mapped(struct fxfs_dax_range *range, const struct fxfs_dax_e
 	if (e->open)
 		bitmap_set(range->writable, page, pages);
 	else
-		bitmap_clear(range->writable, page, pages);
+		fxfs_dax_clear_writable(range, page, pages);
 	return e->open;
 }
 
@@ -1553,9 +1567,11 @@ static void fxfs_dax_put_range(struct fxfs_dax *dax, struct fxfs_dax_range *rang
 /*
  * Drops `inode`'s ranges of chunks `first` to `last` too small for the file to be `size` bytes
  * long, or all of them if `size` is negative, once nothing uses their pages: they are mapped again
- * as needed. With the inode's invalidate_lock held for writing.
+ * as needed. With the inode's invalidate_lock held for writing. fxdax: unless `pinned`, -EBUSY
+ * rather than wait for a page pinned (TASK-79.49).
  */
-static int fxfs_dax_drop(struct inode *inode, pgoff_t first, pgoff_t last, loff_t size)
+static int fxfs_dax_drop_pinned(struct inode *inode, pgoff_t first, pgoff_t last, loff_t size,
+				bool pinned)
 {
 	struct fxfs_dax_file *file = fxfs_dax_file(inode);
 	struct fxfs_dax *dax = fxfs_dax_of(inode);
@@ -1580,6 +1596,11 @@ static int fxfs_dax_drop(struct inode *inode, pgoff_t first, pgoff_t last, loff_
 		up_write(&file->sem);
 		if (!busy)
 			return 0;
+		/* fxdax: a page pinned, which a fault doesn't wait for (fxfs_dax_drop_slice). */
+		if (!pinned && dax_layout_busy_page_range(inode->i_mapping,
+							   (loff_t)first << FXFS_DAX_SHIFT,
+							   ((loff_t)(last + 1) << FXFS_DAX_SHIFT) - 1))
+			return -EBUSY;
 		/* A fault in progress, or a page pinned: wait for it. */
 		err = fxfs_dax_break_layouts(inode, (loff_t)first << FXFS_DAX_SHIFT);
 		if (err)
@@ -1587,6 +1608,12 @@ static int fxfs_dax_drop(struct inode *inode, pgoff_t first, pgoff_t last, loff_
 		if (fxfs_dax_wait_released(dax, seen, 10) < 0)
 			return -EINTR;
 	}
+}
+
+/* fxfs_dax_drop_pinned, waiting for pages pinned. */
+static int fxfs_dax_drop(struct inode *inode, pgoff_t first, pgoff_t last, loff_t size)
+{
+	return fxfs_dax_drop_pinned(inode, first, last, size, true);
 }
 
 /*
@@ -1605,14 +1632,15 @@ static int fxfs_dax_fit(struct inode *inode, loff_t size)
 
 /*
  * Drops `inode`'s range of the chunk at `pos`, a slice a write can't use (-EXDEV), to be mapped
- * again where its data now is.
+ * again where its data now is. fxdax: for a fault (`fault`), -EBUSY rather than wait for pages
+ * pinned, which the call faulting may hold itself (TASK-79.49).
  */
-static int fxfs_dax_drop_slice(struct inode *inode, loff_t pos)
+static int fxfs_dax_drop_slice(struct inode *inode, loff_t pos, bool fault)
 {
 	int err;
 
 	filemap_invalidate_lock(inode->i_mapping);
-	err = fxfs_dax_drop(inode, pos >> FXFS_DAX_SHIFT, pos >> FXFS_DAX_SHIFT, -1);
+	err = fxfs_dax_drop_pinned(inode, pos >> FXFS_DAX_SHIFT, pos >> FXFS_DAX_SHIFT, -1, !fault);
 	filemap_invalidate_unlock(inode->i_mapping);
 	return err;
 }
@@ -1842,6 +1870,12 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 			err = fxfs_dax_map_extents(dax, range, extents, count);
 			if (err) {
 				fxfs_device_store_end(dax->dev);
+				/*
+				 * fxdax: the blocks moved, but the range maps some where they were:
+				 * dropped, and mapped again from where Fxfs has them (TASK-79.106).
+				 */
+				if (err != -EXDEV)
+					err = -ESTALE;
 				goto out;
 			}
 			break;
@@ -1988,6 +2022,7 @@ static ssize_t fxfs_dax_write_iter(struct kiocb *iocb, struct iov_iter *from)
 	struct inode *inode = file_inode(iocb->ki_filp);
 	loff_t old_size;
 	ssize_t ret, done = 0;
+	unsigned int stale = 0;
 	int err;
 
 	if (iocb->ki_flags & IOCB_NOWAIT)
@@ -2021,12 +2056,17 @@ static ssize_t fxfs_dax_write_iter(struct kiocb *iocb, struct iov_iter *from)
 		pagefault_enable();
 		if (ret > 0) {
 			done += ret;
-		} else if (ret == -EXDEV) {
-			/* A slice the write can't use: dropped, the chunk is mapped again. */
-			ret = fxfs_dax_drop_slice(inode, iocb->ki_pos);
+		} else if (ret == -EXDEV || (ret == -ESTALE && !stale++)) {
+			/*
+			 * A slice the write can't use, or fxdax: a range mapping some of its blocks
+			 * where they were (TASK-79.106), once: dropped, the chunk is mapped again.
+			 */
+			ret = fxfs_dax_drop_slice(inode, iocb->ki_pos, false);
 			if (ret)
 				break;
 		} else if (ret != -EFAULT) {
+			if (ret == -ESTALE)
+				ret = -EIO;
 			break;
 		}
 		/* What faulted in may be gone again: the loop faults it in once more. */
@@ -2051,6 +2091,7 @@ static vm_fault_t fxfs_dax_do_fault(struct vm_fault *vmf, unsigned int order, bo
 {
 	struct inode *inode = file_inode(vmf->vma->vm_file);
 	struct super_block *sb = inode->i_sb;
+	unsigned int stale = 0;
 	vm_fault_t ret;
 	unsigned long pfn;
 	int error;
@@ -2070,8 +2111,20 @@ static vm_fault_t fxfs_dax_do_fault(struct vm_fault *vmf, unsigned int order, bo
 		filemap_invalidate_unlock_shared(inode->i_mapping);
 		fxfs_vfs_fill_end(sb);
 		if (!(ret & VM_FAULT_ERROR) ||
-		    (error != -EAGAIN && error != -EXDEV && error != -EBUSY))
+		    (error != -EAGAIN && error != -EXDEV && error != -EBUSY && error != -ESTALE))
 			break;
+		/* fxdax: a fault killed meanwhile tries no more (TASK-79.49). */
+		if (fatal_signal_pending(current)) {
+			ret = VM_FAULT_SIGBUS;
+			break;
+		}
+		/* fxdax: a range mapping blocks where they were, dropped once (TASK-79.106). */
+		if (error == -ESTALE) {
+			if (stale++ || fxfs_dax_drop_slice(inode, (loff_t)vmf->pgoff << PAGE_SHIFT,
+							   true))
+				break;
+			continue;
+		}
 		if (error == -EBUSY) {
 			/* A seal was in progress: waited for without the page's DAX entry. */
 			fxfs_device_wait_unsealed(fxfs_dax_of(inode)->dev);
@@ -2079,7 +2132,7 @@ static vm_fault_t fxfs_dax_do_fault(struct vm_fault *vmf, unsigned int order, bo
 		}
 		if (error == -EXDEV) {
 			/* A slice can't take the store: it maps the chunk no more. */
-			if (fxfs_dax_drop_slice(inode, (loff_t)vmf->pgoff << PAGE_SHIFT))
+			if (fxfs_dax_drop_slice(inode, (loff_t)vmf->pgoff << PAGE_SHIFT, true))
 				break;
 			continue;
 		}
@@ -2987,7 +3040,7 @@ void fxfs_dax_resize_end(struct inode *inode, loff_t size)
 			pr_warn("fxfs: unmapping the DAX window at %llx failed: %d\n",
 				range->window_offset, err);
 		bitmap_clear(range->mapped, page, range->pages - page);
-		bitmap_clear(range->writable, page, range->pages - page);
+		fxfs_dax_clear_writable(range, page, range->pages - page);
 		bitmap_clear(range->relocated, page, range->pages - page);
 		if (range->moved)
 			memset(&range->moved[page], 0, (range->pages - page) * sizeof(*range->moved));

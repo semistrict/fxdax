@@ -30,7 +30,8 @@ use fxfs::object_store::transaction::{LockKey, LockKeys, Mutation, Options, Tran
 use fxfs::object_store::volume::root_volume;
 use fxfs::object_store::{
     AttributeId, AttributeKey, DataObjectHandle, Directory, FileExtent, HandleOptions,
-    MAX_XATTR_NAME_SIZE, MAX_XATTR_VALUE_SIZE, NewChildStoreOptions, ObjectDescriptor, ObjectKey,
+    MAX_INLINE_XATTR_SIZE, MAX_XATTR_NAME_SIZE, MAX_XATTR_VALUE_SIZE, NewChildStoreOptions,
+    ObjectDescriptor, ObjectKey,
     ObjectKind, ObjectStore, ObjectValue, SetExtendedAttributeMode, StoreObjectHandle,
     StoreOptions, Timestamp, TombstoneMode, TrimMode, TrimResult,
 };
@@ -835,7 +836,10 @@ impl Fxfs {
     }
 
     /// Creates `name` in the directory `dir`, as `mode` says: a directory, or a file, which may be
-    /// a special file (as Starnix and fxdax make them), owned by `uid` and `gid`.
+    /// a special file (as Starnix and fxdax make them), owned by `uid` and `gid`. fxdax: with the
+    /// extended attributes `xattrs`, names and values, in its transaction, as the ACLs it inherits:
+    /// written back after, a crash could keep the new object without them (TASK-79.29). Those too
+    /// large to keep inline in its record are written back with it (`write_inode`), as before.
     pub async fn create(
         &self,
         dir: u64,
@@ -844,6 +848,7 @@ impl Fxfs {
         rdev: u64,
         uid: u32,
         gid: u32,
+        xattrs: &[(&[u8], &[u8])],
     ) -> Result<[Attr; 2], Error> {
         let name = utf8_name(name)?;
         self.drain(&[dir]).await?;
@@ -866,7 +871,27 @@ impl Fxfs {
             child.update_attributes(&mut transaction, Some(&attributes), None).await?;
             child.object_id()
         };
-        self.commit_new(transaction, ino, dir.object_id()).await
+        let mut later = Vec::new();
+        for &(name, value) in xattrs {
+            ensure!(name.len() <= MAX_XATTR_NAME_SIZE, FxfsError::TooBig);
+            ensure!(value.len() <= MAX_XATTR_VALUE_SIZE, FxfsError::TooBig);
+            if value.len() <= MAX_INLINE_XATTR_SIZE {
+                transaction.add(
+                    self.volume.store_object_id(),
+                    Mutation::replace_or_insert_object(
+                        ObjectKey::extended_attribute(ino, name.to_vec()),
+                        ObjectValue::inline_extended_attribute(value),
+                    ),
+                );
+            } else {
+                later.push((name, value));
+            }
+        }
+        let attrs = self.commit_new(transaction, ino, dir.object_id()).await?;
+        for (name, value) in later {
+            self.change_xattr(ino, name, Some(value.to_vec()));
+        }
+        Ok(attrs)
     }
 
     /// Creates the symlink `name` in the directory `dir`, to `target`, owned by `uid` and `gid`.

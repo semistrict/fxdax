@@ -201,12 +201,22 @@ int fxfs_readdir(struct fxfs *fs, u64 dir, u64 index, const char *after, size_t 
  * left them: the directories', and those of the inodes it linked.
  */
 
+/* fxdax: an extended attribute a new inode is made with (fxfs_create): its full name, its value. */
+struct fxfs_xattr {
+	const char *name;
+	size_t name_len;
+	const void *value;
+	size_t value_len;
+};
+
 /*
  * Creates `name` in directory `dir` as `mode` says: a directory, a regular file, or a special
- * file (FIFO, socket or device `rdev`), owned by `uid` and `gid`.
+ * file (FIFO, socket or device `rdev`), owned by `uid` and `gid`. fxdax: with the `nr_xattrs`
+ * extended attributes `xattrs`, the ACLs it inherits, in the same transaction (TASK-79.29).
  */
 int fxfs_create(struct fxfs *fs, u64 dir, const char *name, size_t len, u32 mode, u64 rdev,
-		u32 uid, u32 gid, struct fxfs_attr *attr, struct fxfs_attr *dir_attr);
+		u32 uid, u32 gid, const struct fxfs_xattr *xattrs, size_t nr_xattrs,
+		struct fxfs_attr *attr, struct fxfs_attr *dir_attr);
 /* The longest target a symlink has: PATH_MAX - 1, as Fxfs's MAX_LONG_SYMLINK. */
 #define FXFS_SYMLINK_MAX 4095
 
