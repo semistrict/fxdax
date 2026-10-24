@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-24 15:35'
-updated_date: '2026-10-24 16:00'
+updated_date: '2026-10-24 23:13'
 labels:
   - bug
 dependencies: []
@@ -31,4 +31,6 @@ gce_create (scripts/lib/gce.sh) only tries the other zones of the first zone's r
 
 <!-- SECTION:NOTES:BEGIN -->
 Again in us-central1 (2026-10-24): 500 GB of SSD quota a region fits two 200 GB hosts; the third create fails though us-west1 had none in use.
+
+Also the project's global quota: CPUS-ALL-REGIONS 32 (2026-10-24, r81 refused with three n2-standard-8 hosts of this session up and another session's): a fourth host waits for one to go.
 <!-- SECTION:NOTES:END -->
