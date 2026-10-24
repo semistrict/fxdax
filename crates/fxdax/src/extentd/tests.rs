@@ -2913,3 +2913,33 @@ fn stores_held_through_their_connections_are_let_go_once_they_are() {
     assert_eq!(delete_store(&path).map_err(|error| error.errno()), Ok(()));
     assert_eq!(resizing.join().unwrap(), Err(Errno::ETIMEDOUT));
 }
+
+/// TASK-79.16: a VM process that keeps as much stream data in flight as the protocol allows,
+/// whole extents' writes of eight threads, four in flight at once, the others waiting for room
+/// until one is answered, is served on: what a request's payload holds is counted in flight until
+/// its reply is queued, and the reply's bytes from then, not both (`server::Answer`), which, for a
+/// while, would have a VM process within the bounds let go.
+#[test]
+fn vm_processes_within_the_bounds_are_served_on() {
+    const WRITERS: u64 = 8;
+    const ROUNDS: u64 = 8;
+    host();
+    let dir = tempfile::tempdir().unwrap();
+    let (store, served) = connect(&dir.path().join("store"), 1 << 30);
+    let store = std::sync::Arc::new(store);
+    let extent = pattern(3, super::wire::MAX_PAYLOAD as usize);
+    let extent = std::sync::Arc::new(extent);
+    let writers: Vec<_> = (1..=WRITERS)
+        .map(|sequence| {
+            let (store, extent) = (store.clone(), extent.clone());
+            std::thread::spawn(move || {
+                let id = ExtentId { branch: store.branch(), sequence };
+                (0..ROUNDS).map(|_| write(&store, id, 0, &extent)).collect::<Vec<_>>()
+            })
+        })
+        .collect();
+    let written: Vec<_> = writers.into_iter().map(|writer| writer.join().unwrap()).collect();
+    assert_eq!(written, vec![vec![Ok(()); ROUNDS as usize]; WRITERS as usize]);
+    drop(store);
+    served.join().unwrap();
+}
