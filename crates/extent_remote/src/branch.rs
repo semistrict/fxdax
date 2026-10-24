@@ -168,11 +168,84 @@ pub async fn delete(
     }
 }
 
+/// Deletes `child`, the child of a fork, as [`delete`] does, but only if its branch is the one the
+/// fork made: its record names `origin`, the fork's place in its parent's branch, or it has no
+/// record yet, as a fork whose segment has not been acknowledged has not. A fork whose segment never
+/// went to object storage names no `origin`: its child has no record but the one its deletion
+/// gives it. A branch of another's, whose ID the fork's child was given, as a guest may give any,
+/// is left as it is (TASK-79.82); so is a branch deleted already, whoever's. Returns whether the
+/// fork's branch is gone, deleted now or before: `false` for another's.
+///
+/// An ID found free may be taken by another branch's record before the deletion takes the child's
+/// lease, which no single request to object storage rules out: a fork looks for its child's record
+/// before it is made (`ExtentStore::fork`), so that this only arises for an ID another branch
+/// takes while the fork is being made or deleted.
+pub async fn delete_fork(
+    bucket: &impl Bucket,
+    child: u64,
+    origin: Option<Origin>,
+    holder: u64,
+    token: u64,
+) -> Result<bool, Error> {
+    match record(bucket, child).await? {
+        Some(record) if record.deleted => return Ok(true),
+        Some(record) if origin.is_none() || record.origin != origin => return Ok(false),
+        _ => {}
+    }
+    delete(bucket, child, holder, token).await?;
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::sim::bucket::{Direct, SimBucket};
     use futures::executor::block_on;
+
+    /// TASK-79.82: a fork's child is deleted only if its branch is the fork's: one with no record,
+    /// or whose record names the fork's origin. One whose record is another's, of no parent, or of
+    /// another point of the fork's parent, is left as it is, as is one whose record names the
+    /// parent while the fork's segment never went, the fork naming no origin. One deleted is gone
+    /// already.
+    #[test]
+    fn forks_delete_only_their_own_branches() {
+        use crate::batch::{Batch, Commit};
+        use crate::writer::Writer;
+        let memory = std::sync::Arc::new(object_store::memory::InMemory::new());
+        let bucket = std::sync::Arc::new(crate::store::Store::new(memory, ""));
+        let live = |child| {
+            let record = block_on(record(&*bucket, child)).unwrap();
+            record.map(|record| !record.deleted)
+        };
+        // A fork of branch 1's to 3, made, its child given its record.
+        let origin = block_on(async {
+            create(&*bucket, 1).await.unwrap();
+            let parent = Writer::open(bucket.clone(), 1, 10, 0).await.unwrap();
+            let forking = Batch::from(Commit { tag: 1, ..Commit::default() });
+            let at = parent.add_segment(forking.fork(3, &mut parent.chain()).frame()).unwrap();
+            parent.upload(at).await.unwrap();
+            parent.acknowledge().await.unwrap();
+            Origin { parent: 1, at }
+        });
+        assert_eq!(live(3), Some(true));
+        assert_eq!(block_on(delete_fork(&*bucket, 3, Some(origin), 9, 0)), Ok(true));
+        assert_eq!(live(3), Some(false));
+        assert_eq!(block_on(delete_fork(&*bucket, 3, None, 9, 0)), Ok(true));
+        // Forks whose children have no record yet, whose segments went or not.
+        assert_eq!(block_on(delete_fork(&*bucket, 2, Some(origin), 9, 0)), Ok(true));
+        assert_eq!(block_on(delete_fork(&*bucket, 4, None, 9, 0)), Ok(true));
+        assert_eq!((live(2), live(4)), (Some(false), Some(false)));
+
+        block_on(create(&*bucket, 5)).unwrap();
+        block_on(record_fork(&*bucket, 6, Origin { at: origin.at + 1, ..origin })).unwrap();
+        block_on(record_fork(&*bucket, 7, origin)).unwrap();
+        for (child, origin) in [(5, Some(origin)), (6, Some(origin)), (7, None)] {
+            assert_eq!(block_on(delete_fork(&*bucket, child, origin, 9, 0)), Ok(false), "{child}");
+            assert_eq!(live(child), Some(true), "{child}");
+            let lease = block_on(take_lease(&*bucket, &layout::lease(child), 10 + child, 0));
+            assert_eq!(lease, Ok(1), "{child}");
+        }
+    }
 
     /// A fork's child gets one record: given again from the same origin, it stands; from another,
     /// the child is another branch's, which is corrupt.
