@@ -1801,11 +1801,16 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 	}
 	start = fxfs_dax_chunk_start(range);
 	end = min_t(loff_t, pos + length, start + ((loff_t)range->pages << PAGE_SHIFT));
-	/* A range covers the file's chunk as its size grows (fxfs_dax_fit). */
-	if (WARN_ON_ONCE(end <= pos)) {
+	/*
+	 * A range covers the file's chunk as its size grows (fxfs_dax_fit). fxdax: unless a fault
+	 * mapped it again as small as the file was, between the write's fit and its iomap: dropped,
+	 * as a slice the write can't use is, and mapped again as large as it needs (-EXDEV). It was
+	 * a WARN and EIO (TASK-79.28).
+	 */
+	if (end <= pos) {
 		kvfree(extents);
 		fxfs_dax_put_range(dax, range);
-		return -EIO;
+		return -EXDEV;
 	}
 	if (size)
 		size = end;
