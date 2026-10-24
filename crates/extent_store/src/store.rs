@@ -6,7 +6,7 @@
 
 use crate::dir::{Dir, File, not_found};
 use crate::durability::{Batch, Durability, Syncs};
-use crate::framed::{Aligned, Framed, Packed, Part, Source, read_aligned};
+use crate::framed::{Aligned, Framed, Packed, Part, Source, read_aligned, read_data};
 use crate::index::{
     Appended, IndexLog, IndexWrite, Recovered, rebuild, recover, start_fork, write_records,
 };
@@ -995,13 +995,9 @@ impl<D: Dir> Store<D> {
             let len = part.len() as usize;
             let out = &mut buf[at..at + len];
             match part {
-                Part::Data { file, offset, len, raw } => {
+                Part::Data { file, offset, len, unframed } => {
                     let mut data = Aligned::new(len as usize);
-                    if raw {
-                        file.read_cached(data.as_mut_slice(), offset)?;
-                    } else {
-                        file.read_at(data.as_mut_slice(), offset)?;
-                    }
+                    read_data(&*file, unframed, data.as_mut_slice(), offset)?;
                     out.copy_from_slice(data.as_slice());
                 }
                 Part::Packed { part, skip, .. } => {

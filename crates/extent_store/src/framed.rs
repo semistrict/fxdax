@@ -281,9 +281,9 @@ impl<F: File> Source<F> {
     }
 }
 
-/// Adds `len` bytes at `offset` in `file`, raw if `raw`, to `parts`, extending the last if they
-/// follow it.
-fn push_data<F>(parts: &mut Vec<Part<F>>, file: &Arc<F>, offset: u64, len: u64, raw: bool) {
+/// Adds `len` bytes at `offset` in `file`, unframed if `unframed`, to `parts`, extending the last
+/// if they follow it.
+fn push_data<F>(parts: &mut Vec<Part<F>>, file: &Arc<F>, offset: u64, len: u64, unframed: bool) {
     if let Some(Part::Data { file: last, offset: last_offset, len: last_len, .. }) =
         parts.last_mut()
         && Arc::ptr_eq(last, file)
@@ -292,7 +292,7 @@ fn push_data<F>(parts: &mut Vec<Part<F>>, file: &Arc<F>, offset: u64, len: u64, 
         *last_len += len;
         return;
     }
-    parts.push(Part::Data { file: file.clone(), offset, len, raw });
+    parts.push(Part::Data { file: file.clone(), offset, len, unframed });
 }
 
 /// A part of a range of an extent: bytes of a file, raw; bytes of a part of a file stored
@@ -303,9 +303,11 @@ pub enum Part<F> {
         file: Arc<F>,
         offset: u64,
         len: u64,
-        /// fxdax: whether its file is raw, written lately through the host's page cache, which
-        /// reads of it go through ([`File::read_cached`](crate::File::read_cached)).
-        raw: bool,
+        /// fxdax: whether its file is unframed, a raw file, which the store wrote lately: not a
+        /// framed file, whose parts stored as they are ([`Encoding::Raw`]) are data too. Reads of
+        /// an unframed file go through the host's page cache
+        /// ([`File::read_cached`](crate::File::read_cached)).
+        unframed: bool,
     },
     /// `len` bytes from `skip` in the part.
     Packed {
@@ -333,6 +335,19 @@ impl<F> Part<F> {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+}
+
+/// fxdax: reads `buf.len()` bytes at `offset` in `file`, a [`Part::Data`]'s, which is `unframed`
+/// or not: through the host's page cache if it is ([`File::read_cached`]), which holds what the
+/// store wrote to it lately, else as its file's reads go. Every read of the store's of a part of
+/// data reads so: its seal copies, and `Store::read`, `read_kept` and `read_view`, whoever asks.
+pub(crate) fn read_data<F: File>(
+    file: &F,
+    unframed: bool,
+    buf: &mut [u8],
+    offset: u64,
+) -> io::Result<()> {
+    if unframed { file.read_cached(buf, offset) } else { file.read_at(buf, offset) }
 }
 
 /// A part of a file, stored compressed.
