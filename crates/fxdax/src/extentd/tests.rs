@@ -2965,3 +2965,94 @@ fn vm_processes_within_the_bounds_are_served_on() {
     drop(store);
     served.join().unwrap();
 }
+
+/// TASK-79.43: a window's mappings are answered beside as much stream data in flight as the
+/// protocol allows, and their VM process served on: what a reply to `MAPPINGS` holds, as many
+/// mappings as a window of its size may have, takes none of the room the daemon keeps for what it
+/// queues otherwise, stage operations and commits. Here a window of pages every other of which is
+/// a mapping of its own, their reply larger than that room, behind whole extents' reads, their
+/// replies unread, and an `INFO` after.
+#[test]
+fn window_mappings_are_answered_beside_the_stream_data_in_flight() {
+    use super::wire::*;
+    let ps = page_size();
+    // A reply of mappings larger than the daemon's room for what it queues but replies.
+    let count = (18 << 20) / MAPPING_BYTES;
+    host();
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("extentd.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || serve(listener));
+    let path = dir.path().join("store");
+    let (sender, mut receiver, _stream, branch) = raw_connection(&socket, &path, 1 << 30);
+    call(&sender, &mut receiver, Header::new(WINDOW, 2).with_args(&[2 * count * ps]), &[]);
+    // The mappings, as many in flight as a thread taking their replies leaves room for.
+    let sender = std::sync::Arc::new(sender);
+    let (answered, answers) = std::sync::mpsc::channel();
+    let receiving = {
+        let sender = sender.clone();
+        std::thread::spawn(move || {
+            for _ in 0..count {
+                let reply = loop {
+                    let message = receiver.receive(|| 0).unwrap().unwrap();
+                    match message.header.kind {
+                        REPLY => break message,
+                        _ if message.header.flags & STAGE_ACK != 0 => {
+                            sender.send(Header::new(ACK, message.header.id), &[], &[]).unwrap()
+                        }
+                        _ => {}
+                    }
+                };
+                assert_eq!(reply.header.status, 0, "mapping {}", reply.header.id);
+                answered.send(()).unwrap();
+            }
+            receiver
+        })
+    };
+    for n in 0..count {
+        if n >= 1024 {
+            answers.recv().unwrap();
+        }
+        let args = [0, 0, 0, ps, 2 * n * ps];
+        let zeros = Header::new(MAP, 3 + n).with_args(&args).with_flags(MAP_ZEROS);
+        sender.send(zeros, &[], &[]).unwrap();
+    }
+    let mut receiver = receiving.join().unwrap();
+
+    // A whole extent read back as many times as the protocol's stream data holds, and the
+    // window's mappings, their replies unread, which the daemon holds.
+    let id = 3 + count;
+    let extent = pattern(4, MAX_PAYLOAD as usize);
+    let written = Header::new(WRITE, id).with_args(&[branch, 1, 0]);
+    assert_eq!(call(&sender, &mut receiver, written, &extent).header.status, 0);
+    let reads = MAX_STREAM_BYTES / MAX_PAYLOAD;
+    for n in 1..=reads {
+        let read = Header::new(READ, id + n).with_args(&[branch, 1, 0, MAX_PAYLOAD]);
+        sender.send(read, &[], &[]).unwrap();
+    }
+    sender.send(Header::new(MAPPINGS, id + reads + 1), &[], &[]).unwrap();
+    let holder = super::stores::open_paths().holder(&super::stores::store_key(&path)).unwrap();
+    // All of them queued, but what the socket holds, a mebibyte at most.
+    let replies = reads * MAX_PAYLOAD + count * MAPPING_BYTES - (1 << 20);
+    while holder.queued() < replies {
+        std::thread::yield_now();
+    }
+    sender.send(Header::new(INFO, id + reads + 2), &[], &[]).unwrap();
+    // Their replies, in any order, as the daemon serves its requests side by side.
+    let answered = within(std::time::Duration::from_secs(60), move || {
+        let mut answered = Vec::new();
+        while answered.len() < reads as usize + 2 {
+            let message = receiver.receive(|| 0).unwrap().expect("the daemon let it go");
+            if message.header.kind == REPLY {
+                let header = message.header;
+                answered.push((header.id - id, header.status, message.payload.len()));
+            }
+        }
+        answered.sort();
+        answered
+    });
+    let mut expected: Vec<_> = (1..=reads).map(|n| (n, 0, MAX_PAYLOAD as usize)).collect();
+    expected.push((reads + 1, 0, (count * MAPPING_BYTES) as usize));
+    expected.push((reads + 2, 0, 0));
+    assert_eq!(answered, Ok(expected));
+}
