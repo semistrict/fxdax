@@ -255,11 +255,16 @@ impl Device for ImageDevice {
         }
         let _writing = self.writes.write().await;
         // The store holds a write back while a commit waits for those in progress, which may be
-        // this executor's futures: its thread hands them to another meanwhile, rather than wait
-        // with them, which a commit would wait for for ever.
-        let write = tokio::task::block_in_place(|| {
-            self.store.begin_write(extent, offset, buffer.len() as u64)
-        })?;
+        // futures of this very task, as Fxfs joins its writes: this thread must not wait, as they
+        // can't end while it does, and the commit would wait for them for ever (TASK-98). A
+        // thread of its own waits, and the write is tried again.
+        let write = loop {
+            if let Some(write) = self.store.try_begin_write(extent, offset, buffer.len() as u64)? {
+                break write;
+            }
+            let store = self.store.clone();
+            unblock(move || store.wait_until_writes_resume()).await?;
+        };
         let (addr, len) = (buffer.as_ptr() as usize, buffer.len());
         // The host reads the buffer.
         self.transfer(
@@ -459,6 +464,56 @@ mod tests {
         go.send(()).unwrap();
         let waited = written.recv_timeout(std::time::Duration::from_secs(30));
         assert_eq!(waited, Ok(()), "the held write never went on");
+        committing.join().unwrap();
+    }
+
+    /// TASK-98: as above, with the write in progress a future of the held write's own task, as
+    /// Fxfs joins its writes: the held write waits off the task's thread, which the other future
+    /// ends on. fxdaxctl import hung so, every executor thread waiting in `begin_write` for a
+    /// commit that waited for the writes those threads had begun.
+    #[test]
+    fn writes_held_back_by_a_commit_leave_their_own_task_running() {
+        let (device, _, _dir) = device(16 * MIB as u64);
+        let store = device.store.clone();
+        let device = Arc::new(device);
+        let executor = crate::executor::Executor::new(1);
+        let (go, went) = futures::channel::oneshot::channel::<()>();
+        let (held, holding) = futures::channel::oneshot::channel::<()>();
+        let (began, beginning) = std::sync::mpsc::channel();
+        let (writing, entered) = std::sync::mpsc::channel();
+        let (wrote, written) = std::sync::mpsc::channel();
+        let in_task = store.clone();
+        executor.spawn(async move {
+            // A write in progress, which ends once told to.
+            let in_progress = async {
+                let write = in_task.begin_write(extent(1), 0, BLOCK as u64).unwrap();
+                began.send(()).unwrap();
+                let _ = went.await;
+                write.finish();
+            };
+            // And beside it, once a commit holds writes back, another.
+            let held_back = async {
+                let _ = holding.await;
+                // In the same poll as the write begins: the other is told to end only after.
+                writing.send(()).unwrap();
+                write(&device, extent(2), 0, &pattern(0, BLOCK as usize)).await;
+            };
+            futures::join!(in_progress, held_back);
+            wrote.send(()).unwrap();
+        });
+        beginning.recv().unwrap();
+        let committing = std::thread::spawn({
+            let store = store.clone();
+            move || store.commit(None).unwrap()
+        });
+        while !store.holding_writes() {
+            std::thread::yield_now();
+        }
+        held.send(()).unwrap();
+        entered.recv().unwrap();
+        go.send(()).unwrap();
+        let waited = written.recv_timeout(std::time::Duration::from_secs(30));
+        assert_eq!(waited, Ok(()), "the task's writes never ended");
         committing.join().unwrap();
     }
 
