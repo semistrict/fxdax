@@ -749,9 +749,13 @@ impl<D: Dir> Store<D> {
             Some(placement) => matches!(placement, Placement::Segment),
             None => end < self.options.large_extent,
         };
-        // fxdax: what it writes over, in a segment, takes room too (TASK-79.2).
+        // fxdax: what it writes over, in a segment, takes room too (TASK-79.2). And what it adds
+        // to the branch's files: all it writes, to a segment, which it appends to; what the
+        // extent's raw file takes past what it did, as it is written in place (TASK-79.89).
         let overwrites = if to_segment { len - grows.min(len) } else { 0 };
-        state.check_room(grows, overwrites)?;
+        let adds =
+            if to_segment { len } else { end.saturating_sub(state.uncommitted.raw_of(extent)) };
+        state.check_room(grows, overwrites, adds)?;
         if to_segment {
             self.make_room(&mut state, len)?;
         }
@@ -768,6 +772,11 @@ impl<D: Dir> Store<D> {
                 (placement, opening)
             }
         };
+        // fxdax: its raw file, if it has one, takes what it writes from now on, which the writes
+        // begun after it count (TASK-79.89).
+        if let Placement::Own(_) = placement {
+            state.uncommitted.raw_to(extent, end);
+        }
         let (file, file_offset, segment) = match placement {
             Placement::Own(file) => (file, offset, None),
             Placement::Segment => {

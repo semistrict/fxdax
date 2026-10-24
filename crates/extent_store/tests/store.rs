@@ -12,7 +12,7 @@ use extent_store::{
     Closed, Description, Dir, File as _, Footprint, HostDir, Lineage, MemDir, MemFile, NoSpace,
     Options, Part, Place, RemoteData, Store, TooLong, TooSmall,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use storage_device::{ExtentId, NoExtent, OtherBranch, SealedExtent};
 
@@ -2334,6 +2334,141 @@ fn dead_space_the_uploader_lets_go_takes_none_of_the_room() {
         assert!(read(&store, extent(sequence), 0, BLOCK) == noise(sequence, BLOCK), "{sequence}");
     }
     assert_eq!(read(&store, extent(200), 0, 54 * BLOCK), pattern(200, 0, 54 * BLOCK));
+}
+
+/// fxdax: the bytes the branch's files of extents' data take of the host's disk: its segments',
+/// open and closed, and its extents' own files and raw files (TASK-79.89).
+fn data_files(dir: &MemDir) -> u64 {
+    let mut bytes = 0;
+    for kind in ["segments", "open-segments", "extents", "open-extents"] {
+        for name in dir.list(&of(kind, BRANCH)).unwrap() {
+            let file = dir.open(&format!("{}/{name}", of(kind, BRANCH)), true).unwrap();
+            bytes += file.size().unwrap();
+        }
+    }
+    bytes
+}
+
+/// fxdax: the bytes of the frame of closed segment `name`: what its file takes past its data, its
+/// footer, table and trailer, which say what it holds (TASK-79.89).
+fn frame(dir: &MemDir, name: &str) -> u64 {
+    let file = dir.open(&format!("{}/{name}", of("segments", BRANCH)), true).unwrap();
+    let mut bytes = vec![0; file.size().unwrap() as usize];
+    file.read_at(&mut bytes, 0).unwrap();
+    (bytes.len() - extent_frame::data(&bytes).unwrap().len()) as u64
+}
+
+/// fxdax: a guest writing a segment of blocks of data that does not compress at each commit, and
+/// freeing all but two of them at the next, which pin the segment, until it lets go of them too,
+/// twenty-one commits later; a pass of cleaning behind each commit copying `pass` bytes at most,
+/// which the next commit makes the extents' places (TASK-79.89). Its extents hold less than its
+/// capacity. Returns how many of its writes were refused. Each refused write would have taken the
+/// branch's files past three times its capacity of the host's disk; and each commit leaves them
+/// within it, but for what no write counted, the frames of the segments closed and cleaning's
+/// copies, since they last were.
+fn churn_pinning(pass: u64) -> usize {
+    let capacity = 64 * BLOCK as u64;
+    let bound = 3 * capacity;
+    let dir = MemDir::new();
+    let store = create(dir.clone(), capacity);
+    let (mut live, mut refused) = (BTreeSet::new(), 0);
+    let free = |live: &mut BTreeSet<u64>, sequence: u64| {
+        store.free(extent(sequence)).unwrap();
+        live.remove(&sequence);
+    };
+    // What the files may take past the bound, which no write counted: the frames of the segments
+    // closed, and cleaning's copies, since they last took no more than it.
+    let (mut uncounted, mut closed) = (0, Vec::new());
+    for cycle in 0..100 {
+        let first = 16 * cycle;
+        if cycle > 0 {
+            for sequence in first - 14..first {
+                free(&mut live, sequence);
+            }
+        }
+        if cycle > 20 {
+            let pins = 16 * (cycle - 21);
+            free(&mut live, pins);
+            free(&mut live, pins + 1);
+        }
+        for sequence in first..first + 16 {
+            match store.write(extent(sequence), 0, &noise(sequence, BLOCK)) {
+                Ok(()) => drop(live.insert(sequence)),
+                Err(error) => {
+                    assert_eq!(error.downcast_ref::<NoSpace>(), Some(&NoSpace), "{error:?}");
+                    let files = data_files(&dir);
+                    assert!(files + BLOCK as u64 > bound, "refused with {files} bytes of files");
+                    refused += 1;
+                }
+            }
+        }
+        store.commit(None).unwrap();
+        let segments = dir.list(&of("segments", BRANCH)).unwrap();
+        for name in segments.iter().filter(|name| !closed.contains(*name)) {
+            uncounted += frame(&dir, name);
+        }
+        closed = segments;
+        let files = data_files(&dir);
+        assert!(files <= bound + uncounted, "{files} bytes of files, past {bound} and {uncounted}");
+        if files <= bound {
+            uncounted = 0;
+        }
+        if store.cleaning_due(64 << 20, 0.5).unwrap() {
+            uncounted += store.clean_behind(0.5, pass).unwrap();
+        }
+    }
+    for sequence in live {
+        assert!(read(&store, extent(sequence), 0, BLOCK) == noise(sequence, BLOCK), "{sequence}");
+    }
+    refused
+}
+
+/// fxdax: a guest that frees faster than cleaning behind its commits takes back, a block a pass,
+/// has the branch's files take the host's disk past three times its capacity, its extents holding
+/// less than it: as far as cleaning lags its frees, as cleaning's pace alone bounded the files
+/// across commits. Its writes past the bound are refused (`ENOSPC`), until cleaning, or its own
+/// frees, take back enough (TASK-79.89).
+#[test]
+fn files_past_three_times_the_capacity_refuse_writes() {
+    assert_eq!(churn_pinning(BLOCK as u64), 637);
+}
+
+/// fxdax: the guest of `files_past_three_times_the_capacity_refuse_writes`, cleaned behind at the
+/// extent daemon's pace, a pass of 64 MiB behind each commit, is never refused: the bound is far
+/// from what an honest guest's files take (TASK-79.89).
+#[test]
+fn cleaning_at_its_pace_keeps_a_churning_guest_from_the_bound() {
+    assert_eq!(churn_pinning(64 << 20), 0);
+}
+
+/// fxdax: at the bound, the write a commit comes with (doc-4's `WRITE_COMMIT`, or a DAX guest's
+/// extents mapped writably, which its commits write first) is refused, until cleaning's copies
+/// wait for the commit: what the commit takes back of the files, as the copies land, counts as
+/// taken back for it, a capacity's worth at most. Refused, the guest could never commit again,
+/// and the copies, which wait for its commit, never land (TASK-79.89).
+#[test]
+fn the_write_a_commit_comes_with_takes_what_the_commit_takes_back() {
+    let capacity = 64 * BLOCK as u64;
+    let dir = MemDir::new();
+    let store = create(dir.clone(), capacity);
+    // Eleven segments, each pinned by one extent: 704 KiB of files, and their frames.
+    for cycle in 0..11 {
+        churn(&store, 16 * cycle);
+    }
+    assert!(data_files(&dir) > 11 * 16 * BLOCK as u64, "{} bytes of files", data_files(&dir));
+    // The write the next commit comes with, of an extent of its own: 17 blocks, past the bound.
+    let data = noise(200, 17 * BLOCK);
+    error_is(store.write(extent(200), 0, &data), NoSpace);
+    assert!(store.cleaning_due(64 << 20, 0.5).unwrap());
+    assert_eq!(store.clean_behind(0.5, u64::MAX).unwrap(), 11 * BLOCK as u64);
+    store.write(extent(200), 0, &data).unwrap();
+    store.commit(None).unwrap();
+    let usage = store.usage().unwrap();
+    assert_eq!((usage.segments, usage.segment_bytes, usage.dead_bytes), (1, 11 * BLOCK as u64, 0));
+    for sequence in (0..176).step_by(16) {
+        assert!(read(&store, extent(sequence), 0, BLOCK) == noise(sequence, BLOCK), "{sequence}");
+    }
+    assert!(read(&store, extent(200), 0, 17 * BLOCK) == data);
 }
 
 /// A fork made and deleted holds the branch's segments no more: what the branch frees in them

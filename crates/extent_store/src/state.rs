@@ -170,10 +170,43 @@ impl<F: File> State<F> {
         self.garbage() > self.space.capacity()
     }
 
-    /// Fails with [`NoSpace`] unless a write may add `grows` bytes, and write over `overwrites`.
-    pub fn check_room(&self, grows: u64, overwrites: u64) -> Result<(), NoSpace> {
+    /// Fails with [`NoSpace`] unless a write may add `grows` bytes, and write over `overwrites`;
+    /// fxdax: and add `adds` bytes to what the branch's files take of the host's disk, as
+    /// [`Space::check_files`] says (TASK-79.89).
+    pub fn check_room(&self, grows: u64, overwrites: u64, adds: u64) -> Result<(), NoSpace> {
         let wasted = self.uncommitted.wasted() + overwrites;
-        self.space.check(grows, self.kept.for_views(), wasted)
+        self.space.check(grows, self.kept.for_views(), wasted)?;
+        self.space.check_files(self.file_bytes() + adds, || self.taken_back())
+    }
+
+    /// fxdax: the bytes of the host's disk the branch's files take that it alone holds
+    /// (TASK-79.89): its segments', but those another branch may hold extents in, which are that
+    /// branch's to let go of ([`Segments::file_bytes`]); its extents' own files; and the raw files
+    /// of those open, written in place.
+    pub fn file_bytes(&self) -> u64 {
+        self.segments.file_bytes() + self.own_files.bytes() + self.uncommitted.raw_bytes()
+    }
+
+    /// fxdax: the bytes of the host's disk the next commit takes back of the branch's files as
+    /// cleaning's copies land, which wait for it ([`Copied::lands`]): those of the segments they
+    /// leave no extent in, which it lets go of (TASK-79.89). Found going through the copies, at
+    /// most what a pass of cleaning copies, one extent each.
+    pub fn taken_back(&self) -> u64 {
+        let open = self.segments.open_segment();
+        let mut moved = BTreeMap::new();
+        for copied in self.uncommitted.copies() {
+            if !copied.lands(open, self.extents.get(&copied.extent)) {
+                continue;
+            }
+            let Data::Pieces(pieces) = &copied.entry.data else {
+                unreachable!("copies are of segments'")
+            };
+            for piece in pieces {
+                *moved.entry(piece.segment).or_default() += piece.len;
+            }
+        }
+        let uploads = &self.uploads;
+        self.segments.emptied_by(&moved, |segment| uploader_keeps(uploads, open.branch, segment))
     }
 
     /// What the store holds, as doc-4's `INFO` reports it.
@@ -192,6 +225,10 @@ impl<F: File> State<F> {
     }
 }
 
+/// fxdax: how many times its capacity a branch's files may take of the host's disk before writes
+/// are refused ([`Space`], TASK-79.89).
+pub(crate) const FILES_PER_CAPACITY: u64 = 3;
+
 /// The room a branch's extents take: the most they may hold, as its record says
 /// ([`Store::set_capacity`](crate::Store::set_capacity)), the bytes they hold, and those writes
 /// in progress may add. A write takes room only if what they hold and may add, with what views
@@ -209,7 +246,25 @@ impl<F: File> State<F> {
 /// behind the commits that come with the writer's writes, which a writer refused room for it
 /// could neither make nor know to. Counted as used past the capacity's worth, it found a guest's
 /// store full with a tenth of it used (`ENOSPC`), which the guest's filesystem did not survive.
-/// What the host's disk holds of it is bounded by cleaning's pace alone.
+///
+/// fxdax: what the branch's files take of the host's disk is bounded apart from the room
+/// (TASK-79.89): a write is refused once the files ([`State::file_bytes`]), with what it adds to
+/// them, would take more than [`FILES_PER_CAPACITY`] times the capacity, counted as they take the
+/// disk, framed and compressed, less what the next commit takes back of them as cleaning's copies
+/// land ([`State::taken_back`]), a capacity's worth at most. Bounded by cleaning's pace alone
+/// across commits, they grew without bound under a writer freeing faster than cleaning took back.
+/// An honest writer's files come nowhere near it: its extents hold its capacity at most, and what
+/// no extent is in, about as much again, cleaning being due once it takes the capacity's worth
+/// ([`State::garbage_past_capacity`]); but for what an uploader keeps of its frees, and of its
+/// segments, as far as it lags, which counts too. What the next commit takes back counts as taken
+/// back for the writes it comes with, which the bound would refuse otherwise, and so the commit:
+/// the copies, which wait for it, would never land, and the store would stay at the bound for
+/// good. A capacity's worth is the most those writes need, as the room bounds them; and what
+/// bounds the files should the copies not land, a segment closed between commits taking them,
+/// which no footer names as their extents' places: four times the capacity, as each write begins.
+/// Commits, and cleaning's copies, are never refused: the files take more by what cleaning copies,
+/// until the commits after take it back, by what a commit writes again sealing the extents written
+/// in pieces, and by the frames of the segments it closes, which say what they hold.
 pub(crate) struct Space {
     capacity: u64,
     /// The bytes extents hold.
@@ -240,6 +295,23 @@ impl Space {
             return Err(NoSpace);
         }
         Ok(())
+    }
+
+    /// fxdax: fails with [`NoSpace`] if the branch's files, taking `file_bytes` of the host's disk
+    /// with a write's, less what the next commit takes back of them, `taken_back()`, a capacity's
+    /// worth at most, would take more than [`FILES_PER_CAPACITY`] times the capacity (TASK-79.89).
+    /// What it takes back is found only if the files take more without it, as it goes through
+    /// cleaning's copies.
+    pub fn check_files(
+        &self,
+        file_bytes: u64,
+        taken_back: impl FnOnce() -> u64,
+    ) -> Result<(), NoSpace> {
+        let bound = self.capacity.saturating_mul(FILES_PER_CAPACITY);
+        if file_bytes <= bound || file_bytes - taken_back().min(self.capacity) <= bound {
+            return Ok(());
+        }
+        Err(NoSpace)
     }
 
     /// fxdax: of `wasted`, what is past the capacity's worth, which counts as used (TASK-79.2).
@@ -336,6 +408,8 @@ pub(crate) struct Uncommitted<F> {
     let_go: u64,
     /// fxdax: cleaning's copies, which the next commit makes their extents' places (TASK-79.2).
     copies: Vec<Copied>,
+    /// fxdax: the bytes the open extents' raw files take (TASK-79.89).
+    raw: u64,
 }
 
 /// fxdax: a copy of cleaning's: of `extent`, sealed, as `entry` was, in `piece`, which the segment
@@ -358,17 +432,18 @@ impl Copied {
 
 /// An extent open: where its data goes, and its opening's number, which the writes to it carry;
 /// fxdax: and the bytes its writes wrote over, in segments, which its pieces hold until it is
-/// sealed, or freed.
+/// sealed, or freed; and those its raw file takes, if it has one (TASK-79.89).
 struct Open<F> {
     placement: Placement<F>,
     opening: u64,
     overwritten: u64,
+    raw: u64,
 }
 
 impl<F> Default for Uncommitted<F> {
     fn default() -> Self {
         let (open, changes, copies) = (HashMap::new(), Vec::new(), Vec::new());
-        Self { open, openings: 0, changes, overwritten: 0, let_go: 0, copies }
+        Self { open, openings: 0, changes, overwritten: 0, let_go: 0, copies, raw: 0 }
     }
 }
 
@@ -402,7 +477,7 @@ impl<F> Uncommitted<F> {
     pub fn open(&mut self, extent: ExtentId, placement: Placement<F>) -> u64 {
         self.openings += 1;
         let opening = self.openings;
-        self.open.insert(extent, Open { placement, opening, overwritten: 0 });
+        self.open.insert(extent, Open { placement, opening, overwritten: 0, raw: 0 });
         opening
     }
 
@@ -421,6 +496,28 @@ impl<F> Uncommitted<F> {
         self.overwritten
     }
 
+    /// fxdax: `extent`, open, has its raw file take `end` bytes, if it took fewer: a write to it
+    /// that ends there began (TASK-79.89).
+    pub fn raw_to(&mut self, extent: ExtentId, end: u64) {
+        if let Some(open) = self.open.get_mut(&extent)
+            && end > open.raw
+        {
+            self.raw += end - open.raw;
+            open.raw = end;
+        }
+    }
+
+    /// fxdax: the bytes `extent`'s raw file takes, if it is open, in one (TASK-79.89).
+    pub fn raw_of(&self, extent: ExtentId) -> u64 {
+        self.open.get(&extent).map_or(0, |open| open.raw)
+    }
+
+    /// fxdax: the bytes the open extents' raw files take, which the next commit frames in files of
+    /// their own, and whose flush removes them (TASK-79.89).
+    pub fn raw_bytes(&self) -> u64 {
+        self.raw
+    }
+
     /// fxdax: `bytes` that writes since the last commit wrote are no extent's any more: of an
     /// extent freed while open, or of a write dropped (TASK-79.2).
     pub fn let_go(&mut self, bytes: u64) {
@@ -436,10 +533,12 @@ impl<F> Uncommitted<F> {
     }
 
     /// `extent`, freed, is open no more: where its data went, if it was. fxdax: what its writes
-    /// wrote over is let go of with the rest of what they wrote, which its free lets go of.
+    /// wrote over is let go of with the rest of what they wrote, which its free lets go of; and its
+    /// raw file, if it has one, which the next commit's flush removes.
     pub fn remove(&mut self, extent: ExtentId) -> Option<Placement<F>> {
         let open = self.open.remove(&extent)?;
         self.overwritten -= open.overwritten;
+        self.raw -= open.raw;
         Some(open.placement)
     }
 
@@ -477,6 +576,7 @@ impl<F> Uncommitted<F> {
         self.open.clear();
         self.overwritten = 0;
         self.let_go = 0;
+        self.raw = 0;
         std::mem::take(&mut self.changes)
     }
 }
