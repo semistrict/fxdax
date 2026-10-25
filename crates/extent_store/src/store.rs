@@ -660,9 +660,16 @@ impl<D: Dir> Store<D> {
             if rules().close_waits_for_framings {
                 state = self.framed(state);
             }
-            let closings = std::mem::take(&mut state.closings);
+            let mut closings = std::mem::take(&mut state.closings);
             state.closed = true;
             drop(state);
+            // fxdax: and those of the commits no flush took, as none does once the store failed
+            // (TASK-79.99).
+            if rules().close_waits_for_framings && rules().flushes_wait_for_every_framing {
+                let durability = self.durability.lock().unwrap();
+                let waiting = durability.waiting().flat_map(|pending| pending.closings.iter());
+                closings.extend(waiting.cloned());
+            }
             if rules().close_waits_for_framings {
                 for closing in &closings {
                     if let Err(err) = closing.wait() {
@@ -1686,11 +1693,19 @@ impl<D: Dir> Store<D> {
         // their framed files from now on, which are synced with the commits' data, their raw files
         // going once the commits are durable.
         let mut syncs = Syncs::default();
+        // Every commit's waited for, before any failure is said, so that none goes on framing as
+        // the branch is opened again (TASK-79.99).
+        let mut framings = Vec::with_capacity(commits.len());
         for pending in commits.iter_mut() {
-            // Each waited for, before any failure is said, so that none goes on framing as the
-            // branch is opened again.
             let closings = std::mem::take(&mut pending.closings);
             let framed: Vec<_> = closings.iter().map(Closing::wait).collect();
+            let failed = framed.iter().any(Result::is_err);
+            framings.push(framed);
+            if failed && !rules().flushes_wait_for_every_framing {
+                break;
+            }
+        }
+        for (pending, framed) in commits.iter_mut().zip(framings) {
             for framed in framed {
                 let (number, framed) = framed?;
                 pending.syncs.file(framed.file.clone());

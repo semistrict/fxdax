@@ -1086,6 +1086,37 @@ fn closing_during_a_framing() {
     reopening.join().unwrap();
 }
 
+/// One run of a flush failing, as the framing of the segment its first commit closed, which
+/// stalls, fails, while those of the segments its later commits closed, and a commit after it took
+/// them, go on (TASK-79.99): the flush waits for each it took before it says it failed, and the
+/// branch's closing for the rest, so that another store, opening the branch, frames their segments
+/// again from their raw files only once nothing else frames them.
+fn closing_after_a_failed_flush() {
+    let (dir, store) = framing_stalls();
+    // Each commit fills the open segment, and closes it: the first, whose framing stalls.
+    store.write(extent(2), 0, &pattern(2, 2 * BLOCK)).unwrap();
+    store.commit_ordered(None).unwrap();
+    store.write(extent(3), 0, &pattern(3, 3 * BLOCK)).unwrap();
+    store.commit_ordered(None).unwrap();
+    let flushing = {
+        let store = store.clone();
+        thread::spawn(move || store.flush().expect_err("a flush whose framing failed"))
+    };
+    store.write(extent(4), 0, &pattern(4, 3 * BLOCK)).unwrap();
+    store.commit_ordered(None).unwrap();
+    dir.wait_until_stalled();
+    dir.let_go(Err(std::io::Error::other("the disk failed")));
+    drop(flushing.join().unwrap());
+    // Failing too, unless the flush took every commit, and nothing was left to flush.
+    drop(store.close());
+    let failure = "a framing raced the branch's closing after a failed flush";
+    let reopened = store.lineage().open_branch(BRANCH);
+    let reopened = reopened.unwrap_or_else(|error| panic!("{failure}: {error:#}"));
+    // What was durable: the first commit, extent 1's.
+    assert_eq!(reopened.epoch().unwrap(), 1, "{failure}: commits not durable recovered");
+    check_framed(&reopened, failure);
+}
+
 /// One run of a fork while a closing between commits frames the segment, which stalls
 /// (TASK-41.1): the fork waits for it, so that its child, which inherits the extent in it, reads it
 /// from its framed file, whole.
@@ -1291,6 +1322,12 @@ fn closing_during_a_framing_by_pct() {
 }
 
 #[test]
+fn closing_after_a_failed_flush_by_pct() {
+    set_rules(Rules::ALL);
+    Runner::new(PctScheduler::new(3, runs()), config()).run(closing_after_a_failed_flush);
+}
+
+#[test]
 fn forking_during_a_framing_by_pct() {
     set_rules(Rules::ALL);
     Runner::new(PctScheduler::new(3, runs()), config()).run(forking_during_a_framing);
@@ -1342,6 +1379,7 @@ fn replay() {
             "durable_once_synced" => rules.durable_once_synced = false,
             "close_waits_for_flushes" => rules.close_waits_for_flushes = false,
             "close_waits_for_framings" => rules.close_waits_for_framings = false,
+            "flushes_wait_for_every_framing" => rules.flushes_wait_for_every_framing = false,
             "forks_wait_for_framings" => rules.forks_wait_for_framings = false,
             "keep_frees_for_views" => rules.keep_frees_for_views = false,
             "keep_pins" => rules.keep_pins = false,
@@ -1372,6 +1410,7 @@ fn replay() {
         Ok("closing_during_a_commit") => closing_during_a_commit,
         Ok("serving_during_a_framing") => serving_during_a_framing,
         Ok("closing_during_a_framing") => closing_during_a_framing,
+        Ok("closing_after_a_failed_flush") => closing_after_a_failed_flush,
         Ok("forking_during_a_framing") => forking_during_a_framing,
         Ok("deleting_stalled_marking") => lineage::deleting_stalled_marking,
         Ok("deleting_stalled_removing_its_index") => lineage::deleting_stalled_removing_its_index,
@@ -1546,6 +1585,15 @@ fn needs_closes_to_wait_for_flushes() {
 fn needs_closes_to_wait_for_framings() {
     let rules = Rules { close_waits_for_framings: false, ..Rules::ALL };
     fails_without(rules, &["raced the branch's closing"], closing_during_a_framing);
+}
+
+/// A failed flush, and the branch's closing after it, not waiting for the framings of its later
+/// commits, and of those it didn't take: another store, opening the branch, frames their segments
+/// again meanwhile, from their raw files, and finds a framed file made, or its own removed.
+#[test]
+fn needs_flushes_to_wait_for_every_framing() {
+    let rules = Rules { flushes_wait_for_every_framing: false, ..Rules::ALL };
+    fails_without(rules, &["after a failed flush"], closing_after_a_failed_flush);
 }
 
 /// A fork while a closing between commits frames a segment: the child, reading the extent it

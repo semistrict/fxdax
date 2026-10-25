@@ -954,6 +954,12 @@ pub(crate) struct Closing<F> {
     framing: Arc<Framing<F>>,
 }
 
+impl<F> Clone for Closing<F> {
+    fn clone(&self) -> Self {
+        Self { number: self.number, framing: self.framing.clone() }
+    }
+}
+
 impl<F: File> Closing<F> {
     /// The segment, and its framed file, once framed; or what failed.
     pub fn wait(&self) -> Result<(SegmentId, Arc<Framed<F>>), Error> {
