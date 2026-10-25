@@ -441,6 +441,76 @@ pub struct ExtentStore {
     /// fxdax: notified as it commits, for its followers' daemon to tell them, holding no thread
     /// meanwhile (TASK-34).
     committed: event_listener::Event,
+    /// fxdax: the window's latest changes, which a refused fault's log tells of the page it was
+    /// on ([`ExtentStore::describe_window_offset`], TASK-44.12).
+    changes: Mutex<WindowChanges>,
+}
+
+/// fxdax: the latest of a window's MAPs and UNMAPs, as [`WindowChanges::MOST`] of them: which
+/// mapped a page as it was refused, and what mapped it before, read-only or writably (TASK-44.12).
+#[derive(Default)]
+struct WindowChanges {
+    changes: std::collections::VecDeque<WindowChange>,
+}
+
+/// One of a window's changes: `len` bytes at `window_offset`, mapped or unmapped, when.
+struct WindowChange {
+    at: std::time::Instant,
+    window_offset: u64,
+    len: u64,
+    change: Change,
+}
+
+/// What a [`WindowChange`] did.
+enum Change {
+    /// A MAP of `extent`'s bytes from `offset`, writably or not, and how it ended.
+    Map {
+        extent: ExtentId,
+        offset: u64,
+        writable: bool,
+        result: std::result::Result<(), Errno>,
+    },
+    /// A MAP of zeros.
+    Zeros,
+    /// Zeros mapped in place of what a freed extent's memory, which they kept, mapped.
+    Freed,
+    Unmap,
+}
+
+impl WindowChanges {
+    const MOST: usize = 4096;
+
+    fn record(&mut self, window_offset: u64, len: u64, change: Change) {
+        if self.changes.len() == Self::MOST {
+            self.changes.pop_front();
+        }
+        let at = std::time::Instant::now();
+        self.changes.push_back(WindowChange { at, window_offset, len, change });
+    }
+
+    /// The changes of the page at `window_offset`, oldest first, with how long ago each was.
+    fn of(&self, window_offset: u64) -> Vec<String> {
+        let now = std::time::Instant::now();
+        (self.changes.iter())
+            .filter(|change| {
+                (change.window_offset..change.window_offset + change.len).contains(&window_offset)
+            })
+            .map(|change| {
+                let (at, len, ago) =
+                    (change.window_offset, change.len, now.duration_since(change.at));
+                let what = match &change.change {
+                    Change::Map { extent, offset, writable, result } => {
+                        let how = if *writable { "writably" } else { "read-only" };
+                        format!("MAP of {extent:?} from {offset:#x}, {how}, {result:?}")
+                    }
+                    Change::Zeros => "MAP of zeros".into(),
+                    Change::Freed => "zeros in place of a freed extent's".into(),
+                    Change::Unmap => "UNMAP".into(),
+                };
+                format!("{what}, {len:#x} bytes from {at:#x}, {ago:?} ago")
+            })
+            .collect()
+    }
 }
 
 /// A follower's part of its store: the writer's store it follows, and the view it reads it
@@ -637,6 +707,7 @@ impl ExtentStore {
             opening: Default::default(),
             following: None,
             committed: event_listener::Event::new(),
+            changes: Mutex::default(),
         }
     }
 
@@ -657,6 +728,7 @@ impl ExtentStore {
             opening: Default::default(),
             following: Some(following),
             committed: event_listener::Event::new(),
+            changes: Mutex::default(),
         }
     }
 
@@ -1157,6 +1229,11 @@ impl ExtentStore {
         let mut dax = self.dax.lock().unwrap();
         let Some(dax) = dax.as_mut() else { return Ok(()) };
         let zeros = dax.zeros()?;
+        let mut changes = self.changes.lock().unwrap();
+        for (start, end, _) in dax.kept(kept) {
+            changes.record(start, end - start, Change::Freed);
+        }
+        drop(changes);
         dax.replace_kept(kept, Mapped::zeros(&zeros), &zeros)
     }
 
@@ -1486,6 +1563,9 @@ impl ExtentStore {
         let start = std::time::Instant::now();
         let mapped = self.map_counted(extent, offset, len, window_offset, writable);
         stats::count_since(Counter::Maps, Counter::MapNs, start);
+        let result = mapped.as_ref().map(|_| ()).map_err(|errno| *errno);
+        let change = Change::Map { extent, offset, writable, result };
+        self.changes.lock().unwrap().record(window_offset, len, change);
         mapped
     }
 
@@ -1603,6 +1683,7 @@ impl ExtentStore {
         let mut dax = self.dax.lock().unwrap();
         let dax = dax.as_mut().ok_or(Errno::ENOSYS)?;
         dax.check_range(window_offset, len)?;
+        self.changes.lock().unwrap().record(window_offset, len, Change::Zeros);
         self.map_zeros(dax, window_offset, len)
     }
 
@@ -1636,9 +1717,16 @@ impl ExtentStore {
         let mapping = self.window_mappings().into_iter().find(|mapping| {
             (mapping.window_offset..mapping.window_offset + mapping.len).contains(&window_offset)
         });
-        let Some(mapping) = mapping else { return "nothing mapped".into() };
+        let Some(mapping) = mapping else {
+            let history = self.changes.lock().unwrap().of(window_offset);
+            return format!("nothing mapped; the page's latest MAPs and UNMAPs: {history:#?}");
+        };
         let MappingContents::Extent { extent, offset, writable } = mapping.contents else {
-            return format!("zeros, {:#x} bytes from {:#x}", mapping.len, mapping.window_offset);
+            let history = self.changes.lock().unwrap().of(window_offset);
+            return format!(
+                "zeros, {:#x} bytes from {:#x}; the page's latest MAPs and UNMAPs: {history:#?}",
+                mapping.len, mapping.window_offset
+            );
         };
         let open_here = self.open.lock().unwrap().contains_key(&extent);
         let stored = self.store.extent(extent.into()).map(|stored| {
@@ -1646,9 +1734,10 @@ impl ExtentStore {
                 format!("{len:#x} bytes, {}", if open { "open" } else { "sealed" })
             })
         });
+        let history = self.changes.lock().unwrap().of(window_offset);
         format!(
             "{extent:?} from {offset:#x}, {:#x} bytes from {:#x}, {}; {} in the window; in the \
-             store: {stored:?}",
+             store: {stored:?}; the page's latest MAPs and UNMAPs: {history:#?}",
             mapping.len,
             mapping.window_offset,
             if writable { "writable" } else { "read-only" },
@@ -1681,6 +1770,7 @@ impl ExtentStore {
         let mut dax = self.dax.lock().unwrap();
         let dax = dax.as_mut().ok_or(Errno::ENOSYS)?;
         dax.check_range(window_offset, len)?;
+        self.changes.lock().unwrap().record(window_offset, len, Change::Unmap);
         dax.unmap(window_offset, len)
     }
 
