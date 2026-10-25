@@ -2229,6 +2229,67 @@ mod guest {
         fs::remove_file(&name).unwrap();
     }
 
+    /// Sustained page-sized appends allocate in batches, without publishing the reserved tail as
+    /// file data. Sync, eviction, cloning, growing and shrinking preserve the written bytes.
+    fn test_append_pages() {
+        use std::os::unix::fs::FileExt;
+        const PAGE: usize = 4096;
+        const APPENDS: usize = 48;
+        let name = path("append-pages");
+        let file =
+            fs::OpenOptions::new().create_new(true).read(true).write(true).open(&name).unwrap();
+        let mut expected = vec![0x55; 100];
+        file.write_all_at(&expected, 0).unwrap();
+        file.sync_data().unwrap();
+        // Establish an unsealed append stream, as SQLite's WAL does between barriers.
+        for _ in 0..2 {
+            file.write_all_at(&vec![0x33; PAGE], expected.len() as u64).unwrap();
+            expected.extend_from_slice(&vec![0x33; PAGE]);
+        }
+        let before = stats()["dax_map_writes"];
+        for n in 0..APPENDS {
+            let bytes = vec![n as u8 + 1; PAGE];
+            file.write_all_at(&bytes, expected.len() as u64).unwrap();
+            expected.extend_from_slice(&bytes);
+        }
+        let after = stats()["dax_map_writes"];
+        assert!(
+            after - before <= APPENDS as u64 / 4,
+            "page appends mapped {} writes",
+            after - before
+        );
+        assert_eq!(file.metadata().unwrap().len(), expected.len() as u64);
+        assert_eq!(fs::read(&name).unwrap(), expected);
+        file.sync_data().unwrap();
+        drop(file);
+        evict(&name);
+        assert_eq!(fs::read(&name).unwrap(), expected);
+
+        let file = fs::OpenOptions::new().read(true).write(true).open(&name).unwrap();
+        let copy_name = path("append-pages-copy");
+        let copy = fs::File::create(&copy_name).unwrap();
+        const FICLONE: libc::c_ulong = 0x40049409;
+        assert_eq!(unsafe { libc::ioctl(copy.as_raw_fd(), FICLONE as _, file.as_raw_fd()) }, 0);
+        copy.sync_data().unwrap();
+        drop(copy);
+        evict(&copy_name);
+        assert_eq!(fs::metadata(&copy_name).unwrap().len(), expected.len() as u64);
+        assert_eq!(fs::read(&copy_name).unwrap(), expected);
+        fs::remove_file(copy_name).unwrap();
+
+        expected.resize(expected.len() + 65536, 0);
+        file.set_len(expected.len() as u64).unwrap();
+        assert_eq!(fs::read(&name).unwrap(), expected);
+        file.set_len((PAGE + 3) as u64).unwrap();
+        expected[PAGE + 3..].fill(0);
+        file.set_len(expected.len() as u64).unwrap();
+        file.sync_data().unwrap();
+        drop(file);
+        evict(&name);
+        assert_eq!(fs::read(&name).unwrap(), expected);
+        fs::remove_file(name).unwrap();
+    }
+
     /// Deferred appends survive COW after another file seals the extent, and an ordinary grow
     /// or shrink uses the appended size rather than zeroing data past Fxfs's former end.
     fn test_append_size() {
@@ -2466,6 +2527,7 @@ mod guest {
                 tests.push(("evacuate_dropped", &test_evacuate_dropped));
                 tests.push(("faults_writes_compaction", &test_faults_writes_compaction));
                 tests.push(("append_writable", &test_append_writable));
+                tests.push(("append_pages", &test_append_pages));
                 tests.push(("append_size", &test_append_size));
                 tests.push(("append_writeback", &test_append_writeback));
                 tests.push(("faults_unheld", &test_faults_unheld));
