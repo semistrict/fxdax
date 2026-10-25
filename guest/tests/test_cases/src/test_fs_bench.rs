@@ -20,7 +20,9 @@
 // files, fsync, tree, large-dir and concurrent; pgbench, PostgreSQL's benchmark, runs only when it
 // names it. The sqlite group adds rollback-journal and WAL commits, batches, checkpoints,
 // process recovery and reader isolation; it also runs the mmap scan independently of io.
-// FXDAX_BENCH_SQLITE_TXNS sizes each transaction workload (200 commits).
+// FXDAX_BENCH_SQLITE_TXNS sizes each transaction workload (200 commits). The sqlite-transactions
+// group skips scans; FXDAX_BENCH_SQLITE_WORKLOAD selects one transaction workload by its result
+// name (such as sqlite-wal-normal-batch100), keeping the recovery and snapshot checks.
 // FXDAX_BENCH_FILES sets how many files the metadata workloads make (2000), and
 // FXDAX_BENCH_PGBENCH_SECS how long pgbench's transactions run (20), and FXDAX_BENCH_PGBENCH_SCALE
 // the scale of its database (10, about 160 MiB). With
@@ -408,6 +410,7 @@ RUN wget -q -O /opt/lua-5.4.7.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz \\
         for var in [
             "FXDAX_BENCH_FILES",
             "FXDAX_BENCH_SQLITE_TXNS",
+            "FXDAX_BENCH_SQLITE_WORKLOAD",
             "FXDAX_BENCH_PGBENCH_SECS",
             "FXDAX_BENCH_PGBENCH_SCALE",
             "FXDAX_BENCH_WATCHDOG_SECS",
@@ -1095,12 +1098,25 @@ mod guest {
         let count: usize = std::env::var("FXDAX_BENCH_SQLITE_TXNS")
             .map_or(200, |n| n.parse().expect("FXDAX_BENCH_SQLITE_TXNS is a count"));
         assert!((1..=100_000).contains(&count), "SQLite transaction count must be 1..=100000");
+        let selected = std::env::var("FXDAX_BENCH_SQLITE_WORKLOAD").unwrap_or_default();
+        assert!(
+            selected.is_empty()
+                || Mode::ALL.iter().any(|mode| {
+                    [1, 100]
+                        .iter()
+                        .any(|batch| selected == format!("sqlite-{}-batch{batch}", mode.name()))
+                }),
+            "FXDAX_BENCH_SQLITE_WORKLOAD must name a SQLite transaction workload"
+        );
         // Keep sidecars isolated, including those SQLite leaves after a killed writer.
         let root = tempdir::TempDir::new_in(MNT, "sqlite").unwrap();
         for mode in Mode::ALL {
             sqlite::recovery(root.path(), mode);
             for batch in [1, 100] {
                 let workload = format!("sqlite-{}-batch{batch}", mode.name());
+                if !selected.is_empty() && selected != workload {
+                    continue;
+                }
                 let measurement =
                     sqlite::transactions(root.path(), mode, count, batch, |phase, run| {
                         let (name, operations) = match phase {
@@ -1865,7 +1881,7 @@ mod guest {
                 if runs("io") || runs("sqlite") {
                     sqlite_workload();
                 }
-                if groups.split(',').any(|g| g == "sqlite") {
+                if groups.split(',').any(|g| matches!(g, "sqlite" | "sqlite-transactions")) {
                     sqlite_transactions();
                 }
                 metadata_workloads(runs);

@@ -1,0 +1,6 @@
+{
+  "findings": [],
+  "overall_correctness": "patch is correct",
+  "overall_explanation": "No P0 defects are demonstrated by the change bundle. The changes preserve bounded UNMAP coalescing and framing, retain actual EOF while speculatively reserving append space with fallback behavior, and maintain the required range and cache lifetimes. Any lower-severity concerns are outside the requested P0-only threshold.",
+  "overall_confidence": 0.95
+}

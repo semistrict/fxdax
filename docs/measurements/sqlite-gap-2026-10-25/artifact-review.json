@@ -1,0 +1,6 @@
+{
+  "findings": [],
+  "overall_correctness": "patch is correct",
+  "overall_explanation": "No P0 defect is evident in the provided investigation generators or generated artifacts. The comparison direction is handled correctly for throughput and elapsed-time metrics, unfavorable unprofiled observations are retained, profile runs are excluded from comparative conclusions, and the final-versus-fresh-original comparison accurately records its unequal sample counts without a significance claim.",
+  "overall_confidence": 0.99
+}

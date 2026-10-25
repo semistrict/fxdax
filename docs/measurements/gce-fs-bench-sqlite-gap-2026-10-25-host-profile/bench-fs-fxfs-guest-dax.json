@@ -1,0 +1,32 @@
+{
+  "case": "bench-fs-fxfs-guest-dax",
+  "backend": "fxfs-guest-dax",
+  "host_os": "linux",
+  "vmm": "firecracker",
+  "iterations": 3,
+  "results": [
+    {
+      "workload": "sqlite-delete-full-batch100",
+      "unit": "txn/s",
+      "higher_is_better": true,
+      "values": [
+        54.74,
+        54.454,
+        54.692
+      ]
+    }
+  ],
+  "failures": {},
+  "observations": {
+    "mtime-ahead-of-guest-ms": [
+      -5.598,
+      -2.936,
+      -4.639
+    ],
+    "sqlite-delete-full-batch100-updates-per-second": [
+      5474.0,
+      5445.4,
+      5469.2
+    ]
+  }
+}

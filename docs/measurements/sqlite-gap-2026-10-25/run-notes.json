@@ -1,0 +1,66 @@
+{
+  "runs": {
+    "gce-fs-bench-sqlite-gap-2026-10-25-baseline": {
+      "description": "Current main 33074daf7: same-host SQLite baseline against ext4 on virtio-pmem; unprofiled, three iterations, before further optimizations.\n\nIterations: 3. Cases: bench-fs-ext4-dax-pmem bench-fs-fxfs-guest-dax. Workloads: sqlite.",
+      "outcome": "original main"
+    },
+    "gce-fs-bench-sqlite-gap-2026-10-25-candidate1": {
+      "description": "First append-allocation candidate: sustained appends reserve up to 16 pages without advancing EOF; three unprofiled SQLite iterations on the baseline host. Includes all recovery, integrity, payload and snapshot checks.\n\nIterations: 3. Cases: bench-fs-fxfs-guest-dax. Workloads: sqlite.",
+      "outcome": "retained: sustained append reservation"
+    },
+    "gce-fs-bench-sqlite-gap-2026-10-25-candidate2": {
+      "description": "Candidate 2 experiment: append reservation plus bounded sequential overwrite COW preserving every lookahead byte, clone data and mapped-reader coherence. Same host, Fxfs then ext4, full unprofiled SQLite group with correctness checks.\n\nIterations: 3. Cases: bench-fs-fxfs-guest-dax bench-fs-ext4-dax-pmem. Workloads: sqlite.",
+      "outcome": "discarded: overwrite lookahead increased checkpoint cost"
+    },
+    "gce-fs-bench-sqlite-gap-2026-10-25-candidate3": {
+      "description": "Experimental negotiated stage replacement; immutable append-only candidate1 kernel. Same host, reverse case order. Compare full SQLite including checkpoints; retain unfavorable outcomes.",
+      "outcome": "build failed: missing control-API counter fields"
+    },
+    "gce-fs-bench-sqlite-gap-2026-10-25-candidate3-run": {
+      "description": "Experimental negotiated stage replacement; immutable append-only candidate1 kernel. Same host, reverse case order. Prior candidate3 directory records compile failure; proto counter plumbing fixed. Full SQLite checkpoints and all correctness checks retained.",
+      "outcome": "discarded: server-side replacement added no throughput gain"
+    },
+    "gce-fs-bench-sqlite-gap-2026-10-25-candidate4": {
+      "description": "Candidate4: append reservation plus extent-result buffers sized to covered logical pages rather than 512 entries. Root stage experiment reverted. Same-host full SQLite comparison, Fxfs then ext4, correctness checks unchanged.\n\nIterations: 3. Cases: bench-fs-fxfs-guest-dax bench-fs-ext4-dax-pmem. Workloads: sqlite.",
+      "outcome": "build failed: test snapshot had a stats type error"
+    },
+    "gce-fs-bench-sqlite-gap-2026-10-25-candidate4-run": {
+      "description": "Candidate4 retry after correcting test stats typing: same immutable kernel da4cfc183fa14ac44dae125e4945221df0fbd88ac71d9aea56fb1351ca11395e. Append reservation plus extent buffers sized to covered pages. Root stage experiment reverted. Same-host full SQLite, all recovery/integrity/payload/snapshot checks retained.",
+      "outcome": "retained: smaller extent buffers; allocation reduction, no throughput claim"
+    },
+    "gce-fs-bench-sqlite-gap-2026-10-25-candidate5": {
+      "description": "Candidate5 experiment: client peeks only complete adjacent exact stage replacements already in socket; no daemon queue or new wire kind. ACK retains original UNMAP ID. Immutable C4 kernel, Fxfs then ext4, full SQLite with correctness checks. Temporary power-of-two logs confirm actual use; remove before retaining code.",
+      "outcome": "discarded: client replacement did not close gaps; usage unconfirmed with INFO disabled"
+    },
+    "gce-fs-bench-sqlite-gap-2026-10-25-candidate6": {
+      "description": "Candidate6: combine only adjacent complete acknowledged UNMAP headers already waiting, at most64 per operation. Union includes no gaps; ACK max ID of consumed UNMAPs only. No wait, no new protocol, no replacement. C5 discarded. Immutable C4 kernel; full SQLite correctness and same-host ext4.",
+      "outcome": "retained: adjacent acknowledged UNMAP batching"
+    },
+    "gce-fs-bench-sqlite-gap-2026-10-25-candidate7": {
+      "description": "Candidate7 batch: C6 adjacent unmap batching extended to same-permission protections with matching ACK flags; cached DAX reads retain lookup lock, skip redundant LRU movement and empty wakeups using wq_has_sleeper barrier. C4buffer sizing and C1append reservation retained. Temporary per-kind logs. Same host full SQLite and correctness checks.\n\nIterations: 3. Cases: bench-fs-fxfs-guest-dax bench-fs-ext4-dax-pmem. Workloads: sqlite.",
+      "outcome": "protection batching discarded: no protection batches observed; cached-read kernel retained"
+    },
+    "gce-fs-bench-sqlite-gap-2026-10-25-final": {
+      "description": "Quiet final candidate8: C1append reservation, C4covered-page extent buffers, C7cached-read bookkeeping and C6UNMAP-only batching. No protection peeks, no direct replacement, no diagnostic logs. Immutable C7kernel0f0eaeb5f4937cb62234e90fbb19e7afcdc36f18d5147373f424f0c455965784. Reverse case order ext4 thenFxfs, five iterations with all correctness checks.",
+      "outcome": "retained batch; final macOS and Linux workspace, Shuttle, Python and 11 guest cases passed; temporary instance and disk deleted and independently audited. Remaining performance gaps are recorded in summary.json."
+    },
+    "gce-fs-bench-sqlite-gap-2026-10-25-final-control": {
+      "description": "Fresh same-instance original-main control, after the quiet final candidate. Three full SQLite iterations; original frozen daemon/VMM and original kernel, current identical timed runner/guest agent. All recovery, integrity, payload and snapshot checks retained. See binaries.txt and frozen-host.sh.",
+      "outcome": "fresh original-main binaries and kernel; identical current timed harness",
+      "same_instance_as": "gce-fs-bench-sqlite-gap-2026-10-25-final",
+      "source": "revision 33074daf7e5e476bf1ccbd3ec098f17108fa4f78\nfirecracker 01cbb2fe3d40e584970ccac5c59b0fdfd6af3853\nruntime frozen original daemon and VMM; binaries.txt records exact hashes\nharness-source ../gce-fs-bench-sqlite-gap-2026-10-25-final/source.txt\nkernel original main; binaries.txt records exact hash\n"
+    },
+    "gce-fs-bench-sqlite-gap-2026-10-25-host-profile": {
+      "description": "Whole-host diagnostic capture of selected DELETE/FULL batch100, using frozen original daemon/VMM and the C4 kernel. Includes setup, recovery, verification and snapshot CPU time. Profiled timings are not A/B evidence. See binaries.txt and perf reports.",
+      "outcome": "diagnostic only; initial 0.5% report threshold hid smaller functions; repeated in host-profile2",
+      "same_instance_as": "gce-fs-bench-sqlite-gap-2026-10-25-final",
+      "source": "revision 33074daf7e5e476bf1ccbd3ec098f17108fa4f78\nfirecracker 01cbb2fe3d40e584970ccac5c59b0fdfd6af3853\nruntime frozen original daemon/VMM; binaries.txt\nharness-source ../gce-fs-bench-sqlite-gap-2026-10-25-profile-scans/source.txt\nkernel C4 da4cfc183fa14ac44dae125e4945221df0fbd88ac71d9aea56fb1351ca11395e\n"
+    },
+    "gce-fs-bench-sqlite-gap-2026-10-25-host-profile2": {
+      "description": "Whole-host diagnostic capture of selected DELETE/FULL batch100, using frozen original daemon/VMM and the C4 kernel. Includes setup, recovery, verification and snapshot CPU time. Profiled timings are not A/B evidence. See binaries.txt and perf reports.",
+      "outcome": "diagnostic only; complete self table and 0.03% inclusive reports; raw perf retained only on the temporary host",
+      "same_instance_as": "gce-fs-bench-sqlite-gap-2026-10-25-final",
+      "source": "revision 33074daf7e5e476bf1ccbd3ec098f17108fa4f78\nfirecracker 01cbb2fe3d40e584970ccac5c59b0fdfd6af3853\nruntime frozen original daemon/VMM; binaries.txt\nharness-source ../gce-fs-bench-sqlite-gap-2026-10-25-profile-scans/source.txt\nkernel C4 da4cfc183fa14ac44dae125e4945221df0fbd88ac71d9aea56fb1351ca11395e\n"
+    }
+  }
+}

@@ -1,0 +1,4709 @@
+{
+  "baseline_revision": "33074daf7e5e476bf1ccbd3ec098f17108fa4f78",
+  "firecracker_revision": "01cbb2fe3d40e584970ccac5c59b0fdfd6af3853",
+  "instance": "fxdax-bench-sqlite-gap-20261025",
+  "zone": "us-east4-a",
+  "machine": "n2-standard-8",
+  "final_kernel_sha256": "0f0eaeb5f4937cb62234e90fbb19e7afcdc36f18d5147373f424f0c455965784",
+  "retained_changes": [
+    "Reserve up to 16 aligned pages only after sustained unsealed appends; publish actual EOF.",
+    "Size DAX extent-result buffers to covered pages, including speculative reservation.",
+    "Keep the range lookup read lock through cached-read iomap construction.",
+    "Skip redundant LRU tail movement and empty wake queues with the paired memory barrier.",
+    "Combine at most 64 adjacent complete acknowledged UNMAPs already in the socket; ACK only actual consumed taking IDs after applying the union."
+  ],
+  "interpretation": [
+    "Ratios greater than one favor Fxfs; checkpoints use inverse elapsed-time ratios.",
+    "All observations, including slower experiments, are retained. No profiler timings are used as unprofiled performance evidence.",
+    "Five final observations and three fresh original-main observations have different sample counts; no statistical significance or tail-latency guarantee is claimed.",
+    "The fresh original control uses frozen original daemon/VMM and original kernel with the same current runner, guest agent and unchanged timed SQLite SQL.",
+    "Extent allocation bytes count requested buffer bytes over a phase, not resident memory or allocator-rounded sizes.",
+    "Whole-host profiles include setup, recovery, verification and snapshot work; guest phase profiles isolate individual workload sections."
+  ],
+  "remaining_gaps": {
+    "sqlite-mmap-scan": {
+      "unit": "MiB/s",
+      "higher_is_better": true,
+      "observations": [
+        3353.944,
+        3498.559,
+        3434.389,
+        3436.519,
+        3465.679
+      ],
+      "median": 3436.519,
+      "minimum": 3353.944,
+      "maximum": 3498.559,
+      "median_absolute_deviation": 29.16000000000031,
+      "ext4": {
+        "unit": "MiB/s",
+        "higher_is_better": true,
+        "observations": [
+          3510.462,
+          3515.519,
+          3420.737,
+          3442.194,
+          3466.074
+        ],
+        "median": 3466.074,
+        "minimum": 3420.737,
+        "maximum": 3515.519,
+        "median_absolute_deviation": 44.38799999999992
+      },
+      "performance_ratio_to_ext4": 0.9914730614522367,
+      "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-final"
+    },
+    "sqlite-delete-full-batch100": {
+      "unit": "txn/s",
+      "higher_is_better": true,
+      "observations": [
+        56.204,
+        54.168,
+        54.638,
+        54.311,
+        53.625
+      ],
+      "median": 54.311,
+      "minimum": 53.625,
+      "maximum": 56.204,
+      "median_absolute_deviation": 0.3269999999999982,
+      "ext4": {
+        "unit": "txn/s",
+        "higher_is_better": true,
+        "observations": [
+          57.462,
+          58.688,
+          58.06,
+          59.168,
+          58.676
+        ],
+        "median": 58.676,
+        "minimum": 57.462,
+        "maximum": 59.168,
+        "median_absolute_deviation": 0.49199999999999733
+      },
+      "performance_ratio_to_ext4": 0.925608425932238,
+      "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-final"
+    },
+    "sqlite-wal-full-batch1-checkpoint": {
+      "unit": "ms",
+      "higher_is_better": false,
+      "observations": [
+        18.575,
+        15.61,
+        19.844,
+        14.498,
+        17.36
+      ],
+      "median": 17.36,
+      "minimum": 14.498,
+      "maximum": 19.844,
+      "median_absolute_deviation": 1.75,
+      "ext4": {
+        "unit": "ms",
+        "higher_is_better": false,
+        "observations": [
+          13.893,
+          14.348,
+          13.976,
+          13.776,
+          14.291
+        ],
+        "median": 13.976,
+        "minimum": 13.776,
+        "maximum": 14.348,
+        "median_absolute_deviation": 0.20000000000000107
+      },
+      "performance_ratio_to_ext4": 0.8050691244239632,
+      "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-final"
+    },
+    "sqlite-wal-full-batch100-checkpoint": {
+      "unit": "ms",
+      "higher_is_better": false,
+      "observations": [
+        65.646,
+        63.526,
+        64.0,
+        60.452,
+        65.29
+      ],
+      "median": 64.0,
+      "minimum": 60.452,
+      "maximum": 65.646,
+      "median_absolute_deviation": 1.2900000000000063,
+      "ext4": {
+        "unit": "ms",
+        "higher_is_better": false,
+        "observations": [
+          62.534,
+          61.853,
+          62.288,
+          63.812,
+          62.548
+        ],
+        "median": 62.534,
+        "minimum": 61.853,
+        "maximum": 63.812,
+        "median_absolute_deviation": 0.24600000000000222
+      },
+      "performance_ratio_to_ext4": 0.97709375,
+      "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-final"
+    },
+    "sqlite-wal-normal-batch1-checkpoint": {
+      "unit": "ms",
+      "higher_is_better": false,
+      "observations": [
+        15.861,
+        19.647,
+        25.127,
+        37.368,
+        15.726
+      ],
+      "median": 19.647,
+      "minimum": 15.726,
+      "maximum": 37.368,
+      "median_absolute_deviation": 3.9209999999999976,
+      "ext4": {
+        "unit": "ms",
+        "higher_is_better": false,
+        "observations": [
+          19.206,
+          16.776,
+          17.553,
+          17.564,
+          17.383
+        ],
+        "median": 17.553,
+        "minimum": 16.776,
+        "maximum": 19.206,
+        "median_absolute_deviation": 0.1700000000000017
+      },
+      "performance_ratio_to_ext4": 0.893418842571385,
+      "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-final"
+    }
+  },
+  "remaining_diagnosis": [
+    "DELETE/FULL batch100 still makes about 23400 DAX map-write transactions per 200 SQLite transactions, roughly one per updated database page plus journal work.",
+    "Guest DELETE profile attributes 6.7 percent of all guest samples to map-write and 6.4 percent to transaction commit, with about 72 percent idle. These are directional profiles, not latency attribution.",
+    "Overwrite lookahead and both replacement approaches did not close the remaining gaps in measured runs and were removed.",
+    "Small checkpoints remain variable; UNMAP batching reduces their mapping work but does not remove every remaining median or tail gap."
+  ],
+  "diagnostics": [
+    "gce-fs-bench-sqlite-gap-2026-10-25-profile",
+    "gce-fs-bench-sqlite-gap-2026-10-25-profile-delete",
+    "gce-fs-bench-sqlite-gap-2026-10-25-profile-full-checkpoint",
+    "gce-fs-bench-sqlite-gap-2026-10-25-profile-scans",
+    "gce-fs-bench-sqlite-gap-2026-10-25-host-profile",
+    "gce-fs-bench-sqlite-gap-2026-10-25-host-profile2"
+  ],
+  "trials": [
+    {
+      "directory": "gce-fs-bench-sqlite-gap-2026-10-25-baseline",
+      "outcome": "original main",
+      "metrics": {
+        "sqlite-pread-scan": {
+          "unit": "MiB/s",
+          "higher_is_better": true,
+          "observations": [
+            807.208,
+            825.343,
+            835.47
+          ],
+          "median": 825.343,
+          "minimum": 807.208,
+          "maximum": 835.47,
+          "median_absolute_deviation": 10.127000000000066,
+          "ext4": {
+            "unit": "MiB/s",
+            "higher_is_better": true,
+            "observations": [
+              184.942,
+              186.408,
+              184.225
+            ],
+            "median": 184.942,
+            "minimum": 184.225,
+            "maximum": 186.408,
+            "median_absolute_deviation": 0.717000000000013
+          },
+          "performance_ratio_to_ext4": 4.462712634231272,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-baseline"
+        },
+        "sqlite-pread-scan-warm": {
+          "unit": "MiB/s",
+          "higher_is_better": true,
+          "observations": [
+            2580.73,
+            2704.526,
+            2643.885
+          ],
+          "median": 2643.885,
+          "minimum": 2580.73,
+          "maximum": 2704.526,
+          "median_absolute_deviation": 60.64099999999962,
+          "ext4": {
+            "unit": "MiB/s",
+            "higher_is_better": true,
+            "observations": [
+              2438.72,
+              2808.655,
+              2757.952
+            ],
+            "median": 2757.952,
+            "minimum": 2438.72,
+            "maximum": 2808.655,
+            "median_absolute_deviation": 50.702999999999975
+          },
+          "performance_ratio_to_ext4": 0.9586406870025295,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-baseline"
+        },
+        "sqlite-mmap-scan": {
+          "unit": "MiB/s",
+          "higher_is_better": true,
+          "observations": [
+            3334.234,
+            3302.77,
+            3380.084
+          ],
+          "median": 3334.234,
+          "minimum": 3302.77,
+          "maximum": 3380.084,
+          "median_absolute_deviation": 31.463999999999942,
+          "ext4": {
+            "unit": "MiB/s",
+            "higher_is_better": true,
+            "observations": [
+              3382.942,
+              3567.118,
+              3466.155
+            ],
+            "median": 3466.155,
+            "minimum": 3382.942,
+            "maximum": 3567.118,
+            "median_absolute_deviation": 83.21300000000019
+          },
+          "performance_ratio_to_ext4": 0.9619402479115907,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-baseline"
+        },
+        "sqlite-mmap-scan-warm": {
+          "unit": "MiB/s",
+          "higher_is_better": true,
+          "observations": [
+            3694.72,
+            3582.473,
+            3694.266
+          ],
+          "median": 3694.266,
+          "minimum": 3582.473,
+          "maximum": 3694.72,
+          "median_absolute_deviation": 0.4539999999997235,
+          "ext4": {
+            "unit": "MiB/s",
+            "higher_is_better": true,
+            "observations": [
+              3601.836,
+              3722.26,
+              3781.649
+            ],
+            "median": 3722.26,
+            "minimum": 3601.836,
+            "maximum": 3781.649,
+            "median_absolute_deviation": 59.38899999999967
+          },
+          "performance_ratio_to_ext4": 0.9924793002100873,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-baseline"
+        },
+        "sqlite-delete-full-batch1": {
+          "unit": "txn/s",
+          "higher_is_better": true,
+          "observations": [
+            267.296,
+            268.315,
+            260.407
+          ],
+          "median": 267.296,
+          "minimum": 260.407,
+          "maximum": 268.315,
+          "median_absolute_deviation": 1.0190000000000055,
+          "ext4": {
+            "unit": "txn/s",
+            "higher_is_better": true,
+            "observations": [
+              160.892,
+              154.576,
+              163.744
+            ],
+            "median": 160.892,
+            "minimum": 154.576,
+            "maximum": 163.744,
+            "median_absolute_deviation": 2.852000000000004
+          },
+          "performance_ratio_to_ext4": 1.6613380404246327,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-baseline"
+        },
+        "sqlite-delete-full-batch100": {
+          "unit": "txn/s",
+          "higher_is_better": true,
+          "observations": [
+            47.972,
+            47.093,
+            46.915
+          ],
+          "median": 47.093,
+          "minimum": 46.915,
+          "maximum": 47.972,
+          "median_absolute_deviation": 0.17800000000000438,
+          "ext4": {
+            "unit": "txn/s",
+            "higher_is_better": true,
+            "observations": [
+              57.259,
+              59.229,
+              59.103
+            ],
+            "median": 59.103,
+            "minimum": 57.259,
+            "maximum": 59.229,
+            "median_absolute_deviation": 0.12599999999999767
+          },
+          "performance_ratio_to_ext4": 0.7967954249361285,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-baseline"
+        },
+        "sqlite-wal-full-batch1": {
+          "unit": "txn/s",
+          "higher_is_better": true,
+          "observations": [
+            527.873,
+            615.365,
+            580.822
+          ],
+          "median": 580.822,
+          "minimum": 527.873,
+          "maximum": 615.365,
+          "median_absolute_deviation": 34.543000000000006,
+          "ext4": {
+            "unit": "txn/s",
+            "higher_is_better": true,
+            "observations": [
+              366.039,
+              334.753,
+              360.4
+            ],
+            "median": 360.4,
+            "minimum": 334.753,
+            "maximum": 366.039,
+            "median_absolute_deviation": 5.63900000000001
+          },
+          "performance_ratio_to_ext4": 1.6116037735849058,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-baseline"
+        },
+        "sqlite-wal-full-batch1-checkpoint": {
+          "unit": "ms",
+          "higher_is_better": false,
+          "observations": [
+            47.852,
+            20.02,
+            17.973
+          ],
+          "median": 20.02,
+          "minimum": 17.973,
+          "maximum": 47.852,
+          "median_absolute_deviation": 2.0470000000000006,
+          "ext4": {
+            "unit": "ms",
+            "higher_is_better": false,
+            "observations": [
+              14.271,
+              15.458,
+              14.247
+            ],
+            "median": 14.271,
+            "minimum": 14.247,
+            "maximum": 15.458,
+            "median_absolute_deviation": 0.02400000000000091
+          },
+          "performance_ratio_to_ext4": 0.7128371628371629,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-baseline"
+        },
+        "sqlite-wal-full-batch100": {
+          "unit": "txn/s",
+          "higher_is_better": true,
+          "observations": [
+            106.012,
+            105.258,
+            103.679
+          ],
+          "median": 105.258,
+          "minimum": 103.679,
+          "maximum": 106.012,
+          "median_absolute_deviation": 0.7540000000000049,
+          "ext4": {
+            "unit": "txn/s",
+            "higher_is_better": true,
+            "observations": [
+              119.926,
+              115.207,
+              117.159
+            ],
+            "median": 117.159,
+            "minimum": 115.207,
+            "maximum": 119.926,
+            "median_absolute_deviation": 1.9520000000000124
+          },
+          "performance_ratio_to_ext4": 0.8984200957672905,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-baseline"
+        },
+        "sqlite-wal-full-batch100-checkpoint": {
+          "unit": "ms",
+          "higher_is_better": false,
+          "observations": [
+            120.12,
+            129.047,
+            129.07
+          ],
+          "median": 129.047,
+          "minimum": 120.12,
+          "maximum": 129.07,
+          "median_absolute_deviation": 0.022999999999996135,
+          "ext4": {
+            "unit": "ms",
+            "higher_is_better": false,
+            "observations": [
+              60.75,
+              61.796,
+              62.287
+            ],
+            "median": 61.796,
+            "minimum": 60.75,
+            "maximum": 62.287,
+            "median_absolute_deviation": 0.49099999999999966
+          },
+          "performance_ratio_to_ext4": 0.47886428975489553,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-baseline"
+        },
+        "sqlite-wal-normal-batch1": {
+          "unit": "txn/s",
+          "higher_is_better": true,
+          "observations": [
+            13786.007,
+            6649.368,
+            13013.649
+          ],
+          "median": 13013.649,
+          "minimum": 6649.368,
+          "maximum": 13786.007,
+          "median_absolute_deviation": 772.3580000000002,
+          "ext4": {
+            "unit": "txn/s",
+            "higher_is_better": true,
+            "observations": [
+              15082.939,
+              14791.227,
+              15379.181
+            ],
+            "median": 15082.939,
+            "minimum": 14791.227,
+            "maximum": 15379.181,
+            "median_absolute_deviation": 291.71199999999953
+          },
+          "performance_ratio_to_ext4": 0.8628059160088096,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-baseline"
+        },
+        "sqlite-wal-normal-batch1-checkpoint": {
+          "unit": "ms",
+          "higher_is_better": false,
+          "observations": [
+            31.871,
+            74.676,
+            20.886
+          ],
+          "median": 31.871,
+          "minimum": 20.886,
+          "maximum": 74.676,
+          "median_absolute_deviation": 10.985,
+          "ext4": {
+            "unit": "ms",
+            "higher_is_better": false,
+            "observations": [
+              16.416,
+              17.563,
+              17.012
+            ],
+            "median": 17.012,
+            "minimum": 16.416,
+            "maximum": 17.563,
+            "median_absolute_deviation": 0.5509999999999984
+          },
+          "performance_ratio_to_ext4": 0.5337767876753161,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-baseline"
+        },
+        "sqlite-wal-normal-batch100": {
+          "unit": "txn/s",
+          "higher_is_better": true,
+          "observations": [
+            202.257,
+            222.157,
+            199.428
+          ],
+          "median": 202.257,
+          "minimum": 199.428,
+          "maximum": 222.157,
+          "median_absolute_deviation": 2.8290000000000077,
+          "ext4": {
+            "unit": "txn/s",
+            "higher_is_better": true,
+            "observations": [
+              273.035,
+              272.358,
+              271.596
+            ],
+            "median": 272.358,
+            "minimum": 271.596,
+            "maximum": 273.035,
+            "median_absolute_deviation": 0.6770000000000209
+          },
+          "performance_ratio_to_ext4": 0.7426145000330447,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-baseline"
+        },
+        "sqlite-wal-normal-batch100-checkpoint": {
+          "unit": "ms",
+          "higher_is_better": false,
+          "observations": [
+            121.686,
+            318.032,
+            259.875
+          ],
+          "median": 259.875,
+          "minimum": 121.686,
+          "maximum": 318.032,
+          "median_absolute_deviation": 58.15699999999998,
+          "ext4": {
+            "unit": "ms",
+            "higher_is_better": false,
+            "observations": [
+              389.013,
+              392.351,
+              381.918
+            ],
+            "median": 389.013,
+            "minimum": 381.918,
+            "maximum": 392.351,
+            "median_absolute_deviation": 3.3380000000000223
+          },
+          "performance_ratio_to_ext4": 1.4969235209235208,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-baseline"
+        }
+      }
+    },
+    {
+      "directory": "gce-fs-bench-sqlite-gap-2026-10-25-candidate1",
+      "outcome": "retained: sustained append reservation",
+      "metrics": {
+        "sqlite-pread-scan": {
+          "unit": "MiB/s",
+          "higher_is_better": true,
+          "observations": [
+            756.927,
+            842.268,
+            836.226
+          ],
+          "median": 836.226,
+          "minimum": 756.927,
+          "maximum": 842.268,
+          "median_absolute_deviation": 6.04200000000003,
+          "ext4": {
+            "unit": "MiB/s",
+            "higher_is_better": true,
+            "observations": [
+              184.942,
+              186.408,
+              184.225
+            ],
+            "median": 184.942,
+            "minimum": 184.225,
+            "maximum": 186.408,
+            "median_absolute_deviation": 0.717000000000013
+          },
+          "performance_ratio_to_ext4": 4.521558110110196,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-baseline"
+        },
+        "sqlite-pread-scan-warm": {
+          "unit": "MiB/s",
+          "higher_is_better": true,
+          "observations": [
+            2578.515,
+            2696.246,
+            2666.213
+          ],
+          "median": 2666.213,
+          "minimum": 2578.515,
+          "maximum": 2696.246,
+          "median_absolute_deviation": 30.0329999999999,
+          "ext4": {
+            "unit": "MiB/s",
+            "higher_is_better": true,
+            "observations": [
+              2438.72,
+              2808.655,
+              2757.952
+            ],
+            "median": 2757.952,
+            "minimum": 2438.72,
+            "maximum": 2808.655,
+            "median_absolute_deviation": 50.702999999999975
+          },
+          "performance_ratio_to_ext4": 0.9667365494395841,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-baseline"
+        },
+        "sqlite-mmap-scan": {
+          "unit": "MiB/s",
+          "higher_is_better": true,
+          "observations": [
+            3405.833,
+            3518.324,
+            3547.452
+          ],
+          "median": 3518.324,
+          "minimum": 3405.833,
+          "maximum": 3547.452,
+          "median_absolute_deviation": 29.128000000000156,
+          "ext4": {
+            "unit": "MiB/s",
+            "higher_is_better": true,
+            "observations": [
+              3382.942,
+              3567.118,
+              3466.155
+            ],
+            "median": 3466.155,
+            "minimum": 3382.942,
+            "maximum": 3567.118,
+            "median_absolute_deviation": 83.21300000000019
+          },
+          "performance_ratio_to_ext4": 1.0150509714654998,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-baseline"
+        },
+        "sqlite-mmap-scan-warm": {
+          "unit": "MiB/s",
+          "higher_is_better": true,
+          "observations": [
+            3827.988,
+            3823.273,
+            3756.604
+          ],
+          "median": 3823.273,
+          "minimum": 3756.604,
+          "maximum": 3827.988,
+          "median_absolute_deviation": 4.714999999999691,
+          "ext4": {
+            "unit": "MiB/s",
+            "higher_is_better": true,
+            "observations": [
+              3601.836,
+              3722.26,
+              3781.649
+            ],
+            "median": 3722.26,
+            "minimum": 3601.836,
+            "maximum": 3781.649,
+            "median_absolute_deviation": 59.38899999999967
+          },
+          "performance_ratio_to_ext4": 1.0271375454696878,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-baseline"
+        },
+        "sqlite-delete-full-batch1": {
+          "unit": "txn/s",
+          "higher_is_better": true,
+          "observations": [
+            267.552,
+            262.58,
+            263.662
+          ],
+          "median": 263.662,
+          "minimum": 262.58,
+          "maximum": 267.552,
+          "median_absolute_deviation": 1.0819999999999936,
+          "ext4": {
+            "unit": "txn/s",
+            "higher_is_better": true,
+            "observations": [
+              160.892,
+              154.576,
+              163.744
+            ],
+            "median": 160.892,
+            "minimum": 154.576,
+            "maximum": 163.744,
+            "median_absolute_deviation": 2.852000000000004
+          },
+          "performance_ratio_to_ext4": 1.6387514606071152,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-baseline"
+        },
+        "sqlite-delete-full-batch100": {
+          "unit": "txn/s",
+          "higher_is_better": true,
+          "observations": [
+            55.218,
+            55.341,
+            55.007
+          ],
+          "median": 55.218,
+          "minimum": 55.007,
+          "maximum": 55.341,
+          "median_absolute_deviation": 0.12299999999999756,
+          "ext4": {
+            "unit": "txn/s",
+            "higher_is_better": true,
+            "observations": [
+              57.259,
+              59.229,
+              59.103
+            ],
+            "median": 59.103,
+            "minimum": 57.259,
+            "maximum": 59.229,
+            "median_absolute_deviation": 0.12599999999999767
+          },
+          "performance_ratio_to_ext4": 0.9342672960763413,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-baseline"
+        },
+        "sqlite-wal-full-batch1": {
+          "unit": "txn/s",
+          "higher_is_better": true,
+          "observations": [
+            628.605,
+            610.566,
+            598.528
+          ],
+          "median": 610.566,
+          "minimum": 598.528,
+          "maximum": 628.605,
+          "median_absolute_deviation": 12.038000000000011,
+          "ext4": {
+            "unit": "txn/s",
+            "higher_is_better": true,
+            "observations": [
+              366.039,
+              334.753,
+              360.4
+            ],
+            "median": 360.4,
+            "minimum": 334.753,
+            "maximum": 366.039,
+            "median_absolute_deviation": 5.63900000000001
+          },
+          "performance_ratio_to_ext4": 1.6941342952275251,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-baseline"
+        },
+        "sqlite-wal-full-batch1-checkpoint": {
+          "unit": "ms",
+          "higher_is_better": false,
+          "observations": [
+            18.948,
+            23.207,
+            15.722
+          ],
+          "median": 18.948,
+          "minimum": 15.722,
+          "maximum": 23.207,
+          "median_absolute_deviation": 3.226000000000001,
+          "ext4": {
+            "unit": "ms",
+            "higher_is_better": false,
+            "observations": [
+              14.271,
+              15.458,
+              14.247
+            ],
+            "median": 14.271,
+            "minimum": 14.247,
+            "maximum": 15.458,
+            "median_absolute_deviation": 0.02400000000000091
+          },
+          "performance_ratio_to_ext4": 0.7531665611146295,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-baseline"
+        },
+        "sqlite-wal-full-batch100": {
+          "unit": "txn/s",
+          "higher_is_better": true,
+          "observations": [
+            151.804,
+            152.761,
+            157.527
+          ],
+          "median": 152.761,
+          "minimum": 151.804,
+          "maximum": 157.527,
+          "median_absolute_deviation": 0.9569999999999936,
+          "ext4": {
+            "unit": "txn/s",
+            "higher_is_better": true,
+            "observations": [
+              119.926,
+              115.207,
+              117.159
+            ],
+            "median": 117.159,
+            "minimum": 115.207,
+            "maximum": 119.926,
+            "median_absolute_deviation": 1.9520000000000124
+          },
+          "performance_ratio_to_ext4": 1.3038776363744995,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-baseline"
+        },
+        "sqlite-wal-full-batch100-checkpoint": {
+          "unit": "ms",
+          "higher_is_better": false,
+          "observations": [
+            80.582,
+            70.235,
+            62.572
+          ],
+          "median": 70.235,
+          "minimum": 62.572,
+          "maximum": 80.582,
+          "median_absolute_deviation": 7.662999999999997,
+          "ext4": {
+            "unit": "ms",
+            "higher_is_better": false,
+            "observations": [
+              60.75,
+              61.796,
+              62.287
+            ],
+            "median": 61.796,
+            "minimum": 60.75,
+            "maximum": 62.287,
+            "median_absolute_deviation": 0.49099999999999966
+          },
+          "performance_ratio_to_ext4": 0.8798462305118531,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-baseline"
+        },
+        "sqlite-wal-normal-batch1": {
+          "unit": "txn/s",
+          "higher_is_better": true,
+          "observations": [
+            20382.496,
+            22853.844,
+            23467.598
+          ],
+          "median": 22853.844,
+          "minimum": 20382.496,
+          "maximum": 23467.598,
+          "median_absolute_deviation": 613.7540000000008,
+          "ext4": {
+            "unit": "txn/s",
+            "higher_is_better": true,
+            "observations": [
+              15082.939,
+              14791.227,
+              15379.181
+            ],
+            "median": 15082.939,
+            "minimum": 14791.227,
+            "maximum": 15379.181,
+            "median_absolute_deviation": 291.71199999999953
+          },
+          "performance_ratio_to_ext4": 1.5152115910566237,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-baseline"
+        },
+        "sqlite-wal-normal-batch1-checkpoint": {
+          "unit": "ms",
+          "higher_is_better": false,
+          "observations": [
+            16.028,
+            15.414,
+            38.147
+          ],
+          "median": 16.028,
+          "minimum": 15.414,
+          "maximum": 38.147,
+          "median_absolute_deviation": 0.613999999999999,
+          "ext4": {
+            "unit": "ms",
+            "higher_is_better": false,
+            "observations": [
+              16.416,
+              17.563,
+              17.012
+            ],
+            "median": 17.012,
+            "minimum": 16.416,
+            "maximum": 17.563,
+            "median_absolute_deviation": 0.5509999999999984
+          },
+          "performance_ratio_to_ext4": 1.0613925630147243,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-baseline"
+        },
+        "sqlite-wal-normal-batch100": {
+          "unit": "txn/s",
+          "higher_is_better": true,
+          "observations": [
+            335.848,
+            446.17,
+            436.732
+          ],
+          "median": 436.732,
+          "minimum": 335.848,
+          "maximum": 446.17,
+          "median_absolute_deviation": 9.437999999999988,
+          "ext4": {
+            "unit": "txn/s",
+            "higher_is_better": true,
+            "observations": [
+              273.035,
+              272.358,
+              271.596
+            ],
+            "median": 272.358,
+            "minimum": 271.596,
+            "maximum": 273.035,
+            "median_absolute_deviation": 0.6770000000000209
+          },
+          "performance_ratio_to_ext4": 1.6035218352315703,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-baseline"
+        },
+        "sqlite-wal-normal-batch100-checkpoint": {
+          "unit": "ms",
+          "higher_is_better": false,
+          "observations": [
+            102.951,
+            210.113,
+            185.984
+          ],
+          "median": 185.984,
+          "minimum": 102.951,
+          "maximum": 210.113,
+          "median_absolute_deviation": 24.12899999999999,
+          "ext4": {
+            "unit": "ms",
+            "higher_is_better": false,
+            "observations": [
+              389.013,
+              392.351,
+              381.918
+            ],
+            "median": 389.013,
+            "minimum": 381.918,
+            "maximum": 392.351,
+            "median_absolute_deviation": 3.3380000000000223
+          },
+          "performance_ratio_to_ext4": 2.091647668616655,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-baseline"
+        }
+      }
+    },
+    {
+      "directory": "gce-fs-bench-sqlite-gap-2026-10-25-candidate2",
+      "outcome": "discarded: overwrite lookahead increased checkpoint cost",
+      "metrics": {
+        "sqlite-pread-scan": {
+          "unit": "MiB/s",
+          "higher_is_better": true,
+          "observations": [
+            782.142,
+            817.864,
+            850.8
+          ],
+          "median": 817.864,
+          "minimum": 782.142,
+          "maximum": 850.8,
+          "median_absolute_deviation": 32.93599999999992,
+          "ext4": {
+            "unit": "MiB/s",
+            "higher_is_better": true,
+            "observations": [
+              181.029,
+              182.767,
+              184.554
+            ],
+            "median": 182.767,
+            "minimum": 181.029,
+            "maximum": 184.554,
+            "median_absolute_deviation": 1.7379999999999995
+          },
+          "performance_ratio_to_ext4": 4.474899735729098,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate2"
+        },
+        "sqlite-pread-scan-warm": {
+          "unit": "MiB/s",
+          "higher_is_better": true,
+          "observations": [
+            2718.26,
+            2482.256,
+            2706.283
+          ],
+          "median": 2706.283,
+          "minimum": 2482.256,
+          "maximum": 2718.26,
+          "median_absolute_deviation": 11.977000000000317,
+          "ext4": {
+            "unit": "MiB/s",
+            "higher_is_better": true,
+            "observations": [
+              2776.687,
+              2692.898,
+              2815.171
+            ],
+            "median": 2776.687,
+            "minimum": 2692.898,
+            "maximum": 2815.171,
+            "median_absolute_deviation": 38.483999999999924
+          },
+          "performance_ratio_to_ext4": 0.97464460344288,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate2"
+        },
+        "sqlite-mmap-scan": {
+          "unit": "MiB/s",
+          "higher_is_better": true,
+          "observations": [
+            3525.023,
+            3314.083,
+            3497.306
+          ],
+          "median": 3497.306,
+          "minimum": 3314.083,
+          "maximum": 3525.023,
+          "median_absolute_deviation": 27.7170000000001,
+          "ext4": {
+            "unit": "MiB/s",
+            "higher_is_better": true,
+            "observations": [
+              3346.439,
+              3437.029,
+              3495.443
+            ],
+            "median": 3437.029,
+            "minimum": 3346.439,
+            "maximum": 3495.443,
+            "median_absolute_deviation": 58.414000000000215
+          },
+          "performance_ratio_to_ext4": 1.0175375302332335,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate2"
+        },
+        "sqlite-mmap-scan-warm": {
+          "unit": "MiB/s",
+          "higher_is_better": true,
+          "observations": [
+            3872.276,
+            3666.941,
+            3773.679
+          ],
+          "median": 3773.679,
+          "minimum": 3666.941,
+          "maximum": 3872.276,
+          "median_absolute_deviation": 98.59699999999975,
+          "ext4": {
+            "unit": "MiB/s",
+            "higher_is_better": true,
+            "observations": [
+              3766.119,
+              3817.822,
+              3845.432
+            ],
+            "median": 3817.822,
+            "minimum": 3766.119,
+            "maximum": 3845.432,
+            "median_absolute_deviation": 27.609999999999673
+          },
+          "performance_ratio_to_ext4": 0.9884376484812545,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate2"
+        },
+        "sqlite-delete-full-batch1": {
+          "unit": "txn/s",
+          "higher_is_better": true,
+          "observations": [
+            263.381,
+            259.556,
+            258.648
+          ],
+          "median": 259.556,
+          "minimum": 258.648,
+          "maximum": 263.381,
+          "median_absolute_deviation": 0.9079999999999586,
+          "ext4": {
+            "unit": "txn/s",
+            "higher_is_better": true,
+            "observations": [
+              175.885,
+              158.995,
+              169.049
+            ],
+            "median": 169.049,
+            "minimum": 158.995,
+            "maximum": 175.885,
+            "median_absolute_deviation": 6.835999999999984
+          },
+          "performance_ratio_to_ext4": 1.5353891475252737,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate2"
+        },
+        "sqlite-delete-full-batch100": {
+          "unit": "txn/s",
+          "higher_is_better": true,
+          "observations": [
+            55.296,
+            55.131,
+            54.88
+          ],
+          "median": 55.131,
+          "minimum": 54.88,
+          "maximum": 55.296,
+          "median_absolute_deviation": 0.16499999999999915,
+          "ext4": {
+            "unit": "txn/s",
+            "higher_is_better": true,
+            "observations": [
+              59.29,
+              64.518,
+              58.653
+            ],
+            "median": 59.29,
+            "minimum": 58.653,
+            "maximum": 64.518,
+            "median_absolute_deviation": 0.6370000000000005
+          },
+          "performance_ratio_to_ext4": 0.9298532636194974,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate2"
+        },
+        "sqlite-wal-full-batch1": {
+          "unit": "txn/s",
+          "higher_is_better": true,
+          "observations": [
+            633.667,
+            618.871,
+            606.518
+          ],
+          "median": 618.871,
+          "minimum": 606.518,
+          "maximum": 633.667,
+          "median_absolute_deviation": 12.352999999999952,
+          "ext4": {
+            "unit": "txn/s",
+            "higher_is_better": true,
+            "observations": [
+              433.559,
+              468.805,
+              377.543
+            ],
+            "median": 433.559,
+            "minimum": 377.543,
+            "maximum": 468.805,
+            "median_absolute_deviation": 35.24599999999998
+          },
+          "performance_ratio_to_ext4": 1.4274204894835534,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate2"
+        },
+        "sqlite-wal-full-batch1-checkpoint": {
+          "unit": "ms",
+          "higher_is_better": false,
+          "observations": [
+            19.419,
+            23.208,
+            20.377
+          ],
+          "median": 20.377,
+          "minimum": 19.419,
+          "maximum": 23.208,
+          "median_absolute_deviation": 0.9579999999999984,
+          "ext4": {
+            "unit": "ms",
+            "higher_is_better": false,
+            "observations": [
+              13.751,
+              13.653,
+              13.287
+            ],
+            "median": 13.653,
+            "minimum": 13.287,
+            "maximum": 13.751,
+            "median_absolute_deviation": 0.09799999999999898
+          },
+          "performance_ratio_to_ext4": 0.6700201207243461,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate2"
+        },
+        "sqlite-wal-full-batch100": {
+          "unit": "txn/s",
+          "higher_is_better": true,
+          "observations": [
+            142.178,
+            143.111,
+            140.234
+          ],
+          "median": 142.178,
+          "minimum": 140.234,
+          "maximum": 143.111,
+          "median_absolute_deviation": 0.9329999999999927,
+          "ext4": {
+            "unit": "txn/s",
+            "higher_is_better": true,
+            "observations": [
+              117.08,
+              126.896,
+              115.879
+            ],
+            "median": 117.08,
+            "minimum": 115.879,
+            "maximum": 126.896,
+            "median_absolute_deviation": 1.2009999999999934
+          },
+          "performance_ratio_to_ext4": 1.2143662453023574,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate2"
+        },
+        "sqlite-wal-full-batch100-checkpoint": {
+          "unit": "ms",
+          "higher_is_better": false,
+          "observations": [
+            72.247,
+            91.883,
+            86.946
+          ],
+          "median": 86.946,
+          "minimum": 72.247,
+          "maximum": 91.883,
+          "median_absolute_deviation": 4.936999999999998,
+          "ext4": {
+            "unit": "ms",
+            "higher_is_better": false,
+            "observations": [
+              64.018,
+              63.255,
+              62.895
+            ],
+            "median": 63.255,
+            "minimum": 62.895,
+            "maximum": 64.018,
+            "median_absolute_deviation": 0.35999999999999943
+          },
+          "performance_ratio_to_ext4": 0.7275205299841281,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate2"
+        },
+        "sqlite-wal-normal-batch1": {
+          "unit": "txn/s",
+          "higher_is_better": true,
+          "observations": [
+            22674.917,
+            19719.834,
+            24546.747
+          ],
+          "median": 22674.917,
+          "minimum": 19719.834,
+          "maximum": 24546.747,
+          "median_absolute_deviation": 1871.829999999998,
+          "ext4": {
+            "unit": "txn/s",
+            "higher_is_better": true,
+            "observations": [
+              14878.618,
+              15509.094,
+              14630.131
+            ],
+            "median": 14878.618,
+            "minimum": 14630.131,
+            "maximum": 15509.094,
+            "median_absolute_deviation": 248.487000000001
+          },
+          "performance_ratio_to_ext4": 1.5239934918686668,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate2"
+        },
+        "sqlite-wal-normal-batch1-checkpoint": {
+          "unit": "ms",
+          "higher_is_better": false,
+          "observations": [
+            14.778,
+            32.14,
+            14.456
+          ],
+          "median": 14.778,
+          "minimum": 14.456,
+          "maximum": 32.14,
+          "median_absolute_deviation": 0.32200000000000095,
+          "ext4": {
+            "unit": "ms",
+            "higher_is_better": false,
+            "observations": [
+              17.31,
+              17.134,
+              18.232
+            ],
+            "median": 17.31,
+            "minimum": 17.134,
+            "maximum": 18.232,
+            "median_absolute_deviation": 0.17599999999999838
+          },
+          "performance_ratio_to_ext4": 1.1713357693869264,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate2"
+        },
+        "sqlite-wal-normal-batch100": {
+          "unit": "txn/s",
+          "higher_is_better": true,
+          "observations": [
+            460.372,
+            448.239,
+            433.316
+          ],
+          "median": 448.239,
+          "minimum": 433.316,
+          "maximum": 460.372,
+          "median_absolute_deviation": 12.133000000000038,
+          "ext4": {
+            "unit": "txn/s",
+            "higher_is_better": true,
+            "observations": [
+              270.484,
+              267.298,
+              268.591
+            ],
+            "median": 268.591,
+            "minimum": 267.298,
+            "maximum": 270.484,
+            "median_absolute_deviation": 1.2930000000000064
+          },
+          "performance_ratio_to_ext4": 1.6688533867478805,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate2"
+        },
+        "sqlite-wal-normal-batch100-checkpoint": {
+          "unit": "ms",
+          "higher_is_better": false,
+          "observations": [
+            264.655,
+            278.716,
+            214.482
+          ],
+          "median": 264.655,
+          "minimum": 214.482,
+          "maximum": 278.716,
+          "median_absolute_deviation": 14.061000000000035,
+          "ext4": {
+            "unit": "ms",
+            "higher_is_better": false,
+            "observations": [
+              379.063,
+              369.12,
+              371.47
+            ],
+            "median": 371.47,
+            "minimum": 369.12,
+            "maximum": 379.063,
+            "median_absolute_deviation": 2.3500000000000227
+          },
+          "performance_ratio_to_ext4": 1.4036009143979902,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate2"
+        }
+      }
+    },
+    {
+      "directory": "gce-fs-bench-sqlite-gap-2026-10-25-candidate3",
+      "outcome": "build failed: missing control-API counter fields"
+    },
+    {
+      "directory": "gce-fs-bench-sqlite-gap-2026-10-25-candidate3-run",
+      "outcome": "discarded: server-side replacement added no throughput gain",
+      "metrics": {
+        "sqlite-pread-scan": {
+          "unit": "MiB/s",
+          "higher_is_better": true,
+          "observations": [
+            720.104,
+            839.195,
+            845.438
+          ],
+          "median": 839.195,
+          "minimum": 720.104,
+          "maximum": 845.438,
+          "median_absolute_deviation": 6.242999999999938,
+          "ext4": {
+            "unit": "MiB/s",
+            "higher_is_better": true,
+            "observations": [
+              181.347,
+              184.152,
+              182.651
+            ],
+            "median": 182.651,
+            "minimum": 181.347,
+            "maximum": 184.152,
+            "median_absolute_deviation": 1.304000000000002
+          },
+          "performance_ratio_to_ext4": 4.594527267849615,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate3-run"
+        },
+        "sqlite-pread-scan-warm": {
+          "unit": "MiB/s",
+          "higher_is_better": true,
+          "observations": [
+            2578.57,
+            2550.994,
+            2637.666
+          ],
+          "median": 2578.57,
+          "minimum": 2550.994,
+          "maximum": 2637.666,
+          "median_absolute_deviation": 27.576000000000022,
+          "ext4": {
+            "unit": "MiB/s",
+            "higher_is_better": true,
+            "observations": [
+              2811.139,
+              2818.925,
+              2383.888
+            ],
+            "median": 2811.139,
+            "minimum": 2383.888,
+            "maximum": 2818.925,
+            "median_absolute_deviation": 7.786000000000058
+          },
+          "performance_ratio_to_ext4": 0.9172687654363587,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate3-run"
+        },
+        "sqlite-mmap-scan": {
+          "unit": "MiB/s",
+          "higher_is_better": true,
+          "observations": [
+            3309.417,
+            3374.458,
+            3388.031
+          ],
+          "median": 3374.458,
+          "minimum": 3309.417,
+          "maximum": 3388.031,
+          "median_absolute_deviation": 13.572999999999865,
+          "ext4": {
+            "unit": "MiB/s",
+            "higher_is_better": true,
+            "observations": [
+              3284.527,
+              3469.821,
+              3473.288
+            ],
+            "median": 3469.821,
+            "minimum": 3284.527,
+            "maximum": 3473.288,
+            "median_absolute_deviation": 3.4670000000000982
+          },
+          "performance_ratio_to_ext4": 0.9725164496958201,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate3-run"
+        },
+        "sqlite-mmap-scan-warm": {
+          "unit": "MiB/s",
+          "higher_is_better": true,
+          "observations": [
+            3729.675,
+            3684.004,
+            3738.335
+          ],
+          "median": 3729.675,
+          "minimum": 3684.004,
+          "maximum": 3738.335,
+          "median_absolute_deviation": 8.659999999999854,
+          "ext4": {
+            "unit": "MiB/s",
+            "higher_is_better": true,
+            "observations": [
+              3810.78,
+              3808.903,
+              3816.966
+            ],
+            "median": 3810.78,
+            "minimum": 3808.903,
+            "maximum": 3816.966,
+            "median_absolute_deviation": 1.8770000000004075
+          },
+          "performance_ratio_to_ext4": 0.9787169555838962,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate3-run"
+        },
+        "sqlite-delete-full-batch1": {
+          "unit": "txn/s",
+          "higher_is_better": true,
+          "observations": [
+            262.9,
+            252.913,
+            258.483
+          ],
+          "median": 258.483,
+          "minimum": 252.913,
+          "maximum": 262.9,
+          "median_absolute_deviation": 4.416999999999973,
+          "ext4": {
+            "unit": "txn/s",
+            "higher_is_better": true,
+            "observations": [
+              174.252,
+              179.746,
+              186.366
+            ],
+            "median": 179.746,
+            "minimum": 174.252,
+            "maximum": 186.366,
+            "median_absolute_deviation": 5.494
+          },
+          "performance_ratio_to_ext4": 1.4380459092274653,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate3-run"
+        },
+        "sqlite-delete-full-batch100": {
+          "unit": "txn/s",
+          "higher_is_better": true,
+          "observations": [
+            55.191,
+            53.401,
+            55.055
+          ],
+          "median": 55.055,
+          "minimum": 53.401,
+          "maximum": 55.191,
+          "median_absolute_deviation": 0.13600000000000279,
+          "ext4": {
+            "unit": "txn/s",
+            "higher_is_better": true,
+            "observations": [
+              57.272,
+              59.297,
+              60.424
+            ],
+            "median": 59.297,
+            "minimum": 57.272,
+            "maximum": 60.424,
+            "median_absolute_deviation": 1.1270000000000024
+          },
+          "performance_ratio_to_ext4": 0.9284618108841932,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate3-run"
+        },
+        "sqlite-wal-full-batch1": {
+          "unit": "txn/s",
+          "higher_is_better": true,
+          "observations": [
+            580.01,
+            626.523,
+            610.828
+          ],
+          "median": 610.828,
+          "minimum": 580.01,
+          "maximum": 626.523,
+          "median_absolute_deviation": 15.69500000000005,
+          "ext4": {
+            "unit": "txn/s",
+            "higher_is_better": true,
+            "observations": [
+              359.131,
+              377.882,
+              393.486
+            ],
+            "median": 377.882,
+            "minimum": 359.131,
+            "maximum": 393.486,
+            "median_absolute_deviation": 15.603999999999985
+          },
+          "performance_ratio_to_ext4": 1.6164516965613602,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate3-run"
+        },
+        "sqlite-wal-full-batch1-checkpoint": {
+          "unit": "ms",
+          "higher_is_better": false,
+          "observations": [
+            42.01,
+            16.214,
+            19.512
+          ],
+          "median": 19.512,
+          "minimum": 16.214,
+          "maximum": 42.01,
+          "median_absolute_deviation": 3.298000000000002,
+          "ext4": {
+            "unit": "ms",
+            "higher_is_better": false,
+            "observations": [
+              13.697,
+              14.031,
+              13.91
+            ],
+            "median": 13.91,
+            "minimum": 13.697,
+            "maximum": 14.031,
+            "median_absolute_deviation": 0.12100000000000044
+          },
+          "performance_ratio_to_ext4": 0.7128946289462894,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate3-run"
+        },
+        "sqlite-wal-full-batch100": {
+          "unit": "txn/s",
+          "higher_is_better": true,
+          "observations": [
+            137.927,
+            143.542,
+            134.058
+          ],
+          "median": 137.927,
+          "minimum": 134.058,
+          "maximum": 143.542,
+          "median_absolute_deviation": 3.8689999999999998,
+          "ext4": {
+            "unit": "txn/s",
+            "higher_is_better": true,
+            "observations": [
+              116.72,
+              119.259,
+              120.489
+            ],
+            "median": 119.259,
+            "minimum": 116.72,
+            "maximum": 120.489,
+            "median_absolute_deviation": 1.230000000000004
+          },
+          "performance_ratio_to_ext4": 1.156533259544353,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate3-run"
+        },
+        "sqlite-wal-full-batch100-checkpoint": {
+          "unit": "ms",
+          "higher_is_better": false,
+          "observations": [
+            68.555,
+            73.757,
+            66.017
+          ],
+          "median": 68.555,
+          "minimum": 66.017,
+          "maximum": 73.757,
+          "median_absolute_deviation": 2.538000000000011,
+          "ext4": {
+            "unit": "ms",
+            "higher_is_better": false,
+            "observations": [
+              72.182,
+              62.305,
+              61.952
+            ],
+            "median": 62.305,
+            "minimum": 61.952,
+            "maximum": 72.182,
+            "median_absolute_deviation": 0.35300000000000153
+          },
+          "performance_ratio_to_ext4": 0.9088323244110568,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate3-run"
+        },
+        "sqlite-wal-normal-batch1": {
+          "unit": "txn/s",
+          "higher_is_better": true,
+          "observations": [
+            22739.04,
+            23862.311,
+            22879.934
+          ],
+          "median": 22879.934,
+          "minimum": 22739.04,
+          "maximum": 23862.311,
+          "median_absolute_deviation": 140.89400000000023,
+          "ext4": {
+            "unit": "txn/s",
+            "higher_is_better": true,
+            "observations": [
+              15038.427,
+              15198.753,
+              15336.1
+            ],
+            "median": 15198.753,
+            "minimum": 15038.427,
+            "maximum": 15336.1,
+            "median_absolute_deviation": 137.34699999999975
+          },
+          "performance_ratio_to_ext4": 1.505382316562418,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate3-run"
+        },
+        "sqlite-wal-normal-batch1-checkpoint": {
+          "unit": "ms",
+          "higher_is_better": false,
+          "observations": [
+            16.091,
+            16.032,
+            16.369
+          ],
+          "median": 16.091,
+          "minimum": 16.032,
+          "maximum": 16.369,
+          "median_absolute_deviation": 0.05900000000000105,
+          "ext4": {
+            "unit": "ms",
+            "higher_is_better": false,
+            "observations": [
+              16.984,
+              17.618,
+              18.526
+            ],
+            "median": 17.618,
+            "minimum": 16.984,
+            "maximum": 18.526,
+            "median_absolute_deviation": 0.6339999999999968
+          },
+          "performance_ratio_to_ext4": 1.0948977689391584,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate3-run"
+        },
+        "sqlite-wal-normal-batch100": {
+          "unit": "txn/s",
+          "higher_is_better": true,
+          "observations": [
+            341.77,
+            445.351,
+            442.69
+          ],
+          "median": 442.69,
+          "minimum": 341.77,
+          "maximum": 445.351,
+          "median_absolute_deviation": 2.6610000000000014,
+          "ext4": {
+            "unit": "txn/s",
+            "higher_is_better": true,
+            "observations": [
+              270.42,
+              269.792,
+              270.12
+            ],
+            "median": 270.12,
+            "minimum": 269.792,
+            "maximum": 270.42,
+            "median_absolute_deviation": 0.30000000000001137
+          },
+          "performance_ratio_to_ext4": 1.6388642084999259,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate3-run"
+        },
+        "sqlite-wal-normal-batch100-checkpoint": {
+          "unit": "ms",
+          "higher_is_better": false,
+          "observations": [
+            90.258,
+            207.107,
+            241.688
+          ],
+          "median": 207.107,
+          "minimum": 90.258,
+          "maximum": 241.688,
+          "median_absolute_deviation": 34.58099999999999,
+          "ext4": {
+            "unit": "ms",
+            "higher_is_better": false,
+            "observations": [
+              423.0,
+              373.218,
+              379.637
+            ],
+            "median": 379.637,
+            "minimum": 373.218,
+            "maximum": 423.0,
+            "median_absolute_deviation": 6.418999999999983
+          },
+          "performance_ratio_to_ext4": 1.833047651696949,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate3-run"
+        }
+      }
+    },
+    {
+      "directory": "gce-fs-bench-sqlite-gap-2026-10-25-candidate4",
+      "outcome": "build failed: test snapshot had a stats type error"
+    },
+    {
+      "directory": "gce-fs-bench-sqlite-gap-2026-10-25-candidate4-run",
+      "outcome": "retained: smaller extent buffers; allocation reduction, no throughput claim",
+      "metrics": {
+        "sqlite-pread-scan": {
+          "unit": "MiB/s",
+          "higher_is_better": true,
+          "observations": [
+            737.552,
+            831.693,
+            843.236
+          ],
+          "median": 831.693,
+          "minimum": 737.552,
+          "maximum": 843.236,
+          "median_absolute_deviation": 11.543000000000006,
+          "ext4": {
+            "unit": "MiB/s",
+            "higher_is_better": true,
+            "observations": [
+              182.538,
+              184.639,
+              184.782
+            ],
+            "median": 184.639,
+            "minimum": 182.538,
+            "maximum": 184.782,
+            "median_absolute_deviation": 0.14300000000000068
+          },
+          "performance_ratio_to_ext4": 4.504427558641456,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate4-run"
+        },
+        "sqlite-pread-scan-warm": {
+          "unit": "MiB/s",
+          "higher_is_better": true,
+          "observations": [
+            2437.854,
+            2694.854,
+            2541.481
+          ],
+          "median": 2541.481,
+          "minimum": 2437.854,
+          "maximum": 2694.854,
+          "median_absolute_deviation": 103.62700000000041,
+          "ext4": {
+            "unit": "MiB/s",
+            "higher_is_better": true,
+            "observations": [
+              2756.618,
+              2642.19,
+              2772.923
+            ],
+            "median": 2756.618,
+            "minimum": 2642.19,
+            "maximum": 2772.923,
+            "median_absolute_deviation": 16.304999999999836
+          },
+          "performance_ratio_to_ext4": 0.9219561796375124,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate4-run"
+        },
+        "sqlite-mmap-scan": {
+          "unit": "MiB/s",
+          "higher_is_better": true,
+          "observations": [
+            3433.437,
+            3471.78,
+            3478.533
+          ],
+          "median": 3471.78,
+          "minimum": 3433.437,
+          "maximum": 3478.533,
+          "median_absolute_deviation": 6.752999999999702,
+          "ext4": {
+            "unit": "MiB/s",
+            "higher_is_better": true,
+            "observations": [
+              3472.513,
+              3533.53,
+              3536.586
+            ],
+            "median": 3533.53,
+            "minimum": 3472.513,
+            "maximum": 3536.586,
+            "median_absolute_deviation": 3.0559999999995853
+          },
+          "performance_ratio_to_ext4": 0.9825245575953792,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate4-run"
+        },
+        "sqlite-mmap-scan-warm": {
+          "unit": "MiB/s",
+          "higher_is_better": true,
+          "observations": [
+            3746.294,
+            3860.133,
+            3842.874
+          ],
+          "median": 3842.874,
+          "minimum": 3746.294,
+          "maximum": 3860.133,
+          "median_absolute_deviation": 17.259000000000015,
+          "ext4": {
+            "unit": "MiB/s",
+            "higher_is_better": true,
+            "observations": [
+              3798.524,
+              3886.173,
+              3835.7
+            ],
+            "median": 3835.7,
+            "minimum": 3798.524,
+            "maximum": 3886.173,
+            "median_absolute_deviation": 37.17599999999993
+          },
+          "performance_ratio_to_ext4": 1.00187032353938,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate4-run"
+        },
+        "sqlite-delete-full-batch1": {
+          "unit": "txn/s",
+          "higher_is_better": true,
+          "observations": [
+            268.968,
+            264.054,
+            262.177
+          ],
+          "median": 264.054,
+          "minimum": 262.177,
+          "maximum": 268.968,
+          "median_absolute_deviation": 1.8769999999999527,
+          "ext4": {
+            "unit": "txn/s",
+            "higher_is_better": true,
+            "observations": [
+              175.905,
+              171.255,
+              165.367
+            ],
+            "median": 171.255,
+            "minimum": 165.367,
+            "maximum": 175.905,
+            "median_absolute_deviation": 4.650000000000006
+          },
+          "performance_ratio_to_ext4": 1.5418761496014715,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate4-run"
+        },
+        "sqlite-delete-full-batch100": {
+          "unit": "txn/s",
+          "higher_is_better": true,
+          "observations": [
+            55.407,
+            55.442,
+            54.936
+          ],
+          "median": 55.407,
+          "minimum": 54.936,
+          "maximum": 55.442,
+          "median_absolute_deviation": 0.035000000000003695,
+          "ext4": {
+            "unit": "txn/s",
+            "higher_is_better": true,
+            "observations": [
+              58.429,
+              60.289,
+              60.593
+            ],
+            "median": 60.289,
+            "minimum": 58.429,
+            "maximum": 60.593,
+            "median_absolute_deviation": 0.30400000000000205
+          },
+          "performance_ratio_to_ext4": 0.9190233707641526,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate4-run"
+        },
+        "sqlite-wal-full-batch1": {
+          "unit": "txn/s",
+          "higher_is_better": true,
+          "observations": [
+            616.443,
+            622.291,
+            552.072
+          ],
+          "median": 616.443,
+          "minimum": 552.072,
+          "maximum": 622.291,
+          "median_absolute_deviation": 5.84800000000007,
+          "ext4": {
+            "unit": "txn/s",
+            "higher_is_better": true,
+            "observations": [
+              385.899,
+              396.942,
+              390.638
+            ],
+            "median": 390.638,
+            "minimum": 385.899,
+            "maximum": 396.942,
+            "median_absolute_deviation": 4.738999999999976
+          },
+          "performance_ratio_to_ext4": 1.5780415627767908,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate4-run"
+        },
+        "sqlite-wal-full-batch1-checkpoint": {
+          "unit": "ms",
+          "higher_is_better": false,
+          "observations": [
+            20.036,
+            21.355,
+            17.025
+          ],
+          "median": 20.036,
+          "minimum": 17.025,
+          "maximum": 21.355,
+          "median_absolute_deviation": 1.318999999999999,
+          "ext4": {
+            "unit": "ms",
+            "higher_is_better": false,
+            "observations": [
+              14.036,
+              14.704,
+              13.557
+            ],
+            "median": 14.036,
+            "minimum": 13.557,
+            "maximum": 14.704,
+            "median_absolute_deviation": 0.4789999999999992
+          },
+          "performance_ratio_to_ext4": 0.7005390297464563,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate4-run"
+        },
+        "sqlite-wal-full-batch100": {
+          "unit": "txn/s",
+          "higher_is_better": true,
+          "observations": [
+            138.88,
+            149.778,
+            150.664
+          ],
+          "median": 149.778,
+          "minimum": 138.88,
+          "maximum": 150.664,
+          "median_absolute_deviation": 0.8859999999999957,
+          "ext4": {
+            "unit": "txn/s",
+            "higher_is_better": true,
+            "observations": [
+              120.458,
+              119.849,
+              122.127
+            ],
+            "median": 120.458,
+            "minimum": 119.849,
+            "maximum": 122.127,
+            "median_absolute_deviation": 0.6089999999999947
+          },
+          "performance_ratio_to_ext4": 1.2434043401019441,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate4-run"
+        },
+        "sqlite-wal-full-batch100-checkpoint": {
+          "unit": "ms",
+          "higher_is_better": false,
+          "observations": [
+            64.425,
+            69.968,
+            66.519
+          ],
+          "median": 66.519,
+          "minimum": 64.425,
+          "maximum": 69.968,
+          "median_absolute_deviation": 2.0940000000000083,
+          "ext4": {
+            "unit": "ms",
+            "higher_is_better": false,
+            "observations": [
+              61.892,
+              62.084,
+              62.334
+            ],
+            "median": 62.084,
+            "minimum": 61.892,
+            "maximum": 62.334,
+            "median_absolute_deviation": 0.19200000000000017
+          },
+          "performance_ratio_to_ext4": 0.9333273200138306,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate4-run"
+        },
+        "sqlite-wal-normal-batch1": {
+          "unit": "txn/s",
+          "higher_is_better": true,
+          "observations": [
+            22659.2,
+            20824.42,
+            22337.459
+          ],
+          "median": 22337.459,
+          "minimum": 20824.42,
+          "maximum": 22659.2,
+          "median_absolute_deviation": 321.7410000000018,
+          "ext4": {
+            "unit": "txn/s",
+            "higher_is_better": true,
+            "observations": [
+              15085.604,
+              15332.042,
+              14817.217
+            ],
+            "median": 15085.604,
+            "minimum": 14817.217,
+            "maximum": 15332.042,
+            "median_absolute_deviation": 246.4380000000001
+          },
+          "performance_ratio_to_ext4": 1.480713599535027,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate4-run"
+        },
+        "sqlite-wal-normal-batch1-checkpoint": {
+          "unit": "ms",
+          "higher_is_better": false,
+          "observations": [
+            16.085,
+            37.356,
+            16.695
+          ],
+          "median": 16.695,
+          "minimum": 16.085,
+          "maximum": 37.356,
+          "median_absolute_deviation": 0.6099999999999994,
+          "ext4": {
+            "unit": "ms",
+            "higher_is_better": false,
+            "observations": [
+              17.093,
+              16.99,
+              17.82
+            ],
+            "median": 17.093,
+            "minimum": 16.99,
+            "maximum": 17.82,
+            "median_absolute_deviation": 0.10300000000000153
+          },
+          "performance_ratio_to_ext4": 1.0238394728960767,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate4-run"
+        },
+        "sqlite-wal-normal-batch100": {
+          "unit": "txn/s",
+          "higher_is_better": true,
+          "observations": [
+            341.523,
+            441.381,
+            443.873
+          ],
+          "median": 441.381,
+          "minimum": 341.523,
+          "maximum": 443.873,
+          "median_absolute_deviation": 2.4920000000000186,
+          "ext4": {
+            "unit": "txn/s",
+            "higher_is_better": true,
+            "observations": [
+              270.483,
+              270.182,
+              270.018
+            ],
+            "median": 270.182,
+            "minimum": 270.018,
+            "maximum": 270.483,
+            "median_absolute_deviation": 0.1640000000000441
+          },
+          "performance_ratio_to_ext4": 1.633643247884759,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate4-run"
+        },
+        "sqlite-wal-normal-batch100-checkpoint": {
+          "unit": "ms",
+          "higher_is_better": false,
+          "observations": [
+            88.558,
+            185.547,
+            252.415
+          ],
+          "median": 185.547,
+          "minimum": 88.558,
+          "maximum": 252.415,
+          "median_absolute_deviation": 66.868,
+          "ext4": {
+            "unit": "ms",
+            "higher_is_better": false,
+            "observations": [
+              369.303,
+              384.844,
+              372.337
+            ],
+            "median": 372.337,
+            "minimum": 369.303,
+            "maximum": 384.844,
+            "median_absolute_deviation": 3.033999999999992
+          },
+          "performance_ratio_to_ext4": 2.0066991112763883,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate4-run"
+        }
+      }
+    },
+    {
+      "directory": "gce-fs-bench-sqlite-gap-2026-10-25-candidate5",
+      "outcome": "discarded: client replacement did not close gaps; usage unconfirmed with INFO disabled",
+      "metrics": {
+        "sqlite-pread-scan": {
+          "unit": "MiB/s",
+          "higher_is_better": true,
+          "observations": [
+            753.158,
+            835.659,
+            843.215
+          ],
+          "median": 835.659,
+          "minimum": 753.158,
+          "maximum": 843.215,
+          "median_absolute_deviation": 7.55600000000004,
+          "ext4": {
+            "unit": "MiB/s",
+            "higher_is_better": true,
+            "observations": [
+              183.917,
+              183.646,
+              183.367
+            ],
+            "median": 183.646,
+            "minimum": 183.367,
+            "maximum": 183.917,
+            "median_absolute_deviation": 0.271000000000015
+          },
+          "performance_ratio_to_ext4": 4.550379534539277,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate5"
+        },
+        "sqlite-pread-scan-warm": {
+          "unit": "MiB/s",
+          "higher_is_better": true,
+          "observations": [
+            2676.907,
+            2619.447,
+            2620.701
+          ],
+          "median": 2620.701,
+          "minimum": 2619.447,
+          "maximum": 2676.907,
+          "median_absolute_deviation": 1.2539999999999054,
+          "ext4": {
+            "unit": "MiB/s",
+            "higher_is_better": true,
+            "observations": [
+              2843.169,
+              2559.287,
+              2748.054
+            ],
+            "median": 2748.054,
+            "minimum": 2559.287,
+            "maximum": 2843.169,
+            "median_absolute_deviation": 95.11499999999978
+          },
+          "performance_ratio_to_ext4": 0.9536570242069479,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate5"
+        },
+        "sqlite-mmap-scan": {
+          "unit": "MiB/s",
+          "higher_is_better": true,
+          "observations": [
+            3353.057,
+            3463.579,
+            3536.673
+          ],
+          "median": 3463.579,
+          "minimum": 3353.057,
+          "maximum": 3536.673,
+          "median_absolute_deviation": 73.0939999999996,
+          "ext4": {
+            "unit": "MiB/s",
+            "higher_is_better": true,
+            "observations": [
+              3302.629,
+              3458.586,
+              3399.638
+            ],
+            "median": 3399.638,
+            "minimum": 3302.629,
+            "maximum": 3458.586,
+            "median_absolute_deviation": 58.947999999999865
+          },
+          "performance_ratio_to_ext4": 1.0188081789884689,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate5"
+        },
+        "sqlite-mmap-scan-warm": {
+          "unit": "MiB/s",
+          "higher_is_better": true,
+          "observations": [
+            3746.957,
+            3842.249,
+            3845.177
+          ],
+          "median": 3842.249,
+          "minimum": 3746.957,
+          "maximum": 3845.177,
+          "median_absolute_deviation": 2.9280000000003383,
+          "ext4": {
+            "unit": "MiB/s",
+            "higher_is_better": true,
+            "observations": [
+              3806.481,
+              3846.426,
+              3731.534
+            ],
+            "median": 3806.481,
+            "minimum": 3731.534,
+            "maximum": 3846.426,
+            "median_absolute_deviation": 39.94499999999971
+          },
+          "performance_ratio_to_ext4": 1.0093966054211225,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate5"
+        },
+        "sqlite-delete-full-batch1": {
+          "unit": "txn/s",
+          "higher_is_better": true,
+          "observations": [
+            269.742,
+            264.444,
+            262.183
+          ],
+          "median": 264.444,
+          "minimum": 262.183,
+          "maximum": 269.742,
+          "median_absolute_deviation": 2.261000000000024,
+          "ext4": {
+            "unit": "txn/s",
+            "higher_is_better": true,
+            "observations": [
+              191.505,
+              165.651,
+              175.8
+            ],
+            "median": 175.8,
+            "minimum": 165.651,
+            "maximum": 191.505,
+            "median_absolute_deviation": 10.149000000000001
+          },
+          "performance_ratio_to_ext4": 1.504232081911263,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate5"
+        },
+        "sqlite-delete-full-batch100": {
+          "unit": "txn/s",
+          "higher_is_better": true,
+          "observations": [
+            55.257,
+            54.865,
+            55.091
+          ],
+          "median": 55.091,
+          "minimum": 54.865,
+          "maximum": 55.257,
+          "median_absolute_deviation": 0.16599999999999682,
+          "ext4": {
+            "unit": "txn/s",
+            "higher_is_better": true,
+            "observations": [
+              58.413,
+              55.862,
+              57.397
+            ],
+            "median": 57.397,
+            "minimum": 55.862,
+            "maximum": 58.413,
+            "median_absolute_deviation": 1.0159999999999982
+          },
+          "performance_ratio_to_ext4": 0.9598236841646777,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate5"
+        },
+        "sqlite-wal-full-batch1": {
+          "unit": "txn/s",
+          "higher_is_better": true,
+          "observations": [
+            618.482,
+            616.695,
+            604.926
+          ],
+          "median": 616.695,
+          "minimum": 604.926,
+          "maximum": 618.482,
+          "median_absolute_deviation": 1.7869999999999209,
+          "ext4": {
+            "unit": "txn/s",
+            "higher_is_better": true,
+            "observations": [
+              390.044,
+              338.42,
+              355.37
+            ],
+            "median": 355.37,
+            "minimum": 338.42,
+            "maximum": 390.044,
+            "median_absolute_deviation": 16.94999999999999
+          },
+          "performance_ratio_to_ext4": 1.7353603286715256,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate5"
+        },
+        "sqlite-wal-full-batch1-checkpoint": {
+          "unit": "ms",
+          "higher_is_better": false,
+          "observations": [
+            19.928,
+            20.903,
+            20.55
+          ],
+          "median": 20.55,
+          "minimum": 19.928,
+          "maximum": 20.903,
+          "median_absolute_deviation": 0.352999999999998,
+          "ext4": {
+            "unit": "ms",
+            "higher_is_better": false,
+            "observations": [
+              14.029,
+              14.989,
+              14.075
+            ],
+            "median": 14.075,
+            "minimum": 14.029,
+            "maximum": 14.989,
+            "median_absolute_deviation": 0.045999999999999375
+          },
+          "performance_ratio_to_ext4": 0.6849148418491484,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate5"
+        },
+        "sqlite-wal-full-batch100": {
+          "unit": "txn/s",
+          "higher_is_better": true,
+          "observations": [
+            153.393,
+            154.346,
+            151.605
+          ],
+          "median": 153.393,
+          "minimum": 151.605,
+          "maximum": 154.346,
+          "median_absolute_deviation": 0.953000000000003,
+          "ext4": {
+            "unit": "txn/s",
+            "higher_is_better": true,
+            "observations": [
+              119.106,
+              111.882,
+              114.213
+            ],
+            "median": 114.213,
+            "minimum": 111.882,
+            "maximum": 119.106,
+            "median_absolute_deviation": 2.330999999999989
+          },
+          "performance_ratio_to_ext4": 1.3430432612749863,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate5"
+        },
+        "sqlite-wal-full-batch100-checkpoint": {
+          "unit": "ms",
+          "higher_is_better": false,
+          "observations": [
+            87.406,
+            68.083,
+            62.159
+          ],
+          "median": 68.083,
+          "minimum": 62.159,
+          "maximum": 87.406,
+          "median_absolute_deviation": 5.9239999999999995,
+          "ext4": {
+            "unit": "ms",
+            "higher_is_better": false,
+            "observations": [
+              62.362,
+              65.646,
+              61.843
+            ],
+            "median": 62.362,
+            "minimum": 61.843,
+            "maximum": 65.646,
+            "median_absolute_deviation": 0.5189999999999984
+          },
+          "performance_ratio_to_ext4": 0.9159702128284595,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate5"
+        },
+        "sqlite-wal-normal-batch1": {
+          "unit": "txn/s",
+          "higher_is_better": true,
+          "observations": [
+            22743.366,
+            22297.178,
+            23370.615
+          ],
+          "median": 22743.366,
+          "minimum": 22297.178,
+          "maximum": 23370.615,
+          "median_absolute_deviation": 446.1880000000019,
+          "ext4": {
+            "unit": "txn/s",
+            "higher_is_better": true,
+            "observations": [
+              15056.282,
+              14142.601,
+              15042.746
+            ],
+            "median": 15042.746,
+            "minimum": 14142.601,
+            "maximum": 15056.282,
+            "median_absolute_deviation": 13.536000000000058
+          },
+          "performance_ratio_to_ext4": 1.5119158430249373,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate5"
+        },
+        "sqlite-wal-normal-batch1-checkpoint": {
+          "unit": "ms",
+          "higher_is_better": false,
+          "observations": [
+            15.521,
+            36.553,
+            94.942
+          ],
+          "median": 36.553,
+          "minimum": 15.521,
+          "maximum": 94.942,
+          "median_absolute_deviation": 21.031999999999996,
+          "ext4": {
+            "unit": "ms",
+            "higher_is_better": false,
+            "observations": [
+              17.402,
+              18.683,
+              17.019
+            ],
+            "median": 17.402,
+            "minimum": 17.019,
+            "maximum": 18.683,
+            "median_absolute_deviation": 0.38300000000000267
+          },
+          "performance_ratio_to_ext4": 0.47607583508877527,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate5"
+        },
+        "sqlite-wal-normal-batch100": {
+          "unit": "txn/s",
+          "higher_is_better": true,
+          "observations": [
+            358.66,
+            442.394,
+            431.452
+          ],
+          "median": 431.452,
+          "minimum": 358.66,
+          "maximum": 442.394,
+          "median_absolute_deviation": 10.942000000000007,
+          "ext4": {
+            "unit": "txn/s",
+            "higher_is_better": true,
+            "observations": [
+              271.392,
+              269.132,
+              270.474
+            ],
+            "median": 270.474,
+            "minimum": 269.132,
+            "maximum": 271.392,
+            "median_absolute_deviation": 0.9180000000000064
+          },
+          "performance_ratio_to_ext4": 1.5951699608834862,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate5"
+        },
+        "sqlite-wal-normal-batch100-checkpoint": {
+          "unit": "ms",
+          "higher_is_better": false,
+          "observations": [
+            87.131,
+            253.482,
+            283.375
+          ],
+          "median": 253.482,
+          "minimum": 87.131,
+          "maximum": 283.375,
+          "median_absolute_deviation": 29.893,
+          "ext4": {
+            "unit": "ms",
+            "higher_is_better": false,
+            "observations": [
+              378.894,
+              371.859,
+              389.317
+            ],
+            "median": 378.894,
+            "minimum": 371.859,
+            "maximum": 389.317,
+            "median_absolute_deviation": 7.035000000000025
+          },
+          "performance_ratio_to_ext4": 1.4947570241673964,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate5"
+        }
+      }
+    },
+    {
+      "directory": "gce-fs-bench-sqlite-gap-2026-10-25-candidate6",
+      "outcome": "retained: adjacent acknowledged UNMAP batching",
+      "metrics": {
+        "sqlite-pread-scan": {
+          "unit": "MiB/s",
+          "higher_is_better": true,
+          "observations": [
+            742.614,
+            832.312,
+            841.913
+          ],
+          "median": 832.312,
+          "minimum": 742.614,
+          "maximum": 841.913,
+          "median_absolute_deviation": 9.600999999999999,
+          "ext4": {
+            "unit": "MiB/s",
+            "higher_is_better": true,
+            "observations": [
+              184.224,
+              185.086,
+              184.342
+            ],
+            "median": 184.342,
+            "minimum": 184.224,
+            "maximum": 185.086,
+            "median_absolute_deviation": 0.11800000000002342
+          },
+          "performance_ratio_to_ext4": 4.515042692386976,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate6"
+        },
+        "sqlite-pread-scan-warm": {
+          "unit": "MiB/s",
+          "higher_is_better": true,
+          "observations": [
+            2710.099,
+            2705.341,
+            2650.665
+          ],
+          "median": 2705.341,
+          "minimum": 2650.665,
+          "maximum": 2710.099,
+          "median_absolute_deviation": 4.758000000000266,
+          "ext4": {
+            "unit": "MiB/s",
+            "higher_is_better": true,
+            "observations": [
+              2770.89,
+              2774.109,
+              2764.079
+            ],
+            "median": 2770.89,
+            "minimum": 2764.079,
+            "maximum": 2774.109,
+            "median_absolute_deviation": 3.219000000000051
+          },
+          "performance_ratio_to_ext4": 0.9763437018430902,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate6"
+        },
+        "sqlite-mmap-scan": {
+          "unit": "MiB/s",
+          "higher_is_better": true,
+          "observations": [
+            3357.342,
+            3553.947,
+            3502.42
+          ],
+          "median": 3502.42,
+          "minimum": 3357.342,
+          "maximum": 3553.947,
+          "median_absolute_deviation": 51.527000000000044,
+          "ext4": {
+            "unit": "MiB/s",
+            "higher_is_better": true,
+            "observations": [
+              3307.811,
+              3610.297,
+              3493.187
+            ],
+            "median": 3493.187,
+            "minimum": 3307.811,
+            "maximum": 3610.297,
+            "median_absolute_deviation": 117.11000000000013
+          },
+          "performance_ratio_to_ext4": 1.002643145070676,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate6"
+        },
+        "sqlite-mmap-scan-warm": {
+          "unit": "MiB/s",
+          "higher_is_better": true,
+          "observations": [
+            3831.992,
+            3864.809,
+            3902.001
+          ],
+          "median": 3864.809,
+          "minimum": 3831.992,
+          "maximum": 3902.001,
+          "median_absolute_deviation": 32.81700000000001,
+          "ext4": {
+            "unit": "MiB/s",
+            "higher_is_better": true,
+            "observations": [
+              3837.228,
+              3909.426,
+              3806.921
+            ],
+            "median": 3837.228,
+            "minimum": 3806.921,
+            "maximum": 3909.426,
+            "median_absolute_deviation": 30.307000000000244
+          },
+          "performance_ratio_to_ext4": 1.0071877407336756,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate6"
+        },
+        "sqlite-delete-full-batch1": {
+          "unit": "txn/s",
+          "higher_is_better": true,
+          "observations": [
+            271.888,
+            265.682,
+            265.982
+          ],
+          "median": 265.982,
+          "minimum": 265.682,
+          "maximum": 271.888,
+          "median_absolute_deviation": 0.30000000000001137,
+          "ext4": {
+            "unit": "txn/s",
+            "higher_is_better": true,
+            "observations": [
+              167.6,
+              169.814,
+              168.66
+            ],
+            "median": 168.66,
+            "minimum": 167.6,
+            "maximum": 169.814,
+            "median_absolute_deviation": 1.0600000000000023
+          },
+          "performance_ratio_to_ext4": 1.5770307126763905,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate6"
+        },
+        "sqlite-delete-full-batch100": {
+          "unit": "txn/s",
+          "higher_is_better": true,
+          "observations": [
+            55.085,
+            54.968,
+            54.768
+          ],
+          "median": 54.968,
+          "minimum": 54.768,
+          "maximum": 55.085,
+          "median_absolute_deviation": 0.11699999999999733,
+          "ext4": {
+            "unit": "txn/s",
+            "higher_is_better": true,
+            "observations": [
+              59.329,
+              58.992,
+              59.932
+            ],
+            "median": 59.329,
+            "minimum": 58.992,
+            "maximum": 59.932,
+            "median_absolute_deviation": 0.3370000000000033
+          },
+          "performance_ratio_to_ext4": 0.9264946316304,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate6"
+        },
+        "sqlite-wal-full-batch1": {
+          "unit": "txn/s",
+          "higher_is_better": true,
+          "observations": [
+            609.475,
+            633.323,
+            614.667
+          ],
+          "median": 614.667,
+          "minimum": 609.475,
+          "maximum": 633.323,
+          "median_absolute_deviation": 5.192000000000007,
+          "ext4": {
+            "unit": "txn/s",
+            "higher_is_better": true,
+            "observations": [
+              397.053,
+              359.845,
+              382.253
+            ],
+            "median": 382.253,
+            "minimum": 359.845,
+            "maximum": 397.053,
+            "median_absolute_deviation": 14.800000000000011
+          },
+          "performance_ratio_to_ext4": 1.608010924701703,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate6"
+        },
+        "sqlite-wal-full-batch1-checkpoint": {
+          "unit": "ms",
+          "higher_is_better": false,
+          "observations": [
+            17.967,
+            15.238,
+            14.285
+          ],
+          "median": 15.238,
+          "minimum": 14.285,
+          "maximum": 17.967,
+          "median_absolute_deviation": 0.9529999999999994,
+          "ext4": {
+            "unit": "ms",
+            "higher_is_better": false,
+            "observations": [
+              13.72,
+              14.084,
+              13.763
+            ],
+            "median": 13.763,
+            "minimum": 13.72,
+            "maximum": 14.084,
+            "median_absolute_deviation": 0.04299999999999926
+          },
+          "performance_ratio_to_ext4": 0.9032025200157501,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate6"
+        },
+        "sqlite-wal-full-batch100": {
+          "unit": "txn/s",
+          "higher_is_better": true,
+          "observations": [
+            154.385,
+            151.576,
+            152.974
+          ],
+          "median": 152.974,
+          "minimum": 151.576,
+          "maximum": 154.385,
+          "median_absolute_deviation": 1.3979999999999961,
+          "ext4": {
+            "unit": "txn/s",
+            "higher_is_better": true,
+            "observations": [
+              119.978,
+              119.793,
+              121.195
+            ],
+            "median": 119.978,
+            "minimum": 119.793,
+            "maximum": 121.195,
+            "median_absolute_deviation": 0.18499999999998806
+          },
+          "performance_ratio_to_ext4": 1.275017086465852,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate6"
+        },
+        "sqlite-wal-full-batch100-checkpoint": {
+          "unit": "ms",
+          "higher_is_better": false,
+          "observations": [
+            58.668,
+            66.829,
+            61.394
+          ],
+          "median": 61.394,
+          "minimum": 58.668,
+          "maximum": 66.829,
+          "median_absolute_deviation": 2.725999999999999,
+          "ext4": {
+            "unit": "ms",
+            "higher_is_better": false,
+            "observations": [
+              62.69,
+              61.779,
+              64.589
+            ],
+            "median": 62.69,
+            "minimum": 61.779,
+            "maximum": 64.589,
+            "median_absolute_deviation": 0.9109999999999943
+          },
+          "performance_ratio_to_ext4": 1.0211095546796103,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate6"
+        },
+        "sqlite-wal-normal-batch1": {
+          "unit": "txn/s",
+          "higher_is_better": true,
+          "observations": [
+            24287.216,
+            22416.622,
+            20130.198
+          ],
+          "median": 22416.622,
+          "minimum": 20130.198,
+          "maximum": 24287.216,
+          "median_absolute_deviation": 1870.594000000001,
+          "ext4": {
+            "unit": "txn/s",
+            "higher_is_better": true,
+            "observations": [
+              14942.105,
+              14825.527,
+              15217.259
+            ],
+            "median": 14942.105,
+            "minimum": 14825.527,
+            "maximum": 15217.259,
+            "median_absolute_deviation": 116.57799999999952
+          },
+          "performance_ratio_to_ext4": 1.5002318615750592,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate6"
+        },
+        "sqlite-wal-normal-batch1-checkpoint": {
+          "unit": "ms",
+          "higher_is_better": false,
+          "observations": [
+            42.634,
+            15.499,
+            16.044
+          ],
+          "median": 16.044,
+          "minimum": 15.499,
+          "maximum": 42.634,
+          "median_absolute_deviation": 0.5449999999999999,
+          "ext4": {
+            "unit": "ms",
+            "higher_is_better": false,
+            "observations": [
+              17.338,
+              17.154,
+              17.608
+            ],
+            "median": 17.338,
+            "minimum": 17.154,
+            "maximum": 17.608,
+            "median_absolute_deviation": 0.18400000000000105
+          },
+          "performance_ratio_to_ext4": 1.0806532036898528,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate6"
+        },
+        "sqlite-wal-normal-batch100": {
+          "unit": "txn/s",
+          "higher_is_better": true,
+          "observations": [
+            344.214,
+            451.95,
+            452.651
+          ],
+          "median": 451.95,
+          "minimum": 344.214,
+          "maximum": 452.651,
+          "median_absolute_deviation": 0.7010000000000218,
+          "ext4": {
+            "unit": "txn/s",
+            "higher_is_better": true,
+            "observations": [
+              271.392,
+              271.278,
+              271.11
+            ],
+            "median": 271.278,
+            "minimum": 271.11,
+            "maximum": 271.392,
+            "median_absolute_deviation": 0.1139999999999759
+          },
+          "performance_ratio_to_ext4": 1.6660031406896245,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate6"
+        },
+        "sqlite-wal-normal-batch100-checkpoint": {
+          "unit": "ms",
+          "higher_is_better": false,
+          "observations": [
+            95.423,
+            193.206,
+            188.285
+          ],
+          "median": 188.285,
+          "minimum": 95.423,
+          "maximum": 193.206,
+          "median_absolute_deviation": 4.920999999999992,
+          "ext4": {
+            "unit": "ms",
+            "higher_is_better": false,
+            "observations": [
+              372.672,
+              379.75,
+              370.6
+            ],
+            "median": 372.672,
+            "minimum": 370.6,
+            "maximum": 379.75,
+            "median_absolute_deviation": 2.0720000000000027
+          },
+          "performance_ratio_to_ext4": 1.9792973417956823,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate6"
+        }
+      }
+    },
+    {
+      "directory": "gce-fs-bench-sqlite-gap-2026-10-25-candidate7",
+      "outcome": "protection batching discarded: no protection batches observed; cached-read kernel retained",
+      "metrics": {
+        "sqlite-pread-scan": {
+          "unit": "MiB/s",
+          "higher_is_better": true,
+          "observations": [
+            791.213,
+            848.975,
+            853.116
+          ],
+          "median": 848.975,
+          "minimum": 791.213,
+          "maximum": 853.116,
+          "median_absolute_deviation": 4.140999999999963,
+          "ext4": {
+            "unit": "MiB/s",
+            "higher_is_better": true,
+            "observations": [
+              180.607,
+              185.523,
+              183.54
+            ],
+            "median": 183.54,
+            "minimum": 180.607,
+            "maximum": 185.523,
+            "median_absolute_deviation": 1.983000000000004
+          },
+          "performance_ratio_to_ext4": 4.625558461370819,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate7"
+        },
+        "sqlite-pread-scan-warm": {
+          "unit": "MiB/s",
+          "higher_is_better": true,
+          "observations": [
+            2828.335,
+            2665.167,
+            2795.809
+          ],
+          "median": 2795.809,
+          "minimum": 2665.167,
+          "maximum": 2828.335,
+          "median_absolute_deviation": 32.52599999999984,
+          "ext4": {
+            "unit": "MiB/s",
+            "higher_is_better": true,
+            "observations": [
+              2769.143,
+              2682.834,
+              2742.547
+            ],
+            "median": 2742.547,
+            "minimum": 2682.834,
+            "maximum": 2769.143,
+            "median_absolute_deviation": 26.596000000000004
+          },
+          "performance_ratio_to_ext4": 1.0194206334476674,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate7"
+        },
+        "sqlite-mmap-scan": {
+          "unit": "MiB/s",
+          "higher_is_better": true,
+          "observations": [
+            3407.512,
+            3480.878,
+            3563.168
+          ],
+          "median": 3480.878,
+          "minimum": 3407.512,
+          "maximum": 3563.168,
+          "median_absolute_deviation": 73.36599999999999,
+          "ext4": {
+            "unit": "MiB/s",
+            "higher_is_better": true,
+            "observations": [
+              3273.299,
+              3567.128,
+              3570.009
+            ],
+            "median": 3567.128,
+            "minimum": 3273.299,
+            "maximum": 3570.009,
+            "median_absolute_deviation": 2.880999999999858
+          },
+          "performance_ratio_to_ext4": 0.9758208844762509,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate7"
+        },
+        "sqlite-mmap-scan-warm": {
+          "unit": "MiB/s",
+          "higher_is_better": true,
+          "observations": [
+            3790.02,
+            3780.31,
+            3864.121
+          ],
+          "median": 3790.02,
+          "minimum": 3780.31,
+          "maximum": 3864.121,
+          "median_absolute_deviation": 9.710000000000036,
+          "ext4": {
+            "unit": "MiB/s",
+            "higher_is_better": true,
+            "observations": [
+              3759.272,
+              3880.024,
+              3744.424
+            ],
+            "median": 3759.272,
+            "minimum": 3744.424,
+            "maximum": 3880.024,
+            "median_absolute_deviation": 14.847999999999956
+          },
+          "performance_ratio_to_ext4": 1.0081792432151757,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate7"
+        },
+        "sqlite-delete-full-batch1": {
+          "unit": "txn/s",
+          "higher_is_better": true,
+          "observations": [
+            266.298,
+            263.777,
+            264.712
+          ],
+          "median": 264.712,
+          "minimum": 263.777,
+          "maximum": 266.298,
+          "median_absolute_deviation": 0.9350000000000023,
+          "ext4": {
+            "unit": "txn/s",
+            "higher_is_better": true,
+            "observations": [
+              175.84,
+              179.166,
+              159.079
+            ],
+            "median": 175.84,
+            "minimum": 159.079,
+            "maximum": 179.166,
+            "median_absolute_deviation": 3.3259999999999934
+          },
+          "performance_ratio_to_ext4": 1.5054140127388533,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate7"
+        },
+        "sqlite-delete-full-batch100": {
+          "unit": "txn/s",
+          "higher_is_better": true,
+          "observations": [
+            55.83,
+            54.04,
+            53.948
+          ],
+          "median": 54.04,
+          "minimum": 53.948,
+          "maximum": 55.83,
+          "median_absolute_deviation": 0.09199999999999875,
+          "ext4": {
+            "unit": "txn/s",
+            "higher_is_better": true,
+            "observations": [
+              56.632,
+              59.813,
+              58.726
+            ],
+            "median": 58.726,
+            "minimum": 56.632,
+            "maximum": 59.813,
+            "median_absolute_deviation": 1.0870000000000033
+          },
+          "performance_ratio_to_ext4": 0.9202057010523448,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate7"
+        },
+        "sqlite-wal-full-batch1": {
+          "unit": "txn/s",
+          "higher_is_better": true,
+          "observations": [
+            601.133,
+            624.949,
+            605.865
+          ],
+          "median": 605.865,
+          "minimum": 601.133,
+          "maximum": 624.949,
+          "median_absolute_deviation": 4.731999999999971,
+          "ext4": {
+            "unit": "txn/s",
+            "higher_is_better": true,
+            "observations": [
+              378.991,
+              378.833,
+              390.382
+            ],
+            "median": 378.991,
+            "minimum": 378.833,
+            "maximum": 390.382,
+            "median_absolute_deviation": 0.15799999999995862
+          },
+          "performance_ratio_to_ext4": 1.5986263526046793,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate7"
+        },
+        "sqlite-wal-full-batch1-checkpoint": {
+          "unit": "ms",
+          "higher_is_better": false,
+          "observations": [
+            15.058,
+            15.024,
+            14.95
+          ],
+          "median": 15.024,
+          "minimum": 14.95,
+          "maximum": 15.058,
+          "median_absolute_deviation": 0.034000000000000696,
+          "ext4": {
+            "unit": "ms",
+            "higher_is_better": false,
+            "observations": [
+              13.797,
+              14.279,
+              13.523
+            ],
+            "median": 13.797,
+            "minimum": 13.523,
+            "maximum": 14.279,
+            "median_absolute_deviation": 0.2740000000000009
+          },
+          "performance_ratio_to_ext4": 0.9183306709265177,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate7"
+        },
+        "sqlite-wal-full-batch100": {
+          "unit": "txn/s",
+          "higher_is_better": true,
+          "observations": [
+            157.657,
+            150.596,
+            149.784
+          ],
+          "median": 150.596,
+          "minimum": 149.784,
+          "maximum": 157.657,
+          "median_absolute_deviation": 0.8120000000000118,
+          "ext4": {
+            "unit": "txn/s",
+            "higher_is_better": true,
+            "observations": [
+              120.39,
+              124.922,
+              119.32
+            ],
+            "median": 120.39,
+            "minimum": 119.32,
+            "maximum": 124.922,
+            "median_absolute_deviation": 1.0700000000000074
+          },
+          "performance_ratio_to_ext4": 1.2509012376443227,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate7"
+        },
+        "sqlite-wal-full-batch100-checkpoint": {
+          "unit": "ms",
+          "higher_is_better": false,
+          "observations": [
+            90.972,
+            79.484,
+            59.733
+          ],
+          "median": 79.484,
+          "minimum": 59.733,
+          "maximum": 90.972,
+          "median_absolute_deviation": 11.488,
+          "ext4": {
+            "unit": "ms",
+            "higher_is_better": false,
+            "observations": [
+              67.138,
+              62.806,
+              63.603
+            ],
+            "median": 63.603,
+            "minimum": 62.806,
+            "maximum": 67.138,
+            "median_absolute_deviation": 0.7970000000000041
+          },
+          "performance_ratio_to_ext4": 0.8001987821448343,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate7"
+        },
+        "sqlite-wal-normal-batch1": {
+          "unit": "txn/s",
+          "higher_is_better": true,
+          "observations": [
+            22790.08,
+            21749.677,
+            19946.679
+          ],
+          "median": 21749.677,
+          "minimum": 19946.679,
+          "maximum": 22790.08,
+          "median_absolute_deviation": 1040.403000000002,
+          "ext4": {
+            "unit": "txn/s",
+            "higher_is_better": true,
+            "observations": [
+              15009.867,
+              14907.085,
+              15063.1
+            ],
+            "median": 15009.867,
+            "minimum": 14907.085,
+            "maximum": 15063.1,
+            "median_absolute_deviation": 53.233000000000175
+          },
+          "performance_ratio_to_ext4": 1.449025297825757,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate7"
+        },
+        "sqlite-wal-normal-batch1-checkpoint": {
+          "unit": "ms",
+          "higher_is_better": false,
+          "observations": [
+            38.258,
+            18.266,
+            16.407
+          ],
+          "median": 18.266,
+          "minimum": 16.407,
+          "maximum": 38.258,
+          "median_absolute_deviation": 1.8589999999999982,
+          "ext4": {
+            "unit": "ms",
+            "higher_is_better": false,
+            "observations": [
+              16.891,
+              16.539,
+              17.611
+            ],
+            "median": 16.891,
+            "minimum": 16.539,
+            "maximum": 17.611,
+            "median_absolute_deviation": 0.35199999999999676
+          },
+          "performance_ratio_to_ext4": 0.9247235300558414,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate7"
+        },
+        "sqlite-wal-normal-batch100": {
+          "unit": "txn/s",
+          "higher_is_better": true,
+          "observations": [
+            343.012,
+            420.844,
+            441.328
+          ],
+          "median": 420.844,
+          "minimum": 343.012,
+          "maximum": 441.328,
+          "median_absolute_deviation": 20.48399999999998,
+          "ext4": {
+            "unit": "txn/s",
+            "higher_is_better": true,
+            "observations": [
+              268.64,
+              269.063,
+              267.449
+            ],
+            "median": 268.64,
+            "minimum": 267.449,
+            "maximum": 269.063,
+            "median_absolute_deviation": 0.4230000000000018
+          },
+          "performance_ratio_to_ext4": 1.5665723645026801,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate7"
+        },
+        "sqlite-wal-normal-batch100-checkpoint": {
+          "unit": "ms",
+          "higher_is_better": false,
+          "observations": [
+            104.819,
+            256.906,
+            264.816
+          ],
+          "median": 256.906,
+          "minimum": 104.819,
+          "maximum": 264.816,
+          "median_absolute_deviation": 7.909999999999968,
+          "ext4": {
+            "unit": "ms",
+            "higher_is_better": false,
+            "observations": [
+              465.695,
+              369.354,
+              370.63
+            ],
+            "median": 370.63,
+            "minimum": 369.354,
+            "maximum": 465.695,
+            "median_absolute_deviation": 1.2760000000000105
+          },
+          "performance_ratio_to_ext4": 1.4426677461795365,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-candidate7"
+        }
+      }
+    },
+    {
+      "directory": "gce-fs-bench-sqlite-gap-2026-10-25-final",
+      "outcome": "quiet retained batch, reversed case order, five iterations",
+      "metrics": {
+        "sqlite-pread-scan": {
+          "unit": "MiB/s",
+          "higher_is_better": true,
+          "observations": [
+            754.953,
+            851.345,
+            844.508,
+            848.054,
+            845.608
+          ],
+          "median": 845.608,
+          "minimum": 754.953,
+          "maximum": 851.345,
+          "median_absolute_deviation": 2.4460000000000264,
+          "ext4": {
+            "unit": "MiB/s",
+            "higher_is_better": true,
+            "observations": [
+              182.251,
+              184.555,
+              185.44,
+              183.684,
+              184.901
+            ],
+            "median": 184.555,
+            "minimum": 182.251,
+            "maximum": 185.44,
+            "median_absolute_deviation": 0.8710000000000093
+          },
+          "performance_ratio_to_ext4": 4.581875321719812,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-final"
+        },
+        "sqlite-pread-scan-warm": {
+          "unit": "MiB/s",
+          "higher_is_better": true,
+          "observations": [
+            2818.21,
+            2805.952,
+            2779.486,
+            2817.981,
+            2779.924
+          ],
+          "median": 2805.952,
+          "minimum": 2779.486,
+          "maximum": 2818.21,
+          "median_absolute_deviation": 12.25799999999981,
+          "ext4": {
+            "unit": "MiB/s",
+            "higher_is_better": true,
+            "observations": [
+              2719.146,
+              2706.017,
+              2812.971,
+              2794.062,
+              2682.127
+            ],
+            "median": 2719.146,
+            "minimum": 2682.127,
+            "maximum": 2812.971,
+            "median_absolute_deviation": 37.01900000000023
+          },
+          "performance_ratio_to_ext4": 1.0319239937833422,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-final"
+        },
+        "sqlite-mmap-scan": {
+          "unit": "MiB/s",
+          "higher_is_better": true,
+          "observations": [
+            3353.944,
+            3498.559,
+            3434.389,
+            3436.519,
+            3465.679
+          ],
+          "median": 3436.519,
+          "minimum": 3353.944,
+          "maximum": 3498.559,
+          "median_absolute_deviation": 29.16000000000031,
+          "ext4": {
+            "unit": "MiB/s",
+            "higher_is_better": true,
+            "observations": [
+              3510.462,
+              3515.519,
+              3420.737,
+              3442.194,
+              3466.074
+            ],
+            "median": 3466.074,
+            "minimum": 3420.737,
+            "maximum": 3515.519,
+            "median_absolute_deviation": 44.38799999999992
+          },
+          "performance_ratio_to_ext4": 0.9914730614522367,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-final"
+        },
+        "sqlite-mmap-scan-warm": {
+          "unit": "MiB/s",
+          "higher_is_better": true,
+          "observations": [
+            3883.269,
+            3866.954,
+            3790.105,
+            3826.469,
+            3825.347
+          ],
+          "median": 3826.469,
+          "minimum": 3790.105,
+          "maximum": 3883.269,
+          "median_absolute_deviation": 36.36400000000003,
+          "ext4": {
+            "unit": "MiB/s",
+            "higher_is_better": true,
+            "observations": [
+              3764.245,
+              3825.33,
+              3781.17,
+              3789.125,
+              3794.2
+            ],
+            "median": 3789.125,
+            "minimum": 3764.245,
+            "maximum": 3825.33,
+            "median_absolute_deviation": 7.954999999999927
+          },
+          "performance_ratio_to_ext4": 1.009855573516313,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-final"
+        },
+        "sqlite-delete-full-batch1": {
+          "unit": "txn/s",
+          "higher_is_better": true,
+          "observations": [
+            262.853,
+            260.404,
+            266.934,
+            274.343,
+            266.761
+          ],
+          "median": 266.761,
+          "minimum": 260.404,
+          "maximum": 274.343,
+          "median_absolute_deviation": 3.9080000000000155,
+          "ext4": {
+            "unit": "txn/s",
+            "higher_is_better": true,
+            "observations": [
+              184.319,
+              183.25,
+              168.485,
+              176.212,
+              179.345
+            ],
+            "median": 179.345,
+            "minimum": 168.485,
+            "maximum": 184.319,
+            "median_absolute_deviation": 3.905000000000001
+          },
+          "performance_ratio_to_ext4": 1.4874181047701358,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-final"
+        },
+        "sqlite-delete-full-batch100": {
+          "unit": "txn/s",
+          "higher_is_better": true,
+          "observations": [
+            56.204,
+            54.168,
+            54.638,
+            54.311,
+            53.625
+          ],
+          "median": 54.311,
+          "minimum": 53.625,
+          "maximum": 56.204,
+          "median_absolute_deviation": 0.3269999999999982,
+          "ext4": {
+            "unit": "txn/s",
+            "higher_is_better": true,
+            "observations": [
+              57.462,
+              58.688,
+              58.06,
+              59.168,
+              58.676
+            ],
+            "median": 58.676,
+            "minimum": 57.462,
+            "maximum": 59.168,
+            "median_absolute_deviation": 0.49199999999999733
+          },
+          "performance_ratio_to_ext4": 0.925608425932238,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-final"
+        },
+        "sqlite-wal-full-batch1": {
+          "unit": "txn/s",
+          "higher_is_better": true,
+          "observations": [
+            636.225,
+            602.738,
+            608.725,
+            589.975,
+            622.486
+          ],
+          "median": 608.725,
+          "minimum": 589.975,
+          "maximum": 636.225,
+          "median_absolute_deviation": 13.760999999999967,
+          "ext4": {
+            "unit": "txn/s",
+            "higher_is_better": true,
+            "observations": [
+              375.839,
+              381.014,
+              368.627,
+              374.789,
+              390.782
+            ],
+            "median": 375.839,
+            "minimum": 368.627,
+            "maximum": 390.782,
+            "median_absolute_deviation": 5.175000000000011
+          },
+          "performance_ratio_to_ext4": 1.6196429854272707,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-final"
+        },
+        "sqlite-wal-full-batch1-checkpoint": {
+          "unit": "ms",
+          "higher_is_better": false,
+          "observations": [
+            18.575,
+            15.61,
+            19.844,
+            14.498,
+            17.36
+          ],
+          "median": 17.36,
+          "minimum": 14.498,
+          "maximum": 19.844,
+          "median_absolute_deviation": 1.75,
+          "ext4": {
+            "unit": "ms",
+            "higher_is_better": false,
+            "observations": [
+              13.893,
+              14.348,
+              13.976,
+              13.776,
+              14.291
+            ],
+            "median": 13.976,
+            "minimum": 13.776,
+            "maximum": 14.348,
+            "median_absolute_deviation": 0.20000000000000107
+          },
+          "performance_ratio_to_ext4": 0.8050691244239632,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-final"
+        },
+        "sqlite-wal-full-batch100": {
+          "unit": "txn/s",
+          "higher_is_better": true,
+          "observations": [
+            151.67,
+            163.005,
+            162.913,
+            158.759,
+            141.557
+          ],
+          "median": 158.759,
+          "minimum": 141.557,
+          "maximum": 163.005,
+          "median_absolute_deviation": 4.246000000000009,
+          "ext4": {
+            "unit": "txn/s",
+            "higher_is_better": true,
+            "observations": [
+              118.484,
+              119.919,
+              121.175,
+              117.582,
+              119.686
+            ],
+            "median": 119.686,
+            "minimum": 117.582,
+            "maximum": 121.175,
+            "median_absolute_deviation": 1.2020000000000124
+          },
+          "performance_ratio_to_ext4": 1.3264625770766838,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-final"
+        },
+        "sqlite-wal-full-batch100-checkpoint": {
+          "unit": "ms",
+          "higher_is_better": false,
+          "observations": [
+            65.646,
+            63.526,
+            64.0,
+            60.452,
+            65.29
+          ],
+          "median": 64.0,
+          "minimum": 60.452,
+          "maximum": 65.646,
+          "median_absolute_deviation": 1.2900000000000063,
+          "ext4": {
+            "unit": "ms",
+            "higher_is_better": false,
+            "observations": [
+              62.534,
+              61.853,
+              62.288,
+              63.812,
+              62.548
+            ],
+            "median": 62.534,
+            "minimum": 61.853,
+            "maximum": 63.812,
+            "median_absolute_deviation": 0.24600000000000222
+          },
+          "performance_ratio_to_ext4": 0.97709375,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-final"
+        },
+        "sqlite-wal-normal-batch1": {
+          "unit": "txn/s",
+          "higher_is_better": true,
+          "observations": [
+            23407.919,
+            20522.783,
+            21809.247,
+            22238.602,
+            23762.991
+          ],
+          "median": 22238.602,
+          "minimum": 20522.783,
+          "maximum": 23762.991,
+          "median_absolute_deviation": 1169.3170000000027,
+          "ext4": {
+            "unit": "txn/s",
+            "higher_is_better": true,
+            "observations": [
+              15599.929,
+              15134.679,
+              14834.683,
+              14892.261,
+              14609.161
+            ],
+            "median": 14892.261,
+            "minimum": 14609.161,
+            "maximum": 15599.929,
+            "median_absolute_deviation": 242.41799999999967
+          },
+          "performance_ratio_to_ext4": 1.493299237771887,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-final"
+        },
+        "sqlite-wal-normal-batch1-checkpoint": {
+          "unit": "ms",
+          "higher_is_better": false,
+          "observations": [
+            15.861,
+            19.647,
+            25.127,
+            37.368,
+            15.726
+          ],
+          "median": 19.647,
+          "minimum": 15.726,
+          "maximum": 37.368,
+          "median_absolute_deviation": 3.9209999999999976,
+          "ext4": {
+            "unit": "ms",
+            "higher_is_better": false,
+            "observations": [
+              19.206,
+              16.776,
+              17.553,
+              17.564,
+              17.383
+            ],
+            "median": 17.553,
+            "minimum": 16.776,
+            "maximum": 19.206,
+            "median_absolute_deviation": 0.1700000000000017
+          },
+          "performance_ratio_to_ext4": 0.893418842571385,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-final"
+        },
+        "sqlite-wal-normal-batch100": {
+          "unit": "txn/s",
+          "higher_is_better": true,
+          "observations": [
+            352.441,
+            442.279,
+            460.914,
+            457.311,
+            449.424
+          ],
+          "median": 449.424,
+          "minimum": 352.441,
+          "maximum": 460.914,
+          "median_absolute_deviation": 7.8870000000000005,
+          "ext4": {
+            "unit": "txn/s",
+            "higher_is_better": true,
+            "observations": [
+              269.944,
+              270.334,
+              270.264,
+              272.659,
+              271.326
+            ],
+            "median": 270.334,
+            "minimum": 269.944,
+            "maximum": 272.659,
+            "median_absolute_deviation": 0.38999999999998636
+          },
+          "performance_ratio_to_ext4": 1.6624767879733957,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-final"
+        },
+        "sqlite-wal-normal-batch100-checkpoint": {
+          "unit": "ms",
+          "higher_is_better": false,
+          "observations": [
+            109.344,
+            195.283,
+            218.26,
+            180.549,
+            257.219
+          ],
+          "median": 195.283,
+          "minimum": 109.344,
+          "maximum": 257.219,
+          "median_absolute_deviation": 22.977000000000004,
+          "ext4": {
+            "unit": "ms",
+            "higher_is_better": false,
+            "observations": [
+              371.008,
+              380.455,
+              383.585,
+              379.665,
+              369.265
+            ],
+            "median": 379.665,
+            "minimum": 369.265,
+            "maximum": 383.585,
+            "median_absolute_deviation": 3.919999999999959
+          },
+          "performance_ratio_to_ext4": 1.944178448712894,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-final"
+        }
+      }
+    },
+    {
+      "directory": "gce-fs-bench-sqlite-gap-2026-10-25-final-control",
+      "outcome": "fresh original-main binaries and kernel; identical current timed harness",
+      "metrics": {
+        "sqlite-pread-scan": {
+          "unit": "MiB/s",
+          "higher_is_better": true,
+          "observations": [
+            806.259,
+            826.281,
+            841.047
+          ],
+          "median": 826.281,
+          "minimum": 806.259,
+          "maximum": 841.047,
+          "median_absolute_deviation": 14.766000000000076,
+          "ext4": {
+            "unit": "MiB/s",
+            "higher_is_better": true,
+            "observations": [
+              182.251,
+              184.555,
+              185.44,
+              183.684,
+              184.901
+            ],
+            "median": 184.555,
+            "minimum": 182.251,
+            "maximum": 185.44,
+            "median_absolute_deviation": 0.8710000000000093
+          },
+          "performance_ratio_to_ext4": 4.477153152176857,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-final"
+        },
+        "sqlite-pread-scan-warm": {
+          "unit": "MiB/s",
+          "higher_is_better": true,
+          "observations": [
+            2669.193,
+            2664.829,
+            2715.264
+          ],
+          "median": 2669.193,
+          "minimum": 2664.829,
+          "maximum": 2715.264,
+          "median_absolute_deviation": 4.364000000000033,
+          "ext4": {
+            "unit": "MiB/s",
+            "higher_is_better": true,
+            "observations": [
+              2719.146,
+              2706.017,
+              2812.971,
+              2794.062,
+              2682.127
+            ],
+            "median": 2719.146,
+            "minimum": 2682.127,
+            "maximum": 2812.971,
+            "median_absolute_deviation": 37.01900000000023
+          },
+          "performance_ratio_to_ext4": 0.9816291585666971,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-final"
+        },
+        "sqlite-mmap-scan": {
+          "unit": "MiB/s",
+          "higher_is_better": true,
+          "observations": [
+            3353.656,
+            3394.508,
+            3467.351
+          ],
+          "median": 3394.508,
+          "minimum": 3353.656,
+          "maximum": 3467.351,
+          "median_absolute_deviation": 40.85199999999986,
+          "ext4": {
+            "unit": "MiB/s",
+            "higher_is_better": true,
+            "observations": [
+              3510.462,
+              3515.519,
+              3420.737,
+              3442.194,
+              3466.074
+            ],
+            "median": 3466.074,
+            "minimum": 3420.737,
+            "maximum": 3515.519,
+            "median_absolute_deviation": 44.38799999999992
+          },
+          "performance_ratio_to_ext4": 0.979352431598402,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-final"
+        },
+        "sqlite-mmap-scan-warm": {
+          "unit": "MiB/s",
+          "higher_is_better": true,
+          "observations": [
+            3653.667,
+            3685.665,
+            3737.336
+          ],
+          "median": 3685.665,
+          "minimum": 3653.667,
+          "maximum": 3737.336,
+          "median_absolute_deviation": 31.998000000000047,
+          "ext4": {
+            "unit": "MiB/s",
+            "higher_is_better": true,
+            "observations": [
+              3764.245,
+              3825.33,
+              3781.17,
+              3789.125,
+              3794.2
+            ],
+            "median": 3789.125,
+            "minimum": 3764.245,
+            "maximum": 3825.33,
+            "median_absolute_deviation": 7.954999999999927
+          },
+          "performance_ratio_to_ext4": 0.9726955431662982,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-final"
+        },
+        "sqlite-delete-full-batch1": {
+          "unit": "txn/s",
+          "higher_is_better": true,
+          "observations": [
+            257.405,
+            264.282,
+            260.531
+          ],
+          "median": 260.531,
+          "minimum": 257.405,
+          "maximum": 264.282,
+          "median_absolute_deviation": 3.126000000000033,
+          "ext4": {
+            "unit": "txn/s",
+            "higher_is_better": true,
+            "observations": [
+              184.319,
+              183.25,
+              168.485,
+              176.212,
+              179.345
+            ],
+            "median": 179.345,
+            "minimum": 168.485,
+            "maximum": 184.319,
+            "median_absolute_deviation": 3.905000000000001
+          },
+          "performance_ratio_to_ext4": 1.4526805876941091,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-final"
+        },
+        "sqlite-delete-full-batch100": {
+          "unit": "txn/s",
+          "higher_is_better": true,
+          "observations": [
+            46.932,
+            47.425,
+            46.544
+          ],
+          "median": 46.932,
+          "minimum": 46.544,
+          "maximum": 47.425,
+          "median_absolute_deviation": 0.38800000000000523,
+          "ext4": {
+            "unit": "txn/s",
+            "higher_is_better": true,
+            "observations": [
+              57.462,
+              58.688,
+              58.06,
+              59.168,
+              58.676
+            ],
+            "median": 58.676,
+            "minimum": 57.462,
+            "maximum": 59.168,
+            "median_absolute_deviation": 0.49199999999999733
+          },
+          "performance_ratio_to_ext4": 0.7998500238598405,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-final"
+        },
+        "sqlite-wal-full-batch1": {
+          "unit": "txn/s",
+          "higher_is_better": true,
+          "observations": [
+            596.232,
+            609.078,
+            574.996
+          ],
+          "median": 596.232,
+          "minimum": 574.996,
+          "maximum": 609.078,
+          "median_absolute_deviation": 12.846000000000004,
+          "ext4": {
+            "unit": "txn/s",
+            "higher_is_better": true,
+            "observations": [
+              375.839,
+              381.014,
+              368.627,
+              374.789,
+              390.782
+            ],
+            "median": 375.839,
+            "minimum": 368.627,
+            "maximum": 390.782,
+            "median_absolute_deviation": 5.175000000000011
+          },
+          "performance_ratio_to_ext4": 1.586402688385186,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-final"
+        },
+        "sqlite-wal-full-batch1-checkpoint": {
+          "unit": "ms",
+          "higher_is_better": false,
+          "observations": [
+            19.899,
+            20.059,
+            21.839
+          ],
+          "median": 20.059,
+          "minimum": 19.899,
+          "maximum": 21.839,
+          "median_absolute_deviation": 0.16000000000000014,
+          "ext4": {
+            "unit": "ms",
+            "higher_is_better": false,
+            "observations": [
+              13.893,
+              14.348,
+              13.976,
+              13.776,
+              14.291
+            ],
+            "median": 13.976,
+            "minimum": 13.776,
+            "maximum": 14.348,
+            "median_absolute_deviation": 0.20000000000000107
+          },
+          "performance_ratio_to_ext4": 0.6967446034199113,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-final"
+        },
+        "sqlite-wal-full-batch100": {
+          "unit": "txn/s",
+          "higher_is_better": true,
+          "observations": [
+            105.197,
+            105.938,
+            106.084
+          ],
+          "median": 105.938,
+          "minimum": 105.197,
+          "maximum": 106.084,
+          "median_absolute_deviation": 0.1460000000000008,
+          "ext4": {
+            "unit": "txn/s",
+            "higher_is_better": true,
+            "observations": [
+              118.484,
+              119.919,
+              121.175,
+              117.582,
+              119.686
+            ],
+            "median": 119.686,
+            "minimum": 117.582,
+            "maximum": 121.175,
+            "median_absolute_deviation": 1.2020000000000124
+          },
+          "performance_ratio_to_ext4": 0.8851327640659726,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-final"
+        },
+        "sqlite-wal-full-batch100-checkpoint": {
+          "unit": "ms",
+          "higher_is_better": false,
+          "observations": [
+            102.715,
+            94.141,
+            90.865
+          ],
+          "median": 94.141,
+          "minimum": 90.865,
+          "maximum": 102.715,
+          "median_absolute_deviation": 3.2760000000000105,
+          "ext4": {
+            "unit": "ms",
+            "higher_is_better": false,
+            "observations": [
+              62.534,
+              61.853,
+              62.288,
+              63.812,
+              62.548
+            ],
+            "median": 62.534,
+            "minimum": 61.853,
+            "maximum": 63.812,
+            "median_absolute_deviation": 0.24600000000000222
+          },
+          "performance_ratio_to_ext4": 0.664258930752807,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-final"
+        },
+        "sqlite-wal-normal-batch1": {
+          "unit": "txn/s",
+          "higher_is_better": true,
+          "observations": [
+            12418.299,
+            7768.963,
+            13092.151
+          ],
+          "median": 12418.299,
+          "minimum": 7768.963,
+          "maximum": 13092.151,
+          "median_absolute_deviation": 673.851999999999,
+          "ext4": {
+            "unit": "txn/s",
+            "higher_is_better": true,
+            "observations": [
+              15599.929,
+              15134.679,
+              14834.683,
+              14892.261,
+              14609.161
+            ],
+            "median": 14892.261,
+            "minimum": 14609.161,
+            "maximum": 15599.929,
+            "median_absolute_deviation": 242.41799999999967
+          },
+          "performance_ratio_to_ext4": 0.8338759977413772,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-final"
+        },
+        "sqlite-wal-normal-batch1-checkpoint": {
+          "unit": "ms",
+          "higher_is_better": false,
+          "observations": [
+            29.302,
+            18.544,
+            37.297
+          ],
+          "median": 29.302,
+          "minimum": 18.544,
+          "maximum": 37.297,
+          "median_absolute_deviation": 7.994999999999997,
+          "ext4": {
+            "unit": "ms",
+            "higher_is_better": false,
+            "observations": [
+              19.206,
+              16.776,
+              17.553,
+              17.564,
+              17.383
+            ],
+            "median": 17.553,
+            "minimum": 16.776,
+            "maximum": 19.206,
+            "median_absolute_deviation": 0.1700000000000017
+          },
+          "performance_ratio_to_ext4": 0.5990376083543786,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-final"
+        },
+        "sqlite-wal-normal-batch100": {
+          "unit": "txn/s",
+          "higher_is_better": true,
+          "observations": [
+            197.543,
+            225.677,
+            188.549
+          ],
+          "median": 197.543,
+          "minimum": 188.549,
+          "maximum": 225.677,
+          "median_absolute_deviation": 8.994,
+          "ext4": {
+            "unit": "txn/s",
+            "higher_is_better": true,
+            "observations": [
+              269.944,
+              270.334,
+              270.264,
+              272.659,
+              271.326
+            ],
+            "median": 270.334,
+            "minimum": 269.944,
+            "maximum": 272.659,
+            "median_absolute_deviation": 0.38999999999998636
+          },
+          "performance_ratio_to_ext4": 0.730736792264384,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-final"
+        },
+        "sqlite-wal-normal-batch100-checkpoint": {
+          "unit": "ms",
+          "higher_is_better": false,
+          "observations": [
+            150.758,
+            338.462,
+            200.605
+          ],
+          "median": 200.605,
+          "minimum": 150.758,
+          "maximum": 338.462,
+          "median_absolute_deviation": 49.84699999999998,
+          "ext4": {
+            "unit": "ms",
+            "higher_is_better": false,
+            "observations": [
+              371.008,
+              380.455,
+              383.585,
+              379.665,
+              369.265
+            ],
+            "median": 379.665,
+            "minimum": 369.265,
+            "maximum": 383.585,
+            "median_absolute_deviation": 3.919999999999959
+          },
+          "performance_ratio_to_ext4": 1.892599885346826,
+          "ext4_reference": "gce-fs-bench-sqlite-gap-2026-10-25-final"
+        }
+      }
+    }
+  ],
+  "final_against_fresh_original": {
+    "sqlite-pread-scan": {
+      "original": {
+        "unit": "MiB/s",
+        "higher_is_better": true,
+        "observations": [
+          806.259,
+          826.281,
+          841.047
+        ],
+        "median": 826.281,
+        "minimum": 806.259,
+        "maximum": 841.047,
+        "median_absolute_deviation": 14.766000000000076
+      },
+      "final": {
+        "unit": "MiB/s",
+        "higher_is_better": true,
+        "observations": [
+          754.953,
+          851.345,
+          844.508,
+          848.054,
+          845.608
+        ],
+        "median": 845.608,
+        "minimum": 754.953,
+        "maximum": 851.345,
+        "median_absolute_deviation": 2.4460000000000264
+      },
+      "final_performance_ratio": 1.0233903478356636
+    },
+    "sqlite-pread-scan-warm": {
+      "original": {
+        "unit": "MiB/s",
+        "higher_is_better": true,
+        "observations": [
+          2669.193,
+          2664.829,
+          2715.264
+        ],
+        "median": 2669.193,
+        "minimum": 2664.829,
+        "maximum": 2715.264,
+        "median_absolute_deviation": 4.364000000000033
+      },
+      "final": {
+        "unit": "MiB/s",
+        "higher_is_better": true,
+        "observations": [
+          2818.21,
+          2805.952,
+          2779.486,
+          2817.981,
+          2779.924
+        ],
+        "median": 2805.952,
+        "minimum": 2779.486,
+        "maximum": 2818.21,
+        "median_absolute_deviation": 12.25799999999981
+      },
+      "final_performance_ratio": 1.0512360852137705
+    },
+    "sqlite-mmap-scan": {
+      "original": {
+        "unit": "MiB/s",
+        "higher_is_better": true,
+        "observations": [
+          3353.656,
+          3394.508,
+          3467.351
+        ],
+        "median": 3394.508,
+        "minimum": 3353.656,
+        "maximum": 3467.351,
+        "median_absolute_deviation": 40.85199999999986
+      },
+      "final": {
+        "unit": "MiB/s",
+        "higher_is_better": true,
+        "observations": [
+          3353.944,
+          3498.559,
+          3434.389,
+          3436.519,
+          3465.679
+        ],
+        "median": 3436.519,
+        "minimum": 3353.944,
+        "maximum": 3498.559,
+        "median_absolute_deviation": 29.16000000000031
+      },
+      "final_performance_ratio": 1.012376167621346
+    },
+    "sqlite-mmap-scan-warm": {
+      "original": {
+        "unit": "MiB/s",
+        "higher_is_better": true,
+        "observations": [
+          3653.667,
+          3685.665,
+          3737.336
+        ],
+        "median": 3685.665,
+        "minimum": 3653.667,
+        "maximum": 3737.336,
+        "median_absolute_deviation": 31.998000000000047
+      },
+      "final": {
+        "unit": "MiB/s",
+        "higher_is_better": true,
+        "observations": [
+          3883.269,
+          3866.954,
+          3790.105,
+          3826.469,
+          3825.347
+        ],
+        "median": 3826.469,
+        "minimum": 3790.105,
+        "maximum": 3883.269,
+        "median_absolute_deviation": 36.36400000000003
+      },
+      "final_performance_ratio": 1.0382031465149437
+    },
+    "sqlite-delete-full-batch1": {
+      "original": {
+        "unit": "txn/s",
+        "higher_is_better": true,
+        "observations": [
+          257.405,
+          264.282,
+          260.531
+        ],
+        "median": 260.531,
+        "minimum": 257.405,
+        "maximum": 264.282,
+        "median_absolute_deviation": 3.126000000000033
+      },
+      "final": {
+        "unit": "txn/s",
+        "higher_is_better": true,
+        "observations": [
+          262.853,
+          260.404,
+          266.934,
+          274.343,
+          266.761
+        ],
+        "median": 266.761,
+        "minimum": 260.404,
+        "maximum": 274.343,
+        "median_absolute_deviation": 3.9080000000000155
+      },
+      "final_performance_ratio": 1.0239127013675917
+    },
+    "sqlite-delete-full-batch100": {
+      "original": {
+        "unit": "txn/s",
+        "higher_is_better": true,
+        "observations": [
+          46.932,
+          47.425,
+          46.544
+        ],
+        "median": 46.932,
+        "minimum": 46.544,
+        "maximum": 47.425,
+        "median_absolute_deviation": 0.38800000000000523
+      },
+      "final": {
+        "unit": "txn/s",
+        "higher_is_better": true,
+        "observations": [
+          56.204,
+          54.168,
+          54.638,
+          54.311,
+          53.625
+        ],
+        "median": 54.311,
+        "minimum": 53.625,
+        "maximum": 56.204,
+        "median_absolute_deviation": 0.3269999999999982
+      },
+      "final_performance_ratio": 1.1572274780533538
+    },
+    "sqlite-wal-full-batch1": {
+      "original": {
+        "unit": "txn/s",
+        "higher_is_better": true,
+        "observations": [
+          596.232,
+          609.078,
+          574.996
+        ],
+        "median": 596.232,
+        "minimum": 574.996,
+        "maximum": 609.078,
+        "median_absolute_deviation": 12.846000000000004
+      },
+      "final": {
+        "unit": "txn/s",
+        "higher_is_better": true,
+        "observations": [
+          636.225,
+          602.738,
+          608.725,
+          589.975,
+          622.486
+        ],
+        "median": 608.725,
+        "minimum": 589.975,
+        "maximum": 636.225,
+        "median_absolute_deviation": 13.760999999999967
+      },
+      "final_performance_ratio": 1.0209532530961103
+    },
+    "sqlite-wal-full-batch1-checkpoint": {
+      "original": {
+        "unit": "ms",
+        "higher_is_better": false,
+        "observations": [
+          19.899,
+          20.059,
+          21.839
+        ],
+        "median": 20.059,
+        "minimum": 19.899,
+        "maximum": 21.839,
+        "median_absolute_deviation": 0.16000000000000014
+      },
+      "final": {
+        "unit": "ms",
+        "higher_is_better": false,
+        "observations": [
+          18.575,
+          15.61,
+          19.844,
+          14.498,
+          17.36
+        ],
+        "median": 17.36,
+        "minimum": 14.498,
+        "maximum": 19.844,
+        "median_absolute_deviation": 1.75
+      },
+      "final_performance_ratio": 1.155472350230415
+    },
+    "sqlite-wal-full-batch100": {
+      "original": {
+        "unit": "txn/s",
+        "higher_is_better": true,
+        "observations": [
+          105.197,
+          105.938,
+          106.084
+        ],
+        "median": 105.938,
+        "minimum": 105.197,
+        "maximum": 106.084,
+        "median_absolute_deviation": 0.1460000000000008
+      },
+      "final": {
+        "unit": "txn/s",
+        "higher_is_better": true,
+        "observations": [
+          151.67,
+          163.005,
+          162.913,
+          158.759,
+          141.557
+        ],
+        "median": 158.759,
+        "minimum": 141.557,
+        "maximum": 163.005,
+        "median_absolute_deviation": 4.246000000000009
+      },
+      "final_performance_ratio": 1.498602956446223
+    },
+    "sqlite-wal-full-batch100-checkpoint": {
+      "original": {
+        "unit": "ms",
+        "higher_is_better": false,
+        "observations": [
+          102.715,
+          94.141,
+          90.865
+        ],
+        "median": 94.141,
+        "minimum": 90.865,
+        "maximum": 102.715,
+        "median_absolute_deviation": 3.2760000000000105
+      },
+      "final": {
+        "unit": "ms",
+        "higher_is_better": false,
+        "observations": [
+          65.646,
+          63.526,
+          64.0,
+          60.452,
+          65.29
+        ],
+        "median": 64.0,
+        "minimum": 60.452,
+        "maximum": 65.646,
+        "median_absolute_deviation": 1.2900000000000063
+      },
+      "final_performance_ratio": 1.470953125
+    },
+    "sqlite-wal-normal-batch1": {
+      "original": {
+        "unit": "txn/s",
+        "higher_is_better": true,
+        "observations": [
+          12418.299,
+          7768.963,
+          13092.151
+        ],
+        "median": 12418.299,
+        "minimum": 7768.963,
+        "maximum": 13092.151,
+        "median_absolute_deviation": 673.851999999999
+      },
+      "final": {
+        "unit": "txn/s",
+        "higher_is_better": true,
+        "observations": [
+          23407.919,
+          20522.783,
+          21809.247,
+          22238.602,
+          23762.991
+        ],
+        "median": 22238.602,
+        "minimum": 20522.783,
+        "maximum": 23762.991,
+        "median_absolute_deviation": 1169.3170000000027
+      },
+      "final_performance_ratio": 1.7907929258266368
+    },
+    "sqlite-wal-normal-batch1-checkpoint": {
+      "original": {
+        "unit": "ms",
+        "higher_is_better": false,
+        "observations": [
+          29.302,
+          18.544,
+          37.297
+        ],
+        "median": 29.302,
+        "minimum": 18.544,
+        "maximum": 37.297,
+        "median_absolute_deviation": 7.994999999999997
+      },
+      "final": {
+        "unit": "ms",
+        "higher_is_better": false,
+        "observations": [
+          15.861,
+          19.647,
+          25.127,
+          37.368,
+          15.726
+        ],
+        "median": 19.647,
+        "minimum": 15.726,
+        "maximum": 37.368,
+        "median_absolute_deviation": 3.9209999999999976
+      },
+      "final_performance_ratio": 1.4914236270168475
+    },
+    "sqlite-wal-normal-batch100": {
+      "original": {
+        "unit": "txn/s",
+        "higher_is_better": true,
+        "observations": [
+          197.543,
+          225.677,
+          188.549
+        ],
+        "median": 197.543,
+        "minimum": 188.549,
+        "maximum": 225.677,
+        "median_absolute_deviation": 8.994
+      },
+      "final": {
+        "unit": "txn/s",
+        "higher_is_better": true,
+        "observations": [
+          352.441,
+          442.279,
+          460.914,
+          457.311,
+          449.424
+        ],
+        "median": 449.424,
+        "minimum": 352.441,
+        "maximum": 460.914,
+        "median_absolute_deviation": 7.8870000000000005
+      },
+      "final_performance_ratio": 2.275069225434462
+    },
+    "sqlite-wal-normal-batch100-checkpoint": {
+      "original": {
+        "unit": "ms",
+        "higher_is_better": false,
+        "observations": [
+          150.758,
+          338.462,
+          200.605
+        ],
+        "median": 200.605,
+        "minimum": 150.758,
+        "maximum": 338.462,
+        "median_absolute_deviation": 49.84699999999998
+      },
+      "final": {
+        "unit": "ms",
+        "higher_is_better": false,
+        "observations": [
+          109.344,
+          195.283,
+          218.26,
+          180.549,
+          257.219
+        ],
+        "median": 195.283,
+        "minimum": 109.344,
+        "maximum": 257.219,
+        "median_absolute_deviation": 22.977000000000004
+      },
+      "final_performance_ratio": 1.027252756256305
+    }
+  }
+}

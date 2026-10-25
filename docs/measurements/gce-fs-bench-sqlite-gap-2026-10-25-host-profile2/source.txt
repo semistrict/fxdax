@@ -1,0 +1,5 @@
+revision 33074daf7e5e476bf1ccbd3ec098f17108fa4f78
+firecracker 01cbb2fe3d40e584970ccac5c59b0fdfd6af3853
+runtime frozen original daemon/VMM; binaries.txt
+harness-source ../gce-fs-bench-sqlite-gap-2026-10-25-profile-scans/source.txt
+kernel C4 da4cfc183fa14ac44dae125e4945221df0fbd88ac71d9aea56fb1351ca11395e

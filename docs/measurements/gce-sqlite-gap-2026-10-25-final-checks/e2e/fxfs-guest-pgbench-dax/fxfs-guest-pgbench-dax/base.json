@@ -1,0 +1,28 @@
+{
+  "boot-source": {
+    "boot_args": "console=ttyS0 loglevel=5 reboot=k panic=-1 8250.nr_uarts=1 i8042.noaux i8042.nomux i8042.dumbkbd sysctl.kernel.hung_task_timeout_secs=10 init=/guest-agent FXDAX_PGBENCH_ROLE=base -- fxfs-guest-pgbench-dax",
+    "kernel_image_path": "/var/lib/fxdax-test/sqlite-gap-candidate7-vmlinux"
+  },
+  "drives": [
+    {
+      "drive_id": "rootfs",
+      "is_read_only": false,
+      "is_root_device": true,
+      "path_on_host": "/home/ramon/run-20261025T165437Z-6e400821/results/e2e/fxfs-guest-pgbench-dax/fxfs-guest-pgbench-dax/rootfs.ext4"
+    }
+  ],
+  "extent": [
+    {
+      "capacity": 17179869184,
+      "extentd_socket": "/tmp/fxdax-pgbench.Rab1Zmjj5wVu/extentd.sock",
+      "id": "extents",
+      "path_on_host": "/home/ramon/run-20261025T165437Z-6e400821/results/e2e/fxfs-guest-pgbench-dax/fxfs-guest-pgbench-dax/base",
+      "tag": "extents"
+    }
+  ],
+  "machine-config": {
+    "mem_size_mib": 512,
+    "vcpu_count": 2
+  },
+  "pmem": []
+}

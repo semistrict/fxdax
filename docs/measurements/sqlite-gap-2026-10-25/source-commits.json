@@ -1,0 +1,18 @@
+[
+  {
+    "commit": "898253757c12aa8eafe843d755904dd9a4469ac1",
+    "subject": "perf(fxfs): reserve blocks for sustained DAX appends"
+  },
+  {
+    "commit": "6c9e3b85a69f82a88fb0c92a4d0a104949500eca",
+    "subject": "perf(fxfs): size DAX extent buffers to the mapped range"
+  },
+  {
+    "commit": "69f13ff2b1dcb8df7835bb7c128f65bdc50e82e5",
+    "subject": "perf(fxfs): streamline cached DAX reads"
+  },
+  {
+    "commit": "dac94e49ba90debcfc8d128e7a8adb5c82311ae6",
+    "subject": "perf(extentd): coalesce adjacent stage unmaps"
+  }
+]

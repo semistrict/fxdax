@@ -1,0 +1,78 @@
+{
+  "source_review": {
+    "result": "no P0 findings",
+    "command": "/Users/ramon/.agents/skills/autoreview/scripts/autoreview --mode local --json-output /tmp/fxdax-sqlite-final-review.json --prompt <scope baseline>",
+    "artifact": "source-review.json"
+  },
+  "local": {
+    "cargo check --workspace": 0,
+    "cargo clippy --workspace": 0,
+    "scripts/test.sh": 0,
+    "logs": "local-validation/"
+  },
+  "initial_linux_caveat": {
+    "test": "extentd::tests::hundreds_of_writers_flush_on_threads_they_share",
+    "threshold_ms": 200,
+    "observed_max_ms": 236.292575,
+    "observed_median_ms": 51.566546,
+    "root_code_changed": false,
+    "artifact": "linux-initial/fxdax-tests.log.gz"
+  },
+  "serialized_linux_retry": {
+    "result": 0,
+    "test_threads": 1,
+    "workspace_tests": 2628,
+    "skipped": 18,
+    "all_shuttle_and_python_suites": "passed",
+    "artifact": "linux-serialized-retry/fxdax-tests.log.gz"
+  },
+  "final_linux": {
+    "status": "passed",
+    "test_threads": 1,
+    "source_checksums": "source-sha256.json",
+    "controller_log": "/tmp/fxdax-sqlite-final-linux.log",
+    "kernel_sha256": "0f0eaeb5f4937cb62234e90fbb19e7afcdc36f18d5147373f424f0c455965784",
+    "result": 0,
+    "workspace_tests": 2631,
+    "skipped": 18,
+    "all_shuttle_and_python_suites": "passed",
+    "guest_cases": [
+      "extent-guest",
+      "fxfs-guest",
+      "fxfs-guest-dax",
+      "fxfs-guest-checks",
+      "fxfs-guest-checks-dax",
+      "fxfs-guest-crash-dax",
+      "fxfs-guest-follow-dax",
+      "fxfs-guest-follow-torture-dax",
+      "fxfs-guest-follow-torture-mutant-faults-dax",
+      "fxfs-guest-snapshot-dax",
+      "fxfs-guest-pgbench-dax"
+    ],
+    "artifacts": "../gce-sqlite-gap-2026-10-25-final-checks/",
+    "remote_source_checksums": "remote-source-sha256.json"
+  },
+  "cloud_cleanup": {
+    "active": [],
+    "already_deleted_and_verified": [
+      "fxdax-test-sqlite-gap-linux-20261025",
+      "fxdax-test-sqlite-gap-retry-20261025",
+      "fxdax-test-sqlite-stage-20261025",
+      "fxdax-bench-sqlite-gap-20261025"
+    ],
+    "verification": [
+      "cloud-deletion.log",
+      "cloud-audit.json"
+    ]
+  },
+  "artifact_review": {
+    "result": "no P0 findings",
+    "command": "/Users/ramon/.agents/skills/autoreview/scripts/autoreview --mode local --json-output /tmp/fxdax-sqlite-report-review.json --prompt <artifact scope>",
+    "artifact": "artifact-review.json"
+  },
+  "experimental_linux_validation": {
+    "candidate3_stage_host": "canceled after performance rejection; no completed validation claim",
+    "resource_deletion": "instance and boot disk verified deleted"
+  },
+  "diagnostic_storage": "Raw diagnostics, single-backend reports and code patch snapshots are gzip archives preserving their original bytes. JSON measurements, hash manifests and run metadata remain plain text."
+}

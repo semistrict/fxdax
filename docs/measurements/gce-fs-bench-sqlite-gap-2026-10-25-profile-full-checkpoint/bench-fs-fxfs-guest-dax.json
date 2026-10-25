@@ -1,0 +1,70 @@
+{
+  "case": "bench-fs-fxfs-guest-dax",
+  "backend": "fxfs-guest-dax",
+  "host_os": "linux",
+  "vmm": "firecracker",
+  "iterations": 10,
+  "results": [
+    {
+      "workload": "sqlite-wal-full-batch1",
+      "unit": "txn/s",
+      "higher_is_better": true,
+      "values": [
+        544.582,
+        541.15,
+        531.861,
+        527.07,
+        511.217,
+        528.752,
+        524.554,
+        506.508,
+        534.188,
+        549.391
+      ]
+    },
+    {
+      "workload": "sqlite-wal-full-batch1-checkpoint",
+      "unit": "ms",
+      "higher_is_better": false,
+      "values": [
+        26.808,
+        41.916,
+        41.415,
+        68.291,
+        72.448,
+        27.282,
+        61.19,
+        31.047,
+        31.452,
+        27.538
+      ]
+    }
+  ],
+  "failures": {},
+  "observations": {
+    "mtime-ahead-of-guest-ms": [
+      -5.441,
+      -2.853,
+      -4.308,
+      -6.217,
+      -6.867,
+      -3.572,
+      -3.828,
+      -4.065,
+      -5.024,
+      -3.081
+    ],
+    "sqlite-wal-full-batch1-updates-per-second": [
+      544.6,
+      541.1,
+      531.9,
+      527.1,
+      511.2,
+      528.8,
+      524.6,
+      506.5,
+      534.2,
+      549.4
+    ]
+  }
+}

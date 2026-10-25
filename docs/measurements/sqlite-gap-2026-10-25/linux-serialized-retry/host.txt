@@ -1,0 +1,6 @@
+Linux fxdax-test-sqlite-gap-retry-20261025 7.0.0-1011-gcp #11-Ubuntu SMP PREEMPT Tue Aug 11 17:32:26 UTC 2026 x86_64 GNU/Linux
+model name	: Intel(R) Xeon(R) CPU @ 2.80GHz
+cpus 8
+MemTotal:       32857460 kB
+rustc 1.97.1 (8bab26f4f 2026-07-14)
+cargo-nextest 0.9.143 (60fa45f63 2026-08-04)

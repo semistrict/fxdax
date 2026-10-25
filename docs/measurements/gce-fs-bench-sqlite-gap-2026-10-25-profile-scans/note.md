@@ -1,0 +1,1 @@
+Diagnosis only: one profiled full SQLite iteration plus DAX correctness checks on immutable C4 kernel. Guest profiler captures warm pread and mmap paths separately; not throughput A/B evidence. Root stage experiment reverted.

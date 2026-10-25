@@ -1,0 +1,4 @@
+object-store: get=7 get-range=1 head=0 list=3 create=7 update=2 overwrite=0 delete=1 up-segments=4158 up-extents=0 up-checkpoints=0 up-moves=0 up-other=39 down=78
+followers: views=0 max-views=0 max-behind=0 max-stale-ms=0 max-kept=0
+daemon: maps=9 map-ns=482308 faults=0 fault-ns=0 page-ins=8 page-in-bytes=32768 fetched-bytes=0 reads=76 read-bytes=319488 read-stored-bytes=266240 prefetches=0 unpacks=1 stage-ops=0 stage-ns=0 commits=3 commit-ns=1331270 commit-write-ns=1097807 commit-written-bytes=733184 commit-store-ns=72264 commit-seal-ns=286593 commit-wait-ns=5497 segment-closes=2 segment-close-ns=952155
+requests: open=1 open-ns=48541954 read=76 read-ns=2937614 write=3 write-ns=1649977 map=9 map-ns=492428 unmap=2 unmap-ns=60248 commit=1 commit-ns=18946 root=4 root-ns=3538 info=4 info-ns=5060 window=1 window-ns=12905 transfer=1 transfer-ns=12023

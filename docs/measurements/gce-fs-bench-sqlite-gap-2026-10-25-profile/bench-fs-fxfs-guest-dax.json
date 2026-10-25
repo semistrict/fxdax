@@ -1,0 +1,42 @@
+{
+  "case": "bench-fs-fxfs-guest-dax",
+  "backend": "fxfs-guest-dax",
+  "host_os": "linux",
+  "vmm": "firecracker",
+  "iterations": 3,
+  "results": [
+    {
+      "workload": "sqlite-wal-normal-batch100",
+      "unit": "txn/s",
+      "higher_is_better": true,
+      "values": [
+        184.484,
+        200.108,
+        164.624
+      ]
+    },
+    {
+      "workload": "sqlite-wal-normal-batch100-checkpoint",
+      "unit": "ms",
+      "higher_is_better": false,
+      "values": [
+        331.312,
+        284.907,
+        110.964
+      ]
+    }
+  ],
+  "failures": {},
+  "observations": {
+    "mtime-ahead-of-guest-ms": [
+      -3.44,
+      -5.046,
+      -2.49
+    ],
+    "sqlite-wal-normal-batch100-updates-per-second": [
+      18448.4,
+      20010.8,
+      16462.4
+    ]
+  }
+}
