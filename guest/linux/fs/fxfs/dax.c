@@ -289,6 +289,8 @@ struct fxfs_dax {
 	atomic64_t maps[FXFS_DAX_WHYS], map_bytes[FXFS_DAX_WHYS];
 	/* fxdax: the writes that made room through a Fxfs transaction (TASK-92.28). */
 	atomic64_t map_writes;
+	/* Requested bytes of extent-result buffers, before allocator rounding. */
+	atomic64_t extent_alloc_bytes;
 	/* The files with ranges, or inodes using the window, by inode number. */
 	struct xarray files;
 	/* Guards `files`, and files' inodes. */
@@ -357,10 +359,15 @@ static loff_t fxfs_dax_chunk_start(struct fxfs_dax_range *range)
 }
 
 /* Room for the pieces of a chunk's data, at most one per page, from Rust. */
-static struct fxfs_dax_extent *fxfs_dax_alloc_extents(void)
+static struct fxfs_dax_extent *fxfs_dax_alloc_extents(struct fxfs_dax *dax, size_t capacity)
 {
-	return fxfs_nofs(kvmalloc_array(FXFS_DAX_PAGES, sizeof(struct fxfs_dax_extent),
-					GFP_KERNEL));
+	struct fxfs_dax_extent *extents;
+
+	/* DAX blocks are pages: at most one returned extent per covered logical page. */
+	extents = fxfs_nofs(kvmalloc_array(capacity, sizeof(*extents), GFP_KERNEL));
+	if (extents)
+		atomic64_add(capacity * sizeof(*extents), &dax->extent_alloc_bytes);
+	return extents;
 }
 
 /* Marks `file` as having writable pages in the window, which the sealer forgets. In the gate. */
@@ -765,7 +772,7 @@ static int fxfs_dax_map_chunk(struct fxfs_dax *dax, struct inode *inode,
 
 	if (end <= start)
 		return 0;
-	extents = fxfs_dax_alloc_extents();
+	extents = fxfs_dax_alloc_extents(dax, DIV_ROUND_UP(end - start, PAGE_SIZE));
 	if (!extents)
 		return -ENOMEM;
 	for (;;) {
@@ -775,7 +782,7 @@ static int fxfs_dax_map_chunk(struct fxfs_dax *dax, struct inode *inode,
 		 */
 		seals = fxfs_device_seals(dax->dev);
 		count = fxfs_nofs(fxfs_dax_extents(dax->fs, inode->i_ino, start, end - start,
-						   extents, FXFS_DAX_PAGES));
+						   extents, DIV_ROUND_UP(end - start, PAGE_SIZE)));
 		fxfs_dax_delay();
 		if (count < 0) {
 			err = count;
@@ -1770,19 +1777,19 @@ static int fxfs_dax_drop_slice(struct inode *inode, loff_t pos, bool fault)
 /* Makes room through `reserved`, recording only `size`, with an exact-write fallback. */
 static ssize_t fxfs_dax_reserve_write(struct inode *inode, loff_t pos, loff_t end,
 				    loff_t reserved, loff_t size, bool keep,
-				    struct fxfs_dax_extent *extents)
+				    struct fxfs_dax_extent *extents, size_t capacity)
 {
 	struct fxfs_dax *dax = fxfs_dax_of(inode);
 	ssize_t count;
 
 	atomic64_inc(&dax->map_writes);
 	count = fxfs_nofs(fxfs_dax_map_write(dax->fs, inode->i_ino, pos, reserved - pos,
-					   size, keep, extents, FXFS_DAX_PAGES));
+					   size, keep, extents, capacity));
 	/* Speculation must not refuse a write that its own bytes have room for. */
 	if (reserved > end && (count == -ENOSPC || count == -EDQUOT || count == -ENOMEM)) {
 		atomic64_inc(&dax->map_writes);
 		count = fxfs_nofs(fxfs_dax_map_write(dax->fs, inode->i_ino, pos, end - pos,
-						   size, keep, extents, FXFS_DAX_PAGES));
+						   size, keep, extents, capacity));
 	}
 	return count;
 }
@@ -1809,7 +1816,8 @@ static loff_t fxfs_dax_append_end(struct inode *inode, loff_t pos, loff_t end)
 
 /* Makes room before mapping a chunk's range for the first time. */
 static int fxfs_dax_prepare_write(struct inode *inode, loff_t pos, loff_t len, loff_t size,
-				  loff_t reserved, bool fault, struct fxfs_dax_extent *extents)
+				  loff_t reserved, bool fault, struct fxfs_dax_extent *extents,
+				  size_t capacity)
 {
 	struct fxfs_dax_file *file = fxfs_dax_file(inode);
 	ssize_t count = 0;
@@ -1820,7 +1828,7 @@ static int fxfs_dax_prepare_write(struct inode *inode, loff_t pos, loff_t len, l
 		if (count)
 			goto out;
 		count = fxfs_dax_reserve_write(inode, pos, pos + len, max(pos + len, reserved),
-					     size, fault, extents);
+					     size, fault, extents, capacity);
 		if (count >= 0 && size > i_size_read(inode))
 			i_size_write(inode, size);
 	}
@@ -1927,6 +1935,7 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 	struct fxfs_dax_range *range;
 	unsigned long first, pages;
 	loff_t start, end, size, reserved;
+	size_t capacity;
 	bool fresh = false;
 	/*
 	 * A fault's page, which a store may change any part of, as it held it: copied here from its
@@ -1945,14 +1954,16 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 	size = flags & (IOMAP_FAULT | IOMAP_ZERO) ? 0 :
 	       min_t(loff_t, pos + length, round_up(pos + 1, FXFS_DAX_SIZE));
 	reserved = size ? fxfs_dax_append_end(inode, pos, size) : 0;
+	end = max(reserved, min_t(loff_t, pos + length, round_up(pos + 1, FXFS_DAX_SIZE)));
+	capacity = DIV_ROUND_UP(offset_in_page(pos) + end - pos, PAGE_SIZE);
 	/* A chunk with no range yet: room for the write first. Zeroing leaves holes be. */
 	if (!(flags & IOMAP_ZERO) && !xa_load(&file->ranges, pos >> FXFS_DAX_SHIFT)) {
-		extents = fxfs_dax_alloc_extents();
+		extents = fxfs_dax_alloc_extents(dax, capacity);
 		if (!extents)
 			return -ENOMEM;
 		err = fxfs_dax_prepare_write(inode, pos,
 					     min_t(loff_t, pos + length, round_up(pos + 1, FXFS_DAX_SIZE)) - pos,
-					     size, reserved, fault, extents);
+					     size, reserved, fault, extents, capacity);
 		if (err) {
 			kvfree(extents);
 			return err;
@@ -2021,7 +2032,7 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 			goto out;
 
 		if (!extents) {
-			extents = fxfs_dax_alloc_extents();
+			extents = fxfs_dax_alloc_extents(dax, capacity);
 			if (!extents) {
 				err = -ENOMEM;
 				goto out;
@@ -2041,7 +2052,7 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 		seals = fxfs_device_seals(dax->dev);
 		/* A fault's pages hold what they held: a store may change any part of them. */
 		count = fxfs_dax_reserve_write(inode, pos, end, reserved, size, fault && !held,
-					     extents);
+					     extents, capacity);
 		fxfs_dax_delay();
 		if (count < 0) {
 			err = count;
@@ -2789,6 +2800,7 @@ void fxfs_dax_show_stats(struct fxfs_dax *dax, struct seq_file *m)
 	seq_printf(m, "window_regions %ld\nwindow_regions_pruned %ld\n",
 		   atomic_long_read(&dax->region_count), atomic_long_read(&dax->regions_pruned));
 	seq_printf(m, "dax_map_writes %lld\n", atomic64_read(&dax->map_writes));
+	seq_printf(m, "dax_extent_alloc_bytes %lld\n", atomic64_read(&dax->extent_alloc_bytes));
 	for (why = 0; why < FXFS_DAX_WHYS; why++)
 		seq_printf(m, "window_maps_%s %lld\nwindow_map_bytes_%s %lld\n", fxfs_dax_whys[why],
 			   atomic64_read(&dax->maps[why]), fxfs_dax_whys[why],

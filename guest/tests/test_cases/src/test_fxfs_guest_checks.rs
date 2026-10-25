@@ -2246,18 +2246,20 @@ mod guest {
             file.write_all_at(&vec![0x33; PAGE], expected.len() as u64).unwrap();
             expected.extend_from_slice(&vec![0x33; PAGE]);
         }
-        let before = stats()["dax_map_writes"];
+        let before = stats();
         for n in 0..APPENDS {
             let bytes = vec![n as u8 + 1; PAGE];
             file.write_all_at(&bytes, expected.len() as u64).unwrap();
             expected.extend_from_slice(&bytes);
         }
-        let after = stats()["dax_map_writes"];
+        let after = stats();
         assert!(
-            after - before <= APPENDS as u64 / 4,
+            after["dax_map_writes"] - before["dax_map_writes"] <= APPENDS as u64 / 4,
             "page appends mapped {} writes",
-            after - before
+            after["dax_map_writes"] - before["dax_map_writes"]
         );
+        let allocated = after["dax_extent_alloc_bytes"] - before["dax_extent_alloc_bytes"];
+        assert!(allocated <= 65536, "small appends allocated {allocated} bytes of extent buffers");
         assert_eq!(file.metadata().unwrap().len(), expected.len() as u64);
         assert_eq!(fs::read(&name).unwrap(), expected);
         file.sync_data().unwrap();
