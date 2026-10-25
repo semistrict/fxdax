@@ -1874,6 +1874,159 @@ mod guest {
         fs::write(FAIL_HELD, "N").unwrap();
     }
 
+    /// fxdax: a file's random operations, as fsx makes them (TASK-44.15): write(2)s, stores
+    /// through a mapping, reads, truncations, holes punched and fsyncs, at random offsets and
+    /// lengths, from a seed (FXDAX_RANDOM_OPS_SEED, or 1), each read, and every 256th operation
+    /// the whole file, checked against what a model of its bytes says it holds. A mismatch names
+    /// the seed, the operation and those before it, which replay it.
+    fn test_random_ops() {
+        const MAX: u64 = 1 << 20;
+        const OPS: usize = 3000;
+        const PAGE: u64 = 4096;
+        let seed: u64 =
+            std::env::var("FXDAX_RANDOM_OPS_SEED").ok().and_then(|s| s.parse().ok()).unwrap_or(1);
+        // xorshift64*, as the operations need no more.
+        let mut state = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+        let mut next = move |bound: u64| {
+            state ^= state >> 12;
+            state ^= state << 25;
+            state ^= state >> 27;
+            state.wrapping_mul(0x2545_F491_4F6C_DD1D) % bound.max(1)
+        };
+        let name = path("random-ops");
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .read(true)
+            .write(true)
+            .open(&name)
+            .unwrap();
+        let fd = file.as_raw_fd();
+        let mut model: Vec<u8> = Vec::new();
+        let mut done: Vec<String> = Vec::new();
+        let failed = |done: &[String], what: String| -> ! {
+            let last = &done[done.len().saturating_sub(24)..];
+            panic!(
+                "seed {seed}, operation {}: {what}; the last before it:\n{}",
+                done.len(),
+                last.join("\n")
+            );
+        };
+        let check = |model: &[u8], done: &[String], at: u64, len: u64| {
+            let mut got = vec![0u8; len as usize];
+            let n = unsafe { libc::pread(fd, got.as_mut_ptr().cast(), got.len(), at as i64) };
+            if n < 0 {
+                failed(done, format!("pread at {at:#x}: {}", std::io::Error::last_os_error()));
+            }
+            got.truncate(n as usize);
+            let end = (at as usize + len as usize).min(model.len()).max(at as usize);
+            let want = model.get(at as usize..end).unwrap_or(&[]);
+            if got != want {
+                let first = got
+                    .iter()
+                    .zip(want)
+                    .position(|(a, b)| a != b)
+                    .unwrap_or(got.len().min(want.len()));
+                failed(
+                    done,
+                    format!(
+                        "{len:#x} bytes read at {at:#x}: {} bytes, differing from the model at {:#x} ({} bytes there)",
+                        got.len(),
+                        at as usize + first,
+                        want.len()
+                    ),
+                );
+            }
+        };
+        for op in 0..OPS {
+            let at = next(MAX);
+            let len = 1 + next(16 << 10);
+            match next(16) {
+                // write(2)
+                0..=4 => {
+                    let data: Vec<u8> = (0..len).map(|_| next(256) as u8).collect();
+                    done.push(format!("write {len:#x} at {at:#x}"));
+                    let n =
+                        unsafe { libc::pwrite(fd, data.as_ptr().cast(), data.len(), at as i64) };
+                    if n != data.len() as isize {
+                        failed(&done, format!("pwrite: {n}: {}", std::io::Error::last_os_error()));
+                    }
+                    let end = (at + len) as usize;
+                    if model.len() < end {
+                        model.resize(end, 0);
+                    }
+                    model[at as usize..end].copy_from_slice(&data);
+                }
+                // Stores through a mapping of the file, within its size.
+                5..=8 if !model.is_empty() => {
+                    let size = model.len() as u64;
+                    let at = at % size;
+                    let len = len.min(size - at);
+                    done.push(format!("store {len:#x} at {at:#x}"));
+                    let mapped = size.div_ceil(PAGE) * PAGE;
+                    let map = unsafe {
+                        libc::mmap(
+                            std::ptr::null_mut(),
+                            mapped as usize,
+                            libc::PROT_READ | libc::PROT_WRITE,
+                            libc::MAP_SHARED,
+                            fd,
+                            0,
+                        )
+                    };
+                    if map == libc::MAP_FAILED {
+                        failed(&done, format!("mmap: {}", std::io::Error::last_os_error()));
+                    }
+                    for i in 0..len {
+                        let byte = next(256) as u8;
+                        unsafe { map.cast::<u8>().add((at + i) as usize).write_volatile(byte) };
+                        model[(at + i) as usize] = byte;
+                    }
+                    unsafe { libc::munmap(map, mapped as usize) };
+                }
+                // Reads.
+                9..=11 => {
+                    done.push(format!("read {len:#x} at {at:#x}"));
+                    check(&model, &done, at, len);
+                }
+                // A truncation, shorter or longer.
+                12 => {
+                    let size = next(MAX);
+                    done.push(format!("truncate to {size:#x}"));
+                    file.set_len(size).unwrap();
+                    model.resize(size as usize, 0);
+                }
+                // A hole punched, the size kept.
+                13 => {
+                    done.push(format!("punch {len:#x} at {at:#x}"));
+                    let punch = libc::FALLOC_FL_PUNCH_HOLE | libc::FALLOC_FL_KEEP_SIZE;
+                    if unsafe { libc::fallocate(fd, punch, at as i64, len as i64) } != 0 {
+                        failed(&done, format!("punch: {}", std::io::Error::last_os_error()));
+                    }
+                    let end = ((at + len) as usize).min(model.len());
+                    if (at as usize) < end {
+                        model[at as usize..end].fill(0);
+                    }
+                }
+                // fsync, a seal and a commit.
+                _ => {
+                    done.push("fsync".into());
+                    file.sync_all().unwrap();
+                }
+            }
+            if op % 256 == 255 {
+                done.push("read the whole file".into());
+                let size = file.metadata().unwrap().len();
+                if size != model.len() as u64 {
+                    failed(&done, format!("size {size:#x}, the model's {:#x}", model.len()));
+                }
+                check(&model, &done, 0, MAX + PAGE);
+            }
+        }
+        drop(file);
+        fs::remove_file(&name).unwrap();
+    }
+
     /// fxdax: stores through a mapping of a file, write(2)s into its holes, and other files made,
     /// written and removed meanwhile, which make the journal compact, for a few seconds: a write
     /// in the gate waited for a fault's DAX entry, the fault for Fxfs, Fxfs for compaction, and
@@ -2100,6 +2253,7 @@ mod guest {
                 ("multigrain_times", &test_multigrain_times),
                 ("cache_shrinks", &test_cache_shrinks),
                 ("direct_io", &test_direct_io),
+                ("random_ops", &test_random_ops),
             ];
             if dax {
                 tests.push(("pmd_write_unlink", &test_pmd_write_unlink));
