@@ -56,6 +56,7 @@ mod host {
     use crate::common::{fxdax_guest_should_run, setup_rootfs};
     use crate::vm::{Firecracker, Vm};
     use crate::{ShouldRun, Test, TestOutcome, TestSetup};
+    use anyhow::Context;
     use std::ffi::{CString, OsStr};
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
@@ -82,6 +83,14 @@ mod host {
     /// (TASK-99).
     fn load_memory() -> anyhow::Result<u32> {
         Ok(u32::try_from(setting("FXDAX_PGBENCH_MEMORY_MIB", 4096)?)?)
+    }
+
+    /// How many VMs load and run pgbench, one after another, each on a fork of the base of its own,
+    /// all served by the one daemon: FXDAX_PGBENCH_VMS, or 1. The sandbox team's runs had one
+    /// daemon serve many, whose memory reached its cap from the third on, where most of their
+    /// crashes came (TASK-102, TASK-103).
+    fn vms() -> usize {
+        setting("FXDAX_PGBENCH_VMS", 1).map_or(1, |vms| vms.max(1) as usize)
     }
 
     /// The environment's `name`, a count, or `default`.
@@ -177,16 +186,23 @@ RUN apk add --no-cache postgresql postgresql-contrib perf
                 crate::common::spawn_daemon(test_setup, &socket, "extentd", &env, memory)?;
             let (base, fork) = (dir.join("base"), dir.join("fork"));
             wait(run(test_setup, &root, "base", &base, &socket, 512, 0)?)?;
-            crate::common::control(&socket)?.fork_store(&base, &fork)?;
             let window = if self.dax { window()? } else { 0 };
-            let stop = Arc::new(AtomicBool::new(false));
-            let samples = dir.join("samples.txt");
-            let sampler = sample(socket.clone(), fork.clone(), stats, samples, stop.clone());
-            let loaded =
-                wait(run(test_setup, &root, "load", &fork, &socket, load_memory()?, window)?);
-            stop.store(true, Ordering::Relaxed);
-            sampler.join().expect("the sampler panicked")?;
-            loaded
+            for vm in 0..vms() {
+                let (fork, samples) = match vm {
+                    0 => (fork.clone(), dir.join("samples.txt")),
+                    vm => (dir.join(format!("fork-{vm}")), dir.join(format!("samples-{vm}.txt"))),
+                };
+                crate::common::control(&socket)?.fork_store(&base, &fork)?;
+                let stop = Arc::new(AtomicBool::new(false));
+                let sampler =
+                    sample(socket.clone(), fork.clone(), stats.clone(), samples, stop.clone());
+                let loaded =
+                    wait(run(test_setup, &root, "load", &fork, &socket, load_memory()?, window)?);
+                stop.store(true, Ordering::Relaxed);
+                sampler.join().expect("the sampler panicked")?;
+                loaded.with_context(|| format!("VM {} of {}", vm + 1, vms()))?;
+            }
+            Ok(())
         }
     }
 
@@ -200,7 +216,7 @@ RUN apk add --no-cache postgresql postgresql-contrib perf
         }
 
         fn timeout_secs(&self) -> u64 {
-            1200
+            1200 * vms() as u64
         }
 
         fn start_vm(self: Box<Self>, test_setup: TestSetup) -> anyhow::Result<()> {
@@ -213,7 +229,8 @@ RUN apk add --no-cache postgresql postgresql-contrib perf
 
         fn check(self: Box<Self>, stdout: Vec<u8>, _test_setup: TestSetup) -> TestOutcome {
             let output = String::from_utf8(stdout).unwrap();
-            let expected = format!("OK base\nOK load {}\nOK runs {RUNS}\n", SCALE * 100_000);
+            let each = format!("OK load {}\nOK runs {RUNS}\n", SCALE * 100_000);
+            let expected = format!("OK base\n{}", each.repeat(vms()));
             if output == expected {
                 TestOutcome::Pass
             } else {
