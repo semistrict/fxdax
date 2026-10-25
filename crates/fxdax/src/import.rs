@@ -11,8 +11,10 @@
 //!   entry's permissions, owner, times and extended attributes (PAX `SCHILY.xattr.*` records). It
 //!   replaces what its path names already, except that a directory over a directory keeps its
 //!   entries, taking the new one's attributes.
-//! - A whiteout, `.wh.NAME`, removes `NAME`, and an opaque whiteout, `.wh..wh..opq`, everything in
-//!   its directory that the layers below made.
+//! - A whiteout, `.wh.NAME`, removes what the layers below made at `NAME`, and an opaque whiteout,
+//!   `.wh..wh..opq`, what they made in its directory: whatever the order of the layer's entries,
+//!   what the layer itself makes stays, and a directory it keeps, making something in it, or
+//!   giving it attributes, is as the layer says, not as the layers below left it.
 //! - The directories an entry's path passes through that no entry made are made, root's, with
 //!   permissions 0755, at the Unix epoch.
 //!
@@ -132,8 +134,14 @@ pub struct Importer {
     /// The times of the directories the layers made, and of those they passed through, by path,
     /// which are set once every layer is applied.
     times: BTreeMap<Vec<u8>, Times>,
-    /// What the layer being applied made, which its opaque whiteouts keep.
+    /// What the layer being applied made new, which holds nothing the layers below made, and
+    /// which its whiteouts keep.
     made: BTreeSet<Vec<u8>>,
+    /// The directories the layers below made that the layer being applied keeps, by path: those
+    /// it made something in, or gave attributes to, with the attributes its entry says, if one
+    /// does. Its whiteouts remove what the layers below made in them, and give them those
+    /// attributes, or an implicit directory's (TASK-79.98).
+    kept: BTreeMap<Vec<u8>, Option<Metadata>>,
     /// What files' contents are read into from the layers, a chunk at a time: one buffer for all
     /// of them, not one each, as most are far smaller.
     chunk: Box<[u8]>,
@@ -159,6 +167,7 @@ impl Times {
 }
 
 /// What a layer's entry says of the node it makes, beyond its type.
+#[derive(Clone)]
 struct Metadata {
     perm: u16,
     owner: Owner,
@@ -166,12 +175,19 @@ struct Metadata {
     xattrs: Vec<(Vec<u8>, Vec<u8>)>,
 }
 
+impl Metadata {
+    /// A directory's that an entry's path passes through, which no entry made.
+    fn implicit() -> Self {
+        Self { perm: 0o755, owner: Owner { uid: 0, gid: 0 }, times: Times::EPOCH, xattrs: vec![] }
+    }
+}
+
 impl Importer {
     /// An importer of layers into `fs`, which holds what the layers below them made, or nothing.
     pub fn new(fs: &Filesystem) -> Self {
         let dirs = BTreeMap::from([(ROOT.to_vec(), fs.root().clone())]);
         let chunk = vec![0; CHUNK].into_boxed_slice();
-        Self { dirs, times: BTreeMap::new(), made: BTreeSet::new(), chunk }
+        Self { dirs, times: BTreeMap::new(), made: BTreeSet::new(), kept: BTreeMap::new(), chunk }
     }
 
     /// The root directory.
@@ -193,6 +209,7 @@ impl Importer {
             _ => Box::new(layer),
         };
         self.made.clear();
+        self.kept.clear();
         let mut archive = tar::Archive::new(layer);
         for entry in archive.entries().context("reading the layer")? {
             let mut entry = entry.context("reading the layer")?;
@@ -221,7 +238,7 @@ impl Importer {
             return self.opaque(parent).await;
         }
         if let Some(whited_out) = name.strip_prefix(WHITEOUT) {
-            return self.remove(&join(parent, whited_out)).await;
+            return self.remove_lower(&join(parent, whited_out)).await;
         }
         let metadata = metadata(entry)?;
         let dir = self.directory(parent).await?;
@@ -230,7 +247,9 @@ impl Importer {
                 if entry_type.is_dir() && attr.file_type == FileType::Directory =>
             {
                 let existing = self.remember_directory(&path, existing);
-                self.made.insert(path.clone());
+                if !self.made.contains(&path) {
+                    self.kept.insert(path.clone(), Some(metadata.clone()));
+                }
                 return self.update_directory(&existing, &path, metadata).await;
             }
             Ok((existing, _)) => {
@@ -310,33 +329,38 @@ impl Importer {
     }
 
     /// The directory at `path`, walking to it from the root, remembering the directories on the
-    /// way: if `make`, making those that aren't there, and failing if one isn't a directory.
+    /// way: if `make`, making those that aren't there, keeping those that are, and failing if one
+    /// isn't a directory.
     async fn walk(&mut self, path: &[u8], make: bool) -> anyhow::Result<Option<Node>> {
         let (mut dir, mut end) = (self.root(), 0);
         for name in path.split(|&byte| byte == b'/').filter(|name| !name.is_empty()) {
             end += if end == 0 { name.len() } else { name.len() + 1 };
             let prefix = &path[..end];
-            if let Some(remembered) = self.dirs.get(prefix) {
-                dir = remembered.clone();
-                continue;
-            }
-            let found = match dir.lookup(name).await {
-                Ok((found, attr)) if attr.file_type == FileType::Directory => found,
-                Ok(_) => {
-                    ensure!(!make, Errno::ENOTDIR);
-                    return Ok(None);
+            dir = match self.dirs.get(prefix) {
+                Some(remembered) => remembered.clone(),
+                None => {
+                    let found = match dir.lookup(name).await {
+                        Ok((found, attr)) if attr.file_type == FileType::Directory => found,
+                        Ok(_) => {
+                            ensure!(!make, Errno::ENOTDIR);
+                            return Ok(None);
+                        }
+                        Err(Errno::ENOENT) if make => {
+                            let implicit = Metadata::implicit();
+                            let (made, _) = dir.mkdir(name, implicit.perm, implicit.owner).await?;
+                            self.made.insert(prefix.to_vec());
+                            self.times.insert(prefix.to_vec(), implicit.times);
+                            made
+                        }
+                        Err(Errno::ENOENT) => return Ok(None),
+                        Err(errno) => return Err(errno.into()),
+                    };
+                    self.remember_directory(prefix, found)
                 }
-                Err(Errno::ENOENT) if make => {
-                    let root = Owner { uid: 0, gid: 0 };
-                    let (made, _) = dir.mkdir(name, 0o755, root).await?;
-                    self.made.insert(prefix.to_vec());
-                    self.times.insert(prefix.to_vec(), Times::EPOCH);
-                    made
-                }
-                Err(Errno::ENOENT) => return Ok(None),
-                Err(errno) => return Err(errno.into()),
             };
-            dir = self.remember_directory(prefix, found);
+            if make && !self.made.contains(prefix) && !self.kept.contains_key(prefix) {
+                self.kept.insert(prefix.to_vec(), None);
+            }
         }
         Ok(Some(dir))
     }
@@ -376,22 +400,44 @@ impl Importer {
         self.dirs.remove(path);
         self.times.remove(path);
         self.made.remove(path);
+        self.kept.remove(path);
         self.dirs.extract_if(inside.clone(), |_, _| true).for_each(drop);
         self.times.extract_if(inside.clone(), |_, _| true).for_each(drop);
-        self.made.extract_if(inside, |_| true).for_each(drop);
+        self.made.extract_if(inside.clone(), |_| true).for_each(drop);
+        self.kept.extract_if(inside, |_, _| true).for_each(drop);
         remove(&dir, name.to_vec()).await
     }
 
-    /// Removes everything in the directory at `path` that the layers below made.
+    /// Removes what the layers below made at `path`, a whiteout's, keeping what the layer being
+    /// applied made: all of what it made new, and of a directory it keeps, what it made in it,
+    /// the directory as the layer says, or as an implicit one, as it would be had the whiteout
+    /// come before the layer's entries.
+    async fn remove_lower(&mut self, path: &[u8]) -> anyhow::Result<()> {
+        if self.made.contains(path) {
+            return Ok(());
+        }
+        let Some(said) = self.kept.get(path).cloned() else {
+            return self.remove(path).await;
+        };
+        let dir = self.directory(path).await?;
+        let metadata = said.unwrap_or_else(Metadata::implicit);
+        for xattr in dir.listxattr().await? {
+            dir.removexattr(&xattr).await?;
+        }
+        self.update_directory(&dir, path, metadata).await?;
+        for name in entries(&dir).await? {
+            Box::pin(self.remove_lower(&join(path, &name))).await?;
+        }
+        Ok(())
+    }
+
+    /// Removes what the layers below made in the directory at `path`, an opaque whiteout's.
     async fn opaque(&mut self, path: &[u8]) -> anyhow::Result<()> {
         let Some(dir) = self.find_directory(path).await? else {
             return Ok(());
         };
         for name in entries(&dir).await? {
-            let child = join(path, &name);
-            if !self.made.contains(&child) {
-                self.remove(&child).await?;
-            }
+            self.remove_lower(&join(path, &name)).await?;
         }
         Ok(())
     }

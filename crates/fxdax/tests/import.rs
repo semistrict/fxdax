@@ -299,6 +299,76 @@ fn removals_forget_what_they_remove_and_nothing_else() {
     })
 }
 
+/// TASK-79.98: a layer's whiteouts hide what the layers below made, not what the layer itself
+/// makes, whatever the order of its entries: a file it replaces, a directory it makes something
+/// in, or gives attributes to, under an opaque whiteout or not. Such a directory is as the layer
+/// says, or as an implicit one, not as the layers below left it.
+#[test]
+fn whiteouts_hide_lower_layers_alone_in_any_order() {
+    let lower = &[("user.lower", &b"1"[..])];
+    let base = layer(&[
+        Entry::new("x", Kind::File(b"lower x")),
+        Entry::new("d/sub/old", Kind::File(b"old")),
+        Entry::new("d/gone", Kind::File(b"gone")),
+        Entry::new("d/again", Kind::Dir).perm(0o700).xattrs(lower),
+        Entry::new("d/again/old", Kind::File(b"old")),
+        Entry::new("passed", Kind::Dir).perm(0o700).xattrs(lower),
+        Entry::new("passed/old", Kind::File(b"old")),
+        Entry::new("again", Kind::Dir).perm(0o700).xattrs(lower),
+        Entry::new("again/old", Kind::File(b"old")),
+    ])
+    .unwrap();
+    let made = [
+        Entry::new("x", Kind::File(b"upper x")),
+        Entry::new("d/sub/new", Kind::File(b"new")),
+        Entry::new("d/again", Kind::Dir).perm(0o711).mtime(MTIME + 3),
+        Entry::new("d/again/new", Kind::File(b"new")),
+        Entry::new("passed/new", Kind::File(b"new")),
+        Entry::new("again", Kind::Dir).perm(0o711).owner(5, 5).mtime(MTIME + 7),
+        Entry::new("again/new", Kind::File(b"new")),
+    ];
+    let names_whited_out = [whiteout("x"), opaque("d"), whiteout("passed"), whiteout("again")];
+    let whiteouts = names_whited_out.each_ref().map(|name| Entry::new(name, Kind::File(b"")));
+    let first = [&whiteouts[..], &made].concat();
+    let last = [&made[..], &whiteouts].concat();
+    let mut between = made.to_vec();
+    for (at, whiteout) in whiteouts.into_iter().enumerate() {
+        between.insert(2 * at + 1, whiteout);
+    }
+    let manifest_of = |entries: &[Entry]| {
+        block_on(async {
+            let fs = imported(&[base.clone(), layer(entries).unwrap()]).await;
+            let manifest = manifest(&fs).await;
+            close(fs).await;
+            manifest
+        })
+    };
+    block_on(async {
+        let fs = imported(&[base.clone(), layer(&last).unwrap()]).await;
+        assert_eq!(names(&fs, "").await, ["again", "d", "passed", "x"]);
+        assert_eq!(contents(&at(&fs, "x").await.unwrap().0).await, b"upper x");
+        assert_eq!(names(&fs, "d").await, ["again", "sub"]);
+        assert_eq!(names(&fs, "d/sub").await, ["new"]);
+        assert_eq!(names(&fs, "d/again").await, ["new"]);
+        assert_eq!(names(&fs, "passed").await, ["new"]);
+        assert_eq!(names(&fs, "again").await, ["new"]);
+        let d_again = attr_at(&fs, "d/again").await.unwrap();
+        assert_eq!((d_again.perm, d_again.mtime), (0o711, time(MTIME + 3)));
+        let passed = attr_at(&fs, "passed").await.unwrap();
+        assert_eq!((passed.perm, passed.uid, passed.mtime), (0o755, 0, UNIX_EPOCH));
+        let again = attr_at(&fs, "again").await.unwrap();
+        assert_eq!((again.perm, again.uid, again.mtime), (0o711, 5, time(MTIME + 7)));
+        for path in ["d/again", "passed", "again"] {
+            let xattrs = at(&fs, path).await.unwrap().0.listxattr().await.unwrap();
+            assert_eq!(xattrs, Vec::<Vec<u8>>::new(), "{path}");
+        }
+        close(fs).await;
+    });
+    let expected = manifest_of(&first);
+    assert_eq!(manifest_of(&last), expected);
+    assert_eq!(manifest_of(&between), expected);
+}
+
 /// Everything about the nodes in `fs` that an image gives them, by path: all but their inode
 /// numbers and change times.
 async fn manifest(fs: &Filesystem) -> Vec<String> {
