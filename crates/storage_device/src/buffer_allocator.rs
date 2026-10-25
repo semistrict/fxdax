@@ -42,15 +42,21 @@ mod buffer_source {
 
     impl BufferSource {
         pub fn new(size: usize) -> Self {
-            Self::new_internal(size, false)
+            Self::new_internal(size, false).unwrap()
         }
 
         pub fn new_trusted(size: usize) -> Self {
+            Self::new_internal(size, true).unwrap()
+        }
+
+        /// fxdax: a trusted source, or why its VMO couldn't be made or mapped, as when the kernel's
+        /// handles run out (TASK-105), which `new_trusted` panics on.
+        pub fn try_new_trusted(size: usize) -> Result<Self, zx::Status> {
             Self::new_internal(size, true)
         }
 
-        fn new_internal(size: usize, trusted: bool) -> Self {
-            let mut vmo = zx::Vmo::create(size as u64).unwrap();
+        fn new_internal(size: usize, trusted: bool) -> Result<Self, zx::Status> {
+            let mut vmo = zx::Vmo::create(size as u64)?;
             if trusted {
                 // We strip the TRANSFER right to prevent the VMO handle from being transferred
                 // or duplicated to another process (such as a block device driver). Because the
@@ -60,17 +66,17 @@ mod buffer_source {
                 // and &mut [u8]) without risking undefined behavior from aliasing or concurrent
                 // mutation.
                 let rights = zx::Rights::VMO_DEFAULT & !zx::Rights::TRANSFER;
-                vmo = vmo.replace_handle(rights).unwrap();
+                vmo = vmo.replace_handle(rights)?;
             }
             let vmo = Arc::new(vmo);
             let name = zx::Name::new("transfer-buf").unwrap();
-            vmo.set_name(&name).unwrap();
+            vmo.set_name(&name)?;
             let flags = zx::VmarFlags::PERM_READ
                 | zx::VmarFlags::PERM_WRITE
                 | zx::VmarFlags::MAP_RANGE
                 | zx::VmarFlags::REQUIRE_NON_RESIZABLE;
-            let base = vmar_root_self().map(0, &vmo, 0, size, flags).unwrap() as *mut u8;
-            Self { base, size, vmo, trusted }
+            let base = vmar_root_self().map(0, &vmo, 0, size, flags)? as *mut u8;
+            Ok(Self { base, size, vmo, trusted })
         }
 
         pub fn is_trusted(&self) -> bool {

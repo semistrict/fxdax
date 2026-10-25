@@ -255,10 +255,15 @@ enum FileHolder<T> {
 impl Pager {
     /// Creates a new pager.
     pub fn new(scope: ExecutionScope) -> Result<Self, Error> {
+        let executor = fasync::EHandle::local();
+        // fxdax: the process's port, which its VMOs' page requests come to, made now rather than
+        // as the first is registered, which panics if the kernel's handles have run out by then
+        // (TASK-105).
+        executor.port();
         Ok(Pager {
             pager: zx::Pager::create(zx::PagerOptions::empty())?,
             scope,
-            executor: fasync::EHandle::local(),
+            executor,
             recorder: Mutex::new(None),
         })
     }

@@ -217,17 +217,20 @@ pub(crate) fn evict_arena(arena: ArenaId) {
 }
 
 impl ExtentCache {
-    /// The buffers the pager reads extents' pages of `arena` into, which are of `arena` too.
-    fn allocator(&self, arena: ArenaId) -> Arc<BufferAllocator> {
+    /// The buffers the pager reads extents' pages of `arena` into, which are of `arena` too: made
+    /// as the arena's first extent is, which fails if they can't be, as when the kernel's handles
+    /// run out (TASK-105).
+    fn allocator(&self, arena: ArenaId) -> Result<Arc<BufferAllocator>, zx::Status> {
         let mut allocators = self.allocators.lock().unwrap();
-        (allocators.entry(arena))
-            .or_insert_with(|| {
-                let block_size = ExtentStore::BLOCK_SIZE as usize;
-                // Trusted: the kernel's alone, read into in place (`FxExtent::aligned_read`).
-                let source = with_arena(arena, || BufferSource::new_trusted(PAGER_BUFFERS));
-                Arc::new(BufferAllocator::new(block_size, source))
-            })
-            .clone()
+        if let Some(allocator) = allocators.get(&arena) {
+            return Ok(allocator.clone());
+        }
+        let block_size = ExtentStore::BLOCK_SIZE as usize;
+        // Trusted: the kernel's alone, read into in place (`FxExtent::aligned_read`).
+        let source = with_arena(arena, || BufferSource::try_new_trusted(PAGER_BUFFERS))?;
+        let allocator = Arc::new(BufferAllocator::new(block_size, source));
+        allocators.insert(arena, allocator.clone());
+        Ok(allocator)
     }
 }
 
@@ -1874,8 +1877,9 @@ fn cached(
         let mut extents = cache.extents.lock().unwrap();
         let key = (arena, extent);
         if !extents.contains_key(&key) {
-            // fxdax: its VMO made, or, the kernel's handles run out (TASK-104), the extents
-            // nothing else holds let go of, half of them, and made once more.
+            // fxdax: its VMO, and its arena's buffers if it is the arena's first, made, or, the
+            // kernel's handles run out (TASK-104, TASK-105), the extents nothing else holds let go
+            // of, half of them, and made once more.
             let make = || {
                 let source = StoredExtent::new(
                     store.clone(),
@@ -1886,7 +1890,7 @@ fn cached(
                 with_arena(arena, || {
                     FxExtent::new(
                         cache.pager.clone(),
-                        cache.allocator(arena),
+                        cache.allocator(arena)?,
                         Box::new(source),
                         len,
                         extent.sequence,
@@ -3293,20 +3297,17 @@ mod tests {
 
     /// TASK-104: with the kernel's handles run out, caching an extent fails with ENOMEM, the cache
     /// having let go of what it could and tried again, rather than panicking in the request that
-    /// asked, which poisoned its store; once handles are free, it caches.
+    /// asked, which poisoned its store; once handles are free, it caches. TASK-105: the process's
+    /// first extent, whose VMO's page requests come to a port made with the cache, not with it.
     #[test]
     fn caching_fails_when_handles_run_out() {
         let (store, _dir) = store(1 << 20);
         let ps = page_size();
-        for extent in [1, 2] {
-            write(&store, id(&store, extent), 0, &pattern(extent as u8, ps as usize)).unwrap();
-        }
+        write(&store, id(&store, 1), 0, &pattern(1, ps as usize)).unwrap();
         store.commit(None).unwrap();
-        // An extent in use before the handles run out, as a process's are: what the first one
-        // cached makes (the pager, its port, the arena's buffers) made, and no extent cached that
-        // the cache could let go of.
-        let in_use = super::cached(&store.store, ArenaId::DEFAULT, None, None, id(&store, 2), ps);
-        let in_use = in_use.unwrap();
+        // The cache, and its arena's buffers, made before the handles run out; no extent cached
+        // that it could let go of.
+        drop(extent_cache().allocator(ArenaId::DEFAULT).unwrap());
         let mut held = Vec::new();
         while let Ok(vmo) = zx::Vmo::create(0) {
             held.push(vmo);
@@ -3317,7 +3318,28 @@ mod tests {
         assert_eq!(cached(&store), Err(Errno::ENOMEM));
         drop(held);
         assert_eq!(cached(&store), Ok(()));
-        drop(in_use);
+    }
+
+    /// TASK-105: as TASK-104, for the first extent of an arena, which makes the arena's buffers
+    /// too, and with nothing cached to let go of.
+    #[test]
+    fn an_arenas_first_caching_fails_when_handles_run_out() {
+        let (store, _dir) = store(1 << 20);
+        let ps = page_size();
+        write(&store, id(&store, 1), 0, &pattern(1, ps as usize)).unwrap();
+        store.commit(None).unwrap();
+        // The cache, made as the process's first store is, before the handles run out.
+        extent_cache();
+        let mut held = Vec::new();
+        while let Ok(vmo) = zx::Vmo::create(0) {
+            held.push(vmo);
+        }
+        let cached = |store: &ExtentStore| {
+            super::cached(&store.store, ArenaId::DEFAULT, None, None, id(store, 1), ps).map(drop)
+        };
+        assert_eq!(cached(&store), Err(Errno::ENOMEM));
+        drop(held);
+        assert_eq!(cached(&store), Ok(()));
     }
 
     /// The process's cached sealed `extent`, if it is cached.
@@ -3443,7 +3465,7 @@ mod tests {
         let cache = extent_cache();
         let extent = FxExtent::new(
             cache.pager.clone(),
-            cache.allocator(ArenaId::DEFAULT),
+            cache.allocator(ArenaId::DEFAULT).unwrap(),
             Box::new(HeldSource(held.clone())),
             readers as u64 * READ_AHEAD,
             u64::MAX,
