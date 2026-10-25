@@ -2078,6 +2078,8 @@ out:
 static int fxfs_dax_iomap_begin(struct inode *inode, loff_t pos, loff_t length,
 				unsigned int flags, struct iomap *iomap, struct iomap *srcmap)
 {
+	int err;
+
 	if (WARN_ON_ONCE(flags & IOMAP_REPORT))
 		return -EIO;
 	iomap->offset = pos;
@@ -2090,7 +2092,11 @@ static int fxfs_dax_iomap_begin(struct inode *inode, loff_t pos, loff_t length,
 			return -EROFS;
 		return fxfs_dax_iomap_write(inode, pos, length, flags, iomap, srcmap);
 	}
-	return fxfs_dax_iomap_read(inode, pos, length, flags, iomap, srcmap);
+	err = fxfs_dax_iomap_read(inode, pos, length, flags, iomap, srcmap);
+	/* fxdax: between the iomap and the read of what it maps, which its range keeps mapped. */
+	if (!err)
+		fxfs_dax_delay();
+	return err;
 }
 
 static int fxfs_dax_iomap_end(struct inode *inode, loff_t pos, loff_t length, ssize_t written,
