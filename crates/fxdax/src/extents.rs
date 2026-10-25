@@ -114,6 +114,13 @@ struct Cached {
 /// fxdax: the cache's clock, which counts the extents asked for.
 static CACHE_CLOCK: AtomicU64 = AtomicU64::new(0);
 
+/// fxdax: the most extents the cache keeps (TASK-104). Each holds a VMO, a handle of the kernel's
+/// 2^18, which entries never let go of: under pgbench, small extents by the hundred thousand, the
+/// table filled, and an extent's `create_vmo` failed, a panic in a store's request that poisoned
+/// it. Past this, those asked for longest ago that nothing else holds (no window maps them) go,
+/// down to seven eighths of it; one asked for again is read anew from its store. Tests lower it.
+static MOST_CACHED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1 << 16);
+
 /// zircon's `ZX_VMO_OP_FXDAX_EVICT`: a pager-backed VMO's clean pages evicted now, whatever their
 /// age (`zircon::vm::vm_object_paged::VmObjectPaged::evict_range`).
 const VMO_OP_EVICT: u32 = 0x8000_0001;
@@ -1795,7 +1802,13 @@ fn cached(
         });
         cached.used.store(CACHE_CLOCK.fetch_add(1, Ordering::Relaxed) + 1, Ordering::Relaxed);
         let shared = !Arc::ptr_eq(&cached.store, store);
-        (cached.extent.clone(), cached.sealing.clone().filter(|_| shared))
+        let found = (cached.extent.clone(), cached.sealing.clone().filter(|_| shared));
+        let most = MOST_CACHED.load(Ordering::Relaxed);
+        let gone = (extents.len() > most).then(|| let_go_least_used(&mut extents, most));
+        drop(extents);
+        // Freed past the cache's lock: an extent's pager deregisters it as it goes.
+        drop(gone);
+        found
     };
     // fxdax: another store's extent, a fork's parent's, whose guest may still store to its
     // pages until its seal is made: not shared with this store's guest before then.
@@ -1803,6 +1816,22 @@ fn cached(
         sealing.wait();
     }
     cached
+}
+
+/// fxdax: takes out of the cache `extents` those asked for longest ago that nothing else holds,
+/// down to seven eighths of `most`, and returns them, for the caller to let go of past the cache's
+/// lock (TASK-104).
+fn let_go_least_used(
+    extents: &mut HashMap<(ArenaId, ExtentId), Cached>,
+    most: usize,
+) -> Vec<Cached> {
+    let mut idle: Vec<(u64, (ArenaId, ExtentId))> = (extents.iter())
+        .filter(|(_, cached)| Arc::strong_count(&cached.extent) == 1)
+        .map(|(key, cached)| (cached.used.load(Ordering::Relaxed), *key))
+        .collect();
+    idle.sort_unstable_by_key(|(used, _)| *used);
+    let excess = extents.len().saturating_sub(most - most / 8);
+    idle.into_iter().take(excess).filter_map(|(_, key)| extents.remove(&key)).collect()
 }
 
 /// How many threads read a boot profile's units into the cache at once.
@@ -3117,6 +3146,34 @@ mod tests {
         assert!(bytes[2 * ps as usize..3 * ps as usize] == pattern(2, ps as usize)[..]);
         assert!(bytes[3 * ps as usize..].iter().all(|byte| *byte == 0), "past the sealed extent");
         assert_eq!(Arc::strong_count(&cached(stored).unwrap()), 4);
+    }
+
+    /// TASK-104: the cache keeps no more extents than its bound, letting go of those asked for
+    /// longest ago that nothing else holds, and keeps those a window maps: an extent's VMO is a
+    /// handle of the kernel's, whose table filled under pgbench and failed an extent's creation.
+    #[test]
+    fn the_cache_keeps_its_bound() {
+        super::MOST_CACHED.store(8, Ordering::Relaxed);
+        let (store, _dir) = store(1 << 20);
+        let ps = page_size();
+        for sequence in 1..=20 {
+            write(&store, id(&store, sequence), 0, &pattern(sequence as u8, ps as usize)).unwrap();
+        }
+        store.commit(None).unwrap();
+        let window = store.create_dax_window(ps, None).unwrap();
+        store.map(id(&store, 1), 0, ps, 0, false).unwrap();
+        for sequence in 2..=20 {
+            let extent = id(&store, sequence);
+            drop(super::cached(&store.store, ArenaId::DEFAULT, None, None, extent, ps));
+        }
+        let kept: Vec<u64> = {
+            let extents = extent_cache().extents.lock().unwrap();
+            let mut kept: Vec<u64> = extents.keys().map(|(_, extent)| extent.sequence).collect();
+            kept.sort_unstable();
+            kept
+        };
+        assert_eq!(kept, [1, 14, 15, 16, 17, 18, 19, 20]);
+        drop(window);
     }
 
     /// The process's cached sealed `extent`, if it is cached.
