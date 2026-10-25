@@ -106,12 +106,13 @@ FROM alpine:3.22
 RUN apk add --no-cache postgresql postgresql-contrib perf
 ";
 
-    /// A VM of the guest's `role`, of `memory` MiB, on the store at `store`, which the daemon at
-    /// `extentd` serves, run in Firecracker.
+    /// A VM named `name`, of `memory` MiB, on the store at `store`, which the daemon at `extentd`
+    /// serves, run in Firecracker: its guest's role what its name begins with (`load-1`, a load's),
+    /// its API socket and files named after it, each VM's its own, as one's socket outlives it.
     fn run(
         test_setup: &TestSetup,
         root: &Path,
-        role: &str,
+        name: &str,
         store: &Path,
         extentd: &Path,
         memory: u32,
@@ -120,8 +121,9 @@ RUN apk add --no-cache postgresql postgresql-contrib perf
         let mut vm = Vm::new(vcpus()?, memory)?;
         vm.guest_kernel()?;
         vm.extent_store_served("extents", store, CAPACITY, window, extentd);
+        let role = name.split('-').next().unwrap_or(name);
         vm.env(&CString::new(format!("FXDAX_PGBENCH_ROLE={role}"))?);
-        vm.spawn_api(root, &test_setup.test_case, role, &Vm::api_socket(role))
+        vm.spawn_api(root, &test_setup.test_case, name, &Vm::api_socket(name))
     }
 
     /// Samples, every 2 s until `stop`, what the daemon at `socket` did and has left to upload of
@@ -188,16 +190,20 @@ RUN apk add --no-cache postgresql postgresql-contrib perf
             wait(run(test_setup, &root, "base", &base, &socket, 512, 0)?)?;
             let window = if self.dax { window()? } else { 0 };
             for vm in 0..vms() {
-                let (fork, samples) = match vm {
-                    0 => (fork.clone(), dir.join("samples.txt")),
-                    vm => (dir.join(format!("fork-{vm}")), dir.join(format!("samples-{vm}.txt"))),
+                let (fork, samples, name) = match vm {
+                    0 => (fork.clone(), dir.join("samples.txt"), "load".to_owned()),
+                    vm => (
+                        dir.join(format!("fork-{vm}")),
+                        dir.join(format!("samples-{vm}.txt")),
+                        format!("load-{vm}"),
+                    ),
                 };
                 crate::common::control(&socket)?.fork_store(&base, &fork)?;
                 let stop = Arc::new(AtomicBool::new(false));
                 let sampler =
                     sample(socket.clone(), fork.clone(), stats.clone(), samples, stop.clone());
                 let loaded =
-                    wait(run(test_setup, &root, "load", &fork, &socket, load_memory()?, window)?);
+                    wait(run(test_setup, &root, &name, &fork, &socket, load_memory()?, window)?);
                 stop.store(true, Ordering::Relaxed);
                 sampler.join().expect("the sampler panicked")?;
                 loaded.with_context(|| format!("VM {} of {}", vm + 1, vms()))?;
