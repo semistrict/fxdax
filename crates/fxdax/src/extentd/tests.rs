@@ -2568,9 +2568,12 @@ fn frees_of_many_extents_fail_against_daemons_without_them() {
 }
 
 /// TASK-79.95: a fork's child opened while the fork is being made, its segment not yet in the
-/// bucket, waits for the fork, and finds its record the fork's: before, it found none, took a
-/// branch of its own, and the parent's writer, recording the fork, found the child's record
-/// another's, failing the fork, and every writer of the parent's after.
+/// bucket, waits for the fork, and finds its record the fork's. Before, it opened at once: before
+/// the parent's uploader took the fork's segment, it found no record and no sign the fork might
+/// land, took a branch of its own, and the parent's writer, recording the fork, found the child's
+/// record another's, failing the fork, and every writer of the parent's after. Here the fork's
+/// segment is held as it uploads, after it was taken, which no test can come before: what is
+/// asserted is that the child doesn't open while its fork is being made.
 #[test]
 fn childs_opened_during_their_forks_wait_for_them() {
     use std::sync::Arc;
@@ -2608,10 +2611,12 @@ fn childs_opened_during_their_forks_wait_for_them() {
         std::thread::yield_now();
     }
     // The child opened, and committing a write, as its VM would.
+    let opened = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let opening = {
-        let (socket, child) = (socket.clone(), child.clone());
+        let (socket, child, opened) = (socket.clone(), child.clone(), opened.clone());
         std::thread::spawn(move || {
             let store = RemoteExtentStore::connect(&socket, &child, 1 << 24)?;
+            opened.store(true, std::sync::atomic::Ordering::Relaxed);
             let data = pattern(2, ps);
             let extent = ExtentId { branch, sequence: 1 };
             store.write(extent, 0, &[VolatileSlice::from(&data[..])])?;
@@ -2619,22 +2624,22 @@ fn childs_opened_during_their_forks_wait_for_them() {
             Ok::<_, crate::Error>(store)
         })
     };
-    // The child's opening waiting for the fork; or the child committing, its branch its own in
-    // the bucket.
-    let records = extent_remote::store::Store::new(gated.clone(), "branches");
-    let record = || control(extent_remote::branch::record(&records, branch)).unwrap();
     let key = super::stores::store_key(&child);
-    while !super::stores::open_paths().is_waited_for(&key) && record().is_none() {
+    let opened_now = || opened.load(std::sync::atomic::Ordering::Relaxed);
+    while !super::stores::open_paths().is_waited_for(&key) && !opened_now() {
         assert!(std::time::Instant::now() < deadline, "the child neither waited nor opened");
         std::thread::yield_now();
     }
+    assert!(!opened_now(), "the child opened while its fork was being made");
     gated.hold_writes(None);
     assert_eq!(forking.join().unwrap(), Ok(()));
-    let opened = opening.join().unwrap();
-    assert!(opened.is_ok(), "opening the child: {:?}", opened.err());
-    let origin = record().and_then(|record| record.origin).map(|origin| origin.parent);
+    let child_store = opening.join().unwrap();
+    assert!(child_store.is_ok(), "opening the child: {:?}", child_store.err());
+    let records = extent_remote::store::Store::new(gated.clone(), "branches");
+    let record = control(extent_remote::branch::record(&records, branch)).unwrap();
+    let origin = record.and_then(|record| record.origin).map(|origin| origin.parent);
     assert_eq!(origin, Some(parent));
-    drop((opened, store));
+    drop((child_store, store));
 }
 
 /// An object store in memory whose reads wait while they are held ([`GatedReads::hold`]): what
