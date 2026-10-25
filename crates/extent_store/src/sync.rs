@@ -149,6 +149,9 @@ pub struct Rules {
     pub close_waits_for_flushes: bool,
     /// Closing a branch waits for the segments closed between commits to be framed (TASK-41.1).
     pub close_waits_for_framings: bool,
+    /// A flush whose commits' framings fail waits for every one of them to end before it says so,
+    /// and closing a branch for those of the commits no flush took (TASK-79.99).
+    pub flushes_wait_for_every_framing: bool,
     /// A fork waits for the segments closed between commits to be framed, which its child reads
     /// from their framed files (TASK-41.1).
     pub forks_wait_for_framings: bool,
@@ -181,6 +184,7 @@ impl Rules {
         durable_once_synced: true,
         close_waits_for_flushes: true,
         close_waits_for_framings: true,
+        flushes_wait_for_every_framing: true,
         forks_wait_for_framings: true,
         keep_frees_for_views: true,
         keep_pins: true,

@@ -65,6 +65,11 @@ impl<T> Durability<T> {
         !self.queue.is_empty()
     }
 
+    /// fxdax: the commits waiting for a flush to take them, oldest first.
+    pub fn waiting(&self) -> impl Iterator<Item = &T> {
+        self.queue.iter()
+    }
+
     /// The epoch of the last commit durable.
     pub fn durable(&self) -> u64 {
         self.durable
