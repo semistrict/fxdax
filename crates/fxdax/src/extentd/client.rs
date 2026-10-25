@@ -759,7 +759,7 @@ impl Client {
                     break;
                 }
             };
-            let header = message.header;
+            let mut header = message.header;
             if header.kind == REPLY {
                 let reply = match header.status {
                     0 => Ok(message),
@@ -791,6 +791,10 @@ impl Client {
                     committed(epoch);
                 }
                 continue;
+            }
+            if let Err(err) = receiver.coalesce_unmaps(&mut header) {
+                log::error!("receiving stage unmaps: {err}");
+                break;
             }
             let start = std::time::Instant::now();
             let made = self.make(&header);

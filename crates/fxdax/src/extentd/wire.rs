@@ -599,6 +599,74 @@ impl Receiver {
         Self(stream)
     }
 
+    /// Joins up to 63 more adjacent acknowledged unmaps already waiting in the socket,
+    /// without crossing another operation, a gap, or partial input. The ACK uses the largest ID
+    /// of the unmaps actually consumed, after the entire union was unmapped.
+    pub fn coalesce_unmaps(&mut self, header: &mut Header) -> io::Result<usize> {
+        let is_range = |h: &Header| {
+            h.kind == STAGE_UNMAP
+                && h.flags == STAGE_ACK
+                && h.len == 0
+                && h.status == 0
+                && h.reserved == 0
+                && h.args[1] != 0
+        };
+        if !is_range(header) {
+            return Ok(0);
+        }
+        let (mut start, Some(mut end)) =
+            (header.args[0], header.args[0].checked_add(header.args[1]))
+        else {
+            return Ok(0);
+        };
+        let mut bytes = [0u8; 63 * size_of::<Header>()];
+        let got = loop {
+            // SAFETY: The live buffer is writable for its length. Peeking consumes no input;
+            // this receiver is the stream's only reader, so whole headers stay until received.
+            let got = unsafe {
+                libc::recv(
+                    self.0.as_raw_fd(),
+                    bytes.as_mut_ptr().cast(),
+                    bytes.len(),
+                    libc::MSG_PEEK | libc::MSG_DONTWAIT,
+                )
+            };
+            if got >= 0 {
+                break got as usize;
+            }
+            let err = io::Error::last_os_error();
+            match err.kind() {
+                io::ErrorKind::WouldBlock => return Ok(0),
+                io::ErrorKind::Interrupted => continue,
+                _ => return Err(err),
+            }
+        };
+        let mut id = header.id;
+        let mut joined = 0;
+        for bytes in bytes[..got].chunks_exact(size_of::<Header>()) {
+            let next = Header::read_from_bytes(bytes).unwrap();
+            if !is_range(&next) {
+                break;
+            }
+            let Some(next_end) = next.args[0].checked_add(next.args[1]) else { break };
+            if next.args[0] > end || next_end < start {
+                break;
+            }
+            let received = self.receive(|| 0)?.ok_or(io::ErrorKind::UnexpectedEof)?;
+            debug_assert_eq!(received.header, next);
+            start = start.min(next.args[0]);
+            end = end.max(next_end);
+            // Never use a later MAP or MAPPED's ID: taking operations which haven't reached
+            // the wire yet may own intervening IDs, whose kept pages must remain quarantined.
+            id = id.max(next.id);
+            joined += 1;
+        }
+        header.id = id;
+        header.args[0] = start;
+        header.args[1] = end - start;
+        Ok(joined)
+    }
+
     /// The next message, or `None` once the other end has closed the connection: one whose payload
     /// is past [`MAX_PAYLOAD`] only if `most`, asked then, allows that many bytes, as a reply to
     /// [`MAPPINGS`] of a large window may hold (TASK-79.43).
@@ -747,6 +815,94 @@ pub(crate) fn pair() -> ((Sender, Receiver), (Sender, Receiver)) {
 mod tests {
     use super::*;
     use std::os::fd::AsFd;
+
+    fn unmap(id: u64, offset: u64, len: u64) -> Header {
+        Header::new(STAGE_UNMAP, id).with_flags(STAGE_ACK).with_args(&[offset, len])
+    }
+
+    #[test]
+    fn unmaps_join_adjacent_ranges_and_ack_only_consumed_taking_ids() {
+        let ((sender, _), (_, mut receiver)) = pair();
+        // Includes reversed address order, overlap, and IDs allocated in a different order.
+        for h in [
+            unmap(7, 8192, 4096),
+            unmap(3, 4096, 4096),
+            unmap(5, 4096, 8192),
+            unmap(6, 12288, 4096),
+        ] {
+            sender.send(h, &[], &[]).unwrap();
+        }
+        let mapped = Header::new(STAGE_MAPPED, 99).with_args(&[4096, 12288]);
+        sender.send(mapped, &[], &[]).unwrap();
+        let reply = Header::new(REPLY, 100);
+        let file = tempfile::tempfile().unwrap();
+        sender.send(reply, &[], &[file.as_fd()]).unwrap();
+        let mut h = receiver.receive(|| 0).unwrap().unwrap().header;
+        assert_eq!(receiver.coalesce_unmaps(&mut h).unwrap(), 3);
+        assert_eq!(h, unmap(7, 4096, 12288));
+        assert_eq!(receiver.receive(|| 0).unwrap().unwrap().header, mapped);
+        let message = receiver.receive(|| 0).unwrap().unwrap();
+        assert_eq!(message.header, reply);
+        assert_eq!(message.fds.len(), 1);
+    }
+
+    #[test]
+    fn unmap_batches_leave_gaps_other_operations_and_partial_headers_untouched() {
+        for variation in 0..6 {
+            let ((sender, _), (_, mut receiver)) = pair();
+            let mut first = unmap(1, 4096, 4096);
+            assert_eq!(receiver.coalesce_unmaps(&mut first).unwrap(), 0);
+            let mut next = unmap(2, 8192, 4096);
+            match variation {
+                0 => next.args[0] += 4096,
+                1 => {
+                    next.kind = STAGE_PROTECT;
+                    next.args[2] = 1;
+                }
+                2 => next.flags = 0,
+                3 => next.args = [u64::MAX - 1024, 4096, 0, 0, 0],
+                4 => {}
+                5 => next.len = 3,
+                _ => unreachable!(),
+            }
+            if variation == 4 {
+                write_all(&sender.0.lock().unwrap(), &next.as_bytes()[..17]).unwrap();
+                assert_eq!(receiver.coalesce_unmaps(&mut first).unwrap(), 0);
+                assert_eq!(first, unmap(1, 4096, 4096));
+                write_all(&sender.0.lock().unwrap(), &next.as_bytes()[17..]).unwrap();
+                assert_eq!(receiver.coalesce_unmaps(&mut first).unwrap(), 1);
+                assert_eq!(first, unmap(2, 4096, 8192));
+            } else {
+                let payload = vec![9; next.len as usize];
+                sender.send(next, &payload, &[]).unwrap();
+                assert_eq!(receiver.coalesce_unmaps(&mut first).unwrap(), 0);
+                assert_eq!(first, unmap(1, 4096, 4096));
+                let received = receiver.receive(|| 0).unwrap().unwrap();
+                assert_eq!((received.header, received.payload), (next, payload));
+            }
+        }
+    }
+
+    #[test]
+    fn unmap_batches_bound_the_work_taken_from_the_socket() {
+        let ((sender, _), (_, mut receiver)) = pair();
+        for id in 1..=128 {
+            sender.send(unmap(id, id * 4096, 4096), &[], &[]).unwrap();
+        }
+        let mut next_id = 1;
+        let mut total_joined = 0;
+        while next_id <= 128 {
+            let mut header = receiver.receive(|| 0).unwrap().unwrap().header;
+            assert_eq!(header.id, next_id);
+            let joined = receiver.coalesce_unmaps(&mut header).unwrap();
+            assert!(joined <= 63);
+            let count = joined as u64 + 1;
+            assert_eq!(header, unmap(next_id + count - 1, next_id * 4096, count * 4096));
+            total_joined += joined;
+            next_id += count;
+        }
+        assert!(total_joined > 0);
+    }
 
     /// Messages arrive whole and in order, with their payloads, and descriptors sent with one
     /// arrive with it.

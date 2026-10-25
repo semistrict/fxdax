@@ -39,7 +39,8 @@ pub struct Stats {
     /// The parts of extents stored compressed decompressed (`extent_store::unpacks`).
     pub unpacks: u64,
     /// The changes to a DAX window the extent daemon sent this process, a VMM's, which it made
-    /// (`extentd::client`'s stage operations: maps, protections, unmaps).
+    /// (`extentd::client`'s stage operations: maps, protections, unmaps). Adjacent queued unmaps
+    /// applied together count as one host operation.
     pub stage_ops: u64,
     /// The nanoseconds they took.
     pub stage_ns: u64,
