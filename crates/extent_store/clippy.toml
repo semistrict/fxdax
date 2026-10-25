@@ -1,0 +1,2 @@
+# Clippy's configuration for extent_store, in place of the workspace's (../../clippy.toml): its
+# Store is synchronous, its blocking calls its own API, which the workspace's disallows elsewhere.

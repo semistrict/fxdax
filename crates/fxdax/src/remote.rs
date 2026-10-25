@@ -408,6 +408,7 @@ static RUNTIME: std::sync::LazyLock<tokio::runtime::Runtime> = std::sync::LazyLo
 
 /// Runs `work`, which blocks on the store's disk, on the remotes' runtime: on its thread, which
 /// hands its other tasks to another meanwhile.
+#[allow(clippy::disallowed_methods, reason = "the work waits on the disk alone")]
 fn blocking<T>(work: impl FnOnce() -> T) -> T {
     tokio::task::block_in_place(work)
 }

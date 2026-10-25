@@ -1,0 +1,8 @@
+# Clippy's configuration for fxdax's crates (crates/extent_store has its own: see there).
+
+# Calls that block their thread, which async code must not make while other futures of its own
+# task may be what they wait for: each use says, in an allow, why it can't (TASK-44.20).
+disallowed-methods = [
+    { path = "tokio::task::block_in_place", allow-invalid = true, reason = "hands the runtime's other tasks on, but not the other futures of its own task, which the blocked work may wait for: the import deadlock (TASK-98)" },
+    { path = "extent_store::store::Store::begin_write", allow-invalid = true, reason = "waits on a condvar while a commit holds writes back, which may wait for writes of the caller's own task: use try_begin_write and wait off the task's thread (TASK-98)" },
+]

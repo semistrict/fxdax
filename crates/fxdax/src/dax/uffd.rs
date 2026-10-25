@@ -178,6 +178,29 @@ fn default_budget() -> usize {
     (max.saturating_sub(MAPPINGS_RESERVED) / 2).max(1)
 }
 
+/// Logs a fault the window refused, `what` at window offset `offset`: each of the first thousand,
+/// a run's few, and every power of two after: a vCPU whose access stays refused for a second stops
+/// its VM with only `EFAULT` to say so, from `KVM_RUN` (TASK-99, TASK-101).
+fn refused(what: &str, offset: u64) {
+    static REFUSED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let count = REFUSED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    if count <= 1000 || count.is_power_of_two() {
+        log::warn!("fxdax: the DAX window refused {what}, at offset {offset:#x} ({count} so far)");
+    }
+}
+
+/// fxdax: logs a restriction of a page at window offset `offset` to reads, or its lifting, `what`,
+/// as its changes stood (`made`, and what the fault saw, `seen`), each of the first thousand and
+/// every power of two after: which side was wrong, the window or the guest, when a store stays
+/// refused (TASK-102).
+fn changed_protection(what: &str, offset: u64, made: u32, seen: Option<u32>) {
+    static CHANGED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let count = CHANGED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    if count <= 1000 || count.is_power_of_two() {
+        log::warn!("fxdax: DAX window offset {offset:#x} {what} (made {made}, seen {seen:?})");
+    }
+}
+
 /// What the window has done to a page of a second stage, as the faults on it see it, and what it
 /// maps there.
 #[derive(Clone, Copy, Default)]
@@ -187,6 +210,10 @@ struct PageChanges {
     /// Whether a fault that found nothing mapped there withheld the page, which the window's
     /// mapping it anew gives back.
     withheld: bool,
+    /// fxdax: whether a fault whose store the window refused made the page read-only here, which
+    /// the window's making it writable in place lifts, and its memory replaced does away with
+    /// (TASK-102): left so, its stores failed, KVM_RUN with EFAULT, for ever.
+    restricted: bool,
     /// What the window maps at the page, if anything.
     mapped: Option<Mapped>,
 }
@@ -348,6 +375,9 @@ pub(crate) struct Rules {
     pub restrict_between_changes: bool,
     /// A page withheld is given back when the window maps it anew.
     pub mapping_gives_back_withheld: bool,
+    /// fxdax: a page a refused store made read-only is made writable again when the window makes
+    /// it writable in place (TASK-102).
+    pub protection_lifts_restriction: bool,
 }
 
 impl Rules {
@@ -358,6 +388,7 @@ impl Rules {
         refused_store_read_only: true,
         restrict_between_changes: true,
         mapping_gives_back_withheld: true,
+        protection_lifts_restriction: true,
     };
 }
 
@@ -598,14 +629,16 @@ impl<H: HostMemory> UffdSecondStage<H> {
         let page_size = page_size() as usize;
         let page = self.page_range(addr, 1).start;
         let withheld = prot == libc::PROT_NONE;
-        let Some(seen) = seen else {
-            return self.host.protect(addr, page_size, prot);
-        };
+        let offset = (addr - self.base) as u64;
         let mut pages = self.pages.lock().unwrap();
-        if pages.pages[page].made == seen {
-            self.host.protect(addr, page_size, prot);
-            pages.pages[page].withheld = withheld;
+        let made = pages.pages[page].made;
+        if seen.is_some_and(|seen| made != seen) {
+            return;
         }
+        self.host.protect(addr, page_size, prot);
+        pages.pages[page].withheld = withheld;
+        pages.pages[page].restricted = prot == libc::PROT_READ;
+        changed_protection("restricted to reads", offset, made, seen);
     }
 
     /// The size of the memory: its window's, as a test's window in it takes it
@@ -647,6 +680,7 @@ impl<H: HostMemory> UffdSecondStage<H> {
             // here too, so that the write fails in the kernel rather than faulting here again. A
             // store from the guest then fails as KVM's would.
             Err(Errno::EACCES) if access == Access::Write => {
+                refused("a store to a page the window maps read-only", offset);
                 if rules().refused_store_read_only {
                     self.restrict(addr, seen, libc::PROT_READ);
                 }
@@ -655,13 +689,19 @@ impl<H: HostMemory> UffdSecondStage<H> {
             // Where the window maps nothing, the fault is KVM's, for a page the guest has
             // unmapped (see the module docs): it is withheld, so that the fault fails.
             Err(Errno::ENOENT) => {
+                refused("an access to a page the window maps nothing at", offset);
                 self.restrict(addr, seen, libc::PROT_NONE);
                 Ok(())
             }
             resolved => resolved,
         };
         if let Err(err) = resolved {
-            log::error!("unresolved DAX window fault at offset {offset:#x} ({access:?}): {err}");
+            let why =
+                format!("unresolved DAX window fault at offset {offset:#x} ({access:?}): {err}");
+            log::error!("{why}");
+            // fxdax: on standard error too, which a process without a logger, a test's, keeps:
+            // its abort said nothing else (TASK-100).
+            eprintln!("fxdax: {why}");
             std::process::abort();
         }
         self.host.wake(addr, page_size);
@@ -709,6 +749,7 @@ impl<H: HostMemory> SecondStage for UffdSecondStage<H> {
                         let offset = phys.offset + at as u64 * page_size;
                         let phys = crate::kernel::PhysLocation { arena: phys.arena, offset };
                         page.mapped = Some(Mapped { phys, protection, installed: true, used });
+                        page.restricted = false;
                     }
                 })
             },
@@ -725,11 +766,20 @@ impl<H: HostMemory> SecondStage for UffdSecondStage<H> {
         let (addr, len) = self.addr(offset, len);
         let range = self.page_range(addr, len);
         let page_size = page_size() as usize;
-        // The pages left out take the protection when they are installed again.
+        // The pages left out take the protection when they are installed again. fxdax: those a
+        // refused store made read-only made writable again, if the window makes them writable.
+        let lifts = protection == Protection::ReadWrite && rules().protection_lifts_restriction;
         let installed = |pages: &mut Pages| {
             let mut installed: Vec<std::ops::Range<usize>> = Vec::new();
+            let mut lifted = Vec::new();
             for at in range.clone() {
-                let Some(mapped) = &mut pages.pages[at].mapped else { continue };
+                let page = &mut pages.pages[at];
+                // Installed or not: memory left out, made writable, faults to the window.
+                if lifts && page.restricted {
+                    page.restricted = false;
+                    lifted.push((at, page.made));
+                }
+                let Some(mapped) = &mut page.mapped else { continue };
                 mapped.protection = protection;
                 if !mapped.installed {
                     continue;
@@ -739,9 +789,17 @@ impl<H: HostMemory> SecondStage for UffdSecondStage<H> {
                     _ => installed.push(at..at + 1),
                 }
             }
-            installed
+            (installed, lifted)
         };
-        self.change(addr, len, installed, |installed| {
+        self.change(addr, len, installed, |(installed, lifted)| {
+            for (at, made) in lifted {
+                self.host.protect(
+                    self.base + at * page_size,
+                    page_size,
+                    libc::PROT_READ | libc::PROT_WRITE,
+                );
+                changed_protection("made writable again", (at * page_size) as u64, made, None);
+            }
             for run in installed {
                 let addr = self.base + run.start * page_size;
                 self.host.write_protect(
@@ -757,7 +815,9 @@ impl<H: HostMemory> SecondStage for UffdSecondStage<H> {
         let (addr, len) = self.addr(offset, len);
         let range = self.page_range(addr, len);
         let forget = |pages: &mut Pages| {
-            pages.update(range, |pages| pages.iter_mut().for_each(|page| page.mapped = None))
+            pages.update(range, |pages| {
+                pages.iter_mut().for_each(|page| (page.mapped, page.restricted) = (None, false))
+            })
         };
         self.change(addr, len, forget, |()| self.leave_out(addr, len));
     }
@@ -882,6 +942,7 @@ impl<H: HostMemory> UffdSecondStage<H> {
                     page.made = page.made.wrapping_add(1);
                     if let Some(mapped) = &mut page.mapped {
                         mapped.installed = false;
+                        page.restricted = false;
                     }
                 }
             });

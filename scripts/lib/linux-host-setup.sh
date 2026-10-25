@@ -29,12 +29,13 @@ host_setup() {
     # podman the root filesystems of guests that need one, and busybox-static the
     # image of fxfs-guest-docker-dax's containers; flex, bison, bc, cpio and
     # libelf's and OpenSSL's headers build the guest kernel (test-linux-host.sh's
-    # FXDAX_GUEST_KERNEL_BUILD). The marker names the list, so a host that
+    # FXDAX_GUEST_KERNEL_BUILD); elfutils' eu-stack saves a hung test's stacks
+    # (the guest tests' runner, TASK-44.13). The marker names the list, so a host that
     # installed a different one installs again.
     local packages packages_ready
     packages=(build-essential clang libclang-dev llvm pkg-config musl-tools python3
         curl ca-certificates e2fsprogs podman rsync libseccomp-dev busybox-static
-        git flex bison bc cpio libelf-dev libssl-dev sqlite3)
+        git flex bison bc cpio libelf-dev libssl-dev sqlite3 elfutils)
     packages_ready="$work/tools/packages-$(printf '%s\n' "${packages[@]}" | sha256sum | cut -c1-16)"
     if [[ ! -f "$packages_ready" ]]; then
         apt-get -o DPkg::Lock::Timeout=600 update -qq
@@ -51,6 +52,8 @@ host_setup() {
             --no-modify-path
     fi
     rustup target add x86_64-unknown-linux-musl
+    # scripts/test.sh checks clippy's rules first (TASK-44.20).
+    rustup component add clippy
 
     # The guest tests' runner isolates each test with `buildah unshare` where
     # buildah is installed, as podman installs it, and buildah's re-execution fails

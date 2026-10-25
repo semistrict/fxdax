@@ -16,6 +16,10 @@ testing = []
 # threads. Only for those tests: `cargo nextest run -p fxdax --features shuttle --lib
 # shuttle_tests::`.
 shuttle = ["dep:shuttle", "zircon/shuttle"]
+# fxdax: the extent daemon's failpoints (the fail crate's), which the FAILPOINTS environment
+# variable sets: a request of a kind failing or waiting, as configured (TASK-44.10). Without the
+# feature they are nothing: scripts/test-e2e.sh builds the daemon with it for FXDAX_FAILPOINTS.
+failpoints = ["fail/failpoints"]
 
 [dependencies]
 anyhow.workspace = true
@@ -49,6 +53,7 @@ sha2.workspace = true
 serde.workspace = true
 serde_json = "1.0.154"
 shuttle = { workspace = true, optional = true }
+fail = "0.5.1"
 
 [dev-dependencies]
 async-trait.workspace = true

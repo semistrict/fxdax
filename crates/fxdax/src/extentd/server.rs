@@ -381,6 +381,10 @@ fn receive(
                 Ok(Some(message)) => {
                     let Some(message) = connection.admit(message) else { continue };
                     IO.spawn(receive(connection.clone(), receiver, gone));
+                    #[allow(
+                        clippy::disallowed_methods,
+                        reason = "the task does nothing more: its receiving goes on in another"
+                    )]
                     tokio::task::block_in_place(move || connection.serve_in_turn(message));
                     return;
                 }
@@ -679,6 +683,20 @@ pub(super) struct Connection {
     _alive: tokio::sync::oneshot::Sender<std::convert::Infallible>,
 }
 
+/// fxdax: the failpoint of requests of `kind`, if they have one (TASK-44.10).
+#[cfg(feature = "failpoints")]
+fn failpoint(kind: u32) -> Option<&'static str> {
+    Some(match kind {
+        READ => "extentd::read",
+        WRITE => "extentd::write",
+        MAP => "extentd::map",
+        UNMAP => "extentd::unmap",
+        COMMIT => "extentd::commit",
+        FREE | FREE_MANY => "extentd::free",
+        _ => return None,
+    })
+}
+
 impl Connection {
     /// Its store, once it has opened one.
     pub(super) fn store(&self) -> Option<&Arc<ExtentStore>> {
@@ -838,6 +856,17 @@ impl Connection {
             return self.memories(reply, fds);
         }
         let store = self.store.get().ok_or(Errno::EBADF)?;
+        // fxdax: a request failing, with the errno given (EIO by default), or waiting, as
+        // FAILPOINTS says, in a daemon built with the failpoints feature (TASK-44.10):
+        // `extentd::map=1%return(5)` fails one MAP in a hundred with EIO, `extentd::commit=
+        // sleep(50)` delays each COMMIT 50 ms.
+        #[cfg(feature = "failpoints")]
+        if let Some(point) = failpoint(kind) {
+            fail::fail_point!(point, |errno: Option<String>| {
+                let errno = errno.and_then(|errno| errno.parse().ok());
+                Err(Errno::from_raw(errno.unwrap_or(Errno::EIO.raw())))
+            });
+        }
         match kind {
             TRANSFER => {
                 let fd = message.fds.first().ok_or(Errno::EINVAL)?;
@@ -970,6 +999,22 @@ impl Connection {
             }
         };
         let faulted = faulted.await;
+        // fxdax: a store refused stops its VM if the guest goes on with it for a second, with no
+        // more than KVM_RUN's EFAULT to say so: what the window had there, each refusal of the
+        // first thousand, a run's few, and every power of two after (TASK-99, TASK-101).
+        if faulted == Err(Errno::EACCES) {
+            static REFUSED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let count = REFUSED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            if (count <= 1000 || count.is_power_of_two())
+                && let Some(store) = self.store.get()
+            {
+                let offset = args[0];
+                log::warn!(
+                    "extentd: a store at DAX window offset {offset:#x} refused ({count} so far): {}",
+                    store.describe_window_offset(offset - offset % crate::kernel::page_size())
+                );
+            }
+        }
         answer.send(faulted, Header::new(REPLY, message.header.id), Vec::new(), Vec::new());
     }
 

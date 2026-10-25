@@ -114,6 +114,13 @@ struct Cached {
 /// fxdax: the cache's clock, which counts the extents asked for.
 static CACHE_CLOCK: AtomicU64 = AtomicU64::new(0);
 
+/// fxdax: the most extents the cache keeps (TASK-104). Each holds a VMO, a handle of the kernel's
+/// 2^18, which entries never let go of: under pgbench, small extents by the hundred thousand, the
+/// table filled, and an extent's `create_vmo` failed, a panic in a store's request that poisoned
+/// it. Past this, those asked for longest ago that nothing else holds (no window maps them) go,
+/// down to seven eighths of it; one asked for again is read anew from its store. Tests lower it.
+static MOST_CACHED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1 << 16);
+
 /// zircon's `ZX_VMO_OP_FXDAX_EVICT`: a pager-backed VMO's clean pages evicted now, whatever their
 /// age (`zircon::vm::vm_object_paged::VmObjectPaged::evict_range`).
 const VMO_OP_EVICT: u32 = 0x8000_0001;
@@ -434,6 +441,76 @@ pub struct ExtentStore {
     /// fxdax: notified as it commits, for its followers' daemon to tell them, holding no thread
     /// meanwhile (TASK-34).
     committed: event_listener::Event,
+    /// fxdax: the window's latest changes, which a refused fault's log tells of the page it was
+    /// on ([`ExtentStore::describe_window_offset`], TASK-44.12).
+    changes: Mutex<WindowChanges>,
+}
+
+/// fxdax: the latest of a window's MAPs and UNMAPs, as [`WindowChanges::MOST`] of them: which
+/// mapped a page as it was refused, and what mapped it before, read-only or writably (TASK-44.12).
+#[derive(Default)]
+struct WindowChanges {
+    changes: std::collections::VecDeque<WindowChange>,
+}
+
+/// One of a window's changes: `len` bytes at `window_offset`, mapped or unmapped, when.
+struct WindowChange {
+    at: std::time::Instant,
+    window_offset: u64,
+    len: u64,
+    change: Change,
+}
+
+/// What a [`WindowChange`] did.
+enum Change {
+    /// A MAP of `extent`'s bytes from `offset`, writably or not, and how it ended.
+    Map {
+        extent: ExtentId,
+        offset: u64,
+        writable: bool,
+        result: std::result::Result<(), Errno>,
+    },
+    /// A MAP of zeros.
+    Zeros,
+    /// Zeros mapped in place of what a freed extent's memory, which they kept, mapped.
+    Freed,
+    Unmap,
+}
+
+impl WindowChanges {
+    const MOST: usize = 4096;
+
+    fn record(&mut self, window_offset: u64, len: u64, change: Change) {
+        if self.changes.len() == Self::MOST {
+            self.changes.pop_front();
+        }
+        let at = std::time::Instant::now();
+        self.changes.push_back(WindowChange { at, window_offset, len, change });
+    }
+
+    /// The changes of the page at `window_offset`, oldest first, with how long ago each was.
+    fn of(&self, window_offset: u64) -> Vec<String> {
+        let now = std::time::Instant::now();
+        (self.changes.iter())
+            .filter(|change| {
+                (change.window_offset..change.window_offset + change.len).contains(&window_offset)
+            })
+            .map(|change| {
+                let (at, len, ago) =
+                    (change.window_offset, change.len, now.duration_since(change.at));
+                let what = match &change.change {
+                    Change::Map { extent, offset, writable, result } => {
+                        let how = if *writable { "writably" } else { "read-only" };
+                        format!("MAP of {extent:?} from {offset:#x}, {how}, {result:?}")
+                    }
+                    Change::Zeros => "MAP of zeros".into(),
+                    Change::Freed => "zeros in place of a freed extent's".into(),
+                    Change::Unmap => "UNMAP".into(),
+                };
+                format!("{what}, {len:#x} bytes from {at:#x}, {ago:?} ago")
+            })
+            .collect()
+    }
 }
 
 /// A follower's part of its store: the writer's store it follows, and the view it reads it
@@ -630,6 +707,7 @@ impl ExtentStore {
             opening: Default::default(),
             following: None,
             committed: event_listener::Event::new(),
+            changes: Mutex::default(),
         }
     }
 
@@ -650,6 +728,7 @@ impl ExtentStore {
             opening: Default::default(),
             following: Some(following),
             committed: event_listener::Event::new(),
+            changes: Mutex::default(),
         }
     }
 
@@ -1150,6 +1229,11 @@ impl ExtentStore {
         let mut dax = self.dax.lock().unwrap();
         let Some(dax) = dax.as_mut() else { return Ok(()) };
         let zeros = dax.zeros()?;
+        let mut changes = self.changes.lock().unwrap();
+        for (start, end, _) in dax.kept(kept) {
+            changes.record(start, end - start, Change::Freed);
+        }
+        drop(changes);
         dax.replace_kept(kept, Mapped::zeros(&zeros), &zeros)
     }
 
@@ -1479,6 +1563,9 @@ impl ExtentStore {
         let start = std::time::Instant::now();
         let mapped = self.map_counted(extent, offset, len, window_offset, writable);
         stats::count_since(Counter::Maps, Counter::MapNs, start);
+        let result = mapped.as_ref().map(|_| ()).map_err(|errno| *errno);
+        let change = Change::Map { extent, offset, writable, result };
+        self.changes.lock().unwrap().record(window_offset, len, change);
         mapped
     }
 
@@ -1596,6 +1683,7 @@ impl ExtentStore {
         let mut dax = self.dax.lock().unwrap();
         let dax = dax.as_mut().ok_or(Errno::ENOSYS)?;
         dax.check_range(window_offset, len)?;
+        self.changes.lock().unwrap().record(window_offset, len, Change::Zeros);
         self.map_zeros(dax, window_offset, len)
     }
 
@@ -1623,6 +1711,40 @@ impl ExtentStore {
             .collect()
     }
 
+    /// fxdax: what the window maps at `window_offset`, and the extent's state here and in the
+    /// store, said for a log: why a store there was refused (TASK-99).
+    pub fn describe_window_offset(&self, window_offset: u64) -> String {
+        let mapping = self.window_mappings().into_iter().find(|mapping| {
+            (mapping.window_offset..mapping.window_offset + mapping.len).contains(&window_offset)
+        });
+        let Some(mapping) = mapping else {
+            let history = self.changes.lock().unwrap().of(window_offset);
+            return format!("nothing mapped; the page's latest MAPs and UNMAPs: {history:#?}");
+        };
+        let MappingContents::Extent { extent, offset, writable } = mapping.contents else {
+            let history = self.changes.lock().unwrap().of(window_offset);
+            return format!(
+                "zeros, {:#x} bytes from {:#x}; the page's latest MAPs and UNMAPs: {history:#?}",
+                mapping.len, mapping.window_offset
+            );
+        };
+        let open_here = self.open.lock().unwrap().contains_key(&extent);
+        let stored = self.store.extent(extent.into()).map(|stored| {
+            stored.map(|(len, open)| {
+                format!("{len:#x} bytes, {}", if open { "open" } else { "sealed" })
+            })
+        });
+        let history = self.changes.lock().unwrap().of(window_offset);
+        format!(
+            "{extent:?} from {offset:#x}, {:#x} bytes from {:#x}, {}; {} in the window; in the \
+             store: {stored:?}; the page's latest MAPs and UNMAPs: {history:#?}",
+            mapping.len,
+            mapping.window_offset,
+            if writable { "writable" } else { "read-only" },
+            if open_here { "open" } else { "not open" },
+        )
+    }
+
     /// Forks the store as [`ExtentStore::fork`] does, but only once nothing is open
     /// ([`ExtentStore::is_quiescent`]), and no write or writable mapping comes between that and the
     /// fork, which would seal it under its writer: `EBUSY` otherwise. So a running VM's store forks,
@@ -1648,6 +1770,7 @@ impl ExtentStore {
         let mut dax = self.dax.lock().unwrap();
         let dax = dax.as_mut().ok_or(Errno::ENOSYS)?;
         dax.check_range(window_offset, len)?;
+        self.changes.lock().unwrap().record(window_offset, len, Change::Unmap);
         dax.unmap(window_offset, len)
     }
 
@@ -1769,7 +1892,13 @@ fn cached(
         });
         cached.used.store(CACHE_CLOCK.fetch_add(1, Ordering::Relaxed) + 1, Ordering::Relaxed);
         let shared = !Arc::ptr_eq(&cached.store, store);
-        (cached.extent.clone(), cached.sealing.clone().filter(|_| shared))
+        let found = (cached.extent.clone(), cached.sealing.clone().filter(|_| shared));
+        let most = MOST_CACHED.load(Ordering::Relaxed);
+        let gone = (extents.len() > most).then(|| let_go_least_used(&mut extents, most));
+        drop(extents);
+        // Freed past the cache's lock: an extent's pager deregisters it as it goes.
+        drop(gone);
+        found
     };
     // fxdax: another store's extent, a fork's parent's, whose guest may still store to its
     // pages until its seal is made: not shared with this store's guest before then.
@@ -1777,6 +1906,22 @@ fn cached(
         sealing.wait();
     }
     cached
+}
+
+/// fxdax: takes out of the cache `extents` those asked for longest ago that nothing else holds,
+/// down to seven eighths of `most`, and returns them, for the caller to let go of past the cache's
+/// lock (TASK-104).
+fn let_go_least_used(
+    extents: &mut HashMap<(ArenaId, ExtentId), Cached>,
+    most: usize,
+) -> Vec<Cached> {
+    let mut idle: Vec<(u64, (ArenaId, ExtentId))> = (extents.iter())
+        .filter(|(_, cached)| Arc::strong_count(&cached.extent) == 1)
+        .map(|(key, cached)| (cached.used.load(Ordering::Relaxed), *key))
+        .collect();
+    idle.sort_unstable_by_key(|(used, _)| *used);
+    let excess = extents.len().saturating_sub(most - most / 8);
+    idle.into_iter().take(excess).filter_map(|(_, key)| extents.remove(&key)).collect()
 }
 
 /// How many threads read a boot profile's units into the cache at once.
@@ -3091,6 +3236,34 @@ mod tests {
         assert!(bytes[2 * ps as usize..3 * ps as usize] == pattern(2, ps as usize)[..]);
         assert!(bytes[3 * ps as usize..].iter().all(|byte| *byte == 0), "past the sealed extent");
         assert_eq!(Arc::strong_count(&cached(stored).unwrap()), 4);
+    }
+
+    /// TASK-104: the cache keeps no more extents than its bound, letting go of those asked for
+    /// longest ago that nothing else holds, and keeps those a window maps: an extent's VMO is a
+    /// handle of the kernel's, whose table filled under pgbench and failed an extent's creation.
+    #[test]
+    fn the_cache_keeps_its_bound() {
+        super::MOST_CACHED.store(8, Ordering::Relaxed);
+        let (store, _dir) = store(1 << 20);
+        let ps = page_size();
+        for sequence in 1..=20 {
+            write(&store, id(&store, sequence), 0, &pattern(sequence as u8, ps as usize)).unwrap();
+        }
+        store.commit(None).unwrap();
+        let window = store.create_dax_window(ps, None).unwrap();
+        store.map(id(&store, 1), 0, ps, 0, false).unwrap();
+        for sequence in 2..=20 {
+            let extent = id(&store, sequence);
+            drop(super::cached(&store.store, ArenaId::DEFAULT, None, None, extent, ps));
+        }
+        let kept: Vec<u64> = {
+            let extents = extent_cache().extents.lock().unwrap();
+            let mut kept: Vec<u64> = extents.keys().map(|(_, extent)| extent.sequence).collect();
+            kept.sort_unstable();
+            kept
+        };
+        assert_eq!(kept, [1, 14, 15, 16, 17, 18, 19, 20]);
+        drop(window);
     }
 
     /// The process's cached sealed `extent`, if it is cached.

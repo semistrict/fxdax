@@ -48,32 +48,47 @@ else
 fi
 
 # gce_create makes the host in $zone, or where that zone has no room for its
-# machine, in the next zone of the same region that does. zone names each zone
-# as its create is tried: a create that fails may have made the host there all
-# the same, which gce_all's trap then finds there.
+# machine, in the next zone of the same region that does; and where the region
+# is out of quota (its SSD or CPUs), or out of room, in the next region of
+# FXDAX_GCE_REGIONS's (TASK-97). The project's own quota, of every region, it
+# stops at. zone names each zone as its create is tried: a create that fails may
+# have made the host there all the same, which gce_all's trap then finds there.
 gce_create() {
-    local region zones candidates candidate log
-    region=${zone%-*}
-    zones=$("${cloud[@]}" compute zones list --filter="region:$region" --format='value(name)') ||
-        return
-    candidates=("$zone")
-    while read -r candidate; do
-        [[ "$candidate" == "$zone" ]] || candidates+=("$candidate")
-    done < <(sort <<< "$zones")
+    local first=$zone region regions zones candidates candidate log
+    regions=("${first%-*}")
+    for region in ${FXDAX_GCE_REGIONS:-us-east4 us-east1 us-central1 us-west1}; do
+        [[ $region == "${first%-*}" ]] || regions+=("$region")
+    done
     log=$(mktemp) || return
-    for candidate in "${candidates[@]}"; do
-        zone=$candidate
-        if gce_create_in "$zone" 2> "$log"; then
-            echo "Created $instance in $zone." >&2
-            rm -f -- "$log"
-            return 0
-        fi
-        if ! [[ $(< "$log") =~ ZONE_RESOURCE_POOL_EXHAUSTED|does\ not\ have\ enough\ resources ]]; then
-            cat "$log" >&2
+    for region in "${regions[@]}"; do
+        if ! zones=$("${cloud[@]}" compute zones list --filter="region:$region" \
+            --format='value(name)'); then
             rm -f -- "$log"
             return 1
         fi
-        echo "$candidate has no room for this machine; trying the next zone." >&2
+        candidates=()
+        [[ $region == "${first%-*}" ]] && candidates=("$first")
+        while read -r candidate; do
+            [[ -z $candidate || $candidate == "$first" ]] || candidates+=("$candidate")
+        done < <(sort <<< "$zones")
+        for candidate in ${candidates[@]+"${candidates[@]}"}; do
+            zone=$candidate
+            if gce_create_in "$zone" 2> "$log"; then
+                echo "Created $instance in $zone." >&2
+                rm -f -- "$log"
+                return 0
+            fi
+            if [[ $(< "$log") =~ Quota\ \'[A-Z_]+\'\ exceeded.*in\ region ]]; then
+                echo "$region is out of quota for this machine; trying the next region." >&2
+                continue 2
+            fi
+            if ! [[ $(< "$log") =~ ZONE_RESOURCE_POOL_EXHAUSTED|does\ not\ have\ enough\ resources ]]; then
+                cat "$log" >&2
+                rm -f -- "$log"
+                return 1
+            fi
+            echo "$candidate has no room for this machine; trying the next zone." >&2
+        done
     done
     cat "$log" >&2
     rm -f -- "$log"

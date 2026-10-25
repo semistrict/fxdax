@@ -7,7 +7,9 @@
 # one spec (its .tla) and its models (backlog doc-8 testing 0; TASK-42.8, TASK-44):
 #
 # - specs/follower: live read-only followers' protocol (doc-8);
-# - specs/dax: the guest Fxfs's DAX seal and relocation protocol (guest/linux/fs/fxfs/dax.c).
+# - specs/dax: the guest Fxfs's DAX seal and relocation protocol (guest/linux/fs/fxfs/dax.c);
+# - specs/dax-region: a region of its window, opened while a reader's read-only MAP of it is in
+#   flight (TASK-99, TASK-44.14).
 #
 #   check-tla.sh [MODEL...]
 #

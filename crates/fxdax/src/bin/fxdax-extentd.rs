@@ -71,6 +71,10 @@ impl log::Log for Stderr {
 fn main() -> anyhow::Result<()> {
     use anyhow::Context;
     log::set_logger(&Stderr).map(|()| log::set_max_level(log::LevelFilter::Info))?;
+    // fxdax: the failpoints FAILPOINTS sets, in a daemon built with them (TASK-44.10).
+    let _failpoints = fail::FailScenario::setup();
+    // fxdax: before any thread is started, which SIGQUIT would end otherwise (TASK-44.13).
+    fxdax::stacks::on_sigquit().context("handling SIGQUIT")?;
     stop_on_sigterm().context("handling SIGTERM")?;
     fxdax::extentd::raise_open_files_limit().context("raising the limit of open files")?;
     // A host of the multi-node system: the bucket and this host's placement token named.

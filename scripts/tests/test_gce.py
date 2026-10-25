@@ -317,6 +317,23 @@ class Hosts(unittest.TestCase):
         )
         self.assertEqual(project.state()["instances"], {})
 
+    def test_a_run_makes_its_host_in_the_next_region_out_of_quota(self):
+        # TASK-97: us-east4 has its zones, and no quota; us-east1 has room.
+        project = Project(
+            {"zones": ["us-east4-a", "us-east4-b", "us-east1-b"], "quota": ["us-east4"]}
+        )
+        self.assertEqual(
+            project.run("gce_all eval 'echo \"ran in $zone\"'"),
+            (
+                0,
+                "ran in us-east1-b\n",
+                "us-east4 is out of quota for this machine; trying the next region.\n"
+                "Created fxdax-test-x in us-east1-b.\n"
+                "Verified deletion of fxdax-test-x and its boot disk.\n",
+            ),
+        )
+        self.assertEqual(project.state()["instances"], {})
+
     def test_a_run_deletes_the_host_its_failed_create_made_in_the_next_zone(self):
         project = Project(
             {

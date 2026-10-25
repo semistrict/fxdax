@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-24 14:08'
+updated_date: '2026-10-24 22:04'
 labels:
   - bug
 dependencies: []
@@ -32,3 +33,9 @@ Found bisecting TASK-79.11 (2026-10-24): having txn_map_write write a fault's pa
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+TASK-99 (2026-10-24): forcing the keep=true path (fxfs.dax_fail_held) stopped VMs on EFAULT; the cause was a race in region_open it made common (fixed in TASK-99), not incoherent device writes: extentd opens an extent written through the device from the store's contents. faults_unheld now covers the keep path; AC1 may be met by it.
+<!-- SECTION:NOTES:END -->

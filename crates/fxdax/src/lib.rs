@@ -133,6 +133,8 @@ mod shuttle_testing;
 pub mod stats;
 mod storage;
 // The extent daemon's (Linux), and its tests' everywhere.
+#[cfg(target_os = "linux")]
+pub mod stacks;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod store_requests;
 #[cfg(test)]

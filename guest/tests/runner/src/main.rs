@@ -188,6 +188,7 @@ fn run_single_test(
         }
         if std::time::Instant::now() >= deadline {
             eprintln!("TIMEOUT ({}s)", timeout.as_secs());
+            save_stacks(&test_dir, child.id());
             let _ = child.kill();
             let _ = child.wait();
             kill_cleanup_pids(&test_dir);
@@ -203,6 +204,7 @@ fn run_single_test(
     let stdout = fs::read(&stdout_path).unwrap_or_default();
 
     let test_name = test_case.name.to_string();
+    let checks_console = get_test(&test_name).unwrap().checks_console();
     let test_dir_clone = test_dir.clone();
     let outcome = match catch_unwind(|| {
         let test = get_test(&test_name).unwrap();
@@ -211,6 +213,14 @@ fn run_single_test(
     }) {
         Ok(outcome) => outcome,
         Err(_) => TestOutcome::Fail("test.check() panicked".to_string()),
+    };
+    // fxdax: a test that passed fails if a kernel of its VMs complained (TASK-44.8).
+    let outcome = match outcome {
+        TestOutcome::Pass if checks_console => match consoles_complaints(&test_dir) {
+            Ok(()) => TestOutcome::Pass,
+            Err(err) => TestOutcome::Fail(format!("{err:#}")),
+        },
+        outcome => outcome,
     };
 
     // Kill any background processes registered for cleanup (e.g. gvproxy).
@@ -245,6 +255,58 @@ fn run_single_test(
     }
 
     Ok(TestResult { name: test_case.name.to_string(), outcome, log_path: Some(log_path) })
+}
+
+/// fxdax: saves, before a test that hung is killed, the stacks of every thread of its processes,
+/// `pid`'s and its descendants', and those it registered for cleanup, to `stacks-<pid>.txt` in its
+/// directory `dir`: what waits for what, which a timeout alone kept nothing of (TASK-44.13). With
+/// elfutils' eu-stack; without it, a note says so.
+fn save_stacks(dir: &Path, pid: u32) {
+    let mut pids = vec![pid];
+    let mut at = 0;
+    while at < pids.len() {
+        let tasks = fs::read_dir(format!("/proc/{}/task", pids[at])).into_iter().flatten();
+        for task in tasks.flatten() {
+            let children = fs::read_to_string(task.path().join("children")).unwrap_or_default();
+            pids.extend(children.split_whitespace().filter_map(|child| child.parse::<u32>().ok()));
+        }
+        at += 1;
+    }
+    let cleanup = fs::read_to_string(dir.join("cleanup.pids")).unwrap_or_default();
+    pids.extend(cleanup.lines().filter_map(|line| line.trim().parse::<u32>().ok()));
+    pids.sort_unstable();
+    pids.dedup();
+    for pid in pids {
+        let comm = fs::read_to_string(format!("/proc/{pid}/comm")).unwrap_or_default();
+        match Command::new("eu-stack").args(["-p", &pid.to_string()]).output() {
+            Ok(output) => {
+                let mut saved = format!("{pid} {}\n", comm.trim()).into_bytes();
+                saved.extend(output.stdout);
+                saved.extend(output.stderr);
+                let path = dir.join(format!("stacks-{pid}.txt"));
+                if let Err(err) = fs::write(&path, saved) {
+                    eprintln!("saving {}: {err}", path.display());
+                }
+            }
+            Err(err) => {
+                eprintln!("no stacks of the hung test's processes: eu-stack: {err}");
+                return;
+            }
+        }
+    }
+    eprintln!("the hung test's stacks: {}/stacks-*.txt", dir.display());
+}
+
+/// fxdax: fails with what the kernels of a test's VMs complained of on their consoles, the files
+/// `console.txt` and `<name>.console.txt` in its directory `dir` (`vm::complaints`).
+fn consoles_complaints(dir: &Path) -> anyhow::Result<()> {
+    for entry in fs::read_dir(dir)? {
+        let path = entry?.path();
+        if path.file_name().is_some_and(|name| name.to_string_lossy().ends_with("console.txt")) {
+            test_cases::vm::complaints(&path).with_context(|| format!("in {}", path.display()))?;
+        }
+    }
+    Ok(())
 }
 
 fn write_github_summary(

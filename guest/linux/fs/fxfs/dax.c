@@ -54,7 +54,9 @@
 #include <linux/iomap.h>
 #include <linux/log2.h>
 #include <linux/mm.h>
+#include <linux/moduleparam.h>
 #include <linux/pagemap.h>
+#include <linux/prandom.h>
 #include <linux/seq_file.h>
 #include <linux/slab.h>
 #include <linux/uio.h>
@@ -83,6 +85,52 @@
  * write waits for, so more than a page, though they make the extent at least that long.
  */
 #define FXFS_DAX_REGION_FIRST 16UL
+
+/*
+ * fxdax: fault injection: a fault's copy of the page it holds fails to allocate, as it may when
+ * memory is short, and Fxfs keeps the page's contents through the device instead (keep, in
+ * fxfs_dax_iomap_write; TASK-79.107, TASK-99).
+ */
+static bool fxfs_dax_fail_held;
+module_param_named(dax_fail_held, fxfs_dax_fail_held, bool, 0644);
+MODULE_PARM_DESC(dax_fail_held, "Fail every DAX fault's held copy of its page (fault injection)");
+
+/*
+ * fxdax: delay injection (TASK-44.11): at the steps of the DAX protocol where a check and its use
+ * race what other tasks change, a quarter of the time, a sleep of up to fxfs.dax_delay_us
+ * microseconds, from a generator seeded with fxfs.dax_delay_seed, which a run names: a window of
+ * microseconds two tasks rarely meet in, as TASK-99's, widened so that they do. Off (0) unless set.
+ */
+static unsigned int fxfs_dax_delay_us;
+module_param_named(dax_delay_us, fxfs_dax_delay_us, uint, 0644);
+MODULE_PARM_DESC(dax_delay_us, "Sleep up to this many microseconds at the DAX protocol's racing steps (delay injection)");
+static unsigned long fxfs_dax_delay_seed;
+module_param_named(dax_delay_seed, fxfs_dax_delay_seed, ulong, 0444);
+MODULE_PARM_DESC(dax_delay_seed, "The seed of fxfs.dax_delay_us's delays");
+
+static DEFINE_SPINLOCK(fxfs_dax_delay_lock);
+static struct rnd_state fxfs_dax_delay_state;
+static bool fxfs_dax_delay_seeded;
+
+/* fxdax: a delay injected here, if fxfs.dax_delay_us asks for them. Where the caller may sleep. */
+static void fxfs_dax_delay(void)
+{
+	unsigned int most = READ_ONCE(fxfs_dax_delay_us);
+	u32 chance;
+
+	if (!most)
+		return;
+	spin_lock(&fxfs_dax_delay_lock);
+	if (!fxfs_dax_delay_seeded) {
+		prandom_seed_state(&fxfs_dax_delay_state, fxfs_dax_delay_seed);
+		fxfs_dax_delay_seeded = true;
+	}
+	chance = prandom_u32_state(&fxfs_dax_delay_state);
+	spin_unlock(&fxfs_dax_delay_lock);
+	if (chance % 4)
+		return;
+	fsleep(chance / 4 % most + 1);
+}
 
 /* The window's mapping of a whole extent, from its start, which slices of files share. */
 struct fxfs_dax_region {
@@ -313,6 +361,8 @@ static struct fxfs_dax_extent *fxfs_dax_alloc_extents(void)
 /* Marks `file` as having writable pages in the window, which the sealer forgets. In the gate. */
 static void fxfs_dax_add_writable(struct fxfs_dax *dax, struct fxfs_dax_file *file)
 {
+	fxfs_device_assert_in_gate(dax->dev);
+
 	mutex_lock(&dax->writable_lock);
 	if (list_empty(&file->writable))
 		list_add_tail(&file->writable, &dax->writable);
@@ -336,6 +386,8 @@ static int fxfs_dax_map_slice(struct fxfs_dax *dax, struct fxfs_dax_range *range
 	ssize_t i;
 	int err;
 
+	fxfs_device_assert_in_gate(dax->dev);
+	lockdep_assert_held_write(&range->file->sem);
 	for (i = 0; i < count; i++) {
 		const struct fxfs_dax_extent *e = &extents[i];
 		unsigned long page = (e->offset - start) >> PAGE_SHIFT;
@@ -397,6 +449,8 @@ static void fxfs_dax_relocate(struct fxfs_dax_range *range, unsigned long page,
 	unsigned int index = 0;
 	unsigned long i;
 	u64 moved;
+
+	lockdep_assert_held_write(&range->file->sem);
 
 	if (!range->moved)
 		return;
@@ -469,6 +523,8 @@ static void fxfs_dax_prune(struct fxfs_dax *dax, struct fxfs_dax_range *range)
 	unsigned int i, kept = 0, nr = range->nr_regions;
 	unsigned long page, *used;
 	u64 moved;
+
+	lockdep_assert_held_write(&range->file->sem);
 
 	if (!nr || atomic_read(&range->users) != 1 ||
 	    !bitmap_empty(range->relocated, range->pages))
@@ -585,6 +641,7 @@ static int fxfs_dax_map_extents(struct fxfs_dax *dax, struct fxfs_dax_range *ran
 	ssize_t i, nr_own = 0;
 	int err, many;
 
+	lockdep_assert_held_write(&range->file->sem);
 	if (range->region)
 		return fxfs_dax_map_slice(dax, range, extents, count);
 	fxfs_dax_prune(dax, range);
@@ -714,6 +771,7 @@ static int fxfs_dax_map_chunk(struct fxfs_dax *dax, struct inode *inode,
 		seals = fxfs_device_seals(dax->dev);
 		count = fxfs_nofs(fxfs_dax_extents(dax->fs, inode->i_ino, start, end - start,
 						   extents, FXFS_DAX_PAGES));
+		fxfs_dax_delay();
 		if (count < 0) {
 			err = count;
 			break;
@@ -835,6 +893,8 @@ static struct fxfs_dax_region *fxfs_dax_find_region(struct fxfs_dax *dax, u64 br
 {
 	struct fxfs_dax_region *region;
 
+	lockdep_assert_held(&dax->regions_lock);
+
 	hash_for_each_possible(dax->regions, region, node, fxfs_dax_region_key(branch, sequence)) {
 		if (region->branch == branch && region->sequence == sequence)
 			return region;
@@ -915,6 +975,8 @@ static void fxfs_dax_free_range(struct fxfs_dax *dax, struct fxfs_dax_range *ran
 static void fxfs_dax_unmap_range(struct fxfs_dax *dax, struct fxfs_dax_range *range)
 {
 	int err;
+
+	lockdep_assert_held_write(&range->file->sem);
 
 	xa_erase(&range->file->ranges, range->chunk);
 	if (!range->region && !bitmap_empty(range->mapped, range->pages)) {
@@ -1157,16 +1219,23 @@ static struct fxfs_dax_region *fxfs_dax_get_region(struct fxfs_dax *dax,
 
 /*
  * Makes `region`, of an open extent, writable, unless it is mapped already. In the gate, where only
- * writable regions are mapped further.
+ * writable regions are mapped further. fxdax: under the region's lock, which a MAP of it holds: a
+ * read-only one in flight, outside the gate, by a reader that found the extent sealed, ended after
+ * this had made the region writable and claimed its pages mapped, read-only, where writers took
+ * them for writable: the host refused their stores, and the VM stopped (TASK-99).
  */
 static void fxfs_dax_region_open(struct fxfs_dax *dax, struct fxfs_dax_region *region)
 {
+	fxfs_device_assert_in_gate(dax->dev);
+	fxfs_dax_delay();
+	mutex_lock(&region->lock);
 	spin_lock(&dax->regions_lock);
-	if (!region->writable && !READ_ONCE(region->mapped)) {
+	if (!region->writable && !region->mapped) {
 		region->writable = true;
 		list_add_tail(&region->writable_list, &dax->writable_regions);
 	}
 	spin_unlock(&dax->regions_lock);
+	mutex_unlock(&region->lock);
 }
 
 /*
@@ -1180,9 +1249,18 @@ static int fxfs_dax_map_to(struct fxfs_dax *dax, struct fxfs_dax_region *region,
 			   enum fxfs_dax_why why)
 {
 	unsigned long from, to;
+	/*
+	 * As the region's lock, held, keeps it: fxfs_dax_region_open sets it under that lock, and a
+	 * seal clears it with no store in progress, so during no writable MAP.
+	 */
+	bool writable;
 	int err = 0;
 
 	mutex_lock(&region->lock);
+	writable = READ_ONCE(region->writable);
+	/* A read-only MAP may be a reader's, outside the gate; a writable one is in it. */
+	if (writable)
+		fxfs_device_assert_in_gate(dax->dev);
 	from = region->mapped;
 	if (end <= from)
 		goto out;
@@ -1191,17 +1269,17 @@ static int fxfs_dax_map_to(struct fxfs_dax *dax, struct fxfs_dax_region *region,
 		goto out;
 	}
 	to = region->pages;
-	if (region->writable)
+	if (writable)
 		to = min(to, max(end, from + clamp(from, FXFS_DAX_REGION_FIRST, FXFS_DAX_REGION_STEP)));
 	for (;;) {
 		err = fxfs_device_map(dax->dev, region->branch, region->sequence,
 				      (u64)from << PAGE_SHIFT, (u64)(to - from) << PAGE_SHIFT,
-				      region->window_offset + ((u64)from << PAGE_SHIFT),
-				      region->writable);
+				      region->window_offset + ((u64)from << PAGE_SHIFT), writable);
+		fxfs_dax_delay();
 		atomic64_inc(&dax->maps[why]);
 		atomic64_add((u64)(to - from) << PAGE_SHIFT, &dax->map_bytes[why]);
 		/* A sealed extent may end before what was allocated of it: past what was written. */
-		if (!err || region->writable || to == end)
+		if (!err || writable || to == end)
 			break;
 		to = end;
 	}
@@ -1215,7 +1293,7 @@ static int fxfs_dax_map_to(struct fxfs_dax *dax, struct fxfs_dax_region *region,
 	else if (err != -ENOENT)
 		pr_warn("fxfs: mapping pages %lu to %lu of extent %llx:%llu, of %lu pages, %s, at %llu of the DAX window failed: %d\n",
 			from, to, region->branch, region->sequence, region->pages,
-			region->writable ? "writably" : "read-only", region->window_offset, err);
+			writable ? "writably" : "read-only", region->window_offset, err);
 out:
 	mutex_unlock(&region->lock);
 	return err;
@@ -1330,6 +1408,8 @@ static int fxfs_dax_move(struct fxfs_dax *dax, struct fxfs_dax_range *range,
 	struct fxfs_dax_region *region;
 	int err;
 
+	lockdep_assert_held_write(&range->file->sem);
+
 	if (!range->moved) {
 		range->moved = kcalloc(range->pages, sizeof(*range->moved), GFP_NOFS);
 		if (!range->moved)
@@ -1380,12 +1460,15 @@ static struct fxfs_dax_range *fxfs_dax_new_slice(struct fxfs_dax *dax, struct in
 	u64 seals;
 	int err;
 
+	lockdep_assert_held_write(&file->sem);
+
 	if (end <= start)
 		return NULL;
 	pages = (end - start) >> PAGE_SHIFT;
 	for (;;) {
 		seals = fxfs_device_seals(dax->dev);
 		count = fxfs_nofs(fxfs_dax_extents(dax->fs, inode->i_ino, start, end - start, &e, 1));
+		fxfs_dax_delay();
 		/* Holes, or more than one piece. */
 		if (count == 0 || count == -E2BIG)
 			return NULL;
@@ -1627,6 +1710,8 @@ static int fxfs_dax_fit(struct inode *inode, loff_t size)
 {
 	loff_t old = i_size_read(inode);
 
+	lockdep_assert_held_write(&inode->i_mapping->invalidate_lock);
+
 	if (size <= old)
 		return 0;
 	return fxfs_dax_drop(inode, old >> FXFS_DAX_SHIFT, (size - 1) >> FXFS_DAX_SHIFT, size);
@@ -1774,7 +1859,11 @@ static int fxfs_dax_iomap_read(struct inode *inode, loff_t pos, loff_t length, u
 	return 0;
 }
 
-/* The guest's memory of the window's page at `window_offset`. */
+/*
+ * The guest's memory of the window's page at `window_offset`. fxdax: with dax_read_lock held, as
+ * dax_direct_access needs, for as long as the caller uses the memory; a debug kernel's lockdep
+ * found faults taking it without (TASK-44.8).
+ */
 static void *fxfs_dax_window_page(struct fxfs_dax *dax, u64 window_offset)
 {
 	void *kaddr;
@@ -1895,11 +1984,13 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 		}
 		fresh |= find_next_zero_bit(range->mapped, first + pages, first) != first + pages;
 		if (fault && pages == 1 && test_bit(first, range->mapped) && !held) {
+			int id = dax_read_lock();
 			void *page = fxfs_dax_window_page(dax, fxfs_dax_page_offset(range, first));
 
-			held = page ? kmalloc(PAGE_SIZE, GFP_NOFS) : NULL;
+			held = page && !fxfs_dax_fail_held ? kmalloc(PAGE_SIZE, GFP_NOFS) : NULL;
 			if (held)
 				memcpy(held, page, PAGE_SIZE);
+			dax_read_unlock(id);
 		}
 		/* As in fxfs_dax_map_chunk: unless a seal was in progress, or began since. */
 		seals = fxfs_device_seals(dax->dev);
@@ -1908,6 +1999,7 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 		count = fxfs_nofs(fxfs_dax_map_write(dax->fs, inode->i_ino, pos, end - pos, size,
 						     fault && !held, extents,
 						     FXFS_DAX_PAGES));
+		fxfs_dax_delay();
 		if (count < 0) {
 			err = count;
 			goto out;
@@ -1938,10 +2030,12 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 	}
 	/* In the gate. The page held, now in its new block, which Fxfs left zeros. */
 	if (held) {
+		int id = dax_read_lock();
 		void *page = fxfs_dax_window_page(dax, fxfs_dax_page_offset(range, first));
 
 		if (page)
 			memcpy(page, held, PAGE_SIZE);
+		dax_read_unlock(id);
 		kfree(held);
 	}
 	kvfree(extents);
@@ -2951,6 +3045,8 @@ static void fxfs_dax_wait_page(struct inode *inode)
  */
 static int fxfs_dax_break_layouts(struct inode *inode, loff_t start)
 {
+	lockdep_assert_held_write(&inode->i_mapping->invalidate_lock);
+
 	return dax_break_layout(inode, start, LLONG_MAX, fxfs_dax_wait_page);
 }
 
@@ -2967,6 +3063,8 @@ static int fxfs_dax_break_layouts(struct inode *inode, loff_t start)
  */
 static int fxfs_dax_clean(struct inode *inode, loff_t pos, loff_t len)
 {
+	lockdep_assert_held_write(&inode->i_mapping->invalidate_lock);
+
 	return filemap_write_and_wait_range(inode->i_mapping, round_down(pos, PAGE_SIZE),
 					    round_up(pos + len, PAGE_SIZE) - 1);
 }

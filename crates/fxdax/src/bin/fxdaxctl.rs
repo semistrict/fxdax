@@ -253,6 +253,9 @@ fn stat_lines(
 }
 
 fn main() -> anyhow::Result<()> {
+    // fxdax: its threads' stacks on SIGQUIT, as an import that hung needed (TASK-98, TASK-44.13).
+    #[cfg(target_os = "linux")]
+    fxdax::stacks::on_sigquit()?;
     let args: Vec<String> = std::env::args().skip(1).collect();
     let command = Command::parse(&args)?;
     match std::env::var_os("FXDAX_EXTENTD_GRPC").filter(|socket| !socket.is_empty()) {

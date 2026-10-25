@@ -744,6 +744,7 @@ impl<B: Bucket> Fetcher<B> {
 /// `block_in_place`, which hands the runtime's other tasks to another of its threads meanwhile, as
 /// those of the runtime a host's stores share need, which their fetches and uploads run on
 /// (TASK-92.21). On an executor of another kind, or none, it runs as it is.
+#[allow(clippy::disallowed_methods, reason = "the work waits on files alone")]
 fn blocking<T>(io: impl FnOnce() -> T) -> T {
     match tokio::runtime::Handle::try_current().map(|runtime| runtime.runtime_flavor()) {
         Ok(tokio::runtime::RuntimeFlavor::MultiThread) => tokio::task::block_in_place(io),
