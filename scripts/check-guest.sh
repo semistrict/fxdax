@@ -3,7 +3,8 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-# The quick check of a batch of the guest's changes, between builds: type-checks the guest
+# The quick check of a batch of the guest's changes, between builds: matches the guest's C against
+# the semantic patches of scripts/cocci (scripts/cocci-guest.py), type-checks the guest
 # filesystem's Rust (cargo check, no code), and compiles guest/linux's C, fs/fxfs and
 # drivers/virtio_extent, object by object, in the kernel tree build-guest-kernel.sh configured
 # before, building and linking no kernel. A kernel built from the tree after puts its own series
@@ -31,6 +32,9 @@ if [[ ! -f $src/.config ]]; then
     echo "no configured kernel tree at $src: build one first (build-guest-kernel.sh $arch)" >&2
     exit 1
 fi
+
+# The guest's C against the shapes its bugs had (TASK-44.17): no match.
+python3 "$root/scripts/cocci-guest.py"
 
 # The Rust, against the sysroot a build uses, its target directory too: no code.
 rustflags=$("$root/scripts/build-guest-sysroot.sh" "$target" "$work/rust-$arch")
