@@ -277,6 +277,40 @@ fn refusal_races_changes() {
     change.join().unwrap();
 }
 
+/// TASK-102: a store the window refused, as it mapped the page read-only, its page restricted to
+/// reads; then the window makes the page writable in place, as the kernel's address space does
+/// once a pager has dirtied it: the guest's next store is made, or faults to the window, never
+/// fails. Left read-only here, it failed for ever, KVM_RUN with EFAULT, until the VM stopped (the
+/// sandbox team's 2 GiB DAX VMs, at ae54e01: a page r--s, uffd_wp set).
+fn refusal_lifted_by_protection() {
+    let ps = page_size();
+    let memory = ModelMemory::default();
+    let base = 64 * ps as usize;
+    // SAFETY: The model changes no memory.
+    let stage = unsafe {
+        UffdSecondStage::with_host(base, ps, memory.clone(), Memories::InProcess, None, usize::MAX)
+    }
+    .unwrap();
+    let telling = Arc::new(Telling { stage: stage.clone(), memory: memory.clone() });
+    let (mut dax, _) = Dax::<Arc<u8>>::new(ps, Some(telling.clone())).unwrap();
+    let window = dax.window.clone();
+    let vmo = zx::Vmo::create(ps).unwrap();
+    dax.map(0, Arc::new(0), &vmo, 0, ps, false).unwrap();
+    let guest = HostGuest { memory, stage: stage.clone(), window, base };
+    // A store faulted on the page, which the window refused, as it maps it read-only.
+    let seen = stage.seen(base);
+    stage.restrict(base, seen, libc::PROT_READ);
+    telling.protect(0, ps, Protection::ReadWrite);
+    if let Outcome::Failed = guest.access(0, Access::Write, Some(7)) {
+        panic!("a store to a page the window maps writable failed");
+    }
+}
+
+#[test]
+fn refusals_are_lifted_by_protections() {
+    Runner::new(RandomScheduler::new(1), config()).run(refusal_lifted_by_protection);
+}
+
 #[test]
 fn refusal_races_changes_by_pct() {
     Runner::new(PctScheduler::new(3, runs(RUNS)), config()).run(refusal_races_changes);
@@ -403,6 +437,16 @@ fn needs_mapping_to_give_back_withheld() {
     *RULES.lock().unwrap() = Rules { mapping_gives_back_withheld: false, ..Rules::ALL };
     fails_with("a page mapped was withheld", || {
         Runner::new(PctScheduler::new(3, runs(10 * RUNS)), config()).run(withholding_races_maps);
+    });
+}
+
+/// A refused store's page left read-only when the window makes it writable in place: its stores
+/// fail for ever (TASK-102).
+#[test]
+fn needs_protections_to_lift_restrictions() {
+    *RULES.lock().unwrap() = Rules { protection_lifts_restriction: false, ..Rules::ALL };
+    fails_with("a store to a page the window maps writable failed", || {
+        Runner::new(RandomScheduler::new(1), config()).run(refusal_lifted_by_protection);
     });
 }
 
