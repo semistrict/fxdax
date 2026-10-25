@@ -87,12 +87,6 @@ MUTANTS = [
         "a fault's page held is not copied into its new block",
         [("\t\tif (page)\n\t\t\tmemcpy(page, held, PAGE_SIZE);", "\t\t(void)page;")],
     ),
-    (
-        "evacuation_unordered",
-        "a write maps a page in its range's own space while an evacuation's MAP of it is in flight "
-        "(TASK-101)",
-        [("\twait_event(dax->wait, !atomic_read(&range->file->evacuation_mapping));\n", "")],
-    ),
 ]
 
 SUITES = "fxfs-guest-dax fxfs-guest-checks-dax fxfs-guest-pgbench-dax"

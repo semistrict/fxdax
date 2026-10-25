@@ -201,9 +201,8 @@ struct fxfs_dax_file {
 	atomic_t held;
 	/*
 	 * fxdax: whether an evacuation's MAP of pages of its ranges, read-only, in their own space, is
-	 * in flight (fxfs_dax_evacuate_work), which what a write maps there waits for: landing after
-	 * it, the evacuation's page took the place of the write's, whose stores the host refused, and
-	 * the VM stopped (TASK-101). Set under its semaphore.
+	 * in flight (fxfs_dax_evacuate_work). Set under its semaphore. [DEBUG-ev] TASK-101's
+	 * diagnosis: what a write maps there meanwhile is logged.
 	 */
 	atomic_t evacuation_mapping;
 };
@@ -651,8 +650,6 @@ static int fxfs_dax_map_extents(struct fxfs_dax *dax, struct fxfs_dax_range *ran
 	lockdep_assert_held_write(&range->file->sem);
 	if (range->region)
 		return fxfs_dax_map_slice(dax, range, extents, count);
-	/* fxdax: after an evacuation's MAP of the file's pages in flight, which this may replace. */
-	wait_event(dax->wait, !atomic_read(&range->file->evacuation_mapping));
 	fxfs_dax_prune(dax, range);
 	if (count > 1) {
 		maps = kmalloc_array(count, sizeof(*maps), GFP_NOFS);
@@ -676,6 +673,11 @@ static int fxfs_dax_map_extents(struct fxfs_dax *dax, struct fxfs_dax_range *ran
 		 * piece: the range's own space does, with the others, if it gathers them.
 		 */
 		if (err == -EXDEV || err == -EAGAIN || err == -ENOSPC || err == -ENOMEM) {
+			if (atomic_read(&range->file->evacuation_mapping))
+				pr_warn("fxfs: [DEBUG-ev] ino %llu maps %llu bytes at %llx of the DAX window, %s, of extent %llx:%llu, while an evacuation's MAP is in flight\n",
+					range->file->ino, e->len,
+					range->window_offset + (e->offset - start),
+					e->open ? "writably" : "read-only", e->branch, e->sequence);
 			if (maps) {
 				maps[nr_own] = (struct fxfs_device_map) {
 					.branch = e->branch, .sequence = e->sequence,
@@ -2632,8 +2634,13 @@ static void fxfs_dax_evacuee_place(struct fxfs_dax *dax, struct fxfs_dax_file *f
 		moved = true;
 		for (i = 0; i < run->pages; i++)
 			moved &= run->range->moved[run->page + i] == run->moved + i;
-		if (!moved)
+		if (!moved) {
+			pr_warn("fxfs: [DEBUG-ev] ino %llu: the evacuation mapped %lu pages at %llx of the DAX window, of extent %llx:%llu, which moved meanwhile\n",
+				file->ino, run->pages,
+				run->range->window_offset + ((u64)run->page << PAGE_SHIFT),
+				ev->maps[r].branch, ev->maps[r].sequence);
 			continue;
+		}
 		fxfs_dax_relocate(run->range, run->page, run->pages, NULL, 0);
 		index = (fxfs_dax_chunk_start(run->range) >> PAGE_SHIFT) + run->page;
 		if (!file->inode || !xa_find(&file->inode->i_mapping->i_pages, &index,
