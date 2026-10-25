@@ -2027,6 +2027,80 @@ mod guest {
         fs::remove_file(&name).unwrap();
     }
 
+    /// fxdax: a file's pages rewritten and fsynced, so that they move to new blocks and the
+    /// regions they were in are let go of (fxfs_dax_prune), while read(2)s of it, whose iomaps use
+    /// its ranges, copy from where its pages are; another file's pages rewritten likewise beside
+    /// it. A region let go of while an iomap still used it (prune's in-use check removed, a hand
+    /// mutant no test killed, TASK-44.19) gives its window space to another file's extent, whose
+    /// bytes the read then returns. The file's bytes are odd, the other's even: a read finds odd
+    /// bytes alone.
+    fn test_prune_while_read() {
+        use std::os::unix::fs::FileExt;
+        const PAGE: usize = 4096;
+        const PAGES: usize = 256;
+        let (odd, even) = (path("prune-odd"), path("prune-even"));
+        let create = |name: &str, byte: u8| {
+            let file = fs::OpenOptions::new()
+                .create(true)
+                .truncate(true)
+                .read(true)
+                .write(true)
+                .open(name)
+                .unwrap();
+            file.write_all_at(&vec![byte; PAGE * PAGES], 0).unwrap();
+            file.sync_all().unwrap();
+            file
+        };
+        let (odd_file, even_file) = (create(&odd, 1), create(&even, 2));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+        std::thread::scope(|scope| {
+            // Each file's pages written again, a page at a time, fsynced now and then.
+            for (file, first) in [(&odd_file, 1u8), (&even_file, 2u8)] {
+                scope.spawn(move || {
+                    let mut n = 0usize;
+                    while std::time::Instant::now() < deadline {
+                        let page = (n * 37) % PAGES;
+                        let byte = first.wrapping_add(2 * (n % 100) as u8);
+                        file.write_all_at(&[byte; PAGE], (page * PAGE) as u64).unwrap();
+                        if n % 8 == 0 {
+                            file.sync_data().unwrap();
+                        }
+                        n += 1;
+                    }
+                });
+            }
+            // read(2)s of the odd file, which find its bytes alone.
+            let readers: Vec<_> = (0..2)
+                .map(|reader| {
+                    let file = &odd_file;
+                    scope.spawn(move || {
+                        let mut buf = vec![0u8; PAGE * 16];
+                        let mut n = reader;
+                        while std::time::Instant::now() < deadline {
+                            let at = (n * 16) % PAGES * PAGE;
+                            let len = buf.len().min(PAGE * PAGES - at);
+                            file.read_exact_at(&mut buf[..len], at as u64).unwrap();
+                            if let Some(i) = buf[..len].iter().position(|byte| byte % 2 == 0) {
+                                return Err(format!(
+                                    "byte {:#x} of the odd file read {:#x}, not the file's",
+                                    at + i,
+                                    buf[i]
+                                ));
+                            }
+                            n += 1;
+                        }
+                        Ok(())
+                    })
+                })
+                .collect();
+            for reader in readers {
+                assert_eq!(reader.join().unwrap(), Ok(()));
+            }
+        });
+        fs::remove_file(&odd).unwrap();
+        fs::remove_file(&even).unwrap();
+    }
+
     /// fxdax: stores through a mapping of a file, write(2)s into its holes, and other files made,
     /// written and removed meanwhile, which make the journal compact, for a few seconds: a write
     /// in the gate waited for a fault's DAX entry, the fault for Fxfs, Fxfs for compaction, and
@@ -2263,6 +2337,7 @@ mod guest {
                 tests.push(("faults_writes_compaction", &test_faults_writes_compaction));
                 tests.push(("faults_unheld", &test_faults_unheld));
                 tests.push(("append_while_mapped", &test_append_while_mapped));
+                tests.push(("prune_while_read", &test_prune_while_read));
             }
             // Files on DAX are in no page cache.
             if !dax {
