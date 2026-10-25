@@ -3,9 +3,10 @@ id: TASK-79.25
 title: >-
   A guest can abort its VMM with a chain whose writable lengths sum past
   u32::MAX
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-21 20:58'
+updated_date: '2026-10-25 04:44'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -29,8 +30,8 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity medium): docs/review
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A test reproduces the failure on the code before the fix
-- [ ] #2 Fixed, and the test passes on macOS and on Linux (GCE)
+- [x] #1 A test reproduces the failure on the code before the fix
+- [x] #2 Fixed, and the test passes on macOS and on Linux (GCE)
 <!-- AC:END -->
 
 ## Definition of Done
@@ -39,3 +40,17 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity medium): docs/review
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Fix (vendor/firecracker, uncommitted): Buffers::new refuses a chain whose writable lengths sum past u32::MAX (BuffersError::TooLong), before handle's u32 conversion could abort the VMM. Test chains_writing_past_u32_are_refused: three aliased 0x6000_0000-byte writable descriptors. GCE r93 runs it green, then red with the bound taken out.
+
+GCE r93: chains_writing_past_u32_are_refused green, red with the bound taken out; r97: all 9 extent device tests green with FXDAX_EXTENTD_REMOTE and FXDAX_EXTENTD_TOKEN set. Fork commit 01cbb2fe3 pushed to semistrict/firecracker fxdax-v1.16.1.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Buffers::new refuses descriptor chains whose writable lengths sum past u32::MAX (BuffersError::TooLong) instead of handle aborting the VMM. Test proven red without the bound; device tests green on Linux.
+<!-- SECTION:FINAL_SUMMARY:END -->

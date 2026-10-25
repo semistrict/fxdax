@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-24 03:39'
+updated_date: '2026-10-25 04:44'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -32,3 +33,9 @@ Found in round 2b. In vendor/firecracker, `cargo test -p vmm --features fxdax --
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+GCE r97: the 9 extent device tests pass with FXDAX_EXTENTD_REMOTE=memory:///vmm FXDAX_EXTENTD_TOKEN=1 (n=1 is not it). Still no script runs them.
+<!-- SECTION:NOTES:END -->
