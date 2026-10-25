@@ -2626,9 +2626,15 @@ fn childs_opened_during_their_forks_wait_for_them() {
     };
     let key = super::stores::store_key(&child);
     let opened_now = || opened.load(std::sync::atomic::Ordering::Relaxed);
-    while !super::stores::open_paths().is_waited_for(&key) && !opened_now() {
-        assert!(std::time::Instant::now() < deadline, "the child neither waited nor opened");
+    let waiting = || super::stores::open_paths().is_waited_for(&key);
+    while !waiting() && !opened_now() && !opening.is_finished() {
+        let late = std::time::Instant::now() >= deadline;
+        assert!(!late, "the child's opening neither waited nor ended");
         std::thread::yield_now();
+    }
+    if opening.is_finished() {
+        let ended = opening.join().unwrap().map(drop);
+        panic!("the child's opening ended while its fork was being made: {ended:?}");
     }
     assert!(!opened_now(), "the child opened while its fork was being made");
     gated.hold_writes(None);
