@@ -91,30 +91,33 @@ pub struct FxExtent {
 impl FxExtent {
     /// An extent of `size` bytes, read from `source` by `pager` into buffers from `allocator`,
     /// identified as `id`. The buffers must be trusted (`BufferSource::new_trusted`), as `source`
-    /// reads into them.
+    /// reads into them. fxdax: fails if its VMO can't be made, as when the kernel's handles run
+    /// out (TASK-104), which panicked and poisoned the store that asked: its VMO is made first,
+    /// and the pager's receiver of its page requests set to it once it is, before anything has
+    /// the VMO to page in.
     pub fn new(
         pager: Arc<Pager>,
         allocator: Arc<BufferAllocator>,
         source: Box<dyn ExtentSource>,
         size: u64,
         id: u64,
-    ) -> Arc<Self> {
+    ) -> Result<Arc<Self>, Error> {
         assert!(allocator.buffer_source().is_trusted(), "an extent's buffers are shared");
-        Arc::new_cyclic(|weak| {
-            let (vmo, pager_packet_receiver_registration) =
-                pager.create_vmo(weak.clone(), size, zx::VmoOptions::empty()).unwrap();
-            Self {
-                pager: pager.clone(),
-                allocator,
-                source,
-                vmo,
-                open_count: AtomicUsize::new(0),
-                size,
-                id,
-                reading: Reading::default(),
-                pager_packet_receiver_registration,
-            }
-        })
+        let (vmo, pager_packet_receiver_registration) =
+            pager.create_vmo(std::sync::Weak::new(), size, zx::VmoOptions::empty())?;
+        let extent = Arc::new(Self {
+            pager: pager.clone(),
+            allocator,
+            source,
+            vmo,
+            open_count: AtomicUsize::new(0),
+            size,
+            id,
+            reading: Reading::default(),
+            pager_packet_receiver_registration,
+        });
+        drop(extent.pager_packet_receiver_registration.set_receiver(&extent));
+        Ok(extent)
     }
 
     /// The extent's VMO, whose pages the pager supplies as they are read or mapped.

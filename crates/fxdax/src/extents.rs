@@ -1108,7 +1108,7 @@ impl ExtentStore {
         if bytes.is_empty() {
             return Ok(true);
         }
-        let cached = self.cached(extent, len);
+        let cached = self.cached(extent, len)?;
         match cached.vmo().read(bytes, offset) {
             Ok(()) => Ok(true),
             // Freed meanwhile, or its page-in failed: as the store says.
@@ -1419,7 +1419,7 @@ impl ExtentStore {
     /// window maps them, from their sealed pages, which their memory becomes.
     fn seal_mapped(&self, dax: &mut Dax<Mapped>, sealed: &[(ExtentId, OpenExtent)]) -> Result<()> {
         for &(extent, ref extent_open) in sealed {
-            let sealed = self.cached(extent, extent_open.len);
+            let sealed = self.cached(extent, extent_open.len)?;
             // The window maps the sealed extent first, so that nothing reads its memory once its
             // pages move: a read meanwhile pages in from the store, which holds them.
             let pages = extent_open.len.next_multiple_of(page_size());
@@ -1595,7 +1595,7 @@ impl ExtentStore {
         if !offset.is_multiple_of(page_size()) {
             return Err(Errno::EINVAL);
         }
-        let cached = self.cached(extent, extent_len);
+        let cached = self.cached(extent, extent_len)?;
         let mut dax = self.dax.lock().unwrap();
         let dax = dax.as_mut().ok_or(Errno::ENOSYS)?;
         let within = end.min(extent_len.next_multiple_of(page_size())).max(offset);
@@ -1776,7 +1776,7 @@ impl ExtentStore {
 
     /// The sealed `extent`, of `len` bytes, in the cache: read from this store if no other store
     /// has it cached.
-    fn cached(&self, extent: ExtentId, len: u64) -> Arc<FxExtent> {
+    fn cached(&self, extent: ExtentId, len: u64) -> Result<Arc<FxExtent>> {
         let remote = self.uploader().map(crate::remote::Remote::fetcher);
         let recorder = self.profiling.as_ref().map(|(recorder, _)| recorder.clone());
         cached(&self.store, self.arenas.of(extent), remote, recorder, extent, len)
@@ -1868,15 +1868,22 @@ fn cached(
     recorder: Option<Arc<Recorder>>,
     extent: ExtentId,
     len: u64,
-) -> Arc<FxExtent> {
+) -> Result<Arc<FxExtent>> {
     let cache = extent_cache();
     let (cached, sealing) = {
         let mut extents = cache.extents.lock().unwrap();
-        let cached = extents.entry((arena, extent)).or_insert_with(|| {
-            let source = StoredExtent::new(store.clone(), extent.into(), remote, recorder);
-            Cached {
-                // fxdax: its pages of `arena`, as the pager supplies them.
-                extent: with_arena(arena, || {
+        let key = (arena, extent);
+        if !extents.contains_key(&key) {
+            // fxdax: its VMO made, or, the kernel's handles run out (TASK-104), the extents
+            // nothing else holds let go of, half of them, and made once more.
+            let make = || {
+                let source = StoredExtent::new(
+                    store.clone(),
+                    extent.into(),
+                    remote.clone(),
+                    recorder.clone(),
+                );
+                with_arena(arena, || {
                     FxExtent::new(
                         cache.pager.clone(),
                         cache.allocator(arena),
@@ -1884,12 +1891,29 @@ fn cached(
                         len,
                         extent.sequence,
                     )
-                }),
+                })
+            };
+            let made = match make() {
+                Ok(made) => made,
+                Err(err) => {
+                    log::warn!("fxdax: caching {extent:?}: {err:#}; letting go of idle extents");
+                    let half = extents.len() / 2;
+                    drop(let_go_least_used(&mut extents, half.max(1)));
+                    make().map_err(|err| {
+                        log::error!("fxdax: caching {extent:?}: {err:#}");
+                        Errno::ENOMEM
+                    })?
+                }
+            };
+            let cached = Cached {
+                extent: made,
                 store: store.clone(),
                 sealing: None,
                 used: AtomicU64::new(0),
-            }
-        });
+            };
+            extents.insert(key, cached);
+        }
+        let cached = extents.get(&key).expect("cached just now");
         cached.used.store(CACHE_CLOCK.fetch_add(1, Ordering::Relaxed) + 1, Ordering::Relaxed);
         let shared = !Arc::ptr_eq(&cached.store, store);
         let found = (cached.extent.clone(), cached.sealing.clone().filter(|_| shared));
@@ -1905,7 +1929,7 @@ fn cached(
     if let Some(sealing) = sealing {
         sealing.wait();
     }
-    cached
+    Ok(cached)
 }
 
 /// fxdax: takes out of the cache `extents` those asked for longest ago that nothing else holds,
@@ -1942,6 +1966,7 @@ fn replay(store: Arc<Store<HostDir>>, arenas: Arenas, units: Vec<profile::Unit>)
                     continue;
                 }
                 let extent = cached(&store, arenas.of(unit.extent), None, None, unit.extent, len);
+                let Ok(extent) = extent else { continue };
                 match extent.vmo().read(&mut [0; 1], unit.offset) {
                     Ok(()) => stats::add(Counter::Prefetches, 1),
                     Err(status) => log::debug!(
@@ -3254,7 +3279,7 @@ mod tests {
         store.map(id(&store, 1), 0, ps, 0, false).unwrap();
         for sequence in 2..=20 {
             let extent = id(&store, sequence);
-            drop(super::cached(&store.store, ArenaId::DEFAULT, None, None, extent, ps));
+            drop(super::cached(&store.store, ArenaId::DEFAULT, None, None, extent, ps).unwrap());
         }
         let kept: Vec<u64> = {
             let extents = extent_cache().extents.lock().unwrap();
@@ -3264,6 +3289,35 @@ mod tests {
         };
         assert_eq!(kept, [1, 14, 15, 16, 17, 18, 19, 20]);
         drop(window);
+    }
+
+    /// TASK-104: with the kernel's handles run out, caching an extent fails with ENOMEM, the cache
+    /// having let go of what it could and tried again, rather than panicking in the request that
+    /// asked, which poisoned its store; once handles are free, it caches.
+    #[test]
+    fn caching_fails_when_handles_run_out() {
+        let (store, _dir) = store(1 << 20);
+        let ps = page_size();
+        for extent in [1, 2] {
+            write(&store, id(&store, extent), 0, &pattern(extent as u8, ps as usize)).unwrap();
+        }
+        store.commit(None).unwrap();
+        // An extent in use before the handles run out, as a process's are: what the first one
+        // cached makes (the pager, its port, the arena's buffers) made, and no extent cached that
+        // the cache could let go of.
+        let in_use = super::cached(&store.store, ArenaId::DEFAULT, None, None, id(&store, 2), ps);
+        let in_use = in_use.unwrap();
+        let mut held = Vec::new();
+        while let Ok(vmo) = zx::Vmo::create(0) {
+            held.push(vmo);
+        }
+        let cached = |store: &ExtentStore| {
+            super::cached(&store.store, ArenaId::DEFAULT, None, None, id(store, 1), ps).map(drop)
+        };
+        assert_eq!(cached(&store), Err(Errno::ENOMEM));
+        drop(held);
+        assert_eq!(cached(&store), Ok(()));
+        drop(in_use);
     }
 
     /// The process's cached sealed `extent`, if it is cached.
@@ -3393,7 +3447,8 @@ mod tests {
             Box::new(HeldSource(held.clone())),
             readers as u64 * READ_AHEAD,
             u64::MAX,
-        );
+        )
+        .unwrap();
         let faults: Vec<_> = (0..readers as u64)
             .map(|chunk| {
                 let extent = extent.clone();
