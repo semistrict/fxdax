@@ -87,6 +87,14 @@ MUTANTS = [
         "a fault's page held is not copied into its new block",
         [("\t\tif (page)\n\t\t\tmemcpy(page, held, PAGE_SIZE);", "\t\t(void)page;")],
     ),
+    (
+        "evacuation_unlocked",
+        "an evacuation maps a file's pages after letting go of its semaphore, which a write may map "
+        "anew meanwhile (TASK-101)",
+        [("\tfxfs_dax_evacuee_gather(file, ev);\n\tfxfs_dax_delay();\n",
+          "\tfxfs_dax_evacuee_gather(file, ev);\n\tup_read(&file->sem);\n\tfxfs_dax_delay();\n"),
+         ("\t\t}\n\t}\n\tup_read(&file->sem);\n}\n", "\t\t}\n\t}\n}\n")],
+    ),
 ]
 
 SUITES = "fxfs-guest-dax fxfs-guest-checks-dax fxfs-guest-pgbench-dax"
