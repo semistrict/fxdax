@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-25 04:44'
+updated_date: '2026-10-25 18:58'
 labels:
   - bug
 dependencies: []
@@ -25,3 +26,9 @@ GCE r94 workspace run (tree at 74d3dd079's ancestors, rebased on 0ddfa011f): SIG
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+The abort's log line carries no cause: every stderr logger dropped key-values (TASK-107), and fxextent logs the error as one (error:?). With TASK-107 the next occurrence names it. Suspects meanwhile: commit_range of a page-in buffer failing ENOMEM under the tenant's 2-chunk limit when nothing is evictable yet (the extents just written and committed, or readahead buffers in flight).
+<!-- SECTION:NOTES:END -->

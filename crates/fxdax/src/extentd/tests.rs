@@ -13,29 +13,10 @@ use std::thread::JoinHandle;
 
 const BLOCK: usize = ExtentStore::BLOCK_SIZE as usize;
 
-/// The daemon's log, on standard error, which nextest shows of a test that fails.
-struct Stderr;
-
-impl log::Log for Stderr {
-    fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
-        metadata.level() <= log::Level::Info
-    }
-
-    fn log(&self, record: &log::Record<'_>) {
-        if self.enabled(record.metadata()) {
-            eprintln!("{} {}: {}", record.level(), record.target(), record.args());
-        }
-    }
-
-    fn flush(&self) {}
-}
-
 /// Makes this process a host of the multi-node system, as the daemon's must be: its stores'
 /// branches in a bucket in its memory, as of placement 1; its log on standard error.
 fn host() {
-    if log::set_logger(&Stderr).is_ok() {
-        log::set_max_level(log::LevelFilter::Info);
-    }
+    let _ = super::logging::to_stderr();
     // SAFETY: nextest runs each test in a process of its own, whose other threads don't read the
     // environment yet.
     unsafe {

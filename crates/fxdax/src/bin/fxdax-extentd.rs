@@ -48,29 +48,10 @@
 //! what the stores' followers are, what serving the stores cost it (`fxdax::stats::Stats`), and
 //! the VM processes' requests it served, by kind, rewritten as they change.
 
-/// Logs to standard error: what goes wrong serving a VM process.
-#[cfg(target_os = "linux")]
-struct Stderr;
-
-#[cfg(target_os = "linux")]
-impl log::Log for Stderr {
-    fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
-        metadata.level() <= log::Level::Info
-    }
-
-    fn log(&self, record: &log::Record<'_>) {
-        if self.enabled(record.metadata()) {
-            eprintln!("{} {}: {}", record.level(), record.target(), record.args());
-        }
-    }
-
-    fn flush(&self) {}
-}
-
 #[cfg(target_os = "linux")]
 fn main() -> anyhow::Result<()> {
     use anyhow::Context;
-    log::set_logger(&Stderr).map(|()| log::set_max_level(log::LevelFilter::Info))?;
+    fxdax::extentd::logging::to_stderr()?;
     // fxdax: the failpoints FAILPOINTS sets, in a daemon built with them (TASK-44.10).
     let _failpoints = fail::FailScenario::setup();
     // fxdax: before any thread is started, which SIGQUIT would end otherwise (TASK-44.13).

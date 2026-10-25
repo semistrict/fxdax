@@ -67,17 +67,38 @@ impl log::Log for StderrLogger {
 
     fn log(&self, record: &log::Record<'_>) {
         if self.enabled(record.metadata()) {
-            let _ = writeln!(
-                std::io::stderr(),
-                "[{}] {}: {}",
-                self.tags,
-                record.level(),
-                record.args()
-            );
+            let _ = writeln!(std::io::stderr(), "{}", Line { tags: &self.tags, record });
         }
     }
 
     fn flush(&self) {}
+}
+
+/// A record's line: its tags, level and message, then each key-value, `key=value`, as the
+/// system log would keep them (`log::error!(error:?; "...")` says why there alone).
+struct Line<'a> {
+    tags: &'a str,
+    record: &'a log::Record<'a>,
+}
+
+impl std::fmt::Display for Line<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "[{}] {}: {}", self.tags, self.record.level(), self.record.args())?;
+        self.record.key_values().visit(&mut KeyValues(f)).map_err(|_| std::fmt::Error)
+    }
+}
+
+/// Writes the key-values it visits, each after a space.
+struct KeyValues<'a, 'b>(&'a mut std::fmt::Formatter<'b>);
+
+impl<'kvs> log::kv::VisitSource<'kvs> for KeyValues<'_, '_> {
+    fn visit_pair(
+        &mut self,
+        key: log::kv::Key<'kvs>,
+        value: log::kv::Value<'kvs>,
+    ) -> Result<(), log::kv::Error> {
+        write!(self.0, " {key}={value}").map_err(log::kv::Error::from)
+    }
 }
 
 /// Install the stderr logger. Later calls only adjust the level, since a
@@ -92,4 +113,23 @@ pub fn initialize(options: PublishOptions<'_>) -> Result<(), PublishError> {
 /// Like [`initialize`]; there is nothing asynchronous to wait for here.
 pub fn initialize_sync(options: PublishOptions<'_>) {
     let _ = initialize(options);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Line;
+
+    #[test]
+    fn key_values_follow_the_message() {
+        let pairs = [("range", log::kv::Value::from_debug(&(0..4096u64)))];
+        let record = log::Record::builder()
+            .level(log::Level::Error)
+            .args(format_args!("Failed to load an extent's range"))
+            .key_values(&pairs)
+            .build();
+        assert_eq!(
+            Line { tags: "fxfs", record: &record }.to_string(),
+            "[fxfs] ERROR: Failed to load an extent's range range=0..4096"
+        );
+    }
 }
