@@ -15,7 +15,8 @@ on is killed; one they pass, missed, needs a test, or is recorded here as equiva
     scripts/guest-mutants-gce.py HOST ZONE RESULTS [MUTANT...]
 
 runs every mutant (or those named) on HOST, made with scripts/test-gce.sh create, writing each
-run's results under RESULTS, and prints each mutant's fate.
+run's results under RESULTS, and prints each mutant's fate. FXDAX_E2E_TEST names the suites, the
+DAX ones by default; the other FXDAX_* settings reach the host as scripts/test-gce.sh says.
 """
 
 import os
@@ -86,6 +87,16 @@ MUTANTS = [
         "a fault's page held is not copied into its new block",
         [("\t\tif (page)\n\t\t\tmemcpy(page, held, PAGE_SIZE);", "\t\t(void)page;")],
     ),
+    (
+        "evacuation_unlocked",
+        "an evacuation maps a file's pages after letting go of its semaphore, which a write may map "
+        "anew meanwhile (TASK-101)",
+        [("\tfxfs_dax_evacuee_gather(file, &ev);\n\tfxfs_dax_evacuee_map(dax, file, &ev);\n",
+          "\tfxfs_dax_evacuee_gather(file, &ev);\n\tup_write(&file->sem);\n"
+          "\tfxfs_dax_evacuee_map(dax, file, &ev);\n\tdown_write(&file->sem);\n"),
+         ("\tlockdep_assert_held_write(&file->sem);\n\tif (ev->count) {\n\t\tfxfs_dax_delay();",
+          "\tif (ev->count) {\n\t\tfxfs_dax_delay();")],
+    ),
 ]
 
 SUITES = "fxfs-guest-dax fxfs-guest-checks-dax fxfs-guest-pgbench-dax"
@@ -111,7 +122,8 @@ def run(host, zone, results, name, edits):
                             "vendor/firecracker"], check=True)
             mutate(tree, edits)
             env = dict(os.environ, FXDAX_GCE_ZONE=zone, FXDAX_WORKSPACE_TESTS="0",
-                       FXDAX_GUEST_KERNEL_BUILD="release", FXDAX_E2E_TEST=SUITES)
+                       FXDAX_GUEST_KERNEL_BUILD="release",
+                       FXDAX_E2E_TEST=os.environ.get("FXDAX_E2E_TEST", SUITES))
             out = Path(results) / name
             log = open(Path(results) / f"{name}.log", "w")
             ran = subprocess.run([tree / "scripts/test-gce.sh", "run", host, out], env=env,
