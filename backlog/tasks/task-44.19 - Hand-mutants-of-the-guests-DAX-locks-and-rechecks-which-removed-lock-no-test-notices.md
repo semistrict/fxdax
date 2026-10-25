@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-24 21:31'
-updated_date: '2026-10-25 01:28'
+updated_date: '2026-10-25 02:18'
 labels: []
 dependencies: []
 parent_task_id: TASK-44
@@ -37,4 +37,6 @@ Before TASK-99's fix, taking region->lock out of fxfs_dax_region_open would have
 
 <!-- SECTION:NOTES:BEGIN -->
 GCE r83 (kernel built per mutant from HEAD): killed region_open_unlocked, map_chunk_no_seals_recheck, new_slice_no_seals_recheck, write_no_seals_recheck, seal_keeps_writable, relocate_unmarked, cow_not_shared, held_not_copied_back; MISSED prune_in_use (fxfs_dax_prune without its users == 1 check: a range lets go of regions while another iomap uses it), which needs a test that kills it (AC2).
+
+GCE r88: prune_while_read green x3 on HEAD (pushed, da13b9094), but MISSED the prune_in_use mutant: AC2 still open.
 <!-- SECTION:NOTES:END -->

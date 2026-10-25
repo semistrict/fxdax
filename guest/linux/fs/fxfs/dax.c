@@ -199,6 +199,13 @@ struct fxfs_dax_file {
 	 * Changed under its semaphore.
 	 */
 	atomic_t held;
+	/*
+	 * fxdax: whether an evacuation's MAP of pages of its ranges, read-only, in their own space, is
+	 * in flight (fxfs_dax_evacuate_work), which what a write maps there waits for: landing after
+	 * it, the evacuation's page took the place of the write's, whose stores the host refused, and
+	 * the VM stopped (TASK-101). Set under its semaphore.
+	 */
+	atomic_t evacuation_mapping;
 };
 
 /* A range of the window. */
@@ -642,6 +649,8 @@ static int fxfs_dax_map_extents(struct fxfs_dax *dax, struct fxfs_dax_range *ran
 	lockdep_assert_held_write(&range->file->sem);
 	if (range->region)
 		return fxfs_dax_map_slice(dax, range, extents, count);
+	/* fxdax: after an evacuation's MAP of the file's pages in flight, which this may replace. */
+	wait_event(dax->wait, !atomic_read(&range->file->evacuation_mapping));
 	fxfs_dax_prune(dax, range);
 	if (count > 1) {
 		maps = kmalloc_array(count, sizeof(*maps), GFP_NOFS);
@@ -1237,6 +1246,26 @@ static void fxfs_dax_region_open(struct fxfs_dax *dax, struct fxfs_dax_region *r
 }
 
 /*
+ * fxdax: warns unless pages up to `to` of `region`, which a MAP mapped, are still the region's: a
+ * seal shrinks a writable region to what it maps, giving the rest of its space back, which the
+ * next region may take at once (fxfs_dax_restage_work); a MAP past that maps another region's
+ * window pages, whose stores the host then refuses.
+ */
+static void fxfs_dax_assert_mapped_within(struct fxfs_dax *dax, struct fxfs_dax_region *region,
+					  unsigned long to, bool writable, enum fxfs_dax_why why)
+{
+	unsigned long pages;
+
+	spin_lock(&dax->regions_lock);
+	pages = region->pages;
+	spin_unlock(&dax->regions_lock);
+	WARN(to > pages,
+	     "fxfs: mapped pages to %lu of extent %llx:%llu, %s (%s), past its region's %lu pages at %llu of the DAX window\n",
+	     to, region->branch, region->sequence, writable ? "writably" : "read-only",
+	     fxfs_dax_whys[why], pages, region->window_offset);
+}
+
+/*
  * Maps `region`'s extent as far as page `end` at least, in the gate, where the device has sealed
  * the extents the filesystem has: read-only, all of it if it can; or, while the extent is open,
  * writably, and further, doubling what is mapped by up to FXFS_DAX_REGION_STEP pages, from
@@ -1286,9 +1315,10 @@ static int fxfs_dax_map_to(struct fxfs_dax *dax, struct fxfs_dax_region *region,
 	 * holes, which the region must not claim as mapped, or a slice of it would hand the guest
 	 * window pages the host never mapped.
 	 */
-	if (!err)
+	if (!err) {
+		fxfs_dax_assert_mapped_within(dax, region, to, writable, why);
 		WRITE_ONCE(region->mapped, to);
-	else if (err != -ENOENT)
+	} else if (err != -ENOENT)
 		pr_warn("fxfs: mapping pages %lu to %lu of extent %llx:%llu, of %lu pages, %s, at %llu of the DAX window failed: %d\n",
 			from, to, region->branch, region->sequence, region->pages,
 			writable ? "writably" : "read-only", region->window_offset, err);
@@ -2516,6 +2546,7 @@ static void fxfs_dax_evacuee_gather(struct fxfs_dax_file *file, struct fxfs_dax_
 				atomic_inc(&file->held);
 			}
 			held = true;
+			atomic_set(&file->evacuation_mapping, 1);
 		}
 	}
 out:
@@ -2608,6 +2639,7 @@ static void fxfs_dax_evacuate_work(struct work_struct *work)
 	mutex_unlock(&dax->writable_lock);
 	list_for_each_entry(file, &files, evacuating)
 		fxfs_dax_evacuee_gather(file, &ev);
+	fxfs_dax_delay();
 	if (ev.count) {
 		err = fxfs_nofs(fxfs_device_map_many(dax->dev, ev.maps, ev.count));
 		for (r = 0; r < ev.count; r++) {
@@ -2623,6 +2655,10 @@ static void fxfs_dax_evacuate_work(struct work_struct *work)
 			atomic64_add(ev.maps[r].len, &dax->map_bytes[FXFS_DAX_EVACUATE]);
 		}
 	}
+	/* The writes waiting for the MAPs (fxfs_dax_map_extents). */
+	list_for_each_entry(file, &files, evacuating)
+		atomic_set(&file->evacuation_mapping, 0);
+	wake_up_all(&dax->wait);
 	list_for_each_entry(file, &files, evacuating)
 		fxfs_dax_evacuee_place(dax, file, &ev);
 	list_for_each_entry_safe(file, next, &files, evacuating) {

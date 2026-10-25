@@ -15,7 +15,8 @@ on is killed; one they pass, missed, needs a test, or is recorded here as equiva
     scripts/guest-mutants-gce.py HOST ZONE RESULTS [MUTANT...]
 
 runs every mutant (or those named) on HOST, made with scripts/test-gce.sh create, writing each
-run's results under RESULTS, and prints each mutant's fate.
+run's results under RESULTS, and prints each mutant's fate. FXDAX_E2E_TEST names the suites, the
+DAX ones by default; the other FXDAX_* settings reach the host as scripts/test-gce.sh says.
 """
 
 import os
@@ -86,6 +87,12 @@ MUTANTS = [
         "a fault's page held is not copied into its new block",
         [("\t\tif (page)\n\t\t\tmemcpy(page, held, PAGE_SIZE);", "\t\t(void)page;")],
     ),
+    (
+        "evacuation_unordered",
+        "a write maps a page in its range's own space while an evacuation's MAP of it is in flight "
+        "(TASK-101)",
+        [("\twait_event(dax->wait, !atomic_read(&range->file->evacuation_mapping));\n", "")],
+    ),
 ]
 
 SUITES = "fxfs-guest-dax fxfs-guest-checks-dax fxfs-guest-pgbench-dax"
@@ -111,7 +118,8 @@ def run(host, zone, results, name, edits):
                             "vendor/firecracker"], check=True)
             mutate(tree, edits)
             env = dict(os.environ, FXDAX_GCE_ZONE=zone, FXDAX_WORKSPACE_TESTS="0",
-                       FXDAX_GUEST_KERNEL_BUILD="release", FXDAX_E2E_TEST=SUITES)
+                       FXDAX_GUEST_KERNEL_BUILD="release",
+                       FXDAX_E2E_TEST=os.environ.get("FXDAX_E2E_TEST", SUITES))
             out = Path(results) / name
             log = open(Path(results) / f"{name}.log", "w")
             ran = subprocess.run([tree / "scripts/test-gce.sh", "run", host, out], env=env,

@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-25 00:06'
+updated_date: '2026-10-25 02:18'
 labels:
   - bug
 dependencies: []
@@ -25,3 +26,9 @@ Found by TASK-44.10's failpoints (GCE r82, kernel b8): FXDAX_FAILPOINTS='extentd
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+GCE r89 (x10, same failpoints, kernel b9): round 4 of 4 failed in log_writes, Bad address 1 s after the 13th refusal at 0x318000. The page's history: MAP of staging extent ...916 from 0x0 writably (RESTAGE-shaped, 1 page) at 0x318000, then 0.15 ms later a MAP of the sealed ...913 from 0x8000 read-only at 0x318000: 913's region (window 0x310000, 9 pages, 8 mapped) reached into space 916's region had taken. r87 (pgbench-dax, 10 VMs on one daemon, no failpoints) stopped the same way: MAP ...735 writably 0x1c0000 bytes at 0x20800000, then MAP ...721 from 0xf8000 read-only at 0x20800000. Hypothesis: a read-only fxfs_dax_map_to, outside the gate, reads region->writable false and region->pages before fxfs_dax_seal shrinks it (seal changes both under regions_lock, map_to reads them under region->lock only), and maps the tail the seal gave back, which restage took. fxfs_dax_assert_mapped_within (WARN after a MAP past the region's pages) added; r90 checks it (x10 with failpoints, and 10-VM pgbench).
+<!-- SECTION:NOTES:END -->
