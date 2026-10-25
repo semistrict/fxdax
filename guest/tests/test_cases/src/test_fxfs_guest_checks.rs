@@ -1740,8 +1740,13 @@ mod guest {
         }
         let after = stats();
         let regions = after["window_regions"] as i64 - before["window_regions"] as i64;
-        assert!(regions <= 32, "{regions} regions more after {ROUNDS} fsyncs: {after:?}");
         let evacuated = after["window_maps_evacuate"] - before["window_maps_evacuate"];
+        let pruned = after["window_regions_pruned"] - before["window_regions_pruned"];
+        assert!(
+            regions <= 32,
+            "{regions} regions more after {ROUNDS} fsyncs, {evacuated} runs evacuated, {pruned} \
+             regions pruned: {after:?}"
+        );
         assert!(evacuated > 0, "no pages evacuated: {after:?}");
         drop(file);
         evict(&name);
