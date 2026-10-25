@@ -813,7 +813,9 @@ static int fxfs_dax_map_chunk(struct fxfs_dax *dax, struct inode *inode,
 static void fxfs_dax_released(struct fxfs_dax *dax)
 {
 	atomic_long_inc(&dax->released);
-	wake_up_all(&dax->wait);
+	/* Pairs the condition update with a waiter preparing to sleep before testing the queue. */
+	if (wq_has_sleeper(&dax->wait))
+		wake_up_all(&dax->wait);
 }
 
 /* Waits up to `ms` milliseconds for a range to be freed, or its last user done, since `seen`. */
@@ -1583,6 +1585,16 @@ static unsigned long fxfs_dax_range_capacity(pgoff_t chunk, loff_t size)
 		     roundup_pow_of_two(fxfs_dax_range_pages(chunk, size)));
 }
 
+static void fxfs_dax_use_range(struct fxfs_dax *dax, struct fxfs_dax_range *range)
+{
+	/* Its user keeps it linked and alive. Already last, this access cannot make it newer. */
+	if (READ_ONCE(range->list.next) == &dax->used)
+		return;
+	spin_lock(&dax->lock);
+	list_move_tail(&range->list, &dax->used);
+	spin_unlock(&dax->lock);
+}
+
 /*
  * The range mapping `inode`'s chunk `chunk`, mapped first if it isn't, for a file at least `size`
  * bytes long, kept for an iomap: a slice of its extent's region if it can be, or a range of its
@@ -1649,9 +1661,7 @@ static struct fxfs_dax_range *fxfs_dax_get_range(struct inode *inode, pgoff_t ch
 		return ERR_PTR(err);
 	range = new;
 used:
-	spin_lock(&dax->lock);
-	list_move_tail(&range->list, &dax->used);
-	spin_unlock(&dax->lock);
+	fxfs_dax_use_range(dax, range);
 	return range;
 }
 
@@ -1864,20 +1874,33 @@ static int fxfs_dax_iomap_read(struct inode *inode, loff_t pos, loff_t length, u
 		fxfs_dax_hole(iomap, length);
 		return 0;
 	}
-	range = fxfs_dax_get_range(inode, pos >> FXFS_DAX_SHIFT, 0, flags & IOMAP_FAULT);
-	if (IS_ERR(range))
-		return PTR_ERR(range);
+	/* A cache hit keeps the lookup's read lock through its iomap, rather than taking it twice. */
+	down_read(&file->sem);
+	range = xa_load(&file->ranges, pos >> FXFS_DAX_SHIFT);
+	if (range) {
+		atomic_inc(&range->users);
+		fxfs_dax_use_range(dax, range);
+	} else {
+		up_read(&file->sem);
+		range = fxfs_dax_get_range(inode, pos >> FXFS_DAX_SHIFT, 0, flags & IOMAP_FAULT);
+		if (IS_ERR(range))
+			return PTR_ERR(range);
+		down_read(&file->sem);
+	}
 	/* fxdax: the window between a follower's extents read and its mapping, widened in tests. */
-	if (fxfs_vfs_follows(inode->i_sb) && fxfs_follow_iomap_delay_us)
+	if (fxfs_vfs_follows(inode->i_sb) && fxfs_follow_iomap_delay_us) {
+		up_read(&file->sem);
 		fsleep(fxfs_follow_iomap_delay_us);
+		down_read(&file->sem);
+	}
 	start = fxfs_dax_chunk_start(range);
 	page = (pos - start) >> PAGE_SHIFT;
 	/* A range covers the file's chunk as its size grows (fxfs_dax_fit). */
 	if (WARN_ON_ONCE(page >= range->pages)) {
+		up_read(&file->sem);
 		fxfs_dax_put_range(dax, range);
 		return -EIO;
 	}
-	down_read(&file->sem);
 	mapped = test_bit(page, range->mapped);
 	end_page = mapped ? find_next_zero_bit(range->mapped, range->pages, page) :
 			    find_next_bit(range->mapped, range->pages, page);

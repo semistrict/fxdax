@@ -2070,11 +2070,13 @@ mod guest {
                 });
             }
             // read(2)s of the odd file, which find its bytes alone.
-            let readers: Vec<_> = (0..2)
+            let readers: Vec<_> = (0..3)
                 .map(|reader| {
                     let file = &odd_file;
                     scope.spawn(move || {
-                        let mut buf = vec![0u8; PAGE * 16];
+                        // Single-page cached reads race the same relocations as longer copies.
+                        let pages = if reader == 2 { 1 } else { 16 };
+                        let mut buf = vec![0u8; PAGE * pages];
                         let mut n = reader;
                         while std::time::Instant::now() < deadline {
                             let at = (n * 16) % PAGES * PAGE;
