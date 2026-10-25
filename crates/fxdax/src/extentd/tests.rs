@@ -2607,17 +2607,24 @@ fn childs_opened_during_their_forks_wait_for_them() {
         assert!(std::time::Instant::now() < deadline, "the fork's segment was never held");
         std::thread::yield_now();
     }
+    // The child opened, and committing a write, as its VM would.
     let opening = {
         let (socket, child) = (socket.clone(), child.clone());
-        std::thread::spawn(move || RemoteExtentStore::connect(&socket, &child, 1 << 24))
+        std::thread::spawn(move || {
+            let store = RemoteExtentStore::connect(&socket, &child, 1 << 24)?;
+            let data = pattern(2, ps);
+            let extent = ExtentId { branch, sequence: 1 };
+            store.write(extent, 0, &[VolatileSlice::from(&data[..])])?;
+            store.commit(None)?;
+            Ok::<_, crate::Error>(store)
+        })
     };
-    // The child's opening waiting for the fork; or opened, and its branch its own in the bucket.
+    // The child's opening waiting for the fork; or the child committing, its branch its own in
+    // the bucket.
     let records = extent_remote::store::Store::new(gated.clone(), "branches");
     let record = || control(extent_remote::branch::record(&records, branch)).unwrap();
     let key = super::stores::store_key(&child);
-    while !super::stores::open_paths().is_waited_for(&key)
-        && !(opening.is_finished() && record().is_some())
-    {
+    while !super::stores::open_paths().is_waited_for(&key) && record().is_none() {
         assert!(std::time::Instant::now() < deadline, "the child neither waited nor opened");
         std::thread::yield_now();
     }
