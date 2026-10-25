@@ -1,9 +1,10 @@
 ---
 id: TASK-79.98
 title: 'Import: OCI whiteouts delete additions from their own layer'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-24 00:54'
+updated_date: '2026-10-25 02:34'
 labels:
   - review-2026-10-23
 dependencies: []
@@ -24,9 +25,9 @@ Found by the 2026-10-23 adversarial review at bce42647. Severity P2; high static
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Ordinary whiteouts remove only lower-layer content and preserve same-layer additions and replacements regardless of archive ordering.
-- [ ] #2 Opaque whiteouts remove lower-layer descendants while preserving same-layer nested additions under both pre-existing and explicitly reintroduced upper directories.
-- [ ] #3 Regression tests compare equivalent archive orderings and assert surviving new contents and removal of hidden lower-layer entries; their correct-behavior expectations fail before the fix.
+- [x] #1 Ordinary whiteouts remove only lower-layer content and preserve same-layer additions and replacements regardless of archive ordering.
+- [x] #2 Opaque whiteouts remove lower-layer descendants while preserving same-layer nested additions under both pre-existing and explicitly reintroduced upper directories.
+- [x] #3 Regression tests compare equivalent archive orderings and assert surviving new contents and removal of hidden lower-layer entries; their correct-behavior expectations fail before the fix.
 <!-- AC:END -->
 
 ## Definition of Done
@@ -34,3 +35,15 @@ Found by the 2026-10-23 adversarial review at bce42647. Severity P2; high static
 - [ ] #1 The fix batch passes cargo build or cargo check, cargo clippy, scripts/test.sh on macOS and scripts/test-gce.sh for the Linux workspace and applicable guest cases.
 - [ ] #2 Changed upstream deviations are documented, scripts/upstream-changes.py --check passes, and generated files are updated through their generators.
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Fixed: Importer.kept (lower directories the layer keeps, with its entry's metadata if any) beside made (new); remove_lower for whiteouts and each entry of an opaque one. whiteouts_hide_lower_layers_alone_in_any_order compares whiteouts first, last and interleaved, and asserts the survivors, their attributes and no lower xattrs; red before (only d left), green after; fxdax 228/228, import 14/14 (macOS).
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Whiteouts, ordinary and opaque, remove only what lower layers made, keeping the layer's own additions and resetting the directories it keeps to its attributes (or an implicit directory's), so a layer's result no longer depends on its archive order. Regression test compares three orderings; red before the fix.
+<!-- SECTION:FINAL_SUMMARY:END -->
