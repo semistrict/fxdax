@@ -220,6 +220,12 @@ impl<H: Holder> Paths<H> {
         }
     }
 
+    /// Whether something waits to hold the store `key` names.
+    #[cfg(test)]
+    pub fn is_waited_for(&self, key: &Path) -> bool {
+        self.held.lock().unwrap().waiting.contains_key(key)
+    }
+
     /// How many stores holders hold: not the daemon's.
     pub fn held_by_holders(&self) -> usize {
         let held = self.held.lock().unwrap();

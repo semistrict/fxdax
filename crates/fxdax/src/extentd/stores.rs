@@ -669,8 +669,12 @@ async fn point(from: &Path, branch: u64, capacity: u64) -> Result<(Arc<HeldStore
 /// the point kept open of it, as restores fork it (TASK-92.5), opened here, if none is, which no
 /// connection opens meanwhile, and kept open for the forks after it. Its commits' uploads, which
 /// the fork's branch follows, are waited for first, holding no thread; the fork, as of then, is
-/// made on a blocking thread.
+/// made on a blocking thread. fxdax: the store at `to` is held throughout, so that a connection
+/// opens the child only once the fork is made, in the bucket too: before, it found no record of
+/// the fork there, and took a branch of its own, which failed every writer of the parent after,
+/// finding the child's record another's (TASK-79.95).
 pub(super) async fn fork(from: PathBuf, to: PathBuf, branch: u64) -> Result<(), Errno> {
+    let _child = Held::to_fork(&to).await?;
     let key = store_key(&from);
     let live = |connection: &Connection| {
         let store = connection.store().cloned()?;

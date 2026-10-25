@@ -2567,14 +2567,82 @@ fn frees_of_many_extents_fail_against_daemons_without_them() {
     assert_eq!((freeing, answering.join().unwrap()), (Err(Errno::EINVAL), Vec::new()));
 }
 
+/// TASK-79.95: a fork's child opened while the fork is being made, its segment not yet in the
+/// bucket, waits for the fork, and finds its record the fork's: before, it found none, took a
+/// branch of its own, and the parent's writer, recording the fork, found the child's record
+/// another's, failing the fork, and every writer of the parent's after.
+#[test]
+fn childs_opened_during_their_forks_wait_for_them() {
+    use std::sync::Arc;
+    host();
+    let ps = page_size() as usize;
+    let gated = Arc::new(GatedReads::new());
+    super::stores::use_bucket(extent_remote::store::Store::new(gated.clone(), "branches"));
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("extentd.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || serve(listener));
+    let (path, child) = (dir.path().join("store"), dir.path().join("child"));
+    let parent = {
+        let store = ExtentStore::create(&path, 1 << 24).unwrap();
+        let branch = store.branch();
+        let data = pattern(1, ps);
+        let extent = ExtentId { branch, sequence: 1 };
+        store.write(extent, 0, &[VolatileSlice::from(&data[..])]).unwrap();
+        store.commit(None).unwrap();
+        branch
+    };
+    let store = RemoteExtentStore::connect(&socket, &path, 1 << 24).unwrap();
+    wait_uploaded(&path).unwrap();
+    // The parent's segments, the fork's among them, which records the fork, held.
+    let segments = format!("branches/{}", extent_remote::layout::segments(parent));
+    gated.hold_writes(Some(segments));
+    let branch = parent + 1;
+    let forking = {
+        let (path, child) = (path.clone(), child.clone());
+        std::thread::spawn(move || control(super::stores::fork(path, child, branch)))
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while gated.writes_waiting() == 0 || !child.exists() {
+        assert!(std::time::Instant::now() < deadline, "the fork's segment was never held");
+        std::thread::yield_now();
+    }
+    let opening = {
+        let (socket, child) = (socket.clone(), child.clone());
+        std::thread::spawn(move || RemoteExtentStore::connect(&socket, &child, 1 << 24))
+    };
+    // The child's opening waiting for the fork; or opened, and its branch its own in the bucket.
+    let records = extent_remote::store::Store::new(gated.clone(), "branches");
+    let record = || control(extent_remote::branch::record(&records, branch)).unwrap();
+    let key = super::stores::store_key(&child);
+    while !super::stores::open_paths().is_waited_for(&key)
+        && !(opening.is_finished() && record().is_some())
+    {
+        assert!(std::time::Instant::now() < deadline, "the child neither waited nor opened");
+        std::thread::yield_now();
+    }
+    gated.hold_writes(None);
+    assert_eq!(forking.join().unwrap(), Ok(()));
+    let opened = opening.join().unwrap();
+    assert!(opened.is_ok(), "opening the child: {:?}", opened.err());
+    let origin = record().and_then(|record| record.origin).map(|origin| origin.parent);
+    assert_eq!(origin, Some(parent));
+    drop((opened, store));
+}
+
 /// An object store in memory whose reads wait while they are held ([`GatedReads::hold`]): what
-/// makes a page-in's fetch from object storage wait as long as a test needs.
+/// makes a page-in's fetch from object storage wait as long as a test needs. And whose writes
+/// under a prefix wait while it is held ([`GatedReads::hold_writes`]).
 #[derive(Debug)]
 struct GatedReads {
     store: object_store::memory::InMemory,
     held: tokio::sync::watch::Sender<bool>,
     /// The reads waiting.
     waiting: std::sync::atomic::AtomicUsize,
+    /// The prefix of the keys whose writes wait, if any.
+    held_writes: tokio::sync::watch::Sender<Option<String>>,
+    /// The writes waiting.
+    writes_waiting: std::sync::atomic::AtomicUsize,
 }
 
 impl std::fmt::Display for GatedReads {
@@ -2589,7 +2657,18 @@ impl GatedReads {
             store: object_store::memory::InMemory::new(),
             held: tokio::sync::watch::channel(false).0,
             waiting: Default::default(),
+            held_writes: tokio::sync::watch::channel(None).0,
+            writes_waiting: Default::default(),
         }
+    }
+
+    /// Holds the writes of keys beginning with `prefix` from now on, if any, or lets them go.
+    fn hold_writes(&self, prefix: Option<String>) {
+        self.held_writes.send_replace(prefix);
+    }
+
+    fn writes_waiting(&self) -> usize {
+        self.writes_waiting.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Holds the reads from now on, if `held`, or lets them go.
@@ -2610,6 +2689,16 @@ impl object_store::ObjectStore for GatedReads {
         payload: object_store::PutPayload,
         opts: object_store::PutOptions,
     ) -> object_store::Result<object_store::PutResult> {
+        use std::sync::atomic::Ordering;
+        let holds = |prefix: &Option<String>| {
+            prefix.as_ref().is_some_and(|prefix| location.as_ref().starts_with(prefix.as_str()))
+        };
+        if holds(&self.held_writes.borrow()) {
+            let mut held = self.held_writes.subscribe();
+            self.writes_waiting.fetch_add(1, Ordering::Relaxed);
+            let _ = held.wait_for(|prefix| !holds(prefix)).await;
+            self.writes_waiting.fetch_sub(1, Ordering::Relaxed);
+        }
         self.store.put_opts(location, payload, opts).await
     }
 
