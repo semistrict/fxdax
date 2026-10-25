@@ -4,7 +4,7 @@ title: 'SQLite DAX: small writes pay Fxfs transactions and window remaps'
 status: In Progress
 assignee: []
 created_date: '2026-10-24 21:20'
-updated_date: '2026-10-24 21:20'
+updated_date: '2026-10-25 00:34'
 labels: []
 dependencies: []
 parent_task_id: TASK-92
@@ -29,15 +29,15 @@ The old 256-faults/MiB SQLite mmap investigation is stale: current DAX scans run
 <!-- AC:BEGIN -->
 - [ ] #1 TASK-92.28's extending-write fast path is implemented and improves SQLite WAL/NORMAL batch1 on GCE without changing recovery or durability semantics
 - [ ] #2 The remaining post-seal MAP/UNMAP cost is reduced, with guest and VMM measurements on the SQLite DELETE/FULL and WAL/FULL workloads
-- [ ] #3 SQLite recovery, integrity and snapshot checks and the DAX guest suites pass
+- [x] #3 SQLite recovery, integrity and snapshot checks and the DAX guest suites pass
 <!-- AC:END -->
 
 ## Definition of Done
 
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -47,3 +47,7 @@ The old 256-faults/MiB SQLite mmap investigation is stale: current DAX scans run
 2. Add stage-replacement attribution, then reduce replacement and evacuation costs on the current quarantined RemoteStage design.
 3. Measure three iterations, verify recovery and the DAX suites, and record the result beside the baseline.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+2026-10-25: The first safe append-size implementation and regression coverage are complete locally. Same-host, reverse-order SQLite A/B shows repeatable 10–13% gains at batch100, while batch1 throughput is effectively flat. All ten iterations per kernel passed recovery/integrity/payload/snapshot checks; the five guest cases and macOS/Linux workspace suites passed. AC #1 remains open because meaningful WAL/NORMAL batch1 improvement is not established. Stage replacement and evacuation work (AC #2) remains unimplemented. See docs/measurements/sqlite-dax-appends-2026-10-24.md for raw runs, sample ranges, kernel identities, and validation.

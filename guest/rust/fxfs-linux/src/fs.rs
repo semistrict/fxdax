@@ -838,6 +838,22 @@ impl Fxfs {
         Ok(extents.iter().map(|(extent, open)| DaxExtent::new(extent, *open, &allocator)).collect())
     }
 
+    /// Records an append already written through the DAX window, whose data must not be zeroed as
+    /// an ordinary grow would zero it, in one transaction (TASK-92.28).
+    pub async fn dax_update_size(&self, ino: u64, size: u64) -> Result<(), Error> {
+        let file = self.file(ino).await?;
+        if size <= file.get_size() {
+            return Ok(());
+        }
+        let mut transaction = file.new_transaction().await?;
+        // Recheck with the file locked: another size update may have committed meanwhile.
+        if size <= file.get_size() {
+            return Ok(());
+        }
+        file.txn_update_size(&mut transaction, size, None).await?;
+        transaction.commit().await.map(|_| ())
+    }
+
     /// Makes room to write `range` of the file `ino` through a DAX window, without writing it, and
     /// makes the file `size` long if it is shorter, in one transaction: returns the pieces holding
     /// the range's blocks, which are open, for the caller to store the data in before the next

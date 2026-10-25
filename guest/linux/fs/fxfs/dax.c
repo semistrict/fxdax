@@ -234,6 +234,8 @@ struct fxfs_dax {
 	atomic_long_t window_full, regions_full, reclaims, region_count, regions_pruned;
 	/* fxdax: the window's MAPs, and the bytes they mapped, by why (`enum fxfs_dax_why`). */
 	atomic64_t maps[FXFS_DAX_WHYS], map_bytes[FXFS_DAX_WHYS];
+	/* fxdax: the writes that made room through a Fxfs transaction (TASK-92.28). */
+	atomic64_t map_writes;
 	/* The files with ranges, or inodes using the window, by inode number. */
 	struct xarray files;
 	/* Guards `files`, and files' inodes. */
@@ -1631,6 +1633,36 @@ static int fxfs_dax_fit(struct inode *inode, loff_t size)
 }
 
 /*
+ * Records appends already stored through writable pages, before Fxfs reads or changes their
+ * blocks using its size (TASK-92.28). With the file's semaphore held for writing.
+ */
+static int fxfs_dax_write_size_locked(struct inode *inode)
+{
+	return fxfs_nofs(fxfs_dax_update_size(fxfs_vfs_fs(inode->i_sb), inode->i_ino,
+					   i_size_read(inode)));
+}
+
+/*
+ * Inode writeback takes no i_rwsem: the caller may hold it while waiting for writeback. The
+ * invalidate_lock excludes truncate and reflink, and the file's semaphore excludes extending
+ * iomaps, from reading the size until committing it. No old writeback can undo a later truncate.
+ */
+int fxfs_dax_write_size(struct inode *inode)
+{
+	struct fxfs_dax_file *file = fxfs_dax_file(inode);
+	int err;
+
+	if (!IS_DAX(inode))
+		return 0;
+	filemap_invalidate_lock_shared(inode->i_mapping);
+	down_write(&file->sem);
+	err = fxfs_dax_write_size_locked(inode);
+	up_write(&file->sem);
+	filemap_invalidate_unlock_shared(inode->i_mapping);
+	return err;
+}
+
+/*
  * Drops `inode`'s range of the chunk at `pos`, a slice a write can't use (-EXDEV), to be mapped
  * again where its data now is. fxdax: for a fault (`fault`), -EBUSY rather than wait for pages
  * pinned, which the call faulting may hold itself (TASK-79.49).
@@ -1659,11 +1691,16 @@ static int fxfs_dax_prepare_write(struct inode *inode, loff_t pos, loff_t len, l
 
 	down_write(&file->sem);
 	if (!xa_load(&file->ranges, pos >> FXFS_DAX_SHIFT)) {
+		count = fxfs_dax_write_size_locked(inode);
+		if (count)
+			goto out;
+		atomic64_inc(&dax->map_writes);
 		count = fxfs_nofs(fxfs_dax_map_write(dax->fs, inode->i_ino, pos, len, size, fault,
 						     extents, FXFS_DAX_PAGES));
 		if (count >= 0 && size > i_size_read(inode))
 			i_size_write(inode, size);
 	}
+out:
 	up_write(&file->sem);
 	return count < 0 ? count : 0;
 }
@@ -1824,10 +1861,17 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 			err = gate;
 			goto out;
 		}
-		/* Writable pages take the write as they are, unless it grows the file. */
-		if (find_next_zero_bit(range->writable, first + pages, first) == first + pages &&
-		    size <= i_size_read(inode))
+		/*
+		 * Writable pages take the write as they are. An append's size goes with the inode's
+		 * next writeback, not a transaction of its own for every write (TASK-92.28).
+		 */
+		if (find_next_zero_bit(range->writable, first + pages, first) == first + pages) {
+			if (size > i_size_read(inode)) {
+				i_size_write(inode, size);
+				__mark_inode_dirty(inode, I_DIRTY_SYNC | I_DIRTY_DATASYNC);
+			}
 			break;
+		}
 		if (flags & IOMAP_ZERO && find_next_bit(range->mapped, first + pages, first) ==
 						  first + pages) {
 			fxfs_device_store_end(dax->dev);
@@ -1837,6 +1881,10 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 			return 0;
 		}
 		fxfs_device_store_end(dax->dev);
+		/* COW must keep the appended bytes too, beyond Fxfs's former end. */
+		err = fxfs_dax_write_size_locked(inode);
+		if (err)
+			goto out;
 
 		if (!extents) {
 			extents = fxfs_dax_alloc_extents();
@@ -1856,6 +1904,7 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 		/* As in fxfs_dax_map_chunk: unless a seal was in progress, or began since. */
 		seals = fxfs_device_seals(dax->dev);
 		/* A fault's pages hold what they held: a store may change any part of them. */
+		atomic64_inc(&dax->map_writes);
 		count = fxfs_nofs(fxfs_dax_map_write(dax->fs, inode->i_ino, pos, end - pos, size,
 						     fault && !held, extents,
 						     FXFS_DAX_PAGES));
@@ -2584,6 +2633,7 @@ void fxfs_dax_show_stats(struct fxfs_dax *dax, struct seq_file *m)
 		   atomic_long_read(&dax->reclaims));
 	seq_printf(m, "window_regions %ld\nwindow_regions_pruned %ld\n",
 		   atomic_long_read(&dax->region_count), atomic_long_read(&dax->regions_pruned));
+	seq_printf(m, "dax_map_writes %lld\n", atomic64_read(&dax->map_writes));
 	for (why = 0; why < FXFS_DAX_WHYS; why++)
 		seq_printf(m, "window_maps_%s %lld\nwindow_map_bytes_%s %lld\n", fxfs_dax_whys[why],
 			   atomic64_read(&dax->maps[why]), fxfs_dax_whys[why],
@@ -2946,10 +2996,16 @@ static int fxfs_dax_zero_part(struct inode *inode, loff_t pos, loff_t len)
  */
 int fxfs_dax_remap(struct inode *inode, loff_t pos, loff_t len, loff_t size)
 {
+	struct fxfs_dax_file *file = fxfs_dax_file(inode);
 	int err;
 
 	if (!IS_DAX(inode) || !fxfs_dax_file(inode) || !len)
 		return 0;
+	down_write(&file->sem);
+	err = fxfs_dax_write_size_locked(inode);
+	up_write(&file->sem);
+	if (err)
+		return err;
 	err = fxfs_dax_break_layouts(inode, round_down(pos, PAGE_SIZE));
 	if (!err)
 		err = fxfs_dax_drop(inode, pos >> FXFS_DAX_SHIFT, (pos + len - 1) >> FXFS_DAX_SHIFT, -1);
@@ -2988,11 +3044,41 @@ void fxfs_dax_punch_end(struct inode *inode)
 
 int fxfs_dax_resize_begin(struct inode *inode, loff_t size)
 {
+	struct fxfs_dax_file *file = fxfs_dax_file(inode);
 	bool zeroed;
 	int err;
 
 	filemap_invalidate_lock(inode->i_mapping);
+	/* An ordinary grow zeroes from Fxfs's end: first record data appended since it. */
+	down_write(&file->sem);
+	err = fxfs_dax_write_size_locked(inode);
+	up_write(&file->sem);
+	if (err) {
+		filemap_invalidate_unlock(inode->i_mapping);
+		return err;
+	}
 	if (size >= i_size_read(inode)) {
+		loff_t old = i_size_read(inode);
+
+		/*
+		 * An ordinary grow copies and zeroes the last partial block through the device.
+		 * Seal its window stores first, then drop its mapping, which the copy replaces:
+		 * otherwise the window can hide a zero-filled replacement until eviction.
+		 */
+		if (size > old && !PAGE_ALIGNED(old)) {
+			err = fxfs_nofs(fxfs_fsync(fxfs_vfs_fs(inode->i_sb)));
+			if (!err)
+				err = fxfs_dax_break_layouts(inode, round_down(old, PAGE_SIZE));
+			if (!err)
+				err = fxfs_dax_clean(inode, old, 1);
+			if (!err)
+				err = fxfs_dax_drop(inode, old >> FXFS_DAX_SHIFT,
+						    old >> FXFS_DAX_SHIFT, -1);
+			if (err) {
+				filemap_invalidate_unlock(inode->i_mapping);
+				return err;
+			}
+		}
 		/* The ranges the file's end moves into, mapped as large as they need. */
 		err = fxfs_dax_fit(inode, size);
 		if (err)

@@ -239,6 +239,8 @@ void fxfs_dax_set_inode(struct inode *inode);
  * next inode read in for it: unless no name links it, when they go.
  */
 void fxfs_dax_evict(struct inode *inode);
+/* Records a DAX file's deferred append size, for writeback and fsync (TASK-92.28). */
+int fxfs_dax_write_size(struct inode *inode);
 /*
  * Before and after a DAX file's size changes to `size`, under its inode's lock: the first waits
  * for the pages past the size to be unused, and zeroes the last page past it; the second unmaps
@@ -300,6 +302,10 @@ static inline void fxfs_dax_show_stats(struct fxfs_dax *dax, struct seq_file *m)
 static inline void fxfs_dax_inode_init(struct fxfs_dax_inode *di) {}
 static inline void fxfs_dax_set_inode(struct inode *inode) {}
 static inline void fxfs_dax_evict(struct inode *inode) {}
+static inline int fxfs_dax_write_size(struct inode *inode)
+{
+	return 0;
+}
 static inline int fxfs_dax_resize_begin(struct inode *inode, loff_t size)
 {
 	return 0;

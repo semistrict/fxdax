@@ -1962,6 +1962,136 @@ mod guest {
         fs::remove_file(&name).unwrap();
     }
 
+    /// fxdax: sub-page appends into a block already writable take no Fxfs transaction of their own
+    /// (TASK-92.28). fdatasync writes the deferred size, and eviction finds all the appended data.
+    fn test_append_writable() {
+        use std::os::unix::fs::FileExt;
+        const APPENDS: usize = 32;
+        let name = path("append-writable");
+        let mut expected = vec![1; 100];
+        fs::write(&name, &expected).unwrap();
+        let file = fs::OpenOptions::new().read(true).write(true).open(&name).unwrap();
+        file.sync_data().unwrap();
+        // The first append after the seal makes its page writable; the rest reuse it.
+        file.write_all_at(&[2], expected.len() as u64).unwrap();
+        expected.push(2);
+        let before = stats()["dax_map_writes"];
+        for n in 0..APPENDS {
+            file.write_all_at(&[n as u8 + 3], expected.len() as u64).unwrap();
+            expected.push(n as u8 + 3);
+        }
+        let after = stats();
+        assert_eq!(after["dax_map_writes"], before, "appends mapped writes: {after:?}");
+        file.sync_data().unwrap();
+        drop(file);
+        evict(&name);
+        assert_eq!(fs::read(&name).unwrap(), expected);
+        fs::remove_file(&name).unwrap();
+    }
+
+    /// Deferred appends survive COW after another file seals the extent, and an ordinary grow
+    /// or shrink uses the appended size rather than zeroing data past Fxfs's former end.
+    fn test_append_size() {
+        use std::os::unix::fs::FileExt;
+
+        let seal = fs::File::create(path("append-size-seal")).unwrap();
+        for operation in ["overwrite", "grow", "shrink", "clone"] {
+            let name = path(&format!("append-size-{operation}"));
+            let file =
+                fs::OpenOptions::new().create_new(true).read(true).write(true).open(&name).unwrap();
+            let mut expected = vec![0x11; 100];
+            file.write_all_at(&expected, 0).unwrap();
+            file.sync_data().unwrap();
+            // One transaction makes the page writable, then the appends defer their size.
+            for n in 0..32 {
+                file.write_all_at(&[n + 1], expected.len() as u64).unwrap();
+                expected.push(n + 1);
+            }
+            match operation {
+                "overwrite" => {
+                    seal.sync_all().unwrap();
+                    file.write_all_at(&[0x55], 0).unwrap();
+                    expected[0] = 0x55;
+                }
+                "grow" => {
+                    file.set_len(200).unwrap();
+                    expected.resize(200, 0);
+                }
+                "shrink" => {
+                    file.set_len(120).unwrap();
+                    expected.truncate(120);
+                }
+                "clone" => {
+                    let clone_name = path("append-size-clone-copy");
+                    let cloned = fs::File::create(&clone_name).unwrap();
+                    const FICLONE: libc::c_ulong = 0x40049409;
+                    assert_eq!(
+                        unsafe { libc::ioctl(cloned.as_raw_fd(), FICLONE as _, file.as_raw_fd()) },
+                        0
+                    );
+                    cloned.sync_data().unwrap();
+                    drop(cloned);
+                    evict(&clone_name);
+                    assert_eq!(fs::read(&clone_name).unwrap(), expected, "cloned append");
+                    fs::remove_file(clone_name).unwrap();
+                }
+                _ => unreachable!(),
+            }
+            // Read before fsync too: writing the size later cannot repair bytes zeroed by COW.
+            assert_eq!(fs::read(&name).unwrap(), expected, "{operation}");
+            file.sync_data().unwrap();
+            drop(file);
+            evict(&name);
+            assert_eq!(fs::read(&name).unwrap(), expected, "{operation} after eviction");
+            fs::remove_file(name).unwrap();
+        }
+        drop(seal);
+        fs::remove_file(path("append-size-seal")).unwrap();
+    }
+
+    /// Background inode writeback must neither restore a size from before truncate nor lose
+    /// the last deferred append when fdatasync returns (TASK-92.28).
+    fn test_append_writeback() {
+        use std::os::unix::fs::FileExt;
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+
+        let name = path("append-writeback");
+        let file = Arc::new(
+            fs::OpenOptions::new().create_new(true).read(true).write(true).open(&name).unwrap(),
+        );
+        let stop = Arc::new(AtomicBool::new(false));
+        let syncer = {
+            let (file, stop) = (file.clone(), stop.clone());
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    assert_eq!(unsafe { libc::syncfs(file.as_raw_fd()) }, 0);
+                }
+            })
+        };
+        for round in 0..64 {
+            file.set_len(0).unwrap();
+            let mut expected = vec![round as u8; 100];
+            file.write_all_at(&expected, 0).unwrap();
+            for _ in 0..32 {
+                file.write_all_at(&[0xa5], expected.len() as u64).unwrap();
+                expected.push(0xa5);
+            }
+            file.set_len(120).unwrap();
+            expected.truncate(120);
+            file.sync_data().unwrap();
+            assert_eq!(fs::read(&name).unwrap(), expected);
+        }
+        stop.store(true, Ordering::Relaxed);
+        syncer.join().unwrap();
+        drop(file);
+        evict(&name);
+        assert_eq!(fs::metadata(&name).unwrap().len(), 120);
+        fs::remove_file(name).unwrap();
+    }
+
     /// fxdax: a file appended to across its chunks while another thread maps it and reads it
     /// all, again and again, for a few seconds: each append writes. A fault mapped the chunk again
     /// as small as the file was, between the write making room for it and writing, which the write
@@ -2094,6 +2224,9 @@ mod guest {
                 tests.push(("regions_evacuated", &test_regions_evacuated));
                 tests.push(("evacuate_dropped", &test_evacuate_dropped));
                 tests.push(("faults_writes_compaction", &test_faults_writes_compaction));
+                tests.push(("append_writable", &test_append_writable));
+                tests.push(("append_size", &test_append_size));
+                tests.push(("append_writeback", &test_append_writeback));
                 tests.push(("append_while_mapped", &test_append_while_mapped));
             }
             // Files on DAX are in no page cache.

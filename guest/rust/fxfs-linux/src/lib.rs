@@ -430,6 +430,20 @@ pub unsafe extern "C" fn fxfs_dax_map_write(
     }
 }
 
+/// Records an append already written through the DAX window (`Fxfs::dax_update_size`).
+///
+/// # Safety
+///
+/// `fs` is mounted.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fxfs_dax_update_size(fs: *const Fxfs, ino: u64, size: u64) -> c_int {
+    // SAFETY: As the caller promises.
+    match unsafe { block_on((*fs).dax_update_size(ino, size)) } {
+        Ok(()) => 0,
+        Err(error) => -errno(&error),
+    }
+}
+
 /// # Safety
 ///
 /// `fs` is mounted, and `out` is writable.

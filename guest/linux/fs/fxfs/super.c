@@ -1792,14 +1792,17 @@ static const struct address_space_operations fxfs_vfs_aops = {
  * commits the change to its directory that made it: so that a sync of the directory after it has
  * nothing of its own to commit. fxdax: fdatasync writes back neither's times, as data doesn't
  * need them to be read back: only what does (I_DIRTY_DATASYNC), as generic_file_fsync. Fxfs has a
- * file's size already, which its writes of the data change (TASK-41: a database's log is
- * fdatasynced at each transaction, two transactions each).
+ * file's size already, which its writes of the data change, except a DAX append into a block
+ * writable already, whose size this writes, and write_inode outside a sync (TASK-41, TASK-92.28).
  */
 int fxfs_vfs_fsync(struct file *file, loff_t start, loff_t end, int datasync)
 {
 	struct inode *inode = file_inode(file);
 	int err = file_write_and_wait_range(file, start, end);
 
+	/* A DAX append's last size, not one a racing inode writeback took (TASK-92.28). */
+	if (!err)
+		err = fxfs_dax_write_size(inode);
 	if (!err && (!datasync || (READ_ONCE(inode->i_state) & I_DIRTY_DATASYNC)))
 		err = sync_inode_metadata(inode, 1);
 	if (!err && !datasync && !S_ISDIR(inode->i_mode)) {
@@ -2141,6 +2144,11 @@ static void fxfs_vfs_evict_inode(struct inode *inode)
 /* Writes back the attributes the kernel keeps (fxfs_vfs_write_attr). */
 static int fxfs_vfs_write_inode(struct inode *inode, struct writeback_control *wbc)
 {
+	/* DAX appends into writable blocks defer their size to this writeback (TASK-92.28). */
+	int err = fxfs_dax_write_size(inode);
+
+	if (err)
+		return err;
 	return fxfs_vfs_write_attr(inode, 0);
 }
 

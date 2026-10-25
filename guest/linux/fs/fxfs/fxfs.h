@@ -374,6 +374,8 @@ bool fxfs_dax_restage(struct fxfs *fs, struct fxfs_dax_extent *out);
  */
 ssize_t fxfs_dax_map_write(struct fxfs *fs, u64 ino, u64 offset, u64 len, u64 size, bool keep,
 			   struct fxfs_dax_extent *out, size_t max);
+/* Records an append already written through the window, without zeroing it (TASK-92.28). */
+int fxfs_dax_update_size(struct fxfs *fs, u64 ino, u64 size);
 
 /*
  * Extended attributes of inode `ino`, by their full names (`user.x`): getxattr(2)'s and
