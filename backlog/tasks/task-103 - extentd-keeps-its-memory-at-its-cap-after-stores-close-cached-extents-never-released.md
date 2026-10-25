@@ -3,10 +3,10 @@ id: TASK-103
 title: >-
   extentd keeps its memory at its cap after stores close: cached extents never
   released
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-25 00:29'
-updated_date: '2026-10-25 00:41'
+updated_date: '2026-10-25 01:32'
 labels:
   - bug
 dependencies: []
@@ -31,4 +31,12 @@ Sandbox team, 2026-10-24, ae54e01: one daemon serving VMs one after another, 8 G
 
 <!-- SECTION:NOTES:BEGIN -->
 Related: TASK-104's bound lets go of cache entries (and their pages) past 65,536 extents. Memory up to the daemon's budget is a warm cache by design (forks of a base reuse it); what to free when every store closed, or after idling, is the decision left.
+
+Decision (user, 2026-10-24): keep extents cached up to the daemon's budget, evicting the least recently used under pressure (evict_least_used, TASK-50.3), rather than freeing a store's on close: forks of a base reuse its pages. TASK-104 bounds the entries (65,536), letting go of those nothing maps.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Working as intended: the extent cache keeps pages up to the daemon's memory budget and evicts the least recently used under pressure; entries are bounded by TASK-104. Not freed on store close, by decision, so forks of a base find it warm.
+<!-- SECTION:FINAL_SUMMARY:END -->

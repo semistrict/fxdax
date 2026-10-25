@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-24 21:31'
+updated_date: '2026-10-25 01:28'
 labels: []
 dependencies: []
 parent_task_id: TASK-44
@@ -21,7 +22,7 @@ Before TASK-99's fix, taking region->lock out of fxfs_dax_region_open would have
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Each lock acquisition, gate check and seals recheck in dax.c and device.c is removed in turn and the DAX suites run on it
+- [x] #1 Each lock acquisition, gate check and seals recheck in dax.c and device.c is removed in turn and the DAX suites run on it
 - [ ] #2 Every surviving mutant gets a test that kills it, or a reason it is equivalent
 <!-- AC:END -->
 
@@ -31,3 +32,9 @@ Before TASK-99's fix, taking region->lock out of fxfs_dax_region_open would have
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+GCE r83 (kernel built per mutant from HEAD): killed region_open_unlocked, map_chunk_no_seals_recheck, new_slice_no_seals_recheck, write_no_seals_recheck, seal_keeps_writable, relocate_unmarked, cow_not_shared, held_not_copied_back; MISSED prune_in_use (fxfs_dax_prune without its users == 1 check: a range lets go of regions while another iomap uses it), which needs a test that kills it (AC2).
+<!-- SECTION:NOTES:END -->

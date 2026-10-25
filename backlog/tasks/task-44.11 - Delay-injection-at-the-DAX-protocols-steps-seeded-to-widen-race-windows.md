@@ -4,7 +4,7 @@ title: 'Delay injection at the DAX protocol''s steps, seeded, to widen race wind
 status: To Do
 assignee: []
 created_date: '2026-10-24 21:31'
-updated_date: '2026-10-24 23:57'
+updated_date: '2026-10-25 01:30'
 labels: []
 dependencies: []
 parent_task_id: TASK-44
@@ -36,4 +36,6 @@ Races between a check and its act (TASK-99's mapped check against a MAP in fligh
 
 <!-- SECTION:NOTES:BEGIN -->
 c7dacce4d: fxfs.dax_delay_us / dax_delay_seed, seeded sleeps a quarter of the time at a chunk's map, a slice's, a write's (between Rust's answer and the gate), after a MAP's reply in map_to, before region_open. GCE r81: fxfs-guest-dax, -checks-dax, -follow-dax, -pgbench-dax pass at 300 us. AC2 left: TASK-99's fix reverted (guest-mutants region_open_unlocked) failing faults_writes_compaction/seal_race with delays, without fail_held.
+
+r83: TASK-99's mutant (region_open_unlocked) with fxfs.dax_delay_us=300 and no held-copy failures: fxfs-guest-checks-dax with faults_writes_compaction and seal_race passed, fxfs-guest-pgbench-dax failed (the load died): delays expose it under pgbench, not those two checks. AC2 as written not met.
 <!-- SECTION:NOTES:END -->
