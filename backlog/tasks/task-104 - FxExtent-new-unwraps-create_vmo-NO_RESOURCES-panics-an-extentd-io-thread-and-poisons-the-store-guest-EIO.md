@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-25 00:29'
-updated_date: '2026-10-25 00:41'
+updated_date: '2026-10-25 01:41'
 labels:
   - bug
 dependencies: []
@@ -31,4 +31,6 @@ Sandbox team, 2026-10-24, ae54e01: extentd 'thread extentd io panicked at crates
 
 <!-- SECTION:NOTES:BEGIN -->
 The cache never let go of an entry, each an FxExtent with a VMO handle: bounded now (MOST_CACHED, 65,536, a quarter of the table): past it, entries nothing else holds (no window maps them), asked for longest ago, go, down to 7/8; dropped past the cache's lock. the_cache_keeps_its_bound (macOS, 225/225 fxdax). create_vmo's unwrap stays (Arc::new_cyclic is infallible): with the bound the table doesn't fill from the cache; making it fallible means FxExtent built without new_cyclic.
+
+FxExtent::new returns its VMO's creation error (made first, receiver set after Arc::new); cached() lets go of half its idle extents and retries once, else ENOMEM; callers propagate, replay skips. caching_fails_when_handles_run_out (macOS; 386/386 fxdax+fxfs-platform), upstream-changes --check passes. a96cfb132. Linux run pending (next GCE workspace run). The arena's BufferSource and the packet port, made lazily on an arena's or the process's first extent, still unwrap NO_RESOURCES: TASK filed.
 <!-- SECTION:NOTES:END -->
