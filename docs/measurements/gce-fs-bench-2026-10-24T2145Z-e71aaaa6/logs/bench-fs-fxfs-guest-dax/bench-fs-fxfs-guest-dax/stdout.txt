@@ -1,0 +1,9 @@
+OBSERVED mtime-ahead-of-guest-ms -5.532
+RESULT sqlite-pread-scan MiB/s higher 807.836
+OBSERVED sqlite-pread-scan-faults-per-mib 2.7
+RESULT sqlite-pread-scan-warm MiB/s higher 2698.319
+OBSERVED sqlite-pread-scan-warm-faults-per-mib 2.6
+RESULT sqlite-mmap-scan MiB/s higher 2841.293
+OBSERVED sqlite-mmap-scan-faults-per-mib 3.7
+RESULT sqlite-mmap-scan-warm MiB/s higher 3040.304
+OBSERVED sqlite-mmap-scan-warm-faults-per-mib 3.7

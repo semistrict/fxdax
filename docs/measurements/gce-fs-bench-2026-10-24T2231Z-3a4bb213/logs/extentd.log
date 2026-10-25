@@ -1,0 +1,23 @@
+memory-pressure: memory watermarks - OutOfMemory: 50MB, Critical: 150MB, Warning: 300MB, Debounce: 1MB
+memory-pressure: hysteresis interval - 10 seconds
+memory-pressure: eviction: level - Critical, strategy - one-shot, delay - 5000 ms
+memory-pressure: ImminentOutOfMemory watermark - 60MB
+memory-pressure: memory availability state - Normal
+INFO fxdax::extentd::stores: extentd: object-store: get=190 get-range=3 head=0 list=13 create=190 update=2 overwrite=0 delete=1 up-segments=32684841 up-extents=0 up-checkpoints=42805 up-moves=0 up-other=93 down=4290
+INFO fxdax::host_store: fxdax: cleaning branch 4011cb1d7198f958 of /home/ramon/run-20261024T223250Z-3a4bb213/results/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 1945600 bytes
+INFO fxdax::host_store: fxdax: cleaning branch 4011cb1d7198f958 of /home/ramon/run-20261024T223250Z-3a4bb213/results/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 9158656 bytes
+INFO fxdax::host_store: fxdax: cleaning branch 4011cb1d7198f958 of /home/ramon/run-20261024T223250Z-3a4bb213/results/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 11264000 bytes
+INFO fxdax::host_store: fxdax: cleaning branch 4011cb1d7198f958 of /home/ramon/run-20261024T223250Z-3a4bb213/results/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 15888384 bytes
+INFO fxdax::host_store: fxdax: cleaning branch 4011cb1d7198f958 of /home/ramon/run-20261024T223250Z-3a4bb213/results/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 17907712 bytes
+INFO fxdax::host_store: fxdax: cleaning branch 4011cb1d7198f958 of /home/ramon/run-20261024T223250Z-3a4bb213/results/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 6369280 bytes
+INFO fxdax::host_store: fxdax: cleaning branch 4011cb1d7198f958 of /home/ramon/run-20261024T223250Z-3a4bb213/results/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 339968 bytes
+INFO fxdax::host_store: fxdax: cleaning branch 4011cb1d7198f958 of /home/ramon/run-20261024T223250Z-3a4bb213/results/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 6475776 bytes
+INFO fxdax::host_store: fxdax: cleaning branch 4011cb1d7198f958 of /home/ramon/run-20261024T223250Z-3a4bb213/results/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 6467584 bytes
+INFO fxdax::host_store: fxdax: cleaning branch 4011cb1d7198f958 of /home/ramon/run-20261024T223250Z-3a4bb213/results/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 5410816 bytes
+INFO fxdax::host_store: fxdax: cleaning branch 4011cb1d7198f958 of /home/ramon/run-20261024T223250Z-3a4bb213/results/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 13373440 bytes
+INFO fxdax::host_store: fxdax: cleaning branch 4011cb1d7198f958 of /home/ramon/run-20261024T223250Z-3a4bb213/results/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 12754944 bytes
+INFO fxdax::host_store: fxdax: cleaning branch 4011cb1d7198f958 of /home/ramon/run-20261024T223250Z-3a4bb213/results/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 13754368 bytes
+INFO fxdax::host_store: fxdax: cleaning branch 4011cb1d7198f958 of /home/ramon/run-20261024T223250Z-3a4bb213/results/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 7974912 bytes
+INFO fxdax::host_store: fxdax: cleaning branch 4011cb1d7198f958 of /home/ramon/run-20261024T223250Z-3a4bb213/results/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 3629056 bytes
+INFO fxdax::extentd::stores: extentd: object-store: get=277 get-range=5 head=0 list=23 create=315 update=2 overwrite=0 delete=1 up-segments=1888934064 up-extents=81042922 up-checkpoints=51838 up-moves=0 up-other=147 down=6198
+INFO fxdax_extentd: extentd: stopping, on SIGTERM

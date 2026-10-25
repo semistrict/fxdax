@@ -1,0 +1,48 @@
+TASK-92.28 validation record
+
+cargo check --workspace: exit 0.
+cargo clippy --workspace: exit 0, existing workspace warnings remain.
+scripts/upstream-changes.py --check: exit 0.
+rustfmt --edition 2024 --check guest/tests/test_cases/src/test_fxfs_guest_checks.rs: exit 0.
+Structured source review after the resize seal/drop correction: no actionable findings.
+
+macOS: scripts/test.sh (workspace-macos.log).
+Linux workspace: scripts/test.sh via scripts/test-gce.sh (workspace-linux.log).
+Workspace Rust source did not change during the subsequent C-only resize correction.
+
+Latest guest validation: exit 0.
+FXDAX_WORKSPACE_TESTS=0 FXDAX_GUEST_KERNEL_BUILD=release
+FXDAX_E2E_TEST='extent-guest fxfs-guest fxfs-guest-dax fxfs-guest-checks fxfs-guest-checks-dax'
+scripts/test-gce.sh run fxdax-test-sqlite-20261025-resize /tmp/fxdax-sqlite-resize-validation
+Guest cases and all four append checks passed; see guest.log and dax-checks.log.
+Kernel SHA-256: d9443ef9c659d56839b77155e4e1dc1c11284fb2018c24f99023aab308523227.
+
+Workspace summaries:
+
+workspace-macos.log
+Summary [ 137.442s] 2509 tests run: 2509 passed (1 slow), 16 skipped
+Summary [  21.269s] 57 tests run: 57 passed, 0 skipped
+Summary [   2.349s] 7 tests run: 7 passed, 71 skipped
+Summary [   0.058s] 11 tests run: 11 passed, 208 skipped
+Summary [   0.434s] 21 tests run: 21 passed, 137 skipped
+Summary [   0.434s] 8 tests run: 8 passed, 0 skipped
+Summary [   3.798s] 16 tests run: 16 passed, 0 skipped
+Ran 84 tests in 10.906s
+
+workspace-linux.log
+Summary [ 604.926s] 2622 tests run: 2622 passed (8 slow), 18 skipped
+Summary [ 130.982s] 57 tests run: 57 passed (2 slow), 0 skipped
+Summary [   5.808s] 7 tests run: 7 passed, 71 skipped
+Summary [   0.519s] 11 tests run: 11 passed, 209 skipped
+Summary [   2.136s] 32 tests run: 32 passed, 223 skipped
+Summary [   1.344s] 8 tests run: 8 passed, 0 skipped
+Summary [  12.834s] 16 tests run: 16 passed, 0 skipped
+Ran 84 tests in 7.269s
+
+SQLite A/B: both kernels passed five iterations in each of two orders, 10 per kernel per workload. Every report has no failures and five values for each workload. Candidate kernel hash matched the guest-validated kernel. Order: baseline/candidate, then candidate/baseline. See ab.sh, ab-repeat.sh, ab.log, ab-repeat.log, and ab-summary.json.
+
+Cloud cleanup: scripts/test-gce.sh delete fxdax-test-sqlite-20261025-resize succeeded and verified both instance and boot disk absent. Previous validation and benchmark hosts were also deleted and verified.
+
+Implementation commit: 076eba863 (Guest DAX: preserve deferred append sizes). Final bounded source and benchmark-procedure review returned no actionable findings; source-review.json records its result.
+
+Whitespace: source/test/report diff checks passed. The complete generated-artifact check flags original terminal carriage returns and trailing spaces in package-install output and generated notes. Those raw records are retained verbatim; generated files were not hand-edited to remove output whitespace.

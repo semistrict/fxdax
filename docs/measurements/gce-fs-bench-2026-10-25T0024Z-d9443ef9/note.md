@@ -1,0 +1,1 @@
+TASK-92.28 controlled same-host SQLite A/B: candidate, first round. Five iterations; baseline then candidate, no concurrent build or test work. Same n2-standard-8 host, same benchmark harness, kernel is the treatment. The reverse-order round is recorded separately. Process-kill recovery, integrity, payload and snapshot checks passed.

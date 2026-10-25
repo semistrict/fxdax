@@ -1,0 +1,6 @@
+revision a6ee070d938e1f4b61afdd9511e53b0f6918aae1
+firecracker 6610d88f12f28662f21de7f3a4f3fd394a54abf7
+kernel source canonical git archive a6ee070d938e1f4b61afdd9511e53b0f6918aae1
+source archive sha256 f6c089f54bbd3eb9aaa1482fe01d1e84cb761694c32ea4716470fb4ab00efd95
+benchmark harness shared with candidate, from test-tree
+guest kernel d10635f939a558f6012addafd3fccbba76f075ba5653aed3ededf4505c5a9a0a

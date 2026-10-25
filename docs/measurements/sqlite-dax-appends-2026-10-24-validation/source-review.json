@@ -1,0 +1,6 @@
+{
+  "findings": [],
+  "overall_correctness": "patch is correct",
+  "overall_explanation": "No P0 defects are demonstrated by the change bundle. The deferred DAX size path is synchronized with truncate, COW/reflink, resize, writeback, and fsync paths, and the accompanying regressions exercise the principal data-coherence cases. Any residual concerns below the requested P0 threshold do not justify marking the patch incorrect.",
+  "overall_confidence": 0.98
+}

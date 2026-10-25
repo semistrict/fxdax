@@ -1,0 +1,11 @@
+memory-pressure: memory watermarks - OutOfMemory: 50MB, Critical: 150MB, Warning: 300MB, Debounce: 1MB
+memory-pressure: hysteresis interval - 10 seconds
+memory-pressure: eviction: level - Critical, strategy - one-shot, delay - 5000 ms
+memory-pressure: ImminentOutOfMemory watermark - 60MB
+memory-pressure: memory availability state - Normal
+[    0.051270] PCI: Fatal: No config space access function found
+[    0.078263] PCI: System does not support PCI
+[    0.201862] check access for rdinit=/init failed: -2, ignoring
+PASS: file_attributes
+PASS: append_writable
+[    0.326615] reboot: Restarting system

@@ -1,0 +1,5 @@
+info: component rust-std for target x86_64-unknown-linux-musl is up to date
+Measuring candidate-repeat: five SQLite iterations, reversed order.
+candidate-repeat: exit 0
+Measuring baseline-repeat: five SQLite iterations, reversed order.
+baseline-repeat: exit 0

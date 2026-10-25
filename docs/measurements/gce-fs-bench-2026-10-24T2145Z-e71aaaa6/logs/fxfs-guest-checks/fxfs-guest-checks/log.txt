@@ -1,0 +1,43 @@
+memory-pressure: memory watermarks - OutOfMemory: 50MB, Critical: 150MB, Warning: 300MB, Debounce: 1MB
+memory-pressure: hysteresis interval - 10 seconds
+memory-pressure: eviction: level - Critical, strategy - one-shot, delay - 5000 ms
+memory-pressure: ImminentOutOfMemory watermark - 60MB
+memory-pressure: memory availability state - Normal
+[    0.050371] PCI: Fatal: No config space access function found
+[    0.078262] PCI: System does not support PCI
+[    0.170768] check access for rdinit=/init failed: -2, ignoring
+PASS: host_file
+PASS: mmap_write
+PASS: regular_write
+PASS: namespace
+PASS: truncate_mapped
+PASS: eviction_writes_back
+PASS: tmpfile
+PASS: fallocate
+PASS: zero_mapped
+PASS: seal_race
+PASS: writes_across_seals
+PASS: stats
+PASS: log_writes
+PASS: acls
+PASS: freeze
+PASS: show_options
+PASS: write_removes_privileges
+PASS: delayed_unlinks
+PASS: sparse
+PASS: file_handles
+PASS: unsupported
+PASS: reflinks
+PASS: removed_directories
+PASS: file_attributes
+PASS: idmapped_mount
+PASS: multigrain_times
+PASS: cache_shrinks
+PASS: direct_io
+PASS: large_folios
+PASS: scattered_writeback
+PASS: partial_writeback
+PASS: short_copy
+PASS: direct_read_past_end
+PASS: store_past_end
+[   21.557853] reboot: Restarting system

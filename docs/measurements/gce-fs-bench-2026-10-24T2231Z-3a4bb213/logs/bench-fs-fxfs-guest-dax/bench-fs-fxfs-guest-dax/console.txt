@@ -1,0 +1,421 @@
+[    0.104040] PCI: Fatal: No config space access function found
+[    0.131062] PCI: System does not support PCI
+[    0.345145] check access for rdinit=/init failed: -2, ignoring
+iteration 1/3
+OBSERVED mtime-ahead-of-guest-ms -5.721
+RESULT sqlite-pread-scan MiB/s higher 828.241
+OBSERVED sqlite-pread-scan-faults-per-mib 2.7
+RESULT sqlite-pread-scan-warm MiB/s higher 2701.971
+OBSERVED sqlite-pread-scan-warm-faults-per-mib 2.6
+RESULT sqlite-mmap-scan MiB/s higher 2825.153
+OBSERVED sqlite-mmap-scan-faults-per-mib 3.7
+RESULT sqlite-mmap-scan-warm MiB/s higher 2986.031
+OBSERVED sqlite-mmap-scan-warm-faults-per-mib 3.7
+FXFS sqlite-delete-full-batch1: dax_map_writes 1200, device_commits 602, device_commits_ns 170648342, device_read_bytes 974848, device_reads 215, device_reads_ns 32854004, device_write_bytes 3547136, device_writes 816, device_writes_ns 195627455, fsyncs 800, journal_compaction_ns 13616479, journal_compactions 1, seal_waits 602, seal_waits_ns 2902178, seals 602, seals_ns 176472021, window_free_bytes 4194304, window_map_bytes_evacuate 9162752, window_map_bytes_reach 196608, window_map_bytes_restage 39321600, window_map_requests 1203, window_maps 1411, window_maps_evacuate 808, window_maps_ns 306168205, window_maps_reach 3, window_maps_restage 600, window_regions_free_bytes 4194304, window_regions_largest_free_bytes 4194304, window_regions_pruned 682, window_unmaps 1005, window_unmaps_ns 180474504, writes_held_by_seals 1, writes_held_by_seals_ns 254623
+REQUESTS sqlite-delete-full-batch1: read 1.07 (133 µs each), write 4.08 (227 µs each), free 1.03 (180 µs each), map 6.01 (214 µs each), unmap 5.03 (160 µs each), commit 0.01 (243 µs each) per operation
+RESULT sqlite-delete-full-batch1 txn/s higher 345.216
+OBSERVED sqlite-delete-full-batch1-updates-per-second 345.2
+FXFS sqlite-delete-full-batch100: dax_map_writes 40804, device_commits 605, device_commits_ns 605735542, device_read_bytes 1269760, device_reads 232, device_reads_ns 43970283, device_write_bytes 8998912, device_writes 2065, device_writes_ns 1450979187, fsyncs 800, journal_compaction_ns 102913370, journal_compactions 2, seal_waits 605, seal_waits_ns 2391236, seals 605, seals_ns 613688945, stores_held_by_seals 4, stores_held_by_seals_ns 2798304, window_map_bytes_evacuate 203579392, window_map_bytes_grow 288161792, window_map_bytes_reach 393216, window_map_bytes_restage 39518208, window_map_requests 3009, window_maps 22812, window_maps_evacuate 20604, window_maps_grow 1602, window_maps_ns 1545003418, window_maps_reach 3, window_maps_restage 603, window_regions 1, window_regions_largest_free_bytes 2490368, window_regions_pruned 862, window_unmaps 2004, window_unmaps_ns 694103734
+REQUESTS sqlite-delete-full-batch100: read 1.16 (173 µs each), write 10.32 (682 µs each), free 1.89 (1184 µs each), map 15.05 (492 µs each), unmap 10.03 (325 µs each), commit 0.02 (667 µs each) per operation
+RESULT sqlite-delete-full-batch100 txn/s higher 57.400
+OBSERVED sqlite-delete-full-batch100-updates-per-second 5740.0
+FXFS sqlite-wal-full-batch1: dax_map_writes 808, device_commits 201, device_commits_ns 53536015, device_read_bytes 819200, device_reads 200, device_reads_ns 31795871, device_write_bytes 1675264, device_writes 409, device_writes_ns 76814326, fsyncs 201, seal_waits 201, seal_waits_ns 4052078, seals 201, seals_ns 55467088, window_map_bytes_evacuate 6369280, window_map_bytes_grow 65536, window_map_bytes_reach 57344, window_map_bytes_restage 13172736, window_map_requests 411, window_maps 1554, window_maps_evacuate 1345, window_maps_grow 1, window_maps_ns 143543168, window_maps_reach 7, window_maps_restage 201, window_regions 201, window_regions_pruned 436, window_unmaps 14, window_unmaps_ns 4381554
+REQUESTS sqlite-wal-full-batch1: read 1.00 (144 µs each), write 2.04 (177 µs each), free 0.01 (585 µs each), map 2.06 (316 µs each), unmap 0.07 (291 µs each) per operation
+FXFS sqlite-wal-full-batch1-checkpoint: dax_map_writes 201, device_commits 2, device_commits_ns 1402001, device_write_bytes 28672, device_writes 7, device_writes_ns 2230834, fsyncs 2, seal_waits 2, seal_waits_ns 7084, seals 2, seals_ns 1422288, window_map_bytes_evacuate 8192, window_map_bytes_grow 983040, window_map_bytes_restage 131072, window_map_requests 10, window_maps 181, window_maps_evacuate 2, window_maps_grow 5, window_maps_ns 9202760, window_maps_restage 2, window_regions 1, window_unmaps 2, window_unmaps_ns 5021524
+REQUESTS sqlite-wal-full-batch1-checkpoint: write 7.00 (274 µs each), map 11.00 (938 µs each), unmap 3.00 (1772 µs each) per operation
+RESULT sqlite-wal-full-batch1 txn/s higher 860.403
+OBSERVED sqlite-wal-full-batch1-updates-per-second 860.4
+RESULT sqlite-wal-full-batch1-checkpoint ms lower 30.410
+FXFS sqlite-wal-full-batch100: dax_map_writes 21559, device_commits 203, device_commits_ns 192609949, device_read_bytes 1069056, device_reads 216, device_reads_ns 36311757, device_write_bytes 5603328, device_writes 1224, device_writes_ns 966050772, fsyncs 201, journal_compaction_ns 22881248, journal_compactions 1, seal_waits 203, seal_waits_ns 5009072, seals 203, seals_ns 195035775, stores_held_by_seals 1, stores_held_by_seals_ns 540911, window_map_bytes_evacuate 131022848, window_map_bytes_grow 143851520, window_map_bytes_reach 15228928, window_map_bytes_restage 13303808, window_map_requests 1249, window_maps 2140, window_maps_evacuate 1094, window_maps_grow 798, window_maps_ns 404856209, window_maps_reach 45, window_maps_restage 203, window_regions 54, window_regions_pruned 385, window_unmaps 511, window_unmaps_ns 91864264
+REQUESTS sqlite-wal-full-batch100: read 1.08 (150 µs each), write 6.12 (768 µs each), free 0.04 (443 µs each), map 6.25 (306 µs each), unmap 2.56 (169 µs each), commit 0.01 (472 µs each) per operation
+FXFS sqlite-wal-full-batch100-checkpoint: dax_map_writes 1025, device_commits 2, device_commits_ns 5014664, device_write_bytes 126976, device_writes 31, device_writes_ns 24279270, fsyncs 2, seal_waits 2, seal_waits_ns 11248549, seals 2, seals_ns 5029179, window_free_bytes 84844544, window_largest_free_bytes 77594624, window_map_bytes_evacuate 4218880, window_map_bytes_grow 3997696, window_map_bytes_reach 131072, window_map_bytes_restage 131072, window_map_requests 23, window_maps 30, window_maps_evacuate 9, window_maps_grow 17, window_maps_ns 7205160, window_maps_reach 2, window_maps_restage 2, window_regions_free_bytes 2007040, window_regions_pruned 4, window_unmaps 48, window_unmaps_ns 12400284
+REQUESTS sqlite-wal-full-batch100-checkpoint: write 31.00 (258 µs each), free 1.00 (1582 µs each), map 23.00 (287 µs each), unmap 48.00 (253 µs each) per operation
+RESULT sqlite-wal-full-batch100 txn/s higher 125.317
+OBSERVED sqlite-wal-full-batch100-updates-per-second 12531.7
+RESULT sqlite-wal-full-batch100-checkpoint ms lower 93.571
+FXFS sqlite-wal-normal-batch1: dax_map_writes 212, device_commits 1, device_commits_ns 429706, device_read_bytes 4096, device_reads 1, device_reads_ns 201393, device_write_bytes 40960, device_writes 10, device_writes_ns 1982428, fsyncs 1, seal_waits 1, seal_waits_ns 17393, seals 1, seals_ns 439297, window_map_bytes_evacuate 4096, window_map_bytes_grow 983040, window_map_bytes_restage 65536, window_map_requests 7, window_maps 7, window_maps_evacuate 1, window_maps_grow 5, window_maps_ns 1673707, window_maps_restage 1, window_regions 1, window_unmaps 7, window_unmaps_ns 845653
+REQUESTS sqlite-wal-normal-batch1: read 0.01 (165 µs each), write 0.05 (173 µs each), free 0.01 (239 µs each), map 0.04 (212 µs each), unmap 0.04 (108 µs each) per operation
+FXFS sqlite-wal-normal-batch1-checkpoint: dax_map_writes 201, device_commits 2, device_commits_ns 2926417, device_write_bytes 57344, device_writes 14, device_writes_ns 5334865, fsyncs 2, seal_waits 2, seal_waits_ns 8360314, seals 2, seals_ns 2938181, window_map_bytes_evacuate 860160, window_map_bytes_grow 851968, window_map_bytes_reach 131072, window_map_bytes_restage 131072, window_map_requests 9, window_maps 97, window_maps_evacuate 4, window_maps_grow 4, window_maps_ns 6373452, window_maps_reach 1, window_maps_restage 2, window_regions 2, window_regions_pruned 1, window_unmaps 1, window_unmaps_ns 1209473
+REQUESTS sqlite-wal-normal-batch1-checkpoint: write 14.00 (346 µs each), free 1.00 (1178 µs each), map 10.00 (626 µs each), unmap 1.00 (1166 µs each) per operation
+RESULT sqlite-wal-normal-batch1 txn/s higher 17850.012
+OBSERVED sqlite-wal-normal-batch1-updates-per-second 17850.0
+RESULT sqlite-wal-normal-batch1-checkpoint ms lower 21.133
+FXFS sqlite-wal-normal-batch100: dax_map_writes 20160, device_commits 1, device_commits_ns 392957, device_read_bytes 4096, device_reads 1, device_reads_ns 274998, device_write_bytes 3190784, device_writes 779, device_writes_ns 1145623804, fsyncs 1, seal_waits 1, seal_waits_ns 29914, seals 1, seals_ns 403491, window_map_bytes_evacuate 4096, window_map_bytes_grow 80216064, window_map_bytes_reach 2555904, window_map_bytes_restage 65536, window_map_requests 397, window_maps 397, window_maps_evacuate 1, window_maps_grow 356, window_maps_ns 96873995, window_maps_reach 39, window_maps_restage 1, window_regions 37, window_unmaps 325, window_unmaps_ns 23227055
+REQUESTS sqlite-wal-normal-batch100: read 0.01 (127 µs each), write 3.90 (465 µs each), free 0.01 (315 µs each), map 1.99 (223 µs each), unmap 1.62 (70 µs each) per operation
+FXFS sqlite-wal-normal-batch100-checkpoint: dax_map_writes 1025, device_commits 2, device_commits_ns 149167360, device_read_bytes 196608, device_reads 6, device_reads_ns 18866584, device_write_bytes 1024000, device_writes 56, device_writes_ns 176395066, fsyncs 2, seal_waits 2, seal_waits_ns 22182, seals 2, seals_ns 150837604, window_free_bytes 154140672, window_largest_free_bytes 77594624, window_map_bytes_evacuate 86761472, window_map_bytes_grow 3932160, window_map_bytes_reach 196608, window_map_bytes_restage 131072, window_map_requests 24, window_maps 116, window_maps_evacuate 95, window_maps_grow 17, window_maps_ns 80578898, window_maps_reach 2, window_maps_restage 2, window_regions_free_bytes 71303168, window_regions_largest_free_bytes 14680064, window_regions_pruned 83, window_unmaps 77, window_unmaps_ns 23706983
+REQUESTS sqlite-wal-normal-batch100-checkpoint: read 6.00 (3113 µs each), write 56.00 (2818 µs each), free 2.00 (18540 µs each), map 24.00 (3339 µs each), unmap 77.00 (301 µs each) per operation
+RESULT sqlite-wal-normal-batch100 txn/s higher 281.642
+OBSERVED sqlite-wal-normal-batch100-updates-per-second 28164.2
+RESULT sqlite-wal-normal-batch100-checkpoint ms lower 280.076
+iteration 2/3
+OBSERVED mtime-ahead-of-guest-ms -5.998
+RESULT sqlite-pread-scan MiB/s higher 843.269
+OBSERVED sqlite-pread-scan-faults-per-mib 2.7
+RESULT sqlite-pread-scan-warm MiB/s higher 2721.543
+OBSERVED sqlite-pread-scan-warm-faults-per-mib 2.6
+RESULT sqlite-mmap-scan MiB/s higher 2856.316
+OBSERVED sqlite-mmap-scan-faults-per-mib 3.7
+RESULT sqlite-mmap-scan-warm MiB/s higher 3003.839
+OBSERVED sqlite-mmap-scan-warm-faults-per-mib 3.6
+FXFS sqlite-delete-full-batch1: dax_map_writes 1200, device_commits 603, device_commits_ns 186577598, device_read_bytes 950272, device_reads 215, device_reads_ns 35512584, device_write_bytes 3543040, device_writes 817, device_writes_ns 211840438, fsyncs 800, journal_compaction_ns 13887548, journal_compactions 1, seal_waits 603, seal_waits_ns 3207711, seals 603, seals_ns 192433058, window_free_bytes 2097152, window_map_bytes_evacuate 4980736, window_map_bytes_reach 262144, window_map_bytes_restage 39321600, window_map_requests 1204, window_maps 1413, window_maps_evacuate 809, window_maps_ns 330121282, window_maps_reach 4, window_maps_restage 600, window_regions_free_bytes 2162688, window_regions_largest_free_bytes 4194304, window_regions_pruned 682, window_unmaps 1005, window_unmaps_ns 193747177
+REQUESTS sqlite-delete-full-batch1: read 1.07 (143 µs each), write 4.08 (247 µs each), free 1.03 (176 µs each), map 6.02 (231 µs each), unmap 5.03 (172 µs each), commit 0.01 (274 µs each) per operation
+RESULT sqlite-delete-full-batch1 txn/s higher 326.165
+OBSERVED sqlite-delete-full-batch1-updates-per-second 326.2
+FXFS sqlite-delete-full-batch100: dax_map_writes 40800, device_commits 605, device_commits_ns 604552590, device_read_bytes 1208320, device_reads 230, device_reads_ns 44375248, device_write_bytes 8998912, device_writes 2068, device_writes_ns 1394308688, fsyncs 800, journal_compaction_ns 38213468, journal_compactions 2, seal_waits 605, seal_waits_ns 2983707, seals 605, seals_ns 612403696, stores_held_by_seals 3, stores_held_by_seals_ns 1312253, window_map_bytes_evacuate 205664256, window_map_bytes_grow 288030720, window_map_bytes_reach 524288, window_map_bytes_restage 39387136, window_map_requests 3006, window_maps 22817, window_maps_evacuate 20611, window_maps_grow 1600, window_maps_ns 1603829396, window_maps_reach 5, window_maps_restage 601, window_regions 1, window_regions_largest_free_bytes 2490368, window_regions_pruned 860, window_unmaps 2003, window_unmaps_ns 700030617, writes_held_by_seals 1, writes_held_by_seals_ns 1597103
+REQUESTS sqlite-delete-full-batch100: read 1.15 (178 µs each), write 10.34 (652 µs each), free 1.89 (1214 µs each), map 15.04 (511 µs each), unmap 10.02 (327 µs each), commit 0.02 (398 µs each) per operation
+RESULT sqlite-delete-full-batch100 txn/s higher 55.161
+OBSERVED sqlite-delete-full-batch100-updates-per-second 5516.1
+FXFS sqlite-wal-full-batch1: dax_map_writes 808, device_commits 201, device_commits_ns 109651031, device_read_bytes 819200, device_reads 200, device_reads_ns 40026669, device_write_bytes 1679360, device_writes 410, device_writes_ns 134216383, fsyncs 201, seal_waits 201, seal_waits_ns 4049502, seals 201, seals_ns 111705039, window_map_bytes_evacuate 5787648, window_map_bytes_grow 65536, window_map_bytes_reach 57344, window_map_bytes_restage 13172736, window_map_requests 411, window_maps 1411, window_maps_evacuate 1202, window_maps_grow 1, window_maps_ns 160416292, window_maps_reach 7, window_maps_restage 201, window_regions 201, window_regions_pruned 433, window_unmaps 14, window_unmaps_ns 6727397
+REQUESTS sqlite-wal-full-batch1: read 1.00 (183 µs each), write 2.05 (316 µs each), free 0.01 (620 µs each), map 2.06 (357 µs each), unmap 0.07 (432 µs each) per operation
+FXFS sqlite-wal-full-batch1-checkpoint: dax_map_writes 201, device_commits 2, device_commits_ns 1699113, device_write_bytes 28672, device_writes 7, device_writes_ns 2376099, fsyncs 2, seal_waits 2, seal_waits_ns 126594, seals 2, seals_ns 1712284, window_map_bytes_evacuate 8192, window_map_bytes_grow 983040, window_map_bytes_restage 131072, window_map_requests 10, window_maps 181, window_maps_evacuate 2, window_maps_grow 5, window_maps_ns 9652796, window_maps_restage 2, window_regions 1, window_unmaps 2, window_unmaps_ns 5202838
+REQUESTS sqlite-wal-full-batch1-checkpoint: write 7.00 (310 µs each), map 11.00 (990 µs each), unmap 2.00 (2737 µs each) per operation
+RESULT sqlite-wal-full-batch1 txn/s higher 650.632
+OBSERVED sqlite-wal-full-batch1-updates-per-second 650.6
+RESULT sqlite-wal-full-batch1-checkpoint ms lower 15.383
+FXFS sqlite-wal-full-batch100: dax_map_writes 21559, device_commits 203, device_commits_ns 191937012, device_read_bytes 1077248, device_reads 216, device_reads_ns 48100291, device_write_bytes 5312512, device_writes 1224, device_writes_ns 1174076614, fsyncs 201, journal_compaction_ns 27433621, journal_compactions 1, seal_waits 203, seal_waits_ns 4775843, seals 203, seals_ns 194135983, stores_held_by_seals 2, stores_held_by_seals_ns 891817, window_map_bytes_evacuate 129634304, window_map_bytes_grow 143982592, window_map_bytes_reach 14229504, window_map_bytes_restage 13303808, window_map_requests 1237, window_maps 2128, window_maps_evacuate 1093, window_maps_grow 800, window_maps_ns 395542305, window_maps_reach 32, window_maps_restage 203, window_regions 53, window_regions_pruned 384, window_unmaps 504, window_unmaps_ns 91832335, writes_held_by_seals 1, writes_held_by_seals_ns 1347116
+REQUESTS sqlite-wal-full-batch100: read 1.08 (205 µs each), write 6.12 (934 µs each), free 0.04 (652 µs each), map 6.19 (302 µs each), unmap 2.52 (169 µs each), commit 0.01 (417 µs each) per operation
+FXFS sqlite-wal-full-batch100-checkpoint: dax_map_writes 1025, device_commits 4, device_commits_ns 6113536, device_read_bytes 245760, device_reads 15, device_reads_ns 10775311, device_write_bytes 1458176, device_writes 87, device_writes_ns 48043591, fsyncs 2, journal_compaction_ns 37469095, journal_compactions 1, seal_waits 4, seal_waits_ns 14597912, seals 4, seals_ns 6133995, window_free_bytes 86921216, window_largest_free_bytes 77594624, window_map_bytes_evacuate 4222976, window_map_bytes_grow 3997696, window_map_bytes_reach 131072, window_map_bytes_restage 196608, window_map_requests 25, window_maps 32, window_maps_evacuate 10, window_maps_grow 17, window_maps_ns 15224378, window_maps_reach 2, window_maps_restage 3, window_regions_free_bytes 4083712, window_regions_pruned 4, window_unmaps 47, window_unmaps_ns 11011330
+REQUESTS sqlite-wal-full-batch100-checkpoint: read 15.00 (698 µs each), write 87.00 (398 µs each), free 2.00 (2542 µs each), map 25.00 (337 µs each), unmap 47.00 (230 µs each), commit 2.00 (543 µs each) per operation
+RESULT sqlite-wal-full-batch100 txn/s higher 118.547
+OBSERVED sqlite-wal-full-batch100-updates-per-second 11854.7
+RESULT sqlite-wal-full-batch100-checkpoint ms lower 102.634
+FXFS sqlite-wal-normal-batch1: dax_map_writes 212, device_commits 1, device_commits_ns 367206, device_read_bytes 4096, device_reads 1, device_reads_ns 226120, device_write_bytes 40960, device_writes 10, device_writes_ns 1902188, fsyncs 1, seal_waits 1, seal_waits_ns 32128, seals 1, seals_ns 377612, window_map_bytes_evacuate 4096, window_map_bytes_grow 983040, window_map_bytes_restage 65536, window_map_requests 7, window_maps 7, window_maps_evacuate 1, window_maps_grow 5, window_maps_ns 2102200, window_maps_restage 1, window_regions 1, window_unmaps 7, window_unmaps_ns 852182
+REQUESTS sqlite-wal-normal-batch1: read 0.01 (186 µs each), write 0.05 (165 µs each), free 0.01 (233 µs each), map 0.04 (275 µs each), unmap 0.04 (104 µs each) per operation
+FXFS sqlite-wal-normal-batch1-checkpoint: dax_map_writes 201, device_commits 2, device_commits_ns 3154189, device_write_bytes 61440, device_writes 15, device_writes_ns 5850263, fsyncs 2, seal_waits 2, seal_waits_ns 19542, seals 2, seals_ns 3175781, window_map_bytes_evacuate 860160, window_map_bytes_grow 983040, window_map_bytes_restage 131072, window_map_requests 8, window_maps 11, window_maps_evacuate 4, window_maps_grow 5, window_maps_ns 4399481, window_maps_restage 2, window_regions 2, window_regions_pruned 1, window_unmaps 1, window_unmaps_ns 1283060
+REQUESTS sqlite-wal-normal-batch1-checkpoint: write 15.00 (367 µs each), free 1.00 (1374 µs each), map 10.00 (724 µs each), unmap 1.00 (1256 µs each) per operation
+RESULT sqlite-wal-normal-batch1 txn/s higher 16989.032
+OBSERVED sqlite-wal-normal-batch1-updates-per-second 16989.0
+RESULT sqlite-wal-normal-batch1-checkpoint ms lower 28.103
+FXFS sqlite-wal-normal-batch100: dax_map_writes 20170, device_commits 3, device_commits_ns 50870855, device_read_bytes 438272, device_reads 19, device_reads_ns 4029027, device_write_bytes 4300800, device_writes 804, device_writes_ns 2281038440, fsyncs 1, journal_compaction_ns 121018851, journal_compactions 1, seal_waits 3, seal_waits_ns 101398, seals 3, seals_ns 50946162, stores_held_by_seals 1, stores_held_by_seals_ns 48362416, window_map_bytes_evacuate 54923264, window_map_bytes_grow 87162880, window_map_bytes_reach 21520384, window_map_bytes_restage 196608, window_map_requests 545, window_maps 606, window_maps_evacuate 64, window_maps_grow 388, window_maps_ns 156508855, window_maps_reach 151, window_maps_restage 3, window_regions 16, window_regions_pruned 54, window_unmaps 391, window_unmaps_ns 76598771
+REQUESTS sqlite-wal-normal-batch100: read 0.10 (176 µs each), write 4.02 (353 µs each), free 0.01 (278 µs each), map 2.73 (273 µs each), unmap 1.96 (181 µs each), commit 0.01 (25099 µs each) per operation
+FXFS sqlite-wal-normal-batch100-checkpoint: dax_map_writes 1025, device_commits 2, device_commits_ns 29711197, device_write_bytes 196608, device_writes 48, device_writes_ns 43763379, fsyncs 2, seal_waits 2, seal_waits_ns 12909242, seals 2, seals_ns 29739904, window_free_bytes 102113280, window_largest_free_bytes 77594624, window_map_bytes_evacuate 31883264, window_map_bytes_grow 4063232, window_map_bytes_reach 65536, window_map_bytes_restage 131072, window_map_requests 23, window_maps 64, window_maps_evacuate 43, window_maps_grow 18, window_maps_ns 23053254, window_maps_reach 1, window_maps_restage 2, window_regions_free_bytes 19275776, window_regions_pruned 31, window_unmaps 54, window_unmaps_ns 14489486
+REQUESTS sqlite-wal-normal-batch100-checkpoint: write 48.00 (828 µs each), free 5.00 (2110 µs each), map 23.00 (975 µs each), unmap 54.00 (257 µs each) per operation
+RESULT sqlite-wal-normal-batch100 txn/s higher 217.615
+OBSERVED sqlite-wal-normal-batch100-updates-per-second 21761.5
+RESULT sqlite-wal-normal-batch100-checkpoint ms lower 127.356
+iteration 3/3
+OBSERVED mtime-ahead-of-guest-ms -3.692
+RESULT sqlite-pread-scan MiB/s higher 842.215
+OBSERVED sqlite-pread-scan-faults-per-mib 2.7
+RESULT sqlite-pread-scan-warm MiB/s higher 2700.248
+OBSERVED sqlite-pread-scan-warm-faults-per-mib 2.6
+RESULT sqlite-mmap-scan MiB/s higher 2734.149
+OBSERVED sqlite-mmap-scan-faults-per-mib 7.6
+RESULT sqlite-mmap-scan-warm MiB/s higher 2843.299
+OBSERVED sqlite-mmap-scan-warm-faults-per-mib 7.6
+
+thread 'main' (1) panicked at test_cases/src/sqlite.rs:134:5:
+assertion `left == right` failed
+  left: ["ok", "4096|226401|4096000"]
+ right: ["ok", "4096|1|4096000"]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+kernel: 5,0,0,-;Linux version 6.18.54+ (root@fxdax) (gcc (Ubuntu 15.2.0-16ubuntu1) 15.2.0, GNU ld (GNU Binutils for Ubuntu) 2.46) #1 SMP PREEMPT_DYNAMIC Sat Oct 24 22:41:28 UTC 2026
+kernel: 6,1,0,-;Command line: console=ttyS0 loglevel=5 reboot=k panic=-1 8250.nr_uarts=1 i8042.noaux i8042.nomux i8042.dumbkbd init=/guest-agent FXDAX_BENCH_ITERATIONS=3 FXDAX_BENCH_GROUPS=sqlite FXDAX_BENCH_GUEST_PERF= PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME=/root pci=off root=/dev/vda rw virtio_mmio.device=4K@0xc0001000:5 virtio_mmio.device=4K@0xc0002000:6 -- bench-fs-fxfs-guest-dax
+kernel: 6,2,0,-;KASLR disabled
+kernel: 6,3,0,-;BIOS-provided physical RAM map:
+kernel: 6,4,0,-;BIOS-e820: [mem 0x0000000000000000-0x000000000009fbff] usable
+kernel: 6,5,0,-;BIOS-e820: [mem 0x000000000009fc00-0x00000000000fffff] reserved
+kernel: 6,6,0,-;BIOS-e820: [mem 0x0000000000100000-0x000000007fffffff] usable
+kernel: 6,7,0,-;BIOS-e820: [mem 0x00000000eec00000-0x00000000febfffff] reserved
+kernel: 6,8,0,-;NX (Execute Disable) protection: active
+kernel: 6,9,0,-;APIC: Static calls initialized
+kernel: 6,10,0,-;DMI not present or invalid.
+kernel: 6,11,0,-;Hypervisor detected: KVM
+kernel: 6,12,0,-;last_pfn = 0x80000 max_arch_pfn = 0x400000000
+kernel: 6,13,0,-;kvm-clock: Using msrs 4b564d01 and 4b564d00
+kernel: 6,14,0,-;kvm-clock: using sched offset of 53431567 cycles
+kernel: 6,15,14,-;clocksource: kvm-clock: mask: 0xffffffffffffffff max_cycles: 0x1cd42e4dffb, max_idle_ns: 881590591483 ns
+kernel: 6,16,83,-;tsc: Detected 2699.998 MHz processor
+kernel: 7,17,679,-;e820: update [mem 0x00000000-0x00000fff] usable ==> reserved
+kernel: 7,18,681,-;e820: remove [mem 0x000a0000-0x000fffff] usable
+kernel: 6,19,684,-;last_pfn = 0x80000 max_arch_pfn = 0x400000000
+kernel: 6,20,945,-;MTRR map: 0 entries (0 fixed + 0 variable; max 16), built from 8 variable MTRRs
+kernel: 6,21,996,-;x86/PAT: Configuration [0-7]: WB  WC  UC- UC  WB  WP  UC- WT  
+kernel: 6,22,1370,-;Using GB pages for direct mapping
+kernel: 6,23,1540,-;ACPI: Early table checksum verification disabled
+kernel: 6,24,1691,-;ACPI: RSDP 0x00000000000E0000 000024 (v02 FIRECK)
+kernel: 6,25,1738,-;ACPI: XSDT 0x00000000000A0151 00003C (v01 FIRECK FCMVXSDT 00000000 FCAT 20240119)
+kernel: 6,26,1809,-;ACPI: FACP 0x000000000009FFB9 000114 (v06 FIRECK FCVMFADT 00000000 FCAT 20240119)
+kernel: 6,27,1826,-;ACPI: DSDT 0x000000000009FD44 000275 (v02 FIRECK FCVMDSDT 00000000 FCAT 20240119)
+kernel: 6,28,1840,-;ACPI: APIC 0x00000000000A00CD 000048 (v06 FIRECK FCVMMADT 00000000 FCAT 20240119)
+kernel: 6,29,1843,-;ACPI: MCFG 0x00000000000A0115 00003C (v01 FIRECK FCMVMCFG 00000000 FCAT 20240119)
+kernel: 6,30,1845,-;ACPI: Reserving FACP table memory at [mem 0x9ffb9-0xa00cc]
+kernel: 6,31,1846,-;ACPI: Reserving DSDT table memory at [mem 0x9fd44-0x9ffb8]
+kernel: 6,32,1847,-;ACPI: Reserving APIC table memory at [mem 0xa00cd-0xa0114]
+kernel: 6,33,1847,-;ACPI: Reserving MCFG table memory at [mem 0xa0115-0xa0150]
+kernel: 6,34,2248,-;No NUMA configuration found
+kernel: 6,35,2248,-;Faking a node at [mem 0x0000000000000000-0x000000007fffffff]
+kernel: 6,36,2265,-;NODE_DATA(0) allocated [mem 0x7ffd5680-0x7fffffff]
+kernel: 6,37,3164,-;Zone ranges:
+kernel: 6,38,3176,-;  DMA      [mem 0x0000000000001000-0x0000000000ffffff]
+kernel: 6,39,3178,-;  DMA32    [mem 0x0000000001000000-0x000000007fffffff]
+kernel: 6,40,3179,-;  Normal   empty
+kernel: 6,41,3191,-;  Device   empty
+kernel: 6,42,3191,-;Movable zone start for each node
+kernel: 6,43,3205,-;Early memory node ranges
+kernel: 6,44,3216,-;  node   0: [mem 0x0000000000001000-0x000000000009efff]
+kernel: 6,45,3217,-;  node   0: [mem 0x0000000000100000-0x000000007fffffff]
+kernel: 6,46,3219,-;Initmem setup node 0 [mem 0x0000000000001000-0x000000007fffffff]
+kernel: 6,47,3285,-;On node 0, zone DMA: 1 pages in unavailable ranges
+kernel: 6,48,4054,-;On node 0, zone DMA: 97 pages in unavailable ranges
+kernel: 6,49,15797,-;IOAPIC[0]: apic_id 0, version 17, address 0xfec00000, GSI 0-23
+kernel: 6,50,15817,-;ACPI: Using ACPI (MADT) for SMP configuration information
+kernel: 6,51,15829,-;TSC deadline timer available
+kernel: 6,52,15844,-;CPU topo: Max. logical packages:   1
+kernel: 6,53,15856,-;CPU topo: Max. logical dies:       1
+kernel: 6,54,15856,-;CPU topo: Max. dies per package:   1
+kernel: 6,55,15859,-;CPU topo: Max. threads per core:   1
+kernel: 6,56,15860,-;CPU topo: Num. cores per package:     2
+kernel: 6,57,15860,-;CPU topo: Num. threads per package:   2
+kernel: 6,58,15860,-;CPU topo: Allowing 2 present CPUs plus 0 hotplug CPUs
+kernel: 6,59,15932,-;kvm-guest: APIC: eoi() replaced with kvm_guest_apic_eoi_write()
+kernel: 6,60,16120,-;kvm-guest: KVM setup pv remote TLB flush
+kernel: 6,61,16143,-;kvm-guest: setup PV sched yield
+kernel: 6,62,16227,-;PM: hibernation: Registered nosave memory: [mem 0x00000000-0x00000fff]
+kernel: 6,63,16239,-;PM: hibernation: Registered nosave memory: [mem 0x0009f000-0x000fffff]
+kernel: 6,64,16240,-;[mem 0x80000000-0xeebfffff] available for PCI devices
+kernel: 6,65,16242,-;Booting paravirtualized kernel on KVM
+kernel: 6,66,16253,-;clocksource: refined-jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 7645519600211568 ns
+kernel: 6,67,16280,-;setup_percpu: NR_CPUS:64 nr_cpumask_bits:2 nr_cpu_ids:2 nr_node_ids:1
+kernel: 6,68,22821,-;percpu: Embedded 45 pages/cpu s143640 r8192 d32488 u1048576
+kernel: 7,69,22849,-;pcpu-alloc: s143640 r8192 d32488 u1048576 alloc=1*2097152
+kernel: 7,70,22852,-;pcpu-alloc: [0] 0 1 
+kernel: 6,71,22950,-;kvm-guest: PV spinlocks enabled
+kernel: 6,72,22952,-;PV qspinlock hash table entries: 256 (order: 0, 4096 bytes, linear)
+kernel: 5,73,22966,-;Kernel command line: console=ttyS0 loglevel=5 reboot=k panic=-1 8250.nr_uarts=1 i8042.noaux i8042.nomux i8042.dumbkbd init=/guest-agent FXDAX_BENCH_ITERATIONS=3 FXDAX_BENCH_GROUPS=sqlite FXDAX_BENCH_GUEST_PERF= PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME=/root pci=off root=/dev/vda rw virtio_mmio.device=4K@0xc0001000:5 virtio_mmio.device=4K@0xc0002000:6 -- bench-fs-fxfs-guest-dax
+kernel: 5,74,23814,-;Unknown kernel command line parameters "FXDAX_BENCH_ITERATIONS=3 FXDAX_BENCH_GROUPS=sqlite FXDAX_BENCH_GUEST_PERF= PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", will be passed to user space.
+kernel: 5,75,23912,-;random: crng init done
+kernel: 6,76,23913,-;printk: log buffer data + meta data: 131072 + 458752 = 589824 bytes
+kernel: 6,77,30603,-;Dentry cache hash table entries: 262144 (order: 9, 2097152 bytes, linear)
+kernel: 6,78,33707,-;Inode-cache hash table entries: 131072 (order: 8, 1048576 bytes, linear)
+kernel: 6,79,33888,-;Fallback order for Node 0: 0 
+kernel: 6,80,33916,-;Built 1 zonelists, mobility grouping on.  Total pages: 524190
+kernel: 6,81,33917,-;Policy zone: DMA32
+kernel: 6,82,33918,-;mem auto-init: stack:off, heap alloc:off, heap free:off
+kernel: 6,83,37775,-;SLUB: HWalign=64, Order=0-3, MinObjects=0, CPUs=2, Nodes=1
+kernel: 6,84,39172,-;Dynamic Preempt: none
+kernel: 6,85,39406,-;rcu: Preemptible hierarchical RCU implementation.
+kernel: 6,86,39418,-;rcu: \x09RCU restricting CPUs from NR_CPUS=64 to nr_cpu_ids=2.
+kernel: 6,87,39441,-;\x09Trampoline variant of Tasks RCU enabled.
+kernel: 6,88,39442,-;\x09Tracing variant of Tasks RCU enabled.
+kernel: 6,89,39464,-;rcu: RCU calculated value of scheduler-enlistment delay is 25 jiffies.
+kernel: 6,90,39465,-;rcu: Adjusting geometry for rcu_fanout_leaf=16, nr_cpu_ids=2
+kernel: 6,91,39515,-;RCU Tasks: Setting shift to 1 and lim to 1 rcu_task_cb_adjust=1 rcu_task_cpu_ids=2.
+kernel: 6,92,39516,-;RCU Tasks Trace: Setting shift to 1 and lim to 1 rcu_task_cb_adjust=1 rcu_task_cpu_ids=2.
+kernel: 6,93,39520,-;NR_IRQS: 4352, nr_irqs: 424, preallocated irqs: 0
+kernel: 6,94,39712,-;rcu: srcu_init: Setting srcu_struct sizes based on contention.
+kernel: 6,95,39738,-;clocksource: jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 7645041785100000 ns
+kernel: 6,96,40160,-;Console: colour dummy device 80x25
+kernel: 6,97,40425,-;printk: legacy console [ttyS0] enabled
+kernel: 6,98,40471,-;ACPI: Core revision 20250807
+kernel: 6,99,40643,-;APIC: Switch to symmetric I/O mode setup
+kernel: 6,100,41511,-;x2apic enabled
+kernel: 6,101,42403,-;APIC: Switched APIC routing to: physical x2apic
+kernel: 6,102,42414,-;kvm-guest: APIC: send_IPI_mask() replaced with kvm_send_ipi_mask()
+kernel: 6,103,42419,-;kvm-guest: APIC: send_IPI_mask_allbutself() replaced with kvm_send_ipi_mask_allbutself()
+kernel: 6,104,42422,-;kvm-guest: setup PV IPIs
+kernel: 6,105,42744,-;clocksource: tsc-early: mask: 0xffffffffffffffff max_cycles: 0x26eb3cc21a9, max_idle_ns: 440795299783 ns
+kernel: 6,106,42771,-;Calibrating delay loop (skipped) preset value.. 5399.99 BogoMIPS (lpj=10799992)
+kernel: 6,107,43722,-;x86/cpu: User Mode Instruction Prevention (UMIP) activated
+kernel: 6,108,43791,-;Last level iTLB entries: 4KB 0, 2MB 0, 4MB 0
+kernel: 6,109,43792,-;Last level dTLB entries: 4KB 0, 2MB 0, 4MB 0, 1GB 0
+kernel: 6,110,43830,-;mitigations: Enabled attack vectors: user_kernel, user_user, SMT mitigations: auto
+kernel: 6,111,43844,-;Speculative Store Bypass: Mitigation: Speculative Store Bypass disabled via prctl
+kernel: 6,112,43845,-;Spectre V2 : Mitigation: Enhanced / Automatic IBRS
+kernel: 6,113,43846,-;Spectre V1 : Mitigation: usercopy/swapgs barriers and __user pointer sanitization
+kernel: 6,114,43855,-;Spectre V2 : Spectre v2 / PBRSB-eIBRS: Retire a single CALL on VMEXIT
+kernel: 6,115,43867,-;Spectre V2 : mitigation: Enabling conditional Indirect Branch Prediction Barrier
+kernel: 6,116,44078,-;x86/fpu: Supporting XSAVE feature 0x001: 'x87 floating point registers'
+kernel: 6,117,44080,-;x86/fpu: Supporting XSAVE feature 0x002: 'SSE registers'
+kernel: 6,118,44081,-;x86/fpu: Supporting XSAVE feature 0x004: 'AVX registers'
+kernel: 6,119,44082,-;x86/fpu: Supporting XSAVE feature 0x020: 'AVX-512 opmask'
+kernel: 6,120,44083,-;x86/fpu: Supporting XSAVE feature 0x040: 'AVX-512 Hi256'
+kernel: 6,121,44083,-;x86/fpu: Supporting XSAVE feature 0x080: 'AVX-512 ZMM_Hi256'
+kernel: 6,122,44084,-;x86/fpu: Supporting XSAVE feature 0x20000: 'AMX Tile config'
+kernel: 6,123,44085,-;x86/fpu: Supporting XSAVE feature 0x40000: 'AMX Tile data'
+kernel: 6,124,44086,-;x86/fpu: xstate_offset[2]:  576, xstate_sizes[2]:  256
+kernel: 6,125,44087,-;x86/fpu: xstate_offset[5]:  832, xstate_sizes[5]:   64
+kernel: 6,126,44088,-;x86/fpu: xstate_offset[6]:  896, xstate_sizes[6]:  512
+kernel: 6,127,44089,-;x86/fpu: xstate_offset[7]: 1408, xstate_sizes[7]: 1024
+kernel: 6,128,44089,-;x86/fpu: xstate_offset[17]: 2432, xstate_sizes[17]:   64
+kernel: 6,129,44090,-;x86/fpu: xstate_offset[18]: 2496, xstate_sizes[18]: 8192
+kernel: 6,130,44091,-;x86/fpu: Enabled xstate features 0x600e7, context size is 10688 bytes, using 'compacted' format.
+kernel: 6,131,46757,-;Freeing SMP alternatives memory: 48K
+kernel: 6,132,46757,-;pid_max: default: 32768 minimum: 301
+kernel: 6,133,46757,-;LSM: initializing lsm=capability,landlock,selinux
+kernel: 6,134,46757,-;landlock: Up and running.
+kernel: 6,135,46757,-;SELinux:  Initializing.
+kernel: 6,136,46757,-;Mount-cache hash table entries: 4096 (order: 3, 32768 bytes, linear)
+kernel: 6,137,46757,-;Mountpoint-cache hash table entries: 4096 (order: 3, 32768 bytes, linear)
+kernel: 6,138,46757,-;smpboot: CPU0: Intel(R) Xeon(R) Processor @ 2.70GHz (family: 0x6, model: 0x8f, stepping: 0x8)
+kernel: 6,139,46757,-;Performance Events: unsupported CPU family 6 model 143 no PMU driver, software events only.
+kernel: 6,140,46757,-;signal: max sigframe size: 11952
+kernel: 6,141,46757,-;rcu: Hierarchical SRCU implementation.
+kernel: 6,142,46757,-;rcu: \x09Max phase no-delay instances is 1000.
+kernel: 6,143,46757,-;Timer migration: 1 hierarchy levels; 8 children per group; 1 crossnode level
+kernel: 6,144,46855,-;NMI watchdog: Perf NMI watchdog permanently disabled
+kernel: 6,145,47298,-;smp: Bringing up secondary CPUs ...
+kernel: 6,146,48538,-;smpboot: x86: Booting SMP configuration:
+kernel: 6,147,48539,-;.... node  #0, CPUs:      #1
+kernel: 6,148,50789,-;smp: Brought up 1 node, 2 CPUs
+kernel: 6,149,50792,-;smpboot: Total of 2 processors activated (10799.99 BogoMIPS)
+kernel: 6,150,101716,-;node 0 deferred pages initialised in 48ms
+kernel: 6,151,101731,-;Memory: 2025740K/2096760K available (16967K kernel code, 1242K rwdata, 3292K rodata, 2084K init, 2648K bss, 67792K reserved, 0K cma-reserved)
+kernel: 6,152,101731,-;devtmpfs: initialized
+kernel: 6,153,102828,-;x86/mm: Memory block size: 128MB
+kernel: 6,154,103699,-;posixtimers hash table entries: 1024 (order: 2, 16384 bytes, linear)
+kernel: 6,155,103699,-;futex hash table entries: 512 (32768 bytes on 1 NUMA nodes, total 32 KiB, linear).
+kernel: 6,156,103699,-;NET: Registered PF_NETLINK/PF_ROUTE protocol family
+kernel: 6,157,103727,-;audit: initializing netlink subsys (disabled)
+kernel: 5,158,104040,-;audit: type=2000 audit(1792882192.609:1): state=initialized audit_enabled=0 res=1
+kernel: 6,159,104040,-;thermal_sys: Registered thermal governor 'fair_share'
+kernel: 6,160,104040,-;thermal_sys: Registered thermal governor 'step_wise'
+kernel: 6,161,104040,-;thermal_sys: Registered thermal governor 'user_space'
+kernel: 6,162,104040,-;cpuidle: using governor ladder
+kernel: 6,163,104040,-;cpuidle: using governor menu
+kernel: 3,164,104040,-;PCI: Fatal: No config space access function found
+kernel: 6,165,122773,-;loading FIPS 140 Kernel Cryptographic Module
+kernel: 6,166,122773,-;FIPS 140: run_initcalls starting
+kernel: 6,167,124418,-;HugeTLB: registered 1.00 GiB page size, pre-allocated 0 pages
+kernel: 6,168,124418,-;HugeTLB: 16380 KiB vmemmap can be freed for a 1.00 GiB page
+kernel: 6,169,124418,-;HugeTLB: registered 2.00 MiB page size, pre-allocated 0 pages
+kernel: 6,170,124418,-;HugeTLB: 28 KiB vmemmap can be freed for a 2.00 MiB page
+kernel: 6,171,127549,-;ACPI: Added _OSI(Module Device)
+kernel: 6,172,127551,-;ACPI: Added _OSI(Processor Device)
+kernel: 6,173,127552,-;ACPI: Added _OSI(Processor Aggregator Device)
+kernel: 6,174,127642,-;ACPI: 1 ACPI AML tables successfully acquired and loaded
+kernel: 6,175,127682,-;ACPI: Interpreter enabled
+kernel: 6,176,127682,-;ACPI: PM: (supports S0)
+kernel: 6,177,127682,-;ACPI: Using IOAPIC for interrupt routing
+kernel: 6,178,127682,-;PCI: Using host bridge windows from ACPI; if necessary, use "pci=nocrs" and report a bug
+kernel: 6,179,127682,-;PCI: Using E820 reservations for host bridge windows
+kernel: 6,180,127682,-;iommu: Default domain type: Translated
+kernel: 6,181,127682,-;iommu: DMA domain TLB invalidation policy: lazy mode
+kernel: 5,182,127682,-;SCSI subsystem initialized
+kernel: 6,183,127682,-;pps_core: LinuxPPS API ver. 1 registered
+kernel: 6,184,127682,-;pps_core: Software ver. 5.3.6 - Copyright 2005-2007 Rodolfo Giometti <giometti@linux.it>
+kernel: 6,185,127682,-;PTP clock support registered
+kernel: 6,186,131035,-;NetLabel: Initializing
+kernel: 6,187,131036,-;NetLabel:  domain hash size = 128
+kernel: 6,188,131048,-;NetLabel:  protocols = UNLABELED CIPSOv4 CALIPSO
+kernel: 6,189,131060,-;NetLabel:  unlabeled traffic allowed by default
+kernel: 6,190,131061,-;PCI: Using ACPI for IRQ routing
+kernel: 4,191,131062,-;PCI: System does not support PCI
+kernel: 6,192,132658,-;vgaarb: loaded
+kernel: 6,193,132658,-;clocksource: Switched to clocksource kvm-clock
+kernel: 5,194,132658,-;VFS: Disk quotas dquot_6.6.0
+kernel: 6,195,132658,-;VFS: Dquot-cache hash table entries: 512 (order 0, 4096 bytes)
+kernel: 6,196,132658,-;pnp: PnP ACPI init
+kernel: 6,197,132658,-;pnp: PnP ACPI: found 2 devices
+kernel: 6,198,134533,-;NET: Registered PF_INET protocol family
+kernel: 6,199,135442,-;IP idents hash table entries: 32768 (order: 6, 262144 bytes, linear)
+kernel: 6,200,136170,-;tcp_listen_portaddr_hash hash table entries: 1024 (order: 2, 16384 bytes, linear)
+kernel: 6,201,136219,-;Table-perturb hash table entries: 65536 (order: 6, 262144 bytes, linear)
+kernel: 6,202,136223,-;TCP established hash table entries: 16384 (order: 5, 131072 bytes, linear)
+kernel: 6,203,136602,-;TCP bind hash table entries: 16384 (order: 7, 524288 bytes, linear)
+kernel: 6,204,138114,-;TCP: Hash tables configured (established 16384 bind 16384)
+kernel: 6,205,138724,-;MPTCP token hash table entries: 2048 (order: 4, 49152 bytes, linear)
+kernel: 6,206,138734,-;UDP hash table entries: 1024 (order: 4, 65536 bytes, linear)
+kernel: 6,207,138940,-;UDP-Lite hash table entries: 1024 (order: 4, 65536 bytes, linear)
+kernel: 6,208,139191,-;NET: Registered PF_UNIX/PF_LOCAL protocol family
+kernel: 6,209,140145,-;RPC: Registered named UNIX socket transport module.
+kernel: 6,210,140146,-;RPC: Registered udp transport module.
+kernel: 6,211,140147,-;RPC: Registered tcp transport module.
+kernel: 6,212,140147,-;RPC: Registered tcp-with-tls transport module.
+kernel: 6,213,140148,-;RPC: Registered tcp NFSv4.1 backchannel transport module.
+kernel: 6,214,140149,-;NET: Registered PF_XDP protocol family
+kernel: 6,215,140162,-;PCI: CLS 0 bytes, default 64
+kernel: 5,216,140328,-;Initialise system trusted keyrings
+kernel: 5,217,148395,-;Key type asymmetric registered
+kernel: 5,218,148396,-;Asymmetric key parser 'x509' registered
+kernel: 6,219,148503,-;RAPL PMU: API unit is 2^-32 Joules, 1 fixed counters, 10737418240 ms ovfl timer
+kernel: 6,220,148505,-;RAPL PMU: hw unit of domain psys 2^-0 Joules
+kernel: 6,221,148527,-;clocksource: tsc: mask: 0xffffffffffffffff max_cycles: 0x26eb3cc21a9, max_idle_ns: 440795299783 ns
+kernel: 6,222,148568,-;clocksource: Switched to clocksource tsc
+kernel: 6,223,148595,-;platform rtc_cmos: registered platform RTC device (no PNP device found)
+ SUBSYSTEM=platform
+ DEVICE=+platform:rtc_cmos
+kernel: 5,224,149878,-;Key type blacklist registered
+kernel: 6,225,150462,-;workingset: timestamp_bits=36 max_order=19 bucket_order=0
+kernel: 6,226,152173,-;squashfs: version 4.0 (2009/01/31) Phillip Lougher
+kernel: 5,227,152526,-;NFS: Registering the id_resolver key type
+kernel: 5,228,152539,-;Key type id_resolver registered
+kernel: 5,229,152540,-;Key type id_legacy registered
+kernel: 6,230,152555,-;nfs4filelayout_init: NFSv4 File Layout Driver Registering...
+kernel: 6,231,152556,-;nfs4flexfilelayout_init: NFSv4 Flexfile Layout Driver Registering...
+kernel: 6,232,152615,-;fuse: init (API version 7.45)
+kernel: 6,233,153762,-;fxfs: Rust runtime ready
+kernel: 6,234,153819,-;SGI XFS with ACLs, security attributes, quota, no debug enabled
+kernel: 6,235,155130,-;Block layer SCSI generic (bsg) driver version 0.4 loaded (major 247)
+kernel: 6,236,155422,-;io scheduler mq-deadline registered
+kernel: 6,237,155423,-;io scheduler kyber registered
+kernel: 6,238,155428,-;io scheduler bfq registered
+kernel: 6,239,272559,-;virtio_extent virtio1: extent store "bench", branch 4011cb1d7198f958, 2 request queues, with a DAX window to write through
+ SUBSYSTEM=virtio
+ DEVICE=+virtio:virtio1
+kernel: 6,240,272719,-;Serial: 8250/16550 driver, 1 ports, IRQ sharing disabled
+kernel: 6,241,273109,-;00:00: ttyS0 at I/O 0x3f8 (irq = 28, base_baud = 115200) is a 16550A
+kernel: 6,242,283686,-;loop: module loaded
+kernel: 6,243,283994,-;virtio_blk virtio0: 1/0/0 default/read/poll queues
+ SUBSYSTEM=virtio
+ DEVICE=+virtio:virtio0
+kernel: 5,244,284701,-;virtio_blk virtio0: [vda] 1730560 512-byte logical blocks (886 MB/845 MiB)
+ SUBSYSTEM=virtio
+ DEVICE=+virtio:virtio0
+kernel: 6,245,286066,-;Loading iSCSI transport class v2.0-870.
+kernel: 5,246,287222,-;iscsi: registered transport (tcp)
+kernel: 6,247,287243,-;tun: Universal TUN/TAP device driver, 1.6
+kernel: 6,248,287606,-;i8042: PNP: PS/2 Controller [PNP0303:PS2] at 0x60,0x64 irq 29
+kernel: 6,249,288118,-;serio: i8042 KBD port at 0x60,0x64 irq 29
+kernel: 6,250,288282,-;input: AT Raw Set 2 keyboard as /devices/platform/i8042/serio0/input/input0
+kernel: 6,251,288621,-;vmclock AMZNC10C:00: vmclock0: registered miscdev
+ SUBSYSTEM=platform
+ DEVICE=+platform:AMZNC10C:00
+kernel: 6,252,288634,-;intel_pstate: CPU model not supported
+kernel: 6,253,293342,-;Initializing XFRM netlink socket
+kernel: 6,254,293382,-;NET: Registered PF_INET6 protocol family
+kernel: 6,255,294139,-;Segment Routing with IPv6
+kernel: 6,256,294146,-;In-situ OAM (IOAM) with IPv6
+kernel: 6,257,294197,-;NET: Registered PF_PACKET protocol family
+kernel: 5,258,294207,-;Bridge firewalling registered
+kernel: 5,259,294302,-;Key type dns_resolver registered
+kernel: 6,260,294375,-;NET: Registered PF_VSOCK protocol family
+kernel: 5,261,294477,-;Loading compiled-in X.509 certificates
+kernel: 6,262,307080,-;FIPS 140: run_initcalls finished
+kernel: 6,263,309726,-;IPI shorthand broadcast: enabled
+kernel: 6,264,315390,-;sched_clock: Marking stable (312029906, 3020057)->(371856485, -56806522)
+kernel: 6,265,336107,-;registered taskstats version 1
+kernel: 6,266,343659,-;Demotion targets for Node 0: null
+kernel: 5,267,343699,-;Key type .fscrypt registered
+kernel: 5,268,343700,-;Key type fscrypt-provisioning registered
+kernel: 5,269,344271,-;Key type encrypted registered
+kernel: 6,270,344356,-;clk: Disabling unused clocks
+kernel: 4,271,345145,-;check access for rdinit=/init failed: -2, ignoring
+kernel: 6,272,351508,-;EXT4-fs (vda): mounted filesystem 9c57f35a-51e6-431e-b79b-3c25a4004bcd r/w with ordered data mode. Quota mode: none.
+kernel: 6,273,351535,-;VFS: Mounted root (ext4 filesystem) on device 254:0.
+kernel: 6,274,351612,-;devtmpfs: mounted
+kernel: 6,275,353620,-;Freeing unused kernel image (initmem) memory: 2084K
+kernel: 6,276,353630,-;Write protecting the kernel read-only data: 24576k
+kernel: 6,277,358021,-;Freeing unused kernel image (text/rodata gap) memory: 1464K
+kernel: 6,278,363753,-;Freeing unused kernel image (rodata/data gap) memory: 2852K
+kernel: 6,279,363761,-;Run /guest-agent as init process
+kernel: 7,280,363762,-;  with arguments:
+kernel: 7,281,363762,-;    /guest-agent
+kernel: 7,282,363763,-;    bench-fs-fxfs-guest-dax
+kernel: 7,283,363763,-;  with environment:
+kernel: 7,284,363764,-;    HOME=/root
+kernel: 7,285,363764,-;    TERM=linux
+kernel: 7,286,363765,-;    FXDAX_BENCH_ITERATIONS=3
+kernel: 7,287,363765,-;    FXDAX_BENCH_GROUPS=sqlite
+kernel: 7,288,363766,-;    FXDAX_BENCH_GUEST_PERF=
+kernel: 7,289,363766,-;    PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+kernel: 6,290,425865,-;fxfs: Formatting
+kernel: 6,291,4940311,-;guest-agent (1): drop_caches: 3
+kernel: 6,292,5359248,-;guest-agent (1): drop_caches: 3
+kernel: 6,293,17593894,-;guest-agent (1): drop_caches: 3
+kernel: 6,294,22636611,-;guest-agent (1): drop_caches: 3
+kernel: 6,295,23048537,-;guest-agent (1): drop_caches: 3
+kernel: 6,296,34615591,-;guest-agent (1): drop_caches: 3
+kernel: 6,297,39431067,-;guest-agent (1): drop_caches: 3
+kernel: 6,298,39844945,-;guest-agent (1): drop_caches: 3
+[   41.591266] reboot: Restarting system

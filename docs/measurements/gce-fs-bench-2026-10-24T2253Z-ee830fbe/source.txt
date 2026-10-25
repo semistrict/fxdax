@@ -1,0 +1,16 @@
+revision a6ee070d938e1f4b61afdd9511e53b0f6918aae1
+firecracker 6610d88f12f28662f21de7f3a4f3fd394a54abf7
+changed  M docs/measurements/fs-bench-history.md
+changed  M guest/linux/fs/fxfs/dax.c
+changed  M guest/linux/fs/fxfs/fxfs.h
+changed  M guest/linux/fs/fxfs/super.c
+changed  M guest/rust/fxfs-linux/src/fs.rs
+changed  M guest/rust/fxfs-linux/src/lib.rs
+changed  M guest/tests/test_cases/src/test_fxfs_guest_checks.rs
+changed ?? docs/measurements/gce-fs-bench-2026-10-24T2134Z-5d096176/
+changed ?? docs/measurements/gce-fs-bench-2026-10-24T2145Z-e71aaaa6/
+changed ?? docs/measurements/gce-fs-bench-2026-10-24T2206Z-6942eee8/
+changed ?? docs/measurements/gce-fs-bench-2026-10-24T2212Z-371a702e/
+changed ?? docs/measurements/gce-fs-bench-2026-10-24T2231Z-3a4bb213/
+changed ?? docs/measurements/gce-fs-bench-2026-10-24T2253Z-ee830fbe/
+e4984e338b016bf902605cc64f1a83a2accce45674f50a14464f818ffcf7af22  source.tar.gz

@@ -1,0 +1,33 @@
+memory-pressure: memory watermarks - OutOfMemory: 50MB, Critical: 150MB, Warning: 300MB, Debounce: 1MB
+memory-pressure: hysteresis interval - 10 seconds
+memory-pressure: eviction: level - Critical, strategy - one-shot, delay - 5000 ms
+memory-pressure: ImminentOutOfMemory watermark - 60MB
+memory-pressure: memory availability state - Normal
+INFO fxdax::host_store: fxdax: cleaning branch dc9ee851b83b27db of /home/ramon/sqlite-append-ab/baseline-repeat/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 1945600 bytes
+INFO fxdax::host_store: fxdax: cleaning branch dc9ee851b83b27db of /home/ramon/sqlite-append-ab/baseline-repeat/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 11603968 bytes
+INFO fxdax::host_store: fxdax: cleaning branch dc9ee851b83b27db of /home/ramon/sqlite-append-ab/baseline-repeat/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 14692352 bytes
+INFO fxdax::host_store: fxdax: cleaning branch dc9ee851b83b27db of /home/ramon/sqlite-append-ab/baseline-repeat/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 7241728 bytes
+INFO fxdax::host_store: fxdax: cleaning branch dc9ee851b83b27db of /home/ramon/sqlite-append-ab/baseline-repeat/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 3616768 bytes
+INFO fxdax::host_store: fxdax: cleaning branch dc9ee851b83b27db of /home/ramon/sqlite-append-ab/baseline-repeat/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 13426688 bytes
+INFO fxdax::host_store: fxdax: cleaning branch dc9ee851b83b27db of /home/ramon/sqlite-append-ab/baseline-repeat/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 7434240 bytes
+INFO fxdax::host_store: fxdax: cleaning branch dc9ee851b83b27db of /home/ramon/sqlite-append-ab/baseline-repeat/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 16138240 bytes
+INFO fxdax::host_store: fxdax: cleaning branch dc9ee851b83b27db of /home/ramon/sqlite-append-ab/baseline-repeat/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 19709952 bytes
+INFO fxdax::host_store: fxdax: cleaning branch dc9ee851b83b27db of /home/ramon/sqlite-append-ab/baseline-repeat/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 9478144 bytes
+INFO fxdax::host_store: fxdax: cleaning branch dc9ee851b83b27db of /home/ramon/sqlite-append-ab/baseline-repeat/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 3207168 bytes
+INFO fxdax::host_store: fxdax: cleaning branch dc9ee851b83b27db of /home/ramon/sqlite-append-ab/baseline-repeat/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 18894848 bytes
+INFO fxdax::host_store: fxdax: cleaning branch dc9ee851b83b27db of /home/ramon/sqlite-append-ab/baseline-repeat/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 12660736 bytes
+INFO fxdax::host_store: fxdax: cleaning branch dc9ee851b83b27db of /home/ramon/sqlite-append-ab/baseline-repeat/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 19812352 bytes
+INFO fxdax::extentd::stores: extentd: object-store: get=91 get-range=1 head=0 list=5 create=369 update=2 overwrite=0 delete=1 up-segments=1946711382 up-extents=78496914 up-checkpoints=11461 up-moves=0 up-other=39 down=2094
+INFO fxdax::host_store: fxdax: cleaning branch dc9ee851b83b27db of /home/ramon/sqlite-append-ab/baseline-repeat/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 9039872 bytes
+INFO fxdax::host_store: fxdax: cleaning branch dc9ee851b83b27db of /home/ramon/sqlite-append-ab/baseline-repeat/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 8679424 bytes
+INFO fxdax::host_store: fxdax: cleaning branch dc9ee851b83b27db of /home/ramon/sqlite-append-ab/baseline-repeat/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 8765440 bytes
+INFO fxdax::host_store: fxdax: cleaning branch dc9ee851b83b27db of /home/ramon/sqlite-append-ab/baseline-repeat/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 8085504 bytes
+INFO fxdax::host_store: fxdax: cleaning branch dc9ee851b83b27db of /home/ramon/sqlite-append-ab/baseline-repeat/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 22142976 bytes
+INFO fxdax::host_store: fxdax: cleaning branch dc9ee851b83b27db of /home/ramon/sqlite-append-ab/baseline-repeat/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 19419136 bytes
+INFO fxdax::host_store: fxdax: cleaning branch dc9ee851b83b27db of /home/ramon/sqlite-append-ab/baseline-repeat/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 17166336 bytes
+INFO fxdax::host_store: fxdax: cleaning branch dc9ee851b83b27db of /home/ramon/sqlite-append-ab/baseline-repeat/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 9166848 bytes
+INFO fxdax::host_store: fxdax: cleaning branch dc9ee851b83b27db of /home/ramon/sqlite-append-ab/baseline-repeat/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 4415488 bytes
+INFO fxdax::host_store: fxdax: cleaning branch dc9ee851b83b27db of /home/ramon/sqlite-append-ab/baseline-repeat/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 13160448 bytes
+INFO fxdax::host_store: fxdax: cleaning branch dc9ee851b83b27db of /home/ramon/sqlite-append-ab/baseline-repeat/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 8339456 bytes
+INFO fxdax::host_store: fxdax: cleaning branch dc9ee851b83b27db of /home/ramon/sqlite-append-ab/baseline-repeat/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 20209664 bytes
+INFO fxdax_extentd: extentd: stopping, on SIGTERM

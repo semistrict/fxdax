@@ -1,0 +1,126 @@
+OBSERVED mtime-ahead-of-guest-ms -6.247
+RESULT sqlite-pread-scan MiB/s higher 802.765
+OBSERVED sqlite-pread-scan-faults-per-mib 2.7
+RESULT sqlite-pread-scan-warm MiB/s higher 2696.104
+OBSERVED sqlite-pread-scan-warm-faults-per-mib 2.6
+RESULT sqlite-mmap-scan MiB/s higher 3296.694
+OBSERVED sqlite-mmap-scan-faults-per-mib 5.7
+RESULT sqlite-mmap-scan-warm MiB/s higher 3672.490
+OBSERVED sqlite-mmap-scan-warm-faults-per-mib 5.6
+RESULT sqlite-delete-full-batch1 txn/s higher 254.558
+OBSERVED sqlite-delete-full-batch1-updates-per-second 254.6
+RESULT sqlite-delete-full-batch100 txn/s higher 44.056
+OBSERVED sqlite-delete-full-batch100-updates-per-second 4405.6
+RESULT sqlite-wal-full-batch1 txn/s higher 641.676
+OBSERVED sqlite-wal-full-batch1-updates-per-second 641.7
+RESULT sqlite-wal-full-batch1-checkpoint ms lower 18.815
+RESULT sqlite-wal-full-batch100 txn/s higher 94.347
+OBSERVED sqlite-wal-full-batch100-updates-per-second 9434.7
+RESULT sqlite-wal-full-batch100-checkpoint ms lower 108.294
+RESULT sqlite-wal-normal-batch1 txn/s higher 13137.482
+OBSERVED sqlite-wal-normal-batch1-updates-per-second 13137.5
+RESULT sqlite-wal-normal-batch1-checkpoint ms lower 30.099
+RESULT sqlite-wal-normal-batch100 txn/s higher 174.436
+OBSERVED sqlite-wal-normal-batch100-updates-per-second 17443.6
+RESULT sqlite-wal-normal-batch100-checkpoint ms lower 143.221
+OBSERVED mtime-ahead-of-guest-ms -6.779
+RESULT sqlite-pread-scan MiB/s higher 827.180
+OBSERVED sqlite-pread-scan-faults-per-mib 2.7
+RESULT sqlite-pread-scan-warm MiB/s higher 2673.655
+OBSERVED sqlite-pread-scan-warm-faults-per-mib 2.6
+RESULT sqlite-mmap-scan MiB/s higher 3420.888
+OBSERVED sqlite-mmap-scan-faults-per-mib 5.6
+RESULT sqlite-mmap-scan-warm MiB/s higher 3732.153
+OBSERVED sqlite-mmap-scan-warm-faults-per-mib 5.6
+RESULT sqlite-delete-full-batch1 txn/s higher 253.269
+OBSERVED sqlite-delete-full-batch1-updates-per-second 253.3
+RESULT sqlite-delete-full-batch100 txn/s higher 43.356
+OBSERVED sqlite-delete-full-batch100-updates-per-second 4335.6
+RESULT sqlite-wal-full-batch1 txn/s higher 608.525
+OBSERVED sqlite-wal-full-batch1-updates-per-second 608.5
+RESULT sqlite-wal-full-batch1-checkpoint ms lower 23.904
+RESULT sqlite-wal-full-batch100 txn/s higher 94.529
+OBSERVED sqlite-wal-full-batch100-updates-per-second 9452.9
+RESULT sqlite-wal-full-batch100-checkpoint ms lower 101.800
+RESULT sqlite-wal-normal-batch1 txn/s higher 12050.846
+OBSERVED sqlite-wal-normal-batch1-updates-per-second 12050.8
+RESULT sqlite-wal-normal-batch1-checkpoint ms lower 17.051
+RESULT sqlite-wal-normal-batch100 txn/s higher 168.178
+OBSERVED sqlite-wal-normal-batch100-updates-per-second 16817.8
+RESULT sqlite-wal-normal-batch100-checkpoint ms lower 100.212
+OBSERVED mtime-ahead-of-guest-ms -4.567
+RESULT sqlite-pread-scan MiB/s higher 839.546
+OBSERVED sqlite-pread-scan-faults-per-mib 2.7
+RESULT sqlite-pread-scan-warm MiB/s higher 2640.990
+OBSERVED sqlite-pread-scan-warm-faults-per-mib 2.6
+RESULT sqlite-mmap-scan MiB/s higher 3304.946
+OBSERVED sqlite-mmap-scan-faults-per-mib 5.7
+RESULT sqlite-mmap-scan-warm MiB/s higher 3633.375
+OBSERVED sqlite-mmap-scan-warm-faults-per-mib 5.6
+RESULT sqlite-delete-full-batch1 txn/s higher 252.886
+OBSERVED sqlite-delete-full-batch1-updates-per-second 252.9
+RESULT sqlite-delete-full-batch100 txn/s higher 41.991
+OBSERVED sqlite-delete-full-batch100-updates-per-second 4199.1
+RESULT sqlite-wal-full-batch1 txn/s higher 607.793
+OBSERVED sqlite-wal-full-batch1-updates-per-second 607.8
+RESULT sqlite-wal-full-batch1-checkpoint ms lower 18.329
+RESULT sqlite-wal-full-batch100 txn/s higher 93.383
+OBSERVED sqlite-wal-full-batch100-updates-per-second 9338.3
+RESULT sqlite-wal-full-batch100-checkpoint ms lower 95.048
+RESULT sqlite-wal-normal-batch1 txn/s higher 7730.985
+OBSERVED sqlite-wal-normal-batch1-updates-per-second 7731.0
+RESULT sqlite-wal-normal-batch1-checkpoint ms lower 31.604
+RESULT sqlite-wal-normal-batch100 txn/s higher 170.375
+OBSERVED sqlite-wal-normal-batch100-updates-per-second 17037.5
+RESULT sqlite-wal-normal-batch100-checkpoint ms lower 232.336
+OBSERVED mtime-ahead-of-guest-ms -5.526
+RESULT sqlite-pread-scan MiB/s higher 832.782
+OBSERVED sqlite-pread-scan-faults-per-mib 2.7
+RESULT sqlite-pread-scan-warm MiB/s higher 2623.316
+OBSERVED sqlite-pread-scan-warm-faults-per-mib 2.6
+RESULT sqlite-mmap-scan MiB/s higher 3332.978
+OBSERVED sqlite-mmap-scan-faults-per-mib 5.6
+RESULT sqlite-mmap-scan-warm MiB/s higher 3671.254
+OBSERVED sqlite-mmap-scan-warm-faults-per-mib 5.6
+RESULT sqlite-delete-full-batch1 txn/s higher 243.353
+OBSERVED sqlite-delete-full-batch1-updates-per-second 243.4
+RESULT sqlite-delete-full-batch100 txn/s higher 40.041
+OBSERVED sqlite-delete-full-batch100-updates-per-second 4004.1
+RESULT sqlite-wal-full-batch1 txn/s higher 563.668
+OBSERVED sqlite-wal-full-batch1-updates-per-second 563.7
+RESULT sqlite-wal-full-batch1-checkpoint ms lower 29.026
+RESULT sqlite-wal-full-batch100 txn/s higher 91.018
+OBSERVED sqlite-wal-full-batch100-updates-per-second 9101.8
+RESULT sqlite-wal-full-batch100-checkpoint ms lower 119.790
+RESULT sqlite-wal-normal-batch1 txn/s higher 11103.960
+OBSERVED sqlite-wal-normal-batch1-updates-per-second 11104.0
+RESULT sqlite-wal-normal-batch1-checkpoint ms lower 16.705
+RESULT sqlite-wal-normal-batch100 txn/s higher 162.408
+OBSERVED sqlite-wal-normal-batch100-updates-per-second 16240.8
+RESULT sqlite-wal-normal-batch100-checkpoint ms lower 184.642
+OBSERVED mtime-ahead-of-guest-ms -4.200
+RESULT sqlite-pread-scan MiB/s higher 840.885
+OBSERVED sqlite-pread-scan-faults-per-mib 2.7
+RESULT sqlite-pread-scan-warm MiB/s higher 2659.508
+OBSERVED sqlite-pread-scan-warm-faults-per-mib 2.6
+RESULT sqlite-mmap-scan MiB/s higher 3356.925
+OBSERVED sqlite-mmap-scan-faults-per-mib 7.6
+RESULT sqlite-mmap-scan-warm MiB/s higher 3705.107
+OBSERVED sqlite-mmap-scan-warm-faults-per-mib 7.6
+RESULT sqlite-delete-full-batch1 txn/s higher 250.729
+OBSERVED sqlite-delete-full-batch1-updates-per-second 250.7
+RESULT sqlite-delete-full-batch100 txn/s higher 43.810
+OBSERVED sqlite-delete-full-batch100-updates-per-second 4381.0
+RESULT sqlite-wal-full-batch1 txn/s higher 593.218
+OBSERVED sqlite-wal-full-batch1-updates-per-second 593.2
+RESULT sqlite-wal-full-batch1-checkpoint ms lower 23.159
+RESULT sqlite-wal-full-batch100 txn/s higher 92.011
+OBSERVED sqlite-wal-full-batch100-updates-per-second 9201.1
+RESULT sqlite-wal-full-batch100-checkpoint ms lower 113.767
+RESULT sqlite-wal-normal-batch1 txn/s higher 12305.361
+OBSERVED sqlite-wal-normal-batch1-updates-per-second 12305.4
+RESULT sqlite-wal-normal-batch1-checkpoint ms lower 37.159
+RESULT sqlite-wal-normal-batch100 txn/s higher 161.140
+OBSERVED sqlite-wal-normal-batch100-updates-per-second 16114.0
+RESULT sqlite-wal-normal-batch100-checkpoint ms lower 325.354
+DONE

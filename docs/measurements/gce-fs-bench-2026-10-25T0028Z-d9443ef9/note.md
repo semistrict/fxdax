@@ -1,0 +1,1 @@
+TASK-92.28 controlled same-host SQLite A/B: candidate, reverse-order round. Five iterations; candidate then baseline, using the same saved kernels and benchmark harness as the first round, without rebuilding. Repeated because the first round showed an ambiguous batch1 slowdown. All recovery, integrity, payload and snapshot checks passed.

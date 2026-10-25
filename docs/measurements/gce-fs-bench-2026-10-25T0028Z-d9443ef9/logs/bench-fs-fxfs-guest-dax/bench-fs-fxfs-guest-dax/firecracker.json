@@ -1,0 +1,29 @@
+{
+  "boot-source": {
+    "boot_args": "console=ttyS0 loglevel=5 reboot=k panic=-1 8250.nr_uarts=1 i8042.noaux i8042.nomux i8042.dumbkbd init=/guest-agent FXDAX_BENCH_ITERATIONS=5 FXDAX_BENCH_GROUPS=sqlite FXDAX_BENCH_GUEST_PERF= PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME=/root -- bench-fs-fxfs-guest-dax",
+    "kernel_image_path": "/home/ramon/sqlite-append-ab/candidate-vmlinux"
+  },
+  "drives": [
+    {
+      "drive_id": "rootfs",
+      "is_read_only": false,
+      "is_root_device": true,
+      "path_on_host": "/home/ramon/sqlite-append-ab/candidate-repeat/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/rootfs.ext4"
+    }
+  ],
+  "extent": [
+    {
+      "capacity": 8589934592,
+      "dax_window_size": 2147483648,
+      "extentd_socket": "/home/ramon/sqlite-append-ab/candidate-repeat/logs/extentd.sock",
+      "id": "bench",
+      "path_on_host": "/home/ramon/sqlite-append-ab/candidate-repeat/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents",
+      "tag": "bench"
+    }
+  ],
+  "machine-config": {
+    "mem_size_mib": 2048,
+    "vcpu_count": 2
+  },
+  "pmem": []
+}

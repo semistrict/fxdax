@@ -1,0 +1,11 @@
+memory-pressure: memory watermarks - OutOfMemory: 50MB, Critical: 150MB, Warning: 300MB, Debounce: 1MB
+memory-pressure: hysteresis interval - 10 seconds
+memory-pressure: eviction: level - Critical, strategy - one-shot, delay - 5000 ms
+memory-pressure: ImminentOutOfMemory watermark - 60MB
+memory-pressure: memory availability state - Normal
+WARN fxdax::remote: fxdax: commits wait for object storage: 1 not uploaded
+WARN fxdax::remote: fxdax: commits wait for object storage: 1 not uploaded
+WARN fxdax::remote: fxdax: commits wait for object storage: 1 not uploaded
+INFO fxdax::extentd::stores: extentd: object-store: get=214 get-range=4 head=0 list=18 create=214 update=2 overwrite=0 delete=1 up-segments=37955887 up-extents=0 up-checkpoints=31455 up-moves=0 up-other=120 down=4776
+INFO fxdax::host_store: fxdax: cleaning branch 6cc3a09085f84aa9 of /home/ramon/run-20261024T214554Z-e71aaaa6/results/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 1949696 bytes
+INFO fxdax_extentd: extentd: stopping, on SIGTERM

@@ -1,0 +1,257 @@
+{
+  "case": "bench-fs-fxfs-guest-dax",
+  "backend": "fxfs-guest-dax",
+  "host_os": "linux",
+  "vmm": "firecracker",
+  "iterations": 5,
+  "results": [
+    {
+      "workload": "sqlite-pread-scan",
+      "unit": "MiB/s",
+      "higher_is_better": true,
+      "values": [
+        800.72,
+        826.054,
+        827.94,
+        845.294,
+        839.13
+      ]
+    },
+    {
+      "workload": "sqlite-pread-scan-warm",
+      "unit": "MiB/s",
+      "higher_is_better": true,
+      "values": [
+        2637.395,
+        2575.904,
+        2673.061,
+        2553.293,
+        2551.647
+      ]
+    },
+    {
+      "workload": "sqlite-mmap-scan",
+      "unit": "MiB/s",
+      "higher_is_better": true,
+      "values": [
+        3353.085,
+        3389.468,
+        3422.239,
+        3322.385,
+        3389.558
+      ]
+    },
+    {
+      "workload": "sqlite-mmap-scan-warm",
+      "unit": "MiB/s",
+      "higher_is_better": true,
+      "values": [
+        3747.388,
+        3678.481,
+        3768.79,
+        3600.152,
+        3706.966
+      ]
+    },
+    {
+      "workload": "sqlite-delete-full-batch1",
+      "unit": "txn/s",
+      "higher_is_better": true,
+      "values": [
+        249.193,
+        250.571,
+        244.259,
+        232.461,
+        251.806
+      ]
+    },
+    {
+      "workload": "sqlite-delete-full-batch100",
+      "unit": "txn/s",
+      "higher_is_better": true,
+      "values": [
+        42.098,
+        42.015,
+        41.009,
+        40.034,
+        43.702
+      ]
+    },
+    {
+      "workload": "sqlite-wal-full-batch1",
+      "unit": "txn/s",
+      "higher_is_better": true,
+      "values": [
+        576.264,
+        603.478,
+        573.652,
+        479.639,
+        569.95
+      ]
+    },
+    {
+      "workload": "sqlite-wal-full-batch1-checkpoint",
+      "unit": "ms",
+      "higher_is_better": false,
+      "values": [
+        34.83,
+        37.819,
+        20.492,
+        41.91,
+        18.593
+      ]
+    },
+    {
+      "workload": "sqlite-wal-full-batch100",
+      "unit": "txn/s",
+      "higher_is_better": true,
+      "values": [
+        93.843,
+        91.923,
+        93.912,
+        92.818,
+        95.451
+      ]
+    },
+    {
+      "workload": "sqlite-wal-full-batch100-checkpoint",
+      "unit": "ms",
+      "higher_is_better": false,
+      "values": [
+        111.675,
+        97.106,
+        126.577,
+        93.008,
+        109.937
+      ]
+    },
+    {
+      "workload": "sqlite-wal-normal-batch1",
+      "unit": "txn/s",
+      "higher_is_better": true,
+      "values": [
+        11785.581,
+        11974.37,
+        12188.89,
+        10572.272,
+        12464.047
+      ]
+    },
+    {
+      "workload": "sqlite-wal-normal-batch1-checkpoint",
+      "unit": "ms",
+      "higher_is_better": false,
+      "values": [
+        38.091,
+        21.622,
+        22.319,
+        33.398,
+        30.204
+      ]
+    },
+    {
+      "workload": "sqlite-wal-normal-batch100",
+      "unit": "txn/s",
+      "higher_is_better": true,
+      "values": [
+        168.806,
+        166.945,
+        174.132,
+        168.173,
+        165.286
+      ]
+    },
+    {
+      "workload": "sqlite-wal-normal-batch100-checkpoint",
+      "unit": "ms",
+      "higher_is_better": false,
+      "values": [
+        132.649,
+        170.526,
+        237.27,
+        206.212,
+        319.093
+      ]
+    }
+  ],
+  "failures": {},
+  "observations": {
+    "mtime-ahead-of-guest-ms": [
+      -5.619,
+      -3.984,
+      -3.914,
+      -4.146,
+      -6.076
+    ],
+    "sqlite-delete-full-batch1-updates-per-second": [
+      249.2,
+      250.6,
+      244.3,
+      232.5,
+      251.8
+    ],
+    "sqlite-delete-full-batch100-updates-per-second": [
+      4209.8,
+      4201.5,
+      4100.9,
+      4003.4,
+      4370.2
+    ],
+    "sqlite-mmap-scan-faults-per-mib": [
+      5.7,
+      5.6,
+      3.7,
+      7.6,
+      9.6
+    ],
+    "sqlite-mmap-scan-warm-faults-per-mib": [
+      5.6,
+      5.6,
+      3.6,
+      7.6,
+      9.6
+    ],
+    "sqlite-pread-scan-faults-per-mib": [
+      2.7,
+      2.7,
+      2.6,
+      2.7,
+      2.7
+    ],
+    "sqlite-pread-scan-warm-faults-per-mib": [
+      2.6,
+      2.6,
+      2.6,
+      2.6,
+      2.6
+    ],
+    "sqlite-wal-full-batch1-updates-per-second": [
+      576.3,
+      603.5,
+      573.7,
+      479.6,
+      570.0
+    ],
+    "sqlite-wal-full-batch100-updates-per-second": [
+      9384.3,
+      9192.3,
+      9391.2,
+      9281.8,
+      9545.1
+    ],
+    "sqlite-wal-normal-batch1-updates-per-second": [
+      11785.6,
+      11974.4,
+      12188.9,
+      10572.3,
+      12464.0
+    ],
+    "sqlite-wal-normal-batch100-updates-per-second": [
+      16880.6,
+      16694.5,
+      17413.2,
+      16817.3,
+      16528.6
+    ]
+  }
+}

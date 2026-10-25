@@ -1,0 +1,39 @@
+[    0.051112] PCI: Fatal: No config space access function found
+[    0.079007] PCI: System does not support PCI
+[    0.184135] check access for rdinit=/init failed: -2, ignoring
+PASS: host_file
+PASS: mmap_write
+PASS: regular_write
+PASS: namespace
+PASS: truncate_mapped
+PASS: eviction_writes_back
+PASS: tmpfile
+PASS: fallocate
+PASS: zero_mapped
+PASS: seal_race
+PASS: writes_across_seals
+PASS: stats
+PASS: log_writes
+PASS: acls
+PASS: freeze
+PASS: show_options
+PASS: write_removes_privileges
+PASS: delayed_unlinks
+PASS: sparse
+PASS: file_handles
+PASS: unsupported
+PASS: reflinks
+PASS: removed_directories
+PASS: file_attributes
+PASS: idmapped_mount
+PASS: multigrain_times
+PASS: cache_shrinks
+PASS: direct_io
+PASS: large_folios
+PASS: scattered_writeback
+PASS: partial_writeback
+PASS: short_copy
+PASS: direct_read_past_end
+PASS: store_past_end
+OK
+[   21.447766] reboot: Restarting system
