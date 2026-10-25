@@ -7,8 +7,8 @@ project's hosts and their boot disks, kept in $FAKE_GCLOUD/state.json, and each 
 the labels a create gave, appended to $FAKE_GCLOUD/calls.
 
 state.json holds the hosts ("instances": each name's zone and labels), their boot disks ("disks"),
-the region's zones ("zones", default us-east4-a alone) and those with no room for a host
-("exhausted"), how the next create goes ("create": "made", the host made as asked; "taken", made at
+the zones ("zones", default us-east4-a alone, which a listing filtered by region gives those of),
+those with no room for a host ("exhausted"), and the regions out of quota ("quota"), how the next create goes ("create": "made", the host made as asked; "taken", made at
 once by another run, whose maker label is "winner", and which this create then finds there; or
 "ambiguous", made as asked though the create reports an error), which listings and copies fail
 ("failing": "instances", "disks", "zones", "scp"), and the status SSH ends with ("ssh"). A host is
@@ -68,7 +68,9 @@ def main(argv):
     elif command[2:] == ("list",) and command[1] in state.get("failing", []):
         sys.exit(f"ERROR: (gcloud.compute.{command[1]}.list) listing the {command[1]} failed")
     elif command == ("compute", "zones", "list"):
-        print("\n".join(state.get("zones", ["us-east4-a"])))
+        region = flags.get("filter", "").removeprefix("region:")
+        zones = state.get("zones", ["us-east4-a"])
+        print("\n".join(zone for zone in zones if zone.rsplit("-", 1)[0] == region))
     elif command in [("compute", "instances", "list"), ("compute", "disks", "list")]:
         kind = command[1]
         name = flags["filter"].removeprefix("name=")
@@ -86,6 +88,13 @@ def main(argv):
         name = args[0]
         if name in instances:
             sys.exit(f"ERROR: (gcloud.compute.instances.create) {name} already exists")
+        region = flags["zone"].rsplit("-", 1)[0]
+        if region in state.get("quota", []):
+            sys.exit(
+                "ERROR: (gcloud.compute.instances.create) Could not fetch resource:\n"
+                " - Quota 'SSD_TOTAL_GB' exceeded.  Limit: 500.0 in region "
+                f"{region}."
+            )
         if flags["zone"] in state.get("exhausted", []):
             sys.exit(
                 f"ERROR: (gcloud.compute.instances.create) The zone '{flags['zone']}' does not "
