@@ -36,10 +36,6 @@ use std::ops::Range;
 /// The pages of a chunk.
 const CHUNK_PAGES: usize = CHUNK_SIZE / page::SIZE;
 
-/// fxdax: how many of an arena's free pages [`Arenas::take_run`] looks through for one beginning
-/// a run: few, as it does under the node's lock, for each run an allocation begins.
-const RUN_SCAN: usize = 32;
-
 /// The indices of chunk `chunk`'s pages.
 pub(super) fn chunk_pages(chunk: usize) -> Range<usize> {
     chunk * CHUNK_PAGES..(chunk + 1) * CHUNK_PAGES
@@ -255,53 +251,6 @@ impl Arenas {
         Ok(page)
     }
 
-    /// fxdax: a free page of `arena`'s to begin a run of pages taken together with, as
-    /// [`Arenas::take`] takes one: of the first [`RUN_SCAN`] on its free list, the first that
-    /// begins a run of free pages, its page before taken and its page after free
-    /// ([`Arenas::take_after`]); else the first in a run; else the list's first. The list holds
-    /// what evictions free in the order they free it, pages of runs among others left alone, and
-    /// a run begun at its list's first page would mostly end at once (TASK-108.1).
-    pub(super) fn take_run(
-        &mut self,
-        pages: &PmmPages,
-        arena: ArenaId,
-    ) -> Result<VmPagePtr, Refused> {
-        let entry = self.live(arena).ok_or(Starved::Removed)?;
-        let mut within = None;
-        let mut at = entry.free.front();
-        for _ in 0..RUN_SCAN {
-            let Some(page) = at else { break };
-            if Self::free_beside(pages, page, 1) {
-                if !Self::free_beside(pages, page, -1) {
-                    within = Some(page);
-                    break;
-                }
-                within.get_or_insert(page);
-            }
-            at = entry.free.next(page);
-        }
-        let Some(page) = within else { return self.take(pages, arena) };
-        self.entry_mut(arena).free.erase(page);
-        self.taken(pages, arena, pages.memory.chunk_of(page.paddr()));
-        Ok(page)
-    }
-
-    /// fxdax: whether the page `by` pages after `page` (before it, if negative), physically, is
-    /// free, on a free list, and of `page`'s chunk.
-    fn free_beside(pages: &PmmPages, page: VmPagePtr, by: isize) -> bool {
-        let chunk = pages.memory.chunk_of(page.paddr());
-        let Some(index) = pages.index_of(page).and_then(|index| index.checked_add_signed(by))
-        else {
-            return false;
-        };
-        if !chunk_pages(chunk).contains(&index) {
-            return false;
-        }
-        let beside = pages.page(index);
-        // SAFETY: Under the node's lock, which guards the free lists, the pages' membership of.
-        beside.is_free() && unsafe { beside.in_container() }
-    }
-
     /// fxdax: the page after `page`, physically, if it is free, on its arena's free list, and of
     /// the same chunk, taken as [`Arenas::take`] takes one: so that the pages an allocation takes
     /// together are consecutive where they can be, as a window's second stage maps each run of
@@ -311,11 +260,16 @@ impl Arenas {
     /// takes allocated, under the lock that it took it under, so that one free and listed is on
     /// the free list.
     pub(super) fn take_after(&mut self, pages: &PmmPages, page: VmPagePtr) -> Option<VmPagePtr> {
-        if !Self::free_beside(pages, page, 1) {
+        let chunk = pages.memory.chunk_of(page.paddr());
+        let index = pages.index_of(page)? + 1;
+        if index >= chunk_pages(chunk).end {
             return None;
         }
-        let chunk = pages.memory.chunk_of(page.paddr());
-        let next = pages.page(pages.index_of(page)? + 1);
+        let next = pages.page(index);
+        // SAFETY: Under the node's lock, which guards the free lists, the pages' membership of.
+        if !next.is_free() || !unsafe { next.in_container() } {
+            return None;
+        }
         let arena = pages.memory.chunk_arena(chunk)?;
         self.live(arena)?;
         self.entry_mut(arena).free.erase(next);
