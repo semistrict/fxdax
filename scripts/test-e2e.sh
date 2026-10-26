@@ -111,6 +111,16 @@ if [[ -n ${FXDAX_FIRECRACKER_JAIL:-} ]]; then
     # What the daemons and the tests make, sockets and images, the jailed user reaches.
     umask 000
 fi
+# FXDAX_GUEST_HUGE_PAGES=2M backs each VM's memory with the host's 2 MiB huge pages, as many
+# reserved as FXDAX_GUEST_HUGE_PAGES_MIB (default 16384) take (TASK-91.16): the hypervisor's
+# second-stage mappings of guest memory then 2 MiB each, what refilling the guest's TLB after a
+# flush walks the fewer.
+if [[ ${FXDAX_GUEST_HUGE_PAGES:-} == 2M ]]; then
+    sysctl -q vm.nr_hugepages=$(( ${FXDAX_GUEST_HUGE_PAGES_MIB:-16384} / 2 ))
+    echo "huge pages: $(sysctl -n vm.nr_hugepages) of 2 MiB reserved"
+elif [[ -n ${FXDAX_GUEST_HUGE_PAGES:-} ]]; then
+    echo "FXDAX_GUEST_HUGE_PAGES is 2M or unset" >&2; exit 2
+fi
 # fxfs-guest-docker-dax's Docker, its static binaries (Apache-2.0), downloaded once, and BusyBox,
 # its containers' image, the host's static one (busybox-static).
 if [[ -z ${FXDAX_DOCKER_STATIC:-} && " ${tests[*]} " =~ \ (all|fxfs-guest-docker-dax)\  ]]; then

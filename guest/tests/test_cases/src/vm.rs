@@ -51,8 +51,19 @@ const CMDLINE: &str = "console=ttyS0 loglevel=5 reboot=k panic=-1 8250.nr_uarts=
 impl Vm {
     /// A VM of `cpus` vCPUs and `ram_mib` MiB of memory.
     pub fn new(cpus: u8, ram_mib: u32) -> anyhow::Result<Self> {
+        // fxdax: FXDAX_GUEST_HUGE_PAGES=2M backs its memory with the host's huge pages
+        // (scripts/test-e2e.sh, TASK-91.16).
+        let huge_pages = match std::env::var("FXDAX_GUEST_HUGE_PAGES").as_deref() {
+            Ok("2M") => "2M",
+            Ok(other) => anyhow::bail!("FXDAX_GUEST_HUGE_PAGES is 2M or unset, not {other:?}"),
+            Err(_) => "None",
+        };
         let config = serde_json::json!({
-            "machine-config": { "vcpu_count": cpus, "mem_size_mib": ram_mib },
+            "machine-config": {
+                "vcpu_count": cpus,
+                "mem_size_mib": ram_mib,
+                "huge_pages": huge_pages,
+            },
             "drives": [],
             "pmem": [],
             "extent": [],
