@@ -4,7 +4,7 @@ title: 'VMM: the extentd client thread spends 90-165 us of host kernel time per 
 status: In Progress
 assignee: []
 created_date: '2026-10-23 18:01'
-updated_date: '2026-10-26 16:52'
+updated_date: '2026-10-26 17:22'
 labels: []
 dependencies: []
 parent_task_id: TASK-91
@@ -91,4 +91,6 @@ r138 (1676b6449, guest profile by command, first run): DAX 979 tps, no DAX 1431.
 r141 (9f77e3799, workspace + pgbench-dax 1 VM): workspace 2,641 of 2,642 (TASK-110's timing flake, 257 ms against 200), the new tests among those passing; tps 1089/1012/976/942/902. Over the VM (load + 5 runs), the changes that took access from pages installed: leave-outs 515k, overwrites 254k, write-protects 110k (879k), against KVM's 620k remote flushes; the guest's UNMAPs 248k, evacuation MAPs 432k, restage 185k, seals ~55k. Leave-outs dominate: twice the guest's UNMAPs, the rest a map's leftovers or trim past the budget (half vm.max_map_count's runs). r142 A/B: vm.max_map_count default against 1048576 (4f193124c, FXDAX_MAX_MAP_COUNT), one host.
 
 r142 (4f193124c, one host, pgbench-dax, vm.max_map_count default against 1048576): equal: tps 1119/1051/1025/984/989 against 1134/1048/1024/967/980; leave-outs 542.7k / 543.0k, overwrites 267k / 266k, write-protects 115k / 113k, KVM remote flushes 643k / 640k. Trim takes nothing away. Leave-outs: the guest's UNMAPs ~265k, and ~278k from remaps whose maps leave installed pages uncovered. r143 (exp/stage-leftovers cb557db40, not for main) logs the first 400 such leftovers from the VM process (FXDAX_STAGE_LOG).
+
+r143 (exp/stage-leftovers): the leftovers are seals. Each logged change unmaps a writable region's range of 16-64 pages, all installed, and maps it anew with no pages ('mapped' alone): Extents::seal_mapped maps the sealed extent first, before it has the pages (supply_pages after), then populates, each its own change, so the VM process leaves every page out (a flush of the guest's TLBs), installs it again on the populate, and the guest faults it in again; the in-place reprotection (TASK-91.16's remap) never saw the two together. Fix 5de767990: each extent's seal is one change (Dax::changing): its mappings made read-only, its pages supplied, its pages mapped again, then the zeros past its end, so the VM process takes the unmap, the mapping anew and the maps together and write-protects in place. Test seals_write_protect_the_pages_mapped_in_place (15106bc6f; r145 runs it without the fix, expecting it to fail). r146: workspace, pgbench-dax, checks-dax with the fix. Also bench-fs-ext4-pmem (f3188ebc0, ext4 on pmem with dax=never) for the user's ext4 pmem DAX/no-DAX comparison, r144.
 <!-- SECTION:NOTES:END -->
