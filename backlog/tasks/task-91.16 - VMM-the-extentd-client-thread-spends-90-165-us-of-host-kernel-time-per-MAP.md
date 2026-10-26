@@ -4,7 +4,7 @@ title: 'VMM: the extentd client thread spends 90-165 us of host kernel time per 
 status: In Progress
 assignee: []
 created_date: '2026-10-23 18:01'
-updated_date: '2026-10-26 15:02'
+updated_date: '2026-10-26 15:34'
 labels: []
 dependencies: []
 parent_task_id: TASK-91
@@ -85,4 +85,6 @@ r136 (16d8fa399, one host, pgbench-dax, fxfs.dax_drop_idle_ms 0/1000/5000): 0: 1
 r137 (4ef3d04b0, one host, guest memory in 4K pages against the host's 2 MiB huge pages): DAX 4K 1140/1070/1033/1003/979, 2M 1200/1104/1059/1032/1004 (+3-5%); no DAX 4K 1717-1741, init 16.2 s, 2M 1821-1882 (+7%), init 10.5 s (-35%). KVM pages_2m 336 (DAX) / 1277 (no DAX). The TLB-refill reading is mostly wrong for DAX: huge pages help no DAX more. Huge pages are worth the sandbox team's VMs on their own (FXDAX_GUEST_HUGE_PAGES=2M; Firecracker's machine-config huge_pages '2M', hugetlbfs reserved on the host).
 
 Regression caught by scripts/tests/test_guest_mutants.py: 8140da231's timing between the evacuation's gather and MAP hid the evacuation_unlocked mutant's code; fixed in 9f2f0a03d (timed within fxfs_dax_evacuee_map).
+
+r138 (1676b6449, guest profile by command, first run): DAX 979 tps, no DAX 1431. Per transaction: postgres 1.0 against 0.82 ms (+22%), pgbench, a client doing the same work either way, +39%, Fxfs's kworkers ~0.21 against ~0.08 ms. Every task in the guest runs slower under DAX, as interrupted vCPUs would make it; the kworkers' extra is the evacuation's. Leaving freed space mapped can't help: a region's space costs one flush whether unmapped at its prune or overwritten later (r69 measured it equal). The evacuation's MAPs over ranges' own space, populated with the pages' older versions, may each flush where a MAP into fresh space wouldn't: 9f77e3799 has VM processes count the changes that took access from pages installed, by how (stage-overwrites, stage-leave-outs, stage-write-protects in extentd's stats), to attribute the ~2.1 KVM flushes a transaction. r141: workspace + pgbench-dax.
 <!-- SECTION:NOTES:END -->
