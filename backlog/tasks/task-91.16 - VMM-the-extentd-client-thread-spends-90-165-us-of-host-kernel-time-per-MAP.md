@@ -4,7 +4,7 @@ title: 'VMM: the extentd client thread spends 90-165 us of host kernel time per 
 status: In Progress
 assignee: []
 created_date: '2026-10-23 18:01'
-updated_date: '2026-10-26 11:44'
+updated_date: '2026-10-26 12:13'
 labels: []
 dependencies: []
 parent_task_id: TASK-91
@@ -71,4 +71,6 @@ Buffered receiver (7195eec4f, the VM process reading up to 64 KiB of messages a 
 Pushed (e3d46ea92): remap at once with corked changes and no prefault of pages reprotected in place, the VM processes' stage counts, the buffered receiver. Verified: macOS scripts/test.sh; Linux workspace r123 (one load-sensitive timing flake, TASK-110, passed in 4 other runs of the same code); guest fxfs-guest-dax and fxfs-guest-checks-dax r124. Host time per window change 112 -> ~85-92 us (hosts vary ~15%). Not done: target 50 us per MAP (now ~130). What's left (r119) is mostly a TLB shootdown, host and KVM, per page whose access is taken away (leave-outs of the guest's UNMAPs, installs over own-space pages, seals' write-protection), which Linux flushes once a system call; under GCE's nested virtualization each IPI to a vCPU exits to L0.
 
 Hypothesis (2026-10-26): the guest's evacuation (fxfs_dax_evacuate_file) holds the file's semaphore for writing across its MAP_MANY, which waits for extentd and, ahead of the reply on the VM process's one 'extentd client' thread, the stage work of every run (each an install over populated own space, a TLB shootdown); every write's iomap takes that semaphore for writing, so the WAL's writers queue behind each evacuation. Counters (8140da231): dax_write_waits/dax_write_wait_ns, dax_evacuations/dax_evacuate_hold_ns/dax_evacuate_map_ns. r132 measures, pgbench-dax 1 VM.
+
+r132 (8140da231, pgbench-dax 1 VM, us-east4-a): tps 1117/1044/1014/957/987. The hypothesis is false: writes waited for their file's semaphore ~5-6k times a run, 1.0-1.3 ms in all. Per run: evacuations ~45-49k holding the semaphore 34-36 s (MAP_MANY 20-22 s, ~420 us each; the rest the regions' UNMAPs, 42.7k at 318 us), all on the one evacuation worker; commits (seals) 41k at ~470 us; stores held by seals 14k, 7.5 s. Guest CPU over run 2: user 35.7 s, system 48.5 s, idle 28.8 s of 2 vCPUs: the guest is near CPU-bound, system time large. r133: guest profiles (new fxfs-guest-pgbench-dax-profile, 7ec91b237) against no DAX (fxfs-guest-pgbench-profile), same host.
 <!-- SECTION:NOTES:END -->

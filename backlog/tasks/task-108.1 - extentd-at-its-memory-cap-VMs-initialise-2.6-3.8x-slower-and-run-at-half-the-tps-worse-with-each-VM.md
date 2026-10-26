@@ -6,7 +6,7 @@ title: >-
 status: In Progress
 assignee: []
 created_date: '2026-10-25 19:06'
-updated_date: '2026-10-26 05:29'
+updated_date: '2026-10-26 12:32'
 labels:
   - bug
 dependencies: []
@@ -56,4 +56,6 @@ r120 (cac2afe77, 5 VMs on one 8 GiB extentd, n2-standard-8 32 GB): the VMM's hos
 r125 (n2-standard-16, 64 GB, 5 VMs): the decay holds with free memory plenty: VMM host time per guest window change 66.7 -> 76.9 -> 84.8 -> 91.8 -> 96.3 us, tps first runs 1216 -> 1105; so not host memory. The stage operations extentd sends grow: 2.56M, 3.23M, 3.74M, 4.24M, 4.73M a VM for ~1.1M guest window changes each (the mix of MAPs, evacuations and seals unchanged), each a little cheaper (27.6 -> 20.9 us as the VMM measures it). Hypothesis: the daemon's physical memory fragments once its cache is at its cap (from VM 2), evictions scattering the free pages, so the pages open extents and page-ins take are scattered, and each window mapping is a stage map, and a host mapping in the VMM, per run of consecutive pages. 3d941c934 counts the stage maps sent and their bytes; r126 measures runs per VM.
 
 r126 (3d941c934, 5 VMs, stage map counters): runs shorten as the daemon's memory recycles: stage maps per VM 1.23M, 1.92M, 2.52M, 2.96M, 3.45M, averaging 9.5, 5.9, 4.4, 3.7, 3.1 pages, for ~1.0-1.16M guest window changes each; tps first runs 1132 -> 1022. Cause confirmed: the arenas' free lists return pages in the order freed, and multi-page allocations took them a page at a time. Fix 9c94b62e1: each page after the first follows on from the last taken where that one is free and of its chunk (Arenas::take_after); tests pages_taken_after_another_follow_on_from_it and pages_allocated_together_follow_on_from_one_another (64 runs of 64 pages without it, at most 8 with). r128 measures the runs and the decay across 5 VMs.
+
+r130 (d20e7cbc4, the fix; 5 VMs, n2-standard-8): stage maps per VM 1.06M, 1.37M, 1.56M, 1.72M, 1.85M, averaging 10.4, 8.0, 7.0, 6.3, 5.8 pages (r126: 9.5 -> 3.1); the VMM's extentd client sys 89.0, 94.6, 97.6, 99.2, 101.2 s (+14%, r120 +46%); first-run tps 1074, 1062, 1050, 1041, 1035 (-3.6%, r126 -10%), fifth runs 882-902; init 17.3, 17.9, 19.0 s (VMs 1, 3, 5). Linux workspace r131 green (2,640). Pushed (8140da231). Runs still shorten some as memory recycles. r134: AC1's 10 VMs.
 <!-- SECTION:NOTES:END -->
