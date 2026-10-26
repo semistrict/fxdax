@@ -13,7 +13,8 @@
 # Usage: test-gce.sh [all|create|run|delete] [instance] [results-directory]
 #
 # FXDAX_GCE_PROJECT is the project (default: gcloud's), FXDAX_GCE_ZONE the zone
-# to try first (default: us-east4-a), and FXDAX_E2E_TEST the guest tests' cases to
+# to try first (default: us-east4-a), FXDAX_GCE_MACHINE the machine type
+# (default: n2-standard-8), and FXDAX_E2E_TEST the guest tests' cases to
 # run, separated by spaces, instead of scripts/test-e2e.sh's (`all` runs every one),
 # each FXDAX_E2E_ROUNDS times, under Firecracker's seccomp filter with
 # FXDAX_FIRECRACKER_SECCOMP, in its jailer's jail with FXDAX_FIRECRACKER_JAIL
@@ -43,7 +44,7 @@ instance=${2:-fxdax-test-$(date -u +%Y%m%d-%H%M%S)-$gce_maker}
 results=${3:-$(mktemp -d "${TMPDIR:-/tmp}/fxdax-gce.XXXXXX")}
 [[ -n "$project" && "$project" != '(unset)' ]] || { echo 'Set FXDAX_GCE_PROJECT.' >&2; exit 2; }
 [[ "$instance" =~ ^fxdax-test-[a-z0-9-]+$ ]] || { echo 'Use an fxdax-test- instance name.' >&2; exit 2; }
-machine=n2-standard-8
+machine=${FXDAX_GCE_MACHINE:-n2-standard-8}
 purpose=fxdax-test
 # The host deletes itself after this long; the run's own limit leaves time to
 # copy the results back.
