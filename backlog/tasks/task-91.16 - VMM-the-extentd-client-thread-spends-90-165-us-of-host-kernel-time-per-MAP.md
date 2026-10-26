@@ -4,7 +4,7 @@ title: 'VMM: the extentd client thread spends 90-165 us of host kernel time per 
 status: In Progress
 assignee: []
 created_date: '2026-10-23 18:01'
-updated_date: '2026-10-26 12:48'
+updated_date: '2026-10-26 13:25'
 labels: []
 dependencies: []
 parent_task_id: TASK-91
@@ -77,4 +77,6 @@ r132 (8140da231, pgbench-dax 1 VM, us-east4-a): tps 1117/1044/1014/957/987. The 
 r133 (7ec91b237, one host, guest profiles, first run profiled): DAX 976/1028/1000/945/951 tps, no DAX 1404/1692/1699/1677/1687. Guest CPU per 60 s run: DAX user ~33 s, sys ~46-49 s, idle ~30-33 s; no DAX user ~46 s, sys ~49 s, idle ~21 s: 1.42 against 0.94 ms of vCPU busy per transaction, and more idle. Profiles alike in shape (halt 25% against 21%, vm_notify, finish_task_switch, rep_movs; DAX adds fxfs_dax_evacuee_gather 2.9%): DAX's extra guest time is spread, as VM exits charged to whatever ran would be. Commits: DAX 39k at 483 us, no DAX 70k at 250 us; DAX stores held by seals 13.4k, 7.3 s. r135 (bd57cd64f): KVM's per-VM counts (debugfs: exits by reason, page faults, TLB flushes) sampled each 2 s, DAX against no DAX on one host.
 
 r133 commits, extentd against the guest: DAX 130 us in extentd (seal 59) against 483 us seen; no DAX 63 us against 250. Outside extentd (transport, the VMM's queues, the guest's wakeup): DAX 353 us, no DAX 187 us. DAX's extra 166 us there is the suspect for the VMM's one 'extentd client' thread delivering replies behind window changes' stage work (it makes them in order on the socket); no DAX's 187 us is the transport itself (TASK-91.4).
+
+r135 (bd57cd64f, one host, KVM debugfs per VM over load + 5 runs): DAX 1138/1040/1021/976/974 tps, no DAX 1708-1751. DAX: remote_tlb_flush 638k (no DAX 0), vCPU tlb_flush 1.35M (1.8k), irq_exits 2.99M (1.73M), exits 9.43M (8.72M) for ~40% fewer transactions: ~30 exits a transaction against ~17; per transaction ~2.1 remote flushes, ~4.4 vCPU flushes, ~6 more interrupt exits. pf_taken 184k (no DAX 644k, its page cache). The host's shootdowns land on the guest's vCPUs (each a kick and a TLB flush, under nested virtualization exits to L0), which fits the guest's spread-out extra CPU per transaction (r133). Cutting window changes that take access away is the lever, guest and host alike. Experiment 16d8fa399 (fxfs.dax_drop_idle_ms): evacuations drop ranges no iomap used for that long, reclaimed as the window's reclaim does, rather than map their pages a second time; r136 A/B 0/1000/5000 ms on one host.
 <!-- SECTION:NOTES:END -->
