@@ -110,16 +110,6 @@ static unsigned long fxfs_dax_delay_seed;
 module_param_named(dax_delay_seed, fxfs_dax_delay_seed, ulong, 0444);
 MODULE_PARM_DESC(dax_delay_seed, "The seed of fxfs.dax_delay_us's delays");
 
-/*
- * fxdax: experiment (TASK-91.16): an evacuation drops a file's ranges no iomap used for
- * fxfs.dax_drop_idle_ms milliseconds, as reclaiming the window does, rather than map their pages
- * in their own space: pages written and not read since, as a database's log, are mapped again only
- * if an iomap reaches them, each MAP a host TLB shootdown of the vCPUs. Off (0) unless set.
- */
-static unsigned int fxfs_dax_drop_idle_ms;
-module_param_named(dax_drop_idle_ms, fxfs_dax_drop_idle_ms, uint, 0644);
-MODULE_PARM_DESC(dax_drop_idle_ms, "Drop ranges idle this many milliseconds rather than evacuate them (0: off)");
-
 static DEFINE_SPINLOCK(fxfs_dax_delay_lock);
 static struct rnd_state fxfs_dax_delay_state;
 static bool fxfs_dax_delay_seeded;
@@ -230,8 +220,6 @@ struct fxfs_dax_range {
 	unsigned long pages;
 	/* The iomaps using it, which keep it. */
 	atomic_t users;
-	/* fxdax: when an iomap last used it, in jiffies (fxfs.dax_drop_idle_ms). */
-	unsigned long used_at;
 	/* Its pages that map an extent, and those that map one writably. */
 	unsigned long *mapped;
 	unsigned long *writable;
@@ -309,8 +297,6 @@ struct fxfs_dax {
 	 * took of that (TASK-91.16).
 	 */
 	atomic64_t write_waits, write_wait_ns, evacuations, evacuate_hold_ns, evacuate_map_ns;
-	/* fxdax: the ranges evacuations dropped, idle (fxfs.dax_drop_idle_ms). */
-	atomic64_t ranges_dropped;
 	/* The files with ranges, or inodes using the window, by inode number. */
 	struct xarray files;
 	/* Guards `files`, and files' inodes. */
@@ -912,7 +898,6 @@ static struct fxfs_dax_range *fxfs_dax_new_range(u64 window_offset, unsigned lon
 	range->window_offset = window_offset;
 	range->region = region;
 	range->pages = pages;
-	range->used_at = jiffies;
 	INIT_LIST_HEAD(&range->list);
 	return range;
 }
@@ -1629,8 +1614,6 @@ static unsigned long fxfs_dax_range_capacity(pgoff_t chunk, loff_t size)
 
 static void fxfs_dax_use_range(struct fxfs_dax *dax, struct fxfs_dax_range *range)
 {
-	if (READ_ONCE(range->used_at) != jiffies)
-		WRITE_ONCE(range->used_at, jiffies);
 	/* Its user keeps it linked and alive. Already last, this access cannot make it newer. */
 	if (READ_ONCE(range->list.next) == &dax->used)
 		return;
@@ -2829,40 +2812,6 @@ static void fxfs_dax_lock_evacuable(struct fxfs_dax *dax, struct fxfs_dax_file *
 }
 
 /*
- * fxdax: drops `file`'s ranges with pages in sealed staging extents' regions that no iomap used
- * for fxfs.dax_drop_idle_ms, as reclaiming the window does (fxfs_dax_reclaim_range), unless an
- * iomap uses one now or its file's locks are taken: their pages go from the window rather than
- * move in it, and an iomap that reaches them again maps their chunk anew.
- */
-static void fxfs_dax_drop_idle(struct fxfs_dax *dax, struct fxfs_dax_file *file)
-{
-	unsigned long idle = msecs_to_jiffies(READ_ONCE(fxfs_dax_drop_idle_ms));
-	struct fxfs_dax_range *range;
-	unsigned long chunk = 0;
-	bool found;
-
-	if (!idle)
-		return;
-	for (;;) {
-		found = false;
-		down_read(&file->sem);
-		xa_for_each_start(&file->ranges, chunk, range, chunk) {
-			if (!range->region && range->moved && !atomic_read(&range->users) &&
-			    time_after(jiffies, READ_ONCE(range->used_at) + idle)) {
-				found = true;
-				break;
-			}
-		}
-		up_read(&file->sem);
-		if (!found)
-			return;
-		if (fxfs_dax_reclaim_range(dax, file, chunk))
-			atomic64_inc(&dax->ranges_dropped);
-		chunk++;
-	}
-}
-
-/*
  * fxdax: evacuates `file`: gathers its runs, maps them in their ranges' own space, and has them be
  * there, holding its semaphore for writing throughout. So no write maps one of those pages anew in
  * its range's own space between the gathering and the MAP, which the evacuation's MAP, landing
@@ -2932,10 +2881,8 @@ static void fxfs_dax_evacuate_work(struct work_struct *work)
 	mutex_lock(&dax->writable_lock);
 	list_splice_init(&dax->evacuating, &files);
 	mutex_unlock(&dax->writable_lock);
-	list_for_each_entry(file, &files, evacuating) {
-		fxfs_dax_drop_idle(dax, file);
+	list_for_each_entry(file, &files, evacuating)
 		fxfs_dax_evacuate_file(dax, file);
-	}
 	list_for_each_entry_safe(file, next, &files, evacuating) {
 		mutex_lock(&dax->writable_lock);
 		list_del_init(&file->evacuating);
@@ -2994,7 +2941,6 @@ void fxfs_dax_show_stats(struct fxfs_dax *dax, struct seq_file *m)
 	seq_printf(m, "dax_evacuations %lld\ndax_evacuate_hold_ns %lld\ndax_evacuate_map_ns %lld\n",
 		   atomic64_read(&dax->evacuations), atomic64_read(&dax->evacuate_hold_ns),
 		   atomic64_read(&dax->evacuate_map_ns));
-	seq_printf(m, "dax_ranges_dropped %lld\n", atomic64_read(&dax->ranges_dropped));
 	for (why = 0; why < FXFS_DAX_WHYS; why++)
 		seq_printf(m, "window_maps_%s %lld\nwindow_map_bytes_%s %lld\n", fxfs_dax_whys[why],
 			   atomic64_read(&dax->maps[why]), fxfs_dax_whys[why],
