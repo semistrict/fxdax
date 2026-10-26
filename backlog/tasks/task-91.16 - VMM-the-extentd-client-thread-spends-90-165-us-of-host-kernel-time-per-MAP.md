@@ -4,7 +4,7 @@ title: 'VMM: the extentd client thread spends 90-165 us of host kernel time per 
 status: In Progress
 assignee: []
 created_date: '2026-10-23 18:01'
-updated_date: '2026-10-26 14:09'
+updated_date: '2026-10-26 14:57'
 labels: []
 dependencies: []
 parent_task_id: TASK-91
@@ -81,4 +81,6 @@ r133 commits, extentd against the guest: DAX 130 us in extentd (seal 59) against
 r135 (bd57cd64f, one host, KVM debugfs per VM over load + 5 runs): DAX 1138/1040/1021/976/974 tps, no DAX 1708-1751. DAX: remote_tlb_flush 638k (no DAX 0), vCPU tlb_flush 1.35M (1.8k), irq_exits 2.99M (1.73M), exits 9.43M (8.72M) for ~40% fewer transactions: ~30 exits a transaction against ~17; per transaction ~2.1 remote flushes, ~4.4 vCPU flushes, ~6 more interrupt exits. pf_taken 184k (no DAX 644k, its page cache). The host's shootdowns land on the guest's vCPUs (each a kick and a TLB flush, under nested virtualization exits to L0), which fits the guest's spread-out extra CPU per transaction (r133). Cutting window changes that take access away is the lever, guest and host alike. Experiment 16d8fa399 (fxfs.dax_drop_idle_ms): evacuations drop ranges no iomap used for that long, reclaimed as the window's reclaim does, rather than map their pages a second time; r136 A/B 0/1000/5000 ms on one host.
 
 r136 (16d8fa399, one host, pgbench-dax, fxfs.dax_drop_idle_ms 0/1000/5000): 0: 1131/1058/1011/971/981 tps. 1000: 740/128/115/76/54, ranges dropped ~3k a run, then 'range' MAPs 124k-324k a run as data files' chunks, read again, are mapped anew piece by piece. 5000: 1131/1039/990/957/948, 77 ranges dropped in all: the ranges evacuated are in use within 5 s (the WAL's chunk being written, data files read). Dropping at a range's grain doesn't work; reverted (c6d96357e). Reading of r133/r135: DAX's user time per transaction is 29% higher than no DAX's for the same PostgreSQL work, and the extra guest time spreads over every symbol: the ~4.4 vCPU TLB flushes a transaction (r135), each emptying the guest's TLB, whose refills walk two-dimensional page tables under nested virtualization with guest memory in 4K pages (KVM pages_2m=0). r137 (4ef3d04b0): guest memory in the host's 2 MiB huge pages (FXDAX_GUEST_HUGE_PAGES=2M, Firecracker's huge_pages) against 4K, DAX and no DAX, one host.
+
+r137 (4ef3d04b0, one host, guest memory in 4K pages against the host's 2 MiB huge pages): DAX 4K 1140/1070/1033/1003/979, 2M 1200/1104/1059/1032/1004 (+3-5%); no DAX 4K 1717-1741, init 16.2 s, 2M 1821-1882 (+7%), init 10.5 s (-35%). KVM pages_2m 336 (DAX) / 1277 (no DAX). The TLB-refill reading is mostly wrong for DAX: huge pages help no DAX more. Huge pages are worth the sandbox team's VMs on their own (FXDAX_GUEST_HUGE_PAGES=2M; Firecracker's machine-config huge_pages '2M', hugetlbfs reserved on the host).
 <!-- SECTION:NOTES:END -->
