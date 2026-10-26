@@ -4,7 +4,7 @@ title: 'VMM: the extentd client thread spends 90-165 us of host kernel time per 
 status: In Progress
 assignee: []
 created_date: '2026-10-23 18:01'
-updated_date: '2026-10-26 18:09'
+updated_date: '2026-10-26 18:38'
 labels: []
 dependencies: []
 parent_task_id: TASK-91
@@ -97,4 +97,6 @@ r143 (exp/stage-leftovers): the leftovers are seals. Each logged change unmaps a
 r144 (f3188ebc0, before the seal fix; bench VMs, 2 vCPU 2 GiB, pgbench scale 50, 60 s, -c 4 -j 2, 3 iterations, one host): ext4 on virtio-pmem without DAX 1130/1131/1134 tps (init 17.1-24.8 s); ext4 on the same pmem with DAX 872/884/886 (init 21.9-22.4 s), -22%; Fxfs without DAX 1546/1568/1553 (init 11.4-17.3 s); Fxfs with DAX 888/892/891 (init 19.4-19.9 s), -43%. Fxfs's DAX runs as fast as Linux's own on pmem, which writes in place with no window changes at all; DAX costs ext4 on pmem 22% too. Fxfs without DAX is the fastest of the four.
 
 r146 (5de767990, the seal fix): workspace 2,642 passed, checks-dax and pgbench-dax green. pgbench-dax 1176/1088/1053/1028/987 tps (r142, same code before: 1119/1051/1025/984/989): +2-5%. Over the VM: write-protects 232k (115k), leave-outs 475k (543k), overwrites 276k (267k), KVM remote flushes 612k (643k), extentd client sys 88.3 s (93.0). Seals now write-protect in place, but leave-outs fell by a fraction: r143's first 400 were the load's; r147 samples leftovers across the whole run.
+
+r147 (exp/stage-leftovers-2, each 1000th leftover over the VM's life, after the seal fix): ~124k leftovers, all a range mapped anew with no pages: regions' 16-32 pages and ranges' own space 2-12 pages. That fits Extents::free's replace_kept, zeros mapped over a freed extent's window mappings (a version the guest replaced), which leaves its installed pages out. A page version installed costs one flush when it goes, however it goes (zeros, overwrite, unmap); the cut is in installing fewer: read-only maps are prefaulted into KVM, which a replacement then zaps and flushes, though evacuated pages are mostly cold (r112). r148 A/B: FXDAX_PREFAULT_READ_ONLY=0 (exp/no-prefault-ro 7eba4c930), read-only installs not prefaulted.
 <!-- SECTION:NOTES:END -->
