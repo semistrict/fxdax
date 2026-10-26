@@ -345,23 +345,20 @@ impl Queued {
         (self.header.len() + self.payload.len() - self.sent) as u64
     }
 
-    /// Sends what of it `stream` takes, `fds` with its first bytes: whether it is all sent.
-    fn send(&mut self, stream: &UnixStream, fds: &[BorrowedFd<'_>]) -> io::Result<bool> {
-        let len = self.header.len() + self.payload.len();
-        while self.sent < len {
-            let (header, payload) = match self.sent.checked_sub(self.header.len()) {
-                None => (&self.header[self.sent..], &self.payload[..]),
-                Some(at) => (&[][..], &self.payload[at..]),
-            };
-            let fds = if self.sent == 0 { fds } else { &[] };
-            match send_parts(stream, [header, payload], fds) {
-                Ok(sent) => self.sent += sent,
-                Err(err) if err.kind() == io::ErrorKind::WouldBlock => return Ok(false),
-                Err(err) => return Err(err),
-            }
+    /// What of its header, and of its payload, is not sent.
+    fn unsent(&self) -> (&[u8], &[u8]) {
+        match self.sent.checked_sub(self.header.len()) {
+            None => (&self.header[self.sent..], &self.payload[..]),
+            Some(at) => (&[][..], &self.payload[at..]),
         }
-        Ok(true)
     }
+}
+
+thread_local! {
+    /// fxdax: the sender this thread holds back what it sends through, and how many corks deep
+    /// ([`AsyncSender::cork`]).
+    static CORKED: std::cell::RefCell<Option<(usize, usize)>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 impl AsyncSender {
@@ -404,6 +401,53 @@ impl AsyncSender {
         self.queue(header, Vec::new(), &[], true)
     }
 
+    /// fxdax: holds back what this thread sends through it, until [`AsyncSender::uncork`], to send
+    /// it all at once, in as few writes as the socket takes: the messages of one change to a
+    /// window, which its VM process then reads, and makes, together (TASK-91.16). Others' sends
+    /// meanwhile send what it held back first, in order, so that it delays none of theirs. Corks
+    /// nest; this thread mustn't wait for what it holds back, as for a stage operation's
+    /// acknowledgement, until it uncorks.
+    pub fn cork(self: &std::sync::Arc<Self>) {
+        CORKED.with_borrow_mut(|corked| match corked {
+            Some((sender, depth)) => {
+                assert_eq!(*sender, self.identity(), "a thread corks one sender at a time");
+                *depth += 1;
+            }
+            None => *corked = Some((self.identity(), 1)),
+        });
+    }
+
+    /// fxdax: ends a [`AsyncSender::cork`]: the last one sends what this thread held back.
+    pub fn uncork(self: &std::sync::Arc<Self>) {
+        let last = CORKED.with_borrow_mut(|corked| {
+            let (sender, depth) = corked.as_mut().expect("uncorked a sender not corked");
+            assert_eq!(*sender, self.identity(), "uncorked another sender than corked");
+            *depth -= 1;
+            let last = *depth == 0;
+            if last {
+                *corked = None;
+            }
+            last
+        });
+        if last {
+            let mut queue = self.queue.lock().unwrap();
+            if !queue.draining && queue.failed.is_none() {
+                self.write_queued(&mut queue);
+            }
+        }
+    }
+
+    /// fxdax: whether this thread holds back what it sends through any sender
+    /// ([`AsyncSender::cork`]).
+    pub fn corked() -> bool {
+        CORKED.with_borrow(Option::is_some)
+    }
+
+    /// What tells this sender from another, for [`CORKED`].
+    fn identity(&self) -> usize {
+        self as *const Self as usize
+    }
+
     /// Sends `header`, `payload` and `fds`, as [`AsyncSender::send`] does, in place of a message
     /// of its kind waiting if it is the `latest` of what its kind says.
     fn queue(
@@ -417,7 +461,7 @@ impl AsyncSender {
         header.len = payload.len() as u64;
         let latest = latest.then_some(header.kind);
         let header = header.as_bytes().try_into().unwrap();
-        let mut message = Queued { header, payload, sent: 0, latest };
+        let message = Queued { header, payload, sent: 0, latest };
         let mut queue = self.queue.lock().unwrap();
         if let Some(failed) = queue.failed {
             return Err(failed.into());
@@ -429,28 +473,76 @@ impl AsyncSender {
             queued.header = message.header;
             return Ok(());
         }
-        if queue.messages.is_empty() {
-            match message.send(self.stream.get_ref(), fds) {
-                Ok(true) => return Ok(()),
-                Ok(false) => {}
-                Err(err) => {
-                    queue.failed = Some(err.kind());
-                    return Err(err);
+        // The descriptors are the queue's until it sends them, with the message's first bytes.
+        let fds = fds.iter().map(|fd| fd.try_clone_to_owned()).collect::<io::Result<_>>()?;
+        self.queued.fetch_add(message.left(), std::sync::atomic::Ordering::Relaxed);
+        queue.messages.push_back((message, fds));
+        // Held back by this thread, or written by the task draining the queue, if one does.
+        let corked = CORKED
+            .with_borrow(|corked| corked.is_some_and(|(sender, _)| sender == self.identity()));
+        if !corked && !queue.draining {
+            self.write_queued(&mut queue);
+        }
+        queue.failed.map_or(Ok(()), |failed| Err(failed.into()))
+    }
+
+    /// Writes what of the messages in `queue` the socket takes now, and has a task write the rest
+    /// as it takes it; or, the socket failed, fails the queue, which the sends say from now on, as
+    /// a VM process gone makes them fail.
+    fn write_queued(self: &std::sync::Arc<Self>, queue: &mut Queue) {
+        match self.send_queued(queue) {
+            Ok(true) => {}
+            Ok(false) => {
+                queue.draining = true;
+                self.runtime.spawn(self.clone().drain());
+            }
+            Err(err) => {
+                queue.failed = Some(err.kind());
+                queue.messages.clear();
+                self.queued.store(0, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+    }
+
+    /// Sends what of the messages in `queue` the socket takes, many in each write: whether it took
+    /// them all. A message's descriptors go with its first bytes, which begin a write.
+    fn send_queued(&self, queue: &mut Queue) -> io::Result<bool> {
+        /// The most messages a write sends: their headers and payloads, each an `iovec`.
+        const MOST: usize = 64;
+        while !queue.messages.is_empty() {
+            let fds: Vec<BorrowedFd<'_>> = match queue.messages.front() {
+                Some((message, fds)) if message.sent == 0 => fds.iter().map(AsFd::as_fd).collect(),
+                _ => Vec::new(),
+            };
+            let mut parts: Vec<&[u8]> = Vec::with_capacity(2 * MOST);
+            for (at, (message, more_fds)) in queue.messages.iter().take(MOST).enumerate() {
+                // Another message's descriptors begin a write of their own.
+                if at > 0 && !more_fds.is_empty() {
+                    break;
+                }
+                let (header, payload) = message.unsent();
+                parts.extend([header, payload]);
+            }
+            let sent = match send_parts(self.stream.get_ref(), &parts, &fds) {
+                Ok(sent) => sent,
+                Err(err) if err.kind() == io::ErrorKind::WouldBlock => return Ok(false),
+                Err(err) => return Err(err),
+            };
+            drop(parts);
+            drop(fds);
+            self.queued.fetch_sub(sent as u64, std::sync::atomic::Ordering::Relaxed);
+            let mut left = sent;
+            while left > 0 {
+                let (message, _) = queue.messages.front_mut().expect("bytes sent of a message");
+                let taken = (message.left() as usize).min(left);
+                message.sent += taken;
+                left -= taken;
+                if message.left() == 0 {
+                    queue.messages.pop_front();
                 }
             }
         }
-        // The descriptors, unless sent with its first bytes, are the queue's until it sends them.
-        let fds = match message.sent {
-            0 => fds.iter().map(|fd| fd.try_clone_to_owned()).collect::<io::Result<_>>()?,
-            _ => Vec::new(),
-        };
-        self.queued.fetch_add(message.left(), std::sync::atomic::Ordering::Relaxed);
-        queue.messages.push_back((message, fds));
-        if !queue.draining {
-            queue.draining = true;
-            self.runtime.spawn(self.clone().drain());
-        }
-        Ok(())
+        Ok(true)
     }
 
     /// Writes the messages queued as the socket takes them, until none is left, or it fails.
@@ -461,24 +553,16 @@ impl AsyncSender {
                 Err(err) => return self.fail(err),
             };
             let mut queue = self.queue.lock().unwrap();
-            while let Some((message, fds)) = queue.messages.front_mut() {
-                let fds: Vec<BorrowedFd<'_>> = fds.iter().map(AsFd::as_fd).collect();
-                let left = message.left();
-                let sent = message.send(self.stream.get_ref(), &fds);
-                let taken = left - message.left();
-                self.queued.fetch_sub(taken, std::sync::atomic::Ordering::Relaxed);
-                match sent {
-                    Ok(true) => drop(queue.messages.pop_front()),
-                    Ok(false) => break,
-                    Err(err) => {
-                        drop(queue);
-                        return self.fail(err);
-                    }
+            match self.send_queued(&mut queue) {
+                Ok(true) => {
+                    queue.draining = false;
+                    return;
                 }
-            }
-            if queue.messages.is_empty() {
-                queue.draining = false;
-                return;
+                Ok(false) => {}
+                Err(err) => {
+                    drop(queue);
+                    return self.fail(err);
+                }
             }
             ready.clear_ready();
         }
@@ -547,14 +631,15 @@ fn write_all(stream: &UnixStream, mut bytes: &[u8]) -> io::Result<()> {
 
 /// Sends what of `bytes` one `sendmsg` does, with `fds`: how many bytes it sent, at least one.
 fn send_with_fds(stream: &UnixStream, bytes: &[u8], fds: &[BorrowedFd<'_>]) -> io::Result<usize> {
-    send_parts(stream, [bytes, &[]], fds)
+    send_parts(stream, &[bytes], fds)
 }
 
 /// Sends what of `parts`, in order, one `sendmsg` does, with `fds`: how many bytes it sent, at
 /// least one.
-fn send_parts(stream: &UnixStream, parts: [&[u8]; 2], fds: &[BorrowedFd<'_>]) -> io::Result<usize> {
-    let mut iov =
-        parts.map(|part| libc::iovec { iov_base: part.as_ptr() as *mut _, iov_len: part.len() });
+fn send_parts(stream: &UnixStream, parts: &[&[u8]], fds: &[BorrowedFd<'_>]) -> io::Result<usize> {
+    let mut iov: Vec<libc::iovec> = (parts.iter())
+        .map(|part| libc::iovec { iov_base: part.as_ptr() as *mut _, iov_len: part.len() })
+        .collect();
     let len = (fds.len() * size_of::<RawFd>()) as u32;
     // SAFETY: CMSG_SPACE only computes a size.
     let space = unsafe { libc::CMSG_SPACE(len) } as usize;
@@ -599,26 +684,66 @@ impl Receiver {
         Self(stream)
     }
 
-    /// Joins up to 63 more adjacent acknowledged unmaps already waiting in the socket,
-    /// without crossing another operation, a gap, or partial input. The ACK uses the largest ID
-    /// of the unmaps actually consumed, after the entire union was unmapped.
-    pub fn coalesce_unmaps(&mut self, header: &mut Header) -> io::Result<usize> {
-        let is_range = |h: &Header| {
+    /// fxdax: takes what follows the stage unmap `header`, already waiting whole in the socket, of
+    /// the window's change it begins (TASK-91.16): first the acknowledged unmaps adjacent to it or
+    /// overlapping it, which it joins, then the window's mapping anew of the range they unmap
+    /// ([`STAGE_MAPPED`]) and its pages ([`STAGE_MAP`]), each within it, which it returns, in
+    /// order, for the VM process to make with the unmap at once. Up to 63 messages, without
+    /// crossing another, a gap, or partial input. The unmap's ID becomes the largest of those it
+    /// joined: never a later map's, as operations taking access away that haven't reached the
+    /// wire yet may own the IDs between, whose pages kept must stay quarantined.
+    pub fn take_change(&mut self, header: &mut Header) -> io::Result<Vec<Header>> {
+        let is_unmap = |h: &Header| {
             h.kind == STAGE_UNMAP
                 && h.flags == STAGE_ACK
-                && h.len == 0
                 && h.status == 0
                 && h.reserved == 0
                 && h.args[1] != 0
         };
-        if !is_range(header) {
-            return Ok(0);
+        if !is_unmap(header) || header.len != 0 {
+            return Ok(Vec::new());
         }
         let (mut start, Some(mut end)) =
             (header.args[0], header.args[0].checked_add(header.args[1]))
         else {
-            return Ok(0);
+            return Ok(Vec::new());
         };
+        let mut id = header.id;
+        let mut anew = false;
+        let taken = self.take_waiting(|next| {
+            let len = match next.kind {
+                STAGE_UNMAP if !anew && is_unmap(next) => {
+                    let Some(next_end) = next.args[0].checked_add(next.args[1]) else {
+                        return false;
+                    };
+                    if next.args[0] > end || next_end < start {
+                        return false;
+                    }
+                    (start, end) = (start.min(next.args[0]), end.max(next_end));
+                    id = id.max(next.id);
+                    return true;
+                }
+                STAGE_MAPPED => next.args[1],
+                STAGE_MAP => next.args[2],
+                _ => return false,
+            };
+            anew = true;
+            next.flags == 0
+                && next.status == 0
+                && next.reserved == 0
+                && len != 0
+                && next.args[0] >= start
+                && next.args[0].checked_add(len).is_some_and(|next_end| next_end <= end)
+        })?;
+        header.id = id;
+        header.args[0] = start;
+        header.args[1] = end - start;
+        Ok(taken.into_iter().filter(|taken| taken.kind != STAGE_UNMAP).collect())
+    }
+
+    /// fxdax: receives the messages already waiting whole in the socket, up to 63, as long as
+    /// `take` takes each, in order, none with a payload, in one read rather than one each.
+    fn take_waiting(&mut self, mut take: impl FnMut(&Header) -> bool) -> io::Result<Vec<Header>> {
         let mut bytes = [0u8; 63 * size_of::<Header>()];
         let got = loop {
             // SAFETY: The live buffer is writable for its length. Peeking consumes no input;
@@ -636,35 +761,19 @@ impl Receiver {
             }
             let err = io::Error::last_os_error();
             match err.kind() {
-                io::ErrorKind::WouldBlock => return Ok(0),
+                io::ErrorKind::WouldBlock => return Ok(Vec::new()),
                 io::ErrorKind::Interrupted => continue,
                 _ => return Err(err),
             }
         };
-        let mut id = header.id;
-        let mut joined = 0;
-        for bytes in bytes[..got].chunks_exact(size_of::<Header>()) {
-            let next = Header::read_from_bytes(bytes).unwrap();
-            if !is_range(&next) {
-                break;
-            }
-            let Some(next_end) = next.args[0].checked_add(next.args[1]) else { break };
-            if next.args[0] > end || next_end < start {
-                break;
-            }
-            let received = self.receive(|| 0)?.ok_or(io::ErrorKind::UnexpectedEof)?;
-            debug_assert_eq!(received.header, next);
-            start = start.min(next.args[0]);
-            end = end.max(next_end);
-            // Never use a later MAP or MAPPED's ID: taking operations which haven't reached
-            // the wire yet may own intervening IDs, whose kept pages must remain quarantined.
-            id = id.max(next.id);
-            joined += 1;
-        }
-        header.id = id;
-        header.args[0] = start;
-        header.args[1] = end - start;
-        Ok(joined)
+        let taken: Vec<Header> = (bytes[..got].chunks_exact(size_of::<Header>()))
+            .map(|bytes| Header::read_from_bytes(bytes).unwrap())
+            .take_while(|next| next.len == 0 && take(next))
+            .collect();
+        // Stage operations carry no descriptors: the read stops short of the first bytes of any
+        // message after them that does, which its descriptors come with.
+        self.0.read_exact(&mut bytes[..taken.len() * size_of::<Header>()])?;
+        Ok(taken)
     }
 
     /// The next message, or `None` once the other end has closed the connection: one whose payload
@@ -838,12 +947,39 @@ mod tests {
         let file = tempfile::tempfile().unwrap();
         sender.send(reply, &[], &[file.as_fd()]).unwrap();
         let mut h = receiver.receive(|| 0).unwrap().unwrap().header;
-        assert_eq!(receiver.coalesce_unmaps(&mut h).unwrap(), 3);
+        assert_eq!(receiver.take_change(&mut h).unwrap(), [mapped]);
         assert_eq!(h, unmap(7, 4096, 12288));
-        assert_eq!(receiver.receive(|| 0).unwrap().unwrap().header, mapped);
         let message = receiver.receive(|| 0).unwrap().unwrap();
         assert_eq!(message.header, reply);
         assert_eq!(message.fds.len(), 1);
+    }
+
+    /// fxdax: an unmap takes the window's mapping anew of what it unmaps, and the maps of its
+    /// pages, each within it, in order, up to the first that isn't (TASK-91.16): one outside it,
+    /// one of another kind, or an unmap after them, which begins the next change.
+    #[test]
+    fn unmaps_take_the_maps_within_them() {
+        let map =
+            |id, offset, len| Header::new(STAGE_MAP, id).with_args(&[offset, 1 << 20, len, 1, 0]);
+        let mapped = Header::new(STAGE_MAPPED, 2).with_args(&[4096, 8192]);
+        for (after, taken) in [
+            (map(5, 8192, 8192), 3),
+            (unmap(5, 4096, 4096), 3),
+            (Header::new(STAGE_PROTECT, 5).with_args(&[4096, 4096, 2]), 3),
+            (map(5, 4096, 8192), 4),
+        ] {
+            let ((sender, _), (_, mut receiver)) = pair();
+            let sent = [mapped, map(3, 4096, 4096), map(4, 8192, 4096), after];
+            for h in sent {
+                sender.send(h, &[], &[]).unwrap();
+            }
+            let mut first = unmap(1, 4096, 8192);
+            assert_eq!(receiver.take_change(&mut first).unwrap(), sent[..taken]);
+            assert_eq!(first, unmap(1, 4096, 8192), "the unmap's ID is never a map's");
+            if taken < sent.len() {
+                assert_eq!(receiver.receive(|| 0).unwrap().unwrap().header, after);
+            }
+        }
     }
 
     #[test]
@@ -851,7 +987,7 @@ mod tests {
         for variation in 0..6 {
             let ((sender, _), (_, mut receiver)) = pair();
             let mut first = unmap(1, 4096, 4096);
-            assert_eq!(receiver.coalesce_unmaps(&mut first).unwrap(), 0);
+            assert_eq!(receiver.take_change(&mut first).unwrap(), Vec::<Header>::new());
             let mut next = unmap(2, 8192, 4096);
             match variation {
                 0 => next.args[0] += 4096,
@@ -867,15 +1003,15 @@ mod tests {
             }
             if variation == 4 {
                 write_all(&sender.0.lock().unwrap(), &next.as_bytes()[..17]).unwrap();
-                assert_eq!(receiver.coalesce_unmaps(&mut first).unwrap(), 0);
+                assert_eq!(receiver.take_change(&mut first).unwrap(), Vec::<Header>::new());
                 assert_eq!(first, unmap(1, 4096, 4096));
                 write_all(&sender.0.lock().unwrap(), &next.as_bytes()[17..]).unwrap();
-                assert_eq!(receiver.coalesce_unmaps(&mut first).unwrap(), 1);
+                assert_eq!(receiver.take_change(&mut first).unwrap(), Vec::<Header>::new());
                 assert_eq!(first, unmap(2, 4096, 8192));
             } else {
                 let payload = vec![9; next.len as usize];
                 sender.send(next, &payload, &[]).unwrap();
-                assert_eq!(receiver.coalesce_unmaps(&mut first).unwrap(), 0);
+                assert_eq!(receiver.take_change(&mut first).unwrap(), Vec::<Header>::new());
                 assert_eq!(first, unmap(1, 4096, 4096));
                 let received = receiver.receive(|| 0).unwrap().unwrap();
                 assert_eq!((received.header, received.payload), (next, payload));
@@ -894,11 +1030,11 @@ mod tests {
         while next_id <= 128 {
             let mut header = receiver.receive(|| 0).unwrap().unwrap().header;
             assert_eq!(header.id, next_id);
-            let joined = receiver.coalesce_unmaps(&mut header).unwrap();
-            assert!(joined <= 63);
-            let count = joined as u64 + 1;
+            assert_eq!(receiver.take_change(&mut header).unwrap(), Vec::<Header>::new());
+            let count = header.args[1] / 4096;
+            assert!(count <= 64, "{count} unmaps joined");
             assert_eq!(header, unmap(next_id + count - 1, next_id * 4096, count * 4096));
-            total_joined += joined;
+            total_joined += count - 1;
             next_id += count;
         }
         assert!(total_joined > 0);
@@ -960,6 +1096,64 @@ mod tests {
         drop(receiver);
         let gone = sender.send(Header::new(READ, 8), Vec::new(), &[]);
         assert_eq!(gone.map_err(|err| err.kind()), Err(io::ErrorKind::BrokenPipe));
+    }
+
+    /// fxdax: what a thread sends corked waits until it uncorks, then arrives, in order
+    /// (TASK-91.16); another thread's send meanwhile sends what waits first, then its own, as
+    /// corking delays none of its sends; a message's descriptors arrive with it, whatever was
+    /// sent with it.
+    #[test]
+    fn corked_sends_wait_for_uncorking_or_another_send() {
+        let runtime =
+            tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build();
+        let runtime = runtime.unwrap();
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        ours.set_nonblocking(true).unwrap();
+        let sender = std::sync::Arc::new({
+            let _entered = runtime.enter();
+            AsyncSender::new(ours).unwrap()
+        });
+        let waiting = |stream: &UnixStream| {
+            let mut byte = [0u8; 1];
+            // SAFETY: Peeks a byte into `byte`, without waiting.
+            let got = unsafe {
+                libc::recv(
+                    stream.as_raw_fd(),
+                    byte.as_mut_ptr().cast(),
+                    1,
+                    libc::MSG_PEEK | libc::MSG_DONTWAIT,
+                )
+            };
+            got > 0
+        };
+        let mut receiver = Receiver::new(theirs.try_clone().unwrap());
+        let mut ids = |count: usize| -> Vec<(u64, usize)> {
+            (0..count)
+                .map(|_| {
+                    let message = receiver.receive(|| 0).unwrap().unwrap();
+                    (message.header.id, message.fds.len())
+                })
+                .collect()
+        };
+        sender.cork();
+        sender.send(Header::new(STAGE_UNMAP, 1), Vec::new(), &[]).unwrap();
+        sender.send(Header::new(STAGE_MAP, 2), Vec::new(), &[]).unwrap();
+        assert!(!waiting(&theirs), "a corked send arrived");
+        let other = sender.clone();
+        std::thread::spawn(move || other.send(Header::new(REPLY, 3), Vec::new(), &[]).unwrap())
+            .join()
+            .unwrap();
+        assert_eq!(ids(3), [(1, 0), (2, 0), (3, 0)]);
+        sender.cork();
+        sender.send(Header::new(STAGE_MAP, 4), Vec::new(), &[]).unwrap();
+        let file = tempfile::tempfile().unwrap();
+        sender.send(Header::new(REPLY, 5), Vec::new(), &[file.as_fd()]).unwrap();
+        sender.send(Header::new(STAGE_MAP, 6), Vec::new(), &[]).unwrap();
+        sender.uncork();
+        assert!(!waiting(&theirs), "a send arrived while corked");
+        sender.uncork();
+        assert_eq!(ids(3), [(4, 0), (5, 1), (6, 0)]);
+        assert!(!AsyncSender::corked());
     }
 
     /// fxdax: the extents a `FREE_MANY`'s payload names are those put in it, in order; one that

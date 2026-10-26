@@ -65,7 +65,7 @@
 //! The userfaultfd must handle faults taken in the kernel, such as KVM's. That needs access to
 //! `/dev/userfaultfd`, or the `vm.unprivileged_userfaultfd` sysctl.
 
-use super::{Access, Faults, Prefault, Protection, SecondStage};
+use super::{Access, Anew, Faults, Prefault, Protection, SecondStage};
 use crate::error::{Errno, Error, Result};
 use crate::kernel::page_size;
 use futures::StreamExt;
@@ -267,6 +267,28 @@ impl Pages {
     fn tick(&mut self) -> u64 {
         self.clock += 1;
         self.clock
+    }
+
+    /// fxdax: the protection the pages of `range` are installed with, if each is installed, in one
+    /// run of memory from `phys` on, all with one protection, and none restricted by a fault: what
+    /// a map of the very same pages there changes in place (TASK-91.16).
+    fn installed_as(
+        &self,
+        range: std::ops::Range<usize>,
+        phys: crate::kernel::PhysLocation,
+    ) -> Option<Protection> {
+        let mut protection = None;
+        for (at, page) in self.pages[range].iter().enumerate() {
+            let mapped = page.mapped.filter(|mapped| mapped.installed)?;
+            let offset = phys.offset + at as u64 * page_size();
+            if page.restricted || mapped.phys != (crate::kernel::PhysLocation { offset, ..phys }) {
+                return None;
+            }
+            if *protection.get_or_insert(mapped.protection) != mapped.protection {
+                return None;
+            }
+        }
+        protection
     }
 }
 
@@ -822,6 +844,91 @@ impl<H: HostMemory> SecondStage for UffdSecondStage<H> {
         self.change(addr, len, forget, |()| self.leave_out(addr, len));
     }
 
+    /// fxdax: the window's change of a range it mapped, made at once (TASK-91.16): each map of the
+    /// very pages installed where it maps them, as a seal's of the open extent's pages, read-only
+    /// now, changes their protection in place, the memory staying; another's memory is installed
+    /// over what was there, in one `mmap`; and only what no map covers is left out. Made in steps,
+    /// each page would be left out, then installed again: an unmap of the old memory, flushing
+    /// the host's TLBs and the hypervisor's mappings, then a map, its registration and its
+    /// protection, then the guest's accesses faulting the pages in again.
+    fn remap(&self, offset: u64, len: u64, anew: &[Anew]) {
+        let (addr, len) = self.addr(offset, len);
+        let range = self.page_range(addr, len);
+        let page_size = page_size() as usize;
+        let maps: Vec<(usize, usize, crate::kernel::PhysLocation, Protection)> = (anew.iter())
+            .filter_map(|anew| match *anew {
+                Anew::Map { offset, phys, len, protection } => {
+                    assert_ne!(protection, Protection::None, "a guest's pages are always readable");
+                    let (addr, len) = self.addr(offset, len);
+                    Some((addr, len, phys, protection))
+                }
+                Anew::Mapped { .. } => None,
+            })
+            .collect();
+        let record = |pages: &mut Pages| {
+            let used = pages.tick();
+            let in_place: Vec<Option<Protection>> = (maps.iter())
+                .map(|&(addr, len, phys, _)| pages.installed_as(self.page_range(addr, len), phys))
+                .collect();
+            pages.update(range.clone(), |pages| {
+                pages.iter_mut().for_each(|page| (page.mapped, page.restricted) = (None, false))
+            });
+            let mut covered = vec![false; range.len()];
+            for &(addr, len, phys, protection) in &maps {
+                let mapping = self.page_range(addr, len);
+                covered[mapping.start - range.start..mapping.end - range.start].fill(true);
+                pages.update(mapping, |pages| {
+                    for (at, page) in pages.iter_mut().enumerate() {
+                        let offset = phys.offset + at as u64 * page_size as u64;
+                        let phys = crate::kernel::PhysLocation { offset, ..phys };
+                        page.mapped = Some(Mapped { phys, protection, installed: true, used });
+                    }
+                });
+            }
+            // The runs of pages no map covers, which are left out.
+            let mut left_out: Vec<std::ops::Range<usize>> = Vec::new();
+            for (at, covered) in (range.clone()).zip(covered) {
+                match left_out.last_mut() {
+                    _ if covered => {}
+                    Some(run) if run.end == at => run.end = at + 1,
+                    _ => left_out.push(at..at + 1),
+                }
+            }
+            (in_place, left_out)
+        };
+        // Whether each map was made in place.
+        let mut reprotected = Vec::with_capacity(maps.len());
+        self.change(addr, len, record, |(in_place, left_out)| {
+            for (&(addr, len, phys, protection), was) in maps.iter().zip(in_place) {
+                reprotected.push(was.is_some());
+                match was {
+                    Some(was) => self.reprotect(addr, len, was, protection),
+                    None => self.install(addr, len, protection, self.memory(phys, protection)),
+                }
+            }
+            for run in left_out {
+                self.leave_out(self.base + run.start * page_size, run.len() * page_size);
+            }
+        });
+        for anew in anew {
+            if let Anew::Mapped { offset, len } = *anew {
+                self.window_mapped(offset, len);
+            }
+        }
+        self.trim();
+        // The memory installed is mapped for the guest ahead of its accesses, as `map` has it;
+        // the pages reprotected in place aren't: the hypervisor maps those the guest touches
+        // again as it does, which a seal's, written and done with, mostly aren't, rather than
+        // each at once (r116 against r117: 87 against 83 us of host time a window change).
+        if let Some(prefault) = &self.prefault {
+            for (&(addr, len, ..), reprotected) in maps.iter().zip(reprotected) {
+                if !reprotected {
+                    prefault.prefault((addr - self.base) as u64, len as u64);
+                }
+            }
+        }
+    }
+
     fn window_mapped(&self, offset: u64, len: u64) {
         let (addr, len) = self.addr(offset, len);
         let page_size = page_size() as usize;
@@ -888,6 +995,22 @@ impl<H: HostMemory> UffdSecondStage<H> {
         // would then fault anyway.
         if protection == Protection::ReadWrite {
             self.host.populate_write(addr, len);
+        }
+    }
+
+    /// fxdax: changes the protection of the pages installed at the `len` bytes at `addr`, which
+    /// the window mapped with `was`, to `now`, their memory staying, as [`install`](Self::install)
+    /// leaves memory it installs: tracked by write protection while read-only, and faulted in for
+    /// writing once writable.
+    fn reprotect(&self, addr: usize, len: usize, was: Protection, now: Protection) {
+        match now {
+            _ if now == was => {}
+            Protection::Read => self.host.write_protect(addr, len, true),
+            Protection::ReadWrite => {
+                self.host.write_protect(addr, len, false);
+                self.host.populate_write(addr, len);
+            }
+            Protection::None => unreachable!("a guest's pages are always readable"),
         }
     }
 

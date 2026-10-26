@@ -792,12 +792,16 @@ impl Client {
                 }
                 continue;
             }
-            if let Err(err) = receiver.coalesce_unmaps(&mut header) {
-                log::error!("receiving stage unmaps: {err}");
-                break;
-            }
+            let anew = match receiver.take_change(&mut header) {
+                Ok(anew) => anew,
+                Err(err) => {
+                    log::error!("receiving a change to the window: {err}");
+                    break;
+                }
+            };
             let start = std::time::Instant::now();
-            let made = self.make(&header);
+            let made =
+                if anew.is_empty() { self.make(&header) } else { self.remap(&header, &anew) };
             crate::stats::count_since(
                 crate::stats::Counter::StageOps,
                 crate::stats::Counter::StageNs,
@@ -834,9 +838,7 @@ impl Client {
         let args = header.args;
         match header.kind {
             STAGE_MAP => {
-                let arena =
-                    crate::kernel::ArenaId(u32::try_from(args[4]).map_err(std::io::Error::other)?);
-                let phys = crate::kernel::PhysLocation { arena, offset: args[1] };
+                let phys = phys_location(&args)?;
                 stage.map(args[0], phys, args[2], protection(args[3])?)
             }
             STAGE_PROTECT => stage.protect(args[0], args[1], protection(args[2])?),
@@ -846,6 +848,34 @@ impl Client {
         }
         Ok(())
     }
+
+    /// fxdax: makes the stage unmap `unmap` and what follows it within what it unmaps, `anew`, as
+    /// [`Receiver::take_change`] takes them, at once (TASK-91.16).
+    fn remap(&self, unmap: &Header, anew: &[Header]) -> std::io::Result<()> {
+        let stage = self.stage.get().ok_or_else(|| std::io::Error::other("no window"))?;
+        let anew = (anew.iter())
+            .map(|header| {
+                let args = header.args;
+                Ok(match header.kind {
+                    STAGE_MAPPED => crate::dax::Anew::Mapped { offset: args[0], len: args[1] },
+                    _ => crate::dax::Anew::Map {
+                        offset: args[0],
+                        phys: phys_location(&args)?,
+                        len: args[2],
+                        protection: protection(args[3])?,
+                    },
+                })
+            })
+            .collect::<std::io::Result<Vec<_>>>()?;
+        stage.remap(unmap.args[0], unmap.args[1], &anew);
+        Ok(())
+    }
+}
+
+/// The physical memory a [`STAGE_MAP`] with `args` maps.
+fn phys_location(args: &[u64; 5]) -> std::io::Result<crate::kernel::PhysLocation> {
+    let arena = crate::kernel::ArenaId(u32::try_from(args[4]).map_err(std::io::Error::other)?);
+    Ok(crate::kernel::PhysLocation { arena, offset: args[1] })
 }
 
 /// The requests a client sent that wait for replies, by ID, with their bytes of stream data

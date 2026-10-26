@@ -1499,6 +1499,8 @@ impl Acks {
 
     /// Waits for stage operation `id` to be acknowledged, or the VM process to be gone.
     fn wait(&self, id: u64) {
+        // What this thread holds back would never be acknowledged.
+        assert!(!AsyncSender::corked(), "waited for a stage operation held back");
         let mut state = self.state.lock().unwrap();
         while state.acked < id && !state.closed {
             state = self.acked.wait(state).unwrap();
@@ -1783,6 +1785,8 @@ impl Parking {
     /// them has made the stage operations taking them away, or the daemon let it go, which it does
     /// once it has left one unacknowledged for [`UNRESPONSIVE`].
     pub(super) fn wait(&self) {
+        // What this thread holds back would never be acknowledged.
+        assert!(!AsyncSender::corked(), "waited for pages freed with stage operations held back");
         let mut parked = self.0.parked.lock().unwrap();
         while *parked > 0 {
             parked = self.0.freed.wait(parked).unwrap();
@@ -1884,6 +1888,14 @@ impl SecondStage for RemoteStage {
     fn protect(&self, offset: u64, len: u64, protection: Protection) {
         let taking = protection != Protection::ReadWrite;
         self.send(STAGE_PROTECT, &[offset, len, protection_code(protection)], taking);
+    }
+
+    fn begin_change(&self) {
+        self.sender.cork();
+    }
+
+    fn end_change(&self) {
+        self.sender.uncork();
     }
 
     fn begin_deferring(&self) {

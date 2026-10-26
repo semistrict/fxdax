@@ -20,7 +20,7 @@ use std::collections::BTreeMap;
 use std::os::fd::RawFd;
 
 /// A page of host memory, as the second stage made it.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Page {
     /// What it maps: anonymous memory, or a file's page.
     file: Option<(RawFd, u64)>,
@@ -37,6 +37,9 @@ struct Page {
 struct Model {
     pages: BTreeMap<usize, Page>,
     told: BTreeMap<u64, (Option<Protection>, Option<Option<Protection>>)>,
+    /// fxdax: how many times memory was mapped (`mmap`): each over memory mapped before unmaps it,
+    /// which flushes the host's TLBs and the hypervisor's mappings (TASK-91.16).
+    maps: usize,
 }
 
 impl Model {
@@ -64,6 +67,7 @@ impl ModelMemory {
 impl HostMemory for ModelMemory {
     fn map(&self, addr: usize, len: usize, prot: libc::c_int, memory: Memory) {
         let mut model = self.0.lock().unwrap();
+        model.maps += 1;
         for at in (0..len).step_by(page_size() as usize) {
             let file = match memory {
                 Memory::Anonymous => None,
@@ -141,6 +145,152 @@ impl SecondStage for Telling {
 
     fn window_mapped(&self, offset: u64, len: u64) {
         self.stage.window_mapped(offset, len);
+    }
+
+    fn remap(&self, offset: u64, len: u64, anew: &[Anew]) {
+        let ps = page_size();
+        // What each page of the range has once the change is made: what a map of it gives it, or
+        // nothing.
+        let mut protections: BTreeMap<u64, Option<Protection>> =
+            (offset..offset + len).step_by(ps as usize).map(|at| (at, None)).collect();
+        for anew in anew {
+            if let Anew::Map { offset, len, protection, .. } = *anew {
+                for at in (offset..offset + len).step_by(ps as usize) {
+                    protections.insert(at, Some(protection));
+                }
+            }
+        }
+        let mut model = self.memory.0.lock().unwrap();
+        for (&at, &protection) in &protections {
+            model.told.entry(at).or_default().1 = Some(protection);
+        }
+        drop(model);
+        self.stage.remap(offset, len, anew);
+        let mut model = self.memory.0.lock().unwrap();
+        for (at, protection) in protections {
+            model.told.insert(at, (protection, None));
+        }
+    }
+}
+
+/// A stage operation the window made, held back ([`Remapping`]).
+#[derive(Clone, Copy, Debug)]
+enum Op {
+    Unmap(u64, u64),
+    Mapped(u64, u64),
+    Map(u64, PhysLocation, u64, Protection),
+    Protect(u64, u64, Protection),
+}
+
+/// The window's changes, held back and made as the extent daemon sends them and its VM process
+/// makes them (TASK-91.16): what a thread makes in a change ([`SecondStage::begin_change`]) is
+/// held back, as the daemon's sender holds a corked thread's messages, until the change ends, or
+/// another thread makes something outside a change, which makes what was held back first, in
+/// order; then each unmap is made with what follows it within what it unmaps, at once
+/// ([`SecondStage::remap`]), as the VM process takes it (`wire::Receiver::take_change`).
+struct Remapping {
+    stage: Arc<Telling>,
+    held: shuttle::sync::Mutex<Held>,
+}
+
+#[derive(Default)]
+struct Held {
+    /// The threads in a change, and how many changes deep.
+    changing: Vec<(thread::ThreadId, usize)>,
+    ops: Vec<Op>,
+}
+
+impl Remapping {
+    /// Makes `op`: held back if this thread is in a change, or made after what was held back.
+    fn make(&self, op: Op) {
+        let mut held = self.held.lock().unwrap();
+        let me = thread::current().id();
+        held.ops.push(op);
+        if !held.changing.iter().any(|(changing, _)| *changing == me) {
+            self.flush(&mut held);
+        }
+    }
+
+    /// Makes what was held back, in order, holding it so that what is made after waits.
+    fn flush(&self, held: &mut Held) {
+        let ps = page_size();
+        let mut ops = std::mem::take(&mut held.ops).into_iter().peekable();
+        while let Some(op) = ops.next() {
+            match op {
+                Op::Unmap(mut start, len) => {
+                    let mut end = start + len;
+                    while let Some(&Op::Unmap(next, len)) = ops.peek() {
+                        if next > end || next + len < start {
+                            break;
+                        }
+                        (start, end) = (start.min(next), end.max(next + len));
+                        ops.next();
+                    }
+                    let within = |offset: u64, len: u64| offset >= start && offset + len <= end;
+                    let mut anew = Vec::new();
+                    loop {
+                        match ops.peek() {
+                            Some(&Op::Mapped(offset, len)) if within(offset, len) => {
+                                anew.push(Anew::Mapped { offset, len })
+                            }
+                            Some(&Op::Map(offset, phys, len, protection))
+                                if within(offset, len) =>
+                            {
+                                anew.push(Anew::Map { offset, phys, len, protection })
+                            }
+                            _ => break,
+                        }
+                        ops.next();
+                    }
+                    assert_eq!(start % ps, 0);
+                    match anew.is_empty() {
+                        true => self.stage.unmap(start, end - start),
+                        false => self.stage.remap(start, end - start, &anew),
+                    }
+                }
+                Op::Mapped(offset, len) => self.stage.window_mapped(offset, len),
+                Op::Map(offset, phys, len, prot) => self.stage.map(offset, phys, len, prot),
+                Op::Protect(offset, len, prot) => self.stage.protect(offset, len, prot),
+            }
+        }
+    }
+}
+
+impl SecondStage for Remapping {
+    fn map(&self, offset: u64, phys: PhysLocation, len: u64, prot: Protection) {
+        self.make(Op::Map(offset, phys, len, prot));
+    }
+
+    fn protect(&self, offset: u64, len: u64, prot: Protection) {
+        self.make(Op::Protect(offset, len, prot));
+    }
+
+    fn unmap(&self, offset: u64, len: u64) {
+        self.make(Op::Unmap(offset, len));
+    }
+
+    fn window_mapped(&self, offset: u64, len: u64) {
+        self.make(Op::Mapped(offset, len));
+    }
+
+    fn begin_change(&self) {
+        let mut held = self.held.lock().unwrap();
+        let me = thread::current().id();
+        match held.changing.iter_mut().find(|(changing, _)| *changing == me) {
+            Some((_, depth)) => *depth += 1,
+            None => held.changing.push((me, 1)),
+        }
+    }
+
+    fn end_change(&self) {
+        let mut held = self.held.lock().unwrap();
+        let me = thread::current().id();
+        let at = held.changing.iter().position(|(changing, _)| *changing == me).unwrap();
+        held.changing[at].1 -= 1;
+        if held.changing[at].1 == 0 {
+            held.changing.remove(at);
+            self.flush(&mut held);
+        }
     }
 }
 
@@ -241,6 +391,122 @@ fn seals_and_frees_through_userfaultfd() {
     let (dax, _) = Dax::<Arc<u8>>::new(2 * ps, Some(telling)).unwrap();
     let window = dax.window.clone();
     stores_race_seals_and_frees(dax, Arc::new(HostGuest { memory, stage, window, base }));
+}
+
+/// fxdax: as [`seals_and_frees_through_userfaultfd`], with the window's changes made at once, as
+/// the extent daemon's VM process makes them ([`Remapping`], TASK-91.16).
+fn seals_and_frees_remapped() {
+    let ps = page_size();
+    let memory = ModelMemory::default();
+    let base = 64 * ps as usize;
+    // SAFETY: The model changes no memory.
+    let stage = unsafe {
+        UffdSecondStage::with_host(
+            base,
+            2 * ps,
+            memory.clone(),
+            Memories::InProcess,
+            None,
+            usize::MAX,
+        )
+    }
+    .unwrap();
+    let telling = Arc::new(Telling { stage: stage.clone(), memory: memory.clone() });
+    let remapping = Arc::new(Remapping { stage: telling, held: Default::default() });
+    let (dax, _) = Dax::<Arc<u8>>::new(2 * ps, Some(remapping)).unwrap();
+    let window = dax.window.clone();
+    stores_race_seals_and_frees(dax, Arc::new(HostGuest { memory, stage, window, base }));
+}
+
+/// fxdax: a stage over a model of its host memory, and a window of `pages` pages through it,
+/// whose changes it makes in steps, or at once ([`Remapping`]).
+fn modelled(
+    pages: u64,
+    at_once: bool,
+) -> (ModelMemory, Arc<UffdSecondStage<ModelMemory>>, Dax<()>) {
+    let ps = page_size();
+    let memory = ModelMemory::default();
+    // SAFETY: The model changes no memory.
+    let stage = unsafe {
+        UffdSecondStage::with_host(
+            64 * ps as usize,
+            pages * ps,
+            memory.clone(),
+            Memories::InProcess,
+            None,
+            usize::MAX,
+        )
+    }
+    .unwrap();
+    let telling = Arc::new(Telling { stage: stage.clone(), memory: memory.clone() });
+    let second_stage: Arc<dyn SecondStage> = match at_once {
+        true => Arc::new(Remapping { stage: telling, held: Default::default() }),
+        false => telling,
+    };
+    let (dax, _) = Dax::<()>::new(pages * ps, Some(second_stage)).unwrap();
+    (memory, stage, dax)
+}
+
+/// fxdax: the window's changes made at once leave the host memory as made in steps (TASK-91.16),
+/// with fewer `mmap`s: none for a seal's map of the very pages installed, read-only now, nor for
+/// a map of them writable again, their protection changed in place; one for a map of other
+/// memory, installed over the old; and pages no map covers, as a file's not in memory, left out.
+/// A page a refused store restricted is installed anew, as in steps, which lifts it.
+fn remaps_end_as_steps_do() {
+    let ps = page_size();
+    let (steps, steps_stage, mut steps_dax) = modelled(2, false);
+    let (at_once, at_once_stage, mut at_once_dax) = modelled(2, true);
+    let vmo = |value| {
+        let vmo = zx::Vmo::create(2 * ps).unwrap();
+        vmo.write(&vec![value; 2 * ps as usize], 0).unwrap();
+        vmo
+    };
+    let (open, other) = (vmo(1), vmo(2));
+    // Not yet written, it has no page in memory.
+    let unwritten = zx::Vmo::create(2 * ps).unwrap();
+    let pages = |memory: &ModelMemory| memory.0.lock().unwrap().pages.clone();
+    let maps = |memory: &ModelMemory| memory.0.lock().unwrap().maps;
+    let mut change = |what: &str, mmaps: usize, make: &dyn Fn(&mut Dax<()>)| {
+        let before = maps(&at_once);
+        make(&mut steps_dax);
+        make(&mut at_once_dax);
+        assert_eq!(pages(&at_once), pages(&steps), "{what}: the memory differs");
+        assert_eq!(maps(&at_once) - before, mmaps, "{what}: mmaps");
+    };
+    change("open, writable", 1, &|dax| dax.map(0, (), &open, 0, 2 * ps, true).unwrap());
+    change("sealed, the same pages", 0, &|dax| dax.map(0, (), &open, 0, 2 * ps, false).unwrap());
+    // A store faulted on the second page, which the window refused, as it maps it read-only.
+    for stage in [&steps_stage, &at_once_stage] {
+        let addr = 64 * ps as usize + ps as usize;
+        stage.restrict(addr, stage.seen(addr), libc::PROT_READ);
+    }
+    // The first page in place, the second, restricted, installed anew.
+    change("writable again", 1, &|dax| dax.map(0, (), &open, 0, 2 * ps, true).unwrap());
+    change("other memory", 1, &|dax| dax.map(0, (), &other, 0, 2 * ps, false).unwrap());
+    change("nothing in memory", 1, &|dax| dax.map(0, (), &unwritten, 0, 2 * ps, false).unwrap());
+}
+
+#[test]
+fn remaps_end_as_steps_do_once() {
+    Runner::new(RandomScheduler::new(1), config()).run(remaps_end_as_steps_do);
+}
+
+/// fxdax: the events the race reaches with the window's changes made at once: all but an access
+/// failing, which the schedules reach no more (TASK-91.16). Made in steps, a seal and a free each
+/// left the pages out, inaccessible until registered, which an access found; made at once, a seal
+/// leaves its pages in place, and a free's zeros, installed over the sealed copy, refuse a store
+/// only until they are registered, a step no schedule found in thousands.
+const REMAPPED_EVENTS: [Event; 5] =
+    [Event::ReadOpen, Event::ReadSealed, Event::ReadZeros, Event::Faulted, Event::StoreRefused];
+
+#[test]
+fn remapped_stores_race_seals_and_frees_randomly() {
+    reaching(|| RandomScheduler::new(runs(RUNS)), seals_and_frees_remapped, &REMAPPED_EVENTS);
+}
+
+#[test]
+fn remapped_stores_race_seals_and_frees_by_pct() {
+    reaching(|| PctScheduler::new(3, runs(RUNS)), seals_and_frees_remapped, &REMAPPED_EVENTS);
 }
 
 /// The window maps zeros over a page it mapped read-only, as a free does a sealed extent, while

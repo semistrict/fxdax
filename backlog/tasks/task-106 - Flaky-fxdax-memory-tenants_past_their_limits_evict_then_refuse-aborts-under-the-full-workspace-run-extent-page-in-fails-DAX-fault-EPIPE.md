@@ -6,7 +6,7 @@ title: >-
 status: In Progress
 assignee: []
 created_date: '2026-10-25 04:44'
-updated_date: '2026-10-26 01:06'
+updated_date: '2026-10-26 01:43'
 labels:
   - bug
 dependencies: []
@@ -35,4 +35,6 @@ The abort's log line carries no cause: every stderr logger dropped key-values (T
 r113 (main 139e82be6, GCE, Linux workspace): aborted again, with TASK-107's key-values: 'ERROR fxfs_platform::fuchsia::fxextent: Failed to load an extent's range range=0..1048576 error=NO_MEMORY', then 'unresolved DAX window fault at offset 0x400000 (Read): EPIPE'. So the page-in of a 1 MiB range fails NO_MEMORY under the tenant's limit, and the fault turns that into EPIPE and aborts, where the test expects the tenant evicted then refused.
 
 Cause, from the code: relief's evictor (extents::evict_least_used) counts the pages it evicts as freed, but those a window mapped go to quarantine until the VM process acknowledges their unmaps (TASK-79.9). The arena stays starved; the pass after finds nothing left to evict, frees nothing, and Arenas::relieved marks the arena exhausted, so the page-in's commit_range fails NO_MEMORY while the pages it waits for are acknowledgements away. Slow acknowledgements under the full workspace run widen the window. Fix: each arena counts its pages in quarantine (Quarantined::new counts them, its drop frees them through PmmNode::free_quarantined, which counts them back under the same lock), and a pass that frees nothing doesn't exhaust an arena with pages to come back: its allocations wait for them. Test: arenas::tests::relief_exhausts_no_arena_with_pages_to_come_back (red without the check). macOS: zircon and zircon-core-tests 540 passed.
+
+r115b (c06c3cdbc, GCE, Linux workspace -p fxdax -p zircon): tenants_past_their_limits_evict_then_refuse passed (2.1 s), and relief_exhausts_no_arena_with_pages_to_come_back. One pass isn't proof for a flake seen about one run in three; it reruns in every workspace run from here.
 <!-- SECTION:NOTES:END -->

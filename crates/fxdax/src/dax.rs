@@ -89,6 +89,41 @@ pub trait SecondStage: Send + Sync {
     fn end_deferring(&self) -> Option<Arc<dyn Deferred>> {
         None
     }
+
+    /// fxdax: the window begins a change of its mapping of a range, which may unmap what it maps
+    /// there, then map the range anew ([`window_mapped`](Self::window_mapped)) and its pages in
+    /// memory: what this thread makes here until [`end_change`](Self::end_change) is one change,
+    /// which a stage in another process, sent it whole (`crate::extentd`), may make at once
+    /// ([`remap`](Self::remap), TASK-91.16). Changes may nest.
+    fn begin_change(&self) {}
+
+    /// fxdax: ends [`begin_change`](Self::begin_change).
+    fn end_change(&self) {}
+
+    /// fxdax: unmaps the mapped `len` bytes at `offset`, then makes `anew`, each within them, in
+    /// order: as [`unmap`](Self::unmap), then [`window_mapped`](Self::window_mapped) or
+    /// [`map`](Self::map) for each, would one after another, the window's change of a range it
+    /// mapped, which a stage may make at once rather than in steps (TASK-91.16).
+    fn remap(&self, offset: u64, len: u64, anew: &[Anew]) {
+        self.unmap(offset, len);
+        for anew in anew {
+            match *anew {
+                Anew::Mapped { offset, len } => self.window_mapped(offset, len),
+                Anew::Map { offset, phys, len, protection } => {
+                    self.map(offset, phys, len, protection)
+                }
+            }
+        }
+    }
+}
+
+/// fxdax: what a window's change makes of a range it unmapped ([`SecondStage::remap`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Anew {
+    /// The window maps the range anew ([`SecondStage::window_mapped`]).
+    Mapped { offset: u64, len: u64 },
+    /// It maps the pages there ([`SecondStage::map`]).
+    Map { offset: u64, phys: crate::kernel::PhysLocation, len: u64, protection: Protection },
 }
 
 /// fxdax: changes to a [`SecondStage`] that take access away, deferred: until they are made, the
@@ -147,6 +182,23 @@ impl Faults for Window {
         access: Access,
     ) -> futures::future::BoxFuture<'_, Result<()>> {
         Box::pin(Window::fault_page(self, offset, access))
+    }
+}
+
+/// fxdax: a change to a [`SecondStage`] begun ([`SecondStage::begin_change`]), which ends however
+/// what makes it does.
+struct Change<'a>(&'a dyn SecondStage);
+
+impl<'a> Change<'a> {
+    fn begin(stage: &'a dyn SecondStage) -> Self {
+        stage.begin_change();
+        Self(stage)
+    }
+}
+
+impl Drop for Change<'_> {
+    fn drop(&mut self) {
+        self.0.end_change();
     }
 }
 
@@ -322,7 +374,7 @@ impl Window {
     }
 
     /// Maps `len` bytes of `vmo` at `vmo_offset` into the window at `offset`, replacing what was
-    /// mapped there.
+    /// mapped there: one change to the second stage, if there is one (`SecondStage::begin_change`).
     fn map(
         &self,
         offset: u64,
@@ -331,6 +383,7 @@ impl Window {
         len: u64,
         writable: bool,
     ) -> Result<()> {
+        let _change = self.stage.as_deref().map(Change::begin);
         let mut flags =
             zx::VmarFlagsExtended::PERM_READ | zx::VmarFlagsExtended::SPECIFIC_OVERWRITE;
         if writable {
