@@ -415,8 +415,9 @@ mod guest {
             .expect("perf record")
     }
 
-    /// What `profiler` sampled, on the console: the guest's time by symbol, and the call chains
-    /// into the paravirtual spinlock's slow path, the round 6 report's 20-42% (TASK-91.14).
+    /// What `profiler` sampled, on the console: the guest's time by command and by symbol, and the
+    /// call chains into the paravirtual spinlock's slow path, the round 6 report's 20-42%
+    /// (TASK-91.14).
     fn report(profiler: std::process::Child) {
         let status = profiler.wait_with_output().expect("perf record").status;
         assert!(status.success(), "perf record: {status}");
@@ -428,8 +429,10 @@ mod guest {
                 .expect("perf report");
             eprintln!("{}", String::from_utf8_lossy(&output.stdout));
         };
+        eprintln!("profile: by command");
+        perf(&["--sort", "comm", "-g", "none", "--percent-limit", "0.5"]);
         eprintln!("profile: by symbol");
-        perf(&["--sort", "symbol", "-g", "none", "--percent-limit", "1"]);
+        perf(&["--sort", "symbol", "-g", "none", "--percent-limit", "0.3"]);
         eprintln!("profile: the spinlock's callers");
         let lock = "__pv_queued_spin_lock_slowpath";
         perf(&["--sort", "symbol", "-S", lock, "-g", "caller,0.5,callee", "--percent-limit", "1"]);
