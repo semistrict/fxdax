@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-25 19:06'
-updated_date: '2026-10-26 02:42'
+updated_date: '2026-10-26 03:35'
 labels:
   - bug
 dependencies: []
@@ -50,4 +50,6 @@ r111 (b1a73f2b9, 10 VMs, perf of pgbench's own extentd for 20 s in the first run
 Sandbox at 139e82b: across 12 2 GiB DAX VMs on one 8 GiB extentd, tps 944-1,041 with no downward trend (11% fall over 15 at b746104), extentd's memory 3.4-7.6 GB, never at its cap: neither the at-cap slowdown nor a drift reproduced there (n2-standard-16, 64 GB). Our harness still decays (r111: VM 1 954 -> VM 10 821 first-run tps) on n2-standard-8 (32 GB): host memory, not extentd's CPU (r111), is the suspect; r118 records it system-wide and off-CPU.
 
 r118 (117d2516e, 10 VMs, VMM thread sampler): the VMM's extentd client thread grows across VMs: VM 1 105.1 s sys (user 13.1), VM 10 147.6 s sys (user 18.5), +40%, while extentd's own CPU falls (r111) and tps falls 939 -> 781 (first runs). The window's changes cost the VMM more in later VMs on one host: per-MAP normalisation and the host-wide/off-CPU profiles (r118-perf) next.
+
+r120 (cac2afe77, 5 VMs on one 8 GiB extentd, n2-standard-8 32 GB): the VMM's host time per window change grows 84.6 -> 94.5 -> 103.9 -> 112.1 -> 123.4 us (+46%), tps first runs 1094 -> 961, as the host's free memory falls 12.0 -> 4.8 -> 4.4 -> 3.3 -> 2.4 GB. extentd's cache (RssShmem) reaches its 8 GiB cap from VM 2 and stays; its anonymous memory grows ~0.7 GB a VM (0.6 -> 3.8 GB): the harness's bucket is in extentd's memory (memory:///, FXDAX_REMOTE_LATENCY_MS=25), every VM's uploads kept. The VMM's own page tables and RSS stay flat. So our decay is the harness's in-memory bucket starving a 32 GB host, which costs the host kernel's memory operations (the VMM's window changes) more as it goes; the sandbox team's real bucket on 64 GB hosts shows none at 139e82b. To confirm: the same 5 VMs on n2-standard-16 (FXDAX_GCE_MACHINE, bfea65a73).
 <!-- SECTION:NOTES:END -->
