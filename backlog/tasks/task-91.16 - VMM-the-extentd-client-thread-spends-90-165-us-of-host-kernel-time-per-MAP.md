@@ -4,7 +4,7 @@ title: 'VMM: the extentd client thread spends 90-165 us of host kernel time per 
 status: In Progress
 assignee: []
 created_date: '2026-10-23 18:01'
-updated_date: '2026-10-26 01:43'
+updated_date: '2026-10-26 01:54'
 labels: []
 dependencies: []
 parent_task_id: TASK-91
@@ -63,4 +63,6 @@ Baseline r114b (main + the VMM thread sampler, 117d2516e; GCE us-east4-a, pgbenc
 r116 (23759aa8a: corked changes, remap in the VMM, prefault unchanged; same setup as r114b): tps 1082/1001/989/918/915, load 17.2 s. extentd client sys 98.47 s for 698,618 MAPs, 243,117 UNMAPs, 188,996 seals: 141 us per MAP (baseline 180), 87 us per window change counting MAPs, UNMAPs and seals (baseline 112): -22%. Far from the 50 us target. r117 drops the prefault of pages reprotected in place; r119 profiles the extentd client thread (perf -g, perf trace -s) with the change, to see what's left.
 
 r115b (c06c3cdbc, GCE, Linux): fxdax + zircon workspace tests 2,637 passed (and the other suites), the new wire tests (corked sends, unmaps taking the maps within them) and remaps_end_as_steps_do among them. The remapped seal-and-free race failed only its reach check: no schedule reached an access failing (EFAULT, retried), as a seal made at once leaves its pages in place; required events now exclude it (6b22a2a46). Ported 491d3838 (VM processes report stage counts, STAGE_COUNTS renumbered 27, FREE_MANY took 26): ae046fc9a. r115c reruns fxdax at HEAD.
+
+r117 (63eaee74f, r116 without prefaulting pages reprotected in place): tps 1127/1046/1000/961/938, load 16.4 s; extentd client sys 97.75 s for 728,907 MAPs, 256,846 UNMAPs, 198,188 seals: 83 us per window change (r116 87, baseline 112), 134 us per MAP. Adopted (pages reprotected in place are mapped for the guest as it touches them).
 <!-- SECTION:NOTES:END -->
