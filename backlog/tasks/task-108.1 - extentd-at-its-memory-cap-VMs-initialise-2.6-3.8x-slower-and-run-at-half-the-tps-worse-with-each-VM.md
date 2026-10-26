@@ -6,7 +6,7 @@ title: >-
 status: In Progress
 assignee: []
 created_date: '2026-10-25 19:06'
-updated_date: '2026-10-26 13:51'
+updated_date: '2026-10-26 15:02'
 labels:
   - bug
 dependencies: []
@@ -60,4 +60,6 @@ r126 (3d941c934, 5 VMs, stage map counters): runs shorten as the daemon's memory
 r130 (d20e7cbc4, the fix; 5 VMs, n2-standard-8): stage maps per VM 1.06M, 1.37M, 1.56M, 1.72M, 1.85M, averaging 10.4, 8.0, 7.0, 6.3, 5.8 pages (r126: 9.5 -> 3.1); the VMM's extentd client sys 89.0, 94.6, 97.6, 99.2, 101.2 s (+14%, r120 +46%); first-run tps 1074, 1062, 1050, 1041, 1035 (-3.6%, r126 -10%), fifth runs 882-902; init 17.3, 17.9, 19.0 s (VMs 1, 3, 5). Linux workspace r131 green (2,640). Pushed (8140da231). Runs still shorten some as memory recycles. r134: AC1's 10 VMs.
 
 r134 (8140da231, 10 VMs, n2-standard-8): first-run tps 1132, 1131, 1093, 1056, 1072, 1062, 1076, 1065, 1070, 1059 (VM 10 -6.4%; r110 -14%), fifth runs 970 -> 955; init 16.3 -> 17.2-18.8 s (+12-15%; r110 +44%); the VMM's extentd client sys 91.0 -> 106.3 s (+17%); pages per stage map 10.1, 7.7, 6.8, 6.0, 5.7, 5.4, 5.3, 5.2, 5.1, 5.1: runs shorten, then hold at ~5. AC1 met for tps, not for init (+15% against 10%). What's left: multi-page allocations take a run only where the page after the last is free; taking from the longest free runs (or the chunk with most free) would keep runs long as memory recycles.
+
+f7893385b: a run's first page is, of the first 32 on the free list, the first beginning a run of free pages (its page before taken, its page after free), else the first in one, else the list's first (Arenas::take_run); test pages_allocated_together_begin_where_free_pages_run (fails without: the six single pages ahead on the list taken first). zircon 212 and zircon-core-tests 331 pass on macOS. r139: 10 VMs; r140: Linux workspace.
 <!-- SECTION:NOTES:END -->
