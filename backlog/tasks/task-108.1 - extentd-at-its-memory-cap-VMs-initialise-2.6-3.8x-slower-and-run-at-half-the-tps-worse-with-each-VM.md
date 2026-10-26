@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-25 19:06'
-updated_date: '2026-10-25 23:39'
+updated_date: '2026-10-26 01:28'
 labels:
   - bug
 dependencies: []
@@ -44,4 +44,8 @@ GCE r102 (tree 417c88b12, FXDAX_PGBENCH_VMS=10, 8 GiB daemon, n2-standard-8, 5 x
 GCE r108 (95af36bac, same setup): the same decay, init 19.0 -> 27.0 s, first-run tps 957 -> 805; within each VM tps falls run to run too (957 -> 797 over its five runs, VM 1 included), a second effect growing with the store. Its profile captured nothing (pgrep -f matched another process); r110 profiles extentd (pgrep -x) for 20 s in VM 1's and VM 10's first run.
 
 r110 (b1a73f2b9, 10 VMs): the decay again, VM 1 -> 10 init 18.9 -> 27.3 s, first run 976 -> 835 tps, fifth run 783 -> 711. Its profiles caught the harness's idle extentd (pgrep -x picks the first; pgbench's daemon runs from /tmp/fxdax-pgbench.*); r111 picks it by its arguments and profiles VMs 1, 5 and 10, with perf diff.
+
+r111 (b1a73f2b9, 10 VMs, perf of pgbench's own extentd for 20 s in the first run of VMs 1, 5, 10): extentd's CPU doesn't grow, it falls: 9.56G, 9.42G, 8.65G task-clock in 20 s (~0.48, 0.47, 0.43 CPUs), the same shape of profile (receive, serve_in_turn, write_with_barriers 20-22%, commit_with 16%, ExtentStore::map 13-15%, Window::map 11-12%), while its threads park more: epoll_wait 9.9% -> 12.3% -> 19.1% inclusive, finish_task_switch 7.4% -> 12.8%. So the ~20% per-request latency growth and the tps decay aren't extentd's CPU: it waits on the VMs more. Next: the VMM's threads per VM (the pgbench sampler now records them, 1d7e41579) and the host kernel (shmem/memfd of the 8 GiB arenas, KVM) across 10 VMs.
+
+Sandbox at 139e82b: across 12 2 GiB DAX VMs on one 8 GiB extentd, tps 944-1,041 with no downward trend (11% fall over 15 at b746104), extentd's memory 3.4-7.6 GB, never at its cap: neither the at-cap slowdown nor a drift reproduced there (n2-standard-16, 64 GB). Our harness still decays (r111: VM 1 954 -> VM 10 821 first-run tps) on n2-standard-8 (32 GB): host memory, not extentd's CPU (r111), is the suspect; r118 records it system-wide and off-CPU.
 <!-- SECTION:NOTES:END -->

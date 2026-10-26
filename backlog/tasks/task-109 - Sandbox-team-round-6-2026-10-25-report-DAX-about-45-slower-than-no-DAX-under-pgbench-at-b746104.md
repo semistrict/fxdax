@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-25 23:26'
+updated_date: '2026-10-26 01:28'
 labels: []
 dependencies: []
 priority: high
@@ -31,3 +32,9 @@ Sandbox team profile at b746104 (GCE n2-standard-16, us-central1-a, nested, Rust
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Sandbox retest at 139e82b (TASK-101 landed; 2026-10-25 20:06-21:02 EDT): 32 traced DAX VMs, 0 crashes (b746104: 2 of 21): 12 x 2 GiB (init 18.1-19.7 s, 944-1,041 tps, no downward trend over the 12), 10 x 8 GiB (17.5-18.2 s, 957-1,047 tps, one run each, so run 3's collapse untested), 10 x 2 GiB synchronous_commit=off (2,239-2,689 tps). One EFAULT in all (82k-360k KVM_RUN returns per VM), a fault-in that recovered within 1 ms. AC3 met in substance (no VM lost; one transient EFAULT, retried). extentd's refused-store counter still passed 131,072 (KVM's async page-fault worker storing to read-only pages, TASK-102's design); extentd's memory stayed 3.4-7.6 GB, never at its 8 GiB cap. The DAX gap (AC1, AC2) is unchanged: TASK-91.16 in progress.
+<!-- SECTION:NOTES:END -->

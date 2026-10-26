@@ -4,7 +4,7 @@ title: 'VMM: the extentd client thread spends 90-165 us of host kernel time per 
 status: In Progress
 assignee: []
 created_date: '2026-10-23 18:01'
-updated_date: '2026-10-26 00:35'
+updated_date: '2026-10-26 01:30'
 labels: []
 dependencies: []
 parent_task_id: TASK-91
@@ -57,4 +57,8 @@ r69 (GCE us-east1-b, one host, kernel b6, 8 GiB window, 3 rounds each arm): the 
 Design read (2026-10-24): a seal (extents.rs seal_mapped) maps the sealed extent's VMO over each window mapping of the open one (make_read_only: map_unsafe SPECIFIC_OVERWRITE, the aspace's unmap -> STAGE_UNMAP -> leave_out, one shootdown), supplies the open VMO's pages to it (the same physical pages), then populates (STAGE_MAP of those pages read-only). Reprotecting in place (91fc372f on review/r7-dax-unverified) saves the unmap's zap, the free and the refaults, but a write->read downgrade (UFFDIO_WRITEPROTECT or mprotect) flushes the host's TLBs and KVM's too: about half the cost per seal, not the shootdown. Removing it needs the protection deferred and batched (one flush for many pages), applied before the sealed pages are shared (cached.sealing). The r7 branch's ordering races (a deferred unmap after another thread's fault mapped the offset, PROTECT not undoing a fault's mprotect, acks out of order) are the risk; Shuttle models exist there (shuttle_tests.rs faults_race_deferred_unmaps).
 
 Sandbox team round 6 (TASK-109, b746104), perf of the VMM's extentd client thread over a 60 s DAX pgbench run: 21.1 s system for 120,091 MAPs (~175 us each), 3.9 s without DAX. mmap(MAP_FIXED) 38% inclusive (unmap_region 25%, flush_tlb_mm_range 11.7%, smp_call_function_many_cond 13.9%, kvm_mmu_notifier_invalidate_range_start 10.8%), KVM_PRE_FAULT_MEMORY 12.3%, recvmsg 13%. Syscalls: 705,266 recvmsg (165,437 without DAX), 351,240 mmap, 638,499 ioctl, 307,721 mprotect, 143,522 sendmsg: ~2.9 mmaps and 5.3 ioctls per MAP. External-interrupt exits 472k against 295k (shootdown IPIs to vCPUs). Their ask: under 50 us system per MAP, by in-place reprotection (TASK-92.50's unlanded branches) and batching window changes so one shootdown and prefault cover many pages.
+
+Baseline r114b (main + the VMM thread sampler, 117d2516e; GCE us-east4-a, pgbench-dax, 1 VM, load + 5 runs): tps 1069/1022/989/934/890, load 16.8 s. Over the VM: extentd client sys 102.69 s (user 9.25) for 568,782 window MAPs (414,245 requests), 193,730 UNMAPs, 156,197 seals: ~180 us system per MAP. vCPUs sys 58.0 + 38.8 s.
+
+r116 (23759aa8a: corked changes, remap in the VMM, prefault unchanged; same setup as r114b): tps 1082/1001/989/918/915, load 17.2 s. extentd client sys 98.47 s for 698,618 MAPs, 243,117 UNMAPs, 188,996 seals: 141 us per MAP (baseline 180), 87 us per window change counting MAPs, UNMAPs and seals (baseline 112): -22%. Far from the 50 us target. r117 drops the prefault of pages reprotected in place; r119 profiles the extentd client thread (perf -g, perf trace -s) with the change, to see what's left.
 <!-- SECTION:NOTES:END -->
