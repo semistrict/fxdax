@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-25 19:06'
-updated_date: '2026-10-26 03:35'
+updated_date: '2026-10-26 04:33'
 labels:
   - bug
 dependencies: []
@@ -52,4 +52,6 @@ Sandbox at 139e82b: across 12 2 GiB DAX VMs on one 8 GiB extentd, tps 944-1,041 
 r118 (117d2516e, 10 VMs, VMM thread sampler): the VMM's extentd client thread grows across VMs: VM 1 105.1 s sys (user 13.1), VM 10 147.6 s sys (user 18.5), +40%, while extentd's own CPU falls (r111) and tps falls 939 -> 781 (first runs). The window's changes cost the VMM more in later VMs on one host: per-MAP normalisation and the host-wide/off-CPU profiles (r118-perf) next.
 
 r120 (cac2afe77, 5 VMs on one 8 GiB extentd, n2-standard-8 32 GB): the VMM's host time per window change grows 84.6 -> 94.5 -> 103.9 -> 112.1 -> 123.4 us (+46%), tps first runs 1094 -> 961, as the host's free memory falls 12.0 -> 4.8 -> 4.4 -> 3.3 -> 2.4 GB. extentd's cache (RssShmem) reaches its 8 GiB cap from VM 2 and stays; its anonymous memory grows ~0.7 GB a VM (0.6 -> 3.8 GB): the harness's bucket is in extentd's memory (memory:///, FXDAX_REMOTE_LATENCY_MS=25), every VM's uploads kept. The VMM's own page tables and RSS stay flat. So our decay is the harness's in-memory bucket starving a 32 GB host, which costs the host kernel's memory operations (the VMM's window changes) more as it goes; the sandbox team's real bucket on 64 GB hosts shows none at 139e82b. To confirm: the same 5 VMs on n2-standard-16 (FXDAX_GCE_MACHINE, bfea65a73).
+
+r125 (n2-standard-16, 64 GB, 5 VMs): the decay holds with free memory plenty: VMM host time per guest window change 66.7 -> 76.9 -> 84.8 -> 91.8 -> 96.3 us, tps first runs 1216 -> 1105; so not host memory. The stage operations extentd sends grow: 2.56M, 3.23M, 3.74M, 4.24M, 4.73M a VM for ~1.1M guest window changes each (the mix of MAPs, evacuations and seals unchanged), each a little cheaper (27.6 -> 20.9 us as the VMM measures it). Hypothesis: the daemon's physical memory fragments once its cache is at its cap (from VM 2), evictions scattering the free pages, so the pages open extents and page-ins take are scattered, and each window mapping is a stage map, and a host mapping in the VMM, per run of consecutive pages. 3d941c934 counts the stage maps sent and their bytes; r126 measures runs per VM.
 <!-- SECTION:NOTES:END -->
