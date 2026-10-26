@@ -72,6 +72,15 @@ pub struct Stats {
     pub stage_maps: u64,
     /// The bytes they mapped.
     pub stage_map_bytes: u64,
+    /// fxdax: the VM processes' changes to their windows that took access away from pages they had
+    /// installed, as they told the daemon (`extentd::wire::STAGE_COUNTS`): each flushes the host's
+    /// TLBs and the hypervisor's, interrupting the guest's vCPUs (TASK-91.16). Memory installed
+    /// over theirs, as a map over a range mapped makes it.
+    pub stage_overwrites: u64,
+    /// Theirs left out, as an unmap, or what a map anew leaves uncovered, makes it.
+    pub stage_leave_outs: u64,
+    /// Theirs write-protected, as a seal makes it.
+    pub stage_write_protects: u64,
 }
 
 /// The counters, in the order of [`Stats`]' fields.
@@ -99,10 +108,13 @@ pub(crate) enum Counter {
     CommitWaitNs,
     StageMaps,
     StageMapBytes,
+    StageOverwrites,
+    StageLeaveOuts,
+    StageWriteProtects,
 }
 
 /// The counters [`Counter`] names, which this module keeps.
-const COUNTED: usize = 22;
+const COUNTED: usize = 25;
 
 /// The counters a snapshot holds: those it keeps, and the extent store's.
 const COUNTERS: usize = COUNTED + 3;
@@ -154,6 +166,9 @@ pub fn stats() -> Stats {
         segment_close_ns: extent_store::segment_closes().1,
         stage_maps: count(Counter::StageMaps),
         stage_map_bytes: count(Counter::StageMapBytes),
+        stage_overwrites: count(Counter::StageOverwrites),
+        stage_leave_outs: count(Counter::StageLeaveOuts),
+        stage_write_protects: count(Counter::StageWriteProtects),
     }
 }
 
@@ -186,6 +201,9 @@ impl Stats {
             self.segment_close_ns,
             self.stage_maps,
             self.stage_map_bytes,
+            self.stage_overwrites,
+            self.stage_leave_outs,
+            self.stage_write_protects,
         ]
     }
 
@@ -218,6 +236,9 @@ impl Stats {
             segment_close_ns: word(22),
             stage_maps: word(23),
             stage_map_bytes: word(24),
+            stage_overwrites: word(25),
+            stage_leave_outs: word(26),
+            stage_write_protects: word(27),
         }
     }
 
@@ -257,6 +278,9 @@ impl Stats {
             "segment-close-ns",
             "stage-maps",
             "stage-map-bytes",
+            "stage-overwrites",
+            "stage-leave-outs",
+            "stage-write-protects",
         ];
         std::array::from_fn(|at| (names[at], words[at]))
     }

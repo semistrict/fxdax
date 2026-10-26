@@ -550,8 +550,8 @@ impl RemoteExtentStore {
     /// fxdax: the stage operations this process made of the store's window so far, and the
     /// nanoseconds they took, which it tells the daemon ([`STAGE_COUNTS`]).
     #[cfg(test)]
-    pub(super) fn stage_counts(&self) -> [u64; 2] {
-        self.client.stage_counts.counts()
+    pub(super) fn stage_counts(&self) -> [u64; 5] {
+        self.client.stage_counts()
     }
 
     /// Has `lost` called once the daemon goes, closing the connection: at once if it went already.
@@ -818,7 +818,8 @@ impl Client {
             let start = std::time::Instant::now();
             let made =
                 if anew.is_empty() { self.make(&header) } else { self.remap(&header, &anew) };
-            let counts = self.stage_counts.count_since(start);
+            self.stage_counts.count_since(start);
+            let counts = self.stage_counts();
             if let Err(err) = made {
                 log::error!("making the extent daemon's change to the window: {err}");
                 break;
@@ -853,7 +854,7 @@ impl Client {
     /// fxdax: tells the daemon what the stage operations made so far cost, if any were made
     /// ([`STAGE_COUNTS`]).
     fn tell_stage_counts(&self) {
-        let counts = self.stage_counts.counts();
+        let counts = self.stage_counts();
         if counts[0] == 0 {
             return;
         }
@@ -864,6 +865,16 @@ impl Client {
         {
             log::warn!("telling the extent daemon what the window's changes cost: {err}");
         }
+    }
+
+    /// fxdax: what the stage operations made so far cost, as [`STAGE_COUNTS`] says it: how many,
+    /// the nanoseconds they took, and the changes among them that took access away from pages
+    /// installed, by how (`dax::uffd::Taken`).
+    fn stage_counts(&self) -> [u64; 5] {
+        let [ops, ns] = self.stage_counts.counts();
+        let [overwritten, left_out, write_protected] =
+            self.stage.get().map_or([0; 3], |stage| stage.taken());
+        [ops, ns, overwritten, left_out, write_protected]
     }
 
     /// Makes the stage operation `header` says to the window.
@@ -951,13 +962,10 @@ struct StageCounts {
 }
 
 impl StageCounts {
-    /// Counts an operation made since `start`, and returns the counts.
-    fn count_since(&self, start: std::time::Instant) -> [u64; 2] {
-        let ns = start.elapsed().as_nanos() as u64;
-        [
-            self.ops.fetch_add(1, Ordering::Relaxed) + 1,
-            self.ns.fetch_add(ns, Ordering::Relaxed) + ns,
-        ]
+    /// Counts an operation made since `start`.
+    fn count_since(&self, start: std::time::Instant) {
+        self.ops.fetch_add(1, Ordering::Relaxed);
+        self.ns.fetch_add(start.elapsed().as_nanos() as u64, Ordering::Relaxed);
     }
 
     fn counts(&self) -> [u64; 2] {

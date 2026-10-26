@@ -764,9 +764,9 @@ fn child_changes_its_window() {
     store.unmap(0, ps).unwrap();
     // Mapped anew, with its page in memory, which the window maps at once.
     store.map(extent, 0, ps, 0, false).unwrap();
-    let [ops, ns] = store.stage_counts();
+    let [ops, ns, overwritten, left_out, write_protected] = store.stage_counts();
     drop(store);
-    println!("STAGE {ops} {ns}");
+    println!("STAGE {ops} {ns} {overwritten} {left_out} {write_protected}");
 }
 
 /// TASK-91.16: what its VM processes' changes to their windows cost them, which they make, the
@@ -796,13 +796,19 @@ fn vm_processes_tell_the_daemon_what_their_windows_cost() {
         .lines()
         .find_map(|line| line.strip_prefix("STAGE "))
         .unwrap_or_else(|| panic!("the child changed nothing: {stdout}"));
-    let (ops, ns) = stage.split_once(' ').unwrap();
-    let (ops, ns): (u64, u64) = (ops.parse().unwrap(), ns.parse().unwrap());
+    let said: Vec<u64> = stage.split(' ').map(|count| count.parse().unwrap()).collect();
+    let [ops, ns, overwritten, left_out, write_protected] = said[..] else {
+        panic!("not five counts: {stage}");
+    };
     assert_eq!(ops, 5, "{stdout}");
+    // fxdax: the unmap alone took access away, from the page the load faulted in (TASK-91.16).
+    assert_eq!((overwritten, left_out, write_protected), (0, 1, 0), "{stdout}");
     // Once the daemon is done with the connection, which the child closed.
     served.join().unwrap();
     let counted = crate::stats::stats().since(&before);
     assert_eq!((counted.stage_ops, counted.stage_ns), (ops, ns));
+    let taken = (counted.stage_overwrites, counted.stage_leave_outs, counted.stage_write_protects);
+    assert_eq!(taken, (overwritten, left_out, write_protected));
     // fxdax: the daemon's maps of pages, one a page: the fault's, and the map's anew, of the page
     // in memory by then (TASK-108.1).
     let ps = page_size();

@@ -686,7 +686,7 @@ pub(super) struct Connection {
     requests: Mutex<Requests>,
     drained: Arc<event_listener::Event>,
     /// fxdax: what its VM process last said its stage operations cost it ([`STAGE_COUNTS`]).
-    stage_counts: [std::sync::atomic::AtomicU64; 2],
+    stage_counts: [std::sync::atomic::AtomicU64; 5],
     /// What says, as it drops, that the connection has: its last field, dropped after its store,
     /// window and open extents (TASK-79.34).
     _alive: tokio::sync::oneshot::Sender<std::convert::Infallible>,
@@ -765,7 +765,13 @@ impl Connection {
     /// before. A count only grows: one said again, or smaller, adds nothing.
     fn stage_counted(&self, args: [u64; 5]) {
         use crate::stats::Counter;
-        let said = [(args[0], Counter::StageOps), (args[1], Counter::StageNs)];
+        let said = [
+            (args[0], Counter::StageOps),
+            (args[1], Counter::StageNs),
+            (args[2], Counter::StageOverwrites),
+            (args[3], Counter::StageLeaveOuts),
+            (args[4], Counter::StageWriteProtects),
+        ];
         for (before, (count, counter)) in self.stage_counts.iter().zip(said) {
             crate::stats::add(
                 counter,

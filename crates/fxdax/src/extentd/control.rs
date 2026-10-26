@@ -325,6 +325,10 @@ impl Extentd for Control {
             // metrics report: not the API (TASK-108.1).
             stage_maps: _,
             stage_map_bytes: _,
+            // And the VM processes' changes that took access away, as they told it (TASK-91.16).
+            stage_overwrites: _,
+            stage_leave_outs: _,
+            stage_write_protects: _,
         } = crate::stats::stats();
         use extent_remote::store::{Request, Upload};
         let bucket = stores::remote_bucket().map_err(status)?.stats();
@@ -594,6 +598,9 @@ impl Client {
             // The maps the daemon sent the VM processes' windows, which the API doesn't report.
             stage_maps: 0,
             stage_map_bytes: 0,
+            stage_overwrites: 0,
+            stage_leave_outs: 0,
+            stage_write_protects: 0,
         })
     }
 

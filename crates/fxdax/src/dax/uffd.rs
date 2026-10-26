@@ -74,6 +74,7 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::task::{Context, Poll, Wake, Waker};
 
 #[cfg(feature = "shuttle")]
@@ -161,7 +162,23 @@ pub(crate) struct UffdSecondStage<H: HostMemory = Syscalls> {
     pages: Mutex<Pages>,
     /// The runs of pages it keeps installed at most (see the module docs).
     budget: usize,
+    /// fxdax: the changes that took access away from pages it had installed (TASK-91.16).
+    taken: Taken,
 }
+
+/// fxdax: the changes a second stage made that took access away from pages it had installed, by
+/// how: memory installed over theirs, theirs left out, or theirs write-protected. Each flushes the
+/// host's TLBs of the process's threads and the hypervisor's of the guest's vCPUs, interrupting
+/// them, which those that took access from no installed page needn't (TASK-91.16).
+#[derive(Default)]
+struct Taken {
+    overwritten: AtomicU64,
+    left_out: AtomicU64,
+    write_protected: AtomicU64,
+}
+
+/// fxdax: as [`Taken`] counts them: installed over, left out, write-protected.
+pub(crate) type TakenCounts = [u64; 3];
 
 /// How many mappings a VM process keeps for itself beside its window's: Firecracker's, its
 /// libraries', guest memory's, its threads' stacks'.
@@ -267,6 +284,11 @@ impl Pages {
     fn tick(&mut self) -> u64 {
         self.clock += 1;
         self.clock
+    }
+
+    /// fxdax: whether a page of `range` is installed, which a change taking it away flushes.
+    fn any_installed(&self, range: std::ops::Range<usize>) -> bool {
+        self.pages[range].iter().any(|page| page.mapped.is_some_and(|mapped| mapped.installed))
     }
 
     /// fxdax: the protection the pages of `range` are installed with, if each is installed, in one
@@ -601,7 +623,8 @@ impl<H: HostMemory> UffdSecondStage<H> {
         let pages = vec![PageChanges::default(); size / page_size];
         let pages = Mutex::new(Pages { pages, runs: 0, clock: 0 });
         let budget = budget.max(1);
-        let stage = Arc::new(Self { base, size, host, memories, prefault, pages, budget });
+        let taken = Taken::default();
+        let stage = Arc::new(Self { base, size, host, memories, prefault, pages, budget, taken });
         stage.unmap(0, size as u64);
         Ok(stage)
     }
@@ -661,6 +684,21 @@ impl<H: HostMemory> UffdSecondStage<H> {
         pages.pages[page].withheld = withheld;
         pages.pages[page].restricted = prot == libc::PROT_READ;
         changed_protection("restricted to reads", offset, made, seen);
+    }
+
+    /// fxdax: the changes made so far that took access away from pages installed, by how
+    /// ([`Taken`]).
+    pub(crate) fn taken(&self) -> TakenCounts {
+        let taken = &self.taken;
+        [&taken.overwritten, &taken.left_out, &taken.write_protected]
+            .map(|count| count.load(Ordering::Relaxed))
+    }
+
+    /// fxdax: counts a change that took access away from pages installed, `count` by how.
+    fn took(count: &AtomicU64, took: bool) {
+        if took {
+            count.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     /// The size of the memory: its window's, as a test's window in it takes it
@@ -766,6 +804,7 @@ impl<H: HostMemory> SecondStage for UffdSecondStage<H> {
             len,
             |pages| {
                 let used = pages.tick();
+                Self::took(&self.taken.overwritten, pages.any_installed(range.clone()));
                 pages.update(range, |pages| {
                     for (at, page) in pages.iter_mut().enumerate() {
                         let offset = phys.offset + at as u64 * page_size;
@@ -824,6 +863,7 @@ impl<H: HostMemory> SecondStage for UffdSecondStage<H> {
             }
             for run in installed {
                 let addr = self.base + run.start * page_size;
+                Self::took(&self.taken.write_protected, protection == Protection::Read);
                 self.host.write_protect(
                     addr,
                     run.len() * page_size,
@@ -837,6 +877,7 @@ impl<H: HostMemory> SecondStage for UffdSecondStage<H> {
         let (addr, len) = self.addr(offset, len);
         let range = self.page_range(addr, len);
         let forget = |pages: &mut Pages| {
+            Self::took(&self.taken.left_out, pages.any_installed(range.clone()));
             pages.update(range, |pages| {
                 pages.iter_mut().for_each(|page| (page.mapped, page.restricted) = (None, false))
             })
@@ -870,6 +911,13 @@ impl<H: HostMemory> SecondStage for UffdSecondStage<H> {
             let in_place: Vec<Option<Protection>> = (maps.iter())
                 .map(|&(addr, len, phys, _)| pages.installed_as(self.page_range(addr, len), phys))
                 .collect();
+            for (&(addr, len, ..), in_place) in maps.iter().zip(&in_place) {
+                let over = in_place.is_none() && pages.any_installed(self.page_range(addr, len));
+                Self::took(&self.taken.overwritten, over);
+            }
+            let installed_before: Vec<bool> = (range.clone())
+                .map(|at| pages.pages[at].mapped.is_some_and(|mapped| mapped.installed))
+                .collect();
             pages.update(range.clone(), |pages| {
                 pages.iter_mut().for_each(|page| (page.mapped, page.restricted) = (None, false))
             });
@@ -893,6 +941,10 @@ impl<H: HostMemory> SecondStage for UffdSecondStage<H> {
                     Some(run) if run.end == at => run.end = at + 1,
                     _ => left_out.push(at..at + 1),
                 }
+            }
+            for run in &left_out {
+                let at = run.start - range.start..run.end - range.start;
+                Self::took(&self.taken.left_out, installed_before[at].contains(&true));
             }
             (in_place, left_out)
         };
@@ -1005,7 +1057,10 @@ impl<H: HostMemory> UffdSecondStage<H> {
     fn reprotect(&self, addr: usize, len: usize, was: Protection, now: Protection) {
         match now {
             _ if now == was => {}
-            Protection::Read => self.host.write_protect(addr, len, true),
+            Protection::Read => {
+                Self::took(&self.taken.write_protected, true);
+                self.host.write_protect(addr, len, true)
+            }
             Protection::ReadWrite => {
                 self.host.write_protect(addr, len, false);
                 self.host.populate_write(addr, len);
@@ -1069,6 +1124,7 @@ impl<H: HostMemory> UffdSecondStage<H> {
                     }
                 }
             });
+            Self::took(&self.taken.left_out, true);
             self.leave_out(self.base + run.start * page_size, run.len() * page_size);
         }
     }
@@ -1415,6 +1471,62 @@ mod tests {
         drop(dax);
         // SAFETY: Unmaps the memory, which nothing uses any more.
         assert_eq!(unsafe { libc::munmap(memory, PAGES * ps) }, 0);
+    }
+
+    /// TASK-91.16: the changes that take access away from pages installed are counted by how,
+    /// each a flush of the host's TLBs and the hypervisor's: a map of other memory over them, a map
+    /// of the very same pages read-only, made in place, and an unmap. A map where nothing is
+    /// installed takes nothing away.
+    #[test]
+    fn changes_taking_access_from_pages_installed_are_counted() {
+        let ps = page_size() as usize;
+        // SAFETY: Maps anonymous memory, which this test owns.
+        let memory = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                2 * ps,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                -1,
+                0,
+            )
+        };
+        assert_ne!(memory, libc::MAP_FAILED);
+        let base = memory as usize;
+        let file = zx::Vmo::create((2 * ps) as u64).unwrap();
+        file.write(&vec![1; 2 * ps], 0).unwrap();
+        // SAFETY: Only the test uses the memory, which outlives the window.
+        let stage =
+            unsafe { UffdSecondStage::new(base, (2 * ps) as u64, Memories::InProcess, None) }
+                .unwrap();
+        let (dax, _window) = Dax::<()>::in_host_memory(stage.clone()).unwrap();
+        dax.window.map(0, &file, 0, (2 * ps) as u64, true).unwrap();
+        assert_eq!(stage.taken(), [0, 0, 0], "mapped where nothing was");
+        let phys = |page: usize| stage.pages.lock().unwrap().pages[page].mapped.unwrap().phys;
+        let first = phys(0);
+        // The first page's own read-only, in place; and the first page's again at the second's.
+        stage.remap(
+            0,
+            (2 * ps) as u64,
+            &[
+                Anew::Map { offset: 0, phys: first, len: ps as u64, protection: Protection::Read },
+                Anew::Map {
+                    offset: ps as u64,
+                    phys: first,
+                    len: ps as u64,
+                    protection: Protection::Read,
+                },
+            ],
+        );
+        assert_eq!(stage.taken(), [1, 0, 1], "the second page installed over, the first protected");
+        stage.unmap(0, (2 * ps) as u64);
+        assert_eq!(stage.taken(), [1, 1, 1], "both left out");
+        stage.unmap(0, (2 * ps) as u64);
+        assert_eq!(stage.taken(), [1, 1, 1], "nothing installed to leave out");
+
+        drop(dax);
+        // SAFETY: Unmaps the memory, which nothing uses any more.
+        assert_eq!(unsafe { libc::munmap(memory, 2 * ps) }, 0);
     }
 
     /// TASK-12: a window of more scattered pages than the process may make mappings

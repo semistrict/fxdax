@@ -146,9 +146,10 @@ pub(crate) const TRANSFER: u32 = 25;
 pub(crate) const FREE_MANY: u32 = 26;
 /// The most bytes a transfer area holds.
 pub(crate) const MAX_TRANSFER_AREA: u64 = 64 << 20;
-/// fxdax: the stage operations the VM process has made of the connection's, `args[0]`, and the
-/// nanoseconds they took it, `args[1]`, so far, which the daemon counts as its own
-/// (`Stats::stage_ops`, TASK-91.16): said with each [`ACK`]; otherwise once [`STAGE_COUNTS_EVERY`]
+/// fxdax: the stage operations the VM process has made of the connection's, `args[0]`, the
+/// nanoseconds they took it, `args[1]`, and those of them that took access away from pages it had
+/// installed, by how, `args[2..5]` (`Stats::stage_overwrites`), so far, which the daemon counts as
+/// its own (`Stats::stage_ops`, TASK-91.16): said with each [`ACK`]; otherwise once [`STAGE_COUNTS_EVERY`]
 /// has passed since it last said, as it makes them; and as it closes the connection. Nothing
 /// replies.
 pub(crate) const STAGE_COUNTS: u32 = 27;
