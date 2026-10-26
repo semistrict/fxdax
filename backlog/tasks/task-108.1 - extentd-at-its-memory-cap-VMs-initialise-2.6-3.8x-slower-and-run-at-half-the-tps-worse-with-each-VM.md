@@ -6,7 +6,7 @@ title: >-
 status: In Progress
 assignee: []
 created_date: '2026-10-25 19:06'
-updated_date: '2026-10-26 15:02'
+updated_date: '2026-10-26 16:22'
 labels:
   - bug
 dependencies: []
@@ -62,4 +62,6 @@ r130 (d20e7cbc4, the fix; 5 VMs, n2-standard-8): stage maps per VM 1.06M, 1.37M,
 r134 (8140da231, 10 VMs, n2-standard-8): first-run tps 1132, 1131, 1093, 1056, 1072, 1062, 1076, 1065, 1070, 1059 (VM 10 -6.4%; r110 -14%), fifth runs 970 -> 955; init 16.3 -> 17.2-18.8 s (+12-15%; r110 +44%); the VMM's extentd client sys 91.0 -> 106.3 s (+17%); pages per stage map 10.1, 7.7, 6.8, 6.0, 5.7, 5.4, 5.3, 5.2, 5.1, 5.1: runs shorten, then hold at ~5. AC1 met for tps, not for init (+15% against 10%). What's left: multi-page allocations take a run only where the page after the last is free; taking from the longest free runs (or the chunk with most free) would keep runs long as memory recycles.
 
 f7893385b: a run's first page is, of the first 32 on the free list, the first beginning a run of free pages (its page before taken, its page after free), else the first in one, else the list's first (Arenas::take_run); test pages_allocated_together_begin_where_free_pages_run (fails without: the six single pages ahead on the list taken first). zircon 212 and zircon-core-tests 331 pass on macOS. r139: 10 VMs; r140: Linux workspace.
+
+r139 (f7893385b, take_run, 10 VMs): no change: pages per stage map 10.3, 7.9, 6.6, 5.8, 5.5, 5.3, 5.1, 5.1, 5.1, 5.1 (r134 10.1 -> 5.1); first-run tps 1110 -> 1049-1057 (-5%), VMM sys 91.8 -> 106.0 s. The runs that shorten aren't multi-page allocations' starts: reverted. The pages a window maps in runs come from allocations of a page at a time (an open extent's pages as writes reach them, page-ins), consecutive only as the free list hands them out; next: where pages of one extent are allocated, and whether it can ask for them together.
 <!-- SECTION:NOTES:END -->
