@@ -4,7 +4,7 @@ title: 'VMM: the extentd client thread spends 90-165 us of host kernel time per 
 status: In Progress
 assignee: []
 created_date: '2026-10-23 18:01'
-updated_date: '2026-10-26 01:54'
+updated_date: '2026-10-26 03:18'
 labels: []
 dependencies: []
 parent_task_id: TASK-91
@@ -65,4 +65,6 @@ r116 (23759aa8a: corked changes, remap in the VMM, prefault unchanged; same setu
 r115b (c06c3cdbc, GCE, Linux): fxdax + zircon workspace tests 2,637 passed (and the other suites), the new wire tests (corked sends, unmaps taking the maps within them) and remaps_end_as_steps_do among them. The remapped seal-and-free race failed only its reach check: no schedule reached an access failing (EFAULT, retried), as a seal made at once leaves its pages in place; required events now exclude it (6b22a2a46). Ported 491d3838 (VM processes report stage counts, STAGE_COUNTS renumbered 27, FREE_MANY took 26): ae046fc9a. r115c reruns fxdax at HEAD.
 
 r117 (63eaee74f, r116 without prefaulting pages reprotected in place): tps 1127/1046/1000/961/938, load 16.4 s; extentd client sys 97.75 s for 728,907 MAPs, 256,846 UNMAPs, 198,188 seals: 83 us per window change (r116 87, baseline 112), 134 us per MAP. Adopted (pages reprotected in place are mapped for the guest as it touches them).
+
+Buffered receiver (7195eec4f, the VM process reading up to 64 KiB of messages a recvmsg, headers saying their descriptors): r122 against cmp-dax (cac2afe77), same day, us-east4-a: 91.8 against 97.0 us of extentd client sys per window change (-5%), tps 989/929/913/849/859 against 995/923/903/834/848. Hosts differ by ~15% (r117: 83 us), so A/Bs go on one host from here. r121: 2 wire tests failed on expectations (the 63-message bound dropped, now restored; replies' fds field), fixed.
 <!-- SECTION:NOTES:END -->
