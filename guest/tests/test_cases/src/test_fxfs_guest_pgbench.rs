@@ -11,7 +11,8 @@
 //! as theirs did, where Fxfs's journal shut down on a write to a sealed extent (TASK-91.1). With
 //! a DAX window (fxfs-guest-pgbench-dax) or without (fxfs-guest-pgbench); and without, its first
 //! run probed (TASK-91.14): profiled, the guest's time by symbol and the callers of its hot
-//! spinlock on the console (fxfs-guest-pgbench-profile); or, as the sandbox team's CPU-bound run,
+//! spinlock on the console (fxfs-guest-pgbench-profile; with DAX, fxfs-guest-pgbench-dax-profile,
+//! TASK-91.16); or, as the sandbox team's CPU-bound run,
 //! with synchronous_commit off, its locks' contention, on a kernel that counts it
 //! (fxfs-guest-pgbench-locks, scripts/build-guest-kernel.sh's FXDAX_GUEST_KERNEL_LOCK_STAT). Or,
 //! without DAX, with PostgreSQL's fsync off (fxfs-guest-pgbench-nofsync): the load as fast as it

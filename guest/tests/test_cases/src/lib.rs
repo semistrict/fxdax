@@ -94,6 +94,10 @@ pub fn test_cases() -> Vec<TestCase> {
             Box::new(TestFxfsGuestPgbench { dax: false, probe: Probe::Profile, fsync: true }),
         ),
         TestCase::new(
+            "fxfs-guest-pgbench-dax-profile",
+            Box::new(TestFxfsGuestPgbench { dax: true, probe: Probe::Profile, fsync: true }),
+        ),
+        TestCase::new(
             "fxfs-guest-pgbench-locks",
             Box::new(TestFxfsGuestPgbench { dax: false, probe: Probe::Locks, fsync: true }),
         ),

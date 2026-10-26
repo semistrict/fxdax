@@ -4,7 +4,7 @@ title: 'VMM: the extentd client thread spends 90-165 us of host kernel time per 
 status: In Progress
 assignee: []
 created_date: '2026-10-23 18:01'
-updated_date: '2026-10-26 03:48'
+updated_date: '2026-10-26 11:44'
 labels: []
 dependencies: []
 parent_task_id: TASK-91
@@ -69,4 +69,6 @@ r117 (63eaee74f, r116 without prefaulting pages reprotected in place): tps 1127/
 Buffered receiver (7195eec4f, the VM process reading up to 64 KiB of messages a recvmsg, headers saying their descriptors): r122 against cmp-dax (cac2afe77), same day, us-east4-a: 91.8 against 97.0 us of extentd client sys per window change (-5%), tps 989/929/913/849/859 against 995/923/903/834/848. Hosts differ by ~15% (r117: 83 us), so A/Bs go on one host from here. r121: 2 wire tests failed on expectations (the 63-message bound dropped, now restored; replies' fds field), fixed.
 
 Pushed (e3d46ea92): remap at once with corked changes and no prefault of pages reprotected in place, the VM processes' stage counts, the buffered receiver. Verified: macOS scripts/test.sh; Linux workspace r123 (one load-sensitive timing flake, TASK-110, passed in 4 other runs of the same code); guest fxfs-guest-dax and fxfs-guest-checks-dax r124. Host time per window change 112 -> ~85-92 us (hosts vary ~15%). Not done: target 50 us per MAP (now ~130). What's left (r119) is mostly a TLB shootdown, host and KVM, per page whose access is taken away (leave-outs of the guest's UNMAPs, installs over own-space pages, seals' write-protection), which Linux flushes once a system call; under GCE's nested virtualization each IPI to a vCPU exits to L0.
+
+Hypothesis (2026-10-26): the guest's evacuation (fxfs_dax_evacuate_file) holds the file's semaphore for writing across its MAP_MANY, which waits for extentd and, ahead of the reply on the VM process's one 'extentd client' thread, the stage work of every run (each an install over populated own space, a TLB shootdown); every write's iomap takes that semaphore for writing, so the WAL's writers queue behind each evacuation. Counters (8140da231): dax_write_waits/dax_write_wait_ns, dax_evacuations/dax_evacuate_hold_ns/dax_evacuate_map_ns. r132 measures, pgbench-dax 1 VM.
 <!-- SECTION:NOTES:END -->
