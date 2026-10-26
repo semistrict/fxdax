@@ -57,6 +57,9 @@ pub enum Backend {
     Ext4GuestKernel,
     /// ext4 with DAX on writable virtio-pmem, with fxdax's guest kernel: storage as memory.
     Ext4DaxPmem,
+    /// ext4 on the same virtio-pmem without DAX, its files in the page cache: what DAX on pmem
+    /// costs or saves, against the same device (TASK-91.16).
+    Ext4Pmem,
     /// The guest kernel's Fxfs on an extent-store device, with files in the page cache.
     FxfsGuest,
     /// The guest kernel's Fxfs on an extent-store device, mapping files from its DAX window.
@@ -563,6 +566,7 @@ RUN wget -q -O /opt/lua-5.4.7.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz \\
             match self.backend {
                 Backend::Ext4GuestKernel => "ext4-guest-kernel",
                 Backend::Ext4DaxPmem => "ext4-dax-pmem",
+                Backend::Ext4Pmem => "ext4-pmem",
                 Backend::FxfsGuest => "fxfs-guest",
                 Backend::FxfsGuestDax => "fxfs-guest-dax",
                 Backend::FxfsGuestDaxForkWarm => "fxfs-guest-dax-fork-warm",
@@ -600,7 +604,9 @@ RUN wget -q -O /opt/lua-5.4.7.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz \\
                 | Backend::FxfsGuestDaxForkProfiled
                 | Backend::FxfsGuestDaxFollowed
                 | Backend::FxfsGuestDaxFollowedIdle => fxdax_guest_should_run(),
-                Backend::Ext4GuestKernel | Backend::Ext4DaxPmem => ShouldRun::Yes,
+                Backend::Ext4GuestKernel | Backend::Ext4DaxPmem | Backend::Ext4Pmem => {
+                    ShouldRun::Yes
+                }
             }
         }
 
@@ -679,7 +685,7 @@ RUN wget -q -O /opt/lua-5.4.7.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz \\
                 Backend::FxfsGuestDaxFollowed | Backend::FxfsGuestDaxFollowedIdle => {
                     unreachable!("followed::run boots its VMs")
                 }
-                Backend::Ext4DaxPmem => {
+                Backend::Ext4DaxPmem | Backend::Ext4Pmem => {
                     let image = test_setup.tmp_dir.join("pmem.img");
                     std::fs::File::create(&image)?.set_len(IMAGE_SIZE)?;
                     Some(vm.pmem("bench", &image)?)
@@ -1864,6 +1870,11 @@ mod guest {
                     let device = bench_device();
                     run("mkfs.ext4", &["-q", "-F", &device]);
                     mount(&device, "ext4", "dax=always");
+                }
+                Backend::Ext4Pmem => {
+                    let device = bench_device();
+                    run("mkfs.ext4", &["-q", "-F", &device]);
+                    mount(&device, "ext4", "dax=never");
                 }
             }
             let iterations: u32 = std::env::var("FXDAX_BENCH_ITERATIONS")

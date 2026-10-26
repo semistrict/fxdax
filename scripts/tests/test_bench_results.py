@@ -35,6 +35,7 @@ class Registry(unittest.TestCase):
             [
                 "ext4-guest-kernel",
                 "ext4-dax-pmem",
+                "ext4-pmem",
                 "fxfs-guest",
                 "fxfs-guest-dax",
                 "fxfs-guest-dax-fork-warm",

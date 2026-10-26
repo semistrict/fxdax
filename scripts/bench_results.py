@@ -18,6 +18,7 @@ ORDER = [
     "fxdax-nodax",
     "virtiofs-passthrough",
     "ext4-guest-kernel",
+    "ext4-pmem",
     "ext4-dax-pmem",
     "fxfs-guest",
     "fxfs-guest-dax",
@@ -35,7 +36,9 @@ BASELINES = {
     # The guest kernel's Fxfs with ext4 with DAX on writable pmem, booted on the same kernel,
     # fxdax's guest kernel: storage as memory; or, if that wasn't measured, with ext4 on the same
     # kernel.
-    "ext4-dax-pmem": ["ext4-guest-kernel"],
+    "ext4-dax-pmem": ["ext4-pmem", "ext4-guest-kernel"],
+    # ext4 on the same pmem without DAX, its files in the page cache (TASK-91.16).
+    "ext4-pmem": ["ext4-guest-kernel"],
     "fxfs-guest": ["ext4-dax-pmem", "ext4-guest-kernel"],
     "fxfs-guest-dax": ["ext4-dax-pmem", "ext4-guest-kernel"],
     # A writer with followers attached, reading or not, against one alone (TASK-42.7).

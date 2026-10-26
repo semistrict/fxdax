@@ -178,6 +178,11 @@ pub fn test_cases() -> Vec<TestCase> {
         ),
         #[cfg(any(feature = "host", target_os = "linux"))]
         TestCase::new(
+            "bench-fs-ext4-pmem",
+            Box::new(TestFsBench { backend: BenchBackend::Ext4Pmem }),
+        ),
+        #[cfg(any(feature = "host", target_os = "linux"))]
+        TestCase::new(
             "bench-fs-fxfs-guest",
             Box::new(TestFsBench { backend: BenchBackend::FxfsGuest }),
         ),
