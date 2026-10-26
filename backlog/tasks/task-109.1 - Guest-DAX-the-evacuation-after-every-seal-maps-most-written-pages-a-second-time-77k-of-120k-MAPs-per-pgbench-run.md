@@ -3,10 +3,10 @@ id: TASK-109.1
 title: >-
   Guest DAX: the evacuation after every seal maps most written pages a second
   time (77k of 120k MAPs per pgbench run)
-status: In Progress
+status: To Do
 assignee: []
 created_date: '2026-10-25 23:26'
-updated_date: '2026-10-25 23:42'
+updated_date: '2026-10-26 00:32'
 labels: []
 dependencies: []
 parent_task_id: TASK-109
@@ -38,4 +38,8 @@ TASK-91.10's evacuation (fxfs_dax_evacuate_work) moves every sealed staging exte
 
 <!-- SECTION:NOTES:BEGIN -->
 Hypothesis: much of the evacuation maps pages rewritten right after (the WAL's tail page, written at every commit, moves to the next staging region at the next write, so its evacuation MAP is wasted), and pages written once (WAL) are rarely read through the window again. Experiment exp/evacuate-delay (5492cf523, not for main): fxfs.dax_evacuate_delay_ms, the evacuation skipping regions sealed less than that long ago. r112: pgbench-dax, 1 VM, 0 / 200 / 2000 ms.
+
+r112 (exp/evacuate-delay 5492cf523, pgbench-dax 1 VM, per run): delay 0: 1104/1027/1006/961/958 tps, evacuate MAPs 79-92k, MAP requests 99-110k, regions ~300-440. 200 ms: 1154/1092/1036/1002/981, evacuate 73-89k, requests 56-69k, regions ~530-690. 2000 ms: 1213/1144/1058/1011/1031, evacuate 75-94k, requests 58-72k, regions 1,700-2,500 (regions' pool 680-740 MB free, never full). The hypothesis is wrong: evacuated pages are not rewritten soon after (the WAL tail isn't what's evacuated); they're cold, and deferring doesn't cut their MAPs. Deferring batches them: MAP requests -40%, tps +5-10% (one VM each, so a hint). Dropping cold pages instead of mapping them isn't possible as ranges stand: a page not set in range->mapped reads as a hole (fxfs_dax_iomap_begin's read path), so a dropped page would need its range forgotten. One MAP per written run is what the staging design costs, written-at-own-space or evacuated alike; cutting the count needs the host to place a seal's staging pages at their ranges' addresses as part of the seal's remap (a protocol change), or each MAP made cheaper (TASK-91.16).
+
+Parked (2026-10-25): placing a seal's staging pages at their ranges' addresses inside the seal would put ~2 host mappings (~0.35 ms) on every fsync's critical path, where the async evacuation now costs none; the per-MAP host cost (TASK-91.16) is the root and is worked first.
 <!-- SECTION:NOTES:END -->

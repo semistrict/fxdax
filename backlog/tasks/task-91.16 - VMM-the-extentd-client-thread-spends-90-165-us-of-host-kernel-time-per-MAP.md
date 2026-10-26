@@ -4,7 +4,7 @@ title: 'VMM: the extentd client thread spends 90-165 us of host kernel time per 
 status: In Progress
 assignee: []
 created_date: '2026-10-23 18:01'
-updated_date: '2026-10-25 23:26'
+updated_date: '2026-10-26 00:35'
 labels: []
 dependencies: []
 parent_task_id: TASK-91
@@ -30,6 +30,18 @@ Round 6: Firecracker's 'extentd client' thread took 5.72 s system for 62,454 MAP
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+Where a MAP's host cost goes today (uffd.rs, server.rs RemoteStage, client.rs): an overwrite is STAGE_UNMAP (leave_out: anonymous mmap over the old memory, the TLB shootdown and KVM zap; UFFDIO_REGISTER; mprotect), STAGE_MAPPED, then STAGE_MAP for the pages MAP_RANGE populates (install: file mmap, UFFDIO_REGISTER, mprotect/UFFDIO_WRITEPROTECT, MADV_POPULATE_WRITE, then KVM_PRE_FAULT_MEMORY), each its own message and recvmsg, the receiver peeking for UNMAPs to join. A seal remaps the open extent's pages, the same physical pages, read-only that way too.
+1. Measure: fxfs-guest-pgbench-dax reports each run's VMM threads' user and system CPU (/proc/<vmm>/task), so 'extentd client' system us per MAP is read off every run. Baseline on GCE.
+2. extentd: RemoteStage writes the stage operations of one window change (a MAP's UNMAP, MAPPED and MAPs) together, in one write, in the order the kernel made them, flushed at the change's end and before anything waits for or keeps pages until them (IDs taken in order as they are queued, so acknowledgements stay cumulative).
+3. VMM: reads whole buffers of messages; an UNMAP followed by MAPs of the same range is made as installs over the old memory (one mmap replacing it), leaving out only what no MAP covers.
+4. VMM: where that MAP is of the very pages installed there (a seal), the pages are write-protected in place (UFFDIO_WRITEPROTECT): no unmap, zap or refault.
+5. Prefault: measured with and without for pages reprotected and read-only installs.
+Proof: the stage's unit tests and Shuttle model for each rule (a test failing with it off), extentd's stage tests, fxfs-guest-checks-dax and pgbench-dax on GCE, and the per-MAP system time against the baseline (target under 50 us).
+<!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
 
