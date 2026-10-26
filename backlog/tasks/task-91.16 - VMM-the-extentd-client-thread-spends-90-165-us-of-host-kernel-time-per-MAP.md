@@ -1,10 +1,10 @@
 ---
 id: TASK-91.16
 title: 'VMM: the extentd client thread spends 90-165 us of host kernel time per MAP'
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-23 18:01'
-updated_date: '2026-10-26 19:13'
+updated_date: '2026-10-26 19:15'
 labels: []
 dependencies: []
 parent_task_id: TASK-91
@@ -21,14 +21,14 @@ Round 6: Firecracker's 'extentd client' thread took 5.72 s system for 62,454 MAP
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [x] #1 The per-MAP host kernel time attributed with a profile
-- [ ] #2 Cut, and the VM process's stage counters reported
+- [x] #2 Cut, and the VM process's stage counters reported
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -101,4 +101,12 @@ r146 (5de767990, the seal fix): workspace 2,642 passed, checks-dax and pgbench-d
 r147 (exp/stage-leftovers-2, each 1000th leftover over the VM's life, after the seal fix): ~124k leftovers, all a range mapped anew with no pages: regions' 16-32 pages and ranges' own space 2-12 pages. That fits Extents::free's replace_kept, zeros mapped over a freed extent's window mappings (a version the guest replaced), which leaves its installed pages out. A page version installed costs one flush when it goes, however it goes (zeros, overwrite, unmap); the cut is in installing fewer: read-only maps are prefaulted into KVM, which a replacement then zaps and flushes, though evacuated pages are mostly cold (r112). r148 A/B: FXDAX_PREFAULT_READ_ONLY=0 (exp/no-prefault-ro 7eba4c930), read-only installs not prefaulted.
 
 r148 (exp/no-prefault-ro 7eba4c930, one host, A/B): read-only installs not prefaulted: KVM remote flushes 584k -> 411k (-30%), vCPU TLB flushes 1.23M -> 0.87M, interrupt exits -13%, extentd client sys 87.5 -> 74.7 s; but KVM page faults 187k -> 805k (the guest touches most of what's mapped read-only), init 16.0 -> 17.7 s, tps 1157/1073/1036/1012/987 -> 1192/1106/1028/1006/1006 (equal within noise). Faults replace flushes one for one: not adopted. Where the per-VM gap stands: Fxfs DAX ~890 tps on pmem-sized bench VMs, equal to ext4 with DAX on pmem (r144); the user's call (2026-10-26): DAX is for N VMs not keeping N copies, and a single VM's DAX being slower is reasonable.
+
+Accepted by the user (2026-10-26): DAX is for N VMs not keeping N copies; one VM's DAX slower than without is reasonable, at par with ext4's DAX on pmem (r144). The 50 us per MAP target set aside. Validation: Linux workspace 2,642 passed, fxfs-guest-checks-dax and pgbench-dax green (r146, 5de767990); macOS fxdax 228 passed; upstream-changes --check passes.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The VMM's host cost per window change cut: a window change sent whole (corked) and made at once in the VM process (remap: in-place write-protection of the same pages, installs over, only uncovered pages left out), a buffered receiver, no prefault of pages reprotected in place (~112 -> ~85 us of host time per change, r114b -> r117); seals made one change, so their pages are write-protected in place rather than left out and installed again (5de767990, +2-5% DAX tps, r146). VM processes report their stage counts and which changes took access away (stage-overwrites/-leave-outs/-write-protects, 9f77e3799). What remains of DAX's single-VM cost is the TLB flush each replaced page version takes, a cost ext4's DAX on pmem shows too (-22%, r144); accepted. Verified on GCE (r146: workspace, checks-dax, pgbench-dax) and macOS.
+<!-- SECTION:FINAL_SUMMARY:END -->

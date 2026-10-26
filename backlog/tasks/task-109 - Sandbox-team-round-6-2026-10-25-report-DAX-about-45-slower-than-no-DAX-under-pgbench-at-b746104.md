@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-25 23:26'
-updated_date: '2026-10-26 03:14'
+updated_date: '2026-10-26 19:15'
 labels: []
 dependencies: []
 priority: high
@@ -41,4 +41,6 @@ Sandbox retest at 139e82b (TASK-101 landed; 2026-10-25 20:06-21:02 EDT): 32 trac
 Our comparison, 2026-10-25 22:10-22:45 EDT, GCE n2-standard-8 us-east4-a, PostgreSQL 17, pgbench -i -q -s 50 then 5 x 60 s -c 4 -j 2, shared_buffers=256MB (branch at cac2afe77, TASK-91.16 in): native on the host in a container held to 2 CPUs/4 GiB (scripts/pgbench-native.sh): load 11.2 s, 3,287/3,561/3,565/3,293/3,684 tps; native uncapped: 7.6 s, ~3,440 (commit-latency bound at -c 4); fxdax no-DAX in Firecracker (fxfs-guest-pgbench, bucket 25 ms away): 16.7 s, 1,693/1,730/1,707/1,697/1,739 (~49% of native); DAX: 18.8 s, 995/923/903/834/848 (~53% of no-DAX, falling 15% over the runs). ext4 on virtio-blk in the bench's VMs pending.
 
 Bench VMs (2 vCPU, 2 GiB, Postgres defaults, no bucket latency, scale 50, 60 s, 3 iterations): ext4 on virtio-blk 1,140 tps (init 11.8 s), fxfs no-DAX 1,660 (11.4 s), fxfs DAX 405 (21.6 s): filed as TASK-109.3.
+
+2026-10-26: the user accepts one VM's DAX being slower than without (DAX is for N VMs sharing one copy). TASK-91.16 done: seals write-protect in place (5de767990); Fxfs DAX ~890 tps against ext4 DAX on pmem ~880 and ext4 pmem without DAX ~1,130 in the bench VMs (r144). AC1 and AC2 (10% of no DAX, 50 us per MAP) not met; left open for the user to close or reframe around density.
 <!-- SECTION:NOTES:END -->
