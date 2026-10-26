@@ -2706,13 +2706,16 @@ static void fxfs_dax_evacuee_gather(struct fxfs_dax_file *file, struct fxfs_dax_
 static void fxfs_dax_evacuee_map(struct fxfs_dax *dax, struct fxfs_dax_file *file,
 				 struct fxfs_dax_evacuation *ev)
 {
+	u64 began;
 	size_t r;
 	int err;
 
 	lockdep_assert_held_write(&file->sem);
 	if (ev->count) {
 		fxfs_dax_delay();
+		began = ktime_get_ns();
 		err = fxfs_nofs(fxfs_device_map_many(dax->dev, ev->maps, ev->count));
+		atomic64_add(ktime_get_ns() - began, &dax->evacuate_map_ns);
 		for (r = 0; r < ev->count; r++) {
 			/* If they failed, mapped one by one, to place those that did. */
 			if (err)
@@ -2824,15 +2827,12 @@ static void fxfs_dax_lock_evacuable(struct fxfs_dax *dax, struct fxfs_dax_file *
 static void fxfs_dax_evacuate_file(struct fxfs_dax *dax, struct fxfs_dax_file *file)
 {
 	struct fxfs_dax_evacuation ev = {};
-	u64 locked, mapping;
+	u64 locked;
 
 	fxfs_dax_lock_evacuable(dax, file);
 	locked = ktime_get_ns();
 	fxfs_dax_evacuee_gather(file, &ev);
-	mapping = ktime_get_ns();
 	fxfs_dax_evacuee_map(dax, file, &ev);
-	if (ev.count)
-		atomic64_add(ktime_get_ns() - mapping, &dax->evacuate_map_ns);
 	fxfs_dax_evacuee_place(dax, file, &ev);
 	up_write(&file->sem);
 	if (ev.count) {
