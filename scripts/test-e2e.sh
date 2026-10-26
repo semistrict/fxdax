@@ -20,7 +20,7 @@
 #
 # The guests' extent stores are served by fxdax's extent daemon, which this
 # starts, as FXDAX_EXTENTD tells the tests; its control API is beside it, at
-# extentd.control. LIBCLANG_PATH names libclang's
+# extentd.control. FXDAX_EXTENTD_MEMORY caps its memory, in bytes. LIBCLANG_PATH names libclang's
 # directory where llvm-config cannot, and DAX needs access to /dev/userfaultfd
 # (see the README).
 set -euo pipefail
@@ -144,11 +144,13 @@ if [[ -e $socket || -e $control ]]; then
     exit 2
 fi
 # A host keeps stores in a bucket, FXDAX_EXTENTD_REMOTE's or one in its memory, as of placement 1
-# unless one is named; what it did with it scripts/bench-report.py reports.
+# unless one is named; what it did with it scripts/bench-report.py reports. Its kernel takes
+# FXDAX_EXTENTD_MEMORY bytes at most, if set, or the daemon's default.
 env FXDAX_EXTENTD_REMOTE="${FXDAX_EXTENTD_REMOTE:-memory:///e2e}" \
     FXDAX_EXTENTD_TOKEN="${FXDAX_EXTENTD_TOKEN:-1}" \
     FXDAX_EXTENTD_STATS="$results/extentd-stats.txt" FXDAX_EXTENTD_GRPC="$control" \
-    FAILPOINTS="${FXDAX_FAILPOINTS:-}" "$extentd_bin" "$socket" > "$results/extentd.log" 2>&1 &
+    FAILPOINTS="${FXDAX_FAILPOINTS:-}" "$extentd_bin" "$socket" ${FXDAX_EXTENTD_MEMORY:-} \
+    > "$results/extentd.log" 2>&1 &
 daemon=$!
 trap 'kill "$daemon" 2> /dev/null; rm -f "$socket" "$control"' EXIT
 while [[ ! -S $socket || ! -S $control ]]; do

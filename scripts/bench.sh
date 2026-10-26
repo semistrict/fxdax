@@ -38,6 +38,10 @@ if compgen -G "$results/bench-*.json" > /dev/null || [[ -e $results/logs ]]; the
 fi
 
 status=0 report=0
+# The extent daemon holds as much memory as the sandbox team's does, 8 GiB, unless
+# FXDAX_EXTENTD_MEMORY says otherwise: with its default, 1 GiB, a DAX guest's working set
+# doesn't fit, and its faults page in again what was evicted, which measures that (TASK-109.3).
+export FXDAX_EXTENTD_MEMORY=${FXDAX_EXTENTD_MEMORY:-$((8 << 30))}
 # shellcheck disable=SC2086 # The cases are names separated by spaces.
 FXDAX_BENCH_ITERATIONS=$iterations FXDAX_BENCH_RESULTS=$results \
     FXDAX_E2E_RESULTS=$results/logs "$root/scripts/test-e2e.sh" $cases >&2 || status=$?
