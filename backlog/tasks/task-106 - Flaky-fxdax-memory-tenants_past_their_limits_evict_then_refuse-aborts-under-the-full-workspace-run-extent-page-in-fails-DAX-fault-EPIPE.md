@@ -3,10 +3,10 @@ id: TASK-106
 title: >-
   Flaky: fxdax::memory tenants_past_their_limits_evict_then_refuse aborts under
   the full workspace run (extent page-in fails, DAX fault EPIPE)
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-25 04:44'
-updated_date: '2026-10-26 01:43'
+updated_date: '2026-10-26 02:06'
 labels:
   - bug
 dependencies: []
@@ -22,9 +22,9 @@ GCE r94 workspace run (tree at 74d3dd079's ancestors, rebased on 0ddfa011f): SIG
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Notes
@@ -38,3 +38,9 @@ Cause, from the code: relief's evictor (extents::evict_least_used) counts the pa
 
 r115b (c06c3cdbc, GCE, Linux workspace -p fxdax -p zircon): tenants_past_their_limits_evict_then_refuse passed (2.1 s), and relief_exhausts_no_arena_with_pages_to_come_back. One pass isn't proof for a flake seen about one run in three; it reruns in every workspace run from here.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Relief marked a tenant's arena exhausted while pages it had evicted waited in quarantine for the VM process's unmap acknowledgements, so a page-in under the tenant's limit failed NO_MEMORY and the DAX fault aborted with EPIPE. Each arena now counts its quarantined pages, and a relief pass that frees nothing doesn't exhaust an arena with pages to come back. Verified: new unit test relief_exhausts_no_arena_with_pages_to_come_back (red without the fix); macOS scripts/test.sh and Linux fxdax+zircon workspace tests on GCE (r115b, r115c) pass, the flaky test included. Pushed in 2ee52df5f.
+<!-- SECTION:FINAL_SUMMARY:END -->
