@@ -29,6 +29,13 @@ pub struct Quarantined {
 }
 
 impl Quarantined {
+    /// fxdax: `pages`, freed, quarantined, as their arenas count them until they come back
+    /// (TASK-106).
+    fn new(pages: VmPageDoublyLinkedList, delay_reuse: PmmOptDelayReuse) -> Self {
+        node().quarantining(&pages);
+        Self { pages, delay_reuse }
+    }
+
     /// How many pages it holds.
     pub fn len(&self) -> usize {
         self.pages.iter().count()
@@ -42,8 +49,9 @@ impl Quarantined {
 
 impl Drop for Quarantined {
     fn drop(&mut self) {
-        // SAFETY: The pages are the quarantine's, which their owner gave up as it freed them.
-        unsafe { node().free_list(&mut self.pages, self.delay_reuse) };
+        // SAFETY: The pages are the quarantine's, which their owner gave up as it freed them, and
+        // which their arenas counted as they were quarantined.
+        unsafe { node().free_quarantined(&mut self.pages, self.delay_reuse) };
     }
 }
 
@@ -124,7 +132,7 @@ pub(super) fn sift(list: &mut VmPageDoublyLinkedList, delay_reuse: PmmOptDelayRe
         }
     }
     if !pages.is_empty() {
-        quarantine(Quarantined { pages, delay_reuse });
+        quarantine(Quarantined::new(pages, delay_reuse));
     }
 }
 
@@ -137,6 +145,6 @@ pub(super) fn sift_page(page: VmPagePtr, delay_reuse: PmmOptDelayReuse) -> bool 
     }
     let mut pages = VmPageDoublyLinkedList::new();
     pages.push_back(page);
-    quarantine(Quarantined { pages, delay_reuse });
+    quarantine(Quarantined::new(pages, delay_reuse));
     true
 }

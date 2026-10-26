@@ -68,11 +68,11 @@ mod arenas;
 mod quarantine;
 mod relief;
 
-pub use quarantine::{Quarantined, quarantine_with};
 #[cfg(all(test, feature = "shuttle"))]
 pub(crate) use quarantine::QuarantineForTest;
 #[cfg(test)]
 pub(crate) use quarantine::quarantine_for_test;
+pub use quarantine::{Quarantined, quarantine_with};
 pub use relief::{RELIEF_BYTES, relieve_with};
 
 /// No restrictions on which arena to allocate from.
@@ -583,7 +583,44 @@ impl PmmNode {
     ) {
         // fxdax: but those quarantined, as a second stage may map them still.
         quarantine::sift(list, delay_reuse);
+        self.free_list_locked(self.locked(), list, delay_reuse);
+    }
+
+    /// fxdax: counts `list`'s pages, freed, quarantined in their arenas, as relief finds them
+    /// (`Arenas::relieved`, TASK-106).
+    pub(super) fn quarantining(&self, list: &VmPageDoublyLinkedList) {
         let mut locked = self.locked();
+        for page in list.iter() {
+            locked.arenas.quarantine(&self.pages, page, true);
+        }
+    }
+
+    /// fxdax: frees every page on `list`, quarantined, now that every second stage has made the
+    /// changes taking them away: as `free_list` does, as their arenas count them back, under the
+    /// lock relief finds them under.
+    ///
+    /// # Safety
+    ///
+    /// As `free_list`'s; and the pages were quarantined, counted (`quarantining`).
+    pub(super) unsafe fn free_quarantined(
+        &self,
+        list: &mut VmPageDoublyLinkedList,
+        delay_reuse: PmmOptDelayReuse,
+    ) {
+        let mut locked = self.locked();
+        for page in list.iter() {
+            locked.arenas.quarantine(&self.pages, page, false);
+        }
+        self.free_list_locked(locked, list, delay_reuse);
+    }
+
+    /// Frees every page on `list` back to this node, under the lock, `locked`.
+    fn free_list_locked(
+        &self,
+        mut locked: NodeGuard<'_>,
+        list: &mut VmPageDoublyLinkedList,
+        delay_reuse: PmmOptDelayReuse,
+    ) {
         let mut count = 0;
         for page in list.iter() {
             // SAFETY: The caller owns the pages.

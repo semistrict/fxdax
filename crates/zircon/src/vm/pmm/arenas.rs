@@ -99,6 +99,11 @@ struct ArenaPages {
     /// The most chunks it may have, if capped.
     cap: Option<usize>,
     relief: Relief,
+    /// fxdax: its pages freed and quarantined, as a second stage may map them still, which come
+    /// back to it once every second stage has made the changes taking them away
+    /// (`pmm::quarantine`): relief exhausts it not while any is to come back, as each makes it room
+    /// (TASK-106).
+    quarantined: usize,
     /// Whether it was removed, and goes with its last chunk: it gives no page meanwhile.
     retiring: bool,
 }
@@ -112,6 +117,7 @@ impl ArenaPages {
             going_back: 0,
             cap: None,
             relief: Relief::default(),
+            quarantined: 0,
             retiring: false,
         }
     }
@@ -286,6 +292,22 @@ impl Arenas {
         !self.within_caps(arena) || self.free_chunks.is_empty()
     }
 
+    /// fxdax: `page`, freed, is quarantined, to come back to its arena ([`Arenas::put`]) once every
+    /// second stage has made the changes taking it away; or, `quarantined` false, it is coming
+    /// back now (TASK-106).
+    pub(super) fn quarantine(&mut self, pages: &PmmPages, page: VmPagePtr, quarantined: bool) {
+        let chunk = pages.memory.chunk_of(page.paddr());
+        let arena = pages.memory.chunk_arena(chunk).expect("a page of no arena's");
+        let entry = self.entry_mut(arena);
+        match quarantined {
+            true => entry.quarantined += 1,
+            false => {
+                entry.quarantined = (entry.quarantined.checked_sub(1))
+                    .expect("a page came back from quarantine its arena didn't count");
+            }
+        }
+    }
+
     /// The cap `arena` is held to, if it is starved: it has no free page, and can take no chunk,
     /// even with other arenas' spares gone back for one: past its own cap, or, past the total's or
     /// out of chunks, with fewer of their spares than it wants (`spares_wanted`); and no chunk
@@ -352,13 +374,15 @@ impl Arenas {
     }
 
     /// Relief's pass for `arena` freed `freed` bytes: something, and it is not exhausted; nothing,
-    /// and it is, if it is starved still.
+    /// and it is, if it is starved still, but while pages of it are quarantined, which make it room
+    /// as they come back (TASK-106): what relief evicted, a window mapped, waits for its VM process
+    /// to unmap it, and a pass after finds nothing left to evict.
     pub(super) fn relieved(&mut self, arena: ArenaId, freed: u64) {
         let starved = self.starved(arena).is_some();
         let Some(entry) = self.arenas.get_mut(&arena) else { return };
         if freed > 0 {
             entry.relief.exhausted = false;
-        } else if starved {
+        } else if starved && entry.quarantined == 0 {
             entry.relief.exhausted = true;
         }
     }
@@ -1035,6 +1059,31 @@ mod tests {
         fixture.remove(second);
         assert!(fixture.arenas.ask_relief(second, Starved::Total), "gone");
         assert_eq!(fixture.arenas.take_asked(), [(first, Starved::Arena)]);
+        fixture.put_all(taken);
+    }
+
+    /// TASK-106: a pass that frees nothing doesn't exhaust an arena starved while pages of it are
+    /// quarantined, which make it room as they come back: what relief evicted that a window mapped,
+    /// waiting for its VM process to unmap it, while the pass after finds nothing to evict. Its
+    /// allocations wait for them rather than fail. Once none is to come back, it is exhausted.
+    #[test]
+    fn relief_exhausts_no_arena_with_pages_to_come_back() {
+        let mut fixture = Fixture::new();
+        let arena = fixture.create();
+        fixture.arenas.set_cap(arena, Some(1));
+        let mut taken = fixture.take_chunks(arena, 1);
+        assert_eq!(fixture.arenas.starved(arena), Some(Starved::Arena));
+        let evicted = taken.pop().unwrap();
+        fixture.arenas.quarantine(&fixture.pages, evicted, true);
+        fixture.arenas.relieved(arena, 0);
+        assert!(!fixture.arenas.ask_relief(arena, Starved::Arena), "a page is to come back");
+
+        fixture.arenas.quarantine(&fixture.pages, evicted, false);
+        let _ = fixture.put(evicted);
+        assert!(!fixture.arenas.ask_relief(arena, Starved::Arena), "it came back");
+        taken.extend(fixture.take(arena));
+        fixture.arenas.relieved(arena, 0);
+        assert!(fixture.arenas.ask_relief(arena, Starved::Arena), "none is to come back");
         fixture.put_all(taken);
     }
 }
