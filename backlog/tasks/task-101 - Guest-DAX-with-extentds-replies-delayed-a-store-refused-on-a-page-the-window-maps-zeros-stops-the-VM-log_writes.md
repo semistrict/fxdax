@@ -3,10 +3,10 @@ id: TASK-101
 title: >-
   Guest DAX: with extentd's replies delayed, a store refused on a page the
   window maps zeros stops the VM (log_writes)
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-25 00:06'
-updated_date: '2026-10-25 23:57'
+updated_date: '2026-10-26 00:39'
 labels:
   - bug
 dependencies: []
@@ -22,9 +22,9 @@ Found by TASK-44.10's failpoints (GCE r82, kernel b8): FXDAX_FAILPOINTS='extentd
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Notes
@@ -59,4 +59,12 @@ GCE r109: HEAD (c587b2b50, delay inside the MAP) full checks-dax with fxfs.dax_d
 Sandbox team round 6 (TASK-109, b746104, main without this fix): 2 of 21 DAX VMs died with this signature without failpoints: 8 GiB during initdb (window 0x21469000: MAP of ...631 writably 0x1b2000 bytes at 0x21400000, then 1.18 ms later MAP of the older ...619 from 0x0 read-only, 0x200000 bytes at 0x21400000) and 2 GiB with synchronous_commit=off (0xdc10000: ...285 writably 0x104000 at 0xdc10000, then ...272 from 0x0 read-only 0x200000 at 0xdc00000). As r87/r89/r90: a writable map_own of a newer extent, then the evacuation's read-only MAP of an older one. TASK-102 lifted nothing because the window never made the page writable again.
 
 evacuation_rewrites dropped before landing (user's call): it never stopped a VM with the mutant evacuation_unlocked (r104, r106, r109).
+
+Landed in 139e82be6 (with TASK-107). Validation: macOS scripts/test.sh (clippy, 2,514 workspace tests and the rest) passed; Linux workspace on GCE r113: 2,633 of 2,634 passed, the one failure TASK-106's flaky memory test (an extent page-in failing NO_MEMORY), unrelated; scripts/upstream-changes.py --check passed; guest checks-dax green r98 x20, r103b x10, r104/r106 x10, r109 full suite with delays x3. Linux tests run on GCE, not Lima (project practice).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+An evacuation held a file's DAX semaphore only while gathering its runs; its read-only MAP_MANY could then land after a write's writable map of the same page in the range's own space, the host refusing the write's stores and the VM stopping (log_writes under delays, 10-VM pgbench, the sandbox team's b746104). Each file is now evacuated holding its semaphore for writing from gathering through its MAP to placing, once no iomap uses its ranges (fxfs_dax_lock_evacuable); the delay point sits inside the MAP. Verified by the guest checks on GCE (r98-r109), the macOS workspace tests, and the Linux workspace tests (r113; one unrelated flaky failure, TASK-106).
+<!-- SECTION:FINAL_SUMMARY:END -->
