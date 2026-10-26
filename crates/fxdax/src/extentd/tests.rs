@@ -815,6 +815,42 @@ fn vm_processes_tell_the_daemon_what_their_windows_cost() {
     assert_eq!((counted.stage_maps, counted.stage_map_bytes), (2, 2 * ps));
 }
 
+/// TASK-91.16: a seal of an extent the window maps writably write-protects its pages where they are
+/// in the VM process, one change: none left out, as the sealed extent mapped before it has them
+/// would, each a flush of the guest's TLBs, then installed again, and faulted in again.
+#[test]
+fn seals_write_protect_the_pages_mapped_in_place() {
+    host();
+    let ps = page_size() as usize;
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("extentd.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || serve(listener));
+    let store = RemoteExtentStore::connect(&socket, dir.path().join("store"), 1 << 24).unwrap();
+    let memory = memory(1);
+    // SAFETY: The memory is the test's, and outlives the store.
+    unsafe { store.create_dax_window_in_host_memory(memory, ps as u64, None) }.unwrap();
+    let open = ExtentId { branch: store.branch(), sequence: 1 };
+    store.map(open, 0, ps as u64, 0, true).unwrap();
+    // SAFETY: The window's memory, whose faults the store serves.
+    unsafe { std::ptr::copy_nonoverlapping(pattern(1, ps).as_ptr(), memory.as_ptr(), ps) };
+    let [_, _, overwritten, left_out, write_protected] = store.stage_counts();
+    store.commit(None).unwrap();
+    let [_, _, overwritten_after, left_out_after, write_protected_after] = store.stage_counts();
+    assert_eq!(
+        (
+            overwritten_after - overwritten,
+            left_out_after - left_out,
+            write_protected_after - write_protected
+        ),
+        (0, 0, 1),
+        "installed over, left out, write-protected by the seal"
+    );
+    // SAFETY: As above.
+    let window = unsafe { std::slice::from_raw_parts(memory.as_ptr(), ps) };
+    assert_eq!(window, pattern(1, ps), "the sealed page, where it was");
+}
+
 /// What `work` returns, run on a thread of its own, unless it takes longer than `wait`: what a
 /// test that would otherwise hang for good waits for.
 fn within<T: Send + 'static>(
