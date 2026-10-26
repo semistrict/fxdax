@@ -291,6 +291,12 @@ struct fxfs_dax {
 	atomic64_t map_writes;
 	/* Requested bytes of extent-result buffers, before allocator rounding. */
 	atomic64_t extent_alloc_bytes;
+	/*
+	 * fxdax: the writes that waited for their file's semaphore, and how long, in ns; and the
+	 * evacuations of a file with runs, how long they held its semaphore, and how long their MAPs
+	 * took of that (TASK-91.16).
+	 */
+	atomic64_t write_waits, write_wait_ns, evacuations, evacuate_hold_ns, evacuate_map_ns;
 	/* The files with ranges, or inodes using the window, by inode number. */
 	struct xarray files;
 	/* Guards `files`, and files' inodes. */
@@ -2043,7 +2049,13 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 	first = (pos - start) >> PAGE_SHIFT;
 	pages = DIV_ROUND_UP(end - start, PAGE_SIZE) - first;
 
-	down_write(&file->sem);
+	if (!down_write_trylock(&file->sem)) {
+		u64 began = ktime_get_ns();
+
+		down_write(&file->sem);
+		atomic64_inc(&dax->write_waits);
+		atomic64_add(ktime_get_ns() - began, &dax->write_wait_ns);
+	}
 	for (;;) {
 		gate = fxfs_dax_store_begin(dax, fault);
 		if (gate < 0) {
@@ -2812,12 +2824,21 @@ static void fxfs_dax_lock_evacuable(struct fxfs_dax *dax, struct fxfs_dax_file *
 static void fxfs_dax_evacuate_file(struct fxfs_dax *dax, struct fxfs_dax_file *file)
 {
 	struct fxfs_dax_evacuation ev = {};
+	u64 locked, mapping;
 
 	fxfs_dax_lock_evacuable(dax, file);
+	locked = ktime_get_ns();
 	fxfs_dax_evacuee_gather(file, &ev);
+	mapping = ktime_get_ns();
 	fxfs_dax_evacuee_map(dax, file, &ev);
+	if (ev.count)
+		atomic64_add(ktime_get_ns() - mapping, &dax->evacuate_map_ns);
 	fxfs_dax_evacuee_place(dax, file, &ev);
 	up_write(&file->sem);
+	if (ev.count) {
+		atomic64_inc(&dax->evacuations);
+		atomic64_add(ktime_get_ns() - locked, &dax->evacuate_hold_ns);
+	}
 	/* Those waiting to drop its ranges (fxfs_dax_lock_unheld). */
 	wake_up_all(&dax->wait);
 	kfree(ev.runs);
@@ -2915,6 +2936,11 @@ void fxfs_dax_show_stats(struct fxfs_dax *dax, struct seq_file *m)
 		   atomic_long_read(&dax->region_count), atomic_long_read(&dax->regions_pruned));
 	seq_printf(m, "dax_map_writes %lld\n", atomic64_read(&dax->map_writes));
 	seq_printf(m, "dax_extent_alloc_bytes %lld\n", atomic64_read(&dax->extent_alloc_bytes));
+	seq_printf(m, "dax_write_waits %lld\ndax_write_wait_ns %lld\n",
+		   atomic64_read(&dax->write_waits), atomic64_read(&dax->write_wait_ns));
+	seq_printf(m, "dax_evacuations %lld\ndax_evacuate_hold_ns %lld\ndax_evacuate_map_ns %lld\n",
+		   atomic64_read(&dax->evacuations), atomic64_read(&dax->evacuate_hold_ns),
+		   atomic64_read(&dax->evacuate_map_ns));
 	for (why = 0; why < FXFS_DAX_WHYS; why++)
 		seq_printf(m, "window_maps_%s %lld\nwindow_map_bytes_%s %lld\n", fxfs_dax_whys[why],
 			   atomic64_read(&dax->maps[why]), fxfs_dax_whys[why],
