@@ -4,7 +4,7 @@ title: 'VMM: the extentd client thread spends 90-165 us of host kernel time per 
 status: In Progress
 assignee: []
 created_date: '2026-10-23 18:01'
-updated_date: '2026-10-26 16:16'
+updated_date: '2026-10-26 16:52'
 labels: []
 dependencies: []
 parent_task_id: TASK-91
@@ -89,4 +89,6 @@ Regression caught by scripts/tests/test_guest_mutants.py: 8140da231's timing bet
 r138 (1676b6449, guest profile by command, first run): DAX 979 tps, no DAX 1431. Per transaction: postgres 1.0 against 0.82 ms (+22%), pgbench, a client doing the same work either way, +39%, Fxfs's kworkers ~0.21 against ~0.08 ms. Every task in the guest runs slower under DAX, as interrupted vCPUs would make it; the kworkers' extra is the evacuation's. Leaving freed space mapped can't help: a region's space costs one flush whether unmapped at its prune or overwritten later (r69 measured it equal). The evacuation's MAPs over ranges' own space, populated with the pages' older versions, may each flush where a MAP into fresh space wouldn't: 9f77e3799 has VM processes count the changes that took access from pages installed, by how (stage-overwrites, stage-leave-outs, stage-write-protects in extentd's stats), to attribute the ~2.1 KVM flushes a transaction. r141: workspace + pgbench-dax.
 
 r141 (9f77e3799, workspace + pgbench-dax 1 VM): workspace 2,641 of 2,642 (TASK-110's timing flake, 257 ms against 200), the new tests among those passing; tps 1089/1012/976/942/902. Over the VM (load + 5 runs), the changes that took access from pages installed: leave-outs 515k, overwrites 254k, write-protects 110k (879k), against KVM's 620k remote flushes; the guest's UNMAPs 248k, evacuation MAPs 432k, restage 185k, seals ~55k. Leave-outs dominate: twice the guest's UNMAPs, the rest a map's leftovers or trim past the budget (half vm.max_map_count's runs). r142 A/B: vm.max_map_count default against 1048576 (4f193124c, FXDAX_MAX_MAP_COUNT), one host.
+
+r142 (4f193124c, one host, pgbench-dax, vm.max_map_count default against 1048576): equal: tps 1119/1051/1025/984/989 against 1134/1048/1024/967/980; leave-outs 542.7k / 543.0k, overwrites 267k / 266k, write-protects 115k / 113k, KVM remote flushes 643k / 640k. Trim takes nothing away. Leave-outs: the guest's UNMAPs ~265k, and ~278k from remaps whose maps leave installed pages uncovered. r143 (exp/stage-leftovers cb557db40, not for main) logs the first 400 such leftovers from the VM process (FXDAX_STAGE_LOG).
 <!-- SECTION:NOTES:END -->
