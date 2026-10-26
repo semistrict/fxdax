@@ -131,7 +131,8 @@ RUN apk add --no-cache postgresql postgresql-contrib perf
     /// the store at `store`: its stats file, `stats`, and the store's upload lag, appended to
     /// `samples` with the seconds since it started: to see where a run's time goes (TASK-91.2).
     /// And the CPU time of each thread of the VM's process, `vmm`, so far: what the window's
-    /// changes cost the VMM, its 'extentd client' thread's system time (TASK-91.16).
+    /// changes cost the VMM, its 'extentd client' thread's system time; and KVM's counts of the
+    /// VM's exits, faults and flushes, what they cost the guest (TASK-91.16).
     fn sample(
         socket: PathBuf,
         store: PathBuf,
@@ -160,9 +161,32 @@ RUN apk add --no-cache postgresql postgresql-contrib perf
                 if let Some(threads) = thread_times(vmm) {
                     writeln!(out, "vmm-threads: {threads}")?;
                 }
+                if let Some(kvm) = kvm_stats(vmm) {
+                    writeln!(out, "kvm: {kvm}")?;
+                }
             }
             Ok(())
         })
+    }
+
+    /// KVM's counts so far for the VM of process `pid`, as its debugfs directory has them, each
+    /// `name=N` separated by spaces, the names in order: its exits by reason, its page faults,
+    /// its TLB flushes (TASK-91.16); or none without debugfs, or once the VM is gone.
+    fn kvm_stats(pid: u32) -> Option<String> {
+        let prefix = format!("{pid}-");
+        let dir = std::fs::read_dir("/sys/kernel/debug/kvm")
+            .ok()?
+            .flatten()
+            .find(|entry| entry.file_name().to_string_lossy().starts_with(&prefix))?;
+        let mut stats = std::collections::BTreeMap::new();
+        for entry in std::fs::read_dir(dir.path()).ok()?.flatten() {
+            let Ok(text) = std::fs::read_to_string(entry.path()) else { continue };
+            let Ok(count) = text.trim().parse::<u64>() else { continue };
+            stats.insert(entry.file_name().to_string_lossy().into_owned(), count);
+        }
+        let stats: Vec<String> =
+            stats.iter().map(|(name, count)| format!("{name}={count}")).collect();
+        Some(stats.join(" "))
     }
 
     /// The user and system CPU seconds of process `pid`'s threads so far, summed by name, as
