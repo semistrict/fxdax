@@ -4,7 +4,7 @@ title: 'VMM: the extentd client thread spends 90-165 us of host kernel time per 
 status: In Progress
 assignee: []
 created_date: '2026-10-23 18:01'
-updated_date: '2026-10-26 17:49'
+updated_date: '2026-10-26 18:09'
 labels: []
 dependencies: []
 parent_task_id: TASK-91
@@ -95,4 +95,6 @@ r142 (4f193124c, one host, pgbench-dax, vm.max_map_count default against 1048576
 r143 (exp/stage-leftovers): the leftovers are seals. Each logged change unmaps a writable region's range of 16-64 pages, all installed, and maps it anew with no pages ('mapped' alone): Extents::seal_mapped maps the sealed extent first, before it has the pages (supply_pages after), then populates, each its own change, so the VM process leaves every page out (a flush of the guest's TLBs), installs it again on the populate, and the guest faults it in again; the in-place reprotection (TASK-91.16's remap) never saw the two together. Fix 5de767990: each extent's seal is one change (Dax::changing): its mappings made read-only, its pages supplied, its pages mapped again, then the zeros past its end, so the VM process takes the unmap, the mapping anew and the maps together and write-protects in place. Test seals_write_protect_the_pages_mapped_in_place (15106bc6f; r145 runs it without the fix, expecting it to fail). r146: workspace, pgbench-dax, checks-dax with the fix. Also bench-fs-ext4-pmem (f3188ebc0, ext4 on pmem with dax=never) for the user's ext4 pmem DAX/no-DAX comparison, r144.
 
 r144 (f3188ebc0, before the seal fix; bench VMs, 2 vCPU 2 GiB, pgbench scale 50, 60 s, -c 4 -j 2, 3 iterations, one host): ext4 on virtio-pmem without DAX 1130/1131/1134 tps (init 17.1-24.8 s); ext4 on the same pmem with DAX 872/884/886 (init 21.9-22.4 s), -22%; Fxfs without DAX 1546/1568/1553 (init 11.4-17.3 s); Fxfs with DAX 888/892/891 (init 19.4-19.9 s), -43%. Fxfs's DAX runs as fast as Linux's own on pmem, which writes in place with no window changes at all; DAX costs ext4 on pmem 22% too. Fxfs without DAX is the fastest of the four.
+
+r146 (5de767990, the seal fix): workspace 2,642 passed, checks-dax and pgbench-dax green. pgbench-dax 1176/1088/1053/1028/987 tps (r142, same code before: 1119/1051/1025/984/989): +2-5%. Over the VM: write-protects 232k (115k), leave-outs 475k (543k), overwrites 276k (267k), KVM remote flushes 612k (643k), extentd client sys 88.3 s (93.0). Seals now write-protect in place, but leave-outs fell by a fraction: r143's first 400 were the load's; r147 samples leftovers across the whole run.
 <!-- SECTION:NOTES:END -->
