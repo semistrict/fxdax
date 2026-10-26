@@ -4,7 +4,7 @@ title: 'VMM: the extentd client thread spends 90-165 us of host kernel time per 
 status: In Progress
 assignee: []
 created_date: '2026-10-23 18:01'
-updated_date: '2026-10-26 12:13'
+updated_date: '2026-10-26 12:48'
 labels: []
 dependencies: []
 parent_task_id: TASK-91
@@ -73,4 +73,6 @@ Pushed (e3d46ea92): remap at once with corked changes and no prefault of pages r
 Hypothesis (2026-10-26): the guest's evacuation (fxfs_dax_evacuate_file) holds the file's semaphore for writing across its MAP_MANY, which waits for extentd and, ahead of the reply on the VM process's one 'extentd client' thread, the stage work of every run (each an install over populated own space, a TLB shootdown); every write's iomap takes that semaphore for writing, so the WAL's writers queue behind each evacuation. Counters (8140da231): dax_write_waits/dax_write_wait_ns, dax_evacuations/dax_evacuate_hold_ns/dax_evacuate_map_ns. r132 measures, pgbench-dax 1 VM.
 
 r132 (8140da231, pgbench-dax 1 VM, us-east4-a): tps 1117/1044/1014/957/987. The hypothesis is false: writes waited for their file's semaphore ~5-6k times a run, 1.0-1.3 ms in all. Per run: evacuations ~45-49k holding the semaphore 34-36 s (MAP_MANY 20-22 s, ~420 us each; the rest the regions' UNMAPs, 42.7k at 318 us), all on the one evacuation worker; commits (seals) 41k at ~470 us; stores held by seals 14k, 7.5 s. Guest CPU over run 2: user 35.7 s, system 48.5 s, idle 28.8 s of 2 vCPUs: the guest is near CPU-bound, system time large. r133: guest profiles (new fxfs-guest-pgbench-dax-profile, 7ec91b237) against no DAX (fxfs-guest-pgbench-profile), same host.
+
+r133 (7ec91b237, one host, guest profiles, first run profiled): DAX 976/1028/1000/945/951 tps, no DAX 1404/1692/1699/1677/1687. Guest CPU per 60 s run: DAX user ~33 s, sys ~46-49 s, idle ~30-33 s; no DAX user ~46 s, sys ~49 s, idle ~21 s: 1.42 against 0.94 ms of vCPU busy per transaction, and more idle. Profiles alike in shape (halt 25% against 21%, vm_notify, finish_task_switch, rep_movs; DAX adds fxfs_dax_evacuee_gather 2.9%): DAX's extra guest time is spread, as VM exits charged to whatever ran would be. Commits: DAX 39k at 483 us, no DAX 70k at 250 us; DAX stores held by seals 13.4k, 7.3 s. r135 (bd57cd64f): KVM's per-VM counts (debugfs: exits by reason, page faults, TLB flushes) sampled each 2 s, DAX against no DAX on one host.
 <!-- SECTION:NOTES:END -->
