@@ -111,6 +111,12 @@ if [[ -n ${FXDAX_FIRECRACKER_JAIL:-} ]]; then
     # What the daemons and the tests make, sockets and images, the jailed user reaches.
     umask 000
 fi
+# FXDAX_MAX_MAP_COUNT sets vm.max_map_count, of which a VM process's DAX window keeps half its
+# runs of pages installed (dax::uffd's budget), leaving out those past it (TASK-91.16).
+if [[ -n ${FXDAX_MAX_MAP_COUNT:-} ]]; then
+    sysctl -q vm.max_map_count="$FXDAX_MAX_MAP_COUNT"
+    echo "vm.max_map_count: $(sysctl -n vm.max_map_count)"
+fi
 # FXDAX_GUEST_HUGE_PAGES=2M backs each VM's memory with the host's 2 MiB huge pages, as many
 # reserved as FXDAX_GUEST_HUGE_PAGES_MIB (default 16384) take (TASK-91.16): the hypervisor's
 # second-stage mappings of guest memory then 2 MiB each, what refilling the guest's TLB after a
