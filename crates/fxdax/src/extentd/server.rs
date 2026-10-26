@@ -1907,6 +1907,8 @@ impl SecondStage for RemoteStage {
     ) {
         let args = [offset, phys.offset, len, protection_code(protection), phys.arena.0.into()];
         self.send(STAGE_MAP, &args, false);
+        crate::stats::add(crate::stats::Counter::StageMaps, 1);
+        crate::stats::add(crate::stats::Counter::StageMapBytes, len);
     }
 
     fn protect(&self, offset: u64, len: u64, protection: Protection) {

@@ -65,6 +65,13 @@ pub struct Stats {
     pub segment_closes: u64,
     /// The nanoseconds closing them took.
     pub segment_close_ns: u64,
+    /// fxdax: the maps of pages the extent daemon sent its VM processes' windows
+    /// (`extentd::wire::STAGE_MAP`): one for each run of consecutive pages of the kernel's physical
+    /// memory that a window maps, so that more of them for as many bytes, `stage_map_bytes`, say
+    /// that memory is more fragmented (TASK-108.1).
+    pub stage_maps: u64,
+    /// The bytes they mapped.
+    pub stage_map_bytes: u64,
 }
 
 /// The counters, in the order of [`Stats`]' fields.
@@ -90,10 +97,12 @@ pub(crate) enum Counter {
     CommitStoreNs,
     CommitSealNs,
     CommitWaitNs,
+    StageMaps,
+    StageMapBytes,
 }
 
 /// The counters [`Counter`] names, which this module keeps.
-const COUNTED: usize = 20;
+const COUNTED: usize = 22;
 
 /// The counters a snapshot holds: those it keeps, and the extent store's.
 const COUNTERS: usize = COUNTED + 3;
@@ -143,6 +152,8 @@ pub fn stats() -> Stats {
         commit_wait_ns: count(Counter::CommitWaitNs),
         segment_closes: extent_store::segment_closes().0,
         segment_close_ns: extent_store::segment_closes().1,
+        stage_maps: count(Counter::StageMaps),
+        stage_map_bytes: count(Counter::StageMapBytes),
     }
 }
 
@@ -173,6 +184,8 @@ impl Stats {
             self.commit_wait_ns,
             self.segment_closes,
             self.segment_close_ns,
+            self.stage_maps,
+            self.stage_map_bytes,
         ]
     }
 
@@ -203,6 +216,8 @@ impl Stats {
             commit_wait_ns: word(20),
             segment_closes: word(21),
             segment_close_ns: word(22),
+            stage_maps: word(23),
+            stage_map_bytes: word(24),
         }
     }
 
@@ -240,6 +255,8 @@ impl Stats {
             "commit-wait-ns",
             "segment-closes",
             "segment-close-ns",
+            "stage-maps",
+            "stage-map-bytes",
         ];
         std::array::from_fn(|at| (names[at], words[at]))
     }

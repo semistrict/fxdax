@@ -321,6 +321,10 @@ impl Extentd for Control {
             commit_wait_ns,
             segment_closes,
             segment_close_ns,
+            // fxdax: the maps the daemon sent the VM processes' windows, which its stats file and
+            // metrics report: not the API (TASK-108.1).
+            stage_maps: _,
+            stage_map_bytes: _,
         } = crate::stats::stats();
         use extent_remote::store::{Request, Upload};
         let bucket = stores::remote_bucket().map_err(status)?.stats();
@@ -587,6 +591,9 @@ impl Client {
             commit_wait_ns: response.commit_wait_ns,
             segment_closes: response.segment_closes,
             segment_close_ns: response.segment_close_ns,
+            // The maps the daemon sent the VM processes' windows, which the API doesn't report.
+            stage_maps: 0,
+            stage_map_bytes: 0,
         })
     }
 

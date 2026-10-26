@@ -803,6 +803,10 @@ fn vm_processes_tell_the_daemon_what_their_windows_cost() {
     served.join().unwrap();
     let counted = crate::stats::stats().since(&before);
     assert_eq!((counted.stage_ops, counted.stage_ns), (ops, ns));
+    // fxdax: the daemon's maps of pages, one a page: the fault's, and the map's anew, of the page
+    // in memory by then (TASK-108.1).
+    let ps = page_size();
+    assert_eq!((counted.stage_maps, counted.stage_map_bytes), (2, 2 * ps));
 }
 
 /// What `work` returns, run on a thread of its own, unless it takes longer than `wait`: what a
