@@ -308,7 +308,8 @@ impl Extentd for Control {
             read_stored_bytes,
             prefetches,
             unpacks,
-            // The VMM processes', which change their windows, not the daemon.
+            // The VM processes' changes to their windows, as they told the daemon, which its
+            // stats file and metrics report: not the API.
             stage_ops: _,
             stage_ns: _,
             commits,
@@ -573,7 +574,8 @@ impl Client {
             read_stored_bytes: response.read_stored_bytes,
             prefetches: response.prefetches,
             unpacks: response.unpacks,
-            // The VMM processes' (`Stats::stage_ops`).
+            // The VM processes' changes to their windows, which the API doesn't report
+            // (`Stats::stage_ops`).
             stage_ops: 0,
             stage_ns: 0,
             commits: response.commits,
