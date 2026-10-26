@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-26 03:47'
+updated_date: '2026-10-26 16:16'
 labels:
   - bug
 dependencies: []
@@ -30,3 +31,9 @@ GCE r123 (19b799cc1, full Linux workspace): '300 stores' guests committing: 46 t
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Again in r141 (9f77e3799, GCE n2-standard-8, full workspace): 257.4 ms (median 57 ms), 300 stores.
+<!-- SECTION:NOTES:END -->
