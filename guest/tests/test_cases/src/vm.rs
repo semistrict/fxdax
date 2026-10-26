@@ -340,6 +340,11 @@ impl Firecracker {
         Ok(this)
     }
 
+    /// The process ID of the VM's process, whose threads' times a test may sample.
+    pub fn pid(&self) -> u32 {
+        self.child.id()
+    }
+
     /// Sends Firecracker's API a `method` request of `path`, with `body`, and fails unless it
     /// succeeds.
     pub fn request(

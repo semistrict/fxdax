@@ -129,11 +129,14 @@ RUN apk add --no-cache postgresql postgresql-contrib perf
     /// Samples, every 2 s until `stop`, what the daemon at `socket` did and has left to upload of
     /// the store at `store`: its stats file, `stats`, and the store's upload lag, appended to
     /// `samples` with the seconds since it started: to see where a run's time goes (TASK-91.2).
+    /// And the CPU time of each thread of the VM's process, `vmm`, so far: what the window's
+    /// changes cost the VMM, its 'extentd client' thread's system time (TASK-91.16).
     fn sample(
         socket: PathBuf,
         store: PathBuf,
         stats: PathBuf,
         samples: PathBuf,
+        vmm: u32,
         stop: Arc<AtomicBool>,
     ) -> std::thread::JoinHandle<anyhow::Result<()>> {
         std::thread::spawn(move || {
@@ -152,9 +155,39 @@ RUN apk add --no-cache postgresql postgresql-contrib perf
                     stat.oldest_pending_ms
                 )?;
                 out.write_all(&std::fs::read(&stats).unwrap_or_default())?;
+                // Gone once the VM ends, which its last sample before then sums up.
+                if let Some(threads) = thread_times(vmm) {
+                    writeln!(out, "vmm-threads: {threads}")?;
+                }
             }
             Ok(())
         })
+    }
+
+    /// The user and system CPU seconds of process `pid`'s threads so far, summed by name, as
+    /// `name user=U sys=S` separated by `; `, the names in order; or none once it is gone.
+    fn thread_times(pid: u32) -> Option<String> {
+        // SAFETY: sysconf has no preconditions.
+        let ticks = unsafe { nix::libc::sysconf(nix::libc::_SC_CLK_TCK) } as f64;
+        let mut times = std::collections::BTreeMap::<String, (u64, u64)>::new();
+        for task in std::fs::read_dir(format!("/proc/{pid}/task")).ok()?.flatten() {
+            let Ok(stat) = std::fs::read_to_string(task.path().join("stat")) else { continue };
+            // `pid (comm) state ...`: the name may hold spaces and parentheses, the rest not.
+            let (Some(open), Some(close)) = (stat.find('('), stat.rfind(')')) else { continue };
+            let fields: Vec<&str> = stat[close + 1..].split_whitespace().collect();
+            // utime and stime, the stat's 14th and 15th fields; the state is its 3rd.
+            let (Some(user), Some(sys)) = (fields.get(11), fields.get(12)) else { continue };
+            let (Ok(user), Ok(sys)) = (user.parse::<u64>(), sys.parse::<u64>()) else { continue };
+            let summed = times.entry(stat[open + 1..close].to_owned()).or_default();
+            *summed = (summed.0 + user, summed.1 + sys);
+        }
+        let times: Vec<String> = times
+            .iter()
+            .map(|(name, (user, sys))| {
+                format!("{name} user={:.2} sys={:.2}", *user as f64 / ticks, *sys as f64 / ticks)
+            })
+            .collect();
+        Some(times.join("; "))
     }
 
     /// Waits for `firecracker`'s VM to end, and passes on what its guest said.
@@ -199,11 +232,18 @@ RUN apk add --no-cache postgresql postgresql-contrib perf
                     ),
                 };
                 crate::common::control(&socket)?.fork_store(&base, &fork)?;
+                let firecracker =
+                    run(test_setup, &root, &name, &fork, &socket, load_memory()?, window)?;
                 let stop = Arc::new(AtomicBool::new(false));
-                let sampler =
-                    sample(socket.clone(), fork.clone(), stats.clone(), samples, stop.clone());
-                let loaded =
-                    wait(run(test_setup, &root, &name, &fork, &socket, load_memory()?, window)?);
+                let sampler = sample(
+                    socket.clone(),
+                    fork.clone(),
+                    stats.clone(),
+                    samples,
+                    firecracker.pid(),
+                    stop.clone(),
+                );
+                let loaded = wait(firecracker);
                 stop.store(true, Ordering::Relaxed);
                 sampler.join().expect("the sampler panicked")?;
                 loaded.with_context(|| format!("VM {} of {}", vm + 1, vms()))?;
