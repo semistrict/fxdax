@@ -31,7 +31,10 @@ pub(crate) struct Header {
     pub args: [u64; 5],
     /// A reply's status: 0, or a -errno.
     pub status: i32,
-    pub reserved: u32,
+    /// fxdax: how many descriptors the message carries, which come with its first bytes
+    /// ([`MAX_FDS`] at most): what a receiver that reads many messages at once gives it of those
+    /// that came with them, in order (TASK-91.16). The senders set it.
+    pub fds: u32,
     /// The bytes of payload after the header.
     pub len: u64,
 }
@@ -294,6 +297,7 @@ impl Sender {
     ) -> io::Result<()> {
         assert!(fds.len() <= MAX_FDS, "too many descriptors for a message");
         header.len = payload.len() as u64;
+        header.fds = fds.len() as u32;
         let stream = self.0.lock().unwrap();
         let header = header.as_bytes();
         // The daemon's connections are non-blocking, for their receivers (TASK-34): a full one is
@@ -469,6 +473,7 @@ impl AsyncSender {
     ) -> io::Result<()> {
         assert!(fds.len() <= MAX_FDS, "too many descriptors for a message");
         header.len = payload.len() as u64;
+        header.fds = fds.len() as u32;
         let latest = latest.then_some(header.kind);
         let header = header.as_bytes().try_into().unwrap();
         let message = Queued { header, payload, sent: 0, latest };
@@ -686,12 +691,28 @@ fn send_parts(stream: &UnixStream, parts: &[&[u8]], fds: &[BorrowedFd<'_>]) -> i
     }
 }
 
-/// The receiving half of a connection, which one thread receives messages through.
-pub(crate) struct Receiver(UnixStream);
+/// The receiving half of a connection, which one thread receives messages through. fxdax: it
+/// reads what the socket holds, many messages at once, rather than a message's header and payload
+/// each a read (TASK-91.16): a VM process's stage operations come in runs, a window change's
+/// together. The descriptors that come with what it reads it keeps, in order, for the messages
+/// that say they carry them ([`Header::fds`]).
+pub(crate) struct Receiver {
+    stream: UnixStream,
+    /// What it read and has not received yet: `buffer[start..end]`.
+    buffer: Box<[u8]>,
+    start: usize,
+    end: usize,
+    /// The descriptors that came with what it read, for the messages not received yet.
+    fds: std::collections::VecDeque<OwnedFd>,
+}
+
+/// fxdax: the bytes a [`Receiver`] reads at most at once.
+const RECEIVE_BYTES: usize = 64 << 10;
 
 impl Receiver {
     pub fn new(stream: UnixStream) -> Self {
-        Self(stream)
+        let buffer = vec![0; RECEIVE_BYTES].into_boxed_slice();
+        Self { stream, buffer, start: 0, end: 0, fds: Default::default() }
     }
 
     /// fxdax: takes what follows the stage unmap `header`, already waiting whole in the socket, of
@@ -707,7 +728,7 @@ impl Receiver {
             h.kind == STAGE_UNMAP
                 && h.flags == STAGE_ACK
                 && h.status == 0
-                && h.reserved == 0
+                && h.fds == 0
                 && h.args[1] != 0
         };
         if !is_unmap(header) || header.len != 0 {
@@ -740,7 +761,7 @@ impl Receiver {
             anew = true;
             next.flags == 0
                 && next.status == 0
-                && next.reserved == 0
+                && next.fds == 0
                 && len != 0
                 && next.args[0] >= start
                 && next.args[0].checked_add(len).is_some_and(|next_end| next_end <= end)
@@ -751,38 +772,23 @@ impl Receiver {
         Ok(taken.into_iter().filter(|taken| taken.kind != STAGE_UNMAP).collect())
     }
 
-    /// fxdax: receives the messages already waiting whole in the socket, up to 63, as long as
-    /// `take` takes each, in order, none with a payload, in one read rather than one each.
+    /// fxdax: receives the messages already read or waiting whole in the socket, up to 63, as long
+    /// as `take` takes each, in order, none with a payload or descriptors: a read of the socket's,
+    /// at most, that waits for nothing. Bounded, so that what is made of them together, and
+    /// acknowledged once all is, waits for no more.
     fn take_waiting(&mut self, mut take: impl FnMut(&Header) -> bool) -> io::Result<Vec<Header>> {
-        let mut bytes = [0u8; 63 * size_of::<Header>()];
-        let got = loop {
-            // SAFETY: The live buffer is writable for its length. Peeking consumes no input;
-            // this receiver is the stream's only reader, so whole headers stay until received.
-            let got = unsafe {
-                libc::recv(
-                    self.0.as_raw_fd(),
-                    bytes.as_mut_ptr().cast(),
-                    bytes.len(),
-                    libc::MSG_PEEK | libc::MSG_DONTWAIT,
-                )
-            };
-            if got >= 0 {
-                break got as usize;
+        const MOST: usize = 63;
+        self.read(libc::MSG_DONTWAIT)?;
+        let mut taken = Vec::new();
+        while taken.len() < MOST
+            && let Some(next) = self.buffered_header()
+        {
+            if next.len != 0 || next.fds != 0 || !take(&next) {
+                break;
             }
-            let err = io::Error::last_os_error();
-            match err.kind() {
-                io::ErrorKind::WouldBlock => return Ok(Vec::new()),
-                io::ErrorKind::Interrupted => continue,
-                _ => return Err(err),
-            }
-        };
-        let taken: Vec<Header> = (bytes[..got].chunks_exact(size_of::<Header>()))
-            .map(|bytes| Header::read_from_bytes(bytes).unwrap())
-            .take_while(|next| next.len == 0 && take(next))
-            .collect();
-        // Stage operations carry no descriptors: the read stops short of the first bytes of any
-        // message after them that does, which its descriptors come with.
-        self.0.read_exact(&mut bytes[..taken.len() * size_of::<Header>()])?;
+            self.start += size_of::<Header>();
+            taken.push(next);
+        }
         Ok(taken)
     }
 
@@ -790,19 +796,67 @@ impl Receiver {
     /// is past [`MAX_PAYLOAD`] only if `most`, asked then, allows that many bytes, as a reply to
     /// [`MAPPINGS`] of a large window may hold (TASK-79.43).
     pub fn receive(&mut self, most: impl FnOnce() -> u64) -> io::Result<Option<Message>> {
-        let mut header = Header::default();
-        let bytes = header.as_mut_bytes();
-        let (received, fds) = receive_with_fds(&self.0, bytes)?;
-        if received == 0 {
-            return Ok(None);
-        }
-        self.0.read_exact(&mut bytes[received..])?;
+        let header = loop {
+            if let Some(header) = self.buffered_header() {
+                break header;
+            }
+            if self.read(0)? == 0 {
+                return match self.start == self.end {
+                    true => Ok(None),
+                    false => Err(io::ErrorKind::UnexpectedEof.into()),
+                };
+            }
+        };
+        self.start += size_of::<Header>();
         if header.len > MAX_PAYLOAD + size_of::<Header>() as u64 && header.len > most() {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "a message too large"));
         }
+        // Its descriptors came with its first bytes, which were read.
+        let carried = header.fds as usize;
+        if carried > MAX_FDS || carried > self.fds.len() {
+            let what = format!("a message of {carried} descriptors, {} received", self.fds.len());
+            return Err(io::Error::new(io::ErrorKind::InvalidData, what));
+        }
+        let fds = self.fds.drain(..carried).collect();
         let mut payload = vec![0; header.len as usize];
-        self.0.read_exact(&mut payload)?;
+        let buffered = payload.len().min(self.end - self.start);
+        payload[..buffered].copy_from_slice(&self.buffer[self.start..self.start + buffered]);
+        self.start += buffered;
+        // The rest straight from the socket: no more than the payload, which carries no
+        // descriptors, as they come with a message's first bytes.
+        self.stream.read_exact(&mut payload[buffered..])?;
         Ok(Some(Message { header, payload, fds }))
+    }
+
+    /// The next header, if what was read holds it whole.
+    fn buffered_header(&self) -> Option<Header> {
+        let bytes = self.buffer.get(self.start..self.start + size_of::<Header>())?;
+        (self.start + size_of::<Header>() <= self.end)
+            .then(|| Header::read_from_bytes(bytes).unwrap())
+    }
+
+    /// Reads what the socket holds into the buffer, after what it holds already, moved to its
+    /// start, with the descriptors that come with it, with `flags` (`MSG_DONTWAIT`, or none to wait
+    /// for some): how many bytes, 0 at the end of the stream, or with nothing waiting.
+    fn read(&mut self, flags: libc::c_int) -> io::Result<usize> {
+        self.buffer.copy_within(self.start..self.end, 0);
+        (self.start, self.end) = (0, self.end - self.start);
+        if self.end == self.buffer.len() {
+            return Ok(0);
+        }
+        match receive_with_fds(&self.stream, &mut self.buffer[self.end..], flags) {
+            Ok((read, fds)) => {
+                self.end += read;
+                self.fds.extend(fds);
+                Ok(read)
+            }
+            Err(err)
+                if err.kind() == io::ErrorKind::WouldBlock && flags & libc::MSG_DONTWAIT != 0 =>
+            {
+                Ok(0)
+            }
+            Err(err) => Err(err),
+        }
     }
 }
 
@@ -865,7 +919,7 @@ impl AsyncReceiver {
         loop {
             let mut ready = self.0.readable().await?;
             let read = ready.try_io(|stream| match with_fds {
-                true => receive_with_fds(stream.get_ref(), bytes),
+                true => receive_with_fds(stream.get_ref(), bytes, 0),
                 false => (&*stream.get_ref()).read(bytes).map(|read| (read, Vec::new())),
             });
             match read {
@@ -878,7 +932,11 @@ impl AsyncReceiver {
 }
 
 /// Receives what of `bytes` one `recvmsg` does, and the descriptors that came with them.
-fn receive_with_fds(stream: &UnixStream, bytes: &mut [u8]) -> io::Result<(usize, Vec<OwnedFd>)> {
+fn receive_with_fds(
+    stream: &UnixStream,
+    bytes: &mut [u8],
+    flags: libc::c_int,
+) -> io::Result<(usize, Vec<OwnedFd>)> {
     let mut iov = libc::iovec { iov_base: bytes.as_mut_ptr().cast(), iov_len: bytes.len() };
     // SAFETY: CMSG_SPACE only computes a size.
     let space = unsafe { libc::CMSG_SPACE((MAX_FDS * size_of::<RawFd>()) as u32) } as usize;
@@ -892,7 +950,7 @@ fn receive_with_fds(stream: &UnixStream, bytes: &mut [u8]) -> io::Result<(usize,
     let received = loop {
         // SAFETY: `msg` points at live buffers for the call.
         let received =
-            unsafe { libc::recvmsg(stream.as_raw_fd(), &mut msg, libc::MSG_CMSG_CLOEXEC) };
+            unsafe { libc::recvmsg(stream.as_raw_fd(), &mut msg, libc::MSG_CMSG_CLOEXEC | flags) };
         if received >= 0 {
             break received as usize;
         }
@@ -960,7 +1018,7 @@ mod tests {
         assert_eq!(receiver.take_change(&mut h).unwrap(), [mapped]);
         assert_eq!(h, unmap(7, 4096, 12288));
         let message = receiver.receive(|| 0).unwrap().unwrap();
-        assert_eq!(message.header, reply);
+        assert_eq!(message.header, Header { fds: 1, ..reply }, "the header says its descriptor");
         assert_eq!(message.fds.len(), 1);
     }
 

@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-25 19:06'
-updated_date: '2026-10-26 01:28'
+updated_date: '2026-10-26 02:42'
 labels:
   - bug
 dependencies: []
@@ -48,4 +48,6 @@ r110 (b1a73f2b9, 10 VMs): the decay again, VM 1 -> 10 init 18.9 -> 27.3 s, first
 r111 (b1a73f2b9, 10 VMs, perf of pgbench's own extentd for 20 s in the first run of VMs 1, 5, 10): extentd's CPU doesn't grow, it falls: 9.56G, 9.42G, 8.65G task-clock in 20 s (~0.48, 0.47, 0.43 CPUs), the same shape of profile (receive, serve_in_turn, write_with_barriers 20-22%, commit_with 16%, ExtentStore::map 13-15%, Window::map 11-12%), while its threads park more: epoll_wait 9.9% -> 12.3% -> 19.1% inclusive, finish_task_switch 7.4% -> 12.8%. So the ~20% per-request latency growth and the tps decay aren't extentd's CPU: it waits on the VMs more. Next: the VMM's threads per VM (the pgbench sampler now records them, 1d7e41579) and the host kernel (shmem/memfd of the 8 GiB arenas, KVM) across 10 VMs.
 
 Sandbox at 139e82b: across 12 2 GiB DAX VMs on one 8 GiB extentd, tps 944-1,041 with no downward trend (11% fall over 15 at b746104), extentd's memory 3.4-7.6 GB, never at its cap: neither the at-cap slowdown nor a drift reproduced there (n2-standard-16, 64 GB). Our harness still decays (r111: VM 1 954 -> VM 10 821 first-run tps) on n2-standard-8 (32 GB): host memory, not extentd's CPU (r111), is the suspect; r118 records it system-wide and off-CPU.
+
+r118 (117d2516e, 10 VMs, VMM thread sampler): the VMM's extentd client thread grows across VMs: VM 1 105.1 s sys (user 13.1), VM 10 147.6 s sys (user 18.5), +40%, while extentd's own CPU falls (r111) and tps falls 939 -> 781 (first runs). The window's changes cost the VMM more in later VMs on one host: per-MAP normalisation and the host-wide/off-CPU profiles (r118-perf) next.
 <!-- SECTION:NOTES:END -->
