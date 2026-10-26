@@ -1426,50 +1426,57 @@ impl ExtentStore {
             // The window maps the sealed extent first, so that nothing reads its memory once its
             // pages move: a read meanwhile pages in from the store, which holds them.
             let pages = extent_open.len.next_multiple_of(page_size());
-            let mut mapped = Vec::new();
             let is_kept = |mapped: &Mapped| mapped.keeps(&extent_open.vmo);
-            // fxdax: as the window maps it now, each mapping at the offset it maps: a range
-            // unmapped and mapped again to another part of the extent was sealed to the part it
-            // mapped first (TASK-79.10).
-            for (window_offset, end, keep) in dax.kept(extent_open.vmo.identity()) {
-                let Some(offset) = keep.extent_offset(window_offset) else { continue };
-                let len = end - window_offset;
-                // What a read-only mapping maps past the sealed extent, zeros.
-                let within = (offset + len).min(pages).max(offset) - offset;
-                if within > 0 {
-                    let keep = Mapped::extent(sealed.clone(), extent, window_offset, offset, false);
-                    mapped.extend(dax.make_read_only(
-                        window_offset,
-                        within,
-                        keep,
-                        sealed.vmo(),
-                        offset,
-                        is_kept,
-                    )?);
+            // fxdax: one change to the second stage, each mapping of the extent followed by its
+            // pages mapped again, so that a VM process makes it in place: the pages, the very same,
+            // write-protected where they are, where in steps it would leave them out, as the
+            // sealed extent is mapped before it has them, then install them again, each a flush
+            // of the guest's TLBs, and the guest fault them in again (TASK-91.16).
+            dax.changing(|dax| -> Result<()> {
+                let mut mapped = Vec::new();
+                let mut past = Vec::new();
+                // fxdax: as the window maps it now, each mapping at the offset it maps: a range
+                // unmapped and mapped again to another part of the extent was sealed to the part
+                // it mapped first (TASK-79.10).
+                for (window_offset, end, keep) in dax.kept(extent_open.vmo.identity()) {
+                    let Some(offset) = keep.extent_offset(window_offset) else { continue };
+                    let len = end - window_offset;
+                    // What a read-only mapping maps past the sealed extent, zeros.
+                    let within = (offset + len).min(pages).max(offset) - offset;
+                    if within > 0 {
+                        let keep =
+                            Mapped::extent(sealed.clone(), extent, window_offset, offset, false);
+                        mapped.extend(dax.make_read_only(
+                            window_offset,
+                            within,
+                            keep,
+                            sealed.vmo(),
+                            offset,
+                            is_kept,
+                        )?);
+                    }
+                    if within < len {
+                        past.push((window_offset + within, len - within));
+                    }
                 }
-                if within < len {
-                    let past = window_offset + within;
+                // Its memory is the sealed extent's pages, but for those paged in meanwhile.
+                sealed.supply_pages(0..pages, &extent_open.vmo, 0);
+                // Mapped again, read-only, so that the guest's next loads of them do not fault
+                // one page at a time, each a trip to the store's process from the guest's.
+                for (window_offset, len) in mapped {
+                    // The faults the pages are otherwise mapped on would show what fails.
+                    if let Err(err) = dax.populate(window_offset, len) {
+                        log::warn!("mapping sealed extent {extent:?}'s pages again: {err:?}");
+                    }
+                }
+                // Past the extent, zeros, which have no pages of the extent's: after its pages
+                // mapped again, which a mapping between would part from their mapping anew.
+                for (past, len) in past {
                     let zeros = dax.zeros()?;
-                    dax.make_read_only(
-                        past,
-                        len - within,
-                        Mapped::zeros(&zeros),
-                        &zeros,
-                        past,
-                        is_kept,
-                    )?;
+                    dax.make_read_only(past, len, Mapped::zeros(&zeros), &zeros, past, is_kept)?;
                 }
-            }
-            // Its memory is the sealed extent's pages, but for those paged in meanwhile.
-            sealed.supply_pages(0..pages, &extent_open.vmo, 0);
-            // Mapped again, read-only, so that the guest's next loads of them do not fault one
-            // page at a time, each a trip to the store's process from the guest's.
-            for (window_offset, len) in mapped {
-                // The faults the pages are otherwise mapped on would show what fails.
-                if let Err(err) = dax.populate(window_offset, len) {
-                    log::warn!("mapping sealed extent {extent:?}'s pages again: {err:?}");
-                }
-            }
+                Ok(())
+            })?;
         }
         Ok(())
     }

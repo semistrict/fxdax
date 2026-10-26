@@ -533,6 +533,16 @@ impl<K: Keep> Dax<K> {
         Ok((dax, window))
     }
 
+    /// fxdax: runs `f`, whose changes to the window's mappings are one change to the second stage
+    /// ([`SecondStage::begin_change`]): a stage in another process, sent it whole, makes it at once
+    /// ([`SecondStage::remap`]), as a range mapped anew and its pages mapped again there are made in
+    /// place (TASK-91.16).
+    pub fn changing<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
+        let stage = self.stage.clone();
+        let _change = stage.as_deref().map(Change::begin);
+        f(self)
+    }
+
     /// fxdax: runs `f`, whose changes to the second stage that take access away aren't waited for:
     /// returns what waits for them, if any. Until they are made, the guest may still reach the
     /// pages they take away, which the caller mustn't free or share meanwhile.
