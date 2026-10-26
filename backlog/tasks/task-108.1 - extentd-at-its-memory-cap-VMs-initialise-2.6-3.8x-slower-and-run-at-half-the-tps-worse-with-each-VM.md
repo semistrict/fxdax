@@ -3,10 +3,10 @@ id: TASK-108.1
 title: >-
   extentd at its memory cap: VMs initialise 2.6-3.8x slower and run at half the
   tps, worse with each VM
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-10-25 19:06'
-updated_date: '2026-10-26 04:33'
+updated_date: '2026-10-26 05:29'
 labels:
   - bug
 dependencies: []
@@ -54,4 +54,6 @@ r118 (117d2516e, 10 VMs, VMM thread sampler): the VMM's extentd client thread gr
 r120 (cac2afe77, 5 VMs on one 8 GiB extentd, n2-standard-8 32 GB): the VMM's host time per window change grows 84.6 -> 94.5 -> 103.9 -> 112.1 -> 123.4 us (+46%), tps first runs 1094 -> 961, as the host's free memory falls 12.0 -> 4.8 -> 4.4 -> 3.3 -> 2.4 GB. extentd's cache (RssShmem) reaches its 8 GiB cap from VM 2 and stays; its anonymous memory grows ~0.7 GB a VM (0.6 -> 3.8 GB): the harness's bucket is in extentd's memory (memory:///, FXDAX_REMOTE_LATENCY_MS=25), every VM's uploads kept. The VMM's own page tables and RSS stay flat. So our decay is the harness's in-memory bucket starving a 32 GB host, which costs the host kernel's memory operations (the VMM's window changes) more as it goes; the sandbox team's real bucket on 64 GB hosts shows none at 139e82b. To confirm: the same 5 VMs on n2-standard-16 (FXDAX_GCE_MACHINE, bfea65a73).
 
 r125 (n2-standard-16, 64 GB, 5 VMs): the decay holds with free memory plenty: VMM host time per guest window change 66.7 -> 76.9 -> 84.8 -> 91.8 -> 96.3 us, tps first runs 1216 -> 1105; so not host memory. The stage operations extentd sends grow: 2.56M, 3.23M, 3.74M, 4.24M, 4.73M a VM for ~1.1M guest window changes each (the mix of MAPs, evacuations and seals unchanged), each a little cheaper (27.6 -> 20.9 us as the VMM measures it). Hypothesis: the daemon's physical memory fragments once its cache is at its cap (from VM 2), evictions scattering the free pages, so the pages open extents and page-ins take are scattered, and each window mapping is a stage map, and a host mapping in the VMM, per run of consecutive pages. 3d941c934 counts the stage maps sent and their bytes; r126 measures runs per VM.
+
+r126 (3d941c934, 5 VMs, stage map counters): runs shorten as the daemon's memory recycles: stage maps per VM 1.23M, 1.92M, 2.52M, 2.96M, 3.45M, averaging 9.5, 5.9, 4.4, 3.7, 3.1 pages, for ~1.0-1.16M guest window changes each; tps first runs 1132 -> 1022. Cause confirmed: the arenas' free lists return pages in the order freed, and multi-page allocations took them a page at a time. Fix 9c94b62e1: each page after the first follows on from the last taken where that one is free and of its chunk (Arenas::take_after); tests pages_taken_after_another_follow_on_from_it and pages_allocated_together_follow_on_from_one_another (64 runs of 64 pages without it, at most 8 with). r128 measures the runs and the decay across 5 VMs.
 <!-- SECTION:NOTES:END -->
