@@ -530,6 +530,7 @@ impl PmmNode {
         for _ in 0..count {
             let page = match last.and_then(|last| locked.arenas.take_after(&self.pages, last)) {
                 Some(page) => Ok(page),
+                None if count > 1 => locked.arenas.take_run(&self.pages, arena),
                 None => locked.arenas.take(&self.pages, arena),
             };
             match page {

@@ -1438,3 +1438,41 @@ fn pages_allocated_together_follow_on_from_one_another() {
         unsafe { pmm::free_page(page) };
     }
 }
+
+/// TASK-108.1: pages allocated together begin their run where a run of free pages begins, among
+/// the first on the free list, rather than at its first page, whose page after may be in use: as
+/// pages left alone among those in use come back first, freed last.
+#[test]
+fn pages_allocated_together_begin_where_free_pages_run() {
+    const PAGES: usize = 64;
+    let arena = pmm::create_arena();
+    let node = pmm::node();
+    let mut list = VmPageDoublyLinkedList::new();
+    node.alloc_pages_in(arena, PAGES, 0, &mut list).unwrap();
+    let mut pages: Vec<VmPagePtr> = std::iter::from_fn(|| list.pop_front()).collect();
+    pages.sort_by_key(|page| page.paddr().0);
+    // Pages 32 to 39 freed, then 0, 2, ... 10, each alone, ahead of them on the list.
+    let alone = [0, 2, 4, 6, 8, 10];
+    for at in (32..40).chain(alone) {
+        // SAFETY: The test owns the page, freed once.
+        unsafe { pmm::free_page(pages[at]) };
+    }
+    node.alloc_pages_in(arena, 8, 0, &mut list).unwrap();
+    let again: Vec<VmPagePtr> = std::iter::from_fn(|| list.pop_front()).collect();
+    assert_eq!(
+        again.iter().map(|page| page.paddr()).collect::<Vec<_>>(),
+        pages[32..40].iter().map(|page| page.paddr()).collect::<Vec<_>>(),
+        "the run of free pages, in order"
+    );
+    let freed: Vec<usize> = (32..40).chain(alone).collect();
+    for (at, page) in pages.into_iter().enumerate() {
+        if !freed.contains(&at) {
+            // SAFETY: As above.
+            unsafe { pmm::free_page(page) };
+        }
+    }
+    for page in again {
+        // SAFETY: As above.
+        unsafe { pmm::free_page(page) };
+    }
+}
