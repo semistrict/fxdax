@@ -498,10 +498,6 @@ impl PmmNode {
 
             let refused = match self.take_pages_locked(&mut locked, arena, count) {
                 Ok(mut alloc_list) => {
-                    for page in alloc_list.iter() {
-                        // SAFETY: The page was just taken from the free list under the lock.
-                        unsafe { Self::alloc_page_helper_locked(page) };
-                    }
                     drop(locked);
                     list.splice(&mut alloc_list);
                     return Ok(());
@@ -519,8 +515,10 @@ impl PmmNode {
         }
     }
 
-    /// fxdax: `count` pages of `arena`'s, taken under the node's lock, whose state `locked` is:
-    /// every one, or none, as the arena refuses one, those taken then put back.
+    /// fxdax: `count` pages of `arena`'s, taken under the node's lock, whose state `locked` is,
+    /// and allocated: every one, or none, as the arena refuses one, those taken then put back.
+    /// Each is the one after the last taken, physically, where that one is free, and of its chunk
+    /// (`Arenas::take_after`, TASK-108.1).
     fn take_pages_locked(
         &self,
         locked: &mut PmmNodeLocked,
@@ -528,14 +526,27 @@ impl PmmNode {
         count: usize,
     ) -> Result<VmPageDoublyLinkedList, Refused> {
         let mut taken = VmPageDoublyLinkedList::new();
+        let mut last = None;
         for _ in 0..count {
-            match locked.arenas.take(&self.pages, arena) {
-                Ok(page) => taken.push_back(page),
+            let page = match last.and_then(|last| locked.arenas.take_after(&self.pages, last)) {
+                Some(page) => Ok(page),
+                None => locked.arenas.take(&self.pages, arena),
+            };
+            match page {
+                Ok(page) => {
+                    // SAFETY: The page was just taken from the free list under the lock.
+                    unsafe { Self::alloc_page_helper_locked(page) };
+                    taken.push_back(page);
+                    last = Some(page);
+                }
                 Err(refused) => {
                     // Free pages, but too many of other arenas' chunks, or chunks the host maps no
                     // more of, or chunks going back: those taken go back.
                     let mut room = false;
                     while let Some(page) = taken.pop_front() {
+                        // SAFETY: The page was allocated above, under the lock, and is this
+                        // function's.
+                        unsafe { Self::free_page_helper_locked(page) };
                         room |= locked.arenas.put(&self.pages, page, false);
                     }
                     if room {

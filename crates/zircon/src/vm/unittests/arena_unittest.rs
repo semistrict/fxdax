@@ -1392,3 +1392,49 @@ fn clean_pages_of_pager_vmos_are_evicted_on_demand() {
     let anonymous = VmObjectPaged::create(0, 0, PAGE_SIZE).unwrap();
     assert_eq!(anonymous.evict_range(0, PAGE_SIZE), Err(Status::NOT_SUPPORTED));
 }
+
+/// TASK-108.1: pages allocated together come in runs of consecutive pages where those free allow,
+/// though the free list holds them scattered, freed in another order, as evictions free them: a
+/// window maps each run with a mapping of its own in a VM process, not each page.
+#[test]
+fn pages_allocated_together_follow_on_from_one_another() {
+    const PAGES: usize = 64;
+    let arena = pmm::create_arena();
+    let node = pmm::node();
+    let mut list = VmPageDoublyLinkedList::new();
+    node.alloc_pages_in(arena, 2 * PAGES, 0, &mut list).unwrap();
+    let mut pages: Vec<VmPagePtr> = std::iter::from_fn(|| list.pop_front()).collect();
+    pages.sort_by_key(|page| page.paddr().0);
+    let runs = |pages: &[VmPagePtr]| {
+        1 + pages
+            .windows(2)
+            .filter(|pair| pair[1].paddr().0 != pair[0].paddr().0 + page::SIZE)
+            .count()
+    };
+    assert_eq!(runs(&pages), 1, "a new chunk's pages are consecutive");
+    // The first half freed scattered, the second kept, so that runs end at it.
+    let kept = pages.split_off(PAGES);
+    for at in 0..PAGES {
+        // SAFETY: The test owns the page, freed once.
+        unsafe { pmm::free_page(pages[at * 37 % PAGES]) };
+    }
+    node.alloc_pages_in(arena, PAGES, 0, &mut list).unwrap();
+    let again: Vec<VmPagePtr> = std::iter::from_fn(|| list.pop_front()).collect();
+    let mut sorted = again.clone();
+    sorted.sort_by_key(|page| page.paddr().0);
+    assert_eq!(
+        sorted.iter().map(|page| page.paddr()).collect::<Vec<_>>(),
+        pages.iter().map(|page| page.paddr()).collect::<Vec<_>>(),
+        "the pages freed, again"
+    );
+    // In the order taken: a run from each page the list gave, up to one taken before.
+    let taken_runs = runs(&again);
+    assert!(
+        taken_runs <= 8,
+        "{taken_runs} runs of {PAGES} pages, taken a page at a time from the list"
+    );
+    for page in again.into_iter().chain(kept) {
+        // SAFETY: As above.
+        unsafe { pmm::free_page(page) };
+    }
+}

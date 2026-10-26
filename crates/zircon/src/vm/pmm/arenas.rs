@@ -246,9 +246,41 @@ impl Arenas {
             }
             self.give(pages, arena).ok_or(Refused::Unmapped)?;
         }
-        let entry = self.entry_mut(arena);
-        let page = entry.free.pop_front().expect("a free page of the arena's");
+        let page = self.entry_mut(arena).free.pop_front().expect("a free page of the arena's");
+        self.taken(pages, arena, pages.memory.chunk_of(page.paddr()));
+        Ok(page)
+    }
+
+    /// fxdax: the page after `page`, physically, if it is free, on its arena's free list, and of
+    /// the same chunk, taken as [`Arenas::take`] takes one: so that the pages an allocation takes
+    /// together are consecutive where they can be, as a window's second stage maps each run of
+    /// them with a mapping of its own, not a page each. Taken a page at a time from the list, as
+    /// evictions refill it in the order they free them, an extent's pages are scattered more with
+    /// each eviction, and the window's runs shorter (TASK-108.1). The caller marks each page it
+    /// takes allocated, under the lock that it took it under, so that one free and listed is on
+    /// the free list.
+    pub(super) fn take_after(&mut self, pages: &PmmPages, page: VmPagePtr) -> Option<VmPagePtr> {
         let chunk = pages.memory.chunk_of(page.paddr());
+        let index = pages.index_of(page)? + 1;
+        if index >= chunk_pages(chunk).end {
+            return None;
+        }
+        let next = pages.page(index);
+        // SAFETY: Under the node's lock, which guards the free lists, the pages' membership of.
+        if !next.is_free() || !unsafe { next.in_container() } {
+            return None;
+        }
+        let arena = pages.memory.chunk_arena(chunk)?;
+        self.live(arena)?;
+        self.entry_mut(arena).free.erase(next);
+        self.taken(pages, arena, chunk);
+        Some(next)
+    }
+
+    /// A page of `arena`'s, of `chunk`, was taken off its free list: the chunk is its spare no
+    /// more, and it takes another, if it may, as [`Arenas::take`] says.
+    fn taken(&mut self, pages: &PmmPages, arena: ArenaId, chunk: usize) {
+        let entry = self.entry_mut(arena);
         if entry.spare == Some(chunk) {
             entry.spare = None;
         }
@@ -262,7 +294,6 @@ impl Arenas {
             self.entry_mut(arena).spare = Some(spare);
         }
         self.chunk_used[chunk] += 1;
-        Ok(page)
     }
 
     /// Puts `page`, free, back on its arena's free list, at the front unless `delay_reuse`, and
@@ -1059,6 +1090,48 @@ mod tests {
         fixture.remove(second);
         assert!(fixture.arenas.ask_relief(second, Starved::Total), "gone");
         assert_eq!(fixture.arenas.take_asked(), [(first, Starved::Arena)]);
+        fixture.put_all(taken);
+    }
+
+    /// TASK-108.1: pages taken together follow on from one another where those after are free, on
+    /// the free list, and of the chunk, however the list orders them: freed in another order, as
+    /// evictions free them, a run taken a page at a time from the list would be scattered. A page
+    /// in use, or past the chunk, ends the run.
+    #[test]
+    fn pages_taken_after_another_follow_on_from_it() {
+        let mut fixture = Fixture::new();
+        let arena = fixture.create();
+        let mut taken = fixture.take_chunks(arena, 1);
+        let index = |page: VmPagePtr| page.paddr().0 / page::SIZE;
+        let first = index(taken[0]);
+        // Pages 8 to 11 of the chunk freed last first, so that the list holds them 11, 10, 9, 8,
+        // behind page 8's: page 12 stays in use.
+        let freed: Vec<VmPagePtr> = taken.drain(8..12).collect();
+        for &page in &freed {
+            let _ = fixture.put(page);
+        }
+        let head = fixture.take(arena).unwrap();
+        assert_eq!(index(head), first + 11, "the list's head, freed last");
+        assert_eq!(fixture.arenas.take_after(&fixture.pages, head), None, "page 12 is in use");
+        let start = fixture.take(arena).unwrap();
+        assert_eq!(index(start), first + 10);
+        assert_eq!(fixture.arenas.take_after(&fixture.pages, start), None, "page 11 was taken");
+        let _ = fixture.put(head);
+        let _ = fixture.put(start);
+        // Freed again: 10 at the head, then 11, 9, 8.
+        let start = fixture.take(arena).unwrap();
+        assert_eq!(index(start), first + 10);
+        let next = fixture.arenas.take_after(&fixture.pages, start).unwrap();
+        assert_eq!(index(next), first + 11);
+        assert_eq!(fixture.arenas.take_after(&fixture.pages, next), None, "page 12 is in use");
+        // The last page of the chunk has none after it of the chunk.
+        let last = taken.pop().unwrap();
+        assert_eq!(index(last), first + CHUNK_PAGES - 1);
+        let _ = fixture.put(last);
+        let last = fixture.take(arena).unwrap();
+        assert_eq!(fixture.arenas.take_after(&fixture.pages, last), None, "past the chunk");
+        taken.extend([start, next, last]);
+        taken.extend(std::iter::from_fn(|| fixture.take(arena).ok()).take(2));
         fixture.put_all(taken);
     }
 
