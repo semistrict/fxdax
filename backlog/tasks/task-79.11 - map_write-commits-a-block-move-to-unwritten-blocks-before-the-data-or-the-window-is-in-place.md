@@ -3,10 +3,11 @@ id: TASK-79.11
 title: >-
   map_write commits a block move to unwritten blocks before the data or the
   window is in place
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-10-21 20:58'
-updated_date: '2026-10-24 14:08'
+updated_date: '2026-10-27 14:12'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -41,8 +42,19 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity high): docs/reviews/
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Fxfs txn_map_write_holding: moved blocks hold the caller's bytes, written in the moving transaction (Kept::Held); fxfs_dax_map_write takes held.
+2. The fault passes its held page (zeroed past EOF) to map_write, keep=true; no copy back after the gate, no fxfs_write fallback.
+3. Fault injection fxfs.dax_fault_seals_moved: the next N faults seal right after their blocks move.
+4. fxfs-guest-crash-dax: a synced page stored to through a mapping with that injection, writers paused, then the crash: the page holds what was synced (zeros on the old code).
+<!-- SECTION:PLAN:END -->
+
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
 2026-10-24 attempt, reverted: txn_map_write took the fault's page ('held') and Fxfs wrote it into the moved block in the moving transaction. On GCE, fxfs-guest-checks-dax's new faults_writes_compaction then killed the VM (Firecracker: vcpu run: Bad address), bisected to this change (variant without it passes). The device WRITE of the page into a staging extent races the window's view of that extent: a fault's block can land in a staging extent the restage hasn't mapped (opened) yet, whose WRITE then goes to the store rather than the open extent's memory the window maps, and the writable MAP after finds it in another state. The keep=true fault path (used when the held copy can't be allocated) writes the same way: filed as TASK-79.107. A fix needs the host to take device writes to a not-yet-opened staging extent as the open extent's (or the guest to write only after the window opened it).
+
+r153 (GCE, exp/79.12-repro at the crash check's commit: main with fxfs.dax_fault_seals_moved and the crash check, without the fix): fxfs-guest-crash-dax failed, 'mapped-synced holds other data': the page synced, stored to through a mapping, its fault's move committed and sealed before the copy back, read as the move's new block after the crash. r151/r152 had not reached the move (the store full by 2 s; then the file's range reclaimed, so the fault took prepare_write's path, which reads the old block): the check now stores at 1 s, after a load maps the range. AC1 met.
 <!-- SECTION:NOTES:END -->

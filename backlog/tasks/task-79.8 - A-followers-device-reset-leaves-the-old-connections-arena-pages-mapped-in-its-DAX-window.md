@@ -3,9 +3,11 @@ id: TASK-79.8
 title: >-
   A follower's device reset leaves the old connection's arena pages mapped in
   its DAX window
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-10-21 20:58'
+updated_date: '2026-10-27 13:51'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -39,3 +41,12 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity high): docs/reviews/
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. UffdSecondStage::release: the whole window replaced with PROT_NONE anonymous memory, and no change made after (a released flag under the pages lock), so the receiver thread's late STAGE_MAPs land nowhere.
+2. RemoteExtentStore's Drop releases the window first.
+3. Firecracker: the window's host memory PROT_NONE until a store takes it over; activation reopens a follower's store only after its queues initialize.
+4. Tests (Linux): extentd windows_let_go_of_the_daemons_pages_as_their_connection_goes, uffd released_stages_change_nothing.
+<!-- SECTION:PLAN:END -->

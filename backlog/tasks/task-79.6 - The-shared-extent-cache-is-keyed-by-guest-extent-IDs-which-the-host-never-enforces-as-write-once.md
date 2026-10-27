@@ -3,9 +3,11 @@ id: TASK-79.6
 title: >-
   The shared extent cache is keyed by guest extent IDs, which the host never
   enforces as write-once
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-10-21 20:58'
+updated_date: '2026-10-27 15:11'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -39,3 +41,18 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity high): docs/reviews/
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. extent_store: Spent, the sequence numbers of the branch's own extents freed once sealed, as runs: Store::free records them; begin_write and Store::may_open refuse them (Spent, EPERM in fxdax), as they refuse sealed extents held. Freed-while-open extents, never sealed, may be written again, and so may IDs minted but never written (Fxfs's journal tail, across mounts).
+2. Persisted: recovery spends a delta's frees of own extents not written in the same epoch, and a footer rebuild its frees; checkpoints keep the runs as 'spent' rows of their table (local only; object storage's checkpoints don't hold them).
+3. fxdax map_open checks may_open before a writable MAP opens a new extent.
+4. Tests: extent_store freed_extents_are_written_no_more (across two reopens, deltas then checkpoint; an unwritten ID below next_sequence still writable), layout's checkpoint table round trip with spent rows, fxdax extents::freed_extents_are_written_no_more, fxdax filesystem images_opened_again_take_synced_writes.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+First version (spend everything below next_sequence at open) broke every guest mounting a store written before (r149: the journal writes the tail it minted ahead in an earlier mount): replaced by the persisted record above; images_opened_again_take_synced_writes fails under the first version, passes now.
+<!-- SECTION:NOTES:END -->
