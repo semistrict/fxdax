@@ -252,6 +252,9 @@ struct Pages {
     runs: usize,
     /// Counts installations and faults, the ones longest ago left out first.
     clock: u64,
+    /// fxdax: whether the memory was let go of ([`UffdSecondStage::release`]): nothing changes
+    /// it from now on.
+    released: bool,
 }
 
 impl Pages {
@@ -621,7 +624,7 @@ impl<H: HostMemory> UffdSecondStage<H> {
             return Err(Error::msg("DAX window memory must be whole pages"));
         }
         let pages = vec![PageChanges::default(); size / page_size];
-        let pages = Mutex::new(Pages { pages, runs: 0, clock: 0 });
+        let pages = Mutex::new(Pages { pages, runs: 0, clock: 0, released: false });
         let budget = budget.max(1);
         let taken = Taken::default();
         let stage = Arc::new(Self { base, size, host, memories, prefault, pages, budget, taken });
@@ -639,24 +642,45 @@ impl<H: HostMemory> UffdSecondStage<H> {
     /// Makes the window's change to the `len` bytes at `addr`: `record`s it in the pages, and
     /// makes it to the memory with `change`, given what `record` returns, holding the pages' lock,
     /// and counts it for each page, which is withheld no more: the change replaces its memory.
+    /// fxdax: returns whether it did: not once the memory was let go of ([`Self::release`]).
     fn change<T>(
         &self,
         addr: usize,
         len: usize,
         record: impl FnOnce(&mut Pages) -> T,
         change: impl FnOnce(T),
-    ) {
+    ) -> bool {
         let mut pages = self.pages.lock().unwrap();
+        if pages.released {
+            return false;
+        }
         let recorded = record(&mut pages);
         if !rules().restrict_between_changes {
             drop(pages);
-            return change(recorded);
+            change(recorded);
+            return true;
         }
         for page in &mut pages.pages[self.page_range(addr, len)] {
             page.made = page.made.wrapping_add(1);
             page.withheld = false;
         }
         change(recorded);
+        true
+    }
+
+    /// fxdax: lets go of the memory, as the connection to the daemon whose pages it maps goes,
+    /// after which the daemon frees them, for other VMs' extents (TASK-79.8): all of it replaced
+    /// with memory nothing accesses, whose faults userfaultfd reports not, the guest's or this
+    /// process's; and no change made to it from now on, as the thread receiving from the daemon
+    /// may still make those it sent before it went.
+    pub fn release(&self) {
+        let mut pages = self.pages.lock().unwrap();
+        pages.released = true;
+        let all = 0..pages.pages.len();
+        pages.update(all, |pages| {
+            pages.iter_mut().for_each(|page| (page.mapped, page.restricted) = (None, false))
+        });
+        self.host.map(self.base, self.size, libc::PROT_NONE, Memory::Anonymous);
     }
 
     /// What a fault finds of the page at `addr`, which a restriction of the page checks: the
@@ -677,7 +701,7 @@ impl<H: HostMemory> UffdSecondStage<H> {
         let offset = (addr - self.base) as u64;
         let mut pages = self.pages.lock().unwrap();
         let made = pages.pages[page].made;
-        if seen.is_some_and(|seen| made != seen) {
+        if pages.released || seen.is_some_and(|seen| made != seen) {
             return;
         }
         self.host.protect(addr, page_size, prot);
@@ -799,7 +823,7 @@ impl<H: HostMemory> SecondStage for UffdSecondStage<H> {
         let memory = self.memory(phys, protection);
         let range = self.page_range(addr, len);
         let page_size = page_size();
-        self.change(
+        let made = self.change(
             addr,
             len,
             |pages| {
@@ -817,7 +841,7 @@ impl<H: HostMemory> SecondStage for UffdSecondStage<H> {
             |()| self.install(addr, len, protection, memory),
         );
         self.trim();
-        if let Some(prefault) = &self.prefault {
+        if made && let Some(prefault) = &self.prefault {
             prefault.prefault(offset, len as u64);
         }
     }
@@ -950,7 +974,7 @@ impl<H: HostMemory> SecondStage for UffdSecondStage<H> {
         };
         // Whether each map was made in place.
         let mut reprotected = Vec::with_capacity(maps.len());
-        self.change(addr, len, record, |(in_place, left_out)| {
+        let made = self.change(addr, len, record, |(in_place, left_out)| {
             for (&(addr, len, phys, protection), was) in maps.iter().zip(in_place) {
                 reprotected.push(was.is_some());
                 match was {
@@ -972,7 +996,7 @@ impl<H: HostMemory> SecondStage for UffdSecondStage<H> {
         // the pages reprotected in place aren't: the hypervisor maps those the guest touches
         // again as it does, which a seal's, written and done with, mostly aren't, rather than
         // each at once (r116 against r117: 87 against 83 us of host time a window change).
-        if let Some(prefault) = &self.prefault {
+        if made && let Some(prefault) = &self.prefault {
             for (&(addr, len, ..), reprotected) in maps.iter().zip(reprotected) {
                 if !reprotected {
                     prefault.prefault((addr - self.base) as u64, len as u64);
@@ -987,6 +1011,9 @@ impl<H: HostMemory> SecondStage for UffdSecondStage<H> {
         let range = self.page_range(addr, len);
         let first = range.start;
         let mut pages = self.pages.lock().unwrap();
+        if pages.released {
+            return;
+        }
         // Each page counts the mapping as a change, so that a fault that found nothing there
         // before withholds nothing now. A page withheld is unmapped memory, registered for
         // missing faults, made accessible again.
@@ -1084,7 +1111,7 @@ impl<H: HostMemory> UffdSecondStage<H> {
     /// longest ago, down to seven eighths of it, so that it is not done at each mapping.
     fn trim(&self) {
         let mut pages = self.pages.lock().unwrap();
-        if pages.runs <= self.budget {
+        if pages.released || pages.runs <= self.budget {
             return;
         }
         let page_size = page_size() as usize;
@@ -1318,6 +1345,55 @@ mod tests {
         assert!(!first.is_finished());
         pager.supply(0, 1);
         assert_eq!(first.join().unwrap(), 1);
+
+        drop(dax);
+        // SAFETY: Unmaps the memory, which nothing uses any more.
+        assert_eq!(unsafe { libc::munmap(memory, 2 * ps) }, 0);
+    }
+
+    /// fxdax TASK-79.8: a second stage let go of maps nothing from then on, and no change the
+    /// window makes reaches its memory, which nothing can access: what the thread receiving from a
+    /// daemon gone makes still.
+    #[test]
+    fn released_stages_change_nothing() {
+        let ps = page_size() as usize;
+        // SAFETY: Maps anonymous memory, which this test owns.
+        let memory = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                2 * ps,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                -1,
+                0,
+            )
+        };
+        assert_ne!(memory, libc::MAP_FAILED);
+        let base = memory as usize;
+        let file = zx::Vmo::create(2 * ps as u64).unwrap();
+        file.write(&vec![7; 2 * ps], 0).unwrap();
+        // SAFETY: Only the test uses the memory, which outlives the window.
+        let stage = unsafe { UffdSecondStage::in_process(base, 2 * ps as u64, None) }.unwrap();
+        let (dax, _window) = Dax::<()>::in_host_memory(stage.clone()).unwrap();
+        dax.window.map(0, &file, 0, ps as u64, false).unwrap();
+        // SAFETY: The memory is the window's, whose faults the fault thread serves.
+        assert_eq!(unsafe { (base as *const u8).read_volatile() }, 7);
+
+        stage.release();
+        dax.window.map(ps as u64, &file, ps as u64, ps as u64, false).unwrap();
+        stage.protect(0, ps as u64, Protection::ReadWrite);
+        stage.unmap(0, ps as u64);
+        let maps = std::fs::read_to_string("/proc/self/maps").unwrap();
+        let window: Vec<&str> = (maps.lines())
+            .filter(|line| {
+                let (start, end) = line.split_whitespace().next().unwrap().split_once('-').unwrap();
+                let start = usize::from_str_radix(start, 16).unwrap();
+                let end = usize::from_str_radix(end, 16).unwrap();
+                start < base + 2 * ps && end > base
+            })
+            .map(|line| line.split_whitespace().nth(1).unwrap())
+            .collect();
+        assert_eq!(window, ["---p"]);
 
         drop(dax);
         // SAFETY: Unmaps the memory, which nothing uses any more.

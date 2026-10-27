@@ -600,7 +600,14 @@ impl RemoteExtentStore {
 
 impl Drop for RemoteExtentStore {
     fn drop(&mut self) {
-        // The faults stop being served first: the daemon stops serving them once disconnected.
+        // fxdax: the window lets go of the daemon's pages first, which the daemon frees once the
+        // connection goes, for other VMs' extents, and makes none of the changes the daemon sent
+        // before (TASK-79.8): the guest reaches nothing there until another connection's window
+        // takes the memory over.
+        if let Some(stage) = self.client.stage.get() {
+            stage.release();
+        }
+        // The faults stop being served: the daemon stops serving them once disconnected.
         self.faults.get_mut().unwrap().take();
         // fxdax: what the window's changes cost, all of it, which the daemon counts (TASK-91.16).
         self.client.tell_stage_counts();

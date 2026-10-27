@@ -125,6 +125,58 @@ fn mapped_from(addr: usize) -> (String, u64) {
 /// How /proc/self/maps names anonymous memory's file: none.
 const ANONYMOUS: &str = "00:00 0";
 
+/// The protection this process maps the page at `addr` with, as /proc/self/maps has it: "r-xp".
+fn protection_of(addr: usize) -> String {
+    let maps = std::fs::read_to_string("/proc/self/maps").unwrap();
+    for line in maps.lines() {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        let (start, end) = fields[0].split_once('-').unwrap();
+        let (start, end) =
+            (usize::from_str_radix(start, 16).unwrap(), usize::from_str_radix(end, 16).unwrap());
+        if (start..end).contains(&addr) {
+            return fields[1].to_owned();
+        }
+    }
+    panic!("{addr:#x} isn't mapped");
+}
+
+/// fxdax TASK-79.8: a window whose connection goes maps none of the daemon's pages from then on,
+/// which the daemon frees for other VMs' extents, nor anything the guest can reach, until another
+/// connection's window takes its memory over: a follower's device, reset and activated again,
+/// failing before its new window was made, left its guest the pages of other VMs.
+#[test]
+fn windows_let_go_of_the_daemons_pages_as_their_connection_goes() {
+    host();
+    let ps = page_size() as usize;
+    let dir = tempfile::tempdir().unwrap();
+    let (store, served) = connect(&dir.path().join("store"), 1 << 24);
+    let memory = memory(2);
+    // SAFETY: The memory is the test's, and outlives the store.
+    unsafe { store.create_dax_window_in_host_memory(memory, 2 * ps as u64, None) }.unwrap();
+    let base = memory.as_ptr() as usize;
+    let extent = ExtentId { branch: store.branch(), sequence: 1 };
+    write(&store, extent, 0, &pattern(4, ps)).unwrap();
+    store.commit(None).unwrap();
+    store.map(extent, 0, ps as u64, 0, false).unwrap();
+    // SAFETY: The window's memory, whose faults the store serves.
+    let page = unsafe { std::slice::from_raw_parts(memory.as_ptr(), ps) };
+    assert!(*page == pattern(4, ps)[..], "the window maps other data");
+    assert_ne!(mapped_from(base).0, ANONYMOUS, "the window maps no file");
+
+    drop(store);
+    served.join().unwrap();
+    for addr in [base, base + ps] {
+        assert_eq!(
+            (mapped_from(addr).0, protection_of(addr)),
+            (ANONYMOUS.to_owned(), "---p".to_owned()),
+            "{:#x} of the window",
+            addr - base
+        );
+    }
+    // SAFETY: Unmaps the memory, which nothing uses any more.
+    assert_eq!(unsafe { libc::munmap(memory.as_ptr().cast(), 2 * ps) }, 0);
+}
+
 /// fxdax: with `FXDAX_EXTENTD_REMOTE` naming a bucket, the stores the daemon opens keep their
 /// branches there: a durable commit is an uploaded one.
 #[test]
