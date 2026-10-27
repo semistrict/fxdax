@@ -1673,7 +1673,10 @@ impl Fxfs {
     /// and out of it again. False if it can't wholly, which leaves the rest to the graveyard: an
     /// object with more extents than the transaction has room for, or more attributes, or one in
     /// the graveyard already, which its entry's kind (a trim) may concern. An object with nothing
-    /// allocated, as files never written are, has no extents to walk, nor a trim in the graveyard.
+    /// allocated, as files never written are, has no extents to walk: but it may be in the
+    /// graveyard still, a truncate's trim, which ran out of room before it removed its entry, which
+    /// goes with the object, as the graveyard's tombstone removes it (TASK-82: fsck found the
+    /// entry of an object gone).
     async fn tombstone_now(
         &self,
         transaction: &mut Transaction<'_>,
@@ -1681,8 +1684,9 @@ impl Fxfs {
     ) -> Result<bool, Error> {
         let store = &self.volume;
         let entry = ObjectKey::graveyard_entry(store.graveyard_directory_object_id(), ino);
+        let in_graveyard = store.tree().find(&entry).await?.is_some();
         let tombstoned = store.tombstone_if_unallocated(transaction, ino).await?
-            || (store.tree().find(&entry).await?.is_none()
+            || (!in_graveyard
                 && matches!(
                     store
                         .trim_some(
@@ -1700,6 +1704,9 @@ impl Fxfs {
                 store.store_object_id(),
                 Mutation::replace_or_insert_object(entry, ObjectValue::Some),
             );
+            if in_graveyard {
+                store.remove_from_graveyard(transaction, ino);
+            }
         }
         Ok(tombstoned)
     }
