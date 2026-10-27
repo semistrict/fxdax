@@ -25,6 +25,7 @@ use fxfs::filesystem::{
 use fxfs::object_handle::{ObjectHandle, ReadObjectHandle};
 use fxfs::object_store::allocator::Allocator;
 use fxfs::object_store::directory::{MutableAttributesInternal, ReplacedChild, replace_child};
+use fxfs::object_store::dirty_reservation::DirtyReservation;
 use fxfs::object_store::journal::{DEFAULT_RECLAIM_SIZE, JournalOptions, LazyFlush};
 use fxfs::object_store::transaction::{LockKey, LockKeys, Mutation, Options, Transaction};
 use fxfs::object_store::volume::root_volume;
@@ -309,6 +310,9 @@ pub struct Fxfs {
     /// evicts them (`evict`): one for each object, as Fxfs has handles.
     directories: Mutex<FxHashMap<u64, Arc<Directory<ObjectStore>>>>,
     files: Mutex<FxHashMap<u64, Arc<DataObjectHandle<ObjectStore>>>>,
+    /// fxdax: the room reserved for the page cache's dirty data, by file, as it dirties it,
+    /// which its writeback writes it with (`write_dirty`, TASK-80).
+    dirty: DirtyReservation,
     /// The changes to inodes' extended attributes not yet written back: values set, or `None`,
     /// removed. As the kernel keeps an inode's attributes, and writes them back with them
     /// (`write_inode`), as ext4's journal does.
@@ -380,6 +384,7 @@ impl Fxfs {
         .await;
         match volume {
             Ok(volume) => Ok(Self {
+                dirty: DirtyReservation::new(&volume),
                 following: follows
                     .then(|| Following::new(vfs, volume.store_object_id(), advanced, latest)),
                 read_only,
@@ -510,6 +515,8 @@ impl Fxfs {
         if let Err(error) = self.drain_all().await {
             log::error!("unlinks failed as the filesystem was unmounted: {error:#}");
         }
+        // The page cache was written back, and its room with it.
+        drop(self.dirty);
         self.filesystem.close().await
     }
 
@@ -815,6 +822,46 @@ impl Fxfs {
         self.write_many(ino, &mut [(offset, data)]).await
     }
 
+    /// fxdax: reserves room for `bytes` more of the file `ino`'s data, whole pages, which the page
+    /// cache dirties: NoSpace if the filesystem hasn't it (TASK-80).
+    pub fn reserve_dirty(&self, ino: u64, bytes: u64) -> Result<(), Error> {
+        self.dirty.reserve(ino, bytes)
+    }
+
+    /// fxdax: reserves what room the filesystem has for `bytes` more of the file `ino`'s data,
+    /// which the page cache dirtied whether it has or not.
+    pub fn reserve_dirty_what_fits(&self, ino: u64, bytes: u64) {
+        self.dirty.reserve_what_fits(ino, bytes)
+    }
+
+    /// fxdax: releases the room of `bytes` of the file `ino`'s dirty data, which the page cache
+    /// dropped unwritten.
+    pub fn release_dirty(&self, ino: u64, bytes: u64) {
+        self.dirty.release(ino, bytes)
+    }
+
+    /// fxdax: `write_many`, writing back `dirty` bytes of the page cache's dirty data, whose room
+    /// it was reserved (`reserve_dirty`) pays for the writes (TASK-80): a filesystem filled since
+    /// they were dirtied doesn't fail them.
+    pub async fn write_dirty(
+        &self,
+        ino: u64,
+        writes: &mut [(u64, &[u8])],
+        dirty: u64,
+    ) -> Result<(), Error> {
+        if dirty == 0 {
+            return self.write_many(ino, writes).await;
+        }
+        let taken = self.dirty.take(ino, dirty);
+        writes.sort_unstable_by_key(|(offset, _)| *offset);
+        let written = match self.file(ino).await {
+            Ok(file) => file.write_many_reserved(writes, &taken.reservation).await,
+            Err(error) => Err(error),
+        };
+        self.dirty.written(taken);
+        written
+    }
+
     /// Writes each of `writes`, bytes at an offset, to the file `ino`, as `write` writes one, but
     /// in as few transactions as hold them, each with a write to the device
     /// (`DataObjectHandle::write_many`): the page cache's writeback of a file's folios, contiguous
@@ -845,7 +892,11 @@ impl Fxfs {
         if size <= file.get_size() {
             return Ok(());
         }
-        let mut transaction = file.new_transaction().await?;
+        // The data is written: recording its size, which changes a record, borrows the metadata
+        // space it needs, as setting attributes does, so that a full filesystem's fsync doesn't
+        // fail it (TASK-82).
+        let options = Options { borrow_metadata_space: true, ..file.default_transaction_options() };
+        let mut transaction = file.new_transaction_with_options(options).await?;
         // Recheck with the file locked: another size update may have committed meanwhile.
         if size <= file.get_size() {
             return Ok(());
@@ -1328,6 +1379,12 @@ impl Fxfs {
         if self.read_only {
             return;
         }
+        // fxdax: the page cache dropped its pages, the dirty ones' room with them (TASK-80).
+        let dirty = self.dirty.dirty_bytes(ino);
+        if dirty > 0 {
+            log::error!("inode {ino} evicted with the room of {dirty} bytes of dirty data reserved");
+            self.dirty.release(ino, dirty);
+        }
         // An inode is written back before it is evicted, unless no name links it.
         let changes = self.xattrs.lock().unwrap().remove(&ino);
         if changes.is_some() && !unlinked {
@@ -1679,7 +1736,10 @@ impl Fxfs {
             ..Default::default()
         };
         if attributes != fio::MutableNodeAttributes::default() || flag(SET_CTIME) {
-            let mut transaction = self.transaction(&[ino]).await?;
+            // fxdax: changing a record, it borrows the metadata space it needs, as Fuchsia's
+            // `update_attributes` does: an inode's writeback on a full filesystem failed (TASK-82).
+            let options = Options { borrow_metadata_space: true, ..Default::default() };
+            let mut transaction = self.transaction_with(&[ino], options).await?;
             let ctime = if flag(SET_CTIME) {
                 Timestamp::from_nanos(set.ctime_ns)
             } else {
@@ -1743,9 +1803,13 @@ impl Fxfs {
         out
     }
 
-    /// Makes what the filesystem holds durable: sync, syncfs.
+    /// Makes what the filesystem holds durable: sync, syncfs. fxdax: and frees what was removed,
+    /// the graveyard's tombstones of the objects unlinked done, so that their room is free once
+    /// it returns: a write right after `rm` and `sync` found it full, the graveyard waiting
+    /// GRAVEYARD_BATCH_DELAY still; and a write that finds it full syncs to make room (TASK-80).
     pub async fn sync(&self) -> Result<(), Error> {
         self.drain_all().await?;
+        self.filesystem.graveyard().flush().await;
         let _durable = self.durability.begin();
         self.filesystem.sync(SyncOptions { flush_device: true, ..Default::default() }).await
     }

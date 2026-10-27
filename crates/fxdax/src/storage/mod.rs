@@ -14,13 +14,15 @@ use crate::filesystem::DEFAULT_EXECUTOR_THREADS;
 use crate::host_store;
 use extent_store::{HostDir, Store};
 use fxfs::filesystem::FxFilesystem;
+use anyhow::Context as _;
+use fxfs::fsck::errors::FsckIssue;
 use fxfs::fsck::{FsckOptions, fsck_volume_with_options, fsck_with_options};
 use fxfs::object_store::volume::{list_volumes, root_volume};
 use gate::WriteGate;
 use image::ImageDevice;
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use storage_device::DeviceHolder;
 use storage_device::fake_device::FakeDevice;
 
@@ -143,13 +145,28 @@ impl Storage {
         let executor = Executor::new(DEFAULT_EXECUTOR_THREADS);
         let device = executor.run(async move {
             let filesystem = FxFilesystem::open(device).await?;
-            let options = FsckOptions { fail_on_warning: true, ..Default::default() };
-            fsck_with_options(filesystem.clone(), &options).await?;
-            let store_ids =
-                list_volumes(root_volume(filesystem.clone()).await?.volume_directory()).await?;
-            for store_id in store_ids {
-                fsck_volume_with_options(filesystem.as_ref(), &options, store_id, None).await?;
-            }
+            // fxdax: what fsck found, which its error says, as well as how many (TASK-82).
+            let issues = Mutex::new(Vec::new());
+            let options = FsckOptions {
+                fail_on_warning: true,
+                on_error: Box::new(|issue: &FsckIssue| {
+                    issue.log();
+                    issues.lock().unwrap().push(issue.clone());
+                }),
+                ..Default::default()
+            };
+            let checked = async {
+                fsck_with_options(filesystem.clone(), &options).await?;
+                let store_ids =
+                    list_volumes(root_volume(filesystem.clone()).await?.volume_directory())
+                        .await?;
+                for store_id in store_ids {
+                    fsck_volume_with_options(filesystem.as_ref(), &options, store_id, None)
+                        .await?;
+                }
+                anyhow::Ok(())
+            };
+            checked.await.with_context(|| format!("fsck found {:?}", issues.lock().unwrap()))?;
             filesystem.close().await?;
             anyhow::Ok(filesystem.take_device().await)
         });

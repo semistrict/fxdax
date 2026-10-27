@@ -955,13 +955,15 @@ pub struct WritePart {
 
 /// # Safety
 ///
-/// `fs` is mounted, `parts` holds `count` parts, and each part's `data` its `len` bytes.
+/// `fs` is mounted, `parts` holds `count` parts, and each part's `data` its `len` bytes; `dirty`
+/// bytes of the file's dirty data, which they write, have room reserved (`fxfs_reserve_dirty`).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fxfs_write_many(
     fs: *const Fxfs,
     ino: u64,
     parts: *const WritePart,
     count: usize,
+    dirty: u64,
 ) -> c_int {
     // SAFETY: As the caller promises.
     let (fs, parts) = unsafe { (&*fs, core::slice::from_raw_parts(parts, count)) };
@@ -970,10 +972,49 @@ pub unsafe extern "C" fn fxfs_write_many(
         // SAFETY: As the caller promises.
         .map(|part| (part.offset, unsafe { core::slice::from_raw_parts(part.data, part.len) }))
         .collect();
-    match block_on(fs.write_many(ino, &mut writes)) {
+    match block_on(fs.write_dirty(ino, &mut writes, dirty)) {
         Ok(()) => 0,
         Err(error) => -errno(&error),
     }
+}
+
+/// fxdax: reserves room for `bytes` more of the file `ino`'s data, which the page cache dirties:
+/// 0, or -ENOSPC if the filesystem hasn't it (TASK-80).
+///
+/// # Safety
+///
+/// `fs` is mounted.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fxfs_reserve_dirty(fs: *const Fxfs, ino: u64, bytes: u64) -> c_int {
+    // SAFETY: As the caller promises.
+    match unsafe { &*fs }.reserve_dirty(ino, bytes) {
+        Ok(()) => 0,
+        Err(error) => -errno(&error),
+    }
+}
+
+/// fxdax: reserves what room the filesystem has for `bytes` more of the file `ino`'s data, which
+/// the page cache dirtied whether it has or not.
+///
+/// # Safety
+///
+/// `fs` is mounted.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fxfs_reserve_dirty_what_fits(fs: *const Fxfs, ino: u64, bytes: u64) {
+    // SAFETY: As the caller promises.
+    unsafe { &*fs }.reserve_dirty_what_fits(ino, bytes)
+}
+
+/// fxdax: releases the room of `bytes` of the file `ino`'s dirty data, which the page cache
+/// dropped unwritten.
+///
+/// # Safety
+///
+/// `fs` is mounted.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fxfs_release_dirty(fs: *const Fxfs, ino: u64, bytes: u64) {
+    // SAFETY: As the caller promises.
+    unsafe { &*fs }.release_dirty(ino, bytes)
 }
 
 /// # Safety

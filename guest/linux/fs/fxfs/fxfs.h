@@ -325,9 +325,22 @@ struct fxfs_write_part {
 /*
  * Writes each of the `count` parts of `parts` to file `ino`, as fxfs_write writes one, in as few
  * transactions as hold them, each with one write to the device: the page cache's writeback of a
- * file's folios, contiguous or not, in any order. No two share a block.
+ * file's folios, contiguous or not, in any order. No two share a block. fxdax: `dirty` bytes of
+ * the file's dirty pages, which they write, have room reserved (fxfs_reserve_dirty), which pays
+ * for them: a filesystem filled since doesn't fail them (TASK-80).
  */
-int fxfs_write_many(struct fxfs *fs, u64 ino, const struct fxfs_write_part *parts, size_t count);
+int fxfs_write_many(struct fxfs *fs, u64 ino, const struct fxfs_write_part *parts, size_t count,
+		    u64 dirty);
+/*
+ * fxdax: reserves room for `bytes` more of file `ino`'s data, whole pages, which the page cache
+ * dirties: 0, or -ENOSPC if the filesystem hasn't room for them, and for writing them back
+ * (TASK-80).
+ */
+int fxfs_reserve_dirty(struct fxfs *fs, u64 ino, u64 bytes);
+/* fxdax: as fxfs_reserve_dirty, for pages dirtied whether the filesystem has room or not. */
+void fxfs_reserve_dirty_what_fits(struct fxfs *fs, u64 ino, u64 bytes);
+/* fxdax: releases the room of `bytes` of file `ino`'s dirty pages, dropped unwritten. */
+void fxfs_release_dirty(struct fxfs *fs, u64 ino, u64 bytes);
 
 /* The extent-store device the filesystem is on (device.h). */
 struct fxfs_device *fxfs_dax_device(struct fxfs *fs);

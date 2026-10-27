@@ -95,8 +95,9 @@ mod host {
         }
 
         fn timeout_secs(&self) -> u64 {
-            // fxdax: the evacuation's and the fault, write and compaction checks run for seconds.
-            120
+            // fxdax: the evacuation's and the fault, write and compaction checks run for seconds,
+            // and filling the filesystem (`enospc`) most of a minute.
+            180
         }
 
         fn start_vm(self: Box<Self>, test_setup: TestSetup) -> anyhow::Result<()> {
@@ -2568,6 +2569,127 @@ mod guest {
         assert_eq!(open_by_handle(&mut handle), b"by handle");
     }
 
+    /// fxdax: the filesystem filled, each way a guest fills it, fails what doesn't fit with
+    /// ENOSPC, and stays mounted and whole: a panic took the guest's kernel down with it (TASK-60,
+    /// the sandbox team's pgbench, TASK-58). What fitted is written back, and read back as it was
+    /// written: in the page cache, a write reserves room as it dirties pages, and fails then if
+    /// the filesystem has none, where it never did and its writeback, failing, dropped the data
+    /// (TASK-80). Then what filled it removed, a file is written and read back.
+    fn test_enospc() {
+        let dir = path("full");
+        fs::create_dir_all(&dir).unwrap();
+        let enospc = |result: std::io::Result<()>, what: &str| {
+            let err = result.expect_err(what);
+            assert_eq!(err.raw_os_error(), Some(libc::ENOSPC), "{what}: {err}");
+        };
+        // Until a write doesn't fit, as `write` says: Err then; Ok if `write` fitted `limit`
+        // times, many more than the filesystem has room for.
+        let fill = |limit: usize, write: &mut dyn FnMut(usize) -> std::io::Result<()>| {
+            (0..limit).try_for_each(|n| write(n))
+        };
+        let sync = || unsafe { libc::sync() };
+        let block = vec![0x5a; 1 << 20];
+        const IMAGE_MIB: usize = (IMAGE_SIZE >> 20) as usize;
+        // `path`, opened to read its data as the filesystem has it, its pages written back
+        // dropped from the cache: those writeback failed to write are dropped too.
+        let stored = |path: &str| {
+            let file = fs::File::open(path).unwrap();
+            let fd = file.as_raw_fd();
+            assert_eq!(unsafe { libc::posix_fadvise(fd, 0, 0, libc::POSIX_FADV_DONTNEED) }, 0);
+            file
+        };
+        let read_all = |mut file: fs::File| {
+            let mut read = Vec::new();
+            file.read_to_end(&mut read).unwrap();
+            read
+        };
+
+        // A file written a MiB at a time, whose writes that fitted fsync, and read back.
+        let big = format!("{dir}/big");
+        let mut file = fs::File::create(&big).unwrap();
+        enospc(fill(IMAGE_MIB * 4, &mut |_| file.write_all(&block)), "a file's writes");
+        let fitted = file.metadata().unwrap().len();
+        assert!(fitted > (IMAGE_SIZE / 2), "{fitted} bytes fitted");
+        file.sync_all().unwrap();
+        drop(file);
+        let mut read = stored(&big);
+        let mut at = 0;
+        let mut chunk = vec![0; block.len()];
+        loop {
+            let n = read.read(&mut chunk).unwrap();
+            if n == 0 {
+                break;
+            }
+            assert!(chunk[..n] == block[..n], "the file's data at {at} as written");
+            at += n as u64;
+        }
+        assert_eq!(at, fitted);
+        // Open, it would keep its room, unlinked.
+        drop(read);
+        fs::remove_file(&big).unwrap();
+        sync();
+
+        // Files of a block each, as many as fit.
+        let mut files = 0;
+        enospc(
+            fill(IMAGE_MIB * 1024, &mut |n| {
+                fs::write(format!("{dir}/f{n}"), &block[..4096])?;
+                files = n + 1;
+                Ok(())
+            }),
+            "small files",
+        );
+        assert!(files > 1000, "{files} small files fitted");
+        sync();
+        for n in 0..files {
+            assert!(read_all(stored(&format!("{dir}/f{n}"))) == block[..4096], "small file {n}");
+        }
+        // Room for a file of many extents, then truncated while full: as a truncate of
+        // PostgreSQL's relations, which panicked (TASK-58).
+        for n in 0..files / 2 {
+            fs::remove_file(format!("{dir}/f{n}")).unwrap();
+        }
+        sync();
+        let extents = format!("{dir}/extents");
+        let file = fs::OpenOptions::new().create(true).write(true).open(&extents).unwrap();
+        let mut blocks = 0;
+        enospc(
+            fill(IMAGE_MIB * 1024, &mut |n| {
+                std::os::unix::fs::FileExt::write_all_at(&file, &block[..4096], 2 * n as u64 * 4096)?;
+                blocks = n + 1;
+                Ok(())
+            }),
+            "a file of many extents",
+        );
+        file.sync_all().unwrap();
+        let read = stored(&extents);
+        let mut data = vec![0; 4096];
+        for n in 0..blocks {
+            std::os::unix::fs::FileExt::read_exact_at(&read, &mut data, 2 * n as u64 * 4096)
+                .unwrap();
+            assert!(data == block[..4096], "block {n} of {blocks}");
+        }
+        drop(read);
+        // Full, a directory doesn't fit either. (Nor is fallocate checked: it reserves no space,
+        // which an extent store can't, fxfs_vfs_fallocate.)
+        enospc(
+            fill(IMAGE_MIB * 1024, &mut |n| fs::create_dir(format!("{dir}/d{n}"))),
+            "directories",
+        );
+        file.set_len(0).unwrap();
+        drop(file);
+        sync();
+
+        // All of it gone, the filesystem is as it was.
+        fs::remove_dir_all(&dir).unwrap();
+        sync();
+        let again = vec![0xa5; 8 << 20];
+        fs::write(path("after-full"), &again).unwrap();
+        evict(&path("after-full"));
+        assert!(fs::read(path("after-full")).unwrap() == again, "read back after full");
+        fs::remove_file(path("after-full")).unwrap();
+    }
+
     impl Test for TestFxfsGuestChecks {
         fn in_guest(self: Box<Self>) {
             let dax = self.dax;
@@ -2633,6 +2755,8 @@ mod guest {
                 tests.push(("direct_read_past_end", &test_direct_read_past_end));
                 tests.push(("store_past_end", &test_store_past_end));
             }
+            // Last: it fills the filesystem, then removes what it filled it with.
+            tests.push(("enospc", &test_enospc));
             let only = std::env::var("FXDAX_CHECKS").unwrap_or_default();
             let only: Vec<&str> = only.split(',').filter(|name| !name.is_empty()).collect();
             let mut failed = Vec::new();

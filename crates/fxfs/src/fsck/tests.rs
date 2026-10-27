@@ -6,6 +6,7 @@ use crate::object_store::allocator::TEST_EXTENT;
 
 use storage_device::ExtentRange;
 
+use crate::errors::FxfsError;
 use crate::filesystem::{FxFilesystem, FxFilesystemBuilder, OpenFxFilesystem, SyncOptions};
 use crate::fsck::errors::{FsckError, FsckFatal, FsckIssue, FsckWarning};
 use crate::fsck::{FsckOptions, fsck_volume_with_options, fsck_with_options};
@@ -22,7 +23,7 @@ use crate::object_store::extent::MIN_BLOCK_SIZE;
 use crate::object_store::transaction::{self, LockKey, ObjectStoreMutation, Options, lock_keys};
 use crate::object_store::volume::root_volume;
 use crate::object_store::{
-    AttributeId, AttributeKey, BytesAndNodes, ChildValue, DirType, EncryptionKeys, ExtentMode,
+    AttributeId, AttributeKey, BytesAndNodes, DataObjectHandle, ChildValue, DirType, EncryptionKeys, ExtentMode,
     ExtentValue, FsverityMetadata, HandleOptions, Mutation, NewChildStoreOptions, ObjectAttributes,
     ObjectDescriptor, ObjectKey, ObjectKeyData, ObjectKind, ObjectStore, ObjectValue, ProjectId,
     RootDigest, StoreInfo, StoreOptions, Timestamp, VOLUME_DATA_KEY_ID,
@@ -3906,6 +3907,145 @@ async fn test_empty_volume() {
     test.run(TestOptions { volume_store_id: Some(store_id), ..Default::default() })
         .await
         .expect("Fsck should succeed");
+}
+
+/// fxdax: a volume filled until it has no room, each way the guest's check 'enospc' fills it, and
+/// emptied again, passes fsck without warnings (TASK-82): a file written a MiB at a time, removed;
+/// files of a block; half of them removed, a file of every other block, then directories; the
+/// file truncated while full; and all of it removed.
+#[fuchsia::test]
+async fn test_filled_and_emptied_without_warnings() {
+    let device = DeviceHolder::new(FakeDevice::new(8192, 4096));
+    let fs = FxFilesystem::new_empty(device).await.expect("new_empty failed");
+    let store = root_volume(fs.clone())
+        .await
+        .unwrap()
+        .new_volume("vol", NewChildStoreOptions::default())
+        .await
+        .unwrap();
+    let store_id = store.store_object_id();
+    let dir = Directory::open(&store, store.root_directory_object_id()).await.unwrap();
+    let no_space = |result: Result<(), Error>, what: &str| {
+        let error = result.expect_err(what);
+        assert!(FxfsError::NoSpace.matches(&error), "{what}: {error:?}");
+    };
+    let lock = || lock_keys![LockKey::object(store_id, dir.object_id())];
+    let create = async |name: &str| {
+        let mut transaction = store.new_transaction(lock(), Options::default()).await?;
+        let file = dir.create_child_file(&mut transaction, name).await?;
+        transaction.commit().await?;
+        anyhow::Ok(file)
+    };
+    let remove = async |name: &str| {
+        let mut transaction =
+            dir.acquire_context_for_replace(None, name, true).await.unwrap().transaction;
+        let replaced = directory::replace_child(&mut transaction, None, (&dir, name)).await;
+        transaction.commit().await.expect("commit failed");
+        match replaced.expect("replace_child failed") {
+            directory::ReplacedChild::Object(id) | directory::ReplacedChild::Directory(id) => {
+                fs.graveyard().queue_tombstone_object(store_id, id)
+            }
+            replaced => panic!("{name} replaced {replaced:?}"),
+        }
+    };
+    let block = vec![0x5a; 1 << 20];
+    let write = async |file: &DataObjectHandle<ObjectStore>, offset: u64, len: usize| {
+        let mut buf = file.allocate_buffer(len).await;
+        buf.as_mut().copy_from_slice(&block[..len]);
+        file.write_or_append(Some(offset), buf.as_ref()).await.map(|_| ())
+    };
+    let settle = async || {
+        fs.graveyard().flush().await;
+        fs.sync(SyncOptions { flush_device: true, ..Default::default() }).await.expect("sync");
+    };
+
+    let big = create("big").await.unwrap();
+    let mut n = 0;
+    no_space(
+        async {
+            loop {
+                write(&big, n << 20, 1 << 20).await?;
+                n += 1;
+            }
+        }
+        .await,
+        "a file's writes",
+    );
+    remove("big").await;
+    settle().await;
+
+    let mut files = 0;
+    no_space(
+        async {
+            loop {
+                let file = create(&format!("f{files}")).await?;
+                files += 1;
+                write(&file, 0, 4096).await?;
+            }
+        }
+        .await,
+        "small files",
+    );
+    assert!(files > 1000, "{files} small files fitted");
+    for n in 0..files / 2 {
+        remove(&format!("f{n}")).await;
+    }
+    settle().await;
+    let extents = create("extents").await.unwrap();
+    let mut n = 0;
+    no_space(
+        async {
+            loop {
+                write(&extents, 2 * n * 4096, 4096).await?;
+                n += 1;
+            }
+        }
+        .await,
+        "a file of many extents",
+    );
+    let mut dirs = 0;
+    no_space(
+        async {
+            loop {
+                let mut transaction = store.new_transaction(lock(), Options::default()).await?;
+                dir.create_child_dir(&mut transaction, &format!("d{dirs}")).await?;
+                transaction.commit().await?;
+                dirs += 1;
+            }
+        }
+        .await,
+        "directories",
+    );
+    // As the guest's setattr shrinks a file: borrowing metadata space, as an unlink does.
+    let borrowing = Options { borrow_metadata_space: true, ..extents.default_transaction_options() };
+    extents.truncate_with_options(borrowing, 0).await.expect("truncate failed");
+    settle().await;
+
+    remove("extents").await;
+    for n in files / 2..files {
+        remove(&format!("f{n}")).await;
+    }
+    for n in 0..dirs {
+        remove(&format!("d{n}")).await;
+    }
+    settle().await;
+    fs.close().await.expect("close failed");
+    let device = fs.take_device().await;
+    device.reopen(false);
+    let fs = FxFilesystem::open(device).await.expect("open failed");
+    let issues = Mutex::new(Vec::new());
+    let options = FsckOptions {
+        fail_on_warning: true,
+        on_error: Box::new(|issue: &FsckIssue| issues.lock().push(issue.clone())),
+        ..Default::default()
+    };
+    let checked = async {
+        fsck_with_options(fs.clone(), &options).await?;
+        fsck_volume_with_options(fs.as_ref(), &options, store_id, None).await
+    };
+    let result = checked.await;
+    assert!(result.is_ok() && issues.lock().is_empty(), "{result:?}: {:?}", issues.lock());
+    fs.close().await.expect("close failed");
 }
 
 #[test_case(true; "read_only")]
