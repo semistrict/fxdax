@@ -3,9 +3,11 @@ id: TASK-80
 title: >-
   Guest Fxfs: buffered writes to files not on DAX return ENOSPC when the
   filesystem is full
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-10-22 12:37'
+updated_date: '2026-10-27 19:21'
 labels: []
 dependencies: []
 priority: high
@@ -31,3 +33,13 @@ A buffered write (fxfs_vfs_write_begin/write_end in guest/linux/fs/fxfs/super.c)
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Fxfs (crates/fxfs): DirtyReservation, room for a store's files' dirty data by file: each block and its share of a transaction's metadata space (META/WRITE_MANY_WRITES), and a spare (a transaction's metadata) per file with dirty data; reserve (NoSpace), reserve_what_fits (owed), release, take/written for a writeback. DataObjectHandle::write_many_reserved pays blocks from what was taken, holding metadata beyond the blocks still to write, topped up from the allocator, else borrowing it.
+2. fxfs-linux: Fxfs::dirty, FFI fxfs_reserve_dirty / fxfs_reserve_dirty_what_fits / fxfs_release_dirty; fxfs_write_many takes the bytes of reserved pages it writes.
+3. Guest kernel (super.c): folio state on every dirtied folio, with dirty and reserved bitmaps; write_begin reserves the pages it dirties (ENOSPC after sync_filesystem to make room), write_end releases what a short copy didn't dirty; page_mkwrite reserves (SIGBUS); zero_past_end reserves; writeback passes each run's reserved bytes; invalidate releases.
+4. Tests: Fxfs unit tests (fill to NoSpace, write back a block at a time and 128 at a time, filesystem kept full; release; owed); guest check 'enospc' registered without DAX, checking that what fitted reads back after writeback.
+5. GCE: fxfs-guest-checks[-dax] enospc, then the default guest suites and workspace.
+<!-- SECTION:PLAN:END -->

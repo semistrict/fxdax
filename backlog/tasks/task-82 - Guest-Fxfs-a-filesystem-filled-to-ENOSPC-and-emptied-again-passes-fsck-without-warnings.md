@@ -3,10 +3,11 @@ id: TASK-82
 title: >-
   Guest Fxfs: a filesystem filled to ENOSPC and emptied again passes fsck
   without warnings
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-10-22 13:13'
-updated_date: '2026-10-24 00:54'
+updated_date: '2026-10-27 19:21'
 labels: []
 dependencies: []
 priority: high
@@ -31,6 +32,15 @@ The 'enospc' guest check (TASK-60, uncommitted in the main checkout's guest/test
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Storage::check names the fsck issues it found (fsck found [...]).
+2. Run the enospc check (DAX) on GCE to learn the warning.
+3. Find the operation that leaves it; fix; Fxfs-level test filling to NoSpace then fsck with fail_on_warning.
+4. Register enospc in fxfs-guest-checks-dax (done with TASK-80's merge of branch enospc-check).
+<!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
 
