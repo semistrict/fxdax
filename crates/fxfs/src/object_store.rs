@@ -6,12 +6,15 @@
 // their source's layers and extents) deviate from upstream here: `ObjectStore::snapshot_store_info`
 // gives a snapshot's store information. Volumes are not installed from images within files (no
 // `install`, `extent_mapping_iterator`): such an image is a block device's, which fxdax's extent
-// store has none of (backlog doc-4).
+// store has none of (backlog doc-4). `dirty_reservation` reserves room for the data a page cache
+// holds dirty as it dirties it, as Fuchsia's pager-backed files do in its platform crate, for the
+// guest kernel's page cache (TASK-80).
 
 pub mod allocator;
 pub mod caching_object_handle;
 pub mod data_object_handle;
 pub mod directory;
+pub mod dirty_reservation;
 pub mod extent;
 mod extent_record;
 pub mod flush;

@@ -22,7 +22,7 @@ use crate::lsm_tree::types::{ItemRef, LayerIterator};
 use crate::object_handle::{
     LayerObject, ObjectHandle, ObjectProperties, ReadObjectHandle, WriteBytes, WriteObjectHandle,
 };
-use crate::object_store::allocator::STAGED_MAX;
+use crate::object_store::allocator::{Reservation, STAGED_MAX};
 use crate::object_store::extent_record::{ExtentMode, ExtentValue};
 use crate::object_store::object_manager::ObjectManager;
 use crate::object_store::object_record::{
@@ -1150,7 +1150,32 @@ impl<S: HandleOwner> DataObjectHandle<S> {
     /// transaction, and a round trip to the device, per batch of them rather than per page
     /// (TASK-92.10).
     pub async fn write_many(&self, writes: &[(u64, &[u8])]) -> Result<(), Error> {
+        self.write_many_paid(writes, None).await
+    }
+
+    /// fxdax: `write_many`, its blocks paid for from `reserved`, which a page cache reserved as it
+    /// dirtied them (`DirtyReservation::take`), so that the filesystem filled since doesn't fail
+    /// them (TASK-80). Its transactions hold their metadata space in it too, topped up from the
+    /// allocator if it is short; or, with no room there either, borrow it, as removing a file
+    /// does, which compacting the journal repays: the data was accepted, and must be written.
+    pub async fn write_many_reserved(
+        &self,
+        writes: &[(u64, &[u8])],
+        reserved: &Reservation,
+    ) -> Result<(), Error> {
+        self.write_many_paid(writes, Some(reserved)).await
+    }
+
+    /// fxdax: `write_many`, paid for from `reserved` if given (`write_many_reserved`).
+    async fn write_many_paid(
+        &self,
+        writes: &[(u64, &[u8])],
+        reserved: Option<&Reservation>,
+    ) -> Result<(), Error> {
         let writes = self.blocks_of(writes)?;
+        let blocks = |writes: &[BlocksWrite<'_>]| {
+            writes.iter().map(|write| write.blocks.end - write.blocks.start).sum::<u64>()
+        };
         let mut rest = &writes[..];
         while !rest.is_empty() {
             let mut covered = 0;
@@ -1164,12 +1189,52 @@ impl<S: HandleOwner> DataObjectHandle<S> {
                 .count()
                 .max(1);
             let (writes, after) = rest.split_at(held);
-            let mut transaction = self.new_transaction().await?;
+            let mut transaction = match reserved {
+                None => self.new_transaction().await?,
+                Some(reserved) => {
+                    let options =
+                        self.reserved_transaction_options(reserved, blocks(writes), blocks(after));
+                    self.new_transaction_with_options(options).await?
+                }
+            };
             self.txn_write_blocks(&mut transaction, writes).await?;
             transaction.commit().await?;
             rest = after;
         }
         Ok(())
+    }
+
+    /// fxdax: the options of a transaction of `write_many_reserved` writing `blocks` bytes of
+    /// blocks paid for from `reserved`, before `later` bytes of them: holding its metadata space
+    /// in what `reserved` has beyond the blocks, topped up from the allocator if it hasn't enough,
+    /// so that it never pays for metadata with room for blocks; or, the allocator full, borrowing
+    /// it, and as much room for the blocks as the allocator has, if `reserved` hasn't it (some of
+    /// it owed, `DirtyReservation::reserve_what_fits`), which then fails it as a write with no
+    /// reservation fails.
+    fn reserved_transaction_options<'a>(
+        &self,
+        reserved: &'a Reservation,
+        blocks: u64,
+        later: u64,
+    ) -> Options<'a> {
+        let store = self.store();
+        let (allocator, owner) = (store.allocator(), Some(store.store_object_id()));
+        let data = blocks + later;
+        let short = (data + transaction::TRANSACTION_METADATA_MAX_AMOUNT)
+            .saturating_sub(reserved.amount());
+        let holds = short == 0
+            || allocator.clone().reserve(owner, short).map(|more| more.move_to(reserved, short)).is_some();
+        if !holds {
+            let short = data.saturating_sub(reserved.amount());
+            let more = allocator.reserve_with(owner, |limit| short.min(limit));
+            let got = more.amount();
+            more.move_to(reserved, got);
+        }
+        Options {
+            borrow_metadata_space: !holds,
+            allocator_reservation: Some(reserved),
+            ..self.default_transaction_options()
+        }
     }
 
     /// fxdax: `writes`, but those empty, with the blocks each covers, which are in order and apart.
