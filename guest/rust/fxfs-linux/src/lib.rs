@@ -410,7 +410,7 @@ pub unsafe extern "C" fn fxfs_dax_extents(
 
 /// # Safety
 ///
-/// `fs` is mounted, and `out` has room for `max` extents.
+/// `fs` is mounted, `held` is null or `len` readable bytes, and `out` has room for `max` extents.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fxfs_dax_map_write(
     fs: *const Fxfs,
@@ -419,13 +419,15 @@ pub unsafe extern "C" fn fxfs_dax_map_write(
     len: u64,
     size: u64,
     keep: bool,
+    held: *const u8,
     out: *mut DaxExtent,
     max: usize,
 ) -> isize {
     // SAFETY: As the caller promises.
     unsafe {
         let range = offset..offset.saturating_add(len);
-        let result = block_on((*fs).dax_map_write(ino, range, size, keep));
+        let held = (!held.is_null()).then(|| std::slice::from_raw_parts(held, len as usize));
+        let result = block_on((*fs).dax_map_write(ino, range, size, keep, held));
         copy_extents(result, out, max)
     }
 }

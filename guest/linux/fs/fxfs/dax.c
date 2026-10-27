@@ -98,6 +98,38 @@ module_param_named(dax_fail_held, fxfs_dax_fail_held, bool, 0644);
 MODULE_PARM_DESC(dax_fail_held, "Fail every DAX fault's held copy of its page (fault injection)");
 
 /*
+ * fxdax: fault injection: a write fault that makes room for its page in Fxfs seals first, holding
+ * the file's semaphore, as Fxfs's map_write may wait for compaction, whose seal waits for the
+ * stores in the gate (TASK-79.12).
+ */
+static bool fxfs_dax_fault_seals;
+module_param_named(dax_fault_seals, fxfs_dax_fault_seals, bool, 0644);
+MODULE_PARM_DESC(dax_fault_seals, "Seal in every DAX write fault making room, holding the file's semaphore (fault injection)");
+
+/*
+ * fxdax: fault injection: the next this many write faults whose blocks Fxfs moved seal right after
+ * the move, as a seal may come between it and the fault's mapping of the new block (TASK-79.11).
+ */
+static unsigned int fxfs_dax_fault_seals_moved;
+module_param_named(dax_fault_seals_moved, fxfs_dax_fault_seals_moved, uint, 0644);
+MODULE_PARM_DESC(dax_fault_seals_moved, "Seal right after the next this many DAX write faults move their blocks (fault injection)");
+
+/* fxdax: whether to seal after a fault's move, as fxfs.dax_fault_seals_moved asks, counting it. */
+static bool fxfs_dax_seal_moved(void)
+{
+	unsigned int left = READ_ONCE(fxfs_dax_fault_seals_moved);
+
+	while (left) {
+		unsigned int was = cmpxchg(&fxfs_dax_fault_seals_moved, left, left - 1);
+
+		if (was == left)
+			return true;
+		left = was;
+	}
+	return false;
+}
+
+/*
  * fxdax: delay injection (TASK-44.11): at the steps of the DAX protocol where a check and its use
  * race what other tasks change, a quarter of the time, a sleep of up to fxfs.dax_delay_us
  * microseconds, from a generator seeded with fxfs.dax_delay_seed, which a run names: a window of
@@ -742,6 +774,32 @@ static bool fxfs_dax_any_open(const struct fxfs_dax_extent *extents, ssize_t cou
 			return true;
 	}
 	return false;
+}
+
+/*
+ * fxdax: takes the file's semaphore for reading; for a fault (`fault`), only if it is free, or
+ * -EDEADLK. A fault holds its page's DAX entry, which a write(2) in the gate may wait for, while
+ * the semaphore's holder, another fault, waits in Fxfs (fxfs_dax_map_write) for compaction, whose
+ * seal waits for that write: the fault lets go of its entry and waits for the semaphore instead
+ * (fxfs_dax_do_fault), then tries again (TASK-79.12).
+ */
+static int fxfs_dax_down_read(struct fxfs_dax_file *file, bool fault)
+{
+	if (!fault) {
+		down_read(&file->sem);
+		return 0;
+	}
+	return down_read_trylock(&file->sem) ? 0 : -EDEADLK;
+}
+
+/* fxdax: as fxfs_dax_down_read, for writing. */
+static int fxfs_dax_down_write(struct fxfs_dax_file *file, bool fault)
+{
+	if (!fault) {
+		down_write(&file->sem);
+		return 0;
+	}
+	return down_write_trylock(&file->sem) ? 0 : -EDEADLK;
 }
 
 /*
@@ -1625,7 +1683,8 @@ static void fxfs_dax_use_range(struct fxfs_dax *dax, struct fxfs_dax_range *rang
 /*
  * The range mapping `inode`'s chunk `chunk`, mapped first if it isn't, for a file at least `size`
  * bytes long, kept for an iomap: a slice of its extent's region if it can be, or a range of its
- * own. For a fault (`fault`), -EBUSY rather than wait for a seal (fxfs_dax_store_begin).
+ * own. For a fault (`fault`), -EBUSY rather than wait for a seal (fxfs_dax_store_begin), and
+ * fxdax: -EDEADLK rather than for the file's semaphore (fxfs_dax_down_read).
  */
 static struct fxfs_dax_range *fxfs_dax_get_range(struct inode *inode, pgoff_t chunk, loff_t size,
 						 bool fault)
@@ -1636,7 +1695,9 @@ static struct fxfs_dax_range *fxfs_dax_get_range(struct inode *inode, pgoff_t ch
 	unsigned long pages;
 	int err;
 
-	down_read(&file->sem);
+	err = fxfs_dax_down_read(file, fault);
+	if (err)
+		return ERR_PTR(err);
 	range = xa_load(&file->ranges, chunk);
 	if (range)
 		atomic_inc(&range->users);
@@ -1644,7 +1705,9 @@ static struct fxfs_dax_range *fxfs_dax_get_range(struct inode *inode, pgoff_t ch
 	if (range)
 		goto used;
 
-	down_write(&file->sem);
+	err = fxfs_dax_down_write(file, fault);
+	if (err)
+		return ERR_PTR(err);
 	range = xa_load(&file->ranges, chunk);
 	if (range)
 		atomic_inc(&range->users);
@@ -1660,7 +1723,11 @@ static struct fxfs_dax_range *fxfs_dax_get_range(struct inode *inode, pgoff_t ch
 	new = fxfs_dax_alloc_range(dax, pages, fault);
 	if (IS_ERR(new))
 		return new;
-	down_write(&file->sem);
+	err = fxfs_dax_down_write(file, fault);
+	if (err) {
+		fxfs_dax_free_range(dax, new);
+		return ERR_PTR(err);
+	}
 	/* Another iomap may have mapped it meanwhile. */
 	range = xa_load(&file->ranges, chunk);
 	if (range) {
@@ -1811,9 +1878,12 @@ static int fxfs_dax_drop_slice(struct inode *inode, loff_t pos, bool fault)
 	return err;
 }
 
-/* Makes room through `reserved`, recording only `size`, with an exact-write fallback. */
+/*
+ * Makes room through `reserved`, recording only `size`, with an exact-write fallback. fxdax: the
+ * blocks hold `held`, if not NULL, which is `reserved - pos` bytes (fxfs_dax_map_write).
+ */
 static ssize_t fxfs_dax_reserve_write(struct inode *inode, loff_t pos, loff_t end,
-				    loff_t reserved, loff_t size, bool keep,
+				    loff_t reserved, loff_t size, bool keep, const void *held,
 				    struct fxfs_dax_extent *extents, size_t capacity)
 {
 	struct fxfs_dax *dax = fxfs_dax_of(inode);
@@ -1821,12 +1891,13 @@ static ssize_t fxfs_dax_reserve_write(struct inode *inode, loff_t pos, loff_t en
 
 	atomic64_inc(&dax->map_writes);
 	count = fxfs_nofs(fxfs_dax_map_write(dax->fs, inode->i_ino, pos, reserved - pos,
-					   size, keep, extents, capacity));
+					   size, keep, held, extents, capacity));
 	/* Speculation must not refuse a write that its own bytes have room for. */
-	if (reserved > end && (count == -ENOSPC || count == -EDQUOT || count == -ENOMEM)) {
+	if (!held && reserved > end &&
+	    (count == -ENOSPC || count == -EDQUOT || count == -ENOMEM)) {
 		atomic64_inc(&dax->map_writes);
 		count = fxfs_nofs(fxfs_dax_map_write(dax->fs, inode->i_ino, pos, end - pos,
-						   size, keep, extents, capacity));
+						   size, keep, NULL, extents, capacity));
 	}
 	return count;
 }
@@ -1857,15 +1928,17 @@ static int fxfs_dax_prepare_write(struct inode *inode, loff_t pos, loff_t len, l
 				  size_t capacity)
 {
 	struct fxfs_dax_file *file = fxfs_dax_file(inode);
-	ssize_t count = 0;
+	ssize_t count;
 
-	down_write(&file->sem);
+	count = fxfs_dax_down_write(file, fault);
+	if (count)
+		return count;
 	if (!xa_load(&file->ranges, pos >> FXFS_DAX_SHIFT)) {
 		count = fxfs_dax_write_size_locked(inode);
 		if (count)
 			goto out;
 		count = fxfs_dax_reserve_write(inode, pos, pos + len, max(pos + len, reserved),
-					     size, fault, extents, capacity);
+					     size, fault, NULL, extents, capacity);
 		if (count >= 0 && size > i_size_read(inode))
 			i_size_write(inode, size);
 	}
@@ -1893,32 +1966,44 @@ static int fxfs_dax_iomap_read(struct inode *inode, loff_t pos, loff_t length, u
 	struct fxfs_dax *dax = fxfs_dax_of(inode);
 	struct fxfs_dax_range *range;
 	unsigned long page, end_page;
+	bool fault = flags & IOMAP_FAULT;
 	loff_t start;
 	bool mapped;
 	u64 at = 0;
+	int err;
 
 	if (pos >= i_size_read(inode)) {
 		fxfs_dax_hole(iomap, length);
 		return 0;
 	}
 	/* A cache hit keeps the lookup's read lock through its iomap, rather than taking it twice. */
-	down_read(&file->sem);
+	err = fxfs_dax_down_read(file, fault);
+	if (err)
+		return err;
 	range = xa_load(&file->ranges, pos >> FXFS_DAX_SHIFT);
 	if (range) {
 		atomic_inc(&range->users);
 		fxfs_dax_use_range(dax, range);
 	} else {
 		up_read(&file->sem);
-		range = fxfs_dax_get_range(inode, pos >> FXFS_DAX_SHIFT, 0, flags & IOMAP_FAULT);
+		range = fxfs_dax_get_range(inode, pos >> FXFS_DAX_SHIFT, 0, fault);
 		if (IS_ERR(range))
 			return PTR_ERR(range);
-		down_read(&file->sem);
+		err = fxfs_dax_down_read(file, fault);
+		if (err) {
+			fxfs_dax_put_range(dax, range);
+			return err;
+		}
 	}
 	/* fxdax: the window between a follower's extents read and its mapping, widened in tests. */
 	if (fxfs_vfs_follows(inode->i_sb) && fxfs_follow_iomap_delay_us) {
 		up_read(&file->sem);
 		fsleep(fxfs_follow_iomap_delay_us);
-		down_read(&file->sem);
+		err = fxfs_dax_down_read(file, fault);
+		if (err) {
+			fxfs_dax_put_range(dax, range);
+			return err;
+		}
 	}
 	start = fxfs_dax_chunk_start(range);
 	page = (pos - start) >> PAGE_SHIFT;
@@ -1989,11 +2074,11 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 	bool fresh = false;
 	/*
 	 * A fault's page, which a store may change any part of, as it held it: copied here from its
-	 * mapping and back once it moves, rather than by Fxfs through the device, a read and a write.
+	 * mapping, for Fxfs to write into the block it moves the page to, in the moving transaction,
+	 * rather than read the old block through the device. fxdax: not copied back after the
+	 * transaction, which a seal between made the new block's zeros durable (TASK-79.11).
 	 */
 	void *held = NULL;
-	/* Whether Fxfs moved the page held, leaving it to be copied back. */
-	bool moved = false;
 	bool fault = flags & IOMAP_FAULT;
 	ssize_t count;
 	long gate;
@@ -2052,6 +2137,12 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 	if (!down_write_trylock(&file->sem)) {
 		u64 began = ktime_get_ns();
 
+		/* fxdax: a fault waits for it without its DAX entry (fxfs_dax_down_read). */
+		if (fault) {
+			kvfree(extents);
+			fxfs_dax_put_range(dax, range);
+			return -EDEADLK;
+		}
 		down_write(&file->sem);
 		atomic64_inc(&dax->write_waits);
 		atomic64_add(ktime_get_ns() - began, &dax->write_wait_ns);
@@ -2100,21 +2191,39 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 			void *page = fxfs_dax_window_page(dax, fxfs_dax_page_offset(range, first));
 
 			held = page && !fxfs_dax_fail_held ? kmalloc(PAGE_SIZE, GFP_NOFS) : NULL;
-			if (held)
-				memcpy(held, page, PAGE_SIZE);
+			if (held) {
+				loff_t page_pos = start + ((loff_t)first << PAGE_SHIFT);
+				loff_t in_file = clamp_t(loff_t, i_size_read(inode) - page_pos, 0,
+							 PAGE_SIZE);
+
+				/* What the page holds past the file's end isn't the file's. */
+				memcpy(held, page, in_file);
+				memset(held + in_file, 0, PAGE_SIZE - in_file);
+			}
 			dax_read_unlock(id);
+		}
+		/* fxdax: fault injection, as fxfs_dax_map_write waiting for compaction's seal. */
+		if (fault && READ_ONCE(fxfs_dax_fault_seals)) {
+			err = fxfs_nofs(fxfs_fsync(dax->fs));
+			if (err)
+				goto out;
 		}
 		/* As in fxfs_dax_map_chunk: unless a seal was in progress, or began since. */
 		seals = fxfs_device_seals(dax->dev);
 		/* A fault's pages hold what they held: a store may change any part of them. */
-		count = fxfs_dax_reserve_write(inode, pos, end, reserved, size, fault && !held,
+		count = fxfs_dax_reserve_write(inode, pos, end, reserved, size, fault, held,
 					     extents, capacity);
 		fxfs_dax_delay();
 		if (count < 0) {
 			err = count;
 			goto out;
 		}
-		moved |= held != NULL;
+		/* fxdax: fault injection, a seal between the move and the mapping of the new block. */
+		if (fault && fxfs_dax_seal_moved()) {
+			err = fxfs_nofs(fxfs_fsync(dax->fs));
+			if (err)
+				goto out;
+		}
 		if (size > i_size_read(inode))
 			i_size_write(inode, size);
 		gate = fxfs_dax_store_begin(dax, fault);
@@ -2138,16 +2247,7 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 		}
 		fxfs_device_store_end(dax->dev);
 	}
-	/* In the gate. The page held, now in its new block, which Fxfs left zeros. */
-	if (held) {
-		int id = dax_read_lock();
-		void *page = fxfs_dax_window_page(dax, fxfs_dax_page_offset(range, first));
-
-		if (page)
-			memcpy(page, held, PAGE_SIZE);
-		dax_read_unlock(id);
-		kfree(held);
-	}
+	kfree(held);
 	kvfree(extents);
 	iomap->type = IOMAP_MAPPED;
 	/* Holes a mapping of the file maps zeros for are gone. */
@@ -2162,22 +2262,6 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 	up_write(&file->sem);
 	return 0;
 out:
-	/*
-	 * A fault's page held, whose block Fxfs moved, but which the window didn't map where it is
-	 * now: out of a slice's region (-EXDEV), or a seal began (-EBUSY). Fxfs writes it there,
-	 * before the semaphore lets anything map the block. What the page holds past the file's end
-	 * isn't the file's.
-	 */
-	if (moved) {
-		loff_t page_pos = start + ((loff_t)first << PAGE_SHIFT);
-		loff_t len = min_t(loff_t, PAGE_SIZE, i_size_read(inode) - page_pos);
-		int write_err = 0;
-
-		if (len > 0)
-			write_err = fxfs_nofs(fxfs_write(dax->fs, inode->i_ino, page_pos, held, len));
-		if (write_err)
-			err = write_err;
-	}
 	up_write(&file->sem);
 	kfree(held);
 	kvfree(extents);
@@ -2386,8 +2470,8 @@ static vm_fault_t fxfs_dax_do_fault(struct vm_fault *vmf, unsigned int order, bo
 		ret = dax_iomap_fault(vmf, order, &pfn, &error, &fxfs_dax_iomap_ops);
 		filemap_invalidate_unlock_shared(inode->i_mapping);
 		fxfs_vfs_fill_end(sb);
-		if (!(ret & VM_FAULT_ERROR) ||
-		    (error != -EAGAIN && error != -EXDEV && error != -EBUSY && error != -ESTALE))
+		if (!(ret & VM_FAULT_ERROR) || (error != -EAGAIN && error != -EXDEV &&
+						 error != -EBUSY && error != -ESTALE && error != -EDEADLK))
 			break;
 		/* fxdax: a fault killed meanwhile tries no more (TASK-79.49). */
 		if (fatal_signal_pending(current)) {
@@ -2404,6 +2488,17 @@ static vm_fault_t fxfs_dax_do_fault(struct vm_fault *vmf, unsigned int order, bo
 		if (error == -EBUSY) {
 			/* A seal was in progress: waited for without the page's DAX entry. */
 			fxfs_device_wait_unsealed(fxfs_dax_of(inode)->dev);
+			continue;
+		}
+		if (error == -EDEADLK) {
+			/*
+			 * fxdax: the file's semaphore was held: waited for without the page's DAX
+			 * entry, which a write(2) its holder waits for may wait for (TASK-79.12).
+			 */
+			struct fxfs_dax_file *file = fxfs_dax_file(inode);
+
+			down_read(&file->sem);
+			up_read(&file->sem);
 			continue;
 		}
 		if (error == -EXDEV) {

@@ -83,9 +83,9 @@ MUTANTS = [
           "\tif (!nr ||")],
     ),
     (
-        "held_not_copied_back",
-        "a fault's page held is not copied into its new block",
-        [("\t\tif (page)\n\t\t\tmemcpy(page, held, PAGE_SIZE);", "\t\t(void)page;")],
+        "held_not_written",
+        "a fault's page held is not written into its new block, which holds zeros (TASK-79.11)",
+        [("size, fault, held,\n", "size, false, NULL,\n")],
     ),
     (
         "evacuation_unlocked",

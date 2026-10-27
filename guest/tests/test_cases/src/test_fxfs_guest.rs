@@ -74,6 +74,16 @@ fn durable(writer: u8, index: usize) -> Vec<u8> {
 /// freed, half, stands out from the store's metadata (some 13 MB once the writers ran).
 const UNNAMED: usize = 48 << 20;
 
+/// fxdax: the crash test's file, a page of `mapped_synced()`, synced, which its guest then stores
+/// a byte to through a mapping, at MAPPED_STORE, as the VM stops (TASK-79.11).
+const MAPPED_SYNCED: &str = "mapped-synced";
+const MAPPED_STORE: usize = 100;
+
+/// The contents of MAPPED_SYNCED as synced.
+fn mapped_synced() -> Vec<u8> {
+    pattern(4096, 7)
+}
+
 /// The small file's contents.
 #[cfg_attr(feature = "host", allow(dead_code))]
 const HELLO: &[u8] = b"Hello from the host's Fxfs\n";
@@ -177,6 +187,18 @@ mod host {
                         read += n;
                     }
                     assert!(contents == expected, "{name} holds other data");
+                }
+                // fxdax: a page synced, then stored to through a mapping, the fault's block moved
+                // and a seal right after: it holds what was synced, but for the byte stored, which
+                // it may or may not hold. It held zeros (TASK-79.11).
+                if output.lines().any(|line| line == "stored mapped") {
+                    let (file, _) = block_on(fs.root().lookup(MAPPED_SYNCED.as_bytes())).unwrap();
+                    let mut contents = vec![0; 4096];
+                    let read = block_on(file.read(0, &mut contents)).unwrap();
+                    let expected = mapped_synced();
+                    assert_eq!(read, expected.len(), "{MAPPED_SYNCED} ends early");
+                    contents[MAPPED_STORE] = expected[MAPPED_STORE];
+                    assert!(contents == expected, "{MAPPED_SYNCED} holds other data");
                 }
                 // The unnamed file open as the VM stopped, which nothing names: freed once the
                 // store is mounted again, its blocks with it, as the graveyard frees them.
@@ -557,8 +579,14 @@ mod guest {
     /// filesystem mounted, for the VM to stop with.
     /// Writes and fsyncs file after file, and the directory, reporting each once both fsyncs
     /// return, until the VM stops.
+    /// Whether the crash test's writers wait, as its guest stores through a mapping (TASK-79.11).
+    static PAUSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
     fn fsync_files(writer: u8) -> ! {
         for index in 0.. {
+            while PAUSED.load(std::sync::atomic::Ordering::Acquire) {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
             let mut file = fs::File::create(format!("{MNT}/synced-{writer}-{index}")).unwrap();
             file.write_all(&durable(writer, index)).unwrap();
             file.sync_all().unwrap();
@@ -598,12 +626,58 @@ mod guest {
         unnamed.write_all(&pattern(UNNAMED, 9)).unwrap();
         unnamed.sync_all().unwrap();
         std::mem::forget(unnamed);
+        let mapped = format!("{MNT}/{MAPPED_SYNCED}");
+        if dax {
+            let mut file = fs::File::create(&mapped).unwrap();
+            file.write_all(&mapped_synced()).unwrap();
+            file.sync_all().unwrap();
+            fs::File::open(MNT).unwrap().sync_all().unwrap();
+        }
         std::thread::spawn(|| fsync_files(1));
         std::thread::spawn(|| fsync_files(2));
-        std::thread::sleep(std::time::Duration::from_secs(2));
+        // fxdax: with DAX, a store through a mapping as the VM stops, before the writers fill the
+        // store, which they do in 2 seconds (TASK-79.11).
+        if dax {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            store_mapped(&mapped);
+        } else {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+        }
         // A reset, which ends the VM on every architecture: x86's has no power-off.
         unsafe { libc::reboot(libc::RB_AUTOBOOT) };
         panic!("reboot: {}", std::io::Error::last_os_error());
+    }
+
+    /// fxdax: stores a byte to the page at `path`, synced, through a mapping, as the VM is about
+    /// to stop, with the writers waiting: the fault moves the page's block, and a seal comes right
+    /// after (the fxfs.dax_fault_seals_moved fault injection), with none after it (TASK-79.11).
+    fn store_mapped(path: &str) {
+        const SEALS_MOVED: &str = "/sys/module/fxfs/parameters/dax_fault_seals_moved";
+        PAUSED.store(true, std::sync::atomic::Ordering::Release);
+        // A writer's fsync in progress, done.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let file = fs::OpenOptions::new().read(true).write(true).open(path).unwrap();
+        let map = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                4096,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                file.as_raw_fd(),
+                0,
+            )
+        };
+        assert_ne!(map, libc::MAP_FAILED, "mmap: {}", std::io::Error::last_os_error());
+        // A load first maps the file's range, which the writers' files may have taken: the store
+        // then finds the page mapped, read-only, as a fault holding it does.
+        let loaded = unsafe { map.cast::<u8>().add(MAPPED_STORE).read_volatile() };
+        assert_eq!(loaded, mapped_synced()[MAPPED_STORE], "the mapping maps other data");
+        fs::write(SEALS_MOVED, "1").unwrap();
+        unsafe { map.cast::<u8>().add(MAPPED_STORE).write_volatile(0xee) };
+        assert_eq!(fs::read_to_string(SEALS_MOVED).unwrap().trim(), "0", "no seal after a move");
+        let mut stdout = std::io::stdout().lock();
+        writeln!(stdout, "stored mapped").unwrap();
+        stdout.flush().unwrap();
     }
 
     /// Whether the kernel accesses `path` through the DAX window: STATX_ATTR_DAX.

@@ -370,10 +370,12 @@ bool fxfs_dax_restage(struct fxfs *fs, struct fxfs_dax_extent *out);
  * pieces holding the range's blocks, as fxfs_dax_extents, which are open: blocks of open extents
  * stay, and the others move to new ones, holding what the range's first and last blocks hold
  * around it: or, if the caller may store only some of the range (`keep`), as a fault does, all
- * they hold. The caller stores the data through writable mappings before the extents are sealed.
+ * they hold; fxdax: or `held`, if not NULL, `len` bytes, whole blocks, written in the transaction,
+ * as a fault holds its page (TASK-79.11). The caller stores the data through writable mappings
+ * before the extents are sealed.
  */
 ssize_t fxfs_dax_map_write(struct fxfs *fs, u64 ino, u64 offset, u64 len, u64 size, bool keep,
-			   struct fxfs_dax_extent *out, size_t max);
+			   const void *held, struct fxfs_dax_extent *out, size_t max);
 /* Records an append already written through the window, without zeroing it (TASK-92.28). */
 int fxfs_dax_update_size(struct fxfs *fs, u64 ino, u64 size);
 

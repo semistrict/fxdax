@@ -2176,6 +2176,83 @@ mod guest {
         fs::remove_file(&name).unwrap();
     }
 
+    /// fxdax: a write(2) into a file's holes, in the gate, waits for the DAX entry of a read fault
+    /// on the page it writes; the read fault for the file's semaphore, which a write fault holds
+    /// while it seals, as Fxfs's map_write may wait for compaction's seal (the fxfs.dax_fault_seals
+    /// fault injection); and the seal for the write(2): the filesystem hung (TASK-79.12). Each
+    /// finishes, and the file holds what the write(2)s wrote.
+    fn test_faults_seal_holding_the_semaphore() {
+        use std::os::unix::fs::FileExt;
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        const FAULT_SEALS: &str = "/sys/module/fxfs/parameters/dax_fault_seals";
+        const PAGE: usize = 4096;
+        const SIZE: usize = 32 << 20;
+        // The pages the stores go to, ahead of those the write(2)s go to.
+        const STORED: usize = 64;
+        let name = path("faults-seal");
+        let file = fs::OpenOptions::new().create(true).read(true).write(true).open(&name).unwrap();
+        file.set_len(SIZE as u64).unwrap();
+        let map = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                SIZE,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                file.as_raw_fd(),
+                0,
+            )
+        };
+        assert_ne!(map, libc::MAP_FAILED, "mmap: {}", std::io::Error::last_os_error());
+        let map = map as usize;
+        let writing = AtomicUsize::new(STORED);
+        let stop = AtomicBool::new(false);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+        fs::write(FAULT_SEALS, "Y").unwrap();
+        let written = std::thread::scope(|scope| {
+            // Stores, each page's first since a seal a write fault, which seals.
+            scope.spawn(|| {
+                let mut n = 0usize;
+                while !stop.load(Ordering::Relaxed) {
+                    let at = map + (n % STORED) * PAGE + n % PAGE;
+                    unsafe { (at as *mut u8).write_volatile(n as u8) };
+                    n += 1;
+                }
+            });
+            // Loads of the page the write(2)s write, faulted on anew each time.
+            scope.spawn(|| {
+                while !stop.load(Ordering::Relaxed) {
+                    let at = map + writing.load(Ordering::Relaxed) * PAGE;
+                    let advised = unsafe {
+                        libc::madvise(at as *mut libc::c_void, PAGE, libc::MADV_DONTNEED)
+                    };
+                    assert_eq!(advised, 0, "madvise: {}", std::io::Error::last_os_error());
+                    unsafe { (at as *const u8).read_volatile() };
+                }
+            });
+            // write(2)s into the file's holes, a page each.
+            let writer = scope.spawn(|| {
+                let mut page = STORED;
+                while std::time::Instant::now() < deadline && page < SIZE / PAGE {
+                    writing.store(page, Ordering::Relaxed);
+                    file.write_all_at(&[page as u8; PAGE], (page * PAGE) as u64).unwrap();
+                    page += 1;
+                }
+                stop.store(true, Ordering::Relaxed);
+                page
+            });
+            writer.join().unwrap()
+        });
+        fs::write(FAULT_SEALS, "N").unwrap();
+        assert_eq!(unsafe { libc::munmap(map as *mut libc::c_void, SIZE) }, 0);
+        let mut read = vec![0; PAGE];
+        for page in STORED..written {
+            file.read_exact_at(&mut read, (page * PAGE) as u64).unwrap();
+            assert!(read == [page as u8; PAGE], "page {page} holds other data");
+        }
+        drop(file);
+        fs::remove_file(&name).unwrap();
+    }
+
     /// A store through a mapping past a file's end, then the file grown over it: it reads zeros
     /// there. Writeback wrote no more than the file held, and the folio's tail, never zeroed,
     /// became the file's data (TASK-79.53).
@@ -2540,6 +2617,10 @@ mod guest {
                 tests.push(("append_size", &test_append_size));
                 tests.push(("append_writeback", &test_append_writeback));
                 tests.push(("faults_unheld", &test_faults_unheld));
+                tests.push((
+                    "faults_seal_holding_the_semaphore",
+                    &test_faults_seal_holding_the_semaphore,
+                ));
                 tests.push(("append_while_mapped", &test_append_while_mapped));
                 tests.push(("prune_while_read", &test_prune_while_read));
             }

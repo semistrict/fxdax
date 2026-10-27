@@ -90,6 +90,17 @@ struct BlocksWrite<'d> {
     data: &'d [u8],
 }
 
+/// fxdax: what moves with the blocks [`DataObjectHandle::txn_map_write`] moves to new ones.
+#[derive(Clone, Copy)]
+enum Kept<'a> {
+    /// What the range's first and last blocks hold around it.
+    Around,
+    /// All they hold.
+    All,
+    /// These bytes, the blocks' contents as their caller holds them.
+    Held(&'a [u8]),
+}
+
 /// DataObjectHandle is a typed handle for file-like objects that store data in the default data
 /// attribute. In addition to traditional files, this means things like the journal, superblocks,
 /// and layer files.
@@ -1922,6 +1933,35 @@ impl<S: HandleOwner> DataObjectHandle<S> {
         range: Range<u64>,
         keep: bool,
     ) -> Result<Vec<FileExtent>, Error> {
+        let kept = if keep { Kept::All } else { Kept::Around };
+        self.txn_map_write_keeping(transaction, range, kept).await
+    }
+
+    /// fxdax: makes room as [`txn_map_write`](Self::txn_map_write) does, with `keep`, for the
+    /// blocks `range`, whose contents are `held`, as a fault holds its page's (TASK-79.11): those
+    /// that move hold `held` in the new blocks, written in the transaction, rather than read from
+    /// the old. A seal between the transaction and the caller's stores makes no zeros durable
+    /// there, as a copy back after it did.
+    pub async fn txn_map_write_holding<'a>(
+        &'a self,
+        transaction: &mut Transaction<'a>,
+        range: Range<u64>,
+        held: &[u8],
+    ) -> Result<Vec<FileExtent>, Error> {
+        let aligned = self.block_size().align_range_outwards(range.clone());
+        ensure!(
+            aligned == Some(range.clone()) && held.len() as u64 == range.end - range.start,
+            FxfsError::InvalidArgs
+        );
+        self.txn_map_write_keeping(transaction, range, Kept::Held(held)).await
+    }
+
+    async fn txn_map_write_keeping<'a>(
+        &'a self,
+        transaction: &mut Transaction<'a>,
+        range: Range<u64>,
+        kept: Kept<'_>,
+    ) -> Result<Vec<FileExtent>, Error> {
         ensure!(range.start < range.end, FxfsError::InvalidArgs);
         ensure!(!self.handle.is_encrypted() && !self.is_verified_file(), FxfsError::NotSupported);
         let block_size = self.block_size();
@@ -1992,29 +2032,35 @@ impl<S: HandleOwner> DataObjectHandle<S> {
         for part in moving {
             // What moves with the blocks: all of them, or what the range's first and last blocks
             // hold around it.
-            let mut kept = Vec::new();
-            if keep {
-                kept.push(part.clone());
+            let mut keeping = Vec::new();
+            if matches!(kept, Kept::All | Kept::Held(_)) {
+                keeping.push(part.clone());
             } else {
                 let last_block = aligned.end - block_size.get()..aligned.end;
                 if part.start == aligned.start && range.start > aligned.start {
-                    kept.push(aligned.start..aligned.start + block_size.get());
+                    keeping.push(aligned.start..aligned.start + block_size.get());
                 }
                 if part.end == aligned.end
                     && range.end < aligned.end
-                    && kept.last() != Some(&last_block)
+                    && keeping.last() != Some(&last_block)
                 {
-                    kept.push(last_block);
+                    keeping.push(last_block);
                 }
             }
             let mut copies = Vec::new();
-            for blocks in kept {
+            for blocks in keeping {
                 let mut copy = device.allocate_buffer((blocks.end - blocks.start) as usize).await;
-                let read = self
-                    .handle
-                    .read_aligned(self.attribute_id(), blocks.start, copy.as_mut())
-                    .await?;
-                copy.subslice_mut(read..).fill(0);
+                if let Kept::Held(held) = kept {
+                    let at = (blocks.start - aligned.start) as usize
+                        ..(blocks.end - aligned.start) as usize;
+                    copy.as_mut().copy_from_slice(&held[at]);
+                } else {
+                    let read = self
+                        .handle
+                        .read_aligned(self.attribute_id(), blocks.start, copy.as_mut())
+                        .await?;
+                    copy.subslice_mut(read..).fill(0);
+                }
                 // New blocks read as zeros: a block of zeros (a hole, or past the end of the file,
                 // as a small file's new data is) needs no write.
                 if copy.as_ptr_slice().iter_as::<u64>().any(|word| word != 0) {
@@ -3903,6 +3949,44 @@ mod tests {
         device.reopen(false);
         let fs = FxFilesystem::open(device).await.expect("open failed");
         check(&fs).await;
+        fs.close().await.expect("close failed");
+    }
+
+    /// fxdax TASK-79.11: a fault's block, moved, holds what the fault held of it, written in the
+    /// moving transaction: committed, and the filesystem opened again before any store to it, the
+    /// block holds it, not the zeros a new block holds until a copy after the commit lands.
+    #[fuchsia::test]
+    async fn test_map_write_holding() {
+        let (fs, object) = test_filesystem_and_object_with_key(None, false).await;
+        let bs = fs.block_size().get();
+        let mut buf = object.allocate_buffer(3 * bs as usize).await;
+        buf.as_mut().copy_from_slice(&vec![0x11; 3 * bs as usize]);
+        object.write_or_append(Some(0), buf.as_ref()).await.expect("write failed");
+        fs.sync(SyncOptions { flush_device: true, ..Default::default() })
+            .await
+            .expect("sync failed");
+
+        let held = vec![0x22; bs as usize];
+        let mut transaction = object.new_transaction().await.expect("new_transaction failed");
+        let extents = object
+            .txn_map_write_holding(&mut transaction, bs..2 * bs, &held)
+            .await
+            .expect("map failed");
+        transaction.commit().await.expect("commit failed");
+        assert_eq!(extents.iter().map(|e| e.logical_range()).collect::<Vec<_>>(), vec![bs..2 * bs]);
+        let mut expected = vec![0x11; 3 * bs as usize];
+        expected[bs as usize..2 * bs as usize].fill(0x22);
+        assert!(object.contents(usize::MAX).await.expect("contents")[..] == expected[..]);
+        let mut transaction = object.new_transaction().await.expect("new_transaction failed");
+        let unaligned = object.txn_map_write_holding(&mut transaction, 1..bs + 1, &held).await;
+        assert!(unaligned.is_err(), "an unaligned range was mapped");
+        drop(transaction);
+
+        fs.close().await.expect("close failed");
+        let device = fs.take_device().await;
+        device.reopen(false);
+        let fs = FxFilesystem::open(device).await.expect("open failed");
+        fsck(fs.clone()).await.expect("fsck failed");
         fs.close().await.expect("close failed");
     }
 

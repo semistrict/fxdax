@@ -857,16 +857,19 @@ impl Fxfs {
     /// Makes room to write `range` of the file `ino` through a DAX window, without writing it, and
     /// makes the file `size` long if it is shorter, in one transaction: returns the pieces holding
     /// the range's blocks, which are open, for the caller to store the data in before the next
-    /// seal (`DataObjectHandle::txn_map_write`, as `keep` says).
+    /// seal (`DataObjectHandle::txn_map_write`, as `keep` says). fxdax: the blocks hold `held`,
+    /// if given, all they hold as the caller holds it, if they move
+    /// (`DataObjectHandle::txn_map_write_holding`, TASK-79.11).
     pub async fn dax_map_write(
         &self,
         ino: u64,
         range: Range<u64>,
         size: u64,
         keep: bool,
+        held: Option<&[u8]>,
     ) -> Result<Vec<DaxExtent>, Error> {
         loop {
-            match self.try_dax_map_write(ino, range.clone(), size, keep).await {
+            match self.try_dax_map_write(ino, range.clone(), size, keep, held).await {
                 // A seal came between the writes copying the first and last blocks' surroundings
                 // to an extent: the transaction is dropped, and its extents with it.
                 Err(error) if error.chain().any(|e| e.downcast_ref::<SealedExtent>().is_some()) => {
@@ -882,10 +885,14 @@ impl Fxfs {
         range: Range<u64>,
         size: u64,
         keep: bool,
+        held: Option<&[u8]>,
     ) -> Result<Vec<DaxExtent>, Error> {
         let file = self.file(ino).await?;
         let mut transaction = file.new_transaction().await?;
-        let extents = file.txn_map_write(&mut transaction, range, keep).await?;
+        let extents = match held {
+            Some(held) => file.txn_map_write_holding(&mut transaction, range, held).await?,
+            None => file.txn_map_write(&mut transaction, range, keep).await?,
+        };
         // The transaction locks the file: its size is as it was.
         if size > file.get_size() {
             file.txn_update_size(&mut transaction, size, None).await?;
