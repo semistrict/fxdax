@@ -160,6 +160,7 @@ mod ledger;
 mod lineage;
 mod mem;
 mod segments;
+mod spent;
 mod state;
 mod store;
 mod sync;
@@ -177,8 +178,8 @@ pub use lineage::Lineage;
 pub use mem::{Io, MemDir, MemFile};
 pub use segments::segment_closes;
 pub use store::{
-    Cleaned, Footprint, ForkCommitted, Info, NoSpace, Options, Rebuilt, RemoteData, Store, TooLong,
-    TooSmall, Unaligned, Usage, Write,
+    Cleaned, Footprint, ForkCommitted, Info, NoSpace, Options, Rebuilt, RemoteData, Spent, Store,
+    TooLong, TooSmall, Unaligned, Usage, Write,
 };
 pub use sync::Rules;
 #[cfg(feature = "shuttle")]

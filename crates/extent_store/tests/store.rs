@@ -10,7 +10,7 @@ use common::noise;
 use extent_frame::segment::Chain;
 use extent_store::{
     Closed, Description, Dir, File as _, Footprint, HostDir, Lineage, MemDir, MemFile, NoSpace,
-    Options, Part, Place, RemoteData, Store, TooLong, TooSmall,
+    Options, Part, Place, RemoteData, Spent, Store, TooLong, TooSmall,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -150,6 +150,47 @@ fn writes_once() {
     );
     assert!(store.write(extent(2), 1, &[3; BLOCK]).is_err(), "unaligned");
     assert_eq!(read(&store, extent(1), 0, 2 * BLOCK), [[1; BLOCK], [2; BLOCK]].concat());
+}
+
+/// fxdax: an extent freed once sealed is written no more, nor opened, though the store holds it
+/// no longer, nor once it opens again, from its deltas or its checkpoint: forks, views and caches
+/// that hold it by its ID would take another's data for it (TASK-79.6). One freed while open,
+/// which nothing but its writer saw, may be written again; and one never written, though below
+/// the branch's next sequence number, as Fxfs's journal writes the tail it minted ahead in an
+/// earlier mount.
+#[test]
+fn freed_extents_are_written_no_more() {
+    let dir = MemDir::new();
+    let store = create(dir.clone(), 1 << 20);
+    store.write(extent(1), 0, &[1; BLOCK]).unwrap();
+    store.write(extent(2), 0, &[2; BLOCK]).unwrap();
+    store.commit(None).unwrap();
+    store.free(extent(1)).unwrap();
+    error_is(store.write(extent(1), 0, &[3; BLOCK]), Spent(extent(1)));
+    store.commit(None).unwrap();
+    error_is(store.write(extent(1), 0, &[3; BLOCK]), Spent(extent(1)));
+    error_is(store.may_open(extent(1)), Spent(extent(1)));
+    error_is(store.may_open(extent(2)), SealedExtent(extent(2)));
+
+    store.write(extent(4), 0, &[4; BLOCK]).unwrap();
+    store.free(extent(4)).unwrap();
+    store.write(extent(4), 0, &[5; BLOCK]).unwrap();
+    store.may_open(extent(5)).unwrap();
+    store.commit(None).unwrap();
+
+    // From its deltas; then from the checkpoint that opening wrote.
+    let store = reopened(store, &dir);
+    error_is(store.write(extent(1), 0, &[6; BLOCK]), Spent(extent(1)));
+    store.free(extent(2)).unwrap();
+    store.commit(None).unwrap();
+    let store = reopened(store, &dir);
+    for sequence in [1, 2] {
+        error_is(store.write(extent(sequence), 0, &[6; BLOCK]), Spent(extent(sequence)));
+    }
+    store.write(extent(3), 0, &[7; BLOCK]).unwrap();
+    store.commit(None).unwrap();
+    assert_eq!(read(&store, extent(3), 0, BLOCK), [7; BLOCK]);
+    assert_eq!(read(&store, extent(4), 0, BLOCK), [5; BLOCK]);
 }
 
 /// The store holds at most its capacity, and frees make room.

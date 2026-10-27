@@ -335,6 +335,9 @@ pub(crate) struct Checkpoint {
     pub segment: u64,
     pub extents: Vec<(ExtentId, Extent)>,
     pub gone: Vec<ExtentId>,
+    /// fxdax: the runs of the branch's own extents it froze once sealed, which it writes no more
+    /// (`Spent`, TASK-79.6): each's first, and its end, past its last.
+    pub spent: Vec<(ExtentId, u64)>,
 }
 
 /// A checkpoint's state but for its extents, its table's footer holds.
@@ -351,6 +354,10 @@ const REMOTE: &str = "remote";
 /// The key of a row of a fork's checkpoint's table naming an extent of its parent's it holds no
 /// longer.
 const GONE: &str = "gone";
+/// fxdax: the key of a row of a checkpoint's table naming a run of its branch's extents it freed
+/// once sealed: the run's first, and, as its offset, its end (TASK-79.6). Checkpoints only a
+/// branch's own store reads hold them, not object storage's.
+const SPENT: &str = "spent";
 
 impl Checkpoint {
     /// Its table, in doc-7's format, as checkpoints in object storage are (`extent_frame::table`):
@@ -373,6 +380,9 @@ impl Checkpoint {
         for extent in &self.gone {
             entries.push(((extent.branch, extent.sequence), GONE.to_owned(), 0, 0));
         }
+        for (first, end) in &self.spent {
+            entries.push(((first.branch, first.sequence), SPENT.to_owned(), *end, 0));
+        }
         entries.sort_by_key(|(id, ..)| *id);
         let rest = Rest {
             epoch: self.epoch,
@@ -390,11 +400,16 @@ impl Checkpoint {
         let (footer, rows) = extent_frame::table::decode(bytes)?;
         let Rest { epoch, next_sequence, root, segment } =
             bincode::deserialize(&footer.rest).context("a checkpoint's state")?;
-        let (mut extents, mut gone) = (Vec::with_capacity(rows.len()), Vec::new());
+        let (mut extents, mut gone, mut spent) =
+            (Vec::with_capacity(rows.len()), Vec::new(), Vec::new());
         for row in rows {
             let extent = ExtentId::new(row.id.0, row.id.1);
             if row.key == GONE {
                 gone.push(extent);
+                continue;
+            }
+            if row.key == SPENT {
+                spent.push((extent, row.offset));
                 continue;
             }
             let data = if row.key == REMOTE {
@@ -416,7 +431,7 @@ impl Checkpoint {
             };
             extents.push((extent, Extent { len: row.len, data }));
         }
-        Ok(Self { epoch, next_sequence, root, segment, extents, gone })
+        Ok(Self { epoch, next_sequence, root, segment, extents, gone, spent })
     }
 }
 
@@ -618,10 +633,11 @@ mod tests {
                 (ExtentId::new(2, 1), Extent { len: 4096, data: Data::Remote }),
             ],
             gone: vec![ExtentId::new(1, 3)],
+            spent: vec![(ExtentId::new(1, 0), 2), (ExtentId::new(1, 6), 9)],
         };
         let table = checkpoint.table().unwrap();
         assert_eq!(Checkpoint::of_table(&table).unwrap(), checkpoint);
-        assert_eq!(extent_frame::Frame::of(&table).unwrap().data_len, 4 * 36);
+        assert_eq!(extent_frame::Frame::of(&table).unwrap().data_len, 6 * 36);
         let open = Extent { len: 8192, data: Data::Pieces(vec![]) };
         let unsealed = Checkpoint { extents: vec![(ExtentId::new(1, 9), open)], ..checkpoint };
         assert!(unsealed.table().is_err());

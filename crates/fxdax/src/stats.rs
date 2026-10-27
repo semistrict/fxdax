@@ -81,6 +81,10 @@ pub struct Stats {
     pub stage_leave_outs: u64,
     /// Theirs write-protected, as a seal makes it.
     pub stage_write_protects: u64,
+    /// fxdax: the extent cache's passes letting go of extents past its bound (TASK-109.2).
+    pub cache_trims: u64,
+    /// The nanoseconds they took, under the cache's lock.
+    pub cache_trim_ns: u64,
 }
 
 /// The counters, in the order of [`Stats`]' fields.
@@ -111,10 +115,12 @@ pub(crate) enum Counter {
     StageOverwrites,
     StageLeaveOuts,
     StageWriteProtects,
+    CacheTrims,
+    CacheTrimNs,
 }
 
 /// The counters [`Counter`] names, which this module keeps.
-const COUNTED: usize = 25;
+const COUNTED: usize = 27;
 
 /// The counters a snapshot holds: those it keeps, and the extent store's.
 const COUNTERS: usize = COUNTED + 3;
@@ -169,6 +175,8 @@ pub fn stats() -> Stats {
         stage_overwrites: count(Counter::StageOverwrites),
         stage_leave_outs: count(Counter::StageLeaveOuts),
         stage_write_protects: count(Counter::StageWriteProtects),
+        cache_trims: count(Counter::CacheTrims),
+        cache_trim_ns: count(Counter::CacheTrimNs),
     }
 }
 
@@ -204,6 +212,8 @@ impl Stats {
             self.stage_overwrites,
             self.stage_leave_outs,
             self.stage_write_protects,
+            self.cache_trims,
+            self.cache_trim_ns,
         ]
     }
 
@@ -239,6 +249,8 @@ impl Stats {
             stage_overwrites: word(25),
             stage_leave_outs: word(26),
             stage_write_protects: word(27),
+            cache_trims: word(28),
+            cache_trim_ns: word(29),
         }
     }
 
@@ -281,6 +293,8 @@ impl Stats {
             "stage-overwrites",
             "stage-leave-outs",
             "stage-write-protects",
+            "cache-trims",
+            "cache-trim-ns",
         ];
         std::array::from_fn(|at| (names[at], words[at]))
     }

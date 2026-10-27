@@ -61,6 +61,12 @@ pub struct TooSmall {
     pub held: u64,
 }
 
+/// fxdax: the error of a write, or an opening, of an extent of the store's branch that the branch
+/// sealed and freed (TASK-79.6): an extent's ID is its branch's to write once.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("{0:?} was written before: an extent's ID is written once")]
+pub struct Spent(pub ExtentId);
+
 /// fxdax: the error of a read of an extent the store holds whose data is elsewhere
 /// ([`Store::adopt`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
@@ -370,7 +376,7 @@ impl<D: Dir> Store<D> {
             }
             (false, None) => bail!("branch {branch:#x} is no fork, and has no index"),
         };
-        let Recovered { epoch, next_sequence, root, extents, .. } = recovered;
+        let Recovered { epoch, next_sequence, root, extents, spent, .. } = recovered;
         // Footers of commits not recovered, which were not durable, are no footers: the commits
         // after this epoch are others.
         close_left_open(dir, branch, epoch)?;
@@ -445,10 +451,10 @@ impl<D: Dir> Store<D> {
         // A new index file, with a checkpoint of what was recovered, which replaces the others but
         // those forks need.
         let segment = open_segment.number;
-        let state = Recovered { epoch, next_sequence, root, segment, extents };
+        let state = Recovered { epoch, next_sequence, root, segment, extents, spent };
         let pinned = || lineage.pinned(branch);
         let index = IndexLog::open(dir, branch, &state, origin.as_ref(), pinned)?;
-        let Recovered { root, mut extents, .. } = state;
+        let Recovered { root, mut extents, spent, .. } = state;
         let mut holdings = extents.holdings();
         holdings.own.insert(FileKey::Segment(open_segment));
         lineage.recovered(branch, epoch, &holdings);
@@ -474,6 +480,7 @@ impl<D: Dir> Store<D> {
                 epoch,
                 root,
                 next_sequence,
+                spent,
                 uncommitted: Uncommitted::default(),
                 gate: Gate::default(),
                 segments,
@@ -780,6 +787,30 @@ impl<D: Dir> Store<D> {
         }
     }
 
+    /// fxdax: fails unless `extent` may be opened, as a write opens it, or a writable mapping of it
+    /// that the store's user keeps until it writes it: unless it is the branch's, and open, or
+    /// never sealed by the branch, held or freed ([`Spent`], TASK-79.6).
+    pub fn may_open(&self, extent: ExtentId) -> Result<(), Error> {
+        if extent.branch != self.branch {
+            bail!(OtherBranch(extent));
+        }
+        Self::check_opens(&*self.writable()?, extent)
+    }
+
+    /// Fails unless `extent`, the branch's, may be opened, as [`Store::may_open`] says, by `state`.
+    fn check_opens(state: &State<D::File>, extent: ExtentId) -> Result<(), Error> {
+        if state.uncommitted.is_open(extent) {
+            return Ok(());
+        }
+        if state.extents.get(&extent).is_some() {
+            bail!(SealedExtent(extent));
+        }
+        if state.spent.contains(extent.sequence) {
+            bail!(Spent(extent));
+        }
+        Ok(())
+    }
+
     /// Begins a write, as [`Store::begin_write`] says, with `state`, writable, held, and no commit
     /// holding writes back.
     fn begin_write_locked(
@@ -791,9 +822,7 @@ impl<D: Dir> Store<D> {
     ) -> Result<Write<'_, D>, Error> {
         let end = offset + len;
         let current = state.extents.get(&extent).map(|entry| entry.len);
-        if current.is_some() && !state.uncommitted.is_open(extent) {
-            bail!(SealedExtent(extent));
-        }
+        Self::check_opens(&state, extent)?;
         let grows = end.saturating_sub(current.unwrap_or(0));
         let to_segment = match state.uncommitted.placement(extent) {
             Some(placement) => matches!(placement, Placement::Segment),
@@ -1086,6 +1115,10 @@ impl<D: Dir> Store<D> {
             state.unreferenced.doomed.push(open_extent_path(extent));
         }
         let Some(entry) = state.extents.remove(&extent) else { return Ok(()) };
+        // fxdax: sealed, the branch's own is written no more (TASK-79.6).
+        if placement.is_none() && extent.branch == self.branch {
+            state.spent.insert(extent.sequence);
+        }
         state.space.removed(entry.len, extent.branch == self.branch);
         state.uncommitted.push(Change::Free(extent));
         state.track(&entry);
@@ -1397,7 +1430,8 @@ impl<D: Dir> Store<D> {
         let checkpoint = || {
             let (root, segment) = (root.unwrap_or(&state.root), state.segments.open_segment());
             let (extents, origin) = (&state.extents, self.origin.as_ref());
-            Checkpoint::of(epoch, next_sequence, root, segment.number, extents, origin)
+            let spent = (self.branch, &state.spent);
+            Checkpoint::of(epoch, next_sequence, root, segment.number, extents, origin, spent)
         };
         let pinned = || self.lineage.pinned(self.branch);
         state.index.append(&self.lineage.dir, delta, checkpoint, &self.options, pinned)

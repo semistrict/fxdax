@@ -13,7 +13,9 @@
 //! store and window in the process shares: each is a pager-backed VMO (`FxExtent`, Fuchsia's
 //! `FxBlob` as an extent), whose pages the pager reads from the store as they are first read or
 //! mapped, and which the kernel evicts under memory pressure. Windows map it read-only: one copy of
-//! each page, whichever store or fork maps it, as an extent never changes once sealed. Reads of
+//! each page, whichever store or fork maps it, as an extent never changes once sealed, its ID its
+//! branch's to write once, which the store keeps to (TASK-79.6). Its pages are read from any of the
+//! stores that asked for it, open still, that hold it (TASK-79.7). Reads of
 //! sealed extents read it too (TASK-32): the guest's filesystem reads its metadata, which it maps
 //! not, so a fork reads what its base's other forks read before from memory, not the store. Reads
 //! of open extents, and a follower's, go to the store. The store's files bypass the host's page
@@ -32,13 +34,13 @@ use crate::kernel::{Arena, ArenaId, page_size};
 use crate::memory::{VolatileSlice, VolatileSliceMut};
 use crate::profile::{self, Recorder};
 use crate::stats::{self, Counter};
-use extent_store::{HostDir, NoSpace, Store, TooLong, TooSmall, Unaligned};
+use extent_store::{HostDir, NoSpace, Spent, Store, TooLong, TooSmall, Unaligned};
 use fxfs_platform::fuchsia::fxextent::{ExtentSource, FxExtent};
 use fxfs_platform::fuchsia::pager::Pager;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use storage_device::buffer_allocator::{BufferAllocator, BufferSource};
 use storage_device::{NoExtent, OtherBranch, SealedExtent};
 use vfs::execution_scope::ExecutionScope;
@@ -98,17 +100,78 @@ struct ExtentCache {
     _executor: Executor,
 }
 
-/// A sealed extent cached, and the store its pages are read from.
+/// A sealed extent cached, and the stores its pages are read from.
 struct Cached {
     extent: Arc<FxExtent>,
-    store: Arc<Store<HostDir>>,
+    /// fxdax: those that asked for it (TASK-79.7).
+    holders: Arc<Holders>,
     /// fxdax: what waits for the guest that sealed it to lose its access to its pages, if the
     /// sealing commit didn't (`ExtentStore::commit`): another store's guest, a fork's, waits
     /// for it before it maps them.
-    sealing: Option<Arc<dyn Deferred>>,
+    sealing: Option<Sealing>,
     /// fxdax: when it was last asked for, by [`CACHE_CLOCK`]: those longest ago are evicted first
     /// (TASK-50.3).
     used: AtomicU64,
+}
+
+/// fxdax: a seal of a cached extent not yet made: its store's guest may store to its pages until
+/// it is.
+struct Sealing {
+    store: Weak<Store<HostDir>>,
+    made: Arc<dyn Deferred>,
+}
+
+/// fxdax: the stores a cached extent's pages are read from (TASK-79.7): each that asked for it,
+/// as forks of a base share it, held weakly, so that the cache keeps none open, nor its files and
+/// disk space, once it closes. A page-in reads through the first open still that holds the extent,
+/// or keeps it for a follower's view: a store that frees an extent its siblings map, or closes,
+/// leaves them reading it through theirs. Each holds the same data by its ID, which its branch
+/// writes once (TASK-79.6).
+#[derive(Default)]
+struct Holders(Mutex<Vec<Holder>>);
+
+/// A store a cached extent's pages are read from, and its object storage, which holds them if the
+/// store holds them without their data.
+struct Holder {
+    store: Weak<Store<HostDir>>,
+    remote: Option<Weak<crate::remote::Fetcher>>,
+}
+
+/// A [`Holder`] open still.
+type OpenHolder = (Arc<Store<HostDir>>, Option<Arc<crate::remote::Fetcher>>);
+
+impl Holders {
+    /// Adds `store`, reading through `remote`, unless it is there, letting go of those closed.
+    fn add(&self, store: &Arc<Store<HostDir>>, remote: Option<&Arc<crate::remote::Fetcher>>) {
+        let mut holders = self.0.lock().unwrap();
+        holders.retain(|holder| holder.store.strong_count() > 0);
+        if !holders.iter().any(|holder| std::ptr::eq(holder.store.as_ptr(), Arc::as_ptr(store))) {
+            let (store, remote) = (Arc::downgrade(store), remote.map(Arc::downgrade));
+            holders.push(Holder { store, remote });
+        }
+    }
+
+    /// Those open still, in the order they asked, with their object storage.
+    fn open(&self) -> Vec<OpenHolder> {
+        let holders = self.0.lock().unwrap();
+        (holders.iter())
+            .filter_map(|holder| {
+                Some((holder.store.upgrade()?, holder.remote.as_ref().and_then(Weak::upgrade)))
+            })
+            .collect()
+    }
+
+    /// Whether one is open still.
+    fn any_open(&self) -> bool {
+        self.0.lock().unwrap().iter().any(|holder| holder.store.strong_count() > 0)
+    }
+
+    /// Whether one open still, but `store`, holds `extent`.
+    fn another_holds(&self, store: &Arc<Store<HostDir>>, extent: storage_device::ExtentId) -> bool {
+        (self.open().into_iter())
+            .filter(|(holder, _)| !Arc::ptr_eq(holder, store))
+            .any(|(holder, _)| holder.extent(extent).is_ok_and(|held| held.is_some()))
+    }
 }
 
 /// fxdax: the cache's clock, which counts the extents asked for.
@@ -120,6 +183,13 @@ static CACHE_CLOCK: AtomicU64 = AtomicU64::new(0);
 /// it. Past this, those asked for longest ago that nothing else holds (no window maps them) go,
 /// down to seven eighths of it; one asked for again is read anew from its store. Tests lower it.
 static MOST_CACHED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1 << 16);
+
+/// fxdax: the number of extents past which the cache next lets go of those over its bound: the
+/// bound, or, if its last pass couldn't get below it, as the windows' mappings hold the extents
+/// they map, an eighth of the bound more than it left (TASK-109.2). Each lookup past the bound
+/// sorted every extent cached, under the cache's lock, and let go of none: an 8 GiB window,
+/// mapping more than the bound, never full, so never reclaiming, made each MAP 3-6 ms.
+static TRIM_AT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// zircon's `ZX_VMO_OP_FXDAX_EVICT`: a pager-backed VMO's clean pages evicted now, whatever their
 /// age (`zircon::vm::vm_object_paged::VmObjectPaged::evict_range`).
@@ -234,12 +304,12 @@ impl ExtentCache {
     }
 }
 
-/// A sealed extent's contents, in a store, or, fxdax, in object storage, if the store holds it
-/// without its data.
+/// A sealed extent's contents, in the stores that hold it, or, fxdax, in object storage, if one
+/// holds it without its data.
 struct StoredExtent {
-    store: Arc<Store<HostDir>>,
+    /// fxdax: the stores it is read through (TASK-79.7).
+    holders: Arc<Holders>,
     extent: storage_device::ExtentId,
-    remote: Option<Arc<crate::remote::Fetcher>>,
     /// Where the parts of the object its data is in begin in it (`read_ahead_phase`).
     phase: u64,
     /// fxdax: what records its page-ins for its base's boot profile, if anything does.
@@ -247,10 +317,12 @@ struct StoredExtent {
 }
 
 impl StoredExtent {
+    /// `extent`, read through `holders`, laid out as `store`, reading through `remote`, holds it.
     fn new(
-        store: Arc<Store<HostDir>>,
+        holders: Arc<Holders>,
+        store: &Store<HostDir>,
+        remote: Option<&crate::remote::Fetcher>,
         extent: storage_device::ExtentId,
-        remote: Option<Arc<crate::remote::Fetcher>>,
         recorder: Option<Arc<Recorder>>,
     ) -> Self {
         // Its offset in the data of the object it is in: a segment's, its own file's, or, fxdax,
@@ -258,13 +330,13 @@ impl StoredExtent {
         let offset = match store.place(extent) {
             Ok(Some(extent_store::Place::Run { offset, .. })) => offset,
             Ok(Some(extent_store::Place::Remote)) => {
-                remote.as_ref().and_then(|remote| remote.offset(extent)).unwrap_or(0)
+                remote.and_then(|remote| remote.offset(extent)).unwrap_or(0)
             }
             _ => 0,
         };
         // In whole pages, which page-ins are.
         let phase = offset % extent_frame::PART / page_size() * page_size();
-        Self { store, extent, remote, phase, recorder }
+        Self { holders, extent, phase, recorder }
     }
 }
 
@@ -281,35 +353,39 @@ impl ExtentSource for StoredExtent {
             let extent = ExtentId { branch: self.extent.branch, sequence: self.extent.sequence };
             recorder.record(extent, offset, buf.len() as u64);
         }
-        // fxdax: an extent freed since it was mapped, which a follower's view keeps, reads as
-        // kept (doc-8).
-        let read = match self.store.read(self.extent, offset, buf) {
-            Err(error) if error.downcast_ref::<NoExtent>().is_some() => {
-                self.store.read_kept(self.extent, offset, buf)
-            }
-            read => read,
-        };
-        match read {
-            Err(error) if error.downcast_ref::<extent_store::RemoteData>().is_some() => {
-                let Some(remote) = &self.remote else {
-                    return Box::pin(std::future::ready(Err(error)));
-                };
-                let fetched = remote.read(self.extent, offset, buf.len() as u64);
-                Box::pin(async move {
-                    let data = fetched.await?;
-                    stats::add(Counter::FetchedBytes, data.len() as u64);
-                    buf[..data.len()].copy_from_slice(&data);
-                    buf[data.len()..].fill(0);
-                    Ok(())
-                })
-            }
-            read => {
-                if read.is_ok() {
-                    stats::add(Counter::PageInBytes, buf.len() as u64);
+        // fxdax: through the first of the stores that asked for it that holds it still (TASK-79.7).
+        let mut failed = anyhow::Error::new(NoExtent(self.extent));
+        for (store, remote) in self.holders.open() {
+            // fxdax: an extent freed since it was mapped, which a follower's view keeps, reads as
+            // kept (doc-8).
+            let read = match store.read(self.extent, offset, buf) {
+                Err(error) if error.downcast_ref::<NoExtent>().is_some() => {
+                    store.read_kept(self.extent, offset, buf)
                 }
-                Box::pin(std::future::ready(read))
+                read => read,
+            };
+            match read {
+                Ok(()) => {
+                    stats::add(Counter::PageInBytes, buf.len() as u64);
+                    return Box::pin(std::future::ready(Ok(())));
+                }
+                Err(error)
+                    if error.downcast_ref::<extent_store::RemoteData>().is_some()
+                        && let Some(remote) = remote =>
+                {
+                    let fetched = remote.read(self.extent, offset, buf.len() as u64);
+                    return Box::pin(async move {
+                        let data = fetched.await?;
+                        stats::add(Counter::FetchedBytes, data.len() as u64);
+                        buf[..data.len()].copy_from_slice(&data);
+                        buf[data.len()..].fill(0);
+                        Ok(())
+                    });
+                }
+                Err(error) => failed = error,
             }
         }
+        Box::pin(std::future::ready(Err(failed)))
     }
 
     /// A part of an object (`extent_frame::PART`), which a sealed extent's data is stored and
@@ -595,6 +671,7 @@ fn errno(error: anyhow::Error) -> Errno {
     } else if error.downcast_ref::<NoExtent>().is_some() {
         Errno::ENOENT
     } else if error.downcast_ref::<SealedExtent>().is_some()
+        || error.downcast_ref::<Spent>().is_some()
         || error.downcast_ref::<OtherBranch>().is_some()
     {
         Errno::EPERM
@@ -1206,24 +1283,28 @@ impl ExtentStore {
             }
         }
         self.store.free(extent.into()).map_err(errno)?;
-        // Its pages, if read from this store: another that holds it reads them anew.
-        let cached = {
-            let mut extents = extent_cache().extents.lock().unwrap();
-            let key = (self.arenas.of(extent), extent);
-            if extents.get(&key).is_some_and(|cached| Arc::ptr_eq(&cached.store, &self.store)) {
-                extents.remove(&key)
-            } else {
-                None
-            }
+        let cache = extent_cache();
+        let key = (self.arenas.of(extent), extent);
+        let found = {
+            let extents = cache.extents.lock().unwrap();
+            extents.get(&key).map(|cached| (cached.extent.clone(), cached.holders.clone()))
         };
+        let Some((cached, holders)) = found else { return Ok(()) };
+        // fxdax: its pages, unless another store that asked for them holds it still, which reads
+        // them through itself (TASK-79.7): one that holds it reads them anew.
+        if !holders.another_holds(&self.store, extent.into()) {
+            let mut extents = cache.extents.lock().unwrap();
+            let same = extents.get(&key).is_some_and(|now| Arc::ptr_eq(&now.extent, &cached));
+            let removed = same.then(|| extents.remove(&key));
+            drop(extents);
+            // Freed past the cache's lock: an extent's pager deregisters it as it goes.
+            drop(removed);
+        }
         // fxdax: the window's mappings of it, which kept its pages, map zeros instead: a guest
         // rewriting the same blocks, sealing each version (a database's log, fsynced at each
         // transaction), filled the cache with pages only the window's mappings kept, which no
         // eviction could take (ENOMEM).
-        if let Some(cached) = cached {
-            self.replace_kept(cached.extent.identity())?;
-        }
-        Ok(())
+        self.replace_kept(cached.identity())
     }
 
     /// Maps zeros where the window maps what keeps a freed extent's pages, which has the identity
@@ -1390,7 +1471,8 @@ impl ExtentStore {
                 let mut extents = extent_cache().extents.lock().unwrap();
                 for (extent, _) in &sealed {
                     if let Some(cached) = extents.get_mut(&(self.arenas.of(*extent), *extent)) {
-                        cached.sealing = Some(deferred.clone());
+                        let store = Arc::downgrade(&self.store);
+                        cached.sealing = Some(Sealing { store, made: deferred.clone() });
                     }
                 }
                 drop(extents);
@@ -1652,7 +1734,11 @@ impl ExtentStore {
                 Some((_, false)) if writable => return Err(Errno::EPERM),
                 Some((_, false)) => return Ok(false),
                 Some((len, true)) => len,
-                None if writable => 0,
+                // fxdax: one its branch never wrote, nor sealed (TASK-79.6).
+                None if writable => {
+                    self.store.may_open(extent.into()).map_err(errno)?;
+                    0
+                }
                 None => return Err(Errno::ENOENT),
             };
             let vmo =
@@ -1870,7 +1956,8 @@ fn public_branches(dir: &Path) -> std::collections::BTreeSet<u64> {
 }
 
 /// The sealed `extent`, of `len` bytes, in the cache, cached from `store` if it isn't: read from
-/// it, or, fxdax, from `remote`, with its page-ins recorded by `recorder`, if any.
+/// it, or, fxdax, from `remote`, with its page-ins recorded by `recorder`, if any; and, fxdax, from
+/// any other store that asked for it, which `store` is one of from now on (TASK-79.7).
 fn cached(
     store: &Arc<Store<HostDir>>,
     arena: ArenaId,
@@ -1887,11 +1974,13 @@ fn cached(
             // fxdax: its VMO, and its arena's buffers if it is the arena's first, made, or, the
             // kernel's handles run out (TASK-104, TASK-105), the extents nothing else holds let go
             // of, half of them, and made once more.
+            let holders = Arc::new(Holders::default());
             let make = || {
                 let source = StoredExtent::new(
-                    store.clone(),
+                    holders.clone(),
+                    store,
+                    remote.as_deref(),
                     extent.into(),
-                    remote.clone(),
                     recorder.clone(),
                 );
                 with_arena(arena, || {
@@ -1916,20 +2005,24 @@ fn cached(
                     })?
                 }
             };
-            let cached = Cached {
-                extent: made,
-                store: store.clone(),
-                sealing: None,
-                used: AtomicU64::new(0),
-            };
+            let cached = Cached { extent: made, holders, sealing: None, used: AtomicU64::new(0) };
             extents.insert(key, cached);
         }
         let cached = extents.get(&key).expect("cached just now");
         cached.used.store(CACHE_CLOCK.fetch_add(1, Ordering::Relaxed) + 1, Ordering::Relaxed);
-        let shared = !Arc::ptr_eq(&cached.store, store);
-        let found = (cached.extent.clone(), cached.sealing.clone().filter(|_| shared));
+        cached.holders.add(store, remote.as_ref());
+        let sealing = (cached.sealing.as_ref())
+            .filter(|sealing| !std::ptr::eq(sealing.store.as_ptr(), Arc::as_ptr(store)))
+            .map(|sealing| sealing.made.clone());
+        let found = (cached.extent.clone(), sealing);
         let most = MOST_CACHED.load(Ordering::Relaxed);
-        let gone = (extents.len() > most).then(|| let_go_least_used(&mut extents, most));
+        let gone = (extents.len() > most.max(TRIM_AT.load(Ordering::Relaxed))).then(|| {
+            let started = std::time::Instant::now();
+            let gone = let_go_least_used(&mut extents, most);
+            TRIM_AT.store(extents.len() + most / 8, Ordering::Relaxed);
+            stats::count_since(Counter::CacheTrims, Counter::CacheTrimNs, started);
+            gone
+        });
         drop(extents);
         // Freed past the cache's lock: an extent's pager deregisters it as it goes.
         drop(gone);
@@ -1950,11 +2043,14 @@ fn let_go_least_used(
     extents: &mut HashMap<(ArenaId, ExtentId), Cached>,
     most: usize,
 ) -> Vec<Cached> {
-    let mut idle: Vec<(u64, (ArenaId, ExtentId))> = (extents.iter())
+    // fxdax: those no store open reads first, which none asks for but to cache them anew.
+    let mut idle: Vec<((bool, u64), (ArenaId, ExtentId))> = (extents.iter())
         .filter(|(_, cached)| Arc::strong_count(&cached.extent) == 1)
-        .map(|(key, cached)| (cached.used.load(Ordering::Relaxed), *key))
+        .map(|(key, cached)| {
+            ((cached.holders.any_open(), cached.used.load(Ordering::Relaxed)), *key)
+        })
         .collect();
-    idle.sort_unstable_by_key(|(used, _)| *used);
+    idle.sort_unstable_by_key(|(order, _)| *order);
     let excess = extents.len().saturating_sub(most - most / 8);
     idle.into_iter().take(excess).filter_map(|(_, key)| extents.remove(&key)).collect()
 }
@@ -3222,11 +3318,85 @@ mod tests {
         // Unmapped, it stays cached, for the next read or mapping, until the kernel evicts its
         // pages.
         assert!(Arc::ptr_eq(&cached(extent).unwrap(), &extent_cached));
-        drop(extent_cached);
-        // Freed by the store whose cached pages they are, it is no longer cached.
+        // fxdax: freed by one store, it stays cached for the other, which holds it still
+        // (TASK-79.7); freed by that one too, it is no longer cached.
         store.free(extent).unwrap();
-        assert!(cached(extent).is_none());
+        assert!(Arc::ptr_eq(&cached(extent).unwrap(), &extent_cached));
         assert_eq!(read(&copy, extent, 0, BLOCK), Ok(pattern(6, BLOCK)));
+        drop(extent_cached);
+        copy.free(extent).unwrap();
+        assert!(cached(extent).is_none());
+    }
+
+    /// TASK-79.6: an extent freed once sealed is mapped writably, and written, no more: a fork
+    /// that shares its pages through the cache, by its ID, would read what its writer stored in
+    /// them as its own.
+    #[test]
+    fn freed_extents_are_written_no_more() {
+        let (store, dir) = store(1 << 20);
+        let ps = page_size();
+        let extent = id(&store, 1);
+        write(&store, extent, 0, &pattern(6, ps as usize)).unwrap();
+        store.commit(None).unwrap();
+        let fork_path = dir.path().join("fork");
+        store.fork(&fork_path, store.branch() + 1).unwrap();
+        let fork = ExtentStore::open(&fork_path).unwrap();
+        assert_eq!(read(&fork, extent, 0, BLOCK), Ok(pattern(6, BLOCK)));
+
+        store.free(extent).unwrap();
+        store.commit(None).unwrap();
+        let window = store.create_dax_window(ps, None).unwrap();
+        assert_eq!(store.map(extent, 0, ps, 0, true), Err(Errno::EPERM));
+        assert_eq!(write(&store, extent, 0, &pattern(7, BLOCK)), Err(Errno::EPERM));
+        drop(window);
+        assert_eq!(read(&fork, extent, 0, BLOCK), Ok(pattern(6, BLOCK)));
+    }
+
+    /// TASK-79.7: an extent forks share in the cache pages in through any of them that holds it:
+    /// one that frees it, the one it was cached through, leaves the others' mappings of it paging
+    /// in through theirs.
+    #[test]
+    fn forks_page_in_what_a_sibling_freed() {
+        let (base, dir) = store(1 << 20);
+        let ps = page_size();
+        let extent = id(&base, 1);
+        write(&base, extent, 0, &pattern(6, ps as usize)).unwrap();
+        base.commit(None).unwrap();
+        let forks: Vec<ExtentStore> = (1..=2)
+            .map(|fork| {
+                let path = dir.path().join(format!("fork-{fork}"));
+                base.fork(&path, base.branch() + fork).unwrap();
+                ExtentStore::open(&path).unwrap()
+            })
+            .collect();
+        drop(base);
+        let windows: Vec<DaxWindow> =
+            forks.iter().map(|fork| fork.create_dax_window(ps, None).unwrap()).collect();
+        for fork in &forks {
+            fork.map(extent, 0, ps, 0, false).unwrap();
+        }
+        forks[0].free(extent).unwrap();
+        forks[0].commit(None).unwrap();
+        block_on(windows[1].fault(0, Access::Read)).unwrap();
+        // SAFETY: The test faulted the page in, and nothing writes it.
+        let mapped = unsafe { std::slice::from_raw_parts(windows[1].host_base(), ps as usize) };
+        assert!(mapped == pattern(6, ps as usize), "the window maps other data");
+    }
+
+    /// TASK-79.7: the cache keeps no store it read an extent through once it closes, nor its
+    /// files and disk space: with hundreds of forks, the daemon's file descriptors ran out.
+    #[test]
+    fn the_cache_keeps_no_store_closed() {
+        let (store, _dir) = store(1 << 20);
+        let ps = page_size();
+        let extent = id(&store, 1);
+        write(&store, extent, 0, &pattern(6, ps as usize)).unwrap();
+        store.commit(None).unwrap();
+        assert_eq!(read(&store, extent, 0, BLOCK), Ok(pattern(6, BLOCK)));
+        assert!(cached(extent).is_some());
+        let closed = Arc::downgrade(&store.store);
+        drop(store);
+        assert!(closed.upgrade().is_none(), "the cache keeps the store");
     }
 
     /// A read-only mapping of an open extent maps its memory, which sees what is written and
@@ -3299,6 +3469,36 @@ mod tests {
             kept
         };
         assert_eq!(kept, [1, 14, 15, 16, 17, 18, 19, 20]);
+        drop(window);
+    }
+
+    /// TASK-109.2: past its bound, with more extents than the bound held by a window's mappings,
+    /// which it can't let go of, the cache looks through its extents again only once it grows by
+    /// an eighth of its bound: it did at every lookup, each a sort of every extent cached.
+    #[test]
+    fn the_cache_trims_what_windows_hold_once_per_eighth_of_its_bound() {
+        const MOST: usize = 64;
+        super::MOST_CACHED.store(MOST, Ordering::Relaxed);
+        let (store, _dir) = store(8 << 20);
+        let ps = page_size();
+        let (mapped, looked_up) = (2 * MOST as u64, 4 * MOST as u64);
+        for sequence in 1..=mapped + looked_up {
+            write(&store, id(&store, sequence), 0, &pattern(sequence as u8, ps as usize)).unwrap();
+        }
+        store.commit(None).unwrap();
+        let window = store.create_dax_window(mapped * ps, None).unwrap();
+        for sequence in 1..=mapped {
+            store.map(id(&store, sequence), 0, ps, (sequence - 1) * ps, false).unwrap();
+        }
+        let before = stats::stats();
+        for sequence in mapped + 1..=mapped + looked_up {
+            let extent = id(&store, sequence);
+            drop(super::cached(&store.store, ArenaId::DEFAULT, None, None, extent, ps).unwrap());
+        }
+        let trims = stats::stats().since(&before).cache_trims;
+        assert!(trims <= looked_up / (MOST as u64 / 8) + 1, "{trims} trims of the cache");
+        let cached = extent_cache().extents.lock().unwrap().len() as u64;
+        assert!(cached <= mapped + MOST as u64 / 8, "{cached} extents cached");
         drop(window);
     }
 

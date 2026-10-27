@@ -719,6 +719,37 @@ fn contents_survive_remount() {
     })
 }
 
+/// fxdax TASK-79.6: an image formatted, closed, then opened again and mounted, as a guest mounts
+/// the store its host formatted, takes writes, synced: its journal writes the blocks of its tail
+/// minted before, never written, below the store's next sequence number, which the store took for
+/// spent once, failing the journal's flush.
+#[test]
+fn images_opened_again_take_synced_writes() {
+    block_on(async {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("image");
+        let fs = Filesystem::format(Storage::create(&path, 64 << 20).unwrap()).await.unwrap();
+        let (file, _) = fs.root().create(b"file", 0o644, OWNER).await.unwrap();
+        file.write(0, b"formatted").await.unwrap();
+        drop(file);
+        drop(fs.close().await.expect("close failed"));
+
+        for round in 0..3u8 {
+            let fs = Filesystem::mount(Storage::open(&path).unwrap()).await.expect("mount failed");
+            let (file, _) = fs.root().lookup(b"file").await.unwrap();
+            file.write(0, &[round; 8192]).await.unwrap();
+            file.fsync().await.expect("fsync failed");
+            drop(file);
+            drop(fs.close().await.expect("close failed"));
+        }
+        let fs = Filesystem::mount(Storage::open(&path).unwrap()).await.expect("mount failed");
+        let (file, _) = fs.root().lookup(b"file").await.unwrap();
+        assert!(read_all(&file).await == [2; 8192], "the file holds other data");
+        drop(file);
+        fs.close().await.expect("close failed").check().await.expect("check failed");
+    })
+}
+
 #[test]
 fn contents_survive_remount_of_an_image() {
     block_on(async {

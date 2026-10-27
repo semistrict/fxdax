@@ -20,6 +20,7 @@ use crate::layout::{
     Change, Data, EXTENTS, Extent, FileKey, Piece, SegmentId, branch_dir, extent_path,
 };
 use crate::segments::{Closing, Segments};
+use crate::spent::Spent;
 use crate::store::{Info, NoSpace, TooSmall};
 use crate::sync::rules;
 use crate::uploads::Uploads;
@@ -41,6 +42,8 @@ pub(crate) struct State<F> {
     /// The root as of the last commit.
     pub root: Vec<u8>,
     pub next_sequence: u64,
+    /// fxdax: the sequence numbers of its own extents it opens no more (TASK-79.6).
+    pub spent: Spent,
     /// What it changed since the last commit, which the next records.
     pub uncommitted: Uncommitted<F>,
     /// The gate writes pass.

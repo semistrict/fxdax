@@ -17,10 +17,12 @@ use crate::layout::{
     segment_path,
 };
 use crate::segments::{Reaped, footer_last, segment_footer};
+use crate::spent::Spent;
 use crate::store::Options;
 use anyhow::{Error, anyhow, bail, ensure};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+use storage_device::ExtentId;
 
 /// Applies `change`, recovering it from an index.
 fn apply(extents: &mut Extents, change: Change) {
@@ -60,7 +62,8 @@ fn apply(extents: &mut Extents, change: Change) {
 impl Checkpoint {
     /// The checkpoint of a branch as of commit `epoch`: its next sequence number, its root, the
     /// segment open, and its extents, `extents`, as the index of a branch over `origin` holds
-    /// them: what they hold over `origin`, or, with none, all they hold.
+    /// them: what they hold over `origin`, or, with none, all they hold; fxdax: and, of the branch
+    /// `spent` names, the sequence numbers it spent.
     pub(crate) fn of(
         epoch: u64,
         next_sequence: u64,
@@ -68,9 +71,11 @@ impl Checkpoint {
         segment: u64,
         extents: &Extents,
         origin: Option<&Arc<Layer>>,
+        (branch, spent): (u64, &Spent),
     ) -> Self {
         let (extents, gone) = extents.overlay(origin);
-        Self { epoch, next_sequence, root: root.to_vec(), segment, extents, gone }
+        let spent = spent.runs().map(|(first, end)| (ExtentId::new(branch, first), end)).collect();
+        Self { epoch, next_sequence, root: root.to_vec(), segment, extents, gone, spent }
     }
 }
 
@@ -83,6 +88,8 @@ pub(crate) struct Recovered {
     /// The segment open as of its checkpoint, whose footer follows it.
     pub segment: u64,
     pub extents: Extents,
+    /// fxdax: the sequence numbers of its own extents it freed once sealed (TASK-79.6).
+    pub spent: Spent,
 }
 
 impl Recovered {
@@ -95,21 +102,37 @@ impl Recovered {
         for extent in checkpoint.gone {
             extents.remove(&extent);
         }
+        let mut spent = Spent::default();
+        for (first, end) in checkpoint.spent {
+            spent.insert_run(first.sequence, end);
+        }
         Self {
             epoch: checkpoint.epoch,
             next_sequence: checkpoint.next_sequence,
             root: checkpoint.root,
             segment: checkpoint.segment,
             extents,
+            spent,
         }
     }
 
-    /// Applies `delta`, if it follows on, and returns whether it did.
-    fn apply(&mut self, delta: Delta) -> bool {
+    /// Applies `delta`, `branch`'s, if it follows on, and returns whether it did.
+    fn apply(&mut self, branch: u64, delta: Delta) -> bool {
         if delta.epoch != self.epoch + 1 {
             return false;
         }
+        // fxdax: those it wrote in the epoch, open, whose frees spend nothing.
+        let mut written = std::collections::HashSet::new();
         for change in delta.changes {
+            match change {
+                Change::Write { extent, .. } | Change::WriteOwn { extent, .. } => {
+                    written.insert(extent);
+                }
+                Change::Free(extent) if extent.branch == branch && !written.contains(&extent) => {
+                    self.spent.insert(extent.sequence);
+                }
+                _ => {}
+            }
             apply(&mut self.extents, change);
         }
         self.epoch = delta.epoch;
@@ -122,7 +145,7 @@ impl Recovered {
 
     /// Its checkpoint, as the index of a branch over `origin` holds it: what it holds over
     /// `origin`, or, with none, all it holds.
-    fn checkpoint(&self, origin: Option<&Arc<Layer>>) -> Checkpoint {
+    fn checkpoint(&self, branch: u64, origin: Option<&Arc<Layer>>) -> Checkpoint {
         Checkpoint::of(
             self.epoch,
             self.next_sequence,
@@ -130,6 +153,7 @@ impl Recovered {
             self.segment,
             &self.extents,
             origin,
+            (branch, &self.spent),
         )
     }
 }
@@ -177,7 +201,7 @@ pub(crate) fn recover<D: Dir>(
     let (checkpoint, deltas) = newest_checkpoint(dir, branch)?;
     let mut recovered = Recovered::of(checkpoint, base);
     for delta in deltas {
-        if !recovered.apply(delta) {
+        if !recovered.apply(branch, delta) {
             break;
         }
     }
@@ -218,7 +242,7 @@ pub(crate) fn layers_at<D: Dir>(
             bail!("branch {branch:#x}'s index file {number:#x} ends before epoch {epoch}");
         };
         ensure!(
-            recovered.apply(delta),
+            recovered.apply(branch, delta),
             "branch {branch:#x}'s index file {number:#x} skips an epoch before {epoch}"
         );
     }
@@ -234,7 +258,7 @@ pub(crate) fn write_checkpoint<D: Dir>(
     state: &Recovered,
     origin: Option<&Arc<Layer>>,
 ) -> Result<(D::File, u64), Error> {
-    let bytes = encode(&Record::Checkpoint(state.checkpoint(origin).table()?));
+    let bytes = encode(&Record::Checkpoint(state.checkpoint(branch, origin).table()?));
     let file = dir.create(&index_path(branch, number), false)?;
     file.write_at(&bytes, 0)?;
     file.sync()?;
@@ -256,6 +280,7 @@ pub(crate) fn start_fork<D: Dir>(
         root: origin.root().to_vec(),
         segment: 0,
         extents: Extents::over(Some(origin.clone())),
+        spent: Spent::default(),
     };
     create_branch_dirs(dir, branch)?;
     // What an earlier opening wrote, before it could record that it had.
@@ -302,6 +327,11 @@ pub(crate) fn rebuild<D: Dir>(
             state.extents.insert(extent, Extent { len: location.len, data: Data::Own });
         }
         for extent in footer.frees {
+            // fxdax: as a delta's frees (`Recovered::apply`), of what the footer's segments
+            // sealed before, all of it: a footer records an epoch's last state of each.
+            if extent.branch == branch {
+                state.spent.insert(extent.sequence);
+            }
             state.extents.remove(&extent);
         }
         if let Some(root) = footer.root {
@@ -530,7 +560,7 @@ mod tests {
     }
 
     fn checkpoint(epoch: u64) -> impl FnOnce() -> Checkpoint {
-        move || state(epoch).checkpoint(None)
+        move || state(epoch).checkpoint(BRANCH, None)
     }
 
     /// The bytes of the record of `record`.
