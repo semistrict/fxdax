@@ -191,7 +191,11 @@ mod host {
                 // fxdax: a page synced, then stored to through a mapping, the fault's block moved
                 // and a seal right after: it holds what was synced, but for the byte stored, which
                 // it may or may not hold. It held zeros (TASK-79.11).
-                if output.lines().any(|line| line == "stored mapped") {
+                if self.dax {
+                    assert!(
+                        output.lines().any(|line| line == "stored mapped"),
+                        "the guest didn't store to {MAPPED_SYNCED}: {output:?}"
+                    );
                     let (file, _) = block_on(fs.root().lookup(MAPPED_SYNCED.as_bytes())).unwrap();
                     let mut contents = vec![0; 4096];
                     let read = block_on(file.read(0, &mut contents)).unwrap();
