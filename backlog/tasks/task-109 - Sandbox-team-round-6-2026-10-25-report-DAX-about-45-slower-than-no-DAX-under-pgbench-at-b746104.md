@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-25 23:26'
-updated_date: '2026-10-27 21:18'
+updated_date: '2026-10-27 22:35'
 labels: []
 dependencies: []
 priority: high
@@ -46,4 +46,6 @@ Bench VMs (2 vCPU, 2 GiB, Postgres defaults, no bucket latency, scale 50, 60 s, 
 2026-10-26: the user accepts one VM's DAX being slower than without (DAX is for N VMs sharing one copy). TASK-91.16 done: seals write-protect in place (5de767990); Fxfs DAX ~890 tps against ext4 DAX on pmem ~880 and ext4 pmem without DAX ~1,130 in the bench VMs (r144). AC1 and AC2 (10% of no DAX, 50 us per MAP) not met; left open for the user to close or reframe around density.
 
 2026-10-27 baseline at bf2223772 (GCE n2-standard-8, default suite fxfs-guest-pgbench[-dax], scale 50, -c 4 -j 2, 5x60 s): no DAX 1644-1684 tps, fsync commit 263 us; DAX 1108/1004/981/936/902 tps, fsyncs 43.9k->34.9k a run, guest commit 436->515 us (extentd commit 106->147 us, its seal part 48->83), ~3.7 window MAPs per fsync at ~290 us as the guest sees them (extentd's part 50-67 us); per run ~140k MAPs: evacuate 75-90k, restage 34-37k, reach 5-24k, grow 5-8k; window_full 228-355. VMM 'extentd client' thread ~16 s host system time a run (~114 us per MAP; AC2 wants <50). Each install is mmap(MAP_FIXED) + UFFDIO_REGISTER + (write-protect, mprotect) + MADV_POPULATE_WRITE + KVM_PRE_FAULT_MEMORY.
+
+Profile at bf2223772 (GCE n2-standard-8, perf record-all, pgbench-dax): the VMM's 'extentd client' thread is 23% of one CPU, not saturated; of it mmap(MAP_FIXED) 38% (unmap_region's TLB shootdowns: smp_call_function_many_cond 23%, kvm_mmu_notifier_invalidate_range_start 12%), KVM_PRE_FAULT_MEMORY 20%, leave_out 17%, recvmsg 10%, userfaultfd ioctls 8%. Landed: read-only maps no longer pre-faulted: client thread 3.38% -> 2.88% of host samples, tps 1108/1004/981/936/902 -> 1151/1054/987/958/969 (2 GiB). Per fsync: guest commit 425-515 us with DAX against 263 without; extentd's commit 106-147 us against 25 (writing the open extents ~28, store commit ~21, sealing the windows' mappings 48-83 us, growing over the runs); guest MAP ~280 us against extentd's 50-67. The tps decline over the runs at 2 GiB is window pressure: reach MAPs grow 5k -> 23k a run with window_full events; at 8 GiB reach stays ~4k, window never full, 1168/1063/960/1045/1016. What remains of the gap is per-transaction design cost: a restage MAP on the write path (~280 us) and a commit ~200 us dearer than without DAX.
 <!-- SECTION:NOTES:END -->
