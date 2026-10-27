@@ -841,7 +841,9 @@ impl<H: HostMemory> SecondStage for UffdSecondStage<H> {
             |()| self.install(addr, len, protection, memory),
         );
         self.trim();
-        if made && let Some(prefault) = &self.prefault {
+        if made && let Some(prefault) = &self.prefault
+            && Self::prefaults(protection)
+        {
             prefault.prefault(offset, len as u64);
         }
     }
@@ -997,8 +999,8 @@ impl<H: HostMemory> SecondStage for UffdSecondStage<H> {
         // again as it does, which a seal's, written and done with, mostly aren't, rather than
         // each at once (r116 against r117: 87 against 83 us of host time a window change).
         if made && let Some(prefault) = &self.prefault {
-            for (&(addr, len, ..), reprotected) in maps.iter().zip(reprotected) {
-                if !reprotected {
+            for (&(addr, len, _, protection), reprotected) in maps.iter().zip(reprotected) {
+                if !reprotected && Self::prefaults(protection) {
                     prefault.prefault((addr - self.base) as u64, len as u64);
                 }
             }
@@ -1029,6 +1031,17 @@ impl<H: HostMemory> SecondStage for UffdSecondStage<H> {
 }
 
 impl<H: HostMemory> UffdSecondStage<H> {
+    /// fxdax: whether memory the window maps with `protection` is mapped for the guest ahead of
+    /// its accesses (`Prefault`): writable, an open extent's, which the guest maps to write now;
+    /// not read-only, a sealed extent's, most of which the window maps as the guest's DAX moves
+    /// pages written already (its evacuation, 60% of pgbench's maps), and which the guest seldom
+    /// touches again. Mapped for it, the hypervisor's pre-fault took a fifth of the VM process's
+    /// time changing the window, and its pages, in the host's page tables, made each later unmap
+    /// of them flush the host's and the hypervisor's TLBs on every CPU (TASK-109).
+    fn prefaults(protection: Protection) -> bool {
+        protection == Protection::ReadWrite
+    }
+
     /// The memory of the page at `phys`, which the window maps with `protection`.
     fn memory(&self, phys: crate::kernel::PhysLocation, protection: Protection) -> Memory {
         // A page of an arena the window may not map is the daemon's error, which the guest must
@@ -1398,6 +1411,50 @@ mod tests {
         drop(dax);
         // SAFETY: Unmaps the memory, which nothing uses any more.
         assert_eq!(unsafe { libc::munmap(memory, 2 * ps) }, 0);
+    }
+
+    /// fxdax TASK-109: the hypervisor is told of the pages the window maps writable, to map them
+    /// for the guest ahead of its accesses, and not of those it maps read-only, which the guest's
+    /// accesses map.
+    #[test]
+    fn writable_maps_alone_are_prefaulted() {
+        struct Told(Mutex<Vec<(u64, u64)>>);
+        impl Prefault for Told {
+            fn prefault(&self, offset: u64, len: u64) {
+                self.0.lock().unwrap().push((offset, len));
+            }
+        }
+        let ps = page_size() as usize;
+        // SAFETY: Maps anonymous memory, which this test owns.
+        let memory = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                4 * ps,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                -1,
+                0,
+            )
+        };
+        assert_ne!(memory, libc::MAP_FAILED);
+        let base = memory as usize;
+        let file = zx::Vmo::create(4 * ps as u64).unwrap();
+        file.write(&vec![7; 4 * ps], 0).unwrap();
+        let told = Arc::new(Told(Mutex::new(Vec::new())));
+        // SAFETY: Only the test uses the memory, which outlives the window.
+        let stage =
+            unsafe { UffdSecondStage::in_process(base, 4 * ps as u64, Some(told.clone())) }
+                .unwrap();
+        let (dax, _window) = Dax::<()>::in_host_memory(stage).unwrap();
+        dax.window.map(0, &file, 0, 2 * ps as u64, false).unwrap();
+        dax.window.map(2 * ps as u64, &file, 2 * ps as u64, 2 * ps as u64, true).unwrap();
+        assert_eq!(*told.0.lock().unwrap(), [(2 * ps as u64, 2 * ps as u64)]);
+        // SAFETY: The memory is the window's, whose faults the fault thread serves.
+        assert_eq!(unsafe { (base as *const u8).read_volatile() }, 7);
+
+        drop(dax);
+        // SAFETY: Unmaps the memory, which nothing uses any more.
+        assert_eq!(unsafe { libc::munmap(memory, 4 * ps) }, 0);
     }
 
     /// Stores to pages mapped read-only, of a file whose pager tracks its dirty pages, fault as

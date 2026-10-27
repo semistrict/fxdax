@@ -3,10 +3,11 @@ id: TASK-109
 title: >-
   Sandbox team, round 6 (2026-10-25 report): DAX about 45% slower than no DAX
   under pgbench at b746104
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-10-25 23:26'
-updated_date: '2026-10-26 19:15'
+updated_date: '2026-10-27 21:18'
 labels: []
 dependencies: []
 priority: high
@@ -43,4 +44,6 @@ Our comparison, 2026-10-25 22:10-22:45 EDT, GCE n2-standard-8 us-east4-a, Postgr
 Bench VMs (2 vCPU, 2 GiB, Postgres defaults, no bucket latency, scale 50, 60 s, 3 iterations): ext4 on virtio-blk 1,140 tps (init 11.8 s), fxfs no-DAX 1,660 (11.4 s), fxfs DAX 405 (21.6 s): filed as TASK-109.3.
 
 2026-10-26: the user accepts one VM's DAX being slower than without (DAX is for N VMs sharing one copy). TASK-91.16 done: seals write-protect in place (5de767990); Fxfs DAX ~890 tps against ext4 DAX on pmem ~880 and ext4 pmem without DAX ~1,130 in the bench VMs (r144). AC1 and AC2 (10% of no DAX, 50 us per MAP) not met; left open for the user to close or reframe around density.
+
+2026-10-27 baseline at bf2223772 (GCE n2-standard-8, default suite fxfs-guest-pgbench[-dax], scale 50, -c 4 -j 2, 5x60 s): no DAX 1644-1684 tps, fsync commit 263 us; DAX 1108/1004/981/936/902 tps, fsyncs 43.9k->34.9k a run, guest commit 436->515 us (extentd commit 106->147 us, its seal part 48->83), ~3.7 window MAPs per fsync at ~290 us as the guest sees them (extentd's part 50-67 us); per run ~140k MAPs: evacuate 75-90k, restage 34-37k, reach 5-24k, grow 5-8k; window_full 228-355. VMM 'extentd client' thread ~16 s host system time a run (~114 us per MAP; AC2 wants <50). Each install is mmap(MAP_FIXED) + UFFDIO_REGISTER + (write-protect, mprotect) + MADV_POPULATE_WRITE + KVM_PRE_FAULT_MEMORY.
 <!-- SECTION:NOTES:END -->

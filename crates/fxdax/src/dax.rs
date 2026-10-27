@@ -143,8 +143,9 @@ pub trait Deferred: Send + Sync {
 #[cfg(target_os = "linux")]
 pub trait Prefault: Send + Sync {
     /// Maps the `len` bytes at `offset` into the window for the guest, which the window has just
-    /// mapped read-only in its host memory. It is called with the window's mappings locked, and must not
-    /// wait on the window, or for the guest.
+    /// mapped in its host memory, writable (fxdax: pages read-only are left to the guest's
+    /// accesses, TASK-109). It is called with the window's mappings locked, and must not wait on
+    /// the window, or for the guest.
     fn prefault(&self, offset: u64, len: u64);
 }
 
