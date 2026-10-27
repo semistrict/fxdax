@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-22 21:06'
+updated_date: '2026-10-27 13:41'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -39,3 +40,9 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity medium): docs/review
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-10-27: every Rust build keeps frame pointers now, by the user's request: .cargo/config.toml's build.rustflags (-Cforce-frame-pointers=yes), and Firecracker's .cargo/config.toml likewise; test-e2e.sh's separate frame-pointers extentd build and example-linux-host.sh's RUSTFLAGS are gone (example perf keeps its own target for line tables). The guest's Rust had them already (build-guest-sysroot.sh). Left: a bench perf profile of the VMM showing whole stacks (AC #1/#2).
+<!-- SECTION:NOTES:END -->

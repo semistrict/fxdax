@@ -1,0 +1,5 @@
+# fxdax: every build here keeps frame pointers, always: perf's call graphs walk them, through the
+# daemon, the VMM and the fxdax code it links alike (TASK-92.39). A RUSTFLAGS in the environment
+# replaces these; the guest's Rust (scripts/build-guest-sysroot.sh) sets its own, with them too.
+[build]
+rustflags = ["-Cforce-frame-pointers=yes"]

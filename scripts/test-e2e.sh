@@ -43,23 +43,14 @@ if [[ -z ${LIBCLANG_PATH:-} ]] && command -v llvm-config > /dev/null; then
 fi
 if [[ -n ${LIBCLANG_PATH:-} ]]; then export LIBCLANG_PATH; fi
 
-# Under the bench's perf (FXDAX_BENCH_PERF), with frame pointers, which its call graphs walk, in a
-# target of its own, as the flags differ.
-extentd_target="$root/target"
-# With FXDAX_FAILPOINTS, a daemon whose failpoints it sets (FAILPOINTS, the fail crate's): requests
+# With frame pointers, as every build here has them (.cargo/config.toml), which the bench's perf
+# call graphs walk (FXDAX_BENCH_PERF). With FXDAX_FAILPOINTS, a daemon whose failpoints it sets (FAILPOINTS, the fail crate's): requests
 # failing or waiting as it says, such as extentd::map=1%return(5) (TASK-44.10).
 extentd_features=()
 if [[ -n ${FXDAX_FAILPOINTS:-} ]]; then extentd_features=(--features failpoints); fi
-if [[ -n ${FXDAX_BENCH_PERF:-} ]]; then
-    extentd_target="$root/target/frame-pointers"
-    RUSTFLAGS="-C force-frame-pointers=yes" CARGO_TARGET_DIR="$extentd_target" \
-        cargo build --release --manifest-path "$root/Cargo.toml" -p fxdax --bin fxdax-extentd \
-        ${extentd_features[@]+"${extentd_features[@]}"}
-else
-    cargo build --release --manifest-path "$root/Cargo.toml" -p fxdax --bin fxdax-extentd \
-        ${extentd_features[@]+"${extentd_features[@]}"}
-fi
-extentd_bin="$extentd_target/release/fxdax-extentd"
+cargo build --release --manifest-path "$root/Cargo.toml" -p fxdax --bin fxdax-extentd \
+    ${extentd_features[@]+"${extentd_features[@]}"}
+extentd_bin="$root/target/release/fxdax-extentd"
 # From its directory, whose .cargo/config.toml sets its target directory and build environment.
 # For the host's target, Firecracker has no seccomp filter of its own, and allows every system
 # call. FXDAX_FIRECRACKER_SECCOMP builds it as production does, for musl, which compiles in its

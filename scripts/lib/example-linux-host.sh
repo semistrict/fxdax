@@ -17,13 +17,14 @@ shift 3
 source "$(dirname "${BASH_SOURCE[0]}")/linux-host-setup.sh"
 host_setup
 host_tree example-tree
-# Under perf (FXDAX_PERF=record): perf itself, and frame pointers, which its call graphs walk,
-# and symbols, in a target of their own, as the flags differ.
+# Under perf (FXDAX_PERF=record): perf itself, and symbols, in a target of their own, as the
+# profile differs. Its call graphs walk frame pointers, which every build here has
+# (.cargo/config.toml).
 target="$repo/target"
 if [[ ${FXDAX_PERF:-} == record ]]; then
     host_need perf
-    target="$repo/target/frame-pointers"
-    export RUSTFLAGS="-C force-frame-pointers=yes" CARGO_PROFILE_RELEASE_DEBUG=line-tables-only
+    target="$repo/target/perf"
+    export CARGO_PROFILE_RELEASE_DEBUG=line-tables-only
 fi
 host_record > "$results/host.txt"
 CARGO_TARGET_DIR="$target" \
