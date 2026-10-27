@@ -3,11 +3,11 @@ id: TASK-79.6
 title: >-
   The shared extent cache is keyed by guest extent IDs, which the host never
   enforces as write-once
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-21 20:58'
-updated_date: '2026-10-27 15:11'
+updated_date: '2026-10-27 15:15'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -31,15 +31,15 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity high): docs/reviews/
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A test reproduces the failure on the code before the fix
-- [ ] #2 Fixed, and the test passes on macOS and on Linux (GCE)
+- [x] #1 A test reproduces the failure on the code before the fix
+- [x] #2 Fixed, and the test passes on macOS and on Linux (GCE)
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -56,3 +56,9 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity high): docs/reviews/
 <!-- SECTION:NOTES:BEGIN -->
 First version (spend everything below next_sequence at open) broke every guest mounting a store written before (r149: the journal writes the tail it minted ahead in an earlier mount): replaced by the persisted record above; images_opened_again_take_synced_writes fails under the first version, passes now.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The store records its own extents freed once sealed (extent_store Spent, persisted via deltas, footer rebuilds and checkpoint 'spent' rows) and refuses to write or writably map them again (EPERM); fxdax's map_open checks Store::may_open. IDs minted but never written stay writable (Fxfs's journal tail across mounts; a first version that spent everything below next_sequence broke that, caught by r149 and by the new images_opened_again_take_synced_writes). Repro: fxdax extents::freed_extents_are_written_no_more accepted the rewrite on the old code. macOS scripts/test.sh: 2526 tests, Shuttle and script tests pass; Linux (GCE r155): workspace 2653 tests pass, guest suites pass (the mutant script test fixed after, passes on macOS). Commit 62fd9c83c.
+<!-- SECTION:FINAL_SUMMARY:END -->

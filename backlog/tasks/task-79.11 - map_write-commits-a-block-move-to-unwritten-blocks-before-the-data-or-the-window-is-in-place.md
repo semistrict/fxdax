@@ -3,11 +3,11 @@ id: TASK-79.11
 title: >-
   map_write commits a block move to unwritten blocks before the data or the
   window is in place
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-21 20:58'
-updated_date: '2026-10-27 14:12'
+updated_date: '2026-10-27 15:15'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -31,15 +31,15 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity high): docs/reviews/
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A test reproduces the failure on the code before the fix
-- [ ] #2 Fixed, and the test passes on macOS and on Linux (GCE)
+- [x] #1 A test reproduces the failure on the code before the fix
+- [x] #2 Fixed, and the test passes on macOS and on Linux (GCE)
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -58,3 +58,9 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity high): docs/reviews/
 
 r153 (GCE, exp/79.12-repro at the crash check's commit: main with fxfs.dax_fault_seals_moved and the crash check, without the fix): fxfs-guest-crash-dax failed, 'mapped-synced holds other data': the page synced, stored to through a mapping, its fault's move committed and sealed before the copy back, read as the move's new block after the crash. r151/r152 had not reached the move (the store full by 2 s; then the file's range reclaimed, so the fault took prepare_write's path, which reads the old block): the check now stores at 1 s, after a load maps the range. AC1 met.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A write fault passes its held page to map_write, and Fxfs writes it into the moved block in the moving transaction (DataObjectHandle::txn_map_write_holding); the copy back after the gate and its fxfs_write fallback are gone. Injection fxfs.dax_fault_seals_moved and a crash-dax check: the old kernel lost the synced page (r153), the fix keeps it in 3 rounds with the store required to happen (r158). The map_extents-failure half was fixed by TASK-79.106. Hand mutant held_not_copied_back retargeted as held_not_written. macOS scripts/test.sh: 2526 tests, Shuttle and script tests pass; Linux (GCE r155): workspace 2653 tests pass, guest suites pass (the mutant script test fixed after, passes on macOS). Commits 718788ca9, 7331c6d26.
+<!-- SECTION:FINAL_SUMMARY:END -->
