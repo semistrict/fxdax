@@ -6,7 +6,7 @@ title: >-
 status: In Progress
 assignee: []
 created_date: '2026-10-21 19:54'
-updated_date: '2026-10-24 00:54'
+updated_date: '2026-10-27 20:29'
 labels: []
 dependencies: []
 priority: high
@@ -38,4 +38,6 @@ Audit of the rest: allocator.rs's remaining release asserts (move_to, forget, re
 6dbc848: Hold-branch borrow; a shrinking truncate borrows metadata space (guest setattr), so a full filesystem's files can be cut. The enospc check (DAX only: buffered writes reserve nothing, TASK-80; fallocate reserves nothing by design) passes in the guest, but the image's fsck then warns once: TASK-82. The check stays uncommitted until TASK-82 is fixed.
 
 The enospc guest check is kept on branch enospc-check (66f6d20b) until TASK-82's fix.
+
+enospc check now on main (with TASK-80, TASK-82), in fxfs-guest-checks and -dax.
 <!-- SECTION:NOTES:END -->
