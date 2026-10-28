@@ -25,8 +25,9 @@ pub fn has_vmm() -> bool {
 /// A VM, as it is configured, until it boots: Firecracker's configuration.
 pub struct Vm {
     config: serde_json::Value,
-    /// The guest's environment.
-    env: Vec<CString>,
+    /// The kernel's arguments the test adds: the guest agent's environment (`NAME=value`), and
+    /// module parameters (`module.name=value`).
+    args: Vec<CString>,
     /// The disks and pmem devices added.
     disks: usize,
     pmems: usize,
@@ -70,7 +71,7 @@ impl Vm {
         });
         Ok(Self {
             config,
-            env: Vec::new(),
+            args: Vec::new(),
             disks: 0,
             pmems: 0,
             read_only_root: false,
@@ -201,7 +202,12 @@ impl Vm {
 
     /// Sets `var`, `NAME=value`, in the guest agent's environment.
     pub fn env(&mut self, var: &CStr) {
-        self.env.push(var.to_owned());
+        self.args.push(var.to_owned());
+    }
+
+    /// Sets the kernel's module parameter `param`, `module.name=value`, as it boots.
+    pub fn module_param(&mut self, param: &CStr) {
+        self.args.push(param.to_owned());
     }
 
     /// Boots the guest, with `root` as its root filesystem, running the guest agent there
@@ -258,8 +264,8 @@ impl Vm {
                 CMDLINE.to_owned()
             }
         };
-        for var in &self.env {
-            let var = var.to_str().context("the guest's environment is not UTF-8")?;
+        for var in &self.args {
+            let var = var.to_str().context("the kernel's arguments are not UTF-8")?;
             ensure!(
                 !var.contains(char::is_whitespace),
                 "the kernel's command line cannot pass {var:?}"

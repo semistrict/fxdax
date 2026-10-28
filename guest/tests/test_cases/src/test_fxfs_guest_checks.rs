@@ -20,6 +20,10 @@ use macros::{guest, host};
 pub struct TestFxfsGuestChecks {
     /// Whether the device has a DAX window, and the guest maps files into it.
     pub dax: bool,
+    /// fxdax: whether the guest's DAX code sleeps at the steps of its protocol where tasks race
+    /// (fxfs.dax_delay_us), from the run's seed, widening the races' windows (TASK-119.3).
+    #[cfg_attr(feature = "guest", allow(dead_code))]
+    pub delay: bool,
 }
 
 /// Offset of the second 2 MiB DAX chunk.
@@ -28,6 +32,9 @@ const MAPPED_SIZE: usize = CHUNK + (1 << 20);
 const HOST_CONTENT: &[u8] = b"written by the host\n";
 const WRITTEN: &[u8] = b"written through FUSE_WRITE\n";
 const EVICTED: &[u8] = b"written back when its inode is evicted\n";
+/// fxdax: random_ops's file, and its model's (TASK-119.2).
+const RANDOM_OPS: &str = "random-ops";
+const RANDOM_OPS_MODEL: &str = "random-ops.model";
 /// Size of the image, which is sparse.
 #[cfg_attr(feature = "guest", allow(dead_code))]
 const IMAGE_SIZE: u64 = 256 << 20;
@@ -89,6 +96,16 @@ mod host {
         buf
     }
 
+    /// fxdax: the seed of a run's random choices (random_ops's operations, fxfs.dax_delay_us's
+    /// delays): FXDAX_SEED's, to replay a run, or else a new one each run, which the run says
+    /// (TASK-119.2).
+    fn seed() -> u64 {
+        std::env::var("FXDAX_SEED").ok().and_then(|seed| seed.parse().ok()).unwrap_or_else(|| {
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap();
+            now.as_nanos() as u64 ^ u64::from(std::process::id()) << 32
+        })
+    }
+
     impl Test for TestFxfsGuestChecks {
         fn should_run(&self) -> ShouldRun {
             fxdax_guest_should_run()
@@ -111,13 +128,24 @@ mod host {
             // `seal_race,sparse`), for a quick run: all of them otherwise.
             let only = std::env::var("FXDAX_CHECKS").unwrap_or_default();
             vm.env(&std::ffi::CString::new(format!("FXDAX_CHECKS={only}"))?);
+            let seed = seed();
+            eprintln!("{}: seed {seed} (FXDAX_SEED={seed} replays it)", test_setup.test_case);
+            std::fs::write(test_setup.tmp_dir.join("seed"), seed.to_string())?;
+            vm.env(&std::ffi::CString::new(format!("FXDAX_RANDOM_OPS_SEED={seed}"))?);
+            if self.delay {
+                vm.module_param(c"fxfs.dax_delay_us=200");
+                vm.module_param(&std::ffi::CString::new(format!("fxfs.dax_delay_seed={seed}"))?);
+            }
             vm.enter(&setup_rootfs(&test_setup)?, &test_setup.test_case)
         }
 
         fn check(self: Box<Self>, stdout: Vec<u8>, test_setup: TestSetup) -> TestOutcome {
             let output = String::from_utf8(stdout).unwrap();
+            let seed = std::fs::read_to_string(test_setup.tmp_dir.join("seed")).unwrap();
             if output != "OK\n" {
-                return TestOutcome::Fail(format!("expected exactly \"OK\\n\", got {output:?}"));
+                return TestOutcome::Fail(format!(
+                    "seed {seed}: expected exactly \"OK\\n\", got {output:?}"
+                ));
             }
             // The host's checks are of what all the guest's checks wrote.
             if std::env::var_os("FXDAX_CHECKS").is_some_and(|only| !only.is_empty()) {
@@ -163,6 +191,11 @@ mod host {
             assert_eq!(read_path(&fs, "delayed-kept/again"), b"recreated");
             assert_eq!(lookup_path(&fs, "delayed-kept/linked").1.nlink, 1);
             assert!(block_on(lookup_path(&fs, "delayed-kept").0.lookup(b"gone")).is_err());
+            // fxdax: random_ops's file, as the store holds it, is as its model (TASK-119.2).
+            assert!(
+                read_path(&fs, RANDOM_OPS) == read_path(&fs, RANDOM_OPS_MODEL),
+                "host: seed {seed}: random-ops differs from its model"
+            );
 
             TestOutcome::Pass
         }
@@ -671,7 +704,9 @@ mod guest {
 
     /// fxdax: as a database's log: files written whole, then written again 8 KiB at a time, each
     /// write fdatasynced, by several threads at once, while another fsyncs: on DAX, a writable MAP
-    /// of an extent the guest took for open was refused (EPERM) under pgbench (TASK-91.9).
+    /// of an extent the guest took for open was refused (EPERM) under pgbench (TASK-91.9). Each
+    /// write reads back as written once fdatasynced, and each file, in the end, as its writes left
+    /// it (TASK-119.1).
     fn test_log_writes() {
         use std::os::unix::fs::FileExt;
         use std::time::{Duration, Instant};
@@ -688,11 +723,23 @@ mod guest {
                     file.write_all_at(&vec![0; SIZE], 0).unwrap();
                     file.sync_all().unwrap();
                     let block = vec![n as u8 + 1; WRITE];
-                    let mut offset = 0;
+                    let mut read = vec![0; WRITE];
+                    let (mut offset, mut written) = (0, 0);
                     while Instant::now() < deadline {
                         file.write_all_at(&block, offset as u64).unwrap();
                         file.sync_data().unwrap();
+                        file.read_exact_at(&mut read, offset as u64).unwrap();
+                        assert!(
+                            read == block,
+                            "log-{n}: the write at {offset:#x} reads back other"
+                        );
                         offset = (offset + WRITE) % SIZE;
+                        written = (written + WRITE).min(SIZE);
+                    }
+                    for at in (0..SIZE).step_by(WRITE) {
+                        file.read_exact_at(&mut read, at as u64).unwrap();
+                        let byte = if at < written { n as u8 + 1 } else { 0 };
+                        assert!(read.iter().all(|&b| b == byte), "log-{n} at {at:#x}: not {byte}");
                     }
                     name
                 })
@@ -713,7 +760,10 @@ mod guest {
     /// fsyncs seal its extents again and again: as the pages move, a write(2) in the device's gate
     /// invalidates their DAX entries, which a fault holding an entry must not wait for the gate
     /// with (the seal waits for the write(2), the write(2) for the fault): a deadlock, which the
-    /// test's timeout catches. Then each byte holds what was written last, by each in turn alone.
+    /// test's timeout catches. Each byte has one owner, the write(2)s a page's first, the stores
+    /// its second: after each of its rounds, the owner finds its byte as it left it, through the
+    /// mapping and read(2) alike, and the other's no older than it found it last (TASK-119.1).
+    /// Then each byte holds what was written last, by each in turn alone.
     fn test_seal_race() {
         use std::os::unix::fs::FileExt;
         use std::sync::atomic::{AtomicBool, Ordering};
@@ -745,15 +795,45 @@ mod guest {
         };
         assert_ne!(map, libc::MAP_FAILED, "mmap: {}", std::io::Error::last_os_error());
         let mapped = map as usize;
-        let store = move |round: usize| {
+        let file = &file;
+        // The byte at `at`, through the mapping and through read(2).
+        let load = move |at: usize| unsafe { ((mapped + at) as *const u8).read_volatile() };
+        let read = move |at: usize| {
+            let mut byte = [0];
+            file.read_exact_at(&mut byte, at as u64).unwrap();
+            byte[0]
+        };
+        // After its round, the owner of byte `own` of each page checks it, and that the other
+        // owner's, `other`, is no older than in `seen`.
+        let check = move |what: &str, round: usize, own: usize, other: usize, seen: &mut [u8]| {
+            for (n, page) in (0..SIZE).step_by(PAGE).enumerate() {
+                let (mapped, read) = (load(page + own), read(page + own));
+                assert_eq!(
+                    (mapped, read),
+                    (round as u8, round as u8),
+                    "page {n}: the {what}' byte, mapped and read, after their round {round}"
+                );
+                let other = load(page + other);
+                assert!(
+                    other >= seen[n],
+                    "page {n}: the other's byte went back from {} to {other}, after the \
+                     {what}' round {round}",
+                    seen[n]
+                );
+                seen[n] = other;
+            }
+        };
+        let store = move |round: usize, seen: &mut [u8]| {
             for page in (0..SIZE).step_by(PAGE) {
                 unsafe { ((mapped + page + 1) as *mut u8).write_volatile(round as u8) };
             }
+            check("stores", round, 1, 0, seen);
         };
-        let write = |round: usize| {
+        let write = move |round: usize, seen: &mut [u8]| {
             for page in (0..SIZE).step_by(PAGE) {
                 file.write_all_at(&[round as u8], page as u64).unwrap();
             }
+            check("write(2)s", round, 0, 1, seen);
         };
         let sealing = AtomicBool::new(true);
         std::thread::scope(|scope| {
@@ -766,14 +846,18 @@ mod guest {
                     fs::File::open(path("seal-race-other")).unwrap().sync_all().unwrap();
                 }
             });
-            let storer = scope.spawn(move || (0..ROUNDS).for_each(store));
-            (0..ROUNDS).for_each(write);
-            storer.join().unwrap();
+            let storer = scope.spawn(move || {
+                let mut seen = [0; SIZE / PAGE];
+                (0..ROUNDS).for_each(|round| store(round, &mut seen));
+            });
+            let mut seen = [0; SIZE / PAGE];
+            (0..ROUNDS).for_each(|round| write(round, &mut seen));
             sealing.store(false, Ordering::Relaxed);
+            storer.join().unwrap();
         });
 
-        write(ROUNDS);
-        store(ROUNDS);
+        write(ROUNDS, &mut [0; SIZE / PAGE]);
+        store(ROUNDS, &mut [0; SIZE / PAGE]);
         let mut expected = vec![0; SIZE];
         for page in (0..SIZE).step_by(PAGE) {
             (expected[page], expected[page + 1]) = (ROUNDS as u8, ROUNDS as u8);
@@ -1882,9 +1966,11 @@ mod guest {
 
     /// fxdax: a file's random operations, as fsx makes them (TASK-44.15): write(2)s, stores
     /// through a mapping, reads, truncations, holes punched and fsyncs, at random offsets and
-    /// lengths, from a seed (FXDAX_RANDOM_OPS_SEED, or 1), each read, and every 256th operation
-    /// the whole file, checked against what a model of its bytes says it holds. A mismatch names
-    /// the seed, the operation and those before it, which replay it.
+    /// lengths, from a seed (FXDAX_RANDOM_OPS_SEED, which the host picks anew each run, or 1),
+    /// each read, and every 256th operation and the last the whole file, checked against what a
+    /// model of its bytes says it holds. A mismatch names the seed, the operation and those before
+    /// it, which replay it. The file stays, and the model beside it, which the host compares it
+    /// with, as its Fxfs reads them from the store (TASK-119.2).
     fn test_random_ops() {
         const MAX: u64 = 1 << 20;
         const OPS: usize = 3000;
@@ -1899,7 +1985,7 @@ mod guest {
             state ^= state >> 27;
             state.wrapping_mul(0x2545_F491_4F6C_DD1D) % bound.max(1)
         };
-        let name = path("random-ops");
+        let name = path(RANDOM_OPS);
         let file = fs::OpenOptions::new()
             .create(true)
             .truncate(true)
@@ -2020,17 +2106,21 @@ mod guest {
                     file.sync_all().unwrap();
                 }
             }
-            if op % 256 == 255 {
+            if op % 256 == 255 || op == OPS - 1 {
                 done.push("read the whole file".into());
                 let size = file.metadata().unwrap().len();
                 if size != model.len() as u64 {
                     failed(&done, format!("size {size:#x}, the model's {:#x}", model.len()));
                 }
-                check(&model, &done, 0, MAX + PAGE);
+                check(&model, &done, 0, model.len() as u64 + PAGE);
             }
         }
+        file.sync_all().unwrap();
         drop(file);
-        fs::remove_file(&name).unwrap();
+        fs::write(path(RANDOM_OPS_MODEL), &model).unwrap();
+        fs::File::open(path(RANDOM_OPS_MODEL)).unwrap().sync_all().unwrap();
+        evict(&name);
+        assert!(fs::read(&name).unwrap() == model, "seed {seed}: the file evicted differs");
     }
 
     /// fxdax: a file's pages rewritten and fsynced, so that they move to new blocks and the
@@ -2109,23 +2199,29 @@ mod guest {
         fs::remove_file(&even).unwrap();
     }
 
-    /// fxdax: stores through a mapping of a file, write(2)s into its holes, and other files made,
-    /// written and removed meanwhile, which make the journal compact, for a few seconds: a write
-    /// in the gate waited for a fault's DAX entry, the fault for Fxfs, Fxfs for compaction, and
-    /// compaction's seal for the write, and the filesystem hung (TASK-79.12). Each finishes.
+    /// fxdax: stores through a mapping of a file, write(2)s to its pages, holes or not, and other
+    /// files made, written and removed meanwhile, which make the journal compact, for a few
+    /// seconds: a write in the gate waited for a fault's DAX entry, the fault for Fxfs, Fxfs for
+    /// compaction, and compaction's seal for the write, and the filesystem hung (TASK-79.12). Each
+    /// finishes. The write(2)s write pages' first halves, the stores their second: each finds its
+    /// bytes as it left them, now and then as it goes, and the file holds what both left
+    /// (TASK-119.1).
     fn test_faults_writes_compaction() {
         use std::os::unix::fs::FileExt;
         use std::sync::atomic::{AtomicBool, Ordering};
         const PAGE: usize = 4096;
+        const HALF: usize = PAGE / 2;
         const SIZE: usize = 4 << 20;
         let name = path("faults-writes");
         let file = fs::OpenOptions::new().create(true).read(true).write(true).open(&name).unwrap();
         file.set_len(SIZE as u64).unwrap();
         let stop = AtomicBool::new(false);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
-        std::thread::scope(|scope| {
+        let read = |at: usize, buf: &mut [u8]| file.read_exact_at(buf, at as u64).unwrap();
+        let (stored, written) = std::thread::scope(|scope| {
             // Stores through a mapping, a page at a time, holes and pages mapped already.
-            scope.spawn(|| {
+            let storer = scope.spawn(|| {
+                let mut stored = vec![0u8; SIZE];
                 let map = unsafe {
                     libc::mmap(
                         std::ptr::null_mut(),
@@ -2138,24 +2234,37 @@ mod guest {
                 };
                 assert_ne!(map, libc::MAP_FAILED, "mmap: {}", std::io::Error::last_os_error());
                 let mut n = 0usize;
+                let mut byte = [0];
                 while !stop.load(Ordering::Relaxed) {
-                    let page = (n * 7919) % (SIZE / PAGE);
-                    unsafe { map.cast::<u8>().add(page * PAGE + n % PAGE).write_volatile(n as u8) };
-                    n += 1;
-                }
-                assert_eq!(unsafe { libc::munmap(map, SIZE) }, 0);
-            });
-            // write(2)s into the file's holes, fsynced now and then: a seal each.
-            scope.spawn(|| {
-                let mut n = 0usize;
-                while !stop.load(Ordering::Relaxed) {
-                    let page = (n * 104_729 + 3) % (SIZE / PAGE);
-                    file.write_all_at(&[n as u8; PAGE], (page * PAGE) as u64).unwrap();
-                    if n % 16 == 0 {
-                        file.sync_data().unwrap();
+                    let at = (n * 7919) % (SIZE / PAGE) * PAGE + HALF + n % HALF;
+                    unsafe { map.cast::<u8>().add(at).write_volatile(n as u8) };
+                    stored[at] = n as u8;
+                    if n % 64 == 0 {
+                        read(at, &mut byte);
+                        assert_eq!(byte[0], n as u8, "the store at {at:#x} reads back other");
                     }
                     n += 1;
                 }
+                assert_eq!(unsafe { libc::munmap(map, SIZE) }, 0);
+                stored
+            });
+            // write(2)s to the pages, fsynced now and then: a seal each.
+            let writer = scope.spawn(|| {
+                let mut written = vec![0u8; SIZE / PAGE];
+                let mut half = [0; HALF];
+                let mut n = 0usize;
+                while !stop.load(Ordering::Relaxed) {
+                    let page = (n * 104_729 + 3) % (SIZE / PAGE);
+                    file.write_all_at(&[n as u8; HALF], (page * PAGE) as u64).unwrap();
+                    written[page] = n as u8;
+                    if n % 16 == 0 {
+                        file.sync_data().unwrap();
+                    }
+                    read(page * PAGE, &mut half);
+                    assert!(half == [n as u8; HALF], "the write to page {page} reads back other");
+                    n += 1;
+                }
+                written
             });
             // Files made, written, synced and removed: the journal fills, and compacts.
             scope.spawn(|| {
@@ -2171,8 +2280,15 @@ mod guest {
                 }
                 stop.store(true, Ordering::Relaxed);
             });
+            (storer.join().unwrap(), writer.join().unwrap())
         });
         file.sync_all().unwrap();
+        let mut page = vec![0; PAGE];
+        for (n, &byte) in written.iter().enumerate() {
+            read(n * PAGE, &mut page);
+            assert!(page[..HALF].iter().all(|&b| b == byte), "page {n}'s first half: not {byte}");
+            assert!(page[HALF..] == stored[n * PAGE + HALF..][..HALF], "page {n}'s second half");
+        }
         drop(file);
         fs::remove_file(&name).unwrap();
     }
@@ -2181,7 +2297,8 @@ mod guest {
     /// on the page it writes; the read fault for the file's semaphore, which a write fault holds
     /// while it seals, as Fxfs's map_write may wait for compaction's seal (the fxfs.dax_fault_seals
     /// fault injection); and the seal for the write(2): the filesystem hung (TASK-79.12). Each
-    /// finishes, and the file holds what the write(2)s wrote.
+    /// finishes, and the file holds what the write(2)s wrote, and what the stores stored, which
+    /// read back as stored now and then as they go (TASK-119.1).
     fn test_faults_seal_holding_the_semaphore() {
         use std::os::unix::fs::FileExt;
         use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -2209,15 +2326,23 @@ mod guest {
         let stop = AtomicBool::new(false);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
         fs::write(FAULT_SEALS, "Y").unwrap();
-        let written = std::thread::scope(|scope| {
+        let (stored, written) = std::thread::scope(|scope| {
             // Stores, each page's first since a seal a write fault, which seals.
-            scope.spawn(|| {
+            let storer = scope.spawn(|| {
+                let mut stored = vec![0u8; STORED * PAGE];
+                let mut byte = [0];
                 let mut n = 0usize;
                 while !stop.load(Ordering::Relaxed) {
-                    let at = map + (n % STORED) * PAGE + n % PAGE;
-                    unsafe { (at as *mut u8).write_volatile(n as u8) };
+                    let at = (n % STORED) * PAGE + n % PAGE;
+                    unsafe { ((map + at) as *mut u8).write_volatile(n as u8) };
+                    stored[at] = n as u8;
+                    if n % 64 == 0 {
+                        file.read_exact_at(&mut byte, at as u64).unwrap();
+                        assert_eq!(byte[0], n as u8, "the store at {at:#x} reads back other");
+                    }
                     n += 1;
                 }
+                stored
             });
             // Loads of the page the write(2)s write, faulted on anew each time.
             scope.spawn(|| {
@@ -2241,10 +2366,16 @@ mod guest {
                 stop.store(true, Ordering::Relaxed);
                 page
             });
-            writer.join().unwrap()
+            let written = writer.join().unwrap();
+            (storer.join().unwrap(), written)
         });
         fs::write(FAULT_SEALS, "N").unwrap();
         assert_eq!(unsafe { libc::munmap(map as *mut libc::c_void, SIZE) }, 0);
+        let mut read = vec![0; STORED * PAGE];
+        file.read_exact_at(&mut read, 0).unwrap();
+        if let Some(at) = read.iter().zip(&stored).position(|(a, b)| a != b) {
+            panic!("the stored byte at {at:#x} reads {:#x}, not {:#x}", read[at], stored[at]);
+        }
         let mut read = vec![0; PAGE];
         for page in STORED..written {
             file.read_exact_at(&mut read, (page * PAGE) as u64).unwrap();
@@ -2459,9 +2590,10 @@ mod guest {
                 }
             })
         };
+        let mut expected = Vec::new();
         for round in 0..64 {
             file.set_len(0).unwrap();
-            let mut expected = vec![round as u8; 100];
+            expected = vec![round as u8; 100];
             file.write_all_at(&expected, 0).unwrap();
             for _ in 0..32 {
                 file.write_all_at(&[0xa5], expected.len() as u64).unwrap();
@@ -2476,14 +2608,15 @@ mod guest {
         syncer.join().unwrap();
         drop(file);
         evict(&name);
-        assert_eq!(fs::metadata(&name).unwrap().len(), 120);
+        assert_eq!(fs::read(&name).unwrap(), expected, "after eviction");
         fs::remove_file(name).unwrap();
     }
 
     /// fxdax: a file appended to across its chunks while another thread maps it and reads it
     /// all, again and again, for a few seconds: each append writes. A fault mapped the chunk again
     /// as small as the file was, between the write making room for it and writing, which the write
-    /// found too small: EIO, and a WARN (TASK-79.28).
+    /// found too small: EIO, and a WARN (TASK-79.28). Each page mapped holds what was appended
+    /// there, and the file what was appended (TASK-119.1).
     fn test_append_while_mapped() {
         use std::sync::atomic::{AtomicBool, Ordering};
         const STEP: usize = 192 << 10;
@@ -2491,7 +2624,7 @@ mod guest {
         let file = fs::OpenOptions::new().create(true).read(true).write(true).open(&name).unwrap();
         let stop = AtomicBool::new(false);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(4);
-        std::thread::scope(|scope| {
+        let appended = std::thread::scope(|scope| {
             scope.spawn(|| {
                 while !stop.load(Ordering::Relaxed) {
                     let len = file.metadata().unwrap().len() as usize;
@@ -2510,7 +2643,8 @@ mod guest {
                     };
                     assert_ne!(map, libc::MAP_FAILED, "mmap: {}", std::io::Error::last_os_error());
                     for page in (0..len).step_by(4096) {
-                        unsafe { map.cast::<u8>().add(page).read_volatile() };
+                        let byte = unsafe { map.cast::<u8>().add(page).read_volatile() };
+                        assert_eq!(byte, (page / STEP) as u8, "byte {page:#x} of {len:#x} mapped");
                     }
                     assert_eq!(unsafe { libc::munmap(map, len) }, 0);
                 }
@@ -2523,7 +2657,13 @@ mod guest {
                 n += 1;
             }
             stop.store(true, Ordering::Relaxed);
+            n as usize
         });
+        let read = fs::read(&name).unwrap();
+        assert_eq!(read.len(), appended * STEP);
+        if let Some(at) = read.iter().enumerate().position(|(at, &b)| b != (at / STEP) as u8) {
+            panic!("byte {at:#x} reads {:#x}, not what was appended there", read[at]);
+        }
         drop(file);
         fs::remove_file(&name).unwrap();
     }
@@ -2655,7 +2795,11 @@ mod guest {
         let mut blocks = 0;
         enospc(
             fill(IMAGE_MIB * 1024, &mut |n| {
-                std::os::unix::fs::FileExt::write_all_at(&file, &block[..4096], 2 * n as u64 * 4096)?;
+                std::os::unix::fs::FileExt::write_all_at(
+                    &file,
+                    &block[..4096],
+                    2 * n as u64 * 4096,
+                )?;
                 blocks = n + 1;
                 Ok(())
             }),

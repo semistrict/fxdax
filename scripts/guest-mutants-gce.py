@@ -99,7 +99,7 @@ MUTANTS = [
     ),
 ]
 
-SUITES = "fxfs-guest-dax fxfs-guest-checks-dax fxfs-guest-pgbench-dax"
+SUITES = "fxfs-guest-dax fxfs-guest-checks-dax fxfs-guest-checks-dax-delay fxfs-guest-pgbench-dax"
 
 
 def mutate(tree, edits):

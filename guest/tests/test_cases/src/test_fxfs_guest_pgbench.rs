@@ -8,7 +8,9 @@
 //! key's parallel build reading back other data than its workers wrote (TASK-59). A base VM makes
 //! the base's filesystem; the host forks it through a daemon of its own; a VM as theirs boots on
 //! the fork, makes the database, and checks it: every account there once. Then pgbench runs on it,
-//! as theirs did, where Fxfs's journal shut down on a write to a sealed extent (TASK-91.1). With
+//! as theirs did, where Fxfs's journal shut down on a write to a sealed extent (TASK-91.1). After
+//! each run, the database is checked whole (its balances, amcheck, its pages' checksums), and
+//! again once it has recovered from a stop as if it crashed (TASK-119.4). With
 //! a DAX window (fxfs-guest-pgbench-dax) or without (fxfs-guest-pgbench); and without, its first
 //! run probed (TASK-91.14): profiled, the guest's time by symbol and the callers of its hot
 //! spinlock on the console (fxfs-guest-pgbench-profile; with DAX, fxfs-guest-pgbench-dax-profile,
@@ -300,7 +302,7 @@ RUN apk add --no-cache postgresql postgresql-contrib perf
 
         fn check(self: Box<Self>, stdout: Vec<u8>, _test_setup: TestSetup) -> TestOutcome {
             let output = String::from_utf8(stdout).unwrap();
-            let each = format!("OK load {}\nOK runs {RUNS}\n", SCALE * 100_000);
+            let each = format!("OK load {}\nOK runs {RUNS}\nOK checked\n", SCALE * 100_000);
             let expected = format!("OK base\n{}", each.repeat(vms()));
             if output == expected {
                 TestOutcome::Pass
@@ -372,6 +374,46 @@ mod guest {
             String::from_utf8_lossy(&output.stdout)
         );
         output
+    }
+
+    /// What `query` returns, through psql at `socket`, unaligned, its rows on lines.
+    fn psql(socket: &str, query: &str) -> String {
+        let output =
+            as_postgres(&format!("psql -h {socket} -v ON_ERROR_STOP=1 -At -c \"{query}\" bench"));
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    }
+
+    /// fxdax: the database is whole (TASK-119.4). Each of pgbench's transactions adds a delta to an
+    /// account, its teller and its branch, and logs it in the history: each table's balances sum
+    /// to the history's deltas. And, with amcheck, every tuple of the tables is sound, and their
+    /// indexes hold them all; a page whose checksum fails fails the query reading it.
+    fn check_data(socket: &str) {
+        let sums = psql(
+            socket,
+            "select (select sum(abalance) from pgbench_accounts), \
+             (select sum(tbalance) from pgbench_tellers), \
+             (select sum(bbalance) from pgbench_branches), \
+             (select coalesce(sum(delta), 0) from pgbench_history)",
+        );
+        let sums: Vec<&str> = sums.split('|').collect();
+        assert_eq!(sums.len(), 4, "{sums:?}");
+        assert_eq!(sums, [sums[3]; 4], "accounts, tellers, branches and history's sums");
+        psql(socket, "create extension if not exists amcheck");
+        let tables = "array['pgbench_accounts', 'pgbench_branches', 'pgbench_tellers', \
+                      'pgbench_history']::regclass[]";
+        let corrupt = psql(
+            socket,
+            &format!("select count(*) from unnest({tables}) as t(rel), verify_heapam(rel)"),
+        );
+        assert_eq!(corrupt, "0", "tuples verify_heapam finds corrupt");
+        let indexes = psql(
+            socket,
+            &format!(
+                "select count(*) from (select bt_index_check(indexrelid, true) from pg_index \
+                 where indrelid = any({tables})) as checked"
+            ),
+        );
+        assert_eq!(indexes, "3", "the pgbench tables' indexes checked");
     }
 
     /// The extent device's `completions` attribute's lines.
@@ -458,16 +500,20 @@ mod guest {
                         .args(["postgres:postgres", &data, socket])
                         .status()
                         .unwrap();
-                    as_postgres(&format!("initdb -D {data} -A trust"));
+                    // fxdax: every page checksummed, which reading it checks (TASK-119.4).
+                    as_postgres(&format!("initdb -D {data} -A trust --data-checksums"));
                     let fsync = if self.fsync { "" } else { " -c fsync=off" };
                     let options = format!(
                         "-c shared_buffers=256MB -k {socket} -c listen_addresses=''{fsync}"
                     );
                     // The server's output to a log of its own: it would hold `as_postgres`'s pipe
                     // open, which waits for its end.
-                    as_postgres(&format!(
-                        "pg_ctl -D {data} -l {data}/server.log -o \"{options}\" -w start"
-                    ));
+                    let start = || {
+                        as_postgres(&format!(
+                            "pg_ctl -D {data} -l {data}/server.log -o \"{options}\" -w start"
+                        ))
+                    };
+                    start();
                     as_postgres(&format!("createdb -h {socket} bench"));
                     as_postgres(&format!("pgbench -h {socket} -i -q -s {SCALE} bench"));
                     // Every account once: the primary key's build found one twice (TASK-59).
@@ -510,9 +556,18 @@ mod guest {
                             "postgres wal|pages written: {}",
                             String::from_utf8_lossy(&written.stdout)
                         );
+                        check_data(socket);
                     }
                     println!("OK runs {RUNS}");
+                    // fxdax: stopped as if it had crashed, with no checkpoint, it recovers from
+                    // its WAL, as the filesystem kept it, to a whole database (TASK-119.4).
+                    as_postgres(&format!("pg_ctl -D {data} -w -m immediate stop"));
+                    start();
+                    check_data(socket);
                     as_postgres(&format!("pg_ctl -D {data} -w -m fast stop"));
+                    // Every page's checksum, the indexes' too, with the server stopped.
+                    as_postgres(&format!("pg_checksums --check -D {data}"));
+                    println!("OK checked");
                     unmount();
                 }
                 role => panic!("no role {role}"),

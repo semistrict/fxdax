@@ -42,5 +42,5 @@ FXDAX_GUEST_KERNEL="$results/$(basename "$built")" FXDAX_E2E_RESULTS="$results" 
     fxfs-guest-follow-torture-mutant-barrier-dax fxfs-guest-follow-torture-mutant-nested-dax \
     fxfs-guest-import \
     fxfs-guest-import-dax fxfs-guest-snapshot fxfs-guest-snapshot-dax fxfs-guest-suspend-dax fxfs-guest-migrate-dax fxfs-guest-checks \
-    fxfs-guest-checks-dax \
+    fxfs-guest-checks-dax fxfs-guest-checks-dax-delay \
     pjdfstest-fxfs-guest pjdfstest-fxfs-guest-dax

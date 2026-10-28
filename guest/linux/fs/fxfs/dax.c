@@ -2618,6 +2618,8 @@ static void fxfs_dax_seal(void *arg)
 		region->pages = region->mapped;
 	}
 	spin_unlock(&dax->regions_lock);
+	/* fxdax: between the regions sealed and the files' pages (TASK-119.3). */
+	fxfs_dax_delay();
 
 	mutex_lock(&dax->writable_lock);
 	list_for_each_entry_safe(file, next, &dax->writable, writable) {
@@ -2648,6 +2650,8 @@ static void fxfs_dax_sealed(void *arg)
 {
 	struct fxfs_dax *dax = arg;
 
+	/* fxdax: between the seal's end and what follows it (TASK-119.3). */
+	fxfs_dax_delay();
 	if (READ_ONCE(dax->restaging) && queue_work(dax->grow_wq, &dax->restage))
 		atomic_inc(&dax->growing);
 	if (READ_ONCE(dax->restaging))
@@ -2938,6 +2942,9 @@ static void fxfs_dax_evacuate_file(struct fxfs_dax *dax, struct fxfs_dax_file *f
 	locked = ktime_get_ns();
 	fxfs_dax_evacuee_gather(file, &ev);
 	fxfs_dax_evacuee_map(dax, file, &ev);
+	/* fxdax: between the MAP and the placing (TASK-119.3). */
+	if (ev.count)
+		fxfs_dax_delay();
 	fxfs_dax_evacuee_place(dax, file, &ev);
 	up_write(&file->sem);
 	if (ev.count) {

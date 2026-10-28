@@ -159,9 +159,20 @@ pub fn test_cases() -> Vec<TestCase> {
             Box::new(TestFxfsGuestSnapshot { dax: true, mode: SnapshotMode::Migrate }),
         ),
         #[cfg(any(feature = "host", target_os = "linux"))]
-        TestCase::new("fxfs-guest-checks", Box::new(TestFxfsGuestChecks { dax: false })),
+        TestCase::new(
+            "fxfs-guest-checks",
+            Box::new(TestFxfsGuestChecks { dax: false, delay: false }),
+        ),
         #[cfg(any(feature = "host", target_os = "linux"))]
-        TestCase::new("fxfs-guest-checks-dax", Box::new(TestFxfsGuestChecks { dax: true })),
+        TestCase::new(
+            "fxfs-guest-checks-dax",
+            Box::new(TestFxfsGuestChecks { dax: true, delay: false }),
+        ),
+        #[cfg(any(feature = "host", target_os = "linux"))]
+        TestCase::new(
+            "fxfs-guest-checks-dax-delay",
+            Box::new(TestFxfsGuestChecks { dax: true, delay: true }),
+        ),
         TestCase::new("fxfs-guest-dax", Box::new(TestFxfsGuest::host_formats().with_dax())),
         TestCase::new("fxfs-guest-crash-dax", Box::new(TestFxfsGuest::crash().with_dax())),
         TestCase::new("fxfs-guest-docker-dax", Box::new(TestFxfsGuestDocker)),
