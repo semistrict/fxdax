@@ -160,6 +160,14 @@ MODULE_PARM_DESC(dax_evacuates, "Evacuate sealed staging extents' pages (diagnos
 static bool fxfs_dax_check_seals;
 module_param_named(dax_check_seals, fxfs_dax_check_seals, bool, 0644);
 MODULE_PARM_DESC(dax_check_seals, "WARN of pages left writable by a seal (diagnostic)");
+/*
+ * fxdax: diagnostic (TASK-121): a write moving a page of one page copies it, as the window maps
+ * it, first, and WARNs if the page where it moved holds other data, but for the write's own bytes:
+ * the copy the move kept of the page wasn't the page's.
+ */
+static bool fxfs_dax_check_moves;
+module_param_named(dax_check_moves, fxfs_dax_check_moves, bool, 0644);
+MODULE_PARM_DESC(dax_check_moves, "WARN of a page moved holding other data (diagnostic)");
 static bool fxfs_dax_moves = true;
 module_param_named(dax_moves, fxfs_dax_moves, bool, 0644);
 MODULE_PARM_DESC(dax_moves, "Map staging extents' pieces where their regions do (diagnostic)");
@@ -2305,6 +2313,33 @@ static void *fxfs_dax_window_page(struct fxfs_dax *dax, u64 window_offset)
  * unless its pages are writable already, and returns in the gate, which fxfs_dax_iomap_end leaves.
  * A zeroing write leaves holes be. A write past the file's end grows it, unless it is a fault's.
  */
+/*
+ * fxdax: with fxfs.dax_check_moves, WARNs unless `range`'s page `page`, where it moved, holds what
+ * it held at `before_at` (`before`), but for the `len` bytes from `skip` a write writes (TASK-121).
+ * In the gate, which keeps both still.
+ */
+static void fxfs_dax_check_moved(struct fxfs_dax *dax, struct inode *inode,
+				 struct fxfs_dax_range *range, unsigned long page, const u8 *before,
+				 u64 before_at, size_t skip, size_t len)
+{
+	u64 at = fxfs_dax_page_offset(range, page);
+	int id = dax_read_lock();
+	const u8 *now = fxfs_dax_window_page(dax, at);
+	size_t i, first = PAGE_SIZE, differ = 0;
+
+	for (i = 0; now && i < PAGE_SIZE; i++) {
+		if ((i < skip || i >= skip + len) && now[i] != before[i]) {
+			first = min(first, i);
+			differ++;
+		}
+	}
+	if (differ)
+		pr_err("fxfs: ino %lu page %lu moved from %llx to %llx holds %zu other bytes, the first at %zu: %#x, not %#x\n",
+		       inode->i_ino, (unsigned long)(fxfs_dax_chunk_start(range) >> PAGE_SHIFT) + page,
+		       before_at, at, differ, first, now[first], before[first]);
+	dax_read_unlock(id);
+}
+
 static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 				unsigned int flags, struct iomap *iomap, struct iomap *srcmap)
 {
@@ -2323,6 +2358,9 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 	 * transaction, which a seal between made the new block's zeros durable (TASK-79.11).
 	 */
 	void *held = NULL;
+	/* fxdax: the page as the window mapped it before it moved (fxfs.dax_check_moves). */
+	void *before = NULL;
+	u64 before_at = 0;
 	bool fault = flags & IOMAP_FAULT;
 	ssize_t count;
 	long gate;
@@ -2430,6 +2468,18 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 			}
 		}
 		fresh |= find_next_zero_bit(range->mapped, first + pages, first) != first + pages;
+		if (READ_ONCE(fxfs_dax_check_moves) && pages == 1 && test_bit(first, range->mapped) &&
+		    !before) {
+			int id = dax_read_lock();
+			void *page;
+
+			before_at = fxfs_dax_page_offset(range, first);
+			page = fxfs_dax_window_page(dax, before_at);
+			before = page ? kmalloc(PAGE_SIZE, GFP_NOFS) : NULL;
+			if (before)
+				memcpy(before, page, PAGE_SIZE);
+			dax_read_unlock(id);
+		}
 		if (fault && pages == 1 && test_bit(first, range->mapped) && !held) {
 			int id;
 
@@ -2478,6 +2528,11 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 		gate = fxfs_dax_store_begin(dax, fault);
 		if (gate == seals) {
 			err = fxfs_dax_map_extents(dax, range, extents, count);
+			if (!err && before)
+				fxfs_dax_check_moved(dax, inode, range, first, before, before_at,
+						     fault ? 0 : offset_in_page(pos),
+						     fault ? 0 : min_t(loff_t, end - pos,
+								       PAGE_SIZE - offset_in_page(pos)));
 			if (err) {
 				fxfs_device_store_end(dax->dev);
 				/*
@@ -2508,6 +2563,7 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 		goto out;
 	}
 	kfree(held);
+	kfree(before);
 	kvfree(extents);
 	fxfs_dax_shadow_check(dax, range, first, pages, fault ? "a fault" : "a write");
 	iomap->type = IOMAP_MAPPED;
@@ -2525,6 +2581,7 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 out:
 	up_write(&file->sem);
 	kfree(held);
+	kfree(before);
 	kvfree(extents);
 	fxfs_dax_put_range(dax, range);
 	return err;
