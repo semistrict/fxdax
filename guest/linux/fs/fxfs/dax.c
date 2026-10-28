@@ -513,11 +513,16 @@ static void fxfs_dax_shadow_check(struct fxfs_dax *dax, struct fxfs_dax_range *r
 		at = fxfs_dax_page_offset(range, i) >> PAGE_SHIFT;
 		entry = xa_load(&dax->shadow, at);
 		WARN(!entry || !(xa_to_value(entry) & 1) || (xa_to_value(entry) >> 1) != seals,
-		     "fxfs: %s: ino %llu chunk %lu page %lu writable at window page %lx, which the guest %s (seals %llu, %s)\n",
+		     "fxfs: %s: ino %llu chunk %lu page %lu writable at window page %lx, which the guest %s (seals %llu, then %lu, %s %llx)\n",
 		     why, range->file->ino, range->chunk, i, at,
 		     !entry ? "never mapped" : !(xa_to_value(entry) & 1) ? "mapped read-only last" :
 		     "mapped writably before a seal",
-		     seals, range->moved && range->moved[i] ? "in a region" : "in its own space");
+		     seals, entry ? xa_to_value(entry) >> 1 : 0,
+		     range->region ? "a slice of region" : range->moved && range->moved[i] ?
+		     "moved to region" : "in its own space at",
+		     range->region ? range->region->window_offset :
+		     range->moved && range->moved[i] ?
+		     range->regions[(range->moved[i] >> 32) - 1]->window_offset : range->window_offset);
 	}
 }
 static const struct address_space_operations fxfs_dax_aops;
