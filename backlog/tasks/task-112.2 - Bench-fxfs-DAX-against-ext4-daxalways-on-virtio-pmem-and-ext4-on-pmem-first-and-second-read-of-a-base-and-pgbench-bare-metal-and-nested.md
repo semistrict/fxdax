@@ -3,9 +3,11 @@ id: TASK-112.2
 title: >-
   Bench: fxfs DAX against ext4 dax=always on virtio-pmem and ext4 on pmem, first
   and second read of a base and pgbench, bare metal and nested
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-10-28 02:30'
+updated_date: '2026-10-28 03:21'
 labels: []
 dependencies: []
 parent_task_id: TASK-112
