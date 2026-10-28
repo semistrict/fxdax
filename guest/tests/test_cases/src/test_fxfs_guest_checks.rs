@@ -2451,6 +2451,106 @@ mod guest {
         }
     }
 
+    /// fxdax: pause points (fxfs.dax_pause, TASK-119.9): sets the steps tasks wait at, and waits
+    /// for a task to wait at `step`.
+    struct Pauses;
+
+    impl Pauses {
+        const PAUSE: &str = "/sys/module/fxfs/parameters/dax_pause";
+        const PAUSED: &str = "/sys/module/fxfs/parameters/dax_paused";
+        const MOVED: u64 = 1 << 0;
+        const SEALING: u64 = 1 << 1;
+        const SHUT: u64 = 1 << 2;
+        const HELD: u64 = 1 << 3;
+
+        fn set(steps: u64) {
+            fs::write(Self::PAUSE, steps.to_string()).unwrap();
+        }
+
+        fn wait(step: u64) {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                let paused: u64 = fs::read_to_string(Self::PAUSED).unwrap().trim().parse().unwrap();
+                if paused & step != 0 {
+                    return;
+                }
+                assert!(std::time::Instant::now() < deadline, "no task waits at step {step:#x}");
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        }
+    }
+
+    /// fxdax: a store to a page sealed, whose fault moved its block, then found the gate shut by a
+    /// seal: it gave up its page to wait for the seal, the page's range still mapping the block
+    /// where it was, which Fxfs freed; once its extent was freed, the device mapped zeros there,
+    /// which the fault's retry took for the page's data, and reads read (TASK-121). Played out
+    /// with pause points: the move, the seal, the gate shut, the extent freed, then the retry.
+    fn test_moved_across_seal() {
+        const PAGE: usize = 4096;
+        let name = path("moved-across-seal");
+        let other = path("moved-across-seal-other");
+        let data: Vec<u8> = (0..PAGE).map(|i| (i % 251) as u8 + 1).collect();
+        fs::write(&name, &data).unwrap();
+        fs::File::open(&name).unwrap().sync_all().unwrap();
+        fs::write(&other, b"other").unwrap();
+        let file = fs::OpenOptions::new().read(true).write(true).open(&name).unwrap();
+        let map = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                PAGE,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                file.as_raw_fd(),
+                0,
+            )
+        };
+        assert_ne!(map, libc::MAP_FAILED, "mmap: {}", std::io::Error::last_os_error());
+        let mapped = map as usize;
+        // A load maps the page read-only: the store faults to make it writable.
+        assert_eq!(unsafe { (mapped as *const u8).read_volatile() }, data[0]);
+        let seal = {
+            let other = other.clone();
+            move || {
+                std::os::unix::fs::FileExt::write_all_at(
+                    &fs::OpenOptions::new().write(true).open(&other).unwrap(),
+                    b"sealed",
+                    0,
+                )
+                .unwrap();
+                fs::File::open(&other).unwrap().sync_all().unwrap();
+            }
+        };
+        Pauses::set(Pauses::MOVED);
+        let storer =
+            std::thread::spawn(move || unsafe { ((mapped + 100) as *mut u8).write_volatile(0xee) });
+        Pauses::wait(Pauses::MOVED);
+        // A seal, in progress as the fault goes on to the gate.
+        Pauses::set(Pauses::MOVED | Pauses::SEALING | Pauses::SHUT);
+        let sealer = std::thread::spawn(seal.clone());
+        Pauses::wait(Pauses::SEALING);
+        Pauses::set(Pauses::SEALING | Pauses::SHUT);
+        Pauses::wait(Pauses::SHUT);
+        // The seal ends; the fault, retrying, waits to copy its page, while seals free the
+        // extent its block moved from.
+        Pauses::set(Pauses::HELD);
+        sealer.join().unwrap();
+        Pauses::wait(Pauses::HELD);
+        (0..4).for_each(|_| seal());
+        Pauses::set(0);
+        storer.join().unwrap();
+        let mut expected = data;
+        expected[100] = 0xee;
+        let bytes = unsafe { std::slice::from_raw_parts(mapped as *const u8, PAGE) };
+        assert!(bytes == &expected[..], "the page as mapped differs from what was stored");
+        assert_eq!(unsafe { libc::munmap(map, PAGE) }, 0);
+        drop(file);
+        assert!(fs::read(&name).unwrap() == expected, "the file differs from what was stored");
+        evict(&name);
+        assert!(fs::read(&name).unwrap() == expected, "the file evicted differs");
+        fs::remove_file(&name).unwrap();
+        fs::remove_file(&other).unwrap();
+    }
+
     /// fxdax: a file's pages rewritten and fsynced, so that they move to new blocks and the
     /// regions they were in are let go of (fxfs_dax_prune), while read(2)s of it, whose iomaps use
     /// its ranges, copy from where its pages are; another file's pages rewritten likewise beside
@@ -3203,6 +3303,7 @@ mod guest {
             ];
             if dax {
                 tests.push(("pmd_write_unlink", &test_pmd_write_unlink));
+                tests.push(("moved_across_seal", &test_moved_across_seal));
                 tests.push(("regions_pruned", &test_regions_pruned));
                 tests.push(("regions_evacuated", &test_regions_evacuated));
                 tests.push(("evacuate_dropped", &test_evacuate_dropped));

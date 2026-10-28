@@ -155,6 +155,39 @@ static bool fxfs_dax_moves = true;
 module_param_named(dax_moves, fxfs_dax_moves, bool, 0644);
 MODULE_PARM_DESC(dax_moves, "Map staging extents' pieces where their regions do (diagnostic)");
 
+/*
+ * fxdax: pause points (TASK-119.9): a task reaching a step whose bit fxfs.dax_pause sets waits
+ * there until the bit is cleared, the bit set in fxfs.dax_paused meanwhile: a check plays an
+ * interleaving out exactly, where fxfs.dax_delay_us's random sleeps only make it likely.
+ */
+enum fxfs_dax_step {
+	/* A fault's blocks moved, before it enters the gate. */
+	FXFS_DAX_STEP_MOVED,
+	/* A seal's sealer, the seal in progress. */
+	FXFS_DAX_STEP_SEALING,
+	/* A fault whose blocks moved found the gate shut by a seal. */
+	FXFS_DAX_STEP_SHUT,
+	/* A fault about to copy the page it holds. */
+	FXFS_DAX_STEP_HELD,
+};
+static unsigned long fxfs_dax_pause_steps;
+module_param_named(dax_pause, fxfs_dax_pause_steps, ulong, 0644);
+MODULE_PARM_DESC(dax_pause, "Steps (bits) of the DAX protocol tasks wait at, until cleared (pause points)");
+static unsigned long fxfs_dax_paused_steps;
+module_param_named(dax_paused, fxfs_dax_paused_steps, ulong, 0444);
+MODULE_PARM_DESC(dax_paused, "Steps (bits) a task waits at (pause points)");
+
+/* fxdax: waits at `step` while fxfs.dax_pause asks. Where the caller may sleep. */
+static void fxfs_dax_pause(enum fxfs_dax_step step)
+{
+	if (likely(!(READ_ONCE(fxfs_dax_pause_steps) & BIT(step))))
+		return;
+	set_bit(step, &fxfs_dax_paused_steps);
+	while (READ_ONCE(fxfs_dax_pause_steps) & BIT(step))
+		msleep(1);
+	clear_bit(step, &fxfs_dax_paused_steps);
+}
+
 static DEFINE_SPINLOCK(fxfs_dax_delay_lock);
 static struct rnd_state fxfs_dax_delay_state;
 static bool fxfs_dax_delay_seeded;
@@ -2258,7 +2291,10 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 		}
 		fresh |= find_next_zero_bit(range->mapped, first + pages, first) != first + pages;
 		if (fault && pages == 1 && test_bit(first, range->mapped) && !held) {
-			int id = dax_read_lock();
+			int id;
+
+			fxfs_dax_pause(FXFS_DAX_STEP_HELD);
+			id = dax_read_lock();
 			void *page = fxfs_dax_window_page(dax, fxfs_dax_page_offset(range, first));
 
 			held = page && !fxfs_dax_fail_held ? kmalloc(PAGE_SIZE, GFP_NOFS) : NULL;
@@ -2285,6 +2321,8 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 		count = fxfs_dax_reserve_write(inode, pos, end, reserved, size, fault, held,
 					     extents, capacity);
 		fxfs_dax_delay();
+		if (fault && count >= 0)
+			fxfs_dax_pause(FXFS_DAX_STEP_MOVED);
 		if (count < 0) {
 			err = count;
 			goto out;
@@ -2314,6 +2352,8 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 		}
 		if (gate >= 0)
 			fxfs_device_store_end(dax->dev);
+		else
+			fxfs_dax_pause(FXFS_DAX_STEP_SHUT);
 		/*
 		 * fxdax: a seal came between the move and the gate: the range maps the blocks where
 		 * they moved, read-only, before the fault waits for the seal, or the write moves them
@@ -2682,6 +2722,7 @@ static void fxfs_dax_seal(void *arg)
 	struct fxfs_dax_range *range;
 	unsigned long chunk;
 
+	fxfs_dax_pause(FXFS_DAX_STEP_SEALING);
 	spin_lock(&dax->regions_lock);
 	list_for_each_entry_safe(region, next_region, &dax->writable_regions, writable_list) {
 		region->writable = false;

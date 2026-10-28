@@ -97,6 +97,13 @@ MUTANTS = [
          ("\tlockdep_assert_held_write(&file->sem);\n\tif (ev->count) {\n\t\tfxfs_dax_delay();",
           "\tif (ev->count) {\n\t\tfxfs_dax_delay();")],
     ),
+    (
+        "moved_unmapped",
+        "a write whose blocks moved before a seal shut the gate leaves its range mapping them where "
+        "they were, whose extent Fxfs frees (TASK-121)",
+        [("		err = fxfs_dax_map_moved(dax, range, extents, count);\n",
+          "		err = 0;\n		(void)fxfs_dax_map_moved;\n")],
+    ),
 ]
 
 SUITES = "fxfs-guest-dax fxfs-guest-checks-dax fxfs-guest-checks-dax-delay fxfs-guest-pgbench-dax"
