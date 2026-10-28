@@ -2551,6 +2551,7 @@ mod guest {
                 fs::File::open(&other).unwrap().sync_all().unwrap();
             }
         };
+        assert_eq!(fs::metadata(&name).unwrap().len(), SIZE as u64, "the file's size, before");
         let _pauses = Pauses::begin(Pauses::MOVED);
         // The store in a process of its own: its fault, paused, holds its process's mmap_lock,
         // which this one's threads and allocations would otherwise wait for.
@@ -2582,6 +2583,7 @@ mod guest {
             libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0,
             "the storer: {status:#x}"
         );
+        assert_eq!(fs::metadata(&name).unwrap().len(), SIZE as u64, "the file's size, after");
         let mut expected = data;
         expected[PAGE + 100] = 0xee;
         let bytes = unsafe { std::slice::from_raw_parts(mapped as *const u8, SIZE) };
