@@ -429,6 +429,13 @@ struct fxfs_dax {
 	 * the device's seal count then, shifted, and whether writably (TASK-121).
 	 */
 	struct xarray shadow;
+	/*
+	 * fxdax: with the shadow, what each window page maps: its extent's sequence, shifted 20 bits,
+	 * and its page in the extent (fxfs.dax_verify_seals, TASK-121).
+	 */
+	struct xarray shadow_extent;
+	/* fxdax: the branch of the extents the window maps, the device's (TASK-121). */
+	u64 shadow_branch;
 	/* Guards `files`, and files' inodes. */
 	struct mutex files_lock;
 	/* Guards the used list. */
@@ -480,13 +487,16 @@ MODULE_PARM_DESC(dax_shadow, "WARN of writes to pages the window maps read-only 
 
 /* fxdax: records `len` bytes at `window_offset` as mapped, writably if `writable`, or unmapped. */
 static void fxfs_dax_shadow_map(struct fxfs_dax *dax, u64 window_offset, u64 len, bool writable,
-				bool mapped)
+				bool mapped, u64 sequence, u64 offset)
 {
 	u64 seals = fxfs_device_seals(dax->dev);
 	unsigned long page;
 
 	if (!READ_ONCE(fxfs_dax_shadowed))
 		return;
+	for (page = 0; mapped && page < len >> PAGE_SHIFT; page++)
+		xa_store(&dax->shadow_extent, (window_offset >> PAGE_SHIFT) + page,
+			 xa_mk_value((sequence << 20) | ((offset >> PAGE_SHIFT) + page)), GFP_NOFS);
 	for (page = window_offset >> PAGE_SHIFT; page < (window_offset + len) >> PAGE_SHIFT; page++) {
 		void *entry = xa_load(&dax->shadow, page);
 		u64 then = entry ? xa_to_value(entry) >> 1 : 0;
@@ -513,8 +523,10 @@ static int fxfs_dax_device_map(struct fxfs_dax *dax, u64 branch, u64 sequence, u
 	int err = fxfs_device_map(dax->dev, branch, sequence, offset, len, window_offset, writable,
 				  ahead);
 
-	if (!err)
-		fxfs_dax_shadow_map(dax, window_offset, len, writable, true);
+	if (!err) {
+		WRITE_ONCE(dax->shadow_branch, branch);
+		fxfs_dax_shadow_map(dax, window_offset, len, writable, true, sequence, offset);
+	}
 	return err;
 }
 
@@ -525,7 +537,8 @@ static int fxfs_dax_device_map_many(struct fxfs_dax *dax, const struct fxfs_devi
 	unsigned int i;
 
 	for (i = 0; !err && i < count; i++)
-		fxfs_dax_shadow_map(dax, maps[i].window_offset, maps[i].len, maps[i].writable, true);
+		fxfs_dax_shadow_map(dax, maps[i].window_offset, maps[i].len, maps[i].writable, true,
+				    maps[i].sequence, maps[i].offset);
 	return err;
 }
 
@@ -533,7 +546,7 @@ static int fxfs_dax_device_unmap(struct fxfs_dax *dax, u64 window_offset, u64 le
 {
 	int err = fxfs_device_unmap(dax->dev, window_offset, len);
 
-	fxfs_dax_shadow_map(dax, window_offset, len, false, false);
+	fxfs_dax_shadow_map(dax, window_offset, len, false, false, 0, 0);
 	return err;
 }
 
@@ -3159,6 +3172,73 @@ static void fxfs_dax_check_sealed(struct fxfs_dax *dax)
 	mutex_unlock(&dax->files_lock);
 }
 
+static void fxfs_dax_read_done(void *arg, int status);
+
+struct fxfs_dax_read_wait {
+	struct completion done;
+	int status;
+};
+
+/*
+ * fxdax: with fxfs.dax_verify_seals and the shadow, as a seal begins, no store in progress: each
+ * window page the guest mapped writably since the seal before, read through the window, as the
+ * guest's stores reached it, is compared with its extent's page read from the device, what the
+ * seal's commit is about to write, and where they differ logged (TASK-121).
+ */
+static void fxfs_dax_verify_writable(struct fxfs_dax *dax)
+{
+	u64 seals = fxfs_device_seals(dax->dev), then, where;
+	struct fxfs_dax_read_wait wait;
+	unsigned long page, b, at, differ;
+	void *entry, *buf, *window;
+	unsigned int checked = 0;
+	int id;
+
+	buf = kmalloc(PAGE_SIZE, GFP_NOFS);
+	if (!buf)
+		return;
+	xa_for_each(&dax->shadow, page, entry) {
+		then = xa_to_value(entry) >> 1;
+		if (!(xa_to_value(entry) & 1) || (then != seals - 1 && then != seals))
+			continue;
+		entry = xa_load(&dax->shadow_extent, page);
+		if (!entry || checked++ == 4096)
+			continue;
+		where = xa_to_value(entry);
+		{
+			struct fxfs_device_op op = {
+				.type = VIRTIO_EXTENT_T_READ, .branch = 0, .sequence = where >> 20,
+				.offset = (where & ((1 << 20) - 1)) << PAGE_SHIFT, .data = buf,
+				.len = PAGE_SIZE,
+			};
+
+			op.branch = READ_ONCE(dax->shadow_branch);
+			init_completion(&wait.done);
+			if (fxfs_device_submit(dax->dev, &op, fxfs_dax_read_done, &wait))
+				break;
+			wait_for_completion(&wait.done);
+			if (wait.status)
+				continue;
+		}
+		id = dax_read_lock();
+		window = fxfs_dax_window_page(dax, (u64)page << PAGE_SHIFT);
+		differ = 0;
+		at = PAGE_SIZE;
+		for (b = 0; window && b < PAGE_SIZE; b++) {
+			if (((u8 *)window)[b] != ((u8 *)buf)[b]) {
+				at = min(at, b);
+				differ++;
+			}
+		}
+		if (differ)
+			pr_err("fxfs: window page %lx, writable at seals %llu, mapping extent %llu page %llu: %lu bytes differ from the device's, the first at %lu: %#x through the window, %#x the device's\n",
+			       page, then, where >> 20, where & ((1 << 20) - 1), differ, at,
+			       ((u8 *)window)[at], ((u8 *)buf)[at]);
+		dax_read_unlock(id);
+	}
+	kfree(buf);
+}
+
 /*
  * Before a seal: makes user mappings of writable pages read-only, and forgets which pages are
  * writable, and which regions, whose extents grow no more: their space in the window past what
@@ -3209,12 +3289,9 @@ static void fxfs_dax_seal(void *arg)
 	mutex_unlock(&dax->writable_lock);
 	if (READ_ONCE(fxfs_dax_check_seals))
 		fxfs_dax_check_sealed(dax);
+	if (READ_ONCE(fxfs_dax_verify_seals) && READ_ONCE(fxfs_dax_shadowed))
+		fxfs_dax_verify_writable(dax);
 }
-
-struct fxfs_dax_read_wait {
-	struct completion done;
-	int status;
-};
 
 static void fxfs_dax_read_done(void *arg, int status)
 {
@@ -3771,6 +3848,7 @@ struct fxfs_dax *fxfs_dax_create(struct super_block *sb, struct fxfs *fs)
 	dax->dax_dev = dax_dev;
 	xa_init(&dax->files);
 	xa_init(&dax->shadow);
+	xa_init(&dax->shadow_extent);
 	mutex_init(&dax->files_lock);
 	spin_lock_init(&dax->lock);
 	INIT_LIST_HEAD(&dax->used);
@@ -3877,6 +3955,7 @@ void fxfs_dax_destroy(struct fxfs_dax *dax)
 	}
 	xa_destroy(&dax->files);
 	xa_destroy(&dax->shadow);
+	xa_destroy(&dax->shadow_extent);
 	destroy_workqueue(dax->grow_wq);
 	fxfs_dax_destroy_pools(dax);
 	kfree(dax);
