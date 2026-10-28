@@ -2454,6 +2454,12 @@ mod guest {
     /// for a task to wait at `step`.
     struct Pauses;
 
+    impl Drop for Pauses {
+        fn drop(&mut self) {
+            Self::set(0);
+        }
+    }
+
     impl Pauses {
         const PAUSE: &str = "/sys/module/fxfs/parameters/dax_pause";
         const PAUSED: &str = "/sys/module/fxfs/parameters/dax_paused";
@@ -2464,6 +2470,15 @@ mod guest {
 
         fn set(steps: u64) {
             fs::write(Self::PAUSE, steps.to_string()).unwrap();
+        }
+
+        /// Pauses `steps` until the guard goes, which lets every task waiting go on: a check that
+        /// fails leaves none waiting, as the checks after it would.
+        fn begin(steps: u64) -> Self {
+            // A hung task's stack on the console, at KERN_INFO.
+            fs::write("/proc/sys/kernel/printk", "7").unwrap();
+            Self::set(steps);
+            Self
         }
 
         fn wait(step: u64) {
@@ -2519,7 +2534,7 @@ mod guest {
                 fs::File::open(&other).unwrap().sync_all().unwrap();
             }
         };
-        Pauses::set(Pauses::MOVED);
+        let _pauses = Pauses::begin(Pauses::MOVED);
         let storer =
             std::thread::spawn(move || unsafe { ((mapped + 100) as *mut u8).write_volatile(0xee) });
         Pauses::wait(Pauses::MOVED);
