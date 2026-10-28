@@ -903,6 +903,40 @@ fn seals_write_protect_the_pages_mapped_in_place() {
     assert_eq!(window, pattern(1, ps), "the sealed page, where it was");
 }
 
+/// TASK-121: an open extent's page the window maps writably at two offsets, as a staging extent's
+/// region and a range's own space map it in the guest: the two are one page, and a store through
+/// either is what its commit writes, and reads read after.
+#[test]
+fn stores_through_either_writable_mapping_of_a_page_are_committed() {
+    host();
+    let ps = page_size() as usize;
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("extentd.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || serve(listener));
+    let store = RemoteExtentStore::connect(&socket, dir.path().join("store"), 1 << 24).unwrap();
+    let memory = memory(2);
+    // SAFETY: The memory is the test's, and outlives the store.
+    unsafe { store.create_dax_window_in_host_memory(memory, 2 * ps as u64, None) }.unwrap();
+    let open = ExtentId { branch: store.branch(), sequence: 1 };
+    store.map(open, 0, ps as u64, 0, true).unwrap();
+    // SAFETY: The window's memory, whose faults the store serves.
+    unsafe { std::ptr::copy_nonoverlapping(pattern(1, ps).as_ptr(), memory.as_ptr(), ps) };
+    store.map(open, 0, ps as u64, ps as u64, true).unwrap();
+    // SAFETY: As above, the window's second page.
+    unsafe { memory.as_ptr().add(ps + 7).write_volatile(0xee) };
+    let mut expected = pattern(1, ps);
+    expected[7] = 0xee;
+    // SAFETY: As above.
+    let first = unsafe { std::slice::from_raw_parts(memory.as_ptr(), ps) };
+    assert_eq!(first, expected, "the first mapping, one page with the second");
+    store.commit(None).unwrap();
+    assert_eq!(read(&store, open, 0, ps).unwrap(), expected, "the sealed extent read");
+    // SAFETY: As above.
+    let second = unsafe { std::slice::from_raw_parts(memory.as_ptr().add(ps), ps) };
+    assert_eq!(second, expected, "the second mapping, sealed");
+}
+
 /// What `work` returns, run on a thread of its own, unless it takes longer than `wait`: what a
 /// test that would otherwise hang for good waits for.
 fn within<T: Send + 'static>(
