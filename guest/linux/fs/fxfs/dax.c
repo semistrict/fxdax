@@ -142,6 +142,19 @@ static unsigned long fxfs_dax_delay_seed;
 module_param_named(dax_delay_seed, fxfs_dax_delay_seed, ulong, 0444);
 MODULE_PARM_DESC(dax_delay_seed, "The seed of fxfs.dax_delay_us's delays");
 
+/*
+ * fxdax: diagnostics (TASK-121): whether seals' staging extents' pages are evacuated to their
+ * ranges' own space, and whether ranges of their own map pieces of staging extents where the
+ * extents' regions do (fxfs_dax_move), rather than in their own space: each off, a failing check
+ * says whether its path is the one losing data.
+ */
+static bool fxfs_dax_evacuates = true;
+module_param_named(dax_evacuates, fxfs_dax_evacuates, bool, 0644);
+MODULE_PARM_DESC(dax_evacuates, "Evacuate sealed staging extents' pages (diagnostic)");
+static bool fxfs_dax_moves = true;
+module_param_named(dax_moves, fxfs_dax_moves, bool, 0644);
+MODULE_PARM_DESC(dax_moves, "Map staging extents' pieces where their regions do (diagnostic)");
+
 static DEFINE_SPINLOCK(fxfs_dax_delay_lock);
 static struct rnd_state fxfs_dax_delay_state;
 static bool fxfs_dax_delay_seeded;
@@ -710,7 +723,7 @@ static int fxfs_dax_map_extents(struct fxfs_dax *dax, struct fxfs_dax_range *ran
 		const struct fxfs_dax_extent *e = &extents[i];
 
 		err = -EXDEV;
-		if (e->extent_size && e->extent_size <= FXFS_DAX_SIZE &&
+		if (READ_ONCE(fxfs_dax_moves) && e->extent_size && e->extent_size <= FXFS_DAX_SIZE &&
 		    PAGE_ALIGNED(e->extent_offset) && (e->extent_offset || e->len < e->extent_size))
 			err = fxfs_dax_move(dax, range, e, (e->offset - start) >> PAGE_SHIFT,
 					    e->len >> PAGE_SHIFT);
@@ -2635,7 +2648,8 @@ static void fxfs_dax_seal(void *arg)
 		rcu_read_unlock();
 		list_del_init(&file->writable);
 		/* fxdax: its pages in the staging extent's region move once the seal ends. */
-		if (READ_ONCE(dax->restaging) && list_empty(&file->evacuating) &&
+		if (READ_ONCE(dax->restaging) && READ_ONCE(fxfs_dax_evacuates) &&
+		    list_empty(&file->evacuating) &&
 		    refcount_inc_not_zero(&file->refs))
 			list_add_tail(&file->evacuating, &dax->evacuating);
 	}
