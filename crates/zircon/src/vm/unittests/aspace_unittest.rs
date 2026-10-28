@@ -118,3 +118,114 @@ fn vmaspace_usercopy_accessed_fault_test() {
     assert_eq!(read_status, Ok(()));
     assert_eq!(read_actual, 1);
 }
+
+/// fxdax (TASK-111.1): a page a guest physical address space maps, as a DAX window maps an extent's
+/// pages into a hypervisor's second stage, is aged as accessed at every harvest for as long as it
+/// is mapped, though nothing the host sees accesses it, and is never made inaccessible there:
+/// eviction then takes the pages no guest maps before those a guest may be using. Unmapped, it
+/// ages as any page not accessed does.
+#[test]
+fn guest_physical_mappings_are_aged_as_accessed_without_being_harvested() {
+    use crate::arch::host::mmu::recording::RecordingSecondStage;
+    use crate::hypervisor::aspace::GuestPhysicalAspace;
+    use crate::vm::arch_vm_aspace::{ARCH_MMU_FLAG_PERM_READ, ARCH_MMU_FLAG_PERM_WRITE};
+    use crate::vm::vm_address_region::{
+        RangeOpType, VMAR_FLAG_SPECIFIC, VmAddressRegionOpChildren,
+    };
+    use std::sync::Arc;
+
+    let _scanner_disable = AutoVmScannerDisable::new();
+    let (vmo, pages) = make_committed_pager_vmo(1, false, false).unwrap();
+    let page = pages[0];
+    let second_stage = Arc::new(RecordingSecondStage::default());
+    let gpa = GuestPhysicalAspace::create_with_second_stage(PAGE_SIZE, second_stage.clone())
+        .expect("Failed to create aspace");
+    let vmar = gpa.root_vmar();
+    vmar.create_vm_mapping(
+        0,
+        PAGE_SIZE,
+        0,
+        VMAR_FLAG_SPECIFIC,
+        vmo,
+        0,
+        ARCH_MMU_FLAG_PERM_READ | ARCH_MMU_FLAG_PERM_WRITE,
+        "window",
+    )
+    .expect("Failed to map");
+    vmar.range_op(RangeOpType::MapRange, 0, PAGE_SIZE, VmAddressRegionOpChildren::Yes)
+        .expect("Failed to populate");
+    assert!(gpa.arch_aspace().query(0).is_ok(), "the page isn't mapped");
+    second_stage.take();
+
+    let page_queues = pmm::node().page_queues();
+    let queue = || page.page_queue().load(Ordering::Relaxed);
+    harvest_access_bits(NonTerminalAction::Retain, TerminalAction::UpdateAgeAndHarvest);
+    for _ in 0..3 {
+        let aged = queue();
+        page_queues.rotate_reclaim_queues();
+        harvest_access_bits(NonTerminalAction::Retain, TerminalAction::UpdateAgeAndHarvest);
+        assert_ne!(aged, queue(), "a mapped page wasn't aged as accessed");
+    }
+    assert_eq!(second_stage.take(), vec![], "harvesting changed the second stage");
+
+    vmar.unmap(0, PAGE_SIZE, VmAddressRegionOpChildren::No).expect("Failed to unmap");
+    harvest_access_bits(NonTerminalAction::Retain, TerminalAction::UpdateAgeAndHarvest);
+    let unmapped = queue();
+    page_queues.rotate_reclaim_queues();
+    harvest_access_bits(NonTerminalAction::Retain, TerminalAction::UpdateAgeAndHarvest);
+    assert_eq!(unmapped, queue(), "an unmapped page was aged as accessed");
+}
+
+/// fxdax (TASK-111.1): evicting a page leaves the mappings of the pages beside it that it doesn't
+/// evict. Upstream unmaps the whole batch of pages an eviction looks at, and keeps those too young
+/// to reclaim unmapped, which a guest's DAX window, whose second stage is another process's, only
+/// maps again through a fault the extent daemon resolves.
+#[test]
+fn evicting_a_page_leaves_the_mappings_of_those_it_keeps() {
+    use super::test_helper::make_reclaimable;
+    use crate::arch::host::mmu::recording::RecordingSecondStage;
+    use crate::hypervisor::aspace::GuestPhysicalAspace;
+    use crate::vm::arch_vm_aspace::ARCH_MMU_FLAG_PERM_READ;
+    use crate::vm::vm_address_region::{
+        RangeOpType, VMAR_FLAG_SPECIFIC, VmAddressRegionOpChildren,
+    };
+    use crate::vm::vm_cow_pages::EvictionAction;
+    use std::sync::Arc;
+
+    const PAGES: usize = 16;
+    let _scanner_disable = AutoVmScannerDisable::new();
+    let (vmo, pages) = make_committed_pager_vmo(PAGES, false, false).unwrap();
+    let second_stage = Arc::new(RecordingSecondStage::default());
+    let gpa = GuestPhysicalAspace::create_with_second_stage(PAGES * PAGE_SIZE, second_stage.clone())
+        .expect("Failed to create aspace");
+    // The window maps all of the pages but the first.
+    let vmar = gpa.root_vmar();
+    let mapped = (PAGES - 1) * PAGE_SIZE;
+    vmar.create_vm_mapping(
+        PAGE_SIZE,
+        mapped,
+        0,
+        VMAR_FLAG_SPECIFIC,
+        vmo.clone(),
+        PAGE_SIZE as u64,
+        ARCH_MMU_FLAG_PERM_READ,
+        "window",
+    )
+    .expect("Failed to map");
+    vmar.range_op(RangeOpType::MapRange, PAGE_SIZE, mapped, VmAddressRegionOpChildren::Yes)
+        .expect("Failed to populate");
+    // The first page is old enough to evict, the rest just used.
+    make_reclaimable(&pages);
+    let page_queues = pmm::node().page_queues();
+    for page in &pages[1..] {
+        page_queues.mark_accessed(*page);
+    }
+    second_stage.take();
+
+    let reclaimed = vmo.cow_pages().reclaim_page(pages[0], 0, EvictionAction::IgnoreHint).unwrap();
+    assert_eq!(reclaimed.num_pages, 1);
+    assert_eq!(second_stage.take(), vec![], "evicting the first page changed the window");
+    for page in 1..PAGES {
+        assert!(gpa.arch_aspace().query(page * PAGE_SIZE).is_ok(), "page {page} was unmapped");
+    }
+}

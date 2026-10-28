@@ -371,7 +371,10 @@ impl Window {
         let offset = usize::try_from(offset).map_err(|_| Errno::EINVAL)?;
         let faulted = self.gpas.page_fault_async(offset, access == Access::Write, pages - 1).await;
         stats::count_since(Counter::Faults, Counter::FaultNs, start);
-        faulted.errno()
+        if faulted == Ok(true) {
+            stats::add(Counter::FaultWaits, 1);
+        }
+        faulted.map(|_| ()).errno()
     }
 
     /// Maps `len` bytes of `vmo` at `vmo_offset` into the window at `offset`, replacing what was

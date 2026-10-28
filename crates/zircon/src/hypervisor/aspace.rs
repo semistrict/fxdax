@@ -121,18 +121,21 @@ impl GuestPhysicalAspace {
     /// Resolves the guest's `write` or read fault at `guest_paddr`, as `page_fault` does, as a
     /// future that waits on page requests rather than blocking the calling thread, and resolves
     /// the `additional_pages` pages after it as it does that page, as far as its mapping goes.
+    /// fxdax: returns whether it waited on a page request (TASK-111.1).
     pub async fn page_fault_async(
         &self,
         guest_paddr: zx_gpaddr_t,
         write: bool,
         additional_pages: usize,
-    ) -> Result<(), Status> {
+    ) -> Result<bool, Status> {
         let mut page_request = MultiPageRequest::default();
         let guest_paddr = page::round_down(guest_paddr);
+        let mut waited = false;
         while self.page_fault_attempt(guest_paddr, write, additional_pages, &mut page_request)? {
             page_request.wait_async(true).await?;
+            waited = true;
         }
-        Ok(())
+        Ok(waited)
     }
 
     /// Attempts to resolve the fault at the page `guest_paddr`, and the `additional_pages` after

@@ -25,6 +25,8 @@
 //! - A page's backlink to its `VmCowPages` is a `Weak` reference, so the page queues can upgrade
 //!   it safely; see `backlink`.
 //! - No kcounters, ktrace or attribution tracking beyond counting committed pages.
+//! - fxdax: eviction unmaps only the pages it reclaims, not the whole batch it looks at
+//!   (`reclaim_chosen_for_eviction`, TASK-111.1).
 //! - The VMO's mappings are kept here, with the lock that is the VMO's lock in Zircon too, in a tree
 //!   by the offsets they map from, as Zircon's are. fxdax: an AVL tree of the port's own, rather
 //!   than Zircon's B-tree (`vm_mapping_tree`).
@@ -3697,15 +3699,6 @@ impl VmCowPages {
         if length == 0 {
             return Err(VmCowReclaimFailure::IncorrectPage);
         }
-        // Remove any mappings to the range and harvest accessed bits to get up-to-date page queue
-        // info.
-        self.range_change_update_locked(
-            &mut locked,
-            VmCowRange::new(offset, length),
-            RangeChangeOp::UnmapAndHarvest,
-            Some(&mut deferred),
-        );
-
         let high_priority_count = locked.high_priority_count;
         let mut num_failed_queue = 0u32;
         let can_reclaim_page = |page: VmPagePtr, num_failed_queue: &mut u32| {
@@ -3742,13 +3735,41 @@ impl VmCowPages {
             true
         };
 
-        let mut page_remover = BatchPqRemove::new(self, deferred.freed_list());
-        let mut num_evicted_pages = 0u64;
+        // fxdax: the pages that may be reclaimed as their queues have them now, before any is
+        // unmapped. Upstream unmaps the whole range first, harvesting its pages' accessed bits,
+        // and keeps the pages too young to reclaim, unmapped: cheap for a process to fault back,
+        // but not for a guest whose DAX window maps the page, which another process faults back
+        // through the extent daemon (TASK-111.1).
         let mut num_failed_pages = 0u32;
-        let _ = locked.page_list.remove_pages(offset, offset + length, |p, off| {
+        let mut reclaimable = Vec::new();
+        let _ = locked.page_list.for_every_page_in_range(offset, offset + length, |p, off| {
             // Borrowed pages are aged and evicted by their lender, and giving one back would not
             // free it. fxdax: and a page not chosen is left as it is.
             if p.is_page() && !self.is_borrowed(p.page()) && chosen(off, p.page()) {
+                if can_reclaim_page(p.page(), &mut num_failed_queue) {
+                    reclaimable.push(off);
+                } else {
+                    num_failed_pages += 1;
+                }
+            }
+            Status::NEXT
+        });
+        // Remove the mappings of those pages, a run of consecutive ones at a time, and harvest
+        // their accessed bits to get up-to-date page queue info.
+        for run in reclaimable.chunk_by(|a, b| b - a == PAGE_SIZE) {
+            self.range_change_update_locked(
+                &mut locked,
+                VmCowRange::new(run[0], run.len() as u64 * PAGE_SIZE),
+                RangeChangeOp::UnmapAndHarvest,
+                Some(&mut deferred),
+            );
+        }
+
+        let mut page_remover = BatchPqRemove::new(self, deferred.freed_list());
+        let mut num_evicted_pages = 0u64;
+        let _ = locked.page_list.remove_pages(offset, offset + length, |p, off| {
+            if p.is_page() && reclaimable.binary_search(&off).is_ok() {
+                // Accessed as it was unmapped, it is not reclaimed.
                 if !can_reclaim_page(p.page(), &mut num_failed_queue) {
                     num_failed_pages += 1;
                     return Status::NEXT;

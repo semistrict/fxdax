@@ -133,3 +133,16 @@ pub fn make_committed_pager_vmo(
 ) -> Result<(Arc<VmObjectPaged>, Vec<VmPagePtr>), Status> {
     make_partially_committed_pager_vmo(num_pages, num_pages, trap_dirty, resizable, false)
 }
+
+/// fxdax: ages the page queues until `pages` can be reclaimed.
+pub fn make_reclaimable(pages: &[VmPagePtr]) {
+    let page_queues = crate::vm::pmm::node().page_queues();
+    for _ in 0..100 {
+        if pages.iter().all(|page| crate::vm::page_queues::PageQueues::is_page_reclaimable(*page)) {
+            return;
+        }
+        page_queues.rotate_reclaim_queues();
+        drop(page_queues.peek_isolate(0));
+    }
+    panic!("pages did not age");
+}

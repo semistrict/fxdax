@@ -21,8 +21,9 @@
 //!   whose addresses start at 0: of the host process's address space too, or, given a
 //!   hypervisor's second stage, of that alone.
 //! - No kernel address space, ASLR, vDSO, memory priorities, attribution or page table
-//!   reclamation. The address space list is the list of address spaces in host memory, which the
-//!   host process's faults are in.
+//!   reclamation.
+//! - fxdax: harvesting ages the pages a guest physical address space maps as accessed at every
+//!   scan, without harvesting them (`harvest_all_user_accessed_bits`, TASK-111.1).
 
 use crate::arch::host::mmu::{HostArchVmAspace, SecondStage};
 use crate::sync::LockId;
@@ -83,10 +84,14 @@ pub struct VmAspace {
     pt_harvest_since_active: AtomicU32,
 }
 
-/// The aspaces in host memory (`host_base`): the address space list, for finding the aspace a
-/// host fault is in. An aspace whose pages are mapped in a hypervisor's second stage is not in
-/// it, as the host process never accesses its pages.
-static HOST_ASPACES: Mutex<Vec<Weak<VmAspace>>> = Mutex::new(Vec::new());
+/// The address space list: every aspace, for harvesting their accessed information, and for
+/// finding the aspace in host memory (`host_base`) a host fault is in.
+static ASPACES: Mutex<Vec<Weak<VmAspace>>> = Mutex::new(Vec::new());
+
+/// The most pages of a guest physical address space aged with its page tables' lock held once
+/// (`harvest_all_user_accessed_bits`): a DAX window maps up to millions, and its mappings change
+/// with that lock held.
+const GUEST_PHYSICAL_HARVEST_PAGES: usize = 512;
 
 impl VmAspace {
     /// Creates a user address space of `size` bytes mapped into the host process.
@@ -107,7 +112,6 @@ impl VmAspace {
     }
 
     fn create_in(type_: Type, arch: HostArchVmAspace, name: &str) -> Arc<VmAspace> {
-        let in_host_memory = arch.host_base().is_some();
         let aspace = Arc::new(VmAspace {
             base: arch.base(),
             size: arch.size(),
@@ -123,11 +127,10 @@ impl VmAspace {
         });
         aspace.init();
         crate::arch::host::exceptions::install();
-        if in_host_memory {
-            let mut aspaces = HOST_ASPACES.lock();
-            aspaces.retain(|a| a.strong_count() > 0);
-            aspaces.push(Arc::downgrade(&aspace));
-        }
+        let mut aspaces = ASPACES.lock();
+        aspaces.retain(|a| a.strong_count() > 0);
+        aspaces.push(Arc::downgrade(&aspace));
+        drop(aspaces);
         aspace
     }
 
@@ -159,14 +162,20 @@ impl VmAspace {
         }
     }
 
-    /// Harvests the accessed information of all the user address spaces into the page queues.
+    /// Harvests the accessed information of all the user address spaces into the page queues,
+    /// and ages the pages guest physical address spaces map as accessed (fxdax).
     pub fn harvest_all_user_accessed_bits(
         non_terminal_action: NonTerminalAction,
         terminal_action: TerminalAction,
     ) {
-        let aspaces = HOST_ASPACES.lock();
+        let aspaces = ASPACES.lock();
+        let mut guest_physical = Vec::new();
 
         for a in aspaces.iter().filter_map(Weak::upgrade) {
+            if a.is_guest_physical() && a.size() > 0 {
+                guest_physical.push(a);
+                continue;
+            }
             if a.is_user() && a.size() > 0 {
                 // The arch_aspace is only destroyed in the VmAspace destructor. Even if the actual
                 // VmAspace has been destroyed, it is still completely safe to walk to the hardware
@@ -216,11 +225,33 @@ impl VmAspace {
                 }
             }
         }
+        drop(aspaces);
+
+        // fxdax: a guest's accesses to its physical address space are the hypervisor's to see, not
+        // the host's, and harvesting their flags would make each page mapped there inaccessible in
+        // the second stage, another process's, for the guest's next access to fault back. So the
+        // pages it maps count as accessed for as long as they are mapped, aged at every scan
+        // without being harvested. The guest chooses what stays mapped, a DAX window's pages
+        // among them, so eviction takes the pages no guest maps first. Unaged, the pages a guest
+        // went on using since they were mapped were the oldest, evicted first and faulted back
+        // (TASK-111.1).
+        for a in guest_physical {
+            let pages = a.size() / PAGE_SIZE;
+            for first in (0..pages).step_by(GUEST_PHYSICAL_HARVEST_PAGES) {
+                let result = a.arch_aspace().harvest_accessed(
+                    a.base() + first * PAGE_SIZE,
+                    GUEST_PHYSICAL_HARVEST_PAGES.min(pages - first),
+                    NonTerminalAction::Retain,
+                    TerminalAction::UpdateAge,
+                );
+                debug_assert!(result.is_ok());
+            }
+        }
     }
 
     /// Returns the host aspace whose memory contains host address `addr`.
     pub fn find_host_aspace(addr: usize) -> Option<Arc<VmAspace>> {
-        HOST_ASPACES.lock().iter().filter_map(Weak::upgrade).find(|aspace| {
+        ASPACES.lock().iter().filter_map(Weak::upgrade).find(|aspace| {
             (aspace.host_base())
                 .is_some_and(|host_base| addr >= host_base && addr - host_base < aspace.size)
         })

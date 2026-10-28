@@ -1029,10 +1029,14 @@ impl Connection {
             }
         };
         let faulted = faulted.await;
+        if flags & FAULT_PAGE == 0 {
+            crate::stats::add(crate::stats::Counter::FaultStores, 1);
+        }
         // fxdax: a store refused stops its VM if the guest goes on with it for a second, with no
         // more than KVM_RUN's EFAULT to say so: what the window had there, each refusal of the
         // first thousand, a run's few, and every power of two after (TASK-99, TASK-101).
         if faulted == Err(Errno::EACCES) {
+            crate::stats::add(crate::stats::Counter::FaultRefusals, 1);
             static REFUSED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
             let count = REFUSED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
             if (count <= 1000 || count.is_power_of_two())

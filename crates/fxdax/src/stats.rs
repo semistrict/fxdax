@@ -85,6 +85,14 @@ pub struct Stats {
     pub cache_trims: u64,
     /// The nanoseconds they took, under the cache's lock.
     pub cache_trim_ns: u64,
+    /// fxdax: of `faults`, those VM processes asked for as the guest's stores to pages they had
+    /// installed read-only (`extentd::wire::FAULT` without `FAULT_PAGE`); the rest were on pages
+    /// they hadn't installed (TASK-111.1).
+    pub fault_stores: u64,
+    /// Of `faults`, the stores refused, to pages the window maps read-only.
+    pub fault_refusals: u64,
+    /// Of `faults`, those that waited for the pager to read their pages in.
+    pub fault_waits: u64,
 }
 
 /// The counters, in the order of [`Stats`]' fields.
@@ -117,10 +125,13 @@ pub(crate) enum Counter {
     StageWriteProtects,
     CacheTrims,
     CacheTrimNs,
+    FaultStores,
+    FaultRefusals,
+    FaultWaits,
 }
 
 /// The counters [`Counter`] names, which this module keeps.
-const COUNTED: usize = 27;
+const COUNTED: usize = 30;
 
 /// The counters a snapshot holds: those it keeps, and the extent store's.
 const COUNTERS: usize = COUNTED + 3;
@@ -177,6 +188,9 @@ pub fn stats() -> Stats {
         stage_write_protects: count(Counter::StageWriteProtects),
         cache_trims: count(Counter::CacheTrims),
         cache_trim_ns: count(Counter::CacheTrimNs),
+        fault_stores: count(Counter::FaultStores),
+        fault_refusals: count(Counter::FaultRefusals),
+        fault_waits: count(Counter::FaultWaits),
     }
 }
 
@@ -214,6 +228,9 @@ impl Stats {
             self.stage_write_protects,
             self.cache_trims,
             self.cache_trim_ns,
+            self.fault_stores,
+            self.fault_refusals,
+            self.fault_waits,
         ]
     }
 
@@ -251,6 +268,9 @@ impl Stats {
             stage_write_protects: word(27),
             cache_trims: word(28),
             cache_trim_ns: word(29),
+            fault_stores: word(30),
+            fault_refusals: word(31),
+            fault_waits: word(32),
         }
     }
 
@@ -295,6 +315,9 @@ impl Stats {
             "stage-write-protects",
             "cache-trims",
             "cache-trim-ns",
+            "fault-stores",
+            "fault-refusals",
+            "fault-waits",
         ];
         std::array::from_fn(|at| (names[at], words[at]))
     }

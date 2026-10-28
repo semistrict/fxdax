@@ -332,6 +332,10 @@ impl Extentd for Control {
             // And the extent cache's trims (TASK-109.2).
             cache_trims: _,
             cache_trim_ns: _,
+            // And the faults by kind (TASK-111.1).
+            fault_stores: _,
+            fault_refusals: _,
+            fault_waits: _,
         } = crate::stats::stats();
         use extent_remote::store::{Request, Upload};
         let bucket = stores::remote_bucket().map_err(status)?.stats();
@@ -606,6 +610,9 @@ impl Client {
             stage_write_protects: 0,
             cache_trims: 0,
             cache_trim_ns: 0,
+            fault_stores: 0,
+            fault_refusals: 0,
+            fault_waits: 0,
         })
     }
 

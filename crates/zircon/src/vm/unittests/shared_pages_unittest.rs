@@ -6,10 +6,9 @@
 
 //! Tests of pages shared between pager-backed VMOs (`VmCowPages::lend_pages`), which Zircon lacks.
 
-use super::test_helper::{make_committed_pager_vmo, make_partially_committed_pager_vmo};
-use crate::vm::page::VmPagePtr;
-use crate::vm::page_queues::PageQueues;
-use crate::vm::pmm;
+use super::test_helper::{
+    make_committed_pager_vmo, make_partially_committed_pager_vmo, make_reclaimable,
+};
 use crate::vm::scanner::AutoVmScannerDisable;
 use crate::vm::vm_cow_pages::EvictionAction;
 use crate::vm::vm_object_paged::VmObjectPaged;
@@ -35,19 +34,6 @@ fn make_borrower(num_pages: u64, trap_dirty: bool) -> Arc<VmObjectPaged> {
     let (borrower, _) =
         make_partially_committed_pager_vmo(num_pages as usize, 0, trap_dirty, true, false).unwrap();
     borrower
-}
-
-/// Ages the page queues until `pages` can be reclaimed.
-fn make_reclaimable(pages: &[VmPagePtr]) {
-    let page_queues = pmm::node().page_queues();
-    for _ in 0..100 {
-        if pages.iter().all(|page| PageQueues::is_page_reclaimable(*page)) {
-            return;
-        }
-        page_queues.rotate_reclaim_queues();
-        drop(page_queues.peek_isolate(0));
-    }
-    panic!("pages did not age");
 }
 
 fn read_page(vmo: &VmObjectPaged, index: u64) -> Vec<u8> {
