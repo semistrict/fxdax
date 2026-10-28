@@ -512,7 +512,13 @@ static void fxfs_dax_shadow_check(struct fxfs_dax *dax, struct fxfs_dax_range *r
 	for (i = page; i < page + pages; i++) {
 		at = fxfs_dax_page_offset(range, i) >> PAGE_SHIFT;
 		entry = xa_load(&dax->shadow, at);
-		WARN(!entry || !(xa_to_value(entry) & 1) || (xa_to_value(entry) >> 1) != seals,
+		/*
+		 * Mapped writably since the last seal; or before one that has begun (odd), which waits
+		 * for this store in the gate to end before it seals.
+		 */
+		WARN(!entry || !(xa_to_value(entry) & 1) ||
+		     ((xa_to_value(entry) >> 1) != seals &&
+		      !((seals & 1) && (xa_to_value(entry) >> 1) == seals - 1)),
 		     "fxfs: %s: ino %llu chunk %lu page %lu writable at window page %lx, which the guest %s (seals %llu, then %lu, %s %llx)\n",
 		     why, range->file->ino, range->chunk, i, at,
 		     !entry ? "never mapped" : !(xa_to_value(entry) & 1) ? "mapped read-only last" :
