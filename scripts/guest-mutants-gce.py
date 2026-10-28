@@ -97,6 +97,13 @@ MUTANTS = [
          ("\tlockdep_assert_held_write(&file->sem);\n\tif (ev->count) {\n\t\tfxfs_dax_delay();",
           "\tif (ev->count) {\n\t\tfxfs_dax_delay();")],
     ),
+    (
+        "pmd_row_unrelocated",
+        "a page moving out of a row a PMD mapped relocates itself alone, whose row's other pages' "
+        "faults meet the PMD entry: SIGBUS (TASK-123)",
+        [("\tif (changed && READ_ONCE(range->huge)) {\n",
+          "\tif (changed && READ_ONCE(range->huge) && false) {\n")],
+    ),
 ]
 
 SUITES = "fxfs-guest-dax fxfs-guest-checks-dax fxfs-guest-pgbench-dax"
