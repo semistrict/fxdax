@@ -655,6 +655,18 @@ mod guest {
         file.sync_all().unwrap();
     }
 
+    /// fxdax: has the kernel log what it traced of `path`'s page `page`, if it traces
+    /// (fxfs.dax_trace, TASK-121): before a check fails on the page.
+    fn trace_dump(path: &str, page: u64) {
+        use std::os::unix::fs::MetadataExt;
+        let traced = fs::read_to_string("/sys/module/fxfs/parameters/dax_trace");
+        if traced.is_ok_and(|traced| traced.trim() == "Y") {
+            let ino = fs::metadata(path).unwrap().ino();
+            let _ =
+                fs::write("/sys/module/fxfs/parameters/dax_trace_dump", format!("{ino} {page}"));
+        }
+    }
+
     /// fxdax: what /proc/fs/fxfs/<tag> counts (TASK-91.7), by name.
     fn stats() -> std::collections::BTreeMap<String, u64> {
         let text = fs::read_to_string("/proc/fs/fxfs/fxdax").unwrap();
@@ -2232,6 +2244,7 @@ mod guest {
                 if let Some(at) =
                     (0..SIZE).find(|&at| read[at] != models[n][at].load(Ordering::Relaxed))
                 {
+                    trace_dump(name, at as u64 / 4096);
                     panic!(
                         "seed {seed}, phase {phase}, {what}: {name} at {at:#x} (thread {}'s) reads {:#x}, its model {:#x}",
                         owner(at),
@@ -2389,6 +2402,7 @@ mod guest {
                 let want = models[n][at + i].load(Ordering::Relaxed);
                 let mapped = unsafe { std::ptr::read_volatile(&mapped[i]) };
                 if read[i] != want || mapped != want {
+                    trace_dump(&names[n], (at + i) as u64 / 4096);
                     failed(
                         log,
                         format!(
@@ -2497,7 +2511,10 @@ mod guest {
                 if let Some(child) = child {
                     let mut status = 0;
                     let ended = unsafe { libc::waitpid(child, &mut status, libc::WNOHANG) };
-                    assert_ne!(ended, child, "the storer ended ({status:#x}) before step {step:#x}");
+                    assert_ne!(
+                        ended, child,
+                        "the storer ended ({status:#x}) before step {step:#x}"
+                    );
                 }
                 assert!(std::time::Instant::now() < deadline, "no task waits at step {step:#x}");
                 std::thread::sleep(std::time::Duration::from_millis(1));
@@ -2804,6 +2821,7 @@ mod guest {
             assert!(page[..HALF].iter().all(|&b| b == byte), "page {n}'s first half: not {byte}");
             let want = &stored[n * PAGE + HALF..][..HALF];
             if let Some(at) = (0..HALF).find(|&at| page[HALF + at] != want[at]) {
+                trace_dump(&name, n as u64);
                 let wrong = (0..HALF).filter(|&at| page[HALF + at] != want[at]).count();
                 panic!(
                     "page {n}'s second half: byte {at:#x} of it reads {:#x}, stored {:#x}; {wrong} \

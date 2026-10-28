@@ -62,6 +62,7 @@
 #include <linux/seq_file.h>
 #include <linux/slab.h>
 #include <linux/uio.h>
+#include <linux/vmalloc.h>
 #include <linux/virtio_extent.h>
 #include <linux/wait.h>
 #include <linux/workqueue.h>
@@ -675,6 +676,85 @@ static u64 fxfs_dax_page_offset(const struct fxfs_dax_range *range, unsigned lon
 	return range->regions[(moved >> 32) - 1]->window_offset + ((moved & U32_MAX) << PAGE_SHIFT);
 }
 
+/*
+ * fxdax: diagnostic (TASK-121): with fxfs.dax_trace set as the filesystem mounts, the latest of
+ * what happened to files' pages, which writing `ino page` to fxfs.dax_trace_dump logs for that
+ * page: where Fxfs had its blocks, where the window maps it, the iomaps of it, and the seals.
+ */
+enum fxfs_dax_trace_kind {
+	FXFS_DAX_TRACE_MAPPED,
+	FXFS_DAX_TRACE_RELOCATED,
+	FXFS_DAX_TRACE_WRITE,
+	FXFS_DAX_TRACE_FAULT,
+	FXFS_DAX_TRACE_READ,
+	FXFS_DAX_TRACE_SEAL,
+};
+
+static const char *const fxfs_dax_trace_kinds[] = {
+	"mapped", "relocated", "write iomap", "fault iomap", "read iomap", "seal",
+};
+
+struct fxfs_dax_trace_event {
+	u64 time, seals, ino, page, window, extent, extent_offset;
+	u32 kind, flags;
+};
+
+#define FXFS_DAX_TRACE_EVENTS (1 << 18)
+
+static bool fxfs_dax_tracing;
+module_param_named(dax_trace, fxfs_dax_tracing, bool, 0444);
+MODULE_PARM_DESC(dax_trace, "Trace what happens to DAX pages (diagnostic), as the filesystem mounts");
+static struct fxfs_dax_trace_event *fxfs_dax_trace_events;
+static atomic64_t fxfs_dax_trace_next;
+static struct fxfs_device *fxfs_dax_trace_dev;
+
+static void fxfs_dax_trace(u32 kind, u64 ino, u64 page, u64 window, u64 extent, u64 extent_offset,
+			   u32 flags)
+{
+	struct fxfs_dax_trace_event *events = READ_ONCE(fxfs_dax_trace_events);
+	u64 at;
+
+	if (likely(!events))
+		return;
+	at = atomic64_inc_return(&fxfs_dax_trace_next) - 1;
+	events[at % FXFS_DAX_TRACE_EVENTS] = (struct fxfs_dax_trace_event) {
+		.time = ktime_get_ns(), .seals = fxfs_device_seals(fxfs_dax_trace_dev), .ino = ino,
+		.page = page, .window = window, .extent = extent, .extent_offset = extent_offset,
+		.kind = kind, .flags = flags,
+	};
+}
+
+/* Logs the traced events of `ino`'s page `page`, oldest first: `ino page` written. */
+static int fxfs_dax_trace_dump(const char *val, const struct kernel_param *kp)
+{
+	struct fxfs_dax_trace_event *events = READ_ONCE(fxfs_dax_trace_events), *e;
+	u64 ino, page, next, at, first;
+	unsigned int shown = 0;
+
+	if (!events || sscanf(val, "%llu %llu", &ino, &page) != 2)
+		return -EINVAL;
+	next = atomic64_read(&fxfs_dax_trace_next);
+	first = next > FXFS_DAX_TRACE_EVENTS ? next - FXFS_DAX_TRACE_EVENTS : 0;
+	pr_err("fxfs: the trace of ino %llu page %llu, of %llu events:\n", ino, page, next - first);
+	for (at = first; at < next; at++) {
+		e = &events[at % FXFS_DAX_TRACE_EVENTS];
+		if (e->kind != FXFS_DAX_TRACE_SEAL && (e->ino != ino || e->page != page))
+			continue;
+		if (e->kind == FXFS_DAX_TRACE_SEAL)
+			continue;
+		pr_err("fxfs:   %llu ns seals %llu: %s window %llx extent %llu at %llx flags %x\n",
+		       e->time, e->seals, fxfs_dax_trace_kinds[e->kind], e->window, e->extent,
+		       e->extent_offset, e->flags);
+		if (++shown == 200)
+			break;
+	}
+	return 0;
+}
+
+static const struct kernel_param_ops fxfs_dax_trace_dump_ops = { .set = fxfs_dax_trace_dump };
+module_param_cb(dax_trace_dump, &fxfs_dax_trace_dump_ops, NULL, 0200);
+MODULE_PARM_DESC(dax_trace_dump, "Log the traced events of `ino page` (diagnostic)");
+
 /* How many of `range`'s pages from `page` on, before `end`, are in a row in the window. */
 static unsigned long fxfs_dax_run(const struct fxfs_dax_range *range, unsigned long page,
 				  unsigned long end)
@@ -720,6 +800,10 @@ static void fxfs_dax_relocate(struct fxfs_dax_range *range, unsigned long page,
 			changed = true;
 		}
 		range->moved[page + i] = moved;
+		fxfs_dax_trace(FXFS_DAX_TRACE_RELOCATED, range->file->ino,
+			       (fxfs_dax_chunk_start(range) >> PAGE_SHIFT) + page + i,
+			       fxfs_dax_page_offset(range, page + i), region ? region->sequence : 0,
+			       first + i, test_bit(page + i, range->mapped));
 	}
 	/* fxdax: a row a PMD mapped broken up: every page of it is relocated (TASK-123). */
 	if (changed && READ_ONCE(range->huge)) {
@@ -861,6 +945,15 @@ static int fxfs_dax_mapped(struct fxfs_dax_range *range, const struct fxfs_dax_e
 		bitmap_set(range->writable, page, pages);
 	else
 		fxfs_dax_clear_writable(range, page, pages);
+	{
+		unsigned long i;
+
+		for (i = 0; i < pages; i++)
+			fxfs_dax_trace(FXFS_DAX_TRACE_MAPPED, range->file->ino,
+				       (start >> PAGE_SHIFT) + page + i,
+				       fxfs_dax_page_offset(range, page + i), e->sequence,
+				       e->extent_offset + ((u64)i << PAGE_SHIFT), e->open);
+	}
 	return e->open;
 }
 
@@ -2302,6 +2395,9 @@ static int fxfs_dax_iomap_read(struct inode *inode, loff_t pos, loff_t length, u
 	iomap->addr = at + offset_in_page(pos);
 	iomap->length = length;
 	iomap->private = range;
+	if (flags & IOMAP_FAULT)
+		fxfs_dax_trace(FXFS_DAX_TRACE_READ, inode->i_ino, (start >> PAGE_SHIFT) + page, at, 0,
+			       length >> PAGE_SHIFT, test_bit(page, range->relocated));
 	/* fxdax: a PMD's, its pages in a row, which a page moving breaks up (TASK-123). */
 	if ((flags & IOMAP_FAULT) && length >= PMD_SIZE)
 		WRITE_ONCE(range->huge, true);
@@ -2589,6 +2685,9 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 	/* Holes a mapping of the file maps zeros for are gone. */
 	iomap->flags |= IOMAP_F_PRIVATE | (fresh ? IOMAP_F_NEW : 0);
 	iomap->addr = fxfs_dax_page_offset(range, first) + offset_in_page(pos);
+	fxfs_dax_trace(fault ? FXFS_DAX_TRACE_FAULT : FXFS_DAX_TRACE_WRITE, inode->i_ino,
+		       (start >> PAGE_SHIFT) + first, fxfs_dax_page_offset(range, first), 0, pages,
+		       find_next_bit(range->relocated, first + pages, first) != first + pages);
 	/* fxdax: a page's place within the window, or its fault dies of SIGBUS (TASK-121). */
 	WARN(iomap->addr >= dax->window_len,
 	     "fxfs: ino %lu page %lu written at %llx, past the window's %llx: moved %llx of %u regions\n",
@@ -3657,6 +3756,12 @@ struct fxfs_dax *fxfs_dax_create(struct super_block *sb, struct fxfs *fs)
 	dax->sb = sb;
 	dax->fs = fs;
 	dax->dev = dev;
+	/* fxdax: the trace, if asked for, of the first filesystem mounted (TASK-121). */
+	if (fxfs_dax_tracing && !fxfs_dax_trace_events) {
+		fxfs_dax_trace_dev = dev;
+		WRITE_ONCE(fxfs_dax_trace_events,
+			   vzalloc(sizeof(*fxfs_dax_trace_events) * FXFS_DAX_TRACE_EVENTS));
+	}
 	dax->dax_dev = dax_dev;
 	xa_init(&dax->files);
 	xa_init(&dax->shadow);
