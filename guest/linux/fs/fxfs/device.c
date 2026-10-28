@@ -283,8 +283,18 @@ struct dax_device *fxfs_device_dax(struct fxfs_device *dev, u64 *window_len)
 	return virtio_extent_dax(dev->vext);
 }
 
+/* fxdax: the flags of a map, `writable` and accessed next if `ahead`, that the device takes. */
+static u32 fxfs_device_map_flags(struct fxfs_device *dev, bool writable, bool ahead)
+{
+	u32 flags = writable ? VIRTIO_EXTENT_MAP_WRITE : 0;
+
+	if (ahead && virtio_extent_map_ahead(dev->vext))
+		flags |= VIRTIO_EXTENT_MAP_AHEAD;
+	return flags;
+}
+
 int fxfs_device_map(struct fxfs_device *dev, u64 branch, u64 sequence, u64 offset, u64 len,
-		    u64 window_offset, bool writable)
+		    u64 window_offset, bool writable, bool ahead)
 {
 	struct vext_request *req = kzalloc(sizeof(*req), GFP_NOFS);
 	u64 began;
@@ -293,7 +303,7 @@ int fxfs_device_map(struct fxfs_device *dev, u64 branch, u64 sequence, u64 offse
 	if (!req)
 		return -ENOMEM;
 	req->type = VIRTIO_EXTENT_T_MAP;
-	req->flags = writable ? VIRTIO_EXTENT_MAP_WRITE : 0;
+	req->flags = fxfs_device_map_flags(dev, writable, ahead);
 	req->id = (struct vext_id) { branch, sequence };
 	req->offset = offset;
 	req->len = len;
@@ -329,10 +339,10 @@ static int fxfs_device_map_one_request(struct fxfs_device *dev, const struct fxf
 				.len = cpu_to_le64(maps[i].len),
 				.window_offset = cpu_to_le64(maps[i].window_offset),
 			},
-			.flags = cpu_to_le32(maps[i].writable ? VIRTIO_EXTENT_MAP_WRITE : 0),
+			.flags = cpu_to_le32(fxfs_device_map_flags(dev, maps[i].writable, maps[i].ahead)),
 		};
 	req->type = VIRTIO_EXTENT_T_MAP;
-	req->flags = VIRTIO_EXTENT_MAP_MANY | (maps[0].writable ? VIRTIO_EXTENT_MAP_WRITE : 0);
+	req->flags = VIRTIO_EXTENT_MAP_MANY | fxfs_device_map_flags(dev, maps[0].writable, maps[0].ahead);
 	req->id = (struct vext_id) { maps[0].branch, maps[0].sequence };
 	req->offset = maps[0].offset;
 	req->len = maps[0].len;
@@ -359,7 +369,8 @@ int fxfs_device_map_many(struct fxfs_device *dev, const struct fxfs_device_map *
 		for (done = 0; done < count && !err; done++)
 			err = fxfs_device_map(dev, maps[done].branch, maps[done].sequence,
 					      maps[done].offset, maps[done].len,
-					      maps[done].window_offset, maps[done].writable);
+					      maps[done].window_offset, maps[done].writable,
+					      maps[done].ahead);
 		return err;
 	}
 	entries = kmalloc_array(FXFS_DEVICE_MAP_MANY - 1, sizeof(*entries), GFP_NOFS);

@@ -47,6 +47,11 @@
  * one its arguments say: the pieces of a file's chunk mapped in one request (fxdax's TASK-91.4).
  */
 #define VIRTIO_EXTENT_F_MAP_MANY 7
+/*
+ * MAP takes MAP_AHEAD: the guest accesses the pages it maps next, as it maps them to read, and the
+ * device maps them for it ahead of its accesses, as it does writable ones (fxdax's TASK-112.1).
+ */
+#define VIRTIO_EXTENT_F_MAP_AHEAD 8
 
 #define VIRTIO_EXTENT_T_READ 1
 #define VIRTIO_EXTENT_T_WRITE 2
@@ -78,9 +83,10 @@
 /* COMMIT: it completes once durable; it sets the root. */
 #define VIRTIO_EXTENT_COMMIT_DURABLE (1 << 0)
 #define VIRTIO_EXTENT_COMMIT_ROOT (1 << 1)
-/* MAP: writable; its data holds more maps (F_MAP_MANY). */
+/* MAP: writable; its data holds more maps (F_MAP_MANY); accessed next (F_MAP_AHEAD). */
 #define VIRTIO_EXTENT_MAP_WRITE (1 << 0)
 #define VIRTIO_EXTENT_MAP_MANY (1 << 1)
+#define VIRTIO_EXTENT_MAP_AHEAD (1 << 2)
 /* FREE: its data names more extents (F_FREE_MANY). */
 #define VIRTIO_EXTENT_FREE_MANY (1 << 0)
 /* RESIZED: the guest took the size it was asked to shrink to. */
@@ -138,7 +144,7 @@ struct virtio_extent_map {
 	__le64 window_offset;
 };
 
-/* One of a MAP_MANY's further maps: its flags MAP_WRITE alone. */
+/* One of a MAP_MANY's further maps: its flags MAP_WRITE and MAP_AHEAD alone. */
 struct virtio_extent_map_entry {
 	struct virtio_extent_map map;
 	__le32 flags;
@@ -290,6 +296,8 @@ bool virtio_extent_freeze(struct virtio_extent *vext);
 bool virtio_extent_free_many(struct virtio_extent *vext);
 /* Whether a MAP may carry MAP_MANY (F_MAP_MANY). */
 bool virtio_extent_map_many(struct virtio_extent *vext);
+/* Whether a MAP, and each of its further maps, may carry MAP_AHEAD (F_MAP_AHEAD). */
+bool virtio_extent_map_ahead(struct virtio_extent *vext);
 /*
  * Whether the device follows a store another VM writes, read-only (F_READ_ONLY): the driver
  * refuses what would write (-EROFS), and the filesystem mounts read-only.

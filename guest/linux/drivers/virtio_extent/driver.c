@@ -151,6 +151,12 @@ bool virtio_extent_map_many(struct virtio_extent *vext)
 }
 EXPORT_SYMBOL_GPL(virtio_extent_map_many);
 
+bool virtio_extent_map_ahead(struct virtio_extent *vext)
+{
+	return virtio_has_feature(vext->vdev, VIRTIO_EXTENT_F_MAP_AHEAD);
+}
+EXPORT_SYMBOL_GPL(virtio_extent_map_ahead);
+
 bool virtio_extent_read_only(struct virtio_extent *vext)
 {
 	return virtio_has_feature(vext->vdev, VIRTIO_EXTENT_F_READ_ONLY);
@@ -878,6 +884,7 @@ static const unsigned int vext_features[] = {
 	VIRTIO_EXTENT_F_READ_ONLY,
 	VIRTIO_EXTENT_F_FREE_MANY,
 	VIRTIO_EXTENT_F_MAP_MANY,
+	VIRTIO_EXTENT_F_MAP_AHEAD,
 };
 
 static struct virtio_driver vext_driver = {

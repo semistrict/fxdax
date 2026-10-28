@@ -1802,9 +1802,19 @@ mod guest {
         let start = Instant::now();
         mount("bench", "fxfs", "");
         result("fork-mount", "s", false, start.elapsed().as_secs_f64());
-        let start = Instant::now();
-        run("sh", &["-c", &format!("find {MNT}/usr -type f -exec cat {{}} + > /dev/null")]);
-        result("fork-read-usr", "s", false, start.elapsed().as_secs_f64());
+        // Read whole, then again: the first read maps the base's data into the window, which the
+        // daemon has in memory already when it is warm; the second finds it mapped, as pages
+        // static DAX on pmem would hold from the start (TASK-112.1). What the guest's Fxfs did
+        // meanwhile, its window's maps among it, and its requests, each read's whole, go to the
+        // log.
+        let read_usr = format!("find {MNT}/usr -type f -exec cat {{}} + > /dev/null");
+        for workload in ["fork-read-usr", "fork-reread-usr"] {
+            observed(workload, 1, || {
+                let start = Instant::now();
+                run("sh", &["-c", &read_usr]);
+                result(workload, "s", false, start.elapsed().as_secs_f64());
+            });
+        }
         let start = Instant::now();
         start_server();
         result("fork-pg-start", "s", false, start.elapsed().as_secs_f64());

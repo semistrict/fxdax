@@ -3,7 +3,7 @@ id: doc-4
 title: Virtio extent-store device specification
 type: specification
 created_date: '2026-10-13 22:18'
-updated_date: '2026-10-23 19:49'
+updated_date: '2026-10-28 02:51'
 ---
 # The virtio extent-store device
 
@@ -87,6 +87,7 @@ Settled in a design review on 2026-10-13:
 | 5 | `VIRTIO_EXTENT_F_READ_ONLY` | The device follows a store another VM writes, read-only (Followers): `ADVANCE`, `LET_GO`, `PIN` and `UNPIN` work, and the configuration holds `committed`, which changes while the device runs. Excludes `DAX_WRITE`, `WRITE_COMMIT` and `RESIZE`. |
 | 6 | `VIRTIO_EXTENT_F_FREE_MANY` | `FREE` takes `FREE_MANY`: its data names more extents to free (TASK-41). Excludes `READ_ONLY`. |
 | 7 | `VIRTIO_EXTENT_F_MAP_MANY` | `MAP` takes `MAP_MANY`: its data holds more maps (TASK-91.4). Needs `DAX`. |
+| 8 | `VIRTIO_EXTENT_F_MAP_AHEAD` | `MAP`, and each of its further maps, takes `MAP_AHEAD`: the guest accesses the pages next (TASK-112.1). Needs `DAX`. |
 | 29 | `VIRTIO_RING_F_EVENT_IDX` | The ring's notification suppression: the device offers it, so that a guest's requests queued while it takes them, and its completions while the driver takes them, cost no exit each. |
 | 32 | `VIRTIO_F_VERSION_1` | Required. |
 
@@ -256,11 +257,18 @@ multiples of `map_alignment`, and the range lies within the window.
 
 With `MAP_MANY` (bit 1, `F_MAP_MANY`), the data holds more maps, each a
 `struct virtio_extent_map_entry { struct virtio_extent_map map; le32 flags; le32 reserved; }`: the
-arguments of a `MAP` and its flags, `MAP_WRITE` alone, each mapped as a `MAP` of its own would be,
+arguments of a `MAP` and its flags, `MAP_WRITE` and `MAP_AHEAD` alone, each mapped as a `MAP` of its own would be,
 in any order. The first that fails fails the request, whichever others mapped, and the guest maps
 them all again, one by one, to learn which failed. A guest maps the pieces of a file's chunk it
 reads, scattered across extents as rewrites move its blocks, in one request rather than one each:
 each request a round trip, which nested virtualization makes dear.
+
+With `MAP_AHEAD` (bit 2, `F_MAP_AHEAD`), the guest accesses the pages it maps next, as a read does:
+the device maps them for the guest ahead of its accesses, those its host holds in memory, as it may
+map writable ones, rather than the hypervisor one first access at a time, which nested
+virtualization makes dear (TASK-112.1). Pages mapped to stay where a seal moved them, which the
+guest seldom touches again, it maps without. The flag changes nothing the guest sees but the time
+its first accesses take.
 
 `UNMAP` makes `len` bytes of the window at `window_offset` inaccessible.
 

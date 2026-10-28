@@ -140,9 +140,11 @@ struct dax_device *fxfs_device_dax(struct fxfs_device *dev, u64 *window_len);
 /*
  * Maps `len` bytes at `offset` in the extent {branch, sequence} at `window_offset` in the window,
  * writably if `writable` (MAP), or unmaps `len` bytes there (UNMAP), and waits for the device.
+ * fxdax: `ahead` if the guest accesses the pages next, as a read does, which the device then maps
+ * for it ahead of its accesses, if it can (MAP_AHEAD, TASK-112.1).
  */
 int fxfs_device_map(struct fxfs_device *dev, u64 branch, u64 sequence, u64 offset, u64 len,
-		    u64 window_offset, bool writable);
+		    u64 window_offset, bool writable, bool ahead);
 
 /* fxdax: one of fxfs_device_map_many's maps, as fxfs_device_map's arguments say it. */
 struct fxfs_device_map {
@@ -152,6 +154,7 @@ struct fxfs_device_map {
 	u64 len;
 	u64 window_offset;
 	bool writable;
+	bool ahead;
 };
 
 /*

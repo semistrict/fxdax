@@ -802,6 +802,43 @@ impl<H: HostMemory> UffdSecondStage<H> {
         }
     }
 
+    /// fxdax: maps the pages installed of the `len` bytes at `offset` for the guest ahead of its
+    /// accesses (`Prefault`), as the guest asks for the pages it maps to read (doc-4's
+    /// `MAP_AHEAD`): each one's first access otherwise takes the hypervisor a fault, which nested
+    /// virtualization makes dear (TASK-112.1). Pages not installed are left to the guest's
+    /// faults, which this mustn't wait for: what waits for the daemon's replies may be holding
+    /// them up. Nothing outside the second stage, or without a `Prefault`, is mapped.
+    pub(crate) fn prefault_installed(&self, offset: u64, len: u64) {
+        let Some(prefault) = &self.prefault else { return };
+        let page_size = page_size();
+        let end = offset.saturating_add(len).min(self.size as u64);
+        if offset >= end {
+            return;
+        }
+        let (first, last) = (offset / page_size, end.div_ceil(page_size));
+        let runs: Vec<std::ops::Range<u64>> = {
+            let pages = self.pages.lock().unwrap();
+            if pages.released {
+                return;
+            }
+            let installed = |at: u64| {
+                let page = &pages.pages[at as usize];
+                !page.withheld && page.mapped.is_some_and(|mapped| mapped.installed)
+            };
+            let mut runs: Vec<std::ops::Range<u64>> = Vec::new();
+            for at in (first..last).filter(|&at| installed(at)) {
+                match runs.last_mut() {
+                    Some(run) if run.end == at => run.end = at + 1,
+                    _ => runs.push(at..at + 1),
+                }
+            }
+            runs
+        };
+        for run in runs {
+            prefault.prefault(run.start * page_size, (run.end - run.start) * page_size);
+        }
+    }
+
     /// The host address of the `len` bytes at `offset`, as a length in host terms.
     fn addr(&self, offset: u64, len: u64) -> (usize, usize) {
         let (offset, len) = (offset as usize, len as usize);
@@ -1035,7 +1072,7 @@ impl<H: HostMemory> UffdSecondStage<H> {
     /// its accesses (`Prefault`): writable, an open extent's, which the guest maps to write now;
     /// not read-only, a sealed extent's, most of which the window maps as the guest's DAX moves
     /// pages written already (its evacuation, 60% of pgbench's maps), and which the guest seldom
-    /// touches again. Mapped for it, the hypervisor's pre-fault took a fifth of the VM process's
+    /// touches again: those it maps to read next it asks for ([`Self::prefault_installed`]). Mapped for it, the hypervisor's pre-fault took a fifth of the VM process's
     /// time changing the window, and its pages, in the host's page tables, made each later unmap
     /// of them flush the host's and the hypervisor's TLBs on every CPU (TASK-109).
     fn prefaults(protection: Protection) -> bool {
@@ -1455,6 +1492,54 @@ mod tests {
         drop(dax);
         // SAFETY: Unmaps the memory, which nothing uses any more.
         assert_eq!(unsafe { libc::munmap(memory, 4 * ps) }, 0);
+    }
+
+    /// fxdax TASK-112.1: the pages the guest asks for ahead of its reads, of what the window maps,
+    /// are those the hypervisor is told of, the runs of them installed; not those it maps nothing
+    /// at, nor past the window.
+    #[test]
+    fn pages_asked_for_ahead_are_prefaulted_as_installed() {
+        struct Told(Mutex<Vec<(u64, u64)>>);
+        impl Prefault for Told {
+            fn prefault(&self, offset: u64, len: u64) {
+                self.0.lock().unwrap().push((offset, len));
+            }
+        }
+        let ps = page_size();
+        // SAFETY: Maps anonymous memory, which this test owns.
+        let memory = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                4 * ps as usize,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                -1,
+                0,
+            )
+        };
+        assert_ne!(memory, libc::MAP_FAILED);
+        let file = zx::Vmo::create(4 * ps).unwrap();
+        file.write(&vec![7; 4 * ps as usize], 0).unwrap();
+        let told = Arc::new(Told(Mutex::new(Vec::new())));
+        // SAFETY: Only the test uses the memory, which outlives the window.
+        let stage =
+            unsafe { UffdSecondStage::in_process(memory as usize, 4 * ps, Some(told.clone())) }
+                .unwrap();
+        let (dax, _window) = Dax::<()>::in_host_memory(stage.clone()).unwrap();
+        dax.window.map(0, &file, 0, 2 * ps, false).unwrap();
+        dax.window.map(3 * ps, &file, 3 * ps, ps, false).unwrap();
+        assert_eq!(*told.0.lock().unwrap(), []);
+
+        stage.prefault_installed(0, 4 * ps);
+        assert_eq!(std::mem::take(&mut *told.0.lock().unwrap()), [(0, 2 * ps), (3 * ps, ps)]);
+        stage.prefault_installed(2 * ps, 8 * ps);
+        assert_eq!(std::mem::take(&mut *told.0.lock().unwrap()), [(3 * ps, ps)]);
+        stage.prefault_installed(4 * ps, ps);
+        assert_eq!(*told.0.lock().unwrap(), []);
+
+        drop(dax);
+        // SAFETY: Unmaps the memory, which nothing uses any more.
+        assert_eq!(unsafe { libc::munmap(memory, 4 * ps as usize) }, 0);
     }
 
     /// Stores to pages mapped read-only, of a file whose pager tracks its dirty pages, fault as

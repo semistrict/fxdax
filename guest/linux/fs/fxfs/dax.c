@@ -283,7 +283,9 @@ struct fxfs_dax_range {
 /*
  * fxdax: why the window maps: a region as far as a write or a fault needs, ahead of the writes
  * in the background, the staging extent's spare, a piece in a range's own space (TASK-91.4), or
- * pages a seal sealed in a staging extent's region in their ranges' own space (TASK-91.10).
+ * pages a seal sealed in a staging extent's region in their ranges' own space (TASK-91.10). The
+ * first and the fourth are for the access at hand, which the device maps ahead of (MAP_AHEAD,
+ * TASK-112.1); evacuated pages, written and done with, mostly aren't touched again.
  */
 enum fxfs_dax_why {
 	FXFS_DAX_REACH,
@@ -661,7 +663,7 @@ static int fxfs_dax_map_own(struct fxfs_dax *dax, struct fxfs_dax_range *range,
 	int err;
 
 	err = fxfs_device_map(dax->dev, e->branch, e->sequence, e->extent_offset, e->len,
-			      range->window_offset + (e->offset - start), e->open);
+			      range->window_offset + (e->offset - start), e->open, true);
 	atomic64_inc(&dax->maps[FXFS_DAX_RANGE]);
 	atomic64_add(e->len, &dax->map_bytes[FXFS_DAX_RANGE]);
 	if (!err)
@@ -723,6 +725,7 @@ static int fxfs_dax_map_extents(struct fxfs_dax *dax, struct fxfs_dax_range *ran
 					.offset = e->extent_offset, .len = e->len,
 					.window_offset = range->window_offset + (e->offset - start),
 					.writable = e->open,
+					.ahead = true,
 				};
 				own[nr_own++] = i;
 				continue;
@@ -1372,7 +1375,8 @@ static int fxfs_dax_map_to(struct fxfs_dax *dax, struct fxfs_dax_region *region,
 	for (;;) {
 		err = fxfs_device_map(dax->dev, region->branch, region->sequence,
 				      (u64)from << PAGE_SHIFT, (u64)(to - from) << PAGE_SHIFT,
-				      region->window_offset + ((u64)from << PAGE_SHIFT), writable);
+				      region->window_offset + ((u64)from << PAGE_SHIFT), writable,
+				      why == FXFS_DAX_REACH);
 		fxfs_dax_delay();
 		atomic64_inc(&dax->maps[why]);
 		atomic64_add((u64)(to - from) << PAGE_SHIFT, &dax->map_bytes[why]);
@@ -2817,7 +2821,7 @@ static void fxfs_dax_evacuee_map(struct fxfs_dax *dax, struct fxfs_dax_file *fil
 				ev->runs[r].mapped = !fxfs_nofs(fxfs_device_map(
 					dax->dev, ev->maps[r].branch, ev->maps[r].sequence,
 					ev->maps[r].offset, ev->maps[r].len, ev->maps[r].window_offset,
-					false));
+					false, false));
 			else
 				ev->runs[r].mapped = true;
 			atomic64_inc(&dax->maps[FXFS_DAX_EVACUATE]);
