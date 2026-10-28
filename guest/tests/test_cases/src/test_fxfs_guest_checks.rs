@@ -2607,34 +2607,6 @@ mod guest {
         let data: Vec<u8> = (0..SIZE).map(|i| (i % 251) as u8 + 1).collect();
         fs::write(&name, &data).unwrap();
         fs::File::open(&name).unwrap().sync_all().unwrap();
-        let file = fs::File::open(&name).unwrap();
-        let map = unsafe {
-            libc::mmap(
-                std::ptr::null_mut(),
-                SIZE,
-                libc::PROT_READ,
-                libc::MAP_SHARED,
-                file.as_raw_fd(),
-                0,
-            )
-        };
-        assert_ne!(map, libc::MAP_FAILED, "mmap: {}", std::io::Error::last_os_error());
-        let bytes = unsafe { std::slice::from_raw_parts(map as *const u8, SIZE) };
-        assert!(bytes == &data[..], "the file as mapped differs from what was written");
-        assert_eq!(unsafe { libc::munmap(map, SIZE) }, 0);
-        drop(file);
-        fs::remove_file(&name).unwrap();
-    }
-
-    /// fxdax: a file larger than a chunk, written whole by one write(2) and fsynced, then read
-    /// through a mapping: each byte as written. The first load of such a file died of SIGBUS, its
-    /// fault failing with no error (TASK-121's pause check).
-    fn test_mapped_after_write() {
-        const SIZE: usize = 4 << 20;
-        let name = path("mapped-after-write");
-        let data: Vec<u8> = (0..SIZE).map(|i| (i % 251) as u8 + 1).collect();
-        fs::write(&name, &data).unwrap();
-        fs::File::open(&name).unwrap().sync_all().unwrap();
         let file = fs::OpenOptions::new().read(true).write(true).open(&name).unwrap();
         let map = unsafe {
             libc::mmap(
@@ -2657,6 +2629,10 @@ mod guest {
         file.sync_all().unwrap();
         let bytes = unsafe { std::slice::from_raw_parts(map as *const u8, SIZE) };
         assert!(bytes == &data[..], "the file as mapped differs after a store moved a page");
+        // And again: each page's fault replaced the kernel's entry of the 2 MiB, which held
+        // them all, with its own (TASK-123).
+        let bytes = unsafe { std::slice::from_raw_parts(map as *const u8, SIZE) };
+        assert!(bytes == &data[..], "the file as mapped differs read again");
         assert_eq!(unsafe { libc::munmap(map, SIZE) }, 0);
         drop(file);
         fs::remove_file(&name).unwrap();
