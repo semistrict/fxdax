@@ -46,7 +46,11 @@
 // for it, whose cache holds nothing (cold): FXDAX_EXTENTD_BIN names the daemon's binary; or by a
 // daemon of its own that reads the base's boot profile, which a fork before the iterations
 // recorded, into its cache as the fork boots (profiled). The host reports the daemon's counters of
-// what serving the fork cost, as observations.
+// what serving the fork cost, as observations. fxdax: so too a fork without a DAX window, its
+// files read through the guest's page cache; and, against them, a base on ext4 on virtio-pmem,
+// with DAX and without, each iteration's VM booted on a copy of the base's image, which the host's
+// page cache holds as the extent daemon holds a warm base, as a static DAX device of a base layer
+// is (TASK-112.2).
 
 use macros::{guest, host};
 
@@ -73,6 +77,15 @@ pub enum Backend {
     /// fxdax: as `FxfsGuestDaxForkCold`, with the base's boot profile, which a fork recorded,
     /// read into the daemon's cache as the fork boots.
     FxfsGuestDaxForkProfiled,
+    /// fxdax: as `FxfsGuestDaxForkWarm`, without a DAX window: the fork's files read through the
+    /// guest's page cache, which each VM fills with a copy of its own (TASK-112.2).
+    FxfsGuestForkWarm,
+    /// fxdax: the fork cases' base on ext4 with DAX on virtio-pmem, each VM booted on a copy of the
+    /// base's image, which the host's page cache holds: a static DAX device, as a base layer's
+    /// (TASK-112.2).
+    Ext4DaxPmemFork,
+    /// fxdax: as `Ext4DaxPmemFork`, without DAX, the files in the guest's page cache.
+    Ext4PmemFork,
     /// fxdax: as `FxfsGuestDax`, with two follower VMs following its store, reading what it writes
     /// as it does (TASK-42.7): what followers cost their writer.
     FxfsGuestDaxFollowed,
@@ -85,12 +98,23 @@ pub enum Backend {
 impl Backend {
     /// Whether the case boots VMs on forks of a base image.
     fn forks(self) -> bool {
+        self.forks_store() || self.forks_image()
+    }
+
+    /// Whether the case's forks are forks of a store, which an extent daemon serves.
+    fn forks_store(self) -> bool {
         matches!(
             self,
             Backend::FxfsGuestDaxForkWarm
                 | Backend::FxfsGuestDaxForkCold
                 | Backend::FxfsGuestDaxForkProfiled
+                | Backend::FxfsGuestForkWarm
         )
+    }
+
+    /// fxdax: whether the case's forks are copies of the base's virtio-pmem image.
+    fn forks_image(self) -> bool {
+        matches!(self, Backend::Ext4DaxPmemFork | Backend::Ext4PmemFork)
     }
 
     /// Whether the case boots a writer VM and followers of its store.
@@ -275,6 +299,9 @@ RUN wget -q -O /opt/lua-5.4.7.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz \\
         /// Runs the base's VM, then, each iteration, forks the base and runs a VM on the fork, and
         /// reports what the daemon serving the fork counted.
         pub fn run(backend: Backend, test_setup: &TestSetup) -> anyhow::Result<()> {
+            if backend.forks_image() {
+                return run_images(test_setup);
+            }
             let extentd =
                 PathBuf::from(std::env::var_os("FXDAX_EXTENTD").context("FXDAX_EXTENTD")?);
             // Under `extents`, which what keeps a run's results leaves out (bench-linux-host.sh).
@@ -338,6 +365,27 @@ RUN wget -q -O /opt/lua-5.4.7.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz \\
                 if backend == Backend::FxfsGuestDaxForkCold && profile.exists() {
                     std::fs::remove_file(&profile)?;
                 }
+            }
+            println!("DONE");
+            Ok(())
+        }
+
+        /// fxdax: runs the base's VM on an image of its own, then, each iteration, a VM on a copy
+        /// of the image, made as it boots, which the host's page cache holds then (TASK-112.2).
+        fn run_images(test_setup: &TestSetup) -> anyhow::Result<()> {
+            // Under `extents`, which what keeps a run's results leaves out (bench-linux-host.sh).
+            let images = test_setup.tmp_dir.join("extents");
+            std::fs::create_dir_all(&images)?;
+            let base = images.join("base.img");
+            std::fs::File::create(&base)?.set_len(IMAGE_SIZE)?;
+            role(test_setup, "base", &base, Path::new(""), None)?;
+            for i in 0..iterations().unwrap_or(1) {
+                let fork = images.join(format!("fork-{i}.img"));
+                let status =
+                    Command::new("cp").arg("--sparse=always").arg(&base).arg(&fork).status()?;
+                anyhow::ensure!(status.success(), "copying the base's image: {status}");
+                role(test_setup, "fork", &fork, Path::new(""), None)?;
+                std::fs::remove_file(&fork)?;
             }
             println!("DONE");
             Ok(())
@@ -572,6 +620,9 @@ RUN wget -q -O /opt/lua-5.4.7.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz \\
                 Backend::FxfsGuestDaxForkWarm => "fxfs-guest-dax-fork-warm",
                 Backend::FxfsGuestDaxForkCold => "fxfs-guest-dax-fork-cold",
                 Backend::FxfsGuestDaxForkProfiled => "fxfs-guest-dax-fork-profiled",
+                Backend::FxfsGuestForkWarm => "fxfs-guest-fork-warm",
+                Backend::Ext4DaxPmemFork => "ext4-dax-pmem-fork",
+                Backend::Ext4PmemFork => "ext4-pmem-fork",
                 Backend::FxfsGuestDaxFollowed => "fxfs-guest-dax-followed",
                 Backend::FxfsGuestDaxFollowedIdle => "fxfs-guest-dax-followed-idle",
             }
@@ -602,11 +653,14 @@ RUN wget -q -O /opt/lua-5.4.7.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz \\
                 | Backend::FxfsGuestDaxForkWarm
                 | Backend::FxfsGuestDaxForkCold
                 | Backend::FxfsGuestDaxForkProfiled
+                | Backend::FxfsGuestForkWarm
                 | Backend::FxfsGuestDaxFollowed
                 | Backend::FxfsGuestDaxFollowedIdle => fxdax_guest_should_run(),
-                Backend::Ext4GuestKernel | Backend::Ext4DaxPmem | Backend::Ext4Pmem => {
-                    ShouldRun::Yes
-                }
+                Backend::Ext4GuestKernel
+                | Backend::Ext4DaxPmem
+                | Backend::Ext4Pmem
+                | Backend::Ext4DaxPmemFork
+                | Backend::Ext4PmemFork => ShouldRun::Yes,
             }
         }
 
@@ -676,11 +730,19 @@ RUN wget -q -O /opt/lua-5.4.7.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz \\
                 // The base's store, new, or a fork of it.
                 Backend::FxfsGuestDaxForkWarm
                 | Backend::FxfsGuestDaxForkCold
-                | Backend::FxfsGuestDaxForkProfiled => {
+                | Backend::FxfsGuestDaxForkProfiled
+                | Backend::FxfsGuestForkWarm => {
                     let store = std::env::var_os(STORE).context("no store for a fork case")?;
-                    vm.extent_store("bench", std::path::Path::new(&store), IMAGE_SIZE, 1 << 31)?;
+                    let window = if self.backend == Backend::FxfsGuestForkWarm { 0 } else { 1 << 31 };
+                    vm.extent_store("bench", std::path::Path::new(&store), IMAGE_SIZE, window)?;
                     vm.env(&CString::new(format!("{ROLE}={}", std::env::var(ROLE)?))?);
                     None
+                }
+                // fxdax: the base's image, or a copy of it (TASK-112.2).
+                Backend::Ext4DaxPmemFork | Backend::Ext4PmemFork => {
+                    let image = std::env::var_os(STORE).context("no image for a fork case")?;
+                    vm.env(&CString::new(format!("{ROLE}={}", std::env::var(ROLE)?))?);
+                    Some(vm.pmem("bench", std::path::Path::new(&image))?)
                 }
                 Backend::FxfsGuestDaxFollowed | Backend::FxfsGuestDaxFollowedIdle => {
                     unreachable!("followed::run boots its VMs")
@@ -1754,7 +1816,7 @@ mod guest {
 
     /// fxdax: a fork case's VM's work: the base's, which makes the data its forks use, or a
     /// fork's, which uses it.
-    fn fork_workloads() {
+    fn fork_workloads(backend: Backend) {
         let pgdata = format!("{MNT}/pgdata");
         let socket = "/run/pgbench";
         let as_postgres = |command: &str| {
@@ -1780,8 +1842,20 @@ mod guest {
         fs::create_dir_all(socket).unwrap();
         run("chown", &["postgres:postgres", socket]);
         let role = std::env::var(ROLE).expect("a fork case's role");
+        // fxdax: the base's filesystem, made as it mounts, or a fork's, its copy (TASK-112.2).
+        let mount_bench = |base: bool| match backend {
+            Backend::Ext4DaxPmemFork | Backend::Ext4PmemFork => {
+                let device = bench_device();
+                if base {
+                    run("mkfs.ext4", &["-q", "-F", &device]);
+                }
+                let dax = if backend == Backend::Ext4DaxPmemFork { "always" } else { "never" };
+                mount(&device, "ext4", &format!("dax={dax}"));
+            }
+            _ => mount("bench", "fxfs", ""),
+        };
         if role == "base" {
-            mount("bench", "fxfs", "");
+            mount_bench(true);
             let start = Instant::now();
             run("cp", &["-a", "/usr", &format!("{MNT}/usr")]);
             result("base-copy-usr", "s", false, start.elapsed().as_secs_f64());
@@ -1800,7 +1874,7 @@ mod guest {
         }
         let requests = device_requests().zip(device_request_ns());
         let start = Instant::now();
-        mount("bench", "fxfs", "");
+        mount_bench(false);
         result("fork-mount", "s", false, start.elapsed().as_secs_f64());
         // Read whole, then again: the first read maps the base's data into the window, which the
         // daemon has in memory already when it is warm; the second finds it mapped, as pages
@@ -1873,8 +1947,11 @@ mod guest {
                 }
                 Backend::FxfsGuestDaxForkWarm
                 | Backend::FxfsGuestDaxForkCold
-                | Backend::FxfsGuestDaxForkProfiled => {
-                    return fork_workloads();
+                | Backend::FxfsGuestDaxForkProfiled
+                | Backend::FxfsGuestForkWarm
+                | Backend::Ext4DaxPmemFork
+                | Backend::Ext4PmemFork => {
+                    return fork_workloads(self.backend);
                 }
                 Backend::Ext4DaxPmem => {
                     let device = bench_device();
