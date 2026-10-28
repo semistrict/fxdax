@@ -2042,12 +2042,12 @@ mod guest {
         let data: Vec<u8> = (0..SIZE).map(|i| (i % 251) as u8 + 1).collect();
         fs::write(&name, &data).unwrap();
         fs::File::open(&name).unwrap().sync_all().unwrap();
-        let file = fs::File::open(&name).unwrap();
+        let file = fs::OpenOptions::new().read(true).write(true).open(&name).unwrap();
         let map = unsafe {
             libc::mmap(
                 std::ptr::null_mut(),
                 SIZE,
-                libc::PROT_READ,
+                libc::PROT_READ | libc::PROT_WRITE,
                 libc::MAP_SHARED,
                 file.as_raw_fd(),
                 0,
@@ -2056,6 +2056,14 @@ mod guest {
         assert_ne!(map, libc::MAP_FAILED, "mmap: {}", std::io::Error::last_os_error());
         let bytes = unsafe { std::slice::from_raw_parts(map as *const u8, SIZE) };
         assert!(bytes == &data[..], "the file as mapped differs from what was written");
+        // A store to the second page moves it, which the first chunk's mapping, read in 2 MiB at
+        // once, mapped in a row with the rest; then the chunk is read again, page by page.
+        let mut data = data;
+        unsafe { (map as *mut u8).add(4096 + 100).write_volatile(0xee) };
+        data[4096 + 100] = 0xee;
+        file.sync_all().unwrap();
+        let bytes = unsafe { std::slice::from_raw_parts(map as *const u8, SIZE) };
+        assert!(bytes == &data[..], "the file as mapped differs after a store moved a page");
         assert_eq!(unsafe { libc::munmap(map, SIZE) }, 0);
         drop(file);
         fs::remove_file(&name).unwrap();
