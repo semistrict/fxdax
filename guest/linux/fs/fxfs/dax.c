@@ -2507,14 +2507,19 @@ static void *fxfs_dax_window_page(struct fxfs_dax *dax, u64 window_offset)
 /*
  * fxdax: with fxfs.dax_check_moves and the shadow, logs where `seen`, the window's page at
  * `window_offset` as copied, differs from the extent's page the shadow has the window map there,
- * as the device has it: what a write that moves the page reads around what it writes (TASK-121).
- * Returns where that is, as fxfs_dax_read_shadowed does.
+ * as the device has it; and where Fxfs has file `inode`'s page at `pos` elsewhere, and what the
+ * device has there: what a write that moves the page reads around what it writes (TASK-121).
+ * Returns where the window maps it, as fxfs_dax_read_shadowed does.
  */
-static s64 fxfs_dax_check_device(struct fxfs_dax *dax, u64 window_offset, const u8 *seen)
+static s64 fxfs_dax_check_device(struct fxfs_dax *dax, struct inode *inode, loff_t pos,
+				 u64 window_offset, const u8 *seen)
 {
 	u8 *buf = READ_ONCE(fxfs_dax_shadowed) ? kmalloc(PAGE_SIZE, GFP_NOFS) : NULL;
+	struct fxfs_dax_extent e;
 	size_t first, differ;
+	ssize_t count;
 	s64 where;
+	int err;
 
 	if (!buf)
 		return -ENOMEM;
@@ -2524,6 +2529,20 @@ static s64 fxfs_dax_check_device(struct fxfs_dax *dax, u64 window_offset, const 
 		pr_err("fxfs: window %llx, mapping extent %lld page %lld, held %zu bytes the device's doesn't before a move, the first at %zu: %#x, the device's %#x\n",
 		       window_offset, where >> 20, where & ((1 << 20) - 1), differ, first, seen[first],
 		       buf[first]);
+	count = fxfs_nofs(fxfs_dax_extents(dax->fs, inode->i_ino, pos, PAGE_SIZE, &e, 1));
+	if (count != 1) {
+		pr_err("fxfs: ino %lu at %lld, mapped at window %llx: %zd extents in Fxfs\n",
+		       inode->i_ino, pos, window_offset, count);
+	} else if (where < 0 || e.sequence != where >> 20 ||
+		   e.extent_offset >> PAGE_SHIFT != (where & ((1 << 20) - 1))) {
+		err = fxfs_dax_read_device_page(dax, e.branch, e.sequence, e.extent_offset, buf);
+		differ = err ? 0 : fxfs_dax_differ(seen, buf, 0, 0, &first);
+		pr_err("fxfs: ino %lu at %lld: Fxfs has it in extent %llu page %llu, %s, the window at %llx maps extent %lld page %lld: %d, %zu bytes differ, the first at %zu: %#x, the device's %#x\n",
+		       inode->i_ino, pos, e.sequence, e.extent_offset >> PAGE_SHIFT,
+		       e.open ? "open" : "sealed", window_offset, where >> 20,
+		       where & ((1 << 20) - 1), err, differ, differ ? first : 0,
+		       differ ? seen[first] : 0, differ ? buf[first] : 0);
+	}
 	kfree(buf);
 	return where;
 }
@@ -2728,7 +2747,9 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 				memcpy(before, page, PAGE_SIZE);
 			dax_read_unlock(id);
 			if (before)
-				before_where = fxfs_dax_check_device(dax, before_at, before);
+				before_where = fxfs_dax_check_device(dax, inode,
+								     start + ((loff_t)first << PAGE_SHIFT),
+								     before_at, before);
 		}
 		if (fault && pages == 1 && test_bit(first, range->mapped) && !held) {
 			int id;
