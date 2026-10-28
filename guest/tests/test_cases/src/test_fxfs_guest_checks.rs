@@ -27,7 +27,6 @@ pub struct TestFxfsGuestChecks {
     /// fxdax: whether the DAX window is small, 32 MiB, as the checks' files fill it: regions run
     /// out of room, ranges are reclaimed under load, and pieces map writably in ranges' own space
     /// (TASK-119.12).
-    #[cfg_attr(feature = "guest", allow(dead_code))]
     pub small_window: bool,
 }
 
@@ -3317,7 +3316,11 @@ mod guest {
                 tests.push(("pmd_write_unlink", &test_pmd_write_unlink));
                 tests.push(("moved_across_seal", &test_moved_across_seal));
                 tests.push(("regions_pruned", &test_regions_pruned));
-                tests.push(("regions_evacuated", &test_regions_evacuated));
+                // A small window's regions fill: its writes map in ranges' own space, and
+                // nothing is evacuated, which the check counts on.
+                if !self.small_window {
+                    tests.push(("regions_evacuated", &test_regions_evacuated));
+                }
                 tests.push(("evacuate_dropped", &test_evacuate_dropped));
                 tests.push(("faults_writes_compaction", &test_faults_writes_compaction));
                 tests.push(("append_writable", &test_append_writable));

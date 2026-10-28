@@ -561,7 +561,9 @@ enum Change {
 }
 
 impl WindowChanges {
-    const MOST: usize = 4096;
+    /// fxdax: enough that a refused store's page's history reaches back past the many MAPs of a
+    /// guest sealing every millisecond, to the change that made it read-only (TASK-121).
+    const MOST: usize = 1 << 16;
 
     fn record(&mut self, window_offset: u64, len: u64, change: Change) {
         if self.changes.len() == Self::MOST {
