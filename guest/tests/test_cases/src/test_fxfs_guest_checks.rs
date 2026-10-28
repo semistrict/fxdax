@@ -2598,6 +2598,34 @@ mod guest {
         fs::write(EVACUATES, "Y").unwrap();
     }
 
+    /// fxdax: a file larger than a chunk, written whole by one write(2) and fsynced, then read
+    /// through a mapping: each byte as written. The first load of such a file died of SIGBUS, its
+    /// fault failing with no error (TASK-121's pause check).
+    fn test_mapped_after_write() {
+        const SIZE: usize = 4 << 20;
+        let name = path("mapped-after-write");
+        let data: Vec<u8> = (0..SIZE).map(|i| (i % 251) as u8 + 1).collect();
+        fs::write(&name, &data).unwrap();
+        fs::File::open(&name).unwrap().sync_all().unwrap();
+        let file = fs::File::open(&name).unwrap();
+        let map = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                SIZE,
+                libc::PROT_READ,
+                libc::MAP_SHARED,
+                file.as_raw_fd(),
+                0,
+            )
+        };
+        assert_ne!(map, libc::MAP_FAILED, "mmap: {}", std::io::Error::last_os_error());
+        let bytes = unsafe { std::slice::from_raw_parts(map as *const u8, SIZE) };
+        assert!(bytes == &data[..], "the file as mapped differs from what was written");
+        assert_eq!(unsafe { libc::munmap(map, SIZE) }, 0);
+        drop(file);
+        fs::remove_file(&name).unwrap();
+    }
+
     /// fxdax: a file's pages rewritten and fsynced, so that they move to new blocks and the
     /// regions they were in are let go of (fxfs_dax_prune), while read(2)s of it, whose iomaps use
     /// its ranges, copy from where its pages are; another file's pages rewritten likewise beside
@@ -3363,6 +3391,7 @@ mod guest {
             if dax {
                 tests.push(("pmd_write_unlink", &test_pmd_write_unlink));
                 tests.push(("moved_across_seal", &test_moved_across_seal));
+                tests.push(("mapped_after_write", &test_mapped_after_write));
                 tests.push(("regions_pruned", &test_regions_pruned));
                 // A small window's regions fill: its writes map in ranges' own space, and
                 // nothing is evacuated, which the check counts on.
