@@ -3,7 +3,7 @@ id: doc-9
 title: 'Why every guest fsync seals, and what of a DAX seal is on the commit path'
 type: other
 created_date: '2026-10-28 03:23'
-updated_date: '2026-10-28 03:24'
+updated_date: '2026-10-28 07:16'
 ---
 # Why every guest fsync seals, and what of a DAX seal is on the commit path
 
@@ -71,13 +71,26 @@ Off it, the background work costs the transactions directly:
 
 So the levers, cheapest first:
 
-1. **Evacuate without holding the file for the MAP** (TASK-112.4): gather and place under the
-   semaphore, MAP outside it; or no evacuation at all for pages the staging region can keep
-   (TASK-109.1).
+1. **Evacuate without holding the file for the MAP** (TASK-112.5): gather and place under the
+   semaphore, MAP outside it, writers that would map a page of a held range in its own space
+   writably backing off (TASK-101). What was tried the night of 2026-10-28, none landed:
+   - no evacuation at all: correct, and +11-16% tps while the regions' space lasts (bench VMs
+     1513 tps against 1364, above ext4 dax=always on virtio-pmem's 1496), but 667 -> 210 tps at
+     2 GiB once it fills: a staging region holds pages of many files, so letting go of ranges
+     frees few regions;
+   - evacuations batched (16 seals / 20 ms): +3-6%, but data lost under fxfs.dax_delay_us
+     (TASK-112.6);
+   - the semaphore held for reading through the MAP: writers, the WAL's, still wait;
+   - evacuating by dropping the pages instead of mapping them: a range's `mapped` bit means the
+     file has data there, so they read as holes.
 2. **Order only what must be ordered** in the VM process's window changes: a commit's reply needs
    its own write-protects, not other requests' changes (~66 us at most).
-3. **Cheaper window changes** (TASK-91.16, TASK-109): ~25 us a stage operation nested.
-4. **Lazy write-protect** (seal-on-share): only if the above don't close the gap, for the reasons in 1.
+3. **Cheaper seals in extentd**: 58 us a commit, of which finding or making the cached extents
+   11.3, the read-only remap 20.3, handing the pages over 8.7, mapping them again 6.4 (stats
+   commit-seal-*-ns, 7ac00fa2a). Its write phase went 44 -> 36 us (9048fe2a8).
+4. **Cheaper window changes** (TASK-91.16, TASK-109): ~25 us a stage operation nested.
+5. **Lazy write-protect** (seal-on-share): only if the above don't close the gap, for the reasons
+   in 1.
 
 ## 3. What sets the no-DAX ceiling?
 
