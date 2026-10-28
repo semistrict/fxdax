@@ -1307,7 +1307,8 @@ impl ExtentStore {
         for buffer in buffers {
             at += buffer.copy_to(&mut data[at..]);
         }
-        if let Some(open) = self.open.lock().unwrap().get_mut(&extent) {
+        let mut open = self.open.lock().unwrap();
+        if let Some(open) = open.get_mut(&extent) {
             // An open extent mapped writably is in memory, which the commit writes to the store.
             let end = offset.checked_add(data.len() as u64).ok_or(Errno::EINVAL)?;
             if end > Self::MAX_EXTENT {
@@ -1317,6 +1318,10 @@ impl ExtentStore {
             open.len = open.len.max(end);
             return Ok(());
         }
+        // fxdax: to the store with the open extents held, so that a writable mapping opening the
+        // extent, which reads its memory from the store, does so before the write or after it:
+        // between, it read the store without the write, and its commit wrote that memory over it,
+        // a moved page's surroundings Fxfs had copied to a new staging extent lost (TASK-121).
         self.store.write(extent.into(), offset, &data).map_err(errno)
     }
 
