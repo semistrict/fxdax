@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-28 04:48'
-updated_date: '2026-10-28 12:45'
+updated_date: '2026-10-28 14:02'
 labels:
   - bug
 dependencies: []
@@ -40,4 +40,8 @@ With evacuation delayed to every 16 seals or 20 ms (a TASK-112.4 experiment, not
 Hypothesis (read-only analysis, 2026-10-28): fxfs_dax_seal sets region->evacuate as the seal begins, before the device seals the extent; an evacuation in between (a late one, or on main one overlapping the next seal) maps the still-open extent. Tested with a new fault injection fxfs.dax_evacuate_in_seal (queue the evacuation from fxfs_dax_seal, then fsleep 2 ms) on main 32aeffade+: checks-dax under fxfs.dax_delay_us=200 passed 3/3 (r202), so not reproduced: the evacuation may wait on the file semaphore its seal's caller holds, or the host's seal remaps the evacuation's read-only map of the open extent (seal_mapped keeps mappings of the open VMO), making it harmless. Candidate fix kept unlanded: region->sealed_at = fxfs_device_seals() at seal, gather skips a region while the seal count still equals it. Other hypotheses: a deferred seal_mapped change landing after the evacuation's newer MAP of the same own-space slot (check: memcmp own-space pages with region pages after the MAP); aborted map_write leaving moved stale; region pool full pushing writes to own-space writable maps (TASK-79.106).
 
 Review 2026-10-28: fxfs_dax_seal sets region->evacuate and shrinks region->pages at seal begin, before the COMMIT completes; an evacuation already running can map the still-open extent read-only. Matches the sealed_at hypothesis. Suggested diagnostic: after the MAP in fxfs_dax_evacuee_place, memcmp own-space vs region page and WARN; record per page the seal count at move/gather/place.
+
+2026-10-28 GCE r204: TASK-112.5's first cut (evacuation MAP without the file semaphore, placing waiting for the ranges' other users) failed random_ops in round 3 of 5 under fxfs.dax_delay_us=200 (seed 1, op 1799: read of 0x101000 at 0 differs at 0x14000), where main passed 5/5 the same day: the same signature as batching's. Both delay the evacuation, which then may gather a region whose seal has begun (evacuate set in fxfs_dax_seal) but whose COMMIT hasn't ended. Fix under test (with TASK-112.5): region->sealed_at, the device's seal count at the seal's begin; gather skips regions until the device's count passes it (the seal's end re-queues the file).
+
+2026-10-28 later: the sealed_at fix does not fix it. HEAD 9b937d632 (local, unpushed: TASK-112.5 unlocked evacuation MAP + sealed_at + nr_moved) failed random_ops in round 2 of 10 (op 1028, differs at 0x6000) under fxfs.dax_delay_us=200 on r204; the evacuate_unsealed mutant (sealed_at check removed) failed an append check (zeros where 165s expected, checks.rs:2490) in round 2 on r205. So delaying evacuation relative to the seal (batching, or the unlocked MAP) exposes a race other than the seal's begin. Diagnostic added: fxfs.dax_evacuee_verify compares each placed page's own-space copy with its region page and warns; r204/r205 run it x6 each.
 <!-- SECTION:NOTES:END -->
