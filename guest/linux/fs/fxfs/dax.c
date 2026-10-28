@@ -151,6 +151,14 @@ MODULE_PARM_DESC(dax_delay_seed, "The seed of fxfs.dax_delay_us's delays");
 static bool fxfs_dax_evacuates = true;
 module_param_named(dax_evacuates, fxfs_dax_evacuates, bool, 0644);
 MODULE_PARM_DESC(dax_evacuates, "Evacuate sealed staging extents' pages (diagnostic)");
+/*
+ * fxdax: diagnostic (TASK-121): after each seal's sealer, checks that no range of any file has a
+ * page writable still, which the sealer would have kept the user's mappings writable of, while
+ * the device makes it read-only: the stores the window refused.
+ */
+static bool fxfs_dax_check_seals;
+module_param_named(dax_check_seals, fxfs_dax_check_seals, bool, 0644);
+MODULE_PARM_DESC(dax_check_seals, "WARN of pages left writable by a seal (diagnostic)");
 static bool fxfs_dax_moves = true;
 module_param_named(dax_moves, fxfs_dax_moves, bool, 0644);
 MODULE_PARM_DESC(dax_moves, "Map staging extents' pieces where their regions do (diagnostic)");
@@ -2710,6 +2718,33 @@ static const struct file_operations fxfs_dax_file_operations = {
 };
 
 /*
+ * fxdax: with fxfs.dax_check_seals, WARNs of a range with pages writable after a seal's sealer,
+ * no store in progress: its file wasn't on the writable files, whose pages the sealer forgets
+ * and the user's mappings of which it makes read-only (TASK-121).
+ */
+static void fxfs_dax_check_sealed(struct fxfs_dax *dax)
+{
+	struct fxfs_dax_range *range;
+	struct fxfs_dax_file *file;
+	unsigned long ino, chunk;
+
+	mutex_lock(&dax->files_lock);
+	xa_for_each(&dax->files, ino, file) {
+		rcu_read_lock();
+		xa_for_each(&file->ranges, chunk, range) {
+			unsigned long page = find_first_bit(range->writable, range->pages);
+
+			WARN(page < range->pages,
+			     "fxfs: ino %llu chunk %lu page %lu writable after a seal (%s, slice %d)\n",
+			     file->ino, chunk, page, file->inode ? "inode" : "no inode",
+			     !!range->region);
+		}
+		rcu_read_unlock();
+	}
+	mutex_unlock(&dax->files_lock);
+}
+
+/*
  * Before a seal: makes user mappings of writable pages read-only, and forgets which pages are
  * writable, and which regions, whose extents grow no more: their space in the window past what
  * they map is free again. With no store in progress.
@@ -2756,6 +2791,8 @@ static void fxfs_dax_seal(void *arg)
 			list_add_tail(&file->evacuating, &dax->evacuating);
 	}
 	mutex_unlock(&dax->writable_lock);
+	if (READ_ONCE(fxfs_dax_check_seals))
+		fxfs_dax_check_sealed(dax);
 }
 
 /*
