@@ -465,11 +465,10 @@ static void fxfs_dax_shadow_map(struct fxfs_dax *dax, u64 window_offset, u64 len
 		 * the user's mappings may map writably still: mapped read-only, or unmapped, their
 		 * stores are refused.
 		 */
-		WARN(!writable && entry && (xa_to_value(entry) & 1) &&
-		     (then == seals || ((seals & 1) && then == seals - 1)),
-		     "fxfs: window page %lx, mapped writably at seals %llu, %s at %llu by %pS\n",
-		     page, then, mapped ? "mapped read-only" : "unmapped", seals,
-		     __builtin_return_address(1));
+		if (mapped && !writable && entry && (xa_to_value(entry) & 1) &&
+		    (then == seals || ((seals & 1) && then == seals - 1)))
+			pr_err("fxfs: window page %lx, mapped writably at seals %llu, mapped read-only at %llu by %pS\n",
+			       page, then, seals, __builtin_return_address(1));
 		if (mapped)
 			xa_store(&dax->shadow, page, xa_mk_value((seals << 1) | writable), GFP_NOFS);
 		else
