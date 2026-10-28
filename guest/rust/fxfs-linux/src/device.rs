@@ -1057,7 +1057,9 @@ impl Device for ExtentDevice {
 
     async fn free(&self, extent: ExtentId) -> Result<(), Error> {
         let _passage = self.gate.pass().await;
-        self.open.lock().unwrap().remove(&extent);
+        if self.open.lock().unwrap().remove(&extent) {
+            log::error!("fxfs: freeing {extent:?}, open since the last seal (TASK-121)");
+        }
         self.call(op(T_FREE, 0, Some(extent), 0, std::ptr::null_mut(), 0), Some(extent)).await
     }
 
@@ -1074,7 +1076,9 @@ impl Device for ExtentDevice {
         {
             let mut open = self.open.lock().unwrap();
             for extent in extents {
-                open.remove(extent);
+                if open.remove(extent) {
+                    log::error!("fxfs: freeing {extent:?}, open since the last seal (TASK-121)");
+                }
             }
         }
         let mut results = Vec::with_capacity(extents.len());

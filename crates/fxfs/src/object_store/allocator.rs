@@ -1782,6 +1782,13 @@ impl Allocator {
         if extents.is_empty() {
             return Ok(());
         }
+        // fxdax: an extent the device holds open was written, or mapped writably, since the last
+        // seal: something uses it, which its free takes from under it (TASK-121).
+        for (extent, dead) in self.inner.lock().extents.freeing_described() {
+            if device.is_open(extent) {
+                error!(extent:?, dead:%; "Freeing an extent open on the device");
+            }
+        }
         let results = device.free_extents(&extents).await;
         self.inner.lock().extents.finish_freeing(results)
     }

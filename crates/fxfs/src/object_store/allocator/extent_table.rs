@@ -720,6 +720,11 @@ impl ExtentTable {
         self.freeing.iter().map(|dead| dead.extent).collect()
     }
 
+    /// fxdax: the extents being freed, each with how it died, said for a log (TASK-121).
+    pub(super) fn freeing_described(&self) -> Vec<(ExtentId, String)> {
+        self.freeing.iter().map(|dead| (dead.extent, format!("{dead:?}"))).collect()
+    }
+
     /// Finishes freeing the extents `start_freeing` returned, with `results`, those of their
     /// frees, in order. The extents freed are unsealed until a device flush seals their frees;
     /// those not freed are dead again, at the back of the queue, and tried again later.
