@@ -384,6 +384,8 @@ struct fxfs_dax {
 	 */
 	struct gen_pool *region_pool;
 	u64 regions_at;
+	/* fxdax: the window's size, which no page's place is past (fxfs_dax_page_offset). */
+	u64 window_len;
 	/*
 	 * fxdax: how often the window had no room for a range, or for a region in their own space,
 	 * how many ranges were reclaimed for room, how many regions there are, and how many ranges
@@ -2279,6 +2281,11 @@ static int fxfs_dax_iomap_read(struct inode *inode, loff_t pos, loff_t length, u
 		fxfs_dax_hole(iomap, length);
 		return 0;
 	}
+	/* fxdax: a page's place within the window, or its fault dies of SIGBUS (TASK-121). */
+	WARN(at + length > dax->window_len,
+	     "fxfs: ino %lu page %lu read at %llx, %llx bytes, past the window's %llx: moved %llx of %u regions\n",
+	     inode->i_ino, page, at, length, dax->window_len,
+	     range->moved ? range->moved[page] : 0, range->nr_regions);
 	iomap->type = IOMAP_MAPPED;
 	iomap->addr = at + offset_in_page(pos);
 	iomap->length = length;
@@ -2570,6 +2577,11 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 	/* Holes a mapping of the file maps zeros for are gone. */
 	iomap->flags |= IOMAP_F_PRIVATE | (fresh ? IOMAP_F_NEW : 0);
 	iomap->addr = fxfs_dax_page_offset(range, first) + offset_in_page(pos);
+	/* fxdax: a page's place within the window, or its fault dies of SIGBUS (TASK-121). */
+	WARN(iomap->addr >= dax->window_len,
+	     "fxfs: ino %lu page %lu written at %llx, past the window's %llx: moved %llx of %u regions\n",
+	     inode->i_ino, first, iomap->addr, dax->window_len,
+	     range->moved ? range->moved[first] : 0, range->nr_regions);
 	/* The pages in a row in the window: the next iomap maps those after. */
 	iomap->length = min_t(loff_t, end, start + ((loff_t)(first + fxfs_dax_run(range, first,
 								  first + pages)) << PAGE_SHIFT)) - pos;
@@ -3534,6 +3546,7 @@ struct fxfs_dax *fxfs_dax_create(struct super_block *sb, struct fxfs *fs)
 	 * filled as pgbench -i -s 50 loaded its tables, whose writes then mapped their pieces in
 	 * ranges' space, the load half as slow again.
 	 */
+	dax->window_len = window_len;
 	dax->regions_at = window_len < 4 * FXFS_DAX_SIZE ? window_len :
 			  window_len - rounddown(window_len / 2, FXFS_DAX_SIZE);
 	dax->region_pool = dax->regions_at < window_len ? gen_pool_create(PAGE_SHIFT, -1) : dax->pool;
