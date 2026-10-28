@@ -8,6 +8,7 @@
 
 #include <linux/lockdep.h>
 #include <linux/minmax.h>
+#include <linux/moduleparam.h>
 #include <linux/seq_file.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
@@ -283,12 +284,20 @@ struct dax_device *fxfs_device_dax(struct fxfs_device *dev, u64 *window_len)
 	return virtio_extent_dax(dev->vext);
 }
 
+/*
+ * fxdax: diagnostic (TASK-121): whether maps carry MAP_AHEAD, which has the VM process map the
+ * pages for the guest ahead of its accesses, after the MAP, not waited for.
+ */
+static bool fxfs_device_maps_ahead = true;
+module_param_named(map_ahead, fxfs_device_maps_ahead, bool, 0644);
+MODULE_PARM_DESC(map_ahead, "Ask the device to map pages ahead of the guest's accesses (diagnostic)");
+
 /* fxdax: the flags of a map, `writable` and accessed next if `ahead`, that the device takes. */
 static u32 fxfs_device_map_flags(struct fxfs_device *dev, bool writable, bool ahead)
 {
 	u32 flags = writable ? VIRTIO_EXTENT_MAP_WRITE : 0;
 
-	if (ahead && virtio_extent_map_ahead(dev->vext))
+	if (ahead && READ_ONCE(fxfs_device_maps_ahead) && virtio_extent_map_ahead(dev->vext))
 		flags |= VIRTIO_EXTENT_MAP_AHEAD;
 	return flags;
 }
