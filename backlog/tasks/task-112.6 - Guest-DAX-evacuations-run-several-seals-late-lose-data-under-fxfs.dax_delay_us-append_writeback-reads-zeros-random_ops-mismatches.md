@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-28 04:48'
-updated_date: '2026-10-28 14:13'
+updated_date: '2026-10-28 19:45'
 labels:
   - bug
 dependencies: []
@@ -46,4 +46,6 @@ Review 2026-10-28: fxfs_dax_seal sets region->evacuate and shrinks region->pages
 2026-10-28 later: the sealed_at fix does not fix it. HEAD 9b937d632 (local, unpushed: TASK-112.5 unlocked evacuation MAP + sealed_at + nr_moved) failed random_ops in round 2 of 10 (op 1028, differs at 0x6000) under fxfs.dax_delay_us=200 on r204; the evacuate_unsealed mutant (sealed_at check removed) failed an append check (zeros where 165s expected, checks.rs:2490) in round 2 on r205. So delaying evacuation relative to the seal (batching, or the unlocked MAP) exposes a race other than the seal's begin. Diagnostic added: fxfs.dax_evacuee_verify compares each placed page's own-space copy with its region page and warns; r204/r205 run it x6 each.
 
 Verify run (fxfs.dax_evacuee_verify=1, delays): r204 6/6 green; r205 failed random_ops round 6 at op 117 (read at 0x16282 differs from 0x17000; a store at 0x17b84 after an fsync came just before) with no 'evacuated page differs' warning: each evacuated page matched its region page when placed, so the host maps the right data; the loss is in the guest's bookkeeping, or a write after placing. Parked on branch wip/task-112-5 (9b937d632 + 54aaf0633).
+
+2026-10-28 reviews (Astra, Fable): (1) Astra: a fault's allocation transaction commits before returning (guest/rust/fxfs-linux/src/fs.rs:953); if a seal then closes the gate, map_write's caller returns -EBUSY keeping the old range mapping and freeing its held copy; the fault loop retries without dropping the range; an evacuation meanwhile may gather the old moved location; the retry may copy stale or freed contents into held. (2) Fable: host map_open maps the open VMO read-only and seal_mapped remaps every mapping of it, so evacuating an unsealed region looks harmless on the host; candidates: an evacuation MAP landing after a later writable own-space MAP (regions full), truncate/regrow between gather and place (resize_end zeroes moved without dropping region refs, TASK-117), a host frame reused after a sealed VMO's eviction. TASK-121 (zeros on main under concurrent write(2)/stores, found by the new checks) may be the same race.
 <!-- SECTION:NOTES:END -->
