@@ -79,6 +79,17 @@ const UNNAMED: usize = 48 << 20;
 const MAPPED_SYNCED: &str = "mapped-synced";
 const MAPPED_STORE: usize = 100;
 
+/// fxdax: the crash test's files whose pages are written again and again, each write then synced
+/// (TASK-119.6): through write(2) and fsync, or stores through a mapping and msync.
+const REWRITTEN: [&str; 2] = ["rewritten", "rewritten-mapped"];
+const REWRITTEN_PAGES: usize = 16;
+
+/// The contents of the page `page` of a REWRITTEN file as its write `generation` writes it.
+fn rewritten(page: usize, generation: u32) -> Vec<u8> {
+    let g = generation.to_le_bytes();
+    (0..4096).map(|i| (i % 251) as u8 ^ page as u8 ^ g[0] ^ g[1].rotate_left(3)).collect()
+}
+
 /// The contents of MAPPED_SYNCED as synced.
 fn mapped_synced() -> Vec<u8> {
     pattern(4096, 7)
@@ -148,6 +159,20 @@ mod host {
             let mut vm = Vm::new(2, 512)?;
             vm.guest_kernel()?;
             vm.extent_store("extents", &path, CAPACITY, if self.dax { WINDOW } else { 0 })?;
+            if self.mode == Mode::Crash {
+                // fxdax: when the VM stops, from when its writers begin: FXDAX_CRASH_MS, to replay
+                // a run, or else a time of the run's own, before the writers fill the store, and
+                // with DAX after its store through a mapping (TASK-119.6).
+                let first = if self.dax { 1100 } else { 300 };
+                let crash_ms = std::env::var("FXDAX_CRASH_MS").ok().and_then(|ms| ms.parse().ok());
+                let crash_ms: u64 = crash_ms.unwrap_or_else(|| {
+                    let now =
+                        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap();
+                    first + now.subsec_nanos() as u64 % (2000 - first)
+                });
+                eprintln!("{}: crash at {crash_ms} ms (FXDAX_CRASH_MS)", test_setup.test_case);
+                vm.env(&std::ffi::CString::new(format!("FXDAX_CRASH_MS={crash_ms}"))?);
+            }
             vm.enter(&setup_rootfs(&test_setup)?, &test_setup.test_case)
         }
 
@@ -187,6 +212,48 @@ mod host {
                         read += n;
                     }
                     assert!(contents == expected, "{name} holds other data");
+                }
+                // fxdax: each page written again and again holds, byte by byte, what one of its
+                // writes since the last synced (that one's included) wrote: none torn into others',
+                // none older (TASK-119.6).
+                for (file, name) in REWRITTEN.iter().enumerate() {
+                    let (node, attr) = block_on(fs.root().lookup(name.as_bytes())).unwrap();
+                    assert_eq!(attr.size, (REWRITTEN_PAGES * 4096) as u64, "{name}'s size");
+                    for page in 0..REWRITTEN_PAGES {
+                        let written: Vec<(u32, bool)> = (output.lines())
+                            .filter_map(|line| {
+                                let (synced, rest) = match line.strip_prefix("rewrote ") {
+                                    Some(rest) => (true, rest),
+                                    None => (false, line.strip_prefix("rewriting ")?),
+                                };
+                                let fields: Vec<usize> =
+                                    rest.split(' ').map(|n| n.parse().unwrap()).collect();
+                                (fields[0] == file && fields[1] == page)
+                                    .then_some((fields[2] as u32, synced))
+                            })
+                            .collect();
+                        let last_synced = (written.iter())
+                            .filter(|(_, synced)| *synced)
+                            .map(|&(generation, _)| generation)
+                            .max()
+                            .unwrap_or_else(|| panic!("{name} page {page} never synced"));
+                        let allowed: Vec<Vec<u8>> = (written.iter())
+                            .filter(|&&(generation, synced)| !synced && generation >= last_synced)
+                            .map(|&(generation, _)| rewritten(page, generation))
+                            .chain([rewritten(page, last_synced)])
+                            .collect();
+                        let mut contents = vec![0; 4096];
+                        let read =
+                            block_on(node.read((page * 4096) as u64, &mut contents)).unwrap();
+                        assert_eq!(read, 4096, "{name} page {page} ends early");
+                        for (at, byte) in contents.iter().enumerate() {
+                            assert!(
+                                allowed.iter().any(|allowed| allowed[at] == *byte),
+                                "{name} page {page} byte {at} holds {byte:#x}: no write since \
+                                 generation {last_synced}, the last synced, wrote it"
+                            );
+                        }
+                    }
                 }
                 // fxdax: a page synced, then stored to through a mapping, the fault's block moved
                 // and a seal right after: it holds what was synced, but for the byte stored, which
@@ -608,6 +675,70 @@ mod guest {
         unreachable!()
     }
 
+    /// Reports `line` on its own write, as the VM may stop between writes.
+    fn report(line: &str) {
+        let mut stdout = std::io::stdout().lock();
+        writeln!(stdout, "{line}").unwrap();
+        stdout.flush().unwrap();
+    }
+
+    /// fxdax: makes REWRITTEN[`file`], each page's generation 0 synced, then writes its pages
+    /// again and again, each a generation more, through write(2) and fsync, or (`file` 1) stores
+    /// through a mapping and msync of the page, reporting each write as it begins, and as its sync
+    /// returns, until the VM stops (TASK-119.6). The pages of a crash's store hold what one of
+    /// their writes since the last synced wrote.
+    fn rewrite(file: usize) -> ! {
+        let path = format!("{MNT}/{}", REWRITTEN[file]);
+        let mut handle = fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        for page in 0..REWRITTEN_PAGES {
+            handle.write_all(&rewritten(page, 0)).unwrap();
+        }
+        handle.sync_all().unwrap();
+        fs::File::open(MNT).unwrap().sync_all().unwrap();
+        for page in 0..REWRITTEN_PAGES {
+            report(&format!("rewrote {file} {page} 0"));
+        }
+        let size = REWRITTEN_PAGES * 4096;
+        let map = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                size,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                handle.as_raw_fd(),
+                0,
+            )
+        };
+        assert_ne!(map, libc::MAP_FAILED, "mmap: {}", std::io::Error::last_os_error());
+        for generation in 1u32.. {
+            while PAUSED.load(std::sync::atomic::Ordering::Acquire) {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            // Pages in an order that varies, from the generation.
+            let page = (generation as usize * 7) % REWRITTEN_PAGES;
+            let data = rewritten(page, generation);
+            report(&format!("rewriting {file} {page} {generation}"));
+            if file == 0 {
+                std::os::unix::fs::FileExt::write_all_at(&handle, &data, (page * 4096) as u64)
+                    .unwrap();
+                handle.sync_all().unwrap();
+            } else {
+                let at = unsafe { map.cast::<u8>().add(page * 4096) };
+                unsafe { std::ptr::copy_nonoverlapping(data.as_ptr(), at, 4096) };
+                let synced = unsafe { libc::msync(at.cast(), 4096, libc::MS_SYNC) };
+                assert_eq!(synced, 0, "msync: {}", std::io::Error::last_os_error());
+            }
+            report(&format!("rewrote {file} {page} {generation}"));
+        }
+        unreachable!()
+    }
+
     /// Stops the VM mid-workload: with two writers fsyncing, and without syncing (reboot(2)
     /// doesn't).
     fn crash(dax: bool) -> ! {
@@ -639,13 +770,19 @@ mod guest {
         }
         std::thread::spawn(|| fsync_files(1));
         std::thread::spawn(|| fsync_files(2));
+        std::thread::spawn(|| rewrite(0));
+        std::thread::spawn(|| rewrite(1));
         // fxdax: with DAX, a store through a mapping as the VM stops, before the writers fill the
-        // store, which they do in 2 seconds (TASK-79.11).
+        // store, which they do in 2 seconds (TASK-79.11). The VM stops at a time the host picks,
+        // FXDAX_CRASH_MS, from when the writers begin (TASK-119.6).
+        let crash_ms: u64 = std::env::var("FXDAX_CRASH_MS").unwrap().parse().unwrap();
         if dax {
             std::thread::sleep(std::time::Duration::from_secs(1));
             store_mapped(&mapped);
+            PAUSED.store(false, std::sync::atomic::Ordering::Release);
+            std::thread::sleep(std::time::Duration::from_millis(crash_ms.saturating_sub(1000)));
         } else {
-            std::thread::sleep(std::time::Duration::from_secs(2));
+            std::thread::sleep(std::time::Duration::from_millis(crash_ms));
         }
         // A reset, which ends the VM on every architecture: x86's has no power-off.
         unsafe { libc::reboot(libc::RB_AUTOBOOT) };
