@@ -2482,11 +2482,22 @@ mod guest {
         }
 
         fn wait(step: u64) {
+            Self::wait_or(step, None);
+        }
+
+        /// Waits for a task to wait at `step`, as `wait`, failing if the process `child` ends
+        /// first, with how it ended.
+        fn wait_or(step: u64, child: Option<libc::pid_t>) {
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
             loop {
                 let paused: u64 = fs::read_to_string(Self::PAUSED).unwrap().trim().parse().unwrap();
                 if paused & step != 0 {
                     return;
+                }
+                if let Some(child) = child {
+                    let mut status = 0;
+                    let ended = unsafe { libc::waitpid(child, &mut status, libc::WNOHANG) };
+                    assert_ne!(ended, child, "the storer ended ({status:#x}) before step {step:#x}");
                 }
                 assert!(std::time::Instant::now() < deadline, "no task waits at step {step:#x}");
                 std::thread::sleep(std::time::Duration::from_millis(1));
@@ -2554,12 +2565,12 @@ mod guest {
         let sealer = std::thread::spawn(seal.clone());
         Pauses::wait(Pauses::SEALING);
         Pauses::set(Pauses::SEALING | Pauses::SHUT);
-        Pauses::wait(Pauses::SHUT);
+        Pauses::wait_or(Pauses::SHUT, Some(storer));
         // The seal ends; the fault, retrying, waits to copy its page, while seals free the
         // extent its block moved from.
         Pauses::set(Pauses::HELD);
         sealer.join().unwrap();
-        Pauses::wait(Pauses::HELD);
+        Pauses::wait_or(Pauses::HELD, Some(storer));
         (0..4).for_each(|_| seal());
         Pauses::set(0);
         let mut status = 0;
