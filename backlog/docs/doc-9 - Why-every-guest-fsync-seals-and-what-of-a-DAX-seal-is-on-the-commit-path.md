@@ -3,7 +3,7 @@ id: doc-9
 title: 'Why every guest fsync seals, and what of a DAX seal is on the commit path'
 type: other
 created_date: '2026-10-28 03:23'
-updated_date: '2026-10-28 03:23'
+updated_date: '2026-10-28 03:24'
 ---
 # Why every guest fsync seals, and what of a DAX seal is on the commit path
 
@@ -47,30 +47,37 @@ and the evacuation (`fxfs_dax_evacuate_work`) as background work once the barrie
 round 7 reading of "about three MAPs per seal on the commit path" counts MAPs per seal, not MAPs
 the commit waits for.
 
-What the commit still pays for them is on the host. A DAX commit takes the guest ~430 us
-(`device_commits_ns`), against ~263 us without DAX. Of it:
+What a DAX commit itself costs, against no DAX:
 
-| Part | Per commit |
-|---|---|
-| extentd's commit | 126 us: writing open extents 44, store commit 15, sealing the windows' mappings 58, waiting for uploads 9 |
-| VMM window changes in the reply's stream | 10.5 stage operations at ~25 us, ~262 us of one thread's time |
+| Per commit | DAX | No DAX |
+|---|---|---|
+| The guest's `COMMIT` round trip (`device_commits_ns`) | ~430 us | ~263 us |
+| extentd's commit | 126 us: writing open extents 44, store commit 15, sealing the windows' mappings 58, waiting for uploads 9 | ~25 us |
+| The rest: transport, and the VM process's window changes before the reply | ~304 us | ~238 us |
 
-The VM process applies the daemon's window changes on one thread, in the order the daemon sent
-them, before the replies that follow them (that order is what makes a commit's write-protects
-precede its reply). The background evacuation and restage MAPs go through the same stream, so a
-commit's reply waits behind every change queued ahead of it, not only its own.
+So on the commit path DAX adds ~100 us in extentd, of which writing the data the guest stored
+through the window (44 us) replaces the `WRITE`s a commit without DAX follows, and ~66 us of window
+changes the reply waits for: its own write-protects, and whatever else the VM process's one
+thread had queued ahead of it. Sealing is ~0.43 ms against ~0.26 ms, but both spend ~19 s of a
+60 s run sealing: DAX's lower tps is mostly not the commit path.
+
+Off it, the background work costs the transactions directly:
+
+- **Evacuation holds each file's DAX semaphore for writing** while it gathers, MAPs and places the
+  file's sealed pages (`fxfs_dax_evacuate_file`): ~650 us each, 32 s of holds a 60 s run
+  (`dax_evacuate_hold_ns`), a MAP round trip (~400 us) inside it. Reads, writes and faults of that
+  file wait meanwhile: PostgreSQL's WAL is evacuated after nearly every commit.
+- **Stores wait for seals**: 10k a run, ~480 us each (`stores_held_by_seals_ns`, 4.9 s).
 
 So the levers, cheapest first:
 
-1. **Order only what must be ordered.** A commit's reply needs its own write-protects applied, not
-   the evacuation and restage changes of earlier commits. Those could go on a second stream, or
-   the VM process could apply changes to disjoint window ranges in parallel. (Protocol and VMM
-   change.)
-2. **Fewer evacuation MAPs** (TASK-109.1): most written pages are mapped twice, once in the staging
-   region and once in their range's own space after the seal.
-3. **Cheaper window changes** (TASK-91.16, TASK-109): 25 us a stage operation nested, after
-   1cd30919's ~20% cut.
-4. **Lazy write-protect** (seal-on-share): only if 1-3 don't close the gap, for the reasons in 1.
+1. **Evacuate without holding the file for the MAP** (TASK-112.4): gather and place under the
+   semaphore, MAP outside it; or no evacuation at all for pages the staging region can keep
+   (TASK-109.1).
+2. **Order only what must be ordered** in the VM process's window changes: a commit's reply needs
+   its own write-protects, not other requests' changes (~66 us at most).
+3. **Cheaper window changes** (TASK-91.16, TASK-109): ~25 us a stage operation nested.
+4. **Lazy write-protect** (seal-on-share): only if the above don't close the gap, for the reasons in 1.
 
 ## 3. What sets the no-DAX ceiling?
 
