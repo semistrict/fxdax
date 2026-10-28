@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-28 19:44'
-updated_date: '2026-10-28 20:17'
+updated_date: '2026-10-28 23:21'
 labels:
   - bug
 dependencies: []
@@ -41,4 +41,6 @@ Found 2026-10-28 by the TASK-119 checks on test/119 (main 56126dc9e + test chang
 Cause (2026-10-28, from host logs: every refused store's page shows a writable MAP of an extent, then 'zeros in place of a freed extent's' ms later; no guest free of an open extent logged): a write fault's map_write commits the move of its page to new blocks (the old freed), then a seal keeps the fault from the gate (fxfs_dax_store_begin -EBUSY): the iomap returned -EBUSY with the range still mapping the page where it was; once the old extent was freed the device mapped zeros there, which reads returned and the retried fault's held copy took (Astra's candidate, TASK-112.6 notes). Before the free, reads return the old data: pgbench-dax on main (r207, run 2) ended with accounts/tellers/branches sums -263212 each and history's deltas -743934: PostgreSQL's committed updates read back stale. Bisection: fxfs.dax_evacuates=0 still fails; fxfs.dax_moves=0 passes seal_race, torture still fails. Fix 6f7bc03a4 (test/119): when a seal comes between the move and the gate, the range maps the moved blocks read-only in its own space at once (fxfs_dax_map_moved; slices -EXDEV), counted in dax_moved_unsealed. Verifying: r208 (seal_race,torture,random_ops x5), r209 (same with delays), r206 (checks-dax, checks, crash x2), r207 (pgbench-dax).
 
 Correction: the pgbench-dax 'stale balances' were the check's error, not data loss: pgbench empties pgbench_history as each run begins, so after run 2 the balances carry run 1's deltas too (fixed in 5c1bf4fd3: each run's change in the balances is checked against its history).
+
+Remaining loss found (cae97000a): ExtentStore::write checked an extent wasn't open with the open lock as an if-let temporary, dropped before the fall-through store.write. A writable MAP opening the extent between read the store without the write; the commit then wrote the VMO's zeros over it. Fxfs copies a moved page's surroundings (Kept::Around/All) to a new staging extent with device.write while restage maps the extent's region writably: the copy was lost, the moved block holding only what the move wrote. Found with dax_check_moves plus device reads (old block intact, Fxfs's tree agreeing with the window, new block zeros); a read-back after the copy hid it. Host test writes_racing_the_mapping_that_opens_their_extent_are_committed fails unfixed at extent 3 (zeros).
 <!-- SECTION:NOTES:END -->

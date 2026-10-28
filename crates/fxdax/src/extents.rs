@@ -2045,6 +2045,39 @@ mod tests {
         assert_eq!(read(&store, small, 0, 2 * ps as usize), Ok(past));
     }
 
+    /// Races `steps` on one extent, `rounds` times, a fresh extent each: `prepare` alone first,
+    /// then each step on a thread of its own, all released at once, then a commit, after which the
+    /// extent reads `expected` (TASK-119.19). The steps are ones whose outcome is the same whichever
+    /// comes first: what one does between another's steps is what such a race loses.
+    fn race(
+        store: &ExtentStore,
+        rounds: u64,
+        prepare: impl Fn(ExtentId),
+        steps: &[&(dyn Fn(ExtentId) + Sync)],
+        expected: &[u8],
+    ) {
+        for sequence in 1..=rounds {
+            let extent = id(store, sequence);
+            prepare(extent);
+            let all = std::sync::Barrier::new(steps.len());
+            std::thread::scope(|scope| {
+                for step in steps {
+                    let all = &all;
+                    scope.spawn(move || {
+                        all.wait();
+                        step(extent);
+                    });
+                }
+            });
+            store.commit_ordered(None).unwrap();
+            let read = read(store, extent, 0, expected.len());
+            assert_eq!(read, Ok(expected.to_vec()), "extent {sequence}");
+        }
+    }
+
+    /// How many times each race is run: the race TASK-121 lost lost within a few.
+    const ROUNDS: u64 = 2000;
+
     /// TASK-121: a write to an extent not open yet, as Fxfs copies a moved page's surroundings to a
     /// new staging extent, racing a writable mapping that opens it, as the guest maps the extent's
     /// region ahead of the writes to it: the write's bytes are the open extent's, which its commit
@@ -2057,20 +2090,78 @@ mod tests {
         let ps = page_size();
         let _window = store.create_dax_window(ps, None).unwrap();
         let data = pattern(7, BLOCK);
-        for sequence in 1..=2000 {
-            let extent = id(&store, sequence);
-            let both = std::sync::Barrier::new(2);
-            std::thread::scope(|scope| {
-                scope.spawn(|| {
-                    both.wait();
-                    write(&store, extent, 0, &data).unwrap();
-                });
-                both.wait();
-                store.map(extent, 0, ps, 0, true).unwrap();
-            });
-            store.commit_ordered(None).unwrap();
-            assert_eq!(read(&store, extent, 0, BLOCK), Ok(data.clone()), "extent {sequence}");
-        }
+        let write = |extent| write(&store, extent, 0, &data).unwrap();
+        let map = |extent| store.map(extent, 0, ps, 0, true).unwrap();
+        race(&store, ROUNDS, |_| {}, &[&write, &map], &data);
+    }
+
+    /// As `writes_racing_the_mapping_that_opens_their_extent_are_committed`, two writes to other
+    /// blocks of the extent, both racing the mapping.
+    #[test]
+    fn writes_to_other_blocks_racing_the_mapping_that_opens_their_extent_are_committed() {
+        let (store, _dir) = store(1 << 26);
+        let len = (2 * BLOCK as u64).next_multiple_of(page_size());
+        let _window = store.create_dax_window(len, None).unwrap();
+        let (first, second) = (pattern(1, BLOCK), pattern(2, BLOCK));
+        let write_first = |extent| write(&store, extent, 0, &first).unwrap();
+        let write_second = |extent| write(&store, extent, BLOCK as u64, &second).unwrap();
+        let map = |extent| store.map(extent, 0, len, 0, true).unwrap();
+        let expected = [first.clone(), second.clone()].concat();
+        race(&store, ROUNDS, |_| {}, &[&write_first, &write_second, &map], &expected);
+    }
+
+    /// A write to an extent written before, held open in the store, racing a read-only mapping,
+    /// which opens it from the store too: the commit writes both writes.
+    #[test]
+    fn writes_racing_a_read_only_mapping_that_opens_their_extent_are_committed() {
+        let (store, _dir) = store(1 << 26);
+        let len = (2 * BLOCK as u64).next_multiple_of(page_size());
+        let _window = store.create_dax_window(len, None).unwrap();
+        let (first, second) = (pattern(1, BLOCK), pattern(2, BLOCK));
+        let prepare = |extent| write(&store, extent, 0, &first).unwrap();
+        let write_second = |extent| write(&store, extent, BLOCK as u64, &second).unwrap();
+        let map = |extent| store.map(extent, 0, len, 0, false).unwrap();
+        let expected = [first.clone(), second.clone()].concat();
+        race(&store, ROUNDS, prepare, &[&write_second, &map], &expected);
+    }
+
+    /// A write to an extent not open racing a commit: committed by it, or by the next, which
+    /// seals it.
+    #[test]
+    fn writes_racing_a_commit_are_committed() {
+        let (store, _dir) = store(1 << 26);
+        let data = pattern(3, BLOCK);
+        let write = |extent| write(&store, extent, 0, &data).unwrap();
+        let commit = |_: ExtentId| store.commit_ordered(None).unwrap();
+        race(&store, ROUNDS, |_| {}, &[&write, &commit], &data);
+    }
+
+    /// A read-only mapping of an extent written, open in the store, racing a commit that seals it:
+    /// it maps the open extent, or the sealed one, and the commit writes what was written.
+    #[test]
+    fn read_only_mappings_racing_a_commit_keep_what_was_written() {
+        let (store, _dir) = store(1 << 26);
+        let ps = page_size();
+        let _window = store.create_dax_window(ps, None).unwrap();
+        let data = pattern(4, BLOCK);
+        let prepare = |extent| write(&store, extent, 0, &data).unwrap();
+        let map = |extent| store.map(extent, 0, ps, 0, false).unwrap();
+        let commit = |_: ExtentId| store.commit_ordered(None).unwrap();
+        race(&store, ROUNDS, prepare, &[&map, &commit], &data);
+    }
+
+    /// A writable and a read-only mapping of an extent written, open in the store, racing, either
+    /// opening it: the commit writes what was written.
+    #[test]
+    fn writable_and_read_only_mappings_racing_keep_what_was_written() {
+        let (store, _dir) = store(1 << 26);
+        let ps = page_size();
+        let _window = store.create_dax_window(2 * ps, None).unwrap();
+        let data = pattern(5, BLOCK);
+        let prepare = |extent| write(&store, extent, 0, &data).unwrap();
+        let writable = |extent| store.map(extent, 0, ps, 0, true).unwrap();
+        let read_only = |extent| store.map(extent, 0, ps, ps, false).unwrap();
+        race(&store, ROUNDS, prepare, &[&writable, &read_only], &data);
     }
 
     /// A commit that seals an open extent maps it read-only where the window still maps it, and
