@@ -383,21 +383,29 @@ mod guest {
         String::from_utf8_lossy(&output.stdout).trim().to_owned()
     }
 
-    /// fxdax: the database is whole (TASK-119.4). Each of pgbench's transactions adds a delta to an
-    /// account, its teller and its branch, and logs it in the history: each table's balances sum
-    /// to the history's deltas. And, with amcheck, every tuple of the tables is sound, and their
-    /// indexes hold them all; a page whose checksum fails fails the query reading it.
-    fn check_data(socket: &str) {
+    /// fxdax: the database is whole (TASK-119.4), after a run that began with each table's
+    /// balances summing to `before`: each of pgbench's transactions adds a delta to an account,
+    /// its teller and its branch, and logs it in the history, which pgbench empties as a run begins:
+    /// each table's balances sum to `before` and the history's deltas. And, with amcheck, every
+    /// tuple of the tables is sound, and their indexes hold them all; a page whose checksum fails
+    /// fails the query reading it. Returns the balances' sum.
+    fn check_data(socket: &str, before: i64) -> i64 {
         let sums = psql(
             socket,
-            "select (select sum(abalance) from pgbench_accounts), \
-             (select sum(tbalance) from pgbench_tellers), \
-             (select sum(bbalance) from pgbench_branches), \
+            "select (select coalesce(sum(abalance), 0) from pgbench_accounts), \
+             (select coalesce(sum(tbalance), 0) from pgbench_tellers), \
+             (select coalesce(sum(bbalance), 0) from pgbench_branches), \
              (select coalesce(sum(delta), 0) from pgbench_history)",
         );
-        let sums: Vec<&str> = sums.split('|').collect();
+        let sums: Vec<i64> = sums.split('|').map(|sum| sum.parse().unwrap()).collect();
         assert_eq!(sums.len(), 4, "{sums:?}");
-        assert_eq!(sums, [sums[3]; 4], "accounts, tellers, branches and history's sums");
+        let after = before + sums[3];
+        assert_eq!(
+            sums[..3],
+            [after; 3],
+            "accounts, tellers and branches' sums, from {before}, and the history's {}",
+            sums[3]
+        );
         psql(socket, "create extension if not exists amcheck");
         let tables = "array['pgbench_accounts', 'pgbench_branches', 'pgbench_tellers', \
                       'pgbench_history']::regclass[]";
@@ -414,6 +422,7 @@ mod guest {
             ),
         );
         assert_eq!(indexes, "3", "the pgbench tables' indexes checked");
+        after
     }
 
     /// The extent device's `completions` attribute's lines.
@@ -531,6 +540,8 @@ mod guest {
                     // (TASK-91.12).
                     let written = "select (select wal_bytes from pg_stat_wal), \
                         (select sum(writes * op_bytes) from pg_stat_io)";
+                    // The balances' sum before the last run, and after it.
+                    let (mut before, mut after) = (0, 0);
                     for i in 0..RUNS {
                         let probe = if i == 0 { self.probe } else { Probe::None };
                         let profiler = (probe == Probe::Profile).then(profile);
@@ -556,14 +567,15 @@ mod guest {
                             "postgres wal|pages written: {}",
                             String::from_utf8_lossy(&written.stdout)
                         );
-                        check_data(socket);
+                        before = after;
+                        after = check_data(socket, before);
                     }
                     println!("OK runs {RUNS}");
                     // fxdax: stopped as if it had crashed, with no checkpoint, it recovers from
                     // its WAL, as the filesystem kept it, to a whole database (TASK-119.4).
                     as_postgres(&format!("pg_ctl -D {data} -w -m immediate stop"));
                     start();
-                    check_data(socket);
+                    assert_eq!(check_data(socket, before), after, "the balances recovered");
                     as_postgres(&format!("pg_ctl -D {data} -w -m fast stop"));
                     // Every page's checksum, the indexes' too, with the server stopped.
                     as_postgres(&format!("pg_checksums --check -D {data}"));
