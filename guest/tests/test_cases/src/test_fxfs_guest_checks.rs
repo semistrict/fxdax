@@ -1996,10 +1996,8 @@ mod guest {
     /// a writer made it writable; the host refused the writer's stores, and the VM stopped with
     /// only KVM_RUN's EFAULT to say so (TASK-99, the sandbox team's 2 GiB DAX VM).
     fn test_faults_unheld() {
-        const FAIL_HELD: &str = "/sys/module/fxfs/parameters/dax_fail_held";
-        fs::write(FAIL_HELD, "Y").unwrap();
+        let _fail_held = Param::set("dax_fail_held", "Y");
         test_faults_writes_compaction();
-        fs::write(FAIL_HELD, "N").unwrap();
     }
 
     /// fxdax: the seed of the run's random checks (FXDAX_RANDOM_OPS_SEED, which the host picks
@@ -2464,6 +2462,31 @@ mod guest {
         }
     }
 
+    /// fxdax: one of fxfs's module parameters set for a check, as it was again once the guard
+    /// goes: a check that fails leaves the checks after it as they were.
+    struct Param {
+        path: String,
+        was: String,
+    }
+
+    impl Param {
+        fn set(name: &str, value: &str) -> Self {
+            let path = format!("/sys/module/fxfs/parameters/{name}");
+            let was = fs::read_to_string(&path).unwrap().trim().to_string();
+            fs::write(&path, value).unwrap();
+            Self { path, was }
+        }
+    }
+
+    impl Drop for Param {
+        fn drop(&mut self) {
+            // Not a panic, which in a check's unwinding would abort the checks after it.
+            if let Err(err) = fs::write(&self.path, &self.was) {
+                eprintln!("setting {} back to {}: {err}", self.path, self.was);
+            }
+        }
+    }
+
     /// fxdax: pause points (fxfs.dax_pause, TASK-119.9): sets the steps tasks wait at, and waits
     /// for a task to wait at `step`.
     struct Pauses;
@@ -2529,9 +2552,8 @@ mod guest {
     /// with pause points: the move, the seal, the gate shut, the extent freed, then the retry.
     fn test_moved_across_seal() {
         const PAGE: usize = 4096;
-        const EVACUATES: &str = "/sys/module/fxfs/parameters/dax_evacuates";
         // No evacuation, which would wait for the file's semaphore the paused fault holds.
-        fs::write(EVACUATES, "N").unwrap();
+        let _evacuates = Param::set("dax_evacuates", "N");
         let name = path("moved-across-seal");
         let other = path("moved-across-seal-other");
         // Larger than a chunk, in one extent: a range of its own, not a slice of a region,
@@ -2612,7 +2634,6 @@ mod guest {
         assert!(fs::read(&name).unwrap() == expected, "the file evicted differs");
         fs::remove_file(&name).unwrap();
         fs::remove_file(&other).unwrap();
-        fs::write(EVACUATES, "Y").unwrap();
     }
 
     /// fxdax: a file larger than a chunk, written whole by one write(2) and fsynced, then read
@@ -2745,7 +2766,14 @@ mod guest {
         const HALF: usize = PAGE / 2;
         const SIZE: usize = 4 << 20;
         let name = path("faults-writes");
-        let file = fs::OpenOptions::new().create(true).read(true).write(true).open(&name).unwrap();
+        // Truncated: a check before that failed leaves its file, which the model holds none of.
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .read(true)
+            .write(true)
+            .open(&name)
+            .unwrap();
         file.set_len(SIZE as u64).unwrap();
         let stop = AtomicBool::new(false);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
@@ -2847,13 +2875,18 @@ mod guest {
     fn test_faults_seal_holding_the_semaphore() {
         use std::os::unix::fs::FileExt;
         use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-        const FAULT_SEALS: &str = "/sys/module/fxfs/parameters/dax_fault_seals";
         const PAGE: usize = 4096;
         const SIZE: usize = 32 << 20;
         // The pages the stores go to, ahead of those the write(2)s go to.
         const STORED: usize = 64;
         let name = path("faults-seal");
-        let file = fs::OpenOptions::new().create(true).read(true).write(true).open(&name).unwrap();
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .read(true)
+            .write(true)
+            .open(&name)
+            .unwrap();
         file.set_len(SIZE as u64).unwrap();
         let map = unsafe {
             libc::mmap(
@@ -2870,7 +2903,7 @@ mod guest {
         let writing = AtomicUsize::new(STORED);
         let stop = AtomicBool::new(false);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
-        fs::write(FAULT_SEALS, "Y").unwrap();
+        let fault_seals = Param::set("dax_fault_seals", "Y");
         let (stored, written) = std::thread::scope(|scope| {
             // Stores, each page's first since a seal a write fault, which seals.
             let storer = scope.spawn(|| {
@@ -2914,7 +2947,7 @@ mod guest {
             let written = writer.join().unwrap();
             (storer.join().unwrap(), written)
         });
-        fs::write(FAULT_SEALS, "N").unwrap();
+        drop(fault_seals);
         assert_eq!(unsafe { libc::munmap(map as *mut libc::c_void, SIZE) }, 0);
         let mut read = vec![0; STORED * PAGE];
         file.read_exact_at(&mut read, 0).unwrap();
@@ -3166,7 +3199,13 @@ mod guest {
         use std::sync::atomic::{AtomicBool, Ordering};
         const STEP: usize = 192 << 10;
         let name = path("append-mapped");
-        let file = fs::OpenOptions::new().create(true).read(true).write(true).open(&name).unwrap();
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .read(true)
+            .write(true)
+            .open(&name)
+            .unwrap();
         let stop = AtomicBool::new(false);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(4);
         let appended = std::thread::scope(|scope| {
