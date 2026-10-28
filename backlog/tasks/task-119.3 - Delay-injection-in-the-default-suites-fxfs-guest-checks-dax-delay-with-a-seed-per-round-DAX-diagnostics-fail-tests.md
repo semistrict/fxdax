@@ -1,0 +1,35 @@
+---
+id: TASK-119.3
+title: >-
+  Delay injection in the default suites: fxfs-guest-checks-dax-delay with a seed
+  per round; DAX diagnostics fail tests
+status: To Do
+assignee: []
+created_date: '2026-10-28 19:27'
+labels:
+  - testing
+dependencies: []
+parent_task_id: TASK-119
+priority: high
+ordinal: 439000
+---
+
+## Description
+
+<!-- SECTION:DESCRIPTION:BEGIN -->
+fxfs.dax_delay_us found TASK-101, 112.6 and 113, but no test or script sets it; runs were by hand via FXDAX_GUEST_CMDLINE. dax_evacuee_verify warns with pr_warn, which the runner does not count as a failure.
+<!-- SECTION:DESCRIPTION:END -->
+
+## Acceptance Criteria
+<!-- AC:BEGIN -->
+- [ ] #1 A case runs checks-dax with fxfs.dax_delay_us=200, fxfs.dax_evacuee_verify=1 and a seed per round, in the default e2e and GCE sets
+- [ ] #2 Delay points at seal begin and end and the evacuation steps
+- [ ] #3 A DAX diagnostic warning fails the test
+<!-- AC:END -->
+
+## Definition of Done
+<!-- DOD:BEGIN -->
+- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [ ] #2 scripts/upstream-changes.py --check passes
+- [ ] #3 Deviations from upstream documented where they occur
+<!-- DOD:END -->
