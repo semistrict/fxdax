@@ -2715,7 +2715,19 @@ mod guest {
         for (n, &byte) in written.iter().enumerate() {
             read(n * PAGE, &mut page);
             assert!(page[..HALF].iter().all(|&b| b == byte), "page {n}'s first half: not {byte}");
-            assert!(page[HALF..] == stored[n * PAGE + HALF..][..HALF], "page {n}'s second half");
+            let want = &stored[n * PAGE + HALF..][..HALF];
+            if let Some(at) = (0..HALF).find(|&at| page[HALF + at] != want[at]) {
+                let wrong = (0..HALF).filter(|&at| page[HALF + at] != want[at]).count();
+                panic!(
+                    "page {n}'s second half: byte {at:#x} of it reads {:#x}, stored {:#x}; {wrong} \
+                     bytes of {HALF} differ, {} of them zeros",
+                    page[HALF + at],
+                    want[at],
+                    (0..HALF)
+                        .filter(|&at| page[HALF + at] != want[at] && page[HALF + at] == 0)
+                        .count()
+                );
+            }
         }
         drop(file);
         fs::remove_file(&name).unwrap();
