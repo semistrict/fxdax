@@ -503,6 +503,10 @@ pub struct ExtentStore {
     store: Arc<Store<HostDir>>,
     /// The open extents mapped writably, until the next commit. Locked before `dax`.
     open: Mutex<HashMap<ExtentId, OpenExtent>>,
+    /// fxdax: what a commit reads each open extent's memory into, kept from one to the next, under
+    /// `open`'s lock: one the size of each extent, zeroed for it, cost the commit more than its
+    /// copy did (TASK-112.3).
+    commit_buffer: Mutex<Vec<u8>>,
     dax: Mutex<Option<Dax<Mapped>>>,
     /// fxdax: the arenas of the kernel's physical memory its extents' pages are of (TASK-43).
     arenas: Arenas,
@@ -714,6 +718,9 @@ impl ExtentStore {
 
     /// The most bytes an extent holds (doc-4's `max_extent`).
     pub const MAX_EXTENT: u64 = 64 << 20;
+    /// fxdax: the most of a commit's buffer a store keeps for the next (`commit_buffer`): a
+    /// staging extent's few pages, and the pages mapped ahead of them, are far less.
+    const COMMIT_BUFFER_KEPT: usize = 4 << 20;
 
     /// A new store at `path`, which must not exist, holding at most `capacity` bytes, with a branch
     /// of its own.
@@ -782,6 +789,7 @@ impl ExtentStore {
             arenas,
             store,
             open: Mutex::new(HashMap::new()),
+            commit_buffer: Mutex::new(Vec::new()),
             dax: Mutex::new(None),
             remote: Default::default(),
             opening: Default::default(),
@@ -803,6 +811,7 @@ impl ExtentStore {
             arenas: self.arenas.clone(),
             store: self.store.clone(),
             open: Mutex::new(HashMap::new()),
+            commit_buffer: Mutex::new(Vec::new()),
             dax: Mutex::new(None),
             remote: Default::default(),
             opening: Default::default(),
@@ -1440,18 +1449,28 @@ impl ExtentStore {
     fn commit_and_seal(&self, root: Option<&[u8]>, durable: bool) -> Result<()> {
         let started = std::time::Instant::now();
         let mut open = self.open.lock().unwrap();
+        let mut buffer = self.commit_buffer.lock().unwrap();
         for (extent, extent_open) in open.iter() {
-            let mut data = vec![0; extent_open.len as usize];
-            extent_open.vmo.read(&mut data, 0).errno()?;
+            let len = extent_open.len as usize;
+            if buffer.len() < len {
+                buffer.resize(len, 0);
+            }
+            let data = &mut buffer[..len];
+            extent_open.vmo.read(data, 0).errno()?;
             // fxdax: what was mapped writably, past what was stored to, the store leaves out: the
             // pages a guest maps ahead of its writes, which read as zeros past the extent's end as
             // they would within it (doc-4). Written whole, they took the store's room. The cached
             // extent, which pages them in from the store, is as long as the window maps it still,
             // so that one mapping of it replaces each, as before.
-            let kept = (kept_len(&data) as u64).max(extent_open.stored);
+            let kept = (kept_len(data) as u64).max(extent_open.stored);
             self.store.write((*extent).into(), 0, &data[..kept as usize]).map_err(errno)?;
             stats::add(Counter::CommitWrittenBytes, kept);
         }
+        // An extent up to MAX_EXTENT, rare, a store keeps the memory of no longer than its commit.
+        if buffer.len() > Self::COMMIT_BUFFER_KEPT {
+            *buffer = Vec::new();
+        }
+        drop(buffer);
         stats::add_since(Counter::CommitWriteNs, started);
         let committing = std::time::Instant::now();
         self.store.commit_ordered(root).map_err(errno)?;
@@ -2358,6 +2377,44 @@ mod tests {
         store.unmap(ps, 2 * ps).unwrap();
         assert!(!window.is_mapped(ps));
         assert_eq!(block_on(window.fault(2 * ps, Access::Read)), Err(Errno::ENOENT));
+    }
+
+    /// fxdax (TASK-112.3): a commit writes what the guest stored through each open extent's
+    /// writable mapping: of a smaller extent after a larger one, nothing of the larger's, whose
+    /// memory the commit read before into the buffer it reads the smaller's into.
+    #[test]
+    fn commits_write_what_was_stored_through_the_window() {
+        let (store, _dir) = store(1 << 20);
+        let ps = page_size();
+        let (large, small) = (id(&store, 1), id(&store, 2));
+        let window = store.create_dax_window(8 * ps, None).unwrap();
+        // Stores `data` through the window at `offset`, as a guest's stores reach it.
+        let store_through = |offset: u64, data: &[u8]| {
+            for page in (offset..offset + data.len() as u64).step_by(ps as usize) {
+                block_on(window.fault(page, Access::Write)).unwrap();
+            }
+            // SAFETY: The test faulted the pages in writably, and nothing else accesses them.
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    data.as_ptr(),
+                    window.host_base().add(offset as usize),
+                    data.len(),
+                )
+            };
+        };
+        store.map(large, 0, 4 * ps, 0, true).unwrap();
+        store_through(0, &pattern(1, 4 * ps as usize));
+        store.commit(None).unwrap();
+        // Mapped four pages ahead of its writes, as the guest maps a staging extent: one stored.
+        store.map(small, 0, 4 * ps, 4 * ps, true).unwrap();
+        store_through(4 * ps, &pattern(2, ps as usize));
+        store.commit(None).unwrap();
+
+        assert_eq!(read(&store, large, 0, 4 * ps as usize), Ok(pattern(1, 4 * ps as usize)));
+        assert_eq!(read(&store, small, 0, ps as usize), Ok(pattern(2, ps as usize)));
+        // Past the page stored, zeros, as the window maps: none of the larger extent's bytes.
+        let past = [pattern(2, ps as usize), vec![0; ps as usize]].concat();
+        assert_eq!(read(&store, small, 0, 2 * ps as usize), Ok(past));
     }
 
     /// A commit that seals an open extent maps it read-only where the window still maps it, and
