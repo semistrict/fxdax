@@ -2363,15 +2363,17 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 		else
 			fxfs_dax_pause(FXFS_DAX_STEP_SHUT);
 		/*
-		 * fxdax: a seal came between the move and the gate: the range maps the blocks where
-		 * they moved, read-only, before the fault waits for the seal, or the write moves them
-		 * again (TASK-121).
+		 * fxdax: a seal came between the move and the gate. A write holds the file's
+		 * semaphore, and moves the blocks again, from where Fxfs has them now. A fault, its
+		 * gate shut, gives up its page to wait for the seal, and with it the semaphore: the
+		 * range maps the blocks where they moved, read-only, first (TASK-121).
 		 */
+		if (gate >= 0)
+			continue;
 		err = fxfs_dax_map_moved(dax, range, extents, count);
-		if (!err && gate < 0)
+		if (!err)
 			err = gate;
-		if (err)
-			goto out;
+		goto out;
 	}
 	kfree(held);
 	kvfree(extents);
