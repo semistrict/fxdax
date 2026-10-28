@@ -3402,7 +3402,6 @@ mod guest {
             ];
             if dax {
                 tests.push(("pmd_write_unlink", &test_pmd_write_unlink));
-                tests.push(("moved_across_seal", &test_moved_across_seal));
                 tests.push(("mapped_after_write", &test_mapped_after_write));
                 tests.push(("regions_pruned", &test_regions_pruned));
                 // A small window's regions fill: its writes map in ranges' own space, and
@@ -3432,6 +3431,11 @@ mod guest {
                 tests.push(("short_copy", &test_short_copy));
                 tests.push(("direct_read_past_end", &test_direct_read_past_end));
                 tests.push(("store_past_end", &test_store_past_end));
+            }
+            // fxdax: it dies of SIGBUS (TASK-121's pause check, the fault path's SIGBUS open):
+            // after the others, which it would stop.
+            if dax {
+                tests.push(("moved_across_seal", &test_moved_across_seal));
             }
             // Last: it fills the filesystem, then removes what it filled it with.
             tests.push(("enospc", &test_enospc));
