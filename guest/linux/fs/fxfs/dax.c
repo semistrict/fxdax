@@ -2505,10 +2505,29 @@ static void *fxfs_dax_window_page(struct fxfs_dax *dax, u64 window_offset)
 }
 
 /*
- * Maps a write of up to `length` bytes at `pos` writably, making room for it in open extents
- * unless its pages are writable already, and returns in the gate, which fxfs_dax_iomap_end leaves.
- * A zeroing write leaves holes be. A write past the file's end grows it, unless it is a fault's.
+ * fxdax: with fxfs.dax_check_moves and the shadow, logs where `seen`, the window's page at
+ * `window_offset` as copied, differs from the extent's page the shadow has the window map there,
+ * as the device has it: what a write that moves the page reads around what it writes (TASK-121).
+ * Returns where that is, as fxfs_dax_read_shadowed does.
  */
+static s64 fxfs_dax_check_device(struct fxfs_dax *dax, u64 window_offset, const u8 *seen)
+{
+	u8 *buf = READ_ONCE(fxfs_dax_shadowed) ? kmalloc(PAGE_SIZE, GFP_NOFS) : NULL;
+	size_t first, differ;
+	s64 where;
+
+	if (!buf)
+		return -ENOMEM;
+	where = fxfs_dax_read_shadowed(dax, window_offset >> PAGE_SHIFT, buf);
+	differ = where >= 0 ? fxfs_dax_differ(seen, buf, 0, 0, &first) : 0;
+	if (differ)
+		pr_err("fxfs: window %llx, mapping extent %lld page %lld, held %zu bytes the device's doesn't before a move, the first at %zu: %#x, the device's %#x\n",
+		       window_offset, where >> 20, where & ((1 << 20) - 1), differ, first, seen[first],
+		       buf[first]);
+	kfree(buf);
+	return where;
+}
+
 /*
  * fxdax: with fxfs.dax_check_moves, WARNs unless `range`'s page `page`, where it moved, holds what
  * it held at `before_at` (`before`), but for the `len` bytes from `skip` a write writes (TASK-121).
@@ -2516,15 +2535,16 @@ static void *fxfs_dax_window_page(struct fxfs_dax *dax, u64 window_offset)
  */
 static void fxfs_dax_check_moved(struct fxfs_dax *dax, struct inode *inode,
 				 struct fxfs_dax_range *range, unsigned long page, const u8 *before,
-				 u64 before_at, size_t skip, size_t len)
+				 u64 before_at, s64 before_where, size_t skip, size_t len)
 {
 	u64 at = fxfs_dax_page_offset(range, page);
 	int id = dax_read_lock();
 	const u8 *now = fxfs_dax_window_page(dax, at), *then;
 	size_t first, differ = now ? fxfs_dax_differ(now, before, skip, len, &first) : 0;
 	u8 moved = differ ? now[first] : 0, left = 0;
-	s64 was, is;
+	s64 is;
 	u8 *buf;
+	int err;
 
 	/* Where it was, as the window has it now. */
 	then = differ ? fxfs_dax_window_page(dax, before_at) : NULL;
@@ -2544,12 +2564,15 @@ static void fxfs_dax_check_moved(struct fxfs_dax *dax, struct inode *inode,
 	buf = READ_ONCE(fxfs_dax_shadowed) ? kmalloc(PAGE_SIZE, GFP_NOFS) : NULL;
 	if (!buf)
 		return;
-	was = fxfs_dax_read_shadowed(dax, before_at >> PAGE_SHIFT, buf);
-	if (was >= 0)
+	err = before_where < 0 ? before_where :
+	      fxfs_dax_read_device_page(dax, READ_ONCE(dax->shadow_branch), before_where >> 20,
+					(before_where & ((1 << 20) - 1)) << PAGE_SHIFT, buf);
+	if (!err)
 		pr_err("fxfs:   from %llx, mapping extent %lld page %lld, the device has %#x there, the window %#x now\n",
-		       before_at, was >> 20, was & ((1 << 20) - 1), buf[first], left);
+		       before_at, before_where >> 20, before_where & ((1 << 20) - 1), buf[first],
+		       left);
 	else
-		pr_err("fxfs:   from %llx: %lld\n", before_at, was);
+		pr_err("fxfs:   from %llx: %d\n", before_at, err);
 	is = fxfs_dax_read_shadowed(dax, at >> PAGE_SHIFT, buf);
 	if (is >= 0)
 		pr_err("fxfs:   to %llx, mapping extent %lld page %lld, the device has %#x there\n",
@@ -2559,6 +2582,11 @@ static void fxfs_dax_check_moved(struct fxfs_dax *dax, struct inode *inode,
 	kfree(buf);
 }
 
+/*
+ * Maps a write of up to `length` bytes at `pos` writably, making room for it in open extents
+ * unless its pages are writable already, and returns in the gate, which fxfs_dax_iomap_end leaves.
+ * A zeroing write leaves holes be. A write past the file's end grows it, unless it is a fault's.
+ */
 static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 				unsigned int flags, struct iomap *iomap, struct iomap *srcmap)
 {
@@ -2580,6 +2608,7 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 	/* fxdax: the page as the window mapped it before it moved (fxfs.dax_check_moves). */
 	void *before = NULL;
 	u64 before_at = 0;
+	s64 before_where = -ENOENT;
 	bool fault = flags & IOMAP_FAULT;
 	ssize_t count;
 	long gate;
@@ -2698,6 +2727,8 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 			if (before)
 				memcpy(before, page, PAGE_SIZE);
 			dax_read_unlock(id);
+			if (before)
+				before_where = fxfs_dax_check_device(dax, before_at, before);
 		}
 		if (fault && pages == 1 && test_bit(first, range->mapped) && !held) {
 			int id;
@@ -2749,6 +2780,7 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 			err = fxfs_dax_map_extents(dax, range, extents, count);
 			if (!err && before)
 				fxfs_dax_check_moved(dax, inode, range, first, before, before_at,
+						     before_where,
 						     fault ? 0 : offset_in_page(pos),
 						     fault ? 0 : min_t(loff_t, end - pos,
 								       PAGE_SIZE - offset_in_page(pos)));
