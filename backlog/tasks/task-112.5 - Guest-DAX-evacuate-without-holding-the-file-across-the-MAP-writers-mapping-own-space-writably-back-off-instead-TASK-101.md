@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-28 04:48'
+updated_date: '2026-10-28 14:13'
 labels: []
 dependencies: []
 parent_task_id: TASK-112
@@ -33,3 +34,9 @@ After each seal, fxfs_dax_evacuate_file holds the file DAX semaphore for writing
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-10-28 attempt (branch wip/task-112-5, unpushed): gather and place under the semaphore, MAP without it; own-space MAPs wait for an evacuation's in flight (fxfs_dax_wait_evacuee; check evacuee_waited, fault injection fxfs.dax_evacuee_delay_ms, AC2 shown 5/5); placing waits for the ranges' other users. GCE r205: DAX suites green, pgbench-dax 1216/1105/1044/1018/1017 vs 1172/1085/1022/983/983 on main (same host, +2-3.5%), dax_write_wait_ns 72 ms total. Not landed: under fxfs.dax_delay_us=200 random_ops loses data ~1 round in 6 (TASK-112.6's race, which any lateness of the evacuation exposes).
+<!-- SECTION:NOTES:END -->

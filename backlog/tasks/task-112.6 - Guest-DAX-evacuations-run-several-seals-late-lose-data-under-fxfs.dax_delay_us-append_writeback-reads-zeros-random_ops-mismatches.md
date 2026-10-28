@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-28 04:48'
-updated_date: '2026-10-28 14:02'
+updated_date: '2026-10-28 14:13'
 labels:
   - bug
 dependencies: []
@@ -44,4 +44,6 @@ Review 2026-10-28: fxfs_dax_seal sets region->evacuate and shrinks region->pages
 2026-10-28 GCE r204: TASK-112.5's first cut (evacuation MAP without the file semaphore, placing waiting for the ranges' other users) failed random_ops in round 3 of 5 under fxfs.dax_delay_us=200 (seed 1, op 1799: read of 0x101000 at 0 differs at 0x14000), where main passed 5/5 the same day: the same signature as batching's. Both delay the evacuation, which then may gather a region whose seal has begun (evacuate set in fxfs_dax_seal) but whose COMMIT hasn't ended. Fix under test (with TASK-112.5): region->sealed_at, the device's seal count at the seal's begin; gather skips regions until the device's count passes it (the seal's end re-queues the file).
 
 2026-10-28 later: the sealed_at fix does not fix it. HEAD 9b937d632 (local, unpushed: TASK-112.5 unlocked evacuation MAP + sealed_at + nr_moved) failed random_ops in round 2 of 10 (op 1028, differs at 0x6000) under fxfs.dax_delay_us=200 on r204; the evacuate_unsealed mutant (sealed_at check removed) failed an append check (zeros where 165s expected, checks.rs:2490) in round 2 on r205. So delaying evacuation relative to the seal (batching, or the unlocked MAP) exposes a race other than the seal's begin. Diagnostic added: fxfs.dax_evacuee_verify compares each placed page's own-space copy with its region page and warns; r204/r205 run it x6 each.
+
+Verify run (fxfs.dax_evacuee_verify=1, delays): r204 6/6 green; r205 failed random_ops round 6 at op 117 (read at 0x16282 differs from 0x17000; a store at 0x17b84 after an fsync came just before) with no 'evacuated page differs' warning: each evacuated page matched its region page when placed, so the host maps the right data; the loss is in the guest's bookkeeping, or a write after placing. Parked on branch wip/task-112-5 (9b937d632 + 54aaf0633).
 <!-- SECTION:NOTES:END -->
