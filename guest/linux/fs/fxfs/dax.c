@@ -2758,6 +2758,10 @@ static vm_fault_t fxfs_dax_do_fault(struct vm_fault *vmf, unsigned int order, bo
 		/* No range was free, nor could the fault reclaim one, holding the lock it holds. */
 		fxfs_dax_make_room(fxfs_dax_of(inode), seen);
 	}
+	/* fxdax: a SIGBUS says nothing of why: the error here does (TASK-121). */
+	if (ret & VM_FAULT_SIGBUS)
+		pr_err_ratelimited("fxfs: a %s fault of order %u at page %lu of ino %lu failed: %d\n",
+				   write ? "write" : "read", order, vmf->pgoff, inode->i_ino, error);
 	if (write)
 		sb_end_pagefault(sb);
 	return ret;
