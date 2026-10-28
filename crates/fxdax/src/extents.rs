@@ -527,10 +527,9 @@ pub struct ExtentStore {
     /// fxdax: the window's latest changes, which a refused fault's log tells of the page it was
     /// on ([`ExtentStore::describe_window_offset`], TASK-44.12).
     changes: Mutex<WindowChanges>,
-    /// fxdax: with FXDAX_CHECK_SEALED_READS, the memory of the extents the latest commits sealed,
-    /// which the window keeps mapping: a read of one that the store answers otherwise is logged
-    /// (TASK-121).
-    recently_sealed: Mutex<std::collections::VecDeque<(ExtentId, Arc<zx::Vmo>, u64, std::time::Instant)>>,
+    /// fxdax: with FXDAX_CHECK_SEALED_READS, what the latest commits wrote of the extents they
+    /// sealed: a read of one that the store answers otherwise is logged (TASK-121).
+    recently_sealed: Mutex<std::collections::VecDeque<(ExtentId, Vec<u8>, std::time::Instant)>>,
 }
 
 /// fxdax: whether reads of sealed extents are compared with their memory as sealed (TASK-121).
@@ -1192,22 +1191,22 @@ impl ExtentStore {
         Ok(())
     }
 
-    /// fxdax: logs where `data`, read from sealed `extent` at `offset`, differs from the extent's
-    /// memory as a recent commit sealed it, which the window maps still (TASK-121).
+    /// fxdax: logs where `data`, read from sealed `extent` at `offset`, differs from what the
+    /// commit that sealed it wrote (TASK-121).
     fn check_sealed_read(&self, extent: ExtentId, offset: u64, data: &[u8]) {
         let recent = self.recently_sealed.lock().unwrap();
-        let Some((_, vmo, len, sealed)) = recent.iter().rev().find(|(e, ..)| *e == extent) else {
+        let Some((_, written, sealed)) = recent.iter().rev().find(|(e, ..)| *e == extent) else {
             return;
         };
-        let held = len.saturating_sub(offset).min(data.len() as u64) as usize;
-        let mut memory = vec![0; held];
-        if vmo.read(&mut memory, offset).is_err() {
+        let held = (written.len() as u64).saturating_sub(offset).min(data.len() as u64) as usize;
+        if held == 0 {
             return;
         }
+        let memory = &written[offset as usize..][..held];
         if let Some(at) = (0..held).find(|&at| memory[at] != data[at]) {
             let differ = (0..held).filter(|&at| memory[at] != data[at]).count();
             log::warn!(
-                "extentd: a read of sealed {extent:?} at {offset:#x} differs from its memory as sealed, {:?} ago: {differ} bytes, the first at {:#x}: {:#x}, the memory {:#x}",
+                "extentd: a read of sealed {extent:?} at {offset:#x} differs from what its commit wrote, {:?} ago: {differ} bytes, the first at {:#x}: {:#x}, written {:#x}",
                 sealed.elapsed(),
                 offset + at as u64,
                 data[at],
@@ -1505,6 +1504,13 @@ impl ExtentStore {
             // so that one mapping of it replaces each, as before.
             let kept = (kept_len(data) as u64).max(extent_open.stored);
             self.store.write((*extent).into(), 0, &data[..kept as usize]).map_err(errno)?;
+            if check_sealed_reads() {
+                let mut recent = self.recently_sealed.lock().unwrap();
+                recent.push_back((*extent, data[..kept as usize].to_vec(), started));
+                if recent.len() > 4096 {
+                    recent.pop_front();
+                }
+            }
             stats::add(Counter::CommitWrittenBytes, kept);
         }
         // An extent up to MAX_EXTENT, rare, a store keeps the memory of no longer than its commit.
@@ -1520,15 +1526,6 @@ impl ExtentStore {
         let sealing_started = std::time::Instant::now();
         let mut dax = self.dax.lock().unwrap();
         let sealed: Vec<(ExtentId, OpenExtent)> = open.drain().collect();
-        if check_sealed_reads() {
-            let mut recent = self.recently_sealed.lock().unwrap();
-            for (extent, extent_open) in &sealed {
-                recent.push_back((*extent, extent_open.vmo.clone(), extent_open.len, started));
-                if recent.len() > 4096 {
-                    recent.pop_front();
-                }
-            }
-        }
         if let Some(dax) = dax.as_mut() {
             // fxdax: the guest's access to the pages, which it is to lose, taken away without
             // waiting for its VM process to make the change: what it may reach meanwhile, the
