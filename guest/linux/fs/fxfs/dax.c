@@ -56,6 +56,7 @@
 #include <linux/mm.h>
 #include <linux/moduleparam.h>
 #include <linux/pagemap.h>
+#include <linux/pagewalk.h>
 #include <linux/prandom.h>
 #include <linux/seq_file.h>
 #include <linux/slab.h>
@@ -2724,14 +2725,51 @@ static const struct file_operations fxfs_dax_file_operations = {
  * no store in progress: its file wasn't on the writable files, whose pages the sealer forgets
  * and the user's mappings of which it makes read-only (TASK-121).
  */
+struct fxfs_dax_writable_ptes {
+	unsigned long count, addr;
+	pgoff_t pgoff;
+};
+
+static int fxfs_dax_writable_pte(pte_t *pte, unsigned long addr, unsigned long next,
+				 struct mm_walk *walk)
+{
+	struct fxfs_dax_writable_ptes *found = walk->private;
+	pte_t entry = ptep_get(pte);
+
+	if (pte_present(entry) && pte_write(entry) && !found->count++) {
+		found->addr = addr;
+		found->pgoff = linear_page_index(walk->vma, addr);
+	}
+	return 0;
+}
+
+static const struct mm_walk_ops fxfs_dax_writable_ops = {
+	.pte_entry = fxfs_dax_writable_pte,
+	.walk_lock = PGWALK_RDLOCK,
+};
+
 static void fxfs_dax_check_sealed(struct fxfs_dax *dax)
 {
+	struct fxfs_dax_writable_ptes found;
 	struct fxfs_dax_range *range;
 	struct fxfs_dax_file *file;
 	unsigned long ino, chunk;
 
 	mutex_lock(&dax->files_lock);
 	xa_for_each(&dax->files, ino, file) {
+		/* The user's mappings of its pages, none writable after the sealer. */
+		if (file->inode) {
+			struct address_space *mapping = file->inode->i_mapping;
+
+			found = (struct fxfs_dax_writable_ptes) {};
+			i_mmap_lock_read(mapping);
+			walk_page_mapping(mapping, 0, ULONG_MAX, &fxfs_dax_writable_ops, &found);
+			i_mmap_unlock_read(mapping);
+			WARN(found.count,
+			     "fxfs: ino %llu: %lu user mappings writable after a seal, the first at %lx, page %lu (%s the writable files)\n",
+			     file->ino, found.count, found.addr, found.pgoff,
+			     list_empty(&file->writable) ? "not on" : "on");
+		}
 		rcu_read_lock();
 		xa_for_each(&file->ranges, chunk, range) {
 			unsigned long page = find_first_bit(range->writable, range->pages);
