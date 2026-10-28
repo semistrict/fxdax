@@ -550,6 +550,74 @@ static int fxfs_dax_device_unmap(struct fxfs_dax *dax, u64 window_offset, u64 le
 	return err;
 }
 
+struct fxfs_dax_read_wait {
+	struct completion done;
+	int status;
+};
+
+static void fxfs_dax_read_done(void *arg, int status)
+{
+	struct fxfs_dax_read_wait *wait = arg;
+
+	wait->status = status;
+	complete(&wait->done);
+}
+
+/* fxdax: diagnostic: reads the page at `offset` in an extent from the device into `buf`. */
+static int fxfs_dax_read_device_page(struct fxfs_dax *dax, u64 branch, u64 sequence, u64 offset,
+				     void *buf)
+{
+	struct fxfs_device_op op = {
+		.type = VIRTIO_EXTENT_T_READ, .branch = branch, .sequence = sequence,
+		.offset = offset, .data = buf, .len = PAGE_SIZE,
+	};
+	struct fxfs_dax_read_wait wait;
+	int err;
+
+	init_completion(&wait.done);
+	err = fxfs_device_submit(dax->dev, &op, fxfs_dax_read_done, &wait);
+	if (err)
+		return err;
+	wait_for_completion(&wait.done);
+	return wait.status;
+}
+
+/*
+ * fxdax: diagnostic: reads from the device the extent's page the shadow has the window map at
+ * window page `page` into `buf`, and returns where it is, (sequence << 20) | page, or -ENOENT.
+ */
+static s64 fxfs_dax_read_shadowed(struct fxfs_dax *dax, unsigned long page, void *buf)
+{
+	void *entry = xa_load(&dax->shadow_extent, page);
+	u64 where;
+	int err;
+
+	if (!entry)
+		return -ENOENT;
+	where = xa_to_value(entry);
+	err = fxfs_dax_read_device_page(dax, READ_ONCE(dax->shadow_branch), where >> 20,
+					(where & ((1 << 20) - 1)) << PAGE_SHIFT, buf);
+	return err ? err : where;
+}
+
+/*
+ * fxdax: diagnostic: how many bytes pages `a` and `b` differ in, but for the `len` bytes from
+ * `skip`, and in `first`, the first, or PAGE_SIZE.
+ */
+static size_t fxfs_dax_differ(const u8 *a, const u8 *b, size_t skip, size_t len, size_t *first)
+{
+	size_t i, differ = 0;
+
+	*first = PAGE_SIZE;
+	for (i = 0; i < PAGE_SIZE; i++) {
+		if ((i < skip || i >= skip + len) && a[i] != b[i]) {
+			*first = min(*first, i);
+			differ++;
+		}
+	}
+	return differ;
+}
+
 static u64 fxfs_dax_page_offset(const struct fxfs_dax_range *range, unsigned long page);
 
 /*
@@ -2452,20 +2520,43 @@ static void fxfs_dax_check_moved(struct fxfs_dax *dax, struct inode *inode,
 {
 	u64 at = fxfs_dax_page_offset(range, page);
 	int id = dax_read_lock();
-	const u8 *now = fxfs_dax_window_page(dax, at);
-	size_t i, first = PAGE_SIZE, differ = 0;
+	const u8 *now = fxfs_dax_window_page(dax, at), *then;
+	size_t first, differ = now ? fxfs_dax_differ(now, before, skip, len, &first) : 0;
+	u8 moved = differ ? now[first] : 0, left = 0;
+	s64 was, is;
+	u8 *buf;
 
-	for (i = 0; now && i < PAGE_SIZE; i++) {
-		if ((i < skip || i >= skip + len) && now[i] != before[i]) {
-			first = min(first, i);
-			differ++;
-		}
-	}
-	if (differ)
-		pr_err("fxfs: ino %lu page %lu moved from %llx to %llx holds %zu other bytes, the first at %zu: %#x, not %#x\n",
-		       inode->i_ino, (unsigned long)(fxfs_dax_chunk_start(range) >> PAGE_SHIFT) + page,
-		       before_at, at, differ, first, now[first], before[first]);
+	/* Where it was, as the window has it now. */
+	then = differ ? fxfs_dax_window_page(dax, before_at) : NULL;
+	if (then)
+		left = then[first];
 	dax_read_unlock(id);
+	if (!differ)
+		return;
+	pr_err("fxfs: ino %lu page %lu moved from %llx to %llx holds %zu other bytes, the first at %zu: %#x, not %#x\n",
+	       inode->i_ino, (unsigned long)(fxfs_dax_chunk_start(range) >> PAGE_SHIFT) + page,
+	       before_at, at, differ, first, moved, before[first]);
+	/*
+	 * With the shadow, the extents' pages the window maps at both, as the device has them: the
+	 * window's view of where the page was against what the device holds there, which a write
+	 * reads around what it writes (TASK-121).
+	 */
+	buf = READ_ONCE(fxfs_dax_shadowed) ? kmalloc(PAGE_SIZE, GFP_NOFS) : NULL;
+	if (!buf)
+		return;
+	was = fxfs_dax_read_shadowed(dax, before_at >> PAGE_SHIFT, buf);
+	if (was >= 0)
+		pr_err("fxfs:   from %llx, mapping extent %lld page %lld, the device has %#x there, the window %#x now\n",
+		       before_at, was >> 20, was & ((1 << 20) - 1), buf[first], left);
+	else
+		pr_err("fxfs:   from %llx: %lld\n", before_at, was);
+	is = fxfs_dax_read_shadowed(dax, at >> PAGE_SHIFT, buf);
+	if (is >= 0)
+		pr_err("fxfs:   to %llx, mapping extent %lld page %lld, the device has %#x there\n",
+		       at, is >> 20, is & ((1 << 20) - 1), buf[first]);
+	else
+		pr_err("fxfs:   to %llx: %lld\n", at, is);
+	kfree(buf);
 }
 
 static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
@@ -3172,13 +3263,6 @@ static void fxfs_dax_check_sealed(struct fxfs_dax *dax)
 	mutex_unlock(&dax->files_lock);
 }
 
-static void fxfs_dax_read_done(void *arg, int status);
-
-struct fxfs_dax_read_wait {
-	struct completion done;
-	int status;
-};
-
 /*
  * fxdax: with fxfs.dax_verify_seals and the shadow, as a seal begins, no store in progress: each
  * window page the guest mapped writably since the seal before, read through the window, as the
@@ -3187,11 +3271,12 @@ struct fxfs_dax_read_wait {
  */
 static void fxfs_dax_verify_writable(struct fxfs_dax *dax)
 {
-	u64 seals = fxfs_device_seals(dax->dev), then, where;
-	struct fxfs_dax_read_wait wait;
-	unsigned long page, b, at, differ;
+	u64 seals = fxfs_device_seals(dax->dev), then;
+	unsigned long page;
+	size_t at, differ;
 	void *entry, *buf, *window;
 	unsigned int checked = 0;
+	s64 where;
 	int id;
 
 	buf = kmalloc(PAGE_SIZE, GFP_NOFS);
@@ -3201,37 +3286,16 @@ static void fxfs_dax_verify_writable(struct fxfs_dax *dax)
 		then = xa_to_value(entry) >> 1;
 		if (!(xa_to_value(entry) & 1) || (then != seals - 1 && then != seals))
 			continue;
-		entry = xa_load(&dax->shadow_extent, page);
-		if (!entry || checked++ == 4096)
+		if (checked++ == 4096)
+			break;
+		where = fxfs_dax_read_shadowed(dax, page, buf);
+		if (where < 0)
 			continue;
-		where = xa_to_value(entry);
-		{
-			struct fxfs_device_op op = {
-				.type = VIRTIO_EXTENT_T_READ, .branch = 0, .sequence = where >> 20,
-				.offset = (where & ((1 << 20) - 1)) << PAGE_SHIFT, .data = buf,
-				.len = PAGE_SIZE,
-			};
-
-			op.branch = READ_ONCE(dax->shadow_branch);
-			init_completion(&wait.done);
-			if (fxfs_device_submit(dax->dev, &op, fxfs_dax_read_done, &wait))
-				break;
-			wait_for_completion(&wait.done);
-			if (wait.status)
-				continue;
-		}
 		id = dax_read_lock();
 		window = fxfs_dax_window_page(dax, (u64)page << PAGE_SHIFT);
-		differ = 0;
-		at = PAGE_SIZE;
-		for (b = 0; window && b < PAGE_SIZE; b++) {
-			if (((u8 *)window)[b] != ((u8 *)buf)[b]) {
-				at = min(at, b);
-				differ++;
-			}
-		}
+		differ = window ? fxfs_dax_differ(window, buf, 0, 0, &at) : 0;
 		if (differ)
-			pr_err("fxfs: window page %lx, writable at seals %llu, mapping extent %llu page %llu: %lu bytes differ from the device's, the first at %lu: %#x through the window, %#x the device's\n",
+			pr_err("fxfs: window page %lx, writable at seals %llu, mapping extent %llu page %llu: %zu bytes differ from the device's, the first at %zu: %#x through the window, %#x the device's\n",
 			       page, then, where >> 20, where & ((1 << 20) - 1), differ, at,
 			       ((u8 *)window)[at], ((u8 *)buf)[at]);
 		dax_read_unlock(id);
@@ -3293,14 +3357,6 @@ static void fxfs_dax_seal(void *arg)
 		fxfs_dax_verify_writable(dax);
 }
 
-static void fxfs_dax_read_done(void *arg, int status)
-{
-	struct fxfs_dax_read_wait *wait = arg;
-
-	wait->status = status;
-	complete(&wait->done);
-}
-
 /*
  * fxdax: with fxfs.dax_verify_seals, compares each sealed region not compared yet, read through the
  * window, with its extent read from the device, and logs where they differ (TASK-121). In the
@@ -3309,11 +3365,11 @@ static void fxfs_dax_read_done(void *arg, int status)
 static void fxfs_dax_verify_sealed(struct fxfs_dax *dax)
 {
 	struct fxfs_dax_region *regions[16], *region;
-	struct fxfs_dax_read_wait wait;
 	unsigned int count = 0, i, bucket;
-	unsigned long page, at, differ;
+	unsigned long page;
+	size_t at, differ;
 	void *buf, *window;
-	int id, err;
+	int id;
 
 	spin_lock(&dax->regions_lock);
 	hash_for_each(dax->regions, bucket, region, node) {
@@ -3336,35 +3392,14 @@ static void fxfs_dax_verify_sealed(struct fxfs_dax *dax)
 		mapped = region->mapped;
 		mutex_unlock(&region->lock);
 		for (page = 0; buf && page < mapped; page++) {
-			struct fxfs_device_op op = {
-				.type = VIRTIO_EXTENT_T_READ, .branch = region->branch,
-				.sequence = region->sequence, .offset = (u64)page << PAGE_SHIFT,
-				.data = buf, .len = PAGE_SIZE,
-			};
-
-			init_completion(&wait.done);
-			err = fxfs_device_submit(dax->dev, &op, fxfs_dax_read_done, &wait);
-			if (err)
-				break;
-			wait_for_completion(&wait.done);
-			if (wait.status)
+			if (fxfs_dax_read_device_page(dax, region->branch, region->sequence,
+						      (u64)page << PAGE_SHIFT, buf))
 				break;
 			id = dax_read_lock();
 			window = fxfs_dax_window_page(dax, region->window_offset + (page << PAGE_SHIFT));
-			differ = 0;
-			at = PAGE_SIZE;
-			if (window) {
-				unsigned long b;
-
-				for (b = 0; b < PAGE_SIZE; b++) {
-					if (((u8 *)window)[b] != ((u8 *)buf)[b]) {
-						at = min(at, b);
-						differ++;
-					}
-				}
-			}
+			differ = window ? fxfs_dax_differ(window, buf, 0, 0, &at) : 0;
 			if (differ)
-				pr_err("fxfs: sealed region %llx:%llu page %lu at %llx: %lu bytes differ from the device's, the first at %lu: %#x through the window, %#x the device's\n",
+				pr_err("fxfs: sealed region %llx:%llu page %lu at %llx: %zu bytes differ from the device's, the first at %zu: %#x through the window, %#x the device's\n",
 				       region->branch, region->sequence, page, region->window_offset, differ,
 				       at, ((u8 *)window)[at], ((u8 *)buf)[at]);
 			dax_read_unlock(id);
