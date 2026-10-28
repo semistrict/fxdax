@@ -2538,8 +2538,16 @@ mod guest {
             }
         };
         let _pauses = Pauses::begin(Pauses::MOVED);
-        let storer =
-            std::thread::spawn(move || unsafe { ((mapped + 100) as *mut u8).write_volatile(0xee) });
+        // The store in a process of its own: its fault, paused, holds its process's mmap_lock,
+        // which this one's threads and allocations would otherwise wait for.
+        let storer = unsafe { libc::fork() };
+        assert!(storer >= 0, "fork: {}", std::io::Error::last_os_error());
+        if storer == 0 {
+            unsafe {
+                ((mapped + 100) as *mut u8).write_volatile(0xee);
+                libc::_exit(0);
+            }
+        }
         Pauses::wait(Pauses::MOVED);
         // A seal, in progress as the fault goes on to the gate.
         Pauses::set(Pauses::MOVED | Pauses::SEALING | Pauses::SHUT);
@@ -2554,7 +2562,12 @@ mod guest {
         Pauses::wait(Pauses::HELD);
         (0..4).for_each(|_| seal());
         Pauses::set(0);
-        storer.join().unwrap();
+        let mut status = 0;
+        assert_eq!(unsafe { libc::waitpid(storer, &mut status, 0) }, storer);
+        assert!(
+            libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0,
+            "the storer: {status:#x}"
+        );
         let mut expected = data;
         expected[100] = 0xee;
         let bytes = unsafe { std::slice::from_raw_parts(mapped as *const u8, PAGE) };
