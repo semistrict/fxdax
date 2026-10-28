@@ -128,9 +128,19 @@ def run(host, zone, results, name, edits):
             log = open(Path(results) / f"{name}.log", "w")
             ran = subprocess.run([tree / "scripts/test-gce.sh", "run", host, out], env=env,
                                  stdout=log, stderr=subprocess.STDOUT, cwd=tree)
-            return ran.returncode
+            remote = out / "remote.log"
+            return fate(ran.returncode, remote.read_text(errors="replace") if remote.exists() else "")
         finally:
             subprocess.run(["git", "-C", ROOT, "worktree", "remove", "--force", tree], check=True)
+
+
+def fate(status, remote_log):
+    """A mutant's fate, from its run's exit status and the host's log: killed only if a suite
+    failed a round (scripts/test-e2e.sh says so); a run that failed otherwise, as a build that
+    doesn't compile or a host lost, is BROKEN, and says nothing of the suites (TASK-119.8)."""
+    if status == 0:
+        return "MISSED"
+    return "killed" if ": failed in round " in remote_log else "BROKEN"
 
 
 def main():
@@ -141,9 +151,7 @@ def main():
     for name, what, edits in MUTANTS:
         if names and name not in names:
             continue
-        status = run(host, zone, results, name, edits)
-        fate = "killed" if status != 0 else "MISSED"
-        print(f"{fate} {name}: {what}", flush=True)
+        print(f"{run(host, zone, results, name, edits)} {name}: {what}", flush=True)
 
 
 if __name__ == "__main__":

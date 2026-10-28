@@ -2188,7 +2188,8 @@ mod guest {
             file.sync_all().unwrap();
         }
         // Which thread owns the byte at `at`.
-        let owner = |at: usize| if at < SHARED { at / SLOT % THREADS } else { at / PAGE % THREADS };
+        let owner =
+            |at: usize| if at < SHARED { at / SLOT } else { (at - SHARED) / PAGE } % THREADS;
         // A run of bytes `thread` owns, at random: in a slot of the shared pages, or a page.
         let owned = |rng: &mut Rng, thread: usize| -> (usize, usize) {
             if rng.next(2) == 0 {

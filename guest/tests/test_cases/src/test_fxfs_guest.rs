@@ -185,9 +185,10 @@ mod host {
                 let synced: Vec<(u8, usize)> = output
                     .lines()
                     .filter_map(|line| line.strip_prefix("synced "))
-                    .map(|file| {
-                        let (writer, index) = file.split_once(' ').unwrap();
-                        (writer.parse().unwrap(), index.parse().unwrap())
+                    // A line the VM stopped in the middle of: of a file a line before names too.
+                    .filter_map(|file| {
+                        let (writer, index) = file.split_once(' ')?;
+                        Some((writer.parse().ok()?, index.parse().ok()?))
                     })
                     .collect();
                 if synced.len() < 10 {
@@ -226,9 +227,13 @@ mod host {
                                     Some(rest) => (true, rest),
                                     None => (false, line.strip_prefix("rewriting ")?),
                                 };
-                                let fields: Vec<usize> =
-                                    rest.split(' ').map(|n| n.parse().unwrap()).collect();
-                                (fields[0] == file && fields[1] == page)
+                                // The VM may stop mid-line: a line cut short is of a write
+                                // not begun, or a sync whose write the line before names.
+                                let fields: Vec<usize> = rest
+                                    .split(' ')
+                                    .map(|n| n.parse().ok())
+                                    .collect::<Option<_>>()?;
+                                (fields.len() == 3 && fields[0] == file && fields[1] == page)
                                     .then_some((fields[2] as u32, synced))
                             })
                             .collect();
