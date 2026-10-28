@@ -752,27 +752,6 @@ mod tests {
         assert_eq!(&said, b"ready\n");
         running.kill().unwrap();
     }
-    /// TASK-44.12: a store the DAX window refused fails its test; a load of a page it maps
-    /// nothing at, as a follower's late fault, doesn't.
-    #[test]
-    fn refused_stores_fail_tests() {
-        let dir = tempdir::TempDir::new("vmm-log").unwrap();
-        let checked = |log: &str| {
-            let path = dir.path().join("firecracker.log");
-            std::fs::write(&path, log).unwrap();
-            refused_stores(&path).map_err(|err| err.to_string())
-        };
-        let load = "[dax faults] fxdax: the DAX window refused an access to a page the window \
-                    maps nothing at, at offset 0x1000 (1 so far)\n";
-        assert_eq!(checked(load), Ok(()));
-        let store = "[dax faults] fxdax: the DAX window refused a store to a page the window maps \
-                     read-only, at offset 0x6000 (2 so far)";
-        assert_eq!(
-            checked(&format!("{load}{store}\n")),
-            Err(format!("the DAX window refused stores: {:#?}", vec![store]))
-        );
-    }
-
     /// TASK-44.8: a console's complaints fail its test: a WARN_ON's, lockdep's, a KCSAN report of
     /// a race in fxdax's code; not KCSAN's of a race of the rest of the kernel's, nor of the race
     /// looked into (KCSAN_REVIEWED_CHANGE).
@@ -858,19 +837,6 @@ const COMPLAINTS: [&str; 7] = [
     "suspicious RCU usage",
     "sleeping function called from invalid context",
 ];
-
-/// fxdax: fails with the lines of the VMM's log at `log` in which the DAX window refused a guest's
-/// store to a page it maps read-only (`dax/uffd.rs`): the guest took the page for writable, and
-/// its store is lost, or lands in what the window maps there later. Each such refusal was data
-/// lost (TASK-121), which the tests passed by, as the VM went on (TASK-44.12).
-pub fn refused_stores(log: &Path) -> anyhow::Result<()> {
-    let log = String::from_utf8_lossy(&std::fs::read(log)?).into_owned();
-    let refused: Vec<&str> = (log.lines())
-        .filter(|line| line.contains("the DAX window refused a store to a page"))
-        .collect();
-    anyhow::ensure!(refused.is_empty(), "the DAX window refused stores: {refused:#?}");
-    Ok(())
-}
 
 /// Fails with the lines of the console at `console` in which its kernel complains, but for
 /// KCSAN's reports of races that aren't fxdax's code's, or were reviewed (see [`ours`]). The

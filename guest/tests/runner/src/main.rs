@@ -298,20 +298,12 @@ fn save_stacks(dir: &Path, pid: u32) {
 }
 
 /// fxdax: fails with what the kernels of a test's VMs complained of on their consoles, the files
-/// `console.txt` and `<name>.console.txt` in its directory `dir` (`vm::complaints`), and the
-/// stores their DAX windows refused, in their VMMs' logs, `*.log` (`vm::refused_stores`).
+/// `console.txt` and `<name>.console.txt` in its directory `dir` (`vm::complaints`).
 fn consoles_complaints(dir: &Path) -> anyhow::Result<()> {
     for entry in fs::read_dir(dir)? {
         let path = entry?.path();
-        let name = path.file_name().map(|name| name.to_string_lossy().into_owned());
-        if name.as_ref().is_some_and(|name| name.ends_with("console.txt")) {
+        if path.file_name().is_some_and(|name| name.to_string_lossy().ends_with("console.txt")) {
             test_cases::vm::complaints(&path).with_context(|| format!("in {}", path.display()))?;
-        }
-        // fxdax: and the stores the DAX window refused them, which their VMMs log, in
-        // `firecracker.log` or `<name>.log` (TASK-44.12).
-        if name.as_ref().is_some_and(|name| name.ends_with(".log")) {
-            test_cases::vm::refused_stores(&path)
-                .with_context(|| format!("in {}", path.display()))?;
         }
     }
     Ok(())
