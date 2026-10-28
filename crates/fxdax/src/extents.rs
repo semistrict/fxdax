@@ -2472,6 +2472,34 @@ mod tests {
         assert_eq!(read(&store, small, 0, 2 * ps as usize), Ok(past));
     }
 
+    /// TASK-121: a write to an extent not open yet, as Fxfs copies a moved page's surroundings to a
+    /// new staging extent, racing a writable mapping that opens it, as the guest maps the extent's
+    /// region ahead of the writes to it: the write's bytes are the open extent's, which its commit
+    /// writes. The write checked the extent wasn't open, then wrote to the store, which the
+    /// mapping, opening it between, had read: the commit wrote the extent's memory, zeros, over
+    /// them.
+    #[test]
+    fn writes_racing_the_mapping_that_opens_their_extent_are_committed() {
+        let (store, _dir) = store(1 << 26);
+        let ps = page_size();
+        let _window = store.create_dax_window(ps, None).unwrap();
+        let data = pattern(7, BLOCK);
+        for sequence in 1..=2000 {
+            let extent = id(&store, sequence);
+            let both = std::sync::Barrier::new(2);
+            std::thread::scope(|scope| {
+                scope.spawn(|| {
+                    both.wait();
+                    write(&store, extent, 0, &data).unwrap();
+                });
+                both.wait();
+                store.map(extent, 0, ps, 0, true).unwrap();
+            });
+            store.commit_ordered(None).unwrap();
+            assert_eq!(read(&store, extent, 0, BLOCK), Ok(data.clone()), "extent {sequence}");
+        }
+    }
+
     /// A commit that seals an open extent maps it read-only where the window still maps it, and
     /// leaves what was mapped over part of its mapping since.
     #[test]
