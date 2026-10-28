@@ -3,9 +3,11 @@ id: TASK-119.2
 title: >-
   random_ops: a seed per round, a final full check, and the host checks its file
   after the VM
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-10-28 19:27'
+updated_date: '2026-10-28 19:36'
 labels:
   - testing
 dependencies: []
@@ -33,3 +35,9 @@ random_ops always runs seed 1, has no full check after its last op, compares onl
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+Host picks a seed per run (FXDAX_SEED replays), passes FXDAX_RANDOM_OPS_SEED, writes it to the run dir, names it in failures. random_ops checks the whole file (model length + a page) every 256 ops and after the last; keeps random-ops and random-ops.model; host compares them from the store.
+<!-- SECTION:PLAN:END -->

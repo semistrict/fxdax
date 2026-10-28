@@ -3,9 +3,11 @@ id: TASK-119.1
 title: >-
   Concurrent DAX checks verify contents: every byte has one owner thread
   checking it through read(2) and its mapping
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-10-28 19:27'
+updated_date: '2026-10-28 19:36'
 labels:
   - testing
 dependencies: []
@@ -33,3 +35,9 @@ seal_race, evacuee_waited, log_writes, faults_writes_compaction, faults_unheld, 
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+Byte-owner checks (b9af10794, branch test/119): seal_race (each round, own byte via map and read(2), other's byte monotonic), log_writes (each write read back; whole file at end), faults_writes_compaction/faults_unheld (write(2)s own pages' first halves, stores second halves; periodic read-back; full model at end), faults_seal_holding (stored bytes modelled, read back periodically and at end), append_while_mapped (mapped pages hold what was appended; whole file at end), append_writeback (contents after evict). Verify on GCE r206 (checks-dax x3, checks-dax-delay x3); then hand mutants.
+<!-- SECTION:PLAN:END -->
