@@ -47,6 +47,7 @@
  */
 
 #include <linux/dax.h>
+#include <linux/completion.h>
 #include <linux/delay.h>
 #include <linux/genalloc.h>
 #include <linux/hash.h>
@@ -61,6 +62,7 @@
 #include <linux/seq_file.h>
 #include <linux/slab.h>
 #include <linux/uio.h>
+#include <linux/virtio_extent.h>
 #include <linux/wait.h>
 #include <linux/workqueue.h>
 #include <linux/writeback.h>
@@ -168,6 +170,14 @@ MODULE_PARM_DESC(dax_check_seals, "WARN of pages left writable by a seal (diagno
 static bool fxfs_dax_check_moves;
 module_param_named(dax_check_moves, fxfs_dax_check_moves, bool, 0644);
 MODULE_PARM_DESC(dax_check_moves, "WARN of a page moved holding other data (diagnostic)");
+/*
+ * fxdax: diagnostic (TASK-121): after each seal, the regions of staging extents it sealed are read
+ * through the window and from the device, what their commit wrote, and where they differ logged:
+ * stores the window took that the extent doesn't hold.
+ */
+static bool fxfs_dax_verify_seals;
+module_param_named(dax_verify_seals, fxfs_dax_verify_seals, bool, 0644);
+MODULE_PARM_DESC(dax_verify_seals, "Compare sealed regions through the window with the device (diagnostic)");
 static bool fxfs_dax_moves = true;
 module_param_named(dax_moves, fxfs_dax_moves, bool, 0644);
 MODULE_PARM_DESC(dax_moves, "Map staging extents' pieces where their regions do (diagnostic)");
@@ -268,6 +278,8 @@ struct fxfs_dax_region {
 	 * move to the ranges' own space after (fxfs_dax_evacuate_work). Set under the regions lock.
 	 */
 	bool evacuate;
+	/* fxdax: whether fxfs.dax_verify_seals compared it sealed with the device's (TASK-121). */
+	bool verified;
 };
 
 /* A file's ranges of the window, which outlive its inodes. */
@@ -3100,6 +3112,86 @@ static void fxfs_dax_seal(void *arg)
 		fxfs_dax_check_sealed(dax);
 }
 
+struct fxfs_dax_read_wait {
+	struct completion done;
+	int status;
+};
+
+static void fxfs_dax_read_done(void *arg, int status)
+{
+	struct fxfs_dax_read_wait *wait = arg;
+
+	wait->status = status;
+	complete(&wait->done);
+}
+
+/*
+ * fxdax: with fxfs.dax_verify_seals, compares each sealed region not compared yet, read through the
+ * window, with its extent read from the device, and logs where they differ (TASK-121). In the
+ * evacuation's work, after a seal.
+ */
+static void fxfs_dax_verify_sealed(struct fxfs_dax *dax)
+{
+	struct fxfs_dax_region *regions[16], *region;
+	struct fxfs_dax_read_wait wait;
+	unsigned int count = 0, i, bucket;
+	unsigned long page, at, differ;
+	void *buf, *window;
+	int id, err;
+
+	spin_lock(&dax->regions_lock);
+	hash_for_each(dax->regions, bucket, region, node) {
+		if (count == ARRAY_SIZE(regions))
+			break;
+		if (!region->evacuate || region->writable || region->verified || !region->mapped)
+			continue;
+		region->verified = true;
+		region->refs++;
+		regions[count++] = region;
+	}
+	spin_unlock(&dax->regions_lock);
+	buf = kmalloc(PAGE_SIZE, GFP_NOFS);
+	for (i = 0; i < count; i++) {
+		region = regions[i];
+		for (page = 0; buf && page < READ_ONCE(region->mapped); page++) {
+			struct fxfs_device_op op = {
+				.type = VIRTIO_EXTENT_T_READ, .branch = region->branch,
+				.sequence = region->sequence, .offset = (u64)page << PAGE_SHIFT,
+				.data = buf, .len = PAGE_SIZE,
+			};
+
+			init_completion(&wait.done);
+			err = fxfs_device_submit(dax->dev, &op, fxfs_dax_read_done, &wait);
+			if (err)
+				break;
+			wait_for_completion(&wait.done);
+			if (wait.status)
+				break;
+			id = dax_read_lock();
+			window = fxfs_dax_window_page(dax, region->window_offset + (page << PAGE_SHIFT));
+			differ = 0;
+			at = PAGE_SIZE;
+			if (window) {
+				unsigned long b;
+
+				for (b = 0; b < PAGE_SIZE; b++) {
+					if (((u8 *)window)[b] != ((u8 *)buf)[b]) {
+						at = min(at, b);
+						differ++;
+					}
+				}
+			}
+			if (differ)
+				pr_err("fxfs: sealed region %llx:%llu page %lu at %llx: %lu bytes differ from the device's, the first at %lu: %#x through the window, %#x the device's\n",
+				       region->branch, region->sequence, page, region->window_offset, differ,
+				       at, ((u8 *)window)[at], ((u8 *)buf)[at]);
+			dax_read_unlock(id);
+		}
+		fxfs_dax_put_region(dax, region);
+	}
+	kfree(buf);
+}
+
 /*
  * fxdax: once a seal ends, has the staging extent the seal sealed replaced in the background, if
  * writes took blocks of it, and the new one's region mapped (fxfs_dax_restage_work).
@@ -3446,6 +3538,9 @@ static void fxfs_dax_evacuate_work(struct work_struct *work)
 	u64 seals = fxfs_device_seals(dax->dev);
 	bool again = false;
 	LIST_HEAD(files);
+
+	if (READ_ONCE(fxfs_dax_verify_seals))
+		fxfs_dax_verify_sealed(dax);
 
 	/* Off the filesystem's list, onto this one: a seal meanwhile doesn't add them again. */
 	mutex_lock(&dax->writable_lock);
