@@ -393,6 +393,11 @@ struct fxfs_dax {
 	atomic64_t moved_unsealed;
 	/* The files with ranges, or inodes using the window, by inode number. */
 	struct xarray files;
+	/*
+	 * fxdax: with fxfs.dax_shadow, the window's pages as the guest mapped them last, by page:
+	 * the device's seal count then, shifted, and whether writably (TASK-121).
+	 */
+	struct xarray shadow;
 	/* Guards `files`, and files' inodes. */
 	struct mutex files_lock;
 	/* Guards the used list. */
@@ -431,6 +436,90 @@ struct fxfs_dax {
 };
 
 static const struct iomap_ops fxfs_dax_iomap_ops;
+
+/*
+ * fxdax: diagnostic (TASK-121): the guest keeps a shadow of how it mapped each page of the window
+ * (fxfs_dax_shadow_map), and WARNs of a write's iomap mapping a page writably that it mapped
+ * read-only last, or before the last seal, which made it read-only: a store there the window
+ * refuses.
+ */
+static bool fxfs_dax_shadowed;
+module_param_named(dax_shadow, fxfs_dax_shadowed, bool, 0644);
+MODULE_PARM_DESC(dax_shadow, "WARN of writes to pages the window maps read-only (diagnostic)");
+
+/* fxdax: records `len` bytes at `window_offset` as mapped, writably if `writable`, or unmapped. */
+static void fxfs_dax_shadow_map(struct fxfs_dax *dax, u64 window_offset, u64 len, bool writable,
+				bool mapped)
+{
+	u64 seals = fxfs_device_seals(dax->dev);
+	unsigned long page;
+
+	if (!READ_ONCE(fxfs_dax_shadowed))
+		return;
+	for (page = window_offset >> PAGE_SHIFT; page < (window_offset + len) >> PAGE_SHIFT; page++) {
+		if (mapped)
+			xa_store(&dax->shadow, page, xa_mk_value((seals << 1) | writable), GFP_NOFS);
+		else
+			xa_erase(&dax->shadow, page);
+	}
+}
+
+static int fxfs_dax_device_map(struct fxfs_dax *dax, u64 branch, u64 sequence, u64 offset,
+			       u64 len, u64 window_offset, bool writable, bool ahead)
+{
+	int err = fxfs_device_map(dax->dev, branch, sequence, offset, len, window_offset, writable,
+				  ahead);
+
+	if (!err)
+		fxfs_dax_shadow_map(dax, window_offset, len, writable, true);
+	return err;
+}
+
+static int fxfs_dax_device_map_many(struct fxfs_dax *dax, const struct fxfs_device_map *maps,
+				    unsigned int count)
+{
+	int err = fxfs_device_map_many(dax->dev, maps, count);
+	unsigned int i;
+
+	for (i = 0; !err && i < count; i++)
+		fxfs_dax_shadow_map(dax, maps[i].window_offset, maps[i].len, maps[i].writable, true);
+	return err;
+}
+
+static int fxfs_dax_device_unmap(struct fxfs_dax *dax, u64 window_offset, u64 len)
+{
+	int err = fxfs_device_unmap(dax->dev, window_offset, len);
+
+	fxfs_dax_shadow_map(dax, window_offset, len, false, false);
+	return err;
+}
+
+static u64 fxfs_dax_page_offset(const struct fxfs_dax_range *range, unsigned long page);
+
+/*
+ * fxdax: WARNs unless the window maps `range`'s `pages` pages from `page` writably, as the
+ * shadow has them, since the last seal: a write's iomap that takes them for writable (TASK-121).
+ */
+static void fxfs_dax_shadow_check(struct fxfs_dax *dax, struct fxfs_dax_range *range,
+				  unsigned long page, unsigned long pages, const char *why)
+{
+	u64 seals = fxfs_device_seals(dax->dev);
+	unsigned long i, at;
+	void *entry;
+
+	if (!READ_ONCE(fxfs_dax_shadowed))
+		return;
+	for (i = page; i < page + pages; i++) {
+		at = fxfs_dax_page_offset(range, i) >> PAGE_SHIFT;
+		entry = xa_load(&dax->shadow, at);
+		WARN(!entry || !(xa_to_value(entry) & 1) || (xa_to_value(entry) >> 1) != seals,
+		     "fxfs: %s: ino %llu chunk %lu page %lu writable at window page %lx, which the guest %s (seals %llu, %s)\n",
+		     why, range->file->ino, range->chunk, i, at,
+		     !entry ? "never mapped" : !(xa_to_value(entry) & 1) ? "mapped read-only last" :
+		     "mapped writably before a seal",
+		     seals, range->moved && range->moved[i] ? "in a region" : "in its own space");
+	}
+}
 static const struct address_space_operations fxfs_dax_aops;
 static const struct file_operations fxfs_dax_file_operations;
 static int fxfs_dax_break_layouts(struct inode *inode, loff_t start);
@@ -721,7 +810,7 @@ static int fxfs_dax_map_own(struct fxfs_dax *dax, struct fxfs_dax_range *range,
 	loff_t start = fxfs_dax_chunk_start(range);
 	int err;
 
-	err = fxfs_device_map(dax->dev, e->branch, e->sequence, e->extent_offset, e->len,
+	err = fxfs_dax_device_map(dax, e->branch, e->sequence, e->extent_offset, e->len,
 			      range->window_offset + (e->offset - start), e->open, true);
 	atomic64_inc(&dax->maps[FXFS_DAX_RANGE]);
 	atomic64_add(e->len, &dax->map_bytes[FXFS_DAX_RANGE]);
@@ -797,7 +886,7 @@ static int fxfs_dax_map_extents(struct fxfs_dax *dax, struct fxfs_dax_range *ran
 		writable |= err;
 	}
 	if (nr_own) {
-		many = fxfs_device_map_many(dax->dev, maps, nr_own);
+		many = fxfs_dax_device_map_many(dax, maps, nr_own);
 		atomic64_add(nr_own, &dax->maps[FXFS_DAX_RANGE]);
 		for (i = 0; i < nr_own; i++) {
 			const struct fxfs_dax_extent *e = &extents[own[i]];
@@ -1108,7 +1197,7 @@ static void fxfs_dax_put_region(struct fxfs_dax *dax, struct fxfs_dax_region *re
 	list_del(&region->writable_list);
 	spin_unlock(&dax->regions_lock);
 	if (region->mapped) {
-		err = fxfs_device_unmap(dax->dev, region->window_offset,
+		err = fxfs_dax_device_unmap(dax, region->window_offset,
 					(u64)region->mapped << PAGE_SHIFT);
 		if (err)
 			pr_warn("fxfs: unmapping the DAX window at %llx failed: %d\n",
@@ -1170,7 +1259,7 @@ static void fxfs_dax_unmap_range(struct fxfs_dax *dax, struct fxfs_dax_range *ra
 
 	xa_erase(&range->file->ranges, range->chunk);
 	if (!range->region && !bitmap_empty(range->mapped, range->pages)) {
-		err = fxfs_device_unmap(dax->dev, range->window_offset,
+		err = fxfs_dax_device_unmap(dax, range->window_offset,
 					(u64)range->pages << PAGE_SHIFT);
 		if (err)
 			pr_warn("fxfs: unmapping the DAX window at %llx failed: %d\n",
@@ -1482,7 +1571,7 @@ static int fxfs_dax_map_to(struct fxfs_dax *dax, struct fxfs_dax_region *region,
 	if (writable)
 		to = min(to, max(end, from + clamp(from, FXFS_DAX_REGION_FIRST, FXFS_DAX_REGION_STEP)));
 	for (;;) {
-		err = fxfs_device_map(dax->dev, region->branch, region->sequence,
+		err = fxfs_dax_device_map(dax, region->branch, region->sequence,
 				      (u64)from << PAGE_SHIFT, (u64)(to - from) << PAGE_SHIFT,
 				      region->window_offset + ((u64)from << PAGE_SHIFT), writable,
 				      why == FXFS_DAX_REACH);
@@ -2378,6 +2467,7 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 	}
 	kfree(held);
 	kvfree(extents);
+	fxfs_dax_shadow_check(dax, range, first, pages, fault ? "a fault" : "a write");
 	iomap->type = IOMAP_MAPPED;
 	/* Holes a mapping of the file maps zeros for are gone. */
 	iomap->flags |= IOMAP_F_PRIVATE | (fresh ? IOMAP_F_NEW : 0);
@@ -3016,13 +3106,13 @@ static void fxfs_dax_evacuee_map(struct fxfs_dax *dax, struct fxfs_dax_file *fil
 	if (ev->count) {
 		fxfs_dax_delay();
 		began = ktime_get_ns();
-		err = fxfs_nofs(fxfs_device_map_many(dax->dev, ev->maps, ev->count));
+		err = fxfs_nofs(fxfs_dax_device_map_many(dax, ev->maps, ev->count));
 		atomic64_add(ktime_get_ns() - began, &dax->evacuate_map_ns);
 		for (r = 0; r < ev->count; r++) {
 			/* If they failed, mapped one by one, to place those that did. */
 			if (err)
-				ev->runs[r].mapped = !fxfs_nofs(fxfs_device_map(
-					dax->dev, ev->maps[r].branch, ev->maps[r].sequence,
+				ev->runs[r].mapped = !fxfs_nofs(fxfs_dax_device_map(
+					dax, ev->maps[r].branch, ev->maps[r].sequence,
 					ev->maps[r].offset, ev->maps[r].len, ev->maps[r].window_offset,
 					false, false));
 			else
@@ -3298,6 +3388,7 @@ struct fxfs_dax *fxfs_dax_create(struct super_block *sb, struct fxfs *fs)
 	dax->dev = dev;
 	dax->dax_dev = dax_dev;
 	xa_init(&dax->files);
+	xa_init(&dax->shadow);
 	mutex_init(&dax->files_lock);
 	spin_lock_init(&dax->lock);
 	INIT_LIST_HEAD(&dax->used);
@@ -3403,6 +3494,7 @@ void fxfs_dax_destroy(struct fxfs_dax *dax)
 		fxfs_dax_put_file(dax, file);
 	}
 	xa_destroy(&dax->files);
+	xa_destroy(&dax->shadow);
 	destroy_workqueue(dax->grow_wq);
 	fxfs_dax_destroy_pools(dax);
 	kfree(dax);
@@ -3742,7 +3834,7 @@ void fxfs_dax_resize_end(struct inode *inode, loff_t size)
 			continue;
 		/* A slice's pages past the end stay its region's: the slice no longer maps them. */
 		err = range->region ? 0 :
-		      fxfs_device_unmap(dax->dev, range->window_offset + ((u64)page << PAGE_SHIFT),
+		      fxfs_dax_device_unmap(dax, range->window_offset + ((u64)page << PAGE_SHIFT),
 					(u64)(range->pages - page) << PAGE_SHIFT);
 		if (err)
 			pr_warn("fxfs: unmapping the DAX window at %llx failed: %d\n",
