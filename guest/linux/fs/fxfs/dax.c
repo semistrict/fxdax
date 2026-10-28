@@ -2841,6 +2841,10 @@ static const struct file_operations fxfs_dax_file_operations = {
 struct fxfs_dax_writable_ptes {
 	unsigned long count, addr;
 	pgoff_t pgoff;
+	/* fxdax: with the shadow, the window's first pfn, and the writable PTEs it disowns. */
+	struct fxfs_dax *dax;
+	unsigned long base, disowned;
+	u64 file;
 };
 
 static int fxfs_dax_writable_pte(pte_t *pte, unsigned long addr, unsigned long next,
@@ -2848,11 +2852,30 @@ static int fxfs_dax_writable_pte(pte_t *pte, unsigned long addr, unsigned long n
 {
 	struct fxfs_dax_writable_ptes *found = walk->private;
 	pte_t entry = ptep_get(pte);
+	unsigned long page;
+	u64 seals, then;
+	void *shadow;
 
-	if (pte_present(entry) && pte_write(entry) && !found->count++) {
+	if (!pte_present(entry) || !pte_write(entry))
+		return 0;
+	if (!found->count++) {
 		found->addr = addr;
 		found->pgoff = linear_page_index(walk->vma, addr);
 	}
+	if (!found->dax)
+		return 0;
+	/* A writable PTE of a window page the guest mapped writably this seal, or none. */
+	page = pte_pfn(entry) - found->base;
+	shadow = xa_load(&found->dax->shadow, page);
+	seals = fxfs_device_seals(found->dax->dev);
+	then = shadow ? xa_to_value(shadow) >> 1 : 0;
+	if (shadow && (xa_to_value(shadow) & 1) && (then == seals || then == seals - 1))
+		return 0;
+	if (found->disowned++ < 8)
+		pr_err("fxfs: ino %llu page %lu mapped writably at %lx, window page %lx, which the guest %s (seals %llu, then %llu)\n",
+		       found->file, linear_page_index(walk->vma, addr), addr, page,
+		       !shadow ? "never mapped" : !(xa_to_value(shadow) & 1) ? "mapped read-only" :
+		       "mapped writably before a seal", seals, then);
 	return 0;
 }
 
@@ -2860,6 +2883,42 @@ static const struct mm_walk_ops fxfs_dax_writable_ops = {
 	.pte_entry = fxfs_dax_writable_pte,
 	.walk_lock = PGWALK_RDLOCK,
 };
+
+/*
+ * fxdax: with fxfs.dax_shadow, as a seal begins, before its sealer makes them read-only: logs the
+ * user's writable PTEs of window pages the guest didn't map writably this seal, whose stores the
+ * window refuses (TASK-121).
+ */
+static void fxfs_dax_check_ptes(struct fxfs_dax *dax)
+{
+	struct fxfs_dax_writable_ptes found;
+	struct fxfs_dax_file *file;
+	unsigned long ino, base;
+	void *kaddr;
+	int id;
+
+	if (!READ_ONCE(fxfs_dax_shadowed))
+		return;
+	id = dax_read_lock();
+	if (dax_direct_access(dax->dax_dev, 0, 1, DAX_ACCESS, &kaddr, &base) < 1)
+		base = 0;
+	dax_read_unlock(id);
+	if (!base)
+		return;
+	mutex_lock(&dax->files_lock);
+	xa_for_each(&dax->files, ino, file) {
+		struct address_space *mapping;
+
+		if (!file->inode)
+			continue;
+		mapping = file->inode->i_mapping;
+		found = (struct fxfs_dax_writable_ptes) { .dax = dax, .base = base, .file = file->ino };
+		i_mmap_lock_read(mapping);
+		walk_page_mapping(mapping, 0, ULONG_MAX, &fxfs_dax_writable_ops, &found);
+		i_mmap_unlock_read(mapping);
+	}
+	mutex_unlock(&dax->files_lock);
+}
 
 static void fxfs_dax_check_sealed(struct fxfs_dax *dax)
 {
@@ -2911,6 +2970,7 @@ static void fxfs_dax_seal(void *arg)
 	unsigned long chunk;
 
 	fxfs_dax_pause(FXFS_DAX_STEP_SEALING);
+	fxfs_dax_check_ptes(dax);
 	spin_lock(&dax->regions_lock);
 	list_for_each_entry_safe(region, next_region, &dax->writable_regions, writable_list) {
 		region->writable = false;
