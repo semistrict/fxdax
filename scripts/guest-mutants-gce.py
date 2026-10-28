@@ -57,9 +57,9 @@ MUTANTS = [
         "write_no_seals_recheck",
         "a write maps the blocks it moved though a seal came between",
         [("\t\tif (gate == seals) {\n\t\t\terr = fxfs_dax_map_extents(dax, range, extents, count);\n"
-          "\t\t\tif (err) {",
+          "\t\t\tif (!err && before)",
           "\t\tif (true) {\n\t\t\terr = fxfs_dax_map_extents(dax, range, extents, count);\n"
-          "\t\t\tif (err) {")],
+          "\t\t\tif (!err && before)")],
     ),
     (
         "seal_keeps_writable",
@@ -103,6 +103,13 @@ MUTANTS = [
         "they were, whose extent Fxfs frees (TASK-121)",
         [("\t\terr = fxfs_dax_map_moved(dax, range, extents, count);\n",
           "\t\terr = 0;\n\t\t(void)fxfs_dax_map_moved;\n")],
+    ),
+    (
+        "pmd_row_unrelocated",
+        "a page moving out of a row a PMD mapped relocates itself alone, whose row's other pages' "
+        "faults meet the PMD entry: SIGBUS (TASK-123)",
+        [("\tif (changed && READ_ONCE(range->huge)) {\n",
+          "\tif (changed && READ_ONCE(range->huge) && false) {\n")],
     ),
 ]
 
