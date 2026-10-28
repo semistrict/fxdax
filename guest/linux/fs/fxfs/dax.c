@@ -169,7 +169,22 @@ MODULE_PARM_DESC(dax_check_seals, "WARN of pages left writable by a seal (diagno
  * the copy the move kept of the page wasn't the page's.
  */
 static bool fxfs_dax_check_moves;
-module_param_named(dax_check_moves, fxfs_dax_check_moves, bool, 0644);
+
+/* Fxfs checks the blocks it keeps as pages move with it (fxfs_set_check_kept). */
+static int fxfs_dax_set_check_moves(const char *val, const struct kernel_param *kp)
+{
+	int err = param_set_bool(val, kp);
+
+	if (!err)
+		fxfs_set_check_kept(fxfs_dax_check_moves);
+	return err;
+}
+
+static const struct kernel_param_ops fxfs_dax_check_moves_ops = {
+	.set = fxfs_dax_set_check_moves,
+	.get = param_get_bool,
+};
+module_param_cb(dax_check_moves, &fxfs_dax_check_moves_ops, &fxfs_dax_check_moves, 0644);
 MODULE_PARM_DESC(dax_check_moves, "WARN of a page moved holding other data (diagnostic)");
 /*
  * fxdax: diagnostic (TASK-121): after each seal, the regions of staging extents it sealed are read

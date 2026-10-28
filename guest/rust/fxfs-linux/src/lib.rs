@@ -295,6 +295,14 @@ pub unsafe extern "C" fn fxfs_unmount(fs: *mut Fxfs) {
     }
 }
 
+/// fxdax: diagnostic (TASK-121): has Fxfs log the blocks a DAX write's move keeps that read short
+/// or as zeros, or read back other (`fxfs::object_store::data_object_handle::CHECK_KEPT`).
+#[unsafe(no_mangle)]
+pub extern "C" fn fxfs_set_check_kept(on: bool) {
+    fxfs::object_store::data_object_handle::CHECK_KEPT
+        .store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// fxdax: whether `fs` is mounted read-only, and whether it follows its device's writer.
 ///
 /// # Safety

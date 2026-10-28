@@ -93,6 +93,8 @@ void fxfs_init(void);
 int fxfs_mount(const char *source, size_t len, u64 memory, bool read_only, void *vfs,
 	       struct fxfs **fs, struct fxfs_attr *root);
 /* fxdax: whether the filesystem is mounted read-only, and whether it follows its writer. */
+/* fxdax: diagnostic: Fxfs logs the blocks a DAX write's move keeps that read short or as zeros. */
+void fxfs_set_check_kept(bool on);
 bool fxfs_read_only(struct fxfs *fs);
 bool fxfs_follows(struct fxfs *fs);
 /*

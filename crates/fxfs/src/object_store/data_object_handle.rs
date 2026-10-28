@@ -54,7 +54,7 @@ use std::future::Future;
 use std::ops::{Deref, Range};
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::{self, AtomicU64, Ordering};
+use std::sync::atomic::{self, AtomicBool, AtomicU64, Ordering};
 use storage_device::buffer::{Buffer, BufferFuture, BufferRef, MutableBufferRef};
 use storage_device::{ExtentId, ExtentRange, WriteFlags};
 use storage_ptr_slice::PtrByteSlice;
@@ -89,6 +89,10 @@ struct BlocksWrite<'d> {
     blocks: Range<u64>,
     data: &'d [u8],
 }
+
+/// fxdax: diagnostic (TASK-121): with it set, [`DataObjectHandle::txn_map_write`] logs the blocks
+/// it keeps that read short or as zeros, and those whose copy reads back other from the device.
+pub static CHECK_KEPT: AtomicBool = AtomicBool::new(false);
 
 /// fxdax: what moves with the blocks [`DataObjectHandle::txn_map_write`] moves to new ones.
 #[derive(Clone, Copy)]
@@ -1220,10 +1224,14 @@ impl<S: HandleOwner> DataObjectHandle<S> {
         let store = self.store();
         let (allocator, owner) = (store.allocator(), Some(store.store_object_id()));
         let data = blocks + later;
-        let short = (data + transaction::TRANSACTION_METADATA_MAX_AMOUNT)
-            .saturating_sub(reserved.amount());
+        let short =
+            (data + transaction::TRANSACTION_METADATA_MAX_AMOUNT).saturating_sub(reserved.amount());
         let holds = short == 0
-            || allocator.clone().reserve(owner, short).map(|more| more.move_to(reserved, short)).is_some();
+            || allocator
+                .clone()
+                .reserve(owner, short)
+                .map(|more| more.move_to(reserved, short))
+                .is_some();
         if !holds {
             let short = data.saturating_sub(reserved.amount());
             let more = allocator.reserve_with(owner, |limit| short.min(limit));
@@ -2125,6 +2133,15 @@ impl<S: HandleOwner> DataObjectHandle<S> {
                         .read_aligned(self.attribute_id(), blocks.start, copy.as_mut())
                         .await?;
                     copy.subslice_mut(read..).fill(0);
+                    let zeros = || copy.as_ptr_slice().iter_as::<u64>().all(|word| word == 0);
+                    if CHECK_KEPT.load(Ordering::Relaxed) && (read < copy.len() || zeros()) {
+                        error!(
+                            "fxfs: object {} keeping {blocks:?} for {range:?}: read {read} bytes of {}, all zeros: {}",
+                            self.object_id(),
+                            copy.len(),
+                            zeros()
+                        );
+                    }
                 }
                 // New blocks read as zeros: a block of zeros (a hole, or past the end of the file,
                 // as a small file's new data is) needs no write.
@@ -2158,9 +2175,31 @@ impl<S: HandleOwner> DataObjectHandle<S> {
                             .write(
                                 device_range.extent,
                                 device_range.range.start + (start - offset),
-                                copy.subslice(copied),
+                                copy.subslice(copied.clone()),
                             )
                             .await?;
+                        if CHECK_KEPT.load(Ordering::Relaxed) {
+                            let mut back = device.allocate_buffer(copied.len()).await;
+                            device
+                                .read(
+                                    device_range.extent,
+                                    device_range.range.start + (start - offset),
+                                    back.as_mut(),
+                                )
+                                .await?;
+                            let wrote = copy.subslice(copied).as_ptr_slice().to_vec();
+                            let back = back.as_ptr_slice().to_vec();
+                            if let Some(at) = (0..wrote.len()).find(|&at| back[at] != wrote[at]) {
+                                error!(
+                                    "fxfs: object {} kept {blocks:?} in {:?} at {:#x}, which reads back other: at {at:#x} {:#x}, written {:#x}",
+                                    self.object_id(),
+                                    device_range.extent,
+                                    device_range.range.start + (start - offset),
+                                    back[at],
+                                    wrote[at]
+                                );
+                            }
+                        }
                     }
                 }
                 transaction.add(
