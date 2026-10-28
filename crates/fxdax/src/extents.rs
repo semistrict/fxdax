@@ -1523,7 +1523,9 @@ impl ExtentStore {
     /// window maps them, from their sealed pages, which their memory becomes.
     fn seal_mapped(&self, dax: &mut Dax<Mapped>, sealed: &[(ExtentId, OpenExtent)]) -> Result<()> {
         for &(extent, ref extent_open) in sealed {
+            let started = std::time::Instant::now();
             let sealed = self.cached(extent, extent_open.len)?;
+            stats::add_since(Counter::CommitSealCachedNs, started);
             // The window maps the sealed extent first, so that nothing reads its memory once its
             // pages move: a read meanwhile pages in from the store, which holds them.
             let pages = extent_open.len.next_multiple_of(page_size());
@@ -1534,6 +1536,7 @@ impl ExtentStore {
             // sealed extent is mapped before it has them, then install them again, each a flush
             // of the guest's TLBs, and the guest fault them in again (TASK-91.16).
             dax.changing(|dax| -> Result<()> {
+                let remapping = std::time::Instant::now();
                 let mut mapped = Vec::new();
                 let mut past = Vec::new();
                 // fxdax: as the window maps it now, each mapping at the offset it maps: a range
@@ -1560,8 +1563,12 @@ impl ExtentStore {
                         past.push((window_offset + within, len - within));
                     }
                 }
+                stats::add_since(Counter::CommitSealRemapNs, remapping);
                 // Its memory is the sealed extent's pages, but for those paged in meanwhile.
+                let supplying = std::time::Instant::now();
                 sealed.supply_pages(0..pages, &extent_open.vmo, 0);
+                stats::add_since(Counter::CommitSealSupplyNs, supplying);
+                let populating = std::time::Instant::now();
                 // Mapped again, read-only, so that the guest's next loads of them do not fault
                 // one page at a time, each a trip to the store's process from the guest's.
                 for (window_offset, len) in mapped {
@@ -1570,6 +1577,7 @@ impl ExtentStore {
                         log::warn!("mapping sealed extent {extent:?}'s pages again: {err:?}");
                     }
                 }
+                stats::add_since(Counter::CommitSealPopulateNs, populating);
                 // Past the extent, zeros, which have no pages of the extent's: after its pages
                 // mapped again, which a mapping between would part from their mapping anew.
                 for (past, len) in past {

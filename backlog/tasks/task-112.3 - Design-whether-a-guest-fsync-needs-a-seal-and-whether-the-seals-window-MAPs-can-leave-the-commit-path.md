@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-28 02:30'
-updated_date: '2026-10-28 03:25'
+updated_date: '2026-10-28 05:16'
 labels: []
 dependencies: []
 parent_task_id: TASK-112
@@ -32,6 +32,12 @@ Sandbox round 7b (TASK-112): DAX seals cost 0.54 ms against 0.32 without, about 
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-10-28 night: extentd's commit write 44 -> 36 us (9048fe2a8, one buffer per store). Seal phases (new stats commit-seal-{cached,remap,supply,populate}-ns, GCE pgbench-dax 2 GiB, per commit): cached extent 11.3 us, read-only remap 20.3, supply_pages 8.7, populate 6.4, the rest ~11 of 58; commit 120 (write 37, store 14, wait 9.8).
+<!-- SECTION:NOTES:END -->
 
 ## Final Summary
 

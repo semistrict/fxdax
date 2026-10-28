@@ -336,6 +336,11 @@ impl Extentd for Control {
             fault_stores: _,
             fault_refusals: _,
             fault_waits: _,
+            // And the seal's phases (TASK-112.3).
+            commit_seal_cached_ns: _,
+            commit_seal_remap_ns: _,
+            commit_seal_supply_ns: _,
+            commit_seal_populate_ns: _,
         } = crate::stats::stats();
         use extent_remote::store::{Request, Upload};
         let bucket = stores::remote_bucket().map_err(status)?.stats();
@@ -613,6 +618,10 @@ impl Client {
             fault_stores: 0,
             fault_refusals: 0,
             fault_waits: 0,
+            commit_seal_cached_ns: 0,
+            commit_seal_remap_ns: 0,
+            commit_seal_supply_ns: 0,
+            commit_seal_populate_ns: 0,
         })
     }
 

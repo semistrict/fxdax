@@ -93,6 +93,15 @@ pub struct Stats {
     pub fault_refusals: u64,
     /// Of `faults`, those that waited for the pager to read their pages in.
     pub fault_waits: u64,
+    /// fxdax: of `commit_seal_ns`, finding or making the cached extents of the extents sealed
+    /// (TASK-112.3).
+    pub commit_seal_cached_ns: u64,
+    /// Of those, mapping the cached extents read-only where the windows mapped the open ones.
+    pub commit_seal_remap_ns: u64,
+    /// Of those, handing the open extents' pages to the cached extents.
+    pub commit_seal_supply_ns: u64,
+    /// Of those, mapping the pages in the windows again.
+    pub commit_seal_populate_ns: u64,
 }
 
 /// The counters, in the order of [`Stats`]' fields.
@@ -128,10 +137,14 @@ pub(crate) enum Counter {
     FaultStores,
     FaultRefusals,
     FaultWaits,
+    CommitSealCachedNs,
+    CommitSealRemapNs,
+    CommitSealSupplyNs,
+    CommitSealPopulateNs,
 }
 
 /// The counters [`Counter`] names, which this module keeps.
-const COUNTED: usize = 30;
+const COUNTED: usize = 34;
 
 /// The counters a snapshot holds: those it keeps, and the extent store's.
 const COUNTERS: usize = COUNTED + 3;
@@ -191,6 +204,10 @@ pub fn stats() -> Stats {
         fault_stores: count(Counter::FaultStores),
         fault_refusals: count(Counter::FaultRefusals),
         fault_waits: count(Counter::FaultWaits),
+        commit_seal_cached_ns: count(Counter::CommitSealCachedNs),
+        commit_seal_remap_ns: count(Counter::CommitSealRemapNs),
+        commit_seal_supply_ns: count(Counter::CommitSealSupplyNs),
+        commit_seal_populate_ns: count(Counter::CommitSealPopulateNs),
     }
 }
 
@@ -231,6 +248,10 @@ impl Stats {
             self.fault_stores,
             self.fault_refusals,
             self.fault_waits,
+            self.commit_seal_cached_ns,
+            self.commit_seal_remap_ns,
+            self.commit_seal_supply_ns,
+            self.commit_seal_populate_ns,
         ]
     }
 
@@ -271,6 +292,10 @@ impl Stats {
             fault_stores: word(30),
             fault_refusals: word(31),
             fault_waits: word(32),
+            commit_seal_cached_ns: word(33),
+            commit_seal_remap_ns: word(34),
+            commit_seal_supply_ns: word(35),
+            commit_seal_populate_ns: word(36),
         }
     }
 
@@ -318,6 +343,10 @@ impl Stats {
             "fault-stores",
             "fault-refusals",
             "fault-waits",
+            "commit-seal-cached-ns",
+            "commit-seal-remap-ns",
+            "commit-seal-supply-ns",
+            "commit-seal-populate-ns",
         ];
         std::array::from_fn(|at| (names[at], words[at]))
     }
