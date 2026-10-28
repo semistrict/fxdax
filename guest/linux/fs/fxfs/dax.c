@@ -807,6 +807,13 @@ static int fxfs_dax_map_moved(struct fxfs_dax *dax, struct fxfs_dax_range *range
 		unsigned long page = (e->offset - fxfs_dax_chunk_start(range)) >> PAGE_SHIFT;
 		unsigned long pages = e->len >> PAGE_SHIFT;
 
+		/*
+		 * A piece writable already stayed where it was, in its open extent, which the user's
+		 * mappings may map writably until the seal's sealer makes them read-only: mapped
+		 * read-only now, their stores would be refused. Those the sealer forgot are mapped.
+		 */
+		if (find_next_zero_bit(range->writable, page + pages, page) == page + pages)
+			continue;
 		e->open = false;
 		err = fxfs_dax_map_own(dax, range, e);
 		/*
