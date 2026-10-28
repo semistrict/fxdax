@@ -804,8 +804,24 @@ static int fxfs_dax_map_moved(struct fxfs_dax *dax, struct fxfs_dax_range *range
 	if (range->region)
 		return -EXDEV;
 	for (i = 0; i < count; i++) {
-		extents[i].open = false;
-		err = fxfs_dax_mapped(range, &extents[i], fxfs_dax_map_own(dax, range, &extents[i]));
+		struct fxfs_dax_extent *e = &extents[i];
+		unsigned long page = (e->offset - fxfs_dax_chunk_start(range)) >> PAGE_SHIFT;
+		unsigned long pages = e->len >> PAGE_SHIFT;
+
+		e->open = false;
+		err = fxfs_dax_map_own(dax, range, e);
+		/*
+		 * An extent the device doesn't hold was never written: its blocks are zeros, a hole,
+		 * as fxfs_dax_mapped has them; moved from where they were, which faults replace, and
+		 * no longer writable, nor mapped, as the range had them (TASK-121).
+		 */
+		if (err == -ENOENT) {
+			fxfs_dax_relocate(range, page, pages, NULL, 0);
+			fxfs_dax_clear_writable(range, page, pages);
+			bitmap_clear(range->mapped, page, pages);
+			continue;
+		}
+		err = fxfs_dax_mapped(range, e, err);
 		if (err < 0)
 			return err;
 	}
