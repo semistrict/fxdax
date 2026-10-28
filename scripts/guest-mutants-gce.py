@@ -101,8 +101,8 @@ MUTANTS = [
         "moved_unmapped",
         "a write whose blocks moved before a seal shut the gate leaves its range mapping them where "
         "they were, whose extent Fxfs frees (TASK-121)",
-        [("		err = fxfs_dax_map_moved(dax, range, extents, count);\n",
-          "		err = 0;\n		(void)fxfs_dax_map_moved;\n")],
+        [("\t\terr = fxfs_dax_map_moved(dax, range, extents, count);\n",
+          "\t\terr = 0;\n\t\t(void)fxfs_dax_map_moved;\n")],
     ),
 ]
 
