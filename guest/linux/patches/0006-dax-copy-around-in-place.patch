@@ -1,0 +1,31 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+dax: copy no edges of a page onto itself
+
+A filesystem whose copy-on-write moves where its entries map a page,
+rather than its data, as Fxfs's DAX does for a page moved to new
+blocks it already holds, returns IOMAP_F_SHARED with a srcmap at the
+iomap's own address, for the kernel to replace its entries of the
+page. dax_iomap_copy_around then copied the page's edges onto
+themselves: a store racing the copy, through another mapping of the
+page, to bytes the write didn't cover, was undone. Copy nothing when
+the source is the destination.
+
+diff --git a/fs/dax.c b/fs/dax.c
+--- a/fs/dax.c
++++ b/fs/dax.c
+@@ -1318,6 +1318,14 @@ static int dax_iomap_copy_around(loff_t pos, uint64_t length, size_t align_size,
+ 		ret = dax_iomap_direct_access(srcmap, pos, size, &saddr, NULL);
+ 		if (ret)
+ 			return dax_mem2blk_err(ret);
++		/*
++		 * A source that is the destination holds the data already, as a
++		 * filesystem's whose CoW moves only where its entries map the
++		 * pages: copying it onto itself would undo stores racing the
++		 * copy, through other mappings of the pages.
++		 */
++		if (saddr == daddr)
++			return 0;
+ 	}
+ 
+ 	if (copy_all) {

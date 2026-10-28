@@ -541,10 +541,9 @@ static void fxfs_dax_relocate(struct fxfs_dax_range *range, unsigned long page,
  * maps, was relocated since the faults before: so that the kernel replaces its DAX entries of
  * them, which say where the pages were, and its mappings of them (dax_insert_entry,
  * dax_iomap_iter, dax_zero_iter), copying nothing: `srcmap`, the data around a write, is where the
- * pages are already. Fills in `srcmap`, so after `iomap` is. (That copy of the pages onto
- * themselves isn't atomic: a store racing it, through another mapping of a page just relocated,
- * or a write(2) racing a fault, may be undone. Only on pages relocated since the faults before,
- * and as racing stores to one page are in any case.)
+ * pages are already. Fills in `srcmap`, so after `iomap` is. (fxdax: the kernel copied the pages
+ * onto themselves, which undid stores racing the copy through other mappings of the pages: it
+ * copies nothing where the source is the destination, patches/0006, TASK-122.)
  *
  * A fault's iomap (`flags`) forgets they were relocated: the fault replaces its page's entry, in
  * the entry's lock, before anything maps the page again. Another's, a write(2)'s or zeroing's,
