@@ -2480,12 +2480,7 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 				memcpy(before, page, PAGE_SIZE);
 			dax_read_unlock(id);
 		}
-		/*
-		 * fxdax: a write(2) of part of one page too keeps the page as the window has it: Fxfs's
-		 * read of its old block through the device found what the store holds, which a seal's
-		 * commit wrote before stores the window took after it, and lost them (TASK-121).
-		 */
-		if (pages == 1 && test_bit(first, range->mapped) && !held) {
+		if (fault && pages == 1 && test_bit(first, range->mapped) && !held) {
 			int id;
 
 			fxfs_dax_pause(FXFS_DAX_STEP_HELD);
@@ -2513,17 +2508,8 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 		/* As in fxfs_dax_map_chunk: unless a seal was in progress, or began since. */
 		seals = fxfs_device_seals(dax->dev);
 		/* A fault's pages hold what they held: a store may change any part of them. */
-		if (held && !fault) {
-			/* The page whole, as a fault's: what it holds is `held`. */
-			loff_t page_pos = start + ((loff_t)first << PAGE_SHIFT);
-
-			count = fxfs_dax_reserve_write(inode, page_pos, page_pos + PAGE_SIZE,
-						     page_pos + PAGE_SIZE, size, true, held,
-						     extents, capacity);
-		} else {
-			count = fxfs_dax_reserve_write(inode, pos, end, reserved, size, fault,
-						     held, extents, capacity);
-		}
+		count = fxfs_dax_reserve_write(inode, pos, end, reserved, size, fault, held,
+					     extents, capacity);
 		fxfs_dax_delay();
 		if (fault && count >= 0)
 			fxfs_dax_pause(FXFS_DAX_STEP_MOVED);
