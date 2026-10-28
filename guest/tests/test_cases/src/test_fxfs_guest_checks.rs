@@ -731,7 +731,13 @@ mod guest {
             .map(|n| {
                 std::thread::spawn(move || {
                     let name = path(&format!("log-{n}"));
-                    let file = fs::File::create(&name).unwrap();
+                    let file = fs::OpenOptions::new()
+                        .create(true)
+                        .truncate(true)
+                        .read(true)
+                        .write(true)
+                        .open(&name)
+                        .unwrap();
                     file.write_all_at(&vec![0; SIZE], 0).unwrap();
                     file.sync_all().unwrap();
                     let block = vec![n as u8 + 1; WRITE];
