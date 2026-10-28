@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-28 04:48'
-updated_date: '2026-10-28 05:28'
+updated_date: '2026-10-28 12:45'
 labels:
   - bug
 dependencies: []
@@ -38,4 +38,6 @@ With evacuation delayed to every 16 seals or 20 ms (a TASK-112.4 experiment, not
 
 <!-- SECTION:NOTES:BEGIN -->
 Hypothesis (read-only analysis, 2026-10-28): fxfs_dax_seal sets region->evacuate as the seal begins, before the device seals the extent; an evacuation in between (a late one, or on main one overlapping the next seal) maps the still-open extent. Tested with a new fault injection fxfs.dax_evacuate_in_seal (queue the evacuation from fxfs_dax_seal, then fsleep 2 ms) on main 32aeffade+: checks-dax under fxfs.dax_delay_us=200 passed 3/3 (r202), so not reproduced: the evacuation may wait on the file semaphore its seal's caller holds, or the host's seal remaps the evacuation's read-only map of the open extent (seal_mapped keeps mappings of the open VMO), making it harmless. Candidate fix kept unlanded: region->sealed_at = fxfs_device_seals() at seal, gather skips a region while the seal count still equals it. Other hypotheses: a deferred seal_mapped change landing after the evacuation's newer MAP of the same own-space slot (check: memcmp own-space pages with region pages after the MAP); aborted map_write leaving moved stale; region pool full pushing writes to own-space writable maps (TASK-79.106).
+
+Review 2026-10-28: fxfs_dax_seal sets region->evacuate and shrinks region->pages at seal begin, before the COMMIT completes; an evacuation already running can map the still-open extent read-only. Matches the sealed_at hypothesis. Suggested diagnostic: after the MAP in fxfs_dax_evacuee_place, memcmp own-space vs region page and WARN; record per page the seal count at move/gather/place.
 <!-- SECTION:NOTES:END -->
