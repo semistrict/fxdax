@@ -2467,6 +2467,12 @@ static vm_fault_t fxfs_dax_do_fault(struct vm_fault *vmf, unsigned int order, bo
 	for (;;) {
 		long seen = atomic_long_read(&fxfs_dax_of(inode)->released);
 
+		/*
+		 * fxdax: each try after the first yields first: retries that find the file's semaphore,
+		 * or the gate, busy as soon as they look again kept the task holding it off both of a
+		 * 2-vCPU guest's CPUs, without preemption, for minutes (TASK-113).
+		 */
+		cond_resched();
 		error = 0;
 		/* fxdax: a follower's extents read and mapped under its fill barrier, as of one state. */
 		fxfs_vfs_fill_begin(sb);
