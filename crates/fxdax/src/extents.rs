@@ -527,6 +527,16 @@ pub struct ExtentStore {
     /// fxdax: the window's latest changes, which a refused fault's log tells of the page it was
     /// on ([`ExtentStore::describe_window_offset`], TASK-44.12).
     changes: Mutex<WindowChanges>,
+    /// fxdax: with FXDAX_CHECK_SEALED_READS, the memory of the extents the latest commits sealed,
+    /// which the window keeps mapping: a read of one that the store answers otherwise is logged
+    /// (TASK-121).
+    recently_sealed: Mutex<std::collections::VecDeque<(ExtentId, Arc<zx::Vmo>, u64, std::time::Instant)>>,
+}
+
+/// fxdax: whether reads of sealed extents are compared with their memory as sealed (TASK-121).
+fn check_sealed_reads() -> bool {
+    static CHECK: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *CHECK.get_or_init(|| std::env::var_os("FXDAX_CHECK_SEALED_READS").is_some())
 }
 
 /// fxdax: the latest of a window's MAPs and UNMAPs, as [`WindowChanges::MOST`] of them: which
@@ -798,6 +808,7 @@ impl ExtentStore {
             following: None,
             committed: event_listener::Event::new(),
             changes: Mutex::default(),
+            recently_sealed: Mutex::default(),
         }
     }
 
@@ -820,6 +831,7 @@ impl ExtentStore {
             following: Some(following),
             committed: event_listener::Event::new(),
             changes: Mutex::default(),
+            recently_sealed: Mutex::default(),
         }
     }
 
@@ -1168,6 +1180,9 @@ impl ExtentStore {
                 if !self.read_cached(extent, offset, &mut data)? {
                     self.read_stored(extent, offset, &mut data)?;
                 }
+                if check_sealed_reads() {
+                    self.check_sealed_read(extent, offset, &data);
+                }
             }
         }
         let mut at = 0;
@@ -1175,6 +1190,30 @@ impl ExtentStore {
             at += buffer.copy_from(&data[at..]);
         }
         Ok(())
+    }
+
+    /// fxdax: logs where `data`, read from sealed `extent` at `offset`, differs from the extent's
+    /// memory as a recent commit sealed it, which the window maps still (TASK-121).
+    fn check_sealed_read(&self, extent: ExtentId, offset: u64, data: &[u8]) {
+        let recent = self.recently_sealed.lock().unwrap();
+        let Some((_, vmo, len, sealed)) = recent.iter().rev().find(|(e, ..)| *e == extent) else {
+            return;
+        };
+        let held = len.saturating_sub(offset).min(data.len() as u64) as usize;
+        let mut memory = vec![0; held];
+        if vmo.read(&mut memory, offset).is_err() {
+            return;
+        }
+        if let Some(at) = (0..held).find(|&at| memory[at] != data[at]) {
+            let differ = (0..held).filter(|&at| memory[at] != data[at]).count();
+            log::warn!(
+                "extentd: a read of sealed {extent:?} at {offset:#x} differs from its memory as sealed, {:?} ago: {differ} bytes, the first at {:#x}: {:#x}, the memory {:#x}",
+                sealed.elapsed(),
+                offset + at as u64,
+                data[at],
+                memory[at]
+            );
+        }
     }
 
     /// fxdax: reads `extent`'s bytes at `offset` from the extent cache, if it is sealed: which pages
@@ -1481,6 +1520,15 @@ impl ExtentStore {
         let sealing_started = std::time::Instant::now();
         let mut dax = self.dax.lock().unwrap();
         let sealed: Vec<(ExtentId, OpenExtent)> = open.drain().collect();
+        if check_sealed_reads() {
+            let mut recent = self.recently_sealed.lock().unwrap();
+            for (extent, extent_open) in &sealed {
+                recent.push_back((*extent, extent_open.vmo.clone(), extent_open.len, started));
+                if recent.len() > 4096 {
+                    recent.pop_front();
+                }
+            }
+        }
         if let Some(dax) = dax.as_mut() {
             // fxdax: the guest's access to the pages, which it is to lose, taken away without
             // waiting for its VM process to make the change: what it may reach meanwhile, the
