@@ -4,6 +4,7 @@ title: Guest DAX tracepoints and a trace checker of the protocol's invariants
 status: To Do
 assignee: []
 created_date: '2026-10-24 21:31'
+updated_date: '2026-10-28 01:26'
 labels: []
 dependencies: []
 parent_task_id: TASK-44
@@ -30,3 +31,9 @@ The guest's beliefs (regions open, pages writable) and the host's MAPs are each 
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Sandbox team round 7 (TASK-111) asks for tracepoints or USDT probes at seal start and end, MAP by reason, evacuation, guest fault to extentd, and window reclaim, so bpftrace can measure latencies.
+<!-- SECTION:NOTES:END -->
