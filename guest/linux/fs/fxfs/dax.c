@@ -274,6 +274,14 @@ struct fxfs_dax_range {
 	 */
 	unsigned long *relocated;
 	/*
+	 * fxdax: whether a fault mapped its pages 2 MiB at once, in a row in the window, with one PMD,
+	 * one DAX entry for them all: a page of them moving breaks the row up, and relocates them
+	 * all (fxfs_dax_relocate), so that the faults of each replace the entry. Only the moved
+	 * page's did, and the others' met the PMD entry, which a page's fault can't take: SIGBUS
+	 * (TASK-123).
+	 */
+	bool huge;
+	/*
 	 * Freed after a grace period: the sealer walks files' ranges without their semaphores,
 	 * which writers hold waiting for the gate the sealer keeps closed.
 	 */
@@ -499,6 +507,7 @@ static void fxfs_dax_relocate(struct fxfs_dax_range *range, unsigned long page,
 			      unsigned long pages, struct fxfs_dax_region *region, unsigned long first)
 {
 	unsigned int index = 0;
+	bool changed = false;
 	unsigned long i;
 	u64 moved;
 
@@ -512,9 +521,16 @@ static void fxfs_dax_relocate(struct fxfs_dax_range *range, unsigned long page,
 	}
 	for (i = 0; i < pages; i++) {
 		moved = region ? ((u64)(index + 1) << 32) | (first + i) : 0;
-		if (range->moved[page + i] != moved && test_bit(page + i, range->mapped))
+		if (range->moved[page + i] != moved && test_bit(page + i, range->mapped)) {
 			set_bit(page + i, range->relocated);
+			changed = true;
+		}
 		range->moved[page + i] = moved;
+	}
+	/* fxdax: a row a PMD mapped broken up: every page of it is relocated (TASK-123). */
+	if (changed && READ_ONCE(range->huge)) {
+		bitmap_or(range->relocated, range->relocated, range->mapped, range->pages);
+		WRITE_ONCE(range->huge, false);
 	}
 }
 
@@ -2038,6 +2054,9 @@ static int fxfs_dax_iomap_read(struct inode *inode, loff_t pos, loff_t length, u
 	iomap->addr = at + offset_in_page(pos);
 	iomap->length = length;
 	iomap->private = range;
+	/* fxdax: a PMD's, its pages in a row, which a page moving breaks up (TASK-123). */
+	if ((flags & IOMAP_FAULT) && length >= PMD_SIZE)
+		WRITE_ONCE(range->huge, true);
 	/* A read's copy needs no mapping of the pages replaced. */
 	if (flags & IOMAP_FAULT)
 		fxfs_dax_cow(inode, range, page, end_page - page, flags, iomap, srcmap);
