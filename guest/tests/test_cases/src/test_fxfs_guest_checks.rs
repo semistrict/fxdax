@@ -2517,7 +2517,10 @@ mod guest {
         fs::write(EVACUATES, "N").unwrap();
         let name = path("moved-across-seal");
         let other = path("moved-across-seal-other");
-        let data: Vec<u8> = (0..PAGE).map(|i| (i % 251) as u8 + 1).collect();
+        // Larger than a chunk, in one extent: a range of its own, not a slice of a region,
+        // whose fault keeps the page it holds.
+        const SIZE: usize = 4 << 20;
+        let data: Vec<u8> = (0..SIZE).map(|i| (i % 251) as u8 + 1).collect();
         fs::write(&name, &data).unwrap();
         fs::File::open(&name).unwrap().sync_all().unwrap();
         fs::write(&other, b"other").unwrap();
@@ -2525,7 +2528,7 @@ mod guest {
         let map = unsafe {
             libc::mmap(
                 std::ptr::null_mut(),
-                PAGE,
+                SIZE,
                 libc::PROT_READ | libc::PROT_WRITE,
                 libc::MAP_SHARED,
                 file.as_raw_fd(),
@@ -2555,7 +2558,7 @@ mod guest {
         assert!(storer >= 0, "fork: {}", std::io::Error::last_os_error());
         if storer == 0 {
             unsafe {
-                ((mapped + 100) as *mut u8).write_volatile(0xee);
+                ((mapped + PAGE + 100) as *mut u8).write_volatile(0xee);
                 libc::_exit(0);
             }
         }
@@ -2580,10 +2583,10 @@ mod guest {
             "the storer: {status:#x}"
         );
         let mut expected = data;
-        expected[100] = 0xee;
-        let bytes = unsafe { std::slice::from_raw_parts(mapped as *const u8, PAGE) };
+        expected[PAGE + 100] = 0xee;
+        let bytes = unsafe { std::slice::from_raw_parts(mapped as *const u8, SIZE) };
         assert!(bytes == &expected[..], "the page as mapped differs from what was stored");
-        assert_eq!(unsafe { libc::munmap(map, PAGE) }, 0);
+        assert_eq!(unsafe { libc::munmap(map, SIZE) }, 0);
         drop(file);
         assert!(fs::read(&name).unwrap() == expected, "the file differs from what was stored");
         evict(&name);
