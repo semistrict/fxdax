@@ -161,17 +161,22 @@ pub fn test_cases() -> Vec<TestCase> {
         #[cfg(any(feature = "host", target_os = "linux"))]
         TestCase::new(
             "fxfs-guest-checks",
-            Box::new(TestFxfsGuestChecks { dax: false, delay: false }),
+            Box::new(TestFxfsGuestChecks { dax: false, delay: false, small_window: false }),
         ),
         #[cfg(any(feature = "host", target_os = "linux"))]
         TestCase::new(
             "fxfs-guest-checks-dax",
-            Box::new(TestFxfsGuestChecks { dax: true, delay: false }),
+            Box::new(TestFxfsGuestChecks { dax: true, delay: false, small_window: false }),
         ),
         #[cfg(any(feature = "host", target_os = "linux"))]
         TestCase::new(
             "fxfs-guest-checks-dax-delay",
-            Box::new(TestFxfsGuestChecks { dax: true, delay: true }),
+            Box::new(TestFxfsGuestChecks { dax: true, delay: true, small_window: false }),
+        ),
+        #[cfg(any(feature = "host", target_os = "linux"))]
+        TestCase::new(
+            "fxfs-guest-checks-dax-small",
+            Box::new(TestFxfsGuestChecks { dax: true, delay: false, small_window: true }),
         ),
         TestCase::new("fxfs-guest-dax", Box::new(TestFxfsGuest::host_formats().with_dax())),
         TestCase::new("fxfs-guest-crash-dax", Box::new(TestFxfsGuest::crash().with_dax())),

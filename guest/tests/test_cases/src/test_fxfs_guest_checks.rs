@@ -24,6 +24,11 @@ pub struct TestFxfsGuestChecks {
     /// (fxfs.dax_delay_us), from the run's seed, widening the races' windows (TASK-119.3).
     #[cfg_attr(feature = "guest", allow(dead_code))]
     pub delay: bool,
+    /// fxdax: whether the DAX window is small, 32 MiB, as the checks' files fill it: regions run
+    /// out of room, ranges are reclaimed under load, and pieces map writably in ranges' own space
+    /// (TASK-119.12).
+    #[cfg_attr(feature = "guest", allow(dead_code))]
+    pub small_window: bool,
 }
 
 /// Offset of the second 2 MiB DAX chunk.
@@ -125,7 +130,11 @@ mod host {
         fn start_vm(self: Box<Self>, test_setup: TestSetup) -> anyhow::Result<()> {
             let image = test_setup.tmp_dir.join("fxdax.img");
             create_image(&image)?;
-            let window = if self.dax { 1 << 29 } else { 0 };
+            let window = match (self.dax, self.small_window) {
+                (false, _) => 0,
+                (true, false) => 1 << 29,
+                (true, true) => 32 << 20,
+            };
             let mut vm = Vm::new(2, 512)?;
             vm.guest_kernel()?;
             vm.extent_store("fxdax", &image, IMAGE_SIZE, window)?;
