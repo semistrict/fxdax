@@ -2501,6 +2501,9 @@ mod guest {
     /// with pause points: the move, the seal, the gate shut, the extent freed, then the retry.
     fn test_moved_across_seal() {
         const PAGE: usize = 4096;
+        const EVACUATES: &str = "/sys/module/fxfs/parameters/dax_evacuates";
+        // No evacuation, which would wait for the file's semaphore the paused fault holds.
+        fs::write(EVACUATES, "N").unwrap();
         let name = path("moved-across-seal");
         let other = path("moved-across-seal-other");
         let data: Vec<u8> = (0..PAGE).map(|i| (i % 251) as u8 + 1).collect();
@@ -2563,6 +2566,7 @@ mod guest {
         assert!(fs::read(&name).unwrap() == expected, "the file evicted differs");
         fs::remove_file(&name).unwrap();
         fs::remove_file(&other).unwrap();
+        fs::write(EVACUATES, "Y").unwrap();
     }
 
     /// fxdax: a file's pages rewritten and fsynced, so that they move to new blocks and the
