@@ -344,6 +344,11 @@ struct fxfs_dax {
 	 * took of that (TASK-91.16).
 	 */
 	atomic64_t write_waits, write_wait_ns, evacuations, evacuate_hold_ns, evacuate_map_ns;
+	/*
+	 * fxdax: the writes whose blocks Fxfs moved before a seal kept them from the gate, which
+	 * their ranges map read-only where they moved to (fxfs_dax_map_moved, TASK-121).
+	 */
+	atomic64_t moved_unsealed;
 	/* The files with ranges, or inodes using the window, by inode number. */
 	struct xarray files;
 	/* Guards `files`, and files' inodes. */
@@ -778,6 +783,33 @@ out:
 	kfree(maps);
 	kfree(own);
 	return err;
+}
+
+/*
+ * fxdax: has `range` map the pieces `extents`, where Fxfs just moved its pages, read-only in its
+ * own space, outside the gate: a seal came between the move and the gate, which seals, or sealed,
+ * their extents. The range mapped the pages where they were, whose blocks the move freed: once
+ * their extent was freed, the device mapped zeros there, which reads returned, and a fault's copy
+ * of its page took, losing the page's data (TASK-121). A slice maps its region's pages alone:
+ * -EXDEV, for it to be dropped. With the file's DAX semaphore held for writing.
+ */
+static int fxfs_dax_map_moved(struct fxfs_dax *dax, struct fxfs_dax_range *range,
+			      struct fxfs_dax_extent *extents, ssize_t count)
+{
+	ssize_t i;
+	int err;
+
+	lockdep_assert_held_write(&range->file->sem);
+	atomic64_inc(&dax->moved_unsealed);
+	if (range->region)
+		return -EXDEV;
+	for (i = 0; i < count; i++) {
+		extents[i].open = false;
+		err = fxfs_dax_mapped(range, &extents[i], fxfs_dax_map_own(dax, range, &extents[i]));
+		if (err < 0)
+			return err;
+	}
+	return 0;
 }
 
 /* Whether any of the pieces `extents` is of an open extent. */
@@ -2244,10 +2276,6 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 		if (size > i_size_read(inode))
 			i_size_write(inode, size);
 		gate = fxfs_dax_store_begin(dax, fault);
-		if (gate < 0) {
-			err = gate;
-			goto out;
-		}
 		if (gate == seals) {
 			err = fxfs_dax_map_extents(dax, range, extents, count);
 			if (err) {
@@ -2262,7 +2290,18 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 			}
 			break;
 		}
-		fxfs_device_store_end(dax->dev);
+		if (gate >= 0)
+			fxfs_device_store_end(dax->dev);
+		/*
+		 * fxdax: a seal came between the move and the gate: the range maps the blocks where
+		 * they moved, read-only, before the fault waits for the seal, or the write moves them
+		 * again (TASK-121).
+		 */
+		err = fxfs_dax_map_moved(dax, range, extents, count);
+		if (!err && gate < 0)
+			err = gate;
+		if (err)
+			goto out;
 	}
 	kfree(held);
 	kvfree(extents);
@@ -3064,6 +3103,7 @@ void fxfs_dax_show_stats(struct fxfs_dax *dax, struct seq_file *m)
 	seq_printf(m, "dax_extent_alloc_bytes %lld\n", atomic64_read(&dax->extent_alloc_bytes));
 	seq_printf(m, "dax_write_waits %lld\ndax_write_wait_ns %lld\n",
 		   atomic64_read(&dax->write_waits), atomic64_read(&dax->write_wait_ns));
+	seq_printf(m, "dax_moved_unsealed %lld\n", atomic64_read(&dax->moved_unsealed));
 	seq_printf(m, "dax_evacuations %lld\ndax_evacuate_hold_ns %lld\ndax_evacuate_map_ns %lld\n",
 		   atomic64_read(&dax->evacuations), atomic64_read(&dax->evacuate_hold_ns),
 		   atomic64_read(&dax->evacuate_map_ns));
