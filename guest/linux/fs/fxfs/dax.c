@@ -3242,7 +3242,8 @@ static void fxfs_dax_verify_sealed(struct fxfs_dax *dax)
 	hash_for_each(dax->regions, bucket, region, node) {
 		if (count == ARRAY_SIZE(regions))
 			break;
-		if (!region->evacuate || region->writable || region->verified || !region->mapped)
+		/* Its `mapped`, under its own lock, which a sealed region's no MAP changes. */
+		if (!region->evacuate || region->writable || region->verified)
 			continue;
 		region->verified = true;
 		region->refs++;
@@ -3251,8 +3252,13 @@ static void fxfs_dax_verify_sealed(struct fxfs_dax *dax)
 	spin_unlock(&dax->regions_lock);
 	buf = kmalloc(PAGE_SIZE, GFP_NOFS);
 	for (i = 0; i < count; i++) {
+		unsigned long mapped;
+
 		region = regions[i];
-		for (page = 0; buf && page < READ_ONCE(region->mapped); page++) {
+		mutex_lock(&region->lock);
+		mapped = region->mapped;
+		mutex_unlock(&region->lock);
+		for (page = 0; buf && page < mapped; page++) {
 			struct fxfs_device_op op = {
 				.type = VIRTIO_EXTENT_T_READ, .branch = region->branch,
 				.sequence = region->sequence, .offset = (u64)page << PAGE_SHIFT,
