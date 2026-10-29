@@ -2049,9 +2049,9 @@ mod guest {
     /// staging extent's region maps it; another file's fsync seals, and the evacuation after it
     /// relocates the page to its range's own space, and lets go of the regions its range no longer
     /// uses (fxfs_dax_prune), held at its end (pause points); then msync writes the entry back,
-    /// flushing the page where the entry says. That region stays the range's for it (`stale`,
-    /// TASK-128): let go of, the window unmaps it, and the flush faults where the host maps
-    /// nothing, which stops the VM.
+    /// and the page holds what was stored, through the mapping and the file (TASK-128). The
+    /// region the entry says stays the range's (`stale`); this device's writeback flushes nothing
+    /// there (no write cache), so a prune that let go of it (the mutant prune_drops_stale) passes.
     fn test_stale_entry_flushed() {
         use std::os::unix::io::AsRawFd;
         const SIZE: usize = 1 << 20;

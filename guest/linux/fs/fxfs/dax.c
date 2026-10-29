@@ -1097,7 +1097,9 @@ static u64 fxfs_dax_renumbered(const unsigned long *used, u64 moved)
  * filled with thousands of them (TASK-91.10). Only while no other iomap uses the range, which
  * may use a page where it was; and keeping the regions where the kernel's mappings and DAX entries
  * of pages relocated may still say they are (`stale`), until the kernel replaces them
- * (fxfs_dax_cow): a DAX entry's writeback flushes the page where it says. fxdax: it kept every
+ * (fxfs_dax_cow), which lets go of the pages the entry says (dax_disassociate_entry): another
+ * file's, if the region's space were taken again, whose own entries then lost them. fxdax: it
+ * kept every
  * region while any page was relocated, which a page of a mapped file stays until it faults again:
  * five such files held 1700 regions, and the window had no room for a staging extent's (TASK-128).
  * With the file's DAX semaphore held for writing, and an iomap's use of the range.

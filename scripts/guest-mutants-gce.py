@@ -123,7 +123,9 @@ MUTANTS = [
     (
         "prune_drops_stale",
         "a prune lets go of the regions where the kernel's DAX entries of relocated pages say they "
-        "are, whose writeback then flushes window pages nothing maps (TASK-128)",
+        "are, whose pages the entries' replacement lets go of, another file's if their space was "
+        "taken again (TASK-128). Unkilled: the device has no write cache, so writeback flushes "
+        "nothing where an entry says, and the space's reuse is the allocator's to choose",
         [("\t\tif (range->stale[page] && test_bit(page, range->relocated))\n",
           "\t\tif (false)\n")],
     ),
