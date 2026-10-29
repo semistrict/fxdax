@@ -2952,7 +2952,9 @@ mod guest {
 
     /// fxdax: a file larger than a chunk, written whole by one write(2) and fsynced, then read
     /// through a mapping: each byte as written. The first load of such a file died of SIGBUS, its
-    /// fault failing with no error (TASK-121's pause check).
+    /// fault failing with no error (TASK-121's pause check). The read maps the first chunk with a
+    /// PMD, which the store after breaks up (TASK-123): a read that mapped none would leave
+    /// pmd_row_unrelocated unkilled, as the DAX gate found it (TASK-119.8).
     fn test_mapped_after_write() {
         const SIZE: usize = 4 << 20;
         let name = path("mapped-after-write");
@@ -2971,8 +2973,10 @@ mod guest {
             )
         };
         assert_ne!(map, libc::MAP_FAILED, "mmap: {}", std::io::Error::last_os_error());
+        let before = stats()["dax_huge_maps"];
         let bytes = unsafe { std::slice::from_raw_parts(map as *const u8, SIZE) };
         assert!(bytes == &data[..], "the file as mapped differs from what was written");
+        assert!(stats()["dax_huge_maps"] > before, "no fault mapped a PMD's 2 MiB: {:?}", stats());
         // A store to the second page moves it, which the first chunk's mapping, read in 2 MiB at
         // once, mapped in a row with the rest; then the chunk is read again, page by page.
         let mut data = data;

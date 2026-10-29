@@ -497,6 +497,8 @@ struct fxfs_dax {
 	atomic64_t maps[FXFS_DAX_WHYS], map_bytes[FXFS_DAX_WHYS];
 	/* fxdax: the writes that made room through a Fxfs transaction (TASK-92.28). */
 	atomic64_t map_writes;
+	/* fxdax: the faults whose iomap mapped a PMD's 2 MiB, its pages in a row (TASK-123). */
+	atomic64_t huge_maps;
 	/* Requested bytes of extent-result buffers, before allocator rounding. */
 	atomic64_t extent_alloc_bytes;
 	/*
@@ -2691,8 +2693,10 @@ static int fxfs_dax_iomap_read(struct inode *inode, loff_t pos, loff_t length, u
 		fxfs_dax_trace(FXFS_DAX_TRACE_READ, inode->i_ino, (start >> PAGE_SHIFT) + page, at, 0,
 			       length >> PAGE_SHIFT, test_bit(page, range->relocated));
 	/* fxdax: a PMD's, its pages in a row, which a page moving breaks up (TASK-123). */
-	if ((flags & IOMAP_FAULT) && length >= PMD_SIZE)
+	if ((flags & IOMAP_FAULT) && length >= PMD_SIZE) {
 		WRITE_ONCE(range->huge, true);
+		atomic64_inc(&dax->huge_maps);
+	}
 	/* A read's copy needs no mapping of the pages replaced. */
 	if (flags & IOMAP_FAULT)
 		fxfs_dax_cow(inode, range, page, end_page - page, flags, iomap, srcmap);
@@ -4167,6 +4171,7 @@ void fxfs_dax_show_stats(struct fxfs_dax *dax, struct seq_file *m)
 		   atomic_long_read(&dax->region_count), atomic_long_read(&dax->regions_pruned));
 	fxfs_dax_show_regions(dax, m);
 	seq_printf(m, "dax_map_writes %lld\n", atomic64_read(&dax->map_writes));
+	seq_printf(m, "dax_huge_maps %lld\n", atomic64_read(&dax->huge_maps));
 	seq_printf(m, "dax_extent_alloc_bytes %lld\n", atomic64_read(&dax->extent_alloc_bytes));
 	seq_printf(m, "dax_write_waits %lld\ndax_write_wait_ns %lld\n",
 		   atomic64_read(&dax->write_waits), atomic64_read(&dax->write_wait_ns));
