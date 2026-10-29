@@ -211,12 +211,15 @@ fn refused(what: &str, offset: u64, thread: u32) {
     }
 }
 
-/// fxdax: the name of this process's thread `thread`, as the kernel has it: whether a fault the
-/// window refused was a vCPU's, the guest's own access, or a device's, the VMM's on its behalf
-/// (TASK-44.12).
+/// fxdax: the name of thread `thread`, as the kernel has it: whether a fault the window refused was
+/// a vCPU's, the guest's own access, a device's, the VMM's on its behalf, or a kernel thread's, as
+/// KVM's asynchronous page faults are, a vCPU's access faulted in for it as its guest goes on
+/// (TASK-44.12): this process's threads, then any.
 fn thread_name(thread: u32) -> String {
-    std::fs::read_to_string(format!("/proc/self/task/{thread}/comm"))
-        .map_or_else(|err| format!("unknown: {err}"), |name| name.trim_end().to_owned())
+    [format!("/proc/self/task/{thread}/comm"), format!("/proc/{thread}/comm")]
+        .iter()
+        .find_map(|path| std::fs::read_to_string(path).ok())
+        .map_or_else(|| "gone".to_owned(), |name| name.trim_end().to_owned())
 }
 
 /// fxdax: logs a restriction of a page at window offset `offset` to reads, or its lifting, `what`,
