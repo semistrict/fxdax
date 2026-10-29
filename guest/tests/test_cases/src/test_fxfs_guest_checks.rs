@@ -2053,9 +2053,7 @@ mod guest {
     /// TASK-128): let go of, the window unmaps it, and the flush faults where the host maps
     /// nothing, which stops the VM.
     fn test_stale_entry_flushed() {
-        use std::os::unix::fs::FileExt;
         use std::os::unix::io::AsRawFd;
-        const PAGE: usize = 4096;
         const SIZE: usize = 1 << 20;
         let (name, other) = (path("stale-entry"), path("stale-entry-other"));
         fs::write(&name, vec![1; SIZE]).unwrap();
@@ -2076,11 +2074,12 @@ mod guest {
         let (pauses, only) = Pauses::begin_of(Pauses::PLACED, &name);
         // The store moves the page to the staging extent's region, its entry dirty.
         unsafe { std::ptr::write_volatile(map, 2) };
-        // Another file's fsync seals; the evacuation after it relocates the page, and prunes.
+        // Another file's fsync seals, of its creation alone: data of its own would move to the
+        // same staging extent, whose region its range would hold. The evacuation after the seal
+        // relocates the page, and prunes.
         let other_file =
             fs::OpenOptions::new().create(true).truncate(true).write(true).open(&other).unwrap();
-        other_file.write_all_at(&[3; PAGE], 0).unwrap();
-        other_file.sync_data().unwrap();
+        other_file.sync_all().unwrap();
         Pauses::wait(Pauses::PLACED);
         drop(pauses);
         drop(only);
