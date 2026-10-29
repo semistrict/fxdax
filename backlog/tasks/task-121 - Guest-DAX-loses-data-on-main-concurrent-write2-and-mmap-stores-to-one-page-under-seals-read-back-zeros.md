@@ -3,11 +3,11 @@ id: TASK-121
 title: >-
   Guest DAX loses data on main: concurrent write(2) and mmap stores to one page
   under seals read back zeros
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-28 19:44'
-updated_date: '2026-10-28 23:21'
+updated_date: '2026-10-29 03:22'
 labels:
   - bug
 dependencies: []
@@ -23,16 +23,16 @@ Found 2026-10-28 by the TASK-119 checks on test/119 (main 56126dc9e + test chang
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The cause is identified and recorded
-- [ ] #2 seal_race and torture pass 10 rounds each on checks-dax and checks-dax-delay with the fix
-- [ ] #3 A hand mutant reintroducing the cause is killed by those checks
+- [x] #1 The cause is identified and recorded
+- [x] #2 seal_race and torture pass 10 rounds each on checks-dax and checks-dax-delay with the fix
+- [x] #3 A hand mutant reintroducing the cause is killed by those checks
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Notes
@@ -43,4 +43,12 @@ Cause (2026-10-28, from host logs: every refused store's page shows a writable M
 Correction: the pgbench-dax 'stale balances' were the check's error, not data loss: pgbench empties pgbench_history as each run begins, so after run 2 the balances carry run 1's deltas too (fixed in 5c1bf4fd3: each run's change in the balances is checked against its history).
 
 Remaining loss found (cae97000a): ExtentStore::write checked an extent wasn't open with the open lock as an if-let temporary, dropped before the fall-through store.write. A writable MAP opening the extent between read the store without the write; the commit then wrote the VMO's zeros over it. Fxfs copies a moved page's surroundings (Kept::Around/All) to a new staging extent with device.write while restage maps the extent's region writably: the copy was lost, the moved block holding only what the move wrote. Found with dax_check_moves plus device reads (old block intact, Fxfs's tree agreeing with the window, new block zeros); a read-back after the copy hid it. Host test writes_racing_the_mapping_that_opens_their_extent_are_committed fails unfixed at extent 3 (zeros).
+
+Final: at c1792bac9, seal_race, torture, faults_writes_compaction, faults_unheld passed 10 rounds each on fxfs-guest-checks-dax (r208) and fxfs-guest-checks-dax-delay (r209). Hand mutant (ExtentStore::write's open lock released before the store write) killed in round 1 by torture, faults_writes_compaction and faults_unheld (bytes read as zeros), and by the host race suite (TASK-119.19).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Two causes. (1) Guest: a fault whose move a seal came between kept mapping the page where it was; fxfs_dax_map_moved maps the moved block before giving up the page (3098e9cca and before). (2) Host: ExtentStore::write checked an extent wasn't open, let go of the lock, then wrote the store; a writable MAP opening the extent between read the store without the write, and its commit wrote zeros over Fxfs's copy of a moved page's other bytes (cae97000a: the store write under the lock). Found with dax_check_moves' device reads (old block intact, Fxfs's tree agreeing with the window, new block zeros). Guarded by the host race suite (TASK-119.19), specs/extent-open (TASK-119.20), and the guest checks, which kill the mutant in one round. DoD #1: Linux (GCE) runs, not the macOS workspace.
+<!-- SECTION:FINAL_SUMMARY:END -->
