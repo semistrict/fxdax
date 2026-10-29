@@ -39,6 +39,8 @@ pub struct Vm {
     cpus: Vec<usize>,
     /// fxdax: the extent store whose Fxfs is the root filesystem, by its tag, if not an image.
     fxfs_root: Option<String>,
+    /// fxdax: a line of the guest agent's output at which the VM process is killed ([`Vm::kill_on`]).
+    kill_on: Option<String>,
 }
 
 /// The guest kernel's command line, before the guest's environment and the test's name: the
@@ -82,6 +84,7 @@ impl Vm {
             root_image: "rootfs.ext4".into(),
             cpus: Vec::new(),
             fxfs_root: None,
+            kill_on: None,
         })
     }
 
@@ -204,6 +207,13 @@ impl Vm {
         self.cpus = cpus.to_owned();
     }
 
+    /// fxdax: kills the VM process (SIGKILL) at once as `line` comes on its console, a line of the
+    /// guest agent's output, as a host's crash would end it, wherever its guest's writes and its
+    /// own requests were (TASK-119.6): [`Vm::enter`] returns as if it had exited of itself.
+    pub fn kill_on(&mut self, line: &str) {
+        self.kill_on = Some(line.to_owned());
+    }
+
     /// Sets `var`, `NAME=value`, in the guest agent's environment.
     pub fn env(&mut self, var: &CStr) {
         self.args.push(var.to_owned());
@@ -219,15 +229,20 @@ impl Vm {
     pub fn enter(self, root: &Path, test_case: &str) -> anyhow::Result<()> {
         let dir = root.parent().context("the root has no parent")?.to_owned();
         let cpus = self.cpus.clone();
+        let kill_on = self.kill_on.clone();
         let config = self.prepare(root, test_case)?;
         let config_path = dir.join("firecracker.json");
         std::fs::write(&config_path, serde_json::to_vec_pretty(&config)?)?;
         let mut args = vec!["--no-api".into(), "--config-file".into(), config_path.into()];
         args.extend(log_args(&dir.join("firecracker.log")));
         let console_path = dir.join("console.txt");
-        let status = spawn(&args, &console_path, &cpus)?.wait()?;
+        let mut child = spawn(&args, &console_path, &cpus)?;
+        let code = match kill_on {
+            Some(line) => kill_on_line(&mut child, &console_path, &line)?.map_or(0, exit_code),
+            None => exit_code(child.wait()?),
+        };
         split_console(std::fs::File::open(&console_path)?)?;
-        std::process::exit(status.code().unwrap_or(1));
+        std::process::exit(code);
     }
 
     /// A path for the API socket of the VM `name` of this process: in the temporary directory, as
@@ -485,6 +500,41 @@ fn log_args(log: &Path) -> Vec<std::ffi::OsString> {
 /// Starts fxdax's Firecracker with `args`, its console, its serial port, going to `console`, on
 /// the host's CPUs `cpus`, or any if none; in a jail, as production runs it, with
 /// FXDAX_FIRECRACKER_JAILER set ([`Jail`]).
+/// The exit code a VM process's exit `status` is said with.
+fn exit_code(status: std::process::ExitStatus) -> i32 {
+    status.code().unwrap_or(1)
+}
+
+/// fxdax: waits for the VM process `child` to exit, killing it (SIGKILL) at once if `line`, a line
+/// of the guest agent's output, comes on its console at `console` first ([`Vm::kill_on`]). Returns
+/// its exit status, if it exited of itself.
+fn kill_on_line(
+    child: &mut std::process::Child,
+    console: &Path,
+    line: &str,
+) -> anyhow::Result<Option<std::process::ExitStatus>> {
+    use std::io::Read;
+    let line = format!("{line}\n").into_bytes();
+    let mut file = std::fs::File::open(console)?;
+    let mut seen = Vec::new();
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(Some(status));
+        }
+        let from = seen.len().saturating_sub(line.len());
+        if file.read_to_end(&mut seen)? == 0 {
+            // Its console grows as the VM runs: looked at again soon.
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            continue;
+        }
+        if seen[from..].windows(line.len()).any(|window| window == line) {
+            child.kill()?;
+            child.wait()?;
+            return Ok(None);
+        }
+    }
+}
+
 fn spawn(
     args: &[std::ffi::OsString],
     console: &Path,

@@ -38,22 +38,25 @@ pub struct TestFxfsGuest {
     /// fxdax: the step of the DAX protocol (fxfs.dax_pause's bit) a crash test's VM stops with an
     /// evacuation held at, if any (TASK-119.16).
     crash_step: Option<u32>,
+    /// fxdax: whether a crash test's VM process is killed (SIGKILL), rather than its guest reset
+    /// (TASK-119.6).
+    killed: bool,
 }
 
 impl TestFxfsGuest {
     /// fxfs-guest.
     pub fn host_formats() -> Self {
-        Self { mode: Mode::HostFormats, dax: false, crash_step: None }
+        Self { mode: Mode::HostFormats, dax: false, crash_step: None, killed: false }
     }
 
     /// fxfs-guest-format.
     pub fn guest_formats() -> Self {
-        Self { mode: Mode::GuestFormats, dax: false, crash_step: None }
+        Self { mode: Mode::GuestFormats, dax: false, crash_step: None, killed: false }
     }
 
     /// fxfs-guest-crash.
     pub fn crash() -> Self {
-        Self { mode: Mode::Crash, dax: false, crash_step: None }
+        Self { mode: Mode::Crash, dax: false, crash_step: None, killed: false }
     }
 
     /// fxfs-guest-crash-dax-STEP: the crash test with DAX, its VM stopped with an evacuation of a
@@ -62,6 +65,13 @@ impl TestFxfsGuest {
     /// window; the store, which a crash leaves, must hold every fsync acknowledged as well.
     pub fn crash_at(step: u32) -> Self {
         Self { crash_step: Some(step), ..Self::crash().with_dax() }
+    }
+
+    /// fxdax: fxfs-guest-crash-dax-killed: the crash test with DAX, its VM process killed
+    /// (SIGKILL) where its guest would reset it, as a host's crash would end it, the extent
+    /// daemon serving the store on, its requests in flight cut off (TASK-119.6).
+    pub fn crash_killed() -> Self {
+        Self { killed: true, ..Self::crash().with_dax() }
     }
 
     /// The same test with a DAX window.
@@ -118,6 +128,10 @@ fn resized_size(generation: u32) -> usize {
 fn resized_byte(at: usize) -> u8 {
     (at % 251) as u8 + 1
 }
+
+/// fxdax: the line the killed crash test's guest says where it would reset its VM, at which the
+/// host kills the VM's process (TASK-119.6).
+const KILL_ME: &str = "kill me";
 
 /// The contents of MAPPED_SYNCED as synced.
 fn mapped_synced() -> Vec<u8> {
@@ -213,6 +227,9 @@ mod host {
                 });
                 eprintln!("{}: crash at {crash_ms} ms (FXDAX_CRASH_MS)", test_setup.test_case);
                 vm.env(&std::ffi::CString::new(format!("FXDAX_CRASH_MS={crash_ms}"))?);
+                if self.killed {
+                    vm.kill_on(KILL_ME);
+                }
             }
             vm.enter(&setup_rootfs(&test_setup)?, &test_setup.test_case)
         }
@@ -879,8 +896,9 @@ mod guest {
     }
 
     /// Stops the VM mid-workload: with two writers fsyncing, and without syncing (reboot(2)
-    /// doesn't); with an evacuation held at `step` of the DAX protocol, if asked.
-    fn crash(dax: bool, step: Option<u32>) -> ! {
+    /// doesn't); with an evacuation held at `step` of the DAX protocol, if asked; or, if `killed`,
+    /// has its host kill its process there ([`KILL_ME`]).
+    fn crash(dax: bool, step: Option<u32>, killed: bool) -> ! {
         assert_eq!(names(MNT), Vec::<String>::new());
         // Files map their data from the window, if there is one: small ones too.
         let (probe, small) = (format!("{MNT}/probe"), format!("{MNT}/small"));
@@ -907,7 +925,8 @@ mod guest {
             file.sync_all().unwrap();
             fs::File::open(MNT).unwrap().sync_all().unwrap();
         }
-        let stopper = Stopper::fork(step);
+        // fxdax: unless its process is to be killed, whose host the guest asks to (TASK-119.6).
+        let stopper = (!killed).then(|| Stopper::fork(step));
         std::thread::spawn(|| fsync_files(1));
         std::thread::spawn(|| fsync_files(2));
         std::thread::spawn(|| rewrite(0));
@@ -925,7 +944,15 @@ mod guest {
         } else {
             std::thread::sleep(std::time::Duration::from_millis(crash_ms));
         }
-        stopper.stop()
+        match stopper {
+            Some(stopper) => stopper.stop(),
+            None => {
+                report(KILL_ME);
+                loop {
+                    std::thread::park();
+                }
+            }
+        }
     }
 
     /// fxdax: what stops the crash test's VM, a process of its own, forked before the writers
@@ -1243,7 +1270,7 @@ mod guest {
             assert_eq!(mount("missing").unwrap_err().raw_os_error(), Some(libc::ENOENT));
             mount("extents").unwrap();
             if self.mode == Mode::Crash {
-                crash(self.dax, self.crash_step);
+                crash(self.dax, self.crash_step, self.killed);
             }
             let host_formats = self.mode == Mode::HostFormats;
             if host_formats {
