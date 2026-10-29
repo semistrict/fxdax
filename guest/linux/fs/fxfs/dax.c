@@ -497,6 +497,8 @@ struct fxfs_dax {
 	atomic64_t maps[FXFS_DAX_WHYS], map_bytes[FXFS_DAX_WHYS];
 	/* fxdax: the writes that made room through a Fxfs transaction (TASK-92.28). */
 	atomic64_t map_writes;
+	/* fxdax: the window's bytes kept from use as their UNMAP failed (TASK-44.22). */
+	atomic64_t lost_bytes;
 	/* fxdax: the faults whose iomap mapped a PMD's 2 MiB, its pages in a row (TASK-123). */
 	atomic64_t huge_maps;
 	/* Requested bytes of extent-result buffers, before allocator rounding. */
@@ -1573,6 +1575,24 @@ static void fxfs_dax_give_window(struct fxfs_dax *dax, u64 window_offset, unsign
 }
 
 /*
+ * fxdax: frees `pages` pages of the window at `window_offset`, which an UNMAP unmapped, unless it
+ * failed (`err`): the host may map them still, which the range or region given them next would
+ * read wherever it reads a page it hasn't mapped, as would a user's mapping the kernel didn't
+ * replace. They are kept from use for good, lost to the window (TASK-44.22).
+ */
+static void fxfs_dax_give_unmapped(struct fxfs_dax *dax, u64 window_offset, unsigned long pages,
+				   int err)
+{
+	if (!err) {
+		fxfs_dax_give_window(dax, window_offset, pages);
+		return;
+	}
+	pr_warn_ratelimited("fxfs: unmapping the DAX window at %llx failed: %d: its %lu pages kept from use\n",
+			    window_offset, err, pages);
+	atomic64_add((u64)pages << PAGE_SHIFT, &dax->lost_bytes);
+}
+
+/*
  * A new range of `pages` pages at `window_offset`, unmapped and on no list: of its own, or a slice
  * of `region`, whose slice it takes.
  */
@@ -1626,7 +1646,7 @@ static struct fxfs_dax_region *fxfs_dax_find_region(struct fxfs_dax *dax, u64 br
  */
 static void fxfs_dax_put_region(struct fxfs_dax *dax, struct fxfs_dax_region *region)
 {
-	int err;
+	int err = 0;
 
 	spin_lock(&dax->regions_lock);
 	if (--region->refs) {
@@ -1636,14 +1656,10 @@ static void fxfs_dax_put_region(struct fxfs_dax *dax, struct fxfs_dax_region *re
 	hash_del(&region->node);
 	list_del(&region->writable_list);
 	spin_unlock(&dax->regions_lock);
-	if (region->mapped) {
+	if (region->mapped)
 		err = fxfs_dax_device_unmap(dax, region->window_offset,
 					(u64)region->mapped << PAGE_SHIFT);
-		if (err)
-			pr_warn("fxfs: unmapping the DAX window at %llx failed: %d\n",
-				region->window_offset, err);
-	}
-	fxfs_dax_give_window(dax, region->window_offset, region->pages);
+	fxfs_dax_give_unmapped(dax, region->window_offset, region->pages, err);
 	kfree(region);
 	atomic_long_dec(&dax->region_count);
 	fxfs_dax_released(dax);
@@ -1668,9 +1684,10 @@ static void fxfs_dax_free_range_rcu(struct rcu_head *rcu)
 
 /*
  * Frees `range`, which nothing maps, and is in no file's ranges: its space in the window is free
- * again, or its slice, and the regions its pages moved to are its no more.
+ * again, unless its UNMAP failed with `unmap_err` (fxfs_dax_give_unmapped), or its slice, and the
+ * regions its pages moved to are its no more.
  */
-static void fxfs_dax_free_range(struct fxfs_dax *dax, struct fxfs_dax_range *range)
+static void fxfs_dax_free_range(struct fxfs_dax *dax, struct fxfs_dax_range *range, int unmap_err)
 {
 	unsigned int i;
 
@@ -1680,7 +1697,7 @@ static void fxfs_dax_free_range(struct fxfs_dax *dax, struct fxfs_dax_range *ran
 	if (range->region)
 		fxfs_dax_put_region(dax, range->region);
 	else
-		fxfs_dax_give_window(dax, range->window_offset, range->pages);
+		fxfs_dax_give_unmapped(dax, range->window_offset, range->pages, unmap_err);
 	for (i = 0; i < range->nr_regions; i++)
 		fxfs_dax_put_region(dax, range->regions[i]);
 	call_rcu(&range->rcu, fxfs_dax_free_range_rcu);
@@ -1694,19 +1711,15 @@ static void fxfs_dax_free_range(struct fxfs_dax *dax, struct fxfs_dax_range *ran
  */
 static void fxfs_dax_unmap_range(struct fxfs_dax *dax, struct fxfs_dax_range *range)
 {
-	int err;
+	int err = 0;
 
 	lockdep_assert_held_write(&range->file->sem);
 
 	xa_erase(&range->file->ranges, range->chunk);
-	if (!range->region && !bitmap_empty(range->mapped, range->pages)) {
+	if (!range->region && !bitmap_empty(range->mapped, range->pages))
 		err = fxfs_dax_device_unmap(dax, range->window_offset,
 					(u64)range->pages << PAGE_SHIFT);
-		if (err)
-			pr_warn("fxfs: unmapping the DAX window at %llx failed: %d\n",
-				range->window_offset, err);
-	}
-	fxfs_dax_free_range(dax, range);
+	fxfs_dax_free_range(dax, range, err);
 }
 
 /* Drops a reference to `file`, freeing it once it has none. */
@@ -2267,7 +2280,7 @@ static struct fxfs_dax_range *fxfs_dax_new_slice(struct fxfs_dax *dax, struct in
 	if (err) {
 		/* Its slice goes with it. */
 		region = NULL;
-		fxfs_dax_free_range(dax, range);
+		fxfs_dax_free_range(dax, range, 0);
 		goto out;
 	}
 	if (e.open && region->writable) {
@@ -2379,7 +2392,7 @@ static struct fxfs_dax_range *fxfs_dax_get_range(struct inode *inode, pgoff_t ch
 		return new;
 	err = fxfs_dax_down_write(file, fault);
 	if (err) {
-		fxfs_dax_free_range(dax, new);
+		fxfs_dax_free_range(dax, new, 0);
 		return ERR_PTR(err);
 	}
 	/* Another iomap may have mapped it meanwhile. */
@@ -2387,7 +2400,7 @@ static struct fxfs_dax_range *fxfs_dax_get_range(struct inode *inode, pgoff_t ch
 	if (range) {
 		atomic_inc(&range->users);
 		up_write(&file->sem);
-		fxfs_dax_free_range(dax, new);
+		fxfs_dax_free_range(dax, new, 0);
 		goto used;
 	}
 	new->file = file;
@@ -2402,7 +2415,7 @@ static struct fxfs_dax_range *fxfs_dax_get_range(struct inode *inode, pgoff_t ch
 		if (err)
 			fxfs_dax_unmap_range(dax, new);
 	} else {
-		fxfs_dax_free_range(dax, new);
+		fxfs_dax_free_range(dax, new, 0);
 	}
 	up_write(&file->sem);
 	if (err)
@@ -4208,6 +4221,7 @@ void fxfs_dax_show_stats(struct fxfs_dax *dax, struct seq_file *m)
 		   atomic_long_read(&dax->region_count), atomic_long_read(&dax->regions_pruned));
 	fxfs_dax_show_regions(dax, m);
 	seq_printf(m, "dax_map_writes %lld\n", atomic64_read(&dax->map_writes));
+	seq_printf(m, "window_lost_bytes %lld\n", atomic64_read(&dax->lost_bytes));
 	seq_printf(m, "dax_huge_maps %lld\n", atomic64_read(&dax->huge_maps));
 	seq_printf(m, "dax_extent_alloc_bytes %lld\n", atomic64_read(&dax->extent_alloc_bytes));
 	seq_printf(m, "dax_write_waits %lld\ndax_write_wait_ns %lld\n",
