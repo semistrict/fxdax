@@ -3543,14 +3543,41 @@ static void fxfs_dax_check_sealed(struct fxfs_dax *dax)
 }
 
 /*
+ * fxdax: the region whose extent page `where` ((sequence << 20) | page, as the shadow has it) the
+ * window maps at window page `page`, with a reference taken, which keeps it mapped there; or NULL,
+ * if no region maps it so, as a range's own space or a region gone do.
+ */
+static struct fxfs_dax_region *fxfs_dax_hold_shadowed(struct fxfs_dax *dax, unsigned long page,
+						      s64 where)
+{
+	struct fxfs_dax_region *region;
+	u64 at = (u64)page << PAGE_SHIFT;
+	unsigned long in_extent = where & ((1 << 20) - 1);
+
+	spin_lock(&dax->regions_lock);
+	region = fxfs_dax_find_region(dax, READ_ONCE(dax->shadow_branch), where >> 20);
+	if (region && region->window_offset + ((u64)in_extent << PAGE_SHIFT) == at &&
+	    in_extent < READ_ONCE(region->mapped))
+		region->refs++;
+	else
+		region = NULL;
+	spin_unlock(&dax->regions_lock);
+	return region;
+}
+
+/*
  * fxdax: with fxfs.dax_verify_seals and the shadow, as a seal begins, no store in progress: each
- * window page the guest mapped writably since the seal before, read through the window, as the
- * guest's stores reached it, is compared with its extent's page read from the device, what the
- * seal's commit is about to write, and where they differ logged (TASK-121).
+ * window page of a region the guest mapped writably since the seal before, read through the
+ * window, as the guest's stores reached it, is compared with its extent's page read from the
+ * device, what the seal's commit is about to write, and where they differ logged (TASK-121).
+ * fxdax: holding the region, which keeps it mapped: a restage's work unmapped a spare region the
+ * shadow had as writable, and the read of it, which the host refused, stopped the VM (TASK-119.21,
+ * GCE r236). A range's own space it can't hold, and leaves be.
  */
 static void fxfs_dax_verify_writable(struct fxfs_dax *dax)
 {
 	u64 seals = fxfs_device_seals(dax->dev), then;
+	struct fxfs_dax_region *region;
 	unsigned long page;
 	size_t at, differ;
 	void *entry, *buf, *window;
@@ -3570,6 +3597,9 @@ static void fxfs_dax_verify_writable(struct fxfs_dax *dax)
 		where = fxfs_dax_read_shadowed(dax, page, buf);
 		if (where < 0)
 			continue;
+		region = fxfs_dax_hold_shadowed(dax, page, where);
+		if (!region)
+			continue;
 		id = dax_read_lock();
 		window = fxfs_dax_window_page(dax, (u64)page << PAGE_SHIFT);
 		differ = window ? fxfs_dax_differ(window, buf, 0, 0, &at) : 0;
@@ -3580,6 +3610,7 @@ static void fxfs_dax_verify_writable(struct fxfs_dax *dax)
 			fxfs_dax_diagnosed();
 		}
 		dax_read_unlock(id);
+		fxfs_dax_put_region(dax, region);
 	}
 	kfree(buf);
 }
