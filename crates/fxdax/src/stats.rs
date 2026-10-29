@@ -102,6 +102,13 @@ pub struct Stats {
     pub commit_seal_supply_ns: u64,
     /// Of those, mapping the pages in the windows again.
     pub commit_seal_populate_ns: u64,
+    /// fxdax: of the maps of pages the windows made (`stage_maps`), the runs of pages consecutive in
+    /// the window and present together that they were made of: as many as the maps, a window maps
+    /// short runs as its pages are short of each other; fewer, as the pages are apart in physical
+    /// memory (TASK-131.1).
+    pub stage_segments: u64,
+    /// Of `stage_maps`, those of open extents' pages.
+    pub stage_maps_open: u64,
 }
 
 /// The counters, in the order of [`Stats`]' fields.
@@ -141,10 +148,12 @@ pub(crate) enum Counter {
     CommitSealRemapNs,
     CommitSealSupplyNs,
     CommitSealPopulateNs,
+    StageSegments,
+    StageMapsOpen,
 }
 
 /// The counters [`Counter`] names, which this module keeps.
-const COUNTED: usize = 34;
+const COUNTED: usize = 36;
 
 /// The counters a snapshot holds: those it keeps, and the extent store's.
 const COUNTERS: usize = COUNTED + 3;
@@ -208,6 +217,8 @@ pub fn stats() -> Stats {
         commit_seal_remap_ns: count(Counter::CommitSealRemapNs),
         commit_seal_supply_ns: count(Counter::CommitSealSupplyNs),
         commit_seal_populate_ns: count(Counter::CommitSealPopulateNs),
+        stage_segments: count(Counter::StageSegments),
+        stage_maps_open: count(Counter::StageMapsOpen),
     }
 }
 
@@ -252,6 +263,8 @@ impl Stats {
             self.commit_seal_remap_ns,
             self.commit_seal_supply_ns,
             self.commit_seal_populate_ns,
+            self.stage_segments,
+            self.stage_maps_open,
         ]
     }
 
@@ -296,6 +309,8 @@ impl Stats {
             commit_seal_remap_ns: word(34),
             commit_seal_supply_ns: word(35),
             commit_seal_populate_ns: word(36),
+            stage_segments: word(37),
+            stage_maps_open: word(38),
         }
     }
 
@@ -347,6 +362,8 @@ impl Stats {
             "commit-seal-remap-ns",
             "commit-seal-supply-ns",
             "commit-seal-populate-ns",
+            "stage-segments",
+            "stage-maps-open",
         ];
         std::array::from_fn(|at| (names[at], words[at]))
     }

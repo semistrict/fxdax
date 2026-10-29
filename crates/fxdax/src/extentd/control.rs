@@ -341,6 +341,9 @@ impl Extentd for Control {
             commit_seal_remap_ns: _,
             commit_seal_supply_ns: _,
             commit_seal_populate_ns: _,
+            // And the windows' runs of pages and open extents' maps (TASK-131.1).
+            stage_segments: _,
+            stage_maps_open: _,
         } = crate::stats::stats();
         use extent_remote::store::{Request, Upload};
         let bucket = stores::remote_bucket().map_err(status)?.stats();
@@ -622,6 +625,8 @@ impl Client {
             commit_seal_remap_ns: 0,
             commit_seal_supply_ns: 0,
             commit_seal_populate_ns: 0,
+            stage_segments: 0,
+            stage_maps_open: 0,
         })
     }
 

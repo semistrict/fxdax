@@ -231,6 +231,11 @@ pub(crate) trait Source: Send + Sync {
 
     /// `window` maps it no more.
     fn unmapped(&self, _window: &Window) {}
+
+    /// fxdax: whether it is an open extent's pages, for the windows' stats (`stage_maps_open`).
+    fn is_open(&self) -> bool {
+        false
+    }
 }
 
 /// The identity of `source`, the same for each of its handles: what a window finds the mappings of
@@ -668,14 +673,16 @@ impl Window {
     fn install(&self, state: &mut WindowState, start: u64, end: u64) {
         let ps = page_size();
         let staged = self.stage().is_some();
-        // The pages to map, in order: their offsets, where they are, and their protections.
-        let mut pages: Vec<(u64, PhysLocation, Protection)> = Vec::new();
+        // The pages to map, in order: their offsets, where they are, their protections, and
+        // whether they are an open extent's.
+        let mut pages: Vec<(u64, PhysLocation, Protection, bool)> = Vec::new();
         for mapping_start in state.overlapping(start, end) {
             let mapping = &state.mappings[&mapping_start];
             let (from, to) = (start.max(mapping_start), end.min(mapping.end));
             let first = mapping.page + (from - mapping_start) / ps;
             let protection =
                 if mapping.writable { Protection::ReadWrite } else { Protection::Read };
+            let open = mapping.source.is_open();
             let ptes = &state.ptes;
             let mut found = Vec::new();
             mapping.source.each_present(first..first + (to - from) / ps, &mut |page, frame| {
@@ -692,11 +699,18 @@ impl Window {
             });
             for (offset, pte) in found {
                 state.insert_pte(offset, pte);
-                pages.push((offset, pte.location, protection));
+                pages.push((offset, pte.location, protection, open));
             }
         }
+        // fxdax: the runs of pages consecutive in the window, which the maps below are made of
+        // (`stage_segments`, TASK-131.1).
+        let segments = 1 + pages.windows(2).filter(|pair| pair[0].0 + ps != pair[1].0).count();
+        if self.stage().is_some() && !pages.is_empty() {
+            crate::stats::add(crate::stats::Counter::StageSegments, segments as u64);
+        }
         let mut run: Option<(u64, PhysLocation, u64, Protection)> = None;
-        for (offset, location, protection) in pages {
+        let mut open_runs = 0;
+        for (offset, location, protection, open) in pages {
             match &mut run {
                 Some((at, first, len, prot))
                     if *at + *len == offset
@@ -707,6 +721,7 @@ impl Window {
                     *len += ps;
                 }
                 _ => {
+                    open_runs += u64::from(open);
                     if let Some((at, first, len, prot)) =
                         run.replace((offset, location, ps, protection))
                     {
@@ -717,6 +732,9 @@ impl Window {
         }
         if let Some((at, first, len, prot)) = run {
             self.map_run(at, first, len, prot);
+        }
+        if self.stage().is_some() {
+            crate::stats::add(crate::stats::Counter::StageMapsOpen, open_runs);
         }
     }
 

@@ -908,6 +908,10 @@ impl Source for OpenPages {
     fn bring_in(self: Arc<Self>, page: u64) -> BoxFuture<'static, Result<bool>> {
         Box::pin(std::future::ready(self.commit(page..page + 1).map(|()| false)))
     }
+
+    fn is_open(&self) -> bool {
+        true
+    }
 }
 
 /// Zeros, which windows map read-only where nothing else is to be read: one page of them, of the
