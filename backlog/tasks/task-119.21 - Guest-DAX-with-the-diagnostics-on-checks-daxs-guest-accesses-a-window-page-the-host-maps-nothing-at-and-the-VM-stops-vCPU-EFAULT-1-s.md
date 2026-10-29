@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-29 13:35'
-updated_date: '2026-10-29 15:03'
+updated_date: '2026-10-29 15:10'
 labels:
   - dax
   - bug
@@ -24,7 +24,7 @@ GCE r228c (main 7b146e0b5, kernel built), fxfs-guest-checks-dax with FXDAX_GUEST
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Which diagnostic's run reproduces it is known, and the access's window offset traced (fxfs.dax_trace) to the guest's mapping of it
+- [x] #1 Which diagnostic's run reproduces it is known, and the access's window offset traced (fxfs.dax_trace) to the guest's mapping of it
 - [ ] #2 Fixed, or shown a diagnostic's own fault; checks-dax with every diagnostic on passes on GCE
 <!-- AC:END -->
 
@@ -43,4 +43,6 @@ GCE r229 (each diagnostic alone, checks-dax, 1 round): check_moves and check_sea
 401bbf9e6 (main): verify_seals no longer reads sealed staging regions after the seal (verify_sealed removed), only pages written since the last seal as a seal begins (verify_writable). GCE r232, checks-dax with all four diagnostics on: still stopped in round 1 of 2, after stats, in log_writes: 'an access to a page the window maps nothing at, at offset 0x10671000', the vCPU failing a second later. Before it, a store at 0x10341000 refused 9 times in 3 s: the same offset in every run with dax_check_moves on (r228c, r228m, r229-check_moves, which passed, r232), in none without: check_moves (fxfs_set_check_kept, Rust's kept-range checks) changes what the guest does there. Next: the four diagnostics in pairs, to find which pair stops the VM; fxfs.dax_trace for 0x10671000's history.
 
 GCE r235 (main 98c82281b), checks-dax with pairs (r234's pairs were malformed, a zsh loop): check_moves+shadow and shadow+check_seals passed (516 and 186 refusals, many 'maps nothing at', which resolved); shadow+verify_seals stopped the VM after stats, in log_writes: 'an access to a page the window maps nothing at, at offset 0x10802000', the vCPU failing a second later. So fxfs_dax_verify_writable, as a seal begins, reads a page the shadow says the guest mapped writably since the last seal while the host maps nothing there: the shadow stale (an unmapping it doesn't record), or the host's unmapping one the guest still takes as mapped. Next: which, by fxfs.dax_trace of the offset.
+
+GCE r236 (main with extentd describing accesses to nothing mapped): shadow+verify_seals stopped the VM again: 'an access to nothing mapped at DAX window offset 0x10412000': the host's history shows window 0x10411000-0x10421000 (a spare staging region, 64 KiB) mapped writably for each new staging extent and unmapped within milliseconds, over and over, the last UNMAP 364 us before the access. So verify_writable (as a seal begins) read a page the shadow had as writable while the restage work, which the gate doesn't stop, unmapped it: the diagnostic's race, not the DAX code's. Fix in w1126: it holds the region (a reference, which keeps it mapped) while it reads; own-space pages, which it can't hold, it skips. GCE r237: checks-dax with all four diagnostics, 2 rounds, pending.
 <!-- SECTION:NOTES:END -->
