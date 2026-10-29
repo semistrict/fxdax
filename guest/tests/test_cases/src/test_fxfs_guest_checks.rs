@@ -21,7 +21,8 @@ pub struct TestFxfsGuestChecks {
     /// Whether the device has a DAX window, and the guest maps files into it.
     pub dax: bool,
     /// fxdax: whether the guest's DAX code sleeps at the steps of its protocol where tasks race
-    /// (fxfs.dax_delay_us), from the run's seed, widening the races' windows (TASK-119.3).
+    /// (fxfs.dax_delay_us), from the run's seed, widening the races' windows (TASK-119.3), and
+    /// checks where evacuations place pages (fxfs.dax_check_places, TASK-119.10).
     #[cfg_attr(feature = "guest", allow(dead_code))]
     pub delay: bool,
     /// fxdax: whether the DAX window is small, 32 MiB, as the checks' files fill it: regions run
@@ -147,6 +148,8 @@ mod host {
             vm.env(&std::ffi::CString::new(format!("FXDAX_RANDOM_OPS_SEED={seed}"))?);
             if self.delay {
                 vm.module_param(c"fxfs.dax_delay_us=200");
+                // fxdax: evacuated pages placed where Fxfs holds them (TASK-119.10).
+                vm.module_param(c"fxfs.dax_check_places=1");
                 vm.module_param(&std::ffi::CString::new(format!("fxfs.dax_delay_seed={seed}"))?);
             }
             vm.enter(&setup_rootfs(&test_setup)?, &test_setup.test_case)

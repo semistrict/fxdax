@@ -111,6 +111,19 @@ MUTANTS = [
         [("\tif (READ_ONCE(range->huge)) {\n",
           "\tif (READ_ONCE(range->huge) && false) {\n")],
     ),
+    (
+        "evacuation_maps_elsewhere",
+        "an evacuation maps each run from the page after its own in its region, which "
+        "fxfs.dax_check_places finds Fxfs holds them not (TASK-119.10)",
+        [("\t\t\t\t\t.offset = (moved & U32_MAX) << PAGE_SHIFT,\n",
+          "\t\t\t\t\t.offset = ((moved & U32_MAX) + 1) << PAGE_SHIFT,\n")],
+    ),
+    (
+        "prune_misnumbers",
+        "a prune renumbers its pages' regions one past those it kept, which a moved page's region's "
+        "index then is none of (TASK-119.10)",
+        [("(moved >> 32) - 1) + 1) << 32) |", "(moved >> 32) - 1) + 2) << 32) |")],
+    ),
 ]
 
 SUITES = "fxfs-guest-dax fxfs-guest-checks-dax fxfs-guest-checks-dax-delay fxfs-guest-pgbench-dax"

@@ -196,6 +196,14 @@ static const struct kernel_param_ops fxfs_dax_check_moves_ops = {
 module_param_cb(dax_check_moves, &fxfs_dax_check_moves_ops, &fxfs_dax_check_moves, 0644);
 MODULE_PARM_DESC(dax_check_moves, "WARN of a page moved holding other data (diagnostic)");
 /*
+ * fxdax: diagnostic (TASK-119.10): as an evacuation places its runs in their ranges' own space,
+ * asks Fxfs where each run's pages are, and WARNs unless it is where the evacuation's MAP mapped
+ * them from: the window would map other blocks than the file's there.
+ */
+static bool fxfs_dax_check_places;
+module_param_named(dax_check_places, fxfs_dax_check_places, bool, 0644);
+MODULE_PARM_DESC(dax_check_places, "WARN of evacuated pages placed where Fxfs holds them not (diagnostic)");
+/*
  * fxdax: diagnostic (TASK-121): after each seal, the regions of staging extents it sealed are read
  * through the window and from the device, what their commit wrote, and where they differ logged:
  * stores the window took that the extent doesn't hold.
@@ -642,6 +650,28 @@ static size_t fxfs_dax_differ(const u8 *a, const u8 *b, size_t skip, size_t len,
 	return differ;
 }
 
+/*
+ * fxdax: the index in `range`'s regions of the region a page whose `moved` entry is `moved` moved
+ * to: WARNs if it is none of them, which would read, or in fxfs_dax_prune set, past them
+ * (TASK-119.10).
+ */
+static unsigned int fxfs_dax_moved_index(const struct fxfs_dax_range *range, u64 moved)
+{
+	unsigned int index = (moved >> 32) - 1;
+
+	WARN(index >= range->nr_regions,
+	     "fxfs: ino %llu chunk %lu: a page moved to region %u of the range's %u\n",
+	     range->file ? range->file->ino : 0, range->chunk, index, range->nr_regions);
+	return index;
+}
+
+/* fxdax: the region a page of `range` whose `moved` entry is `moved` moved to. */
+static struct fxfs_dax_region *fxfs_dax_moved_region(const struct fxfs_dax_range *range,
+						     u64 moved)
+{
+	return range->regions[fxfs_dax_moved_index(range, moved)];
+}
+
 static u64 fxfs_dax_page_offset(const struct fxfs_dax_range *range, unsigned long page);
 
 /*
@@ -676,7 +706,8 @@ static void fxfs_dax_shadow_check(struct fxfs_dax *dax, struct fxfs_dax_range *r
 		     "moved to region" : "in its own space at",
 		     range->region ? range->region->window_offset :
 		     range->moved && range->moved[i] ?
-		     range->regions[(range->moved[i] >> 32) - 1]->window_offset : range->window_offset);
+		     fxfs_dax_moved_region(range, range->moved[i])->window_offset :
+		     range->window_offset);
 	}
 }
 static const struct address_space_operations fxfs_dax_aops;
@@ -778,7 +809,8 @@ static u64 fxfs_dax_page_offset(const struct fxfs_dax_range *range, unsigned lon
 
 	if (!moved)
 		return range->window_offset + ((u64)page << PAGE_SHIFT);
-	return range->regions[(moved >> 32) - 1]->window_offset + ((moved & U32_MAX) << PAGE_SHIFT);
+	return fxfs_dax_moved_region(range, moved)->window_offset +
+	       ((moved & U32_MAX) << PAGE_SHIFT);
 }
 
 /*
@@ -1022,7 +1054,7 @@ static void fxfs_dax_prune(struct fxfs_dax *dax, struct fxfs_dax_range *range)
 		return;
 	for (page = 0; page < range->pages; page++) {
 		if (range->moved[page])
-			__set_bit((range->moved[page] >> 32) - 1, used);
+			__set_bit(fxfs_dax_moved_index(range, range->moved[page]), used);
 	}
 	if (bitmap_full(used, nr)) {
 		bitmap_free(used);
@@ -3679,7 +3711,7 @@ static void fxfs_dax_evacuee_gather(struct fxfs_dax_file *file, struct fxfs_dax_
 			moved = range->moved[page];
 			if (!moved)
 				continue;
-			region = range->regions[(moved >> 32) - 1];
+			region = fxfs_dax_moved_region(range, moved);
 			if (!READ_ONCE(region->evacuate))
 				continue;
 			while (end < range->pages && range->moved[end] == moved + (end - page))
@@ -3737,6 +3769,53 @@ static void fxfs_dax_evacuee_map(struct fxfs_dax *dax, struct fxfs_dax_file *fil
 }
 
 /*
+ * fxdax: whether `run` of `file` is to be placed in its range's own space: mapped there, and its
+ * pages where it was gathered, which no write moved meanwhile, and no other iomap using its range,
+ * which may use a page where it was. With the file's semaphore held for writing.
+ */
+static bool fxfs_dax_evacuee_placeable(struct fxfs_dax_file *file,
+				       const struct fxfs_dax_evacuee *run)
+{
+	unsigned long i;
+
+	if (run->file != file || !run->mapped || atomic_read(&run->range->users) != 1)
+		return false;
+	for (i = 0; i < run->pages; i++) {
+		if (run->range->moved[run->page + i] != run->moved + i)
+			return false;
+	}
+	return true;
+}
+
+/*
+ * fxdax: for fxfs.dax_check_places, WARNs unless Fxfs holds `run`'s pages, of `file`, where the
+ * evacuation's MAP `map` mapped them from into their range's own space, as it places them there
+ * (TASK-119.10). With the file's semaphore held for writing: no write moves them meanwhile.
+ */
+static void fxfs_dax_check_placed(struct fxfs_dax *dax, struct fxfs_dax_file *file,
+				  const struct fxfs_dax_evacuee *run,
+				  const struct fxfs_device_map *map)
+{
+	u64 pos = fxfs_dax_chunk_start(run->range) + ((u64)run->page << PAGE_SHIFT), done = 0;
+	struct fxfs_dax_extent e;
+	ssize_t count;
+
+	while (done < map->len) {
+		count = fxfs_nofs(fxfs_dax_extents(dax->fs, file->ino, pos + done, map->len - done,
+						   &e, 1));
+		if (WARN(count <= 0 || e.offset != pos + done || e.branch != map->branch ||
+			 e.sequence != map->sequence || e.extent_offset != map->offset + done,
+			 "fxfs: ino %llu: evacuated %llu bytes at %llu from extent %llx:%llu at %llu, but Fxfs holds those at %llu %s %llx:%llu at %llu (%zd)\n",
+			 file->ino, map->len - done, pos + done, map->branch, map->sequence,
+			 map->offset + done, count > 0 ? e.offset : 0,
+			 count > 0 ? "in extent" : "nowhere:", count > 0 ? e.branch : 0,
+			 count > 0 ? e.sequence : 0, count > 0 ? e.extent_offset : 0, count))
+			return;
+		done += min(e.len, map->len - done);
+	}
+}
+
+/*
  * fxdax: has `file`'s runs in `ev` that were mapped in their ranges' own space be there, unless a
  * write moved them meanwhile, or another iomap uses their range, which may use a page where it
  * was; and lets go of the ranges, and of the regions they emptied (fxfs_dax_prune). Pages nothing
@@ -3748,20 +3827,18 @@ static void fxfs_dax_evacuee_place(struct fxfs_dax *dax, struct fxfs_dax_file *f
 {
 	struct fxfs_dax_evacuee *run;
 	pgoff_t index;
-	unsigned long i;
-	bool moved;
 	size_t r;
 
 	lockdep_assert_held_write(&file->sem);
+	/* Fxfs asked without the files lock, which its paths take. */
+	for (r = 0; READ_ONCE(fxfs_dax_check_places) && r < ev->count; r++) {
+		if (fxfs_dax_evacuee_placeable(file, &ev->runs[r]))
+			fxfs_dax_check_placed(dax, file, &ev->runs[r], &ev->maps[r]);
+	}
 	mutex_lock(&dax->files_lock);
 	for (r = 0; r < ev->count; r++) {
 		run = &ev->runs[r];
-		if (run->file != file || !run->mapped || atomic_read(&run->range->users) != 1)
-			continue;
-		moved = true;
-		for (i = 0; i < run->pages; i++)
-			moved &= run->range->moved[run->page + i] == run->moved + i;
-		if (!moved)
+		if (!fxfs_dax_evacuee_placeable(file, run))
 			continue;
 		fxfs_dax_relocate(run->range, run->page, run->pages, NULL, 0);
 		index = (fxfs_dax_chunk_start(run->range) >> PAGE_SHIFT) + run->page;
