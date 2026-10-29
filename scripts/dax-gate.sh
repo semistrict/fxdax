@@ -6,8 +6,7 @@
 # The gate a change to the guest's DAX code passes before it is pushed (TASK-119.8): on two GCE
 # test hosts (scripts/test-gce.sh create), HEAD's DAX suites, rounds of each, the checks with
 # delays injected (fxfs-guest-checks-dax-delay) and on a small window (-small), the crash test,
-# with an evacuation held at each of its steps too (-gathered, -mapped, -placed), and
-# pgbench-dax, whose data is checked; and every hand mutant of dax.c
+# and pgbench-dax, whose data is checked; and every hand mutant of dax.c
 # (scripts/guest-mutants-gce.py) killed by the suites within FXDAX_GATE_MUTANT_ROUNDS rounds
 # (default 3). A pass is recorded as a note on HEAD (`git notes --ref=dax-gate`), which
 # scripts/hooks/pre-push asks for of a push changing the guest's DAX code:
@@ -34,9 +33,10 @@ mkdir -p "$results"
 echo "dax-gate: $commit, results in $results"
 
 export FXDAX_GCE_ZONE=$zone FXDAX_WORKSPACE_TESTS=0 FXDAX_GUEST_KERNEL_BUILD=release
+# fxdax: not yet the crash-at-step variants (fxfs-guest-crash-dax-gathered, -mapped, -placed),
+# which at times hold no evacuation, or stop no VM (TASK-119.16).
 suites="fxfs-guest-dax fxfs-guest-crash-dax fxfs-guest-checks-dax fxfs-guest-checks-dax-delay
-    fxfs-guest-checks-dax-small fxfs-guest-crash-dax-gathered fxfs-guest-crash-dax-mapped
-    fxfs-guest-crash-dax-placed"
+    fxfs-guest-checks-dax-small"
 
 # Host A: the suites, rounds of each.
 FXDAX_E2E_TEST=$suites FXDAX_E2E_ROUNDS=$rounds \

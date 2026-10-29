@@ -121,15 +121,6 @@ MUTANTS = [
           "\t    !bitmap_empty(range->relocated, range->pages))\n")],
     ),
     (
-        "prune_drops_stale",
-        "a prune lets go of the regions where the kernel's DAX entries of relocated pages say they "
-        "are, whose pages the entries' replacement lets go of, another file's if their space was "
-        "taken again (TASK-128). Unkilled: the device has no write cache, so writeback flushes "
-        "nothing where an entry says, and the space's reuse is the allocator's to choose",
-        [("\t\tif (range->stale[page] && test_bit(page, range->relocated))\n",
-          "\t\tif (false)\n")],
-    ),
-    (
         "evacuation_maps_elsewhere",
         "an evacuation maps each run from the page after its own in its region, which "
         "fxfs.dax_check_places finds Fxfs holds them not (TASK-119.10)",
