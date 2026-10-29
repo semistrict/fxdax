@@ -6,7 +6,7 @@ title: >-
 status: In Progress
 assignee: []
 created_date: '2026-10-29 21:33'
-updated_date: '2026-10-29 22:04'
+updated_date: '2026-10-29 22:26'
 labels:
   - dax
   - bug
@@ -39,4 +39,6 @@ GCE r269 (fxfs-guest-faults-dax, the debug kernel failing the writers' kernel al
 
 <!-- SECTION:NOTES:BEGIN -->
 2026-10-29: fxfs_device_unmap allocates its request with __GFP_NOFAIL (failslab skips those), and fxfs_dax_give_unmapped keeps the window space of an UNMAP that fails anyway from use, counted in window_lost_bytes; fxfs-guest-faults-dax asserts window_lost_bytes 0. GCE r255 (debug kernel) round 1: faults-dax's writer panicked writing make-it-fail=0 (ENOMEM: the write allocates), now retried; checks-dax failed on KCSAN, fxfs_dax_cow's unlocked find_next_bit against readers' test_and_clear_bit, benign (a hint; only readers clear), marked data_race. Rerunning (r255-unmap3).
+
+GCE r255 (debug kernel) at 7c9948612: fxfs-guest-faults-dax 3 rounds passed (window_lost_bytes 0 asserted), fxfs-guest-checks-dax 3 rounds passed (after marking fxfs_dax_cow's and fxfs_dax_grow_ahead's KCSAN races).
 <!-- SECTION:NOTES:END -->
