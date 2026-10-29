@@ -1054,7 +1054,7 @@ impl Connection {
                 let offset = args[0];
                 log::warn!(
                     "extentd: {what} at DAX window offset {offset:#x} refused ({count} so far): {}",
-                    store.describe_window_offset(offset - offset % crate::pages::page_size())
+                    store.refused(offset - offset % crate::pages::page_size(), what)
                 );
             }
         }

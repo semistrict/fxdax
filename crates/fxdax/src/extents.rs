@@ -209,7 +209,7 @@ pub struct ExtentStore {
     /// meanwhile (TASK-34).
     committed: event_listener::Event,
     /// fxdax: the window's latest changes, which a refused fault's log tells of the page it was
-    /// on ([`ExtentStore::describe_window_offset`], TASK-44.12).
+    /// on ([`ExtentStore::refused`], TASK-44.12).
     changes: Mutex<WindowChanges>,
     /// fxdax: with FXDAX_CHECK_SEALED_READS, what the latest commits wrote of the extents they
     /// sealed: a read of one that the store answers otherwise is logged (TASK-121).
@@ -227,6 +227,19 @@ fn check_sealed_reads() -> bool {
 #[derive(Default)]
 struct WindowChanges {
     changes: std::collections::VecDeque<WindowChange>,
+    /// fxdax: the pages whose accesses the window refused, until a change of the window covers
+    /// them, which is logged then, with what it did: a guest's store a seal refused, which a later
+    /// MAP lets through, may land in another extent than the one it was to (TASK-44.12).
+    refused: Vec<Refused>,
+}
+
+/// A page whose access the window refused ([`WindowChanges::refused`]): when, and what the window
+/// mapped there then.
+struct Refused {
+    at: std::time::Instant,
+    window_offset: u64,
+    what: String,
+    mapped: String,
 }
 
 /// One of a window's changes: `len` bytes at `window_offset`, mapped or unmapped, when.
@@ -253,17 +266,63 @@ enum Change {
     Unmap,
 }
 
+impl Change {
+    /// What the change did, said for a log.
+    fn describe(&self) -> String {
+        match self {
+            Change::Map { extent, offset, writable, result } => {
+                let how = if *writable { "writably" } else { "read-only" };
+                format!("MAP of {extent:?} from {offset:#x}, {how}, {result:?}")
+            }
+            Change::Zeros => "MAP of zeros".into(),
+            Change::Freed => "zeros in place of a freed extent's".into(),
+            Change::Unmap => "UNMAP".into(),
+        }
+    }
+}
+
 impl WindowChanges {
     /// fxdax: enough that a refused store's page's history reaches back past the many MAPs of a
     /// guest sealing every millisecond, to the change that made it read-only (TASK-121).
     const MOST: usize = 1 << 16;
+
+    /// The most refused pages awaiting a change ([`WindowChanges::refused`]): the oldest go first.
+    const MOST_REFUSED: usize = 1024;
 
     fn record(&mut self, window_offset: u64, len: u64, change: Change) {
         if self.changes.len() == Self::MOST {
             self.changes.pop_front();
         }
         let at = std::time::Instant::now();
+        if !self.refused.is_empty() {
+            let range = window_offset..window_offset + len;
+            self.refused.retain(|refused| {
+                if !range.contains(&refused.window_offset) {
+                    return true;
+                }
+                log::warn!(
+                    "extentd: {} refused at DAX window offset {:#x}, {:?} ago, mapping {}, \
+                     met: {}, {len:#x} bytes from {window_offset:#x}",
+                    refused.what,
+                    refused.window_offset,
+                    at.duration_since(refused.at),
+                    refused.mapped,
+                    change.describe(),
+                );
+                false
+            });
+        }
         self.changes.push_back(WindowChange { at, window_offset, len, change });
+    }
+
+    /// Notes the page at `window_offset` refused `what`, the window mapping `mapped` there: the
+    /// next change covering it is logged.
+    fn refuse(&mut self, window_offset: u64, what: &str, mapped: String) {
+        if self.refused.len() == Self::MOST_REFUSED {
+            self.refused.remove(0);
+        }
+        let at = std::time::Instant::now();
+        self.refused.push(Refused { at, window_offset, what: what.to_owned(), mapped });
     }
 
     /// The changes of the page at `window_offset`, oldest first, with how long ago each was.
@@ -276,16 +335,7 @@ impl WindowChanges {
             .map(|change| {
                 let (at, len, ago) =
                     (change.window_offset, change.len, now.duration_since(change.at));
-                let what = match &change.change {
-                    Change::Map { extent, offset, writable, result } => {
-                        let how = if *writable { "writably" } else { "read-only" };
-                        format!("MAP of {extent:?} from {offset:#x}, {how}, {result:?}")
-                    }
-                    Change::Zeros => "MAP of zeros".into(),
-                    Change::Freed => "zeros in place of a freed extent's".into(),
-                    Change::Unmap => "UNMAP".into(),
-                };
-                format!("{what}, {len:#x} bytes from {at:#x}, {ago:?} ago")
+                format!("{}, {len:#x} bytes from {at:#x}, {ago:?} ago", change.change.describe())
             })
             .collect()
     }
@@ -1552,22 +1602,30 @@ impl ExtentStore {
             .collect()
     }
 
+    /// fxdax: notes the page at `window_offset` refused `what` (a guest's access), and returns
+    /// what the window maps there, the extent's state here and in the store, and the page's
+    /// latest changes, said for a log: why the access was refused (TASK-99). The next change of
+    /// the window covering the page is logged too, with what it did, which the refusal met
+    /// (TASK-44.12).
+    pub fn refused(&self, window_offset: u64, what: &str) -> String {
+        let mapped = self.describe_mapping(window_offset);
+        let mut changes = self.changes.lock().unwrap();
+        let history = changes.of(window_offset);
+        changes.refuse(window_offset, what, mapped.clone());
+        format!("{mapped}; the page's latest MAPs and UNMAPs: {history:#?}")
+    }
+
     /// fxdax: what the window maps at `window_offset`, and the extent's state here and in the
-    /// store, said for a log: why a store there was refused (TASK-99).
-    pub fn describe_window_offset(&self, window_offset: u64) -> String {
+    /// store, said for a log.
+    fn describe_mapping(&self, window_offset: u64) -> String {
         let mapping = self.window_mappings().into_iter().find(|mapping| {
             (mapping.window_offset..mapping.window_offset + mapping.len).contains(&window_offset)
         });
         let Some(mapping) = mapping else {
-            let history = self.changes.lock().unwrap().of(window_offset);
-            return format!("nothing mapped; the page's latest MAPs and UNMAPs: {history:#?}");
+            return "nothing mapped".into();
         };
         let MappingContents::Extent { extent, offset, writable } = mapping.contents else {
-            let history = self.changes.lock().unwrap().of(window_offset);
-            return format!(
-                "zeros, {:#x} bytes from {:#x}; the page's latest MAPs and UNMAPs: {history:#?}",
-                mapping.len, mapping.window_offset
-            );
+            return format!("zeros, {:#x} bytes from {:#x}", mapping.len, mapping.window_offset);
         };
         let open_here = self.open.lock().unwrap().contains_key(&extent);
         let stored = self.store.extent(extent.into()).map(|stored| {
@@ -1575,10 +1633,9 @@ impl ExtentStore {
                 format!("{len:#x} bytes, {}", if open { "open" } else { "sealed" })
             })
         });
-        let history = self.changes.lock().unwrap().of(window_offset);
         format!(
             "{extent:?} from {offset:#x}, {:#x} bytes from {:#x}, {}; {} in the window; in the \
-             store: {stored:?}; the page's latest MAPs and UNMAPs: {history:#?}",
+             store: {stored:?}",
             mapping.len,
             mapping.window_offset,
             if writable { "writable" } else { "read-only" },
@@ -1745,6 +1802,24 @@ mod tests {
     use futures::executor::block_on;
 
     const BLOCK: usize = ExtentStore::BLOCK_SIZE as usize;
+
+    /// TASK-44.12: a page refused waits for the next change of the window covering it, which
+    /// meets it (and is logged), whatever the changes of other pages meanwhile.
+    #[test]
+    fn refused_pages_meet_the_next_change_covering_them() {
+        let mut changes = WindowChanges::default();
+        changes.refuse(0x3000, "a store", "an extent, read-only".into());
+        changes.refuse(0x9000, "a store", "nothing mapped".into());
+        changes.record(0x4000, 0x4000, Change::Unmap);
+        let waiting = |changes: &WindowChanges| -> Vec<u64> {
+            changes.refused.iter().map(|refused| refused.window_offset).collect()
+        };
+        assert_eq!(waiting(&changes), [0x3000, 0x9000]);
+        changes.record(0x2000, 0x2000, Change::Zeros);
+        assert_eq!(waiting(&changes), [0x9000]);
+        changes.record(0x8000, 0x2000, Change::Unmap);
+        assert_eq!(waiting(&changes), Vec::<u64>::new());
+    }
 
     fn store(capacity: u64) -> (ExtentStore, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
