@@ -150,6 +150,9 @@ if [[ -e $socket || -e $control ]]; then
     echo "$socket exists: a daemon may be running" >&2
     exit 2
 fi
+# fxdax: the extent daemons check each read-only MAP of an open extent against the window's
+# writable mappings of it elsewhere, which fails the run (scripts/dax-refusals.py, TASK-119.11).
+export FXDAX_CHECK_OPEN_MAPS=1
 # A host keeps stores in a bucket, FXDAX_EXTENTD_REMOTE's or one in its memory, as of placement 1
 # unless one is named; what it did with it scripts/bench-report.py reports. Its kernel takes
 # FXDAX_EXTENTD_MEMORY bytes at most, if set, or the daemon's default.

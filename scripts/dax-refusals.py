@@ -10,12 +10,14 @@ fault, a kernel worker's, faults the page in for the vCPU as its guest goes on, 
 refuses it; the guest's task retries once the guest made its mapping read-only, through its own
 fault, which maps the page anew. Every DAX run has hundreds such, of pages of extents sealed. A
 store refused to a page of an extent still open, or mapped writably, is the guest and the window
-disagreeing (TASK-99): that fails the run.
+disagreeing (TASK-99): that fails the run. So does a read-only MAP of an open extent's pages
+another range of the window maps writably, which the daemon logs with FXDAX_CHECK_OPEN_MAPS
+(TASK-119.11): a guest's evacuation, or reader, of pages still being written.
 
 Usage: scripts/dax-refusals.py EXTENTD_LOG
 
-prints each refused store no seal explains, as the daemon logged it (its first line), and exits 1 if
-there are any.
+prints each refused store no seal explains, and each such MAP, as the daemon logged it (its first
+line), and exits 1 if there are any.
 """
 
 import re
@@ -30,9 +32,18 @@ SEALED = re.compile(
 )
 
 
+# The daemon's line for a read-only MAP of an open extent another range maps writably
+# (`ExtentStore::check_open_map`).
+OPEN_MAPPED = re.compile(r"extentd: a read-only MAP of open ExtentId")
+
+
 def unexplained(lines):
-    """The lines of `lines` that say of a store refused that no seal explains."""
-    return [line for line in lines if REFUSED.search(line) and not SEALED.search(line)]
+    """The lines of `lines` that say of a store refused that no seal explains, or of a read-only MAP
+    of an open extent another range maps writably."""
+    return [
+        line for line in lines
+        if (REFUSED.search(line) and not SEALED.search(line)) or OPEN_MAPPED.search(line)
+    ]
 
 
 def main():

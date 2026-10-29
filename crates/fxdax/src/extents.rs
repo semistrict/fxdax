@@ -222,6 +222,16 @@ fn check_sealed_reads() -> bool {
     *CHECK.get_or_init(|| std::env::var_os("FXDAX_CHECK_SEALED_READS").is_some())
 }
 
+/// fxdax: whether a read-only MAP of an open extent is checked against the window's writable
+/// mappings of it elsewhere (FXDAX_CHECK_OPEN_MAPS, which the guest tests set): a guest maps an
+/// open extent's pages in one place, and evacuates a staging extent's only once it is sealed: one
+/// mapped read-only while another range maps them writably is a guest's evacuation, or reader, of
+/// pages still being written, which the window then shows apart (TASK-119.11, TASK-99).
+fn check_open_maps() -> bool {
+    static CHECK: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *CHECK.get_or_init(|| std::env::var_os("FXDAX_CHECK_OPEN_MAPS").is_some())
+}
+
 /// fxdax: the latest of a window's MAPs and UNMAPs, as [`WindowChanges::MOST`] of them: which
 /// mapped a page as it was refused, and what mapped it before, read-only or writably (TASK-44.12).
 #[derive(Default)]
@@ -1562,10 +1572,52 @@ impl ExtentStore {
                 )
             })?;
         }
+        if !writable
+            && check_open_maps()
+            && let Some(found) = self.check_open_map(dax, extent, offset..end, window_offset)
+        {
+            log::error!("{found}");
+        }
         let pages: Arc<dyn Source> = extent_open.pages.clone();
         let keep = Mapped::extent(&pages, extent, window_offset, offset, writable);
         dax.map(window_offset, keep, &pages, offset, len, writable)?;
         Ok(true)
+    }
+
+    /// fxdax: what to log of a read-only MAP of `bytes` of the open `extent` at `window_offset`,
+    /// if another range of the window maps some of them writably ([`check_open_maps`]), with both
+    /// ranges' latest changes: the guest tests fail on it (scripts/dax-refusals.py). A writable
+    /// mapping the MAP replaces, of the window's range it maps, is no other.
+    fn check_open_map(
+        &self,
+        dax: &Dax<Mapped>,
+        extent: ExtentId,
+        bytes: std::ops::Range<u64>,
+        window_offset: u64,
+    ) -> Option<String> {
+        let replaced = window_offset..window_offset + (bytes.end - bytes.start);
+        for (start, end, mapped) in dax.mappings() {
+            let Maps::Extent { extent: other, window_offset: at, offset, writable: true } =
+                mapped.maps
+            else {
+                continue;
+            };
+            let from = offset + (start - at);
+            let overlap = from.max(bytes.start)..(from + (end - start)).min(bytes.end);
+            if other != extent || overlap.is_empty() || (start < replaced.end && end > replaced.start)
+            {
+                continue;
+            }
+            let changes = self.changes.lock().unwrap();
+            return Some(format!(
+                "extentd: a read-only MAP of open {extent:?} {bytes:#x?} at DAX window offset \
+                 {window_offset:#x}, which window offset {start:#x} maps writably, {overlap:#x?} of \
+                 it: the read-only page's latest changes: {:#?}; the writable's: {:#?}",
+                changes.of(window_offset + (overlap.start - bytes.start)),
+                changes.of(start + (overlap.start - from)),
+            ));
+        }
+        None
     }
 
     /// Maps zeros, read-only, at `len` bytes of the DAX window at `window_offset`, as a mapping a
@@ -2080,6 +2132,27 @@ mod tests {
         store.unmap(ps, 2 * ps).unwrap();
         assert!(!window.is_mapped(ps));
         assert_eq!(block_on(window.fault(2 * ps, Access::Read)), Err(Errno::ENOENT));
+    }
+
+    /// fxdax (TASK-119.11): a read-only MAP of an open extent's pages another range of the window
+    /// maps writably is found, with both ranges' changes; one of pages none maps writably, or the
+    /// writable mapping's own range mapped again read-only, is not.
+    #[test]
+    fn read_only_maps_of_pages_mapped_writably_elsewhere_are_found() {
+        let (store, _dir) = store(1 << 20);
+        let ps = page_size();
+        let extent = id(&store, 1);
+        let _window = store.create_dax_window(8 * ps, None).unwrap();
+        store.map(extent, 0, 2 * ps, 0, true).unwrap();
+        let found = |bytes: std::ops::Range<u64>, window_offset| {
+            let dax = store.dax.lock().unwrap();
+            store.check_open_map(dax.as_ref().unwrap(), extent, bytes, window_offset)
+        };
+        let elsewhere = found(ps..2 * ps, 4 * ps).expect("not found elsewhere");
+        assert!(elsewhere.contains("which window offset 0x0 maps writably"), "{elsewhere}");
+        assert!(elsewhere.contains("MAP of"), "no changes: {elsewhere}");
+        assert_eq!(found(2 * ps..3 * ps, 4 * ps), None, "pages none maps writably");
+        assert_eq!(found(0..2 * ps, 0), None, "the writable mapping's own range");
     }
 
     /// fxdax (TASK-112.3): a commit writes what the guest stored through each open extent's

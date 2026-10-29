@@ -36,6 +36,12 @@ class DaxRefusals(unittest.TestCase):
     def test_stores_to_pages_mapped_writably_are_unexplained(self):
         self.assertEqual(dax_refusals.unexplained([WRITABLE]), [WRITABLE])
 
+    def test_read_only_maps_of_open_extents_mapped_writably_elsewhere_fail(self):
+        line = ("ERROR fxdax::extents: extentd: a read-only MAP of open ExtentId { branch: 1, "
+                "sequence: 2 } 0x1000..0x2000 at DAX window offset 0x4000, which window offset 0x0 "
+                "maps writably, 0x1000..0x2000 of it: the read-only page's latest changes: [\n")
+        self.assertEqual(dax_refusals.unexplained([SEALED, line]), [line])
+
     def test_what_a_refusal_met_later_is_no_refusal(self):
         self.assertEqual(dax_refusals.unexplained([MET]), [])
 
