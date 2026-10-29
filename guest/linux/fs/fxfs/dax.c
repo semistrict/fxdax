@@ -229,6 +229,8 @@ enum fxfs_dax_step {
 	FXFS_DAX_STEP_SHUT,
 	/* A fault about to copy the page it holds. */
 	FXFS_DAX_STEP_HELD,
+	/* An evacuation of a file, its runs gathered, before their MAP, holding its semaphore. */
+	FXFS_DAX_STEP_GATHERED,
 };
 static unsigned long fxfs_dax_pause_steps;
 module_param_named(dax_pause, fxfs_dax_pause_steps, ulong, 0644);
@@ -236,6 +238,10 @@ MODULE_PARM_DESC(dax_pause, "Steps (bits) of the DAX protocol tasks wait at, unt
 static unsigned long fxfs_dax_paused_steps;
 module_param_named(dax_paused, fxfs_dax_paused_steps, ulong, 0444);
 MODULE_PARM_DESC(dax_paused, "Steps (bits) a task waits at (pause points)");
+/* fxdax: the file whose tasks wait at the steps of a file, any file's if 0 (pause points). */
+static unsigned long fxfs_dax_pause_ino;
+module_param_named(dax_pause_ino, fxfs_dax_pause_ino, ulong, 0644);
+MODULE_PARM_DESC(dax_pause_ino, "The inode whose tasks wait at fxfs.dax_pause's steps of a file, or 0 for any (pause points)");
 
 /* fxdax: waits at `step` while fxfs.dax_pause asks. Where the caller may sleep. */
 static void fxfs_dax_pause(enum fxfs_dax_step step)
@@ -246,6 +252,15 @@ static void fxfs_dax_pause(enum fxfs_dax_step step)
 	while (READ_ONCE(fxfs_dax_pause_steps) & BIT(step))
 		msleep(1);
 	clear_bit(step, &fxfs_dax_paused_steps);
+}
+
+/* fxdax: waits at `step`, of file `ino`, as fxfs_dax_pause, if fxfs.dax_pause_ino names it. */
+static void fxfs_dax_pause_file(enum fxfs_dax_step step, u64 ino)
+{
+	unsigned long only = READ_ONCE(fxfs_dax_pause_ino);
+
+	if (!only || only == ino)
+		fxfs_dax_pause(step);
 }
 
 static DEFINE_SPINLOCK(fxfs_dax_delay_lock);
@@ -3749,6 +3764,7 @@ static void fxfs_dax_evacuee_map(struct fxfs_dax *dax, struct fxfs_dax_file *fil
 
 	lockdep_assert_held_write(&file->sem);
 	if (ev->count) {
+		fxfs_dax_pause_file(FXFS_DAX_STEP_GATHERED, file->ino);
 		fxfs_dax_delay();
 		began = ktime_get_ns();
 		err = fxfs_nofs(fxfs_dax_device_map_many(dax, ev->maps, ev->count));

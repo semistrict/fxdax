@@ -94,8 +94,9 @@ MUTANTS = [
         [("\tfxfs_dax_evacuee_gather(file, &ev);\n\tfxfs_dax_evacuee_map(dax, file, &ev);\n",
           "\tfxfs_dax_evacuee_gather(file, &ev);\n\tup_write(&file->sem);\n"
           "\tfxfs_dax_evacuee_map(dax, file, &ev);\n\tdown_write(&file->sem);\n"),
-         ("\tlockdep_assert_held_write(&file->sem);\n\tif (ev->count) {\n\t\tfxfs_dax_delay();",
-          "\tif (ev->count) {\n\t\tfxfs_dax_delay();")],
+         ("\tlockdep_assert_held_write(&file->sem);\n\tif (ev->count) {\n"
+          "\t\tfxfs_dax_pause_file(FXFS_DAX_STEP_GATHERED, file->ino);\n",
+          "\tif (ev->count) {\n\t\tfxfs_dax_pause_file(FXFS_DAX_STEP_GATHERED, file->ino);\n")],
     ),
     (
         "moved_unmapped",

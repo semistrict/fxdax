@@ -1891,6 +1891,56 @@ mod guest {
         );
     }
 
+    /// fxdax: an evacuation paused between gathering a file's runs and their MAP (pause points,
+    /// TASK-119.9), and a write to a page it gathered, mapping the page anew in its range's own
+    /// space (fxfs.dax_moves off), meanwhile: the write waits for the evacuation, which holds the
+    /// file's semaphore from gathering through placing, and the file holds what it wrote. An
+    /// evacuation that let go of the semaphore across its MAP (the hand mutant evacuation_unlocked,
+    /// TASK-101), which timing alone killed once in 70 rounds, mapped where the page was over the
+    /// write's mapping: the file read what was there before.
+    fn test_evacuation_paused() {
+        use std::os::unix::fs::FileExt;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        const PAGE: usize = 4096;
+        let name = path("evacuation-paused");
+        fs::write(&name, vec![1; 1 << 20]).unwrap();
+        let file = fs::OpenOptions::new().read(true).write(true).open(&name).unwrap();
+        file.sync_all().unwrap();
+        let (pauses, only) = Pauses::begin_of(Pauses::GATHERED, &name);
+        // The page written moves to the staging extent's region, which the fsync seals, and the
+        // evacuation after the seal gathers it, and waits.
+        file.write_all_at(&[2; PAGE], 0).unwrap();
+        file.sync_data().unwrap();
+        Pauses::wait(Pauses::GATHERED);
+        let written = AtomicBool::new(false);
+        let waited = std::thread::scope(|scope| {
+            let writer = scope.spawn(|| {
+                let _own_space = Param::set("dax_moves", "N");
+                file.write_all_at(&[3; PAGE], 0).unwrap();
+                written.store(true, Ordering::SeqCst);
+            });
+            // Time for a write the evacuation doesn't hold off to be done.
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            let waited = !written.load(Ordering::SeqCst);
+            drop(pauses);
+            writer.join().unwrap();
+            waited
+        });
+        drop(only);
+        let mut page = vec![0; PAGE];
+        file.read_exact_at(&mut page, 0).unwrap();
+        let read = page[0];
+        drop(file);
+        evict(&name);
+        let stored = fs::read(&name).unwrap()[0];
+        assert_eq!(
+            (waited, read, stored),
+            (true, 3, 3),
+            "(the write waited for the evacuation, the page read, then from the device)"
+        );
+        fs::remove_file(&name).unwrap();
+    }
+
     /// fxdax: a file's pages each written once and fsynced, as a database's rows a run updates
     /// once and its history it appends: each write moves its page to the staging extent's region,
     /// a new one after every seal, which the page, written no more, kept, until the window's
@@ -2569,9 +2619,17 @@ mod guest {
         const SEALING: u64 = 1 << 1;
         const SHUT: u64 = 1 << 2;
         const HELD: u64 = 1 << 3;
+        const GATHERED: u64 = 1 << 4;
 
         fn set(steps: u64) {
             fs::write(Self::PAUSE, steps.to_string()).unwrap();
+        }
+
+        /// Pauses `steps`, as `begin`, those of a file only the file `path`'s tasks.
+        fn begin_of(steps: u64, path: &str) -> (Self, Param) {
+            use std::os::unix::fs::MetadataExt;
+            let only = Param::set("dax_pause_ino", &fs::metadata(path).unwrap().ino().to_string());
+            (Self::begin(steps), only)
         }
 
         /// Pauses `steps` until the guard goes, which lets every task waiting go on: a check that
@@ -3532,6 +3590,7 @@ mod guest {
                     tests.push(("regions_evacuated", &test_regions_evacuated));
                 }
                 tests.push(("evacuate_dropped", &test_evacuate_dropped));
+                tests.push(("evacuation_paused", &test_evacuation_paused));
                 tests.push(("faults_writes_compaction", &test_faults_writes_compaction));
                 tests.push(("append_writable", &test_append_writable));
                 tests.push(("append_pages", &test_append_pages));
