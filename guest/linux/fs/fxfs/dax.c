@@ -870,11 +870,11 @@ static unsigned long fxfs_dax_run(const struct fxfs_dax_range *range, unsigned l
 /*
  * Has `range`'s `pages` pages from `page` on be where `region`'s pages from `first` on are, or in
  * the range's own space without `region`: those the window mapped elsewhere before are
- * relocated, so that the kernel's mappings of them go (fxfs_dax_cow). With the file's DAX
- * semaphore held for writing.
+ * relocated, so that the kernel's mappings of them go (fxfs_dax_cow); and, if `unmapping`, those
+ * it mapped, which it maps no longer. With the file's DAX semaphore held for writing.
  */
-static void fxfs_dax_relocate(struct fxfs_dax_range *range, unsigned long page,
-			      unsigned long pages, struct fxfs_dax_region *region, unsigned long first)
+static void fxfs_dax_place(struct fxfs_dax_range *range, unsigned long page, unsigned long pages,
+			   struct fxfs_dax_region *region, unsigned long first, bool unmapping)
 {
 	unsigned int index = 0;
 	bool changed = false;
@@ -891,7 +891,8 @@ static void fxfs_dax_relocate(struct fxfs_dax_range *range, unsigned long page,
 	}
 	for (i = 0; i < pages; i++) {
 		moved = region ? ((u64)(index + 1) << 32) | (first + i) : 0;
-		if (range->moved[page + i] != moved && test_bit(page + i, range->mapped)) {
+		if ((range->moved[page + i] != moved || unmapping) &&
+		    test_bit(page + i, range->mapped)) {
 			set_bit(page + i, range->relocated);
 			changed = true;
 		}
@@ -906,6 +907,13 @@ static void fxfs_dax_relocate(struct fxfs_dax_range *range, unsigned long page,
 		bitmap_or(range->relocated, range->relocated, range->mapped, range->pages);
 		WRITE_ONCE(range->huge, false);
 	}
+}
+
+/* fxfs_dax_place: the pages where `region`'s are, or in the range's own space. */
+static void fxfs_dax_relocate(struct fxfs_dax_range *range, unsigned long page,
+			      unsigned long pages, struct fxfs_dax_region *region, unsigned long first)
+{
+	fxfs_dax_place(range, page, pages, region, first, false);
 }
 
 /*
@@ -1012,6 +1020,21 @@ static void fxfs_dax_clear_writable(struct fxfs_dax_range *range, unsigned long 
 
 	for (i = page; i < page + pages; i++)
 		clear_bit(i, range->writable);
+}
+
+/*
+ * fxdax: has `range` map its `pages` pages from `page` on no longer, holes, in its own space: those
+ * it mapped are relocated, as faults may hold entries of them, where the window mapped them. Else
+ * a page's next mapping, elsewhere, found it unmapped, and relocated it not: the kernel kept the
+ * entry, and refused the fault's page, which no entry named, and the fault died of SIGBUS
+ * (validate_page_before_insert, TASK-124). With the file's DAX semaphore held for writing.
+ */
+static void fxfs_dax_unmap_pages(struct fxfs_dax_range *range, unsigned long page,
+				 unsigned long pages)
+{
+	fxfs_dax_place(range, page, pages, NULL, 0, true);
+	fxfs_dax_clear_writable(range, page, pages);
+	bitmap_clear(range->mapped, page, pages);
 }
 
 /*
@@ -1203,9 +1226,7 @@ static int fxfs_dax_map_moved(struct fxfs_dax *dax, struct fxfs_dax_range *range
 		 * no longer writable, nor mapped, as the range had them (TASK-121).
 		 */
 		if (err == -ENOENT) {
-			fxfs_dax_relocate(range, page, pages, NULL, 0);
-			fxfs_dax_clear_writable(range, page, pages);
-			bitmap_clear(range->mapped, page, pages);
+			fxfs_dax_unmap_pages(range, page, pages);
 			continue;
 		}
 		err = fxfs_dax_mapped(range, e, err);
