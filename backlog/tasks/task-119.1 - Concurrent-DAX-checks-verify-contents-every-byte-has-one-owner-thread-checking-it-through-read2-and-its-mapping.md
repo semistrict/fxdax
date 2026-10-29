@@ -3,11 +3,11 @@ id: TASK-119.1
 title: >-
   Concurrent DAX checks verify contents: every byte has one owner thread
   checking it through read(2) and its mapping
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-28 19:27'
-updated_date: '2026-10-29 12:38'
+updated_date: '2026-10-29 18:44'
 labels:
   - testing
 dependencies: []
@@ -26,7 +26,7 @@ seal_race, evacuee_waited, log_writes, faults_writes_compaction, faults_unheld, 
 <!-- AC:BEGIN -->
 - [x] #1 Each listed check asserts exact contents during the race, not only at the end
 - [x] #2 append_writeback checks contents after eviction
-- [ ] #3 A hand mutant of dax.c that loses a write fails each check it should (named per check)
+- [x] #3 A hand mutant of dax.c that loses a write fails each check it should (named per check)
 <!-- AC:END -->
 
 ## Definition of Done
@@ -46,4 +46,12 @@ Byte-owner checks (b9af10794, branch test/119): seal_race (each round, own byte 
 
 <!-- SECTION:NOTES:BEGIN -->
 On main since b9af10794 and 8bd5f35ec: seal_race, log_writes, faults_writes_compaction, faults_unheld, faults_seal_holding_the_semaphore and append_while_mapped give each byte one owner that checks it as it goes, through read(2) and the mapping, and the file whole at the end; append_writeback compares contents after eviction. Passing on GCE r221/r224 (checks-dax, -delay, -small). AC3 open: no mutant is attributed per check (moved_unmapped, held_not_written lose writes and are killed by the suites, but which checks fail them is not recorded).
+
+AC3, from the DAX gate's passing run on 3e6615852 (/tmp/fxdax-gate-3e6615852048/mutants, each mutant's checks-dax and -delay consoles' FAIL lines): each listed check fails under a mutant that loses or misplaces writes: seal_race (held_not_written, moved_unmapped), log_writes (new_slice_no_seals_recheck, prune_misnumbers, evacuation_maps_elsewhere), faults_writes_compaction (held_not_written, moved_unmapped, evacuation_maps_elsewhere), faults_unheld and faults_seal_holding_the_semaphore (held_not_written, evacuation_maps_elsewhere), append_while_mapped (evacuation_maps_elsewhere), append_writeback (new_slice_no_seals_recheck, evacuation_maps_elsewhere). evacuee_waited is no longer a check (its race is evacuation_paused's, which evacuation_unlocked fails). DoD #1: macOS scripts/test.sh passed on main since.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The concurrent DAX checks give each byte one owner that checks it through read(2) and its mapping as it goes, and the file whole at the end; append_writeback compares contents after eviction. Each check fails under a write-losing hand mutant (the DAX gate's run on 3e6615852).
+<!-- SECTION:FINAL_SUMMARY:END -->
