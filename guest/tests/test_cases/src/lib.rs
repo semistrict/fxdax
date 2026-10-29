@@ -186,6 +186,7 @@ pub fn test_cases() -> Vec<TestCase> {
         TestCase::new("fxfs-guest-crash-dax-mapped", Box::new(TestFxfsGuest::crash_at(6))),
         TestCase::new("fxfs-guest-crash-dax-placed", Box::new(TestFxfsGuest::crash_at(7))),
         TestCase::new("fxfs-guest-crash-dax-killed", Box::new(TestFxfsGuest::crash_killed())),
+        TestCase::new("fxfs-guest-faults-dax", Box::new(TestFxfsGuest::faults())),
         TestCase::new("fxfs-guest-docker-dax", Box::new(TestFxfsGuestDocker)),
         TestCase::new("extent-guest", Box::new(TestExtentGuest)),
         #[cfg(any(feature = "host", target_os = "linux"))]

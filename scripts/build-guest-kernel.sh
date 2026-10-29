@@ -112,10 +112,14 @@ if [[ $arch == x86_64 && ${FXDAX_GUEST_KERNEL_PROFILE:-} == 1 ]]; then
 fi
 # fxdax: with FXDAX_GUEST_KERNEL_DEBUG=1, a kernel that checks its locking (lockdep, sleeping in
 # atomic context) and, with KCSAN, its data races, as the followers' torture test runs it
-# (TASK-42.7, doc-8 testing 6): slow, so built with its own FXDAX_GUEST_KERNEL_WORK.
+# (TASK-42.7, doc-8 testing 6), and that fails allocations as a test asks, through debugfs
+# (failslab, fail_page_alloc: fxfs-guest-faults-dax, TASK-44.10): slow, so built with its own
+# FXDAX_GUEST_KERNEL_WORK.
 if [[ ${FXDAX_GUEST_KERNEL_DEBUG:-} == 1 ]]; then
     "$src/scripts/config" --file "$src/.config" --enable DEBUG_KERNEL --enable PROVE_LOCKING \
-        --enable DEBUG_ATOMIC_SLEEP --enable DEBUG_LIST --enable KCSAN
+        --enable DEBUG_ATOMIC_SLEEP --enable DEBUG_LIST --enable KCSAN --enable DEBUG_FS \
+        --enable FAULT_INJECTION --enable FAILSLAB --enable FAIL_PAGE_ALLOC \
+        --enable FAULT_INJECTION_DEBUG_FS
 fi
 # fxdax: with FXDAX_GUEST_KERNEL_KASAN=1, a kernel that checks its memory accesses (KASAN, and
 # KFENCE's sampled checks) and its locking, which KCSAN's can't be built with (TASK-44.8): slow,
@@ -140,7 +144,8 @@ if [[ ${FXDAX_GUEST_KERNEL_LOCK_STAT:-} == 1 ]]; then
         { echo "the lock_stat kernel has no CONFIG_LOCK_STAT" >&2; exit 1; }
 fi
 if [[ ${FXDAX_GUEST_KERNEL_DEBUG:-} == 1 ]]; then
-    for option in PROVE_LOCKING DEBUG_ATOMIC_SLEEP KCSAN; do
+    for option in PROVE_LOCKING DEBUG_ATOMIC_SLEEP KCSAN FAILSLAB FAIL_PAGE_ALLOC \
+        FAULT_INJECTION_DEBUG_FS; do
         grep -q "^CONFIG_$option=y" "$src/.config" ||
             { echo "the debug kernel has no CONFIG_$option" >&2; exit 1; }
     done

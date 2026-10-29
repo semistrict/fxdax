@@ -29,6 +29,8 @@ enum Mode {
     HostFormats,
     GuestFormats,
     Crash,
+    /// fxdax: writers fsyncing files while the kernel fails their allocations (TASK-44.10).
+    Faults,
 }
 
 pub struct TestFxfsGuest {
@@ -72,6 +74,15 @@ impl TestFxfsGuest {
     /// daemon serving the store on, its requests in flight cut off (TASK-119.6).
     pub fn crash_killed() -> Self {
         Self { killed: true, ..Self::crash().with_dax() }
+    }
+
+    /// fxdax: fxfs-guest-faults-dax: two writers create, write and fsync files, as the crash
+    /// test's do, while the guest's kernel fails their allocations at random, slabs' and pages'
+    /// (failslab, fail_page_alloc, its debug build's: FXDAX_GUEST_KERNEL_BUILD=debug), their
+    /// calls failing as they may; the filesystem complains of nothing, and the store holds every
+    /// file whose fsync returned (TASK-44.10).
+    pub fn faults() -> Self {
+        Self { mode: Mode::Faults, dax: true, crash_step: None, killed: false }
     }
 
     /// The same test with a DAX window.
@@ -178,6 +189,36 @@ mod host {
     /// The store's capacity: room for the crash test's unnamed file too.
     const CAPACITY: u64 = 128 << 20;
 
+    /// The files whose fsync the guest says returned, its writer and index, as `output` says.
+    fn synced_files(output: &str) -> Vec<(u8, usize)> {
+        (output.lines())
+            .filter_map(|line| line.strip_prefix("synced "))
+            // A line the VM stopped in the middle of: of a file a line before names too.
+            .filter_map(|file| {
+                let (writer, index) = file.split_once(' ')?;
+                Some((writer.parse().ok()?, index.parse().ok()?))
+            })
+            .collect()
+    }
+
+    /// Asserts `fs` holds each of the files `synced` names whole, as its writer wrote it.
+    fn assert_synced(fs: &Filesystem, synced: &[(u8, usize)]) {
+        for &(writer, index) in synced {
+            let name = format!("synced-{writer}-{index}");
+            let (file, attr) = block_on(fs.root().lookup(name.as_bytes())).unwrap();
+            let expected = durable(writer, index);
+            assert_eq!(attr.size, expected.len() as u64, "{name}");
+            let mut contents = vec![0; expected.len()];
+            let mut read = 0;
+            while read < contents.len() {
+                let n = block_on(file.read(read as u64, &mut contents[read..])).unwrap();
+                assert_ne!(n, 0, "{name} ends early, at {read}");
+                read += n;
+            }
+            assert!(contents == expected, "{name} holds other data");
+        }
+    }
+
     impl Test for TestFxfsGuest {
         fn should_run(&self) -> ShouldRun {
             fxdax_guest_should_run()
@@ -238,18 +279,27 @@ mod host {
             // fxdax: as the guest wrote it, a stop's kernel lines in its midst gone (GCE r248).
             let output = crate::vm::without_kernel_lines(&String::from_utf8(stdout).unwrap());
             let path = test_setup.tmp_dir.join("extents");
+            // fxdax: the writers' calls failed, some of them, as their allocations did; the store
+            // holds every file whose fsync returned, whole (TASK-44.10).
+            if self.mode == Mode::Faults {
+                let failed: Option<u64> = (output.lines())
+                    .find_map(|line| line.strip_prefix("failed calls ")?.parse().ok());
+                let synced = synced_files(&output);
+                if failed.is_none_or(|failed| failed == 0) || synced.is_empty() {
+                    return TestOutcome::Fail(format!(
+                        "no call failed, or no fsync returned: {output:?}"
+                    ));
+                }
+                let storage = block_on(Storage::open(&path).unwrap().check()).unwrap();
+                let fs = block_on(Filesystem::mount(storage)).unwrap();
+                assert_synced(&fs, &synced);
+                block_on(fs.close()).unwrap();
+                return TestOutcome::Pass;
+            }
             if self.mode == Mode::Crash {
                 // The guest stopped mid-workload: its filesystem is consistent, and holds every
                 // file whose fsync returned before it did.
-                let synced: Vec<(u8, usize)> = output
-                    .lines()
-                    .filter_map(|line| line.strip_prefix("synced "))
-                    // A line the VM stopped in the middle of: of a file a line before names too.
-                    .filter_map(|file| {
-                        let (writer, index) = file.split_once(' ')?;
-                        Some((writer.parse().ok()?, index.parse().ok()?))
-                    })
-                    .collect();
+                let synced = synced_files(&output);
                 if synced.len() < 10 {
                     return TestOutcome::Fail(format!("too few fsyncs returned: {output:?}"));
                 }
@@ -267,20 +317,7 @@ mod host {
                     .unwrap();
                 let storage = block_on(Storage::open(&path).unwrap().check()).unwrap();
                 let fs = block_on(Filesystem::mount(storage)).unwrap();
-                for (writer, index) in synced {
-                    let name = format!("synced-{writer}-{index}");
-                    let (file, attr) = block_on(fs.root().lookup(name.as_bytes())).unwrap();
-                    let expected = durable(writer, index);
-                    assert_eq!(attr.size, expected.len() as u64, "{name}");
-                    let mut contents = vec![0; expected.len()];
-                    let mut read = 0;
-                    while read < contents.len() {
-                        let n = block_on(file.read(read as u64, &mut contents[read..])).unwrap();
-                        assert_ne!(n, 0, "{name} ends early, at {read}");
-                        read += n;
-                    }
-                    assert!(contents == expected, "{name} holds other data");
-                }
+                assert_synced(&fs, &synced);
                 // fxdax: each page written again and again holds, byte by byte, what one of its
                 // writes since the last synced (that one's included) wrote: none torn into others',
                 // none older (TASK-119.6).
@@ -771,6 +808,80 @@ mod guest {
     /// filesystem mounted, for the VM to stop with.
     /// Writes and fsyncs file after file, and the directory, reporting each once both fsyncs
     /// return, until the VM stops.
+    /// fxdax: the faults test's (TASK-44.10): its writers' allocations failed at random for a few
+    /// seconds, as the debug kernel's fault injection does them for tasks that ask, through
+    /// debugfs; each writer reports each file whose fsync returned, and in the end how many of its
+    /// calls failed.
+    fn faults() {
+        const DEBUGFS: &str = "/sys/kernel/debug";
+        const ATTRS: [&str; 2] = ["failslab", "fail_page_alloc"];
+        let debugfs = CString::new(DEBUGFS).unwrap();
+        // SAFETY: Plain system call on NUL-terminated strings.
+        let mounted = unsafe {
+            libc::mount(
+                c"debugfs".as_ptr(),
+                debugfs.as_ptr(),
+                c"debugfs".as_ptr(),
+                0,
+                std::ptr::null(),
+            )
+        };
+        let err = std::io::Error::last_os_error();
+        assert!(mounted == 0 || err.raw_os_error() == Some(libc::EBUSY), "debugfs: {err}");
+        let set = |attr: &str, name: &str, value: &str| {
+            let path = format!("{DEBUGFS}/{attr}/{name}");
+            fs::write(&path, value).unwrap_or_else(|err| {
+                panic!("{path}: {err} (the debug kernel injects faults: FXDAX_GUEST_KERNEL_BUILD=debug)")
+            });
+        };
+        for attr in ATTRS {
+            set(attr, "task-filter", "Y");
+            set(attr, "interval", "1");
+            set(attr, "times", "-1");
+            set(attr, "verbose", "0");
+            set(attr, "ignore-gfp-wait", "N");
+            set(attr, "probability", "1");
+        }
+        set("fail_page_alloc", "ignore-gfp-highmem", "N");
+        set("fail_page_alloc", "min-order", "0");
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let writers: Vec<_> = (1..=2u8)
+            .map(|writer| {
+                let stop = stop.clone();
+                std::thread::spawn(move || {
+                    // Its allocations, alone, fail.
+                    fs::write("/proc/thread-self/make-it-fail", "1").unwrap();
+                    let mut failed = 0u64;
+                    for index in 0.. {
+                        if stop.load(std::sync::atomic::Ordering::Acquire) {
+                            break;
+                        }
+                        let attempt = || -> std::io::Result<()> {
+                            let name = format!("{MNT}/synced-{writer}-{index}");
+                            let mut file = fs::File::create(name)?;
+                            file.write_all(&durable(writer, index))?;
+                            file.sync_all()?;
+                            fs::File::open(MNT)?.sync_all()
+                        };
+                        match attempt() {
+                            Ok(()) => report(&format!("synced {writer} {index}")),
+                            Err(_) => failed += 1,
+                        }
+                    }
+                    fs::write("/proc/thread-self/make-it-fail", "0").unwrap();
+                    failed
+                })
+            })
+            .collect();
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        stop.store(true, std::sync::atomic::Ordering::Release);
+        let failed: u64 = writers.into_iter().map(|writer| writer.join().unwrap()).sum();
+        for attr in ATTRS {
+            set(attr, "probability", "0");
+        }
+        report(&format!("failed calls {failed}"));
+    }
+
     /// Whether the crash test's writers wait, as its guest stores through a mapping (TASK-79.11).
     static PAUSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -1271,6 +1382,10 @@ mod guest {
             mount("extents").unwrap();
             if self.mode == Mode::Crash {
                 crash(self.dax, self.crash_step, self.killed);
+            }
+            if self.mode == Mode::Faults {
+                faults();
+                return;
             }
             let host_formats = self.mode == Mode::HostFormats;
             if host_formats {
