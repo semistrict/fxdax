@@ -218,7 +218,8 @@ mod host {
         }
 
         fn check(self: Box<Self>, stdout: Vec<u8>, test_setup: TestSetup) -> TestOutcome {
-            let output = String::from_utf8(stdout).unwrap();
+            // fxdax: as the guest wrote it, a stop's kernel lines in its midst gone (GCE r248).
+            let output = crate::vm::without_kernel_lines(&String::from_utf8(stdout).unwrap());
             let path = test_setup.tmp_dir.join("extents");
             if self.mode == Mode::Crash {
                 // The guest stopped mid-workload: its filesystem is consistent, and holds every

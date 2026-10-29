@@ -703,6 +703,41 @@ pub fn split_console(mut console: impl std::io::Read) -> anyhow::Result<()> {
     }
 }
 
+/// fxdax: `output`, the guest agent's standard output, without the kernel's lines that came out in
+/// the midst of it: the console carries the kernel's lines as it says them, between the bytes of
+/// output it is still passing on, so that one, a stop's, went into the middle of an output line
+/// (GCE r215, r221, r248). The kernel's begin with its timestamp, `[` seconds `.` microseconds `]`,
+/// and end with "\r\n", which the agent's output, passed on as written, never has.
+pub fn without_kernel_lines(output: &str) -> String {
+    let mut kept = String::with_capacity(output.len());
+    let mut rest = output;
+    while let Some(at) = rest.find('[') {
+        let (before, from) = rest.split_at(at);
+        kept.push_str(before);
+        match kernel_line(from) {
+            Some(len) => rest = &from[len..],
+            None => {
+                kept.push('[');
+                rest = &from[1..];
+            }
+        }
+    }
+    kept.push_str(rest);
+    kept
+}
+
+/// The length of the kernel's line `text` begins with, if it does ([`without_kernel_lines`]).
+fn kernel_line(text: &str) -> Option<usize> {
+    let stamp = text.strip_prefix('[')?.trim_start_matches(' ');
+    let (seconds, rest) = stamp.split_once('.')?;
+    let (micros, _) = rest.split_once(']')?;
+    let digits = |part: &str| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit());
+    if !digits(seconds) || micros.len() != 6 || !digits(micros) {
+        return None;
+    }
+    Some(text.find("\r\n")? + 2)
+}
+
 /// The bytes the files under `dir` hold.
 fn tree_size(dir: &Path) -> anyhow::Result<u64> {
     let mut size = 0;
@@ -756,6 +791,20 @@ mod tests {
         assert_eq!(&said, b"ready\n");
         running.kill().unwrap();
     }
+    /// fxdax: the kernel's lines that came out in the midst of the agent's output go, the output
+    /// whole again around them; brackets of the output's own stay.
+    #[test]
+    fn output_loses_the_kernels_lines_in_its_midst() {
+        let output = "resized 904 27009\nresized 905 240[    3.814723] fxfs: Terminating journal\r\n08\n\
+                      resizing 906 [    3.816289] fxfs: flush failed\r\n[    3.816289] \r\n21007\n\
+                      [not the kernel's]\n[1.5] neither\r\n";
+        assert_eq!(
+            without_kernel_lines(output),
+            "resized 904 27009\nresized 905 24008\nresizing 906 21007\n[not the kernel's]\n\
+             [1.5] neither\r\n"
+        );
+    }
+
     /// TASK-44.8: a console's complaints fail its test: a WARN_ON's, lockdep's, a KCSAN report of
     /// a race in fxdax's code; not KCSAN's of a race of the rest of the kernel's, nor of the race
     /// looked into (KCSAN_REVIEWED_CHANGE).
