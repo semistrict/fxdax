@@ -219,5 +219,11 @@ for (comm, call), count in sorted(seen.items()):
 ' > "$results/seccomp-log.txt"
     echo "seccomp: $(wc -l < "$results/seccomp-log.txt") thread and call pairs refused" >&2
 fi
+# fxdax: the guest stores the DAX windows refused that no seal explains: the guest and the window
+# disagreeing, which fails the run (TASK-44.12).
+if ! "$root/scripts/dax-refusals.py" "$results/extentd.log" > "$results/unexplained-refusals.txt"; then
+    echo "the DAX window refused stores no seal explains: see $results/unexplained-refusals.txt" >&2
+    status=1
+fi
 echo "Logs: $results" >&2
 exit "$status"
