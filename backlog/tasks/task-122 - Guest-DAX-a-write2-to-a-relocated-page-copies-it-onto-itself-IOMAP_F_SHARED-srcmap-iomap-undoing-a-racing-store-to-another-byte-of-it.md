@@ -8,7 +8,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-28 19:45'
-updated_date: '2026-10-29 07:01'
+updated_date: '2026-10-29 07:27'
 labels:
   - bug
 dependencies: []
@@ -41,4 +41,6 @@ Documented in fxfs_dax_cow (dax.c): the copy of the page onto itself is not atom
 Fix 2026-10-28 (test/119): guest kernel patch guest/linux/patches/0006-dax-copy-around-in-place.patch, dax_iomap_copy_around returns at once when saddr == daddr (fxfs_dax_cow's srcmap is the iomap). Evidence it bites: faults_writes_compaction/faults_unheld (write(2)s of pages' first halves, stores of their second halves) lost second-half bytes on r206 with TASK-121's fix in.
 
 2026-10-29: AC1 met by patch 0006 (6b42a571e). AC2's control queued on GCE r217: main with 0006's test neutralized (saddr == daddr && false, so 0007/0008 still apply), seal_race, torture, faults_writes_compaction, faults_unheld under checks-dax-delay, 5 rounds; main passed them 10 rounds each at TASK-121's close.
+
+GCE r217 (2026-10-29, kernel built): the control, patch 0006 neutralized (saddr == daddr && false), passed seal_race, torture, faults_writes_compaction and faults_unheld under checks-dax-delay 5 rounds of 5: the checks don't kill the mutant. The loss needs a store landing inside dax_iomap_copy_around's memcpy of the page's edges onto themselves, between its read and write of the same bytes: a window of the copy's length, in fs/dax.c, which no fxfs pause point reaches; r206's losses came before TASK-121's and TASK-125's fixes, which made the path rarer. AC2 needs a pause point in the kernel's copy (a test hook in patch 0006's function) to be deterministic.
 <!-- SECTION:NOTES:END -->
