@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-26 03:47'
-updated_date: '2026-10-26 16:16'
+updated_date: '2026-10-29 22:12'
 labels:
   - bug
 dependencies: []
@@ -36,4 +36,6 @@ GCE r123 (19b799cc1, full Linux workspace): '300 stores' guests committing: 46 t
 
 <!-- SECTION:NOTES:BEGIN -->
 Again in r141 (9f77e3799, GCE n2-standard-8, full workspace): 257.4 ms (median 57 ms), 300 stores.
+
+2026-10-29, OrbStack arm64 container: failed alone too, 2 of 3 runs passing at a27e50fd8+1 (lags 220, 319 ms, the bound 200), 3 of 3 at a27e50fd8; the test makes no window.
 <!-- SECTION:NOTES:END -->
