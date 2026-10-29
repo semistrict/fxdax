@@ -17,13 +17,14 @@ class Mutants(unittest.TestCase):
         whose code moved would test nothing."""
         dax = (script.SCRIPTS.parent / guest_mutants.DAX).read_text()
         found = {
-            name: [dax.count(old) for old, _ in edits] for name, _, edits in guest_mutants.MUTANTS
+            name: [dax.count(old) for old, _ in edits] for name, _, edits, *_ in guest_mutants.MUTANTS
         }
-        self.assertEqual(found, {name: [1] * len(edits) for name, _, edits in guest_mutants.MUTANTS})
+        self.assertEqual(
+            found, {name: [1] * len(edits) for name, _, edits, *_ in guest_mutants.MUTANTS})
 
     def test_mutants_change_the_code(self):
         """Each mutant's edit changes what it finds."""
-        changed = [old != new for _, _, edits in guest_mutants.MUTANTS for old, new in edits]
+        changed = [old != new for _, _, edits, *_ in guest_mutants.MUTANTS for old, new in edits]
         self.assertEqual(changed, [True] * len(changed))
 
     def test_fates(self):

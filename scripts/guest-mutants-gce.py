@@ -29,7 +29,8 @@ ROOT = Path(__file__).resolve().parent.parent
 DAX = "guest/linux/fs/fxfs/dax.c"
 
 # Each mutant: its name, what it takes out, and its edits, (old, new) text of dax.c, each of
-# which must be found there once.
+# which must be found there once; and, for one only an assertion of a debug kernel's finds, the
+# kernel the host builds (FXDAX_GUEST_KERNEL_BUILD: debug, with lockdep), release otherwise.
 MUTANTS = [
     (
         "region_open_unlocked",
@@ -136,6 +137,17 @@ MUTANTS = [
         "blocks Fxfs freed, rather than dropped and the write tried again (TASK-79.106)",
         [("\t\t\t\tif (err != -EXDEV)\n\t\t\t\t\terr = -ESTALE;\n", "")],
     ),
+    (
+        "regions_find_unlocked",
+        "a region is looked up without the regions lock, which fxfs_dax_find_region asserts held: "
+        "a lockdep kernel's assertion fails (TASK-44.9)",
+        [("\tspin_lock(&dax->regions_lock);\n\tregion = fxfs_dax_find_region(dax, e->branch, "
+          "e->sequence);\n\tif (region)\n\t\tregion->refs++;\n\tspin_unlock(&dax->regions_lock);"
+          "\n\tif (region)\n\t\treturn region;\n",
+          "\tregion = fxfs_dax_find_region(dax, e->branch, e->sequence);\n\tif (region)\n"
+          "\t\tregion->refs++;\n\tif (region)\n\t\treturn region;\n")],
+        "debug",
+    ),
 ]
 
 # Equivalent mutants, which no suite can kill, and why:
@@ -160,7 +172,7 @@ def mutate(tree, edits):
     path.write_text(text)
 
 
-def run(host, zone, results, name, edits):
+def run(host, zone, results, name, edits, build):
     with tempfile.TemporaryDirectory(prefix="fxdax-mutant-") as scratch:
         tree = Path(scratch) / "tree"
         subprocess.run(["git", "-C", ROOT, "worktree", "add", "-q", "--detach", tree, "HEAD"],
@@ -170,7 +182,7 @@ def run(host, zone, results, name, edits):
                             "vendor/firecracker"], check=True)
             mutate(tree, edits)
             env = dict(os.environ, FXDAX_GCE_ZONE=zone, FXDAX_WORKSPACE_TESTS="0",
-                       FXDAX_GUEST_KERNEL_BUILD="release",
+                       FXDAX_GUEST_KERNEL_BUILD=build,
                        FXDAX_E2E_TEST=os.environ.get("FXDAX_E2E_TEST", SUITES))
             out = Path(results) / name
             log = open(Path(results) / f"{name}.log", "w")
@@ -199,10 +211,11 @@ def main():
         raise SystemExit(__doc__)
     host, zone, results, names = sys.argv[1], sys.argv[2], sys.argv[3], set(sys.argv[4:])
     Path(results).mkdir(parents=True, exist_ok=True)
-    for name, what, edits in MUTANTS:
+    for name, what, edits, *build in MUTANTS:
         if names and name not in names:
             continue
-        print(f"{run(host, zone, results, name, edits)} {name}: {what}", flush=True)
+        ended = run(host, zone, results, name, edits, build[0] if build else "release")
+        print(f"{ended} {name}: {what}", flush=True)
 
 
 if __name__ == "__main__":
