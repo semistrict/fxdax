@@ -176,8 +176,13 @@ rounds=${FXDAX_E2E_ROUNDS:-1}
 status=0
 for test in "${tests[@]}"; do
     if (( rounds == 1 )); then
-        "$harness/target/debug/runner" test --test-case "$test" --base-dir "$results/$test" \
-            --keep-all || status=1
+        # fxdax: said as a failed round of several is, which guest-mutants-gce.py reads: a mutant
+        # killed in a single round was taken for a broken run (TASK-119.8).
+        if ! "$harness/target/debug/runner" test --test-case "$test" --base-dir "$results/$test" \
+            --keep-all; then
+            echo "$test: failed in round 1 of 1: see $results/$test" >&2
+            status=1
+        fi
         continue
     fi
     for (( round = 1; round <= rounds; round++ )); do
