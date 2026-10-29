@@ -6,7 +6,7 @@ title: >-
 status: In Progress
 assignee: []
 created_date: '2026-10-23 09:16'
-updated_date: '2026-10-29 18:58'
+updated_date: '2026-10-29 19:26'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -46,4 +46,6 @@ Landed (3ca2e731): with a remote, a fork claims its child ID first (one GET; EEX
 Handed over (2026-10-24): landed on main; what is left is in the notes above.
 
 2026-10-29: AC1's race closed for forks whose segment went (an origin to claim the ID with): branch::delete_fork gives a child with no record the record its fork would ([record_fork]'s, live, naming the origin) by a create that succeeds only if none is there, before ending the child's lease; a branch taking the ID after the deletion found it free has its record there first, the create fails, and the deletion leaves it be (test forks_deleted_leave_a_branch_taking_their_childs_id_meanwhile, failing before: the other branch's lease ended, its record marked deleted). The claim is live, not deleted, so a deletion refused by a later placement (ESTALE at the lease) changes nothing wrong (forks_failed_whose_deletion_failed_keep_their_handle_and_branch); a child so claimed has its lease ended and record marked deleted alone (delete split into end_lease and mark_deleted), as delete treated a branch with no record, without recovering it (stores_are_deleted_while_their_forks_live_locally recovered a fork whose parent was gone otherwise: 'lost'). Remaining: a fork whose segment never went names no origin, and has none to claim the ID with. macOS scripts/test.sh passed (1826); GCE Linux workspace r246 pending.
+
+GCE r246 (main 3866a31d6): Linux workspace 1955/1955 and the Shuttle suites, fxfs-guest-dax passed.
 <!-- SECTION:NOTES:END -->
