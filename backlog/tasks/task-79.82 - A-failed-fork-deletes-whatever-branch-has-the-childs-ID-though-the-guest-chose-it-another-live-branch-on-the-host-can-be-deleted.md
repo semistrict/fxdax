@@ -6,7 +6,7 @@ title: >-
 status: In Progress
 assignee: []
 created_date: '2026-10-23 09:16'
-updated_date: '2026-10-24 12:29'
+updated_date: '2026-10-29 18:58'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -44,4 +44,6 @@ User decision (2026-10-23): with a remote, a fork refuses (EEXIST) a child ID wh
 Landed (3ca2e731): with a remote, a fork claims its child ID first (one GET; EEXIST if a record exists or the store has a claim for it), records its origin in a claim file before its segment goes, and unfork and a leftover handle's deletion delete a child in object storage only if its record is absent or names that origin (branch::delete_fork). AC #2 and #3 hold (forks_to_a_branch_the_bucket_has_fail_with_eexist, forks_failed_leave_branches_that_took_their_childs_id_be, forks_failed_whose_handles_are_deleted_later_leave_branches_that_took_their_childs_id_be, forks_failed_once_committed_leave_their_child_no_branch, forks_whose_host_crashed_before_their_record_are_deleted_in_object_storage_too, host::tests::forks_failed_once_committed_keep_their_handles). AC #1 is not fully met: another branch taking the ID after the GET and before a failed fork's deletion takes the child's lease can still be deleted (documented on delete_fork). Still EIO, not EEXIST: a fork to a branch the local store has when object storage has nothing. macOS: workspace 2493/2493 and every Shuttle suite; Linux (GCE fxdax-test-r8m): workspace 2571/2571, Shuttle suites, and the guest cases fxfs-guest, fxfs-guest-dax, fxfs-guest-checks, fxfs-guest-checks-dax, extent-guest, fxfs-guest-pgbench and fxfs-guest-pgbench-dax, all OK, with a guest kernel built from the tree; scripts/upstream-changes.py --check passes. Pushed 430bb064..3ca2e731.
 
 Handed over (2026-10-24): landed on main; what is left is in the notes above.
+
+2026-10-29: AC1's race closed for forks whose segment went (an origin to claim the ID with): branch::delete_fork gives a child with no record the record its fork would ([record_fork]'s, live, naming the origin) by a create that succeeds only if none is there, before ending the child's lease; a branch taking the ID after the deletion found it free has its record there first, the create fails, and the deletion leaves it be (test forks_deleted_leave_a_branch_taking_their_childs_id_meanwhile, failing before: the other branch's lease ended, its record marked deleted). The claim is live, not deleted, so a deletion refused by a later placement (ESTALE at the lease) changes nothing wrong (forks_failed_whose_deletion_failed_keep_their_handle_and_branch); a child so claimed has its lease ended and record marked deleted alone (delete split into end_lease and mark_deleted), as delete treated a branch with no record, without recovering it (stores_are_deleted_while_their_forks_live_locally recovered a fork whose parent was gone otherwise: 'lost'). Remaining: a fork whose segment never went names no origin, and has none to claim the ID with. macOS scripts/test.sh passed (1826); GCE Linux workspace r246 pending.
 <!-- SECTION:NOTES:END -->
