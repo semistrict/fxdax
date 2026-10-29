@@ -910,7 +910,10 @@ mod guest {
                             Err(_) => failed += 1,
                         }
                     }
-                    fs::write("/proc/thread-self/make-it-fail", "0").unwrap();
+                    // Writing it allocates, which may fail until it is written (GCE r255).
+                    while let Err(err) = fs::write("/proc/thread-self/make-it-fail", "0") {
+                        assert_eq!(err.raw_os_error(), Some(libc::ENOMEM), "make-it-fail: {err}");
+                    }
                     failed
                 })
             })
