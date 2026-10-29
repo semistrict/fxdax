@@ -98,7 +98,22 @@ const WINDOW: u64 = 64 << 20;
 /// The contents of the crash test's file `index`, of `writer`: of a size and pattern its name
 /// gives, which the host checks.
 fn durable(writer: u8, index: usize) -> Vec<u8> {
-    pattern(4096 * (index % 37) + 13 * index + 1, writer.wrapping_mul(31) ^ index as u8)
+    let mut bytes = vec![0; durable_len(index)];
+    durable_into(writer, index, &mut bytes);
+    bytes
+}
+
+/// The length of file `index`'s bytes, `durable`'s.
+fn durable_len(index: usize) -> usize {
+    4096 * (index % 37) + 13 * index + 1
+}
+
+/// `durable`'s bytes in `bytes`, as long as they are: for a writer whose allocations may fail.
+fn durable_into(writer: u8, index: usize, bytes: &mut [u8]) {
+    let seed = writer.wrapping_mul(31) ^ index as u8;
+    for (i, byte) in bytes.iter_mut().enumerate() {
+        *byte = (i % 251) as u8 ^ (i / 4096) as u8 ^ seed;
+    }
 }
 
 /// The bytes of the unnamed file (O_TMPFILE) the crash test's guest leaves open as its VM stops,
@@ -863,17 +878,29 @@ mod guest {
             .map(|writer| {
                 let stop = stop.clone();
                 std::thread::spawn(move || {
+                    // Its memory, as much as it needs, before its allocations fail: a large one,
+                    // mapped, failed, and the agent, init, aborted (GCE r269).
+                    let mut bytes =
+                        vec![0; (0..37).map(|i| durable_len(i)).max().unwrap() + 13 * 4096];
+                    let mut name = String::with_capacity(64);
                     // Its allocations, alone, fail.
                     fs::write("/proc/thread-self/make-it-fail", "1").unwrap();
                     let mut failed = 0u64;
-                    for index in 0.. {
+                    for index in 0..4096 {
                         if stop.load(std::sync::atomic::Ordering::Acquire) {
                             break;
                         }
+                        let data = &mut bytes[..durable_len(index)];
+                        durable_into(writer, index, data);
+                        name.clear();
+                        std::fmt::Write::write_fmt(
+                            &mut name,
+                            format_args!("{MNT}/synced-{writer}-{index}"),
+                        )
+                        .unwrap();
                         let attempt = || -> std::io::Result<()> {
-                            let name = format!("{MNT}/synced-{writer}-{index}");
-                            let mut file = fs::File::create(name)?;
-                            file.write_all(&durable(writer, index))?;
+                            let mut file = fs::File::create(&name)?;
+                            file.write_all(data)?;
                             file.sync_all()?;
                             fs::File::open(MNT)?.sync_all()
                         };
