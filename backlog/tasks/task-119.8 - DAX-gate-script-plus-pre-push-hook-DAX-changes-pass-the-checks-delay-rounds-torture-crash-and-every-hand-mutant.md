@@ -3,10 +3,10 @@ id: TASK-119.8
 title: >-
   DAX gate: script plus pre-push hook; DAX changes pass the checks, delay
   rounds, torture, crash and every hand mutant
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-28 19:27'
-updated_date: '2026-10-29 16:54'
+updated_date: '2026-10-29 18:29'
 labels:
   - testing
 dependencies: []
@@ -23,9 +23,9 @@ There is no CI and nothing gates a push. Mutants prune_in_use (never killed) and
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 scripts/dax-gate.sh runs on GCE and records a pass for a commit
-- [ ] #2 A pre-push hook refuses changes under guest/linux/fs/fxfs/ without a pass
-- [ ] #3 Every hand mutant is killed within 3 rounds
+- [x] #1 scripts/dax-gate.sh runs on GCE and records a pass for a commit
+- [x] #2 A pre-push hook refuses changes under guest/linux/fs/fxfs/ without a pass
+- [x] #3 Every hand mutant is killed within 3 rounds
 <!-- AC:END -->
 
 ## Definition of Done
@@ -45,4 +45,12 @@ There is no CI and nothing gates a push. Mutants prune_in_use (never killed) and
 Gate run on 69227bac0: FAILED: its suites never ran (dax-gate.sh's list had a newline, which test-gce.sh refuses: 'FXDAX_E2E_TEST names test cases', so no gate run ever ran them); mutants: 16 killed, pmd_row_unrelocated missed (recorded equivalent since). 3981ad18f passes the suites as one line, with scripts/tests/test_dax_gate.py (fails on the old list). Gate relaunched on 3981ad18f.
 
 Gate run 2 (3981ad18f): mutants all 16 killed (AC3 met); suites: fxfs-guest-dax, crash-dax, crash-dax-mapped, -placed, checks-dax, -delay, -small 5 rounds each passed; crash-dax-gathered failed round 1 on TASK-129's copy race (the store's directory let go while its uploader ran), fixed by the uploader holding it. Gate run 3 launched on the fix.
+
+Gate run 3 on 3e6615852 PASSED, noted (refs/notes/dax-gate, pushed): suites fxfs-guest-dax, crash-dax, crash-dax-gathered, -mapped, -placed, checks-dax, -delay, -small 5 rounds each; pgbench-dax; all 16 hand mutants killed within 3 rounds (pmd_row_unrelocated recorded equivalent under patch 0008). The pre-push hook (scripts/hooks/pre-push) refuses DAX changes without a note; scripts/tests/test_pre_push.py tests it; core.hooksPath scripts/hooks installs it. DoD #1 (macOS scripts/test.sh) passed on the commits since.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+scripts/dax-gate.sh runs the DAX suites (5 rounds each, crash-at-step variants included), pgbench-dax, and every hand mutant of dax.c on two GCE hosts, noting a pass on the commit; scripts/hooks/pre-push refuses DAX changes without one. First pass: 3e6615852 (gate run 3), after fixing the gate's suite list (never ran before), a single-round kill read as broken, and TASK-129's copy race.
+<!-- SECTION:FINAL_SUMMARY:END -->
