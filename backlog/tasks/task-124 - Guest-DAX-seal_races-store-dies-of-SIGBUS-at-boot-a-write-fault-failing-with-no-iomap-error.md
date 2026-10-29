@@ -3,11 +3,11 @@ id: TASK-124
 title: >-
   Guest DAX: seal_race's store dies of SIGBUS at boot, a write fault failing
   with no iomap error
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-28 23:58'
-updated_date: '2026-10-29 01:22'
+updated_date: '2026-10-29 03:06'
 labels:
   - bug
 dependencies: []
@@ -23,15 +23,15 @@ fxfs-guest-checks-dax round 1 on r209 at cae97000a (also r206-merge before): sea
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The failing step of dax_fault_iter is known, from a kernel log of it
-- [ ] #2 seal_race passes 20 rounds of fxfs-guest-checks-dax in a row
+- [x] #1 The failing step of dax_fault_iter is known, from a kernel log of it
+- [x] #2 seal_race passes 20 rounds of fxfs-guest-checks-dax in a row
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -51,3 +51,9 @@ Second cause (r208 checks at 14af2c666, large_folios, read faults): 'dax: a read
 
 seal_race: no SIGBUS in 60 rounds at 329c0acd1, nor in 2x40 at 7f0b65266.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Two causes, each named by kernel patch 0007's log of the failing step. (1) fxfs_dax_map_moved's ENOENT branch unmapped a page without relocating it; its next mapping elsewhere relocated it not, and the kernel refused the new page (validate_page_before_insert): fxfs_dax_unmap_pages relocates mapped pages it unmaps. (2) A shared PTE fault replacing a PMD entry stored over its multi-index slot, naming one page for all 512: kernel patch 0008 splits it. Verified: seal_race 60 rounds at 329c0acd1 and 15 at the rebased HEAD, no SIGBUS; fxfs-guest-checks-dax and -delay rounds. DoD #1: the fxdax crate's tests on Linux (GCE), not the macOS workspace run.
+<!-- SECTION:FINAL_SUMMARY:END -->

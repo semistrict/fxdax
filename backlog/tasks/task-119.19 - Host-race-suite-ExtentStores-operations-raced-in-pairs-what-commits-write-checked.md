@@ -3,11 +3,11 @@ id: TASK-119.19
 title: >-
   Host race suite: ExtentStore's operations raced in pairs, what commits write
   checked
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-28 23:39'
-updated_date: '2026-10-29 01:07'
+updated_date: '2026-10-29 03:06'
 labels:
   - testing
 dependencies: []
@@ -24,16 +24,16 @@ TASK-121's last loss was a host atomicity race: ExtentStore::write checked an ex
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Each pair of ExtentStore operations that can touch one extent concurrently (write, writable map, read-only map, commit) has a test racing them from a barrier many times and checking what the next commit wrote
-- [ ] #2 The suite runs within the fxdax crate's tests in under 30 s
-- [ ] #3 The tests racing a write against the mapping that opens its extent fail with the TASK-121 bug put back (the open lock released before the store write); the others, of pairs that bug doesn't lose, pass with and without it; all pass on main
+- [x] #1 Each pair of ExtentStore operations that can touch one extent concurrently (write, writable map, read-only map, commit) has a test racing them from a barrier many times and checking what the next commit wrote
+- [x] #2 The suite runs within the fxdax crate's tests in under 30 s
+- [x] #3 The tests racing a write against the mapping that opens its extent fail with the TASK-121 bug put back (the open lock released before the store write); the others, of pairs that bug doesn't lose, pass with and without it; all pass on main
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -44,3 +44,9 @@ TASK-121's last loss was a host atomicity race: ExtentStore::write checked an ex
 3. Fold the existing writes_racing_the_mapping_that_opens_their_extent_are_committed into the helper.
 4. Verify on GCE: each fails with the fix reverted (hand mutant), all pass on main, timing under 30 s.
 <!-- SECTION:PLAN:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+crates/fxdax/src/extents.rs: race() runs steps on one extent from a barrier, 2000 rounds, then commits and checks what the extent reads. Seven tests: write x writable map (opening), writes to two blocks x writable map, write x read-only map, write x commit, read-only map x commit, writable map x commit, writable x read-only map. Each ~2-2.5 s on GCE. With TASK-121's fix reverted the two write-vs-opening-mapping tests fail (extent 3, zeros); all pass on main. DoD #1: the fxdax crate's tests on Linux (GCE), not macOS.
+<!-- SECTION:FINAL_SUMMARY:END -->

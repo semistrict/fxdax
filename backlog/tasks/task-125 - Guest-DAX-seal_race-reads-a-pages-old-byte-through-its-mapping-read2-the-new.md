@@ -3,11 +3,11 @@ id: TASK-125
 title: >-
   Guest DAX: seal_race reads a page's old byte through its mapping, read(2) the
   new
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-29 01:11'
-updated_date: '2026-10-29 01:22'
+updated_date: '2026-10-29 03:06'
 labels:
   - bug
 dependencies: []
@@ -23,15 +23,15 @@ seal_race, about 1 round in 15-25 (r209 at 14af2c666, r208 and r209 at 7f0b65266
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Each shape's cause is known, from a trace or log of it
-- [ ] #2 seal_race passes 60 rounds in a row
+- [x] #1 Each shape's cause is known, from a trace or log of it
+- [x] #2 seal_race passes 60 rounds in a row
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -49,3 +49,9 @@ At 1ed1557fe (r209, round 1): page 0's fault mapped it in a region slot, window 
 
 Verified: seal_race 60 rounds passed at 329c0acd1 (r209). Control without TASK-124's fixes or this one (r208): the stale read in round 8 (page 15), so it predates TASK-124's fixes.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A page evacuated or moved kept the user's PTE where it was until its next fault; once that place's extent was freed, the host mapped zeros there (replace_kept), and loads read them. Traced at 1ed1557fe; the two earlier shapes fit it once the frame's late read is allowed for. fxfs_dax_place unmaps the user's mappings of pages it relocates at once. seal_race 60 rounds in a row at 329c0acd1; control without the fix failed in round 8. DoD #1: Linux (GCE) only.
+<!-- SECTION:FINAL_SUMMARY:END -->
