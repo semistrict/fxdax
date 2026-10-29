@@ -108,8 +108,8 @@ MUTANTS = [
         "pmd_row_unrelocated",
         "a page moving out of a row a PMD mapped relocates itself alone, whose row's other pages' "
         "faults meet the PMD entry: SIGBUS (TASK-123)",
-        [("\tif (changed && READ_ONCE(range->huge)) {\n",
-          "\tif (changed && READ_ONCE(range->huge) && false) {\n")],
+        [("\tif (READ_ONCE(range->huge)) {\n",
+          "\tif (READ_ONCE(range->huge) && false) {\n")],
     ),
 ]
 
