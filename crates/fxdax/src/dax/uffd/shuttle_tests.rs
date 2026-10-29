@@ -346,7 +346,7 @@ impl Guest for HostGuest {
         };
         drop(model);
         Outcome::Faulted(Box::pin(async move {
-            self.stage.resolve(&*self.window, addr, fault).await;
+            self.stage.resolve(&*self.window, addr, fault, 0).await;
             Ok(())
         }))
     }
@@ -598,7 +598,7 @@ fn withholding_races_maps() {
         dax
     });
     // A load's fault, as KVM makes for the guest.
-    future::block_on(stage.resolve(&*window, base, 0));
+    future::block_on(stage.resolve(&*window, base, 0, 0));
     let _dax = map.join().unwrap();
     match guest.access(0, Access::Read, None) {
         Outcome::Made(read) => assert_eq!(read, 0, "the page mapped isn't the file's zeros"),

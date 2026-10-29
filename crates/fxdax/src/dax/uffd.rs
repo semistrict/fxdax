@@ -87,6 +87,7 @@ const UFFD_API: u64 = 0xaa;
 const UFFD_EVENT_PAGEFAULT: u8 = 0x12;
 const UFFD_PAGEFAULT_FLAG_WRITE: u64 = 1 << 0;
 const UFFD_PAGEFAULT_FLAG_WP: u64 = 1 << 1;
+const UFFD_FEATURE_THREAD_ID: u64 = 1 << 8;
 const UFFD_FEATURE_WP_HUGETLBFS_SHMEM: u64 = 1 << 12;
 const UFFDIO_REGISTER_MODE_MISSING: u64 = 1 << 0;
 const UFFDIO_REGISTER_MODE_WP: u64 = 1 << 1;
@@ -195,15 +196,27 @@ fn default_budget() -> usize {
     (max.saturating_sub(MAPPINGS_RESERVED) / 2).max(1)
 }
 
-/// Logs a fault the window refused, `what` at window offset `offset`: each of the first thousand,
-/// a run's few, and every power of two after: a vCPU whose access stays refused for a second stops
-/// its VM with only `EFAULT` to say so, from `KVM_RUN` (TASK-99, TASK-101).
-fn refused(what: &str, offset: u64) {
+/// Logs a fault the window refused, `what` at window offset `offset`, of `thread`: each of the
+/// first thousand, a run's few, and every power of two after: a vCPU whose access stays refused
+/// for a second stops its VM with only `EFAULT` to say so, from `KVM_RUN` (TASK-99, TASK-101).
+fn refused(what: &str, offset: u64, thread: u32) {
     static REFUSED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let count = REFUSED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
     if count <= 1000 || count.is_power_of_two() {
-        log::warn!("fxdax: the DAX window refused {what}, at offset {offset:#x} ({count} so far)");
+        log::warn!(
+            "fxdax: the DAX window refused {what}, at offset {offset:#x}, by thread {thread} ({}) \
+             ({count} so far)",
+            thread_name(thread)
+        );
     }
+}
+
+/// fxdax: the name of this process's thread `thread`, as the kernel has it: whether a fault the
+/// window refused was a vCPU's, the guest's own access, or a device's, the VMM's on its behalf
+/// (TASK-44.12).
+fn thread_name(thread: u32) -> String {
+    std::fs::read_to_string(format!("/proc/self/task/{thread}/comm"))
+        .map_or_else(|err| format!("unknown: {err}"), |name| name.trim_end().to_owned())
 }
 
 /// fxdax: logs a restriction of a page at window offset `offset` to reads, or its lifting, `what`,
@@ -512,7 +525,11 @@ impl UffdSecondStage {
     ) -> Result<Arc<Self>, Error> {
         let uffd = open_userfaultfd()?;
         let mut api =
-            UffdioApi { api: UFFD_API, features: UFFD_FEATURE_WP_HUGETLBFS_SHMEM, ioctls: 0 };
+            UffdioApi {
+                api: UFFD_API,
+                features: UFFD_FEATURE_WP_HUGETLBFS_SHMEM | UFFD_FEATURE_THREAD_ID,
+                ioctls: 0,
+            };
         ioctl(&uffd, UFFDIO_API, &mut api)
             .map_err(|err| Error::new(anyhow::Error::new(err).context("UFFDIO_API")))?;
         // SAFETY: As the caller promises.
@@ -580,7 +597,7 @@ impl UffdSecondStage {
             }
             while let Some(msg) = self.read_event() {
                 if msg.event == UFFD_EVENT_PAGEFAULT {
-                    faults.push(self.resolve(window, msg.address as usize, msg.flags));
+                    faults.push(self.resolve(window, msg.address as usize, msg.flags, msg.ptid));
                 }
             }
         }
@@ -734,7 +751,13 @@ impl<H: HostMemory> UffdSecondStage<H> {
 
     /// Resolves the fault at host address `address` described by `flags`, and wakes the faulting
     /// thread.
-    pub(crate) async fn resolve(&self, window: &dyn Faults, address: usize, flags: u64) {
+    pub(crate) async fn resolve(
+        &self,
+        window: &dyn Faults,
+        address: usize,
+        flags: u64,
+        thread: u32,
+    ) {
         let page_size = page_size() as usize;
         let addr = address - address % page_size;
         let offset = (addr - self.base) as u64;
@@ -764,7 +787,7 @@ impl<H: HostMemory> UffdSecondStage<H> {
             // here too, so that the write fails in the kernel rather than faulting here again. A
             // store from the guest then fails as KVM's would.
             Err(Errno::EACCES) if access == Access::Write => {
-                refused("a store to a page the window maps read-only", offset);
+                refused("a store to a page the window maps read-only", offset, thread);
                 if rules().refused_store_read_only {
                     self.restrict(addr, seen, libc::PROT_READ);
                 }
@@ -773,7 +796,7 @@ impl<H: HostMemory> UffdSecondStage<H> {
             // Where the window maps nothing, the fault is KVM's, for a page the guest has
             // unmapped (see the module docs): it is withheld, so that the fault fails.
             Err(Errno::ENOENT) => {
-                refused("an access to a page the window maps nothing at", offset);
+                refused("an access to a page the window maps nothing at", offset, thread);
                 self.restrict(addr, seen, libc::PROT_NONE);
                 Ok(())
             }
