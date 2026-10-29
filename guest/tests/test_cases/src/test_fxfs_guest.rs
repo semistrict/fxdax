@@ -873,6 +873,8 @@ mod guest {
         // agent, init, with SIGSEGV (GCE r267).
         set("fail_page_alloc", "ignore-gfp-highmem", "Y");
         set("fail_page_alloc", "min-order", "0");
+        // As many files as a writer makes at most, in the seconds its allocations fail.
+        const FILES: usize = 4096;
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let writers: Vec<_> = (1..=2u8)
             .map(|writer| {
@@ -880,13 +882,12 @@ mod guest {
                 std::thread::spawn(move || {
                     // Its memory, as much as it needs, before its allocations fail: a large one,
                     // mapped, failed, and the agent, init, aborted (GCE r269).
-                    let mut bytes =
-                        vec![0; (0..37).map(|i| durable_len(i)).max().unwrap() + 13 * 4096];
+                    let mut bytes = vec![0; (0..FILES).map(durable_len).max().unwrap()];
                     let mut name = String::with_capacity(64);
                     // Its allocations, alone, fail.
                     fs::write("/proc/thread-self/make-it-fail", "1").unwrap();
                     let mut failed = 0u64;
-                    for index in 0..4096 {
+                    for index in 0..FILES {
                         if stop.load(std::sync::atomic::Ordering::Acquire) {
                             break;
                         }
