@@ -196,7 +196,7 @@ mod host {
                 }
                 // The store as the crash left it, for a failure to be looked into: checking it
                 // recovers it, and mounting it replays its journal.
-                crate::common::copy_dir(&path, &test_setup.tmp_dir.join("extents-at-crash"))
+                crate::common::copy_store(&path, &test_setup.tmp_dir.join("extents-at-crash"))
                     .unwrap();
                 let storage = block_on(Storage::open(&path).unwrap().check()).unwrap();
                 let fs = block_on(Filesystem::mount(storage)).unwrap();

@@ -97,6 +97,20 @@ pub fn control(socket: &Path) -> Result<fxdax::extentd::control::Client, fxdax::
     fxdax::extentd::control::Client::connect(socket.with_extension("control"))
 }
 
+/// Copies the extent store at `from` to `to`, as [`copy_dir`] does, once no process has it open: its
+/// directory taken, as a process opening it takes it, which the extent daemon serving it holds
+/// until its last user, an upload too, lets it go. Copied while the daemon held it, an upload's
+/// marker's `.new` file was renamed away between listing it and copying it (TASK-129).
+pub fn copy_store(from: &Path, to: &Path) -> anyhow::Result<()> {
+    use extent_store::Dir;
+    let dir = extent_store::HostDir::new(from, false)
+        .with_context(|| format!("opening {}", from.display()))?;
+    dir.take().with_context(|| format!("taking {}", from.display()))?;
+    let copied = copy_dir(from, to);
+    dir.let_go();
+    copied
+}
+
 /// Copies the directory `from` to `to`, which must not exist, with everything in it.
 pub fn copy_dir(from: &Path, to: &Path) -> anyhow::Result<()> {
     create_dir(to).with_context(|| format!("creating {}", to.display()))?;

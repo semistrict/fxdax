@@ -3,7 +3,7 @@ name = "test_cases"
 edition = "2024"
 
 [features]
-host = ["fxdax", "follower_history", "futures", "serde", "serde_json"]
+host = ["fxdax", "extent_store", "follower_history", "futures", "serde", "serde_json"]
 guest = ["serde_json"]
 
 [lib]
@@ -19,5 +19,7 @@ tempdir = "0.3.7"
 # The fxdax repository whose guest tests these are.
 fxdax = { path = "../../../crates/fxdax", optional = true, features = ["testing"] }
 futures = { version = "0.3.34", optional = true }
+# fxdax's extent store, whose directory the crash test takes before it copies it (TASK-129).
+extent_store = { path = "../../../crates/extent_store", optional = true }
 # fxdax's history checker of followers (TASK-42.1), which the followers' torture test's host runs.
 follower_history = { path = "../../../crates/follower_history", optional = true }
