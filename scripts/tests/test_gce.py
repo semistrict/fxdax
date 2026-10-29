@@ -13,6 +13,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -594,6 +595,19 @@ class Source(unittest.TestCase):
         self.assertEqual(
             json.loads((results / "instance.json").read_text()),
             {"name": "fxdax-test-x", "zone": "us-east4-a"},
+        )
+
+    def test_a_submodule_not_checked_out_is_not_copied(self):
+        shutil.rmtree(self.repo / "vendor" / "firecracker")
+        (self.repo / "vendor" / "firecracker").mkdir()
+        self.assertEqual(
+            self.push({})[:3],
+            (
+                "status 1\n",
+                f"vendor/firecracker is not checked out: git -C {self.repo} submodule update "
+                "--init vendor/firecracker\n",
+                [],
+            ),
         )
 
     def test_a_copy_that_failed_is_not_unpacked(self):
