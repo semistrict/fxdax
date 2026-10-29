@@ -7,7 +7,7 @@ title: >-
 status: In Progress
 assignee: []
 created_date: '2026-10-28 19:45'
-updated_date: '2026-10-29 07:01'
+updated_date: '2026-10-29 08:05'
 labels:
   - testing
 dependencies: []
@@ -39,4 +39,6 @@ Fable and Astra (2026-10-28): fxfs_dax_delay sleeps <=200 us a quarter of the ti
 
 <!-- SECTION:NOTES:BEGIN -->
 2026-10-29, branch t3/task-112-6: pause points GATHERED (an evacuation between gathering and its MAP), READ_MAPPED (a read between its iomap and its copy), EVACUEES_MAPPED (between MAP and placing), PLACED (after placing); fxfs.dax_pause_ino limits a file's steps to one inode. Checks evacuation_paused (a write meanwhile waits for the evacuation; kills evacuation_unlocked) and prune_while_paused (the page a paused read maps moved out and pruned meanwhile; kills prune_in_use). Pending GCE r214 (mutants), r215 (checks, mutant prune_in_use).
+
+GCE r220: the mutant prune_in_use killed in round 1 by prune_while_paused alone: the region let go of under the paused read, the window unmapped it, and the read's copy was refused ('an access to a page the window maps nothing at'), the vCPU failing with EFAULT a second later. r214: evacuation_unlocked killed, evacuation_paused failing. Both survivors of TASK-44.19 now die in one round, by design rather than timing. Caveat (r215): both checks need room for regions, which TASK-128 exhausts late in the full suites.
 <!-- SECTION:NOTES:END -->

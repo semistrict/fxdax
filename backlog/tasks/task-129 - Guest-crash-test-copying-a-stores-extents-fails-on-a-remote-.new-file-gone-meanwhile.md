@@ -6,7 +6,7 @@ title: >-
 status: In Progress
 assignee: []
 created_date: '2026-10-29 02:34'
-updated_date: '2026-10-29 07:41'
+updated_date: '2026-10-29 08:05'
 labels:
   - bug
   - testing
@@ -38,4 +38,6 @@ fxfs-guest-crash-dax round 3 of 15 on r209 (rebased onto f897ce4a2): test_fxfs_g
 
 <!-- SECTION:NOTES:BEGIN -->
 c0904a4a7 on main: copy_store takes the store's directory (extent_store::Dir::take) before copying. GCE r216 crash-dax round 1 copied the store (it failed on the reverted refusal check). r220: 10 rounds.
+
+GCE r220 (kernel built, branch t3/task-112-6 rebased on main with c0904a4a7): fxfs-guest-crash-dax 10 rounds passed; r216 round 1 copied too. 11 of AC2's 20 so far.
 <!-- SECTION:NOTES:END -->
