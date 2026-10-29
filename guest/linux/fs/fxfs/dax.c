@@ -3797,7 +3797,7 @@ static void fxfs_dax_check_placed(struct fxfs_dax *dax, struct fxfs_dax_file *fi
 				  const struct fxfs_device_map *map)
 {
 	u64 pos = fxfs_dax_chunk_start(run->range) + ((u64)run->page << PAGE_SHIFT), done = 0;
-	struct fxfs_dax_extent e;
+	struct fxfs_dax_extent e = {};
 	ssize_t count;
 
 	while (done < map->len) {
