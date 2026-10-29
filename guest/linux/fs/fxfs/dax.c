@@ -886,15 +886,19 @@ static unsigned long fxfs_dax_run(const struct fxfs_dax_range *range, unsigned l
 /*
  * Has `range`'s `pages` pages from `page` on be where `region`'s pages from `first` on are, or in
  * the range's own space without `region`: those the window mapped elsewhere before are
- * relocated, so that the kernel's mappings of them go (fxfs_dax_cow); and, if `unmapping`, those
- * it mapped, which it maps no longer. With the file's DAX semaphore held for writing.
+ * relocated, so that the kernel's entries of them are replaced (fxfs_dax_cow); and, if
+ * `unmapping`, those it mapped, which it maps no longer. The user's mappings of them go now
+ * (TASK-125): one left where a page was, read-only since a seal, read what the window maps there
+ * once its extent was freed, zeros, until the next fault replaced it. With the file's DAX
+ * semaphore held for writing, and its inode live: an iomap's, or the files lock held.
  */
 static void fxfs_dax_place(struct fxfs_dax_range *range, unsigned long page, unsigned long pages,
 			   struct fxfs_dax_region *region, unsigned long first, bool unmapping)
 {
+	unsigned long i, from = ULONG_MAX, to = 0;
+	struct inode *inode;
 	unsigned int index = 0;
-	bool changed = false;
-	unsigned long i;
+	pgoff_t start;
 	u64 moved;
 
 	lockdep_assert_held_write(&range->file->sem);
@@ -910,7 +914,8 @@ static void fxfs_dax_place(struct fxfs_dax_range *range, unsigned long page, uns
 		if ((range->moved[page + i] != moved || unmapping) &&
 		    test_bit(page + i, range->mapped)) {
 			set_bit(page + i, range->relocated);
-			changed = true;
+			from = min(from, page + i);
+			to = page + i + 1;
 		}
 		range->moved[page + i] = moved;
 		fxfs_dax_trace(FXFS_DAX_TRACE_RELOCATED, range->file->ino,
@@ -918,10 +923,19 @@ static void fxfs_dax_place(struct fxfs_dax_range *range, unsigned long page, uns
 			       fxfs_dax_page_offset(range, page + i), region ? region->sequence : 0,
 			       first + i, test_bit(page + i, range->mapped));
 	}
+	if (from == ULONG_MAX)
+		return;
 	/* fxdax: a row a PMD mapped broken up: every page of it is relocated (TASK-123). */
-	if (changed && READ_ONCE(range->huge)) {
+	if (READ_ONCE(range->huge)) {
 		bitmap_or(range->relocated, range->relocated, range->mapped, range->pages);
 		WRITE_ONCE(range->huge, false);
+		from = 0;
+		to = range->pages;
+	}
+	inode = READ_ONCE(range->file->inode);
+	if (inode) {
+		start = fxfs_dax_chunk_start(range) >> PAGE_SHIFT;
+		unmap_mapping_pages(inode->i_mapping, start + from, to - from, false);
 	}
 }
 
