@@ -3,10 +3,10 @@ id: TASK-128
 title: >-
   Guest DAX check regions_evacuated finds no pages evacuated under
   fxfs-guest-checks-dax-delay
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-29 02:00'
-updated_date: '2026-10-29 09:23'
+updated_date: '2026-10-29 10:07'
 labels:
   - bug
   - testing
@@ -24,7 +24,7 @@ r208 at d716667e7, fxfs-guest-checks-dax-delay round 1: regions_evacuated failed
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [x] #1 The cause is known: evacuation not run within the check, or not finding the regions' pages
-- [ ] #2 regions_evacuated passes 10 rounds of fxfs-guest-checks-dax-delay
+- [x] #2 regions_evacuated passes 10 rounds of fxfs-guest-checks-dax-delay
 <!-- AC:END -->
 
 ## Definition of Done
@@ -45,3 +45,9 @@ GCE r219 (ee3e590e3's counts): checks-dax round 2, 5 ranges keeping 1630 regions
 
 GCE r221 with the fix: checks-dax, checks-dax-delay (regions_evacuated in it) and checks-dax-small 2 rounds each passed; pgbench-dax 2. r222: the mutant prune_waits_unrelocated (the old rule) killed by regions_pruned_mapped in round 1. On main (b952a7424). AC2 wants 10 rounds of the delay suite.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Cause: fxfs_dax_prune let go of no region while any page of its range was relocated, which a mapped file's page stays until it faults again; mapped files stored to and fsynced page after page kept every staging extent's region they were ever in (r219: five ranges, 1630 regions, 35 pages in them, 92 relocated), and the window's region space had no 2 MiB run left. Fix (b025910d7, on main): per relocated page, where the kernel's entry last had it (stale); a prune keeps the regions moved or stale name and lets go of the rest. New stats (window_regions_* by kind, ranges keeping regions, their moved and relocated pages) and the checks regions_pruned_mapped (kills the old rule's mutant) and stale_entry_flushed. GCE r224 (main b952a7424): fxfs-guest-checks-dax-delay 10 rounds passed, regions_evacuated in each. DoD #1 on macOS not run.
+<!-- SECTION:FINAL_SUMMARY:END -->

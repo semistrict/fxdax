@@ -3,10 +3,10 @@ id: TASK-129
 title: >-
   Guest crash test: copying a store's extents fails on a remote-*.new file gone
   meanwhile
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-29 02:34'
-updated_date: '2026-10-29 08:05'
+updated_date: '2026-10-29 10:07'
 labels:
   - bug
   - testing
@@ -23,8 +23,8 @@ fxfs-guest-crash-dax round 3 of 15 on r209 (rebased onto f897ce4a2): test_fxfs_g
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The crash test's copy of the store tolerates files its writer renames or removes meanwhile, or copies a quiescent store
-- [ ] #2 fxfs-guest-crash-dax passes 20 rounds
+- [x] #1 The crash test's copy of the store tolerates files its writer renames or removes meanwhile, or copies a quiescent store
+- [x] #2 fxfs-guest-crash-dax passes 20 rounds
 <!-- AC:END -->
 
 ## Definition of Done
@@ -41,3 +41,9 @@ c0904a4a7 on main: copy_store takes the store's directory (extent_store::Dir::ta
 
 GCE r220 (kernel built, branch t3/task-112-6 rebased on main with c0904a4a7): fxfs-guest-crash-dax 10 rounds passed; r216 round 1 copied too. 11 of AC2's 20 so far.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The crash test copies the store once no process has it open: copy_store takes its directory (extent_store::Dir::take), as a process opening it does, which the extent daemon holds while an upload uses it; copied while held, an upload's marker's .new file was renamed away mid-copy. GCE: fxfs-guest-crash-dax 21 rounds passed (r216 1, r220 10, r224 10), kernel built. DoD #1 on macOS not run.
+<!-- SECTION:FINAL_SUMMARY:END -->
