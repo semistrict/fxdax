@@ -811,7 +811,8 @@ mod guest {
     /// fxdax: the faults test's (TASK-44.10): its writers' allocations failed at random for a few
     /// seconds, as the debug kernel's fault injection does them for tasks that ask, through
     /// debugfs; each writer reports each file whose fsync returned, and in the end how many of its
-    /// calls failed.
+    /// calls failed. Not those of Fxfs's Rust, through fxfs_rt_alloc, which can't fail them: a
+    /// failure there panics the kernel, or writes through NULL (TASK-60.1, GCE r260).
     fn faults() {
         const DEBUGFS: &str = "/sys/kernel/debug";
         const ATTRS: [&str; 2] = ["failslab", "fail_page_alloc"];
@@ -834,7 +835,11 @@ mod guest {
                 panic!("{path}: {err} (the debug kernel injects faults: FXDAX_GUEST_KERNEL_BUILD=debug)")
             });
         };
+        let (rust_start, rust_end) = symbol_range("fxfs_rt_alloc");
         for attr in ATTRS {
+            set(attr, "reject-start", &format!("{rust_start:#x}"));
+            set(attr, "reject-end", &format!("{rust_end:#x}"));
+            set(attr, "stacktrace-depth", "32");
             set(attr, "task-filter", "Y");
             set(attr, "interval", "1");
             set(attr, "times", "-1");
@@ -880,6 +885,25 @@ mod guest {
             set(attr, "probability", "0");
         }
         report(&format!("failed calls {failed}"));
+    }
+
+    /// fxdax: the addresses of the kernel's function `name`, from its start to the next symbol's,
+    /// as /proc/kallsyms has them.
+    fn symbol_range(name: &str) -> (u64, u64) {
+        let symbols = fs::read_to_string("/proc/kallsyms").unwrap();
+        let mut addresses: Vec<(u64, &str)> = (symbols.lines())
+            .filter_map(|line| {
+                let mut fields = line.split_whitespace();
+                let address = u64::from_str_radix(fields.next()?, 16).ok()?;
+                Some((address, fields.nth(1)?))
+            })
+            .collect();
+        addresses.sort_unstable();
+        let at = addresses.iter().position(|&(_, symbol)| symbol == name).expect(name);
+        let start = addresses[at].0;
+        assert_ne!(start, 0, "/proc/kallsyms hides addresses");
+        let end = addresses[at..].iter().find(|&&(address, _)| address > start).unwrap().0;
+        (start, end)
     }
 
     /// Whether the crash test's writers wait, as its guest stores through a mapping (TASK-79.11).

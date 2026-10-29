@@ -119,7 +119,7 @@ if [[ ${FXDAX_GUEST_KERNEL_DEBUG:-} == 1 ]]; then
     "$src/scripts/config" --file "$src/.config" --enable DEBUG_KERNEL --enable PROVE_LOCKING \
         --enable DEBUG_ATOMIC_SLEEP --enable DEBUG_LIST --enable KCSAN --enable DEBUG_FS \
         --enable FAULT_INJECTION --enable FAILSLAB --enable FAIL_PAGE_ALLOC \
-        --enable FAULT_INJECTION_DEBUG_FS
+        --enable FAULT_INJECTION_DEBUG_FS --enable FAULT_INJECTION_STACKTRACE_FILTER
 fi
 # fxdax: with FXDAX_GUEST_KERNEL_KASAN=1, a kernel that checks its memory accesses (KASAN, and
 # KFENCE's sampled checks) and its locking, which KCSAN's can't be built with (TASK-44.8): slow,
@@ -145,7 +145,7 @@ if [[ ${FXDAX_GUEST_KERNEL_LOCK_STAT:-} == 1 ]]; then
 fi
 if [[ ${FXDAX_GUEST_KERNEL_DEBUG:-} == 1 ]]; then
     for option in PROVE_LOCKING DEBUG_ATOMIC_SLEEP KCSAN FAILSLAB FAIL_PAGE_ALLOC \
-        FAULT_INJECTION_DEBUG_FS; do
+        FAULT_INJECTION_DEBUG_FS FAULT_INJECTION_STACKTRACE_FILTER; do
         grep -q "^CONFIG_$option=y" "$src/.config" ||
             { echo "the debug kernel has no CONFIG_$option" >&2; exit 1; }
     done
