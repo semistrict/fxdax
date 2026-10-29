@@ -361,6 +361,11 @@ pub struct Remote {
     bucket: Arc<Bucket>,
     /// Says the uploader stopped, once it has.
     stopped: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+    /// fxdax: the store's directory, held taken for this process until the uploader stopped, last
+    /// of its fields to go: the store closes first, its last commit the uploader's to upload as it
+    /// stops, writing the branch's marker in the directory, which another process, a crash test's
+    /// copy, took once the store let it go (TASK-129).
+    _dir: extent_store::DirHold<HostDir>,
 }
 
 struct Shared {
@@ -529,6 +534,7 @@ impl Remote {
         let parts = fetch::Fetcher::new(bucket.clone(), BUDGET.clone(), MEMORY.clone(), cache);
         let parts = Arc::new(parts.reading_ahead(spawn));
         let fetcher = Arc::new(Fetcher { runtime, parts, writer: Default::default() });
+        let dir = store.lineage().hold_dir()?;
         let shared = Arc::new(Shared {
             store,
             fetcher,
@@ -546,7 +552,9 @@ impl Remote {
             let _ = stop.send(());
         });
         match start.recv() {
-            Ok(Ok(())) => Ok(Self { shared, bucket, stopped: Mutex::new(Some(stopped)) }),
+            Ok(Ok(())) => {
+                Ok(Self { shared, bucket, stopped: Mutex::new(Some(stopped)), _dir: dir })
+            }
             Ok(Err(err)) => {
                 let _ = stopped.recv();
                 Err(err)
@@ -1558,6 +1566,33 @@ mod tests {
         let (extents, _) = uploaded(&bucket, 7);
         let sequences: Vec<_> = extents.iter().map(|(sequence, _)| *sequence).collect();
         assert_eq!(sequences, (1..=closed as u64).collect::<Vec<_>>());
+    }
+
+    /// A store's uploader holds its directory taken until it stops, after the store closed: the
+    /// store's closing let it go, and its uploader, which uploads the store's last commits as it
+    /// stops, wrote the branch's marker in the directory after, while another process, a crash
+    /// test's copy, had taken it, and the copy found the marker's new file gone (TASK-129, GCE, the
+    /// DAX gate's second run).
+    #[test]
+    fn uploaders_hold_their_stores_directory_until_they_stop() {
+        use std::os::fd::AsRawFd;
+        // Whether another process could take the directory at `path` now, as `Dir::take` does.
+        let free = |path: &std::path::Path| {
+            let dir = std::fs::File::open(path).unwrap();
+            // SAFETY: Plain system call on the directory's descriptor, which closing unlocks.
+            unsafe { libc::flock(dir.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) == 0 }
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("store");
+        let branch = crate::host_store::new_branch();
+        let store = Arc::new(crate::host_store::create(&path, 1 << 30, branch).unwrap());
+        let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
+        let remote = super::Remote::attach(store.clone(), bucket, 1, idle()).unwrap();
+        assert!(!free(&path), "taken while the store is open");
+        store.close().unwrap();
+        assert!(!free(&path), "taken while its uploader runs");
+        drop(remote);
+        assert!(free(&path), "free once the uploader stopped");
     }
 
     /// TASK-79.19: a benchmark of a store's uploads keeping up with sustained writes, to a bucket

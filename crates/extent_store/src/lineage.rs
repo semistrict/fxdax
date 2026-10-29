@@ -57,6 +57,16 @@ pub struct Lineage<D: Dir> {
     files: Mutex<Files<SegmentId, D::File>>,
 }
 
+/// fxdax: a hold of a store's directory, taken for this process until it is dropped
+/// ([`Lineage::hold_dir`]).
+pub struct DirHold<D: Dir>(Arc<Lineage<D>>);
+
+impl<D: Dir> Drop for DirHold<D> {
+    fn drop(&mut self) {
+        self.0.let_go();
+    }
+}
+
 /// The layers forks are over, by where they were forked: the parent, its index file, and its
 /// epoch.
 type Layers = HashMap<(u64, u64, u64), Arc<Layer>>;
@@ -262,6 +272,14 @@ impl<D: Dir> Lineage<D> {
         let result = f();
         self.let_go();
         result
+    }
+
+    /// fxdax: holds the store's directory taken for this process until what it returns is dropped,
+    /// as a branch open does: for what outlives the branch's store's closing and still writes in
+    /// the directory, as its uploader does as it stops (TASK-129).
+    pub fn hold_dir(self: &Arc<Self>) -> Result<DirHold<D>, Error> {
+        self.hold()?;
+        Ok(DirHold(self.clone()))
     }
 
     /// Holds the store's directory taken for this process, taking it if nothing held it: and then

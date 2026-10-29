@@ -174,7 +174,7 @@ pub use host::{
     fork_host_with, is_handle, open_host, resolve_host,
 };
 pub use layout::{Description, Place};
-pub use lineage::Lineage;
+pub use lineage::{DirHold, Lineage};
 pub use mem::{Io, MemDir, MemFile};
 pub use segments::segment_closes;
 pub use store::{
