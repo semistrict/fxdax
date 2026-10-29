@@ -1998,9 +1998,6 @@ static int fxfs_dax_map_to(struct fxfs_dax *dax, struct fxfs_dax_region *region,
 
 	mutex_lock(&region->lock);
 	writable = READ_ONCE(region->writable);
-	/* A read-only MAP may be a reader's, outside the gate; a writable one is in it. */
-	if (writable)
-		fxfs_device_assert_in_gate(dax->dev);
 	from = region->mapped;
 	if (end <= from)
 		goto out;
@@ -2011,6 +2008,13 @@ static int fxfs_dax_map_to(struct fxfs_dax *dax, struct fxfs_dax_region *region,
 	to = region->pages;
 	if (writable)
 		to = min(to, max(end, from + clamp(from, FXFS_DAX_REGION_FIRST, FXFS_DAX_REGION_STEP)));
+	/*
+	 * A read-only MAP may be a reader's, outside the gate; a writable one is in it. fxdax: asserted
+	 * as one is sent, not as a reader finds a writable region mapped as far as it needs, which
+	 * sends none, outside the gate (TASK-44.21, GCE r257).
+	 */
+	if (writable)
+		fxfs_device_assert_in_gate(dax->dev);
 	for (;;) {
 		err = fxfs_dax_device_map(dax, region->branch, region->sequence,
 				      (u64)from << PAGE_SHIFT, (u64)(to - from) << PAGE_SHIFT,
