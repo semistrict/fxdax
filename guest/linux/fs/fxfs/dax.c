@@ -216,6 +216,17 @@ module_param_named(dax_moves, fxfs_dax_moves, bool, 0644);
 MODULE_PARM_DESC(dax_moves, "Map staging extents' pieces where their regions do (diagnostic)");
 
 /*
+ * fxdax: a diagnostic found the window, or the guest's view of it, wrong: WARNs, once, so that a
+ * test with diagnostics on fails, as the runner fails a test whose kernel WARNs (TASK-44.8), the
+ * diagnostic's own lines saying what it found. They logged alone, and a test passed on them
+ * (TASK-119.3).
+ */
+static void fxfs_dax_diagnosed(void)
+{
+	WARN_ONCE(1, "fxfs: a DAX diagnostic found the window wrong\n");
+}
+
+/*
  * fxdax: pause points (TASK-119.9): a task reaching a step whose bit fxfs.dax_pause sets waits
  * there until the bit is cleared, the bit set in fxfs.dax_paused meanwhile: a check plays an
  * interleaving out exactly, where fxfs.dax_delay_us's random sleeps only make it likely.
@@ -567,9 +578,11 @@ static void fxfs_dax_shadow_map(struct fxfs_dax *dax, u64 window_offset, u64 len
 		 * stores are refused.
 		 */
 		if (mapped && !writable && entry && (xa_to_value(entry) & 1) &&
-		    (then == seals || ((seals & 1) && then == seals - 1)))
+		    (then == seals || ((seals & 1) && then == seals - 1))) {
 			pr_err("fxfs: window page %lx, mapped writably at seals %llu, mapped read-only at %llu by %pS\n",
 			       page, then, seals, __builtin_return_address(1));
+			fxfs_dax_diagnosed();
+		}
 		if (mapped)
 			xa_store(&dax->shadow, page, xa_mk_value((seals << 1) | writable), GFP_NOFS);
 		else
@@ -2706,10 +2719,12 @@ static s64 fxfs_dax_check_device(struct fxfs_dax *dax, struct inode *inode, loff
 		return -ENOMEM;
 	where = fxfs_dax_read_shadowed(dax, window_offset >> PAGE_SHIFT, buf);
 	differ = where >= 0 ? fxfs_dax_differ(seen, buf, 0, 0, &first) : 0;
-	if (differ)
+	if (differ) {
 		pr_err("fxfs: window %llx, mapping extent %lld page %lld, held %zu bytes the device's doesn't before a move, the first at %zu: %#x, the device's %#x\n",
 		       window_offset, where >> 20, where & ((1 << 20) - 1), differ, first, seen[first],
 		       buf[first]);
+		fxfs_dax_diagnosed();
+	}
 	count = fxfs_nofs(fxfs_dax_extents(dax->fs, inode->i_ino, pos, PAGE_SIZE, &e, 1));
 	if (count != 1) {
 		pr_err("fxfs: ino %lu at %lld, mapped at window %llx: %zd extents in Fxfs\n",
@@ -2723,6 +2738,7 @@ static s64 fxfs_dax_check_device(struct fxfs_dax *dax, struct inode *inode, loff
 		       e.open ? "open" : "sealed", window_offset, where >> 20,
 		       where & ((1 << 20) - 1), err, differ, differ ? first : 0,
 		       differ ? seen[first] : 0, differ ? buf[first] : 0);
+		fxfs_dax_diagnosed();
 	}
 	kfree(buf);
 	return where;
@@ -2756,6 +2772,7 @@ static void fxfs_dax_check_moved(struct fxfs_dax *dax, struct inode *inode,
 	pr_err("fxfs: ino %lu page %lu moved from %llx to %llx holds %zu other bytes, the first at %zu: %#x, not %#x\n",
 	       inode->i_ino, (unsigned long)(fxfs_dax_chunk_start(range) >> PAGE_SHIFT) + page,
 	       before_at, at, differ, first, moved, before[first]);
+	fxfs_dax_diagnosed();
 	/*
 	 * With the shadow, the extents' pages the window maps at both, as the device has them: the
 	 * window's view of where the page was against what the device holds there, which a write
@@ -3419,6 +3436,7 @@ static int fxfs_dax_writable_pte(pte_t *pte, unsigned long addr, unsigned long n
 		       found->file, linear_page_index(walk->vma, addr), addr, page,
 		       !shadow ? "never mapped" : !(xa_to_value(shadow) & 1) ? "mapped read-only" :
 		       "mapped writably before a seal", seals, then);
+	fxfs_dax_diagnosed();
 	return 0;
 }
 
@@ -3530,10 +3548,12 @@ static void fxfs_dax_verify_writable(struct fxfs_dax *dax)
 		id = dax_read_lock();
 		window = fxfs_dax_window_page(dax, (u64)page << PAGE_SHIFT);
 		differ = window ? fxfs_dax_differ(window, buf, 0, 0, &at) : 0;
-		if (differ)
+		if (differ) {
 			pr_err("fxfs: window page %lx, writable at seals %llu, mapping extent %llu page %llu: %zu bytes differ from the device's, the first at %zu: %#x through the window, %#x the device's\n",
 			       page, then, where >> 20, where & ((1 << 20) - 1), differ, at,
 			       ((u8 *)window)[at], ((u8 *)buf)[at]);
+			fxfs_dax_diagnosed();
+		}
 		dax_read_unlock(id);
 	}
 	kfree(buf);
@@ -3634,10 +3654,12 @@ static void fxfs_dax_verify_sealed(struct fxfs_dax *dax)
 			id = dax_read_lock();
 			window = fxfs_dax_window_page(dax, region->window_offset + (page << PAGE_SHIFT));
 			differ = window ? fxfs_dax_differ(window, buf, 0, 0, &at) : 0;
-			if (differ)
+			if (differ) {
 				pr_err("fxfs: sealed region %llx:%llu page %lu at %llx: %zu bytes differ from the device's, the first at %zu: %#x through the window, %#x the device's\n",
 				       region->branch, region->sequence, page, region->window_offset, differ,
 				       at, ((u8 *)window)[at], ((u8 *)buf)[at]);
+				fxfs_dax_diagnosed();
+			}
 			dax_read_unlock(id);
 		}
 		fxfs_dax_put_region(dax, region);
