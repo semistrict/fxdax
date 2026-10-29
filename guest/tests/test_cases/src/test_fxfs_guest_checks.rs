@@ -3800,6 +3800,7 @@ mod guest {
                 ));
                 tests.push(("append_while_mapped", &test_append_while_mapped));
                 tests.push(("prune_while_read", &test_prune_while_read));
+                tests.push(("map_failed_after_move", &test_map_failed_after_move));
             }
             // Files on DAX are in no page cache.
             if !dax {
@@ -3809,7 +3810,6 @@ mod guest {
                 tests.push(("short_copy", &test_short_copy));
                 tests.push(("direct_read_past_end", &test_direct_read_past_end));
                 tests.push(("store_past_end", &test_store_past_end));
-                tests.push(("map_failed_after_move", &test_map_failed_after_move));
             }
             // fxdax: it dies of SIGBUS (TASK-121's pause check, the fault path's SIGBUS open):
             // after the others, which it would stop.
