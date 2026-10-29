@@ -2724,7 +2724,9 @@ static void *fxfs_dax_window_page(struct fxfs_dax *dax, u64 window_offset)
  * `window_offset` as copied, differs from the extent's page the shadow has the window map there,
  * as the device has it; and where Fxfs has file `inode`'s page at `pos` elsewhere, and what the
  * device has there: what a write that moves the page reads around what it writes (TASK-121).
- * Returns where the window maps it, as fxfs_dax_read_shadowed does.
+ * Returns where the window maps it, as fxfs_dax_read_shadowed does. fxdax: a page the shadow
+ * doesn't know of it can't place, and finds nothing wrong with: it said Fxfs had it elsewhere than
+ * the window, which it said mapped extent -1, and failed a test (TASK-119.21, GCE r239).
  */
 static s64 fxfs_dax_check_device(struct fxfs_dax *dax, struct inode *inode, loff_t pos,
 				 u64 window_offset, const u8 *seen)
@@ -2750,8 +2752,8 @@ static s64 fxfs_dax_check_device(struct fxfs_dax *dax, struct inode *inode, loff
 	if (count != 1) {
 		pr_err("fxfs: ino %lu at %lld, mapped at window %llx: %zd extents in Fxfs\n",
 		       inode->i_ino, pos, window_offset, count);
-	} else if (where < 0 || e.sequence != where >> 20 ||
-		   e.extent_offset >> PAGE_SHIFT != (where & ((1 << 20) - 1))) {
+	} else if (where >= 0 && (e.sequence != where >> 20 ||
+				  e.extent_offset >> PAGE_SHIFT != (where & ((1 << 20) - 1)))) {
 		err = fxfs_dax_read_device_page(dax, e.branch, e.sequence, e.extent_offset, buf);
 		differ = err ? 0 : fxfs_dax_differ(seen, buf, 0, 0, &first);
 		pr_err("fxfs: ino %lu at %lld: Fxfs has it in extent %llu page %llu, %s, the window at %llx maps extent %lld page %lld: %d, %zu bytes differ, the first at %zu: %#x, the device's %#x\n",
