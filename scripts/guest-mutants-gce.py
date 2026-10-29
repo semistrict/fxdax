@@ -16,7 +16,9 @@ on is killed; one they pass, missed, needs a test, or is recorded here as equiva
 
 runs every mutant (or those named) on HOST, made with scripts/test-gce.sh create, writing each
 run's results under RESULTS, and prints each mutant's fate. FXDAX_E2E_TEST names the suites, the
-DAX ones by default; the other FXDAX_* settings reach the host as scripts/test-gce.sh says.
+DAX ones by default; FXDAX_MUTANT_KERNEL the kernel the host builds for every mutant (debug, with
+lockdep and KCSAN, or kasan), each's own otherwise; the other FXDAX_* settings reach the host as
+scripts/test-gce.sh says.
 """
 
 import os
@@ -214,7 +216,8 @@ def main():
     for name, what, edits, *build in MUTANTS:
         if names and name not in names:
             continue
-        ended = run(host, zone, results, name, edits, build[0] if build else "release")
+        kernel = os.environ.get("FXDAX_MUTANT_KERNEL") or (build[0] if build else "release")
+        ended = run(host, zone, results, name, edits, kernel)
         print(f"{ended} {name}: {what}", flush=True)
 
 
