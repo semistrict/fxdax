@@ -2980,7 +2980,9 @@ mod tests {
         failed.next.hold.send_replace(Hold::Nothing);
         assert_eq!(taking.join().unwrap(), Ok(()));
 
-        let deleted = extent_remote::layout::Record { origin: None, forked: true, deleted: true };
+        // TASK-79.82: its deletion gave it the record its fork would first, naming the fork.
+        let origin = Some(extent_remote::layout::Origin { parent: failed.branch, at: 2 });
+        let deleted = extent_remote::layout::Record { origin, forked: true, deleted: true };
         assert_eq!(failed.record(), Some(deleted));
         let parents = futures::executor::block_on(recover(&*failed.bucket(), failed.branch, None));
         let fork = extent_remote::layout::Fork { child: failed.child, at: 2 };

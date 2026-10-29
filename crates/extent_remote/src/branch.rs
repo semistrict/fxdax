@@ -102,31 +102,7 @@ pub async fn delete(
     holder: u64,
     token: u64,
 ) -> Result<(), Error> {
-    let key = layout::lease(branch);
-    let lease = layout::encode(&Lease { epoch: Lease::FINAL, holder, token: u64::MAX });
-    loop {
-        match bucket::get(bucket, &key).await {
-            None => {
-                if let Created::Created = bucket::create(bucket, &key, lease.clone()).await {
-                    break;
-                }
-            }
-            Some(object) => {
-                let current = Lease::decode(&object.bytes)?;
-                if current.epoch == Lease::FINAL {
-                    break;
-                }
-                if rules().delete_tokens && current.token > token {
-                    return Err(Error::Stale);
-                }
-                if let Updated::Updated =
-                    bucket::update(bucket, &key, lease.clone(), &object.meta.version).await
-                {
-                    break;
-                }
-            }
-        }
-    }
+    end_lease(bucket, branch, holder, token).await?;
     let record = loop {
         if let Some(record) = record(bucket, branch).await? {
             break record;
@@ -150,6 +126,47 @@ pub async fn delete(
     for fork in &recovered.state.forks {
         record_fork(bucket, fork.child, Origin { parent: branch, at: fork.at }).await?;
     }
+    mark_deleted(bucket, branch).await
+}
+
+/// Ends `branch`'s lease, as [`delete`] does first: its final epoch, which no writer takes, as
+/// `holder` of the placement whose fencing token is `token`, unless a later placement took it
+/// ([`Error::Stale`]).
+async fn end_lease(
+    bucket: &impl Bucket,
+    branch: u64,
+    holder: u64,
+    token: u64,
+) -> Result<(), Error> {
+    let key = layout::lease(branch);
+    let lease = layout::encode(&Lease { epoch: Lease::FINAL, holder, token: u64::MAX });
+    loop {
+        match bucket::get(bucket, &key).await {
+            None => {
+                if let Created::Created = bucket::create(bucket, &key, lease.clone()).await {
+                    return Ok(());
+                }
+            }
+            Some(object) => {
+                let current = Lease::decode(&object.bytes)?;
+                if current.epoch == Lease::FINAL {
+                    return Ok(());
+                }
+                if rules().delete_tokens && current.token > token {
+                    return Err(Error::Stale);
+                }
+                if let Updated::Updated =
+                    bucket::update(bucket, &key, lease.clone(), &object.meta.version).await
+                {
+                    return Ok(());
+                }
+            }
+        }
+    }
+}
+
+/// Marks `branch`'s record deleted, as [`delete`] does last.
+async fn mark_deleted(bucket: &impl Bucket, branch: u64) -> Result<(), Error> {
     let key = layout::record(branch);
     loop {
         let Some(object) = bucket::get(bucket, &key).await else {
@@ -176,10 +193,13 @@ pub async fn delete(
 /// is left as it is (TASK-79.82); so is a branch deleted already, whoever's. Returns whether the
 /// fork's branch is gone, deleted now or before: `false` for another's.
 ///
-/// An ID found free may be taken by another branch's record before the deletion takes the child's
-/// lease, which no single request to object storage rules out: a fork looks for its child's record
-/// before it is made (`ExtentStore::fork`), so that this only arises for an ID another branch
-/// takes while the fork is being made or deleted.
+/// A child with no record yet gets the one its fork would give it first ([`record_fork`]), naming
+/// `origin`, before the deletion ends its lease: created only if no record is there, which another
+/// branch taking the ID meanwhile has, whose lease the deletion took otherwise (TASK-79.82). Its
+/// record taken, the ID is no other's, and a deletion that stops goes on as the fork's; deleted, it
+/// had no record before, nor children with none, as [`delete`] deletes such a branch. A fork whose
+/// segment never went, naming no `origin`, has none to take it with: an ID another branch takes
+/// while it is being deleted is that one's still.
 pub async fn delete_fork(
     bucket: &impl Bucket,
     child: u64,
@@ -187,10 +207,24 @@ pub async fn delete_fork(
     holder: u64,
     token: u64,
 ) -> Result<bool, Error> {
-    match record(bucket, child).await? {
-        Some(record) if record.deleted => return Ok(true),
-        Some(record) if origin.is_none() || record.origin != origin => return Ok(false),
-        _ => {}
+    loop {
+        match record(bucket, child).await? {
+            Some(record) if record.deleted => return Ok(true),
+            Some(record) if origin.is_none() || record.origin != origin => return Ok(false),
+            Some(_) => break,
+            None => {
+                let Some(origin) = origin else { break };
+                let record =
+                    layout::encode(&Record { origin: Some(origin), forked: true, deleted: false });
+                if let Created::Created =
+                    bucket::create(bucket, &layout::record(child), record).await
+                {
+                    end_lease(bucket, child, holder, token).await?;
+                    mark_deleted(bucket, child).await?;
+                    return Ok(true);
+                }
+            }
+        }
     }
     delete(bucket, child, holder, token).await?;
     Ok(true)
@@ -260,6 +294,88 @@ mod tests {
         assert!(matches!(refused, Err(Error::Corrupt(_))), "{refused:?}");
         let record = block_on(record(&bucket, 2)).unwrap();
         assert_eq!(record, Some(Record { origin: Some(origin), forked: true, deleted: false }));
+    }
+
+    /// TASK-79.82: a branch that takes a failed fork's child's ID after the fork's deletion found
+    /// it free, before the deletion takes the child's lease, is left be: its record taken and its
+    /// lease kept, not the deletion's.
+    #[test]
+    fn forks_deleted_leave_a_branch_taking_their_childs_id_meanwhile() {
+        use crate::bucket::{ByteRange, Error as BucketError, Meta, Object, PutMode, Version};
+        use std::future::Future;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        /// A bucket in which branch `child` is created, its lease taken, as its record is first
+        /// found missing.
+        struct Racing {
+            bucket: Direct,
+            child: u64,
+            raced: AtomicBool,
+        }
+
+        impl Bucket for Racing {
+            fn get(&self, key: &str) -> impl Future<Output = Result<Object, BucketError>> + Send {
+                let key = key.to_owned();
+                async move {
+                    let got = self.bucket.get(&key).await;
+                    if key == layout::record(self.child)
+                        && matches!(got, Err(BucketError::NotFound))
+                        && !self.raced.swap(true, Ordering::SeqCst)
+                    {
+                        create(&self.bucket, self.child).await.unwrap();
+                        let lease = layout::lease(self.child);
+                        take_lease(&self.bucket, &lease, 7, 0).await.unwrap();
+                    }
+                    got
+                }
+            }
+
+            fn get_range(
+                &self,
+                key: &str,
+                range: ByteRange,
+            ) -> impl Future<Output = Result<Vec<u8>, BucketError>> + Send {
+                self.bucket.get_range(key, range)
+            }
+
+            fn head(&self, key: &str) -> impl Future<Output = Result<Meta, BucketError>> + Send {
+                self.bucket.head(key)
+            }
+
+            fn list(
+                &self,
+                prefix: &str,
+            ) -> impl Future<Output = Result<Vec<Meta>, BucketError>> + Send {
+                self.bucket.list(prefix)
+            }
+
+            fn put(
+                &self,
+                key: &str,
+                bytes: Vec<u8>,
+                mode: PutMode,
+            ) -> impl Future<Output = Result<Version, BucketError>> + Send {
+                self.bucket.put(key, bytes, mode)
+            }
+
+            fn delete(&self, key: &str) -> impl Future<Output = Result<(), BucketError>> + Send {
+                self.bucket.delete(key)
+            }
+
+            fn now(&self) -> u64 {
+                self.bucket.now()
+            }
+        }
+
+        let racing =
+            Racing { bucket: Direct(SimBucket::new()), child: 3, raced: AtomicBool::new(false) };
+        let origin = Origin { parent: 1, at: 7 };
+        assert_eq!(block_on(delete_fork(&racing, 3, Some(origin), 9, 0)), Ok(false));
+        let record = block_on(record(&racing.bucket, 3)).unwrap();
+        assert_eq!(record, Some(Record { origin: None, forked: false, deleted: false }));
+        let lease = block_on(bucket::get(&racing.bucket, &layout::lease(3))).unwrap();
+        let lease = Lease::decode(&lease.bytes).unwrap();
+        assert_eq!((lease.epoch, lease.holder), (1, 7), "the other branch's lease");
     }
 
     /// A branch deleted, before it had a record, has a deleted one, and takes no lease again.
