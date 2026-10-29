@@ -1040,11 +1040,15 @@ impl<H: HostMemory> SecondStage for UffdSecondStage<H> {
             // fxdax: the maps made in place one after another in the window, their protections
             // alike, reprotected at once: a seal's of an open extent's pages, one write protection
             // of the range rather than one of each run of physical memory its pages are in, which
-            // the window maps apart (TASK-131.1).
+            // the window maps apart (TASK-131.1). In order with the rest: a run is reprotected
+            // before any memory is installed after it.
             let mut run: Option<(usize, usize, Protection, Protection)> = None;
             for (&(addr, len, phys, protection), was) in maps.iter().zip(in_place) {
                 reprotected.push(was.is_some());
                 let Some(was) = was else {
+                    if let Some((addr, len, was, now)) = run.take() {
+                        self.reprotect(addr, len, was, now);
+                    }
                     self.install(addr, len, protection, self.memory(phys, protection));
                     continue;
                 };
