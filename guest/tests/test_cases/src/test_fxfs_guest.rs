@@ -35,22 +35,33 @@ pub struct TestFxfsGuest {
     mode: Mode,
     /// Whether the device has a DAX window.
     dax: bool,
+    /// fxdax: the step of the DAX protocol (fxfs.dax_pause's bit) a crash test's VM stops with an
+    /// evacuation held at, if any (TASK-119.16).
+    crash_step: Option<u32>,
 }
 
 impl TestFxfsGuest {
     /// fxfs-guest.
     pub fn host_formats() -> Self {
-        Self { mode: Mode::HostFormats, dax: false }
+        Self { mode: Mode::HostFormats, dax: false, crash_step: None }
     }
 
     /// fxfs-guest-format.
     pub fn guest_formats() -> Self {
-        Self { mode: Mode::GuestFormats, dax: false }
+        Self { mode: Mode::GuestFormats, dax: false, crash_step: None }
     }
 
     /// fxfs-guest-crash.
     pub fn crash() -> Self {
-        Self { mode: Mode::Crash, dax: false }
+        Self { mode: Mode::Crash, dax: false, crash_step: None }
+    }
+
+    /// fxfs-guest-crash-dax-STEP: the crash test with DAX, its VM stopped with an evacuation of a
+    /// file held at `step` (fxfs.dax_pause's bit): its runs gathered, mapped in their ranges' own
+    /// space, or placed there (TASK-119.16). What the window shows a warm reader agrees with the
+    /// window; the store, which a crash leaves, must hold every fsync acknowledged as well.
+    pub fn crash_at(step: u32) -> Self {
+        Self { crash_step: Some(step), ..Self::crash().with_dax() }
     }
 
     /// The same test with a DAX window.
@@ -193,6 +204,14 @@ mod host {
                     .collect();
                 if synced.len() < 10 {
                     return TestOutcome::Fail(format!("too few fsyncs returned: {output:?}"));
+                }
+                // fxdax: the VM stopped with an evacuation held at the step asked (TASK-119.16).
+                if let Some(step) = self.crash_step
+                    && !output.lines().any(|line| line == format!("held at step {step}"))
+                {
+                    return TestOutcome::Fail(format!(
+                        "no evacuation was held at step {step}: {output:?}"
+                    ));
                 }
                 // The store as the crash left it, for a failure to be looked into: checking it
                 // recovers it, and mounting it replays its journal.
@@ -745,8 +764,8 @@ mod guest {
     }
 
     /// Stops the VM mid-workload: with two writers fsyncing, and without syncing (reboot(2)
-    /// doesn't).
-    fn crash(dax: bool) -> ! {
+    /// doesn't); with an evacuation held at `step` of the DAX protocol, if asked.
+    fn crash(dax: bool, step: Option<u32>) -> ! {
         assert_eq!(names(MNT), Vec::<String>::new());
         // Files map their data from the window, if there is one: small ones too.
         let (probe, small) = (format!("{MNT}/probe"), format!("{MNT}/small"));
@@ -789,9 +808,29 @@ mod guest {
         } else {
             std::thread::sleep(std::time::Duration::from_millis(crash_ms));
         }
+        if let Some(step) = step {
+            hold_evacuation(step);
+        }
         // A reset, which ends the VM on every architecture: x86's has no power-off.
         unsafe { libc::reboot(libc::RB_AUTOBOOT) };
         panic!("reboot: {}", std::io::Error::last_os_error());
+    }
+
+    /// fxdax: holds the next evacuation of a file at `step` of the DAX protocol (fxfs.dax_pause's
+    /// bit, a pause point), which the writers' fsyncs start as they seal, and reports it once one
+    /// is held, for the VM to stop with it so (TASK-119.16).
+    fn hold_evacuation(step: u32) {
+        const PARAMETERS: &str = "/sys/module/fxfs/parameters";
+        fs::write(format!("{PARAMETERS}/dax_pause"), (1u64 << step).to_string()).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while std::time::Instant::now() < deadline {
+            let paused = fs::read_to_string(format!("{PARAMETERS}/dax_paused")).unwrap();
+            if paused.trim().parse::<u64>().unwrap() & (1 << step) != 0 {
+                report(&format!("held at step {step}"));
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
     }
 
     /// fxdax: stores a byte to the page at `path`, synced, through a mapping, as the VM is about
@@ -1019,7 +1058,7 @@ mod guest {
             assert_eq!(mount("missing").unwrap_err().raw_os_error(), Some(libc::ENOENT));
             mount("extents").unwrap();
             if self.mode == Mode::Crash {
-                crash(self.dax);
+                crash(self.dax, self.crash_step);
             }
             let host_formats = self.mode == Mode::HostFormats;
             if host_formats {

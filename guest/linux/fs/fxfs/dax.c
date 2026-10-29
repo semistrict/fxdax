@@ -233,6 +233,10 @@ enum fxfs_dax_step {
 	FXFS_DAX_STEP_GATHERED,
 	/* A read of a file, its iomap made, before the copy of what it maps, holding its range. */
 	FXFS_DAX_STEP_READ_MAPPED,
+	/* An evacuation of a file, its runs mapped in their ranges' own space, before their placing. */
+	FXFS_DAX_STEP_EVACUEES_MAPPED,
+	/* An evacuation of a file, its runs placed, before it lets go of the file's semaphore. */
+	FXFS_DAX_STEP_PLACED,
 };
 static unsigned long fxfs_dax_pause_steps;
 module_param_named(dax_pause, fxfs_dax_pause_steps, ulong, 0644);
@@ -3936,9 +3940,13 @@ static void fxfs_dax_evacuate_file(struct fxfs_dax *dax, struct fxfs_dax_file *f
 	fxfs_dax_evacuee_gather(file, &ev);
 	fxfs_dax_evacuee_map(dax, file, &ev);
 	/* fxdax: between the MAP and the placing (TASK-119.3). */
-	if (ev.count)
+	if (ev.count) {
+		fxfs_dax_pause_file(FXFS_DAX_STEP_EVACUEES_MAPPED, file->ino);
 		fxfs_dax_delay();
+	}
 	fxfs_dax_evacuee_place(dax, file, &ev);
+	if (ev.count)
+		fxfs_dax_pause_file(FXFS_DAX_STEP_PLACED, file->ino);
 	up_write(&file->sem);
 	if (ev.count) {
 		atomic64_inc(&dax->evacuations);
