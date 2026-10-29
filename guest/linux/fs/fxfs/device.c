@@ -393,14 +393,18 @@ int fxfs_device_map_many(struct fxfs_device *dev, const struct fxfs_device_map *
 	return err;
 }
 
+/*
+ * fxdax: an UNMAP's request is allocated without failing: the window space it unmaps goes to other
+ * extents once it is unmapped, and is lost to the window if it can't be (TASK-44.22). A request is
+ * a few hundred bytes, which the allocator makes room for. It can't be on the stack, whose memory
+ * the device can't be given if it is vmalloc's (VMAP_STACK).
+ */
 int fxfs_device_unmap(struct fxfs_device *dev, u64 window_offset, u64 len)
 {
-	struct vext_request *req = kzalloc(sizeof(*req), GFP_NOFS);
+	struct vext_request *req = kzalloc(sizeof(*req), GFP_NOFS | __GFP_NOFAIL);
 	u64 began;
 	int err;
 
-	if (!req)
-		return -ENOMEM;
 	req->type = VIRTIO_EXTENT_T_UNMAP;
 	req->len = len;
 	req->window_offset = window_offset;
