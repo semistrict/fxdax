@@ -6,7 +6,7 @@ title: >-
 status: In Progress
 assignee: []
 created_date: '2026-10-28 19:27'
-updated_date: '2026-10-29 15:03'
+updated_date: '2026-10-29 16:54'
 labels:
   - testing
 dependencies: []
@@ -43,4 +43,6 @@ There is no CI and nothing gates a push. Mutants prune_in_use (never killed) and
 2026-10-29: the gate ran on GCE (69227bac0, hosts r225a/b), detached (it outlives a 2 h shell). Mutants so far: 14 killed; pmd_row_unrelocated MISSED in 3 rounds. r233: mapped_after_write, now asserting its read mapped a PMD (dax_huge_maps, dac1d5081), passes, and still misses it: kernel patch 0008 (TASK-124) splits the PMD entry the moved page's shared fault replaces, so the row's other pages fault fine relocated or not; recorded equivalent in guest-mutants-gce.py (98c82281b), out of the list. test-e2e.sh says a single round's failure as a failed round (b0ccb059c), and scripts/tests/test_pre_push.py tests the hook (f03ead327).
 
 Gate run on 69227bac0: FAILED: its suites never ran (dax-gate.sh's list had a newline, which test-gce.sh refuses: 'FXDAX_E2E_TEST names test cases', so no gate run ever ran them); mutants: 16 killed, pmd_row_unrelocated missed (recorded equivalent since). 3981ad18f passes the suites as one line, with scripts/tests/test_dax_gate.py (fails on the old list). Gate relaunched on 3981ad18f.
+
+Gate run 2 (3981ad18f): mutants all 16 killed (AC3 met); suites: fxfs-guest-dax, crash-dax, crash-dax-mapped, -placed, checks-dax, -delay, -small 5 rounds each passed; crash-dax-gathered failed round 1 on TASK-129's copy race (the store's directory let go while its uploader ran), fixed by the uploader holding it. Gate run 3 launched on the fix.
 <!-- SECTION:NOTES:END -->

@@ -3,10 +3,10 @@ id: TASK-129
 title: >-
   Guest crash test: copying a store's extents fails on a remote-*.new file gone
   meanwhile
-status: Done
+status: In Progress
 assignee: []
 created_date: '2026-10-29 02:34'
-updated_date: '2026-10-29 10:07'
+updated_date: '2026-10-29 16:54'
 labels:
   - bug
   - testing
@@ -40,6 +40,8 @@ fxfs-guest-crash-dax round 3 of 15 on r209 (rebased onto f897ce4a2): test_fxfs_g
 c0904a4a7 on main: copy_store takes the store's directory (extent_store::Dir::take) before copying. GCE r216 crash-dax round 1 copied the store (it failed on the reverted refusal check). r220: 10 rounds.
 
 GCE r220 (kernel built, branch t3/task-112-6 rebased on main with c0904a4a7): fxfs-guest-crash-dax 10 rounds passed; r216 round 1 copied too. 11 of AC2's 20 so far.
+
+Recurred in the DAX gate's second run (3981ad18f), fxfs-guest-crash-dax-gathered round 1: copying the store, remote-*.new gone: copy_store took the directory, but the store's closing had let it go while its uploader still ran: ExtentStore's drop closes the store, then drops the uploader, which uploads the last commits as it stops, writing the branch's marker in the directory after. Stopping the uploader before the close (tried) left the closing commit unuploaded (later_placements_fence_earlier_ones failed). Fix: Lineage::hold_dir, which the uploader (Remote) holds until it stops, its last field; test uploaders_hold_their_stores_directory_until_they_stop fails without it ('taken while its uploader runs'). macOS scripts/test.sh passed (1824). The gate's third run on it pending.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
