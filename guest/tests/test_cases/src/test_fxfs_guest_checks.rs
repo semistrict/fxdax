@@ -1878,6 +1878,19 @@ mod guest {
         fs::remove_file(&name).unwrap();
     }
 
+    /// fxdax: the checks before, on a 32 MiB window, filled its regions' space, their writes then
+    /// mapping their pieces in ranges' own space, writably, and its ranges', which other ranges
+    /// were reclaimed for: the paths a full window takes, as the sandbox team runs it, which a large
+    /// window never reaches (TASK-119.12, TASK-101). Since the filesystem was mounted last
+    /// (file_attributes remounts it).
+    fn test_window_filled() {
+        let stats = stats();
+        assert!(
+            stats["window_regions_full"] > 0 && stats["window_reclaims"] > 0,
+            "the window's regions or ranges never filled: {stats:?}"
+        );
+    }
+
     /// fxdax: a file's pages each written once and fsynced, as a database's rows a run updates
     /// once and its history it appends: each write moves its page to the staging extent's region,
     /// a new one after every seal, which the page, written no more, kept, until the window's
@@ -3548,6 +3561,10 @@ mod guest {
             }
             // Last: it fills the filesystem, then removes what it filled it with.
             tests.push(("enospc", &test_enospc));
+            // fxdax: of the checks before, on a small window (TASK-119.12).
+            if self.small_window {
+                tests.push(("window_filled", &test_window_filled));
+            }
             let only = std::env::var("FXDAX_CHECKS").unwrap_or_default();
             let only: Vec<&str> = only.split(',').filter(|name| !name.is_empty()).collect();
             let mut failed = Vec::new();

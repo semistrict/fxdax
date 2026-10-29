@@ -5,9 +5,10 @@
 
 # The gate a change to the guest's DAX code passes before it is pushed (TASK-119.8): on two GCE
 # test hosts (scripts/test-gce.sh create), HEAD's DAX suites, rounds of each, the checks with
-# delays injected (fxfs-guest-checks-dax-delay), the crash test, and pgbench-dax, whose data is
-# checked; and every hand mutant of dax.c (scripts/guest-mutants-gce.py) killed by the suites
-# within FXDAX_GATE_MUTANT_ROUNDS rounds (default 3). A pass is recorded as a note on HEAD
+# delays injected (fxfs-guest-checks-dax-delay) and on a small window (-small), the crash test,
+# and pgbench-dax, whose data is checked; and every hand mutant of dax.c
+# (scripts/guest-mutants-gce.py) killed by the suites within FXDAX_GATE_MUTANT_ROUNDS rounds
+# (default 3). A pass is recorded as a note on HEAD
 # (`git notes --ref=dax-gate`), which scripts/hooks/pre-push asks for of a push changing the
 # guest's DAX code: `git config core.hooksPath scripts/hooks` installs it.
 #
@@ -16,7 +17,7 @@
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
-(( $# >= 2 )) || { sed -n '6,15p' "$0" >&2; exit 2; }
+(( $# >= 2 )) || { sed -n '6,16p' "$0" >&2; exit 2; }
 host_a=$1 host_b=$2 zone=${3:-us-east4-a}
 rounds=${FXDAX_GATE_ROUNDS:-5}
 mutant_rounds=${FXDAX_GATE_MUTANT_ROUNDS:-3}
@@ -32,7 +33,8 @@ mkdir -p "$results"
 echo "dax-gate: $commit, results in $results"
 
 export FXDAX_GCE_ZONE=$zone FXDAX_WORKSPACE_TESTS=0 FXDAX_GUEST_KERNEL_BUILD=release
-suites="fxfs-guest-dax fxfs-guest-crash-dax fxfs-guest-checks-dax fxfs-guest-checks-dax-delay"
+suites="fxfs-guest-dax fxfs-guest-crash-dax fxfs-guest-checks-dax fxfs-guest-checks-dax-delay
+    fxfs-guest-checks-dax-small"
 
 # Host A: the suites, rounds of each.
 FXDAX_E2E_TEST=$suites FXDAX_E2E_ROUNDS=$rounds \
