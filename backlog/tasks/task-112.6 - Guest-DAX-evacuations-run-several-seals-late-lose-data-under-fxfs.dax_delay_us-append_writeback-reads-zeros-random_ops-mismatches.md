@@ -3,10 +3,10 @@ id: TASK-112.6
 title: >-
   Guest DAX: evacuations run several seals late lose data under
   fxfs.dax_delay_us (append_writeback reads zeros, random_ops mismatches)
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-28 04:48'
-updated_date: '2026-10-29 07:38'
+updated_date: '2026-10-29 09:23'
 labels:
   - bug
 dependencies: []
@@ -23,8 +23,8 @@ With evacuation delayed to every 16 seals or 20 ms (a TASK-112.4 experiment, not
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The race is identified and recorded
-- [ ] #2 A check reproduces it on main with a delay injection (fxfs.dax_*), and passes with the fix
+- [x] #1 The race is identified and recorded
+- [x] #2 A check reproduces it on main with a delay injection (fxfs.dax_*), and passes with the fix
 <!-- AC:END -->
 
 ## Definition of Done
@@ -52,4 +52,12 @@ Verify run (fxfs.dax_evacuee_verify=1, delays): r204 6/6 green; r205 failed rand
 2026-10-29: retest after TASK-121's fixes (guest 14af2c666 et al., host cae97000a: ExtentStore::write raced a writable MAP opening the extent, its commit writing zeros over the write, the 'append_writeback read zeros' signature). New fault injection fxfs.dax_evacuate_every=N (evacuation after one seal in N; branch t3/task-112-6, 3ab28efbf). GCE r212: main + dax_evacuate_every=16 under checks-dax-delay, 10 rounds of append_writeback, random_ops, torture, seal_race, writes_across_seals, faults_writes_compaction, faults_unheld, mapped_after_write, append_pages, append_while_mapped; r213 the same with the host fix taken out (the lock dropped before the store write), the control.
 
 TASK-130: r212 and r213 ran no guest case (no guest kernel; skipped, reported passed): void. GCE r218 (kernel built): the control, the host fix taken out (the open extents' lock dropped before ExtentStore::write's store write), fxfs.dax_evacuate_every=16 under checks-dax-delay: failed round 1 of 8, torture, faults_writes_compaction and faults_unheld: the injection and checks reproduce the loss with TASK-121's host race in. Main's run under the same injection is r215's second stage.
+
+GCE r221 (main + branch, kernel built): fxfs.dax_evacuate_every=16 under checks-dax-delay, the ten checks, 8 rounds of 8 passed; r218, the host fix taken out, failed round 1. The loss was TASK-121's host race (ExtentStore::write against a writable MAP opening the extent), which late evacuations made likelier.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Identified: the late-evacuation losses (append_writeback zeros, random_ops mismatches) were TASK-121's host race, ExtentStore::write checking an extent wasn't open, letting go of the lock, then writing the store while a writable MAP opened it, its commit writing zeros over the write; fixed by cae97000a. fxfs.dax_evacuate_every=N (fault injection) runs the evacuation after one seal in N; with it, checks-dax-delay passes 8 rounds on main (r221) and fails round 1 with the host fix taken out (r218). DoD #1 not run on macOS for this closure.
+<!-- SECTION:FINAL_SUMMARY:END -->

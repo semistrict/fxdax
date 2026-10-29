@@ -3,10 +3,10 @@ id: TASK-119.12
 title: >-
   fxfs-guest-checks-dax-small: the checks with a 16-32 MiB window, regions full,
   own-space writable maps, reclaim under load
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-28 19:45'
-updated_date: '2026-10-29 06:47'
+updated_date: '2026-10-29 09:23'
 labels:
   - testing
 dependencies: []
@@ -23,7 +23,7 @@ Fable: tests use a large window; the sandbox team runs it full. window_regions_f
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The case runs in the default set and reaches regions_full and reclaims (counters)
+- [x] #1 The case runs in the default set and reaches regions_full and reclaims (counters)
 <!-- AC:END -->
 
 ## Definition of Done
@@ -38,3 +38,9 @@ Fable: tests use a large window; the sandbox team runs it full. window_regions_f
 <!-- SECTION:NOTES:BEGIN -->
 2026-10-29, branch t3/task-112-6: fxfs-guest-checks-dax-small (6304e1165) joins test-e2e.sh's default suites, dax-gate.sh's and test-guest-kernel.sh's; its last check, window_filled, asserts window_regions_full and window_reclaims grew since the last mount (file_attributes remounts). Pending: GCE r214.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+fxfs-guest-checks-dax-small is in test-e2e.sh's default suites, dax-gate.sh's and test-guest-kernel.sh's; its last check, window_filled, asserts window_regions_full and window_reclaims grew since the last mount. GCE r221: 2 rounds passed. The pause checks and regions checks that need room for regions skip it.
+<!-- SECTION:FINAL_SUMMARY:END -->

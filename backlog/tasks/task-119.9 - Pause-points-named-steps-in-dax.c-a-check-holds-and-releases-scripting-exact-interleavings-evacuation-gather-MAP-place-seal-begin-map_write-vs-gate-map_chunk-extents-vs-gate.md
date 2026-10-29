@@ -4,10 +4,10 @@ title: >-
   Pause points: named steps in dax.c a check holds and releases, scripting exact
   interleavings (evacuation gather/MAP/place, seal begin, map_write vs gate,
   map_chunk extents vs gate)
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-28 19:45'
-updated_date: '2026-10-29 08:05'
+updated_date: '2026-10-29 09:23'
 labels:
   - testing
 dependencies: []
@@ -24,8 +24,8 @@ Fable and Astra (2026-10-28): fxfs_dax_delay sleeps <=200 us a quarter of the ti
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A check pauses an evacuation after its gather, writes/truncates/fsyncs, releases it, and verifies contents
-- [ ] #2 Each pause point has a check that reaches it (counter)
+- [x] #1 A check pauses an evacuation after its gather, writes/truncates/fsyncs, releases it, and verifies contents
+- [x] #2 Each pause point has a check that reaches it (counter)
 <!-- AC:END -->
 
 ## Definition of Done
@@ -42,3 +42,9 @@ Fable and Astra (2026-10-28): fxfs_dax_delay sleeps <=200 us a quarter of the ti
 
 GCE r220: the mutant prune_in_use killed in round 1 by prune_while_paused alone: the region let go of under the paused read, the window unmapped it, and the read's copy was refused ('an access to a page the window maps nothing at'), the vCPU failing with EFAULT a second later. r214: evacuation_unlocked killed, evacuation_paused failing. Both survivors of TASK-44.19 now die in one round, by design rather than timing. Caveat (r215): both checks need room for regions, which TASK-128 exhausts late in the full suites.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Pause points GATHERED, READ_MAPPED, EVACUEES_MAPPED, PLACED join MOVED, SEALING, SHUT, HELD, with fxfs.dax_pause_ino to hold one file's. evacuation_paused holds an evacuation after its gather, writes the page meanwhile (which waits), and reads it back; prune_while_paused holds a read between iomap and copy while its page moves out and its range prunes; stale_entry_flushed holds an evacuation at PLACED; the crash-at-step variants reach GATHERED, EVACUEES_MAPPED and PLACED. evacuation_unlocked and prune_in_use, which timing killed once in 70 rounds or never, die in round 1 (r214, r220, r222). GCE r221: checks-dax, -delay, -small 2 rounds each.
+<!-- SECTION:FINAL_SUMMARY:END -->

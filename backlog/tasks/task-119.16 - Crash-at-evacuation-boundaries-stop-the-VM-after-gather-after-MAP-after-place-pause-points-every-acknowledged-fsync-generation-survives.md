@@ -6,7 +6,7 @@ title: >-
 status: In Progress
 assignee: []
 created_date: '2026-10-28 19:45'
-updated_date: '2026-10-29 07:01'
+updated_date: '2026-10-29 09:23'
 labels:
   - testing
 dependencies:
@@ -38,4 +38,6 @@ Astra: warm-window reads agree while durable storage may be wrong.
 
 <!-- SECTION:NOTES:BEGIN -->
 2026-10-29, branch t3/task-112-6: fxfs-guest-crash-dax-gathered, -mapped, -placed: the crash test's VM stopped (reboot) once an evacuation is held at GATHERED, EVACUEES_MAPPED or PLACED, which the guest reports ('held at step N') and the host requires, then checks the store as fxfs-guest-crash-dax does. In dax-gate.sh. Pending GCE r215.
+
+GCE r219/r221: -placed 2 of 2 twice; -gathered held no evacuation within 10 s in one round of two; -mapped once printed no 'held at step 6' and its VM didn't stop in 40 s, a writer blocked 20 s (on the held file, presumably); the console's loglevel hides the blocked task's stack. Out of dax-gate.sh until reliable.
 <!-- SECTION:NOTES:END -->
