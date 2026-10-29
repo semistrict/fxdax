@@ -34,7 +34,8 @@ export PJDFSTEST_REPO=${PJDFSTEST_REPO:-https://github.com/pjd/pjdfstest}
 export PJDFSTEST_COMMIT=${PJDFSTEST_COMMIT:-85a8aea9e685999ef0540392fd80535f873d7ff7}
 FXDAX_GUEST_KERNEL="$results/$(basename "$built")" FXDAX_E2E_RESULTS="$results" \
     "$root/scripts/test-e2e.sh" extent-guest fxfs-guest fxfs-guest-dax fxfs-guest-format \
-    fxfs-guest-crash fxfs-guest-crash-dax fxfs-guest-resize fxfs-guest-live-fork \
+    fxfs-guest-crash fxfs-guest-crash-dax fxfs-guest-crash-dax-killed fxfs-guest-resize \
+    fxfs-guest-live-fork \
     fxfs-guest-daemon-lost \
     fxfs-guest-follow fxfs-guest-follow-dax fxfs-guest-follow-torture \
     fxfs-guest-follow-torture-dax fxfs-guest-follow-torture-mutant \
