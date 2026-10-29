@@ -791,25 +791,54 @@ impl OpenPages {
         Arc::new(Self { arena, pages: Mutex::new(Vec::new()) })
     }
 
-    /// A new page of zeros, of its arena: `ENOMEM` once relief finds nothing to evict for it.
-    fn zeroed(&self) -> Result<physmem::Page> {
-        let page = physmem::alloc(self.arena, physmem::Wait::Yes).map_err(|_| Errno::ENOMEM)?;
-        // SAFETY: The page is allocated, and only this extent's.
-        unsafe { std::ptr::write_bytes(page.as_ptr(), 0, page_size() as usize) };
-        Ok(page)
+    /// `count` new pages of zeros, of its arena, at most a chunk's: consecutive in physical memory
+    /// where they can be, after `after` where it can, the page before them in the extent, and else
+    /// of the smallest free run that holds them (`physmem::alloc_run`), so that a window maps the
+    /// extent in runs as long as they are, each one change of its VM process's memory, rather than
+    /// a page at a time (TASK-108.1, TASK-131.1). Taken a page at a time, they would be the single
+    /// pages free among those in use, scattered. `ENOMEM` once relief finds nothing to evict for
+    /// them.
+    fn zeroed(&self, after: Option<&physmem::Page>, count: usize) -> Result<Vec<physmem::Page>> {
+        debug_assert!(count <= physmem::CHUNK_SIZE / page_size() as usize);
+        let mut run: Vec<physmem::Page> = Vec::with_capacity(count);
+        while run.len() < count {
+            let Some(next) = run.last().or(after).and_then(physmem::alloc_after) else { break };
+            run.push(next);
+        }
+        let rest = physmem::alloc_run(self.arena, count - run.len(), physmem::Wait::Yes)
+            .map_err(|_| Errno::ENOMEM)?;
+        run.extend(rest);
+        for page in &run {
+            // SAFETY: The page is allocated, and only this extent's.
+            unsafe { std::ptr::write_bytes(page.as_ptr(), 0, page_size() as usize) };
+        }
+        Ok(run)
     }
 
     /// Brings `pages` into memory, as a guest about to write them maps them: so that they are
-    /// mapped now rather than one fault at a time as it writes them.
+    /// mapped now rather than one fault at a time as it writes them. Each run of them not in
+    /// memory is allocated a chunk's pages at most at once ([`OpenPages::zeroed`]): those brought
+    /// in before an allocation fails stay, as its arena's cap refuses the rest.
     pub(crate) fn commit(&self, pages: Range<u64>) -> Result<()> {
         let mut table = self.pages.lock().unwrap();
         if table.len() < pages.end as usize {
             table.resize_with(pages.end as usize, || None);
         }
-        for page in pages {
-            if table[page as usize].is_none() {
-                table[page as usize] = Some(self.zeroed()?);
+        let mut page = pages.start as usize;
+        while page < pages.end as usize {
+            if table[page].is_some() {
+                page += 1;
+                continue;
             }
+            let chunk = physmem::CHUNK_SIZE / page_size() as usize;
+            let end = (page..pages.end as usize).find(|at| table[*at].is_some());
+            let end = end.unwrap_or(pages.end as usize).min(page + chunk);
+            let before = page.checked_sub(1).and_then(|before| table[before].as_ref());
+            let run = self.zeroed(before, end - page)?;
+            for (slot, frame) in table[page..end].iter_mut().zip(run) {
+                *slot = Some(frame);
+            }
+            page = end;
         }
         Ok(())
     }
@@ -864,7 +893,6 @@ impl OpenPages {
             .filter_map(|page| Some((page, table[page as usize].take()?)))
             .collect()
     }
-
 }
 
 impl Source for OpenPages {
@@ -912,3 +940,37 @@ pub(crate) fn zeros() -> Arc<dyn Source> {
         .clone()
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The physical memory offsets of `open`'s pages, in order.
+    fn offsets(open: &OpenPages) -> Vec<u64> {
+        let table = open.pages.lock().unwrap();
+        table
+            .iter()
+            .map(|page| page.as_ref().expect("a page brought in").location().offset)
+            .collect()
+    }
+
+    /// An open extent's pages brought in are consecutive in physical memory, each run after the
+    /// page before it in the extent, though single pages are free among pages in use, which pages
+    /// taken a page at a time would be (TASK-131.1). Each test runs in a process of its own
+    /// (nextest), whose arena is its own.
+    #[test]
+    fn open_pages_are_brought_in_in_runs() {
+        let ps = page_size();
+        let row = physmem::alloc_run(ArenaId::DEFAULT, 64, physmem::Wait::No).unwrap();
+        let (freed, kept): (Vec<_>, Vec<_>) =
+            row.into_iter().enumerate().partition(|(at, _)| at % 2 == 0);
+        drop(freed);
+        let open = OpenPages::new(ArenaId::DEFAULT);
+        open.commit(0..8).unwrap();
+        open.commit(8..12).unwrap();
+        open.write(12 * ps, &vec![1; 4 * ps as usize]).unwrap();
+        let offsets = offsets(&open);
+        let first = offsets[0];
+        assert_eq!(offsets, (0..16).map(|page| first + page * ps).collect::<Vec<_>>());
+        drop(kept);
+    }
+}
