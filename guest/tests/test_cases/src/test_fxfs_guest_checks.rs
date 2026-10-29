@@ -40,6 +40,8 @@ const EVICTED: &[u8] = b"written back when its inode is evicted\n";
 /// fxdax: random_ops's file, and its model's (TASK-119.2).
 const RANDOM_OPS: &str = "random-ops";
 const RANDOM_OPS_MODEL: &str = "random-ops.model";
+/// fxdax: random_ops's operations, as it made them, each a line, which replay it (TASK-119.15).
+const RANDOM_OPS_HISTORY: &str = "random-ops.history";
 /// fxdax: torture's files, each with its model beside it, `<name>.model` (TASK-119.5).
 const TORTURE_FILES: usize = 4;
 fn torture(n: usize) -> String {
@@ -211,6 +213,12 @@ mod host {
             assert!(
                 read_path(&fs, RANDOM_OPS) == read_path(&fs, RANDOM_OPS_MODEL),
                 "host: seed {seed}: random-ops differs from its model"
+            );
+            // fxdax: and its operations, which replay it (TASK-119.15).
+            let history = read_path(&fs, RANDOM_OPS_HISTORY);
+            assert!(
+                history.starts_with(format!("seed {seed}\n").as_bytes()),
+                "host: random_ops's history is of another seed"
             );
             // fxdax: and torture's (TASK-119.5).
             for name in (0..TORTURE_FILES).map(torture) {
@@ -2298,15 +2306,22 @@ mod guest {
         }
     }
 
-    /// fxdax: a file's random operations, as fsx makes them (TASK-44.15): write(2)s, stores
-    /// through a mapping, reads, truncations, holes punched and fsyncs, at random offsets and
-    /// lengths, from a seed (FXDAX_RANDOM_OPS_SEED, which the host picks anew each run, or 1),
-    /// each read, and every 256th operation and the last the whole file, checked against what a
-    /// model of its bytes says it holds. A mismatch names the seed, the operation and those before
-    /// it, which replay it. The file stays, and the model beside it, which the host compares it
-    /// with, as its Fxfs reads them from the store (TASK-119.2).
+    /// fxdax: a file's random operations, as fsx makes them (TASK-44.15): write(2)s, appends,
+    /// stores through a mapping, reads, truncations, holes punched and fsyncs, at random offsets
+    /// and lengths, from a seed (FXDAX_RANDOM_OPS_SEED, which the host picks anew each run, or 1),
+    /// each read, and every 256th operation and the last the whole file, through read(2) and the
+    /// mapping, checked against what a model of its bytes says it holds. A mismatch names the
+    /// seed, the operation and those before it, which replay it. The file stays, and the model
+    /// beside it, which the host compares it with, as its Fxfs reads them from the store
+    /// (TASK-119.2), and the operations made, its history (TASK-119.15). fxdax: the file reaches
+    /// across two 2 MiB chunks, the offsets drawn near a chunk's end, a page's, and the file's as
+    /// often as anywhere, and one mapping of it is kept across every operation, seals and
+    /// truncations among them, which its stores and reads go through (TASK-119.15).
     fn test_random_ops() {
-        const MAX: u64 = 1 << 20;
+        const MAX: u64 = 4 << 20;
+        /// The most the file holds: a write at MAX's last byte, of the most a write writes.
+        const MOST: u64 = MAX + (16 << 10);
+        const CHUNK: u64 = 2 << 20;
         const OPS: usize = 3000;
         const PAGE: u64 = 4096;
         let seed = seed();
@@ -2320,9 +2335,28 @@ mod guest {
             .open(&name)
             .unwrap();
         let fd = file.as_raw_fd();
+        // The mapping kept: as large as the file may be, touched within its size alone.
+        let map = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                MOST as usize,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                fd,
+                0,
+            )
+        };
+        assert_ne!(map, libc::MAP_FAILED, "mmap: {}", std::io::Error::last_os_error());
+        let mapped = map.cast::<u8>();
         let mut model: Vec<u8> = Vec::new();
         let mut done: Vec<String> = Vec::new();
+        let history = |done: &[String]| {
+            fs::write(path(RANDOM_OPS_HISTORY), format!("seed {seed}\n{}\n", done.join("\n")))
+                .unwrap();
+            fs::File::open(path(RANDOM_OPS_HISTORY)).unwrap().sync_all().unwrap();
+        };
         let failed = |done: &[String], what: String| -> ! {
+            history(done);
             let last = &done[done.len().saturating_sub(24)..];
             panic!(
                 "seed {seed}, operation {}: {what}; the last before it:\n{}",
@@ -2356,10 +2390,24 @@ mod guest {
                 );
             }
         };
+        // Where an operation goes: anywhere, or near a chunk's end, a page's, or the file's.
+        let place = |rng: &mut Rng, size: u64| -> u64 {
+            let near = |rng: &mut Rng, end: u64| (end + rng.next(16 << 10)).saturating_sub(8 << 10);
+            let at = match rng.next(4) {
+                0 => rng.next(MAX),
+                1 => near(rng, CHUNK),
+                2 => {
+                    let page = rng.next(MAX / PAGE) * PAGE;
+                    near(rng, page)
+                }
+                _ => near(rng, size),
+            };
+            at.min(MAX - 1)
+        };
         for op in 0..OPS {
-            let at = rng.next(MAX);
+            let at = place(&mut rng, model.len() as u64);
             let len = 1 + rng.next(16 << 10);
-            match rng.next(16) {
+            match rng.next(17) {
                 // write(2)
                 0..=4 => {
                     let data = rng.bytes(len as usize);
@@ -2375,32 +2423,30 @@ mod guest {
                     }
                     model[at as usize..end].copy_from_slice(&data);
                 }
-                // Stores through a mapping of the file, within its size.
+                // Stores through the mapping kept, within the file's size.
                 5..=8 if !model.is_empty() => {
                     let size = model.len() as u64;
                     let at = at % size;
                     let len = len.min(size - at);
                     done.push(format!("store {len:#x} at {at:#x}"));
-                    let mapped = size.div_ceil(PAGE) * PAGE;
-                    let map = unsafe {
-                        libc::mmap(
-                            std::ptr::null_mut(),
-                            mapped as usize,
-                            libc::PROT_READ | libc::PROT_WRITE,
-                            libc::MAP_SHARED,
-                            fd,
-                            0,
-                        )
-                    };
-                    if map == libc::MAP_FAILED {
-                        failed(&done, format!("mmap: {}", std::io::Error::last_os_error()));
-                    }
                     for i in 0..len {
                         let byte = rng.next(256) as u8;
-                        unsafe { map.cast::<u8>().add((at + i) as usize).write_volatile(byte) };
+                        unsafe { mapped.add((at + i) as usize).write_volatile(byte) };
                         model[(at + i) as usize] = byte;
                     }
-                    unsafe { libc::munmap(map, mapped as usize) };
+                }
+                // An append.
+                16 => {
+                    let at = model.len() as u64;
+                    let len = len.min(MOST - at);
+                    let data = rng.bytes(len as usize);
+                    done.push(format!("append {len:#x} at {at:#x}"));
+                    let n =
+                        unsafe { libc::pwrite(fd, data.as_ptr().cast(), data.len(), at as i64) };
+                    if n != data.len() as isize {
+                        failed(&done, format!("append: {n}: {}", std::io::Error::last_os_error()));
+                    }
+                    model.extend_from_slice(&data);
                 }
                 // Reads.
                 9..=11 => {
@@ -2439,10 +2485,16 @@ mod guest {
                     failed(&done, format!("size {size:#x}, the model's {:#x}", model.len()));
                 }
                 check(&model, &done, 0, model.len() as u64 + PAGE);
+                let through = unsafe { std::slice::from_raw_parts(mapped, model.len()) };
+                if let Some(at) = through.iter().zip(&model).position(|(a, b)| a != b) {
+                    failed(&done, format!("the mapping differs from the model at {at:#x}"));
+                }
             }
         }
+        unsafe { libc::munmap(map, MOST as usize) };
         file.sync_all().unwrap();
         drop(file);
+        history(&done);
         fs::write(path(RANDOM_OPS_MODEL), &model).unwrap();
         fs::File::open(path(RANDOM_OPS_MODEL)).unwrap().sync_all().unwrap();
         evict(&name);
