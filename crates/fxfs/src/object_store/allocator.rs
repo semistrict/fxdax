@@ -1063,7 +1063,9 @@ impl Allocator {
         let mut inner = self.inner.lock();
         let Inner { info, extents, .. } = &mut *inner;
         // The extents dying when the tree was last compacted, which it doesn't hold, are freed again.
-        extents.load(loading, std::mem::take(&mut info.dying), &info.marked_for_deletion);
+        let records =
+            extents.load(loading, std::mem::take(&mut info.dying), &info.marked_for_deletion);
+        self.record(records);
         Ok(())
     }
 
@@ -4090,6 +4092,31 @@ mod tests {
         assert_eq!(allocator.dead_extents(), vec![staging]);
         flush_device(&fs).await;
         assert!(allocator.dead_extents().is_empty());
+        fs.close().await.expect("close failed");
+    }
+
+    /// fxdax: a shared extent emptied while it is the staging extent, the tree compacted then, and
+    /// the filesystem closed with it staging still: the layers the compaction wrote hold its
+    /// records, all counted 0, and no transaction journals the removal its last pin's going would
+    /// have written. The next mount finds nothing of it allocated, kills it, and removes it from
+    /// the tree, which fsck finds whole: it reported an ExtentMismatch (TASK-119.22, a guest's
+    /// store after fxfs-guest-checks-dax).
+    #[fuchsia::test]
+    async fn test_staging_extent_empty_at_close() {
+        let (fs, allocator) = test_fs().await;
+        let (transaction, range) = shared_allocation(&fs).await;
+        transaction.commit().await.expect("commit failed");
+        let extent = range.extent;
+        commit_deallocation(&fs, range).await;
+        assert_eq!(allocator.extents()[&extent], (99, 0));
+        fs.journal().force_compact().await.expect("compact failed");
+        fs.close().await.expect("close failed");
+        let device = fs.take_device().await;
+        device.reopen(false);
+
+        let fs = FxFilesystemBuilder::new().open(device).await.expect("open failed");
+        assert!(!fs.allocator().extents().contains_key(&extent));
+        fsck(fs.clone()).await.expect("fsck failed");
         fs.close().await.expect("close failed");
     }
 

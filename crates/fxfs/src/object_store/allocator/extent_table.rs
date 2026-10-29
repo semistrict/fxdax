@@ -48,22 +48,22 @@
 //! - `commit`: the allocation's range, counted once.
 //! - `recount`: the parts of the range whose references change, with their new counts. A part none
 //!   references any more is counted 0, so that its extent's size is known while the rest is alive.
-//! - The removal from the tree of an extent that dies, in two cases. One is `recount`'s, with the
-//!   extent's last deallocation, which its transaction journals. The other is an empty extent's,
+//! - The removal from the tree of an extent that dies, in three cases. One is `recount`'s, with
+//!   the extent's last deallocation, which its transaction journals. Another is an empty extent's,
 //!   with its last pin (`stage`, `restage`, `drop_allocation`), which no transaction journals:
-//!   replay, which pins aren't in, kills the extent with its last deallocation instead.
+//!   replay, which pins aren't in, kills the extent with its last deallocation instead, unless
+//!   the tree was compacted since. The third is `load`'s, of an extent it finds with nothing
+//!   allocated: one empty when the tree was last compacted, as the staging extent emptied may be,
+//!   whose filesystem stopped while pins still held it, so that the removal its last pin's going
+//!   writes never came. Its records, all counted 0, stayed in the tree for good otherwise, as no
+//!   compaction filters them out, and fsck reported the extent as an `ExtentMismatch`
+//!   (TASK-119.22). The tree's next compaction writes the removal.
 //!
 //! The other deaths write nothing. Those of owners deleted (`kill_owners`, and `load`'s) leave
 //! their records to a compaction of all the tree's layers, which filters them out once they are
 //! freed (the allocator's "Compactions"). The tree has no records of pending extents, of those of
 //! transactions that dropped, of orphans, nor of those dying when it was last compacted, but for
 //! removals that hide their records in older layers.
-//!
-//! A known defect: an extent `load` finds with nothing allocated dies without leaving the tree.
-//! Such an extent was empty when the tree was last compacted, and the filesystem stopped while
-//! pins still held it: its removal, which no transaction journals, never came. Its records, all
-//! counted 0, stay in the tree for good, as no compaction filters them out, and fsck reports the
-//! extent as an `ExtentMismatch`.
 //!
 //! Replay applies the transactions the journal holds, which pins aren't in: there, an extent dies
 //! with its last deallocation, to be freed once replay is done. An allocation replayed in an extent
@@ -634,12 +634,14 @@ impl ExtentTable {
     /// Loads the extents of the allocator's tree, as a mount finds them, before replay: those
     /// alive, and the dead, which are those of owners marked for deletion, those of which nothing
     /// is allocated, and those `dying` when the tree was last compacted, which it doesn't hold.
+    /// Returns the removals of those of which nothing is allocated, whose records the tree holds.
     pub(super) fn load(
         &mut self,
         loading: Loading,
         dying: Vec<ExtentId>,
         marked_for_deletion: &HashSet<u64>,
-    ) {
+    ) -> Records {
+        let mut records = Records::default();
         debug_assert!(self.extents.is_empty() && self.dead.is_empty());
         for extent in dying {
             if !loading.0.contains_key(&extent) {
@@ -660,11 +662,12 @@ impl ExtentTable {
                 self.alive_bytes += size;
                 self.extents.insert(extent, ExtentState::Allocated { info, pins: 0 });
             } else {
-                // Its records stay in the tree: the known defect the module's doc describes.
                 let free_after = FreeAfter::Now;
                 self.queue_dead(DeadExtent { free_after, extent, size, owner_object_id });
+                records.add_removal(extent, size);
             }
         }
+        records
     }
 
     /// Kills the extents of `branch` with `sequences` that aren't alive: those a crash left, whose
@@ -1245,7 +1248,8 @@ mod tests {
 
     /// A mount finds the extents alive in the tree, with their sizes and references; those of
     /// owners deleted, those of which nothing is allocated, and those dying when the tree was
-    /// compacted are dead. Orphans die after replay, and minting resumes past them.
+    /// compacted are dead, and those of which nothing is allocated leave the tree (TASK-119.22).
+    /// Orphans die after replay, and minting resumes past them.
     #[fuchsia::test]
     fn a_mount_loads_the_extents_alive_and_kills_the_rest() {
         let device = FakeDevice::new(64, BS as u32);
@@ -1264,7 +1268,8 @@ mod tests {
         assert!(FxfsError::Inconsistent.matches(&wrong.expect_err("added")));
 
         let mut table = ExtentTable::default();
-        table.load(loading, vec![gone, alive], &HashSet::from([OTHER_OWNER]));
+        let records = table.load(loading, vec![gone, alive], &HashSet::from([OTHER_OWNER]));
+        assert_eq!(records.0, [removed(empty, BS)]);
         assert_eq!(table.alive().collect::<Vec<_>>(), [(alive, OWNER, 2 * BS)]);
         assert_eq!(table.extent_size(alive, &device), Some(3 * BS));
         assert!(table.is_referenced_more_than_once(&ExtentRange::new(alive, BS..2 * BS)));
