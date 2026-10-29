@@ -101,6 +101,24 @@ fn rewritten(page: usize, generation: u32) -> Vec<u8> {
     (0..4096).map(|i| (i % 251) as u8 ^ page as u8 ^ g[0] ^ g[1].rotate_left(3)).collect()
 }
 
+/// fxdax: the crash test's file truncated and extended again and again, each size then synced
+/// (TASK-119.6): wherever it holds bytes, they are `resized_byte`'s, but for those an extension not
+/// yet synced left zeros.
+const RESIZED: &str = "resized";
+
+/// The sizes RESIZED is given are multiples of this, which pages' and blocks' ends fall within.
+const RESIZED_STEP: usize = 3001;
+
+/// The size resize `generation` gives RESIZED: across pages and blocks, shrinking and growing it.
+fn resized_size(generation: u32) -> usize {
+    (generation as usize * 7919 % 16 + 1) * RESIZED_STEP
+}
+
+/// RESIZED's byte at `at`, which no zero is.
+fn resized_byte(at: usize) -> u8 {
+    (at % 251) as u8 + 1
+}
+
 /// The contents of MAPPED_SYNCED as synced.
 fn mapped_synced() -> Vec<u8> {
     pattern(4096, 7)
@@ -289,6 +307,55 @@ mod host {
                                  generation {last_synced}, the last synced, wrote it"
                             );
                         }
+                    }
+                }
+                // fxdax: the file resized again and again is as large as its last resize synced
+                // made it, or one after; its bytes the pattern's below both, and the pattern's or
+                // an extension's zeros above (TASK-119.6).
+                {
+                    let resizes: Vec<(u32, usize, bool)> = (output.lines())
+                        .filter_map(|line| {
+                            let (synced, rest) = match line.strip_prefix("resized ") {
+                                Some(rest) => (true, rest),
+                                None => (false, line.strip_prefix("resizing ")?),
+                            };
+                            let (generation, size) = rest.split_once(' ')?;
+                            let (generation, size) = (generation.parse().ok()?, size.parse().ok()?);
+                            // A line the VM stopped in the middle of says another size.
+                            (size == resized_size(generation)).then_some((generation, size, synced))
+                        })
+                        .collect();
+                    let (last_synced, synced_size) = (resizes.iter())
+                        .filter(|(_, _, synced)| *synced)
+                        .map(|&(generation, size, _)| (generation, size))
+                        .max()
+                        .expect("RESIZED never synced");
+                    let allowed: Vec<usize> = (resizes.iter())
+                        .filter(|&&(generation, _, synced)| !synced && generation > last_synced)
+                        .map(|&(_, size, _)| size)
+                        .chain([synced_size])
+                        .collect();
+                    let (node, attr) = block_on(fs.root().lookup(RESIZED.as_bytes())).unwrap();
+                    let size = attr.size as usize;
+                    assert!(
+                        allowed.contains(&size),
+                        "{RESIZED} is {size} bytes: no resize since generation {last_synced}, \
+                         the last synced, of {synced_size}, made it so: {allowed:?}"
+                    );
+                    let mut contents = vec![0; size];
+                    let mut read = 0;
+                    while read < size {
+                        let n = block_on(node.read(read as u64, &mut contents[read..])).unwrap();
+                        assert_ne!(n, 0, "{RESIZED} ends early, at {read}");
+                        read += n;
+                    }
+                    let kept = allowed.iter().copied().min().unwrap();
+                    for (at, &byte) in contents.iter().enumerate() {
+                        assert!(
+                            byte == resized_byte(at) || (at >= kept && byte == 0),
+                            "{RESIZED} byte {at} of {size} holds {byte:#x}: neither the pattern's \
+                             nor, past {kept}, an extension's zero"
+                        );
                     }
                 }
                 // fxdax: a page synced, then stored to through a mapping, the fault's block moved
@@ -718,6 +785,39 @@ mod guest {
         stdout.flush().unwrap();
     }
 
+    /// fxdax: makes RESIZED, of resize 0's size, synced, then truncates or extends it again and
+    /// again, to each resize's size, writing the pattern where it extends, and syncing it,
+    /// reporting each resize as it begins, and as its sync returns, until the VM stops
+    /// (TASK-119.6).
+    fn resize() -> ! {
+        use std::os::unix::fs::FileExt;
+        let path = format!("{MNT}/{RESIZED}");
+        let file = fs::OpenOptions::new().read(true).write(true).create(true).open(&path).unwrap();
+        // As much as RESIZED holds at most.
+        let full: Vec<u8> = (0..16 * RESIZED_STEP).map(resized_byte).collect();
+        let first = resized_size(0);
+        file.write_all_at(&full[..first], 0).unwrap();
+        file.sync_all().unwrap();
+        fs::File::open(MNT).unwrap().sync_all().unwrap();
+        report(&format!("resized 0 {first}"));
+        let mut size = first;
+        for generation in 1u32.. {
+            while PAUSED.load(std::sync::atomic::Ordering::Acquire) {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            let next = resized_size(generation);
+            report(&format!("resizing {generation} {next}"));
+            file.set_len(next as u64).unwrap();
+            if next > size {
+                file.write_all_at(&full[size..next], size as u64).unwrap();
+            }
+            file.sync_all().unwrap();
+            size = next;
+            report(&format!("resized {generation} {next}"));
+        }
+        unreachable!()
+    }
+
     /// fxdax: makes REWRITTEN[`file`], each page's generation 0 synced, then writes its pages
     /// again and again, each a generation more, through write(2) and fsync, or (`file` 1) stores
     /// through a mapping and msync of the page, reporting each write as it begins, and as its sync
@@ -809,6 +909,7 @@ mod guest {
         std::thread::spawn(|| fsync_files(2));
         std::thread::spawn(|| rewrite(0));
         std::thread::spawn(|| rewrite(1));
+        std::thread::spawn(resize);
         // fxdax: with DAX, a store through a mapping as the VM stops, before the writers fill the
         // store, which they do in 2 seconds (TASK-79.11). The VM stops at a time the host picks,
         // FXDAX_CRASH_MS, from when the writers begin (TASK-119.6).
