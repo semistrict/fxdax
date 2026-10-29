@@ -4,10 +4,10 @@ title: >-
   Bookkeeping assertions that fail tests: nr_moved vs moved[], region indices
   valid, placed pages at the extent Fxfs says, no MAP pending into freed window
   space; DAX diagnostics WARN
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-28 19:45'
-updated_date: '2026-10-29 12:44'
+updated_date: '2026-10-29 12:58'
 labels:
   - testing
 dependencies: []
@@ -25,7 +25,7 @@ Fable/Astra: at place, ask Fxfs (fxfs_dax_extents) where each page is and WARN u
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [x] #1 Assertions behind a debug param, on in checks-dax-delay
-- [ ] #2 A hand mutant breaking each is caught by its assertion
+- [x] #2 A hand mutant breaking each is caught by its assertion
 <!-- AC:END -->
 
 ## Definition of Done
@@ -45,4 +45,12 @@ GCE r214 (kernel built per mutant): evacuation_maps_elsewhere and prune_misnumbe
 GCE r221: checks-dax-delay with fxfs.dax_check_places 2 rounds passed after check_placed reads every piece and looks below the file's size (a truncate's pages past it, which resize_end unmaps after, were false WARNs). evacuation_maps_elsewhere and prune_misnumbers killed by it (r214); the region index WARN's own kill is still unshown.
 
 418636158: mutant prune_unrenumbered (a prune lets regions go but leaves moved[]'s indices as they were, past those kept): fxfs_dax_moved_index's WARN should kill it in checks-dax, where check_places is off. GCE r225b pending.
+
+GCE r225b (main 418636158, kernel built per mutant): prune_unrenumbered killed in round 1 of checks-dax (check_places off) by fxfs_dax_moved_index's own WARN, 'a page moved to region 4 of the range's 3' and others: the index WARN's kill shown. With evacuation_maps_elsewhere and prune_misnumbers killed by check_places (r214), each assertion has a mutant it catches. DoD #1 not run.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Bookkeeping assertions that fail tests: moved-page region indices checked at every decode (WARN), and fxfs.dax_check_places checking evacuated runs against Fxfs's extents (on in checks-dax-delay). Each shown to kill a mutant of its own: prune_unrenumbered (r225b), evacuation_maps_elsewhere and prune_misnumbers (r214).
+<!-- SECTION:FINAL_SUMMARY:END -->
