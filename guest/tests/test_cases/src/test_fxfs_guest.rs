@@ -852,7 +852,9 @@ mod guest {
             set(attr, "ignore-gfp-wait", "N");
             set(attr, "probability", "1");
         }
-        set("fail_page_alloc", "ignore-gfp-highmem", "N");
+        // Not the pages the writers' own memory faults in (__GFP_HIGHMEM): one failing killed the
+        // agent, init, with SIGSEGV (GCE r267).
+        set("fail_page_alloc", "ignore-gfp-highmem", "Y");
         set("fail_page_alloc", "min-order", "0");
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let writers: Vec<_> = (1..=2u8)
