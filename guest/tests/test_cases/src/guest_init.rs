@@ -131,6 +131,43 @@ fn forward(fd: libc::c_int, (start, end): (u8, u8), console: &File) -> mpsc::Rec
     forwarded
 }
 
+/// fxdax: the console, opened anew: for a process the agent's pipes and forwarders may not serve
+/// (`say`, `crash`).
+fn console() -> File {
+    use std::os::unix::fs::OpenOptionsExt;
+    File::options()
+        .write(true)
+        .custom_flags(libc::O_NOCTTY)
+        .open("/dev/console")
+        .expect("open the console")
+}
+
+/// fxdax: says `line` on the console as the agent's standard output, in a frame of its own, one
+/// write: from a process whose agent's forwarders may be stuck, as a crash test's stopping one
+/// (TASK-119.16). Its frame comes between the forwarders', which may end mid-line: hence a line
+/// begun anew.
+pub fn say(line: &str) {
+    let framed = [&[STDOUT_START, b'\n'], line.as_bytes(), &[b'\n', STDOUT_END]].concat();
+    console().write_all(&framed).expect("write to the console");
+}
+
+/// fxdax: resets the VM at once, without syncing, as a crash does, once the console has passed
+/// what was written to it: the last lines came out in the midst of the reset's kernel messages
+/// otherwise, and a crash test missed the line it looked for (TASK-119.16, GCE r215, r221).
+pub fn crash() -> ! {
+    // SAFETY: Plain system calls.
+    unsafe {
+        assert_eq!(
+            libc::tcdrain(console().as_raw_fd()),
+            0,
+            "tcdrain: {}",
+            std::io::Error::last_os_error()
+        );
+        libc::reboot(libc::RB_AUTOBOOT);
+    }
+    panic!("reboot: {}", std::io::Error::last_os_error());
+}
+
 impl Init {
     /// Resets the VM, which ends it, once the test's output has reached the host.
     pub fn reset(self) -> ! {

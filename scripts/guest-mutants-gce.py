@@ -133,6 +133,12 @@ MUTANTS = [
         "index then is none of (TASK-119.10)",
         [("(moved >> 32) - 1) + 1) << 32) |", "(moved >> 32) - 1) + 2) << 32) |")],
     ),
+    (
+        "prune_unrenumbered",
+        "a prune lets go of regions, but its pages' moved entries keep their regions' old indices, "
+        "past those it kept, which fxfs_dax_moved_index WARNs of (TASK-119.10)",
+        [("\t\trange->moved[page] = fxfs_dax_renumbered(used, range->moved[page]);\n", "")],
+    ),
 ]
 
 SUITES = "fxfs-guest-dax fxfs-guest-checks-dax fxfs-guest-checks-dax-delay fxfs-guest-pgbench-dax"

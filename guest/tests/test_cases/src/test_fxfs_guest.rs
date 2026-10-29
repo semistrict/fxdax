@@ -804,6 +804,7 @@ mod guest {
             file.sync_all().unwrap();
             fs::File::open(MNT).unwrap().sync_all().unwrap();
         }
+        let stopper = Stopper::fork(step);
         std::thread::spawn(|| fsync_files(1));
         std::thread::spawn(|| fsync_files(2));
         std::thread::spawn(|| rewrite(0));
@@ -820,17 +821,58 @@ mod guest {
         } else {
             std::thread::sleep(std::time::Duration::from_millis(crash_ms));
         }
-        if let Some(step) = step {
-            hold_evacuation(step);
+        stopper.stop()
+    }
+
+    /// fxdax: what stops the crash test's VM, a process of its own, forked before the writers
+    /// begin: a writer's fault on a file whose evacuation it holds waits holding its process's
+    /// memory map lock, which the agent's threads then waited for, the stop's among them, which
+    /// said nothing and stopped no VM (GCE r221); nor does it say anything through the agent's
+    /// forwarders, in that process too (TASK-119.16).
+    struct Stopper {
+        /// The pipe whose write says to stop.
+        go: fs::File,
+    }
+
+    impl Stopper {
+        /// Forks the process that stops the VM, once told to, with an evacuation held at `step` of
+        /// the DAX protocol first, if asked.
+        fn fork(step: Option<u32>) -> Self {
+            let mut fds = [0; 2];
+            assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0, "pipe");
+            // SAFETY: The pipe's ends, which nothing else owns.
+            let (mut wait, go) = unsafe {
+                use std::os::fd::FromRawFd;
+                (fs::File::from_raw_fd(fds[0]), fs::File::from_raw_fd(fds[1]))
+            };
+            // SAFETY: The agent's threads, its forwarders, hold no lock the child takes.
+            match unsafe { libc::fork() } {
+                -1 => panic!("fork: {}", std::io::Error::last_os_error()),
+                0 => {
+                    drop(go);
+                    wait.read_exact(&mut [0]).unwrap();
+                    if let Some(step) = step {
+                        hold_evacuation(step);
+                    }
+                    // A reset, which ends the VM on every architecture: x86's has no power-off.
+                    crate::guest_init::crash()
+                }
+                _ => Self { go },
+            }
         }
-        // A reset, which ends the VM on every architecture: x86's has no power-off.
-        unsafe { libc::reboot(libc::RB_AUTOBOOT) };
-        panic!("reboot: {}", std::io::Error::last_os_error());
+
+        /// Has the VM stop.
+        fn stop(mut self) -> ! {
+            self.go.write_all(&[1]).unwrap();
+            let mut status = 0;
+            unsafe { libc::wait(&mut status) };
+            panic!("the process stopping the VM ended, status {status:#x}");
+        }
     }
 
     /// fxdax: holds the next evacuation of a file at `step` of the DAX protocol (fxfs.dax_pause's
-    /// bit, a pause point), which the writers' fsyncs start as they seal, and reports it once one
-    /// is held, for the VM to stop with it so (TASK-119.16).
+    /// bit, a pause point), which the writers' fsyncs start as they seal, and says so on the
+    /// console once one is held, for the VM to stop with it so (TASK-119.16).
     fn hold_evacuation(step: u32) {
         const PARAMETERS: &str = "/sys/module/fxfs/parameters";
         fs::write(format!("{PARAMETERS}/dax_pause"), (1u64 << step).to_string()).unwrap();
@@ -838,7 +880,7 @@ mod guest {
         while std::time::Instant::now() < deadline {
             let paused = fs::read_to_string(format!("{PARAMETERS}/dax_paused")).unwrap();
             if paused.trim().parse::<u64>().unwrap() & (1 << step) != 0 {
-                report(&format!("held at step {step}"));
+                crate::guest_init::say(&format!("held at step {step}"));
                 return;
             }
             std::thread::sleep(std::time::Duration::from_millis(1));
