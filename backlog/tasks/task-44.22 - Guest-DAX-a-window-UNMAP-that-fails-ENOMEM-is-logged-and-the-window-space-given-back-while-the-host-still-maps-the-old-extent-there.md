@@ -3,9 +3,10 @@ id: TASK-44.22
 title: >-
   Guest DAX: a window UNMAP that fails (ENOMEM) is logged, and the window space
   given back while the host still maps the old extent there
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-10-29 21:33'
+updated_date: '2026-10-29 22:04'
 labels:
   - dax
   - bug
@@ -33,3 +34,9 @@ GCE r269 (fxfs-guest-faults-dax, the debug kernel failing the writers' kernel al
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-10-29: fxfs_device_unmap allocates its request with __GFP_NOFAIL (failslab skips those), and fxfs_dax_give_unmapped keeps the window space of an UNMAP that fails anyway from use, counted in window_lost_bytes; fxfs-guest-faults-dax asserts window_lost_bytes 0. GCE r255 (debug kernel) round 1: faults-dax's writer panicked writing make-it-fail=0 (ENOMEM: the write allocates), now retried; checks-dax failed on KCSAN, fxfs_dax_cow's unlocked find_next_bit against readers' test_and_clear_bit, benign (a hint; only readers clear), marked data_race. Rerunning (r255-unmap3).
+<!-- SECTION:NOTES:END -->
