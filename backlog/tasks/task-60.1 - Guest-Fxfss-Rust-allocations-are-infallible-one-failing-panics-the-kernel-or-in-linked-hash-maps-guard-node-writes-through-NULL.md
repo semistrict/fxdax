@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-29 21:11'
+updated_date: '2026-10-29 21:15'
 labels:
   - fxfs
   - bug
@@ -33,3 +34,9 @@ GCE r260 (fxfs-guest-faults-dax on a debug kernel failing the writers' slab and 
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+GCE r262 (the same test, fxfs_rt_alloc's allocations exempt): 'Kernel panic - not syncing: fxfs: panicked at linux-rt/src/executor.rs:134:5: assertion failed: no memory to schedule a task (-12)': the executor's fxfs_rt_schedule (rt.c, its work item's allocation) failing, which the executor asserts can't, as losing the poll would leave the task waiting for ever. Its parker and timer allocations (fxfs_rt_parker_new, fxfs_rt_timer_new) are the same. The runtime's C allocations need __GFP_NOFAIL, or room set aside, as much as the Rust allocator's.
+<!-- SECTION:NOTES:END -->
