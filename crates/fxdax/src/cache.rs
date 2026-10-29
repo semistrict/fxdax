@@ -307,6 +307,26 @@ pub(crate) fn freed(
     Some(cached)
 }
 
+/// The extents cached: how many something but the cache holds (`pinned`), as a window's mapping, a
+/// read or a page-in does, which it keeps however many it holds, and how many nothing else does
+/// (`idle`), which it lets go of past its bound (TASK-104), the extent daemon's gauges
+/// (`crate::extentd::metrics`, TASK-131.6).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Entries {
+    pub pinned: u64,
+    pub idle: u64,
+}
+
+/// The extents cached, as of now: a pass over them, under the cache's lock.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn entries() -> Entries {
+    let Some(cache) = EXTENT_CACHE.get() else { return Entries::default() };
+    let extents = cache.extents.lock().unwrap();
+    let idle = extents.values().filter(|cached| Arc::strong_count(&cached.extent) == 1).count();
+    Entries { pinned: (extents.len() - idle) as u64, idle: idle as u64 }
+}
+
 /// The extents cached, by arena and ID.
 #[cfg(test)]
 pub(crate) fn keys() -> Vec<(ArenaId, ExtentId)> {

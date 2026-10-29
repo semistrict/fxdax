@@ -10,9 +10,16 @@
 //!   kind, as the daemon served them, from their dispatch to their reply's sending.
 //! - `fxdax_extentd_connections`, `fxdax_extentd_stores_open` and `fxdax_extentd_follower_views`:
 //!   the VM processes connected, the stores their connections write, and the followers' views.
+//! - `fxdax_extentd_extent_cache_pinned_entries` and `fxdax_extentd_extent_cache_idle_entries`:
+//!   the sealed extents cached that something but the cache holds, and those nothing else does
+//!   (`crate::cache::entries`); `fxdax_extentd_window_mappings`,
+//!   `fxdax_extentd_window_mapped_bytes` and `fxdax_extentd_window_pages`: the ranges the VMs'
+//!   windows map, their bytes, and the pages of them mapped in the VM processes (`crate::dax::live`,
+//!   TASK-131.6).
 //! - `fxdax_extentd_<counter>_total`: the counters the control API's `GetStats` reports
 //!   (`crate::stats::Stats::named`, its dashes underscores): maps, faults, page-ins, reads and
-//!   their nanoseconds and bytes.
+//!   their nanoseconds and bytes; the VM processes' changes to their windows (`stage_ops`) and
+//!   their nanoseconds in them (`stage_ns`), whose ratio is what a window change costs a VM process.
 //! - `fxdax_extentd_memory_bytes`, `fxdax_extentd_memory_limit_bytes` and
 //!   `fxdax_extentd_memory_capacity_bytes`: the memory the daemon's cached and open extents' pages
 //!   hold, every tenant's together, its limit, if any, and the most the daemon's kernel has
@@ -151,6 +158,7 @@ pub fn render() -> String {
         let _ = writeln!(out, "{name}_count{{kind=\"{kind}\"}} {count}");
     }
 
+    let (entries, live) = (crate::cache::entries(), crate::dax::live());
     let gauges = [
         ("connections", "VM processes connected.", super::server::connections() as u64),
         (
@@ -159,6 +167,23 @@ pub fn render() -> String {
             super::stores::open_count() as u64,
         ),
         ("follower_views", "Followers' views of stores.", super::stores::follower_views() as u64),
+        (
+            "extent_cache_pinned_entries",
+            "Sealed extents cached that a window's mapping, a read or a page-in holds.",
+            entries.pinned,
+        ),
+        (
+            "extent_cache_idle_entries",
+            "Sealed extents cached that nothing but the cache holds.",
+            entries.idle,
+        ),
+        ("window_mappings", "Ranges the VMs' DAX windows map, all windows'.", live.mappings),
+        ("window_mapped_bytes", "Bytes those ranges span.", live.mapped_bytes),
+        (
+            "window_pages",
+            "Pages the VMs' DAX windows have mapped in their VM processes, all windows'.",
+            live.pages,
+        ),
     ];
     for (name, help, value) in gauges {
         let _ = writeln!(out, "# HELP fxdax_extentd_{name} {help}");

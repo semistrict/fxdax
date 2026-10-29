@@ -330,7 +330,60 @@ struct WindowState {
     ptes: BTreeMap<u64, Pte>,
 }
 
+/// The process's windows' mappings, their bytes, and the pages they have mapped, all windows'
+/// together, as their states change: the extent daemon's gauges (`crate::extentd::metrics`,
+/// TASK-131.6).
+static LIVE_MAPPINGS: AtomicU64 = AtomicU64::new(0);
+static LIVE_MAPPED_BYTES: AtomicU64 = AtomicU64::new(0);
+static LIVE_PTES: AtomicU64 = AtomicU64::new(0);
+
+/// The process's windows' mappings, as of now.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Live {
+    /// Their mapped ranges.
+    pub mappings: u64,
+    /// The bytes those ranges span.
+    pub mapped_bytes: u64,
+    /// The pages they have mapped in their second stages: of those bytes, those the guest reaches
+    /// without a fault.
+    pub pages: u64,
+}
+
+/// The process's windows' mappings, as of now.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn live() -> Live {
+    Live {
+        mappings: LIVE_MAPPINGS.load(Ordering::Relaxed),
+        mapped_bytes: LIVE_MAPPED_BYTES.load(Ordering::Relaxed),
+        pages: LIVE_PTES.load(Ordering::Relaxed),
+    }
+}
+
+impl Drop for WindowState {
+    fn drop(&mut self) {
+        let bytes: u64 = self.mappings.iter().map(|(start, mapping)| mapping.end - start).sum();
+        LIVE_MAPPINGS.fetch_sub(self.mappings.len() as u64, Ordering::Relaxed);
+        LIVE_MAPPED_BYTES.fetch_sub(bytes, Ordering::Relaxed);
+        LIVE_PTES.fetch_sub(self.ptes.len() as u64, Ordering::Relaxed);
+    }
+}
+
 impl WindowState {
+    /// Records that the window has mapped `pte` at `offset`, where it had mapped nothing.
+    fn insert_pte(&mut self, offset: u64, pte: Pte) {
+        let previous = self.ptes.insert(offset, pte);
+        debug_assert!(previous.is_none(), "a page mapped over another at {offset:#x}");
+        LIVE_PTES.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Records that the window has unmapped the page at `offset`, which it had mapped.
+    fn remove_pte(&mut self, offset: u64) {
+        if self.ptes.remove(&offset).is_some() {
+            LIVE_PTES.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+
     /// The mapping `offset` is in, and its start.
     fn mapping_at(&self, offset: u64) -> Option<(u64, &Mapping)> {
         let (start, mapping) = self.mappings.range(..=offset).next_back()?;
@@ -352,11 +405,16 @@ impl WindowState {
     fn insert(&mut self, start: u64, mapping: Mapping) {
         let identity = source_identity(&mapping.source);
         self.by_source.entry(identity).or_default().insert(start);
-        self.mappings.insert(start, mapping);
+        LIVE_MAPPINGS.fetch_add(1, Ordering::Relaxed);
+        LIVE_MAPPED_BYTES.fetch_add(mapping.end - start, Ordering::Relaxed);
+        let previous = self.mappings.insert(start, mapping);
+        debug_assert!(previous.is_none(), "a mapping over another at {start:#x}");
     }
 
     fn remove(&mut self, start: u64) -> Mapping {
         let mapping = self.mappings.remove(&start).expect("a mapping there");
+        LIVE_MAPPINGS.fetch_sub(1, Ordering::Relaxed);
+        LIVE_MAPPED_BYTES.fetch_sub(mapping.end - start, Ordering::Relaxed);
         let identity = source_identity(&mapping.source);
         let starts = self.by_source.get_mut(&identity).expect("its source's mappings");
         starts.remove(&start);
@@ -599,7 +657,7 @@ impl Window {
             );
         }
         for offset in &gone {
-            state.ptes.remove(offset);
+            state.remove_pte(*offset);
         }
         self.unmap_runs(&gone);
     }
@@ -633,7 +691,7 @@ impl Window {
                 found.push((offset, Pte { location: frame.location(), frame: frame.frame() }));
             });
             for (offset, pte) in found {
-                state.ptes.insert(offset, pte);
+                state.insert_pte(offset, pte);
                 pages.push((offset, pte.location, protection));
             }
         }
@@ -666,7 +724,7 @@ impl Window {
     fn unmap_ptes(&self, state: &mut WindowState, start: u64, end: u64) {
         let gone: Vec<u64> = state.ptes.range(start..end).map(|(offset, _)| *offset).collect();
         for offset in &gone {
-            state.ptes.remove(offset);
+            state.remove_pte(*offset);
         }
         self.unmap_runs(&gone);
     }
@@ -1456,6 +1514,42 @@ pub(crate) mod tests {
         assert!(!window.is_mapped(2 * ps) && window.is_mapped(ps) && window.is_mapped(3 * ps));
         let mappings: Vec<_> = dax.mappings().map(|(start, end, _)| (start, end)).collect();
         assert_eq!(mappings, [(0, 2 * ps), (3 * ps, 4 * ps)]);
+    }
+
+    /// The windows' gauges (`live`) follow their mappings, split and unmapped, and their pages,
+    /// mapped and unmapped, and drop to nothing as the windows go. Each test runs in a process of
+    /// its own (nextest), whose windows are its own.
+    #[test]
+    fn live_gauges_follow_the_windows_mappings_and_pages() {
+        let ps = page_size();
+        let gauges = |mappings, mapped_pages: u64, pages| Live {
+            mappings,
+            mapped_bytes: mapped_pages * ps,
+            pages,
+        };
+        let (source, other) = (TestSource::numbered(4, 1), TestSource::paged(2));
+        let (mut dax, window) =
+            Dax::<()>::new(6 * ps, Some(Arc::new(Recorded::default()))).unwrap();
+        let (mut second, _) = Dax::<()>::new(2 * ps, Some(Arc::new(Recorded::default()))).unwrap();
+        assert_eq!(live(), Live::default());
+
+        dax.map(0, (), &source.source(), 0, 4 * ps, false).unwrap();
+        dax.map(4 * ps, (), &other.source(), 0, 2 * ps, false).unwrap();
+        second.map(0, (), &TestSource::numbered(2, 5).source(), 0, 2 * ps, false).unwrap();
+        assert_eq!(live(), gauges(3, 8, 6));
+
+        other.supply(1, 3);
+        futures::executor::block_on(window.fault(5 * ps, Access::Read)).unwrap();
+        assert_eq!(live(), gauges(3, 8, 7));
+
+        // The first mapping split in two around the page unmapped.
+        dax.unmap(ps, ps).unwrap();
+        assert_eq!(live(), gauges(4, 7, 6));
+
+        drop(second);
+        assert_eq!(live(), gauges(3, 5, 4));
+        drop((dax, window));
+        assert_eq!(live(), Live::default());
     }
 
     /// A source's pages unmapped by it, as it evicts them, are unmapped where a window maps them

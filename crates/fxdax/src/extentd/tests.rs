@@ -670,6 +670,55 @@ fn maps_a_window_in_the_vm_process() {
     assert_eq!(unsafe { libc::munmap(memory.as_ptr().cast(), 4 * ps) }, 0);
 }
 
+/// TASK-131.6: the daemon's gauges of its extent cache and its windows' mappings follow a window's
+/// mappings: an open extent's, its page stored to; sealed, the cached extent its two mappings hold
+/// (pinned), its pages faulted in; and unmapped, the cached extent nothing holds (idle).
+#[test]
+fn metrics_gauge_the_extent_cache_and_the_windows_mappings() {
+    host();
+    let ps = page_size() as usize;
+    let gauges = || {
+        let metrics = super::metrics::render();
+        [
+            "extent_cache_pinned_entries",
+            "extent_cache_idle_entries",
+            "window_mappings",
+            "window_mapped_bytes",
+            "window_pages",
+        ]
+        .map(|name| {
+            let name = format!("fxdax_extentd_{name} ");
+            let line = metrics.lines().find_map(|line| line.strip_prefix(&name));
+            line.unwrap_or_else(|| panic!("no {name}in {metrics}")).parse::<u64>().unwrap()
+        })
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let (store, served) = connect(&dir.path().join("store"), 1 << 24);
+    let memory = memory(4);
+    // SAFETY: The memory is the test's, and outlives the store.
+    unsafe { store.create_dax_window_in_host_memory(memory, 4 * ps as u64, None) }.unwrap();
+    assert_eq!(gauges(), [0, 0, 0, 0, 0]);
+    let extent = ExtentId { branch: store.branch(), sequence: 1 };
+    store.map(extent, 0, ps as u64, 0, true).unwrap();
+    // SAFETY: The window's memory, whose faults the store serves.
+    unsafe { std::ptr::copy_nonoverlapping(pattern(3, ps).as_ptr(), memory.as_ptr(), ps) };
+    assert_eq!(gauges(), [0, 0, 1, ps as u64, 1]);
+
+    store.commit(None).unwrap();
+    store.map(extent, 0, ps as u64, 2 * ps as u64, false).unwrap();
+    // SAFETY: As above.
+    let window = unsafe { std::slice::from_raw_parts(memory.as_ptr(), 3 * ps) };
+    assert!(window[2 * ps..] == pattern(3, ps)[..], "its other mapping maps other data");
+    assert_eq!(gauges(), [1, 0, 2, 2 * ps as u64, 2]);
+
+    store.unmap(0, 4 * ps as u64).unwrap();
+    assert_eq!(gauges(), [0, 1, 0, 0, 0]);
+    drop(store);
+    served.join().unwrap();
+    // SAFETY: Unmaps the memory, which nothing uses any more.
+    assert_eq!(unsafe { libc::munmap(memory.as_ptr().cast(), 4 * ps) }, 0);
+}
+
 /// The environment a child process of [`two_processes_map_the_same_pages`] is told what to map in;
 /// and, if set, that it runs on once it has, until its input closes.
 const CHILD_SOCKET: &str = "FXDAX_EXTENTD_TEST_SOCKET";
