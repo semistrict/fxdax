@@ -838,6 +838,8 @@ mod guest {
                 panic!("{path}: {err} (the debug kernel injects faults: FXDAX_GUEST_KERNEL_BUILD=debug)")
             });
         };
+        // What report() maps, before the writers' allocations fail: its mmap failed (GCE r268).
+        quiet();
         let (rust_start, rust_end) = symbols_range("fxfs_rt_alloc", "fxfs_rt_");
         eprintln!("faults: none forced from {rust_start:#x} to {rust_end:#x}, Fxfs's runtime");
         for attr in ATTRS {
