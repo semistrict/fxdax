@@ -872,19 +872,21 @@ mod guest {
         let check = move |what: &str, round: usize, own: usize, other: usize, seen: &mut [u8]| {
             for (n, page) in (0..SIZE).step_by(PAGE).enumerate() {
                 let (mapped, read) = (load(page + own), read(page + own));
-                let frame = mapped_pfn(mapped_at + page);
+                // Looked into only where they differ: a page table read for every byte slowed the
+                // check, whose seals then filled the window's regions for the checks after.
                 if (mapped, read) != (round as u8, round as u8) {
+                    let frame = mapped_pfn(mapped_at + page);
                     trace_dump(&path("seal-race"), n as u64);
                     if let Some(frame) = frame {
                         trace_dump_frame(frame);
                     }
+                    assert_eq!(
+                        (mapped, read),
+                        (round as u8, round as u8),
+                        "page {n}: the {what}' byte, mapped and read, after their round {round}; \
+                         the mapping maps page frame {frame:x?}"
+                    );
                 }
-                assert_eq!(
-                    (mapped, read),
-                    (round as u8, round as u8),
-                    "page {n}: the {what}' byte, mapped and read, after their round {round}; the \
-                     mapping maps page frame {frame:x?}"
-                );
                 let other = load(page + other);
                 assert!(
                     other >= seen[n],
