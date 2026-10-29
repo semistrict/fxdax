@@ -1941,6 +1941,65 @@ mod guest {
         fs::remove_file(&name).unwrap();
     }
 
+    /// fxdax: a read(2) paused between its iomap and its copy (pause points, TASK-119.9), of a page
+    /// in a sealed staging extent's region, which no evacuation moves (fxfs.dax_evacuates off);
+    /// meanwhile stores through a mapping move the page to the next staging extent, then fault
+    /// another page of its chunk in, whose mapping lets go of the regions none of the chunk's pages
+    /// is in (fxfs_dax_prune): not while the read uses the range, whose copy reads the first
+    /// region, and finds the page as it was. A prune that let go of it whatever used the range (the
+    /// hand mutant prune_in_use, TASK-44.19, which no check killed) had the window unmap it under
+    /// the read's copy.
+    fn test_prune_while_paused() {
+        use std::os::unix::fs::FileExt;
+        use std::os::unix::io::AsRawFd;
+        const PAGE: usize = 4096;
+        const SIZE: usize = 1 << 20;
+        let name = path("prune-paused");
+        fs::write(&name, vec![1; SIZE]).unwrap();
+        let file = fs::OpenOptions::new().read(true).write(true).open(&name).unwrap();
+        file.sync_all().unwrap();
+        let unevacuated = Param::set("dax_evacuates", "N");
+        // The first page moves to the staging extent's region, which the fsync seals.
+        file.write_all_at(&[2; PAGE], 0).unwrap();
+        file.sync_data().unwrap();
+        let map = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                SIZE,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                file.as_raw_fd(),
+                0,
+            )
+        };
+        assert_ne!(map, libc::MAP_FAILED);
+        let map = map as *mut u8;
+        let (pauses, only) = Pauses::begin_of(Pauses::READ_MAPPED, &name);
+        let read = std::thread::scope(|scope| {
+            let reader = scope.spawn(|| {
+                let mut page = vec![0; PAGE];
+                file.read_exact_at(&mut page, 0).unwrap();
+                page
+            });
+            Pauses::wait(Pauses::READ_MAPPED);
+            // The first page moves to the next staging extent; the second's fault prunes.
+            unsafe {
+                std::ptr::write_volatile(map, 3);
+                std::ptr::write_volatile(map.add(PAGE), 4);
+            }
+            drop(pauses);
+            reader.join().unwrap()
+        });
+        drop(only);
+        drop(unevacuated);
+        assert_eq!(unsafe { libc::munmap(map as *mut libc::c_void, SIZE) }, 0);
+        assert!(read == vec![2; PAGE], "the read found {:?}, not 2s", &read[..16]);
+        drop(file);
+        let after = fs::read(&name).unwrap();
+        assert_eq!((after[0], after[1], after[PAGE], after[PAGE + 1]), (3, 2, 4, 1));
+        fs::remove_file(&name).unwrap();
+    }
+
     /// fxdax: a file's pages each written once and fsynced, as a database's rows a run updates
     /// once and its history it appends: each write moves its page to the staging extent's region,
     /// a new one after every seal, which the page, written no more, kept, until the window's
@@ -2620,6 +2679,7 @@ mod guest {
         const SHUT: u64 = 1 << 2;
         const HELD: u64 = 1 << 3;
         const GATHERED: u64 = 1 << 4;
+        const READ_MAPPED: u64 = 1 << 5;
 
         fn set(steps: u64) {
             fs::write(Self::PAUSE, steps.to_string()).unwrap();
@@ -3591,6 +3651,7 @@ mod guest {
                 }
                 tests.push(("evacuate_dropped", &test_evacuate_dropped));
                 tests.push(("evacuation_paused", &test_evacuation_paused));
+                tests.push(("prune_while_paused", &test_prune_while_paused));
                 tests.push(("faults_writes_compaction", &test_faults_writes_compaction));
                 tests.push(("append_writable", &test_append_writable));
                 tests.push(("append_pages", &test_append_pages));

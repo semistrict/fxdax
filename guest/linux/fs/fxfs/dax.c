@@ -231,6 +231,8 @@ enum fxfs_dax_step {
 	FXFS_DAX_STEP_HELD,
 	/* An evacuation of a file, its runs gathered, before their MAP, holding its semaphore. */
 	FXFS_DAX_STEP_GATHERED,
+	/* A read of a file, its iomap made, before the copy of what it maps, holding its range. */
+	FXFS_DAX_STEP_READ_MAPPED,
 };
 static unsigned long fxfs_dax_pause_steps;
 module_param_named(dax_pause, fxfs_dax_pause_steps, ulong, 0644);
@@ -3008,8 +3010,10 @@ static int fxfs_dax_iomap_begin(struct inode *inode, loff_t pos, loff_t length,
 	}
 	err = fxfs_dax_iomap_read(inode, pos, length, flags, iomap, srcmap);
 	/* fxdax: between the iomap and the read of what it maps, which its range keeps mapped. */
-	if (!err)
+	if (!err) {
+		fxfs_dax_pause_file(FXFS_DAX_STEP_READ_MAPPED, inode->i_ino);
 		fxfs_dax_delay();
+	}
 	return err;
 }
 
