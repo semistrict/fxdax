@@ -1092,7 +1092,12 @@ static void fxfs_dax_cow(struct inode *inode, struct fxfs_dax_range *range, unsi
 	bool relocated = false;
 	unsigned long i;
 
-	if (find_next_bit(range->relocated, page + pages, page) == page + pages)
+	/*
+	 * A hint, unlocked: another read iomap may be clearing the bits it finds (below), which only
+	 * readers clear, writers setting them with the semaphore held for writing; a bit it misses so,
+	 * that reader has cleared, and replaces the entry of.
+	 */
+	if (data_race(find_next_bit(range->relocated, page + pages, page)) == page + pages)
 		return;
 	if (fault || !xa_find(&inode->i_mapping->i_pages, &index, index + pages - 1, XA_PRESENT)) {
 		/* Atomically: read iomaps take the file's semaphore for reading. */
