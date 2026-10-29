@@ -667,6 +667,20 @@ mod guest {
         }
     }
 
+    /// fxdax: the page frame this process's page table maps `addr` to, if any
+    /// (/proc/self/pagemap): which page of the DAX window a mapping of a file maps, the window's
+    /// page frames in a row from its first.
+    fn mapped_pfn(addr: usize) -> Option<u64> {
+        use std::os::unix::fs::FileExt;
+        const PRESENT: u64 = 1 << 63;
+        const PFN: u64 = (1 << 55) - 1;
+        let pagemap = fs::File::open("/proc/self/pagemap").unwrap();
+        let mut bytes = [0; 8];
+        pagemap.read_exact_at(&mut bytes, (addr / 4096 * 8) as u64).unwrap();
+        let entry = u64::from_le_bytes(bytes);
+        (entry & PRESENT != 0).then_some(entry & PFN)
+    }
+
     /// fxdax: what /proc/fs/fxfs/<tag> counts (TASK-91.7), by name.
     fn stats() -> std::collections::BTreeMap<String, u64> {
         let text = fs::read_to_string("/proc/fs/fxfs/fxdax").unwrap();
@@ -833,6 +847,7 @@ mod guest {
         };
         assert_ne!(map, libc::MAP_FAILED, "mmap: {}", std::io::Error::last_os_error());
         let mapped = map as usize;
+        let mapped_at = mapped;
         let file = &file;
         // The byte at `at`, through the mapping and through read(2).
         let load = move |at: usize| unsafe { ((mapped + at) as *const u8).read_volatile() };
@@ -852,7 +867,9 @@ mod guest {
                 assert_eq!(
                     (mapped, read),
                     (round as u8, round as u8),
-                    "page {n}: the {what}' byte, mapped and read, after their round {round}"
+                    "page {n}: the {what}' byte, mapped and read, after their round {round}; the \
+                     mapping maps page frame {:x?}",
+                    mapped_pfn(mapped_at + page)
                 );
                 let other = load(page + other);
                 assert!(
