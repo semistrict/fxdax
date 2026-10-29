@@ -156,6 +156,15 @@ static bool fxfs_dax_evacuates = true;
 module_param_named(dax_evacuates, fxfs_dax_evacuates, bool, 0644);
 MODULE_PARM_DESC(dax_evacuates, "Evacuate sealed staging extents' pages (diagnostic)");
 /*
+ * fxdax: fault injection (TASK-112.6): the evacuation runs after one seal in this many, the device's
+ * seal count a multiple of it, rather than after each: several seals late, as batching evacuations
+ * (TASK-112.4) or evacuating without the file's semaphore (TASK-112.5) has it, which lost data.
+ * Each seal's (0 or 1) unless set.
+ */
+static unsigned int fxfs_dax_evacuate_every;
+module_param_named(dax_evacuate_every, fxfs_dax_evacuate_every, uint, 0644);
+MODULE_PARM_DESC(dax_evacuate_every, "Evacuate after one seal in this many (fault injection)");
+/*
  * fxdax: diagnostic (TASK-121): after each seal's sealer, checks that no range of any file has a
  * page writable still, which the sealer would have kept the user's mappings writable of, while
  * the device makes it read-only: the stores the window refused.
@@ -3540,7 +3549,8 @@ static void fxfs_dax_sealed(void *arg)
 	fxfs_dax_delay();
 	if (READ_ONCE(dax->restaging) && queue_work(dax->grow_wq, &dax->restage))
 		atomic_inc(&dax->growing);
-	if (READ_ONCE(dax->restaging))
+	if (READ_ONCE(dax->restaging) &&
+	    fxfs_device_seals(dax->dev) % max(READ_ONCE(fxfs_dax_evacuate_every), 1U) == 0)
 		queue_work(dax->grow_wq, &dax->evacuate);
 }
 
