@@ -765,10 +765,7 @@ mod guest {
             file.write_all(&durable(writer, index)).unwrap();
             file.sync_all().unwrap();
             fs::File::open(MNT).unwrap().sync_all().unwrap();
-            // Each report a write of its own, as the VM may stop between writes.
-            let mut stdout = std::io::stdout().lock();
-            writeln!(stdout, "synced {writer} {index}").unwrap();
-            stdout.flush().unwrap();
+            report(&format!("synced {writer} {index}"));
             // Unsynced changes beside them, which the filesystem may hold or not.
             fs::write(format!("{MNT}/pending-{writer}-{index}"), pattern(5000, writer)).unwrap();
             if index % 3 == 0 {
@@ -778,8 +775,13 @@ mod guest {
         unreachable!()
     }
 
-    /// Reports `line` on its own write, as the VM may stop between writes.
+    /// Reports `line` on its own write, as the VM may stop between writes: unless it is about to,
+    /// when the caller waits here for it ([`quiet`]), its write, if this is said as it begins, not
+    /// begun.
     fn report(line: &str) {
+        while quiet().load(std::sync::atomic::Ordering::Acquire) {
+            std::thread::park();
+        }
         let mut stdout = std::io::stdout().lock();
         writeln!(stdout, "{line}").unwrap();
         stdout.flush().unwrap();
@@ -935,10 +937,36 @@ mod guest {
         go: fs::File,
     }
 
+    /// fxdax: whether the VM is about to stop, in memory the process that stops it shares, which
+    /// sets it before it drains the console: the writers report nothing more, and begin no write,
+    /// so that the console drains, as writers printing all the while kept it from, and the VM ran
+    /// on (TASK-119.6, GCE r247). Made before that process is forked ([`Stopper::fork`]).
+    fn quiet() -> &'static std::sync::atomic::AtomicBool {
+        static QUIET: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+        let page = *QUIET.get_or_init(|| {
+            // SAFETY: A new anonymous mapping, shared with the processes forked after.
+            let page = unsafe {
+                libc::mmap(
+                    std::ptr::null_mut(),
+                    4096,
+                    libc::PROT_READ | libc::PROT_WRITE,
+                    libc::MAP_SHARED | libc::MAP_ANONYMOUS,
+                    -1,
+                    0,
+                )
+            };
+            assert_ne!(page, libc::MAP_FAILED, "mmap: {}", std::io::Error::last_os_error());
+            page as usize
+        });
+        // SAFETY: Zeroed memory, mapped for good, is a false AtomicBool.
+        unsafe { &*(page as *const std::sync::atomic::AtomicBool) }
+    }
+
     impl Stopper {
         /// Forks the process that stops the VM, once told to, with an evacuation held at `step` of
         /// the DAX protocol first, if asked.
         fn fork(step: Option<u32>) -> Self {
+            quiet();
             let mut fds = [0; 2];
             assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0, "pipe");
             // SAFETY: The pipe's ends, which nothing else owns.
@@ -955,6 +983,7 @@ mod guest {
                     if let Some(step) = step {
                         hold_evacuation(step);
                     }
+                    quiet().store(true, std::sync::atomic::Ordering::Release);
                     // A reset, which ends the VM on every architecture: x86's has no power-off.
                     crate::guest_init::crash()
                 }
