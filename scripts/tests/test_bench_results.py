@@ -25,6 +25,7 @@ class Registry(unittest.TestCase):
         self.assertEqual(bench.baselines("fxfs-guest-dax-followed"), ["fxfs-guest-dax"])
         self.assertEqual(bench.baselines("fxfs-guest-dax"), ["ext4-dax-pmem", "ext4-guest-kernel"])
         self.assertEqual(bench.baselines("fxfs-guest-dax-fork-cold"), [])
+        self.assertEqual(bench.baselines("ext4-dax-pmem-fork"), ["fxfs-guest-dax-fork-warm"])
         self.assertEqual(bench.baselines("ext4-virtio-blk"), [])
         self.assertEqual(bench.baselines("fxfs-guest-dax-future"), ["ext4-virtio-blk"])
 
@@ -41,6 +42,9 @@ class Registry(unittest.TestCase):
                 "fxfs-guest-dax-fork-warm",
                 "fxfs-guest-dax-fork-cold",
                 "fxfs-guest-dax-fork-profiled",
+                "fxfs-guest-fork-warm",
+                "ext4-dax-pmem-fork",
+                "ext4-pmem-fork",
                 "fxfs-guest-dax-followed",
                 "fxfs-guest-dax-followed-idle",
             ],

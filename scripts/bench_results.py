@@ -27,6 +27,9 @@ ORDER = [
     "fxfs-guest-dax-fork-cold",
     "fxfs-guest-dax-fork-profiled",
     "fxfs-guest-dax-fork-warm",
+    "fxfs-guest-fork-warm",
+    "ext4-dax-pmem-fork",
+    "ext4-pmem-fork",
 ]
 # What a filesystem compares with, in order of preference: the first of them a run measured. Unless
 # named here, ext4 on virtio-blk, which runs before fxdax left libkrun (TASK-40) compared every
@@ -49,6 +52,12 @@ BASELINES = {
     "fxfs-guest-dax-fork-cold": [],
     # A cold fork with its base's boot profile read ahead, against one with the base's data in memory.
     "fxfs-guest-dax-fork-profiled": ["fxfs-guest-dax-fork-warm"],
+    # Forks without fxdax's DAX: Fxfs through the page cache, and ext4 on copies of the base's image
+    # on virtio-pmem, with DAX, as a static DAX device's base layer, and without; each against a
+    # warm fork with DAX (TASK-112.2).
+    "fxfs-guest-fork-warm": ["fxfs-guest-dax-fork-warm"],
+    "ext4-dax-pmem-fork": ["fxfs-guest-dax-fork-warm"],
+    "ext4-pmem-fork": ["fxfs-guest-dax-fork-warm"],
 }
 # A filesystem more times slower than its baseline than this is in bold.
 LIMIT = 2.0
