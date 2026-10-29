@@ -56,10 +56,8 @@ MUTANTS = [
     (
         "write_no_seals_recheck",
         "a write maps the blocks it moved though a seal came between",
-        [("\t\tif (gate == seals) {\n\t\t\terr = fxfs_dax_map_extents(dax, range, extents, count);\n"
-          "\t\t\tif (!err && before)",
-          "\t\tif (true) {\n\t\t\terr = fxfs_dax_map_extents(dax, range, extents, count);\n"
-          "\t\t\tif (!err && before)")],
+        [("\t\tif (gate == seals) {\n\t\t\tbool fail = count > 1 &&",
+          "\t\tif (true) {\n\t\t\tbool fail = count > 1 &&")],
     ),
     (
         "seal_keeps_writable",
@@ -138,6 +136,12 @@ MUTANTS = [
         "a prune lets go of regions, but its pages' moved entries keep their regions' old indices, "
         "past those it kept, which fxfs_dax_moved_index WARNs of (TASK-119.10)",
         [("\t\trange->moved[page] = fxfs_dax_renumbered(used, range->moved[page]);\n", "")],
+    ),
+    (
+        "map_failure_unretried",
+        "a write whose pieces' MAP failed after its blocks moved fails, its range left mapping "
+        "blocks Fxfs freed, rather than dropped and the write tried again (TASK-79.106)",
+        [("\t\t\t\tif (err != -EXDEV)\n\t\t\t\t\terr = -ESTALE;\n", "")],
     ),
 ]
 

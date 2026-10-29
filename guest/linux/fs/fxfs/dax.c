@@ -118,20 +118,35 @@ static unsigned int fxfs_dax_fault_seals_moved;
 module_param_named(dax_fault_seals_moved, fxfs_dax_fault_seals_moved, uint, 0644);
 MODULE_PARM_DESC(dax_fault_seals_moved, "Seal right after the next this many DAX write faults move their blocks (fault injection)");
 
-/* fxdax: whether to seal after a fault's move, as fxfs.dax_fault_seals_moved asks, counting it. */
-static bool fxfs_dax_seal_moved(void)
+/* fxdax: whether a fault injection counting down in `left` injects once more, counting it. */
+static bool fxfs_dax_inject(unsigned int *left)
 {
-	unsigned int left = READ_ONCE(fxfs_dax_fault_seals_moved);
+	unsigned int now = READ_ONCE(*left);
 
-	while (left) {
-		unsigned int was = cmpxchg(&fxfs_dax_fault_seals_moved, left, left - 1);
+	while (now) {
+		unsigned int was = cmpxchg(left, now, now - 1);
 
-		if (was == left)
+		if (was == now)
 			return true;
-		left = was;
+		now = was;
 	}
 	return false;
 }
+
+/* fxdax: whether to seal after a fault's move, as fxfs.dax_fault_seals_moved asks, counting it. */
+static bool fxfs_dax_seal_moved(void)
+{
+	return fxfs_dax_inject(&fxfs_dax_fault_seals_moved);
+}
+
+/*
+ * fxdax: fault injection: of the next this many writes whose blocks Fxfs moved into more than one
+ * piece, the range maps the first piece alone, then fails as if the device's MAP of the next had,
+ * the others mapping the blocks where they were, which Fxfs freed (TASK-79.106).
+ */
+static unsigned int fxfs_dax_fail_maps;
+module_param_named(dax_fail_maps, fxfs_dax_fail_maps, uint, 0644);
+MODULE_PARM_DESC(dax_fail_maps, "Fail the MAP of the second piece of the next this many writes whose blocks moved (fault injection)");
 
 /*
  * fxdax: delay injection (TASK-44.11): at the steps of the DAX protocol where a check and its use
@@ -2996,7 +3011,11 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 			i_size_write(inode, size);
 		gate = fxfs_dax_store_begin(dax, fault);
 		if (gate == seals) {
-			err = fxfs_dax_map_extents(dax, range, extents, count);
+			bool fail = count > 1 && fxfs_dax_inject(&fxfs_dax_fail_maps);
+
+			err = fxfs_dax_map_extents(dax, range, extents, fail ? 1 : count);
+			if (!err && fail)
+				err = -EIO;
 			if (!err && before)
 				fxfs_dax_check_moved(dax, inode, range, first, before, before_at,
 						     before_where,

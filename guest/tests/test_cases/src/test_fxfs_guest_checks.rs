@@ -2039,7 +2039,10 @@ mod guest {
         let after = stats();
         assert_eq!(unsafe { libc::munmap(map as *mut libc::c_void, PAGES * PAGE) }, 0);
         let regions = after["window_regions"] as i64 - before["window_regions"] as i64;
-        assert!(regions <= 16, "{regions} regions more after {ROUNDS} stores and fsyncs: {after:?}");
+        assert!(
+            regions <= 16,
+            "{regions} regions more after {ROUNDS} stores and fsyncs: {after:?}"
+        );
         drop(file);
         assert!(fs::read(&name).unwrap() == expected, "the file differs from what was stored");
         fs::remove_file(&name).unwrap();
@@ -2820,6 +2823,40 @@ mod guest {
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
         }
+    }
+
+    /// fxdax: a write whose blocks moved into three pieces, the first page's and the third's
+    /// writable in place, the second's moved past them, whose MAP fails after the first piece (the
+    /// fxfs.dax_fail_maps fault injection, as a device's MAP error): the range mapped the second
+    /// page where it was, which Fxfs freed, the write and reads going there. It is dropped, mapped
+    /// again from Fxfs's extents, and the write tried again, which writes the pages, as read(2)
+    /// finds them, and the file evicted (TASK-79.106).
+    fn test_map_failed_after_move() {
+        const PAGE: usize = 4096;
+        let name = path("map-failed-after-move");
+        // Larger than a chunk, in one extent: a range of its own, not a slice of a region.
+        const SIZE: usize = 4 << 20;
+        let mut expected: Vec<u8> = (0..SIZE).map(|i| (i % 251) as u8 + 1).collect();
+        fs::write(&name, &expected).unwrap();
+        fs::File::open(&name).unwrap().sync_all().unwrap();
+        let file = fs::OpenOptions::new().read(true).write(true).open(&name).unwrap();
+        let write = |data: &[u8], at: usize| {
+            std::os::unix::fs::FileExt::write_all_at(&file, data, at as u64).unwrap();
+        };
+        // Pages 0 and 2 move to the staging extent, one after the other, writable from then on.
+        write(&[0xa0; PAGE], 0);
+        write(&[0xa2; PAGE], 2 * PAGE);
+        let fail = Param::set("dax_fail_maps", "1");
+        write(&[0xc0; 3 * PAGE], 0);
+        let left = fs::read_to_string("/sys/module/fxfs/parameters/dax_fail_maps").unwrap();
+        assert_eq!(left.trim(), "0", "no MAP failed: the write's blocks were in one piece");
+        drop(fail);
+        expected[..3 * PAGE].fill(0xc0);
+        assert!(fs::read(&name).unwrap() == expected, "the file, read after the MAP failed");
+        drop(file);
+        evict(&name);
+        assert!(fs::read(&name).unwrap() == expected, "the file evicted");
+        fs::remove_file(&name).unwrap();
     }
 
     /// fxdax: a store to a page sealed, whose fault moved its block, then found the gate shut by a
@@ -3772,6 +3809,7 @@ mod guest {
                 tests.push(("short_copy", &test_short_copy));
                 tests.push(("direct_read_past_end", &test_direct_read_past_end));
                 tests.push(("store_past_end", &test_store_past_end));
+                tests.push(("map_failed_after_move", &test_map_failed_after_move));
             }
             // fxdax: it dies of SIGBUS (TASK-121's pause check, the fault path's SIGBUS open):
             // after the others, which it would stop.
