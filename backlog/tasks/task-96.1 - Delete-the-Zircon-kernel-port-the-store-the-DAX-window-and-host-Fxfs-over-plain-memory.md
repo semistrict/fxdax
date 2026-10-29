@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-29 00:24'
-updated_date: '2026-10-29 01:50'
+updated_date: '2026-10-29 02:29'
 labels: []
 dependencies: []
 parent_task_id: TASK-96
@@ -57,4 +57,6 @@ fxdax runs a port of the Zircon kernel (crates/zircon, ~40k lines) inside its pr
 Host Fxfs (branch zircon-removal-fxfs, 972759d4e, 3280d1c3c): the guest's file layer moved to crates/fxfs-posix (Fxfs<P: Platform>); fxfs-linux and fxdax's Filesystem/Node/Image both run on it; fxdax's filesystem, image and volume no longer use fxfs-platform, vfs, fidl channels, streams or the pager; connection.rs gone. No crate deletable yet: fxfs-platform, vfs, fuchsia-async-kernel, memory-pressure-signaler, refaults_vmo, fidl-fuchsia-fs-startup, fuchsia-fs remain only through fxfs-platform, which extents.rs uses. Awaiting the user: tests of host page-cache behaviour that no longer exists (memory_pressure.rs, shared_pages.rs page counts, filesystem.rs writes_fail_with_enomem..., the old filesystem.rs unit tests kept in tests/awaiting_decision/). GCE run not done: CPU quota full.
 
 Landed on main as one commit (squashed): crates/zircon and the 13 crates only it or fxfs-platform needed deleted; crates/physmem (the port's PMM lifted, with run allocation, is_free); crates/fxfs-posix shared by guest and host; extent cache (crate::cache) and DAX window page tables (crate::dax) over physmem; storage_device buffers plain memory; zx types only (page size from the host). Verified: macOS scripts/test.sh, 1816 workspace tests and all Shuttle suites pass (one scripts test fails on main too: TASK-127); Linux cargo check --workspace --tests, fxdax/physmem --features shuttle, bins and examples clean in OrbStack Docker (arm64). Not run yet: Linux tests, guest DAX/crash suites, pgbench A/B on GCE (CPU quota full). Tests set aside verbatim in crates/fxdax/tests-awaiting-decision/ for the user (see its README).
+
+The tests set aside in crates/fxdax/tests-awaiting-decision deleted, as the user agreed (2026-10-28).
 <!-- SECTION:NOTES:END -->
