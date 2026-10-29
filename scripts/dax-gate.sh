@@ -34,12 +34,14 @@ mkdir -p "$results"
 echo "dax-gate: $commit, results in $results"
 
 export FXDAX_GCE_ZONE=$zone FXDAX_WORKSPACE_TESTS=0 FXDAX_GUEST_KERNEL_BUILD=release
-suites="fxfs-guest-dax fxfs-guest-crash-dax fxfs-guest-crash-dax-gathered fxfs-guest-crash-dax-mapped
+# fxdax: on one line, as test-gce.sh takes them: a newline in them was refused, and the gate's
+# suites never ran (TASK-119.8).
+suites=(fxfs-guest-dax fxfs-guest-crash-dax fxfs-guest-crash-dax-gathered fxfs-guest-crash-dax-mapped
     fxfs-guest-crash-dax-placed fxfs-guest-checks-dax fxfs-guest-checks-dax-delay
-    fxfs-guest-checks-dax-small"
+    fxfs-guest-checks-dax-small)
 
 # Host A: the suites, rounds of each.
-FXDAX_E2E_TEST=$suites FXDAX_E2E_ROUNDS=$rounds \
+FXDAX_E2E_TEST="${suites[*]}" FXDAX_E2E_ROUNDS=$rounds \
     scripts/test-gce.sh run "$host_a" "$results/suites" > "$results/suites.log" 2>&1 &
 suites_pid=$!
 
