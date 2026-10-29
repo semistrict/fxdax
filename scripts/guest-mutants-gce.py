@@ -156,19 +156,22 @@ def run(host, zone, results, name, edits):
             log = open(Path(results) / f"{name}.log", "w")
             ran = subprocess.run([tree / "scripts/test-gce.sh", "run", host, out], env=env,
                                  stdout=log, stderr=subprocess.STDOUT, cwd=tree)
-            remote = out / "remote.log"
-            return fate(ran.returncode, remote.read_text(errors="replace") if remote.exists() else "")
+            # scripts/test-e2e.sh says a round failed in the guest tests' log, e2e.log.
+            logs = [out / "remote.log", out / "e2e.log"]
+            said = "".join(log.read_text(errors="replace") for log in logs if log.exists())
+            return fate(ran.returncode, said)
         finally:
             subprocess.run(["git", "-C", ROOT, "worktree", "remove", "--force", tree], check=True)
 
 
-def fate(status, remote_log):
-    """A mutant's fate, from its run's exit status and the host's log: killed only if a suite
-    failed a round (scripts/test-e2e.sh says so); a run that failed otherwise, as a build that
-    doesn't compile or a host lost, is BROKEN, and says nothing of the suites (TASK-119.8)."""
+def fate(status, logs):
+    """A mutant's fate, from its run's exit status and the host's logs: killed only if a suite
+    failed a round (scripts/test-e2e.sh says so, in e2e.log); a run that failed otherwise, as a
+    build that doesn't compile or a host lost, is BROKEN, and says nothing of the suites
+    (TASK-119.8)."""
     if status == 0:
         return "MISSED"
-    return "killed" if ": failed in round " in remote_log else "BROKEN"
+    return "killed" if ": failed in round " in logs else "BROKEN"
 
 
 def main():

@@ -3821,22 +3821,26 @@ static void fxfs_dax_check_placed(struct fxfs_dax *dax, struct fxfs_dax_file *fi
 				  const struct fxfs_device_map *map)
 {
 	u64 pos = fxfs_dax_chunk_start(run->range) + ((u64)run->page << PAGE_SHIFT), done = 0;
-	struct fxfs_dax_extent e = {};
-	ssize_t count;
+	/* Fxfs may hold the run in pieces, one a page at most, each following the one before. */
+	struct fxfs_dax_extent *e = fxfs_dax_alloc_extents(dax, run->pages);
+	ssize_t count, i;
 
-	while (done < map->len) {
-		count = fxfs_nofs(fxfs_dax_extents(dax->fs, file->ino, pos + done, map->len - done,
-						   &e, 1));
-		if (WARN(count <= 0 || e.offset != pos + done || e.branch != map->branch ||
-			 e.sequence != map->sequence || e.extent_offset != map->offset + done,
+	if (!e)
+		return;
+	count = fxfs_nofs(fxfs_dax_extents(dax->fs, file->ino, pos, map->len, e, run->pages));
+	for (i = 0; done < map->len; i++) {
+		if (WARN(i >= count || e[i].offset != pos + done || e[i].branch != map->branch ||
+			 e[i].sequence != map->sequence || e[i].extent_offset != map->offset + done,
 			 "fxfs: ino %llu: evacuated %llu bytes at %llu from extent %llx:%llu at %llu, but Fxfs holds those at %llu %s %llx:%llu at %llu (%zd)\n",
 			 file->ino, map->len - done, pos + done, map->branch, map->sequence,
-			 map->offset + done, count > 0 ? e.offset : 0,
-			 count > 0 ? "in extent" : "nowhere:", count > 0 ? e.branch : 0,
-			 count > 0 ? e.sequence : 0, count > 0 ? e.extent_offset : 0, count))
-			return;
-		done += min(e.len, map->len - done);
+			 map->offset + done, i < count ? e[i].offset : 0,
+			 i < count ? "in extent" : "nowhere:", i < count ? e[i].branch : 0,
+			 i < count ? e[i].sequence : 0, i < count ? e[i].extent_offset : 0, count))
+			break;
+		done += min(e[i].len, map->len - done);
 	}
+	kvfree(e);
+}
 }
 
 /*
