@@ -1037,12 +1037,34 @@ impl<H: HostMemory> SecondStage for UffdSecondStage<H> {
         // Whether each map was made in place.
         let mut reprotected = Vec::with_capacity(maps.len());
         let made = self.change(addr, len, record, |(in_place, left_out)| {
+            // fxdax: the maps made in place one after another in the window, their protections
+            // alike, reprotected at once: a seal's of an open extent's pages, one write protection
+            // of the range rather than one of each run of physical memory its pages are in, which
+            // the window maps apart (TASK-131.1).
+            let mut run: Option<(usize, usize, Protection, Protection)> = None;
             for (&(addr, len, phys, protection), was) in maps.iter().zip(in_place) {
                 reprotected.push(was.is_some());
-                match was {
-                    Some(was) => self.reprotect(addr, len, was, protection),
-                    None => self.install(addr, len, protection, self.memory(phys, protection)),
+                let Some(was) = was else {
+                    self.install(addr, len, protection, self.memory(phys, protection));
+                    continue;
+                };
+                match &mut run {
+                    Some((start, run_len, run_was, now))
+                        if *start + *run_len == addr && *run_was == was && *now == protection =>
+                    {
+                        *run_len += len;
+                    }
+                    _ => {
+                        if let Some((addr, len, was, now)) =
+                            run.replace((addr, len, was, protection))
+                        {
+                            self.reprotect(addr, len, was, now);
+                        }
+                    }
                 }
+            }
+            if let Some((addr, len, was, now)) = run {
+                self.reprotect(addr, len, was, now);
             }
             for run in left_out {
                 self.leave_out(self.base + run.start * page_size, run.len() * page_size);
@@ -1692,6 +1714,25 @@ mod tests {
         assert_eq!(stage.taken(), [1, 1, 1], "both left out");
         stage.unmap(0, (2 * ps) as u64);
         assert_eq!(stage.taken(), [1, 1, 1], "nothing installed to leave out");
+
+        // TASK-131.1: maps in place one after another in the window, each a page apart in memory
+        // or not, read-only alike, are one write protection.
+        dax.window.map(0, &file, 0, (2 * ps) as u64, true).unwrap();
+        let (first, second) = (phys(0), phys(1));
+        stage.remap(
+            0,
+            (2 * ps) as u64,
+            &[
+                Anew::Map { offset: 0, phys: first, len: ps as u64, protection: Protection::Read },
+                Anew::Map {
+                    offset: ps as u64,
+                    phys: second,
+                    len: ps as u64,
+                    protection: Protection::Read,
+                },
+            ],
+        );
+        assert_eq!(stage.taken(), [1, 1, 2], "the two pages protected at once");
 
         drop(dax);
         // SAFETY: Unmaps the memory, which nothing uses any more.
