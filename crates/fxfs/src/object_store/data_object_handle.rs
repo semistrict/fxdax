@@ -94,6 +94,15 @@ struct BlocksWrite<'d> {
 /// it keeps that read short or as zeros, and those whose copy reads back other from the device.
 pub static CHECK_KEPT: AtomicBool = AtomicBool::new(false);
 
+/// fxdax: whether to log the `CHECK_KEPT` block kept that read short or as zeros, as holes and new
+/// files' blocks do: the first hundred, and every power of two after. Each a line on a guest's
+/// serial console, they slowed fxfs-guest-checks-dax past its timeout (TASK-119.21, GCE r237).
+fn log_kept_short() -> bool {
+    static LOGGED: AtomicU64 = AtomicU64::new(0);
+    let count = LOGGED.fetch_add(1, Ordering::Relaxed) + 1;
+    count <= 100 || count.is_power_of_two()
+}
+
 /// fxdax: what moves with the blocks [`DataObjectHandle::txn_map_write`] moves to new ones.
 #[derive(Clone, Copy)]
 enum Kept<'a> {
@@ -2134,7 +2143,10 @@ impl<S: HandleOwner> DataObjectHandle<S> {
                         .await?;
                     copy.subslice_mut(read..).fill(0);
                     let zeros = || copy.as_ptr_slice().iter_as::<u64>().all(|word| word == 0);
-                    if CHECK_KEPT.load(Ordering::Relaxed) && (read < copy.len() || zeros()) {
+                    if CHECK_KEPT.load(Ordering::Relaxed)
+                        && (read < copy.len() || zeros())
+                        && log_kept_short()
+                    {
                         error!(
                             "fxfs: object {} keeping {blocks:?} for {range:?}: read {read} bytes of {}, all zeros: {}",
                             self.object_id(),
