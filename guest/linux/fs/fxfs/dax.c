@@ -803,6 +803,8 @@ MODULE_PARM_DESC(dax_trace, "Trace what happens to DAX pages (diagnostic), as th
 static struct fxfs_dax_trace_event *fxfs_dax_trace_events;
 static atomic64_t fxfs_dax_trace_next;
 static struct fxfs_device *fxfs_dax_trace_dev;
+/* The window's first page frame, which `pfn N` written to fxfs.dax_trace_dump is counted from. */
+static unsigned long fxfs_dax_trace_base;
 
 static void fxfs_dax_trace(u32 kind, u64 ino, u64 page, u64 window, u64 extent, u64 extent_offset,
 			   u32 flags)
@@ -824,23 +826,37 @@ static void fxfs_dax_trace(u32 kind, u64 ino, u64 page, u64 window, u64 extent, 
 static int fxfs_dax_trace_dump(const char *val, const struct kernel_param *kp)
 {
 	struct fxfs_dax_trace_event *events = READ_ONCE(fxfs_dax_trace_events), *e;
-	u64 ino, page, next, at, first;
+	u64 ino = 0, page = 0, pfn, window = 0, next, at, first;
 	unsigned int shown = 0;
+	bool by_window;
 
-	if (!events || sscanf(val, "%llu %llu", &ino, &page) != 2)
+	if (!events)
 		return -EINVAL;
+	/* `pfn N`: the events of the window's page at page frame N, whichever page they were of. */
+	by_window = sscanf(val, "pfn %llx", &pfn) == 1;
+	if (by_window) {
+		if (!fxfs_dax_trace_base || pfn < fxfs_dax_trace_base)
+			return -EINVAL;
+		window = (pfn - fxfs_dax_trace_base) << PAGE_SHIFT;
+	} else if (sscanf(val, "%llu %llu", &ino, &page) != 2) {
+		return -EINVAL;
+	}
 	next = atomic64_read(&fxfs_dax_trace_next);
 	first = next > FXFS_DAX_TRACE_EVENTS ? next - FXFS_DAX_TRACE_EVENTS : 0;
-	pr_err("fxfs: the trace of ino %llu page %llu, of %llu events:\n", ino, page, next - first);
+	if (by_window)
+		pr_err("fxfs: the trace of window page %llx, of %llu events:\n", window, next - first);
+	else
+		pr_err("fxfs: the trace of ino %llu page %llu, of %llu events:\n", ino, page,
+		       next - first);
 	for (at = first; at < next; at++) {
 		e = &events[at % FXFS_DAX_TRACE_EVENTS];
-		if (e->kind != FXFS_DAX_TRACE_SEAL && (e->ino != ino || e->page != page))
-			continue;
 		if (e->kind == FXFS_DAX_TRACE_SEAL)
 			continue;
-		pr_err("fxfs:   %llu ns seals %llu: %s window %llx extent %llu at %llx flags %x\n",
-		       e->time, e->seals, fxfs_dax_trace_kinds[e->kind], e->window, e->extent,
-		       e->extent_offset, e->flags);
+		if (by_window ? e->window != window : e->ino != ino || e->page != page)
+			continue;
+		pr_err("fxfs:   %llu ns seals %llu: ino %llu page %llu: %s window %llx extent %llu at %llx flags %x\n",
+		       e->time, e->seals, e->ino, e->page, fxfs_dax_trace_kinds[e->kind], e->window,
+		       e->extent, e->extent_offset, e->flags);
 		if (++shown == 200)
 			break;
 	}
@@ -849,7 +865,7 @@ static int fxfs_dax_trace_dump(const char *val, const struct kernel_param *kp)
 
 static const struct kernel_param_ops fxfs_dax_trace_dump_ops = { .set = fxfs_dax_trace_dump };
 module_param_cb(dax_trace_dump, &fxfs_dax_trace_dump_ops, NULL, 0200);
-MODULE_PARM_DESC(dax_trace_dump, "Log the traced events of `ino page` (diagnostic)");
+MODULE_PARM_DESC(dax_trace_dump, "Log the traced events of `ino page`, or `pfn N` (hex), the window's page at page frame N (diagnostic)");
 
 /* How many of `range`'s pages from `page` on, before `end`, are in a row in the window. */
 static unsigned long fxfs_dax_run(const struct fxfs_dax_range *range, unsigned long page,
@@ -3965,6 +3981,12 @@ struct fxfs_dax *fxfs_dax_create(struct super_block *sb, struct fxfs *fs)
 	dax->dev = dev;
 	/* fxdax: the trace, if asked for, of the first filesystem mounted (TASK-121). */
 	if (fxfs_dax_tracing && !fxfs_dax_trace_events) {
+		void *kaddr;
+		int id = dax_read_lock();
+
+		if (dax_direct_access(dax_dev, 0, 1, DAX_ACCESS, &kaddr, &fxfs_dax_trace_base) < 1)
+			fxfs_dax_trace_base = 0;
+		dax_read_unlock(id);
 		fxfs_dax_trace_dev = dev;
 		WRITE_ONCE(fxfs_dax_trace_events,
 			   vzalloc(sizeof(*fxfs_dax_trace_events) * FXFS_DAX_TRACE_EVENTS));

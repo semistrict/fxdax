@@ -667,6 +667,17 @@ mod guest {
         }
     }
 
+    /// fxdax: has the kernel log what it traced of the DAX window's page at page frame `frame`, of
+    /// whichever pages of files (fxfs.dax_trace, TASK-124): where a mapping maps a page that isn't
+    /// its file's.
+    fn trace_dump_frame(frame: u64) {
+        let traced = fs::read_to_string("/sys/module/fxfs/parameters/dax_trace");
+        if traced.is_ok_and(|traced| traced.trim() == "Y") {
+            let _ =
+                fs::write("/sys/module/fxfs/parameters/dax_trace_dump", format!("pfn {frame:x}"));
+        }
+    }
+
     /// fxdax: the page frame this process's page table maps `addr` to, if any
     /// (/proc/self/pagemap): which page of the DAX window a mapping of a file maps, the window's
     /// page frames in a row from its first.
@@ -861,15 +872,18 @@ mod guest {
         let check = move |what: &str, round: usize, own: usize, other: usize, seen: &mut [u8]| {
             for (n, page) in (0..SIZE).step_by(PAGE).enumerate() {
                 let (mapped, read) = (load(page + own), read(page + own));
+                let frame = mapped_pfn(mapped_at + page);
                 if (mapped, read) != (round as u8, round as u8) {
                     trace_dump(&path("seal-race"), n as u64);
+                    if let Some(frame) = frame {
+                        trace_dump_frame(frame);
+                    }
                 }
                 assert_eq!(
                     (mapped, read),
                     (round as u8, round as u8),
                     "page {n}: the {what}' byte, mapped and read, after their round {round}; the \
-                     mapping maps page frame {:x?}",
-                    mapped_pfn(mapped_at + page)
+                     mapping maps page frame {frame:x?}"
                 );
                 let other = load(page + other);
                 assert!(
