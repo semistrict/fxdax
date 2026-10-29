@@ -1,0 +1,72 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+dax: split a PMD entry a shared PTE fault replaces
+
+A shared fault (IOMAP_F_SHARED) may replace a real PMD entry with a PTE
+entry, as when a filesystem moves one page of a 2 MiB row a read fault
+mapped at once. dax_insert_entry stored the PTE entry over the PMD's
+multi-index slot: every index of the PMD then named the one page. A
+fault of another of them found that entry, kept it, as it isn't shared
+or empty, and inserted its own page, which no entry referenced:
+validate_page_before_insert refused it, and the fault died of SIGBUS
+(fxdax TASK-124). Split the entry instead, as grab_mapping_entry
+downgrades a zero or empty PMD: the new entry at the fault's index, the
+others empty, and the PMD's waiters woken. The PMD's mappings are
+already unmapped (a shared fault unmaps the PMD's range).
+
+diff --git a/fs/dax.c b/fs/dax.c
+--- a/fs/dax.c
++++ b/fs/dax.c
+@@ -1048,10 +1048,28 @@ static void *dax_insert_entry(struct xa_state *xas, struct vm_fault *vmf,
+ 	bool write = iter->flags & IOMAP_WRITE;
+ 	bool dirty = write && !dax_fault_is_synchronous(iter, vmf->vma);
+ 	bool shared = iter->iomap.flags & IOMAP_F_SHARED;
++	/*
++	 * A shared fault replacing a PMD entry with a PTE entry splits it: else
++	 * its store over the PMD's multi-index slot names the one page for all
++	 * of the PMD's indices, and a fault of another of them, finding an
++	 * entry, keeps it, and inserts a page no entry names, which fails.
++	 */
++	bool split = shared && dax_is_pmd_entry(entry) && !(flags & DAX_PMD);
+ 
+ 	if (dirty)
+ 		__mark_inode_dirty(mapping->host, I_DIRTY_PAGES);
+ 
++	if (split) {
++		xas_reset(xas);
++		xas_split_alloc(xas, xa_mk_value(xa_to_value(entry) | DAX_LOCKED),
++				PMD_ORDER, mapping_gfp_mask(mapping) & ~__GFP_HIGHMEM);
++		if (xas_error(xas)) {
++			pr_warn_ratelimited("dax: no memory to split a PMD entry at index %lx\n",
++					    xas->xa_index);
++			split = false;
++		}
++	}
++
+ 	if (shared || (dax_is_zero_entry(entry) && !(flags & DAX_ZERO_PAGE))) {
+ 		unsigned long index = xas->xa_index;
+ 		/* we are replacing a zero page with block mapping */
+@@ -1087,6 +1105,23 @@ static void *dax_insert_entry(struct xa_state *xas, struct vm_fault *vmf,
+ 		 * existing entry is a PMD, we will just leave the PMD in the
+ 		 * tree and dirty it if necessary.
+ 		 */
++		if (split) {
++			unsigned long index = xas->xa_index, i;
++			unsigned long base = index & ~PG_PMD_COLOUR;
++
++			/* The PMD's other indices empty: their faults make their own. */
++			xas_split(xas, xa_mk_value(xa_to_value(entry) | DAX_LOCKED),
++				  PMD_ORDER);
++			for (i = base; i < base + PG_PMD_NR; i++) {
++				if (i == index)
++					continue;
++				xas_set(xas, i);
++				xas_store(xas, NULL);
++			}
++			xas_set(xas, index);
++			/* Those waiting for the PMD entry look again. */
++			dax_wake_entry(xas, entry, WAKE_ALL);
++		}
+ 		old = dax_lock_entry(xas, new_entry);
+ 		WARN_ON_ONCE(old != xa_mk_value(xa_to_value(entry) |
+ 					DAX_LOCKED));

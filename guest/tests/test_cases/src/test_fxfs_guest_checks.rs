@@ -846,6 +846,9 @@ mod guest {
         let check = move |what: &str, round: usize, own: usize, other: usize, seen: &mut [u8]| {
             for (n, page) in (0..SIZE).step_by(PAGE).enumerate() {
                 let (mapped, read) = (load(page + own), read(page + own));
+                if (mapped, read) != (round as u8, round as u8) {
+                    trace_dump(&path("seal-race"), n as u64);
+                }
                 assert_eq!(
                     (mapped, read),
                     (round as u8, round as u8),
