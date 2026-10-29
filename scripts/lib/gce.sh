@@ -246,6 +246,11 @@ root = pathlib.Path(sys.argv[1])
 def files(directory):
     return subprocess.check_output(['git', '-C', str(directory), 'ls-files', '--cached', '--others', '--exclude-standard', '-z']).split(b'\0')
 submodules = ['vendor/firecracker']
+# A submodule not checked out, as a new worktree's is, is no source: git there is the project's,
+# whose files it would list, and the host would build what an earlier run left of it, or fail.
+for submodule in submodules:
+    if not (root / submodule / '.git').exists():
+        sys.exit(f'{submodule} is not checked out: git -C {root} submodule update --init {submodule}')
 names = {name.decode() for name in files(root) if name} - set(submodules)
 for submodule in submodules:
     names.update(submodule + '/' + name.decode() for name in files(root / submodule) if name)
