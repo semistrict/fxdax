@@ -1383,6 +1383,25 @@ mod guest {
         counts.lines().map(|count| count.parse().unwrap()).collect()
     }
 
+    /// The kernel's text is where vmlinux links it, unrandomized: Firecracker boots the ELF at its
+    /// 64-bit entry, past the decompressor, which alone randomizes it (KASLR, RANDOMIZE_BASE), so
+    /// that the symbols the build's vmlinux has symbolize host profiles of the guest and its stacks
+    /// (TASK-131.6). On x86_64, `__START_KERNEL_map` and `PHYSICAL_START`, 16 MiB; arm64's
+    /// configuration randomizes nothing.
+    fn kernel_text_unrandomized() {
+        if cfg!(target_arch = "x86_64") {
+            let symbols = fs::read_to_string("/proc/kallsyms").unwrap();
+            let text = (symbols.lines())
+                .find_map(|line| {
+                    let mut fields = line.split_whitespace();
+                    let address = fields.next()?;
+                    (fields.nth(1)? == "_text").then(|| u64::from_str_radix(address, 16).unwrap())
+                })
+                .expect("_text in /proc/kallsyms");
+            assert_eq!(text, 0xffff_ffff_8100_0000, "the kernel's text randomized: {text:#x}");
+        }
+    }
+
     /// The driver uses a request queue per CPU, of the device's four (fxdax TASK-26.18.5): a
     /// writer on each CPU fsyncs a file, through its CPU's queue.
     fn queue_per_cpu() {
@@ -1498,6 +1517,7 @@ mod guest {
             assert_eq!(is_dax(&renamed), self.dax, "the DAX attribute");
             metadata_cached();
             queue_per_cpu();
+            kernel_text_unrandomized();
             if self.dax {
                 read_maps();
                 small_files_share();
