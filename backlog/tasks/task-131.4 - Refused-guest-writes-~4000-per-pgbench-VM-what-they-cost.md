@@ -1,9 +1,10 @@
 ---
 id: TASK-131.4
 title: 'Refused guest writes (~4,000 per pgbench VM): what they cost'
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-10-29 21:13'
+updated_date: '2026-10-29 21:53'
 labels:
   - performance
 dependencies: []
@@ -29,3 +30,9 @@ Sandbox team round 8: ~4,000 refused guest writes per pgbench VM; do they cost a
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-10-29, first numbers, b5d3246 pgbench-dax on GCE (r264, 5 runs, ~330 s): 103 refusals over the test (the sandbox team saw ~4,000 a VM); the daemon's time on every fault, refused or not, 89 ms for 309 (fault-ns), at most 0.29 ms each with pager waits, against 80 s of MAPs; the VMM's fault thread ('dax faults') under 10 ms of CPU over the test, the sampler's resolution. So the host side of refusals costs under 0.1 s a run, some 0.03%. Open: the guest side (the task's retry through its own fault and MAP, the async page fault's worker), and a run on main whose refusals approach the team's count (FXDAX_PGBENCH_VMS, 8 GiB) to scale it.
+<!-- SECTION:NOTES:END -->
