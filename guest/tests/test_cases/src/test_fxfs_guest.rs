@@ -151,6 +151,11 @@ mod host {
             fxdax_guest_should_run()
         }
 
+        fn timeout_secs(&self) -> u64 {
+            // fxdax: the crash test held at a step waits up to 10 s for an evacuation there.
+            if self.crash_step.is_some() { 40 } else { 15 }
+        }
+
         fn start_vm(self: Box<Self>, test_setup: TestSetup) -> anyhow::Result<()> {
             let path = test_setup.tmp_dir.join("extents");
             if self.mode == Mode::HostFormats {
@@ -169,7 +174,14 @@ mod host {
 
             let mut vm = Vm::new(2, 512)?;
             vm.guest_kernel()?;
-            vm.extent_store("extents", &path, CAPACITY, if self.dax { WINDOW } else { 0 })?;
+            // fxdax: holding an evacuation, a window whose regions the writers don't fill, as
+            // they fill a small one's, after which their pages move nowhere to evacuate from.
+            let window = match (self.dax, self.crash_step) {
+                (false, _) => 0,
+                (true, None) => WINDOW,
+                (true, Some(_)) => 1 << 29,
+            };
+            vm.extent_store("extents", &path, CAPACITY, window)?;
             if self.mode == Mode::Crash {
                 // fxdax: when the VM stops, from when its writers begin: FXDAX_CRASH_MS, to replay
                 // a run, or else a time of the run's own, before the writers fill the store, and

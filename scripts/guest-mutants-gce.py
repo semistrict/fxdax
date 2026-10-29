@@ -69,7 +69,8 @@ MUTANTS = [
     (
         "relocate_unmarked",
         "a page moved is not marked relocated, its old mappings kept",
-        [("\t\t\tset_bit(page + i, range->relocated);", "\t\t\t;")],
+        [("\t\t\tif (!test_and_set_bit(page + i, range->relocated))\n"
+          "\t\t\t\tWRITE_ONCE(range->stale[page + i], range->moved[page + i]);\n", "")],
     ),
     (
         "cow_not_shared",
@@ -79,8 +80,7 @@ MUTANTS = [
     (
         "prune_in_use",
         "a range lets go of regions while another iomap uses it",
-        [("\tif (!nr || atomic_read(&range->users) != 1 ||",
-          "\tif (!nr ||")],
+        [("\tif (!nr || atomic_read(&range->users) != 1)\n", "\tif (!nr)\n")],
     ),
     (
         "held_not_written",
@@ -111,6 +111,21 @@ MUTANTS = [
         "faults meet the PMD entry: SIGBUS (TASK-123)",
         [("\tif (READ_ONCE(range->huge)) {\n",
           "\tif (READ_ONCE(range->huge) && false) {\n")],
+    ),
+    (
+        "prune_waits_unrelocated",
+        "a prune lets go of no region while any page of its range is relocated, as it did before: "
+        "mapped files' ranges kept every region their pages were ever in (TASK-128)",
+        [("\tif (!nr || atomic_read(&range->users) != 1)\n",
+          "\tif (!nr || atomic_read(&range->users) != 1 ||\n"
+          "\t    !bitmap_empty(range->relocated, range->pages))\n")],
+    ),
+    (
+        "prune_drops_stale",
+        "a prune lets go of the regions where the kernel's DAX entries of relocated pages say they "
+        "are, whose writeback then flushes window pages nothing maps (TASK-128)",
+        [("\t\tif (range->stale[page] && test_bit(page, range->relocated))\n",
+          "\t\tif (false)\n")],
     ),
     (
         "evacuation_maps_elsewhere",

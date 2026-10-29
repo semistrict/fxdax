@@ -2000,6 +2000,100 @@ mod guest {
         fs::remove_file(&name).unwrap();
     }
 
+    /// fxdax: a mapped file's pages stored to one at a time, each store fsynced: the store moves
+    /// its page to the staging extent's region, and the evacuation after the seal relocates it to
+    /// its range's own space, where it stays relocated until it faults again, rounds later, so that
+    /// some page is relocated always. fxfs_dax_prune let go of no region while any page was: five
+    /// such files held 1700 regions, and the window had no room for a staging extent's (TASK-128).
+    /// It keeps those the relocated pages' DAX entries may say alone.
+    fn test_regions_pruned_mapped() {
+        use std::os::unix::io::AsRawFd;
+        const PAGE: usize = 4096;
+        const PAGES: usize = 4;
+        const ROUNDS: usize = 300;
+        let name = path("regions-pruned-mapped");
+        fs::write(&name, vec![1; PAGES * PAGE]).unwrap();
+        let file = fs::OpenOptions::new().read(true).write(true).open(&name).unwrap();
+        file.sync_all().unwrap();
+        let map = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                PAGES * PAGE,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                file.as_raw_fd(),
+                0,
+            )
+        };
+        assert_ne!(map, libc::MAP_FAILED);
+        let map = map as *mut u8;
+        let before = stats();
+        let mut expected = vec![1; PAGES * PAGE];
+        for round in 0..ROUNDS {
+            let at = (round % PAGES) * PAGE;
+            let byte = (round % 251) as u8 + 2;
+            unsafe { std::ptr::write_volatile(map.add(at), byte) };
+            expected[at] = byte;
+            file.sync_data().unwrap();
+        }
+        let after = stats();
+        assert_eq!(unsafe { libc::munmap(map as *mut libc::c_void, PAGES * PAGE) }, 0);
+        let regions = after["window_regions"] as i64 - before["window_regions"] as i64;
+        assert!(regions <= 16, "{regions} regions more after {ROUNDS} stores and fsyncs: {after:?}");
+        drop(file);
+        assert!(fs::read(&name).unwrap() == expected, "the file differs from what was stored");
+        fs::remove_file(&name).unwrap();
+    }
+
+    /// fxdax: a mapped file's page stored to, its DAX entry dirty, saying the page is where the
+    /// staging extent's region maps it; another file's fsync seals, and the evacuation after it
+    /// relocates the page to its range's own space, and lets go of the regions its range no longer
+    /// uses (fxfs_dax_prune), held at its end (pause points); then msync writes the entry back,
+    /// flushing the page where the entry says. That region stays the range's for it (`stale`,
+    /// TASK-128): let go of, the window unmaps it, and the flush faults where the host maps
+    /// nothing, which stops the VM.
+    fn test_stale_entry_flushed() {
+        use std::os::unix::fs::FileExt;
+        use std::os::unix::io::AsRawFd;
+        const PAGE: usize = 4096;
+        const SIZE: usize = 1 << 20;
+        let (name, other) = (path("stale-entry"), path("stale-entry-other"));
+        fs::write(&name, vec![1; SIZE]).unwrap();
+        let file = fs::OpenOptions::new().read(true).write(true).open(&name).unwrap();
+        file.sync_all().unwrap();
+        let map = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                SIZE,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                file.as_raw_fd(),
+                0,
+            )
+        };
+        assert_ne!(map, libc::MAP_FAILED);
+        let map = map as *mut u8;
+        let (pauses, only) = Pauses::begin_of(Pauses::PLACED, &name);
+        // The store moves the page to the staging extent's region, its entry dirty.
+        unsafe { std::ptr::write_volatile(map, 2) };
+        // Another file's fsync seals; the evacuation after it relocates the page, and prunes.
+        let other_file =
+            fs::OpenOptions::new().create(true).truncate(true).write(true).open(&other).unwrap();
+        other_file.write_all_at(&[3; PAGE], 0).unwrap();
+        other_file.sync_data().unwrap();
+        Pauses::wait(Pauses::PLACED);
+        drop(pauses);
+        drop(only);
+        // The entry written back: the page flushed where the entry says it is.
+        assert_eq!(unsafe { libc::msync(map as *mut libc::c_void, SIZE, libc::MS_SYNC) }, 0);
+        let stored = unsafe { std::ptr::read_volatile(map) };
+        assert_eq!(unsafe { libc::munmap(map as *mut libc::c_void, SIZE) }, 0);
+        drop(file);
+        assert_eq!((stored, fs::read(&name).unwrap()[0]), (2, 2));
+        fs::remove_file(&name).unwrap();
+        fs::remove_file(&other).unwrap();
+    }
+
     /// fxdax: a file's pages each written once and fsynced, as a database's rows a run updates
     /// once and its history it appends: each write moves its page to the staging extent's region,
     /// a new one after every seal, which the page, written no more, kept, until the window's
@@ -2680,6 +2774,7 @@ mod guest {
         const HELD: u64 = 1 << 3;
         const GATHERED: u64 = 1 << 4;
         const READ_MAPPED: u64 = 1 << 5;
+        const PLACED: u64 = 1 << 7;
 
         fn set(steps: u64) {
             fs::write(Self::PAUSE, steps.to_string()).unwrap();
@@ -3650,8 +3745,13 @@ mod guest {
                     tests.push(("regions_evacuated", &test_regions_evacuated));
                 }
                 tests.push(("evacuate_dropped", &test_evacuate_dropped));
-                tests.push(("evacuation_paused", &test_evacuation_paused));
-                tests.push(("prune_while_paused", &test_prune_while_paused));
+                // As regions_evacuated: their pages move to staging extents' regions.
+                if !self.small_window {
+                    tests.push(("evacuation_paused", &test_evacuation_paused));
+                    tests.push(("prune_while_paused", &test_prune_while_paused));
+                    tests.push(("regions_pruned_mapped", &test_regions_pruned_mapped));
+                    tests.push(("stale_entry_flushed", &test_stale_entry_flushed));
+                }
                 tests.push(("faults_writes_compaction", &test_faults_writes_compaction));
                 tests.push(("append_writable", &test_append_writable));
                 tests.push(("append_pages", &test_append_pages));

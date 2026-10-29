@@ -391,6 +391,13 @@ struct fxfs_dax_range {
 	 */
 	u64 *moved;
 	/*
+	 * fxdax: for each page relocated, where it was as the kernel's mappings and DAX entries of it
+	 * last had it, which they may still say until they are replaced, as `moved` says it (0, its
+	 * own space): the region there stays the range's until then (fxfs_dax_prune, TASK-128). Made
+	 * with `moved`.
+	 */
+	u64 *stale;
+	/*
 	 * The regions its pages moved to, each of which it holds a reference to while any page is
 	 * there, or may be used there: iomaps may use a page where it was until they end, and the
 	 * kernel's mappings of it until the kernel replaces them (fxfs_dax_prune).
@@ -975,7 +982,9 @@ static void fxfs_dax_place(struct fxfs_dax_range *range, unsigned long page, uns
 		moved = region ? ((u64)(index + 1) << 32) | (first + i) : 0;
 		if ((range->moved[page + i] != moved || unmapping) &&
 		    test_bit(page + i, range->mapped)) {
-			set_bit(page + i, range->relocated);
+			/* Where the kernel last had it: where it was as it was first relocated. */
+			if (!test_and_set_bit(page + i, range->relocated))
+				WRITE_ONCE(range->stale[page + i], range->moved[page + i]);
 			from = min(from, page + i);
 			to = page + i + 1;
 		}
@@ -989,7 +998,10 @@ static void fxfs_dax_place(struct fxfs_dax_range *range, unsigned long page, uns
 		return;
 	/* fxdax: a row a PMD mapped broken up: every page of it is relocated (TASK-123). */
 	if (READ_ONCE(range->huge)) {
-		bitmap_or(range->relocated, range->relocated, range->mapped, range->pages);
+		for_each_set_bit(i, range->mapped, range->pages) {
+			if (!test_and_set_bit(i, range->relocated))
+				WRITE_ONCE(range->stale[i], range->moved[i]);
+		}
 		WRITE_ONCE(range->huge, false);
 		from = 0;
 		to = range->pages;
@@ -999,6 +1011,18 @@ static void fxfs_dax_place(struct fxfs_dax_range *range, unsigned long page, uns
 		start = fxfs_dax_chunk_start(range) >> PAGE_SHIFT;
 		unmap_mapping_pages(inode->i_mapping, start + from, to - from, false);
 	}
+}
+
+/*
+ * fxdax: `range`'s `pages` pages from `page` on relocated no longer: nothing of the kernel's maps
+ * them where they were. With the file's DAX semaphore held for writing.
+ */
+static void fxfs_dax_unrelocate(struct fxfs_dax_range *range, unsigned long page,
+				unsigned long pages)
+{
+	bitmap_clear(range->relocated, page, pages);
+	if (range->stale)
+		memset(&range->stale[page], 0, pages * sizeof(*range->stale));
 }
 
 /* fxfs_dax_place: the pages where `region`'s are, or in the range's own space. */
@@ -1038,8 +1062,12 @@ static void fxfs_dax_cow(struct inode *inode, struct fxfs_dax_range *range, unsi
 		return;
 	if (fault || !xa_find(&inode->i_mapping->i_pages, &index, index + pages - 1, XA_PRESENT)) {
 		/* Atomically: read iomaps take the file's semaphore for reading. */
-		for (i = page; i < page + pages; i++)
-			relocated |= test_and_clear_bit(i, range->relocated);
+		for (i = page; i < page + pages; i++) {
+			if (!test_and_clear_bit(i, range->relocated))
+				continue;
+			relocated = true;
+			WRITE_ONCE(range->stale[i], 0);
+		}
 		/* Without entries, there are none to replace. */
 		if (!fault || !relocated)
 			return;
@@ -1051,24 +1079,37 @@ static void fxfs_dax_cow(struct inode *inode, struct fxfs_dax_range *range, unsi
 }
 
 /*
+ * fxdax: `moved`, a page's place in its range's regions (as `moved` and `stale` say it), renumbered
+ * as fxfs_dax_prune keeps the regions `used` marks and lets go of the rest: 0, its own space, as
+ * it was.
+ */
+static u64 fxfs_dax_renumbered(const unsigned long *used, u64 moved)
+{
+	if (!moved)
+		return 0;
+	return ((u64)(bitmap_weight(used, (moved >> 32) - 1) + 1) << 32) | (moved & U32_MAX);
+}
+
+/*
  * fxdax: lets go of the regions none of the range of its own `range`'s pages is in any more, as
  * pages written again move to the staging extent's region after every seal: the range held every
  * region its pages were ever in, and under a database fsyncing at each transaction, the window
  * filled with thousands of them (TASK-91.10). Only while no other iomap uses the range, which
- * may use a page where it was, and the kernel's mappings are of where its pages are, none
- * relocated (fxfs_dax_cow). With the file's DAX semaphore held for writing, and an iomap's use
- * of the range.
+ * may use a page where it was; and keeping the regions where the kernel's mappings and DAX entries
+ * of pages relocated may still say they are (`stale`), until the kernel replaces them
+ * (fxfs_dax_cow): a DAX entry's writeback flushes the page where it says. fxdax: it kept every
+ * region while any page was relocated, which a page of a mapped file stays until it faults again:
+ * five such files held 1700 regions, and the window had no room for a staging extent's (TASK-128).
+ * With the file's DAX semaphore held for writing, and an iomap's use of the range.
  */
 static void fxfs_dax_prune(struct fxfs_dax *dax, struct fxfs_dax_range *range)
 {
 	unsigned int i, kept = 0, nr = range->nr_regions;
 	unsigned long page, *used;
-	u64 moved;
 
 	lockdep_assert_held_write(&range->file->sem);
 
-	if (!nr || atomic_read(&range->users) != 1 ||
-	    !bitmap_empty(range->relocated, range->pages))
+	if (!nr || atomic_read(&range->users) != 1)
 		return;
 	used = bitmap_zalloc(nr, GFP_NOFS);
 	if (!used)
@@ -1076,6 +1117,9 @@ static void fxfs_dax_prune(struct fxfs_dax *dax, struct fxfs_dax_range *range)
 	for (page = 0; page < range->pages; page++) {
 		if (range->moved[page])
 			__set_bit(fxfs_dax_moved_index(range, range->moved[page]), used);
+		/* fxdax: where the kernel may map a page relocated still (TASK-128). */
+		if (range->stale[page] && test_bit(page, range->relocated))
+			__set_bit(fxfs_dax_moved_index(range, range->stale[page]), used);
 	}
 	if (bitmap_full(used, nr)) {
 		bitmap_free(used);
@@ -1083,10 +1127,9 @@ static void fxfs_dax_prune(struct fxfs_dax *dax, struct fxfs_dax_range *range)
 	}
 	/* Its pages' regions' indices, as those before them it lets go of go. */
 	for (page = 0; page < range->pages; page++) {
-		moved = range->moved[page];
-		if (moved)
-			range->moved[page] = ((u64)(bitmap_weight(used, (moved >> 32) - 1) + 1) << 32) |
-					     (moved & U32_MAX);
+		range->moved[page] = fxfs_dax_renumbered(used, range->moved[page]);
+		range->stale[page] = test_bit(page, range->relocated) ?
+				     fxfs_dax_renumbered(used, range->stale[page]) : 0;
 	}
 	for (i = 0; i < nr; i++) {
 		if (test_bit(i, used)) {
@@ -1579,6 +1622,7 @@ static void fxfs_dax_free_range_memory(struct fxfs_dax_range *range)
 	bitmap_free(range->writable);
 	bitmap_free(range->relocated);
 	kfree(range->moved);
+	kfree(range->stale);
 	kfree(range->regions);
 	kfree(range);
 }
@@ -2075,9 +2119,16 @@ static int fxfs_dax_move(struct fxfs_dax *dax, struct fxfs_dax_range *range,
 	lockdep_assert_held_write(&range->file->sem);
 
 	if (!range->moved) {
-		range->moved = kcalloc(range->pages, sizeof(*range->moved), GFP_NOFS);
-		if (!range->moved)
+		u64 *moved = kcalloc(range->pages, sizeof(*moved), GFP_NOFS);
+		u64 *stale = kcalloc(range->pages, sizeof(*stale), GFP_NOFS);
+
+		if (!moved || !stale) {
+			kfree(moved);
+			kfree(stale);
 			return -ENOMEM;
+		}
+		range->stale = stale;
+		range->moved = moved;
 	}
 	/* Not reclaiming other ranges for it, in the gate: the range's own space maps it then. */
 	region = fxfs_dax_get_region(dax, e, false);
@@ -3812,32 +3863,35 @@ static bool fxfs_dax_evacuee_placeable(struct fxfs_dax_file *file,
 }
 
 /*
- * fxdax: for fxfs.dax_check_places, WARNs unless Fxfs holds `run`'s pages, of `file`, where the
- * evacuation's MAP `map` mapped them from into their range's own space, as it places them there
- * (TASK-119.10). With the file's semaphore held for writing: no write moves them meanwhile.
+ * fxdax: for fxfs.dax_check_places, WARNs unless Fxfs holds `run`'s pages, of `file`, below its
+ * size, `size`, where the evacuation's MAP `map` mapped them from into their range's own space, as
+ * it places them there (TASK-119.10). With the file's semaphore held for writing: no write moves
+ * them meanwhile. Past the size, a truncate's: Fxfs let go of them as it shrank the file, and
+ * fxfs_dax_resize_end, waiting for this evacuation, unmaps them after.
  */
 static void fxfs_dax_check_placed(struct fxfs_dax *dax, struct fxfs_dax_file *file,
 				  const struct fxfs_dax_evacuee *run,
-				  const struct fxfs_device_map *map)
+				  const struct fxfs_device_map *map, loff_t size)
 {
 	u64 pos = fxfs_dax_chunk_start(run->range) + ((u64)run->page << PAGE_SHIFT), done = 0;
+	u64 len = min_t(u64, map->len, max_t(loff_t, round_up(size, PAGE_SIZE) - (loff_t)pos, 0));
 	/* Fxfs may hold the run in pieces, one a page at most, each following the one before. */
 	struct fxfs_dax_extent *e = fxfs_dax_alloc_extents(dax, run->pages);
 	ssize_t count, i;
 
 	if (!e)
 		return;
-	count = fxfs_nofs(fxfs_dax_extents(dax->fs, file->ino, pos, map->len, e, run->pages));
-	for (i = 0; done < map->len; i++) {
+	count = len ? fxfs_nofs(fxfs_dax_extents(dax->fs, file->ino, pos, len, e, run->pages)) : 0;
+	for (i = 0; done < len; i++) {
 		if (WARN(i >= count || e[i].offset != pos + done || e[i].branch != map->branch ||
 			 e[i].sequence != map->sequence || e[i].extent_offset != map->offset + done,
 			 "fxfs: ino %llu: evacuated %llu bytes at %llu from extent %llx:%llu at %llu, but Fxfs holds those at %llu %s %llx:%llu at %llu (%zd)\n",
-			 file->ino, map->len - done, pos + done, map->branch, map->sequence,
+			 file->ino, len - done, pos + done, map->branch, map->sequence,
 			 map->offset + done, i < count ? e[i].offset : 0,
 			 i < count ? "in extent" : "nowhere:", i < count ? e[i].branch : 0,
 			 i < count ? e[i].sequence : 0, i < count ? e[i].extent_offset : 0, count))
 			break;
-		done += min(e[i].len, map->len - done);
+		done += min(e[i].len, len - done);
 	}
 	kvfree(e);
 }
@@ -3853,14 +3907,21 @@ static void fxfs_dax_evacuee_place(struct fxfs_dax *dax, struct fxfs_dax_file *f
 				   struct fxfs_dax_evacuation *ev)
 {
 	struct fxfs_dax_evacuee *run;
+	loff_t size = -1;
 	pgoff_t index;
 	size_t r;
 
 	lockdep_assert_held_write(&file->sem);
-	/* Fxfs asked without the files lock, which its paths take. */
-	for (r = 0; READ_ONCE(fxfs_dax_check_places) && r < ev->count; r++) {
+	if (READ_ONCE(fxfs_dax_check_places)) {
+		mutex_lock(&dax->files_lock);
+		if (file->inode)
+			size = i_size_read(file->inode);
+		mutex_unlock(&dax->files_lock);
+	}
+	/* Fxfs asked without the files lock, which its paths take; of a file with an inode. */
+	for (r = 0; size >= 0 && r < ev->count; r++) {
 		if (fxfs_dax_evacuee_placeable(file, &ev->runs[r]))
-			fxfs_dax_check_placed(dax, file, &ev->runs[r], &ev->maps[r]);
+			fxfs_dax_check_placed(dax, file, &ev->runs[r], &ev->maps[r], size);
 	}
 	mutex_lock(&dax->files_lock);
 	for (r = 0; r < ev->count; r++) {
@@ -3871,7 +3932,7 @@ static void fxfs_dax_evacuee_place(struct fxfs_dax *dax, struct fxfs_dax_file *f
 		index = (fxfs_dax_chunk_start(run->range) >> PAGE_SHIFT) + run->page;
 		if (!file->inode || !xa_find(&file->inode->i_mapping->i_pages, &index,
 					     index + run->pages - 1, XA_PRESENT))
-			bitmap_clear(run->range->relocated, run->page, run->pages);
+			fxfs_dax_unrelocate(run->range, run->page, run->pages);
 	}
 	mutex_unlock(&dax->files_lock);
 	for (r = 0; r < ev->count; r++) {
@@ -4644,7 +4705,7 @@ void fxfs_dax_resize_end(struct inode *inode, loff_t size)
 				range->window_offset, err);
 		bitmap_clear(range->mapped, page, range->pages - page);
 		fxfs_dax_clear_writable(range, page, range->pages - page);
-		bitmap_clear(range->relocated, page, range->pages - page);
+		fxfs_dax_unrelocate(range, page, range->pages - page);
 		if (range->moved)
 			memset(&range->moved[page], 0, (range->pages - page) * sizeof(*range->moved));
 	}
