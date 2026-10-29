@@ -8,7 +8,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-28 19:45'
-updated_date: '2026-10-28 20:21'
+updated_date: '2026-10-29 07:01'
 labels:
   - bug
 dependencies: []
@@ -39,4 +39,6 @@ Documented in fxfs_dax_cow (dax.c): the copy of the page onto itself is not atom
 
 <!-- SECTION:NOTES:BEGIN -->
 Fix 2026-10-28 (test/119): guest kernel patch guest/linux/patches/0006-dax-copy-around-in-place.patch, dax_iomap_copy_around returns at once when saddr == daddr (fxfs_dax_cow's srcmap is the iomap). Evidence it bites: faults_writes_compaction/faults_unheld (write(2)s of pages' first halves, stores of their second halves) lost second-half bytes on r206 with TASK-121's fix in.
+
+2026-10-29: AC1 met by patch 0006 (6b42a571e). AC2's control queued on GCE r217: main with 0006's test neutralized (saddr == daddr && false, so 0007/0008 still apply), seal_race, torture, faults_writes_compaction, faults_unheld under checks-dax-delay, 5 rounds; main passed them 10 rounds each at TASK-121's close.
 <!-- SECTION:NOTES:END -->

@@ -3,9 +3,10 @@ id: TASK-119.16
 title: >-
   Crash at evacuation boundaries: stop the VM after gather, after MAP, after
   place (pause points), every acknowledged fsync generation survives
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-10-28 19:45'
+updated_date: '2026-10-29 07:01'
 labels:
   - testing
 dependencies:
@@ -32,3 +33,9 @@ Astra: warm-window reads agree while durable storage may be wrong.
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-10-29, branch t3/task-112-6: fxfs-guest-crash-dax-gathered, -mapped, -placed: the crash test's VM stopped (reboot) once an evacuation is held at GATHERED, EVACUEES_MAPPED or PLACED, which the guest reports ('held at step N') and the host requires, then checks the store as fxfs-guest-crash-dax does. In dax-gate.sh. Pending GCE r215.
+<!-- SECTION:NOTES:END -->
