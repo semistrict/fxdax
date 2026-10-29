@@ -3841,7 +3841,6 @@ static void fxfs_dax_check_placed(struct fxfs_dax *dax, struct fxfs_dax_file *fi
 	}
 	kvfree(e);
 }
-}
 
 /*
  * fxdax: has `file`'s runs in `ev` that were mapped in their ranges' own space be there, unless a
