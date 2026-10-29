@@ -921,6 +921,10 @@ mod guest {
         for attr in ATTRS {
             set(attr, "probability", "0");
         }
+        // No window space lost to an UNMAP that failed: its request's allocation can't
+        // (TASK-44.22).
+        let stats = fs::read_to_string("/proc/fs/fxfs/extents").unwrap();
+        assert!(stats.lines().any(|line| line == "window_lost_bytes 0"), "{stats}");
         report(&format!("failed calls {failed}"));
         report(&format!("forced failures {}", forced_failures()));
     }
