@@ -7,6 +7,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-29 20:54'
+updated_date: '2026-10-29 21:01'
 labels:
   - dax
   - bug
@@ -24,7 +25,7 @@ GCE r257 (main 88032eb67, FXDAX_GUEST_KERNEL_BUILD=kasan: KASAN, KFENCE, lockdep
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The assertion fires only where a writable MAP is sent outside the gate
+- [x] #1 The assertion fires only where a writable MAP is sent outside the gate
 - [ ] #2 Whether a writable MAP is sent outside the gate is known: fixed if so
 <!-- AC:END -->
 
@@ -34,3 +35,9 @@ GCE r257 (main 88032eb67, FXDAX_GUEST_KERNEL_BUILD=kasan: KASAN, KFENCE, lockdep
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Assertion moved to where map_to sends a writable MAP (pushed). GCE r258, the KASAN kernel, checks-dax's second half (random_ops, torture and every check after but enospc, which the KASAN kernel's slowness left to the 180 s timeout): no assertion, no KASAN or KFENCE report. So r257's was most likely a reader finding a writable region mapped already, sending no MAP. AC2 stays open until more KASAN and debug rounds show none.
+<!-- SECTION:NOTES:END -->
