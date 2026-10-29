@@ -2073,7 +2073,8 @@ static void fxfs_dax_grow_ahead(struct fxfs_dax *dax, struct fxfs_dax_region *re
 	unsigned long mapped = READ_ONCE(region->mapped);
 	unsigned long reached = atomic_long_read(&region->reached);
 
-	if (!READ_ONCE(region->writable) || mapped >= region->pages ||
+	/* Outside the gate, a hint: a seal may shrink it meanwhile, which fxfs_dax_grow sees. */
+	if (!READ_ONCE(region->writable) || mapped >= READ_ONCE(region->pages) ||
 	    reached + clamp(mapped, FXFS_DAX_REGION_FIRST, FXFS_DAX_REGION_STEP) / 2 <= mapped)
 		return;
 	if (atomic_cmpxchg(&region->growing, 0, 1))
@@ -3656,12 +3657,13 @@ static void fxfs_dax_seal(void *arg)
 	fxfs_dax_check_ptes(dax);
 	spin_lock(&dax->regions_lock);
 	list_for_each_entry_safe(region, next_region, &dax->writable_regions, writable_list) {
-		region->writable = false;
+		WRITE_ONCE(region->writable, false);
 		region->evacuate = true;
 		list_del_init(&region->writable_list);
 		fxfs_dax_give_window(dax, region->window_offset + ((u64)region->mapped << PAGE_SHIFT),
 				     region->pages - region->mapped);
-		region->pages = region->mapped;
+		/* fxdax: as fxfs_dax_grow_ahead reads it, outside the gate (KCSAN, GCE r255). */
+		WRITE_ONCE(region->pages, region->mapped);
 	}
 	spin_unlock(&dax->regions_lock);
 	/* fxdax: between the regions sealed and the files' pages (TASK-119.3). */
