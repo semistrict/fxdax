@@ -3,9 +3,10 @@ id: TASK-129
 title: >-
   Guest crash test: copying a store's extents fails on a remote-*.new file gone
   meanwhile
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-10-29 02:34'
+updated_date: '2026-10-29 06:47'
 labels:
   - bug
   - testing
