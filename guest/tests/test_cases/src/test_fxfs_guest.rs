@@ -838,7 +838,8 @@ mod guest {
                 panic!("{path}: {err} (the debug kernel injects faults: FXDAX_GUEST_KERNEL_BUILD=debug)")
             });
         };
-        let (rust_start, rust_end) = symbols_range("fxfs_rt_");
+        let (rust_start, rust_end) = symbols_range("fxfs_rt_alloc", "fxfs_rt_");
+        eprintln!("faults: none forced from {rust_start:#x} to {rust_end:#x}, Fxfs's runtime");
         for attr in ATTRS {
             set(attr, "reject-start", &format!("{rust_start:#x}"));
             set(attr, "reject-end", &format!("{rust_end:#x}"));
@@ -917,10 +918,12 @@ mod guest {
         }
     }
 
-    /// fxdax: the addresses of the kernel's functions whose names begin with `prefix`, one
-    /// object's, from the first's start to the end of the last, the next symbol's start, as
-    /// /proc/kallsyms has them.
-    fn symbols_range(prefix: &str) -> (u64, u64) {
+    /// fxdax: the addresses of the kernel's functions around `name` whose names begin with
+    /// `prefix`, one after another, one object's text, from the first's start to the end of the
+    /// last, the next symbol's start, as /proc/kallsyms has them: not those of the prefix elsewhere,
+    /// as an __init one is, which took most of the kernel in between, and the injection forced no
+    /// failure (GCE r266).
+    fn symbols_range(name: &str, prefix: &str) -> (u64, u64) {
         let symbols = fs::read_to_string("/proc/kallsyms").unwrap();
         let mut addresses: Vec<(u64, &str)> = (symbols.lines())
             .filter_map(|line| {
@@ -930,12 +933,14 @@ mod guest {
             })
             .collect();
         addresses.sort_unstable();
-        let named = |&&(_, symbol): &&(u64, &str)| symbol.starts_with(prefix);
-        let start = addresses.iter().find(named).expect(prefix).0;
-        let last = addresses.iter().rev().find(named).unwrap().0;
+        let at = addresses.iter().position(|&(_, symbol)| symbol == name).expect(name);
+        let named = |at: &usize| addresses[*at].1.starts_with(prefix);
+        let first = (0..=at).rev().take_while(named).last().unwrap();
+        let last = (at..addresses.len()).take_while(named).last().unwrap();
+        let start = addresses[first].0;
         assert_ne!(start, 0, "/proc/kallsyms hides addresses");
-        let end = addresses.iter().find(|&&(address, _)| address > last).unwrap().0;
-        (start, end)
+        let end = addresses[last..].iter().find(|&&(address, _)| address > addresses[last].0);
+        (start, end.unwrap().0)
     }
 
     /// Whether the crash test's writers wait, as its guest stores through a mapping (TASK-79.11).
