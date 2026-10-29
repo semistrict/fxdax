@@ -11,7 +11,9 @@
 # - specs/dax-region: a region of its window, opened while a reader's read-only MAP of it is in
 #   flight (TASK-99, TASK-44.14);
 # - specs/extent-open: the host's extent store opening an extent, writes, MAPs and commits racing
-#   on it (crates/fxdax/src/extents.rs, TASK-121, TASK-119.20).
+#   on it (crates/fxdax/src/extents.rs, TASK-121, TASK-119.20);
+# - specs/dax-evacuate: a page's block moved by writes, seals, evacuations, prunes and truncation,
+#   the host's replies in any order (guest/linux/fs/fxfs/dax.c, TASK-119.7).
 #
 #   check-tla.sh [MODEL...]
 #
@@ -110,7 +112,7 @@ for cfg in ${chosen[@]+"${chosen[@]}"}; do
         -metadir "$work/${model//\//-}.states" -config "$cfg" "${tla[0]}" > "$log" 2>&1 &&
         found=0 || found=$?
     took=$((SECONDS - start))
-    states=$(sed -n 's/.* \([0-9,]*\) distinct states found.*/\1/p' "$log" | tail -1)
+    states=$(sed -n 's/.* \([0-9,]*\) distinct states found.*/\1/p' "$log" | sed -n '$p')
     if [[ -z $expect ]]; then
         if (( found == 0 )) && grep -q '^Model checking completed. No error has been found' "$log"
         then
