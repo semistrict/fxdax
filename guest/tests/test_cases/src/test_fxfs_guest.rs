@@ -811,8 +811,9 @@ mod guest {
     /// fxdax: the faults test's (TASK-44.10): its writers' allocations failed at random for a few
     /// seconds, as the debug kernel's fault injection does them for tasks that ask, through
     /// debugfs; each writer reports each file whose fsync returned, and in the end how many of its
-    /// calls failed. Not those of Fxfs's Rust, through fxfs_rt_alloc, which can't fail them: a
-    /// failure there panics the kernel, or writes through NULL (TASK-60.1, GCE r260).
+    /// calls failed. Not those of Fxfs's Rust's runtime, rt.c's (fxfs_rt_*), its allocator's and
+    /// its executor's, which can't fail: a failure there panicked the kernel, or wrote through
+    /// NULL (TASK-60.1, GCE r260, r262).
     fn faults() {
         const DEBUGFS: &str = "/sys/kernel/debug";
         const ATTRS: [&str; 2] = ["failslab", "fail_page_alloc"];
@@ -835,7 +836,7 @@ mod guest {
                 panic!("{path}: {err} (the debug kernel injects faults: FXDAX_GUEST_KERNEL_BUILD=debug)")
             });
         };
-        let (rust_start, rust_end) = symbol_range("fxfs_rt_alloc");
+        let (rust_start, rust_end) = symbols_range("fxfs_rt_");
         for attr in ATTRS {
             set(attr, "reject-start", &format!("{rust_start:#x}"));
             set(attr, "reject-end", &format!("{rust_end:#x}"));
@@ -887,9 +888,10 @@ mod guest {
         report(&format!("failed calls {failed}"));
     }
 
-    /// fxdax: the addresses of the kernel's function `name`, from its start to the next symbol's,
-    /// as /proc/kallsyms has them.
-    fn symbol_range(name: &str) -> (u64, u64) {
+    /// fxdax: the addresses of the kernel's functions whose names begin with `prefix`, one
+    /// object's, from the first's start to the end of the last, the next symbol's start, as
+    /// /proc/kallsyms has them.
+    fn symbols_range(prefix: &str) -> (u64, u64) {
         let symbols = fs::read_to_string("/proc/kallsyms").unwrap();
         let mut addresses: Vec<(u64, &str)> = (symbols.lines())
             .filter_map(|line| {
@@ -899,10 +901,11 @@ mod guest {
             })
             .collect();
         addresses.sort_unstable();
-        let at = addresses.iter().position(|&(_, symbol)| symbol == name).expect(name);
-        let start = addresses[at].0;
+        let named = |&&(_, symbol): &&(u64, &str)| symbol.starts_with(prefix);
+        let start = addresses.iter().find(named).expect(prefix).0;
+        let last = addresses.iter().rev().find(named).unwrap().0;
         assert_ne!(start, 0, "/proc/kallsyms hides addresses");
-        let end = addresses[at..].iter().find(|&&(address, _)| address > start).unwrap().0;
+        let end = addresses.iter().find(|&&(address, _)| address > last).unwrap().0;
         (start, end)
     }
 
