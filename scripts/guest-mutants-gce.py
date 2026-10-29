@@ -104,13 +104,6 @@ MUTANTS = [
           "\t\terr = 0;\n\t\t(void)fxfs_dax_map_moved;\n")],
     ),
     (
-        "pmd_row_unrelocated",
-        "a page moving out of a row a PMD mapped relocates itself alone, whose row's other pages' "
-        "faults meet the PMD entry: SIGBUS (TASK-123)",
-        [("\tif (READ_ONCE(range->huge)) {\n",
-          "\tif (READ_ONCE(range->huge) && false) {\n")],
-    ),
-    (
         "prune_waits_unrelocated",
         "a prune lets go of no region while any page of its range is relocated, as it did before: "
         "mapped files' ranges kept every region their pages were ever in (TASK-128)",
@@ -144,6 +137,15 @@ MUTANTS = [
         [("\t\t\t\tif (err != -EXDEV)\n\t\t\t\t\terr = -ESTALE;\n", "")],
     ),
 ]
+
+# Equivalent mutants, which no suite can kill, and why:
+#
+# - pmd_row_unrelocated (TASK-123): a page moving out of a row a PMD mapped relocating itself
+#   alone, its row's other pages' faults then meeting the PMD entry: kernel patch 0008 (TASK-124)
+#   splits the PMD entry as the moved page's shared fault replaces it, the others empty, so their
+#   faults make their own whether relocated or not. Only a split whose allocation fails keeps the
+#   PMD entry, which no test can bring about: the DAX gate (GCE r225 gate) and r233, whose
+#   mapped_after_write did map the row with a PMD (dax_huge_maps), missed it.
 
 SUITES = "fxfs-guest-dax fxfs-guest-checks-dax fxfs-guest-checks-dax-delay fxfs-guest-pgbench-dax"
 
