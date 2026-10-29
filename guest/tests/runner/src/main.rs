@@ -214,9 +214,10 @@ fn run_single_test(
         Ok(outcome) => outcome,
         Err(_) => TestOutcome::Fail("test.check() panicked".to_string()),
     };
-    // fxdax: a test that passed fails if a kernel of its VMs complained (TASK-44.8).
+    // fxdax: a test that passed fails if a kernel of its VMs complained (TASK-44.8), or a VMM's
+    // DAX window refused one of its guest's accesses (TASK-44.12).
     let outcome = match outcome {
-        TestOutcome::Pass if checks_console => match consoles_complaints(&test_dir) {
+        TestOutcome::Pass if checks_console => match vms_complaints(&test_dir) {
             Ok(()) => TestOutcome::Pass,
             Err(err) => TestOutcome::Fail(format!("{err:#}")),
         },
@@ -298,13 +299,19 @@ fn save_stacks(dir: &Path, pid: u32) {
 }
 
 /// fxdax: fails with what the kernels of a test's VMs complained of on their consoles, the files
-/// `console.txt` and `<name>.console.txt` in its directory `dir` (`vm::complaints`).
-fn consoles_complaints(dir: &Path) -> anyhow::Result<()> {
+/// `console.txt` and `<name>.console.txt` in its directory `dir` (`vm::complaints`), and the
+/// guest accesses their VMMs' DAX windows refused, in its logs, `firecracker.log` and
+/// `<name>.log` (`vm::refusals`).
+fn vms_complaints(dir: &Path) -> anyhow::Result<()> {
     for entry in fs::read_dir(dir)? {
         let path = entry?.path();
-        if path.file_name().is_some_and(|name| name.to_string_lossy().ends_with("console.txt")) {
-            test_cases::vm::complaints(&path).with_context(|| format!("in {}", path.display()))?;
-        }
+        let name = path.file_name().map(|name| name.to_string_lossy().into_owned());
+        let checked = match name {
+            Some(name) if name.ends_with("console.txt") => test_cases::vm::complaints(&path),
+            Some(name) if name.ends_with(".log") => test_cases::vm::refusals(&path),
+            _ => continue,
+        };
+        checked.with_context(|| format!("in {}", path.display()))?;
     }
     Ok(())
 }

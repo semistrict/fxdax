@@ -793,9 +793,47 @@ mod tests {
             ))
         );
     }
+
+    /// TASK-44.12: a VMM's log that says its DAX window refused a guest's access fails its test.
+    #[test]
+    fn vmm_logs_fail_on_refused_accesses() {
+        let dir = tempdir::TempDir::new("vmm-log").unwrap();
+        let checked = |log: &str| {
+            let path = dir.path().join("firecracker.log");
+            std::fs::write(&path, log).unwrap();
+            refusals(&path).map_err(|err| err.to_string())
+        };
+        assert_eq!(checked("[anonymous-instance:main] Running Firecracker v1.16.1\n"), Ok(()));
+        let refused = "[anonymous-instance:dax faults] fxdax: the DAX window refused a store to a \
+                       page the window maps read-only, at offset 0x10342000 (1 so far)";
+        assert_eq!(
+            checked(&format!("[anonymous-instance:main] Running\n{refused}\n")),
+            Err(format!("the DAX window refused 1 of the guest's accesses: {:#?}", [refused]))
+        );
+    }
 }
 
 // fxdax: what a guest's kernel says of itself on its console (TASK-44.8).
+
+/// What the VMM's DAX window logs of each guest access it refuses (fxdax's dax/uffd.rs `refused`).
+const REFUSED: &str = "the DAX window refused";
+
+/// Fails with the lines of the VMM's log at `log` in which its DAX window refused a guest's access:
+/// a store to a page it maps read-only, or an access where it maps nothing, which the guest took
+/// for one it may make. Guest and host disagree on the page, an invariant broken, which stops the
+/// VM a second later with only KVM_RUN's EFAULT if the access stays refused (TASK-99, TASK-44.12):
+/// the runner checks every test's VMM logs so, as it does their consoles.
+pub fn refusals(log: &Path) -> anyhow::Result<()> {
+    let log = String::from_utf8_lossy(&std::fs::read(log)?).into_owned();
+    let refused: Vec<&str> = log.lines().filter(|line| line.contains(REFUSED)).collect();
+    anyhow::ensure!(
+        refused.is_empty(),
+        "the DAX window refused {} of the guest's accesses: {:#?}",
+        refused.len(),
+        &refused[..refused.len().min(10)]
+    );
+    Ok(())
+}
 
 /// The change of a word in a race of fxdax's code that KCSAN reports, looked into: a task's
 /// flags, its PF_MEMALLOC_NOFS set or cleared, as fs/fxfs's NOFS scopes around its calls into its
