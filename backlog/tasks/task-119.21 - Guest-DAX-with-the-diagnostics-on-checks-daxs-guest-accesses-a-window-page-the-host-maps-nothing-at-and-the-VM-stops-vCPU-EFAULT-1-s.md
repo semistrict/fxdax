@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-29 13:35'
+updated_date: '2026-10-29 13:53'
 labels:
   - dax
   - bug
@@ -33,3 +34,9 @@ GCE r228c (main 7b146e0b5, kernel built), fxfs-guest-checks-dax with FXDAX_GUEST
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+GCE r229 (each diagnostic alone, checks-dax, 1 round): check_moves and check_seals passed; verify_seals failed on its own findings ('sealed region ... page 1 at 106b1000: 1 bytes differ from the device's: 0x0 through the window, 0x1 the device's', and dozens more, all zeros through the window) with refusals of accesses to pages the window maps nothing at (0x106a0000, 0x12fcf000, 0x13202000): fxfs_dax_verify_sealed reads a sealed region's pages through the window holding a region reference, but not the extent, which Fxfs frees once evacuations empty it, the window then mapping zeros or nothing there: a racy diagnostic, and the likely source of r228c's withheld page (0x1002a000) and VM stop. shadow alone: every guest check passed, but the host's fsck failed: TASK-119.22.
+<!-- SECTION:NOTES:END -->
