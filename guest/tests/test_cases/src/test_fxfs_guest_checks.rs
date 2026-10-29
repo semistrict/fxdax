@@ -1901,12 +1901,25 @@ mod guest {
         let regions = after["window_regions"] as i64 - before["window_regions"] as i64;
         let evacuated = after["window_maps_evacuate"] - before["window_maps_evacuate"];
         let pruned = after["window_regions_pruned"] - before["window_regions_pruned"];
+        // The window's regions, and what holds them, each round, failing or not: what a round
+        // that fails differs in (TASK-128).
+        let regions_of = |stats: &std::collections::BTreeMap<String, u64>| {
+            let held = ["window_regions", "window_slices", "window_ranges_"];
+            (stats.iter())
+                .filter(|(name, _)| held.iter().any(|prefix| name.starts_with(prefix)))
+                .map(|(name, value)| format!("{name} {value}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        eprintln!("regions_evacuated: before: {}", regions_of(&before));
+        eprintln!("regions_evacuated: after: {}", regions_of(&after));
         assert!(
             regions <= 32,
             "{regions} regions more after {ROUNDS} fsyncs, {evacuated} runs evacuated, {pruned} \
              regions pruned: {after:?}"
         );
-        assert!(evacuated > 0, "no pages evacuated: {after:?}");
+        // The regions before as well: those the checks before left, whose space they hold.
+        assert!(evacuated > 0, "no pages evacuated: {before:?} then {after:?}");
         drop(file);
         evict(&name);
         assert!(fs::read(&name).unwrap() == expected, "the file differs from what was written");

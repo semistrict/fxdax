@@ -3918,6 +3918,57 @@ static void fxfs_dax_forget_evacuating(struct fxfs_dax *dax)
 	}
 }
 
+/*
+ * fxdax: the window's regions by what they map, writably, a sealed staging extent's whose pages
+ * move to their ranges' own space (`evacuate`), or a sealed extent's, with the references held to
+ * them; and what holds them: slices, and ranges of their own whose pages moved there (TASK-128). A
+ * region the evacuation leaves keeps its space, in pieces among the others'.
+ */
+static void fxfs_dax_show_regions(struct fxfs_dax *dax, struct seq_file *m)
+{
+	static const char *const kinds[] = { "writable", "sealed", "read" };
+	unsigned long count[3] = {}, pages[3] = {}, refs[3] = {}, slices = 0, keeping = 0, kept = 0;
+	struct fxfs_dax_region *region;
+	struct fxfs_dax_range *range;
+	struct fxfs_dax_file *file;
+	unsigned long ino, chunk;
+	unsigned int bucket;
+	int kind;
+
+	spin_lock(&dax->regions_lock);
+	hash_for_each(dax->regions, bucket, region, node) {
+		kind = region->writable ? 0 : region->evacuate ? 1 : 2;
+		count[kind]++;
+		pages[kind] += region->pages;
+		refs[kind] += region->refs;
+	}
+	spin_unlock(&dax->regions_lock);
+	mutex_lock(&dax->files_lock);
+	xa_for_each(&dax->files, ino, file) {
+		/*
+		 * Ranges freed meanwhile are freed after a grace period (fxfs_dax_free_range), but not
+		 * their regions: only the ranges are read.
+		 */
+		rcu_read_lock();
+		xa_for_each(&file->ranges, chunk, range) {
+			if (READ_ONCE(range->region)) {
+				slices++;
+			} else if (READ_ONCE(range->nr_regions)) {
+				keeping++;
+				kept += READ_ONCE(range->nr_regions);
+			}
+		}
+		rcu_read_unlock();
+	}
+	mutex_unlock(&dax->files_lock);
+	for (kind = 0; kind < ARRAY_SIZE(kinds); kind++)
+		seq_printf(m, "window_regions_%s %lu\nwindow_regions_%s_bytes %lu\nwindow_regions_%s_refs %lu\n",
+			   kinds[kind], count[kind], kinds[kind], pages[kind] << PAGE_SHIFT,
+			   kinds[kind], refs[kind]);
+	seq_printf(m, "window_slices %lu\nwindow_ranges_keeping_regions %lu\nwindow_ranges_kept_regions %lu\n",
+		   slices, keeping, kept);
+}
+
 void fxfs_dax_show_stats(struct fxfs_dax *dax, struct seq_file *m)
 {
 	bool apart = dax->region_pool != dax->pool;
@@ -3935,6 +3986,7 @@ void fxfs_dax_show_stats(struct fxfs_dax *dax, struct seq_file *m)
 		   atomic_long_read(&dax->reclaims));
 	seq_printf(m, "window_regions %ld\nwindow_regions_pruned %ld\n",
 		   atomic_long_read(&dax->region_count), atomic_long_read(&dax->regions_pruned));
+	fxfs_dax_show_regions(dax, m);
 	seq_printf(m, "dax_map_writes %lld\n", atomic64_read(&dax->map_writes));
 	seq_printf(m, "dax_extent_alloc_bytes %lld\n", atomic64_read(&dax->extent_alloc_bytes));
 	seq_printf(m, "dax_write_waits %lld\ndax_write_wait_ns %lld\n",
