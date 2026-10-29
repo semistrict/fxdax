@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-24 21:31'
-updated_date: '2026-10-29 21:01'
+updated_date: '2026-10-29 21:31'
 labels: []
 dependencies: []
 parent_task_id: TASK-44
@@ -42,4 +42,6 @@ Committed: the runner fails a passed test whose consoles complain (vm::complaint
 FXDAX_GUEST_KERNEL_BUILD=kasan (KASAN, KFENCE, lockdep, no KCSAN): the kernel builds, but triple-faults at boot under Firecracker (vCPU exit Shutdown within 1 ms, an empty console; GCE r84): a KASAN kernel booted directly by Firecracker needs looking into (its early shadow, the boot path).
 
 2026-10-29: the KASAN kernel boots under Firecracker built without PVH, entered at its 64-bit entry (88032eb67; GCE r253 showed it faulting before its first line at PVH's, r256 booting without). GCE r257 on it: fxfs-guest-dax and fxfs-guest-crash-dax passed; checks-dax and -small outran their 180 s timeout (KASAN's slowness), checks-dax's console with map_to's gate assertion firing (TASK-44.21, narrowed since: r258 none); no KASAN or KFENCE report.
+
+AC3, GCE r261 (mutant region_open_unlocked, TASK-99's race put back, on the debug kernel, FXDAX_MUTANT_KERNEL=debug): killed in round 1 of checks-dax, but not by KCSAN: the VM stopped (the guest's output empty) and test-e2e.sh's check found refused stores no seal explains (scripts/dax-refusals.py, TASK-44.12), TASK-99's symptom. KCSAN, non-strict (CONFIG_KCSAN_STRICT off), reported no race in region_open or map_to; its reports were the reviewed PF_MEMALLOC_NOFS change (fxfs_dax_write_size_locked / kthread_is_per_cpu) and two of the kernel's. AC3 open: KCSAN_STRICT, or a race window held open (a pause point in region_open), may let KCSAN see it.
 <!-- SECTION:NOTES:END -->
