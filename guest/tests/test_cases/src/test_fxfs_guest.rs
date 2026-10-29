@@ -1006,14 +1006,19 @@ mod guest {
 
     /// Reports `line` on its own write, as the VM may stop between writes: unless it is about to,
     /// when the caller waits here for it ([`quiet`]), its write, if this is said as it begins, not
-    /// begun.
+    /// begun. Quiet is read under stdout's lock, which the killed crash test sets it and says
+    /// KILL_ME under: no line, nor the write it says begins, comes after that (GCE r261).
     fn report(line: &str) {
-        while quiet().load(std::sync::atomic::Ordering::Acquire) {
+        loop {
+            let mut stdout = std::io::stdout().lock();
+            if !quiet().load(std::sync::atomic::Ordering::Acquire) {
+                writeln!(stdout, "{line}").unwrap();
+                stdout.flush().unwrap();
+                return;
+            }
+            drop(stdout);
             std::thread::park();
         }
-        let mut stdout = std::io::stdout().lock();
-        writeln!(stdout, "{line}").unwrap();
-        stdout.flush().unwrap();
     }
 
     /// fxdax: makes RESIZED, of resize 0's size, synced, then truncates or extends it again and
@@ -1158,7 +1163,14 @@ mod guest {
         match stopper {
             Some(stopper) => stopper.stop(),
             None => {
-                report(KILL_ME);
+                // The writers quiet first, under stdout's lock (`report`): a write the host
+                // doesn't hear of, said after KILL_ME, on which it kills the VM, would reach the
+                // store, which the checks would find written by no write said (GCE r261).
+                let mut stdout = std::io::stdout().lock();
+                quiet().store(true, std::sync::atomic::Ordering::Release);
+                writeln!(stdout, "{KILL_ME}").unwrap();
+                stdout.flush().unwrap();
+                drop(stdout);
                 loop {
                     std::thread::park();
                 }
