@@ -3921,13 +3921,15 @@ static void fxfs_dax_forget_evacuating(struct fxfs_dax *dax)
 /*
  * fxdax: the window's regions by what they map, writably, a sealed staging extent's whose pages
  * move to their ranges' own space (`evacuate`), or a sealed extent's, with the references held to
- * them; and what holds them: slices, and ranges of their own whose pages moved there (TASK-128). A
- * region the evacuation leaves keeps its space, in pieces among the others'.
+ * them; and what holds them: slices, and ranges of their own whose pages moved there, with how many
+ * of those ranges' pages are in regions still and how many relocated (TASK-128). A region the
+ * evacuation leaves keeps its space, in pieces among the others'.
  */
 static void fxfs_dax_show_regions(struct fxfs_dax *dax, struct seq_file *m)
 {
 	static const char *const kinds[] = { "writable", "sealed", "read" };
 	unsigned long count[3] = {}, pages[3] = {}, refs[3] = {}, slices = 0, keeping = 0, kept = 0;
+	unsigned long moved = 0, relocated = 0, page;
 	struct fxfs_dax_region *region;
 	struct fxfs_dax_range *range;
 	struct fxfs_dax_file *file;
@@ -3956,6 +3958,14 @@ static void fxfs_dax_show_regions(struct fxfs_dax *dax, struct seq_file *m)
 			} else if (READ_ONCE(range->nr_regions)) {
 				keeping++;
 				kept += READ_ONCE(range->nr_regions);
+				/*
+				 * Its pages in regions still, which an evacuation moves, and
+				 * those relocated, whose bits keep fxfs_dax_prune from letting
+				 * go of the regions the rest left.
+				 */
+				for (page = 0; range->moved && page < range->pages; page++)
+					moved += !!READ_ONCE(range->moved[page]);
+				relocated += bitmap_weight(range->relocated, range->pages);
 			}
 		}
 		rcu_read_unlock();
@@ -3967,6 +3977,8 @@ static void fxfs_dax_show_regions(struct fxfs_dax *dax, struct seq_file *m)
 			   kinds[kind], refs[kind]);
 	seq_printf(m, "window_slices %lu\nwindow_ranges_keeping_regions %lu\nwindow_ranges_kept_regions %lu\n",
 		   slices, keeping, kept);
+	seq_printf(m, "window_ranges_kept_moved_pages %lu\nwindow_ranges_kept_relocated_pages %lu\n",
+		   moved, relocated);
 }
 
 void fxfs_dax_show_stats(struct fxfs_dax *dax, struct seq_file *m)
