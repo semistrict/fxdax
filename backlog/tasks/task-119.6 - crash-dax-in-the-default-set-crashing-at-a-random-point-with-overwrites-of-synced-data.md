@@ -3,10 +3,10 @@ id: TASK-119.6
 title: >-
   crash-dax in the default set, crashing at a random point, with overwrites of
   synced data
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-28 19:27'
-updated_date: '2026-10-29 19:43'
+updated_date: '2026-10-29 19:48'
 labels:
   - testing
 dependencies: []
@@ -26,7 +26,7 @@ crash-dax crashes at one fixed point, only writes new files with write(2), never
 - [x] #1 In the default e2e and GCE sets
 - [x] #2 Random crash point; workload includes overwrites of synced ranges, mmap stores with msync, truncate
 - [x] #3 After the crash every fsynced state survives; every unsynced byte is old or new
-- [ ] #4 A variant kills the VMM with SIGKILL
+- [x] #4 A variant kills the VMM with SIGKILL
 <!-- AC:END -->
 
 ## Definition of Done
@@ -40,4 +40,12 @@ crash-dax crashes at one fixed point, only writes new files with write(2), never
 
 <!-- SECTION:NOTES:BEGIN -->
 2026-10-29: fxfs-guest-crash and -crash-dax are in test-e2e.sh's and test-guest-kernel.sh's defaults and the DAX gate (AC1). The crash point is random each round (FXDAX_CRASH_MS); the workload fsyncs new files, overwrites synced pages through write(2)+fsync and through a mapping+msync, and now truncates and extends a file, each size synced, the pattern written where it extends (AC2); after the crash every file whose fsync returned is whole, each rewritten page holds one of its writes since the last synced, and the resized file is as large as its last synced resize or one after, holding the pattern or an unsynced extension's zeros (AC3). On main: the resizing writer; writers quieted before the stop drains the console (r247: they kept it, and the VM, going); the kernel's lines taken out of the guest's output before it is parsed (r248: a stop's line split a synced resize's report). GCE r249: fxfs-guest-crash and -crash-dax 10 rounds each passed; r248 crash-dax and -gathered 8 each. AC4 (a variant killing the VMM with SIGKILL) not done.
+
+AC4: fxfs-guest-crash-dax-killed: the guest says KILL_ME where it would reset its VM, and its host, waiting for that line on the console (Vm::kill_on), kills the VM process (SIGKILL) at once, the extent daemon serving the store on, the VM's requests in flight cut off; the store is checked as the crash test's. The guest never resets itself there, so a round ends only by the kill. GCE r250: 8 rounds passed (fxfs-guest-crash-dax 8 too). In the default suites and the DAX gate.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The crash test in the default sets and the gate crashes at a random point with overwrites of synced pages (write(2) and mmap+msync), a file truncated and extended, and fsyncs, checking every acknowledged fsync survives and unsynced bytes are old or new; a variant kills the VMM with SIGKILL. Along the way: writers quieted before the stop drains the console, and kernel lines taken out of the guest's output. GCE r249 (crash, crash-dax 10 rounds), r250 (crash-dax-killed 8).
+<!-- SECTION:FINAL_SUMMARY:END -->
