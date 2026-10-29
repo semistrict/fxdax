@@ -3,10 +3,10 @@ id: TASK-119.21
 title: >-
   Guest DAX: with the diagnostics on, checks-dax's guest accesses a window page
   the host maps nothing at, and the VM stops (vCPU EFAULT 1 s)
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-29 13:35'
-updated_date: '2026-10-29 15:10'
+updated_date: '2026-10-29 15:41'
 labels:
   - dax
   - bug
@@ -25,7 +25,7 @@ GCE r228c (main 7b146e0b5, kernel built), fxfs-guest-checks-dax with FXDAX_GUEST
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [x] #1 Which diagnostic's run reproduces it is known, and the access's window offset traced (fxfs.dax_trace) to the guest's mapping of it
-- [ ] #2 Fixed, or shown a diagnostic's own fault; checks-dax with every diagnostic on passes on GCE
+- [x] #2 Fixed, or shown a diagnostic's own fault; checks-dax with every diagnostic on passes on GCE
 <!-- AC:END -->
 
 ## Definition of Done
@@ -45,4 +45,12 @@ GCE r229 (each diagnostic alone, checks-dax, 1 round): check_moves and check_sea
 GCE r235 (main 98c82281b), checks-dax with pairs (r234's pairs were malformed, a zsh loop): check_moves+shadow and shadow+check_seals passed (516 and 186 refusals, many 'maps nothing at', which resolved); shadow+verify_seals stopped the VM after stats, in log_writes: 'an access to a page the window maps nothing at, at offset 0x10802000', the vCPU failing a second later. So fxfs_dax_verify_writable, as a seal begins, reads a page the shadow says the guest mapped writably since the last seal while the host maps nothing there: the shadow stale (an unmapping it doesn't record), or the host's unmapping one the guest still takes as mapped. Next: which, by fxfs.dax_trace of the offset.
 
 GCE r236 (main with extentd describing accesses to nothing mapped): shadow+verify_seals stopped the VM again: 'an access to nothing mapped at DAX window offset 0x10412000': the host's history shows window 0x10411000-0x10421000 (a spare staging region, 64 KiB) mapped writably for each new staging extent and unmapped within milliseconds, over and over, the last UNMAP 364 us before the access. So verify_writable (as a seal begins) read a page the shadow had as writable while the restage work, which the gate doesn't stop, unmapped it: the diagnostic's race, not the DAX code's. Fix in w1126: it holds the region (a reference, which keeps it mapped) while it reads; own-space pages, which it can't hold, it skips. GCE r237: checks-dax with all four diagnostics, 2 rounds, pending.
+
+Fixed, all the diagnostics' own faults: (1) verify_seals's verify_sealed read sealed regions after Fxfs might free their extents: removed (401bbf9e6); (2) verify_writable read pages a concurrent restage unmapped (r236's host history: the spare region at 0x10411000 unmapped 364 us before): it holds the region while it reads, skipping own-space pages; (3) check_moves's kept-range log, 21028 serial lines, rate-limited (Fxfs CHECK_KEPT); (4) check_device took a page the shadow doesn't know of for one Fxfs has elsewhere (extent -1): no finding. With all four on, GCE: r237 torture passed; r240a every check through random_ops passed (torture then outran the 180 s timeout: ~108 s with the diagnostics, ~10 s without); r240b every check after torture passed; no finding, no refusal stopping the VM. The diagnostics are too slow for checks-dax in one 180 s run, which a run with them names checks in halves (FXDAX_CHECKS).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+With every DAX diagnostic on, checks-dax's VM stopped and diagnostics reported false findings: each a diagnostic's own race or misreading (verify_sealed reading freed extents, verify_writable reading a region a restage unmapped, check_device on pages the shadow doesn't know), fixed or removed; and check_moves's log flood rate-limited. Verified on GCE: every check passes with all four diagnostics on (r237, r240a, r240b).
+<!-- SECTION:FINAL_SUMMARY:END -->
