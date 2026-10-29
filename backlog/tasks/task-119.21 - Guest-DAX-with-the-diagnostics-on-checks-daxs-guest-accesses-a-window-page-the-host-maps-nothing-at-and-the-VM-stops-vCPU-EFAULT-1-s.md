@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-29 13:35'
-updated_date: '2026-10-29 13:53'
+updated_date: '2026-10-29 14:34'
 labels:
   - dax
   - bug
@@ -39,4 +39,6 @@ GCE r228c (main 7b146e0b5, kernel built), fxfs-guest-checks-dax with FXDAX_GUEST
 
 <!-- SECTION:NOTES:BEGIN -->
 GCE r229 (each diagnostic alone, checks-dax, 1 round): check_moves and check_seals passed; verify_seals failed on its own findings ('sealed region ... page 1 at 106b1000: 1 bytes differ from the device's: 0x0 through the window, 0x1 the device's', and dozens more, all zeros through the window) with refusals of accesses to pages the window maps nothing at (0x106a0000, 0x12fcf000, 0x13202000): fxfs_dax_verify_sealed reads a sealed region's pages through the window holding a region reference, but not the extent, which Fxfs frees once evacuations empty it, the window then mapping zeros or nothing there: a racy diagnostic, and the likely source of r228c's withheld page (0x1002a000) and VM stop. shadow alone: every guest check passed, but the host's fsck failed: TASK-119.22.
+
+401bbf9e6 (main): verify_seals no longer reads sealed staging regions after the seal (verify_sealed removed), only pages written since the last seal as a seal begins (verify_writable). GCE r232, checks-dax with all four diagnostics on: still stopped in round 1 of 2, after stats, in log_writes: 'an access to a page the window maps nothing at, at offset 0x10671000', the vCPU failing a second later. Before it, a store at 0x10341000 refused 9 times in 3 s: the same offset in every run with dax_check_moves on (r228c, r228m, r229-check_moves, which passed, r232), in none without: check_moves (fxfs_set_check_kept, Rust's kept-range checks) changes what the guest does there. Next: the four diagnostics in pairs, to find which pair stops the VM; fxfs.dax_trace for 0x10671000's history.
 <!-- SECTION:NOTES:END -->
