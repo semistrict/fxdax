@@ -282,12 +282,14 @@ mod host {
             // fxdax: the writers' calls failed, some of them, as their allocations did; the store
             // holds every file whose fsync returned, whole (TASK-44.10).
             if self.mode == Mode::Faults {
-                let failed: Option<u64> = (output.lines())
-                    .find_map(|line| line.strip_prefix("failed calls ")?.parse().ok());
+                // Calls may all succeed, allocations failing where the code falls back: that the
+                // kernel forced failures, its log says.
+                let forced: Option<u64> = (output.lines())
+                    .find_map(|line| line.strip_prefix("forced failures ")?.parse().ok());
                 let synced = synced_files(&output);
-                if failed.is_none_or(|failed| failed == 0) || synced.is_empty() {
+                if forced.is_none_or(|forced| forced == 0) || synced.is_empty() {
                     return TestOutcome::Fail(format!(
-                        "no call failed, or no fsync returned: {output:?}"
+                        "no allocation failed, or no fsync returned: {output:?}"
                     ));
                 }
                 let storage = block_on(Storage::open(&path).unwrap().check()).unwrap();
@@ -844,7 +846,8 @@ mod guest {
             set(attr, "task-filter", "Y");
             set(attr, "interval", "1");
             set(attr, "times", "-1");
-            set(attr, "verbose", "0");
+            // A line in the kernel's log for each failure forced, which proves some were.
+            set(attr, "verbose", "1");
             set(attr, "ignore-gfp-wait", "N");
             set(attr, "probability", "1");
         }
@@ -886,6 +889,32 @@ mod guest {
             set(attr, "probability", "0");
         }
         report(&format!("failed calls {failed}"));
+        report(&format!("forced failures {}", forced_failures()));
+    }
+
+    /// fxdax: how many failures the kernel's fault injection says it forced, in its log
+    /// (/dev/kmsg), each a line while its rate allows.
+    fn forced_failures() -> usize {
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut kmsg = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open("/dev/kmsg")
+            .unwrap();
+        let (mut forced, mut record) = (0, vec![0; 8192]);
+        loop {
+            match kmsg.read(&mut record) {
+                Ok(0) => return forced,
+                Ok(n) => {
+                    let line = String::from_utf8_lossy(&record[..n]);
+                    forced += usize::from(line.contains("FAULT_INJECTION: forcing a failure"));
+                }
+                // Records overwritten while reading: read on from the oldest kept.
+                Err(err) if err.raw_os_error() == Some(libc::EPIPE) => continue,
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => return forced,
+                Err(err) => panic!("/dev/kmsg: {err}"),
+            }
+        }
     }
 
     /// fxdax: the addresses of the kernel's functions whose names begin with `prefix`, one
