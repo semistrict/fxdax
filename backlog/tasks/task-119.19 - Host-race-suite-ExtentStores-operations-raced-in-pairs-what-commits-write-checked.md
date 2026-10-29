@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-28 23:39'
-updated_date: '2026-10-28 23:39'
+updated_date: '2026-10-29 01:07'
 labels:
   - testing
 dependencies: []
@@ -25,8 +25,8 @@ TASK-121's last loss was a host atomicity race: ExtentStore::write checked an ex
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [ ] #1 Each pair of ExtentStore operations that can touch one extent concurrently (write, writable map, read-only map, commit) has a test racing them from a barrier many times and checking what the next commit wrote
-- [ ] #2 Every test fails with the TASK-121 bug put back (the open lock released before the store write), and passes on main
-- [ ] #3 The suite runs within the fxdax crate's tests in under 30 s
+- [ ] #2 The suite runs within the fxdax crate's tests in under 30 s
+- [ ] #3 The tests racing a write against the mapping that opens its extent fail with the TASK-121 bug put back (the open lock released before the store write); the others, of pairs that bug doesn't lose, pass with and without it; all pass on main
 <!-- AC:END -->
 
 ## Definition of Done

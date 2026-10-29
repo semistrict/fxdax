@@ -2150,6 +2150,18 @@ mod tests {
         race(&store, ROUNDS, prepare, &[&map, &commit], &data);
     }
 
+    /// A writable mapping opening an extent never written, racing a commit: it opens the extent,
+    /// which the commit seals or the next, and the extent reads as zeros.
+    #[test]
+    fn writable_mappings_racing_a_commit_open_their_extent() {
+        let (store, _dir) = store(1 << 26);
+        let ps = page_size();
+        let _window = store.create_dax_window(ps, None).unwrap();
+        let map = |extent| store.map(extent, 0, ps, 0, true).unwrap();
+        let commit = |_: ExtentId| store.commit_ordered(None).unwrap();
+        race(&store, ROUNDS, |_| {}, &[&map, &commit], &vec![0; BLOCK]);
+    }
+
     /// A writable and a read-only mapping of an extent written, open in the store, racing, either
     /// opening it: the commit writes what was written.
     #[test]
