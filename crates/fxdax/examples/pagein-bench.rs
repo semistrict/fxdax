@@ -7,8 +7,8 @@
 //! directory and sealed by a commit, each of a few parts (`extent_frame::PART`, 1 MiB), mapped
 //! into a DAX window in this process's memory, and read a part at a time, by a fault on each
 //! part's first page, from each extent's end so that nothing is read ahead. Each fault pages its
-//! part in: the part read from the store, unpacked if it is stored compressed, into the pager's
-//! buffer, whose pages are then supplied to the extent's VMO, and mapped. Data of two kinds: half
+//! part in: the part read from the store, unpacked if it is stored compressed, into pages of
+//! physical memory, which go into the cached extent's table, and are mapped. Data of two kinds: half
 //! its bits random, which the store keeps compressed, about half as large; and random, which it
 //! keeps raw, as it does not compress.
 //!
@@ -94,7 +94,7 @@ fn main() {
     let mut args = std::env::args().skip(1);
     let mib: u64 = args.next().map_or(256, |n| n.parse().unwrap());
     let rounds: usize = args.next().map_or(3, |n| n.parse().unwrap());
-    fxdax::kernel::configure(fxdax::kernel::Config::with_memory((4 * mib) << 20)).unwrap();
+    fxdax::pages::configure(fxdax::pages::Config::with_memory((4 * mib) << 20)).unwrap();
     for (kind, mask) in [("compressed", 0x0f), ("raw", 0xff)] {
         let (times, cpu): (Vec<f64>, Vec<f64>) = (0..rounds).map(|_| round(mib, mask)).unzip();
         let ((time, times), (cpu, cpus)) = (median(times), median(cpu));

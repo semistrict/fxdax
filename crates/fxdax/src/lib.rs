@@ -4,8 +4,7 @@
 
 //! fxdax: Fuchsia's Fxfs, and the extent stores a guest's own Fxfs keeps its filesystem in.
 //!
-//! Fxfs runs largely as upstream wrote it, on a port of the parts of the Zircon kernel that give
-//! Fuchsia its memory semantics (see [`kernel`]). fxdax has two uses of it:
+//! fxdax has two uses of Fxfs:
 //!
 //! - **Extent stores** ([`ExtentStore`]), which a guest running Fxfs in its own kernel keeps its
 //!   filesystem in, through a VMM's extent-store device (backlog doc-4). On Linux, fxdax's extent
@@ -13,7 +12,9 @@
 //!   extents into the VMs' DAX windows from one cache of their pages, which the VMs share; a VMM's
 //!   device is a `RemoteExtentStore`, a connection to it.
 //! - **A filesystem on the host** ([`Filesystem`]), which formats, fills and checks images, such
-//!   as the stores a guest's Fxfs mounts.
+//!   as the stores a guest's Fxfs mounts. It is the guest's filesystem too: Fxfs's POSIX layer
+//!   (crates/fxfs-posix), which the guest kernel's VFS calls, and the host's filesystem calls as a
+//!   VFS would.
 //!
 //! # Using the filesystem
 //!
@@ -51,17 +52,13 @@
 //! futures are `Send`, and may run on any executor, or be driven by any thread with a `block_on`,
 //! any number at once:
 //!
-//! - Fxfs runs on threads of its own (see [`Options::executor_threads`]), which complete
-//!   operations such as lookups and wake their futures.
-//! - Reads and writes wait for Fxfs's pager to supply or dirty pages in the kernel, which wakes
-//!   their futures when it does, as it would wake a Zircon thread.
+//! - Fxfs runs on threads of its own (see [`Options::executor_threads`]), which run every
+//!   operation, reads and writes too, and wake their futures as they complete.
 //!
-//! Dropping a handle never waits. Dropping a future gives up on its operation: a read or write
-//! leaves what it had transferred, and other operations run to completion on Fxfs's threads
-//! regardless. Dropping a mounted filesystem blocks the dropping thread until it is unmounted;
-//! await [`close`](Filesystem::close) instead. Either waits for the reads and writes under way,
-//! which make progress only as their callers poll them, and never completes on the thread that
-//! would poll one: complete or drop them first.
+//! Dropping a handle never waits. Dropping a future gives up waiting for its operation, which runs
+//! to completion on Fxfs's threads regardless: a read leaves its buffers as they were. Dropping a
+//! mounted filesystem blocks the dropping thread until it is unmounted; await
+//! [`close`](Filesystem::close) instead. Either waits for the operations under way.
 //!
 //! # Images and volumes
 //!
@@ -89,8 +86,7 @@
 //! [`Image::snapshot_volume`] clones a whole volume, mounted or not, into a new one, in time and
 //! space independent of its size: the snapshot shares the source's metadata and data until
 //! either changes them, as Fxfs writes changes to new blocks, and what they share is freed once
-//! neither references it. Their files share the memory of what they share too: a block read by
-//! the same file in several of them takes one page of memory, until one of them writes it.
+//! neither references it.
 //!
 //! # Storage
 //!
@@ -98,9 +94,8 @@
 //! per extent, or memory. Closing an image, or a filesystem mounted from storage, gives its
 //! storage back, which [`Storage::check`] checks.
 //!
-//! An image's I/O bypasses the host's page cache where the host filesystem allows, as the
-//! kernel caches files' pages already, and runs on threads of its own. Freeing an
-//! extent removes its file.
+//! An image's I/O bypasses the host's page cache where the host filesystem allows, and runs on
+//! threads of its own. Freeing an extent removes its file.
 //!
 //! An image can be cloned: [`Storage::clone_to`] clones closed storage, and
 //! [`Image::clone_storage_to`] a mounted image's, after writing back its volumes' dirty data.
@@ -109,7 +104,7 @@
 
 #![deny(missing_docs)]
 
-mod connection;
+mod cache;
 mod dax;
 mod error;
 mod executor;
@@ -120,12 +115,12 @@ mod filesystem;
 mod host_store;
 mod image;
 pub mod import;
-pub mod kernel;
 mod memory;
 mod node;
 // The extent daemon's (Linux), and its tests' everywhere.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod open_stores;
+pub mod pages;
 mod profile;
 pub mod remote;
 #[cfg(all(test, feature = "shuttle"))]

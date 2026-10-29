@@ -9,10 +9,9 @@ The guest's kernel runs Fxfs (`guest/`), which keeps its filesystem as
 extents: immutable pieces of data, written once and sealed by the next
 commit (backlog doc-4). On the host, fxdax's extent daemon, `fxdax-extentd`,
 keeps each VM's extents in an extent store on local disk, caches their pages
-in a port of the parts of the Zircon kernel that give Fuchsia its memory
-semantics, and maps them into the VMs' DAX windows. Its cache is shared by the
-host's VMs: two VMs mapping one extent, such as two forks of one image, map
-the same pages.
+in physical memory of its own, and maps them into the VMs' DAX windows. Its
+cache is shared by the host's VMs: two VMs mapping one extent, such as two
+forks of one image, map the same pages.
 
 ## How it fits together
 
@@ -22,32 +21,30 @@ guest (Linux + Fxfs)     guest/: Fxfs in the kernel; DAX loads and stores
 Firecracker (one VM     vendor/firecracker: the extent device, a client of the
   process)               daemon
   │  Unix socket; the daemon's memory (a memfd), mapped into the DAX window
-fxdax-extentd            crates/fxdax: extentd, the stores, the extent cache
-  │
-in-process Zircon        crates/zircon: pager-backed VMOs, page queues and
-                         eviction, guest physical address spaces
-  │
+fxdax-extentd            crates/fxdax: extentd, the stores, the extent cache,
+  │                      the DAX windows
+physical memory          crates/physmem: arenas of shared memory (memfds),
+  │                      their caps, relief and quarantine
 extent store             crates/extent_store: segments, large extents' files,
                          an index
 ```
 
 - **Requests:** the guest's Fxfs reads, writes, frees and commits extents
   through the device, which forwards each request to the daemon.
-- **DAX:** `MAP` maps a range of an extent into the VM's DAX window, a guest
-  physical address space of the daemon's kernel: a sealed extent's pages from
-  the cache, which its pager reads in from the store, an open extent's from
-  the memory the guest writes it in, until a commit seals it.
-- **Hypervisor mirror:** the daemon's kernel maps pages at the window's
-  addresses, and the VM process maps the same pages of the kernel's memory
-  (a memfd) into the host memory KVM follows for the window, keeping it in
-  step with userfaultfd.
+- **DAX:** `MAP` maps a range of an extent into the VM's DAX window, a range
+  of guest physical memory the daemon keeps the page tables of: a sealed
+  extent's pages from the cache, which reads them in from the store, an open
+  extent's from the memory the guest writes it in, until a commit seals it.
+- **Hypervisor mirror:** the daemon maps pages at the window's addresses, and
+  the VM process maps the same pages of the daemon's physical memory (memfds)
+  into the host memory KVM follows for the window, keeping it in step with
+  userfaultfd.
 
 ## Where the code comes from
 
-Code falls into four kinds:
+Code falls into three kinds:
 
 - Fuchsia sources, copied;
-- ports of the Zircon kernel;
 - stand-ins for what exists only inside Fuchsia's build;
 - fxdax's own code.
 
@@ -63,8 +60,8 @@ their tests:
 - Fxfs;
 - its libraries (`storage_device`, `fscrypt`, `fsverity-merkle` and others);
 - the Rust runtime crates (`fuchsia-async`, `fuchsia-sync` and others);
-- the SDK's `zx` crates;
-- parts of the vfs library.
+- the SDK's `zx` crates, for their types: fxdax defines none of Zircon's
+  syscalls, and neither Fxfs in the guest nor Fxfs on the host calls any.
 
 Each crate's `Cargo.toml` cites the Fuchsia directory it is copied from. Most
 files are as upstream wrote them. Those that aren't say how they deviate in
@@ -72,20 +69,12 @@ their leading comment:
 
 - The runtime crates are built for the host only, without Fuchsia's runtime
   and handles.
-- Some code only builds what fxdax needs, such as VMO-backed buffers and
-  pager-backed files, when `target_os = "fuchsia"`. In `storage_device`,
-  `storage_units`, Fxfs's `errors.rs` and the vfs library's token registry,
-  the Fuchsia code paths the in-process kernel can build are built
-  unconditionally. What it can't build, such as FIDL protocols over channels
-  or tests that need Fuchsia's component framework, is removed from those
-  files and from the platform layer's directories, paged object handles and
-  pager.
+- Code that needs Zircon, such as VMO-backed buffers, builds only when
+  `target_os = "fuchsia"`: fxdax's buffers are plain memory. What can't build
+  at all, such as FIDL protocols over channels or tests that need Fuchsia's
+  component framework, is removed from those files.
 - `storage_device` has no `FileBackedDevice`: fxdax has its own image device
   (see `crates/fxdax`).
-- Paged object handles support pages larger than blocks: Apple silicon hosts
-  have 16 KiB pages, but Fxfs keeps its 4 KiB blocks.
-- Directories and the token registry's test mocks have no watchers, which are
-  channels the in-process vfs doesn't have.
 - Fxfs can snapshot a volume (`RootVolume::snapshot_volume`), which upstream
   can't. The snapshot shares the source's layer files, by reference count,
   and its data extents. The allocator records a store's allocations under a
@@ -94,74 +83,25 @@ their leading comment:
   them, and freed once none does. Blocks written in place (preallocated
   files) are written to new blocks where a snapshot shares them. fsck checks
   shared extents, and the on-disk format is version 59.
-- Files share the pages of the data frozen owners hold: the platform layer
-  caches those pages by device block, one cache VMO per frozen owner
-  (`shared_blocks.rs`), and supplies files with them as shared pages, so a
-  volume and its snapshots use one page of memory per block they read.
+### `crates/physmem`: physical memory
 
-### `crates/zircon`: the Zircon kernel, ported
+The extent cache's pages, open extents', and the DAX windows', are host shared
+memory: physical memory in arenas, each its own shared memory object (a memfd
+on Linux, POSIX shared memory on macOS), which a process given an arena's
+object maps the arena's pages from (TASK-43). An arena takes memory 2 MiB at a
+time, and gives a chunk back once its pages are all free; arenas may be capped,
+each and together (TASK-50.3); an arena starved at a cap asks for relief, which
+evicts cached extents' pages; and a page a VM process's window may still map,
+freed, waits in quarantine until the VM process has unmapped it (TASK-79.9).
+It was the Zircon kernel port's PMM, fxdax's own code there, lifted out with
+its tests when the port was deleted (TASK-96.1).
 
-Fxfs's pager depends on Zircon's pager semantics:
+### `crates/fxfs-posix`: Fxfs's files and directories
 
-- VMOs whose pages a userspace pager supplies;
-- dirty tracking that asks the pager before a clean page is written;
-- writeback that write-protects pages again;
-- page queues and eviction under memory pressure.
-
-Rather than rewrite Fxfs for a host's page cache, fxdax ports that part of
-the kernel. It runs inside the host process:
-
-- `vm/` holds the VMM: VMOs, their page lists and copy-on-write pages, VMARs
-  and mappings, the PMM, page queues, the scanner and the evictor.
-- `object/` holds the dispatchers for VMOs, VMARs, pagers, ports, streams and
-  events.
-- `syscalls/` holds the syscalls over them, exported with their C names.
-- `hypervisor/` holds guest physical address spaces.
-
-It is ported from `zircon/kernel`, keeping Zircon's structure and names.
-Zircon's C++ is translated, and its Rust files are copied. Zircon's own unit
-tests come along where they can run. `crates/zircon-core-tests` ports
-Zircon's core tests (`zircon/system/utest/core`), which drive the kernel
-through the `zx` crate as a Fuchsia program would.
-
-What changes on a host:
-
-- **Architecture layer (`arch/host`):**
-  - Physical memory is a shared memory object (a memfd or POSIX shared
-    memory), and its "physmap" is a mapping of all of it.
-  - An address space is a reserved range of host virtual memory, or a
-    hypervisor's second stage (see guest windows below). Mapping a page in host
-    memory maps its part of physical memory there with `mmap(MAP_FIXED)`, and
-    unmapping restores the reservation.
-  - Faults arrive as `SIGSEGV`/`SIGBUS` and go to the VMM's fault handler, as
-    a data abort would.
-  - Accessed flags are emulated by making pages inaccessible.
-- **Syscalls:** `zx-sys` declares the syscalls for the host. Fuchsia's `zx`
-  crate calls them unchanged, and they resolve to this kernel instead of
-  Fuchsia's vDSO.
-- **Page size:** the page size is the host's (the `page` crate), 16 KiB on
-  Apple silicon, rather than Zircon's fixed 4 KiB.
-- **Guest windows:** a guest physical address space is a window whose
-  mappings are made to a hypervisor's `SecondStage`, since a hypervisor may
-  not follow the host's mappings as they change, and the guest's memory may be
-  another process's; without one, it is a window of host memory.
-- **Futures in place of threads:** where a Zircon thread blocks, on a page
-  request, a page allocation or a stream's ordering, a future can wait
-  instead, with its waker registered where the thread would block
-  (`kernel/wakers.rs`). Stream reads and writes of host memory, VMO zeroing
-  and guest faults have async versions (`stream_readv_at_async`,
-  `stream_writev_at_async`, `page_fault_async`) that run the same steps as
-  the synchronous ones between waits. One thread serves their deadlines.
-- **Not ported:** VMO children, the kernel address space, and the
-  interrupt-controller parts of the hypervisor. Fxfs's code paths that need
-  them are left out.
-- **Shared pages, beyond Zircon:** a pager can supply a VMO with the clean
-  pages of another pager-backed VMO, which the two then share
-  (`zx_pager_supply_shared_pages`). The page stays its lender's, in its page
-  queue and counted once; the borrower maps it read-only, copies it before
-  writing or pinning it (raising the usual DIRTY request), and gives it back
-  rather than freeing it. The lender takes it back from its borrowers before
-  it writes, pins or evicts it (`VmCowPages::lend_pages`).
+One POSIX layer over Fxfs's object stores, which the guest kernel's VFS calls
+(`guest/rust/fxfs-linux`) and the host's filesystem calls as a library
+(`crates/fxdax`), generic over what differs between them (`Platform`): the
+guest's, Fxfs in the kernel, the host's, images being built.
 
 ### `crates/`: stand-ins for Fuchsia-only pieces
 
@@ -170,56 +110,11 @@ of these stands in with the items the code copied from Fuchsia uses:
 
 | Crate | Stands in for | How |
 |---|---|---|
-| `fidl` | FIDL runtime | No channels or wire format: a proxy calls the object serving its protocol in-process. Handles are the in-process kernel's. |
-| `fidl-fuchsia-io`, `-fs`, `-fs-startup`, `-fxfs`, `-memorypressure`, `-diagnostics-types` | generated FIDL bindings | Written to the shape of the generated types, for the types and protocols Fxfs uses. fuchsia.io's `File`, `Directory` and `Symlink` protocols, and fuchsia.memorypressure's `Provider` and `Watcher`, are served in-process. |
-| `memory-pressure-signaler` | the memory pressure signaler component (`src/developer/memory/pressure_signaler`) | Ported: it watches the kernel's memory pressure events (`zx_system_get_event`, `zx_object_wait_many`) and serves `fuchsia.memorypressure/Provider` to the process, as the component does to the system. No crash reports. |
-| `vfs` | `src/storage/lib/vfs/rust` | Some files copied: execution scopes, paths, temporary clones, the token registry, and parts of `directory`. Node, file, directory and symlink connections are excerpts that serve in-process proxies. |
-| `flex_client` | FDomain's `flex.rs` | Re-exports FIDL, which is all the copied code needs. |
-| `fuchsia-async-kernel` | — | fuchsia-async plus its Fuchsia executor's port packet receivers, which Fxfs's pager uses. On hosts, fuchsia-async's portable executor has no ports. |
-| `fuchsia-runtime` | process runtime | The runtime the in-process kernel provides. |
-| `fuchsia-inspect`, `diagnostics-log`, `refaults_vmo` | diagnostics | No-ops, stderr logging, and an in-memory counter. |
-| `fuchsia-fs` | `src/lib/fuchsia-fs` | What fxdax's tests use. |
+| `fidl` | FIDL runtime | No channels or wire format: the types the generated bindings use. |
+| `fidl-fuchsia-io`, `-fs`, `-fxfs`, `-diagnostics-types` | generated FIDL bindings | Written to the shape of the generated types, for the types Fxfs uses. |
+| `fuchsia-inspect`, `diagnostics-log` | diagnostics | No-ops, and stderr logging. |
 | `bssl-crypto`, `mundane` | BoringSSL bindings | SHA-256/512 on the `sha2` crate. |
 | `fxfs-unicode-gen` | build-time generated tables | Tables generated once from UCD 12.1.0 by Fxfs's own generator (`scripts/generate-unicode-tables.sh`). |
-
-### `crates/fxfs-platform`: Fxfs's platform layer, in part
-
-Fxfs's platform layer (`src/storage/fxfs/platform`) holds its files,
-directories and pager.
-
-**Copied:** the directory entry cache, the node cache, symlinks, and, with the
-deviations above, directories, paged object handles and the pager.
-
-**Excerpts, copied verbatim except as noted:**
-
-- `file.rs`: FxFile.
-  - `get_backing_memory` hands out the file's own VMO rather than a reference
-    child, as the kernel has no VMO children. Whoever maps it keeps the file
-    open.
-  - `mark_dirty` refuses whole pages past the last page that fits in the
-    maximum file size.
-  - fsverity is left out.
-- `volume.rs`: FxVolume, with its background task, which flushes its files
-  every 20 s (5 s under warning memory pressure, 1.5 s under critical) and
-  flushes dirty pages as soon as pressure turns critical.
-  - The task's timer is fused and replaced to reset it, as the host's
-    fuchsia-async timer can't be reset.
-  - Blobs, profiles, inspect and the fuchsia.fxfs protocols are not ported.
-- `volumes_directory.rs`: VolumesDirectory, which owns the mounted volumes and
-  their memory pressure monitor, counts the pages they dirty, and under
-  critical pressure flushes them all before letting more pages be dirtied
-  once the count reaches 1% of memory.
-  - Volumes aren't served over FIDL, so neither are the methods serving them,
-    nor auto-unmounting, checking, removing or installing volumes.
-- `memory_pressure.rs`: the MemoryPressureMonitor, verbatim except that its
-  watcher is served in-process, and registers with the process's memory
-  pressure signaler.
-- `errors.rs`: without blob errors.
-- `profile.rs`: only the pager's `Recorder` trait.
-- `testing.rs`: the test fixture, serving the volume in-process.
-- `directory_tests.rs`: fxdax's own tests of cross-directory renames and hard
-  links, which upstream covers only in its conformance suites, and those
-  aren't copied.
 
 ### `crates/fxdax`: fxdax's own code
 
@@ -227,22 +122,24 @@ deviations above, directories, paged object handles and the pager.
 (`cargo doc -p fxdax --open`) are the guide.
 
 - `extents.rs` holds `ExtentStore`, an extent store as a VM's device serves
-  it: its I/O, `MAP` and `UNMAP` into its DAX window, and the cache of sealed
-  extents' pages (`FxExtent`, copied from Fuchsia's `FxBlob`), shared by every
-  store in the process.
+  it: its I/O, and `MAP` and `UNMAP` into its DAX window.
+- `cache.rs` holds the cache of sealed extents' pages, shared by every store
+  in the process, each extent a table of its pages, read in a part at a time
+  and evicted as memory runs out; and open extents' memory, which a commit
+  moves into the cache uncopied.
 - `extentd/` holds the daemon (`bin/fxdax-extentd.rs`) and its client,
   `RemoteExtentStore`, which a VMM's device is; see the extent daemon below.
-- `dax.rs` holds DAX windows and the `SecondStage` trait that follows a
-  window's mappings: the daemon's connection to a VM process implements it;
+- `dax.rs` holds DAX windows, their mappings and the pages they have mapped,
+  and the `SecondStage` trait that follows a window's pages: the daemon's connection to a VM process implements it;
   `dax/uffd.rs` is the VM process's own second stage, in the host memory that
   KVM follows, described below.
-- `filesystem.rs`, `volume.rs`, `image.rs`, `node.rs` and `connection.rs`
-  hold the host's view of an Fxfs image: `Filesystem` and `Image`, which
-  format, fill and check images, such as the stores a guest's Fxfs mounts. A
-  `Filesystem` is a volume whose nodes are `Node` handles, each holding its
-  node open, with a fuchsia.io connection to it once an operation needs one;
-  `volume.rs` keeps the nodes held, and runs the volume's one unmount. An
-  `Image`'s volumes share its journal, space and executor.
+- `filesystem.rs`, `volume.rs`, `image.rs` and `node.rs` hold the host's view
+  of an Fxfs image: `Filesystem` and `Image`, which format, fill and check
+  images, such as the stores a guest's Fxfs mounts, through `crates/fxfs-posix`
+  as the guest's kernel does. A `Filesystem` is a volume whose nodes are `Node`
+  handles, each holding its node, with the checks Linux's VFS makes for the
+  guest; `volume.rs` keeps the nodes held, and runs the volume's one unmount.
+  An `Image`'s volumes share its journal, space and executor.
 - `import.rs` makes filesystems of container images (TASK-39.5): an OCI image
   layout's layers, or a `docker export` tarball, applied as the OCI image spec
   applies changesets (whiteouts, opaque directories), files keeping their
@@ -251,7 +148,7 @@ deviations above, directories, paged object handles and the pager.
 - `memory.rs` holds `VolatileSlice` and `VolatileSliceMut`, memory fxdax only
   copies into and out of, as a guest may change it concurrently.
 - `error.rs` holds `Errno`, Linux's errno values on every host, mapped from
-  Zircon statuses with fdio's table, and `Error`, for setting up.
+  Fxfs's errors, and `Error`, for setting up.
 - `storage/` holds `Storage`: an image, or memory. It checks filesystems
   (fsck), and clones images: a clone is a fork of the image's extent store,
   whose directory is a handle naming the image's. `Storage::delete` deletes
@@ -262,16 +159,15 @@ deviations above, directories, paged object handles and the pager.
   - `image.rs` is the device on images, in place of Fuchsia's
     `FileBackedDevice`: an extent store in a directory, `crates/extent_store`'s.
     Extents' I/O bypasses the host's page cache where the host filesystem
-    allows (`O_DIRECT`, `F_NOCACHE`), since the kernel caches their pages
-    already.
+    allows (`O_DIRECT`, `F_NOCACHE`).
   - `io.rs` runs extents' I/O off Fxfs's executor threads: on an io_uring on
     Linux, and a small thread pool elsewhere.
 - `host_store.rs` makes, opens and deletes both host stacks' extent stores in
   the host's directories, images (`Storage`) and guests' stores
   (`ExtentStore`), with one block size, one set of options and one way of
   minting branches, and cleans images' stores after their commits.
-- `kernel.rs` configures the kernel: its memory, which extents' pages come
-  from, and its memory pressure thresholds.
+- `pages.rs` configures physical memory (`crates/physmem`): its size, which
+  extents' pages come from, and tenants' arenas of it.
 - `executor.rs` holds the fuchsia-async executor Fxfs runs on.
 
 `crates/extent_store` is fxdax's too: backlog doc-4's extent store on local
@@ -292,12 +188,12 @@ like this:
 
 - Pages the window hasn't mapped are anonymous memory registered with
   userfaultfd for missing faults.
-- Mapped pages are the kernel's pages mapped again, from its physical memory
-  (a memfd), at their offset there. They stay read-write, and userfaultfd
-  write-protects them while the kernel maps them read-only.
+- Mapped pages are the daemon's pages mapped again, from its physical memory
+  (memfds), at their offset there. They stay read-write, and userfaultfd
+  write-protects them while the window maps them read-only.
 - A fault thread in the VM process passes each event to the daemon, which
-  resolves them concurrently, as futures, so a fault waiting for the pager
-  holds up no other.
+  resolves them concurrently, as futures, so a fault waiting for a page to be
+  read in holds up no other.
 - Changing a page's mapping replaces its memory in several system calls. Until
   userfaultfd tracks the new memory, it is inaccessible, or read-only where a
   store would go untracked, so a fault in between fails with `EFAULT` rather
@@ -324,12 +220,12 @@ mode 0600; a jail made otherwise needs the same (`mknod dev/userfaultfd c 10
 MINOR`, its minor as the host's `/dev/userfaultfd` has it).
 
 **The extent daemon.** The VMM runs one VM per process, so extents cached in a
-VM process's kernel would be shared by that VM alone. `fxdax-extentd` (the
-`extentd` module) is one process on a host that owns the kernel, its extent
+VM process would be shared by that VM alone. `fxdax-extentd` (the `extentd`
+module) is one process on a host that owns the physical memory, the extent
 cache and the stores, and serves them to VM processes over a Unix socket: the
 only way the VMM's extent device has a store, at the socket its configuration
-names (`extentd_socket`). The
-kernel's physical memory is a memfd, which each VM process receives once: its
+names (`extentd_socket`). Physical memory is memfds, which each VM process
+receives once: its
 window's pages are pages of it, which the VM process maps into its own memory
 at the offsets the daemon names, so two VMs mapping one extent map the same
 pages. The daemon's changes to a window reach the VM process in order before
@@ -338,13 +234,14 @@ daemon frees or shares a page; guests' faults go from the VM process's
 userfaultfd to the daemon. One daemon serves every tenant on a host. Guest
 isolation is the security boundary: a guest reaches only what its window maps,
 so one tenant for everything is secure. As defence in depth against a VM
-process escaped from its guest, the kernel's physical memory is in arenas, each
+process escaped from its guest, physical memory is in arenas, each
 its own memfd (TASK-43): a tenant's stores' pages are of its arena, and public
 bases' pages, which every tenant's forks share, one copy, of the default arena.
 A tenant's VM process holds its tenant's arena and the default one, read-only
 (mapped private, so the window can track stores to it), and nothing of another
-tenant's. Pages a pager supplies from another arena are copied into the VMO's
-own, and the originals cleared. The host's VM manager drives the daemon
+tenant's. An extent's pages are of the arena it is cached in alone: a commit
+moves an open extent's pages into its cached extent only within one arena.
+The host's VM manager drives the daemon
 through a gRPC control API on a Unix socket of its own (`FXDAX_EXTENTD_GRPC`;
 `crates/fxdax/proto/fxdax/extentd/v1/extentd.proto`, TASK-43.3): it makes,
 imports, forks, places, syncs, resizes and deletes stores, and grants tenants
@@ -364,7 +261,7 @@ frozen, holds the pages it may still map until the daemon has killed it
 (`pidfd_open`).
 
 **The daemon's memory.** DAX moves the guests' file pages out of their RAM into
-the daemon's (TASK-50.3). Its kernel's physical memory is at most
+the daemon's (TASK-50.3). Its physical memory is at most
 `MEMORY_BYTES` (its second argument, 1 GiB by default), taken by arenas in
 2 MiB chunks as they need them. The control API limits, at runtime, the memory
 of each tenant and of every tenant together (`SetMemoryLimit`): past a
@@ -592,11 +489,9 @@ reformat the files copied from Fuchsia, which keep upstream's formatting.
   `AUTHORS`). What was copied or adapted from Fuchsia keeps The Fuchsia
   Authors' copyright; fxdax's own code, and its changes, are The fxdax
   Authors'.
-- **Ports of the Zircon kernel (`zircon`, `page`, `zircon_macros`):** MIT, as
-  Zircon's kernel is (their `LICENSE`), keeping the copyrights of the sources
-  they port: The Fuchsia Authors', and those of LK's authors that Zircon's
-  files carry. A port of Fuchsia's BSD-licensed code among them, such as of
-  `zircon/system/public`, stays BSD-3-Clause.
+- **`physmem`:** MIT (its `LICENSE`), as the Zircon kernel port it was lifted
+  from was (deleted, TASK-96.1), keeping the copyrights of the sources it
+  ports.
 - **The parts of Rust's std imported into the guest's
   (`scripts/import-guest-std.py`):** MIT OR Apache-2.0, as Rust is (the
   licenses and Rust's `COPYRIGHT` in `guest/rust/std`).

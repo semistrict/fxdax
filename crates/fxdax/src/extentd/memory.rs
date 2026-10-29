@@ -6,15 +6,14 @@
 //! (TASK-50.3): the memory a tenant holds, its arena's, and every tenant's together, each limited
 //! at runtime through the control API. Past a limit the daemon evicts the clean pages asked for
 //! longest ago, the tenant's own past the tenant's, any tenant's past the total; with none left to
-//! evict, what would take more fails with `ENOMEM` (the kernel's relief, with `crate::extents`'
+//! evict, what would take more fails with `ENOMEM` (physical memory's relief, with `crate::cache`'s
 //! evictor), and the daemon goes on. Its metrics name tenants by [`label`]s.
 
 use super::server::{Parking, Tenant};
 use crate::Errno;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, Weak};
-use zircon::vm::physmap::CHUNK_SIZE;
-use zircon::vm::pmm;
+use physmem::CHUNK_SIZE;
 
 /// The tenants alive, and their limits, under one lock, so that a tenant made as its limit is set
 /// is limited as it was set.
@@ -60,7 +59,7 @@ pub(super) fn alive(name: &str, dir: &std::path::Path) -> Option<Arc<Tenant>> {
 pub(super) fn register(tenant: &Arc<Tenant>) {
     let mut registry = REGISTRY.lock().unwrap();
     if let Some(bytes) = registry.limit(tenant.name()) {
-        pmm::node().set_arena_cap(tenant.arena(), Some(bytes));
+        physmem::set_arena_cap(tenant.arena(), Some(bytes));
     }
     registry.tenants.retain(|alive| alive.strong_count() > 0);
     registry.tenants.push(Arc::downgrade(tenant));
@@ -74,9 +73,8 @@ pub fn set_limit(tenant: Option<&str>, bytes: Option<u64>) -> Result<(), Errno> 
     if bytes.is_some_and(|bytes| bytes < CHUNK_SIZE as u64) {
         return Err(Errno::EINVAL);
     }
-    let node = pmm::node();
     let Some(name) = tenant else {
-        node.set_total_cap(bytes);
+        physmem::set_total_cap(bytes);
         return Ok(());
     };
     super::grants::check_name(name)?;
@@ -87,7 +85,7 @@ pub fn set_limit(tenant: Option<&str>, bytes: Option<u64>) -> Result<(), Errno> 
         None => limits.remove(name),
     };
     for tenant in registry.alive().filter(|tenant| tenant.name() == name) {
-        node.set_arena_cap(tenant.arena(), bytes);
+        physmem::set_arena_cap(tenant.arena(), bytes);
     }
     Ok(())
 }
@@ -100,17 +98,16 @@ pub fn set_limit(tenant: Option<&str>, bytes: Option<u64>) -> Result<(), Errno> 
 /// pages free before what is held is looked at again ([`Parking`]), so that it evicts no more than
 /// it must, and returns what is held once they are, not before.
 pub fn shrink(tenant: Option<&str>, target: u64) -> Result<u64, Errno> {
-    let node = pmm::node();
     let parking = Parking::start();
     let Some(name) = tenant else {
         // Free memory first: the arenas' spare chunks.
-        node.release_spares(None);
-        crate::extents::evict_least_used(None, |_| {
+        physmem::release_spares(None);
+        crate::cache::evict_least_used(None, |_| {
             parking.wait();
-            node.arenas_bytes() <= target
+            physmem::arenas_bytes() <= target
         });
         parking.wait();
-        return Ok(node.arenas_bytes());
+        return Ok(physmem::arenas_bytes());
     };
     let arenas: Vec<_> = (REGISTRY.lock().unwrap().alive())
         .filter(|tenant| tenant.name() == name)
@@ -119,10 +116,10 @@ pub fn shrink(tenant: Option<&str>, target: u64) -> Result<u64, Errno> {
     if arenas.is_empty() {
         return Err(Errno::ENOENT);
     }
-    let held = || arenas.iter().map(|arena| node.arena_bytes(*arena)).sum::<u64>();
+    let held = || arenas.iter().map(|arena| physmem::arena_bytes(*arena)).sum::<u64>();
     for arena in &arenas {
-        node.release_spares(Some(*arena));
-        crate::extents::evict_least_used(Some(*arena), |_| {
+        physmem::release_spares(Some(*arena));
+        crate::cache::evict_least_used(Some(*arena), |_| {
             parking.wait();
             held() <= target
         });
@@ -144,7 +141,6 @@ pub struct TenantMemory {
 /// The memory of each tenant alive, by label: a tenant alive twice, revoked and granted again with
 /// another directory, is counted once, with both its arenas'.
 pub fn tenants() -> Vec<TenantMemory> {
-    let node = pmm::node();
     let registry = REGISTRY.lock().unwrap();
     let mut memory: HashMap<String, TenantMemory> = HashMap::new();
     for tenant in registry.alive() {
@@ -153,7 +149,7 @@ pub fn tenants() -> Vec<TenantMemory> {
             bytes: 0,
             limit: registry.limit(tenant.name()),
         });
-        entry.bytes += node.arena_bytes(tenant.arena());
+        entry.bytes += physmem::arena_bytes(tenant.arena());
     }
     let mut memory: Vec<_> = memory.into_values().collect();
     memory.sort_by(|a, b| a.label.cmp(&b.label));

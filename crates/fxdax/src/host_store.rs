@@ -23,7 +23,7 @@ use std::path::Path;
 pub(crate) const BLOCK_SIZE: u32 = 4096;
 
 /// Whether stores' files bypass the host's page cache, where the host's file system allows: the
-/// in-process kernel caches their pages already.
+/// extent cache (`crate::cache`) caches their pages already.
 const DIRECT: bool = true;
 
 /// The bytes of the host's disk that what no extent is in takes, of a store's segments that

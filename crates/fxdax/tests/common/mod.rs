@@ -44,7 +44,7 @@ pub fn pattern(seed: u64) -> Vec<u8> {
 
 /// `pages` pages of anonymous memory, which a store's window takes.
 pub fn memory(pages: usize) -> std::ptr::NonNull<u8> {
-    let len = pages * fxdax::kernel::page_size() as usize;
+    let len = pages * fxdax::pages::page_size() as usize;
     // SAFETY: A new anonymous mapping, which nothing else uses.
     let memory = unsafe {
         libc::mmap(
@@ -67,7 +67,7 @@ pub fn memory(pages: usize) -> std::ptr::NonNull<u8> {
 /// on them resolved as the guest's would be.
 #[cfg(target_os = "linux")]
 pub fn read_window(at: *const u8, len: usize) -> Vec<u8> {
-    let page = fxdax::kernel::page_size() as usize;
+    let page = fxdax::pages::page_size() as usize;
     let mut fds = [0; 2];
     // SAFETY: A new pipe, whose descriptors this function closes.
     assert_eq!(unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) }, 0);
@@ -102,7 +102,7 @@ pub fn cache(store: &RemoteExtentStore, bytes: &[u8]) {
     let extent = ExtentId { branch: store.branch(), sequence: 1 };
     store.write(extent, 0, &[VolatileSlice::from(bytes)]).unwrap();
     store.commit(None).unwrap();
-    let window = memory(bytes.len() / fxdax::kernel::page_size() as usize);
+    let window = memory(bytes.len() / fxdax::pages::page_size() as usize);
     // SAFETY: The memory is this function's, which it leaks: the window maps it while the
     // process lives.
     unsafe { store.create_dax_window_in_host_memory(window, bytes.len() as u64, None) }.unwrap();
@@ -115,7 +115,7 @@ pub fn cache(store: &RemoteExtentStore, bytes: &[u8]) {
 /// Whether `memory`, a shared memory object, holds `bytes` at a page's start: in the parts of it
 /// that hold data.
 pub fn holds(memory: BorrowedFd<'_>, bytes: &[u8]) -> bool {
-    let page = fxdax::kernel::page_size() as usize;
+    let page = fxdax::pages::page_size() as usize;
     let fd = memory.as_raw_fd();
     let mut offset = 0;
     let mut buf = vec![0u8; 1 << 20];
@@ -145,7 +145,7 @@ pub fn holds(memory: BorrowedFd<'_>, bytes: &[u8]) -> bool {
 
 /// How many pages of `memory`, a shared memory object, start as `bytes` does: copies of it.
 pub fn copies(memory: BorrowedFd<'_>, bytes: &[u8]) -> usize {
-    let page = fxdax::kernel::page_size() as usize;
+    let page = fxdax::pages::page_size() as usize;
     let fd = memory.as_raw_fd();
     let mut offset = 0;
     let mut count = 0;

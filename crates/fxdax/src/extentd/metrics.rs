@@ -166,14 +166,13 @@ pub fn render() -> String {
         let _ = writeln!(out, "fxdax_extentd_{name} {value}");
     }
 
-    let node = zircon::vm::pmm::node();
     let memory = [
-        ("memory_bytes", "Memory extents' pages hold, every tenant's.", Some(node.arenas_bytes())),
-        ("memory_limit_bytes", "The limit of every tenant's memory.", node.total_cap()),
+        ("memory_bytes", "Memory extents' pages hold, every tenant's.", Some(physmem::arenas_bytes())),
+        ("memory_limit_bytes", "The limit of every tenant's memory.", physmem::total_cap()),
         (
             "memory_capacity_bytes",
             "The most memory the daemon has.",
-            Some(node.count_total_bytes()),
+            Some(physmem::count_total_bytes()),
         ),
     ];
     for (name, help, value) in memory {

@@ -13,10 +13,10 @@ crate-type = ["staticlib"]
 anyhow = "1.0.104"
 async-trait = "0.1.92"
 event-listener = "5.4.2"
-fidl-fuchsia-io = { path = "../../../crates/fidl-fuchsia-io" }
 follower = { path = "../../../crates/follower" }
 futures = "0.3.34"
 fxfs = { path = "../../../crates/fxfs" }
+fxfs-posix = { path = "../../../crates/fxfs-posix" }
 getrandom = "0.4.3"
 linux-rt.workspace = true
 log = "0.4.34"

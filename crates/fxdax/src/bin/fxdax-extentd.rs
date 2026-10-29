@@ -64,7 +64,7 @@ fn main() -> anyhow::Result<()> {
     let socket = args.next().context("usage: fxdax-extentd SOCKET [MEMORY_BYTES]")?;
     if let Some(memory) = args.next() {
         let memory: u64 = memory.parse().context("MEMORY_BYTES must be a number")?;
-        fxdax::kernel::configure(fxdax::kernel::Config::with_memory(memory))?;
+        fxdax::pages::configure(fxdax::pages::Config::with_memory(memory))?;
     }
     let listener = std::os::unix::net::UnixListener::bind(&socket)
         .with_context(|| format!("listening at {socket}"))?;

@@ -40,7 +40,7 @@ fn read_through(store: &RemoteExtentStore) -> std::ptr::NonNull<u8> {
     }
     store.commit(None).unwrap();
     let size = EXTENTS * EXTENT;
-    let window = memory((size / fxdax::kernel::page_size()) as usize);
+    let window = memory((size / fxdax::pages::page_size()) as usize);
     // SAFETY: The memory is this test's, which it leaks: the window maps it while the process
     // lives.
     unsafe { store.create_dax_window_in_host_memory(window, size, None) }.unwrap();
@@ -65,7 +65,7 @@ fn read_through(store: &RemoteExtentStore) -> std::ptr::NonNull<u8> {
 /// What `mapped`, an extent's bytes read through a window, holds where it is not `expected`: the
 /// first page that differs, and whether it is zeros or which extent's page.
 fn whose(mapped: &[u8], expected: &[u8]) -> String {
-    let page = fxdax::kernel::page_size() as usize;
+    let page = fxdax::pages::page_size() as usize;
     let differs = |at: &usize| mapped[*at..at + page] != expected[*at..at + page];
     let at = (0..mapped.len()).step_by(page).find(differs);
     let Some(at) = at else { return "the expected bytes".into() };

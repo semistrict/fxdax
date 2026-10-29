@@ -140,7 +140,7 @@ fn a_layer_makes_files_with_their_owners_modes_links_and_xattrs() {
         // The zeros are holes: two pages hold data, the head's and the tail's.
         let (holey_file, holey_attr) = at(&fs, "var/holey").await.unwrap();
         assert_eq!(holey_attr.size, holey.len() as u64);
-        assert_eq!(holey_attr.blocks * 512, 2 * fxdax::kernel::page_size());
+        assert_eq!(holey_attr.blocks * 512, 2 * u64::from(Storage::BLOCK_SIZE));
         assert_eq!(contents(&holey_file).await, holey);
         // A file of zeros is a hole.
         let (zeros_file, zeros) = at(&fs, "var/zeros").await.unwrap();
@@ -166,9 +166,9 @@ fn files_longer_than_a_chunk_are_written_whole() {
         let (file, attr) = at(&fs, "long").await.unwrap();
         assert_eq!(attr.size, long.len() as u64);
         assert_eq!(contents(&file).await, long);
-        // Of the data's pages, the last holds 100 bytes.
-        let page_size = fxdax::kernel::page_size();
-        assert_eq!(attr.blocks * 512, (4 << 20) - (64 << 10) + page_size);
+        // Of the data's blocks, the last holds 100 bytes.
+        let block_size = u64::from(Storage::BLOCK_SIZE);
+        assert_eq!(attr.blocks * 512, (4 << 20) - (64 << 10) + block_size);
         drop(file);
         close(fs).await;
     })
@@ -181,7 +181,7 @@ fn files_longer_than_a_chunk_are_written_whole() {
 fn unless_memory_fails<T>(future: impl Future<Output = T>) -> T {
     let mut future = pin!(future);
     block_on(poll_fn(|cx| {
-        let failed = zircon::vm::pmm::node().has_alloc_failed_no_mem();
+        let failed = physmem::has_alloc_failed_no_mem();
         assert!(!failed, "the kernel failed an allocation for want of memory");
         future.as_mut().poll(cx)
     }))
@@ -193,7 +193,7 @@ fn unless_memory_fails<T>(future: impl Future<Output = T>) -> T {
 #[test]
 fn files_larger_than_the_kernels_memory_are_imported_whole() {
     const MEMORY: u64 = 64 << 20;
-    fxdax::kernel::configure(fxdax::kernel::Config::with_memory(MEMORY)).unwrap();
+    fxdax::pages::configure(fxdax::pages::Config::with_memory(MEMORY)).unwrap();
     let large: Vec<u8> = (0..2 * MEMORY).map(|at| (at / 4096 % 251 + 1) as u8).collect();
     let layer = layer(&[Entry::new("large", Kind::File(&large))]).unwrap();
     unless_memory_fails(async {

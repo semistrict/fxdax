@@ -28,10 +28,10 @@ use std::sync::{Arc, Mutex, OnceLock};
 pub struct RemoteExtentStore {
     client: Arc<Client>,
     branch: u64,
-    /// The daemon's kernel's physical memory, which the window maps pages of, by arena: its
+    /// The daemon's physical memory, which the window maps pages of, by arena: its
     /// tenant's, the default tenant's if of none, and the default arena, read-only (TASK-43,
     /// TASK-79.17).
-    memories: Vec<(crate::kernel::ArenaId, OwnedFd)>,
+    memories: Vec<(crate::pages::ArenaId, OwnedFd)>,
     /// The thread serving the guest's faults on the window, once it is created.
     faults: Mutex<Option<FaultThread>>,
     /// fxdax: whether it is a follower's, read-only (backlog doc-8).
@@ -139,7 +139,7 @@ impl RemoteExtentStore {
             .map_err(|_| Error::msg("the daemon named no arena"))?;
         // Its tenant's arena, and the default one, read-only.
         let memories =
-            vec![(crate::kernel::ArenaId(arena), own), (crate::kernel::ArenaId::DEFAULT, public)];
+            vec![(crate::pages::ArenaId(arena), own), (crate::pages::ArenaId::DEFAULT, public)];
         // A follower's view's commit, which it has heard of.
         client.committed.fetch_max(reply.header.args[2], Ordering::AcqRel);
         let branch = reply.header.args[0];
@@ -243,14 +243,14 @@ impl RemoteExtentStore {
         self.branch
     }
 
-    /// The daemon's kernel's physical memory, which it handed this VM process as it connected,
+    /// The daemon's physical memory, which it handed this VM process as it connected,
     /// and which its window maps pages of: its tenant's arena of it (TASK-43), the default
     /// tenant's if it is of none (TASK-79.17).
     pub fn physical_memory(&self) -> std::os::fd::BorrowedFd<'_> {
         self.memories[0].1.as_fd()
     }
 
-    /// The default arena of the daemon's kernel's physical memory, which public bases' pages are
+    /// The default arena of the daemon's physical memory, which public bases' pages are
     /// of, as every VM process holds it: read-only (TASK-43, TASK-79.17).
     pub fn public_memory(&self) -> std::os::fd::BorrowedFd<'_> {
         self.memories[1].1.as_fd()
@@ -577,7 +577,7 @@ impl RemoteExtentStore {
     }
 
     /// Creates the store's window in the `size` bytes of this process's memory at `base`, which
-    /// a hypervisor such as KVM maps as guest memory: the daemon maps its kernel's pages there,
+    /// a hypervisor such as KVM maps as guest memory: the daemon maps its pages there,
     /// and the guest's faults there go to it. `prefault`, if any, is told of the pages mapped.
     ///
     /// # Safety
@@ -779,7 +779,7 @@ impl Client {
         // of its window (TASK-79.43).
         let mappings = || {
             let pages =
-                self.stage.get().map_or(0, |stage| stage.size() / crate::kernel::page_size());
+                self.stage.get().map_or(0, |stage| stage.size() / crate::pages::page_size());
             pages * MAPPING_BYTES
         };
         let mut told = std::time::Instant::now();
@@ -935,9 +935,9 @@ impl Client {
 }
 
 /// The physical memory a [`STAGE_MAP`] with `args` maps.
-fn phys_location(args: &[u64; 5]) -> std::io::Result<crate::kernel::PhysLocation> {
-    let arena = crate::kernel::ArenaId(u32::try_from(args[4]).map_err(std::io::Error::other)?);
-    Ok(crate::kernel::PhysLocation { arena, offset: args[1] })
+fn phys_location(args: &[u64; 5]) -> std::io::Result<crate::pages::PhysLocation> {
+    let arena = crate::pages::ArenaId(u32::try_from(args[4]).map_err(std::io::Error::other)?);
+    Ok(crate::pages::PhysLocation { arena, offset: args[1] })
 }
 
 /// The requests a client sent that wait for replies, by ID, with their bytes of stream data

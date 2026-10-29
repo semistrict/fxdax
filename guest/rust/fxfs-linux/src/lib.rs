@@ -16,7 +16,7 @@ mod fs;
 use anyhow::Error;
 use core::ffi::{c_char, c_int, c_void};
 use device::ExtentDevice;
-use fs::{Attr, DaxExtent, Fxfs, ReaddirStart, SetAttr, StatFs};
+use fs::{Attr, DaxExtent, Fxfs, GuestFxfs, ReaddirStart, SetAttr, StatFs};
 use fxfs::errors::FxfsError;
 use fxfs::object_store::SetExtendedAttributeMode;
 use linux_rt::block_on;

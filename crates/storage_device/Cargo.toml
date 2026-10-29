@@ -12,7 +12,6 @@ async-trait.workspace = true
 block_protocol.workspace = true
 event-listener.workspace = true
 fprint.workspace = true
-fuchsia-runtime.workspace = true
 fuchsia-sync.workspace = true
 futures.workspace = true
 log.workspace = true

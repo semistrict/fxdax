@@ -96,8 +96,6 @@ fprint = { path = "crates/fprint" }
 fuchsia-async = { path = "crates/fuchsia-async" }
 fuchsia-async-macro = { path = "crates/fuchsia-async-macro" }
 fuchsia-emulated-handle = { path = "crates/fuchsia-emulated-handle" }
-fuchsia-fs = { path = "crates/fuchsia-fs" }
-fuchsia-runtime = { path = "crates/fuchsia-runtime" }
 fuchsia-sync = { path = "crates/fuchsia-sync" }
 fxfs-unicode = { path = "crates/fxfs-unicode" }
 fxfs_trace = { path = "crates/fxfs_trace" }
@@ -105,12 +103,8 @@ fxfs_trace_macros = { path = "crates/fxfs_trace_macros" }
 storage_ptr_slice = { path = "crates/storage_ptr_slice" }
 storage_trace = { path = "crates/storage_trace" }
 storage_units = { path = "crates/storage_units" }
-vfs = { path = "crates/vfs" }
 name = { path = "crates/name" }
 fidl-fuchsia-fs = { path = "crates/fidl-fuchsia-fs" }
-fidl-fuchsia-fs-startup = { path = "crates/fidl-fuchsia-fs-startup" }
-flex_client = { path = "crates/flex_client" }
-refaults_vmo = { path = "crates/refaults_vmo" }
 test_util = { path = "crates/test_util" }
 storage_xts = { path = "crates/storage_xts" }
 zx-status = { path = "crates/zx-status" }
@@ -118,9 +112,7 @@ zx-status-ext = { path = "crates/zx-status-ext" }
 zx-types = { path = "crates/zx-types" }
 zx-sys = { path = "crates/zx-sys" }
 zx = { path = "crates/zx" }
-zircon = { path = "crates/zircon" }
-zircon_macros = { path = "crates/zircon_macros" }
-page = { path = "crates/page" }
+physmem = { path = "crates/physmem" }
 fscrypt = { path = "crates/fscrypt" }
 fxfs-crypto = { path = "crates/fxfs-crypto" }
 fxfs-insecure-crypto = { path = "crates/fxfs-insecure-crypto" }
@@ -140,11 +132,9 @@ bssl-crypto = { path = "crates/bssl-crypto" }
 mundane = { path = "crates/mundane" }
 fidl-fuchsia-io = { path = "crates/fidl-fuchsia-io" }
 fidl-fuchsia-fxfs = { path = "crates/fidl-fuchsia-fxfs" }
-fidl-fuchsia-memorypressure = { path = "crates/fidl-fuchsia-memorypressure" }
-memory-pressure-signaler = { path = "crates/memory-pressure-signaler" }
 fxfs = { path = "crates/fxfs" }
 fxfs_macros = { path = "crates/fxfs_macros" }
-fxfs-platform = { path = "crates/fxfs-platform" }
+fxfs-posix = { path = "crates/fxfs-posix" }
 fuchsia-inspect = { path = "crates/fuchsia-inspect" }
 fuchsia = { path = "crates/fuchsia" }
 fuchsia-macro = { path = "crates/fuchsia-macro" }

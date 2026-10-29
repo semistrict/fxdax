@@ -1,0 +1,25 @@
+[package]
+name = "physmem"
+version = "0.1.0"
+edition.workspace = true
+# Its physical memory manager is fxdax's own code lifted from fxdax's port of the Zircon kernel,
+# which was MIT licensed, as Zircon is: the crate is too (its LICENSE).
+license = "MIT"
+
+[features]
+# Its locks and condition variables as Shuttle's (awslabs/shuttle), whose scheduler then chooses
+# every interleaving of a test's threads. Only for its Shuttle tests:
+# `cargo nextest run -p physmem --features shuttle --lib shuttle::`. Cargo unifies the parking_lot
+# wrapper's own `shuttle` feature for every crate of a build, so a build enabling another crate's
+# must enable this one too.
+shuttle = ["parking_lot/shuttle", "dep:shuttle"]
+
+[dependencies]
+libc.workspace = true
+# parking_lot itself without the `shuttle` feature; with it, Shuttle's locks behind parking_lot's
+# API (Apache-2.0).
+parking_lot = { package = "shuttle-parking_lot", version = "0.12.5" }
+shuttle = { workspace = true, optional = true }
+
+[lints]
+workspace = true

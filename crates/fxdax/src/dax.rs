@@ -5,32 +5,39 @@
 //! DAX windows: guest physical memory into which an extent-store device maps extents, so that the
 //! guest's Fxfs reads and writes their pages directly instead of copying them through requests.
 //!
-//! A window is a guest physical address space of the kernel, as a Zircon guest's memory is: `MAP`
-//! maps a range of an extent's VMO into it, and the guest's loads and stores fault pages in. A
-//! sealed extent's VMO is pager-backed, shared by every window that maps it, whose pager reads
-//! pages in from the store; an open extent's is the memory the guest writes it in, until a commit
-//! seals it.
+//! A window is a range of guest physical memory, whose mappings each map a range of a [`Source`]'s
+//! pages (`crate::cache`): a sealed extent's cached pages, shared by every window that maps it,
+//! which are read in from the store as they are first needed; an open extent's, the memory the
+//! guest writes it in until a commit seals it; or zeros. The guest's loads and stores fault pages
+//! in. The window keeps the pages it has mapped, each a page of physical memory (`crate::pages`),
+//! as page tables do; a source evicting a page unmaps it from each window that maps it first.
 //!
-//! The kernel maps the window's pages in its [`SecondStage`], if it has one: its translation
-//! outside the kernel. A VM's window is the extent daemon's (`crate::extentd`), whose second stage
-//! is its connection to the VM process, which makes each change in the VM's memory. KVM maps guest
-//! memory from the host memory backing it, and follows changes to it: the VM process's own stage
+//! The window maps its pages in its [`SecondStage`], if it has one: its translation outside the
+//! daemon. A VM's window is the extent daemon's (`crate::extentd`), whose second stage is its
+//! connection to the VM process, which makes each change in the VM's memory. KVM maps guest memory
+//! from the host memory backing it, and follows changes to it: the VM process's own stage
 //! (`dax::uffd`) takes that memory over, maps the window's pages into it, and reports the faults
 //! KVM takes there itself, with userfaultfd, to the daemon, which passes them to the window
-//! ([`DaxWindow::fault`]). A window without a second stage, as tests' are, has its pages mapped
-//! at its host address.
+//! ([`DaxWindow::fault`]). A window without a second stage, as tests' are, has its pages mapped at
+//! its host address.
 
 #[cfg(all(test, feature = "shuttle"))]
 mod shuttle_tests;
 #[cfg(target_os = "linux")]
 pub(crate) mod uffd;
 
-use crate::error::{Errno, IntoErrno, Result};
-use crate::kernel::page_size;
+use crate::error::{Errno, Result};
+use crate::pages::{PhysLocation, page_size};
+use futures::future::BoxFuture;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::ops::Range;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use zircon::hypervisor::aspace::GuestPhysicalAspace;
+
+#[cfg(feature = "shuttle")]
+use shuttle::sync::Mutex;
+#[cfg(not(feature = "shuttle"))]
+use std::sync::Mutex;
 
 /// The access a guest's fault on a window was for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -44,26 +51,24 @@ pub enum Access {
 /// The guest's access to a page of a window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Protection {
-    /// None: the kernel tracks the page's accesses, and the next must fault.
-    None,
     /// Loads and instruction fetches. Stores must fault.
     Read,
     /// Loads, stores and instruction fetches.
     ReadWrite,
 }
 
-/// A window's second stage: a translation of it outside the kernel, which follows its mappings,
+/// A window's second stage: a translation of it outside the daemon, which follows its mappings,
 /// such as the extent daemon's connection to a VM process, which makes them in the VM's memory.
 ///
-/// Each change the kernel makes to its mappings of the window is made here, rather than in this
-/// process's memory, with offsets into the window. Calls for a window are serialized. They cannot
-/// fail: if the hypervisor refuses one, the guest's memory no longer matches the window's, and the
+/// Each change the window makes to its pages is made here, rather than in this process's memory,
+/// with offsets into the window. Calls for a window are serialized. They cannot fail: if the
+/// hypervisor refuses one, the guest's memory no longer matches the window's, and the
 /// implementation must panic.
 pub trait SecondStage: Send + Sync {
-    /// Maps the `len` bytes at `offset`, where nothing is mapped, to the pages at `phys` in the
-    /// kernel's physical memory, consecutive in one arena's object
-    /// ([`arena_memory`](crate::kernel::arena_memory)), from which another process can map them.
-    fn map(&self, offset: u64, phys: crate::kernel::PhysLocation, len: u64, protection: Protection);
+    /// Maps the `len` bytes at `offset`, where nothing is mapped, to the pages at `phys` of
+    /// physical memory, consecutive in one arena's object
+    /// ([`arena_memory`](crate::pages::arena_memory)), from which another process can map them.
+    fn map(&self, offset: u64, phys: PhysLocation, len: u64, protection: Protection);
 
     /// Changes the protection of the mapped `len` bytes at `offset`.
     fn protect(&self, offset: u64, len: u64, protection: Protection);
@@ -72,7 +77,7 @@ pub trait SecondStage: Send + Sync {
     fn unmap(&self, offset: u64, len: u64);
 
     /// fxdax: the window maps the `len` bytes at `offset` anew; called once it has, before any of
-    /// the pages it maps there now are mapped here, as the kernel maps a page here only once it is
+    /// the pages it maps there now are mapped here, as the window maps a page here only once it is
     /// in memory. A stage that withholds pages a fault found nothing at (`dax::uffd`) gives them
     /// back, so that accesses to them fault again.
     fn window_mapped(&self, _offset: u64, _len: u64) {}
@@ -81,7 +86,7 @@ pub trait SecondStage: Send + Sync {
     /// away, until [`end_deferring`](Self::end_deferring). Only a stage that makes them after it
     /// returns, as one in another process does (`crate::extentd`), defers: the pages it took away,
     /// the guest may reach still, which mustn't be shared with another guest until then. Freed,
-    /// they wait for it themselves (`zircon::vm::pmm::quarantine_with`, TASK-79.9).
+    /// they wait for it themselves (`physmem::quarantine_with`, TASK-79.9).
     fn begin_deferring(&self) {}
 
     /// fxdax: ends [`begin_deferring`](Self::begin_deferring): what waits for the changes it
@@ -123,7 +128,7 @@ pub enum Anew {
     /// The window maps the range anew ([`SecondStage::window_mapped`]).
     Mapped { offset: u64, len: u64 },
     /// It maps the pages there ([`SecondStage::map`]).
-    Map { offset: u64, phys: crate::kernel::PhysLocation, len: u64, protection: Protection },
+    Map { offset: u64, phys: PhysLocation, len: u64, protection: Protection },
 }
 
 /// fxdax: changes to a [`SecondStage`] that take access away, deferred: until they are made, the
@@ -158,12 +163,11 @@ pub(crate) trait Faults: Send + Sync {
     fn size(&self) -> u64;
 
     /// As [`DaxWindow::fault`].
-    fn fault(&self, offset: u64, access: Access) -> futures::future::BoxFuture<'_, Result<()>>;
+    fn fault(&self, offset: u64, access: Access) -> BoxFuture<'_, Result<()>>;
 
     /// Resolves a fault at `offset` for `access` on that page alone, for a fault whose access may
     /// not be the guest's.
-    fn fault_page(&self, offset: u64, access: Access)
-    -> futures::future::BoxFuture<'_, Result<()>>;
+    fn fault_page(&self, offset: u64, access: Access) -> BoxFuture<'_, Result<()>>;
 }
 
 /// A test's window in this process's host memory resolves the faults on it itself.
@@ -173,15 +177,11 @@ impl Faults for Window {
         Window::size(self)
     }
 
-    fn fault(&self, offset: u64, access: Access) -> futures::future::BoxFuture<'_, Result<()>> {
+    fn fault(&self, offset: u64, access: Access) -> BoxFuture<'_, Result<()>> {
         Box::pin(Window::fault(self, offset, access))
     }
 
-    fn fault_page(
-        &self,
-        offset: u64,
-        access: Access,
-    ) -> futures::future::BoxFuture<'_, Result<()>> {
+    fn fault_page(&self, offset: u64, access: Access) -> BoxFuture<'_, Result<()>> {
         Box::pin(Window::fault_page(self, offset, access))
     }
 }
@@ -203,35 +203,40 @@ impl Drop for Change<'_> {
     }
 }
 
-/// A [`SecondStage`] as the kernel's address spaces take it.
-struct KernelSecondStage(Arc<dyn SecondStage>);
+/// What a window's mapping maps pages of (`crate::cache`): an extent's pages, sealed or open, or
+/// zeros. Its pages are numbered from its first, each a page of physical memory once it is in
+/// memory, which the source keeps until it lets go of it: a page it evicts, it first unmaps from
+/// each window it was told maps it ([`Window::unmap_pages_of`]).
+///
+/// Its lock is taken after a window's, never before: a window looks its pages up, and maps them,
+/// under its own.
+pub(crate) trait Source: Send + Sync {
+    /// Calls `found` with each page of `pages` in memory, by number, under the source's lock, so
+    /// that it stays in memory while `found` maps it.
+    fn each_present(&self, pages: Range<u64>, found: &mut dyn FnMut(u64, &physmem::Page));
 
-impl KernelSecondStage {
-    fn protection(prot: libc::c_int) -> Protection {
-        debug_assert_eq!(prot & libc::PROT_EXEC, 0, "DAX mappings are not executable");
-        match prot & (libc::PROT_READ | libc::PROT_WRITE) {
-            libc::PROT_NONE => Protection::None,
-            libc::PROT_READ => Protection::Read,
-            _ => {
-                assert_ne!(prot & libc::PROT_READ, 0, "a writable page is readable");
-                Protection::ReadWrite
-            }
-        }
+    /// Brings page `page` into memory: completes once it is in, holding no thread meanwhile,
+    /// returning whether it waited for it; or fails, the page not in memory.
+    fn bring_in(self: Arc<Self>, page: u64) -> BoxFuture<'static, Result<bool>>;
+
+    /// How many pages from `page` a fault on it maps, as far as they are in memory: those bringing
+    /// it in brought in with it, which the guest reading on would fault on next.
+    fn brought_in_with(&self, _page: u64) -> u64 {
+        1
     }
+
+    /// `window` maps it from now on, until [`Source::unmapped`]: a page it evicts, it unmaps there
+    /// first.
+    fn mapped(&self, _window: &Arc<Window>) {}
+
+    /// `window` maps it no more.
+    fn unmapped(&self, _window: &Window) {}
 }
 
-impl zircon::hypervisor::aspace::SecondStage for KernelSecondStage {
-    fn map(&self, vaddr: usize, phys: crate::kernel::PhysLocation, len: usize, prot: libc::c_int) {
-        self.0.map(vaddr as u64, phys, len as u64, Self::protection(prot));
-    }
-
-    fn protect(&self, vaddr: usize, len: usize, prot: libc::c_int) {
-        self.0.protect(vaddr as u64, len as u64, Self::protection(prot));
-    }
-
-    fn unmap(&self, vaddr: usize, len: usize) {
-        self.0.unmap(vaddr as u64, len as u64);
-    }
+/// The identity of `source`, the same for each of its handles: what a window finds the mappings of
+/// a source by.
+pub(crate) fn source_identity<T: ?Sized>(source: &Arc<T>) -> usize {
+    Arc::as_ptr(source) as *const () as usize
 }
 
 /// A DAX window of an extent-store device. See the module docs.
@@ -245,9 +250,9 @@ impl DaxWindow {
     /// window's second stage, or, without one, at its host address, so that the guest can retry
     /// the access.
     ///
-    /// Completes once Fxfs's pager supplies or dirties the page, holding no thread meanwhile.
-    /// Fails if nothing is mapped there, with `ENOENT`, or with `EACCES` for a store to a
-    /// read-only mapping; the guest cannot go on.
+    /// Completes once the page is in memory, holding no thread meanwhile. Fails if nothing is
+    /// mapped there, with `ENOENT`, or with `EACCES` for a store to a read-only mapping; the guest
+    /// cannot go on.
     pub async fn fault(&self, offset: u64, access: Access) -> Result<()> {
         self.0.fault(offset, access).await
     }
@@ -259,11 +264,11 @@ impl DaxWindow {
         self.0.fault_page(offset, access).await
     }
 
-    /// The memory in this process where the kernel maps the pages of a window without a second
-    /// stage, as tests' are.
+    /// The memory in this process where the pages of a window without a second stage, as tests'
+    /// are, are mapped.
     #[cfg(test)]
     pub(crate) fn host_base(&self) -> *mut u8 {
-        let host_base = self.0.gpas.host_base().expect("a test's window has no second stage");
+        let host_base = self.0.host_base().expect("a test's window has no second stage");
         host_base as *mut u8
     }
 
@@ -274,35 +279,123 @@ impl DaxWindow {
 
     /// Whether anything is mapped at `offset`.
     pub fn is_mapped(&self, offset: u64) -> bool {
-        self.0.gpas.is_mapped(offset as usize)
+        self.0.is_mapped(offset)
     }
 }
 
 impl std::fmt::Debug for DaxWindow {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DaxWindow")
-            .field("host_base", &self.0.gpas.host_base().map(|base| base as *mut u8))
+            .field("host_base", &self.0.host_base().map(|base| base as *mut u8))
             .field("size", &self.size())
             .finish()
     }
 }
 
-/// How many pages a store fault that follows on from the last dirties: its own and those after
-/// it, where a sequential writer stores next. Dirtying them together costs Fxfs's pager one
-/// request rather than one a page.
+/// How many pages a store fault that follows on from the last brings in: its own and those after
+/// it, where a sequential writer stores next, mapped together rather than one fault each.
 const SEQUENTIAL_STORE_PAGES: usize = 16;
 
-/// A window: a guest physical address space of the kernel.
+/// Where a window's pages are mapped: in exactly one place.
+enum Translation {
+    /// In its second stage alone, another process's (a VMM's) or another range of this one's.
+    Stage(Arc<dyn SecondStage>),
+    /// In host memory: a reservation of host address space, at `base`, as long as the window.
+    Host { base: usize },
+}
+
+/// A mapping of a window: a range of its source's pages, from `page`, up to the window's `end`.
+struct Mapping {
+    end: u64,
+    source: Arc<dyn Source>,
+    page: u64,
+    writable: bool,
+}
+
+/// A page the window has mapped: where it is in physical memory, and which page of it it is.
+#[derive(Clone, Copy)]
+struct Pte {
+    location: PhysLocation,
+    frame: u32,
+}
+
+/// A window's mappings and the pages it has mapped, under its lock.
+#[derive(Default)]
+struct WindowState {
+    /// The mapped ranges of the window, by start. They do not overlap.
+    mappings: BTreeMap<u64, Mapping>,
+    /// The starts of the mappings, by the identity of their source ([`source_identity`]).
+    by_source: HashMap<usize, BTreeSet<u64>>,
+    /// The pages mapped, by offset: each within a mapping, and its source's.
+    ptes: BTreeMap<u64, Pte>,
+}
+
+impl WindowState {
+    /// The mapping `offset` is in, and its start.
+    fn mapping_at(&self, offset: u64) -> Option<(u64, &Mapping)> {
+        let (start, mapping) = self.mappings.range(..=offset).next_back()?;
+        (mapping.end > offset).then_some((*start, mapping))
+    }
+
+    /// The starts of the mappings overlapping `start..end`: as they do not overlap each other,
+    /// the last to start before it, and those starting in it.
+    fn overlapping(&self, start: u64, end: u64) -> Vec<u64> {
+        let before = self.mappings.range(..start).next_back();
+        before
+            .filter(|(_, mapping)| mapping.end > start)
+            .map(|(start, _)| *start)
+            .into_iter()
+            .chain(self.mappings.range(start..end).map(|(start, _)| *start))
+            .collect()
+    }
+
+    fn insert(&mut self, start: u64, mapping: Mapping) {
+        let identity = source_identity(&mapping.source);
+        self.by_source.entry(identity).or_default().insert(start);
+        self.mappings.insert(start, mapping);
+    }
+
+    fn remove(&mut self, start: u64) -> Mapping {
+        let mapping = self.mappings.remove(&start).expect("a mapping there");
+        let identity = source_identity(&mapping.source);
+        let starts = self.by_source.get_mut(&identity).expect("its source's mappings");
+        starts.remove(&start);
+        if starts.is_empty() {
+            self.by_source.remove(&identity);
+        }
+        mapping
+    }
+
+    /// Forgets the mappings of `start..end`, keeping what of them is around it, and returns the
+    /// sources of those it forgot.
+    fn forget(&mut self, start: u64, end: u64) -> Vec<Arc<dyn Source>> {
+        let ps = page_size();
+        let mut forgotten = Vec::new();
+        for mapping_start in self.overlapping(start, end) {
+            let mapping = self.remove(mapping_start);
+            if mapping_start < start {
+                let before = Mapping { end: start, source: mapping.source.clone(), ..mapping };
+                self.insert(mapping_start, before);
+            }
+            if mapping.end > end {
+                let page = mapping.page + (end - mapping_start) / ps;
+                let after = Mapping { page, source: mapping.source.clone(), ..mapping };
+                self.insert(end, after);
+            }
+            forgotten.push(mapping.source);
+        }
+        forgotten
+    }
+}
+
+/// A window. See the module docs.
 pub(crate) struct Window {
-    gpas: GuestPhysicalAspace,
-    /// The root VMAR of `gpas`, which extents' VMOs are mapped into.
-    vmar: zx::Vmar,
-    /// `vmar`'s base address.
-    base: usize,
-    /// Where a store fault following on from the last would be: the page after those it dirtied.
+    size: u64,
+    translation: Translation,
+    state: Mutex<WindowState>,
+    /// Where a store fault following on from the last would be: the page after those it brought
+    /// in.
     next_store: AtomicU64,
-    /// The second stage, told of the window's mappings anew.
-    stage: Option<Arc<dyn SecondStage>>,
 }
 
 impl Window {
@@ -312,30 +405,39 @@ impl Window {
         if size == 0 || !size.is_multiple_of(page_size()) {
             return Err(Errno::EINVAL);
         }
-        let size = usize::try_from(size).map_err(|_| Errno::EINVAL)?;
-        let gpas = match &second_stage {
-            Some(second_stage) => GuestPhysicalAspace::create_with_second_stage(
-                size,
-                Arc::new(KernelSecondStage(second_stage.clone())),
-            ),
-            None => GuestPhysicalAspace::create(size),
-        }
-        .errno()?;
-        let (vmar, rights) = gpas.create_vmar_dispatcher().errno()?;
-        let handle = vmar.make_and_add_handle(rights).errno()?;
-        // SAFETY: The handle was just added to the handle table, and is owned by nothing else.
-        let vmar = zx::Vmar::from(unsafe { zx::Handle::from_raw(handle) }.unwrap());
-        let base = vmar.info().errno()?.base;
-        let next_store = AtomicU64::new(u64::MAX);
-        Ok(Self { gpas, vmar, base, next_store, stage: second_stage })
+        let len = usize::try_from(size).map_err(|_| Errno::EINVAL)?;
+        let translation = match second_stage {
+            Some(stage) => Translation::Stage(stage),
+            None => Translation::Host { base: reserve(None, len).map_err(|_| Errno::ENOMEM)? },
+        };
+        let (state, next_store) = (Mutex::new(WindowState::default()), AtomicU64::new(u64::MAX));
+        Ok(Self { size, translation, state, next_store })
     }
 
     fn size(&self) -> u64 {
-        self.gpas.size() as u64
+        self.size
+    }
+
+    fn stage(&self) -> Option<&Arc<dyn SecondStage>> {
+        match &self.translation {
+            Translation::Stage(stage) => Some(stage),
+            Translation::Host { .. } => None,
+        }
+    }
+
+    fn host_base(&self) -> Option<usize> {
+        match self.translation {
+            Translation::Host { base } => Some(base),
+            Translation::Stage(_) => None,
+        }
+    }
+
+    fn is_mapped(&self, offset: u64) -> bool {
+        self.state.lock().unwrap().mapping_at(offset).is_some()
     }
 
     /// Resolves the guest's fault at `offset` for `access`. A store that follows on from the last
-    /// store fault dirties the pages after it too, up to `SEQUENTIAL_STORE_PAGES` in all.
+    /// store fault brings in the pages after it too, up to `SEQUENTIAL_STORE_PAGES` in all.
     pub(crate) async fn fault(&self, offset: u64, access: Access) -> Result<()> {
         let page = offset - offset % page_size();
         if access == Access::Read {
@@ -368,66 +470,249 @@ impl Window {
     async fn fault_pages(&self, offset: u64, access: Access, pages: usize) -> Result<()> {
         use crate::stats::{self, Counter};
         let start = std::time::Instant::now();
-        let offset = usize::try_from(offset).map_err(|_| Errno::EINVAL)?;
-        let faulted = self.gpas.page_fault_async(offset, access == Access::Write, pages - 1).await;
+        let faulted = self.resolve(offset, access, pages).await;
         stats::count_since(Counter::Faults, Counter::FaultNs, start);
         if faulted == Ok(true) {
             stats::add(Counter::FaultWaits, 1);
         }
-        faulted.map(|_| ()).errno()
+        faulted.map(|_| ())
     }
 
-    /// Maps `len` bytes of `vmo` at `vmo_offset` into the window at `offset`, replacing what was
-    /// mapped there: one change to the second stage, if there is one (`SecondStage::begin_change`).
+    /// Maps the page at `offset`, which a fault for `access` was on, and the `pages - 1` after it
+    /// within its mapping, bringing them into memory first, and those its source brought in with
+    /// it (`Source::brought_in_with`), and returns whether it waited for the page to be brought
+    /// in. A page evicted, or mapped anew, meanwhile is resolved as it is then.
+    async fn resolve(&self, offset: u64, access: Access, pages: usize) -> Result<bool> {
+        let ps = page_size();
+        let mut waited = false;
+        loop {
+            let (source, page, count, mapped) = {
+                let state = self.state.lock().unwrap();
+                let (start, mapping) = state.mapping_at(offset).ok_or(Errno::ENOENT)?;
+                if access == Access::Write && !mapping.writable {
+                    return Err(Errno::EACCES);
+                }
+                let left = (mapping.end - offset) / ps;
+                let count = left.min(pages as u64);
+                if count == 1 && state.ptes.contains_key(&offset) {
+                    return Ok(waited);
+                }
+                let page = mapping.page + (offset - start) / ps;
+                let mapped = left.min(mapping.source.brought_in_with(page).max(count));
+                (mapping.source.clone(), page, count, mapped)
+            };
+            waited |= source.clone().bring_in(page).await?;
+            for next in 1..count {
+                // Those after it are brought in as they can be: a fault on one shows what fails.
+                if let Err(errno) = source.clone().bring_in(page + next).await {
+                    log::debug!("fxdax: bringing in a page after a store fault: {errno:?}");
+                    break;
+                }
+            }
+            let mut state = self.state.lock().unwrap();
+            let same = state.mapping_at(offset).is_some_and(|(start, mapping)| {
+                source_identity(&mapping.source) == source_identity(&source)
+                    && mapping.page + (offset - start) / ps == page
+            });
+            if same {
+                self.install(&mut state, offset, offset + mapped * ps);
+                if state.ptes.contains_key(&offset) {
+                    return Ok(waited);
+                }
+            }
+        }
+    }
+
+    /// Maps `len` bytes of `source`'s pages from `source_offset` into the window at `offset`,
+    /// replacing what was mapped there, and then its pages in memory: one change to the second
+    /// stage, if there is one (`SecondStage::begin_change`).
     fn map(
-        &self,
+        self: &Arc<Self>,
         offset: u64,
-        vmo: &zx::Vmo,
-        vmo_offset: u64,
+        source: &Arc<dyn Source>,
+        source_offset: u64,
         len: u64,
         writable: bool,
     ) -> Result<()> {
-        let _change = self.stage.as_deref().map(Change::begin);
-        let mut flags =
-            zx::VmarFlagsExtended::PERM_READ | zx::VmarFlagsExtended::SPECIFIC_OVERWRITE;
-        if writable {
-            flags |= zx::VmarFlagsExtended::PERM_WRITE;
+        let _change = self.stage().map(|stage| Change::begin(stage.as_ref()));
+        let end = offset + len;
+        let mut state = self.state.lock().unwrap();
+        self.unmap_ptes(&mut state, offset, end);
+        let forgotten = state.forget(offset, end);
+        let identity = source_identity(source);
+        let first = !state.by_source.contains_key(&identity);
+        let page = source_offset / page_size();
+        state.insert(offset, Mapping { end, source: source.clone(), page, writable });
+        if first {
+            source.mapped(self);
         }
-        // SAFETY: The mappings replaced are the window's, which only the guest accesses.
-        unsafe { self.vmar.map_unsafe(offset as usize, vmo, vmo_offset, len as usize, flags) }
-            .inspect_err(|status| {
-                log::warn!(
-                    "fxdax: mapping {len:#x} bytes into the DAX window at {offset:#x}: {status}"
-                )
-            })
-            .errno()?;
-        if let Some(stage) = &self.stage {
+        if let Some(stage) = self.stage() {
             stage.window_mapped(offset, len);
         }
-        // The pages the VMO has in memory are mapped now, so that the guest's first accesses to
-        // them do not fault here.
-        self.vmar
-            .op_range(zx::VmarOp::MAP_RANGE, self.base + offset as usize, len as usize)
-            .inspect_err(|status| {
-                log::warn!(
-                    "fxdax: populating {len:#x} bytes of the DAX window at {offset:#x}: {status}"
-                )
-            })
-            .errno()?;
+        // Its pages in memory are mapped now, so that the guest's first accesses to them do not
+        // fault.
+        self.install(&mut state, offset, end);
+        self.unmapped(&state, forgotten);
         Ok(())
     }
 
     /// Maps the pages in memory of what is mapped at `len` bytes of the window at `offset`, so
     /// that the guest's first accesses to them do not fault.
-    fn populate(&self, offset: u64, len: u64) -> Result<()> {
-        self.vmar.op_range(zx::VmarOp::MAP_RANGE, self.base + offset as usize, len as usize).errno()
+    fn populate(&self, offset: u64, len: u64) {
+        let mut state = self.state.lock().unwrap();
+        self.install(&mut state, offset, offset + len);
     }
 
     /// Unmaps `len` bytes of the window at `offset`.
-    fn unmap(&self, offset: u64, len: u64) -> Result<()> {
-        // SAFETY: Only the guest accesses the window's memory, which the window hands out only to
-        // the VMM.
-        unsafe { self.vmar.unmap(self.base + offset as usize, len as usize) }.errno()
+    fn unmap(&self, offset: u64, len: u64) {
+        let end = offset + len;
+        let mut state = self.state.lock().unwrap();
+        self.unmap_ptes(&mut state, offset, end);
+        let forgotten = state.forget(offset, end);
+        self.unmapped(&state, forgotten);
+    }
+
+    /// Tells the sources `forgotten` that no longer have a mapping in the window so.
+    fn unmapped(&self, state: &WindowState, forgotten: Vec<Arc<dyn Source>>) {
+        let mut told = BTreeSet::new();
+        for source in forgotten {
+            let identity = source_identity(&source);
+            if !state.by_source.contains_key(&identity) && told.insert(identity) {
+                source.unmapped(self);
+            }
+        }
+    }
+
+    /// Unmaps the pages the window has mapped of `source`, by its identity, that `evicted` says
+    /// are of the frames it evicts: before it lets go of them.
+    pub(crate) fn unmap_pages_of(&self, source: usize, evicted: &dyn Fn(u32) -> bool) {
+        let mut state = self.state.lock().unwrap();
+        let Some(starts) = state.by_source.get(&source) else { return };
+        let ranges: Vec<(u64, u64)> =
+            starts.iter().map(|start| (*start, state.mappings[start].end)).collect();
+        let mut gone = Vec::new();
+        for (start, end) in ranges {
+            gone.extend(
+                (state.ptes.range(start..end))
+                    .filter(|(_, pte)| evicted(pte.frame))
+                    .map(|(offset, _)| *offset),
+            );
+        }
+        for offset in &gone {
+            state.ptes.remove(offset);
+        }
+        self.unmap_runs(&gone);
+    }
+
+    /// Maps, where nothing is mapped, the pages in memory of the mappings of `start..end`: in runs
+    /// of pages consecutive in the window and in an arena's object, each one change of the second
+    /// stage.
+    fn install(&self, state: &mut WindowState, start: u64, end: u64) {
+        let ps = page_size();
+        let staged = self.stage().is_some();
+        // The pages to map, in order: their offsets, where they are, and their protections.
+        let mut pages: Vec<(u64, PhysLocation, Protection)> = Vec::new();
+        for mapping_start in state.overlapping(start, end) {
+            let mapping = &state.mappings[&mapping_start];
+            let (from, to) = (start.max(mapping_start), end.min(mapping.end));
+            let first = mapping.page + (from - mapping_start) / ps;
+            let protection =
+                if mapping.writable { Protection::ReadWrite } else { Protection::Read };
+            let ptes = &state.ptes;
+            let mut found = Vec::new();
+            mapping.source.each_present(first..first + (to - from) / ps, &mut |page, frame| {
+                let offset = from + (page - first) * ps;
+                if ptes.contains_key(&offset) {
+                    return;
+                }
+                // Once freed, it waits for the stage to take it away (`physmem::quarantine_with`,
+                // TASK-79.9).
+                if staged {
+                    frame.mark_staged();
+                }
+                found.push((offset, Pte { location: frame.location(), frame: frame.frame() }));
+            });
+            for (offset, pte) in found {
+                state.ptes.insert(offset, pte);
+                pages.push((offset, pte.location, protection));
+            }
+        }
+        let mut run: Option<(u64, PhysLocation, u64, Protection)> = None;
+        for (offset, location, protection) in pages {
+            match &mut run {
+                Some((at, first, len, prot))
+                    if *at + *len == offset
+                        && first.arena == location.arena
+                        && first.offset + *len == location.offset
+                        && *prot == protection =>
+                {
+                    *len += ps;
+                }
+                _ => {
+                    if let Some((at, first, len, prot)) =
+                        run.replace((offset, location, ps, protection))
+                    {
+                        self.map_run(at, first, len, prot);
+                    }
+                }
+            }
+        }
+        if let Some((at, first, len, prot)) = run {
+            self.map_run(at, first, len, prot);
+        }
+    }
+
+    /// Unmaps the pages the window has mapped of `start..end`.
+    fn unmap_ptes(&self, state: &mut WindowState, start: u64, end: u64) {
+        let gone: Vec<u64> = state.ptes.range(start..end).map(|(offset, _)| *offset).collect();
+        for offset in &gone {
+            state.ptes.remove(offset);
+        }
+        self.unmap_runs(&gone);
+    }
+
+    /// Unmaps the pages at `offsets`, in order, in runs of consecutive pages.
+    fn unmap_runs(&self, offsets: &[u64]) {
+        let ps = page_size();
+        let mut runs: Vec<(u64, u64)> = Vec::new();
+        for &offset in offsets {
+            match runs.last_mut() {
+                Some((start, len)) if *start + *len == offset => *len += ps,
+                _ => runs.push((offset, ps)),
+            }
+        }
+        for (start, len) in runs {
+            match &self.translation {
+                Translation::Stage(stage) => stage.unmap(start, len),
+                Translation::Host { base } => {
+                    let at = base + start as usize;
+                    reserve(Some(at), len as usize).expect("the window's memory reserved again");
+                }
+            }
+        }
+    }
+
+    /// Maps the `len` bytes at `offset` to the pages at `location`, with `protection`.
+    fn map_run(&self, offset: u64, location: PhysLocation, len: u64, protection: Protection) {
+        match &self.translation {
+            Translation::Stage(stage) => stage.map(offset, location, len, protection),
+            Translation::Host { base } => {
+                let fd = crate::pages::arena_memory(location.arena).expect("the page's arena");
+                let prot = match protection {
+                    Protection::Read => libc::PROT_READ,
+                    Protection::ReadWrite => libc::PROT_READ | libc::PROT_WRITE,
+                };
+                let at = (base + offset as usize) as *mut libc::c_void;
+                // SAFETY: Maps pages of physical memory, shared, over the window's reservation,
+                // which only the guest, a test, accesses.
+                let addr = unsafe {
+                    use std::os::fd::AsRawFd as _;
+                    let (flags, fd) = (libc::MAP_SHARED | libc::MAP_FIXED, fd.as_raw_fd());
+                    libc::mmap(at, len as usize, prot, flags, fd, location.offset as libc::off_t)
+                };
+                assert_eq!(addr, at, "map pages: {}", std::io::Error::last_os_error());
+            }
+        }
     }
 
     /// Checks that `len` bytes at `offset` are page aligned and within the window.
@@ -442,6 +727,32 @@ impl Window {
         }
         Ok(())
     }
+}
+
+impl Drop for Window {
+    fn drop(&mut self) {
+        if let Translation::Host { base } = self.translation {
+            // SAFETY: The reservation is the window's own.
+            let status = unsafe { libc::munmap(base as *mut libc::c_void, self.size as usize) };
+            debug_assert_eq!(status, 0, "unreserve a window: {}", std::io::Error::last_os_error());
+        }
+    }
+}
+
+/// Reserves `len` bytes of host address space, at `at` if given, over what is there, inaccessible
+/// until pages are mapped there.
+fn reserve(at: Option<usize>, len: usize) -> std::io::Result<usize> {
+    let flags = libc::MAP_PRIVATE
+        | libc::MAP_ANON
+        | libc::MAP_NORESERVE
+        | if at.is_some() { libc::MAP_FIXED } else { 0 };
+    let hint = at.unwrap_or(0) as *mut libc::c_void;
+    // SAFETY: Either an address hint, or replacing part of a window's own reservation.
+    let base = unsafe { libc::mmap(hint, len, libc::PROT_NONE, flags, -1, 0) };
+    if base == libc::MAP_FAILED {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(base as usize)
 }
 
 /// The rules of how a window changes its mappings, each of which its Shuttle tests show to be
@@ -479,7 +790,7 @@ pub(crate) trait Keep: Clone {
 
 impl<T: ?Sized> Keep for Arc<T> {
     fn identity(&self) -> usize {
-        Arc::as_ptr(self) as *const () as usize
+        source_identity(self)
     }
 }
 
@@ -500,8 +811,6 @@ pub(crate) struct Dax<K: Keep> {
     kept: HashMap<usize, BTreeSet<u64>>,
     /// The second stage, if the window has one.
     stage: Option<Arc<dyn SecondStage>>,
-    /// fxdax: zeros, the window's size of them, once asked for ([`Dax::zeros`]).
-    zeros: Option<Arc<zx::Vmo>>,
     /// The thread serving the faults on the host memory a test's window was created in
     /// ([`Dax::in_host_memory`]), which runs until the window is dropped.
     #[cfg(all(test, target_os = "linux"))]
@@ -518,7 +827,6 @@ impl<K: Keep> Dax<K> {
             mappings: BTreeMap::new(),
             kept: HashMap::new(),
             stage: second_stage,
-            zeros: None,
             #[cfg(all(test, target_os = "linux"))]
             _faults: None,
         };
@@ -581,18 +889,18 @@ impl<K: Keep> Dax<K> {
         self.window.check_range(offset, len)
     }
 
-    /// Maps `len` bytes of `vmo`, whose memory `keep` keeps alive, at `vmo_offset` into the
+    /// Maps `len` bytes of `source`, whose memory `keep` keeps alive, at `source_offset` into the
     /// window at `offset`.
     pub fn map(
         &mut self,
         offset: u64,
         keep: K,
-        vmo: &zx::Vmo,
-        vmo_offset: u64,
+        source: &Arc<dyn Source>,
+        source_offset: u64,
         len: u64,
         writable: bool,
     ) -> Result<()> {
-        self.window.map(offset, vmo, vmo_offset, len, writable)?;
+        self.window.map(offset, source, source_offset, len, writable)?;
         let end = offset + len;
         self.forget(offset, end);
         self.insert(offset, end, keep);
@@ -600,16 +908,16 @@ impl<K: Keep> Dax<K> {
     }
 
     /// Maps the parts of the window's `len` bytes at `offset` that mappings `is_kept` says are
-    /// kept alive by what was mapped there still map, read-only, from `vmo` at `vmo_offset`, kept
-    /// alive by `keep`: a writable mapping of what has become immutable since, and moved. Returns
-    /// the parts, as the window's offsets and lengths.
+    /// kept alive by what was mapped there still map, read-only, from `source` at `source_offset`,
+    /// kept alive by `keep`: a writable mapping of what has become immutable since, and moved.
+    /// Returns the parts, as the window's offsets and lengths.
     pub fn make_read_only(
         &mut self,
         offset: u64,
         len: u64,
         keep: K,
-        vmo: &zx::Vmo,
-        vmo_offset: u64,
+        source: &Arc<dyn Source>,
+        source_offset: u64,
         is_kept: impl Fn(&K) -> bool,
     ) -> Result<Vec<(u64, u64)>> {
         let end = offset + len;
@@ -620,8 +928,8 @@ impl<K: Keep> Dax<K> {
             .collect();
         let mut mapped = Vec::with_capacity(parts.len());
         for (start, part_end) in parts {
-            let (vmo_offset, len) = (vmo_offset + (start - offset), part_end - start);
-            self.map(start, keep.clone(), vmo, vmo_offset, len, false)?;
+            let (source_offset, len) = (source_offset + (start - offset), part_end - start);
+            self.map(start, keep.clone(), source, source_offset, len, false)?;
             mapped.push((start, len));
         }
         Ok(mapped)
@@ -629,14 +937,15 @@ impl<K: Keep> Dax<K> {
 
     /// Unmaps `len` bytes of the window at `offset`.
     pub fn unmap(&mut self, offset: u64, len: u64) -> Result<()> {
-        self.window.unmap(offset, len)?;
+        self.window.unmap(offset, len);
         self.forget(offset, offset + len);
         Ok(())
     }
 
     /// Maps the pages in memory of what is mapped at `len` bytes of the window at `offset`.
     pub fn populate(&self, offset: u64, len: u64) -> Result<()> {
-        self.window.populate(offset, len)
+        self.window.populate(offset, len);
+        Ok(())
     }
 
     /// Maps the window's ranges whose mappings keep alive what has the identity `kept`, what a
@@ -644,15 +953,15 @@ impl<K: Keep> Dax<K> {
     /// goes with their old mappings. The guest may still touch such a range, as a store racing the
     /// move of what it maps, which faults as on any read-only page; unmapped, its fault would find
     /// nothing to map.
-    pub fn replace_kept(&mut self, kept: usize, keep: K, zeros: &zx::Vmo) -> Result<()> {
+    pub fn replace_kept(&mut self, kept: usize, keep: K, zeros: &Arc<dyn Source>) -> Result<()> {
         let starts: Vec<u64> =
             self.kept.get(&kept).map(|starts| starts.iter().copied().collect()).unwrap_or_default();
         for start in starts {
             let end = self.mappings[&start].0;
             if rules().free_maps_zeros {
-                self.window.map(start, zeros, start, end - start, false)?;
+                self.window.map(start, zeros, 0, end - start, false)?;
             } else {
-                self.window.unmap(start, end - start)?;
+                self.window.unmap(start, end - start);
             }
             self.remove(start);
             self.insert(start, end, keep.clone());
@@ -673,21 +982,10 @@ impl<K: Keep> Dax<K> {
             .collect()
     }
 
-    /// The window's size.
-    pub fn size(&self) -> u64 {
-        self.window.size()
-    }
-
-    /// fxdax: zeros, the window's size of them, which it maps where nothing else is to be read:
-    /// made as first asked for, and gone with the window, as large as it, however large the window
-    /// before it on its store was (TASK-79.45).
-    pub fn zeros(&mut self) -> Result<Arc<zx::Vmo>> {
-        if let Some(zeros) = &self.zeros {
-            return Ok(zeros.clone());
-        }
-        let zeros = Arc::new(zx::Vmo::create(self.size()).errno()?);
-        self.zeros = Some(zeros.clone());
-        Ok(zeros)
+    /// Zeros, which the window maps where nothing else is to be read: one page of them, read-only,
+    /// wherever it maps them (`crate::cache::zeros`).
+    pub fn zeros(&self) -> Arc<dyn Source> {
+        crate::cache::zeros()
     }
 
     /// The window's mappings, in order, as their starts, ends and what keeps them alive.
@@ -745,43 +1043,168 @@ impl<K: Keep> Dax<K> {
 pub(crate) mod tests {
     use super::*;
     use futures::FutureExt;
-    use std::task::{Context, Poll};
+    use std::task::{Context, Poll, Waker};
 
-    const KEY: u64 = 3;
+    #[cfg(feature = "shuttle")]
+    use shuttle::sync::Condvar;
+    #[cfg(not(feature = "shuttle"))]
+    use std::sync::Condvar;
 
-    /// A pager-backed VMO of `pages` pages, served by the test, and its pager and port.
-    pub(crate) struct TestPager {
-        pub port: zx::Port,
-        pub pager: zx::Pager,
-        pub vmo: zx::Vmo,
+    /// How a [`TestSource`]'s pages come into memory.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Kind {
+        /// Each is in memory from the start.
+        Filled,
+        /// Each is asked for, and comes in once the test supplies it ([`TestSource::supply`]).
+        Paged,
+        /// Each comes in, zeros, as it is first brought in, as an open extent's do.
+        Anonymous,
     }
 
-    impl TestPager {
-        pub fn new(pages: u64) -> Self {
-            let port = zx::Port::create();
-            let pager = zx::Pager::create(zx::PagerOptions::empty()).unwrap();
-            let vmo =
-                pager.create_vmo(zx::VmoOptions::empty(), &port, KEY, pages * page_size()).unwrap();
-            Self { port, pager, vmo }
+    /// A test's source of pages, of physical memory's default arena.
+    pub(crate) struct TestSource {
+        kind: Kind,
+        pages: Mutex<Vec<Option<physmem::Page>>>,
+        /// The pages asked for, and not yet taken ([`TestSource::request`]).
+        requests: Mutex<Vec<u64>>,
+        asked: Condvar,
+        /// What waits for pages to be supplied, under the lock their supply takes, so that none
+        /// misses it.
+        wakers: Mutex<Vec<Waker>>,
+    }
+
+    impl TestSource {
+        fn new(kind: Kind, pages: Vec<Option<physmem::Page>>) -> Arc<Self> {
+            Arc::new(Self {
+                kind,
+                pages: Mutex::new(pages),
+                requests: Mutex::new(Vec::new()),
+                asked: Condvar::new(),
+                wakers: Mutex::new(Vec::new()),
+            })
         }
 
-        /// The range of the read request queued on the port, waiting up to `deadline` for it.
-        pub fn read_request(&self, deadline: zx::MonotonicInstant) -> std::ops::Range<u64> {
-            let packet = self.port.wait(deadline).expect("no page request");
-            let zx::PacketContents::Pager(request) = packet.contents() else {
-                panic!("Unexpected packet");
-            };
-            assert_eq!(request.command(), zx::sys::zx_page_request_command_t::ZX_PAGER_VMO_READ);
-            request.range()
+        /// A page of physical memory, its bytes `value`.
+        fn page_of(value: u8) -> physmem::Page {
+            let page = physmem::alloc(physmem::ArenaId::DEFAULT, physmem::Wait::No).unwrap();
+            // SAFETY: The page is allocated, and only this test's.
+            unsafe { std::ptr::write_bytes(page.as_ptr(), value, page_size() as usize) };
+            page
+        }
+
+        /// `pages` pages in memory, each its number plus `first`.
+        pub fn numbered(pages: u64, first: u8) -> Arc<Self> {
+            let pages = (0..pages).map(|page| Some(Self::page_of(first + page as u8))).collect();
+            Self::new(Kind::Filled, pages)
+        }
+
+        /// `pages` pages in memory, each its bytes `value`.
+        #[cfg_attr(not(any(target_os = "linux", feature = "shuttle")), allow(dead_code))]
+        pub fn filled(pages: u64, value: u8) -> Arc<Self> {
+            Self::new(Kind::Filled, (0..pages).map(|_| Some(Self::page_of(value))).collect())
+        }
+
+        /// `pages` pages in memory, page `page`'s bytes `tag(page)`, scattered over physical
+        /// memory: no two consecutive, so that a window maps a run of each.
+        #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+        pub fn scattered(pages: u64, tag: impl Fn(u64) -> u8) -> Arc<Self> {
+            let mut spacers = Vec::new();
+            let pages = (0..pages)
+                .map(|page| {
+                    let frame = Self::page_of(tag(page));
+                    spacers.push(Self::page_of(0));
+                    Some(frame)
+                })
+                .collect();
+            drop(spacers);
+            Self::new(Kind::Filled, pages)
+        }
+
+        /// `pages` pages, none in memory, each brought in once the test supplies it.
+        pub fn paged(pages: u64) -> Arc<Self> {
+            Self::new(Kind::Paged, (0..pages).map(|_| None).collect())
+        }
+
+        /// `pages` pages, each zeros as it is first brought in.
+        pub fn anonymous(pages: u64) -> Arc<Self> {
+            Self::new(Kind::Anonymous, (0..pages).map(|_| None).collect())
+        }
+
+        /// It, as a window's mappings take it.
+        pub fn source(self: &Arc<Self>) -> Arc<dyn Source> {
+            self.clone()
         }
 
         /// Supplies `page` with bytes of `value`.
         pub fn supply(&self, page: u64, value: u8) {
-            let aux = zx::Vmo::create(page_size()).unwrap();
-            aux.write(&vec![value; page_size() as usize], 0).unwrap();
-            self.pager
-                .supply_pages(&self.vmo, page * page_size()..(page + 1) * page_size(), &aux, 0)
-                .unwrap();
+            let frame = Self::page_of(value);
+            let woken = {
+                let mut pages = self.pages.lock().unwrap();
+                pages[page as usize] = Some(frame);
+                std::mem::take(&mut *self.wakers.lock().unwrap())
+            };
+            for waker in woken {
+                waker.wake();
+            }
+        }
+
+        /// The page asked for next, waiting for one.
+        #[cfg_attr(not(any(target_os = "linux", feature = "shuttle")), allow(dead_code))]
+        pub fn request(&self) -> u64 {
+            let mut requests = self.requests.lock().unwrap();
+            while requests.is_empty() {
+                requests = self.asked.wait(requests).unwrap();
+            }
+            requests.remove(0)
+        }
+
+        /// The pages asked for, without waiting.
+        pub fn requests(&self) -> Vec<u64> {
+            std::mem::take(&mut *self.requests.lock().unwrap())
+        }
+
+        /// How many of its pages are in memory.
+        pub fn present(&self) -> u64 {
+            self.pages.lock().unwrap().iter().filter(|page| page.is_some()).count() as u64
+        }
+    }
+
+    impl Source for TestSource {
+        fn each_present(&self, pages: Range<u64>, found: &mut dyn FnMut(u64, &physmem::Page)) {
+            let held = self.pages.lock().unwrap();
+            for page in pages {
+                if let Some(Some(frame)) = held.get(page as usize) {
+                    found(page, frame);
+                }
+            }
+        }
+
+        fn bring_in(self: Arc<Self>, page: u64) -> BoxFuture<'static, Result<bool>> {
+            let index = page as usize;
+            {
+                let mut pages = self.pages.lock().unwrap();
+                if pages[index].is_some() {
+                    return Box::pin(std::future::ready(Ok(false)));
+                }
+                match self.kind {
+                    Kind::Filled => panic!("page {page} of a filled source is not in memory"),
+                    Kind::Anonymous => {
+                        pages[index] = Some(Self::page_of(0));
+                        return Box::pin(std::future::ready(Ok(false)));
+                    }
+                    Kind::Paged => {}
+                }
+            }
+            self.requests.lock().unwrap().push(page);
+            self.asked.notify_all();
+            Box::pin(std::future::poll_fn(move |cx| {
+                let pages = self.pages.lock().unwrap();
+                if pages[index].is_some() {
+                    return Poll::Ready(Ok(true));
+                }
+                self.wakers.lock().unwrap().push(cx.waker().clone());
+                Poll::Pending
+            }))
         }
     }
 
@@ -790,14 +1213,14 @@ pub(crate) mod tests {
     #[test]
     fn replacing_what_keeps_mappings_finds_what_remains_of_them() {
         let ps = page_size();
-        let vmo = zx::Vmo::create(8 * ps).unwrap();
-        let zeros = zx::Vmo::create(8 * ps).unwrap();
+        let source = TestSource::anonymous(8).source();
+        let zeros = crate::cache::zeros();
         let (mut dax, _window) = Dax::<Arc<u8>>::new(8 * ps, None).unwrap();
         let (a, b, z) = (Arc::new(0), Arc::new(1), Arc::new(2));
-        dax.map(0, a.clone(), &vmo, 0, 4 * ps, true).unwrap();
-        dax.map(4 * ps, b.clone(), &vmo, 4 * ps, 2 * ps, true).unwrap();
+        dax.map(0, a.clone(), &source, 0, 4 * ps, true).unwrap();
+        dax.map(4 * ps, b.clone(), &source, 4 * ps, 2 * ps, true).unwrap();
         // Over the middle of `a`'s mapping, which splits around it.
-        dax.map(ps, b.clone(), &vmo, ps, ps, true).unwrap();
+        dax.map(ps, b.clone(), &source, ps, ps, true).unwrap();
 
         dax.replace_kept(a.identity(), z.clone(), &zeros).unwrap();
         let kept_by = |keep: &Arc<u8>| -> Vec<(u64, u64)> {
@@ -818,19 +1241,18 @@ pub(crate) mod tests {
     /// supplied.
     #[test]
     fn faults_wait_concurrently() {
-        let pager = TestPager::new(2);
+        let pager = TestSource::paged(2);
         let (dax, window) = Dax::<()>::new(2 * page_size(), None).unwrap();
-        dax.window.map(0, &pager.vmo, 0, 2 * page_size(), false).unwrap();
+        dax.window.map(0, &pager.source(), 0, 2 * page_size(), false).unwrap();
         let mut cx = Context::from_waker(futures::task::noop_waker_ref());
 
         let mut first = Box::pin(window.fault(0, Access::Read));
         let mut second = Box::pin(window.fault(page_size(), Access::Read));
         assert!(first.poll_unpin(&mut cx).is_pending());
         assert!(second.poll_unpin(&mut cx).is_pending());
-        let now = zx::MonotonicInstant::INFINITE_PAST;
-        let mut requests = [pager.read_request(now), pager.read_request(now)];
-        requests.sort_by_key(|range| range.start);
-        assert_eq!(requests, [0..page_size(), page_size()..2 * page_size()]);
+        let mut requests = pager.requests();
+        requests.sort();
+        assert_eq!(requests, [0, 1]);
 
         pager.supply(1, 2);
         assert_eq!(second.poll_unpin(&mut cx), Poll::Ready(Ok(())));
@@ -852,20 +1274,26 @@ pub(crate) mod tests {
         fn keep_until_made(&self, _keep: Box<dyn Send>) {}
     }
 
-    /// A second stage that keeps the window's pages as the kernel maps them in it, the ranges the
+    /// A second stage that keeps the window's pages as the window maps them in it, the ranges the
     /// window maps anew, and its deferrals, each of which defers changes.
     #[derive(Default)]
-    struct Recorded {
-        pages: std::sync::Mutex<BTreeMap<u64, Protection>>,
+    pub(crate) struct Recorded {
+        pages: std::sync::Mutex<BTreeMap<u64, (PhysLocation, Protection)>>,
         mapped: std::sync::Mutex<Vec<(u64, u64)>>,
         deferrals: std::sync::Mutex<Vec<&'static str>>,
     }
 
     impl Recorded {
         /// The pages mapped, by their numbers.
-        fn pages(&self) -> Vec<(u64, Protection)> {
+        pub fn pages(&self) -> Vec<(u64, Protection)> {
             let pages = self.pages.lock().unwrap();
-            pages.iter().map(|(offset, protection)| (offset / page_size(), *protection)).collect()
+            pages.iter().map(|(offset, (_, protection))| (offset / page_size(), *protection)).collect()
+        }
+
+        /// Where the pages mapped are, by their numbers.
+        pub fn locations(&self) -> Vec<(u64, PhysLocation)> {
+            let pages = self.pages.lock().unwrap();
+            pages.iter().map(|(offset, (location, _))| (offset / page_size(), *location)).collect()
         }
 
         fn each_page(offset: u64, len: u64) -> impl Iterator<Item = u64> {
@@ -874,23 +1302,19 @@ pub(crate) mod tests {
     }
 
     impl SecondStage for Recorded {
-        fn map(
-            &self,
-            offset: u64,
-            _phys: crate::kernel::PhysLocation,
-            len: u64,
-            protection: Protection,
-        ) {
+        fn map(&self, offset: u64, phys: PhysLocation, len: u64, protection: Protection) {
             let mut pages = self.pages.lock().unwrap();
             for page in Self::each_page(offset, len) {
-                assert_eq!(pages.insert(page, protection), None, "{page:#x} mapped twice");
+                let at = PhysLocation { arena: phys.arena, offset: phys.offset + (page - offset) };
+                let before = pages.insert(page, (at, protection));
+                assert!(before.is_none(), "{page:#x} mapped twice");
             }
         }
 
         fn protect(&self, offset: u64, len: u64, protection: Protection) {
             let mut pages = self.pages.lock().unwrap();
             for page in Self::each_page(offset, len) {
-                *pages.get_mut(&page).expect("a page mapped") = protection;
+                pages.get_mut(&page).expect("a page mapped").1 = protection;
             }
         }
 
@@ -915,31 +1339,12 @@ pub(crate) mod tests {
         }
     }
 
-    /// An anonymous VMO of `pages` pages, each its number plus `first`.
-    fn numbered(pages: u64, first: u8) -> zx::Vmo {
-        let vmo = zx::Vmo::create(pages * page_size()).unwrap();
-        for page in 0..pages {
-            let bytes = vec![first + page as u8; page_size() as usize];
-            vmo.write(&bytes, page * page_size()).unwrap();
-        }
-        vmo
-    }
-
     /// The byte at the start of page `page` of the window, which a load faults in first: of a
-    /// window with no second stage, whose host memory the kernel maps.
+    /// window with no second stage, whose host memory the window maps.
     fn load(window: &DaxWindow, page: u64) -> u8 {
         futures::executor::block_on(window.fault(page * page_size(), Access::Read)).unwrap();
         // SAFETY: The page is mapped, and nothing else accesses it.
         unsafe { *window.host_base().add((page * page_size()) as usize) }
-    }
-
-    /// The kernel's protections are the second stage's.
-    #[test]
-    fn protections_are_the_kernels() {
-        let protection = KernelSecondStage::protection;
-        assert_eq!(protection(libc::PROT_NONE), Protection::None);
-        assert_eq!(protection(libc::PROT_READ), Protection::Read);
-        assert_eq!(protection(libc::PROT_READ | libc::PROT_WRITE), Protection::ReadWrite);
     }
 
     /// The second stage, where alone the window's pages are mapped, maps the pages the window maps
@@ -949,13 +1354,18 @@ pub(crate) mod tests {
         let ps = page_size();
         let stage = Arc::new(Recorded::default());
         let (mut dax, window) = Dax::<()>::new(4 * ps, Some(stage.clone())).unwrap();
-        assert_eq!(dax.window.gpas.host_base(), None);
-        let vmo = zx::Vmo::create(4 * ps).unwrap();
-        vmo.write(&[1], 0).unwrap();
-        dax.map(0, (), &vmo, 0, 4 * ps, false).unwrap();
+        assert_eq!(dax.window.host_base(), None);
+        let source = TestSource::paged(4);
+        source.supply(0, 1);
+        dax.map(0, (), &source.source(), 0, 4 * ps, false).unwrap();
         assert_eq!(*stage.mapped.lock().unwrap(), [(0, 4 * ps)]);
         assert_eq!(stage.pages(), [(0, Protection::Read)]);
-        futures::executor::block_on(window.fault(2 * ps + 5, Access::Read)).unwrap();
+        let mut fault = Box::pin(window.fault(2 * ps + 5, Access::Read));
+        let mut cx = Context::from_waker(futures::task::noop_waker_ref());
+        assert!(fault.poll_unpin(&mut cx).is_pending());
+        assert_eq!(source.requests(), [2]);
+        source.supply(2, 3);
+        assert_eq!(fault.poll_unpin(&mut cx), Poll::Ready(Ok(())));
         assert_eq!(stage.pages(), [(0, Protection::Read), (2, Protection::Read)]);
         let store = futures::executor::block_on(window.fault(ps, Access::Write));
         assert_eq!(store, Err(Errno::EACCES));
@@ -966,80 +1376,65 @@ pub(crate) mod tests {
         assert_eq!(unmapped, Err(Errno::ENOENT));
 
         // Mapped anew where pages were, its pages in memory are mapped at once.
-        dax.map(2 * ps, (), &numbered(2, 1), 0, 2 * ps, false).unwrap();
+        dax.map(2 * ps, (), &TestSource::numbered(2, 1).source(), 0, 2 * ps, false).unwrap();
         assert_eq!(*stage.mapped.lock().unwrap(), [(0, 4 * ps), (2 * ps, 2 * ps)]);
         assert_eq!(stage.pages(), [(2, Protection::Read), (3, Protection::Read)]);
     }
 
-    /// A store to a clean page of a file whose pager tracks its dirty pages maps it writable once
-    /// the pager dirties it; writeback takes the write access away again.
+    /// Pages consecutive in the window and in physical memory are mapped in one change of the
+    /// second stage.
     #[test]
-    fn stores_dirty_pages_and_writeback_cleans_them() {
+    fn consecutive_pages_are_mapped_together() {
         let ps = page_size();
-        let port = zx::Port::create();
-        let pager = zx::Pager::create(zx::PagerOptions::empty()).unwrap();
-        let vmo = pager.create_vmo(zx::VmoOptions::TRAP_DIRTY, &port, KEY, ps).unwrap();
-        let aux = zx::Vmo::create(ps).unwrap();
-        pager.supply_pages(&vmo, 0..ps, &aux, 0).unwrap();
+        let first = physmem::alloc(physmem::ArenaId::DEFAULT, physmem::Wait::No).unwrap();
+        let second = physmem::alloc_after(&first).expect("the page after a page just allocated");
+        let at = first.location();
+        let source = TestSource::new(Kind::Filled, vec![Some(first), Some(second)]);
         let stage = Arc::new(Recorded::default());
-        let (mut dax, window) = Dax::<()>::new(ps, Some(stage.clone())).unwrap();
-        dax.map(0, (), &vmo, 0, ps, true).unwrap();
-        futures::executor::block_on(window.fault(0, Access::Read)).unwrap();
-        assert_eq!(stage.pages(), [(0, Protection::Read)]);
-
-        let mut cx = Context::from_waker(futures::task::noop_waker_ref());
-        let mut store = Box::pin(window.fault(0, Access::Write));
-        assert!(store.poll_unpin(&mut cx).is_pending());
-        let packet = port.wait(zx::MonotonicInstant::INFINITE_PAST).unwrap();
-        let zx::PacketContents::Pager(request) = packet.contents() else { panic!("{packet:?}") };
-        assert_eq!(request.command(), zx::sys::zx_page_request_command_t::ZX_PAGER_VMO_DIRTY);
-        pager.op_range(zx::PagerOp::Dirty, &vmo, request.range()).unwrap();
-        assert_eq!(store.poll_unpin(&mut cx), Poll::Ready(Ok(())));
-        assert_eq!(stage.pages(), [(0, Protection::ReadWrite)]);
-
-        let begin = zx::PagerOp::WritebackBegin(zx::PagerWritebackBeginOptions::empty());
-        pager.op_range(begin, &vmo, 0..ps).unwrap();
-        assert_eq!(stage.pages(), [(0, Protection::Read)]);
+        let (mut dax, _window) = Dax::<()>::new(2 * ps, Some(stage.clone())).unwrap();
+        dax.map(0, (), &source.source(), 0, 2 * ps, true).unwrap();
+        let next = PhysLocation { arena: at.arena, offset: at.offset + ps };
+        assert_eq!(stage.locations(), [(0, at), (1, next)]);
+        assert_eq!(stage.pages(), [(0, Protection::ReadWrite), (1, Protection::ReadWrite)]);
     }
 
-    /// A store fault that follows on from the last dirties the pages after it too; a load, or a
+    /// A store fault that follows on from the last brings in the pages after it too; a load, or a
     /// store elsewhere, does not.
     #[test]
-    fn stores_that_follow_on_dirty_the_pages_after_them() {
+    fn stores_that_follow_on_bring_in_the_pages_after_them() {
         let ps = page_size();
-        let vmo = zx::Vmo::create(64 * ps).unwrap();
+        let source = TestSource::anonymous(64);
         let (mut dax, window) = Dax::<()>::new(64 * ps, None).unwrap();
-        dax.map(0, (), &vmo, 0, 64 * ps, true).unwrap();
-        let committed = || vmo.info().unwrap().committed_bytes / ps;
+        dax.map(0, (), &source.source(), 0, 64 * ps, true).unwrap();
         let fault = |offset: u64, access: Access| {
             futures::executor::block_on(window.fault(offset, access)).unwrap();
-            committed()
+            source.present()
         };
         assert_eq!(fault(5, Access::Write), 1);
         assert_eq!(fault(ps + 7, Access::Write), 17);
         assert_eq!(fault(17 * ps + 1, Access::Write), 33);
         assert_eq!(fault(40 * ps, Access::Write), 34);
-        assert_eq!(fault(41 * ps, Access::Read), 34);
+        // A load brings in its page, an open extent's, as a store would.
+        assert_eq!(fault(41 * ps, Access::Read), 35);
         assert_eq!(fault(41 * ps, Access::Write), 50);
     }
 
-    /// A fault on a page alone dirties that page alone, and a store on the next follows on from
+    /// A fault on a page alone brings in that page alone, and a store on the next follows on from
     /// it.
     #[cfg(target_os = "linux")]
     #[test]
     fn faults_on_a_page_alone_are_followed_on_from() {
         let ps = page_size();
-        let vmo = zx::Vmo::create(32 * ps).unwrap();
+        let source = TestSource::anonymous(32);
         let (mut dax, window) = Dax::<()>::new(32 * ps, None).unwrap();
-        dax.map(0, (), &vmo, 0, 32 * ps, true).unwrap();
-        let committed = || vmo.info().unwrap().committed_bytes / ps;
+        dax.map(0, (), &source.source(), 0, 32 * ps, true).unwrap();
         futures::executor::block_on(window.fault_page(ps + 3, Access::Write)).unwrap();
-        assert_eq!(committed(), 1);
+        assert_eq!(source.present(), 1);
         futures::executor::block_on(window.fault(2 * ps, Access::Write)).unwrap();
-        assert_eq!(committed(), 17);
+        assert_eq!(source.present(), 17);
         futures::executor::block_on(window.fault_page(20 * ps, Access::Read)).unwrap();
         futures::executor::block_on(window.fault(21 * ps, Access::Write)).unwrap();
-        assert_eq!(committed(), 18);
+        assert_eq!(source.present(), 19);
     }
 
     /// Populating maps the pages of a range that are in memory; unmapping part of a mapping
@@ -1047,10 +1442,10 @@ pub(crate) mod tests {
     #[test]
     fn ranges_are_populated_and_unmapped_where_they_are() {
         let ps = page_size();
-        let pager = TestPager::new(4);
+        let pager = TestSource::paged(4);
         let stage = Arc::new(Recorded::default());
         let (mut dax, window) = Dax::<()>::new(4 * ps, Some(stage.clone())).unwrap();
-        dax.map(0, (), &pager.vmo, 0, 4 * ps, false).unwrap();
+        dax.map(0, (), &pager.source(), 0, 4 * ps, false).unwrap();
         assert_eq!(stage.pages(), []);
         pager.supply(2, 7);
         dax.populate(2 * ps, ps).unwrap();
@@ -1063,19 +1458,40 @@ pub(crate) mod tests {
         assert_eq!(mappings, [(0, 2 * ps), (3 * ps, 4 * ps)]);
     }
 
+    /// A source's pages unmapped by it, as it evicts them, are unmapped where a window maps them
+    /// alone: the other pages, and other sources', stay mapped.
+    #[test]
+    fn a_sources_evicted_pages_are_unmapped_from_the_window() {
+        let ps = page_size();
+        let (source, other) = (TestSource::numbered(4, 1), TestSource::numbered(2, 9));
+        let stage = Arc::new(Recorded::default());
+        let (mut dax, _window) = Dax::<()>::new(6 * ps, Some(stage.clone())).unwrap();
+        dax.map(0, (), &source.source(), 0, 4 * ps, false).unwrap();
+        dax.map(4 * ps, (), &other.source(), 0, 2 * ps, false).unwrap();
+        let frames: Vec<u32> = {
+            let mut frames = Vec::new();
+            source.each_present(1..3, &mut |_, frame| frames.push(frame.frame()));
+            frames
+        };
+        dax.window.unmap_pages_of(source_identity(&source), &|frame| frames.contains(&frame));
+        let pages: Vec<u64> = stage.pages().into_iter().map(|(page, _)| page).collect();
+        assert_eq!(pages, [0, 3, 4, 5]);
+    }
+
     /// Making a range read-only remaps the parts of it that what `is_kept` says still maps, from
-    /// the new VMO at the offsets they are at in the range, and no others.
+    /// the new source at the offsets they are at in the range, and no others.
     #[test]
     fn ranges_made_read_only_map_their_kept_parts_anew() {
         let ps = page_size();
-        let (old, new) = (numbered(7, 0xa0), numbered(8, 0xb0));
+        let (old, new) = (TestSource::numbered(7, 0xa0).source(), TestSource::numbered(8, 0xb0));
+        let new = new.source();
         let (mut dax, window) = Dax::<Arc<u8>>::new(8 * ps, None).unwrap();
         let (other, kept, after, moved) = (Arc::new(0), Arc::new(1), Arc::new(2), Arc::new(3));
         dax.map(0, other.clone(), &old, 0, 2 * ps, true).unwrap();
         dax.map(2 * ps, kept.clone(), &old, 2 * ps, 3 * ps, true).unwrap();
         dax.map(5 * ps, after.clone(), &old, 5 * ps, 2 * ps, true).unwrap();
 
-        // The range from the second page, at the new VMO's second.
+        // The range from the second page, at the new source's second.
         let is = |keep: Arc<u8>| move |k: &Arc<u8>| Arc::ptr_eq(k, &keep);
         let parts =
             dax.make_read_only(ps, 5 * ps, moved.clone(), &new, ps, is(kept.clone())).unwrap();
@@ -1105,13 +1521,13 @@ pub(crate) mod tests {
     #[test]
     fn freed_extents_ranges_map_zeros() {
         let ps = page_size();
-        let vmo = numbered(8, 1);
-        let zeros = zx::Vmo::create(8 * ps).unwrap();
+        let source = TestSource::numbered(8, 1).source();
+        let zeros = crate::cache::zeros();
         let (mut dax, window) = Dax::<Arc<u8>>::new(8 * ps, None).unwrap();
         let (freed, other, zero) = (Arc::new(0), Arc::new(1), Arc::new(2));
-        dax.map(0, freed.clone(), &vmo, 0, 2 * ps, true).unwrap();
-        dax.map(2 * ps, other.clone(), &vmo, 2 * ps, 2 * ps, true).unwrap();
-        dax.map(4 * ps, freed.clone(), &vmo, 4 * ps, 2 * ps, true).unwrap();
+        dax.map(0, freed.clone(), &source, 0, 2 * ps, true).unwrap();
+        dax.map(2 * ps, other.clone(), &source, 2 * ps, 2 * ps, true).unwrap();
+        dax.map(4 * ps, freed.clone(), &source, 4 * ps, 2 * ps, true).unwrap();
         dax.replace_kept(freed.identity(), zero.clone(), &zeros).unwrap();
 
         let loaded: Vec<u8> = (0..6).map(|page| load(&window, page)).collect();

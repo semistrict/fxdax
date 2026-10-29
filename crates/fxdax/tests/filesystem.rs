@@ -7,7 +7,7 @@
 use futures::executor::block_on;
 use fxdax::{
     DirEntry, Errno, FileType, Filesystem, Node, Owner, RenameFlags, Result, SetAttr, SetTime,
-    Storage, VolatileSlice, VolatileSliceMut, XattrMode, kernel,
+    Storage, VolatileSlice, VolatileSliceMut, XattrMode, pages,
 };
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -113,23 +113,6 @@ fn write_past_the_end_leaves_a_hole() {
         let contents = read_all(&file).await;
         assert!(contents[..100_000].iter().all(|&byte| byte == 0));
         assert_eq!(&contents[100_000..], b"end");
-    })
-}
-
-/// TASK-79.75: a write that takes pages of the kernel's, whose memory is full of pages nothing
-/// evicts (anonymous ones), fails with ENOMEM. The DIRTY request for its page, which Fxfs's
-/// response failed for want of memory, was resolved for the write to ask again, which it did for
-/// ever.
-#[test]
-fn writes_fail_with_enomem_with_memory_full_of_pages_nothing_evicts() {
-    kernel::configure(kernel::Config::with_memory(64 << 20)).expect("configure failed");
-    with_fs(async |fs| {
-        let (file, _) = fs.root().create(b"file", 0o644, OWNER).await.unwrap();
-        let len = zircon::vm::pmm::count_free_pages() * kernel::page_size();
-        let anonymous = zx::Vmo::create(len).unwrap();
-        anonymous.op_range(zx::VmoOp::COMMIT, 0, len).unwrap();
-        assert_eq!(zircon::vm::pmm::count_free_pages(), 0);
-        assert_eq!(errno(file.write(0, b"hello, world").await), Errno::ENOMEM);
     })
 }
 
@@ -406,6 +389,81 @@ fn renamed_directory_has_its_new_parent() {
         );
         assert_eq!(a.entries().await.unwrap(), []);
         assert_eq!(sub.entries().await.unwrap(), []);
+    })
+}
+
+/// A directory renamed into itself, or a directory in it however deep, fails with `EINVAL`, as
+/// rename(2) does, and stays where it is; a file over a directory fails with `EISDIR`, a directory
+/// over a file with `ENOTDIR`, and over a directory holding anything with `ENOTEMPTY`.
+#[test]
+fn renames_that_rename2_refuses_fail_as_it_does() {
+    with_fs(async |fs| {
+        let root = fs.root();
+        let (outer, _) = root.mkdir(b"outer", 0o755, OWNER).await.unwrap();
+        let (inner, _) = outer.mkdir(b"inner", 0o755, OWNER).await.unwrap();
+        let (deepest, _) = inner.mkdir(b"deepest", 0o755, OWNER).await.unwrap();
+        drop(inner);
+        let rename = |dir: &Node, name: &'static [u8], to: &Node, new_name: &'static [u8]| {
+            let (dir, to) = (dir.clone(), to.clone());
+            async move { dir.rename(name, &to, new_name, RenameFlags::empty()).await }
+        };
+        assert_eq!(errno(rename(root, b"outer", &outer, b"moved").await), Errno::EINVAL);
+        assert_eq!(errno(rename(root, b"outer", &deepest, b"moved").await), Errno::EINVAL);
+        assert_eq!(root.lookup(b"outer").await.unwrap().0.inode(), outer.inode());
+
+        let (_, _) = root.create(b"file", 0o644, OWNER).await.unwrap();
+        let (full, _) = root.mkdir(b"full", 0o755, OWNER).await.unwrap();
+        full.create(b"child", 0o644, OWNER).await.unwrap();
+        assert_eq!(errno(rename(root, b"file", root, b"outer").await), Errno::EISDIR);
+        assert_eq!(errno(rename(root, b"outer", root, b"file").await), Errno::ENOTDIR);
+        assert_eq!(errno(rename(root, b"outer", root, b"full").await), Errno::ENOTEMPTY);
+        // Into a directory removed, nothing goes.
+        let (gone, _) = root.mkdir(b"gone", 0o755, OWNER).await.unwrap();
+        root.rmdir(b"gone").await.unwrap();
+        assert_eq!(errno(rename(root, b"file", &gone, b"file").await), Errno::ENOENT);
+        assert_eq!(errno(gone.create(b"new", 0o644, OWNER).await), Errno::ENOENT);
+        assert_eq!(gone.getattr().await.unwrap().nlink, 0);
+    })
+}
+
+/// A directory moved deeper still refuses being renamed into what is now in it: the parents
+/// the filesystem knows its directories by move with it.
+#[test]
+fn directories_moved_are_known_where_they_went() {
+    with_fs(async |fs| {
+        let root = fs.root();
+        let (a, _) = root.mkdir(b"a", 0o755, OWNER).await.unwrap();
+        let (b, _) = root.mkdir(b"b", 0o755, OWNER).await.unwrap();
+        root.rename(b"b", &a, b"b", RenameFlags::empty()).await.unwrap();
+        assert_eq!(errno(root.rename(b"a", &b, b"a", RenameFlags::empty()).await), Errno::EINVAL);
+        a.rename(b"b", root, b"b", RenameFlags::empty()).await.unwrap();
+        root.rename(b"a", &b, b"a", RenameFlags::empty()).await.expect("rename failed");
+        assert_eq!(b.lookup(b"a").await.unwrap().0.inode(), a.inode());
+    })
+}
+
+/// Times are as Linux keeps them: a write changes its file's modification and change times, and
+/// making or removing a name its directory's.
+#[test]
+fn writes_and_names_change_times() {
+    with_fs(async |fs| {
+        let root = fs.root();
+        let epoch = SetAttr {
+            atime: Some(SetTime::At(time(1, 0))),
+            mtime: Some(SetTime::At(time(1, 0))),
+            ..Default::default()
+        };
+        root.setattr(&epoch).await.unwrap();
+        let (file, _) = root.create(b"file", 0o644, OWNER).await.unwrap();
+        assert!(root.getattr().await.unwrap().mtime > time(1, 0), "the directory's time stayed");
+        file.setattr(&epoch).await.unwrap();
+        file.write(0, b"changed").await.unwrap();
+        let written = file.getattr().await.unwrap();
+        assert!(written.mtime > time(1, 0), "the file's time stayed");
+        assert!(written.ctime >= written.mtime);
+        root.setattr(&epoch).await.unwrap();
+        root.unlink(b"file").await.unwrap();
+        assert!(root.getattr().await.unwrap().mtime > time(1, 0), "the directory's time stayed");
     })
 }
 
@@ -934,7 +992,7 @@ fn concurrent_operations_on_one_thread() {
         .into_iter()
         .map(|created| created.unwrap().0)
         .collect();
-        let contents = |i: usize| vec![i as u8; 3 * kernel::page_size() as usize];
+        let contents = |i: usize| vec![i as u8; 3 * pages::page_size() as usize];
         let written = futures::future::join_all(
             files
                 .iter()
@@ -942,7 +1000,7 @@ fn concurrent_operations_on_one_thread() {
                 .map(|(i, file)| async move { file.write(0, &contents(i)).await.unwrap() }),
         )
         .await;
-        assert!(written.iter().all(|&len| len == 3 * kernel::page_size() as usize));
+        assert!(written.iter().all(|&len| len == 3 * pages::page_size() as usize));
         fs.root().fsync().await.unwrap();
         let read = futures::future::join_all(files.iter().map(read_all)).await;
         assert_eq!(read, (0..32).map(contents).collect::<Vec<_>>());

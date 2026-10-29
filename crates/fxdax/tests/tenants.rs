@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-//! TASK-43: one extent daemon serves every tenant, each in an arena of its kernel's physical memory
+//! TASK-43: one extent daemon serves every tenant, each in an arena of its physical memory
 //! of its own: a tenant's VM processes hold their tenant's arena, and the default one, whose pages
 //! are public bases', read-only, and nothing of another tenant's. This is defence in depth, for a
 //! VM process escaped from its guest; guest isolation is the security boundary.
@@ -93,7 +93,7 @@ fn public_bases_are_shared_read_only() {
     let mut stores = Vec::new();
     for (socket, fork) in [(&one, &forks[0]), (&two, &forks[1])] {
         let store = RemoteExtentStore::connect(socket, fork, 1 << 24).unwrap();
-        let pages = base_bytes.len() / fxdax::kernel::page_size() as usize;
+        let pages = base_bytes.len() / fxdax::pages::page_size() as usize;
         let window = memory(pages);
         // SAFETY: The memory is this test's, which it leaks: the window maps it while the process
         // lives.
@@ -110,7 +110,7 @@ fn public_bases_are_shared_read_only() {
     assert_eq!(copies(public, &base_bytes), 1, "the base's pages, once, in the default arena");
 
     // Neither tenant's VM process can map the default arena writably.
-    let size = fxdax::kernel::page_size() as usize;
+    let size = fxdax::pages::page_size() as usize;
     // SAFETY: An attempt at a shared, writable mapping of the read-only descriptor.
     let mapped = unsafe {
         libc::mmap(
@@ -144,7 +144,7 @@ fn the_default_tenants_pages_are_its_own() {
     let public = theirs.public_memory();
     assert!(!holds(public, &our_bytes), "the default tenant's pages are in every tenant's memory");
     let public = ours.public_memory();
-    let size = fxdax::kernel::page_size() as usize;
+    let size = fxdax::pages::page_size() as usize;
     // SAFETY: An attempt at a shared, writable mapping of the read-only descriptor.
     let mapped = unsafe {
         libc::mmap(

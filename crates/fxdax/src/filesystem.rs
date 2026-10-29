@@ -4,61 +4,108 @@
 
 //! A filesystem: an Fxfs volume, whose nodes are reached through handles to them.
 //!
-//! [`Filesystem`] is a fuchsia.io client of the volume, as Starnix's remote filesystems and fdio
-//! are: each node a [`Node`] handle holds keeps a connection to it once an operation needs one,
-//! the one that created it opened by name from its parent directory, or one served from the node
-//! itself, with `FLAG_SEND_REPRESENTATION`, whose representation gives the node's protocol and
-//! attributes. A listing of a directory reads through a connection of its own, which it closes.
-//! File contents are read and written through the file's stream, as futures that the kernel wakes
-//! once its pager has supplied or dirtied their pages.
+//! [`Filesystem`] serves the volume through Fxfs's POSIX layer (crates/fxfs-posix), the guest
+//! kernel's too, as a VFS does: a [`Node`] handle holds its node as an inode is held, and its
+//! operations check what the kernel's VFS checks before it calls the layer: that names are valid,
+//! exist or not, and name nodes of the types the operation takes. A change of a directory's names
+//! checks and changes them under the volume's lock of its names (`Volume::namespace`), as the VFS
+//! locks a directory's. Times are kept as Linux keeps them: a write changes its file's
+//! modification time, and a change of a directory's names its own.
+//!
+//! Every operation runs on Fxfs's executor, where it completes whoever waits for it. Reads and
+//! writes copy through buffers of their own, as the memory they are given may be another's that
+//! changes meanwhile ([`VolatileSlice`]).
 
-use crate::connection::{self, Connection, RIGHTS};
-use crate::error::{Errno, Error, IntoErrno, Result};
+use crate::error::{Errno, Error, Result};
 use crate::executor::assert_not_on_executor;
 use crate::image::{Compactions, Image, ImageShared};
 use crate::memory::{VolatileSlice, VolatileSliceMut};
 use crate::node::*;
 use crate::storage::Storage;
-use crate::volume::{Hold, OpenGuarded, Volume};
-use fidl::endpoints::create_proxy;
-use fidl_fuchsia_io as fio;
-use fxfs::object_store::ObjectDescriptor;
-use fxfs_platform::directory::{self as fx_directory, FxDirectory};
-use fxfs_platform::file::FxFile;
-use fxfs_platform::node::{FxNode, OpenedNode};
-use fxfs_platform::symlink::FxSymlink;
-use fxfs_platform::volume::FxVolumeAndRoot;
+use crate::volume::{Hold, HostFxfs, Volume};
+use fxfs::errors::FxfsError;
+use fxfs::object_store::{ObjectStore, SetExtendedAttributeMode};
+use fxfs_posix::ReaddirStart;
+use std::future::Future;
 use std::num::NonZeroU8;
 use std::path::Path;
 use std::sync::Arc;
-use vfs::node::Node as _;
-use zircon::user_copy::HostBuffer;
 
-/// Runs `$body` with `$n` bound to `$node`, an `Arc<dyn FxNode>`, as the file, directory or
-/// symlink it is, which serve its extended attributes; anything else fails with `NOT_SUPPORTED`.
-macro_rules! on_node {
-    ($node:expr, |$n:ident| $body:expr) => {
-        match $node.into_any().downcast::<FxFile>() {
-            Ok($n) => $body,
-            Err(any) => match any.downcast::<FxDirectory>() {
-                Ok($n) => $body,
-                Err(any) => match any.downcast::<FxSymlink>() {
-                    Ok($n) => $body,
-                    Err(_) => Err(zx::Status::NOT_SUPPORTED),
-                },
-            },
-        }
-    };
+/// The errno of `error`, an Fxfs operation's.
+fn errno(error: anyhow::Error) -> Errno {
+    Errno::of_fxfs(&error)
 }
 
-/// The errno of an extended attribute's operation's failure: Fxfs's `NOT_FOUND` is the
-/// attribute's, and `FILE_BIG` its name's or value's.
-fn xattr_errno(status: zx::Status) -> Errno {
-    match status {
-        zx::Status::NOT_FOUND => Errno::ENODATA,
-        zx::Status::FILE_BIG => Errno::E2BIG,
-        status => Errno::of_status(status),
+/// The errno of `error`, an extended attribute's operation's.
+fn xattr_errno(error: anyhow::Error) -> Errno {
+    Errno::of_xattr(&error)
+}
+
+/// The longest name a directory holds, as Linux's `NAME_MAX`.
+const NAME_MAX: usize = 255;
+
+/// How much of a write Fxfs writes in a transaction at most: a write longer is written a piece at
+/// a time.
+const WRITE_CHUNK: usize = 1 << 20;
+
+/// `name`, a name of a directory's: valid, which `.`, `..`, and those holding `/` or NUL are not,
+/// and in UTF-8, as Fxfs keeps names.
+fn valid_name(name: &[u8]) -> Result<String> {
+    if name.len() > NAME_MAX {
+        return Err(Errno::ENAMETOOLONG);
     }
+    if matches!(name, b"" | b"." | b"..") || name.iter().any(|&byte| byte == b'/' || byte == 0) {
+        return Err(Errno::EINVAL);
+    }
+    Ok(std::str::from_utf8(name).map_err(|_| Errno::EINVAL)?.to_owned())
+}
+
+/// The attributes of the node `name` names in the directory `dir`, if it names one.
+async fn find(fxfs: &HostFxfs, dir: u64, name: &str) -> Result<Option<fxfs_posix::Attr>> {
+    match fxfs.lookup(dir, name.as_bytes()).await {
+        Ok(attr) => Ok(Some(attr)),
+        Err(error) if FxfsError::NotFound.matches(&error) => Ok(None),
+        Err(error) => Err(errno(error)),
+    }
+}
+
+/// The type of the node whose attributes are `attr`.
+fn type_of(attr: &fxfs_posix::Attr) -> Result<FileType> {
+    FileType::from_mode(attr.mode).ok_or(Errno::EIO)
+}
+
+/// The attributes of a node, from Fxfs's, on an image of `block_size` blocks.
+fn attr(block_size: u32, attr: &fxfs_posix::Attr) -> Result<Attr> {
+    Ok(Attr {
+        inode: Inode(attr.ino),
+        size: attr.size,
+        blocks: attr.blocks,
+        atime: time_from_nanos(attr.atime_ns),
+        mtime: time_from_nanos(attr.mtime_ns),
+        ctime: time_from_nanos(attr.ctime_ns),
+        file_type: type_of(attr)?,
+        perm: (attr.mode & PERM_MASK) as u16,
+        nlink: attr.nlink,
+        uid: attr.uid,
+        gid: attr.gid,
+        rdev: attr.rdev as u32,
+        blksize: block_size,
+    })
+}
+
+/// The times of a change at `now`: its modification time, and its status change time.
+fn changed_at(now: u64) -> fxfs_posix::SetAttr {
+    fxfs_posix::SetAttr {
+        valid: fxfs_posix::SET_MTIME | fxfs_posix::SET_CTIME,
+        mtime_ns: now,
+        ctime_ns: now,
+        ..Default::default()
+    }
+}
+
+/// Now, in nanoseconds since the Unix epoch.
+fn now() -> Result<u64> {
+    nanos_from_time(std::time::SystemTime::now())
 }
 
 /// The name of the volume a filesystem mounted from storage serves.
@@ -171,20 +218,20 @@ impl Filesystem {
         }
     }
 
-    /// The filesystem of `volume`, the volume `name` of `image`, just mounted, which the image
-    /// unmounts when it is closed: serves the volume's root directory, which it holds.
-    pub(crate) async fn new(image: Arc<ImageShared>, name: &str, volume: FxVolumeAndRoot) -> Self {
-        let (volume, root) = image
-            .executor
-            .run(async move {
-                let (root, server_end) = create_proxy::<fio::DirectoryMarker>();
-                volume.root().clone().serve(RIGHTS, server_end);
-                (volume, root)
-            })
-            .await;
-        let (volume, root) = Volume::new(image, name, volume, Connection::Directory(root));
+    /// The filesystem of the volume of `image` whose store is `store`, just mounted, which the
+    /// image unmounts when it is closed: serves the volume's root directory, which it holds.
+    pub(crate) fn new(image: Arc<ImageShared>, store: Arc<ObjectStore>) -> Self {
+        let (volume, root) = Volume::new(image, store);
         let root = Node(Arc::new(root));
         Self { volume, root, backing: futures::lock::Mutex::new(Backing::Volume) }
+    }
+
+    /// Fails with `ENOTCONN` once the filesystem is unmounted, as every operation does.
+    fn mounted(&self) -> Result<()> {
+        match self.volume.is_mounted() {
+            true => Ok(()),
+            false => Err(Errno::ENOTCONN),
+        }
     }
 
     /// The filesystem's volume.
@@ -245,27 +292,19 @@ impl Filesystem {
     /// mounted, and returns the clone's storage (see [`Image::clone_storage_to`]).
     pub async fn clone_storage_to(&self, path: impl AsRef<Path>) -> Result<Storage, Error> {
         // As every operation does, it fails once the filesystem is unmounted.
-        self.volume.fx_volume()?;
+        self.mounted()?;
         self.volume.image.clone_storage_to(path.as_ref()).await
     }
 
     /// The filesystem's usage.
     pub async fn statfs(&self) -> Result<StatFs> {
-        let root = self.root.directory(&self.volume).await?;
-        let info = self
-            .volume
-            .run(async move {
-                let (status, info) = root.query_filesystem().await.errno()?;
-                zx::Status::ok(status).errno()?;
-                info.ok_or(Errno::EIO)
-            })
-            .await?;
-        let block_size = info.block_size.max(1);
+        let statfs =
+            self.volume.run(move |fxfs| async move { fxfs.statfs().await.map_err(errno) }).await?;
         Ok(StatFs {
-            block_size,
-            blocks: info.total_bytes / block_size as u64,
-            blocks_free: info.total_bytes.saturating_sub(info.used_bytes) / block_size as u64,
-            name_max: info.max_filename_size,
+            block_size: statfs.block_size as u32,
+            blocks: statfs.blocks,
+            blocks_free: statfs.free_blocks,
+            name_max: NAME_MAX as u32,
         })
     }
 
@@ -273,7 +312,7 @@ impl Filesystem {
     /// for benchmarks to compare: the trees the image's volumes share, the allocator's among them.
     pub fn compactions(&self) -> Result<Compactions> {
         // As every operation does, it fails once the filesystem is unmounted.
-        self.volume.fx_volume()?;
+        self.mounted()?;
         self.volume.image.compactions()
     }
 }
@@ -307,7 +346,7 @@ impl Drop for Filesystem {
 
 impl std::fmt::Debug for Filesystem {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mounted = self.volume.fx_volume().is_ok();
+        let mounted = self.volume.is_mounted();
         f.debug_struct("Filesystem").field("mounted", &mounted).finish_non_exhaustive()
     }
 }
@@ -328,6 +367,11 @@ impl Node {
         Inode(self.0.object_id())
     }
 
+    /// The node's inode number, as Fxfs has it: its object ID.
+    fn ino(&self) -> u64 {
+        self.0.object_id()
+    }
+
     /// The node's volume, while its filesystem lives.
     fn volume(&self) -> Result<Arc<Volume>> {
         self.0.volume()
@@ -341,197 +385,203 @@ impl Node {
         self.volume()
     }
 
-    /// Fxfs's node.
-    fn fx_node(&self, volume: &Volume) -> Result<Arc<dyn FxNode>> {
-        volume.with_held(&self.0, |held| held.node.0.clone())
-    }
-
-    /// Fxfs's node of this directory: `ENOTDIR` if the node is not one.
-    fn fx_directory(&self, volume: &Volume) -> Result<Arc<FxDirectory>> {
-        let directory = self.fx_node(volume)?.into_any().downcast::<FxDirectory>();
-        directory.map_err(|_| Errno::ENOTDIR)
-    }
-
-    /// A connection to the node, which is opened the first time one is needed.
-    async fn connection(&self, volume: &Volume) -> Result<Connection> {
-        if let Some(connection) = volume.with_held(&self.0, |held| held.connection.clone())? {
-            return Ok(connection);
-        }
-        let node = self.fx_node(volume)?;
-        let fx_volume = volume.fx_volume()?;
-        let connection = volume
-            .run(async move { connection::connect(OpenedNode::new(node), &fx_volume).await })
-            .await?;
-        // Another operation may have connected meanwhile, whose connection is kept.
-        volume.with_held(&self.0, |held| held.connection.get_or_insert(connection).clone())
-    }
-
-    async fn directory(&self, volume: &Volume) -> Result<fio::DirectoryProxy> {
-        // `Clone::clone`, as the proxy's `clone` is fuchsia.io's `Clone`.
-        Ok(Clone::clone(self.connection(volume).await?.directory()?))
-    }
-
-    async fn file(&self, volume: &Volume) -> Result<fio::FileProxy> {
-        Ok(Clone::clone(self.connection(volume).await?.file()?.0))
-    }
-
-    /// This file's stream, which its reads and writes copy through, and the file opened under a
-    /// guard on the volume's scope, which they hold while they copy (see [`OpenGuarded`]). The
-    /// file's connection, which gives the stream, is found as the file is opened, under one hold
-    /// of the volume's lock, and opened the first time one is needed.
-    async fn stream(&self) -> Result<(Arc<zx::Stream>, OpenGuarded)> {
+    /// The node's type, which never changes, and its volume.
+    fn file_type(&self) -> Result<(FileType, Arc<Volume>)> {
         let volume = self.volume()?;
-        let (connection, open) = volume.open_guarded(&self.0, |held| held.connection.clone())?;
-        let connection = match connection {
-            Some(connection) => connection,
-            None => self.connection(&volume).await?,
-        };
-        Ok((connection.file()?.1.clone(), open))
+        let file_type = volume.with_held(&self.0, |held| held.file_type)?;
+        Ok((file_type, volume))
     }
 
-    /// The child `name` of this directory, and its attributes, if it has one.
-    async fn child(
-        &self,
-        volume: &Volume,
-        name: &[u8],
-    ) -> Result<Option<(Arc<dyn FxNode>, fio::Attributes)>> {
-        let directory = self.fx_directory(volume)?;
-        let name = connection::name(name)?;
-        volume
-            .run(async move {
-                let Some(node) = directory.lookup_child(&name).await.errno()? else {
-                    return Ok(None);
-                };
-                let attributes = attributes(&node).await?;
-                Ok(Some((node, attributes)))
-            })
-            .await
+    /// The volume of this directory: `ENOTDIR` if the node is not one.
+    fn directory(&self) -> Result<Arc<Volume>> {
+        match self.file_type()? {
+            (FileType::Directory, volume) => Ok(volume),
+            _ => Err(Errno::ENOTDIR),
+        }
+    }
+
+    /// The volume of this file, whose contents are read and written: `EISDIR` if the node is a
+    /// directory, and `EINVAL` if a symlink.
+    fn file(&self) -> Result<Arc<Volume>> {
+        match self.file_type()? {
+            (FileType::Directory, _) => Err(Errno::EISDIR),
+            (FileType::Symlink, _) => Err(Errno::EINVAL),
+            (_, volume) => Ok(volume),
+        }
+    }
+
+    /// Fails with `ENOENT` if the directory `dir` of `volume`, which is held, is removed: nothing
+    /// is made in it any more.
+    fn exists(volume: &Volume, dir: &Node) -> Result<()> {
+        match volume.is_unlinked(&dir.0)? {
+            true => Err(Errno::ENOENT),
+            false => Ok(()),
+        }
     }
 
     /// Looks up `name` in this directory, and returns a handle to the node it names and its
     /// attributes.
     pub async fn lookup(&self, name: &[u8]) -> Result<(Node, Attr)> {
-        let volume = self.volume()?;
-        let (node, attributes) = self.child(&volume, name).await?.ok_or(Errno::ENOENT)?;
-        handle(&volume, node, None, attributes)
+        let volume = self.directory()?;
+        let (dir, name) = (self.ino(), valid_name(name)?);
+        let held = volume.clone();
+        volume
+            .run(move |fxfs| async move {
+                // Held before the name can go (`Volume::namespace`).
+                let _names = held.namespace.read().await;
+                let found = find(&fxfs, dir, &name).await?.ok_or(Errno::ENOENT)?;
+                handle(&held, &found, dir)
+            })
+            .await
     }
 
     /// The node's attributes.
     pub async fn getattr(&self) -> Result<Attr> {
         let volume = self.volume()?;
-        let node = self.fx_node(&volume)?;
-        let node_type = file_type(&*node);
-        let attributes = volume.run(async move { attributes(&node).await }).await?;
-        attr(volume.block_size(), node_type, attributes)
+        let (ino, block_size) = (self.ino(), volume.block_size());
+        let attr = volume
+            .run(move |fxfs| async move { attr(block_size, &fxfs.attr(ino).await.map_err(errno)?) })
+            .await?;
+        self.linked(&volume, attr)
+    }
+
+    /// `attr`, the node's attributes, as Fxfs gives them, with no link if no name links it any
+    /// more: Fxfs counts one for an object in its graveyard, which a VFS counts as none.
+    fn linked(&self, volume: &Volume, mut attr: Attr) -> Result<Attr> {
+        if volume.is_unlinked(&self.0)? {
+            attr.nlink = 0;
+        }
+        Ok(attr)
     }
 
     /// Changes the node's attributes, and returns them.
     pub async fn setattr(&self, set: &SetAttr) -> Result<Attr> {
-        let volume = self.volume()?;
-        let connection = self.connection(&volume).await?;
+        let (file_type, volume) = self.file_type()?;
+        let mut change = fxfs_posix::SetAttr::default();
+        let now = now()?;
         if let Some(size) = set.size {
-            let proxy = Clone::clone(connection.file()?.0);
-            volume.run(async move { proxy.resize(size).await.errno()?.errno() }).await?;
+            match file_type {
+                FileType::Directory => return Err(Errno::EISDIR),
+                FileType::Symlink => return Err(Errno::EINVAL),
+                _ => {}
+            }
+            // A truncation changes the file's contents, as a write does.
+            change = changed_at(now);
+            change.valid |= fxfs_posix::SET_SIZE;
+            change.size = size;
         }
-        let mut update = fio::MutableNodeAttributes {
-            uid: set.uid,
-            gid: set.gid,
-            access_time: set.atime.map(|time| nanos_from_time(time.resolve())).transpose()?,
-            modification_time: set.mtime.map(|time| nanos_from_time(time.resolve())).transpose()?,
-            ..Default::default()
-        };
-        if set.perm.is_some() || set.kill_suid_sgid {
-            let attr = self.getattr().await?;
-            let mut perm = attr.perm as u32;
-            if set.kill_suid_sgid {
-                perm &= !S_ISUID;
-                if perm & S_IXGRP != 0 {
-                    perm &= !S_ISGID;
+        if let Some(uid) = set.uid {
+            change.valid |= fxfs_posix::SET_UID;
+            change.uid = uid;
+        }
+        if let Some(gid) = set.gid {
+            change.valid |= fxfs_posix::SET_GID;
+            change.gid = gid;
+        }
+        if let Some(atime) = set.atime {
+            change.valid |= fxfs_posix::SET_ATIME;
+            change.atime_ns = nanos_from_time(atime.resolve())?;
+        }
+        if let Some(mtime) = set.mtime {
+            change.valid |= fxfs_posix::SET_MTIME;
+            change.mtime_ns = nanos_from_time(mtime.resolve())?;
+        }
+        let (perm, kill_suid_sgid) = (set.perm, set.kill_suid_sgid);
+        let (ino, block_size) = (self.ino(), volume.block_size());
+        let attr = volume
+            .run(move |fxfs| async move {
+                if perm.is_some() || kill_suid_sgid {
+                    let mode = match file_type {
+                        // A symlink's permissions are always all of them.
+                        FileType::Symlink => 0o777,
+                        _ => {
+                            let mut mode = fxfs.attr(ino).await.map_err(errno)?.mode & PERM_MASK;
+                            if kill_suid_sgid {
+                                mode &= !S_ISUID;
+                                if mode & S_IXGRP != 0 {
+                                    mode &= !S_ISGID;
+                                }
+                            }
+                            perm.map_or(mode, |perm| perm as u32 & PERM_MASK)
+                        }
+                    };
+                    change.valid |= fxfs_posix::SET_MODE;
+                    change.mode = file_type.mode_bits() | mode;
                 }
-            }
-            if let Some(new_perm) = set.perm {
-                perm = new_perm as u32 & PERM_MASK;
-            }
-            update.mode = Some(attr.file_type.mode_bits() | perm);
-        }
-        if update != fio::MutableNodeAttributes::default() {
-            self.update_attributes(&volume, connection, update).await?;
-        }
-        self.getattr().await
-    }
-
-    /// Updates the node's attributes through `connection`, a connection to it, or, for a symlink,
-    /// whose connections don't update attributes, its node.
-    async fn update_attributes(
-        &self,
-        volume: &Volume,
-        connection: Connection,
-        mut update: fio::MutableNodeAttributes,
-    ) -> Result<()> {
-        if let Connection::Symlink(_) = connection {
-            let symlink = self.fx_node(volume)?.into_any().downcast::<FxSymlink>();
-            let symlink = symlink.map_err(|_| Errno::EIO)?;
-            // Fxfs keeps a node's owner with its mode, which a symlink fuchsia.io made has
-            // neither of: a symlink's mode is always the same.
-            if update.mode.is_some() || update.uid.is_some() || update.gid.is_some() {
-                update.mode = Some(FileType::Symlink.mode_bits() | 0o777);
-            }
-            return volume
-                .run(async move { symlink.update_attributes(&update).await.errno() })
-                .await;
-        }
-        volume.run(async move { connection.update_attributes(&update).await }).await
+                if change.valid != 0 {
+                    fxfs.setattr(ino, &change).await.map_err(errno)?;
+                }
+                attr(block_size, &fxfs.attr(ino).await.map_err(errno)?)
+            })
+            .await?;
+        self.linked(&volume, attr)
     }
 
     /// The target of this symlink.
     pub async fn readlink(&self) -> Result<Vec<u8>> {
-        let volume = self.volume()?;
-        let Connection::Symlink(proxy) = self.connection(&volume).await? else {
-            return Err(Errno::EINVAL);
+        let volume = match self.file_type()? {
+            (FileType::Symlink, volume) => volume,
+            _ => return Err(Errno::EINVAL),
         };
-        volume.run(async move { proxy.describe().await.errno()?.target.ok_or(Errno::EIO) }).await
+        let ino = self.ino();
+        volume.run(move |fxfs| async move { fxfs.readlink(ino).await.map_err(errno) }).await
     }
 
-    /// Creates `name` in this directory as a `protocol` node with `mode`, owned by `owner`.
+    /// Makes `name` in this directory with `make`, unless it names something already (`EEXIST`),
+    /// and returns a handle to what it made, and its attributes.
+    async fn make<F>(
+        &self,
+        name: &[u8],
+        make: impl FnOnce(Arc<HostFxfs>, u64, String) -> F + Send + 'static,
+    ) -> Result<(Node, Attr)>
+    where
+        F: Future<Output = anyhow::Result<fxfs_posix::Attr>> + Send + 'static,
+    {
+        let volume = self.directory()?;
+        let (dir, name) = (self.ino(), valid_name(name)?);
+        let (held, this) = (volume.clone(), self.clone());
+        volume
+            .run(move |fxfs| async move {
+                let _names = held.namespace.write().await;
+                Self::exists(&held, &this)?;
+                if find(&fxfs, dir, &name).await?.is_some() {
+                    return Err(Errno::EEXIST);
+                }
+                let made = make(fxfs, dir, name).await.map_err(errno)?;
+                handle(&held, &made, dir)
+            })
+            .await
+    }
+
+    /// Creates `name` in this directory with `mode`, which says what it is, owned by `owner`.
     async fn create_node(
         &self,
         name: &[u8],
-        protocol: fio::Flags,
         mode: u32,
         rdev: u32,
         owner: Owner,
     ) -> Result<(Node, Attr)> {
-        let volume = self.volume()?;
-        let directory = self.directory(&volume).await?;
-        let name = connection::name(name)?;
-        let flags = protocol | fio::Flags::FLAG_MAYBE_CREATE | fio::Flags::FLAG_MUST_CREATE;
-        let create_attributes = fio::MutableNodeAttributes {
-            mode: Some(mode),
-            uid: Some(owner.uid),
-            gid: Some(owner.gid),
-            rdev: Some(rdev as u64),
-            ..Default::default()
-        };
-        let (connection, attributes) = volume
-            .run(async move {
-                connection::open(&directory, &name, flags, Some(create_attributes)).await
-            })
-            .await?;
-        handle_connected(&volume, connection, attributes)
+        self.make(name, move |fxfs, dir, name| async move {
+            let [made, _] = fxfs
+                .create(dir, name.as_bytes(), mode, rdev.into(), owner.uid, owner.gid, &[])
+                .await?;
+            anyhow::Ok(made)
+        })
+        .await
     }
 
     /// Creates the regular file `name` in this directory with `perm`, owned by `owner`, and
     /// returns a handle to it and its attributes.
     pub async fn create(&self, name: &[u8], perm: u16, owner: Owner) -> Result<(Node, Attr)> {
         let mode = FileType::File.mode_bits() | (perm as u32 & PERM_MASK);
-        self.create_node(name, fio::Flags::PROTOCOL_FILE, mode, 0, owner).await
+        self.create_node(name, mode, 0, owner).await
     }
 
     /// Creates the directory `name` in this directory with `perm`, owned by `owner`, and returns a
     /// handle to it and its attributes.
     pub async fn mkdir(&self, name: &[u8], perm: u16, owner: Owner) -> Result<(Node, Attr)> {
         let mode = FileType::Directory.mode_bits() | (perm as u32 & PERM_MASK);
-        self.create_node(name, fio::Flags::PROTOCOL_DIRECTORY, mode, 0, owner).await
+        self.create_node(name, mode, 0, owner).await
     }
 
     /// Creates the node `name` in this directory of `file_type` with `perm`, owned by `owner`, and
@@ -552,62 +602,46 @@ impl Node {
             return Err(Errno::EINVAL);
         }
         let mode = file_type.mode_bits() | (perm as u32 & PERM_MASK);
-        self.create_node(name, fio::Flags::PROTOCOL_FILE, mode, rdev, owner).await
+        self.create_node(name, mode, rdev, owner).await
     }
 
     /// Creates the symlink `name` in this directory to `target`, owned by `owner`, and returns a
     /// handle to it and its attributes.
     pub async fn symlink(&self, name: &[u8], target: &[u8], owner: Owner) -> Result<(Node, Attr)> {
-        let volume = self.volume()?;
-        let directory = self.directory(&volume).await?;
-        let link_name = connection::name(name)?;
         let target = target.to_vec();
-        let (proxy, attributes) = volume
-            .run(async move {
-                let (proxy, server_end) = create_proxy::<fio::SymlinkMarker>();
-                directory
-                    .create_symlink(&link_name, &target, Some(server_end))
-                    .await
-                    .errno()?
-                    .errno()?;
-                let connection = Connection::Symlink(proxy);
-                let attributes = connection.get_attributes().await?;
-                Ok::<_, Errno>((connection, attributes))
-            })
-            .await?;
-        let (node, _) = handle_connected(&volume, proxy.clone(), attributes)?;
-        let owner = fio::MutableNodeAttributes {
-            uid: Some(owner.uid),
-            gid: Some(owner.gid),
-            ..Default::default()
-        };
-        node.update_attributes(&volume, proxy, owner).await?;
-        let attr = node.getattr().await?;
-        Ok((node, attr))
+        self.make(name, move |fxfs, dir, name| async move {
+            let [made, _] =
+                fxfs.symlink(dir, name.as_bytes(), &target, owner.uid, owner.gid).await?;
+            anyhow::Ok(made)
+        })
+        .await
     }
 
     /// Links the node into directory `dir` as `name`, and returns its attributes. Directories
     /// fail with `EPERM`, and a directory of another filesystem with `EXDEV`.
     pub async fn link(&self, dir: &Node, name: &[u8]) -> Result<Attr> {
         let volume = self.same_volume(dir)?;
-        let connection = self.connection(&volume).await?;
-        let directory = dir.directory(&volume).await?;
-        let name = connection::name(name)?;
-        let link_connection = connection.clone();
-        let attributes = volume
-            .run(async move {
-                let token = connection::token(&directory).await?;
-                match &link_connection {
-                    Connection::File(proxy, _) => proxy.link_into(token, &name).await,
-                    Connection::Symlink(proxy) => proxy.link_into(token, &name).await,
-                    Connection::Directory(_) => return Err(Errno::EPERM),
+        if self.file_type()?.0 == FileType::Directory {
+            return Err(Errno::EPERM);
+        }
+        dir.directory()?;
+        let (ino, dir_ino, name) = (self.ino(), dir.ino(), valid_name(name)?);
+        let (held, this, dir) = (volume.clone(), self.clone(), dir.clone());
+        let block_size = volume.block_size();
+        volume
+            .run(move |fxfs| async move {
+                let _names = held.namespace.write().await;
+                Self::exists(&held, &dir)?;
+                // A node no name links any more is freed once it is let go of.
+                Self::exists(&held, &this)?;
+                if find(&fxfs, dir_ino, &name).await?.is_some() {
+                    return Err(Errno::EEXIST);
                 }
-                .errno()?
-                .errno()?;
-                link_connection.get_attributes().await
+                let [linked, _] =
+                    fxfs.link(ino, dir_ino, name.as_bytes(), false).await.map_err(errno)?;
+                attr(block_size, &linked)
             })
-            .await?;
-        attr(volume.block_size(), connection.file_type(), attributes)
+            .await
     }
 
     /// Removes the non-directory `name` from this directory. A directory fails with `EISDIR`.
@@ -621,21 +655,31 @@ impl Node {
         self.remove(name, true).await
     }
 
-    /// Removes `name`, as `rmdir` does if `directory`, and as `unlink` does otherwise, through
-    /// Fxfs's directory: it checks what `name` holds in the transaction that removes it, and
-    /// fuchsia.io's unlink can't require that it is not a directory.
+    /// Removes `name`, as `rmdir` does if `directory`, and as `unlink` does otherwise.
     async fn remove(&self, name: &[u8], directory: bool) -> Result<()> {
-        let volume = self.volume()?;
-        let parent = self.fx_directory(&volume)?;
-        let name = connection::name(name)?;
-        volume.run(async move { parent.remove_child(&name, directory).await.errno() }).await
+        let volume = self.directory()?;
+        let (dir, name) = (self.ino(), valid_name(name)?);
+        let held = volume.clone();
+        volume
+            .run(move |fxfs| async move {
+                let _names = held.namespace.write().await;
+                let found = find(&fxfs, dir, &name).await?.ok_or(Errno::ENOENT)?;
+                match (type_of(&found)? == FileType::Directory, directory) {
+                    (true, false) => return Err(Errno::EISDIR),
+                    (false, true) => return Err(Errno::ENOTDIR),
+                    _ => {}
+                }
+                let (replaced, _) =
+                    fxfs.unlink(dir, name.as_bytes(), found.ino).await.map_err(errno)?;
+                held.unlinked(&fxfs, found.ino, replaced).await
+            })
+            .await
     }
 
     /// Renames `name` in this directory to `new_name` in directory `new_dir`, replacing what is
-    /// there unless `flags` say not to. A directory of another filesystem fails with `EXDEV`.
-    ///
-    /// It renames through Fxfs's directory, which checks that `new_name` holds nothing, if it
-    /// must not, in the transaction that renames: fuchsia.io's rename can't say not to replace.
+    /// there unless `flags` say not to, as rename(2) does: a directory only with an empty
+    /// directory, and anything else only with something else, but a directory into itself never.
+    /// A directory of another filesystem fails with `EXDEV`.
     pub async fn rename(
         &self,
         name: &[u8],
@@ -647,33 +691,81 @@ impl Node {
             return Err(Errno::EINVAL);
         }
         let volume = self.same_volume(new_dir)?;
-        let old_directory = self.fx_directory(&volume)?;
-        let new_directory = new_dir.fx_directory(&volume)?;
-        let old = connection::name(name)?;
-        let new = connection::name(new_name)?;
+        self.directory()?;
+        new_dir.directory()?;
+        let (dir, name) = (self.ino(), valid_name(name)?);
+        let (new_dir_ino, new_name) = (new_dir.ino(), valid_name(new_name)?);
         let no_replace = flags.contains(RenameFlags::NOREPLACE);
+        let (held, new_dir) = (volume.clone(), new_dir.clone());
         volume
-            .run(async move {
-                new_directory.rename_child(&old_directory, &old, &new, no_replace).await.errno()
+            .run(move |fxfs| async move {
+                let _names = held.namespace.write().await;
+                let moved = find(&fxfs, dir, &name).await?.ok_or(Errno::ENOENT)?;
+                let replaced = find(&fxfs, new_dir_ino, &new_name).await?;
+                // As Linux's renameat2 does, a rename that must not replace fails once the source
+                // is found if the new name holds anything, the source itself too.
+                if no_replace && replaced.is_some() {
+                    return Err(Errno::EEXIST);
+                }
+                Self::exists(&held, &new_dir)?;
+                let moves_directory = type_of(&moved)? == FileType::Directory;
+                if let Some(replaced) = &replaced {
+                    match (moves_directory, type_of(replaced)? == FileType::Directory) {
+                        (true, false) => return Err(Errno::ENOTDIR),
+                        (false, true) => return Err(Errno::EISDIR),
+                        _ => {}
+                    }
+                    // Names of the same node: nothing to do.
+                    if replaced.ino == moved.ino {
+                        return Ok(());
+                    }
+                }
+                if moves_directory && held.is_within(new_dir_ino, moved.ino)? {
+                    return Err(Errno::EINVAL);
+                }
+                let replaced_ino = replaced.as_ref().map(|replaced| replaced.ino);
+                let (replaced_kind, _) = fxfs
+                    .rename(
+                        dir,
+                        name.as_bytes(),
+                        moved.ino,
+                        new_dir_ino,
+                        new_name.as_bytes(),
+                        replaced_ino,
+                    )
+                    .await
+                    .map_err(errno)?;
+                if moves_directory {
+                    held.moved(moved.ino, new_dir_ino)?;
+                }
+                match replaced_ino {
+                    Some(replaced) => held.unlinked(&fxfs, replaced, replaced_kind).await,
+                    None => Ok(()),
+                }
             })
             .await
     }
 
     /// The entries of this directory, but `.` and `..`, as it holds them now.
     pub async fn entries(&self) -> Result<Vec<DirEntry>> {
-        let volume = self.volume()?;
-        let directory = self.fx_directory(&volume)?;
-        let entries = volume.run(connection::read_entries(directory)).await?;
-        // Fxfs lists a directory's `.`, and no `..`.
-        Ok(entries
-            .into_iter()
-            .filter(|(_, _, name)| name != b".")
-            .map(|(object_id, file_type, name)| DirEntry {
-                inode: Inode(object_id),
-                file_type,
-                name,
+        let volume = self.directory()?;
+        let dir = self.ino();
+        volume
+            .run(move |fxfs| async move {
+                let mut entries = Vec::new();
+                let listed = fxfs.readdir(dir, ReaddirStart::Index(0), |name, ino, kind| {
+                    let file_type = match FileType::from_mode(kind) {
+                        Some(FileType::Directory) => FileType::Directory,
+                        Some(FileType::Symlink) => FileType::Symlink,
+                        _ => FileType::File,
+                    };
+                    entries.push(DirEntry { inode: Inode(ino), file_type, name: name.into() });
+                    true
+                });
+                listed.await.map_err(errno)?;
+                Ok(entries)
             })
-            .collect())
+            .await
     }
 
     /// Reads from this file at `offset` into `buf`, and returns how much was read: less than asked
@@ -685,18 +777,30 @@ impl Node {
     /// Reads from this file at `offset` into `bufs` in turn, memory that may change meanwhile, and
     /// returns how much was read: less than asked only at the end of the file.
     ///
-    /// The file's pages are copied straight into the buffers. Waiting for pages not yet in memory
-    /// holds no thread: the future is woken once Fxfs's pager has supplied them. Dropping the
-    /// future before it completes leaves the buffers with what was read so far. It holds the
-    /// filesystem's unmount off until it completes or is dropped (see [`Filesystem::unmount`]).
+    /// The file's contents are read into a buffer of the read's own, which is copied into `bufs`
+    /// once the read is done. Dropping the future before it completes leaves the buffers as they
+    /// were.
     pub async fn read_vectored(
         &self,
         offset: u64,
         bufs: &mut [VolatileSliceMut<'_>],
     ) -> Result<usize> {
-        let (stream, _open) = self.stream().await?;
-        let bufs: Vec<HostBuffer> = bufs.iter().map(VolatileSliceMut::host_buffer).collect();
-        zircon::syscalls::stream_readv_at_async(stream.raw_handle(), offset, &bufs).await.errno()
+        let volume = self.file()?;
+        let len = bufs.iter().map(VolatileSliceMut::len).sum::<usize>();
+        let ino = self.ino();
+        let data = volume
+            .run(move |fxfs| async move {
+                let mut data = vec![0; len];
+                let read = fxfs.read_into(ino, offset, &mut [&mut data[..]]).await;
+                data.truncate(read.map_err(errno)?);
+                Ok(data)
+            })
+            .await?;
+        let mut rest = &data[..];
+        for buf in bufs {
+            rest = &rest[buf.copy_from(rest)..];
+        }
+        Ok(data.len())
     }
 
     /// Writes `data` to this file at `offset`, extending it if that is past its end, and returns
@@ -706,40 +810,54 @@ impl Node {
     }
 
     /// Writes `bufs` in turn to this file at `offset`, memory that may change meanwhile, and
-    /// returns how much was written.
+    /// returns how much was written, changing the file's modification time.
     ///
-    /// Waiting for Fxfs's pager, to read pages in or mark them dirty, holds no thread. Dropping the
-    /// future before it completes leaves the file with what was written so far. It holds the
-    /// filesystem's unmount off until it completes or is dropped (see [`Filesystem::unmount`]).
+    /// What `bufs` hold is copied, then written, a MiB at a time, in a transaction each.
+    /// Dropping the future once the write has begun leaves it to complete.
     pub async fn write_vectored(&self, offset: u64, bufs: &[VolatileSlice<'_>]) -> Result<usize> {
-        let (stream, _open) = self.stream().await?;
-        let bufs: Vec<HostBuffer> = bufs.iter().map(VolatileSlice::host_buffer).collect();
-        zircon::syscalls::stream_writev_at_async(stream.raw_handle(), offset, &bufs).await.errno()
+        let volume = self.file()?;
+        let mut data = vec![0; bufs.iter().map(VolatileSlice::len).sum::<usize>()];
+        let mut at = 0;
+        for buf in bufs {
+            at += buf.copy_to(&mut data[at..]);
+        }
+        if data.is_empty() {
+            return Ok(0);
+        }
+        offset.checked_add(data.len() as u64).ok_or(Errno::EFBIG)?;
+        let (ino, now) = (self.ino(), now()?);
+        volume
+            .run(move |fxfs| async move {
+                for (chunk, written) in data.chunks(WRITE_CHUNK).zip((0..).step_by(WRITE_CHUNK)) {
+                    fxfs.write(ino, offset + written as u64, chunk).await.map_err(errno)?;
+                }
+                fxfs.setattr(ino, &changed_at(now)).await.map_err(errno)?;
+                Ok(data.len())
+            })
+            .await
     }
 
     /// Allocates `len` bytes of this file at `offset`, extending it if they are past its end.
     pub async fn allocate(&self, offset: u64, len: u64) -> Result<()> {
-        let volume = self.volume()?;
-        let proxy = self.file(&volume).await?;
+        let volume = self.file()?;
+        let end = offset.checked_add(len).filter(|_| len > 0).ok_or(Errno::EINVAL)?;
+        let ino = self.ino();
         volume
-            .run(async move {
-                proxy.allocate(offset, len, fio::AllocateMode::empty()).await.errno()?.errno()
-            })
+            .run(move |fxfs| async move { fxfs.allocate(ino, offset..end).await.map_err(errno) })
             .await
     }
 
     /// Writes back the node's data and metadata, and for a directory, the filesystem's.
     pub async fn fsync(&self) -> Result<()> {
-        let volume = self.volume()?;
-        let connection = self.connection(&volume).await?;
+        let (file_type, volume) = self.file_type()?;
         volume
-            .run(async move {
-                match &connection {
-                    Connection::Directory(proxy) => proxy.sync().await.errno()?,
-                    Connection::File(proxy, _) => proxy.sync().await.errno()?,
-                    Connection::Symlink(_) => Ok(()),
+            .run(move |fxfs| async move {
+                match file_type {
+                    FileType::Directory => fxfs.sync().await,
+                    FileType::Symlink => Ok(()),
+                    _ => fxfs.fsync().await,
                 }
-                .errno()
+                .map_err(errno)
             })
             .await
     }
@@ -748,27 +866,26 @@ impl Node {
     /// that name.
     pub async fn getxattr(&self, name: &[u8]) -> Result<Vec<u8>> {
         let volume = self.volume()?;
-        let (node, name) = (self.fx_node(&volume)?, name.to_vec());
+        let (ino, name) = (self.ino(), name.to_vec());
         volume
-            .run(async move {
-                on_node!(node, |n| n.get_extended_attribute(name).await).map_err(xattr_errno)
-            })
+            .run(move |fxfs| async move { fxfs.get_xattr(ino, &name).await.map_err(xattr_errno) })
             .await
     }
 
     /// Sets the node's extended attribute `name` to `value`, as `mode` says.
     pub async fn setxattr(&self, name: &[u8], value: &[u8], mode: XattrMode) -> Result<()> {
         let volume = self.volume()?;
-        let (node, name, value) = (self.fx_node(&volume)?, name.to_vec(), value.to_vec());
+        let (ino, name, value) = (self.ino(), name.to_vec(), value.to_vec());
         let mode = match mode {
-            XattrMode::Set => fio::SetExtendedAttributeMode::Set,
-            XattrMode::Create => fio::SetExtendedAttributeMode::Create,
-            XattrMode::Replace => fio::SetExtendedAttributeMode::Replace,
+            XattrMode::Set => SetExtendedAttributeMode::Set,
+            XattrMode::Create => SetExtendedAttributeMode::Create,
+            XattrMode::Replace => SetExtendedAttributeMode::Replace,
         };
         volume
-            .run(async move {
-                on_node!(node, |n| n.set_extended_attribute(name, value, mode).await)
-                    .map_err(xattr_errno)
+            .run(move |fxfs| async move {
+                fxfs.set_xattr(ino, &name, &value, mode).await.map_err(xattr_errno)?;
+                // Written back at once, as the host's VFS keeps no inode to write it back with.
+                fxfs.write_inode(ino, &Default::default()).await.map_err(xattr_errno)
             })
             .await
     }
@@ -776,11 +893,9 @@ impl Node {
     /// The names of the node's extended attributes.
     pub async fn listxattr(&self) -> Result<Vec<Vec<u8>>> {
         let volume = self.volume()?;
-        let node = self.fx_node(&volume)?;
+        let ino = self.ino();
         volume
-            .run(async move {
-                on_node!(node, |n| n.list_extended_attributes().await).map_err(xattr_errno)
-            })
+            .run(move |fxfs| async move { fxfs.list_xattrs(ino).await.map_err(xattr_errno) })
             .await
     }
 
@@ -788,10 +903,11 @@ impl Node {
     /// name.
     pub async fn removexattr(&self, name: &[u8]) -> Result<()> {
         let volume = self.volume()?;
-        let (node, name) = (self.fx_node(&volume)?, name.to_vec());
+        let (ino, name) = (self.ino(), name.to_vec());
         volume
-            .run(async move {
-                on_node!(node, |n| n.remove_extended_attribute(name).await).map_err(xattr_errno)
+            .run(move |fxfs| async move {
+                fxfs.remove_xattr(ino, &name).await.map_err(xattr_errno)?;
+                fxfs.write_inode(ino, &Default::default()).await.map_err(xattr_errno)
             })
             .await
     }
@@ -803,89 +919,22 @@ impl std::fmt::Debug for Node {
     }
 }
 
-/// A new handle to `node`, of `volume`, which `connection` connects to if given and it has no
-/// connection yet, and the node's attributes, from `attributes`.
-fn handle(
-    volume: &Arc<Volume>,
-    node: Arc<dyn FxNode>,
-    connection: Option<Connection>,
-    attributes: fio::Attributes,
-) -> Result<(Node, Attr)> {
-    let attr = attr(volume.block_size(), file_type(&*node), attributes)?;
-    let hold = volume.hold(node, connection)?;
+/// A new handle to the node `found`, of `volume`, found in the directory `dir`, and its
+/// attributes.
+fn handle(volume: &Arc<Volume>, found: &fxfs_posix::Attr, dir: u64) -> Result<(Node, Attr)> {
+    let attr = attr(volume.block_size(), found)?;
+    let hold = volume.hold(found.ino, attr.file_type, Some(dir))?;
     Ok((Node(Arc::new(hold)), attr))
-}
-
-/// A new handle to the node a new `connection` connects to, as [`handle`] gives it.
-fn handle_connected(
-    volume: &Arc<Volume>,
-    connection: Connection,
-    attributes: fio::Attributes,
-) -> Result<(Node, Attr)> {
-    let object_id = attributes.1.id.ok_or(Errno::EIO)?;
-    // The connection holds the node open, so it is in the volume's cache.
-    let node = volume.fx_volume()?.cache().get(object_id).ok_or(Errno::EIO)?;
-    handle(volume, node, Some(connection), attributes)
-}
-
-/// The attributes of a node of `node_type`, unless its mode says otherwise, from its fuchsia.io
-/// attributes, on an image of `block_size` blocks.
-fn attr(
-    block_size: u32,
-    node_type: FileType,
-    (mutable, immutable): fio::Attributes,
-) -> Result<Attr> {
-    // Special files are Fxfs files whose mode says what they are, as Starnix makes them.
-    let file_type = mutable.mode.and_then(FileType::from_mode).unwrap_or(node_type);
-    let perm = mutable.mode.map_or(file_type.default_perm(), |mode| (mode & PERM_MASK) as u16);
-    let object_id = immutable.id.ok_or(Errno::EIO)?;
-    Ok(Attr {
-        inode: Inode(object_id),
-        size: immutable.content_size.unwrap_or(0),
-        blocks: immutable.storage_size.unwrap_or(0).div_ceil(512),
-        atime: time_from_nanos(mutable.access_time.unwrap_or(0)),
-        mtime: time_from_nanos(mutable.modification_time.unwrap_or(0)),
-        ctime: time_from_nanos(immutable.change_time.unwrap_or(0)),
-        file_type,
-        perm,
-        nlink: immutable.link_count.unwrap_or(1) as u32,
-        uid: mutable.uid.unwrap_or(0),
-        gid: mutable.gid.unwrap_or(0),
-        rdev: mutable.rdev.unwrap_or(0) as u32,
-        blksize: block_size,
-    })
-}
-
-/// The type of `node`, unless its mode says otherwise.
-fn file_type(node: &dyn FxNode) -> FileType {
-    match node.object_descriptor() {
-        ObjectDescriptor::Directory => FileType::Directory,
-        ObjectDescriptor::Symlink => FileType::Symlink,
-        _ => FileType::File,
-    }
-}
-
-/// The attributes of `node`, as fxdax makes nodes' attributes from.
-async fn attributes(node: &Arc<dyn FxNode>) -> Result<fio::Attributes> {
-    let attributes = fx_directory::get_attributes(node, connection::ATTRIBUTES).await.errno()?;
-    Ok((attributes.mutable_attributes, attributes.immutable_attributes))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::kernel::page_size;
-    use fuchsia_async::ScopeHandle;
-    use fuchsia_async_kernel::{EHandle, PacketReceiver};
     use futures::FutureExt as _;
     use futures::channel::oneshot;
     use futures::executor::block_on;
-    use futures::task::ArcWake;
     use fxfs::object_store::transaction::{LockKey, lock_keys};
-    use fxfs_platform::volume::{FxVolume, READ_AHEAD_SIZE};
     use std::collections::BTreeMap;
-    use std::future::Future;
-    use std::task::{Context, Poll};
 
     const OWNER: Owner = Owner { uid: 1000, gid: 100 };
 
@@ -917,6 +966,33 @@ mod tests {
             assert_eq!(again.read(0, &mut buf).await, Ok(8));
             assert_eq!(&buf[..8], b"contents");
             drop(again);
+            assert_eq!(held(), BTreeMap::from([(root, 1)]));
+            fs.close().await.unwrap().check().await.unwrap();
+        })
+    }
+
+    /// A directory held holds the directory it is in, which a handle to it alone keeps, until the
+    /// last handle to it, or to a directory in it, drops: a rename moves the hold.
+    #[test]
+    fn held_directories_hold_their_parents() {
+        block_on(async {
+            let fs = Filesystem::format(Storage::memory(8 << 20)).await.unwrap();
+            let root = fs.root().inode().0;
+            let held = || fs.volume().held();
+            let (outer, _) = fs.root().mkdir(b"outer", 0o755, OWNER).await.unwrap();
+            let (inner, _) = outer.mkdir(b"inner", 0o755, OWNER).await.unwrap();
+            let (other, _) = fs.root().mkdir(b"other", 0o755, OWNER).await.unwrap();
+            let ids = (outer.inode().0, inner.inode().0, other.inode().0);
+            drop(outer);
+            // The inner directory holds the outer one, which no handle holds.
+            assert_eq!(held(), BTreeMap::from([(root, 1), (ids.0, 0), (ids.1, 1), (ids.2, 1)]));
+            let (outer, _) = fs.root().lookup(b"outer").await.unwrap();
+            outer.rename(b"inner", &other, b"inner", RenameFlags::empty()).await.unwrap();
+            drop(outer);
+            assert_eq!(held(), BTreeMap::from([(root, 1), (ids.1, 1), (ids.2, 1)]));
+            drop(other);
+            assert_eq!(held(), BTreeMap::from([(root, 1), (ids.1, 1), (ids.2, 0)]));
+            drop(inner);
             assert_eq!(held(), BTreeMap::from([(root, 1)]));
             fs.close().await.unwrap().check().await.unwrap();
         })
@@ -970,7 +1046,9 @@ mod tests {
     /// Holds the lock of Fxfs's that a transaction changing the node `object_id` of `volume` takes,
     /// until the sender returned is sent on or dropped.
     async fn hold_lock(volume: &Volume, object_id: u64) -> oneshot::Sender<()> {
-        let store = volume.fx_volume().unwrap().store().clone();
+        let fxfs = volume.fxfs().unwrap();
+        let store = fxfs.filesystem().object_manager().store(fxfs.volume_id()).unwrap();
+        drop(fxfs);
         let (locked, held) = oneshot::channel();
         let (release, released) = oneshot::channel::<()>();
         volume.image.executor.spawn(async move {
@@ -984,226 +1062,70 @@ mod tests {
         release
     }
 
-    /// A handle to the scope of `volume`'s Fxfs volume, which has been given a task that ends only
-    /// once the scope's shutdown wakes it: the handle's `on_no_tasks` completes once unmounting has
-    /// shut the scope down, and its other tasks have ended. Fxfs's `ExecutionScope` has no
-    /// `on_no_tasks`, as it waits for its tasks and guards both, and gives the handle only through
-    /// a guard.
-    async fn watch_shutdown(volume: &Volume) -> ScopeHandle {
-        let scope = volume.fx_volume().unwrap().scope().try_active_guard().unwrap().to_handle();
-        let (spawned, polled) = oneshot::channel();
-        let mut spawned = Some(spawned);
-        let task = std::future::poll_fn(move |_| match spawned.take() {
-            Some(spawned) => {
-                let _ = spawned.send(());
-                Poll::Pending
-            }
-            None => Poll::Ready(()),
-        });
-        let spawner = scope.clone();
-        volume.image.executor.run(async move { drop(spawner.spawn(task)) }).await;
-        polled.await.unwrap();
-        scope
-    }
-
-    /// Leaves `file`, of `volume`, dirty but with no connection, whose close would write it back:
-    /// closes the file's connection, which writes the file back, then writes `data` at its start
-    /// through the stream the connection gave, as a write under way as it closed would. Returns
-    /// the stream, as such a write has it still.
-    async fn dirty_unconnected(volume: &Volume, file: &Node, data: &[u8]) -> Arc<zx::Stream> {
-        let connection = volume.with_held(&file.0, |held| held.connection.take()).unwrap();
-        let (proxy, stream) = connection.as_ref().unwrap().file().unwrap();
-        let (proxy, stream) = (Clone::clone(proxy), stream.clone());
-        volume.image.executor.run(async move { proxy.close().await }).await.unwrap().unwrap();
-        assert_eq!(write_stream(&stream, 0, data).await, Ok(data.len()));
-        stream
-    }
-
-    /// Writes `data` at `offset` through `stream`, a file's, as the file's writes do.
-    async fn write_stream(
-        stream: &zx::Stream,
-        offset: u64,
-        data: &[u8],
-    ) -> Result<usize, zx::Status> {
-        let bufs = [VolatileSlice::from(data).host_buffer()];
-        zircon::syscalls::stream_writev_at_async(stream.raw_handle(), offset, &bufs).await
-    }
-
-    /// Holds Fxfs's pager off from answering page requests until the sender returned is sent on or
-    /// dropped. The requests' packets arrive on the process's port, whose packets one thread hands
-    /// to their receivers (fuchsia-async-kernel's `packets`), so a receiver of the test's own that
-    /// waits on that thread keeps the pager's packets waiting too. Fxfs's executor registers it, as
-    /// a receiver is registered through the handle of a runtime, which the test's thread lacks.
-    async fn hold_pager(volume: &Volume) -> oneshot::Sender<()> {
-        /// Receives one packet, and waits on the receiving thread until it is released.
-        struct Waiting(std::sync::Mutex<Option<(oneshot::Sender<()>, oneshot::Receiver<()>)>>);
-        impl PacketReceiver for Waiting {
-            fn receive_packet(&self, _: zx::Packet) {
-                let (waiting, released) = self.0.lock().unwrap().take().expect("a second packet");
-                waiting.send(()).unwrap();
-                let _ = block_on(released);
-            }
-        }
-        let (waiting, held) = oneshot::channel();
-        let (release, released) = oneshot::channel();
-        let receiver = Waiting(std::sync::Mutex::new(Some((waiting, released))));
-        let registered = async move { EHandle::local().register_receiver(receiver) };
-        let registration = volume.image.executor.run(registered).await;
-        let user = zx::UserPacket::from_u8_array([0; 32]);
-        let packet = zx::Packet::from_user_packet(registration.key(), 0, user);
-        registration.port().queue(&packet).unwrap();
-        held.await.unwrap();
-        release
-    }
-
-    /// Polls `future`, a read's or a write's, of a file of `volume`, once, which leaves it waiting
-    /// on a page request, and waits until it is woken: until Fxfs's pager has answered the
-    /// request, supplying the pages it asked for, or letting it dirty them. It has copied nothing
-    /// to or from them yet. The pager is held off for the poll (see [`hold_pager`]), as an answer
-    /// that comes before the future begins to wait for it, later in the poll that made the
-    /// request, lets the future copy in that poll.
-    async fn woken(volume: &Volume, future: &mut (impl Future + Unpin)) {
-        struct Woken(std::sync::Mutex<Option<oneshot::Sender<()>>>);
-        impl ArcWake for Woken {
-            fn wake_by_ref(woken: &Arc<Self>) {
-                if let Some(sender) = woken.0.lock().unwrap().take() {
-                    let _ = sender.send(());
-                }
-            }
-        }
-        let (sender, receiver) = oneshot::channel();
-        let waker = futures::task::waker(Arc::new(Woken(std::sync::Mutex::new(Some(sender)))));
-        let release = hold_pager(volume).await;
-        let polled = future.poll_unpin(&mut Context::from_waker(&waker));
-        assert!(polled.is_pending(), "it needed no page request");
-        release.send(()).unwrap();
-        receiver.await.unwrap();
-    }
-
-    /// Whether the scope of `volume`, Fxfs's, has finished: shut down with no guard left, which
-    /// unmounting waits for to write the volume back. Its `ExecutionScope` gives a guard under the
-    /// lock it shuts the scope down under, so a shutdown under way is done once this asks: a scope
-    /// that the shutdown found guarded, and has a guard still, has not finished.
-    fn scope_finished(volume: &FxVolume) -> bool {
-        volume.scope().try_active_guard().is_none()
-    }
-
-    /// Unmounting waits for an operation under way, as for the volume's fuchsia.io requests: the
-    /// unmount shuts the scope of Fxfs's volume down, then waits for the scope to finish, with its
-    /// guards gone, before it writes the volume back, and the operation holds one. An rmdir held
-    /// by the lock of Fxfs's that it takes keeps the scope, shut down and with no tasks left, from
-    /// finishing; let go, it removes the directory, and the unmount completes. Meanwhile, the
-    /// image's volumes directory is free, as work under a guard may need it: dirtying a page under
-    /// critical memory pressure does (`VolumesDirectory::report_pager_dirty`).
+    /// Unmounting waits for an operation under way, which runs on Fxfs's executor: an rmdir held
+    /// by the lock of Fxfs's that it takes keeps the unmount waiting, with the volume refusing
+    /// new operations; let go, it removes the directory, and the unmount completes.
     #[test]
     fn unmounting_waits_for_an_operation_under_way() {
         block_on(async {
             let fs = Filesystem::format(Storage::memory(8 << 20)).await.unwrap();
             fs.root().mkdir(b"dir", 0o755, OWNER).await.unwrap();
             let volume = fs.volume().clone();
-            let fx_volume = volume.fx_volume().unwrap();
-            let scope = watch_shutdown(&volume).await;
 
             let release = hold_lock(&volume, fs.root().inode().0).await;
             let mut rmdir = Box::pin(fs.root().rmdir(b"dir"));
             assert!(futures::poll!(&mut rmdir).is_pending());
             let mut unmounted = Box::pin(volume.image.unmount_volume(&volume).wait());
-            scope.on_no_tasks().await;
-            assert!(!scope_finished(&fx_volume), "the scope finished with an rmdir under way");
-            // So the unmount waits for it still, with the volumes directory free.
             assert!(futures::poll!(&mut unmounted).is_pending(), "unmounted under an rmdir");
-            let volumes_directory = volume.image.volumes_directory().unwrap();
-            assert!(
-                volumes_directory.lock().now_or_never().is_some(),
-                "the volumes directory is locked while the unmount waits for the scope"
-            );
+            assert_eq!(fs.root().getattr().await, Err(Errno::ENOTCONN));
 
             release.send(()).unwrap();
             assert_eq!(rmdir.await, Ok(()));
             unmounted.await.expect("unmounting failed");
-            drop((scope, fx_volume, volumes_directory, volume));
+            drop(volume);
             let fs = Filesystem::mount(fs.close().await.unwrap()).await.unwrap();
             assert_eq!(fs.root().lookup(b"dir").await.err(), Some(Errno::ENOENT));
             fs.close().await.unwrap().check().await.unwrap();
         })
     }
 
-    /// An operation that found the volume mounted, but finds its scope finished as it runs its
-    /// work, or as it begins to copy, a read or write, as it does if the whole unmount comes
-    /// between the two, fails with `ENOTCONN`, as one does once unmounting begins, and changes
-    /// nothing. The test shuts the scope down itself, as the unmount does, leaving the volume
-    /// mounted. The file's page is dirty, so that a write to it, as a read of it, needs no pager.
-    #[test]
-    fn operations_refuse_a_volume_whose_scope_is_shut_down() {
-        block_on(async {
-            let fs = Filesystem::format(Storage::memory(8 << 20)).await.unwrap();
-            fs.root().mkdir(b"dir", 0o755, OWNER).await.unwrap();
-            let (file, _) = fs.root().create(b"file", 0o644, OWNER).await.unwrap();
-            assert_eq!(file.write(0, b"written").await, Ok(7));
-            // As the unmount shuts it down.
-            let scope = fs.volume().fx_volume().unwrap().scope().clone();
-            scope.shutdown();
-            scope.wait().await;
-            assert_eq!(fs.root().rmdir(b"dir").await, Err(Errno::ENOTCONN));
-            assert_eq!(file.write(0, b"changed").await, Err(Errno::ENOTCONN));
-            let mut contents = [0; 7];
-            assert_eq!(file.read(0, &mut contents).await, Err(Errno::ENOTCONN));
-
-            drop((scope, file));
-            let fs = Filesystem::mount(fs.close().await.unwrap()).await.unwrap();
-            assert_eq!(fs.root().lookup(b"dir").await.unwrap().1.file_type, FileType::Directory);
-            let (file, _) = fs.root().lookup(b"file").await.unwrap();
-            assert_eq!(file.read(0, &mut contents).await, Ok(7));
-            assert_eq!(&contents, b"written");
-            drop(file);
-            fs.close().await.unwrap().check().await.unwrap();
-        })
-    }
-
-    /// Unmounting waits for writes under way, which hold their file open under a guard on the
-    /// volume's scope while they copy (see [`Node::write_vectored`]), and writes back what they
-    /// wrote: an overwrite of a file's page written back already, and a write extending another
-    /// file at its end. Fxfs's pager let each dirty its page before the unmount began, and each
-    /// copies to it only once the unmount is under way. The extending write was lost otherwise: it
-    /// extends its file over its page only once it has copied, and the volume's last write-back
-    /// leaves a dirty page past the file's end for a later one, which never comes. The writes are
-    /// to files of their own, as the file's stream holds off a write extending it until those
-    /// before it complete.
+    /// Unmounting waits for writes under way, and writes back what they wrote: an overwrite of a
+    /// file's block, and a write extending another file at its end. Each is held by the lock of
+    /// Fxfs's on its file that its transaction takes, and completes once let go of.
     #[test]
     fn unmounting_waits_for_writes_under_way() {
-        let page = page_size() as usize;
+        const BLOCK: usize = Storage::BLOCK_SIZE as usize;
         block_on(async {
             let fs = Filesystem::format(Storage::memory(8 << 20)).await.unwrap();
             let (overwritten, _) = fs.root().create(b"overwritten", 0o644, OWNER).await.unwrap();
             let (extended, _) = fs.root().create(b"extended", 0o644, OWNER).await.unwrap();
             for file in [&overwritten, &extended] {
-                assert_eq!(file.write(0, &vec![1; page]).await, Ok(page));
-                file.fsync().await.unwrap();
+                assert_eq!(file.write(0, &[1; BLOCK]).await, Ok(BLOCK));
             }
             let volume = fs.volume().clone();
-            let fx_volume = volume.fx_volume().unwrap();
-            let scope = watch_shutdown(&volume).await;
 
-            let data = vec![2; page];
+            let data = [2; BLOCK];
+            let releases = [
+                hold_lock(&volume, overwritten.inode().0).await,
+                hold_lock(&volume, extended.inode().0).await,
+            ];
             let mut overwrite = Box::pin(overwritten.write(0, &data));
-            woken(&volume, &mut overwrite).await;
-            let mut extend = Box::pin(extended.write(page as u64, &data));
-            woken(&volume, &mut extend).await;
+            assert!(futures::poll!(&mut overwrite).is_pending());
+            let mut extend = Box::pin(extended.write(BLOCK as u64, &data));
+            assert!(futures::poll!(&mut extend).is_pending());
             let mut unmounted = Box::pin(volume.image.unmount_volume(&volume).wait());
-            scope.on_no_tasks().await;
-            assert!(!scope_finished(&fx_volume), "the scope finished with writes under way");
-            // So the unmount waits for them still.
             assert!(futures::poll!(&mut unmounted).is_pending(), "unmounted under writes");
 
-            assert_eq!(overwrite.await, Ok(page));
-            assert_eq!(extend.await, Ok(page));
+            for release in releases {
+                release.send(()).unwrap();
+            }
+            assert_eq!(overwrite.await, Ok(BLOCK));
+            assert_eq!(extend.await, Ok(BLOCK));
             unmounted.await.expect("unmounting failed");
-            drop((overwritten, extended, scope, fx_volume, volume));
+            drop((overwritten, extended, volume));
             let fs = Filesystem::mount(fs.close().await.unwrap()).await.unwrap();
-            let written = [
-                (&b"overwritten"[..], data.clone()),
-                (b"extended", [vec![1; page], data].concat()),
-            ];
+            let written =
+                [(&b"overwritten"[..], data.to_vec()), (b"extended", [[1; BLOCK], data].concat())];
             for (name, written) in written {
                 let (file, attr) = fs.root().lookup(name).await.unwrap();
                 assert_eq!(attr.size, written.len() as u64);
@@ -1215,213 +1137,46 @@ mod tests {
         })
     }
 
-    /// A write under way holds the unmount off only until it is dropped, which is what lets the
-    /// unmount complete once the write's caller has stopped polling it (see
-    /// [`Filesystem::unmount`]): the file it holds open, and its guard, go with it, and the
-    /// unmount completes, leaving the file as it was, as the write copied nothing. Fxfs's pager
-    /// let the write dirty its page, written back already, before the unmount began.
+    /// A write given up on, its future dropped once it has begun, completes on Fxfs's executor
+    /// regardless, before the unmount writes the volume back: what it wrote is kept.
     #[test]
-    fn unmounting_completes_once_a_write_under_way_is_dropped() {
-        let page = page_size() as usize;
+    fn a_write_given_up_on_completes_before_the_unmount() {
+        const BLOCK: usize = Storage::BLOCK_SIZE as usize;
         block_on(async {
             let fs = Filesystem::format(Storage::memory(8 << 20)).await.unwrap();
             let (file, _) = fs.root().create(b"file", 0o644, OWNER).await.unwrap();
-            assert_eq!(file.write(0, &vec![1; page]).await, Ok(page));
-            file.fsync().await.unwrap();
+            assert_eq!(file.write(0, &[1; BLOCK]).await, Ok(BLOCK));
             let volume = fs.volume().clone();
-            let fx_volume = volume.fx_volume().unwrap();
-            let scope = watch_shutdown(&volume).await;
 
-            let data = vec![2; page];
+            let release = hold_lock(&volume, file.inode().0).await;
+            let data = [2; BLOCK];
             let mut write = Box::pin(file.write(0, &data));
-            woken(&volume, &mut write).await;
+            assert!(futures::poll!(&mut write).is_pending());
+            drop(write);
             let mut unmounted = Box::pin(volume.image.unmount_volume(&volume).wait());
-            scope.on_no_tasks().await;
-            assert!(!scope_finished(&fx_volume), "the scope finished with a write under way");
             assert!(futures::poll!(&mut unmounted).is_pending(), "unmounted under a write");
 
-            drop(write);
-            unmounted.await.expect("unmounting failed");
-            drop((file, scope, fx_volume, volume));
-            let fs = Filesystem::mount(fs.close().await.unwrap()).await.unwrap();
-            let (file, attr) = fs.root().lookup(b"file").await.unwrap();
-            assert_eq!(attr.size, page as u64);
-            let mut contents = vec![0; page];
-            assert_eq!(file.read(0, &mut contents).await, Ok(page));
-            assert_eq!(contents, vec![1; page]);
-            drop(file);
-            fs.close().await.unwrap().check().await.unwrap();
-        })
-    }
-
-    /// A write through a file's stream that holds no guard on the volume's scope, unlike the
-    /// filesystem's own (see [`Node::write_vectored`]), and copies once the scope has finished,
-    /// before the volume's last write-back reaches its file, is written back if its page is dirty
-    /// already, and fails otherwise: what a write copies to a dirty page it copies under the lock
-    /// of the file's VMO that the write-back takes to begin cleaning it, and to dirty a page it
-    /// needs Fxfs's pager, which refuses once the scope has finished. The file is dirty and has no
-    /// connection, whose close as the unmount begins would write it back, and the writes go
-    /// through the stream its connection gave; the lock of Fxfs's that writing the file back
-    /// takes holds the write-back off until they are done.
-    #[test]
-    fn writes_copying_once_the_scope_finishes_are_written_back_or_fail() {
-        let page = page_size() as usize;
-        block_on(async {
-            let fs = Filesystem::format(Storage::memory(8 << 20)).await.unwrap();
-            let (file, _) = fs.root().create(b"file", 0o644, OWNER).await.unwrap();
-            assert_eq!(file.write(0, &vec![1; 2 * page]).await, Ok(2 * page));
-            let volume = fs.volume().clone();
-            let stream = dirty_unconnected(&volume, &file, &vec![2; page]).await;
-            let fx_volume = volume.fx_volume().unwrap();
-            let scope = watch_shutdown(&volume).await;
-
-            let release = hold_lock(&volume, file.inode().0).await;
-            let mut unmounted = Box::pin(volume.image.unmount_volume(&volume).wait());
-            scope.on_no_tasks().await;
-            assert!(scope_finished(&fx_volume), "the scope is held");
-            // The first page is dirty, the second clean.
-            let data = vec![3; page];
-            assert_eq!(write_stream(&stream, 0, &data).await, Ok(page));
-            assert_eq!(write_stream(&stream, page as u64, &data).await, Err(zx::Status::BAD_STATE));
-            assert!(futures::poll!(&mut unmounted).is_pending(), "unmounted under the lock");
-
             release.send(()).unwrap();
             unmounted.await.expect("unmounting failed");
-            drop((file, stream, scope, fx_volume, volume));
+            drop((file, volume));
             let fs = Filesystem::mount(fs.close().await.unwrap()).await.unwrap();
             let (file, _) = fs.root().lookup(b"file").await.unwrap();
-            let mut contents = vec![0; 2 * page];
-            assert_eq!(file.read(0, &mut contents).await, Ok(2 * page));
-            assert_eq!(contents, [vec![3; page], vec![1; page]].concat());
-            drop(file);
-            fs.close().await.unwrap().check().await.unwrap();
-        })
-    }
-
-    /// Unmounting waits for a read under way, which holds its file open under a guard on the
-    /// volume's scope while it copies (see [`Node::read_vectored`]), and Fxfs's pager supplies
-    /// the pages it asks for meanwhile: the file is open though the unmount has closed it, and the
-    /// scope's shutdown waits for the guard. Fxfs's pager reads in the whole window of
-    /// `READ_AHEAD_SIZE` that a page it is asked for is in; the file's second window is in memory,
-    /// its first and third not, so the read asks for the first before the unmount begins, and,
-    /// once it has copied the second, for the third, as it alone holds the file open.
-    #[test]
-    fn unmounting_waits_for_a_read_under_way() {
-        const WINDOW: usize = READ_AHEAD_SIZE as usize;
-        let page = page_size() as usize;
-        block_on(async {
-            let fs = Filesystem::format(Storage::memory(8 << 20)).await.unwrap();
-            let (file, _) = fs.root().create(b"file", 0o644, OWNER).await.unwrap();
-            let data: Vec<u8> = (0..3 * WINDOW).map(|at| (at / page) as u8).collect();
-            assert_eq!(file.write(0, &data).await, Ok(data.len()));
-            drop(file);
-            let fs = Filesystem::mount(fs.close().await.unwrap()).await.unwrap();
-            let (file, _) = fs.root().lookup(b"file").await.unwrap();
-            let mut byte = [0];
-            assert_eq!(file.read(WINDOW as u64, &mut byte).await, Ok(1));
-            let volume = fs.volume().clone();
-            let fx_volume = volume.fx_volume().unwrap();
-            let scope = watch_shutdown(&volume).await;
-
-            let mut contents = vec![0; data.len()];
-            let mut read = Box::pin(file.read(0, &mut contents));
-            woken(&volume, &mut read).await;
-            let mut unmounted = Box::pin(volume.image.unmount_volume(&volume).wait());
-            scope.on_no_tasks().await;
-            assert!(!scope_finished(&fx_volume), "the scope finished with a read under way");
-            // So the unmount waits for it still.
-            assert!(futures::poll!(&mut unmounted).is_pending(), "unmounted under a read");
-
-            assert_eq!(read.await, Ok(data.len()));
+            let mut contents = [0; BLOCK];
+            assert_eq!(file.read(0, &mut contents).await, Ok(BLOCK));
             assert_eq!(contents, data);
-            unmounted.await.expect("unmounting failed");
-            drop((file, scope, fx_volume, volume));
-            fs.close().await.unwrap().check().await.unwrap();
-        })
-    }
-
-    /// Unmounting waits for a clone of the image writing the volume back, as for an operation:
-    /// the clone writes each volume mounted as it begins back under a guard on its scope. One held
-    /// by the lock of Fxfs's that writing back a dirty file takes keeps the scope from finishing;
-    /// let go, it clones the image, file and all, and the unmount completes. The file has no
-    /// connection, whose close as the unmount begins would wait for the lock too.
-    #[test]
-    fn unmounting_waits_for_a_clone_writing_the_volume_back() {
-        block_on(async {
-            let dir = tempfile::tempdir().unwrap();
-            let storage = Storage::create(dir.path().join("image"), 64 << 20).unwrap();
-            let fs = Filesystem::format(storage).await.unwrap();
-            let (file, _) = fs.root().create(b"file", 0o644, OWNER).await.unwrap();
-            let volume = fs.volume().clone();
-            dirty_unconnected(&volume, &file, b"written").await;
-            let fx_volume = volume.fx_volume().unwrap();
-            let scope = watch_shutdown(&volume).await;
-
-            let release = hold_lock(&volume, file.inode().0).await;
-            let mut clone = Box::pin(fs.clone_storage_to(dir.path().join("clone")));
-            assert!(futures::poll!(&mut clone).is_pending());
-            let mut unmounted = Box::pin(volume.image.unmount_volume(&volume).wait());
-            scope.on_no_tasks().await;
-            assert!(!scope_finished(&fx_volume), "the scope finished with a clone writing it back");
-            // So the unmount waits for it still.
-            assert!(futures::poll!(&mut unmounted).is_pending(), "unmounted under a clone");
-
-            release.send(()).unwrap();
-            let clone = clone.await.expect("cloning failed");
-            unmounted.await.expect("unmounting failed");
-            drop((file, scope, fx_volume, volume));
-            fs.close().await.unwrap().check().await.unwrap();
-            let fs = Filesystem::mount(clone.check().await.unwrap()).await.unwrap();
-            let (file, attr) = fs.root().lookup(b"file").await.unwrap();
-            let mut contents = vec![0; attr.size as usize];
-            assert_eq!(file.read(0, &mut contents).await, Ok(7));
-            assert_eq!(contents, b"written");
             drop(file);
             fs.close().await.unwrap().check().await.unwrap();
         })
     }
 
-    /// Unmounting waits for a snapshot of the volume writing it back, as for an operation: the
-    /// snapshot writes its source back, if it is mounted as the snapshot begins, under a guard on
-    /// its scope. One held by the lock of Fxfs's that writing back a dirty file takes keeps the
-    /// scope from finishing; let go, it snapshots the volume, file and all, once the unmount, which
-    /// the snapshot waits for, completes. The file has no connection, whose close as the unmount
-    /// begins would wait for the lock too.
+    /// Names are refused as a VFS refuses them: too long, or `.`, `..`, empty, or holding `/` or
+    /// NUL, or not in UTF-8, which Fxfs keeps names in.
     #[test]
-    fn unmounting_waits_for_a_snapshot_writing_its_source_back() {
-        block_on(async {
-            let image = Image::format(Storage::memory(64 << 20)).await.unwrap();
-            let fs = image.create_volume("source").await.unwrap();
-            let (file, _) = fs.root().create(b"file", 0o644, OWNER).await.unwrap();
-            let volume = fs.volume().clone();
-            dirty_unconnected(&volume, &file, b"written").await;
-            let fx_volume = volume.fx_volume().unwrap();
-            let scope = watch_shutdown(&volume).await;
-
-            let release = hold_lock(&volume, file.inode().0).await;
-            let mut snapshot = Box::pin(image.snapshot_volume("source", "snapshot"));
-            assert!(futures::poll!(&mut snapshot).is_pending());
-            let mut unmounted = Box::pin(volume.image.unmount_volume(&volume).wait());
-            scope.on_no_tasks().await;
-            assert!(
-                !scope_finished(&fx_volume),
-                "the scope finished with a snapshot writing it back"
-            );
-            // So the unmount waits for it still.
-            assert!(futures::poll!(&mut unmounted).is_pending(), "unmounted under a snapshot");
-
-            release.send(()).unwrap();
-            unmounted.await.expect("unmounting failed");
-            snapshot.await.expect("snapshotting failed");
-            drop((file, scope, fx_volume, volume, fs));
-            let fs = image.open_volume("snapshot").await.unwrap();
-            let (file, attr) = fs.root().lookup(b"file").await.unwrap();
-            let mut contents = vec![0; attr.size as usize];
-            assert_eq!(file.read(0, &mut contents).await, Ok(7));
-            assert_eq!(contents, b"written");
-            drop(file);
-            fs.unmount().await.unwrap();
-            image.close().await.unwrap().check().await.unwrap();
-        })
+    fn invalid_names_are_refused() {
+        assert_eq!(valid_name(&[b'a'; 256]), Err(Errno::ENAMETOOLONG));
+        assert_eq!(valid_name(&[b'a'; 255]), Ok("a".repeat(255)));
+        for name in [&b""[..], b".", b"..", b"a/b", b"a\0b", b"\xff"] {
+            assert_eq!(valid_name(name), Err(Errno::EINVAL), "{name:?}");
+        }
     }
 }

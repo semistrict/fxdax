@@ -29,7 +29,7 @@ const THREADS: usize = 8;
 
 /// Reads or writes `count` pages of `file` on the calling thread, round and round its pages.
 fn ops(file: &Node, count: u64, write: bool) {
-    let page = fxdax::kernel::page_size();
+    let page = fxdax::pages::page_size();
     let mut buf = vec![0x5a; page as usize];
     block_on(async {
         for op in 0..count {
@@ -64,7 +64,7 @@ fn round(count: u64) -> [(f64, f64); 2] {
     block_on(async {
         let fs = Filesystem::format(Storage::memory(64 << 20)).await.unwrap();
         let owner = Owner { uid: 0, gid: 0 };
-        let page = fxdax::kernel::page_size();
+        let page = fxdax::pages::page_size();
         let mut files = Vec::new();
         for thread in 0..THREADS {
             let name = format!("file-{thread}");

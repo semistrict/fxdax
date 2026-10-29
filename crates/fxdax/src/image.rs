@@ -5,7 +5,7 @@
 //! An image: a mounted Fxfs filesystem whose volumes are each a [`Filesystem`].
 //!
 //! Fxfs keeps any number of volumes on one device, which share its journal, its allocator and the
-//! memory they cache. An [`Image`] mounts the device and creates, lists, opens and deletes its
+//! records it caches. An [`Image`] mounts the device and creates, lists, opens and deletes its
 //! volumes; each open volume is a [`Filesystem`], which unmounts on its own. Closing the image
 //! unmounts the volumes still open, and gives the storage back.
 
@@ -14,23 +14,18 @@ use crate::executor::{Executor, assert_not_on_executor};
 use crate::filesystem::{Filesystem, Options};
 use crate::storage::{Kind, Storage, clone_image};
 use crate::volume::{Unmount, Volume};
-use fidl_fuchsia_fs_startup::CreateOptions;
 use fxfs::errors::FxfsError;
 use fxfs::filesystem::{FxFilesystemBuilder, OpenFxFilesystem, SyncOptions};
 use fxfs::lsm_tree::LSMTree;
 use fxfs::lsm_tree::types::{MergeableKey, Value};
 use fxfs::object_store::volume::{RootVolume, root_volume};
-use fxfs_platform::file::FlushType;
-use fxfs_platform::memory_pressure::MemoryPressureMonitor;
-use fxfs_platform::volume::{FxVolume, MemoryPressureConfig};
-use fxfs_platform::volumes_directory::VolumesDirectory;
-use refaults_vmo::PageRefaultCounter;
+use fxfs::object_store::{NewChildStoreOptions, StoreOptions};
+use std::collections::HashSet;
 use std::future::Future;
 use std::path::Path;
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 use storage_device::DeviceHolder;
-use vfs::execution_scope::ActiveGuard;
 
 /// A mounted Fxfs image, whose named volumes are filesystems of their own.
 ///
@@ -47,6 +42,9 @@ pub(crate) struct ImageShared {
     pub block_size: u32,
     storage_kind: Kind,
     state: Mutex<State>,
+    /// Held while volumes are mounted, created, deleted or snapshotted, which the root volume's
+    /// directory lists, one at a time.
+    volumes_lock: futures::lock::Mutex<()>,
 }
 
 struct State {
@@ -55,13 +53,13 @@ struct State {
     /// The volumes mounted, while their filesystems live: closing the image unmounts them, or
     /// waits for their unmounts under way.
     volumes: Vec<Weak<Volume>>,
+    /// The stores of the volumes mounted, until their unmounts are done: a volume is mounted once
+    /// at a time.
+    mounted: HashSet<u64>,
 }
 
 struct Open {
     filesystem: OpenFxFilesystem,
-    /// The image's volumes directory, which mounts its volumes and runs their background tasks,
-    /// and limits their dirty pages under memory pressure, as Fxfs's component does.
-    volumes_directory: Arc<VolumesDirectory>,
     /// The image's root volume, whose directory lists the volumes.
     root_volume: Arc<RootVolume>,
 }
@@ -133,21 +131,17 @@ impl Image {
         let open = executor
             .run(async move {
                 let filesystem = FxFilesystemBuilder::new().format(format).open(device).await?;
-                let volumes_directory = VolumesDirectory::new(
-                    root_volume(filesystem.clone()).await?,
-                    Some(MemoryPressureMonitor::start()?),
-                    Arc::new(PageRefaultCounter::new()?),
-                    memory_pressure_config(),
-                )
-                .await?;
                 let root_volume = Arc::new(root_volume(filesystem.clone()).await?);
-                anyhow::Ok(Open { filesystem, volumes_directory, root_volume })
+                anyhow::Ok(Open { filesystem, root_volume })
             })
             .await
             .map_err(Error::new)?;
         let block_size = open.filesystem.block_size().get() as u32;
-        let state = Mutex::new(State { open: Some(open), volumes: Vec::new() });
-        Ok(Self { shared: Arc::new(ImageShared { executor, block_size, storage_kind, state }) })
+        let state =
+            Mutex::new(State { open: Some(open), volumes: Vec::new(), mounted: HashSet::new() });
+        let volumes_lock = futures::lock::Mutex::new(());
+        let shared = ImageShared { executor, block_size, storage_kind, state, volumes_lock };
+        Ok(Self { shared: Arc::new(shared) })
     }
 
     /// Creates the volume `name`, which must not exist, and mounts it.
@@ -183,37 +177,37 @@ impl Image {
 
     /// Deletes the volume `name` and everything in it. Fails with `EBUSY` if it is mounted.
     pub async fn delete_volume(&self, name: &str) -> Result<(), Error> {
-        let volumes_directory = self.shared.with_open(|open| open.volumes_directory.clone())?;
-        let name = name.to_owned();
+        let _volumes = self.shared.volumes_lock.lock().await;
+        let root_volume = self.shared.with_open(|open| open.root_volume.clone())?;
+        let (shared, name) = (self.shared.clone(), name.to_owned());
         self.shared
             .executor
-            .run(async move { volumes_directory.remove_volume(&name).await })
+            .run(async move {
+                let (store_id, transaction) =
+                    root_volume.acquire_transaction_for_remove_volume(&name, [], false).await?;
+                // Cowardly refuse to delete a mounted volume.
+                anyhow::ensure!(!shared.is_mounted(store_id), FxfsError::AlreadyBound);
+                root_volume.delete_volume(&name, transaction, || {}).await
+            })
             .await
             .map_err(volume_error)
     }
 
     /// Snapshots the volume `source` into the new volume `name`: a volume of its own from then on,
-    /// which starts with everything the source held, writing back its dirty data first if it is
-    /// mounted. Writes to the source while it snapshots may be in the snapshot or not.
+    /// which starts with everything the source held. Writes to the source while it snapshots may
+    /// be in the snapshot or not.
     ///
     /// It takes time and space independent of the source's size: the snapshot shares the source's
     /// metadata and data, until either changes them, as Fxfs writes changes to new blocks. What
     /// they share is freed once neither references it. Fails with `EEXIST` if `name` exists, and
     /// `ENOENT` if `source` doesn't.
     pub async fn snapshot_volume(&self, source: &str, name: &str) -> Result<(), Error> {
-        let volumes_directory = self.shared.volumes_directory()?;
-        let mounted = self.shared.mounted_volume(source);
+        let _volumes = self.shared.volumes_lock.lock().await;
+        let root_volume = self.shared.with_open(|open| open.root_volume.clone())?;
         let (source, name) = (source.to_owned(), name.to_owned());
         self.shared
             .executor
-            .run(async move {
-                // Under the guard, so that an unmount begun meanwhile writes the volume back after
-                // this has; and no longer, as the snapshot waits for an unmount under way.
-                if let Some((volume, _guard)) = mounted {
-                    volume.flush_all_files(FlushType::Sync).await;
-                }
-                volumes_directory.snapshot_volume(&source, &name).await
-            })
+            .run(async move { root_volume.snapshot_volume(&source, &name).await.map(|_| ()) })
             .await
             .map_err(volume_error)
     }
@@ -221,8 +215,8 @@ impl Image {
     /// Clones the image to a new image at `path`, which must not exist, while it is mounted, and
     /// returns the clone's storage (see [`Storage::clone_to`]).
     ///
-    /// Every mounted volume's dirty pages are written back and the journal is committed, flushing
-    /// the image, before it is cloned, so the clone has everything written before this was called.
+    /// The journal is committed, flushing the image, before it is cloned, so the clone has
+    /// everything written before this was called.
     /// The image's writes wait while it is cloned, so the clone is the image as it was at one
     /// time, which it recovers from as Fxfs does after a crash.
     pub async fn clone_storage_to(&self, path: impl AsRef<Path>) -> Result<Storage, Error> {
@@ -268,11 +262,6 @@ impl ImageShared {
         self.state.lock().unwrap().open.as_ref().map(f).ok_or(Errno::ENOTCONN)
     }
 
-    /// The image's volumes directory, until it is closed.
-    pub fn volumes_directory(&self) -> Result<Arc<VolumesDirectory>, Errno> {
-        self.with_open(|open| open.volumes_directory.clone())
-    }
-
     /// What compacting the image's trees has cost since it was mounted, until it is closed.
     pub fn compactions(&self) -> Result<Compactions, Errno> {
         self.with_open(|open| {
@@ -288,74 +277,68 @@ impl ImageShared {
         })
     }
 
-    /// The volume `name`, Fxfs's, if it is mounted, with a guard on its scope
-    /// ([`Volume::fx_volume_guarded`]). An unmounted filesystem of it may be listed still, beside
-    /// its remount's.
-    fn mounted_volume(&self, name: &str) -> Option<(Arc<FxVolume>, ActiveGuard)> {
-        let state = self.state.lock().unwrap();
-        let volumes = state.volumes.iter().filter_map(Weak::upgrade);
-        volumes
-            .filter(|volume| volume.name() == name)
-            .find_map(|volume| volume.fx_volume_guarded().ok())
+    /// Whether the volume whose store is `store_id` is mounted, or its unmount is under way.
+    fn is_mounted(&self, store_id: u64) -> bool {
+        self.state.lock().unwrap().mounted.contains(&store_id)
+    }
+
+    /// Notes that the unmount of the volume whose store is `store_id` is done: it may be mounted
+    /// again.
+    pub fn unmounted(&self, store_id: u64) {
+        self.state.lock().unwrap().mounted.remove(&store_id);
     }
 
     /// Creates the volume `name`, or mounts it, and serves it as a filesystem.
     async fn mount_volume(self: &Arc<Self>, name: &str, create: bool) -> Result<Filesystem, Error> {
-        let volumes_directory = self.volumes_directory()?;
-        let name = name.to_owned();
-        let volume = self
+        let _volumes = self.volumes_lock.lock().await;
+        let root_volume = self.with_open(|open| open.root_volume.clone())?;
+        let store = self
             .executor
             .run({
-                let name = name.clone();
+                let name = name.to_owned();
                 async move {
                     if create {
-                        let options = CreateOptions::default();
-                        volumes_directory.create_and_mount_volume(&name, None, false, options).await
+                        root_volume.new_volume(&name, NewChildStoreOptions::default()).await
                     } else {
-                        volumes_directory.mount_volume(&name, None, false).await
+                        root_volume.volume(&name, StoreOptions::default()).await
                     }
                 }
             })
             .await
             .map_err(volume_error)?;
-        let filesystem = Filesystem::new(self.clone(), &name, volume).await;
+        {
+            let mut state = self.state.lock().unwrap();
+            // Its volumes' unmounts begin as the image closes, which it does no more once
+            // closed.
+            if state.open.is_none() {
+                return Err(Errno::ENOTCONN.into());
+            }
+            if !state.mounted.insert(store.store_object_id()) {
+                return Err(Errno::EBUSY.into());
+            }
+        }
+        let filesystem = Filesystem::new(self.clone(), store);
         let mut state = self.state.lock().unwrap();
         state.volumes.retain(|volume| volume.strong_count() > 0);
         state.volumes.push(Arc::downgrade(filesystem.volume()));
         Ok(filesystem)
     }
 
-    /// Begins unmounting `volume`, one of the image's, unless that has begun, from the image's
-    /// volumes directory while the image is open: once it is closed, so are its volumes. Under the
-    /// image's lock, so that the image doesn't close meanwhile, as its close begins its volumes'
-    /// unmounts under it.
-    pub fn unmount_volume(&self, volume: &Volume) -> Unmount {
-        let state = self.state.lock().unwrap();
-        let volumes_directory = state.open.as_ref().map(|open| open.volumes_directory.clone());
-        volume.begin_unmount(volumes_directory)
+    /// Begins unmounting `volume`, one of the image's, unless that has begun. Under the image's
+    /// lock, so that the image doesn't close meanwhile, as its close begins its volumes' unmounts
+    /// under it.
+    pub fn unmount_volume(&self, volume: &Arc<Volume>) -> Unmount {
+        let _state = self.state.lock().unwrap();
+        volume.begin_unmount()
     }
 
     pub async fn clone_storage_to(&self, path: &Path) -> Result<Storage, Error> {
         let Kind::Image { store, writes, .. } = &self.storage_kind else {
             return Err(Error::msg("memory cannot be cloned to an image"));
         };
-        let (filesystem, volumes) = {
-            let state = self.state.lock().unwrap();
-            let open = state.open.as_ref().ok_or(Errno::ENOTCONN)?;
-            let volumes: Vec<_> = state
-                .volumes
-                .iter()
-                .filter_map(|volume| volume.upgrade()?.fx_volume_guarded().ok())
-                .collect();
-            ((*open.filesystem).clone(), volumes)
-        };
+        let filesystem = self.with_open(|open| (*open.filesystem).clone())?;
         self.executor
             .run(async move {
-                // Each under its guard, so that an unmount begun meanwhile writes the volume back
-                // after this has.
-                for (volume, _guard) in volumes {
-                    volume.flush_all_files(FlushType::Sync).await;
-                }
                 filesystem.sync(SyncOptions { flush_device: true, ..Default::default() }).await
             })
             .await
@@ -376,15 +359,15 @@ impl ImageShared {
         &self,
     ) -> Option<impl Future<Output = anyhow::Result<DeviceHolder>> + Send + 'static> {
         // The volumes' unmounts begin as the image's filesystem is taken, under one hold of the
-        // lock, from the volumes directory they unmount from: an unmount begun in between
-        // ([`ImageShared::unmount_volume`]) would find it gone, and not unmount the volume from
-        // it. Those under way already are waited for.
-        let (Open { filesystem, volumes_directory, root_volume }, unmounts) = {
+        // lock: those under way already are waited for.
+        let (Open { filesystem, root_volume }, unmounts) = {
             let mut state = self.state.lock().unwrap();
             let open = state.open.take()?;
             let volumes = std::mem::take(&mut state.volumes);
-            let unmounts: Vec<Unmount> = (volumes.iter().filter_map(Weak::upgrade))
-                .map(|volume| volume.begin_unmount(Some(open.volumes_directory.clone())))
+            let unmounts: Vec<Unmount> = volumes
+                .iter()
+                .filter_map(Weak::upgrade)
+                .map(|volume| volume.begin_unmount())
                 .collect();
             (open, unmounts)
         };
@@ -395,8 +378,6 @@ impl ImageShared {
                 }
             }
             drop(root_volume);
-            volumes_directory.terminate().await;
-            drop(volumes_directory);
             filesystem.close().await?;
             anyhow::Ok(filesystem.take_device().await)
         })
@@ -405,19 +386,11 @@ impl ImageShared {
 
 /// The error of a volume operation, with the errno of the Fxfs error causing it, if one did.
 fn volume_error(error: anyhow::Error) -> Error {
-    let fxfs_error = error.chain().find_map(|cause| cause.downcast_ref::<FxfsError>()).cloned();
-    match fxfs_error {
-        Some(FxfsError::AlreadyBound) => Error::new(error.context(Errno::EBUSY)),
-        Some(fxfs_error) => Error::new(error.context(Errno::of_status(fxfs_error.into()))),
-        None => Error::new(error),
+    match error.chain().any(|cause| cause.downcast_ref::<FxfsError>().is_some()) {
+        true => {
+            let errno = Errno::of_fxfs(&error);
+            Error::new(error.context(errno))
+        }
+        false => Error::new(error),
     }
-}
-
-/// Fxfs's configuration under memory pressure, with more of the directory entries looked up kept
-/// while there is none: Fuchsia's 2,000 are a phone's, and a guest's own cache of entries, which
-/// it forgets on reclaim, is a whole VM's. Pressure shrinks it as Fuchsia's does.
-fn memory_pressure_config() -> MemoryPressureConfig {
-    let mut config = MemoryPressureConfig::default();
-    config.mem_normal.cache_size_limit = 16_384;
-    config
 }

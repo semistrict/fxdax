@@ -571,8 +571,7 @@ mod tests {
     }
 
     /// Runs `profile`'s simulation under `scheduler`, once a run has warmed the process up: a
-    /// process's first run initializes what lives as long as the process (the in-process kernel,
-    /// statics), taking Shuttle's locks then only, so that its schedules replay in no other
+    /// process's first run initializes what lives as long as the process (statics), taking Shuttle's locks then only, so that its schedules replay in no other
     /// process, nor another's in it. After it, every run starts alike, and a failing run's
     /// schedule replays exactly (`failing_schedules_replay`).
     fn simulations(scheduler: impl Scheduler + 'static, config: Config, profile: Profile) {

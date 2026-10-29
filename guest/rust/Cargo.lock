@@ -710,12 +710,26 @@ dependencies = [
  "anyhow",
  "async-trait",
  "event-listener",
- "fidl-fuchsia-io",
  "follower",
  "futures",
  "fxfs",
+ "fxfs-posix",
  "getrandom 0.4.3",
  "linux-rt",
+ "log",
+ "rustc-hash",
+ "storage_device",
+]
+
+[[package]]
+name = "fxfs-posix"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "event-listener",
+ "fidl-fuchsia-io",
+ "futures",
+ "fxfs",
  "log",
  "rustc-hash",
  "storage_device",

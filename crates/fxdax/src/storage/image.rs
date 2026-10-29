@@ -9,17 +9,11 @@
 //! It replaces Fuchsia's `FileBackedDevice`, which is for host tools and tests:
 //!
 //! - Extents' I/O bypasses the host's page cache where the host filesystem allows (`O_DIRECT` on
-//!   Linux, `F_NOCACHE` on macOS), as the in-process kernel caches files' pages already.
+//!   Linux, `F_NOCACHE` on macOS).
 //! - Extents' I/O runs off Fxfs's executor threads (see `io`), which only await it, as do commits,
 //!   which sync the image, and cleaning, which runs after a commit once segments hold much freed
 //!   space.
 //! - Flushing commits the store: a barrier, durable, which seals the extents written before it.
-//!
-//! Transfer buffers are memory of the in-process kernel's, which the host's I/O cannot fault in:
-//! it fails with `EFAULT` on a page the kernel's page scanner made inaccessible to track its
-//! accesses, and, for a read, on a page not yet written, which the kernel maps read-only, as the
-//! zero page. An operation that fails so touches its buffer's pages as it will access them, which
-//! faults them in, and is tried again.
 
 use super::gate::WriteGate;
 use super::io::{Io, Op};
@@ -37,9 +31,6 @@ use storage_device::{ReadOptions, WriteFlags, WriteOptions};
 
 /// The size of the transfer buffers' memory.
 const TRANSFER_HEAP_SIZE: usize = 32 * 1024 * 1024;
-
-/// How many times an operation is tried again after faulting its buffer's pages in.
-const FAULT_RETRIES: usize = 3;
 
 /// Runs `f` on a thread of its own, as it blocks.
 async fn unblock<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Result<T, Error> {
@@ -106,7 +97,6 @@ impl ImageDevice {
 
     /// Transfers `len` bytes at `offset` in `fd`'s file to or from memory at `addr`, as `op`
     /// makes operations of them: the first `needed` of them, and the rest as far as the file goes.
-    #[allow(clippy::too_many_arguments)]
     async fn transfer(
         &self,
         fd: RawFd,
@@ -114,11 +104,9 @@ impl ImageDevice {
         len: usize,
         needed: usize,
         offset: u64,
-        access: Access,
         op: impl Fn(usize, usize, u64) -> Op,
     ) -> Result<(), Error> {
         let mut done = 0;
-        let mut faults = 0;
         while done < needed {
             let operation = op(addr + done, len - done, offset + done as u64);
             // SAFETY: The file is open as long as the caller holds it, which it does for the
@@ -126,15 +114,7 @@ impl ImageDevice {
             // for even if it is dropped.
             match unsafe { self.io.run(fd, operation) }.await {
                 Ok(0) => bail!("the image's file ended at {:#x}", offset + done as u64),
-                Ok(transferred) => {
-                    done += transferred;
-                    // The budget is for faults without progress between them.
-                    faults = 0;
-                }
-                Err(err) if err.raw_os_error() == Some(libc::EFAULT) && faults < FAULT_RETRIES => {
-                    faults += 1;
-                    touch(addr + done, len - done, access);
-                }
+                Ok(transferred) => done += transferred,
                 Err(err) => {
                     return Err(
                         Error::new(err).context(format!("I/O at {:#x}", offset + done as u64))
@@ -192,14 +172,12 @@ impl Device for ImageDevice {
                 Part::Data { file, offset, len, .. } => {
                     let mut part = buffer.reborrow().subslice_mut(at..at + len as usize);
                     let addr = part.as_mut_ptr() as usize;
-                    // The host writes the buffer.
                     self.transfer(
                         file.as_raw_fd(),
                         addr,
                         len as usize,
                         len as usize,
                         offset,
-                        Access::Write,
                         |addr, len, offset| Op::Read { addr, len, offset },
                     )
                     .await?;
@@ -216,7 +194,6 @@ impl Device for ImageDevice {
                         stored.as_slice().len(),
                         part.stored.len as usize,
                         range.start,
-                        Access::Write,
                         |addr, len, offset| Op::Read { addr, len, offset },
                     )
                     .await?;
@@ -266,14 +243,12 @@ impl Device for ImageDevice {
             unblock(move || store.wait_until_writes_resume()).await?;
         };
         let (addr, len) = (buffer.as_ptr() as usize, buffer.len());
-        // The host reads the buffer.
         self.transfer(
             write.file().as_raw_fd(),
             addr,
             len,
             len,
             write.offset(),
-            Access::Read,
             |addr, len, offset| Op::Write { addr, len, offset },
         )
         .await?;
@@ -315,42 +290,12 @@ impl Device for ImageDevice {
     }
 }
 
-/// How the host accesses a buffer.
-#[derive(Clone, Copy)]
-enum Access {
-    Read,
-    Write,
-}
-
-/// Touches the pages of the `len` bytes at `addr` as `access` does, faulting them in.
-fn touch(addr: usize, len: usize, access: Access) {
-    let page_size = crate::kernel::page_size() as usize;
-    let mut page = addr - addr % page_size;
-    while page < addr + len {
-        let byte = page.max(addr) as *mut u8;
-        // SAFETY: The memory is a transfer buffer's, which the operation that failed is the only
-        // user of, and which is mapped readable and writable. Writing a byte back unchanged leaves
-        // it as it was.
-        unsafe {
-            match access {
-                Access::Read => {
-                    byte.read_volatile();
-                }
-                Access::Write => byte.write_volatile(byte.read_volatile()),
-            }
-        }
-        page += page_size;
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use futures::executor::block_on;
     use std::path::PathBuf;
     use storage_device::NoExtent;
-    use zircon::vm::arch_vm_aspace::{NonTerminalAction, TerminalAction};
-    use zircon::vm::vm_aspace::VmAspace;
 
     const BLOCK: u32 = host_store::BLOCK_SIZE;
     const MIB: usize = 1 << 20;
@@ -584,60 +529,4 @@ mod tests {
         );
     }
 
-    /// The kernel's page scanner makes transfer buffers' pages inaccessible to track their
-    /// accesses, which the host's I/O into them fails on; the device's I/O faults them back in.
-    #[test]
-    fn io_into_harvested_buffers() {
-        let (device, _, _dir) = device(4 * MIB as u64);
-        block_on(async {
-            write(&device, extent(1), 0, &pattern(0, MIB)).await;
-            let mut buffer = device.allocate_buffer(MIB).await;
-            let harvest = || {
-                VmAspace::harvest_all_user_accessed_bits(
-                    NonTerminalAction::Retain,
-                    TerminalAction::UpdateAgeAndHarvest,
-                )
-            };
-
-            harvest();
-            let [Part::Data { file, offset, .. }] =
-                &device.store.locate(extent(1), 0, MIB as u64).unwrap()[..]
-            else {
-                panic!("extent 1 isn't in one piece");
-            };
-            // SAFETY: Reads into the buffer, which is the test's.
-            let read = unsafe {
-                libc::pread(
-                    file.as_raw_fd(),
-                    buffer.as_mut().as_mut_ptr().cast(),
-                    MIB,
-                    *offset as libc::off_t,
-                )
-            };
-            assert_eq!(read, -1);
-            assert_eq!(std::io::Error::last_os_error().raw_os_error(), Some(libc::EFAULT));
-
-            harvest();
-            device.read(extent(1), 0, buffer.as_mut()).await.unwrap();
-            assert!(contents(buffer.as_ref()) == pattern(0, MIB));
-            harvest();
-            device.write(extent(2), 0, buffer.as_ref()).await.unwrap();
-            let mut copy = vec![0; MIB];
-            device.store.read(extent(2), 0, &mut copy).unwrap();
-            assert!(copy == pattern(0, MIB));
-        });
-    }
-
-    /// A fresh device's first reads land in buffers the kernel maps read-only, as the zero page,
-    /// until they are written; the host's reads into them fault them in.
-    #[test]
-    fn first_reads_into_unwritten_buffers() {
-        let (device, image, _dir) = device(4 * MIB as u64);
-        // Through the store, as the device's buffers are what is being tested.
-        device.store.write(extent(1), 0, &pattern(0, MIB)).unwrap();
-        block_on(device.flush()).unwrap();
-        drop(device);
-        let device = ImageDevice::open(&image, Default::default()).unwrap();
-        assert!(block_on(read(&device, extent(1), 0, MIB)) == pattern(0, MIB));
-    }
 }

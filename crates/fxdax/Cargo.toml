@@ -15,7 +15,7 @@ testing = []
 # TASK-44.3), on Shuttle's locks, whose scheduler then chooses every interleaving of their tests'
 # threads. Only for those tests: `cargo nextest run -p fxdax --features shuttle --lib
 # shuttle_tests::`.
-shuttle = ["dep:shuttle", "zircon/shuttle"]
+shuttle = ["dep:shuttle", "physmem/shuttle"]
 # fxdax: the extent daemon's failpoints (the fail crate's), which the FAILPOINTS environment
 # variable sets: a request of a kind failing or waiting, as configured (TASK-44.10). Without the
 # feature they are nothing: scripts/test-e2e.sh builds the daemon with it for FXDAX_FAILPOINTS.
@@ -25,20 +25,15 @@ failpoints = ["fail/failpoints"]
 anyhow.workspace = true
 thiserror.workspace = true
 bitflags.workspace = true
-fidl.workspace = true
-fidl-fuchsia-fs-startup.workspace = true
-fidl-fuchsia-io.workspace = true
 fuchsia-async.workspace = true
 futures.workspace = true
 fxfs.workspace = true
-fxfs-platform.workspace = true
+fxfs-posix.workspace = true
 libc.workspace = true
 log.workspace = true
 rand.workspace = true
-refaults_vmo.workspace = true
+physmem.workspace = true
 storage_device.workspace = true
-zircon.workspace = true
-zx.workspace = true
 zerocopy.workspace = true
 async-trait.workspace = true
 event-listener.workspace = true
@@ -46,7 +41,6 @@ extent_remote.workspace = true
 extent_frame.workspace = true
 extent_store.workspace = true
 tokio.workspace = true
-vfs.workspace = true
 tar = { version = "0.4.46", default-features = false }
 flate2.workspace = true
 sha2.workspace = true
@@ -57,8 +51,8 @@ fail = "0.5.1"
 
 [dev-dependencies]
 async-trait.workspace = true
-# Its packet receivers, which the filesystem's tests hold Fxfs's pager off with.
-fuchsia-async-kernel = { path = "../fuchsia-async-kernel" }
+# fxfs-metabench's attributes, as Fxfs's API takes them.
+fidl-fuchsia-io.workspace = true
 fxdax = { path = ".", features = ["testing"] }
 object_store.workspace = true
 tempfile.workspace = true

@@ -45,7 +45,7 @@ fn allocated(path: &Path) -> u64 {
     std::fs::read_dir(path).unwrap().map(|entry| allocated(&entry.unwrap().path())).sum()
 }
 
-/// Image I/O bypasses the host's page cache, which the in-process kernel stands in for.
+/// Image I/O bypasses the host's page cache.
 #[test]
 fn images_bypass_the_page_cache() {
     let dir = images();

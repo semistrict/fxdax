@@ -6,7 +6,7 @@
 //!
 //! Each message is a [`Header`], followed by `len` bytes of payload. A message may carry up to
 //! [`MAX_FDS`] file descriptors, as `SCM_RIGHTS`, with its first bytes: the daemon's reply to
-//! [`OPEN`] carries its kernel's physical memory, the VM process's tenant's arena of it, `args[1]`,
+//! [`OPEN`] carries its physical memory, the VM process's tenant's arena of it, `args[1]`,
 //! the default tenant's if it is of none, and the default arena, read-only (TASK-43, TASK-79.17).
 
 use std::io::{self, Read, Write};
@@ -205,7 +205,7 @@ pub(crate) fn extent_ids(
 
 /// The reply to request `id`.
 pub(crate) const REPLY: u32 = 100;
-/// Maps `args[2]` bytes of the kernel's physical memory at `args[1]` in arena `args[4]`'s object
+/// Maps `args[2]` bytes of physical memory at `args[1]` in arena `args[4]`'s object
 /// into the window at `args[0]`, with protection `args[3]` ([`Protection`](crate::Protection) as
 /// [`protection_code`]).
 pub(crate) const STAGE_MAP: u32 = 101;
@@ -229,7 +229,6 @@ pub(crate) const STAGE_ACK: u32 = 1 << 0;
 /// `protection` on the wire.
 pub(crate) fn protection_code(protection: crate::Protection) -> u64 {
     match protection {
-        crate::Protection::None => 0,
         crate::Protection::Read => 1,
         crate::Protection::ReadWrite => 2,
     }
@@ -238,7 +237,6 @@ pub(crate) fn protection_code(protection: crate::Protection) -> u64 {
 /// The protection `code` stands for.
 pub(crate) fn protection(code: u64) -> io::Result<crate::Protection> {
     match code {
-        0 => Ok(crate::Protection::None),
         1 => Ok(crate::Protection::Read),
         2 => Ok(crate::Protection::ReadWrite),
         _ => Err(io::Error::new(io::ErrorKind::InvalidData, "an unknown protection")),

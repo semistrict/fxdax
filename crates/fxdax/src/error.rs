@@ -4,6 +4,7 @@
 
 //! Errors: the errno values a guest is given, and the errors of setting a filesystem up.
 
+use fxfs::errors::FxfsError;
 use std::fmt;
 
 /// A Linux errno value, as a guest's Linux kernel understands it.
@@ -113,44 +114,46 @@ impl Errno {
         self.0
     }
 
-    /// The errno fdio gives `status` (`fdio_status_to_errno` in `sdk/lib/fdio/fdio_unistd.cc`).
-    pub(crate) fn of_status(status: zx::Status) -> Self {
-        match status {
-            zx::Status::NOT_FOUND => Self::ENOENT,
-            zx::Status::NO_MEMORY => Self::ENOMEM,
-            zx::Status::INVALID_ARGS => Self::EINVAL,
-            zx::Status::BUFFER_TOO_SMALL => Self::EINVAL,
-            zx::Status::TIMED_OUT => Self::ETIMEDOUT,
-            zx::Status::UNAVAILABLE => Self::EBUSY,
-            zx::Status::ALREADY_EXISTS => Self::EEXIST,
-            zx::Status::PEER_CLOSED => Self::EPIPE,
-            zx::Status::BAD_STATE => Self::EPIPE,
-            zx::Status::BAD_PATH => Self::ENAMETOOLONG,
-            zx::Status::NOT_FILE => Self::EISDIR,
-            zx::Status::NOT_DIR => Self::ENOTDIR,
-            zx::Status::NOT_SUPPORTED => Self::ENOTSUP,
-            zx::Status::WRONG_TYPE => Self::ENOTSUP,
-            zx::Status::OUT_OF_RANGE => Self::EINVAL,
-            zx::Status::NO_RESOURCES => Self::ENOMEM,
-            zx::Status::BAD_HANDLE => Self::EBADF,
-            zx::Status::ACCESS_DENIED => Self::EACCES,
-            zx::Status::SHOULD_WAIT => Self::EAGAIN,
-            zx::Status::FILE_BIG => Self::EFBIG,
-            zx::Status::NO_SPACE => Self::ENOSPC,
-            zx::Status::NOT_EMPTY => Self::ENOTEMPTY,
-            zx::Status::IO_REFUSED => Self::ECONNREFUSED,
-            zx::Status::CANCELED => Self::EBADF,
-            zx::Status::PROTOCOL_NOT_SUPPORTED => Self::EPROTONOSUPPORT,
-            zx::Status::ADDRESS_UNREACHABLE => Self::ENETUNREACH,
-            zx::Status::ADDRESS_IN_USE => Self::EADDRINUSE,
-            zx::Status::NOT_CONNECTED => Self::ENOTCONN,
-            zx::Status::CONNECTION_REFUSED => Self::ECONNREFUSED,
-            zx::Status::CONNECTION_RESET => Self::ECONNRESET,
-            zx::Status::CONNECTION_ABORTED => Self::ECONNABORTED,
+    /// The errno of `error`, an Fxfs operation's, as Linux's filesystems give it: the errno it
+    /// carries, or the one of the Fxfs error causing it. Any other is an I/O error, which is
+    /// logged.
+    pub(crate) fn of_fxfs(error: &anyhow::Error) -> Self {
+        // An errno added as context is found by downcasting the error, not its causes.
+        let errno = error.downcast_ref::<Errno>();
+        if let Some(errno) = errno.or_else(|| error.chain().find_map(|cause| cause.downcast_ref()))
+        {
+            return *errno;
+        }
+        let fxfs_error = error.chain().find_map(|cause| cause.downcast_ref::<FxfsError>());
+        match fxfs_error {
+            Some(FxfsError::NotFound | FxfsError::Deleted) => Self::ENOENT,
+            Some(FxfsError::AlreadyExists) => Self::EEXIST,
+            Some(FxfsError::NotDir) => Self::ENOTDIR,
+            Some(FxfsError::NotFile) => Self::EISDIR,
+            Some(FxfsError::NotEmpty) => Self::ENOTEMPTY,
+            Some(FxfsError::NoSpace) => Self::ENOSPC,
+            Some(FxfsError::ReadOnlyFilesystem) => Self::EROFS,
+            Some(FxfsError::InvalidArgs | FxfsError::BadPath | FxfsError::WrongType) => {
+                Self::EINVAL
+            }
+            Some(FxfsError::TooBig) => Self::EFBIG,
+            Some(FxfsError::AccessDenied) => Self::EACCES,
+            Some(FxfsError::NotSupported) => Self::ENOTSUP,
+            Some(FxfsError::Unavailable | FxfsError::AlreadyBound) => Self::EBUSY,
+            _ => {
+                log::error!("fxdax: {error:#}");
+                Self::EIO
+            }
+        }
+    }
 
-            // No specific translation, so return a generic value: as fdio does for IO and
-            // IO_INVALID too.
-            _ => Self::EIO,
+    /// The errno of `error`, an extended attribute's operation's: `ENODATA` for one that doesn't
+    /// exist, as getxattr(2) has it, and `E2BIG` for one too large.
+    pub(crate) fn of_xattr(error: &anyhow::Error) -> Self {
+        match error.chain().find_map(|cause| cause.downcast_ref::<FxfsError>()) {
+            Some(FxfsError::NotFound) => Self::ENODATA,
+            Some(FxfsError::TooBig) => Self::E2BIG,
+            _ => Self::of_fxfs(error),
         }
     }
 }
@@ -174,43 +177,6 @@ impl fmt::Display for Errno {
 }
 
 impl std::error::Error for Errno {}
-
-/// The results the kernel and fuchsia.io give, as errno values.
-pub(crate) trait IntoErrno {
-    type Ok;
-
-    fn errno(self) -> Result<Self::Ok>;
-}
-
-impl<T> IntoErrno for std::result::Result<T, zx::Status> {
-    type Ok = T;
-
-    fn errno(self) -> Result<T> {
-        self.map_err(Errno::of_status)
-    }
-}
-
-impl<T> IntoErrno for std::result::Result<T, i32> {
-    type Ok = T;
-
-    /// A raw status, as fuchsia.io methods' results have.
-    fn errno(self) -> Result<T> {
-        self.map_err(|status| Errno::of_status(zx::Status::err_from_raw(status)))
-    }
-}
-
-impl<T> IntoErrno for std::result::Result<T, fidl::Error> {
-    type Ok = T;
-
-    /// A call on a closed connection fails with the status of its epitaph, as fdio's do.
-    fn errno(self) -> Result<T> {
-        self.map_err(|error| {
-            let fidl::Error::ClientChannelClosed { epitaph, .. } = error;
-            let status: std::result::Result<(), zx::Status> = epitaph.into();
-            status.err().map_or(Errno::EIO, Errno::of_status)
-        })
-    }
-}
 
 /// An error setting up, checking or tearing down a filesystem.
 pub struct Error(anyhow::Error);
@@ -274,48 +240,30 @@ impl std::error::Error for Error {
 mod tests {
     use super::*;
 
-    /// Statuses are the errnos fdio gives them.
+    /// Fxfs's errors are the errnos Linux's filesystems give them, the guest's among them
+    /// (guest/rust/fxfs-linux), and an errno an error carries is its own.
     #[test]
-    fn statuses_are_fdios_errnos() {
-        use zx::Status;
+    fn fxfs_errors_are_linuxs_errnos() {
         let table = [
-            (Status::NOT_FOUND, Errno::ENOENT),
-            (Status::NO_MEMORY, Errno::ENOMEM),
-            (Status::INVALID_ARGS, Errno::EINVAL),
-            (Status::BUFFER_TOO_SMALL, Errno::EINVAL),
-            (Status::TIMED_OUT, Errno::ETIMEDOUT),
-            (Status::UNAVAILABLE, Errno::EBUSY),
-            (Status::ALREADY_EXISTS, Errno::EEXIST),
-            (Status::PEER_CLOSED, Errno::EPIPE),
-            (Status::BAD_STATE, Errno::EPIPE),
-            (Status::BAD_PATH, Errno::ENAMETOOLONG),
-            (Status::IO, Errno::EIO),
-            (Status::NOT_FILE, Errno::EISDIR),
-            (Status::NOT_DIR, Errno::ENOTDIR),
-            (Status::NOT_SUPPORTED, Errno::ENOTSUP),
-            (Status::WRONG_TYPE, Errno::ENOTSUP),
-            (Status::OUT_OF_RANGE, Errno::EINVAL),
-            (Status::NO_RESOURCES, Errno::ENOMEM),
-            (Status::BAD_HANDLE, Errno::EBADF),
-            (Status::ACCESS_DENIED, Errno::EACCES),
-            (Status::SHOULD_WAIT, Errno::EAGAIN),
-            (Status::FILE_BIG, Errno::EFBIG),
-            (Status::NO_SPACE, Errno::ENOSPC),
-            (Status::NOT_EMPTY, Errno::ENOTEMPTY),
-            (Status::IO_REFUSED, Errno::ECONNREFUSED),
-            (Status::IO_INVALID, Errno::EIO),
-            (Status::CANCELED, Errno::EBADF),
-            (Status::PROTOCOL_NOT_SUPPORTED, Errno::EPROTONOSUPPORT),
-            (Status::ADDRESS_UNREACHABLE, Errno::ENETUNREACH),
-            (Status::ADDRESS_IN_USE, Errno::EADDRINUSE),
-            (Status::NOT_CONNECTED, Errno::ENOTCONN),
-            (Status::CONNECTION_REFUSED, Errno::ECONNREFUSED),
-            (Status::CONNECTION_RESET, Errno::ECONNRESET),
-            (Status::CONNECTION_ABORTED, Errno::ECONNABORTED),
-            (Status::INTERNAL, Errno::EIO),
+            (FxfsError::NotFound, Errno::ENOENT, Errno::ENODATA),
+            (FxfsError::Deleted, Errno::ENOENT, Errno::ENOENT),
+            (FxfsError::AlreadyExists, Errno::EEXIST, Errno::EEXIST),
+            (FxfsError::NotDir, Errno::ENOTDIR, Errno::ENOTDIR),
+            (FxfsError::NotFile, Errno::EISDIR, Errno::EISDIR),
+            (FxfsError::NotEmpty, Errno::ENOTEMPTY, Errno::ENOTEMPTY),
+            (FxfsError::NoSpace, Errno::ENOSPC, Errno::ENOSPC),
+            (FxfsError::TooBig, Errno::EFBIG, Errno::E2BIG),
+            (FxfsError::InvalidArgs, Errno::EINVAL, Errno::EINVAL),
+            (FxfsError::AlreadyBound, Errno::EBUSY, Errno::EBUSY),
+            (FxfsError::Inconsistent, Errno::EIO, Errno::EIO),
         ];
-        for (status, errno) in table {
-            assert_eq!(Errno::of_status(status), errno, "{status}");
+        for (fxfs_error, errno, xattr_errno) in table {
+            let error = anyhow::Error::from(fxfs_error.clone()).context("in context");
+            assert_eq!(Errno::of_fxfs(&error), errno, "{fxfs_error:?}");
+            assert_eq!(Errno::of_xattr(&error), xattr_errno, "{fxfs_error:?}");
         }
+        let carried = anyhow::Error::from(FxfsError::NotFound).context(Errno::EXDEV);
+        assert_eq!(Errno::of_fxfs(&carried), Errno::EXDEV);
     }
+
 }

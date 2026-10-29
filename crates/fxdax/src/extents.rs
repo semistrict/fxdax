@@ -9,42 +9,35 @@
 //! frees by ID. Its I/O copies between the image's files and guest memory, and blocks the calling
 //! thread: a device's queue threads call it.
 //!
-//! Sealed extents are cached in the in-process kernel's memory, keyed by extent ID, which every
-//! store and window in the process shares: each is a pager-backed VMO (`FxExtent`, Fuchsia's
-//! `FxBlob` as an extent), whose pages the pager reads from the store as they are first read or
-//! mapped, and which the kernel evicts under memory pressure. Windows map it read-only: one copy of
-//! each page, whichever store or fork maps it, as an extent never changes once sealed, its ID its
-//! branch's to write once, which the store keeps to (TASK-79.6). Its pages are read from any of the
-//! stores that asked for it, open still, that hold it (TASK-79.7). Reads of
-//! sealed extents read it too (TASK-32): the guest's filesystem reads its metadata, which it maps
-//! not, so a fork reads what its base's other forks read before from memory, not the store. Reads
-//! of open extents, and a follower's, go to the store. The store's files bypass the host's page
-//! cache.
+//! Sealed extents are cached in physical memory (`crate::cache`), keyed by extent ID, which every
+//! store and window in the process shares: each a table of its pages, which are read in from the
+//! store as they are first read or mapped, and evicted as memory runs out. Windows map them
+//! read-only: one copy of each page, whichever store or fork maps it, as an extent never changes
+//! once sealed, its ID its branch's to write once, which the store keeps to (TASK-79.6). Its pages
+//! are read from any of the stores that asked for it, open still, that hold it (TASK-79.7). Reads
+//! of sealed extents read it too (TASK-32): the guest's filesystem reads its metadata, which it
+//! maps not, so a fork reads what its base's other forks read before from memory, not the store.
+//! Reads of open extents, and a follower's, go to the store. The store's files bypass the host's
+//! page cache.
 //!
-//! The guest's open extents map writably (doc-4's `DAX_WRITE`): an extent mapped so is memory of
-//! the kernel's until the next commit, which reads and writes of it use too. The commit writes it
-//! to the store, seals it, maps the window's mappings of it to its VMO in the cache, and moves its
-//! memory's pages there.
+//! The guest's open extents map writably (doc-4's `DAX_WRITE`): an extent mapped so is pages of
+//! physical memory until the next commit, which reads and writes of it use too. The commit writes
+//! it to the store, seals it, maps the window's mappings of it to its pages in the cache, and moves
+//! its pages there.
 
-use crate::dax::{Dax, DaxWindow, Deferred, Keep, SecondStage};
-use crate::error::{Errno, Error, IntoErrno, Result};
-use crate::executor::Executor;
+use crate::cache::{self, CachedExtent, OpenPages};
+use crate::dax::{Dax, DaxWindow, Keep, SecondStage, Source};
+use crate::error::{Errno, Error, Result};
 use crate::host_store;
-use crate::kernel::{Arena, ArenaId, page_size};
 use crate::memory::{VolatileSlice, VolatileSliceMut};
+use crate::pages::{Arena, ArenaId, page_size};
 use crate::profile::{self, Recorder};
 use crate::stats::{self, Counter};
 use extent_store::{HostDir, NoSpace, Spent, Store, TooLong, TooSmall, Unaligned};
-use fxfs_platform::fuchsia::fxextent::{ExtentSource, FxExtent};
-use fxfs_platform::fuchsia::pager::Pager;
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, Weak};
-use storage_device::buffer_allocator::{BufferAllocator, BufferSource};
+use std::sync::{Arc, Mutex};
 use storage_device::{NoExtent, OtherBranch, SealedExtent};
-use vfs::execution_scope::ExecutionScope;
-use zircon::vm::pmm::with_arena;
 
 /// An extent's ID: the branch that wrote it, and the sequence number that branch gave it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -88,323 +81,13 @@ pub struct StoreBytes {
     pub inherited: u64,
 }
 
-/// The process's cache of sealed extents (see the module docs): their pager, on an executor of
-/// its own, which reads their pages from the stores, and the extents, by ID.
-struct ExtentCache {
-    pager: Arc<Pager>,
-    /// fxdax: the buffers the pager reads into, by arena (TASK-43): their pages move into the
-    /// extents' VMOs, which are of the same arena, so that no arena's memory holds another's data.
-    allocators: Mutex<HashMap<ArenaId, Arc<BufferAllocator>>>,
-    /// fxdax: by the arena their pages are of (TASK-43), and their IDs.
-    extents: Mutex<HashMap<(ArenaId, ExtentId), Cached>>,
-    _executor: Executor,
-}
-
-/// A sealed extent cached, and the stores its pages are read from.
-struct Cached {
-    extent: Arc<FxExtent>,
-    /// fxdax: those that asked for it (TASK-79.7).
-    holders: Arc<Holders>,
-    /// fxdax: what waits for the guest that sealed it to lose its access to its pages, if the
-    /// sealing commit didn't (`ExtentStore::commit`): another store's guest, a fork's, waits
-    /// for it before it maps them.
-    sealing: Option<Sealing>,
-    /// fxdax: when it was last asked for, by [`CACHE_CLOCK`]: those longest ago are evicted first
-    /// (TASK-50.3).
-    used: AtomicU64,
-}
-
-/// fxdax: a seal of a cached extent not yet made: its store's guest may store to its pages until
-/// it is.
-struct Sealing {
-    store: Weak<Store<HostDir>>,
-    made: Arc<dyn Deferred>,
-}
-
-/// fxdax: the stores a cached extent's pages are read from (TASK-79.7): each that asked for it,
-/// as forks of a base share it, held weakly, so that the cache keeps none open, nor its files and
-/// disk space, once it closes. A page-in reads through the first open still that holds the extent,
-/// or keeps it for a follower's view: a store that frees an extent its siblings map, or closes,
-/// leaves them reading it through theirs. Each holds the same data by its ID, which its branch
-/// writes once (TASK-79.6).
-#[derive(Default)]
-struct Holders(Mutex<Vec<Holder>>);
-
-/// A store a cached extent's pages are read from, and its object storage, which holds them if the
-/// store holds them without their data.
-struct Holder {
-    store: Weak<Store<HostDir>>,
-    remote: Option<Weak<crate::remote::Fetcher>>,
-}
-
-/// A [`Holder`] open still.
-type OpenHolder = (Arc<Store<HostDir>>, Option<Arc<crate::remote::Fetcher>>);
-
-impl Holders {
-    /// Adds `store`, reading through `remote`, unless it is there, letting go of those closed.
-    fn add(&self, store: &Arc<Store<HostDir>>, remote: Option<&Arc<crate::remote::Fetcher>>) {
-        let mut holders = self.0.lock().unwrap();
-        holders.retain(|holder| holder.store.strong_count() > 0);
-        if !holders.iter().any(|holder| std::ptr::eq(holder.store.as_ptr(), Arc::as_ptr(store))) {
-            let (store, remote) = (Arc::downgrade(store), remote.map(Arc::downgrade));
-            holders.push(Holder { store, remote });
-        }
-    }
-
-    /// Those open still, in the order they asked, with their object storage.
-    fn open(&self) -> Vec<OpenHolder> {
-        let holders = self.0.lock().unwrap();
-        (holders.iter())
-            .filter_map(|holder| {
-                Some((holder.store.upgrade()?, holder.remote.as_ref().and_then(Weak::upgrade)))
-            })
-            .collect()
-    }
-
-    /// Whether one is open still.
-    fn any_open(&self) -> bool {
-        self.0.lock().unwrap().iter().any(|holder| holder.store.strong_count() > 0)
-    }
-
-    /// Whether one open still, but `store`, holds `extent`.
-    fn another_holds(&self, store: &Arc<Store<HostDir>>, extent: storage_device::ExtentId) -> bool {
-        (self.open().into_iter())
-            .filter(|(holder, _)| !Arc::ptr_eq(holder, store))
-            .any(|(holder, _)| holder.extent(extent).is_ok_and(|held| held.is_some()))
-    }
-}
-
-/// fxdax: the cache's clock, which counts the extents asked for.
-static CACHE_CLOCK: AtomicU64 = AtomicU64::new(0);
-
-/// fxdax: the most extents the cache keeps (TASK-104). Each holds a VMO, a handle of the kernel's
-/// 2^18, which entries never let go of: under pgbench, small extents by the hundred thousand, the
-/// table filled, and an extent's `create_vmo` failed, a panic in a store's request that poisoned
-/// it. Past this, those asked for longest ago that nothing else holds (no window maps them) go,
-/// down to seven eighths of it; one asked for again is read anew from its store. Tests lower it.
-static MOST_CACHED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1 << 16);
-
-/// fxdax: the number of extents past which the cache next lets go of those over its bound: the
-/// bound, or, if its last pass couldn't get below it, as the windows' mappings hold the extents
-/// they map, an eighth of the bound more than it left (TASK-109.2). Each lookup past the bound
-/// sorted every extent cached, under the cache's lock, and let go of none: an 8 GiB window,
-/// mapping more than the bound, never full, so never reclaiming, made each MAP 3-6 ms.
-static TRIM_AT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-
-/// zircon's `ZX_VMO_OP_FXDAX_EVICT`: a pager-backed VMO's clean pages evicted now, whatever their
-/// age (`zircon::vm::vm_object_paged::VmObjectPaged::evict_range`).
-const VMO_OP_EVICT: u32 = 0x8000_0001;
-
-/// fxdax: evicts the clean pages of the cached extents of `arena`, or of every arena, those asked
-/// for longest ago first, until `enough` says, of the bytes evicted so far, that they are, or none
-/// is left to evict: memory an arena past its cap, or the arenas past the total's, give back
-/// (TASK-50.3). Returns the bytes it evicted, as the extents held them: pages faulted in again
-/// meanwhile do not hide them. Evicted pages are paged in again as they are touched.
-pub(crate) fn evict_least_used(arena: Option<ArenaId>, mut enough: impl FnMut(u64) -> bool) -> u64 {
-    let Some(cache) = EXTENT_CACHE.get() else { return 0 };
-    let mut candidates: Vec<(u64, Arc<FxExtent>)> = {
-        let extents = cache.extents.lock().unwrap();
-        (extents.iter())
-            .filter(|((of, _), _)| arena.is_none_or(|arena| *of == arena))
-            .map(|(_, cached)| (cached.used.load(Ordering::Relaxed), cached.extent.clone()))
-            .collect()
-    };
-    candidates.sort_by_key(|(used, _)| *used);
-    let mut evicted = 0;
-    for (_, extent) in candidates {
-        if enough(evicted) {
-            break;
-        }
-        let vmo = extent.vmo();
-        // Its clean pages, all of them, which eviction on demand takes whatever their age.
-        let held = vmo.info().map_or(0, |info| info.committed_bytes);
-        if held == 0 {
-            continue;
-        }
-        let size = vmo.get_size().unwrap_or(0);
-        match vmo.op_range(zx::VmoOp::from_raw(VMO_OP_EVICT), 0, size) {
-            Ok(()) => evicted += held,
-            Err(status) => log::warn!("fxdax: evicting a cached extent's pages: {status}"),
-        }
-    }
-    evicted
-}
-
-/// fxdax: gives, once, the kernel's relief of arenas under pressure (TASK-50.3) its evictor, which
-/// frees pages of cached extents (`zircon::vm::pmm::relieve_with`): before a store of any arena
-/// opens, whose allocations may wait for it.
-fn relieve_pressure() {
-    static STARTED: std::sync::Once = std::sync::Once::new();
-    STARTED.call_once(|| {
-        let relieved = zircon::vm::pmm::relieve_with(|arena, bytes| {
-            evict_least_used(arena, |evicted| evicted >= bytes)
-        });
-        // Without its thread, the kernel's evictor frees what it may.
-        if let Err(err) = relieved {
-            log::error!("fxdax: starting the thread that frees capped memory: {err}");
-        }
-    });
-}
-
-/// How many threads the cache's pager reads extents' pages on: a read of the store, and the
-/// decompression of a part, keep one busy, while page-ins of other extents, and of what a fork's
-/// boot profile names, wait for theirs.
-const PAGER_THREADS: u8 = 6;
-/// The buffers the cache's pager reads into, at most a part (`extent_frame::PART`, 1 MiB) each
-/// (`StoredExtent::read_ahead_size`): 32 page-ins at once.
-const PAGER_BUFFERS: usize = 32 << 20;
-
-static EXTENT_CACHE: OnceLock<ExtentCache> = OnceLock::new();
-
-fn extent_cache() -> &'static ExtentCache {
-    EXTENT_CACHE.get_or_init(|| {
-        let executor = Executor::new(PAGER_THREADS);
-        // The pager pages in on the executor it is created on.
-        let pager = futures::executor::block_on(
-            executor.run(async { Pager::new(ExecutionScope::new()).map(Arc::new) }),
-        )
-        .expect("the extent cache's pager");
-        ExtentCache {
-            pager,
-            allocators: Default::default(),
-            extents: Mutex::new(HashMap::new()),
-            _executor: executor,
-        }
-    })
-}
-
-/// fxdax: lets go of the extents cached in `arena`, and of the buffers the pager reads into for it:
-/// a tenant's, which nothing holds now (`crate::kernel::Arena`, TASK-43.4). Their pages are freed
-/// as the last holders of the extents, page-ins in flight, let them go.
-pub(crate) fn evict_arena(arena: ArenaId) {
-    let Some(cache) = EXTENT_CACHE.get() else { return };
-    let evicted: Vec<Cached> = {
-        let mut extents = cache.extents.lock().unwrap();
-        extents.extract_if(|(of, _), _| *of == arena).map(|(_, cached)| cached).collect()
-    };
-    drop(evicted);
-    cache.allocators.lock().unwrap().remove(&arena);
-}
-
-impl ExtentCache {
-    /// The buffers the pager reads extents' pages of `arena` into, which are of `arena` too: made
-    /// as the arena's first extent is, which fails if they can't be, as when the kernel's handles
-    /// run out (TASK-105).
-    fn allocator(&self, arena: ArenaId) -> Result<Arc<BufferAllocator>, zx::Status> {
-        let mut allocators = self.allocators.lock().unwrap();
-        if let Some(allocator) = allocators.get(&arena) {
-            return Ok(allocator.clone());
-        }
-        let block_size = ExtentStore::BLOCK_SIZE as usize;
-        // Trusted: the kernel's alone, read into in place (`FxExtent::aligned_read`).
-        let source = with_arena(arena, || BufferSource::try_new_trusted(PAGER_BUFFERS))?;
-        let allocator = Arc::new(BufferAllocator::new(block_size, source));
-        allocators.insert(arena, allocator.clone());
-        Ok(allocator)
-    }
-}
-
-/// A sealed extent's contents, in the stores that hold it, or, fxdax, in object storage, if one
-/// holds it without its data.
-struct StoredExtent {
-    /// fxdax: the stores it is read through (TASK-79.7).
-    holders: Arc<Holders>,
-    extent: storage_device::ExtentId,
-    /// Where the parts of the object its data is in begin in it (`read_ahead_phase`).
-    phase: u64,
-    /// fxdax: what records its page-ins for its base's boot profile, if anything does.
-    recorder: Option<Arc<Recorder>>,
-}
-
-impl StoredExtent {
-    /// `extent`, read through `holders`, laid out as `store`, reading through `remote`, holds it.
-    fn new(
-        holders: Arc<Holders>,
-        store: &Store<HostDir>,
-        remote: Option<&crate::remote::Fetcher>,
-        extent: storage_device::ExtentId,
-        recorder: Option<Arc<Recorder>>,
-    ) -> Self {
-        // Its offset in the data of the object it is in: a segment's, its own file's, or, fxdax,
-        // the one object storage holds it in.
-        let offset = match store.place(extent) {
-            Ok(Some(extent_store::Place::Run { offset, .. })) => offset,
-            Ok(Some(extent_store::Place::Remote)) => {
-                remote.and_then(|remote| remote.offset(extent)).unwrap_or(0)
-            }
-            _ => 0,
-        };
-        // In whole pages, which page-ins are.
-        let phase = offset % extent_frame::PART / page_size() * page_size();
-        Self { holders, extent, phase, recorder }
-    }
-}
-
-impl ExtentSource for StoredExtent {
-    /// A read of the local store, which doesn't wait for long, so it reads on the pager's thread;
-    /// or a fetch, which the page-in waits for holding no thread.
-    fn read<'a>(
-        &'a self,
-        offset: u64,
-        buf: &'a mut [u8],
-    ) -> futures::future::BoxFuture<'a, std::result::Result<(), anyhow::Error>> {
-        stats::add(Counter::PageIns, 1);
-        if let Some(recorder) = &self.recorder {
-            let extent = ExtentId { branch: self.extent.branch, sequence: self.extent.sequence };
-            recorder.record(extent, offset, buf.len() as u64);
-        }
-        // fxdax: through the first of the stores that asked for it that holds it still (TASK-79.7).
-        let mut failed = anyhow::Error::new(NoExtent(self.extent));
-        for (store, remote) in self.holders.open() {
-            // fxdax: an extent freed since it was mapped, which a follower's view keeps, reads as
-            // kept (doc-8).
-            let read = match store.read(self.extent, offset, buf) {
-                Err(error) if error.downcast_ref::<NoExtent>().is_some() => {
-                    store.read_kept(self.extent, offset, buf)
-                }
-                read => read,
-            };
-            match read {
-                Ok(()) => {
-                    stats::add(Counter::PageInBytes, buf.len() as u64);
-                    return Box::pin(std::future::ready(Ok(())));
-                }
-                Err(error)
-                    if error.downcast_ref::<extent_store::RemoteData>().is_some()
-                        && let Some(remote) = remote =>
-                {
-                    let fetched = remote.read(self.extent, offset, buf.len() as u64);
-                    return Box::pin(async move {
-                        let data = fetched.await?;
-                        stats::add(Counter::FetchedBytes, data.len() as u64);
-                        buf[..data.len()].copy_from_slice(&data);
-                        buf[data.len()..].fill(0);
-                        Ok(())
-                    });
-                }
-                Err(error) => failed = error,
-            }
-        }
-        Box::pin(std::future::ready(Err(failed)))
-    }
-
-    /// A part of an object (`extent_frame::PART`), which a sealed extent's data is stored and
-    /// fetched in, and decompressed whole: reading less of it costs nearly as much.
-    fn read_ahead_size(&self) -> u64 {
-        extent_frame::PART
-    }
-
-    fn read_ahead_phase(&self) -> u64 {
-        self.phase
-    }
-}
-
-/// A window's mapping: what it keeps alive, an open extent's memory, a sealed extent in the cache,
-/// or zeros; and what it maps, which a snapshot of its VM maps again where the VM is restored
-/// ([`ExtentStore::window_mappings`]).
+/// A window's mapping: whose pages it maps, an open extent's memory, a sealed extent in the cache,
+/// or zeros, which the window keeps while it maps them, by their identity
+/// (`dax::source_identity`); and what it maps, which a snapshot of its VM maps again where the VM
+/// is restored ([`ExtentStore::window_mappings`]).
 #[derive(Clone)]
 struct Mapped {
-    pages: Arc<dyn Send + Sync>,
+    pages: usize,
     maps: Maps,
 }
 
@@ -424,22 +107,23 @@ enum Maps {
 
 impl Mapped {
     fn extent(
-        pages: Arc<dyn Send + Sync>,
+        pages: &Arc<dyn Source>,
         extent: ExtentId,
         window_offset: u64,
         offset: u64,
         writable: bool,
     ) -> Self {
+        let pages = pages.identity();
         Self { pages, maps: Maps::Extent { extent, window_offset, offset, writable } }
     }
 
-    fn zeros(zeros: &Arc<zx::Vmo>) -> Self {
-        Self { pages: zeros.clone(), maps: Maps::Zeros }
+    fn zeros(zeros: &Arc<dyn Source>) -> Self {
+        Self { pages: zeros.identity(), maps: Maps::Zeros }
     }
 
-    /// Whether it keeps `vmo` alive.
-    fn keeps(&self, vmo: &Arc<zx::Vmo>) -> bool {
-        self.identity() == vmo.identity()
+    /// Whether it keeps `pages` alive.
+    fn keeps<T: ?Sized>(&self, pages: &Arc<T>) -> bool {
+        self.identity() == pages.identity()
     }
 
     /// Where in its extent the window's byte at `window_offset`, which it maps, is: none for
@@ -456,7 +140,7 @@ impl Mapped {
 
 impl Keep for Mapped {
     fn identity(&self) -> usize {
-        self.pages.identity()
+        self.pages
     }
 }
 
@@ -488,10 +172,10 @@ pub enum MappingContents {
     Zeros,
 }
 
-/// An open extent that a window maps writably: its contents, in the kernel's memory, and how long
-/// it is.
+/// An open extent that a window maps writably: its contents, in physical memory, and how long it
+/// is.
 struct OpenExtent {
-    vmo: Arc<zx::Vmo>,
+    pages: Arc<OpenPages>,
     len: u64,
     /// fxdax: how long the store held it as written when it was opened here, which its commit
     /// keeps at least.
@@ -508,7 +192,7 @@ pub struct ExtentStore {
     /// copy did (TASK-112.3).
     commit_buffer: Mutex<Vec<u8>>,
     dax: Mutex<Option<Dax<Mapped>>>,
-    /// fxdax: the arenas of the kernel's physical memory its extents' pages are of (TASK-43).
+    /// fxdax: the arenas of physical memory its extents' pages are of (TASK-43).
     arenas: Arenas,
     /// fxdax: the uploader of the store's branch to object storage, if it has one: durable
     /// commits are uploaded ones then (doc-4's `COMMIT_DURABLE`).
@@ -770,7 +454,7 @@ impl ExtentStore {
 
     /// fxdax: the store at `path`, as [`ExtentStore::open`] has it, a tenant's (TASK-43): the
     /// pages of its own extents, and of those it inherited from other branches but public ones
-    /// ([`ExtentStore::make_public`]), are of `arena` of the kernel's physical memory, which it
+    /// ([`ExtentStore::make_public`]), are of `arena` of physical memory, which it
     /// holds, and what reads into the extent cache for it, until they are gone (TASK-79.36); or of
     /// the default arena, without one. Those of public branches' extents, which every tenant's
     /// forks of them share, are of the default arena.
@@ -792,7 +476,7 @@ impl ExtentStore {
     /// The store `store`, its own extents' pages of `arena`, or the default arena without one;
     /// its base's boot profile read or recorded if `profiled` ([`ExtentStore::profile`]).
     fn new(store: Store<HostDir>, arena: Option<Arc<Arena>>, profiled: bool) -> Self {
-        relieve_pressure();
+        cache::relieve_pressure();
         let store = Arc::new(store);
         let arenas = Arenas { own: arena, public: Arc::new(public_branches(store.dir().path())) };
         Self {
@@ -1165,15 +849,15 @@ impl ExtentStore {
         stats::add(Counter::Reads, 1);
         stats::add(Counter::ReadBytes, len as u64);
         let mut data = vec![0; len];
-        let open = self.open.lock().unwrap().get(&extent).map(|open| open.vmo.clone());
+        let open = self.open.lock().unwrap().get(&extent).map(|open| open.pages.clone());
         match open {
             // An open extent mapped writably is in memory.
-            Some(vmo) => {
+            Some(pages) => {
                 let end = offset.checked_add(len as u64).ok_or(Errno::EINVAL)?;
                 if end > Self::MAX_EXTENT {
                     return Err(Errno::EINVAL);
                 }
-                vmo.read(&mut data, offset).errno()?;
+                pages.read(offset, &mut data);
             }
             None => {
                 if !self.read_cached(extent, offset, &mut data)? {
@@ -1238,11 +922,11 @@ impl ExtentStore {
             return Ok(true);
         }
         let cached = self.cached(extent, len)?;
-        match cached.vmo().read(bytes, offset) {
+        match cached.read(offset, bytes) {
             Ok(()) => Ok(true),
             // Freed meanwhile, or its page-in failed: as the store says.
-            Err(status) => {
-                log::debug!("fxdax: reading {extent:?} at {offset} from the cache: {status}");
+            Err(errno) => {
+                log::debug!("fxdax: reading {extent:?} at {offset} from the cache: {errno:?}");
                 Ok(false)
             }
         }
@@ -1314,7 +998,7 @@ impl ExtentStore {
             if end > Self::MAX_EXTENT {
                 return Err(Errno::EINVAL);
             }
-            open.vmo.write(&data, offset).errno()?;
+            open.pages.write(offset, &data)?;
             open.len = open.len.max(end);
             return Ok(());
         }
@@ -1331,29 +1015,17 @@ impl ExtentStore {
         // An open extent's memory is dropped as the window's mappings of it go.
         let open = self.open.lock().unwrap().remove(&extent);
         if let Some(open) = &open {
-            self.replace_kept(open.vmo.identity())?;
+            self.replace_kept(open.pages.identity())?;
             if self.store.extent(extent.into()).map_err(errno)?.is_none() {
                 return Ok(());
             }
         }
         self.store.free(extent.into()).map_err(errno)?;
-        let cache = extent_cache();
-        let key = (self.arenas.of(extent), extent);
-        let found = {
-            let extents = cache.extents.lock().unwrap();
-            extents.get(&key).map(|cached| (cached.extent.clone(), cached.holders.clone()))
-        };
-        let Some((cached, holders)) = found else { return Ok(()) };
         // fxdax: its pages, unless another store that asked for them holds it still, which reads
         // them through itself (TASK-79.7): one that holds it reads them anew.
-        if !holders.another_holds(&self.store, extent.into()) {
-            let mut extents = cache.extents.lock().unwrap();
-            let same = extents.get(&key).is_some_and(|now| Arc::ptr_eq(&now.extent, &cached));
-            let removed = same.then(|| extents.remove(&key));
-            drop(extents);
-            // Freed past the cache's lock: an extent's pager deregisters it as it goes.
-            drop(removed);
-        }
+        let Some(cached) = cache::freed(&self.store, self.arenas.of(extent), extent) else {
+            return Ok(());
+        };
         // fxdax: the window's mappings of it, which kept its pages, map zeros instead: a guest
         // rewriting the same blocks, sealing each version (a database's log, fsynced at each
         // transaction), filled the cache with pages only the window's mappings kept, which no
@@ -1366,7 +1038,7 @@ impl ExtentStore {
     fn replace_kept(&self, kept: usize) -> Result<()> {
         let mut dax = self.dax.lock().unwrap();
         let Some(dax) = dax.as_mut() else { return Ok(()) };
-        let zeros = dax.zeros()?;
+        let zeros = dax.zeros();
         let mut changes = self.changes.lock().unwrap();
         for (start, end, _) in dax.kept(kept) {
             changes.record(start, end - start, Change::Freed);
@@ -1501,7 +1173,7 @@ impl ExtentStore {
                 buffer.resize(len, 0);
             }
             let data = &mut buffer[..len];
-            extent_open.vmo.read(data, 0).errno()?;
+            extent_open.pages.read(0, data);
             // fxdax: what was mapped writably, past what was stored to, the store leaves out: the
             // pages a guest maps ahead of its writes, which read as zeros past the extent's end as
             // they would within it (doc-4). Written whole, they took the store's room. The cached
@@ -1539,14 +1211,8 @@ impl ExtentStore {
             // must not: what it stores is what it reads, until they are paged out, its own.
             let (sealing, deferred) = dax.deferring(|dax| self.seal_mapped(dax, &sealed));
             if let Some(deferred) = deferred {
-                let mut extents = extent_cache().extents.lock().unwrap();
-                for (extent, _) in &sealed {
-                    if let Some(cached) = extents.get_mut(&(self.arenas.of(*extent), *extent)) {
-                        let store = Arc::downgrade(&self.store);
-                        cached.sealing = Some(Sealing { store, made: deferred.clone() });
-                    }
-                }
-                drop(extents);
+                let keys = sealed.iter().map(|(extent, _)| (self.arenas.of(*extent), *extent));
+                cache::sealing(&self.store, keys, &deferred);
                 deferred.keep_until_made(Box::new(sealed));
             }
             sealing?;
@@ -1577,11 +1243,12 @@ impl ExtentStore {
         for &(extent, ref extent_open) in sealed {
             let started = std::time::Instant::now();
             let sealed = self.cached(extent, extent_open.len)?;
+            let source: Arc<dyn Source> = sealed.clone();
             stats::add_since(Counter::CommitSealCachedNs, started);
             // The window maps the sealed extent first, so that nothing reads its memory once its
             // pages move: a read meanwhile pages in from the store, which holds them.
             let pages = extent_open.len.next_multiple_of(page_size());
-            let is_kept = |mapped: &Mapped| mapped.keeps(&extent_open.vmo);
+            let is_kept = |mapped: &Mapped| mapped.keeps(&extent_open.pages);
             // fxdax: one change to the second stage, each mapping of the extent followed by its
             // pages mapped again, so that a VM process makes it in place: the pages, the very same,
             // write-protected where they are, where in steps it would leave them out, as the
@@ -1594,19 +1261,19 @@ impl ExtentStore {
                 // fxdax: as the window maps it now, each mapping at the offset it maps: a range
                 // unmapped and mapped again to another part of the extent was sealed to the part
                 // it mapped first (TASK-79.10).
-                for (window_offset, end, keep) in dax.kept(extent_open.vmo.identity()) {
+                for (window_offset, end, keep) in dax.kept(extent_open.pages.identity()) {
                     let Some(offset) = keep.extent_offset(window_offset) else { continue };
                     let len = end - window_offset;
                     // What a read-only mapping maps past the sealed extent, zeros.
                     let within = (offset + len).min(pages).max(offset) - offset;
                     if within > 0 {
                         let keep =
-                            Mapped::extent(sealed.clone(), extent, window_offset, offset, false);
+                            Mapped::extent(&source, extent, window_offset, offset, false);
                         mapped.extend(dax.make_read_only(
                             window_offset,
                             within,
                             keep,
-                            sealed.vmo(),
+                            &source,
                             offset,
                             is_kept,
                         )?);
@@ -1618,7 +1285,7 @@ impl ExtentStore {
                 stats::add_since(Counter::CommitSealRemapNs, remapping);
                 // Its memory is the sealed extent's pages, but for those paged in meanwhile.
                 let supplying = std::time::Instant::now();
-                sealed.supply_pages(0..pages, &extent_open.vmo, 0);
+                sealed.supply(0..pages / page_size(), &extent_open.pages);
                 stats::add_since(Counter::CommitSealSupplyNs, supplying);
                 let populating = std::time::Instant::now();
                 // Mapped again, read-only, so that the guest's next loads of them do not fault
@@ -1633,7 +1300,7 @@ impl ExtentStore {
                 // Past the extent, zeros, which have no pages of the extent's: after its pages
                 // mapped again, which a mapping between would part from their mapping anew.
                 for (past, len) in past {
-                    let zeros = dax.zeros()?;
+                    let zeros = dax.zeros();
                     dax.make_read_only(past, len, Mapped::zeros(&zeros), &zeros, past, is_kept)?;
                 }
                 Ok(())
@@ -1766,25 +1433,25 @@ impl ExtentStore {
         if !offset.is_multiple_of(page_size()) {
             return Err(Errno::EINVAL);
         }
-        let cached = self.cached(extent, extent_len)?;
+        let cached: Arc<dyn Source> = self.cached(extent, extent_len)?;
         let mut dax = self.dax.lock().unwrap();
         let dax = dax.as_mut().ok_or(Errno::ENOSYS)?;
         let within = end.min(extent_len.next_multiple_of(page_size())).max(offset);
         if within > offset {
-            let keep = Mapped::extent(cached.clone(), extent, window_offset, offset, false);
-            dax.map(window_offset, keep, cached.vmo(), offset, within - offset, false)?;
+            let keep = Mapped::extent(&cached, extent, window_offset, offset, false);
+            dax.map(window_offset, keep, &cached, offset, within - offset, false)?;
         }
         self.map_zeros(dax, window_offset + (within - offset), end - within)
     }
 
-    /// Maps zeros, read-only, at `len` bytes of the window at `window_offset`, if any: the
-    /// window's own ([`Dax::zeros`]).
+    /// Maps zeros, read-only, at `len` bytes of the window at `window_offset`, if any
+    /// ([`Dax::zeros`]).
     fn map_zeros(&self, dax: &mut Dax<Mapped>, window_offset: u64, len: u64) -> Result<()> {
         if len == 0 {
             return Ok(());
         }
-        let zeros = dax.zeros()?;
-        dax.map(window_offset, Mapped::zeros(&zeros), &zeros, window_offset, len, false)
+        let zeros = dax.zeros();
+        dax.map(window_offset, Mapped::zeros(&zeros), &zeros, 0, len, false)
     }
 
     /// Maps an open extent's memory, which the commit that seals it maps the sealed pages in place
@@ -1820,15 +1487,13 @@ impl ExtentStore {
                 }
                 None => return Err(Errno::ENOENT),
             };
-            let vmo =
-                with_arena(self.arenas.own(), || zx::Vmo::create(Self::MAX_EXTENT)).errno()?;
+            let pages = OpenPages::new(self.arenas.own());
             if len > 0 {
                 let mut data = vec![0; len as usize];
                 self.store.read(extent.into(), 0, &mut data).map_err(errno)?;
-                vmo.write(&data, 0).errno()?;
+                pages.write(0, &data)?;
             }
-            let vmo = Arc::new(vmo);
-            open.insert(extent, OpenExtent { vmo, len, stored: len });
+            open.insert(extent, OpenExtent { pages, len, stored: len });
         }
         let extent_open = open.get_mut(&extent).unwrap();
         // Its memory past what was written is zeros, until it is written and stored to.
@@ -1837,18 +1502,19 @@ impl ExtentStore {
         }
         let mut dax = self.dax.lock().unwrap();
         let dax = dax.as_mut().ok_or(Errno::ENOSYS)?;
-        let vmo = &extent_open.vmo;
         if writable {
-            // The guest maps what it is about to write: its pages are committed and mapped now,
+            // The guest maps what it is about to write: its pages are brought in and mapped now,
             // rather than one fault at a time as it writes them.
-            vmo.op_range(zx::VmoOp::COMMIT, offset, len).errno().inspect_err(|errno| {
+            let ps = page_size();
+            extent_open.pages.commit(offset / ps..end.div_ceil(ps)).inspect_err(|errno| {
                 log::warn!(
-                    "fxdax: committing {len:#x} bytes at {offset:#x} of {extent:?}: {errno:?}"
+                    "fxdax: bringing in {len:#x} bytes at {offset:#x} of {extent:?}: {errno:?}"
                 )
             })?;
         }
-        let keep = Mapped::extent(vmo.clone(), extent, window_offset, offset, writable);
-        dax.map(window_offset, keep, vmo, offset, len, writable)?;
+        let pages: Arc<dyn Source> = extent_open.pages.clone();
+        let keep = Mapped::extent(&pages, extent, window_offset, offset, writable);
+        dax.map(window_offset, keep, &pages, offset, len, writable)?;
         Ok(true)
     }
 
@@ -1951,15 +1617,15 @@ impl ExtentStore {
 
     /// The sealed `extent`, of `len` bytes, in the cache: read from this store if no other store
     /// has it cached.
-    fn cached(&self, extent: ExtentId, len: u64) -> Result<Arc<FxExtent>> {
+    fn cached(&self, extent: ExtentId, len: u64) -> Result<Arc<CachedExtent>> {
         let remote = self.uploader().map(crate::remote::Remote::fetcher);
         let recorder = self.profiling.as_ref().map(|(recorder, _)| recorder.clone());
-        cached(&self.store, self.arenas.of(extent), remote, recorder, extent, len)
+        cache::cached(&self.store, self.arenas.of(extent), remote, recorder, extent, len)
     }
 
     /// fxdax: makes the store's branch public, and those it inherited from (TASK-43): a base,
     /// which every tenant forks, whose extents' pages, and its ancestors', are of the default
-    /// arena of the kernel's physical memory, which every tenant's VM processes hold read-only.
+    /// arena of physical memory, which every tenant's VM processes hold read-only.
     /// Stores opened since take it so; a tenant opens no public store itself, only forks of it.
     pub fn make_public(&self) -> Result<()> {
         self.writable()?;
@@ -1985,14 +1651,14 @@ impl ExtentStore {
         self.arenas.public.contains(&self.branch())
     }
 
-    /// fxdax: the arena of the kernel's physical memory its own extents' pages are of
+    /// fxdax: the arena of physical memory its own extents' pages are of
     /// ([`ExtentStore::open_in`]): its tenant's, or the default.
     pub fn arena(&self) -> ArenaId {
         self.arenas.own()
     }
 }
 
-/// fxdax: the arenas of the kernel's physical memory a store's extents' pages are of (TASK-43).
+/// fxdax: the arenas of physical memory a store's extents' pages are of (TASK-43).
 #[derive(Clone)]
 struct Arenas {
     /// The store's, its tenant's, held for as long as the store and what reads into the extent
@@ -2034,106 +1700,6 @@ fn public_branches(dir: &Path) -> std::collections::BTreeSet<u64> {
         .collect()
 }
 
-/// The sealed `extent`, of `len` bytes, in the cache, cached from `store` if it isn't: read from
-/// it, or, fxdax, from `remote`, with its page-ins recorded by `recorder`, if any; and, fxdax, from
-/// any other store that asked for it, which `store` is one of from now on (TASK-79.7).
-fn cached(
-    store: &Arc<Store<HostDir>>,
-    arena: ArenaId,
-    remote: Option<Arc<crate::remote::Fetcher>>,
-    recorder: Option<Arc<Recorder>>,
-    extent: ExtentId,
-    len: u64,
-) -> Result<Arc<FxExtent>> {
-    let cache = extent_cache();
-    let (cached, sealing) = {
-        let mut extents = cache.extents.lock().unwrap();
-        let key = (arena, extent);
-        if !extents.contains_key(&key) {
-            // fxdax: its VMO, and its arena's buffers if it is the arena's first, made, or, the
-            // kernel's handles run out (TASK-104, TASK-105), the extents nothing else holds let go
-            // of, half of them, and made once more.
-            let holders = Arc::new(Holders::default());
-            let make = || {
-                let source = StoredExtent::new(
-                    holders.clone(),
-                    store,
-                    remote.as_deref(),
-                    extent.into(),
-                    recorder.clone(),
-                );
-                with_arena(arena, || {
-                    FxExtent::new(
-                        cache.pager.clone(),
-                        cache.allocator(arena)?,
-                        Box::new(source),
-                        len,
-                        extent.sequence,
-                    )
-                })
-            };
-            let made = match make() {
-                Ok(made) => made,
-                Err(err) => {
-                    log::warn!("fxdax: caching {extent:?}: {err:#}; letting go of idle extents");
-                    let half = extents.len() / 2;
-                    drop(let_go_least_used(&mut extents, half.max(1)));
-                    make().map_err(|err| {
-                        log::error!("fxdax: caching {extent:?}: {err:#}");
-                        Errno::ENOMEM
-                    })?
-                }
-            };
-            let cached = Cached { extent: made, holders, sealing: None, used: AtomicU64::new(0) };
-            extents.insert(key, cached);
-        }
-        let cached = extents.get(&key).expect("cached just now");
-        cached.used.store(CACHE_CLOCK.fetch_add(1, Ordering::Relaxed) + 1, Ordering::Relaxed);
-        cached.holders.add(store, remote.as_ref());
-        let sealing = (cached.sealing.as_ref())
-            .filter(|sealing| !std::ptr::eq(sealing.store.as_ptr(), Arc::as_ptr(store)))
-            .map(|sealing| sealing.made.clone());
-        let found = (cached.extent.clone(), sealing);
-        let most = MOST_CACHED.load(Ordering::Relaxed);
-        let gone = (extents.len() > most.max(TRIM_AT.load(Ordering::Relaxed))).then(|| {
-            let started = std::time::Instant::now();
-            let gone = let_go_least_used(&mut extents, most);
-            TRIM_AT.store(extents.len() + most / 8, Ordering::Relaxed);
-            stats::count_since(Counter::CacheTrims, Counter::CacheTrimNs, started);
-            gone
-        });
-        drop(extents);
-        // Freed past the cache's lock: an extent's pager deregisters it as it goes.
-        drop(gone);
-        found
-    };
-    // fxdax: another store's extent, a fork's parent's, whose guest may still store to its
-    // pages until its seal is made: not shared with this store's guest before then.
-    if let Some(sealing) = sealing {
-        sealing.wait();
-    }
-    Ok(cached)
-}
-
-/// fxdax: takes out of the cache `extents` those asked for longest ago that nothing else holds,
-/// down to seven eighths of `most`, and returns them, for the caller to let go of past the cache's
-/// lock (TASK-104).
-fn let_go_least_used(
-    extents: &mut HashMap<(ArenaId, ExtentId), Cached>,
-    most: usize,
-) -> Vec<Cached> {
-    // fxdax: those no store open reads first, which none asks for but to cache them anew.
-    let mut idle: Vec<((bool, u64), (ArenaId, ExtentId))> = (extents.iter())
-        .filter(|(_, cached)| Arc::strong_count(&cached.extent) == 1)
-        .map(|(key, cached)| {
-            ((cached.holders.any_open(), cached.used.load(Ordering::Relaxed)), *key)
-        })
-        .collect();
-    idle.sort_unstable_by_key(|(order, _)| *order);
-    let excess = extents.len().saturating_sub(most - most / 8);
-    idle.into_iter().take(excess).filter_map(|(_, key)| extents.remove(&key)).collect()
-}
-
 /// How many threads read a boot profile's units into the cache at once.
 const REPLAY_THREADS: usize = 4;
 
@@ -2151,12 +1717,13 @@ fn replay(store: Arc<Store<HostDir>>, arenas: Arenas, units: Vec<profile::Unit>)
                 if matches!(store.place(id), Ok(Some(extent_store::Place::Remote))) {
                     continue;
                 }
-                let extent = cached(&store, arenas.of(unit.extent), None, None, unit.extent, len);
+                let arena = arenas.of(unit.extent);
+                let extent = cache::cached(&store, arena, None, None, unit.extent, len);
                 let Ok(extent) = extent else { continue };
-                match extent.vmo().read(&mut [0; 1], unit.offset) {
+                match extent.read(unit.offset, &mut [0; 1]) {
                     Ok(()) => stats::add(Counter::Prefetches, 1),
-                    Err(status) => log::debug!(
-                        "fxdax: reading {:?} at {} ahead: {status}",
+                    Err(errno) => log::debug!(
+                        "fxdax: reading {:?} at {} ahead: {errno:?}",
                         unit.extent,
                         unit.offset
                     ),
@@ -2172,8 +1739,9 @@ fn replay(store: Arc<Store<HostDir>>, arenas: Arenas, units: Vec<profile::Unit>)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dax::{Access, Protection, SecondStage};
-    use crate::kernel::PhysLocation;
+    use crate::dax::{Access, Deferred, Protection, SecondStage};
+    use crate::pages::PhysLocation;
+    use std::sync::atomic::Ordering;
     use futures::executor::block_on;
 
     const BLOCK: usize = ExtentStore::BLOCK_SIZE as usize;
@@ -2671,17 +2239,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let held = Arena::new();
         let arena = held.id();
-        let node = zircon::vm::pmm::node();
-        node.set_arena_cap(arena, Some(4 * chunk));
+        physmem::set_arena_cap(arena, Some(4 * chunk));
         let (store, window) = mapped_extents(&dir.path().join("store"), 16, &held);
         let first = id(&store, 1);
         // What the cache holds of extent 1.
-        let cached = || {
-            let extents = EXTENT_CACHE.get().unwrap().extents.lock().unwrap();
-            extents[&(arena, first)].extent.vmo().info().unwrap().committed_bytes
-        };
+        let cached = || cache::find(arena, first).expect("extent 1 cached").held();
         read_twice(&window, 16, |round, sequence| {
-            let held = node.arena_bytes(arena);
+            let held = physmem::arena_bytes(arena);
             assert!(held <= 4 * chunk, "round {round}, extent {sequence}: {held}");
             // Once all were read, the one asked for longest ago gave its pages back, as its
             // first page's read in again.
@@ -2691,17 +2255,16 @@ mod tests {
         });
     }
 
-    /// TASK-50.3: a kernel out of memory, its arenas uncapped, evicts the extents asked for longest
+    /// TASK-50.3: physical memory run out, its arenas uncapped, evicts the extents asked for longest
     /// ago, any arena's, rather than wait for memory for ever, and abort.
     #[test]
-    fn kernels_out_of_memory_evict_their_least_used_extents() {
+    fn memory_run_out_evicts_the_least_used_extents() {
         let memory = 48u64 << 20;
-        crate::kernel::configure(crate::kernel::Config::with_memory(memory)).unwrap();
+        crate::pages::configure(crate::pages::Config::with_memory(memory)).unwrap();
         let dir = tempfile::tempdir().unwrap();
-        let node = zircon::vm::pmm::node();
         let (_store, window) = mapped_extents(&dir.path().join("store"), 64, &Arena::new());
         read_twice(&window, 64, |_, _| ());
-        assert_eq!(node.count_free_chunks(), 0, "the kernel never ran out");
+        assert_eq!(physmem::count_free_chunks(), 0, "memory never ran out");
     }
 
     /// TASK-50.3: a store whose arena is capped, with nothing it holds to evict, as an open
@@ -2715,13 +2278,12 @@ mod tests {
         drop(ExtentStore::create(&path, 1 << 30).unwrap());
         let held = Arena::new();
         let arena = held.id();
-        let node = zircon::vm::pmm::node();
-        node.set_arena_cap(arena, Some(2 * chunk));
+        physmem::set_arena_cap(arena, Some(2 * chunk));
         let store = ExtentStore::open_in(&path, Some(held)).unwrap();
         let len = 4 * chunk;
         let _window = store.create_dax_window(len, None).unwrap();
         assert_eq!(store.map(id(&store, 1), 0, len, 0, true), Err(Errno::ENOMEM));
-        assert_eq!(node.arena_bytes(arena), 2 * chunk);
+        assert_eq!(physmem::arena_bytes(arena), 2 * chunk);
     }
 
     /// A store holds a block at least; one asked for less is not made, nor its directory.
@@ -3104,29 +2666,30 @@ mod tests {
         }
     }
 
-    /// A second stage recording the changes made to it, page by page.
+    /// A second stage recording the changes made to it, page by page: each, the page, and the
+    /// protection it gives it, if any.
     #[derive(Default)]
-    struct RecordingSecondStage(std::sync::Mutex<Vec<(&'static str, u64, Protection)>>);
+    struct RecordingSecondStage(std::sync::Mutex<Vec<(&'static str, u64, Option<Protection>)>>);
 
     impl SecondStage for RecordingSecondStage {
         fn map(&self, offset: u64, _: PhysLocation, len: u64, protection: Protection) {
             let mut ops = self.0.lock().unwrap();
             for page in (0..len).step_by(page_size() as usize) {
-                ops.push(("map", offset + page, protection));
+                ops.push(("map", offset + page, Some(protection)));
             }
         }
 
         fn protect(&self, offset: u64, len: u64, protection: Protection) {
             let mut ops = self.0.lock().unwrap();
             for page in (0..len).step_by(page_size() as usize) {
-                ops.push(("protect", offset + page, protection));
+                ops.push(("protect", offset + page, Some(protection)));
             }
         }
 
         fn unmap(&self, offset: u64, len: u64) {
             let mut ops = self.0.lock().unwrap();
             for page in (0..len).step_by(page_size() as usize) {
-                ops.push(("unmap", offset + page, Protection::None));
+                ops.push(("unmap", offset + page, None));
             }
         }
     }
@@ -3168,7 +2731,7 @@ mod tests {
     /// are mapped read-only as the guest faults on them; unmapping unmaps them.
     #[test]
     fn second_stage_follows_the_window() {
-        use Protection::{Read, ReadWrite};
+        let (read, read_write) = (Some(Protection::Read), Some(Protection::ReadWrite));
         let (store, _dir) = store(1 << 20);
         let ps = page_size();
         let stage = Arc::new(RecordingSecondStage::default());
@@ -3176,25 +2739,20 @@ mod tests {
         let take = || std::mem::take(&mut *stage.0.lock().unwrap());
         let open = id(&store, 1);
         store.map(open, 0, 2 * ps, 0, true).unwrap();
-        assert_eq!(take(), [("map", 0, ReadWrite), ("map", ps, ReadWrite)]);
+        assert_eq!(take(), [("map", 0, read_write), ("map", ps, read_write)]);
         // What the extent holds: a commit leaves out what nothing was stored to.
         write(&store, open, 0, &pattern(3, 2 * ps as usize)).unwrap();
         // Sealed, the pages are mapped again, read-only, from the sealed extent.
         store.commit(None).unwrap();
         assert_eq!(
             take(),
-            [
-                ("unmap", 0, Protection::None),
-                ("unmap", ps, Protection::None),
-                ("map", 0, Read),
-                ("map", ps, Read)
-            ]
+            [("unmap", 0, None), ("unmap", ps, None), ("map", 0, read), ("map", ps, read)]
         );
         store.map(open, 0, ps, 3 * ps, false).unwrap();
         block_on(window.fault(3 * ps, Access::Read)).unwrap();
-        assert_eq!(take(), [("map", 3 * ps, Read)]);
+        assert_eq!(take(), [("map", 3 * ps, read)]);
         store.unmap(0, 2 * ps).unwrap();
-        assert_eq!(take(), [("unmap", 0, Protection::None), ("unmap", ps, Protection::None)]);
+        assert_eq!(take(), [("unmap", 0, None), ("unmap", ps, None)]);
     }
 
     /// TASK-79.45: a writer taking a store over maps zeros through a window of its own, however
@@ -3590,11 +3148,11 @@ mod tests {
     }
 
     /// TASK-104: the cache keeps no more extents than its bound, letting go of those asked for
-    /// longest ago that nothing else holds, and keeps those a window maps: an extent's VMO is a
-    /// handle of the kernel's, whose table filled under pgbench and failed an extent's creation.
+    /// longest ago that nothing else holds, and keeps those a window maps: under pgbench, extents
+    /// by the hundred thousand, those never asked for again would be most of what it holds.
     #[test]
     fn the_cache_keeps_its_bound() {
-        super::MOST_CACHED.store(8, Ordering::Relaxed);
+        cache::MOST_CACHED.store(8, Ordering::Relaxed);
         let (store, _dir) = store(1 << 20);
         let ps = page_size();
         for sequence in 1..=20 {
@@ -3605,14 +3163,10 @@ mod tests {
         store.map(id(&store, 1), 0, ps, 0, false).unwrap();
         for sequence in 2..=20 {
             let extent = id(&store, sequence);
-            drop(super::cached(&store.store, ArenaId::DEFAULT, None, None, extent, ps).unwrap());
+            drop(cache::cached(&store.store, ArenaId::DEFAULT, None, None, extent, ps).unwrap());
         }
-        let kept: Vec<u64> = {
-            let extents = extent_cache().extents.lock().unwrap();
-            let mut kept: Vec<u64> = extents.keys().map(|(_, extent)| extent.sequence).collect();
-            kept.sort_unstable();
-            kept
-        };
+        let mut kept: Vec<u64> = cache::keys().iter().map(|(_, extent)| extent.sequence).collect();
+        kept.sort_unstable();
         assert_eq!(kept, [1, 14, 15, 16, 17, 18, 19, 20]);
         drop(window);
     }
@@ -3623,7 +3177,7 @@ mod tests {
     #[test]
     fn the_cache_trims_what_windows_hold_once_per_eighth_of_its_bound() {
         const MOST: usize = 64;
-        super::MOST_CACHED.store(MOST, Ordering::Relaxed);
+        cache::MOST_CACHED.store(MOST, Ordering::Relaxed);
         let (store, _dir) = store(8 << 20);
         let ps = page_size();
         let (mapped, looked_up) = (2 * MOST as u64, 4 * MOST as u64);
@@ -3638,66 +3192,18 @@ mod tests {
         let before = stats::stats();
         for sequence in mapped + 1..=mapped + looked_up {
             let extent = id(&store, sequence);
-            drop(super::cached(&store.store, ArenaId::DEFAULT, None, None, extent, ps).unwrap());
+            drop(cache::cached(&store.store, ArenaId::DEFAULT, None, None, extent, ps).unwrap());
         }
         let trims = stats::stats().since(&before).cache_trims;
         assert!(trims <= looked_up / (MOST as u64 / 8) + 1, "{trims} trims of the cache");
-        let cached = extent_cache().extents.lock().unwrap().len() as u64;
+        let cached = cache::keys().len() as u64;
         assert!(cached <= mapped + MOST as u64 / 8, "{cached} extents cached");
         drop(window);
     }
 
-    /// TASK-104: with the kernel's handles run out, caching an extent fails with ENOMEM, the cache
-    /// having let go of what it could and tried again, rather than panicking in the request that
-    /// asked, which poisoned its store; once handles are free, it caches. TASK-105: the process's
-    /// first extent, whose VMO's page requests come to a port made with the cache, not with it.
-    #[test]
-    fn caching_fails_when_handles_run_out() {
-        let (store, _dir) = store(1 << 20);
-        let ps = page_size();
-        write(&store, id(&store, 1), 0, &pattern(1, ps as usize)).unwrap();
-        store.commit(None).unwrap();
-        // The cache, and its arena's buffers, made before the handles run out; no extent cached
-        // that it could let go of.
-        drop(extent_cache().allocator(ArenaId::DEFAULT).unwrap());
-        let mut held = Vec::new();
-        while let Ok(vmo) = zx::Vmo::create(0) {
-            held.push(vmo);
-        }
-        let cached = |store: &ExtentStore| {
-            super::cached(&store.store, ArenaId::DEFAULT, None, None, id(store, 1), ps).map(drop)
-        };
-        assert_eq!(cached(&store), Err(Errno::ENOMEM));
-        drop(held);
-        assert_eq!(cached(&store), Ok(()));
-    }
-
-    /// TASK-105: as TASK-104, for the first extent of an arena, which makes the arena's buffers
-    /// too, and with nothing cached to let go of.
-    #[test]
-    fn an_arenas_first_caching_fails_when_handles_run_out() {
-        let (store, _dir) = store(1 << 20);
-        let ps = page_size();
-        write(&store, id(&store, 1), 0, &pattern(1, ps as usize)).unwrap();
-        store.commit(None).unwrap();
-        // The cache, made as the process's first store is, before the handles run out.
-        extent_cache();
-        let mut held = Vec::new();
-        while let Ok(vmo) = zx::Vmo::create(0) {
-            held.push(vmo);
-        }
-        let cached = |store: &ExtentStore| {
-            super::cached(&store.store, ArenaId::DEFAULT, None, None, id(store, 1), ps).map(drop)
-        };
-        assert_eq!(cached(&store), Err(Errno::ENOMEM));
-        drop(held);
-        assert_eq!(cached(&store), Ok(()));
-    }
-
     /// The process's cached sealed `extent`, if it is cached.
-    fn cached(extent: ExtentId) -> Option<Arc<FxExtent>> {
-        let extents = extent_cache().extents.lock().unwrap();
-        extents.get(&(ArenaId::DEFAULT, extent)).map(|cached| cached.extent.clone())
+    fn cached(extent: ExtentId) -> Option<Arc<CachedExtent>> {
+        cache::find(ArenaId::DEFAULT, extent)
     }
 
     /// Stores through a writable mapping of a new extent are its data once a commit seals it, after
@@ -3757,8 +3263,8 @@ mod tests {
         assert_eq!(read(&store, written, 0, 2 * ps as usize), Ok(written_data));
     }
 
-    /// What one page-in reads (`fxextent`'s read-ahead).
-    const READ_AHEAD: u64 = 128 * 1024;
+    /// What one page-in reads: a part.
+    const READ_AHEAD: u64 = extent_frame::PART;
 
     /// A source whose reads all wait until `readers` of them are waiting at once, then fill the
     /// buffer with the `pattern` of their chunk.
@@ -3772,7 +3278,7 @@ mod tests {
 
     struct HeldSource(Arc<Held>);
 
-    impl ExtentSource for HeldSource {
+    impl cache::Contents for HeldSource {
         fn read<'a>(
             &'a self,
             offset: u64,
@@ -3808,27 +3314,24 @@ mod tests {
     /// wait at once than the pager has threads, and all go on.
     #[test]
     fn page_ins_wait_holding_no_thread() {
-        let readers = 4 * PAGER_THREADS as usize;
+        let readers = 4 * cache::PAGER_THREADS;
         let held = Arc::new(Held {
             readers,
             waiting: Mutex::new((0, Vec::new())),
             all: std::sync::Condvar::new(),
         });
-        let cache = extent_cache();
-        let extent = FxExtent::new(
-            cache.pager.clone(),
-            cache.allocator(ArenaId::DEFAULT).unwrap(),
+        let extent = Arc::new(CachedExtent::new(
+            ArenaId::DEFAULT,
+            ExtentId { branch: u64::MAX, sequence: u64::MAX },
             Box::new(HeldSource(held.clone())),
             readers as u64 * READ_AHEAD,
-            u64::MAX,
-        )
-        .unwrap();
+        ));
         let faults: Vec<_> = (0..readers as u64)
             .map(|chunk| {
                 let extent = extent.clone();
                 std::thread::spawn(move || {
                     let mut data = vec![0; BLOCK];
-                    extent.vmo().read(&mut data, chunk * READ_AHEAD).unwrap();
+                    extent.read(chunk * READ_AHEAD, &mut data).unwrap();
                     data
                 })
             })

@@ -4,7 +4,7 @@
 
 use super::client::{Opening, RemoteExtentStore};
 use super::server::{serve, serve_connection};
-use crate::kernel::page_size;
+use crate::pages::page_size;
 use crate::{Commit, Errno, ExtentId, ExtentStore, VolatileSlice, VolatileSliceMut, WriteBarriers};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
@@ -1015,22 +1015,11 @@ fn refuse_system_call(call: libc::c_long, args: &[(usize, u32)], errno: u16) {
     }
 }
 
-/// The page of the daemon's kernel's physical memory at `offset` in the memory of `arena`, as a VM
-/// process maps it from its tenant's arena.
-fn page_at(arena: crate::kernel::ArenaId, offset: u64) -> zircon::vm::page::VmPagePtr {
-    use zircon::kernel::types::PAddr;
-    use zircon::vm::physmap::{CHUNK_SIZE, PHYS_BASE};
-    let memory = zircon::vm::pmm::node().phys_memory();
-    let chunk_at = |chunk: usize| PAddr(PHYS_BASE.0 + chunk * CHUNK_SIZE);
-    let within = offset % CHUNK_SIZE as u64;
-    let chunk = (0..memory.chunk_count())
-        .find(|chunk| {
-            memory.chunk_arena(*chunk) == Some(arena)
-                && memory.location(chunk_at(*chunk)).offset == offset - within
-        })
-        .unwrap_or_else(|| panic!("no chunk of {arena:?} holds {offset:#x}"));
-    let paddr = PAddr(chunk_at(chunk).0 + within as usize);
-    zircon::vm::pmm::paddr_to_vm_page(paddr).expect("a page of physical memory")
+/// Whether the page of the daemon's physical memory at `offset` in the memory of `arena`, as a VM
+/// process maps it from its tenant's arena, is free.
+fn page_is_free(arena: crate::pages::ArenaId, offset: u64) -> bool {
+    let location = crate::pages::PhysLocation { arena, offset };
+    physmem::is_free(location).unwrap_or_else(|| panic!("no chunk of {arena:?} holds {offset:#x}"))
 }
 
 /// TASK-79.9: a VM process that stops answering, frozen as SIGSTOP or a cgroup's freezer freezes
@@ -1098,11 +1087,11 @@ fn frozen_vm_processes_are_killed() {
     assert_eq!(unsafe { libc::kill(theirs.0.id() as libc::pid_t, libc::SIGSTOP) }, 0);
 
     // The extent's page evicted: its mappings taken away, ours and the frozen child's.
-    let mapped = page_at(tenant.arena(), offset);
+    let arena = tenant.arena();
     let wait = std::time::Duration::from_secs(10);
-    let evicted = within(wait, || crate::extents::evict_least_used(None, |_| false));
+    let evicted = within(wait, || crate::cache::evict_least_used(None, |_| false));
     assert_eq!(evicted, Ok(ps as u64), "the eviction waited for the frozen VM process");
-    assert!(!mapped.is_free(), "the page the frozen VM process maps is free");
+    assert!(!page_is_free(arena, offset), "the page the frozen VM process maps is free");
     let ours = std::sync::Arc::new(ours);
     let reading = ours.clone();
     let served = within(wait, move || read(&reading, extent, 0, BLOCK));
@@ -1120,7 +1109,7 @@ fn frozen_vm_processes_are_killed() {
     // the opening waits for (`CLOSING_WAIT`); and its page, free by then.
     let reopened = RemoteExtentStore::connect(&socket, &child, 1 << 24).map(|store| store.branch());
     assert_eq!(reopened.map_err(|error| error.errno()), Ok(extent.branch + 1));
-    assert!(mapped.is_free(), "the page the frozen VM process mapped isn't free once it's gone");
+    assert!(page_is_free(arena, offset), "the page the frozen VM process mapped isn't free once it's gone");
 }
 
 /// A VM process, for [`vm_processes_the_daemon_may_not_kill_are_refused`]: opens the store
@@ -1732,14 +1721,14 @@ fn tenants_arenas_go_with_them() {
     // SAFETY: The window's memory, whose faults the store serves: the extent cached, in the arena.
     let page = unsafe { std::slice::from_raw_parts(memory.as_ptr(), ps) };
     assert!(*page == pattern(4, ps)[..], "the window maps other data");
-    assert!(crate::kernel::arena_memory(arena).is_some());
+    assert!(crate::pages::arena_memory(arena).is_some());
 
     drop(store);
     served.join().unwrap();
     // Gone with the tenant, once the page-in that served the fault, which holds the extent a while
     // after the fault returns, lets it go: the arena retires until then.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while crate::kernel::arena_memory(arena).is_some() {
+    while crate::pages::arena_memory(arena).is_some() {
         assert!(std::time::Instant::now() < deadline, "the tenant's arena stayed");
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
@@ -3216,7 +3205,7 @@ fn call(
 #[test]
 fn shrinks_return_once_the_pages_they_evict_are_free() {
     use super::wire::*;
-    const CHUNK: u64 = zircon::vm::physmap::CHUNK_SIZE as u64;
+    const CHUNK: u64 = physmem::CHUNK_SIZE as u64;
     host();
     let dir = tempfile::tempdir().unwrap();
     let tenant = super::server::Tenant::new("shrunk", dir.path()).unwrap();

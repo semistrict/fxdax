@@ -2,17 +2,17 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-//! The userfaultfd second stage under Shuttle (TASK-44.3): its real code, the window's and the
-//! kernel's, over a model of the host memory it changes, [`ModelMemory`], which a guest's accesses
+//! The userfaultfd second stage under Shuttle (TASK-44.3): its real code, and the window's, over a model of the host memory it changes, [`ModelMemory`], which a guest's accesses
 //! are made against as KVM makes them. Each of the stage's rules of the order it changes its
 //! memory in, turned off, fails.
 
 use super::super::shuttle_tests::{
     Event, Guest, Outcome, RUNS, SEALED, byte, reaching, stores_race_seals_and_frees,
 };
+use super::super::tests::TestSource;
 use super::super::{Dax, Window};
 use super::*;
-use crate::kernel::PhysLocation;
+use crate::pages::PhysLocation;
 use crate::shuttle_testing::{config, fails_with, runs};
 use shuttle::scheduler::{PctScheduler, RandomScheduler};
 use shuttle::{Runner, future, thread};
@@ -72,7 +72,7 @@ impl HostMemory for ModelMemory {
             let file = match memory {
                 Memory::Anonymous => None,
                 Memory::File { fd, offset, shared } => {
-                    assert!(shared, "the window's pages are of this process's kernel");
+                    assert!(shared, "the window's pages are of this process's physical memory");
                     Some((fd, offset + at as u64))
                 }
             };
@@ -456,14 +456,9 @@ fn remaps_end_as_steps_do() {
     let ps = page_size();
     let (steps, steps_stage, mut steps_dax) = modelled(2, false);
     let (at_once, at_once_stage, mut at_once_dax) = modelled(2, true);
-    let vmo = |value| {
-        let vmo = zx::Vmo::create(2 * ps).unwrap();
-        vmo.write(&vec![value; 2 * ps as usize], 0).unwrap();
-        vmo
-    };
-    let (open, other) = (vmo(1), vmo(2));
+    let (open, other) = (TestSource::filled(2, 1).source(), TestSource::filled(2, 2).source());
     // Not yet written, it has no page in memory.
-    let unwritten = zx::Vmo::create(2 * ps).unwrap();
+    let unwritten = TestSource::paged(2).source();
     let pages = |memory: &ModelMemory| memory.0.lock().unwrap().pages.clone();
     let maps = |memory: &ModelMemory| memory.0.lock().unwrap().maps;
     let mut change = |what: &str, mmaps: usize, make: &dyn Fn(&mut Dax<()>)| {
@@ -525,12 +520,7 @@ fn refusal_races_changes() {
     let telling = Arc::new(Telling { stage: stage.clone(), memory: memory.clone() });
     let (mut dax, _) = Dax::<Arc<u8>>::new(ps, Some(telling)).unwrap();
     let window = dax.window.clone();
-    let vmo = |value| {
-        let vmo = zx::Vmo::create(ps).unwrap();
-        vmo.write(&vec![value; ps as usize], 0).unwrap();
-        vmo
-    };
-    let (sealed, zeros) = (vmo(SEALED), vmo(0));
+    let (sealed, zeros) = (TestSource::filled(1, SEALED).source(), crate::cache::zeros());
     dax.map(0, Arc::new(0), &sealed, 0, ps, false).unwrap();
     let guest = HostGuest { memory, stage: stage.clone(), window, base };
 
@@ -560,8 +550,8 @@ fn refusal_lifted_by_protection() {
     let telling = Arc::new(Telling { stage: stage.clone(), memory: memory.clone() });
     let (mut dax, _) = Dax::<Arc<u8>>::new(ps, Some(telling.clone())).unwrap();
     let window = dax.window.clone();
-    let vmo = zx::Vmo::create(ps).unwrap();
-    dax.map(0, Arc::new(0), &vmo, 0, ps, false).unwrap();
+    let page = TestSource::anonymous(1).source();
+    dax.map(0, Arc::new(0), &page, 0, ps, false).unwrap();
     let guest = HostGuest { memory, stage: stage.clone(), window, base };
     // A store faulted on the page, which the window refused, as it maps it read-only.
     let seen = stage.seen(base);
@@ -599,8 +589,8 @@ fn withholding_races_maps() {
     let telling = Arc::new(Telling { stage: stage.clone(), memory: memory.clone() });
     let (mut dax, _) = Dax::<Arc<u8>>::new(ps, Some(telling)).unwrap();
     let window = dax.window.clone();
-    // Not yet written, it has no page in memory.
-    let file = zx::Vmo::create(ps).unwrap();
+    // Not yet written, it has no page in memory, and is zeros as it is brought in.
+    let file = TestSource::anonymous(1).source();
     let guest = HostGuest { memory, stage: stage.clone(), window: window.clone(), base };
 
     let map = thread::spawn(move || {

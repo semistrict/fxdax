@@ -10,7 +10,6 @@
 //! copies do, and only ever copies into or out of it, as `vm-memory`'s volatile slices do.
 
 use std::marker::PhantomData;
-use zircon::user_copy::HostBuffer;
 
 /// `len` bytes of memory that fxdax copies out of, such as a request's buffer in guest memory.
 #[derive(Clone, Copy, Debug)]
@@ -69,10 +68,6 @@ impl<'a> VolatileSlice<'a> {
         unsafe { std::ptr::copy_nonoverlapping(self.addr as *const u8, dst.as_mut_ptr(), len) };
         len
     }
-
-    pub(crate) fn host_buffer(&self) -> HostBuffer {
-        HostBuffer { addr: self.addr, len: self.len }
-    }
 }
 
 impl<'a> From<&'a [u8]> for VolatileSlice<'a> {
@@ -126,10 +121,6 @@ impl<'a> VolatileSliceMut<'a> {
         // SAFETY: The slice's memory is writable for `len` bytes, and `src` is another's.
         unsafe { std::ptr::copy_nonoverlapping(src.as_ptr(), self.addr as *mut u8, len) };
         len
-    }
-
-    pub(crate) fn host_buffer(&self) -> HostBuffer {
-        HostBuffer { addr: self.addr, len: self.len }
     }
 }
 

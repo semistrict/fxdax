@@ -16,7 +16,7 @@
 //! The files the kernel has open are held (`Fxfs::hold`): one the writer deletes reads as it was
 //! until the last close, as POSIX has it (doc-8's graveyard).
 
-use crate::fs::{Attr, Fxfs};
+use crate::fs::{Attr, Fxfs, GuestFxfs};
 use anyhow::Error;
 use core::ffi::c_void;
 use follower::{Follow, Kernel, Protocol};

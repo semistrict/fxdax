@@ -9,9 +9,15 @@ use bitflags::bitflags;
 ///
 /// Wraps the
 /// [zx_system_get_page_size](https://fuchsia.dev/fuchsia-src/reference/syscalls/system_get_page_size.md)
-/// syscall.
+/// syscall. fxdax: on a host, which has none of Zircon's syscalls (TASK-96.1), the host's page
+/// size. The guest kernel's Fxfs asks for none.
 pub fn system_get_page_size() -> u32 {
-    unsafe { sys::zx_system_get_page_size() }
+    #[cfg(any(target_os = "fuchsia", target_os = "none"))]
+    // SAFETY: The syscall has no preconditions.
+    return unsafe { sys::zx_system_get_page_size() };
+    #[cfg(not(any(target_os = "fuchsia", target_os = "none")))]
+    // SAFETY: sysconf has no preconditions.
+    return u32::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) }).expect("the page size");
 }
 
 /// Retrieve the system cache line size in bytes.

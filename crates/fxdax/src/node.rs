@@ -91,7 +91,9 @@ impl FileType {
     }
 
     /// The permissions of a node that has none of its own, such as the root directory of a new
-    /// volume.
+    /// volume. fxdax: unused since Fxfs's POSIX layer gives such nodes these (TASK-96.1); kept,
+    /// with its test, until the user decides on removing them.
+    #[allow(dead_code)]
     pub(crate) fn default_perm(self) -> u16 {
         match self {
             Self::Directory => 0o755,

@@ -19,7 +19,7 @@
 //! followers are cut off, and neither a writer nor a follower opens it until they are gone.
 
 use super::server::Connection;
-use crate::kernel::Arena;
+use crate::pages::Arena;
 use crate::open_stores::{Holder, Paths};
 use crate::store_requests::{self, Capacity, Close, Released};
 use crate::{Errno, ExtentInfo, ExtentStore};

@@ -18,7 +18,8 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
-#[cfg(not(target_os = "none"))]
+// fxdax: Fuchsia's alone; fxdax's buffers, the host's and the guest kernel's, are plain memory.
+#[cfg(target_os = "fuchsia")]
 mod buffer_source {
     use crate::buffer::{round_down, round_up};
     use fuchsia_runtime::vmar_root_self;
@@ -167,16 +168,16 @@ mod buffer_source {
     }
 }
 
-/// fxdax: in the guest kernel (TASK-26.6), whose Fxfs has no VMOs, buffers are the kernel's memory,
-/// which only Fxfs and the extent-store device's driver use, so they are all trusted.
-#[cfg(target_os = "none")]
+/// fxdax: where Fxfs has no VMOs, in the guest kernel (TASK-26.6) and on the host (TASK-96.1),
+/// buffers are plain memory, which only Fxfs and its device use, so they are all trusted.
+#[cfg(not(target_os = "fuchsia"))]
 mod buffer_source {
     use std::alloc::{Layout, alloc_zeroed, dealloc};
     use std::ops::Range;
     use std::sync::Arc;
     use storage_ptr_slice::MutPtrByteSlice;
 
-    /// A buffer source in the kernel's memory.
+    /// A buffer source in plain memory.
     #[derive(Debug)]
     pub struct BufferSource {
         base: *mut u8,
@@ -217,7 +218,7 @@ mod buffer_source {
 
         /// Never called: trusted sources have no VMO to give.
         pub fn vmo(&self) -> &Arc<zx::Vmo> {
-            unreachable!("the guest kernel's buffers have no VMO")
+            unreachable!("plain memory's buffers have no VMO")
         }
 
         /// As on other targets.
@@ -252,7 +253,7 @@ mod buffer_source {
             }
         }
 
-        /// The kernel's memory is committed already.
+        /// Plain memory, which the host commits as it is touched.
         pub fn commit_range(&self, _range: Range<usize>) -> Result<(), zx::Status> {
             Ok(())
         }
@@ -642,6 +643,7 @@ pub use crate::pinned_buffer_allocator::{
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "fuchsia")]
     use crate::buffer::BufferAllocator as BufferAllocatorTrait;
     use crate::buffer_allocator::{BufferAllocator, BufferSource, order};
     use fuchsia_async as fasync;
@@ -960,6 +962,8 @@ mod tests {
     /// mapping, so that writing them takes no fault, each of which the host makes a signal and a
     /// system call of; and maps those alone. The host holds a page of the mapping only once the
     /// in-process kernel has mapped it there.
+    // fxdax: of VMO-backed buffers, which only Fuchsia has (TASK-96.1).
+    #[cfg(target_os = "fuchsia")]
     #[fuchsia::test]
     async fn committed_ranges_are_mapped() {
         let page_size = zx::system_get_page_size() as usize;
@@ -1127,6 +1131,8 @@ mod tests {
     #[fuchsia::test]
     async fn test_trusted_buffer_apis() {
         // Untrusted allocator (only relevant/testable on Fuchsia)
+        // fxdax: of VMO-backed buffers, which only Fuchsia has (TASK-96.1).
+        #[cfg(target_os = "fuchsia")]
         {
             let source = BufferSource::new(4096);
             let allocator = BufferAllocator::new(512, source);
@@ -1157,6 +1163,8 @@ mod tests {
         }
     }
 
+    // fxdax: of VMO-backed buffers, which only Fuchsia has (TASK-96.1).
+    #[cfg(target_os = "fuchsia")]
     #[fuchsia::test]
     async fn test_trusted_buffer_rights() {
         use zx;
@@ -1194,6 +1202,8 @@ mod tests {
         assert_eq!(unpinned.contiguity(), None);
     }
 
+    // fxdax: of VMO-backed buffers, which only Fuchsia has (TASK-96.1).
+    #[cfg(target_os = "fuchsia")]
     #[fuchsia::test]
     async fn test_vmo_trusted_vs_untrusted() {
         let untrusted_source = BufferSource::new(4096);

@@ -2,19 +2,18 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-//! DAX windows under Shuttle (awslabs/shuttle), with the kernel on Shuttle's locks (zircon's
-//! `shuttle` feature): faults, the pager that supplies their pages, and the store that maps and
-//! remaps them, on threads of their own, in every interleaving Shuttle's scheduler chooses
-//! (TASK-44.3).
+//! DAX windows under Shuttle (awslabs/shuttle), on Shuttle's locks: faults, the source that
+//! brings their pages in, and the store that maps and remaps them, on threads of their own, in
+//! every interleaving Shuttle's scheduler chooses (TASK-44.3).
 //!
 //! The race of a guest's stores with a seal and a free is run against a [`Guest`]: a guest's view
 //! of the window through a second stage, here one that records what the window maps
 //! ([`FakeStage`]), and, on Linux, the userfaultfd second stage over a model of its host memory
 //! (`uffd::shuttle_tests`).
 
-use super::tests::TestPager;
+use super::tests::TestSource;
 use super::*;
-use crate::kernel::PhysLocation;
+use crate::pages::PhysLocation;
 use crate::shuttle_testing::{BATCHES, config, fails_with, runs};
 use futures::future::LocalBoxFuture;
 use shuttle::scheduler::{PctScheduler, RandomScheduler, Scheduler};
@@ -24,13 +23,13 @@ use std::os::fd::{AsRawFd, RawFd};
 /// The schedules each test runs, before `SHUTTLE_SOAK`.
 pub(super) const RUNS: usize = 100;
 
-/// Faults on two pages, each on a thread of its own, wait for the pager, which supplies each page
+/// Faults on two pages, each on a thread of its own, wait for the source, which supplies each page
 /// asked for, its bytes naming it; each completes with its page mapped.
 fn faults_wait_for_the_pager() {
     let ps = page_size();
-    let pager = TestPager::new(2);
+    let pager = TestSource::paged(2);
     let (dax, window) = Dax::<()>::new(2 * ps, None).unwrap();
-    dax.window.map(0, &pager.vmo, 0, 2 * ps, false).unwrap();
+    dax.window.map(0, &pager.source(), 0, 2 * ps, false).unwrap();
     let faults: Vec<_> = (0..2)
         .map(|page| {
             let window = window.clone();
@@ -38,8 +37,7 @@ fn faults_wait_for_the_pager() {
         })
         .collect();
     for _ in 0..2 {
-        let request = pager.read_request(zx::MonotonicInstant::INFINITE);
-        let page = request.start / ps;
+        let page = pager.request();
         pager.supply(page, page as u8 + 1);
     }
     for fault in faults {
@@ -55,14 +53,14 @@ fn faults_wait_for_the_pager_randomly() {
     Runner::new(RandomScheduler::new(runs(RUNS)), config()).run(faults_wait_for_the_pager);
 }
 
-/// The kernel's waits are Shuttle's: a wait on a port for a request no fault makes is a
-/// deadlock Shuttle reports, rather than a test that never ends.
+/// The test source's waits are Shuttle's: a wait for a request no fault makes is a deadlock
+/// Shuttle reports, rather than a test that never ends.
 #[test]
 #[should_panic(expected = "deadlock")]
-fn kernel_waits_are_shuttles() {
+fn source_waits_are_shuttles() {
     Runner::new(RandomScheduler::new(1), config()).run(|| {
-        let pager = TestPager::new(1);
-        pager.read_request(zx::MonotonicInstant::INFINITE);
+        let pager = TestSource::paged(1);
+        pager.request();
     });
 }
 
@@ -189,12 +187,8 @@ const ATTEMPTS: usize = 100;
 /// the seal began, and every access completes.
 pub(super) fn stores_race_seals_and_frees<G: Guest>(mut dax: Dax<Arc<u8>>, guest: Arc<G>) {
     let ps = page_size();
-    let vmo = |value| {
-        let vmo = zx::Vmo::create(2 * ps).unwrap();
-        vmo.write(&vec![value; 2 * ps as usize], 0).unwrap();
-        vmo
-    };
-    let (open, sealed, zeros) = (vmo(OPEN), vmo(SEALED), vmo(0));
+    let (open, sealed) = (TestSource::filled(2, OPEN).source(), TestSource::filled(2, SEALED));
+    let (sealed, zeros) = (sealed.source(), crate::cache::zeros());
     let (opened, seal, free) = (Arc::new(0), Arc::new(1), Arc::new(2));
     dax.map(0, opened.clone(), &open, 0, 2 * ps, true).unwrap();
     let sealing = Arc::new(shuttle::sync::atomic::AtomicBool::new(false));
@@ -320,7 +314,7 @@ impl Guest for StageGuest {
                 if protection == Protection::ReadWrite
                     || (kind == Access::Read && protection == Protection::Read) =>
             {
-                let arena = crate::kernel::arena_memory(phys.arena).expect("the page's arena");
+                let arena = crate::pages::arena_memory(phys.arena).expect("the page's arena");
                 Outcome::Made(byte(arena.as_raw_fd(), phys.offset, write))
             }
             _ => Outcome::Faulted(Box::pin(self.window.fault(offset, kind))),

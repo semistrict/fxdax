@@ -8,7 +8,7 @@
   that cites a Fuchsia source in its leading comment, as scripts/upstream-changes.py finds them.
 - fxdax's own code, and its adaptations, carry The fxdax Authors' copyright.
 - Either is under the license of the nearest LICENSE file above it: BSD-3-Clause at the root, as
-  Fuchsia is, MIT in the ports of the Zircon kernel (crates/zircon, crates/page), as Zircon is. The
+  Fuchsia is, MIT in crates/physmem, lifted from fxdax's port of the Zircon kernel, as Zircon is. The
   header says which, in Fuchsia's words.
 - guest/linux, built into the guest's Linux kernel, is GPL-2.0 OR BSD-3-Clause, and its patches to
   the kernel GPL-2.0, as the kernel is: an SPDX line, then fxdax's copyright.

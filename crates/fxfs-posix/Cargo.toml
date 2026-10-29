@@ -1,0 +1,21 @@
+# Fxfs as a POSIX filesystem, which a VFS calls: the guest kernel's (guest/rust/fxfs-linux) and the
+# host's (crates/fxdax). It builds for the guest kernel's targets too, so it makes no system calls.
+[package]
+name = "fxfs-posix"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+event-listener.workspace = true
+fidl-fuchsia-io.workspace = true
+futures.workspace = true
+fxfs.workspace = true
+log.workspace = true
+rustc-hash.workspace = true
+storage_device.workspace = true
+
+[lints]
+workspace = true

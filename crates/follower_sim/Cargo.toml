@@ -10,14 +10,11 @@ license.workspace = true
 publish = false
 
 [features]
-# Fxfs's executor, tasks, timers and locks, the in-process kernel's, and the extent store's, as
-# Shuttle's. The kernel's together with fuchsia-sync's: parking_lot's wrapper's feature, enabled
-# for either, is both's.
+# Fxfs's executor, tasks, timers and locks, and the extent store's, as Shuttle's.
 shuttle = [
     "dep:shuttle",
     "fuchsia-async/shuttle",
     "fuchsia-sync/shuttle",
-    "zircon/shuttle",
     "extent_store/shuttle",
     "fxfs/shuttle",
     "follower/shuttle",
@@ -35,7 +32,6 @@ futures.workspace = true
 fxfs.workspace = true
 shuttle = { workspace = true, optional = true }
 storage_device.workspace = true
-zircon.workspace = true
 
 [lints]
 workspace = true

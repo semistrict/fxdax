@@ -15,14 +15,14 @@
 //! KVM on its behalf) and reports the address:
 //!
 //! - An unmapped page is anonymous memory registered for missing faults.
-//! - A mapped page maps the window's page again, read-write, from the kernel's physical memory
+//! - A mapped page maps the window's page again, read-write, from physical memory
 //!   (a memfd, which the process that owns the kernel may share with this one), registered for
 //!   write-protect faults, and is write-protected while the window maps it read-only.
 //!
 //! A fault thread passes the faults to the window, which maps the page (and so maps it here), and
 //! wakes the faulting thread. It resolves faults concurrently, as futures it polls as they make
 //! progress, so that a fault waiting for Fxfs's pager does not hold up the others. A fault the
-//! window cannot resolve is fatal, as it is to a Zircon guest: the faulting thread cannot go on.
+//! window cannot resolve is fatal: the faulting thread cannot go on.
 //!
 //! A fault's access is not always the guest's. x86 KVM hands a fault it cannot resolve without
 //! waiting, as it cannot one userfaultfd reports, to a worker that faults the page in for writing
@@ -60,14 +60,14 @@
 //! installed, half of what the process may map beyond what it keeps for itself: past it, it leaves
 //! out the runs installed or faulted on longest ago, memory registered for missing faults again,
 //! whose pages it remembers, and installs one again, as it was, when the guest faults on it,
-//! without the window. The kernel's mappings of the window are unchanged.
+//! without the window. The window's mappings are unchanged.
 //!
 //! The userfaultfd must handle faults taken in the kernel, such as KVM's. That needs access to
 //! `/dev/userfaultfd`, or the `vm.unprivileged_userfaultfd` sysctl.
 
 use super::{Access, Anew, Faults, Prefault, Protection, SecondStage};
 use crate::error::{Errno, Error, Result};
-use crate::kernel::page_size;
+use crate::pages::page_size;
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use std::fs::File;
@@ -152,7 +152,7 @@ pub(crate) struct UffdSecondStage<H: HostMemory = Syscalls> {
     size: usize,
     /// What changes the memory: system calls, but in tests.
     host: H,
-    /// The kernel's physical memory, which the window's pages are mapped from.
+    /// Physical memory, which the window's pages are mapped from.
     memories: Memories,
     /// The hypervisor, told of the pages mapped here, if it maps them ahead of the guest.
     prefault: Option<Arc<dyn Prefault>>,
@@ -239,7 +239,7 @@ struct PageChanges {
 /// installed in host memory or left out, and when it was installed or faulted on last.
 #[derive(Clone, Copy)]
 struct Mapped {
-    phys: crate::kernel::PhysLocation,
+    phys: crate::pages::PhysLocation,
     protection: Protection,
     installed: bool,
     used: u64,
@@ -300,13 +300,13 @@ impl Pages {
     fn installed_as(
         &self,
         range: std::ops::Range<usize>,
-        phys: crate::kernel::PhysLocation,
+        phys: crate::pages::PhysLocation,
     ) -> Option<Protection> {
         let mut protection = None;
         for (at, page) in self.pages[range].iter().enumerate() {
             let mapped = page.mapped.filter(|mapped| mapped.installed)?;
             let offset = phys.offset + at as u64 * page_size();
-            if page.restricted || mapped.phys != (crate::kernel::PhysLocation { offset, ..phys }) {
+            if page.restricted || mapped.phys != (crate::pages::PhysLocation { offset, ..phys }) {
                 return None;
             }
             if *protection.get_or_insert(mapped.protection) != mapped.protection {
@@ -452,23 +452,23 @@ fn rules() -> Rules {
     *RULES.lock().unwrap()
 }
 
-/// The kernel's physical memory, by arena (TASK-43), which a window's pages are mapped from.
+/// Physical memory, by arena (TASK-43), which a window's pages are mapped from.
 pub(crate) enum Memories {
-    /// This process's kernel's, every arena's, as tests have it.
+    /// This process's, every arena's, as tests have it.
     #[cfg(test)]
     InProcess,
     /// The arenas' a daemon gave this process: its tenant's, and the default, read-only, or the
     /// default alone.
-    Given(Vec<(crate::kernel::ArenaId, OwnedFd)>),
+    Given(Vec<(crate::pages::ArenaId, OwnedFd)>),
 }
 
 impl Memories {
     /// The descriptor of `arena`'s memory, which the window maps pages of, and whether it is
     /// read-only, as a tenant's VM process holds the default arena.
-    fn fd(&self, arena: crate::kernel::ArenaId) -> Option<(std::os::fd::RawFd, bool)> {
+    fn fd(&self, arena: crate::pages::ArenaId) -> Option<(std::os::fd::RawFd, bool)> {
         let fd = match self {
             #[cfg(test)]
-            Self::InProcess => crate::kernel::arena_memory(arena)?.as_raw_fd(),
+            Self::InProcess => crate::pages::arena_memory(arena)?.as_raw_fd(),
             Self::Given(memories) => {
                 memories.iter().find(|(given, _)| *given == arena)?.1.as_raw_fd()
             }
@@ -482,7 +482,7 @@ impl Memories {
 impl UffdSecondStage {
     /// Takes over the `size` bytes of host memory at `base`, replacing them with memory whose
     /// faults userfaultfd reports, as nothing is mapped yet: the window's pages are mapped there
-    /// from `phys`, the kernel's physical memory. `prefault`, if any, is told of the pages mapped
+    /// from `phys`, physical memory. `prefault`, if any, is told of the pages mapped
     /// there.
     ///
     /// # Safety
@@ -851,12 +851,11 @@ impl<H: HostMemory> SecondStage for UffdSecondStage<H> {
     fn map(
         &self,
         offset: u64,
-        phys: crate::kernel::PhysLocation,
+        phys: crate::pages::PhysLocation,
         len: u64,
         protection: Protection,
     ) {
         let (addr, len) = self.addr(offset, len);
-        assert_ne!(protection, Protection::None, "a guest's pages are always readable");
         let memory = self.memory(phys, protection);
         let range = self.page_range(addr, len);
         let page_size = page_size();
@@ -869,7 +868,7 @@ impl<H: HostMemory> SecondStage for UffdSecondStage<H> {
                 pages.update(range, |pages| {
                     for (at, page) in pages.iter_mut().enumerate() {
                         let offset = phys.offset + at as u64 * page_size;
-                        let phys = crate::kernel::PhysLocation { arena: phys.arena, offset };
+                        let phys = crate::pages::PhysLocation { arena: phys.arena, offset };
                         page.mapped = Some(Mapped { phys, protection, installed: true, used });
                         page.restricted = false;
                     }
@@ -886,7 +885,6 @@ impl<H: HostMemory> SecondStage for UffdSecondStage<H> {
     }
 
     fn protect(&self, offset: u64, len: u64, protection: Protection) {
-        assert_ne!(protection, Protection::None, "a guest's pages are always readable");
         let (addr, len) = self.addr(offset, len);
         let range = self.page_range(addr, len);
         let page_size = page_size() as usize;
@@ -959,10 +957,9 @@ impl<H: HostMemory> SecondStage for UffdSecondStage<H> {
         let (addr, len) = self.addr(offset, len);
         let range = self.page_range(addr, len);
         let page_size = page_size() as usize;
-        let maps: Vec<(usize, usize, crate::kernel::PhysLocation, Protection)> = (anew.iter())
+        let maps: Vec<(usize, usize, crate::pages::PhysLocation, Protection)> = (anew.iter())
             .filter_map(|anew| match *anew {
                 Anew::Map { offset, phys, len, protection } => {
-                    assert_ne!(protection, Protection::None, "a guest's pages are always readable");
                     let (addr, len) = self.addr(offset, len);
                     Some((addr, len, phys, protection))
                 }
@@ -991,7 +988,7 @@ impl<H: HostMemory> SecondStage for UffdSecondStage<H> {
                 pages.update(mapping, |pages| {
                     for (at, page) in pages.iter_mut().enumerate() {
                         let offset = phys.offset + at as u64 * page_size as u64;
-                        let phys = crate::kernel::PhysLocation { offset, ..phys };
+                        let phys = crate::pages::PhysLocation { offset, ..phys };
                         page.mapped = Some(Mapped { phys, protection, installed: true, used });
                     }
                 });
@@ -1080,7 +1077,7 @@ impl<H: HostMemory> UffdSecondStage<H> {
     }
 
     /// The memory of the page at `phys`, which the window maps with `protection`.
-    fn memory(&self, phys: crate::kernel::PhysLocation, protection: Protection) -> Memory {
+    fn memory(&self, phys: crate::pages::PhysLocation, protection: Protection) -> Memory {
         // A page of an arena the window may not map is the daemon's error, which the guest must
         // not get past.
         let (fd, read_only) =
@@ -1142,7 +1139,6 @@ impl<H: HostMemory> UffdSecondStage<H> {
                 self.host.write_protect(addr, len, false);
                 self.host.populate_write(addr, len);
             }
-            Protection::None => unreachable!("a guest's pages are always readable"),
         }
     }
 
@@ -1244,7 +1240,7 @@ impl<H: HostMemory> UffdSecondStage<H> {
         {
             end += 1;
         }
-        let first = crate::kernel::PhysLocation {
+        let first = crate::pages::PhysLocation {
             arena: phys.arena,
             offset: phys.offset - ((at - start) * page_size) as u64,
         };
@@ -1355,7 +1351,7 @@ mod shuttle_tests;
 #[cfg(test)]
 mod tests {
     use super::super::Dax;
-    use super::super::tests::TestPager;
+    use super::super::tests::TestSource;
     use super::*;
 
     /// The fault thread resolves faults concurrently: a fault waiting for the pager does not hold
@@ -1376,19 +1372,19 @@ mod tests {
         };
         assert_ne!(memory, libc::MAP_FAILED);
         let base = memory as usize;
-        let pager = TestPager::new(2);
+        let pager = TestSource::paged(2);
         // SAFETY: Only the test uses the memory, which outlives the window.
         let stage = unsafe { UffdSecondStage::in_process(base, 2 * ps as u64, None) }.unwrap();
         let (dax, _window) = Dax::<()>::in_host_memory(stage).unwrap();
-        dax.window.map(0, &pager.vmo, 0, 2 * ps as u64, false).unwrap();
+        dax.window.map(0, &pager.source(), 0, 2 * ps as u64, false).unwrap();
 
         // SAFETY: The memory is the window's, whose faults the fault thread serves.
         let load =
             move |offset: usize| move || unsafe { ((base + offset) as *const u8).read_volatile() };
         let first = std::thread::spawn(load(0));
-        assert_eq!(pager.read_request(zx::MonotonicInstant::INFINITE), 0..ps as u64);
+        assert_eq!(pager.request(), 0);
         let second = std::thread::spawn(load(ps));
-        assert_eq!(pager.read_request(zx::MonotonicInstant::INFINITE), ps as u64..2 * ps as u64);
+        assert_eq!(pager.request(), 1);
 
         pager.supply(1, 2);
         assert_eq!(second.join().unwrap(), 2);
@@ -1420,8 +1416,7 @@ mod tests {
         };
         assert_ne!(memory, libc::MAP_FAILED);
         let base = memory as usize;
-        let file = zx::Vmo::create(2 * ps as u64).unwrap();
-        file.write(&vec![7; 2 * ps], 0).unwrap();
+        let file = TestSource::filled(2, 7).source();
         // SAFETY: Only the test uses the memory, which outlives the window.
         let stage = unsafe { UffdSecondStage::in_process(base, 2 * ps as u64, None) }.unwrap();
         let (dax, _window) = Dax::<()>::in_host_memory(stage.clone()).unwrap();
@@ -1475,8 +1470,7 @@ mod tests {
         };
         assert_ne!(memory, libc::MAP_FAILED);
         let base = memory as usize;
-        let file = zx::Vmo::create(4 * ps as u64).unwrap();
-        file.write(&vec![7; 4 * ps], 0).unwrap();
+        let file = TestSource::filled(4, 7).source();
         let told = Arc::new(Told(Mutex::new(Vec::new())));
         // SAFETY: Only the test uses the memory, which outlives the window.
         let stage =
@@ -1518,8 +1512,7 @@ mod tests {
             )
         };
         assert_ne!(memory, libc::MAP_FAILED);
-        let file = zx::Vmo::create(4 * ps).unwrap();
-        file.write(&vec![7; 4 * ps as usize], 0).unwrap();
+        let file = TestSource::filled(4, 7).source();
         let told = Arc::new(Told(Mutex::new(Vec::new())));
         // SAFETY: Only the test uses the memory, which outlives the window.
         let stage =
@@ -1540,66 +1533,6 @@ mod tests {
         drop(dax);
         // SAFETY: Unmaps the memory, which nothing uses any more.
         assert_eq!(unsafe { libc::munmap(memory, 4 * ps as usize) }, 0);
-    }
-
-    /// Stores to pages mapped read-only, of a file whose pager tracks its dirty pages, fault as
-    /// stores, which the window resolves once the pager dirties the pages, and the stores land in
-    /// the file. A store following on from the last dirties the file's pages after it too.
-    #[test]
-    fn stores_to_clean_pages_wait_for_the_pager_to_dirty_them() {
-        let ps = page_size() as usize;
-        // SAFETY: Maps anonymous memory, which this test owns.
-        let memory = unsafe {
-            libc::mmap(
-                std::ptr::null_mut(),
-                4 * ps,
-                libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
-                -1,
-                0,
-            )
-        };
-        assert_ne!(memory, libc::MAP_FAILED);
-        let base = memory as usize;
-        let port = zx::Port::create();
-        let pager = zx::Pager::create(zx::PagerOptions::empty()).unwrap();
-        let vmo = pager.create_vmo(zx::VmoOptions::TRAP_DIRTY, &port, 7, 4 * ps as u64).unwrap();
-        let aux = zx::Vmo::create(4 * ps as u64).unwrap();
-        aux.write(&vec![5; 4 * ps], 0).unwrap();
-        pager.supply_pages(&vmo, 0..4 * ps as u64, &aux, 0).unwrap();
-        // SAFETY: Only the test uses the memory, which outlives the window.
-        let stage = unsafe { UffdSecondStage::in_process(base, 4 * ps as u64, None) }.unwrap();
-        let (dax, _window) = Dax::<()>::in_host_memory(stage).unwrap();
-        dax.window.map(0, &vmo, 0, 4 * ps as u64, true).unwrap();
-
-        // SAFETY: The memory is the window's, whose faults the fault thread serves.
-        let load = move |page: usize| unsafe { ((base + page * ps) as *const u8).read_volatile() };
-        let store = move |page: usize| {
-            // SAFETY: As for loads.
-            std::thread::spawn(move || unsafe { ((base + page * ps) as *mut u8).write_volatile(9) })
-        };
-        let dirtied = || {
-            let packet = port.wait(zx::MonotonicInstant::INFINITE).unwrap();
-            let zx::PacketContents::Pager(request) = packet.contents() else { panic!() };
-            assert_eq!(request.command(), zx::sys::zx_page_request_command_t::ZX_PAGER_VMO_DIRTY);
-            pager.op_range(zx::PagerOp::Dirty, &vmo, request.range()).unwrap();
-            request.range()
-        };
-        assert_eq!((load(0), load(1)), (5, 5));
-        let first = store(0);
-        assert_eq!(dirtied(), 0..ps as u64);
-        first.join().unwrap();
-        let second = store(1);
-        assert_eq!(dirtied(), ps as u64..4 * ps as u64);
-        second.join().unwrap();
-        let mut bytes = [0; 2];
-        vmo.read(&mut bytes[..1], 0).unwrap();
-        vmo.read(&mut bytes[1..], ps as u64).unwrap();
-        assert_eq!(bytes, [9, 9]);
-
-        drop(dax);
-        // SAFETY: Unmaps the memory, which nothing uses any more.
-        assert_eq!(unsafe { libc::munmap(memory, 4 * ps) }, 0);
     }
 
     /// A window whose pages are scattered over its arena's memory keeps no more runs installed
@@ -1623,15 +1556,8 @@ mod tests {
         };
         assert_ne!(memory, libc::MAP_FAILED);
         let base = memory as usize;
-        // The file's pages, written turn about with another's, are scattered: a run each.
-        let (file, other) = (
-            zx::Vmo::create((PAGES * ps) as u64).unwrap(),
-            zx::Vmo::create((PAGES * ps) as u64).unwrap(),
-        );
-        for page in 0..PAGES {
-            file.write(&vec![page as u8 + 1; ps], (page * ps) as u64).unwrap();
-            other.write(&vec![0xff; ps], (page * ps) as u64).unwrap();
-        }
+        // The file's pages are scattered: a run each.
+        let file = TestSource::scattered(PAGES as u64, |page| page as u8 + 1).source();
         // SAFETY: Only the test uses the memory, which outlives the window.
         let stage = unsafe {
             UffdSecondStage::with_budget(
@@ -1711,8 +1637,7 @@ mod tests {
         };
         assert_ne!(memory, libc::MAP_FAILED);
         let base = memory as usize;
-        let file = zx::Vmo::create((2 * ps) as u64).unwrap();
-        file.write(&vec![1; 2 * ps], 0).unwrap();
+        let file = TestSource::filled(2, 1).source();
         // SAFETY: Only the test uses the memory, which outlives the window.
         let stage =
             unsafe { UffdSecondStage::new(base, (2 * ps) as u64, Memories::InProcess, None) }
@@ -1755,9 +1680,9 @@ mod tests {
         let max = std::fs::read_to_string("/proc/sys/vm/max_map_count").unwrap();
         let pages = max.trim().parse::<usize>().unwrap() + MAPPINGS_RESERVED;
         let ps = page_size() as usize;
-        // Room for the file and another, and the watchdog's thresholds.
+        // Room for the file and the pages between its pages.
         let memory = (4 * pages * ps).next_multiple_of(1 << 30) as u64;
-        crate::kernel::configure(crate::kernel::Config::with_memory(memory)).unwrap();
+        crate::pages::configure(crate::pages::Config::with_memory(memory)).unwrap();
         // SAFETY: Maps anonymous memory, which this test owns.
         let window = unsafe {
             libc::mmap(
@@ -1771,18 +1696,9 @@ mod tests {
         };
         assert_ne!(window, libc::MAP_FAILED);
         let base = window as usize;
-        // The file's pages, written turn about with another's, are scattered: a run each. (Mapped
-        // in pieces instead, the VMO's mappings take long to remove: TASK-53.)
-        let (file, other) = (
-            zx::Vmo::create((pages * ps) as u64).unwrap(),
-            zx::Vmo::create((pages * ps) as u64).unwrap(),
-        );
+        // The file's pages are scattered: a run each.
         let tag = |page: usize| (page % 251) as u8 + 1;
-        for page in 0..pages {
-            file.write(&vec![tag(page); ps], (page * ps) as u64).unwrap();
-            other.write(&[0xff], (page * ps) as u64).unwrap();
-        }
-        drop(other);
+        let file = TestSource::scattered(pages as u64, |page| tag(page as usize)).source();
         // SAFETY: Only the test uses the memory, which outlives the window.
         let stage =
             unsafe { UffdSecondStage::new(base, (pages * ps) as u64, Memories::InProcess, None) }
@@ -1836,9 +1752,9 @@ mod tests {
         assert_eq!(write(), -1);
         assert_eq!(std::io::Error::last_os_error().raw_os_error(), Some(libc::EFAULT));
 
-        // Not yet written, the VMO has no page in memory, and its first is zeros.
-        let vmo = zx::Vmo::create(ps as u64).unwrap();
-        dax.window.map(0, &vmo, 0, ps as u64, false).unwrap();
+        // Not yet written, the source has no page in memory, and its first is zeros.
+        let source = TestSource::anonymous(1).source();
+        dax.window.map(0, &source, 0, ps as u64, false).unwrap();
         assert_eq!(write(), ps as isize);
         let mut read = vec![1u8; ps];
         // SAFETY: Reads into `read`, which is `ps` bytes.

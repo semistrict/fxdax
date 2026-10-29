@@ -17,7 +17,7 @@
 //! ```
 //!
 //! FILES is how many small files there are (default 20000), LARGE_MIB the large file's size
-//! (default 256), KERNEL_MIB the kernel's memory (default `kernel::Config::default`'s 1 GiB, which
+//! (default 256), KERNEL_MIB physical memory (default `pages::Config::default`'s 1 GiB, which
 //! `fxdaxctl import` runs with), its pressure levels scaled to it: a large file larger than it is
 //! written back and evicted as it is written (TASK-79.70); and THREADS the threads Fxfs runs on
 //! (`Options::executor_threads`, default 1, as `fxdaxctl import`'s). On one, its compactions run
@@ -70,8 +70,8 @@ fn main() {
     let files: usize = args.next().map_or(20_000, |n| n.parse().unwrap());
     let large_mib: usize = args.next().map_or(256, |n| n.parse().unwrap());
     if let Some(kernel_mib) = args.next().map(|n| n.parse::<u64>().unwrap()) {
-        let config = fxdax::kernel::Config::with_memory(kernel_mib << 20);
-        fxdax::kernel::configure(config).unwrap();
+        let config = fxdax::pages::Config::with_memory(kernel_mib << 20);
+        fxdax::pages::configure(config).unwrap();
     }
     let mut options = Options::new();
     if let Some(threads) = args.next().map(|n| n.parse::<NonZeroU8>().unwrap()) {

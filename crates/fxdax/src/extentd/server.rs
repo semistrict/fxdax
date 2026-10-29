@@ -102,7 +102,7 @@ fn serve_as(listener: UnixListener, tenant: Option<Arc<Tenant>>) {
 /// stores alone. Guest isolation is the security boundary, which nothing relies on tenants for.
 ///
 /// Its arena goes, and the extents cached in it, once it is gone, as its VM processes are, and the
-/// stores opened in its arena, and what reads into the extent cache for them (`kernel::Arena`).
+/// stores opened in its arena, and what reads into the extent cache for them (`pages::Arena`).
 pub struct Tenant {
     name: String,
     /// Its stores' directory, canonical.
@@ -110,12 +110,12 @@ pub struct Tenant {
     memory: Memory,
 }
 
-/// The memory a tenant's VM processes hold (TASK-43): its arena of the kernel's physical memory,
+/// The memory a tenant's VM processes hold (TASK-43): its arena of physical memory,
 /// which its stores' own pages are of, and the default arena, read-only, whose pages are public
 /// bases'. The default tenant's, of the VM processes of no tenant, is as any other's
 /// ([`default_memory`], TASK-79.17).
 struct Memory {
-    arena: Arc<crate::kernel::Arena>,
+    arena: Arc<crate::pages::Arena>,
     memory: Arc<std::os::fd::OwnedFd>,
     /// The default arena's memory, reopened read-only.
     public: std::os::fd::OwnedFd,
@@ -126,9 +126,9 @@ struct Memory {
 impl Memory {
     /// An arena of its own, and the default one, read-only.
     fn new() -> std::io::Result<Self> {
-        let public = reopen_read_only(crate::kernel::physical_memory())?;
-        let arena = crate::kernel::Arena::new();
-        let memory = crate::kernel::arena_memory(arena.id()).expect("a new arena");
+        let public = reopen_read_only(crate::pages::physical_memory())?;
+        let arena = crate::pages::Arena::new();
+        let memory = crate::pages::arena_memory(arena.id()).expect("a new arena");
         Ok(Self { arena, memory, public, connections: Default::default() })
     }
 }
@@ -194,8 +194,8 @@ impl Tenant {
         &self.dir
     }
 
-    /// Its arena of the kernel's physical memory.
-    pub fn arena(&self) -> crate::kernel::ArenaId {
+    /// Its arena of physical memory.
+    pub fn arena(&self) -> crate::pages::ArenaId {
         self.memory.arena.id()
     }
 
@@ -721,8 +721,8 @@ impl Connection {
         }
     }
 
-    /// The arena of the kernel's physical memory its store's own pages are of: its tenant's.
-    fn arena(&self) -> Result<&Arc<crate::kernel::Arena>, Errno> {
+    /// The arena of physical memory its store's own pages are of: its tenant's.
+    fn arena(&self) -> Result<&Arc<crate::pages::Arena>, Errno> {
         Ok(&self.memory()?.arena)
     }
 
@@ -1045,14 +1045,14 @@ impl Connection {
                 let offset = args[0];
                 log::warn!(
                     "extentd: a store at DAX window offset {offset:#x} refused ({count} so far): {}",
-                    store.describe_window_offset(offset - offset % crate::kernel::page_size())
+                    store.describe_window_offset(offset - offset % crate::pages::page_size())
                 );
             }
         }
         answer.send(faulted, Header::new(REPLY, message.header.id), Vec::new(), Vec::new());
     }
 
-    /// Hands the VM process its kernel's memory, in `reply`: its tenant's arena, and the default
+    /// Hands the VM process its physical memory, in `reply`: its tenant's arena, and the default
     /// one, read-only (TASK-43); the default tenant's as any other's (TASK-79.17).
     fn memories<'a>(
         &'a self,
@@ -1090,7 +1090,7 @@ impl Connection {
     }
 
     /// fxdax: serves `message`, an [`OPEN`] of a store to write ([`Connection::open`]), and
-    /// replies with its branch and the kernel's memory: a future, which holds no thread while it
+    /// replies with its branch and physical memory: a future, which holds no thread while it
     /// waits (TASK-92.5), served so ([`serve_future`]).
     async fn serve_open(self: Arc<Self>, message: Message, answer: Answer) {
         let Header { flags, args, id, .. } = message.header;
@@ -1555,8 +1555,7 @@ impl Acks {
 /// fxdax: how long a VM process may leave a stage operation that takes access to pages away
 /// unacknowledged before the daemon takes it to have stopped answering, and lets it go
 /// ([`Peer::let_go`], TASK-79.9): long past what making one takes, and well within what an
-/// allocation waits for the pages freed meanwhile, which wait for it, before it fails
-/// (`zircon::vm::anonymous_page_request`, 30 s).
+/// allocation waits for the pages freed meanwhile, which wait for it, before it fails.
 const UNRESPONSIVE: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// fxdax: how often the watchdog looks for VM processes that stopped answering ([`watch`]).
@@ -1595,7 +1594,7 @@ impl Peer {
     fn connected(stream: &UnixStream, sender: Arc<AsyncSender>) -> std::io::Result<Arc<Self>> {
         static WATCHING: std::sync::Once = std::sync::Once::new();
         WATCHING.call_once(|| {
-            zircon::vm::pmm::quarantine_with(quarantine);
+            physmem::quarantine_with(quarantine);
             IO.spawn(watch());
         });
         let process = peer_process(stream)?;
@@ -1627,7 +1626,7 @@ impl Peer {
     /// Its window is of `size` bytes, whose mappings, a page each at most, a reply to `MAPPINGS`
     /// holds (TASK-79.43).
     fn set_window(&self, size: u64) {
-        let mappings = size / crate::kernel::page_size() * MAPPING_BYTES;
+        let mappings = size / crate::pages::page_size() * MAPPING_BYTES;
         self.mappings.store(mappings, Ordering::Relaxed);
     }
 
@@ -1758,10 +1757,10 @@ fn peer_process(stream: &UnixStream) -> std::io::Result<Option<std::os::fd::Owne
 }
 
 /// fxdax: quarantines `pages`, freed, which a VM process may still reach, as a stage operation
-/// taking them away may be unacknowledged (`zircon::vm::pmm::quarantine_with`, TASK-79.9): until
+/// taking them away may be unacknowledged (`physmem::quarantine_with`, TASK-79.9): until
 /// every VM process connected has made those it was sent so far, or gone. The pages are freed as
 /// the last of them lets go: at once, if none waits for any.
-fn quarantine(pages: zircon::vm::pmm::Quarantined) {
+fn quarantine(pages: physmem::Quarantined) {
     let waiting = PARKING.with_borrow(Clone::clone);
     if let Some(waiting) = &waiting {
         *waiting.parked.lock().unwrap() += 1;
@@ -1775,7 +1774,7 @@ fn quarantine(pages: zircon::vm::pmm::Quarantined) {
 /// fxdax: pages quarantined ([`quarantine`]), freed as they are dropped; and, if they were freed
 /// on a thread waiting for what it frees, what it waits on ([`Parking`]).
 struct Parked {
-    pages: Option<zircon::vm::pmm::Quarantined>,
+    pages: Option<physmem::Quarantined>,
     waiting: Option<Arc<Waiting>>,
 }
 
@@ -1911,7 +1910,7 @@ impl SecondStage for RemoteStage {
     fn map(
         &self,
         offset: u64,
-        phys: crate::kernel::PhysLocation,
+        phys: crate::pages::PhysLocation,
         len: u64,
         protection: Protection,
     ) {

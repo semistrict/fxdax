@@ -6,13 +6,12 @@
 //! processes, so that each sealed extent is one copy in memory, shared by every VM that maps it
 //! (doc-2, doc-4: forks of a VM, VMs of one base image).
 //!
-//! A VMM (fxdax's Firecracker) runs one VM per process, and an extent cached in a VM process's
-//! kernel would be shared by that VM's windows alone. The daemon owns the kernel instead: its stores, its extent cache
-//! (the pager's `FxExtent`s), and each VM's window, a guest physical address space of the kernel.
-//! The kernel's physical memory is a shared memory object (a memfd: `zircon::vm::physmap`), which
-//! a VM process receives once, as it connects: the window's pages are pages of it, which the VM
-//! process maps into its own memory, where KVM maps them for the guest, at the offsets the daemon
-//! names. Two VMs mapping one extent map the same pages.
+//! A VMM (fxdax's Firecracker) runs one VM per process, and an extent cached in a VM process would
+//! be shared by that VM's windows alone. The daemon owns them instead: its stores, its extent cache
+//! (`crate::cache`), and each VM's window (`crate::dax`). Physical memory is shared memory objects
+//! (memfds: `crate::pages`), which a VM process receives once, as it connects: the window's pages
+//! are pages of them, which the VM process maps into its own memory, where KVM maps them for the
+//! guest, at the offsets the daemon names. Two VMs mapping one extent map the same pages.
 //!
 //! - A VM process's device sends the guest's requests ([`wire`]) to the daemon, which serves them
 //!   from the VM's store as an in-process device would, and replies. Their data is copied through
@@ -72,7 +71,7 @@
 //! maps, so every VM of one tenant, or of none, is secure. As defence in depth against a VM process
 //! escaped from its guest, the daemon serves tenants (TASK-43): the control API grants each a VM
 //! socket of its own ([`Tenant`], `grants`), whose connections name stores in the tenant's
-//! directory alone, and hold the tenant's arena of the kernel's physical memory, with the default
+//! directory alone, and hold the tenant's arena of physical memory, with the default
 //! arena, whose pages are public bases', read-only, and nothing of another tenant's. The daemon's
 //! own VM socket is the default tenant's, whose pages are of an arena of its own, as a tenant's
 //! are, the default arena holding public bases' alone (TASK-79.17): its connections name stores in
