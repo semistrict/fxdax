@@ -6,7 +6,7 @@ title: >-
 status: In Progress
 assignee: []
 created_date: '2026-10-28 04:48'
-updated_date: '2026-10-29 06:47'
+updated_date: '2026-10-29 07:38'
 labels:
   - bug
 dependencies: []
@@ -50,4 +50,6 @@ Verify run (fxfs.dax_evacuee_verify=1, delays): r204 6/6 green; r205 failed rand
 2026-10-28 reviews (Astra, Fable): (1) Astra: a fault's allocation transaction commits before returning (guest/rust/fxfs-linux/src/fs.rs:953); if a seal then closes the gate, map_write's caller returns -EBUSY keeping the old range mapping and freeing its held copy; the fault loop retries without dropping the range; an evacuation meanwhile may gather the old moved location; the retry may copy stale or freed contents into held. (2) Fable: host map_open maps the open VMO read-only and seal_mapped remaps every mapping of it, so evacuating an unsealed region looks harmless on the host; candidates: an evacuation MAP landing after a later writable own-space MAP (regions full), truncate/regrow between gather and place (resize_end zeroes moved without dropping region refs, TASK-117), a host frame reused after a sealed VMO's eviction. TASK-121 (zeros on main under concurrent write(2)/stores, found by the new checks) may be the same race.
 
 2026-10-29: retest after TASK-121's fixes (guest 14af2c666 et al., host cae97000a: ExtentStore::write raced a writable MAP opening the extent, its commit writing zeros over the write, the 'append_writeback read zeros' signature). New fault injection fxfs.dax_evacuate_every=N (evacuation after one seal in N; branch t3/task-112-6, 3ab28efbf). GCE r212: main + dax_evacuate_every=16 under checks-dax-delay, 10 rounds of append_writeback, random_ops, torture, seal_race, writes_across_seals, faults_writes_compaction, faults_unheld, mapped_after_write, append_pages, append_while_mapped; r213 the same with the host fix taken out (the lock dropped before the store write), the control.
+
+TASK-130: r212 and r213 ran no guest case (no guest kernel; skipped, reported passed): void. GCE r218 (kernel built): the control, the host fix taken out (the open extents' lock dropped before ExtentStore::write's store write), fxfs.dax_evacuate_every=16 under checks-dax-delay: failed round 1 of 8, torture, faults_writes_compaction and faults_unheld: the injection and checks reproduce the loss with TASK-121's host race in. Main's run under the same injection is r215's second stage.
 <!-- SECTION:NOTES:END -->
