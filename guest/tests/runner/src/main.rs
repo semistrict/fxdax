@@ -447,9 +447,15 @@ fn run_tests(
     let extra_msg =
         if extra.is_empty() { String::new() } else { format!(" ({})", extra.join(", ")) };
 
-    if num_fail > 0 {
+    // fxdax: a case asked for by name that skips fails: it was to run. Fresh GCE hosts without a
+    // guest kernel skipped every guest case asked for, and the run passed, round after round.
+    let skipped_asked = test_case != "all" && num_skip > 0;
+    if num_fail > 0 || skipped_asked {
         eprintln!("(See test artifacts at: {})", base_dir.display());
         println!("\nFAIL - {num_pass}/{num_ran} passed{extra_msg}");
+        if skipped_asked {
+            println!("{test_case} was asked for, and skipped");
+        }
         anyhow::bail!("")
     } else {
         if keep_all {

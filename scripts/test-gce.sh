@@ -22,7 +22,8 @@
 # (such as `sparse,acls`). FXDAX_GUEST_KERNEL
 # names fxdax's x86-64 guest kernel (scripts/build-guest-kernel.sh), for the
 # guest Fxfs tests, or FXDAX_GUEST_KERNEL_BUILD (release, debug or kasan) has the host
-# build one from the source (scripts/lib/test-linux-host.sh); FXDAX_GUEST_CMDLINE
+# build one from the source (scripts/lib/test-linux-host.sh), a release one if neither is
+# set; FXDAX_GUEST_CMDLINE
 # adds to its arguments (such as fxfs.follow_apply_delay_us=200). FXDAX_GCE_LIMIT
 # caps a run's time on the host (timeout's DURATION, default 6h).
 # FXDAX_WORKSPACE_TESTS=0 runs the guest tests alone, FXDAX_GUEST_TESTS=0 the

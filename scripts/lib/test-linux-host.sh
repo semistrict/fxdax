@@ -10,8 +10,9 @@
 # whose DAX window takes KVM's faults through userfaultfd. With FXDAX_GUEST_KERNEL_BUILD set
 # (release; debug: lockdep, KCSAN, DEBUG_ATOMIC_SLEEP; or kasan: KASAN, KFENCE, lockdep), the guest
 # tests run on a guest kernel it builds from the source (scripts/build-guest-kernel.sh), not
-# FXDAX_GUEST_KERNEL's. It builds
-# in trees that persist between runs, so that a run builds only what changed.
+# FXDAX_GUEST_KERNEL's; with neither set, on a release one it builds (TASK-130: without one, every
+# guest case skipped). It builds in trees that persist between runs, so that a run builds only
+# what changed.
 #
 # Usage: test-linux-host.sh SOURCE RESULTS [TEST...]
 set -euo pipefail
@@ -40,6 +41,9 @@ export PJDFSTEST_COMMIT=${PJDFSTEST_COMMIT:-85a8aea9e685999ef0540392fd80535f873d
 
 if [[ ${FXDAX_GUEST_TESTS:-1} == 0 ]]; then
     exit "$status"
+fi
+if [[ -z ${FXDAX_GUEST_KERNEL:-} ]]; then
+    FXDAX_GUEST_KERNEL_BUILD=${FXDAX_GUEST_KERNEL_BUILD:-release}
 fi
 case ${FXDAX_GUEST_KERNEL_BUILD:-} in
     '') ;;
