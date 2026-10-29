@@ -119,11 +119,13 @@ if [[ ${FXDAX_GUEST_KERNEL_DEBUG:-} == 1 ]]; then
 fi
 # fxdax: with FXDAX_GUEST_KERNEL_KASAN=1, a kernel that checks its memory accesses (KASAN, and
 # KFENCE's sampled checks) and its locking, which KCSAN's can't be built with (TASK-44.8): slow,
-# so built with its own FXDAX_GUEST_KERNEL_WORK.
+# so built with its own FXDAX_GUEST_KERNEL_WORK. Booted at its 64-bit entry, not PVH's, which
+# Firecracker takes a kernel's Xen note for: entered there, a KASAN kernel faulted before its
+# first line, the VM shut down within a millisecond (GCE r84, r253; it boots without, r256).
 if [[ ${FXDAX_GUEST_KERNEL_KASAN:-} == 1 ]]; then
     "$src/scripts/config" --file "$src/.config" --enable DEBUG_KERNEL --enable KASAN \
         --enable KASAN_GENERIC --enable KFENCE --enable PROVE_LOCKING --enable DEBUG_ATOMIC_SLEEP \
-        --enable DEBUG_LIST --disable KCSAN
+        --enable DEBUG_LIST --disable KCSAN --disable PVH
 fi
 # fxdax: with FXDAX_GUEST_KERNEL_LOCK_STAT=1, a kernel that counts each lock's contention, in
 # /proc/lock_stat, which names a hot lock where a sampling profile can't see it, taken with
