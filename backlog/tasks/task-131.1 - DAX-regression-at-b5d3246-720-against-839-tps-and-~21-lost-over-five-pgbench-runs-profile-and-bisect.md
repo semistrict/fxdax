@@ -6,7 +6,7 @@ title: >-
 status: In Progress
 assignee: []
 created_date: '2026-10-29 21:13'
-updated_date: '2026-10-30 00:32'
+updated_date: '2026-10-30 00:46'
 labels:
   - performance
 dependencies: []
@@ -51,4 +51,6 @@ GCE r264 at 641568faf, pgbench-dax 1 VM: tps 828.5, 715.6, 768.9, 664.7, 666.7. 
 GCE r264 at 585a82004 (641568faf + open extents' pages allocated in runs after the page before them, wip-open-pages-runs): tps 927.7, 815.0, 817.0, 672.9, 673.5; stage-maps 5609050 in stage-segments 1327152 (4.23 per segment; 4.26 without), 9.5 KB each. Allocating in runs doesn't lengthen them. r264-F counts open extents' allocations, their pages and the physical runs they came as, to tell page-at-a-time commits from scattered free memory.
 
 GCE r264 at 4782583c0 (open pages in runs + allocation counters): tps 937.9, 829.0, 801.9, 661.6, 653.4. Open extents' allocations: 292262, 4554810 pages (15.6 each), in 1739511 physical runs (2.6 pages each). Commits ask for runs; free memory is fragmented: the arenas' free list, LIFO, hands out the short runs freed last (an fsync's small extents) first. Fix: physmem's free pages as a buddy allocator's blocks (0b846e695, local): runs from the smallest block holding them, single pages from the smallest blocks, freed pages joined with their buddies. physmem tests (54, shuttle 10) and fxdax's pass on macOS. r264-G measures it with open pages in runs.
+
+GCE r264 at ed4f7745e (buddy allocator 0b846e695 + open pages in runs + counters), pgbench-dax: tps 1018.9, 933.9, 891.1, 837.5, 893.2 (mean 915; r264 without: 938, 829, 802, 662, 653, mean 769: +19%; run 5/run 1 0.88 against 0.70). Open allocations 323024 of 5116569 pages in 325434 physical runs (1.007 a allocation; 6.0 without). stage-maps 2106558 (27.7 KB each; 9.5 KB without) in 1461628 segments (1.44 a segment; 4.23); stage-ops 2849107 (5243814), the VMM's stage time 83.9 s (130.4 s). Release suites and Linux workspace tests running before the push (r264, r263).
 <!-- SECTION:NOTES:END -->
