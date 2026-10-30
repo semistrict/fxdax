@@ -13,6 +13,7 @@
 
 #include <linux/completion.h>
 #include <linux/dax.h>
+#include <linux/device/driver.h>
 #include <linux/io.h>
 #include <linux/memremap.h>
 #include <linux/list.h>
@@ -86,7 +87,7 @@ struct virtio_extent {
 static LIST_HEAD(devices);
 static DEFINE_MUTEX(devices_lock);
 
-struct virtio_extent *virtio_extent_find(const char *tag)
+static struct virtio_extent *vext_find_bound(const char *tag)
 {
 	struct virtio_extent *vext, *found = NULL;
 
@@ -99,6 +100,22 @@ struct virtio_extent *virtio_extent_find(const char *tag)
 	}
 	mutex_unlock(&devices_lock);
 	return found;
+}
+
+/*
+ * fxdax: the device tagged `tag`, once probes in progress are done if none is bound yet: devices
+ * are probed asynchronously (vext_driver), so that the window's memmap, built as a device is
+ * probed, a third of a fork's boot, overlaps the rest of the boot (TASK-92.8); a mount by tag
+ * waits for its device's probe, as the kernel waits for probes before it mounts the root.
+ */
+struct virtio_extent *virtio_extent_find(const char *tag)
+{
+	struct virtio_extent *found = vext_find_bound(tag);
+
+	if (found)
+		return found;
+	wait_for_device_probe();
+	return vext_find_bound(tag);
 }
 EXPORT_SYMBOL_GPL(virtio_extent_find);
 
@@ -889,6 +906,8 @@ static const unsigned int vext_features[] = {
 
 static struct virtio_driver vext_driver = {
 	.driver.name = "virtio_extent",
+	/* fxdax: its window's memmap built beside the rest of the boot (virtio_extent_find). */
+	.driver.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 	.id_table = vext_ids,
 	.feature_table = vext_features,
 	.feature_table_size = ARRAY_SIZE(vext_features),
