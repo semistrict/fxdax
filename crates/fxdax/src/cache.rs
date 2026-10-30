@@ -51,9 +51,6 @@ pub(crate) struct Cached {
     /// commit didn't (`ExtentStore::commit`): another store's guest, a fork's, waits for it before
     /// it maps them.
     sealing: Option<Sealing>,
-    /// When it was last asked for, by [`CACHE_CLOCK`]: those longest ago are evicted first
-    /// (TASK-50.3).
-    used: AtomicU64,
 }
 
 /// A seal of a cached extent not yet made: its store's guest may store to its pages until it is.
@@ -154,20 +151,26 @@ fn extent_cache() -> &'static ExtentCache {
     })
 }
 
-/// Evicts the pages of the cached extents of `arena`, or of every arena, those asked for longest
-/// ago first, until `enough` says, of the bytes evicted so far, that they are, or none is left to
-/// evict: memory an arena past its cap, or the arenas past the total's, give back (TASK-50.3).
-/// Returns the bytes it evicted. Evicted pages are read in again as they are touched.
+/// Evicts the pages of the cached extents of `arena`, or of every arena, those no window maps
+/// first, then those used longest ago (`CachedExtent::eviction_order`), until `enough` says, of
+/// the bytes evicted so far, that they are, or none is left to evict: memory an arena past its cap,
+/// or the arenas past the total's, give back (TASK-50.3). Returns the bytes it evicted. Evicted
+/// pages are read in again as they are touched.
 pub(crate) fn evict_least_used(arena: Option<ArenaId>, mut enough: impl FnMut(u64) -> bool) -> u64 {
     let Some(cache) = EXTENT_CACHE.get() else { return 0 };
-    let mut candidates: Vec<(u64, Arc<CachedExtent>)> = {
+    let candidates: Vec<Arc<CachedExtent>> = {
         let extents = cache.extents.lock().unwrap();
         (extents.iter())
             .filter(|((of, _), _)| arena.is_none_or(|arena| *of == arena))
-            .map(|(_, cached)| (cached.used.load(Ordering::Relaxed), cached.extent.clone()))
+            .map(|(_, cached)| cached.extent.clone())
             .collect()
     };
-    candidates.sort_by_key(|(used, _)| *used);
+    // Past the cache's lock, as each takes its own; those evicted already, which stay cached
+    // until freed, left out, each pass having gone through them all (TASK-92.33).
+    let mut candidates: Vec<_> = (candidates.into_iter())
+        .filter_map(|extent| Some((extent.eviction_order()?, extent)))
+        .collect();
+    candidates.sort_unstable_by_key(|(order, _)| *order);
     let mut evicted = 0;
     for (_, extent) in candidates {
         if enough(evicted) {
@@ -229,10 +232,9 @@ pub(crate) fn cached(
                 extent: Arc::new(CachedExtent::new(arena, extent, Box::new(stored), len)),
                 holders,
                 sealing: None,
-                used: AtomicU64::new(0),
             }
         });
-        cached.used.store(CACHE_CLOCK.fetch_add(1, Ordering::Relaxed) + 1, Ordering::Relaxed);
+        cached.extent.used();
         cached.holders.add(store, remote.as_ref());
         let sealing = (cached.sealing.as_ref())
             .filter(|sealing| !std::ptr::eq(sealing.store.as_ptr(), Arc::as_ptr(store)))
@@ -346,7 +348,7 @@ fn let_go_least_used(
         .filter(|(_, cached)| Arc::strong_count(&cached.extent) == 1)
         .map(|(key, cached)| {
             let open = cached.holders.any_open();
-            ((open, cached.used.load(Ordering::Relaxed)), *key)
+            ((open, cached.extent.used.load(Ordering::Relaxed)), *key)
         })
         .collect();
     idle.sort_unstable_by_key(|(order, _)| *order);
@@ -493,6 +495,11 @@ pub(crate) struct CachedExtent {
     contents: Box<dyn Contents>,
     len: u64,
     pages: Mutex<Pages>,
+    /// How many of its pages are in memory, which relief asks of every extent cached (TASK-92.33).
+    present: AtomicUsize,
+    /// When it was last asked for or faulted on, by [`CACHE_CLOCK`]: those longest ago are evicted
+    /// first (TASK-50.3, TASK-92.32).
+    used: AtomicU64,
     /// Notified as pages come in, fail to, or go.
     changed: event_listener::Event,
 }
@@ -509,7 +516,34 @@ impl CachedExtent {
         let slots = std::iter::repeat_with(|| Slot::Absent).take(count).collect();
         // A reader from its start reads on.
         let pages = Mutex::new(Pages { slots, windows: Vec::new(), next: 0 });
-        Self { arena, extent, contents, len, pages, changed: event_listener::Event::new() }
+        Self {
+            arena,
+            extent,
+            contents,
+            len,
+            pages,
+            present: AtomicUsize::new(0),
+            used: AtomicU64::new(0),
+            changed: event_listener::Event::new(),
+        }
+    }
+
+    /// Notes that it is in use now: asked for, or faulted on, as a guest keeping its mapping asks
+    /// for it only once (TASK-92.32).
+    fn used(&self) {
+        self.used.store(CACHE_CLOCK.fetch_add(1, Ordering::Relaxed) + 1, Ordering::Relaxed);
+    }
+
+    /// When relief evicts it, those first that sort first: whether a window maps it, as what
+    /// guests keep mapped they may use without a sign, and an eviction takes from all of them,
+    /// then when it was last used. `None` with nothing in memory to evict.
+    pub(crate) fn eviction_order(&self) -> Option<(bool, u64)> {
+        if self.present.load(Ordering::Relaxed) == 0 {
+            return None;
+        }
+        let pages = self.pages.lock().unwrap();
+        let mapped = pages.windows.iter().any(|window| window.strong_count() > 0);
+        Some((mapped, self.used.load(Ordering::Relaxed)))
     }
 
     /// The part `page` is in, of its `pages`, as page numbers: a part of an object
@@ -569,6 +603,7 @@ impl CachedExtent {
             if let Some(slot @ (Slot::Absent | Slot::Failed(_))) = table.slots.get_mut(page as usize)
             {
                 *slot = Slot::Present(frame);
+                self.present.fetch_add(1, Ordering::Relaxed);
             }
         }
         drop(table);
@@ -586,6 +621,7 @@ impl CachedExtent {
                 *slot = match std::mem::replace(slot, Slot::Absent) {
                     Slot::Present(frame) => {
                         frames.insert(frame.frame());
+                        self.present.fetch_sub(1, Ordering::Relaxed);
                         Slot::Evicting(frame)
                     }
                     other => other,
@@ -631,6 +667,7 @@ impl CachedExtent {
                     let slot = &mut table.slots[page as usize];
                     if let Slot::Filling = slot {
                         *slot = Slot::Present(frame);
+                        self.present.fetch_add(1, Ordering::Relaxed);
                     }
                 }
             }
@@ -737,6 +774,7 @@ impl Source for CachedExtent {
 
     fn bring_in(self: Arc<Self>, page: u64) -> BoxFuture<'static, Result<bool>> {
         Box::pin(async move {
+            self.used();
             let mut waited = false;
             loop {
                 let listener = {

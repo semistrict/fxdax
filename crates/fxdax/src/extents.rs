@@ -2452,6 +2452,51 @@ mod tests {
         });
     }
 
+    /// TASK-92.32: relief takes first what no window maps, though what one maps was used longer
+    /// ago, as a guest using its mappings gives no sign of it. TASK-92.33: extents it evicted, which
+    /// stay cached, are left out of the next pass.
+    #[test]
+    fn relief_evicts_what_no_window_maps_first() {
+        const EXTENT: u64 = 1 << 20;
+        let dir = tempfile::tempdir().unwrap();
+        let held = Arena::new();
+        let (store, window) = mapped_extents(&dir.path().join("store"), 2, &held);
+        let cached = |sequence| cache::find(held.id(), id(&store, sequence)).expect("cached");
+        for sequence in 1..=2 {
+            block_on(window.fault((sequence - 1) * EXTENT, Access::Read)).unwrap();
+        }
+        let (mapped, unmapped) = (cached(1).held(), cached(2).held());
+        store.unmap(EXTENT, EXTENT).unwrap();
+
+        let evicted = cache::evict_least_used(Some(held.id()), |evicted| evicted > 0);
+        assert_eq!(evicted, unmapped * page_size());
+        assert_eq!((cached(1).held(), cached(2).held()), (mapped, 0));
+        assert_eq!(cached(2).eviction_order(), None);
+
+        let evicted = cache::evict_least_used(Some(held.id()), |_| false);
+        assert_eq!(evicted, mapped * page_size());
+        assert_eq!(cached(1).eviction_order(), None);
+    }
+
+    /// TASK-92.32: of what windows map, relief takes what was faulted on longest ago, whichever
+    /// its one MAP came first.
+    #[test]
+    fn relief_evicts_what_was_faulted_on_longest_ago_first() {
+        const EXTENT: u64 = 1 << 20;
+        let dir = tempfile::tempdir().unwrap();
+        let held = Arena::new();
+        let (store, window) = mapped_extents(&dir.path().join("store"), 2, &held);
+        let cached = |sequence| cache::find(held.id(), id(&store, sequence)).expect("cached");
+        for sequence in [2, 1] {
+            block_on(window.fault((sequence - 1) * EXTENT, Access::Read)).unwrap();
+        }
+        let (recent, oldest) = (cached(1).held(), cached(2).held());
+
+        let evicted = cache::evict_least_used(Some(held.id()), |evicted| evicted > 0);
+        assert_eq!(evicted, oldest * page_size());
+        assert_eq!((cached(1).held(), cached(2).held()), (recent, 0));
+    }
+
     /// TASK-50.3: physical memory run out, its arenas uncapped, evicts the extents asked for longest
     /// ago, any arena's, rather than wait for memory for ever, and abort.
     #[test]
