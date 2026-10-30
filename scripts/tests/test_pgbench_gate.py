@@ -20,34 +20,46 @@ THRESHOLDS = {"decay": 0.9, "dax": 0.95, "static-dax": 0.0, "density": 0.9}
 
 
 def log(*vms):
-    """A case's log of `vms`, each its runs' tps, as the guest and pgbench print them."""
-    lines = ["pgbench: at 1.15 s: initdb -D /mnt/fxfs/pgdata -A trust", "OK base"]
+    """A case's log of `vms`, each its runs' tps, as a run keeps it: its console (log.txt), where
+    pgbench says each run's tps, and its guest's output (stdout.txt), where the guest says how many
+    runs each VM made."""
+    console = ["pgbench: at 1.15 s: initdb -D /mnt/fxfs/pgdata -A trust"]
+    stdout = ["OK base"]
     for runs in vms:
-        lines.append("OK load 5000000")
         for tps in runs:
-            lines += ["latency average = 3.840 ms", "initial connection time = 4.1 ms",
-                      f"tps = {tps} (without initial connection time)"]
-        lines.append(f"OK runs {len(runs)}")
-    return "\n".join(lines) + "\n"
+            console += ["latency average = 3.840 ms", "initial connection time = 4.1 ms",
+                        f"tps = {tps} (without initial connection time)"]
+        stdout += ["OK load 5000000", f"OK runs {len(runs)}", "OK checked"]
+    return "\n".join(console) + "\n", "\n".join(stdout) + "\n"
 
 
 class PgbenchGate(unittest.TestCase):
     def results(self, cases, rounds=False):
-        """A results directory of `cases`, each case's log text by its name: in e2e/CASE/CASE, or,
-        if `rounds`, each of a list of logs in e2e/CASE/round-K/CASE."""
+        """A results directory of `cases`, each case's log by its name: in e2e/CASE/CASE, or, if
+        `rounds`, each of a list of logs in e2e/CASE/round-K/CASE."""
         root = Path(tempfile.mkdtemp())
-        for case, text in cases.items():
-            for at, each in enumerate(text if rounds else [text], 1):
+        for case, logged in cases.items():
+            for at, (console, stdout) in enumerate(logged if rounds else [logged], 1):
                 place = root / "e2e" / case / (f"round-{at}" if rounds else case)
                 if rounds:
                     place = place / case
                 place.mkdir(parents=True)
-                (place / "log.txt").write_text(each)
+                (place / "log.txt").write_text(console)
+                (place / "stdout.txt").write_text(stdout)
         return root
 
     def test_runs_are_split_by_vm(self):
-        self.assertEqual(gate.runs(log([1, 2, 3], [4, 5, 6]).splitlines()),
+        console, stdout = log([1, 2, 3], [4, 5, 6])
+        self.assertEqual(gate.runs((console + stdout).splitlines()),
                          [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+
+    def test_vms_are_told_apart_by_the_guest_s_output_beside_the_console(self):
+        console, stdout = log([1, 2], [3, 4])
+        place = self.results({"fxfs-guest-pgbench-dax": (console, stdout)})
+        log_txt = place / "e2e" / "fxfs-guest-pgbench-dax" / "fxfs-guest-pgbench-dax" / "log.txt"
+        self.assertEqual(gate.runs(gate.said(log_txt)), [[1.0, 2.0], [3.0, 4.0]])
+        log_txt.with_name("stdout.txt").unlink()
+        self.assertEqual(gate.runs(gate.said(log_txt)), [[1.0, 2.0, 3.0, 4.0]])
 
     def test_each_rounds_runs_are_measured_in_order(self):
         results = self.results({"fxfs-guest-pgbench-dax": [log([1, 2]), log([3, 4])] * 5},

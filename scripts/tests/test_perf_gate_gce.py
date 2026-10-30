@@ -17,18 +17,23 @@ import script
 
 # The fake test-gce.sh: records its arguments and the variables the gate sets, and writes each case
 # it is to run a log of a VM a run of tps 100, every VM after the first one a run of tps 80, as
-# FXDAX_PGBENCH_VMS has it; or fails if FAKE_FAIL names its results.
+# FXDAX_PGBENCH_VMS has it: the tps on the console (log.txt), the runs each VM made in the guest's
+# output (stdout.txt); or fails if FAKE_FAIL names its results.
 FAKE_TEST_GCE = r"""#!/usr/bin/env bash
 set -euo pipefail
 results=$3
 echo "$* E2E_TEST=$FXDAX_E2E_TEST VMS=${FXDAX_PGBENCH_VMS:-} ROUNDS=$FXDAX_E2E_ROUNDS \
 WORKSPACE=$FXDAX_WORKSPACE_TESTS KERNEL=$FXDAX_GUEST_KERNEL_BUILD" >> "$CALLS"
 for case in $FXDAX_E2E_TEST; do
-    mkdir -p "$results/e2e/$case/$case"
+    place=$results/e2e/$case/$case
+    mkdir -p "$place"
+    : > "$place/log.txt"
+    echo 'OK base' > "$place/stdout.txt"
     for ((vm = 0; vm < ${FXDAX_PGBENCH_VMS:-1}; vm++)); do
         tps=$((vm == 0 ? 100 : 80))
-        printf 'tps = %s (without initial connection time)\nOK runs 1\n' "$tps"
-    done > "$results/e2e/$case/$case/log.txt"
+        echo "tps = $tps (without initial connection time)" >> "$place/log.txt"
+        printf 'OK load 5000000\nOK runs 1\nOK checked\n' >> "$place/stdout.txt"
+    done
 done
 [[ ${FAKE_FAIL:-} != "$(basename "$results")" ]]
 """

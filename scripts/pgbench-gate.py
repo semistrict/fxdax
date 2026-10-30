@@ -7,7 +7,8 @@
 Reads the pgbench cases' logs of scripts/test-gce.sh results directories (fxfs-guest-pgbench,
 without a DAX window, fxfs-guest-pgbench-dax, with one, and pgbench-ext4-dax-pmem, ext4 with DAX on
 virtio-pmem, a static DAX device: e2e/CASE/CASE/log.txt, or each round's, round-K/CASE/log.txt),
-their pgbench runs' tps in order, RUNS a VM, as many VMs as one daemon served (FXDAX_PGBENCH_VMS),
+their pgbench runs' tps in order, RUNS a VM as the guest's output beside it says (stdout.txt's
+`OK runs RUNS`), as many VMs as one daemon served (FXDAX_PGBENCH_VMS),
 each directory's rounds after the last's; writes them, and the gates, as JSON; and fails unless
 every gate passes:
 
@@ -77,6 +78,16 @@ def logs(results, case):
     return rounds
 
 
+def said(log):
+    """The lines of a case's `log`, its console, where pgbench says its tps, then of its guest's
+    output beside it (stdout.txt), where the guest says how many runs a VM made."""
+    lines = log.read_text(errors="replace").splitlines()
+    stdout = log.with_name("stdout.txt")
+    if stdout.exists():
+        lines += stdout.read_text(errors="replace").splitlines()
+    return lines
+
+
 def measure(*results):
     """Each case's rounds in the `results` directories, by its JSON name: each round's VMs' runs'
     tps, each directory's rounds after the last's."""
@@ -85,8 +96,7 @@ def measure(*results):
         rounds = []
         for directory in results:
             for log in logs(directory, case):
-                with open(log, errors="replace") as text:
-                    rounds.append(runs(text))
+                rounds.append(runs(said(log)))
         if any(rounds):
             measured[name] = [vms for vms in rounds if vms]
     return measured
