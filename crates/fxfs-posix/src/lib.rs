@@ -1077,14 +1077,15 @@ impl<P: Platform> Fxfs<P> {
         self.xattrs.lock().unwrap().entry(ino).or_default().insert(name.to_vec(), value);
     }
 
-    /// Writes back the changes to `ino`'s extended attributes.
+    /// Writes back the changes to `ino`'s extended attributes, each pending until it is written,
+    /// so that what reads them meanwhile finds it (TASK-79.51); one that fails, and those after
+    /// it, are written back next time.
     async fn write_xattrs(&self, ino: u64) -> Result<(), Error> {
-        let Some(changes) = self.xattrs.lock().unwrap().remove(&ino) else {
+        let Some(changes) = self.xattrs.lock().unwrap().get(&ino).cloned() else {
             return Ok(());
         };
         let handle = self.handle(ino);
-        let mut changes = changes.into_iter();
-        while let Some((name, value)) = changes.next() {
+        for (name, value) in changes {
             let written = match value.clone() {
                 Some(value) => {
                     let mode = SetExtendedAttributeMode::Set;
@@ -1096,14 +1097,16 @@ impl<P: Platform> Fxfs<P> {
                     removed => removed,
                 },
             };
-            if let Err(error) = written {
-                // What is left is written back next time, unless changed again meanwhile.
-                let mut xattrs = self.xattrs.lock().unwrap();
-                let pending = xattrs.entry(ino).or_default();
-                for (name, value) in std::iter::once((name, value)).chain(changes) {
-                    pending.entry(name).or_insert(value);
+            written?;
+            // Unless changed again meanwhile, which is written back next time.
+            let mut xattrs = self.xattrs.lock().unwrap();
+            if let Some(pending) = xattrs.get_mut(&ino) {
+                if pending.get(&name) == Some(&value) {
+                    pending.remove(&name);
                 }
-                return Err(error);
+                if pending.is_empty() {
+                    xattrs.remove(&ino);
+                }
             }
         }
         Ok(())

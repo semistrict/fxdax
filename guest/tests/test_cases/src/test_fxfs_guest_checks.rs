@@ -1003,6 +1003,50 @@ mod guest {
         value
     }
 
+    /// fxdax: an extended attribute set reads as set while it is written back, not as before it
+    /// was, as a reader of overlayfs's opaque flag on a directory would find (TASK-79.51).
+    fn test_xattrs_read_as_written_back() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        const ROUNDS: u64 = 500;
+        let name = path("xattr-written-back");
+        let file = fs::File::create(&name).unwrap();
+        let (file_name, attribute) =
+            (CString::new(name.as_str()).unwrap(), CString::new("user.written").unwrap());
+        // Odd while it is set.
+        let turn = AtomicU64::new(0);
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                while turn.load(Ordering::SeqCst) < 2 * ROUNDS {
+                    let before = turn.load(Ordering::SeqCst);
+                    let mut value = [0u8; 1];
+                    let len = unsafe {
+                        libc::getxattr(
+                            file_name.as_ptr(),
+                            attribute.as_ptr(),
+                            value.as_mut_ptr().cast(),
+                            value.len(),
+                        )
+                    };
+                    let error = std::io::Error::last_os_error();
+                    if before % 2 == 1 && turn.load(Ordering::SeqCst) == before {
+                        assert_eq!(len, 1, "turn {before}: getxattr: {error}");
+                    }
+                }
+            });
+            for _ in 0..ROUNDS {
+                set_xattr(&name, "user.written", b"1");
+                turn.fetch_add(1, Ordering::SeqCst);
+                file.sync_all().unwrap();
+                turn.fetch_add(1, Ordering::SeqCst);
+                let removed = unsafe { libc::removexattr(file_name.as_ptr(), attribute.as_ptr()) };
+                assert_eq!(removed, 0, "removexattr: {}", std::io::Error::last_os_error());
+                file.sync_all().unwrap();
+            }
+        });
+        drop(file);
+        fs::remove_file(&name).unwrap();
+    }
+
     /// POSIX ACLs: set and read back, the mode following them, and a directory's default ACL
     /// inherited, in place of the umask, which applies without one.
     fn test_acls() {
@@ -3929,6 +3973,7 @@ mod guest {
                 ("stats", &test_stats),
                 ("log_writes", &test_log_writes),
                 ("acls", &test_acls),
+                ("xattrs_read_as_written_back", &test_xattrs_read_as_written_back),
                 ("freeze", &test_freeze),
                 ("show_options", &show_options),
                 ("write_removes_privileges", &test_write_removes_privileges),
