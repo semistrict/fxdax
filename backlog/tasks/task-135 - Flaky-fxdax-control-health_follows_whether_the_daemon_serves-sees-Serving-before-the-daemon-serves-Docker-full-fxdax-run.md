@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-30 03:38'
+updated_date: '2026-10-30 04:18'
 labels:
   - bug
   - flaky
@@ -22,7 +23,7 @@ OrbStack Docker, full fxdax run of the batch worktree (3e38f4d81 + fix, nothing 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The cause found and fixed; the test passes 50 runs under the full suite's load
+- [x] #1 The cause found and fixed; the test passes 50 runs under the full suite's load
 <!-- AC:END -->
 
 ## Definition of Done
@@ -31,3 +32,9 @@ OrbStack Docker, full fxdax run of the batch worktree (3e38f4d81 + fix, nothing 
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Cause: tonic_health's reporter starts with the server's status ("") SERVING; report_health, which set NOT_SERVING, ran on a task spawned beside the server, so a check served before it ran saw SERVING. Fixed (07cc62d9a): the first status reported before the server is built and serves, the task following SERVING's changes after. Docker: the test 20 of 20 alone and in the full fxdax run (was failing under load).
+<!-- SECTION:NOTES:END -->
