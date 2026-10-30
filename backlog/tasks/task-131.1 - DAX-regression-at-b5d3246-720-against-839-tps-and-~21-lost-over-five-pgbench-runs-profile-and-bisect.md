@@ -6,7 +6,7 @@ title: >-
 status: In Progress
 assignee: []
 created_date: '2026-10-29 21:13'
-updated_date: '2026-10-30 00:02'
+updated_date: '2026-10-30 00:18'
 labels:
   - performance
 dependencies: []
@@ -47,4 +47,6 @@ Bisected: 6a08c8622 (f897ce4a2's parent, r263): 1037 941 895 870 898 tps, stage-
 A/B: open extents' pages allocated in runs (wip-open-pages-runs, r263) left runs as short, 5.75M stage maps for 54.7 GB (9.5 KB), against 5.69M for 51.9 GB at a27e50fd8 (r264): not the cause; dropped. tps 949..696 against 905..668, within hosts' spread. Committed meanwhile: the VMM reprotects in-place maps one after another in the window at once (verified by tests; perf to measure).
 
 GCE r264 at 641568faf, pgbench-dax 1 VM: tps 828.5, 715.6, 768.9, 664.7, 666.7. stage-maps 5030410 (47.5 GB, 9.4 KB each) in stage-segments 1181078 (40 KB each): a window-consecutive run of pages present together is 4.3 runs of physical memory, so the short maps come from scattered physical memory, not from gaps in the window. stage-maps-open 1605892 (32%); the rest are cached extents read in with alloc_run. stage-ops 4752917 at 25.6 us each (121.9 s); guest MAP requests 825265 at 93 us each (76.9 s). Next: physmem's free list is LIFO and alloc_run only extends a run by the physically next free page, so churn scatters free memory; reproduce in a physmem test, then an allocator that keeps free runs whole (buddy).
+
+GCE r264 at 585a82004 (641568faf + open extents' pages allocated in runs after the page before them, wip-open-pages-runs): tps 927.7, 815.0, 817.0, 672.9, 673.5; stage-maps 5609050 in stage-segments 1327152 (4.23 per segment; 4.26 without), 9.5 KB each. Allocating in runs doesn't lengthen them. r264-F counts open extents' allocations, their pages and the physical runs they came as, to tell page-at-a-time commits from scattered free memory.
 <!-- SECTION:NOTES:END -->
