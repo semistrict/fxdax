@@ -2199,8 +2199,11 @@ fn counting_followers_walks_no_extents() {
 /// they are), and their passes of cleaning on `CLEANINGS`: the most of each seen at once, looking
 /// every millisecond, is no more. Once their commits are durable, the daemon's runtime and those
 /// threads keep no more threads than it serves 300 forks' reads on
-/// (`serves_hundreds_of_forks_of_a_base`). One guest's commits are durable within a few turns of
-/// 50 ms each, and the flushes' time: the most one waited, its lag, is measured. The stores are on
+/// (`serves_hundreds_of_forks_of_a_base`). One guest's commits are durable within a few of its
+/// store's turns, of 50 ms each and the flushes' time: told in turns, which the daemon counts
+/// ([`ExtentStore::flush_turns`]), as the full workspace's tests beside it stretch each turn's
+/// flushes to hundreds of milliseconds (TASK-110); the most one waited in time, its lag, is
+/// reported. The stores are on
 /// a disk, in `/var/tmp`, as a host's are: `/tmp` may be memory (tmpfs), whose syncs cost nothing.
 #[test]
 fn hundreds_of_writers_flush_on_threads_they_share() {
@@ -2266,26 +2269,27 @@ fn hundreds_of_writers_flush_on_threads_they_share() {
     let lagging = {
         let probe = probe.clone();
         std::thread::spawn(move || {
-            let (mut lags, mut sequence) = (Vec::new(), 0);
+            let (mut lags, mut turns, mut sequence) = (Vec::new(), 0, 0);
             while std::time::Instant::now() < until {
                 sequence += 1;
                 let extent = ExtentId { branch: probe.branch(), sequence };
                 write(&probe, extent, 0, &pattern(sequence as u8, BLOCK)).unwrap();
                 probe.commit_ordered(None).unwrap();
-                let committed = std::time::Instant::now();
+                let (committed, turned) = (std::time::Instant::now(), probed.flush_turns());
                 while probed.flush_pending() {
                     std::thread::yield_now();
                 }
                 lags.push(committed.elapsed());
+                turns = turns.max(probed.flush_turns() - turned);
             }
             lags.sort();
-            lags
+            (lags, turns)
         })
     };
     for writer in writers {
         writer.join().unwrap();
     }
-    let lags = lagging.join().unwrap();
+    let (lags, turns) = lagging.join().unwrap();
     // Every guest's commits durable, what the flushes took and kept.
     while theirs.iter().any(|store| store.flush_pending()) {
         std::thread::yield_now();
@@ -2299,15 +2303,15 @@ fn hundreds_of_writers_flush_on_threads_they_share() {
     println!(
         "{STORES} stores' guests committing: {threads} threads kept, {kept:?} named {NAMES:?}, \
          at most {} at once, {most:?}; a guest's {} ordered commits durable within {median:?}, \
-         the median, and {lag:?}",
+         the median, and {lag:?}, {turns} of its store's turns",
         most.iter().sum::<usize>(),
         lags.len()
     );
     let (flushing, cleaning) = (super::server::FLUSHES + 15, super::server::CLEANINGS);
     assert!(most[1] <= flushing && most[2] <= cleaning, "{most:?} named {NAMES:?} at once");
     assert!(threads < 64, "{threads} threads kept: {kept:?} named {NAMES:?}, of {names:?}");
-    // Four turns.
-    assert!(lag < std::time::Duration::from_millis(200), "ordered commits durable {lag:?} after");
+    // Four turns, however long the load made them.
+    assert!(turns <= 4, "ordered commits durable {turns} turns after, {lag:?}");
     drop(stores);
 }
 

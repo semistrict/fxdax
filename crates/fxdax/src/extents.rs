@@ -214,6 +214,10 @@ pub struct ExtentStore {
     /// fxdax: with FXDAX_CHECK_SEALED_READS, what the latest commits wrote of the extents they
     /// sealed: a read of one that the store answers otherwise is logged (TASK-121).
     recently_sealed: Mutex<std::collections::VecDeque<(ExtentId, Vec<u8>, std::time::Instant)>>,
+    /// fxdax: the turns its daemon has taken at making its commits durable behind them
+    /// ([`ExtentStore::flush_turned`]): how a commit's lag is told in turns, which the daemon's
+    /// load stretches, rather than in time (TASK-110).
+    flush_turns: std::sync::atomic::AtomicU64,
 }
 
 /// fxdax: whether reads of sealed extents are compared with their memory as sealed (TASK-121).
@@ -542,6 +546,7 @@ impl ExtentStore {
             committed: event_listener::Event::new(),
             changes: Mutex::default(),
             recently_sealed: Mutex::default(),
+            flush_turns: Default::default(),
         }
     }
 
@@ -565,6 +570,7 @@ impl ExtentStore {
             committed: event_listener::Event::new(),
             changes: Mutex::default(),
             recently_sealed: Mutex::default(),
+            flush_turns: Default::default(),
         }
     }
 
@@ -1169,6 +1175,19 @@ impl ExtentStore {
     /// Whether commits are waiting for [`ExtentStore::flush`].
     pub fn flush_pending(&self) -> bool {
         self.store.flush_pending()
+    }
+
+    /// fxdax: counts a turn its daemon took at making its commits durable, whether or not it
+    /// flushed: a commit made before a turn began is durable once the turn ends (TASK-110).
+    pub fn flush_turned(&self) {
+        self.flush_turns.fetch_add(1, std::sync::atomic::Ordering::Release);
+    }
+
+    /// fxdax: the turns its daemon has taken at making its commits durable ([`flush_turned`]).
+    ///
+    /// [`flush_turned`]: ExtentStore::flush_turned
+    pub fn flush_turns(&self) -> u64 {
+        self.flush_turns.load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// fxdax: a count that moves with each change of the store's that may make cleaning it behind

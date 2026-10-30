@@ -1391,6 +1391,7 @@ async fn flush_behind(store: Arc<ExtentStore>, mut stopped: tokio::sync::oneshot
         // Found before the look, which then finds what they count.
         let changes = store.cleaning_changes();
         if !store.flush_pending() && looked == Some(changes) {
+            store.flush_turned();
             continue;
         }
         let behind = store.clone();
@@ -1414,6 +1415,7 @@ async fn flush_behind(store: Arc<ExtentStore>, mut stopped: tokio::sync::oneshot
                 }
                 // Due as a pass goes on, it is looked for again until that pass is done.
                 looked = (!due || idle).then_some(changes);
+                store.flush_turned();
             }
             Some(Err(err)) => {
                 log::error!("extentd: making a store's commits durable: {err:?}");
