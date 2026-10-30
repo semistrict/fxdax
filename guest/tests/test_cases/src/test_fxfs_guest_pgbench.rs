@@ -202,6 +202,43 @@ RUN apk add --no-cache postgresql postgresql-contrib perf e2fsprogs
         })
     }
 
+    /// fxdax: with FXDAX_HOST_GUEST_PROFILE=DELAY:SECONDS, profiles the guest from the host, as
+    /// `perf kvm --guest` does, for SECONDS from DELAY seconds on, its symbols the guest kernel's
+    /// vmlinux's (FXDAX_GUEST_KERNEL), where its text is as linked (KASLR off, TASK-131.6); the
+    /// report, the guest's time by symbol, in `report`, which fails unless it names Fxfs's own.
+    fn profile_guest(report: PathBuf) -> Option<std::thread::JoinHandle<anyhow::Result<()>>> {
+        let asked = std::env::var("FXDAX_HOST_GUEST_PROFILE").ok()?;
+        Some(std::thread::spawn(move || {
+            let (delay, seconds) = asked.split_once(':').context("DELAY:SECONDS")?;
+            let (delay, seconds): (u64, u64) = (delay.parse()?, seconds.parse()?);
+            let vmlinux = std::env::var("FXDAX_GUEST_KERNEL").context("FXDAX_GUEST_KERNEL")?;
+            let guest = format!("--guestvmlinux={vmlinux}");
+            let data = report.with_extension("data");
+            std::thread::sleep(Duration::from_secs(delay));
+            let recorded = Command::new("perf")
+                .args(["kvm", "--guest", &guest, "record", "-a", "-o"])
+                .arg(&data)
+                .args(["--", "sleep", &seconds.to_string()])
+                .output()?;
+            anyhow::ensure!(
+                recorded.status.success(),
+                "perf kvm record: {}",
+                String::from_utf8_lossy(&recorded.stderr)
+            );
+            let reported = Command::new("perf")
+                .args(["kvm", "--guest", &guest, "report", "--stdio", "--sort", "sym", "-i"])
+                .arg(&data)
+                .args(["--percent-limit", "0.2"])
+                .output()?;
+            std::fs::write(&report, &reported.stdout)?;
+            std::fs::remove_file(&data)?;
+            let text = String::from_utf8_lossy(&reported.stdout);
+            anyhow::ensure!(reported.status.success(), "perf kvm report: {}", reported.status);
+            anyhow::ensure!(text.contains("fxfs_"), "the guest's symbols unresolved: {text}");
+            Ok(())
+        }))
+    }
+
     /// KVM's counts so far for the VM of process `pid`, as its debugfs directory has them, each
     /// `name=N` separated by spaces, the names in order: its exits by reason, its page faults,
     /// its TLB flushes (TASK-91.16); or none without debugfs, or once the VM is gone.
@@ -337,9 +374,13 @@ RUN apk add --no-cache postgresql postgresql-contrib perf e2fsprogs
                     firecracker.pid(),
                     stop.clone(),
                 );
+                let profiler = profile_guest(dir.join(format!("{}.txt", nth("perf-kvm", vm))));
                 let loaded = wait(firecracker);
                 stop.store(true, Ordering::Relaxed);
                 sampler.join().expect("the sampler panicked")?;
+                if let Some(profiler) = profiler {
+                    profiler.join().expect("the profiler panicked")?;
+                }
                 loaded.with_context(|| format!("VM {} of {}", vm + 1, vms()))?;
             }
             Ok(())
