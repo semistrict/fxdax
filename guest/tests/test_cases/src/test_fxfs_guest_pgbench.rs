@@ -205,7 +205,9 @@ RUN apk add --no-cache postgresql postgresql-contrib perf e2fsprogs
     /// fxdax: with FXDAX_HOST_GUEST_PROFILE=DELAY:SECONDS, profiles the guest from the host, as
     /// `perf kvm --guest` does, for SECONDS from DELAY seconds on, its symbols the guest kernel's
     /// vmlinux's (FXDAX_GUEST_KERNEL), where its text is as linked (KASLR off, TASK-131.6); the
-    /// report, the guest's time by symbol, in `report`, which fails unless it names Fxfs's own.
+    /// report, the guest's time by symbol, in `report`, which `check` fails unless it names
+    /// Fxfs's own. perf records every guest until stopped with SIGINT, by `timeout`: given a
+    /// command to run, it would pass that command its own options too.
     fn profile_guest(report: PathBuf) -> Option<std::thread::JoinHandle<anyhow::Result<()>>> {
         let asked = std::env::var("FXDAX_HOST_GUEST_PROFILE").ok()?;
         Some(std::thread::spawn(move || {
@@ -215,14 +217,15 @@ RUN apk add --no-cache postgresql postgresql-contrib perf e2fsprogs
             let guest = format!("--guestvmlinux={vmlinux}");
             let data = report.with_extension("data");
             std::thread::sleep(Duration::from_secs(delay));
-            let recorded = Command::new("perf")
-                .args(["kvm", "--guest", &guest, "record", "-a", "-o"])
+            let recorded = Command::new("timeout")
+                .args(["--signal=INT", &seconds.to_string()])
+                .args(["perf", "kvm", "--guest", &guest, "record", "-a", "-o"])
                 .arg(&data)
-                .args(["--", "sleep", &seconds.to_string()])
                 .output()?;
             anyhow::ensure!(
-                recorded.status.success(),
-                "perf kvm record: {}",
+                data.exists(),
+                "perf kvm record: {}: {}",
+                recorded.status,
                 String::from_utf8_lossy(&recorded.stderr)
             );
             let reported = Command::new("perf")
@@ -232,9 +235,12 @@ RUN apk add --no-cache postgresql postgresql-contrib perf e2fsprogs
                 .output()?;
             std::fs::write(&report, &reported.stdout)?;
             std::fs::remove_file(&data)?;
-            let text = String::from_utf8_lossy(&reported.stdout);
-            anyhow::ensure!(reported.status.success(), "perf kvm report: {}", reported.status);
-            anyhow::ensure!(text.contains("fxfs_"), "the guest's symbols unresolved: {text}");
+            anyhow::ensure!(
+                reported.status.success(),
+                "perf kvm report: {}: {}",
+                reported.status,
+                String::from_utf8_lossy(&reported.stderr)
+            );
             Ok(())
         }))
     }
@@ -408,15 +414,22 @@ RUN apk add --no-cache postgresql postgresql-contrib perf e2fsprogs
             std::process::exit(0);
         }
 
-        fn check(self: Box<Self>, stdout: Vec<u8>, _test_setup: TestSetup) -> TestOutcome {
+        fn check(self: Box<Self>, stdout: Vec<u8>, test_setup: TestSetup) -> TestOutcome {
             let output = String::from_utf8(stdout).unwrap();
             let each = format!("OK load {}\nOK runs {RUNS}\nOK checked\n", SCALE * 100_000);
             let expected = format!("OK base\n{}", each.repeat(vms()));
-            if output == expected {
-                TestOutcome::Pass
-            } else {
-                TestOutcome::Fail(format!("expected {expected:?}, got {output:?}"))
+            if output != expected {
+                return TestOutcome::Fail(format!("expected {expected:?}, got {output:?}"));
             }
+            // The guest's profile from the host, if asked for, symbolized (TASK-131.6).
+            if std::env::var_os("FXDAX_HOST_GUEST_PROFILE").is_some() {
+                let report = test_setup.tmp_dir.join("perf-kvm.txt");
+                let text = std::fs::read_to_string(&report).unwrap_or_default();
+                if !text.contains("fxfs_") {
+                    return TestOutcome::Fail(format!("{}: no Fxfs symbol: {text}", report.display()));
+                }
+            }
+            TestOutcome::Pass
         }
     }
 }
