@@ -7,7 +7,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-29 20:54'
-updated_date: '2026-10-29 21:01'
+updated_date: '2026-10-30 00:27'
 labels:
   - dax
   - bug
@@ -40,4 +40,6 @@ GCE r257 (main 88032eb67, FXDAX_GUEST_KERNEL_BUILD=kasan: KASAN, KFENCE, lockdep
 
 <!-- SECTION:NOTES:BEGIN -->
 Assertion moved to where map_to sends a writable MAP (pushed). GCE r258, the KASAN kernel, checks-dax's second half (random_ops, torture and every check after but enospc, which the KASAN kernel's slowness left to the 180 s timeout): no assertion, no KASAN or KFENCE report. So r257's was most likely a reader finding a writable region mapped already, sending no MAP. AC2 stays open until more KASAN and debug rounds show none.
+
+GCE r255 (debug kernel with lockdep, 7c9948612): fxfs-guest-checks-dax 3 rounds and fxfs-guest-faults-dax 3 rounds passed, no fxfs_device_assert_in_gate warning (/tmp/fxdax-r255-unmap4). Next: KASAN rounds of checks-dax once a host is free.
 <!-- SECTION:NOTES:END -->
