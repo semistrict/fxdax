@@ -783,32 +783,84 @@ impl Source for CachedExtent {
 pub(crate) struct OpenPages {
     arena: ArenaId,
     pages: Mutex<Vec<Option<physmem::Page>>>,
+    /// Pages taken ahead of the extent's next pages, consecutive in physical memory after its last
+    /// run ([`Ahead`]): locked within `pages`'s lock.
+    ahead: Mutex<Ahead>,
 }
+
+/// fxdax: an open extent's pages taken ahead of those it brings in next, physically after the last
+/// run it brought in, for the page after that run's last: so that the extent's runs brought in one
+/// commit after another follow on in physical memory, though other extents' allocations come
+/// between, which took the pages after each run as the extent grew a run at a time, and its
+/// window mapped it in as many pieces (TASK-131.1). Freed with the extent's pages, or as it brings
+/// in pages elsewhere.
+#[derive(Default)]
+struct Ahead {
+    /// The page of the extent the first is for.
+    at: usize,
+    pages: std::collections::VecDeque<physmem::Page>,
+}
+
+/// How many pages an open extent takes ahead of a run it brings in ([`Ahead`]).
+const AHEAD_PAGES: usize = 16;
 
 impl OpenPages {
     /// No pages yet, of `arena`.
     pub(crate) fn new(arena: ArenaId) -> Arc<Self> {
-        Arc::new(Self { arena, pages: Mutex::new(Vec::new()) })
+        Arc::new(Self { arena, pages: Mutex::new(Vec::new()), ahead: Mutex::default() })
     }
 
-    /// `count` new pages of zeros, of its arena, at most a chunk's: consecutive in physical memory
-    /// where they can be, after `after` where it can, the page before them in the extent, and else
-    /// of the smallest free run that holds them (`physmem::alloc_run`), so that a window maps the
+    /// `count` new pages of zeros for the extent's pages from `at`, of its arena, at most a chunk's:
+    /// consecutive in physical memory where they can be: those taken ahead for them ([`Ahead`]),
+    /// then after `after` where it can, the page before them in the extent, and else of the
+    /// smallest free run that holds them (`physmem::alloc_run`), with [`AHEAD_PAGES`] more ahead
+    /// of the extent's next pages if they are free without waiting, so that a window maps the
     /// extent in runs as long as they are, each one change of its VM process's memory, rather than
     /// a page at a time (TASK-108.1, TASK-131.1). Taken a page at a time, they would be the single
     /// pages free among those in use, scattered. `ENOMEM` once relief finds nothing to evict for
     /// them.
-    fn zeroed(&self, after: Option<&physmem::Page>, count: usize) -> Result<Vec<physmem::Page>> {
+    fn zeroed(
+        &self,
+        at: usize,
+        after: Option<&physmem::Page>,
+        count: usize,
+    ) -> Result<Vec<physmem::Page>> {
         debug_assert!(count <= physmem::CHUNK_SIZE / page_size() as usize);
+        let ps = page_size() as usize;
         let mut run: Vec<physmem::Page> = Vec::with_capacity(count);
+        let mut ahead = self.ahead.lock().unwrap();
+        if ahead.at != at {
+            ahead.pages.clear();
+        }
+        while run.len() < count {
+            let Some(next) = ahead.pages.pop_front() else { break };
+            run.push(next);
+        }
+        ahead.at = at + run.len();
         while run.len() < count {
             let Some(next) = run.last().or(after).and_then(physmem::alloc_after) else { break };
             run.push(next);
         }
-        let rest = physmem::alloc_run(self.arena, count - run.len(), physmem::Wait::Yes)
-            .map_err(|_| Errno::ENOMEM)?;
-        run.extend(rest);
-        let ps = page_size() as usize;
+        let wanted = count - run.len();
+        if wanted > 0 {
+            // With pages ahead if they are free now; else only those it needs, waiting for them.
+            let rest = physmem::alloc_run(self.arena, wanted + AHEAD_PAGES, physmem::Wait::No)
+                .or_else(|_| physmem::alloc_run(self.arena, wanted, physmem::Wait::Yes))
+                .map_err(|_| Errno::ENOMEM)?;
+            let mut rest = rest.into_iter();
+            run.extend(rest.by_ref().take(wanted));
+            // Those ahead that follow on from the run's last page, for the extent's next pages.
+            let mut last = run.last().map(|page| page.as_ptr() as usize);
+            ahead.at = at + count;
+            ahead.pages = rest
+                .take_while(|page| {
+                    let follows = last.is_some_and(|last| page.as_ptr() as usize == last + ps);
+                    last = Some(page.as_ptr() as usize);
+                    follows
+                })
+                .collect();
+        }
+        drop(ahead);
         let breaks = (run.windows(2))
             .filter(|pair| pair[1].as_ptr() as usize != pair[0].as_ptr() as usize + ps);
         stats::add(Counter::OpenAllocs, 1);
@@ -840,7 +892,7 @@ impl OpenPages {
             let end = (page..pages.end as usize).find(|at| table[*at].is_some());
             let end = end.unwrap_or(pages.end as usize).min(page + chunk);
             let before = page.checked_sub(1).and_then(|before| table[before].as_ref());
-            let run = self.zeroed(before, end - page)?;
+            let run = self.zeroed(page, before, end - page)?;
             for (slot, frame) in table[page..end].iter_mut().zip(run) {
                 *slot = Some(frame);
             }
@@ -967,6 +1019,23 @@ mod tests {
     /// page before it in the extent, though single pages are free among pages in use, which pages
     /// taken a page at a time would be (TASK-131.1). Each test runs in a process of its own
     /// (nextest), whose arena is its own.
+    /// TASK-131.1: an open extent's runs brought in one after another follow on in physical memory
+    /// though another extent's come between: each takes pages ahead of its next ([`Ahead`]).
+    #[test]
+    fn open_extents_growing_together_keep_their_pages_in_one_run() {
+        let ps = page_size();
+        let (one, other) = (OpenPages::new(ArenaId::DEFAULT), OpenPages::new(ArenaId::DEFAULT));
+        for at in 0..4 {
+            one.commit(at * 2..at * 2 + 2).unwrap();
+            other.commit(at * 2..at * 2 + 2).unwrap();
+        }
+        for open in [&one, &other] {
+            let offsets = offsets(open);
+            let first = offsets[0];
+            assert_eq!(offsets, (0..8).map(|page| first + page * ps).collect::<Vec<_>>());
+        }
+    }
+
     #[test]
     fn open_pages_are_brought_in_in_runs() {
         let ps = page_size();
