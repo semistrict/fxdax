@@ -4,6 +4,7 @@ title: Probe builds struct pages for the whole 2 GiB DAX window at every boot
 status: To Do
 assignee: []
 created_date: '2026-10-22 21:06'
+updated_date: '2026-10-30 04:12'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -37,3 +38,9 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity high): docs/reviews/
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-10-30, from the guest kernel's source (6.18.54, GCE r255): compound devmap geometry (pgmap->vmemmap_shift) would cut the memmap's init to 2 unique vmemmap pages a compound page (memmap_init_compound, compound_nr_pages, CONFIG_ARCH_WANT_OPTIMIZE_DAX_VMEMMAP=y on x86_64), but fs-dax makes its folios per DAX entry as it maps them, writing their tail pages' struct pages, which the vmemmap optimization shares read-only; pmem.c sets no vmemmap_shift for MEMORY_DEVICE_FS_DAX either. Ruled out. Left: an asynchronous probe (PROBE_PREFER_ASYNCHRONOUS), if mounting by tag waits for the device's probe; or the window's memmap made a part at a time as the window's allocator first hands each out (devm_memremap_pages per part); or struct pages in the window itself (altmap), which saves the 32 MiB of RAM, not the init.
+<!-- SECTION:NOTES:END -->
