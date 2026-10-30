@@ -1397,6 +1397,18 @@ mod guest {
         }
     }
 
+    /// TASK-111.7: the filesystem says the commit it was built of, in /proc/fs/fxfs/build, as
+    /// scripts/build-commit.sh said for the tree the kernel was built from: a commit, `-dirty` if
+    /// a tracked file differed from it.
+    fn build_commit_shown() {
+        let build = fs::read_to_string("/proc/fs/fxfs/build").unwrap();
+        let commit = (build.strip_prefix("commit ").and_then(|line| line.strip_suffix('\n')))
+            .unwrap_or_else(|| panic!("/proc/fs/fxfs/build: {build:?}"));
+        let commit = commit.strip_suffix("-dirty").unwrap_or(commit);
+        assert_eq!(commit.len(), 40, "/proc/fs/fxfs/build: {build:?}");
+        assert!(commit.bytes().all(|byte| byte.is_ascii_hexdigit()), "{build:?}");
+    }
+
     /// The driver uses a request queue per CPU, of the device's four (fxdax TASK-26.18.5): a
     /// writer on each CPU fsyncs a file, through its CPU's queue.
     fn queue_per_cpu() {
@@ -1513,6 +1525,7 @@ mod guest {
             metadata_cached();
             queue_per_cpu();
             kernel_text_unrandomized();
+            build_commit_shown();
             if self.dax {
                 read_maps();
                 small_files_share();

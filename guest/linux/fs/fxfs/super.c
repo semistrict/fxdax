@@ -2850,6 +2850,17 @@ void fxfs_vfs_drop_entries(void *vfs, u64 ino)
 static struct proc_dir_entry *fxfs_vfs_proc;
 
 /*
+ * fxdax: /proc/fs/fxfs/build, the commit the filesystem was built of (`commit COMMIT`), as
+ * scripts/build-commit.sh said (the Makefile's FXFS_BUILD_COMMIT, TASK-111.7). A device tagged
+ * `build` keeps no stats there.
+ */
+static int fxfs_vfs_build_show(struct seq_file *m, void *v)
+{
+	seq_printf(m, "commit %s\n", FXFS_BUILD_COMMIT);
+	return 0;
+}
+
+/*
  * fxdax: what the filesystem `m` is of waited on, and its device's and window's requests took, as
  * lines of a name and a number, all told since it mounted (TASK-91.7): Fxfs waits on the device in
  * the kernel, which counts it as idle, not iowait, so that nothing else tells those waits apart.
@@ -3093,6 +3104,8 @@ static int __init fxfs_vfs_init(void)
 	}
 	fxfs_init();
 	fxfs_vfs_proc = proc_mkdir("fs/fxfs", NULL);
+	if (fxfs_vfs_proc)
+		proc_create_single("build", 0444, fxfs_vfs_proc, fxfs_vfs_build_show);
 	err = register_filesystem(&fxfs_vfs_type);
 	if (err) {
 		proc_remove(fxfs_vfs_proc);
