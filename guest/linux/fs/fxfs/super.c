@@ -2772,6 +2772,8 @@ static void fxfs_vfs_settle_attr(struct super_block *sb, struct inode *inode, u6
 	if (grows)
 		fxfs_vfs_drop_data(sb, inode, ino, i_size_read(inode), U64_MAX);
 	fxfs_vfs_set_attr(inode, attr);
+	/* Read anew, as the writer may have changed them with what it changed (TASK-79.30). */
+	forget_all_cached_acls(inode);
 	if (resized && !grows) {
 		int err = IS_DAX(inode) ? fxfs_dax_shrunk(inode, attr->size) : 0;
 

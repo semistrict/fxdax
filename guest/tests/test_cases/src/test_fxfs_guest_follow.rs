@@ -256,6 +256,8 @@ mod guest {
         fs::create_dir(path("dir")).unwrap();
         fs::write(path("dir/two"), TWO).unwrap();
         fs::write(path("big"), big(1)).unwrap();
+        fs::write(path("acl"), ONE).unwrap();
+        set_acl(&acl(7));
         sync();
         tell.write_all(b"ready\n").unwrap();
 
@@ -266,6 +268,7 @@ mod guest {
         let mut file = fs::OpenOptions::new().write(true).open(path("big")).unwrap();
         file.write_all(&big(2)[..PAGE]).unwrap();
         drop(file);
+        set_acl(&acl(0));
         sync();
         tell.write_all(b"changed\n").unwrap();
 
@@ -285,6 +288,53 @@ mod guest {
         println!("OK writer");
     }
 
+    /// The POSIX ACL of the file `acl`, a user's entry with the permissions `user`: not one the
+    /// file's mode alone would say.
+    fn acl(user: u16) -> Vec<u8> {
+        const UNDEFINED: u32 = u32::MAX;
+        let entries = [
+            (0x01u16, 7u16, UNDEFINED),
+            (0x02, user, 1000),
+            (0x04, 5, UNDEFINED),
+            (0x10, 7, UNDEFINED),
+            (0x20, 0, UNDEFINED),
+        ];
+        let mut value = 2u32.to_le_bytes().to_vec();
+        for (tag, permissions, id) in entries {
+            value.extend(tag.to_le_bytes());
+            value.extend(permissions.to_le_bytes());
+            value.extend(id.to_le_bytes());
+        }
+        value
+    }
+
+    /// Sets the file `acl`'s POSIX ACL.
+    fn set_acl(value: &[u8]) {
+        let (file, name) = acl_names();
+        let set = unsafe {
+            libc::setxattr(file.as_ptr(), name.as_ptr(), value.as_ptr().cast(), value.len(), 0)
+        };
+        assert_eq!(set, 0, "setxattr: {}", std::io::Error::last_os_error());
+    }
+
+    /// The file `acl`'s POSIX ACL.
+    fn get_acl() -> Vec<u8> {
+        let (file, name) = acl_names();
+        let mut value = vec![0u8; 256];
+        let len = unsafe {
+            libc::getxattr(file.as_ptr(), name.as_ptr(), value.as_mut_ptr().cast(), value.len())
+        };
+        assert!(len >= 0, "getxattr: {}", std::io::Error::last_os_error());
+        value.truncate(len as usize);
+        value
+    }
+
+    /// The file `acl`'s path, and the name its POSIX ACL is an extended attribute of.
+    fn acl_names() -> (CString, CString) {
+        let file = CString::new(path("acl")).unwrap();
+        (file, CString::new("system.posix_acl_access").unwrap())
+    }
+
     /// The bytes of `name`, or the error reading it.
     fn read(name: &str) -> std::io::Result<Vec<u8>> {
         fs::read(path(name))
@@ -299,6 +349,7 @@ mod guest {
             && gone("dir/two")
             && read("big").is_ok_and(|data| data[..PAGE] == big(2)[..PAGE])
             && mapped[..PAGE] == big(2)[..PAGE]
+            && get_acl() == acl(0)
     }
 
     fn follower() {
@@ -306,6 +357,8 @@ mod guest {
         assert_eq!(read("one").unwrap(), ONE);
         assert_eq!(read("dir/two").unwrap(), TWO);
         assert_eq!(read("big").unwrap(), big(1));
+        // Cached by the kernel from here on, until its writer's change is followed (TASK-79.30).
+        assert_eq!(get_acl(), acl(7));
         let refused = fs::write(path("four"), b"a follower writes nothing").unwrap_err();
         assert_eq!(refused.raw_os_error(), Some(libc::EROFS), "{refused}");
         let mut held = fs::File::open(path("dir/two")).unwrap();
