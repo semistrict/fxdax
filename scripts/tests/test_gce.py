@@ -16,6 +16,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import unittest
 from pathlib import Path
@@ -596,6 +597,20 @@ class Source(unittest.TestCase):
             json.loads((results / "instance.json").read_text()),
             {"name": "fxdax-test-x", "zone": "us-east4-a"},
         )
+
+    def shipped_revision(self, project):
+        """The commit the source copied to the host says its builds are of (TASK-111.7)."""
+        with tarfile.open(project.directory / "uploaded" / "source.tar.gz") as archive:
+            return archive.extractfile("source-revision.txt").read().decode()
+
+    def test_the_source_carries_the_commit_its_builds_report(self):
+        project = self.push({})[3]
+        self.assertEqual(self.shipped_revision(project), f"{self.revision(self.repo)}\n")
+
+    def test_a_source_changed_since_its_commit_says_so(self):
+        (self.repo / "README").write_text("changed\n")
+        project = self.push({})[3]
+        self.assertEqual(self.shipped_revision(project), f"{self.revision(self.repo)}-dirty\n")
 
     def test_a_submodule_not_checked_out_is_not_copied(self):
         shutil.rmtree(self.repo / "vendor" / "firecracker")

@@ -8,6 +8,10 @@
 //! - `fxdax_extentd_requests_total{kind}`, `fxdax_extentd_request_errors_total{kind}`, and
 //!   `fxdax_extentd_request_duration_seconds{kind}`, a histogram: the VM processes' requests, by
 //!   kind, as the daemon served them, from their dispatch to their reply's sending.
+//! - `fxdax_extentd_build_info{commit}`, 1: the commit the daemon was built of
+//!   (`crate::BUILD_COMMIT`); `fxdax_extentd_vm_build_info{branch,commit}`: the VM processes
+//!   connected, by their store's branch, in hexadecimal, and the commit they said they were built
+//!   of (`wire::BUILD`), a writer and its followers counted together (TASK-111.7).
 //! - `fxdax_extentd_connections`, `fxdax_extentd_stores_open` and `fxdax_extentd_follower_views`:
 //!   the VM processes connected, the stores their connections write, and the followers' views.
 //! - `fxdax_extentd_extent_cache_pinned_entries` and `fxdax_extentd_extent_cache_idle_entries`:
@@ -158,6 +162,21 @@ pub fn render() -> String {
         let _ = writeln!(out, "{name}_count{{kind=\"{kind}\"}} {count}");
     }
 
+    let name = "fxdax_extentd_build_info";
+    let _ = writeln!(out, "# HELP {name} The daemon's build, by the commit it was built of.");
+    let _ = writeln!(out, "# TYPE {name} gauge");
+    let _ = writeln!(out, "{name}{{commit=\"{}\"}} 1", label_value(crate::BUILD_COMMIT));
+    let name = "fxdax_extentd_vm_build_info";
+    let _ = writeln!(
+        out,
+        "# HELP {name} VM processes connected, by their store's branch and the commit they were \
+         built of, as they said."
+    );
+    let _ = writeln!(out, "# TYPE {name} gauge");
+    for ((branch, commit), count) in super::server::vm_builds() {
+        let _ = writeln!(out, "{name}{{branch=\"{branch:x}\",commit=\"{commit}\"}} {count}");
+    }
+
     let (entries, live) = (crate::cache::entries(), crate::dax::live());
     let gauges = [
         ("connections", "VM processes connected.", super::server::connections() as u64),
@@ -289,6 +308,12 @@ pub fn render() -> String {
         let _ = writeln!(out, "{name} {}", stats.downloaded);
     }
     out
+}
+
+/// `value` as a label's value in Prometheus' text format: its backslashes, double quotes and
+/// newlines escaped.
+fn label_value(value: &str) -> String {
+    value.replace('\\', r"\\").replace('"', "\\\"").replace('\n', r"\n")
 }
 
 /// How long a client has to send its request and take the response: one deadline for the whole

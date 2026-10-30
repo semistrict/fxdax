@@ -16,6 +16,7 @@
 //! fxdaxctl resize DIR CAPACITY
 //! fxdaxctl public DIR
 //! fxdaxctl stat DIR
+//! fxdaxctl --version
 //! ```
 //!
 //! With `FXDAX_EXTENTD_GRPC` naming the control socket of the extent daemon (TASK-43.5), every
@@ -58,7 +59,8 @@
 //! store at DIR is and holds, one `name value` a line: its branch (hex), capacity, used and
 //! available bytes, and of those used, its own (its branch wrote them) and inherited (from the
 //! branches it was forked from), what billing it alone charges it and what it shares (TASK-49);
-//! whether it is public, and, through the daemon, open.
+//! whether it is public, and, through the daemon, open. `--version` prints the commit it was built
+//! of (`fxdax::BUILD_COMMIT`, TASK-111.7).
 
 use anyhow::{Context as _, bail};
 use fxdax::ExtentStore;
@@ -70,7 +72,7 @@ fn usage() -> anyhow::Error {
         "usage: fxdaxctl take DIR CAPACITY BRANCH [TOKEN] | fxdaxctl place DIR TOKEN | \
          fxdaxctl sync DIR | fxdaxctl import DIR CAPACITY IMAGE [REF] | fxdaxctl fork SRC DST | \
          fxdaxctl delete DIR | fxdaxctl resize DIR CAPACITY | fxdaxctl public DIR | \
-         fxdaxctl stat DIR"
+         fxdaxctl stat DIR | fxdaxctl --version"
     )
 }
 
@@ -257,6 +259,11 @@ fn main() -> anyhow::Result<()> {
     #[cfg(target_os = "linux")]
     fxdax::stacks::on_sigquit()?;
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // fxdax: the commit it was built of (TASK-111.7).
+    if args == ["--version"] {
+        println!("fxdaxctl {}", fxdax::BUILD_COMMIT);
+        return Ok(());
+    }
     let command = Command::parse(&args)?;
     match std::env::var_os("FXDAX_EXTENTD_GRPC").filter(|socket| !socket.is_empty()) {
         Some(socket) => command.through(socket.as_ref()),

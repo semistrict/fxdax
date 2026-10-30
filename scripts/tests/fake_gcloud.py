@@ -14,8 +14,8 @@ once by another run, whose maker label is "winner", and which this create then f
 ("failing": "instances", "disks", "zones", "scp"), and the status SSH ends with ("ssh"). A host is
 found by its zone, as gcloud's describe and delete find one, and by its name alone in a listing;
 described as JSON, it is its name and zone. scp writes, where it copies to here, an archive of one
-file, fetched, which names what it copied. A call this does not know fails, so that its test does
-too.
+file, fetched, which names what it copied; and keeps what it copies to a host in uploaded/, by its
+path there, its slashes underscores. A call this does not know fails, so that its test does too.
 
 Usage: python3 fake_gcloud.py ARG...
 """
@@ -24,6 +24,7 @@ import io
 import json
 import os
 import re
+import shutil
 import sys
 import tarfile
 from pathlib import Path
@@ -63,6 +64,10 @@ def main(argv):
             entry.size = len(fetched)
             with tarfile.open(words[3], "w:gz") as archive:
                 archive.addfile(entry, io.BytesIO(fetched))
+        else:
+            (STATE / "uploaded").mkdir(exist_ok=True)
+            name = words[3].split(":", 1)[1].replace("/", "_")
+            shutil.copyfile(words[2], STATE / "uploaded" / name)
     elif words[:2] == ["storage", "rm"]:
         pass
     elif command[2:] == ("list",) and command[1] in state.get("failing", []):

@@ -265,6 +265,25 @@ pub(super) fn connections() -> usize {
     CONNECTIONS.load(Ordering::Relaxed)
 }
 
+/// fxdax: the builds VM processes said ([`BUILD`]), each with its connection, which it lasts as
+/// long as, and its store's branch (TASK-111.7).
+static BUILDS: Mutex<Vec<(Weak<Connection>, u64, String)>> = Mutex::new(Vec::new());
+
+/// fxdax: the builds the VM processes connected said, by their stores' branches, each with how
+/// many said it (`metrics`): a writer and its followers are of one branch. In order of branch and
+/// commit.
+pub(super) fn vm_builds() -> Vec<((u64, String), usize)> {
+    let mut builds = BUILDS.lock().unwrap();
+    // Gone, as their connections are: not upgraded, which would have the last to let go of one
+    // close its store here.
+    builds.retain(|(connection, _, _)| connection.strong_count() > 0);
+    let mut counted = std::collections::BTreeMap::new();
+    for (_, branch, commit) in builds.iter() {
+        *counted.entry((*branch, commit.clone())).or_insert(0) += 1;
+    }
+    counted.into_iter().collect()
+}
+
 /// Receives the VM process's messages, serving its requests ([`receive`]), until it is gone; then,
 /// once its requests are done, lets its store go.
 async fn run_connection(stream: UnixStream, tenant: Option<Arc<Tenant>>) {
@@ -301,6 +320,7 @@ async fn run_connection(stream: UnixStream, tenant: Option<Arc<Tenant>>) {
         requests: Mutex::new(Requests::default()),
         drained: Arc::new(event_listener::Event::new()),
         stage_counts: Default::default(),
+        said_build: AtomicBool::new(false),
         _alive: alive,
     });
     match AsyncReceiver::new(stream) {
@@ -687,6 +707,8 @@ pub(super) struct Connection {
     drained: Arc<event_listener::Event>,
     /// fxdax: what its VM process last said its stage operations cost it ([`STAGE_COUNTS`]).
     stage_counts: [std::sync::atomic::AtomicU64; 5],
+    /// fxdax: whether its VM process said its build ([`BUILD`]), once.
+    said_build: AtomicBool,
     /// What says, as it drops, that the connection has: its last field, dropped after its store,
     /// window and open extents (TASK-79.34).
     _alive: tokio::sync::oneshot::Sender<std::convert::Infallible>,
@@ -778,6 +800,22 @@ impl Connection {
                 count.saturating_sub(before.fetch_max(count, Ordering::Relaxed)),
             );
         }
+    }
+
+    /// fxdax: records the build its VM process says, `payload` ([`BUILD`]), with its store's
+    /// `branch`, for the daemon's metrics while it is connected (TASK-111.7): `EINVAL` unless a
+    /// label's characters, as many as [`MAX_BUILD`] at most; `EEXIST` said again.
+    fn said_build(&self, branch: u64, payload: &[u8]) -> Result<(), Errno> {
+        let commit = std::str::from_utf8(payload).map_err(|_| Errno::EINVAL)?;
+        let label = |byte: u8| byte.is_ascii_alphanumeric() || b"._-".contains(&byte);
+        if commit.is_empty() || commit.len() > MAX_BUILD || !commit.bytes().all(label) {
+            return Err(Errno::EINVAL);
+        }
+        if self.said_build.swap(true, Ordering::AcqRel) {
+            return Err(Errno::EEXIST);
+        }
+        BUILDS.lock().unwrap().push((self.this.clone(), branch, commit.to_owned()));
+        Ok(())
     }
 
     /// `message`, a request, to serve now, unless [`WORKERS`] of the connection's run, when it
@@ -1010,6 +1048,7 @@ impl Connection {
                 self.shrinking.answered(args[0], args[1] == 1);
                 Ok(())
             }
+            BUILD => self.said_build(store.branch(), &message.payload),
             _ => Err(Errno::EINVAL),
         }
     }

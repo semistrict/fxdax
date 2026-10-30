@@ -176,8 +176,11 @@ nm -A --defined-only "$archive" 2>/dev/null |
     sort -u | while read -r member; do ar d "$archive" "$member"; done
 cp "$archive" "$out/"
 
+# fxdax: the commit the build is of, which the filesystem shows in /proc/fs/fxfs/build
+# (scripts/build-commit.sh, TASK-111.7).
+commit=$("$root/scripts/build-commit.sh")
 make -C "$src" "${make_args[@]}" -j"$(nproc)" KBUILD_BUILD_USER=root KBUILD_BUILD_HOST=fxdax \
-    "$make_target"
+    FXFS_BUILD_COMMIT="$commit" "$make_target"
 # The kernel's own memcpy, which Rust calls, is in the kernel: not Rust's. nm's listing whole,
 # before grep reads it: errexit stops at nm failing, and nothing stops nm part way.
 rust_symbols=$(nm "$src/fs/fxfs/fxfs_rust.o")

@@ -32,6 +32,7 @@ esac
     # The kernel's image, and the object of fs/fxfs's Rust.
     "make": """\
 src=$2
+echo "$@" >> "$FAKE/make"
 if [[ ${@: -1} == vmlinux ]]; then
     : > "$src/vmlinux"
     : > "$src/fs/fxfs/fxfs_rust.o"
@@ -62,10 +63,10 @@ MESSAGE = "fxfs_rust.o defines the string functions above, which must be the ker
 
 
 class RustInTheKernel(unittest.TestCase):
-    def build(self, object_, archive="", status=0):
+    def build(self, object_, archive="", status=0, env=None):
         """Builds the x86-64 kernel, nm listing `archive` (a member and a symbol it defines, a line
-        each) for the Rust's archive, and `object_`, then ending with `status`, for its object:
-        the script's status, output and errors."""
+        each) for the Rust's archive, and `object_`, then ending with `status`, for its object,
+        with `env` in its environment too: the script's status, output and errors."""
         self.directory = Path(tempfile.mkdtemp())
         fake, tree, bin_ = self.directory / "fake", self.directory / "tree", self.directory / "bin"
         for directory in [fake, tree / "scripts", bin_]:
@@ -73,8 +74,10 @@ class RustInTheKernel(unittest.TestCase):
         for name, text in {"archive": archive, "object": object_, "status": str(status)}.items():
             (fake / name).write_text(text)
         (fake / "deleted").write_text("")
+        (fake / "make").write_text("")
         (tree / "guest").symlink_to(SCRIPTS.parent / "guest")
-        (tree / "scripts" / "build-guest-kernel.sh").symlink_to(SCRIPTS / "build-guest-kernel.sh")
+        for name in ["build-guest-kernel.sh", "build-commit.sh"]:
+            (tree / "scripts" / name).symlink_to(SCRIPTS / name)
         tools = {bin_ / name: script for name, script in TOOLS.items()}
         tools[tree / "scripts" / "build-guest-sysroot.sh"] = "echo -Cpanic=abort\n"
         for path, script in tools.items():
@@ -88,6 +91,7 @@ class RustInTheKernel(unittest.TestCase):
                 "HOME": str(self.directory),
                 "FAKE": str(fake),
                 "FXDAX_GUEST_KERNEL_WORK": str(self.work),
+                **(env or {}),
             },
             capture_output=True,
             text=True,
@@ -103,6 +107,14 @@ class RustInTheKernel(unittest.TestCase):
             (0, f"{self.work / 'out' / 'x86_64' / 'vmlinux'}\n", ""),
         )
         self.assertTrue(self.built())
+
+    def test_the_kernel_is_built_with_the_commit_the_tree_is_of(self):
+        """TASK-111.7: fs/fxfs shows it in /proc/fs/fxfs/build (scripts/build-commit.sh)."""
+        self.build("", env={"FXDAX_BUILD_COMMIT": "0123abcd-dirty"})
+        builds = [line for line in (self.directory / "fake" / "make").read_text().splitlines()
+                  if line.endswith(" vmlinux")]
+        self.assertEqual(len(builds), 1, builds)
+        self.assertIn(" FXFS_BUILD_COMMIT=0123abcd-dirty vmlinux", builds[0])
 
     def test_the_archive_loses_the_members_that_define_string_functions(self):
         archive = "".join(f"compiler_builtins-{i}.o {name}\n" for i, name in enumerate(FUNCTIONS))

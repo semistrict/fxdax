@@ -156,9 +156,23 @@ pub use node::{
 };
 pub use storage::Storage;
 
+/// fxdax: the commit this build is of, as scripts/build-commit.sh said at build time (build.rs):
+/// a commit, with `-dirty` if a tracked file differed from it, or `unknown`. What extentd's
+/// metrics, fxdaxctl --version and a VM process's connection to extentd report (TASK-111.7).
+pub const BUILD_COMMIT: &str = env!("FXDAX_BUILD_COMMIT");
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// TASK-111.7: a build of this checkout is of its commit, `-dirty` or not, as builds here
+    /// are from git; or of the commit the source a GCE host builds says, which is too.
+    #[test]
+    fn builds_are_stamped_with_their_commit() {
+        let commit = BUILD_COMMIT.strip_suffix("-dirty").unwrap_or(BUILD_COMMIT);
+        assert_eq!(commit.len(), 40, "{BUILD_COMMIT}");
+        assert!(commit.bytes().all(|byte| byte.is_ascii_hexdigit()), "{BUILD_COMMIT}");
+    }
 
     /// Filesystems, their nodes and windows are shared by a device's threads.
     #[test]

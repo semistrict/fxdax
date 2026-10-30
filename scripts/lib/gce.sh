@@ -239,8 +239,11 @@ gce_push_source() {
 # STAGING, records it and the host (gce_push_source), and copies it to the
 # host's home.
 gce_stage_source() {
-    local staging=$1 revision firecracker kernel
-    python3 - "$repo" "$staging/source.tar.gz" <<'PY' || return
+    local staging=$1 revision firecracker kernel built
+    # The commit its builds report, as builds here would: the host's copy has no .git
+    # (TASK-111.7).
+    built=$("$(dirname "${BASH_SOURCE[0]}")/../build-commit.sh" "$repo") || return
+    python3 - "$repo" "$staging/source.tar.gz" "$built" <<'PY' || return
 import io, pathlib, subprocess, sys, tarfile
 root = pathlib.Path(sys.argv[1])
 def files(directory):
@@ -254,7 +257,7 @@ for submodule in submodules:
 names = {name.decode() for name in files(root) if name} - set(submodules)
 for submodule in submodules:
     names.update(submodule + '/' + name.decode() for name in files(root / submodule) if name)
-revision = subprocess.check_output(['git', '-C', str(root), 'rev-parse', 'HEAD']).decode().strip() + '-working-tree'
+revision = sys.argv[3]
 with tarfile.open(sys.argv[2], 'w:gz') as archive:
     for name in sorted(names):
         path = root / name

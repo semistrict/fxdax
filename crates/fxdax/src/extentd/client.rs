@@ -143,6 +143,12 @@ impl RemoteExtentStore {
         // A follower's view's commit, which it has heard of.
         client.committed.fetch_max(reply.header.args[2], Ordering::AcqRel);
         let branch = reply.header.args[0];
+        // fxdax: its build, which the daemon's metrics show (TASK-111.7): a daemon older than that
+        // refuses it, which costs nothing.
+        let build = Header::new(BUILD, 0);
+        if let Err(errno) = client.call_blocking(build, crate::BUILD_COMMIT.as_bytes()) {
+            log::debug!("extentd: the daemon took no build ({}): {errno:?}", crate::BUILD_COMMIT);
+        }
         let transfer = match Transfer::give(&client) {
             Ok(transfer) => Some(transfer),
             Err(err) => {

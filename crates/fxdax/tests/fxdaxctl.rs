@@ -282,6 +282,13 @@ fn commands_with_more_arguments_print_the_usage() {
     }
 }
 
+/// TASK-111.7: `fxdaxctl --version` prints the commit it was built of, the library's.
+#[test]
+fn the_version_is_the_build_commit() {
+    let printed = Fxdaxctl::with_env(&[]).run(&[Path::new("--version")]).unwrap();
+    assert_eq!(printed, format!("fxdaxctl {}\n", fxdax::BUILD_COMMIT));
+}
+
 /// Without a daemon, a store grows, or keeps its capacity, here; it shrinks only through the
 /// daemon serving its VM, whose guest must agree.
 #[test]

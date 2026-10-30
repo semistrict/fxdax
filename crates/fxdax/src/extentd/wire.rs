@@ -153,6 +153,13 @@ pub(crate) const MAX_TRANSFER_AREA: u64 = 64 << 20;
 /// has passed since it last said, as it makes them; and as it closes the connection. Nothing
 /// replies.
 pub(crate) const STAGE_COUNTS: u32 = 27;
+/// fxdax: the VM process's build, the commit it was built of ([`crate::BUILD_COMMIT`]), the
+/// payload, [`MAX_BUILD`] bytes at most, of letters, digits, `.`, `_` and `-`: which the daemon's
+/// metrics show by its store's branch (TASK-111.7). Said once, after [`OPEN`]. A request, which a
+/// daemon older than it refuses (`EINVAL`), and the VM process lets be.
+pub(crate) const BUILD: u32 = 28;
+/// fxdax: the most bytes a [`BUILD`]'s commit has.
+pub(crate) const MAX_BUILD: usize = 64;
 /// fxdax: how long a VM process's stage operations go uncounted at most while it makes them
 /// ([`STAGE_COUNTS`]): within a sample of the daemon's stats file (`FXDAX_EXTENTD_STATS`).
 pub(crate) const STAGE_COUNTS_EVERY: std::time::Duration = std::time::Duration::from_millis(500);

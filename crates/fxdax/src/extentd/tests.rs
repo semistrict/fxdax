@@ -719,6 +719,50 @@ fn metrics_gauge_the_extent_cache_and_the_windows_mappings() {
     assert_eq!(unsafe { libc::munmap(memory.as_ptr().cast(), 4 * ps) }, 0);
 }
 
+/// TASK-111.7: the metrics show the daemon's build, and each VM process's, as it said it opening
+/// its store, by the store's branch, a writer and its follower together, while they are connected.
+/// A build said again, or not a label's characters, is refused.
+#[test]
+fn metrics_show_the_daemons_and_its_vm_processes_builds() {
+    use super::wire::{BUILD, Header, MAX_BUILD};
+    host();
+    let builds = || {
+        let metrics = super::metrics::render();
+        let series = ["fxdax_extentd_build_info{", "fxdax_extentd_vm_build_info{"];
+        (metrics.lines())
+            .filter(|line| series.iter().any(|name| line.starts_with(name)))
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
+    };
+    let commit = crate::BUILD_COMMIT;
+    let daemon = format!("fxdax_extentd_build_info{{commit=\"{commit}\"}} 1");
+    let vms = |branch: u64, count: usize| {
+        format!("fxdax_extentd_vm_build_info{{branch=\"{branch:x}\",commit=\"{commit}\"}} {count}")
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let (store, served) = connect(&dir.path().join("store"), 1 << 24);
+    let branch = store.branch();
+    assert_eq!(builds(), [daemon.clone(), vms(branch, 1)]);
+    let (follower, followed) = follow(&dir.path().join("store")).unwrap();
+    assert_eq!(builds(), [daemon.clone(), vms(branch, 2)]);
+
+    let said = |payload: &[u8]| store.call(Header::new(BUILD, 0), payload, &[]).map(drop);
+    assert_eq!(said(b"again"), Err(Errno::EEXIST));
+    let (other, other_served) = connect(&dir.path().join("other"), 1 << 24);
+    let said = |payload: &[u8]| other.call(Header::new(BUILD, 0), payload, &[]).map(drop);
+    assert_eq!(said(b"a\"b"), Err(Errno::EINVAL));
+    assert_eq!(said(&[b'a'; MAX_BUILD + 1]), Err(Errno::EINVAL));
+    assert_eq!(said(b""), Err(Errno::EINVAL));
+
+    drop((follower, other));
+    followed.join().unwrap();
+    other_served.join().unwrap();
+    assert_eq!(builds(), [daemon.clone(), vms(branch, 1)]);
+    drop(store);
+    served.join().unwrap();
+    assert_eq!(builds(), [daemon]);
+}
+
 /// The environment a child process of [`two_processes_map_the_same_pages`] is told what to map in;
 /// and, if set, that it runs on once it has, until its input closes.
 const CHILD_SOCKET: &str = "FXDAX_EXTENTD_TEST_SOCKET";
