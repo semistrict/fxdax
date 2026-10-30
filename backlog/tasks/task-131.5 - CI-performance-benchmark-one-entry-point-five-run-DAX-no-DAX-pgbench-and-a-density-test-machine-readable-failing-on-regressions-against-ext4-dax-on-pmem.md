@@ -7,7 +7,7 @@ title: >-
 status: In Progress
 assignee: []
 created_date: '2026-10-29 21:13'
-updated_date: '2026-10-30 01:12'
+updated_date: '2026-10-30 03:30'
 labels:
   - performance
 dependencies: []
@@ -42,4 +42,6 @@ Sandbox team round 8: own the performance benchmark in CI: one entry point, a fi
 GCE r261 at 9601cd2ba, scripts/pgbench-gate.py: no-DAX tps 1636.6, 1672.2, 1685.9, 1727.2, 1691.8 (decay 1.0337, passed); DAX 1041.1, 945.6, 878.9, 778.4, 825.9 (decay 0.7933, failed; DAX/no-DAX 0.5213, failed). DAX is half as fast as no DAX on GCE nested.
 
 On main (dee940204, ad8aeef22): scripts/perf-gate-gce.sh [--bare-metal] INSTANCE RESULTS runs fxfs-guest-pgbench, fxfs-guest-pgbench-dax and pgbench-ext4-dax-pmem (new: the pgbench case on ext4 mounted dax=always on virtio-pmem, a copy of a base image, asserted mounted with DAX) one VM each into RESULTS/single, then a density run of FXDAX_PERF_GATE_VMS (default 3) DAX VMs on one daemon into RESULTS/density, then pgbench-gate.py over both into RESULTS/gate.json; non-zero on a failed run or gate. The gate now reads several results, reports static-dax (DAX fxfs median against ext4 DAX on pmem; FXDAX_GATE_STATIC_DAX, default 0, ungated), gates decay and density on the fxfs cases only, takes density from the first round of more than one VM, and counts each VM's runs from stdout.txt (the guest's OK runs lines were never in log.txt, so density had never split VMs). Tests: scripts/tests/test_pgbench_gate.py, test_perf_gate_gce.py (fake test-gce.sh); scripts suite 117 OK. GCE r261 (nested n2-standard-8, release kernel, ce3b003db, FXDAX_PERF_GATE_VMS=2): no-DAX tps 1673.1, 1706.7, 1706.7, 1699.1, 1681.8 (decay 1.0052); DAX 1050.8, 948.6, 872.5, 796.2, 827.7 (decay 0.7877 FAIL; DAX/no-DAX 0.5135 FAIL); ext4 DAX on pmem 1180.1, 1104.7, 1187.0, 1190.9, 1197.4 (DAX fxfs/ext4-dax-pmem 0.7351); density 2 VMs: VM 1 median 888.8, VM 2 803.9 (0.9045, pass). Open: bare metal needs a metal machine and quota.
+
+GCE r264, scripts/perf-gate-gce.sh at cda03e8f8 (main, buddy allocator): no-DAX 1422-1469 tps (decay 0.998), DAX 1020, 898, 881, 813, 866 (decay 0.8495, failed; DAX/no-DAX 0.6135, failed; r261 before the allocator 0.51), ext4-dax-pmem 1125-1171 (DAX against it 0.7688), density 0.9787 passed.
 <!-- SECTION:NOTES:END -->
