@@ -703,7 +703,7 @@ mod guest {
                     as_postgres(&format!("initdb -D {data} -A trust --data-checksums"));
                     let fsync = if self.fsync { "" } else { " -c fsync=off" };
                     let options = format!(
-                        "-c shared_buffers=256MB -k {socket} -c listen_addresses=''{fsync}"
+                        "-c shared_buffers=256MB -c checkpoint_timeout=1d -c max_wal_size=100GB -k {socket} -c listen_addresses=''{fsync}"
                     );
                     // The server's output to a log of its own: it would hold `as_postgres`'s pipe
                     // open, which waits for its end.
