@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-29 21:13'
+updated_date: '2026-10-30 00:05'
 labels:
   - performance
 dependencies: []
@@ -31,3 +32,9 @@ Sandbox team round 8: DAX seals cost 0.54 ms against 0.32 without DAX, almost al
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Measured, GCE r261 at 9601cd2ba (nested n2, release kernel, 1 VM, 5 x 60 s pgbench), extentd's side: DAX 176108 commits at 120 us each (commit-ns 21.1 s): seal 44 us (remap 18.7, populate 10.2, cached 2.9, supply 1.8), write 49 us, store 18 us, wait 8 us. No DAX 346967 commits at 288 us each, 246 us of it waiting (commit-wait-ns 85.3 s). The seal's remaps cost DAX 3.3 s of the run; its 1078678 window MAPs cost 73.6 s (68 us each) and the VMM's 6265407 stage operations 127.2 s (20 us each, 5.8 per MAP). So dropping the seal from fsync would save at most ~4% of DAX's daemon time; the window maps are what to cut (TASK-131.1).
+<!-- SECTION:NOTES:END -->
