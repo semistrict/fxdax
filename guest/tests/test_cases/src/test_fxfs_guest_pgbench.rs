@@ -202,6 +202,91 @@ RUN apk add --no-cache postgresql postgresql-contrib perf e2fsprogs
         })
     }
 
+    /// fxdax: with FXDAX_HOST_GUEST_PROFILE=DELAY:SECONDS, profiles the guest from the host, as
+    /// `perf kvm --guest` does, for SECONDS from DELAY seconds on, its symbols the guest kernel's
+    /// vmlinux's (FXDAX_GUEST_KERNEL), where its text is as linked (KASLR off, TASK-131.6); the
+    /// report, the guest's time by symbol, in `report`, which `check` fails unless it names
+    /// Fxfs's own. perf records every guest until stopped with SIGINT, by `timeout`: given a
+    /// command to run, it would pass that command its own options too.
+    fn profile_guest(report: PathBuf) -> Option<std::thread::JoinHandle<anyhow::Result<()>>> {
+        let asked = std::env::var("FXDAX_HOST_GUEST_PROFILE").ok()?;
+        Some(std::thread::spawn(move || {
+            let (delay, seconds) = asked.split_once(':').context("DELAY:SECONDS")?;
+            let (delay, seconds): (u64, u64) = (delay.parse()?, seconds.parse()?);
+            let vmlinux = std::env::var("FXDAX_GUEST_KERNEL").context("FXDAX_GUEST_KERNEL")?;
+            let guest = format!("--guestvmlinux={vmlinux}");
+            let data = report.with_extension("data");
+            std::thread::sleep(Duration::from_secs(delay));
+            let recorded = Command::new("timeout")
+                .args(["--signal=INT", &seconds.to_string()])
+                .args(["perf", "kvm", "--guest", &guest, "record", "-a", "-o"])
+                .arg(&data)
+                .output()?;
+            anyhow::ensure!(
+                data.exists(),
+                "perf kvm record: {}: {}",
+                recorded.status,
+                String::from_utf8_lossy(&recorded.stderr)
+            );
+            let reported = Command::new("perf")
+                .args(["kvm", "--guest", &guest, "report", "--stdio", "--sort", "sym", "-i"])
+                .arg(&data)
+                .args(["--percent-limit", "0.01"])
+                .output()?;
+            std::fs::remove_file(&data)?;
+            anyhow::ensure!(
+                reported.status.success(),
+                "perf kvm report: {}: {}",
+                reported.status,
+                String::from_utf8_lossy(&reported.stderr)
+            );
+            let symbols = Command::new("nm").args(["-n", "--defined-only", &vmlinux]).output()?;
+            anyhow::ensure!(symbols.status.success(), "nm {vmlinux}: {}", symbols.status);
+            let text = symbolize(
+                &String::from_utf8_lossy(&reported.stdout),
+                &String::from_utf8_lossy(&symbols.stdout),
+            );
+            std::fs::write(&report, text)?;
+            Ok(())
+        }))
+    }
+
+    /// `report`'s guest samples (perf kvm report's `[g] 0xADDRESS` lines, which perf leaves
+    /// unresolved, as it found no relocation of the guest's kernel to apply its vmlinux with),
+    /// each given the symbol of `nm`'s, the guest kernel's vmlinux's symbols in address order, it
+    /// falls in, as the kernel's text is where vmlinux links it; summed by symbol, most first, a
+    /// line each, its percentage and name.
+    fn symbolize(report: &str, nm: &str) -> String {
+        let symbols: Vec<(u64, &str)> = (nm.lines())
+            .filter_map(|line| {
+                let mut fields = line.split_whitespace();
+                let address = u64::from_str_radix(fields.next()?, 16).ok()?;
+                Some((address, fields.nth(1)?))
+            })
+            .collect();
+        let mut by_symbol = std::collections::HashMap::<&str, f64>::new();
+        for line in report.lines() {
+            let mut fields = line.split_whitespace();
+            let (Some(percent), Some("[g]"), Some(address)) =
+                (fields.next(), fields.next(), fields.next())
+            else {
+                continue;
+            };
+            let (Some(percent), Some(address)) = (
+                percent.strip_suffix('%').and_then(|percent| percent.parse::<f64>().ok()),
+                address.strip_prefix("0x").and_then(|hex| u64::from_str_radix(hex, 16).ok()),
+            ) else {
+                continue;
+            };
+            let at = symbols.partition_point(|&(start, _)| start <= address);
+            let name = at.checked_sub(1).map_or("?", |at| symbols[at].1);
+            *by_symbol.entry(name).or_default() += percent;
+        }
+        let mut sorted: Vec<_> = by_symbol.into_iter().collect();
+        sorted.sort_by(|a, b| b.1.total_cmp(&a.1));
+        sorted.iter().map(|(name, percent)| format!("{percent:6.2}% {name}\n")).collect()
+    }
+
     /// KVM's counts so far for the VM of process `pid`, as its debugfs directory has them, each
     /// `name=N` separated by spaces, the names in order: its exits by reason, its page faults,
     /// its TLB flushes (TASK-91.16); or none without debugfs, or once the VM is gone.
@@ -337,9 +422,13 @@ RUN apk add --no-cache postgresql postgresql-contrib perf e2fsprogs
                     firecracker.pid(),
                     stop.clone(),
                 );
+                let profiler = profile_guest(dir.join(format!("{}.txt", nth("perf-kvm", vm))));
                 let loaded = wait(firecracker);
                 stop.store(true, Ordering::Relaxed);
                 sampler.join().expect("the sampler panicked")?;
+                if let Some(profiler) = profiler {
+                    profiler.join().expect("the profiler panicked")?;
+                }
                 loaded.with_context(|| format!("VM {} of {}", vm + 1, vms()))?;
             }
             Ok(())
@@ -367,15 +456,22 @@ RUN apk add --no-cache postgresql postgresql-contrib perf e2fsprogs
             std::process::exit(0);
         }
 
-        fn check(self: Box<Self>, stdout: Vec<u8>, _test_setup: TestSetup) -> TestOutcome {
+        fn check(self: Box<Self>, stdout: Vec<u8>, test_setup: TestSetup) -> TestOutcome {
             let output = String::from_utf8(stdout).unwrap();
             let each = format!("OK load {}\nOK runs {RUNS}\nOK checked\n", SCALE * 100_000);
             let expected = format!("OK base\n{}", each.repeat(vms()));
-            if output == expected {
-                TestOutcome::Pass
-            } else {
-                TestOutcome::Fail(format!("expected {expected:?}, got {output:?}"))
+            if output != expected {
+                return TestOutcome::Fail(format!("expected {expected:?}, got {output:?}"));
             }
+            // The guest's profile from the host, if asked for, symbolized (TASK-131.6).
+            if std::env::var_os("FXDAX_HOST_GUEST_PROFILE").is_some() {
+                let report = test_setup.tmp_dir.join("perf-kvm.txt");
+                let text = std::fs::read_to_string(&report).unwrap_or_default();
+                if !text.contains("fxfs_") {
+                    return TestOutcome::Fail(format!("{}: no Fxfs symbol: {text}", report.display()));
+                }
+            }
+            TestOutcome::Pass
         }
     }
 }
