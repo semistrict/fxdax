@@ -461,17 +461,19 @@ pub async fn simulate(profile: Profile) {
             fasync::Task::spawn(async move {
                 while !followed.load(Ordering::SeqCst) {
                     let name = NAMES[thread_rng().gen_range(0..NAMES.len())];
-                    // Held as it is looked up, before any batch may delete it.
+                    // Held as it is looked up, and said to be, before any batch may delete it,
+                    // which the checker would then find kept (TASK-79.47).
                     let fs = &follower.fs;
                     let root_store = fs.root_store().store_object_id();
                     let held = {
                         let _filling = follower.protocol.fill();
                         let found = lookup(fs, name).await.expect("lookup failed");
-                        found.map(|object_id| (object_id, fs.hold(root_store, object_id)))
+                        found.map(|object_id| {
+                            let hold = fs.hold(root_store, object_id);
+                            follower.state.lock().held.insert(object_id);
+                            (object_id, hold)
+                        })
                     };
-                    if let Some((object_id, _)) = &held {
-                        follower.state.lock().held.insert(*object_id);
-                    }
                     let Some((object_id, hold)) = held else {
                         fasync::yield_now().await;
                         continue;
