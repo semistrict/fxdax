@@ -2326,6 +2326,57 @@ async fn test_file_length_mismatch() {
     );
 }
 
+/// fxdax: blocks past a file's end, to a 64 KiB boundary, are those appends through a DAX window
+/// reserve (TASK-133).
+#[fuchsia::test]
+async fn test_blocks_reserved_past_the_end() {
+    let mut test = FsckTest::new().await;
+    {
+        let fs = test.filesystem();
+        let device = fs.device();
+        let store = fs.root_store();
+        let mut transaction = fs
+            .root_store()
+            .new_transaction(lock_keys![], Options::default())
+            .await
+            .expect("new_transaction failed");
+        let handle =
+            ObjectStore::create_object(&store, &mut transaction, HandleOptions::default(), None)
+                .await
+                .expect("create object failed");
+        transaction.commit().await.expect("commit transaction failed");
+
+        let mut transaction = fs
+            .root_store()
+            .new_transaction(
+                lock_keys![LockKey::object(store.store_object_id(), handle.object_id())],
+                Options::default(),
+            )
+            .await
+            .expect("new_transaction failed");
+        let buf = device.allocate_buffer(1).await;
+        // The last block before the boundary.
+        handle.txn_write(&mut transaction, 60 << 10, buf.as_ref()).await.expect("write failed");
+        transaction.add(
+            store.store_object_id(),
+            Mutation::replace_or_insert_object(
+                ObjectKey::attribute(
+                    handle.object_id(),
+                    handle.attribute_id(),
+                    AttributeKey::Attribute,
+                ),
+                ObjectValue::attribute(123, false),
+            ),
+        );
+        transaction.commit().await.expect("commit transaction failed");
+    }
+
+    test.remount().await.expect("Remount failed");
+    test.run(TestOptions::default()).await.expect_err("Fsck should warn");
+    // No name links the object, which alone it says.
+    assert_matches!(test.errors()[..], [FsckIssue::Warning(FsckWarning::OrphanedObject(..))]);
+}
+
 #[fuchsia::test]
 async fn test_spurious_extents() {
     let mut test = FsckTest::new().await;

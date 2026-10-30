@@ -42,6 +42,13 @@ const RANDOM_OPS: &str = "random-ops";
 const RANDOM_OPS_MODEL: &str = "random-ops.model";
 /// fxdax: random_ops's operations, as it made them, each a line, which replay it (TASK-119.15).
 const RANDOM_OPS_HISTORY: &str = "random-ops.history";
+/// What append_reserved_tail leaves, for the host to read.
+const APPEND_RESERVED: &str = "append-reserved";
+
+/// What the file `APPEND_RESERVED` holds.
+fn append_reserved() -> Vec<u8> {
+    (0..(256 << 10) + 100 + 3 * 4096).map(|at: usize| (at % 251) as u8).collect()
+}
 /// fxdax: torture's files, each with its model beside it, `<name>.model` (TASK-119.5).
 const TORTURE_FILES: usize = 4;
 fn torture(n: usize) -> String {
@@ -165,12 +172,12 @@ mod host {
                     "seed {seed}: expected exactly \"OK\\n\", got {output:?}"
                 ));
             }
+            // fxdax: fsck, whichever checks ran.
+            let fs = open_image(&test_setup.tmp_dir.join("fxdax.img"));
             // The host's checks are of what all the guest's checks wrote.
             if std::env::var_os("FXDAX_CHECKS").is_some_and(|only| !only.is_empty()) {
                 return TestOutcome::Pass;
             }
-
-            let fs = open_image(&test_setup.tmp_dir.join("fxdax.img"));
 
             let mapped = read_path(&fs, "dax-mapped");
             assert_eq!(mapped.len(), MAPPED_SIZE, "host: dax-mapped size");
@@ -220,6 +227,10 @@ mod host {
                 history.starts_with(format!("seed {seed}\n").as_bytes()),
                 "host: random_ops's history is of another seed"
             );
+            // fxdax: and the blocks appends reserved past a file's end left it as written (TASK-133).
+            if self.dax {
+                assert_eq!(read_path(&fs, APPEND_RESERVED), append_reserved());
+            }
             // fxdax: and torture's (TASK-119.5).
             for name in (0..TORTURE_FILES).map(torture) {
                 assert!(
@@ -3695,6 +3706,34 @@ mod guest {
         fs::remove_file(&name).unwrap();
     }
 
+    /// fxdax: appends that end part way through the run they reserved (TASK-92.58) leave blocks
+    /// past the file's end, which a crash would leave as a clean unmount does: the file is left
+    /// for the host's fsck, which they failed, and its contents (TASK-133). Shrunk first, as
+    /// reservations stop at the end of the file's range, which is as long as it has been.
+    fn test_append_reserved_tail() {
+        use std::os::unix::fs::{FileExt, MetadataExt};
+        const PAGE: usize = 4096;
+        let name = path(APPEND_RESERVED);
+        let file = fs::File::create_new(&name).unwrap();
+        file.write_all_at(&vec![0x77; 1 << 20], 0).unwrap();
+        file.sync_data().unwrap();
+        let expected = append_reserved();
+        file.set_len((expected.len() - 3 * PAGE) as u64).unwrap();
+        file.write_all_at(&expected[..expected.len() - 3 * PAGE], 0).unwrap();
+        file.sync_data().unwrap();
+        // Two pages make an append stream, as in append_pages; the third reserves past itself.
+        for page in (1..=3).rev() {
+            let at = expected.len() - page * PAGE;
+            file.write_all_at(&expected[at..at + PAGE], at as u64).unwrap();
+        }
+        file.sync_all().unwrap();
+        drop(file);
+        evict(&name);
+        assert_eq!(fs::read(&name).unwrap(), expected);
+        let allocated = fs::metadata(&name).unwrap().blocks() * 512;
+        assert_eq!(allocated, (expected.len() as u64).next_multiple_of(64 << 10));
+    }
+
     /// File handles: name_to_handle_at, and open_by_handle_at with the inode cached and evicted.
     fn test_file_handles() {
         fs::write(path("handled"), b"by handle").unwrap();
@@ -3929,6 +3968,7 @@ mod guest {
                 ));
                 tests.push(("append_while_mapped", &test_append_while_mapped));
                 tests.push(("append_size_follows_data", &test_append_size_follows_data));
+                tests.push(("append_reserved_tail", &test_append_reserved_tail));
                 tests.push(("append_stopped_short", &test_append_stopped_short));
                 tests.push(("prune_while_read", &test_prune_while_read));
                 tests.push(("map_failed_after_move", &test_map_failed_after_move));

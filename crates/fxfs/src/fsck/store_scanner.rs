@@ -32,6 +32,17 @@ use std::sync::Arc;
 use storage_device::ExtentId;
 use storage_units::BlockSize;
 
+/// fxdax: how far past a file's end, to the next boundary of this many bytes, appends through a
+/// DAX window reserve blocks ahead of their writes (the guest's FXFS_DAX_APPEND_SIZE, TASK-92.58),
+/// which a clean unmount leaves as a crash does (TASK-133).
+const APPEND_RESERVATION: u64 = 64 << 10;
+
+/// fxdax: where a file `size` bytes long may have blocks up to.
+fn max_extent_end(bs: BlockSize, size: u64) -> u64 {
+    let reserved = size.checked_next_multiple_of(APPEND_RESERVATION).unwrap_or(u64::MAX);
+    std::cmp::max(bs.align_up(size).unwrap(), reserved)
+}
+
 // Information about a specific attribute.
 #[derive(Debug)]
 struct ScannedAttribute {
@@ -1002,7 +1013,7 @@ impl<'a> ScannedStore<'a> {
                     Some(attribute) => {
                         if !*in_graveyard
                             && !tombstoned_attributes.contains(&attribute_id)
-                            && range.end > bs.align_up(attribute.size).unwrap()
+                            && range.end > max_extent_end(bs, attribute.size)
                         {
                             self.fsck.error(FsckError::ExtentExceedsLength(
                                 self.store_id,
