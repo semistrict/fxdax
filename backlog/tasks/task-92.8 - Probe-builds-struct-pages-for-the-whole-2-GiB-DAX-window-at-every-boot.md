@@ -4,7 +4,7 @@ title: Probe builds struct pages for the whole 2 GiB DAX window at every boot
 status: To Do
 assignee: []
 created_date: '2026-10-22 21:06'
-updated_date: '2026-10-30 04:12'
+updated_date: '2026-10-30 07:20'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -43,4 +43,6 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity high): docs/reviews/
 
 <!-- SECTION:NOTES:BEGIN -->
 2026-10-30, from the guest kernel's source (6.18.54, GCE r255): compound devmap geometry (pgmap->vmemmap_shift) would cut the memmap's init to 2 unique vmemmap pages a compound page (memmap_init_compound, compound_nr_pages, CONFIG_ARCH_WANT_OPTIMIZE_DAX_VMEMMAP=y on x86_64), but fs-dax makes its folios per DAX entry as it maps them, writing their tail pages' struct pages, which the vmemmap optimization shares read-only; pmem.c sets no vmemmap_shift for MEMORY_DEVICE_FS_DAX either. Ruled out. Left: an asynchronous probe (PROBE_PREFER_ASYNCHRONOUS), if mounting by tag waits for the device's probe; or the window's memmap made a part at a time as the window's allocator first hands each out (devm_memremap_pages per part); or struct pages in the window itself (altmap), which saves the 32 MiB of RAM, not the init.
+
+GCE r263 at 1e1e1baf5 (main 3358b1089 + virtio_extent probed asynchronously, a lookup by tag waiting for probes in progress) against r264 at 3358b1089, same suites (fxfs-guest, -dax, -checks-dax, -crash-dax, -docker-dax, -snapshot-dax, -pgbench-dax), all passed on both. VMM resume to the guest's first I/O at init (port 0x87): 261.6, 337.2, 261.9, 266.4, 258.0 ms against 258.6, 341.5, 254.0, 252.1, 254.2; the kernel's 'check access for rdinit' over 8 boots each, median 0.251 s against 0.272 s. No boot gain to show: whatever the window's memmap costs now, the asynchronous probe doesn't take it off the path to init and a mount. Not pushed. Next if it's taken up again: a boot at loglevel 7 with initcall_debug, to measure the probe's time on main today.
 <!-- SECTION:NOTES:END -->

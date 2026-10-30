@@ -4,6 +4,7 @@ title: Open-extent READ and WRITE check open and do their I/O under different lo
 status: To Do
 assignee: []
 created_date: '2026-10-21 20:58'
+updated_date: '2026-10-30 10:18'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -37,3 +38,9 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity low): docs/reviews/2
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Reads of open extents hold the open extents; the WRITE half was closed by TASK-121. reads_of_open_extents_hold_off_their_commit stops a read between finding its pages and reading them (a cfg(test) hook): without the fix the read returns zeros as a success; with it, passes. A race test without the hook passed unfixed, the window being nanoseconds, and was dropped.
+<!-- SECTION:NOTES:END -->

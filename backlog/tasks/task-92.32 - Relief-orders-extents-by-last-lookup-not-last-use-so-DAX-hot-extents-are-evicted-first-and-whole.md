@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-22 21:06'
+updated_date: '2026-10-30 10:18'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -39,3 +40,9 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity medium): docs/review
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Relief orders extents by whether a window maps them, then by when last used, a fault counting (cache.rs, CachedExtent::eviction_order). Tests: relief_evicts_what_no_window_maps_first, relief_evicts_what_was_faulted_on_longest_ago_first, each failing without it (mutant: (0, 64) for (64, 0) held). macOS and Linux, GCE r273. Whole extents still go for a smaller request.
+<!-- SECTION:NOTES:END -->

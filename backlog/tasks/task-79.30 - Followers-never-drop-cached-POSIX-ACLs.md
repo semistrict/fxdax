@@ -4,6 +4,7 @@ title: Followers never drop cached POSIX ACLs
 status: To Do
 assignee: []
 created_date: '2026-10-21 20:58'
+updated_date: '2026-10-30 10:18'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -37,3 +38,9 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity medium): docs/review
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+fxfs_vfs_settle_attr drops a settled inode's cached ACLs. fxfs-guest-follow, -dax check a writer's ACL change is followed: r284 both pass; r282 without the fix the follower never reports seen (its console cut off mid-panic).
+<!-- SECTION:NOTES:END -->

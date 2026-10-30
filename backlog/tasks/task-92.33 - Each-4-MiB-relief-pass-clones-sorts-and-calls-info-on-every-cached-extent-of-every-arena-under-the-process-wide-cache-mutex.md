@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-22 21:06'
+updated_date: '2026-10-30 10:18'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -39,3 +40,9 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity medium): docs/review
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Relief leaves out extents with nothing in memory, by a count of present pages, and asks each its order past the cache's lock; every entry is still cloned under that lock. relief_evicts_what_no_window_maps_first checks eviction_order is None once evicted. GCE r273.
+<!-- SECTION:NOTES:END -->

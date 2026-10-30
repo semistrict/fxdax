@@ -4,6 +4,7 @@ title: A partial worker-spawn failure leaves orphan workers
 status: To Do
 assignee: []
 created_date: '2026-10-21 20:58'
+updated_date: '2026-10-30 10:18'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -37,3 +38,9 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity low): docs/reviews/2
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+start_all: a worker failing to start stops those started, which give back their queues. Test workers_start_all_or_none, on start_all, as Worker::spawn has no seam to fail: passes on x86_64 under emulation (--features fxdax, which the extent device needs; no script runs Firecracker's unit tests).
+<!-- SECTION:NOTES:END -->

@@ -4,6 +4,7 @@ title: Xattr write-back hides pending changes while it writes them
 status: To Do
 assignee: []
 created_date: '2026-10-21 20:59'
+updated_date: '2026-10-30 10:18'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -37,3 +38,9 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity low): docs/reviews/2
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+write_xattrs leaves each change pending until written, removed only if unchanged since. xattrs_read_as_written_back: r283 without the fix, 'turn 5: getxattr: No data available'; with it passes (r273).
+<!-- SECTION:NOTES:END -->
