@@ -211,14 +211,15 @@ impl PmmNode {
         Ok(frames)
     }
 
-    /// Allocates a page of `arena`, once, and as many of the pages after it as are free, up to
+    /// Allocates a run of pages of `arena`, once, `most` or fewer, of its smallest free block that
+    /// holds them (`FreeBlocks::take`), and as many of the pages after them as are free, up to
     /// `most` in all, under one hold of the lock: told to wait, as its arena is starved and relief
     /// asked for, the caller waits for room, and tries again.
     fn try_alloc_run(&self, arena: ArenaId, most: usize, wait: Wait) -> Result<Vec<u32>, Failed> {
         loop {
             let mut locked = self.locked();
-            let frame = match locked.take(&self.pages, arena) {
-                Ok(frame) => frame,
+            let (first, count) = match locked.take(&self.pages, arena, most) {
+                Ok(taken) => taken,
                 Err(Refused::Starved(starved)) => {
                     return Err(self.starved_status(locked, arena, starved, wait));
                 }
@@ -228,11 +229,15 @@ impl PmmNode {
                     continue;
                 }
             };
-            self.pages.frames.allocate(frame);
-            self.decrement_free_count();
-            let mut run = vec![frame];
+            let mut run: Vec<u32> = (first..first + count as u32).collect();
+            for &frame in &run {
+                self.pages.frames.allocate(frame);
+                self.decrement_free_count();
+            }
             while run.len() < most {
-                let Some(next) = locked.take_after(&self.pages, *run.last().unwrap()) else { break };
+                let Some(next) = locked.take_after(&self.pages, *run.last().unwrap()) else {
+                    break;
+                };
                 self.pages.frames.allocate(next);
                 self.decrement_free_count();
                 run.push(next);

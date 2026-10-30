@@ -5,10 +5,11 @@
 // https://opensource.org/licenses/MIT
 
 //! fxdax's own: the PMM's arenas, which its free pages are of (TASK-43). An arena takes physical
-//! memory a chunk (`physmap::CHUNK_SIZE`) at a time, and its free list holds the free pages of the
-//! chunks it has; a chunk whose pages are all free goes back, its memory to the host. An arena
-//! also keeps a spare chunk, its pages last on its free list and faulted in from the host ahead of
-//! their use (TASK-26.18.3). An arena may be capped, and the arenas together, in chunks
+//! memory a chunk (`physmap::CHUNK_SIZE`) at a time, and its free blocks (`FreeBlocks`) hold the
+//! free pages of the chunks it has; a chunk whose pages are all free goes back, its memory to the
+//! host. An arena also keeps a spare chunk, one free block of a chunk's size, taken from last, as
+//! only a run as long or no other free page takes it, and faulted in from the host ahead of its
+//! use (TASK-26.18.3). An arena may be capped, and the arenas together, in chunks
 //! (TASK-50.3). One with no free page takes a chunk if one is free and it is within the caps as
 //! they stand ([`Arenas::within_caps`]); or else, within its own cap, once enough of other arenas'
 //! spares have gone back to free one and bring the arenas under the total cap with it
@@ -27,7 +28,7 @@
 //! outside it, but one that would take the chunk.
 
 use super::PmmPages;
-use crate::frames::FrameList;
+use crate::frames::FreeBlocks;
 use crate::physmap::{ArenaId, CHUNK_SIZE};
 use crate::sync::rules;
 use std::collections::BTreeMap;
@@ -36,6 +37,11 @@ use std::ops::Range;
 /// The pages of a chunk.
 fn chunk_page_count() -> u32 {
     (CHUNK_SIZE / crate::page_bytes()) as u32
+}
+
+/// The order of a chunk's pages: 2 to the power of it.
+fn chunk_order() -> u32 {
+    chunk_page_count().ilog2()
 }
 
 /// The frames of chunk `chunk`'s pages.
@@ -91,7 +97,7 @@ struct Relief {
 /// An arena's pages, and what holds it to them.
 struct ArenaPages {
     /// The free pages of the chunks it has.
-    free: FrameList,
+    free: FreeBlocks,
     /// Its spare chunk, none of whose pages is taken yet.
     spare: Option<usize>,
     /// How many chunks it has, its spare and those going back included (TASK-50.3).
@@ -114,7 +120,7 @@ struct ArenaPages {
 impl ArenaPages {
     fn new() -> Self {
         Self {
-            free: FrameList::new(),
+            free: FreeBlocks::new(chunk_order()),
             spare: None,
             chunks: 0,
             going_back: 0,
@@ -137,15 +143,15 @@ impl ArenaPages {
 ///   chunk table names the arena, which counts it among its `chunks`; but for a chunk going back,
 ///   which its arena counts, and the table names none once the host has taken it back, until it
 ///   is free (TASK-92.35).
-/// - A chunk's free pages are on its arena's free list, and `chunk_used` counts the others. One
-///   none of whose pages is allocated goes back, unless it is its arena's spare: off the free
-///   list, it is going back until the host takes it back, as the PMM's lock is dropped
+/// - A chunk's free pages are in its arena's free blocks, and `chunk_used` counts the others. One
+///   none of whose pages is allocated goes back, unless it is its arena's spare: out of the free
+///   blocks, it is going back until the host takes it back, as the PMM's lock is dropped
 ///   ([`Arenas::take_returning`]), or at once, another arena's spare given back for a chunk an
 ///   allocation takes. Unless the host does not take it back (TASK-79.37): it is its arena's
 ///   spare then, if its arena has none, which goes back with the spares, whether arenas keep them
 ///   or not; or else it goes back once its pages are freed again.
-/// - A spare's pages are all on its arena's free list, none of them taken yet: an arena whose free
-///   list is empty has no spare.
+/// - A spare's pages are all in its arena's free blocks, none of them taken yet: an arena with no
+///   free block has no spare.
 /// - An arena is here from its creation until its removal, or the release of its last chunk after
 ///   that, finds it holding no chunk; and its object is in physmap as long. Removed, here still or
 ///   gone, it gives no page, of its chunks' free pages or of a chunk it would take.
@@ -232,8 +238,14 @@ impl Arenas {
     /// the host does not map, or would not, refusing chunks. It fails as [`Arenas::starved`] says,
     /// having given back what spares there were; or as the host does not map the chunk it takes,
     /// or take back a spare for it. It waits, rather than take a spare, or fail, while chunks going
-    /// back would make it room (`Refused::GoingBack`).
-    pub(super) fn take(&mut self, pages: &PmmPages, arena: ArenaId) -> Result<u32, Refused> {
+    /// back would make it room (`Refused::GoingBack`). Takes a run of pages, consecutive, `most` of
+    /// them or fewer ([`FreeBlocks::take`]): its first, and how many.
+    pub(super) fn take(
+        &mut self,
+        pages: &PmmPages,
+        arena: ArenaId,
+        most: usize,
+    ) -> Result<(u32, usize), Refused> {
         let entry = self.live(arena).ok_or(Starved::Removed)?;
         if entry.free.is_empty() {
             debug_assert!(entry.spare.is_none(), "{arena:?} has a spare, and no free page");
@@ -249,40 +261,36 @@ impl Arenas {
             }
             self.give(pages, arena).ok_or(Refused::Unmapped)?;
         }
-        let page = (self.entry_mut(arena).free.pop_front(&pages.frames))
+        let (first, count) = (self.entry_mut(arena).free.take(&pages.frames, most))
             .expect("a free page of the arena's");
-        self.taken(pages, arena, pages.chunk_of(page));
-        Ok(page)
+        self.taken(pages, arena, pages.chunk_of(first), count);
+        Ok((first, count))
     }
 
-    /// fxdax: the page after `page`, physically, if it is free, on its arena's free list, and of
+    /// fxdax: the page after `page`, physically, if it is free, of its arena's free blocks, and of
     /// the same chunk, taken as [`Arenas::take`] takes one: so that the pages an allocation takes
     /// together are consecutive where they can be, as a window's second stage maps each run of
-    /// them with a mapping of its own, not a page each. Taken a page at a time from the list, as
-    /// evictions refill it in the order they free them, an extent's pages are scattered more with
-    /// each eviction, and the window's runs shorter (TASK-108.1). The caller marks each page it
-    /// takes allocated, under the lock that it took it under, so that one free and listed is on
-    /// the free list.
+    /// them with a mapping of its own, not a page each (TASK-108.1). The caller marks each page it
+    /// takes allocated, under the lock that it took it under, so that one free is in a free block.
     pub(super) fn take_after(&mut self, pages: &PmmPages, page: u32) -> Option<u32> {
         let chunk = pages.chunk_of(page);
         let next = page + 1;
         if next >= chunk_pages(chunk).end {
             return None;
         }
-        // Under the node's lock, which guards the free lists, the pages' membership of.
-        if !pages.frames.is_listed(next) {
-            return None;
-        }
         let arena = pages.memory.chunk_arena(chunk)?;
         self.live(arena)?;
-        self.entry_mut(arena).free.erase(&pages.frames, next);
-        self.taken(pages, arena, chunk);
+        // Under the node's lock, which guards the free blocks.
+        if !self.entry_mut(arena).free.take_page(&pages.frames, next) {
+            return None;
+        }
+        self.taken(pages, arena, chunk, 1);
         Some(next)
     }
 
-    /// A page of `arena`'s, of `chunk`, was taken off its free list: the chunk is its spare no
-    /// more, and it takes another, if it may, as [`Arenas::take`] says.
-    fn taken(&mut self, pages: &PmmPages, arena: ArenaId, chunk: usize) {
+    /// `count` pages of `arena`'s, of `chunk`, were taken from its free blocks: the chunk is its
+    /// spare no more, and it takes another, if it may, as [`Arenas::take`] says.
+    fn taken(&mut self, pages: &PmmPages, arena: ArenaId, chunk: usize, count: usize) {
         let entry = self.entry_mut(arena);
         if entry.spare == Some(chunk) {
             entry.spare = None;
@@ -296,10 +304,10 @@ impl Arenas {
         {
             self.entry_mut(arena).spare = Some(spare);
         }
-        self.chunk_used[chunk] += 1;
+        self.chunk_used[chunk] += count as u32;
     }
 
-    /// Puts `page`, free, back at the front of its arena's free list, and its chunk back if the
+    /// Puts `page`, free, back in its arena's free blocks, and its chunk back if the
     /// page was the last of it allocated, as the lock is dropped
     /// ([`Arenas::take_returning`]). Returns whether an allocation waiting for room may find it
     /// now: as the arena is at a cap ([`Arenas::within_caps`]), its own allocations waiting for its
@@ -311,7 +319,7 @@ impl Arenas {
         let chunk = pages.chunk_of(page);
         let arena = pages.memory.chunk_arena(chunk).expect("a page of no arena's");
         let entry = self.entry_mut(arena);
-        entry.free.push_front(&pages.frames, page);
+        entry.free.insert(&pages.frames, page..page + 1);
         entry.relief.exhausted = false;
         self.chunk_used[chunk] -= 1;
         if self.chunk_used[chunk] == 0 {
@@ -457,9 +465,7 @@ impl Arenas {
         let entry = self.arenas.get_mut(&arena).expect("the arena of a chunk going back");
         entry.going_back -= 1;
         if result.is_err() {
-            for index in chunk_pages(chunk) {
-                entry.free.push_back(&pages.frames, index);
-            }
+            entry.free.insert(&pages.frames, chunk_pages(chunk));
             entry.spare.get_or_insert(chunk);
             return;
         }
@@ -538,8 +544,8 @@ impl Arenas {
         self.arenas.values_mut().for_each(|entry| entry.relief.exhausted = false);
     }
 
-    /// Gives the free chunk given back last to `arena`, its pages last on its free list, faulted in
-    /// ahead of their use, and returns it; or leaves it free, as the host does not map it
+    /// Gives the free chunk given back last to `arena`, its pages a free block of their own, faulted
+    /// in ahead of their use, and returns it; or leaves it free, as the host does not map it
     /// (`PhysMemory::assign_chunk`).
     fn give(&mut self, pages: &PmmPages, arena: ArenaId) -> Option<usize> {
         let &chunk = self.free_chunks.last().expect("a free chunk");
@@ -550,9 +556,7 @@ impl Arenas {
         self.free_chunks.pop();
         let entry = self.entry_mut(arena);
         entry.chunks += 1;
-        for index in chunk_pages(chunk) {
-            entry.free.push_back(&pages.frames, index);
-        }
+        entry.free.insert(&pages.frames, chunk_pages(chunk));
         pages.memory.populate_later(chunk);
         Some(chunk)
     }
@@ -591,8 +595,8 @@ impl Arenas {
         taken
     }
 
-    /// Gives `chunk`, none of whose pages is allocated, back: off its arena's free list, which has
-    /// it, going back, until the host takes it back ([`Returning::release`]).
+    /// Gives `chunk`, none of whose pages is allocated, back: out of its arena's free blocks, which
+    /// has it, going back, until the host takes it back ([`Returning::release`]).
     fn give_back(&mut self, pages: &PmmPages, chunk: usize) -> Returning {
         let arena = pages.memory.chunk_arena(chunk).expect("a chunk of no arena's");
         debug_assert!(
@@ -600,9 +604,7 @@ impl Arenas {
             "chunk {chunk} of {arena:?} goes back with a page allocated"
         );
         let entry = self.entry_mut(arena);
-        for index in chunk_pages(chunk) {
-            entry.free.erase(&pages.frames, index);
-        }
+        entry.free.take_chunk(&pages.frames, chunk_pages(chunk));
         entry.going_back += 1;
         Returning { chunk, arena }
     }
@@ -647,7 +649,7 @@ mod tests {
         chunk_page_count() as usize
     }
 
-    /// Arenas over physical memory of their own, no node's. The arenas go first, their free lists
+    /// Arenas over physical memory of their own, no node's. The arenas go first, their free blocks
     /// pointing into the pages.
     struct Fixture {
         arenas: Arenas,
@@ -666,9 +668,15 @@ mod tests {
 
         /// A page of `arena`'s, allocated, as the node allocates it.
         fn take(&mut self, arena: ArenaId) -> Result<u32, Refused> {
-            let page = self.arenas.take(&self.pages, arena)?;
-            self.pages.frames.allocate(page);
-            Ok(page)
+            Ok(self.take_run(arena, 1)?[0])
+        }
+
+        /// A run of `most` pages of `arena`'s, or fewer, allocated, as the node allocates them.
+        fn take_run(&mut self, arena: ArenaId, most: usize) -> Result<Vec<u32>, Refused> {
+            let (first, count) = self.arenas.take(&self.pages, arena, most)?;
+            let run: Vec<u32> = (first..first + count as u32).collect();
+            run.iter().for_each(|&page| self.pages.frames.allocate(page));
+            Ok(run)
         }
 
         /// The page after `page`, if free, allocated, as the node allocates it.
@@ -1058,7 +1066,8 @@ mod tests {
         assert_eq!(fixture.arenas.free_chunk_count(), free_chunks);
         assert_eq!(fixture.arenas.entry(arena).spare, Some(chunk));
         let free = &fixture.arenas.entry(arena).free;
-        assert_eq!(free.iter(&fixture.pages.frames).count(), pages_per_chunk());
+        let first = chunk_pages(chunk).start;
+        assert_eq!(free.blocks(&fixture.pages.frames), [(first, chunk_order())], "one block");
         assert_eq!(free.len(), pages_per_chunk());
 
         fixture.arenas.keep_spares(&fixture.pages, true);
@@ -1119,10 +1128,11 @@ mod tests {
         fixture.put_all(taken);
     }
 
-    /// TASK-108.1: pages taken together follow on from one another where those after are free, on
-    /// the free list, and of the chunk, however the list orders them: freed in another order, as
-    /// evictions free them, a run taken a page at a time from the list would be scattered. A page
-    /// in use, or past the chunk, ends the run.
+    /// TASK-108.1: pages taken together follow on from one another where those after are free, of
+    /// the arena's free blocks, and of the chunk, however they were freed: in another order, as
+    /// evictions free them, they make one block again (TASK-131.1), which a page is taken from
+    /// first, and the pages after it from what is left of it. A page in use, or past the chunk,
+    /// ends the run.
     #[test]
     fn pages_taken_after_another_follow_on_from_it() {
         let mut fixture = Fixture::new();
@@ -1130,34 +1140,50 @@ mod tests {
         let mut taken = fixture.take_chunks(arena, 1);
         let index = |page: u32| page as usize;
         let first = index(taken[0]);
-        // Pages 8 to 11 of the chunk freed last first, so that the list holds them 11, 10, 9, 8,
-        // behind page 8's: page 12 stays in use.
+        // Pages 8 to 11 of the chunk freed out of order: page 12 stays in use.
         let freed: Vec<u32> = taken.drain(8..12).collect();
-        for &page in &freed {
-            let _ = fixture.put(page);
+        for at in [3, 1, 0, 2] {
+            let _ = fixture.put(freed[at]);
         }
-        let head = fixture.take(arena).unwrap();
-        assert_eq!(index(head), first + 11, "the list's head, freed last");
-        assert_eq!(fixture.take_after(head), None, "page 12 is in use");
         let start = fixture.take(arena).unwrap();
-        assert_eq!(index(start), first + 10);
-        assert_eq!(fixture.take_after(start), None, "page 11 was taken");
-        let _ = fixture.put(head);
-        let _ = fixture.put(start);
-        // Freed again: 10 at the head, then 11, 9, 8.
-        let start = fixture.take(arena).unwrap();
-        assert_eq!(index(start), first + 10);
-        let next = fixture.take_after(start).unwrap();
-        assert_eq!(index(next), first + 11);
-        assert_eq!(fixture.take_after(next), None, "page 12 is in use");
+        assert_eq!(index(start), first + 8, "the smallest block's first page");
+        let mut run = vec![start];
+        while let Some(next) = fixture.take_after(*run.last().unwrap()) {
+            run.push(next);
+        }
+        assert_eq!(run.iter().map(|&page| index(page) - first).collect::<Vec<_>>(), [8, 9, 10, 11]);
         // The last page of the chunk has none after it of the chunk.
         let last = taken.pop().unwrap();
         assert_eq!(index(last), first + pages_per_chunk() - 1);
         let _ = fixture.put(last);
         let last = fixture.take(arena).unwrap();
         assert_eq!(fixture.take_after(last), None, "past the chunk");
-        taken.extend([start, next, last]);
-        taken.extend(std::iter::from_fn(|| fixture.take(arena).ok()).take(2));
+        taken.extend(run);
+        taken.push(last);
+        fixture.put_all(taken);
+    }
+
+    /// TASK-131.1: a run is taken from the smallest free block that holds it, however recently
+    /// pages were freed elsewhere: single pages freed among pages in use, as an fsync's small
+    /// extents are freed, are left for single pages; and a page from them.
+    #[test]
+    fn runs_are_taken_from_the_smallest_block_holding_them() {
+        let mut fixture = Fixture::new();
+        let arena = fixture.create();
+        let mut taken = fixture.take_chunks(arena, 1);
+        let first = taken[0];
+        // Pages 64 to 127 freed, then every fourth of 0 to 63, after them.
+        let run: Vec<u32> = taken.drain(64..128).collect();
+        fixture.put_each(run);
+        let holes: Vec<u32> = (0..16).map(|at| taken[at * 4]).collect();
+        taken.retain(|page| !holes.contains(page));
+        fixture.put_each(holes);
+        let run = fixture.take_run(arena, 64).unwrap();
+        assert_eq!(run, (first + 64..first + 128).collect::<Vec<_>>(), "the run freed first");
+        let page = fixture.take(arena).unwrap();
+        assert_eq!((page - first) % 4, 0, "a page freed among those in use: {}", page - first);
+        taken.extend(run);
+        taken.push(page);
         fixture.put_all(taken);
     }
 
