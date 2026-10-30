@@ -123,14 +123,19 @@ def percentiles(counts):
 
 
 def logs(results, case):
-    """The logs of `case` in `results`, a test-gce.sh results directory: each round's, in order."""
+    """The logs of `case` in `results`, a test-gce.sh results directory: each round's, in order:
+    its artifacts' (round-K/CASE/log.txt), or, of a round that passed, whose artifacts aren't kept,
+    its whole log (round-K.log), which has its console and its guest's output both."""
     root = Path(results) / "e2e" / case
     single = root / case / "log.txt"
     if single.exists():
         return [single]
-    rounds = sorted(root.glob(f"round-*/{case}/log.txt"),
-                    key=lambda path: int(path.parent.parent.name.split("-")[1]))
-    return rounds
+    rounds = {}
+    for path in root.glob("round-*.log"):
+        rounds[int(path.stem.split("-")[1])] = path
+    for path in root.glob(f"round-*/{case}/log.txt"):
+        rounds[int(path.parent.parent.name.split("-")[1])] = path
+    return [rounds[at] for at in sorted(rounds)]
 
 
 def said(log):

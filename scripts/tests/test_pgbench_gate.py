@@ -165,6 +165,15 @@ class PgbenchGate(unittest.TestCase):
                          (1, "failed: decay of dax: 0.8 under 0.9\n"))
         self.assertEqual(json.loads(failed.stdout)["host"], "bare-metal")
 
+    def test_rounds_that_passed_are_read_from_their_whole_logs(self):
+        root = Path(tempfile.mkdtemp())
+        case = root / "e2e" / "fxfs-guest-pgbench-dax"
+        case.mkdir(parents=True)
+        for at, runs in [(1, [10, 9]), (2, [8, 7])]:
+            console, stdout = log(runs)
+            (case / f"round-{at}.log").write_text(console + stdout)
+        self.assertEqual(gate.measure(root)["dax"], [[[10.0, 9.0]], [[8.0, 7.0]]])
+
     def test_a_run_without_pgbench_fails(self):
         empty = subprocess.run(
             [sys.executable, script.SCRIPTS / "pgbench-gate.py", tempfile.mkdtemp()],
