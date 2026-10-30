@@ -1,10 +1,10 @@
 ---
 id: TASK-79.51
 title: Xattr write-back hides pending changes while it writes them
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-21 20:59'
-updated_date: '2026-10-30 10:18'
+updated_date: '2026-10-30 13:08'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -28,15 +28,15 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity low): docs/reviews/2
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A test reproduces the failure on the code before the fix
-- [ ] #2 Fixed, and the test passes on macOS and on Linux (GCE)
+- [x] #1 A test reproduces the failure on the code before the fix
+- [x] #2 Fixed, and the test passes on macOS and on Linux (GCE)
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Notes
@@ -44,3 +44,9 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity low): docs/reviews/2
 <!-- SECTION:NOTES:BEGIN -->
 write_xattrs leaves each change pending until written, removed only if unchanged since. xattrs_read_as_written_back: r283 without the fix, 'turn 5: getxattr: No data available'; with it passes (r273).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+write_xattrs leaves each change pending until it is written (main 36adb1ce4). xattrs_read_as_written_back fails without the fix (r283, 'turn 5: getxattr: No data available') and passes with it (r273, r286). The test is a guest check, on Linux only; the crate's workspace tests pass on macOS and r285.
+<!-- SECTION:FINAL_SUMMARY:END -->

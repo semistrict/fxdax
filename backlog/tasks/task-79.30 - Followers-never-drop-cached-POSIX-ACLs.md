@@ -1,10 +1,10 @@
 ---
 id: TASK-79.30
 title: Followers never drop cached POSIX ACLs
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-21 20:58'
-updated_date: '2026-10-30 10:18'
+updated_date: '2026-10-30 13:08'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -28,15 +28,15 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity medium): docs/review
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A test reproduces the failure on the code before the fix
-- [ ] #2 Fixed, and the test passes on macOS and on Linux (GCE)
+- [x] #1 A test reproduces the failure on the code before the fix
+- [x] #2 Fixed, and the test passes on macOS and on Linux (GCE)
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Notes
@@ -44,3 +44,9 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity medium): docs/review
 <!-- SECTION:NOTES:BEGIN -->
 fxfs_vfs_settle_attr drops a settled inode's cached ACLs. fxfs-guest-follow, -dax check a writer's ACL change is followed: r284 both pass; r282 without the fix the follower never reports seen (its console cut off mid-panic).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A follower settling an inode drops its cached POSIX ACLs (main 36adb1ce4). fxfs-guest-follow and -dax check a writer's ACL change is followed: the follower never reports seen without the fix (r282), both pass with it (r284, r286). Guest-only, so on Linux; macOS suite unaffected and passing.
+<!-- SECTION:FINAL_SUMMARY:END -->

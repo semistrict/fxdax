@@ -1,10 +1,10 @@
 ---
 id: TASK-79.46
 title: Open-extent READ and WRITE check open and do their I/O under different locks
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-21 20:58'
-updated_date: '2026-10-30 10:18'
+updated_date: '2026-10-30 13:08'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -28,15 +28,15 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity low): docs/reviews/2
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A test reproduces the failure on the code before the fix
-- [ ] #2 Fixed, and the test passes on macOS and on Linux (GCE)
+- [x] #1 A test reproduces the failure on the code before the fix
+- [x] #2 Fixed, and the test passes on macOS and on Linux (GCE)
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Notes
@@ -44,3 +44,9 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity low): docs/reviews/2
 <!-- SECTION:NOTES:BEGIN -->
 Reads of open extents hold the open extents; the WRITE half was closed by TASK-121. reads_of_open_extents_hold_off_their_commit stops a read between finding its pages and reading them (a cfg(test) hook): without the fix the read returns zeros as a success; with it, passes. A race test without the hook passed unfixed, the window being nanoseconds, and was dropped.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Reads of open extents hold the open extents through the read, so a commit can't move their pages out from under it (60c868c4b's change on main at 36adb1ce4). reads_of_open_extents_hold_off_their_commit stops a read in the window: without the fix it returns zeros as a success. Passes on macOS (scripts/test.sh) and Linux (GCE r285, 1969 of 1969).
+<!-- SECTION:FINAL_SUMMARY:END -->
