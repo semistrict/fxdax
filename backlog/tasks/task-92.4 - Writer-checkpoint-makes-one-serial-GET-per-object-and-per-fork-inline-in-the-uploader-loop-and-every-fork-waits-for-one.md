@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-22 21:06'
+updated_date: '2026-10-30 04:15'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -39,3 +40,9 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity high): docs/reviews/
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+On main (4896b828b): Writer::record_forks and the checkpoint's reads of forks' records run RECORDS_AT_ONCE (32) at once (buffer_unordered); test forks_records_are_made_and_read_a_few_at_once (SimBucket: 65 forks, 32 requests waiting at once, acknowledging and checkpointing; serially 1). The reopened writer still re-creates every child's record (32 at a time now). Verified at 3364435c6 (the batch): macOS extent_remote and fxdax 371 passed; Linux workspace on GCE r264 1965 of 1965; guest suites on GCE r263 (release), fxfs-guest-dax, -checks-dax, -crash-dax, -checks-dax-small, -checks-dax-delay, -pgbench-dax 2 rounds each passed (pgbench-dax 1051.6 -> 863.4, 997.4 -> 889.5 tps).
+<!-- SECTION:NOTES:END -->

@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-26 03:47'
-updated_date: '2026-10-29 22:12'
+updated_date: '2026-10-30 04:15'
 labels:
   - bug
 dependencies: []
@@ -22,7 +22,7 @@ GCE r123 (19b799cc1, full Linux workspace): '300 stores' guests committing: 46 t
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The lag bound holds under the full workspace's load, or is stated relative to what the load allows, without the test losing what it checks (four turns of the flush threads)
+- [x] #1 The lag bound holds under the full workspace's load, or is stated relative to what the load allows, without the test losing what it checks (four turns of the flush threads)
 <!-- AC:END -->
 
 ## Definition of Done
@@ -38,4 +38,6 @@ GCE r123 (19b799cc1, full Linux workspace): '300 stores' guests committing: 46 t
 Again in r141 (9f77e3799, GCE n2-standard-8, full workspace): 257.4 ms (median 57 ms), 300 stores.
 
 2026-10-29, OrbStack arm64 container: failed alone too, 2 of 3 runs passing at a27e50fd8+1 (lags 220, 319 ms, the bound 200), 3 of 3 at a27e50fd8; the test makes no window.
+
+On main (aff4349fd): ExtentStore counts its daemon's flush turns (flush_turned, from flush_behind each turn); the test bounds the probe's lag at 4 of its store's turns, however long the load made them, and reports the time. Verified at 3364435c6 (the batch): macOS extent_remote and fxdax 371 passed; Linux workspace on GCE r264 1965 of 1965; guest suites on GCE r263 (release), fxfs-guest-dax, -checks-dax, -crash-dax, -checks-dax-small, -checks-dax-delay, -pgbench-dax 2 rounds each passed (pgbench-dax 1051.6 -> 863.4, 997.4 -> 889.5 tps).
 <!-- SECTION:NOTES:END -->
