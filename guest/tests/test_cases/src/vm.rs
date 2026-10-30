@@ -50,10 +50,11 @@ pub struct Vm {
 /// kills a hung test (TASK-44.13); a soft lockup panics, printing every task's state first
 /// (panic_print's bit 0), runnable ones too: two vCPUs looping in the kernel starve the task they
 /// wait on, which no guest watchdog then runs to name, and the test waited for its timeout
-/// (TASK-113).
+/// (TASK-113). It says what every CPU is doing before that, as the task holding what the stuck
+/// CPU waits for is on another, whose state the tasks' dump doesn't show (TASK-133).
 const CMDLINE: &str = "console=ttyS0 loglevel=5 reboot=k panic=-1 8250.nr_uarts=1 i8042.noaux i8042.nomux \
      i8042.dumbkbd sysctl.kernel.hung_task_timeout_secs=10 softlockup_panic=1 panic_print=0x1 \
-     init=/guest-agent";
+     sysctl.kernel.softlockup_all_cpu_backtrace=1 init=/guest-agent";
 
 impl Vm {
     /// A VM of `cpus` vCPUs and `ram_mib` MiB of memory.

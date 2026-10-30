@@ -3734,6 +3734,13 @@ mod guest {
         assert_eq!(allocated, (expected.len() as u64).next_multiple_of(64 << 10));
     }
 
+    /// fxdax: a soft lockup dumps every CPU's stack, as the guest's command line asks (vm::CMDLINE),
+    /// which a kernel without the setting would ignore but for a line in its log (TASK-133).
+    fn test_lockups_show_every_cpu() {
+        let setting = fs::read_to_string("/proc/sys/kernel/softlockup_all_cpu_backtrace").unwrap();
+        assert_eq!(setting, "1\n");
+    }
+
     /// File handles: name_to_handle_at, and open_by_handle_at with the inode cached and evicted.
     fn test_file_handles() {
         fs::write(path("handled"), b"by handle").unwrap();
@@ -3931,6 +3938,7 @@ mod guest {
                 ("unsupported", &test_unsupported),
                 ("reflinks", &test_reflinks),
                 ("removed_directories", &test_removed_directories),
+                ("lockups_show_every_cpu", &test_lockups_show_every_cpu),
                 ("file_attributes", &test_file_attributes),
                 ("idmapped_mount", &test_idmapped_mount),
                 ("multigrain_times", &test_multigrain_times),
