@@ -6,7 +6,7 @@ title: >-
 status: In Progress
 assignee: []
 created_date: '2026-10-29 21:13'
-updated_date: '2026-10-29 22:26'
+updated_date: '2026-10-30 00:02'
 labels:
   - performance
 dependencies: []
@@ -45,4 +45,6 @@ Also: the VMM's 'extentd client' thread, which makes the window's changes (mmap,
 Bisected: 6a08c8622 (f897ce4a2's parent, r263): 1037 941 895 870 898 tps, stage-ops 2.70M, stage maps 1.58M for 55.7 GB (35 KB a run), VMM 'extentd client' 16+102 s; 79a4ab93e (f897ce4a2 with guest builds fixed): 913 816 801 649 680, 5.42M, 5.81M for 52.6 GB (9 KB a run), 21+150 s. The regression is f897ce4a2, the Zircon port's deletion: fxdax's own physmem, extent cache and DAX windows. Its windows map in runs of physically consecutive pages (Window::install, map_run), each run a stage map; a seal's read-only remap of an open extent's pages is reprotected in place in the VMM (uffd remap), but one reprotect per physical run (write-protects 198K against 898K). With physical runs a quarter as long, every kind of window change roughly quadrupled. Open extents' pages are allocated a page at a time (OpenPages::zeroed), interleaving with every other extent allocating at once. A/B on GCE: a27e50fd8 (r264) against it with open extents' pages allocated in runs after the page before them (branch wip-open-pages-runs, r263). Next if that's not all: coalesce the VMM's in-place reprotects of window-consecutive runs, and have the window protect pages whose frames don't change rather than remap them.
 
 A/B: open extents' pages allocated in runs (wip-open-pages-runs, r263) left runs as short, 5.75M stage maps for 54.7 GB (9.5 KB), against 5.69M for 51.9 GB at a27e50fd8 (r264): not the cause; dropped. tps 949..696 against 905..668, within hosts' spread. Committed meanwhile: the VMM reprotects in-place maps one after another in the window at once (verified by tests; perf to measure).
+
+GCE r264 at 641568faf, pgbench-dax 1 VM: tps 828.5, 715.6, 768.9, 664.7, 666.7. stage-maps 5030410 (47.5 GB, 9.4 KB each) in stage-segments 1181078 (40 KB each): a window-consecutive run of pages present together is 4.3 runs of physical memory, so the short maps come from scattered physical memory, not from gaps in the window. stage-maps-open 1605892 (32%); the rest are cached extents read in with alloc_run. stage-ops 4752917 at 25.6 us each (121.9 s); guest MAP requests 825265 at 93 us each (76.9 s). Next: physmem's free list is LIFO and alloc_run only extends a run by the physically next free page, so churn scatters free memory; reproduce in a physmem test, then an allocator that keeps free runs whole (buddy).
 <!-- SECTION:NOTES:END -->
