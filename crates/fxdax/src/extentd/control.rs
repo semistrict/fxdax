@@ -56,7 +56,17 @@ pub fn serve_control(
         let incoming = tokio_stream::wrappers::UnixListenerStream::new(
             tokio::net::UnixListener::from_std(listener)?,
         );
-        tokio::spawn(report_health(reporter));
+        // Its first status reported before it serves: the reporter starts with the server's, "",
+        // SERVING, which a check served before a task of its own reported otherwise saw.
+        let mut serving = super::SERVING.subscribe();
+        let now = *serving.borrow_and_update();
+        report_health(&reporter, now).await;
+        tokio::spawn(async move {
+            while serving.changed().await.is_ok() {
+                let now = *serving.borrow_and_update();
+                report_health(&reporter, now).await;
+            }
+        });
         CONTROL_SERVING.store(true, std::sync::atomic::Ordering::Release);
         tonic::transport::Server::builder()
             .add_service(health)
@@ -75,22 +85,16 @@ pub(super) fn is_serving() -> bool {
 }
 
 /// Reports, through the standard gRPC health service (grpc.health.v1.Health), whether the daemon
-/// serves (TASK-48): SERVING while it accepts VM processes' connections, NOT_SERVING as it starts
-/// and once it stops; the whole server's status, named "", and the control API's, alike.
-async fn report_health(reporter: tonic_health::server::HealthReporter) {
+/// serves (TASK-48), `serving`: SERVING while it accepts VM processes' connections, NOT_SERVING
+/// as it starts and once it stops; the whole server's status, named "", and the control API's,
+/// alike. Its callers have it reported once it returns ([`super::stop_serving`] waits for that).
+async fn report_health(reporter: &tonic_health::server::HealthReporter, serving: bool) {
     use tonic::server::NamedService;
     use tonic_health::ServingStatus;
-    let mut serving = super::SERVING.subscribe();
-    loop {
-        let now = *serving.borrow_and_update();
-        let status = if now { ServingStatus::Serving } else { ServingStatus::NotServing };
-        reporter.set_service_status("", status).await;
-        reporter.set_service_status(<ExtentdServer<Control> as NamedService>::NAME, status).await;
-        super::REPORTED.send_replace(now);
-        if serving.changed().await.is_err() {
-            return;
-        }
-    }
+    let status = if serving { ServingStatus::Serving } else { ServingStatus::NotServing };
+    reporter.set_service_status("", status).await;
+    reporter.set_service_status(<ExtentdServer<Control> as NamedService>::NAME, status).await;
+    super::REPORTED.send_replace(serving);
 }
 
 /// A channel to the control API of the daemon listening at `socket`: for its clients, the API's
