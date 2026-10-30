@@ -905,17 +905,26 @@ impl ExtentStore {
         stats::add(Counter::Reads, 1);
         stats::add(Counter::ReadBytes, len as u64);
         let mut data = vec![0; len];
-        let open = self.open.lock().unwrap().get(&extent).map(|open| open.pages.clone());
-        match open {
-            // An open extent mapped writably is in memory.
-            Some(pages) => {
+        let open = self.open.lock().unwrap();
+        match open.get(&extent) {
+            // An open extent mapped writably is in memory. Read with the open extents held, which
+            // a commit moves into the cache: past them, its pages would read as zeros
+            // (TASK-79.46).
+            Some(extent_open) => {
                 let end = offset.checked_add(len as u64).ok_or(Errno::EINVAL)?;
                 if end > Self::MAX_EXTENT {
                     return Err(Errno::EINVAL);
                 }
-                pages.read(offset, &mut data);
+                #[cfg(test)]
+                {
+                    let found = tests::OPEN_READ_FOUND.lock().unwrap().take();
+                    found.into_iter().for_each(|found| found());
+                }
+                extent_open.pages.read(offset, &mut data);
+                drop(open);
             }
             None => {
+                drop(open);
                 if !self.read_cached(extent, offset, &mut data)? {
                     self.read_stored(extent, offset, &mut data)?;
                 }
@@ -2217,6 +2226,40 @@ mod tests {
         let map = |extent| store.map(extent, 0, len, 0, false).unwrap();
         let expected = [first.clone(), second.clone()].concat();
         race(&store, ROUNDS, prepare, &[&write_second, &map], &expected);
+    }
+
+    /// Run by a read of an open extent once it has found it, before it reads its pages.
+    pub(super) static OPEN_READ_FOUND: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>> =
+        std::sync::Mutex::new(None);
+
+    /// TASK-79.46: a read of an open extent holds off the commit that seals it, which would move
+    /// its pages into the cache between the read finding them and reading them, and they would
+    /// read as zeros. The read gives a commit it let in time to end.
+    #[test]
+    fn reads_of_open_extents_hold_off_their_commit() {
+        let (store, _dir) = store(1 << 26);
+        let ps = page_size();
+        let _window = store.create_dax_window(ps, None).unwrap();
+        let extent = id(&store, 1);
+        let data = pattern(3, BLOCK);
+        store.map(extent, 0, ps, 0, true).unwrap();
+        write(&store, extent, 0, &data).unwrap();
+        let (found, read_found) = std::sync::mpsc::channel();
+        let (committed, commit_ended) = std::sync::mpsc::channel();
+        *OPEN_READ_FOUND.lock().unwrap() = Some(Box::new(move || {
+            found.send(()).unwrap();
+            let waited = std::time::Duration::from_millis(200);
+            commit_ended.recv_timeout(waited).ok();
+        }));
+        std::thread::scope(|scope| {
+            let store = &store;
+            scope.spawn(move || {
+                read_found.recv().unwrap();
+                store.commit_ordered(None).unwrap();
+                committed.send(()).ok();
+            });
+            assert_eq!(read(store, extent, 0, BLOCK), Ok(data.clone()));
+        });
     }
 
     /// A write to an extent not open racing a commit: committed by it, or by the next, which
