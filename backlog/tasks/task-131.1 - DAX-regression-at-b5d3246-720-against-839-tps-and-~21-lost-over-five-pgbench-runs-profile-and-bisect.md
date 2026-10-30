@@ -6,7 +6,7 @@ title: >-
 status: In Progress
 assignee: []
 created_date: '2026-10-29 21:13'
-updated_date: '2026-10-30 00:46'
+updated_date: '2026-10-30 01:17'
 labels:
   - performance
 dependencies: []
@@ -53,4 +53,6 @@ GCE r264 at 585a82004 (641568faf + open extents' pages allocated in runs after t
 GCE r264 at 4782583c0 (open pages in runs + allocation counters): tps 937.9, 829.0, 801.9, 661.6, 653.4. Open extents' allocations: 292262, 4554810 pages (15.6 each), in 1739511 physical runs (2.6 pages each). Commits ask for runs; free memory is fragmented: the arenas' free list, LIFO, hands out the short runs freed last (an fsync's small extents) first. Fix: physmem's free pages as a buddy allocator's blocks (0b846e695, local): runs from the smallest block holding them, single pages from the smallest blocks, freed pages joined with their buddies. physmem tests (54, shuttle 10) and fxdax's pass on macOS. r264-G measures it with open pages in runs.
 
 GCE r264 at ed4f7745e (buddy allocator 0b846e695 + open pages in runs + counters), pgbench-dax: tps 1018.9, 933.9, 891.1, 837.5, 893.2 (mean 915; r264 without: 938, 829, 802, 662, 653, mean 769: +19%; run 5/run 1 0.88 against 0.70). Open allocations 323024 of 5116569 pages in 325434 physical runs (1.007 a allocation; 6.0 without). stage-maps 2106558 (27.7 KB each; 9.5 KB without) in 1461628 segments (1.44 a segment; 4.23); stage-ops 2849107 (5243814), the VMM's stage time 83.9 s (130.4 s). Release suites and Linux workspace tests running before the push (r264, r263).
+
+Pushed: e88f2c02a (buddy allocator), 9706c857f (open pages in runs, a chunk's at most). Verified: GCE r264 suites at ccbc757e1, fxfs-guest, -dax, -checks, -checks-dax, -crash, -crash-dax, -checks-dax-small 2 rounds each passed; Linux workspace r263 1959 of 1960 (the one TASK-132's flake, fixed since); macOS physmem and fxdax 292 passed on main with it.
 <!-- SECTION:NOTES:END -->
