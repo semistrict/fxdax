@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-30 00:53'
+updated_date: '2026-10-30 00:53'
 labels:
   - bug
   - flaky
@@ -17,7 +18,7 @@ ordinal: 480000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-GCE r263 (buddy branch ccbc757e1, Linux workspace run): SIGABRT, 'reading ExtentId {..., sequence: 1} at 0x0: Errno(ENOMEM)' then 'unresolved DAX window fault at offset 0x0 (Read): ENOMEM'. Pre-existing: in OrbStack Docker, main (wbk at 4dd8...) fails 2 of 12 runs of it alone, the buddy branch 1 of 12. A read fault's page-in under the 4-chunk total limit finds no memory where relief, evicting the other tenant's pages, should make room: likely relief freeing pages without freeing a whole chunk the starved arena could take, or the fault not waiting for relief. Kin of TASK-106 (tenants_past_their_limits_evict_then_refuse).
+GCE r263 (buddy branch ccbc757e1, Linux workspace run): SIGABRT, 'reading ExtentId {..., sequence: 1} at 0x0: Errno(ENOMEM)' then 'unresolved DAX window fault at offset 0x0 (Read): ENOMEM'. Pre-existing: in OrbStack Docker, main (the commit before 'backlog: memory test flake filed') fails 2 of 12 runs of it alone, the buddy branch 1 of 12. A read fault's page-in under the 4-chunk total limit finds no memory where relief, evicting the other tenant's pages, should make room: likely relief freeing pages without freeing a whole chunk the starved arena could take, or the fault not waiting for relief. Kin of TASK-106 (tenants_past_their_limits_evict_then_refuse).
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
