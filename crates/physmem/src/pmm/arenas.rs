@@ -404,15 +404,21 @@ impl Arenas {
     }
 
     /// Relief's pass for `arena` freed `freed` bytes: something, and it is not exhausted; nothing,
-    /// and it is, if it is starved still, but while pages of it are quarantined, which make it room
-    /// as they come back (TASK-106): what relief evicted, a window mapped, waits for its VM process
-    /// to unmap it, and a pass after finds nothing left to evict.
+    /// and it is, if it is starved still, but while pages that would make it room are quarantined,
+    /// as they make it room once they come back (TASK-106): what relief evicted, a window mapped,
+    /// waits for its VM process to unmap it, and a pass after finds nothing left to evict. Its own
+    /// pages, starved at its own cap; any arena's, at the total's, which relief evicts any arena's
+    /// for (TASK-132).
     pub(super) fn relieved(&mut self, arena: ArenaId, freed: u64) {
-        let starved = self.starved(arena).is_some();
+        let starved = self.starved(arena);
+        let coming_back = match starved {
+            Some(Starved::Total) => self.arenas.values().any(|entry| entry.quarantined > 0),
+            _ => self.arenas.get(&arena).is_some_and(|entry| entry.quarantined > 0),
+        };
         let Some(entry) = self.arenas.get_mut(&arena) else { return };
         if freed > 0 {
             entry.relief.exhausted = false;
-        } else if starved && entry.quarantined == 0 {
+        } else if starved.is_some() && !coming_back {
             entry.relief.exhausted = true;
         }
     }
@@ -1152,6 +1158,29 @@ mod tests {
         assert_eq!(fixture.take_after(last), None, "past the chunk");
         taken.extend([start, next, last]);
         taken.extend(std::iter::from_fn(|| fixture.take(arena).ok()).take(2));
+        fixture.put_all(taken);
+    }
+
+    /// TASK-132: an arena starved at the total cap is made room by any arena's pages, and a pass
+    /// that frees nothing doesn't exhaust it while pages of another arena's, which relief evicted
+    /// for it, are quarantined: they make it room as they come back, their chunk freed. Once none
+    /// is to come back, it is exhausted.
+    #[test]
+    fn relief_exhausts_no_arena_starved_at_the_total_with_any_arenas_pages_to_come_back() {
+        let mut fixture = Fixture::new();
+        let (full, starved) = (fixture.create(), fixture.create());
+        fixture.arenas.set_total_cap(Some(1));
+        let mut taken = fixture.take_chunks(full, 1);
+        assert_eq!(fixture.arenas.starved(starved), Some(Starved::Total));
+        let evicted = taken.pop().unwrap();
+        fixture.arenas.quarantine(&fixture.pages, evicted, true);
+        fixture.arenas.relieved(starved, 0);
+        assert!(!fixture.arenas.ask_relief(starved, Starved::Total), "a page is to come back");
+
+        fixture.arenas.quarantine(&fixture.pages, evicted, false);
+        let _ = fixture.put(evicted);
+        fixture.arenas.relieved(starved, 0);
+        assert!(fixture.arenas.ask_relief(starved, Starved::Total), "none is to come back");
         fixture.put_all(taken);
     }
 
