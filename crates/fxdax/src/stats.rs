@@ -109,6 +109,14 @@ pub struct Stats {
     pub stage_segments: u64,
     /// Of `stage_maps`, those of open extents' pages.
     pub stage_maps_open: u64,
+    /// fxdax: the allocations of open extents' pages, each of a run of them not yet in memory
+    /// (TASK-131.1).
+    pub open_allocs: u64,
+    /// Their pages.
+    pub open_alloc_pages: u64,
+    /// The runs of pages consecutive in physical memory they were: as many as the pages, physical
+    /// memory gave them a page at a time.
+    pub open_alloc_runs: u64,
 }
 
 /// The counters, in the order of [`Stats`]' fields.
@@ -150,10 +158,13 @@ pub(crate) enum Counter {
     CommitSealPopulateNs,
     StageSegments,
     StageMapsOpen,
+    OpenAllocs,
+    OpenAllocPages,
+    OpenAllocRuns,
 }
 
 /// The counters [`Counter`] names, which this module keeps.
-const COUNTED: usize = 36;
+const COUNTED: usize = 39;
 
 /// The counters a snapshot holds: those it keeps, and the extent store's.
 const COUNTERS: usize = COUNTED + 3;
@@ -219,6 +230,9 @@ pub fn stats() -> Stats {
         commit_seal_populate_ns: count(Counter::CommitSealPopulateNs),
         stage_segments: count(Counter::StageSegments),
         stage_maps_open: count(Counter::StageMapsOpen),
+        open_allocs: count(Counter::OpenAllocs),
+        open_alloc_pages: count(Counter::OpenAllocPages),
+        open_alloc_runs: count(Counter::OpenAllocRuns),
     }
 }
 
@@ -265,6 +279,9 @@ impl Stats {
             self.commit_seal_populate_ns,
             self.stage_segments,
             self.stage_maps_open,
+            self.open_allocs,
+            self.open_alloc_pages,
+            self.open_alloc_runs,
         ]
     }
 
@@ -311,6 +328,9 @@ impl Stats {
             commit_seal_populate_ns: word(36),
             stage_segments: word(37),
             stage_maps_open: word(38),
+            open_allocs: word(39),
+            open_alloc_pages: word(40),
+            open_alloc_runs: word(41),
         }
     }
 
@@ -364,6 +384,9 @@ impl Stats {
             "commit-seal-populate-ns",
             "stage-segments",
             "stage-maps-open",
+            "open-allocs",
+            "open-alloc-pages",
+            "open-alloc-runs",
         ];
         std::array::from_fn(|at| (names[at], words[at]))
     }

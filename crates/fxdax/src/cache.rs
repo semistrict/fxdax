@@ -808,6 +808,12 @@ impl OpenPages {
         let rest = physmem::alloc_run(self.arena, count - run.len(), physmem::Wait::Yes)
             .map_err(|_| Errno::ENOMEM)?;
         run.extend(rest);
+        let ps = page_size() as usize;
+        let breaks = (run.windows(2))
+            .filter(|pair| pair[1].as_ptr() as usize != pair[0].as_ptr() as usize + ps);
+        stats::add(Counter::OpenAllocs, 1);
+        stats::add(Counter::OpenAllocPages, run.len() as u64);
+        stats::add(Counter::OpenAllocRuns, 1 + breaks.count() as u64);
         for page in &run {
             // SAFETY: The page is allocated, and only this extent's.
             unsafe { std::ptr::write_bytes(page.as_ptr(), 0, page_size() as usize) };
