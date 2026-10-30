@@ -333,18 +333,33 @@ impl Drop for DurableGuard {
     }
 }
 
-/// fxdax: how many of something there were, and their nanoseconds, all told.
+/// fxdax: how many of something there were, and their nanoseconds, all told; and how many took
+/// each power of two of time (TASK-111.6), as the C side's histograms (fs/fxfs/hist.h) count them:
+/// bucket k those under 1.024 us times 2 to the k, the last the rest.
 #[derive(Default)]
 pub struct Timed {
     pub count: AtomicU64,
     pub ns: AtomicU64,
+    pub hist: [AtomicU64; HIST_BUCKETS],
 }
+
+/// The buckets of a histogram of times ([`Timed`]).
+pub const HIST_BUCKETS: usize = 24;
 
 impl Timed {
     /// Counts one, which began at `began`.
     fn add(&self, began: Instant) {
+        let ns = began.elapsed().as_nanos() as u64;
         self.count.fetch_add(1, Ordering::Relaxed);
-        self.ns.fetch_add(began.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        self.ns.fetch_add(ns, Ordering::Relaxed);
+        let bucket = (u64::BITS - (ns >> 10).leading_zeros()) as usize;
+        self.hist[bucket.min(HIST_BUCKETS - 1)].fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Its histogram's buckets' counts, comma-separated.
+    pub fn hist(&self) -> String {
+        let counts = self.hist.iter().map(|count| count.load(Ordering::Relaxed).to_string());
+        counts.collect::<Vec<_>>().join(",")
     }
 }
 

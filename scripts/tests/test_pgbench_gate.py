@@ -79,6 +79,25 @@ class PgbenchGate(unittest.TestCase):
             {"gate": "dax", "case": "dax", "value": 0.9464, "threshold": 0.95, "passed": False},
         ])
 
+    def test_each_runs_latencies_are_its_guests_histograms_over_it(self):
+        lines = [
+            "fxfs stats: seals 0 seals_hist 0,0,0,0 device_reads 3",
+            "fxfs stats: seals 10 seals_hist 0,5,4,1 device_reads 9",
+            "tps = 100.0 (without initial connection time)",
+            "fxfs stats: seals 10 seals_hist 0,5,4,1",
+            "fxfs stats: seals 12 seals_hist 2,5,4,1",
+            "tps = 90.0 (without initial connection time)",
+        ]
+        found, per_vm = gate.records(lines)
+        self.assertEqual((found, per_vm), ([
+            (100.0, {"seals": {"count": 10, "p50_us": 2.048, "p90_us": 4.096, "p99_us": None}}),
+            (90.0, {"seals": {"count": 2, "p50_us": 1.024, "p90_us": 1.024, "p99_us": 1.024}}),
+        ], None))
+        results = self.results({"fxfs-guest-pgbench-dax": ("\n".join(lines), "OK runs 2\n")})
+        self.assertEqual(gate.measure_latencies(results)["dax"][0][0][1]["seals"]["count"], 2)
+        self.assertEqual(gate.measure_latencies(self.results({"fxfs-guest-pgbench": log([1])})),
+                         {}, "no histograms, no latencies")
+
     def test_one_daemon_s_last_vm_is_gated_against_its_first(self):
         measured = gate.measure(self.results({
             "fxfs-guest-pgbench-dax": log([100, 100, 95], [90, 85, 80]),

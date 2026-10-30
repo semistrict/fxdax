@@ -923,6 +923,12 @@ mod guest {
         // (TASK-44.22).
         let stats = fs::read_to_string("/proc/fs/fxfs/extents").unwrap();
         assert!(stats.lines().any(|line| line == "window_lost_bytes 0"), "{stats}");
+        // The DAX window's latency histograms, each 24 buckets' counts (TASK-111.6).
+        for name in ["window_map_requests", "window_unmaps", "dax_faults", "dax_evacuate_map"] {
+            let line = stats.lines().find_map(|line| line.strip_prefix(&format!("{name}_hist ")));
+            let buckets = line.unwrap_or_else(|| panic!("{name}_hist: {stats}")).split(',');
+            assert_eq!(buckets.map(|count| count.parse::<u64>().unwrap()).count(), 24, "{name}");
+        }
         report(&format!("failed calls {failed}"));
         report(&format!("forced failures {}", forced_failures()));
     }

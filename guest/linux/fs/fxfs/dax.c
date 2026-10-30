@@ -69,6 +69,7 @@
 #include <linux/writeback.h>
 
 #include "device.h"
+#include "hist.h"
 #include "vfs.h"
 
 /* A range's size: a power of two, the window's and chunks' alignment. */
@@ -509,6 +510,11 @@ struct fxfs_dax {
 	 * took of that (TASK-91.16).
 	 */
 	atomic64_t write_waits, write_wait_ns, evacuations, evacuate_hold_ns, evacuate_map_ns;
+	/*
+	 * fxdax: what each fault of a mapping took, and each evacuation held its file's semaphore,
+	 * and its MAP took (TASK-111.6).
+	 */
+	struct fxfs_hist fault_hist, evacuate_hold_hist, evacuate_map_hist;
 	/*
 	 * fxdax: the writes whose blocks Fxfs moved before a seal kept them from the gate, which
 	 * their ranges map read-only where they moved to (fxfs_dax_map_moved, TASK-121).
@@ -3299,6 +3305,7 @@ static vm_fault_t fxfs_dax_do_fault(struct vm_fault *vmf, unsigned int order, bo
 {
 	struct inode *inode = file_inode(vmf->vma->vm_file);
 	struct super_block *sb = inode->i_sb;
+	u64 began = ktime_get_ns();
 	unsigned int stale = 0;
 	vm_fault_t ret;
 	unsigned long pfn;
@@ -3370,6 +3377,7 @@ static vm_fault_t fxfs_dax_do_fault(struct vm_fault *vmf, unsigned int order, bo
 				   write ? "write" : "read", order, vmf->pgoff, inode->i_ino, error);
 	if (write)
 		sb_end_pagefault(sb);
+	fxfs_hist_add(&fxfs_dax_of(inode)->fault_hist, ktime_get_ns() - began);
 	return ret;
 }
 
@@ -3880,6 +3888,7 @@ static void fxfs_dax_evacuee_map(struct fxfs_dax *dax, struct fxfs_dax_file *fil
 		began = ktime_get_ns();
 		err = fxfs_nofs(fxfs_dax_device_map_many(dax, ev->maps, ev->count));
 		atomic64_add(ktime_get_ns() - began, &dax->evacuate_map_ns);
+		fxfs_hist_add(&dax->evacuate_map_hist, ktime_get_ns() - began);
 		for (r = 0; r < ev->count; r++) {
 			/* If they failed, mapped one by one, to place those that did. */
 			if (err)
@@ -4067,6 +4076,7 @@ static void fxfs_dax_evacuate_file(struct fxfs_dax *dax, struct fxfs_dax_file *f
 	if (ev.count) {
 		atomic64_inc(&dax->evacuations);
 		atomic64_add(ktime_get_ns() - locked, &dax->evacuate_hold_ns);
+		fxfs_hist_add(&dax->evacuate_hold_hist, ktime_get_ns() - locked);
 	}
 	/* Those waiting to drop its ranges (fxfs_dax_lock_unheld). */
 	wake_up_all(&dax->wait);
@@ -4237,6 +4247,9 @@ void fxfs_dax_show_stats(struct fxfs_dax *dax, struct seq_file *m)
 	seq_printf(m, "dax_evacuations %lld\ndax_evacuate_hold_ns %lld\ndax_evacuate_map_ns %lld\n",
 		   atomic64_read(&dax->evacuations), atomic64_read(&dax->evacuate_hold_ns),
 		   atomic64_read(&dax->evacuate_map_ns));
+	fxfs_hist_show(m, "dax_evacuate_hold", &dax->evacuate_hold_hist);
+	fxfs_hist_show(m, "dax_evacuate_map", &dax->evacuate_map_hist);
+	fxfs_hist_show(m, "dax_faults", &dax->fault_hist);
 	for (why = 0; why < FXFS_DAX_WHYS; why++)
 		seq_printf(m, "window_maps_%s %lld\nwindow_map_bytes_%s %lld\n", fxfs_dax_whys[why],
 			   atomic64_read(&dax->maps[why]), fxfs_dax_whys[why],

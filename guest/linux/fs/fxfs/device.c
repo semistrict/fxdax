@@ -18,6 +18,7 @@
 #include <linux/wait.h>
 
 #include "device.h"
+#include "hist.h"
 
 /* fxdax: the gate's class, as lockdep has it (gate_map). */
 static struct lock_class_key fxfs_device_gate_key;
@@ -48,6 +49,8 @@ struct fxfs_device {
 	void *sealer_arg;
 	/* fxdax: what the window's requests took, and the stores seals held off (TASK-91.7). */
 	atomic64_t maps, map_ns, unmaps, unmap_ns, stores_held, stores_held_ns;
+	/* fxdax: what MAP requests took, and UNMAPs, each (TASK-111.6). */
+	struct fxfs_hist map_hist, unmap_hist;
 	/* fxdax: the requests the maps took, fewer than the maps with MAP_MANY (TASK-91.4). */
 	atomic64_t map_requests;
 };
@@ -322,6 +325,7 @@ int fxfs_device_map(struct fxfs_device *dev, u64 branch, u64 sequence, u64 offse
 	atomic64_inc(&dev->maps);
 	atomic64_inc(&dev->map_requests);
 	atomic64_add(ktime_get_ns() - began, &dev->map_ns);
+	fxfs_hist_add(&dev->map_hist, ktime_get_ns() - began);
 	kfree(req);
 	return err;
 }
@@ -363,6 +367,7 @@ static int fxfs_device_map_one_request(struct fxfs_device *dev, const struct fxf
 	atomic64_add(count, &dev->maps);
 	atomic64_inc(&dev->map_requests);
 	atomic64_add(ktime_get_ns() - began, &dev->map_ns);
+	fxfs_hist_add(&dev->map_hist, ktime_get_ns() - began);
 	kfree(req);
 	return err;
 }
@@ -412,6 +417,7 @@ int fxfs_device_unmap(struct fxfs_device *dev, u64 window_offset, u64 len)
 	err = virtio_extent_call(dev->vext, req);
 	atomic64_inc(&dev->unmaps);
 	atomic64_add(ktime_get_ns() - began, &dev->unmap_ns);
+	fxfs_hist_add(&dev->unmap_hist, ktime_get_ns() - began);
 	kfree(req);
 	return err;
 }
@@ -421,8 +427,10 @@ void fxfs_device_show_stats(struct fxfs_device *dev, struct seq_file *m)
 	seq_printf(m, "window_maps %lld\nwindow_maps_ns %lld\n", atomic64_read(&dev->maps),
 		   atomic64_read(&dev->map_ns));
 	seq_printf(m, "window_map_requests %lld\n", atomic64_read(&dev->map_requests));
+	fxfs_hist_show(m, "window_map_requests", &dev->map_hist);
 	seq_printf(m, "window_unmaps %lld\nwindow_unmaps_ns %lld\n", atomic64_read(&dev->unmaps),
 		   atomic64_read(&dev->unmap_ns));
+	fxfs_hist_show(m, "window_unmaps", &dev->unmap_hist);
 	seq_printf(m, "stores_held_by_seals %lld\nstores_held_by_seals_ns %lld\n",
 		   atomic64_read(&dev->stores_held), atomic64_read(&dev->stores_held_ns));
 }

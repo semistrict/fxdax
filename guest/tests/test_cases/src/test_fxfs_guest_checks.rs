@@ -703,13 +703,15 @@ mod guest {
         (entry & PRESENT != 0).then_some(entry & PFN)
     }
 
-    /// fxdax: what /proc/fs/fxfs/<tag> counts (TASK-91.7), by name.
+    /// fxdax: what /proc/fs/fxfs/<tag> counts (TASK-91.7), by name: a histogram (NAME_hist, its
+    /// buckets' counts comma-separated, TASK-111.6) as how many it counts.
     fn stats() -> std::collections::BTreeMap<String, u64> {
         let text = fs::read_to_string("/proc/fs/fxfs/fxdax").unwrap();
         (text.lines())
             .map(|line| {
                 let (name, value) = line.split_once(' ').unwrap();
-                (name.to_owned(), value.parse().unwrap())
+                let counts = value.split(',').map(|count| count.parse::<u64>().unwrap());
+                (name.to_owned(), counts.sum())
             })
             .collect()
     }
@@ -726,6 +728,12 @@ mod guest {
         assert_eq!(
             ["device_commits", "seals", "seal_waits", "device_writes"].map(grew),
             [true; 4],
+            "{before:?} then {after:?}"
+        );
+        // And their histograms (TASK-111.6).
+        assert_eq!(
+            ["device_commits_hist", "seals_hist", "seal_waits_hist"].map(grew),
+            [true; 3],
             "{before:?} then {after:?}"
         );
         fs::remove_file(path("stats")).unwrap();

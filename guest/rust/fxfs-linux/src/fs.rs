@@ -383,6 +383,7 @@ impl GuestFxfs for Fxfs {
         for (name, timed) in timed {
             let _ = writeln!(out, "{name} {}", timed.count.load(Relaxed));
             let _ = writeln!(out, "{name}_ns {}", timed.ns.load(Relaxed));
+            let _ = writeln!(out, "{name}_hist {}", timed.hist());
         }
         let _ = writeln!(out, "fsyncs {fsyncs}");
         let _ = writeln!(out, "fsyncs_coalesced {coalesced}");

@@ -20,6 +20,11 @@ every gate passes:
 - density: of one daemon serving many VMs, the first round that had more than one, its last VM's
   median run against its first's, at least DENSITY.
 
+Each run's guest latencies (TASK-111.6), the histograms the guest's Fxfs keeps of its faults, seals,
+evacuations and window MAPs (`NAME_hist` in /proc/fs/fxfs/extents, which the case's log has before
+and after each run on its `fxfs stats:` lines), are reported as their percentiles, in us: the upper
+bound of the bucket each falls in, bucket k's 1.024 us times 2 to the k, the last's none.
+
 A gate whose cases didn't run is left out. The host's kind (`nested`, as GCE's n2 VMs are, or
 `bare-metal`) is reported with the numbers, which differ much between the two (window remaps and
 first-touch mappings cost more nested), never compared across.
@@ -50,21 +55,71 @@ FXFS = ("no-dax", "dax")
 TPS = re.compile(r"^tps = ([0-9.]+) \(without initial connection time\)")
 # The runs a VM makes, as its guest says once they are done (test_fxfs_guest_pgbench.rs).
 RUNS = re.compile(r"^OK runs ([0-9]+)$")
+# The guest's Fxfs's stats, names and values, on one line, as the case logs them around each run.
+STATS = re.compile(r"^fxfs stats: (.*)$")
+# The percentiles of each run's latencies reported.
+PERCENTILES = (50, 90, 99)
 DEFAULTS = {"decay": 0.9, "dax": 0.95, "static-dax": 0.0, "density": 0.9}
+
+
+def records(lines):
+    """Each pgbench run's record in `lines`, a case's log, in order: its tps, and its guest's
+    latencies' percentiles (`latencies`); and the runs a VM made, if the guest said."""
+    found, stats, per_vm = [], [], None
+    for line in lines:
+        if match := STATS.match(line):
+            stats.append(match.group(1).split())
+        elif match := TPS.match(line):
+            # The run's stats are the last before its tps, and those before them, before it.
+            between = latencies(stats[-2], stats[-1]) if len(stats) > 1 else {}
+            found.append((float(match.group(1)), between))
+        elif match := RUNS.match(line.strip()):
+            per_vm = int(match.group(1))
+    return found, per_vm
+
+
+def by_vm(values, per_vm):
+    """`values`, a value each run, VM by VM: `per_vm` runs each, or all one VM's."""
+    per_vm = per_vm or len(values)
+    return [values[at:at + per_vm] for at in range(0, len(values), per_vm)]
 
 
 def runs(lines):
     """The tps of each VM's pgbench runs in `lines`, a case's log, VM by VM, in order."""
-    tps, per_vm = [], None
-    for line in lines:
-        if found := TPS.match(line):
-            tps.append(float(found.group(1)))
-        elif found := RUNS.match(line.strip()):
-            per_vm = int(found.group(1))
-    if not tps:
-        return []
-    per_vm = per_vm or len(tps)
-    return [tps[at:at + per_vm] for at in range(0, len(tps), per_vm)]
+    found, per_vm = records(lines)
+    return by_vm([tps for tps, _ in found], per_vm)
+
+
+def latencies(before, after):
+    """The percentiles of each histogram's counts between the stats `before` and `after` (each a
+    stats line's words, names and values in turn), by the name before its `_hist`: how many, and
+    each percentile's bucket's upper bound in us."""
+    pairs = [dict(zip(words[::2], words[1::2])) for words in (before, after)]
+    found = {}
+    for name, value in pairs[1].items():
+        if not name.endswith("_hist") or name not in pairs[0]:
+            continue
+        counts = [int(now) - int(then)
+                  for now, then in zip(value.split(","), pairs[0][name].split(","))]
+        found[name.removesuffix("_hist")] = percentiles(counts)
+    return found
+
+
+def percentiles(counts):
+    """How many `counts`, a histogram's buckets, count, and each of PERCENTILES' bucket's upper
+    bound in us: none for the last bucket, which has none, nor for no count."""
+    total, found = sum(counts), {}
+    for percentile in PERCENTILES:
+        bound = None
+        if total:
+            reached, at = 0, 0
+            for at, count in enumerate(counts):
+                reached += count
+                if reached * 100 >= percentile * total:
+                    break
+            bound = None if at == len(counts) - 1 else round(1.024 * 2 ** at, 3)
+        found[f"p{percentile}_us"] = bound
+    return {"count": total, **found}
 
 
 def logs(results, case):
@@ -91,12 +146,27 @@ def said(log):
 def measure(*results):
     """Each case's rounds in the `results` directories, by its JSON name: each round's VMs' runs'
     tps, each directory's rounds after the last's."""
+    return measure_each(results, lambda found: [tps for tps, _ in found])
+
+
+def measure_latencies(*results):
+    """As `measure`, each run's guest latencies' percentiles (`latencies`): of the cases whose
+    guests keep them."""
+    measured = measure_each(results, lambda found: [between for _, between in found])
+    return {name: rounds for name, rounds in measured.items()
+            if any(run for vms in rounds for runs in vms for run in runs)}
+
+
+def measure_each(results, values):
+    """Each case's rounds in the `results` directories, by its JSON name: each round's VMs' runs'
+    `values`, of its runs' records (`records`), each directory's rounds after the last's."""
     measured = {}
     for case, name in CASES.items():
         rounds = []
         for directory in results:
             for log in logs(directory, case):
-                rounds.append(runs(said(log)))
+                found, per_vm = records(said(log))
+                rounds.append(by_vm(values(found), per_vm) if found else [])
         if any(rounds):
             measured[name] = [vms for vms in rounds if vms]
     return measured
@@ -147,6 +217,8 @@ def main():
     if not measured:
         raise SystemExit(f"no pgbench runs in {' '.join(args.results)}")
     report = {"host": args.host, "tps": measured, "gates": gates(measured, thresholds())}
+    if latency := measure_latencies(*args.results):
+        report["latency"] = latency
     text = json.dumps(report, indent=2)
     if args.json:
         Path(args.json).write_text(text + "\n")
