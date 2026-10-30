@@ -38,6 +38,11 @@ use storage_device::ExtentId;
 /// How many of a segment's extents of their own upload at once.
 const OWN_AT_ONCE: usize = 4;
 
+/// How many forks' children's records are read, or made, at once: each a round trip to object
+/// storage, which one at a time held a checkpoint, and the uploader with it, up for a round trip
+/// a fork, 300 forks of a base 6-9 s at 25 ms of latency (TASK-92.4).
+const RECORDS_AT_ONCE: usize = 32;
+
 /// The bytes of an object a writer uploads, read only as its upload goes, within the writer's
 /// budget, and held only while it does.
 #[derive(Clone)]
@@ -413,12 +418,16 @@ impl<B: Bucket> Writer<B> {
                 .copied()
                 .collect()
         };
-        for fork in forks {
-            let origin = Origin { parent: self.branch, at: fork.at };
-            branch::record_fork(&*self.bucket, fork.child, origin).await?;
-            self.inner().recorded.insert(fork.child);
-        }
-        Ok(())
+        futures::stream::iter(forks)
+            .map(|fork| async move {
+                let origin = Origin { parent: self.branch, at: fork.at };
+                branch::record_fork(&*self.bucket, fork.child, origin).await?;
+                self.inner().recorded.insert(fork.child);
+                Ok::<_, Error>(())
+            })
+            .buffer_unordered(RECORDS_AT_ONCE)
+            .try_collect()
+            .await
     }
 
     /// Writes a checkpoint as of the last segment acknowledged, with the extents the collector
@@ -446,13 +455,16 @@ impl<B: Bucket> Writer<B> {
             state.extents.insert(*extent, location.clone());
         }
         // Forks whose children were deleted. Their records stay; their forks need not.
-        let mut gone = Vec::new();
-        for fork in &state.forks {
-            if branch::record(&*self.bucket, fork.child).await?.is_some_and(|record| record.deleted)
-            {
-                gone.push(fork.child);
-            }
-        }
+        let children: Vec<u64> = state.forks.iter().map(|fork| fork.child).collect();
+        let gone: Vec<u64> = futures::stream::iter(children)
+            .map(|child| async move {
+                let record = branch::record(&*self.bucket, child).await?;
+                Ok::<_, Error>(record.is_some_and(|record| record.deleted).then_some(child))
+            })
+            .buffer_unordered(RECORDS_AT_ONCE)
+            .try_filter_map(|gone| async move { Ok(gone) })
+            .try_collect()
+            .await?;
         state.forks.retain(|fork| !gone.contains(&fork.child));
         let key = layout::checkpoint(self.branch, seq);
         // Another writer's of the same segment holds the same extents, perhaps elsewhere.
@@ -630,6 +642,49 @@ mod tests {
             bucket.complete(0, Fault::None);
         }
         assert_eq!(most, OWN_AT_ONCE);
+    }
+
+    /// TASK-92.4: a fork's children's records are made, as their forks are acknowledged, and read,
+    /// as a checkpoint looks for those deleted, a few at once: one at a time, 300 forks of a base
+    /// held the uploader up for a round trip each.
+    #[test]
+    fn forks_records_are_made_and_read_a_few_at_once() {
+        use crate::layout::Segment;
+        use crate::sim::bucket::{Fault, SimBucket};
+        use std::task::{Context, Poll};
+        let bucket = SimBucket::new();
+        let (writer, _) = bucket.served(async {
+            branch::create(&*bucket, 1).await.unwrap();
+            Writer::open(bucket.clone(), 1, 10, 0).await.unwrap()
+        });
+        let children: Vec<u64> = (2..2 + 2 * RECORDS_AT_ONCE as u64 + 1).collect();
+        let footer = writer.chain().close(Contents { forks: children, ..Contents::default() });
+        let segment = Segment { data: Vec::new(), footer: footer.clone() };
+        let seq = writer.add_segment(Objects {
+            footer,
+            segment: segment.encode().into(),
+            own: Vec::new(),
+        });
+        bucket.served(writer.upload(seq.unwrap())).0.unwrap();
+        let mut context = Context::from_waker(futures::task::noop_waker_ref());
+        // The most requests waiting at once, until `future` is done.
+        let mut most_waiting = |future: std::pin::Pin<&mut dyn Future<Output = _>>| {
+            let mut future = future;
+            let mut most = 0;
+            while let Poll::Pending = future.as_mut().poll(&mut context) {
+                most = most.max(bucket.waiting());
+                bucket.complete(0, Fault::None);
+            }
+            most
+        };
+        let acknowledged = most_waiting(std::pin::pin!(async {
+            writer.acknowledge().await.unwrap();
+        }));
+        assert_eq!(acknowledged, RECORDS_AT_ONCE, "the records made at once");
+        let checkpointed = most_waiting(std::pin::pin!(async {
+            writer.checkpoint().await.unwrap();
+        }));
+        assert_eq!(checkpointed, RECORDS_AT_ONCE, "the records read at once");
     }
 
     /// TASK-79.19: a writer uploading within a budget reads each object only once the budget has
