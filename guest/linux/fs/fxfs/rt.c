@@ -32,7 +32,7 @@ void *fxfs_rt_alloc(size_t size, size_t align)
 	 */
 	if (align > ARCH_KMALLOC_MINALIGN)
 		size = roundup_pow_of_two(max(size, align));
-	return kvmalloc(size, GFP_KERNEL);
+	return kvmalloc(size, GFP_KERNEL | __GFP_NOFAIL);
 }
 
 void fxfs_rt_free(void *ptr)
@@ -72,12 +72,10 @@ struct fxfs_rt_parker {
 
 struct fxfs_rt_parker *fxfs_rt_parker_new(void)
 {
-	struct fxfs_rt_parker *parker = kmalloc(sizeof(*parker), GFP_KERNEL);
+	struct fxfs_rt_parker *parker = kmalloc(sizeof(*parker), GFP_KERNEL | __GFP_NOFAIL);
 
-	if (parker) {
-		atomic_set(&parker->state, PARKER_EMPTY);
-		init_completion(&parker->unparked);
-	}
+	atomic_set(&parker->state, PARKER_EMPTY);
+	init_completion(&parker->unparked);
 	return parker;
 }
 
@@ -127,6 +125,7 @@ void fxfs_rt_unpark(struct fxfs_rt_parker *parker)
 
 struct fxfs_rt_work {
 	struct work_struct work;
+	struct workqueue_struct *wq;
 	void (*run)(void *arg);
 	void *arg;
 };
@@ -134,12 +133,14 @@ struct fxfs_rt_work {
 static void fxfs_rt_work_run(struct work_struct *work)
 {
 	struct fxfs_rt_work *w = container_of(work, struct fxfs_rt_work, work);
+	/* What it runs may free it, its task's last reference dropped: nothing reads it after. */
+	void (*run)(void *arg) = w->run;
+	void *arg = w->arg;
 	/* Rust's allocations must not recurse into filesystems to reclaim memory. */
 	unsigned int nofs = memalloc_nofs_save();
 
-	w->run(w->arg);
+	run(arg);
 	memalloc_nofs_restore(nofs);
-	kfree(w);
 }
 
 /*
@@ -171,27 +172,27 @@ void fxfs_rt_exit(void)
 		destroy_workqueue(fxfs_rt_wq);
 }
 
-static int fxfs_rt_queue(struct workqueue_struct *wq, void (*run)(void *arg), void *arg)
+struct fxfs_rt_work *fxfs_rt_work_new(void (*run)(void *arg), bool urgent)
 {
-	struct fxfs_rt_work *w = kmalloc(sizeof(*w), GFP_ATOMIC);
+	struct fxfs_rt_work *w = kmalloc(sizeof(*w), GFP_KERNEL | __GFP_NOFAIL);
 
-	if (!w)
-		return -ENOMEM;
 	INIT_WORK(&w->work, fxfs_rt_work_run);
+	w->wq = urgent ? fxfs_rt_urgent_wq : fxfs_rt_wq;
 	w->run = run;
+	w->arg = NULL;
+	return w;
+}
+
+void fxfs_rt_work_queue(struct fxfs_rt_work *w, void *arg)
+{
+	/* Its run, if one has begun, has read its argument already. */
 	w->arg = arg;
-	queue_work(wq, &w->work);
-	return 0;
+	WARN_ON_ONCE(!queue_work(w->wq, &w->work));
 }
 
-int fxfs_rt_schedule(void (*run)(void *arg), void *arg)
+void fxfs_rt_work_free(struct fxfs_rt_work *w)
 {
-	return fxfs_rt_queue(fxfs_rt_wq, run, arg);
-}
-
-int fxfs_rt_schedule_urgent(void (*run)(void *arg), void *arg)
-{
-	return fxfs_rt_queue(fxfs_rt_urgent_wq, run, arg);
+	kfree(w);
 }
 
 struct fxfs_rt_timer {
@@ -210,10 +211,8 @@ static enum hrtimer_restart fxfs_rt_timer_fire(struct hrtimer *timer)
 
 struct fxfs_rt_timer *fxfs_rt_timer_new(void (*fire)(void *arg), void *arg)
 {
-	struct fxfs_rt_timer *t = kmalloc(sizeof(*t), GFP_KERNEL);
+	struct fxfs_rt_timer *t = kmalloc(sizeof(*t), GFP_KERNEL | __GFP_NOFAIL);
 
-	if (!t)
-		return NULL;
 	hrtimer_setup(&t->timer, fxfs_rt_timer_fire, CLOCK_MONOTONIC, HRTIMER_MODE_REL_SOFT);
 	t->fire = fire;
 	t->arg = arg;

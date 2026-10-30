@@ -828,9 +828,9 @@ mod guest {
     /// fxdax: the faults test's (TASK-44.10): its writers' allocations failed at random for a few
     /// seconds, as the debug kernel's fault injection does them for tasks that ask, through
     /// debugfs; each writer reports each file whose fsync returned, and in the end how many of its
-    /// calls failed. Not those of Fxfs's Rust's runtime, rt.c's (fxfs_rt_*), its allocator's and
-    /// its executor's, which can't fail: a failure there panicked the kernel, or wrote through
-    /// NULL (TASK-60.1, GCE r260, r262).
+    /// calls failed. Fxfs's Rust's runtime's allocations, rt.c's (fxfs_rt_*), its allocator's and
+    /// its executor's, are made not to fail (__GFP_NOFAIL), which the injection skips: one failing
+    /// panicked the kernel, or wrote through NULL (TASK-60.1, GCE r260, r262).
     fn faults() {
         const DEBUGFS: &str = "/sys/kernel/debug";
         const ATTRS: [&str; 2] = ["failslab", "fail_page_alloc"];
@@ -855,12 +855,7 @@ mod guest {
         };
         // What report() maps, before the writers' allocations fail: its mmap failed (GCE r268).
         quiet();
-        let (rust_start, rust_end) = symbols_range("fxfs_rt_alloc", "fxfs_rt_");
-        eprintln!("faults: none forced from {rust_start:#x} to {rust_end:#x}, Fxfs's runtime");
         for attr in ATTRS {
-            set(attr, "reject-start", &format!("{rust_start:#x}"));
-            set(attr, "reject-end", &format!("{rust_end:#x}"));
-            set(attr, "stacktrace-depth", "32");
             set(attr, "task-filter", "Y");
             set(attr, "interval", "1");
             set(attr, "times", "-1");
@@ -955,31 +950,6 @@ mod guest {
                 Err(err) => panic!("/dev/kmsg: {err}"),
             }
         }
-    }
-
-    /// fxdax: the addresses of the kernel's functions around `name` whose names begin with
-    /// `prefix`, one after another, one object's text, from the first's start to the end of the
-    /// last, the next symbol's start, as /proc/kallsyms has them: not those of the prefix elsewhere,
-    /// as an __init one is, which took most of the kernel in between, and the injection forced no
-    /// failure (GCE r266).
-    fn symbols_range(name: &str, prefix: &str) -> (u64, u64) {
-        let symbols = fs::read_to_string("/proc/kallsyms").unwrap();
-        let mut addresses: Vec<(u64, &str)> = (symbols.lines())
-            .filter_map(|line| {
-                let mut fields = line.split_whitespace();
-                let address = u64::from_str_radix(fields.next()?, 16).ok()?;
-                Some((address, fields.nth(1)?))
-            })
-            .collect();
-        addresses.sort_unstable();
-        let at = addresses.iter().position(|&(_, symbol)| symbol == name).expect(name);
-        let named = |at: &usize| addresses[*at].1.starts_with(prefix);
-        let first = (0..=at).rev().take_while(named).last().unwrap();
-        let last = (at..addresses.len()).take_while(named).last().unwrap();
-        let start = addresses[first].0;
-        assert_ne!(start, 0, "/proc/kallsyms hides addresses");
-        let end = addresses[last..].iter().find(|&&(address, _)| address > addresses[last].0);
-        (start, end.unwrap().0)
     }
 
     /// Whether the crash test's writers wait, as its guest stores through a mapping (TASK-79.11).

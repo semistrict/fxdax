@@ -10,7 +10,11 @@
 
 #include <linux/types.h>
 
-/* Memory for Rust's allocator, which may sleep: NULL if there is none, or `align` is too large. */
+/*
+ * Memory for Rust's allocator, which may sleep: without failing (__GFP_NOFAIL), as Rust's code
+ * mostly can't, and some writes through what it got unchecked (TASK-60.1); NULL only if `align` is
+ * too large.
+ */
 void *fxfs_rt_alloc(size_t size, size_t align);
 void fxfs_rt_free(void *ptr);
 
@@ -22,7 +26,7 @@ void __noreturn fxfs_rt_panic(const char *msg, size_t len);
 /*
  * A parker lets a thread wait until it is woken: an fxfs_rt_unpark lets fxfs_rt_park return, one
  * at a time, or several at once, as std's thread parking does. The thread spins briefly before it
- * sleeps. Unparking does not sleep, so it may be called from any context.
+ * sleeps. Unparking does not sleep, so it may be called from any context. Made without failing.
  */
 struct fxfs_rt_parker;
 struct fxfs_rt_parker *fxfs_rt_parker_new(void);
@@ -35,16 +39,21 @@ int fxfs_rt_init(void);
 void fxfs_rt_exit(void);
 
 /*
- * Calls `run(arg)` on a kernel worker, once. Does not sleep, so it may be called from any context;
- * fails with -ENOMEM if it cannot.
+ * A task's work item, which calls `run(arg)` on a kernel worker each time it is queued, with the
+ * `arg` it was queued with: made where the kernel may sleep, without failing, so that queueing it,
+ * from any context, allocates nothing and can't fail, as losing a poll would leave its task
+ * waiting for ever (TASK-60.1). It is queued once at a time, not again until its run has begun.
+ * Urgent work, which tasks wait for, runs at a high priority. It may be freed from any context
+ * once it is queued no more, from its own run too.
  */
-int fxfs_rt_schedule(void (*run)(void *arg), void *arg);
-/* As fxfs_rt_schedule, for work that tasks wait for: at a high priority. */
-int fxfs_rt_schedule_urgent(void (*run)(void *arg), void *arg);
+struct fxfs_rt_work;
+struct fxfs_rt_work *fxfs_rt_work_new(void (*run)(void *arg), bool urgent);
+void fxfs_rt_work_queue(struct fxfs_rt_work *work, void *arg);
+void fxfs_rt_work_free(struct fxfs_rt_work *work);
 
 /*
  * A one-shot timer, which calls `fire(arg)` from a softirq once started and its time has passed.
- * Freeing a timer cancels it, waiting for `fire` if it is running.
+ * Freeing a timer cancels it, waiting for `fire` if it is running. Made without failing.
  */
 struct fxfs_rt_timer;
 struct fxfs_rt_timer *fxfs_rt_timer_new(void (*fire)(void *arg), void *arg);

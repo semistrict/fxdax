@@ -74,7 +74,7 @@ impl Drop for Parker {
 /// A future running on the kernel's workers. Dropping it cancels the future; `detach` lets it run
 /// on.
 #[must_use = "dropping a task cancels it"]
-pub struct Task<T>(async_task::Task<T>);
+pub struct Task<T>(async_task::Task<T, Work>);
 
 impl<T> Task<T> {
     /// Lets the future run to completion without waiting for it.
@@ -107,9 +107,7 @@ where
     F: Future + Send + 'static,
     F::Output: Send + 'static,
 {
-    let (runnable, task) = async_task::spawn(future, schedule);
-    runnable.schedule();
-    Task(task)
+    spawn_on(future, false)
 }
 
 /// Runs `future`, which tasks wait for, on the kernel's workers at a high priority, as a
@@ -119,31 +117,61 @@ where
     F: Future + Send + 'static,
     F::Output: Send + 'static,
 {
-    let (runnable, task) = async_task::spawn(future, schedule_urgent);
+    spawn_on(future, true)
+}
+
+/// Runs `future` on the kernel's workers, at a high priority if `urgent`, its polls queued on a
+/// work item of its own ([`Work`]).
+fn spawn_on<F>(future: F, urgent: bool) -> Task<F::Output>
+where
+    F: Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    let (runnable, task) =
+        async_task::Builder::new().metadata(Work::new(urgent)).spawn(|_| future, schedule);
     runnable.schedule();
     Task(task)
 }
 
-/// Queues a task's next poll on a worker. Wakers call this from any context, so it does not
-/// allocate with Rust's allocator, which may sleep.
-fn schedule(runnable: Runnable) {
-    let runnable = runnable.into_raw();
-    // SAFETY: `run` takes back the runnable, once.
-    let ret = unsafe { ffi::fxfs_rt_schedule(run, runnable.as_ptr().cast()) };
-    // Losing the poll would leave the task waiting forever.
-    assert_eq!(ret, 0, "no memory to schedule a task");
+/// A task's work item (`fxfs_rt_work`), which its polls are queued on, one at a time, as a task is
+/// scheduled again only once its poll has begun: made with the task, where the kernel may sleep,
+/// so that a waker, in any context, queues a poll without allocating, and can't fail to, which
+/// would leave the task waiting for ever (TASK-60.1). Freed with the task, in its last poll, or
+/// wherever its last waker or handle is dropped.
+struct Work(NonNull<ffi::Work>);
+
+// SAFETY: A work item may be queued from any context, and freed from any once queued no more.
+unsafe impl Send for Work {}
+// SAFETY: As above; it is queued once at a time (`schedule`).
+unsafe impl Sync for Work {}
+
+impl Work {
+    fn new(urgent: bool) -> Self {
+        // SAFETY: Makes a work item, without failing, which `drop` frees.
+        let work = unsafe { ffi::fxfs_rt_work_new(run, urgent) };
+        Self(NonNull::new(work).expect("a work item"))
+    }
 }
 
-/// As `schedule`, at a high priority.
-fn schedule_urgent(runnable: Runnable) {
+impl Drop for Work {
+    fn drop(&mut self) {
+        // SAFETY: Its task, gone, holds no runnable, so it is queued no more.
+        unsafe { ffi::fxfs_rt_work_free(self.0.as_ptr()) }
+    }
+}
+
+/// Queues a task's next poll on its work item. Wakers call this from any context: it allocates
+/// nothing.
+fn schedule(runnable: Runnable<Work>) {
+    let work = runnable.metadata().0;
     let runnable = runnable.into_raw();
-    // SAFETY: `run` takes back the runnable, once.
-    let ret = unsafe { ffi::fxfs_rt_schedule_urgent(run, runnable.as_ptr().cast()) };
-    assert_eq!(ret, 0, "no memory to schedule a task");
+    // SAFETY: `run` takes back the runnable, once; the task, alive while it is held, holds the
+    // work item.
+    unsafe { ffi::fxfs_rt_work_queue(work.as_ptr(), runnable.as_ptr().cast()) };
 }
 
 extern "C" fn run(runnable: *mut c_void) {
     // SAFETY: `schedule` gave up the runnable, which is not null, for this call.
-    let runnable = unsafe { Runnable::<()>::from_raw(NonNull::new_unchecked(runnable.cast())) };
+    let runnable = unsafe { Runnable::<Work>::from_raw(NonNull::new_unchecked(runnable.cast())) };
     runnable.run();
 }

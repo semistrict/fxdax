@@ -18,6 +18,12 @@ pub struct Timer {
     _private: [u8; 0],
 }
 
+/// A task's work item.
+#[repr(C)]
+pub struct Work {
+    _private: [u8; 0],
+}
+
 unsafe extern "C" {
     pub fn fxfs_rt_alloc(size: usize, align: usize) -> *mut c_void;
     pub fn fxfs_rt_free(ptr: *mut c_void);
@@ -30,9 +36,9 @@ unsafe extern "C" {
     pub fn fxfs_rt_park(parker: *mut Parker);
     pub fn fxfs_rt_unpark(parker: *mut Parker);
 
-    pub fn fxfs_rt_schedule(run: extern "C" fn(arg: *mut c_void), arg: *mut c_void) -> c_int;
-    pub fn fxfs_rt_schedule_urgent(run: extern "C" fn(arg: *mut c_void), arg: *mut c_void)
-    -> c_int;
+    pub fn fxfs_rt_work_new(run: extern "C" fn(arg: *mut c_void), urgent: bool) -> *mut Work;
+    pub fn fxfs_rt_work_queue(work: *mut Work, arg: *mut c_void);
+    pub fn fxfs_rt_work_free(work: *mut Work);
 
     pub fn fxfs_rt_timer_new(fire: extern "C" fn(arg: *mut c_void), arg: *mut c_void)
     -> *mut Timer;
