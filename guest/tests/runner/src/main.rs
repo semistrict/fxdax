@@ -182,9 +182,9 @@ fn run_single_test(
     let timeout = std::time::Duration::from_secs(test_case.timeout_secs());
     let mut child = child;
     let deadline = std::time::Instant::now() + timeout;
-    loop {
-        if child.try_wait().unwrap_or(None).is_some() {
-            break;
+    let exited = loop {
+        if let Some(status) = child.try_wait().unwrap_or(None) {
+            break status;
         }
         if std::time::Instant::now() >= deadline {
             eprintln!("TIMEOUT ({}s)", timeout.as_secs());
@@ -199,7 +199,7 @@ fn run_single_test(
             });
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
-    }
+    };
 
     let stdout = fs::read(&stdout_path).unwrap_or_default();
 
@@ -213,6 +213,14 @@ fn run_single_test(
     }) {
         Ok(outcome) => outcome,
         Err(_) => TestOutcome::Fail("test.check() panicked".to_string()),
+    };
+    // fxdax: a test whose host side failed, its error in the log, or died, fails, though its
+    // guests said what they should: start_vm's errors went unseen, as did its process's aborting.
+    let outcome = match outcome {
+        TestOutcome::Pass if !exited.success() => {
+            TestOutcome::Fail(format!("the test's host side exited with {exited}; see its log"))
+        }
+        outcome => outcome,
     };
     // fxdax: a test that passed fails if a kernel of its VMs complained (TASK-44.8).
     let outcome = match outcome {
