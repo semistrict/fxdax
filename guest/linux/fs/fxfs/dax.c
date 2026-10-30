@@ -268,6 +268,8 @@ enum fxfs_dax_step {
 	FXFS_DAX_STEP_EVACUEES_MAPPED,
 	/* An evacuation of a file, its runs placed, before it lets go of the file's semaphore. */
 	FXFS_DAX_STEP_PLACED,
+	/* A write of a file, its iomap made, in the gate, before the copy into what it maps. */
+	FXFS_DAX_STEP_WRITE_MAPPED,
 };
 static unsigned long fxfs_dax_pause_steps;
 module_param_named(dax_pause, fxfs_dax_pause_steps, ulong, 0644);
@@ -1500,15 +1502,17 @@ static long fxfs_dax_store_begin(struct fxfs_dax *dax, bool fault)
 }
 
 /*
- * Maps the extents holding the data of the chunk `range` is for, which is unmapped: for a fault
- * (`fault`), -EBUSY rather than wait for a seal (fxfs_dax_store_begin).
+ * Maps the extents holding the data of the chunk `range` is for, which is unmapped, as far as the
+ * file goes, or the write it is for grows it to (`grows`): for a fault (`fault`), -EBUSY rather
+ * than wait for a seal (fxfs_dax_store_begin). fxdax: a write grows the file as it ends, its
+ * bytes written (fxfs_dax_iomap_end, TASK-133), so `grows` maps the extents it reserved past it.
  */
 static int fxfs_dax_map_chunk(struct fxfs_dax *dax, struct inode *inode,
-			      struct fxfs_dax_range *range, bool fault)
+			      struct fxfs_dax_range *range, loff_t grows, bool fault)
 {
 	loff_t start = fxfs_dax_chunk_start(range);
 	loff_t end = min_t(loff_t, start + ((loff_t)range->pages << PAGE_SHIFT),
-			   round_up(i_size_read(inode), PAGE_SIZE));
+			   round_up(max(i_size_read(inode), grows), PAGE_SIZE));
 	struct fxfs_dax_extent *extents;
 	ssize_t count;
 	long gate;
@@ -2389,11 +2393,13 @@ static void fxfs_dax_use_range(struct fxfs_dax *dax, struct fxfs_dax_range *rang
 /*
  * The range mapping `inode`'s chunk `chunk`, mapped first if it isn't, for a file at least `size`
  * bytes long, kept for an iomap: a slice of its extent's region if it can be, or a range of its
- * own. For a fault (`fault`), -EBUSY rather than wait for a seal (fxfs_dax_store_begin), and
- * fxdax: -EDEADLK rather than for the file's semaphore (fxfs_dax_down_read).
+ * own, its extents mapped as far as the write it is for grows the file to (`grows`,
+ * fxfs_dax_map_chunk). For a fault (`fault`), -EBUSY rather than wait for a seal
+ * (fxfs_dax_store_begin), and fxdax: -EDEADLK rather than for the file's semaphore
+ * (fxfs_dax_down_read).
  */
 static struct fxfs_dax_range *fxfs_dax_get_range(struct inode *inode, pgoff_t chunk, loff_t size,
-						 bool fault)
+						 loff_t grows, bool fault)
 {
 	struct fxfs_dax_file *file = fxfs_dax_file(inode);
 	struct fxfs_dax *dax = fxfs_dax_of(inode);
@@ -2450,7 +2456,7 @@ static struct fxfs_dax_range *fxfs_dax_get_range(struct inode *inode, pgoff_t ch
 		spin_lock(&dax->lock);
 		list_add_tail(&new->list, &dax->used);
 		spin_unlock(&dax->lock);
-		err = fxfs_dax_map_chunk(dax, inode, new, fault);
+		err = fxfs_dax_map_chunk(dax, inode, new, grows, fault);
 		if (err)
 			fxfs_dax_unmap_range(dax, new);
 	} else {
@@ -2645,8 +2651,6 @@ static int fxfs_dax_prepare_write(struct inode *inode, loff_t pos, loff_t len, l
 			goto out;
 		count = fxfs_dax_reserve_write(inode, pos, pos + len, max(pos + len, reserved),
 					     size, fault, NULL, extents, capacity);
-		if (count >= 0 && size > i_size_read(inode))
-			i_size_write(inode, size);
 	}
 out:
 	up_write(&file->sem);
@@ -2692,7 +2696,7 @@ static int fxfs_dax_iomap_read(struct inode *inode, loff_t pos, loff_t length, u
 		fxfs_dax_use_range(dax, range);
 	} else {
 		up_read(&file->sem);
-		range = fxfs_dax_get_range(inode, pos >> FXFS_DAX_SHIFT, 0, fault);
+		range = fxfs_dax_get_range(inode, pos >> FXFS_DAX_SHIFT, 0, 0, fault);
 		if (IS_ERR(range))
 			return PTR_ERR(range);
 		err = fxfs_dax_down_read(file, fault);
@@ -2932,11 +2936,11 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 		/* Its pages were holes, which mappings of the file may map zeros for. */
 		fresh = true;
 	}
-	range = fxfs_dax_get_range(inode, pos >> FXFS_DAX_SHIFT, max(size, reserved), fault);
+	range = fxfs_dax_get_range(inode, pos >> FXFS_DAX_SHIFT, max(size, reserved), size, fault);
 	/* Nor may reserving window space refuse a write whose own range fits. */
 	if (IS_ERR(range) && reserved > size &&
 	    (PTR_ERR(range) == -ENOMEM || PTR_ERR(range) == -ENOSPC))
-		range = fxfs_dax_get_range(inode, pos >> FXFS_DAX_SHIFT, size, fault);
+		range = fxfs_dax_get_range(inode, pos >> FXFS_DAX_SHIFT, size, size, fault);
 	if (IS_ERR(range)) {
 		kvfree(extents);
 		return PTR_ERR(range);
@@ -2979,17 +2983,9 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 			err = gate;
 			goto out;
 		}
-		/*
-		 * Writable pages take the write as they are. An append's size goes with the inode's
-		 * next writeback, not a transaction of its own for every write (TASK-92.28).
-		 */
-		if (find_next_zero_bit(range->writable, first + pages, first) == first + pages) {
-			if (size > i_size_read(inode)) {
-				i_size_write(inode, size);
-				__mark_inode_dirty(inode, I_DIRTY_SYNC | I_DIRTY_DATASYNC);
-			}
+		/* Writable pages take the write as they are. */
+		if (find_next_zero_bit(range->writable, first + pages, first) == first + pages)
 			break;
-		}
 		if (flags & IOMAP_ZERO && find_next_bit(range->mapped, first + pages, first) ==
 						  first + pages) {
 			fxfs_device_store_end(dax->dev);
@@ -3071,8 +3067,6 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 			if (err)
 				goto out;
 		}
-		if (size > i_size_read(inode))
-			i_size_write(inode, size);
 		gate = fxfs_dax_store_begin(dax, fault);
 		if (gate == seals) {
 			bool fail = count > 1 && fxfs_dax_inject(&fxfs_dax_fail_maps);
@@ -3138,6 +3132,8 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 	fxfs_dax_cow(inode, range, first, DIV_ROUND_UP(offset_in_page(pos) + iomap->length, PAGE_SIZE),
 		     flags, iomap, srcmap);
 	up_write(&file->sem);
+	if (size)
+		fxfs_dax_pause_file(FXFS_DAX_STEP_WRITE_MAPPED, inode->i_ino);
 	return 0;
 out:
 	up_write(&file->sem);
@@ -3179,6 +3175,18 @@ static int fxfs_dax_iomap_end(struct inode *inode, loff_t pos, loff_t length, ss
 {
 	struct fxfs_dax *dax = fxfs_dax_of(inode);
 
+	/*
+	 * A write past the file's end grows it as it ends, by what it wrote, not as it begins: a
+	 * reader finding the file longer reads what the write wrote there, never the zeros before
+	 * it (TASK-133), as ext4's and XFS's DAX writes grow theirs. In the gate still, so that a
+	 * seal takes the size with the bytes. An append's size goes with the inode's next writeback,
+	 * not a transaction of its own for every write (TASK-92.28).
+	 */
+	if ((flags & IOMAP_WRITE) && !(flags & (IOMAP_FAULT | IOMAP_ZERO)) && written > 0 &&
+	    pos + written > i_size_read(inode)) {
+		i_size_write(inode, pos + written);
+		__mark_inode_dirty(inode, I_DIRTY_SYNC | I_DIRTY_DATASYNC);
+	}
 	if (iomap->flags & IOMAP_F_PRIVATE)
 		fxfs_device_store_end(dax->dev);
 	if (iomap->private)
@@ -3250,7 +3258,7 @@ static ssize_t fxfs_dax_write_iter(struct kiocb *iocb, struct iov_iter *from)
 {
 	struct inode *inode = file_inode(iocb->ki_filp);
 	struct fxfs_dax_file *file = fxfs_dax_file(inode);
-	loff_t old_size, write_pos = 0;
+	loff_t old_size, end, write_pos = 0;
 	u64 seals = 0;
 	ssize_t ret, done = 0;
 	unsigned int stale = 0;
@@ -3270,6 +3278,7 @@ static ssize_t fxfs_dax_write_iter(struct kiocb *iocb, struct iov_iter *from)
 	if (ret)
 		goto out;
 	write_pos = iocb->ki_pos;
+	end = write_pos + iov_iter_count(from);
 	seals = fxfs_device_seals(fxfs_dax_of(inode)->dev);
 	if (write_pos != old_size || file->append_next != write_pos || file->append_seals != seals)
 		file->append_bytes = 0;
@@ -3306,8 +3315,11 @@ static ssize_t fxfs_dax_write_iter(struct kiocb *iocb, struct iov_iter *from)
 		}
 		/* What faulted in may be gone again: the loop faults it in once more. */
 	}
-	/* A write that stopped short leaves the file no longer than it wrote. */
-	if (i_size_read(inode) > max(old_size, iocb->ki_pos)) {
+	/*
+	 * A write that stopped short leaves the file no longer than it wrote: Fxfs has the size its
+	 * iomap asked for (fxfs_dax_map_write), past the inode's, which grows as bytes are written.
+	 */
+	if (iocb->ki_pos < end && end > old_size) {
 		err = fxfs_dax_set_size(inode, max(old_size, iocb->ki_pos));
 		if (err && !done)
 			ret = err;

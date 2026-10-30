@@ -2837,6 +2837,7 @@ mod guest {
         const GATHERED: u64 = 1 << 4;
         const READ_MAPPED: u64 = 1 << 5;
         const PLACED: u64 = 1 << 7;
+        const WRITE_MAPPED: u64 = 1 << 8;
 
         fn set(steps: u64) {
             fs::write(Self::PAUSE, steps.to_string()).unwrap();
@@ -3630,6 +3631,70 @@ mod guest {
         fs::remove_file(&name).unwrap();
     }
 
+    /// fxdax: an append grows the file as it ends, its bytes written, not as it begins: one paused
+    /// with its iomap made, before its copy (WRITE_MAPPED), leaves the file as long as it was, so
+    /// that a reader finding the file longer reads what was appended there, never zeros
+    /// (append_while_mapped, TASK-133).
+    fn test_append_size_follows_data() {
+        use std::io::Write as _;
+        const OLD: usize = 4096;
+        const APPENDED: usize = 64 << 10;
+        let name = path("append-size");
+        fs::write(&name, vec![1; OLD]).unwrap();
+        let (pauses, only) = Pauses::begin_of(Pauses::WRITE_MAPPED, &name);
+        std::thread::scope(|scope| {
+            let appender = scope.spawn(|| {
+                let mut file = fs::OpenOptions::new().append(true).open(&name).unwrap();
+                file.write_all(&vec![2; APPENDED]).unwrap();
+            });
+            Pauses::wait(Pauses::WRITE_MAPPED);
+            let len = fs::metadata(&name).unwrap().len() as usize;
+            assert_eq!(len, OLD, "the file grew before its append wrote there");
+            drop(pauses);
+            appender.join().unwrap();
+        });
+        drop(only);
+        let read = fs::read(&name).unwrap();
+        assert_eq!(read.len(), OLD + APPENDED);
+        assert!(read[..OLD].iter().all(|&byte| byte == 1), "the file's bytes before the append");
+        assert!(read[OLD..].iter().all(|&byte| byte == 2), "the append's bytes");
+        fs::remove_file(&name).unwrap();
+    }
+
+    /// fxdax: an append whose user memory ends part way through it stops there, and leaves the
+    /// file as long as it wrote, in Fxfs as in the inode, which is read in again here: Fxfs took
+    /// the size the write asked for as it began (TASK-133).
+    fn test_append_stopped_short() {
+        const PAGE: usize = 4096;
+        let name = path("append-short");
+        fs::write(&name, vec![1; PAGE]).unwrap();
+        let map = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                2 * PAGE,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                -1,
+                0,
+            )
+        };
+        assert_ne!(map, libc::MAP_FAILED, "mmap: {}", std::io::Error::last_os_error());
+        unsafe { std::ptr::write_bytes(map.cast::<u8>(), 2, PAGE) };
+        assert_eq!(unsafe { libc::munmap(map.cast::<u8>().add(PAGE).cast(), PAGE) }, 0);
+        let file = fs::OpenOptions::new().append(true).open(&name).unwrap();
+        let wrote = unsafe { libc::write(file.as_raw_fd(), map.cast(), 2 * PAGE) };
+        assert_eq!(wrote, PAGE as isize, "write: {}", std::io::Error::last_os_error());
+        assert_eq!(unsafe { libc::munmap(map, PAGE) }, 0);
+        drop(file);
+        assert_eq!(fs::metadata(&name).unwrap().len(), 2 * PAGE as u64);
+        evict(&name);
+        let read = fs::read(&name).unwrap();
+        assert_eq!(read.len(), 2 * PAGE);
+        assert!(read[..PAGE].iter().all(|&byte| byte == 1), "the file before the append");
+        assert!(read[PAGE..].iter().all(|&byte| byte == 2), "the append");
+        fs::remove_file(&name).unwrap();
+    }
+
     /// File handles: name_to_handle_at, and open_by_handle_at with the inode cached and evicted.
     fn test_file_handles() {
         fs::write(path("handled"), b"by handle").unwrap();
@@ -3863,6 +3928,8 @@ mod guest {
                     &test_faults_seal_holding_the_semaphore,
                 ));
                 tests.push(("append_while_mapped", &test_append_while_mapped));
+                tests.push(("append_size_follows_data", &test_append_size_follows_data));
+                tests.push(("append_stopped_short", &test_append_stopped_short));
                 tests.push(("prune_while_read", &test_prune_while_read));
                 tests.push(("map_failed_after_move", &test_map_failed_after_move));
             }
