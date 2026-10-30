@@ -396,6 +396,9 @@ struct fxfs_dax_file {
 	atomic_t held;
 };
 
+/* fxdax: the mark of a file's ranges with pages moved (fxfs_dax_range's moved_pages). */
+#define FXFS_DAX_RANGE_MOVED XA_MARK_1
+
 /* A range of the window. */
 struct fxfs_dax_range {
 	/* On the filesystem's used list. */
@@ -419,6 +422,12 @@ struct fxfs_dax_range {
 	 * `regions` plus one, shifted 32 bits, and its page in the region. Made as a page first moves.
 	 */
 	u64 *moved;
+	/*
+	 * fxdax: how many of `moved` are not 0, which mark the range in its file's ranges while there
+	 * are any (FXFS_DAX_RANGE_MOVED), so that an evacuation looks at those ranges alone, not every
+	 * range of the file page by page at every seal (TASK-109.1). Under the file's semaphore.
+	 */
+	unsigned long moved_pages;
 	/*
 	 * fxdax: for each page relocated, where it was as the kernel's mappings and DAX entries of it
 	 * last had it, which they may still say until they are replaced, as `moved` says it (0, its
@@ -993,6 +1002,24 @@ static unsigned long fxfs_dax_run(const struct fxfs_dax_range *range, unsigned l
 }
 
 /*
+ * fxdax: sets where `range`'s page `page` is, `moved` as fxfs_dax_range's moved says, counting the
+ * range's pages moved, and marking the range in its file's ranges while it has any (TASK-109.1).
+ * With the file's DAX semaphore held for writing.
+ */
+static void fxfs_dax_set_moved(struct fxfs_dax_range *range, unsigned long page, u64 moved)
+{
+	bool was = range->moved[page];
+
+	range->moved[page] = moved;
+	if (was == !!moved)
+		return;
+	if (moved && range->moved_pages++ == 0)
+		xa_set_mark(&range->file->ranges, range->chunk, FXFS_DAX_RANGE_MOVED);
+	if (!moved && --range->moved_pages == 0)
+		xa_clear_mark(&range->file->ranges, range->chunk, FXFS_DAX_RANGE_MOVED);
+}
+
+/*
  * Has `range`'s `pages` pages from `page` on be where `region`'s pages from `first` on are, or in
  * the range's own space without `region`: those the window mapped elsewhere before are
  * relocated, so that the kernel's entries of them are replaced (fxfs_dax_cow); and, if
@@ -1028,7 +1055,7 @@ static void fxfs_dax_place(struct fxfs_dax_range *range, unsigned long page, uns
 			from = min(from, page + i);
 			to = page + i + 1;
 		}
-		range->moved[page + i] = moved;
+		fxfs_dax_set_moved(range, page + i, moved);
 		fxfs_dax_trace(FXFS_DAX_TRACE_RELOCATED, range->file->ino,
 			       (fxfs_dax_chunk_start(range) >> PAGE_SHIFT) + page + i,
 			       fxfs_dax_page_offset(range, page + i), region ? region->sequence : 0,
@@ -3836,7 +3863,8 @@ static void fxfs_dax_evacuee_gather(struct fxfs_dax_file *file, struct fxfs_dax_
 	u64 moved;
 
 	lockdep_assert_held_write(&file->sem);
-	xa_for_each(&file->ranges, chunk, range) {
+	/* fxdax: only ranges with pages moved, which are marked (fxfs_dax_set_moved, TASK-109.1). */
+	xa_for_each_marked(&file->ranges, chunk, range, FXFS_DAX_RANGE_MOVED) {
 		if (range->region || !range->moved)
 			continue;
 		held = false;
@@ -4770,8 +4798,10 @@ void fxfs_dax_resize_end(struct inode *inode, loff_t size)
 		bitmap_clear(range->mapped, page, range->pages - page);
 		fxfs_dax_clear_writable(range, page, range->pages - page);
 		fxfs_dax_unrelocate(range, page, range->pages - page);
-		if (range->moved)
-			memset(&range->moved[page], 0, (range->pages - page) * sizeof(*range->moved));
+		if (range->moved) {
+			for (unsigned long i = page; i < range->pages; i++)
+				fxfs_dax_set_moved(range, i, 0);
+		}
 	}
 	up_write(&file->sem);
 	filemap_invalidate_unlock(inode->i_mapping);
