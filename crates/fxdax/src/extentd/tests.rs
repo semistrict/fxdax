@@ -1108,6 +1108,18 @@ fn refuse_system_call(call: libc::c_long, args: &[(usize, u32)], errno: u16) {
     }
 }
 
+/// Stops `child` as SIGSTOP does, and waits until it has: the signal is sent before its threads
+/// stop, and one still running answers what its caller takes to go unanswered (TASK-134).
+fn freeze(child: &std::process::Child) {
+    let pid = child.id() as libc::pid_t;
+    // SAFETY: Signals the child this test made.
+    assert_eq!(unsafe { libc::kill(pid, libc::SIGSTOP) }, 0);
+    let mut status = 0;
+    // SAFETY: Waits for that child to stop, writing `status`.
+    assert_eq!(unsafe { libc::waitpid(pid, &mut status, libc::WUNTRACED) }, pid);
+    assert!(libc::WIFSTOPPED(status), "wait status {status:#x}");
+}
+
 /// Whether the page of the daemon's physical memory at `offset` in the memory of `arena`, as a VM
 /// process maps it from its tenant's arena, is free.
 fn page_is_free(arena: crate::pages::ArenaId, offset: u64) -> bool {
@@ -1176,8 +1188,7 @@ fn frozen_vm_processes_are_killed() {
     let mapped = stdout.lines().map(Result::unwrap).find(|line| line.starts_with("MAPPED "));
     let (file, offset) = mapped_from(page);
     assert_eq!(mapped, Some(format!("MAPPED {file} {offset}")));
-    // SAFETY: Signals the child this test made.
-    assert_eq!(unsafe { libc::kill(theirs.0.id() as libc::pid_t, libc::SIGSTOP) }, 0);
+    freeze(&theirs.0);
 
     // The extent's page evicted: its mappings taken away, ours and the frozen child's.
     let arena = tenant.arena();
