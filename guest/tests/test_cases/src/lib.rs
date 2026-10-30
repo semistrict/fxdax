@@ -17,7 +17,7 @@ use test_fxfs_guest_resize::TestFxfsGuestResize;
 mod test_fxfs_guest_live_fork;
 use test_fxfs_guest_live_fork::TestFxfsGuestLiveFork;
 mod test_fxfs_guest_pgbench;
-use test_fxfs_guest_pgbench::{Probe, TestFxfsGuestPgbench};
+use test_fxfs_guest_pgbench::{Probe, Storage as PgbenchStorage, TestFxfsGuestPgbench};
 mod test_fxfs_guest_daemon_lost;
 use test_fxfs_guest_daemon_lost::TestFxfsGuestDaemonLost;
 mod test_fxfs_guest_follow;
@@ -83,27 +83,59 @@ pub fn test_cases() -> Vec<TestCase> {
         TestCase::new("fxfs-guest-live-fork", Box::new(TestFxfsGuestLiveFork)),
         TestCase::new(
             "fxfs-guest-pgbench",
-            Box::new(TestFxfsGuestPgbench { dax: false, probe: Probe::None, fsync: true }),
+            Box::new(TestFxfsGuestPgbench {
+                storage: PgbenchStorage::Fxfs,
+                probe: Probe::None,
+                fsync: true,
+            }),
         ),
         TestCase::new(
             "fxfs-guest-pgbench-dax",
-            Box::new(TestFxfsGuestPgbench { dax: true, probe: Probe::None, fsync: true }),
+            Box::new(TestFxfsGuestPgbench {
+                storage: PgbenchStorage::FxfsDax,
+                probe: Probe::None,
+                fsync: true,
+            }),
         ),
         TestCase::new(
             "fxfs-guest-pgbench-profile",
-            Box::new(TestFxfsGuestPgbench { dax: false, probe: Probe::Profile, fsync: true }),
+            Box::new(TestFxfsGuestPgbench {
+                storage: PgbenchStorage::Fxfs,
+                probe: Probe::Profile,
+                fsync: true,
+            }),
         ),
         TestCase::new(
             "fxfs-guest-pgbench-dax-profile",
-            Box::new(TestFxfsGuestPgbench { dax: true, probe: Probe::Profile, fsync: true }),
+            Box::new(TestFxfsGuestPgbench {
+                storage: PgbenchStorage::FxfsDax,
+                probe: Probe::Profile,
+                fsync: true,
+            }),
         ),
         TestCase::new(
             "fxfs-guest-pgbench-locks",
-            Box::new(TestFxfsGuestPgbench { dax: false, probe: Probe::Locks, fsync: true }),
+            Box::new(TestFxfsGuestPgbench {
+                storage: PgbenchStorage::Fxfs,
+                probe: Probe::Locks,
+                fsync: true,
+            }),
         ),
         TestCase::new(
             "fxfs-guest-pgbench-nofsync",
-            Box::new(TestFxfsGuestPgbench { dax: false, probe: Probe::None, fsync: false }),
+            Box::new(TestFxfsGuestPgbench {
+                storage: PgbenchStorage::Fxfs,
+                probe: Probe::None,
+                fsync: false,
+            }),
+        ),
+        TestCase::new(
+            "pgbench-ext4-dax-pmem",
+            Box::new(TestFxfsGuestPgbench {
+                storage: PgbenchStorage::Ext4DaxPmem,
+                probe: Probe::None,
+                fsync: true,
+            }),
         ),
         TestCase::new("fxfs-guest-daemon-lost", Box::new(TestFxfsGuestDaemonLost)),
         TestCase::new("runner-deadlock", Box::new(TestRunnerDeadlock)),

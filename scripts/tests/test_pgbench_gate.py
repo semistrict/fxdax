@@ -16,7 +16,7 @@ import script
 
 gate = script.load("pgbench-gate")
 
-THRESHOLDS = {"decay": 0.9, "dax": 0.95, "density": 0.9}
+THRESHOLDS = {"decay": 0.9, "dax": 0.95, "static-dax": 0.0, "density": 0.9}
 
 
 def log(*vms):
@@ -76,6 +76,42 @@ class PgbenchGate(unittest.TestCase):
             {"gate": "density", "case": "dax", "value": 0.85, "threshold": 0.9,
              "passed": False},
         ])
+
+    def test_dax_is_reported_against_ext4_with_dax_on_pmem_which_decays_ungated(self):
+        measured = gate.measure(self.results({
+            "fxfs-guest-pgbench-dax": log([900, 880, 860]),
+            "pgbench-ext4-dax-pmem": log([2000, 1000, 1500]),
+        }))
+        self.assertEqual(gate.gates(measured, THRESHOLDS), [
+            {"gate": "decay", "case": "dax", "value": 0.9556, "threshold": 0.9, "passed": True},
+            {"gate": "static-dax", "case": "dax", "value": 0.5867, "threshold": 0.0,
+             "passed": True},
+        ])
+        gated = gate.gates(measured, {**THRESHOLDS, "static-dax": 0.6})
+        self.assertEqual(gated[1]["passed"], False)
+
+    def test_density_is_of_the_first_round_of_many_vms_in_any_results(self):
+        single = self.results({
+            "fxfs-guest-pgbench": log([1000, 1000]),
+            "fxfs-guest-pgbench-dax": log([900, 900]),
+        })
+        density = self.results({"fxfs-guest-pgbench-dax": log([800, 800], [700, 720], [600, 600])})
+        measured = gate.measure(single, density)
+        self.assertEqual(measured["dax"], [[[900.0, 900.0]],
+                                           [[800.0, 800.0], [700.0, 720.0], [600.0, 600.0]]])
+        self.assertEqual(gate.gates(measured, THRESHOLDS), [
+            {"gate": "decay", "case": "no-dax", "value": 1.0, "threshold": 0.9, "passed": True},
+            {"gate": "decay", "case": "dax", "value": 1.0, "threshold": 0.9, "passed": True},
+            {"gate": "density", "case": "dax", "value": 0.75, "threshold": 0.9, "passed": False},
+            {"gate": "dax", "case": "dax", "value": 0.9, "threshold": 0.95, "passed": False},
+        ])
+
+    def test_the_static_dax_threshold_is_set_from_the_environment(self):
+        os.environ["FXDAX_GATE_STATIC_DAX"] = "0.7"
+        try:
+            self.assertEqual(gate.thresholds()["static-dax"], 0.7)
+        finally:
+            del os.environ["FXDAX_GATE_STATIC_DAX"]
 
     def test_the_command_writes_json_and_fails_on_a_gate(self):
         results = self.results({"fxfs-guest-pgbench-dax": log([100, 80])})

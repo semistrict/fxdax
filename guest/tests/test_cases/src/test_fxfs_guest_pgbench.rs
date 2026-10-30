@@ -19,18 +19,31 @@
 //! (fxfs-guest-pgbench-locks, scripts/build-guest-kernel.sh's FXDAX_GUEST_KERNEL_LOCK_STAT). Or,
 //! without DAX, with PostgreSQL's fsync off (fxfs-guest-pgbench-nofsync): the load as fast as it
 //! goes when nothing waits for the store's commits, which the load with fsync on is measured
-//! against on the same host (TASK-91.17).
+//! against on the same host (TASK-91.17). And on ext4 with DAX on writable virtio-pmem
+//! (pgbench-ext4-dax-pmem), a copy of a base image of its own: a static DAX device, storage as
+//! memory, which the sandbox team measure the DAX window against (TASK-131.5).
 
 use macros::{guest, host};
 
 pub struct TestFxfsGuestPgbench {
     #[cfg_attr(feature = "guest", allow(dead_code))]
-    pub dax: bool,
+    pub storage: Storage,
     #[cfg_attr(feature = "host", allow(dead_code))]
     pub probe: Probe,
     /// Whether PostgreSQL fsyncs, as it does by default.
     #[cfg_attr(feature = "host", allow(dead_code))]
     pub fsync: bool,
+}
+
+/// What the database is stored on.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Storage {
+    /// The guest's Fxfs, on a fork of a base store a daemon of the case's own serves.
+    Fxfs,
+    /// The same, through a DAX window.
+    FxfsDax,
+    /// fxdax: ext4 with DAX on writable virtio-pmem, on a copy of a base image (TASK-131.5).
+    Ext4DaxPmem,
 }
 
 /// What a run of pgbench's first is probed for (TASK-91.14).
@@ -62,6 +75,7 @@ mod host {
     use anyhow::Context;
     use std::ffi::{CString, OsStr};
     use std::path::{Path, PathBuf};
+    use std::process::Command;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::{Duration, Instant};
@@ -69,6 +83,8 @@ mod host {
     /// The stores' capacity, and the fork's VM's DAX window if it has one, as the sandbox team's.
     const CAPACITY: u64 = 16 << 30;
     const WINDOW: u64 = 2 << 30;
+    /// The ext4 images' size: the database's, its WAL's and the runs' history's, with room.
+    const PMEM_SIZE: u64 = 8 << 30;
 
     /// The fork's VM's DAX window: FXDAX_PGBENCH_WINDOW_MIB's, or [`WINDOW`]. The sandbox team's
     /// runs decay more in 8 GiB than in 2.
@@ -106,24 +122,39 @@ mod host {
 
     const CONTAINERFILE: &str = "\
 FROM alpine:3.22
-RUN apk add --no-cache postgresql postgresql-contrib perf
+RUN apk add --no-cache postgresql postgresql-contrib perf e2fsprogs
 ";
 
-    /// A VM named `name`, of `memory` MiB, on the store at `store`, which the daemon at `extentd`
-    /// serves, run in Firecracker: its guest's role what its name begins with (`load-1`, a load's),
-    /// its API socket and files named after it, each VM's its own, as one's socket outlives it.
+    /// Where a VM's filesystem is.
+    enum Device<'a> {
+        /// The store at `store`, which the daemon at `extentd` serves, with a DAX window of
+        /// `window` bytes if not 0.
+        Store { store: &'a Path, extentd: &'a Path, window: u64 },
+        /// The image at `image`, on writable virtio-pmem, which the guest mounts ext4 on, with DAX.
+        Pmem(&'a Path),
+    }
+
+    /// A VM named `name`, of `memory` MiB, on `device`, run in Firecracker: its guest's role what
+    /// its name begins with (`load-1`, a load's), its API socket and files named after it, each
+    /// VM's its own, as one's socket outlives it.
     fn run(
         test_setup: &TestSetup,
         root: &Path,
         name: &str,
-        store: &Path,
-        extentd: &Path,
+        device: Device,
         memory: u32,
-        window: u64,
     ) -> anyhow::Result<Firecracker> {
         let mut vm = Vm::new(vcpus()?, memory)?;
         vm.guest_kernel()?;
-        vm.extent_store_served("extents", store, CAPACITY, window, extentd);
+        match device {
+            Device::Store { store, extentd, window } => {
+                vm.extent_store_served("extents", store, CAPACITY, window, extentd);
+            }
+            Device::Pmem(image) => {
+                let device = vm.pmem("pgbench", image)?;
+                vm.env(&CString::new(format!("FXDAX_PGBENCH_PMEM={device}"))?);
+            }
+        }
         let role = name.split('-').next().unwrap_or(name);
         vm.env(&CString::new(format!("FXDAX_PGBENCH_ROLE={role}"))?);
         vm.spawn_api(root, &test_setup.test_case, name, &Vm::api_socket(name))
@@ -225,10 +256,51 @@ RUN apk add --no-cache postgresql postgresql-contrib perf
         Ok(())
     }
 
+    /// What VM `vm` of those run one after another names its `what`: the first `what` itself, the
+    /// next `what-1`, and so on.
+    fn nth(what: &str, vm: usize) -> String {
+        match vm {
+            0 => what.to_owned(),
+            vm => format!("{what}-{vm}"),
+        }
+    }
+
     impl TestFxfsGuestPgbench {
         fn run(&self, test_setup: &TestSetup) -> anyhow::Result<()> {
-            let dir = &test_setup.tmp_dir;
             let root = setup_rootfs(test_setup)?;
+            match self.storage {
+                Storage::Fxfs | Storage::FxfsDax => self.run_stores(test_setup, &root),
+                Storage::Ext4DaxPmem => Self::run_images(test_setup, &root),
+            }
+        }
+
+        /// The base's VM makes ext4 on an image of its own, then each VM loads and runs pgbench on
+        /// a copy of it, made as it boots, as bench-fork-ext4-dax-pmem's forks are.
+        fn run_images(test_setup: &TestSetup, root: &Path) -> anyhow::Result<()> {
+            // Under `extents`, which what keeps a run's results leaves out (test-linux-host.sh).
+            let images = test_setup.tmp_dir.join("extents");
+            std::fs::create_dir_all(&images)?;
+            let base = images.join("base.img");
+            std::fs::File::create(&base)?.set_len(PMEM_SIZE)?;
+            wait(run(test_setup, root, "base", Device::Pmem(&base), 512)?)?;
+            for vm in 0..vms() {
+                let image = images.join(format!("{}.img", nth("load", vm)));
+                let status =
+                    Command::new("cp").arg("--sparse=always").arg(&base).arg(&image).status()?;
+                anyhow::ensure!(status.success(), "copying the base's image: {status}");
+                let firecracker =
+                    run(test_setup, root, &nth("load", vm), Device::Pmem(&image), load_memory()?)?;
+                let loaded = wait(firecracker);
+                std::fs::remove_file(&image)?;
+                loaded.with_context(|| format!("VM {} of {}", vm + 1, vms()))?;
+            }
+            Ok(())
+        }
+
+        /// The base's VM makes the guest's Fxfs on a store, then each VM loads and runs pgbench on
+        /// a fork of it, a daemon of the case's own serving them all.
+        fn run_stores(&self, test_setup: &TestSetup, root: &Path) -> anyhow::Result<()> {
+            let dir = &test_setup.tmp_dir;
             // A daemon of its own, whose bucket answers 25 ms late, as the sandbox team's RustFS
             // did, or as FXDAX_REMOTE_LATENCY_MS says; its socket's path short, as Unix sockets'
             // must be.
@@ -246,21 +318,16 @@ RUN apk add --no-cache postgresql postgresql-contrib perf
             let memory = Some(8 << 30);
             let _daemon =
                 crate::common::spawn_daemon(test_setup, &socket, "extentd", &env, memory)?;
-            let (base, fork) = (dir.join("base"), dir.join("fork"));
-            wait(run(test_setup, &root, "base", &base, &socket, 512, 0)?)?;
-            let window = if self.dax { window()? } else { 0 };
+            let base = dir.join("base");
+            let device = Device::Store { store: &base, extentd: &socket, window: 0 };
+            wait(run(test_setup, root, "base", device, 512)?)?;
+            let window = if self.storage == Storage::FxfsDax { window()? } else { 0 };
             for vm in 0..vms() {
-                let (fork, samples, name) = match vm {
-                    0 => (fork.clone(), dir.join("samples.txt"), "load".to_owned()),
-                    vm => (
-                        dir.join(format!("fork-{vm}")),
-                        dir.join(format!("samples-{vm}.txt")),
-                        format!("load-{vm}"),
-                    ),
-                };
+                let fork = dir.join(nth("fork", vm));
+                let samples = dir.join(format!("{}.txt", nth("samples", vm)));
                 crate::common::control(&socket)?.fork_store(&base, &fork)?;
-                let firecracker =
-                    run(test_setup, &root, &name, &fork, &socket, load_memory()?, window)?;
+                let device = Device::Store { store: &fork, extentd: &socket, window };
+                let firecracker = run(test_setup, root, &nth("load", vm), device, load_memory()?)?;
                 let stop = Arc::new(AtomicBool::new(false));
                 let sampler = sample(
                     socket.clone(),
@@ -325,17 +392,43 @@ mod guest {
 
     const MNT: &str = "/mnt/fxfs";
 
-    fn mount() {
+    /// Mounts the database's filesystem at MNT: the guest's Fxfs on the store tagged `extents`,
+    /// made as it mounts; or, on the virtio-pmem device FXDAX_PGBENCH_PMEM names, ext4 with DAX,
+    /// which the base (`role`) makes, and which must map its files' data in place (TASK-131.5).
+    fn mount(role: &str) {
         fs::create_dir_all(MNT).unwrap();
-        let (source, target, fstype) = (
-            CString::new("extents").unwrap(),
+        let (source, fstype, data) = match std::env::var("FXDAX_PGBENCH_PMEM") {
+            Ok(device) => {
+                if role == "base" {
+                    let status = Command::new("mkfs.ext4").args(["-q", "-F", &device]).status();
+                    assert!(status.expect("mkfs.ext4").success(), "mkfs.ext4 {device}");
+                }
+                (device, "ext4", "dax=always")
+            }
+            Err(_) => ("extents".to_owned(), "fxfs", ""),
+        };
+        let (source, target, fstype, options) = (
+            CString::new(source).unwrap(),
             CString::new(MNT).unwrap(),
-            CString::new("fxfs").unwrap(),
+            CString::new(fstype).unwrap(),
+            CString::new(data).unwrap(),
         );
         let ret = unsafe {
-            libc::mount(source.as_ptr(), target.as_ptr(), fstype.as_ptr(), 0, std::ptr::null())
+            libc::mount(
+                source.as_ptr(),
+                target.as_ptr(),
+                fstype.as_ptr(),
+                0,
+                options.as_ptr().cast(),
+            )
         };
         assert_eq!(ret, 0, "mount: {}", std::io::Error::last_os_error());
+        // ext4 on a device without DAX mounts without it, saying so in the kernel's log alone.
+        if !data.is_empty() {
+            let mounts = fs::read_to_string("/proc/mounts").unwrap();
+            let mounted = mounts.lines().find(|line| line.split(' ').nth(1) == Some(MNT));
+            assert!(mounted.is_some_and(|line| line.contains(data)), "{MNT}: {mounted:?}");
+        }
     }
 
     fn unmount() {
@@ -493,8 +586,9 @@ mod guest {
         fn in_guest(self: Box<Self>) {
             // Every message on the console: a task hung says where, its stack logged at KERN_INFO.
             fs::write("/proc/sys/kernel/printk", "7").unwrap();
-            mount();
-            match std::env::var("FXDAX_PGBENCH_ROLE").unwrap().as_str() {
+            let role = std::env::var("FXDAX_PGBENCH_ROLE").unwrap();
+            mount(&role);
+            match role.as_str() {
                 // The base's filesystem, made as it mounts, with a directory for the database.
                 "base" => {
                     fs::create_dir_all(format!("{MNT}/pgdata")).unwrap();

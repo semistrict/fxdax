@@ -733,7 +733,8 @@ RUN wget -q -O /opt/lua-5.4.7.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz \\
                 | Backend::FxfsGuestDaxForkProfiled
                 | Backend::FxfsGuestForkWarm => {
                     let store = std::env::var_os(STORE).context("no store for a fork case")?;
-                    let window = if self.backend == Backend::FxfsGuestForkWarm { 0 } else { 1 << 31 };
+                    let window =
+                        if self.backend == Backend::FxfsGuestForkWarm { 0 } else { 1 << 31 };
                     vm.extent_store("bench", std::path::Path::new(&store), IMAGE_SIZE, window)?;
                     vm.env(&CString::new(format!("{ROLE}={}", std::env::var(ROLE)?))?);
                     None
