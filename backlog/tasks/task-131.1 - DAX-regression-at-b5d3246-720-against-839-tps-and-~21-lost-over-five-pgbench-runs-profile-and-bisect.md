@@ -6,7 +6,7 @@ title: >-
 status: In Progress
 assignee: []
 created_date: '2026-10-29 21:13'
-updated_date: '2026-10-30 09:17'
+updated_date: '2026-10-30 13:43'
 labels:
   - performance
 dependencies: []
@@ -61,4 +61,6 @@ GCE r261 at b6051f15c (main 3358b1089 + open extents taking 16 pages ahead of th
 Per pgbench run (batch 2 and batch 5 alike, r261): what decays is how much a commit changes the window, not what a change costs. Run 1 to 5: MAPs a commit 3.00 3.56 3.89 3.92 3.75, UNMAPs 1.04 1.03 1.43 1.53 1.41, stage changes 9.3 10.0 12.7 12.7 11.6, frees 0.21..0.36; a MAP 43-49 us, an UNMAP 17-21 us, the VMM's stage time 10-11 s a run: flat. Guest: window_maps_reach 4742, 5028, 20150, 22386, 18608 for 613 MB, 988 MB, 954 MB, 1045 MB, 836 MB, 130-196 KB each in runs 1-2 and 40-50 KB after; window_regions_read falls from run 3 (-1644 in run 4) while the window keeps 820 MB free: not capacity. No-DAX (1.00) and ext4 DAX on pmem don't decay (r264), so it is ours. Hypothesis: Postgres's first checkpoint rewrites heap pages into small extents, so reads map many small extents where they mapped the load's large ones. Test: r272, pgbench-dax with checkpoints off (experiment, not for main).
 
 r272, pgbench-dax with checkpoints off (checkpoint_timeout=1d, max_wal_size=100GB, experiment 2cf31e1f9): tps 1075.4, 977.1, 985.9, 990.8, 1000.9; window_maps_reach 3294 3432 3077 2928 2940 (with checkpoints 4742 5028 20150 22386 18608), window_unmaps 41-45K a run (50-61K), window_regions_read +322 +86 +66 +91 +119 (+357 +265 +102 -1644 -769). So checkpoints cause the churn: their rewrites of heap pages are what breaks up the read regions. But tps barely gains: run 5 1001 against 1017 with them, run 1 lower, 1075 against 1170, on different hosts. What decays is not simply that churn: the runs flat from run 2 at the level the checkpointed runs fall to. Compare run 1, which alone stands above it. Its pg_ctl restart after the runs failed: recovering all the WAL took past pg_ctl's 60 s, the experiment's own doing.
+
+perf kvm guest profiles at main, 15 s from 40 s (run 1, r287: tps 1162 1093 1028 1021 1043) and from 330 s (run 5, r288: 1184 1082 1012 992 1001), so a host each: the guest kernel's symbols add to 5.8% and 6.0% of samples, and none moves by more than 0.22 points: vm_interrupt 1.14 to 1.33, fxfs_dax_evacuee_gather 0.45 to 0.23, x2apic_send_IPI 0.69 to 0.72, vm_notify 0.64 to 0.67, __pv_queued_spin_lock_slowpath 0.20 to 0.21. The decay isn't in the guest kernel's code. Left: the rest of the samples, which the report doesn't name: Postgres in the guest, and the host's VMM and extentd threads; a host-side profile by thread, run 1 against run 5, would say.
 <!-- SECTION:NOTES:END -->
