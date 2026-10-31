@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# Copyright 2026 The fxdax Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
 # Same-host comparison using frozen daemon/VMM binaries and one immutable guest kernel.
 set -euo pipefail
 repo=/var/lib/fxdax-test/bench-tree
