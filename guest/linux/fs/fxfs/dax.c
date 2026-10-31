@@ -85,8 +85,13 @@
  */
 #define FXFS_DAX_POOL_BASE (1UL << 48)
 
-/* The most pages a writable region's mapping grows by at once. */
-#define FXFS_DAX_REGION_STEP 64UL
+/*
+ * The most pages a writable region's mapping grows by at once. fxdax: a MAP in a write holds the
+ * inode's lock, which the file's other writes queue for (TASK-146.2).
+ */
+static unsigned long fxfs_dax_region_step = 64;
+module_param_named(dax_region_step, fxfs_dax_region_step, ulong, 0644);
+MODULE_PARM_DESC(dax_region_step, "The most pages a writable region's mapping grows by at once");
 /* fxdax: how many times running a write has a chunk's range dropped before it gives up. */
 #define FXFS_DAX_MAX_DROPS 256
 /*
@@ -2111,7 +2116,7 @@ static void fxfs_dax_assert_mapped_within(struct fxfs_dax *dax, struct fxfs_dax_
 /*
  * Maps `region`'s extent as far as page `end` at least, in the gate, where the device has sealed
  * the extents the filesystem has: read-only, all of it if it can; or, while the extent is open,
- * writably, and further, doubling what is mapped by up to FXFS_DAX_REGION_STEP pages, from
+ * writably, and further, doubling what is mapped by up to fxfs_dax_region_step pages, from
  * FXFS_DAX_REGION_FIRST, so that the next blocks it hands out need no MAP. -EXDEV if the region's
  * space doesn't reach so far: sealed, it shrinks to what it mapped.
  */
@@ -2137,7 +2142,8 @@ static int fxfs_dax_map_to(struct fxfs_dax *dax, struct fxfs_dax_region *region,
 	}
 	to = region->pages;
 	if (writable)
-		to = min(to, max(end, from + clamp(from, FXFS_DAX_REGION_FIRST, FXFS_DAX_REGION_STEP)));
+		to = min(to, max(end, from + clamp(from, FXFS_DAX_REGION_FIRST,
+						   READ_ONCE(fxfs_dax_region_step))));
 	/*
 	 * A read-only MAP may be a reader's, outside the gate; a writable one is in it. fxdax: asserted
 	 * as one is sent, not as a reader finds a writable region mapped as far as it needs, which
@@ -2187,7 +2193,8 @@ static void fxfs_dax_grow_ahead(struct fxfs_dax *dax, struct fxfs_dax_region *re
 
 	/* Outside the gate, a hint: a seal may shrink it meanwhile, which fxfs_dax_grow sees. */
 	if (!READ_ONCE(region->writable) || mapped >= READ_ONCE(region->pages) ||
-	    reached + clamp(mapped, FXFS_DAX_REGION_FIRST, FXFS_DAX_REGION_STEP) / 2 <= mapped)
+	    reached + clamp(mapped, FXFS_DAX_REGION_FIRST, READ_ONCE(fxfs_dax_region_step)) / 2 <=
+	    mapped)
 		return;
 	if (atomic_cmpxchg(&region->growing, 0, 1))
 		return;
