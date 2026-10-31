@@ -227,8 +227,7 @@ impl Extentd for Control {
     ) -> Result<Response<ForkStoreResponse>, Status> {
         let ForkStoreRequest { from, to, branch } = request.into_inner();
         let (from, to) = (path(from)?, path(to)?);
-        let branch = if branch == 0 { crate::host_store::new_branch() } else { branch };
-        reply(stores::fork(from, to, branch).await.map(|()| ForkStoreResponse { branch }))
+        reply(stores::fork(from, to, branch).await.map(|branch| ForkStoreResponse { branch }))
     }
 
     async fn delete_store(

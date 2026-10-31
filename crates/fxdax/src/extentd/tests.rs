@@ -2916,7 +2916,7 @@ fn childs_opened_during_their_forks_wait_for_them() {
     }
     assert!(!opened_now(), "the child opened while its fork was being made");
     gated.hold_writes(None);
-    assert_eq!(forking.join().unwrap(), Ok(()));
+    assert_eq!(forking.join().unwrap(), Ok(branch));
     let child_store = opening.join().unwrap();
     assert!(child_store.is_ok(), "opening the child: {:?}", child_store.err());
     let records = extent_remote::store::Store::new(gated.clone(), "branches");
@@ -3437,6 +3437,38 @@ fn restores_fork_their_point_anew_once_another_writer_took_its_branch() {
     assert_eq!(read(&taking, extent, 0, BLOCK), Ok(pattern(5, BLOCK)));
     drop(taking);
     assert_eq!(restore("second"), Ok(b"point".to_vec()));
+}
+
+/// TASK-79.103: as a restore, so a control fork of a point kept open: once another writer took its
+/// branch, the fork of the point opened anew takes it back.
+#[test]
+fn control_forks_of_a_point_fork_it_anew_once_another_writer_took_its_branch() {
+    host();
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("extentd.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || serve(listener));
+    let store = RemoteExtentStore::connect(&socket, dir.path().join("store"), 1 << 24).unwrap();
+    let extent = ExtentId { branch: store.branch(), sequence: 1 };
+    write(&store, extent, 0, &pattern(5, BLOCK)).unwrap();
+    store.commit(Some(b"point")).unwrap();
+    let (point, point_branch) = (dir.path().join("point"), store.branch() + 1);
+    store.fork_quiescent(&point, point_branch).unwrap();
+    drop(store);
+    // A restore keeps the point open.
+    let restored =
+        RemoteExtentStore::connect_forked(&socket, dir.path().join("restored"), &point, 0, 0);
+    assert_eq!(restored.map_err(|error| error.errno()).map(drop), Ok(()));
+    let taken = dir.path().join("taken");
+    control(super::stores::create(taken.clone(), 1 << 24, Some(point_branch), None)).unwrap();
+    let taking = RemoteExtentStore::connect(&socket, &taken, 1 << 24).unwrap();
+    assert_eq!(read(&taking, extent, 0, BLOCK), Ok(pattern(5, BLOCK)));
+    drop(taking);
+    let child = dir.path().join("child");
+    let branch = control(super::stores::fork(point, child.clone(), 0)).unwrap();
+    let child = RemoteExtentStore::connect(&socket, &child, 1 << 24).unwrap();
+    assert_eq!(child.branch(), branch);
+    assert_eq!(child.root(), Ok(b"point".to_vec()));
 }
 
 /// TASK-79.34: a store whose VM process goes while the daemon's work through its connection holds

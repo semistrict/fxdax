@@ -19,8 +19,8 @@
 //! followers are cut off, and neither a writer nor a follower opens it until they are gone.
 
 use super::server::Connection;
-use crate::pages::Arena;
 use crate::open_stores::{Holder, Paths};
+use crate::pages::Arena;
 use crate::store_requests::{self, Capacity, Close, Released};
 use crate::{Errno, ExtentInfo, ExtentStore};
 use extent_remote::cache::Cache;
@@ -672,34 +672,56 @@ async fn point(from: &Path, branch: u64, capacity: u64) -> Result<(Arc<HeldStore
 /// made on a blocking thread. fxdax: the store at `to` is held throughout, so that a connection
 /// opens the child only once the fork is made, in the bucket too: before, it found no record of
 /// the fork there, and took a branch of its own, which failed every writer of the parent after,
-/// finding the child's record another's (TASK-79.95).
-pub(super) async fn fork(from: PathBuf, to: PathBuf, branch: u64) -> Result<(), Errno> {
+/// finding the child's record another's (TASK-79.95). Of a `branch` of 0, the fork's is a new one,
+/// and returned: a point kept open whose fork fails then, as once another host took its branch, is
+/// opened anew for a fork once more, as a restore's ([`fork_from`], TASK-79.103), to another new
+/// branch: the failed fork's ID stays taken in the bucket, so a `branch` the caller named gets the
+/// one try.
+pub(super) async fn fork(from: PathBuf, to: PathBuf, branch: u64) -> Result<u64, Errno> {
     let _child = Held::to_fork(&to).await?;
     let key = store_key(&from);
+    let named = branch != 0;
+    let new = || if named { branch } else { crate::host_store::new_branch() };
+    let was_kept = kept(&key).is_some();
+    let first = new();
+    match fork_held(&from, &to, first, &key).await {
+        Err(errno) if !named && was_kept && errno != Errno::EEXIST => {
+            deleted_if_failed(&to)?;
+            let second = new();
+            fork_held(&from, &to, second, &key).await.map(|()| second)
+        }
+        forked => forked.map(|()| first),
+    }
+}
+
+/// fxdax: forks the store at `from`, whose key is `key`, to `to`, which the caller holds, as
+/// [`fork`] does, once. A point whose fork fails is let go of ([`let_go_failed`]).
+async fn fork_held(from: &Path, to: &Path, branch: u64, key: &Path) -> Result<(), Errno> {
     let live = |connection: &Connection| {
         let store = connection.store().cloned()?;
         Some(Forked { store: Here::of(store, None), live: true })
     };
     let open = |held: Option<Released<'static, Connection>>| async {
         let held = held.map(|held| Box::new(held) as Box<dyn Send + Sync>);
-        if let Some((store, _)) = instance(&key) {
+        if let Some((store, _)) = instance(key) {
             return Ok(Forked { store: Here::of(store, held), live: true });
         }
         // Opened by a restore that held it before.
-        if let Some(point) = kept(&key) {
+        if let Some(point) = kept(key) {
             return Ok(Forked { store: Here::kept(point), live: false });
         }
         // Let go of once kept.
-        let opening = from.clone();
-        let point = keep(&key, blocking(move || open_here(&opening)).await?);
+        let opening = from.to_owned();
+        let point = keep(key, blocking(move || open_here(&opening)).await?);
         Ok(Forked { store: Here::kept(point), live: false })
     };
-    let forking = match kept(&key) {
+    let forking = match kept(key) {
         Some(point) => Forked { store: Here::kept(point), live: false },
-        None => store_requests::forking(open_paths(), &key, live, CLOSING_WAIT, open).await?,
+        None => store_requests::forking(open_paths(), key, live, CLOSING_WAIT, open).await?,
     };
     let (store, live) = (forking.store.store().clone(), forking.live);
     let point = Arc::downgrade(&store);
+    let to = to.to_owned();
     let forked = async {
         uploaded(&store).await?;
         blocking(move || {
@@ -714,7 +736,7 @@ pub(super) async fn fork(from: PathBuf, to: PathBuf, branch: u64) -> Result<(), 
     forking.close().await;
     // fxdax: but for its being there already, which is no fault of the point's.
     if forked.as_ref().is_err_and(|errno| *errno != Errno::EEXIST) {
-        let_go_failed(&key, point).await;
+        let_go_failed(key, point).await;
     }
     forked
 }
