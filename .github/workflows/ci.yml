@@ -1,0 +1,51 @@
+# Copyright 2026 The fxdax Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# Does it compile, and do its unit tests pass: no guest kernels nor VMs, which need nested KVM and
+# run on GCE (scripts/test-gce.sh).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      UCD_ZIP: ${{ github.workspace }}/target/UCD-12.1.0.zip
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install the build's tools
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libclang-dev clang
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+      - name: Fetch the Unicode Character Database
+        run: |
+          mkdir -p target
+          [ -f "$UCD_ZIP" ] || curl -fsSL -o "$UCD_ZIP" https://www.unicode.org/Public/12.1.0/ucd/UCD.zip
+          echo "25ba51a0d4c6fa41047b7a5e5733068d4a734588f055f61e85f450097834a0a6  $UCD_ZIP" | sha256sum -c -
+      - name: Compile
+        run: cargo check --workspace --all-targets
+      - name: Compile the guest tests, both halves
+        working-directory: guest/tests
+        run: |
+          cargo check -p test_cases --features host
+          cargo check -p test_cases --features guest --tests --target x86_64-unknown-linux-musl
+      - name: Unit tests
+        run: cargo nextest run --workspace
