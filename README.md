@@ -325,7 +325,7 @@ What a host can tell from a VM process's status (TASK-70):
 | 149-151, 154-156 | `SIGBUS`, `SIGSEGV`, `SIGXFSZ`, `SIGXCPU`, `SIGPIPE`, `SIGHUP` | The VMM's handler caught the signal: a bug, or the host's limits, by the signal. |
 | 152, 153 | `BadConfiguration`, `ArgParsing` | How it was started. |
 | 157 | `SIGILL` | A VMM bug, or a host of another CPU. |
-| 158 | `ExtentdLost` | Storage: its extent daemon went, and the VM can't go on. What it was told stays as doc-10 says. |
+| 158 | `ExtentdLost` | Storage: its extent daemon went, and the VM can't go on. What it was told stays as doc-12 says. |
 | 159 | `AccessRefused` | The guest: an access stayed refused, of a part of its DAX window nothing maps, or that it may not store to. That VM alone stops (TASK-77). |
 | Killed by SIGABRT | A panic | A VMM bug: Firecracker panics abort, and an unresolved DAX window fault does. |
 
@@ -372,8 +372,11 @@ flags (kept in its mode's bits above the kernel's 16, which Fxfs's objects have
 room for), idmapped mounts, multigrain timestamps, O_DIRECT (through Fxfs, past the page
 cache, aligned or not), reflinks (`FICLONE`, `FICLONERANGE`, `cp --reflink`,
 and `copy_file_range`, which share extents, counted per range in the
-allocator, and copy nothing), freezing, NFS export's file handles, and a
-shrinker of its cached records. What programs see of the rest (the guest
+allocator, and copy nothing), freezing, NFS export's file handles, a
+shrinker of its cached records, and a device's volumes mounted side by side
+(`mount -t fxfs -o volume=NAME tag path`), each with a superblock of its own,
+opened as it mounts, sharing the device's journal and DAX window: the filesystem
+freezes once all of them are frozen. What programs see of the rest (the guest
 suites' `unsupported` check pins the first two):
 
 - Deduplication (`FIDEDUPERANGE`, `duperemove`) reports `EOPNOTSUPP` in each

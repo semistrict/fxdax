@@ -6,14 +6,14 @@
 // share their source's layers and extents) deviate from upstream here:
 // `RootVolume::snapshot_volume` makes them; deleting a volume releases its layers by reference
 // count, and locks them. There is no `install_volume` (nor `replace_volume`, which it used): an image within a file is a block device's,
-// which fxdax's extent store has none of (backlog doc-4).
+// which fxdax's extent store has none of (backlog doc-4). `RootVolume::volume` opens a volume left
+// closed (`Options::lazy_volumes`).
 
 use crate::errors::FxfsError;
 use crate::filesystem::{FlushReason, ForceMajor, FxFilesystem};
 use crate::object_handle::ObjectHandle;
 use crate::object_store::directory::Directory;
 use crate::object_store::transaction::{LockKeys, Options, Transaction, lock_keys};
-use crate::object_store::tree_cache::TreeCache;
 use crate::object_store::{
     HandleOptions, INVALID_OBJECT_ID, LockKey, NewChildStoreOptions, ObjectDescriptor, ObjectStore,
     StoreOptions, load_store_info,
@@ -43,11 +43,6 @@ impl RootVolume {
         self.filesystem.object_manager().volume_directory()
     }
 
-    /// The cache of a volume's objects' records, as large as the filesystem's options say.
-    fn tree_cache(&self) -> TreeCache {
-        TreeCache::with_limit(self.filesystem.options().object_cache_items)
-    }
-
     /// Creates a new volume under a transaction lock.
     pub async fn new_volume(
         &self,
@@ -71,7 +66,11 @@ impl RootVolume {
             FxfsError::AlreadyExists
         );
         store = root_store
-            .new_child_store(&mut transaction, options, Some(Box::new(self.tree_cache())))
+            .new_child_store(
+                &mut transaction,
+                options,
+                Some(Box::new(self.filesystem.new_tree_cache())),
+            )
             .await?;
         store.set_trace(self.filesystem.trace());
 
@@ -178,9 +177,12 @@ impl RootVolume {
             .await?;
         transaction.commit().await?;
 
-        let store =
-            ObjectStore::open(&root_store, snapshot_object_id, Some(Box::new(self.tree_cache())))
-                .await?;
+        let store = ObjectStore::open(
+            &root_store,
+            snapshot_object_id,
+            Some(Box::new(filesystem.new_tree_cache())),
+        )
+        .await?;
         store.set_trace(filesystem.trace());
         filesystem.object_manager().add_store(store.clone());
         Ok(store)
@@ -204,7 +206,10 @@ impl RootVolume {
             ObjectDescriptor::Volume => (),
             _ => bail!(anyhow!(FxfsError::Inconsistent).context("Expected volume")),
         }
-        // Lookup the object store corresponding to the volume.
+        // Lookup the object store corresponding to the volume. fxdax: which may be closed.
+        if self.filesystem.options().lazy_volumes {
+            self.filesystem.object_manager().open_volume(store_object_id).await?;
+        }
         let store = self
             .filesystem
             .object_manager()
@@ -390,8 +395,8 @@ pub async fn list_volumes(volume_directory: &Directory<ObjectStore>) -> Result<V
 
 #[cfg(test)]
 mod tests {
-    use super::root_volume;
-    use crate::filesystem::{FxFilesystem, SyncOptions};
+    use super::{RootVolume, root_volume};
+    use crate::filesystem::{FxFilesystem, FxFilesystemBuilder, SyncOptions};
     use crate::fsck::{FsckOptions, fsck_volume_with_options, fsck_with_options};
     use crate::lsm_tree::persistent_layer::PersistentLayerWriter;
     use crate::lsm_tree::types::LayerWriter as _;
@@ -839,6 +844,135 @@ mod tests {
             write_file(&filesystem, &source, "after", &[0xdd; 4096]).await;
         }
         do_fsck(&filesystem, Some("source"), None).await;
+        filesystem.close().await.expect("Close failed");
+    }
+
+    /// Makes volumes "a" and "b", each with a file, flushed, so that the journal holds nothing of
+    /// them, and returns the filesystem, open still.
+    async fn two_flushed_volumes() -> crate::filesystem::OpenFxFilesystem {
+        let device = DeviceHolder::new(FakeDevice::new(16384, 512));
+        let filesystem = FxFilesystem::new_empty(device).await.expect("new_empty failed");
+        let root = root_volume(filesystem.clone()).await.expect("root_volume failed");
+        for (name, byte) in [("a", 0xaa), ("b", 0xbb)] {
+            let store =
+                root.new_volume(name, NewChildStoreOptions::default()).await.expect("new_volume");
+            write_file(&filesystem, &store, "file", &[byte; 8192]).await;
+        }
+        filesystem.journal().force_compact().await.expect("compact failed");
+        filesystem.sync(SyncOptions { flush_device: true, ..Default::default() }).await.unwrap();
+        filesystem
+    }
+
+    fn lazily(device: DeviceHolder) -> impl Future<Output = crate::filesystem::OpenFxFilesystem> {
+        async {
+            FxFilesystemBuilder::new().lazy_volumes(true).open(device).await.expect("open failed")
+        }
+    }
+
+    /// The store of the volume `name`, if it is open.
+    async fn open_store(filesystem: &FxFilesystem, root: &RootVolume, name: &str) -> bool {
+        let (object_id, _, _) = root.volume_directory().lookup(name).await.unwrap().unwrap();
+        filesystem.object_manager().store(object_id).is_some()
+    }
+
+    /// fxdax: volumes open as they are asked for, and only then, with what they require of the
+    /// metadata reservation paid for.
+    #[fuchsia::test]
+    async fn test_lazy_volumes() {
+        let filesystem = two_flushed_volumes().await;
+        filesystem.close().await.expect("Close failed");
+        let device = filesystem.take_device().await;
+        device.reopen(false);
+        let filesystem = lazily(device).await;
+        let root = root_volume(filesystem.clone()).await.expect("root_volume failed");
+        assert!(!open_store(&filesystem, &root, "a").await);
+        assert!(!open_store(&filesystem, &root, "b").await);
+
+        let a = root.volume("a", StoreOptions::default()).await.expect("volume failed");
+        assert!(open_store(&filesystem, &root, "a").await);
+        assert!(!open_store(&filesystem, &root, "b").await);
+        assert_eq!(read_file(&a, "file").await, vec![0xaa; 8192]);
+        // A second ask finds it.
+        let again = root.volume("a", StoreOptions::default()).await.expect("volume failed");
+        assert!(Arc::ptr_eq(&a, &again));
+
+        let objects = filesystem.object_manager();
+        assert_eq!(
+            objects.metadata_reservation().amount() + objects.borrowed_metadata_space(),
+            objects.required_reservation()
+        );
+        write_file(&filesystem, &a, "more", &[0xcc; 4096]).await;
+        std::mem::drop((a, again, root));
+        filesystem.close().await.expect("Close failed");
+
+        // Opened eagerly, as fsck needs, the stores are as they should be.
+        let device = filesystem.take_device().await;
+        device.reopen(false);
+        let filesystem = FxFilesystem::open(device).await.expect("open failed");
+        do_fsck(&filesystem, Some("a"), None).await;
+        do_fsck(&filesystem, Some("b"), None).await;
+        filesystem.close().await.expect("Close failed");
+    }
+
+    /// fxdax: replay opens a volume the journal holds something of, and leaves the others closed.
+    #[fuchsia::test]
+    async fn test_lazy_volumes_replay() {
+        let filesystem = two_flushed_volumes().await;
+        let crashed = {
+            let root = root_volume(filesystem.clone()).await.expect("root_volume failed");
+            let b = root.volume("b", StoreOptions::default()).await.expect("volume failed");
+            write_file(&filesystem, &b, "in-the-journal", &[0xcc; 4096]).await;
+            filesystem
+                .sync(SyncOptions { flush_device: true, ..Default::default() })
+                .await
+                .expect("sync failed");
+            filesystem.device().snapshot().expect("device snapshot failed")
+        };
+        filesystem.close().await.expect("Close failed");
+
+        let filesystem = lazily(crashed).await;
+        let root = root_volume(filesystem.clone()).await.expect("root_volume failed");
+        assert!(!open_store(&filesystem, &root, "a").await);
+        assert!(open_store(&filesystem, &root, "b").await);
+        let b = root.volume("b", StoreOptions::default()).await.expect("volume failed");
+        assert_eq!(read_file(&b, "in-the-journal").await, vec![0xcc; 4096]);
+        filesystem.close().await.expect("Close failed");
+    }
+
+    /// fxdax: a volume closed through a mount is reaped as it opens: what a crash left in its
+    /// graveyard goes then.
+    #[fuchsia::test]
+    async fn test_lazy_volumes_reap_as_they_open() {
+        let device = DeviceHolder::new(FakeDevice::new(16384, 512));
+        let filesystem = FxFilesystem::new_empty(device).await.expect("new_empty failed");
+        let root = root_volume(filesystem.clone()).await.expect("root_volume failed");
+        let store =
+            root.new_volume("a", NewChildStoreOptions::default()).await.expect("new_volume");
+        let mut transaction = filesystem
+            .root_store()
+            .new_transaction(lock_keys![], Options::default())
+            .await
+            .expect("new transaction failed");
+        let handle =
+            ObjectStore::create_object(&store, &mut transaction, HandleOptions::default(), None)
+                .await
+                .expect("create_object failed");
+        let object_id = handle.object_id();
+        store.add_to_graveyard(&mut transaction, object_id);
+        transaction.commit().await.expect("commit failed");
+        drop(handle);
+        filesystem.journal().force_compact().await.expect("compact failed");
+        filesystem.sync(SyncOptions { flush_device: true, ..Default::default() }).await.unwrap();
+        let crashed = filesystem.device().snapshot().expect("device snapshot failed");
+        filesystem.close().await.expect("Close failed");
+
+        let filesystem = lazily(crashed).await;
+        let root = root_volume(filesystem.clone()).await.expect("root_volume failed");
+        assert!(!open_store(&filesystem, &root, "a").await);
+        let store = root.volume("a", StoreOptions::default()).await.expect("volume failed");
+        filesystem.graveyard().flush().await;
+        let found = store.tree().find(&ObjectKey::object(object_id)).await.expect("find failed");
+        assert_eq!(found.map(|item| item.value), None);
         filesystem.close().await.expect("Close failed");
     }
 

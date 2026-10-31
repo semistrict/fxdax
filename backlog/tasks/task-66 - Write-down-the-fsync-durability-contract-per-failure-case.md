@@ -4,7 +4,7 @@ title: Write down the fsync durability contract per failure case
 status: Done
 assignee: []
 created_date: '2026-10-21 19:54'
-updated_date: '2026-10-31 13:52'
+updated_date: '2026-10-31 22:17'
 labels: []
 dependencies: []
 priority: medium
@@ -28,6 +28,8 @@ A guest fsync is an ordered COMMIT, durable within 50 ms and uploaded within abo
 
 <!-- SECTION:NOTES:BEGIN -->
 2026-10-31: doc-10 says it, failure by failure, with what tests each row. Reading the store for it found an acknowledged fsync is not kept across extentd being killed: a commit's record is in extentd's memory until the flush, up to 50 ms.
+
+2026-10-31: the contract is doc-12 now: main's doc-10 is the overlays', which came first.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

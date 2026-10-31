@@ -154,6 +154,17 @@ impl Image {
         self.shared.mount_volume(name, false).await
     }
 
+    /// Compacts the journal into the volumes' layers: a mount then has none of it to replay, and
+    /// no volume to open for it.
+    pub async fn compact(&self) -> Result<(), Error> {
+        let filesystem = self.shared.with_open(|open| open.filesystem.clone())?;
+        self.shared
+            .executor
+            .run(async move { filesystem.journal().force_compact().await })
+            .await
+            .map_err(Error::new)
+    }
+
     /// The names of the image's volumes.
     pub async fn volumes(&self) -> Result<Vec<String>, Error> {
         let root_volume = self.shared.with_open(|open| open.root_volume.clone())?;

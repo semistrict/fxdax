@@ -33,7 +33,7 @@ export DEBIAN_FRONTEND=noninteractive
 packages=(build-essential clang libclang-dev llvm pkg-config musl-tools python3 curl
     ca-certificates e2fsprogs podman rsync git unzip xz-utils
     flex bison bc cpio libelf-dev libssl-dev gcc-x86-64-linux-gnu gperf libseccomp-dev elfutils
-    coccinelle)
+    coccinelle sqlite3)
 missing=()
 for package in "${packages[@]}"; do
     dpkg-query -W -f '${Status}' "$package" 2>/dev/null | grep -q 'install ok installed' ||

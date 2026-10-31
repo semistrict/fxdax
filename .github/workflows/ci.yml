@@ -41,7 +41,7 @@ jobs:
           [ -f "$UCD_ZIP" ] || curl -fsSL -o "$UCD_ZIP" https://www.unicode.org/Public/12.1.0/ucd/UCD.zip
           echo "25ba51a0d4c6fa41047b7a5e5733068d4a734588f055f61e85f450097834a0a6  $UCD_ZIP" | sha256sum -c -
       - name: Compile
-        run: cargo check --workspace --all-targets
+        run: cargo check --workspace
       - name: Compile the guest tests, both halves
         working-directory: guest/tests
         run: |

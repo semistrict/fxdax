@@ -44,7 +44,7 @@ pub struct TestFxfsGuest {
     /// (TASK-119.6).
     killed: bool,
     /// fxdax: whether the extent daemon is killed in the VM process's place, which what it holds
-    /// goes with, of the commits it has yet to make durable (doc-10, TASK-67).
+    /// goes with, of the commits it has yet to make durable (doc-12, TASK-67).
     #[cfg_attr(feature = "guest", allow(dead_code))]
     daemon_killed: bool,
     /// fxdax: whether a crash test's guest stops its VM by touching a part of the window it was
@@ -272,7 +272,7 @@ mod host {
     }
 
     /// fxdax: of the files each writer's fsync returned for, in its order, those that stayed, with
-    /// what was written, followed by those lost: a commit stays only with those before it (doc-10:
+    /// what was written, followed by those lost: a commit stays only with those before it (doc-12:
     /// up to 50 ms of them go with a daemon). Returns how many went.
     fn assert_kept_prefix(fs: &Filesystem, synced: &[(u8, usize)]) -> usize {
         let mut lost = 0;

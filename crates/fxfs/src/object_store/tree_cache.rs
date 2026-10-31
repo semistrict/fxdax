@@ -4,10 +4,11 @@
 
 use super::object_record::{AttributeId, AttributeKey, ObjectKey, ObjectKeyData, ObjectValue};
 use crate::lsm_tree::cache::{ObjectCache, ObjectCachePlaceholder, ObjectCacheResult};
-use fuchsia_sync::{Mutex, MutexGuard};
+use fuchsia_sync::{Mutex, MutexGuard, RwLock};
 use linked_hash_map::{Entry, LinkedHashMap};
 use std::hash::{BuildHasher, BuildHasherDefault};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 fn filter(key: &ObjectKey) -> bool {
     match key.data {
@@ -39,6 +40,54 @@ const SHARDS: usize = 16;
 const SHARD_ABOVE: usize = 16 * ITEM_LIMIT;
 
 type Shard = LinkedHashMap<ObjectKey, CacheValue, BuildHasherDefault<rustc_hash::FxHasher>>;
+type Shards = Box<[Mutex<Shard>]>;
+
+/// fxdax: what the caches of a filesystem's stores share: they hold at most `limit` items, all
+/// told, whatever their number. Over it, a cache adding an item takes one from each of them in
+/// turn, its shards among them, each's least recently used: one little used empties as those used
+/// fill it up, which a store mounted and idle does (backlog doc-10).
+pub struct TreeCacheBudget {
+    limit: usize,
+    used: AtomicUsize,
+    /// The caches sharing it, by their shards.
+    caches: RwLock<Vec<Arc<Shards>>>,
+    /// Whose turn it is.
+    turn: AtomicUsize,
+}
+
+impl TreeCacheBudget {
+    pub fn new(limit: usize) -> Arc<Self> {
+        Arc::new(Self {
+            limit,
+            used: AtomicUsize::new(0),
+            caches: RwLock::new(Vec::new()),
+            turn: AtomicUsize::new(0),
+        })
+    }
+
+    /// Takes items from the caches, in turn, until they hold no more than the limit. With no
+    /// shard's lock held, as it takes them.
+    fn enforce(&self) {
+        while self.used.load(Ordering::Relaxed) > self.limit {
+            let caches = self.caches.read();
+            let shards = caches.iter().map(|cache| cache.len()).sum::<usize>();
+            let first = self.turn.fetch_add(1, Ordering::Relaxed);
+            let found = (0..shards).any(|turn| {
+                let mut at = first.wrapping_add(turn) % shards;
+                let shard = caches.iter().find_map(|cache| {
+                    let shard = cache.get(at);
+                    at -= cache.len().min(at);
+                    shard
+                });
+                shard.unwrap().lock().pop_front().is_some()
+            });
+            if !found {
+                return;
+            }
+            self.used.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+}
 
 struct Placeholder<'a> {
     cache: &'a TreeCache,
@@ -62,6 +111,7 @@ impl Placeholder<'_> {
                     Some(v) => *(entry.get_mut()) = v,
                     None => {
                         entry.remove();
+                        self.cache.removed(1);
                     }
                 }
             }
@@ -102,36 +152,52 @@ enum CacheValue {
 
 /// Supports caching for Objects directly for now. Speeds up stat calls.
 pub struct TreeCache {
-    /// fxdax: the cache's shards (`SHARDS`), each holding at most `limit` items.
-    shards: Box<[Mutex<Shard>]>,
+    /// fxdax: the cache's shards (`SHARDS`).
+    shards: Arc<Shards>,
     placeholder_counter: AtomicU64,
-    limit: usize,
+    /// fxdax: how many items it may hold, with the others sharing it.
+    budget: Arc<TreeCacheBudget>,
 }
 
 impl TreeCache {
     /// fxdax: a cache of at most `limit` items (`ITEM_LIMIT` by default), which grows to that as
     /// it fills.
     pub fn with_limit(limit: usize) -> Self {
-        let shards = if limit > SHARD_ABOVE { SHARDS } else { 1 };
-        let limit = limit.div_ceil(shards);
-        Self {
-            shards: (0..shards)
-                .map(|_| {
-                    Mutex::new(LinkedHashMap::with_capacity_and_hasher(
-                        limit.min(ITEM_LIMIT) + 1,
-                        BuildHasherDefault::<rustc_hash::FxHasher>::default(),
-                    ))
-                })
-                .collect(),
-            placeholder_counter: AtomicU64::new(0),
-            limit,
-        }
+        Self::sharing(&TreeCacheBudget::new(limit))
+    }
+
+    /// fxdax: a cache sharing `budget` with the others on it, which grows as it fills.
+    pub fn sharing(budget: &Arc<TreeCacheBudget>) -> Self {
+        let shards = if budget.limit > SHARD_ABOVE { SHARDS } else { 1 };
+        let shards: Arc<Shards> =
+            Arc::new((0..shards).map(|_| Mutex::new(LinkedHashMap::default())).collect());
+        budget.caches.write().push(shards.clone());
+        Self { shards, placeholder_counter: AtomicU64::new(0), budget: budget.clone() }
     }
 
     /// The shard `key` is in.
     fn shard(&self, key: &ObjectKey) -> &Mutex<Shard> {
         let hash = BuildHasherDefault::<rustc_hash::FxHasher>::default().hash_one(key);
         &self.shards[hash as usize % self.shards.len()]
+    }
+
+    /// Counts an item added to a shard, or `replaced` one of its, or that it held none.
+    fn added(&self, replaced: bool) {
+        if !replaced {
+            self.budget.used.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Counts `count` items removed from its shards.
+    fn removed(&self, count: usize) {
+        self.budget.used.fetch_sub(count, Ordering::Relaxed);
+    }
+}
+
+impl Drop for TreeCache {
+    fn drop(&mut self) {
+        self.removed(self.len());
+        self.budget.caches.write().retain(|cache| !Arc::ptr_eq(cache, &self.shards));
     }
 }
 
@@ -153,10 +219,10 @@ impl ObjectCache<ObjectKey, ObjectValue> for TreeCache {
             Err((_, false)) => ObjectCacheResult::NoCache,
             Err((mut inner, true)) => {
                 let placeholder_id = self.placeholder_counter.fetch_add(1, Ordering::Relaxed);
-                inner.insert(key.clone(), CacheValue::Placeholder(placeholder_id));
-                if inner.len() > self.limit {
-                    let _ = inner.pop_front();
-                }
+                let replaced = inner.insert(key.clone(), CacheValue::Placeholder(placeholder_id));
+                drop(inner);
+                self.added(replaced.is_some());
+                self.budget.enforce();
                 ObjectCacheResult::Placeholder(Box::new(Placeholder {
                     cache: self,
                     key: Some(key.clone()),
@@ -181,7 +247,9 @@ impl ObjectCache<ObjectKey, ObjectValue> for TreeCache {
         {
             let data =
                 ObjectKey::attribute(key.object_id, AttributeId::DATA, AttributeKey::Attribute);
-            self.shard(&data).lock().remove(&data);
+            if self.shard(&data).lock().remove(&data).is_some() {
+                self.removed(1);
+            }
         }
         let mut inner = self.shard(key).lock();
         if let Some(replacement) = value {
@@ -191,18 +259,20 @@ impl ObjectCache<ObjectKey, ObjectValue> for TreeCache {
                 // fxdax: a record written is cached too, as the kernel's caches keep what it
                 // creates: the object a file just created is, say, which its unlink finds.
                 inner.insert(key.clone(), CacheValue::Value(replacement));
-                if inner.len() > self.limit {
-                    let _ = inner.pop_front();
-                }
+                drop(inner);
+                self.added(false);
+                self.budget.enforce();
             }
-        } else {
-            inner.remove(key);
+        } else if inner.remove(key).is_some() {
+            self.removed(1);
         }
     }
 
     fn clear(&self) {
-        for shard in &self.shards {
-            shard.lock().clear();
+        for shard in self.shards.iter() {
+            let mut inner = shard.lock();
+            self.removed(inner.len());
+            inner.clear();
         }
     }
 
@@ -216,11 +286,12 @@ impl ObjectCache<ObjectKey, ObjectValue> for TreeCache {
         let mut removed = 0;
         while removed < count {
             let before = removed;
-            for shard in &self.shards {
+            for shard in self.shards.iter() {
                 if removed == count {
                     break;
                 }
                 if shard.lock().pop_front().is_some() {
+                    self.removed(1);
                     removed += 1;
                 }
             }
@@ -554,6 +625,34 @@ mod tests {
             ObjectCacheResult::Placeholder(placeholder) => placeholder.complete(None),
             _ => panic!("Expected the data's record to be gone."),
         };
+    }
+
+    /// fxdax: caches sharing a budget hold no more than it, all told, and one used takes the
+    /// room of one that isn't, which empties; one dropped gives its room back.
+    #[fuchsia::test]
+    async fn test_shared_budget() {
+        let budget = super::TreeCacheBudget::new(ITEM_LIMIT);
+        let idle = TreeCache::sharing(&budget);
+        let used = TreeCache::sharing(&budget);
+        let now = Timestamp::now();
+        let value = ObjectValue::file(1, 0, now, now, now, now, None, None);
+        for i in 0..ITEM_LIMIT as u64 {
+            idle.invalidate(&ObjectKey::object(i), Some(value.clone()));
+        }
+        assert_eq!(idle.len(), ITEM_LIMIT);
+        for i in 0..4 * ITEM_LIMIT as u64 {
+            used.invalidate(&ObjectKey::object(i), Some(value.clone()));
+        }
+        assert_eq!(idle.len(), 0);
+        assert_eq!(used.len(), ITEM_LIMIT);
+        let last = ObjectKey::object(4 * ITEM_LIMIT as u64 - 1);
+        assert_matches!(used.lookup_or_reserve(&last), ObjectCacheResult::Value(_));
+
+        drop(used);
+        for i in 0..ITEM_LIMIT as u64 {
+            idle.invalidate(&ObjectKey::object(i), Some(value.clone()));
+        }
+        assert_eq!(idle.len(), ITEM_LIMIT);
     }
 
     /// fxdax: a record written is cached, though not looked up before.
