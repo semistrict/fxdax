@@ -44,6 +44,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use storage_device::SealedExtent;
 
+/// fxdax: how many times `Fxfs::dax_map_write` tries again as its extents are found sealed.
+const MAX_SEALED_RETRIES: usize = 1000;
+
 /// What a filesystem's VFS gives it, and keeps for it: the platform it runs on.
 pub trait Platform: Send + Sync + Sized + 'static {
     /// Whether the VFS keeps directories' times, which it writes back with them (`write_inode`):
@@ -730,7 +733,10 @@ impl<P: Platform> Fxfs<P> {
         keep: bool,
         held: Option<&[u8]>,
     ) -> Result<Vec<DaxExtent>, Error> {
-        loop {
+        // fxdax: tried again while seals keep coming, though not for ever: a device that goes on
+        // refusing an extent Fxfs takes for open would have a write spin in the kernel, with
+        // nothing to yield to (xfstests generic/111, TASK-140).
+        for _ in 0..MAX_SEALED_RETRIES {
             match self.try_dax_map_write(ino, range.clone(), size, keep, held).await {
                 // A seal came between the writes copying the first and last blocks' surroundings
                 // to an extent: the transaction is dropped, and its extents with it.
@@ -739,6 +745,8 @@ impl<P: Platform> Fxfs<P> {
                 result => return result,
             }
         }
+        log::error!("fxfs: object {ino} at {range:?}: its extents sealed still, tried at length");
+        Err(FxfsError::Inconsistent.into())
     }
 
     async fn try_dax_map_write(

@@ -1629,8 +1629,13 @@ impl Journal {
 
     // Before we commit, we might need to extend the journal or write pending records to the
     // journal.
-    async fn pre_commit(&self, _transaction: &Transaction<'_>) -> Result<(), Error> {
+    async fn pre_commit(&self, transaction: &Transaction<'_>) -> Result<(), Error> {
         let handle;
+        // fxdax: room for what `transaction` writes, with the file extended past it if it needs
+        // more than a chunk's: its records past the journal's end, a reflink's or a truncate's of
+        // thousands of extents, the next commit found itself writing beyond it, and panicked
+        // (xfstests generic/161, TASK-139).
+        let room = self.room_for(transaction);
 
         let (size, zero_offset) = {
             let mut inner = self.inner.lock();
@@ -1645,7 +1650,7 @@ impl Journal {
             let file_offset = inner.writer.journal_file_checkpoint().file_offset;
 
             let size = handle.get_size();
-            let size = if file_offset + self.chunk_size() > size { Some(size) } else { None };
+            let size = if file_offset + room > size { Some(size) } else { None };
 
             if size.is_none()
                 && inner.zero_offset.is_none()
@@ -1684,7 +1689,7 @@ impl Journal {
             handle
                 .preallocate_range_in_extents_of(
                     &mut transaction,
-                    &mut (size..size + self.chunk_size()),
+                    &mut (size..size + room),
                     EXTENT_SIZE,
                 )
                 .await?;
@@ -1702,7 +1707,8 @@ impl Journal {
         // Make sure the transaction to extend the journal made it to the journal within the old
         // size, since otherwise, it won't be possible to replay.
         if let Some(size) = size {
-            assert!(inner.writer.journal_file_checkpoint().file_offset < size);
+            let file_offset = inner.writer.journal_file_checkpoint().file_offset;
+            assert!(file_offset < size, "the journal at {file_offset}, past its size, {size}");
         }
 
         if inner.zero_offset == zero_offset {
@@ -2017,6 +2023,21 @@ impl Journal {
 
     fn chunk_size(&self) -> u64 {
         CHUNK_SIZE
+    }
+
+    /// fxdax: how much of the journal to have ahead for `transaction`, a chunk's or the chunks that
+    /// hold its records: their real size if it may take more than a chunk, as a block a mutation
+    /// is the most a record can take (`JournalWriter::write_record`) and asking for that much
+    /// would take it from the metadata reservation for nothing.
+    fn room_for(&self, transaction: &Transaction<'_>) -> u64 {
+        let most = transaction.mutations().len() as u64 * BLOCK_SIZE.get();
+        if most <= self.chunk_size() {
+            return self.chunk_size();
+        }
+        let records = self.serialize_records(transaction);
+        let bytes = records.map_or(most, |records| records.bytes.len() as u64);
+        // With the blocks' checksums and a record's padding.
+        (bytes + bytes / 8).next_multiple_of(self.chunk_size()).max(self.chunk_size())
     }
 
     /// fxdax: serializes `transaction`'s records, if each object it changes writes its mutations as
@@ -2582,12 +2603,13 @@ pub use yielder::*;
 
 #[cfg(test)]
 mod tests {
-    use super::SuperBlockInstance;
+    use super::{JournalOptions, SuperBlockInstance};
     use crate::filesystem::{FxFilesystem, FxFilesystemBuilder, SyncOptions};
     use crate::fsck::fsck;
     use crate::object_handle::{ObjectHandle, WriteObjectHandle};
     use crate::object_store::directory::Directory;
-    use crate::object_store::transaction::Options;
+    use crate::object_store::object_record::{ObjectKey, ObjectValue};
+    use crate::object_store::transaction::{Mutation, Options};
     use crate::object_store::volume::root_volume;
     use crate::object_store::{
         HandleOptions, LockKey, NewChildStoreOptions, ObjectStore, StoreOptions, lock_keys,
@@ -2628,6 +2650,69 @@ mod tests {
             expected.push(record);
         }
         assert_eq!(serialized.records().map(<[u8]>::to_vec).collect::<Vec<_>>(), expected);
+    }
+
+    // fxdax: transactions of more records than a chunk of the journal holds, as a reflink's or a
+    // truncate's of thousands of extents are: the journal is extended past each, which the next
+    // commit found itself writing beyond, and panicked, and replays them (TASK-139).
+    #[fuchsia::test]
+    async fn test_transactions_larger_than_a_chunk_stay_within_the_journal() {
+        const ROUNDS: u8 = 3;
+        const MUTATIONS: usize = 200;
+        let device = DeviceHolder::new(FakeDevice::new(65536, TEST_DEVICE_BLOCK_SIZE));
+        // No compaction: what they borrow is more than flushing them could find.
+        let journal = || JournalOptions { reclaim_size: 16 << 20, ..JournalOptions::default() };
+        let fs = FxFilesystemBuilder::new()
+            .format(true)
+            .journal_options(journal())
+            .open(device)
+            .await
+            .expect("open failed");
+        let root_store = fs.root_store();
+        let root_directory = Directory::open(&root_store, root_store.root_directory_object_id())
+            .await
+            .expect("open failed");
+        let store_id = root_store.store_object_id();
+        let directory_id = root_store.root_directory_object_id();
+        let mut transaction = root_store
+            .new_transaction(lock_keys![LockKey::object(store_id, directory_id)], Options::default())
+            .await
+            .expect("new_transaction failed");
+        let handle = root_directory
+            .create_child_file(&mut transaction, "test")
+            .await
+            .expect("create_child_file failed");
+        transaction.commit().await.expect("commit failed");
+        let object_id = handle.object_id();
+        for round in 0..ROUNDS {
+            let options = Options { borrow_metadata_space: true, ..Options::default() };
+            let mut transaction = root_store
+                .new_transaction(lock_keys![LockKey::object(store_id, object_id)], options)
+                .await
+                .expect("new_transaction failed");
+            for i in 0..MUTATIONS {
+                let name = format!("user.{round}-{i}").into_bytes();
+                transaction.add(
+                    store_id,
+                    Mutation::insert_object(
+                        ObjectKey::extended_attribute(object_id, name),
+                        ObjectValue::inline_extended_attribute(vec![round; 1500]),
+                    ),
+                );
+            }
+            transaction.commit().await.expect("commit failed");
+        }
+        let synced = SyncOptions { flush_device: true, ..SyncOptions::default() };
+        fs.sync(synced).await.expect("sync failed");
+        let device = fs.device().snapshot().expect("snapshot failed");
+        let replayed = FxFilesystemBuilder::new()
+            .journal_options(journal())
+            .open(device)
+            .await
+            .expect("open failed");
+        fsck(replayed.clone()).await.expect("fsck failed");
+        // Neither closed: a close compacts what they borrowed, which it can't find room for.
+        std::mem::forget((fs, replayed));
     }
 
     #[fuchsia::test]

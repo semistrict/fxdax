@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-31 16:32'
+updated_date: '2026-10-31 16:43'
 labels:
   - bug
 dependencies: []
@@ -22,7 +23,7 @@ GCE r342, xfstests-fxfs-guest, generic/161, in writeback: 'fxfs: panicked at cra
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [ ] #1 generic/161 passes, without and with DAX
-- [ ] #2 A workload can't panic the guest here
+- [x] #2 A workload can't panic the guest here
 <!-- AC:END -->
 
 ## Definition of Done
@@ -31,3 +32,9 @@ GCE r342, xfstests-fxfs-guest, generic/161, in writeback: 'fxfs: panicked at cra
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-10-31: the cause: pre_commit kept a chunk's room, 128 KiB, ahead of the journal, whatever the transaction it was about to write: a larger one's records ran past the file's end, and the next commit found itself there, the assertion's panic. It now keeps room for the transaction's records (room_for: their real size once a transaction may take more than a chunk), and extends by that. test_transactions_larger_than_a_chunk_stay_within_the_journal, 3 transactions of 200 mutations of 1500 bytes, replayed from a snapshot with fsck: fails without the fix, 'the journal at 314787, past its size, 262144', the panic itself. All 50 journal tests pass.
+<!-- SECTION:NOTES:END -->

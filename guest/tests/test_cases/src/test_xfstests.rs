@@ -29,7 +29,8 @@ mod host {
         "RUN dnf install -y acl attr autoconf automake bc diffutils e2fsprogs findutils fio gawk ",
         "gcc git gzip hostname indent kmod libacl-devel libaio-devel libattr-devel libtool ",
         "libuuid-devel liburing-devel make openssl-devel perl procps-ng psmisc python3 sed ",
-        "shadow-utils tar util-linux which xfsdump xfsprogs xfsprogs-devel && dnf clean all\n",
+        "shadow-utils tar util-linux which xfsdump xfsprogs xfsprogs-devel quota ",
+        "fio-engine-libaio && dnf clean all\n",
         "RUN git init /xfstests \\\n",
         " && git -C /xfstests fetch --depth 1 ",
         "https://git.kernel.org/pub/scm/fs/xfs/xfstests-dev.git refs/tags/v2026.10.15 \\\n",
@@ -90,6 +91,15 @@ mod guest {
         fn in_guest(self: Box<Self>) {
             for dir in ["/mnt/test", "/mnt/scratch"] {
                 std::fs::create_dir_all(dir).unwrap();
+            }
+            // What a shell's process substitution and scripts look for, which a devtmpfs lacks.
+            for (link, target) in [
+                ("/dev/fd", "/proc/self/fd"),
+                ("/dev/stdin", "/proc/self/fd/0"),
+                ("/dev/stdout", "/proc/self/fd/1"),
+                ("/dev/stderr", "/proc/self/fd/2"),
+            ] {
+                std::os::unix::fs::symlink(target, link).unwrap();
             }
             let tests = std::env::var("XFSTESTS").unwrap();
             let status = Command::new("./check")
