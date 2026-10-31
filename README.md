@@ -355,8 +355,11 @@ flags (kept in its mode's bits above the kernel's 16, which Fxfs's objects have
 room for), idmapped mounts, multigrain timestamps, O_DIRECT (through Fxfs, past the page
 cache, aligned or not), reflinks (`FICLONE`, `FICLONERANGE`, `cp --reflink`,
 and `copy_file_range`, which share extents, counted per range in the
-allocator, and copy nothing), freezing, NFS export's file handles, and a
-shrinker of its cached records. What programs see of the rest (the guest
+allocator, and copy nothing), freezing, NFS export's file handles, a
+shrinker of its cached records, and a device's volumes mounted side by side
+(`mount -t fxfs -o volume=NAME tag path`), each with a superblock of its own,
+opened as it mounts, sharing the device's journal and DAX window: the filesystem
+freezes once all of them are frozen. What programs see of the rest (the guest
 suites' `unsupported` check pins the first two):
 
 - Deduplication (`FIDEDUPERANGE`, `duperemove`) reports `EOPNOTSUPP` in each

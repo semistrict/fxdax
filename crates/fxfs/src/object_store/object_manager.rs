@@ -14,7 +14,6 @@ use crate::object_store::transaction::{
     AssocObj, AssociatedObject, MetadataReservation, Mutation, ObjectMutationIterator, Transaction,
     TxnMutation,
 };
-use crate::object_store::tree_cache::TreeCache;
 use crate::object_store::volume::{VOLUMES_DIRECTORY, list_volumes};
 use crate::object_store::{ObjectDescriptor, ObjectStore};
 use crate::round::round_div;
@@ -245,12 +244,15 @@ impl ObjectManager {
             }
         }
 
-        let object_ids = list_volumes(self.volume_directory.get().unwrap())
-            .await
-            .context("Failed to list volumes")?;
+        // fxdax: replay opened those with something in the journal, which lazily are all that open.
+        if !root_store.filesystem().options().lazy_volumes {
+            let object_ids = list_volumes(self.volume_directory.get().unwrap())
+                .await
+                .context("Failed to list volumes")?;
 
-        for store_id in object_ids {
-            self.open_store(&root_store, store_id).await?;
+            for store_id in object_ids {
+                self.open_store(&root_store, store_id).await?;
+            }
         }
 
         // This can fail if a filesystem is created and truncated to a size
@@ -414,16 +416,46 @@ impl ObjectManager {
         Ok(())
     }
 
+    /// fxdax: opens the volume `object_id`, if it stayed closed (`Options::lazy_volumes`), while
+    /// transactions commit: no commit finds what it requires changed. A closed volume wasn't
+    /// counted in the metadata reservation, which pays for compacting the largest, so what it
+    /// adds is reserved now, or it stays closed. Its graveyard is reaped as mounting does.
+    pub async fn open_volume(&self, object_id: u64) -> Result<(), Error> {
+        let root_store = self.root_store();
+        let filesystem = root_store.filesystem();
+        let read_only = filesystem.options().read_only;
+        {
+            let _commits = filesystem.lock_commits().await;
+            if self.store(object_id).is_some() {
+                return Ok(());
+            }
+            let required = self.required_reservation();
+            self.open_store(&root_store, object_id).await?;
+            let more = self.required_reservation() - required;
+            if more > 0 && !read_only {
+                let Some(reservation) = filesystem.allocator().reserve(None, more) else {
+                    self.forget_store(object_id);
+                    bail!(FxfsError::NoSpace);
+                };
+                reservation.move_to(self.metadata_reservation(), more);
+            }
+        }
+        if !read_only {
+            let store = self.store(object_id).ok_or(FxfsError::NotFound)?;
+            filesystem.graveyard().initial_reap(&store).await?;
+        }
+        Ok(())
+    }
+
     /// Opens the specified store if it isn't already.  This is *not* thread-safe.
     async fn open_store(&self, parent: &Arc<ObjectStore>, object_id: u64) -> Result<(), Error> {
         if self.inner.read().stores.contains_key(&object_id) {
             return Ok(());
         }
-        let items = parent.filesystem().options().object_cache_items;
-        let store =
-            ObjectStore::open(parent, object_id, Some(Box::new(TreeCache::with_limit(items))))
-                .await
-                .with_context(|| format!("Failed to open store {object_id}"))?;
+        let cache = parent.filesystem().new_tree_cache();
+        let store = ObjectStore::open(parent, object_id, Some(Box::new(cache)))
+            .await
+            .with_context(|| format!("Failed to open store {object_id}"))?;
         if let Some(on_new_store) = &self.on_new_store {
             on_new_store(&store);
         }

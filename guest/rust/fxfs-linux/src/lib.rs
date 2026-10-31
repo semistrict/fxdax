@@ -3,8 +3,7 @@
 // found in the LICENSE file.
 
 //! The filesystem the guest kernel's fs/fxfs calls (guest/linux/fs/fxfs/fxfs.h): Fxfs, on the
-//! extent-store device a mount names (`device`), serving the volume fxdax's images keep their files
-//! in (`fs`).
+//! extent-store device a mount names (`device`), serving the volumes mounted (`fs`).
 //!
 //! Each call blocks the calling thread until Fxfs is done with it, while Fxfs's own tasks run on
 //! the kernel's workers.
@@ -16,11 +15,13 @@ mod fs;
 use anyhow::Error;
 use core::ffi::{c_char, c_int, c_void};
 use device::ExtentDevice;
-use fs::{Attr, DaxExtent, Fxfs, GuestFxfs, ReaddirStart, SetAttr, StatFs};
+use fs::{Attr, DaxExtent, Filesystem, Fxfs, GuestFxfs, ReaddirStart, SetAttr, StatFs};
 use fxfs::errors::FxfsError;
 use fxfs::object_store::SetExtendedAttributeMode;
 use linux_rt::block_on;
 use log::LevelFilter;
+use std::mem::ManuallyDrop;
+use std::sync::Arc;
 
 // The kernel's errnos (asm-generic/errno-base.h, asm-generic/errno.h).
 const ENOENT: c_int = 2;
@@ -242,31 +243,78 @@ pub extern "C" fn fxfs_init() {
     log::info!("Rust runtime ready");
 }
 
+/// The filesystem `filesystem`, as `fxfs_open` returned it, while it stays open.
+///
 /// # Safety
 ///
-/// `source` holds `len` bytes, `fs` and `root` are writable, and `vfs` is the superblock, whose
-/// follower's primitives (vfs.h) outlive the filesystem.
+/// `filesystem` is open.
+unsafe fn filesystem(filesystem: *const Filesystem) -> ManuallyDrop<Arc<Filesystem>> {
+    // SAFETY: As the caller promises: `fxfs_open` made it, and `fxfs_close` drops it.
+    ManuallyDrop::new(unsafe { Arc::from_raw(filesystem) })
+}
+
+/// # Safety
+///
+/// `source` holds `len` bytes, and `filesystem` is writable.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn fxfs_mount(
+pub unsafe extern "C" fn fxfs_open(
     source: *const c_char,
     len: usize,
     memory: u64,
+    read_only: bool,
+    filesystem: *mut *const Filesystem,
+) -> c_int {
+    // SAFETY: As the caller promises.
+    let tag = unsafe { core::slice::from_raw_parts(source.cast::<u8>(), len) };
+    let opened = block_on(async {
+        Filesystem::open(ExtentDevice::find(tag).await?, memory, read_only).await
+    });
+    match opened {
+        Ok(opened) => {
+            // SAFETY: As the caller promises.
+            unsafe { filesystem.write(Arc::into_raw(Arc::new(opened))) };
+            0
+        }
+        Err(error) => -errno(&error),
+    }
+}
+
+/// # Safety
+///
+/// `filesystem` is open, with no volume mounted, and nothing uses it after.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fxfs_close(filesystem: *const Filesystem) {
+    // SAFETY: As the caller promises: `fxfs_open` made it, and no volume holds it.
+    let filesystem = unsafe { Arc::from_raw(filesystem) };
+    let filesystem = Arc::into_inner(filesystem).expect("a volume of the filesystem is mounted");
+    if let Err(error) = block_on(filesystem.close()) {
+        log::error!("failed to close the filesystem: {error:#}");
+    }
+}
+
+/// # Safety
+///
+/// `filesystem` is open, `volume` holds `len` bytes, `fs` and `root` are writable, and `vfs` is the
+/// superblock, whose follower's primitives (vfs.h) outlive the volume.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fxfs_mount(
+    filesystem: *const Filesystem,
+    volume: *const c_char,
+    len: usize,
     read_only: bool,
     vfs: *mut c_void,
     fs: *mut *mut Fxfs,
     root: *mut Attr,
 ) -> c_int {
     // SAFETY: As the caller promises.
-    let tag = unsafe { core::slice::from_raw_parts(source.cast::<u8>(), len) };
+    let (filesystem, volume) = unsafe { (self::filesystem(filesystem), bytes(volume, len)) };
     let mounted = block_on(async {
-        let device = ExtentDevice::find(tag).await?;
-        let mounted = Fxfs::mount(device, memory, read_only, vfs).await?;
+        let volume = str::from_utf8(volume).map_err(|_| FxfsError::InvalidArgs)?;
+        let mounted = filesystem.mount(volume, read_only, vfs).await?;
         match mounted.root().await {
             Ok(attr) => Ok((mounted, attr)),
             Err(error) => {
-                if let Err(unmount_error) = mounted.unmount().await {
-                    log::error!("failed to unmount: {unmount_error:#}");
-                }
+                mounted.unmount().await;
                 Err(error)
             }
         }
@@ -293,11 +341,9 @@ pub unsafe extern "C" fn fxfs_unmount(fs: *mut Fxfs) {
     let fs = unsafe { Box::from_raw(fs) };
     // Its background worker refers to it where it is, boxed: stopped before it moves.
     if let Err(error) = block_on(fs.stop_delayed()) {
-        log::error!("queued unlinks failed as the filesystem was unmounted: {error:#}");
+        log::error!("queued unlinks failed as the volume was unmounted: {error:#}");
     }
-    if let Err(error) = block_on(fs.unmount()) {
-        log::error!("failed to unmount: {error:#}");
-    }
+    block_on(fs.unmount());
 }
 
 /// fxdax: diagnostic (TASK-121): has Fxfs log the blocks a DAX write's move keeps that read short
@@ -306,6 +352,17 @@ pub unsafe extern "C" fn fxfs_unmount(fs: *mut Fxfs) {
 pub extern "C" fn fxfs_set_check_kept(on: bool) {
     fxfs::object_store::data_object_handle::CHECK_KEPT
         .store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// fxdax: whether a volume mounted on `filesystem` follows its device's writer.
+///
+/// # Safety
+///
+/// `filesystem` is open.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fxfs_filesystem_follows(filesystem: *const Filesystem) -> bool {
+    // SAFETY: As the caller promises.
+    unsafe { (*filesystem).follows() }
 }
 
 /// fxdax: whether `fs` is mounted read-only, and whether it follows its device's writer.
@@ -368,15 +425,15 @@ pub unsafe extern "C" fn fxfs_release(fs: *const Fxfs, ino: u64) {
     unsafe { (*fs).release(ino) }
 }
 
-/// The device `fs` is on, as device.h has it.
+/// The device `filesystem` is on, as device.h has it.
 ///
 /// # Safety
 ///
-/// `fs` is mounted.
+/// `filesystem` is open.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn fxfs_dax_device(fs: *const Fxfs) -> *mut c_void {
+pub unsafe extern "C" fn fxfs_dax_device(filesystem: *const Filesystem) -> *mut c_void {
     // SAFETY: As the caller promises.
-    unsafe { (*fs).device() }
+    unsafe { (*filesystem).device() }
 }
 
 /// Copies `extents` to `out`, which has room for `max`, and returns how many: or -E2BIG if they
@@ -461,12 +518,15 @@ pub unsafe extern "C" fn fxfs_dax_update_size(fs: *const Fxfs, ino: u64, size: u
 
 /// # Safety
 ///
-/// `fs` is mounted, and `out` is writable.
+/// `filesystem` is open, and `out` is writable.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn fxfs_dax_restage(fs: *const Fxfs, out: *mut DaxExtent) -> bool {
+pub unsafe extern "C" fn fxfs_dax_restage(
+    filesystem: *const Filesystem,
+    out: *mut DaxExtent,
+) -> bool {
     // SAFETY: As the caller promises.
     unsafe {
-        let Some(extent) = (*fs).restage() else { return false };
+        let Some(extent) = (*filesystem).restage() else { return false };
         out.write(extent);
         true
     }
@@ -526,46 +586,46 @@ pub unsafe extern "C" fn fxfs_sync(fs: *const Fxfs) -> c_int {
     }
 }
 
-/// fxdax: freezes the filesystem (`Fxfs::freeze`).
+/// fxdax: freezes the filesystem (`Filesystem::freeze`).
 ///
 /// # Safety
 ///
-/// `fs` is mounted.
+/// `filesystem` is open.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn fxfs_freeze(fs: *const Fxfs) -> c_int {
+pub unsafe extern "C" fn fxfs_freeze(filesystem: *const Filesystem) -> c_int {
     // SAFETY: As the caller promises.
-    let fs = unsafe { &*fs };
-    match block_on(fs.freeze()) {
+    let filesystem = unsafe { &*filesystem };
+    match block_on(filesystem.freeze()) {
         Ok(()) => 0,
         Err(error) => -errno(&error),
     }
 }
 
-/// fxdax: thaws the filesystem (`Fxfs::thaw`).
+/// fxdax: thaws the filesystem (`Filesystem::thaw`).
 ///
 /// # Safety
 ///
-/// `fs` is mounted, and frozen.
+/// `filesystem` is open, and frozen.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn fxfs_thaw(fs: *const Fxfs) -> c_int {
+pub unsafe extern "C" fn fxfs_thaw(filesystem: *const Filesystem) -> c_int {
     // SAFETY: As the caller promises.
-    let fs = unsafe { &*fs };
-    match block_on(fs.thaw()) {
+    let filesystem = unsafe { &*filesystem };
+    match block_on(filesystem.thaw()) {
         Ok(()) => 0,
         Err(error) => -errno(&error),
     }
 }
 
-/// fxdax: takes the size the host resized the store to (`Fxfs::resize`).
+/// fxdax: takes the size the host resized the store to (`Filesystem::resize`).
 ///
 /// # Safety
 ///
-/// `fs` is mounted.
+/// `filesystem` is open.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn fxfs_resize(fs: *const Fxfs) -> c_int {
+pub unsafe extern "C" fn fxfs_resize(filesystem: *const Filesystem) -> c_int {
     // SAFETY: As the caller promises.
-    let fs = unsafe { &*fs };
-    match block_on(fs.resize()) {
+    let filesystem = unsafe { &*filesystem };
+    match block_on(filesystem.resize()) {
         Ok(()) => 0,
         Err(error) => -errno(&error),
     }
@@ -873,16 +933,20 @@ pub unsafe extern "C" fn fxfs_cached_objects(fs: *const Fxfs) -> u64 {
 }
 
 /// fxdax: writes what the filesystem waited on, and its device's requests took
-/// (`Fxfs::stats`), as text, into the `len` bytes at `buf`, as much of it as fits; returns how
-/// long it is.
+/// (`Filesystem::stats`), as text, into the `len` bytes at `buf`, as much of it as fits; returns
+/// how long it is.
 ///
 /// # Safety
 ///
-/// `fs` is mounted, and `buf` holds `len` bytes.
+/// `filesystem` is open, and `buf` holds `len` bytes.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn fxfs_stats(fs: *const Fxfs, buf: *mut u8, len: usize) -> usize {
+pub unsafe extern "C" fn fxfs_stats(
+    filesystem: *const Filesystem,
+    buf: *mut u8,
+    len: usize,
+) -> usize {
     // SAFETY: As the caller promises.
-    let stats = unsafe { (*fs).stats() };
+    let stats = unsafe { (*filesystem).stats() };
     let copied = stats.len().min(len);
     // SAFETY: As the caller promises, `buf` holds `len` bytes, at least `copied`.
     unsafe { std::ptr::copy_nonoverlapping(stats.as_ptr(), buf, copied) };

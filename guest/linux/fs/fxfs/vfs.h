@@ -32,11 +32,20 @@
 
 struct virtio_extent;
 struct fxfs_dax;
+struct fxfs_dax_volume;
 
-/* A superblock's: the device it is on, the filesystem, once mounted, and its DAX, if it has one. */
-struct fxfs_vfs_info {
+/*
+ * The filesystem on a device, which the superblocks of its mounted volumes share: open while one
+ * is mounted, or mounting, and kept to be opened again.
+ */
+struct fxfs_vfs_filesystem {
+	/* On the filesystems known, one for each device a filesystem was mounted on. */
+	struct list_head list;
 	struct virtio_extent *vext;
-	struct fxfs *fs;
+	/* Guards the rest, and opens and closes the filesystem. */
+	struct mutex lock;
+	struct fxfs_filesystem *filesystem;
+	/* Its DAX, if it has one: one window, which all its volumes share. */
 	struct fxfs_dax *dax;
 	/* fxdax: /proc/fs/fxfs/<its device's tag>, what it waited on (fxfs_vfs_stats_show). */
 	struct proc_dir_entry *stats;
@@ -44,6 +53,28 @@ struct fxfs_vfs_info {
 	struct workqueue_struct *readahead;
 	/* fxdax: takes the size the host resizes the store to (fxfs_resize), off the interrupt. */
 	struct work_struct resize;
+	/* Its superblocks, and how many of those are frozen. */
+	unsigned int volumes;
+	unsigned int volumes_frozen;
+	/*
+	 * fxdax: whether the filesystem is frozen, which takes all its volumes frozen: nothing is
+	 * open on the device, so no volume mounts until it thaws, with the first to thaw.
+	 */
+	bool frozen;
+};
+
+/*
+ * A superblock's: its volume's, and the filesystem and DAX it shares. A volume has its own inode
+ * numbers, st_dev and `EXDEV`, and only the filesystem's journal, device and window in common.
+ */
+struct fxfs_vfs_info {
+	struct virtio_extent *vext;
+	/* The volume's name, as it is mounted, and what mounts it. */
+	char *volume;
+	struct fxfs_vfs_filesystem *filesystem;
+	struct fxfs *fs;
+	struct fxfs_dax *dax;
+	struct fxfs_dax_volume *dax_volume;
 	/*
 	 * fxdax: a follower's (fxfs_follows, backlog doc-8): applies its writer's commits, as its
 	 * device tells of them, off the interrupt (fxfs_follow).
@@ -217,10 +248,21 @@ static inline struct fxfs_vfs_inode *fxfs_vfs_inode(struct inode *inode)
 #if IS_ENABLED(CONFIG_FS_DAX)
 
 /*
- * The DAX of the filesystem `fs`, mounted on `sb`, if its device's window can map files' data;
- * NULL if it can't, or an ERR_PTR.
+ * The DAX of `filesystem`, if its device's window can map files' data; NULL if it can't, or an
+ * ERR_PTR.
  */
-struct fxfs_dax *fxfs_dax_create(struct super_block *sb, struct fxfs *fs);
+struct fxfs_dax *fxfs_dax_create(struct fxfs_filesystem *filesystem);
+/*
+ * `dax`'s share for the volume `fs`, mounted: its files, by their inode numbers; or an ERR_PTR.
+ * fxfs_dax_remove_volume gives it back, before the volume unmounts, with others staying; otherwise
+ * fxfs_dax_quiesce stops what uses it, and fxfs_dax_destroy frees it.
+ */
+struct fxfs_dax_volume *fxfs_dax_add_volume(struct fxfs_dax *dax, struct fxfs *fs);
+/*
+ * Lets go of what `dax`'s window keeps of `volume`, its inodes evicted, its data synced, and frees
+ * it: the window goes on for the other volumes.
+ */
+void fxfs_dax_remove_volume(struct fxfs_dax *dax, struct fxfs_dax_volume *volume);
 /* Waits for `dax`'s regions growing in the background, before a sync. */
 void fxfs_dax_settle(struct fxfs_dax *dax);
 /*
@@ -269,8 +311,8 @@ int fxfs_dax_remap(struct inode *inode, loff_t pos, loff_t len, loff_t size);
  * as needed. Through `inode`, the file's, if one is read in, whose invalidate_lock the caller
  * holds for writing: it breaks the inode's mappings of them first.
  */
-int fxfs_dax_changed(struct fxfs_dax *dax, struct inode *inode, u64 ino, loff_t start,
-		     loff_t end);
+int fxfs_dax_changed(struct fxfs_dax *dax, struct fxfs_dax_volume *volume, struct inode *inode,
+		     u64 ino, loff_t start, loff_t end);
 /*
  * fxdax: a follower's DAX file, shrunk by its writer to `size`, its new size set: the guest's
  * mappings of its pages past it go, as a truncate's do. With its inode's invalidate_lock held for
@@ -278,8 +320,8 @@ int fxfs_dax_changed(struct fxfs_dax *dax, struct inode *inode, u64 ino, loff_t 
  */
 int fxfs_dax_shrunk(struct inode *inode, loff_t size);
 #else
-static inline int fxfs_dax_changed(struct fxfs_dax *dax, struct inode *inode, u64 ino,
-				   loff_t start, loff_t end)
+static inline int fxfs_dax_changed(struct fxfs_dax *dax, struct fxfs_dax_volume *volume,
+				   struct inode *inode, u64 ino, loff_t start, loff_t end)
 {
 	return 0;
 }
@@ -287,10 +329,15 @@ static inline int fxfs_dax_shrunk(struct inode *inode, loff_t size)
 {
 	return 0;
 }
-static inline struct fxfs_dax *fxfs_dax_create(struct super_block *sb, struct fxfs *fs)
+static inline struct fxfs_dax *fxfs_dax_create(struct fxfs_filesystem *filesystem)
 {
 	return NULL;
 }
+static inline struct fxfs_dax_volume *fxfs_dax_add_volume(struct fxfs_dax *dax, struct fxfs *fs)
+{
+	return NULL;
+}
+static inline void fxfs_dax_remove_volume(struct fxfs_dax *dax, struct fxfs_dax_volume *volume) {}
 static inline void fxfs_dax_settle(struct fxfs_dax *dax) {}
 static inline int fxfs_dax_punch_begin(struct inode *inode, loff_t start, loff_t end)
 {

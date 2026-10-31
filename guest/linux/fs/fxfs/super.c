@@ -22,6 +22,7 @@
 #include <linux/fileattr.h>
 #include <linux/fs.h>
 #include <linux/fs_context.h>
+#include <linux/fs_parser.h>
 #include <linux/init.h>
 #include <linux/minmax.h>
 #include <linux/module.h>
@@ -1391,6 +1392,7 @@ static void fxfs_vfs_readahead(struct readahead_control *rac)
 {
 	struct inode *inode = rac->mapping->host;
 	struct fxfs_vfs_info *info = fxfs_vfs_info(inode->i_sb);
+	struct workqueue_struct *readahead = info->filesystem->readahead;
 	unsigned int nr = readahead_count(rac), i = 0;
 	struct fxfs_vfs_read *read;
 	struct folio *folio;
@@ -1411,13 +1413,13 @@ static void fxfs_vfs_readahead(struct readahead_control *rac)
 		i++;
 	}
 	read->nr = i;
-	if (!info->readahead) {
+	if (!readahead) {
 		fxfs_vfs_read_folios(read);
 		kfree(read);
 		return;
 	}
 	INIT_WORK(&read->work, fxfs_vfs_read_work);
-	queue_work(info->readahead, &read->work);
+	queue_work(readahead, &read->work);
 }
 
 /*
@@ -2395,40 +2397,70 @@ static int fxfs_vfs_sync_fs(struct super_block *sb, int wait)
 }
 
 /*
- * Freezing (fsfreeze, FIFREEZE): the VFS stops writers and syncs, and the filesystem is made
- * durable, and holds its background work, compacting and freeing, which writes nothing until it
- * thaws: nothing is open on the device, the point a snapshot of the VM is taken at (fxdax's
- * TASK-39.1). Thawing, it learns the device's branch, which a VM restored from the snapshot has
- * its own of.
+ * Freezing (fsfreeze, FIFREEZE): the VFS stops a volume's writers and syncs it, and once all the
+ * filesystem's volumes are frozen, the filesystem is made durable, and holds its background work,
+ * compacting and freeing, which writes nothing until it thaws: nothing is open on the device, the
+ * point a snapshot of the VM is taken at (fxdax's TASK-39.1). With the first volume to thaw, it
+ * learns the device's branch, which a VM restored from the snapshot has its own of. With the lock
+ * held.
  */
-static int fxfs_vfs_freeze_fs(struct super_block *sb)
+static int fxfs_vfs_filesystem_freeze(struct fxfs_vfs_filesystem *filesystem)
 {
-	struct fxfs_dax *dax = fxfs_vfs_info(sb)->dax;
+	struct fxfs_dax *dax = filesystem->dax;
 	int err;
 
+	lockdep_assert_held(&filesystem->lock);
+	if (filesystem->volumes_frozen < filesystem->volumes)
+		return 0;
 	if (dax)
 		fxfs_dax_quiesce(dax);
-	err = fxfs_nofs(fxfs_freeze(fxfs_vfs_fs(sb)));
-	if (err && dax)
-		fxfs_dax_thaw(dax);
+	err = fxfs_nofs(fxfs_freeze(filesystem->filesystem));
+	if (err) {
+		if (dax)
+			fxfs_dax_thaw(dax);
+		return err;
+	}
+	filesystem->frozen = true;
+	return 0;
+}
+
+static int fxfs_vfs_freeze_fs(struct super_block *sb)
+{
+	struct fxfs_vfs_filesystem *filesystem = fxfs_vfs_info(sb)->filesystem;
+	int err;
+
+	mutex_lock(&filesystem->lock);
+	filesystem->volumes_frozen++;
+	err = fxfs_vfs_filesystem_freeze(filesystem);
+	if (err)
+		filesystem->volumes_frozen--;
+	mutex_unlock(&filesystem->lock);
 	return err;
 }
 
 static int fxfs_vfs_unfreeze_fs(struct super_block *sb)
 {
-	struct fxfs_vfs_info *info = fxfs_vfs_info(sb);
-	int err = fxfs_nofs(fxfs_thaw(info->fs));
+	struct fxfs_vfs_filesystem *filesystem = fxfs_vfs_info(sb)->filesystem;
+	int err = 0;
 
-	if (info->dax)
-		fxfs_dax_thaw(info->dax);
-	/*
-	 * fxdax: a store resized while the VM was away, snapshotted, told it nothing: what the device
-	 * says now it takes as if told, before anything thawed sees the filesystem's size.
-	 */
-	if (!err && !info->follows) {
-		schedule_work(&info->resize);
-		flush_work(&info->resize);
+	mutex_lock(&filesystem->lock);
+	filesystem->volumes_frozen--;
+	if (filesystem->frozen) {
+		err = fxfs_nofs(fxfs_thaw(filesystem->filesystem));
+		if (filesystem->dax)
+			fxfs_dax_thaw(filesystem->dax);
+		filesystem->frozen = false;
+		/*
+		 * fxdax: a store resized while the VM was away, snapshotted, told it nothing: what
+		 * the device says now it takes as if told, before anything thawed sees the
+		 * filesystem's size.
+		 */
+		if (!err && !fxfs_filesystem_follows(filesystem->filesystem)) {
+			schedule_work(&filesystem->resize);
+			flush_work(&filesystem->resize);
+		}
 	}
+	mutex_unlock(&filesystem->lock);
 	return err;
 }
 
@@ -2477,14 +2509,16 @@ static void fxfs_vfs_inode_init_once(void *fi)
 }
 
 /*
- * What the mount is, as /proc/mounts shows it: Fxfs takes no options of its own, but files map
- * their data from the device's DAX window, if it has one (dax), and the filesystem follows another
- * VM's writes, if its device is a follower's (follow).
+ * What the mount is, as /proc/mounts shows it: the volume, if it isn't the default (volume), the
+ * one option Fxfs takes; files map their data from the device's DAX window, if it has one (dax),
+ * and the filesystem follows another VM's writes, if its device is a follower's (follow).
  */
 static int fxfs_vfs_show_options(struct seq_file *m, struct dentry *root)
 {
 	struct fxfs_vfs_info *info = fxfs_vfs_info(root->d_sb);
 
+	if (strcmp(info->volume, FXFS_DEFAULT_VOLUME))
+		seq_show_option(m, "volume", info->volume);
 	if (info->dax)
 		seq_puts(m, ",dax");
 	if (info->follows)
@@ -2570,8 +2604,8 @@ static const struct export_operations fxfs_vfs_export_operations = {
 /* fxdax: takes the size the host resized the store to. */
 static void fxfs_vfs_resize_work(struct work_struct *work)
 {
-	struct fxfs_vfs_info *info = container_of(work, struct fxfs_vfs_info, resize);
-	int err = fxfs_nofs(fxfs_resize(info->fs));
+	struct fxfs_vfs_filesystem *filesystem = container_of(work, struct fxfs_vfs_filesystem, resize);
+	int err = fxfs_nofs(fxfs_resize(filesystem->filesystem));
 
 	if (err)
 		pr_warn("fxfs: resizing: %d\n", err);
@@ -2580,9 +2614,9 @@ static void fxfs_vfs_resize_work(struct work_struct *work)
 /* fxdax: the host resized the store, or asks the guest to shrink: from the device's interrupt. */
 static void fxfs_vfs_resized(void *arg)
 {
-	struct fxfs_vfs_info *info = arg;
+	struct fxfs_vfs_filesystem *filesystem = arg;
 
-	schedule_work(&info->resize);
+	schedule_work(&filesystem->resize);
 }
 
 DEFINE_STATIC_KEY_FALSE(fxfs_vfs_followers);
@@ -2737,7 +2771,8 @@ static long fxfs_vfs_dir_ioctl(struct file *file, unsigned int cmd, unsigned lon
 static void fxfs_vfs_drop_data(struct super_block *sb, struct inode *inode, u64 ino, u64 start,
 			       u64 end)
 {
-	struct fxfs_dax *dax = fxfs_vfs_info(sb)->dax;
+	struct fxfs_vfs_info *info = fxfs_vfs_info(sb);
+	struct fxfs_dax *dax = info->dax;
 	loff_t first = min_t(u64, start, LLONG_MAX);
 	loff_t last = end > LLONG_MAX ? LLONG_MAX : (loff_t)end - 1;
 	int err;
@@ -2748,7 +2783,7 @@ static void fxfs_vfs_drop_data(struct super_block *sb, struct inode *inode, u64 
 		lockdep_assert_held_write(&inode->i_mapping->invalidate_lock);
 	/* fxdax: as the inode has its data: one that got no file stays in the page cache (TASK-79.97). */
 	if (dax && (!inode || IS_DAX(inode))) {
-		err = fxfs_dax_changed(dax, inode, ino, first, last);
+		err = fxfs_dax_changed(dax, info->dax_volume, inode, ino, first, last);
 		if (err)
 			pr_warn("fxfs: dropping inode %llu's window mappings: %d\n", ino, err);
 		return;
@@ -2865,7 +2900,6 @@ void fxfs_vfs_drop_entries(void *vfs, u64 ino)
 	iput(inode);
 }
 
-/* Mounts the filesystem on the extent-store device the mount's source names by its tag. */
 /* fxdax: /proc/fs/fxfs, where each filesystem says what it waited on, by its device's tag. */
 static struct proc_dir_entry *fxfs_vfs_proc;
 
@@ -2882,29 +2916,188 @@ static int fxfs_vfs_build_show(struct seq_file *m, void *v)
 
 /*
  * fxdax: what the filesystem `m` is of waited on, and its device's and window's requests took, as
- * lines of a name and a number, all told since it mounted (TASK-91.7): Fxfs waits on the device in
+ * lines of a name and a number, all told since it opened (TASK-91.7): Fxfs waits on the device in
  * the kernel, which counts it as idle, not iowait, so that nothing else tells those waits apart.
  */
 static int fxfs_vfs_stats_show(struct seq_file *m, void *v)
 {
-	struct fxfs_vfs_info *info = fxfs_vfs_info(m->private);
+	struct fxfs_vfs_filesystem *filesystem = m->private;
 	char *buf = kmalloc(PAGE_SIZE, GFP_KERNEL);
 	size_t len;
 
 	if (!buf)
 		return -ENOMEM;
-	len = fxfs_stats(info->fs, buf, PAGE_SIZE);
+	len = fxfs_stats(filesystem->filesystem, buf, PAGE_SIZE);
 	seq_write(m, buf, min_t(size_t, len, PAGE_SIZE));
 	kfree(buf);
-	fxfs_device_show_stats(fxfs_dax_device(info->fs), m);
-	if (info->dax)
-		fxfs_dax_show_stats(info->dax, m);
+	fxfs_device_show_stats(fxfs_dax_device(filesystem->filesystem), m);
+	if (filesystem->dax)
+		fxfs_dax_show_stats(filesystem->dax, m);
 	return 0;
+}
+
+/* The filesystems known, which outlive their mounts (`struct fxfs_vfs_filesystem`). */
+static LIST_HEAD(fxfs_vfs_filesystems);
+static DEFINE_MUTEX(fxfs_vfs_filesystems_lock);
+
+/*
+ * The filesystem of the device `vext`, new if none was mounted on it: NULL without the memory. It
+ * only knows `vext` by its address: the superblocks hold the device while it is open, and one
+ * bound at that address later finds it closed.
+ */
+static struct fxfs_vfs_filesystem *fxfs_vfs_filesystem_of(struct virtio_extent *vext)
+{
+	struct fxfs_vfs_filesystem *filesystem;
+
+	mutex_lock(&fxfs_vfs_filesystems_lock);
+	list_for_each_entry(filesystem, &fxfs_vfs_filesystems, list) {
+		if (filesystem->vext == vext)
+			goto out;
+	}
+	filesystem = kzalloc(sizeof(*filesystem), GFP_KERNEL);
+	if (filesystem) {
+		filesystem->vext = vext;
+		mutex_init(&filesystem->lock);
+		INIT_WORK(&filesystem->resize, fxfs_vfs_resize_work);
+		list_add(&filesystem->list, &fxfs_vfs_filesystems);
+	}
+out:
+	mutex_unlock(&fxfs_vfs_filesystems_lock);
+	return filesystem;
+}
+
+/* Closes the filesystem, whose last volume went, or as much of it as opened. */
+static void fxfs_vfs_filesystem_close(struct fxfs_vfs_filesystem *filesystem)
+{
+	unsigned int nofs;
+
+	/* Once its readers are done. */
+	proc_remove(filesystem->stats);
+	filesystem->stats = NULL;
+	if (filesystem->filesystem) {
+		/* No resize comes once closing. */
+		fxfs_device_set_resized(fxfs_dax_device(filesystem->filesystem), NULL, NULL);
+		cancel_work_sync(&filesystem->resize);
+	}
+	/* Its volumes' inodes evicted, their folios' reads unlocked them: what's left is its free. */
+	if (filesystem->readahead)
+		destroy_workqueue(filesystem->readahead);
+	filesystem->readahead = NULL;
+	if (filesystem->filesystem) {
+		nofs = memalloc_nofs_save();
+		fxfs_close(filesystem->filesystem);
+		memalloc_nofs_restore(nofs);
+	}
+	filesystem->filesystem = NULL;
+	/* Once closed: the last seals call the DAX's sealer. */
+	if (filesystem->dax)
+		fxfs_dax_destroy(filesystem->dax);
+	filesystem->dax = NULL;
+	/* fxdax: a follower lets go of its store, which keeps a writer from it once it was cut off. */
+	virtio_extent_close(filesystem->vext);
+}
+
+/* Opens the filesystem on the extent-store device the mount's source names by its tag. */
+static int fxfs_vfs_filesystem_open(struct fxfs_vfs_filesystem *filesystem, struct fs_context *fc)
+{
+	struct fxfs_filesystem *fs;
+	struct fxfs_dax *dax;
+	int err;
+
+	/* fxdax: a follower's device, closed as it last unmounted, opens on a new view of its store. */
+	err = virtio_extent_open(filesystem->vext);
+	if (err)
+		goto err_close;
+	err = fxfs_nofs(fxfs_open(fc->source, strlen(fc->source),
+				  (u64)totalram_pages() << PAGE_SHIFT, fc->sb_flags & SB_RDONLY,
+				  &fs));
+	if (err)
+		goto err_close;
+	filesystem->filesystem = fs;
+	/* fxdax: readahead off the reader; a follower's in it (fxfs_vfs_readahead). */
+	if (!fxfs_filesystem_follows(fs)) {
+		fxfs_device_set_resized(fxfs_dax_device(fs), fxfs_vfs_resized, filesystem);
+		filesystem->readahead = alloc_workqueue("fxfs-read", WQ_UNBOUND, 0);
+		if (!filesystem->readahead) {
+			err = -ENOMEM;
+			goto err_close;
+		}
+	}
+	dax = fxfs_dax_create(fs);
+	if (IS_ERR(dax)) {
+		err = PTR_ERR(dax);
+		goto err_close;
+	}
+	filesystem->dax = dax;
+	/* Without it, the filesystem works as well, unobserved: a tag a path can't hold has none. */
+	if (fxfs_vfs_proc && !strchr(fc->source, '/'))
+		filesystem->stats = proc_create_single_data(fc->source, 0444, fxfs_vfs_proc,
+							    fxfs_vfs_stats_show, filesystem);
+	return 0;
+err_close:
+	fxfs_vfs_filesystem_close(filesystem);
+	return err;
+}
+
+/* The volume of the superblock `info` is of joins its device's filesystem, opened if it isn't. */
+static int fxfs_vfs_filesystem_join(struct fxfs_vfs_info *info, struct fs_context *fc)
+{
+	struct fxfs_vfs_filesystem *filesystem = fxfs_vfs_filesystem_of(info->vext);
+	int err = 0;
+
+	if (!filesystem)
+		return -ENOMEM;
+	mutex_lock(&filesystem->lock);
+	if (filesystem->frozen)
+		err = -EBUSY;
+	else if (!filesystem->volumes)
+		err = fxfs_vfs_filesystem_open(filesystem, fc);
+	if (!err) {
+		filesystem->volumes++;
+		info->filesystem = filesystem;
+		info->dax = filesystem->dax;
+	}
+	mutex_unlock(&filesystem->lock);
+	return err;
+}
+
+/*
+ * The volume of `info`, its inodes evicted, leaves its filesystem, which closes with the last. The
+ * volumes left may all be frozen by then, which freezes the filesystem. A frozen filesystem has
+ * none leave: a frozen superblock stays until it thaws.
+ */
+static void fxfs_vfs_filesystem_leave(struct fxfs_vfs_info *info)
+{
+	struct fxfs_vfs_filesystem *filesystem = info->filesystem;
+	unsigned int nofs;
+	int err;
+
+	mutex_lock(&filesystem->lock);
+	WARN_ON_ONCE(filesystem->frozen);
+	filesystem->volumes--;
+	if (info->dax_volume && filesystem->volumes)
+		fxfs_dax_remove_volume(info->dax, info->dax_volume);
+	else if (info->dax && !filesystem->volumes)
+		fxfs_dax_quiesce(info->dax);
+	if (info->fs) {
+		nofs = memalloc_nofs_save();
+		fxfs_unmount(info->fs);
+		memalloc_nofs_restore(nofs);
+	}
+	if (!filesystem->volumes) {
+		fxfs_vfs_filesystem_close(filesystem);
+	} else {
+		err = fxfs_vfs_filesystem_freeze(filesystem);
+		if (err)
+			pr_warn("fxfs: freezing as a volume left: %d\n", err);
+	}
+	mutex_unlock(&filesystem->lock);
 }
 
 static int fxfs_vfs_fill_super(struct super_block *sb, struct fs_context *fc)
 {
 	struct fxfs_vfs_info *info = fxfs_vfs_info(sb);
+	struct fxfs_filesystem *filesystem;
 	struct fxfs_attr attr;
 	struct inode *root;
 	struct fxfs *fs;
@@ -2920,20 +3113,18 @@ static int fxfs_vfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	 */
 	sb->s_bdi->ra_pages = FXFS_IO_MAX / PAGE_SIZE;
 	sb->s_bdi->io_pages = FXFS_IO_MAX / PAGE_SIZE;
-	/* fxdax: a follower's device, closed as it last unmounted, opens on a new view of its store. */
-	err = virtio_extent_open(info->vext);
-	if (err)
-		return err;
 	/* fxdax: what a follower's batches and readers keep, readied before it mounts. */
 	init_rwsem(&info->follow_barrier);
 	INIT_WORK(&info->follow, fxfs_vfs_follow_work);
-	err = fxfs_nofs(fxfs_mount(fc->source, strlen(fc->source),
-				   (u64)totalram_pages() << PAGE_SHIFT,
+	err = fxfs_vfs_filesystem_join(info, fc);
+	if (err)
+		return err;
+	filesystem = info->filesystem->filesystem;
+	err = fxfs_nofs(fxfs_mount(filesystem, info->volume, strlen(info->volume),
 				   fc->sb_flags & SB_RDONLY, sb, &fs, &attr));
 	if (err)
 		return err;
-	fxfs_vfs_info(sb)->fs = fs;
-	INIT_WORK(&fxfs_vfs_info(sb)->resize, fxfs_vfs_resize_work);
+	info->fs = fs;
 	/* fxdax: read-only, it writes nothing; a follower's device tells of its writer's commits. */
 	if (fxfs_read_only(fs))
 		sb->s_flags |= SB_RDONLY;
@@ -2941,25 +3132,14 @@ static int fxfs_vfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	if (info->follows) {
 		static_branch_inc(&fxfs_vfs_followers);
 		set_default_d_op(sb, &fxfs_vfs_follower_dentry_operations);
-	} else {
-		fxfs_device_set_resized(fxfs_dax_device(fs), fxfs_vfs_resized, info);
 	}
-	/* fxdax: readahead off the reader; a follower's in it (fxfs_vfs_readahead). */
-	if (!info->follows) {
-		info->readahead = alloc_workqueue("fxfs-read", WQ_UNBOUND, 0);
-		if (!info->readahead)
-			return -ENOMEM;
+	if (info->dax) {
+		struct fxfs_dax_volume *volume = fxfs_dax_add_volume(info->dax, fs);
+
+		if (IS_ERR(volume))
+			return PTR_ERR(volume);
+		info->dax_volume = volume;
 	}
-	fxfs_vfs_info(sb)->dax = fxfs_dax_create(sb, fs);
-	if (IS_ERR(fxfs_vfs_info(sb)->dax)) {
-		err = PTR_ERR(fxfs_vfs_info(sb)->dax);
-		fxfs_vfs_info(sb)->dax = NULL;
-		return err;
-	}
-	/* Without it, the filesystem works as well, unobserved: a tag a path can't hold has none. */
-	if (fxfs_vfs_proc && !strchr(fc->source, '/'))
-		info->stats = proc_create_single_data(fc->source, 0444, fxfs_vfs_proc,
-						      fxfs_vfs_stats_show, sb);
 	sb->s_magic = FXFS_MAGIC;
 	sb->s_op = &fxfs_vfs_super_operations;
 	sb->s_export_op = &fxfs_vfs_export_operations;
@@ -2994,18 +3174,18 @@ static int fxfs_vfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	 * (TASK-79.54).
 	 */
 	if (info->follows) {
-		fxfs_device_set_resized(fxfs_dax_device(fs), fxfs_vfs_committed, info);
+		fxfs_device_set_resized(fxfs_dax_device(filesystem), fxfs_vfs_committed, info);
 		schedule_work(&info->follow);
 	}
 	return 0;
 }
 
-/* Whether `sb` is on the device `fc` mounts, which the info `fc` holds for a new one names. */
+/* Whether `sb` is of the volume `fc` mounts, which the info `fc` holds for a new one names. */
 static int fxfs_vfs_test_super(struct super_block *sb, struct fs_context *fc)
 {
-	struct fxfs_vfs_info *info = fc->s_fs_info;
+	struct fxfs_vfs_info *mounted = fxfs_vfs_info(sb), *info = fc->s_fs_info;
 
-	return fxfs_vfs_info(sb)->vext == info->vext;
+	return mounted->vext == info->vext && !strcmp(mounted->volume, info->volume);
 }
 
 /*
@@ -3017,12 +3197,21 @@ static int fxfs_vfs_set_super(struct super_block *sb, struct fs_context *fc)
 	return set_anon_super_fc(sb, fc);
 }
 
+/* Frees `info`, letting go of the device it holds. */
+static void fxfs_vfs_info_free(struct fxfs_vfs_info *info)
+{
+	virtio_extent_put(info->vext);
+	kfree(info->volume);
+	kfree(info);
+}
+
 /*
- * One superblock per device, as get_tree_keyed has it: mounting a device mounted already shares
- * its filesystem.
+ * One superblock per volume of a device: mounting a volume mounted already shares its superblock,
+ * as get_tree_keyed has it. Mounted without `volume`, the default.
  */
 static int fxfs_vfs_get_tree(struct fs_context *fc)
 {
+	const char *volume = fc->fs_private ?: FXFS_DEFAULT_VOLUME;
 	struct virtio_extent *vext;
 	struct fxfs_vfs_info *info;
 	struct super_block *sb;
@@ -3039,12 +3228,17 @@ static int fxfs_vfs_get_tree(struct fs_context *fc)
 		return -ENOMEM;
 	}
 	info->vext = vext;
+	info->volume = kstrdup(volume, GFP_KERNEL);
+	if (!info->volume) {
+		fxfs_vfs_info_free(info);
+		return -ENOMEM;
+	}
+	info->vext = vext;
 	fc->s_fs_info = info;
 	sb = sget_fc(fc, fxfs_vfs_test_super, fxfs_vfs_set_super);
 	/* A new superblock took it, and the device with it; a shared one, or none, did not. */
 	if (fc->s_fs_info)
-		virtio_extent_put(vext);
-	kfree(fc->s_fs_info);
+		fxfs_vfs_info_free(fc->s_fs_info);
 	fc->s_fs_info = NULL;
 	if (IS_ERR(sb))
 		return PTR_ERR(sb);
@@ -3060,17 +3254,49 @@ static int fxfs_vfs_get_tree(struct fs_context *fc)
 	return 0;
 }
 
-/* fxdax: a filesystem mounted read-only, or following its writer, stays so. */
+/* fxdax: a filesystem mounted read-only, or following its writer, stays so, and a volume itself. */
 static int fxfs_vfs_reconfigure(struct fs_context *fc)
 {
 	struct super_block *sb = fc->root->d_sb;
 
 	if (!(fc->sb_flags & SB_RDONLY) && fxfs_read_only(fxfs_vfs_fs(sb)))
 		return invalf(fc, "fxfs: mounted read-only, or following a writer: it stays so");
+	if (fc->fs_private && strcmp(fc->fs_private, fxfs_vfs_info(sb)->volume))
+		return invalf(fc, "fxfs: a mount's volume stays its own");
 	return 0;
 }
 
+enum {
+	FXFS_VFS_VOLUME,
+};
+
+static const struct fs_parameter_spec fxfs_vfs_parameters[] = {
+	fsparam_string("volume", FXFS_VFS_VOLUME),
+	{}
+};
+
+/* The one option: `volume`, the name of the volume to mount, which the context keeps. */
+static int fxfs_vfs_parse_param(struct fs_context *fc, struct fs_parameter *param)
+{
+	struct fs_parse_result result;
+	int opt = fs_parse(fc, fxfs_vfs_parameters, param, &result);
+
+	if (opt < 0)
+		return opt;
+	kfree(fc->fs_private);
+	fc->fs_private = param->string;
+	param->string = NULL;
+	return 0;
+}
+
+static void fxfs_vfs_free_context(struct fs_context *fc)
+{
+	kfree(fc->fs_private);
+}
+
 static const struct fs_context_operations fxfs_vfs_context_operations = {
+	.parse_param = fxfs_vfs_parse_param,
+	.free = fxfs_vfs_free_context,
 	.get_tree = fxfs_vfs_get_tree,
 	.reconfigure = fxfs_vfs_reconfigure,
 };
@@ -3084,39 +3310,21 @@ static int fxfs_vfs_init_fs_context(struct fs_context *fc)
 static void fxfs_vfs_kill_sb(struct super_block *sb)
 {
 	struct fxfs_vfs_info *info = fxfs_vfs_info(sb);
-	unsigned int nofs;
 
-	/* Once its readers are done. */
-	proc_remove(info->stats);
-	if (info->fs) {
-		/*
-		 * No resize, nor a writer's commit, comes once unmounting: a follower's batch, which
-		 * invalidates inodes, ends before they go.
-		 */
-		fxfs_device_set_resized(fxfs_dax_device(info->fs), NULL, NULL);
-		cancel_work_sync(&info->resize);
+	/*
+	 * No writer's commit comes once unmounting: a follower's batch, which invalidates inodes,
+	 * ends before they go.
+	 */
+	if (info->follows) {
+		fxfs_device_set_resized(fxfs_dax_device(info->filesystem->filesystem), NULL, NULL);
 		cancel_work_sync(&info->follow);
 	}
 	kill_anon_super(sb);
-	/* Its inodes evicted, their folios' reads unlocked them: what's left of each is its free. */
-	if (info->readahead)
-		destroy_workqueue(info->readahead);
-	if (info->dax)
-		fxfs_dax_quiesce(info->dax);
-	if (info->fs) {
-		nofs = memalloc_nofs_save();
-		fxfs_unmount(info->fs);
-		memalloc_nofs_restore(nofs);
-	}
-	/* Once unmounted: the last seals call the DAX's sealer. */
-	if (info->dax)
-		fxfs_dax_destroy(info->dax);
+	if (info->filesystem)
+		fxfs_vfs_filesystem_leave(info);
 	if (info->follows)
 		static_branch_dec(&fxfs_vfs_followers);
-	/* fxdax: a follower lets go of its store, which keeps a writer from it once it was cut off. */
-	virtio_extent_close(info->vext);
-	virtio_extent_put(info->vext);
-	kfree(info);
+	fxfs_vfs_info_free(info);
 }
 
 static struct file_system_type fxfs_vfs_type = {
@@ -3129,6 +3337,7 @@ static struct file_system_type fxfs_vfs_type = {
 	 * attribute too (nfsd's, without SB_I_VERSION: Fxfs keeps no change counter).
 	 */
 	.fs_flags = FS_ALLOW_IDMAP | FS_MGTIME,
+	.parameters = fxfs_vfs_parameters,
 	.init_fs_context = fxfs_vfs_init_fs_context,
 	.kill_sb = fxfs_vfs_kill_sb,
 };
@@ -3162,7 +3371,11 @@ static int __init fxfs_vfs_init(void)
 
 static void __exit fxfs_vfs_exit(void)
 {
+	struct fxfs_vfs_filesystem *filesystem, *next;
+
 	unregister_filesystem(&fxfs_vfs_type);
+	list_for_each_entry_safe(filesystem, next, &fxfs_vfs_filesystems, list)
+		kfree(filesystem);
 	proc_remove(fxfs_vfs_proc);
 	fxfs_rt_exit();
 	rcu_barrier();

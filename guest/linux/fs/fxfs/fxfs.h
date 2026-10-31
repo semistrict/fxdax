@@ -10,11 +10,16 @@
 
 #include <linux/types.h>
 
-/* A mounted filesystem. */
+/* The filesystem on an extent-store device, which its mounted volumes share. */
+struct fxfs_filesystem;
+/* A mounted volume of one. */
 struct fxfs;
 struct fxfs_device;
 
-/* An inode's attributes. Its inode number is its object's ID in Fxfs. */
+/* The volume a mount naming none mounts, which fxdax's images keep a filesystem's files in. */
+#define FXFS_DEFAULT_VOLUME "default"
+
+/* An inode's attributes. Its inode number is its object's ID in its volume, its own. */
 struct fxfs_attr {
 	u64 ino;
 	u64 size;
@@ -83,15 +88,25 @@ struct fxfs_statfs {
 void fxfs_init(void);
 
 /*
- * Mounts Fxfs on the extent-store device tagged with the `len` bytes of `source`, formatting it if
- * its store holds nothing yet, and fills in the filesystem and its root directory's attributes: 0,
- * or a -errno (-ENOENT if there is no such device). Fxfs sizes what it keeps in memory by
- * the `memory` bytes the kernel has. fxdax: read-only if `read_only`, or if the device follows a
- * store another VM writes, when the filesystem follows that writer (fxfs_follow) on the
- * superblock `vfs`'s primitives (fxfs_vfs_follow_*, below).
+ * Opens Fxfs on the extent-store device tagged with the `len` bytes of `source`, formatting it if
+ * its store holds nothing yet, with an empty default volume: 0, or a -errno (-ENOENT if there is no
+ * such device). Fxfs sizes what it keeps in memory by the `memory` bytes the kernel has. fxdax:
+ * read-only if `read_only`, or if the device follows a store another VM writes.
  */
-int fxfs_mount(const char *source, size_t len, u64 memory, bool read_only, void *vfs,
-	       struct fxfs **fs, struct fxfs_attr *root);
+int fxfs_open(const char *source, size_t len, u64 memory, bool read_only,
+	      struct fxfs_filesystem **filesystem);
+/* Closes the filesystem, writing back what is dirty, once no volume of it is mounted. */
+void fxfs_close(struct fxfs_filesystem *filesystem);
+/*
+ * Mounts the volume named with the `len` bytes of `volume`, and fills in its root directory's
+ * attributes: 0, or a -errno (-ENOENT if there is no such volume). fxdax: read-only if `read_only`,
+ * or if the filesystem is. On a follower's device only the default volume mounts (-EINVAL): it
+ * follows that writer (fxfs_follow) on the superblock `vfs`'s primitives (fxfs_vfs_follow_*, below).
+ */
+int fxfs_mount(struct fxfs_filesystem *filesystem, const char *volume, size_t len, bool read_only,
+	       void *vfs, struct fxfs **fs, struct fxfs_attr *root);
+/* fxdax: whether a volume mounted on the filesystem follows its device's writer. */
+bool fxfs_filesystem_follows(struct fxfs_filesystem *filesystem);
 /* fxdax: whether the filesystem is mounted read-only, and whether it follows its writer. */
 /* fxdax: diagnostic: Fxfs logs the blocks a DAX write's move keeps that read short or as zeros. */
 void fxfs_set_check_kept(bool on);
@@ -149,18 +164,18 @@ struct fxfs_range {
 void fxfs_vfs_drop_file(void *vfs, u64 ino, const struct fxfs_range *ranges, size_t count);
 void fxfs_vfs_drop_entries(void *vfs, u64 ino);
 void fxfs_vfs_settle_file(void *vfs, u64 ino, const struct fxfs_attr *attr, bool gone);
-/* Unmounts the filesystem, writing back what is dirty. */
+/* Unmounts the volume, applying what it queued. The filesystem stays open. */
 void fxfs_unmount(struct fxfs *fs);
 /* Makes what the filesystem holds durable: sync, syncfs. */
 int fxfs_sync(struct fxfs *fs);
 /*
- * fxdax: freezes the filesystem, which the VFS has synced, its writers stopped: makes it durable,
- * holds its background work, and closes the device to writes until it thaws, nothing open on it;
- * -EBUSY if writes kept coming. Thawing, it takes the device's branch, a fork's of its own in a VM
- * restored from a snapshot taken frozen, and writes again (TASK-39.1).
+ * fxdax: freezes the filesystem, each of whose volumes the VFS has synced, its writers stopped:
+ * makes it durable, holds its background work, and closes the device to writes until it thaws,
+ * nothing open on it; -EBUSY if writes kept coming. Thawing, it takes the device's branch, a fork's
+ * of its own in a VM restored from a snapshot taken frozen, and writes again (TASK-39.1).
  */
-int fxfs_freeze(struct fxfs *fs);
-int fxfs_thaw(struct fxfs *fs);
+int fxfs_freeze(struct fxfs_filesystem *filesystem);
+int fxfs_thaw(struct fxfs_filesystem *filesystem);
 /*
  * Makes what the filesystem holds survive the guest's crash, before what comes after: fsync, which
  * need not wait for the host's disk (doc-2's requirement 2).
@@ -170,7 +185,7 @@ int fxfs_fsync(struct fxfs *fs);
  * Takes the size the host resized the store to, as the device's configuration says, while mounted:
  * grows the filesystem, or, asked to shrink, shrinks it if it holds no more, and answers.
  */
-int fxfs_resize(struct fxfs *fs);
+int fxfs_resize(struct fxfs_filesystem *filesystem);
 int fxfs_statfs(struct fxfs *fs, struct fxfs_statfs *statfs);
 
 /* Frees the blocks of file `ino` within the `len` bytes at `offset`, block-aligned: a hole. */
@@ -290,7 +305,7 @@ u64 fxfs_free_cached_objects(struct fxfs *fs, u64 count);
  * fxdax: writes what the filesystem waited on, and its device's requests took, as lines of a name
  * and a number, into the `len` bytes at `buf`, as much as fits; returns how long it is (TASK-91.7).
  */
-size_t fxfs_stats(struct fxfs *fs, char *buf, size_t len);
+size_t fxfs_stats(struct fxfs_filesystem *filesystem, char *buf, size_t len);
 
 /*
  * Closes inode `ino`, which the kernel evicts, and frees it if `unlinked`: if no name links it, a
@@ -347,7 +362,7 @@ void fxfs_reserve_dirty_what_fits(struct fxfs *fs, u64 ino, u64 bytes);
 void fxfs_release_dirty(struct fxfs *fs, u64 ino, u64 bytes);
 
 /* The extent-store device the filesystem is on (device.h). */
-struct fxfs_device *fxfs_dax_device(struct fxfs *fs);
+struct fxfs_device *fxfs_dax_device(struct fxfs_filesystem *filesystem);
 
 /*
  * A piece of a file's data, which the DAX window maps (dax.c): `len` bytes at `offset` in the file,
@@ -380,7 +395,7 @@ ssize_t fxfs_dax_extents(struct fxfs *fs, u64 ino, u64 offset, u64 len,
  * new one, open, which `out` describes (its extent and extent_size), for the window to map before
  * the blocks of the next writes move there: true if it did.
  */
-bool fxfs_dax_restage(struct fxfs *fs, struct fxfs_dax_extent *out);
+bool fxfs_dax_restage(struct fxfs_filesystem *filesystem, struct fxfs_dax_extent *out);
 /*
  * Makes room to write `len` bytes at `offset` of file `ino` through the window, without writing
  * them, and makes the file `size` bytes long if it is shorter, in one transaction. Returns the

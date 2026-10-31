@@ -2,34 +2,37 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-//! Fxfs, mounted on an extent-store device: the volume fxdax's images keep their files in, served
-//! by object ID, which is the kernel's inode number, through Fxfs's POSIX layer (crates/fxfs-posix),
-//! whose VFS is the kernel's (`Guest`).
+//! Fxfs on an extent-store device (`Filesystem`), and its volumes as the kernel mounts them, the one
+//! fxdax's images keep their files in by default, each served by object ID, which is the kernel's
+//! inode number within the volume, through Fxfs's POSIX layer (crates/fxfs-posix), whose VFS is the
+//! kernel's (`Guest`).
 //!
 //! fxdax: what only the guest has is here: its device's DAX, durability, resizes and freezes,
 //! and, on a follower's device, what follows the store's writer (`follow`, backlog doc-8).
 
 use crate::device::{Dax, DeviceStats, Durability, DurableGuard, ExtentDevice, Freezer, Resizer};
 use crate::follow::{Following, GuestFollow};
-use anyhow::{Context as _, Error};
+use anyhow::{Context as _, Error, ensure};
 use follower::{Failed, Kernel as _};
 use fxfs::errors::FxfsError;
 use fxfs::filesystem::{FxFilesystem, FxFilesystemBuilder, OpenFxFilesystem, SyncOptions};
 use fxfs::object_store::journal::{DEFAULT_RECLAIM_SIZE, JournalOptions, LazyFlush};
 use fxfs::object_store::volume::root_volume;
 use fxfs::object_store::{NewChildStoreOptions, StoreOptions};
-use fxfs_posix::Platform;
 pub use fxfs_posix::{Attr, DaxExtent, ReaddirStart, SetAttr, StatFs};
+use fxfs_posix::{Platform, SyncCounts};
 use linux_rt::Task;
 use std::future::Future;
+use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use storage_device::DeviceHolder;
 
-/// The filesystem the kernel mounts.
+/// A volume of a filesystem, as the kernel mounts it.
 pub type Fxfs = fxfs_posix::Fxfs<Guest>;
 
-/// The volume fxdax's images keep a filesystem's files in (crates/fxdax's `VOLUME_NAME`).
+/// The volume fxdax's images keep a filesystem's files in (crates/fxdax's `VOLUME_NAME`), which a
+/// mount naming none mounts (fs/fxfs/fxfs.h's FXFS_DEFAULT_VOLUME).
 const VOLUME: &str = "default";
 
 /// When the journal is written, but for syncs: metadata operations stay in memory, as ext4's do
@@ -46,9 +49,9 @@ const LAZY_FLUSH: LazyFlush = LazyFlush { bytes: 1 << 20, delay: Duration::from_
 const JOURNAL_SHARE: u64 = 32;
 const JOURNAL_MAX: u64 = 8 << 20;
 
-/// The share of memory each store's cache of objects' records takes (`object_cache_items`), at
-/// about `CACHED_OBJECT_SIZE` bytes each: each use of an inode's attributes not cached looks its
-/// record up in the store's tree.
+/// The share of memory the stores' caches of objects' records take, all told
+/// (`object_cache_items`), at about `CACHED_OBJECT_SIZE` bytes each: each use of an inode's
+/// attributes not cached looks its record up in the store's tree.
 const CACHE_SHARE: u64 = 64;
 const CACHED_OBJECT_SIZE: u64 = 256;
 
@@ -62,22 +65,34 @@ const GRAVEYARD_BATCH_DELAY: Duration = Duration::from_millis(5);
 /// transactions' reservations, which removing a file takes too.
 const SHRINK_HEADROOM: u64 = 16 << 20;
 
-/// What the guest kernel gives the filesystem: its device's, and on a follower, what follows the
-/// writer.
-pub struct Guest {
-    /// The filesystem, which unmounting closes.
+/// The filesystem on a device, which its mounted volumes share (backlog doc-10).
+pub struct Filesystem {
+    /// The filesystem, which `close` closes, after the last unmount.
     filesystem: OpenFxFilesystem,
+    /// Whether it changes nothing: mounted so first, or on a follower's device.
+    read_only: bool,
+    /// fxdax: on a follower's device, the epoch of the commit it last advanced to, as it
+    /// advances, and the commit its state is as of at the latest.
+    follower: Option<(Arc<AtomicU64>, u64)>,
     dax: Dax,
     /// What makes the device's commits durable, for `sync`.
     durability: Durability,
     /// fxdax: what the device's requests took, and what waited on its seals (`stats`).
     device_stats: Arc<DeviceStats>,
+    /// fxdax: fsyncs, and those another's sync covered, of all its volumes (`stats`).
+    sync_counts: Arc<SyncCounts>,
     /// fxdax: what resizes the device, as the host resizes its store (`resize`).
     resizer: Resizer,
     /// fxdax: what freezes the device with the filesystem (`freeze`).
     freezer: Freezer,
     /// fxdax: while frozen, the task holding the filesystem's commits (`hold_commits`).
     frozen: Mutex<Option<Task<()>>>,
+}
+
+/// What the guest kernel gives a mounted volume: its filesystem's, and on a follower, what follows
+/// the writer.
+pub struct Guest {
+    filesystem: Arc<Filesystem>,
     /// fxdax: on a follower's device, what follows its writer (doc-8).
     following: Option<Following>,
 }
@@ -88,7 +103,7 @@ impl Platform for Guest {
     type Durable = DurableGuard;
 
     fn durable(&self) -> DurableGuard {
-        self.durability.begin()
+        self.filesystem.durability.begin()
     }
 
     fn spawn_urgent(&self, future: impl Future<Output = ()> + Send + 'static) {
@@ -109,67 +124,21 @@ impl Platform for Guest {
     fn follows(&self) -> bool {
         self.following.is_some()
     }
+
+    fn sync_counts(&self) -> Arc<SyncCounts> {
+        self.filesystem.sync_counts.clone()
+    }
 }
 
-/// What the guest's filesystem does that Fxfs's POSIX layer doesn't: mount and unmount it on its
-/// device, and what only the guest's device has.
-pub(crate) trait GuestFxfs: Sized {
-    /// Mounts the filesystem on `device`, and its volume, sizing what it keeps in memory by the
-    /// kernel's `memory` bytes. A device whose store holds nothing yet is formatted, with an empty
-    /// volume, first. fxdax: read-only, if `read_only` or the device is a follower's, which
-    /// follows its writer, with the kernel's primitives of the superblock `vfs` (`follow`).
-    async fn mount(
-        device: ExtentDevice,
-        memory: u64,
-        read_only: bool,
-        vfs: *mut core::ffi::c_void,
-    ) -> Result<Self, Error>;
-
-    /// Unmounts the filesystem, writing back what is dirty.
-    async fn unmount(self) -> Result<(), Error>;
-
-    /// fxdax: freezes the filesystem, which the VFS has synced, its writers stopped (fsfreeze).
-    async fn freeze(&self) -> Result<(), Error>;
-
-    /// fxdax: thaws the filesystem.
-    async fn thaw(&self) -> Result<(), Error>;
-
-    /// fxdax: takes the size the host resized the store to.
-    async fn resize(&self) -> Result<(), Error>;
-
-    /// fxdax: a follower's batch.
-    async fn follow(&self) -> Result<(), Error>;
-
-    /// fxdax: holds the file `ino`, which the kernel opens, on a follower.
-    async fn hold(&self, ino: u64) -> Result<(), Error>;
-
-    /// fxdax: lets go of the file `ino`, which the kernel closes.
-    fn release(&self, ino: u64);
-
-    /// fxdax: the attributes of `ino` as a follower's batch just left them, or none if it is gone.
-    async fn attr_applied(&self, ino: u64) -> Result<Option<Attr>, Error>;
-
-    /// fxdax: what follows its writer, on a follower.
-    fn following(&self) -> Option<&Following>;
-
-    /// The device, as C has it, for DAX (`struct fxfs_device`).
-    fn device(&self) -> *mut core::ffi::c_void;
-
-    /// fxdax: what the filesystem waited on, and its device's requests took.
-    fn stats(&self) -> String;
-}
-
-impl GuestFxfs for Fxfs {
-    async fn mount(
-        device: ExtentDevice,
-        memory: u64,
-        read_only: bool,
-        vfs: *mut core::ffi::c_void,
-    ) -> Result<Self, Error> {
+impl Filesystem {
+    /// Opens the filesystem on `device`, sizing what it keeps in memory by the kernel's `memory`
+    /// bytes. A device whose store holds nothing yet is formatted, with an empty default volume,
+    /// first. fxdax: read-only, if `read_only` or the device is a follower's.
+    pub async fn open(device: ExtentDevice, memory: u64, read_only: bool) -> Result<Self, Error> {
         let follows = device.read_only();
         let read_only = read_only || follows;
         // A follower's state is as of a commit no later than its writer's latest.
-        let (advanced, latest) = (device.advanced(), device.commits().latest());
+        let follower = follows.then(|| (device.advanced(), device.commits().latest()));
         let format = !read_only && device.is_empty().await?;
         let device = if read_only { device.writing_nothing() } else { device };
         let dax = device.dax();
@@ -184,73 +153,97 @@ impl GuestFxfs for Fxfs {
         let filesystem = FxFilesystemBuilder::new()
             .read_only(read_only)
             .format(format)
+            // A follower applies its writer's commits to every volume they change.
+            .lazy_volumes(!follows)
             .object_cache_items((memory / CACHE_SHARE / CACHED_OBJECT_SIZE) as usize)
             .graveyard_batch_delay(GRAVEYARD_BATCH_DELAY)
             .journal_options(journal)
             .open(DeviceHolder::new(device))
             .await?;
-        let volume = async {
-            let root_volume = root_volume(filesystem.clone()).await?;
-            if format {
+        if format {
+            let volume = async {
+                let root_volume = root_volume(filesystem.clone()).await?;
                 root_volume.new_volume(VOLUME, NewChildStoreOptions::default()).await
-            } else {
-                root_volume.volume(VOLUME, StoreOptions::default()).await
             }
-        }
-        .await;
-        match volume {
-            Ok(volume) => {
-                let following = follows
-                    .then(|| Following::new(vfs, volume.store_object_id(), advanced, latest));
-                let fs = (*filesystem).clone();
-                let guest = Guest {
-                    filesystem,
-                    dax,
-                    durability,
-                    device_stats,
-                    resizer,
-                    freezer,
-                    frozen: Mutex::new(None),
-                    following,
-                };
-                Ok(Self::new(fs, volume, read_only, guest))
-            }
-            Err(error) => {
+            .await;
+            if let Err(error) = volume {
                 if let Err(close_error) = filesystem.close().await {
                     log::error!("failed to close the filesystem: {close_error:#}");
                 }
-                Err(error)
+                return Err(error);
             }
         }
+        Ok(Self {
+            filesystem,
+            read_only,
+            follower,
+            dax,
+            durability,
+            device_stats,
+            sync_counts: Arc::default(),
+            resizer,
+            freezer,
+            frozen: Mutex::new(None),
+        })
     }
 
-    async fn unmount(self) -> Result<(), Error> {
-        let guest = self.close().await;
-        guest.filesystem.close().await
+    /// Closes the filesystem, writing back what is dirty, once no volume of it is mounted.
+    pub async fn close(self) -> Result<(), Error> {
+        self.filesystem.close().await
     }
 
-    /// fxdax: freezes the filesystem, which the VFS has synced, its writers stopped (fsfreeze):
-    /// holds its journal's compactions, syncs, holds its commits, journals what committed
-    /// meanwhile, and closes the device to writes, frees and commits, sealing what is open: the
-    /// point a snapshot of the VM is taken at, which nothing changes until it thaws (TASK-39.1).
-    /// Its other background work, freeing and unlinking, waits at the device or to commit.
-    async fn freeze(&self) -> Result<(), Error> {
-        let journal = self.filesystem().journal();
+    /// Mounts its volume `name`: read-only, if `read_only` or the filesystem is. A follower follows
+    /// its default volume alone, with the kernel's primitives of the superblock `vfs` (`follow`).
+    pub async fn mount(
+        self: &Arc<Self>,
+        name: &str,
+        read_only: bool,
+        vfs: *mut core::ffi::c_void,
+    ) -> Result<Fxfs, Error> {
+        ensure!(self.follower.is_none() || name == VOLUME, FxfsError::InvalidArgs);
+        let filesystem = (*self.filesystem).clone();
+        let root_volume = root_volume(filesystem.clone()).await?;
+        let volume = root_volume.volume(name, StoreOptions::default()).await?;
+        let following = self.follower.as_ref().map(|(advanced, latest)| {
+            Following::new(vfs, volume.store_object_id(), advanced.clone(), *latest)
+        });
+        let guest = Guest { filesystem: self.clone(), following };
+        Ok(Fxfs::new(filesystem, volume, read_only || self.read_only, guest))
+    }
+
+    /// Whether a volume mounted on it follows its device's writer.
+    pub fn follows(&self) -> bool {
+        self.follower.is_some()
+    }
+
+    /// fxdax: freezes the filesystem, each of whose volumes the VFS has synced and stopped the
+    /// writers of (fsfreeze): holds its journal's compactions, syncs, holds its commits, journals
+    /// what committed meanwhile, and closes the device to writes, frees and commits, sealing what
+    /// is open: the point a snapshot of the VM is taken at, which nothing changes until it thaws
+    /// (TASK-39.1). Its other background work, freeing and unlinking, waits at the device or to
+    /// commit.
+    pub async fn freeze(&self) -> Result<(), Error> {
+        let journal = self.filesystem.journal();
         journal.pause_compactions().await;
         let frozen = async {
-            self.sync().await?;
-            let commits = hold_commits(self.filesystem()).await;
+            self.filesystem.graveyard().flush().await;
             {
-                let _durable = self.platform().durability.begin();
+                let _durable = self.durability.begin();
+                let options = SyncOptions { flush_device: true, ..Default::default() };
+                self.filesystem.sync(options).await?;
+            }
+            let commits = hold_commits(&self.filesystem).await;
+            {
+                let _durable = self.durability.begin();
                 let options = SyncOptions {
                     flush_device: true,
                     background_frees: true,
                     ..Default::default()
                 };
-                self.filesystem().sync(options).await?;
+                self.filesystem.sync(options).await?;
             }
-            self.platform().freezer.freeze().await?;
-            *self.platform().frozen.lock().unwrap() = Some(commits);
+            self.freezer.freeze().await?;
+            *self.frozen.lock().unwrap() = Some(commits);
             anyhow::Ok(())
         }
         .await;
@@ -264,30 +257,29 @@ impl GuestFxfs for Fxfs {
     /// of its own in a VM restored from a snapshot taken frozen: the allocator mints extents of it,
     /// and the journal continues in new ones of it before anything else commits, which a
     /// super-block then records. Then it compacts again.
-    async fn thaw(&self) -> Result<(), Error> {
-        let guest = self.platform();
-        let branch = guest.freezer.unfreeze().await?;
-        self.filesystem().allocator().set_branch(branch);
-        guest.freezer.open();
-        let renewed = self.filesystem().renew_journal_tail().await;
+    pub async fn thaw(&self) -> Result<(), Error> {
+        let branch = self.freezer.unfreeze().await?;
+        self.filesystem.allocator().set_branch(branch);
+        self.freezer.open();
+        let renewed = self.filesystem.renew_journal_tail().await;
         // Commits go on as the task holding them is dropped, which cancels it.
-        drop(guest.frozen.lock().unwrap().take());
+        drop(self.frozen.lock().unwrap().take());
         let recorded = match renewed {
-            Ok(true) => self.filesystem().record_journal_tail().await,
+            Ok(true) => self.filesystem.record_journal_tail().await,
             Ok(false) => Ok(()),
             Err(error) => Err(error),
         };
-        self.filesystem().journal().resume_compactions();
+        self.filesystem.journal().resume_compactions();
         recorded.context("renewing the journal's tail as the filesystem thaws")
     }
 
     /// fxdax: takes the size the host resized the store to, as the device's configuration says,
     /// while mounted: grows the device and the allocator; or, asked to shrink, shrinks them if the
     /// allocator holds no more than the smaller size, and answers whether it did.
-    async fn resize(&self) -> Result<(), Error> {
-        let resizer = &self.platform().resizer;
+    pub async fn resize(&self) -> Result<(), Error> {
+        let resizer = &self.resizer;
         let Some((capacity, asked)) = resizer.configured() else { return Ok(()) };
-        let allocator = self.filesystem().allocator();
+        let allocator = self.filesystem.allocator();
         let current = resizer.capacity();
         if asked != 0 && asked < current {
             // Room left for transactions' reservations, so that files can still be removed.
@@ -315,6 +307,91 @@ impl GuestFxfs for Fxfs {
             resizer.set_capacity(capacity);
         }
         Ok(())
+    }
+
+    /// fxdax: the staging extent, new, in place of one sealed since blocks were taken of it, which
+    /// the DAX window maps before the next write's blocks move there (`Allocator::restage`).
+    pub fn restage(&self) -> Option<DaxExtent> {
+        let allocator = self.filesystem.allocator();
+        let extent = allocator.restage()?;
+        Some(DaxExtent {
+            branch: extent.branch,
+            sequence: extent.sequence,
+            open: 1,
+            extent_size: allocator.extent_size(extent).unwrap_or(0),
+            ..Default::default()
+        })
+    }
+
+    /// The device, as C has it, for DAX (`struct fxfs_device`).
+    pub fn device(&self) -> *mut core::ffi::c_void {
+        self.dax.device()
+    }
+
+    /// fxdax: what the filesystem waited on, and its device's requests took, as lines of a name and
+    /// a number: counts, and their nanoseconds, all told since it opened (TASK-91.7).
+    pub fn stats(&self) -> String {
+        use std::fmt::Write as _;
+        use std::sync::atomic::Ordering::Relaxed;
+        let device = &self.device_stats;
+        let journal = self.filesystem.journal().stats();
+        let (fsyncs, coalesced) = self.sync_counts.counts();
+        let mut out = String::new();
+        let timed = [
+            ("device_reads", &device.reads),
+            ("device_writes", &device.writes),
+            ("device_commits", &device.commits),
+            ("seal_waits", &device.seal_waits),
+            ("seals", &device.seals),
+            ("writes_held_by_seals", &device.writes_held),
+        ];
+        for (name, timed) in timed {
+            let _ = writeln!(out, "{name} {}", timed.count.load(Relaxed));
+            let _ = writeln!(out, "{name}_ns {}", timed.ns.load(Relaxed));
+            let _ = writeln!(out, "{name}_hist {}", timed.hist());
+        }
+        let _ = writeln!(out, "fsyncs {fsyncs}");
+        let _ = writeln!(out, "fsyncs_coalesced {coalesced}");
+        let counts = [
+            ("device_read_bytes", &device.read_bytes),
+            ("device_write_bytes", &device.write_bytes),
+            ("device_durable_commits", &device.durable_commits),
+            ("journal_space_waits", &journal.space_waits),
+            ("journal_space_wait_ns", &journal.space_wait_ns),
+            ("journal_compactions", &journal.compactions),
+            ("journal_compaction_ns", &journal.compaction_ns),
+        ];
+        for (name, count) in counts {
+            let _ = writeln!(out, "{name} {}", count.load(Relaxed));
+        }
+        out
+    }
+}
+
+/// What a mounted volume does that Fxfs's POSIX layer doesn't.
+pub(crate) trait GuestFxfs: Sized {
+    /// Unmounts the volume, applying what it queued. Its filesystem stays open.
+    async fn unmount(self);
+
+    /// fxdax: a follower's batch.
+    async fn follow(&self) -> Result<(), Error>;
+
+    /// fxdax: holds the file `ino`, which the kernel opens, on a follower.
+    async fn hold(&self, ino: u64) -> Result<(), Error>;
+
+    /// fxdax: lets go of the file `ino`, which the kernel closes.
+    fn release(&self, ino: u64);
+
+    /// fxdax: the attributes of `ino` as a follower's batch just left them, or none if it is gone.
+    async fn attr_applied(&self, ino: u64) -> Result<Option<Attr>, Error>;
+
+    /// fxdax: what follows its writer, on a follower.
+    fn following(&self) -> Option<&Following>;
+}
+
+impl GuestFxfs for Fxfs {
+    async fn unmount(self) {
+        self.close().await;
     }
 
     /// fxdax: a follower's batch: the writer's commits since those it applied, fetched; what the
@@ -363,49 +440,6 @@ impl GuestFxfs for Fxfs {
 
     fn following(&self) -> Option<&Following> {
         self.platform().following.as_ref()
-    }
-
-    fn device(&self) -> *mut core::ffi::c_void {
-        self.platform().dax.device()
-    }
-
-    /// fxdax: what the filesystem waited on, and its device's requests took, as lines of a name and
-    /// a number: counts, and their nanoseconds, all told since it mounted (TASK-91.7).
-    fn stats(&self) -> String {
-        use std::fmt::Write as _;
-        use std::sync::atomic::Ordering::Relaxed;
-        let device = &self.platform().device_stats;
-        let journal = self.filesystem().journal().stats();
-        let (fsyncs, coalesced) = self.sync_counts();
-        let mut out = String::new();
-        let timed = [
-            ("device_reads", &device.reads),
-            ("device_writes", &device.writes),
-            ("device_commits", &device.commits),
-            ("seal_waits", &device.seal_waits),
-            ("seals", &device.seals),
-            ("writes_held_by_seals", &device.writes_held),
-        ];
-        for (name, timed) in timed {
-            let _ = writeln!(out, "{name} {}", timed.count.load(Relaxed));
-            let _ = writeln!(out, "{name}_ns {}", timed.ns.load(Relaxed));
-            let _ = writeln!(out, "{name}_hist {}", timed.hist());
-        }
-        let _ = writeln!(out, "fsyncs {fsyncs}");
-        let _ = writeln!(out, "fsyncs_coalesced {coalesced}");
-        let counts = [
-            ("device_read_bytes", &device.read_bytes),
-            ("device_write_bytes", &device.write_bytes),
-            ("device_durable_commits", &device.durable_commits),
-            ("journal_space_waits", &journal.space_waits),
-            ("journal_space_wait_ns", &journal.space_wait_ns),
-            ("journal_compactions", &journal.compactions),
-            ("journal_compaction_ns", &journal.compaction_ns),
-        ];
-        for (name, count) in counts {
-            let _ = writeln!(out, "{name} {}", count.load(Relaxed));
-        }
-        out
     }
 }
 

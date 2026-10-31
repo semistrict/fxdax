@@ -23,6 +23,10 @@
 //! through a mapping made before it, which the restored window maps again), writes its own file,
 //! which mints extents of its store's branch, and remounts.
 //!
+//! fxfs-guest-snapshot-volumes(-dax): a VM with `VOLUMES` volumes mounted on one device freezes,
+//! suspends, thaws and uses each (TASK-136.2). Mounted first, with nothing in the journal, the
+//! default volume reads the device fewer times than there are volumes: the rest stay closed.
+//!
 //! The VMs run in Firecracker driven through its API. Their root filesystem's disk is read-only,
 //! as the restored VMs share it. The guest tells the host it is frozen over vsock, and each
 //! restored guest, whose connection the restore resets, asks the host its name on a new one.
@@ -34,7 +38,12 @@ pub struct TestFxfsGuestSnapshot {
     #[cfg_attr(feature = "guest", allow(dead_code))]
     pub dax: bool,
     pub mode: Mode,
+    /// How many volumes the guest mounts besides the default: on a store the host makes, if any.
+    pub volumes: usize,
 }
+
+/// As many volumes as a sandbox may have mounted (backlog doc-10).
+pub const VOLUMES: usize = 256;
 
 /// How the snapshot is restored.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -104,7 +113,7 @@ mod host {
     use crate::{ShouldRun, Test, TestOutcome, TestSetup};
     use anyhow::Context;
     use futures::executor::block_on;
-    use fxdax::{Filesystem, Storage};
+    use fxdax::{Filesystem, Image, Storage};
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::net::UnixListener;
     use std::path::{Path, PathBuf};
@@ -125,6 +134,20 @@ mod host {
     /// The store the test's restore `name` opens.
     fn store(dir: &Path, name: &str) -> PathBuf {
         dir.join(format!("store-{name}"))
+    }
+
+    /// Makes the store at `path`, with the default volume and `volumes` others, empty.
+    fn format(path: &Path, volumes: usize) -> anyhow::Result<()> {
+        block_on(async {
+            let image = Image::format(Storage::create(path, CAPACITY)?).await?;
+            image.create_volume("default").await?.unmount().await?;
+            for volume in 0..volumes {
+                image.create_volume(&format!("v{volume}")).await?.unmount().await?;
+            }
+            image.compact().await?;
+            image.close().await?;
+            Ok(())
+        })
     }
 
     fn read_file(fs: &Filesystem, name: &str) -> Vec<u8> {
@@ -188,6 +211,9 @@ mod host {
                         .with_context(|| format!("taking {name} from the bundle"))?;
                 }
             } else {
+                if self.volumes > 0 {
+                    format(&store(dir, "source"), self.volumes)?;
+                }
                 let mut vm = Vm::new(2, 512)?;
                 vm.guest_kernel()?;
                 let window = if self.dax { 1 << 28 } else { 0 };
@@ -293,7 +319,7 @@ mod host {
         }
 
         fn timeout_secs(&self) -> u64 {
-            120
+            if self.volumes > 0 { 600 } else { 120 }
         }
 
         fn start_vm(self: Box<Self>, test_setup: TestSetup) -> anyhow::Result<()> {
@@ -377,9 +403,9 @@ mod guest {
         assert_eq!(unsafe { libc::umount(target.as_ptr()) }, 0, "umount");
     }
 
-    /// Freezes, or thaws, the filesystem.
-    fn freeze(request: libc::c_ulong) {
-        let dir = fs::File::open(MNT).unwrap();
+    /// Freezes, or thaws, the volume mounted at `target`.
+    fn freeze_at(target: &str, request: libc::c_ulong) {
+        let dir = fs::File::open(target).unwrap();
         let ret = unsafe { libc::ioctl(dir.as_raw_fd(), request as _, 0) };
         assert_eq!(ret, 0, "ioctl {request:#x}: {}", std::io::Error::last_os_error());
     }
@@ -399,6 +425,54 @@ mod guest {
         file.sync_all().unwrap();
         drop(file);
         fs::remove_file(&past).unwrap();
+    }
+
+    /// Freezes, or thaws, the filesystem: each of the `volumes`, then the default.
+    fn freeze(volumes: usize, request: libc::c_ulong) {
+        for volume in 0..volumes {
+            freeze_at(&at(volume), request);
+        }
+        freeze_at(MNT, request);
+    }
+
+    /// Where the volume `volume` mounts.
+    fn at(volume: usize) -> String {
+        format!("{MNT}/v{volume}")
+    }
+
+    fn mount_volumes(volumes: usize) {
+        for volume in 0..volumes {
+            let (source, target, fstype, options) = (
+                CString::new("extents").unwrap(),
+                CString::new(at(volume)).unwrap(),
+                CString::new("fxfs").unwrap(),
+                CString::new(format!("volume=v{volume}")).unwrap(),
+            );
+            let ret = unsafe {
+                libc::mount(
+                    source.as_ptr(),
+                    target.as_ptr(),
+                    fstype.as_ptr(),
+                    0,
+                    options.as_ptr().cast(),
+                )
+            };
+            assert_eq!(ret, 0, "mount v{volume}: {}", std::io::Error::last_os_error());
+        }
+    }
+
+    fn unmount_volumes(volumes: usize) {
+        for volume in 0..volumes {
+            let target = CString::new(at(volume)).unwrap();
+            assert_eq!(unsafe { libc::umount(target.as_ptr()) }, 0, "umount v{volume}");
+        }
+    }
+
+    /// How many reads of the device the filesystem made since it opened.
+    fn device_reads() -> u64 {
+        let stats = fs::read_to_string("/proc/fs/fxfs/extents").unwrap();
+        let line = stats.lines().find_map(|line| line.strip_prefix("device_reads "));
+        line.expect("device_reads").parse().unwrap()
     }
 
     /// A connection to the host on `PORT`.
@@ -462,13 +536,27 @@ mod guest {
 
     impl Test for TestFxfsGuestSnapshot {
         fn in_guest(self: Box<Self>) {
+            let volumes = self.volumes;
             mount();
+            if volumes > 0 {
+                // With nothing in the journal, each volume opened would read its store's record.
+                let reads = device_reads();
+                eprintln!("{reads} reads, with {volumes} volumes closed");
+                assert!(reads < volumes as u64, "{reads} reads with {volumes} volumes");
+            }
+            for volume in 0..volumes {
+                fs::create_dir(at(volume)).unwrap();
+            }
+            mount_volumes(volumes);
+            for volume in 0..volumes {
+                fs::write(format!("{}/before", at(volume)), volume.to_string()).unwrap();
+            }
             fs::write(format!("{MNT}/before"), BEFORE).unwrap();
             fs::write(format!("{MNT}/mapped"), mapped_pattern()).unwrap();
             let mapped = map(&format!("{MNT}/mapped"));
             // Read through the mapping, which with a DAX window maps the window's pages.
             assert!(mapped == &mapped_pattern()[..], "the mapping before the snapshot");
-            freeze(FIFREEZE);
+            freeze(volumes, FIFREEZE);
             {
                 let mut host = connect();
                 host.write_all(b"frozen\n").unwrap();
@@ -480,10 +568,18 @@ mod guest {
             eprintln!("restored");
             let name = name_from_host();
             eprintln!("{name}: thawing");
-            freeze(FITHAW);
+            freeze(volumes, FITHAW);
             eprintln!("{name}: thawed");
             if self.mode == Mode::Suspend {
                 grown();
+            }
+            for volume in 0..volumes {
+                let path = at(volume);
+                assert_eq!(
+                    fs::read(format!("{path}/before")).unwrap(),
+                    volume.to_string().as_bytes()
+                );
+                fs::write(format!("{path}/who"), &name).unwrap();
             }
 
             assert_eq!(fs::read(format!("{MNT}/before")).unwrap(), BEFORE);
@@ -498,10 +594,16 @@ mod guest {
             file.write_all(&after).unwrap();
             file.sync_all().unwrap();
             drop(file);
+            unmount_volumes(volumes);
             unmount();
             mount();
             assert_eq!(fs::read(format!("{MNT}/who")).unwrap(), name.as_bytes());
             assert_eq!(fs::read(format!("{MNT}/after")).unwrap(), after);
+            mount_volumes(volumes);
+            for volume in 0..volumes {
+                assert_eq!(fs::read(format!("{}/who", at(volume))).unwrap(), name.as_bytes());
+            }
+            unmount_volumes(volumes);
             unmount();
             println!("OK {name}");
         }

@@ -372,7 +372,20 @@ struct fxfs_dax_region {
 };
 
 /* A file's ranges of the window, which outlive its inodes. */
+/* A mounted volume's share of the window: the files of its inode numbers, which are its own. */
+struct fxfs_dax_volume {
+	struct fxfs *fs;
+	/* The files with ranges, or inodes using the window, by inode number. */
+	struct xarray files;
+	/* On the filesystem's volumes. Guarded by its files lock. */
+	struct list_head list;
+	/* Going: the evacuation leaves its files alone (fxfs_dax_remove_volume). */
+	bool going;
+};
+
 struct fxfs_dax_file {
+	/* Its volume, until the volume goes (fxfs_dax_remove_volume). Guarded by the files lock. */
+	struct fxfs_dax_volume *volume;
 	u64 ino;
 	/* fxdax: the append stream since the last seal, under the inode's write lock (TASK-92.58). */
 	loff_t append_next;
@@ -489,8 +502,7 @@ static const char *const fxfs_dax_whys[FXFS_DAX_WHYS] = {
 };
 
 struct fxfs_dax {
-	struct super_block *sb;
-	struct fxfs *fs;
+	struct fxfs_filesystem *filesystem;
 	struct fxfs_device *dev;
 	struct dax_device *dax_dev;
 	/* The window's free space for ranges of their own; regions' too, unless they have theirs. */
@@ -535,8 +547,8 @@ struct fxfs_dax {
 	 * their ranges map read-only where they moved to (fxfs_dax_map_moved, TASK-121).
 	 */
 	atomic64_t moved_unsealed;
-	/* The files with ranges, or inodes using the window, by inode number. */
-	struct xarray files;
+	/* The volumes mounted, each with its files. */
+	struct list_head volumes;
 	/*
 	 * fxdax: with fxfs.dax_shadow, the window's pages as the guest mapped them last, by page:
 	 * the device's seal count then, shifted, and whether writably (TASK-121).
@@ -549,7 +561,7 @@ struct fxfs_dax {
 	struct xarray shadow_extent;
 	/* fxdax: the branch of the extents the window maps, the device's (TASK-121). */
 	u64 shadow_branch;
-	/* Guards `files`, and files' inodes. */
+	/* Guards `volumes`, their files, and files' inodes. */
 	struct mutex files_lock;
 	/* Guards the used list. */
 	spinlock_t lock;
@@ -585,6 +597,11 @@ struct fxfs_dax {
 	/* Whether seals restage: until the filesystem unmounts. */
 	bool restaging;
 };
+
+/* Each of `dax`'s files, of each volume, with its files lock held. */
+#define fxfs_dax_for_each_file(dax, volume, ino, file)			\
+	list_for_each_entry(volume, &(dax)->volumes, list)		\
+		xa_for_each(&(volume)->files, ino, file)
 
 static const struct iomap_ops fxfs_dax_iomap_ops;
 
@@ -807,6 +824,11 @@ static int fxfs_dax_move(struct fxfs_dax *dax, struct fxfs_dax_range *range,
 static struct fxfs_dax *fxfs_dax_of(struct inode *inode)
 {
 	return fxfs_vfs_info(inode->i_sb)->dax;
+}
+
+static struct fxfs_dax_volume *fxfs_dax_volume_of(struct inode *inode)
+{
+	return fxfs_vfs_info(inode->i_sb)->dax_volume;
 }
 
 /* The file `inode` is read in for, whose ranges it uses. */
@@ -1534,7 +1556,7 @@ static int fxfs_dax_map_chunk(struct fxfs_dax *dax, struct inode *inode,
 		 * was in progress then, or began since.
 		 */
 		seals = fxfs_device_seals(dax->dev);
-		count = fxfs_nofs(fxfs_dax_extents(dax->fs, inode->i_ino, start, end - start,
+		count = fxfs_nofs(fxfs_dax_extents(fxfs_vfs_fs(inode->i_sb), inode->i_ino, start, end - start,
 						   extents, DIV_ROUND_UP(end - start, PAGE_SIZE)));
 		fxfs_dax_delay();
 		if (count < 0) {
@@ -1789,9 +1811,10 @@ static void fxfs_dax_put_file(struct fxfs_dax *dax, struct fxfs_dax_file *file)
 static bool fxfs_dax_forget_file(struct fxfs_dax *dax, struct fxfs_dax_file *file)
 {
 	lockdep_assert_held(&dax->files_lock);
-	if (file->inode || !xa_empty(&file->ranges) || xa_load(&dax->files, file->ino) != file)
+	if (file->inode || !xa_empty(&file->ranges) || !file->volume ||
+	    xa_load(&file->volume->files, file->ino) != file)
 		return false;
-	xa_erase(&dax->files, file->ino);
+	xa_erase(&file->volume->files, file->ino);
 	return true;
 }
 
@@ -2280,7 +2303,7 @@ static struct fxfs_dax_range *fxfs_dax_new_slice(struct fxfs_dax *dax, struct in
 	pages = (end - start) >> PAGE_SHIFT;
 	for (;;) {
 		seals = fxfs_device_seals(dax->dev);
-		count = fxfs_nofs(fxfs_dax_extents(dax->fs, inode->i_ino, start, end - start, &e, 1));
+		count = fxfs_nofs(fxfs_dax_extents(fxfs_vfs_fs(inode->i_sb), inode->i_ino, start, end - start, &e, 1));
 		fxfs_dax_delay();
 		/* Holes, or more than one piece. */
 		if (count == 0 || count == -E2BIG)
@@ -2606,13 +2629,13 @@ static ssize_t fxfs_dax_reserve_write(struct inode *inode, loff_t pos, loff_t en
 	ssize_t count;
 
 	atomic64_inc(&dax->map_writes);
-	count = fxfs_nofs(fxfs_dax_map_write(dax->fs, inode->i_ino, pos, reserved - pos,
+	count = fxfs_nofs(fxfs_dax_map_write(fxfs_vfs_fs(inode->i_sb), inode->i_ino, pos, reserved - pos,
 					   size, keep, held, extents, capacity));
 	/* Speculation must not refuse a write that its own bytes have room for. */
 	if (!held && reserved > end &&
 	    (count == -ENOSPC || count == -EDQUOT || count == -ENOMEM)) {
 		atomic64_inc(&dax->map_writes);
-		count = fxfs_nofs(fxfs_dax_map_write(dax->fs, inode->i_ino, pos, end - pos,
+		count = fxfs_nofs(fxfs_dax_map_write(fxfs_vfs_fs(inode->i_sb), inode->i_ino, pos, end - pos,
 						   size, keep, NULL, extents, capacity));
 	}
 	return count;
@@ -2812,7 +2835,8 @@ static s64 fxfs_dax_check_device(struct fxfs_dax *dax, struct inode *inode, loff
 		       buf[first]);
 		fxfs_dax_diagnosed();
 	}
-	count = fxfs_nofs(fxfs_dax_extents(dax->fs, inode->i_ino, pos, PAGE_SIZE, &e, 1));
+	count = fxfs_nofs(fxfs_dax_extents(fxfs_vfs_fs(inode->i_sb), inode->i_ino, pos, PAGE_SIZE,
+					   &e, 1));
 	if (count != 1) {
 		pr_err("fxfs: ino %lu at %lld, mapped at window %llx: %zd extents in Fxfs\n",
 		       inode->i_ino, pos, window_offset, count);
@@ -3049,7 +3073,7 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 		}
 		/* fxdax: fault injection, as fxfs_dax_map_write waiting for compaction's seal. */
 		if (fault && READ_ONCE(fxfs_dax_fault_seals)) {
-			err = fxfs_nofs(fxfs_fsync(dax->fs));
+			err = fxfs_nofs(fxfs_fsync(fxfs_vfs_fs(inode->i_sb)));
 			if (err)
 				goto out;
 		}
@@ -3067,7 +3091,7 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 		}
 		/* fxdax: fault injection, a seal between the move and the mapping of the new block. */
 		if (fault && fxfs_dax_seal_moved()) {
-			err = fxfs_nofs(fxfs_fsync(dax->fs));
+			err = fxfs_nofs(fxfs_fsync(fxfs_vfs_fs(inode->i_sb)));
 			if (err)
 				goto out;
 		}
@@ -3554,6 +3578,7 @@ static const struct mm_walk_ops fxfs_dax_writable_ops = {
 static void fxfs_dax_check_ptes(struct fxfs_dax *dax)
 {
 	struct fxfs_dax_writable_ptes found;
+	struct fxfs_dax_volume *volume;
 	struct fxfs_dax_file *file;
 	unsigned long ino, base;
 	void *kaddr;
@@ -3568,7 +3593,7 @@ static void fxfs_dax_check_ptes(struct fxfs_dax *dax)
 	if (!base)
 		return;
 	mutex_lock(&dax->files_lock);
-	xa_for_each(&dax->files, ino, file) {
+	fxfs_dax_for_each_file(dax, volume, ino, file) {
 		struct address_space *mapping;
 
 		if (!file->inode)
@@ -3585,12 +3610,13 @@ static void fxfs_dax_check_ptes(struct fxfs_dax *dax)
 static void fxfs_dax_check_sealed(struct fxfs_dax *dax)
 {
 	struct fxfs_dax_writable_ptes found;
+	struct fxfs_dax_volume *volume;
 	struct fxfs_dax_range *range;
 	struct fxfs_dax_file *file;
 	unsigned long ino, chunk;
 
 	mutex_lock(&dax->files_lock);
-	xa_for_each(&dax->files, ino, file) {
+	fxfs_dax_for_each_file(dax, volume, ino, file) {
 		/* The user's mappings of its pages, none writable after the sealer. */
 		if (file->inode) {
 			struct address_space *mapping = file->inode->i_mapping;
@@ -3777,7 +3803,7 @@ static void fxfs_dax_restage_work(struct work_struct *work)
 	struct fxfs_dax_extent e;
 	u64 seals = fxfs_device_seals(dax->dev);
 
-	if (!fxfs_nofs(fxfs_dax_restage(dax->fs, &e)))
+	if (!fxfs_nofs(fxfs_dax_restage(dax->filesystem, &e)))
 		goto out;
 	region = fxfs_dax_get_region(dax, &e, false);
 	if (IS_ERR(region))
@@ -3986,7 +4012,7 @@ static void fxfs_dax_check_placed(struct fxfs_dax *dax, struct fxfs_dax_file *fi
 
 	if (!e)
 		return;
-	count = len ? fxfs_nofs(fxfs_dax_extents(dax->fs, file->ino, pos, len, e, run->pages)) : 0;
+	count = len ? fxfs_nofs(fxfs_dax_extents(file->volume->fs, file->ino, pos, len, e, run->pages)) : 0;
 	for (i = 0; done < len; i++) {
 		if (WARN(i >= count || e[i].offset != pos + done || e[i].branch != map->branch ||
 			 e[i].sequence != map->sequence || e[i].extent_offset != map->offset + done,
@@ -4164,13 +4190,16 @@ static void fxfs_dax_evacuate_work(struct work_struct *work)
 	mutex_lock(&dax->writable_lock);
 	list_splice_init(&dax->evacuating, &files);
 	mutex_unlock(&dax->writable_lock);
-	list_for_each_entry(file, &files, evacuating)
-		fxfs_dax_evacuate_file(dax, file);
+	list_for_each_entry(file, &files, evacuating) {
+		if (!READ_ONCE(file->volume->going))
+			fxfs_dax_evacuate_file(dax, file);
+	}
 	list_for_each_entry_safe(file, next, &files, evacuating) {
 		mutex_lock(&dax->writable_lock);
 		list_del_init(&file->evacuating);
 		/* A seal since may have sealed more of its pages in a staging extent's region. */
-		if (fxfs_device_seals(dax->dev) != seals && READ_ONCE(dax->restaging)) {
+		if (fxfs_device_seals(dax->dev) != seals && READ_ONCE(dax->restaging) &&
+		    !file->volume->going) {
 			list_add_tail(&file->evacuating, &dax->evacuating);
 			again = true;
 			file = NULL;
@@ -4213,6 +4242,7 @@ static void fxfs_dax_show_regions(struct fxfs_dax *dax, struct seq_file *m)
 	unsigned long count[3] = {}, pages[3] = {}, refs[3] = {}, slices = 0, keeping = 0, kept = 0;
 	unsigned long moved = 0, relocated = 0, page;
 	struct fxfs_dax_region *region;
+	struct fxfs_dax_volume *volume;
 	struct fxfs_dax_range *range;
 	struct fxfs_dax_file *file;
 	unsigned long ino, chunk;
@@ -4228,7 +4258,7 @@ static void fxfs_dax_show_regions(struct fxfs_dax *dax, struct seq_file *m)
 	}
 	spin_unlock(&dax->regions_lock);
 	mutex_lock(&dax->files_lock);
-	xa_for_each(&dax->files, ino, file) {
+	fxfs_dax_for_each_file(dax, volume, ino, file) {
 		/*
 		 * Ranges freed meanwhile are freed after a grace period (fxfs_dax_free_range), but not
 		 * their regions: only the ranges are read.
@@ -4309,9 +4339,9 @@ static void fxfs_dax_destroy_pools(struct fxfs_dax *dax)
 		gen_pool_destroy(dax->pool);
 }
 
-struct fxfs_dax *fxfs_dax_create(struct super_block *sb, struct fxfs *fs)
+struct fxfs_dax *fxfs_dax_create(struct fxfs_filesystem *filesystem)
 {
-	struct fxfs_device *dev = fxfs_dax_device(fs);
+	struct fxfs_device *dev = fxfs_dax_device(filesystem);
 	struct dax_device *dax_dev;
 	struct fxfs_dax *dax;
 	u64 window_len;
@@ -4341,8 +4371,7 @@ struct fxfs_dax *fxfs_dax_create(struct super_block *sb, struct fxfs *fs)
 		kfree(dax);
 		return ERR_PTR(-ENOMEM);
 	}
-	dax->sb = sb;
-	dax->fs = fs;
+	dax->filesystem = filesystem;
 	dax->dev = dev;
 	/* fxdax: the trace, if asked for, of the first filesystem mounted (TASK-121). */
 	if (fxfs_dax_tracing && !fxfs_dax_trace_events) {
@@ -4357,7 +4386,7 @@ struct fxfs_dax *fxfs_dax_create(struct super_block *sb, struct fxfs *fs)
 			   vzalloc(sizeof(*fxfs_dax_trace_events) * FXFS_DAX_TRACE_EVENTS));
 	}
 	dax->dax_dev = dax_dev;
-	xa_init(&dax->files);
+	INIT_LIST_HEAD(&dax->volumes);
 	xa_init(&dax->shadow);
 	xa_init(&dax->shadow_extent);
 	mutex_init(&dax->files_lock);
@@ -4383,6 +4412,63 @@ struct fxfs_dax *fxfs_dax_create(struct super_block *sb, struct fxfs *fs)
 	dax->restaging = true;
 	fxfs_device_set_sealer(dev, fxfs_dax_seal, fxfs_dax_sealed, dax);
 	return dax;
+}
+
+struct fxfs_dax_volume *fxfs_dax_add_volume(struct fxfs_dax *dax, struct fxfs *fs)
+{
+	struct fxfs_dax_volume *volume = kzalloc(sizeof(*volume), GFP_KERNEL);
+
+	if (!volume)
+		return ERR_PTR(-ENOMEM);
+	volume->fs = fs;
+	xa_init(&volume->files);
+	mutex_lock(&dax->files_lock);
+	list_add(&volume->list, &dax->volumes);
+	mutex_unlock(&dax->files_lock);
+	return volume;
+}
+
+void fxfs_dax_remove_volume(struct fxfs_dax *dax, struct fxfs_dax_volume *volume)
+{
+	struct fxfs_dax_range *range;
+	struct fxfs_dax_file *file;
+	unsigned long ino, chunk;
+
+	/* No seal adds its files to those to evacuate from here on, and the evacuation skips them. */
+	mutex_lock(&dax->writable_lock);
+	mutex_lock(&dax->files_lock);
+	WRITE_ONCE(volume->going, true);
+	xa_for_each(&volume->files, ino, file)
+		list_del_init(&file->writable);
+	mutex_unlock(&dax->files_lock);
+	mutex_unlock(&dax->writable_lock);
+	/* One evacuation begun since then lets go of those a seal added before. */
+	queue_work(dax->grow_wq, &dax->evacuate);
+	flush_work(&dax->evacuate);
+
+	/* Reclaim may hold one of its files still: it finds it has no volume. */
+	mutex_lock(&dax->files_lock);
+	list_del(&volume->list);
+	xa_for_each(&volume->files, ino, file) {
+		WARN_ON_ONCE(file->inode);
+		file->volume = NULL;
+	}
+	mutex_unlock(&dax->files_lock);
+
+	/* Its inodes evicted, nothing uses its ranges. */
+	xa_for_each(&volume->files, ino, file) {
+		xa_erase(&volume->files, ino);
+		fxfs_dax_lock_unheld(dax, file);
+		xa_for_each(&file->ranges, chunk, range) {
+			if (WARN_ON_ONCE(atomic_read(&range->users)))
+				continue;
+			fxfs_dax_unmap_range(dax, range);
+		}
+		up_write(&file->sem);
+		fxfs_dax_put_file(dax, file);
+	}
+	xa_destroy(&volume->files);
+	kfree(volume);
 }
 
 /*
@@ -4434,6 +4520,7 @@ void fxfs_dax_thaw(struct fxfs_dax *dax)
  */
 void fxfs_dax_destroy(struct fxfs_dax *dax)
 {
+	struct fxfs_dax_volume *volume, *next_volume;
 	struct fxfs_dax_range *range, *next;
 	struct fxfs_dax_region *region;
 	struct fxfs_dax_file *file;
@@ -4460,11 +4547,14 @@ void fxfs_dax_destroy(struct fxfs_dax *dax)
 		fxfs_dax_give_window(dax, region->window_offset, region->pages);
 		kfree(region);
 	}
-	xa_for_each(&dax->files, ino, file) {
-		xa_erase(&dax->files, ino);
-		fxfs_dax_put_file(dax, file);
+	list_for_each_entry_safe(volume, next_volume, &dax->volumes, list) {
+		xa_for_each(&volume->files, ino, file) {
+			xa_erase(&volume->files, ino);
+			fxfs_dax_put_file(dax, file);
+		}
+		xa_destroy(&volume->files);
+		kfree(volume);
 	}
-	xa_destroy(&dax->files);
 	xa_destroy(&dax->shadow);
 	xa_destroy(&dax->shadow_extent);
 	destroy_workqueue(dax->grow_wq);
@@ -4483,21 +4573,23 @@ void fxfs_dax_inode_init(struct fxfs_dax_inode *di)
  */
 static struct fxfs_dax_file *fxfs_dax_attach(struct fxfs_dax *dax, struct inode *inode)
 {
+	struct fxfs_dax_volume *volume = fxfs_dax_volume_of(inode);
 	struct fxfs_dax_file *file;
 
 	mutex_lock(&dax->files_lock);
-	file = xa_load(&dax->files, inode->i_ino);
+	file = xa_load(&volume->files, inode->i_ino);
 	if (!file) {
 		file = kzalloc(sizeof(*file), GFP_NOFS);
 		if (!file)
 			goto out;
+		file->volume = volume;
 		file->ino = inode->i_ino;
 		refcount_set(&file->refs, 1);
 		init_rwsem(&file->sem);
 		xa_init(&file->ranges);
 		INIT_LIST_HEAD(&file->writable);
 		INIT_LIST_HEAD(&file->evacuating);
-		if (xa_err(xa_store(&dax->files, inode->i_ino, file, GFP_NOFS))) {
+		if (xa_err(xa_store(&volume->files, inode->i_ino, file, GFP_NOFS))) {
 			kfree(file);
 			file = NULL;
 			goto out;
@@ -4559,8 +4651,8 @@ int fxfs_dax_shrunk(struct inode *inode, loff_t size)
 	return fxfs_dax_break_layouts(inode, round_up(size, PAGE_SIZE));
 }
 
-int fxfs_dax_changed(struct fxfs_dax *dax, struct inode *inode, u64 ino, loff_t start,
-		     loff_t end)
+int fxfs_dax_changed(struct fxfs_dax *dax, struct fxfs_dax_volume *volume, struct inode *inode,
+		     u64 ino, loff_t start, loff_t end)
 {
 	pgoff_t first = start >> FXFS_DAX_SHIFT, last = end >> FXFS_DAX_SHIFT;
 	struct fxfs_dax_file *file;
@@ -4576,7 +4668,7 @@ int fxfs_dax_changed(struct fxfs_dax *dax, struct inode *inode, u64 ino, loff_t 
 	}
 	for (;;) {
 		mutex_lock(&dax->files_lock);
-		file = xa_load(&dax->files, ino);
+		file = xa_load(&volume->files, ino);
 		if (file)
 			refcount_inc(&file->refs);
 		mutex_unlock(&dax->files_lock);
@@ -4594,7 +4686,7 @@ int fxfs_dax_changed(struct fxfs_dax *dax, struct inode *inode, u64 ino, loff_t 
 		fxfs_dax_put_file(dax, file);
 		if (inode) {
 			filemap_invalidate_lock(inode->i_mapping);
-			err = fxfs_dax_changed(dax, inode, ino, start, end);
+			err = fxfs_dax_changed(dax, volume, inode, ino, start, end);
 			filemap_invalidate_unlock(inode->i_mapping);
 			iput(inode);
 			return err;

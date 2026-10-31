@@ -69,6 +69,12 @@ pub trait Platform: Send + Sync + Sized + 'static {
     fn follows(&self) -> bool {
         false
     }
+
+    /// fxdax: where the volume counts its fsyncs: the platform's own, to count those of all a
+    /// filesystem's volumes together.
+    fn sync_counts(&self) -> Arc<SyncCounts> {
+        Arc::default()
+    }
 }
 
 const S_IFMT: u32 = 0o170000;
@@ -314,7 +320,7 @@ pub struct Fxfs<P: Platform> {
     /// Unlinks queued (doc-6).
     delayed: Delayed,
     /// fxdax: fsyncs, and those another's sync covered (`fsync`).
-    sync_counts: SyncCounts,
+    sync_counts: Arc<SyncCounts>,
     /// fxdax: whether it is mounted read-only, which changes nothing: with `-o ro`, or on a
     /// follower's device.
     read_only: bool,
@@ -322,9 +328,16 @@ pub struct Fxfs<P: Platform> {
 
 /// fxdax: fsyncs, and those another's sync covered (`Fxfs::fsync`).
 #[derive(Default)]
-struct SyncCounts {
+pub struct SyncCounts {
     fsyncs: AtomicU64,
     coalesced: AtomicU64,
+}
+
+impl SyncCounts {
+    /// Fsyncs, and those another's sync covered, so far.
+    pub fn counts(&self) -> (u64, u64) {
+        (self.fsyncs.load(Ordering::Relaxed), self.coalesced.load(Ordering::Relaxed))
+    }
 }
 
 impl<P: Platform> Fxfs<P> {
@@ -341,12 +354,12 @@ impl<P: Platform> Fxfs<P> {
             read_only,
             filesystem,
             volume,
+            sync_counts: platform.sync_counts(),
             platform,
             directories: Mutex::new(FxHashMap::default()),
             files: Mutex::new(FxHashMap::default()),
             xattrs: Mutex::new(FxHashMap::default()),
             delayed: Delayed::default(),
-            sync_counts: SyncCounts::default(),
         }
     }
 
@@ -402,11 +415,6 @@ impl<P: Platform> Fxfs<P> {
         read().await
     }
 
-    /// fxdax: fsyncs, and those another's sync covered, since it mounted (`fsync`).
-    pub fn sync_counts(&self) -> (u64, u64) {
-        let SyncCounts { fsyncs, coalesced } = &self.sync_counts;
-        (fsyncs.load(Ordering::Relaxed), coalesced.load(Ordering::Relaxed))
-    }
     /// fxdax: frees the blocks of the file `ino` within `range`, which is block-aligned, which
     /// then read as zeros: a hole (fallocate's FALLOC_FL_PUNCH_HOLE and FALLOC_FL_ZERO_RANGE). A
     /// transaction a MiB at a time, as each frees an extent record for each of the range's
@@ -1627,20 +1635,6 @@ impl<P: Platform> Fxfs<P> {
             transaction.commit().await?;
         }
         Ok(())
-    }
-
-    /// fxdax: the staging extent, new, in place of one sealed since blocks were taken of it, which
-    /// the DAX window maps before the next write's blocks move there (`Allocator::restage`).
-    pub fn restage(&self) -> Option<DaxExtent> {
-        let allocator = self.filesystem.allocator();
-        let extent = allocator.restage()?;
-        Some(DaxExtent {
-            branch: extent.branch,
-            sequence: extent.sequence,
-            open: 1,
-            extent_size: allocator.extent_size(extent).unwrap_or(0),
-            ..Default::default()
-        })
     }
 
     /// Makes what the filesystem holds durable: sync, syncfs. fxdax: and frees what was removed,

@@ -23,6 +23,7 @@ use crate::object_store::transaction::{
     self, AssocObj, LockKey, LockManager, MetadataReservation, Mutation, ObjectMutationIterator,
     TRANSACTION_METADATA_MAX_AMOUNT, Transaction, WriteGuard, lock_keys,
 };
+use crate::object_store::tree_cache::{TreeCache, TreeCacheBudget};
 use crate::object_store::volume::{VOLUMES_DIRECTORY, root_volume};
 use crate::object_store::{DataObjectHandle, NewChildStoreOptions, ObjectStore, StoreOptions};
 use crate::serialized_types::{LATEST_VERSION, Version};
@@ -114,14 +115,20 @@ pub struct Options {
     /// NOTE: Type 3 delivery blobs are currently UNSTABLE / EXPERIMENTAL and subject to change.
     pub allow_type3_blobs: bool,
 
-    /// fxdax: how many records of objects (and their extended attributes and keys) each store
-    /// caches, which saves a lookup in its tree for each use of a cached object's attributes.
+    /// fxdax: how many records of objects (and their extended attributes and keys) the stores
+    /// cache, all told, whatever their number: each saves a lookup in its store's tree for each use
+    /// of a cached object's attributes.
     pub object_cache_items: usize,
 
     /// fxdax: if set, the graveyard tombstones the objects queued in batches, waiting this long
     /// once it has none left before taking more, rather than being woken for each: unless
     /// something waits for it (`Graveyard::flush`).
     pub graveyard_batch_delay: Option<std::time::Duration>,
+
+    /// fxdax: if set, mounting opens only the volumes replay needs: the others stay closed, costing
+    /// nothing, until they are asked for by name (`RootVolume::volume`). What walks every volume
+    /// (fsck, say) doesn't find those. A volume closed holds nothing in the journal.
+    pub lazy_volumes: bool,
 }
 
 impl Default for Options {
@@ -137,6 +144,7 @@ impl Default for Options {
             allow_type3_blobs: false,
             object_cache_items: crate::object_store::tree_cache::ITEM_LIMIT,
             graveyard_batch_delay: None,
+            lazy_volumes: false,
         }
     }
 }
@@ -347,7 +355,7 @@ impl FxFilesystemBuilder {
         self
     }
 
-    /// fxdax: sets how many objects' records each store caches (`Options::object_cache_items`).
+    /// fxdax: sets how many objects' records the stores cache (`Options::object_cache_items`).
     pub fn object_cache_items(mut self, items: usize) -> Self {
         self.options.object_cache_items = items;
         self
@@ -356,6 +364,12 @@ impl FxFilesystemBuilder {
     /// fxdax: has the graveyard tombstone in batches (`Options::graveyard_batch_delay`).
     pub fn graveyard_batch_delay(mut self, delay: std::time::Duration) -> Self {
         self.options.graveyard_batch_delay = Some(delay);
+        self
+    }
+
+    /// fxdax: opens volumes as they are asked for (`Options::lazy_volumes`).
+    pub fn lazy_volumes(mut self, lazy: bool) -> Self {
+        self.options.lazy_volumes = lazy;
         self
     }
 
@@ -496,6 +510,7 @@ impl FxFilesystemBuilder {
                 background_tasks: fasync::Scope::new(),
                 closed: AtomicBool::new(true),
                 trace: self.trace,
+                tree_cache_budget: TreeCacheBudget::new(filesystem_options.object_cache_items),
                 graveyard: Graveyard::new(
                     objects.clone(),
                     filesystem_options.graveyard_batch_delay,
@@ -620,6 +635,8 @@ pub struct FxFilesystem {
     // An event that is signalled when the filesystem starts to shut down.
     trace: bool,
     graveyard: Arc<Graveyard>,
+    /// fxdax: what the caches of its stores' records share (`Options::object_cache_items`).
+    tree_cache_budget: Arc<TreeCacheBudget>,
     completed_transactions: UintProperty,
     options: Options,
 
@@ -771,6 +788,11 @@ impl FxFilesystem {
 
     pub fn options(&self) -> &Options {
         &self.options
+    }
+
+    /// fxdax: a new cache of a store's records.
+    pub fn new_tree_cache(&self) -> TreeCache {
+        TreeCache::sharing(&self.tree_cache_budget)
     }
 
     pub fn scope(&self) -> &fasync::Scope {

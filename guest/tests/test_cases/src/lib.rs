@@ -28,10 +28,12 @@ mod test_fxfs_guest_follow_torture;
 use test_fxfs_guest_follow_torture::{Mutant, TestFxfsGuestFollowTorture};
 mod test_fxfs_guest_import;
 use test_fxfs_guest_import::TestFxfsGuestImport;
+mod test_fxfs_guest_volumes;
+use test_fxfs_guest_volumes::TestFxfsGuestVolumes;
 mod test_fxfs_guest_docker;
 use test_fxfs_guest_docker::TestFxfsGuestDocker;
 mod test_fxfs_guest_snapshot;
-use test_fxfs_guest_snapshot::{Mode as SnapshotMode, TestFxfsGuestSnapshot};
+use test_fxfs_guest_snapshot::{Mode as SnapshotMode, TestFxfsGuestSnapshot, VOLUMES};
 mod test_extent_guest;
 use test_extent_guest::TestExtentGuest;
 mod test_runner_deadlock;
@@ -87,6 +89,8 @@ pub fn test_cases() -> Vec<TestCase> {
         TestCase::new("fxfs-guest-crash", Box::new(TestFxfsGuest::crash())),
         TestCase::new("fxfs-guest-resize", Box::new(TestFxfsGuestResize)),
         TestCase::new("fxfs-guest-live-fork", Box::new(TestFxfsGuestLiveFork)),
+        TestCase::new("fxfs-guest-volumes", Box::new(TestFxfsGuestVolumes { dax: false })),
+        TestCase::new("fxfs-guest-volumes-dax", Box::new(TestFxfsGuestVolumes { dax: true })),
         TestCase::new(
             "fxfs-guest-pgbench",
             Box::new(TestFxfsGuestPgbench {
@@ -190,19 +194,35 @@ pub fn test_cases() -> Vec<TestCase> {
         TestCase::new("fxfs-guest-import-dax", Box::new(TestFxfsGuestImport { dax: true })),
         TestCase::new(
             "fxfs-guest-snapshot",
-            Box::new(TestFxfsGuestSnapshot { dax: false, mode: SnapshotMode::Zygote }),
+            Box::new(TestFxfsGuestSnapshot { dax: false, mode: SnapshotMode::Zygote, volumes: 0 }),
         ),
         TestCase::new(
             "fxfs-guest-snapshot-dax",
-            Box::new(TestFxfsGuestSnapshot { dax: true, mode: SnapshotMode::Zygote }),
+            Box::new(TestFxfsGuestSnapshot { dax: true, mode: SnapshotMode::Zygote, volumes: 0 }),
         ),
         TestCase::new(
             "fxfs-guest-suspend-dax",
-            Box::new(TestFxfsGuestSnapshot { dax: true, mode: SnapshotMode::Suspend }),
+            Box::new(TestFxfsGuestSnapshot { dax: true, mode: SnapshotMode::Suspend, volumes: 0 }),
+        ),
+        TestCase::new(
+            "fxfs-guest-snapshot-volumes",
+            Box::new(TestFxfsGuestSnapshot {
+                dax: false,
+                mode: SnapshotMode::Suspend,
+                volumes: VOLUMES,
+            }),
+        ),
+        TestCase::new(
+            "fxfs-guest-snapshot-volumes-dax",
+            Box::new(TestFxfsGuestSnapshot {
+                dax: true,
+                mode: SnapshotMode::Suspend,
+                volumes: VOLUMES,
+            }),
         ),
         TestCase::new(
             "fxfs-guest-migrate-dax",
-            Box::new(TestFxfsGuestSnapshot { dax: true, mode: SnapshotMode::Migrate }),
+            Box::new(TestFxfsGuestSnapshot { dax: true, mode: SnapshotMode::Migrate, volumes: 0 }),
         ),
         #[cfg(any(feature = "host", target_os = "linux"))]
         TestCase::new(
