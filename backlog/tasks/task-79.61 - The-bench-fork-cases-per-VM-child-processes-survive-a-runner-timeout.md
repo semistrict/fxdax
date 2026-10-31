@@ -1,9 +1,10 @@
 ---
 id: TASK-79.61
 title: The bench fork cases' per-VM child processes survive a runner timeout
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-10-21 21:00'
+updated_date: '2026-10-31 02:23'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -37,3 +38,11 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity low): docs/reviews/2
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Uncommitted in worktree batch8 (2026-10-30): role() registers its child for the runner's cleanup, which its timeout runs; its VM has PDEATHSIG. Not exercised: compile only.
+
+role() registers its child for the runner's cleanup; compiled, never run through a timeout, so both ACs stay open.
+<!-- SECTION:NOTES:END -->

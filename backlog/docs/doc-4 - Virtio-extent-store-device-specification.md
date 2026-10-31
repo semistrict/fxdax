@@ -3,7 +3,7 @@ id: doc-4
 title: Virtio extent-store device specification
 type: specification
 created_date: '2026-10-13 22:18'
-updated_date: '2026-10-28 02:51'
+updated_date: '2026-10-30 22:45'
 ---
 # The virtio extent-store device
 
@@ -387,6 +387,11 @@ goes on and never waits for it. The host serves it the same extents, from the sa
 - **Cut off.** A follower too far behind (a lag in time, or in bytes of frees it keeps), or whose
   writer went with writes uncommitted, is cut off: its `READ`s, `MAP`s, `ADVANCE`s and `PIN`s
   fail with `ESTALE` until its guest remounts, with the device reset.
+- **Reset.** A follower's device holds its store open from `DRIVER_OK` to a reset. Its guest
+  resets the device as it unmounts, which lets go of the store for a next writer, and sets
+  `DRIVER_OK` again as it mounts: the device opens the store anew, as of its writer's latest
+  commit, and `branch` says what it opened. A device that can't open it yet asks for a reset
+  (`NEEDS_RESET`), and its guest's next mount tries again.
 
 The host serves a follower's store to its writer as it would without followers: a writer that
 went with nothing open (its last commit all it wrote) leaves its followers following, and the

@@ -1,9 +1,10 @@
 ---
 id: TASK-79.54
 title: A follower's first batch runs before fill_super has finished
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-10-21 21:00'
+updated_date: '2026-10-31 02:23'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -28,7 +29,7 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity low): docs/reviews/2
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [ ] #1 A test reproduces the failure on the code before the fix
-- [ ] #2 Fixed, and the test passes on macOS and on Linux (GCE)
+- [x] #2 Fixed, and the test passes on macOS and on Linux (GCE)
 <!-- AC:END -->
 
 ## Definition of Done
@@ -37,3 +38,11 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity low): docs/reviews/2
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Uncommitted in worktree batch8 (2026-10-30), awaiting a GCE run: gcloud needs reauthentication, r289 stopped at it. super.c: a follower's commit callback and first batch moved to the end of fill_super. No deterministic test: the race is at mount; follow cases will show no regression once run.
+
+The follower's first batch runs at the end of fill_super; follow cases pass r293 3 rounds each. AC1 open: no deterministic test of the race at mount.
+<!-- SECTION:NOTES:END -->

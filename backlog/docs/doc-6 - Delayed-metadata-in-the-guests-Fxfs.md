@@ -3,7 +3,7 @@ id: doc-6
 title: Delayed metadata in the guest's Fxfs
 type: other
 created_date: '2026-10-15 08:43'
-updated_date: '2026-10-15 08:43'
+updated_date: '2026-10-30 22:45'
 ---
 # Delayed metadata in the guest's Fxfs (TASK-26.18.2)
 
@@ -38,9 +38,12 @@ The worker groups consecutive operations, up to N (32), into one Fxfs transactio
 - lookup of a name in a directory with pending operations;
 - readdir;
 - getattr from Fxfs;
-- create, link or rename in the directory;
+- create, symlink, link, unlink, rename, exchange or a range's clone, each of which drains all, as the operations the queue holds make the space and names they look at;
+- statfs, which drains all, as the blocks it says are those the queue's operations free;
 - fsync of the directory or the child;
 - `sync_fs`, which drains all.
+
+**Workers.** Operations go as they fill a batch, or, one or more left over, once they have waited a moment (10 ms), so that a lone unlink needs no sync to go.
 
 The dcache already answers most lookups without Fxfs. Unlinked names are negative dentries.
 
@@ -49,7 +52,7 @@ The dcache already answers most lookups without Fxfs. Unlinked names are negativ
 - A crash loses the queued operations along with the rest of the unflushed journal, which doc-2's requirement 2 allows.
 - fsync and sync drain first, so they keep their promise.
 
-**Errors.** An operation that fails in the worker can't fail its syscall. The filesystem logs it and goes read-only (as ext4's `errors=remount-ro`). Unlinks borrow metadata space, so ENOSPC can't happen; only I/O or corruption errors can.
+**Errors.** An operation that fails in the worker can't fail its syscall. The filesystem logs it and goes read-only (as ext4's `errors=remount-ro`). Unlinks borrow metadata space, so ENOSPC can't happen; only I/O or corruption errors can. Once the filesystem has failed so, new transactions fail, and eviction, which can't, stops waiting for operations that will never apply.
 
 **Eviction.** Evict of an unlinked inode queues its tombstone behind the unlink (FIFO), not on the graveyard directly.
 

@@ -3,9 +3,10 @@ id: TASK-79.58
 title: >-
   The torture test fails a follower that shows exactly what was committed, for
   victims never synced
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-10-21 21:00'
+updated_date: '2026-10-31 02:23'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -30,7 +31,7 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity low): docs/reviews/2
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [ ] #1 A test reproduces the failure on the code before the fix
-- [ ] #2 Fixed, and the test passes on macOS and on Linux (GCE)
+- [x] #2 Fixed, and the test passes on macOS and on Linux (GCE)
 <!-- AC:END -->
 
 ## Definition of Done
@@ -39,3 +40,13 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity low): docs/reviews/2
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+The local check of a held victim takes EMPTY too; the history's check_held judges which is right. No deterministic reproduction (a compaction's commit between create and write); r291 runs fxfs-guest-follow-torture.
+
+GCE r292: fxfs-guest-follow-torture passed; r293 3 rounds.
+
+The local check takes EMPTY, follower_history judges it; fxfs-guest-follow-torture passes r292 and r293 3 rounds. AC1 open: no deterministic reproduction.
+<!-- SECTION:NOTES:END -->

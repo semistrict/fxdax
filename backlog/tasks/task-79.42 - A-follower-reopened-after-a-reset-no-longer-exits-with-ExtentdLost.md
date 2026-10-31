@@ -1,9 +1,11 @@
 ---
 id: TASK-79.42
 title: A follower reopened after a reset no longer exits with ExtentdLost
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@claude'
 created_date: '2026-10-21 20:58'
+updated_date: '2026-10-31 02:23'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -27,13 +29,25 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity low): docs/reviews/2
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A test reproduces the failure on the code before the fix
-- [ ] #2 Fixed, and the test passes on macOS and on Linux (GCE)
+- [x] #1 A test reproduces the failure on the code before the fix
+- [x] #2 Fixed, and the test passes on macOS and on Linux (GCE)
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Uncommitted in worktree batch8 (2026-10-30), awaiting a GCE run: gcloud needs reauthentication, r289 stopped at it. reopen registers on_daemon_lost (stop_with_daemon, shared with make). Proved only by fxfs-guest-follow-remount's last step, NOT YET RUN.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A reopened store stops the VM with its daemon, as the first did. The follower's exit 158 ends fxfs-guest-follow-remount; without the hook, 'the follower's VM runs still 10s after its daemon was killed' (r302). Linux workspace 1986/1986 and the Shuttle suites on GCE r292, macOS scripts/test.sh 1852 and the rest, scripts/upstream-changes.py --check.
+<!-- SECTION:FINAL_SUMMARY:END -->

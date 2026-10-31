@@ -3,9 +3,10 @@ id: TASK-79.32
 title: >-
   fxfs-guest-daemon-lost boots both VMs from one root image, which building the
   second VM truncates and re-mkfs's
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-10-21 20:58'
+updated_date: '2026-10-31 02:23'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -30,7 +31,7 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity medium): docs/review
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [ ] #1 A test reproduces the failure on the code before the fix
-- [ ] #2 Fixed, and the test passes on macOS and on Linux (GCE)
+- [x] #2 Fixed, and the test passes on macOS and on Linux (GCE)
 <!-- AC:END -->
 
 ## Definition of Done
@@ -39,3 +40,11 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity medium): docs/review
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Uncommitted in worktree batch8 (2026-10-30), awaiting a GCE run: gcloud needs reauthentication, r289 stopped at it. fxfs-guest-daemon-lost: each VM its own root image. NOT YET RUN.
+
+Each VM has its own root image; fxfs-guest-daemon-lost passes r293 3 rounds. AC1 open: the race of the shared image was never reproduced.
+<!-- SECTION:NOTES:END -->

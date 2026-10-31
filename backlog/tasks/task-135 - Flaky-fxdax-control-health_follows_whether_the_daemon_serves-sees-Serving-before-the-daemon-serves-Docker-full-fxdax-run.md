@@ -3,10 +3,10 @@ id: TASK-135
 title: >-
   Flaky: fxdax::control health_follows_whether_the_daemon_serves sees Serving
   before the daemon serves (Docker, full fxdax run)
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-30 03:38'
-updated_date: '2026-10-30 04:18'
+updated_date: '2026-10-30 18:15'
 labels:
   - bug
   - flaky
@@ -28,9 +28,9 @@ OrbStack Docker, full fxdax run of the batch worktree (3e38f4d81 + fix, nothing 
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Notes
@@ -38,3 +38,9 @@ OrbStack Docker, full fxdax run of the batch worktree (3e38f4d81 + fix, nothing 
 <!-- SECTION:NOTES:BEGIN -->
 Cause: tonic_health's reporter starts with the server's status ("") SERVING; report_health, which set NOT_SERVING, ran on a task spawned beside the server, so a check served before it ran saw SERVING. Fixed (07cc62d9a): the first status reported before the server is built and serves, the task following SERVING's changes after. Docker: the test 20 of 20 alone and in the full fxdax run (was failing under load).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Fixed in 07cc62d9a: the first health status is reported before the server serves. Verified: 20 of 20 alone and in full fxdax runs under load in Docker.
+<!-- SECTION:FINAL_SUMMARY:END -->

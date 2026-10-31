@@ -1,9 +1,10 @@
 ---
 id: TASK-79.88
 title: 'Import: refuse every crafted-image fault with EINVAL, not EIO'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-23 11:07'
+updated_date: '2026-10-31 02:23'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -29,13 +30,25 @@ Not done here: tar's own header parse errors (header.mode()?, uid()?, mtime()?) 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Every class of crafted-image fault an import detects fails with EINVAL through import::store and extentd's ImportImage
-- [ ] #2 A test per class pins it
+- [x] #1 Every class of crafted-image fault an import detects fails with EINVAL through import::store and extentd's ImportImage
+- [x] #2 A test per class pins it
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Uncommitted in worktree batch8 (2026-10-30): every class is EINVAL through refused(); tests crafted_images_are_refused_with_einval (14 cases), zstd and .. tests assert errno. macOS 15 of 15 in fxdax::import. tar's own header parse errors stay I/O errors, as the task leaves them.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Every class of crafted image is refused with EINVAL through refused(). crafted_images_are_refused_with_einval, 14 cases. Linux workspace 1986/1986 and the Shuttle suites on GCE r292, macOS scripts/test.sh 1852 and the rest, scripts/upstream-changes.py --check.
+<!-- SECTION:FINAL_SUMMARY:END -->

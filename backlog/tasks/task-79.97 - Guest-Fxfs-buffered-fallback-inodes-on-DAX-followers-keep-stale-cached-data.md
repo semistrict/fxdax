@@ -1,9 +1,11 @@
 ---
 id: TASK-79.97
 title: 'Guest Fxfs: buffered fallback inodes on DAX followers keep stale cached data'
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@claude'
 created_date: '2026-10-24 00:54'
+updated_date: '2026-10-31 02:23'
 labels:
   - review-2026-10-23
 dependencies: []
@@ -25,13 +27,27 @@ Found by the 2026-10-23 adversarial review at bce42647. Severity P2; high static
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Changed data ranges invalidate the cache appropriate to each inode actual mapping mode, including buffered inodes on mounts with DAX enabled.
-- [ ] #2 A regression forces DAX attachment allocation failure, caches old follower data, applies a writer overwrite and waits for the settled epoch; subsequent reads and shared mappings must see new bytes. It fails before the fix.
-- [ ] #3 Ordinary DAX inodes and inode-less cached DAX ranges continue to invalidate correctly.
+- [x] #1 Changed data ranges invalidate the cache appropriate to each inode actual mapping mode, including buffered inodes on mounts with DAX enabled.
+- [x] #2 A regression forces DAX attachment allocation failure, caches old follower data, applies a writer overwrite and waits for the settled epoch; subsequent reads and shared mappings must see new bytes. It fails before the fix.
+- [x] #3 Ordinary DAX inodes and inode-less cached DAX ranges continue to invalidate correctly.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 The fix batch passes cargo build or cargo check, cargo clippy, scripts/test.sh on macOS and scripts/test-gce.sh for the Linux workspace and applicable guest cases, with a rebuilt guest kernel for guest changes.
-- [ ] #2 Changed upstream deviations are documented, scripts/upstream-changes.py --check passes, and generated files are updated through their generators.
+- [x] #1 The fix batch passes cargo build or cargo check, cargo clippy, scripts/test.sh on macOS and scripts/test-gce.sh for the Linux workspace and applicable guest cases, with a rebuilt guest kernel for guest changes.
+- [x] #2 Changed upstream deviations are documented, scripts/upstream-changes.py --check passes, and generated files are updated through their generators.
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Uncommitted in worktree batch8 (2026-10-30), awaiting a GCE run: gcloud needs reauthentication, r289 stopped at it. super.c: drop_data dispatches on the inode's own mode, not the mount's; fxfs.dax_fail_attach knob; fxfs-guest-follow-dax extended, NOT YET RUN.
+
+Mutant GCE r297, drop_data on the mount's mode: fxfs-guest-follow-dax fails, the follower doesn't see its writer's changes.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+drop_data goes by the inode's mode, not the mount's. fxfs-guest-follow[-dax] with fxfs.dax_fail_attach forcing a fallback inode, r293 3 rounds each; on the mount's mode the follower never sees its writer's change (r297). DAX inodes' invalidation unchanged, follow-dax mappings checked. Linux workspace 1986/1986 and the Shuttle suites on GCE r292, macOS scripts/test.sh 1852 and the rest, scripts/upstream-changes.py --check.
+<!-- SECTION:FINAL_SUMMARY:END -->

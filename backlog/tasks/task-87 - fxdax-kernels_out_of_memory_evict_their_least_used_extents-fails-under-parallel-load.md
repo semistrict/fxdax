@@ -3,9 +3,10 @@ id: TASK-87
 title: >-
   fxdax: kernels_out_of_memory_evict_their_least_used_extents fails under
   parallel load
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-22 13:26'
+updated_date: '2026-10-30 18:15'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -32,3 +33,15 @@ Seen while testing the lineage refactor on macOS (integrate-2): the test failed 
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-10-30: moot. The test went with the Zircon kernel port in f897ce4a2. Its successor, extents::tests::memory_run_out_evicts_the_least_used_extents, passed in the full suites on macOS and in Docker Linux today. ACs left unchecked: the cause of the old test's flake was never found, and it can no longer be.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Closed as moot: the test was deleted in f897ce4a2; its successor passes in the full macOS and Docker Linux runs.
+<!-- SECTION:FINAL_SUMMARY:END -->

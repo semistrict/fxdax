@@ -3,9 +3,10 @@ id: TASK-114
 title: >-
   Guest DAX: relocated set by mmap faults blocks pruning forever for files later
   written with write(2) (suspected)
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-28 12:45'
+updated_date: '2026-10-31 02:23'
 labels:
   - bug
 dependencies: []
@@ -20,13 +21,25 @@ From a review (2026-10-28): fxfs_dax_prune returns unless relocated is empty; fx
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Confirmed or refuted with a guest test (mmap, unmap, then write(2) + fsync loop; regions pruned)
-- [ ] #2 If confirmed, regions of such files are pruned
+- [x] #1 Confirmed or refuted with a guest test (mmap, unmap, then write(2) + fsync loop; regions pruned)
+- [x] #2 If confirmed, regions of such files are pruned
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Uncommitted in worktree batch8 (2026-10-30), awaiting a GCE run: gcloud needs reauthentication, r289 stopped at it. the prune no longer returns on relocated (TASK-128): relocated pages keep one stale region each. Check regions_written_once_mapped written to confirm, NOT YET RUN.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Refuted: with the prune giving up on any relocated page, regions_written_once_mapped still passes (r302), as no page stays relocated once no entry of it can fault. TASK-128 fixed the case of a mapping that stays (test_regions_pruned_mapped). The test stays as the scenario's check.
+<!-- SECTION:FINAL_SUMMARY:END -->

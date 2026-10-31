@@ -1,9 +1,10 @@
 ---
 id: TASK-79.55
 title: Timestamps outside 1677-2262 are silently clamped
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-21 21:00'
+updated_date: '2026-10-31 02:23'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -27,13 +28,27 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity low): docs/reviews/2
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A test reproduces the failure on the code before the fix
-- [ ] #2 Fixed, and the test passes on macOS and on Linux (GCE)
+- [x] #1 A test reproduces the failure on the code before the fix
+- [x] #2 Fixed, and the test passes on macOS and on Linux (GCE)
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Uncommitted in worktree batch8 (2026-10-30), awaiting a GCE run: gcloud needs reauthentication, r289 stopped at it. super.c: s_time_min/max set to what 64 bits of nanoseconds hold; check timestamps_clamped NOT YET RUN.
+
+Mutant GCE r297, without s_time_min/max: timestamps_clamped fails (13000000000 against 9223372035).
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The superblock says the times Fxfs holds, so a time is clamped as it is set. timestamps_clamped; without s_time_min/max it fails 13000000000 against 9223372035 (r297). Linux workspace 1986/1986 and the Shuttle suites on GCE r292, macOS scripts/test.sh 1852 and the rest, scripts/upstream-changes.py --check.
+<!-- SECTION:FINAL_SUMMARY:END -->

@@ -3,10 +3,10 @@ id: TASK-79.47
 title: >-
   The follower simulation records a held object only after the fill ends: false
   failures
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-10-21 20:58'
-updated_date: '2026-10-30 10:18'
+updated_date: '2026-10-31 02:23'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -31,7 +31,7 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity low): docs/reviews/2
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [ ] #1 A test reproduces the failure on the code before the fix
-- [ ] #2 Fixed, and the test passes on macOS and on Linux (GCE)
+- [x] #2 Fixed, and the test passes on macOS and on Linux (GCE)
 <!-- AC:END -->
 
 ## Definition of Done
@@ -45,4 +45,6 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity low): docs/reviews/2
 
 <!-- SECTION:NOTES:BEGIN -->
 A holder records what it holds under the fill barrier it found it under. No deterministic seam: the batch would have to come between the two; follower_sim's suites pass on macOS and GCE r273.
+
+Fixed in 23923f84d; the simulation's suites pass on r292. AC1 open: its false failures came by schedule, and none was kept as a test.
 <!-- SECTION:NOTES:END -->

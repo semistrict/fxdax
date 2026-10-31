@@ -3,10 +3,10 @@ id: TASK-110
 title: >-
   Flaky: extentd::tests::hundreds_of_writers_flush_on_threads_they_share exceeds
   its 200 ms durable-commit lag under the full Linux workspace run
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-26 03:47'
-updated_date: '2026-10-30 04:15'
+updated_date: '2026-10-30 18:15'
 labels:
   - bug
 dependencies: []
@@ -27,9 +27,9 @@ GCE r123 (19b799cc1, full Linux workspace): '300 stores' guests committing: 46 t
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Notes
@@ -41,3 +41,9 @@ Again in r141 (9f77e3799, GCE n2-standard-8, full workspace): 257.4 ms (median 5
 
 On main (aff4349fd): ExtentStore counts its daemon's flush turns (flush_turned, from flush_behind each turn); the test bounds the probe's lag at 4 of its store's turns, however long the load made them, and reports the time. Verified at 3364435c6 (the batch): macOS extent_remote and fxdax 371 passed; Linux workspace on GCE r264 1965 of 1965; guest suites on GCE r263 (release), fxfs-guest-dax, -checks-dax, -crash-dax, -checks-dax-small, -checks-dax-delay, -pgbench-dax 2 rounds each passed (pgbench-dax 1051.6 -> 863.4, 997.4 -> 889.5 tps).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Fixed on aff4349fd: the test bounds the probe's lag at 4 of its store's flush turns, however long load makes them. Verified: Linux workspace on GCE r264, 1965 of 1965.
+<!-- SECTION:FINAL_SUMMARY:END -->

@@ -3,9 +3,11 @@ id: TASK-79.23
 title: >-
   A failed follower batch leaves a half-applied tree serving readers, lets go of
   its commit, and drifts from its writer for good
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@claude'
 created_date: '2026-10-21 20:58'
+updated_date: '2026-10-31 02:23'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -29,13 +31,25 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity medium): docs/review
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A test reproduces the failure on the code before the fix
-- [ ] #2 Fixed, and the test passes on macOS and on Linux (GCE)
+- [x] #1 A test reproduces the failure on the code before the fix
+- [x] #2 Fixed, and the test passes on macOS and on Linux (GCE)
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Uncommitted in worktree batch8 (2026-10-30), awaiting a GCE run: gcloud needs reauthentication, r289 stopped at it. crates/follower: a batch failing at fetch or apply records it under the barrier (Kernel::fail); fill() returns Failed, batches fail at once after; rule 'fail' with Shuttle needs_failing and failing_exhaustively. crates/fxfs follower.rs: failed flag, what keeps the previous commit stays to unmount, no advance after. Guest: readers ESTALE (Platform::filling), remount recovers; attr read errors now fail the batch rather than settle an inode gone. Tests: follower_sim failure.rs (mutants killed), Shuttle 10 of 10, fxfs-guest-follow-remount(-dax) NOT YET RUN.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A batch that fails ends the follower: readers get ESTALE until it remounts, and the commit it was as of stays held. Shuttle's needs_failing and failing_exhaustively, follower_sim's failure module, fxfs-guest-follow-remount[-dax] (r293, 3 rounds each). Linux workspace 1986/1986 and the Shuttle suites on GCE r292, macOS scripts/test.sh 1852 and the rest, scripts/upstream-changes.py --check.
+<!-- SECTION:FINAL_SUMMARY:END -->

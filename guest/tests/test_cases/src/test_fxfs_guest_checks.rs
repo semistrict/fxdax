@@ -2158,10 +2158,9 @@ mod guest {
 
     /// fxdax: a mapped file's pages stored to and fsynced, their evacuations leaving them
     /// relocated, its mapping then gone, and the file written with write(2) and fsynced, as a
-    /// file a tool prepared and a database then opens: no fault clears those pages' relocated
-    /// bits, as a write(2) leaves them for the faults that hold entries of them, but its ranges'
-    /// regions go all the same: TASK-128 keeps only those the bits name, a page's one each
-    /// (TASK-114).
+    /// file a tool prepared and a database then opens: its ranges' regions go all the same, as no
+    /// page stays relocated with no entry of it left to fault (TASK-114: GCE r302, a prune that
+    /// gives up on any page relocated passes this too; TASK-128's check is of a mapping that stays).
     fn test_regions_written_once_mapped() {
         use std::os::unix::fs::FileExt;
         use std::os::unix::io::AsRawFd;

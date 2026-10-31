@@ -3,9 +3,11 @@ id: TASK-79.24
 title: >-
   A cut-off follower can never recover by remounting, and its connection keeps
   the writer's store EBUSY
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@claude'
 created_date: '2026-10-21 20:58'
+updated_date: '2026-10-31 02:23'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -29,13 +31,27 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity medium): docs/review
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A test reproduces the failure on the code before the fix
-- [ ] #2 Fixed, and the test passes on macOS and on Linux (GCE)
+- [x] #1 A test reproduces the failure on the code before the fix
+- [x] #2 Fixed, and the test passes on macOS and on Linux (GCE)
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Uncommitted in worktree batch8 (2026-10-30), awaiting a GCE run: gcloud needs reauthentication, r289 stopped at it. driver: virtio_extent_close at unmount resets a follower's device, dropping its connection; virtio_extent_open at mount reopens, -EBUSY retriable (reset_prepare/reset_done; kernel builds on 6.18). Firecracker: reset drops the store at once, reopen at activation. fxfs-guest-follow-remount(-dax) NOT YET RUN; vendor/firecracker change uncommitted too.
+
+Mutant GCE r297, no virtio_extent_close at unmount: fxfs-guest-follow-remount fails, the next writer's open EBUSY for as long as it tries. r293: follow-remount and -dax 3 rounds each.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A follower's unmount resets its device, letting the store go; mounting opens it anew. fxfs-guest-follow-remount[-dax] 3 rounds each on r293; without the close at unmount the next writer stays EBUSY (r297). Linux workspace 1986/1986 and the Shuttle suites on GCE r292, macOS scripts/test.sh 1852 and the rest, scripts/upstream-changes.py --check.
+<!-- SECTION:FINAL_SUMMARY:END -->

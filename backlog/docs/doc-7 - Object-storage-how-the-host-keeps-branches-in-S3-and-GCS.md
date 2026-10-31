@@ -3,7 +3,7 @@ id: doc-7
 title: 'Object storage: how the host keeps branches in S3 and GCS'
 type: specification
 created_date: '2026-10-17 01:31'
-updated_date: '2026-10-23 06:12'
+updated_date: '2026-10-30 22:52'
 ---
 # Object storage: how the host keeps branches in S3 and GCS
 
@@ -314,7 +314,10 @@ and the footers after it, and serves the guest from an empty cache.
 
 ## Garbage collection
 
-`fxdax-gc` is the only thing that deletes; writers only add. A pass:
+`fxdax-gc` is the only thing that deletes; writers only add. A live branch is one whose record says
+so, whether or not a host holds it, which only hosts know: `fxdax-gc URL --branches --held FILE`
+lists those no host holds, FILE naming what they do, and `fxdax-gc URL --delete-branch ID` deletes
+one for the next pass to reclaim. A pass:
 
 1. **Takes `gc/lease`**, at a new epoch, and stops before deleting if another pass took it since.
 2. **Lists every object first.** What is written after the listing is no candidate, which is what

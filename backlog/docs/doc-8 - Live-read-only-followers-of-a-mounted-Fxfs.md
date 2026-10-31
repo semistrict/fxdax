@@ -3,7 +3,7 @@ id: doc-8
 title: Live read-only followers of a mounted Fxfs
 type: specification
 created_date: '2026-10-17 22:17'
-updated_date: '2026-10-24 08:22'
+updated_date: '2026-10-30 22:45'
 ---
 # Live read-only followers of a mounted Fxfs
 
@@ -43,7 +43,9 @@ built around testing techniques that make them loud and reproducible.
    ESTALE.
 7. **A follower that falls too far behind** (a lag in time, or in bytes the writer freed that it
    pins) **is cut off**: its operations fail with ESTALE until it remounts. That bounds what
-   followers cost the writer's space. Limits to be chosen with measurements.
+   followers cost the writer's space. Limits to be chosen with measurements. A batch that fails
+   ends a follower the same way: what it applied can't be taken back, so its readers fail with
+   ESTALE until it remounts, on the commit it has kept.
 8. **Readers wait for a batch, briefly** (TASK-42.10, the user's decision of 2026-10-19,
    replacing "no global lock stalls a follower's readers"): a fill barrier keeps them out while a
    batch drops what the kernel caches of what it changes and applies it, as no lock-free scheme
@@ -102,7 +104,9 @@ client}.rs`), doc-4's Followers.
   (`ExtentStore::take_over`), as it does a writer's that went, if nothing is open in it (its last
   commit all it wrote): its followers go on following. A writer that went with writes
   uncommitted retires its instance: its followers are cut off (ESTALE), and no connection opens
-  the store until they are gone (a writer's open fails with EBUSY meanwhile).
+  the store until they are gone (a writer's open fails with EBUSY meanwhile). A follower's guest
+  unmounting is its going: it resets its device, which closes the connection, and mounting opens
+  a new one, as of the writer's latest commit (doc-4's Reset).
 - The daemon's work on a store followers have open: synced, grown and forked through their
   instance; not deleted, placed or made public (EBUSY).
 - OPEN takes a read-only flag: a connection opening a store another connection holds gets a view

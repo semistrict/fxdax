@@ -1,9 +1,11 @@
 ---
 id: TASK-79.21
 title: The deferred unlink queue lets the kernel's view diverge from Fxfs
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@claude'
 created_date: '2026-10-21 20:58'
+updated_date: '2026-10-31 02:23'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -27,13 +29,25 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity medium): docs/review
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A test reproduces the failure on the code before the fix
-- [ ] #2 Fixed, and the test passes on macOS and on Linux (GCE)
+- [x] #1 A test reproduces the failure on the code before the fix
+- [x] #2 Fixed, and the test passes on macOS and on Linux (GCE)
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Uncommitted in worktree batch8 (2026-10-30), awaiting a GCE run: gcloud needs reauthentication, r289 stopped at it. crates/fxfs-posix: stragglers applied within DELAYED_WAIT (10 ms), evictions wake it; statfs drains; lookup drains the inode; namespace changes (create, symlink, link, unlink, rename, exchange, clone) drain all, so names change in syscall order; failed queue keeps what evict gets and fails transactions. crates/fxfs-posix/src/tests.rs 7 tests, each fix mutated and killed. Left: data writes and setattr are not ordered against queued unlinks, within DELAYED_WAIT of them.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The queue is drained by whatever reads what it holds, lone unlinks go within 10 ms, and it fails with the filesystem. crates/fxfs-posix tests, each killing a hand mutant. Linux workspace 1986/1986 and the Shuttle suites on GCE r292, macOS scripts/test.sh 1852 and the rest, scripts/upstream-changes.py --check.
+<!-- SECTION:FINAL_SUMMARY:END -->
