@@ -87,6 +87,8 @@
 
 /* The most pages a writable region's mapping grows by at once. */
 #define FXFS_DAX_REGION_STEP 64UL
+/* fxdax: how many times running a write has a chunk's range dropped before it gives up. */
+#define FXFS_DAX_MAX_DROPS 256
 /*
  * The pages a writable region's first MAP maps: most of a millisecond each, which a small file's
  * write waits for, so more than a page, though they make the extent at least that long.
@@ -2378,7 +2380,18 @@ static struct fxfs_dax_range *fxfs_dax_new_slice(struct fxfs_dax *dax, struct in
 		}
 		if (gate == seals) {
 			fxfs_dax_region_open(dax, region);
-			break;
+			/*
+			 * fxdax: mapped read-only already, the region stays so, and a slice of it could
+			 * never take a write of the extent, open: Fxfs leaves the blocks where they
+			 * are, the slice refuses them, and the chunk made a slice again spun the
+			 * write for ever, unkillable (xfstests generic/111, TASK-140). The range's
+			 * own space maps it.
+			 */
+			if (region->writable)
+				break;
+			fxfs_device_store_end(dax->dev);
+			fxfs_dax_put_region(dax, region);
+			return NULL;
 		}
 		fxfs_device_store_end(dax->dev);
 		fxfs_dax_put_region(dax, region);
@@ -3452,7 +3465,7 @@ static ssize_t fxfs_dax_write_iter(struct kiocb *iocb, struct iov_iter *from)
 	loff_t old_size, end, write_pos = 0;
 	u64 seals = 0;
 	ssize_t ret, done = 0;
-	unsigned int stale = 0;
+	unsigned int stale = 0, drops = 0;
 	int err;
 
 	if (iocb->ki_flags & IOCB_NOWAIT)
@@ -3491,7 +3504,22 @@ static ssize_t fxfs_dax_write_iter(struct kiocb *iocb, struct iov_iter *from)
 		pagefault_enable();
 		if (ret > 0) {
 			done += ret;
+			drops = 0;
 		} else if (ret == -EXDEV || (ret == -ESTALE && !stale++)) {
+			/*
+			 * fxdax: a write that can't get on fails, and says so: it spun unkillable, with
+			 * nothing in the log (TASK-140).
+			 */
+			if (fatal_signal_pending(current)) {
+				ret = -EINTR;
+				break;
+			}
+			if (++drops > FXFS_DAX_MAX_DROPS) {
+				pr_err("fxfs: ino %lu: a write at %lld found no range to take it\n",
+				       inode->i_ino, iocb->ki_pos);
+				ret = -EIO;
+				break;
+			}
 			/*
 			 * A slice the write can't use, or fxdax: a range mapping some of its blocks
 			 * where they were (TASK-79.106), once: dropped, the chunk is mapped again.
