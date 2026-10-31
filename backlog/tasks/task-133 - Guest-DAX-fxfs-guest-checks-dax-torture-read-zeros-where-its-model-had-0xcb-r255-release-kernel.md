@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-30 01:36'
-updated_date: '2026-10-31 07:39'
+updated_date: '2026-10-31 09:15'
 labels:
   - dax
   - bug
@@ -62,4 +62,6 @@ r269: seed 1794450854429239374, torture, 20 rounds passed (main's Firecracker). 
 Proved: append_reserved_tail, strict fsck, fails with ExtentExceedsLength(9, 4, AttributeId(0), 274532, Value("274432..327680")) at main (r279) and at 3358b1089 before the size fix (r280), each round: the error r265 hit is the reservation's since 898253757 (TASK-92.58), any file left with a reserved tail, not caused by 76ec99cf9. Its assertion of the blocks passed: the tail is there.
 
 2026-10-31, the soak (scripts/soak-workloads-gce.sh checks, debug kernel, tree 674bce07a, Firecracker 412e0b8d4, which has no late pre-fault): fxfs-guest-checks-dax round 2 of 10: seed 1793234165365156062, phase 12, after the threads: /mnt/fxdax/torture-2 at 0x1403e (thread 2's) reads 0x0, its model 0xee. So it is not the late pre-fault's: this is the first sighting without it, and the first on the debug kernel: 'the change is implicated' above no longer holds. r319 repeats the full suite on the debug kernel with fxfs.dax_trace=1, whose dump the check takes before it fails. Logs: /tmp/fxdax-soak-results/checks/e2e/fxfs-guest-checks-dax/round-2.
+
+2026-10-31: what the page lost. Its store, read back (crates/fxdax/examples/store-read.rs), and every thread's and the coordinator's operations replayed from the seed (their Rngs depend on no timing): torture-2 differs from its model on page 20 alone, 421 bytes of 431; the page holds 10 bytes, thread 1's last two operations on it in phase 12, op 194 (a store of 3 at 0x23a) and op 295 (a store of 7 at 0xb05). Lost: the page as phase 11's check found it, thread 1's op 0 (a write of 30 at 0x8dd) and op 33, thread 0's op 61, thread 2's op 131: phase 12's. No write(2) to the page came after those, and the coordinator did nothing to the file. So the page became a zero page mid-phase, between thread 1's ops 33 and 194, and what came after landed on it: a store's fault moving the page, its copy held of the window's page read as zeros, is the likeliest; TASK-121's family, by a path its fix doesn't cover. r320, 12 rounds with fxfs.dax_trace=1, didn't recur: it is rare, not hidden by tracing (about 1 round in 19 on the debug kernel so far). r322 and r323 add fxfs.dax_check_moves.
 <!-- SECTION:NOTES:END -->

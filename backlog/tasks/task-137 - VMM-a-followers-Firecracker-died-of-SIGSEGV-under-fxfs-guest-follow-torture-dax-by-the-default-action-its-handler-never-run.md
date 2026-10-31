@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-31 07:09'
+updated_date: '2026-10-31 08:53'
 labels:
   - bug
   - followers
@@ -32,3 +33,9 @@ Soak 2026-10-31 (scripts/soak-workloads-gce.sh replicas, FXDAX_FOLLOW_SECONDS=60
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-10-31, r317 (11e5c7878): 8 of 8 rounds at 10 minutes, no crash; with the soak's 4 before it, 12 clean in 13.
+<!-- SECTION:NOTES:END -->
