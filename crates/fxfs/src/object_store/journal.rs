@@ -99,6 +99,10 @@ const CHUNK_SIZE: u64 = 131_072;
 // which the journal writes once, before it is sealed (backlog doc-4): a journal block is written
 // once. The filesystem's blocks must be no larger (see `check_block_size`).
 const EXTENT_SIZE: u64 = 4096;
+
+// fxdax: how much of the journal's old space a commit zeroes at most: 512 extents, whose records
+// fit well within a chunk.
+const MAX_ZEROED_PER_COMMIT: u64 = 512 * EXTENT_SIZE;
 const_assert!(CHUNK_SIZE > TRANSACTION_MAX_JOURNAL_USAGE);
 
 // See the comment for the `reclaim_size` member of Inner.
@@ -267,6 +271,9 @@ struct Inner {
 
     // The offset that we can zero the journal up to now that it is no longer needed.
     zero_offset: Option<u64>,
+
+    // fxdax: how far it has zeroed towards it, a slice a commit.
+    zeroed_to: u64,
 
     // The journal offset that we most recently flushed to the device.
     device_flushed_offset: u64,
@@ -516,6 +523,7 @@ impl Journal {
             inner: Mutex::new(Inner {
                 super_block_header: SuperBlockHeader::default(),
                 zero_offset: None,
+                zeroed_to: 0,
                 device_flushed_offset: 0,
                 device_flushed_end: 0,
                 barrier_wanted: 0,
@@ -1637,7 +1645,7 @@ impl Journal {
         // (xfstests generic/161, TASK-139).
         let room = self.room_for(transaction);
 
-        let (size, zero_offset) = {
+        let (size, zeroing) = {
             let mut inner = self.inner.lock();
 
             Self::write_pending_records(&mut inner)?;
@@ -1652,14 +1660,29 @@ impl Journal {
             let size = handle.get_size();
             let size = if file_offset + room > size { Some(size) } else { None };
 
+            // fxdax: a slice of what's left to zero: the journal's file has an extent a block
+            // (EXTENT_SIZE), and zeroing a journal of 16 MiB in one transaction, with a small
+            // commit that happened on it, ran past the journal's end (xfstests generic/161,
+            // TASK-139).
+            let zeroing = match inner.zero_offset {
+                Some(end) if inner.zeroed_to >= end => {
+                    inner.zero_offset = None;
+                    None
+                }
+                Some(end) => {
+                    Some(inner.zeroed_to..end.min(inner.zeroed_to + MAX_ZEROED_PER_COMMIT))
+                }
+                None => None,
+            };
+
             if size.is_none()
-                && inner.zero_offset.is_none()
+                && zeroing.is_none()
                 && !self.objects.needs_borrow_for_journal(file_offset)
             {
                 return Ok(());
             }
 
-            (size, inner.zero_offset)
+            (size, zeroing)
         };
 
         let borrowing = Options {
@@ -1674,7 +1697,7 @@ impl Journal {
         // Borrowed, the padding of a sync in each of PostgreSQL's initdb's fsyncs drained the
         // metadata reservation of the guest's large journal, until compacting it found no room
         // (TASK-26.6.1).
-        let mut transaction = if size.is_none() && zero_offset.is_none() {
+        let mut transaction = if size.is_none() && zeroing.is_none() {
             let paying = Options { skip_journal_checks: true, ..Default::default() };
             match handle.new_transaction_with_options(paying).await {
                 Err(error) if FxfsError::NoSpace.matches(&error) => {
@@ -1694,8 +1717,8 @@ impl Journal {
                 )
                 .await?;
         }
-        if let Some(zero_offset) = zero_offset {
-            handle.zero(&mut transaction, 0..zero_offset).await?;
+        if let Some(zeroing) = &zeroing {
+            handle.zero(&mut transaction, zeroing.clone()).await?;
         }
 
         // We can't use regular transaction commit, because that can cause re-entrancy issues, so
@@ -1711,8 +1734,11 @@ impl Journal {
             assert!(file_offset < size, "the journal at {file_offset}, past its size, {size}");
         }
 
-        if inner.zero_offset == zero_offset {
-            inner.zero_offset = None;
+        if let Some(zeroing) = zeroing {
+            inner.zeroed_to = zeroing.end;
+            if inner.zero_offset == Some(zeroing.end) {
+                inner.zero_offset = None;
+            }
         }
 
         Ok(())

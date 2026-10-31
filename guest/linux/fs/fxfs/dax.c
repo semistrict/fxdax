@@ -3254,6 +3254,12 @@ static int fxfs_dax_iomap_begin(struct inode *inode, loff_t pos, loff_t length,
 {
 	int err;
 
+	/*
+	 * fxdax: an iomap a page at most for a write of a file in pieces: a write of many, each with
+	 * its tree lookups, held its CPU for 22 s, no one else getting it, without preemption
+	 * (xfstests generic/111, TASK-140).
+	 */
+	cond_resched();
 	if (WARN_ON_ONCE(flags & IOMAP_REPORT))
 		return -EIO;
 	iomap->offset = pos;
