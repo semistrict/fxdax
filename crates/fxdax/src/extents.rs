@@ -299,7 +299,8 @@ impl WindowChanges {
         }
         let at = std::time::Instant::now();
         if !self.refused.is_empty() {
-            let range = window_offset..window_offset + len;
+            // What a VM process asked, which may be refused yet: past the end of a u64.
+            let range = window_offset..window_offset.saturating_add(len);
             self.refused.retain(|refused| {
                 if !range.contains(&refused.window_offset) {
                     return true;
@@ -334,7 +335,8 @@ impl WindowChanges {
         let now = std::time::Instant::now();
         (self.changes.iter())
             .filter(|change| {
-                (change.window_offset..change.window_offset + change.len).contains(&window_offset)
+                let end = change.window_offset.saturating_add(change.len);
+                (change.window_offset..end).contains(&window_offset)
             })
             .map(|change| {
                 let (at, len, ago) =
@@ -1853,6 +1855,17 @@ mod tests {
         assert_eq!(waiting(&changes), [0x9000]);
         changes.record(0x8000, 0x2000, Change::Unmap);
         assert_eq!(waiting(&changes), Vec::<u64>::new());
+    }
+
+    /// TASK-77: what a VM process asked of the window, recorded before it is refused, may reach
+    /// past the end of a u64, with a page refused waiting.
+    #[test]
+    fn changes_past_the_end_of_a_u64_are_recorded() {
+        let mut changes = WindowChanges::default();
+        changes.refuse(0x3000, "a store", "an extent, read-only".into());
+        changes.record(u64::MAX - 0xfff, 0x2000, Change::Unmap);
+        assert_eq!(changes.refused.len(), 1);
+        assert_eq!(changes.of(u64::MAX - 0xfff).len(), 1);
     }
 
     fn store(capacity: u64) -> (ExtentStore, tempfile::TempDir) {

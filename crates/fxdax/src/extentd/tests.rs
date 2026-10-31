@@ -3768,3 +3768,230 @@ fn window_mappings_are_answered_beside_the_stream_data_in_flight() {
     expected.push((reads + 2, 0, 0));
     assert_eq!(answered, Ok(expected));
 }
+
+/// How a [`whatever_a_vm_process_says_harms_no_other`] sequence ends.
+#[derive(Debug, Clone, Copy)]
+enum LastWords {
+    /// Closes the connection between messages.
+    Nothing,
+    /// A part of a header.
+    PartOfAHeader,
+    /// A header of more payload than comes.
+    MissingPayload(u64),
+    /// A header of more descriptors than come.
+    MissingDescriptors(u32),
+}
+
+/// TASK-77: a VM process is as trustworthy as its guest, once the guest has broken out into it: a
+/// tenant's VM process saying anything, of any kind, with any flags and arguments, IDs and paths
+/// that name another tenant's among them, through its window and transfer area, then breaking off
+/// however it likes, panics nothing, leaves another tenant's store as it was and served, and lets
+/// its own go. Seeded by proptest, which says the sequence if one fails.
+#[test]
+fn whatever_a_vm_process_says_harms_no_other() {
+    use super::wire::*;
+    use proptest::prelude::*;
+    use proptest::test_runner::{Config, TestRunner};
+    use std::os::fd::{AsFd as _, AsRawFd as _, FromRawFd as _, OwnedFd};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use zerocopy::IntoBytes as _;
+
+    /// A word that says the VM process's store's branch, and the other tenant's.
+    const OWN_BRANCH: u64 = 0xb0b0_0001;
+    const OTHER_BRANCH: u64 = 0xb0b0_0002;
+    const WINDOW_BYTES: u64 = 1 << 20;
+    const TRANSFER_BYTES: u64 = 1 << 20;
+    /// The ID of the request that ends a sequence.
+    const LAST: u64 = 0x1a57;
+    const KINDS: [u32; 29] = [
+        OPEN, READ, WRITE, FREE, MAP, UNMAP, COMMIT, ROOT, INFO, WINDOW, FAULT, ACK, FORK, RESIZED,
+        MAPPINGS, ADVANCE, LET_GO, PIN, UNPIN, TRANSFER, FREE_MANY, STAGE_COUNTS, BUILD, REPLY,
+        STAGE_MAP, STAGE_UNMAP, CAPACITY, 14, 0xffff_ffff,
+    ];
+    let wait = std::time::Duration::from_secs(60);
+
+    // A panic on the daemon's runtime ends its task alone.
+    static PANICS: AtomicU64 = AtomicU64::new(0);
+    let panicked = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        PANICS.fetch_add(1, Ordering::Relaxed);
+        panicked(info);
+    }));
+
+    host();
+    let dir = tempfile::tempdir().unwrap();
+    let vms = dir.path().join("vms");
+    std::fs::create_dir(&vms).unwrap();
+    let tenant = super::server::Tenant::new("tenant", &vms).unwrap();
+    let (socket, other_socket) = (dir.path().join("tenant.sock"), dir.path().join("other.sock"));
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || super::server::serve_tenant(listener, tenant));
+    let listener = UnixListener::bind(&other_socket).unwrap();
+    std::thread::spawn(move || serve(listener));
+
+    let other_path = dir.path().join("other");
+    let other = RemoteExtentStore::connect(&other_socket, &other_path, 1 << 24).unwrap();
+    let kept = ExtentId { branch: other.branch(), sequence: 1 };
+    write(&other, kept, 0, &pattern(9, BLOCK)).unwrap();
+    other.commit(None).unwrap();
+
+    let ps = page_size();
+    let word = prop_oneof![
+        Just(0u64),
+        Just(1),
+        Just(ps),
+        Just(WINDOW_BYTES),
+        Just(WINDOW_BYTES - ps),
+        Just(OWN_BRANCH),
+        Just(OTHER_BRANCH),
+        1u64..16,
+        (0u64..64).prop_map(move |page| page * ps),
+        (0u64..4096).prop_map(|back| u64::MAX - back),
+        any::<u64>(),
+    ];
+    let paths = [
+        vms.join("fork"),
+        vms.join("../escaped"),
+        other_path.clone(),
+        std::path::PathBuf::from("relative"),
+    ];
+    let payload = prop_oneof![
+        4 => proptest::collection::vec(any::<u8>(), 0..64),
+        1 => (0..paths.len()).prop_map(move |path| {
+            std::os::unix::ffi::OsStrExt::as_bytes(paths[path].as_os_str()).to_vec()
+        }),
+    ];
+    let anything = (
+        proptest::sample::select(&KINDS[..]),
+        prop_oneof![0u32..32, any::<u32>()],
+        any::<u64>(),
+        [word.clone(), word.clone(), word.clone(), word.clone(), word],
+        payload,
+    );
+    // Requests a store would serve, as far as their extents and pages go: of those the VM
+    // process wrote, or wrote and freed, and of the window it has, in any order.
+    let page = move || (0u64..32).prop_map(move |page| page * ps);
+    let length = move || (1u64..8).prop_map(move |pages| pages * ps);
+    let sequence = || 1u64..16;
+    let plausible = prop_oneof![
+        (sequence(), page(), 1usize..8).prop_map(move |(extent, at, pages)| {
+            (WRITE, 0, 0, [OWN_BRANCH, extent, at, 0, 0], vec![0x5a; pages * ps as usize])
+        }),
+        (sequence(), page(), length()).prop_map(|(extent, at, len)| {
+            (READ, 0, 0, [OWN_BRANCH, extent, at, len, 0], Vec::new())
+        }),
+        (sequence(), page(), length(), page(), 0u32..4).prop_map(|(extent, at, len, to, flags)| {
+            (MAP, flags, 0, [OWN_BRANCH, extent, at, len, to], Vec::new())
+        }),
+        (page(), length()).prop_map(|(at, len)| (UNMAP, 0, 0, [at, len, 0, 0, 0], Vec::new())),
+        (page(), 0u32..4).prop_map(|(at, flags)| (FAULT, flags, 0, [at, 0, 0, 0, 0], Vec::new())),
+        sequence().prop_map(|extent| (FREE, 0, 0, [OWN_BRANCH, extent, 0, 0, 0], Vec::new())),
+        (0u32..4).prop_map(|flags| (COMMIT, flags, 0, [0; 5], Vec::new())),
+        Just((MAPPINGS, 0, 0, [0; 5], Vec::new())),
+        Just((INFO, 0, 0, [0; 5], Vec::new())),
+    ];
+    let message = prop_oneof![3 => plausible, 1 => anything];
+    let last_words = prop_oneof![
+        Just(LastWords::Nothing),
+        Just(LastWords::PartOfAHeader),
+        any::<u64>().prop_map(LastWords::MissingPayload),
+        (1u32..4).prop_map(LastWords::MissingDescriptors),
+    ];
+    let sequence = (proptest::collection::vec(message, 1..64), any::<bool>(), last_words);
+
+    let cases = AtomicU64::new(0);
+    let served = std::sync::Arc::new(AtomicU64::new(0));
+    let config = Config { cases: 128, failure_persistence: None, ..Config::default() };
+    TestRunner::new(config)
+        .run(&sequence, |(messages, transfer, last_words)| {
+            let case = cases.fetch_add(1, Ordering::Relaxed);
+            let path = vms.join(format!("store-{case}"));
+            let (sender, mut receiver, stream, branch) = raw_connection(&socket, &path, 1 << 24);
+            let sender = std::sync::Arc::new(sender);
+            // Whatever comes back, its stage operations made, as far as saying so goes.
+            let (answered, all_answered) = std::sync::mpsc::channel();
+            let answering = {
+                let (sender, served) = (sender.clone(), served.clone());
+                std::thread::spawn(move || {
+                    while let Ok(Some(message)) = receiver.receive(|| u64::MAX) {
+                        if message.header.kind == REPLY && message.header.status == 0 {
+                            served.fetch_add(1, Ordering::Relaxed);
+                        }
+                        if message.header.kind == REPLY && message.header.id == LAST {
+                            let _ = answered.send(());
+                        }
+                        if message.header.flags & STAGE_ACK != 0 {
+                            let _ = sender.send(Header::new(ACK, message.header.id), &[], &[]);
+                        }
+                    }
+                })
+            };
+            let window = Header::new(WINDOW, 2).with_args(&[WINDOW_BYTES]);
+            sender.send(window, &[], &[]).unwrap();
+            if transfer {
+                // SAFETY: Makes a descriptor, which is owned below.
+                let fd =
+                    unsafe { libc::memfd_create(c"transfer".as_ptr(), libc::MFD_ALLOW_SEALING) };
+                assert!(fd >= 0);
+                // SAFETY: Just made, and owned here.
+                let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+                // SAFETY: Sizes and seals it.
+                unsafe {
+                    assert_eq!(libc::ftruncate(fd.as_raw_fd(), TRANSFER_BYTES as i64), 0);
+                    assert_eq!(libc::fcntl(fd.as_raw_fd(), libc::F_ADD_SEALS, libc::F_SEAL_SHRINK), 0);
+                }
+                let area = Header::new(TRANSFER, 3).with_args(&[TRANSFER_BYTES]);
+                sender.send(area, &[], &[fd.as_fd()]).unwrap();
+            }
+            let named = |word: u64| match word {
+                OWN_BRANCH => branch,
+                OTHER_BRANCH => kept.branch,
+                word => word,
+            };
+            for (kind, flags, id, args, payload) in messages {
+                let args = args.map(named);
+                let message = Header::new(kind, id).with_args(&args).with_flags(flags);
+                // The daemon may have let it go by now.
+                let _ = sender.send(message, &payload, &[]);
+            }
+            // Answered, or the daemon has let it go, which ends the answers.
+            let _ = sender.send(Header::new(INFO, LAST), &[], &[]);
+            let _ = all_answered.recv_timeout(wait);
+            let raw = |bytes: &[u8]| {
+                let _ = std::io::Write::write_all(&mut &stream, bytes);
+            };
+            let header = |len, fds| Header { kind: WRITE, len, fds, ..Default::default() };
+            match last_words {
+                LastWords::Nothing => {}
+                LastWords::PartOfAHeader => raw(&header(0, 0).as_bytes()[..16]),
+                LastWords::MissingPayload(len) => raw(header(len, 0).as_bytes()),
+                LastWords::MissingDescriptors(fds) => raw(header(0, fds).as_bytes()),
+            }
+            stream.shutdown(std::net::Shutdown::Both).unwrap();
+            prop_assert!(within(wait, move || answering.join().unwrap()).is_ok());
+
+            // Its store is let go of, and opens.
+            let (opening, reopened) = (socket.clone(), path.clone());
+            let opened = within(wait, move || loop {
+                match RemoteExtentStore::connect(&opening, &reopened, 1 << 24) {
+                    Err(error) if error.errno() == Some(Errno::EBUSY) => std::thread::yield_now(),
+                    opened => break opened.map(drop).map_err(|error| error.to_string()),
+                }
+            });
+            prop_assert_eq!(opened, Ok(Ok(())));
+
+            // Nothing it said reached the other tenant's, which is served on.
+            prop_assert_eq!(read(&other, kept, 0, BLOCK), Ok(pattern(9, BLOCK)));
+            let served = ExtentId { branch: kept.branch, sequence: 2 + case };
+            prop_assert_eq!(write(&other, served, 0, &pattern(7, BLOCK)), Ok(()));
+            prop_assert_eq!(other.commit(None), Ok(()));
+            prop_assert_eq!(read(&other, served, 0, BLOCK), Ok(pattern(7, BLOCK)));
+            prop_assert_eq!(PANICS.load(Ordering::Relaxed), 0);
+            Ok(())
+        })
+        .unwrap();
+    // What it says reaches past the checks: not every request is refused.
+    let served = served.load(Ordering::Relaxed);
+    assert!(served > 1000, "{served} requests served");
+    drop(other);
+}
