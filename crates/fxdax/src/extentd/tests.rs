@@ -763,17 +763,15 @@ const CHILD_SOCKET: &str = "FXDAX_EXTENTD_TEST_SOCKET";
 const CHILD_STORE: &str = "FXDAX_EXTENTD_TEST_STORE";
 const CHILD_EXTENT: &str = "FXDAX_EXTENTD_TEST_EXTENT";
 const CHILD_RUNS_ON: &str = "FXDAX_EXTENTD_TEST_RUNS_ON";
+const CHILD_CLOSES: &str = "FXDAX_EXTENTD_TEST_CLOSES";
 
-/// Maps `extent`'s first page into a new window of the store at `store` the daemon at `socket`
-/// serves, checks it holds the pattern written, and returns the store, mapping it still, and the
-/// page's address.
-fn map_first_page(socket: &Path, store: &Path, extent: ExtentId) -> (RemoteExtentStore, usize) {
-    let ps = page_size() as usize;
-    // Once the daemon has seen a connection that had the store open go.
+/// Opens the store at `store` through the daemon at `socket`, once the daemon has seen a connection
+/// that had it open go.
+fn connect_once_free(socket: &Path, store: &Path) -> RemoteExtentStore {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    let store = loop {
+    loop {
         match RemoteExtentStore::connect(socket, store, 1 << 24) {
-            Ok(store) => break store,
+            Ok(store) => return store,
             Err(error)
                 if error.errno() == Some(Errno::EBUSY) && std::time::Instant::now() < deadline =>
             {
@@ -781,7 +779,15 @@ fn map_first_page(socket: &Path, store: &Path, extent: ExtentId) -> (RemoteExten
             }
             Err(error) => panic!("opening {}: {error:#}", store.display()),
         }
-    };
+    }
+}
+
+/// Maps `extent`'s first page into a new window of the store at `store` the daemon at `socket`
+/// serves, checks it holds the pattern written, and returns the store, mapping it still, and the
+/// page's address.
+fn map_first_page(socket: &Path, store: &Path, extent: ExtentId) -> (RemoteExtentStore, usize) {
+    let ps = page_size() as usize;
+    let store = connect_once_free(socket, store);
     let memory = memory(1);
     // SAFETY: The memory is this function's, and outlives the store.
     unsafe { store.create_dax_window_in_host_memory(memory, ps as u64, None) }.unwrap();
@@ -794,8 +800,9 @@ fn map_first_page(socket: &Path, store: &Path, extent: ExtentId) -> (RemoteExten
 }
 
 /// A VM process, for [`two_processes_map_the_same_pages`] and
-/// [`frozen_vm_processes_hold_nothing_up`]: prints where it maps the extent from; then exits, or,
-/// told to run on, runs on until its input closes.
+/// [`frozen_vm_processes_hold_nothing_up`]: prints where it maps the extent from; then, told to,
+/// closes its connection, leaving its window mapped; then exits, or, told to run on, runs on until
+/// its input closes.
 #[test]
 #[ignore = "run by two_processes_map_the_same_pages"]
 fn child_maps_an_extent() {
@@ -806,9 +813,14 @@ fn child_maps_an_extent() {
     };
     let (branch, sequence) = extent.split_once(':').unwrap();
     let extent = ExtentId { branch: branch.parse().unwrap(), sequence: sequence.parse().unwrap() };
-    let (_store, page) = map_first_page(Path::new(&socket), Path::new(&store), extent);
+    let (store, page) = map_first_page(Path::new(&socket), Path::new(&store), extent);
     let (file, offset) = mapped_from(page);
     println!("MAPPED {file} {offset}");
+    let mut store = Some(store);
+    if std::env::var_os(CHILD_CLOSES).is_some() {
+        store.take();
+        println!("CLOSED");
+    }
     std::io::Write::flush(&mut std::io::stdout()).unwrap();
     if std::env::var_os(CHILD_RUNS_ON).is_some() {
         std::io::copy(&mut std::io::stdin(), &mut std::io::sink()).unwrap();
@@ -1121,6 +1133,12 @@ fn page_is_free(arena: crate::pages::ArenaId, offset: u64) -> bool {
     physmem::is_free(location).unwrap_or_else(|| panic!("no chunk of {arena:?} holds {offset:#x}"))
 }
 
+/// Whether the page of the daemon's physical memory at `offset` in the memory of `arena` is held:
+/// neither free, nor of memory that went back, every page of it free.
+fn page_is_held(arena: crate::pages::ArenaId, offset: u64) -> bool {
+    physmem::is_free(crate::pages::PhysLocation { arena, offset }) == Some(false)
+}
+
 /// TASK-79.9: a VM process that stops answering, frozen as SIGSTOP or a cgroup's freezer freezes
 /// it, holds nothing up: the daemon takes its access to the pages it maps away without waiting for
 /// it, as it evicts them, as the kernel's relief does, while another VM process's requests and
@@ -1142,15 +1160,29 @@ fn frozen_vm_processes_are_killed_without_peer_pidfds() {
     frozen_vm_processes_are_killed();
 }
 
-/// What [`frozen_vm_processes_hold_nothing_up`] shows.
-fn frozen_vm_processes_are_killed() {
+/// A store of a tenant's, whose extent's page a VM process, a child, and this one map, and what
+/// the child printed.
+struct TwoVmProcesses {
+    dir: tempfile::TempDir,
+    tenant: std::sync::Arc<super::server::Tenant>,
+    socket: std::path::PathBuf,
+    extent: ExtentId,
+    ours: RemoteExtentStore,
+    page: usize,
+    theirs: Reaped,
+    stdout: std::io::Lines<std::io::BufReader<std::process::ChildStdout>>,
+    /// Where the page they map is in the memory of the tenant's arena.
+    offset: u64,
+}
+
+/// [`TwoVmProcesses`], of a tenant `name`, its child with `env` set too.
+fn two_vm_processes(name: &str, env: &[&str]) -> TwoVmProcesses {
     use std::io::BufRead as _;
-    use std::os::unix::process::ExitStatusExt as _;
     host();
     let ps = page_size() as usize;
     let dir = tempfile::tempdir().unwrap();
     // A tenant's VM processes, whose pages are of its arena alone.
-    let tenant = super::server::Tenant::new("frozen", dir.path()).unwrap();
+    let tenant = super::server::Tenant::new(name, dir.path()).unwrap();
     let (parent, child) = (dir.path().join("parent"), dir.path().join("child"));
     let extent = {
         let store = ExtentStore::create(&parent, 1 << 24).unwrap();
@@ -1166,22 +1198,33 @@ fn frozen_vm_processes_are_killed() {
     std::thread::spawn(move || super::server::serve_tenant(listener, serving));
     let (ours, page) = map_first_page(&socket, &parent, extent);
 
-    let mut theirs = Reaped(
-        std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "extentd::tests::child_maps_an_extent", "--ignored", "--nocapture"])
-            .env(CHILD_SOCKET, &socket)
-            .env(CHILD_STORE, &child)
-            .env(CHILD_EXTENT, format!("{}:{}", extent.branch, extent.sequence))
-            .env(CHILD_RUNS_ON, "1")
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .spawn()
-            .unwrap(),
-    );
-    let stdout = std::io::BufReader::new(theirs.0.stdout.take().unwrap());
-    let mapped = stdout.lines().map(Result::unwrap).find(|line| line.starts_with("MAPPED "));
+    let mut theirs = std::process::Command::new(std::env::current_exe().unwrap());
+    theirs
+        .args(["--exact", "extentd::tests::child_maps_an_extent", "--ignored", "--nocapture"])
+        .env(CHILD_SOCKET, &socket)
+        .env(CHILD_STORE, &child)
+        .env(CHILD_EXTENT, format!("{}:{}", extent.branch, extent.sequence))
+        .env(CHILD_RUNS_ON, "1")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped());
+    for name in env {
+        theirs.env(name, "1");
+    }
+    let mut theirs = Reaped(theirs.spawn().unwrap());
+    let mut stdout = std::io::BufReader::new(theirs.0.stdout.take().unwrap()).lines();
+    let mapped = stdout.by_ref().map(Result::unwrap).find(|line| line.starts_with("MAPPED "));
     let (file, offset) = mapped_from(page);
     assert_eq!(mapped, Some(format!("MAPPED {file} {offset}")));
+    TwoVmProcesses { dir, tenant, socket, extent, ours, page, theirs, stdout, offset }
+}
+
+/// What [`frozen_vm_processes_hold_nothing_up`] shows.
+fn frozen_vm_processes_are_killed() {
+    use std::os::unix::process::ExitStatusExt as _;
+    let ps = page_size() as usize;
+    let TwoVmProcesses { dir, tenant, socket, extent, ours, page, theirs, stdout, offset } =
+        two_vm_processes("frozen", &[]);
+    drop(stdout);
     freeze(&theirs.0);
 
     // The extent's page evicted: its mappings taken away, ours and the frozen child's.
@@ -1200,14 +1243,121 @@ fn frozen_vm_processes_are_killed() {
     assert_eq!(loaded, Ok(pattern(9, ps)), "our fault waited for the frozen VM process");
 
     // Killed, once it has acknowledged nothing for a while.
-    let killed = within(std::time::Duration::from_secs(30), move || theirs.0.wait().unwrap());
+    let killed = within(std::time::Duration::from_secs(30), move || {
+        let mut theirs = theirs;
+        theirs.0.wait().unwrap()
+    });
     let status = killed.expect("the frozen VM process lives on");
     assert_eq!(status.signal(), Some(libc::SIGKILL), "{status}");
     // Its store goes with it, for another VM process to open once the daemon lets it go, which
     // the opening waits for (`CLOSING_WAIT`); and its page, free by then.
+    let child = dir.path().join("child");
     let reopened = RemoteExtentStore::connect(&socket, &child, 1 << 24).map(|store| store.branch());
     assert_eq!(reopened.map_err(|error| error.errno()), Ok(extent.branch + 1));
-    assert!(page_is_free(arena, offset), "the page the frozen VM process mapped isn't free once it's gone");
+    assert!(
+        page_is_free(arena, offset),
+        "the page the frozen VM process mapped isn't free once it's gone"
+    );
+}
+
+/// TASK-79.100: a VM process that closes its connection and lives on maps what its window mapped
+/// still, as nothing took it away: the page, evicted, is no other's until it is gone, which the
+/// daemon sees to, killing it, and lets its store go once it has exited.
+#[test]
+fn vm_processes_that_close_their_connections_keep_their_pages_until_gone() {
+    use std::os::unix::process::ExitStatusExt as _;
+    let ps = page_size() as usize;
+    let two = two_vm_processes("closing", &[CHILD_CLOSES]);
+    let TwoVmProcesses { dir, tenant, socket, extent, mut theirs, mut stdout, offset, .. } = two;
+    // Open as it runs on, for waiting for it not to close it.
+    let _running = theirs.0.stdin.take();
+    let closed = stdout.next().unwrap().unwrap();
+    assert_eq!(closed, "CLOSED");
+
+    let arena = tenant.arena();
+    let wait = std::time::Duration::from_secs(10);
+    let evicted = within(wait, || crate::cache::evict_least_used(None, |_| false));
+    assert_eq!(evicted, Ok(ps as u64), "the eviction waited for the VM process");
+    // As long as the daemon gives it to exit, the daemon having seen its connection go: well
+    // before that ends.
+    let since = std::time::Instant::now();
+    while since.elapsed() < std::time::Duration::from_secs(1) {
+        assert!(page_is_held(arena, offset), "the page the living VM process maps is free");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
+    let killed = within(std::time::Duration::from_secs(30), move || {
+        let mut theirs = theirs;
+        theirs.0.wait().unwrap()
+    });
+    let status = killed.expect("the VM process lives on");
+    assert_eq!(status.signal(), Some(libc::SIGKILL), "{status}");
+    let reopened = connect_once_free(&socket, &dir.path().join("child"));
+    assert_eq!(reopened.branch(), extent.branch + 1);
+    assert!(!page_is_held(arena, offset), "the page isn't free once the VM process is gone");
+}
+
+/// A VM process, for [`vm_processes_that_leave_their_sockets_to_children_are_gone`]: opens the store
+/// [`CHILD_STORE`] names through the daemon at [`CHILD_SOCKET`], forks a child, which holds the
+/// socket and runs on until killed, says its pid, and exits.
+#[test]
+#[ignore = "run by vm_processes_that_leave_their_sockets_to_children_are_gone"]
+fn child_leaves_its_socket_to_a_child() {
+    let (Ok(socket), Ok(store)) = (std::env::var(CHILD_SOCKET), std::env::var(CHILD_STORE)) else {
+        return;
+    };
+    let _store = RemoteExtentStore::connect(socket, store, 1 << 24).unwrap();
+    // SAFETY: The child calls only what is safe in a child of a process with threads.
+    let child = unsafe { libc::fork() };
+    assert!(child >= 0, "{}", std::io::Error::last_os_error());
+    if child == 0 {
+        loop {
+            // SAFETY: Waits for a signal, as the test kills it.
+            unsafe { libc::pause() };
+        }
+    }
+    println!("CHILD {child}");
+    std::io::Write::flush(&mut std::io::stdout()).unwrap();
+    // SAFETY: As a VMM that dies does: with its store open.
+    unsafe { libc::_exit(0) };
+}
+
+/// A process this test has no child's handle of, killed once dropped.
+struct KilledOnDrop(libc::pid_t);
+
+impl Drop for KilledOnDrop {
+    fn drop(&mut self) {
+        // SAFETY: Signals the process this test's child left.
+        unsafe { libc::kill(self.0, libc::SIGKILL) };
+    }
+}
+
+/// TASK-79.101: a VM process that exits leaving its socket to a child of its own is gone, though
+/// the socket's other end lives on: its store is another's to open.
+#[test]
+fn vm_processes_that_leave_their_sockets_to_children_are_gone() {
+    use std::io::BufRead as _;
+    host();
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("extentd.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || serve(listener));
+    let store = dir.path().join("store");
+    let mut process = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "extentd::tests::child_leaves_its_socket_to_a_child"])
+        .args(["--ignored", "--nocapture"])
+        .env(CHILD_SOCKET, &socket)
+        .env(CHILD_STORE, &store)
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let stdout = std::io::BufReader::new(process.stdout.take().unwrap());
+    let child = stdout.lines().map(Result::unwrap).find_map(|line| {
+        line.strip_prefix("CHILD ").map(|pid| KilledOnDrop(pid.parse().unwrap()))
+    });
+    let _child = child.expect("the VM process left no child");
+    assert!(process.wait().unwrap().success());
+    drop(connect_once_free(&socket, &store));
 }
 
 /// A VM process, for [`vm_processes_the_daemon_may_not_kill_are_refused`]: opens the store

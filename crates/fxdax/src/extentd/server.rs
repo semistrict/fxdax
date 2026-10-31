@@ -325,20 +325,33 @@ async fn run_connection(stream: UnixStream, tenant: Option<Arc<Tenant>>) {
     });
     match AsyncReceiver::new(stream) {
         Ok(receiver) => {
-            let (gone, went) = tokio::sync::oneshot::channel();
+            let (gone, mut went) = tokio::sync::oneshot::channel();
             IO.spawn(receive(connection.clone(), receiver, gone));
+            // fxdax: its process gone, so is it, whoever it left the socket's end to, as a child,
+            // which would hold its store open for good (TASK-79.101).
+            let ended = tokio::select! {
+                ended = &mut went => ended,
+                exited = peer.exited() => {
+                    match exited {
+                        Ok(()) => peer.sender.shutdown(),
+                        Err(err) => log::error!("extentd: waiting for a VM process to exit: {err}"),
+                    }
+                    went.await
+                }
+            };
             // Dropped unsent if receiving failed. fxdax: a VM process past the protocol's
             // bounds the daemon lets go of (TASK-79.16).
-            if went.await == Ok(Ended::Broke) {
+            if ended == Ok(Ended::Broke) {
                 peer.let_go(format_args!("kept more in flight than the protocol allows"));
             }
         }
         Err(err) => log::error!("extentd: receiving from a VM process: {err}"),
     }
     // The VM process is gone, and its mappings of the window with it: nothing waits for it.
-    // fxdax: one the daemon let go, once it has exited (TASK-79.9).
+    // fxdax: one the daemon let go, or that still reaches pages, once it has exited (TASK-79.9,
+    // TASK-79.100).
     connection.closing.store(true, Ordering::Release);
-    peer.gone().await;
+    peer.gone(connection.reaches_pages()).await;
     peer.acks.close();
     // A resize waiting for its guest's answer, which none will give, stops waiting, and holds the
     // connection no more (TASK-79.34).
@@ -437,6 +450,15 @@ fn receive(
 /// window's, a reply to `MAPPINGS` (TASK-79.43), as many mappings as the window may hold, which
 /// [`Peer::room`] leaves room for besides.
 const QUEUED_ROOM: u64 = 16 << 20;
+
+impl Connection {
+    /// fxdax: whether its VM process, should it live on, reaches pages still: those its window has
+    /// mapped, or those of an operation taking access away it left unacknowledged (TASK-79.100).
+    fn reaches_pages(&self) -> bool {
+        let window = self.window.lock().unwrap();
+        self.peer.acks.unacknowledged() || window.as_ref().is_some_and(DaxWindow::maps_pages)
+    }
+}
 
 /// Lets the store of `connection`, whose VM process is gone and whose requests are done, go: once
 /// what it committed is durable.
@@ -1566,6 +1588,12 @@ impl Acks {
         }
     }
 
+    /// fxdax: whether the VM process has left an operation taking access away unacknowledged.
+    fn unacknowledged(&self) -> bool {
+        let state = self.state.lock().unwrap();
+        state.acked < state.last_taking
+    }
+
     /// fxdax: how long, as of `now`, the VM process has left an operation taking access away
     /// unacknowledged, as the watchdog looks every so often (TASK-79.9): since it first found it
     /// so, or none.
@@ -1611,6 +1639,11 @@ impl Acks {
 /// allocation waits for the pages freed meanwhile, which wait for it, before it fails.
 const UNRESPONSIVE: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// fxdax: how long a VM process whose connection went, and that may still reach pages, has to exit,
+/// as one exiting does just after its connection goes, before the daemon lets it go ([`Peer::gone`],
+/// TASK-79.100): long past what the rest of an exit takes.
+const EXITING: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// fxdax: how often the watchdog looks for VM processes that stopped answering ([`watch`]).
 const WATCH_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
 
@@ -1619,7 +1652,8 @@ const WATCH_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
 /// the process itself, which the daemon lets go once it has left one unacknowledged for
 /// [`UNRESPONSIVE`] ([`watch`]): its connection shut down, it is killed as the connection goes,
 /// which waits for it to have exited, its mappings of the window gone, before the pages it may
-/// reach go back ([`Peer::gone`]). One the daemon could not kill it refuses as it connects
+/// reach go back ([`Peer::gone`]). So too one that closes its connection and lives on, reaching
+/// pages still (TASK-79.100). One the daemon could not kill it refuses as it connects
 /// ([`Peer::connected`]): let go, it would map pages the daemon gives others; kept, every page
 /// freed would wait for it.
 struct Peer {
@@ -1705,22 +1739,39 @@ impl Peer {
         self.acks.unanswered(now) >= UNRESPONSIVE
     }
 
-    /// Its connection is gone: if the daemon let it go, kills it and returns once it has exited,
-    /// holding no thread, its memory gone, and its mappings of the window.
-    async fn gone(&self) {
+    /// Returns once its process has exited, holding no thread, its memory gone, and its mappings
+    /// of the window; never, if it is this process.
+    async fn exited(&self) -> std::io::Result<()> {
         use std::os::fd::AsFd;
-        let Some(process) = self.process.as_ref().filter(|_| self.let_go.load(Ordering::Acquire))
-        else {
+        let Some(process) = &self.process else { return std::future::pending().await };
+        // A pidfd is readable once its process has exited.
+        let exited =
+            tokio::io::unix::AsyncFd::with_interest(process.as_fd(), tokio::io::Interest::READABLE);
+        exited?.readable().await.map(drop)
+    }
+
+    /// Its connection is gone, the process perhaps not: `reaching` pages, which go back once it
+    /// is, it has [`EXITING`] to go, as it would were it exiting, and is let go otherwise. If the
+    /// daemon let it go, kills it and returns once it has exited ([`Peer::exited`]).
+    async fn gone(&self, reaching: bool) {
+        let Some(process) = &self.process else { return };
+        if reaching && !self.let_go.load(Ordering::Acquire) {
+            if let Ok(exited) = tokio::time::timeout(EXITING, self.exited()).await {
+                if let Err(err) = exited {
+                    log::error!("extentd: waiting for a VM process to exit: {err}");
+                }
+                return;
+            }
+            self.let_go(format_args!("closed its connection, reaching pages still"));
+        }
+        if !self.let_go.load(Ordering::Acquire) {
             return;
-        };
+        }
         // Which the daemon may, as it checked as the process connected (`Peer::connected`).
         if let Err(err) = signal(process, libc::SIGKILL) {
             log::error!("extentd: killing a VM process: {err}");
         }
-        // A pidfd is readable once its process has exited.
-        let exited =
-            tokio::io::unix::AsyncFd::with_interest(process.as_fd(), tokio::io::Interest::READABLE);
-        if let Err(err) = async { exited?.readable().await.map(drop) }.await {
+        if let Err(err) = self.exited().await {
             log::error!("extentd: waiting for a VM process to exit: {err}");
         }
     }

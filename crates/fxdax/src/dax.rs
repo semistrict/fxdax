@@ -286,6 +286,11 @@ impl DaxWindow {
     pub fn is_mapped(&self, offset: u64) -> bool {
         self.0.is_mapped(offset)
     }
+
+    /// Whether it has pages mapped in its second stage, or in host memory, which reach them.
+    pub fn maps_pages(&self) -> bool {
+        !self.0.state.lock().unwrap().ptes.is_empty()
+    }
 }
 
 impl std::fmt::Debug for DaxWindow {
