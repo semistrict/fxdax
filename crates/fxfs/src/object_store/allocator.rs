@@ -2803,8 +2803,8 @@ mod tests {
         let block = |sequence| ExtentRange::new(extent(sequence), 0..4096);
         let expected: Vec<_> = (0..32) // The initial journal (128k)
             .chain([32, 33]) // The root store's info, and superblock A
-            .chain(34..66) // The journal's next 128k
-            .chain([66]) // Superblock B
+            .chain(34..130) // The journal's next 384k
+            .chain([130]) // Superblock B
             .map(block)
             .collect();
         assert_eq!(device_ranges, expected);
