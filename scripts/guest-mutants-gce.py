@@ -186,8 +186,8 @@ MUTANTS = [
         "evacuees_not_retried",
         "runs memory ran out for wait for a seal of their file, which keeps their regions until one "
         "(TASK-116)",
-        [("if ((sealed || file->evacuees_left) && READ_ONCE(dax->restaging)) {",
-          "if (sealed && READ_ONCE(dax->restaging)) {")],
+        [("if ((sealed || file->evacuees_left) && READ_ONCE(dax->restaging) &&",
+          "if (sealed && READ_ONCE(dax->restaging) &&")],
     ),
     (
         "moved_unmapped_resealed",
