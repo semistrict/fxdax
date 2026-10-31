@@ -4,10 +4,10 @@ title: >-
   Guest DAX: map_to's gate assertion fires outside the gate on the KASAN kernel:
   a write's get_range reaches a writable region through map_chunk without the
   gate
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-29 20:54'
-updated_date: '2026-10-31 02:58'
+updated_date: '2026-10-31 06:53'
 labels:
   - dax
   - bug
@@ -32,7 +32,7 @@ GCE r257 (main 88032eb67, FXDAX_GUEST_KERNEL_BUILD=kasan: KASAN, KFENCE, lockdep
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
+- [x] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
@@ -46,4 +46,12 @@ GCE r255 (debug kernel with lockdep, 7c9948612): fxfs-guest-checks-dax 3 rounds 
 GCE r261, KASAN kernel (KASAN, KFENCE, lockdep) at bc1a436df: fxfs-guest-checks-dax 3 rounds passed, no fxfs_device_assert_in_gate warning, no KASAN or KFENCE report; with r255's debug rounds and r258: no writable MAP is sent outside the gate; r257's was a reader finding a writable region mapped already.
 
 GCE r303 (2026-10-31), the KASAN kernel on the batch at 4fcfe36af: fxfs-guest-follow-dax and fxfs-guest-follow-remount-dax passed; fxfs-guest-checks-dax hit its 180 s timeout, the kernel's slowness as in r258. No assertion, KASAN or KFENCE report in its console.
+
+GCE r304, r305 (2026-10-31), the KASAN kernel at cc4f61cf0: the checks r303's timeout left: unbind_waits_for_unmount on checks-dax and -small and enospc alone passed, no assertion, KASAN, KFENCE or lockdep report. window_filled 'failed' as run alone: it reads counters the checks before it leave, which the filter skipped.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The assertion now fires only where a writable MAP is sent; KASAN rounds (r258, r261, r303-r305) show no writable MAP outside the gate, nor any report.
+<!-- SECTION:FINAL_SUMMARY:END -->

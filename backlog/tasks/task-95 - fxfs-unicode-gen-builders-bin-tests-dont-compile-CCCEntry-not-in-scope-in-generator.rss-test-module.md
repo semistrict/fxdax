@@ -3,9 +3,10 @@ id: TASK-95
 title: >-
   fxfs-unicode-gen-builder's bin tests don't compile: CCCEntry not in scope in
   generator.rs's test module
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-24 12:42'
+updated_date: '2026-10-31 06:53'
 labels:
   - bug
 dependencies: []
@@ -21,12 +22,18 @@ cargo check --workspace --all-targets fails: crates/fxfs-unicode-gen-builder/src
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 cargo check --workspace --all-targets compiles fxfs-unicode-gen-builder's tests
+- [x] #1 cargo check --workspace --all-targets compiles fxfs-unicode-gen-builder's tests
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
+- [x] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+generator.rs's test module imports CCCEntry, with an fxdax comment; cargo check -p fxfs-unicode-gen-builder --all-targets passes on Linux.
+<!-- SECTION:FINAL_SUMMARY:END -->

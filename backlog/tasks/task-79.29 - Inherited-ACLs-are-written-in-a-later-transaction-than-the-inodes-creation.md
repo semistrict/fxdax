@@ -1,11 +1,11 @@
 ---
 id: TASK-79.29
 title: Inherited ACLs are written in a later transaction than the inode's creation
-status: In Progress
+status: Done
 assignee:
   - '@main-session'
 created_date: '2026-10-21 20:58'
-updated_date: '2026-10-24 15:11'
+updated_date: '2026-10-31 06:53'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -29,14 +29,14 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity medium): docs/review
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A test reproduces the failure on the code before the fix
-- [ ] #2 Fixed, and the test passes on macOS and on Linux (GCE)
+- [x] #1 A test reproduces the failure on the code before the fix
+- [x] #2 Fixed, and the test passes on macOS and on Linux (GCE)
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
+- [x] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
@@ -46,4 +46,12 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity medium): docs/review
 Fix: fxfs_create takes the inherited ACLs as extended attributes and adds them inline (<= MAX_INLINE_XATTR_SIZE, as ACLs are) to the creating transaction; larger ones are written back with the inode as before. mknod uses it; tmpfile still writes its ACLs with write_inode (an unnamed file until linked). No deterministic seam: the failure needs a crash between the creation's commit and write_inode's.
 
 Fix landed in 075723b80; no deterministic test (see the notes above). GCE r65, 2026-10-24, batch on main+round 2b: Linux workspace 2620 passed, Firecracker extent tests, and 17 guest cases (checks, crash, fxfs-guest, follow, follow-torture, snapshot with and without DAX; extent-guest, live-fork, daemon-lost, pgbench both) green on vmlinux-b3/b4; macOS scripts/test.sh 2508 passed.
+
+2026-10-31: the failing-first the notes above called impossible: a journal flush for another inode's sake (an fsync of the directory) makes a creation durable without its inode written back, so the crash test (crash(), inherit_acls) now creates a file and a directory under a default ACL that way, and the host reads the ACLs. GCE r307, the hand mutant inherited_acls_written_back: Errno(ENODATA) at the host's getxattr. r306, the fix: fxfs-guest-crash, -crash-dax and -crash-dax-killed 3 rounds of 3.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Fix 075723b80; failing-first by the crash test's inherited ACLs: mutant inherited_acls_written_back fails with ENODATA (r307), the fix passes fxfs-guest-crash, -dax and -killed (r306, r312, the 2026-10-31 soak).
+<!-- SECTION:FINAL_SUMMARY:END -->

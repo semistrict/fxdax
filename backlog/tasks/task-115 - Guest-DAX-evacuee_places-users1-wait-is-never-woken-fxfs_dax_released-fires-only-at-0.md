@@ -3,9 +3,10 @@ id: TASK-115
 title: >-
   Guest DAX: evacuee_place's users==1 wait is never woken (fxfs_dax_released
   fires only at 0)
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-28 12:45'
+updated_date: '2026-10-31 06:53'
 labels:
   - bug
 dependencies: []
@@ -20,12 +21,24 @@ From a review (2026-10-28), matches the downgrade-evacuation deadlock of the nig
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A wait for users dropping to 1 is woken, or the condition is documented as skip-only with an assertion
+- [x] #1 A wait for users dropping to 1 is woken, or the condition is documented as skip-only with an assertion
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
+- [x] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-10-31: skip-only: fxfs_dax_evacuee_placeable's comment says why it must not wait, and it WARNs if the evacuation's own hold is gone.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Skip-only, as the placing does: documented on fxfs_dax_evacuee_placeable, with a WARN if the evacuation's own hold is gone. No wait for one user exists to be woken.
+<!-- SECTION:FINAL_SUMMARY:END -->

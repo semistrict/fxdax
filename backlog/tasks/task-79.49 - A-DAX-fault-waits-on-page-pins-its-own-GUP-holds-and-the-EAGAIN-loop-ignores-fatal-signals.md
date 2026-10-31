@@ -3,11 +3,11 @@ id: TASK-79.49
 title: >-
   A DAX fault waits on page pins its own GUP holds, and the -EAGAIN loop ignores
   fatal signals
-status: In Progress
+status: Done
 assignee:
   - '@main-session'
 created_date: '2026-10-21 20:59'
-updated_date: '2026-10-24 15:11'
+updated_date: '2026-10-31 06:53'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -31,14 +31,14 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity low): docs/reviews/2
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A test reproduces the failure on the code before the fix
-- [ ] #2 Fixed, and the test passes on macOS and on Linux (GCE)
+- [x] #1 A test reproduces the failure on the code before the fix
+- [x] #2 Fixed, and the test passes on macOS and on Linux (GCE)
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
+- [x] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
@@ -48,4 +48,12 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity low): docs/reviews/2
 The fault loop now gives up on a fatal signal (VM_FAULT_SIGBUS), and a fault's slice drop no longer waits for pinned pages (fxfs_dax_drop_pinned with pinned=false returns -EBUSY), so a GUP pinning its own pages fails instead of sleeping. dax_break_layout's wait is interruptible already. No deterministic seam for the self-pin (an O_DIRECT read into a mapping of the file whose slice must drop mid-GUP).
 
 Fix landed in 075723b80; no deterministic test (see the notes above). GCE r65, 2026-10-24, batch on main+round 2b: Linux workspace 2620 passed, Firecracker extent tests, and 17 guest cases (checks, crash, fxfs-guest, follow, follow-torture, snapshot with and without DAX; extent-guest, live-fork, daemon-lost, pgbench both) green on vmlinux-b3/b4; macOS scripts/test.sh 2508 passed.
+
+2026-10-31: 075723b80's fix failed every fault on a slice with a page pinned, so a plain store got SIGBUS for a pin another thread held a moment. Faults from user mode (FAULT_FLAG_USER) hold no pins, and now wait, as a truncate does, a signal sending them back to fault again; faults from the kernel still fail. Tests: slice_held (a vmsplice's page held, MADV_POPULATE_WRITE gets EFAULT, a store waits for the pipe to be read), window_held_killed (a vmsplice holding more of a file than the window has room for dies of SIGKILL). Mutants: fault_ignores_fatal_signals 'process still runs', store_fails_on_pins status 7, SIGBUS (r307). The store waits holding the mapping lock: another thread of its process needing that lock to let the pin go waits too, until a signal. r314 full suites.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Faults from the kernel fail on pins, from user mode wait for them, all killable; tests fail on each mutant (r307), pass on the fix (r314).
+<!-- SECTION:FINAL_SUMMARY:END -->

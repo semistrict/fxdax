@@ -4,6 +4,7 @@ title: Re-enable test_pager_range_bad_expand_panics
 status: To Do
 assignee: []
 created_date: '2026-09-28 02:41'
+updated_date: '2026-10-31 04:45'
 labels: []
 dependencies: []
 priority: low
@@ -28,3 +29,9 @@ The test expects a panic inside a pager packet handler to fail the test. Fuchsia
 - [ ] #2 scripts/kernel-cfg.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-10-31: test_pager_range_bad_expand_panics and scripts/kernel-cfg.py no longer exist in the tree (the test last appears before 7f8d6b69e): nothing is left to re-enable, whatever TASK-96.1 decides of the Zircon port.
+<!-- SECTION:NOTES:END -->

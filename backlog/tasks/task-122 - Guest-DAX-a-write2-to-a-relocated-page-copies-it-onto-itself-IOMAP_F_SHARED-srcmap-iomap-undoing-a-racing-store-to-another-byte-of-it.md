@@ -4,11 +4,11 @@ title: >-
   Guest DAX: a write(2) to a relocated page copies it onto itself
   (IOMAP_F_SHARED, srcmap == iomap), undoing a racing store to another byte of
   it
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-28 19:45'
-updated_date: '2026-10-29 13:07'
+updated_date: '2026-10-31 06:53'
 labels:
   - bug
 dependencies: []
@@ -25,13 +25,13 @@ Documented in fxfs_dax_cow (dax.c): the copy of the page onto itself is not atom
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [ ] #1 A write(2) of part of a relocated page never changes bytes outside its range
-- [ ] #2 seal_race/torture pass with the fix; a mutant restoring the copy fails them
+- [x] #2 seal_race/torture pass with the fix; a mutant restoring the copy fails them
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
+- [x] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
@@ -45,4 +45,12 @@ Fix 2026-10-28 (test/119): guest kernel patch guest/linux/patches/0006-dax-copy-
 GCE r217 (2026-10-29, kernel built): the control, patch 0006 neutralized (saddr == daddr && false), passed seal_race, torture, faults_writes_compaction and faults_unheld under checks-dax-delay 5 rounds of 5: the checks don't kill the mutant. The loss needs a store landing inside dax_iomap_copy_around's memcpy of the page's edges onto themselves, between its read and write of the same bytes: a window of the copy's length, in fs/dax.c, which no fxfs pause point reaches; r206's losses came before TASK-121's and TASK-125's fixes, which made the path rarer. AC2 needs a pause point in the kernel's copy (a test hook in patch 0006's function) to be deterministic.
 
 2026-10-29: AC2's deterministic kill needs the mutant to carry its own window: dax_iomap_copy_around's self-copy is one memcpy, which no pause point splits, so a mutant restoring it would copy the edges through a buffer with a pause between the read and the write back (a pause hook exported from fs/dax.c to fxfs, in patch 0006's copy), and a check storing to the page's other bytes while it is held. guest-mutants-gce.py edits dax.c alone; this mutant edits a patch file, which it would need to learn.
+
+2026-10-31, GCE r315: the hand mutant copy_onto_itself (scripts/guest-mutants-gce.py, which now edits files beside dax.c): patch 0006's self-copy restored, its edges read, held 100 ms, written back, where no pause point reaches: fails seal_race on checks-dax and -delay ('the write(2)s' byte, mapped and read') and torture ('read 0x0, mapped 0x0, the model 0x5f').
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+AC1 by patch 0006; AC2 by the mutant copy_onto_itself, which fails seal_race and torture (r315).
+<!-- SECTION:FINAL_SUMMARY:END -->
