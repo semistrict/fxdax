@@ -5,9 +5,10 @@
 //! Branches' records and leases: creating a branch, forking one, taking one over, deleting one.
 
 use crate::bucket::{self, Bucket, Created, Updated};
-use crate::layout::{self, Lease, Origin, Record};
+use crate::layout::{self, Kind, Lease, Origin, Record};
 use crate::recovery::recover;
 use crate::{Error, rules};
+use std::collections::BTreeMap;
 
 /// Creates `branch`, of no parent.
 pub async fn create(bucket: &impl Bucket, branch: u64) -> Result<(), Error> {
@@ -23,6 +24,21 @@ pub async fn record(bucket: &impl Bucket, branch: u64) -> Result<Option<Record>,
         Some(object) => Ok(Some(layout::decode(&object.bytes)?)),
         None => Ok(None),
     }
+}
+
+/// The branches in `bucket` whose records say they are live, with their records: an operator's
+/// look, to compare with what hosts hold. A fork whose child has no record yet isn't among them.
+pub async fn live(bucket: &impl Bucket) -> Result<BTreeMap<u64, Record>, Error> {
+    let mut live = BTreeMap::new();
+    for meta in bucket::list(bucket, layout::BRANCHES).await {
+        if let Kind::Record { branch } = layout::kind(&meta.key)
+            && let Some(record) = record(bucket, branch).await?
+            && !record.deleted
+        {
+            live.insert(branch, record);
+        }
+    }
+    Ok(live)
 }
 
 /// Gives `child` its record, forked from `origin`, unless it has one. A fork's child gets it once

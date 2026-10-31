@@ -771,6 +771,49 @@ mod tests {
         assert_eq!(kept(&block_on(keys(&*bucket))), [false, true, true]);
     }
 
+    /// TASK-79.85: a fork no host holds any more, as one whose host left neither its handle nor
+    /// its deletion, is a live branch to the collector, which keeps what it inherited for it. An
+    /// operator finds it among the live branches, and deletes it, whatever placement last took
+    /// it: the next pass frees what only it held.
+    #[test]
+    fn branches_no_host_holds_keep_what_they_inherited_until_deleted() {
+        use crate::layout::{Contents, Segment};
+        use crate::writer::Objects;
+        let bucket = store();
+        let (extent, held_in) = block_on(async {
+            branch::create(&*bucket, 1).await.unwrap();
+            let base = Writer::open(bucket.clone(), 1, 10, 0).await.unwrap();
+            let extent = ExtentId::new(1, base.chain().next_sequence());
+            let held_in = base.chain().next_seq();
+            let own = vec![(extent, b"held".to_vec())];
+            commit(&base, Commit { tag: 1, own, ..Commit::default() }).await;
+            let forks = Contents { forks: [2].into_iter().collect(), ..Contents::default() };
+            let footer = base.chain().close(forks);
+            let segment = Segment { data: Vec::new(), footer: footer.clone() }.encode().into();
+            let seq = base.add_segment(Objects { footer, segment, own: Vec::new() }).unwrap();
+            base.upload(seq).await.unwrap();
+            base.acknowledge().await.unwrap();
+            assert_eq!(base.checkpoint().await, Ok(Some(seq)));
+            commit(&base, Commit { tag: 2, frees: vec![extent], ..Commit::default() }).await;
+            base.checkpoint().await.unwrap();
+            // Its host took it, at a placement later than any since, and went.
+            let lease = layout::lease(2);
+            branch::take_lease(&*bucket, &lease, 11, 7).await.unwrap();
+            (extent, held_in)
+        });
+        let kept = || block_on(keys(&*bucket)).contains(&layout::extent(1, held_in, extent));
+        block_on(collect(&*bucket, 1, &KEEP)).unwrap();
+        assert!(kept(), "what the fork inherited went while it is live");
+
+        let live = block_on(branch::live(&*bucket)).unwrap();
+        assert_eq!(live.keys().copied().collect::<Vec<_>>(), [1, 2]);
+        block_on(branch::delete(&*bucket, 2, 12, u64::MAX)).unwrap();
+        block_on(collect(&*bucket, 2, &KEEP)).unwrap();
+        assert!(!kept(), "what the fork inherited stayed once it was deleted");
+        let live = block_on(branch::live(&*bucket)).unwrap();
+        assert_eq!(live.keys().copied().collect::<Vec<_>>(), [1]);
+    }
+
     /// TASK-92.7: a benchmark of a pass over a base of 100,000 extents and 100 forks of it, none
     /// with a checkpoint of its own: how long the pass takes, and the most memory the process
     /// held. `cargo nextest run -p extent_remote --run-ignored only bench_passes_over_many_forks
