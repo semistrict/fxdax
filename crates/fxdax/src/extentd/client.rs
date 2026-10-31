@@ -640,10 +640,20 @@ thread_local! {
     static RECEIVING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// Waits for `future`, a store's request, holding this thread. Not on a thread receiving a
-/// daemon's replies, as a future [`spawn_on_replies`] runs, which would wait for itself.
-fn blocking<T>(future: impl std::future::Future<Output = T>) -> T {
-    assert!(!RECEIVING.get(), "a store's request waited for on a thread receiving replies");
+/// Waits for `future`, a store's request, holding this thread. On a thread receiving a daemon's
+/// replies, as a future [`spawn_on_replies`] runs, it would wait for itself: no such path is left
+/// (the VMM's requests are made with `_async` methods, its callbacks make none), but one that
+/// came to be fails its request rather than the VM process (`EIO`, TASK-56).
+fn blocking<T, E: From<Errno>>(
+    future: impl std::future::Future<Output = std::result::Result<T, E>>,
+) -> std::result::Result<T, E> {
+    if RECEIVING.get() {
+        log::error!(
+            "a store's request waited for on a thread receiving replies: {}",
+            std::backtrace::Backtrace::force_capture()
+        );
+        return Err(Errno::EIO.into());
+    }
     futures::executor::block_on(future)
 }
 

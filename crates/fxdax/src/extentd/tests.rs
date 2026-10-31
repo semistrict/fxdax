@@ -606,9 +606,10 @@ fn futures_go_on_where_their_replies_arrive() {
 }
 
 /// fxdax: a store's blocking call on the thread receiving its replies would wait for itself: it
-/// panics, as from a callback of the store's there.
+/// fails, as from a callback of the store's there, rather than panic the VM process (TASK-56),
+/// and the store goes on.
 #[test]
-fn blocking_calls_where_replies_arrive_panic() {
+fn blocking_calls_where_replies_arrive_fail() {
     host();
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("store");
@@ -617,18 +618,11 @@ fn blocking_calls_where_replies_arrive_panic() {
     let (answer, answered) = std::sync::mpsc::channel();
     let calling = std::sync::Arc::downgrade(&store);
     store.on_capacity(move |_, _| {
-        let calling = calling.upgrade().unwrap();
-        let info = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| calling.info()));
-        let refusal =
-            info.err().and_then(|panic| panic.downcast_ref::<&str>().map(|s| s.to_string()));
-        answer.send(refusal).unwrap();
+        answer.send(calling.upgrade().unwrap().info().map(drop)).unwrap();
     });
     resize(&path, 4 << 20).unwrap();
-    let refusal = answered.recv().unwrap();
-    assert_eq!(
-        refusal.as_deref(),
-        Some("a store's request waited for on a thread receiving replies")
-    );
+    assert_eq!(answered.recv().unwrap(), Err(Errno::EIO));
+    assert_eq!(store.info().map(drop), Ok(()));
     drop(store);
     served.join().unwrap();
 }
