@@ -44,7 +44,7 @@ mod host {
     );
 
     /// Tests that fail for what Fxfs here doesn't do, which any other failure isn't.
-    const KNOWN_FAILURES: [&str; 13] = [
+    const KNOWN_FAILURES: [&str; 14] = [
         // An extent store reserves nothing, so fallocate leaves no unwritten extents, which they
         // look for with FIEMAP (`fxfs_vfs_fallocate`).
         "generic/009",
@@ -53,6 +53,9 @@ mod host {
         "generic/255",
         "generic/796",
         "generic/797",
+        // A heuristic of how few extents a reflinked file's data takes, which the allocator
+        // makes it pass or not (r348, r352); its data is right either way.
+        "generic/302",
         // FIEMAP doesn't say which extents a reflink shares (TASK-143).
         "generic/372",
         "generic/414",

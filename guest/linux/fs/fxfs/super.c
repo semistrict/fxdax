@@ -1098,11 +1098,11 @@ long fxfs_vfs_fallocate(struct file *file, int mode, loff_t offset, loff_t len)
 		return -ENODEV;
 	inode_lock(inode);
 	err = inode_newsize_ok(inode, end);
-	if (!err && (mode & (FALLOC_FL_PUNCH_HOLE | FALLOC_FL_ZERO_RANGE))) {
+	/* fxdax: whatever it changes: setuid goes, as for any write (xfstests generic/683). */
+	if (!err)
 		err = file_modified(file);
-		if (!err)
-			err = fxfs_vfs_punch(inode, offset, min(end, i_size_read(inode)));
-	}
+	if (!err && (mode & (FALLOC_FL_PUNCH_HOLE | FALLOC_FL_ZERO_RANGE)))
+		err = fxfs_vfs_punch(inode, offset, min(end, i_size_read(inode)));
 	/* fxdax: what it can't reserve it can refuse (xfstests generic/213). */
 	if (!err && !(mode & (FALLOC_FL_PUNCH_HOLE | FALLOC_FL_ZERO_RANGE))) {
 		struct fxfs_statfs statfs;
@@ -1111,11 +1111,8 @@ long fxfs_vfs_fallocate(struct file *file, int mode, loff_t offset, loff_t len)
 		if (!err && len > (statfs.free_blocks * statfs.block_size) + inode_get_bytes(inode))
 			err = -ENOSPC;
 	}
-	if (!err && !(mode & FALLOC_FL_KEEP_SIZE) && end > i_size_read(inode)) {
-		err = file_modified(file);
-		if (!err)
-			err = fxfs_vfs_resize(inode, end, NULL, NULL);
-	}
+	if (!err && !(mode & FALLOC_FL_KEEP_SIZE) && end > i_size_read(inode))
+		err = fxfs_vfs_resize(inode, end, NULL, NULL);
 	inode_unlock(inode);
 	return err;
 }
