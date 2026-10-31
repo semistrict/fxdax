@@ -143,6 +143,8 @@ mod ucd_parsers {
     #[cfg(test)]
     mod test {
         use super::*;
+        // fxdax: the file's own import is outside this module (TASK-95).
+        use ::types::CCCEntry;
 
         fn get_icu_dir() -> String {
             let fuchsia_dir = std::env::vars().find(|(k, _)| k == "FUCHSIA_DIR").unwrap().1;
