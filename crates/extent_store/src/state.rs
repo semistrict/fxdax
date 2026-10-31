@@ -176,7 +176,7 @@ impl<F: File> State<F> {
     /// Fails with [`NoSpace`] unless a write may add `grows` bytes, and write over `overwrites`;
     /// fxdax: and add `adds` bytes to what the branch's files take of the host's disk, as
     /// [`Space::check_files`] says (TASK-79.89).
-    pub fn check_room(&self, grows: u64, overwrites: u64, adds: u64) -> Result<(), NoSpace> {
+    pub fn check_room(&self, grows: u64, overwrites: u64, adds: u64) -> anyhow::Result<()> {
         let wasted = self.uncommitted.wasted() + overwrites;
         self.space.check(grows, self.kept.for_views(), wasted)?;
         self.space.check_files(self.file_bytes() + adds, || self.taken_back())
@@ -319,32 +319,37 @@ impl Space {
         self.capacity
     }
 
-    /// Fails with [`NoSpace`] unless a write may add `grows` bytes, views keeping `kept_for_views`
-    /// of the frees, and writes since the last commit, this one's included, wasting `wasted`
-    /// bytes.
-    pub fn check(&self, grows: u64, kept_for_views: u64, wasted: u64) -> Result<(), NoSpace> {
+    /// Fails with [`NoSpace`], saying the numbers (TASK-79.105), unless a write may add `grows`
+    /// bytes, views keeping `kept_for_views` of the frees, and writes since the last commit, this
+    /// one's included, wasting `wasted` bytes.
+    pub fn check(&self, grows: u64, kept_for_views: u64, wasted: u64) -> anyhow::Result<()> {
         let used = self.stored + kept_for_views + self.past_slack(wasted);
         if used + self.reserved + grows > self.capacity {
-            return Err(NoSpace);
+            return Err(anyhow::Error::new(NoSpace).context(format!(
+                "{used} bytes used, {} reserved and {grows} written past the capacity's {}",
+                self.reserved, self.capacity
+            )));
         }
         Ok(())
     }
 
-    /// fxdax: fails with [`NoSpace`] if the branch's files, taking `file_bytes` of the host's disk
-    /// with a write's, less what the next commit takes back of them, `taken_back()`, a capacity's
-    /// worth at most, would take more than [`FILES_PER_CAPACITY`] times the capacity (TASK-79.89).
+    /// fxdax: fails with [`NoSpace`], saying the numbers (TASK-79.105), if the branch's files,
+    /// taking `file_bytes` of the host's disk with a write's, less what the next commit takes back
+    /// of them, `taken_back()`, a capacity's worth at most, would take more than
+    /// [`FILES_PER_CAPACITY`] times the capacity (TASK-79.89).
     /// What it takes back is found only if the files take more without it, as it goes through
     /// cleaning's copies.
     pub fn check_files(
         &self,
         file_bytes: u64,
         taken_back: impl FnOnce() -> u64,
-    ) -> Result<(), NoSpace> {
+    ) -> anyhow::Result<()> {
         let bound = self.capacity.saturating_mul(FILES_PER_CAPACITY);
         if file_bytes <= bound || file_bytes - taken_back().min(self.capacity) <= bound {
             return Ok(());
         }
-        Err(NoSpace)
+        Err(anyhow::Error::new(NoSpace)
+            .context(format!("{file_bytes} bytes of the host's disk past the files' {bound}")))
     }
 
     /// fxdax: of `wasted`, what is past the capacity's worth, which counts as used (TASK-79.2).

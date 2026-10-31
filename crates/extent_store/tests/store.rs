@@ -198,7 +198,14 @@ fn freed_extents_are_written_no_more() {
 fn capacity() {
     let store = create(MemDir::new(), 64 << 10);
     store.write(extent(1), 0, &[1; 48 << 10]).unwrap();
-    error_is(store.write(extent(2), 0, &[2; 32 << 10]), NoSpace);
+    let full = store.write(extent(2), 0, &[2; 32 << 10]);
+    // Which bound refused it, and its numbers (TASK-79.105).
+    assert_eq!(
+        format!("{:#}", full.as_ref().unwrap_err()),
+        "49152 bytes used, 0 reserved and 32768 written past the capacity's 65536: the extent \
+         store is full"
+    );
+    error_is(full, NoSpace);
     assert_eq!(store.info().unwrap().available, 16 << 10);
     store.free(extent(1)).unwrap();
     store.free(extent(1)).expect("freeing a freed extent failed");
