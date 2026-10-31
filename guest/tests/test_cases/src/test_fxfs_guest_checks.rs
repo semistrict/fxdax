@@ -2119,6 +2119,121 @@ mod guest {
         fs::remove_file(&name).unwrap();
     }
 
+    /// fxdax: a mapped file's pages stored to and fsynced, their evacuations leaving them
+    /// relocated, its mapping then gone, and the file written with write(2) and fsynced, as a
+    /// file a tool prepared and a database then opens: no fault clears those pages' relocated
+    /// bits, as a write(2) leaves them for the faults that hold entries of them, but its ranges'
+    /// regions go all the same: TASK-128 keeps only those the bits name, a page's one each
+    /// (TASK-114).
+    fn test_regions_written_once_mapped() {
+        use std::os::unix::fs::FileExt;
+        use std::os::unix::io::AsRawFd;
+        const PAGE: usize = 4096;
+        const PAGES: usize = 16;
+        const ROUNDS: usize = 300;
+        let name = path("regions-written-once-mapped");
+        fs::write(&name, vec![1; PAGES * PAGE]).unwrap();
+        let file = fs::OpenOptions::new().read(true).write(true).open(&name).unwrap();
+        file.sync_all().unwrap();
+        let map = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                PAGES * PAGE,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                file.as_raw_fd(),
+                0,
+            )
+        };
+        assert_ne!(map, libc::MAP_FAILED);
+        let map = map as *mut u8;
+        let mut expected = vec![1; PAGES * PAGE];
+        for page in 0..PAGES {
+            unsafe { std::ptr::write_volatile(map.add(page * PAGE), 2) };
+            expected[page * PAGE] = 2;
+            file.sync_data().unwrap();
+        }
+        assert_eq!(unsafe { libc::munmap(map as *mut libc::c_void, PAGES * PAGE) }, 0);
+        let before = stats();
+        for round in 0..ROUNDS {
+            let at = (round % PAGES) * PAGE;
+            let data = vec![(round % 251) as u8 + 3; PAGE];
+            file.write_all_at(&data, at as u64).unwrap();
+            expected[at..at + PAGE].copy_from_slice(&data);
+            file.sync_data().unwrap();
+        }
+        let after = stats();
+        let regions = after["window_regions"] as i64 - before["window_regions"] as i64;
+        let pruned = after["window_regions_pruned"] - before["window_regions_pruned"];
+        assert!(
+            regions <= 2 * PAGES as i64,
+            "{regions} regions more after {ROUNDS} fsyncs, {pruned} pruned: {after:?}"
+        );
+        assert!(pruned > 0, "no regions pruned: {before:?} then {after:?}");
+        drop(file);
+        assert!(fs::read(&name).unwrap() == expected, "the file differs from what was written");
+        fs::remove_file(&name).unwrap();
+    }
+
+    /// fxdax: a page of each of many files written, which moves it to the staging extent's region,
+    /// then truncated away, and the file fsynced: the truncate cleared what said the page was
+    /// there, so no evacuation came for it to let go of the region, a new one each file, which its
+    /// range kept: for good, as no later write to the range let go of it (TASK-117).
+    fn test_regions_truncated() {
+        use std::os::unix::fs::FileExt;
+        const PAGE: u64 = 4096;
+        const SIZE: u64 = 1 << 20;
+        const FILES: usize = 64;
+        let names: Vec<String> = (0..FILES).map(|n| path(&format!("regions-truncated.{n}"))).collect();
+        let files: Vec<fs::File> = names
+            .iter()
+            .map(|name| {
+                fs::write(name, vec![1; SIZE as usize]).unwrap();
+                let file = fs::OpenOptions::new().read(true).write(true).open(name).unwrap();
+                file.sync_all().unwrap();
+                file
+            })
+            .collect();
+        let before = stats();
+        for (n, file) in files.iter().enumerate() {
+            file.write_all_at(&[(n % 251) as u8 + 2; PAGE as usize], SIZE - PAGE).unwrap();
+            file.set_len(SIZE - 2 * PAGE).unwrap();
+            file.sync_data().unwrap();
+        }
+        let after = stats();
+        let regions = after["window_regions"] as i64 - before["window_regions"] as i64;
+        let pruned = after["window_regions_pruned"] - before["window_regions_pruned"];
+        assert!(
+            regions <= 16,
+            "{regions} regions more after truncating {FILES} files, {pruned} pruned: {after:?}"
+        );
+        drop(files);
+        names.iter().for_each(|name| fs::remove_file(name).unwrap());
+    }
+
+    /// fxdax: a time past what Fxfs holds, 64 bits of nanoseconds, is clamped as it is set, as the
+    /// superblock says: not only once the inode is read in again (TASK-79.55).
+    fn test_timestamps_clamped() {
+        use std::os::unix::ffi::OsStrExt;
+        use std::os::unix::fs::MetadataExt;
+        const SECONDS: i64 = 13_000_000_000;
+        const KEPT: i64 = 9_223_372_035;
+        let name = path("timestamps-clamped");
+        fs::write(&name, b"a time").unwrap();
+        let c_name = std::ffi::CString::new(std::ffi::OsStr::new(&name).as_bytes()).unwrap();
+        for (asked, kept) in [(SECONDS, KEPT), (-SECONDS, -KEPT)] {
+            let time = libc::timespec { tv_sec: asked, tv_nsec: 0 };
+            let set = unsafe {
+                libc::utimensat(libc::AT_FDCWD, c_name.as_ptr(), [time, time].as_ptr(), 0)
+            };
+            assert_eq!(set, 0, "utimensat: {}", std::io::Error::last_os_error());
+            assert_eq!(fs::metadata(&name).unwrap().mtime(), kept, "as it was set");
+            evict(&name);
+            assert_eq!(fs::metadata(&name).unwrap().mtime(), kept, "read in again");
+        }
+        fs::remove_file(&name).unwrap();
+    }
+
     /// fxdax: a mapped file's page stored to, its DAX entry dirty, saying the page is where the
     /// staging extent's region maps it; another file's fsync seals, and the evacuation after it
     /// relocates the page to its range's own space, and lets go of the regions its range no longer
@@ -3989,6 +4104,7 @@ mod guest {
                 ("multigrain_times", &test_multigrain_times),
                 ("cache_shrinks", &test_cache_shrinks),
                 ("direct_io", &test_direct_io),
+                ("timestamps_clamped", &test_timestamps_clamped),
                 ("random_ops", &test_random_ops),
                 ("torture", &test_torture),
             ];
@@ -4007,6 +4123,8 @@ mod guest {
                     tests.push(("evacuation_paused", &test_evacuation_paused));
                     tests.push(("prune_while_paused", &test_prune_while_paused));
                     tests.push(("regions_pruned_mapped", &test_regions_pruned_mapped));
+                    tests.push(("regions_written_once_mapped", &test_regions_written_once_mapped));
+                    tests.push(("regions_truncated", &test_regions_truncated));
                     tests.push(("stale_entry_flushed", &test_stale_entry_flushed));
                 }
                 tests.push(("faults_writes_compaction", &test_faults_writes_compaction));

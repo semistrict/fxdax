@@ -12,6 +12,9 @@
 //! other. Last, the writer mounts its own filesystem read-only (-o ro), which reads, refuses
 //! writes, and commits nothing: the store's latest commit, which the host asks the extent daemon
 //! for, stays as the writer's unmount left it.
+//!
+//! With DAX, one file's inode fails to get its window's file, as without the memory for it, and
+//! stays in the page cache: the follower's batches drop that too (TASK-79.97).
 
 use macros::{guest, host};
 
@@ -193,6 +196,7 @@ mod guest {
     use std::time::{Duration, Instant};
 
     const MNT: &str = "/mnt/fxfs";
+    const FAIL_ATTACH: &str = "/sys/module/fxfs/parameters/dax_fail_attach";
     /// How long a follower takes at most to see its writer's sync.
     const FOLLOWS_WITHIN: Duration = Duration::from_secs(30);
 
@@ -257,6 +261,7 @@ mod guest {
         fs::write(path("dir/two"), TWO).unwrap();
         fs::write(path("big"), big(1)).unwrap();
         fs::write(path("acl"), ONE).unwrap();
+        fs::write(path("fallback"), big(3)).unwrap();
         set_acl(&acl(7));
         sync();
         tell.write_all(b"ready\n").unwrap();
@@ -267,6 +272,9 @@ mod guest {
         fs::remove_file(path("dir/two")).unwrap();
         let mut file = fs::OpenOptions::new().write(true).open(path("big")).unwrap();
         file.write_all(&big(2)[..PAGE]).unwrap();
+        drop(file);
+        let mut file = fs::OpenOptions::new().write(true).open(path("fallback")).unwrap();
+        file.write_all(&big(4)[..PAGE]).unwrap();
         drop(file);
         set_acl(&acl(0));
         sync();
@@ -341,7 +349,7 @@ mod guest {
     }
 
     /// What the follower sees once it followed the writer's changes: none of them, or all.
-    fn followed(mapped: &[u8]) -> bool {
+    fn followed(mapped: &[u8], fallback: &[u8]) -> bool {
         let gone = |name| read(name).is_err_and(|error| error.kind() == ErrorKind::NotFound);
         read("three").is_ok_and(|three| three == THREE)
             && gone("one")
@@ -349,10 +357,50 @@ mod guest {
             && gone("dir/two")
             && read("big").is_ok_and(|data| data[..PAGE] == big(2)[..PAGE])
             && mapped[..PAGE] == big(2)[..PAGE]
+            && read("fallback").is_ok_and(|data| data[..PAGE] == big(4)[..PAGE])
+            && fallback[..PAGE] == big(4)[..PAGE]
             && get_acl() == acl(0)
     }
 
-    fn follower() {
+    /// A shared read-only mapping of the `BIG` bytes of `file`, which the test reads alone.
+    fn map(file: &fs::File) -> &'static [u8] {
+        // SAFETY: Of the open file; it stays mapped until the test unmaps it.
+        unsafe {
+            let addr = libc::mmap(
+                std::ptr::null_mut(),
+                BIG,
+                libc::PROT_READ,
+                libc::MAP_SHARED,
+                file.as_raw_fd(),
+                0,
+            );
+            assert_ne!(addr, libc::MAP_FAILED, "mmap: {}", std::io::Error::last_os_error());
+            std::slice::from_raw_parts(addr as *const u8, BIG)
+        }
+    }
+
+    /// Whether `file` is mapped from the window (statx's STATX_ATTR_DAX).
+    fn is_dax(file: &fs::File) -> bool {
+        const STATX_ATTR_DAX: u64 = 0x200000;
+        // struct statx: stx_attributes at byte 8. As a system call: musl's libc has no statx.
+        let mut stat = [0u64; 32];
+        let empty = CString::new("").unwrap();
+        // SAFETY: Of the open file, into `stat`, as long as a statx.
+        let ret = unsafe {
+            libc::syscall(
+                libc::SYS_statx,
+                file.as_raw_fd(),
+                empty.as_ptr(),
+                libc::AT_EMPTY_PATH,
+                0x7ff, // STATX_BASIC_STATS
+                stat.as_mut_ptr(),
+            )
+        };
+        assert_eq!(ret, 0, "statx: {}", std::io::Error::last_os_error());
+        stat[1] & STATX_ATTR_DAX != 0
+    }
+
+    fn follower(dax: bool) {
         let (mut host, mut tell) = connect();
         assert_eq!(read("one").unwrap(), ONE);
         assert_eq!(read("dir/two").unwrap(), TWO);
@@ -363,25 +411,26 @@ mod guest {
         assert_eq!(refused.raw_os_error(), Some(libc::EROFS), "{refused}");
         let mut held = fs::File::open(path("dir/two")).unwrap();
         let big_file = fs::File::open(path("big")).unwrap();
-        // SAFETY: A shared read-only mapping of the file, which the test reads alone.
-        let mapped = unsafe {
-            let addr = libc::mmap(
-                std::ptr::null_mut(),
-                BIG,
-                libc::PROT_READ,
-                libc::MAP_SHARED,
-                big_file.as_raw_fd(),
-                0,
-            );
-            assert_ne!(addr, libc::MAP_FAILED, "mmap: {}", std::io::Error::last_os_error());
-            std::slice::from_raw_parts(addr as *const u8, BIG)
-        };
+        assert_eq!(is_dax(&big_file), dax);
+        let mapped = map(&big_file);
         assert!(mapped[..PAGE] == big(1)[..PAGE], "the mapping maps other data");
+        // With DAX, an inode left in the page cache: cached, and mapped, as of now.
+        if dax {
+            fs::write(FAIL_ATTACH, "1").unwrap();
+        }
+        let fallback_file = fs::File::open(path("fallback")).unwrap();
+        if dax {
+            fs::write(FAIL_ATTACH, "0").unwrap();
+        }
+        assert!(!is_dax(&fallback_file), "the file got its window's file");
+        assert_eq!(read("fallback").unwrap(), big(3));
+        let fallback = map(&fallback_file);
+        assert!(fallback[..PAGE] == big(3)[..PAGE], "the mapping maps other data");
         tell.write_all(b"following\n").unwrap();
 
         expect(&mut host, "check");
         let deadline = Instant::now() + FOLLOWS_WITHIN;
-        while !followed(mapped) {
+        while !followed(mapped, fallback) {
             assert!(Instant::now() < deadline, "the follower didn't see its writer's changes");
             std::thread::sleep(Duration::from_millis(20));
         }
@@ -393,8 +442,11 @@ mod guest {
         tell.write_all(b"seen\n").unwrap();
 
         // SAFETY: The mapping made above, which nothing uses any more.
-        unsafe { libc::munmap(mapped.as_ptr() as *mut _, BIG) };
-        drop((held, big_file));
+        unsafe {
+            libc::munmap(mapped.as_ptr() as *mut _, BIG);
+            libc::munmap(fallback.as_ptr() as *mut _, BIG);
+        }
+        drop((held, big_file, fallback_file));
         unmount();
         println!("OK follower");
     }
@@ -405,7 +457,7 @@ mod guest {
             mount();
             match std::env::var("FXDAX_FOLLOW").unwrap().as_str() {
                 "writer" => writer(),
-                "follower" => follower(),
+                "follower" => follower(self.dax),
                 role => panic!("no role {role}"),
             }
         }

@@ -2737,7 +2737,8 @@ static void fxfs_vfs_drop_data(struct super_block *sb, struct inode *inode, u64 
 		return;
 	if (inode)
 		lockdep_assert_held_write(&inode->i_mapping->invalidate_lock);
-	if (dax) {
+	/* fxdax: as the inode has its data: one that got no file stays in the page cache (TASK-79.97). */
+	if (dax && (!inode || IS_DAX(inode))) {
 		err = fxfs_dax_changed(dax, inode, ino, first, last);
 		if (err)
 			pr_warn("fxfs: dropping inode %llu's window mappings: %d\n", ino, err);
@@ -2958,6 +2959,12 @@ static int fxfs_vfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	sb->s_blocksize_bits = PAGE_SHIFT;
 	sb->s_maxbytes = MAX_LFS_FILESIZE;
 	sb->s_time_gran = 1;
+	/*
+	 * fxdax: 64 bits of nanoseconds, signed: the VFS clamps a time to these as it sets it, or the
+	 * inode would keep one its next read in finds clamped (timespec64_to_ns, TASK-79.55).
+	 */
+	sb->s_time_min = KTIME_SEC_MIN + 1;
+	sb->s_time_max = KTIME_SEC_MAX - 1;
 	/*
 	 * A write looks at an inode's security attributes once, not each time, until they change,
 	 * as block devices' filesystems get from get_tree_bdev(): each look is a lookup in Fxfs.

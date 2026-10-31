@@ -145,6 +145,10 @@ static bool fxfs_dax_seal_moved(void)
  * piece, the range maps the first piece alone, then fails as if the device's MAP of the next had,
  * the others mapping the blocks where they were, which Fxfs freed (TASK-79.106).
  */
+static bool fxfs_dax_fail_attach;
+module_param_named(dax_fail_attach, fxfs_dax_fail_attach, bool, 0644);
+MODULE_PARM_DESC(dax_fail_attach, "Fail inodes' attaching to their files, which leaves them in the page cache (fault injection)");
+
 static unsigned int fxfs_dax_fail_maps;
 module_param_named(dax_fail_maps, fxfs_dax_fail_maps, uint, 0644);
 MODULE_PARM_DESC(dax_fail_maps, "Fail the MAP of the second piece of the next this many writes whose blocks moved (fault injection)");
@@ -4508,8 +4512,10 @@ out:
 
 void fxfs_dax_set_inode(struct inode *inode)
 {
-	struct fxfs_dax_file *file = fxfs_dax_attach(fxfs_dax_of(inode), inode);
+	struct fxfs_dax_file *file = NULL;
 
+	if (!READ_ONCE(fxfs_dax_fail_attach))
+		file = fxfs_dax_attach(fxfs_dax_of(inode), inode);
 	/* Without its file, it stays in the page cache. */
 	if (!file)
 		return;
@@ -4813,6 +4819,13 @@ void fxfs_dax_resize_end(struct inode *inode, loff_t size)
 		if (range->moved) {
 			for (unsigned long i = page; i < range->pages; i++)
 				fxfs_dax_set_moved(range, i, 0);
+			/*
+			 * fxdax: the regions they were in, which no evacuation lets go of: it finds
+			 * no run of them (TASK-117).
+			 */
+			atomic_inc(&range->users);
+			fxfs_dax_prune(dax, range);
+			fxfs_dax_put_range(dax, range);
 		}
 	}
 	up_write(&file->sem);
