@@ -3,10 +3,10 @@ id: TASK-133
 title: >-
   Guest DAX: fxfs-guest-checks-dax torture read zeros where its model had 0xcb
   (r255, release kernel)
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-30 01:36'
-updated_date: '2026-10-31 09:15'
+updated_date: '2026-10-31 16:32'
 labels:
   - dax
   - bug
@@ -23,14 +23,14 @@ GCE r255 (n2 nested, release guest kernel), fxfs-guest-checks-dax round 1 at fae
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The cause is found, or the failure shown independent of the deferred pre-fault by rounds with and without it
-- [ ] #2 FXDAX_SEED=1794450854429239374 FXDAX_CHECKS=torture and the full suite pass 20 rounds on the fix
+- [x] #1 The cause is found, or the failure shown independent of the deferred pre-fault by rounds with and without it
+- [x] #2 FXDAX_SEED=1794450854429239374 FXDAX_CHECKS=torture and the full suite pass 20 rounds on the fix
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
+- [x] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
@@ -64,4 +64,12 @@ Proved: append_reserved_tail, strict fsck, fails with ExtentExceedsLength(9, 4, 
 2026-10-31, the soak (scripts/soak-workloads-gce.sh checks, debug kernel, tree 674bce07a, Firecracker 412e0b8d4, which has no late pre-fault): fxfs-guest-checks-dax round 2 of 10: seed 1793234165365156062, phase 12, after the threads: /mnt/fxdax/torture-2 at 0x1403e (thread 2's) reads 0x0, its model 0xee. So it is not the late pre-fault's: this is the first sighting without it, and the first on the debug kernel: 'the change is implicated' above no longer holds. r319 repeats the full suite on the debug kernel with fxfs.dax_trace=1, whose dump the check takes before it fails. Logs: /tmp/fxdax-soak-results/checks/e2e/fxfs-guest-checks-dax/round-2.
 
 2026-10-31: what the page lost. Its store, read back (crates/fxdax/examples/store-read.rs), and every thread's and the coordinator's operations replayed from the seed (their Rngs depend on no timing): torture-2 differs from its model on page 20 alone, 421 bytes of 431; the page holds 10 bytes, thread 1's last two operations on it in phase 12, op 194 (a store of 3 at 0x23a) and op 295 (a store of 7 at 0xb05). Lost: the page as phase 11's check found it, thread 1's op 0 (a write of 30 at 0x8dd) and op 33, thread 0's op 61, thread 2's op 131: phase 12's. No write(2) to the page came after those, and the coordinator did nothing to the file. So the page became a zero page mid-phase, between thread 1's ops 33 and 194, and what came after landed on it: a store's fault moving the page, its copy held of the window's page read as zeros, is the likeliest; TASK-121's family, by a path its fix doesn't cover. r320, 12 rounds with fxfs.dax_trace=1, didn't recur: it is rare, not hidden by tracing (about 1 round in 19 on the debug kernel so far). r322 and r323 add fxfs.dax_check_moves.
+
+2026-10-31: the cause. A fault moves its page's block (fxfs_dax_map_write), finds a seal ended since (gate open, seals changed), and takes the write's way round the loop, to move it again; at the top, the next seal has shut the gate: -EBUSY, straight out, the range mapping the block where it was, which Fxfs freed. The next commit frees that extent, the device puts zeros there, and the fault's retry, or the next, copies them as the page's contents: a zero page, on which later stores land. Seen in the trace of ino 2168 page 53 (r331): E430 mapped, Fxfs having it in E432, then 'held differs from the window's before the move'. TASK-121's fix covered the gate shut right after the move only. Fix: fxfs_dax_iomap_write's every way out maps what moved and isn't mapped yet (moved, at out:), so that a move can't outlive its map. A first fix, giving the page up at once, doubled torture's time (55 to 120 s, debug kernel): dropped. test moved_across_two_seals plays it out with pause points (RESEALED) on a page in an extent of its own, which goes: mutant moved_unmapped_resealed fails it, 'the page as mapped differs from what was stored' (r340), every round. r339: checks-dax, -delay, -small, crash-dax 6 of 6 each. r338: debug kernel, move checks on: 15 of 15 through torture, the signature 0 times; it came in nearly every round before. store-read and the replay of a seed's operations named the page.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A fault leaving with blocks moved and unmapped left its range on an extent Fxfs freed; the device's zeros became the page. Every way out now maps them. Deterministic test, killed mutant, r338, r339.
+<!-- SECTION:FINAL_SUMMARY:END -->

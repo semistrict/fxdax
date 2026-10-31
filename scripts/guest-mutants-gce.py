@@ -106,8 +106,7 @@ MUTANTS = [
         "moved_unmapped",
         "a write whose blocks moved before a seal shut the gate leaves its range mapping them where "
         "they were, whose extent Fxfs frees (TASK-121)",
-        [("\t\terr = fxfs_dax_map_moved(dax, range, extents, count);\n",
-          "\t\terr = 0;\n\t\t(void)fxfs_dax_map_moved;\n")],
+        [("\tif (moved) {\n\t\tint mapped", "\tif (false) {\n\t\tint mapped")],
     ),
     (
         "prune_waits_unrelocated",
@@ -189,6 +188,13 @@ MUTANTS = [
         "(TASK-116)",
         [("if ((sealed || file->evacuees_left) && READ_ONCE(dax->restaging)) {",
           "if (sealed && READ_ONCE(dax->restaging)) {")],
+    ),
+    (
+        "moved_unmapped_resealed",
+        "a fault whose blocks moved, finding a seal ended since, tries again, and leaves its range "
+        "mapping them where they were if the next seal shuts the gate (TASK-133)",
+        [("\t\t\t\tfxfs_dax_pause(FXFS_DAX_STEP_RESEALED);\n\t\t\tcontinue;\n",
+          "\t\t\t\tfxfs_dax_pause(FXFS_DAX_STEP_RESEALED);\n\t\t\tmoved = 0;\n\t\t\tcontinue;\n")],
     ),
     (
         "moved_write_not_retried",

@@ -43,22 +43,26 @@ pub struct TestFxfsGuest {
     /// fxdax: whether a crash test's VM process is killed (SIGKILL), rather than its guest reset
     /// (TASK-119.6).
     killed: bool,
+    /// fxdax: whether the extent daemon is killed in the VM process's place, which what it holds
+    /// goes with, of the commits it has yet to make durable (doc-10, TASK-67).
+    #[cfg_attr(feature = "guest", allow(dead_code))]
+    daemon_killed: bool,
 }
 
 impl TestFxfsGuest {
     /// fxfs-guest.
     pub fn host_formats() -> Self {
-        Self { mode: Mode::HostFormats, dax: false, crash_step: None, killed: false }
+        Self { mode: Mode::HostFormats, dax: false, crash_step: None, killed: false, daemon_killed: false }
     }
 
     /// fxfs-guest-format.
     pub fn guest_formats() -> Self {
-        Self { mode: Mode::GuestFormats, dax: false, crash_step: None, killed: false }
+        Self { mode: Mode::GuestFormats, dax: false, crash_step: None, killed: false, daemon_killed: false }
     }
 
     /// fxfs-guest-crash.
     pub fn crash() -> Self {
-        Self { mode: Mode::Crash, dax: false, crash_step: None, killed: false }
+        Self { mode: Mode::Crash, dax: false, crash_step: None, killed: false, daemon_killed: false }
     }
 
     /// fxfs-guest-crash-dax-STEP: the crash test with DAX, its VM stopped with an evacuation of a
@@ -76,13 +80,19 @@ impl TestFxfsGuest {
         Self { killed: true, ..Self::crash().with_dax() }
     }
 
+    /// fxdax: fxfs-guest-crash-dax-daemon-killed: the crash test with DAX, on a daemon of its own,
+    /// killed where its guest would reset its VM: of what fsyncs were told, a prefix stays.
+    pub fn crash_daemon_killed() -> Self {
+        Self { daemon_killed: true, ..Self::crash_killed() }
+    }
+
     /// fxdax: fxfs-guest-faults-dax: two writers create, write and fsync files, as the crash
     /// test's do, while the guest's kernel fails their allocations at random, slabs' and pages'
     /// (failslab, fail_page_alloc, its debug build's: FXDAX_GUEST_KERNEL_BUILD=debug), their
     /// calls failing as they may; the filesystem complains of nothing, and the store holds every
     /// file whose fsync returned (TASK-44.10).
     pub fn faults() -> Self {
-        Self { mode: Mode::Faults, dax: true, crash_step: None, killed: false }
+        Self { mode: Mode::Faults, dax: true, crash_step: None, killed: false, daemon_killed: false }
     }
 
     /// The same test with a DAX window.
@@ -219,7 +229,7 @@ fn written() -> Vec<u8> {
 mod host {
     use super::*;
 
-    use crate::common::{fxdax_guest_should_run, setup_rootfs};
+    use crate::common::{fxdax_guest_should_run, setup_rootfs, spawn_daemon};
     use crate::vm::Vm;
     use crate::{ShouldRun, Test, TestOutcome, TestSetup};
     use futures::executor::block_on;
@@ -238,6 +248,35 @@ mod host {
                 Some((writer.parse().ok()?, index.parse().ok()?))
             })
             .collect()
+    }
+
+    /// fxdax: of the files each writer's fsync returned for, in its order, those that stayed, with
+    /// what was written, followed by those lost: a commit stays only with those before it (doc-10:
+    /// up to 50 ms of them go with a daemon). Returns how many went.
+    fn assert_kept_prefix(fs: &Filesystem, synced: &[(u8, usize)]) -> usize {
+        let mut lost = 0;
+        for &(writer, index) in synced {
+            let earlier_lost = (synced.iter())
+                .any(|&(other, before)| other == writer && before < index && !kept(fs, other, before));
+            if kept(fs, writer, index) {
+                assert!(!earlier_lost, "writer {writer}'s file {index} stayed, an earlier one lost");
+            } else {
+                lost += 1;
+            }
+        }
+        lost
+    }
+
+    fn kept(fs: &Filesystem, writer: u8, index: usize) -> bool {
+        let name = format!("synced-{writer}-{index}");
+        let Ok((file, attr)) = block_on(fs.root().lookup(name.as_bytes())) else {
+            return false;
+        };
+        let mut contents = vec![0; attr.size as usize];
+        let read = block_on(file.read(0, &mut contents)).unwrap();
+        contents.truncate(read);
+        assert!(contents == durable(writer, index), "{name} holds other data");
+        true
     }
 
     /// A line the VM stopped in the middle of, or the kernel's restart message after the last,
@@ -301,7 +340,17 @@ mod host {
                 (true, None) => WINDOW,
                 (true, Some(_)) => 1 << 29,
             };
-            vm.extent_store("extents", &path, CAPACITY, window)?;
+            // fxdax: on a daemon of its own, which goes on running till its test's end otherwise.
+            let daemon = if self.daemon_killed {
+                let socket = std::env::temp_dir()
+                    .join(format!("fxdax-crash-{}.sock", std::process::id()));
+                let daemon = spawn_daemon(&test_setup, &socket, "extentd", &[], None)?;
+                vm.extent_store_served("extents", &path, CAPACITY, window, &socket);
+                Some(daemon)
+            } else {
+                vm.extent_store("extents", &path, CAPACITY, window)?;
+                None
+            };
             if self.mode == Mode::Crash {
                 // fxdax: when the VM stops, from when its writers begin: FXDAX_CRASH_MS, to replay
                 // a run, or else a time of the run's own, before the writers fill the store, and
@@ -315,8 +364,10 @@ mod host {
                 });
                 eprintln!("{}: crash at {crash_ms} ms (FXDAX_CRASH_MS)", test_setup.test_case);
                 vm.env(&std::ffi::CString::new(format!("FXDAX_CRASH_MS={crash_ms}"))?);
-                if self.killed {
-                    vm.kill_on(KILL_ME);
+                match &daemon {
+                    Some(daemon) => vm.kill_daemon_on(KILL_ME, daemon.id()),
+                    None if self.killed => vm.kill_on(KILL_ME),
+                    None => {}
                 }
             }
             vm.enter(&setup_rootfs(&test_setup)?, &test_setup.test_case)
@@ -366,6 +417,13 @@ mod host {
                     .unwrap();
                 let storage = block_on(Storage::open(&path).unwrap().check()).unwrap();
                 let fs = block_on(Filesystem::mount(storage)).unwrap();
+                // fxdax: the rest of the test's checks count on what was told of being there.
+                if self.daemon_killed {
+                    let lost = assert_kept_prefix(&fs, &synced);
+                    eprintln!("{lost} of {} files told of went with the daemon", synced.len());
+                    block_on(fs.close()).unwrap();
+                    return TestOutcome::Pass;
+                }
                 assert_synced(&fs, &synced);
                 // fxdax: what the directory's default ACL handed down came with the creations a
                 // journal flush made durable, their inodes never written back (TASK-79.29).

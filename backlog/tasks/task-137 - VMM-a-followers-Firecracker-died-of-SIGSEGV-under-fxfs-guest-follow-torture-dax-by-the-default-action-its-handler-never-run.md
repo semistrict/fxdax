@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-31 07:09'
-updated_date: '2026-10-31 08:53'
+updated_date: '2026-10-31 12:46'
 labels:
   - bug
   - followers
@@ -23,7 +23,7 @@ Soak 2026-10-31 (scripts/soak-workloads-gce.sh replicas, FXDAX_FOLLOW_SECONDS=60
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The crash's stacks are in hand, or 20 rounds at 10 minutes pass without it on the code it failed on
+- [x] #1 The crash's stacks are in hand, or 20 rounds at 10 minutes pass without it on the code it failed on
 - [ ] #2 Its cause is fixed, with a test that fails before the fix
 <!-- AC:END -->
 
@@ -38,4 +38,8 @@ Soak 2026-10-31 (scripts/soak-workloads-gce.sh replicas, FXDAX_FOLLOW_SECONDS=60
 
 <!-- SECTION:NOTES:BEGIN -->
 2026-10-31, r317 (11e5c7878): 8 of 8 rounds at 10 minutes, no crash; with the soak's 4 before it, 12 clean in 13.
+
+2026-10-31, r321 (c44da93d0): 9 of 9, no crash: 17 clean since, 21 of 22 in all, r317 and r321 keeping any crash's stacks. Not cleared: at 1 in 22, 17 clean rounds come about half the time.
+
+2026-10-31, r329: 9 of 9, no crash: 26 clean rounds at 10 minutes since the crash, 30 of 31 in all, Firecracker 412e0b8d4 throughout. Unexplained: nothing changed for it, and at this rate it could come back: results/cores keeps its stacks if it does. Left open for that.
 <!-- SECTION:NOTES:END -->

@@ -2889,6 +2889,75 @@ mod tests {
         assert_eq!(in_one_run, vec![true; parts as usize], "runs mapped: {runs:?}");
     }
 
+    /// TASK-77: what a guest asks of its store is untrusted: any sequence of its requests, at
+    /// offsets past the window's end and the extents' or at the ends of a u64, fails or doesn't,
+    /// and panics nothing, and an extent it can't name reads as it was written. Seeded by
+    /// proptest, which says the sequence if one fails.
+    #[test]
+    fn serves_whatever_a_guest_asks() {
+        use proptest::prelude::*;
+        use proptest::test_runner::{Config, TestRunner};
+
+        const WINDOW: u64 = 1 << 20;
+        /// The first sequence no request names.
+        const KEPT: u64 = 1 << 20;
+        #[derive(Debug, Clone)]
+        enum Request {
+            Write(u64, u64, usize),
+            Read(u64, u64, usize),
+            Map(u64, u64, u64, u64, bool),
+            Unmap(u64, u64),
+            Commit,
+            Free(u64),
+        }
+        let at = || {
+            prop_oneof![
+                (0u64..64).prop_map(|page| page * BLOCK as u64),
+                0u64..WINDOW,
+                (0u64..4096).prop_map(|back| u64::MAX - back),
+                any::<u64>(),
+            ]
+        };
+        let sequence = || 0u64..16;
+        let bytes = || 0usize..4 * BLOCK;
+        let request = prop_oneof![
+            (sequence(), at(), bytes()).prop_map(|(e, at, len)| Request::Write(e, at, len)),
+            (sequence(), at(), bytes()).prop_map(|(e, at, len)| Request::Read(e, at, len)),
+            (sequence(), at(), at(), at(), any::<bool>())
+                .prop_map(|(e, at, len, to, w)| Request::Map(e, at, len, to, w)),
+            (at(), at()).prop_map(|(to, len)| Request::Unmap(to, len)),
+            Just(Request::Commit),
+            sequence().prop_map(Request::Free),
+        ];
+        let config = Config { cases: 200, failure_persistence: None, ..Config::default() };
+        TestRunner::new(config)
+            .run(&proptest::collection::vec(request, 1..64), |requests| {
+                let (store, _dir) = store(1 << 22);
+                let stage = Arc::new(RunRecordingSecondStage::default());
+                let _window = store.create_dax_window(WINDOW, Some(stage)).unwrap();
+                let kept = id(&store, KEPT);
+                write(&store, kept, 0, &pattern(9, BLOCK)).unwrap();
+                store.commit(None).unwrap();
+                for request in requests {
+                    let extent = |sequence| id(&store, sequence);
+                    // Failing or not as it may: what it may not do is panic.
+                    let _ = match request {
+                        Request::Write(e, at, len) => write(&store, extent(e), at, &vec![1; len]),
+                        Request::Read(e, at, len) => read(&store, extent(e), at, len).map(drop),
+                        Request::Map(e, at, len, to, writable) => {
+                            store.map(extent(e), at, len, to, writable)
+                        }
+                        Request::Unmap(to, len) => store.unmap(to, len),
+                        Request::Commit => store.commit(None),
+                        Request::Free(e) => store.free(extent(e)),
+                    };
+                }
+                prop_assert_eq!(read(&store, kept, 0, BLOCK), Ok(pattern(9, BLOCK)));
+                Ok(())
+            })
+            .unwrap();
+    }
+
     /// A second stage recording the runs it maps: their offsets and lengths.
     #[derive(Default)]
     struct RunRecordingSecondStage(std::sync::Mutex<Vec<(u64, u64)>>);

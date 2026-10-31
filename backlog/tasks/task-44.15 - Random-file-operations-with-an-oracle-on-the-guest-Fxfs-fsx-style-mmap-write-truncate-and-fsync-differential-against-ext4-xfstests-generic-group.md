@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-24 21:31'
-updated_date: '2026-10-25 00:00'
+updated_date: '2026-10-31 16:32'
 labels: []
 dependencies: []
 parent_task_id: TASK-44
@@ -38,4 +38,6 @@ The guest checks are each a scenario someone thought of. fsx's random mixes of m
 
 <!-- SECTION:NOTES:BEGIN -->
 random_ops (guest checks, DAX and not): 3000 seeded operations against an in-memory model of the file, verified each read and every 256th op whole; passes on GCE r82 (kernel b8). The model is the oracle in place of ext4 (the checks VM mounts Fxfs alone); xfstests' generic group and runs under injection left.
+
+2026-10-31: xfstests-fxfs-guest(-dax): generic/quick on Fxfs, as virtiofs's tags (test_xfstests.rs). First run, r342: non-DAX stopped by a panic at generic/161 (60 passed, 51 not run), DAX by a soft lockup at generic/111 (37, 40). Many mismatches are the guest's, as it has no /dev/fd.
 <!-- SECTION:NOTES:END -->

@@ -63,7 +63,8 @@ mod host {
             let window = if self.dax { WINDOW } else { 0 };
             vm.extent_store("extents", &test_setup.tmp_dir.join("extents"), SIZE, window)?;
             vm.extent_store("scratch", &test_setup.tmp_dir.join("scratch"), SIZE, window)?;
-            let tests = std::env::var("FXDAX_XFSTESTS").unwrap_or("-g generic/quick".to_owned());
+            // Check's arguments, separated by commas: a kernel's command line carries them.
+            let tests = std::env::var("FXDAX_XFSTESTS").unwrap_or("-g,generic/quick".to_owned());
             vm.env(&CString::new(format!("XFSTESTS={tests}"))?);
             vm.enter(&setup_rootfs(&test_setup)?, &test_setup.test_case)
         }
@@ -92,7 +93,7 @@ mod guest {
             }
             let tests = std::env::var("XFSTESTS").unwrap();
             let status = Command::new("./check")
-                .args(tests.split_whitespace())
+                .args(tests.split(','))
                 .current_dir("/xfstests")
                 .envs([
                     ("FSTYP", "fxfs"),

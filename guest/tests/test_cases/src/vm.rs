@@ -41,6 +41,8 @@ pub struct Vm {
     fxfs_root: Option<String>,
     /// fxdax: a line of the guest agent's output at which the VM process is killed ([`Vm::kill_on`]).
     kill_on: Option<String>,
+    /// fxdax: a process killed at that line in place of the VM process.
+    kill_instead: Option<u32>,
 }
 
 /// The guest kernel's command line, before the guest's environment and the test's name: the
@@ -86,6 +88,7 @@ impl Vm {
             cpus: Vec::new(),
             fxfs_root: None,
             kill_on: None,
+            kill_instead: None,
         })
     }
 
@@ -227,6 +230,13 @@ impl Vm {
         self.kill_on = Some(line.to_owned());
     }
 
+    /// fxdax: kills the process `daemon`, the VM's extent daemon, at `line`, rather than the VM
+    /// process, which exits as it finds its daemon gone: status 158, or [`Vm::enter`] fails.
+    pub fn kill_daemon_on(&mut self, line: &str, daemon: u32) {
+        self.kill_on = Some(line.to_owned());
+        self.kill_instead = Some(daemon);
+    }
+
     /// Sets `var`, `NAME=value`, in the guest agent's environment.
     pub fn env(&mut self, var: &CStr) {
         self.args.push(var.to_owned());
@@ -242,7 +252,7 @@ impl Vm {
     pub fn enter(self, root: &Path, test_case: &str) -> anyhow::Result<()> {
         let dir = root.parent().context("the root has no parent")?.to_owned();
         let cpus = self.cpus.clone();
-        let kill_on = self.kill_on.clone();
+        let (kill_on, kill_instead) = (self.kill_on.clone(), self.kill_instead);
         let config = self.prepare(root, test_case)?;
         let config_path = dir.join("firecracker.json");
         std::fs::write(&config_path, serde_json::to_vec_pretty(&config)?)?;
@@ -251,7 +261,8 @@ impl Vm {
         let console_path = dir.join("console.txt");
         let mut child = spawn(&args, &console_path, &cpus)?;
         let code = match kill_on {
-            Some(line) => kill_on_line(&mut child, &console_path, &line)?.map_or(0, exit_code),
+            Some(line) => kill_on_line(&mut child, &console_path, &line, kill_instead)?
+                .map_or(0, exit_code),
             None => exit_code(child.wait()?),
         };
         split_console(std::fs::File::open(&console_path)?)?;
@@ -519,12 +530,14 @@ fn exit_code(status: std::process::ExitStatus) -> i32 {
 }
 
 /// fxdax: waits for the VM process `child` to exit, killing it (SIGKILL) at once if `line`, a line
-/// of the guest agent's output, comes on its console at `console` first ([`Vm::kill_on`]). Returns
-/// its exit status, if it exited of itself.
+/// of the guest agent's output, comes on its console at `console` first ([`Vm::kill_on`]): or, with
+/// `daemon`, killing that, and waiting for the VM process to exit, as it does once its daemon goes
+/// ([`Vm::kill_daemon_on`]). Returns its exit status, if it exited of itself.
 fn kill_on_line(
     child: &mut std::process::Child,
     console: &Path,
     line: &str,
+    daemon: Option<u32>,
 ) -> anyhow::Result<Option<std::process::ExitStatus>> {
     use std::io::Read;
     let line = format!("{line}\n").into_bytes();
@@ -541,8 +554,15 @@ fn kill_on_line(
             continue;
         }
         if seen[from..].windows(line.len()).any(|window| window == line) {
-            child.kill()?;
-            child.wait()?;
+            let Some(daemon) = daemon else {
+                child.kill()?;
+                child.wait()?;
+                return Ok(None);
+            };
+            // SAFETY: A plain system call, of a process of this test's.
+            anyhow::ensure!(unsafe { nix::libc::kill(daemon as i32, nix::libc::SIGKILL) } == 0);
+            let status = child.wait()?;
+            anyhow::ensure!(status.code() == Some(158), "the VM exited {status}, not ExtentdLost");
             return Ok(None);
         }
     }

@@ -1226,6 +1226,7 @@ dependencies = [
  "log",
  "object_store",
  "physmem",
+ "proptest",
  "prost",
  "protox",
  "rand 0.10.3",

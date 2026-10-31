@@ -3284,6 +3284,7 @@ mod guest {
         const READ_MAPPED: u64 = 1 << 5;
         const PLACED: u64 = 1 << 7;
         const WRITE_MAPPED: u64 = 1 << 8;
+        const RESEALED: u64 = 1 << 9;
 
         fn set(steps: u64) {
             fs::write(Self::PAUSE, steps.to_string()).unwrap();
@@ -3474,11 +3475,24 @@ mod guest {
     /// which the fault's retry took for the page's data, and reads read (TASK-121). Played out
     /// with pause points: the move, the seal, the gate shut, the extent freed, then the retry.
     fn test_moved_across_seal() {
+        moved_across_seal("moved-across-seal", false);
+    }
+
+    /// fxdax: as `test_moved_across_seal`, a seal ending between the fault's move and the gate,
+    /// which it finds open, and the next shutting it as the fault goes to move the block again: it
+    /// gave up its page with its range mapping the block where it was, which Fxfs had freed, and
+    /// the next copy of the page held the zeros the device put there. Torture's stores went on to
+    /// a zero page once in some 20 rounds (TASK-133).
+    fn test_moved_across_two_seals() {
+        moved_across_seal("moved-across-two-seals", true);
+    }
+
+    fn moved_across_seal(name: &str, two: bool) {
         const PAGE: usize = 4096;
         // No evacuation, which would wait for the file's semaphore the paused fault holds.
         let _evacuates = Param::set("dax_evacuates", "N");
-        let name = path("moved-across-seal");
-        let other = path("moved-across-seal-other");
+        let other = path(&format!("{name}-other"));
+        let name = path(name);
         // Larger than a chunk, in one extent: a range of its own, not a slice of a region,
         // whose fault keeps the page it holds.
         const SIZE: usize = 4 << 20;
@@ -3513,6 +3527,15 @@ mod guest {
                 fs::File::open(&other).unwrap().sync_all().unwrap();
             }
         };
+        // In an extent of its own, which goes as the page moves on: a page of the file's whole
+        // extent leaves it, and the device what the page was, with the rest.
+        if two {
+            let page = (mapped + PAGE) as *mut u8;
+            unsafe { page.write_volatile(page.read_volatile()) };
+            seal();
+            seal();
+            assert_eq!(unsafe { page.read_volatile() }, data[PAGE]);
+        }
         assert_eq!(fs::metadata(&name).unwrap().len(), SIZE as u64, "the file's size, before");
         let _pauses = Pauses::begin(Pauses::MOVED);
         // The store in a process of its own: its fault, paused, holds its process's mmap_lock,
@@ -3526,12 +3549,28 @@ mod guest {
             }
         }
         Pauses::wait(Pauses::MOVED);
-        // A seal, in progress as the fault goes on to the gate.
-        Pauses::set(Pauses::MOVED | Pauses::SEALING | Pauses::SHUT);
-        let sealer = std::thread::spawn(seal.clone());
-        Pauses::wait(Pauses::SEALING);
-        Pauses::set(Pauses::SEALING | Pauses::SHUT);
-        Pauses::wait_or(Pauses::SHUT, Some(storer));
+        let sealer = if two {
+            // A seal, ended as the fault goes on to the gate, which it finds open; the next, in
+            // progress as it goes on from there.
+            seal();
+            Pauses::set(Pauses::RESEALED);
+            Pauses::wait_or(Pauses::RESEALED, Some(storer));
+            Pauses::set(Pauses::RESEALED | Pauses::SEALING);
+            let sealer = std::thread::spawn(seal.clone());
+            Pauses::wait(Pauses::SEALING);
+            Pauses::set(Pauses::SEALING);
+            // Time for the fault to give up its page.
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            sealer
+        } else {
+            // A seal, in progress as the fault goes on to the gate.
+            Pauses::set(Pauses::MOVED | Pauses::SEALING | Pauses::SHUT);
+            let sealer = std::thread::spawn(seal.clone());
+            Pauses::wait(Pauses::SEALING);
+            Pauses::set(Pauses::SEALING | Pauses::SHUT);
+            Pauses::wait_or(Pauses::SHUT, Some(storer));
+            sealer
+        };
         // The seal ends; the fault, retrying, waits to copy its page, while seals free the
         // extent its block moved from.
         Pauses::set(Pauses::HELD);
@@ -4539,6 +4578,7 @@ mod guest {
             // after the others, which it would stop.
             if dax {
                 tests.push(("moved_across_seal", &test_moved_across_seal));
+                tests.push(("moved_across_two_seals", &test_moved_across_two_seals));
             }
             // Of a small window, which it fills.
             if self.small_window {

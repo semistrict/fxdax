@@ -55,6 +55,7 @@ async-trait.workspace = true
 fidl-fuchsia-io.workspace = true
 fxdax = { path = ".", features = ["testing"] }
 object_store.workspace = true
+proptest.workspace = true
 tempfile.workspace = true
 
 [lints]

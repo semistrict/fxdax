@@ -299,6 +299,8 @@ enum fxfs_dax_step {
 	FXFS_DAX_STEP_PLACED,
 	/* A write of a file, its iomap made, in the gate, before the copy into what it maps. */
 	FXFS_DAX_STEP_WRITE_MAPPED,
+	/* A fault whose blocks moved, the gate open but a seal ended since, before it gives up. */
+	FXFS_DAX_STEP_RESEALED,
 };
 static unsigned long fxfs_dax_pause_steps;
 module_param_named(dax_pause, fxfs_dax_pause_steps, ulong, 0644);
@@ -2881,7 +2883,17 @@ static s64 fxfs_dax_check_device(struct fxfs_dax *dax, struct inode *inode, loff
 		       e.open ? "open" : "sealed", window_offset, where >> 20,
 		       where & ((1 << 20) - 1), err, differ, differ ? first : 0,
 		       differ ? seen[first] : 0, differ ? buf[first] : 0);
-		fxfs_dax_diagnosed();
+		/* The same bytes, where the range hasn't followed them: wrong only if they differ. */
+		if (differ)
+			fxfs_dax_diagnosed();
+		/* fxdax: how it fell behind, what the trace, if on, has of the page (TASK-133). */
+		if (READ_ONCE(fxfs_dax_trace_events)) {
+			char of[48];
+
+			snprintf(of, sizeof(of), "%lu %llu", inode->i_ino,
+				 (unsigned long long)pos >> PAGE_SHIFT);
+			fxfs_dax_trace_dump(of, NULL);
+		}
 	}
 	kfree(buf);
 	return where;
@@ -2916,6 +2928,14 @@ static void fxfs_dax_check_moved(struct fxfs_dax *dax, struct inode *inode,
 	       inode->i_ino, (unsigned long)(fxfs_dax_chunk_start(range) >> PAGE_SHIFT) + page,
 	       before_at, at, differ, first, moved, before[first]);
 	fxfs_dax_diagnosed();
+	/* fxdax: what the trace, if on, has of the page. */
+	if (READ_ONCE(fxfs_dax_trace_events)) {
+		char of[48];
+
+		snprintf(of, sizeof(of), "%lu %lu", inode->i_ino,
+			 (unsigned long)(fxfs_dax_chunk_start(range) >> PAGE_SHIFT) + page);
+		fxfs_dax_trace_dump(of, NULL);
+	}
 	/*
 	 * With the shadow, the extents' pages the window maps at both, as the device has them: the
 	 * window's view of where the page was against what the device holds there, which a write
@@ -2970,7 +2990,7 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 	u64 before_at = 0;
 	s64 before_where = -ENOENT;
 	bool fault = flags & IOMAP_FAULT;
-	ssize_t count;
+	ssize_t count, moved = 0;
 	long gate;
 	u64 seals;
 	int err = 0;
@@ -3110,6 +3130,11 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 			}
 			dax_read_unlock(id);
 		}
+		/* fxdax: diagnostic (TASK-133): what the move will keep is what the window showed. */
+		if (held && before && memcmp(held, before, PAGE_SIZE))
+			pr_err("fxfs: ino %lu page %lu: held differs from the window's before the move: size %lld, seals %llu\n",
+			       inode->i_ino, (start >> PAGE_SHIFT) + first, i_size_read(inode),
+			       fxfs_device_seals(dax->dev));
 		/* fxdax: fault injection, as fxfs_dax_map_write waiting for compaction's seal. */
 		if (fault && READ_ONCE(fxfs_dax_fault_seals)) {
 			err = fxfs_nofs(fxfs_fsync(dax->fs));
@@ -3128,6 +3153,7 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 			err = count;
 			goto out;
 		}
+		moved = count;
 		/* fxdax: fault injection, a seal between the move and the mapping of the new block. */
 		if (fault && fxfs_dax_seal_moved()) {
 			err = fxfs_nofs(fxfs_fsync(dax->fs));
@@ -3138,6 +3164,7 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 		if (gate == seals) {
 			bool fail = count > 1 && fxfs_dax_inject(&fxfs_dax_fail_maps);
 
+			moved = 0;
 			err = fxfs_dax_map_extents(dax, range, extents, fail ? 1 : count);
 			if (!err && fail)
 				err = -EIO;
@@ -3159,21 +3186,19 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 			}
 			break;
 		}
-		if (gate >= 0)
-			fxfs_device_store_end(dax->dev);
-		else
-			fxfs_dax_pause(FXFS_DAX_STEP_SHUT);
 		/*
-		 * fxdax: a seal came between the move and the gate. A write holds the file's
-		 * semaphore, and moves the blocks again, from where Fxfs has them now. A fault, its
-		 * gate shut, gives up its page to wait for the seal, and with it the semaphore: the
-		 * range maps the blocks where they moved, read-only, first (TASK-121).
+		 * fxdax: a seal came between the move and the gate. The blocks move again, from where
+		 * Fxfs has them now, unless the gate is shut, for a fault, which gives up its page to
+		 * wait for the seal, and with it the semaphore (`moved`, below).
 		 */
-		if (gate >= 0)
+		if (gate >= 0) {
+			fxfs_device_store_end(dax->dev);
+			if (fault)
+				fxfs_dax_pause(FXFS_DAX_STEP_RESEALED);
 			continue;
-		err = fxfs_dax_map_moved(dax, range, extents, count);
-		if (!err)
-			err = gate;
+		}
+		fxfs_dax_pause(FXFS_DAX_STEP_SHUT);
+		err = gate;
 		goto out;
 	}
 	kfree(held);
@@ -3203,6 +3228,19 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 		fxfs_dax_pause_file(FXFS_DAX_STEP_WRITE_MAPPED, inode->i_ino);
 	return 0;
 out:
+	/*
+	 * fxdax: blocks Fxfs moved that the range doesn't map yet, leaving: it maps them where they
+	 * moved, read-only, whatever the way out. Else it goes on mapping them where they were, in an
+	 * extent Fxfs frees, where the device puts zeros, which the next fault's copy of the page
+	 * held: a seal shutting the gate as a fault went to map them (TASK-121), or as it went to
+	 * move them again, a seal having ended meanwhile (TASK-133).
+	 */
+	if (moved) {
+		int mapped = fxfs_dax_map_moved(dax, range, extents, moved);
+
+		if (mapped)
+			err = mapped;
+	}
 	up_write(&file->sem);
 	kfree(held);
 	kfree(before);

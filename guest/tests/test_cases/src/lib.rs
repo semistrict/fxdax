@@ -21,6 +21,9 @@ pub fn posix_acl(entries: &[(u16, u16, u32)]) -> Vec<u8> {
 mod test_pjdfstest;
 use test_pjdfstest::TestPjdfstest;
 
+mod test_xfstests;
+use test_xfstests::TestXfstests;
+
 mod test_fxfs_guest;
 use test_fxfs_guest::TestFxfsGuest;
 mod test_fxfs_guest_resize;
@@ -93,6 +96,8 @@ pub fn test_cases() -> Vec<TestCase> {
     vec![
         TestCase::new("pjdfstest-fxfs-guest", Box::new(TestPjdfstest { dax: false })),
         TestCase::new("pjdfstest-fxfs-guest-dax", Box::new(TestPjdfstest { dax: true })),
+        TestCase::new("xfstests-fxfs-guest", Box::new(TestXfstests { dax: false })),
+        TestCase::new("xfstests-fxfs-guest-dax", Box::new(TestXfstests { dax: true })),
         TestCase::new("fxfs-guest", Box::new(TestFxfsGuest::host_formats())),
         TestCase::new("fxfs-guest-format", Box::new(TestFxfsGuest::guest_formats())),
         TestCase::new("fxfs-guest-crash", Box::new(TestFxfsGuest::crash())),
@@ -243,6 +248,10 @@ pub fn test_cases() -> Vec<TestCase> {
         TestCase::new("fxfs-guest-crash-dax-mapped", Box::new(TestFxfsGuest::crash_at(6))),
         TestCase::new("fxfs-guest-crash-dax-placed", Box::new(TestFxfsGuest::crash_at(7))),
         TestCase::new("fxfs-guest-crash-dax-killed", Box::new(TestFxfsGuest::crash_killed())),
+        TestCase::new(
+            "fxfs-guest-crash-dax-daemon-killed",
+            Box::new(TestFxfsGuest::crash_daemon_killed()),
+        ),
         TestCase::new("fxfs-guest-faults-dax", Box::new(TestFxfsGuest::faults())),
         TestCase::new("fxfs-guest-docker-dax", Box::new(TestFxfsGuestDocker)),
         TestCase::new("extent-guest", Box::new(TestExtentGuest)),

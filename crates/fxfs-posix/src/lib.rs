@@ -24,6 +24,7 @@ use fxfs::errors::FxfsError;
 use fxfs::filesystem::{FxFilesystem, SyncOptions, TruncateGuard};
 use fxfs::object_handle::{ObjectHandle, ReadObjectHandle};
 use fxfs::object_store::allocator::Allocator;
+use fxfs::object_store::data_object_handle::CHECK_KEPT;
 use fxfs::object_store::directory::{MutableAttributesInternal, ReplacedChild, replace_child};
 use fxfs::object_store::dirty_reservation::DirtyReservation;
 use fxfs::object_store::transaction::{LockKey, LockKeys, Mutation, Options, Transaction};
@@ -750,6 +751,7 @@ impl<P: Platform> Fxfs<P> {
     ) -> Result<Vec<DaxExtent>, Error> {
         let file = self.file(ino).await?;
         let mut transaction = file.new_transaction().await?;
+        let start = range.start;
         let extents = match held {
             Some(held) => file.txn_map_write_holding(&mut transaction, range, held).await?,
             None => file.txn_map_write(&mut transaction, range, keep).await?,
@@ -761,6 +763,32 @@ impl<P: Platform> Fxfs<P> {
         // The extents are open: the allocator opened them as it minted them. Recording them open
         // now could record one a seal sealed since, whose writes would fail.
         transaction.commit().await?;
+        // fxdax: diagnostic (TASK-133): that the blocks hold what the caller held as it commits.
+        if let Some(held) = held
+            && CHECK_KEPT.load(Ordering::Relaxed)
+        {
+            let device = self.filesystem.device();
+            for extent in &extents {
+                let (logical, on_device) = (extent.logical_range(), extent.device_range());
+                let at = (logical.start - start) as usize;
+                let len = (logical.end - logical.start) as usize;
+                let mut back = device.allocate_buffer(len).await;
+                // A block of zeros isn't written, nor an extent with nothing else in it there.
+                let read = device.read(on_device.extent, on_device.range.start, back.as_mut()).await;
+                let back = back.as_ptr_slice().to_vec();
+                let differ = (0..len)
+                    .filter(|&i| held[at + i] != if read.is_ok() { back[i] } else { 0 })
+                    .count();
+                if differ > 0 {
+                    log::error!(
+                        "fxfs: object {ino} at {logical:?} in {:?} at {:#x}: {differ} of {len} bytes \
+                         read back other than held as its transaction commits (read: {read:?})",
+                        on_device.extent,
+                        on_device.range.start
+                    );
+                }
+            }
+        }
         let allocator = self.filesystem.allocator();
         Ok(extents.iter().map(|extent| DaxExtent::new(extent, true, &allocator)).collect())
     }
