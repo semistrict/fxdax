@@ -17,12 +17,14 @@ pub struct ShuttleKernel<C> {
     drop_cached: Box<dyn Fn(&C) + Send + Sync>,
 }
 
-/// The fill barrier: the readers holding it, whether a batch holds it, and how many wait to.
+/// The fill barrier: the readers holding it, whether a batch holds it, how many wait to, and
+/// whether a batch failed.
 #[derive(Default)]
 struct Barrier {
     readers: usize,
     batch: bool,
     waiting: usize,
+    failed: bool,
 }
 
 impl<C> ShuttleKernel<C> {
@@ -77,4 +79,12 @@ impl<C> Kernel for ShuttleKernel<C> {
 
     /// The Shuttle tests' files have no attributes.
     fn settle(&self, _: &C) {}
+
+    fn fail(&self) {
+        self.barrier.lock().unwrap().failed = true;
+    }
+
+    fn failed(&self) -> bool {
+        self.barrier.lock().unwrap().failed
+    }
 }

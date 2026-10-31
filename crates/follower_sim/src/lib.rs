@@ -18,6 +18,8 @@ pub mod model;
 pub mod sim;
 
 #[cfg(all(test, feature = "shuttle"))]
+mod failure;
+#[cfg(all(test, feature = "shuttle"))]
 mod graveyard;
 #[cfg(all(test, feature = "shuttle"))]
 mod probe;

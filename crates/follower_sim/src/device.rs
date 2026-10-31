@@ -12,6 +12,7 @@ use async_trait::async_trait;
 use extent_store::{Description, Dir, Store, View};
 use fuchsia_sync::Mutex;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use storage_device::buffer::{BufferFuture, BufferRef, MutableBufferRef};
 use storage_device::buffer_allocator::{BufferAllocator, BufferSource};
 use storage_device::{Device, ExtentId, Previous, ReadOptions, WriteFlags, WriteOptions};
@@ -133,6 +134,8 @@ pub struct ViewDevice<D: Dir> {
     allocator: BufferAllocator,
     /// The simulation's mutation of a follower's bug: reads the store as it is, past the view.
     past_its_view: bool,
+    /// Whether reads fail, as the tests of a failing batch have them.
+    failing: Arc<AtomicBool>,
 }
 
 impl<D: Dir> ViewDevice<D> {
@@ -145,6 +148,7 @@ impl<D: Dir> ViewDevice<D> {
             view: Arc::new(Mutex::new(view)),
             description,
             past_its_view: false,
+            failing: Arc::default(),
         }
     }
 
@@ -157,6 +161,11 @@ impl<D: Dir> ViewDevice<D> {
     /// Its view, which its advances move.
     pub fn view(&self) -> Arc<Mutex<View>> {
         self.view.clone()
+    }
+
+    /// What has its reads fail, while set.
+    pub fn failing(&self) -> Arc<AtomicBool> {
+        self.failing.clone()
     }
 }
 
@@ -181,6 +190,9 @@ impl<D: Dir + 'static> Device for ViewDevice<D> {
         mut buffer: MutableBufferRef<'_>,
         _read_opts: ReadOptions,
     ) -> Result<(), Error> {
+        if self.failing.load(Ordering::SeqCst) {
+            bail!("reads fail");
+        }
         let mut data = vec![0; buffer.len()];
         if self.past_its_view {
             self.store.read_kept(extent, offset, &mut data)?;

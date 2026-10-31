@@ -441,7 +441,7 @@ pub async fn simulate(profile: Profile) {
                         }
                     };
                     let (epoch, found) = {
-                        let _filling = follower.protocol.fill();
+                        let _filling = follower.protocol.fill().unwrap();
                         let epoch = follower.epoch.load(Ordering::SeqCst);
                         (epoch, observe(&mounted(), name).await)
                     };
@@ -466,7 +466,7 @@ pub async fn simulate(profile: Profile) {
                     let fs = &follower.fs;
                     let root_store = fs.root_store().store_object_id();
                     let held = {
-                        let _filling = follower.protocol.fill();
+                        let _filling = follower.protocol.fill().unwrap();
                         let found = lookup(fs, name).await.expect("lookup failed");
                         found.map(|object_id| {
                             let hold = fs.hold(root_store, object_id);
@@ -485,7 +485,7 @@ pub async fn simulate(profile: Profile) {
                             break;
                         }
                         let (epoch, found) = {
-                            let _filling = follower.protocol.fill();
+                            let _filling = follower.protocol.fill().unwrap();
                             let epoch = follower.epoch.load(Ordering::SeqCst);
                             (epoch, read(fs, object_id).await)
                         };

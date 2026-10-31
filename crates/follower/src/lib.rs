@@ -25,6 +25,10 @@
 //! of the commit it was as of, whose frees the follower's device keeps until then, only after.
 //! Loads through DAX mappings take no barrier: a batch drops the mappings it makes stale.
 //!
+//! A batch that fails leaves the trees as of no commit, part of it applied, and the follower can
+//! never apply the rest: it follows no more, and no reader reads the trees from then on
+//! ([`Failed`]), until the follower is remounted, on a new view of its store. (TASK-79.23)
+//!
 //! The protocol is generic over [`Kernel`], the kernel's operations: thin C shims in the guest
 //! (guest/linux/fs/fxfs), Shuttle's primitives in tests, so that Shuttle runs the protocol itself
 //! (tests/shuttle.rs). It has no lock-free code of its own, whose relaxed orderings Shuttle, which
@@ -33,6 +37,7 @@
 //! Each of its rules ([`Rules`]) is shown to be needed by a test that fails with it turned off.
 
 use anyhow::Error;
+use std::fmt;
 use std::future::Future;
 
 #[cfg(feature = "shuttle")]
@@ -68,7 +73,26 @@ pub trait Kernel: Send + Sync {
     /// Has the kernel's inodes of the objects `changes` names take the attributes the batch left
     /// them with, once applied, holding the barrier.
     fn settle(&self, changes: &Self::Changes);
+
+    /// Records that a batch failed, holding the barrier: readers look, holding it too.
+    fn fail(&self);
+
+    /// Whether a batch failed: read holding the barrier, or by a batch, which alone records it.
+    fn failed(&self) -> bool;
 }
+
+/// What a reader of a follower gets once a batch failed: the trees are as of no commit, and the
+/// follower stays so until it is remounted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Failed;
+
+impl fmt::Display for Failed {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("a follower's batch failed: it reads nothing until it is remounted")
+    }
+}
+
+impl std::error::Error for Failed {}
 
 /// The follower's filesystem, which applies its writer's commits.
 pub trait Follow: Sync {
@@ -81,10 +105,13 @@ pub trait Follow: Sync {
     type Previous: Send;
 
     /// The writer's commits since those applied, read whole, and what they change, with the
-    /// follower's device advanced to the latest of them: no tree changes yet.
+    /// follower's device advanced to the latest of them: no tree changes yet. If it fails, what
+    /// keeps the commit it was as of stays until the follower is unmounted, its device or not
+    /// having advanced: readers may be left what the kernel cached of it.
     fn fetch(&self) -> impl Future<Output = Result<(Self::Batch, Self::Changes), Error>> + Send;
 
-    /// Applies `batch` to the trees readers read.
+    /// Applies `batch` to the trees readers read. If it fails, what keeps the commit the follower
+    /// was as of stays until it is unmounted, as for [`Self::fetch`].
     fn apply(
         &self,
         batch: Self::Batch,
@@ -99,10 +126,12 @@ pub struct Rules {
     pub barrier: bool,
     /// A batch drops what the kernel caches of what it changes, and settles its inodes.
     pub invalidate: bool,
+    /// Once a batch failed, readers read no more.
+    pub fail: bool,
 }
 
 impl Rules {
-    pub const ALL: Self = Self { barrier: true, invalidate: true };
+    pub const ALL: Self = Self { barrier: true, invalidate: true, fail: true };
 }
 
 /// The rules in force: all of them, but in a Shuttle test that turned one off.
@@ -141,31 +170,52 @@ impl<K: Kernel> Protocol<K> {
     }
 
     /// A reader's fill, until dropped: what it reads of the trees, and caches or copies out
-    /// meanwhile, is of one state, between batches.
-    pub fn fill(&self) -> Filling<'_, K> {
+    /// meanwhile, is of one state, between batches. [`Failed`] if there is none left to read.
+    pub fn fill(&self) -> Result<Filling<'_, K>, Failed> {
         let barrier = rules().barrier;
         if barrier {
             self.kernel.fill_begin();
         }
-        Filling { kernel: &self.kernel, barrier }
+        let filling = Filling { kernel: &self.kernel, barrier };
+        if self.kernel.failed() {
+            return Err(Failed);
+        }
+        Ok(filling)
     }
 
     /// One batch of the follower's: the writer's commits since those applied, fetched; then,
     /// holding the barrier, what the kernel caches of what they change dropped, the commits
     /// applied, and the kernel's inodes settled; then the commit the follower was as of let go
-    /// of. Returns what changed.
+    /// of. Returns what changed. Failing, at either step, it ends the follower: no reader reads
+    /// from then on, and every later batch fails at once ([`Failed`]).
     pub async fn batch<F: Follow>(&self, follow: &F) -> Result<F::Changes, Error>
     where
         K: Kernel<Changes = F::Changes>,
     {
+        if self.kernel.failed() {
+            return Err(Failed.into());
+        }
         let invalidate = rules().invalidate;
-        let (batch, changes) = follow.fetch().await?;
+        let (batch, changes) = match follow.fetch().await {
+            Ok(fetched) => fetched,
+            Err(error) => {
+                let _barrier = Barrier::new(&self.kernel);
+                self.fail();
+                return Err(error);
+            }
+        };
         let previous = {
             let _barrier = Barrier::new(&self.kernel);
             if invalidate {
                 self.kernel.drop_cached(&changes);
             }
-            let previous = follow.apply(batch).await?;
+            let previous = match follow.apply(batch).await {
+                Ok(previous) => previous,
+                Err(error) => {
+                    self.fail();
+                    return Err(error);
+                }
+            };
             if invalidate {
                 self.kernel.settle(&changes);
             }
@@ -173,6 +223,12 @@ impl<K: Kernel> Protocol<K> {
         };
         std::mem::drop(previous);
         Ok(changes)
+    }
+
+    fn fail(&self) {
+        if rules().fail {
+            self.kernel.fail();
+        }
     }
 }
 
@@ -209,10 +265,121 @@ impl<K: Kernel> Drop for Barrier<'_, K> {
 #[cfg(all(test, not(feature = "shuttle")))]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    /// The kernel's operations as counts of their calls.
+    #[derive(Default)]
+    struct Counting {
+        held: AtomicBool,
+        failed: AtomicBool,
+        fills: AtomicUsize,
+        settled: AtomicUsize,
+    }
+
+    impl Kernel for Counting {
+        type Changes = ();
+
+        fn fill_begin(&self) {
+            assert!(!self.held.load(Ordering::SeqCst), "a reader beside a batch");
+            self.fills.fetch_add(1, Ordering::SeqCst);
+        }
+
+        fn fill_end(&self) {
+            self.fills.fetch_sub(1, Ordering::SeqCst);
+        }
+
+        fn barrier_take(&self) {
+            assert_eq!(self.fills.load(Ordering::SeqCst), 0, "a batch beside a reader");
+            assert!(!self.held.swap(true, Ordering::SeqCst), "two batches at once");
+        }
+
+        fn barrier_release(&self) {
+            assert!(self.held.swap(false, Ordering::SeqCst), "a batch let go of no barrier");
+        }
+
+        fn drop_cached(&self, (): &()) {}
+
+        fn settle(&self, (): &()) {
+            self.settled.fetch_add(1, Ordering::SeqCst);
+        }
+
+        fn fail(&self) {
+            assert!(self.held.load(Ordering::SeqCst), "a batch failed outside the barrier");
+            self.failed.store(true, Ordering::SeqCst);
+        }
+
+        fn failed(&self) -> bool {
+            self.failed.load(Ordering::SeqCst)
+        }
+    }
+
+    /// A follower that fails as it is told, and counts its calls.
+    #[derive(Default)]
+    struct Failing {
+        fetch_fails: bool,
+        apply_fails: bool,
+        fetches: AtomicUsize,
+    }
+
+    impl Follow for Failing {
+        type Changes = ();
+        type Batch = ();
+        type Previous = ();
+
+        async fn fetch(&self) -> Result<((), ()), Error> {
+            self.fetches.fetch_add(1, Ordering::SeqCst);
+            if self.fetch_fails { Err(anyhow::anyhow!("fetching")) } else { Ok(((), ())) }
+        }
+
+        async fn apply(&self, (): ()) -> Result<(), Error> {
+            if self.apply_fails { Err(anyhow::anyhow!("applying")) } else { Ok(()) }
+        }
+    }
+
+    /// Runs `future` to its end, which nothing here waits for.
+    fn run<T>(future: impl Future<Output = T>) -> T {
+        let mut future = std::pin::pin!(future);
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        match future.as_mut().poll(&mut context) {
+            std::task::Poll::Ready(value) => value,
+            std::task::Poll::Pending => panic!("a batch waited"),
+        }
+    }
 
     /// Outside Shuttle's tests, as in the guest, every rule is in force.
     #[test]
     fn every_rule_is_in_force() {
         assert_eq!(rules(), Rules::ALL);
+    }
+
+    /// A batch that goes through leaves readers reading.
+    #[test]
+    fn batches_settle_and_readers_read_on() {
+        let protocol = Protocol::new(Counting::default());
+        run(protocol.batch(&Failing::default())).unwrap();
+        assert_eq!(protocol.kernel().settled.load(Ordering::SeqCst), 1);
+        assert_eq!(protocol.fill().map(drop), Ok(()));
+        assert_eq!(protocol.kernel().fills.load(Ordering::SeqCst), 0);
+    }
+
+    /// TASK-79.23: a batch that fails, as it applies or as it fetches, ends the follower: readers
+    /// read no more, holding no barrier for it; and no later batch fetches.
+    #[test]
+    fn a_batch_that_fails_ends_the_follower() {
+        for failing in [
+            Failing { apply_fails: true, ..Default::default() },
+            Failing { fetch_fails: true, ..Default::default() },
+        ] {
+            let protocol = Protocol::new(Counting::default());
+            assert!(run(protocol.batch(&failing)).is_err());
+            assert_eq!(protocol.kernel().settled.load(Ordering::SeqCst), 0);
+            assert!(!protocol.kernel().held.load(Ordering::SeqCst), "the barrier stayed held");
+            assert_eq!(protocol.fill().map(drop), Err(Failed));
+            assert_eq!(protocol.kernel().fills.load(Ordering::SeqCst), 0);
+
+            let error = run(protocol.batch(&failing)).unwrap_err();
+            assert_eq!(error.downcast_ref::<Failed>(), Some(&Failed));
+            assert_eq!(failing.fetches.load(Ordering::SeqCst), 1);
+        }
     }
 }

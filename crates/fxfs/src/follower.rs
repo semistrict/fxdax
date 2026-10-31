@@ -25,7 +25,12 @@
 //!
 //! Callers keep readers out of the filesystem while a batch applies: the protocol of
 //! crates/follower, its fill barrier (TASK-42.5, TASK-42.10).
+//!
+//! A batch that fails leaves the follower as of no commit: the journal's reader is past it, and
+//! part of it is applied. It follows no more, and keeps the commit it was as of, whose extents what
+//! the kernel cached may still read, until it is unmounted: it remounts (TASK-79.23).
 
+use crate::errors::FxfsError;
 use crate::filesystem::{ApplyContext, ApplyMode, FxFilesystem};
 use crate::log::*;
 use crate::lsm_tree::Query;
@@ -36,11 +41,12 @@ use crate::object_store::object_record::{
 };
 use crate::object_store::transaction::{AssocObj, Mutation, ObjectStoreMutation};
 use crate::object_store::{ExtentValue, ObjectStore};
-use anyhow::{Context, Error, ensure};
+use anyhow::{Context, Error, anyhow, ensure};
 use fuchsia_sync::Mutex;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ops::Range;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use storage_device::{ExtentId, Previous};
 
 /// The rules a follower keeps, each of which the followers' simulation (crates/follower_sim)
@@ -227,6 +233,18 @@ pub(crate) struct Follower {
     /// Held while a batch is applied: one at a time.
     following: futures::lock::Mutex<()>,
     holds: Arc<Mutex<Holds>>,
+    /// Whether a batch failed (see the module docs).
+    failed: AtomicBool,
+    /// What keeps the commit it was as of, if the device had advanced past it.
+    kept: Mutex<Option<Previous>>,
+}
+
+impl Follower {
+    /// A batch failed, the device left at a commit `previous` keeps the one before of, if any.
+    fn fail(&self, previous: Option<Previous>) {
+        self.failed.store(true, Ordering::Release);
+        *self.kept.lock() = previous;
+    }
 }
 
 impl FxFilesystem {
@@ -244,12 +262,28 @@ impl FxFilesystem {
     /// device to the writer's latest commit, and reads the journal's whole transactions since.
     /// Nothing readers read changes until the batch is applied ([`Self::apply`]), the next thing
     /// the follower does: one batch at a time. An error leaves the follower as of no commit: it
-    /// remounts.
+    /// remounts (see the module docs).
     pub async fn fetch(&self) -> Result<(Batch, Changes), Error> {
         ensure!(self.options().read_only, "Only a read-only mount follows its writer");
         let _following = self.follower().following.lock().await;
-        let previous = self.device().advance().await.context("Advancing the device")?;
-        let transactions = self.journal().read_on().await?;
+        ensure!(
+            !self.follower().failed.load(Ordering::Acquire),
+            anyhow!(FxfsError::Inconsistent).context("A batch failed: the follower remounts")
+        );
+        let previous = match self.device().advance().await.context("Advancing the device") {
+            Ok(previous) => previous,
+            Err(error) => {
+                self.follower().fail(None);
+                return Err(error);
+            }
+        };
+        let transactions = match self.journal().read_on().await {
+            Ok(transactions) => transactions,
+            Err(error) => {
+                self.follower().fail(Some(previous));
+                return Err(error);
+            }
+        };
         let mut changes = Changes::default();
         for transaction in &transactions {
             for (store_object_id, mutation) in self.followed_mutations(transaction) {
@@ -264,16 +298,33 @@ impl FxFilesystem {
     /// out meanwhile (see the module docs). Returns what keeps the commit the follower was as of
     /// (its frees, which readers may still be reading from): its holds' extents are pinned, and
     /// the rest goes when it is dropped, once readers are done with it (crates/follower's fill
-    /// barrier, which a batch lets go of first).
+    /// barrier, which a batch lets go of first). An error leaves the follower as of no commit: it
+    /// remounts (see the module docs).
     pub async fn apply(&self, batch: Batch) -> Result<Previous, Error> {
         let _following = self.follower().following.lock().await;
-        for extent in self.release_holds()? {
-            self.device().unpin(extent).await;
+        let Batch { transactions, previous } = batch;
+        let applied = async {
+            for extent in self.release_holds()? {
+                self.device().unpin(extent).await;
+            }
+            for transaction in transactions {
+                self.apply_followed(transaction).await?;
+            }
+            anyhow::Ok(())
+        };
+        match applied.await {
+            Ok(()) => Ok(previous),
+            Err(error) => {
+                self.follower().fail(Some(previous));
+                Err(error)
+            }
         }
-        for transaction in batch.transactions {
-            self.apply_followed(transaction).await?;
-        }
-        Ok(batch.previous)
+    }
+
+    /// A batch [`Self::apply`] applied failed afterwards, in what its caller does with it: the
+    /// follower stops, as if it had failed there, keeping `previous`.
+    pub fn stop_following(&self, previous: Previous) {
+        self.follower().fail(Some(previous));
     }
 
     /// Follows the writer a batch: fetches it, applies it, and lets go of the commit the follower

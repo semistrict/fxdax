@@ -309,7 +309,7 @@ fn read_key(readers: &Readers, key: &str) -> u64 {
 /// Reads the token's directories, one after the other, as of one state: it is in one of them.
 fn pair(readers: &Readers, _: usize) {
     shuttle_trace::reader_start("StartPair", String::new);
-    let _filling = readers.protocol.fill();
+    let Ok(_filling) = readers.protocol.fill() else { return };
     let (d1, d2) = (read_key(readers, "d1"), read_key(readers, "d2"));
     shuttle_trace::reader_event("Found", String::new);
     assert_eq!(d1 + d2, 1, "a reader saw a rename half applied: d1 {d1}, d2 {d2}");
@@ -318,7 +318,7 @@ fn pair(readers: &Readers, _: usize) {
 /// Opens a file: reads its extent, as a lookup reads the inode it opens.
 fn open(readers: &Readers, file: &'static str) {
     shuttle_trace::reader_start("StartOpen", || format!("f |-> \"{file}\""));
-    let _filling = readers.protocol.fill();
+    let Ok(_filling) = readers.protocol.fill() else { return };
     read_key(readers, file);
     shuttle_trace::reader_event("Found", String::new);
 }
@@ -328,7 +328,7 @@ fn open(readers: &Readers, file: &'static str) {
 fn fault(readers: &Readers, index: usize) {
     let file = FILES[index % FILES.len()];
     shuttle_trace::reader_start("StartFault", || format!("f |-> \"{file}\""));
-    let _filling = readers.protocol.fill();
+    let Ok(_filling) = readers.protocol.fill() else { return };
     let _faulting = readers.dax.invalidate_locks[file].read().unwrap();
     let extent = read_key(readers, file);
     shuttle_trace::reader_event("Found", String::new);
@@ -341,7 +341,7 @@ fn fault(readers: &Readers, index: usize) {
 fn copy(readers: &Readers, index: usize) {
     let file = FILES[index % FILES.len()];
     shuttle_trace::reader_start("StartRead", || format!("f |-> \"{file}\""));
-    let filling = readers.protocol.fill();
+    let Ok(filling) = readers.protocol.fill() else { return };
     let extent = read_key(readers, file);
     shuttle_trace::reader_event("Found", String::new);
     for _ in 0..3 {
@@ -373,6 +373,42 @@ impl Follow for Renaming {
         self.tree.lock().unwrap().insert("d2", 1);
         Ok(())
     }
+}
+
+/// A follower whose one batch, a rename, fails halfway through.
+struct Failing {
+    tree: Arc<Mutex<Tree>>,
+}
+
+impl Follow for Failing {
+    type Changes = BTreeSet<&'static str>;
+    type Batch = ();
+    type Previous = ();
+
+    async fn fetch(&self) -> Result<((), Self::Changes), Error> {
+        Ok(((), ["d1", "d2"].into_iter().collect()))
+    }
+
+    async fn apply(&self, (): ()) -> Result<(), Error> {
+        self.tree.lock().unwrap().insert("d1", 0);
+        anyhow::bail!("the rest of the batch can't be read")
+    }
+}
+
+/// TASK-79.23: a batch that fails halfway, against pair reads, before and after it.
+fn failing() {
+    let tree = Arc::new(Mutex::new(initial()));
+    let follower = Failing { tree: tree.clone() };
+    let readers = Arc::new(Readers::new(tree, Arc::new(Store::new())));
+    let reader = {
+        let readers = readers.clone();
+        thread::spawn(move || {
+            pair(&readers, 0);
+            pair(&readers, 1);
+        })
+    };
+    block_on(readers.protocol.batch(&follower)).unwrap_err();
+    reader.join().unwrap();
 }
 
 /// The smallest: the follower's one batch, a rename, against one pair read.
@@ -496,6 +532,12 @@ fn smallest_exhaustively() {
     check(DfsScheduler::new(None, false), smallest);
 }
 
+/// No reader sees the part of a batch that failed.
+#[test]
+fn failing_exhaustively() {
+    check(DfsScheduler::new(None, false), failing);
+}
+
 #[test]
 fn mixed_randomly() {
     check(RandomScheduler::new(runs()), running(mixed()));
@@ -551,4 +593,11 @@ fn needs_invalidation() {
         RandomScheduler::new(runs()),
         running(mixed()),
     );
+}
+
+/// Without readers reading no more once a batch failed, a pair read sees its rename half applied.
+#[test]
+fn needs_failing() {
+    let rules = Rules { fail: false, ..Rules::ALL };
+    fails_without(rules, "half applied", DfsScheduler::new(None, false), failing);
 }
