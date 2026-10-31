@@ -15,15 +15,18 @@
 //!
 //! The files the kernel has open are held (`Fxfs::hold`): one the writer deletes reads as it was
 //! until the last close, as POSIX has it (doc-8's graveyard).
+//!
+//! A batch that fails ends the follower: what reads the trees fails with ESTALE (`follower::Failed`)
+//! until it is remounted, which opens the store anew.
 
 use crate::fs::{Attr, Fxfs, GuestFxfs};
-use anyhow::Error;
+use anyhow::{Error, ensure};
 use core::ffi::c_void;
 use follower::{Follow, Kernel, Protocol};
 use fxfs::follower::{Batch, Changes, Hold, StoreObject};
 use rustc_hash::FxHashMap;
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use storage_device::Previous;
 
@@ -38,6 +41,7 @@ mod ffi {
         pub fn fxfs_vfs_follow_barrier_take(vfs: *mut c_void);
         pub fn fxfs_vfs_follow_barrier_release(vfs: *mut c_void);
         pub fn fxfs_vfs_follow_epoch(vfs: *mut c_void, which: u32, epoch: u64);
+        pub fn fxfs_vfs_follow_failing() -> bool;
         pub fn fxfs_vfs_drop_file(vfs: *mut c_void, ino: u64, ranges: *const Range, count: usize);
         pub fn fxfs_vfs_drop_entries(vfs: *mut c_void, ino: u64);
         pub fn fxfs_vfs_settle_file(vfs: *mut c_void, ino: u64, attr: *const Attr, gone: bool);
@@ -62,6 +66,8 @@ const FOLLOW_SETTLED: u32 = 1;
 pub struct GuestKernel {
     vfs: *mut c_void,
     volume: u64,
+    /// Whether a batch failed, set holding the fill barrier, which readers hold as they look.
+    failed: AtomicBool,
 }
 
 // SAFETY: The superblock's primitives are the kernel's, which any thread uses.
@@ -168,6 +174,14 @@ impl Kernel for GuestKernel {
         }
         self.epoch(FOLLOW_SETTLED, changes.epoch.load(Ordering::Acquire));
     }
+
+    fn fail(&self) {
+        self.failed.store(true, Ordering::Release);
+    }
+
+    fn failed(&self) -> bool {
+        self.failed.load(Ordering::Acquire)
+    }
 }
 
 /// A follower's state: the protocol its readers and batches keep, and the files the kernel has
@@ -183,7 +197,7 @@ impl Following {
     /// A follower's state, for the volume whose store is `volume`, on the superblock `vfs`, its
     /// device advancing as `advanced` says, as of a commit no later than `latest`'s.
     pub fn new(vfs: *mut c_void, volume: u64, advanced: Arc<AtomicU64>, latest: u64) -> Self {
-        let kernel = GuestKernel { vfs, volume };
+        let kernel = GuestKernel { vfs, volume, failed: AtomicBool::new(false) };
         kernel.epoch(FOLLOW_APPLIED, latest);
         Self { protocol: Protocol::new(kernel), holds: Mutex::default(), advanced }
     }
@@ -219,6 +233,26 @@ impl Following {
 /// The follower's Fxfs, as the protocol follows it.
 pub struct GuestFollow<'a>(pub &'a Fxfs);
 
+impl GuestFollow<'_> {
+    /// Reads the attributes a batch left the objects it changed with, what the kernel's inodes
+    /// take as it settles, and says its commit is applied.
+    async fn applied(&self, changes: &GuestChanges) -> Result<(), Error> {
+        // SAFETY: Reads a module parameter.
+        ensure!(!unsafe { ffi::fxfs_vfs_follow_failing() }, "a test failed the batch");
+        let mut attrs = Vec::new();
+        for ino in changes.objects(self.0.volume_id()) {
+            attrs.push((ino, self.0.attr_applied(ino).await?));
+        }
+        *changes.attrs.lock().unwrap() = attrs;
+        // The batch's commit: what the device advanced to as it was fetched.
+        let following = self.0.following().expect("a follower's batch");
+        let epoch = following.advanced.load(Ordering::Acquire);
+        changes.epoch.store(epoch, Ordering::Release);
+        following.protocol.kernel().epoch(FOLLOW_APPLIED, epoch);
+        Ok(())
+    }
+}
+
 impl Follow for GuestFollow<'_> {
     type Changes = Arc<GuestChanges>;
     type Batch = (Batch, Arc<GuestChanges>);
@@ -231,20 +265,15 @@ impl Follow for GuestFollow<'_> {
         Ok(((batch, changes.clone()), changes))
     }
 
-    /// Applies the batch, and reads the attributes it left the objects it changed with: what the
-    /// kernel's inodes take as the batch settles.
     async fn apply(&self, (batch, changes): Self::Batch) -> Result<Previous, Error> {
-        let previous = self.0.filesystem().apply(batch).await?;
-        let mut attrs = Vec::new();
-        for ino in changes.objects(self.0.volume_id()) {
-            attrs.push((ino, self.0.attr_applied(ino).await));
+        let filesystem = self.0.filesystem();
+        let previous = filesystem.apply(batch).await?;
+        match self.applied(&changes).await {
+            Ok(()) => Ok(previous),
+            Err(error) => {
+                filesystem.stop_following(previous);
+                Err(error)
+            }
         }
-        *changes.attrs.lock().unwrap() = attrs;
-        // The batch's commit: what the device advanced to as it was fetched.
-        let following = self.0.following().expect("a follower's batch");
-        let epoch = following.advanced.load(Ordering::Acquire);
-        changes.epoch.store(epoch, Ordering::Release);
-        following.protocol.kernel().epoch(FOLLOW_APPLIED, epoch);
-        Ok(previous)
     }
 }

@@ -126,6 +126,8 @@ void fxfs_vfs_follow_assert_filling(void *vfs);
 /* The follower's state is as of a commit no earlier than `epoch`'s: its batch settled. */
 #define FXFS_FOLLOW_SETTLED 1
 void fxfs_vfs_follow_epoch(void *vfs, u32 which, u64 epoch);
+/* fxdax: whether the tests have a follower's batches fail (vfs.h). */
+bool fxfs_vfs_follow_failing(void);
 /*
  * fxdax: a follower's batch takes its fill barrier exclusively, waiting for the readers holding it,
  * from before it drops what it changes until it has applied and settled it; and lets go of it.

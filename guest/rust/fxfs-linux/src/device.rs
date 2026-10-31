@@ -135,6 +135,7 @@ const EPERM: c_int = 1;
 const ENOENT: c_int = 2;
 const ENOSPC: c_int = 28;
 const EROFS: c_int = 30;
+const ESTALE: c_int = 116;
 
 /// The transfer buffers' memory.
 const TRANSFER_HEAP_SIZE: usize = 16 << 20;
@@ -957,6 +958,12 @@ impl std::fmt::Display for DeviceError {
 }
 
 impl std::error::Error for DeviceError {}
+
+/// Whether `error` is the device's saying that it was cut off from its store: a follower's, which
+/// its guest remounts.
+pub(crate) fn is_stale(error: &(dyn std::error::Error + 'static)) -> bool {
+    error.downcast_ref::<DeviceError>().is_some_and(|error| error.errno == ESTALE)
+}
 
 /// The error of a request the device failed with `status`, a -errno, on `extent` if it names one.
 fn errno_error(status: c_int, extent: Option<ExtentId>) -> Error {

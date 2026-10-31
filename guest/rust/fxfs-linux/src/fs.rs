@@ -12,6 +12,7 @@
 use crate::device::{Dax, DeviceStats, Durability, DurableGuard, ExtentDevice, Freezer, Resizer};
 use crate::follow::{Following, GuestFollow};
 use anyhow::{Context as _, Error};
+use follower::{Failed, Kernel as _};
 use fxfs::errors::FxfsError;
 use fxfs::filesystem::{FxFilesystem, FxFilesystemBuilder, OpenFxFilesystem, SyncOptions};
 use fxfs::object_store::journal::{DEFAULT_RECLAIM_SIZE, JournalOptions, LazyFlush};
@@ -94,10 +95,15 @@ impl Platform for Guest {
         linux_rt::spawn_urgent(future).detach();
     }
 
-    fn filling(&self) {
+    fn filling(&self) -> Result<(), Error> {
         if let Some(following) = &self.following {
-            following.protocol().kernel().assert_filling();
+            let kernel = following.protocol().kernel();
+            kernel.assert_filling();
+            if kernel.failed() {
+                return Err(Failed.into());
+            }
         }
+        Ok(())
     }
 
     fn follows(&self) -> bool {
@@ -140,8 +146,8 @@ pub(crate) trait GuestFxfs: Sized {
     /// fxdax: lets go of the file `ino`, which the kernel closes.
     fn release(&self, ino: u64);
 
-    /// fxdax: the attributes of `ino` as a follower's batch just left them.
-    async fn attr_applied(&self, ino: u64) -> Option<Attr>;
+    /// fxdax: the attributes of `ino` as a follower's batch just left them, or none if it is gone.
+    async fn attr_applied(&self, ino: u64) -> Result<Option<Attr>, Error>;
 
     /// fxdax: what follows its writer, on a follower.
     fn following(&self) -> Option<&Following>;
@@ -326,7 +332,7 @@ impl GuestFxfs for Fxfs {
     /// Under the fill barrier, which the open holds: no batch comes between the hold and the look.
     async fn hold(&self, ino: u64) -> Result<(), Error> {
         let Some(following) = self.following() else { return Ok(()) };
-        self.platform().filling();
+        self.platform().filling()?;
         following.hold(ino, || self.filesystem().hold(self.volume_id(), ino));
         if let Err(error) = self.attr(ino).await {
             following.release(ino);
@@ -343,14 +349,14 @@ impl GuestFxfs for Fxfs {
     }
 
     /// fxdax: the attributes of `ino` as a follower's batch just left them, read as it applies,
-    /// or none if it is gone.
-    async fn attr_applied(&self, ino: u64) -> Option<Attr> {
+    /// or none if it is gone: read none, its inode would settle as gone (TASK-79.23).
+    async fn attr_applied(&self, ino: u64) -> Result<Option<Attr>, Error> {
         match self.attr(ino).await {
-            Ok(attr) => Some(attr),
-            Err(error) if FxfsError::NotFound.matches(&error) => None,
+            Ok(attr) => Ok(Some(attr)),
+            Err(error) if FxfsError::NotFound.matches(&error) => Ok(None),
+            Err(error) if FxfsError::Deleted.matches(&error) => Ok(None),
             Err(error) => {
-                log::error!("the attributes of inode {ino}, which a batch changed: {error:#}");
-                None
+                Err(error.context(format!("the attributes of inode {ino}, which a batch changed")))
             }
         }
     }

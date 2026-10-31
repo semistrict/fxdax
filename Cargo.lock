@@ -1340,6 +1340,8 @@ dependencies = [
  "anyhow",
  "event-listener",
  "fidl-fuchsia-io",
+ "fuchsia",
+ "fuchsia-async",
  "futures",
  "fxfs",
  "log",

@@ -36,12 +36,17 @@ const ENOSPC: c_int = 28;
 const EROFS: c_int = 30;
 const ERANGE: c_int = 34;
 const ENOTEMPTY: c_int = 39;
+const ESTALE: c_int = 116;
 const E2BIG: c_int = 7;
 const ENODATA: c_int = 61;
 const EOPNOTSUPP: c_int = 95;
 
 /// The errno of `error`, which is logged unless it is one a filesystem's callers expect.
 fn errno(error: &Error) -> c_int {
+    // fxdax: a follower that follows no more, or was cut off, until it remounts: doc-4, doc-8.
+    if error.chain().any(|cause| cause.is::<follower::Failed>() || device::is_stale(cause)) {
+        return ESTALE;
+    }
     let errno = match error.chain().find_map(|cause| cause.downcast_ref::<FxfsError>()) {
         Some(FxfsError::NotFound | FxfsError::Deleted) => return ENOENT,
         Some(FxfsError::AlreadyExists) => return EEXIST,

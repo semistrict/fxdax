@@ -123,12 +123,14 @@ DECLARE_STATIC_KEY_FALSE(fxfs_vfs_followers);
  * the protocol closes; and mutations, each switching off the rule that closes one, which the test
  * must catch: a follower's batches dropping and settling nothing; its readers' fill barrier not
  * taken; its read(2)s' copies faulting, holding the barrier. All 0 but in the test.
+ * follow_fail_batch has its batches fail once applied, as a read of the store would (TASK-79.23).
  */
 extern unsigned int fxfs_follow_apply_delay_us;
 extern unsigned int fxfs_follow_iomap_delay_us;
 extern bool fxfs_follow_skip_invalidate;
 extern bool fxfs_follow_skip_barrier;
 extern bool fxfs_follow_read_faults;
+extern bool fxfs_follow_fail_batch;
 
 /* fxdax: whether `sb`'s filesystem follows its writer. */
 static inline bool fxfs_vfs_follows(struct super_block *sb)

@@ -11,11 +11,15 @@ publish = false
 anyhow.workspace = true
 event-listener.workspace = true
 fidl-fuchsia-io.workspace = true
+fuchsia-async.workspace = true
 futures.workspace = true
 fxfs.workspace = true
 log.workspace = true
 rustc-hash.workspace = true
 storage_device.workspace = true
+
+[dev-dependencies]
+fuchsia.workspace = true
 
 [lints]
 workspace = true

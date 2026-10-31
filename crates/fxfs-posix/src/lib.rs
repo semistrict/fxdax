@@ -17,6 +17,9 @@
 use anyhow::{Error, anyhow, bail, ensure};
 use event_listener::Event;
 use fidl_fuchsia_io as fio;
+use fuchsia_async as fasync;
+use futures::FutureExt as _;
+use futures::future::{BoxFuture, Either, select};
 use fxfs::errors::FxfsError;
 use fxfs::filesystem::{FxFilesystem, SyncOptions, TruncateGuard};
 use fxfs::object_handle::{ObjectHandle, ReadObjectHandle};
@@ -34,8 +37,10 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::ops::Range;
+use std::pin::pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use storage_device::SealedExtent;
 
 /// What a filesystem's VFS gives it, and keeps for it: the platform it runs on.
@@ -54,8 +59,11 @@ pub trait Platform: Send + Sync + Sized + 'static {
     /// completes.
     fn spawn_urgent(&self, future: impl Future<Output = ()> + Send + 'static);
 
-    /// fxdax: on a follower, checks that the fill barrier is held, in a debug kernel (lockdep).
-    fn filling(&self) {}
+    /// fxdax: on a follower, checks that the fill barrier is held, in a debug kernel (lockdep),
+    /// and that the trees can be read: not, once a batch failed (crates/follower).
+    fn filling(&self) -> Result<(), Error> {
+        Ok(())
+    }
 
     /// fxdax: whether the filesystem follows its device's writer: it then keeps no handles.
     fn follows(&self) -> bool {
@@ -180,19 +188,26 @@ const DELAYED_WORKERS: usize = 2;
 /// until it is shorter.
 const DELAYED_QUEUE: usize = 4 * DELAYED_BATCH;
 
+/// fxdax: how long what is queued waits at most, once no more comes, for a full batch: the room an
+/// `rm` frees, and what a crash finds of it, wait for no sync (TASK-79.21).
+const DELAYED_WAIT: Duration = Duration::from_millis(10);
+
 /// fxdax: unlinks the syscalls queued rather than made (doc-6): the kernel holds the directory's
 /// lock while it unlinks, which each of Fxfs's commits held up for most of the call; a batch of
 /// them in one transaction costs a fraction of each alone. Each inode's apply in the order
-/// queued, before anything reads what they change (`drain`), and before syncs; batches unlinking
-/// different inodes apply at once, from one directory too: the kernel writes back a directory's
-/// times (write_inode), and its names are records of their own, which nothing else changes while
-/// unlinks of them are queued.
+/// queued, before anything reads what they change (`drain`), and all of them before syncs and
+/// before any change of names (`drain_all`), so that the journal has names change in the order the
+/// syscalls did, and stays a prefix of them after a crash (doc-2, doc-6), and within
+/// `DELAYED_WAIT` of no more coming; batches unlinking different inodes apply at once, from one
+/// directory too: the kernel writes back a directory's times (write_inode), and its names are
+/// records of their own, which nothing else changes while unlinks of them are queued.
 #[derive(Default)]
 struct Delayed {
     queue: Mutex<DelayedQueue>,
     /// Notified as each batch is applied: for calls waiting for the inodes it changed.
     applied: Event,
-    /// Notified as a batch's worth of unlinks is queued, for a worker to apply it.
+    /// Notified as the queue fills, or a batch's worth of unlinks is queued, for a worker to
+    /// apply it.
     queued: Event,
     /// The tasks applying full batches, once started (`wake_worker`), until stopped.
     workers: Mutex<Option<DelayedWorkers>>,
@@ -221,7 +236,7 @@ struct DelayedQueue {
     /// The inodes the batches applying unlink or free, which no other batch may meanwhile.
     applying: FxHashSet<u64>,
     /// Whether a batch failed: the filesystem may then hold what the kernel doesn't, so changes
-    /// fail from then on.
+    /// fail from then on (`transaction_with`), and what the kernel evicts stays (`evict`).
     failed: bool,
     /// Whether the workers are to stop (`stop_delayed`).
     stopping: bool,
@@ -379,8 +394,11 @@ impl<P: Platform> Fxfs<P> {
 
     /// fxdax: `read`, a read of its trees: a follower's under its fill barrier, which the kernel's
     /// call in holds (fs/fxfs, vfs.h), so that it sees whole batches; checked, in a debug kernel.
-    pub async fn reading<T, R: Future<Output = T>>(&self, read: impl FnOnce() -> R) -> T {
-        self.platform.filling();
+    pub async fn reading<T, R: Future<Output = Result<T, Error>>>(
+        &self,
+        read: impl FnOnce() -> R,
+    ) -> Result<T, Error> {
+        self.platform.filling()?;
         read().await
     }
 
@@ -514,6 +532,8 @@ impl<P: Platform> Fxfs<P> {
         let name = str::from_utf8(name).map_err(|_| anyhow!(FxfsError::NotFound))?;
         let (ino, _, _) =
             self.directory(dir).await?.lookup(name).await?.ok_or(FxfsError::NotFound)?;
+        // Another of its names may be queued to go: the kernel takes its link count from here.
+        self.drain(&[ino]).await?;
         self.attr(ino).await
     }
 
@@ -526,7 +546,7 @@ impl<P: Platform> Fxfs<P> {
         start: ReaddirStart<'_>,
         mut emit: impl FnMut(&str, u64, u32) -> bool,
     ) -> Result<(), Error> {
-        self.platform.filling();
+        self.platform.filling()?;
         self.drain(&[dir]).await?;
         let dir = self.directory(dir).await?;
         let layer_set = dir.store().tree().layer_set();
@@ -554,7 +574,7 @@ impl<P: Platform> Fxfs<P> {
     /// fewer only at the end of the file. fxdax: a follower's under its fill barrier (`reading`),
     /// which keeps the extents it reads until it is done.
     pub async fn read(&self, ino: u64, offset: u64, buf: &mut [u8]) -> Result<usize, Error> {
-        self.platform.filling();
+        self.platform.filling()?;
         let file = self.file(ino).await?;
         let end = file.get_size().min(offset.saturating_add(buf.len() as u64));
         if offset >= end {
@@ -577,7 +597,7 @@ impl<P: Platform> Fxfs<P> {
         parts: &mut [&mut [u8]],
     ) -> Result<usize, Error> {
         const CHUNK: u64 = 1 << 20;
-        self.platform.filling();
+        self.platform.filling()?;
         let file = self.file(ino).await?;
         let len = parts.iter().map(|part| part.len() as u64).sum::<u64>();
         let end = file.get_size().min(offset.saturating_add(len));
@@ -761,7 +781,7 @@ impl<P: Platform> Fxfs<P> {
         xattrs: &[(&[u8], &[u8])],
     ) -> Result<[Attr; 2], Error> {
         let name = utf8_name(name)?;
-        self.drain(&[dir]).await?;
+        self.drain_all().await?;
         let dir = self.directory(dir).await?;
         let mut transaction = self.transaction(&[dir.object_id()]).await?;
         let attributes = fio::MutableNodeAttributes {
@@ -818,7 +838,7 @@ impl<P: Platform> Fxfs<P> {
         gid: u32,
     ) -> Result<[Attr; 2], Error> {
         let name = utf8_name(name)?;
-        self.drain(&[dir]).await?;
+        self.drain_all().await?;
         let dir = self.directory(dir).await?;
         let mut transaction = self.transaction(&[dir.object_id()]).await?;
         let ino = dir.create_symlink(&mut transaction, target, name).await?;
@@ -879,7 +899,7 @@ impl<P: Platform> Fxfs<P> {
         unnamed: bool,
     ) -> Result<[Attr; 2], Error> {
         let name = utf8_name(name)?;
-        self.drain(&[dir, ino]).await?;
+        self.drain_all().await?;
         let dir = self.directory(dir).await?;
         let object = self.volume.tree().find(&ObjectKey::object(ino)).await?;
         let descriptor = match object.map(|item| item.value) {
@@ -918,7 +938,7 @@ impl<P: Platform> Fxfs<P> {
     /// the graveyard until `evict`.
     pub async fn unlink(&self, dir: u64, name: &[u8], ino: u64) -> Result<(u32, Attr), Error> {
         let name = str::from_utf8(name).map_err(|_| anyhow!(FxfsError::NotFound))?;
-        self.drain(&[dir, ino]).await?;
+        self.drain_all().await?;
         let dir = self.directory(dir).await?;
         // Removing a name is what lets a full filesystem free space.
         let options = Options { borrow_metadata_space: true, ..Default::default() };
@@ -945,7 +965,7 @@ impl<P: Platform> Fxfs<P> {
     ) -> Result<(u32, [Attr; 3]), Error> {
         let name = str::from_utf8(name).map_err(|_| anyhow!(FxfsError::NotFound))?;
         let new_name = utf8_name(new_name)?;
-        self.drain(&[dir, new_dir, ino]).await?;
+        self.drain_all().await?;
         if let Some(new_ino) = new_ino {
             self.drain(&[new_ino]).await?;
         }
@@ -976,7 +996,7 @@ impl<P: Platform> Fxfs<P> {
     ) -> Result<[Attr; 4], Error> {
         let name = str::from_utf8(name).map_err(|_| anyhow!(FxfsError::NotFound))?;
         let new_name = str::from_utf8(new_name).map_err(|_| anyhow!(FxfsError::NotFound))?;
-        self.drain(&[dir, new_dir]).await?;
+        self.drain_all().await?;
         let (src, dst) = (self.directory(dir).await?, self.directory(new_dir).await?);
         loop {
             let (a, a_kind, _) = src.lookup(name).await?.ok_or(FxfsError::NotFound)?;
@@ -1031,7 +1051,7 @@ impl<P: Platform> Fxfs<P> {
         dst_offset: u64,
         size: u64,
     ) -> Result<Attr, Error> {
-        self.drain(&[src, dst]).await?;
+        self.drain_all().await?;
         let (source, target) = (self.file(src).await?, self.file(dst).await?);
         let store = self.volume.store_object_id();
         let mut keys = LockKeys::with_capacity(4);
@@ -1191,15 +1211,28 @@ impl<P: Platform> Fxfs<P> {
         }
         if unlinked {
             // Its unlink may be queued still: its object goes once the unlink is made.
-            {
+            let queued = {
                 let mut queue = self.delayed.queue.lock().unwrap();
-                if let Some(pending) = queue.pending.get_mut(&ino) {
-                    *pending += 1;
-                    queue.ops.push(DelayedOp::Evict { ino });
+                // A batch failed: a name may yet link what the kernel takes for unlinked.
+                if queue.failed {
+                    log::error!("inode {ino} evicted unlinked, with unlinks failed: it stays");
                     return;
                 }
+                let pending = queue.pending.get_mut(&ino);
+                let queued = pending.map(|pending| *pending += 1).is_some();
+                if queued {
+                    queue.ops.push(DelayedOp::Evict { ino });
+                }
+                queued.then_some(queue.ops.len())
+            };
+            match queued {
+                Some(1) => self.wake_worker(),
+                Some(_) => {}
+                None => {
+                    let store = self.volume.store_object_id();
+                    self.filesystem.graveyard().queue_tombstone_object(store, ino);
+                }
             }
-            self.filesystem.graveyard().queue_tombstone_object(self.volume.store_object_id(), ino);
         }
     }
 
@@ -1220,7 +1253,8 @@ impl<P: Platform> Fxfs<P> {
         };
         // Whenever a batch's worth waits: the queue may come down to a multiple of a batch from
         // above, as the batches applied leave it, and up from there again without reaching one.
-        if queued >= DELAYED_BATCH {
+        // And as it fills, for what never makes a batch (`apply_stragglers`).
+        if queued == 1 || queued >= DELAYED_BATCH {
             self.wake_worker();
         }
         if queued >= DELAYED_QUEUE {
@@ -1247,31 +1281,69 @@ impl<P: Platform> Fxfs<P> {
     fn start_workers(&self) {
         let mut workers = self.delayed.workers.lock().unwrap();
         if workers.is_none() {
-            let mut stopped = Vec::with_capacity(DELAYED_WORKERS);
+            let mut stopped = Vec::with_capacity(DELAYED_WORKERS + 1);
             for _ in 0..DELAYED_WORKERS {
-                let (stop, worker_stopped) = futures::channel::oneshot::channel();
-                let fs = FxfsRef(self);
-                // At a high priority: the unlinkers wait for it, and those of one directory
-                // would otherwise spin on its lock while the worker waits for the CPU.
-                self.platform.spawn_urgent(async move {
-                    let fs = fs;
-                    // SAFETY: The filesystem stays where it is until this stops (`FxfsRef`).
-                    let fs = unsafe { &*fs.0 };
-                    loop {
-                        let queued = fs.delayed.queued.listen();
-                        if fs.delayed.queue.lock().unwrap().stopping {
-                            break;
-                        }
-                        // A batch failing fails later changes (`apply_batch`).
-                        let _ = fs.apply_until(|queue| queue.ops.len() < DELAYED_BATCH).await;
-                        queued.await;
-                    }
-                    let _ = stop.send(());
-                });
-                stopped.push(worker_stopped);
+                stopped.push(self.spawn_worker(|fs| fs.apply_full_batches().boxed()));
             }
+            stopped.push(self.spawn_worker(|fs| fs.apply_stragglers().boxed()));
             *workers = Some(DelayedWorkers { stopped });
             self.delayed.started.store(true, Ordering::Release);
+        }
+    }
+
+    /// Runs `worker`, which stops as `stop_delayed` asks, in the background. At a high priority:
+    /// the unlinkers wait for it, and those of one directory would otherwise spin on its lock
+    /// while the worker waits for the CPU.
+    fn spawn_worker(
+        &self,
+        worker: for<'a> fn(&'a Self) -> BoxFuture<'a, ()>,
+    ) -> futures::channel::oneshot::Receiver<()> {
+        let (stop, stopped) = futures::channel::oneshot::channel();
+        let fs = FxfsRef(self);
+        self.platform.spawn_urgent(async move {
+            let fs = fs;
+            // SAFETY: The filesystem stays where it is until this stops (`FxfsRef`).
+            let fs = unsafe { &*fs.0 };
+            worker(fs).await;
+            let _ = stop.send(());
+        });
+        stopped
+    }
+
+    /// A worker: applies the full batches queued, as they are.
+    async fn apply_full_batches(&self) {
+        loop {
+            let queued = self.delayed.queued.listen();
+            if self.delayed.queue.lock().unwrap().stopping {
+                break;
+            }
+            // A batch failing fails later changes (`apply_batch`).
+            let _ = self.apply_until(|queue| queue.ops.len() < DELAYED_BATCH).await;
+            queued.await;
+        }
+    }
+
+    /// A worker: applies what stays queued `DELAYED_WAIT` with no more coming, which no full
+    /// batch takes.
+    async fn apply_stragglers(&self) {
+        loop {
+            let queued = self.delayed.queued.listen();
+            let (stopping, waiting) = {
+                let queue = self.delayed.queue.lock().unwrap();
+                (queue.stopping, !queue.ops.is_empty())
+            };
+            if stopping {
+                break;
+            }
+            if !waiting {
+                queued.await;
+                continue;
+            }
+            let waited = pin!(fasync::Timer::new(Instant::now() + DELAYED_WAIT));
+            if let Either::Left(_) = select(waited, queued).await {
+                // A batch failing fails later changes (`apply_batch`).
+                let _ = self.apply_until(|queue| queue.ops.is_empty()).await;
+            }
         }
     }
 
@@ -1291,12 +1363,12 @@ impl<P: Platform> Fxfs<P> {
         self.drain_all().await
     }
 
-    /// Applies the queued unlinks if any changes one of `inos`: before reading or changing them.
+    /// Applies the queued unlinks if any changes one of `inos`: before reading them.
     async fn drain(&self, inos: &[u64]) -> Result<(), Error> {
         self.apply_until(|queue| !inos.iter().any(|ino| queue.pending.contains_key(ino))).await
     }
 
-    /// Applies the queued unlinks.
+    /// Applies the queued unlinks: before anything that must come after them.
     async fn drain_all(&self) -> Result<(), Error> {
         self.apply_until(|queue| queue.pending.is_empty()).await
     }
@@ -1617,8 +1689,9 @@ impl<P: Platform> Fxfs<P> {
         Ok(())
     }
 
-    /// The filesystem's usage.
+    /// The filesystem's usage, what was unlinked gone from it (TASK-79.21).
     pub async fn statfs(&self) -> Result<StatFs, Error> {
+        self.drain_all().await?;
         let block_size = self.filesystem.block_size().get();
         let blocks = self.filesystem.device().block_count();
         let used = self.filesystem.allocator().get_used_bytes().0 / block_size;
@@ -1674,6 +1747,10 @@ impl<P: Platform> Fxfs<P> {
         inos: &[u64],
         options: Options<'a>,
     ) -> Result<Transaction<'a>, Error> {
+        ensure!(
+            !self.delayed.queue.lock().unwrap().failed,
+            anyhow!(FxfsError::Inconsistent).context("an unlink failed")
+        );
         let store = self.volume.store_object_id();
         let mut keys = LockKeys::with_capacity(inos.len());
         for &ino in inos {
@@ -1762,3 +1839,6 @@ fn data_size(data: Option<ObjectValue>) -> u64 {
         _ => 0,
     }
 }
+
+#[cfg(test)]
+mod tests;

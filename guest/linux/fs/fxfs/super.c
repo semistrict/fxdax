@@ -2600,6 +2600,9 @@ bool fxfs_follow_read_faults;
 module_param_named(follow_read_faults, fxfs_follow_read_faults, bool, 0644);
 MODULE_PARM_DESC(follow_read_faults,
 		 "A follower's read(2) copies fault under its fill barrier: a mutation the tests catch");
+bool fxfs_follow_fail_batch;
+module_param_named(follow_fail_batch, fxfs_follow_fail_batch, bool, 0644);
+MODULE_PARM_DESC(follow_fail_batch, "A follower's batches fail once applied (tests)");
 
 /* fxdax: a follower's batch, as its device tells of its writer's commits. */
 static void fxfs_vfs_follow_work(struct work_struct *work)
@@ -2661,6 +2664,11 @@ void fxfs_vfs_follow_barrier_take(void *vfs)
 void fxfs_vfs_follow_barrier_release(void *vfs)
 {
 	up_write(&fxfs_vfs_follow_info(vfs)->follow_barrier);
+}
+
+bool fxfs_vfs_follow_failing(void)
+{
+	return READ_ONCE(fxfs_follow_fail_batch);
 }
 
 void fxfs_vfs_follow_epoch(void *vfs, u32 which, u64 epoch)
