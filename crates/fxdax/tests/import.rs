@@ -508,7 +508,11 @@ fn zstd_layers_are_refused() {
         let mut importer = Importer::new(&fs);
         let layer = [0x28, 0xb5, 0x2f, 0xfd, 0, 0, 0, 0];
         let error = importer.apply(&layer[..]).await.expect_err("applied");
-        assert_eq!(format!("{error:#}"), "zstd-compressed layers are not supported");
+        assert_eq!(
+            format!("{error:#}"),
+            "zstd-compressed layers are not supported: EINVAL (errno 22)"
+        );
+        assert_eq!(error.errno(), Some(Errno::EINVAL));
         drop(importer);
         close(fs).await;
     })
@@ -532,11 +536,124 @@ fn paths_stay_in_the_image() {
         let error = importer.apply(layer.as_slice()).await.expect_err("applied");
         assert_eq!(
             format!("{error:#}"),
-            "applying \"../escaped\": the path \"../escaped\" goes through .."
+            "applying \"../escaped\": the path \"../escaped\" goes through ..: EINVAL (errno 22)"
         );
+        assert_eq!(error.errno(), Some(Errno::EINVAL));
         drop(importer);
         close(fs).await;
     })
+}
+
+/// A layer of one entry, `name`, of `kind`, its header as `make` leaves it.
+fn crafted(name: &str, kind: tar::EntryType, make: impl FnOnce(&mut tar::Header)) -> Vec<u8> {
+    let mut header = tar::Header::new_gnu();
+    header.set_entry_type(kind);
+    header.set_size(0);
+    header.set_mode(0o644);
+    header.set_uid(0);
+    header.set_gid(0);
+    header.set_mtime(0);
+    header.set_path(name).unwrap();
+    make(&mut header);
+    header.set_cksum();
+    let mut builder = tar::Builder::new(Vec::new());
+    builder.append(&header, std::io::empty()).unwrap();
+    builder.into_inner().unwrap()
+}
+
+/// A layer of a device node in a header of the old format, which has no device numbers.
+fn old_device() -> Vec<u8> {
+    let mut header = tar::Header::new_old();
+    header.set_entry_type(tar::EntryType::Char);
+    header.set_size(0);
+    header.set_mode(0o644);
+    header.set_uid(0);
+    header.set_gid(0);
+    header.set_mtime(0);
+    header.set_path("dev").unwrap();
+    header.set_cksum();
+    let mut builder = tar::Builder::new(Vec::new());
+    builder.append(&header, std::io::empty()).unwrap();
+    builder.into_inner().unwrap()
+}
+
+/// A file's layer, with the PAX record `key` of `value`.
+fn with_pax(key: &str, value: &[u8]) -> Vec<u8> {
+    let mut builder = tar::Builder::new(Vec::new());
+    builder.append_pax_extensions([(key, value)]).unwrap();
+    let mut header = tar::Header::new_gnu();
+    header.set_entry_type(tar::EntryType::Regular);
+    header.set_size(0);
+    header.set_mode(0o644);
+    header.set_uid(0);
+    header.set_gid(0);
+    header.set_mtime(0);
+    header.set_path("file").unwrap();
+    header.set_cksum();
+    builder.append(&header, std::io::empty()).unwrap();
+    builder.into_inner().unwrap()
+}
+
+/// TASK-79.88: each fault of a crafted image is `EINVAL`, not the `EIO` a failed host gives, each
+/// saying what it is.
+#[test]
+fn crafted_images_are_refused_with_einval() {
+    use tar::EntryType;
+    let cases: Vec<(&str, Vec<u8>)> = vec![
+        (
+            "the owner's uid or gid is too large",
+            crafted("f", EntryType::Regular, |h| {
+                h.set_uid(1 << 40);
+            }),
+        ),
+        (
+            "the owner's uid or gid is too large",
+            crafted("f", EntryType::Regular, |h| {
+                h.set_gid(1 << 40);
+            }),
+        ),
+        ("the PAX uid", with_pax("uid", b"root")),
+        ("the PAX gid", with_pax("gid", b"root")),
+        ("the PAX time", with_pax("mtime", b"noon")),
+        ("the PAX time", with_pax("atime", b"1.5x")),
+        ("no device major number", old_device()),
+        (
+            "is too large",
+            crafted("dev", EntryType::Char, |h| {
+                h.set_device_major(1 << 12).unwrap();
+                h.set_device_minor(0).unwrap();
+            }),
+        ),
+        (
+            "is too large",
+            crafted("dev", EntryType::Block, |h| {
+                h.set_device_major(0).unwrap();
+                h.set_device_minor(1 << 20).unwrap();
+            }),
+        ),
+        ("no link target", crafted("link", EntryType::Link, |_| {})),
+        (
+            "the link's target is missing",
+            crafted("link", EntryType::Link, |h| {
+                h.set_link_name("nowhere").unwrap();
+            }),
+        ),
+        ("no symlink target", crafted("link", EntryType::Symlink, |_| {})),
+        ("are not supported", crafted("x", EntryType::new(b'X'), |_| {})),
+        ("the root is not a directory", crafted("./", EntryType::Regular, |_| {})),
+    ];
+    for (expected, layer) in cases {
+        block_on(async {
+            let fs = Filesystem::format(Storage::memory(STORAGE_SIZE)).await.unwrap();
+            let mut importer = Importer::new(&fs);
+            let error = importer.apply(layer.as_slice()).await.expect_err(expected);
+            let said = format!("{error:#}");
+            assert!(said.contains(expected), "{expected:?} is not in {said:?}");
+            assert_eq!(error.errno(), Some(Errno::EINVAL), "{said}");
+            drop(importer);
+            close(fs).await;
+        })
+    }
 }
 
 /// An entry whose time is past what a `SystemTime` can hold is refused with `EINVAL`, saying so,

@@ -205,7 +205,9 @@ impl Importer {
         let magic = layer.fill_buf().context("reading the layer")?;
         let layer: Box<dyn Read + 'r> = match magic {
             [0x1f, 0x8b, ..] => Box::new(flate2::bufread::MultiGzDecoder::new(layer)),
-            [0x28, 0xb5, 0x2f, 0xfd, ..] => bail!("zstd-compressed layers are not supported"),
+            [0x28, 0xb5, 0x2f, 0xfd, ..] => {
+                return Err(refused("zstd-compressed layers are not supported"));
+            }
             _ => Box::new(layer),
         };
         self.made.clear();
@@ -230,7 +232,9 @@ impl Importer {
         let path = normalize(&entry.path_bytes())?;
         let Some((parent, name)) = split(&path) else {
             // The root, which only takes the entry's attributes.
-            ensure!(entry_type.is_dir(), "the root is not a directory");
+            if !entry_type.is_dir() {
+                return Err(refused("the root is not a directory"));
+            }
             let metadata = metadata(entry)?;
             return self.update_directory(&self.root(), &path, metadata).await;
         };
@@ -268,8 +272,10 @@ impl Importer {
                 return self.update_directory(&made, &path, metadata).await;
             }
             tar::EntryType::Link => {
-                let target = normalize(&entry.link_name_bytes().context("no link target")?)?;
-                let target = self.find(&target).await?.context("the link's target is missing")?;
+                let target = entry.link_name_bytes().ok_or_else(|| refused("no link target"))?;
+                let target = normalize(&target)?;
+                let target = self.find(&target).await?;
+                let target = target.ok_or_else(|| refused("the link's target is missing"))?;
                 // A hard link is its target's node, which keeps the target's attributes: the
                 // entry's own are not set.
                 target.link(&dir, name).await?;
@@ -279,7 +285,7 @@ impl Importer {
                 dir.create(name, perm, owner).await?
             }
             tar::EntryType::Symlink => {
-                let target = entry.link_name_bytes().context("no symlink target")?;
+                let target = entry.link_name_bytes().ok_or_else(|| refused("no symlink target"))?;
                 dir.symlink(name, &target, owner).await?
             }
             tar::EntryType::Char | tar::EntryType::Block | tar::EntryType::Fifo => {
@@ -290,7 +296,7 @@ impl Importer {
                 };
                 dir.mknod(name, file_type, perm, rdev, owner).await?
             }
-            other => bail!("entries of type {other:?} are not supported"),
+            other => return Err(refused(format!("entries of type {other:?} are not supported"))),
         };
         if attr.file_type == FileType::File {
             write_contents(&node, entry, &mut self.chunk).await?;
@@ -575,13 +581,21 @@ async fn entries(dir: &Node) -> anyhow::Result<Vec<Vec<u8>>> {
     Ok(dir.entries().await?.into_iter().map(|entry| entry.name).collect())
 }
 
+/// What a fault of the image itself is: `EINVAL`, as a caller tells a bad image from a failed host
+/// by it (TASK-79.88). A tar header's own parse errors stay as they are, I/O errors, as a read of
+/// the image failing is.
+fn refused(what: impl std::fmt::Display + Send + Sync + 'static) -> anyhow::Error {
+    anyhow::Error::new(Errno::EINVAL).context(what)
+}
+
 /// What `entry` says of the node it makes: its header, and its PAX records, which take
 /// precedence.
 fn metadata(entry: &mut tar::Entry<'_, impl Read>) -> anyhow::Result<Metadata> {
     let header = entry.header();
     let perm = (header.mode()? & 0o7777) as u16;
-    let mut uid = u32::try_from(header.uid()?).context("the owner's uid is too large")?;
-    let mut gid = u32::try_from(header.gid()?).context("the owner's gid is too large")?;
+    let too_large = |_| refused("the owner's uid or gid is too large");
+    let mut uid = u32::try_from(header.uid()?).map_err(too_large)?;
+    let mut gid = u32::try_from(header.gid()?).map_err(too_large)?;
     let mtime = since_epoch(Duration::from_secs(header.mtime()?))?;
     let mut times = Times { atime: mtime, mtime };
     let mut atime = None;
@@ -594,8 +608,8 @@ fn metadata(entry: &mut tar::Entry<'_, impl Read>) -> anyhow::Result<Metadata> {
             continue;
         }
         match key {
-            "uid" => uid = record.value()?.parse().context("the PAX uid")?,
-            "gid" => gid = record.value()?.parse().context("the PAX gid")?,
+            "uid" => uid = record.value()?.parse().map_err(|_| refused("the PAX uid"))?,
+            "gid" => gid = record.value()?.parse().map_err(|_| refused("the PAX gid"))?,
             "mtime" => times.mtime = pax_time(record.value()?)?,
             "atime" => atime = Some(pax_time(record.value()?)?),
             _ => {}
@@ -611,11 +625,14 @@ fn metadata(entry: &mut tar::Entry<'_, impl Read>) -> anyhow::Result<Metadata> {
 /// before the epoch are the epoch.
 fn pax_time(value: &str) -> anyhow::Result<SystemTime> {
     let (secs, fraction) = value.split_once('.').unwrap_or((value, ""));
-    let secs: i64 = secs.parse().with_context(|| format!("the PAX time {value:?}"))?;
+    let bad = || refused(format!("the PAX time {value:?}"));
+    let secs: i64 = secs.parse().map_err(|_| bad())?;
     let Ok(secs) = u64::try_from(secs) else {
         return Ok(UNIX_EPOCH);
     };
-    ensure!(fraction.bytes().all(|byte| byte.is_ascii_digit()), "the PAX time {value:?}");
+    if !fraction.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(bad());
+    }
     let nanos = format!("{:0<9}", &fraction[..fraction.len().min(9)]).parse::<u32>()?;
     since_epoch(Duration::new(secs, nanos))
 }
@@ -631,9 +648,11 @@ fn since_epoch(since: Duration) -> anyhow::Result<SystemTime> {
 /// The device a device node's header names, as Linux encodes it for user space (`new_encode_dev`,
 /// as glibc's `makedev`), which Fxfs keeps.
 fn device(header: &tar::Header) -> anyhow::Result<u32> {
-    let major = header.device_major()?.context("no device major number")?;
-    let minor = header.device_minor()?.context("no device minor number")?;
-    ensure!(major < 1 << 12 && minor < 1 << 20, "device {major}:{minor} is too large");
+    let major = header.device_major()?.ok_or_else(|| refused("no device major number"))?;
+    let minor = header.device_minor()?.ok_or_else(|| refused("no device minor number"))?;
+    if major >= 1 << 12 || minor >= 1 << 20 {
+        return Err(refused(format!("device {major}:{minor} is too large")));
+    }
     Ok((minor & 0xff) | (major << 8) | ((minor & !0xff) << 12))
 }
 
@@ -644,7 +663,10 @@ fn normalize(path: &[u8]) -> anyhow::Result<Vec<u8>> {
     for component in path.split(|&byte| byte == b'/') {
         match component {
             b"" | b"." => {}
-            b".." => bail!("the path {:?} goes through ..", String::from_utf8_lossy(path)),
+            b".." => {
+                let path = String::from_utf8_lossy(path);
+                return Err(refused(format!("the path {path:?} goes through ..")));
+            }
             component => {
                 if !normal.is_empty() {
                     normal.push(b'/');
