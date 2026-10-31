@@ -1,0 +1,149 @@
+dax.c: lines 1548/1903 (81.3%), branches taken 1042/1716 (60.7%)
+  never called: fxfs_dax_set_check_moves
+  never called: fxfs_dax_diagnosed
+  never called: fxfs_dax_read_done
+  never called: fxfs_dax_read_device_page
+  never called: fxfs_dax_read_shadowed
+  never called: fxfs_dax_differ
+  never called: fxfs_dax_trace_dump
+  never called: fxfs_dax_check_device
+  never called: fxfs_dax_check_moved
+  never called: fxfs_dax_read
+  never called: fxfs_dax_writable_pte
+  never called: fxfs_dax_check_sealed
+  never called: fxfs_dax_hold_shadowed
+  never called: fxfs_dax_verify_writable
+  never called: fxfs_dax_shrunk
+  never called: fxfs_dax_changed
+  fxfs_dax_shadow_map: not run: 637-642,649-651,653,655-656,658
+  fxfs_dax_shadow_check: not run: 807-809,814
+  fxfs_dax_map_slice: not run: 909-912,914,917-918
+  fxfs_dax_trace: not run: 976-977
+  fxfs_dax_map_extents: not run: 1374-1375,1408
+  fxfs_dax_map_moved: not run: 1471
+  fxfs_dax_map_chunk: not run: 1577-1578,1587-1588
+  fxfs_dax_give_unmapped: not run: 1672,1674
+  fxfs_dax_new_range: not run: 1693-1697
+  fxfs_dax_alloc_range: not run: 1968
+  fxfs_dax_get_region: not run: 2001-2002
+  fxfs_dax_map_to: not run: 2135
+  fxfs_dax_keep_region: not run: 2228-2229
+  fxfs_dax_move: not run: 2260-2262
+  fxfs_dax_new_slice: not run: 2325,2339-2340,2355-2356,2366-2367,2381
+  fxfs_dax_get_range: not run: 2465,2503
+  fxfs_dax_drop_pinned: not run: 2569
+  fxfs_dax_reserve_write: not run: 2669
+  fxfs_dax_prepare_write: not run: 2709,2713
+  fxfs_dax_iomap_read: not run: 2763,2768-2771,2773,2780,2782
+  fxfs_dax_iomap_write: not run: 3000-3001,3022,3024,3066,3072,3078,3081-3089,3115,3131-3133,3143,3146
+  fxfs_dax_iomap_begin: not run: 3218,3226
+  fxfs_dax_read_iter: not run: 3286,3292
+  fxfs_dax_write_iter: not run: 3341,3344,3356
+  fxfs_dax_do_fault: not run: 3448,3450-3451,3453
+  fxfs_dax_check_ptes: not run: 3628-3632,3634-3635,3638,3640-3641,3643,3646
+  fxfs_dax_seal: not run: 3808,3810
+  fxfs_dax_evacuee_add: not run: 3920
+  fxfs_dax_evacuee_gather: not run: 3951
+  fxfs_dax_evacuee_map: not run: 4006
+  fxfs_dax_evacuee_place: not run: 4108
+  fxfs_dax_lock_unheld: not run: 4215-4216
+  fxfs_dax_forget_evacuating: not run: 4272-4273,4277
+  fxfs_dax_create: not run: 4418-4420,4428,4430-4434,4454-4456
+  fxfs_dax_quiesce: not run: 4491
+  fxfs_dax_destroy: not run: 4525
+  fxfs_dax_attach: not run: 4571,4579,4581
+  fxfs_dax_set_inode: not run: 4599
+  fxfs_dax_punch_begin: not run: 4797
+  fxfs_dax_resize_begin: not run: 4818-4819,4839-4840,4846,4863
+  fxfs_dax_resize_end: not run: 4892
+device.c: lines 192/197 (97.5%), branches taken 67/98 (68.4%)
+  fxfs_device_find: not run: 81-82
+  fxfs_device_submit: not run: 139
+  fxfs_device_seal_begin: not run: 248
+  fxfs_device_dax: not run: 289
+super.c: lines 652/1239 (52.6%), branches taken 306/938 (32.6%)
+  never called: fxfs_vfs_follower_getattr
+  never called: fxfs_vfs_d_revalidate
+  never called: fxfs_vfs_write_zeros
+  never called: fxfs_vfs_listxattr
+  never called: fxfs_vfs_fill_folio
+  never called: fxfs_vfs_read_folio
+  never called: fxfs_vfs_read_folios
+  never called: fxfs_vfs_read_work
+  never called: fxfs_vfs_readahead
+  never called: fxfs_vfs_folio_state
+  never called: fxfs_vfs_pages_bytes
+  never called: fxfs_vfs_reserve_range
+  never called: fxfs_vfs_unreserve_clean
+  never called: fxfs_vfs_make_room
+  never called: fxfs_vfs_write_begin
+  never called: fxfs_vfs_dirty_range
+  never called: fxfs_vfs_dirty_folio
+  never called: fxfs_vfs_release_folio
+  never called: fxfs_vfs_zero_past_end
+  never called: fxfs_vfs_invalidate_folio
+  never called: fxfs_vfs_write_end
+  never called: fxfs_vfs_write_run
+  never called: fxfs_vfs_writepages
+  never called: fxfs_vfs_direct_IO
+  never called: fxfs_vfs_follower_read
+  never called: fxfs_vfs_follower_read_iter
+  never called: fxfs_vfs_follower_splice_read
+  never called: fxfs_vfs_follower_fadvise
+  never called: fxfs_vfs_follower_fault
+  never called: fxfs_vfs_follower_mmap
+  never called: fxfs_vfs_page_mkwrite
+  never called: fxfs_vfs_mmap
+  never called: fxfs_vfs_resized
+  never called: fxfs_vfs_follow_work
+  never called: fxfs_vfs_committed
+  never called: fxfs_vfs_follow_fill_begin
+  never called: fxfs_vfs_follow_fill_end
+  never called: fxfs_vfs_follow_assert_filling
+  never called: fxfs_vfs_follow_barrier_take
+  never called: fxfs_vfs_follow_barrier_release
+  never called: fxfs_vfs_follow_failing
+  never called: fxfs_vfs_follow_epoch
+  never called: fxfs_vfs_drop_data
+  never called: fxfs_vfs_settle_attr
+  never called: fxfs_vfs_changing
+  never called: fxfs_vfs_drop_file
+  never called: fxfs_vfs_settle_file
+  never called: fxfs_vfs_drop_entries
+  never called: fxfs_vfs_build_show
+  never called: fxfs_vfs_test_super
+  never called: fxfs_vfs_reconfigure
+  never called: fxfs_vfs_exit
+  fxfs_vfs_iget: not run: 177-178,185-186,188-189
+  fxfs_vfs_lookup: not run: 251-252,257
+  fxfs_vfs_instantiate: not run: 309
+  fxfs_vfs_new_gid: not run: 329-331,342-343
+  fxfs_vfs_get_acl: not run: 364-365,371-373,375,378,381-382
+  fxfs_vfs_store_acl: not run: 400,412-413
+  fxfs_vfs_set_acl: not run: 437-438
+  fxfs_vfs_new_acls: not run: 453-455
+  fxfs_vfs_init_acls: not run: 467-468,471-473
+  fxfs_vfs_acl_xattr: not run: 491-493,495-496,498-499,501
+  fxfs_vfs_mknod: not run: 547,549
+  fxfs_vfs_tmpfile: not run: 572-574,578-580
+  fxfs_vfs_rename: not run: 711,715,717
+  fxfs_vfs_resize: not run: 757-759
+  fxfs_vfs_setattr: not run: 786-788
+  fxfs_vfs_each_extent: not run: 853-854
+  fxfs_vfs_llseek: not run: 903,912
+  fxfs_vfs_fiemap_extent: not run: 943-946
+  fxfs_vfs_punch: not run: 1011-1016,1018-1021,1030
+  fxfs_vfs_get_link: not run: 1154-1155
+  fxfs_vfs_dir_fill: not run: 1237
+  fxfs_vfs_iterate: not run: 1307
+  fxfs_vfs_file_open: not run: 2089,2091,2093
+  fxfs_vfs_file_release: not run: 2104
+  fxfs_vfs_remap_file_range: not run: 2305,2315,2323-2324
+  fxfs_vfs_freeze_fs: not run: 2413
+  fxfs_vfs_encode_fh: not run: 2535-2536
+  fxfs_vfs_resize_work: not run: 2577
+  fxfs_vfs_dir_ioctl: not run: 2715,2717,2719-2721,2723-2726
+  fxfs_vfs_fill_super: not run: 2939,2942-2943,2955-2957,2987,2997-2998
+  fxfs_vfs_get_tree: not run: 3032,3038-3039,3046,3050,3054-3055
+  fxfs_vfs_kill_sb: not run: 3115
+  fxfs_vfs_init: not run: 3147-3148,3156-3158

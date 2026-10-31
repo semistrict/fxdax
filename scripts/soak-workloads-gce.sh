@@ -8,8 +8,9 @@
 # (scripts/test-e2e.sh):
 #
 #   crash     the VM stopped mid-workload, its evacuations held at each step, its process killed
-#   checks    the guest checks, with delays, on a small window, and with allocations failing, on
-#             the debug kernel (lockdep, KCSAN)
+#   checks    the guest checks, with delays and on a small window
+#   sanitized the DAX checks and allocations failing, on the debug kernel (lockdep, KCSAN), too
+#             slow for the delays' and the small window's within their cases' timeouts
 #   replicas  followers under torture and remounting, snapshots, suspending and migrating
 #   shapes    DAX pgbench over guest memory, vCPUs and windows (scripts/soak-gce.sh)
 #
@@ -25,10 +26,10 @@ results=${1:?usage: soak-workloads-gce.sh RESULTS [GROUP...]}
 shift
 groups=("$@")
 if (( ${#groups[@]} == 0 )); then
-    groups=(crash checks replicas shapes)
+    groups=(crash checks sanitized replicas shapes)
 fi
 for group in "${groups[@]}"; do
-    [[ $group =~ ^(crash|checks|replicas|shapes)$ ]] || { echo "no such group: $group" >&2; exit 2; }
+    [[ $group =~ ^(crash|checks|sanitized|replicas|shapes)$ ]] || { echo "no such group: $group" >&2; exit 2; }
 done
 factor=${FXDAX_SOAK_ROUNDS:-1}
 [[ $factor =~ ^[1-9][0-9]*$ ]] || { echo "FXDAX_SOAK_ROUNDS is a factor" >&2; exit 2; }
@@ -53,8 +54,12 @@ fxfs-guest-crash-dax-killed fxfs-guest-crash-dax-gathered fxfs-guest-crash-dax-m
 fxfs-guest-crash-dax-placed" &
             ;;
         checks)
-            soak checks 10 debug 20 "fxfs-guest-checks fxfs-guest-checks-dax \
-fxfs-guest-checks-dax-delay fxfs-guest-checks-dax-small fxfs-guest-faults-dax" &
+            soak checks 10 release 20 "fxfs-guest-checks fxfs-guest-checks-dax \
+fxfs-guest-checks-dax-delay fxfs-guest-checks-dax-small" &
+            ;;
+        sanitized)
+            soak sanitized 10 debug 20 "fxfs-guest-checks fxfs-guest-checks-dax \
+fxfs-guest-faults-dax" &
             ;;
         replicas)
             soak replicas 5 release 600 "fxfs-guest-follow-torture fxfs-guest-follow-torture-dax \

@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-30 01:36'
-updated_date: '2026-10-30 09:44'
+updated_date: '2026-10-31 07:39'
 labels:
   - dax
   - bug
@@ -60,4 +60,6 @@ Cause of r265's fsck error, to prove on GCE: blocks fxfs_dax_append_end reserves
 r269: seed 1794450854429239374, torture, 20 rounds passed (main's Firecracker). r271: the timing-only variant dbbbfd82c with every CPU dumped on a lockup, 20 rounds passed: the lockup didn't recur. r274: late pre-fault, torture alone, fxfs.dax_trace=1, 40 rounds passed: not reproduced, so its failures came in full suites only (2 in ~35 full rounds). r275's check made no tail (reservations stop at the range's end, and a small file's range does), so proved nothing; append_reserved_tail now shrinks a 1 MiB file first and asserts the blocks. r279 main and r280 3358b1089, strict; r281 with fsck's allowance.
 
 Proved: append_reserved_tail, strict fsck, fails with ExtentExceedsLength(9, 4, AttributeId(0), 274532, Value("274432..327680")) at main (r279) and at 3358b1089 before the size fix (r280), each round: the error r265 hit is the reservation's since 898253757 (TASK-92.58), any file left with a reserved tail, not caused by 76ec99cf9. Its assertion of the blocks passed: the tail is there.
+
+2026-10-31, the soak (scripts/soak-workloads-gce.sh checks, debug kernel, tree 674bce07a, Firecracker 412e0b8d4, which has no late pre-fault): fxfs-guest-checks-dax round 2 of 10: seed 1793234165365156062, phase 12, after the threads: /mnt/fxdax/torture-2 at 0x1403e (thread 2's) reads 0x0, its model 0xee. So it is not the late pre-fault's: this is the first sighting without it, and the first on the debug kernel: 'the change is implicated' above no longer holds. r319 repeats the full suite on the debug kernel with fxfs.dax_trace=1, whose dump the check takes before it fails. Logs: /tmp/fxdax-soak-results/checks/e2e/fxfs-guest-checks-dax/round-2.
 <!-- SECTION:NOTES:END -->

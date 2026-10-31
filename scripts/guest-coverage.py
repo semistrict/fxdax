@@ -27,7 +27,7 @@ SOURCES = ("dax", "device", "super")
 
 FUNCTION = re.compile(r"^function (\S+) called (\d+)")
 LINE = re.compile(r"^\s*(#####|=====|[\d*]+):\s*(\d+):")
-BRANCH = re.compile(r"^branch\s+\d+ (never executed|taken (\d+)%)")
+BRANCH = re.compile(r"^branch\s+\d+ (never executed|taken (\d+))")
 
 
 def summarize(gcov):

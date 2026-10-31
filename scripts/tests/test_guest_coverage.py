@@ -16,8 +16,8 @@ function fxfs_dax_used called 12 returned 100% blocks executed 75%
        12:   10:static int fxfs_dax_used(int a)
         -:   11:{
        12:   12:	if (a)
-branch  0 taken 100%
-branch  1 taken 0%
+branch  0 taken 12
+branch  1 taken 0 (fallthrough)
     #####:   13:		return 1;
     #####:   14:		return 2;
        12:   15:	return 0;

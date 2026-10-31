@@ -392,7 +392,7 @@ int virtio_extent_submit(struct virtio_extent *vext, struct vext_request *req)
 			return err;
 		}
 		/* The queue is full: wait for the device to complete a request. */
-		wait_event(queue->room, queue->vq->num_free >= descs);
+		wait_event(queue->room, READ_ONCE(queue->vq->num_free) >= descs);
 	}
 }
 EXPORT_SYMBOL_GPL(virtio_extent_submit);

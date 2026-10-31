@@ -870,7 +870,7 @@ mod tests {
 
     /// TASK-44.8: a console's complaints fail its test: a WARN_ON's, lockdep's, a KCSAN report of
     /// a race in fxdax's code; not KCSAN's of a race of the rest of the kernel's, nor of the race
-    /// looked into (KCSAN_REVIEWED_CHANGE).
+    /// looked into (KCSAN_REVIEWED_CHANGE, KCSAN_REVIEWED_PEERS).
     #[test]
     fn consoles_fail_on_their_kernels_complaints() {
         let dir = tempdir::TempDir::new("console").unwrap();
@@ -897,6 +897,8 @@ mod tests {
         assert_eq!(checked("theirs.console.txt", &theirs), Ok(()));
         let reviewed = kcsan("fxfs_dax_seal+0x10/0x20 / kthread_is_per_cpu", "0x40000 -> 0x0");
         assert_eq!(checked("reviewed.console.txt", &reviewed), Ok(()));
+        let peer = kcsan("folio_batch_move_lru / fxfs_vfs_read_folios+0x1b3/0x1f0", "0x1 -> 0x8");
+        assert_eq!(checked("peer.console.txt", &peer), Ok(()));
         let ours =
             kcsan("fxfs_dax_region_open+0x10/0x20 / fxfs_dax_map_to+0x30/0x40", "0x0 -> 0x1");
         assert_eq!(
@@ -918,6 +920,12 @@ mod tests {
 /// Rust do (memalloc_nofs_save and restore, inlined), which other tasks read for other bits of the
 /// word, read whole (the scheduler's kthread_is_per_cpu, for PF_KTHREAD; mem_cgroup_from_task).
 const KCSAN_REVIEWED_CHANGE: u64 = 0x0004_0000;
+
+/// The functions of the kernel's whose races with fxdax's code KCSAN reports, looked into:
+/// folio_batch_move_lru reads a folio's flags, a folio new to the LRU, as the worker that read it
+/// (fxfs_vfs_read_folios) marks it uptodate and unlocks it, for any bits of the word, as the
+/// reads of any filesystem finishing on another thread race it.
+const KCSAN_REVIEWED_PEERS: [&str; 1] = ["folio_batch_move_lru"];
 
 /// Whether the kernel's function `function` is fxdax's code's: fs/fxfs's, its Rust's
 /// (whose mangled names name its crates, fxfs and fxfs_linux), or virtio_extent's.
@@ -970,8 +978,11 @@ pub fn complaints(console: &Path) -> anyhow::Result<()> {
         // "BUG: KCSAN: data-race in FUNCTION[+OFFSET/LENGTH][ / FUNCTION[+...]]", then the
         // report, to a line of '='s, which says "value changed: 0xOLD -> 0xNEW".
         if let Some((_, functions)) = line.split_once("BUG: KCSAN: data-race in ") {
-            let of_ours = (functions.split(" / "))
-                .any(|function| ours(function.trim().split('+').next().unwrap_or_default()));
+            let names: Vec<&str> = (functions.split(" / "))
+                .map(|function| function.trim().split('+').next().unwrap_or_default())
+                .collect();
+            let of_ours = names.iter().any(|function| ours(function));
+            let reviewed = names.iter().any(|function| KCSAN_REVIEWED_PEERS.contains(function));
             let report = lines[at + 1..].iter().take_while(|line| !line.contains("=========="));
             let changed = report.filter_map(|line| line.split_once("value changed: ")).find_map(
                 |(_, change)| {
@@ -981,7 +992,7 @@ pub fn complaints(console: &Path) -> anyhow::Result<()> {
                     Some(word(old)? ^ word(new)?)
                 },
             );
-            if !of_ours || changed == Some(KCSAN_REVIEWED_CHANGE) {
+            if !of_ours || reviewed || changed == Some(KCSAN_REVIEWED_CHANGE) {
                 continue;
             }
         }
