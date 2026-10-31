@@ -82,12 +82,16 @@ struct virtio_extent {
 	/* fxdax: whether it is closed (virtio_extent_close), which `open_lock` guards. */
 	struct mutex open_lock;
 	bool closed;
+	/* fxdax: those who found it and have yet to put it, whom unbinding it waits for. */
+	atomic_t users;
 	struct list_head node;
 };
 
 /* The bound devices. */
 static LIST_HEAD(devices);
 static DEFINE_MUTEX(devices_lock);
+/* fxdax: unbinding, for a device's `users` to go; not the device's, which then goes too. */
+static DECLARE_WAIT_QUEUE_HEAD(devices_unused);
 
 struct virtio_extent *virtio_extent_find(const char *tag)
 {
@@ -96,6 +100,7 @@ struct virtio_extent *virtio_extent_find(const char *tag)
 	mutex_lock(&devices_lock);
 	list_for_each_entry(vext, &devices, node) {
 		if (!strcmp(vext->config.tag, tag)) {
+			atomic_inc(&vext->users);
 			found = vext;
 			break;
 		}
@@ -104,6 +109,13 @@ struct virtio_extent *virtio_extent_find(const char *tag)
 	return found;
 }
 EXPORT_SYMBOL_GPL(virtio_extent_find);
+
+void virtio_extent_put(struct virtio_extent *vext)
+{
+	if (atomic_dec_and_test(&vext->users))
+		wake_up_all(&devices_unused);
+}
+EXPORT_SYMBOL_GPL(virtio_extent_put);
 
 const struct vext_config *virtio_extent_config(struct virtio_extent *vext)
 {
@@ -947,10 +959,16 @@ static void vext_remove(struct virtio_device *vdev)
 	mutex_lock(&devices_lock);
 	list_del(&vext->node);
 	mutex_unlock(&devices_lock);
+	/*
+	 * fxdax: a filesystem goes on using the device, whose window it maps, and which goes with
+	 * this: unbinding waits for it to unmount, which needs requests to go on (TASK-79.48).
+	 */
+	wait_event_idle(devices_unused, !atomic_read(&vext->users));
 	vext_selftest_remove(vdev);
 	sysfs_remove_group(&vdev->dev.kobj, &vext_attr_group);
-	virtio_reset_device(vdev);
-	vdev->config->del_vqs(vdev);
+	/* Closed, it has no queues left to let go of. */
+	if (!vext->closed)
+		vext_reset_prepare(vdev);
 }
 
 static const struct virtio_device_id vext_ids[] = {

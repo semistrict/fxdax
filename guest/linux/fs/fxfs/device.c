@@ -77,8 +77,10 @@ struct fxfs_device *fxfs_device_find(const char *tag, size_t len, struct fxfs_de
 	if (!vext)
 		return NULL;
 	dev = kzalloc(sizeof(*dev), GFP_NOFS);
-	if (!dev)
+	if (!dev) {
+		virtio_extent_put(vext);
 		return NULL;
+	}
 	dev->vext = vext;
 	spin_lock_init(&dev->lock);
 	init_waitqueue_head(&dev->wait);
@@ -102,6 +104,7 @@ struct fxfs_device *fxfs_device_find(const char *tag, size_t len, struct fxfs_de
 
 void fxfs_device_put(struct fxfs_device *dev)
 {
+	virtio_extent_put(dev->vext);
 	kfree(dev);
 }
 

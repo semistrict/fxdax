@@ -268,8 +268,12 @@ struct vext_request {
 	struct sg_table data_sgt;
 };
 
-/* The bound device tagged `tag`, or NULL. It stays bound while the filesystem uses it. */
+/*
+ * The bound device tagged `tag`, or NULL. It stays bound until its finder puts it: unbinding it
+ * waits for that, and finds no more of it meanwhile.
+ */
 struct virtio_extent *virtio_extent_find(const char *tag);
+void virtio_extent_put(struct virtio_extent *vext);
 const struct vext_config *virtio_extent_config(struct virtio_extent *vext);
 
 /*

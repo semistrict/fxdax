@@ -409,6 +409,13 @@ mod guest {
         assert_eq!(fs::read(path("four")).unwrap(), FOUR);
         assert_eq!(fs::read(cold(0)).unwrap(), vec![0u8; 8192]);
 
+        // Unmounting closed the device: unbinding it has no queues to let go of (TASK-79.48).
+        unmount();
+        let device = crate::extent_driver::device();
+        crate::extent_driver::unbind(&device);
+        crate::extent_driver::bind(&device);
+        mount();
+        assert_eq!(fs::read(path("four")).unwrap(), FOUR);
         writeln!(tell, "remounted").unwrap();
         wait_to_end(&mut host);
     }

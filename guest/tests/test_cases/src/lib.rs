@@ -46,6 +46,10 @@ use test_fxfs_guest_checks::TestFxfsGuestChecks;
 #[cfg(feature = "guest")]
 mod kernel_log;
 
+// What the guest's tests unbind the extent driver with.
+#[cfg(feature = "guest")]
+mod extent_driver;
+
 #[cfg(any(feature = "guest", test))]
 mod sqlite;
 #[cfg(any(feature = "host", target_os = "linux"))]

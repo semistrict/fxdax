@@ -265,6 +265,11 @@ mod guest {
 
     /// Mounts the image with the kernel's Fxfs.
     fn mount() {
+        try_mount().expect("mount");
+    }
+
+    /// Mounts the image with the kernel's Fxfs, if it can.
+    fn try_mount() -> std::io::Result<()> {
         fs::create_dir_all(MNT).unwrap();
         let source = CString::new("fxdax").unwrap();
         let target = CString::new(MNT).unwrap();
@@ -272,7 +277,7 @@ mod guest {
         let ret = unsafe {
             libc::mount(source.as_ptr(), target.as_ptr(), fstype.as_ptr(), 0, std::ptr::null())
         };
-        assert_eq!(ret, 0, "mount: {}", std::io::Error::last_os_error());
+        if ret == 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) }
     }
 
     /// Evicts `path`'s inode, for it to be read in again: written back, and its pages dropped,
@@ -1146,6 +1151,38 @@ mod guest {
         assert_eq!(fs::read(path("frozen")).unwrap(), b"written once thawed");
         fs::write(path("thawed"), b"writes go on").unwrap();
         assert_eq!(fs::read(path("thawed")).unwrap(), b"writes go on");
+    }
+
+    /// Unbinding the driver from a mounted device waits for it to unmount, the filesystem working
+    /// meanwhile, rather than freeing what it uses; binding it again gives it back (TASK-79.48).
+    fn test_unbind_waits_for_unmount() {
+        use crate::extent_driver;
+
+        let device = extent_driver::device();
+        let (unbound, unbinding) = std::sync::mpsc::channel();
+        let unbinder = std::thread::spawn({
+            let device = device.clone();
+            move || {
+                extent_driver::unbind(&device);
+                unbound.send(()).unwrap();
+            }
+        });
+        let waited = unbinding.recv_timeout(std::time::Duration::from_millis(500));
+        assert_eq!(waited, Err(std::sync::mpsc::RecvTimeoutError::Timeout), "unbound while mounted");
+        fs::write(path("unbinding"), b"written while unbinding").unwrap();
+        fsync_dir(MNT);
+        assert_eq!(fs::read(path("unbinding")).unwrap(), b"written while unbinding");
+        // Nothing mounts a device going away.
+        unmount();
+        unbinder.join().unwrap();
+        let refused = try_mount().unwrap_err();
+        assert_eq!(refused.raw_os_error(), Some(libc::ENOENT), "{refused}");
+        extent_driver::bind(&device);
+        mount();
+        assert_eq!(fs::read(path("unbinding")).unwrap(), b"written while unbinding");
+        fs::write(path("bound"), b"written once bound again").unwrap();
+        fsync_dir(MNT);
+        assert_eq!(fs::read(path("bound")).unwrap(), b"written once bound again");
     }
 
     /// /proc/mounts shows the mount as it is: files mapping from the DAX window, if it has one.
@@ -4164,6 +4201,8 @@ mod guest {
             if self.small_window {
                 tests.push(("window_filled", &test_window_filled));
             }
+            // fxdax: last: it unmounts, which what the others left open would keep it from.
+            tests.push(("unbind_waits_for_unmount", &test_unbind_waits_for_unmount));
             let only = std::env::var("FXDAX_CHECKS").unwrap_or_default();
             let only: Vec<&str> = only.split(',').filter(|name| !name.is_empty()).collect();
             let mut failed = Vec::new();

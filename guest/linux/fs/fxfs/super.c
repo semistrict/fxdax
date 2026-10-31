@@ -2416,10 +2416,19 @@ static int fxfs_vfs_freeze_fs(struct super_block *sb)
 
 static int fxfs_vfs_unfreeze_fs(struct super_block *sb)
 {
-	int err = fxfs_nofs(fxfs_thaw(fxfs_vfs_fs(sb)));
+	struct fxfs_vfs_info *info = fxfs_vfs_info(sb);
+	int err = fxfs_nofs(fxfs_thaw(info->fs));
 
-	if (fxfs_vfs_info(sb)->dax)
-		fxfs_dax_thaw(fxfs_vfs_info(sb)->dax);
+	if (info->dax)
+		fxfs_dax_thaw(info->dax);
+	/*
+	 * fxdax: a store resized while the VM was away, snapshotted, told it nothing: what the device
+	 * says now it takes as if told, before anything thawed sees the filesystem's size.
+	 */
+	if (!err && !info->follows) {
+		schedule_work(&info->resize);
+		flush_work(&info->resize);
+	}
 	return err;
 }
 
@@ -3025,12 +3034,16 @@ static int fxfs_vfs_get_tree(struct fs_context *fc)
 	if (!vext)
 		return -ENOENT;
 	info = kzalloc(sizeof(*info), GFP_KERNEL);
-	if (!info)
+	if (!info) {
+		virtio_extent_put(vext);
 		return -ENOMEM;
+	}
 	info->vext = vext;
 	fc->s_fs_info = info;
 	sb = sget_fc(fc, fxfs_vfs_test_super, fxfs_vfs_set_super);
-	/* A new superblock took it; a shared one, or none, did not. */
+	/* A new superblock took it, and the device with it; a shared one, or none, did not. */
+	if (fc->s_fs_info)
+		virtio_extent_put(vext);
 	kfree(fc->s_fs_info);
 	fc->s_fs_info = NULL;
 	if (IS_ERR(sb))
@@ -3102,6 +3115,7 @@ static void fxfs_vfs_kill_sb(struct super_block *sb)
 		static_branch_dec(&fxfs_vfs_followers);
 	/* fxdax: a follower lets go of its store, which keeps a writer from it once it was cut off. */
 	virtio_extent_close(info->vext);
+	virtio_extent_put(info->vext);
 	kfree(info);
 }
 
