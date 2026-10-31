@@ -4,10 +4,10 @@ title: >-
   Guest DAX: map_to's gate assertion fires outside the gate on the KASAN kernel:
   a write's get_range reaches a writable region through map_chunk without the
   gate
-status: Done
+status: In Progress
 assignee: []
 created_date: '2026-10-29 20:54'
-updated_date: '2026-10-31 06:53'
+updated_date: '2026-10-31 19:51'
 labels:
   - dax
   - bug
@@ -26,7 +26,7 @@ GCE r257 (main 88032eb67, FXDAX_GUEST_KERNEL_BUILD=kasan: KASAN, KFENCE, lockdep
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [x] #1 The assertion fires only where a writable MAP is sent outside the gate
-- [x] #2 Whether a writable MAP is sent outside the gate is known: fixed if so
+- [ ] #2 Whether a writable MAP is sent outside the gate is known: fixed if so
 <!-- AC:END -->
 
 ## Definition of Done
@@ -48,6 +48,10 @@ GCE r261, KASAN kernel (KASAN, KFENCE, lockdep) at bc1a436df: fxfs-guest-checks-
 GCE r303 (2026-10-31), the KASAN kernel on the batch at 4fcfe36af: fxfs-guest-follow-dax and fxfs-guest-follow-remount-dax passed; fxfs-guest-checks-dax hit its 180 s timeout, the kernel's slowness as in r258. No assertion, KASAN or KFENCE report in its console.
 
 GCE r304, r305 (2026-10-31), the KASAN kernel at cc4f61cf0: the checks r303's timeout left: unbind_waits_for_unmount on checks-dax and -small and enospc alone passed, no assertion, KASAN, KFENCE or lockdep report. window_filled 'failed' as run alone: it reads counters the checks before it leave, which the filter skipped.
+
+2026-10-31: reopened. xfstests generic/013 (fsstress), release kernel: 'mapped pages to 29 of extent ..., writably (reach), past its region's 16 pages': a writable MAP from fxfs_dax_map_chunk's unguarded path, of a sealed piece of a region a seal had yet to mark, the seal giving the space past what was mapped back meanwhile. So AC2's race is real: the rounds of checks that showed none didn't reach it. Fix: fxfs_dax_move gives such a piece to the range's own space (-EXDEV).
+
+r347 on the working tree: xfstests-fxfs-guest-dax of generic/013, 075, 091, 111 3/3, fxfs-guest-checks-dax 3/3, fxfs-guest-crash-dax 3/3, fxfs-guest-dax 3/3. Both WARNs gone: a sealed piece of a writable region falls to the range's own space (-EXDEV), and a read fault of a block the range moved or a slice maps asks for a copy.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

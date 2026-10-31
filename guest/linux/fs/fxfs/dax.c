@@ -2278,6 +2278,16 @@ static int fxfs_dax_move(struct fxfs_dax *dax, struct fxfs_dax_range *range,
 			fxfs_dax_put_region(dax, region);
 			return -EXDEV;
 		}
+	} else if (READ_ONCE(region->writable) &&
+		   first + pages > READ_ONCE(region->mapped)) {
+		/*
+		 * fxdax: a sealed piece, maybe outside the gate (fxfs_dax_map_chunk), of a region a
+		 * seal has yet to reach: reaching for it would map writably, across the seal, which
+		 * gives the space past what is mapped back meanwhile (xfstests generic/013, TASK-44.21).
+		 * The range's own space maps it, read-only.
+		 */
+		fxfs_dax_put_region(dax, region);
+		return -EXDEV;
 	}
 	err = fxfs_dax_reach(dax, region, first + pages);
 	if (err) {
@@ -2819,9 +2829,18 @@ static int fxfs_dax_iomap_read(struct inode *inode, loff_t pos, loff_t length, u
 		WRITE_ONCE(range->huge, true);
 		atomic64_inc(&dax->huge_maps);
 	}
-	/* A read's copy needs no mapping of the pages replaced. */
-	if (flags & IOMAP_FAULT)
+	if (flags & IOMAP_FAULT) {
+		/*
+		 * fxdax: a page of a region may be in other files' DAX entries too, or this one's at
+		 * another offset, as blocks of a staging extent or a reflink's are: said so, as XFS
+		 * says of its reflinks' reads, or the kernel takes the page for one no entry has
+		 * (dax_associate_entry's WARN, xfstests generic/075, TASK-140).
+		 */
+		if (range->region || (range->moved && range->moved[page]))
+			iomap->flags |= IOMAP_F_SHARED;
+		/* A read's copy needs no mapping of the pages replaced. */
 		fxfs_dax_cow(inode, range, page, end_page - page, flags, iomap, srcmap);
+	}
 	up_read(&file->sem);
 	return 0;
 }
