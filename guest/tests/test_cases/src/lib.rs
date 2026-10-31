@@ -22,6 +22,8 @@ mod test_fxfs_guest_daemon_lost;
 use test_fxfs_guest_daemon_lost::TestFxfsGuestDaemonLost;
 mod test_fxfs_guest_follow;
 use test_fxfs_guest_follow::TestFxfsGuestFollow;
+mod test_fxfs_guest_follow_remount;
+use test_fxfs_guest_follow_remount::TestFxfsGuestFollowRemount;
 mod test_fxfs_guest_follow_torture;
 use test_fxfs_guest_follow_torture::{Mutant, TestFxfsGuestFollowTorture};
 mod test_fxfs_guest_import;
@@ -141,6 +143,14 @@ pub fn test_cases() -> Vec<TestCase> {
         TestCase::new("runner-deadlock", Box::new(TestRunnerDeadlock)),
         TestCase::new("fxfs-guest-follow", Box::new(TestFxfsGuestFollow { dax: false })),
         TestCase::new("fxfs-guest-follow-dax", Box::new(TestFxfsGuestFollow { dax: true })),
+        TestCase::new(
+            "fxfs-guest-follow-remount",
+            Box::new(TestFxfsGuestFollowRemount { dax: false }),
+        ),
+        TestCase::new(
+            "fxfs-guest-follow-remount-dax",
+            Box::new(TestFxfsGuestFollowRemount { dax: true }),
+        ),
         TestCase::new(
             "fxfs-guest-follow-torture",
             Box::new(TestFxfsGuestFollowTorture { dax: false, mutant: None }),

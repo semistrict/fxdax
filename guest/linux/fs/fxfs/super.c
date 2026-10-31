@@ -2910,6 +2910,10 @@ static int fxfs_vfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	 */
 	sb->s_bdi->ra_pages = FXFS_IO_MAX / PAGE_SIZE;
 	sb->s_bdi->io_pages = FXFS_IO_MAX / PAGE_SIZE;
+	/* fxdax: a follower's device, closed as it last unmounted, opens on a new view of its store. */
+	err = virtio_extent_open(info->vext);
+	if (err)
+		return err;
 	/* fxdax: what a follower's batches and readers keep, readied before it mounts. */
 	init_rwsem(&info->follow_barrier);
 	INIT_WORK(&info->follow, fxfs_vfs_follow_work);
@@ -2927,9 +2931,6 @@ static int fxfs_vfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	if (info->follows) {
 		static_branch_inc(&fxfs_vfs_followers);
 		set_default_d_op(sb, &fxfs_vfs_follower_dentry_operations);
-		fxfs_device_set_resized(fxfs_dax_device(fs), fxfs_vfs_committed, info);
-		/* Those it made since the device's view opened. */
-		schedule_work(&info->follow);
 	} else {
 		fxfs_device_set_resized(fxfs_dax_device(fs), fxfs_vfs_resized, info);
 	}
@@ -2969,7 +2970,18 @@ static int fxfs_vfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	if (IS_ERR(root))
 		return PTR_ERR(root);
 	sb->s_root = d_make_root(root);
-	return sb->s_root ? 0 : -ENOMEM;
+	if (!sb->s_root)
+		return -ENOMEM;
+	/*
+	 * fxdax: a follower hears of its writer's commits, and follows those since its device's view
+	 * opened, once all a batch uses is here: its DAX state, and the root, which it settles
+	 * (TASK-79.54).
+	 */
+	if (info->follows) {
+		fxfs_device_set_resized(fxfs_dax_device(fs), fxfs_vfs_committed, info);
+		schedule_work(&info->follow);
+	}
+	return 0;
 }
 
 /* Whether `sb` is on the device `fc` mounts, which the info `fc` holds for a new one names. */
@@ -3081,6 +3093,8 @@ static void fxfs_vfs_kill_sb(struct super_block *sb)
 		fxfs_dax_destroy(info->dax);
 	if (info->follows)
 		static_branch_dec(&fxfs_vfs_followers);
+	/* fxdax: a follower lets go of its store, which keeps a writer from it once it was cut off. */
+	virtio_extent_close(info->vext);
 	kfree(info);
 }
 

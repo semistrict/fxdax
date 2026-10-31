@@ -122,10 +122,22 @@ impl Vm {
         window: u64,
     ) -> anyhow::Result<()> {
         let extentd = std::env::var_os("FXDAX_EXTENTD").context("FXDAX_EXTENTD not set")?;
-        self.extent_store_served(tag, path, 0, window, Path::new(&extentd));
+        self.extent_store_following_served(tag, path, window, Path::new(&extentd));
+        Ok(())
+    }
+
+    /// Adds a device as [`Vm::extent_store_following`] does, served by the extent daemon at
+    /// `extentd`.
+    pub fn extent_store_following_served(
+        &mut self,
+        tag: &str,
+        path: &Path,
+        window: u64,
+        extentd: &Path,
+    ) {
+        self.extent_store_served(tag, path, 0, window, extentd);
         let devices = self.config["extent"].as_array_mut().expect("an array");
         devices.last_mut().expect("the device added")["read_only"] = true.into();
-        Ok(())
     }
 
     /// Adds an extent-store device as [`Vm::extent_store`] does, served by the extent daemon at

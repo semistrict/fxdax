@@ -79,6 +79,9 @@ struct virtio_extent {
 	spinlock_t changed_lock;
 	vext_config_changed_t changed;
 	void *changed_arg;
+	/* fxdax: whether it is closed (virtio_extent_close), which `open_lock` guards. */
+	struct mutex open_lock;
+	bool closed;
 	struct list_head node;
 };
 
@@ -312,6 +315,9 @@ int virtio_extent_submit(struct virtio_extent *vext, struct vext_request *req)
 	/* fxdax: a follower's filesystem writes nothing: a write here is its bug (doc-8, testing 1). */
 	if (WARN_ON_ONCE(virtio_extent_read_only(vext) && vext_writes(req)))
 		return -EROFS;
+	/* fxdax: it has no queues then. */
+	if (READ_ONCE(vext->closed))
+		return -ESHUTDOWN;
 	args_len = vext_args(req);
 	if (args_len < 0)
 		return args_len;
@@ -533,7 +539,10 @@ static int vext_find_queues(struct virtio_extent *vext)
 
 	virtio_cread_le(vdev, struct virtio_extent_config, num_request_queues, &offered);
 	vext->nr_queues = clamp(offered, 1U, nr_cpu_ids);
-	vext->queues = devm_kcalloc(&vdev->dev, vext->nr_queues, sizeof(*vext->queues), GFP_KERNEL);
+	/* fxdax: as it opens again, their counts go on. */
+	if (!vext->queues)
+		vext->queues = devm_kcalloc(&vdev->dev, vext->nr_queues, sizeof(*vext->queues),
+					    GFP_KERNEL);
 	infos = kcalloc(vext->nr_queues, sizeof(*infos), GFP_KERNEL);
 	vqs = kcalloc(vext->nr_queues, sizeof(*vqs), GFP_KERNEL);
 	err = -ENOMEM;
@@ -763,6 +772,7 @@ static int vext_probe(struct virtio_device *vdev)
 	vext->vdev = vdev;
 	vdev->priv = vext;
 	spin_lock_init(&vext->changed_lock);
+	mutex_init(&vext->open_lock);
 	vext_read_config(vext);
 	err = vext_map_window(vext);
 	if (err)
@@ -857,6 +867,79 @@ static void vext_config_changed(struct virtio_device *vdev)
 	spin_unlock_irqrestore(&vext->changed_lock, flags);
 }
 
+/*
+ * fxdax: resets the device, and lets its queues go (virtio_extent_close): a filesystem that
+ * unmounted left only what no task waits for, its last let-go of commits, which fails.
+ */
+static int vext_reset_prepare(struct virtio_device *vdev)
+{
+	struct virtio_extent *vext = vdev->priv;
+	struct vext_request *req;
+	unsigned int i;
+
+	virtio_reset_device(vdev);
+	for (i = 0; i < vext->nr_queues; i++) {
+		struct vext_queue *queue = &vext->queues[i];
+
+		for (;;) {
+			spin_lock_irq(&queue->lock);
+			req = virtqueue_detach_unused_buf(queue->vq);
+			spin_unlock_irq(&queue->lock);
+			if (!req)
+				break;
+			req->status = -EIO;
+			sg_free_table(&req->data_sgt);
+			req->done(req);
+		}
+	}
+	vdev->config->del_vqs(vdev);
+	return 0;
+}
+
+/* fxdax: finds its queues again (virtio_extent_open): the core then sets DRIVER_OK. */
+static int vext_reset_done(struct virtio_device *vdev)
+{
+	return vext_find_queues(vdev->priv);
+}
+
+void virtio_extent_close(struct virtio_extent *vext)
+{
+	mutex_lock(&vext->open_lock);
+	if (virtio_extent_read_only(vext) && !vext->closed) {
+		WARN_ON_ONCE(virtio_device_reset_prepare(vext->vdev));
+		WRITE_ONCE(vext->closed, true);
+	}
+	mutex_unlock(&vext->open_lock);
+}
+EXPORT_SYMBOL_GPL(virtio_extent_close);
+
+int virtio_extent_open(struct virtio_extent *vext)
+{
+	struct virtio_device *vdev = vext->vdev;
+	int err = 0;
+
+	mutex_lock(&vext->open_lock);
+	if (!vext->closed)
+		goto out;
+	err = virtio_device_reset_done(vdev);
+	if (err)
+		goto out;
+	/*
+	 * The device opens the store as it takes DRIVER_OK. Failing to, it asks for a reset, which
+	 * leaves it closed, for a later call: FAILED, which an error here would set, stays.
+	 */
+	if (vdev->config->get_status(vdev) & VIRTIO_CONFIG_S_NEEDS_RESET) {
+		err = virtio_device_reset_prepare(vdev) ?: -EBUSY;
+		goto out;
+	}
+	virtio_cread_le(vdev, struct virtio_extent_config, branch, &vext->config.branch);
+	WRITE_ONCE(vext->closed, false);
+out:
+	mutex_unlock(&vext->open_lock);
+	return err;
+}
+EXPORT_SYMBOL_GPL(virtio_extent_open);
+
 static void vext_remove(struct virtio_device *vdev)
 {
 	struct virtio_extent *vext = vdev->priv;
@@ -895,6 +978,8 @@ static struct virtio_driver vext_driver = {
 	.probe = vext_probe,
 	.remove = vext_remove,
 	.config_changed = vext_config_changed,
+	.reset_prepare = vext_reset_prepare,
+	.reset_done = vext_reset_done,
 };
 
 module_virtio_driver(vext_driver);

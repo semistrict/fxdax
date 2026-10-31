@@ -305,6 +305,16 @@ bool virtio_extent_map_ahead(struct virtio_extent *vext);
 bool virtio_extent_read_only(struct virtio_extent *vext);
 /* F_READ_ONLY: the epoch of the writer's latest commit, as the configuration says now. */
 u64 virtio_extent_committed(struct virtio_extent *vext);
+/*
+ * fxdax: F_READ_ONLY: a follower's device has a connection to its store, which keeps its writer
+ * from opening it once it was cut off (doc-4). virtio_extent_close, as its filesystem unmounts,
+ * nothing in flight that any task waits for, resets the device, which lets the store go.
+ * virtio_extent_open, as one mounts, has the device open the store anew, as of its writer's latest
+ * commit, and reads its branch again: 0, or -EBUSY if it couldn't, which another call may yet.
+ * Neither does anything to a writer's device, nor to one open or closed already.
+ */
+void virtio_extent_close(struct virtio_extent *vext);
+int virtio_extent_open(struct virtio_extent *vext);
 
 /*
  * The store's capacity, and the shrink the guest is asked to take, or 0, as the configuration
@@ -313,8 +323,8 @@ u64 virtio_extent_committed(struct virtio_extent *vext);
 bool virtio_extent_capacity(struct virtio_extent *vext, u64 *capacity, u64 *asked);
 /*
  * Has the driver call `changed(arg)` as the device's configuration changes, its capacity or a
- * shrink asked, or its writer's latest commit; or none, if `changed` is NULL. Called from the device's interrupt: it must not
- * sleep.
+ * shrink asked, or its writer's latest commit; or none, if `changed` is NULL. Called from the
+ * device's interrupt: it must not sleep.
  */
 typedef void (*vext_config_changed_t)(void *arg);
 void virtio_extent_set_config_changed(struct virtio_extent *vext, vext_config_changed_t changed,
