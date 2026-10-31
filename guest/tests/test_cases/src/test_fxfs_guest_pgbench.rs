@@ -157,6 +157,10 @@ RUN apk add --no-cache postgresql postgresql-contrib perf e2fsprogs
         }
         let role = name.split('-').next().unwrap_or(name);
         vm.env(&CString::new(format!("FXDAX_PGBENCH_ROLE={role}"))?);
+        // Every run's commits not waiting for the journal: what's left is writes' own cost.
+        if std::env::var_os("FXDAX_PGBENCH_ASYNC").is_some() {
+            vm.env(c"FXDAX_PGBENCH_ASYNC=1");
+        }
         vm.spawn_api(root, &test_setup.test_case, name, &Vm::api_socket(name))
     }
 
@@ -735,8 +739,11 @@ mod guest {
                     for i in 0..RUNS {
                         let probe = if i == 0 { self.probe } else { Probe::None };
                         let profiler = (probe == Probe::Profile).then(profile);
-                        let options = if probe == Probe::Locks {
+                        if probe == Probe::Locks {
                             count_locks(true);
+                        }
+                        let asynchronous = std::env::var_os("FXDAX_PGBENCH_ASYNC").is_some();
+                        let options = if probe == Probe::Locks || asynchronous {
                             "PGOPTIONS='-c synchronous_commit=off' "
                         } else {
                             ""
