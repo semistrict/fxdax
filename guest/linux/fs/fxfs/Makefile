@@ -4,6 +4,11 @@ obj-$(CONFIG_FXFS_FS) += fxfs.o
 fxfs-y := rt.o super.o device.o fxfs_rust.o
 fxfs-$(CONFIG_FS_DAX) += dax.o
 
+# fxdax: what a kernel with GCOV_KERNEL counts (FXDAX_GUEST_KERNEL_COVERAGE, TASK-119.14).
+GCOV_PROFILE_dax.o := y
+GCOV_PROFILE_device.o := y
+GCOV_PROFILE_super.o := y
+
 # fxdax: the commit the build is of, which /proc/fs/fxfs/build shows: scripts/build-guest-kernel.sh
 # gives it, as scripts/build-commit.sh says (TASK-111.7).
 FXFS_BUILD_COMMIT ?= unknown

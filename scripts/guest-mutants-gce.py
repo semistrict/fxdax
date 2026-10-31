@@ -29,9 +29,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 DAX = "guest/linux/fs/fxfs/dax.c"
+SUPER = "guest/linux/fs/fxfs/super.c"
+COPY_AROUND = "guest/linux/patches/0006-dax-copy-around-in-place.patch"
 
-# Each mutant: its name, what it takes out, and its edits, (old, new) text of dax.c, each of
-# which must be found there once; and, for one only an assertion of a debug kernel's finds, the
+# Each mutant: its name, what it takes out, and its edits, (old, new) text of dax.c, or (old, new,
+# path) of another file, each of which must be found there once; and, for one only an assertion of a debug kernel's finds, the
 # kernel the host builds (FXDAX_GUEST_KERNEL_BUILD: debug, with lockdep), release otherwise.
 MUTANTS = [
     (
@@ -92,8 +94,9 @@ MUTANTS = [
         "evacuation_unlocked",
         "an evacuation maps a file's pages after letting go of its semaphore, which a write may map "
         "anew meanwhile (TASK-101)",
-        [("\tfxfs_dax_evacuee_gather(file, &ev);\n\tfxfs_dax_evacuee_map(dax, file, &ev);\n",
-          "\tfxfs_dax_evacuee_gather(file, &ev);\n\tup_write(&file->sem);\n"
+        [("\tfile->evacuees_left = !fxfs_dax_evacuee_gather(file, &ev);\n"
+          "\tfxfs_dax_evacuee_map(dax, file, &ev);\n",
+          "\tfile->evacuees_left = !fxfs_dax_evacuee_gather(file, &ev);\n\tup_write(&file->sem);\n"
           "\tfxfs_dax_evacuee_map(dax, file, &ev);\n\tdown_write(&file->sem);\n"),
          ("\tlockdep_assert_held_write(&file->sem);\n\tif (ev->count) {\n"
           "\t\tfxfs_dax_pause_file(FXFS_DAX_STEP_GATHERED, file->ino);\n",
@@ -150,6 +153,66 @@ MUTANTS = [
           "\t\tregion->refs++;\n\tif (region)\n\t\treturn region;\n")],
         "debug",
     ),
+    (
+        "inherited_acls_written_back",
+        "a created inode's inherited ACLs go with write_inode, not with its creation, which an "
+        "fsync of another inode makes durable without them (TASK-79.29)",
+        [("\terr = fxfs_vfs_acl_xattr(default_acl, ACL_TYPE_DEFAULT, mode, xattrs, &nr_xattrs,\n"
+          "\t\t\t\t &values[0]);\n\tif (!err)\n"
+          "\t\terr = fxfs_vfs_acl_xattr(acl, ACL_TYPE_ACCESS, mode, xattrs, &nr_xattrs, "
+          "&values[1]);\n\tif (!err)\n\t\terr = fxfs_nofs(fxfs_create(",
+          "\tif (!err)\n\t\terr = fxfs_nofs(fxfs_create(", SUPER),
+         ("\tif (default_acl && S_ISDIR(mode))\n"
+          "\t\tset_cached_acl(d_inode(dentry), ACL_TYPE_DEFAULT, default_acl);\n\tif (acl)\n"
+          "\t\tset_cached_acl(d_inode(dentry), ACL_TYPE_ACCESS, acl);\n"
+          "\tposix_acl_release(default_acl);\n\tposix_acl_release(acl);\n\treturn 0;\n}\n\n"
+          "/* Creates an unnamed regular file",
+          "\treturn fxfs_vfs_init_acls(d_inode(dentry), default_acl, acl);\n}\n\n"
+          "/* Creates an unnamed regular file", SUPER)],
+    ),
+    (
+        "fault_ignores_fatal_signals",
+        "a fault with no room looks for none of its signals: a splice holding the window can't be "
+        "killed (TASK-79.49)",
+        [("\t\tif (fatal_signal_pending(current)) {\n\t\t\tret = VM_FAULT_SIGBUS;\n"
+          "\t\t\tbreak;\n\t\t}\n", "")],
+    ),
+    (
+        "store_fails_on_pins",
+        "a store from user mode fails on a page of a slice pinned, as a fault from the kernel does: "
+        "a SIGBUS where the pin goes soon (TASK-79.49)",
+        [("\tbool user = vmf->flags & FAULT_FLAG_USER;\n", "\tbool user = false;\n")],
+    ),
+    (
+        "evacuees_not_retried",
+        "runs memory ran out for wait for a seal of their file, which keeps their regions until one "
+        "(TASK-116)",
+        [("if ((sealed || file->evacuees_left) && READ_ONCE(dax->restaging)) {",
+          "if (sealed && READ_ONCE(dax->restaging)) {")],
+    ),
+    (
+        "moved_write_not_retried",
+        "a write whose chunk's map fails after Fxfs moved its blocks fails, those pages zeros "
+        "(TASK-119.13)",
+        [("\t\treturn fresh && (err == -EIO || err == -ENOMEM || err == -ENOSPC) ? -ESTALE : err;\n",
+          "\t\treturn err;\n")],
+    ),
+    (
+        "copy_onto_itself",
+        "a write(2) to a relocated page copies its edges onto themselves, undoing stores racing "
+        "the copy, the copy held open 100 ms, as no pause point splits it (TASK-122)",
+        [("+\t\t/*\n+\t\t * A source that is the destination holds the data already, as a\n"
+          "+\t\t * filesystem's whose CoW moves only where its entries map the\n"
+          "+\t\t * pages: copying it onto itself would undo stores racing the\n"
+          "+\t\t * copy, through other mappings of the pages.\n+\t\t */\n"
+          "+\t\tif (saddr == daddr)\n+\t\t\treturn 0;\n",
+          "+\t\t/* The edges read here, and copied back after. */\n"
+          "+\t\tif (saddr == daddr) {\n"
+          "+\t\t\tvoid *edges = kmalloc(size, GFP_KERNEL);\n+\n"
+          "+\t\t\tmemcpy(edges, saddr, size);\n"
+          "+\t\t\tschedule_timeout_uninterruptible(HZ / 10);\n"
+          "+\t\t\tsaddr = edges;\n+\t\t}\n", COPY_AROUND)],
+    ),
 ]
 
 # Equivalent mutants, which no suite can kill, and why:
@@ -165,13 +228,12 @@ SUITES = "fxfs-guest-dax fxfs-guest-checks-dax fxfs-guest-checks-dax-delay fxfs-
 
 
 def mutate(tree, edits):
-    path = tree / DAX
-    text = path.read_text()
-    for old, new in edits:
+    for old, new, *file in edits:
+        path = tree / (file[0] if file else DAX)
+        text = path.read_text()
         if text.count(old) != 1:
-            raise SystemExit(f"{DAX}: a mutant's edit is found {text.count(old)} times: {old!r}")
-        text = text.replace(old, new)
-    path.write_text(text)
+            raise SystemExit(f"{path}: a mutant's edit is found {text.count(old)} times: {old!r}")
+        path.write_text(text.replace(old, new))
 
 
 def run(host, zone, results, name, edits, build):

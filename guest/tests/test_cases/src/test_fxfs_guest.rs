@@ -155,6 +155,30 @@ fn resized_byte(at: usize) -> u8 {
     (at % 251) as u8 + 1
 }
 
+/// fxdax: the crash test's directory with a default ACL, durable, and what it created inherits it:
+/// a file and a directory of these names.
+const INHERITS: &str = "inherits";
+const INHERITS_FILE: &str = "file";
+const INHERITS_DIR: &str = "dir";
+
+/// The default ACL of [`INHERITS`]: a user's rw- beside the owners', masked to rwx.
+fn default_acl() -> Vec<u8> {
+    inherited_acl(7, 7, 5)
+}
+
+/// A POSIX ACL as [`INHERITS`]'s entries make it: `owner`'s and `mask`'s permissions, and others'.
+fn inherited_acl(owner: u16, mask: u16, other: u16) -> Vec<u8> {
+    const UNDEFINED: u32 = u32::MAX;
+    const USER: u32 = 1000;
+    crate::posix_acl(&[
+        (0x01, owner, UNDEFINED),
+        (0x02, 6, USER),
+        (0x04, 5, UNDEFINED),
+        (0x10, mask, UNDEFINED),
+        (0x20, other, UNDEFINED),
+    ])
+}
+
 /// fxdax: the line the killed crash test's guest says where it would reset its VM, at which the
 /// host kills the VM's process (TASK-119.6).
 const KILL_ME: &str = "kill me";
@@ -343,6 +367,20 @@ mod host {
                 let storage = block_on(Storage::open(&path).unwrap().check()).unwrap();
                 let fs = block_on(Filesystem::mount(storage)).unwrap();
                 assert_synced(&fs, &synced);
+                // fxdax: what the directory's default ACL handed down came with the creations a
+                // journal flush made durable, their inodes never written back (TASK-79.29).
+                {
+                    let acl = |node: &fxdax::Node, name: &[u8]| block_on(node.getxattr(name)).unwrap();
+                    let (dir, _) = block_on(fs.root().lookup(INHERITS.as_bytes())).unwrap();
+                    assert_eq!(acl(&dir, b"system.posix_acl_default"), default_acl());
+                    let (file, attr) = block_on(dir.lookup(INHERITS_FILE.as_bytes())).unwrap();
+                    assert_eq!(acl(&file, b"system.posix_acl_access"), inherited_acl(6, 6, 4));
+                    assert_eq!(attr.perm, 0o664, "the inheriting file's mode");
+                    let (child, attr) = block_on(dir.lookup(INHERITS_DIR.as_bytes())).unwrap();
+                    assert_eq!(acl(&child, b"system.posix_acl_access"), default_acl());
+                    assert_eq!(acl(&child, b"system.posix_acl_default"), default_acl());
+                    assert_eq!(attr.perm, 0o775, "the inheriting directory's mode");
+                }
                 // fxdax: each page written again and again holds, byte by byte, what one of its
                 // writes since the last synced (that one's included) wrote: none torn into others',
                 // none older (TASK-119.6).
@@ -978,7 +1016,7 @@ mod guest {
             file.write_all(&durable(writer, index)).unwrap();
             file.sync_all().unwrap();
             fs::File::open(MNT).unwrap().sync_all().unwrap();
-            report(&format!("synced {writer} {index}"));
+            report_out(&format!("synced {writer} {index}"));
             // Unsynced changes beside them, which the filesystem may hold or not.
             fs::write(format!("{MNT}/pending-{writer}-{index}"), pattern(5000, writer)).unwrap();
             if index % 3 == 0 {
@@ -993,16 +1031,29 @@ mod guest {
     /// begun. Quiet is read under stdout's lock, which the killed crash test sets it and says
     /// KILL_ME under: no line, nor the write it says begins, comes after that (GCE r261).
     fn report(line: &str) {
+        while_loud(|stdout| {
+            writeln!(stdout, "{line}").unwrap();
+            stdout.flush().unwrap();
+        });
+    }
+
+    /// Runs `say` under stdout's lock, unless the VM is about to stop ([`report`]).
+    fn while_loud(say: impl Fn(&mut std::io::StdoutLock)) {
         loop {
             let mut stdout = std::io::stdout().lock();
             if !quiet().load(std::sync::atomic::Ordering::Acquire) {
-                writeln!(stdout, "{line}").unwrap();
-                stdout.flush().unwrap();
+                say(&mut stdout);
                 return;
             }
             drop(stdout);
             std::thread::park();
         }
+    }
+
+    /// [`report`]s `line` for the host to hold before the caller goes on: of a write, whose bytes
+    /// the store may hold as the VM stops, as it begins.
+    fn report_out(line: &str) {
+        while_loud(|_| crate::guest_init::say_out(line));
     }
 
     /// fxdax: makes RESIZED, of resize 0's size, synced, then truncates or extends it again and
@@ -1019,21 +1070,21 @@ mod guest {
         file.write_all_at(&full[..first], 0).unwrap();
         file.sync_all().unwrap();
         fs::File::open(MNT).unwrap().sync_all().unwrap();
-        report(&format!("resized 0 {first}"));
+        report_out(&format!("resized 0 {first}"));
         let mut size = first;
         for generation in 1u32.. {
             while PAUSED.load(std::sync::atomic::Ordering::Acquire) {
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
             let next = resized_size(generation);
-            report(&format!("resizing {generation} {next}"));
+            report_out(&format!("resizing {generation} {next}"));
             file.set_len(next as u64).unwrap();
             if next > size {
                 file.write_all_at(&full[size..next], size as u64).unwrap();
             }
             file.sync_all().unwrap();
             size = next;
-            report(&format!("resized {generation} {next}"));
+            report_out(&format!("resized {generation} {next}"));
         }
         unreachable!()
     }
@@ -1058,7 +1109,7 @@ mod guest {
         handle.sync_all().unwrap();
         fs::File::open(MNT).unwrap().sync_all().unwrap();
         for page in 0..REWRITTEN_PAGES {
-            report(&format!("rewrote {file} {page} 0"));
+            report_out(&format!("rewrote {file} {page} 0"));
         }
         let size = REWRITTEN_PAGES * 4096;
         let map = unsafe {
@@ -1079,7 +1130,7 @@ mod guest {
             // Pages in an order that varies, from the generation.
             let page = (generation as usize * 7) % REWRITTEN_PAGES;
             let data = rewritten(page, generation);
-            report(&format!("rewriting {file} {page} {generation}"));
+            report_out(&format!("rewriting {file} {page} {generation}"));
             if file == 0 {
                 std::os::unix::fs::FileExt::write_all_at(&handle, &data, (page * 4096) as u64)
                     .unwrap();
@@ -1090,9 +1141,27 @@ mod guest {
                 let synced = unsafe { libc::msync(at.cast(), 4096, libc::MS_SYNC) };
                 assert_eq!(synced, 0, "msync: {}", std::io::Error::last_os_error());
             }
-            report(&format!("rewrote {file} {page} {generation}"));
+            report_out(&format!("rewrote {file} {page} {generation}"));
         }
         unreachable!()
+    }
+
+    /// fxdax: [`INHERITS`], its default ACL durable, and what inherits it, made durable by a
+    /// journal flush for another inode's sake: nothing writes theirs back before the VM stops.
+    fn inherit_acls() {
+        let inherits = format!("{MNT}/{INHERITS}");
+        fs::create_dir(&inherits).unwrap();
+        let path = CString::new(inherits.as_str()).unwrap();
+        let acl = default_acl();
+        let name = c"system.posix_acl_default";
+        let set = unsafe {
+            libc::setxattr(path.as_ptr(), name.as_ptr(), acl.as_ptr().cast(), acl.len(), 0)
+        };
+        assert_eq!(set, 0, "setxattr: {}", std::io::Error::last_os_error());
+        fs::File::open(&inherits).unwrap().sync_all().unwrap();
+        fs::File::create(format!("{inherits}/{INHERITS_FILE}")).unwrap();
+        fs::create_dir(format!("{inherits}/{INHERITS_DIR}")).unwrap();
+        fs::File::open(&inherits).unwrap().sync_all().unwrap();
     }
 
     /// Stops the VM mid-workload: with two writers fsyncing, and without syncing (reboot(2)
@@ -1118,6 +1187,7 @@ mod guest {
         unnamed.write_all(&pattern(UNNAMED, 9)).unwrap();
         unnamed.sync_all().unwrap();
         std::mem::forget(unnamed);
+        inherit_acls();
         let mapped = format!("{MNT}/{MAPPED_SYNCED}");
         if dax {
             let mut file = fs::File::create(&mapped).unwrap();

@@ -57,6 +57,10 @@ fn torture(n: usize) -> String {
 /// Size of the image, which is sparse.
 #[cfg_attr(feature = "guest", allow(dead_code))]
 const IMAGE_SIZE: u64 = 256 << 20;
+/// fxdax: the directory a coverage kernel's counts of fs/fxfs's sources `COVERED` are left in for
+/// the host, as the guest's checks end (TASK-119.14).
+const COVERAGE: &str = "coverage";
+const COVERED: [&str; 3] = ["dax", "device", "super"];
 
 /// What fxfs-guest-checks' "punched" holds, `len` long: ones, but for the hole punched and zeros
 /// from `zeroed` on.
@@ -174,6 +178,17 @@ mod host {
             }
             // fxdax: fsck, whichever checks ran.
             let fs = open_image(&test_setup.tmp_dir.join("fxdax.img"));
+            // fxdax: what a coverage kernel counted, under the directory the run says (TASK-119.14).
+            if let Some(coverage) = std::env::var_os("FXDAX_COVERAGE") {
+                let vm = format!("{}-{}", test_setup.test_case, std::process::id());
+                let counts = Path::new(&coverage).join(vm);
+                std::fs::create_dir(&counts).unwrap();
+                for source in COVERED {
+                    let name = format!("{source}.gcda");
+                    let count = read_path(&fs, &format!("{COVERAGE}/{name}"));
+                    std::fs::write(counts.join(name), count).unwrap();
+                }
+            }
             // The host's checks are of what all the guest's checks wrote.
             if std::env::var_os("FXDAX_CHECKS").is_some_and(|only| !only.is_empty()) {
                 return TestOutcome::Pass;
@@ -248,9 +263,10 @@ mod host {
 mod guest {
     use super::*;
     use crate::Test;
+    use crate::posix_acl;
 
     use nix::libc;
-    use std::ffi::CString;
+    use std::ffi::{CStr, CString};
     use std::fs;
     use std::io::{Read, Seek, SeekFrom, Write};
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -319,6 +335,34 @@ mod guest {
         let (attributes, mask) = (buf[1], buf[7]);
         assert_ne!(mask & STATX_ATTR_DAX, 0, "kernel does not report DAX");
         attributes & STATX_ATTR_DAX != 0
+    }
+
+    /// fxdax: what a coverage kernel counted of fs/fxfs so far, copied to the store for the host:
+    /// a kernel without gcov has no such directory in debugfs, and leaves nothing (TASK-119.14).
+    fn save_coverage() {
+        const DEBUGFS: &CStr = c"/sys/kernel/debug";
+        fn fxfs_counts(dir: &std::path::Path) -> Option<std::path::PathBuf> {
+            (fs::read_dir(dir).ok()?.flatten()).find_map(|entry| {
+                let path = entry.path();
+                if path.ends_with("fs/fxfs") {
+                    Some(path)
+                } else {
+                    fxfs_counts(&path)
+                }
+            })
+        }
+        let debugfs = c"debugfs".as_ptr();
+        // Mounted already, by a check before, or not a kernel with one.
+        unsafe { libc::mount(debugfs, DEBUGFS.as_ptr(), debugfs, 0, std::ptr::null()) };
+        let Some(counts) = fxfs_counts(std::path::Path::new("/sys/kernel/debug/gcov")) else {
+            return;
+        };
+        fs::create_dir(path(COVERAGE)).unwrap();
+        for source in COVERED {
+            let name = format!("{source}.gcda");
+            fs::write(path(&format!("{COVERAGE}/{name}")), fs::read(counts.join(&name)).unwrap())
+                .unwrap();
+        }
     }
 
     fn fsync_dir(dir: &str) {
@@ -978,17 +1022,6 @@ mod guest {
         file.sync_all().unwrap();
     }
 
-    /// A POSIX ACL xattr's value: its version, then each entry's tag, permissions and id.
-    fn acl(entries: &[(u16, u16, u32)]) -> Vec<u8> {
-        let mut value = 2u32.to_le_bytes().to_vec();
-        for &(tag, perm, id) in entries {
-            value.extend(tag.to_le_bytes());
-            value.extend(perm.to_le_bytes());
-            value.extend(id.to_le_bytes());
-        }
-        value
-    }
-
     fn set_xattr(path: &str, name: &str, value: &[u8]) {
         let (path, name) = (CString::new(path).unwrap(), CString::new(name).unwrap());
         let ret = unsafe {
@@ -1063,7 +1096,7 @@ mod guest {
         const UNDEFINED: u32 = u32::MAX;
 
         fs::write(path("acl-file"), b"acl").unwrap();
-        let access = acl(&[
+        let access = posix_acl(&[
             (USER_OBJ, 6, UNDEFINED),
             (USER, 6, 1234),
             (GROUP_OBJ, 4, UNDEFINED),
@@ -1107,7 +1140,7 @@ mod guest {
         fs::set_permissions(path("acl-file"), fs::Permissions::from_mode(0o640)).unwrap();
         assert_eq!(may_open(1234, libc::O_WRONLY), 1, "the user the ACL names can still write");
         assert_eq!(may_open(1234, libc::O_RDONLY), 0, "the user the ACL names can't read");
-        let masked = acl(&[
+        let masked = posix_acl(&[
             (USER_OBJ, 6, UNDEFINED),
             (USER, 6, 1234),
             (GROUP_OBJ, 4, UNDEFINED),
@@ -1119,7 +1152,7 @@ mod guest {
         let old_umask = unsafe { libc::umask(0o077) };
         fs::create_dir(path("acl-dir")).unwrap();
         let default =
-            acl(&[(USER_OBJ, 7, UNDEFINED), (GROUP_OBJ, 5, UNDEFINED), (OTHER, 5, UNDEFINED)]);
+            posix_acl(&[(USER_OBJ, 7, UNDEFINED), (GROUP_OBJ, 5, UNDEFINED), (OTHER, 5, UNDEFINED)]);
         set_xattr(&path("acl-dir"), "system.posix_acl_default", &default);
         fs::write(path("acl-dir/inherits"), b"x").unwrap();
         fs::write(path("umasked"), b"x").unwrap();
@@ -1997,6 +2030,213 @@ mod guest {
             stats["window_regions_full"] > 0 && stats["window_reclaims"] > 0,
             "the window's regions or ranges never filled: {stats:?}"
         );
+    }
+
+    /// What each thread of the process `pid` is doing, as /proc says.
+    fn threads_of(pid: libc::pid_t) -> String {
+        let read = |path: String| fs::read_to_string(&path).unwrap_or_else(|err| format!("{err}"));
+        (fs::read_dir(format!("/proc/{pid}/task")).unwrap().flatten())
+            .map(|task| {
+                let task = task.path().display().to_string();
+                let (wchan, stack) = (read(format!("{task}/wchan")), read(format!("{task}/stack")));
+                format!("{task}: {} in {wchan}\n{stack}", read(format!("{task}/stat")))
+            })
+            .collect()
+    }
+
+    /// Waits for the process `child`, whose status this returns; after `limit`, says what it is
+    /// doing, kills it, for the checks after to find what it holds let go of, and panics.
+    fn wait_for_child(child: libc::pid_t, limit: std::time::Duration) -> i32 {
+        let deadline = std::time::Instant::now() + limit;
+        loop {
+            let mut status = 0;
+            let waited = unsafe { libc::waitpid(child, &mut status, libc::WNOHANG) };
+            assert!(waited >= 0, "waitpid: {}", std::io::Error::last_os_error());
+            if waited == child {
+                return status;
+            }
+            if std::time::Instant::now() >= deadline {
+                let threads = threads_of(child);
+                unsafe { libc::kill(child, libc::SIGKILL) };
+                panic!("process {child} still runs:\n{threads}");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    /// fxdax: a vmsplice holding more of a file's pages than the window has room for, which a pipe
+    /// takes page by page: no chunk it holds a page of can go, so each of its faults finds no room,
+    /// and waits for some: SIGKILL ends it, whose fault looped on for ever without looking
+    /// (TASK-79.49). Its pages go with it, and the file reads back.
+    fn test_window_held_killed() {
+        const SIZE: usize = 48 << 20;
+        let name = path("window-held");
+        let data: Vec<u8> = (0..SIZE).map(|at| (at >> 21) as u8 + 1).collect();
+        fs::write(&name, &data).unwrap();
+        let file = fs::File::open(&name).unwrap();
+        file.sync_all().unwrap();
+        let before = stats()["window_full"];
+        let child = unsafe { libc::fork() };
+        assert!(child >= 0, "fork: {}", std::io::Error::last_os_error());
+        if child == 0 {
+            unsafe {
+                let map = libc::mmap(
+                    std::ptr::null_mut(),
+                    SIZE,
+                    libc::PROT_READ,
+                    libc::MAP_SHARED,
+                    file.as_raw_fd(),
+                    0,
+                );
+                let mut pipe = [0; 2];
+                if map == libc::MAP_FAILED
+                    || libc::pipe(pipe.as_mut_ptr()) != 0
+                    || libc::fcntl(pipe[1], libc::F_SETPIPE_SZ, 2 * SIZE as libc::c_int) < 0
+                {
+                    libc::_exit(1);
+                }
+                let spliced = libc::iovec { iov_base: map, iov_len: SIZE };
+                libc::vmsplice(pipe[1], &spliced, 1, 0);
+                libc::_exit(2);
+            }
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while stats()["window_full"] < before + 16 {
+            let mut status = 0;
+            assert_eq!(
+                unsafe { libc::waitpid(child, &mut status, libc::WNOHANG) },
+                0,
+                "the splice ended, status {status:#x}, without filling the window"
+            );
+            assert!(std::time::Instant::now() < deadline, "the window never filled: {:?}", stats());
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(unsafe { libc::kill(child, libc::SIGKILL) }, 0);
+        let status = wait_for_child(child, std::time::Duration::from_secs(20));
+        assert_eq!(
+            (libc::WIFSIGNALED(status), libc::WTERMSIG(status)),
+            (true, libc::SIGKILL),
+            "status {status:#x}"
+        );
+        drop(file);
+        assert!(fs::read(&name).unwrap() == data, "the file differs from what was written");
+        fs::remove_file(&name).unwrap();
+    }
+
+    /// fxdax: a store to a page of a small file mapped by a slice moves the page, which the slice
+    /// can't map, so the slice has to go, and a page of it held, here by a pipe, holds that up. A
+    /// fault in the kernel, as get_user_pages' here, may hold that page itself, and fails. A store
+    /// from user mode holds none: it waits, and lands once the pipe lets go, where a SIGBUS ended
+    /// it (TASK-79.49).
+    fn test_slice_held() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        const PAGE: usize = 4096;
+        const SIZE: usize = 4 * PAGE;
+        const MADV_POPULATE_WRITE: libc::c_int = 23;
+        static STARTED: AtomicBool = AtomicBool::new(false);
+        static DRAINED: AtomicBool = AtomicBool::new(false);
+        let name = path("slice-held");
+        fs::write(&name, vec![1; SIZE]).unwrap();
+        evict(&name);
+        let file = fs::OpenOptions::new().read(true).write(true).open(&name).unwrap();
+        let child = unsafe { libc::fork() };
+        assert!(child >= 0, "fork: {}", std::io::Error::last_os_error());
+        if child == 0 {
+            unsafe {
+                let map = libc::mmap(
+                    std::ptr::null_mut(),
+                    SIZE,
+                    libc::PROT_READ | libc::PROT_WRITE,
+                    libc::MAP_SHARED,
+                    file.as_raw_fd(),
+                    0,
+                );
+                let mut pipe = [0; 2];
+                if map == libc::MAP_FAILED || libc::pipe(pipe.as_mut_ptr()) != 0 {
+                    libc::_exit(1);
+                }
+                let held = libc::iovec { iov_base: map, iov_len: PAGE };
+                if libc::vmsplice(pipe[1], &held, 1, 0) != PAGE as isize {
+                    libc::_exit(2);
+                }
+                let store = map.cast::<u8>().add(PAGE);
+                if libc::madvise(store.cast(), PAGE, MADV_POPULATE_WRITE) != -1
+                    || std::io::Error::last_os_error().raw_os_error() != Some(libc::EFAULT)
+                {
+                    libc::_exit(3);
+                }
+                let reader = pipe[0];
+                std::thread::spawn(move || {
+                    let mut page = [0u8; PAGE];
+                    page.fill(1);
+                    STARTED.store(true, Ordering::SeqCst);
+                    std::thread::sleep(std::time::Duration::from_millis(300));
+                    DRAINED.store(true, Ordering::SeqCst);
+                    libc::read(reader, page.as_mut_ptr().cast(), PAGE);
+                });
+                // A thread starting maps its signal stack, which the store's fault would keep it
+                // from, holding the mapping lock as it waits for the pipe.
+                while !STARTED.load(Ordering::SeqCst) {
+                    std::hint::spin_loop();
+                }
+                store.write_volatile(2);
+                libc::_exit(if DRAINED.load(Ordering::SeqCst) { 0 } else { 4 });
+            }
+        }
+        let status = wait_for_child(child, std::time::Duration::from_secs(20));
+        assert_eq!(status, 0, "the child's status");
+        let mut expected = vec![1; SIZE];
+        expected[PAGE] = 2;
+        drop(file);
+        assert!(fs::read(&name).unwrap() == expected, "the file differs from what was written");
+        fs::remove_file(&name).unwrap();
+    }
+
+    /// fxdax: an evacuation that gathers one of a file's runs, as if memory ran out for the next
+    /// (fxfs.dax_fail_evacuees): the rest, and the regions they keep, stayed until a seal of that
+    /// file, which a file not written again never has. They go with the next seal of any file
+    /// (TASK-116).
+    fn test_evacuees_left() {
+        use std::os::unix::fs::FileExt;
+        const PAGE: usize = 4096;
+        // Larger than a chunk, in one extent: a range of its own, not a slice of a region, whose
+        // pages count as moved once a write drops it.
+        const SIZE: usize = 4 << 20;
+        const RUNS: usize = 32;
+        const MOVED: &str = "window_ranges_kept_moved_pages";
+        let wait_for = |what: &str, done: &dyn Fn(u64) -> bool| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while !done(stats()[MOVED]) {
+                assert!(std::time::Instant::now() < deadline, "{what}: {:?}", stats());
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        };
+        let (name, other) = (path("evacuees-left"), path("evacuees-left-other"));
+        fs::write(&name, vec![1; SIZE]).unwrap();
+        let file = fs::OpenOptions::new().read(true).write(true).open(&name).unwrap();
+        file.sync_all().unwrap();
+        let before = stats()[MOVED];
+        let mut expected = vec![1; SIZE];
+        {
+            let _fail = Param::set("dax_fail_evacuees", "Y");
+            // Pages apart: each its own run.
+            for run in 0..RUNS {
+                let at = run * 2 * PAGE;
+                file.write_all_at(&[2; PAGE], at as u64).unwrap();
+                expected[at..at + PAGE].fill(2);
+            }
+            file.sync_data().unwrap();
+            wait_for("no run was evacuated", &|moved| moved < before + RUNS as u64);
+        }
+        assert_eq!(stats()[MOVED], before + RUNS as u64 - 1, "the runs left");
+        fs::write(&other, b"seals").unwrap();
+        fs::File::open(&other).unwrap().sync_all().unwrap();
+        wait_for("the runs left stay", &|moved| moved <= before);
+        drop(file);
+        evict(&name);
+        assert!(fs::read(&name).unwrap() == expected, "the file differs from what was written");
+        fs::remove_file(&name).unwrap();
+        fs::remove_file(&other).unwrap();
     }
 
     /// fxdax: an evacuation paused between gathering a file's runs and their MAP (pause points,
@@ -3126,6 +3366,108 @@ mod guest {
         fs::remove_file(&name).unwrap();
     }
 
+    /// fxdax: a fault injection counting down, `name`, has run out.
+    fn assert_injected(name: &str) {
+        let left = fs::read_to_string(format!("/sys/module/fxfs/parameters/{name}")).unwrap();
+        assert_eq!(left.trim(), "0", "{name} never failed anything");
+    }
+
+    /// fxdax: a chunk of a file in pieces, which its range's own space maps in one request: that
+    /// request fails having mapped the first (fxfs.dax_fail_map_many), and the pieces are mapped
+    /// one by one; and that fails too at the second (fxfs.dax_fail_fallbacks), the range left with
+    /// the first alone: a read fails, and the next maps it all; a write, whose blocks moved first,
+    /// is tried again, having lost the pages' old bytes otherwise. Each on a clone of the file:
+    /// evicted, a file keeps what its ranges map, which needs no map (TASK-119.13).
+    fn test_map_many_failed() {
+        use std::os::unix::fs::FileExt;
+        const FICLONE: libc::c_ulong = 0x4004_9409;
+        const PAGE: usize = 4096;
+        const SIZE: usize = 4 << 20;
+        let _own_space = Param::set("dax_moves", "N");
+        let name = path("map-many-failed");
+        let mut expected: Vec<u8> = (0..SIZE).map(|i| (i % 251) as u8 + 1).collect();
+        fs::write(&name, &expected).unwrap();
+        let file = fs::OpenOptions::new().read(true).write(true).open(&name).unwrap();
+        file.sync_all().unwrap();
+        for at in [0, 8 * PAGE, 16 * PAGE] {
+            file.write_all_at(&[0xa0; PAGE], at as u64).unwrap();
+            expected[at..at + PAGE].fill(0xa0);
+            file.sync_data().unwrap();
+        }
+        let clone = |suffix: &str| {
+            let name = path(&format!("map-many-failed-{suffix}"));
+            let open = fs::OpenOptions::new().read(true).write(true).create(true).clone();
+            let clone = open.open(&name).unwrap();
+            let cloned = unsafe { libc::ioctl(clone.as_raw_fd(), FICLONE as _, file.as_raw_fd()) };
+            assert_eq!(cloned, 0, "FICLONE: {}", std::io::Error::last_os_error());
+            (name, clone)
+        };
+        let (one_by_one, clone_read) = clone("one-by-one");
+        {
+            let _many = Param::set("dax_fail_map_many", "1");
+            assert!(fs::read(&one_by_one).unwrap() == expected, "the file, read one by one");
+            assert_injected("dax_fail_map_many");
+        }
+        drop(clone_read);
+        let (read_failed, clone_read) = clone("read-failed");
+        {
+            let _many = Param::set("dax_fail_map_many", "1");
+            let _fallback = Param::set("dax_fail_fallbacks", "1");
+            let mut read = vec![0; SIZE];
+            let failed = clone_read.read_at(&mut read, 0).unwrap_err();
+            assert_eq!(failed.raw_os_error(), Some(libc::EIO), "{failed}");
+            assert_injected("dax_fail_fallbacks");
+            assert!(fs::read(&read_failed).unwrap() == expected, "the file, read after it failed");
+        }
+        drop(clone_read);
+        let (write_failed, clone_write) = clone("write-failed");
+        {
+            let _many = Param::set("dax_fail_map_many", "1");
+            let _fallback = Param::set("dax_fail_fallbacks", "1");
+            // Fxfs moved the write's blocks before its chunk's map failed, whole pages without
+            // their old bytes: tried again, it writes them.
+            clone_write.write_all_at(&[0xc0; 17 * PAGE], 0).unwrap();
+            assert_injected("dax_fail_fallbacks");
+        }
+        expected[..17 * PAGE].fill(0xc0);
+        assert!(fs::read(&write_failed).unwrap() == expected, "the file, read after the write");
+        drop(clone_write);
+        drop(file);
+        evict(&write_failed);
+        assert!(fs::read(&write_failed).unwrap() == expected, "the file evicted");
+        for name in [name, one_by_one, read_failed, write_failed] {
+            fs::remove_file(name).unwrap();
+        }
+    }
+
+    /// fxdax: a write in three pieces, as `test_map_failed_after_move`'s, memory for the second's
+    /// move running out once the first moved (fxfs.dax_fail_moves): the range's own space maps the
+    /// piece, and the write, reads and the file evicted find what was written (TASK-119.13).
+    fn test_move_failed() {
+        const PAGE: usize = 4096;
+        const SIZE: usize = 4 << 20;
+        let name = path("move-failed");
+        let mut expected: Vec<u8> = (0..SIZE).map(|i| (i % 251) as u8 + 1).collect();
+        fs::write(&name, &expected).unwrap();
+        fs::File::open(&name).unwrap().sync_all().unwrap();
+        let file = fs::OpenOptions::new().read(true).write(true).open(&name).unwrap();
+        let write = |data: &[u8], at: usize| {
+            std::os::unix::fs::FileExt::write_all_at(&file, data, at as u64).unwrap();
+        };
+        write(&[0xa0; PAGE], 0);
+        write(&[0xa2; PAGE], 2 * PAGE);
+        let fail = Param::set("dax_fail_moves", "1");
+        write(&[0xc0; 3 * PAGE], 0);
+        assert_injected("dax_fail_moves");
+        drop(fail);
+        expected[..3 * PAGE].fill(0xc0);
+        assert!(fs::read(&name).unwrap() == expected, "the file, read after the move failed");
+        drop(file);
+        evict(&name);
+        assert!(fs::read(&name).unwrap() == expected, "the file evicted");
+        fs::remove_file(&name).unwrap();
+    }
+
     /// fxdax: a store to a page sealed, whose fault moved its block, then found the gate shut by a
     /// seal: it gave up its page to wait for the seal, the page's range still mapping the block
     /// where it was, which Fxfs freed; once its extent was freed, the device mapped zeros there,
@@ -4162,6 +4504,8 @@ mod guest {
                     tests.push(("regions_written_once_mapped", &test_regions_written_once_mapped));
                     tests.push(("regions_truncated", &test_regions_truncated));
                     tests.push(("stale_entry_flushed", &test_stale_entry_flushed));
+                    tests.push(("slice_held", &test_slice_held));
+                    tests.push(("evacuees_left", &test_evacuees_left));
                 }
                 tests.push(("faults_writes_compaction", &test_faults_writes_compaction));
                 tests.push(("append_writable", &test_append_writable));
@@ -4179,6 +4523,8 @@ mod guest {
                 tests.push(("append_stopped_short", &test_append_stopped_short));
                 tests.push(("prune_while_read", &test_prune_while_read));
                 tests.push(("map_failed_after_move", &test_map_failed_after_move));
+                tests.push(("map_many_failed", &test_map_many_failed));
+                tests.push(("move_failed", &test_move_failed));
             }
             // Files on DAX are in no page cache.
             if !dax {
@@ -4193,6 +4539,10 @@ mod guest {
             // after the others, which it would stop.
             if dax {
                 tests.push(("moved_across_seal", &test_moved_across_seal));
+            }
+            // Of a small window, which it fills.
+            if self.small_window {
+                tests.push(("window_held_killed", &test_window_held_killed));
             }
             // Last: it fills the filesystem, then removes what it filled it with.
             tests.push(("enospc", &test_enospc));
@@ -4216,6 +4566,7 @@ mod guest {
                     eprintln!("PASS: {name}");
                 }
             }
+            save_coverage();
             fsync_dir(MNT);
 
             if failed.is_empty() {

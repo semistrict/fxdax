@@ -147,8 +147,27 @@ fn console() -> File {
 /// (TASK-119.16). Its frame comes between the forwarders', which may end mid-line: hence a line
 /// begun anew.
 pub fn say(line: &str) {
+    say_to(&mut console(), line);
+}
+
+fn say_to(console: &mut File, line: &str) {
     let framed = [&[STDOUT_START, b'\n'], line.as_bytes(), &[b'\n', STDOUT_END]].concat();
-    console().write_all(&framed).expect("write to the console");
+    console.write_all(&framed).expect("write to the console");
+}
+
+/// fxdax: [`say`]s `line`, which has left the guest once this returns: the agent's standard output
+/// waits in its pipe and the console, which a VM stopping loses, though what follows the line
+/// reached the store (a crash soak's round 21 of 50, 2026-10-31).
+pub fn say_out(line: &str) {
+    let mut console = console();
+    say_to(&mut console, line);
+    // SAFETY: A plain system call.
+    assert_eq!(
+        unsafe { libc::tcdrain(console.as_raw_fd()) },
+        0,
+        "tcdrain: {}",
+        std::io::Error::last_os_error()
+    );
 }
 
 /// fxdax: resets the VM at once, without syncing, as a crash does, once the console has passed

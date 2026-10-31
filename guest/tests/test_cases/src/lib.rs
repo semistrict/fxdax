@@ -7,6 +7,17 @@
 //! its guest half, in the guest agent, under `guest`. Moved from libkrun's tests (TASK-40), whose
 //! framework this is.
 
+/// A POSIX ACL xattr's value: its version, then each entry's tag, permissions and id.
+pub fn posix_acl(entries: &[(u16, u16, u32)]) -> Vec<u8> {
+    let mut value = 2u32.to_le_bytes().to_vec();
+    for &(tag, perm, id) in entries {
+        value.extend(tag.to_le_bytes());
+        value.extend(perm.to_le_bytes());
+        value.extend(id.to_le_bytes());
+    }
+    value
+}
+
 mod test_pjdfstest;
 use test_pjdfstest::TestPjdfstest;
 

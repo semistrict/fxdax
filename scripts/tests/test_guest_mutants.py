@@ -13,18 +13,24 @@ guest_mutants = script.load("guest-mutants-gce")
 
 class Mutants(unittest.TestCase):
     def test_each_edit_finds_its_code_once(self):
-        """TASK-44.19: dax.c as it is holds each mutant's code once, which it changes: a mutant
-        whose code moved would test nothing."""
-        dax = (script.SCRIPTS.parent / guest_mutants.DAX).read_text()
+        """TASK-44.19: the sources as they are hold each mutant's code once, which it changes: a
+        mutant whose code moved would test nothing."""
+        def count(old, *file):
+            path = script.SCRIPTS.parent / (file[0] if file else guest_mutants.DAX)
+            return path.read_text().count(old)
+
         found = {
-            name: [dax.count(old) for old, _ in edits] for name, _, edits, *_ in guest_mutants.MUTANTS
+            name: [count(old, *file) for old, _, *file in edits]
+            for name, _, edits, *_ in guest_mutants.MUTANTS
         }
         self.assertEqual(
             found, {name: [1] * len(edits) for name, _, edits, *_ in guest_mutants.MUTANTS})
 
     def test_mutants_change_the_code(self):
         """Each mutant's edit changes what it finds."""
-        changed = [old != new for _, _, edits, *_ in guest_mutants.MUTANTS for old, new in edits]
+        changed = [
+            old != new for _, _, edits, *_ in guest_mutants.MUTANTS for old, new, *_ in edits
+        ]
         self.assertEqual(changed, [True] * len(changed))
 
     def test_fates(self):

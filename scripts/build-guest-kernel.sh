@@ -138,6 +138,12 @@ fi
 if [[ ${FXDAX_GUEST_KERNEL_LOCK_STAT:-} == 1 ]]; then
     "$src/scripts/config" --file "$src/.config" --enable DEBUG_KERNEL --enable LOCK_STAT
 fi
+# fxdax: with FXDAX_GUEST_KERNEL_COVERAGE=1, a kernel that counts what fs/fxfs runs (gcov, which
+# fs/fxfs/Makefile asks of its C), for scripts/guest-coverage.py (TASK-119.14): built with its own
+# FXDAX_GUEST_KERNEL_WORK.
+if [[ ${FXDAX_GUEST_KERNEL_COVERAGE:-} == 1 ]]; then
+    "$src/scripts/config" --file "$src/.config" --enable DEBUG_FS --enable GCOV_KERNEL
+fi
 make -C "$src" "${make_args[@]}" olddefconfig
 if [[ ${FXDAX_GUEST_KERNEL_LOCK_STAT:-} == 1 ]]; then
     grep -q '^CONFIG_LOCK_STAT=y' "$src/.config" ||
@@ -155,6 +161,10 @@ if [[ ${FXDAX_GUEST_KERNEL_KASAN:-} == 1 ]]; then
         grep -q "^CONFIG_$option=y" "$src/.config" ||
             { echo "the KASAN kernel has no CONFIG_$option" >&2; exit 1; }
     done
+fi
+if [[ ${FXDAX_GUEST_KERNEL_COVERAGE:-} == 1 ]]; then
+    grep -q '^CONFIG_GCOV_KERNEL=y' "$src/.config" ||
+        { echo "the coverage kernel has no CONFIG_GCOV_KERNEL" >&2; exit 1; }
 fi
 grep -q '^CONFIG_FXFS_FS=y' "$src/.config"
 grep -q '^CONFIG_VIRTIO_EXTENT=y' "$src/.config"

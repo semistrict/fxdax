@@ -8,7 +8,8 @@
 # spaces, are cargo nextest's arguments, such as a filter), then fxdax's guest
 # tests (unless FXDAX_GUEST_TESTS=0; scripts/test-e2e.sh; TESTs name them),
 # whose DAX window takes KVM's faults through userfaultfd. With FXDAX_GUEST_KERNEL_BUILD set
-# (release; debug: lockdep, KCSAN, DEBUG_ATOMIC_SLEEP; or kasan: KASAN, KFENCE, lockdep), the guest
+# (release; debug: lockdep, KCSAN, DEBUG_ATOMIC_SLEEP; kasan: KASAN, KFENCE, lockdep; or coverage:
+# gcov of fs/fxfs, which leaves coverage/ in the results, scripts/guest-coverage.py), the guest
 # tests run on a guest kernel it builds from the source (scripts/build-guest-kernel.sh), not
 # FXDAX_GUEST_KERNEL's; with neither set, on a release one it builds (TASK-130: without one, every
 # guest case skipped). It builds in trees that persist between runs, so that a run builds only
@@ -47,18 +48,20 @@ if [[ -z ${FXDAX_GUEST_KERNEL:-} ]]; then
 fi
 case ${FXDAX_GUEST_KERNEL_BUILD:-} in
     '') ;;
-    release | debug | kasan)
+    release | debug | kasan | coverage)
         echo "== guest kernel ($FXDAX_GUEST_KERNEL_BUILD)" >&2
         # Each kind in a work directory of its own, as their configurations differ. The kernel's
         # Rust builds on guest/rust's own toolchain, not the host's.
         kernel_work="$work/guest-kernel-$FXDAX_GUEST_KERNEL_BUILD"
-        kernel_debug=0 kernel_kasan=0
+        kernel_debug=0 kernel_kasan=0 kernel_coverage=0
         [[ $FXDAX_GUEST_KERNEL_BUILD == debug ]] && kernel_debug=1
         [[ $FXDAX_GUEST_KERNEL_BUILD == kasan ]] && kernel_kasan=1
+        [[ $FXDAX_GUEST_KERNEL_BUILD == coverage ]] && kernel_coverage=1
         channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' "$repo/guest/rust/rust-toolchain.toml")
         rustup toolchain install "$channel" --component rust-src --profile minimal > /dev/null
         if ! env -u RUSTUP_TOOLCHAIN FXDAX_GUEST_KERNEL_WORK="$kernel_work" \
             FXDAX_GUEST_KERNEL_DEBUG=$kernel_debug FXDAX_GUEST_KERNEL_KASAN=$kernel_kasan \
+            FXDAX_GUEST_KERNEL_COVERAGE=$kernel_coverage \
             "$repo/scripts/build-guest-kernel.sh" x86_64 \
             > "$results/guest-kernel.log" 2>&1; then
             echo "guest kernel: failed, see guest-kernel.log" >&2
@@ -67,12 +70,21 @@ case ${FXDAX_GUEST_KERNEL_BUILD:-} in
         export FXDAX_GUEST_KERNEL="$kernel_work/out/x86_64/vmlinux"
         sha256sum "$FXDAX_GUEST_KERNEL" > "$results/guest-kernel.txt"
         ;;
-    *) echo "FXDAX_GUEST_KERNEL_BUILD is release, debug or kasan" >&2; exit 2 ;;
+    *) echo "FXDAX_GUEST_KERNEL_BUILD is release, debug, kasan or coverage" >&2; exit 2 ;;
 esac
+if [[ ${FXDAX_GUEST_KERNEL_BUILD:-} == coverage ]]; then
+    export FXDAX_COVERAGE="$results/coverage-counts"
+    mkdir -p "$FXDAX_COVERAGE"
+fi
 echo "== guest tests" >&2
 e2e_status=0
 FXDAX_E2E_RESULTS="$results/e2e" "$repo/scripts/test-e2e.sh" "$@" \
     > "$results/e2e.log" 2>&1 || e2e_status=$?
 echo "guest tests: exit $e2e_status" >&2
+if [[ -n ${FXDAX_COVERAGE:-} ]]; then
+    "$repo/scripts/guest-coverage.py" "$FXDAX_COVERAGE" "$(dirname "$(find "$kernel_work" \
+        -path '*/fs/fxfs/dax.gcno' -print -quit)")" "$results/coverage" ||
+        echo "guest coverage: failed" >&2
+fi
 if (( status == 0 )); then status=$e2e_status; fi
 exit "$status"
