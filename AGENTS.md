@@ -32,3 +32,28 @@ Commit a batch once it has compiled and its unit tests have run and passed (the 
 `cargo nextest`, and the GCE run for what only runs on Linux): never a change that has not been
 compiled and tested. A batch may still be several commits, one logical change each, made together
 after the batch's test run.
+
+## Dead ends: check them before you try, add to them when you stop
+
+`dead-ends/` holds every approach that was tried and given up on, a file each, kept for good, so
+that nothing is tried again blind.
+
+- Before designing or trying an approach, read `dead-ends/` for it (`rg` the directory for the
+  subsystem and the idea). If it is there, say so, and go on only with what is different this time.
+- When you give up on an approach, or a measurement shows it isn't worth landing, add its file in
+  the same change that records the decision, whether or not any code of it survives.
+- A wrong theory that cost real time counts, as does an experiment that worked but can't land.
+- Keep the files true: if a dead end's "Reopen if" comes about and it then works, update its file
+  to say so rather than delete it. Don't delete files.
+
+Each file is `dead-ends/<short-kebab-name>.md`, short, with these parts:
+
+```markdown
+# <the approach, in a line>
+
+**Tried:** date, tasks, branches or commits it lives on.
+**Idea:** why it looked right.
+**Result:** what happened, with the numbers and the runs that show it.
+**Why it's dead:** the reason, not the symptom.
+**Reopen if:** what would have to change.
+```
