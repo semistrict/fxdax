@@ -76,11 +76,25 @@ if [[ ${FXDAX_GUEST_KERNEL_BUILD:-} == coverage ]]; then
     export FXDAX_COVERAGE="$results/coverage-counts"
     mkdir -p "$FXDAX_COVERAGE"
 fi
+# A crash leaves a core, whose threads' stacks the results keep, and only those, as the host goes
+# with the core: a VMM died of SIGSEGV in a soak, and nothing said where (2026-10-31). Private
+# memory alone (coredump_filter): a guest's and a daemon's arenas are shared.
+cores="$results/cores"
+mkdir -p "$cores"
+sysctl -q -w kernel.core_pattern="$cores/core.%p"
+ulimit -c unlimited
+echo 0x11 > /proc/self/coredump_filter
 echo "== guest tests" >&2
 e2e_status=0
 FXDAX_E2E_RESULTS="$results/e2e" "$repo/scripts/test-e2e.sh" "$@" \
     > "$results/e2e.log" 2>&1 || e2e_status=$?
 echo "guest tests: exit $e2e_status" >&2
+for core in "$cores"/core.*; do
+    [[ -f $core ]] || continue
+    echo "guest tests: a process crashed: $core.stacks.txt" >&2
+    eu-stack -l -i -n 512 --core="$core" > "$core.stacks.txt" 2>&1 || true
+    rm "$core"
+done
 if [[ -n ${FXDAX_COVERAGE:-} ]]; then
     "$repo/scripts/guest-coverage.py" "$FXDAX_COVERAGE" "$(dirname "$(find "$kernel_work" \
         -path '*/fs/fxfs/dax.gcno' -print -quit)")" "$results/coverage" ||

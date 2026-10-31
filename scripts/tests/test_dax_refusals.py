@@ -14,6 +14,9 @@ PREFIX = "WARN fxdax::extentd::server: extentd: a store at DAX window offset 0x1
 SEALED = (PREFIX + '(1 so far): ExtentId { branch: 1, sequence: 2 } from 0x0, 0x10000 bytes from '
           '0x10fa3000, read-only; not open in the window; in the store: Ok(Some("0xa000 bytes, '
           'sealed")); the page\'s latest MAPs and UNMAPs: [\n')
+FREED = (PREFIX + '(4 so far): ExtentId { branch: 1, sequence: 5 } from 0x0, 0x1000 bytes from '
+         '0x21b000, read-only; not open in the window; in the store: Ok(None); '
+         'the page\'s latest MAPs and UNMAPs: [\n')
 OPEN = (PREFIX + '(2 so far): ExtentId { branch: 1, sequence: 3 } from 0x0, 0x1000 bytes from '
         '0x21b000, read-only; not open in the window; in the store: Ok(Some("0x1000 bytes, open")); '
         'the page\'s latest MAPs and UNMAPs: [\n')
@@ -27,6 +30,9 @@ MET = ("WARN fxdax::extents: extentd: a store refused at DAX window offset 0x1f7
 
 
 class DaxRefusals(unittest.TestCase):
+    def test_seals_explain_stores_to_extents_freed_since(self):
+        self.assertEqual(dax_refusals.unexplained([FREED]), [])
+
     def test_seals_explain_stores_to_sealed_extents_read_only(self):
         self.assertEqual(dax_refusals.unexplained([SEALED, HISTORY, SEALED]), [])
 

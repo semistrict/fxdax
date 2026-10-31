@@ -24,9 +24,11 @@ import sys
 # The daemon's line for a store a window refused (`ExtentStore::refused`): what the window maps at
 # the page, and the extent's state in the store.
 REFUSED = re.compile(r"extentd: a store at DAX window offset (0x[0-9a-f]+) refused")
-# A seal's: the page mapped read-only, of an extent neither open in the window nor in the store.
+# A seal's: the page mapped read-only, of an extent neither open in the window nor in the store,
+# which holds it sealed, or has freed it since, as a follower's windows go on mapping it.
 SEALED = re.compile(
-    r", read-only; not open in the window; in the store: Ok\(Some\(\"0x[0-9a-f]+ bytes, sealed\"\)\)"
+    r", read-only; not open in the window; in the store: "
+    r"Ok\((Some\(\"0x[0-9a-f]+ bytes, sealed\"\)|None)\)"
 )
 
 
