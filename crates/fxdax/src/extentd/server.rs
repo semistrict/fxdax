@@ -561,13 +561,16 @@ impl Answer {
         self.sent = true;
         let header = self.request;
         if let Err(errno) = result {
-            // A full store: which request found it so, and how full.
+            // A full store: which request found it so, and how full: of its extents' bytes, or
+            // of the host's disk, which it may fill far from its capacity (TASK-79.105).
             if errno == Errno::ENOSPC
                 && let Some(store) = self.connection.store.get()
             {
                 let used = store.info().map(|info| (info.used, info.capacity));
+                let disk = store.disk_bytes();
                 log::warn!(
-                    "extentd: request {} (flags {:#x}, args {:#x?}) found the store full: {used:?}",
+                    "extentd: request {} (flags {:#x}, args {:#x?}) found the store full: \
+                     used and capacity {used:?}, {disk:?} bytes of the host's disk",
                     header.kind,
                     header.flags,
                     header.args

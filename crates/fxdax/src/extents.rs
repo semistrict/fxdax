@@ -865,6 +865,12 @@ impl ExtentStore {
         self.store.description().branch
     }
 
+    /// fxdax: the bytes the branch's files take of the host's disk: a write may be refused for
+    /// these, three times the capacity, as well as for what its extents hold (TASK-79.89).
+    pub fn disk_bytes(&self) -> Result<u64> {
+        Ok(self.store.usage().map_err(errno)?.disk_bytes)
+    }
+
     /// What the store holds (`INFO`).
     pub fn info(&self) -> Result<ExtentInfo> {
         let info = self.store.info().map_err(errno)?;
