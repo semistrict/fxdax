@@ -549,7 +549,6 @@ impl ExtentDevice {
             freeze: self.info.flags & DEVICE_FREEZE != 0,
             gate: self.gate.clone(),
             branch: self.branch.clone(),
-            capacity: self.capacity.clone(),
         }
     }
 
@@ -863,7 +862,6 @@ pub struct Freezer {
     freeze: bool,
     gate: Arc<Gate>,
     branch: Arc<AtomicU64>,
-    capacity: Arc<AtomicU64>,
 }
 
 // SAFETY: The device's requests work from any thread.
@@ -897,9 +895,11 @@ impl Freezer {
         frozen
     }
 
-    /// Tells the device the filesystem thaws, and takes its branch and capacity, which are of a
-    /// store of its own in a VM restored from a snapshot; returns the branch. The device takes
-    /// writes, frees and commits again once opened (`Freezer::open`).
+    /// Tells the device the filesystem thaws, and takes its branch, which is of a store of its own
+    /// in a VM restored from a snapshot; returns the branch. Its capacity, which may differ too, is
+    /// for the filesystem to take (`resize`), which compares it with the device's and grows the
+    /// allocator with it (TASK-79.52). The device takes writes, frees and commits again once opened
+    /// (`Freezer::open`).
     pub async fn unfreeze(&self) -> Result<u64, Error> {
         if self.freeze {
             let device = self.sealer.device;
@@ -907,7 +907,6 @@ impl Freezer {
             call(device, thawed, None).await?;
             let info = info(device).await?;
             self.branch.store(info.branch, Ordering::Release);
-            self.capacity.store(info.capacity, Ordering::Release);
         }
         Ok(self.branch.load(Ordering::Acquire))
     }

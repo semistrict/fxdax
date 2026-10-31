@@ -8,7 +8,8 @@
 //! - **Zygote:** twice, as a zygote's children are, each into a store of its own, forked from the
 //!   snapshot's point; the host then checks each store holds what its guest wrote, and not the
 //!   other's.
-//! - **Suspend:** once, into the store the VM had, which nothing changed meanwhile.
+//! - **Suspend:** once, into the store the VM had, which nothing changed meanwhile but its size:
+//!   the guest, told of it by nothing, finds the store grew as it thaws (TASK-79.52).
 //! - **Migrate:** once, as on another host: its extent daemon keeps stores in a bucket, and the
 //!   restore names a point and a store it doesn't have here, so it takes the point's branch from
 //!   the bucket, and forks the store from it. The bucket is FXDAX_EXTENTD_REMOTE's, if set, or one
@@ -32,7 +33,6 @@ pub struct TestFxfsGuestSnapshot {
     /// Whether the device has a DAX window.
     #[cfg_attr(feature = "guest", allow(dead_code))]
     pub dax: bool,
-    #[cfg_attr(feature = "guest", allow(dead_code))]
     pub mode: Mode,
 }
 
@@ -77,6 +77,10 @@ impl Phase {
     }
 }
 
+/// The store's capacity, and what the host grows it to meanwhile, resuming.
+const CAPACITY: u64 = 128 << 20;
+const GROWN: u64 = CAPACITY * 2;
+
 /// The vsock port the guest says it is frozen on, and asks its name on once restored.
 #[cfg_attr(feature = "guest", allow(dead_code))]
 const PORT: u32 = 5051;
@@ -104,8 +108,6 @@ mod host {
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::net::UnixListener;
     use std::path::{Path, PathBuf};
-
-    const CAPACITY: u64 = 512 << 20;
 
     /// A short path for a vsock's socket, which Unix sockets' 107 bytes hold: the test's
     /// directory may be deep.
@@ -228,6 +230,10 @@ mod host {
                     std::fs::copy(dir.join(name), bundle.join(name))
                         .with_context(|| format!("leaving {name} in the bundle"))?;
                 }
+            }
+
+            if self.mode == Mode::Suspend {
+                crate::common::control(&extentd)?.resize_store(&store(dir, "source"), GROWN)?;
             }
 
             // Restored, told its name: each into its own store, but resuming.
@@ -378,6 +384,23 @@ mod guest {
         assert_eq!(ret, 0, "ioctl {request:#x}: {}", std::io::Error::last_os_error());
     }
 
+    /// The filesystem takes the size its store grew to while the VM was away: it says so, and
+    /// holds more than the size it had, which its allocator, which `fallocate` doesn't ask, would
+    /// refuse otherwise (ENOSPC).
+    fn grown() {
+        let stats = nix::sys::statvfs::statvfs(MNT).unwrap();
+        assert_eq!(stats.blocks() * stats.fragment_size(), GROWN);
+        let past = format!("{MNT}/past-what-it-was");
+        let mut file = fs::File::create(&past).unwrap();
+        let chunk = vec![0x5a; 1 << 20];
+        for _ in 0..(CAPACITY + CAPACITY / 4) >> 20 {
+            file.write_all(&chunk).unwrap();
+        }
+        file.sync_all().unwrap();
+        drop(file);
+        fs::remove_file(&past).unwrap();
+    }
+
     /// A connection to the host on `PORT`.
     fn connect() -> fs::File {
         try_connect().expect("connecting to the host")
@@ -459,6 +482,9 @@ mod guest {
             eprintln!("{name}: thawing");
             freeze(FITHAW);
             eprintln!("{name}: thawed");
+            if self.mode == Mode::Suspend {
+                grown();
+            }
 
             assert_eq!(fs::read(format!("{MNT}/before")).unwrap(), BEFORE);
             assert!(mapped == &mapped_pattern()[..], "the mapping after the restore");
