@@ -36,7 +36,6 @@ use fuchsia_sync::Mutex;
 use futures::future::BoxFuture;
 use fxfs_crypto::{Crypt, UnwrappedKey};
 use fxfs_trace::{TraceFutureExt, trace_future_args};
-use static_assertions::const_assert;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock, Weak};
 use std::time::Duration;
