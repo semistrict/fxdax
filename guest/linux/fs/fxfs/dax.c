@@ -960,6 +960,7 @@ module_param_named(dax_trace, fxfs_dax_tracing, bool, 0444);
 MODULE_PARM_DESC(dax_trace, "Trace what happens to DAX pages (diagnostic), as the filesystem mounts");
 static struct fxfs_dax_trace_event *fxfs_dax_trace_events;
 static atomic64_t fxfs_dax_trace_next;
+/* The device of the mount traced, the latest: it goes as the mount does (fxfs_dax_destroy). */
 static struct fxfs_device *fxfs_dax_trace_dev;
 /* The window's first page frame, which `pfn N` written to fxfs.dax_trace_dump is counted from. */
 static unsigned long fxfs_dax_trace_base;
@@ -968,13 +969,14 @@ static void fxfs_dax_trace(u32 kind, u64 ino, u64 page, u64 window, u64 extent, 
 			   u32 flags)
 {
 	struct fxfs_dax_trace_event *events = READ_ONCE(fxfs_dax_trace_events);
+	struct fxfs_device *dev = READ_ONCE(fxfs_dax_trace_dev);
 	u64 at;
 
-	if (likely(!events))
+	if (likely(!events) || !dev)
 		return;
 	at = atomic64_inc_return(&fxfs_dax_trace_next) - 1;
 	events[at % FXFS_DAX_TRACE_EVENTS] = (struct fxfs_dax_trace_event) {
-		.time = ktime_get_ns(), .seals = fxfs_device_seals(fxfs_dax_trace_dev), .ino = ino,
+		.time = ktime_get_ns(), .seals = fxfs_device_seals(dev), .ino = ino,
 		.page = page, .window = window, .extent = extent, .extent_offset = extent_offset,
 		.kind = kind, .flags = flags,
 	};
@@ -4422,17 +4424,18 @@ struct fxfs_dax *fxfs_dax_create(struct super_block *sb, struct fxfs *fs)
 	dax->sb = sb;
 	dax->fs = fs;
 	dax->dev = dev;
-	/* fxdax: the trace, if asked for, of the first filesystem mounted (TASK-121). */
-	if (fxfs_dax_tracing && !fxfs_dax_trace_events) {
+	/* fxdax: the trace, if asked for, of the filesystem mounted last (TASK-121). */
+	if (fxfs_dax_tracing) {
 		void *kaddr;
 		int id = dax_read_lock();
 
 		if (dax_direct_access(dax_dev, 0, 1, DAX_ACCESS, &kaddr, &fxfs_dax_trace_base) < 1)
 			fxfs_dax_trace_base = 0;
 		dax_read_unlock(id);
-		fxfs_dax_trace_dev = dev;
-		WRITE_ONCE(fxfs_dax_trace_events,
-			   vzalloc(sizeof(*fxfs_dax_trace_events) * FXFS_DAX_TRACE_EVENTS));
+		WRITE_ONCE(fxfs_dax_trace_dev, dev);
+		if (!fxfs_dax_trace_events)
+			WRITE_ONCE(fxfs_dax_trace_events,
+				   vzalloc(sizeof(*fxfs_dax_trace_events) * FXFS_DAX_TRACE_EVENTS));
 	}
 	dax->dax_dev = dax_dev;
 	xa_init(&dax->files);
@@ -4525,6 +4528,9 @@ void fxfs_dax_destroy(struct fxfs_dax *dax)
 		atomic_dec(&dax->growing);
 	cancel_work_sync(&dax->evacuate);
 	fxfs_dax_forget_evacuating(dax);
+	/* fxdax: no longer traced: the device goes with the mount. */
+	if (READ_ONCE(fxfs_dax_trace_dev) == dax->dev)
+		WRITE_ONCE(fxfs_dax_trace_dev, NULL);
 	list_for_each_entry_safe(range, next, &dax->used, list) {
 		xa_erase(&range->file->ranges, range->chunk);
 		list_del(&range->list);

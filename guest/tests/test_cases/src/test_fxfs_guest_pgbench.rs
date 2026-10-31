@@ -709,7 +709,7 @@ mod guest {
                     // open, which waits for its end.
                     let start = || {
                         as_postgres(&format!(
-                            "pg_ctl -D {data} -l {data}/server.log -o \"{options}\" -w start"
+                            "pg_ctl -D {data} -l {data}/server.log -o \"{options}\" -w -t 900 start"
                         ))
                     };
                     start();
