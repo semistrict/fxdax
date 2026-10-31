@@ -47,11 +47,10 @@ pub const MIN_BLOCK_SIZE: BlockSize = BlockSize::SIZE_4KIB;
 pub const MAX_BLOCK_SIZE: BlockSize = BlockSize::SIZE_64KIB;
 
 // Whilst Fxfs could support up to u64::MAX, off_t is i64 so allowing files larger than that becomes
-// difficult to deal with via the POSIX APIs. Additionally, PagedObjectHandle only sees data get
-// modified in page chunks so to prevent writes at i64::MAX the entire page containing i64::MAX
-// needs to be excluded.
-pub const MAX_FILE_SIZE: u64 = i64::MAX as u64 - 4095;
-const_assert!(9223372036854771712 == MAX_FILE_SIZE);
+// difficult to deal with via the POSIX APIs. fxdax: the last page's too, as Linux's MAX_LFS_FILESIZE
+// has it, which only Fuchsia's PagedObjectHandle couldn't write: nothing bounded a write by the
+// limit, and a file that reached it couldn't be opened once it was closed (xfstests generic/525).
+pub const MAX_FILE_SIZE: u64 = i64::MAX as u64;
 
 // The maximum number of transactions that can be in-flight at any time.
 const MAX_IN_FLIGHT_TRANSACTIONS: u64 = 4;

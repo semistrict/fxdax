@@ -890,13 +890,18 @@ impl<P: Platform> Fxfs<P> {
         let dir = self.directory(dir).await?;
         let mut transaction = self.transaction(&[dir.object_id()]).await?;
         let ino = dir.create_symlink(&mut transaction, target, name).await?;
+        // fxdax: its times too, as a file's are made: it has only an mtime of Fxfs's own, and a
+        // ctime of 0 before it (xfstests generic/423).
+        let now = Timestamp::now();
         let owner = fio::MutableNodeAttributes {
             mode: Some(S_IFLNK | 0o777),
             uid: Some(uid),
             gid: Some(gid),
+            access_time: Some(now.as_nanos()),
+            modification_time: Some(now.as_nanos()),
             ..Default::default()
         };
-        self.handle(ino).update_attributes(&mut transaction, Some(&owner), None).await?;
+        self.handle(ino).update_attributes(&mut transaction, Some(&owner), Some(now)).await?;
         self.commit_new(transaction, ino, dir.object_id()).await
     }
 

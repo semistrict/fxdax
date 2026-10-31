@@ -293,7 +293,11 @@ u64 fxfs_rt_monotonic_ns(void)
 
 u64 fxfs_rt_realtime_ns(void)
 {
-	return ktime_get_real_ns();
+	/*
+	 * fxdax: the coarse clock, an inode's own: a ctime the kernel sets after a time read from
+	 * a finer clock could be before it (xfstests generic/423).
+	 */
+	return ktime_get_coarse_real_ns();
 }
 
 void fxfs_rt_random_bytes(void *buf, size_t len)

@@ -6,7 +6,7 @@
 //! of them. Unlinks are queued as the guest's VFS queues them, which nothing on the host does.
 
 use super::*;
-use fxfs::object_store::NewChildStoreOptions;
+use fxfs::object_store::{NewChildStoreOptions, StoreOptions};
 use fxfs::object_store::volume::root_volume;
 use storage_device::DeviceHolder;
 use storage_device::fake_device::FakeDevice;
@@ -209,6 +209,18 @@ async fn a_files_last_bytes_read_back() {
     let start = LAST & !4095;
     let got = fs.read_into(ino, start, &mut [&mut parts[..]]).await.unwrap();
     assert_eq!((got, parts[4094]), (4095, b'a'));
+    // And from the layers a compaction leaves, where a mount finds it.
+    fs.filesystem().journal().force_compact().await.unwrap();
+    let got = fs.read_into(ino, start, &mut [&mut parts[..]]).await.unwrap();
+    assert_eq!((got, parts[4094]), (4095, b'a'));
+    // And as readahead asks, and past the end, for far more than is there.
+    let mut window = vec![0xff; 4 << 20];
+    let before = i64::MAX as u64 - (2 << 20) + 1;
+    let got = fs.read_into(ino, before, &mut [&mut window[..]]).await.unwrap();
+    assert_eq!(got as u64, i64::MAX as u64 - before);
+    assert_eq!((window[got - 1], window[0]), (b'a', 0));
+    let got = fs.read(ino, before, &mut window).await.unwrap();
+    assert_eq!(window[got - 1], b'a');
     fs.stop_delayed().await.unwrap();
 }
 
@@ -221,5 +233,39 @@ async fn a_new_nodes_ctime_is_no_earlier_than_its_mtime() {
         let [attr, _] = fs.create(root, name, mode, 0, 0, 0, &[]).await.unwrap();
         assert!(attr.ctime_ns >= attr.mtime_ns, "{name:?}: {attr:?}");
     }
+    let [attr, _] = fs.symlink(root, b"link", b"file", 0, 0).await.unwrap();
+    assert!(attr.ctime_ns >= attr.mtime_ns, "the symlink: {attr:?}");
+    fs.stop_delayed().await.unwrap();
+}
+
+/// As `a_files_last_bytes_read_back`, across an unmount, which xfstests' test does between them.
+#[fuchsia::test]
+async fn a_files_last_bytes_read_back_after_a_remount() {
+    const LAST: u64 = i64::MAX as u64 - 1;
+    let device = DeviceHolder::new(FakeDevice::new(16384, 4096));
+    let filesystem = FxFilesystem::new_empty(device).await.expect("formatting");
+    let root = root_volume((*filesystem).clone()).await.expect("the root volume");
+    let volume = root.new_volume("test", NewChildStoreOptions::default()).await.unwrap();
+    let dir = volume.root_directory_object_id();
+    let fs = Fxfs::new((*filesystem).clone(), volume, false, Tested);
+    let ino = fs.new_file(dir, b"a").await;
+    fs.write(ino, LAST, b"a").await.unwrap();
+    fs.stop_delayed().await.unwrap();
+    drop((fs, root));
+    filesystem.close().await.expect("closing");
+    let device = filesystem.take_device().await;
+    device.reopen(false);
+
+    let filesystem = FxFilesystem::open(device).await.expect("opening");
+    let root = root_volume((*filesystem).clone()).await.expect("the root volume");
+    let volume = root.volume("test", StoreOptions::default()).await.unwrap();
+    let fs = Fxfs::new((*filesystem).clone(), volume, false, Tested);
+    let mut read = vec![0xff; 4096];
+    let start = LAST & !4095;
+    assert_eq!(fs.read(ino, start, &mut read).await.unwrap(), 4095);
+    assert_eq!(read[4094], b'a');
+    let mut window = vec![0xff; 4 << 20];
+    let got = fs.read_into(ino, i64::MAX as u64 - (2 << 20) + 1, &mut [&mut window[..]]).await;
+    assert_eq!(window[got.unwrap() - 1], b'a');
     fs.stop_delayed().await.unwrap();
 }
