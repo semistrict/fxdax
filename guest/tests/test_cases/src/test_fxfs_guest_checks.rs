@@ -1405,9 +1405,11 @@ mod guest {
         let name = path("blocks");
         let mut file = fs::File::create_new(&name).unwrap();
         let bytes = || fs::metadata(&name).unwrap().blocks() * 512;
+        // Before any sync: dirty pages count, or a file looks sparser than it is.
         file.write_all(&vec![1; 1 << 20]).unwrap();
+        assert_eq!(bytes(), 1 << 20);
         file.sync_all().unwrap();
-        assert_eq!(fs::metadata(&name).unwrap().blocks() * 512, 1 << 20);
+        assert_eq!(bytes(), 1 << 20);
         file.set_len(0).unwrap();
         file.sync_all().unwrap();
         assert_eq!(bytes(), 0);

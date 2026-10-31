@@ -289,7 +289,20 @@ static int fxfs_vfs_getattr(struct mnt_idmap *idmap, const struct path *path, st
 	    !(flags & AT_STATX_DONT_SYNC)) {
 		struct fxfs_vfs_inode *fi = fxfs_vfs_inode(inode);
 		struct fxfs *fs = fxfs_vfs_fs(inode->i_sb);
-		u64 offset = fxfs_journal_offset(fs);
+		u64 offset;
+
+		/*
+		 * Dirty pages have no blocks until written back, and which take new ones Fxfs alone
+		 * knows: a file looked sparser than it is to whatever goes by its blocks, as a backup
+		 * does (xfstests generic/422, as NFS writes back for a getattr).
+		 */
+		if (!IS_DAX(inode) && mapping_tagged(inode->i_mapping, PAGECACHE_TAG_DIRTY)) {
+			int err = filemap_write_and_wait(inode->i_mapping);
+
+			if (err)
+				return err;
+		}
+		offset = fxfs_journal_offset(fs);
 
 		if (READ_ONCE(fi->blocks_as_of) != offset) {
 			struct fxfs_attr attr;
