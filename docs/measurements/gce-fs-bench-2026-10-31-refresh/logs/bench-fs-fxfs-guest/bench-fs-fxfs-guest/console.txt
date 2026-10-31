@@ -1,0 +1,326 @@
+[    0.102925] PCI: Fatal: No config space access function found
+[    0.130256] PCI: System does not support PCI
+[    0.236169] check access for rdinit=/init failed: -2, ignoring
+iteration OBSERVED mtime-ahead-of-guest-ms -3.538
+1/3
+FXFS seq-write: device_commits 1, device_commits_ns 615069913, device_write_bytes 269549568, device_writes 528, device_writes_ns 1906869735, fsyncs 1, seal_waits 1, seal_waits_ns 903, seals 1, seals_ns 615072128
+RESULT seq-write MiB/s higher 118.847
+REQUESTS seq-write: write 0.01 (1552 µs each) per operation
+FXFS rand-read-cold: device_read_bytes 67108864, device_reads 16384, device_reads_ns 4467883355
+RESULT rand-read-cold IOPS higher 3172.734
+REQUESTS rand-read-cold: read 1.00 (263 µs each) per operation
+RESULT seq-read-cold MiB/s higher 911.032
+RESULT seq-read-warm MiB/s higher 8321.339
+RESULT rand-read-warm IOPS higher 930448.776
+RESULT mmap-seq-read MiB/s higher 8827.586
+OBSERVED mmap-seq-read-faults-per-mib 13.7
+FXFS rand-write: device_commits 1, device_commits_ns 831214, device_write_bytes 68743168, device_writes 540, device_writes_ns 892690234, fsyncs 1, seal_waits 1, seal_waits_ns 1031, seals 1, seals_ns 831967
+REQUESTS rand-write: write 0.03 (729 µs each) per operation
+RESULT rand-write IOPS higher 25766.789
+RESULT mmap-rand-read IOPS higher 1231781.109
+RESULT mmap-rand-write IOPS higher 11713.754
+FXFS mmap-rand-write: device_commits 3, device_commits_ns 477083061, device_read_bytes 126976, device_reads 13, device_reads_ns 6061255, device_write_bytes 321912832, device_writes 825, device_writes_ns 1213666918, fsyncs 1, journal_compaction_ns 512971082, journal_compactions 1, seal_waits 3, seal_waits_ns 36299, seals 3, seals_ns 477109106, writes_held_by_seals 2, writes_held_by_seals_ns 475707384
+REQUESTS mmap-rand-write: read 0.00 (311 µs each), write 0.07 (685 µs each), free 0.00 (14850 µs each), commit 0.00 (238218 µs each) per operation
+FXFS fsync-append: device_commits 255, device_commits_ns 286597314, device_write_bytes 2105344, device_writes 514, device_writes_ns 330016365, fsyncs 255, seal_waits 255, seal_waits_ns 130480, seals 255, seals_ns 286706732
+REQUESTS fsync-append: write 2.01 (631 µs each), free 0.01 (1120 µs each) per operation
+RESULT fsync-append IOPS higher 399.941
+RESULT sqlite-pread-scan MiB/s higher 120.470
+OBSERVED sqlite-pread-scan-faults-per-mib 2.7
+RESULT sqlite-pread-scan-warm MiB/s higher 3014.170
+OBSERVED sqlite-pread-scan-warm-faults-per-mib 2.6
+RESULT sqlite-mmap-scan MiB/s higher 1142.220
+OBSERVED sqlite-mmap-scan-faults-per-mib 9.6
+RESULT sqlite-mmap-scan-warm MiB/s higher 2826.518
+OBSERVED sqlite-mmap-scan-warm-faults-per-mib 9.3
+RESULT create ops/s higher 78630.817
+FXFS create: 
+REQUESTS create:  per operation
+RESULT stat-cold ops/s higher 193384.322
+FXFS stat-cold: 
+REQUESTS stat-cold:  per operation
+FXFS RESULT stat-warm ops/s higher 1197875.926
+stat-warm: 
+REQUESTS stat-warm:  per operation
+RESULT lookup-missing ops/s higher 399768.374
+FXFS lookup-missing: 
+REQUESTS lookup-missing:  per operation
+RESULT readdir ops/s higher 3464499.276
+FXFS readdir: 
+REQUESTS readdir:  per operation
+RESULT read-small-cold ops/s higher 5445.751
+FXFS read-small-cold: device_read_bytes 8192000, device_reads 2000, device_reads_ns 274003823
+REQUESTS read-small-cold: read 1.00 (127 µs each) per operation
+RESULT chmod ops/s higher 395788.650
+FXFS chmod: 
+REQUESTS chmod:  per operation
+RESULT setxattr ops/s higher 605879.577
+FXFS setxattr: 
+REQUESTS setxattr:  per operation
+RESULT link ops/s higher 96211.008
+FXFS link: 
+REQUESTS link:  per operation
+RESULT rename ops/s higher 80469.530
+FXFS rename: 
+REQUESTS rename:  per operation
+RESULT rename-across ops/s higher 58366.278
+FXFS rename-across: device_commits 2, device_commits_ns 955339, device_read_bytes 344064, device_reads 16, device_reads_ns 3970696, device_write_bytes 1351680, device_writes 193, device_writes_ns 473155597, journal_compaction_ns 24397208, journal_compactions 1, seal_waits 2, seal_waits_ns 1326, seals 2, seals_ns 956534
+REQUESTS rename-across: read 0.01 (243 µs each), write 0.10 (90 µs each), free 0.00 (344 µs each), commit 0.00 (474 µs each) per operation
+RESULT unlink ops/s higher 389873.732
+FXFS unlink: 
+REQUESTS unlink:  per operation
+RESULT create-fsync ops/s higher 2281.658
+FXFS create-fsync: device_commits 201, device_commits_ns 23103048, device_write_bytes 2195456, device_writes 536, device_writes_ns 162060546, fsyncs 400, seal_waits 201, seal_waits_ns 102451, seals 201, seals_ns 23158128
+REQUESTS create-fsync: write 2.68 (195 µs each), free 0.06 (591 µs each) per operation
+RESULT mkdir-tree ops/s higher 80515.086
+FXFS mkdir-tree: 
+REQUESTS mkdir-tree:  per operation
+RESULT find-cold ops/s higher 185066.522
+FXFS find-cold: 
+REQUESTS find-cold:  per operation
+RESULT rm-tree ops/s higher 74916.427
+FXFS rm-tree: 
+REQUESTS rm-tree:  per operation
+RESULT large-dir-create ops/s higher 88934.916
+FXFS large-dir-create: device_write_bytes 1048576, device_writes 256, device_writes_ns 427915870
+REQUESTS large-dir-create: write 0.01 (554 µs each) per operation
+RESULT large-dir-stat-cold ops/s higher 124563.190
+FXFS large-dir-stat-cold: 
+REQUESTS large-dir-stat-cold:  per operation
+RESULT large-dir-unlink ops/s higher 191841.573
+FXFS large-dir-unlink: 
+REQUESTS large-dir-unlink:  per operation
+RESULT create-parallel ops/s higher 126948.946
+FXFS create-parallel: device_write_bytes 1064960, device_writes 260, device_writes_ns 500852119
+REQUESTS create-parallel: write 0.03 (445 µs each) per operation
+RESULT stat-parallel ops/s higher 681827.266
+FXFS stat-parallel: 
+REQUESTS stat-parallel:  per operation
+RESULT unlink-parallel ops/s higher 183523.368
+FXFS unlink-parallel: 
+REQUESTS unlink-parallel:  per operation
+RESULT create-shared-dir ops/s higher 88218.865
+FXFS create-shared-dir: device_write_bytes 1048576, device_writes 256, device_writes_ns 965446102
+REQUESTS create-shared-dir: write 0.03 (429 µs each) per operation
+RESULT unlink-shared-dir ops/s higher 161673.446
+FXFS unlink-shared-dir: 
+REQUESTS unlink-shared-dir:  per operation
+RESULT untar s lower 0.017
+ar: `u' modifier ignored since `D' is the default (see `U')
+RESULT make s lower 4.602
+RESULT build-total s lower 4.619
+iteration 2/3
+OBSERVED mtime-ahead-of-guest-ms -5.642
+FXFS seq-write: device_commits 1, device_commits_ns 590427378, device_write_bytes 269549568, device_writes 528, device_writes_ns 1279665285, fsyncs 1, seal_waits 1, seal_waits_ns 1362, seals 1, seals_ns 590429306
+REQUESTS seq-write: write 0.01 (1320 µs each) per operation
+RESULT seq-write MiB/s higher 184.024
+FXFS rand-read-cold: device_read_bytes 67108864, device_reads 16384, device_reads_ns 4450840704
+RESULT rand-read-cold IOPS higher 3215.702
+REQUESTS rand-read-cold: read 1.00 (261 µs each) per operation
+RESULT seq-read-cold MiB/s higher 1292.929
+RESULT seq-read-warm MiB/s higher 8383.308
+RESULT rand-read-warm IOPS higher 946752.124
+RESULT mmap-seq-read MiB/s higher 8827.586
+OBSERVED mmap-seq-read-faults-per-mib 13.7
+FXFS rand-write: device_commits 3, device_commits_ns 1118273, device_read_bytes 458752, device_reads 16, device_reads_ns 11630186, device_write_bytes 70619136, device_writes 565, device_writes_ns 1040342521, fsyncs 1, journal_compaction_ns 66165097, journal_compactions 1, seal_waits 3, seal_waits_ns 827781, seals 3, seals_ns 1130436, writes_held_by_seals 1, writes_held_by_seals_ns 331890
+REQUESTS rand-write: read 0.00 (351 µs each), write 0.03 (629 µs each), free 0.00 (411 µs each), commit 0.00 (402 µs each) per operation
+RESULT rand-write IOPS higher 25758.512
+RESULT mmap-rand-read IOPS higher 1241062.969
+FXFS mmap-rand-write: device_commits 1, device_commits_ns 675823836, device_write_bytes 320389120, device_writes 814, device_writes_ns 1938517006, fsyncs 1, seal_waits 1, seal_waits_ns 1109, seals 1, seals_ns 675826097
+RESULT mmap-rand-write IOPS higher 10005.774
+REQUESTS mmap-rand-write: write 0.07 (1236 µs each), free 0.00 (13754 µs each) per operation
+FXFS fsync-append: device_commits 255, device_commits_ns 225452214, device_read_bytes 507904, device_reads 16, device_reads_ns 7551982, device_write_bytes 2265088, device_writes 519, device_writes_ns 340480530, fsyncs 255, seal_waits 255, seal_waits_ns 853848, seals 255, seals_ns 225556885, writes_held_by_seals 1, writes_held_by_seals_ns 31051044
+REQUESTS fsync-append: read 0.06 (456 µs each), write 2.03 (643 µs each), free 0.01 (2596 µs each) per operation
+RESULT fsync-append IOPS higher 398.791
+RESULT sqlite-pread-scan MiB/s higher 115.661
+OBSERVED sqlite-pread-scan-faults-per-mib 2.7
+RESULT sqlite-pread-scan-warm MiB/s higher 3091.195
+OBSERVED sqlite-pread-scan-warm-faults-per-mib 2.6
+RESULT sqlite-mmap-scan MiB/s higher 1127.658
+OBSERVED sqlite-mmap-scan-faults-per-mib 9.6
+RESULT sqlite-mmap-scan-warm MiB/s higher 2856.714
+OBSERVED sqlite-mmap-scan-warm-faults-per-mib 9.3
+RESULT create ops/s higher 75897.567
+FXFS create: 
+REQUESTS create:  per operation
+RESULT stat-cold ops/s higher 202315.030
+FXFS stat-cold: 
+REQUESTS stat-cold:  per operation
+RESULT stat-warm ops/s higher 691085.481
+FXFS stat-warm: 
+REQUESTS stat-warm:  per operation
+RESULT lookup-missing ops/s higher 351504.907
+FXFS lookup-missing: 
+REQUESTS lookup-missing:  per operation
+RESULT readdir ops/s higher 3476761.327
+FXFS readdir: 
+REQUESTS readdir:  per operation
+RESULT read-small-cold ops/s higher 5221.880
+FXFS read-small-cold: device_read_bytes 8192000, device_reads 2000, device_reads_ns 284343737
+REQUESTS read-small-cold: read 1.00 (131 µs each) per operation
+RESULT chmod ops/s higher 272094.591
+FXFS chmod: 
+REQUESTS chmod:  per operation
+RESULT setxattr ops/s higher 603532.901
+FXFS setxattr: 
+REQUESTS setxattr:  per operation
+RESULT link ops/s higher 86286.161
+FXFS link: 
+REQUESTS link:  per operation
+RESULT rename ops/s higher 68013.902
+FXFS rename: 
+REQUESTS rename:  per operation
+FXFS rename-across: 
+REQUESTS rename-across: write 0.03 (49 µs each) per operation
+RESULT rename-across ops/s higher 63186.168
+RESULT unlink ops/s higher 255497.410
+FXFS unlink: device_write_bytes 1048576, device_writes 256, device_writes_ns 902101017
+REQUESTS unlink: write 0.10 (278 µs each) per operation
+RESULT create-fsync ops/s higher 2321.946
+FXFS create-fsync: device_commits 200, device_commits_ns 21590076, device_write_bytes 1912832, device_writes 467, device_writes_ns 131373391, fsyncs 400, seal_waits 200, seal_waits_ns 105024, seals 200, seals_ns 21637279
+REQUESTS create-fsync: write 2.33 (101 µs each), free 0.04 (720 µs each) per operation
+RESULT mkdir-tree ops/s higher 64404.593
+FXFS mkdir-tree: device_commits 2, device_commits_ns 451245, device_read_bytes 192512, device_reads 15, device_reads_ns 3693165, device_write_bytes 360448, device_writes 35, device_writes_ns 8073626, journal_compaction_ns 11819265, journal_compactions 1, seal_waits 2, seal_waits_ns 2158, seals 2, seals_ns 452652
+REQUESTS mkdir-tree: read 0.01 (225 µs each), write 0.02 (217 µs each), free 0.00 (449 µs each), commit 0.00 (205 µs each) per operation
+RESULT find-cold ops/s higher 163329.370
+FXFS find-cold: 
+REQUESTS find-cold:  per operation
+RESULT rm-tree ops/s higher 74514.614
+FXFS rm-tree: 
+REQUESTS rm-tree:  per operation
+RESULT large-dir-create ops/s higher 92316.392
+FXFS large-dir-create: device_write_bytes 1048576, device_writes 256, device_writes_ns 829795848
+REQUESTS large-dir-create: write 0.01 (315 µs each) per operation
+RESULT large-dir-stat-cold ops/s higher 190504.931
+FXFS large-dir-stat-cold: 
+REQUESTS large-dir-stat-cold:  per operation
+RESULT large-dir-unlink ops/s higher 210736.813
+FXFS large-dir-unlink: 
+REQUESTS large-dir-unlink:  per operation
+RESULT create-parallel ops/s higher 122266.178
+FXFS create-parallel: device_write_bytes 1048576, device_writes 256, device_writes_ns 806928689
+REQUESTS create-parallel: write 0.03 (324 µs each) per operation
+RESULT stat-parallel ops/s higher 624673.169
+FXFS stat-parallel: 
+REQUESTS stat-parallel:  per operation
+RESULT unlink-parallel ops/s higher 183065.754
+FXFS unlink-parallel: 
+REQUESTS unlink-parallel:  per operation
+RESULT create-shared-dir ops/s higher 84425.259
+FXFS create-shared-dir: device_commits 2, device_commits_ns 2128780, device_read_bytes 262144, device_reads 15, device_reads_ns 17264522, device_write_bytes 1761280, device_writes 281, device_writes_ns 684190139, journal_compaction_ns 72224537, journal_compactions 1, seal_waits 2, seal_waits_ns 1842, seals 2, seals_ns 2130793
+REQUESTS create-shared-dir: read 0.00 (294 µs each), write 0.04 (446 µs each), free 0.00 (412 µs each), commit 0.00 (473 µs each) per operation
+FXFS unlink-shared-dir: 
+REQUESTS unlink-shared-dir:  per operation
+RESULT unlink-shared-dir ops/s higher 155004.854
+RESULT untar s lower 0.015
+ar: `u' modifier ignored since `D' is the default (see `U')
+RESULT make s lower 4.648
+RESULT build-total s lower 4.663
+iteration 3/3
+OBSERVED mtime-ahead-of-guest-ms -3.493
+FXFS seq-write: device_commits 1, device_commits_ns 592817393, device_write_bytes 269549568, device_writes 528, device_writes_ns 1339260865, fsyncs 1, seal_waits 1, seal_waits_ns 1232, seals 1, seals_ns 592819483
+REQUESTS seq-write: write 0.01 (1347 µs each) per operation
+RESULT seq-write MiB/s higher 184.168
+FXFS rand-read-cold: device_read_bytes 67108864, device_reads 16384, device_reads_ns 4588513815
+REQUESTS rand-read-cold: read 1.00 (271 µs each) per operation
+RESULT rand-read-cold IOPS higher 3135.094
+RESULT seq-read-cold MiB/s higher 1236.715
+RESULT seq-read-warm MiB/s higher 8468.266
+RESULT rand-read-warm IOPS higher 938883.558
+RESULT mmap-seq-read MiB/s higher 9142.857
+OBSERVED mmap-seq-read-faults-per-mib 13.7
+FXFS rand-write: device_commits 1, device_commits_ns 771103, device_write_bytes 68812800, device_writes 559, device_writes_ns 973915219, fsyncs 1, seal_waits 1, seal_waits_ns 1087, seals 1, seals_ns 772281
+REQUESTS rand-write: write 0.03 (485 µs each) per operation
+RESULT rand-write IOPS higher 25750.702
+RESULT mmap-rand-read IOPS higher 1226555.722
+FXFS mmap-rand-write: device_commits 3, device_commits_ns 632465757, device_read_bytes 315392, device_reads 15, device_reads_ns 10290569, device_write_bytes 315686912, device_writes 821, device_writes_ns 1755762316, fsyncs 1, journal_compaction_ns 68116400, journal_compactions 1, seal_waits 3, seal_waits_ns 5954935, seals 3, seals_ns 632478831, writes_held_by_seals 1, writes_held_by_seals_ns 1991948
+REQUESTS mmap-rand-write: read 0.00 (507 µs each), write 0.07 (1245 µs each), free 0.00 (4251 µs each), commit 0.00 (1179 µs each) per operation
+RESULT mmap-rand-write IOPS higher 10008.382
+FXFS fsync-append: device_commits 255, device_commits_ns 30811161, device_write_bytes 2101248, device_writes 513, device_writes_ns 78577868, fsyncs 255, seal_waits 255, seal_waits_ns 125206, seals 255, seals_ns 30914388
+REQUESTS fsync-append: write 2.00 (142 µs each), free 0.01 (879 µs each) per operation
+RESULT fsync-append IOPS higher 660.962
+RESULT sqlite-pread-scan MiB/s higher 115.473
+OBSERVED sqlite-pread-scan-faults-per-mib 2.7
+RESULT sqlite-pread-scan-warm MiB/s higher 3103.327
+OBSERVED sqlite-pread-scan-warm-faults-per-mib 2.6
+RESULT sqlite-mmap-scan MiB/s higher 1126.140
+OBSERVED sqlite-mmap-scan-faults-per-mib 9.6
+RESULT sqlite-mmap-scan-warm MiB/s higher 2803.597
+OBSERVED sqlite-mmap-scan-warm-faults-per-mib 9.3
+RESULT create ops/s higher 80394.451
+FXFS create: 
+REQUESTS create:  per operation
+RESULT stat-cold ops/s higher 173603.471
+FXFS stat-cold: 
+REQUESTS stat-cold:  per operation
+RESULT stat-warm ops/s higher 1243552.182
+FXFS stat-warm: 
+REQUESTS stat-warm:  per operation
+RESULT lookup-missing ops/s higher 465608.633
+FXFS lookup-missing: 
+REQUESTS lookup-missing:  per operation
+RESULT readdir ops/s higher 2571702.274
+FXFS readdir: 
+REQUESTS readdir:  per operation
+RESULT read-small-cold ops/s higher 5417.601
+FXFS read-small-cold: device_read_bytes 8192000, device_reads 2000, device_reads_ns 269889858
+REQUESTS read-small-cold: read 1.00 (123 µs each) per operation
+RESULT chmod ops/s higher 345141.844
+FXFS chmod: 
+REQUESTS chmod:  per operation
+RESULT setxattr ops/s higher 618277.584
+FXFS setxattr: 
+REQUESTS setxattr:  per operation
+RESULT link ops/s higher 96561.773
+FXFS link: 
+REQUESTS link:  per operation
+RESULT rename ops/s higher 81035.238
+FXFS rename: 
+REQUESTS rename:  per operation
+FXFS rename-across: device_write_bytes 1028096, device_writes 240, device_writes_ns 699034899
+RESULT rename-across ops/s higher 69623.910
+REQUESTS rename-across: write 0.13 (376 µs each) per operation
+RESULT unlink ops/s higher 335740.988
+FXFS unlink: 
+REQUESTS unlink:  per operation
+RESULT create-fsync ops/s higher 2394.587
+FXFS create-fsync: device_commits 200, device_commits_ns 21288225, device_write_bytes 1990656, device_writes 486, device_writes_ns 171048699, fsyncs 400, seal_waits 200, seal_waits_ns 102695, seals 200, seals_ns 21332835
+REQUESTS create-fsync: write 2.43 (181 µs each), free 0.04 (768 µs each) per operation
+RESULT mkdir-tree ops/s higher 79641.732
+FXFS mkdir-tree: 
+REQUESTS mkdir-tree:  per operation
+RESULT find-cold ops/s higher 177758.956
+FXFS find-cold: 
+REQUESTS find-cold:  per operation
+RESULT rm-tree ops/s higher 78502.509
+FXFS rm-tree: 
+REQUESTS rm-tree:  per operation
+RESULT large-dir-create ops/s higher 92000.569
+FXFS large-dir-create: device_commits 2, device_commits_ns 500144, device_read_bytes 245760, device_reads 14, device_reads_ns 1882457, device_write_bytes 2482176, device_writes 447, device_writes_ns 1269483574, journal_compaction_ns 23154212, journal_compactions 1, seal_waits 2, seal_waits_ns 1495, seals 2, seals_ns 501388
+REQUESTS large-dir-create: read 0.00 (131 µs each), write 0.02 (223 µs each), free 0.00 (455 µs each), commit 0.00 (246 µs each) per operation
+RESULT large-dir-stat-cold ops/s higher 176371.321
+FXFS large-dir-stat-cold: 
+REQUESTS large-dir-stat-cold:  per operation
+RESULT large-dir-unlink ops/s higher 208698.458
+FXFS large-dir-unlink: 
+REQUESTS large-dir-unlink:  per operation
+RESULT create-parallel ops/s higher 118513.873
+FXFS create-parallel: device_write_bytes 1048576, device_writes 256, device_writes_ns 888870697
+REQUESTS create-parallel: write 0.03 (235 µs each) per operation
+RESULT stat-parallel ops/s higher 588294.210
+FXFS stat-parallel: 
+REQUESTS stat-parallel:  per operation
+RESULT unlink-parallel ops/s higher 180681.857
+FXFS unlink-parallel: 
+REQUESTS unlink-parallel:  per operation
+RESULT create-shared-dir ops/s higher 92615.023
+FXFS create-shared-dir: device_write_bytes 1048576, device_writes 256, device_writes_ns 1103179455
+REQUESTS create-shared-dir: write 0.03 (233 µs each) per operation
+FXFS unlink-shared-dir: 
+REQUESTS unlink-shared-dir:  per operation
+RESULT unlink-shared-dir ops/s higher 142940.901
+RESULT untar s lower 0.024
+ar: `u' modifier ignored since `D' is the default (see `U')
+RESULT make s lower 4.573
+RESULT build-total s lower 4.597
+DONE
+[   99.807807] reboot: Restarting system

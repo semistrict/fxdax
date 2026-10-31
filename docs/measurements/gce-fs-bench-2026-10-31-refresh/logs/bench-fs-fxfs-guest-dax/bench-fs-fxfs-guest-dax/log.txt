@@ -1,0 +1,184 @@
+[    0.106054] PCI: Fatal: No config space access function found
+[    0.130501] PCI: System does not support PCI
+[    0.353460] check access for rdinit=/init failed: -2, ignoring
+iteration 1/3
+FXFS seq-write: dax_extent_alloc_bytes 7340032, dax_map_writes 256, device_commits 1, device_commits_ns 718238174, device_write_bytes 36864, device_writes 9, device_writes_ns 720324777, fsyncs 1, seal_waits 1, seal_waits_ns 15151, seals 1, seals_ns 718253448, window_map_bytes_range 268435456, window_map_bytes_restage 65536, window_map_requests 257, window_maps 257, window_maps_ns 138402491, window_maps_range 256, window_maps_restage 1, window_regions 1, window_regions_writable 1, window_regions_writable_bytes 2097152, window_regions_writable_refs 1
+REQUESTS seq-write: write 0.00 (80014 µs each), free 0.00 (288 µs each), map 0.00 (505 µs each) per operation
+FXFS rand-read-cold: 
+REQUESTS rand-read-cold:  per operation
+FXFS rand-write: dax_extent_alloc_bytes 917504, dax_map_writes 16384, device_commits 1, device_commits_ns 40416682, device_write_bytes 1863680, device_writes 455, device_writes_ns 794318389, fsyncs 1, seal_waits 1, seal_waits_ns 11543, seals 1, seals_ns 40433541, window_map_bytes_grow 64946176, window_map_bytes_reach 2162688, window_map_bytes_restage 65536, window_map_requests 458, window_maps 12103, window_maps_grow 287, window_maps_ns 336818987, window_maps_reach 33, window_maps_restage 1, window_ranges_keeping_regions 128, window_ranges_kept_moved_pages 16384, window_ranges_kept_regions 4016, window_ranges_kept_relocated_pages 49280, window_regions 32, window_regions_sealed 31, window_regions_sealed_bytes 67043328, window_regions_sealed_refs 4015, window_regions_writable 1, window_regions_writable_bytes 2097152, window_regions_writable_refs 1, window_unmaps 1, window_unmaps_ns 258192
+REQUESTS rand-write: write 0.03 (751 µs each), free 0.00 (490 µs each), map 0.03 (740 µs each), unmap 0.00 (234 µs each) per operation
+FXFS mmap-rand-write: dax_extent_alloc_bytes 917504, dax_map_writes 16384, device_commits 1, device_commits_ns 80300998, device_write_bytes 68976640, device_writes 16840, device_writes_ns 2962240149, fsyncs 1, seal_waits 1, seal_waits_ns 165267, seals 1, seals_ns 80314634, window_map_bytes_grow 65011712, window_map_bytes_reach 2031616, window_map_bytes_restage 65536, window_map_requests 320, window_maps 320, window_maps_grow 288, window_maps_ns 82978264, window_maps_reach 31, window_maps_restage 1, window_ranges_keeping_regions 128, window_ranges_kept_moved_pages 16384, window_ranges_kept_regions 4016, window_ranges_kept_relocated_pages 49152, window_regions 32, window_regions_sealed 32, window_regions_sealed_bytes 67108864, window_regions_sealed_refs 4016
+REQUESTS mmap-rand-write: write 1.03 (98 µs each), free 0.00 (0 µs each), map 0.02 (232 µs each) per operation
+FXFS fsync-append: dax_evacuate_hold_ns 48205271, dax_evacuate_map_ns 42356296, dax_evacuations 255, dax_extent_alloc_bytes 28672, dax_map_writes 256, dax_write_wait_ns 251, dax_write_waits 1, device_commits 257, device_commits_ns 44094576, device_read_bytes 208896, device_reads 13, device_reads_ns 3586832, device_write_bytes 3022848, device_writes 491, device_writes_ns 1036856700, fsyncs 255, journal_compaction_ns 50074694, journal_compactions 1, seal_waits 257, seal_waits_ns 554542, seals 257, seals_ns 45727074, window_map_bytes_evacuate 1044480, window_map_bytes_reach 65536, window_map_bytes_restage 16711680, window_map_requests 511, window_maps 511, window_maps_evacuate 255, window_maps_ns 96187512, window_maps_reach 1, window_maps_restage 255, window_ranges_keeping_regions 1, window_ranges_kept_moved_pages 1, window_ranges_kept_regions 1, window_regions_largest_free_bytes 63569920, window_regions_pruned 255, window_regions_writable_refs 1, window_unmaps 256, window_unmaps_ns 38745553
+REQUESTS fsync-append: read 0.05 (259 µs each), write 1.92 (130 µs each), free 0.01 (13635 µs each), map 2.00 (156 µs each), unmap 1.00 (136 µs each), commit 0.01 (304 µs each) per operation
+FXFS create: dax_extent_alloc_bytes 112000, dax_map_writes 2000, window_map_bytes_grow 8126464, window_map_bytes_reach 262144, window_map_requests 40, window_maps 40, window_maps_grow 36, window_maps_ns 9663449, window_maps_reach 4, window_regions 4, window_regions_writable 4, window_regions_writable_bytes 8388608, window_regions_writable_refs 2000, window_slices 2000
+REQUESTS create: map 0.02 (236 µs each) per operation
+FXFS stat-cold: 
+REQUESTS stat-cold:  per operation
+FXFS stat-warm: 
+REQUESTS stat-warm:  per operation
+FXFS lookup-missing: 
+REQUESTS lookup-missing:  per operation
+FXFS readdir: 
+REQUESTS readdir:  per operation
+FXFS read-small-cold: 
+REQUESTS read-small-cold:  per operation
+FXFS chmod: 
+REQUESTS chmod:  per operation
+FXFS setxattr: 
+REQUESTS setxattr:  per operation
+FXFS link: 
+REQUESTS link:  per operation
+FXFS rename: 
+REQUESTS rename:  per operation
+FXFS rename-across: 
+REQUESTS rename-across:  per operation
+FXFS unlink: device_write_bytes 1052672, device_writes 257, device_writes_ns 862631488
+REQUESTS unlink: write 0.13 (276 µs each) per operation
+FXFS create-fsync: dax_extent_alloc_bytes 11200, dax_map_writes 200, device_commits 200, device_commits_ns 38588138, device_write_bytes 888832, device_writes 217, device_writes_ns 46504344, fsyncs 400, seal_waits 200, seal_waits_ns 270110, seals 200, seals_ns 40311060, window_map_bytes_reach 65536, window_map_bytes_restage 13041664, window_map_requests 200, window_maps 200, window_maps_ns 34400783, window_maps_reach 1, window_maps_restage 199, window_regions 200, window_regions_sealed 199, window_regions_sealed_bytes 13041664, window_regions_sealed_refs 200, window_regions_writable 1, window_regions_writable_bytes 2097152, window_regions_writable_refs 1, window_slices 200, window_unmaps 1, window_unmaps_ns 204260
+REQUESTS create-fsync: write 1.08 (176 µs each), free 0.03 (531 µs each), map 1.00 (165 µs each), unmap 0.01 (186 µs each) per operation
+FXFS mkdir-tree: dax_extent_alloc_bytes 112000, dax_map_writes 2000, window_map_bytes_grow 8126464, window_map_bytes_reach 196608, window_map_requests 39, window_maps 39, window_maps_grow 36, window_maps_ns 9568165, window_maps_reach 3, window_regions 3, window_regions_writable 3, window_regions_writable_bytes 6291456, window_regions_writable_refs 2000, window_slices 2000
+REQUESTS mkdir-tree: map 0.02 (236 µs each) per operation
+FXFS find-cold: 
+REQUESTS find-cold:  per operation
+FXFS rm-tree: window_free_bytes 8388608, window_regions_free_bytes 8388608, window_regions_largest_free_bytes 6815744, window_unmaps 4, window_unmaps_ns 1337830
+REQUESTS rm-tree: unmap 0.00 (316 µs each) per operation
+FXFS large-dir-create: device_write_bytes 1048576, device_writes 256, device_writes_ns 425807874
+REQUESTS large-dir-create: write 0.01 (657 µs each) per operation
+FXFS large-dir-stat-cold: 
+REQUESTS large-dir-stat-cold:  per operation
+FXFS large-dir-unlink: 
+REQUESTS large-dir-unlink:  per operation
+FXFS create-parallel: device_commits 1, device_commits_ns 376921, device_read_bytes 311296, device_reads 15, device_reads_ns 21711432, device_write_bytes 1785856, device_writes 306, device_writes_ns 1380163160, seal_waits 1, seal_waits_ns 1546, seals 1, seals_ns 379216
+REQUESTS create-parallel: read 0.00 (271 µs each), write 0.04 (106 µs each), free 0.00 (135 µs each), commit 0.00 (250 µs each) per operation
+FXFS stat-parallel: 
+REQUESTS stat-parallel:  per operation
+FXFS unlink-parallel: 
+REQUESTS unlink-parallel:  per operation
+FXFS create-shared-dir: 
+REQUESTS create-shared-dir:  per operation
+FXFS unlink-shared-dir: device_write_bytes 1048576, device_writes 256, device_writes_ns 883531727
+REQUESTS unlink-shared-dir: write 0.03 (303 µs each) per operation
+ar: `u' modifier ignored since `D' is the default (see `U')
+iteration 2/3
+FXFS seq-write: dax_extent_alloc_bytes 7340032, dax_map_writes 256, device_commits 1, device_commits_ns 713209977, device_write_bytes 36864, device_writes 9, device_writes_ns 715284001, fsyncs 1, seal_waits 1, seal_waits_ns 17115, seals 1, seals_ns 713225813, window_map_bytes_range 268435456, window_map_bytes_restage 65536, window_map_requests 257, window_maps 257, window_maps_ns 131370305, window_maps_range 256, window_maps_restage 1, window_unmaps 1, window_unmaps_ns 286348
+REQUESTS seq-write: write 0.00 (79461 µs each), free 0.00 (712 µs each), map 0.00 (505 µs each), unmap 0.00 (280 µs each) per operation
+FXFS rand-read-cold: 
+REQUESTS rand-read-cold:  per operation
+FXFS rand-write: dax_extent_alloc_bytes 917504, dax_map_writes 16384, device_commits 1, device_commits_ns 42037733, device_write_bytes 1900544, device_writes 464, device_writes_ns 1666030249, fsyncs 1, seal_waits 1, seal_waits_ns 12569, seals 1, seals_ns 42051346, window_map_bytes_grow 64421888, window_map_bytes_reach 2686976, window_map_bytes_restage 65536, window_map_requests 443, window_maps 10813, window_maps_grow 285, window_maps_ns 284242298, window_maps_reach 35, window_maps_restage 1, window_ranges_keeping_regions 128, window_ranges_kept_moved_pages 16384, window_ranges_kept_regions 4016, window_ranges_kept_relocated_pages 49280, window_regions 32, window_regions_sealed 31, window_regions_sealed_bytes 67043328, window_regions_sealed_refs 4015, window_regions_writable 1, window_regions_writable_bytes 2097152, window_regions_writable_refs 1, window_unmaps 1, window_unmaps_ns 197791
+REQUESTS rand-write: write 0.03 (199 µs each), free 0.00 (568 µs each), map 0.03 (626 µs each), unmap 0.00 (195 µs each) per operation
+FXFS mmap-rand-write: dax_evacuate_hold_ns 164944871, dax_evacuate_map_ns 155702888, dax_evacuations 2, dax_extent_alloc_bytes 917560, dax_map_writes 16385, dax_moved_unsealed 1, device_commits 3, device_commits_ns 128733965, device_read_bytes 446464, device_reads 15, device_reads_ns 2461286, device_write_bytes 71323648, device_writes 16868, device_writes_ns 3610953456, fsyncs 1, journal_compaction_ns 212701205, journal_compactions 1, seal_waits 3, seal_waits_ns 11295876, seals 3, seals_ns 128768597, window_map_bytes_evacuate 17571840, window_map_bytes_grow 65470464, window_map_bytes_range 4096, window_map_bytes_reach 2031616, window_map_bytes_restage 196608, window_map_requests 380, window_maps 4874, window_maps_evacuate 4290, window_maps_grow 291, window_maps_ns 343225662, window_maps_range 1, window_maps_reach 31, window_maps_restage 3, window_ranges_keeping_regions 128, window_ranges_kept_moved_pages 12094, window_ranges_kept_regions 4115, window_ranges_kept_relocated_pages 53442, window_regions 34, window_regions_sealed 34, window_regions_sealed_bytes 67698688, window_regions_sealed_refs 4115
+REQUESTS mmap-rand-write: read 0.00 (142 µs each), write 1.03 (103 µs each), free 0.00 (17084 µs each), map 0.02 (866 µs each), commit 0.00 (36305 µs each) per operation
+FXFS fsync-append: dax_evacuate_hold_ns 53552279, dax_evacuate_map_ns 45302084, dax_evacuations 255, dax_extent_alloc_bytes 28672, dax_map_writes 256, device_commits 255, device_commits_ns 54270168, device_write_bytes 1974272, device_writes 482, device_writes_ns 447256402, fsyncs 255, seal_waits 255, seal_waits_ns 443722, seals 255, seals_ns 56049361, window_map_bytes_evacuate 1044480, window_map_bytes_restage 16711680, window_map_requests 510, window_maps 510, window_maps_evacuate 255, window_maps_ns 102834091, window_maps_restage 255, window_ranges_keeping_regions 1, window_ranges_kept_moved_pages 1, window_ranges_kept_regions 1, window_regions_largest_free_bytes 67829760, window_regions_pruned 255, window_regions_writable_refs 1, window_unmaps 255, window_unmaps_ns 38881520
+REQUESTS fsync-append: write 1.88 (421 µs each), free 0.01 (19573 µs each), map 1.99 (165 µs each), unmap 1.00 (139 µs each) per operation
+FXFS create: dax_extent_alloc_bytes 112000, dax_map_writes 2000, window_map_bytes_grow 8126464, window_map_bytes_reach 262144, window_map_requests 40, window_maps 40, window_maps_grow 36, window_maps_ns 10401780, window_maps_reach 4, window_regions 4, window_regions_writable 4, window_regions_writable_bytes 8388608, window_regions_writable_refs 2000, window_slices 2000
+REQUESTS create: map 0.02 (252 µs each) per operation
+FXFS stat-cold: 
+REQUESTS stat-cold:  per operation
+FXFS stat-warm: 
+REQUESTS stat-warm:  per operation
+FXFS lookup-missing: 
+REQUESTS lookup-missing:  per operation
+FXFS readdir: 
+REQUESTS readdir:  per operation
+FXFS read-small-cold: 
+REQUESTS read-small-cold:  per operation
+FXFS chmod: 
+REQUESTS chmod:  per operation
+FXFS setxattr: 
+REQUESTS setxattr:  per operation
+FXFS link: 
+REQUESTS link:  per operation
+FXFS rename: 
+REQUESTS rename:  per operation
+FXFS rename-across: 
+REQUESTS rename-across: write 0.03 (563 µs each) per operation
+FXFS unlink: device_write_bytes 1048576, device_writes 256, device_writes_ns 772655117
+REQUESTS unlink: write 0.04 (447 µs each) per operation
+FXFS create-fsync: dax_extent_alloc_bytes 11200, dax_map_writes 200, device_commits 200, device_commits_ns 40976031, device_write_bytes 1105920, device_writes 270, device_writes_ns 83181753, fsyncs 400, seal_waits 200, seal_waits_ns 288255, seals 200, seals_ns 42643258, window_map_bytes_reach 65536, window_map_bytes_restage 13041664, window_map_requests 200, window_maps 200, window_maps_ns 33815930, window_maps_reach 1, window_maps_restage 199, window_regions 200, window_regions_sealed 199, window_regions_sealed_bytes 13041664, window_regions_sealed_refs 200, window_regions_writable 1, window_regions_writable_bytes 2097152, window_regions_writable_refs 1, window_slices 200, window_unmaps 1, window_unmaps_ns 184980
+REQUESTS create-fsync: write 1.35 (291 µs each), free 0.01 (1564 µs each), map 1.00 (156 µs each), unmap 0.01 (163 µs each) per operation
+FXFS mkdir-tree: dax_extent_alloc_bytes 112000, dax_map_writes 2000, window_map_bytes_grow 8126464, window_map_bytes_reach 196608, window_map_requests 39, window_maps 39, window_maps_grow 36, window_maps_ns 10250244, window_maps_reach 3, window_regions 3, window_regions_writable 3, window_regions_writable_bytes 6291456, window_regions_writable_refs 2000, window_slices 2000
+REQUESTS mkdir-tree: map 0.02 (241 µs each) per operation
+FXFS find-cold: 
+REQUESTS find-cold:  per operation
+FXFS rm-tree: window_free_bytes 8388608, window_regions_free_bytes 8388608, window_regions_largest_free_bytes 6815744, window_unmaps 4, window_unmaps_ns 1319345
+REQUESTS rm-tree: unmap 0.00 (326 µs each) per operation
+FXFS large-dir-create: device_commits 2, device_commits_ns 578889, device_read_bytes 270336, device_reads 15, device_reads_ns 3671764, device_write_bytes 2195456, device_writes 400, device_writes_ns 1071772697, journal_compaction_ns 20179845, journal_compactions 1, seal_waits 2, seal_waits_ns 4016, seals 2, seals_ns 584140, window_free_bytes 2031616, window_regions_free_bytes 2031616, window_regions_largest_free_bytes 2031616, window_regions_sealed 1, window_regions_sealed_bytes 65536, window_regions_sealed_refs 1
+REQUESTS large-dir-create: read 0.00 (241 µs each), write 0.02 (339 µs each), free 0.00 (1360 µs each), commit 0.00 (275 µs each) per operation
+FXFS large-dir-stat-cold: 
+REQUESTS large-dir-stat-cold:  per operation
+FXFS large-dir-unlink: 
+REQUESTS large-dir-unlink:  per operation
+FXFS create-parallel: device_write_bytes 1064960, device_writes 260, device_writes_ns 514999900
+REQUESTS create-parallel: write 0.03 (622 µs each) per operation
+FXFS stat-parallel: 
+REQUESTS stat-parallel:  per operation
+FXFS unlink-parallel: 
+REQUESTS unlink-parallel:  per operation
+FXFS create-shared-dir: device_write_bytes 1048576, device_writes 256, device_writes_ns 660041444
+REQUESTS create-shared-dir: write 0.03 (577 µs each) per operation
+FXFS unlink-shared-dir: 
+REQUESTS unlink-shared-dir:  per operation
+ar: `u' modifier ignored since `D' is the default (see `U')
+iteration 3/3
+FXFS seq-write: dax_extent_alloc_bytes 7340032, dax_map_writes 258, dax_write_wait_ns 459, dax_write_waits 1, device_commits 3, device_commits_ns 569877361, device_read_bytes 196608, device_reads 14, device_reads_ns 4517761, device_write_bytes 319488, device_writes 25, device_writes_ns 540623498, fsyncs 1, journal_compaction_ns 64283389, journal_compactions 1, seal_waits 3, seal_waits_ns 1591217, seals 3, seals_ns 569920158, stores_held_by_seals 2, stores_held_by_seals_ns 35539451, window_map_bytes_range 270532608, window_map_bytes_restage 65536, window_map_requests 259, window_maps 259, window_maps_ns 156226768, window_maps_range 258, window_maps_restage 1, window_regions_free_bytes 2031616, window_regions_largest_free_bytes 1966080, window_regions_sealed 1, window_regions_sealed_bytes 65536, window_regions_sealed_refs 1, window_unmaps 1, window_unmaps_ns 400359
+REQUESTS seq-write: read 0.00 (307 µs each), write 0.00 (21553 µs each), free 0.00 (485 µs each), map 0.00 (556 µs each), unmap 0.00 (377 µs each), commit 0.00 (17705 µs each) per operation
+FXFS rand-read-cold: 
+REQUESTS rand-read-cold:  per operation
+FXFS rand-write: dax_extent_alloc_bytes 917504, dax_map_writes 16384, device_commits 1, device_commits_ns 46676327, device_write_bytes 1933312, device_writes 472, device_writes_ns 1681168021, fsyncs 1, seal_waits 1, seal_waits_ns 13131, seals 1, seals_ns 46689837, window_map_bytes_grow 64749568, window_map_bytes_reach 2359296, window_map_bytes_restage 65536, window_map_requests 433, window_maps 9953, window_maps_grow 287, window_maps_ns 303024772, window_maps_reach 33, window_maps_restage 1, window_ranges_keeping_regions 128, window_ranges_kept_moved_pages 16384, window_ranges_kept_regions 4016, window_ranges_kept_relocated_pages 49280, window_regions 32, window_regions_sealed 31, window_regions_sealed_bytes 67043328, window_regions_sealed_refs 4015, window_regions_writable 1, window_regions_writable_bytes 2097152, window_regions_writable_refs 1, window_unmaps 1, window_unmaps_ns 266840
+REQUESTS rand-write: write 0.03 (260 µs each), free 0.00 (527 µs each), map 0.03 (744 µs each), unmap 0.00 (263 µs each) per operation
+FXFS mmap-rand-write: dax_extent_alloc_bytes 917504, dax_map_writes 16384, device_commits 1, device_commits_ns 82706530, device_write_bytes 69042176, device_writes 16856, device_writes_ns 3603291474, fsyncs 1, seal_waits 1, seal_waits_ns 220120, seals 1, seals_ns 82726780, window_map_bytes_grow 65011712, window_map_bytes_reach 2031616, window_map_bytes_restage 65536, window_map_requests 321, window_maps 406, window_maps_grow 288, window_maps_ns 171437151, window_maps_reach 31, window_maps_restage 1, window_ranges_keeping_regions 128, window_ranges_kept_moved_pages 16384, window_ranges_kept_regions 4016, window_ranges_kept_relocated_pages 49152, window_regions 32, window_regions_sealed 32, window_regions_sealed_bytes 67108864, window_regions_sealed_refs 4016
+REQUESTS mmap-rand-write: write 1.03 (98 µs each), free 0.00 (0 µs each), map 0.02 (512 µs each) per operation
+FXFS fsync-append: dax_evacuate_hold_ns 49445848, dax_evacuate_map_ns 43806474, dax_evacuations 255, dax_extent_alloc_bytes 28672, dax_map_writes 256, device_commits 257, device_commits_ns 49272661, device_read_bytes 376832, device_reads 15, device_reads_ns 4010175, device_write_bytes 3502080, device_writes 499, device_writes_ns 679724929, fsyncs 255, journal_compaction_ns 57934417, journal_compactions 1, seal_waits 257, seal_waits_ns 422633, seals 257, seals_ns 50848618, window_map_bytes_evacuate 1044480, window_map_bytes_reach 65536, window_map_bytes_restage 16711680, window_map_requests 511, window_maps 511, window_maps_evacuate 255, window_maps_ns 98662390, window_maps_reach 1, window_maps_restage 255, window_ranges_keeping_regions 1, window_ranges_kept_moved_pages 1, window_ranges_kept_regions 1, window_regions_largest_free_bytes 63438848, window_regions_pruned 255, window_regions_writable_refs 1, window_unmaps 256, window_unmaps_ns 40745451
+REQUESTS fsync-append: read 0.06 (258 µs each), write 1.95 (158 µs each), free 0.02 (8787 µs each), map 2.00 (158 µs each), unmap 1.00 (142 µs each), commit 0.01 (2162 µs each) per operation
+FXFS create: dax_extent_alloc_bytes 112000, dax_map_writes 2000, window_map_bytes_grow 8126464, window_map_bytes_reach 262144, window_map_requests 40, window_maps 40, window_maps_grow 36, window_maps_ns 9707812, window_maps_reach 4, window_regions 4, window_regions_writable 4, window_regions_writable_bytes 8388608, window_regions_writable_refs 2000, window_slices 2000
+REQUESTS create: map 0.02 (234 µs each) per operation
+FXFS stat-cold: 
+REQUESTS stat-cold:  per operation
+FXFS stat-warm: 
+REQUESTS stat-warm:  per operation
+FXFS lookup-missing: 
+REQUESTS lookup-missing:  per operation
+FXFS readdir: 
+REQUESTS readdir:  per operation
+FXFS read-small-cold: 
+REQUESTS read-small-cold:  per operation
+FXFS chmod: 
+REQUESTS chmod:  per operation
+FXFS setxattr: 
+REQUESTS setxattr:  per operation
+FXFS link: 
+REQUESTS link:  per operation
+FXFS rename: 
+REQUESTS rename:  per operation
+FXFS rename-across: device_read_bytes 573440, device_reads 9, device_reads_ns 6215317, device_write_bytes 499712, device_writes 33, device_writes_ns 2866708
+REQUESTS rename-across: read 0.01 (640 µs each), write 0.10 (103 µs each) per operation
+FXFS unlink: device_read_bytes 393216, device_reads 3, device_reads_ns 9717153, device_write_bytes 1073152, device_writes 219, device_writes_ns 809051605
+REQUESTS unlink: read 0.01 (134 µs each), write 0.03 (106 µs each) per operation
+FXFS create-fsync: dax_extent_alloc_bytes 11200, dax_map_writes 200, device_commits 200, device_commits_ns 40795447, device_write_bytes 983040, device_writes 240, device_writes_ns 78373483, fsyncs 400, seal_waits 200, seal_waits_ns 282835, seals 200, seals_ns 42489249, window_map_bytes_reach 65536, window_map_bytes_restage 13041664, window_map_requests 200, window_maps 200, window_maps_ns 34388257, window_maps_reach 1, window_maps_restage 199, window_regions 200, window_regions_sealed 199, window_regions_sealed_bytes 13041664, window_regions_sealed_refs 200, window_regions_writable 1, window_regions_writable_bytes 2097152, window_regions_writable_refs 1, window_slices 200, window_unmaps 1, window_unmaps_ns 179825
+REQUESTS create-fsync: write 1.20 (179 µs each), free 0.03 (588 µs each), map 1.00 (160 µs each), unmap 0.01 (178 µs each) per operation
+FXFS mkdir-tree: dax_extent_alloc_bytes 112000, dax_map_writes 2000, window_map_bytes_grow 8126464, window_map_bytes_reach 196608, window_map_requests 39, window_maps 39, window_maps_grow 36, window_maps_ns 8721263, window_maps_reach 3, window_regions 3, window_regions_writable 3, window_regions_writable_bytes 6291456, window_regions_writable_refs 2000, window_slices 2000
+REQUESTS mkdir-tree: map 0.02 (219 µs each) per operation
+FXFS find-cold: 
+REQUESTS find-cold:  per operation
+FXFS rm-tree: window_free_bytes 8388608, window_regions_free_bytes 8388608, window_regions_largest_free_bytes 6815744, window_unmaps 4, window_unmaps_ns 1298736
+REQUESTS rm-tree: unmap 0.00 (311 µs each) per operation
+FXFS large-dir-create: device_write_bytes 1048576, device_writes 256, device_writes_ns 481227581
+REQUESTS large-dir-create: write 0.01 (730 µs each) per operation
+FXFS large-dir-stat-cold: 
+REQUESTS large-dir-stat-cold:  per operation
+FXFS large-dir-unlink: 
+REQUESTS large-dir-unlink:  per operation
+FXFS create-parallel: device_write_bytes 1048576, device_writes 256, device_writes_ns 443195094
+REQUESTS create-parallel: write 0.03 (659 µs each) per operation
+FXFS stat-parallel: 
+REQUESTS stat-parallel:  per operation
+FXFS unlink-parallel: 
+REQUESTS unlink-parallel:  per operation
+FXFS create-shared-dir: device_write_bytes 1052672, device_writes 257, device_writes_ns 1008317498
+REQUESTS create-shared-dir: write 0.03 (236 µs each) per operation
+FXFS unlink-shared-dir: 
+REQUESTS unlink-shared-dir:  per operation
+ar: `u' modifier ignored since `D' is the default (see `U')
+[   88.573714] reboot: Restarting system

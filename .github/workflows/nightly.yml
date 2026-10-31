@@ -1,0 +1,46 @@
+# Copyright 2026 The fxdax Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# The guest suites, as production runs them: on a disposable GCE host with nested KVM
+# (scripts/test-gce.sh), Firecracker in its jailer under its seccomp filter, and branches kept in
+# real object storage. Needs the repository's GCP_WORKLOAD_IDENTITY_PROVIDER and GCP_SERVICE_ACCOUNT
+# secrets, and its FXDAX_GCE_PROJECT and FXDAX_NIGHTLY_BUCKET (gs://bucket/prefix) variables.
+name: Nightly
+
+on:
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+jobs:
+  guest-suites:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 480
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      FXDAX_GCE_PROJECT: ${{ vars.FXDAX_GCE_PROJECT }}
+      FXDAX_GCE_ZONE: us-west1-b
+      FXDAX_GCE_STORAGE: '1'
+      FXDAX_EXTENTD_REMOTE: ${{ vars.FXDAX_NIGHTLY_BUCKET }}
+      FXDAX_FIRECRACKER_JAIL: '1'
+      FXDAX_FIRECRACKER_SECCOMP: '1'
+      FXDAX_WORKSPACE_TESTS: '0'
+    steps:
+      - uses: actions/checkout@v7
+      - name: Fetch Firecracker
+        run: git -c url.https://github.com/.insteadOf=git@github.com: submodule update --init
+      - uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v3
+      - name: Run the guest suites
+        run: scripts/test-gce.sh all "fxdax-test-nightly-$GITHUB_RUN_ID" results
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: results
+          path: results

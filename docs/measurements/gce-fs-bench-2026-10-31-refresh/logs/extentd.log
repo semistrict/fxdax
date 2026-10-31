@@ -1,0 +1,25 @@
+INFO fxdax::host_store: fxdax: cleaning branch 893a9fb2310ba1c1 of /home/ramon/run-20261031T141301Z-d2ffb9d2/results/logs/bench-fs-fxfs-guest/bench-fs-fxfs-guest/extents: copied 2928640 bytes
+INFO fxdax::host_store: fxdax: cleaning branch 893a9fb2310ba1c1 of /home/ramon/run-20261031T141301Z-d2ffb9d2/results/logs/bench-fs-fxfs-guest/bench-fs-fxfs-guest/extents: copied 4599808 bytes
+INFO fxdax::host_store: fxdax: cleaning branch 893a9fb2310ba1c1 of /home/ramon/run-20261031T141301Z-d2ffb9d2/results/logs/bench-fs-fxfs-guest/bench-fs-fxfs-guest/extents: copied 1171456 bytes
+INFO fxdax::host_store: fxdax: cleaning branch 893a9fb2310ba1c1 of /home/ramon/run-20261031T141301Z-d2ffb9d2/results/logs/bench-fs-fxfs-guest/bench-fs-fxfs-guest/extents: copied 3993600 bytes
+INFO fxdax::host_store: fxdax: cleaning branch 893a9fb2310ba1c1 of /home/ramon/run-20261031T141301Z-d2ffb9d2/results/logs/bench-fs-fxfs-guest/bench-fs-fxfs-guest/extents: copied 3993600 bytes
+INFO fxdax::extentd::stores: extentd: object-store: get=35 get-range=1 head=0 list=3 create=1374 update=2 overwrite=0 delete=1 up-segments=936523697 up-extents=733607927 up-checkpoints=0 up-moves=0 up-other=39 down=750
+INFO fxdax::host_store: fxdax: cleaning branch 893a9fb2310ba1c1 of /home/ramon/run-20261031T141301Z-d2ffb9d2/results/logs/bench-fs-fxfs-guest/bench-fs-fxfs-guest/extents: copied 1560576 bytes
+INFO fxdax::host_store: fxdax: cleaning branch 893a9fb2310ba1c1 of /home/ramon/run-20261031T141301Z-d2ffb9d2/results/logs/bench-fs-fxfs-guest/bench-fs-fxfs-guest/extents: copied 1171456 bytes
+INFO fxdax::host_store: fxdax: cleaning branch 893a9fb2310ba1c1 of /home/ramon/run-20261031T141301Z-d2ffb9d2/results/logs/bench-fs-fxfs-guest/bench-fs-fxfs-guest/extents: copied 3432448 bytes
+INFO fxdax::host_store: fxdax: cleaning branch 893a9fb2310ba1c1 of /home/ramon/run-20261031T141301Z-d2ffb9d2/results/logs/bench-fs-fxfs-guest/bench-fs-fxfs-guest/extents: copied 9871360 bytes
+INFO fxdax::host_store: fxdax: cleaning branch 893a9fb2310ba1c1 of /home/ramon/run-20261031T141301Z-d2ffb9d2/results/logs/bench-fs-fxfs-guest/bench-fs-fxfs-guest/extents: copied 9854976 bytes
+INFO fxdax::host_store: fxdax: cleaning branch 893a9fb2310ba1c1 of /home/ramon/run-20261031T141301Z-d2ffb9d2/results/logs/bench-fs-fxfs-guest/bench-fs-fxfs-guest/extents: copied 1175552 bytes
+INFO fxdax::extentd::stores: extentd: object-store: get=68 get-range=2 head=0 list=7 create=2131 update=2 overwrite=0 delete=1 up-segments=1612855069 up-extents=1205780506 up-checkpoints=5903 up-moves=0 up-other=66 down=1452
+INFO fxdax::host_store: fxdax: cleaning branch ae4352ee374b63ef of /home/ramon/run-20261031T141301Z-d2ffb9d2/results/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 3768320 bytes
+INFO fxdax::host_store: fxdax: cleaning branch ae4352ee374b63ef of /home/ramon/run-20261031T141301Z-d2ffb9d2/results/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 3768320 bytes
+INFO fxdax::host_store: fxdax: cleaning branch ae4352ee374b63ef of /home/ramon/run-20261031T141301Z-d2ffb9d2/results/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 765952 bytes
+INFO fxdax::host_store: fxdax: cleaning branch ae4352ee374b63ef of /home/ramon/run-20261031T141301Z-d2ffb9d2/results/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 8622080 bytes
+INFO fxdax::host_store: fxdax: cleaning branch ae4352ee374b63ef of /home/ramon/run-20261031T141301Z-d2ffb9d2/results/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 3923968 bytes
+INFO fxdax::host_store: fxdax: cleaning branch ae4352ee374b63ef of /home/ramon/run-20261031T141301Z-d2ffb9d2/results/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 6549504 bytes
+INFO fxdax::extentd::stores: extentd: object-store: get=101 get-range=2 head=0 list=7 create=2585 update=2 overwrite=0 delete=1 up-segments=2189853020 up-extents=1747985427 up-checkpoints=5903 up-moves=0 up-other=66 down=2244
+INFO fxdax::host_store: fxdax: cleaning branch ae4352ee374b63ef of /home/ramon/run-20261031T141301Z-d2ffb9d2/results/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 40857600 bytes
+INFO fxdax::host_store: fxdax: cleaning branch ae4352ee374b63ef of /home/ramon/run-20261031T141301Z-d2ffb9d2/results/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 6897664 bytes
+INFO fxdax::host_store: fxdax: cleaning branch ae4352ee374b63ef of /home/ramon/run-20261031T141301Z-d2ffb9d2/results/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 6946816 bytes
+INFO fxdax::host_store: fxdax: cleaning branch ae4352ee374b63ef of /home/ramon/run-20261031T141301Z-d2ffb9d2/results/logs/bench-fs-fxfs-guest-dax/bench-fs-fxfs-guest-dax/extents: copied 839680 bytes
+INFO fxdax_extentd: extentd: stopping, on SIGTERM

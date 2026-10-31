@@ -1,0 +1,16 @@
+revision a779bd6bb49fbb45f14653893be48355a374356b
+firecracker 412e0b8d49b3a9a0387f326d9fe4e2f179bc9719
+changed  D .github/workflows/ci.yml
+changed  D "backlog/docs/doc-10 - The-fsync-durability-contract.md"
+changed  M "backlog/tasks/task-137 - VMM-a-followers-Firecracker-died-of-SIGSEGV-under-fxfs-guest-follow-torture-dax-by-the-default-action-its-handler-never-run.md"
+changed  M "backlog/tasks/task-66 - Write-down-the-fsync-durability-contract-per-failure-case.md"
+changed  M "backlog/tasks/task-67 - Crash-soak-rounds-that-kill-extentd-and-drop-uploads-before-host-loss.md"
+changed  M "backlog/tasks/task-77 - Fuzz-the-extent-protocol-and-the-DAX-fault-path-from-the-guest-side.md"
+changed  M crates/fxfs-posix/src/lib.rs
+changed  M guest/linux/fs/fxfs/dax.c
+changed  M guest/tests/test_cases/src/test_fxfs_guest_checks.rs
+changed  D guest/tests/test_cases/src/test_xfstests.rs
+changed  M scripts/guest-mutants-gce.py
+changed  M vendor/firecracker
+changed ?? "backlog/tasks/task-138 - st_blocks-reads-0-after-evict-of-a-file-with-reserved-blocks-once-under-fxfs.dax_delay_us.md"
+158fe43c1e4cf9def7a840550113a6cdfdcebc354bc361204a35ed26336c4982  source.tar.gz

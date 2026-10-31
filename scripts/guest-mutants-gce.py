@@ -78,7 +78,7 @@ MUTANTS = [
     (
         "cow_not_shared",
         "an iomap of a relocated page doesn't say it is shared, its entry not replaced",
-        [("\tiomap->flags |= IOMAP_F_SHARED;\n", "")],
+        [("\tiomap->flags |= IOMAP_F_SHARED;\n\t*srcmap = *iomap;\n", "\t*srcmap = *iomap;\n")],
     ),
     (
         "prune_in_use",
