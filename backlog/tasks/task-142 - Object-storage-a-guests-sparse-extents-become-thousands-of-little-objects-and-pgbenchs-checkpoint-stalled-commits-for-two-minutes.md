@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-31 21:45'
+updated_date: '2026-10-31 22:32'
 labels: []
 dependencies: []
 priority: high
@@ -20,7 +21,7 @@ GCE r353, non-DAX pgbench, jailed, in GCS: at pg_ctl stop 1.2 GiB waited to uplo
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 pgbench passes in GCS, jailed, its commits stalling under 10 s
+- [x] #1 pgbench passes in GCS, jailed, its commits stalling under 10 s
 - [ ] #2 Whether an extent is stored on its own goes by the bytes it holds, not its reach, or that is shown not to matter
 <!-- AC:END -->
 
@@ -30,3 +31,9 @@ GCE r353, non-DAX pgbench, jailed, in GCS: at pg_ctl stop 1.2 GiB waited to uplo
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-10-31: OWN_AT_ONCE 32, GCE r355, non-DAX pgbench jailed in GCS: pg_ctl stop 8.4 s (failed at 60 s), no write blocked (over 100 s), the oldest upload 14.7 s behind (224 s), one stall. AC1 holds; AC2, by the bytes an extent holds rather than its reach, is open.
+<!-- SECTION:NOTES:END -->

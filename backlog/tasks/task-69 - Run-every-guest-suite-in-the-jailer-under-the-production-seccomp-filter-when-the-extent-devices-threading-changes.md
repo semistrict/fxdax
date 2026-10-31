@@ -3,9 +3,10 @@ id: TASK-69
 title: >-
   Run every guest suite in the jailer under the production seccomp filter when
   the extent device's threading changes
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-10-21 19:54'
+updated_date: '2026-10-31 22:32'
 labels: []
 dependencies: []
 priority: medium
@@ -24,3 +25,9 @@ ordinal: 178000
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-10-31: every suite of scripts/test-e2e.sh's default list, in the jailer under the production seccomp filter (real) with branches in real GCS: r353, all but four; r355, those four after TASK-142's fix and a remote run's 360 s for the checks: fxfs-guest-pgbench, checks-dax, -delay, -small. .github/workflows/nightly.yml runs this nightly, once its secrets are set.
+<!-- SECTION:NOTES:END -->
