@@ -3,7 +3,7 @@ id: doc-7
 title: 'Object storage: how the host keeps branches in S3 and GCS'
 type: specification
 created_date: '2026-10-17 01:31'
-updated_date: '2026-10-30 22:52'
+updated_date: '2026-10-31 21:45'
 ---
 # Object storage: how the host keeps branches in S3 and GCS
 
@@ -30,7 +30,7 @@ This document says how. Where it differs from doc-2's sketch, it says so.
 - **Hosts** keep stores' branches with `fxdax::remote` (TASK-28.5): `extentd` attaches each store
   it opens to the bucket `FXDAX_EXTENTD_REMOTE` names. The uploader has the store close its open
   segment within an interval of the commits it makes durable, and PUTs the store's closed segments,
-  and the extents of their own they name, as they are, up to four at once, acknowledged in order;
+  and the extents of their own they name, as they are, up to 32 at once, acknowledged in order;
   commits stall at a lag bound in commits and in bytes. Only the snapshot an uploader starts from,
   of what the store holds that the branch doesn't, is read back from the store.
 - **Opening elsewhere and forks** (TASK-28.7): an empty store of a branch (`fxdaxctl take`)

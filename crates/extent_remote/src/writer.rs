@@ -35,8 +35,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, MutexGuard};
 use storage_device::ExtentId;
 
-/// How many of a segment's extents of their own upload at once.
-const OWN_AT_ONCE: usize = 4;
+/// How many of a segment's extents of their own upload at once, within the writer's budget, which
+/// bounds what they hold: a guest's sparse extents make thousands of little objects a commit, and
+/// four at once, 60 a second at 15 ms a PUT, held commits up for minutes as they reached the bound
+/// on their lag (GCE r353, pgbench's checkpoint at shutdown: TASK-142).
+const OWN_AT_ONCE: usize = 32;
 
 /// How many forks' children's records are read, or made, at once: each a round trip to object
 /// storage, which one at a time held a checkpoint, and the uploader with it, up for a round trip
