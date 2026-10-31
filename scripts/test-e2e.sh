@@ -141,6 +141,10 @@ fi
 # which boots a VM for each test. pjdfstest's cases take its repository and commit as they build.
 guest_target="$(uname -m)-unknown-linux-musl"
 (cd "$harness" && cargo test -q -p test_cases --features guest)
+# The VMM's extent device, which no other suite reaches (TASK-79.102): its tests' store has a
+# remote in memory, as their EIO without one says.
+(cd "$firecracker_dir" && FXDAX_EXTENTD_REMOTE=memory:///vmm FXDAX_EXTENTD_TOKEN=1 \
+    cargo test -q -p vmm --lib --features fxdax extent::)
 (cd "$harness" && cargo build -q --target "$guest_target" -p guest-agent)
 (cd "$harness" && cargo build -q -p runner)
 export FXDAX_GUEST_AGENT="$harness/target/$guest_target/debug/guest-agent"

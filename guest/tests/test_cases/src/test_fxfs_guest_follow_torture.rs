@@ -1030,7 +1030,9 @@ mod guest {
                         Err(format!("victim.{n} read {} bytes otherwise", kept.len()))
                     }
                 });
-                if found != Ok(Some(n)) {
+                // Empty, as of a commit between its creation and its data, a compaction's: which
+                // of the two it may be the history's check of the read says (TASK-79.58).
+                if !matches!(found, Ok(Some(held)) if held == n || held == EMPTY) {
                     checks.fail(format!("victim.{n}, deleted while open, reads otherwise"));
                 }
             }

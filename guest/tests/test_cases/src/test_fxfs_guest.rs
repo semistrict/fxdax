@@ -216,6 +216,14 @@ mod host {
             .collect()
     }
 
+    /// A line the VM stopped in the middle of, or the kernel's restart message after the last,
+    /// names no file (TASK-79.60).
+    #[test]
+    fn lines_cut_short_name_no_synced_file() {
+        let output = "synced 1 2\nsynced 3\nsynced 3 x\nreboot: Restarting system\nsynced 4 5";
+        assert_eq!(synced_files(output), vec![(1, 2), (4, 5)]);
+    }
+
     /// Asserts `fs` holds each of the files `synced` names whole, as its writer wrote it.
     fn assert_synced(fs: &Filesystem, synced: &[(u8, usize)]) {
         for &(writer, index) in synced {

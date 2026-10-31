@@ -52,6 +52,8 @@ mod host {
     ) -> anyhow::Result<Firecracker> {
         let mut vm = Vm::new(2, 512)?;
         vm.guest_kernel()?;
+        // Both run at once: each boots from an image of its own, which making it remakes.
+        vm.root_image(&format!("{name}.rootfs.ext4"));
         let store = test_setup.tmp_dir.join(format!("store-{name}"));
         vm.extent_store_served("extents", &store, CAPACITY, 1 << 28, extentd);
         vm.vsock(uds);

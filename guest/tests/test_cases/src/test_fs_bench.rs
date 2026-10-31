@@ -409,7 +409,11 @@ RUN wget -q -O /opt/lua-5.4.7.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz \\
             if let Some(output) = output {
                 command.stdout(output);
             }
-            let status = command.status()?;
+            let mut child = command.spawn()?;
+            // The runner's timeout ends it, and its VM with it, which later cases would run
+            // beside (TASK-79.61).
+            test_setup.register_cleanup_pid(child.id());
+            let status = child.wait()?;
             anyhow::ensure!(
                 status.success(),
                 "the {role}'s VM in {}: {status}",
