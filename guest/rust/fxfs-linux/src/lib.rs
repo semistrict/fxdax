@@ -607,6 +607,30 @@ pub unsafe extern "C" fn fxfs_getattr(fs: *const Fxfs, ino: u64, attr: *mut Attr
     unsafe { write_attr(block_on(fs.reading(|| fs.attr_by_handle(ino))), attr) }
 }
 
+/// fxdax: the attributes of the object `ino`, as `fxfs_getattr`'s, but of one no name links too.
+///
+/// # Safety
+///
+/// `fs` is mounted, and `attr` writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fxfs_attr_of_open(fs: *const Fxfs, ino: u64, attr: *mut Attr) -> c_int {
+    // SAFETY: As the caller promises.
+    let fs = unsafe { &*fs };
+    // SAFETY: As the caller promises.
+    unsafe { write_attr(block_on(fs.reading(|| fs.attr(ino))), attr) }
+}
+
+/// fxdax: how far the journal is written (`Journal::file_offset`).
+///
+/// # Safety
+///
+/// `fs` is mounted.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fxfs_journal_offset(fs: *const Fxfs) -> u64 {
+    // SAFETY: As the caller promises.
+    unsafe { &*fs }.filesystem().journal().file_offset()
+}
+
 /// # Safety
 ///
 /// `fs` is mounted, and `statfs` writable.

@@ -1685,60 +1685,81 @@ impl<S: HandleOwner> DataObjectHandle<S> {
             transaction.commit_and_continue().await?;
         }
         // We might need to zero out the tail of the old last block.
+        self.txn_zero_tail(transaction, old_size).await?;
+        self.txn_update_size(transaction, size, None).await?;
+        Ok(())
+    }
+
+    /// fxdax: zeros what the last block of a file of `size` bytes holds past them. No extent of the
+    /// file may start past its last block.
+    async fn txn_zero_tail<'a>(
+        &'a self,
+        transaction: &mut Transaction<'a>,
+        size: u64,
+    ) -> Result<(), Error> {
+        let store = self.store();
         let block_size = self.block_size();
-        if !block_size.is_aligned(old_size) {
-            let layer_set = store.tree.layer_set();
-            let mut merger = layer_set.merger();
-            let aligned_old_size = block_size.align_down(old_size);
-            let iter = merger
-                .query(Query::FullRange(&ObjectKey::attribute(
-                    self.object_id(),
-                    self.attribute_id(),
-                    AttributeKey::Extent(Extent::search_key_from_offset(aligned_old_size)),
-                )))
-                .await?;
-            if let Some(ItemRef {
-                key:
-                    ObjectKey {
-                        object_id,
-                        data:
-                            ObjectKeyData::Attribute(attribute_id, AttributeKey::Extent(extent_key)),
-                    },
-                value: ObjectValue::Extent(ExtentValue::Some { extent, extent_offset, key_id, .. }),
-                ..
-            }) = iter.get()
+        if block_size.is_aligned(size) {
+            return Ok(());
+        }
+        let layer_set = store.tree.layer_set();
+        let mut merger = layer_set.merger();
+        let aligned_size = block_size.align_down(size);
+        let iter = merger
+            .query(Query::FullRange(&ObjectKey::attribute(
+                self.object_id(),
+                self.attribute_id(),
+                AttributeKey::Extent(Extent::search_key_from_offset(aligned_size)),
+            )))
+            .await?;
+        if let Some(ItemRef {
+            key:
+                ObjectKey {
+                    object_id,
+                    data: ObjectKeyData::Attribute(attribute_id, AttributeKey::Extent(extent_key)),
+                },
+            value: ObjectValue::Extent(ExtentValue::Some { extent, extent_offset, key_id, .. }),
+            ..
+        }) = iter.get()
+        {
+            if *object_id == self.object_id()
+                && *attribute_id == self.attribute_id()
+                && extent_key.start <= aligned_size
             {
-                if *object_id == self.object_id() && *attribute_id == self.attribute_id() {
-                    let device_offset = extent_offset
-                        .checked_add(aligned_old_size - extent_key.start)
-                        .ok_or(FxfsError::Inconsistent)?;
-                    ensure!(block_size.is_aligned(device_offset), FxfsError::Inconsistent);
-                    let mut buf = self.allocate_buffer(block_size.get() as usize).await;
-                    // In the case that this extent is in OverwritePartial mode, there is a
-                    // possibility that the last block is allocated, but not initialized yet, in
-                    // which case we don't actually need to bother zeroing out the tail. However,
-                    // it's not strictly incorrect to change uninitialized data, so we skip the
-                    // check and blindly do it to keep it simpler here.
-                    self.read_and_decrypt(
-                        *extent,
-                        device_offset,
-                        aligned_old_size,
-                        buf.as_mut(),
-                        *key_id,
-                    )
+                let device_offset = extent_offset
+                    .checked_add(aligned_size - extent_key.start)
+                    .ok_or(FxfsError::Inconsistent)?;
+                ensure!(block_size.is_aligned(device_offset), FxfsError::Inconsistent);
+                let mut buf = self.allocate_buffer(block_size.get() as usize).await;
+                // In the case that this extent is in OverwritePartial mode, there is a
+                // possibility that the last block is allocated, but not initialized yet, in
+                // which case we don't actually need to bother zeroing out the tail. However,
+                // it's not strictly incorrect to change uninitialized data, so we skip the
+                // check and blindly do it to keep it simpler here.
+                self.read_and_decrypt(*extent, device_offset, aligned_size, buf.as_mut(), *key_id)
                     .await?;
-                    buf.subslice_mut((old_size % block_size) as usize..buf.len()).fill(0);
-                    self.multi_write(
-                        transaction,
-                        *attribute_id,
-                        &[aligned_old_size..aligned_old_size + block_size],
-                        buf.as_mut(),
-                    )
-                    .await?;
-                }
+                buf.subslice_mut((size % block_size) as usize..buf.len()).fill(0);
+                self.multi_write(
+                    transaction,
+                    *attribute_id,
+                    &[aligned_size..aligned_size + block_size],
+                    buf.as_mut(),
+                )
+                .await?;
             }
         }
-        self.txn_update_size(transaction, size, None).await?;
+        Ok(())
+    }
+
+    /// fxdax: zeros what the file's last block holds past its end: a truncate leaves it there, for
+    /// a write past the end to bring back (xfstests generic/130, TASK-139).
+    pub async fn zero_tail(&self) -> Result<(), Error> {
+        let size = self.get_size();
+        if !self.block_size().is_aligned(size) {
+            let mut transaction = self.new_transaction().await?;
+            self.txn_zero_tail(&mut transaction, size).await?;
+            transaction.commit().await?;
+        }
         Ok(())
     }
 

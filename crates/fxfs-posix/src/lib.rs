@@ -107,6 +107,9 @@ pub const SET_SIZE: u32 = 1 << 3;
 pub const SET_ATIME: u32 = 1 << 4;
 pub const SET_MTIME: u32 = 1 << 5;
 pub const SET_CTIME: u32 = 1 << 6;
+/// fxdax: a truncate leaves the last block as it is: a DAX window's file zeroes it through the
+/// window, which maps that block.
+pub const SET_KEEP_TAIL: u32 = 1 << 7;
 
 /// Attributes to set: `struct fxfs_setattr`.
 #[repr(C)]
@@ -782,7 +785,8 @@ impl<P: Platform> Fxfs<P> {
                 let len = (logical.end - logical.start) as usize;
                 let mut back = device.allocate_buffer(len).await;
                 // A block of zeros isn't written, nor an extent with nothing else in it there.
-                let read = device.read(on_device.extent, on_device.range.start, back.as_mut()).await;
+                let read =
+                    device.read(on_device.extent, on_device.range.start, back.as_mut()).await;
                 let back = back.as_ptr_slice().to_vec();
                 let differ = (0..len)
                     .filter(|&i| held[at + i] != if read.is_ok() { back[i] } else { 0 })
@@ -1633,11 +1637,18 @@ impl<P: Platform> Fxfs<P> {
             // A truncate that shrinks the file frees space, as an unlink does, so it borrows the
             // metadata space it needs: a full filesystem's files can still be cut (TASK-60).
             let file = self.file(ino).await?;
-            let options = Options {
-                borrow_metadata_space: set.size < file.get_size(),
-                ..file.default_transaction_options()
-            };
+            let cut = set.size < file.get_size();
+            let options =
+                Options { borrow_metadata_space: cut, ..file.default_transaction_options() };
             file.truncate_with_options(options, set.size).await?;
+            // fxdax: once the cut has freed what it may. With no room even so what the last block
+            // holds past the end stays, as the file must still be cut.
+            if cut && set.valid & SET_KEEP_TAIL == 0 {
+                if let Err(error) = file.zero_tail().await {
+                    ensure!(FxfsError::NoSpace.matches(&error), error);
+                    log::error!("fxfs: object {ino}: no room to zero past its end: {error:#}");
+                }
+            }
         }
         let flag = |bit: u32| set.valid & bit != 0;
         let attributes = fio::MutableNodeAttributes {

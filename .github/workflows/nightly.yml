@@ -26,7 +26,7 @@ jobs:
       FXDAX_GCE_STORAGE: '1'
       FXDAX_EXTENTD_REMOTE: ${{ vars.FXDAX_NIGHTLY_BUCKET }}
       FXDAX_FIRECRACKER_JAIL: '1'
-      FXDAX_FIRECRACKER_SECCOMP: '1'
+      FXDAX_FIRECRACKER_SECCOMP: real
       FXDAX_WORKSPACE_TESTS: '0'
     steps:
       - uses: actions/checkout@v7

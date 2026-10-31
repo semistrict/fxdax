@@ -260,6 +260,36 @@ static struct dentry *fxfs_vfs_lookup(struct inode *dir, struct dentry *dentry,
 }
 
 /*
+ * fxdax: a file's attributes, the kernel's but for its blocks, which Fxfs's writeback, seals and
+ * moves change, each in a commit, none of which is the kernel's to see: read again as a commit has
+ * been made since they last were. `du` of a file in the inode cache saw what it had as read in:
+ * none, of one created here (TASK-138).
+ */
+static int fxfs_vfs_getattr(struct mnt_idmap *idmap, const struct path *path, struct kstat *stat,
+			    u32 request_mask, unsigned int flags)
+{
+	struct inode *inode = d_inode(path->dentry);
+	struct fxfs_vfs_inode *fi = fxfs_vfs_inode(inode);
+	struct fxfs *fs = fxfs_vfs_fs(inode->i_sb);
+
+	if (request_mask & STATX_BLOCKS && !(flags & AT_STATX_DONT_SYNC)) {
+		u64 offset = fxfs_journal_offset(fs);
+
+		if (READ_ONCE(fi->blocks_as_of) != offset) {
+			struct fxfs_attr attr;
+			int err = fxfs_nofs(fxfs_attr_of_open(fs, inode->i_ino, &attr));
+
+			if (err)
+				return err;
+			inode->i_blocks = attr.blocks;
+			WRITE_ONCE(fi->blocks_as_of, offset);
+		}
+	}
+	generic_fillattr(idmap, request_mask, inode, stat);
+	return 0;
+}
+
+/*
  * fxdax: a follower's inode's attributes, which its batches set as they apply
  * (fxfs_vfs_settle_file), read under its fill barrier: none as of a batch half settled.
  */
@@ -763,7 +793,7 @@ static int fxfs_vfs_resize(struct inode *inode, loff_t size, struct mnt_idmap *i
 	truncate_setsize(inode, size);
 	if (iattr)
 		setattr_copy(idmap, inode, iattr);
-	err = fxfs_vfs_write_attr(inode, FXFS_SET_SIZE);
+	err = fxfs_vfs_write_attr(inode, FXFS_SET_SIZE | (IS_DAX(inode) ? FXFS_SET_KEEP_TAIL : 0));
 	if (IS_DAX(inode))
 		fxfs_dax_resize_end(inode, size);
 	return err;
@@ -2037,6 +2067,7 @@ static const struct inode_operations fxfs_vfs_dir_inode_operations = {
 
 static const struct inode_operations fxfs_vfs_file_inode_operations = {
 	FXFS_VFS_FILE_INODE_OPERATIONS,
+	.getattr = fxfs_vfs_getattr,
 };
 
 static const struct inode_operations fxfs_vfs_symlink_inode_operations = {
@@ -2463,6 +2494,7 @@ static struct inode *fxfs_vfs_alloc_inode(struct super_block *sb)
 	fxfs_dax_inode_init(&fi->dax);
 	atomic64_set(&fi->gen, 0);
 	fi->fsflags = 0;
+	fi->blocks_as_of = 0;
 	return &fi->vfs;
 }
 

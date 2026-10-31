@@ -1802,6 +1802,13 @@ impl Journal {
         journal_file_checkpoint.file_offset >= offset
     }
 
+    /// fxdax: how far the journal is written, between commits, which each move it, and whose
+    /// changes are all applied: what was read since hasn't changed if it is where it was.
+    pub fn file_offset(&self) -> u64 {
+        let _guard = self.writer_mutex.lock();
+        self.inner.lock().writer.journal_file_checkpoint().file_offset
+    }
+
     /// Flushes previous writes to the device and then writes out a new super-block.
     /// Callers must ensure that we do not make concurrent calls.
     pub(crate) async fn write_super_block(&self) -> Result<(), Error> {
@@ -2660,9 +2667,7 @@ mod tests {
     use crate::object_handle::{ObjectHandle, ReadObjectHandle, WriteObjectHandle};
     use crate::object_store::directory::Directory;
     use crate::object_store::object_record::{ObjectKey, ObjectValue};
-    use crate::object_store::transaction::{
-        Mutation, Options, TRANSACTION_MAX_JOURNAL_USAGE,
-    };
+    use crate::object_store::transaction::{Mutation, Options, TRANSACTION_MAX_JOURNAL_USAGE};
     use crate::object_store::volume::root_volume;
     use crate::object_store::{
         HandleOptions, LockKey, NewChildStoreOptions, ObjectStore, StoreOptions, lock_keys,

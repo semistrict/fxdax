@@ -47,22 +47,25 @@ pub struct TestFxfsGuest {
     /// goes with, of the commits it has yet to make durable (doc-10, TASK-67).
     #[cfg_attr(feature = "guest", allow(dead_code))]
     daemon_killed: bool,
+    /// fxdax: whether a crash test's guest stops its VM by touching a part of the window it was
+    /// never given, as one that keeps to no protocol may (TASK-77).
+    stray: bool,
 }
 
 impl TestFxfsGuest {
     /// fxfs-guest.
     pub fn host_formats() -> Self {
-        Self { mode: Mode::HostFormats, dax: false, crash_step: None, killed: false, daemon_killed: false }
+        Self { mode: Mode::HostFormats, dax: false, crash_step: None, killed: false, daemon_killed: false, stray: false }
     }
 
     /// fxfs-guest-format.
     pub fn guest_formats() -> Self {
-        Self { mode: Mode::GuestFormats, dax: false, crash_step: None, killed: false, daemon_killed: false }
+        Self { mode: Mode::GuestFormats, dax: false, crash_step: None, killed: false, daemon_killed: false, stray: false }
     }
 
     /// fxfs-guest-crash.
     pub fn crash() -> Self {
-        Self { mode: Mode::Crash, dax: false, crash_step: None, killed: false, daemon_killed: false }
+        Self { mode: Mode::Crash, dax: false, crash_step: None, killed: false, daemon_killed: false, stray: false }
     }
 
     /// fxfs-guest-crash-dax-STEP: the crash test with DAX, its VM stopped with an evacuation of a
@@ -86,13 +89,21 @@ impl TestFxfsGuest {
         Self { daemon_killed: true, ..Self::crash_killed() }
     }
 
+    /// fxdax: fxfs-guest-crash-stray-dax: the crash test with DAX, its guest touching the window
+    /// where nothing is mapped where it would reset its VM: a load or a store, within a page or
+    /// across two, which FXDAX_CRASH_MS says. That VM stops, and nothing else does: its store
+    /// holds what fsyncs were told, and the daemon serves on (TASK-77).
+    pub fn crash_stray() -> Self {
+        Self { stray: true, ..Self::crash_killed() }
+    }
+
     /// fxdax: fxfs-guest-faults-dax: two writers create, write and fsync files, as the crash
     /// test's do, while the guest's kernel fails their allocations at random, slabs' and pages'
     /// (failslab, fail_page_alloc, its debug build's: FXDAX_GUEST_KERNEL_BUILD=debug), their
     /// calls failing as they may; the filesystem complains of nothing, and the store holds every
     /// file whose fsync returned (TASK-44.10).
     pub fn faults() -> Self {
-        Self { mode: Mode::Faults, dax: true, crash_step: None, killed: false, daemon_killed: false }
+        Self { mode: Mode::Faults, dax: true, crash_step: None, killed: false, daemon_killed: false, stray: false }
     }
 
     /// The same test with a DAX window.
@@ -104,6 +115,14 @@ impl TestFxfsGuest {
 /// The DAX window's size, when the device has one.
 #[cfg_attr(feature = "guest", allow(dead_code))]
 const WINDOW: u64 = 64 << 20;
+
+/// fxdax: the window of a test that strays out of what it was given, and how much of its start the
+/// test's writers reach: its first half is files' ranges, and regions fill the second from its
+/// start, of which they use tens of mebibytes in their seconds (GCE r350 mapped 270 MiB in).
+#[cfg_attr(feature = "guest", allow(dead_code))]
+const STRAY_WINDOW: u64 = 1 << 29;
+#[cfg_attr(feature = "host", allow(dead_code))]
+const STRAY_WITHIN: u64 = STRAY_WINDOW - (64 << 20);
 
 /// The contents of the crash test's file `index`, of `writer`: of a size and pattern its name
 /// gives, which the host checks.
@@ -192,6 +211,8 @@ fn inherited_acl(owner: u16, mask: u16, other: u16) -> Vec<u8> {
 /// fxdax: the line the killed crash test's guest says where it would reset its VM, at which the
 /// host kills the VM's process (TASK-119.6).
 const KILL_ME: &str = "kill me";
+/// fxdax: what the guest says before its stray access ([`TestFxfsGuest::crash_stray`]).
+const STRAY: &str = "stray ";
 
 /// The contents of MAPPED_SYNCED as synced.
 fn mapped_synced() -> Vec<u8> {
@@ -336,6 +357,7 @@ mod host {
             // fxdax: holding an evacuation, a window whose regions the writers don't fill, as
             // they fill a small one's, after which their pages move nowhere to evacuate from.
             let window = match (self.dax, self.crash_step) {
+                _ if self.stray => STRAY_WINDOW,
                 (false, _) => 0,
                 (true, None) => WINDOW,
                 (true, Some(_)) => 1 << 29,
@@ -366,6 +388,8 @@ mod host {
                 vm.env(&std::ffi::CString::new(format!("FXDAX_CRASH_MS={crash_ms}"))?);
                 match &daemon {
                     Some(daemon) => vm.kill_daemon_on(KILL_ME, daemon.id()),
+                    // Firecracker's GenericError, as a vCPU's KVM_RUN fails.
+                    None if self.stray => vm.stops_with(1),
                     None if self.killed => vm.kill_on(KILL_ME),
                     None => {}
                 }
@@ -402,6 +426,19 @@ mod host {
                 let synced = synced_files(&output);
                 if synced.len() < 10 {
                     return TestOutcome::Fail(format!("too few fsyncs returned: {output:?}"));
+                }
+                // fxdax: the access never came back, and the daemon serves on (TASK-77).
+                if self.stray {
+                    let [stray] = (output.lines())
+                        .filter(|line| line.starts_with(STRAY))
+                        .collect::<Vec<_>>()[..]
+                    else {
+                        return TestOutcome::Fail(format!("no stray access: {output:?}"));
+                    };
+                    assert_eq!(output.lines().last(), Some(stray), "the stray access returned");
+                    let socket = std::env::var_os("FXDAX_EXTENTD").unwrap();
+                    let other = test_setup.tmp_dir.join("after-the-stray");
+                    fxdax::extentd::RemoteExtentStore::connect(socket, other, 1 << 24).unwrap();
                 }
                 // fxdax: the VM stopped with an evacuation held at the step asked (TASK-119.16).
                 if let Some(step) = self.crash_step
@@ -1224,8 +1261,9 @@ mod guest {
 
     /// Stops the VM mid-workload: with two writers fsyncing, and without syncing (reboot(2)
     /// doesn't); with an evacuation held at `step` of the DAX protocol, if asked; or, if `killed`,
-    /// has its host kill its process there ([`KILL_ME`]).
-    fn crash(dax: bool, step: Option<u32>, killed: bool) -> ! {
+    /// has its host kill its process there ([`KILL_ME`]); or, if `stray`, touches the window where
+    /// nothing is mapped ([`TestFxfsGuest::crash_stray`]).
+    fn crash(dax: bool, step: Option<u32>, killed: bool, stray: bool) -> ! {
         assert_eq!(names(MNT), Vec::<String>::new());
         // Files map their data from the window, if there is one: small ones too.
         let (probe, small) = (format!("{MNT}/probe"), format!("{MNT}/small"));
@@ -1280,14 +1318,34 @@ mod guest {
                 // store, which the checks would find written by no write said (GCE r261).
                 let mut stdout = std::io::stdout().lock();
                 quiet().store(true, std::sync::atomic::Ordering::Release);
-                writeln!(stdout, "{KILL_ME}").unwrap();
+                let access = stray.then(|| stray_access(crash_ms));
+                match &access {
+                    Some(access) => writeln!(stdout, "{STRAY}{access}").unwrap(),
+                    None => writeln!(stdout, "{KILL_ME}").unwrap(),
+                }
                 stdout.flush().unwrap();
                 drop(stdout);
+                if let Some(access) = access {
+                    // As long as the console's drained, the line reaches the host before the VM stops.
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    fs::write("/sys/module/fxfs/parameters/dax_stray", access).unwrap();
+                    println!("the stray access returned");
+                }
                 loop {
                     std::thread::park();
                 }
             }
         }
+    }
+
+    /// fxdax: a load or store (fxfs.dax_stray) of the window where nothing is mapped, past what the
+    /// writers reach, within a page or across two, as `crash_ms` picks.
+    fn stray_access(crash_ms: u64) -> String {
+        let op = if crash_ms & 1 == 0 { "load" } else { "store" };
+        // But for the last page, which a word across two would pass the end of.
+        let page = (crash_ms * 7919) % (STRAY_WINDOW - STRAY_WITHIN - 4096) / 4096;
+        let within = if crash_ms & 2 == 0 { 0 } else { 4092 };
+        format!("{op} {}", STRAY_WITHIN + page * 4096 + within)
     }
 
     /// fxdax: what stops the crash test's VM, a process of its own, forked before the writers
@@ -1636,7 +1694,7 @@ mod guest {
             assert_eq!(mount("missing").unwrap_err().raw_os_error(), Some(libc::ENOENT));
             mount("extents").unwrap();
             if self.mode == Mode::Crash {
-                crash(self.dax, self.crash_step, self.killed);
+                crash(self.dax, self.crash_step, self.killed, self.stray);
             }
             if self.mode == Mode::Faults {
                 faults();

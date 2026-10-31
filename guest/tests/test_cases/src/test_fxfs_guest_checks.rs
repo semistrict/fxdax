@@ -136,8 +136,9 @@ mod host {
 
         fn timeout_secs(&self) -> u64 {
             // fxdax: the evacuation's and the fault, write and compaction checks run for seconds,
-            // and filling the filesystem (`enospc`) most of a minute.
-            180
+            // and filling the filesystem (`enospc`) most of a minute. With branches in object
+            // storage, uploading all the while, they took 270 s on GCE (r353).
+            if std::env::var_os("FXDAX_EXTENTD_REMOTE").is_some() { 360 } else { 180 }
         }
 
         fn start_vm(self: Box<Self>, test_setup: TestSetup) -> anyhow::Result<()> {
@@ -1395,6 +1396,25 @@ mod guest {
         assert_eq!(logical, [(0, 4096), (MIB, 4096)]);
         assert_eq!(extents[1].2 & FIEMAP_EXTENT_LAST, FIEMAP_EXTENT_LAST);
         file.sync_all().unwrap();
+    }
+
+    /// fxdax: st_blocks follows what a file holds, the inode in the cache all along, and an unlinked
+    /// file's too (TASK-138).
+    fn test_blocks_follow_writes() {
+        use std::os::unix::fs::MetadataExt;
+        let name = path("blocks");
+        let mut file = fs::File::create_new(&name).unwrap();
+        let bytes = || fs::metadata(&name).unwrap().blocks() * 512;
+        file.write_all(&vec![1; 1 << 20]).unwrap();
+        file.sync_all().unwrap();
+        assert_eq!(fs::metadata(&name).unwrap().blocks() * 512, 1 << 20);
+        file.set_len(0).unwrap();
+        file.sync_all().unwrap();
+        assert_eq!(bytes(), 0);
+        file.write_all(&vec![2; 1 << 20]).unwrap();
+        file.sync_all().unwrap();
+        fs::remove_file(&name).unwrap();
+        assert_eq!(file.metadata().unwrap().blocks() * 512, 1 << 20);
     }
 
     /// TASK-26.19: what programs see of what Fxfs does not do (README, "Guest Fxfs: what it does
@@ -4511,6 +4531,7 @@ mod guest {
                 ("write_removes_privileges", &test_write_removes_privileges),
                 ("delayed_unlinks", &test_delayed_unlinks),
                 ("sparse", &test_sparse),
+                ("blocks_follow_writes", &test_blocks_follow_writes),
                 ("file_handles", &test_file_handles),
                 ("unsupported", &test_unsupported),
                 ("reflinks", &test_reflinks),

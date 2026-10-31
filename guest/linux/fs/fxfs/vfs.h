@@ -205,6 +205,8 @@ struct fxfs_vfs_inode {
 	atomic64_t gen;
 	/* Its attribute flags (FS_*_FL), which Fxfs keeps in its mode (FXFS_MODE_*). */
 	u32 fsflags;
+	/* fxdax: how far the journal was written as i_blocks was read (fxfs_vfs_getattr). */
+	u64 blocks_as_of;
 	struct inode vfs;
 };
 

@@ -159,3 +159,38 @@ async fn a_failed_batch_keeps_what_the_kernel_evicts() {
     fs.unlink(root, b"b", other).await.expect_err("an unlink after a failed batch");
     fs.stop_delayed().await.unwrap();
 }
+
+fn set_size(size: u64, valid: u32) -> SetAttr {
+    SetAttr { valid: SET_SIZE | valid, size, ..SetAttr::default() }
+}
+
+/// What a truncate cut from the last block stays gone when a write past the end makes that block
+/// part of the file again (xfstests generic/130).
+#[fuchsia::test]
+async fn a_write_past_the_end_finds_a_truncates_tail_zeroed() {
+    let (fs, root) = volume().await;
+    let ino = fs.new_file(root, b"a").await;
+    fs.write(ino, 0, &[b'c'; 8192]).await.unwrap();
+    fs.setattr(ino, &set_size(1, 0)).await.unwrap();
+    fs.write(ino, 65536, b"a").await.unwrap();
+
+    let mut read = vec![0xff; 65537];
+    assert_eq!(fs.read(ino, 0, &mut read).await.unwrap(), 65537);
+    let mut expected = vec![0; 65537];
+    (expected[0], expected[65536]) = (b'c', b'a');
+    assert_eq!(read, expected);
+    fs.stop_delayed().await.unwrap();
+}
+
+/// A truncate that says to keep the tail leaves the block where a DAX window maps it.
+#[fuchsia::test]
+async fn a_truncate_keeping_its_tail_leaves_the_last_block_in_place() {
+    let (fs, root) = volume().await;
+    let ino = fs.new_file(root, b"a").await;
+    fs.write(ino, 0, &[b'c'; 8192]).await.unwrap();
+    let block = fs.dax_extents(ino, 0..4096).await.unwrap();
+    fs.setattr(ino, &set_size(1, SET_KEEP_TAIL)).await.unwrap();
+    let kept = fs.dax_extents(ino, 0..4096).await.unwrap();
+    assert_eq!(format!("{kept:?}"), format!("{block:?}"));
+    fs.stop_delayed().await.unwrap();
+}

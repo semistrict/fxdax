@@ -2860,6 +2860,43 @@ static void *fxfs_dax_window_page(struct fxfs_dax *dax, u64 window_offset)
 	return kaddr;
 }
 
+/* fxdax: the window of the filesystem mounted last, for fxfs.dax_stray; it goes as the mount does. */
+static struct fxfs_dax *fxfs_dax_stray_dax;
+
+/*
+ * fxdax: what a guest that keeps to no protocol does, for tests (TASK-77): `load N` or `store N`,
+ * written to fxfs.dax_stray, reads or stores a word at byte N of the window, whatever maps it.
+ */
+static int fxfs_dax_stray_set(const char *value, const struct kernel_param *kp)
+{
+	struct fxfs_dax *dax = READ_ONCE(fxfs_dax_stray_dax);
+	char op[6];
+	u64 offset;
+	u64 *at;
+	int id, err = -EINVAL;
+
+	if (!dax || sscanf(value, "%5s %llu", op, &offset) != 2 || offset >= dax->window_len)
+		return -EINVAL;
+	id = dax_read_lock();
+	at = fxfs_dax_window_page(dax, offset);
+	if (at) {
+		at = (void *)at + offset_in_page(offset);
+		if (!strcmp(op, "load")) {
+			pr_info("fxfs: a stray load at %llu of the window: %llx\n", offset, READ_ONCE(*at));
+			err = 0;
+		} else if (!strcmp(op, "store")) {
+			WRITE_ONCE(*at, 0x5a5a5a5a5a5a5a5aULL);
+			err = 0;
+		}
+	}
+	dax_read_unlock(id);
+	return err;
+}
+
+static const struct kernel_param_ops fxfs_dax_stray_ops = { .set = fxfs_dax_stray_set };
+module_param_cb(dax_stray, &fxfs_dax_stray_ops, NULL, 0200);
+MODULE_PARM_DESC(dax_stray, "`load N` or `store N`: access byte N of the window, whatever maps it");
+
 /*
  * fxdax: with fxfs.dax_check_moves and the shadow, logs where `seen`, the window's page at
  * `window_offset` as copied, differs from the extent's page the shadow has the window map there,
@@ -4487,6 +4524,7 @@ struct fxfs_dax *fxfs_dax_create(struct super_block *sb, struct fxfs *fs)
 	dax->sb = sb;
 	dax->fs = fs;
 	dax->dev = dev;
+	WRITE_ONCE(fxfs_dax_stray_dax, dax);
 	/* fxdax: the trace, if asked for, of the filesystem mounted last (TASK-121). */
 	if (fxfs_dax_tracing) {
 		void *kaddr;
@@ -4594,6 +4632,8 @@ void fxfs_dax_destroy(struct fxfs_dax *dax)
 	/* fxdax: no longer traced: the device goes with the mount. */
 	if (READ_ONCE(fxfs_dax_trace_dev) == dax->dev)
 		WRITE_ONCE(fxfs_dax_trace_dev, NULL);
+	if (READ_ONCE(fxfs_dax_stray_dax) == dax)
+		WRITE_ONCE(fxfs_dax_stray_dax, NULL);
 	list_for_each_entry_safe(range, next, &dax->used, list) {
 		xa_erase(&range->file->ranges, range->chunk);
 		list_del(&range->list);

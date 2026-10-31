@@ -41,6 +41,8 @@ pub struct Vm {
     fxfs_root: Option<String>,
     /// fxdax: a line of the guest agent's output at which the VM process is killed ([`Vm::kill_on`]).
     kill_on: Option<String>,
+    /// fxdax: how the VM process is to exit ([`Vm::stops_with`]).
+    stops_with: Option<i32>,
     /// fxdax: a process killed at that line in place of the VM process.
     kill_instead: Option<u32>,
 }
@@ -88,6 +90,7 @@ impl Vm {
             cpus: Vec::new(),
             fxfs_root: None,
             kill_on: None,
+            stops_with: None,
             kill_instead: None,
         })
     }
@@ -230,6 +233,12 @@ impl Vm {
         self.kill_on = Some(line.to_owned());
     }
 
+    /// fxdax: the VM stops itself, its VM process exiting with `code`, which [`Vm::enter`] takes as
+    /// an exit of its own, and any other as a failure.
+    pub fn stops_with(&mut self, code: i32) {
+        self.stops_with = Some(code);
+    }
+
     /// fxdax: kills the process `daemon`, the VM's extent daemon, at `line`, rather than the VM
     /// process, which exits as it finds its daemon gone: status 158, or [`Vm::enter`] fails.
     pub fn kill_daemon_on(&mut self, line: &str, daemon: u32) {
@@ -253,6 +262,7 @@ impl Vm {
         let dir = root.parent().context("the root has no parent")?.to_owned();
         let cpus = self.cpus.clone();
         let (kill_on, kill_instead) = (self.kill_on.clone(), self.kill_instead);
+        let stops_with = self.stops_with;
         let config = self.prepare(root, test_case)?;
         let config_path = dir.join("firecracker.json");
         std::fs::write(&config_path, serde_json::to_vec_pretty(&config)?)?;
@@ -266,7 +276,11 @@ impl Vm {
             None => exit_code(child.wait()?),
         };
         split_console(std::fs::File::open(&console_path)?)?;
-        std::process::exit(code);
+        match stops_with {
+            Some(expected) if code == expected => std::process::exit(0),
+            Some(expected) => panic!("the VM process exited with {code}, not {expected}"),
+            None => std::process::exit(code),
+        }
     }
 
     /// A path for the API socket of the VM `name` of this process: in the temporary directory, as

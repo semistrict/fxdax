@@ -42,6 +42,8 @@ struct fxfs_attr {
 #define FXFS_SET_MTIME (1 << 5)
 /* Otherwise a change's ctime is the time of the change. */
 #define FXFS_SET_CTIME (1 << 6)
+/* A truncate leaves the last block as it is: a DAX window zeroes it, which maps that block. */
+#define FXFS_SET_KEEP_TAIL (1 << 7)
 
 /*
  * fxdax: the attribute flags (chattr) an inode's mode keeps above the kernel's 16 bits: Fxfs's
@@ -180,6 +182,10 @@ int fxfs_punch(struct fxfs *fs, u64 ino, u64 offset, u64 len);
  * open, or it is gone.
  */
 int fxfs_getattr(struct fxfs *fs, u64 ino, struct fxfs_attr *attr);
+/* fxdax: as fxfs_getattr, but of an object no name links too, which something holds open. */
+int fxfs_attr_of_open(struct fxfs *fs, u64 ino, struct fxfs_attr *attr);
+/* fxdax: how far the journal is written: every commit moves it, all of it applied. */
+u64 fxfs_journal_offset(struct fxfs *fs);
 /* Sets the attributes `set` says. */
 int fxfs_setattr(struct fxfs *fs, u64 ino, const struct fxfs_setattr *set);
 /*
