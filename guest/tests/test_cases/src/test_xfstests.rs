@@ -8,8 +8,7 @@
 //! are, which xfstests knows, so its image takes fxfs for virtiofs, and a test's scratch filesystem
 //! is emptied rather than made anew.
 //!
-//! Three tests run and fail by design: an extent store reserves nothing, so fallocate leaves no
-//! unwritten extents, which they look for with FIEMAP (`fxfs_vfs_fallocate`, UNWRITTEN_EXTENTS).
+//! Some tests run and fail for what Fxfs here doesn't do ([`KNOWN_FAILURES`]), each said why.
 
 use macros::{guest, host};
 
@@ -44,8 +43,27 @@ mod host {
         "RUN make -j8 && useradd -m fsgqa && useradd -m 123456-fsgqa && useradd -m fsgqa2\n",
     );
 
-    /// The tests that look for fallocate's unwritten extents, which Fxfs here hasn't.
-    const UNWRITTEN_EXTENTS: [&str; 3] = ["generic/009", "generic/092", "generic/094"];
+    /// Tests that fail for what Fxfs here doesn't do, which any other failure isn't.
+    const KNOWN_FAILURES: [&str; 13] = [
+        // An extent store reserves nothing, so fallocate leaves no unwritten extents, which they
+        // look for with FIEMAP (`fxfs_vfs_fallocate`).
+        "generic/009",
+        "generic/092",
+        "generic/094",
+        "generic/255",
+        "generic/796",
+        "generic/797",
+        // FIEMAP doesn't say which extents a reflink shares (TASK-143).
+        "generic/372",
+        "generic/414",
+        "generic/578",
+        "generic/702",
+        // readdir's d_type of a device, fifo or socket is a file's (TASK-144).
+        "generic/401",
+        // Fxfs has no parent pointers, so a directory's handle can't be reconnected (TASK-145).
+        "generic/467",
+        "generic/477",
+    ];
 
     /// The bytes of each filesystem, and of its DAX window if it has one.
     const SIZE: u64 = 4 << 30;
@@ -81,7 +99,7 @@ mod host {
             let failures = stdout.lines().find_map(|line| line.strip_prefix("Failures: "));
             let passed = match failures {
                 Some(failures) => {
-                    failures.split_whitespace().all(|test| UNWRITTEN_EXTENTS.contains(&test))
+                    failures.split_whitespace().all(|test| KNOWN_FAILURES.contains(&test))
                 }
                 None => stdout.lines().any(|line| line.starts_with("Passed all ")),
             };
@@ -95,6 +113,9 @@ mod guest {
     use super::*;
     use crate::Test;
     use std::process::Command;
+    use std::time::Duration;
+
+    const WATCH_EVERY: Duration = Duration::from_secs(300);
 
     impl Test for TestXfstests {
         fn in_guest(self: Box<Self>) {
@@ -120,6 +141,14 @@ mod guest {
                 let status = Command::new("chown").args(["-R", &owner, &home]).status();
                 assert!(status.expect("run chown").success());
             }
+            // A test that spins, each spin yielding, trips no lockup detector, and says nothing
+            // for ever: what each CPU is doing goes to the console now and then (GCE r346, r348).
+            std::thread::spawn(|| {
+                loop {
+                    std::thread::sleep(WATCH_EVERY);
+                    std::fs::write("/proc/sysrq-trigger", "l").unwrap();
+                }
+            });
             let tests = std::env::var("XFSTESTS").unwrap();
             let status = Command::new("./check")
                 .args(tests.split(','))
@@ -138,15 +167,15 @@ mod guest {
         }
     }
 
-    /// The end of each failed test's own log, which the console is all that leaves the guest.
+    /// The end of each failed test's diff and its own log, which the console is all that leaves
+    /// the guest.
     fn print_failed_logs() {
         const LOG_TAIL: usize = 4096;
         let Ok(results) = std::fs::read_dir("/xfstests/results/generic") else { return };
-        for path in results.map(|entry| entry.unwrap().path()) {
-            if path.extension().is_some_and(|extension| extension == "full")
-                && path.with_extension("out.bad").exists()
-            {
-                let log = std::fs::read(&path).unwrap();
+        let paths: Vec<_> = results.map(|entry| entry.unwrap().path()).collect();
+        for bad in paths.iter().filter(|path| path.to_string_lossy().ends_with(".out.bad")) {
+            for path in [bad.clone(), bad.with_extension("").with_extension("full")] {
+                let Ok(log) = std::fs::read(&path) else { continue };
                 let tail = String::from_utf8_lossy(&log[log.len().saturating_sub(LOG_TAIL)..]);
                 println!("==> {}\n{tail}", path.display());
             }

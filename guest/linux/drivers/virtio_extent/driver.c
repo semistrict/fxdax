@@ -449,22 +449,31 @@ static unsigned int vext_signal(struct virtio_extent *vext, struct vext_queue *q
  * a quarter to half of the guest's time.
  */
 #define VEXT_SPIN_NS (100 * NSEC_PER_USEC)
+/*
+ * fxdax: how long a caller spins, and how recent requests must have taken for it to: nested
+ * virtualization takes a device's requests past VEXT_SPIN_NS, so none spins, and each pays a halt
+ * and a wakeup (TASK-146.1).
+ */
+static unsigned long vext_spin_ns = VEXT_SPIN_NS;
+module_param_named(spin_ns, vext_spin_ns, ulong, 0644);
+MODULE_PARM_DESC(spin_ns, "How long a caller polls for its request before it sleeps, in ns");
 
 /*
  * Waits for `req`, whose completion is `done`: on the CPU first, if requests of its type
- * recently took less than VEXT_SPIN_NS, and no other task wants the CPU. fxdax: polling its
+ * recently took less than vext_spin_ns, and no other task wants the CPU. fxdax: polling its
  * queue meanwhile, of which the device signals no completions: each interrupt costs exits to
  * read and acknowledge it, which a request done in time saves (TASK-91.15).
  */
 static void vext_wait(struct virtio_extent *vext, struct vext_request *req, struct completion *done)
 {
 	struct vext_queue *queue = req->queue;
-	u64 deadline = local_clock() + VEXT_SPIN_NS;
+	u64 spin_ns = READ_ONCE(vext_spin_ns);
+	u64 deadline = local_clock() + spin_ns;
 	unsigned int spins = 0, reaped;
 	unsigned long flags;
 	bool completed;
 
-	if (READ_ONCE(vext->recent_ns[req->type]) >= VEXT_SPIN_NS) {
+	if (READ_ONCE(vext->recent_ns[req->type]) >= spin_ns) {
 		wait_for_completion(done);
 		return;
 	}

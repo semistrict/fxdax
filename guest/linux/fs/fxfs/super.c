@@ -259,20 +259,35 @@ static struct dentry *fxfs_vfs_lookup(struct inode *dir, struct dentry *dentry,
 	return found;
 }
 
+/* fxdax: the attribute flags statx says of `inode`, as lsattr does (xfstests generic/424). */
+static void fxfs_vfs_stat_flags(struct inode *inode, struct kstat *stat)
+{
+	u32 fsflags = fxfs_vfs_inode(inode)->fsflags;
+
+	if (fsflags & FS_APPEND_FL)
+		stat->attributes |= STATX_ATTR_APPEND;
+	if (fsflags & FS_IMMUTABLE_FL)
+		stat->attributes |= STATX_ATTR_IMMUTABLE;
+	if (fsflags & FS_NODUMP_FL)
+		stat->attributes |= STATX_ATTR_NODUMP;
+	stat->attributes_mask |= STATX_ATTR_APPEND | STATX_ATTR_IMMUTABLE | STATX_ATTR_NODUMP;
+}
+
 /*
- * fxdax: a file's attributes, the kernel's but for its blocks, which Fxfs's writeback, seals and
- * moves change, each in a commit, none of which is the kernel's to see: read again as a commit has
- * been made since they last were. `du` of a file in the inode cache saw what it had as read in:
- * none, of one created here (TASK-138).
+ * fxdax: an inode's attributes, the kernel's but for a file's blocks, which Fxfs's writeback, seals
+ * and moves change, each in a commit, none of which is the kernel's to see: read again as a commit
+ * has been made since they last were. `du` of a file in the inode cache saw what it had as read
+ * in: none, of one created here (TASK-138, xfstests generic/615).
  */
 static int fxfs_vfs_getattr(struct mnt_idmap *idmap, const struct path *path, struct kstat *stat,
 			    u32 request_mask, unsigned int flags)
 {
 	struct inode *inode = d_inode(path->dentry);
-	struct fxfs_vfs_inode *fi = fxfs_vfs_inode(inode);
-	struct fxfs *fs = fxfs_vfs_fs(inode->i_sb);
 
-	if (request_mask & STATX_BLOCKS && !(flags & AT_STATX_DONT_SYNC)) {
+	if (S_ISREG(inode->i_mode) && request_mask & STATX_BLOCKS &&
+	    !(flags & AT_STATX_DONT_SYNC)) {
+		struct fxfs_vfs_inode *fi = fxfs_vfs_inode(inode);
+		struct fxfs *fs = fxfs_vfs_fs(inode->i_sb);
 		u64 offset = fxfs_journal_offset(fs);
 
 		if (READ_ONCE(fi->blocks_as_of) != offset) {
@@ -286,6 +301,7 @@ static int fxfs_vfs_getattr(struct mnt_idmap *idmap, const struct path *path, st
 		}
 	}
 	generic_fillattr(idmap, request_mask, inode, stat);
+	fxfs_vfs_stat_flags(inode, stat);
 	return 0;
 }
 
@@ -300,6 +316,7 @@ static int fxfs_vfs_follower_getattr(struct mnt_idmap *idmap, const struct path 
 
 	fxfs_vfs_fill_begin(inode->i_sb);
 	generic_fillattr(idmap, request_mask, inode, stat);
+	fxfs_vfs_stat_flags(inode, stat);
 	fxfs_vfs_fill_end(inode->i_sb);
 	return 0;
 }
@@ -1065,7 +1082,8 @@ static int fxfs_vfs_punch(struct inode *inode, loff_t start, loff_t end)
  * fallocate(2): makes the file at least `offset` + `len` bytes long, unless FALLOC_FL_KEEP_SIZE;
  * with FALLOC_FL_PUNCH_HOLE or FALLOC_FL_ZERO_RANGE, makes the range within the file a hole
  * first. Blocks never written read as zeros, and take no space until written: an extent store
- * can't reserve them, so a write to them can still find no space. Other modes aren't supported.
+ * can't reserve them, so a write to them can still find no space, though more than the filesystem
+ * has room for is refused. Other modes aren't supported.
  */
 long fxfs_vfs_fallocate(struct file *file, int mode, loff_t offset, loff_t len)
 {
@@ -1083,6 +1101,14 @@ long fxfs_vfs_fallocate(struct file *file, int mode, loff_t offset, loff_t len)
 		err = file_modified(file);
 		if (!err)
 			err = fxfs_vfs_punch(inode, offset, min(end, i_size_read(inode)));
+	}
+	/* fxdax: what it can't reserve it can refuse (xfstests generic/213). */
+	if (!err && !(mode & (FALLOC_FL_PUNCH_HOLE | FALLOC_FL_ZERO_RANGE))) {
+		struct fxfs_statfs statfs;
+
+		err = fxfs_nofs(fxfs_statfs(fxfs_vfs_fs(inode->i_sb), &statfs));
+		if (!err && len > (statfs.free_blocks * statfs.block_size) + inode_get_bytes(inode))
+			err = -ENOSPC;
 	}
 	if (!err && !(mode & FALLOC_FL_KEEP_SIZE) && end > i_size_read(inode)) {
 		err = file_modified(file);
@@ -2063,6 +2089,7 @@ int fxfs_vfs_fsync(struct file *file, loff_t start, loff_t end, int datasync)
 
 static const struct inode_operations fxfs_vfs_dir_inode_operations = {
 	FXFS_VFS_DIR_INODE_OPERATIONS,
+	.getattr = fxfs_vfs_getattr,
 };
 
 static const struct inode_operations fxfs_vfs_file_inode_operations = {
@@ -2072,10 +2099,12 @@ static const struct inode_operations fxfs_vfs_file_inode_operations = {
 
 static const struct inode_operations fxfs_vfs_symlink_inode_operations = {
 	FXFS_VFS_SYMLINK_INODE_OPERATIONS,
+	.getattr = fxfs_vfs_getattr,
 };
 
 static const struct inode_operations fxfs_vfs_special_inode_operations = {
 	FXFS_VFS_SPECIAL_INODE_OPERATIONS,
+	.getattr = fxfs_vfs_getattr,
 };
 
 static const struct inode_operations fxfs_vfs_follower_dir_inode_operations = {

@@ -3,7 +3,7 @@ id: doc-10
 title: The fsync durability contract
 type: other
 created_date: '2026-10-31 13:51'
-updated_date: '2026-10-31 16:43'
+updated_date: '2026-10-31 21:52'
 ---
 # What an acknowledged fsync survives (TASK-66)
 
@@ -56,7 +56,7 @@ are freed as the store is next mounted.
 ## How a host tells them apart
 
 A VM whose daemon goes exits with status 158 (`ExtentdLost`), within the bound its test holds it
-to. Other exit statuses aren't documented yet (TASK-70).
+to. The README lists the rest ("How a VM process exits").
 
 ## Not promised
 

@@ -194,3 +194,32 @@ async fn a_truncate_keeping_its_tail_leaves_the_last_block_in_place() {
     assert_eq!(format!("{kept:?}"), format!("{block:?}"));
     fs.stop_delayed().await.unwrap();
 }
+
+/// The last bytes a file can hold are read back as written (xfstests generic/303, generic/525).
+#[fuchsia::test]
+async fn a_files_last_bytes_read_back() {
+    let (fs, root) = volume().await;
+    let ino = fs.new_file(root, b"a").await;
+    const LAST: u64 = i64::MAX as u64 - 1;
+    fs.write(ino, LAST, b"a").await.unwrap();
+    let mut read = [0; 1];
+    assert_eq!(fs.read(ino, LAST, &mut read).await.unwrap(), 1);
+    assert_eq!(&read, b"a");
+    let mut parts = [0; 4096];
+    let start = LAST & !4095;
+    let got = fs.read_into(ino, start, &mut [&mut parts[..]]).await.unwrap();
+    assert_eq!((got, parts[4094]), (4095, b'a'));
+    fs.stop_delayed().await.unwrap();
+}
+
+/// A new node's ctime is no earlier than its mtime, whatever it is (xfstests generic/423).
+#[fuchsia::test]
+async fn a_new_nodes_ctime_is_no_earlier_than_its_mtime() {
+    let (fs, root) = volume().await;
+    let fifo = 0o010000 | 0o644;
+    for (name, mode) in [(&b"fifo"[..], fifo), (b"file", FILE), (b"dir", DIR)] {
+        let [attr, _] = fs.create(root, name, mode, 0, 0, 0, &[]).await.unwrap();
+        assert!(attr.ctime_ns >= attr.mtime_ns, "{name:?}: {attr:?}");
+    }
+    fs.stop_delayed().await.unwrap();
+}

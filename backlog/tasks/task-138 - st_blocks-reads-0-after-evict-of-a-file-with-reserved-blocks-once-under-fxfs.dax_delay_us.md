@@ -6,7 +6,7 @@ title: >-
 status: In Progress
 assignee: []
 created_date: '2026-10-31 10:05'
-updated_date: '2026-10-31 20:46'
+updated_date: '2026-10-31 22:15'
 labels:
   - bug
 dependencies: []
@@ -21,7 +21,7 @@ Soak 2026-10-31 (release kernel, fxfs-guest-checks-dax-delay, tree c44da93d0), r
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The cause is known, and st_blocks right after an evict whatever the delays
+- [x] #1 The cause is known, and st_blocks right after an evict whatever the delays
 <!-- AC:END -->
 
 ## Definition of Done
@@ -35,4 +35,6 @@ Soak 2026-10-31 (release kernel, fxfs-guest-checks-dax-delay, tree c44da93d0), r
 
 <!-- SECTION:NOTES:BEGIN -->
 2026-10-31: the cause: a writer's regular file has no .getattr, and nothing sets i_blocks but reading the inode in, so st_blocks of a cached inode is what it was read in with: 0 for a file created here. Each check that passed relied on evict() evicting it; under fxfs.dax_delay_us something held the inode through drop_caches in round 6. Fix: fxfs_vfs_getattr reads the blocks again as the journal has moved since (fxfs_journal_offset), which covers every path, and costs a stat nothing while nothing commits.
+
+2026-10-31: proven: GCE r356, the fix removed: blocks_follow_writes fails on both, left 0, right 1048576. r354 with it: checks-dax and -delay 8 of 8. xfstests generic/615 found the same bug independently.
 <!-- SECTION:NOTES:END -->

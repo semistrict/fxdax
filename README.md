@@ -312,6 +312,23 @@ libkrun before; it left it for Firecracker, which the sandboxes it serves run
 | `WRITE_COMMIT`, INFO's `sequence_floor`, and the store's capacity in the device's configuration, changed while the guest runs. | doc-4's requests (TASK-36, TASK-37). |
 | Snapshots of a VM with the extent device: `PUT /snapshot/create` forks the store to `<snapshot>.extent-<id>` and saves the window's mappings; `PUT /snapshot/load`, with `extent_overrides` naming each restored VM's own store, forks it from that point and maps the window again. The guest's filesystem must be frozen (fsfreeze) as the snapshot is taken, and thawed after a restore, when it learns its store's branch (doc-4, Snapshots). | A zygote's children, suspend-to-RAM and moving VMs, each restored VM with a store of its own (TASK-39.1). |
 
+#### How a VM process exits
+
+What a host can tell from a VM process's status (TASK-70):
+
+| Status | Name | Whose it is |
+|---|---|---|
+| 0 | `Ok` | The guest shut down or reset. |
+| 1 | `GenericError` | A VMM failure not named below. |
+| 2 | `UnexpectedError` | A VMM bug: not possible if its logic is sound. |
+| 148 | `BadSyscall` | A VMM bug, or a compromised VMM: the seccomp filter stopped a system call. |
+| 149-151, 154-156 | `SIGBUS`, `SIGSEGV`, `SIGXFSZ`, `SIGXCPU`, `SIGPIPE`, `SIGHUP` | The VMM's handler caught the signal: a bug, or the host's limits, by the signal. |
+| 152, 153 | `BadConfiguration`, `ArgParsing` | How it was started. |
+| 157 | `SIGILL` | A VMM bug, or a host of another CPU. |
+| 158 | `ExtentdLost` | Storage: its extent daemon went, and the VM can't go on. What it was told stays as doc-10 says. |
+| 159 | `AccessRefused` | The guest: an access stayed refused, of a part of its DAX window nothing maps, or that it may not store to. That VM alone stops (TASK-77). |
+| Killed by SIGABRT | A panic | A VMM bug: Firecracker panics abort, and an unresolved DAX window fault does. |
+
 ### `guest/`: Fxfs in the guest's kernel
 
 The design in backlog doc-2 moves Fxfs into the guest's Linux kernel, over a

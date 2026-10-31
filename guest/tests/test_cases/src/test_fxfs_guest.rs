@@ -388,8 +388,8 @@ mod host {
                 vm.env(&std::ffi::CString::new(format!("FXDAX_CRASH_MS={crash_ms}"))?);
                 match &daemon {
                     Some(daemon) => vm.kill_daemon_on(KILL_ME, daemon.id()),
-                    // Firecracker's GenericError, as a vCPU's KVM_RUN fails.
-                    None if self.stray => vm.stops_with(1),
+                    // FcExitCode::AccessRefused, as a vCPU's KVM_RUN keeps failing (TASK-70).
+                    None if self.stray => vm.stops_with(159),
                     None if self.killed => vm.kill_on(KILL_ME),
                     None => {}
                 }
