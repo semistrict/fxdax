@@ -7,7 +7,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-29 20:54'
-updated_date: '2026-10-30 03:30'
+updated_date: '2026-10-31 02:58'
 labels:
   - dax
   - bug
@@ -44,4 +44,6 @@ Assertion moved to where map_to sends a writable MAP (pushed). GCE r258, the KAS
 GCE r255 (debug kernel with lockdep, 7c9948612): fxfs-guest-checks-dax 3 rounds and fxfs-guest-faults-dax 3 rounds passed, no fxfs_device_assert_in_gate warning (/tmp/fxdax-r255-unmap4). Next: KASAN rounds of checks-dax once a host is free.
 
 GCE r261, KASAN kernel (KASAN, KFENCE, lockdep) at bc1a436df: fxfs-guest-checks-dax 3 rounds passed, no fxfs_device_assert_in_gate warning, no KASAN or KFENCE report; with r255's debug rounds and r258: no writable MAP is sent outside the gate; r257's was a reader finding a writable region mapped already.
+
+GCE r303 (2026-10-31), the KASAN kernel on the batch at 4fcfe36af: fxfs-guest-follow-dax and fxfs-guest-follow-remount-dax passed; fxfs-guest-checks-dax hit its 180 s timeout, the kernel's slowness as in r258. No assertion, KASAN or KFENCE report in its console.
 <!-- SECTION:NOTES:END -->
