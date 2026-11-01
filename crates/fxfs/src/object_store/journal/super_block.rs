@@ -1531,6 +1531,73 @@ mod tests {
         assert!(!loads(&device, u64::MAX - 4096, &[]).await);
     }
 
+    /// fxdax: a mount of a filesystem whose super-blocks start its journal anywhere is refused,
+    /// wherever that is: in a block's seal, which panicked a reader, before the journal's extents,
+    /// which panicked their handle, past them, or near the end of what offsets can count.
+    #[fuchsia::test]
+    async fn test_mount_with_a_journal_that_starts_anywhere() {
+        let device = DeviceHolder::new(FakeDevice::new(TEST_DEVICE_BLOCK_COUNT, 4096));
+        let fs = FxFilesystem::new_empty(device).await.expect("new_empty failed");
+        for _ in 0..64 {
+            let mut transaction = fs
+                .root_store()
+                .new_transaction(lock_keys![], Options::default())
+                .await
+                .expect("new_transaction failed");
+            ObjectStore::create_object(
+                &fs.root_store(),
+                &mut transaction,
+                HandleOptions::default(),
+                None,
+            )
+            .await
+            .expect("create_object failed");
+            transaction.commit().await.expect("commit failed");
+        }
+        fs.journal().force_compact().await.expect("compacting failed");
+        fs.close().await.expect("close failed");
+        let device = fs.take_device().await;
+        device.reopen(false);
+
+        let (header, mut reader) =
+            SuperBlockHeader::read_header((*device).clone(), SuperBlockInstance::A)
+                .await
+                .expect("read failed");
+        let mut records = Vec::new();
+        loop {
+            match reader.next_item().await.expect("a record") {
+                SuperBlockRecord::End => break,
+                record => records.push(record),
+            }
+        }
+        let start = header.journal_checkpoint.file_offset;
+        for file_offset in
+            [start | 4095, (start & !4095) + 4089, 1 << 40, 1 << 61, u64::MAX - 4096, u64::MAX]
+        {
+            let device = device.snapshot().expect("snapshot failed");
+            let mut bytes = SUPER_BLOCK_MAGIC.to_vec();
+            let mut header = header.clone();
+            header.journal_checkpoint.file_offset = file_offset;
+            header.serialize_with_version(&mut bytes).unwrap();
+            for record in &records {
+                record.serialize_into(&mut bytes).unwrap();
+            }
+            SuperBlockRecord::End.serialize_into(&mut bytes).unwrap();
+            let mut writer = JournalWriter::new(BlockSize::SIZE_4KIB, 0);
+            writer.write_all(&bytes).unwrap();
+            writer.pad_to_block().unwrap();
+            {
+                let raw = (*device).clone();
+                let mut buf = raw.allocate_buffer(writer.flushable_bytes()).await;
+                writer.take_flushable(buf.as_mut());
+                for instance in [SuperBlockInstance::A, SuperBlockInstance::B] {
+                    write_raw_super_block(&raw, instance, buf.as_ref()).await;
+                }
+            }
+            assert!(FxFilesystem::open(device).await.is_err(), "mounted at {file_offset}");
+        }
+    }
+
     /// fxdax: a super-block's records are checked as the journal's are: an extent's key must be on
     /// the filesystem's blocks' bounds, whatever its value.
     #[fuchsia::test]
