@@ -4661,13 +4661,28 @@ void fxfs_dax_show_stats(struct fxfs_dax *dax, struct seq_file *m)
 			   atomic64_read(&dax->map_bytes[why]));
 }
 
+/*
+ * Destroys `pool`, whatever of it is taken: gen_pool_destroy stops the kernel if anything is, and
+ * the window's pages an UNMAP failed for are kept taken for good (fxfs_dax_give_unmapped,
+ * TASK-150.12).
+ */
+static void fxfs_dax_destroy_pool(struct gen_pool *pool)
+{
+	struct gen_pool_chunk *chunk;
+
+	list_for_each_entry(chunk, &pool->chunks, next_chunk)
+		bitmap_zero(chunk->bits,
+			    (chunk->end_addr - chunk->start_addr + 1) >> pool->min_alloc_order);
+	gen_pool_destroy(pool);
+}
+
 /* Destroys the window's pools: the ranges', and the regions', if apart. */
 static void fxfs_dax_destroy_pools(struct fxfs_dax *dax)
 {
 	if (dax->region_pool && dax->region_pool != dax->pool)
-		gen_pool_destroy(dax->region_pool);
+		fxfs_dax_destroy_pool(dax->region_pool);
 	if (dax->pool)
-		gen_pool_destroy(dax->pool);
+		fxfs_dax_destroy_pool(dax->pool);
 }
 
 struct fxfs_dax *fxfs_dax_create(struct fxfs_filesystem *filesystem)
@@ -4875,14 +4890,11 @@ void fxfs_dax_destroy(struct fxfs_dax *dax)
 	list_for_each_entry_safe(range, next, &dax->used, list) {
 		xa_erase(&range->file->ranges, range->chunk);
 		list_del(&range->list);
-		if (!range->region)
-			fxfs_dax_give_window(dax, range->window_offset, range->pages);
-		/* Its regions go below. */
+		/* Its regions go below, and its space with the pools. */
 		fxfs_dax_free_range_memory(range);
 	}
 	hash_for_each_safe(dax->regions, bucket, tmp, region, node) {
 		hash_del(&region->node);
-		fxfs_dax_give_window(dax, region->window_offset, region->pages);
 		kfree(region);
 	}
 	list_for_each_entry_safe(volume, next_volume, &dax->volumes, list) {
