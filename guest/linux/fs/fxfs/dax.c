@@ -611,6 +611,8 @@ struct fxfs_dax {
 	 */
 	atomic64_t write_setup_ns, write_fault_in_ns, write_rw_ns, write_begin_ns, write_end_ns;
 	atomic64_t write_retry_ns, write_tail_ns, write_prepare_ns, write_range_ns;
+	/* Of write_range_ns, what it spent waiting for the file's semaphore, behind evacuations. */
+	atomic64_t write_range_wait_ns;
 	struct fxfs_hist write_hist;
 	/*
 	 * fxdax: what each fault of a mapping took, and each evacuation held its file's semaphore,
@@ -2560,16 +2562,20 @@ static void fxfs_dax_use_range(struct fxfs_dax *dax, struct fxfs_dax_range *rang
  * (fxfs_dax_store_begin), and fxdax: -EDEADLK rather than for the file's semaphore
  * (fxfs_dax_down_read).
  */
-static struct fxfs_dax_range *fxfs_dax_get_range(struct inode *inode, pgoff_t chunk, loff_t size,
-						 loff_t grows, bool fault)
+static struct fxfs_dax_range *fxfs_dax_get_range_timed(struct inode *inode, pgoff_t chunk,
+						       loff_t size, loff_t grows, bool fault,
+						       bool timed)
 {
 	struct fxfs_dax_file *file = fxfs_dax_file(inode);
 	struct fxfs_dax *dax = fxfs_dax_of(inode);
 	struct fxfs_dax_range *range, *new;
 	unsigned long pages;
+	u64 began = ktime_get_ns();
 	int err;
 
 	err = fxfs_dax_down_read(file, fault);
+	if (timed)
+		atomic64_add(ktime_get_ns() - began, &dax->write_range_wait_ns);
 	if (err)
 		return ERR_PTR(err);
 	range = xa_load(&file->ranges, chunk);
@@ -2633,6 +2639,12 @@ static struct fxfs_dax_range *fxfs_dax_get_range(struct inode *inode, pgoff_t ch
 used:
 	fxfs_dax_use_range(dax, range);
 	return range;
+}
+
+static struct fxfs_dax_range *fxfs_dax_get_range(struct inode *inode, pgoff_t chunk, loff_t size,
+						 loff_t grows, bool fault)
+{
+	return fxfs_dax_get_range_timed(inode, chunk, size, grows, fault, false);
 }
 
 static void fxfs_dax_put_range(struct fxfs_dax *dax, struct fxfs_dax_range *range)
@@ -3212,11 +3224,12 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 		fresh = true;
 	}
 	began = ktime_get_ns();
-	range = fxfs_dax_get_range(inode, pos >> FXFS_DAX_SHIFT, max(size, reserved), size, fault);
+	range = fxfs_dax_get_range_timed(inode, pos >> FXFS_DAX_SHIFT, max(size, reserved), size,
+					 fault, timed);
 	/* Nor may reserving window space refuse a write whose own range fits. */
 	if (IS_ERR(range) && reserved > size &&
 	    (PTR_ERR(range) == -ENOMEM || PTR_ERR(range) == -ENOSPC))
-		range = fxfs_dax_get_range(inode, pos >> FXFS_DAX_SHIFT, size, size, fault);
+		range = fxfs_dax_get_range_timed(inode, pos >> FXFS_DAX_SHIFT, size, size, fault, timed);
 	if (timed)
 		atomic64_add(ktime_get_ns() - began, &dax->write_range_ns);
 	if (IS_ERR(range)) {
@@ -3688,6 +3701,7 @@ static void fxfs_dax_show_write_times(struct seq_file *m, struct fxfs_dax *dax)
 
 	seq_printf(m, "dax_write_setup_ns %lld\ndax_write_fault_in_ns %lld\n", setup, fault_in);
 	seq_printf(m, "dax_write_prepare_ns %lld\ndax_write_range_ns %lld\n", prepare, range);
+	seq_printf(m, "dax_write_range_wait_ns %lld\n", atomic64_read(&dax->write_range_wait_ns));
 	/* Read apart, as writes go on: a difference may come out below zero by a little. */
 	seq_printf(m, "dax_write_begin_ns %lld\ndax_write_begin_other_ns %lld\n", begin,
 		   max_t(s64, 0, begin - prepare - range - atomic64_read(&dax->write_gate_ns) -
