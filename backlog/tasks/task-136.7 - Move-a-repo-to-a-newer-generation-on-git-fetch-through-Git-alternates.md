@@ -4,13 +4,14 @@ title: 'Move a repo to a newer generation on git fetch, through Git alternates'
 status: To Do
 assignee: []
 created_date: '2026-10-31 04:49'
+updated_date: '2026-10-31 16:04'
 labels: []
 dependencies:
   - TASK-136.2
   - TASK-136.4
   - TASK-136.5
 documentation:
-  - backlog/docs/doc-10 - Fxfs-overlays-for-shared-repository-checkouts.md
+  - backlog/docs/doc-10 - Shared-volumes-Fxfs-volumes-over-read-only-bases.md
 parent_task_id: TASK-136
 priority: medium
 type: feature

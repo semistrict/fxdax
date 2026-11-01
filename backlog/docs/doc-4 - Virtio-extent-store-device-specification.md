@@ -3,7 +3,7 @@ id: doc-4
 title: Virtio extent-store device specification
 type: specification
 created_date: '2026-10-13 22:18'
-updated_date: '2026-10-30 22:45'
+updated_date: '2026-10-31 15:15'
 ---
 # The virtio extent-store device
 
@@ -212,8 +212,9 @@ extent's data, then commits the transaction that refers to it, so this holds.
 ### `READ`
 
 Reads `len` bytes at `offset` in extent `id`. Both are multiples of `block_size`, and the range lies
-within the extent's length. The extent is the guest's, or one its branch inherited from the branch
-it was forked from. A `READ` sees every `WRITE`, and every store through a writable mapping,
+within the extent's length. The extent is the guest's, one its branch inherited from the branch
+it was forked from, or one a fork attached to the store holds (Branches and forks). A `READ` sees
+every `WRITE`, and every store through a writable mapping,
 completed before it was submitted.
 
 Reading an extent the store doesn't hold, one never written or one freed, fails with `ENOENT`. The
@@ -450,6 +451,13 @@ Each VM's filesystem is a branch, with its own ID and root.
   freed it.
 - **Reads** of inherited extents, and mappings of them, are as of the fork. Extents never change, so
   this needs no copying.
+- **Attached forks.** The host's control API may attach a fork of another store to a branch
+  (`AttachBase`, doc-10). `READ`, and read-only `MAP`, of an extent of a branch in that fork's
+  ancestry, and not in the attached-to branch's, read through to the fork: as of it, whatever its
+  store did since. A writable `MAP` of one fails with `EPERM`, as of any other branch's, and `FREE`
+  does nothing, as of any extent the store doesn't hold. An extent no attached fork holds fails with
+  `ENOENT`. What a branch has attached stays attached to its forks. The guest cannot ask for this,
+  and everything an attached fork holds is readable to it.
 
 The guest sees none of this except a different `branch` in its configuration after a fork.
 
