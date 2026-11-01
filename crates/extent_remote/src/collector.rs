@@ -217,12 +217,11 @@ async fn live(bucket: &impl Bucket, records: &BTreeMap<u64, Record>) -> Result<L
                 },
                 Err(error) => return Err(error),
             };
+            // A child with a record is queued by it, as it says: one whose ID another branch took
+            // as the fork was made has another origin than its parent's state says (TASK-79.82).
             for fork in &recovered.state.own.forks {
-                let record = records.get(&fork.child);
-                if record.is_some_and(|record| record.deleted)
-                    || (record.is_none() && !rules().forks_from_states)
-                    || taken.contains(&fork.child)
-                {
+                let recorded = records.contains_key(&fork.child);
+                if recorded || !rules().forks_from_states || taken.contains(&fork.child) {
                     continue;
                 }
                 queue.insert((Some((branch, fork.at)), fork.child));
@@ -812,6 +811,54 @@ mod tests {
         assert!(!kept(), "what the fork inherited stayed once it was deleted");
         let live = block_on(branch::live(&*bucket)).unwrap();
         assert_eq!(live.keys().copied().collect::<Vec<_>>(), [1]);
+    }
+
+    /// TASK-79.82: a fork's child recovers from the origin its record names, not from a parent
+    /// whose state names it too, a fork to its ID refused: what it inherited is kept, though the
+    /// parent it was forked from frees it. A round of recoveries past the first, with more branches
+    /// than one takes, takes the lowest origin first, here the refused fork's.
+    #[test]
+    fn forks_keep_what_their_records_origin_holds_whoever_else_forked_to_their_id() {
+        use crate::layout::{Contents, Origin, Segment};
+        use crate::writer::Objects;
+        const REFUSED: u64 = 1;
+        const PARENT: u64 = 2;
+        const CHILD: u64 = 3;
+        /// Forks `writer`'s branch to `CHILD`: at the segment it returns.
+        async fn fork(writer: &Writer<Store>) -> u64 {
+            let forks = Contents { forks: [CHILD].into_iter().collect(), ..Contents::default() };
+            let footer = writer.chain().close(forks);
+            let segment = Segment { data: Vec::new(), footer: footer.clone() }.encode().into();
+            let seq = writer.add_segment(Objects { footer, segment, own: Vec::new() }).unwrap();
+            writer.upload(seq).await.unwrap();
+            writer.acknowledge().await.unwrap();
+            seq
+        }
+        let bucket = store();
+        let (extent, held_in) = block_on(async {
+            for branch in [REFUSED, PARENT].into_iter().chain(10..30) {
+                branch::create(&*bucket, branch).await.unwrap();
+            }
+            let parent = Writer::open(bucket.clone(), PARENT, 10, 0).await.unwrap();
+            let extent = ExtentId::new(PARENT, parent.chain().next_sequence());
+            let held_in = parent.chain().next_seq();
+            let own = vec![(extent, b"held".to_vec())];
+            commit(&parent, Commit { tag: 1, own, ..Commit::default() }).await;
+            let at = fork(&parent).await;
+            parent.checkpoint().await.unwrap();
+            commit(&parent, Commit { tag: 2, frees: vec![extent], ..Commit::default() }).await;
+            parent.checkpoint().await.unwrap();
+            let refused = Writer::open(bucket.clone(), REFUSED, 11, 0).await.unwrap();
+            fork(&refused).await;
+            assert!(refused.refused(CHILD));
+            refused.checkpoint().await.unwrap();
+            let record = branch::record(&*bucket, CHILD).await.unwrap().unwrap();
+            assert_eq!(record.origin, Some(Origin { parent: PARENT, at }));
+            (extent, held_in)
+        });
+        block_on(collect(&*bucket, 1, &KEEP)).unwrap();
+        let key = layout::extent(1, held_in, extent);
+        assert!(block_on(keys(&*bucket)).contains(&key), "what the child inherited went");
     }
 
     /// TASK-92.7: a benchmark of a pass over a base of 100,000 extents and 100 forks of it, none
