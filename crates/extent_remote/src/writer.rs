@@ -108,6 +108,8 @@ struct Inner {
     checkpoint: Option<u64>,
     /// The forks whose children have their records.
     recorded: BTreeSet<u64>,
+    /// The children of those forks whose IDs another branch has: their forks made no branch.
+    refused: BTreeSet<u64>,
     /// Why it stopped, if it did.
     stopped: Option<Error>,
 }
@@ -228,6 +230,7 @@ impl<B: Bucket> Writer<B> {
                 pending: BTreeMap::new(),
                 checkpoint: recovered.checkpoint,
                 recorded: BTreeSet::new(),
+                refused: BTreeSet::new(),
                 stopped: None,
             }),
         };
@@ -413,7 +416,15 @@ impl<B: Bucket> Writer<B> {
         Ok(self.inner().state.through)
     }
 
-    /// Gives the children of acknowledged forks their records.
+    /// Whether another branch has the ID of `child`, a fork's child, acknowledged: the fork made no
+    /// branch.
+    pub fn refused(&self, child: u64) -> bool {
+        self.inner().refused.contains(&child)
+    }
+
+    /// Gives the children of acknowledged forks their records: but one whose ID another branch took
+    /// while its fork was made, which is that branch's, and this one's segments go on sound; its
+    /// writers would fail on it for ever otherwise, taking the branch or not (TASK-79.82).
     async fn record_forks(&self) -> Result<(), Error> {
         let forks: Vec<_> = {
             let inner = self.inner();
@@ -428,7 +439,11 @@ impl<B: Bucket> Writer<B> {
         futures::stream::iter(forks)
             .map(|fork| async move {
                 let origin = Origin { parent: self.branch, at: fork.at };
-                branch::record_fork(&*self.bucket, fork.child, origin).await?;
+                match branch::record_fork(&*self.bucket, fork.child, origin).await {
+                    Ok(()) => {}
+                    Err(Error::ChildTaken(child)) => drop(self.inner().refused.insert(child)),
+                    Err(error) => return Err(error),
+                }
                 self.inner().recorded.insert(fork.child);
                 Ok::<_, Error>(())
             })

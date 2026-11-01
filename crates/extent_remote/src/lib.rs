@@ -74,6 +74,11 @@ pub enum Error {
     Stale,
     #[error("no such branch")]
     NoBranch,
+    /// A fork's child has a record naming another origin: another branch has the ID the fork's
+    /// guest gave it, which that branch took while the fork was made (TASK-79.82). The fork failed;
+    /// its parent's branch is as sound as before.
+    #[error("branch {0:x} has another origin")]
+    ChildTaken(u64),
     /// Something a branch needs is gone.
     #[error("lost: {0}")]
     Lost(String),

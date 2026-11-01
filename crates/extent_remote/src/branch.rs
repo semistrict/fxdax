@@ -57,7 +57,7 @@ pub async fn record_fork(bucket: &impl Bucket, child: u64, origin: Origin) -> Re
             if existing.origin == Some(origin) || existing.deleted {
                 Ok(())
             } else {
-                Err(Error::Corrupt(format!("branch {child:x} has another origin")))
+                Err(Error::ChildTaken(child))
             }
         }
     }
@@ -145,7 +145,10 @@ pub async fn delete(
     // Its children get their records, so that the collector finds them without its state.
     let recovered = recover(bucket, branch, record.origin).await?;
     for fork in &recovered.state.forks {
-        record_fork(bucket, fork.child, Origin { parent: branch, at: fork.at }).await?;
+        match record_fork(bucket, fork.child, Origin { parent: branch, at: fork.at }).await {
+            Ok(()) | Err(Error::ChildTaken(_)) => {}
+            Err(error) => return Err(error),
+        }
     }
     failpoint!("branch::children_recorded");
     mark_deleted(bucket, branch).await
@@ -316,7 +319,7 @@ mod tests {
     }
 
     /// A fork's child gets one record: given again from the same origin, it stands; from another,
-    /// the child is another branch's, which is corrupt.
+    /// the child is another branch's.
     #[test]
     fn a_child_gets_one_record() {
         let bucket = Direct(SimBucket::new());
@@ -324,8 +327,7 @@ mod tests {
         block_on(record_fork(&bucket, 2, origin)).unwrap();
         block_on(record_fork(&bucket, 2, origin)).unwrap();
         let other = Origin { parent: 1, at: 8 };
-        let refused = block_on(record_fork(&bucket, 2, other));
-        assert!(matches!(refused, Err(Error::Corrupt(_))), "{refused:?}");
+        assert_eq!(block_on(record_fork(&bucket, 2, other)), Err(Error::ChildTaken(2)));
         let record = block_on(record(&bucket, 2)).unwrap();
         assert_eq!(record, Some(Record { origin: Some(origin), forked: true, deleted: false }));
     }
@@ -410,6 +412,29 @@ mod tests {
         let lease = block_on(bucket::get(&racing.bucket, &layout::lease(3))).unwrap();
         let lease = Lease::decode(&lease.bytes).unwrap();
         assert_eq!((lease.epoch, lease.holder), (1, 7), "the other branch's lease");
+    }
+
+    /// TASK-79.82: a parent whose state names a fork to an ID another branch took is deleted all
+    /// the same, the other branch left as it is.
+    #[test]
+    fn parents_are_deleted_though_another_branch_took_their_forks_id() {
+        use crate::batch::{Batch, Commit};
+        use crate::writer::Writer;
+        let memory = std::sync::Arc::new(object_store::memory::InMemory::new());
+        let bucket = std::sync::Arc::new(crate::store::Store::new(memory, ""));
+        block_on(async {
+            create(&*bucket, 1).await.unwrap();
+            create(&*bucket, 2).await.unwrap();
+            let parent = Writer::open(bucket.clone(), 1, 10, 0).await.unwrap();
+            let forking = Batch::from(Commit { tag: 1, ..Commit::default() });
+            let at = parent.add_segment(forking.fork(2, &mut parent.chain()).frame()).unwrap();
+            parent.upload(at).await.unwrap();
+            assert_eq!(parent.acknowledge().await, Ok(Some(at)));
+            assert!(parent.refused(2));
+            assert_eq!(delete(&*bucket, 1, 20, 0).await, Ok(()));
+            let own = Record { origin: None, forked: false, deleted: false };
+            assert_eq!(record(&*bucket, 2).await, Ok(Some(own)));
+        });
     }
 
     /// A branch deleted, before it had a record, has a deleted one, and takes no lease again.

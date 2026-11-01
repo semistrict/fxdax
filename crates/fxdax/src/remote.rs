@@ -305,6 +305,10 @@ pub enum Failure {
     /// A later placement, whose fencing token is higher, holds the branch (TASK-39.7).
     #[error("a later placement holds the branch")]
     Stale,
+    /// Another branch has the ID of a fork's child, which it took while the fork was made
+    /// (TASK-79.82).
+    #[error("another branch has the child's ID")]
+    ChildTaken,
     /// Anything else, as it says.
     #[error("{0}")]
     Other(String),
@@ -635,7 +639,9 @@ impl Remote {
     /// child's record names the branch, and the segment the fork's commit ends, as its origin, and
     /// a checkpoint at the fork is where its recovery starts. The child's marker names the fork's
     /// commit, which the child inherits, from before the segment may land ([`InFlight::upload`]).
-    pub fn forked(&self, epoch: u64) -> Result<(), Failure> {
+    /// `child`'s ID may be another branch's by then, which took it after [`Remote::claim`] found it
+    /// free ([`Failure::ChildTaken`]): the fork failed, and the uploader goes on.
+    pub fn forked(&self, epoch: u64, child: u64) -> Result<(), Failure> {
         failpoint!("remote::forked");
         let shared = &self.shared;
         // Its commit's segment uploads now, if it is not yet uploaded.
@@ -643,7 +649,11 @@ impl Remote {
         shared.wait(|progress| match progress.forked >= epoch {
             true => Some(Ok(())),
             false => progress.failed.clone().map(Err),
-        })
+        })?;
+        match shared.fetcher.writer.get() {
+            Some(writer) if writer.refused(child) => Err(Failure::ChildTaken),
+            _ => Ok(()),
+        }
     }
 
     /// Deletes the branch of `child` in object storage, a fork the store made that
@@ -3315,14 +3325,15 @@ mod tests {
     /// Why a fork to `child` fails whose parent's writer, giving the child its record, found it
     /// another branch's.
     fn anothers(child: u64) -> Result<(), String> {
-        Err(format!("forking branch {child:x}: corrupt: branch {child:x} has another origin"))
+        Err(format!("forking to branch {child:x}: another branch has its ID"))
     }
 
     /// TASK-79.82: a fork whose child's ID another branch took in object storage while the fork
     /// was being made, once it found the ID free, as a store of that branch made elsewhere then,
     /// fails, its parent's writer finding the child's record another's: and its cleanup deletes
     /// the child here alone, leaving the other branch as it was. A fork deletes no branch it did
-    /// not make, whatever ID its guest gives.
+    /// not make, whatever ID its guest gives. And it harms no parent: its writers go on, as a
+    /// writer taking its branch again does, its footer naming a child that is another's.
     #[test]
     fn forks_failed_leave_branches_that_took_their_childs_id_be() {
         let dir = tempfile::tempdir().unwrap();
@@ -3333,11 +3344,18 @@ mod tests {
         let (_, child, fork) = forking_held(dir.path(), &gated, &path);
         let others = others(&dir.path().join("other"), &bucket, child);
         gated.hold.send_replace(Hold::Nothing);
-        let forked = fork.join().unwrap().map_err(|err| err.to_string());
-        assert_eq!((forked, path.exists()), (anothers(child), false));
+        let forked = fork.join().unwrap();
+        let errno = forked.as_ref().map(drop).map_err(crate::Error::errno);
+        let forked = forked.map_err(|err| err.to_string());
+        assert_eq!((forked, errno), (anothers(child), Err(Some(crate::Errno::EEXIST))));
+        assert!(!path.exists(), "the handle of a fork that failed is left");
 
         let record = futures::executor::block_on(branch::record(&*bucket, child)).unwrap();
         assert_eq!((record, live(&others, &bucket)), (Some(own_record()), lives()));
+        let parent = ExtentStore::open(dir.path().join("parent")).unwrap();
+        assert_eq!(parent.attach_remote(bucket.clone(), 3, idle()), Ok(()));
+        parent.commit(Some(b"later")).unwrap();
+        assert_eq!(parent.wait_uploaded(), Ok(()));
     }
 
     /// TASK-79.82: so does a deletion, later, of the handle of such a fork, which its cleanup left,

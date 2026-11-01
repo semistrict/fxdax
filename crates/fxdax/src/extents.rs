@@ -395,6 +395,7 @@ fn is_zeros(bytes: &[u8]) -> bool {
 fn remote_errno(failure: crate::remote::Failure) -> Errno {
     match failure {
         crate::remote::Failure::Taken | crate::remote::Failure::Stale => Errno::EROFS,
+        crate::remote::Failure::ChildTaken => Errno::EEXIST,
         crate::remote::Failure::Other(err) => {
             log::error!("fxdax: uploading the store's commits: {err}");
             Errno::EIO
@@ -767,9 +768,10 @@ impl ExtentStore {
     /// fork, uploads after.
     ///
     /// The guest names the child: with a remote, a fork to a child whose ID another branch has in
-    /// object storage fails with `EEXIST`, making nothing, as the parent's writers would find the
-    /// child's record another's, failing on it for ever; and the deletion of a fork that failed
-    /// deletes there only the branch it made (`Remote::claim`, TASK-79.82).
+    /// object storage fails with `EEXIST`, making nothing; and so does one whose child's ID another
+    /// branch took as it was made, its commit standing, which names a child its parent's writers
+    /// leave be; and the deletion of a fork that failed deletes there only the branch it made
+    /// (`Remote::claim`, TASK-79.82).
     pub fn fork(&self, path: impl AsRef<Path>, branch: u64) -> Result<(), Error> {
         self.writable()?;
         let path = path.as_ref();
@@ -777,18 +779,22 @@ impl ExtentStore {
         failpoint!("fork::durable");
         let remote = self.remote.get();
         let claimed = std::cell::Cell::new(false);
+        let taken = || {
+            let refused = format!("forking to branch {branch:x}: another branch has its ID");
+            anyhow::Error::new(Errno::EEXIST).context(refused)
+        };
         let claim = || -> anyhow::Result<()> {
             let Some(remote) = remote else { return Ok(()) };
             if !remote.claim(branch)? {
-                return Err(anyhow::Error::new(Errno::EEXIST)
-                    .context(format!("forking to branch {branch:x}: another branch has its ID")));
+                return Err(taken());
             }
             claimed.set(true);
             Ok(())
         };
         let failed = match extent_store::fork_host_with(&self.store, path, branch, claim) {
-            Ok(epoch) => match remote.map(|remote| remote.forked(epoch)) {
+            Ok(epoch) => match remote.map(|remote| remote.forked(epoch, branch)) {
                 None | Some(Ok(())) => return Ok(()),
+                Some(Err(crate::remote::Failure::ChildTaken)) => taken(),
                 Some(Err(err)) => anyhow::anyhow!("forking branch {branch:x}: {err}"),
             },
             Err(err) if err.downcast_ref::<extent_store::ForkCommitted>().is_some() => {
