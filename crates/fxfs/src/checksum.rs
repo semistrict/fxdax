@@ -64,10 +64,12 @@ impl Checksums {
         <[Checksum]>::ref_from_bytes(&self.sums).map_err(|_| FxfsError::Inconsistent.into())
     }
 
+    /// fxdax: `amount` is at most how many there are: see `ExtentValue::offset_by`.
     pub fn offset_by(&self, amount: usize) -> Self {
         Checksums { sums: self.sums[amount * std::mem::size_of::<Checksum>()..].to_vec() }
     }
 
+    /// fxdax: `len` is at most how many there are: see `ExtentValue::shrunk`.
     pub fn shrunk(&self, len: usize) -> Self {
         Checksums { sums: self.sums[..len * std::mem::size_of::<Checksum>()].to_vec() }
     }
