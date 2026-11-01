@@ -1933,15 +1933,18 @@ impl Journal {
     }
 
     /// fxdax: flushes the device, though the journal has nothing more for it, for the extents
-    /// that wait for a flush, and frees them: a mount's orphans, the super-block it wrote having
-    /// flushed the journal, stayed on the device until something else was written, in room Fxfs
-    /// doesn't count. The flush task must be running, as a flush's record is written by it.
+    /// that wait for a flush, frees them, and flushes it again, which seals their frees: a mount's
+    /// orphans, the super-block it wrote having flushed the journal, stayed on the device until
+    /// something else was written, in room Fxfs doesn't count, and a compaction before the seal
+    /// recorded them, in room no reservation counts. The flush task must be running, as a flush's
+    /// record is written by it.
     pub async fn flush_for_frees(&self) -> Result<(), Error> {
         let _guard = debug_assert_not_too_long!(self.sync_mutex.lock());
         let (checkpoint, _) = {
             let _guard = self.writer_mutex.lock();
             self.pad_to_block()?
         };
+        self.flush_device(checkpoint.file_offset, true).await?;
         self.flush_device(checkpoint.file_offset, true).await?;
         self.objects.allocator().freed().await.context("freeing dead extents")
     }

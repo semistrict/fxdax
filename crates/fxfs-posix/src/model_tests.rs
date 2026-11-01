@@ -1157,3 +1157,17 @@ fn a_mount_frees_nothing_until_a_super_block_records_its_journal() {
     ];
     Setting::awkward(8643161789968376626, ROOMY).holds(ops);
 }
+
+/// Numbers sought for orphans that a lease's move left the device never having held die in as many
+/// records, in a compaction's room no reservation counts: it failed, and took the journal with it.
+/// Found by a hunt, whose seed this keeps, as what the device's numbers do depends on it.
+#[test]
+fn what_a_mount_sought_leaves_a_compaction_its_room() {
+    let ops = vec![
+        Op::Create(0),
+        Op::Write { file: 0, at: 0, len: 1, byte: 0 },
+        Op::Remount,
+        Op::Compact,
+    ];
+    Setting::awkward(1312117120894968101, ROOMY).holds(ops);
+}

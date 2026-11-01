@@ -4169,6 +4169,37 @@ mod tests {
         fs.close().await.expect("close failed");
     }
 
+    /// fxdax: the numbers a mount seeks orphans among may be numbers the device never held: a
+    /// writer's range begun far past the last's, as a lease moved, the mount that follows one kills
+    /// as many as it seeks, whose records, which no journal record pays for as a compaction's
+    /// metadata reservation counts on, took more room than it held: the compaction failed with
+    /// NoSpace, and the journal closed. The mount frees them, and seals that, before any compaction.
+    #[fuchsia::test]
+    async fn test_a_mount_leaves_a_compaction_nothing_of_the_numbers_it_sought() {
+        let floor = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let device = FakeDevice::new(4096, 4096).calm().with_sequence_floor(floor.clone());
+        let fs = FxFilesystem::new_empty(DeviceHolder::new(device)).await.expect("new_empty failed");
+        fs.close().await.expect("close failed");
+        let device = fs.take_device().await;
+        device.reopen(false);
+        floor.store(1 << 40, Ordering::Relaxed);
+        let fs = FxFilesystemBuilder::new().open(device).await.expect("open failed");
+        let range = commit_allocation(&fs).await;
+        assert_eq!(range.extent, extent(1 << 40));
+        {
+            let device = fs.device();
+            let buffer = device.allocate_buffer(device.block_size() as usize).await;
+            device.write(range.extent, 0, buffer.as_ref()).await.expect("write failed");
+        }
+        fs.close().await.expect("close failed");
+        let device = fs.take_device().await;
+        device.reopen(false);
+
+        let fs = FxFilesystemBuilder::new().open(device).await.expect("open failed");
+        assert_eq!(fs.allocator().inner.lock().extents.dying(), vec![]);
+        fs.close().await.expect("close failed");
+    }
+
     /// A transaction making a shared allocation of a block for a store, and the allocation.
     async fn shared_allocation(fs: &OpenFxFilesystem) -> (Transaction<'_>, ExtentRange) {
         let mut transaction = fs

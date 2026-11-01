@@ -583,18 +583,20 @@ impl FxFilesystemBuilder {
                     if filesystem.renew_journal_tail().await? {
                         filesystem.record_journal_tail().await?;
                     }
+                    // fxdax: the extents a crash orphaned go with a flush, now: they hold room on
+                    // the device Fxfs doesn't count, so that writes would find it full before Fxfs
+                    // did, with no NoSpace to say so. Before any compaction, which records them
+                    // while they die: they may be as many as were sought, of numbers the device
+                    // may never have held, and no journal record pays for that room.
+                    if filesystem.allocator().has_dead_extents() {
+                        filesystem.maybe_start_flush_task();
+                        journal.flush_for_frees().await.context("freeing what the crash left")?;
+                    }
                     anyhow::Ok(())
                 }
                 .await;
                 journal.resume_compactions();
-                renewed.context("Failed to renew the journal's tail")?;
-                // fxdax: the extents a crash orphaned go with a flush, now: they hold room on the
-                // device Fxfs doesn't count, so that writes would find it full before Fxfs did,
-                // with no NoSpace to say so.
-                if filesystem.allocator().has_dead_extents() {
-                    filesystem.maybe_start_flush_task();
-                    journal.flush_for_frees().await.context("Failed to free what the crash left")?;
-                }
+                renewed.context("Failed to go on from the journal")?;
             }
 
             if !read_only {
