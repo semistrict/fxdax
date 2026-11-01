@@ -3819,13 +3819,27 @@ pub(crate) mod guest {
             file.write_all_at(&data[piece.clone()], piece.start as u64).unwrap();
             file.sync_data().unwrap();
         }
+        // At a chunk's alignment in memory too, or no fault can map a PMD of it: an address that
+        // mmap chooses needn't be.
         let map_chunk = |file: &fs::File, len: usize, prot: libc::c_int| {
-            let map = unsafe {
+            let room = unsafe {
                 libc::mmap(
                     std::ptr::null_mut(),
+                    2 * CHUNK,
+                    libc::PROT_NONE,
+                    libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_NORESERVE,
+                    -1,
+                    0,
+                )
+            };
+            assert_ne!(room, libc::MAP_FAILED, "mmap: {}", std::io::Error::last_os_error());
+            let aligned = (room as usize).next_multiple_of(CHUNK);
+            let map = unsafe {
+                libc::mmap(
+                    aligned as *mut libc::c_void,
                     len,
                     prot,
-                    libc::MAP_SHARED,
+                    libc::MAP_SHARED | libc::MAP_FIXED,
                     file.as_raw_fd(),
                     CHUNK as libc::off_t,
                 )
