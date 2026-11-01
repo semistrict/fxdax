@@ -3904,6 +3904,40 @@ mod tests {
         fs.close().await.expect("close failed");
     }
 
+    /// fxdax: an extent a seal came after, which nothing had reached, the device writes for the
+    /// transaction that took blocks of it before the seal, and that opens nothing: minted, open,
+    /// sealed, and never back. It read as open again, to a reader and a writer alike (TASK-153.3).
+    #[fuchsia::test]
+    async fn test_a_write_after_a_seal_reopens_nothing() {
+        let (fs, object) = test_filesystem_and_object_with_key(None, false).await;
+        let bs = fs.block_size().get();
+        let map = async |range: Range<u64>| {
+            let mut transaction = object.new_transaction().await.expect("new_transaction failed");
+            let extents = object.txn_map_write(&mut transaction, range, false).await.expect("map");
+            object.txn_update_size(&mut transaction, bs, None).await.expect("size");
+            transaction.commit().await.expect("commit failed");
+            extents
+        };
+        let first = map(0..bs).await;
+        let extent = first[0].device_range().extent;
+        assert!(fs.device().is_open(extent));
+
+        fs.sync(SyncOptions { flush_device: true, ..Default::default() })
+            .await
+            .expect("sync failed");
+        assert!(!fs.device().is_open(extent));
+        store_mapped(&fs, &first, 0, &vec![3; bs as usize]).await;
+        assert!(!fs.device().is_open(extent), "the device took the write, which opens nothing");
+        let extents = object.extents_in(0..bs).await.expect("extents_in failed");
+        assert_eq!(
+            extents.iter().map(|(_, access)| *access).collect::<Vec<_>>(),
+            [ExtentAccess::Sealed]
+        );
+        let second = map(0..bs).await;
+        assert_ne!(second[0].device_range().extent, extent, "the block stayed");
+        fs.close().await.expect("close failed");
+    }
+
     /// fxdax: blocks in extents the device holds open stay where they are, until the device seals
     /// them; a write past the end of the file finds zeroes around it.
     #[fuchsia::test]

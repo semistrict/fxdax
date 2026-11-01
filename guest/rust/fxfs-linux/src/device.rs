@@ -11,11 +11,12 @@
 //! done with it, waiting for the device if the future is dropped first.
 //!
 //! Extents are open from their first write, or their first writable mapping, until the next
-//! request that seals them (doc-4): a COMMIT, or a WRITE with a barrier. The device knows which it
-//! wrote, and which the allocator minted (`Device::opened`), until then, and submits such
-//! requests through the gate between them and stores through the DAX window (device.h). A seal
-//! waits for the writes in flight, and keeps others out until it ends (`Seal`): the device applies
-//! a request in flight while a barrier is on either side of it, a write's several requests on both.
+//! request that seals them (doc-4): a COMMIT, or a WRITE with a barrier. What Fxfs may take for
+//! open is what the allocator minted since (`OpenExtents`), which it writes, or the DAX window
+//! maps writably, before the next, and requests that seal go through the gate between them and
+//! stores through the window (device.h). A seal waits for the writes in flight, and keeps others
+//! out until it ends (`Seal`): the device applies a request in flight while a barrier is on either
+//! side of it, a write's several requests on both.
 //!
 //! fxdax: frozen with its filesystem (`Freezer`), the device takes no writes, frees or commits
 //! until it thaws: those wait at its `Gate`, as a snapshot of the VM is taken, which a VM restored
@@ -32,7 +33,6 @@ use core::ffi::{c_char, c_int, c_void};
 use futures::future::try_join_all;
 use futures::task::AtomicWaker;
 use fxfs::errors::FxfsError;
-use rustc_hash::FxHashSet;
 use std::future::Future;
 use std::marker::PhantomData;
 use std::pin::Pin;
@@ -44,8 +44,8 @@ use std::time::Instant;
 use storage_device::buffer::{BufferFuture, BufferRef, MutableBufferRef};
 use storage_device::buffer_allocator::{BufferAllocator, BufferSource};
 use storage_device::{
-    Device, ExtentId, NoExtent, OtherBranch, Previous, ReadOptions, SealedExtent, WriteFlags,
-    WriteOptions,
+    Device, ExtentId, NoExtent, OpenExtents, OtherBranch, Previous, ReadOptions, SealedExtent,
+    WriteFlags, WriteOptions,
 };
 
 mod ffi {
@@ -212,9 +212,6 @@ impl Drop for Request<'_> {
     }
 }
 
-/// The extents open: written, or mapped for writes, since the last request that sealed them.
-type OpenExtents = Arc<Mutex<FxHashSet<ExtentId>>>;
-
 /// The extent-store device Fxfs lives on. See the module docs.
 pub struct ExtentDevice {
     device: NonNull<ffi::Device>,
@@ -222,7 +219,8 @@ pub struct ExtentDevice {
     /// fxdax: how many bytes the store holds at most, as resizing changes it (`Resizer`).
     capacity: Arc<AtomicU64>,
     allocator: BufferAllocator,
-    open: OpenExtents,
+    /// What Fxfs may take for open, which `sealer` seals.
+    open: Arc<OpenExtents>,
     /// What seals the extents open.
     sealer: Sealer,
     /// fxdax: the syncs wanting durability in progress (`Durability`).
@@ -406,7 +404,7 @@ impl Dax {
 /// A seal in progress, through the device's gate: it ends as this drops.
 struct Seal<'a> {
     device: NonNull<ffi::Device>,
-    open: OpenExtents,
+    open: Arc<OpenExtents>,
     /// The writes' gate, closed while the seal is.
     writes: Arc<Gate>,
     /// When it began, counted as it ends in `stats`.
@@ -420,7 +418,7 @@ struct Seal<'a> {
 #[derive(Clone)]
 struct Sealer {
     device: NonNull<ffi::Device>,
-    open: OpenExtents,
+    open: Arc<OpenExtents>,
     /// Held by the seal in progress.
     sealing: Arc<futures::lock::Mutex<()>>,
     /// What the writes that seal nothing pass, from their submission to their end, while no seal is
@@ -455,7 +453,7 @@ impl<'a> Seal<'a> {
         sealer.writes.close().await;
         // SAFETY: The device is bound while the filesystem is mounted.
         unsafe { ffi::fxfs_device_seal_begin(sealer.device.as_ptr()) };
-        sealer.open.lock().unwrap().clear();
+        sealer.open.seal();
         sealer.stats.seal_waits.add(asked);
         Self {
             device: sealer.device,
@@ -469,10 +467,10 @@ impl<'a> Seal<'a> {
 }
 
 impl Drop for Seal<'_> {
-    /// Ends the seal. Extents written or mapped meanwhile may be sealed too, if their requests
-    /// came before the one that sealed: none is known to be open.
+    /// Ends the seal. Extents minted meanwhile may be sealed too, if a request reached them before
+    /// the one that sealed: none is known to be open.
     fn drop(&mut self) {
-        self.open.lock().unwrap().clear();
+        self.open.seal();
         // SAFETY: `begin` began the seal.
         unsafe { ffi::fxfs_device_seal_end(self.device.as_ptr()) };
         self.writes.open();
@@ -497,7 +495,7 @@ impl ExtentDevice {
                 .context(format!("no extent store tagged {:?}", String::from_utf8_lossy(tag)))
         })?;
         let block_size = info.block_size as usize;
-        let open: OpenExtents = Arc::default();
+        let open: Arc<OpenExtents> = Arc::default();
         // A follower's filesystem writes nothing.
         let writes_nothing = info.flags & DEVICE_READ_ONLY != 0;
         let this = Self {
@@ -547,6 +545,7 @@ impl ExtentDevice {
         Freezer {
             sealer: self.sealer.clone(),
             freeze: self.info.flags & DEVICE_FREEZE != 0,
+            writes_nothing: self.writes_nothing,
             gate: self.gate.clone(),
             branch: self.branch.clone(),
         }
@@ -643,6 +642,13 @@ impl ExtentDevice {
             self.call(op(T_COMMIT, flags, None, 0, std::ptr::null_mut(), 0), None).await;
         self.count_commit(began, durable);
         committed
+    }
+
+    /// Logs a free of `extent` if it is open: something uses it (TASK-121).
+    fn check_free(&self, extent: ExtentId) {
+        if self.open.contains(extent) {
+            log::error!("fxfs: freeing {extent:?}, open since the last seal (TASK-121)");
+        }
     }
 
     /// fxdax: counts a commit, which began at `began`, durable if `durable` (`DeviceStats`).
@@ -860,6 +866,8 @@ pub struct Freezer {
     sealer: Sealer,
     /// Whether the device takes FREEZE, and INFO says the branch.
     freeze: bool,
+    /// Whether its filesystem writes nothing, which leaves nothing to seal.
+    writes_nothing: bool,
     gate: Arc<Gate>,
     branch: Arc<AtomicU64>,
 }
@@ -870,14 +878,15 @@ unsafe impl Send for Freezer {}
 unsafe impl Sync for Freezer {}
 
 impl Freezer {
-    /// Closes the device to writes, frees and commits, once those in progress end, seals what
-    /// is open, extents minted ahead of writes such as a staging extent, as the next barrier would,
-    /// and tells the device: nothing is open on it until it thaws (`Freezer::unfreeze`).
+    /// Closes the device to writes, frees and commits, once those in progress end, seals what is
+    /// open, extents minted ahead of writes such as a staging extent, and a write that reached an
+    /// extent after the last seal, which no one knows to be open, as the next barrier would, and
+    /// tells the device: nothing is open on it until it thaws (`Freezer::unfreeze`).
     pub async fn freeze(&self) -> Result<(), Error> {
         self.gate.close().await;
         let frozen = async {
             let device = self.sealer.device;
-            if !self.sealer.open.lock().unwrap().is_empty() {
+            if !self.writes_nothing {
                 let _seal = Seal::begin_with(&self.sealer).await;
                 let commit = op(T_COMMIT, COMMIT_DURABLE, None, 0, std::ptr::null_mut(), 0);
                 call(device, commit, None).await?;
@@ -1052,12 +1061,6 @@ impl Device for ExtentDevice {
         if in_one {
             self.count_commit(began, flags & WRITE_DURABLE != 0);
         }
-        // Open once written, until the next seal, which waits for the write's passage to end: not
-        // before, as a write refused, to an extent a seal sealed, would leave it taken for open,
-        // and moved blocks, then a writable MAP, sent there (TASK-91.9).
-        if !commit {
-            self.open.lock().unwrap().insert(extent);
-        }
         if commit && !in_one {
             self.commit_sealed(false).await?;
         }
@@ -1078,9 +1081,7 @@ impl Device for ExtentDevice {
 
     async fn free(&self, extent: ExtentId) -> Result<(), Error> {
         let _passage = self.gate.pass().await;
-        if self.open.lock().unwrap().remove(&extent) {
-            log::error!("fxfs: freeing {extent:?}, open since the last seal (TASK-121)");
-        }
+        self.check_free(extent);
         self.call(op(T_FREE, 0, Some(extent), 0, std::ptr::null_mut(), 0), Some(extent)).await
     }
 
@@ -1094,14 +1095,7 @@ impl Device for ExtentDevice {
                 .await;
         }
         let _passage = self.gate.pass().await;
-        {
-            let mut open = self.open.lock().unwrap();
-            for extent in extents {
-                if open.remove(extent) {
-                    log::error!("fxfs: freeing {extent:?}, open since the last seal (TASK-121)");
-                }
-            }
-        }
+        extents.iter().for_each(|extent| self.check_free(*extent));
         let mut results = Vec::with_capacity(extents.len());
         for batch in extents.chunks(FREE_MANY_MAX) {
             let (first, rest) = batch.split_first().expect("chunks aren't empty");
@@ -1132,11 +1126,11 @@ impl Device for ExtentDevice {
     }
 
     fn is_open(&self, extent: ExtentId) -> bool {
-        self.open.lock().unwrap().contains(&extent)
+        self.open.contains(extent)
     }
 
     fn opened(&self, extent: ExtentId) {
-        self.open.lock().unwrap().insert(extent);
+        self.open.minted(extent);
     }
 
     async fn root(&self) -> Result<Vec<u8>, Error> {

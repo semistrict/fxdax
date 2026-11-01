@@ -95,13 +95,13 @@ static void scenario(void *arg)
 
 int main(void)
 {
-	u64 moved, freed, opened, failed;
+	u64 moved, freed, failed;
 
 	sim_init(1);
 	sim_device_init(WINDOW_LEN);
 	sim_spawn("scenario", scenario, NULL);
 	sim_run();
-	fxfs_sim_stats(&moved, &freed, &opened, &failed);
+	fxfs_sim_stats(&moved, &freed, &failed);
 	sim_log("smoke: passed: %llu points, %llu switches, %llu device maps, %llu blocks moved, %llu extents freed, trace %llx\n",
 		sim_points(), sim_switches(), sim_device_maps(), moved, freed, sim_trace_hash());
 	return 0;

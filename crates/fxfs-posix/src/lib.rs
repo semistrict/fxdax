@@ -727,9 +727,9 @@ impl<P: Platform> Fxfs<P> {
 
     /// Makes room to write `range` of the file `ino` through a DAX window, without writing it, and
     /// makes the file `size` long if it is shorter, in one transaction: returns the pieces holding
-    /// the range's blocks, which are open, for the caller to store the data in before the next
-    /// seal (`DataObjectHandle::txn_map_write`, as `keep` says). fxdax: the blocks hold `held`,
-    /// if given, all they hold as the caller holds it, if they move
+    /// the range's blocks, open unless a seal came meanwhile, for the caller to store the data in
+    /// before the next (`DataObjectHandle::txn_map_write`, as `keep` says). fxdax: the blocks hold
+    /// `held`, if given, all they hold as the caller holds it, if they move
     /// (`DataObjectHandle::txn_map_write_holding`, TASK-79.11).
     pub async fn dax_map_write(
         &self,
@@ -774,8 +774,8 @@ impl<P: Platform> Fxfs<P> {
         if size > file.get_size() {
             file.txn_update_size(&mut transaction, size, None).await?;
         }
-        // The extents are open: the allocator opened them as it minted them. Recording them open
-        // now could record one a seal sealed since, whose writes would fail.
+        // The extents are open, as the allocator minted them, or found them so, unless a seal has
+        // come since, which is for the caller to find out: nothing here can open them.
         transaction.commit().await?;
         // fxdax: diagnostic (TASK-133): that the blocks hold what the caller held as it commits.
         if let Some(held) = held
@@ -805,9 +805,14 @@ impl<P: Platform> Fxfs<P> {
             }
         }
         let allocator = self.filesystem.allocator();
+        let device = self.filesystem.device();
+        let access = |extent: &FileExtent| match device.is_open(extent.device_range().extent) {
+            true => ExtentAccess::Open,
+            false => ExtentAccess::Sealed,
+        };
         Ok(extents
             .iter()
-            .map(|extent| DaxExtent::new(extent, ExtentAccess::Open, &allocator))
+            .map(|extent| DaxExtent::new(extent, access(extent), &allocator))
             .collect())
     }
 
