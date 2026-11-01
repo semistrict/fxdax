@@ -1098,7 +1098,10 @@ impl Shared {
             if plan.bytes() > 0 && plan.bytes() + len > BATCH {
                 plans.push(std::mem::take(&mut plan));
             }
-            plan.seal(extent, len, len >= LARGE);
+            match len >= LARGE && extent.branch == remote.branch {
+                true => plan.seal_own(extent.sequence, len),
+                false => plan.seal(extent, len),
+            }
         }
         plan.commit(tag, frees, root);
         plans.push(plan);
@@ -1572,6 +1575,91 @@ mod tests {
         assert_eq!(uploaded(&bucket, branch), (written, Some(b"before".to_vec())));
     }
 
+    /// TASK-150.1: a child with a branch of its own, forked where no bucket was, uploads what it
+    /// inherited as it attaches, large extents too. A pass of the collector while the segment naming
+    /// them is on its way leaves what the branch is about to hold.
+    #[test]
+    fn what_a_child_uploads_of_what_it_inherited_outlives_the_collector() {
+        let dir = tempfile::tempdir().unwrap();
+        let parent = ExtentStore::create(dir.path().join("parent"), 1 << 30).unwrap();
+        let large = pattern(5, super::LARGE as usize);
+        let inherited = write(&parent, 1, &large);
+        parent.commit(Some(b"root")).unwrap();
+        let (path, branch) = (dir.path().join("child"), parent.branch() + 1);
+        parent.fork(&path, branch).unwrap();
+        drop(parent);
+        let child = ExtentStore::open(&path).unwrap();
+
+        let memory: Arc<dyn object_store::ObjectStore> = Arc::new(InMemory::new());
+        let bucket = Arc::new(Bucket::new(memory.clone(), ""));
+        let gated = Arc::new(Gated::over(memory));
+        // Its fence lands; the segment naming the extents waits.
+        gated.hold.send_replace(Hold::SegmentsFrom(1));
+        let reached = Arc::new(Bucket::new(gated.clone(), ""));
+        let attaching = std::thread::spawn(move || {
+            let attached = child.attach_remote(reached, 1, idle());
+            (child, attached)
+        });
+        gated.wait_held(1);
+        let options = extent_remote::collector::Options { compact_below: 0.0, grace: 0 };
+        futures::executor::block_on(extent_remote::collector::collect(&*bucket, 1, &options))
+            .unwrap();
+        gated.hold.send_replace(Hold::Nothing);
+        let (child, attached) = attaching.join().unwrap();
+        attached.unwrap();
+        let held = (vec![(inherited.sequence, large)], Some(b"root".to_vec()));
+        assert_eq!(uploaded(&bucket, branch), held);
+        drop(child);
+    }
+
+    /// A store whose commit, of more bytes than `options` let wait, is in a segment closed for want
+    /// of room, as a closing that beats the uploader leaves it: with no commit to come, as one in
+    /// the lag's wait holds its guest's seal, and holds back every other. And the commit's epoch.
+    fn closed_for_room(
+        options: super::Options,
+    ) -> (tempfile::TempDir, Arc<extent_store::Store<extent_store::HostDir>>, super::Remote, u64)
+    {
+        const EXTENT: usize = 1 << 20;
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::host_store::create(&dir.path().join("store"), 1 << 30, 7).unwrap();
+        let store = Arc::new(store);
+        let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
+        let remote = super::Remote::attach(store.clone(), bucket, 1, options).unwrap();
+        store.write(super::ExtentId::new(7, 1), 0, &pattern(1, EXTENT)).unwrap();
+        store.commit_ordered(None).unwrap();
+        let epoch = store.epoch().unwrap();
+        // The most a segment holds, its last extent past it, and no commit with them.
+        for sequence in 2..98 {
+            let extent = super::ExtentId::new(7, sequence);
+            store.write(extent, 0, &pattern(sequence as u8, EXTENT)).unwrap();
+        }
+        (dir, store, remote, epoch)
+    }
+
+    /// TASK-150.2: a commit stalled on the bytes waiting (`Options::max_lag_bytes`) ends though
+    /// what it waits for is in a segment closed for want of room, which only a commit's flush would
+    /// end, as the commit, or its guest, have none to come: an uploader's own flush ends it.
+    #[test]
+    fn commits_stalled_on_the_lag_end_with_their_segment_closed_for_room() {
+        let (_dir, store, remote, epoch) =
+            closed_for_room(super::Options { max_lag_bytes: BLOCK as u64, ..idle() });
+        let stalled = std::sync::Arc::new(remote);
+        let waiting = stalled.clone();
+        let (ended, end) = std::sync::mpsc::channel();
+        std::thread::spawn(move || ended.send(waiting.wait_lag(epoch)).unwrap());
+        assert_eq!(end.recv_timeout(Duration::from_secs(30)), Ok(Ok(())));
+        assert_eq!(store.unreleased_bytes().unwrap(), 0);
+    }
+
+    /// TASK-150.2: so does a sync of the store's commits, or anything else waiting for their upload.
+    #[test]
+    fn uploads_waited_for_end_with_their_segment_closed_for_room() {
+        let (_dir, _store, remote, epoch) = closed_for_room(idle());
+        let (ended, end) = std::sync::mpsc::channel();
+        std::thread::spawn(move || ended.send(remote.wait_uploaded(epoch)).unwrap());
+        assert_eq!(end.recv_timeout(Duration::from_secs(30)), Ok(Ok(())));
+    }
+
     /// TASK-79.19: a gather takes no more of the segments the store closed than may upload at once,
     /// with those uploading; the rest it leaves in the store, until those it took are uploaded.
     #[test]
@@ -1910,6 +1998,9 @@ mod tests {
         /// The host dies as it goes, and it lands later ([`Gated::land_late`]), as a dead host's
         /// PUT may.
         DiesLandingLate,
+        /// A pass of the collector, which what the host's dying does stands for here, runs to its
+        /// end just before it, which goes as it would have (TASK-150.1).
+        Collected,
     }
 
     /// A [`Mishap`] set to happen to a write, by its count ([`Gated::arm`]), and what a host's
@@ -2029,6 +2120,11 @@ mod tests {
             options: object_store::PutOptions,
         ) -> object_store::Result<object_store::PutResult> {
             match armed.mishap {
+                Mishap::Collected => {
+                    let collecting = std::thread::spawn(move || (armed.die)());
+                    collecting.join().unwrap();
+                    return self.reached().put_opts(location, payload, options).await;
+                }
                 Mishap::Refused => {}
                 Mishap::Unanswered => {
                     self.reached().put_opts(location, payload, options).await?;

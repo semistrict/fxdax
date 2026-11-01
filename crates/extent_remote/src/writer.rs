@@ -596,14 +596,14 @@ mod tests {
             let again_key = layout::extent(writer.epoch(), writer.chain().next_seq(), again);
             let again_bytes = layout::with_footer(b"again", &());
             bucket::create(&*bucket, &again_key, again_bytes).await;
-            let own = vec![(again, b"again".to_vec())];
+            let own = vec![(again.sequence, b"again".to_vec())];
             let seq = add(&writer, Commit { tag: 1, own, ..Commit::default() }).unwrap();
             assert_eq!(writer.upload(seq).await, Ok(()));
             assert_eq!(writer.acknowledge().await, Ok(Some(seq)));
 
             let other_key = layout::extent(writer.epoch(), writer.chain().next_seq(), other);
             bucket::create(&*bucket, &other_key, layout::with_footer(b"another", &())).await;
-            let own = vec![(other, b"other".to_vec())];
+            let own = vec![(other.sequence, b"other".to_vec())];
             let seq = add(&writer, Commit { tag: 2, own, ..Commit::default() }).unwrap();
             let corrupt = Error::Corrupt(format!("{other_key} holds another extent"));
             assert_eq!(writer.upload(seq).await, Err(corrupt.clone()));
@@ -652,9 +652,7 @@ mod tests {
             Writer::open(bucket.clone(), 1, 10, 0).await.unwrap()
         });
         let first = writer.chain().next_sequence();
-        let own = (0..2 * OWN_AT_ONCE as u64 + 1)
-            .map(|n| (ExtentId::new(1, first + n), vec![n as u8; 10]))
-            .collect();
+        let own = (0..2 * OWN_AT_ONCE as u64 + 1).map(|n| (first + n, vec![n as u8; 10])).collect();
         let commit = Commit { tag: 1, own, ..Commit::default() };
         let seq = writer.add_segment(Batch::from(commit).close(&mut writer.chain()).frame());
         let mut upload = std::pin::pin!(writer.upload(seq.unwrap()));

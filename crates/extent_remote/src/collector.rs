@@ -520,7 +520,7 @@ mod tests {
             let writer = Writer::open(bucket.clone(), 1, 10, 0).await.unwrap();
             let first = writer.chain().next_sequence();
             let (freed, kept) = (ExtentId::new(1, first), ExtentId::new(1, first + 1));
-            let own = vec![(freed, b"freed".to_vec()), (kept, b"kept".to_vec())];
+            let own = vec![(freed.sequence, b"freed".to_vec()), (kept.sequence, b"kept".to_vec())];
             commit(&writer, Commit { tag: 1, own, ..Commit::default() }).await;
             let gone = writer.location(freed).unwrap().key;
             commit(&writer, Commit { tag: 2, frees: vec![freed], ..Commit::default() }).await;
@@ -554,7 +554,7 @@ mod tests {
             commit(&writer, Commit { tag: 1, extents, ..Commit::default() }).await;
             assert_eq!(writer.chain().next_sequence(), first + 2);
             // The writer's next segment, which names `late`, its object uploaded first.
-            let own = vec![(late, b"late".to_vec())];
+            let own = vec![(late.sequence, b"late".to_vec())];
             let objects = Batch::from(Commit { tag: 2, own, ..Commit::default() })
                 .close(&mut writer.chain())
                 .frame();
@@ -662,9 +662,8 @@ mod tests {
         });
         let first = writer.chain().next_sequence();
         let extents = (0..20).map(|n| (ExtentId::new(1, first + n), vec![n as u8; 8])).collect();
-        let own: Vec<_> =
-            (20..23).map(|n| (ExtentId::new(1, first + n), vec![n as u8; 16])).collect();
-        let frees = own.iter().map(|(extent, _)| *extent).collect();
+        let own: Vec<_> = (20..23).map(|n| (first + n, vec![n as u8; 16])).collect();
+        let frees = own.iter().map(|(sequence, _)| ExtentId::new(1, *sequence)).collect();
         let children = (2..2 + forks + deleted).collect();
         let segments: [Box<dyn FnOnce(&mut Chain) -> Objects>; 3] = [
             Box::new(|chain| {
@@ -734,7 +733,7 @@ mod tests {
             let base = Writer::open(bucket.clone(), 1, 10, 0).await.unwrap();
             let sequence = base.chain().next_sequence();
             let extents: Vec<_> = (0..3).map(|n| ExtentId::new(1, sequence + n)).collect();
-            let own = extents.iter().map(|&extent| (extent, b"held".to_vec())).collect();
+            let own = extents.iter().map(|extent| (extent.sequence, b"held".to_vec())).collect();
             let held_in = base.chain().next_seq();
             commit(&base, Commit { tag: 1, own, ..Commit::default() }).await;
             let forks = Contents { forks: children.clone().collect(), ..Contents::default() };
@@ -784,7 +783,7 @@ mod tests {
             let base = Writer::open(bucket.clone(), 1, 10, 0).await.unwrap();
             let extent = ExtentId::new(1, base.chain().next_sequence());
             let held_in = base.chain().next_seq();
-            let own = vec![(extent, b"held".to_vec())];
+            let own = vec![(extent.sequence, b"held".to_vec())];
             commit(&base, Commit { tag: 1, own, ..Commit::default() }).await;
             let forks = Contents { forks: [2].into_iter().collect(), ..Contents::default() };
             let footer = base.chain().close(forks);
@@ -842,7 +841,7 @@ mod tests {
             let parent = Writer::open(bucket.clone(), PARENT, 10, 0).await.unwrap();
             let extent = ExtentId::new(PARENT, parent.chain().next_sequence());
             let held_in = parent.chain().next_seq();
-            let own = vec![(extent, b"held".to_vec())];
+            let own = vec![(extent.sequence, b"held".to_vec())];
             commit(&parent, Commit { tag: 1, own, ..Commit::default() }).await;
             let at = fork(&parent).await;
             parent.checkpoint().await.unwrap();

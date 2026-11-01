@@ -310,6 +310,7 @@ async fn run_connection(stream: UnixStream, tenant: Option<Arc<Tenant>>) {
         this: this.clone(),
         tenant,
         peer: peer.clone(),
+        opening: AtomicBool::new(false),
         store: OnceLock::new(),
         path: OnceLock::new(),
         window: Mutex::new(None),
@@ -713,6 +714,8 @@ pub(super) struct Connection {
     tenant: Option<Arc<Tenant>>,
     /// Its VM process, which it sends to: fxdax: as the daemon depends on it (TASK-79.9).
     peer: Arc<Peer>,
+    /// fxdax: whether an [`OPEN`] is in progress ([`Opening`]).
+    opening: AtomicBool,
     /// Its store: fxdax: a follower's, if read-only (backlog doc-8).
     store: OnceLock<Arc<ExtentStore>>,
     /// The path of the store it writes, which it holds.
@@ -737,6 +740,26 @@ pub(super) struct Connection {
     /// What says, as it drops, that the connection has: its last field, dropped after its store,
     /// window and open extents (TASK-79.34).
     _alive: tokio::sync::oneshot::Sender<std::convert::Infallible>,
+}
+
+/// fxdax: an [`OPEN`] in progress on a connection ([`Connection::opening`]), the only one, until
+/// dropped; only it gives the connection its store, which it has once.
+struct Opening<'a>(&'a Connection);
+
+impl Opening<'_> {
+    /// The connection has `store` from now on, and holds it at `path`, if it writes it.
+    fn opened(self, store: Arc<ExtentStore>, path: Option<PathBuf>) {
+        assert!(self.0.store.set(store).is_ok(), "a connection opened a second store");
+        if let Some(path) = path {
+            assert!(self.0.path.set(path).is_ok(), "a connection holds a second store");
+        }
+    }
+}
+
+impl Drop for Opening<'_> {
+    fn drop(&mut self) {
+        self.0.opening.store(false, Ordering::Release);
+    }
 }
 
 /// fxdax: the failpoint of requests of `kind`, if they have one (TASK-44.10).
@@ -1060,6 +1083,9 @@ impl Connection {
                 ];
             }),
             WINDOW => {
+                if args[0] > MAX_WINDOW {
+                    return Err(Errno::EINVAL);
+                }
                 let (sender, acks) = (self.peer.sender.clone(), self.peer.acks.clone());
                 let stage = Arc::new(RemoteStage { sender, acks });
                 let window = store.create_dax_window(args[0], Some(stage)).map_err(|err| {
@@ -1149,9 +1175,7 @@ impl Connection {
     fn follow(&self, path: &[u8]) -> Result<u64, Errno> {
         let path = PathBuf::from(std::ffi::OsStr::from_bytes(path));
         self.authorize(&path)?;
-        if self.store.get().is_some() {
-            return Err(Errno::EBUSY);
-        }
+        let opening = self.opening()?;
         let followed = stores::followed(&path, self.arena()?)?;
         // A tenant's VM process opens no public base, only forks of it (TASK-43).
         if self.tenant.is_some() && followed.is_public() {
@@ -1161,8 +1185,22 @@ impl Connection {
         let (epoch, sender, told) = (store.epoch()?, self.peer.sender.clone(), store.clone());
         self.start_behind(move |stopped| tell_commits(told, epoch, sender, stopped));
         let branch = store.branch();
-        let _ = self.store.set(store);
+        opening.opened(store, None);
         Ok(branch)
+    }
+
+    /// fxdax: the connection's one [`OPEN`] at a time: `EBUSY` if another is in progress, as its
+    /// requests are served side by side, or it has its store (TASK-150.5). What an `OPEN` holds
+    /// meanwhile, its store's path among it, its [`Opening`] gives the connection, or it lets go of.
+    fn opening(&self) -> Result<Opening<'_>, Errno> {
+        if self.opening.swap(true, Ordering::AcqRel) {
+            return Err(Errno::EBUSY);
+        }
+        let opening = Opening(self);
+        match self.store.get() {
+            Some(_) => Err(Errno::EBUSY),
+            None => Ok(opening),
+        }
     }
 
     /// fxdax: serves `message`, an [`OPEN`] of a store to write ([`Connection::open`]), and
@@ -1205,9 +1243,12 @@ impl Connection {
         if let Some((from, _)) = from {
             self.authorize(std::ffi::OsStr::from_bytes(from).as_ref())?;
         }
-        if self.store.get().is_some() {
-            return Err(Errno::EBUSY);
-        }
+        // fxdax: a tenant's stores are those of its directory, and nothing in the bucket says whose
+        // a branch is: a point not here it finds absent, whatever branch it names, which its VM
+        // manager takes for it first, as `fxdaxctl take` does (TASK-150.4).
+        let from =
+            from.map(|(from, branch)| (from, if self.tenant.is_some() { 0 } else { branch }));
+        let opening = self.opening()?;
         let key = store_key(&path);
         open_paths().hold_async(&key, self.this.clone(), CLOSING_WAIT).await?;
         let opened = self.open_held(&path, &key, capacity, create, from).await;
@@ -1226,8 +1267,7 @@ impl Connection {
         match started {
             Ok(store) => {
                 let branch = store.branch();
-                let _ = self.store.set(store);
-                let _ = self.path.set(key);
+                opening.opened(store, Some(key));
                 Ok(branch)
             }
             Err(errno) => {
@@ -1716,6 +1756,7 @@ impl Peer {
     /// Its window is of `size` bytes, whose mappings, a page each at most, a reply to `MAPPINGS`
     /// holds (TASK-79.43).
     fn set_window(&self, size: u64) {
+        assert!(size <= MAX_WINDOW, "a window past the most the daemon makes room for");
         let mappings = size / crate::pages::page_size() * MAPPING_BYTES;
         self.mappings.store(mappings, Ordering::Relaxed);
     }

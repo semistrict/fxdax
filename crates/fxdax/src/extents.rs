@@ -772,11 +772,41 @@ impl ExtentStore {
     /// branch took as it was made, its commit standing, which names a child its parent's writers
     /// leave be; and the deletion of a fork that failed deletes there only the branch it made
     /// (`Remote::claim`, TASK-79.82).
+    ///
+    /// The fork's commit seals what the store has open: an extent written, and mapped writably since,
+    /// whose memory the next commit could then write to no extent, failing with `EPERM`, and every
+    /// commit after, which it holds to be written too: such a fork fails with `EBUSY`, making nothing
+    /// (TASK-150.7).
     pub fn fork(&self, path: impl AsRef<Path>, branch: u64) -> Result<(), Error> {
         self.writable()?;
-        let path = path.as_ref();
         self.make_durable()?;
         failpoint!("fork::durable");
+        // None comes between the look and the fork's commit.
+        let opening = self.opening.write().unwrap();
+        if self.sealing_would_strand_a_mapping()? {
+            return Err(Errno::EBUSY.into());
+        }
+        self.fork_durable(path.as_ref(), branch, Some(opening))
+    }
+
+    /// fxdax: whether a commit of the store alone would seal an extent held open here too.
+    fn sealing_would_strand_a_mapping(&self) -> Result<bool> {
+        for extent in self.open.lock().unwrap().keys() {
+            if matches!(self.store.extent((*extent).into()).map_err(errno)?, Some((_, true))) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// fxdax: forks the store, as [`ExtentStore::fork`] says, its commits made durable: `opening`,
+    /// if given, held until the fork's commit is made, and not as the fork's upload goes.
+    fn fork_durable(
+        &self,
+        path: &Path,
+        branch: u64,
+        opening: Option<std::sync::RwLockWriteGuard<'_, ()>>,
+    ) -> Result<(), Error> {
         let remote = self.remote.get();
         let claimed = std::cell::Cell::new(false);
         let taken = || {
@@ -791,7 +821,9 @@ impl ExtentStore {
             claimed.set(true);
             Ok(())
         };
-        let failed = match extent_store::fork_host_with(&self.store, path, branch, claim) {
+        let forked = extent_store::fork_host_with(&self.store, path, branch, claim);
+        drop(opening);
+        let failed = match forked {
             Ok(epoch) => match remote.map(|remote| remote.forked(epoch, branch)) {
                 None | Some(Ok(())) => return Ok(()),
                 Some(Err(crate::remote::Failure::ChildTaken)) => taken(),
@@ -1071,8 +1103,12 @@ impl ExtentStore {
     /// branch's, and open (`WRITE`).
     pub fn write(&self, extent: ExtentId, offset: u64, buffers: &[VolatileSlice]) -> Result<()> {
         self.writable()?;
+        let len = buffers.iter().map(VolatileSlice::len).sum();
+        // fxdax: as the store has it of each write, of this one's whichever way it goes: a commit
+        // writes an extent mapped writably to the store, which takes no other (TASK-150.7).
+        self.store.check_io(offset, len as u64).map_err(errno)?;
         let _opening = self.opening.read().unwrap();
-        let mut data = vec![0; buffers.iter().map(VolatileSlice::len).sum()];
+        let mut data = vec![0; len];
         let mut at = 0;
         for buffer in buffers {
             at += buffer.copy_to(&mut data[at..]);
@@ -1080,12 +1116,8 @@ impl ExtentStore {
         let mut open = self.open.lock().unwrap();
         if let Some(open) = open.get_mut(&extent) {
             // An open extent mapped writably is in memory, which the commit writes to the store.
-            let end = offset.checked_add(data.len() as u64).ok_or(Errno::EINVAL)?;
-            if end > Self::MAX_EXTENT {
-                return Err(Errno::EINVAL);
-            }
             open.pages.write(offset, &data)?;
-            open.len = open.len.max(end);
+            open.len = open.len.max(offset + len as u64);
             return Ok(());
         }
         // fxdax: to the store with the open extents held, so that a writable mapping opening the
@@ -1702,7 +1734,9 @@ impl ExtentStore {
         if !self.is_quiescent()? {
             return Err(Errno::EBUSY.into());
         }
-        self.fork(path, branch)
+        self.make_durable()?;
+        failpoint!("fork::durable");
+        self.fork_durable(path.as_ref(), branch, None)
     }
 
     /// Whether nothing is open: no extent written or mapped writably since the last commit, which
@@ -2462,6 +2496,42 @@ mod tests {
         store.map(id(&store, 1), last, ps, 0, true).unwrap();
     }
 
+    /// TASK-150.7: a write to an extent mapped writably is held to what a store's are, whole
+    /// blocks: one that isn't is refused there and then, leaving the extent as it was, not as long
+    /// as no commit can write it, which would fail every commit after (`EINVAL`).
+    #[test]
+    fn writes_to_extents_mapped_writably_are_of_whole_blocks() {
+        let (store, _dir) = store(1 << 24);
+        let ps = page_size();
+        let _window = store.create_dax_window(2 * ps, None).unwrap();
+        let extent = id(&store, 1);
+        store.map(extent, 0, 2 * ps, 0, true).unwrap();
+        assert_eq!(write(&store, extent, ps, &pattern(1, BLOCK + 1)), Err(Errno::EINVAL));
+        assert_eq!(write(&store, extent, ps + 1, &pattern(1, BLOCK)), Err(Errno::EINVAL));
+        assert_eq!(store.commit(None), Ok(()));
+        assert_eq!(store.info().map(|info| info.next_sequence), Ok(2));
+    }
+
+    /// TASK-150.7: a fork, whose commit seals what the store has open, seals no extent a window
+    /// maps writably, whose memory the next commit would write to it, failing that commit and every
+    /// one after (`EPERM`): it is refused, at nothing's cost, and goes through once nothing is so.
+    #[test]
+    fn forks_seal_nothing_a_window_maps_writably() {
+        let (store, dir) = store(1 << 24);
+        let ps = page_size();
+        let _window = store.create_dax_window(ps, None).unwrap();
+        let extent = id(&store, 1);
+        write(&store, extent, 0, &pattern(1, BLOCK)).unwrap();
+        store.map(extent, 0, ps, 0, true).unwrap();
+        let (path, branch) = (dir.path().join("fork"), store.branch() + 1);
+        assert_eq!(store.fork(&path, branch).map_err(|err| err.errno()), Err(Some(Errno::EBUSY)));
+        assert!(!path.exists(), "the refused fork left its handle");
+        assert_eq!(store.commit(None), Ok(()));
+        assert_eq!(read(&store, extent, 0, BLOCK), Ok(pattern(1, BLOCK)));
+        store.fork(&path, branch).unwrap();
+        assert_eq!(store.commit(None), Ok(()));
+    }
+
     /// TASK-50.3: makes a store at `path` of `extents` sealed extents of a MiB each, and opens it
     /// in `arena`, with a window mapping them all, read-only.
     fn mapped_extents(path: &Path, extents: u64, arena: &Arc<Arena>) -> (ExtentStore, DaxWindow) {
@@ -2935,6 +3005,7 @@ mod tests {
             Unmap(u64, u64),
             Commit,
             Free(u64),
+            Fork,
         }
         let at = || {
             prop_oneof![
@@ -2946,24 +3017,35 @@ mod tests {
         };
         let sequence = || 0u64..16;
         let bytes = || 0usize..4 * BLOCK;
+        // Those a store serves: of a few extents, whole blocks and pages, as a guest's are, each
+        // of the others' extents, so that what one opens the next finds open.
+        let ps = page_size();
+        let few = || 0u64..4;
+        let page = move || (0u64..16).prop_map(move |page| page * ps);
         let request = prop_oneof![
-            (sequence(), at(), bytes()).prop_map(|(e, at, len)| Request::Write(e, at, len)),
-            (sequence(), at(), bytes()).prop_map(|(e, at, len)| Request::Read(e, at, len)),
-            (sequence(), at(), at(), at(), any::<bool>())
+            8 => (few(), page(), 1usize..4).prop_map(|(e, at, n)| Request::Write(e, at, n * BLOCK)),
+            8 => (few(), page(), 1u64..4, page(), any::<bool>())
+                .prop_map(move |(e, at, pages, to, w)| Request::Map(e, at, pages * ps, to, w)),
+            8 => (sequence(), at(), bytes()).prop_map(|(e, at, len)| Request::Write(e, at, len)),
+            8 => (sequence(), at(), bytes()).prop_map(|(e, at, len)| Request::Read(e, at, len)),
+            8 => (sequence(), at(), at(), at(), any::<bool>())
                 .prop_map(|(e, at, len, to, w)| Request::Map(e, at, len, to, w)),
-            (at(), at()).prop_map(|(to, len)| Request::Unmap(to, len)),
-            Just(Request::Commit),
-            sequence().prop_map(Request::Free),
+            8 => (at(), at()).prop_map(|(to, len)| Request::Unmap(to, len)),
+            8 => Just(Request::Commit),
+            8 => sequence().prop_map(Request::Free),
+            1 => Just(Request::Fork),
         ];
         let config = Config { cases: 200, failure_persistence: None, ..Config::default() };
         TestRunner::new(config)
             .run(&proptest::collection::vec(request, 1..64), |requests| {
-                let (store, _dir) = store(1 << 22);
+                // Room for every extent it may open, so that nothing it did may fail a commit.
+                let (store, dir) = store(1 << 27);
                 let stage = Arc::new(RunRecordingSecondStage::default());
                 let _window = store.create_dax_window(WINDOW, Some(stage)).unwrap();
                 let kept = id(&store, KEPT);
                 write(&store, kept, 0, &pattern(9, BLOCK)).unwrap();
                 store.commit(None).unwrap();
+                let mut forks = (1u64..).map(|fork| (dir.path().join(fork.to_string()), fork));
                 for request in requests {
                     let extent = |sequence| id(&store, sequence);
                     // Failing or not as it may: what it may not do is panic.
@@ -2976,8 +3058,14 @@ mod tests {
                         Request::Unmap(to, len) => store.unmap(to, len),
                         Request::Commit => store.commit(None),
                         Request::Free(e) => store.free(extent(e)),
+                        Request::Fork => {
+                            let (path, fork) = forks.next().unwrap();
+                            store.fork(path, store.branch() + fork).map_err(|_| Errno::EIO)
+                        }
                     };
                 }
+                // Nor leave a commit it can't make: a wedged store's guest gets nothing more done.
+                prop_assert_eq!(store.commit(None), Ok(()));
                 prop_assert_eq!(read(&store, kept, 0, BLOCK), Ok(pattern(9, BLOCK)));
                 Ok(())
             })

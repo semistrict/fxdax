@@ -16,13 +16,14 @@ use crate::writer::{Body, Objects};
 use std::sync::Arc;
 use storage_device::ExtentId;
 
-/// A commit: the extents it seals, which it minted, stored in its segment or, `own`, on their
-/// own; the extents it frees; and the root, if it sets it. `tag` names it in footers.
+/// A commit: the extents it seals, which it minted, stored in its segment or, `own`, by their
+/// sequence numbers, on their own; the extents it frees; and the root, if it sets it. `tag` names
+/// it in footers.
 #[derive(Clone, Debug, Default)]
 pub struct Commit {
     pub tag: u64,
     pub extents: Vec<(ExtentId, Vec<u8>)>,
-    pub own: Vec<(ExtentId, Vec<u8>)>,
+    pub own: Vec<(u64, Vec<u8>)>,
     pub frees: Vec<ExtentId>,
     pub root: Option<Vec<u8>>,
 }
@@ -50,17 +51,25 @@ pub struct Plan {
 }
 
 impl Plan {
-    /// Seals `extent`, of `len` bytes: on its own if `own`, or in its data, after those before it.
-    /// The branch's next sequence number is past it.
-    pub fn seal(&mut self, extent: ExtentId, len: u64, own: bool) {
-        if own {
-            self.contents.own.push((extent, len));
-        } else {
-            self.contents.extents.push((extent, self.data, len));
-            self.data += len;
-        }
+    /// Seals `extent`, of `len` bytes, in its data, after those before it. The branch's next
+    /// sequence number is past it.
+    pub fn seal(&mut self, extent: ExtentId, len: u64) {
+        self.contents.extents.push((extent, self.data, len));
+        self.data += len;
+        self.sealed(extent.sequence, len);
+    }
+
+    /// Seals the extent of the branch whose sequence number is `sequence`, of `len` bytes, on its
+    /// own. The branch's next sequence number is past it.
+    pub fn seal_own(&mut self, sequence: u64, len: u64) {
+        self.contents.own.push((sequence, len));
+        self.sealed(sequence, len);
+    }
+
+    /// An extent of `sequence`, of `len` bytes, is sealed.
+    fn sealed(&mut self, sequence: u64, len: u64) {
         self.bytes += len;
-        self.contents.next_sequence = self.contents.next_sequence.max(extent.sequence + 1);
+        self.contents.next_sequence = self.contents.next_sequence.max(sequence + 1);
     }
 
     /// The bytes of the extents it seals, in its data and on their own.
@@ -144,11 +153,11 @@ impl Batch {
     /// Adds `commit`, after those before it.
     pub fn commit(&mut self, commit: Commit) {
         for (extent, bytes) in commit.extents {
-            self.plan.seal(extent, bytes.len() as u64, false);
+            self.plan.seal(extent, bytes.len() as u64);
             self.data.extend_from_slice(&bytes);
         }
-        for (extent, bytes) in commit.own {
-            self.plan.seal(extent, bytes.len() as u64, true);
+        for (sequence, bytes) in commit.own {
+            self.plan.seal_own(sequence, bytes.len() as u64);
             self.own.push(bytes);
         }
         self.plan.commit(commit.tag, commit.frees, commit.root);
@@ -218,7 +227,7 @@ mod tests {
             first + 4
         );
         assert_eq!(chain.next_sequence(), first + 4);
-        let own = vec![(ExtentId::new(1, first + 7), b"own".to_vec())];
+        let own = vec![(first + 7, b"own".to_vec())];
         assert_eq!(
             next_sequence(Commit { tag: 2, own, ..Commit::default() }, &mut chain),
             first + 8
@@ -243,7 +252,7 @@ mod tests {
         assert!(batch.is_empty());
         let extents = vec![(small, b"small".to_vec())];
         batch.commit(Commit { tag: 7, extents, root: Some(b"one".to_vec()), ..Commit::default() });
-        let own = vec![(large, b"large".to_vec())];
+        let own = vec![(large.sequence, b"large".to_vec())];
         let frees = vec![freed];
         batch.commit(Commit {
             tag: 8,
@@ -290,7 +299,7 @@ mod tests {
         let commit = Commit {
             tag: 7,
             extents: vec![(small, data[&small].clone()), (other, data[&other].clone())],
-            own: vec![(large, data[&large].clone())],
+            own: vec![(large.sequence, data[&large].clone())],
             frees: vec![freed],
             root: root.clone(),
         };
@@ -298,7 +307,11 @@ mod tests {
         let batch = Batch::from(commit).close(&mut chain.clone()).frame();
         let mut plan = Plan::default();
         for (extent, own) in [(small, false), (other, false), (large, true)] {
-            plan.seal(extent, data[&extent].len() as u64, own);
+            let len = data[&extent].len() as u64;
+            match own {
+                true => plan.seal_own(extent.sequence, len),
+                false => plan.seal(extent, len),
+            }
         }
         assert_eq!(plan.bytes(), 16);
         plan.commit(7, vec![freed], root);

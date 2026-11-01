@@ -155,6 +155,9 @@ pub struct Rules {
     /// A fork waits for the segments closed between commits to be framed, which its child reads
     /// from their framed files (TASK-41.1).
     pub forks_wait_for_framings: bool,
+    /// A flush with no commit to take ends what writes closed for want of room, which holds
+    /// commits an uploader waits for, whether or not one comes after (TASK-150.2).
+    pub flushes_end_closings: bool,
     /// A free of an extent sealed before keeps its data while a view older than the free lives.
     pub keep_frees_for_views: bool,
     /// A free of an extent a view pins keeps its data while it does.
@@ -186,6 +189,7 @@ impl Rules {
         close_waits_for_framings: true,
         flushes_wait_for_every_framing: true,
         forks_wait_for_framings: true,
+        flushes_end_closings: true,
         keep_frees_for_views: true,
         keep_pins: true,
         decide_at_publish: true,

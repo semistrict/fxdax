@@ -2864,6 +2864,133 @@ fn vm_processes_that_leave_replies_unread_are_let_go() {
     drop((sender, receiver, stream));
 }
 
+/// TASK-150.3: a window of any size a VM process names makes the daemon no more room for it: past
+/// what the protocol bounds, it is let go still, here for half a gibibyte of replies it leaves
+/// unread, behind a window's worth of mappings of all the bits a word has.
+#[test]
+fn vm_processes_naming_vast_windows_are_let_go_all_the_same() {
+    use super::wire::*;
+    host();
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("extentd.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || serve(listener));
+    let (sender, mut receiver, stream, branch) =
+        raw_connection(&socket, &dir.path().join("store"), 1 << 24);
+    let window = Header::new(WINDOW, 2).with_args(&[1 << 60]);
+    let answered = call(&sender, &mut receiver, window, &[]).header.status;
+    let len = 8 << 20;
+    let written = Header::new(WRITE, 3).with_args(&[branch, 1, 0]);
+    assert_eq!(call(&sender, &mut receiver, written, &pattern(1, len)).header.status, 0);
+    for id in 4..68 {
+        let read = Header::new(READ, id).with_args(&[branch, 1, 0, len as u64]);
+        sender.send(read, &[], &[]).unwrap();
+    }
+    use std::os::fd::AsRawFd;
+    let mut hung_up = libc::pollfd { fd: stream.as_raw_fd(), events: libc::POLLRDHUP, revents: 0 };
+    // SAFETY: Polls the stream, which the test keeps open, for 10 s at most.
+    let ready = unsafe { libc::poll(&mut hung_up, 1, 10_000) };
+    assert_eq!(ready, 1, "the daemon holds what the VM process leaves unread");
+    assert_eq!(answered, -Errno::EINVAL.raw());
+    drop((sender, receiver, stream));
+}
+
+/// TASK-150.3: a window as large as the daemon makes room for is one it serves.
+#[test]
+fn windows_go_up_to_the_most_the_daemon_makes_room_for() {
+    use super::wire::*;
+    host();
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("extentd.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || serve(listener));
+    for (name, size, status) in
+        [("past", MAX_WINDOW + page_size(), -Errno::EINVAL.raw()), ("largest", MAX_WINDOW, 0)]
+    {
+        let (sender, mut receiver, _stream, _) =
+            raw_connection(&socket, &dir.path().join(name), 1 << 24);
+        let window = Header::new(WINDOW, 2).with_args(&[size]);
+        assert_eq!(call(&sender, &mut receiver, window, &[]).header.status, status, "{name}");
+    }
+}
+
+/// TASK-150.4: a VM process opening a fork of a point that doesn't exist, in its tenant's directory,
+/// names another tenant's branch: it gets nothing of it, and the branch's writer is left as it was.
+/// Its tenant's stores are its directory's: what the bucket holds has no tenant.
+#[test]
+fn tenants_take_no_branch_by_naming_it() {
+    host();
+    let dir = tempfile::tempdir().unwrap();
+    let tenant = |name: &str| {
+        let stores = dir.path().join(name);
+        std::fs::create_dir(&stores).unwrap();
+        let tenant = super::server::Tenant::new(name, &stores).unwrap();
+        let socket = dir.path().join(format!("{name}.sock"));
+        let listener = UnixListener::bind(&socket).unwrap();
+        std::thread::spawn(move || super::server::serve_tenant(listener, tenant));
+        (stores, socket)
+    };
+    let (ours, our_socket) = tenant("ours");
+    let (theirs, their_socket) = tenant("theirs");
+    let store = RemoteExtentStore::connect(&their_socket, theirs.join("store"), 1 << 24).unwrap();
+    let extent = ExtentId { branch: store.branch(), sequence: 1 };
+    write(&store, extent, 0, &pattern(4, BLOCK)).unwrap();
+    store.commit(Some(b"theirs")).unwrap();
+
+    let (restored, point) = (ours.join("restored"), ours.join("point"));
+    let opened =
+        RemoteExtentStore::connect_forked(&our_socket, &restored, &point, store.branch(), 1 << 24);
+    assert_eq!(opened.map(drop).map_err(|error| error.errno()), Err(Some(Errno::ENOENT)));
+    assert!(!point.exists(), "the point of another tenant's branch was taken");
+    let later = ExtentId { branch: store.branch(), sequence: 2 };
+    assert_eq!(write(&store, later, 0, &pattern(5, BLOCK)), Ok(()));
+    assert_eq!(store.commit(None), Ok(()));
+    assert_eq!(read(&store, extent, 0, BLOCK), Ok(pattern(4, BLOCK)));
+}
+
+/// TASK-150.5: a connection has one store, however many `OPEN`s its VM process has in flight: the
+/// second, as the first waits for its store's last holder to let it go, is refused, holding
+/// nothing, and both stores open for others once the connection goes.
+#[test]
+fn connections_open_one_store_at_a_time() {
+    use super::stores::{open_paths, store_key};
+    use super::wire::*;
+    use std::os::unix::ffi::OsStrExt as _;
+    host();
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("extentd.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || serve(listener));
+    let (first, second) = (dir.path().join("first"), dir.path().join("second"));
+    let key = store_key(&first);
+    open_paths().hold(&key, std::sync::Weak::new(), None).unwrap();
+
+    let stream = UnixStream::connect(&socket).unwrap();
+    let sender = Sender::new(stream.try_clone().unwrap());
+    let mut receiver = Receiver::new(stream.try_clone().unwrap());
+    let open = |id| Header::new(OPEN, id).with_args(&[1 << 24]).with_flags(OPEN_CREATE);
+    sender.send(open(1), first.as_os_str().as_bytes(), &[]).unwrap();
+    while !open_paths().is_waited_for(&key) {
+        std::thread::yield_now();
+    }
+    let second_opened = call(&sender, &mut receiver, open(2), second.as_os_str().as_bytes());
+    open_paths().release(&key);
+    let first_opened = receiver.receive(|| 0).unwrap().unwrap();
+    let statuses =
+        (first_opened.header.id, first_opened.header.status, second_opened.header.status);
+    stream.shutdown(std::net::Shutdown::Both).unwrap();
+    drop((sender, receiver, stream));
+
+    let (opening, reopened_first, reopened_second) =
+        (socket.clone(), first.clone(), second.clone());
+    let opened = within(std::time::Duration::from_secs(30), move || {
+        reopened(&opening, &reopened_first);
+        reopened(&opening, &reopened_second);
+    });
+    assert_eq!(opened, Ok(()), "a store stayed held once its connection went");
+    assert_eq!(statuses, (1, 0, -Errno::EBUSY.raw()));
+}
+
 /// TASK-79.16: a tenant's VM processes, the default tenant's too, have so many connections at
 /// most: one past them is closed as it comes; once one goes, another is served. The first of them
 /// is served here, as tests' connections are, which says when it is done ([`serve_connection`]).
@@ -3966,6 +4093,7 @@ fn whatever_a_vm_process_says_harms_no_other() {
     use proptest::prelude::*;
     use proptest::test_runner::{Config, TestRunner};
     use std::os::fd::{AsFd as _, AsRawFd as _, FromRawFd as _, OwnedFd};
+    use std::os::unix::ffi::OsStrExt as _;
     use std::sync::atomic::{AtomicU64, Ordering};
     use zerocopy::IntoBytes as _;
 
@@ -4015,6 +4143,9 @@ fn whatever_a_vm_process_says_harms_no_other() {
         Just(ps),
         Just(WINDOW_BYTES),
         Just(WINDOW_BYTES - ps),
+        Just(MAX_WINDOW),
+        Just(MAX_WINDOW + ps),
+        Just(1 << 60),
         Just(OWN_BRANCH),
         Just(OTHER_BRANCH),
         1u64..16,
@@ -4063,23 +4194,60 @@ fn whatever_a_vm_process_says_harms_no_other() {
         Just((MAPPINGS, 0, 0, [0; 5], Vec::new())),
         Just((INFO, 0, 0, [0; 5], Vec::new())),
     ];
-    let message = prop_oneof![3 => plausible, 1 => anything];
+    // On a connection that opened nothing yet, stores any which way, a point of none named too.
+    let nothing = [&[0], vms.join("nothing").as_os_str().as_bytes()].concat();
+    let opening = prop_oneof![
+        (0u64..4, any::<bool>()).prop_map(|(store, creating)| {
+            let flags = if creating { OPEN_CREATE } else { 0 };
+            (OPEN, flags, 0, [1 << 24, 0, 0, 0, 0], format!("open-{store}").into_bytes())
+        }),
+        (0u64..4).prop_map(move |store| {
+            let named = [format!("open-{store}").as_bytes(), &nothing].concat();
+            (OPEN, OPEN_FORK_FROM, 0, [1 << 24, OTHER_BRANCH, 0, 0, 0], named)
+        }),
+    ];
+    let message = prop_oneof![6 => plausible, 2 => anything, 1 => opening];
     let last_words = prop_oneof![
         Just(LastWords::Nothing),
         Just(LastWords::PartOfAHeader),
         any::<u64>().prop_map(LastWords::MissingPayload),
         (1u32..4).prop_map(LastWords::MissingDescriptors),
     ];
-    let sequence = (proptest::collection::vec(message, 1..64), any::<bool>(), last_words);
+    // A window of any size it asks for first, the sequence's mappings' within most.
+    let window = prop_oneof![
+        4 => Just(WINDOW_BYTES),
+        1 => Just(MAX_WINDOW),
+        1 => Just(MAX_WINDOW + ps),
+        1 => Just(1 << 60),
+    ];
+    let sequence = (
+        proptest::collection::vec(message, 1..64),
+        any::<bool>(),
+        last_words,
+        any::<bool>(),
+        window,
+    );
 
     let cases = AtomicU64::new(0);
     let served = std::sync::Arc::new(AtomicU64::new(0));
     let config = Config { cases: 128, failure_persistence: None, ..Config::default() };
     TestRunner::new(config)
-        .run(&sequence, |(messages, transfer, last_words)| {
+        .run(&sequence, |(messages, transfer, last_words, opened, window)| {
             let case = cases.fetch_add(1, Ordering::Relaxed);
             let path = vms.join(format!("store-{case}"));
-            let (sender, mut receiver, stream, branch) = raw_connection(&socket, &path, 1 << 24);
+            let (sender, mut receiver, stream, branch) = if opened {
+                raw_connection(&socket, &path, 1 << 24)
+            } else {
+                let stream = UnixStream::connect(&socket).unwrap();
+                let sending = Sender::new(stream.try_clone().unwrap());
+                (sending, Receiver::new(stream.try_clone().unwrap()), stream, 0)
+            };
+            // The stores it may hold once done: those it opened, had it none.
+            let held: Vec<_> = (0..4)
+                .filter(|_| !opened)
+                .map(|store| vms.join(format!("{case}-open-{store}")))
+                .chain([path].into_iter().filter(|_| opened))
+                .collect();
             let sender = std::sync::Arc::new(sender);
             // Whatever comes back, its stage operations made, as far as saying so goes.
             let (answered, all_answered) = std::sync::mpsc::channel();
@@ -4099,7 +4267,7 @@ fn whatever_a_vm_process_says_harms_no_other() {
                     }
                 })
             };
-            let window = Header::new(WINDOW, 2).with_args(&[WINDOW_BYTES]);
+            let window = Header::new(WINDOW, 2).with_args(&[window]);
             sender.send(window, &[], &[]).unwrap();
             if transfer {
                 // SAFETY: Makes a descriptor, which is owned below.
@@ -4116,14 +4284,23 @@ fn whatever_a_vm_process_says_harms_no_other() {
                 let area = Header::new(TRANSFER, 3).with_args(&[TRANSFER_BYTES]);
                 sender.send(area, &[], &[fd.as_fd()]).unwrap();
             }
-            let named = |word: u64| match word {
+            let named_word = |word: u64| match word {
                 OWN_BRANCH => branch,
                 OTHER_BRANCH => kept.branch,
                 word => word,
             };
+            // A path a sequence opens at, this case's.
+            let in_vms = |payload: Vec<u8>| match payload.strip_prefix(b"open-") {
+                Some(rest) => {
+                    let named = vms.as_os_str().as_bytes();
+                    [named, format!("/{case}-open-").as_bytes(), rest].concat()
+                }
+                None => payload,
+            };
             for (kind, flags, id, args, payload) in messages {
-                let args = args.map(named);
+                let args = args.map(named_word);
                 let message = Header::new(kind, id).with_args(&args).with_flags(flags);
+                let payload = in_vms(payload);
                 // The daemon may have let it go by now.
                 let _ = sender.send(message, &payload, &[]);
             }
@@ -4144,14 +4321,20 @@ fn whatever_a_vm_process_says_harms_no_other() {
             prop_assert!(within(wait, move || answering.join().unwrap()).is_ok());
 
             // Its store is let go of, and opens.
-            let (opening, reopened) = (socket.clone(), path.clone());
-            let opened = within(wait, move || loop {
-                match RemoteExtentStore::connect(&opening, &reopened, 1 << 24) {
-                    Err(error) if error.errno() == Some(Errno::EBUSY) => std::thread::yield_now(),
-                    opened => break opened.map(drop).map_err(|error| error.to_string()),
-                }
-            });
-            prop_assert_eq!(opened, Ok(Ok(())));
+            for path in held {
+                let (opening, reopened) = (socket.clone(), path);
+                let opened = within(wait, move || {
+                    loop {
+                        match RemoteExtentStore::connect(&opening, &reopened, 1 << 24) {
+                            Err(error) if error.errno() == Some(Errno::EBUSY) => {
+                                std::thread::yield_now()
+                            }
+                            opened => break opened.map(drop).map_err(|error| error.to_string()),
+                        }
+                    }
+                });
+                prop_assert_eq!(opened, Ok(Ok(())));
+            }
 
             // Nothing it said reached the other tenant's, which is served on.
             prop_assert_eq!(read(&other, kept, 0, BLOCK), Ok(pattern(9, BLOCK)));

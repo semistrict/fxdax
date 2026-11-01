@@ -557,6 +557,66 @@ fn each_write_of_a_fork_going_wrong() {
     }));
 }
 
+/// TASK-150.1: a pass of the collector, which nothing keeps away from any step of a fork, just
+/// before each of the fork's writes takes nothing a branch holds, or is about to.
+#[test]
+fn each_write_of_a_fork_meeting_the_collector() {
+    host();
+    all((0..writes(&[]))
+        .map(|write| (vec![Fault::Write(write, Mishap::Collected)], Leftover::Deleted)));
+}
+
+/// What a pass of the collector over `bucket` does as a [`Mishap`] calls it.
+fn pass(bucket: &Arc<Bucket>) -> Arc<dyn Fn() + Send + Sync> {
+    let bucket = bucket.clone();
+    Arc::new(move || {
+        let options = extent_remote::collector::Options { compact_below: 0.0, grace: 0 };
+        block_on(extent_remote::collector::collect(&*bucket, rand::random(), &options)).unwrap();
+    })
+}
+
+/// TASK-150.1: a child with a branch of its own, forked where no bucket was, uploads what it
+/// inherited as it attaches, of every size, with a pass of the collector just before the write
+/// numbered `write`, if it is one of its: it holds all of it then, read from the bucket alone. Says
+/// how many writes the upload made.
+fn upload_of_what_was_inherited(write: usize) -> usize {
+    let temp = tempfile::tempdir().unwrap();
+    let parent = ExtentStore::create(temp.path().join("parent"), 1 << 30).unwrap();
+    let sizes = [BLOCK, 2 * BLOCK, super::LARGE as usize, 2 * super::LARGE as usize];
+    let held = sizes.iter().enumerate().map(|(at, &len)| {
+        let extent = ExtentId { branch: parent.branch(), sequence: at as u64 + 1 };
+        let data = pattern(at as u8, len);
+        parent.write(extent, 0, &[VolatileSlice::from(&data[..])]).unwrap();
+        (extent.sequence, data)
+    });
+    let held: Vec<_> = held.collect();
+    parent.commit(Some(b"root")).unwrap();
+    let (path, branch) = (temp.path().join("child"), parent.branch() + 1);
+    parent.fork(&path, branch).unwrap();
+    drop(parent);
+
+    let memory: Arc<dyn object_store::ObjectStore> = Arc::new(InMemory::new());
+    let bucket = Arc::new(Bucket::new(memory.clone(), ""));
+    let gated = Arc::new(Gated::over(memory));
+    gated.arm(write, Mishap::Collected, pass(&bucket));
+    let child = ExtentStore::open(&path).unwrap();
+    child.attach_remote(Arc::new(Bucket::new(gated.clone(), "")), 1, options()).unwrap();
+    assert_eq!(uploaded(&bucket, branch), (held, Some(b"root".to_vec())), "write {write}");
+    gated.writes()
+}
+
+/// TASK-150.1: a pass of the collector just before each write of a child's upload of what it
+/// inherited takes nothing the segments on their way name.
+#[test]
+fn each_write_of_a_childs_upload_meeting_the_collector() {
+    host();
+    let count = upload_of_what_was_inherited(usize::MAX);
+    assert!(count >= 3, "its record, its lease, its fence, its segment: {count}");
+    for write in 0..count {
+        upload_of_what_was_inherited(write);
+    }
+}
+
 /// Where a fork may fail for what its cleanup finds: nothing of it in object storage, its segment
 /// on its way, there unacknowledged, and acknowledged, its child's record given.
 const FAILING_FOR_CLEANUPS: [&str; 4] =

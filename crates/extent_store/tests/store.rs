@@ -2179,6 +2179,78 @@ fn segment_data(dir: &MemDir) -> Vec<u64> {
     lens
 }
 
+/// TASK-150.2: a segment a write closed for want of room, holding a commit's data, goes to the
+/// uploader with no commit after it: a flush frames it, as nothing else would until the guest next
+/// commits, which a sync of the store, or a fork, waiting for that commit's upload, may not live to
+/// see. It reads as before, and the next commit finds nothing left to do of it.
+#[test]
+fn segments_closed_for_room_go_to_the_uploader_with_no_commit_after() {
+    let dir = MemDir::new();
+    let description = Description { block_size: BLOCK as u32, capacity: 64 << 20, branch: BRANCH };
+    let store = Store::create(dir, description, SMALL_SEGMENTS).unwrap();
+    assert!(store.upload(WRITER, 0).unwrap());
+    let block = |sequence: u64| pattern(sequence as u8, 0, BLOCK);
+    store.write(extent(0), 0, &block(0)).unwrap();
+    store.commit(None).unwrap();
+    // Past what a segment holds, no commit with them.
+    for sequence in 1..48 {
+        store.write(extent(sequence), 0, &block(sequence)).unwrap();
+    }
+
+    store.flush().unwrap();
+    let lasts: Vec<u64> = store.closed(8).unwrap().iter().map(Closed::last).collect();
+    assert_eq!(lasts, [1]);
+    for sequence in 0..48 {
+        assert!(read(&store, extent(sequence), 0, BLOCK) == block(sequence), "{sequence}");
+    }
+    store.commit(None).unwrap();
+    for sequence in 0..48 {
+        assert!(read(&store, extent(sequence), 0, BLOCK) == block(sequence), "{sequence}");
+    }
+}
+
+/// TASK-150.2: so with a segment holding a commit closed by cleaning, whose copies are made as
+/// writes are, with no commit in sight, as a commit waiting for its upload holds off its guest's.
+#[test]
+fn segments_cleaning_closed_for_room_go_to_the_uploader_with_no_commit_after() {
+    let dir = MemDir::new();
+    let description = Description { block_size: BLOCK as u32, capacity: 64 << 20, branch: BRANCH };
+    let store = Store::create(dir, description, SMALL_SEGMENTS).unwrap();
+    assert!(store.upload(WRITER, 0).unwrap());
+    let block = |sequence: u64| pattern(sequence as u8, 0, BLOCK);
+    let uploaded = |store: &Store<MemDir>| {
+        let epoch = store.epoch().unwrap();
+        for closed in store.closed(usize::MAX).unwrap() {
+            store.uploaded(closed.number).unwrap();
+        }
+        store.release(epoch).unwrap();
+    };
+    // Segments of a commit each, which frees leave most of what they hold live... at a third.
+    for round in 0..8 {
+        let extents = round * 32..(round + 1) * 32;
+        for sequence in extents.clone() {
+            store.write(extent(sequence), 0, &block(sequence)).unwrap();
+        }
+        store.commit(None).unwrap();
+        for sequence in extents.filter(|sequence| sequence % 3 != 0) {
+            store.free(extent(sequence)).unwrap();
+        }
+        store.commit(None).unwrap();
+        uploaded(&store);
+    }
+    store.close_now().unwrap();
+    uploaded(&store);
+    store.write(extent(1 << 20), 0, &block(7)).unwrap();
+    store.commit(None).unwrap();
+    let epoch = store.epoch().unwrap();
+
+    let copied = store.clean_behind(0.5, u64::MAX).unwrap();
+    assert!(copied > SEGMENT_LIMIT, "{copied} bytes copied");
+    store.flush().unwrap();
+    let lasts: Vec<u64> = store.closed(8).unwrap().iter().map(Closed::last).collect();
+    assert_eq!(lasts, [epoch]);
+}
+
 /// The open segment takes writes until it holds a segment and an extent, `Options::segment_size`
 /// and `Options::max_extent`, between commits: then the next goes to another, which no segment
 /// grows past, however much is written between commits (TASK-79.2). One holding no commit's data
