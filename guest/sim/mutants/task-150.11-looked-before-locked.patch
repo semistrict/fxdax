@@ -1,0 +1,38 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+#
+# TASK-150.11: TASK-44.21's look at the region before fxfs_dax_map_to locks it, in each caller: a writer
+# makes the region writable between, and a sealed piece's MAP is writable, in no gate (GCE r423).
+
+--- a/guest/linux/fs/fxfs/dax.c
++++ b/guest/linux/fs/fxfs/dax.c
+@@ -2194,7 +2194,7 @@
+ 	from = region->mapped;
+ 	if (end <= from)
+ 		goto out;
+-	if (end > region->pages || (sealed && writable)) {
++	if (end > region->pages) {
+ 		err = -EXDEV;
+ 		goto out;
+ 	}
+@@ -2380,6 +2380,10 @@
+ 			return -EXDEV;
+ 		}
+ 	}
++	if (!e->open && READ_ONCE(region->writable) && first + pages > READ_ONCE(region->mapped)) {
++		fxfs_dax_put_region(dax, region);
++		return -EXDEV;
++	}
+ 	err = fxfs_dax_reach(dax, region, first + pages, !e->open);
+ 	if (err) {
+ 		fxfs_dax_put_region(dax, region);
+@@ -2462,7 +2466,8 @@
+ 		fxfs_device_store_end(dax->dev);
+ 		fxfs_dax_put_region(dax, region);
+ 	}
+-	err = fxfs_dax_reach(dax, region, first + pages, !e.open);
++	err = !e.open && READ_ONCE(region->writable) && first + pages > READ_ONCE(region->mapped) ?
++	      -EXDEV : fxfs_dax_reach(dax, region, first + pages, !e.open);
+ 	if (err)
+ 		goto out;
+ 	range = fxfs_dax_new_range(region->window_offset + ((u64)first << PAGE_SHIFT), pages,
