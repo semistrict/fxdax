@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+#
+# TASK-140, 826183635: a chunk of an open extent whose region stayed read-only gets a range of its
+# own, not a slice that could never take a write: the write spun for ever, unkillable.
+
+--- a/guest/linux/fs/fxfs/dax.c
++++ b/guest/linux/fs/fxfs/dax.c
+@@ -2425,11 +2425,7 @@
+ 			 * write for ever, unkillable (xfstests generic/111, TASK-140). The range's
+ 			 * own space maps it.
+ 			 */
+-			if (region->writable)
+-				break;
+-			fxfs_device_store_end(dax->dev);
+-			fxfs_dax_put_region(dax, region);
+-			return NULL;
++			break;
+ 		}
+ 		fxfs_device_store_end(dax->dev);
+ 		fxfs_dax_put_region(dax, region);

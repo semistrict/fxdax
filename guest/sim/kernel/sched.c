@@ -16,11 +16,13 @@
 /* The nanoseconds of virtual time a scheduling point takes. */
 #define SIM_POINT_NS 100
 /* Points before a run counts as a livelock: of tasks spinning, as TASK-140's write did. */
-#define SIM_MAX_POINTS 200000000ULL
+#define SIM_MAX_POINTS 20000000ULL
 
 struct task_struct *sim_current;
 
 static LIST_HEAD(tasks);
+/* Tasks done, which a run frees as it ends: a coroutine can't free its own stack. */
+static LIST_HEAD(ended);
 static struct task_struct main_task = { .pid = 0, .comm = "main" };
 static u64 rng_state;
 /* In percent: how likely a point is to leave the current task running, which the seed picks. */
@@ -56,6 +58,7 @@ void sim_init(u64 seed)
 	extern sim_initcall_t __start_sim_initcalls[], __stop_sim_initcalls[];
 	sim_initcall_t *call;
 
+	host_fixed_addresses();
 	rng_state = seed * 0x9e3779b97f4a7c15ULL + 0x2545f4914f6cdd1dULL;
 	sim_random();
 	sticky = stickies[sim_random() % ARRAY_SIZE(stickies)];
@@ -281,6 +284,7 @@ static void task_main(void *arg)
 		sim_panic("%s ended holding %s", task->comm, task->held[0].name);
 	task->done = true;
 	task->__state = TASK_NORMAL;
+	list_move(&task->tasks, &ended);
 	wake_up_process(&main_task);
 	pick_next("exit", true);
 	sim_panic("%s ran after its end", task->comm);
@@ -303,15 +307,10 @@ struct task_struct *sim_spawn(const char *name, void (*fn)(void *arg), void *arg
 
 void sim_run(void)
 {
-	struct task_struct *task;
-	bool running;
+	struct task_struct *task, *next;
 
-	for (;;) {
-		running = false;
-		list_for_each_entry(task, &tasks, tasks)
-			running |= !task->done && task != &main_task;
-		if (!running)
-			break;
+	/* Only the main task left. */
+	while (!list_is_singular(&tasks)) {
 		main_task.__state = TASK_UNINTERRUPTIBLE;
 		main_task.blocked_on = "the tasks to end";
 		pick_next("sim_run", true);
@@ -319,6 +318,11 @@ void sim_run(void)
 	}
 	if (rcu_pending)
 		rcu_run_callbacks();
+	list_for_each_entry_safe(task, next, &ended, tasks) {
+		list_del(&task->tasks);
+		host_fiber_free(task->fiber);
+		host_free(task);
+	}
 }
 
 void rcu_read_lock(void)

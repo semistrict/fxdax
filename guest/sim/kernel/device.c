@@ -152,9 +152,33 @@ void sim_device_free_extent(u64 sequence)
 	kfree(extent);
 }
 
+void sim_device_describe(u64 page)
+{
+	static const char *const states[] = { "unmapped", "zeros", "read-only", "writable" };
+	const struct window_page *at = &device.pages[page];
+
+	sim_log("window page %llx: %s, extent %llu\n", page, states[at->state],
+		at->extent ? at->extent->sequence : 0);
+}
+
 u64 sim_device_maps(void)
 {
 	return device.maps;
+}
+
+/* The window page sim_device_watch watches, or -1. */
+static u64 watched = ~0ULL;
+
+void sim_device_watch(u64 page)
+{
+	watched = page;
+}
+
+static void watch(const char *what, u64 page, u64 pages, u64 sequence, u64 in_extent)
+{
+	if (watched >= page && watched < page + pages)
+		sim_log("sim: window page %llx: %s by %s: extent %llu page %llu, at %llu ns\n", watched,
+			what, current->comm, sequence, in_extent + watched - page, ktime_get_ns());
 }
 
 static int map_one(u64 sequence, u64 offset, u64 len, u64 window_offset, bool writable)
@@ -165,6 +189,7 @@ static int map_one(u64 sequence, u64 offset, u64 len, u64 window_offset, bool wr
 	u64 within;
 
 	device.maps++;
+	watch(writable ? "MAP writable" : "MAP read-only", first, pages, sequence, in_extent);
 	if (window_offset + len > device.window_len)
 		return -EINVAL;
 	if (!extent || (!writable && !extent->held))
@@ -204,6 +229,7 @@ static void unmap_one(u64 window_offset, u64 len)
 {
 	u64 page, first = window_offset >> PAGE_SHIFT;
 
+	watch("UNMAP", first, len >> PAGE_SHIFT, 0, 0);
 	for (page = first; page < first + (len >> PAGE_SHIFT); page++) {
 		device.pages[page].extent = NULL;
 		device.pages[page].state = WINDOW_NONE;

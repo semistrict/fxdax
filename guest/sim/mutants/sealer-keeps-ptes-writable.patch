@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+#
+# The protocol itself: the sealer makes user mappings of writable pages read-only. Not a past bug: how
+# far the sim sees a store to a sealed page.
+
+--- a/guest/linux/fs/fxfs/dax.c
++++ b/guest/linux/fs/fxfs/dax.c
+@@ -4056,8 +4056,6 @@
+ 	list_for_each_entry_safe(file, next, &dax->writable, writable) {
+ 		/* A file with no inode has nothing mapping its pages but the window. */
+ 		mutex_lock(&dax->files_lock);
+-		if (file->inode)
+-			wp_shared_mapping_range(file->inode->i_mapping, 0, ULONG_MAX);
+ 		mutex_unlock(&dax->files_lock);
+ 		/* Ranges freed meanwhile are freed after a grace period (fxfs_dax_free_range). */
+ 		rcu_read_lock();

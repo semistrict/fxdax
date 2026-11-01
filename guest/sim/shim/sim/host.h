@@ -9,6 +9,13 @@
 
 #include <sim/base.h>
 
+/*
+ * Runs the process again with its addresses fixed, unless they are: fs/dax.c hashes pointers into
+ * its wait table, whose collisions change what a wake does, so the same seed needs the same
+ * addresses to be the same run.
+ */
+void host_fixed_addresses(void);
+
 void *host_malloc(size_t size);
 void *host_realloc(void *p, size_t size);
 void host_free(void *p);

@@ -113,10 +113,34 @@ vm_fault_t finish_fault(struct vm_fault *vmf)
 	sim_panic("a private mapping's fault: the sim makes only shared ones");
 }
 
+/*
+ * A copy isn't one step: it reads its source before it writes its destination, and a store between
+ * the two is lost where they overlap, as TASK-122's was: the page copied onto itself.
+ */
 unsigned long copy_mc_to_kernel(void *to, const void *from, unsigned long len)
 {
-	memcpy(to, from, len);
+	void *held = kmalloc(len, GFP_ATOMIC);
+
+	memcpy(held, from, len);
+	sim_point("a kernel copy");
+	memcpy(to, held, len);
+	kfree(held);
 	return 0;
+}
+
+/* The user page whose PTE the log tells of, if any (sim_mm_watch). */
+static unsigned long watched_addr = ~0UL;
+
+void sim_mm_watch(unsigned long addr)
+{
+	watched_addr = addr & PAGE_MASK;
+}
+
+static void watch(unsigned long addr, const char *what, unsigned long pte)
+{
+	if (addr == watched_addr)
+		sim_log("sim: address %lx: %s by %s: pte %lx, at %llu ns\n", addr, what, current->comm, pte,
+			ktime_get_ns());
 }
 
 /* The tables' slots of `vma` for `addr`. */
@@ -153,6 +177,7 @@ vm_fault_t vmf_insert_page_mkwrite(struct vm_fault *vmf, struct page *page, bool
 			return VM_FAULT_SIGBUS;
 		}
 		pte->pte |= SIM_PT_WRITE | SIM_PT_DIRTY;
+		watch(addr, "made writable", pte->pte);
 		return VM_FAULT_NOPAGE;
 	}
 	value.pte = (pfn << PAGE_SHIFT) | SIM_PT_PRESENT;
@@ -163,6 +188,8 @@ vm_fault_t vmf_insert_page_mkwrite(struct vm_fault *vmf, struct page *page, bool
 			value.pte |= SIM_PT_WRITE | SIM_PT_DIRTY;
 	}
 	*pte = value;
+	pmd_of(vma, addr)->pmd |= SIM_PT_TABLE;
+	watch(addr, "inserted", value.pte);
 	return VM_FAULT_NOPAGE;
 }
 
@@ -171,7 +198,6 @@ vm_fault_t vmf_insert_folio_pmd(struct vm_fault *vmf, struct folio *folio, bool 
 	struct vm_area_struct *vma = vmf->vma;
 	unsigned long addr = vmf->address & PMD_MASK;
 	pmd_t *pmd = pmd_of(vma, addr);
-	unsigned long i;
 
 	if (addr < vma->vm_start || addr + PMD_SIZE > vma->vm_end)
 		return VM_FAULT_SIGBUS;
@@ -185,11 +211,6 @@ vm_fault_t vmf_insert_folio_pmd(struct vm_fault *vmf, struct folio *folio, bool 
 		pmd->pmd |= SIM_PT_WRITE | SIM_PT_DIRTY;
 		return VM_FAULT_NOPAGE;
 	}
-	/* PTEs under it: a fault of a page beat this one. */
-	for (i = 0; i < PTRS_PER_PTE; i++) {
-		if (!pte_none(*pte_of(vma, addr + (i << PAGE_SHIFT))))
-			return VM_FAULT_NOPAGE;
-	}
 	if (!is_zero_folio(folio)) {
 		folio_get(folio);
 		atomic_inc(&folio->_mapcount);
@@ -199,7 +220,10 @@ vm_fault_t vmf_insert_folio_pmd(struct vm_fault *vmf, struct folio *folio, bool 
 	return VM_FAULT_NOPAGE;
 }
 
-/* A mapping of `folio` gone, with the reference it held: zap_present_ptes's. */
+/*
+ * A mapping gone, with the reference it held: zap_present_ptes's. Its PTE or PMD is clear already,
+ * as the kernel's page table lock has it: a put may wake a task, and so switch to one.
+ */
 static void drop_mapping(unsigned long pfn)
 {
 	struct folio *folio = pfn_folio(pfn);
@@ -213,9 +237,11 @@ static void drop_mapping(unsigned long pfn)
 
 static void zap_pmd(pmd_t *pmd)
 {
-	if (pmd_trans_huge(*pmd)) {
-		drop_mapping(pmd_pfn(*pmd));
+	pmd_t value = *pmd;
+
+	if (pmd_trans_huge(value)) {
 		pmd->pmd = 0;
+		drop_mapping(pmd_pfn(value));
 	}
 }
 
@@ -235,13 +261,16 @@ static bool sim_overlap(struct vm_area_struct *vma, pgoff_t start, pgoff_t nr, u
 {
 	pgoff_t pages = (vma->vm_end - vma->vm_start) >> PAGE_SHIFT;
 	pgoff_t first = max(start, vma->vm_pgoff);
-	pgoff_t last = nr >= ULONG_MAX - start ? ULONG_MAX : start + nr;
+	/* As unmap_mapping_pages: a range running off the end, even to 0 pages, goes to the end. */
+	pgoff_t last = start + nr - 1;
 
-	last = min(last, vma->vm_pgoff + pages);
-	if (first >= last)
+	if (last < start)
+		last = ULONG_MAX;
+	last = min(last, vma->vm_pgoff + pages - 1);
+	if (first > last)
 		return false;
 	*from = vma->vm_start + ((first - vma->vm_pgoff) << PAGE_SHIFT);
-	*to = vma->vm_start + ((last - vma->vm_pgoff) << PAGE_SHIFT);
+	*to = vma->vm_start + ((last + 1 - vma->vm_pgoff) << PAGE_SHIFT);
 	return true;
 }
 
@@ -253,13 +282,14 @@ void unmap_mapping_pages(struct address_space *mapping, pgoff_t start, pgoff_t n
 	i_mmap_lock_read(mapping);
 	for_each_mapped(vma, mapping, start, nr, from, to) {
 		for (addr = from; addr < to; addr += PAGE_SIZE) {
-			pte_t *pte = pte_of(vma, addr);
+			pte_t *pte = pte_of(vma, addr), value = *pte;
 
 			zap_pmd(pmd_of(vma, addr));
-			if (pte_none(*pte))
+			if (pte_none(value))
 				continue;
-			drop_mapping(pte_pfn(*pte));
 			pte->pte = 0;
+			watch(addr, "zapped", value.pte);
+			drop_mapping(pte_pfn(value));
 		}
 	}
 	i_mmap_unlock_read(mapping);
@@ -299,6 +329,7 @@ unsigned long wp_shared_mapping_range(struct address_space *mapping, pgoff_t fir
 			WARN_ON(pmd_write(*pmd_of(vma, addr)));
 			if (pte_write(*pte)) {
 				pte->pte &= ~SIM_PT_WRITE;
+				watch(addr, "write-protected", pte->pte);
 				total++;
 			}
 		}
@@ -325,6 +356,7 @@ int pfn_mkclean_range(unsigned long pfn, unsigned long nr_pages, pgoff_t pgoff,
 		if (pte_present(*pte) && pte_pfn(*pte) == pfn + i &&
 		    (pte->pte & (SIM_PT_WRITE | SIM_PT_DIRTY))) {
 			pte->pte &= ~(SIM_PT_WRITE | SIM_PT_DIRTY);
+			watch(addr, "cleaned", pte->pte);
 			cleaned++;
 		}
 	}
@@ -355,7 +387,7 @@ static vm_fault_t handle_fault(struct vm_area_struct *vma, unsigned long addr, b
 	pte_t *pte = pte_of(vma, addr);
 	vm_fault_t ret;
 
-	if (pmd_none(*vmf.pmd) && pte_none(*pte) && (vma->vm_flags & VM_HUGEPAGE)) {
+	if (pmd_none(*vmf.pmd) && (vma->vm_flags & VM_HUGEPAGE)) {
 		ret = vma->vm_ops->huge_fault(&vmf, PMD_ORDER);
 		if (!(ret & VM_FAULT_FALLBACK))
 			return ret;
@@ -430,6 +462,26 @@ size_t sim_copy_user(unsigned long addr, void *buf, size_t len, bool write)
 		done += part;
 	}
 	return done;
+}
+
+void sim_mm_describe(unsigned long addr)
+{
+	struct vm_area_struct *vma = find_vma(current->mm, addr);
+	pte_t pte = *pte_of(vma, addr);
+	pmd_t pmd = *pmd_of(vma, addr);
+	unsigned long pfn = pmd_trans_huge(pmd) ?
+			    pmd_pfn(pmd) + ((addr >> PAGE_SHIFT) & (PTRS_PER_PTE - 1)) : pte_pfn(pte);
+
+	sim_log("sim: address %lx: pte %lx, pmd %lx, pfn %lx: ", addr, pte.pte, pmd.pmd, pfn);
+	if (pfn >= SIM_WINDOW_PFN)
+		sim_device_describe(pfn - SIM_WINDOW_PFN);
+	else
+		sim_log("the zero page\n");
+}
+
+bool sim_mm_is_huge(unsigned long addr)
+{
+	return pmd_trans_huge(*pmd_of(find_vma(current->mm, addr), addr));
 }
 
 int sim_user_store(unsigned long addr, const void *buf, size_t len)

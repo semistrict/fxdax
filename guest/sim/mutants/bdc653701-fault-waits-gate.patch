@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+#
+# bdc653701: faults don't wait for a seal holding their DAX entry: the seal may wait for a write(2)
+# that waits for that entry.
+
+--- a/guest/linux/fs/fxfs/dax.c
++++ b/guest/linux/fs/fxfs/dax.c
+@@ -1589,9 +1589,7 @@
+ {
+ 	u64 seals;
+ 
+-	if (!fault)
+-		return fxfs_device_store_begin(dax->dev);
+-	return fxfs_device_store_try_begin(dax->dev, &seals) ? (long)seals : -EBUSY;
++	return fxfs_device_store_begin(dax->dev);
+ }
+ 
+ /*

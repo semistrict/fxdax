@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+#
+# A candidate fix, not a mutant (found by this simulator, tests/hole_mapped_then_written.c): a write
+# over holes whose pieces aren't in a row in the window takes several iomaps, and only the first says
+# its pages are new, as the pages are writable by the second. The rest of the write's pages lose
+# what a mapping of the file mapped for them here, as dax_iomap_iter does the iomap's own.
+
+--- a/guest/linux/fs/fxfs/dax.c
++++ b/guest/linux/fs/fxfs/dax.c
+@@ -3366,6 +3366,9 @@
+ 	iomap->length = min_t(loff_t, end, start + ((loff_t)(first + fxfs_dax_run(range, first,
+ 								  first + pages)) << PAGE_SHIFT)) - pos;
+ 	iomap->private = range;
++	if (fresh && pos + iomap->length < end)
++		unmap_mapping_pages(inode->i_mapping, (pos + iomap->length) >> PAGE_SHIFT,
++				    DIV_ROUND_UP(end - (pos + iomap->length), PAGE_SIZE), false);
+ 	fxfs_dax_cow(inode, range, first, DIV_ROUND_UP(offset_in_page(pos) + iomap->length, PAGE_SIZE),
+ 		     flags, iomap, srcmap);
+ 	up_write(&file->sem);

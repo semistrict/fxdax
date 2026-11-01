@@ -105,6 +105,8 @@ typedef struct { unsigned long pgprot; } pgprot_t;
 #define SIM_PT_WRITE 2UL
 #define SIM_PT_DIRTY 4UL
 #define SIM_PT_HUGE 8UL
+/* A PMD with a PTE table under it, which stays, so that it is not none, as zaps leave it. */
+#define SIM_PT_TABLE 16UL
 
 static inline bool pte_none(pte_t pte) { return !pte.pte; }
 static inline bool pte_present(pte_t pte) { return pte.pte & SIM_PT_PRESENT; }

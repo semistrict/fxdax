@@ -89,6 +89,8 @@ static void scenario(void *arg)
 	check(!err, "fsync: %d", err);
 
 	fxfs_dax_show_stats(mount->info->dax, NULL);
+	sim_file_evict(file);
+	sim_mount_free(mount);
 }
 
 int main(void)

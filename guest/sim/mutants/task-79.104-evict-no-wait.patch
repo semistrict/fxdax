@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+#
+# TASK-79.104, f859553d1: evict and truncate wait for an evacuation's hold on a file's ranges.
+
+--- a/guest/linux/fs/fxfs/dax.c
++++ b/guest/linux/fs/fxfs/dax.c
+@@ -4476,13 +4476,7 @@
+  */
+ static void fxfs_dax_lock_unheld(struct fxfs_dax *dax, struct fxfs_dax_file *file)
+ {
+-	for (;;) {
+-		down_write(&file->sem);
+-		if (!atomic_read(&file->held))
+-			return;
+-		up_write(&file->sem);
+-		wait_event(dax->wait, !atomic_read(&file->held));
+-	}
++	down_write(&file->sem);
+ }
+ 
+ /*

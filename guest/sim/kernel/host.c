@@ -18,6 +18,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/personality.h>
+#include <sys/stat.h>
 #include <sys/syscall.h>
 #include <ucontext.h>
 #include <unistd.h>
@@ -42,6 +44,32 @@ static void die(const char *what)
 {
 	fprintf(stderr, "sim host: %s: %s\n", what, strerror(errno));
 	abort();
+}
+
+void host_fixed_addresses(void)
+{
+	static char arguments[4096];
+	char *argv[32];
+	int persona = personality(0xffffffff), argc = 0;
+	ssize_t len, at = 0;
+	int fd;
+
+	if (persona & ADDR_NO_RANDOMIZE)
+		return;
+	if (personality(persona | ADDR_NO_RANDOMIZE) < 0)
+		die("personality");
+	fd = open("/proc/self/cmdline", O_RDONLY);
+	if (fd < 0)
+		die("open");
+	len = read(fd, arguments, sizeof(arguments) - 1);
+	close(fd);
+	while (at < len && argc < 31) {
+		argv[argc++] = &arguments[at];
+		at += strlen(&arguments[at]) + 1;
+	}
+	argv[argc] = NULL;
+	execv("/proc/self/exe", argv);
+	die("execv");
 }
 
 void *host_malloc(size_t size)

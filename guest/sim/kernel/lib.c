@@ -102,16 +102,34 @@ void bitmap_free(const unsigned long *bitmap)
 	kfree(bitmap);
 }
 
+/*
+ * bitmap_set and bitmap_clear aren't atomic: a word of them is read, then written whole, and a task
+ * between the two can lose what another did to the word (TASK-79.50), so the scheduler may run one
+ * there. Each word: `set` bits set, `clear` bits cleared.
+ */
+static void bitmap_change(unsigned long *map, unsigned int start, unsigned int len, bool set)
+{
+	while (len) {
+		unsigned int bit = start % BITS_PER_LONG;
+		unsigned int part = min(len, BITS_PER_LONG - bit);
+		unsigned long mask = (part == BITS_PER_LONG ? ~0UL : (1UL << part) - 1) << bit;
+		unsigned long *word = &map[start / BITS_PER_LONG], value = READ_ONCE(*word);
+
+		sim_point("a non-atomic bitmap write");
+		WRITE_ONCE(*word, set ? value | mask : value & ~mask);
+		start += part;
+		len -= part;
+	}
+}
+
 void bitmap_set(unsigned long *map, unsigned int start, unsigned int len)
 {
-	while (len--)
-		__set_bit(start++, map);
+	bitmap_change(map, start, len, true);
 }
 
 void bitmap_clear(unsigned long *map, unsigned int start, unsigned int len)
 {
-	while (len--)
-		__clear_bit(start++, map);
+	bitmap_change(map, start, len, false);
 }
 
 unsigned int bitmap_weight(const unsigned long *src, unsigned int nbits)

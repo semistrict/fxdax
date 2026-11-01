@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+#
+# TASK-121, 6f7bc03a4: a write whose blocks Fxfs moved before a seal kept it from the gate maps them
+# read-only where they moved, rather than keep mapping where they were.
+
+--- a/guest/linux/fs/fxfs/dax.c
++++ b/guest/linux/fs/fxfs/dax.c
+@@ -3380,7 +3380,7 @@
+ 	 * held: a seal shutting the gate as a fault went to map them (TASK-121), or as it went to
+ 	 * move them again, a seal having ended meanwhile (TASK-133).
+ 	 */
+-	if (moved) {
++	if (0) {
+ 		int mapped = fxfs_dax_map_moved(dax, range, extents, moved);
+ 
+ 		if (mapped)

@@ -11,8 +11,9 @@
  * - A seal, around which a transaction may fall, seals every extent known to be open: those minted
  *   during it aren't known to be. A transaction whose device write finds its extent sealed is
  *   dropped, and tried again.
- * - An extent dies once nothing holds a block of it and it isn't the staging extent, and is freed at
- *   the seal after: until then the window goes on showing it; then the device maps zeros.
+ * - An extent dies once nothing holds a block of it and it isn't the staging extent, and is freed
+ *   after a device flush that follows its death (FreeAfter::Flush): one seal in SIM_FLUSH_SEALS here.
+ *   Until then the window goes on showing it; then the device maps zeros.
  *
  * It has no journal, no tree, no compaction, no crash consistency: durability isn't simulated, and
  * the real Fxfs's own bugs can't show up here. It's what the window's protocol assumes of Fxfs,
@@ -27,6 +28,8 @@
 
 #define STAGING_PAGES ((2UL << 20) >> PAGE_SHIFT)
 #define STAGED_MAX_PAGES ((256UL << 10) >> PAGE_SHIFT)
+/* A seal in so many flushes the device, which frees what died before it. */
+#define SIM_FLUSH_SEALS 4
 /* How often a transaction that met a seal is tried again: MAX_SEALED_RETRIES's sense. */
 #define SEALED_RETRIES 1000
 
@@ -37,6 +40,8 @@ struct stub_extent {
 	bool open;
 	/* Blocks files hold of it. */
 	u64 live;
+	/* How many seals had ended when it lost its last block. */
+	u64 died;
 	struct list_head list;
 };
 
@@ -61,15 +66,26 @@ struct fxfs {
 	struct mutex lock;
 	/* One seal at a time. */
 	struct mutex seal;
+	/* The device writes in flight, shared, which a seal closes (Seal::begin's `writes`). */
+	struct rw_semaphore writes;
 	bool sealing;
 	struct list_head extents, files;
 	struct stub_extent *staging;
 	u64 staging_next;
 	u64 next_sequence, next_ino;
 	u64 branch;
+	u64 seals;
 };
 
 static u64 moves, frees;
+/* The file and page whose blocks the log tells of, if any (fxfs_sim_watch). */
+static u64 watched_ino, watched_page = ~0ULL;
+
+void fxfs_sim_watch(u64 ino, u64 page)
+{
+	watched_ino = ino;
+	watched_page = page;
+}
 
 void sim_device_wrote(u64 sequence, u64 page, u64 pages);
 u64 sim_device_length(u64 sequence);
@@ -90,6 +106,7 @@ struct fxfs *fxfs_sim_new(void)
 		sim_panic("no device");
 	mutex_init(&fs->lock);
 	mutex_init(&fs->seal);
+	init_rwsem(&fs->writes);
 	INIT_LIST_HEAD(&fs->extents);
 	INIT_LIST_HEAD(&fs->files);
 	fs->next_sequence = 1;
@@ -198,8 +215,12 @@ static u64 take_staged(struct fxfs *fs, u64 pages, struct stub_extent **extent)
 
 static void put_block(struct fxfs *fs, struct block *block)
 {
-	if (block->sequence)
-		find_extent(fs, block->sequence)->live--;
+	if (block->sequence) {
+		struct stub_extent *extent = find_extent(fs, block->sequence);
+
+		extent->live--;
+		extent->died = fs->seals;
+	}
 	block->sequence = 0;
 }
 
@@ -335,8 +356,14 @@ static ssize_t try_map_write(struct fxfs *fs, u64 ino, u64 offset, u64 len, u64 
 		if (held && kept[page])
 			memcpy(copies + (page << PAGE_SHIFT), held + (page << PAGE_SHIFT),
 			       PAGE_SIZE);
-		else if (kept[page])
+		else if (kept[page]) {
+			/* What a block holds past the file's end isn't the file's (read_aligned). */
+			u64 at = (first + page) << PAGE_SHIFT;
+			u64 in_file = file->size > at ? min(file->size - at, PAGE_SIZE) : 0;
+
 			read_block(fs, block, copies + (page << PAGE_SHIFT));
+			memset(copies + (page << PAGE_SHIFT) + in_file, 0, PAGE_SIZE - in_file);
+		}
 	}
 	/* The parts that move: their new blocks, and their copies to the device. */
 	for (page = 0; page < pages;) {
@@ -376,13 +403,16 @@ static ssize_t try_map_write(struct fxfs *fs, u64 ino, u64 offset, u64 len, u64 
 		if (!kept[page] || !moving[page] || !keeps_data(data))
 			continue;
 		sim_point("a Fxfs write");
-		if (!find_extent(fs, moved[page].sequence)->open) {
-			err = -EAGAIN;
-			break;
+		down_read(&fs->writes);
+		err = find_extent(fs, moved[page].sequence)->open ? 0 : -EAGAIN;
+		if (!err) {
+			host_store_write(sim_device_store_offset(moved[page].sequence) +
+					 (moved[page].page << PAGE_SHIFT), data, PAGE_SIZE);
+			sim_device_wrote(moved[page].sequence, moved[page].page, 1);
 		}
-		host_store_write(sim_device_store_offset(moved[page].sequence) +
-				 (moved[page].page << PAGE_SHIFT), data, PAGE_SIZE);
-		sim_device_wrote(moved[page].sequence, moved[page].page, 1);
+		up_read(&fs->writes);
+		if (err)
+			break;
 	}
 	mutex_lock(&fs->lock);
 out:
@@ -397,6 +427,12 @@ out:
 	for (page = 0; page < pages; page++) {
 		struct block *block = &file->blocks[first + page];
 
+		if (ino == watched_ino && first + page == watched_page)
+			sim_log("sim: ino %llu page %llu: map_write by %s, %s from extent %llu page %llu to extent %llu page %llu, %s, at %llu ns\n",
+				ino, watched_page, current->comm, moving[page] ? "moved" : "stays",
+				block->sequence, block->page, moved[page].sequence, moved[page].page,
+				!kept[page] ? "keeping nothing" : held ? "keeping what's held" :
+				"keeping what it read", ktime_get_ns());
 		if (moving[page]) {
 			put_block(fs, block);
 			*block = moved[page];
@@ -466,6 +502,7 @@ int fxfs_fsync(struct fxfs *fs)
 	struct stub_extent *extent, *next;
 
 	mutex_lock(&fs->seal);
+	down_write(&fs->writes);
 	fxfs_device_seal_begin(fs->dev);
 	mutex_lock(&fs->lock);
 	fs->sealing = true;
@@ -481,9 +518,12 @@ int fxfs_fsync(struct fxfs *fs)
 		extent->open = false;
 	mutex_unlock(&fs->lock);
 	fxfs_device_seal_end(fs->dev);
+	up_write(&fs->writes);
 	mutex_lock(&fs->lock);
+	fs->seals++;
 	list_for_each_entry_safe(extent, next, &fs->extents, list) {
-		if (extent->live || extent == fs->staging)
+		if (fs->seals % SIM_FLUSH_SEALS || extent->live || extent == fs->staging ||
+		    extent->died >= fs->seals - 1)
 			continue;
 		list_del(&extent->list);
 		sim_device_free_extent(extent->sequence);
@@ -505,6 +545,9 @@ int fxfs_setattr(struct fxfs *fs, u64 ino, const struct fxfs_setattr *set)
 	if (set->valid & FXFS_SET_SIZE) {
 		for (page = DIV_ROUND_UP(set->size, PAGE_SIZE); page < file->nr_blocks; page++)
 			put_block(fs, &file->blocks[page]);
+		if (ino == watched_ino)
+			sim_log("sim: ino %llu size %llu -> %llu, by %s, at %llu ns\n", ino, file->size,
+				set->size, current->comm, ktime_get_ns());
 		file->size = set->size;
 	}
 	mutex_unlock(&fs->lock);
@@ -519,8 +562,12 @@ int fxfs_punch(struct fxfs *fs, u64 ino, u64 offset, u64 len)
 	mutex_lock(&fs->lock);
 	file = find_file(fs, ino);
 	for (page = offset >> PAGE_SHIFT; page < (offset + len) >> PAGE_SHIFT &&
-	     page < file->nr_blocks; page++)
+	     page < file->nr_blocks; page++) {
+		if (ino == watched_ino && page == watched_page)
+			sim_log("sim: ino %llu page %llu: punched by %s, at %llu ns\n", ino, page,
+				current->comm, ktime_get_ns());
 		put_block(fs, &file->blocks[page]);
+	}
 	mutex_unlock(&fs->lock);
 	return 0;
 }

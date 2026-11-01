@@ -35,6 +35,14 @@ void sim_device_seal(void);
 void sim_device_free_extent(u64 sequence);
 u64 sim_device_store_offset(u64 sequence);
 u64 sim_device_maps(void);
+/* Logs every MAP and UNMAP of a window page. */
+void sim_device_watch(u64 page);
+/* Logs what a window page, or a task's address, maps now. */
+void sim_device_describe(u64 page);
+void sim_mm_describe(unsigned long addr);
+bool sim_mm_is_huge(unsigned long addr);
+/* Logs what happens to the PTE of a task's address. */
+void sim_mm_watch(unsigned long addr);
 
 /* A mount, as fs/fxfs/super.c's, of the sim's Fxfs (fxfs/fxfs.c). */
 struct sim_mount {
@@ -44,6 +52,7 @@ struct sim_mount {
 struct sim_mount *sim_mount_new(void);
 void sim_mount_free(struct sim_mount *mount);
 struct file *sim_file_new(struct sim_mount *mount);
+void sim_file_evict(struct file *file);
 /* What VFS calls do, each as a task's system call, into a kernel buffer. */
 ssize_t sim_write(struct file *file, loff_t pos, const void *buf, size_t len);
 ssize_t sim_read(struct file *file, loff_t pos, void *buf, size_t len);
@@ -72,5 +81,7 @@ u64 fxfs_sim_new_file(struct fxfs *fs);
 struct fxfs *fxfs_sim_new(void);
 void fxfs_sim_free(struct fxfs *fs);
 void fxfs_sim_stats(u64 *moves, u64 *frees);
+/* Logs what happens to the block of `page` of file `ino`. */
+void fxfs_sim_watch(u64 ino, u64 page);
 
 #endif

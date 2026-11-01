@@ -37,6 +37,12 @@ struct sim_mount *sim_mount_new(void)
 	return mount;
 }
 
+void sim_file_evict(struct file *file)
+{
+	fxfs_dax_evict(file_inode(file));
+}
+
+/* As fxfs_vfs_kill_sb's, of the last volume, its files evicted. */
 void sim_mount_free(struct sim_mount *mount)
 {
 	struct fxfs_vfs_info *info = mount->info;
