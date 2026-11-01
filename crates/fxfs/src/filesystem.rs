@@ -575,11 +575,15 @@ impl FxFilesystemBuilder {
             filesystem.root_store().set_trace(self.trace);
 
             // fxdax: the journal continues in new extents, which a super-block records. No
-            // compaction, which writes a super-block too, runs meanwhile.
-            if !read_only && image_builder_mode.is_none() {
-                let journal = &filesystem.journal;
-                journal.pause_compactions().await;
-                let renewed = async {
+            // compaction, which writes a super-block too, runs meanwhile, nor until the initial
+            // reap's done: as below, it may otherwise find what a compaction just put in the
+            // graveyard, tombstoning it twice.
+            let compacts = !read_only && image_builder_mode.is_none();
+            if compacts {
+                filesystem.journal.pause_compactions().await;
+            }
+            let mounted = async {
+                if compacts {
                     if filesystem.renew_journal_tail().await? {
                         filesystem.record_journal_tail().await?;
                     }
@@ -590,23 +594,27 @@ impl FxFilesystemBuilder {
                     // may never have held, and no journal record pays for that room.
                     if filesystem.allocator().has_dead_extents() {
                         filesystem.maybe_start_flush_task();
+                        let journal = &filesystem.journal;
                         journal.flush_for_frees().await.context("freeing what the crash left")?;
                     }
-                    anyhow::Ok(())
                 }
-                .await;
-                journal.resume_compactions();
-                renewed.context("Failed to go on from the journal")?;
-            }
 
-            if !read_only {
-                // Queue all purged entries for tombstoning.  Don't start the reaper yet because
-                // that can trigger a flush which can add more entries to the graveyard which might
-                // get caught in the initial reap and cause objects to be prematurely tombstoned.
-                for store in objects.unlocked_stores() {
-                    filesystem.graveyard.initial_reap(&store).await?;
+                if !read_only {
+                    // Queue all purged entries for tombstoning.  Don't start the reaper yet because
+                    // that can trigger a flush which can add more entries to the graveyard which
+                    // might get caught in the initial reap and cause objects to be prematurely
+                    // tombstoned.
+                    for store in objects.unlocked_stores() {
+                        filesystem.graveyard.initial_reap(&store).await?;
+                    }
                 }
+                anyhow::Ok(())
             }
+            .await;
+            if compacts {
+                filesystem.journal.resume_compactions();
+            }
+            mounted.context("Failed to go on from the journal")?;
         }
 
         // This must be after we've formatted the filesystem; it will fail during format otherwise.

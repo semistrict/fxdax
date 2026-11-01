@@ -1171,3 +1171,35 @@ fn what_a_mount_sought_leaves_a_compaction_its_room() {
     ];
     Setting::awkward(1312117120894968101, ROOMY).holds(ops);
 }
+
+/// A compaction moves old layers to the graveyard and tombstones them: one let run by a mount
+/// before its initial reap put them on the reap's list too, and a file gone was tombstoned, which
+/// panics, or does what it may to what's left. Found by a hunt, whose seed this keeps, as when the
+/// device answers depends on it.
+#[test]
+fn a_mount_compacts_nothing_before_its_initial_reap() {
+    let ops = vec![
+        Op::Create(0),
+        Op::Create(0),
+        Op::Write { file: 0, at: 0, len: 1, byte: 209 },
+        Op::Read { file: 11, at: 34507, len: 52 },
+        Op::Fsync,
+        Op::Rename(2, 5),
+        Op::Read { file: 10, at: 9223372036854770658, len: 4096 },
+        Op::Fsync,
+        Op::Write { file: 5, at: 16384, len: 4096, byte: 178 },
+        Op::Fill { file: 10, page: 24, pages: 31, stride: 1, byte: 142 },
+        Op::SetXattr { file: 5, name: 2, len: 2365, byte: 169 },
+        Op::Fill { file: 10, page: 19, pages: 2807, stride: 2, byte: 211 },
+        Op::Create(3),
+        Op::Fill { file: 6, page: 26, pages: 2849, stride: 2, byte: 127 },
+        Op::Write { file: 9, at: 2094745, len: 27, byte: 192 },
+        Op::Write { file: 4, at: 45056, len: 4096, byte: 70 },
+        Op::Fill { file: 8, page: 35, pages: 62, stride: 1, byte: 167 },
+        Op::Create(3),
+        Op::Remount,
+        Op::Clone { from: 5, to: 8, page: 7, pages: 406, to_page: 27 },
+        Op::Fill { file: 7, page: 22, pages: 4041, stride: 1, byte: 176 },
+    ];
+    Setting::awkward(5760810855262097532, ROOMY).holds(ops);
+}
