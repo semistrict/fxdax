@@ -2416,7 +2416,11 @@ impl<S: HandleOwner> DataObjectHandle<S> {
         let mut start = range.start;
         loop {
             let end = self
-                .end_of_extents(start..range.end, MAX_CLONED_PER_COMMIT, MAX_CLONED_BYTES_PER_COMMIT)
+                .end_of_extents(
+                    start..range.end,
+                    MAX_CLONED_PER_COMMIT,
+                    MAX_CLONED_BYTES_PER_COMMIT,
+                )
                 .await?;
             let dst_range = dst_of(start)..dst_of(range.end);
             let dst_end = dst.end_of_extents(dst_range, MAX_CLONED_PER_COMMIT, u64::MAX).await?;
@@ -2444,7 +2448,8 @@ impl<S: HandleOwner> DataObjectHandle<S> {
     ) -> Result<(), Error> {
         let mut start = range.start;
         loop {
-            let end = self.end_of_extents(start..range.end, MAX_ZEROED_PER_COMMIT, u64::MAX).await?;
+            let end =
+                self.end_of_extents(start..range.end, MAX_ZEROED_PER_COMMIT, u64::MAX).await?;
             self.zero(transaction, start..end).await?;
             if end == range.end {
                 return Ok(());
@@ -3114,6 +3119,7 @@ mod tests {
     use crate::fsck::{
         FsckOptions, fsck, fsck_volume, fsck_volume_with_options, fsck_with_options,
     };
+    use crate::hooks::Hooks;
     use crate::lsm_tree::Query;
     use crate::lsm_tree::types::{ItemRef, LayerIterator};
     use crate::object_handle::{
@@ -7175,6 +7181,117 @@ mod tests {
         assert_eq!(file.contents(usize::MAX).await.expect("contents")[..], expected[..]);
         fsck(fs.clone()).await.expect("fsck failed");
         fs.close().await.expect("close failed");
+    }
+
+    /// fxdax: what each of a filesystem's commits holds of records for the journal, from when
+    /// `Commits::take` was last called, by a hook that sees every transaction committed.
+    #[derive(Default)]
+    struct Commits(Mutex<Vec<u64>>);
+
+    impl Commits {
+        /// The commits since the last call, and their records' bytes.
+        fn take(&self) -> (usize, u64) {
+            let commits = std::mem::take(&mut *self.0.lock());
+            (commits.len(), commits.iter().sum())
+        }
+    }
+
+    /// fxdax: a clone of thousands of fragments, one over as many more, a punch of them, and each
+    /// across a hole of 2^50 bytes, each on a filesystem of its own: what they take, in commits and
+    /// the bytes of their records, no more than the constants that split them took.
+    #[fuchsia::test]
+    async fn test_what_clones_and_punches_cost() {
+        const FRAGMENTS: usize = 2048;
+        const FAR: u64 = 1 << 50;
+        const BS: usize = 4096;
+        const END: u64 = (2 * FRAGMENTS * BS) as u64;
+
+        enum Case {
+            Clone,
+            CloneOver,
+            Punch,
+            CloneAcross,
+            PunchAcross,
+        }
+        async fn run(case: Case) -> (usize, u64) {
+            let commits = Arc::new(Commits::default());
+            let (mut hooks, fs_hooks) = Hooks::new();
+            let device = FakeDevice::new(8192, BS as u32).with_branch(u64::MAX >> 1);
+            let fs = FxFilesystemBuilder::new()
+                .format(true)
+                .hooks(fs_hooks)
+                .open(DeviceHolder::new(device))
+                .await
+                .expect("open failed");
+            let counting = commits.clone();
+            hooks.set_pre_commit(move |transaction| {
+                counting.0.lock().push(transaction.journal_bytes());
+                Ok(())
+            });
+            let store = fs.root_store();
+            let data = vec![7u8; BS];
+            let fragmented = async |first: usize| {
+                let file = create_file(&fs).await;
+                let writes = every(&data, (first * BS) as u64, 2, FRAGMENTS, BS);
+                file.write_many(&writes).await.expect("write_many failed");
+                file
+            };
+            let far = async || {
+                let file = create_file(&fs).await;
+                file.write_many(&[(0, &data), (FAR, &data)]).await.expect("write_many failed");
+                file
+            };
+            let clone = async |from: &DataObjectHandle<ObjectStore>,
+                               to: &DataObjectHandle<ObjectStore>,
+                               end: u64| {
+                let store_id = store.store_object_id();
+                let keys = lock_keys![
+                    LockKey::object(store_id, from.object_id()),
+                    LockKey::object(store_id, to.object_id()),
+                ];
+                let options = Options::default();
+                let mut transaction =
+                    store.new_transaction(keys, options).await.expect("new_transaction");
+                commits.take();
+                from.clone_range_in_commits(&mut transaction, 0..end, to, 0, end)
+                    .await
+                    .expect("clone failed");
+                to.txn_update_size(&mut transaction, end, None).await.expect("size failed");
+                transaction.commit().await.expect("commit failed");
+            };
+            let punch = async |file: &DataObjectHandle<ObjectStore>, range: Range<u64>| {
+                let mut transaction = file.new_transaction().await.expect("new_transaction");
+                commits.take();
+                file.zero_in_commits(&mut transaction, range).await.expect("punch failed");
+                transaction.commit().await.expect("commit failed");
+            };
+            match case {
+                Case::Clone => clone(&fragmented(0).await, &create_file(&fs).await, END).await,
+                Case::CloneOver => clone(&fragmented(0).await, &fragmented(1).await, END).await,
+                Case::Punch => punch(&fragmented(0).await, 0..END).await,
+                Case::CloneAcross => {
+                    clone(&far().await, &create_file(&fs).await, FAR + BS as u64).await
+                }
+                Case::PunchAcross => punch(&far().await, BS as u64..FAR).await,
+            }
+            let cost = commits.take();
+            std::mem::drop(hooks);
+            fsck(fs.clone()).await.expect("fsck failed");
+            fs.close().await.expect("close failed");
+            cost
+        }
+        let costs = [
+            run(Case::Clone).await,
+            run(Case::CloneOver).await,
+            run(Case::Punch).await,
+            run(Case::CloneAcross).await,
+            run(Case::PunchAcross).await,
+        ];
+        // What the constants that split them took: 82 and 84 commits of clones, 11 of the punch.
+        let before = [(82, 225_046), (84, 290_495), (11, 67_344), (1, 253), (1, 0)];
+        for (cost, before) in costs.into_iter().zip(before) {
+            assert!(cost.0 <= before.0 && cost.1 <= before.1, "{cost:?}, of {before:?}");
+        }
     }
 
     /// fxdax: the largest of `write_many`'s transactions, of WRITE_MANY_WRITES writes, or of
