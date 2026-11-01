@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+#
+# TASK-153.3: a slice refusing a write says -ESTALE to its readers, a failure they drop once: a fault
+# meeting two refusals in a row dies of SIGBUS, a read of EIO.
+
+--- a/guest/linux/fs/fxfs/dax.c
++++ b/guest/linux/fs/fxfs/dax.c
+@@ -2912,7 +2912,7 @@
+ 		}
+ 	}
+ 	if (range->behind) {
+-		err = range->behind;
++		err = -ESTALE;
+ 		up_read(&file->sem);
+ 		fxfs_dax_put_range(dax, range);
+ 		return err;

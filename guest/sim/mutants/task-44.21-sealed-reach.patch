@@ -3,6 +3,7 @@
 #
 # TASK-44.21, 8af34848c: shared blocks of an open extent go through its region: a read of them outside
 # the gate reaches past what the writable region maps, a writable MAP across a seal (generic/013).
+# Region_open as it was, without its WARN, so that what shows is that MAP.
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c
@@ -15,3 +16,15 @@
  		    e->extent_size <= FXFS_DAX_SIZE && PAGE_ALIGNED(e->extent_offset) &&
  		    (e->extent_offset || e->len < e->extent_size))
  			err = i && fxfs_dax_inject(&fxfs_dax_fail_moves) ? -ENOMEM :
+@@ -2152,10 +2152,7 @@
+ 	fxfs_device_assert_in_gate(dax->dev);
+ 	fxfs_dax_delay();
+ 	spin_lock(&dax->regions_lock);
+-	if (!region->writable) {
+-		WARN_ONCE(READ_ONCE(region->mapped),
+-			  "fxfs: extent %llx:%llu open, its region mapped read-only\n",
+-			  region->branch, region->sequence);
++	if (!region->writable && !region->mapped) {
+ 		region->writable = true;
+ 		list_add_tail(&region->writable_list, &dax->writable_regions);
+ 	}

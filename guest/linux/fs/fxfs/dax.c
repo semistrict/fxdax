@@ -530,11 +530,11 @@ struct fxfs_dax_range {
 	 */
 	bool huge;
 	/*
-	 * fxdax: whether Fxfs moved blocks it maps where they were, which it failed to follow: nothing
-	 * uses it from then on, but to drop it (fxfs_dax_fall_behind). Set and read under its file's
-	 * semaphore.
+	 * fxdax: if Fxfs moved blocks it maps where they were, which it failed to follow, what its
+	 * iomaps say: nothing uses it from then on, but to drop it (fxfs_dax_fall_behind). Set and read
+	 * under its file's semaphore.
 	 */
-	bool behind;
+	int behind;
 	/*
 	 * Freed after a grace period: the sealer walks files' ranges without their semaphores,
 	 * which writers hold waiting for the gate the sealer keeps closed.
@@ -1572,18 +1572,19 @@ static int fxfs_dax_map_moved(struct fxfs_dax *dax, struct fxfs_dax_range *range
  * where they were, in an extent Fxfs frees, where the device puts zeros. Dropped, the chunk is mapped
  * from where Fxfs has them; until then nothing reads it. The kernel's mappings of it go, and the
  * iomaps of it say -ESTALE, whose callers drop it, each way in, whichever failed before: those
- * that gave up left it mapping the blocks, or never tried (TASK-150.13). Returns what to say,
- * -EXDEV of a slice, which is dropped as one is, or -ESTALE. With the file's DAX semaphore held
- * for writing.
+ * that gave up left it mapping the blocks, or never tried (TASK-150.13). Or -EXDEV of a slice
+ * refusing blocks that moved, which is no failure, as often as writes move them: said to its
+ * readers too, a fault that met two in a row, as -ESTALE, which it drops once, died of SIGBUS
+ * (guest/sim, TASK-153.3). Returns what it says. With the file's DAX semaphore held for writing.
  */
 static int fxfs_dax_fall_behind(struct inode *inode, struct fxfs_dax_range *range, int err)
 {
 	lockdep_assert_held_write(&range->file->sem);
 
-	range->behind = true;
+	range->behind = err == -EXDEV ? err : -ESTALE;
 	unmap_mapping_pages(inode->i_mapping, fxfs_dax_chunk_start(range) >> PAGE_SHIFT, range->pages,
 			    false);
-	return err == -EXDEV ? err : -ESTALE;
+	return range->behind;
 }
 
 /* Whether any of the pieces `extents` is of an open extent. */
@@ -2909,9 +2910,10 @@ static int fxfs_dax_iomap_read(struct inode *inode, loff_t pos, loff_t length, u
 		}
 	}
 	if (range->behind) {
+		err = range->behind;
 		up_read(&file->sem);
 		fxfs_dax_put_range(dax, range);
-		return -ESTALE;
+		return err;
 	}
 	start = fxfs_dax_chunk_start(range);
 	page = (pos - start) >> PAGE_SHIFT;
@@ -3261,7 +3263,7 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 		}
 	}
 	if (range->behind) {
-		err = -ESTALE;
+		err = range->behind;
 		goto out;
 	}
 	for (;;) {
@@ -3572,9 +3574,9 @@ static ssize_t fxfs_dax_read_faulting_between(struct kiocb *iocb, struct iov_ite
 		if (ret > 0) {
 			done += ret;
 			empty = 0;
-		} else if (ret == -ESTALE) {
+		} else if (ret == -ESTALE || ret == -EXDEV) {
 			/* fxdax: a range behind Fxfs's blocks, once: dropped, mapped again. */
-			if (stale++) {
+			if (ret == -ESTALE && stale++) {
 				ret = -EIO;
 				break;
 			}
