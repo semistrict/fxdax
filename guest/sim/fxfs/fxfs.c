@@ -13,6 +13,8 @@
  *   reached is taken for sealed, then reads as open again as a transaction's write reaches it, the
  *   way a reader's read-only MAP and a writer can meet on it (TASK-99, TASK-140, TASK-44.21). A
  *   transaction whose device write finds its extent sealed is dropped, and tried again.
+ * - A cut that isn't told what the kernel keeps of the last block (FXFS_SET_KEEP_TAIL) zeros what
+ *   that block holds past the end by moving it (zero_tail), and so does a grow, past the old end.
  * - An extent dies once nothing holds a block of it and it isn't the staging extent, and is freed
  *   after a device flush that follows its death (FreeAfter::Flush): one seal in SIM_FLUSH_SEALS here.
  *   Until then the window goes on showing it; then the device maps zeros.
@@ -60,6 +62,7 @@ struct block {
 	/* 0: a hole. */
 	u64 sequence;
 	u64 page;
+	/* Whether a clone took it: `shared` says if another file still holds it. */
 };
 
 struct stub_file {
@@ -318,7 +321,7 @@ ssize_t fxfs_dax_extents(struct fxfs *fs, u64 ino, u64 offset, u64 len, struct f
 		    out[count - 1].open == open &&
 		    out[count - 1].offset + out[count - 1].len == page << PAGE_SHIFT &&
 		    out[count - 1].extent_offset + out[count - 1].len ==
-		    block->page << PAGE_SHIFT) {
+		    block->page << PAGE_SHIFT && out[count - 1].open == open) {
 			out[count - 1].len += PAGE_SIZE;
 			continue;
 		}
@@ -594,16 +597,45 @@ int fxfs_fsync(struct fxfs *fs)
 	return 0;
 }
 
+/*
+ * zero_tail, a file `size` bytes long's, as its last block's multi_write has it: the block moves, to
+ * a block holding what it held up to `size`, written through the device. A seal between would
+ * have it tried again: the model takes no scheduling point in it.
+ */
+static void move_tail(struct fxfs *fs, struct stub_file *file, u64 size)
+{
+	u64 at = size >> PAGE_SHIFT, in_extent;
+	struct stub_extent *extent;
+	char data[PAGE_SIZE];
+
+	if (!offset_in_page(size) || at >= file->nr_blocks || !file->blocks[at].sequence)
+		return;
+	read_block(fs, &file->blocks[at], data);
+	memset(data + offset_in_page(size), 0, PAGE_SIZE - offset_in_page(size));
+	in_extent = take_staged(fs, 1, &extent);
+	put_block(fs, &file->blocks[at]);
+	file->blocks[at] = (struct block) { extent->sequence, in_extent };
+	extent->live++;
+	host_store_write(sim_device_store_offset(extent->sequence) + (in_extent << PAGE_SHIFT), data,
+			 PAGE_SIZE);
+	sim_device_wrote(extent->sequence, in_extent, 1);
+}
+
 int fxfs_setattr(struct fxfs *fs, u64 ino, const struct fxfs_setattr *set)
 {
 	struct stub_file *file;
-	u64 page;
+	u64 page, old;
 
 	mutex_lock(&fs->lock);
 	file = find_file(fs, ino);
 	if (set->valid & FXFS_SET_SIZE) {
+		old = file->size;
 		for (page = DIV_ROUND_UP(set->size, PAGE_SIZE); page < file->nr_blocks; page++)
 			put_block(fs, &file->blocks[page]);
+		if (set->size > old)
+			move_tail(fs, file, old);
+		else if (set->size < old && !(set->valid & FXFS_SET_KEEP_TAIL))
+			move_tail(fs, file, set->size);
 		if (ino == watched_ino)
 			sim_log("sim: ino %llu size %llu -> %llu, by %s, at %llu ns\n", ino, file->size,
 				set->size, current->comm, ktime_get_ns());

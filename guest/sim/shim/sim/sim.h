@@ -28,6 +28,14 @@ u64 sim_switches(void);
 /* Has each scheduling point logged, with the task it ran. */
 void sim_trace_on(void);
 
+/*
+ * Has `count` allocations by fs/fxfs's own sources fail, after `skip` more of them; or one in `odds`
+ * of them, from the seed, until told 0: how many have.
+ */
+void sim_alloc_fail(u64 skip, u64 count);
+void sim_alloc_fail_odds(unsigned int odds);
+u64 sim_allocs_failed(void);
+
 /* The fake device under the window: seals what is open, frees extents. */
 void sim_device_init(u64 window_len);
 void sim_device_new_extent(u64 sequence, u64 size);
@@ -35,6 +43,13 @@ void sim_device_seal(void);
 void sim_device_free_extent(u64 sequence);
 u64 sim_device_store_offset(u64 sequence);
 u64 sim_device_maps(void);
+/*
+ * Has `count` requests of `type` (VIRTIO_EXTENT_T_MAP or _UNMAP) fail with EIO, doing nothing, after
+ * `skip` more of them; or one MAP or UNMAP in `odds`, from the seed, until told 0: how many have.
+ */
+void sim_device_fail(u32 type, u64 skip, u64 count);
+void sim_device_fail_odds(unsigned int odds);
+u64 sim_device_failed(void);
 /* Logs every MAP and UNMAP of a window page. */
 void sim_device_watch(u64 page);
 /* Logs what a window page, or a task's address, maps now. */

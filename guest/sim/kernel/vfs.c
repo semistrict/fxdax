@@ -139,6 +139,41 @@ size_t iov_iter_zero(size_t bytes, struct iov_iter *i)
 	return done;
 }
 
+void iov_iter_kvec(struct iov_iter *i, unsigned int direction, const struct kvec *kvec,
+		   unsigned long nr_segs, size_t count)
+{
+	if (nr_segs != 1)
+		sim_panic("%lu segments of a kvec", nr_segs);
+	*i = (struct iov_iter) { .data_source = direction, .count = count, .kbuf = kvec->iov_base };
+}
+
+void iov_iter_revert(struct iov_iter *i, size_t bytes)
+{
+	i->count += bytes;
+	if (i->user)
+		i->uaddr -= bytes;
+	else
+		i->kbuf -= bytes;
+}
+
+/* What it copied, which stops short where the user's memory does. */
+size_t copy_from_iter(void *addr, size_t bytes, struct iov_iter *i)
+{
+	size_t done;
+
+	bytes = min(bytes, i->count);
+	if (i->user) {
+		done = sim_copy_user(i->uaddr, addr, bytes, false);
+		i->uaddr += done;
+	} else {
+		memcpy(addr, i->kbuf, bytes);
+		i->kbuf += bytes;
+		done = bytes;
+	}
+	i->count -= done;
+	return done;
+}
+
 /* Faults in the user's pages, one byte of each: what didn't, as the kernel's. */
 static size_t fault_in(const struct iov_iter *i, size_t bytes, bool write)
 {

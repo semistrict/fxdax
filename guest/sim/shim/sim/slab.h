@@ -1,6 +1,9 @@
 /* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause */
 /* Copyright 2026 The fxdax Authors. */
-/* The kernel's allocators, the host's malloc, which ASan watches. */
+/*
+ * The kernel's allocators, the host's malloc, which ASan watches. fs/fxfs's own sources' may fail
+ * as a test asks (sim_alloc_fail): nothing here but they knows what to do about it.
+ */
 #ifndef _SIM_SLAB_H
 #define _SIM_SLAB_H
 
@@ -30,10 +33,13 @@
 #define gfpflags_allow_blocking(gfp) (!!((gfp) & __GFP_DIRECT_RECLAIM))
 #define might_alloc(gfp) might_sleep_if(gfpflags_allow_blocking(gfp))
 
-void *kmalloc(size_t size, gfp_t gfp);
-void *krealloc(const void *p, size_t size, gfp_t gfp);
+void *sim_kmalloc(size_t size, gfp_t gfp, const char *file);
+void *sim_krealloc(const void *p, size_t size, gfp_t gfp, const char *file);
 void kfree(const void *p);
+#define kmalloc(size, gfp) sim_kmalloc(size, gfp, __FILE__)
+#define krealloc(p, size, gfp) sim_krealloc(p, size, gfp, __FILE__)
 #define kmalloc_noprof kmalloc
+#define kvmalloc(size, gfp) kmalloc(size, gfp)
 #define kzalloc(size, gfp) kmalloc(size, (gfp) | __GFP_ZERO)
 #define kmalloc_array(n, size, gfp) kmalloc((n) * (size), gfp)
 #define kcalloc(n, size, gfp) kzalloc((n) * (size), gfp)

@@ -1490,6 +1490,68 @@ pub(crate) mod guest {
         fs::remove_file(&name).unwrap();
     }
 
+    /// A write of pages from a shared mapping of those same pages copies what they held. On DAX a
+    /// write moves whole pages to new blocks, keeping none of what it covers, and read its source
+    /// from them: the first write here left zeros and said it succeeded; and in the second, each
+    /// page's source a page on, the page written first was read as zeros for the next (TASK-150.8).
+    fn test_write_from_same_page() {
+        use std::os::unix::fs::FileExt;
+        const PAGE: usize = 4096;
+        let name = path("write-from-same-page");
+        let file = fs::OpenOptions::new().create(true).read(true).write(true).open(&name).unwrap();
+        let mut expected: Vec<u8> = (0..3 * PAGE).map(|i| (i % 251) as u8 + 1).collect();
+        file.write_all_at(&expected, 0).unwrap();
+        file.sync_all().unwrap();
+        let map = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                3 * PAGE,
+                libc::PROT_READ,
+                libc::MAP_SHARED,
+                file.as_raw_fd(),
+                0,
+            )
+        };
+        assert_ne!(map, libc::MAP_FAILED, "mmap: {}", std::io::Error::last_os_error());
+        let wrote = unsafe { libc::pwrite(file.as_raw_fd(), map, PAGE, 0) };
+        assert_eq!(wrote, PAGE as isize, "pwrite: {}", std::io::Error::last_os_error());
+        let mut read = vec![0; 3 * PAGE];
+        file.read_exact_at(&mut read, 0).unwrap();
+        assert!(read == expected, "a page written from itself: {:?}", &read[..8]);
+        file.sync_all().unwrap();
+        let next = unsafe { map.cast::<u8>().add(PAGE) }.cast();
+        let wrote = unsafe { libc::pwrite(file.as_raw_fd(), next, 2 * PAGE, 0) };
+        assert_eq!(wrote, 2 * PAGE as isize, "pwrite: {}", std::io::Error::last_os_error());
+        assert_eq!(unsafe { libc::munmap(map, 3 * PAGE) }, 0);
+        expected.copy_within(PAGE.., 0);
+        file.read_exact_at(&mut read, 0).unwrap();
+        assert!(read == expected, "pages written from the pages after: {:?}", &read[..8]);
+        file.sync_all().unwrap();
+        // In one page, apart: the iomap of the write unmapped what it was to copy, each time.
+        let map = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                PAGE,
+                libc::PROT_READ,
+                libc::MAP_SHARED,
+                file.as_raw_fd(),
+                0,
+            )
+        };
+        assert_ne!(map, libc::MAP_FAILED, "mmap: {}", std::io::Error::last_os_error());
+        let source = unsafe { map.cast::<u8>().add(2000) }.cast();
+        let wrote = unsafe { libc::pwrite(file.as_raw_fd(), source, 100, 100) };
+        assert_eq!(wrote, 100, "pwrite: {}", std::io::Error::last_os_error());
+        assert_eq!(unsafe { libc::munmap(map, PAGE) }, 0);
+        expected.copy_within(2000..2100, 100);
+        file.read_exact_at(&mut read, 0).unwrap();
+        assert!(read == expected, "bytes written from their page: {:?}", &read[100..108]);
+        drop(file);
+        evict(&name);
+        assert!(fs::read(&name).unwrap() == expected, "the file evicted");
+        fs::remove_file(&name).unwrap();
+    }
+
     /// A write over a hole a mapping maps zeros for takes those zeros away, whatever its pieces. Page
     /// 1 is a hole between pages 0 and 2, written first, and a load maps the zero page for it. A
     /// write of pages 0 and 1 then takes two iomaps, as page 0 stays where it is and page 1 goes
@@ -3379,6 +3441,39 @@ pub(crate) mod guest {
         fs::remove_file(&name).unwrap();
     }
 
+    /// fxdax: a writer killed once its blocks moved, keeping nothing of what they held, before its
+    /// copy: the kernel's copy stopped at the signal, and left zeros where the file's data was
+    /// (patches/0009). Played out with a pause point.
+    fn test_write_killed() {
+        use std::os::unix::fs::FileExt;
+        const PAGE: usize = 4096;
+        let name = path("write-killed");
+        fs::write(&name, vec![1; 4 * PAGE]).unwrap();
+        let file = fs::OpenOptions::new().read(true).write(true).open(&name).unwrap();
+        file.sync_all().unwrap();
+        let (pauses, only) = Pauses::begin_of(Pauses::WRITE_MAPPED, &name);
+        let writer = unsafe { libc::fork() };
+        assert!(writer >= 0, "fork: {}", std::io::Error::last_os_error());
+        if writer == 0 {
+            file.write_all_at(&[2; 4 * PAGE], 0).unwrap();
+            unsafe { libc::_exit(0) };
+        }
+        Pauses::wait_or(Pauses::WRITE_MAPPED, Some(writer));
+        assert_eq!(unsafe { libc::kill(writer, libc::SIGKILL) }, 0);
+        drop(pauses);
+        drop(only);
+        let mut status = 0;
+        assert_eq!(unsafe { libc::waitpid(writer, &mut status, 0) }, writer);
+        assert_eq!(libc::WTERMSIG(status), libc::SIGKILL);
+        let mut read = vec![0; 4 * PAGE];
+        file.read_exact_at(&mut read, 0).unwrap();
+        assert!(read.iter().all(|byte| *byte == 2), "the file: {:?}", &read[..4]);
+        drop(file);
+        evict(&name);
+        assert!(fs::read(&name).unwrap().iter().all(|byte| *byte == 2), "the file evicted");
+        fs::remove_file(&name).unwrap();
+    }
+
     /// fxdax: a fault injection counting down, `name`, has run out.
     fn assert_injected(name: &str) {
         let left = fs::read_to_string(format!("/sys/module/fxfs/parameters/{name}")).unwrap();
@@ -4198,6 +4293,39 @@ pub(crate) mod guest {
         fs::remove_file(&name).unwrap();
     }
 
+    /// As `test_store_past_end`, the file grown by a write past its end, which leaves what is
+    /// between the old end and the write for reads to find: it reads zeros there too.
+    fn test_store_past_end_then_written() {
+        use std::os::unix::fs::FileExt;
+        const PAGE: usize = 4096;
+        let name = path("store-past-end-written");
+        fs::write(&name, vec![b'D'; 100]).unwrap();
+        let file = fs::OpenOptions::new().read(true).write(true).open(&name).unwrap();
+        let map = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                PAGE,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                file.as_raw_fd(),
+                0,
+            )
+        };
+        assert_ne!(map, libc::MAP_FAILED, "mmap: {}", std::io::Error::last_os_error());
+        unsafe { map.cast::<u8>().add(1000).write_volatile(b'X') };
+        assert_eq!(unsafe { libc::msync(map, PAGE, libc::MS_SYNC) }, 0);
+        file.write_all_at(&[b'E'; 8], 2 * PAGE as u64).unwrap();
+        let mut read = vec![0xff; 2 * PAGE + 8];
+        file.read_exact_at(&mut read, 0).unwrap();
+        let mut expected = vec![0; 2 * PAGE + 8];
+        expected[..100].fill(b'D');
+        expected[2 * PAGE..].fill(b'E');
+        assert!(read == expected, "past the old end: {:?}", &read[996..1004]);
+        assert_eq!(unsafe { libc::munmap(map, PAGE) }, 0);
+        drop(file);
+        fs::remove_file(&name).unwrap();
+    }
+
     /// fxdax: sub-page appends into a block already writable take no Fxfs transaction of their own
     /// (TASK-92.28). fdatasync writes the deferred size, and eviction finds all the appended data.
     fn test_append_writable() {
@@ -4518,6 +4646,67 @@ pub(crate) mod guest {
         fs::remove_file(&name).unwrap();
     }
 
+    /// fxdax: as `test_append_stopped_short`, stopping part way through a page, with more
+    /// appended after it and no seal between. Cutting the size Fxfs took for the write, Fxfs zeroed
+    /// what the last block holds past the new end by moving the block, which the window went on
+    /// mapping where it was, writable: the next append's bytes went to a block freed, and read as
+    /// zeros once the file was mapped again (TASK-150.9).
+    fn test_append_stopped_short_in_a_page() {
+        use std::os::unix::fs::FileExt;
+        const PAGE: usize = 4096;
+        const READABLE: usize = 5000;
+        const AFTER: usize = 100;
+        let name = path("append-short-in-a-page");
+        let file = fs::OpenOptions::new().create(true).read(true).write(true).open(&name).unwrap();
+        let map = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                3 * PAGE,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                -1,
+                0,
+            )
+        };
+        assert_ne!(map, libc::MAP_FAILED, "mmap: {}", std::io::Error::last_os_error());
+        unsafe { std::ptr::write_bytes(map.cast::<u8>(), 2, 2 * PAGE) };
+        assert_eq!(unsafe { libc::munmap(map.cast::<u8>().add(2 * PAGE).cast(), PAGE) }, 0);
+        let source = unsafe { map.cast::<u8>().add(2 * PAGE - READABLE) };
+        let wrote = unsafe { libc::write(file.as_raw_fd(), source.cast(), 2 * PAGE) };
+        assert_eq!(wrote, READABLE as isize, "write: {}", std::io::Error::last_os_error());
+        assert_eq!(unsafe { libc::munmap(map, 2 * PAGE) }, 0);
+        (&file).write_all(&[3; AFTER]).unwrap();
+        file.set_len(2 * PAGE as u64).unwrap();
+        let mut expected = vec![0; 2 * PAGE];
+        expected[..READABLE].fill(2);
+        expected[READABLE..READABLE + AFTER].fill(3);
+        let mut read = vec![0; 2 * PAGE];
+        file.read_exact_at(&mut read, 0).unwrap();
+        assert!(read == expected, "after the append: {:?}", &read[READABLE - 2..READABLE + 2]);
+        drop(file);
+        evict(&name);
+        assert!(fs::read(&name).unwrap() == expected, "the file evicted");
+        fs::remove_file(&name).unwrap();
+    }
+
+    /// A write past the end from memory that isn't there says EFAULT, and leaves the file as long
+    /// as it was. Cutting the file back to what a write stopped short wrote, DAX grew it to the
+    /// write's start.
+    fn test_write_past_end_copies_nothing() {
+        const PAGE: usize = 4096;
+        let name = path("write-past-end-copies-nothing");
+        fs::write(&name, vec![b'D'; 100]).unwrap();
+        let file = fs::OpenOptions::new().write(true).open(&name).unwrap();
+        let wrote = unsafe { libc::pwrite(file.as_raw_fd(), 1 as *const _, 8, 2 * PAGE as i64) };
+        assert_eq!(wrote, -1);
+        assert_eq!(std::io::Error::last_os_error().raw_os_error(), Some(libc::EFAULT));
+        assert_eq!(fs::metadata(&name).unwrap().len(), 100);
+        drop(file);
+        evict(&name);
+        assert_eq!(fs::read(&name).unwrap(), vec![b'D'; 100]);
+        fs::remove_file(&name).unwrap();
+    }
+
     /// fxdax: appends that end part way through the run they reserved (TASK-92.58) leave blocks
     /// past the file's end, which a crash would leave as a clean unmount does: the file is left
     /// for the host's fsck, which they failed, and its contents (TASK-133). Shrunk first, as
@@ -4749,6 +4938,14 @@ pub(crate) mod guest {
                 ("sparse", &test_sparse),
                 ("blocks_follow_writes", &test_blocks_follow_writes),
                 ("write_from_own_mapping", &test_write_from_own_mapping),
+                ("write_from_same_page", &test_write_from_same_page),
+                ("short_copy", &test_short_copy),
+                ("append_stopped_short", &test_append_stopped_short),
+                ("append_stopped_short_in_a_page", &test_append_stopped_short_in_a_page),
+                ("write_past_end_copies_nothing", &test_write_past_end_copies_nothing),
+                ("direct_read_past_end", &test_direct_read_past_end),
+                ("store_past_end", &test_store_past_end),
+                ("store_past_end_then_written", &test_store_past_end_then_written),
                 ("read_into_own_mapping", &test_read_into_own_mapping),
                 ("write_over_mapped_hole", &test_write_over_mapped_hole),
                 ("file_handles", &test_file_handles),
@@ -4800,21 +4997,18 @@ pub(crate) mod guest {
                 tests.push(("append_while_mapped", &test_append_while_mapped));
                 tests.push(("append_size_follows_data", &test_append_size_follows_data));
                 tests.push(("append_reserved_tail", &test_append_reserved_tail));
-                tests.push(("append_stopped_short", &test_append_stopped_short));
                 tests.push(("prune_while_read", &test_prune_while_read));
                 tests.push(("map_failed_after_move", &test_map_failed_after_move));
                 tests.push(("map_many_failed", &test_map_many_failed));
                 tests.push(("move_failed", &test_move_failed));
                 tests.push(("sealed_piece_reach", &test_sealed_piece_reach));
+                tests.push(("write_killed", &test_write_killed));
             }
             // Files on DAX are in no page cache.
             if !dax {
                 tests.push(("large_folios", &test_large_folios));
                 tests.push(("scattered_writeback", &test_scattered_writeback));
                 tests.push(("partial_writeback", &test_partial_writeback));
-                tests.push(("short_copy", &test_short_copy));
-                tests.push(("direct_read_past_end", &test_direct_read_past_end));
-                tests.push(("store_past_end", &test_store_past_end));
             }
             // fxdax: it dies of SIGBUS (TASK-121's pause check, the fault path's SIGBUS open):
             // after the others, which it would stop.

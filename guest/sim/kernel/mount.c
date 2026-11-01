@@ -180,22 +180,29 @@ int sim_fsync(struct file *file)
 	return file->f_inode->i_fop->fsync(file, 0, LLONG_MAX, 0);
 }
 
-/* fxfs_vfs_resize, for a DAX file, its inode's lock held by the caller's setattr. */
-int sim_truncate(struct file *file, loff_t size)
+/* super.c's, for a DAX file: its size written back, not the rest of the inode. */
+int fxfs_vfs_resize(struct inode *inode, loff_t size, struct mnt_idmap *idmap, struct iattr *iattr)
 {
-	struct inode *inode = file_inode(file);
 	struct fxfs_setattr set = {
 		.valid = FXFS_SET_SIZE | FXFS_SET_KEEP_TAIL, .size = size,
 	};
+	int err = fxfs_dax_resize_begin(inode, size);
+
+	if (err)
+		return err;
+	truncate_setsize(inode, size);
+	err = fxfs_nofs(fxfs_setattr(fxfs_vfs_fs(inode->i_sb), inode->i_ino, &set));
+	fxfs_dax_resize_end(inode, size);
+	return err;
+}
+
+int sim_truncate(struct file *file, loff_t size)
+{
+	struct inode *inode = file_inode(file);
 	int err;
 
 	inode_lock(inode);
-	err = fxfs_dax_resize_begin(inode, size);
-	if (!err) {
-		truncate_setsize(inode, size);
-		err = fxfs_nofs(fxfs_setattr(fxfs_vfs_fs(inode->i_sb), inode->i_ino, &set));
-		fxfs_dax_resize_end(inode, size);
-	}
+	err = fxfs_vfs_resize(inode, size, NULL, NULL);
 	inode_unlock(inode);
 	return err;
 }
@@ -211,10 +218,11 @@ int sim_clone(struct file *in, loff_t pos_in, struct file *out, loff_t pos_out, 
 	struct fxfs_attr attr;
 	int err;
 
-	inode_lock(src);
-	inode_lock(dst);
-	filemap_invalidate_lock(src->i_mapping);
-	filemap_invalidate_lock(dst->i_mapping);
+	/* By address, as lock_two_nondirectories and filemap_invalidate_lock_two do. */
+	inode_lock(min(src, dst));
+	inode_lock(max(src, dst));
+	filemap_invalidate_lock(min(src->i_mapping, dst->i_mapping));
+	filemap_invalidate_lock(max(src->i_mapping, dst->i_mapping));
 	size = max(i_size_read(dst), pos_out + len);
 	err = filemap_write_and_wait_range(src->i_mapping, pos_in, pos_in + len - 1);
 	if (!err)
@@ -228,10 +236,10 @@ int sim_clone(struct file *in, loff_t pos_in, struct file *out, loff_t pos_out, 
 						 dst->i_ino, pos_out, size, &attr));
 	if (!err)
 		i_size_write(dst, size);
-	filemap_invalidate_unlock(dst->i_mapping);
-	filemap_invalidate_unlock(src->i_mapping);
-	inode_unlock(dst);
-	inode_unlock(src);
+	filemap_invalidate_unlock(max(src->i_mapping, dst->i_mapping));
+	filemap_invalidate_unlock(min(src->i_mapping, dst->i_mapping));
+	inode_unlock(max(src, dst));
+	inode_unlock(min(src, dst));
 	return err;
 }
 

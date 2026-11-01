@@ -28,7 +28,7 @@ sim_build() { # name, patches...
     "$CC" $CFLAGS -c "$dir/guest/linux/fs/fxfs/dax.c" -o "$dir/dax.o" &&
         "$CC" $CFLAGS -c "$dir/guest/linux/fs/fxfs/device.c" -o "$dir/device.o" &&
         "$CC" $CFLAGS -c "$dir/fs/dax.c" -o "$dir/fsdax.o" &&
-        for test in "${scenarios[@]}" interleave; do
+        for test in "${scenarios[@]}" interleave failures scenarios; do
             "$CC" $LDFLAGS "$BUILD/tests/$test.o" "$dir/dax.o" "$dir/device.o" "$dir/fsdax.o" \
                 $OBJECTS -o "$dir/$test" || return 1
         done

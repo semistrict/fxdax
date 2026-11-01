@@ -7,31 +7,12 @@
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c
-@@ -2162,10 +2162,6 @@
+@@ -2166,7 +2166,7 @@
+ 	from = region->mapped;
+ 	if (end <= from)
+ 		goto out;
+-	if (end > region->pages || (sealed && writable)) {
++	if (end > region->pages) {
  		err = -EXDEV;
  		goto out;
  	}
--	if (sealed && writable) {
--		err = -EXDEV;
--		goto out;
--	}
- 	to = region->pages;
- 	if (writable)
- 		to = min(to, max(end, from + clamp(from, FXFS_DAX_REGION_FIRST,
-@@ -2341,16 +2341,6 @@
- 			fxfs_dax_put_region(dax, region);
- 			return -EXDEV;
- 		}
--	} else if (READ_ONCE(region->writable) &&
--		   first + pages > READ_ONCE(region->mapped)) {
--		/*
--		 * fxdax: a sealed piece, maybe outside the gate (fxfs_dax_map_chunk), of a region a
--		 * seal has yet to reach: reaching for it would map writably, across the seal, which
--		 * gives the space past what is mapped back meanwhile (xfstests generic/013, TASK-44.21).
--		 * The range's own space maps it, read-only.
--		 */
--		fxfs_dax_put_region(dax, region);
--		return -EXDEV;
- 	}
- 	err = fxfs_dax_reach_sealed(dax, region, first + pages, !e->open);
- 	if (err) {

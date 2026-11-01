@@ -58,7 +58,8 @@ unsigned long find_next_zero_bit(const unsigned long *addr, unsigned long size,
 #define for_each_set_bit(bit, addr, size) \
 	for ((bit) = 0; (bit) = find_next_bit((addr), (size), (bit)), (bit) < (size); (bit)++)
 
-unsigned long *bitmap_zalloc(unsigned int nbits, gfp_t flags);
+#define bitmap_zalloc(nbits, flags) \
+	((unsigned long *)kzalloc(BITS_TO_LONGS(nbits) * sizeof(unsigned long), flags))
 void bitmap_free(const unsigned long *bitmap);
 void bitmap_set(unsigned long *map, unsigned int start, unsigned int len);
 void bitmap_clear(unsigned long *map, unsigned int start, unsigned int len);

@@ -54,7 +54,7 @@ run() { # name
     sim_build "$name" "${patches[@]}" || return
     for ((i = 0; i < seed_jobs; i++)); do
         mkdir -p "$dir/$i"
-        cp "$dir/interleave" "$dir/$i/interleave"
+        cp "$dir/interleave" "$dir/failures" "$dir/$i/"
     done
     began=$(date +%s.%N)
     for test in "${scenarios[@]}"; do
@@ -63,13 +63,24 @@ run() { # name
             seed=$test
             break
         fi
+    if [[ -z $found ]]; then
+        # Each of what tests/scenarios plays out, by name.
+        for test in $("$dir/scenarios" 2>&1 | grep -v WARNING); do
+            if found=$(failed "$dir" scenarios "$test"); then
+                found=${found:-scenarios $test}
+                seed=$test
+                break
+            fi
+        done
+    fi
     done
     if [[ -z $found ]]; then
         # Seeds at once, a batch at a time: the first of a batch to fail is the one to say.
         for ((seed = 1, first = 0; seed <= seeds && !stop; seed += seed_jobs)); do
             for ((i = 0; i < seed_jobs && seed + i <= seeds; i++)); do
-                (failed "$dir/$i" interleave $((seed + i)) \
-                    "${operations:-$(((seed + i) % 8 ? 200 : 1000))}" > "$dir/$i/failure") &
+                (ops=${operations:-$(((seed + i) % 8 ? 200 : 1000))}
+                 failed "$dir/$i" interleave $((seed + i)) "$ops" ||
+                     failed "$dir/$i" failures $((seed + i)) "$ops") > "$dir/$i/failure" &
             done
             wait
             for ((i = 0; i < seed_jobs; i++)); do

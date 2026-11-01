@@ -17,6 +17,8 @@ make KERNEL=<tree> BUILD=<dir>
 <dir>/tests/interleave SEED [OPERATIONS] # tasks at once, the seed's interleaving
 KERNEL=<tree> BUILD=<dir> ./zloop.sh     # with fixes/*.patch in: every test, then 3,000 seeds
 KERNEL=<tree> BUILD=<dir> ./mutants.sh -b fixes/x.patch...   # puts past bugs back: which it finds
+<dir>/tests/failures SEED [OPERATIONS]   # the same, as allocations, MAPs and UNMAPs fail
+<dir>/tests/scenarios [NAME]             # paths no seed takes, each played out; none lists them
 ```
 
 `interleave`'s flags say what to log of a run; replaying its seed with them shows how it failed. The
@@ -32,7 +34,7 @@ Compiled as they are, from the tree or the repo:
 | Real | From |
 | --- | --- |
 | `dax.c`, `device.c`, `hist.h`, `vfs.h`, `fxfs.h`, `device.h` | fs/fxfs: all of the window's protocol and the gate |
-| `fs/dax.c` | with guest/linux/patches/0005-0008: DAX entries, their locks, shared folios |
+| `fs/dax.c` | with guest/linux/patches/0005-0009: DAX entries, their locks, shared folios |
 | `fs/iomap/iter.c`, `lib/xarray.c`, `lib/genalloc.c` | the kernel's |
 | `linux/{list,rculist,hash,hashtable,xarray,iomap,dax,genalloc,wait,wait_bit}.h` | the kernel's headers |
 
@@ -42,9 +44,9 @@ Written here (see each file's head for what it leaves out):
 | --- | --- | --- |
 | Scheduler, locks, wait queues, RCU, workqueues | `kernel/sched.c`, `locks.c`, `workqueue.c` | One task at a time; wait queues as the kernel's; rwsem order as the kernel's, not its optimistic spinning |
 | Page tables and faults | `kernel/mm.c` | Two flat arrays per VMA, with `mm/memory.c`'s insert and fault rules rewritten, and `mmap_lock`. No TLB, no MMU, no GUP, no private mappings |
-| VFS and page cache | `kernel/vfs.c`, `mount.c` | What dax.c calls. `super.c` is not built: its truncate, punch and fsync are rewritten |
-| Host device | `kernel/device.c`, `host.c` | The window is real memory, a memfd mapped page by page, so a store the host refuses is a SIGSEGV. Requests complete at once: no virtqueue, no second stage, no async page faults |
-| Fxfs | `fxfs/fxfs.c` | A model of what the protocol assumes: blocks, open extents, an extent that reads as sealed then open again as a write reaches it, shared blocks, the staging extent, `FreeAfter::Flush`, one seal in four a flush, transactions that fail. No journal, tree or crash consistency |
+| VFS and page cache | `kernel/vfs.c`, `mount.c` | What dax.c calls. `super.c` is not built: its resize, punch, clone and fsync are rewritten, so that a bug in them shows on a real kernel alone |
+| Host device | `kernel/device.c`, `host.c` | The window is real memory, a memfd mapped page by page, so a store the host refuses is a SIGSEGV. Requests complete at once, or fail with EIO as a test asks: no virtqueue, no second stage, no async page faults |
+| Fxfs | `fxfs/fxfs.c` | A model of what the protocol assumes: blocks, open extents, an extent that reads as sealed then open again as a write reaches it, shared blocks, the staging extent, `FreeAfter::Flush`, one seal in four a flush, transactions that fail, `zero_tail`. No journal, tree or crash consistency |
 
 So a run tests dax.c against a second writing of its assumptions. Where the model differs from
 Fxfs, or `kernel/mm.c` from `mm/memory.c`, a run proves nothing. Five of the first failures here
@@ -92,7 +94,16 @@ It can't find:
 
 ## What it found
 
-In dax.c as it stands. Each has its candidate fix in `fixes/`, out of dax.c until someone decides:
+
+TASK-150.8 to .14, a static audit's findings, each a scenario here, and `tests/failures` finds most
+of them without one: a short copy and a write from its own pages losing what whole pages held; an
+append cut short leaving the last block behind Fxfs; a double free; a sealed piece mapped writably
+outside the gate; a failed UNMAP stopping unmount; a range left behind its blocks after failed MAPs;
+writable bits a seal misses. And TASK-79.53 again, on DAX: a mapping's store past the end read back;
+and a writer killed between its move and its copy, which left zeros.
+
+In dax.c as it stood at TASK-149.14, first found here, the first since fixed:
+
 
 1. **A write over a hole leaves a mapping reading zeros.** Confirmed on a real kernel, GCE r395 and
    r396, whose `write_over_mapped_hole` said `page 1 through the mapping is stale`. A write whose pieces
@@ -163,6 +174,24 @@ without a mutant don't show that WARN.
 300 seeds of the first workload reached 72% of dax.c's lines and 62% of `fs/dax.c`'s; not measured
 since. Eviction, reflinks, reclaim (a run in four has a window its files fill) and Fxfs's failures are
 reached now. Followers and failures of faults past those aren't.
+
+And by `tests/scenarios`, each at once, with how many seeds of `tests/failures` find it alone:
+
+| Bug | `failures` | How |
+| --- | --- | --- |
+| TASK-150.8, whole pages moved before the write has its bytes | 1 | bytes wrong |
+| TASK-150.10, `maps` and `own` apart, freed twice | 1 | ASan |
+| TASK-150.11, TASK-44.21, a sealed piece reaching past a writable region | 33 | lockdep's WARN |
+| TASK-150.11, that look before the region is locked, GCE r423's stack | 16 of 3,000, at 400 operations | lockdep's WARN; no scenario, a race |
+| TASK-150.12, the pool destroyed with what an UNMAP failed for | 1 | `BUG_ON` |
+| TASK-150.13, a range behind its blocks left in use | no, in 400 | a scenario: its extent has to die |
+| TASK-150.14, writable bits of a file not listed | no, in 400 | a scenario: a clone, a piece refused, and a seal |
+| TASK-79.53, a mapping's store past the end read back | 2 | bytes wrong |
+| Patch 0009, a killed writer's copy stopped | 1 | bytes wrong |
+| A write past the end that copies nothing grows the file | not run | a scenario |
+
+150 seeds of `interleave` and `failures` with the scenarios reach 73% of dax.c's lines and 60% of
+`fs/dax.c`'s. Not reached: reclaim (the window never fills), followers, and Fxfs failing.
 
 ## Layout
 

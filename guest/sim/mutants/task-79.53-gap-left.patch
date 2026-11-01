@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+#
+# TASK-79.53, on DAX: a write past the end leaves what a mapping stored past the old end to be read.
+
+--- a/guest/linux/fs/fxfs/dax.c
++++ b/guest/linux/fs/fxfs/dax.c
+@@ -5175,7 +5175,7 @@
+  */
+ static int fxfs_dax_zero_tail(struct inode *inode, loff_t old, loff_t size)
+ {
+-	if (!offset_in_page(old))
++	if (old >= 0)
+ 		return 0;
+ 	return fxfs_dax_zero_part(inode, old, min_t(loff_t, size, round_up(old, PAGE_SIZE)) - old);
+ }

@@ -58,6 +58,10 @@ struct virtio_extent {
 } device;
 
 static struct dax_device { int unused; } dax_device;
+/* What a test has fail: how many of which requests, after how many more, or one in how many. */
+static u32 failing_type;
+static u64 failing_skip, failing, failed;
+static unsigned int failing_odds;
 static int dax_readers;
 
 void sim_device_init(u64 window_len)
@@ -273,12 +277,49 @@ static int do_map(struct vext_request *req)
 	return err;
 }
 
+void sim_device_fail(u32 type, u64 skip, u64 count)
+{
+	failing_type = type;
+	failing_skip = skip;
+	failing = count;
+}
+
+void sim_device_fail_odds(unsigned int odds)
+{
+	failing_odds = odds;
+}
+
+u64 sim_device_failed(void)
+{
+	return failed;
+}
+
+static bool request_fails(u32 type)
+{
+	bool fail = false;
+
+	if (failing_odds && !(sim_random() % failing_odds))
+		fail = true;
+	else if (failing && type == failing_type && !failing_skip--) {
+		failing_skip = 0;
+		failing--;
+		fail = true;
+	}
+	failed += fail;
+	return fail;
+}
+
 int virtio_extent_call(struct virtio_extent *vext, struct vext_request *req)
 {
 	int err;
 
 	/* The request crosses to the host, and others run meanwhile; a seal may end on the way. */
 	sim_point("a device request");
+	if ((req->type == VIRTIO_EXTENT_T_MAP || req->type == VIRTIO_EXTENT_T_UNMAP) &&
+	    request_fails(req->type)) {
+		sim_point("a device reply");
+		return -EIO;
+	}
 	switch (req->type) {
 	case VIRTIO_EXTENT_T_MAP:
 		err = do_map(req);

@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+#
+# TASK-150.13: a range that failed to follow its blocks goes on being used, until someone drops it.
+
+--- a/guest/linux/fs/fxfs/dax.c
++++ b/guest/linux/fs/fxfs/dax.c
+@@ -1564,9 +1564,6 @@
+ {
+ 	lockdep_assert_held_write(&range->file->sem);
+ 
+-	range->behind = true;
+-	unmap_mapping_pages(inode->i_mapping, fxfs_dax_chunk_start(range) >> PAGE_SHIFT, range->pages,
+-			    false);
+ 	return err == -EXDEV ? err : -ESTALE;
+ }
+ 
