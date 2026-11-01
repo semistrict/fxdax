@@ -1565,8 +1565,13 @@ impl<P: Platform> Fxfs<P> {
                 }
             }
             let mut tombstoned = Vec::new();
+            // What a full transaction leaves goes through the graveyard: each that went on would
+            // add its next extent all the same, past what the transaction may take.
             for &ino in &evicted {
-                if last_names.contains(&ino) && self.tombstone_now(&mut transaction, ino).await? {
+                if !transaction.is_full()
+                    && last_names.contains(&ino)
+                    && self.tombstone_now(&mut transaction, ino).await?
+                {
                     tombstoned.push(ino);
                 }
             }

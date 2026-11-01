@@ -1895,8 +1895,9 @@ impl ObjectStore {
                     ensure!(block_size.is_aligned(&device_range.range), FxfsError::Inconsistent);
                     allocator.deallocate(transaction, self.store_object_id, device_range).await?;
                     deallocated += len;
-                    // Stop if the transaction is getting too big.
-                    if transaction.mutations().len() >= TRANSACTION_MUTATION_THRESHOLD {
+                    // Stop if the transaction is getting too big. fxdax: as it says, in what it
+                    // takes of the journal.
+                    if transaction.is_full() {
                         result = TrimResult::Incomplete;
                         break;
                     }

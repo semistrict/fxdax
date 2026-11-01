@@ -3132,12 +3132,12 @@ mod tests {
     use crate::object_store::directory::replace_child;
     use crate::object_store::object_manager::ObjectManager;
     use crate::object_store::object_record::{FsverityMetadata, ObjectKey, ObjectValue, Timestamp};
-    use crate::object_store::transaction::{Mutation, Options, lock_keys};
+    use crate::object_store::transaction::{Mutation, Options, TRANSACTION_ROOM, lock_keys};
     use crate::object_store::volume::root_volume;
     use crate::object_store::{
         AttributeId, AttributeKey, DataObjectHandle, DirType, Directory, Extent, ExtentMode,
         ExtentValue, HandleOptions, LockKey, NewChildStoreOptions, ObjectKeyData, ObjectStore,
-        PosixAttributes, StoreOptions, TRANSACTION_MUTATION_THRESHOLD,
+        PosixAttributes, StoreOptions,
     };
     use crate::range::RangeExt;
     use crate::round::{round_down, round_up};
@@ -5252,7 +5252,7 @@ mod tests {
     #[fuchsia::test]
     async fn test_trim() {
         // Format a new filesystem.
-        let device = DeviceHolder::new(FakeDevice::new(8192, TEST_DEVICE_BLOCK_SIZE));
+        let device = DeviceHolder::new(FakeDevice::new(16384, TEST_DEVICE_BLOCK_SIZE));
         let fs = FxFilesystem::new_empty(device).await.expect("new_empty failed");
         let block_size = fs.block_size();
         root_volume(fs.clone())
@@ -5276,19 +5276,15 @@ mod tests {
         }
         let shared_context = Arc::new(Mutex::new(Context::default()));
 
-        let object_size = (TRANSACTION_MUTATION_THRESHOLD as u64 + 10) * 2 * block_size;
+        // fxdax: more extents than a transaction has room to free, each more than 16 bytes of it.
+        let object_size = (TRANSACTION_ROOM / 16) * 2 * block_size;
 
         // Wait for an object to get tombstoned by the graveyard.
         async fn expect_tombstoned(store: &Arc<ObjectStore>, object_id: u64) {
             loop {
-                if let Err(e) =
-                    ObjectStore::open_object(store, object_id, HandleOptions::default(), None).await
-                {
-                    assert!(
-                        FxfsError::NotFound.matches(&e),
-                        "open_object didn't fail with NotFound: {:?}",
-                        e
-                    );
+                // fxdax: its record, not `open_object`: that looks up its size, whose record a
+                // tombstone in a later layer doesn't hide, once a flush has moved it to an earlier.
+                if store.tree().find(&ObjectKey::object(object_id)).await.expect("find").is_none() {
                     break;
                 }
                 // The graveyard should eventually tombstone the object.
@@ -5459,6 +5455,9 @@ mod tests {
                     .txn_write(&mut transaction, offset, buf.as_ref())
                     .await
                     .expect("write failed");
+                if transaction.is_full() {
+                    transaction.commit_and_continue().await.expect("commit failed");
+                }
             }
             transaction.commit().await.expect("commit failed");
             // This should take up more than one transaction.
