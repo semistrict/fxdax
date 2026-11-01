@@ -118,12 +118,15 @@ pub(crate) fn delete_with(
     }
     // Whether `elsewhere` went before the store deleted the branch, which it had then.
     let went = std::cell::Cell::new(false);
+    let elsewhere = |dir: &Path, branch| -> Result<(), crate::remote::Failure> {
+        failpoint!("delete::elsewhere");
+        elsewhere(dir, branch)
+    };
     extent_store::delete_host_with(
         path,
         options(),
         |dir, branch| {
             went.set(true);
-            failpoint!("delete::elsewhere");
             Ok(elsewhere(dir, branch)?)
         },
         |dir, branch| {

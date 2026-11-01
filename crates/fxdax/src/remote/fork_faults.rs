@@ -17,7 +17,7 @@
 //! the extents of `remote`'s other tests are, which no store's are.
 
 use super::tests::{Gated, Mishap, idle, pattern, restart, uploaded};
-use crate::faults::{CLEANUP_STEPS, FORK_STEPS};
+use crate::faults::{CLEANUP_STEPS, FORK_STEPS, plan};
 use crate::{Errno, ExtentId, ExtentStore, VolatileSlice, VolatileSliceMut};
 use extent_remote::layout::{self, Kind};
 use extent_remote::store::Store as Bucket;
@@ -57,6 +57,15 @@ enum Leftover {
     /// Opens it, as of a fork made, if it opens; and deletes it if not.
     Opened,
 }
+
+/// The writes of a bucket's that go wrong one after another.
+const MISHAPS: [Mishap; 5] = [
+    Mishap::Refused,
+    Mishap::Unanswered,
+    Mishap::Dies,
+    Mishap::DiesAnswered,
+    Mishap::DiesLandingLate,
+];
 
 /// The stores of a host, and another's, in a bucket: a parent, in `host`, reaching the bucket
 /// through `gated`, holding extents two writers minted, one stored on its own; and another tenant's.
@@ -294,6 +303,7 @@ impl World {
             } else if leftover == Leftover::Opened {
                 match self.open(&handle) {
                     Ok(store) => {
+                        assert!(!self.taken.load(Ordering::SeqCst), "{case}: it took another's");
                         self.check_fork(&store, b"root", case);
                         children.push(handle.clone());
                     }
@@ -420,6 +430,23 @@ fn run(faults: &[Fault], leftover: Leftover) -> Result<(), Option<Errno>> {
     errno
 }
 
+/// Runs `cases`, going on past those that fail, then fails with them all: or gives what each fork
+/// gave.
+fn all(cases: impl IntoIterator<Item = (Vec<Fault>, Leftover)>) -> Vec<Result<(), Option<Errno>>> {
+    let (mut failed, mut forked) = (Vec::new(), Vec::new());
+    for (faults, leftover) in cases {
+        match std::panic::catch_unwind(|| run(&faults, leftover)) {
+            Ok(result) => forked.push(result),
+            Err(panic) => {
+                let said = panic.downcast_ref::<String>().cloned().unwrap_or_default();
+                failed.push(format!("{faults:?}, {leftover:?}: {said}"));
+            }
+        }
+    }
+    assert!(failed.is_empty(), "{} failed:\n{}", failed.len(), failed.join("\n"));
+    forked
+}
+
 /// A fork with nothing going wrong forks, and what must hold holds.
 #[test]
 fn forks_with_nothing_going_wrong() {
@@ -470,4 +497,163 @@ fn forks_take_their_steps_in_order() {
             "delete::after"
         ]
     );
+}
+
+/// A step of a fork that fails fails the fork, and what must hold holds.
+#[test]
+fn forks_failing_at_each_step() {
+    host();
+    let forked = all(FORK_STEPS.map(|step| (vec![Fault::Fails(step)], Leftover::Deleted)));
+    let made = (FORK_STEPS.iter().zip(forked)).filter(|(_, forked)| forked.is_ok());
+    let made: Vec<_> = made.map(|(step, _)| *step).collect();
+    assert_eq!(made, Vec::<&str>::new(), "forks made though these steps failed");
+}
+
+/// What a host dying at a step of a fork leaves, deleted or opened, breaks nothing.
+#[test]
+fn hosts_dying_at_each_step_of_a_fork() {
+    host();
+    all(FORK_STEPS.into_iter().flat_map(|step| {
+        [Leftover::Deleted, Leftover::Opened].map(|leftover| (vec![Fault::Dies(step)], leftover))
+    }));
+}
+
+/// Another branch taking the child's ID, as a guest may name one that was free, whichever step of
+/// the fork it comes at, keeps it, and the parent goes on.
+#[test]
+fn branches_taking_the_childs_id_at_each_step() {
+    host();
+    all(FORK_STEPS.map(|step| (vec![Fault::Taken(step)], Leftover::Deleted)));
+}
+
+/// So does it whose host dies later in the fork, whatever is done with what it left.
+#[test]
+fn branches_taking_the_id_of_a_fork_whose_host_dies() {
+    host();
+    let after_claim = FORK_STEPS.iter().position(|step| *step == "fork::claimed").unwrap();
+    all(FORK_STEPS[after_claim + 1..].iter().flat_map(|&step| {
+        [Leftover::Deleted, Leftover::Opened]
+            .map(|leftover| (vec![Fault::Taken("fork::claimed"), Fault::Dies(step)], leftover))
+    }));
+}
+
+/// How many writes the fork that `faults` go wrong in makes.
+fn writes(faults: &[Fault]) -> usize {
+    let mut world = World::new();
+    world.gated.arm(usize::MAX, Mishap::Refused, Arc::new(|| {}));
+    let _ = world.fork(faults);
+    world.gated.writes()
+}
+
+/// A write of a fork's going wrong, its answer lost or the host dying as it goes, a dead host's
+/// PUT landing late, breaks nothing.
+#[test]
+fn each_write_of_a_fork_going_wrong() {
+    host();
+    let count = writes(&[]);
+    assert!(count >= 3, "a fork's segment, its child's record, its checkpoint: {count}");
+    all((0..count).flat_map(|write| {
+        MISHAPS.map(|mishap| (vec![Fault::Write(write, mishap)], Leftover::Deleted))
+    }));
+}
+
+/// Where a fork may fail for what its cleanup finds: nothing of it in object storage, its segment
+/// on its way, there unacknowledged, and acknowledged, its child's record given.
+const FAILING_FOR_CLEANUPS: [&str; 4] =
+    ["fork::committed", "remote::marked", "writer::uploaded", "writer::checkpoint"];
+
+/// A failed fork's cleanup failing, or its host dying, at each step, or a write of it going wrong,
+/// leaves what deleting the fork's handle again finishes.
+#[test]
+fn cleanups_of_failed_forks_going_wrong_at_each_step() {
+    host();
+    all(FAILING_FOR_CLEANUPS.into_iter().flat_map(|first| {
+        CLEANUP_STEPS.into_iter().flat_map(move |step| {
+            let first = Fault::Fails(first);
+            [
+                (vec![first, Fault::Fails(step)], Leftover::Deleted),
+                (vec![first, Fault::Dies(step)], Leftover::Deleted),
+            ]
+        })
+    }));
+}
+
+/// So does a write of the cleanup's going wrong.
+#[test]
+fn each_write_of_a_failed_forks_cleanup_going_wrong() {
+    host();
+    all(FAILING_FOR_CLEANUPS.into_iter().flat_map(|first| {
+        let first = Fault::Fails(first);
+        (0..writes(&[first])).flat_map(move |write| {
+            MISHAPS.map(|mishap| (vec![first, Fault::Write(write, mishap)], Leftover::Deleted))
+        })
+    }));
+}
+
+/// TASK-79.78: a fork whose segment landed, its host lost with its disk before anything came of
+/// it, is an orphan: a live branch no host holds, once the parent's next writer, elsewhere, gives
+/// it its record. The collector keeps what it inherited, though its parent freed it, as it cannot
+/// tell it from a branch held idle; an operator finds it among the live branches, as `fxdax-gc
+/// --branches` does, and deletes it, whichever placement took it last, as `--delete-branch` does;
+/// and the next pass frees what only it held.
+#[test]
+fn forks_orphaned_by_a_lost_host_keep_what_they_inherited_until_deleted() {
+    host();
+    let mut world = World::new();
+    let large = world.held.last().unwrap().0;
+    let _ = world.fork(&[Fault::Dies("writer::uploaded")]);
+    assert!(world.dead.load(Ordering::SeqCst), "the host lives");
+
+    let moved = world.temp.path().join("moved");
+    let parent = ExtentStore::create_for_branch(&moved, 1 << 30, world.branch).unwrap();
+    parent.attach_remote(world.bucket.clone(), rand::random(), options()).unwrap();
+    assert!(world.record(world.child).is_some_and(|record| !record.deleted), "no orphan");
+    let state = block_on(extent_remote::recover(&*world.bucket, world.branch, None));
+    let key = state.unwrap().state.extents[&large.into()].key.clone();
+    assert!(matches!(layout::kind(&key), Kind::Extent { .. }), "{key}");
+    for (extent, _) in &world.held {
+        parent.free(*extent).unwrap();
+    }
+    parent.commit(None).unwrap();
+    assert_eq!(parent.wait_uploaded(), Ok(()));
+    drop(parent);
+    let stored = || {
+        let listed = block_on(extent_remote::Bucket::list(&*world.bucket, "")).unwrap();
+        listed.iter().any(|meta| meta.key == key)
+    };
+    world.collect("orphaned");
+    assert!(stored(), "what the fork inherited went while it is live");
+
+    let held = [world.branch, world.other.branch()];
+    let orphans: Vec<_> = world.live().into_iter().filter(|live| !held.contains(live)).collect();
+    assert_eq!(orphans, [world.child]);
+    assert_eq!(block_on(branch::delete(&*world.bucket, world.child, 9, u64::MAX)), Ok(()));
+    world.collect("deleted");
+    assert!(!stored(), "what the fork inherited stayed once it was deleted");
+}
+
+/// What a seed sets ([`plan`]), on top of the host dying at a step if it is odd.
+fn seeded(seed: u64) -> (Vec<Fault>, Leftover) {
+    let planned = plan(seed).into_iter().map(|(step, actions)| {
+        let passes = actions.split('*').next().unwrap().parse().unwrap();
+        Fault::FailsAfter(step, passes)
+    });
+    let dies = FORK_STEPS[seed as usize / 2 % FORK_STEPS.len()];
+    let leftover = if seed % 4 == 1 { Leftover::Opened } else { Leftover::Deleted };
+    (planned.chain((seed % 2 == 1).then_some(Fault::Dies(dies))).collect(), leftover)
+}
+
+/// Faults a seed picks, several to a fork, its cleanup and the daemon's steps among them: a failure
+/// says the seed; FXDAX_FAULT_SEED says which to run alone.
+#[test]
+fn faults_a_seed_picks() {
+    host();
+    let seeds = match std::env::var("FXDAX_FAULT_SEED") {
+        Ok(seed) => {
+            let seed = seed.parse().unwrap();
+            seed..seed + 1
+        }
+        Err(_) => 0..64,
+    };
+    all(seeds.map(seeded));
 }

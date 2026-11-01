@@ -101,6 +101,21 @@ pub fn from_seed() -> Result<(), String> {
 mod tests {
     use super::*;
 
+    /// A daemon's seed sets its plan's failpoints, as FXDAX_FAULT_SEED names it.
+    #[test]
+    fn seeds_set_their_failpoints() {
+        // SAFETY: nextest runs each test in a process of its own, whose other threads don't read
+        // the environment yet.
+        unsafe { std::env::set_var("FXDAX_FAULT_SEED", "7") };
+        from_seed().unwrap();
+        let mut set = fail::list();
+        set.sort();
+        let mut planned: Vec<_> =
+            plan(7).into_iter().map(|(step, actions)| (step.to_owned(), actions)).collect();
+        planned.sort();
+        assert_eq!(set, planned);
+    }
+
     /// A seed says the same failpoints each time, and each is a step, failing once.
     #[test]
     fn seeds_say_what_fails() {
