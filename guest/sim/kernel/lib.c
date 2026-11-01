@@ -262,3 +262,21 @@ int sim_param_set(const char *name, const char *value)
 	}
 	sim_panic("no parameter %s", name);
 }
+
+unsigned long sim_param_read(const char *name)
+{
+	extern const struct kernel_param __start_sim_params[], __stop_sim_params[];
+	const struct kernel_param *param;
+	unsigned long number;
+	char value[24];
+
+	for (param = __start_sim_params; param < __stop_sim_params; param++) {
+		if (!strcmp(param->name, name)) {
+			param->ops->get(value, param);
+			if (sscanf(value, "%lu", &number) != 1)
+				sim_panic("parameter %s isn't a number: %s", name, value);
+			return number;
+		}
+	}
+	sim_panic("no parameter %s", name);
+}

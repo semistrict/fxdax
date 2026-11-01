@@ -5,21 +5,22 @@
 # Puts each of mutants/*.patch into a copy of dax.c, device.c or fs/dax.c, builds the tests against
 # it, and runs seeds until one fails: how many seeds a past bug takes to show, or that it doesn't.
 #
-#   mutants.sh [-b BASE.patch]... [-s SEEDS] [-o OPERATIONS] [NAME...]
+#   mutants.sh [-b BASE.patch]... [-s SEEDS] [-o OPERATIONS] [-j JOBS] [NAME...]
 #
 # With -b, as many as asked, every build has BASE too: a fix a run needs out of its way. Takes
 # KERNEL and BUILD as the Makefile does. dax.c itself stays as it is. A NAME with no patch builds
-# what the -b fixes make, which is how to see they leave nothing failing.
+# what the -b fixes make, which is how to see they leave nothing failing. JOBS mutants run at once.
 
 set -u -o pipefail
 cd "$(dirname "$0")"
 
-bases=() seeds=2000 operations=200
-while getopts b:s:o: opt; do
+bases=() seeds=2000 operations=200 jobs=$(nproc)
+while getopts b:s:o:j: opt; do
     case $opt in
         b) bases+=("$OPTARG") ;;
         s) seeds=$OPTARG ;;
         o) operations=$OPTARG ;;
+        j) jobs=$OPTARG ;;
         *) exit 2 ;;
     esac
 done
@@ -37,6 +38,9 @@ if [[ ${#names[@]} == 0 ]]; then
     done
 fi
 
+# Every test but smoke runs each build: scenarios first, as they take one run, then seeds.
+tests=(hole_mapped_then_written load_during_move pmd_over_stale_index interleave)
+
 build() { # name, patches...
     local name=$1 dir="$BUILD/mutants/$1" patch
     shift
@@ -50,32 +54,57 @@ build() { # name, patches...
     "$CC" $CFLAGS -c "$dir/guest/linux/fs/fxfs/dax.c" -o "$dir/dax.o" &&
         "$CC" $CFLAGS -c "$dir/guest/linux/fs/fxfs/device.c" -o "$dir/device.o" &&
         "$CC" $CFLAGS -c "$dir/fs/dax.c" -o "$dir/fsdax.o" &&
-        for test in interleave hole_mapped_then_written; do
+        for test in "${tests[@]}"; do
             "$CC" $LDFLAGS "$BUILD/tests/$test.o" "$dir/dax.o" "$dir/device.o" "$dir/fsdax.o" \
                 $OBJECTS -o "$dir/$test" || return 1
         done
 }
 
-printf '%-34s %-10s %-9s %s\n' mutant seeds time 'first failure'
-for name in "${names[@]}"; do
-    patches=("${bases[@]}")
+# Whether `$dir/$test` fails with these arguments: what it says, if so.
+failed() { # dir, test, arguments...
+    local dir=$1 test=$2
+    shift 2
+    if ! timeout 120 "$dir/$test" "$@" > "$dir/log" 2>&1; then
+        grep -E 'PANIC|DEADLOCK|refused|ERROR: Addr|SUMMARY' "$dir/log" | head -1 | cut -c1-100
+        return 0
+    fi
+    return 1
+}
+
+run() { # name
+    local name=$1 dir=$BUILD/mutants/$1 patches=("${bases[@]}") found="" seed test began took
     [[ -f mutants/$name.patch ]] && patches+=("mutants/$name.patch")
-    build "$name" "${patches[@]}" || continue
+    build "$name" "${patches[@]}" || return
     began=$(date +%s.%N)
-    found="" seed=1
-    while ((seed <= seeds)); do
-        if ! timeout 120 "$BUILD/mutants/$name/interleave" "$seed" "$operations" \
-            > "$BUILD/mutants/$name/log" 2>&1; then
-            found=$(grep -E 'PANIC|DEADLOCK|refused|ERROR: Addr|SUMMARY' "$BUILD/mutants/$name/log" | head -1 | cut -c1-100)
-            found=${found:-exit $?}
+    for test in "${tests[@]}"; do
+        [[ $test == interleave ]] && continue
+        if found=$(failed "$dir" "$test"); then
+            found=${found:-$test}
+            seed=$test
             break
         fi
-        seed=$((seed + 1))
     done
+    if [[ -z $found ]]; then
+        for ((seed = 1; seed <= seeds; seed++)); do
+            if found=$(failed "$dir" interleave "$seed" "$operations"); then
+                found=${found:-exit}
+                break
+            fi
+        done
+    fi
     took=$(printf '%.1f' "$(echo "$(date +%s.%N) - $began" | bc)")
     if [[ -n $found ]]; then
-        printf '%-34s %-10s %-9s %s\n' "$name" "$seed" "${took}s" "$found"
+        printf '%-34s %-24s %-9s %s\n' "$name" "$seed" "${took}s" "$found"
     else
-        printf '%-34s %-10s %-9s %s\n' "$name" "none/$seeds" "${took}s" 'not caught'
+        printf '%-34s %-24s %-9s %s\n' "$name" "none/$seeds" "${took}s" 'not caught'
     fi
+}
+
+printf '%-34s %-24s %-9s %s\n' mutant seeds time 'first failure'
+for name in "${names[@]}"; do
+    run "$name" &
+    while (($(jobs -rp | wc -l) >= jobs)); do
+        wait -n
+    done
 done
+wait

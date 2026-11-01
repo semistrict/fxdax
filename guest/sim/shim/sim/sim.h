@@ -53,6 +53,8 @@ struct sim_mount *sim_mount_new(void);
 void sim_mount_free(struct sim_mount *mount);
 struct file *sim_file_new(struct sim_mount *mount);
 void sim_file_evict(struct file *file);
+/* Evicts `file`'s inode, which nothing maps, and reads a new one in for it: that inode, opened. */
+struct file *sim_file_read_in(struct sim_mount *mount, struct file *file);
 /* What VFS calls do, each as a task's system call, into a kernel buffer. */
 ssize_t sim_write(struct file *file, loff_t pos, const void *buf, size_t len);
 ssize_t sim_read(struct file *file, loff_t pos, void *buf, size_t len);

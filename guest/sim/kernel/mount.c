@@ -7,6 +7,7 @@
 
 #include <sim/sim.h>
 #include <sim/host.h>
+#include <linux/dax.h>
 
 #include "../../linux/fs/fxfs/vfs.h"
 #include "../../linux/fs/fxfs/device.h"
@@ -37,9 +38,22 @@ struct sim_mount *sim_mount_new(void)
 	return mount;
 }
 
+/*
+ * fxfs_vfs_evict_inode's, for a file nothing maps: its DAX entries go, as truncate_inode_pages_final
+ * has them, and the page's stale fields with them (dax_folio_put), but its ranges stay.
+ */
 void sim_file_evict(struct file *file)
 {
-	fxfs_dax_evict(file_inode(file));
+	struct inode *inode = file_inode(file);
+	unsigned long index;
+	void *entry;
+
+	dax_break_layout_final(inode);
+	xa_for_each(&inode->i_mapping->i_pages, index, entry) {
+		if (xa_is_value(entry))
+			dax_delete_mapping_entry(inode->i_mapping, index);
+	}
+	fxfs_dax_evict(inode);
 }
 
 /* As fxfs_vfs_kill_sb's, of the last volume, its files evicted. */
@@ -55,7 +69,8 @@ void sim_mount_free(struct sim_mount *mount)
 	kfree(mount);
 }
 
-struct file *sim_file_new(struct sim_mount *mount)
+/* A new inode read in for file `ino` of the mount, opened. */
+static struct file *file_of(struct sim_mount *mount, u64 ino)
 {
 	struct fxfs_vfs_inode *fi = kzalloc(sizeof(*fi), GFP_KERNEL);
 	struct file *file = kzalloc(sizeof(*file), GFP_KERNEL);
@@ -64,7 +79,7 @@ struct file *sim_file_new(struct sim_mount *mount)
 	inode->i_mode = S_IFREG | 0644;
 	inode->i_nlink = 1;
 	inode->i_blkbits = PAGE_SHIFT;
-	inode->i_ino = fxfs_sim_new_file(mount->info->fs);
+	inode->i_ino = ino;
 	inode->i_sb = &mount->sb;
 	inode->i_mapping = &inode->i_data;
 	atomic_set(&inode->i_count, 1);
@@ -81,6 +96,25 @@ struct file *sim_file_new(struct sim_mount *mount)
 	file->f_inode = inode;
 	file->f_mapping = inode->i_mapping;
 	return file;
+}
+
+struct file *sim_file_new(struct sim_mount *mount)
+{
+	return file_of(mount, fxfs_sim_new_file(mount->info->fs));
+}
+
+struct file *sim_file_read_in(struct sim_mount *mount, struct file *file)
+{
+	struct file *again;
+	u64 ino = file_inode(file)->i_ino;
+	int err = fxfs_dax_write_size(file_inode(file));
+
+	if (err)
+		sim_panic("writing the size of ino %llu back: %d", ino, err);
+	sim_file_evict(file);
+	again = file_of(mount, ino);
+	i_size_write(file_inode(again), fxfs_sim_size(mount->info->fs, ino));
+	return again;
 }
 
 static ssize_t do_write(struct file *file, loff_t pos, struct iov_iter *from)
