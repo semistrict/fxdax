@@ -1211,20 +1211,30 @@ impl FsckAfterEveryTransaction {
 
     async fn run(self: Arc<Self>) {
         if let Some(fs) = self.fs.get().and_then(Weak::upgrade) {
+            // fxdax: says what it found, not "1 error".
+            let issues = Arc::new(Mutex::new(Vec::new()));
+            let found = issues.clone();
             let options = FsckOptions {
                 fail_on_warning: true,
                 no_lock: true,
                 quiet: true,
+                on_error: Box::new(move |issue| found.lock().push(format!("{issue:?}"))),
                 ..Default::default()
             };
-            fsck_with_options(fs.clone(), &options).await.expect("fsck failed");
+            if let Err(error) = fsck_with_options(fs.clone(), &options).await {
+                panic!("fsck after a transaction: {error:#}: {:?}", issues.lock());
+            }
             let object_manager = fs.object_manager();
             for store in object_manager.unlocked_stores() {
                 let store_id = store.store_object_id();
                 if !object_manager.is_system_store(store_id) {
-                    fsck_volume_with_options(fs.as_ref(), &options, store_id, None)
-                        .await
-                        .expect("fsck_volume_with_options failed");
+                    let checked = fsck_volume_with_options(fs.as_ref(), &options, store_id, None);
+                    if let Err(error) = checked.await {
+                        panic!(
+                            "fsck of {store_id} after a transaction: {error:#}: {:?}",
+                            issues.lock()
+                        );
+                    }
                 }
             }
         }

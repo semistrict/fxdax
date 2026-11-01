@@ -1,9 +1,11 @@
 ---
 id: TASK-149.6
 title: fsck after every transaction in the model test
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-11-01 06:13'
+updated_date: '2026-11-01 08:27'
 labels: []
 dependencies: []
 parent_task_id: TASK-149
@@ -29,3 +31,11 @@ FxFilesystemBuilder has fsck_after_every_transaction, which the model test doesn
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. A Setting that opens filesystems with fsck_after_every_transaction, FXDAX_MODEL_FSCK for the hunt, a short test in the default run.
+2. Make the hook's panic say what fsck found.
+3. Hunt that way; fix or file findings.
+<!-- SECTION:PLAN:END -->

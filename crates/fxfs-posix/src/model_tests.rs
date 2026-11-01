@@ -20,9 +20,14 @@
 //! replay too, which must leave the same.
 //!
 //! Seeded by proptest, which says the sequence if one fails, shrunk.
+//!
+//! FXDAX_MODEL_CASES asks for more sequences, to hunt. FXDAX_MODEL_FSCK does the hunt with fsck after
+//! every transaction, slowly: corruption is found at the transaction that made it, not operations
+//! later.
 
 use super::tests::Tested;
 use super::*;
+use fxfs::filesystem::FxFilesystemBuilder;
 use fxfs::fsck::{FsckOptions, fsck_with_options};
 use fxfs::object_store::volume::root_volume;
 use fxfs::object_store::{NewChildStoreOptions, StoreOptions};
@@ -310,11 +315,13 @@ struct Setting {
     /// Whether the device is as awkward as a store, as `seed` says, or calm: answering at once and
     /// in order, as a sequence found on a calm one must to stay what was found.
     awkward: bool,
+    /// Whether fsck runs after every transaction.
+    fsck_each: bool,
 }
 
 impl Setting {
     fn calm(seed: u64, blocks: u64) -> Self {
-        Self { seed, blocks, cuts_one_in: CUTS_ONE_IN, awkward: false }
+        Self { seed, blocks, cuts_one_in: CUTS_ONE_IN, awkward: false, fsck_each: false }
     }
 
     fn awkward(seed: u64, blocks: u64) -> Self {
@@ -323,6 +330,15 @@ impl Setting {
 
     fn cutting_one_in(self, cuts_one_in: u32) -> Self {
         Self { cuts_one_in, ..self }
+    }
+
+    fn with_fsck_each(self, fsck_each: bool) -> Self {
+        Self { fsck_each, ..self }
+    }
+
+    /// What opens a filesystem here.
+    fn builder(&self) -> FxFilesystemBuilder {
+        FxFilesystemBuilder::new().fsck_after_every_transaction(self.fsck_each)
     }
 
     /// The seed of what cuts the replay of power cut `cut`, during operation `op`: of those of
@@ -353,6 +369,7 @@ impl Setting {
 
 /// A filesystem and its model.
 struct World {
+    setting: Setting,
     filesystem: fxfs::filesystem::OpenFxFilesystem,
     fs: Fxfs<Tested>,
     root: u64,
@@ -383,29 +400,31 @@ fn xattr_of(name: u8) -> Vec<u8> {
 impl World {
     async fn new(setting: Setting, crashes: &Arc<Crashes>, tally: Rc<Tally>) -> Self {
         let device = DeviceHolder::new(setting.device(crashes));
-        let filesystem = FxFilesystem::new_empty(device).await.expect("formatting");
+        let filesystem = setting.builder().format(true).open(device).await.expect("formatting");
         let volumes = root_volume((*filesystem).clone()).await.expect("the root volume");
         let volume =
             volumes.new_volume("test", NewChildStoreOptions::default()).await.expect("the volume");
         let root = volume.root_directory_object_id();
         let fs = Fxfs::new((*filesystem).clone(), volume, false, Tested);
-        Self { filesystem, fs, root, model: Model::default(), tally }
+        Self { setting, filesystem, fs, root, model: Model::default(), tally }
     }
 
     /// Mounts what `device` holds, or replays it: what `model` should say.
     async fn mount(
+        setting: Setting,
         device: DeviceHolder,
         root: u64,
         model: Model,
         tally: Rc<Tally>,
     ) -> Result<Self, String> {
-        let filesystem = FxFilesystem::open(device).await.map_err(|e| format!("opening: {e:#}"))?;
+        let filesystem = setting.builder().open(device).await;
+        let filesystem = filesystem.map_err(|e| format!("opening: {e:#}"))?;
         let volumes = root_volume((*filesystem).clone()).await.map_err(|e| format!("{e:#}"))?;
         let volume = volumes.volume("test", StoreOptions::default()).await;
         let volume = volume.map_err(|e| format!("the volume: {e:#}"))?;
         drop(volumes);
         let fs = Fxfs::new((*filesystem).clone(), volume, false, Tested);
-        Ok(Self { filesystem, fs, root, model, tally })
+        Ok(Self { setting, filesystem, fs, root, model, tally })
     }
 
     /// Unmounts, as a guest's `umount` does, leaving the device.
@@ -599,10 +618,11 @@ impl World {
 
     /// Unmounts and mounts again, as a guest's `umount` and `mount` do.
     async fn remount(self) -> Result<Self, String> {
-        let (root, model, tally) = (self.root, self.model.clone(), self.tally.clone());
+        let (setting, root) = (self.setting, self.root);
+        let (model, tally) = (self.model.clone(), self.tally.clone());
         let device = self.unmount().await?;
         device.reopen(false);
-        Self::mount(device, root, model, tally).await
+        Self::mount(setting, device, root, model, tally).await
     }
 
     /// Checks what a crash leaves now, this filesystem going on: a copy of the device, as of a
@@ -610,8 +630,8 @@ impl World {
     async fn crash(&self) -> Result<(), String> {
         self.fs.sync().await.map_err(|e| format!("sync: {e:#}"))?;
         let device = self.filesystem.device().snapshot().map_err(|e| format!("snapshot: {e:#}"))?;
-        let replayed =
-            Self::mount(device, self.root, self.model.clone(), self.tally.clone()).await?;
+        let (model, tally) = (self.model.clone(), self.tally.clone());
+        let replayed = Self::mount(self.setting, device, self.root, model, tally).await?;
         replayed.check_all().await?;
         replayed.unmount().await.map(drop)
     }
@@ -836,7 +856,9 @@ impl Past {
         let second_cuts = Crashes::new(seed, SECOND_CUTS_ONE_IN);
         second_cuts.mark(0);
         let device = DeviceHolder::new(device.record_crashes(second_cuts.clone()));
-        let mut world = World::mount(device, root, Model::default(), tally.clone()).await?;
+        let setting = self.setting;
+        let mut world =
+            World::mount(setting, device, root, Model::default(), tally.clone()).await?;
         second_cuts.stop();
         checked(&world.filesystem).await?;
         world.holds_no_orphans().await?;
@@ -863,7 +885,7 @@ impl Past {
         for (_, device) in second_cuts.take() {
             tally.second_cuts.set(tally.second_cuts.get() + 1);
             let device = DeviceHolder::new(device);
-            let again = World::mount(device, root, held.clone(), tally.clone()).await;
+            let again = World::mount(setting, device, root, held.clone(), tally.clone()).await;
             let again = again.map_err(|e| format!("cut during its replay: {e}"))?;
             again.check_all().await.map_err(|e| format!("cut during its replay: {e}"))?;
             again.unmount().await?;
@@ -903,14 +925,14 @@ async fn run(setting: Setting, ops: Vec<Op>, tally: Rc<Tally>) -> Result<(), Str
     Ok(())
 }
 
-/// Aborts, saying the sequence, if one takes longer than SEQUENCE_LIMIT: each is sent here as it
-/// starts, and this ends with the sender.
-fn watch_sequences() -> mpsc::Sender<String> {
+/// Aborts, saying the sequence, if one takes longer than `limit`: each is sent here as it starts,
+/// and this ends with the sender.
+fn watch_sequences(limit: Duration) -> mpsc::Sender<String> {
     let (sender, sequences) = mpsc::channel();
     std::thread::spawn(move || {
         let mut sequence = String::new();
         loop {
-            match sequences.recv_timeout(SEQUENCE_LIMIT) {
+            match sequences.recv_timeout(limit) {
                 Ok(next) => sequence = next,
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     eprintln!("this sequence never ended: {sequence}");
@@ -923,19 +945,20 @@ fn watch_sequences() -> mpsc::Sender<String> {
     sender
 }
 
-/// FXDAX_MODEL_CASES asks for more, to hunt.
 #[test]
 fn whatever_a_vfs_asks_reads_back_as_a_model_says() {
     let cases = std::env::var("FXDAX_MODEL_CASES").map_or(96, |cases| cases.parse().unwrap());
+    let fsck_each = std::env::var_os("FXDAX_MODEL_FSCK").is_some();
     let config = Config { cases, failure_persistence: None, ..Config::default() };
     let room = prop_oneof![Just(ROOMY), Just(TIGHT)];
     let sequences = (any::<u64>(), room, proptest::collection::vec(op(), 1..48));
     let tally = Rc::new(Tally::default());
-    let watched = watch_sequences();
+    let watched = watch_sequences(if fsck_each { 30 * SEQUENCE_LIMIT } else { SEQUENCE_LIMIT });
     TestRunner::new(config)
         .run(&sequences, |(seed, blocks, ops)| {
             watched.send(format!("{seed}, {blocks}, {ops:?}")).expect("the watchdog stopped");
-            prop_assert_eq!(Setting::awkward(seed, blocks).run(ops, tally.clone()), Ok(()));
+            let setting = Setting::awkward(seed, blocks).with_fsck_each(fsck_each);
+            prop_assert_eq!(setting.run(ops, tally.clone()), Ok(()));
             Ok(())
         })
         .unwrap();
@@ -944,6 +967,22 @@ fn whatever_a_vfs_asks_reads_back_as_a_model_says() {
     assert!(cuts > 0, "no power cut");
     assert!(second_cuts > 0, "no power cut of a replay");
     assert!(tally.refused.get() > 0, "no device filled");
+}
+
+/// Fsck after every transaction runs, around a sequence's compactions, crashes and remounts, and
+/// passes: the hunt that does it, FXDAX_MODEL_FSCK, is too slow to run always.
+#[test]
+fn fsck_can_follow_every_transaction() {
+    let ops = vec![
+        Op::Create(0),
+        Op::Write { file: 0, at: 0, len: 1, byte: 1 },
+        Op::Clone { from: 0, to: 0, page: 0, pages: 1, to_page: 1 },
+        Op::Compact,
+        Op::Crash,
+        Op::Unlink(0),
+        Op::Remount,
+    ];
+    Setting::awkward(0, ROOMY).with_fsck_each(true).holds(ops);
 }
 
 /// A power cut around a compaction leaves a filesystem that mounts, whatever the size of its
