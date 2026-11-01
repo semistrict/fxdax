@@ -61,11 +61,11 @@ TESTS := $(patsubst tests/%.c,$(BUILD)/tests/%,$(wildcard tests/*.c))
 
 compile: $(TESTS)
 
-$(BUILD)/fxfs/%.o: $(FXFS)/%.c $(BUILD)/.headers
+$(BUILD)/fxfs/%.o: $(FXFS)/%.c $(BUILD)/.headers $(wildcard shim/sim/*.h)
 	mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(BUILD)/kernel-real/%.o: $(KERNEL)/%.c $(BUILD)/.headers
+$(BUILD)/kernel-real/%.o: $(KERNEL)/%.c $(BUILD)/.headers $(wildcard shim/sim/*.h)
 	mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 

@@ -50,10 +50,19 @@ build() { # name, patches...
     "$CC" $CFLAGS -c "$dir/guest/linux/fs/fxfs/dax.c" -o "$dir/dax.o" &&
         "$CC" $CFLAGS -c "$dir/guest/linux/fs/fxfs/device.c" -o "$dir/device.o" &&
         "$CC" $CFLAGS -c "$dir/fs/dax.c" -o "$dir/fsdax.o" &&
-        for test in interleave hole_mapped_then_written; do
+        for test in interleave hole_mapped_then_written scenarios failures; do
             "$CC" $LDFLAGS "$BUILD/tests/$test.o" "$dir/dax.o" "$dir/device.o" "$dir/fsdax.o" \
                 $OBJECTS -o "$dir/$test" || return 1
         done
+}
+
+# Runs a test of mutant `name`: true, and `found` set, if it fails.
+attempt() { # name, test, arguments...
+    local name=$1 test=$2
+    shift 2
+    timeout 120 "$BUILD/mutants/$name/$test" "$@" > "$BUILD/mutants/$name/log" 2>&1 && return 1
+    found=$(grep -E 'PANIC|DEADLOCK|refused|ERROR: Addr|SUMMARY' "$BUILD/mutants/$name/log" | head -1 | cut -c1-100)
+    found="$test: ${found:-exit $?}"
 }
 
 printf '%-34s %-10s %-9s %s\n' mutant seeds time 'first failure'
@@ -62,15 +71,14 @@ for name in "${names[@]}"; do
     [[ -f mutants/$name.patch ]] && patches+=("mutants/$name.patch")
     build "$name" "${patches[@]}" || continue
     began=$(date +%s.%N)
-    found="" seed=1
-    while ((seed <= seeds)); do
-        if ! timeout 120 "$BUILD/mutants/$name/interleave" "$seed" "$operations" \
-            > "$BUILD/mutants/$name/log" 2>&1; then
-            found=$(grep -E 'PANIC|DEADLOCK|refused|ERROR: Addr|SUMMARY' "$BUILD/mutants/$name/log" | head -1 | cut -c1-100)
-            found=${found:-exit $?}
-            break
-        fi
-        seed=$((seed + 1))
+    found="" seed=0
+    # Each scenario first, seed 0 in what's printed, then seeds of what takes them.
+    for scenario in $("$BUILD/mutants/$name/scenarios" 2>&1 | grep -v WARNING); do
+        attempt "$name" scenarios "$scenario" && break
+    done
+    while [[ -z $found ]] && ((++seed <= seeds)); do
+        attempt "$name" interleave "$seed" "$operations" ||
+            attempt "$name" failures "$seed" "$operations"
     done
     took=$(printf '%.1f' "$(echo "$(date +%s.%N) - $began" | bc)")
     if [[ -n $found ]]; then

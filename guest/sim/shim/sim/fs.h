@@ -100,6 +100,14 @@ struct kiocb {
 	int ki_flags;
 };
 
+struct mnt_idmap;
+struct iattr;
+struct kvec {
+	void *iov_base;
+	size_t iov_len;
+};
+#define ITER_SOURCE WRITE
+
 /* A read's destination or a write's source, in the kernel or at a task's simulated address. */
 struct iov_iter {
 	u8 data_source;
@@ -134,6 +142,7 @@ static inline void i_size_write(struct inode *inode, loff_t size) { WRITE_ONCE(i
 static inline unsigned int i_blocksize(const struct inode *inode) { return 1U << inode->i_blkbits; }
 static inline bool sb_rdonly(const struct super_block *sb) { return false; }
 static inline size_t iov_iter_count(const struct iov_iter *i) { return i->count; }
+static inline bool iov_iter_is_kvec(const struct iov_iter *i) { return !i->user; }
 static inline int iov_iter_rw(const struct iov_iter *i) { return i->data_source; }
 
 #define inode_lock(inode) down_write(&(inode)->i_rwsem)
@@ -180,6 +189,10 @@ ssize_t copy_splice_read(struct file *in, loff_t *ppos, void *pipe, size_t len,
 ssize_t iter_file_splice_write(void *pipe, struct file *out, loff_t *ppos, size_t len,
 			       unsigned int flags);
 size_t iov_iter_zero(size_t bytes, struct iov_iter *i);
+void iov_iter_kvec(struct iov_iter *i, unsigned int direction, const struct kvec *kvec,
+		   unsigned long nr_segs, size_t count);
+void iov_iter_revert(struct iov_iter *i, size_t bytes);
+size_t copy_from_iter(void *addr, size_t bytes, struct iov_iter *i);
 size_t fault_in_iov_iter_readable(const struct iov_iter *i, size_t bytes);
 size_t fault_in_iov_iter_writeable(const struct iov_iter *i, size_t bytes);
 

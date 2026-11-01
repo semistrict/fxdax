@@ -14,6 +14,7 @@
 #define EFAULT 14
 #define EBUSY 16
 #define EEXIST 17
+#define ENOTBLK 15
 #define EXDEV 18
 #define ENODEV 19
 #define EINVAL 22

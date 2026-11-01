@@ -11,6 +11,10 @@
  * - A seal, around which a transaction may fall, seals every extent known to be open: those minted
  *   during it aren't known to be. A transaction whose device write finds its extent sealed is
  *   dropped, and tried again.
+ * - A block two files share (a clone's) is read-only, though its extent be open, and moves when
+ *   written, as `Allocator::is_shared` has it.
+ * - A cut that isn't told what the kernel keeps of the last block (FXFS_SET_KEEP_TAIL) zeros what
+ *   that block holds past the end by moving it (zero_tail), and so does a grow, past the old end.
  * - An extent dies once nothing holds a block of it and it isn't the staging extent, and is freed
  *   after a device flush that follows its death (FreeAfter::Flush): one seal in SIM_FLUSH_SEALS here.
  *   Until then the window goes on showing it; then the device maps zeros.
@@ -50,6 +54,8 @@ struct block {
 	/* 0: a hole. */
 	u64 sequence;
 	u64 page;
+	/* Whether a clone took it: `shared` says if another file still holds it. */
+	bool cloned;
 };
 
 struct stub_file {
@@ -213,6 +219,22 @@ static u64 take_staged(struct fxfs *fs, u64 pages, struct stub_extent **extent)
 	return page;
 }
 
+/* Whether another file's block is `block`. */
+static bool shared(const struct fxfs *fs, const struct block *block)
+{
+	const struct stub_file *file;
+	u64 page, holders = 0;
+
+	if (!block->cloned)
+		return false;
+	list_for_each_entry(file, &fs->files, list) {
+		for (page = 0; page < file->nr_blocks; page++)
+			holders += file->blocks[page].sequence == block->sequence &&
+				   file->blocks[page].page == block->page;
+	}
+	return holders > 1;
+}
+
 static void put_block(struct fxfs *fs, struct block *block)
 {
 	if (block->sequence) {
@@ -265,6 +287,7 @@ ssize_t fxfs_dax_extents(struct fxfs *fs, u64 ino, u64 offset, u64 len, struct f
 	struct stub_file *file;
 	u64 page = offset >> PAGE_SHIFT, end = (offset + len) >> PAGE_SHIFT;
 	ssize_t count = 0;
+	bool open;
 
 	mutex_lock(&fs->lock);
 	file = find_file(fs, ino);
@@ -276,10 +299,11 @@ ssize_t fxfs_dax_extents(struct fxfs *fs, u64 ino, u64 offset, u64 len, struct f
 		if (!block->sequence)
 			continue;
 		extent = find_extent(fs, block->sequence);
+		open = extent->open && !shared(fs, block);
 		if (count && out[count - 1].sequence == block->sequence &&
 		    out[count - 1].offset + out[count - 1].len == page << PAGE_SHIFT &&
 		    out[count - 1].extent_offset + out[count - 1].len ==
-		    block->page << PAGE_SHIFT) {
+		    block->page << PAGE_SHIFT && out[count - 1].open == open) {
 			out[count - 1].len += PAGE_SIZE;
 			continue;
 		}
@@ -290,7 +314,7 @@ ssize_t fxfs_dax_extents(struct fxfs *fs, u64 ino, u64 offset, u64 len, struct f
 		out[count++] = (struct fxfs_dax_extent) {
 			.offset = page << PAGE_SHIFT, .len = PAGE_SIZE, .branch = fs->branch,
 			.sequence = block->sequence, .extent_offset = block->page << PAGE_SHIFT,
-			.open = extent->open, .extent_size = extent->pages << PAGE_SHIFT,
+			.open = open, .extent_size = extent->pages << PAGE_SHIFT,
 		};
 	}
 	mutex_unlock(&fs->lock);
@@ -346,7 +370,8 @@ static ssize_t try_map_write(struct fxfs *fs, u64 ino, u64 offset, u64 len, u64 
 		const struct block *block = &file->blocks[first + page];
 		bool all = keep || held;
 
-		moving[page] = !block->sequence || !find_extent(fs, block->sequence)->open;
+		moving[page] = !block->sequence || !find_extent(fs, block->sequence)->open ||
+			       shared(fs, block);
 		if (!moving[page])
 			continue;
 		moves++;
@@ -535,16 +560,67 @@ int fxfs_fsync(struct fxfs *fs)
 	return 0;
 }
 
+/*
+ * zero_tail, a file `size` bytes long's, as its last block's multi_write has it: the block moves, to
+ * a block holding what it held up to `size`, written through the device. A seal between would
+ * have it tried again: the model takes no scheduling point in it.
+ */
+static void move_tail(struct fxfs *fs, struct stub_file *file, u64 size)
+{
+	u64 at = size >> PAGE_SHIFT, in_extent;
+	struct stub_extent *extent;
+	char data[PAGE_SIZE];
+
+	if (!offset_in_page(size) || at >= file->nr_blocks || !file->blocks[at].sequence)
+		return;
+	read_block(fs, &file->blocks[at], data);
+	memset(data + offset_in_page(size), 0, PAGE_SIZE - offset_in_page(size));
+	in_extent = take_staged(fs, 1, &extent);
+	put_block(fs, &file->blocks[at]);
+	file->blocks[at] = (struct block) { extent->sequence, in_extent };
+	extent->live++;
+	host_store_write(sim_device_store_offset(extent->sequence) + (in_extent << PAGE_SHIFT), data,
+			 PAGE_SIZE);
+	sim_device_wrote(extent->sequence, in_extent, 1);
+}
+
+void fxfs_sim_clone(struct fxfs *fs, u64 from, u64 to, u64 page, u64 pages, u64 size)
+{
+	struct stub_file *source, *target;
+	u64 i;
+
+	mutex_lock(&fs->lock);
+	source = find_file(fs, from);
+	target = find_file(fs, to);
+	reserve_blocks(source, page + pages);
+	reserve_blocks(target, page + pages);
+	for (i = page; i < page + pages; i++) {
+		put_block(fs, &target->blocks[i]);
+		target->blocks[i] = source->blocks[i];
+		if (!source->blocks[i].sequence)
+			continue;
+		source->blocks[i].cloned = target->blocks[i].cloned = true;
+		find_extent(fs, source->blocks[i].sequence)->live++;
+	}
+	target->size = max(target->size, size);
+	mutex_unlock(&fs->lock);
+}
+
 int fxfs_setattr(struct fxfs *fs, u64 ino, const struct fxfs_setattr *set)
 {
 	struct stub_file *file;
-	u64 page;
+	u64 page, old;
 
 	mutex_lock(&fs->lock);
 	file = find_file(fs, ino);
 	if (set->valid & FXFS_SET_SIZE) {
+		old = file->size;
 		for (page = DIV_ROUND_UP(set->size, PAGE_SIZE); page < file->nr_blocks; page++)
 			put_block(fs, &file->blocks[page]);
+		if (set->size > old)
+			move_tail(fs, file, old);
+		else if (set->size < old && !(set->valid & FXFS_SET_KEEP_TAIL))
+			move_tail(fs, file, set->size);
 		if (ino == watched_ino)
 			sim_log("sim: ino %llu size %llu -> %llu, by %s, at %llu ns\n", ino, file->size,
 				set->size, current->comm, ktime_get_ns());

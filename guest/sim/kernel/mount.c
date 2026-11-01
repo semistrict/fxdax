@@ -145,23 +145,59 @@ int sim_fsync(struct file *file)
 	return file->f_inode->i_fop->fsync(file, 0, LLONG_MAX, 0);
 }
 
-/* fxfs_vfs_resize, for a DAX file, its inode's lock held by the caller's setattr. */
-int sim_truncate(struct file *file, loff_t size)
+/* super.c's, for a DAX file: its size written back, not the rest of the inode. */
+int fxfs_vfs_resize(struct inode *inode, loff_t size, struct mnt_idmap *idmap, struct iattr *iattr)
 {
-	struct inode *inode = file_inode(file);
 	struct fxfs_setattr set = {
 		.valid = FXFS_SET_SIZE | FXFS_SET_KEEP_TAIL, .size = size,
 	};
+	int err = fxfs_dax_resize_begin(inode, size);
+
+	if (err)
+		return err;
+	truncate_setsize(inode, size);
+	err = fxfs_nofs(fxfs_setattr(fxfs_vfs_fs(inode->i_sb), inode->i_ino, &set));
+	fxfs_dax_resize_end(inode, size);
+	return err;
+}
+
+int sim_truncate(struct file *file, loff_t size)
+{
+	struct inode *inode = file_inode(file);
 	int err;
 
 	inode_lock(inode);
-	err = fxfs_dax_resize_begin(inode, size);
-	if (!err) {
-		truncate_setsize(inode, size);
-		err = fxfs_nofs(fxfs_setattr(fxfs_vfs_fs(inode->i_sb), inode->i_ino, &set));
-		fxfs_dax_resize_end(inode, size);
-	}
+	err = fxfs_vfs_resize(inode, size, NULL, NULL);
 	inode_unlock(inode);
+	return err;
+}
+
+/* fxfs_vfs_remap_file_range, for two DAX files, of whole pages. */
+int sim_clone(struct file *from, struct file *to, pgoff_t page, pgoff_t pages)
+{
+	struct inode *src = file_inode(from), *dst = file_inode(to);
+	struct address_space *in = src->i_mapping, *out = dst->i_mapping;
+	loff_t pos = (loff_t)page << PAGE_SHIFT, len = (loff_t)pages << PAGE_SHIFT;
+	loff_t size = max(i_size_read(dst), pos + len);
+	int err;
+
+	/* By address, as lock_two_nondirectories and filemap_invalidate_lock_two do. */
+	inode_lock(min(src, dst));
+	inode_lock(max(src, dst));
+	filemap_invalidate_lock(min(in, out));
+	filemap_invalidate_lock(max(in, out));
+	err = filemap_write_and_wait_range(in, pos, pos + len - 1) ?:
+	      filemap_write_and_wait_range(out, pos, pos + len - 1) ?:
+	      fxfs_dax_remap(src, pos, len, i_size_read(src)) ?:
+	      fxfs_dax_remap(dst, pos, len, size);
+	if (!err) {
+		fxfs_sim_clone(fxfs_vfs_fs(dst->i_sb), src->i_ino, dst->i_ino, page, pages, size);
+		i_size_write(dst, size);
+	}
+	filemap_invalidate_unlock(max(in, out));
+	filemap_invalidate_unlock(min(in, out));
+	inode_unlock(max(src, dst));
+	inode_unlock(min(src, dst));
 	return err;
 }
 

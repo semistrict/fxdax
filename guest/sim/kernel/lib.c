@@ -5,20 +5,63 @@
 #include <sim/sim.h>
 #include <sim/host.h>
 
-void *kmalloc(size_t size, gfp_t gfp)
+/* How many allocations are to fail after how many more, or one in how many, if any. */
+static u64 alloc_skip, alloc_failing, allocs_failed;
+static unsigned int alloc_odds;
+
+void sim_alloc_fail(u64 skip, u64 count)
+{
+	alloc_skip = skip;
+	alloc_failing = count;
+}
+
+void sim_alloc_fail_odds(unsigned int odds)
+{
+	alloc_odds = odds;
+}
+
+u64 sim_allocs_failed(void)
+{
+	return allocs_failed;
+}
+
+/* Whether an allocation by the source `file` fails. */
+static bool alloc_fails(gfp_t gfp, const char *file)
+{
+	char *strstr(const char *haystack, const char *needle);
+	bool fail = false;
+
+	if ((gfp & __GFP_NOFAIL) || !strstr(file, "fs/fxfs/"))
+		return false;
+	if (alloc_odds && !(sim_random() % alloc_odds))
+		fail = true;
+	else if (alloc_failing && !alloc_skip--) {
+		alloc_skip = 0;
+		alloc_failing--;
+		fail = true;
+	}
+	allocs_failed += fail;
+	return fail;
+}
+
+void *sim_kmalloc(size_t size, gfp_t gfp, const char *file)
 {
 	void *p;
 
 	might_alloc(gfp);
+	if (alloc_fails(gfp, file))
+		return NULL;
 	p = host_malloc(size);
 	if (gfp & __GFP_ZERO)
 		memset(p, 0, size);
 	return p;
 }
 
-void *krealloc(const void *p, size_t size, gfp_t gfp)
+void *sim_krealloc(const void *p, size_t size, gfp_t gfp, const char *file)
 {
 	might_alloc(gfp);
+	if (alloc_fails(gfp, file))
+		return NULL;
 	return host_realloc((void *)p, size);
 }
 
@@ -90,11 +133,6 @@ unsigned long find_next_zero_bit(const unsigned long *addr, unsigned long size,
 		offset = (offset | (BITS_PER_LONG - 1)) + 1;
 	}
 	return size;
-}
-
-unsigned long *bitmap_zalloc(unsigned int nbits, gfp_t flags)
-{
-	return kzalloc(BITS_TO_LONGS(nbits) * sizeof(unsigned long), flags);
 }
 
 void bitmap_free(const unsigned long *bitmap)
@@ -250,6 +288,24 @@ int param_get_ulong(char *buffer, const struct kernel_param *kp)
 const struct kernel_param_ops param_ops_bool = { param_set_bool, param_get_bool };
 const struct kernel_param_ops param_ops_uint = { param_set_uint, param_get_uint };
 const struct kernel_param_ops param_ops_ulong = { param_set_ulong, param_get_ulong };
+
+unsigned long sim_param_read(const char *name)
+{
+	extern const struct kernel_param __start_sim_params[], __stop_sim_params[];
+	const struct kernel_param *param;
+	unsigned long number;
+	char value[24];
+
+	for (param = __start_sim_params; param < __stop_sim_params; param++) {
+		if (!strcmp(param->name, name)) {
+			param->ops->get(value, param);
+			if (sscanf(value, "%lu", &number) != 1)
+				sim_panic("parameter %s isn't a number: %s", name, value);
+			return number;
+		}
+	}
+	sim_panic("no parameter %s", name);
+}
 
 int sim_param_set(const char *name, const char *value)
 {

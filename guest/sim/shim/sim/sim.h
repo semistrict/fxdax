@@ -28,6 +28,14 @@ u64 sim_switches(void);
 /* Has each scheduling point logged, with the task it ran. */
 void sim_trace_on(void);
 
+/*
+ * Has `count` allocations by fs/fxfs's own sources fail, after `skip` more of them; or one in `odds`
+ * of them, from the seed, until told 0: how many have.
+ */
+void sim_alloc_fail(u64 skip, u64 count);
+void sim_alloc_fail_odds(unsigned int odds);
+u64 sim_allocs_failed(void);
+
 /* The fake device under the window: seals what is open, frees extents. */
 void sim_device_init(u64 window_len);
 void sim_device_new_extent(u64 sequence, u64 size);
@@ -35,6 +43,13 @@ void sim_device_seal(void);
 void sim_device_free_extent(u64 sequence);
 u64 sim_device_store_offset(u64 sequence);
 u64 sim_device_maps(void);
+/*
+ * Has `count` requests of `type` (VIRTIO_EXTENT_T_MAP or _UNMAP) fail with EIO, doing nothing, after
+ * `skip` more of them; or one MAP or UNMAP in `odds`, from the seed, until told 0: how many have.
+ */
+void sim_device_fail(u32 type, u64 skip, u64 count);
+void sim_device_fail_odds(unsigned int odds);
+u64 sim_device_failed(void);
 /* Logs every MAP and UNMAP of a window page. */
 void sim_device_watch(u64 page);
 /* Logs what a window page, or a task's address, maps now. */
@@ -62,6 +77,8 @@ ssize_t sim_read_user(struct file *file, loff_t pos, unsigned long addr, size_t 
 int sim_fsync(struct file *file);
 int sim_truncate(struct file *file, loff_t size);
 int sim_punch(struct file *file, loff_t start, loff_t end);
+/* Makes `to` share `pages` pages of `from` at page `page`, as FICLONERANGE. */
+int sim_clone(struct file *from, struct file *to, pgoff_t page, pgoff_t pages);
 /* Maps `len` bytes of the file at `offset`, shared, into the simulated mm: the address. */
 unsigned long sim_mmap(struct file *file, loff_t offset, size_t len);
 unsigned long sim_mm_map(struct mm_struct *mm, struct file *file, pgoff_t pgoff, size_t len);
@@ -78,6 +95,7 @@ size_t sim_copy_user(unsigned long addr, void *buf, size_t len, bool write);
 void fxfs_sim_read(struct fxfs *fs, u64 ino, u64 offset, void *buf, size_t len);
 u64 fxfs_sim_size(struct fxfs *fs, u64 ino);
 u64 fxfs_sim_new_file(struct fxfs *fs);
+void fxfs_sim_clone(struct fxfs *fs, u64 from, u64 to, u64 page, u64 pages, u64 size);
 struct fxfs *fxfs_sim_new(void);
 void fxfs_sim_free(struct fxfs *fs);
 void fxfs_sim_stats(u64 *moves, u64 *frees);
