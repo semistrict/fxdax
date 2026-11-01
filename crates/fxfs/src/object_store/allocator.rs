@@ -2789,9 +2789,8 @@ mod tests {
     async fn test_mints_past_the_sequence_floor() {
         const STORE_OBJECT_ID: u64 = 99;
         let floor = Arc::new(std::sync::atomic::AtomicU64::new(0));
-        let device =
-            DeviceHolder::new(FakeDevice::new(4096, 4096).with_sequence_floor(floor.clone()));
-        let fs = FxFilesystem::new_empty(device).await.expect("new_empty failed");
+        let device = FakeDevice::new(4096, 4096).calm().with_sequence_floor(floor.clone());
+        let fs = FxFilesystem::new_empty(DeviceHolder::new(device)).await.expect("new_empty failed");
         fs.close().await.expect("close failed");
         let device = fs.take_device().await;
         device.reopen(false);
@@ -2828,7 +2827,8 @@ mod tests {
 
         // Expected extents, in the order they were minted: the journal's blocks are extents of
         // their own.
-        let block = |sequence| ExtentRange::new(extent(sequence), 0..4096);
+        let first = device_ranges[0].extent.sequence;
+        let block = |sequence| ExtentRange::new(extent(first + sequence), 0..4096);
         let expected: Vec<_> = (0..32) // The initial journal (128k)
             .chain([32, 33]) // The root store's info, and superblock A
             .chain(34..130) // The journal's next 384k
@@ -3880,7 +3880,10 @@ mod tests {
     #[fuchsia::test]
     async fn test_background_frees_finish_before_the_next_flush() {
         const STORE_OBJECT_ID: u64 = 99;
-        let (fs, allocator) = test_fs().await;
+        // Calm: an awkward device may be done with the frees before the test looks.
+        let device = DeviceHolder::new(FakeDevice::new(4096, 4096).calm());
+        let fs = FxFilesystem::new_empty(device).await.expect("new_empty failed");
+        let allocator = fs.allocator();
         let mut transaction = fs
             .root_store()
             .new_transaction(lock_keys![], Options::default())
@@ -4041,8 +4044,9 @@ mod tests {
         for orphan in orphans {
             assert!(!device_holds(&fs.device(), orphan).await, "{orphan:?} isn't freed");
         }
+        // Past them, and past the floor, which may have moved on as the device reopened.
         let range = commit_allocation(&fs).await;
-        assert_eq!(range.extent, extent(next_sequence + 3));
+        assert!(range.extent.sequence >= next_sequence + 3, "minted {range:?}");
         fs.close().await.expect("close failed");
     }
 
@@ -4158,7 +4162,7 @@ mod tests {
         fs.close().await.expect("close failed");
         let device = fs.take_device().await;
         device.reopen(false);
-        let far = extent(1 << 40);
+        let far = extent(device.next_sequence().await.expect("next_sequence failed") + (1 << 40));
         let buffer = device.allocate_buffer(device.block_size() as usize).await;
         device.write(far, 0, buffer.as_ref()).await.expect("write failed");
         drop(buffer);

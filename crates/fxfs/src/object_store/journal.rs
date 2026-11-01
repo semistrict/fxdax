@@ -2844,6 +2844,9 @@ mod tests {
     async fn test_transactions_larger_than_a_chunk_stay_within_the_journal() {
         let device = DeviceHolder::new(FakeDevice::new(65536, TEST_DEVICE_BLOCK_SIZE));
         let (fs, object_id) = filesystem_for_records(device).await;
+        // These commits borrow all they take, for what they add, which no filesystem's commits
+        // do, and which leaves a compaction too little of the metadata reservation.
+        fs.journal().pause_compactions().await;
         for round in 0..3 {
             commit_records(&fs, object_id, round, 100).await;
         }
@@ -3814,7 +3817,7 @@ mod tests {
 
         let trips = Arc::new(RoundTrips::default());
         let device =
-            DeviceHolder::new(FakeDevice::new(1 << 16, 4096).with_round_trips(trips.clone()));
+            DeviceHolder::new(FakeDevice::new(1 << 16, 4096).calm().with_round_trips(trips.clone()));
         let options = || super::JournalOptions { reclaim_size: 8 << 20, ..Default::default() };
         let fs = FxFilesystemBuilder::new()
             .journal_options(options())
@@ -3888,7 +3891,7 @@ mod tests {
 
         let trips = Arc::new(RoundTrips::default());
         let device =
-            DeviceHolder::new(FakeDevice::new(1 << 16, 4096).with_round_trips(trips.clone()));
+            DeviceHolder::new(FakeDevice::new(1 << 16, 4096).calm().with_round_trips(trips.clone()));
         let fs = FxFilesystem::new_empty(device).await.expect("new_empty failed");
         fs.sync(SyncOptions { flush_device: true, ..Default::default() })
             .await

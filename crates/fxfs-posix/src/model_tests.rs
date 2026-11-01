@@ -935,7 +935,7 @@ fn whatever_a_vfs_asks_reads_back_as_a_model_says() {
     TestRunner::new(config)
         .run(&sequences, |(seed, blocks, ops)| {
             watched.send(format!("{seed}, {blocks}, {ops:?}")).expect("the watchdog stopped");
-            prop_assert_eq!(Setting::calm(seed, blocks).run(ops, tally.clone()), Ok(()));
+            prop_assert_eq!(Setting::awkward(seed, blocks).run(ops, tally.clone()), Ok(()));
             Ok(())
         })
         .unwrap();

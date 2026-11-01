@@ -7,8 +7,9 @@
 // the next barrier seals them) and only by their branch, frees them, and simulates a crash by undoing any of what happened
 // since the last barrier (writes and frees). It can record such crashes at random barriers
 // (`Crashes`), and count the round trips its reads would take to a store answering from afar
-// (`RoundTrips`). It can be as awkward as a store (`Awkward`): its numbers start large and its floor
-// jumps, and its requests take turns of the executor to answer, in no order but what barriers keep.
+// (`RoundTrips`). Unless told to be calm (`FakeDevice::calm`), it is as awkward as a store
+// (`Awkward`): its numbers start large and its floor jumps, and its requests take turns of the
+// executor to answer, in no order but what barriers keep.
 
 use crate::buffer::{BufferFuture, BufferRef, MutableBufferRef};
 use crate::buffer_allocator::{BufferAllocator, BufferSource};
@@ -20,8 +21,8 @@ use fuchsia_sync::Mutex;
 use rand::rngs::StdRng;
 use rand::{RngExt as _, SeedableRng as _};
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::task::Poll;
 
 pub enum Op {
@@ -325,6 +326,18 @@ impl Drop for Passage<'_> {
 /// fxdax: a store's writers' ranges are this far apart (`EPOCH_SHIFT` in crates/extent_remote).
 const EPOCH_SHIFT: u32 = 40;
 
+/// fxdax: the seed of the next device that isn't given one: FXDAX_DEVICE_SEED, or 0, then the next
+/// for each device a process makes, so that a test run alone, as nextest runs each, sees the same
+/// device, and a run with another seed other devices.
+fn next_seed() -> u64 {
+    static FIRST: OnceLock<u64> = OnceLock::new();
+    static DEVICES: AtomicU64 = AtomicU64::new(0);
+    let first = FIRST.get_or_init(|| {
+        std::env::var("FXDAX_DEVICE_SEED").map_or(0, |seed| seed.parse().expect("a seed"))
+    });
+    first.wrapping_add(DEVICES.fetch_add(1, Ordering::Relaxed))
+}
+
 /// fxdax: the round trips a device's reads and writes take (`FakeDevice::with_round_trips`), were
 /// each a request to a store that answers a while after, as an extent store over a VM's queue
 /// does. What a caller waits for, reading or writing, is a round trip each, whatever their size.
@@ -403,16 +416,18 @@ pub struct FakeDevice {
     frees_held_by: Option<Arc<futures::lock::Mutex<()>>>,
     /// fxdax: what counts the reads' round trips, if anything (`FakeDevice::with_round_trips`).
     round_trips: Option<Arc<RoundTrips>>,
-    /// fxdax: how it is as awkward as a store, if it is (`FakeDevice::awkward`).
+    /// fxdax: how it is as awkward as a store, unless it is calm (`FakeDevice::calm`).
     awkward: Option<Awkward>,
 }
 
 const TRANSFER_HEAP_SIZE: usize = 64 * 1024 * 1024;
 
 impl FakeDevice {
-    /// A device holding at most `block_count` blocks of `block_size` bytes.
+    /// A device holding at most `block_count` blocks of `block_size` bytes, as awkward as a store,
+    /// as FXDAX_DEVICE_SEED says (`FakeDevice::awkward`).
     pub fn new(block_count: u64, block_size: u32) -> Self {
         Self::with_inner(Inner::default(), block_count * block_size as u64, block_size)
+            .awkward(next_seed())
     }
 
     fn with_inner(inner: Inner, capacity: u64, block_size: u32) -> Self {
