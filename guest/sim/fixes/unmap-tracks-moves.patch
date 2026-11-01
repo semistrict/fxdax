@@ -1,0 +1,53 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+#
+# A candidate fix, not a mutant (found by this simulator, seed 8083 of tests/interleave at 200
+# operations, as a fault's SIGBUS): TASK-124 relocates pages going unmapped, so that the next mapping
+# of them elsewhere finds what entries of them to replace; but fxfs_dax_place does nothing for a
+# range none of whose pages ever moved, with no `moved`. A range mapped afresh has none: a fault's
+# move across a seal of a page of zeros, its new extent never written, leaves the page unmapped
+# (-ENOENT, fxfs_dax_map_moved) with the entry another fault made of it in the range's own space. Its
+# next move goes to a region, finds it unmapped, doesn't relocate it, and the fault that follows
+# keeps the entry, and has its page refused: SIGBUS, in a store or a read into a mapping.
+
+--- a/guest/linux/fs/fxfs/dax.c
++++ b/guest/linux/fs/fxfs/dax.c
+@@ -1493,6 +1493,28 @@
+ }
+ 
+ /*
++ * fxdax: has `range` keep where its pages are, and where the kernel last had them, as a page first
++ * moves. With the file's DAX semaphore held for writing.
++ */
++static int fxfs_dax_track_moves(struct fxfs_dax_range *range)
++{
++	u64 *moved, *stale;
++
++	if (range->moved)
++		return 0;
++	moved = kcalloc(range->pages, sizeof(*moved), GFP_NOFS);
++	stale = kcalloc(range->pages, sizeof(*stale), GFP_NOFS);
++	if (!moved || !stale) {
++		kfree(moved);
++		kfree(stale);
++		return -ENOMEM;
++	}
++	range->stale = stale;
++	range->moved = moved;
++	return 0;
++}
++
++/*
+  * fxdax: has `range` map the pieces `extents`, where Fxfs just moved its pages, read-only in its
+  * own space, outside the gate: a seal came between the move and the gate, which seals, or sealed,
+  * their extents. The range mapped the pages where they were, whose blocks the move freed: once
+@@ -1530,6 +1552,9 @@
+ 		 * no longer writable, nor mapped, as the range had them (TASK-121).
+ 		 */
+ 		if (err == -ENOENT) {
++			err = fxfs_dax_track_moves(range);
++			if (err)
++				return err;
+ 			fxfs_dax_unmap_pages(range, page, pages);
+ 			continue;
+ 		}

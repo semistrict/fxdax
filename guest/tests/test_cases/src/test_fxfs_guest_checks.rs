@@ -3732,6 +3732,67 @@ pub(crate) mod guest {
         fs::remove_file(&other).unwrap();
     }
 
+    /// A sealed piece of a writable region is never mapped outside the gate. A clone has the end of
+    /// an open extent read as sealed, and the file, cut short of it, has the rest: its read maps
+    /// that, which makes the extent's region writable, as far as it reaches. The clone, one sealed
+    /// piece past that, is a slice of the region, read outside the gate: fxfs_dax_new_slice reaches
+    /// for it, a writable MAP no gate keeps a seal from (found by guest/sim, TASK-149.14, whose
+    /// tests/sealed_piece_reach plays these steps). It WARNs only on a kernel with lockdep, whose
+    /// fxfs_device_assert_in_gate checks: on the others this passes either way.
+    fn test_sealed_piece_reach() {
+        use std::os::unix::fs::FileExt;
+        /// `_IOW(0x94, 13, struct file_clone_range)`.
+        const FICLONERANGE: libc::c_ulong = 0x4020_940d;
+        const PAGE: usize = 4096;
+        const PIECE: usize = CHUNK / 2;
+        /// `struct file_clone_range`.
+        #[repr(C)]
+        struct CloneRange {
+            src_fd: i64,
+            src_offset: u64,
+            src_length: u64,
+            dest_offset: u64,
+        }
+        let name = path("sealed-piece-reach");
+        let clone_name = path("sealed-piece-reach-clone");
+        let keeper_name = path("sealed-piece-reach-keeper");
+        let data: Vec<u8> = (0..2 * CHUNK).map(|i| (i % 251) as u8 + 1).collect();
+        let open = fs::OpenOptions::new().create(true).truncate(true).read(true).write(true).clone();
+        let file = open.open(&name).unwrap();
+        let clone = open.open(&clone_name).unwrap();
+        let keeper = open.open(&keeper_name).unwrap();
+        file.write_all_at(&data[..CHUNK], 0).unwrap();
+        file.sync_data().unwrap();
+        // The second chunk in two extents, each whole, open: a range of its own, and no region.
+        file.write_all_at(&data[CHUNK..CHUNK + PIECE], CHUNK as u64).unwrap();
+        file.write_all_at(&data[CHUNK + PIECE..], (CHUNK + PIECE) as u64).unwrap();
+        let shared = CHUNK + PIECE - 2 * PAGE;
+        let range = CloneRange {
+            src_fd: file.as_raw_fd() as i64,
+            src_offset: shared as u64,
+            src_length: 2 * PAGE as u64,
+            dest_offset: 0,
+        };
+        // Two clones: shared still, once the file lets go of them.
+        for clone in [&clone, &keeper] {
+            let cloned = unsafe { libc::ioctl(clone.as_raw_fd(), FICLONERANGE as _, &range) };
+            assert_eq!(cloned, 0, "FICLONERANGE: {}", std::io::Error::last_os_error());
+        }
+        file.set_len(shared as u64).unwrap();
+        // The file's open part maps first: its region writable, as far as it reaches.
+        let mut byte = [0];
+        file.read_exact_at(&mut byte, CHUNK as u64).unwrap();
+        assert_eq!(byte[0], data[CHUNK], "the file's open part");
+        clone.read_exact_at(&mut byte, 0).unwrap();
+        assert_eq!(byte[0], data[shared], "the clone, a sealed piece of the region");
+        drop(file);
+        drop(clone);
+        drop(keeper);
+        for name in [name, clone_name, keeper_name] {
+            fs::remove_file(name).unwrap();
+        }
+    }
+
     /// fxdax: a file larger than a chunk, written whole by one write(2) and fsynced, then read
     /// through a mapping: each byte as written. The first load of such a file died of SIGBUS, its
     /// fault failing with no error (TASK-121's pause check). The read maps the first chunk with a
@@ -4703,6 +4764,7 @@ pub(crate) mod guest {
                 tests.push(("map_failed_after_move", &test_map_failed_after_move));
                 tests.push(("map_many_failed", &test_map_many_failed));
                 tests.push(("move_failed", &test_move_failed));
+                tests.push(("sealed_piece_reach", &test_sealed_piece_reach));
             }
             // Files on DAX are in no page cache.
             if !dax {
