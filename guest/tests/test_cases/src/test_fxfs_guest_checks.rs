@@ -2370,6 +2370,98 @@ mod guest {
         fs::remove_file(&name).unwrap();
     }
 
+    /// fxdax: two mappings of a page in a sealed staging extent's region, which no evacuation moves
+    /// (fxfs.dax_evacuates off), loading it in turn, as processes running one binary do: a fault
+    /// each, as the read of a page its entry names replaces nothing. A read that replaced the entry
+    /// took the other mapping's page away, for a fault for each load, as a build's processes queued
+    /// on the entries of their binary's hot pages for minutes on end (TASK-152). Then processes
+    /// reading all of the region's pages at once: a fault for each page of each, at most, and tries
+    /// of a PMD where no page table covers their mapping yet, which dax_faults_hist counts too.
+    fn test_reads_stay_mapped() {
+        use std::os::unix::fs::FileExt;
+        const PAGE: usize = 4096;
+        const PAGES: usize = 256;
+        const SIZE: usize = PAGES * PAGE;
+        const TURNS: u64 = 64;
+        const READERS: usize = 4;
+        const PASSES: usize = 64;
+        let name = path("reads-stay-mapped");
+        // Before the first seal: an evacuation moving a page takes its mappings away, rightly.
+        let unevacuated = Param::set("dax_evacuates", "N");
+        fs::write(&name, vec![1; SIZE]).unwrap();
+        let file = fs::OpenOptions::new().read(true).write(true).open(&name).unwrap();
+        file.sync_all().unwrap();
+        // The file's pages move to the staging extent's region, which the fsync seals.
+        file.write_all_at(&[2; SIZE], 0).unwrap();
+        file.sync_data().unwrap();
+        let map = |at: *mut libc::c_void, flags| {
+            let map = unsafe {
+                libc::mmap(at, SIZE, libc::PROT_READ, libc::MAP_SHARED | flags, file.as_raw_fd(), 0)
+            };
+            assert_ne!(map, libc::MAP_FAILED);
+            map as *const u8
+        };
+        let faults = || stats()["dax_faults_hist"];
+
+        // One 2 MiB, within what is reserved, for both mappings, so that one page table has them.
+        let reserved = 2 * CHUNK;
+        let flags = libc::MAP_PRIVATE | libc::MAP_ANONYMOUS;
+        let spare =
+            unsafe { libc::mmap(std::ptr::null_mut(), reserved, libc::PROT_NONE, flags, -1, 0) };
+        assert_ne!(spare, libc::MAP_FAILED);
+        let aligned = (spare as usize).next_multiple_of(CHUNK);
+        let first = map(aligned as *mut libc::c_void, libc::MAP_FIXED);
+        let second = map((aligned + SIZE) as *mut libc::c_void, libc::MAP_FIXED);
+        // Its page table made, by another page's load: else tries of a PMD fall back, and count.
+        assert_eq!(unsafe { std::ptr::read_volatile(first.add(PAGE)) }, 2);
+        let before = faults();
+        for _ in 0..TURNS {
+            assert_eq!(unsafe { std::ptr::read_volatile(first) }, 2);
+            assert_eq!(unsafe { std::ptr::read_volatile(second) }, 2);
+        }
+        let turns = faults() - before;
+        assert_eq!(unsafe { libc::munmap(spare, reserved) }, 0);
+
+        let before = faults();
+        let began = std::time::Instant::now();
+        let readers: Vec<_> = (0..READERS)
+            .map(|_| match unsafe { libc::fork() } {
+                0 => {
+                    let mapped = map(std::ptr::null_mut(), 0);
+                    let same = (0..PASSES).all(|_| {
+                        (0..PAGES).all(|page| {
+                            let byte = unsafe { std::ptr::read_volatile(mapped.add(page * PAGE)) };
+                            byte == 2
+                        })
+                    });
+                    unsafe { libc::_exit(i32::from(!same)) }
+                }
+                pid => {
+                    assert!(pid > 0, "fork: {}", std::io::Error::last_os_error());
+                    pid
+                }
+            })
+            .collect();
+        for pid in readers {
+            let mut status = 0;
+            assert_eq!(unsafe { libc::waitpid(pid, &mut status, 0) }, pid);
+            assert_eq!(status, 0, "reader {pid}: status {status:#x}");
+        }
+        let read = faults() - before;
+        drop(unevacuated);
+        eprintln!(
+            "reads_stay_mapped: {turns} faults in {TURNS} turns, {read} of {READERS} readers of \
+             {PAGES} pages in {:?}",
+            began.elapsed()
+        );
+        assert_eq!(turns, 2, "two mappings took {turns} faults in {TURNS} turns");
+        assert!(
+            read <= (READERS * (PAGES + 4)) as u64,
+            "{READERS} readers of {PAGES} pages took {read} faults"
+        );
+        fs::remove_file(&name).unwrap();
+    }
+
     /// fxdax: a mapped file's pages stored to one at a time, each store fsynced: the store moves
     /// its page to the staging extent's region, and the evacuation after the seal relocates it to
     /// its range's own space, where it stays relocated until it faults again, rounds later, so that
@@ -4562,6 +4654,7 @@ mod guest {
                 if !self.small_window {
                     tests.push(("evacuation_paused", &test_evacuation_paused));
                     tests.push(("prune_while_paused", &test_prune_while_paused));
+                    tests.push(("reads_stay_mapped", &test_reads_stay_mapped));
                     tests.push(("regions_pruned_mapped", &test_regions_pruned_mapped));
                     tests.push(("regions_written_once_mapped", &test_regions_written_once_mapped));
                     tests.push(("regions_truncated", &test_regions_truncated));

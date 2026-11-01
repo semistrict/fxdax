@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+dax: a folio's last entry going leaves it no share count
+
+folio->share is a union with folio->index, and dax_folio_put left an
+order 0 folio's as it was. A page that had an entry at a nonzero index
+then looked shared: dax_associate_entry skipped dax_folio_init for a
+shared PMD fault, whose entry named an order 0 folio (its WARN), and
+vmf_insert_folio_pmd refused that folio, and the fault died of SIGBUS.
+Found by fxdax's guest/sim; a filesystem saying a read's pages are
+shared reaches it under window pressure (fxdax TASK-152).
+
+diff --git a/fs/dax.c b/fs/dax.c
+--- a/fs/dax.c
++++ b/fs/dax.c
+@@ -392,6 +392,7 @@ static inline unsigned long dax_folio_put(struct folio *folio)
+ 		return ref;
+ 
+ 	folio->mapping = NULL;
++	folio->share = 0;
+ 	order = folio_order(folio);
+ 	if (!order)
+ 		return 0;
