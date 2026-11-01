@@ -1106,7 +1106,10 @@ impl Window {
                     ensure!(piece.segment == segment, "{extent:?} is sealed in another segment");
                     extents.push((*extent, piece.offset, entry.len));
                 }
-                Data::Own => own.push((*extent, entry.len)),
+                Data::Own => {
+                    ensure!(extent.branch == segment.branch, "{extent:?} is another branch's");
+                    own.push((extent.sequence, entry.len));
+                }
                 Data::Remote => {}
             }
         }
@@ -1115,8 +1118,8 @@ impl Window {
 }
 
 /// Where a footer's extents are: runs in its segment, at an offset, of a length; and files of
-/// their own, of a length.
-type Places = (Vec<(ExtentId, u64, u64)>, Vec<(ExtentId, u64)>);
+/// their own, the branch's, by their sequence numbers, of a length.
+type Places = (Vec<(ExtentId, u64, u64)>, Vec<(u64, u64)>);
 
 /// The store's epoch of the last commit of the segment whose footer is `footer`.
 pub(crate) fn footer_last(footer: &Footer) -> u64 {

@@ -632,7 +632,7 @@ mod tests {
         let commit = Commit {
             tag: 1,
             extents: vec![(small, b"small".to_vec())],
-            own: vec![(large, vec![7; 4096])],
+            own: vec![(large.sequence, vec![7; 4096])],
             ..Commit::default()
         };
         let seq = add(&first, commit);

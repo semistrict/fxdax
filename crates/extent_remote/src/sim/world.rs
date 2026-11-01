@@ -118,6 +118,15 @@ struct Branch {
     taken: u64,
 }
 
+/// Seals `extent`, of `bytes`, in `commit`: on its own if `own`.
+fn seal(commit: &mut Commit, extent: ExtentId, bytes: Vec<u8>, own: bool) {
+    if own {
+        commit.own.push((extent.sequence, bytes));
+    } else {
+        commit.extents.push((extent, bytes));
+    }
+}
+
 /// A commit, as its guest made it.
 struct Truth {
     branch: u64,
@@ -545,8 +554,7 @@ impl World {
                 ..Commit::default()
             };
             for (extent, bytes, own) in &truth.extents {
-                (if *own { &mut commit.own } else { &mut commit.extents })
-                    .push((*extent, bytes.clone()));
+                seal(&mut commit, *extent, bytes.clone(), *own);
             }
             batch.commit(commit);
         }
@@ -620,8 +628,7 @@ impl World {
             ..Commit::default()
         };
         for (extent, bytes, own) in &extents {
-            (if *own { &mut commit.own } else { &mut commit.extents })
-                .push((*extent, bytes.clone()));
+            seal(&mut commit, *extent, bytes.clone(), *own);
         }
         let session = self.hosts[host].sessions.get_mut(&branch).unwrap();
         let parent = session.guest.head;
