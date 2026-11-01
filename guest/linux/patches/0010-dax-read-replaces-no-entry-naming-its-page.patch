@@ -1,0 +1,55 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+dax: a read of the page its entry names replaces nothing
+
+A filesystem says a read's pages are shared, as XFS does of reflinked
+blocks and Fxfs of blocks in a region other files map, so that
+dax_associate_entry counts their folios' sharers. dax_insert_entry took
+that for a change of page: it unmapped the page from everything mapping
+it, and replaced the entry with its like. Two processes reading a page
+then undid each other's mappings, one fault for each load, each taking
+the entry's lock and a TLB shootdown: a build's processes running one
+binary out of a filesystem's shared blocks stopped, their tasks queued
+on the entries of its hot pages (fxdax TASK-152). A read of the page its
+entry names, or its PMD entry's row, leaves the entry and the page's
+other mappings alone, as an unshared read does. Writes still replace it:
+a CoW fault's dirty and TOWRITE marks go with the replacing.
+
+diff --git a/fs/dax.c b/fs/dax.c
+--- a/fs/dax.c
++++ b/fs/dax.c
+@@ -1035,6 +1035,18 @@ static bool dax_fault_is_synchronous(const struct iomap_iter *iter,
+ 		(iter->iomap.flags & IOMAP_F_DIRTY);
+ }
+ 
++/*
++ * Whether real entry @entry names @pfn as the page of @index already, a PMD
++ * entry the page of its row.
++ */
++static bool dax_entry_names(void *entry, unsigned long index, unsigned long pfn)
++{
++	if (dax_is_zero_entry(entry) || dax_is_empty_entry(entry))
++		return false;
++	index = dax_is_pmd_entry(entry) ? index & PG_PMD_COLOUR : 0;
++	return dax_to_pfn(entry) + index == pfn;
++}
++
+ /*
+  * By this point grab_mapping_entry() has ensured that we have a locked entry
+  * of the appropriate size so we don't have to worry about downgrading PMDs to
+@@ -1050,7 +1062,14 @@ static void *dax_insert_entry(struct xa_state *xas, struct vm_fault *vmf,
+ 	void *new_entry = dax_make_entry(pfn, flags);
+ 	bool write = iter->flags & IOMAP_WRITE;
+ 	bool dirty = write && !dax_fault_is_synchronous(iter, vmf->vma);
+-	bool shared = iter->iomap.flags & IOMAP_F_SHARED;
++	/*
++	 * A read of a shared page its entry names replaces nothing. Replacing it
++	 * anyway unmaps the page from everything else mapping it, which faults
++	 * again and unmaps it from this mapping in turn: tasks reading one page
++	 * take a fault for each load, queued on its entry.
++	 */
++	bool shared = (iter->iomap.flags & IOMAP_F_SHARED) &&
++		      (write || !dax_entry_names(entry, xas->xa_index, pfn));
+ 	/*
+ 	 * A shared fault replacing a PMD entry with a PTE entry splits it: else
+ 	 * its store over the PMD's multi-index slot names the one page for all
