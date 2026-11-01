@@ -4090,6 +4090,7 @@ fn whatever_a_vm_process_says_harms_no_other() {
     use proptest::prelude::*;
     use proptest::test_runner::{Config, TestRunner};
     use std::os::fd::{AsFd as _, AsRawFd as _, FromRawFd as _, OwnedFd};
+    use std::os::unix::ffi::OsStrExt as _;
     use std::sync::atomic::{AtomicU64, Ordering};
     use zerocopy::IntoBytes as _;
 
@@ -4139,6 +4140,9 @@ fn whatever_a_vm_process_says_harms_no_other() {
         Just(ps),
         Just(WINDOW_BYTES),
         Just(WINDOW_BYTES - ps),
+        Just(MAX_WINDOW),
+        Just(MAX_WINDOW + ps),
+        Just(1 << 60),
         Just(OWN_BRANCH),
         Just(OTHER_BRANCH),
         1u64..16,
@@ -4187,23 +4191,60 @@ fn whatever_a_vm_process_says_harms_no_other() {
         Just((MAPPINGS, 0, 0, [0; 5], Vec::new())),
         Just((INFO, 0, 0, [0; 5], Vec::new())),
     ];
-    let message = prop_oneof![3 => plausible, 1 => anything];
+    // On a connection that opened nothing yet, stores any which way, a point of none named too.
+    let nothing = [&[0], vms.join("nothing").as_os_str().as_bytes()].concat();
+    let opening = prop_oneof![
+        (0u64..4, any::<bool>()).prop_map(|(store, creating)| {
+            let flags = if creating { OPEN_CREATE } else { 0 };
+            (OPEN, flags, 0, [1 << 24, 0, 0, 0, 0], format!("open-{store}").into_bytes())
+        }),
+        (0u64..4).prop_map(move |store| {
+            let named = [format!("open-{store}").as_bytes(), &nothing].concat();
+            (OPEN, OPEN_FORK_FROM, 0, [1 << 24, OTHER_BRANCH, 0, 0, 0], named)
+        }),
+    ];
+    let message = prop_oneof![6 => plausible, 2 => anything, 1 => opening];
     let last_words = prop_oneof![
         Just(LastWords::Nothing),
         Just(LastWords::PartOfAHeader),
         any::<u64>().prop_map(LastWords::MissingPayload),
         (1u32..4).prop_map(LastWords::MissingDescriptors),
     ];
-    let sequence = (proptest::collection::vec(message, 1..64), any::<bool>(), last_words);
+    // A window of any size it asks for first, the sequence's mappings' within most.
+    let window = prop_oneof![
+        4 => Just(WINDOW_BYTES),
+        1 => Just(MAX_WINDOW),
+        1 => Just(MAX_WINDOW + ps),
+        1 => Just(1 << 60),
+    ];
+    let sequence = (
+        proptest::collection::vec(message, 1..64),
+        any::<bool>(),
+        last_words,
+        any::<bool>(),
+        window,
+    );
 
     let cases = AtomicU64::new(0);
     let served = std::sync::Arc::new(AtomicU64::new(0));
     let config = Config { cases: 128, failure_persistence: None, ..Config::default() };
     TestRunner::new(config)
-        .run(&sequence, |(messages, transfer, last_words)| {
+        .run(&sequence, |(messages, transfer, last_words, opened, window)| {
             let case = cases.fetch_add(1, Ordering::Relaxed);
             let path = vms.join(format!("store-{case}"));
-            let (sender, mut receiver, stream, branch) = raw_connection(&socket, &path, 1 << 24);
+            let (sender, mut receiver, stream, branch) = if opened {
+                raw_connection(&socket, &path, 1 << 24)
+            } else {
+                let stream = UnixStream::connect(&socket).unwrap();
+                let sending = Sender::new(stream.try_clone().unwrap());
+                (sending, Receiver::new(stream.try_clone().unwrap()), stream, 0)
+            };
+            // The stores it may hold once done: those it opened, had it none.
+            let held: Vec<_> = (0..4)
+                .filter(|_| !opened)
+                .map(|store| vms.join(format!("{case}-open-{store}")))
+                .chain([path].into_iter().filter(|_| opened))
+                .collect();
             let sender = std::sync::Arc::new(sender);
             // Whatever comes back, its stage operations made, as far as saying so goes.
             let (answered, all_answered) = std::sync::mpsc::channel();
@@ -4223,7 +4264,7 @@ fn whatever_a_vm_process_says_harms_no_other() {
                     }
                 })
             };
-            let window = Header::new(WINDOW, 2).with_args(&[WINDOW_BYTES]);
+            let window = Header::new(WINDOW, 2).with_args(&[window]);
             sender.send(window, &[], &[]).unwrap();
             if transfer {
                 // SAFETY: Makes a descriptor, which is owned below.
@@ -4240,14 +4281,23 @@ fn whatever_a_vm_process_says_harms_no_other() {
                 let area = Header::new(TRANSFER, 3).with_args(&[TRANSFER_BYTES]);
                 sender.send(area, &[], &[fd.as_fd()]).unwrap();
             }
-            let named = |word: u64| match word {
+            let named_word = |word: u64| match word {
                 OWN_BRANCH => branch,
                 OTHER_BRANCH => kept.branch,
                 word => word,
             };
+            // A path a sequence opens at, this case's.
+            let in_vms = |payload: Vec<u8>| match payload.strip_prefix(b"open-") {
+                Some(rest) => {
+                    let named = vms.as_os_str().as_bytes();
+                    [named, format!("/{case}-open-").as_bytes(), rest].concat()
+                }
+                None => payload,
+            };
             for (kind, flags, id, args, payload) in messages {
-                let args = args.map(named);
+                let args = args.map(named_word);
                 let message = Header::new(kind, id).with_args(&args).with_flags(flags);
+                let payload = in_vms(payload);
                 // The daemon may have let it go by now.
                 let _ = sender.send(message, &payload, &[]);
             }
@@ -4268,14 +4318,20 @@ fn whatever_a_vm_process_says_harms_no_other() {
             prop_assert!(within(wait, move || answering.join().unwrap()).is_ok());
 
             // Its store is let go of, and opens.
-            let (opening, reopened) = (socket.clone(), path.clone());
-            let opened = within(wait, move || loop {
-                match RemoteExtentStore::connect(&opening, &reopened, 1 << 24) {
-                    Err(error) if error.errno() == Some(Errno::EBUSY) => std::thread::yield_now(),
-                    opened => break opened.map(drop).map_err(|error| error.to_string()),
-                }
-            });
-            prop_assert_eq!(opened, Ok(Ok(())));
+            for path in held {
+                let (opening, reopened) = (socket.clone(), path);
+                let opened = within(wait, move || {
+                    loop {
+                        match RemoteExtentStore::connect(&opening, &reopened, 1 << 24) {
+                            Err(error) if error.errno() == Some(Errno::EBUSY) => {
+                                std::thread::yield_now()
+                            }
+                            opened => break opened.map(drop).map_err(|error| error.to_string()),
+                        }
+                    }
+                });
+                prop_assert_eq!(opened, Ok(Ok(())));
+            }
 
             // Nothing it said reached the other tenant's, which is served on.
             prop_assert_eq!(read(&other, kept, 0, BLOCK), Ok(pattern(9, BLOCK)));
