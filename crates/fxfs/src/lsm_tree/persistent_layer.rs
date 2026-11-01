@@ -643,6 +643,36 @@ async fn load_bloom_filter<K: FuzzyHash>(
     )?))
 }
 
+/// fxdax: where a layer's parts are, as its trailer and size say, which may be anything: the one
+/// place that does sums with them, and so the one that has to check them.
+struct LayerLayout {
+    data_size: u64,
+    bloom_filter_offset: u64,
+    seek_table_offset: u64,
+}
+
+impl LayerLayout {
+    fn new(layer_info: &LayerInfo, block_size: BlockSize, size: u64) -> Result<Self, Error> {
+        let data_blocks = layer_info.num_data_blocks;
+        if layer_info.num_items == 0 && data_blocks > 0 {
+            return Err(anyhow!(FxfsError::Inconsistent))
+                .context("Invalid num_items/num_data_blocks");
+        }
+        let total_blocks = size / block_size;
+        let bloom_filter_blocks =
+            block_size.align_up_to_blocks(layer_info.bloom_filter_size_bytes as u64);
+        if data_blocks + bloom_filter_blocks > total_blocks - MINIMUM_LAYER_FILE_BLOCKS {
+            return Err(anyhow!(FxfsError::Inconsistent)).context("Invalid number of blocks");
+        }
+
+        Ok(Self {
+            data_size: block_size * data_blocks,
+            bloom_filter_offset: block_size * (NUM_HEADER_BLOCKS + data_blocks),
+            seek_table_offset: block_size * (NUM_HEADER_BLOCKS + data_blocks + bloom_filter_blocks),
+        })
+    }
+}
+
 struct SearchKey<'a, K: Key> {
     key: &'a K,
     buf: Vec<u8>,
@@ -731,22 +761,9 @@ impl<K: FuzzyHash> LayerData<K> {
                 .context("Failed to deserialize LayerInfo")?
         };
         std::mem::drop(buffer);
-        if layer_info.num_items == 0 && layer_info.num_data_blocks > 0 {
-            return Err(anyhow!(FxfsError::Inconsistent))
-                .context("Invalid num_items/num_data_blocks");
-        }
-        let total_blocks = handle.get_size() / block_size;
-        let bloom_filter_blocks =
-            block_size.align_up_to_blocks(layer_info.bloom_filter_size_bytes as u64);
-        if layer_info.num_data_blocks + bloom_filter_blocks
-            > total_blocks - MINIMUM_LAYER_FILE_BLOCKS
-        {
-            return Err(anyhow!(FxfsError::Inconsistent)).context("Invalid number of blocks");
-        }
-
-        let bloom_filter_offset = block_size * (NUM_HEADER_BLOCKS + layer_info.num_data_blocks);
+        let layout = LayerLayout::new(&layer_info, block_size, handle.get_size())?;
         let bloom_filter = if version == LATEST_VERSION {
-            load_bloom_filter(handle, bloom_filter_offset, &layer_info)
+            load_bloom_filter(handle, layout.bloom_filter_offset, &layer_info)
                 .await
                 .context("Failed to load bloom filter")?
         } else {
@@ -757,17 +774,16 @@ impl<K: FuzzyHash> LayerData<K> {
         };
         let bloom_filter_stats = bloom_filter.as_ref().map(|b| b.stats());
 
-        let seek_offset =
-            block_size * (NUM_HEADER_BLOCKS + layer_info.num_data_blocks + bloom_filter_blocks);
-        let seek_table = load_seek_table(handle, seek_offset, layer_info.num_data_blocks, version)
-            .await
-            .context("Failed to load seek table")?;
+        let seek_table =
+            load_seek_table(handle, layout.seek_table_offset, layer_info.num_data_blocks, version)
+                .await
+                .context("Failed to load seek table")?;
 
         Ok(Self {
             object_id: handle.object_id(),
             version,
             block_size,
-            data_size: block_size * layer_info.num_data_blocks,
+            data_size: layout.data_size,
             seek_table,
             num_items: layer_info.num_items,
             bloom_filter,
