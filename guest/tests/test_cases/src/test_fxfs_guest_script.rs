@@ -221,7 +221,20 @@ mod guest {
                 fs::write(path(&model(n)), held).unwrap();
                 fs::File::open(path(&model(n))).unwrap().sync_all().unwrap();
                 evict(name);
-                assert!(fs::read(name).unwrap() == *held, "seed {seed}: {name} evicted differs");
+                let got = fs::read(name).unwrap();
+                if got != *held {
+                    let first = got.iter().zip(held).position(|(a, b)| a != b);
+                    let what = format!(
+                        "{name} evicted is {} bytes, the model {}, differing at {first:#x?}",
+                        got.len(),
+                        held.len()
+                    );
+                    crate::kernel_log::print();
+                    // As a failure the host can shrink: a panic reads as a run that died.
+                    let failure = Failure { op: None, kind: kind::STORED_DIFFERS.to_owned(), what };
+                    println!("{failure}");
+                    return;
+                }
             }
             println!("OK");
         }
