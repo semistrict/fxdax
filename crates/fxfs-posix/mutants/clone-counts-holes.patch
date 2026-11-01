@@ -1,20 +1,13 @@
 diff --git a/crates/fxfs/src/object_store/data_object_handle.rs b/crates/fxfs/src/object_store/data_object_handle.rs
-index 3bcc18491..0988277d6 100644
+index 4c15560f2..0c7a07b1e 100644
 --- a/crates/fxfs/src/object_store/data_object_handle.rs
 +++ b/crates/fxfs/src/object_store/data_object_handle.rs
-@@ -2411,11 +2411,13 @@ impl<S: HandleOwner> DataObjectHandle<S> {
-         let mut start = range.start;
-         loop {
-             let end = self
--                .end_of_extents(start..range.end, MAX_CLONED_PER_COMMIT, MAX_CLONED_BYTES_PER_COMMIT)
-+                .end_of_extents(start..range.end, MAX_CLONED_PER_COMMIT, u64::MAX)
-                 .await?;
-             let dst_range = dst_of(start)..dst_of(range.end);
-             let dst_end = dst.end_of_extents(dst_range, MAX_CLONED_PER_COMMIT, u64::MAX).await?;
--            let end = end.min(start + (dst_end - dst_of(start)));
-+            let end = end
-+                .min(start + (dst_end - dst_of(start)))
-+                .min(start.saturating_add(MAX_CLONED_BYTES_PER_COMMIT));
+@@ -2441,7 +2441,7 @@ impl<S: HandleOwner> DataObjectHandle<S> {
+             let (end, taken) = self.end_of_room(start..range.end, room / 2, &shared).await?;
+             let dst_range = dst_of(start)..dst_of(end);
+             let (dst_end, _) = dst.end_of_room(dst_range, room - taken, &freed).await?;
+-            let end = start + (dst_end - dst_of(start));
++            let end = (start + (dst_end - dst_of(start))).min(start.saturating_add(4 << 20));
              self.txn_clone_range(transaction, start..end, dst, dst_of(start)).await?;
              if end == range.end {
                  return Ok(());

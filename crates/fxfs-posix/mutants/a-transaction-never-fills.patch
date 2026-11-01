@@ -1,0 +1,13 @@
+diff --git a/crates/fxfs/src/object_store/transaction.rs b/crates/fxfs/src/object_store/transaction.rs
+index b0642cd93..db228e7c5 100644
+--- a/crates/fxfs/src/object_store/transaction.rs
++++ b/crates/fxfs/src/object_store/transaction.rs
+@@ -696,7 +696,7 @@ impl<'a> Transaction<'a> {
+     /// fxdax: how many bytes more of records this transaction has room for: what a loop splitting
+     /// its work across commits adds up to before it commits and goes on.
+     pub fn room(&self) -> u64 {
+-        TRANSACTION_ROOM.saturating_sub(self.journal_bytes())
++        u64::MAX >> 1
+     }
+ 
+     /// fxdax: whether it has no room left, and whatever goes on adding to it should commit first.
