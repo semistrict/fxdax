@@ -6,7 +6,8 @@
 //! tenant is the socket it came in on: its VM process names stores in the tenant's directory
 //! alone. A revoked tenant's socket takes no more connections. A tenant's socket works
 //! bind-mounted into a jail, as the host's VM manager mounts it. TASK-154: a tenant reaches of the
-//! bucket what the VM manager puts in its directory.
+//! bucket what the VM manager puts in its directory. TASK-155: the daemon's own socket is its
+//! user's alone, mounted or not.
 
 #![cfg(target_os = "linux")]
 
@@ -385,4 +386,95 @@ fn points_of_later_placements_are_taken_placed() {
     there.daemon.create(&point, snapshot.branch, Some(later)).unwrap();
     let restored = restore(&there.socket, &vm, &point, snapshot.branch).unwrap();
     assert_eq!(restored.root().unwrap(), b"snapshotted");
+}
+
+/// The environment of this test's process as another user ([`as_another_user`]): the daemon's
+/// socket, mounted where a jail would have it, and a socket beside it anyone may connect to.
+const DEFAULT_SOCKET: &str = "FXDAX_TEST_DEFAULT_SOCKET";
+const OPEN_SOCKET: &str = "FXDAX_TEST_OPEN_SOCKET";
+
+/// The user a jail's VM process runs as, as scripts/test-e2e.sh has it.
+const JAIL_USER: u32 = 64000;
+
+struct KillOnDrop(std::process::Child);
+
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// TASK-155: the real daemon's own socket, whatever its umask, even none, is its user's alone: a
+/// VM process of another user, with it bind-mounted into its mount namespace, is refused by the
+/// kernel, where a socket beside it connects. Needs `sudo -n`, as Lima's VMs have it.
+#[test]
+fn the_default_socket_refuses_other_users() {
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+    use std::os::unix::process::CommandExt as _;
+    if let Some(socket) = std::env::var_os(DEFAULT_SOCKET) {
+        return as_another_user(socket.as_ref());
+    }
+    // Where the other user reaches, so that what refuses it is the socket.
+    let dir = tempfile::Builder::new().prefix("fxdax-").tempdir_in("/tmp").unwrap();
+    let everyone = |path: &Path, mode| {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+    };
+    everyone(dir.path(), 0o755);
+    let socket = dir.path().join("extentd.sock");
+    let mut daemon = std::process::Command::new(env!("CARGO_BIN_EXE_fxdax-extentd"));
+    daemon.arg(&socket);
+    daemon.env("FXDAX_EXTENTD_REMOTE", "memory:///branches").env("FXDAX_EXTENTD_TOKEN", "1");
+    // SAFETY: umask is async-signal-safe.
+    unsafe {
+        daemon.pre_exec(|| {
+            libc::umask(0);
+            Ok(())
+        })
+    };
+    let _daemon = KillOnDrop(daemon.spawn().unwrap());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while std::os::unix::net::UnixStream::connect(&socket).is_err() {
+        assert!(std::time::Instant::now() < deadline, "the daemon never served");
+        std::thread::yield_now();
+    }
+
+    let open = dir.path().join("open.sock");
+    let _open = std::os::unix::net::UnixListener::bind(&open).unwrap();
+    everyone(&open, 0o666);
+    let jail = dir.path().join("jail");
+    std::fs::create_dir(&jail).unwrap();
+    everyone(&jail, 0o755);
+    let jail_socket = jail.join("extentd.sock");
+    std::fs::write(&jail_socket, b"").unwrap();
+    let script = r#"mount --bind "$1" "$2" && exec env "$3" "$4" "$5" --exact "$6" --nocapture"#;
+    let status = std::process::Command::new("sudo")
+        .args(["-n", "unshare", "--mount", "--propagation", "private", "sh", "-c", script, "sh"])
+        .arg(&socket)
+        .arg(&jail_socket)
+        .arg(format!("{DEFAULT_SOCKET}={}", jail_socket.display()))
+        .arg(format!("{OPEN_SOCKET}={}", open.display()))
+        .arg(std::env::current_exe().unwrap())
+        .arg("the_default_socket_refuses_other_users")
+        .status()
+        .unwrap();
+    assert!(status.success(), "the other user connected, or failed to try: {status}");
+    let metadata = std::fs::metadata(&socket).unwrap();
+    // SAFETY: A plain system call.
+    assert_eq!((metadata.mode() & 0o777, metadata.uid()), (0o600, unsafe { libc::getuid() }));
+}
+
+/// Root in a mount namespace of its own, it turns into the jail's user: what it runs needn't be
+/// that user's to run. Then the kernel refuses it the daemon's socket, and not the one beside it.
+fn as_another_user(socket: &Path) {
+    use std::os::unix::net::UnixStream;
+    // SAFETY: Plain system calls: this process does nothing else as root.
+    unsafe {
+        assert_eq!(libc::setgroups(0, std::ptr::null()), 0);
+        assert_eq!(libc::setgid(JAIL_USER), 0);
+        assert_eq!(libc::setuid(JAIL_USER), 0);
+    }
+    UnixStream::connect(std::env::var_os(OPEN_SOCKET).unwrap()).unwrap();
+    let refused = UnixStream::connect(socket).unwrap_err();
+    assert_eq!(refused.kind(), std::io::ErrorKind::PermissionDenied);
 }
