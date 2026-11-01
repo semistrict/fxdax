@@ -2861,6 +2861,56 @@ fn vm_processes_that_leave_replies_unread_are_let_go() {
     drop((sender, receiver, stream));
 }
 
+/// TASK-150.3: a window of any size a VM process names makes the daemon no more room for it: past
+/// what the protocol bounds, it is let go still, here for half a gibibyte of replies it leaves
+/// unread, behind a window's worth of mappings of all the bits a word has.
+#[test]
+fn vm_processes_naming_vast_windows_are_let_go_all_the_same() {
+    use super::wire::*;
+    host();
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("extentd.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || serve(listener));
+    let (sender, mut receiver, stream, branch) =
+        raw_connection(&socket, &dir.path().join("store"), 1 << 24);
+    let window = Header::new(WINDOW, 2).with_args(&[1 << 60]);
+    let answered = call(&sender, &mut receiver, window, &[]).header.status;
+    let len = 8 << 20;
+    let written = Header::new(WRITE, 3).with_args(&[branch, 1, 0]);
+    assert_eq!(call(&sender, &mut receiver, written, &pattern(1, len)).header.status, 0);
+    for id in 4..68 {
+        let read = Header::new(READ, id).with_args(&[branch, 1, 0, len as u64]);
+        sender.send(read, &[], &[]).unwrap();
+    }
+    use std::os::fd::AsRawFd;
+    let mut hung_up = libc::pollfd { fd: stream.as_raw_fd(), events: libc::POLLRDHUP, revents: 0 };
+    // SAFETY: Polls the stream, which the test keeps open, for 10 s at most.
+    let ready = unsafe { libc::poll(&mut hung_up, 1, 10_000) };
+    assert_eq!(ready, 1, "the daemon holds what the VM process leaves unread");
+    assert_eq!(answered, -Errno::EINVAL.raw());
+    drop((sender, receiver, stream));
+}
+
+/// TASK-150.3: a window as large as the daemon makes room for is one it serves.
+#[test]
+fn windows_go_up_to_the_most_the_daemon_makes_room_for() {
+    use super::wire::*;
+    host();
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("extentd.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || serve(listener));
+    for (name, size, status) in
+        [("past", MAX_WINDOW + page_size(), -Errno::EINVAL.raw()), ("largest", MAX_WINDOW, 0)]
+    {
+        let (sender, mut receiver, _stream, _) =
+            raw_connection(&socket, &dir.path().join(name), 1 << 24);
+        let window = Header::new(WINDOW, 2).with_args(&[size]);
+        assert_eq!(call(&sender, &mut receiver, window, &[]).header.status, status, "{name}");
+    }
+}
+
 /// TASK-79.16: a tenant's VM processes, the default tenant's too, have so many connections at
 /// most: one past them is closed as it comes; once one goes, another is served. The first of them
 /// is served here, as tests' connections are, which says when it is done ([`serve_connection`]).

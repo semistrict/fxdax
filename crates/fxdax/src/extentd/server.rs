@@ -1060,6 +1060,9 @@ impl Connection {
                 ];
             }),
             WINDOW => {
+                if args[0] > MAX_WINDOW {
+                    return Err(Errno::EINVAL);
+                }
                 let (sender, acks) = (self.peer.sender.clone(), self.peer.acks.clone());
                 let stage = Arc::new(RemoteStage { sender, acks });
                 let window = store.create_dax_window(args[0], Some(stage)).map_err(|err| {
@@ -1716,6 +1719,7 @@ impl Peer {
     /// Its window is of `size` bytes, whose mappings, a page each at most, a reply to `MAPPINGS`
     /// holds (TASK-79.43).
     fn set_window(&self, size: u64) {
+        assert!(size <= MAX_WINDOW, "a window past the most the daemon makes room for");
         let mappings = size / crate::pages::page_size() * MAPPING_BYTES;
         self.mappings.store(mappings, Ordering::Relaxed);
     }

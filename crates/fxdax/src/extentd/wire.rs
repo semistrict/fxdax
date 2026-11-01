@@ -146,6 +146,12 @@ pub(crate) const TRANSFER: u32 = 25;
 pub(crate) const FREE_MANY: u32 = 26;
 /// The most bytes a transfer area holds.
 pub(crate) const MAX_TRANSFER_AREA: u64 = 64 << 20;
+
+/// fxdax: the most bytes a VM process's DAX window has (`WINDOW`, `EINVAL` past them): a number it
+/// chooses, which sizes what the daemon keeps for it, a mapping a page, and the room it holds its
+/// replies in, whatever else it asks (TASK-150.3). 750 MiB of those at most, of 4 KiB pages; the
+/// suites' guests' 2 GiB windows, and their soak's, are far within it.
+pub(crate) const MAX_WINDOW: u64 = 64 << 30;
 /// fxdax: the stage operations the VM process has made of the connection's, `args[0]`, the
 /// nanoseconds they took it, `args[1]`, and those of them that took access away from pages it had
 /// installed, by how, `args[2..5]` (`Stats::stage_overwrites`), so far, which the daemon counts as
