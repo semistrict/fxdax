@@ -57,6 +57,18 @@ use test_runner_deadlock::TestRunnerDeadlock;
 mod test_fxfs_guest_checks;
 #[cfg(any(feature = "host", target_os = "linux"))]
 use test_fxfs_guest_checks::TestFxfsGuestChecks;
+#[cfg(any(feature = "host", target_os = "linux"))]
+mod test_fxfs_guest_script;
+#[cfg(any(feature = "host", target_os = "linux"))]
+use test_fxfs_guest_script::TestFxfsGuestScript;
+
+// The scripts of operations of fxfs-guest-checks' random_ops and fxfs-guest-script: what they are,
+// the guest's running of them, and the host's replays of them in VMs.
+pub mod script;
+#[cfg(all(feature = "guest", target_os = "linux"))]
+mod script_run;
+#[cfg(feature = "host")]
+mod script_vm;
 
 // What the guest's checks print as they fail.
 #[cfg(feature = "guest")]
@@ -259,6 +271,26 @@ pub fn test_cases() -> Vec<TestCase> {
         TestCase::new(
             "fxfs-guest-checks-dax-small",
             Box::new(TestFxfsGuestChecks { dax: true, delay: false, small_window: true }),
+        ),
+        #[cfg(any(feature = "host", target_os = "linux"))]
+        TestCase::new(
+            "fxfs-guest-script",
+            Box::new(TestFxfsGuestScript { dax: false, full: false }),
+        ),
+        #[cfg(any(feature = "host", target_os = "linux"))]
+        TestCase::new(
+            "fxfs-guest-script-dax",
+            Box::new(TestFxfsGuestScript { dax: true, full: false }),
+        ),
+        #[cfg(any(feature = "host", target_os = "linux"))]
+        TestCase::new(
+            "fxfs-guest-script-full",
+            Box::new(TestFxfsGuestScript { dax: false, full: true }),
+        ),
+        #[cfg(any(feature = "host", target_os = "linux"))]
+        TestCase::new(
+            "fxfs-guest-script-full-dax",
+            Box::new(TestFxfsGuestScript { dax: true, full: true }),
         ),
         TestCase::new("fxfs-guest-dax", Box::new(TestFxfsGuest::host_formats().with_dax())),
         TestCase::new("fxfs-guest-crash-dax", Box::new(TestFxfsGuest::crash().with_dax())),
@@ -464,6 +496,11 @@ pub trait Test {
     /// Per-test timeout in seconds. The runner kills the test if it exceeds this.
     fn timeout_secs(&self) -> u64 {
         15
+    }
+
+    /// fxdax: what a test that ran out of time, its VM gone, has to add to that.
+    fn timed_out(self: Box<Self>, _test_setup: TestSetup) -> Option<String> {
+        None
     }
 
     /// fxdax: whether the runner fails the test, once it passed, on its VMs' kernels complaining
