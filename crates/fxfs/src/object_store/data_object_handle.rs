@@ -966,10 +966,8 @@ impl<S: HandleOwner> DataObjectHandle<S> {
             AssocObj::Borrowed(self),
         );
 
-        // The maximum number of mutations we are going to allow per transaction in allocate. This
-        // is probably quite a bit lower than the actual limit, but it should be large enough to
-        // handle most non-edge-case versions of allocate without splitting the transaction.
-        const MAX_TRANSACTION_SIZE: usize = 256;
+        // fxdax: as many mutations as the transaction has room for, rather than upstream's 256,
+        // which it said was probably quite a bit lower than the limit.
         for (switch_range, (extent, extent_offset)) in to_switch {
             transaction.add_with_object(
                 self.store().store_object_id(),
@@ -983,7 +981,7 @@ impl<S: HandleOwner> DataObjectHandle<S> {
                 ),
                 AssocObj::Borrowed(self),
             );
-            if transaction.mutations().len() >= MAX_TRANSACTION_SIZE {
+            if transaction.is_full() {
                 transaction.commit_and_continue().await?;
             }
         }
@@ -1023,7 +1021,7 @@ impl<S: HandleOwner> DataObjectHandle<S> {
                 allocate_range.start += device_range_len;
                 allocated += device_range_len;
 
-                if transaction.mutations().len() >= MAX_TRANSACTION_SIZE {
+                if transaction.is_full() {
                     self.update_allocated_size(&mut transaction, allocated, 0).await?;
                     transaction.commit_and_continue().await?;
                     allocated = 0;
@@ -1921,7 +1919,7 @@ impl<S: HandleOwner> DataObjectHandle<S> {
             ranges.push(device_range);
             // If we didn't allocate all that we requested, we'll loop around and try again.
             // ... unless we have filled the transaction. The caller should check file_range.
-            if transaction.mutations().len() > TRANSACTION_MUTATION_THRESHOLD {
+            if transaction.is_full() {
                 break;
             }
         }
