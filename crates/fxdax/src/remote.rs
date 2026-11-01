@@ -1612,6 +1612,54 @@ mod tests {
         drop(child);
     }
 
+    /// A store whose commit, of more bytes than `options` let wait, is in a segment closed for want
+    /// of room, as a closing that beats the uploader leaves it: with no commit to come, as one in
+    /// the lag's wait holds its guest's seal, and holds back every other. And the commit's epoch.
+    fn closed_for_room(
+        options: super::Options,
+    ) -> (tempfile::TempDir, Arc<extent_store::Store<extent_store::HostDir>>, super::Remote, u64)
+    {
+        const EXTENT: usize = 1 << 20;
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::host_store::create(&dir.path().join("store"), 1 << 30, 7).unwrap();
+        let store = Arc::new(store);
+        let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
+        let remote = super::Remote::attach(store.clone(), bucket, 1, options).unwrap();
+        store.write(super::ExtentId::new(7, 1), 0, &pattern(1, EXTENT)).unwrap();
+        store.commit_ordered(None).unwrap();
+        let epoch = store.epoch().unwrap();
+        // The most a segment holds, its last extent past it, and no commit with them.
+        for sequence in 2..98 {
+            let extent = super::ExtentId::new(7, sequence);
+            store.write(extent, 0, &pattern(sequence as u8, EXTENT)).unwrap();
+        }
+        (dir, store, remote, epoch)
+    }
+
+    /// TASK-150.2: a commit stalled on the bytes waiting (`Options::max_lag_bytes`) ends though
+    /// what it waits for is in a segment closed for want of room, which only a commit's flush would
+    /// end, as the commit, or its guest, have none to come: an uploader's own flush ends it.
+    #[test]
+    fn commits_stalled_on_the_lag_end_with_their_segment_closed_for_room() {
+        let (_dir, store, remote, epoch) =
+            closed_for_room(super::Options { max_lag_bytes: BLOCK as u64, ..idle() });
+        let stalled = std::sync::Arc::new(remote);
+        let waiting = stalled.clone();
+        let (ended, end) = std::sync::mpsc::channel();
+        std::thread::spawn(move || ended.send(waiting.wait_lag(epoch)).unwrap());
+        assert_eq!(end.recv_timeout(Duration::from_secs(30)), Ok(Ok(())));
+        assert_eq!(store.unreleased_bytes().unwrap(), 0);
+    }
+
+    /// TASK-150.2: so does a sync of the store's commits, or anything else waiting for their upload.
+    #[test]
+    fn uploads_waited_for_end_with_their_segment_closed_for_room() {
+        let (_dir, _store, remote, epoch) = closed_for_room(idle());
+        let (ended, end) = std::sync::mpsc::channel();
+        std::thread::spawn(move || ended.send(remote.wait_uploaded(epoch)).unwrap());
+        assert_eq!(end.recv_timeout(Duration::from_secs(30)), Ok(Ok(())));
+    }
+
     /// TASK-79.19: a gather takes no more of the segments the store closed than may upload at once,
     /// with those uploading; the rest it leaves in the store, until those it took are uploaded.
     #[test]

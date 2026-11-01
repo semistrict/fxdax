@@ -1206,6 +1206,39 @@ fn closing_during_a_framing_for_room() {
     reopening.join().unwrap();
 }
 
+/// One run of a write closing the open segment for want of room, racing an uploader taking what
+/// a commit in it made (TASK-150.2). Whichever goes first, the uploader, asking once more after,
+/// with no commit to come, has the commit's segment.
+fn uploading_what_a_closing_for_room_closed() {
+    let dir = MemDir::new();
+    let description = Description { block_size: BLOCK as u32, capacity: 1 << 20, branch: BRANCH };
+    let store = Arc::new(Store::create(dir, description, ROLLING).unwrap());
+    assert!(store.upload(WRITER, 0).unwrap());
+    store.write(extent(1), 0, &pattern(1, BLOCK)).unwrap();
+    store.commit(None).unwrap();
+    // As an uploader gathers for a commit waiting for it: what is closed, closing the rest.
+    let gather = |store: &Store<MemDir>, taken: &mut Vec<u64>| {
+        store.flush().unwrap();
+        taken.extend(store.closed(8).unwrap().iter().map(|closed| closed.last()));
+        store.close_now().unwrap();
+        store.flush().unwrap();
+        taken.extend(store.closed(8).unwrap().iter().map(|closed| closed.last()));
+    };
+    let writer = {
+        let store = store.clone();
+        thread::spawn(move || {
+            for sequence in 2..7 {
+                store.write(extent(sequence), 0, &pattern(sequence as u8, 2 * BLOCK)).unwrap();
+            }
+        })
+    };
+    let mut taken = Vec::new();
+    gather(&store, &mut taken);
+    writer.join().unwrap();
+    gather(&store, &mut taken);
+    assert_eq!(taken, [1], "no commit's segment reached the uploader");
+}
+
 /// Shuttle's configuration: threads' stacks large enough for the store's (Shuttle runs each on a
 /// stack of its own, of 60 KiB by default).
 fn config() -> Config {
@@ -1594,6 +1627,14 @@ fn needs_closes_to_wait_for_framings() {
 fn needs_flushes_to_wait_for_every_framing() {
     let rules = Rules { flushes_wait_for_every_framing: false, ..Rules::ALL };
     fails_without(rules, &["after a failed flush"], closing_after_a_failed_flush);
+}
+
+/// A flush leaving a closing for want of room to the next commit: an uploader that waits for a
+/// commit in the segment closed waits for as long as no commit comes.
+#[test]
+fn needs_flushes_to_end_closings() {
+    let rules = Rules { flushes_end_closings: false, ..Rules::ALL };
+    fails_without(rules, &["no commit's segment"], uploading_what_a_closing_for_room_closed);
 }
 
 /// A fork while a closing between commits frames a segment: the child, reading the extent it
