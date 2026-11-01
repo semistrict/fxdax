@@ -1071,8 +1071,12 @@ impl ExtentStore {
     /// branch's, and open (`WRITE`).
     pub fn write(&self, extent: ExtentId, offset: u64, buffers: &[VolatileSlice]) -> Result<()> {
         self.writable()?;
+        let len = buffers.iter().map(VolatileSlice::len).sum();
+        // fxdax: as the store has it of each write, of this one's whichever way it goes: a commit
+        // writes an extent mapped writably to the store, which takes no other (TASK-150.7).
+        self.store.check_io(offset, len as u64).map_err(errno)?;
         let _opening = self.opening.read().unwrap();
-        let mut data = vec![0; buffers.iter().map(VolatileSlice::len).sum()];
+        let mut data = vec![0; len];
         let mut at = 0;
         for buffer in buffers {
             at += buffer.copy_to(&mut data[at..]);
@@ -1080,12 +1084,8 @@ impl ExtentStore {
         let mut open = self.open.lock().unwrap();
         if let Some(open) = open.get_mut(&extent) {
             // An open extent mapped writably is in memory, which the commit writes to the store.
-            let end = offset.checked_add(data.len() as u64).ok_or(Errno::EINVAL)?;
-            if end > Self::MAX_EXTENT {
-                return Err(Errno::EINVAL);
-            }
             open.pages.write(offset, &data)?;
-            open.len = open.len.max(end);
+            open.len = open.len.max(offset + len as u64);
             return Ok(());
         }
         // fxdax: to the store with the open extents held, so that a writable mapping opening the
@@ -2460,6 +2460,22 @@ mod tests {
         assert_eq!(store.map(id(&store, 1), ps / 2, ps, 0, true), Err(Errno::EINVAL));
         assert_eq!(store.map(id(&store, 1), last + ps, ps, 0, true), Err(Errno::EINVAL));
         store.map(id(&store, 1), last, ps, 0, true).unwrap();
+    }
+
+    /// TASK-150.7: a write to an extent mapped writably is held to what a store's are, whole
+    /// blocks: one that isn't is refused there and then, leaving the extent as it was, not as long
+    /// as no commit can write it, which would fail every commit after (`EINVAL`).
+    #[test]
+    fn writes_to_extents_mapped_writably_are_of_whole_blocks() {
+        let (store, _dir) = store(1 << 24);
+        let ps = page_size();
+        let _window = store.create_dax_window(2 * ps, None).unwrap();
+        let extent = id(&store, 1);
+        store.map(extent, 0, 2 * ps, 0, true).unwrap();
+        assert_eq!(write(&store, extent, ps, &pattern(1, BLOCK + 1)), Err(Errno::EINVAL));
+        assert_eq!(write(&store, extent, ps + 1, &pattern(1, BLOCK)), Err(Errno::EINVAL));
+        assert_eq!(store.commit(None), Ok(()));
+        assert_eq!(store.info().map(|info| info.next_sequence), Ok(2));
     }
 
     /// TASK-50.3: makes a store at `path` of `extents` sealed extents of a MiB each, and opens it

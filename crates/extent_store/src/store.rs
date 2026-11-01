@@ -700,7 +700,7 @@ impl<D: Dir> Store<D> {
 
     /// Fails unless I/O of `len` bytes at `offset` in an extent is aligned to blocks, and ends
     /// within the most an extent holds.
-    fn check_io(&self, offset: u64, len: u64) -> Result<(), Error> {
+    pub fn check_io(&self, offset: u64, len: u64) -> Result<(), Error> {
         let block_size = self.lineage.block_size as u64;
         if !offset.is_multiple_of(block_size) || !len.is_multiple_of(block_size) || len == 0 {
             bail!(Unaligned { offset, len });
