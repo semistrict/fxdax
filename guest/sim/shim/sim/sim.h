@@ -89,6 +89,10 @@ unsigned long sim_mm_map(struct mm_struct *mm, struct file *file, pgoff_t pgoff,
 void sim_munmap(unsigned long addr);
 void sim_mm_init(void *window, u64 len);
 unsigned long sim_window_pfn(pgoff_t pgoff);
+/* How many faults tasks have taken. */
+extern unsigned long sim_mm_faults;
+/* Whether a WARN logs and goes on, rather than fails the run. */
+extern bool sim_warns_continue;
 /* A user access, a page at a time: 0, or -EFAULT for a SIGBUS or a SIGSEGV. */
 int sim_user_store(unsigned long addr, const void *buf, size_t len);
 int sim_user_load(unsigned long addr, void *buf, size_t len);

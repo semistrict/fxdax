@@ -201,6 +201,8 @@ vm_fault_t vmf_insert_folio_pmd(struct vm_fault *vmf, struct folio *folio, bool 
 
 	if (addr < vma->vm_start || addr + PMD_SIZE > vma->vm_end)
 		return VM_FAULT_SIGBUS;
+	if (WARN_ON_ONCE(folio_order(folio) != PMD_ORDER))
+		return VM_FAULT_SIGBUS;
 	if (!pmd_none(*pmd)) {
 		if (!write)
 			return VM_FAULT_NOPAGE;
@@ -454,6 +456,8 @@ static void *translate(struct vm_area_struct *vma, unsigned long addr, bool writ
 	return page_address(pfn_to_page(pte_pfn(pte))) + offset_in_page(addr);
 }
 
+unsigned long sim_mm_faults;
+
 size_t sim_copy_user(unsigned long addr, void *buf, size_t len, bool write)
 {
 	size_t done = 0;
@@ -472,6 +476,7 @@ size_t sim_copy_user(unsigned long addr, void *buf, size_t len, bool write)
 
 			if (pagefault_disabled())
 				break;
+			sim_mm_faults++;
 			/* The kernel's mmap_lock: a fault keeps its VMA, as a task unmaps it. */
 			down_read(&mm->lock);
 			vma = find_vma(mm, addr);
