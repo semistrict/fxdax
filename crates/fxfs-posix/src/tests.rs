@@ -17,7 +17,7 @@ const DIR: u32 = S_IFDIR | 0o755;
 const GOES_WITHIN: Duration = Duration::from_secs(30);
 
 /// As the host does.
-struct Tested;
+pub(super) struct Tested;
 
 impl Platform for Tested {
     const KEEPS_DIRECTORY_TIMES: bool = false;

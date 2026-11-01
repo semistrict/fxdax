@@ -1887,4 +1887,6 @@ fn data_size(data: Option<ObjectValue>) -> u64 {
 }
 
 #[cfg(test)]
+mod model_tests;
+#[cfg(test)]
 mod tests;

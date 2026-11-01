@@ -20,6 +20,7 @@ storage_device.workspace = true
 
 [dev-dependencies]
 fuchsia.workspace = true
+proptest.workspace = true
 
 [lints]
 workspace = true

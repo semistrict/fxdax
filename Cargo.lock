@@ -1346,6 +1346,7 @@ dependencies = [
  "futures",
  "fxfs",
  "log",
+ "proptest",
  "rustc-hash",
  "storage_device",
 ]
