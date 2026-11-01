@@ -1649,10 +1649,16 @@ impl<P: Platform> Fxfs<P> {
             let options =
                 Options { borrow_metadata_space: cut, ..file.default_transaction_options() };
             file.truncate_with_options(options, set.size).await?;
-            // fxdax: once the cut has freed what it may. With no room even so what the last block
-            // holds past the end stays, as the file must still be cut.
+            // fxdax: once the cut has freed what it may, which only a sync makes room of, as a
+            // write that finds the filesystem full makes it (`fxfs_vfs_make_room`). With no room
+            // even so what the last block holds past the end stays, as the file must still be cut.
             if cut && set.valid & SET_KEEP_TAIL == 0 {
-                if let Err(error) = file.zero_tail().await {
+                let mut zeroed = file.zero_tail().await;
+                if matches!(&zeroed, Err(error) if FxfsError::NoSpace.matches(error)) {
+                    self.sync().await?;
+                    zeroed = file.zero_tail().await;
+                }
+                if let Err(error) = zeroed {
                     ensure!(FxfsError::NoSpace.matches(&error), error);
                     log::error!("fxfs: object {ino}: no room to zero past its end: {error:#}");
                 }

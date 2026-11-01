@@ -1361,7 +1361,7 @@ impl World {
     }
 
     /// Whether `done` was refused for replacing or removing `entry`, a directory with names in
-    /// it, as it must be.
+    /// it, as it must be, unless the filesystem had no room to find out.
     fn is_refused_as_not_empty<T>(
         &self,
         entry: Option<Entry>,
@@ -1373,6 +1373,7 @@ impl World {
         }
         match done {
             Err(error) if FxfsError::NotEmpty.matches(error) => Ok(true),
+            Err(error) if FxfsError::NoSpace.matches(error) => Ok(true),
             Err(error) => Err(format!("a directory with names in it: {error:#}")),
             Ok(_) => Err(format!("{ino} went with names in it")),
         }
@@ -2168,6 +2169,35 @@ fn a_punch_crosses_holes_of_any_size() {
     let watched = watch_sequences(SEQUENCE_LIMIT);
     watched.send(format!("{ops:?}")).expect("the watchdog stopped");
     Setting::awkward(0, ROOMY).holds(ops);
+}
+
+/// What a truncate cuts from a file's last block stays gone, however full the filesystem is as it
+/// does: the tail's copy found no room, what the cut freed waiting for a sync, and a write past the
+/// end brought those bytes back. Found by a hunt, whose seed this keeps, as how full the device gets
+/// depends on it. With no room even after a sync they still come back, which a long hunt finds, and
+/// TASK-149.8's notes say why.
+#[test]
+fn a_truncate_on_a_full_filesystem_leaves_nothing_past_the_end() {
+    let ops = vec![
+        Op::Compact,
+        Op::Create(0),
+        Op::Create(3),
+        Op::Create(5),
+        Op::Fill { file: 11, page: 2, pages: 2695, stride: 2, byte: 1 },
+        Op::Create(1),
+        Op::CloneToEnd { from: 6, to: 13, page: 0, to_page: 0 },
+        Op::Symlink(3),
+        Op::Fill { file: 1, page: 0, pages: 512, stride: 1, byte: 0 },
+        Op::Unlink(0),
+        Op::Rename(5, 1),
+        Op::Read { file: 0, at: 0, len: 3 },
+        Op::Truncate { file: 15, size: 41646 },
+        Op::Crash,
+        Op::Create(5),
+        Op::Create(2),
+        Op::Write { file: 9, at: 51996, len: 8, byte: 83 },
+    ];
+    Setting::awkward(0, TIGHT).with_graveyard_of_seed().holds(ops);
 }
 
 /// A punch of many commits, cut, has punched what it got to, from its start: found as a false alarm
