@@ -2319,6 +2319,7 @@ impl Journal {
                         && !inner.terminate
                         && !inner.disable_compactions
                         && !inner.compactions_paused
+                        && !inner.compaction_running
                         && inner.image_builder_mode.is_none()
                         && self.should_compact(&inner, journal_bytes)
                     {
@@ -2542,8 +2543,26 @@ impl Journal {
     /// This should generally NOT be called externally. It is public to allow use by FIDL service
     /// fxfs.Debug.
     pub async fn force_compact(&self) -> Result<(), Error> {
+        // fxdax: after the flush task's, if one runs, and in its way: two at once wrote super-blocks
+        // at once (see `write_super_block`), recording each other's work unfinished: two of them
+        // left a crash no super-block to mount from.
+        loop {
+            debug_assert_not_too_long!({
+                let mut inner = self.inner.lock();
+                if !inner.compaction_running {
+                    inner.compaction_running = true;
+                    break;
+                }
+                self.reclaim_event.listen()
+            });
+        }
         self.inner.lock().forced_compaction = true;
-        scopeguard::defer! { self.inner.lock().forced_compaction = false; }
+        scopeguard::defer! {
+            let mut inner = self.inner.lock();
+            inner.forced_compaction = false;
+            inner.compaction_running = false;
+            self.reclaim_event.notify(usize::MAX);
+        }
         self.compact().await
     }
 

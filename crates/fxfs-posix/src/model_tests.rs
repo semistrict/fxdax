@@ -1096,6 +1096,19 @@ fn every_cut_of_a_store_flushed_around_a_super_block() {
     Setting::awkward(5713515047801504255, ROOMY).cutting_everywhere().holds(ops);
 }
 
+/// A compaction a caller forced ran with the flush task's, each writing super-blocks, of which a
+/// crash could find neither readable. Found by cutting everywhere, whose seed this keeps, as when
+/// the device answers depends on it.
+#[test]
+fn a_compaction_waits_for_another() {
+    let ops = vec![
+        Op::Compact,
+        Op::Create(0),
+        Op::FillWhileCompacting { file: 0, page: 0, pages: 11, byte: 0, flushing: false },
+    ];
+    Setting::awkward(1290169520417531043, ROOMY).cutting_everywhere().holds(ops);
+}
+
 /// Fsck after every transaction runs, around a sequence's compactions, crashes and remounts, and
 /// passes: the hunt that does it, FXDAX_MODEL_FSCK, is too slow to run always.
 #[test]
