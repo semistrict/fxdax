@@ -24,6 +24,7 @@ use crate::object_handle::{
 };
 use crate::object_store::allocator::{Reservation, STAGED_MAX};
 use crate::object_store::extent_record::{ExtentMode, ExtentValue};
+use crate::object_store::journal::mutation_record_bytes;
 use crate::object_store::object_manager::ObjectManager;
 use crate::object_store::object_record::{
     AttributeKey, DirType, FsverityMetadata, ObjectAttributes, ObjectItem, ObjectKey,
@@ -31,8 +32,8 @@ use crate::object_store::object_record::{
 };
 use crate::object_store::store_object_handle::{MaybeChecksums, NeedsTrim};
 use crate::object_store::transaction::{
-    self, AssocObj, AssociatedObject, LockKey, Mutation, ObjectStoreMutation, Operation, Options,
-    ReadGuard, Transaction, lock_keys,
+    self, AllocatorMutation, AssocObj, AssociatedObject, LockKey, Mutation, ObjectStoreMutation,
+    Operation, Options, ReadGuard, Transaction, lock_keys,
 };
 use crate::object_store::{
     AttributeId, Extent, HandleOptions, HandleOwner, RootDigest, StoreObjectHandle,
@@ -122,11 +123,6 @@ const MAX_CLONED_PER_COMMIT: usize = TRANSACTION_MUTATION_THRESHOLD / 8;
 /// hold none, and cost no more than a record however long they are: counted, a clone across one of
 /// exabytes (generic/303) committed for ever, its commits outrunning the journal.
 const MAX_CLONED_BYTES_PER_COMMIT: u64 = 4 << 20;
-
-/// fxdax: the extents a commit of a punch frees, a mutation each, as a truncate counts them: they
-/// are all it costs. A commit a MiB of its range, counting holes, spun for as long as a file may be
-/// on `fallocate(FALLOC_FL_PUNCH_HOLE)`, the inode locked, as a clone's byte limit had.
-const MAX_ZEROED_PER_COMMIT: usize = TRANSACTION_MUTATION_THRESHOLD;
 
 /// DataObjectHandle is a typed handle for file-like objects that store data in the default data
 /// attribute. In addition to traditional files, this means things like the journal, superblocks,
@@ -2438,7 +2434,9 @@ impl<S: HandleOwner> DataObjectHandle<S> {
 
     /// fxdax: `zero` of a range of however many extents, in as many commits as hold them, from its
     /// start: one that fails has zeroed what it got to. As `clone_range_in_commits`, `transaction`
-    /// holds the caller's locks, and is left for it to commit.
+    /// holds the caller's locks, and is left for it to commit. Each extent costs a record, and
+    /// holes nothing: a commit a MiB of the range spun for as long as a file may be on
+    /// `fallocate(FALLOC_FL_PUNCH_HOLE)`, the inode locked.
     pub async fn zero_in_commits<'a>(
         &'a self,
         transaction: &mut Transaction<'a>,
@@ -2446,8 +2444,9 @@ impl<S: HandleOwner> DataObjectHandle<S> {
     ) -> Result<(), Error> {
         let mut start = range.start;
         loop {
-            let end =
-                self.end_of_extents(start..range.end, MAX_ZEROED_PER_COMMIT, u64::MAX).await?;
+            let freed = |_: &Range<u64>, blocks, _: &ExtentValue| self.cost_of_freeing(blocks);
+            let room = transaction.room();
+            let (end, _) = self.end_of_room(start..range.end, room, freed).await?;
             self.zero(transaction, start..end).await?;
             if end == range.end {
                 return Ok(());
@@ -2455,6 +2454,70 @@ impl<S: HandleOwner> DataObjectHandle<S> {
             transaction.commit_and_continue().await?;
             start = end;
         }
+    }
+
+    /// fxdax: what freeing `blocks`, which an extent of this file holds, adds to a transaction.
+    fn cost_of_freeing(&self, blocks: ExtentRange) -> u64 {
+        let store = self.store();
+        let (allocator, owner_object_id) = (store.allocator(), store.store_object_id());
+        let mutation = AllocatorMutation::Deallocate { device_range: blocks, owner_object_id };
+        mutation_record_bytes(allocator.object_id(), &Mutation::Allocator(mutation))
+    }
+
+    /// fxdax: how far this file's extents in `range` fill `room` of a transaction, each costing what
+    /// `cost` says of the part of it in `range`, the blocks that part is, and the extent's value:
+    /// where the last that fits ends, or `range`'s end if they all do, and how much of `room` that
+    /// takes. Holes cost nothing, and the first extent fits whatever it costs, so that a caller
+    /// always gets somewhere.
+    async fn end_of_room(
+        &self,
+        range: Range<u64>,
+        room: u64,
+        cost: impl Fn(&Range<u64>, ExtentRange, &ExtentValue) -> u64,
+    ) -> Result<(u64, u64), Error> {
+        let store = self.store();
+        let layer_set = store.tree().layer_set();
+        let mut merger = layer_set.merger();
+        let mut iter = merger
+            .query(Query::FullRange(&ObjectKey::attribute(
+                self.object_id(),
+                self.attribute_id(),
+                AttributeKey::Extent(Extent(range.clone()).search_key()),
+            )))
+            .await?;
+        let mut reached = None;
+        let mut taken = 0;
+        while let Some(ItemRef {
+            key:
+                ObjectKey {
+                    object_id,
+                    data: ObjectKeyData::Attribute(attribute_id, AttributeKey::Extent(key)),
+                },
+            value: ObjectValue::Extent(value),
+            ..
+        }) = iter.get()
+            && *object_id == self.object_id()
+            && *attribute_id == self.attribute_id()
+            && key.start < range.end
+        {
+            if let ExtentValue::Some { extent, extent_offset, .. } = value
+                && key.end > range.start
+            {
+                let part = max(key.start, range.start)..min(key.end, range.end);
+                let at = extent_offset + (part.start - key.start);
+                let blocks = ExtentRange::new(*extent, at..at + (part.end - part.start));
+                let cost = cost(&part, blocks, value);
+                if let Some(reached) = reached
+                    && taken + cost > room
+                {
+                    return Ok((reached, taken));
+                }
+                taken += cost;
+                reached = Some(part.end);
+            }
+            iter.advance().await?;
+        }
+        Ok((range.end, taken))
     }
 
     /// fxdax: where this file's extents in `range` reach `most` of them, or `most_bytes` of them,
