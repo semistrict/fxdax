@@ -71,7 +71,7 @@ pub fn image() -> FakeDevice {
 }
 
 /// Mounts `device`, which may be refused, and if it isn't, checks it, reads what it can of the
-/// volume, and unmounts it. That none of it panics is what's asked.
+/// volume, compacts it and unmounts it. That none of it panics is what's asked.
 pub async fn mounts_without_panicking(device: DeviceHolder) {
     let Ok(fs) = FxFilesystem::open(device).await else { return };
     let options = FsckOptions { on_error: Box::new(|_| {}), quiet: true, ..FsckOptions::default() };
@@ -95,6 +95,8 @@ pub async fn mounts_without_panicking(device: DeviceHolder) {
         Ok::<_, anyhow::Error>(())
     };
     let _ = read.await;
+    // What it read goes into layers, which what writes them asserts things of.
+    let _ = fs.journal().force_compact().await;
     // It can fail if what it must write finds something wrong: see `fuzz_journal`.
     let _ = fs.close().await;
 }
