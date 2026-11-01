@@ -477,6 +477,17 @@ fn state_at<'a, B: Bucket>(
     })
 }
 
+/// Whether `branch` holds its segment `at`, as a fork's recovery from there needs: the state as of
+/// it reads whole, none of the segments up to it missing. Asked once: what is going, as a pass of
+/// the collector takes it, reads as not held.
+pub(crate) async fn holds(bucket: &impl Bucket, branch: u64, at: u64) -> Result<bool, Error> {
+    match state_at(&Checkpoints::new(bucket, 0), branch, at, &mut BTreeSet::new()).await {
+        Ok(_) => Ok(true),
+        Err(Attempt::Restart | Attempt::Failed(Error::Lost(_))) => Ok(false),
+        Err(Attempt::Failed(error)) => Err(error),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

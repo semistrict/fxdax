@@ -103,6 +103,7 @@ fn one() {
             "delete_tokens" => rules.delete_tokens = false,
             "footers" => rules.footers = false,
             "fork_claims_ids" => rules.fork_claims_ids = false,
+            "fork_claims_landed" => rules.fork_claims_landed = false,
             other => panic!("no rule {other}"),
         }
     }
@@ -317,6 +318,8 @@ fn failed_forks() -> Profile {
 test_holds!(failed_forks_deleted_anywhere, failed_forks());
 
 test_needs!(failed_forks_need_claims_of_ids, fork_claims_ids, failed_forks());
+
+test_needs!(failed_forks_need_claims_of_what_landed, fork_claims_landed, failed_forks());
 
 /// Case 7: collectors stopping midway, two at once, one fenced by another. Case 8: writers' indexes
 /// older than compactions.

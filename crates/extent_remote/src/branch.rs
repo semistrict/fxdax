@@ -6,7 +6,7 @@
 
 use crate::bucket::{self, Bucket, Created, Updated};
 use crate::layout::{self, Kind, Lease, Origin, Record};
-use crate::recovery::recover;
+use crate::recovery::{self, recover};
 use crate::{Error, rules};
 use std::collections::BTreeMap;
 
@@ -214,8 +214,11 @@ async fn mark_deleted(bucket: &impl Bucket, branch: u64) -> Result<(), Error> {
 /// took otherwise (TASK-79.82). Its record taken, the ID is no other's, and a deletion that stops
 /// goes on as the fork's; it had no record before, nor children with none, as [`delete`] deletes
 /// such a branch. The record is the one its fork would give it ([`record_fork`]), live, so that a
-/// deletion a later placement refuses ([`Error::Stale`]) changes nothing; or, naming no `origin`,
-/// deleted from the first, for good.
+/// deletion a later placement refuses ([`Error::Stale`]) changes nothing, only if its parent's
+/// branch holds the fork's segment, as a live branch's record must say: a child naming a segment
+/// that is not there recovers from nothing, which fails its deletion, should one stopping go on,
+/// and every pass of the collector. Otherwise it is deleted from the first, for good: no other
+/// placement took a branch nothing of which landed; and a segment landing after finds it so.
 pub async fn delete_fork(
     bucket: &impl Bucket,
     child: u64,
@@ -232,7 +235,11 @@ pub async fn delete_fork(
                 if origin.is_none() && !rules().fork_claims_ids {
                     return delete(bucket, child, holder, token).await.map(|()| true);
                 }
-                let live = origin.is_some();
+                let live = match origin {
+                    Some(_) if !rules().fork_claims_landed => true,
+                    Some(origin) => recovery::holds(bucket, origin.parent, origin.at).await?,
+                    None => false,
+                };
                 let record = Record { origin, forked: true, deleted: !live };
                 let key = layout::record(child);
                 if let Created::Created = bucket::create(bucket, &key, layout::encode(&record)).await

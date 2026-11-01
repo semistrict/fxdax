@@ -116,6 +116,9 @@ pub(crate) struct Rules {
     /// The deletion of a failed fork takes its child's ID with a record, before it ends the child's
     /// lease, though its fork's segment never went (TASK-79.82).
     pub fork_claims_ids: bool,
+    /// That record says the child lives only if the branch it was forked from holds the fork's
+    /// segment, which reading it needs.
+    pub fork_claims_landed: bool,
 }
 
 impl Rules {
@@ -133,6 +136,7 @@ impl Rules {
         delete_tokens: true,
         footers: true,
         fork_claims_ids: true,
+        fork_claims_landed: true,
     };
 }
 
