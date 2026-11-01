@@ -188,7 +188,7 @@ pub use lineage::{DirHold, Lineage};
 pub use mem::{Io, MemDir, MemFile};
 pub use segments::segment_closes;
 pub use store::{
-    Cleaned, Footprint, ForkCommitted, Info, NoSpace, Options, Rebuilt, RemoteData, Spent, Store,
+    Cleaned, Footprint, ForkCommitted, HasBranch, Info, NoSpace, Options, Rebuilt, RemoteData, Spent, Store,
     TooLong, TooSmall, Unaligned, Usage, Write,
 };
 pub use sync::Rules;

@@ -2821,9 +2821,12 @@ mod tests {
         let child = parent.branch() + 1;
         forked(&parent, &bucket, &dir.path().join("child"), child);
         let again = dir.path().join("again");
-        let forked = parent.fork(&again, child).map_err(|err| err.to_string());
+        let forked = parent.fork(&again, child);
+        let errno = forked.as_ref().map(drop).map_err(crate::Error::errno);
         let has = format!("the store has a branch {child:#x}");
+        let forked = forked.map_err(|err| err.to_string());
         assert_eq!((forked, again.exists()), (Err(has), false));
+        assert_eq!(errno, Err(Some(crate::Errno::EEXIST)));
         drop(parent);
 
         let parent = ExtentStore::open(dir.path().join("parent")).unwrap();

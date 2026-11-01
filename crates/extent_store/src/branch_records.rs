@@ -18,6 +18,7 @@
 
 use crate::dir::{Dir, File as _, read_file};
 use crate::layout::{BRANCHES, BranchRecord, parse_record_name, record_path};
+use crate::store::HasBranch;
 use crate::sync::{Condvar, Mutex, MutexGuard, rules};
 use anyhow::{Context as _, Error, anyhow, bail, ensure};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -209,7 +210,7 @@ impl BranchRecords {
     /// ([`Forking::write`]).
     pub(crate) fn fork(&self, child: u64) -> Result<Forking<'_>, Error> {
         let mut table = self.settled(self.lock(), child)?;
-        ensure!(!table.entries.contains_key(&child), "the store has a branch {child:#x}");
+        ensure!(!table.entries.contains_key(&child), HasBranch(child));
         table.committing.insert(child);
         Ok(Forking { reservation: self.reserve(&mut table, child) })
     }

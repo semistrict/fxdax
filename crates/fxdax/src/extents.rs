@@ -809,9 +809,14 @@ impl ExtentStore {
                 }
                 // A store at `path` already, or a fork's handle, as of a fork retried: `EEXIST`,
                 // as making a store there gives (TASK-79.83); but not for what else the fork found
-                // there already as it made its files.
+                // there already as it made its files. So for a child the store has: its ID is
+                // taken, here as in object storage (TASK-79.82).
+                let exists = err.downcast_ref::<extent_store::HasBranch>().is_some();
                 return Err(match err.downcast_ref::<extent_store::Taken>() {
                     Some(_) => Error::new(err.context(Errno::EEXIST)),
+                    None if exists => {
+                        Error::new(anyhow::Error::new(Errno::EEXIST).context(err.to_string()))
+                    }
                     None => Error::new(err),
                 });
             }

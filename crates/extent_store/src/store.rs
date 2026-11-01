@@ -52,6 +52,11 @@ pub struct ForkCommitted {
     pub child: u64,
 }
 
+/// fxdax: the error of a fork to a branch the store has ([`Store::fork`]), which makes nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("the store has a branch {0:#x}")]
+pub struct HasBranch(pub u64);
+
 /// The error of a capacity smaller than what the store holds: its extents' bytes, and those that
 /// writes in progress may add.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
