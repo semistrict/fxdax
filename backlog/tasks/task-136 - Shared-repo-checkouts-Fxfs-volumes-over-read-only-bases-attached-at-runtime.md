@@ -4,13 +4,13 @@ title: 'Shared repo checkouts: Fxfs volumes over read-only bases, attached at ru
 status: To Do
 assignee: []
 created_date: '2026-10-30 09:08'
-updated_date: '2026-10-31 06:25'
+updated_date: '2026-10-31 16:04'
 labels: []
 dependencies: []
 references:
   - ~/docs/ideas/fxfs-native-overlay-for-shared-repos.md
 documentation:
-  - backlog/docs/doc-10 - Fxfs-overlays-for-shared-repository-checkouts.md
+  - backlog/docs/doc-10 - Shared-volumes-Fxfs-volumes-over-read-only-bases.md
 priority: medium
 type: feature
 ordinal: 467000

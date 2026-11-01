@@ -7,7 +7,8 @@
 # tests of it (guest/tests) on this host, Linux with KVM, in fxdax's Firecracker: fxfs-guest,
 # fxfs-guest-format, fxfs-guest-crash and fxfs-guest-resize, fxfs-guest-live-fork (a running VM's
 # store forked, its filesystem frozen), fxfs-guest-volumes (volumes of one device mounted side by
-# side), fxfs-guest-daemon-lost (VMs whose extent daemon is
+# side), fxfs-guest-shared-volumes (a volume one VM keeps current with Git, published, attached to
+# another as it runs, and written over), fxfs-guest-daemon-lost (VMs whose extent daemon is
 # killed under load exit, at once, saying so), fxfs-guest-follow (a VM following a store another VM
 # writes, read-only, as it writes it), fxfs-guest-follow-torture (two followers' readers checking
 # what they read as the writer changes it, and its mutants, whose followers drop nothing a batch
@@ -37,7 +38,8 @@ export PJDFSTEST_COMMIT=${PJDFSTEST_COMMIT:-85a8aea9e685999ef0540392fd80535f873d
 FXDAX_GUEST_KERNEL="$results/$(basename "$built")" FXDAX_E2E_RESULTS="$results" \
     "$root/scripts/test-e2e.sh" extent-guest fxfs-guest fxfs-guest-dax fxfs-guest-format \
     fxfs-guest-crash fxfs-guest-crash-dax fxfs-guest-crash-dax-killed fxfs-guest-resize \
-    fxfs-guest-live-fork fxfs-guest-volumes fxfs-guest-volumes-dax fxfs-guest-snapshot-volumes \
+    fxfs-guest-live-fork fxfs-guest-volumes fxfs-guest-volumes-dax fxfs-guest-shared-volumes \
+    fxfs-guest-shared-volumes-dax fxfs-guest-snapshot-volumes \
     fxfs-guest-snapshot-volumes-dax fxfs-guest-daemon-lost \
     fxfs-guest-follow fxfs-guest-follow-dax fxfs-guest-follow-torture \
     fxfs-guest-follow-torture-dax fxfs-guest-follow-torture-mutant \

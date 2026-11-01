@@ -132,6 +132,37 @@ struct fxfs_follow_stats {
  */
 #define FXFS_IOC_CACHED_OBJECTS _IOR('x', 0x44, __u64)
 
+/*
+ * fxdax: what publishes a shared volume, and makes one over it (backlog doc-10, Publishing). All
+ * take CAP_SYS_ADMIN, on a directory, and none a follower (-EROFS).
+ *
+ * FXFS_IOC_FLUSH, on the volume's: puts all it holds in one layer, with its writers stopped by
+ * FIFREEZE on it, to stay so. -EBUSY with the filesystem frozen, as with no other volume mounted.
+ *
+ * FXFS_IOC_MANIFEST, on the volume's, with the filesystem frozen (-EINVAL otherwise): writes what
+ * describes it to `data`, which has room for `size` bytes (-ERANGE otherwise), and sets `size`.
+ * FXFS_MANIFEST_MAX bytes are always enough. -EBUSY if the journal holds anything of the volume:
+ * thaw, flush and freeze again. Its layers stay as a fork of the store takes them before the thaw.
+ *
+ * FXFS_IOC_IMPORT, on any of the filesystem's: makes the volume `name`, of `name_size` bytes, over
+ * the `manifest_size` bytes at `manifest`. -EBUSY with the filesystem frozen.
+ */
+struct fxfs_manifest {
+	__u64 data;
+	__u64 size;
+};
+struct fxfs_import {
+	__u64 name;
+	__u64 name_size;
+	__u64 manifest;
+	__u64 manifest_size;
+};
+/* crates/fxfs's MAX_MANIFEST_SIZE. */
+#define FXFS_MANIFEST_MAX 65536
+#define FXFS_IOC_FLUSH _IO('x', 0x45)
+#define FXFS_IOC_MANIFEST _IOWR('x', 0x46, struct fxfs_manifest)
+#define FXFS_IOC_IMPORT _IOW('x', 0x47, struct fxfs_import)
+
 static inline struct fxfs_vfs_info *fxfs_vfs_info(struct super_block *sb)
 {
 	return sb->s_fs_info;

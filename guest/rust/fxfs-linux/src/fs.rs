@@ -15,7 +15,9 @@ use crate::follow::{Following, GuestFollow};
 use anyhow::{Context as _, Error, ensure};
 use follower::{Failed, Kernel as _};
 use fxfs::errors::FxfsError;
-use fxfs::filesystem::{FxFilesystem, FxFilesystemBuilder, OpenFxFilesystem, SyncOptions};
+use fxfs::filesystem::{
+    FlushReason, ForceMajor, FxFilesystem, FxFilesystemBuilder, OpenFxFilesystem, SyncOptions,
+};
 use fxfs::object_store::journal::{DEFAULT_RECLAIM_SIZE, JournalOptions, LazyFlush};
 use fxfs::object_store::volume::root_volume;
 use fxfs::object_store::{NewChildStoreOptions, StoreOptions};
@@ -216,6 +218,15 @@ impl Filesystem {
         self.follower.is_some()
     }
 
+    /// fxdax: makes the volume `name`, over the base `manifest` describes (backlog doc-10), which
+    /// the device must read: one the host attached.
+    pub async fn import(&self, name: &str, manifest: &[u8]) -> Result<(), Error> {
+        ensure!(!self.read_only, FxfsError::ReadOnlyFilesystem);
+        let root_volume = root_volume((*self.filesystem).clone()).await?;
+        root_volume.new_volume_over_base(name, manifest).await?;
+        Ok(())
+    }
+
     /// fxdax: freezes the filesystem, each of whose volumes the VFS has synced and stopped the
     /// writers of (fsfreeze): holds its journal's compactions, syncs, holds its commits, journals
     /// what committed meanwhile, and closes the device to writes, frees and commits, sealing what
@@ -387,11 +398,34 @@ pub(crate) trait GuestFxfs: Sized {
 
     /// fxdax: what follows its writer, on a follower.
     fn following(&self) -> Option<&Following>;
+
+    /// fxdax: puts all the volume holds in one layer, so that the journal holds nothing of it, but
+    /// for what comes after (backlog doc-10, Publishing).
+    async fn flush_volume(&self) -> Result<(), Error>;
+
+    /// fxdax: the volume's manifest, with its filesystem frozen: no compaction frees what it names
+    /// before a fork of the store holds it. `Unavailable` if the journal holds anything of it.
+    async fn manifest(&self) -> Result<Vec<u8>, Error>;
 }
 
 impl GuestFxfs for Fxfs {
     async fn unmount(self) {
         self.close().await;
+    }
+
+    async fn flush_volume(&self) -> Result<(), Error> {
+        ensure!(!self.platform().filesystem.read_only, FxfsError::ReadOnlyFilesystem);
+        let filesystem = self.filesystem();
+        filesystem.graveyard().flush().await;
+        let objects = filesystem.object_manager();
+        let store = objects.store(self.volume_id()).ok_or(FxfsError::NotFound)?;
+        store.flush_with_reason(FlushReason::Journal(ForceMajor::True)).await?;
+        Ok(())
+    }
+
+    async fn manifest(&self) -> Result<Vec<u8>, Error> {
+        let objects = self.filesystem().object_manager();
+        objects.store(self.volume_id()).ok_or(FxfsError::NotFound)?.manifest().await
     }
 
     /// fxdax: a follower's batch: the writer's commits since those it applied, fetched; what the

@@ -74,7 +74,7 @@ impl Daemon {
     }
 
     pub fn make_public(&mut self, path: &Path) -> Result<(), tonic::Status> {
-        let request = MakePublicRequest { path: name(path) };
+        let request = MakePublicRequest { path: name(path), generation: false };
         self.runtime.block_on(self.client.make_public(request)).map(drop)
     }
 

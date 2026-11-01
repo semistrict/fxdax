@@ -72,7 +72,8 @@ fn usage() -> anyhow::Error {
         "usage: fxdaxctl take DIR CAPACITY BRANCH [TOKEN] | fxdaxctl place DIR TOKEN | \
          fxdaxctl sync DIR | fxdaxctl import DIR CAPACITY IMAGE [REF] | fxdaxctl fork SRC DST | \
          fxdaxctl delete DIR | fxdaxctl resize DIR CAPACITY | fxdaxctl public DIR | \
-         fxdaxctl stat DIR | fxdaxctl --version"
+         fxdaxctl public-generation DIR | fxdaxctl attach DIR BASE | fxdaxctl stat DIR | \
+         fxdaxctl --version"
     )
 }
 
@@ -86,6 +87,8 @@ enum Command {
     Delete { dir: PathBuf },
     Resize { dir: PathBuf, capacity: u64 },
     Public { dir: PathBuf },
+    PublicGeneration { dir: PathBuf },
+    Attach { dir: PathBuf, base: PathBuf },
     Stat { dir: PathBuf },
 }
 
@@ -112,6 +115,8 @@ impl Command {
             ["delete", dir] => Self::Delete { dir: dir.into() },
             ["resize", dir, size] => Self::Resize { dir: dir.into(), capacity: capacity(size)? },
             ["public", dir] => Self::Public { dir: dir.into() },
+            ["public-generation", dir] => Self::PublicGeneration { dir: dir.into() },
+            ["attach", dir, base] => Self::Attach { dir: dir.into(), base: base.into() },
             ["stat", dir] => Self::Stat { dir: dir.into() },
             _ => bail!(usage()),
         })
@@ -134,6 +139,8 @@ impl Command {
             Self::Delete { dir } => daemon.delete_store(&dir)?,
             Self::Resize { dir, capacity } => daemon.resize_store(&dir, capacity)?,
             Self::Public { dir } => daemon.make_public(&dir)?,
+            Self::PublicGeneration { dir } => daemon.make_generation_public(&dir)?,
+            Self::Attach { dir, base } => daemon.attach_base(&dir, &base)?,
             Self::Stat { dir } => {
                 let stat = daemon.stat_store(&dir)?;
                 let lines = stat_lines(
@@ -212,6 +219,11 @@ impl Command {
                 store.set_capacity(capacity)?;
             }
             Self::Public { dir } => ExtentStore::open(&dir)?.make_public()?,
+            Self::PublicGeneration { dir } => ExtentStore::open(&dir)?.make_generation_public()?,
+            Self::Attach { dir, base } => {
+                let ancestry = ExtentStore::open(&base)?.ancestry();
+                ExtentStore::open(&dir)?.attach_base(&base.canonicalize()?, &ancestry)?;
+            }
             Self::Stat { dir } => {
                 let store = ExtentStore::open(&dir)?;
                 let (info, bytes) = (store.info()?, store.bytes()?);

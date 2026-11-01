@@ -65,6 +65,13 @@ service Extentd {
   // Makes a store a public base, and the branches it inherited from: their pages are cached once,
   // in memory every tenant's VM processes map read-only, and shared by every tenant's forks.
   rpc MakePublic(MakePublicRequest) returns (MakePublicResponse);
+  // Attaches a fork of a store to a store, a VM's or stopped, and so to its forks and the VMs
+  // restored from them: reads and maps of the fork's extents the store doesn't hold read through
+  // to it, read-only. Everything the fork holds is readable to the guest, which names extents, so
+  // that a store that isn't public attaches only to a store of its tenant (PERMISSION_DENIED
+  // otherwise). The fork stays until the caller deletes it: a VM with it open keeps it from going
+  // (FAILED_PRECONDITION), but a stopped store doesn't. No guest can ask for this.
+  rpc AttachBase(AttachBaseRequest) returns (AttachBaseResponse);
   // Returns once every commit of a store, as of the call, is durable and in the daemon's bucket,
   // as before a clean stop.
   rpc SyncStore(SyncStoreRequest) returns (SyncStoreResponse);
@@ -187,10 +194,24 @@ message PlaceStoreResponse {}
 message MakePublicRequest {
   // The store, which no VM may have open.
   string path = 1;
+  // Its branch alone, not those it inherited: a fork pinning a generation of a store that goes on
+  // being written, to attach to stores (AttachBase), not to fork.
+  bool generation = 2;
 }
 
 // The store made public.
 message MakePublicResponse {}
+
+// Attaches a fork to a store.
+message AttachBaseRequest {
+  // The store to attach it to.
+  string store = 1;
+  // The fork.
+  string base = 2;
+}
+
+// Attached, durably.
+message AttachBaseResponse {}
 
 // Waits for a store's commits to be in object storage.
 message SyncStoreRequest {

@@ -7,7 +7,7 @@
 //! manager to bind-mount into the tenant's jails. A connection's tenant is the socket it came in
 //! on. Grants live as long as the daemon: after a restart, the VM manager grants again.
 
-use super::server::{Tenant, serve_tenant};
+use super::server::{Tenant, in_dir, serve_tenant};
 use crate::Errno;
 use std::collections::HashMap;
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
@@ -84,6 +84,16 @@ impl Grants {
         let grant = Granted { tenant, socket: socket.clone(), listener };
         granted.insert(name.to_owned(), grant);
         Ok(socket)
+    }
+
+    /// Whether the stores at `one` and `other` are of one tenant, or of none: their paths in one
+    /// tenant's directory, as VM processes name them.
+    pub fn same_tenant(&self, one: &Path, other: &Path) -> bool {
+        let granted = self.granted.lock().unwrap();
+        let tenant_of = |path: &Path| {
+            granted.values().map(|grant| grant.tenant.dir()).find(|dir| in_dir(path, dir))
+        };
+        tenant_of(one) == tenant_of(other)
     }
 
     /// Revokes the tenant `name`'s grant (`ENOENT` if it has none): its socket goes, and takes no

@@ -2179,7 +2179,7 @@ fn stores_followed_are_worked_on_as_they_are() {
     fork_store(&path, &fork).unwrap();
     assert_eq!(delete_store(&path).err().and_then(|error| error.errno()), Some(Errno::EBUSY));
     assert_eq!(control(super::stores::place(path.clone(), 2)), Err(Errno::EBUSY));
-    assert_eq!(control(super::stores::make_public(path.clone())), Err(Errno::EBUSY));
+    assert_eq!(control(super::stores::make_public(path.clone(), false)), Err(Errno::EBUSY));
     drop(follower);
     followed.join().unwrap();
     let forked = ExtentStore::open(&fork).unwrap();
@@ -2635,6 +2635,36 @@ fn forks_to_stores_there_already_fail_with_eexist() {
     fork_store(&path, &fork).unwrap();
     let again = fork_store(&path, &fork);
     assert_eq!(again.err().and_then(|error| error.errno()), Some(Errno::EEXIST));
+}
+
+/// TASK-136.5: nothing a VM process sends attaches a store to the one it has open: whatever request
+/// it makes, naming the store, what that holds stays unreadable to it.
+#[test]
+fn requests_attach_nothing() {
+    use super::wire::{ACK, Header, REPLY, STAGE_COUNTS};
+    use std::os::unix::ffi::OsStrExt;
+    host();
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("extentd.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || serve(listener));
+    let base = dir.path().join("base");
+    let store = ExtentStore::create(&base, 1 << 20).unwrap();
+    let extent = ExtentId { branch: store.branch(), sequence: 1 };
+    store.write(extent, 0, &[VolatileSlice::from(&[7; 4096][..])]).unwrap();
+    store.commit(None).unwrap();
+    drop(store);
+    let vm = RemoteExtentStore::connect(&socket, dir.path().join("vm"), 1 << 20).unwrap();
+    // But those nothing replies to.
+    for kind in (0..REPLY).filter(|kind| ![ACK, STAGE_COUNTS].contains(kind)) {
+        for (branch, sequence) in [(extent.branch, 1), (0, 0)] {
+            let header = Header::new(kind, 0).with_args(&[branch, sequence, 0, 4096]);
+            let _ = vm.call(header, base.as_os_str().as_bytes(), &[]);
+        }
+    }
+    let mut data = vec![0; 4096];
+    let read = vm.read(extent, 0, &mut [VolatileSliceMut::from(&mut data[..])]);
+    assert_eq!(read, Err(Errno::ENOENT));
 }
 
 /// TASK-79.17: a store the daemon opens to work on, as no VM process has it open, boots no guest:

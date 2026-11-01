@@ -814,6 +814,11 @@ impl ExtentTable {
         dying
     }
 
+    /// Whether the table holds an extent of any of `branches`.
+    pub(super) fn holds_any_of(&self, branches: &HashSet<u64>) -> bool {
+        self.extents.keys().any(|extent| branches.contains(&extent.branch))
+    }
+
     /// The owner `extent`'s allocations are recorded under, if it is alive.
     pub(super) fn owner(&self, extent: ExtentId) -> Option<u64> {
         self.extents.get(&extent)?.owner()

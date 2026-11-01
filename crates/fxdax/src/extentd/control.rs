@@ -260,8 +260,20 @@ impl Extentd for Control {
         &self,
         request: Request<MakePublicRequest>,
     ) -> Result<Response<MakePublicResponse>, Status> {
-        let store = path(request.into_inner().path)?;
-        reply(stores::make_public(store).await.map(|()| MakePublicResponse {}))
+        let MakePublicRequest { path: store, generation } = request.into_inner();
+        let store = path(store)?;
+        reply(stores::make_public(store, generation).await.map(|()| MakePublicResponse {}))
+    }
+
+    async fn attach_base(
+        &self,
+        request: Request<AttachBaseRequest>,
+    ) -> Result<Response<AttachBaseResponse>, Status> {
+        let AttachBaseRequest { store, base } = request.into_inner();
+        let (store, base) = (path(store)?, path(base)?);
+        let grants = self.grants.clone();
+        let allowed = move |store: &Path, base: &Path| grants.same_tenant(store, base);
+        reply(stores::attach(store, base, allowed).await.map(|()| AttachBaseResponse {}))
     }
 
     async fn sync_store(
@@ -527,9 +539,23 @@ impl Client {
 
     /// Makes the store at `path` a public base (`MakePublic`).
     pub fn make_public(&self, path: &Path) -> Result<(), crate::Error> {
-        let request = MakePublicRequest { path: name(path)? };
+        let request = MakePublicRequest { path: name(path)?, generation: false };
         let what = format!("making the store at {} public", path.display());
         self.call(what, |mut c| async move { c.make_public(request).await }).map(drop)
+    }
+
+    /// Makes the fork at `path` a public generation: its branch alone (`MakePublic`).
+    pub fn make_generation_public(&self, path: &Path) -> Result<(), crate::Error> {
+        let request = MakePublicRequest { path: name(path)?, generation: true };
+        let what = format!("making the generation at {} public", path.display());
+        self.call(what, |mut c| async move { c.make_public(request).await }).map(drop)
+    }
+
+    /// Attaches the fork at `base` to the store at `path` (`AttachBase`).
+    pub fn attach_base(&self, path: &Path, base: &Path) -> Result<(), crate::Error> {
+        let request = AttachBaseRequest { store: name(path)?, base: name(base)? };
+        let what = format!("attaching {} to {}", base.display(), path.display());
+        self.call(what, |mut c| async move { c.attach_base(request).await }).map(drop)
     }
 
     /// What the store at `path` is, and holds (`StatStore`).
