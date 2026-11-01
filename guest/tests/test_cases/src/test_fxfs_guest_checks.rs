@@ -3963,11 +3963,12 @@ pub(crate) mod guest {
         evict(&name);
 
         let file = fs::File::open(&name).unwrap();
+        // No PMD on a real kernel: the page moved leaves the chunk in pieces, so that a fault's
+        // iomap is under 2 MiB. So this shows its bytes alone, and guest/sim's
+        // tests/pmd_over_stale_index and read_pressure what a PMD does here (patch 0011).
         let map = map_chunk(&file, CHUNK, libc::PROT_READ);
-        let before = stats()["dax_huge_maps"];
         let bytes = unsafe { std::slice::from_raw_parts(map as *const u8, CHUNK) };
         assert!(bytes == &data[CHUNK..], "the chunk as mapped differs from what was written");
-        assert!(stats()["dax_huge_maps"] > before, "no fault mapped a PMD's 2 MiB: {:?}", stats());
         assert_eq!(unsafe { libc::munmap(map, CHUNK) }, 0);
         drop(file);
         fs::remove_file(&name).unwrap();
