@@ -33,6 +33,26 @@ Commit a batch once it has compiled and its unit tests have run and passed (the 
 compiled and tested. A batch may still be several commits, one logical change each, made together
 after the batch's test run.
 
+## Every bug exposes a blind spot: close it, then look around it
+
+A bug or crash, however it was found and whoever caused it, shows code the tests don't exercise
+or don't check. The fix is half the work. For each one:
+
+1. **Name the blind spot:** why the tests stayed green. The path never ran; it ran and nothing
+   checked the result; a fake differs from the real thing; an assertion is off in that build; the
+   failure needs two things no test combines.
+2. **Add the test for the class, not the instance:** extend a generator, an oracle, a fake or an
+   invariant, so that it finds this bug and its kin. Put the bug back and see the test go red. A
+   seed pinned as a regression test is on top of this, not instead of it.
+3. **Look around it:** find the same blind spot elsewhere. Search for code sharing the pattern, and
+   use coverage (`FXDAX_GUEST_KERNEL_BUILD=coverage` and `scripts/guest-coverage.py` for `fs/fxfs`)
+   to list what near the bug no test runs. Each place found gets a test or a task.
+4. **Record it** in the fix's task notes: how it was found, the blind spot, the test added, and what
+   step 3 turned up. Testing too large for the fix goes in a task under TASK-149, ranked by how
+   likely it is to find bugs.
+
+It is done when those notes exist and the test went red with the bug back.
+
 ## Dead ends: check them before you try, add to them when you stop
 
 `dead-ends/` holds every approach that was tried and given up on, a file each, kept for good, so

@@ -9,6 +9,10 @@
 //! minutes, one at a time (generic/130, 303, 423, 525). Each step reads back what it changed; each
 //! sequence ends with every file compared, across a remount, and fsck on both sides of it.
 //!
+//! Some sequences have a journal so small that it compacts as they go, and as they mount, as a
+//! guest's does under load: a mount that compacted as it reaped its graveyard tombstoned the layer
+//! files of a compaction, losing a store, on real guests alone.
+//!
 //! Some sequences have a device too small for what they write, where anything that grows may be
 //! refused and leaves things as they were, and what shrinks mustn't be. Some write and clone
 //! thousands of fragments at once, for the transactions that makes, which the journal must hold.
@@ -23,7 +27,9 @@
 
 use super::tests::Tested;
 use super::*;
+use fxfs::filesystem::FxFilesystemBuilder;
 use fxfs::fsck::{FsckOptions, fsck_with_options};
+use fxfs::object_store::journal::{DEFAULT_RECLAIM_SIZE, JournalOptions};
 use fxfs::object_store::volume::root_volume;
 use fxfs::object_store::{NewChildStoreOptions, StoreOptions};
 use proptest::prelude::*;
@@ -47,6 +53,8 @@ const ROOMY: u64 = 32768;
 const TIGHT: u64 = 2048;
 /// How much of a file is read whole, holes and all: a file may be as large as a file may be.
 const WHOLLY_READ: u64 = 64 << 20;
+/// A journal that compacts all the time.
+const SMALL_RECLAIM: u64 = 32 << 10;
 /// A power cut is recorded at one barrier in this many.
 const CUTS_ONE_IN: u32 = 3;
 /// A power cut of a replay is recorded at one barrier in this many.
@@ -270,8 +278,16 @@ struct World {
     filesystem: fxfs::filesystem::OpenFxFilesystem,
     fs: Fxfs<Tested>,
     root: u64,
+    /// The journal's reclaim size, as each mount configures it.
+    reclaim: u64,
     model: Model,
     tally: Rc<Tally>,
+}
+
+/// A filesystem builder for a journal of `reclaim` bytes.
+fn builder(reclaim: u64) -> FxFilesystemBuilder {
+    let options = JournalOptions { reclaim_size: reclaim, ..JournalOptions::default() };
+    FxFilesystemBuilder::new().journal_options(options)
 }
 
 /// Runs fsck, and says what it found.
@@ -295,10 +311,10 @@ fn xattr_of(name: u8) -> Vec<u8> {
 }
 
 impl World {
-    async fn new(blocks: u64, crashes: &Arc<Crashes>, tally: Rc<Tally>) -> Self {
+    async fn new(blocks: u64, reclaim: u64, crashes: &Arc<Crashes>, tally: Rc<Tally>) -> Self {
         let device = FakeDevice::new(blocks, 4096).record_crashes(crashes.clone());
-        let filesystem =
-            FxFilesystem::new_empty(DeviceHolder::new(device)).await.expect("formatting");
+        let device = DeviceHolder::new(device);
+        let filesystem = builder(reclaim).format(true).open(device).await.expect("formatting");
         let volumes = root_volume((*filesystem).clone()).await.expect("the root volume");
         let volume = volumes
             .new_volume("test", NewChildStoreOptions::default())
@@ -306,23 +322,25 @@ impl World {
             .expect("the volume");
         let root = volume.root_directory_object_id();
         let fs = Fxfs::new((*filesystem).clone(), volume, false, Tested);
-        Self { filesystem, fs, root, model: Model::default(), tally }
+        Self { filesystem, fs, root, reclaim, model: Model::default(), tally }
     }
 
     /// Mounts what `device` holds, or replays it: what `model` should say.
     async fn mount(
         device: DeviceHolder,
         root: u64,
+        reclaim: u64,
         model: Model,
         tally: Rc<Tally>,
     ) -> Result<Self, String> {
-        let filesystem = FxFilesystem::open(device).await.map_err(|e| format!("opening: {e:#}"))?;
+        let filesystem = builder(reclaim).open(device).await;
+        let filesystem = filesystem.map_err(|e| format!("opening: {e:#}"))?;
         let volumes = root_volume((*filesystem).clone()).await.map_err(|e| format!("{e:#}"))?;
         let volume = volumes.volume("test", StoreOptions::default()).await;
         let volume = volume.map_err(|e| format!("the volume: {e:#}"))?;
         drop(volumes);
         let fs = Fxfs::new((*filesystem).clone(), volume, false, Tested);
-        Ok(Self { filesystem, fs, root, model, tally })
+        Ok(Self { filesystem, fs, root, reclaim, model, tally })
     }
 
     /// Unmounts, as a guest's `umount` does, leaving the device.
@@ -519,10 +537,11 @@ impl World {
 
     /// Unmounts and mounts again, as a guest's `umount` and `mount` do.
     async fn remount(self) -> Result<Self, String> {
-        let (root, model, tally) = (self.root, self.model.clone(), self.tally.clone());
+        let (root, reclaim) = (self.root, self.reclaim);
+        let (model, tally) = (self.model.clone(), self.tally.clone());
         let device = self.unmount().await?;
         device.reopen(false);
-        Self::mount(device, root, model, tally).await
+        Self::mount(device, root, reclaim, model, tally).await
     }
 
     /// Checks what a crash leaves now, this filesystem going on: a copy of the device, as of a
@@ -530,8 +549,8 @@ impl World {
     async fn crash(&self) -> Result<(), String> {
         self.fs.sync().await.map_err(|e| format!("sync: {e:#}"))?;
         let device = self.filesystem.device().snapshot().map_err(|e| format!("snapshot: {e:#}"))?;
-        let replayed =
-            Self::mount(device, self.root, self.model.clone(), self.tally.clone()).await?;
+        let (model, tally) = (self.model.clone(), self.tally.clone());
+        let replayed = Self::mount(device, self.root, self.reclaim, model, tally).await?;
         replayed.check_all().await?;
         replayed.unmount().await.map(drop)
     }
@@ -748,6 +767,7 @@ impl Past {
         ops: &[Op],
         device: FakeDevice,
         root: u64,
+        reclaim: u64,
         tally: Rc<Tally>,
     ) -> Result<(), String> {
         tally.cuts.set(tally.cuts.get() + 1);
@@ -755,7 +775,7 @@ impl Past {
         let second_cuts = Crashes::new(seed, SECOND_CUTS_ONE_IN);
         second_cuts.mark(0);
         let device = DeviceHolder::new(device.record_crashes(second_cuts.clone()));
-        let mut world = World::mount(device, root, Model::default(), tally.clone()).await?;
+        let mut world = World::mount(device, root, reclaim, Model::default(), tally.clone()).await?;
         second_cuts.stop();
         checked(&world.filesystem).await?;
         world.holds_no_orphans().await?;
@@ -782,7 +802,7 @@ impl Past {
         for (_, device) in second_cuts.take() {
             tally.second_cuts.set(tally.second_cuts.get() + 1);
             let device = DeviceHolder::new(device);
-            let again = World::mount(device, root, held.clone(), tally.clone()).await;
+            let again = World::mount(device, root, reclaim, held.clone(), tally.clone()).await;
             let again = again.map_err(|e| format!("cut during its replay: {e}"))?;
             again.check_all().await.map_err(|e| format!("cut during its replay: {e}"))?;
             again.unmount().await?;
@@ -804,8 +824,19 @@ async fn run(
     ops: Vec<Op>,
     tally: Rc<Tally>,
 ) -> Result<(), String> {
+    run_with_journal(seed, blocks, DEFAULT_RECLAIM_SIZE, cuts_one_in, ops, tally).await
+}
+
+async fn run_with_journal(
+    seed: u64,
+    blocks: u64,
+    reclaim: u64,
+    cuts_one_in: u32,
+    ops: Vec<Op>,
+    tally: Rc<Tally>,
+) -> Result<(), String> {
     let crashes = Crashes::new(seed, cuts_one_in);
-    let mut world = World::new(blocks, &crashes, tally.clone()).await;
+    let mut world = World::new(blocks, reclaim, &crashes, tally.clone()).await;
     let root = world.root;
     let mut past = Past { states: vec![Model::default()], durable: vec![0] };
     world.fs.sync().await.map_err(|e| format!("sync: {e:#}"))?;
@@ -822,7 +853,7 @@ async fn run(
     world.check_all().await.map_err(|e| format!("remounted at the end: {e}"))?;
     world.unmount().await?;
     for (mark, device) in crashes.take() {
-        let cut = past.check_cut(mark as usize, &ops, device, root, tally.clone()).await;
+        let cut = past.check_cut(mark as usize, &ops, device, root, reclaim, tally.clone()).await;
         cut.map_err(|e| format!("a power cut during op {mark}: {e}"))?;
     }
     Ok(())
@@ -854,13 +885,15 @@ fn whatever_a_vfs_asks_reads_back_as_a_model_says() {
     let cases = std::env::var("FXDAX_MODEL_CASES").map_or(96, |cases| cases.parse().unwrap());
     let config = Config { cases, failure_persistence: None, ..Config::default() };
     let room = prop_oneof![Just(ROOMY), Just(TIGHT)];
-    let sequences = (any::<u64>(), room, proptest::collection::vec(op(), 1..48));
+    let journal = prop_oneof![Just(DEFAULT_RECLAIM_SIZE), Just(SMALL_RECLAIM)];
+    let sequences = (any::<u64>(), room, journal, proptest::collection::vec(op(), 1..48));
     let tally = Rc::new(Tally::default());
     let watched = watch_sequences();
     TestRunner::new(config)
-        .run(&sequences, |(seed, blocks, ops)| {
-            watched.send(format!("{seed}, {blocks}, {ops:?}")).expect("the watchdog stopped");
-            let done = run(seed, blocks, CUTS_ONE_IN, ops, tally.clone());
+        .run(&sequences, |(seed, blocks, reclaim, ops)| {
+            let sequence = format!("{seed}, {blocks}, {reclaim}, {ops:?}");
+            watched.send(sequence).expect("the watchdog stopped");
+            let done = run_with_journal(seed, blocks, reclaim, CUTS_ONE_IN, ops, tally.clone());
             let done = fasync::LocalExecutorBuilder::new().build().run_singlethreaded(done);
             prop_assert_eq!(done, Ok(()));
             Ok(())

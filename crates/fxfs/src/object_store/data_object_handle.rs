@@ -117,8 +117,10 @@ enum Kept<'a> {
 /// fxdax: the extents, of either file, a commit of a clone takes: a transaction's mutations are
 /// each's reference, extent and hole, and the extent it replaces.
 const MAX_CLONED_PER_COMMIT: usize = TRANSACTION_MUTATION_THRESHOLD / 8;
-/// fxdax: the bytes a commit of a clone takes: the extent records it writes hold each block's
-/// checksum, so that a dozen extents of 1 MiB ran past TRANSACTION_MAX_JOURNAL_USAGE.
+/// fxdax: the bytes of extents a commit of a clone takes: the extent records it writes hold each
+/// block's checksum, so that a dozen extents of 1 MiB ran past TRANSACTION_MAX_JOURNAL_USAGE. Holes
+/// hold none, and cost no more than a record however long they are: counted, a clone across one of
+/// exabytes (generic/303) committed for ever, its commits outrunning the journal.
 const MAX_CLONED_BYTES_PER_COMMIT: u64 = 4 << 20;
 
 /// DataObjectHandle is a typed handle for file-like objects that store data in the default data
@@ -2408,12 +2410,12 @@ impl<S: HandleOwner> DataObjectHandle<S> {
         let dst_of = |offset: u64| dst_offset + (offset - range.start);
         let mut start = range.start;
         loop {
-            let end = self.end_of_extents(start..range.end, MAX_CLONED_PER_COMMIT).await?;
-            let dst_end =
-                dst.end_of_extents(dst_of(start)..dst_of(range.end), MAX_CLONED_PER_COMMIT).await?;
-            let end = end
-                .min(start + (dst_end - dst_of(start)))
-                .min(start.saturating_add(MAX_CLONED_BYTES_PER_COMMIT));
+            let end = self
+                .end_of_extents(start..range.end, MAX_CLONED_PER_COMMIT, MAX_CLONED_BYTES_PER_COMMIT)
+                .await?;
+            let dst_range = dst_of(start)..dst_of(range.end);
+            let dst_end = dst.end_of_extents(dst_range, MAX_CLONED_PER_COMMIT, u64::MAX).await?;
+            let end = end.min(start + (dst_end - dst_of(start)));
             self.txn_clone_range(transaction, start..end, dst, dst_of(start)).await?;
             if end == range.end {
                 return Ok(());
@@ -2427,9 +2429,15 @@ impl<S: HandleOwner> DataObjectHandle<S> {
         }
     }
 
-    /// fxdax: where the `most`th of this file's extents in `range` ends, or `range`, if it holds
-    /// fewer.
-    async fn end_of_extents(&self, range: Range<u64>, most: usize) -> Result<u64, Error> {
+    /// fxdax: where this file's extents in `range` reach `most` of them, or `most_bytes` of them,
+    /// whichever is first, or `range`'s end, if they don't: holes count for nothing. `most_bytes`
+    /// is block aligned.
+    async fn end_of_extents(
+        &self,
+        range: Range<u64>,
+        most: usize,
+        most_bytes: u64,
+    ) -> Result<u64, Error> {
         let store = self.store();
         let layer_set = store.tree().layer_set();
         let mut merger = layer_set.merger();
@@ -2441,6 +2449,7 @@ impl<S: HandleOwner> DataObjectHandle<S> {
             )))
             .await?;
         let mut extents = 0;
+        let mut bytes = 0;
         while let Some(ItemRef {
             key:
                 ObjectKey {
@@ -2455,9 +2464,14 @@ impl<S: HandleOwner> DataObjectHandle<S> {
             && key.start < range.end
         {
             if matches!(value, ExtentValue::Some { .. }) && key.end > range.start {
+                let (start, end) = (max(key.start, range.start), min(key.end, range.end));
                 extents += 1;
+                bytes += end - start;
+                if bytes >= most_bytes {
+                    return Ok(end - (bytes - most_bytes));
+                }
                 if extents == most {
-                    return Ok(min(key.end, range.end));
+                    return Ok(end);
                 }
             }
             iter.advance().await?;
@@ -6725,6 +6739,45 @@ mod tests {
             }
             transaction.commit().await.expect("commit failed");
         }
+    }
+
+    /// fxdax: a clone across a hole takes no more commits however long the hole is: counted as
+    /// bytes to clone, one of exabytes (xfstests' generic/303) committed for ever, and the journal,
+    /// which couldn't keep up, panicked the guest with a write larger than its transfer buffer.
+    #[fuchsia::test]
+    async fn test_clone_range_crosses_holes_at_once() {
+        const FAR: u64 = 1 << 50;
+        let clones = Clones::new().await;
+        let bs = clones.fs.block_size().get();
+        let data = vec![7; bs as usize];
+        let source = clones.create("source").await;
+        let target = clones.create("target").await;
+        clones.write(&source, 0, &data).await;
+        clones.write(&source, FAR, &data).await;
+        let store_id = clones.store.store_object_id();
+        let keys = lock_keys![
+            LockKey::object(store_id, source.object_id()),
+            LockKey::object(store_id, target.object_id()),
+        ];
+        let mut transaction = clones
+            .store
+            .new_transaction(keys, Options::default())
+            .await
+            .expect("new_transaction failed");
+        let end = FAR + bs;
+        let before = clones.fs.journal().file_offset();
+        source
+            .clone_range_in_commits(&mut transaction, 0..end, &target, 0, end)
+            .await
+            .expect("clone failed");
+        target.txn_update_size(&mut transaction, end, None).await.expect("size failed");
+        transaction.commit().await.expect("commit failed");
+        let journaled = clones.fs.journal().file_offset() - before;
+        assert!(journaled < 64 << 10, "{journaled} bytes of journal to cross a hole");
+        assert_eq!(target.get_size(), end);
+        let mut buffer = target.allocate_buffer(bs as usize).await;
+        target.read_aligned(FAR, buffer.as_mut()).await.expect("read failed");
+        assert_eq!(buffer.to_vec(), data);
     }
 
     /// fxdax: a clone of a file's range, holes and all, shares its extents, copying nothing, in

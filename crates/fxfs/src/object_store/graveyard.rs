@@ -273,6 +273,16 @@ impl Graveyard {
         if store.filesystem().options().skip_initial_reap {
             return Ok(0);
         }
+        // fxdax: a compaction's new layer files are in the root store's graveyard until it commits,
+        // so that a compaction running now would have them tombstoned, and a store lost. That took
+        // a real guest and a narrow window to see: this fails however the timing falls.
+        let fs = store.filesystem();
+        debug_assert!(
+            store.store_object_id() != fs.root_store().store_object_id()
+                || fs.options().read_only
+                || fs.journal().compactions_paused(),
+            "The root store's graveyard reaped with compactions running"
+        );
         let mut count = 0;
         let layer_set = store.tree().layer_set();
         let mut merger = layer_set.merger();

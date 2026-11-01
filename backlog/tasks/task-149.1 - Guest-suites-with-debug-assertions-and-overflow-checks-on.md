@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-01 06:13'
-updated_date: '2026-11-01 06:16'
+updated_date: '2026-11-01 07:15'
 labels: []
 dependencies: []
 parent_task_id: TASK-149
@@ -21,7 +21,7 @@ Release builds hid real faults: Insufficient reservation space panics only in de
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 scripts/test-gce.sh can build the guest's Rust with debug assertions and overflow checks, by one setting
+- [x] #1 scripts/test-gce.sh can build the guest's Rust with debug assertions and overflow checks, by one setting
 - [ ] #2 The default guest suites and xfstests have run that way on GCE, each failure fixed or filed
 - [ ] #3 It runs in the nightly
 <!-- AC:END -->
@@ -43,4 +43,6 @@ Release builds hid real faults: Insufficient reservation space panics only in de
 
 <!-- SECTION:NOTES:BEGIN -->
 r382 (default suites) and r383 (xfstests) run FXDAX_GUEST_KERNEL_BUILD=rust-checks on the uncommitted batch of the model fixes.
+
+r382 (default suites) and r383 (xfstests) ran FXDAX_GUEST_KERNEL_BUILD=rust-checks, on a batch with the endless clone and the freed layer. It builds and runs. It found no new bug: the guest hit no assertion or overflow in the default suites, and all 650 DAX xfstests ran to the end. Its one guest panic was generic/303's clone, already found by the release run (r381), reported 60 s sooner as a lock wait (debug_assert_not_too_long in txn_lock, from setattr), which is a clearer symptom than the release build's journal overflow. So its ranking at 1 was too high on this evidence; keep it for the clearer failures, and run it once more when the batch is clean, as both runs had failures hiding what came after.
 <!-- SECTION:NOTES:END -->

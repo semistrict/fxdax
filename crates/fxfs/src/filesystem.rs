@@ -574,36 +574,45 @@ impl FxFilesystemBuilder {
                 .context("Journal replay failed")?;
             filesystem.root_store().set_trace(self.trace);
 
-            // fxdax: the journal continues in new extents, which a super-block records. No
-            // compaction, which writes a super-block too, runs meanwhile.
-            if !read_only && image_builder_mode.is_none() {
+            // fxdax: no compaction runs until the initial reap is done, as the flush task may run
+            // from here on. A compaction's new layer files are in the graveyard until it commits,
+            // and the reap would tombstone them, leaving a store whose layers are gone.
+            if !read_only {
                 let journal = &filesystem.journal;
                 journal.pause_compactions().await;
-                let renewed = async {
-                    if filesystem.renew_journal_tail().await? {
-                        filesystem.record_journal_tail().await?;
+                let prepared = async {
+                    if image_builder_mode.is_none() {
+                        // fxdax: the journal continues in new extents, which a super-block records.
+                        let renewed = async {
+                            if filesystem.renew_journal_tail().await? {
+                                filesystem.record_journal_tail().await?;
+                            }
+                            anyhow::Ok(())
+                        };
+                        renewed.await.context("Failed to renew the journal's tail")?;
+                        // fxdax: the extents a crash orphaned go with a flush, now: they hold room
+                        // on the device Fxfs doesn't count, so that writes would find it full
+                        // before Fxfs did, with no NoSpace to say so.
+                        if filesystem.allocator().has_dead_extents() {
+                            filesystem.maybe_start_flush_task();
+                            journal
+                                .flush_for_frees()
+                                .await
+                                .context("Failed to free what the crash left")?;
+                        }
+                    }
+                    // Queue all purged entries for tombstoning.  Don't start the reaper yet because
+                    // that can trigger a flush which can add more entries to the graveyard which
+                    // might get caught in the initial reap and cause objects to be prematurely
+                    // tombstoned.
+                    for store in objects.unlocked_stores() {
+                        filesystem.graveyard.initial_reap(&store).await?;
                     }
                     anyhow::Ok(())
                 }
                 .await;
                 journal.resume_compactions();
-                renewed.context("Failed to renew the journal's tail")?;
-                // fxdax: the extents a crash orphaned go with a flush, now: they hold room on the
-                // device Fxfs doesn't count, so that writes would find it full before Fxfs did,
-                // with no NoSpace to say so.
-                if filesystem.allocator().has_dead_extents() {
-                    filesystem.maybe_start_flush_task();
-                    journal.flush_for_frees().await.context("Failed to free what the crash left")?;
-                }
-            }
-
-            if !read_only {
-                // Queue all purged entries for tombstoning.  Don't start the reaper yet because
-                // that can trigger a flush which can add more entries to the graveyard which might
-                // get caught in the initial reap and cause objects to be prematurely tombstoned.
-                for store in objects.unlocked_stores() {
-                    filesystem.graveyard.initial_reap(&store).await?;
-                }
+                prepared?;
             }
         }
 

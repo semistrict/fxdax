@@ -2545,6 +2545,11 @@ impl Journal {
         }
     }
 
+    /// fxdax: whether compactions wait (`pause_compactions`).
+    pub(crate) fn compactions_paused(&self) -> bool {
+        self.inner.lock().compactions_paused
+    }
+
     pub fn resume_compactions(&self) {
         let mut inner = self.inner.lock();
         inner.compactions_paused = false;
