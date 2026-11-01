@@ -809,6 +809,34 @@ pub(crate) mod guest {
             .collect()
     }
 
+    /// fxdax: dax_write_ns adds up (TASK-146.2): what writes of a file's every kind of page spent
+    /// is in the parts /proc/fs/fxfs/<tag> says, the copy among them: a new step in the write would
+    /// show as dax_write_other_ns. 45% of a pgbench's writes' time had no part to be in.
+    fn test_write_times_add_up() {
+        use std::os::unix::fs::FileExt;
+        const PAGE: usize = 4096;
+        let name = path("write-times");
+        let mut file = fs::File::create(&name).unwrap();
+        let before = stats();
+        let data = vec![7u8; 3 * PAGE / 2];
+        for round in 0..64 {
+            file.write_all(&data).unwrap();
+            file.write_all_at(&data, round * PAGE as u64).unwrap();
+            if round % 16 == 0 {
+                file.sync_all().unwrap();
+            }
+        }
+        let after = stats();
+        drop(file);
+        fs::remove_file(&name).unwrap();
+        let spent = |stat: &str| after[stat] - before[stat];
+        let total = spent("dax_write_ns");
+        assert!(spent("dax_write_copy_ns") > 0, "no copying in {total} ns");
+        assert!(spent("dax_write_begin_ns") > 0, "no iomaps in {total} ns");
+        let other = spent("dax_write_other_ns");
+        assert!(other < total / 10, "{other} ns of {total} are in no part of a write");
+    }
+
     /// fxdax: /proc/fs/fxfs/<tag> says what the filesystem waited on and its device's requests
     /// took, which the guest counts as idle (TASK-91.7): an fsync's commit and its seal among them.
     fn test_stats() {
@@ -4801,6 +4829,9 @@ pub(crate) mod guest {
             }
             // Last: it fills the filesystem, then removes what it filled it with.
             tests.push(("enospc", &test_enospc));
+            if dax {
+                tests.push(("write_times_add_up", &test_write_times_add_up));
+            }
             // fxdax: of the checks before, on a small window (TASK-119.12).
             if self.small_window {
                 tests.push(("window_filled", &test_window_filled));

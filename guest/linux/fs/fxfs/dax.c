@@ -592,6 +592,14 @@ struct fxfs_dax {
 	 * the gate, in Fxfs making room, and mapping what moved.
 	 */
 	atomic64_t writes, write_ns, write_lock_ns, write_gate_ns, write_fxfs_ns, write_map_ns;
+	/*
+	 * fxdax: where else a write(2)'s time goes, so that write_ns adds up: what comes before its
+	 * first iomap, faulting in its source, dax_iomap_rw (of which its iomaps' begin and end, the
+	 * rest being the copy, a store's EPT faults on the window among it), dropping a range to try
+	 * again, and what comes after (TASK-146.2).
+	 */
+	atomic64_t write_setup_ns, write_fault_in_ns, write_rw_ns, write_begin_ns, write_end_ns;
+	atomic64_t write_retry_ns, write_tail_ns;
 	struct fxfs_hist write_hist;
 	/*
 	 * fxdax: what each fault of a mapping took, and each evacuation held its file's semaphore,
@@ -3123,6 +3131,8 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 	u64 before_at = 0;
 	s64 before_where = -ENOENT;
 	bool fault = flags & IOMAP_FAULT;
+	/* A write(2)'s, of whose time write_ns counts. */
+	bool timed = !(flags & (IOMAP_FAULT | IOMAP_ZERO));
 	ssize_t count, moved = 0;
 	long gate;
 	u64 seals, began;
@@ -3194,13 +3204,15 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 			return -EDEADLK;
 		}
 		down_write(&file->sem);
-		atomic64_inc(&dax->write_waits);
-		atomic64_add(ktime_get_ns() - began, &dax->write_wait_ns);
+		if (timed) {
+			atomic64_inc(&dax->write_waits);
+			atomic64_add(ktime_get_ns() - began, &dax->write_wait_ns);
+		}
 	}
 	for (;;) {
 		began = ktime_get_ns();
 		gate = fxfs_dax_store_begin(dax, fault);
-		if (!fault)
+		if (timed)
 			atomic64_add(ktime_get_ns() - began, &dax->write_gate_ns);
 		if (gate < 0) {
 			err = gate;
@@ -3283,7 +3295,7 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 		began = ktime_get_ns();
 		count = fxfs_dax_reserve_write(inode, pos, end, reserved, size, fault, held,
 					     extents, capacity);
-		if (!fault)
+		if (timed)
 			atomic64_add(ktime_get_ns() - began, &dax->write_fxfs_ns);
 		fxfs_dax_delay();
 		if (fault && count >= 0)
@@ -3301,7 +3313,7 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 		}
 		began = ktime_get_ns();
 		gate = fxfs_dax_store_begin(dax, fault);
-		if (!fault)
+		if (timed)
 			atomic64_add(ktime_get_ns() - began, &dax->write_gate_ns);
 		if (gate == seals) {
 			bool fail = count > 1 && fxfs_dax_inject(&fxfs_dax_fail_maps);
@@ -3309,7 +3321,7 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 			moved = 0;
 			began = ktime_get_ns();
 			err = fxfs_dax_map_extents(dax, range, extents, fail ? 1 : count);
-			if (!fault)
+			if (timed)
 				atomic64_add(ktime_get_ns() - began, &dax->write_map_ns);
 			if (!err && fail)
 				err = -EIO;
@@ -3406,6 +3418,7 @@ out:
 static int fxfs_dax_iomap_begin(struct inode *inode, loff_t pos, loff_t length,
 				unsigned int flags, struct iomap *iomap, struct iomap *srcmap)
 {
+	u64 began = ktime_get_ns();
 	int err;
 
 	/*
@@ -3424,7 +3437,10 @@ static int fxfs_dax_iomap_begin(struct inode *inode, loff_t pos, loff_t length,
 		/* fxdax: a follower's filesystem is read-only: nothing writes. */
 		if (WARN_ON_ONCE(fxfs_vfs_follows(inode->i_sb)))
 			return -EROFS;
-		return fxfs_dax_iomap_write(inode, pos, length, flags, iomap, srcmap);
+		err = fxfs_dax_iomap_write(inode, pos, length, flags, iomap, srcmap);
+		if (!(flags & (IOMAP_FAULT | IOMAP_ZERO)))
+			atomic64_add(ktime_get_ns() - began, &fxfs_dax_of(inode)->write_begin_ns);
+		return err;
 	}
 	err = fxfs_dax_iomap_read(inode, pos, length, flags, iomap, srcmap);
 	/* fxdax: between the iomap and the read of what it maps, which its range keeps mapped. */
@@ -3439,6 +3455,7 @@ static int fxfs_dax_iomap_end(struct inode *inode, loff_t pos, loff_t length, ss
 			      unsigned int flags, struct iomap *iomap)
 {
 	struct fxfs_dax *dax = fxfs_dax_of(inode);
+	u64 began = ktime_get_ns();
 
 	/*
 	 * A write past the file's end grows it as it ends, by what it wrote, not as it begins: a
@@ -3456,6 +3473,8 @@ static int fxfs_dax_iomap_end(struct inode *inode, loff_t pos, loff_t length, ss
 		fxfs_device_store_end(dax->dev);
 	if (iomap->private)
 		fxfs_dax_put_range(dax, iomap->private);
+	if ((flags & IOMAP_WRITE) && !(flags & (IOMAP_FAULT | IOMAP_ZERO)))
+		atomic64_add(ktime_get_ns() - began, &dax->write_end_ns);
 	return 0;
 }
 
@@ -3550,6 +3569,42 @@ static int fxfs_dax_set_size(struct inode *inode, loff_t size)
 	return err;
 }
 
+/* fxdax: adds to `into` the time since `*at`, and moves `*at` on. */
+static void fxfs_dax_lap(atomic64_t *into, u64 *at)
+{
+	u64 now = ktime_get_ns();
+
+	atomic64_add(now - *at, into);
+	*at = now;
+}
+
+/*
+ * fxdax: where write_ns went (TASK-146.2), each part apart, so that they add up: dax_write_begin_ns
+ * less the waits within it that have counters of their own, the copy, which is dax_iomap_rw less
+ * its iomaps', and what none of them holds, which a new step in the write would show as.
+ */
+static void fxfs_dax_show_write_times(struct seq_file *m, struct fxfs_dax *dax)
+{
+	s64 begin = atomic64_read(&dax->write_begin_ns), end = atomic64_read(&dax->write_end_ns);
+	s64 rw = atomic64_read(&dax->write_rw_ns), setup = atomic64_read(&dax->write_setup_ns);
+	s64 fault_in = atomic64_read(&dax->write_fault_in_ns);
+	s64 retry = atomic64_read(&dax->write_retry_ns), tail = atomic64_read(&dax->write_tail_ns);
+	s64 lock = atomic64_read(&dax->write_lock_ns);
+
+	seq_printf(m, "dax_write_setup_ns %lld\ndax_write_fault_in_ns %lld\n", setup, fault_in);
+	/* Read apart, as writes go on: a difference may come out below zero by a little. */
+	seq_printf(m, "dax_write_begin_ns %lld\ndax_write_begin_other_ns %lld\n", begin,
+		   max_t(s64, 0, begin - atomic64_read(&dax->write_gate_ns) -
+			 atomic64_read(&dax->write_fxfs_ns) - atomic64_read(&dax->write_map_ns) -
+			 atomic64_read(&dax->write_wait_ns)));
+	seq_printf(m, "dax_write_copy_ns %lld\ndax_write_end_ns %lld\n",
+		   max_t(s64, 0, rw - begin - end), end);
+	seq_printf(m, "dax_write_retry_ns %lld\ndax_write_tail_ns %lld\n", retry, tail);
+	seq_printf(m, "dax_write_other_ns %lld\n",
+		   max_t(s64, 0, atomic64_read(&dax->write_ns) - lock - setup - fault_in - rw -
+			 retry - tail));
+}
+
 /*
  * Writes through the window, copying with page faults disabled: in the gate, a fault on the
  * user's memory could wait for a seal that waits for the gate. The memory is faulted in first, and
@@ -3559,17 +3614,18 @@ static ssize_t fxfs_dax_write_iter(struct kiocb *iocb, struct iov_iter *from)
 {
 	struct inode *inode = file_inode(iocb->ki_filp);
 	struct fxfs_dax_file *file = fxfs_dax_file(inode);
+	struct fxfs_dax *dax = fxfs_dax_of(inode);
 	loff_t old_size, end, write_pos = 0;
-	u64 seals = 0, began;
+	u64 seals = 0, began, lap;
 	ssize_t ret, done = 0;
 	unsigned int stale = 0, drops = 0;
 	int err;
 
 	if (iocb->ki_flags & IOCB_NOWAIT)
 		return -EAGAIN;
-	began = ktime_get_ns();
+	began = lap = ktime_get_ns();
 	inode_lock(inode);
-	atomic64_add(ktime_get_ns() - began, &fxfs_dax_of(inode)->write_lock_ns);
+	fxfs_dax_lap(&dax->write_lock_ns, &lap);
 	old_size = i_size_read(inode);
 	ret = generic_write_checks(iocb, from);
 	if (ret <= 0)
@@ -3594,14 +3650,19 @@ static ssize_t fxfs_dax_write_iter(struct kiocb *iocb, struct iov_iter *from)
 		if (ret)
 			goto out;
 	}
+	fxfs_dax_lap(&dax->write_setup_ns, &lap);
 	while (iov_iter_count(from)) {
-		if (fault_in_iov_iter_readable(from, iov_iter_count(from)) == iov_iter_count(from)) {
+		size_t left = fault_in_iov_iter_readable(from, iov_iter_count(from));
+
+		fxfs_dax_lap(&dax->write_fault_in_ns, &lap);
+		if (left == iov_iter_count(from)) {
 			ret = -EFAULT;
 			break;
 		}
 		pagefault_disable();
 		ret = dax_iomap_rw(iocb, from, &fxfs_dax_iomap_ops);
 		pagefault_enable();
+		fxfs_dax_lap(&dax->write_rw_ns, &lap);
 		if (ret > 0) {
 			done += ret;
 			drops = 0;
@@ -3627,6 +3688,7 @@ static ssize_t fxfs_dax_write_iter(struct kiocb *iocb, struct iov_iter *from)
 			 * where they were (TASK-79.106), once: dropped, the chunk is mapped again.
 			 */
 			ret = fxfs_dax_drop_slice(inode, iocb->ki_pos, true);
+			fxfs_dax_lap(&dax->write_retry_ns, &lap);
 			if (ret)
 				break;
 		} else if (ret != -EFAULT) {
@@ -3662,14 +3724,15 @@ static ssize_t fxfs_dax_write_iter(struct kiocb *iocb, struct iov_iter *from)
 		file->append_next = iocb->ki_pos;
 		file->append_seals = seals;
 	}
+	fxfs_dax_lap(&dax->write_tail_ns, &lap);
 out:
 	WRITE_ONCE(file->no_slices, false);
 	WRITE_ONCE(file->growing, 0);
 	inode_unlock(inode);
 	began = ktime_get_ns() - began;
-	atomic64_inc(&fxfs_dax_of(inode)->writes);
-	atomic64_add(began, &fxfs_dax_of(inode)->write_ns);
-	fxfs_hist_add(&fxfs_dax_of(inode)->write_hist, began);
+	atomic64_inc(&dax->writes);
+	atomic64_add(began, &dax->write_ns);
+	fxfs_hist_add(&dax->write_hist, began);
 	if (ret > 0)
 		ret = generic_write_sync(iocb, ret);
 	return ret;
@@ -4654,6 +4717,7 @@ void fxfs_dax_show_stats(struct fxfs_dax *dax, struct seq_file *m)
 		   atomic64_read(&dax->write_lock_ns), atomic64_read(&dax->write_gate_ns));
 	seq_printf(m, "dax_write_fxfs_ns %lld\ndax_write_map_ns %lld\n",
 		   atomic64_read(&dax->write_fxfs_ns), atomic64_read(&dax->write_map_ns));
+	fxfs_dax_show_write_times(m, dax);
 	fxfs_hist_show(m, "dax_write", &dax->write_hist);
 	seq_printf(m, "dax_evacuations %lld\ndax_evacuate_hold_ns %lld\ndax_evacuate_map_ns %lld\n",
 		   atomic64_read(&dax->evacuations), atomic64_read(&dax->evacuate_hold_ns),
