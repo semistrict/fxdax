@@ -6,7 +6,7 @@ title: >-
 status: In Progress
 assignee: []
 created_date: '2026-11-01 06:38'
-updated_date: '2026-11-01 21:21'
+updated_date: '2026-11-01 22:33'
 labels: []
 dependencies: []
 parent_task_id: TASK-149
@@ -28,6 +28,8 @@ Most fixes (about 72% of 231 recent ones) are in DAX and the guest kernel, and d
 - [x] #4 Stores carry a generation, so a stale or zero read is caught, as ztest's txg stamps catch temporal incursions
 - [x] #5 Reintroducing a past DAX bug (a moved-unmapped mutant) fails
 - [ ] #6 It runs in CI on every push, as zloop does
+- [ ] #7 Every scenario and seed checks that a load faults again on a page its mapping already held only after dax.c moved the page or something other than a fault unmapped it
+- [ ] #8 With patch 0010 taken out, interleave fails that check, with no scenario written for it
 <!-- AC:END -->
 
 ## Definition of Done
@@ -65,4 +67,6 @@ r429, every fix merged: fxfs-guest-script-full and -full-dax passed 2 rounds eac
 Correction to the note above: that the address's alignment is the cause is a guess, not shown: test_mapped_after_write maps with no address and gets PMDs. Another cause would be that a relocated page rules a PMD out on a real kernel, where the sim allows it. r451 shows which.
 
 pmd_over_stale_index on real kernels, r425, r427, r429, r451: no PMD ever mapped: a guess of alignment was wrong, the chunk's moved page leaving a fault's iomap under 2 MiB. The assertion that a PMD was mapped is gone, the check's bytes stay; it no longer shows candidate 3 on a real kernel, which sim scenarios pmd_over_stale_index and read_pressure do (patch 0011). That a PMD over a stale index happens on a real kernel at all rests on the sim, the other session's read_pressure and the sandbox's hang, not on this check.
+
+Fault budget, from TASK-152. The read-fault livelock was invisible here: each fault succeeded, so no WARN, no wrong byte, no fault going round 256 times, and the sim has no cost model. Only read_mappings_stay reads sim_mm_faults, in one scenario. Count faults per mapping and page in kernel/mm.c, reset by a move or by unmap_mapping_pages from anything but a fault, and fail the run past one.
 <!-- SECTION:NOTES:END -->
