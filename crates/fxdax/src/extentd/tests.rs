@@ -2945,6 +2945,49 @@ fn tenants_take_no_branch_by_naming_it() {
     assert_eq!(read(&store, extent, 0, BLOCK), Ok(pattern(4, BLOCK)));
 }
 
+/// TASK-150.5: a connection has one store, however many `OPEN`s its VM process has in flight: the
+/// second, as the first waits for its store's last holder to let it go, is refused, holding
+/// nothing, and both stores open for others once the connection goes.
+#[test]
+fn connections_open_one_store_at_a_time() {
+    use super::stores::{open_paths, store_key};
+    use super::wire::*;
+    use std::os::unix::ffi::OsStrExt as _;
+    host();
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("extentd.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || serve(listener));
+    let (first, second) = (dir.path().join("first"), dir.path().join("second"));
+    let key = store_key(&first);
+    open_paths().hold(&key, std::sync::Weak::new(), None).unwrap();
+
+    let stream = UnixStream::connect(&socket).unwrap();
+    let sender = Sender::new(stream.try_clone().unwrap());
+    let mut receiver = Receiver::new(stream.try_clone().unwrap());
+    let open = |id| Header::new(OPEN, id).with_args(&[1 << 24]).with_flags(OPEN_CREATE);
+    sender.send(open(1), first.as_os_str().as_bytes(), &[]).unwrap();
+    while !open_paths().is_waited_for(&key) {
+        std::thread::yield_now();
+    }
+    let second_opened = call(&sender, &mut receiver, open(2), second.as_os_str().as_bytes());
+    open_paths().release(&key);
+    let first_opened = receiver.receive(|| 0).unwrap().unwrap();
+    let statuses =
+        (first_opened.header.id, first_opened.header.status, second_opened.header.status);
+    stream.shutdown(std::net::Shutdown::Both).unwrap();
+    drop((sender, receiver, stream));
+
+    let (opening, reopened_first, reopened_second) =
+        (socket.clone(), first.clone(), second.clone());
+    let opened = within(std::time::Duration::from_secs(30), move || {
+        reopened(&opening, &reopened_first);
+        reopened(&opening, &reopened_second);
+    });
+    assert_eq!(opened, Ok(()), "a store stayed held once its connection went");
+    assert_eq!(statuses, (1, 0, -Errno::EBUSY.raw()));
+}
+
 /// TASK-79.16: a tenant's VM processes, the default tenant's too, have so many connections at
 /// most: one past them is closed as it comes; once one goes, another is served. The first of them
 /// is served here, as tests' connections are, which says when it is done ([`serve_connection`]).
