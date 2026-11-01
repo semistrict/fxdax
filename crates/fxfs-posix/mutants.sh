@@ -4,17 +4,18 @@
 # found in the LICENSE file.
 #
 # Puts each of mutants/*.patch into the tree, a bug of the kind the model test exists for, runs the
-# model tests against it, and takes it out: which test finds it, how soon, or that none does.
+# crate's tests against it, and takes it out: which test finds it, how soon, or that none does.
 #
 #   mutants.sh [-c CASES] [NAME...]
 #
 # CASES is how many sequences the model test tries of each mutant: what it finds, it finds without
-# shrinking. The tree has the mutant in it while it runs.
+# shrinking. A mutant only that finds, and by chance, wants a test that always does: run this at the
+# suite's own 96 to see. The tree has the mutant in it while it runs.
 
 set -u -o pipefail
 cd "$(dirname "$0")/../.."
 
-cases=500
+cases=96
 while getopts c: opt; do
     case $opt in
         c) cases=$OPTARG ;;
@@ -38,7 +39,7 @@ for name in "${names[@]}"; do
     log=$(mktemp)
     began=$SECONDS
     FXDAX_MODEL_CASES=$cases PROPTEST_MAX_SHRINK_ITERS=0 \
-        cargo nextest run -p fxfs-posix model_tests > "$log" 2>&1
+        cargo nextest run -p fxfs-posix > "$log" 2>&1
     status=$?
     patch -s -R -p1 < "$patch"
     case $status in

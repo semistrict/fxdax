@@ -160,6 +160,29 @@ async fn a_failed_batch_keeps_what_the_kernel_evicts() {
     fs.stop_delayed().await.unwrap();
 }
 
+/// An object freed in the batch that unlinks it takes what a truncate short of room left in the
+/// graveyard with it (TASK-82): fsck found the entry of an object gone. Too narrow for sequences to
+/// reach, 6000 of them missing it with the bug back, so this makes the state.
+#[fuchsia::test]
+async fn an_object_freed_in_a_batch_takes_a_trim_left_in_the_graveyard() {
+    let (fs, root) = volume().await;
+    let ino = fs.new_file(root, b"a").await;
+    let entry = ObjectKey::graveyard_entry(fs.volume.graveyard_directory_object_id(), ino);
+    let mut transaction = fs.transaction(&[ino]).await.unwrap();
+    transaction.add(
+        fs.volume.store_object_id(),
+        Mutation::replace_or_insert_object(entry, ObjectValue::Trim),
+    );
+    transaction.commit().await.unwrap();
+    assert!(fs.in_graveyard(ino).await.unwrap());
+
+    fs.unlink_later(root, b"a", ino).await.unwrap();
+    fs.evict(ino, true);
+    fs.sync().await.unwrap();
+    assert!(!fs.in_graveyard(ino).await.unwrap(), "the object went, and its entry stayed");
+    fs.stop_delayed().await.unwrap();
+}
+
 fn set_size(size: u64, valid: u32) -> SetAttr {
     SetAttr { valid: SET_SIZE | valid, size, ..SetAttr::default() }
 }

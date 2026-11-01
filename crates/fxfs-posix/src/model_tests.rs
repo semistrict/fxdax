@@ -1316,8 +1316,13 @@ impl World {
     /// `step`, leaving what's left of the filesystem if it fails, which a remount may not.
     async fn attempt(mut self, op: &Op) -> (Option<Self>, Result<(), String>) {
         if !matches!(op, Op::Remount) {
-            let names = self.model.names.clone();
-            let done = self.act(op).await.and_then(|()| self.keeps_the_order_of(op, &names));
+            let (names, dirs) = (self.model.names.clone(), self.model.dirs.len());
+            let done = self.act(op).await;
+            let done = done.and_then(|()| self.keeps_the_order_of(op, &names));
+            let done = match done {
+                Ok(()) => self.moved_whole(op, &names, dirs).await,
+                failed => failed,
+            };
             self.settle();
             return (Some(self), done);
         }
@@ -1345,6 +1350,24 @@ impl World {
             true => Err(format!("{op:?} went ahead of the unlinks queued")),
             false => Ok(()),
         }
+    }
+
+    /// Checks the directories what `op` did changed, which found `names` in `dirs` directories, if
+    /// it moved names or made or removed a directory: their counts of subdirectories change in the
+    /// same transaction, which nothing else shows until a cut, or the end, if then.
+    async fn moved_whole(
+        &self,
+        op: &Op,
+        names: &BTreeMap<(u64, usize), Entry>,
+        dirs: usize,
+    ) -> Result<(), String> {
+        let moved = matches!(op, Op::Rename(..) | Op::Exchange(..)) && *names != self.model.names;
+        if moved || dirs != self.model.dirs.len() {
+            for dir in &self.model.dirs {
+                self.holds_names(&self.model, *dir).await?;
+            }
+        }
+        Ok(())
     }
 
     /// Removes `name` now, a directory if it's empty.
@@ -2122,6 +2145,8 @@ fn names_and_directories_move_as_one() {
         Op::Exchange(0, 2),
         Op::Rename(0, 3),
         Op::Mkdir(in_a(4)),
+        Op::Rename(in_a(4), 5),
+        Op::Rename(5, in_a(4)),
         Op::Exchange(3, 1),
         Op::SetDirXattr { dir: 1, name: 0, len: 4096, byte: 1 },
         Op::Compact,
@@ -2129,6 +2154,31 @@ fn names_and_directories_move_as_one() {
         Op::Symlink(5),
         Op::Link(1, in_a(5)),
         Op::Unlink(5),
+    ];
+    Setting::awkward(0, ROOMY).cutting_everywhere().holds(ops);
+}
+
+/// Names change, and syncs complete, after the unlinks queued before them, whatever comes between:
+/// the journal keeps the order the syscalls had.
+#[test]
+fn what_comes_after_an_unlink_queued_stays_after_it() {
+    let write = Op::Write { file: 0, at: 0, len: 1, byte: 1 };
+    let ops = vec![
+        Op::Create(0),
+        Op::Create(1),
+        Op::Create(2),
+        Op::Create(3),
+        Op::UnlinkLater(0),
+        write.clone(),
+        Op::Rename(1, 4),
+        Op::UnlinkLater(2),
+        write.clone(),
+        Op::Link(0, 5),
+        Op::UnlinkLater(3),
+        write,
+        Op::Fsync,
+        Op::UnlinkLater(4),
+        Op::Sync,
     ];
     Setting::awkward(0, ROOMY).cutting_everywhere().holds(ops);
 }
