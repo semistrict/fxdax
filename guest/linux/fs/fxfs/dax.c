@@ -3305,6 +3305,14 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 			goto out;
 		}
 		moved = count;
+		/*
+		 * fxdax: blocks moved are freed from under what maps where they were before the range
+		 * maps where they went, if a seal keeps it from the gate: a load through a PTE of the
+		 * page reads zeros once the old extent is freed, until the move ends. The PTEs go as
+		 * the blocks do, so that a load faults, and waits (found by guest/sim, TASK-149.14).
+		 */
+		if (moved)
+			unmap_mapping_pages(inode->i_mapping, (start >> PAGE_SHIFT) + first, pages, false);
 		/* fxdax: fault injection, a seal between the move and the mapping of the new block. */
 		if (fault && fxfs_dax_seal_moved()) {
 			err = fxfs_nofs(fxfs_fsync(fxfs_vfs_fs(inode->i_sb)));

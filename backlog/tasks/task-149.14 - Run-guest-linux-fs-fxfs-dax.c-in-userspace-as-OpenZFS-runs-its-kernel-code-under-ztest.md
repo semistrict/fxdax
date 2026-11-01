@@ -6,7 +6,7 @@ title: >-
 status: In Progress
 assignee: []
 created_date: '2026-11-01 06:38'
-updated_date: '2026-11-01 19:08'
+updated_date: '2026-11-01 19:38'
 labels: []
 dependencies: []
 parent_task_id: TASK-149
@@ -57,4 +57,6 @@ New candidates, none confirmed on a real kernel. 4: writable MAP outside the gat
 17,000 seeds pass with all fixes (a further 3,000 of the same in zloop). Unexplained: TASK-123, TASK-125 and TASK-79.12 all show as fs/dax.c:416's WARN, a page referenced as a PMD's folio splits, at seeds near 2,000, which no base seed shows. Second mappings, reclaim under failure, and followers remain thin.
 
 Correction to the above: that TASK-101 was first found by the dax_check_places false alarm is a guess. The first round logged only 'diagnostic WARN'; all that's known is that it went unseen once that fix was in, and shows now as a store the host refused. Also not rerun on the final workload: -s, and coverage. dax_check_places is off in runs that fail a MAP, as an evacuation can fall between the failure and the write's drop of its range.
+
+Candidate 2 confirmed on a real kernel: r425 load_during_move: a load through a PTE during a fault's move read 0, the file holding 81. Fixed in dax.c from moved-before-mapped.patch, unmapping only when blocks moved, the patch doing so on every iomap, a cost on the write path. r425's pmd_over_stale_index proves nothing: 'no fault mapped a PMD's 2 MiB', its setup not reaching a PMD. Candidate 3 stays unconfirmed.
 <!-- SECTION:NOTES:END -->
