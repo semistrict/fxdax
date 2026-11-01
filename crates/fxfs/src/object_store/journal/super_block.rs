@@ -37,7 +37,7 @@ use crate::log::*;
 use crate::lsm_tree::types::LayerIterator;
 use crate::lsm_tree::{LSMTree, LayerSet, Query};
 use crate::metrics;
-use crate::object_handle::ObjectHandle as _;
+use crate::object_handle::{INVALID_OBJECT_ID, ObjectHandle as _};
 use crate::object_store::allocator::Reservation;
 use crate::object_store::data_object_handle::OverwriteOptions;
 use crate::object_store::journal::bootstrap_handle::BootstrapObjectHandle;
@@ -577,6 +577,20 @@ impl SuperBlockHeader {
             );
             ensure!(
                 root_parent_objects.insert(super_block_header.journal_object_id),
+                FxfsError::Inconsistent
+            );
+
+            // fxdax: none is the invalid ID: a graveyard's, what adds to it asserts as much.
+            ensure!(
+                [
+                    super_block_header.root_parent_store_object_id,
+                    super_block_header.root_parent_graveyard_directory_object_id,
+                    super_block_header.root_store_object_id,
+                    super_block_header.allocator_object_id,
+                    super_block_header.journal_object_id,
+                ]
+                .iter()
+                .all(|id| *id != INVALID_OBJECT_ID),
                 FxfsError::Inconsistent
             );
 
@@ -1694,6 +1708,16 @@ mod tests {
         write_sb(SuperBlockInstance::A, 3, 4, 5, 6, 4).await;
         write_sb(SuperBlockInstance::B, 3, 4, 5, 6, 4).await;
         assert!(manager.load((*device).clone(), BLOCK_SIZE).await.is_err());
+
+        // Fxdax: an object ID that is none, of any, as a graveyard's panicked a compaction.
+        for ids in
+            [[0, 4, 5, 6, 7], [3, 0, 5, 6, 7], [3, 4, 0, 6, 7], [3, 4, 5, 0, 7], [3, 4, 5, 6, 0]]
+        {
+            for instance in [SuperBlockInstance::A, SuperBlockInstance::B] {
+                write_sb(instance, ids[0], ids[1], ids[2], ids[3], ids[4]).await;
+            }
+            assert!(manager.load((*device).clone(), BLOCK_SIZE).await.is_err(), "{ids:?}");
+        }
 
         // Case 5: Valid configuration
         write_sb(SuperBlockInstance::A, 3, 4, 5, 6, 7).await;

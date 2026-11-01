@@ -1988,6 +1988,12 @@ impl ObjectStore {
                 .await?;
 
         let info = load_store_info(parent_store, store_object_id).await?;
+        // fxdax: what adds to a graveyard asserts there is one, as there is of any store that was
+        // made: this is what an image says.
+        ensure!(
+            info.graveyard_directory_object_id != INVALID_OBJECT_ID,
+            anyhow!(FxfsError::Inconsistent).context("A store with no graveyard")
+        );
         let is_encrypted = info.mutations_key.is_some();
 
         let mut total_layer_size = 0;
@@ -3800,6 +3806,34 @@ mod tests {
 
     /// fxdax: an object with nothing allocated is tombstoned in the caller's transaction; one with
     /// storage allocated isn't.
+    /// fxdax: a store's information may say it has no graveyard, which what adds to one asserts it
+    /// has, so it doesn't open.
+    #[fuchsia::test]
+    async fn test_store_with_no_graveyard() {
+        let fs = test_filesystem().await;
+        let store = fs.root_store();
+        // Declared first, as the transaction writes it.
+        let handle;
+        let mut transaction = store
+            .new_transaction(lock_keys![], Options::default())
+            .await
+            .expect("new_transaction failed");
+        handle =
+            ObjectStore::create_object(&store, &mut transaction, HandleOptions::default(), None)
+                .await
+                .expect("create_object failed");
+        let mut serialized = Vec::new();
+        StoreInfo::default().serialize_with_version(&mut serialized).expect("serializing");
+        let mut buf = handle.allocate_buffer(serialized.len()).await;
+        buf.as_mut().copy_from_slice(&serialized);
+        handle.txn_write(&mut transaction, 0u64, buf.as_ref()).await.expect("txn_write failed");
+        transaction.commit().await.expect("commit failed");
+        let object_id = handle.object_id();
+        let error = ObjectStore::open(&store, object_id, None).await.map(drop).expect_err("opened");
+        assert!(FxfsError::Inconsistent.matches(&error), "{error:?}");
+        fs.close().await.expect("close failed");
+    }
+
     /// fxdax: what a graveyard holds is what an image says: an object that isn't there, or isn't
     /// in it, fails its tombstone, where a mount reaps it, and panics nothing.
     #[fuchsia::test]
