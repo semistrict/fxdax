@@ -9,7 +9,9 @@
 // store has none of (backlog doc-4). `dirty_reservation` reserves room for the data a page cache
 // holds dirty as it dirties it, as Fuchsia's pager-backed files do in its platform crate, for the
 // guest kernel's page cache (TASK-80). A store may have layers of a base, a volume another
-// filesystem wrote, below its own (StoreInfoV61, `ObjectStore::manifest`, backlog doc-10).
+// filesystem wrote, below its own (StoreInfoV61, `ObjectStore::manifest`, backlog doc-10). What stops
+// a transaction is what it takes of the journal (`Transaction::room`), not the number of mutations
+// upstream's TRANSACTION_MUTATION_THRESHOLD stood for it with.
 
 pub mod allocator;
 pub mod base_layer;
@@ -103,9 +105,6 @@ pub use transaction::Mutation;
 // For encrypted stores, the lower 32 bits of the object ID are encrypted to make side-channel
 // attacks more difficult. This mask can be used to extract the hi part of the object ID.
 const OBJECT_ID_HI_MASK: u64 = 0xffffffff00000000;
-
-// At time of writing, this threshold limits transactions that delete extents to about 10,000 bytes.
-const TRANSACTION_MUTATION_THRESHOLD: usize = 200;
 
 // The number of keys we want to pre-cache for flushes.  We cache up to 2 keys.  One is for the
 // current flush, and one is pre-cached for the next flush so that we don't need to call the crypt

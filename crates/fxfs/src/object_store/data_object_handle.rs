@@ -36,8 +36,8 @@ use crate::object_store::transaction::{
     Operation, Options, ReadGuard, Transaction, lock_keys,
 };
 use crate::object_store::{
-    AttributeId, Extent, HandleOptions, HandleOwner, RootDigest, StoreObjectHandle,
-    TRANSACTION_MUTATION_THRESHOLD, TrimMode, TrimResult,
+    AttributeId, Extent, HandleOptions, HandleOwner, RootDigest, StoreObjectHandle, TrimMode,
+    TrimResult,
 };
 use crate::range::RangeExt;
 use anyhow::{Context, Error, anyhow, bail, ensure};
@@ -114,15 +114,6 @@ enum Kept<'a> {
     /// These bytes, the blocks' contents as their caller holds them.
     Held(&'a [u8]),
 }
-
-/// fxdax: the extents, of either file, a commit of a clone takes: a transaction's mutations are
-/// each's reference, extent and hole, and the extent it replaces.
-const MAX_CLONED_PER_COMMIT: usize = TRANSACTION_MUTATION_THRESHOLD / 8;
-/// fxdax: the bytes of extents a commit of a clone takes: the extent records it writes hold each
-/// block's checksum, so that a dozen extents of 1 MiB ran past TRANSACTION_MAX_JOURNAL_USAGE. Holes
-/// hold none, and cost no more than a record however long they are: counted, a clone across one of
-/// exabytes (generic/303) committed for ever, its commits outrunning the journal.
-const MAX_CLONED_BYTES_PER_COMMIT: u64 = 4 << 20;
 
 /// DataObjectHandle is a typed handle for file-like objects that store data in the default data
 /// attribute. In addition to traditional files, this means things like the journal, superblocks,
@@ -2395,9 +2386,12 @@ impl<S: HandleOwner> DataObjectHandle<S> {
 
     /// fxdax: `txn_clone_range` of a range of however many extents, in either file, in as many
     /// commits as hold them, from its start, `dst` growing towards `size` with them: one that fails
-    /// has cloned what it got to. A clone of thousands of fragments in one transaction was larger
-    /// than a transaction may be. `transaction` holds the caller's locks, and is left for it to
-    /// commit.
+    /// has cloned what it got to. `transaction` holds the caller's locks, and is left for it to
+    /// commit. Each extent costs its record, which holds each of its blocks' checksums, a reference
+    /// and a hole's record, and each of `dst`'s a record freeing it; holes nothing, however long:
+    /// counted by their bytes, a clone across one of exabytes (generic/303) committed for ever, its
+    /// commits outrunning the journal; and a dozen extents of 1 MiB, counted by how many they were,
+    /// ran past what a transaction may be.
     pub async fn clone_range_in_commits<'a>(
         &'a self,
         transaction: &mut Transaction<'a>,
@@ -2406,19 +2400,34 @@ impl<S: HandleOwner> DataObjectHandle<S> {
         dst_offset: u64,
         size: u64,
     ) -> Result<(), Error> {
+        let store = self.store();
+        let (store_id, allocator_id) = (store.store_object_id(), store.allocator().object_id());
         let dst_of = |offset: u64| dst_offset + (offset - range.start);
+        let shared = |part: &Range<u64>, blocks: ExtentRange, value: &ExtentValue| {
+            let logical = dst_of(part.start)..dst_of(part.end);
+            let extent = ObjectKey::extent(dst.object_id(), dst.attribute_id(), logical);
+            let hole = ObjectValue::Extent(ExtentValue::deleted_extent());
+            let hole = Mutation::merge_object(extent.clone(), hole);
+            let extent = Mutation::merge_object(extent, ObjectValue::Extent(value.clone()));
+            let reference = Mutation::Allocator(AllocatorMutation::Reference {
+                device_range: blocks,
+                owner_object_id: store_id,
+                delta: 1,
+            });
+            mutation_record_bytes(store_id, &extent)
+                + mutation_record_bytes(store_id, &hole)
+                + mutation_record_bytes(allocator_id, &reference)
+        };
+        let freed = |_: &Range<u64>, blocks, _: &ExtentValue| dst.cost_of_freeing(blocks);
         let mut start = range.start;
         loop {
-            let end = self
-                .end_of_extents(
-                    start..range.end,
-                    MAX_CLONED_PER_COMMIT,
-                    MAX_CLONED_BYTES_PER_COMMIT,
-                )
-                .await?;
-            let dst_range = dst_of(start)..dst_of(range.end);
-            let dst_end = dst.end_of_extents(dst_range, MAX_CLONED_PER_COMMIT, u64::MAX).await?;
-            let end = end.min(start + (dst_end - dst_of(start)));
+            // Half of the room for this file's extents, and what they leave for the `dst`'s they
+            // replace, which either file's may be most of.
+            let room = transaction.room();
+            let (end, taken) = self.end_of_room(start..range.end, room / 2, &shared).await?;
+            let dst_range = dst_of(start)..dst_of(end);
+            let (dst_end, _) = dst.end_of_room(dst_range, room - taken, &freed).await?;
+            let end = start + (dst_end - dst_of(start));
             self.txn_clone_range(transaction, start..end, dst, dst_of(start)).await?;
             if end == range.end {
                 return Ok(());
@@ -2518,56 +2527,6 @@ impl<S: HandleOwner> DataObjectHandle<S> {
             iter.advance().await?;
         }
         Ok((range.end, taken))
-    }
-
-    /// fxdax: where this file's extents in `range` reach `most` of them, or `most_bytes` of them,
-    /// whichever is first, or `range`'s end, if they don't: holes count for nothing. `most_bytes`
-    /// is block aligned.
-    async fn end_of_extents(
-        &self,
-        range: Range<u64>,
-        most: usize,
-        most_bytes: u64,
-    ) -> Result<u64, Error> {
-        let store = self.store();
-        let layer_set = store.tree().layer_set();
-        let mut merger = layer_set.merger();
-        let mut iter = merger
-            .query(Query::FullRange(&ObjectKey::attribute(
-                self.object_id(),
-                self.attribute_id(),
-                AttributeKey::Extent(Extent(range.clone()).search_key()),
-            )))
-            .await?;
-        let mut extents = 0;
-        let mut bytes = 0;
-        while let Some(ItemRef {
-            key:
-                ObjectKey {
-                    object_id,
-                    data: ObjectKeyData::Attribute(attribute_id, AttributeKey::Extent(key)),
-                },
-            value: ObjectValue::Extent(value),
-            ..
-        }) = iter.get()
-            && *object_id == self.object_id()
-            && *attribute_id == self.attribute_id()
-            && key.start < range.end
-        {
-            if matches!(value, ExtentValue::Some { .. }) && key.end > range.start {
-                let (start, end) = (max(key.start, range.start), min(key.end, range.end));
-                extents += 1;
-                bytes += end - start;
-                if bytes >= most_bytes {
-                    return Ok(end - (bytes - most_bytes));
-                }
-                if extents == most {
-                    return Ok(end);
-                }
-            }
-            iter.advance().await?;
-        }
-        Ok(range.end)
     }
 
     pub async fn update_attributes<'a>(
