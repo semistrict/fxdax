@@ -128,8 +128,9 @@ const MIN_COMPACTION_BYTES: u64 = RESERVED_SPACE / 8;
 // Whenever the journal is replayed (i.e. the system is unmounted and remounted), we reset the
 // journal stream, at which point any half-complete transactions are discarded.  We indicate a
 // journal reset by XORing the previous block's checksum with this mask, and using that value as a
-// seed for the next journal block.
-const RESET_XOR: u64 = 0xffffffffffffffff;
+// seed for the next journal block. fxdax: public for the test of corrupt images, which reseals what
+// it flips (crates/fxfs-posix/src/corrupt_tests.rs).
+pub const RESET_XOR: u64 = 0xffffffffffffffff;
 
 // To keep track of offsets within a journal file, we need both the file offset and the check-sum of
 // the preceding block, since the check-sum of the preceding block is an input to the check-sum of

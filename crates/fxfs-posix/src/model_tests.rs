@@ -537,7 +537,7 @@ struct World {
 }
 
 /// Runs fsck, and says what it found.
-async fn checked(filesystem: &fxfs::filesystem::OpenFxFilesystem) -> Result<(), String> {
+pub(super) async fn checked(filesystem: &fxfs::filesystem::OpenFxFilesystem) -> Result<(), String> {
     let issues = Arc::new(std::sync::Mutex::new(Vec::new()));
     let found = issues.clone();
     let on_error = Box::new(move |issue: &fxfs::fsck::errors::FsckIssue| {
@@ -1248,7 +1248,7 @@ async fn finish(world: World) -> Result<(), String> {
 
 /// Aborts, saying the sequence, if one takes longer than `limit`: each is sent here as it starts,
 /// and this ends with the sender.
-fn watch_sequences(limit: Duration) -> mpsc::Sender<String> {
+pub(super) fn watch_sequences(limit: Duration) -> mpsc::Sender<String> {
     let (sender, sequences) = mpsc::channel();
     std::thread::spawn(move || {
         let mut sequence = String::new();
