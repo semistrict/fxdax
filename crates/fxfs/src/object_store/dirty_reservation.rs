@@ -7,9 +7,9 @@
 //! the filesystem full (TASK-80): the guest kernel's buffered writes reserved nothing, and their
 //! writeback, failing, dropped the data. As Fuchsia's pager-backed files reserve as their pages
 //! are marked dirty (`PagedObjectHandle::mark_dirty`): each block, and its share of the metadata
-//! space of the transactions that write it back, of WRITE_MANY_WRITES blocks; and for each file
-//! with dirty data a spare, a transaction's metadata space, for its writeback's last transaction,
-//! which may write a block alone. A writeback's blocks are paid for from what it takes
+//! space of the transactions that write it back, of BLOCKS_PER_TRANSACTION blocks at least; and
+//! for each file with dirty data a spare, a transaction's metadata space, for its writeback's last
+//! transaction, which may write a block alone. A writeback's blocks are paid for from what it takes
 //! (`DataObjectHandle::write_many_reserved`), which never pays for metadata with them: what
 //! metadata space a writeback takes beyond its share, its file's next writes reserve again,
 //! which may then find no room.
@@ -17,16 +17,20 @@
 use crate::errors::FxfsError;
 use crate::object_store::ObjectStore;
 use crate::object_store::allocator::{Allocator, Reservation};
-use crate::object_store::data_object_handle::WRITE_MANY_WRITES;
 use crate::object_store::transaction::TRANSACTION_METADATA_MAX_AMOUNT;
 use anyhow::Error;
 use fuchsia_sync::Mutex;
 use rustc_hash::FxHashMap;
 use std::sync::Arc;
 
+/// How many writes of a block `DataObjectHandle::write_many` finds room for in a transaction, at
+/// least: this bounds what reserving dirty data costs, not what a transaction holds, which it asks
+/// the transaction (`test_write_many_transactions_fit_the_journal` holds it to this).
+pub(crate) const BLOCKS_PER_TRANSACTION: u64 = 128;
+
 /// The metadata space reserved for each block of dirty data: a transaction's, shared by the
-/// WRITE_MANY_WRITES writes of a block it may hold.
-const METADATA_PER_BLOCK: u64 = TRANSACTION_METADATA_MAX_AMOUNT / WRITE_MANY_WRITES as u64;
+/// BLOCKS_PER_TRANSACTION writes of a block it holds.
+const METADATA_PER_BLOCK: u64 = TRANSACTION_METADATA_MAX_AMOUNT / BLOCKS_PER_TRANSACTION;
 
 /// The metadata space reserved for each file with dirty data: a transaction's.
 const SPARE: u64 = TRANSACTION_METADATA_MAX_AMOUNT;

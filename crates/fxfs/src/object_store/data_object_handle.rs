@@ -15,6 +15,7 @@
 // doesn't have. `write_many` writes data scattered across a file in as few transactions, and
 // device writes, as hold it: the guest kernel's page-cache writeback.
 
+use crate::checksum::{Checksum, Checksums};
 use crate::errors::FxfsError;
 use crate::log::*;
 use crate::lsm_tree::Query;
@@ -24,7 +25,7 @@ use crate::object_handle::{
 };
 use crate::object_store::allocator::{Reservation, STAGED_MAX};
 use crate::object_store::extent_record::{ExtentMode, ExtentValue};
-use crate::object_store::journal::mutation_record_bytes;
+use crate::object_store::journal::{checksums_record_bytes, mutation_record_bytes};
 use crate::object_store::object_manager::ObjectManager;
 use crate::object_store::object_record::{
     AttributeKey, DirType, FsverityMetadata, ObjectAttributes, ObjectItem, ObjectKey,
@@ -68,20 +69,6 @@ pub use allocated_ranges::{AllocatedRanges, RangeType};
 /// How much data each transaction will cover when writing an attribute across batches. Pulled from
 /// `FLUSH_BATCH_SIZE` in paged_object_handle.rs.
 pub const WRITE_ATTR_BATCH_SIZE: usize = 524_288;
-
-/// fxdax: the most writes one of `write_many`'s transactions holds, and the most bytes of the
-/// blocks they cover, which it writes from a buffer of as many, unless a write alone covers more.
-/// What a transaction takes of the journal grows with both: each write is a record of the file's
-/// extents, and each block it covers a checksum in that record and at most one extent it
-/// overwrites, a range of which the allocator deallocates, a record each; and the blocks are
-/// allocated together, in an extent the allocator records. Blocks are 4 KiB or more
-/// (`crate::filesystem::MIN_BLOCK_SIZE`), so a transaction covers at most 256: so many fit what a
-/// transaction may take of the journal, TRANSACTION_MAX_JOURNAL_USAGE
-/// (`test_write_many_transactions_fit_the_journal`), as upstream's page-cache flushes of
-/// `FLUSH_BATCH_SIZE`, 128 pages of 4 KiB, do. The writes' bytes would not bound the blocks: a
-/// write from a block's last byte covers up to two blocks more than its bytes fill.
-pub const WRITE_MANY_WRITES: usize = 128;
-pub const WRITE_MANY_BYTES: usize = 1 << 20;
 
 /// fxdax: one of `write_many`'s writes: `data`, its bytes, to `range` of the file, which covers
 /// `blocks`.
@@ -1155,7 +1142,7 @@ impl<S: HandleOwner> DataObjectHandle<S> {
     }
 
     /// fxdax: writes `writes`, each bytes at an offset, as `txn_write` writes one, in as few
-    /// transactions as hold them (`WRITE_MANY_WRITES`), each with one `multi_write`: a
+    /// transactions as have room for them (`writes_in_room`), each with one `multi_write`: a
     /// transaction's writes have their blocks allocated together, and written with as few of the
     /// device's writes as they take, at once. They are in order of offset, and no two share a
     /// block. This is a page cache's writeback, of pages scattered across a file, with a
@@ -1185,30 +1172,17 @@ impl<S: HandleOwner> DataObjectHandle<S> {
         reserved: Option<&Reservation>,
     ) -> Result<(), Error> {
         let writes = self.blocks_of(writes)?;
-        let blocks = |writes: &[BlocksWrite<'_>]| {
-            writes.iter().map(|write| write.blocks.end - write.blocks.start).sum::<u64>()
-        };
         let mut rest = &writes[..];
         while !rest.is_empty() {
-            let mut covered = 0;
-            let held = rest
-                .iter()
-                .take(WRITE_MANY_WRITES)
-                .take_while(|write| {
-                    covered += write.blocks.end - write.blocks.start;
-                    covered <= WRITE_MANY_BYTES as u64
-                })
-                .count()
-                .max(1);
-            let (writes, after) = rest.split_at(held);
             let mut transaction = match reserved {
                 None => self.new_transaction().await?,
                 Some(reserved) => {
-                    let options =
-                        self.reserved_transaction_options(reserved, blocks(writes), blocks(after));
+                    let data = rest.iter().map(|write| write.blocks.end - write.blocks.start);
+                    let options = self.reserved_transaction_options(reserved, data.sum());
                     self.new_transaction_with_options(options).await?
                 }
             };
+            let (writes, after) = rest.split_at(self.writes_in_room(&transaction, rest));
             self.txn_write_blocks(&mut transaction, writes).await?;
             transaction.commit().await?;
             rest = after;
@@ -1216,22 +1190,62 @@ impl<S: HandleOwner> DataObjectHandle<S> {
         Ok(())
     }
 
-    /// fxdax: the options of a transaction of `write_many_reserved` writing `blocks` bytes of
-    /// blocks paid for from `reserved`, before `later` bytes of them: holding its metadata space
-    /// in what `reserved` has beyond the blocks, topped up from the allocator if it hasn't enough,
-    /// so that it never pays for metadata with room for blocks; or, the allocator full, borrowing
-    /// it, and as much room for the blocks as the allocator has, if `reserved` hasn't it (some of
-    /// it owed, `DirtyReservation::reserve_what_fits`), which then fails it as a write with no
-    /// reservation fails.
+    /// fxdax: how many of `writes`, one at least, `transaction` has room for, as written by one
+    /// `multi_write`, which has yet to find what they replace, or what it allocates. The most it
+    /// can take: for each run of them its extent's record, and a record of the checksums unless
+    /// barriers stand for them, and for each block its checksums and the record freeing an extent
+    /// of its own, of the largest integers it could hold. The rest of a run of them in one
+    /// allocation, as they are unless the allocator is fragmented, is what the room spares.
+    fn writes_in_room(&self, transaction: &Transaction<'_>, writes: &[BlocksWrite<'_>]) -> usize {
+        let store = self.store();
+        let journaled = !store.filesystem().options().barriers_enabled;
+        // Sequences and branches may be as long as they can be, but extents are far shorter than
+        // the 4 GiB this keeps their offsets to.
+        let extent = ExtentId::new(u64::MAX, u64::MAX);
+        let blocks = ExtentRange::new(extent, u32::MAX as u64..u32::MAX as u64);
+        let sum_size = (1 + journaled as u64) * size_of::<Checksum>() as u64;
+        let per_block = self.cost_of_freeing(blocks.clone()) + sum_size;
+        let run = |write: &BlocksWrite<'_>| {
+            let extent =
+                ObjectKey::extent(self.object_id(), self.attribute_id(), write.blocks.clone());
+            let no_sums = Checksums::fletcher(Vec::new());
+            let value = ExtentValue::with_checksum(blocks.extent, blocks.range.start, no_sums, 0);
+            let extent = Mutation::merge_object(extent, ObjectValue::Extent(value));
+            mutation_record_bytes(store.store_object_id(), &extent)
+                + if journaled { checksums_record_bytes(&blocks, &[], true) } else { 0 }
+        };
+        let block_size = self.block_size();
+        let mut room = transaction.room();
+        let mut end = None;
+        let mut held = 0;
+        for write in writes {
+            let covered = (write.blocks.end - write.blocks.start) / block_size;
+            let run = if end == Some(write.blocks.start) { 0 } else { run(write) };
+            let cost = covered * per_block + run;
+            if held > 0 && cost > room {
+                break;
+            }
+            room = room.saturating_sub(cost);
+            end = Some(write.blocks.end);
+            held += 1;
+        }
+        held
+    }
+
+    /// fxdax: the options of a transaction of `write_many_reserved` of writes that have yet to
+    /// write `data` bytes of blocks, paid for from `reserved`: holding its metadata space in what
+    /// `reserved` has beyond the blocks, topped up from the allocator if it hasn't enough, so that
+    /// it never pays for metadata with room for blocks; or, the allocator full, borrowing it, and
+    /// as much room for the blocks as the allocator has, if `reserved` hasn't it (some of it owed,
+    /// `DirtyReservation::reserve_what_fits`), which then fails it as a write with no reservation
+    /// fails.
     fn reserved_transaction_options<'a>(
         &self,
         reserved: &'a Reservation,
-        blocks: u64,
-        later: u64,
+        data: u64,
     ) -> Options<'a> {
         let store = self.store();
         let (allocator, owner) = (store.allocator(), Some(store.store_object_id()));
-        let data = blocks + later;
         let short =
             (data + transaction::TRANSACTION_METADATA_MAX_AMOUNT).saturating_sub(reserved.amount());
         let holds = short == 0
@@ -3146,9 +3160,7 @@ mod tests {
         ObjectHandle, ObjectProperties, ReadObjectHandle, WriteObjectHandle,
     };
     use crate::object_store::allocator::TEST_EXTENT;
-    use crate::object_store::data_object_handle::{
-        OverwriteOptions, WRITE_ATTR_BATCH_SIZE, WRITE_MANY_BYTES,
-    };
+    use crate::object_store::data_object_handle::{OverwriteOptions, WRITE_ATTR_BATCH_SIZE};
     use crate::object_store::directory::replace_child;
     use crate::object_store::object_manager::ObjectManager;
     use crate::object_store::object_record::{FsverityMetadata, ObjectKey, ObjectValue, Timestamp};
@@ -7168,34 +7180,34 @@ mod tests {
         fs.close().await.expect("close failed");
     }
 
-    /// fxdax: `write_many`'s transactions hold at most WRITE_MANY_WRITES writes, and at most
-    /// WRITE_MANY_BYTES of the blocks they cover, unless one alone covers more: each a device write
-    /// here.
+    /// fxdax: `write_many`'s transactions hold the writes they have room for, by what they could
+    /// cost, unless one alone costs more: each a device write here.
     #[fuchsia::test]
     async fn test_write_many_splits_its_transactions() {
+        const LARGE: usize = 1 << 20;
         let (fs, trips, _) =
             writeback_filesystem(storage_device::fake_device::DEFAULT_BRANCH).await;
         let bs = fs.block_size().get() as usize;
-        let data = vec![5u8; WRITE_MANY_BYTES + bs];
+        let data = vec![5u8; 4 * LARGE];
         let file = create_file(&fs).await;
         let mut expected = Vec::new();
         let mut writes = every(&data[..bs], 0, 2, 300, bs);
-        // Two writes over WRITE_MANY_BYTES together, and one over it alone.
-        let half = WRITE_MANY_BYTES / 2 + bs;
-        for (len, at) in [(half, 600), (half, 1000), (WRITE_MANY_BYTES + bs, 1400)] {
+        // Two writes of more blocks than a transaction has room for together, and one alone.
+        let half = 3 * LARGE / 4;
+        for (len, at) in [(half, 600), (half, 1000), (4 * LARGE, 1400)] {
             writes.push(((at * bs) as u64, &data[..len]));
         }
-        // Two writes of WRITE_MANY_BYTES together, each from a block's last byte, whose blocks
-        // are more.
-        writes.extend(every(&data[..WRITE_MANY_BYTES / 2], (2000 * bs - 1) as u64, 200, 2, bs));
+        // Two writes each from a block's last byte, whose blocks are more than their bytes fill,
+        // which is what they are costed by.
+        writes.extend(every(&data[..3 * LARGE / 4 - 2 * bs], (2600 * bs - 1) as u64, 300, 2, bs));
         for (offset, data) in &writes {
             expected.resize(*offset as usize, 0);
             expected.extend_from_slice(data);
         }
         let before = trips.writes.count();
         file.write_many(&writes).await.expect("write_many failed");
-        // Transactions of 128 writes, 128, and 44 with the first of the large ones, then each of
-        // the others alone.
+        // Transactions of 179 writes, the rest of the 300, the two large ones, the one that costs
+        // more alone, in the three of the most an allocation may be, and the last two.
         assert_eq!(trips.writes.count() - before, 7);
         assert_eq!(file.contents(usize::MAX).await.expect("contents")[..], expected[..]);
         fsck(fs.clone()).await.expect("fsck failed");
@@ -7313,14 +7325,16 @@ mod tests {
         }
     }
 
-    /// fxdax: the largest of `write_many`'s transactions, of WRITE_MANY_WRITES writes, or of
-    /// WRITE_MANY_BYTES of the blocks they cover, that overwrite as many records as they can, fit
-    /// what a transaction may take of the journal, their records' integers as long as a branch's
-    /// and a large file's make them.
+    /// fxdax: `write_many`'s transactions, of as many writes as they have room for, that overwrite
+    /// as many records as they can, fit what a transaction may take of the journal, their records'
+    /// integers as long as a branch's and a large file's make them; and one holds the
+    /// BLOCKS_PER_TRANSACTION writes of a block that dirty data pays its metadata for.
     #[fuchsia::test]
     async fn test_write_many_transactions_fit_the_journal() {
+        use crate::object_store::dirty_reservation::BLOCKS_PER_TRANSACTION;
         use crate::object_store::transaction::TRANSACTION_MAX_JOURNAL_USAGE;
 
+        const WRITES: usize = BLOCKS_PER_TRANSACTION as usize;
         let (fs, _, journal) = writeback_filesystem(u64::MAX >> 1).await;
         let bs = fs.block_size().get() as usize;
         let data = vec![7u8; 256 * bs];
@@ -7345,18 +7359,21 @@ mod tests {
         // splitting an extent.
         for (len, at_a_time) in [(1, 1), (1, 256), (2, 1), (2, 256)] {
             let file = file(768, at_a_time).await;
-            usages
-                .push(journal_usages(&file, &every(&data[..len * bs], AT, len + 1, 128, bs)).await);
+            let writes = every(&data[..len * bs], AT, len + 1, WRITES, bs);
+            usages.push(journal_usages(&file, &writes).await);
+            if len == 1 {
+                assert_eq!(usages.last().expect("just pushed").len(), 1);
+            }
         }
         // 127 writes of a block, and one of the rest of 1 MiB, over extents of a block.
         let blocks = file(512, 1).await;
-        let mut writes = every(&data[..bs], AT, 2, 127, bs);
+        let mut writes = every(&data[..bs], AT, 2, WRITES - 1, bs);
         writes.push((AT + (254 * bs) as u64, &data[..129 * bs]));
         usages.push(journal_usages(&blocks, &writes).await);
-        // WRITE_MANY_WRITES writes of two blocks and two bytes, each from a block's last byte, so
-        // covering four blocks, with a block between, over extents of a block.
+        // Writes of two blocks and two bytes, each from a block's last byte, so covering four
+        // blocks, with a block between, over extents of a block.
         let blocks = file(640, 1).await;
-        let writes = every(&data[..2 * bs + 2], AT + bs as u64 - 1, 5, 128, bs);
+        let writes = every(&data[..2 * bs + 2], AT + bs as u64 - 1, 5, WRITES, bs);
         usages.push(journal_usages(&blocks, &writes).await);
         assert!(
             usages.iter().flatten().all(|usage| *usage <= TRANSACTION_MAX_JOURNAL_USAGE),
