@@ -4,7 +4,7 @@ title: write(2) on DAX without a window round trip in the common case
 status: In Progress
 assignee: []
 created_date: '2026-10-31 22:15'
-updated_date: '2026-11-01 19:24'
+updated_date: '2026-11-01 20:12'
 labels: []
 dependencies: []
 parent_task_id: TASK-146
@@ -39,4 +39,6 @@ Their ask 2. 122,027 of 134,078 maps per run are evacuation's, not the write's o
 2026-11-01: correction: ext4 and XFS take the inode lock exclusive for DAX writes, as far as I recall: only their direct I/O shares it for overwrites. An earlier note and message said ext4's DAX shares it: wrong. Absent-page evacuation measured and dropped: dead-ends/evacuation-leaving-pages-absent.md.
 
 2026-11-01, sandbox team at fc281d8: 67,170 writes, 35.0 s, about 520 us each; map 6.7, lock 5.6, Fxfs 4.3, gate 2.5, 15.9 s (45%) unattributed; they ask that the breakdown cover the rest, the copy included. On test/flaky-writers: dax_write_setup_ns, _fault_in_ns, _begin_ns, _begin_other_ns, _copy_ns (dax_iomap_rw less its iomaps', a store's EPT faults among it), _end_ns, _retry_ns, _tail_ns, _other_ns, and write_wait_ns, already counted, now only for write(2). Guest check write_times_add_up asserts other under 10% of the total. Compiles for guest and host; not yet run on a kernel. The read-fault hang in the same report is thread 'DAX Read Faults Hang Under Pressure', a separate session.
+
+r428 (before the audit's fixes), fxfs-guest-pgbench-dax, 1,041,386 writes, 364.29 s, 350 us each, tps 1027 to 1184: begin 247.9 s (68.0%), of which begin_other 102.3 (28.1%), map 75.9 (20.8%), fxfs 46.2 (12.7%), gate 23.5 (6.4%), wait 0.01; lock 97.9 (26.9%); copy 14.8 (4.1%); setup 1.7, end 0.4, fault_in 0.2, tail 0.06, retry 0.02; other 1.3 (0.36%). It adds up. The copy, which the sandbox team asked about and I guessed was the gap, is small. Beside it: 216,564 seals, window_maps 1,232,207 costing 248.6 s, 755,798 of them evacuation's, 257,297 evacuations. Next: begin_other is fxfs_dax_prepare_write and fxfs_dax_get_range, untimed there: r450 times them, on the merged tree. write_times_add_up failed in r428 on a wrong stat name of mine, dax_write_ns for dax_writes_ns, not on the sum: fixed, unproven until r450.
 <!-- SECTION:NOTES:END -->

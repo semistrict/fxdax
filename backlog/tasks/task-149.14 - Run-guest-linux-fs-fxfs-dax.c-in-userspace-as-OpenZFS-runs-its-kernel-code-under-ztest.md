@@ -6,7 +6,7 @@ title: >-
 status: In Progress
 assignee: []
 created_date: '2026-11-01 06:38'
-updated_date: '2026-11-01 19:38'
+updated_date: '2026-11-01 20:32'
 labels: []
 dependencies: []
 parent_task_id: TASK-149
@@ -59,4 +59,8 @@ New candidates, none confirmed on a real kernel. 4: writable MAP outside the gat
 Correction to the above: that TASK-101 was first found by the dax_check_places false alarm is a guess. The first round logged only 'diagnostic WARN'; all that's known is that it went unseen once that fix was in, and shows now as a store the host refused. Also not rerun on the final workload: -s, and coverage. dax_check_places is off in runs that fail a MAP, as an evacuation can fall between the failure and the write's drop of its range.
 
 Candidate 2 confirmed on a real kernel: r425 load_during_move: a load through a PTE during a fault's move read 0, the file holding 81. Fixed in dax.c from moved-before-mapped.patch, unmapping only when blocks moved, the patch doing so on every iomap, a cost on the write path. r425's pmd_over_stale_index proves nothing: 'no fault mapped a PMD's 2 MiB', its setup not reaching a PMD. Candidate 3 stays unconfirmed.
+
+r429, every fix merged: fxfs-guest-script-full and -full-dax passed 2 rounds each, the first time; load_during_move passes, so candidate 2's fix holds on a real kernel; no unexplained refusals. pmd_over_stale_index never tested candidate 3: mmap's address wasn't 2 MiB aligned, so no PMD could be mapped, and it failed every run on its setup. Fixed: it maps at a chunk's alignment. Its result is not yet seen.
+
+Correction to the note above: that the address's alignment is the cause is a guess, not shown: test_mapped_after_write maps with no address and gets PMDs. Another cause would be that a relocated page rules a PMD out on a real kernel, where the sim allows it. r451 shows which.
 <!-- SECTION:NOTES:END -->
