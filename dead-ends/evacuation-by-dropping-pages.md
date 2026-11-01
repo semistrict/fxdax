@@ -11,3 +11,4 @@ already noted this before the attempt.
 **Reopen if:** Ranges record "the file has data here" apart from "the window maps this page", or a
 dropped page makes its whole range be forgotten (see drop-idle-ranges-at-evacuation.md for the cost
 of that at a range's grain).
+**Since:** 2026-10-31 that lack was made up, and it still lost: evacuation-leaving-pages-absent.md.
