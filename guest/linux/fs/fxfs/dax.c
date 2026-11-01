@@ -457,6 +457,11 @@ struct fxfs_dax_file {
 	 */
 	loff_t growing;
 	/*
+	 * fxdax: whether the write under way has the bytes it is writing in kernel memory, which a
+	 * copy can't stop short of, under the inode's write lock (fxfs_dax_source_needed).
+	 */
+	bool in_hand;
+	/*
 	 * fxdax: how many of its ranges an evacuation holds (fxfs_dax_evacuee_gather): ranges that
 	 * the paths dropping them whatever uses them, evict and truncate, wait for, so that what the
 	 * evacuation maps doesn't land in window space another range took (fxfs_dax_lock_unheld).
@@ -2802,6 +2807,22 @@ static loff_t fxfs_dax_append_end(struct inode *inode, loff_t pos, loff_t end)
 	return base + FXFS_DAX_APPEND_SIZE;
 }
 
+/*
+ * fxdax: whether a write of the bytes from `pos` to `end` has to have them in hand first, -ENOTBLK
+ * saying so to fxfs_dax_write_iter: moving a whole page, Fxfs keeps nothing of what it held, for the
+ * write to fill, and a copy from the user's memory can stop short, where the memory ends, or be of
+ * those very pages, read as the zeros they moved to: what the file held there was lost, short
+ * writes and writes reporting success alike (TASK-150.8). A fault keeps what it moves, zeroing
+ * is meant to lose it, and pages past the file's end hold nothing.
+ */
+static bool fxfs_dax_source_needed(struct inode *inode, unsigned int flags, loff_t pos, loff_t end)
+{
+	loff_t last = min(round_down(end, PAGE_SIZE), round_up(i_size_read(inode), PAGE_SIZE));
+
+	return !(flags & (IOMAP_FAULT | IOMAP_ZERO)) && round_up(pos, PAGE_SIZE) < last &&
+	       !READ_ONCE(fxfs_dax_file(inode)->in_hand);
+}
+
 /* Makes room before mapping a chunk's range for the first time. */
 static int fxfs_dax_prepare_write(struct inode *inode, loff_t pos, loff_t len, loff_t size,
 				  loff_t reserved, bool fault, struct fxfs_dax_extent *extents,
@@ -3161,6 +3182,8 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 	capacity = DIV_ROUND_UP(offset_in_page(pos) + end - pos, PAGE_SIZE);
 	/* A chunk with no range yet: room for the write first. Zeroing leaves holes be. */
 	if (!(flags & IOMAP_ZERO) && !xa_load(&file->ranges, pos >> FXFS_DAX_SHIFT)) {
+		if (fxfs_dax_source_needed(inode, flags, pos, end))
+			return -ENOTBLK;
 		extents = fxfs_dax_alloc_extents(dax, capacity);
 		if (!extents)
 			return -ENOMEM;
@@ -3247,6 +3270,10 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 			return 0;
 		}
 		fxfs_device_store_end(dax->dev);
+		if (fxfs_dax_source_needed(inode, flags, pos, end)) {
+			err = -ENOTBLK;
+			goto out;
+		}
 		/* COW must keep the appended bytes too, beyond Fxfs's former end. */
 		err = fxfs_dax_write_size_locked(inode);
 		if (err)
@@ -3571,15 +3598,51 @@ static ssize_t fxfs_dax_read_iter(struct kiocb *iocb, struct iov_iter *to)
 	return ret;
 }
 
+/* fxdax: bytes of a write, in kernel memory, for as long as it is writing them. */
+struct fxfs_dax_source {
+	struct kvec kvec;
+	struct iov_iter iter;
+};
+
+/*
+ * fxdax: takes the next of a write's bytes at `pos`, as many as reach the chunk's end, from `from`
+ * into `source`, which the write then copies from (fxfs_dax_source_needed). With page faults
+ * enabled, holding no iomap and outside the gate, so that a fault on a mapping of the file itself
+ * gets what it needs, and reads what the pages hold before they move. -EFAULT if the user's memory
+ * holds none of them; if it holds fewer, those are what the write writes.
+ */
+static int fxfs_dax_source_take(struct fxfs_dax_source *source, struct iov_iter *from, loff_t pos)
+{
+	size_t len = min_t(loff_t, iov_iter_count(from), round_up(pos + 1, FXFS_DAX_SIZE) - pos);
+
+	/* The first's as large as any next: what's left of a write only goes down. */
+	if (!source->kvec.iov_base)
+		source->kvec.iov_base = fxfs_nofs(kvmalloc(min_t(size_t, iov_iter_count(from),
+								 FXFS_DAX_SIZE), GFP_KERNEL));
+	if (!source->kvec.iov_base)
+		return -ENOMEM;
+	source->kvec.iov_len = copy_from_iter(source->kvec.iov_base, len, from);
+	if (!source->kvec.iov_len)
+		return -EFAULT;
+	iov_iter_kvec(&source->iter, ITER_SOURCE, &source->kvec, 1, source->kvec.iov_len);
+	return 0;
+}
+
 /*
  * Writes through the window, copying with page faults disabled: in the gate, a fault on the
  * user's memory could wait for a seal that waits for the gate. The memory is faulted in first, and
- * again whenever a copy stops short.
+ * again whenever a copy stops short. fxdax: and bytes are taken in hand, the rest of the chunk's,
+ * and copied from there, a copy that can't stop short, once blocks moving for the copy would lose
+ * what they held, as the iomap says (-ENOTBLK), or a copy stopped short with none copied (-EFAULT):
+ * what faulted in may be gone again, or the write's own iomap unmaps it each time, the source a
+ * page of the target. Then the write goes back to the user's memory.
  */
 static ssize_t fxfs_dax_write_iter(struct kiocb *iocb, struct iov_iter *from)
 {
 	struct inode *inode = file_inode(iocb->ki_filp);
 	struct fxfs_dax_file *file = fxfs_dax_file(inode);
+	struct fxfs_dax_source hand = {};
+	struct iov_iter *source = from;
 	loff_t old_size, end, write_pos = 0;
 	u64 seals = 0, began;
 	ssize_t ret, done = 0;
@@ -3615,17 +3678,24 @@ static ssize_t fxfs_dax_write_iter(struct kiocb *iocb, struct iov_iter *from)
 		if (ret)
 			goto out;
 	}
-	while (iov_iter_count(from)) {
-		if (fault_in_iov_iter_readable(from, iov_iter_count(from)) == iov_iter_count(from)) {
+	while (iov_iter_count(source)) {
+		if (source == from && fault_in_iov_iter_readable(from, iov_iter_count(from)) ==
+				      iov_iter_count(from)) {
 			ret = -EFAULT;
 			break;
 		}
 		pagefault_disable();
-		ret = dax_iomap_rw(iocb, from, &fxfs_dax_iomap_ops);
+		ret = dax_iomap_rw(iocb, source, &fxfs_dax_iomap_ops);
 		pagefault_enable();
 		if (ret > 0) {
 			done += ret;
 			drops = 0;
+		} else if (source == from && (ret == -ENOTBLK || ret == -EFAULT)) {
+			ret = fxfs_dax_source_take(&hand, from, iocb->ki_pos);
+			if (ret)
+				break;
+			source = &hand.iter;
+			WRITE_ONCE(file->in_hand, true);
 		} else if (ret == -EXDEV || (ret == -ESTALE && !stale++)) {
 			/*
 			 * fxdax: a write that can't get on fails, and says so: it spun unkillable, with
@@ -3650,21 +3720,22 @@ static ssize_t fxfs_dax_write_iter(struct kiocb *iocb, struct iov_iter *from)
 			ret = fxfs_dax_drop_slice(inode, iocb->ki_pos, true);
 			if (ret)
 				break;
-		} else if (ret != -EFAULT) {
+		} else {
 			if (ret == -ESTALE)
 				ret = -EIO;
 			break;
-		} else if (++drops > FXFS_DAX_MAX_DROPS) {
-			/*
-			 * fxdax: the write's own iomap unmapping what it copies from, each time: a
-			 * source overlapping the target, which fault_in maps again for nothing.
-			 */
-			pr_err("fxfs: ino %lu: a write at %lld could not read its source\n",
-			       inode->i_ino, iocb->ki_pos);
-			break;
 		}
-		/* What faulted in may be gone again: the loop faults it in once more. */
+		if (source != from && !iov_iter_count(source)) {
+			source = from;
+			WRITE_ONCE(file->in_hand, false);
+		}
 	}
+	/* What it took and didn't write, it didn't write. */
+	if (source != from) {
+		iov_iter_revert(from, iov_iter_count(source));
+		WRITE_ONCE(file->in_hand, false);
+	}
+	kvfree(hand.kvec.iov_base);
 	/*
 	 * A write that stopped short leaves the file no longer than it wrote: Fxfs has the size its
 	 * iomap asked for (fxfs_dax_map_write), past the inode's, which grows as bytes are written.
