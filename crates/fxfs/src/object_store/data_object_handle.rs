@@ -7325,6 +7325,41 @@ mod tests {
         }
     }
 
+    /// fxdax: `allocate` over thousands of fragments, whose extents it changes, and whose holes it
+    /// fills, in as many transactions as it takes, none more than one may take of the journal.
+    #[fuchsia::test]
+    async fn test_allocate_fills_transactions() {
+        use crate::object_store::transaction::TRANSACTION_MAX_JOURNAL_USAGE;
+
+        const FRAGMENTS: usize = 2048;
+        const BS: usize = 4096;
+        let commits = Arc::new(Commits::default());
+        let (mut hooks, fs_hooks) = Hooks::new();
+        let device = FakeDevice::new(8192, BS as u32).with_branch(u64::MAX >> 1);
+        let fs = FxFilesystemBuilder::new()
+            .format(true)
+            .hooks(fs_hooks)
+            .open(DeviceHolder::new(device))
+            .await
+            .expect("open failed");
+        let counting = commits.clone();
+        hooks.set_pre_commit(move |transaction| {
+            counting.0.lock().push(transaction.journal_bytes());
+            Ok(())
+        });
+        let file = create_file(&fs).await;
+        let data = vec![7u8; BS];
+        file.write_many(&every(&data, 0, 2, FRAGMENTS, BS)).await.expect("write_many failed");
+        commits.0.lock().clear();
+        file.allocate(0..(2 * FRAGMENTS * BS) as u64).await.expect("allocate failed");
+        let taken = std::mem::take(&mut *commits.0.lock());
+        assert!(taken.len() > 1, "{taken:?}");
+        assert!(taken.iter().all(|bytes| *bytes <= TRANSACTION_MAX_JOURNAL_USAGE), "{taken:?}");
+        std::mem::drop(hooks);
+        fsck(fs.clone()).await.expect("fsck failed");
+        fs.close().await.expect("close failed");
+    }
+
     /// fxdax: `write_many`'s transactions, of as many writes as they have room for, that overwrite
     /// as many records as they can, fit what a transaction may take of the journal, their records'
     /// integers as long as a branch's and a large file's make them; and one holds the

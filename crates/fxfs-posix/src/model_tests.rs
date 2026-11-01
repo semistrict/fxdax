@@ -11,7 +11,8 @@
 //!
 //! Some sequences have a device too small for what they write, where anything that grows may be
 //! refused and leaves things as they were, and what shrinks mustn't be. Some write and clone
-//! thousands of fragments at once, for the transactions that makes, which the journal must hold.
+//! thousands of fragments at once, for the transactions that makes, which the journal must hold:
+//! none may take more of it than one may, whatever it borrows (`Setting::builder`).
 //!
 //! Power cuts: the device records itself crashing at random barriers, with any of what it wrote
 //! since the barrier before lost (`storage_device::fake_device::Crashes`). What each holds, replayed,
@@ -44,8 +45,10 @@
 use super::*;
 use fxfs::filesystem::{FlushReason, ForceMajor, FxFilesystemBuilder};
 use fxfs::fsck::{FsckOptions, fsck_with_options};
+use fxfs::hooks::Hooks;
 use fxfs::object_store::graveyard::Graveyard;
 use fxfs::object_store::journal::JournalOptions;
+use fxfs::object_store::transaction::TRANSACTION_MAX_JOURNAL_USAGE;
 use fxfs::object_store::volume::root_volume;
 use fxfs::object_store::{NewChildStoreOptions, StoreOptions};
 use proptest::prelude::*;
@@ -826,21 +829,32 @@ impl Setting {
         Crashes::new(seed, if self.every_cut { u32::MAX } else { SECOND_CUTS_ONE_IN })
     }
 
-    /// What opens a filesystem here.
-    fn builder(&self) -> FxFilesystemBuilder {
-        let builder = FxFilesystemBuilder::new().fsck_after_every_transaction(self.fsck_each);
+    /// What opens a filesystem here, and what keeps each transaction it commits, for as long as
+    /// it's kept, to what a transaction may take of the journal: its metadata reservation sees that
+    /// of those that reserve, in a debug build, and nothing that of those that borrow, as a trim
+    /// and an unlink do. A transaction past it took a guest's kernel with it: generic/161, 303.
+    fn builder(&self) -> (FxFilesystemBuilder, Hooks<'static>) {
+        let (mut hooks, handle) = Hooks::new();
+        hooks.set_pre_commit(|transaction| {
+            let bytes = transaction.journal_bytes();
+            assert!(bytes <= TRANSACTION_MAX_JOURNAL_USAGE, "a transaction of {bytes} bytes");
+            Ok(())
+        });
+        let builder = FxFilesystemBuilder::new().hooks(handle);
+        let builder = builder.fsck_after_every_transaction(self.fsck_each);
         let builder = match self.batched_graveyard {
             true => builder.graveyard_batch_delay(BATCHES_APART),
             false => builder,
         };
         if !self.every_cut {
-            return builder;
+            return (builder, hooks);
         }
-        builder.journal_options(JournalOptions {
+        let builder = builder.journal_options(JournalOptions {
             reclaim_size: SHORT_RECLAIM,
             chunk_size: SHORT_RECLAIM,
             ..Default::default()
-        })
+        });
+        (builder, hooks)
     }
 
     /// The seed of what cuts the replay of power cut `cut`, during operation `op`: of those of
@@ -896,6 +910,8 @@ impl Platform for Seeded {
 struct World {
     setting: Setting,
     filesystem: fxfs::filesystem::OpenFxFilesystem,
+    /// What checks its transactions (`Setting::builder`).
+    _hooks: Hooks<'static>,
     // Boxed: the tasks applying queued unlinks refer to it as a world moves.
     fs: Box<Fxfs<Seeded>>,
     root: u64,
@@ -936,14 +952,15 @@ impl World {
         tally: Rc<Tally>,
     ) -> Self {
         let device = DeviceHolder::new(setting.device(crashes, faults));
-        let filesystem = setting.builder().format(true).open(device).await.expect("formatting");
+        let (builder, _hooks) = setting.builder();
+        let filesystem = builder.format(true).open(device).await.expect("formatting");
         let volumes = root_volume((*filesystem).clone()).await.expect("the root volume");
         let volume =
             volumes.new_volume("test", NewChildStoreOptions::default()).await.expect("the volume");
         let root = volume.root_directory_object_id();
         let platform = Seeded { workers: setting.workers };
         let fs = Box::new(Fxfs::new((*filesystem).clone(), volume, false, platform));
-        Self { setting, filesystem, fs, root, model: Model::new(root), tally }
+        Self { setting, filesystem, _hooks, fs, root, model: Model::new(root), tally }
     }
 
     /// Mounts what `device` holds, or replays it: what `model` should say.
@@ -954,7 +971,8 @@ impl World {
         model: Model,
         tally: Rc<Tally>,
     ) -> Result<Self, String> {
-        let filesystem = setting.builder().open(device).await;
+        let (builder, _hooks) = setting.builder();
+        let filesystem = builder.open(device).await;
         let filesystem = filesystem.map_err(|e| format!("opening: {e:#}"))?;
         let volumes = root_volume((*filesystem).clone()).await.map_err(|e| format!("{e:#}"))?;
         let volume = volumes.volume("test", StoreOptions::default()).await;
@@ -962,7 +980,7 @@ impl World {
         drop(volumes);
         let platform = Seeded { workers: setting.workers };
         let fs = Box::new(Fxfs::new((*filesystem).clone(), volume, false, platform));
-        Ok(Self { setting, filesystem, fs, root, model, tally })
+        Ok(Self { setting, filesystem, _hooks, fs, root, model, tally })
     }
 
     /// Unmounts, as a guest's `umount` does, leaving the device.
@@ -2350,6 +2368,27 @@ fn a_clone_of_many_fragments_fits_in_transactions() {
         Op::Create(1),
         Op::Fill { file: 8, page: 0, pages: 2945, stride: 1, byte: 0 },
         Op::Clone { from: 2, to: 13, page: 0, pages: 2937, to_page: 0 },
+    ];
+    Setting::calm(0, ROOMY).holds(ops);
+}
+
+/// A punch, a truncate and an unlink of thousands of fragments each take as many commits as hold
+/// them: what stops them is what they take of the journal, which only the transactions' check sees
+/// of those that borrow what they use of it.
+#[test]
+fn freeing_many_fragments_fits_in_transactions() {
+    let fragments = |file| Op::Fill { file, page: 0, pages: 8192, stride: 2, byte: 1 };
+    let ops = vec![
+        Op::Create(0),
+        Op::Create(1),
+        Op::Create(2),
+        fragments(0),
+        fragments(1),
+        fragments(2),
+        Op::Punch { file: 0, page: 0, pages: 8192 },
+        Op::Truncate { file: 1, size: 0 },
+        Op::Unlink(2),
+        Op::Sync,
     ];
     Setting::calm(0, ROOMY).holds(ops);
 }
