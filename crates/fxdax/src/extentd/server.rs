@@ -1208,6 +1208,11 @@ impl Connection {
         if let Some((from, _)) = from {
             self.authorize(std::ffi::OsStr::from_bytes(from).as_ref())?;
         }
+        // fxdax: a tenant's stores are those of its directory, and nothing in the bucket says whose
+        // a branch is: a point not here it finds absent, whatever branch it names, which its VM
+        // manager takes for it first, as `fxdaxctl take` does (TASK-150.4).
+        let from =
+            from.map(|(from, branch)| (from, if self.tenant.is_some() { 0 } else { branch }));
         if self.store.get().is_some() {
             return Err(Errno::EBUSY);
         }

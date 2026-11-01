@@ -2911,6 +2911,40 @@ fn windows_go_up_to_the_most_the_daemon_makes_room_for() {
     }
 }
 
+/// TASK-150.4: a VM process opening a fork of a point that doesn't exist, in its tenant's directory,
+/// names another tenant's branch: it gets nothing of it, and the branch's writer is left as it was.
+/// Its tenant's stores are its directory's: what the bucket holds has no tenant.
+#[test]
+fn tenants_take_no_branch_by_naming_it() {
+    host();
+    let dir = tempfile::tempdir().unwrap();
+    let tenant = |name: &str| {
+        let stores = dir.path().join(name);
+        std::fs::create_dir(&stores).unwrap();
+        let tenant = super::server::Tenant::new(name, &stores).unwrap();
+        let socket = dir.path().join(format!("{name}.sock"));
+        let listener = UnixListener::bind(&socket).unwrap();
+        std::thread::spawn(move || super::server::serve_tenant(listener, tenant));
+        (stores, socket)
+    };
+    let (ours, our_socket) = tenant("ours");
+    let (theirs, their_socket) = tenant("theirs");
+    let store = RemoteExtentStore::connect(&their_socket, theirs.join("store"), 1 << 24).unwrap();
+    let extent = ExtentId { branch: store.branch(), sequence: 1 };
+    write(&store, extent, 0, &pattern(4, BLOCK)).unwrap();
+    store.commit(Some(b"theirs")).unwrap();
+
+    let (restored, point) = (ours.join("restored"), ours.join("point"));
+    let opened =
+        RemoteExtentStore::connect_forked(&our_socket, &restored, &point, store.branch(), 1 << 24);
+    assert_eq!(opened.map(drop).map_err(|error| error.errno()), Err(Some(Errno::ENOENT)));
+    assert!(!point.exists(), "the point of another tenant's branch was taken");
+    let later = ExtentId { branch: store.branch(), sequence: 2 };
+    assert_eq!(write(&store, later, 0, &pattern(5, BLOCK)), Ok(()));
+    assert_eq!(store.commit(None), Ok(()));
+    assert_eq!(read(&store, extent, 0, BLOCK), Ok(pattern(4, BLOCK)));
+}
+
 /// TASK-79.16: a tenant's VM processes, the default tenant's too, have so many connections at
 /// most: one past them is closed as it comes; once one goes, another is served. The first of them
 /// is served here, as tests' connections are, which says when it is done ([`serve_connection`]).
