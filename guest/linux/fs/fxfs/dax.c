@@ -610,7 +610,7 @@ struct fxfs_dax {
 	 * again, and what comes after (TASK-146.2).
 	 */
 	atomic64_t write_setup_ns, write_fault_in_ns, write_rw_ns, write_begin_ns, write_end_ns;
-	atomic64_t write_retry_ns, write_tail_ns;
+	atomic64_t write_retry_ns, write_tail_ns, write_prepare_ns, write_range_ns;
 	struct fxfs_hist write_hist;
 	/*
 	 * fxdax: what each fault of a mapping took, and each evacuation held its file's semaphore,
@@ -3198,9 +3198,12 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 		extents = fxfs_dax_alloc_extents(dax, capacity);
 		if (!extents)
 			return -ENOMEM;
+		began = ktime_get_ns();
 		err = fxfs_dax_prepare_write(inode, pos,
 					     min_t(loff_t, pos + length, round_up(pos + 1, FXFS_DAX_SIZE)) - pos,
 					     size, reserved, fault, extents, capacity);
+		if (timed)
+			atomic64_add(ktime_get_ns() - began, &dax->write_prepare_ns);
 		if (err) {
 			kvfree(extents);
 			return err;
@@ -3208,11 +3211,14 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 		/* Its pages were holes, which mappings of the file may map zeros for. */
 		fresh = true;
 	}
+	began = ktime_get_ns();
 	range = fxfs_dax_get_range(inode, pos >> FXFS_DAX_SHIFT, max(size, reserved), size, fault);
 	/* Nor may reserving window space refuse a write whose own range fits. */
 	if (IS_ERR(range) && reserved > size &&
 	    (PTR_ERR(range) == -ENOMEM || PTR_ERR(range) == -ENOSPC))
 		range = fxfs_dax_get_range(inode, pos >> FXFS_DAX_SHIFT, size, size, fault);
+	if (timed)
+		atomic64_add(ktime_get_ns() - began, &dax->write_range_ns);
 	if (IS_ERR(range)) {
 		err = PTR_ERR(range);
 		kvfree(extents);
@@ -3677,11 +3683,14 @@ static void fxfs_dax_show_write_times(struct seq_file *m, struct fxfs_dax *dax)
 	s64 fault_in = atomic64_read(&dax->write_fault_in_ns);
 	s64 retry = atomic64_read(&dax->write_retry_ns), tail = atomic64_read(&dax->write_tail_ns);
 	s64 lock = atomic64_read(&dax->write_lock_ns);
+	s64 prepare = atomic64_read(&dax->write_prepare_ns);
+	s64 range = atomic64_read(&dax->write_range_ns);
 
 	seq_printf(m, "dax_write_setup_ns %lld\ndax_write_fault_in_ns %lld\n", setup, fault_in);
+	seq_printf(m, "dax_write_prepare_ns %lld\ndax_write_range_ns %lld\n", prepare, range);
 	/* Read apart, as writes go on: a difference may come out below zero by a little. */
 	seq_printf(m, "dax_write_begin_ns %lld\ndax_write_begin_other_ns %lld\n", begin,
-		   max_t(s64, 0, begin - atomic64_read(&dax->write_gate_ns) -
+		   max_t(s64, 0, begin - prepare - range - atomic64_read(&dax->write_gate_ns) -
 			 atomic64_read(&dax->write_fxfs_ns) - atomic64_read(&dax->write_map_ns) -
 			 atomic64_read(&dax->write_wait_ns)));
 	seq_printf(m, "dax_write_copy_ns %lld\ndax_write_end_ns %lld\n",

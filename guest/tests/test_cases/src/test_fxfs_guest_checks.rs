@@ -809,7 +809,7 @@ pub(crate) mod guest {
             .collect()
     }
 
-    /// fxdax: dax_write_ns adds up (TASK-146.2): what writes of a file's every kind of page spent
+    /// fxdax: dax_writes_ns adds up (TASK-146.2): what writes of a file's every kind of page spent
     /// is in the parts /proc/fs/fxfs/<tag> says, the copy among them: a new step in the write would
     /// show as dax_write_other_ns. 45% of a pgbench's writes' time had no part to be in.
     fn test_write_times_add_up() {
@@ -830,7 +830,7 @@ pub(crate) mod guest {
         drop(file);
         fs::remove_file(&name).unwrap();
         let spent = |stat: &str| after[stat] - before[stat];
-        let total = spent("dax_write_ns");
+        let total = spent("dax_writes_ns");
         assert!(spent("dax_write_copy_ns") > 0, "no copying in {total} ns");
         assert!(spent("dax_write_begin_ns") > 0, "no iomaps in {total} ns");
         let other = spent("dax_write_other_ns");
