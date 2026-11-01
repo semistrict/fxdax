@@ -658,6 +658,10 @@ impl LayerLayout {
             return Err(anyhow!(FxfsError::Inconsistent))
                 .context("Invalid num_items/num_data_blocks");
         }
+        // A block counts its items in 16 bits. What compacts a layer sizes a bloom filter for this.
+        if layer_info.num_items as u64 > data_blocks.saturating_mul(u16::MAX as u64 + 1) {
+            return Err(anyhow!(FxfsError::Inconsistent)).context("Too many items");
+        }
         let total_blocks = size / block_size;
         let bloom_filter_blocks =
             block_size.align_up_to_blocks(layer_info.bloom_filter_size_bytes as u64);
@@ -2048,6 +2052,22 @@ mod tests {
             bloom_filter_size_bytes: 8192,
             bloom_filter_seed: 0,
             bloom_filter_num_hashes: 1,
+        };
+        set_layer_info(&object, &layer_info);
+        let error = open_layer(&object).await.expect_err("opened");
+        assert!(FxfsError::Inconsistent.matches(&error), "{error:?}");
+    }
+
+    /// fxdax: a layer's count of items is what the bloom filter of what compacts it is sized for.
+    #[fuchsia::test]
+    async fn test_layer_item_count_may_be_anything() {
+        let object = written_layer().await;
+        let layer_info = LayerInfo {
+            num_items: 1 << 60,
+            num_data_blocks: 1,
+            bloom_filter_size_bytes: 0,
+            bloom_filter_seed: 0,
+            bloom_filter_num_hashes: 0,
         };
         set_layer_info(&object, &layer_info);
         let error = open_layer(&object).await.expect_err("opened");

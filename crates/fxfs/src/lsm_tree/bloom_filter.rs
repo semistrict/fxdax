@@ -84,6 +84,12 @@ pub struct BloomFilterStats {
 /// falling back to returning true.
 pub const MAX_HASH_PARTITIONS: usize = 4;
 
+/// fxdax: the most partitions of a key a bloom filter hashes one by one: 16 TiB's, of an extent's.
+/// Past that, which only a corrupt layer holds, it holds everything, which queries take for what it
+/// may hold: for the writer, as `MAX_HASH_PARTITIONS` is for the reader, a key's length, which is
+/// what an image says, was how long a compaction spun.
+const MAX_INSERTED_PARTITIONS: usize = 1 << 24;
+
 /// fxdax: the most hashes a bloom filter may say it takes for each query: `estimate_params` chooses
 /// about ten. It says so on disk, and a query spins for as many as it says.
 const MAX_NUM_HASHES: usize = 64;
@@ -216,7 +222,12 @@ impl<V: FuzzyHash> BloomFilterWriter<V> {
     }
 
     pub fn insert(&mut self, value: &V) {
-        for hash in value.fuzzy_hash() {
+        let hashes = value.fuzzy_hash();
+        if hashes.len() > MAX_INSERTED_PARTITIONS {
+            self.data.fill(true);
+            return;
+        }
+        for hash in hashes {
             self.insert_inner(hash);
         }
     }
@@ -354,6 +365,19 @@ mod tests {
             let filter = BloomFilterReader::read(PtrByteSlice::from(&buf[..]), 0, num_hashes)
                 .expect("read failed");
             assert_eq!(filter.maybe_contains(key), MaybeContainsKey::Maybe);
+        }
+    }
+
+    /// fxdax: a key as long as an image says is hashed no longer than a key may reasonably be, and
+    /// the filter then says nothing is missing: of any part of it, or anything else.
+    #[test]
+    fn test_key_of_any_length() {
+        let mut filter = BloomFilterWriter::new(0, 2);
+        filter.insert(&AllocatorKey::new(TEST_EXTENT, 0..u64::MAX & !511));
+        let filter = BloomFilterReader::from(filter);
+        for range in [0..512, 1 << 40..(1 << 40) + 512] {
+            let key = AllocatorKey::new(TEST_EXTENT, range);
+            assert_eq!(filter.maybe_contains(&key), MaybeContainsKey::Maybe);
         }
     }
 
