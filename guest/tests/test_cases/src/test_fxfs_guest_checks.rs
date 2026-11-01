@@ -1449,6 +1449,54 @@ pub(crate) mod guest {
         fs::remove_file(&name).unwrap();
     }
 
+    /// A write over a hole a mapping maps zeros for takes those zeros away, whatever its pieces. Page
+    /// 1 is a hole between pages 0 and 2, written first, and a load maps the zero page for it. A
+    /// write of pages 0 and 1 then takes two iomaps, as page 0 stays where it is and page 1 goes
+    /// after page 2 in the staging extent; only the first says its pages are new, so that page 1's
+    /// mapping could stay on the zero page, and a store from it write zeros for good (found by
+    /// guest/sim, TASK-149.14).
+    fn test_write_over_mapped_hole() {
+        const PAGE: usize = 4096;
+        let name = path("write-over-mapped-hole");
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .read(true)
+            .write(true)
+            .open(&name)
+            .unwrap();
+        let fd = file.as_raw_fd();
+        let write = |at: usize, data: &[u8]| {
+            let written = unsafe { libc::pwrite(fd, data.as_ptr().cast(), data.len(), at as i64) };
+            assert_eq!(written, data.len() as isize, "{}", std::io::Error::last_os_error());
+        };
+        write(0, &[b'a'; PAGE]);
+        write(2 * PAGE, &[b'a'; PAGE]);
+        let map = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                3 * PAGE,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                fd,
+                0,
+            )
+        };
+        assert_ne!(map, libc::MAP_FAILED, "mmap: {}", std::io::Error::last_os_error());
+        let mapped = map.cast::<u8>();
+        assert_eq!(unsafe { mapped.add(PAGE).read_volatile() }, 0, "the hole, through the mapping");
+
+        write(0, &[b'b'; 2 * PAGE]);
+        let mut read = vec![0u8; PAGE];
+        let got = unsafe { libc::pread(fd, read.as_mut_ptr().cast(), PAGE, PAGE as i64) };
+        assert_eq!(got, PAGE as isize, "{}", std::io::Error::last_os_error());
+        assert_eq!(read, vec![b'b'; PAGE], "page 1, through read(2)");
+        let through = unsafe { std::slice::from_raw_parts(mapped.add(PAGE), PAGE) };
+        assert!(through.iter().all(|byte| *byte == b'b'), "page 1 through the mapping is stale");
+        unsafe { libc::munmap(map, 3 * PAGE) };
+        fs::remove_file(&name).unwrap();
+    }
+
     /// fxdax: a read into a mapping of the file it reads, whose pages a seal made read-only: the
     /// read's copy faults, the fault can't store to a slice, and dropping the slice waited for the
     /// slice's users, the read among them, for ever.
@@ -4437,6 +4485,7 @@ pub(crate) mod guest {
                 ("blocks_follow_writes", &test_blocks_follow_writes),
                 ("write_from_own_mapping", &test_write_from_own_mapping),
                 ("read_into_own_mapping", &test_read_into_own_mapping),
+                ("write_over_mapped_hole", &test_write_over_mapped_hole),
                 ("file_handles", &test_file_handles),
                 ("unsupported", &test_unsupported),
                 ("reflinks", &test_reflinks),

@@ -660,6 +660,7 @@ version = "0.1.0"
 dependencies = [
  "bincode",
  "extent_frame",
+ "fail",
  "futures",
  "libc",
  "log",
@@ -679,6 +680,7 @@ dependencies = [
  "anyhow",
  "bincode",
  "extent_frame",
+ "fail",
  "libc",
  "log",
  "rand 0.10.3",
