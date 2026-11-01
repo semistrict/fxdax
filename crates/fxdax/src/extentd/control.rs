@@ -238,6 +238,14 @@ impl Extentd for Control {
         reply(stores::delete(store).await.map(|()| DeleteStoreResponse {}))
     }
 
+    async fn drop_store(
+        &self,
+        request: Request<DropStoreRequest>,
+    ) -> Result<Response<DropStoreResponse>, Status> {
+        let store = path(request.into_inner().path)?;
+        reply(stores::drop_copy(store).await.map(|()| DropStoreResponse {}))
+    }
+
     async fn resize_store(
         &self,
         request: Request<ResizeStoreRequest>,
@@ -521,6 +529,14 @@ impl Client {
         let request = DeleteStoreRequest { path: name(path)? };
         let what = format!("deleting the store at {}", path.display());
         self.call(what, |mut c| async move { c.delete_store(request).await }).map(drop)
+    }
+
+    /// Deletes this host's copy of the store at `path`, its branch staying in the daemon's bucket
+    /// (`DropStore`).
+    pub fn drop_store(&self, path: &Path) -> Result<(), crate::Error> {
+        let request = DropStoreRequest { path: name(path)? };
+        let what = format!("dropping the store at {}", path.display());
+        self.call(what, |mut c| async move { c.drop_store(request).await }).map(drop)
     }
 
     /// Sets the capacity of the store at `path` to `capacity` bytes (`ResizeStore`).

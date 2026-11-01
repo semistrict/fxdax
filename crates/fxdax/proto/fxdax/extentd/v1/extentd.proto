@@ -54,6 +54,13 @@ service Extentd {
   // Deletes a store, or a fork, and its branch in the daemon's bucket: its data goes but for what
   // other branches share of it, which stays until the last of them goes.
   rpc DeleteStore(DeleteStoreRequest) returns (DeleteStoreResponse);
+  // Deletes this host's copy of a store, or a fork, as DeleteStore does, but for its branch in the
+  // daemon's bucket, which stays, with what else holds it: a point this host took for a tenant,
+  // which that tenant's VM processes restore no more, its snapshot living on. A store whose forks
+  // live here keeps its directory, which no longer opens, and takes no CreateStore until the last
+  // of them goes. What its commits hold that the bucket doesn't goes with it: SyncStore first, to
+  // keep it. FAILED_PRECONDITION (EBUSY) while a VM process has it open.
+  rpc DropStore(DropStoreRequest) returns (DropStoreResponse);
   // Sets a store's capacity, the size of the disk its guest sees: a store a VM has open grows at
   // once, the guest seeing it mounted, and shrinks if its guest's filesystem agrees, no lower than
   // what it holds (RESOURCE_EXHAUSTED otherwise); one none has open only grows.
@@ -167,6 +174,15 @@ message DeleteStoreRequest {
 
 // The store deleted.
 message DeleteStoreResponse {}
+
+// Deletes this host's copy of a store.
+message DropStoreRequest {
+  // The store, or the fork, to delete here.
+  string path = 1;
+}
+
+// This host's copy deleted.
+message DropStoreResponse {}
 
 // Sets a store's capacity.
 message ResizeStoreRequest {
