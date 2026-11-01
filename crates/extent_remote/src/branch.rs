@@ -209,13 +209,13 @@ async fn mark_deleted(bucket: &impl Bucket, branch: u64) -> Result<(), Error> {
 /// is left as it is (TASK-79.82); so is a branch deleted already, whoever's. Returns whether the
 /// fork's branch is gone, deleted now or before: `false` for another's.
 ///
-/// A child with no record yet gets the one its fork would give it first ([`record_fork`]), naming
-/// `origin`, before the deletion ends its lease: created only if no record is there, which another
-/// branch taking the ID meanwhile has, whose lease the deletion took otherwise (TASK-79.82). Its
-/// record taken, the ID is no other's, and a deletion that stops goes on as the fork's; deleted, it
-/// had no record before, nor children with none, as [`delete`] deletes such a branch. A fork whose
-/// segment never went, naming no `origin`, has none to take it with: an ID another branch takes
-/// while it is being deleted is that one's still.
+/// A child with no record yet gets one first, before the deletion ends its lease: created only if
+/// no record is there, which another branch taking the ID meanwhile has, whose lease the deletion
+/// took otherwise (TASK-79.82). Its record taken, the ID is no other's, and a deletion that stops
+/// goes on as the fork's; it had no record before, nor children with none, as [`delete`] deletes
+/// such a branch. The record is the one its fork would give it ([`record_fork`]), live, so that a
+/// deletion a later placement refuses ([`Error::Stale`]) changes nothing; or, naming no `origin`,
+/// deleted from the first, for good.
 pub async fn delete_fork(
     bucket: &impl Bucket,
     child: u64,
@@ -227,23 +227,25 @@ pub async fn delete_fork(
         match record(bucket, child).await? {
             Some(record) if record.deleted => return Ok(true),
             Some(record) if origin.is_none() || record.origin != origin => return Ok(false),
-            Some(_) => break,
+            Some(_) => return delete(bucket, child, holder, token).await.map(|()| true),
             None => {
-                let Some(origin) = origin else { break };
-                let record =
-                    layout::encode(&Record { origin: Some(origin), forked: true, deleted: false });
-                if let Created::Created =
-                    bucket::create(bucket, &layout::record(child), record).await
+                if origin.is_none() && !rules().fork_claims_ids {
+                    return delete(bucket, child, holder, token).await.map(|()| true);
+                }
+                let live = origin.is_some();
+                let record = Record { origin, forked: true, deleted: !live };
+                let key = layout::record(child);
+                if let Created::Created = bucket::create(bucket, &key, layout::encode(&record)).await
                 {
                     end_lease(bucket, child, holder, token).await?;
-                    mark_deleted(bucket, child).await?;
+                    if live {
+                        mark_deleted(bucket, child).await?;
+                    }
                     return Ok(true);
                 }
             }
         }
     }
-    delete(bucket, child, holder, token).await?;
-    Ok(true)
 }
 
 #[cfg(test)]

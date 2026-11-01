@@ -113,6 +113,9 @@ pub(crate) struct Rules {
     /// Readers read an extent where the footer of the object at its key says it is, not where
     /// their index does (TASK-79.18).
     pub footers: bool,
+    /// The deletion of a failed fork takes its child's ID with a record, before it ends the child's
+    /// lease, though its fork's segment never went (TASK-79.82).
+    pub fork_claims_ids: bool,
 }
 
 impl Rules {
@@ -129,6 +132,7 @@ impl Rules {
         tokens: true,
         delete_tokens: true,
         footers: true,
+        fork_claims_ids: true,
     };
 }
 

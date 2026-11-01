@@ -102,6 +102,7 @@ fn one() {
             "tokens" => rules.tokens = false,
             "delete_tokens" => rules.delete_tokens = false,
             "footers" => rules.footers = false,
+            "fork_claims_ids" => rules.fork_claims_ids = false,
             other => panic!("no rule {other}"),
         }
     }
@@ -119,6 +120,7 @@ fn one() {
         "taken" => taken(),
         "children" => children(),
         "recovering" => recovering(),
+        "failed" => failed_forks(),
         other => panic!("no profile {other}"),
     };
     let count = std::env::var("SIM_SEEDS").map_or(1, |count| count.parse().unwrap());
@@ -293,6 +295,28 @@ fn crashes() -> Profile {
 test_holds!(crashes_anywhere, crashes());
 
 test_needs!(forks_need_records_after_acks, records_after_ack, crashes());
+
+/// Forks that fail and are deleted, as their hosts' cleanups delete them, those crashing partway
+/// and going on, while their segments land or not, the parents' next writers give them records,
+/// collectors run, and other branches take their IDs (TASK-79.82, TASK-79.78).
+fn failed_forks() -> Profile {
+    let mut profile = weights(|weights| {
+        weights.fork = 6;
+        weights.unfork = 6;
+        weights.contest = 2;
+        weights.open = 4;
+        weights.takeover = 2;
+        weights.collect = 6;
+        weights.crash = 3;
+        weights.close = 2;
+    });
+    profile.fail_after = 0.1;
+    profile
+}
+
+test_holds!(failed_forks_deleted_anywhere, failed_forks());
+
+test_needs!(failed_forks_need_claims_of_ids, fork_claims_ids, failed_forks());
 
 /// Case 7: collectors stopping midway, two at once, one fenced by another. Case 8: writers' indexes
 /// older than compactions.
