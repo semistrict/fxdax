@@ -13,7 +13,9 @@
 // `StoreObjectHandle::multi_overwrite`), so preallocating doesn't guarantee space. `txn_map_write`
 // makes room for writes whose data comes through a DAX window (backlog doc-2), which Fuchsia
 // doesn't have. `write_many` writes data scattered across a file in as few transactions, and
-// device writes, as hold it: the guest kernel's page-cache writeback.
+// device writes, as hold it: the guest kernel's page-cache writeback. What splits an operation
+// across commits is the room its transaction says it has left (`Transaction::room`), not a count
+// of mutations: `allocate`, `preallocate_range`.
 
 use crate::checksum::{Checksum, Checksums};
 use crate::errors::FxfsError;
@@ -1194,13 +1196,13 @@ impl<S: HandleOwner> DataObjectHandle<S> {
     /// `multi_write`, which has yet to find what they replace, or what it allocates. The most it
     /// can take: for each run of them its extent's record, and a record of the checksums unless
     /// barriers stand for them, and for each block its checksums and the record freeing an extent
-    /// of its own, of the largest integers it could hold. The rest of a run of them in one
-    /// allocation, as they are unless the allocator is fragmented, is what the room spares.
+    /// of its own. What it can't say is what `TRANSACTION_ROOM` spares: the rest of an allocation
+    /// split into many.
     fn writes_in_room(&self, transaction: &Transaction<'_>, writes: &[BlocksWrite<'_>]) -> usize {
         let store = self.store();
         let journaled = !store.filesystem().options().barriers_enabled;
-        // Sequences and branches may be as long as they can be, but extents are far shorter than
-        // the 4 GiB this keeps their offsets to.
+        // Extents' branches and sequences may be as long as they can be, but their offsets don't
+        // reach 32 bits.
         let extent = ExtentId::new(u64::MAX, u64::MAX);
         let blocks = ExtentRange::new(extent, u32::MAX as u64..u32::MAX as u64);
         let sum_size = (1 + journaled as u64) * size_of::<Checksum>() as u64;
@@ -1920,6 +1922,7 @@ impl<S: HandleOwner> DataObjectHandle<S> {
             ranges.push(device_range);
             // If we didn't allocate all that we requested, we'll loop around and try again.
             // ... unless we have filled the transaction. The caller should check file_range.
+            // fxdax: as the transaction says, not upstream's 200 mutations.
             if transaction.is_full() {
                 break;
             }
@@ -7040,14 +7043,37 @@ mod tests {
     async fn writeback_filesystem(
         branch: u64,
     ) -> (OpenFxFilesystem, Arc<storage_device::fake_device::RoundTrips>, Arc<JournalUsages>) {
+        let (fs, trips, journal, ..) = counted_filesystem(branch).await;
+        (fs, trips, journal)
+    }
+
+    /// fxdax: `writeback_filesystem`, with what its commits hold of records, which `Hooks` sees
+    /// while it's kept.
+    async fn counted_filesystem(
+        branch: u64,
+    ) -> (
+        OpenFxFilesystem,
+        Arc<storage_device::fake_device::RoundTrips>,
+        Arc<JournalUsages>,
+        Arc<Commits>,
+        Hooks<'static>,
+    ) {
         use crate::object_store::journal::{JournalOptions, LazyFlush};
+        let commits = Arc::new(Commits::default());
+        let (mut hooks, fs_hooks) = Hooks::new();
+        let counting = commits.clone();
+        hooks.set_pre_commit(move |transaction| {
+            counting.0.lock().push(transaction.journal_bytes());
+            Ok(())
+        });
         let trips = Arc::new(storage_device::fake_device::RoundTrips::default());
         let device =
-            FakeDevice::new(8192, 4096).with_branch(branch).with_round_trips(trips.clone());
+            FakeDevice::new(1 << 15, 4096).with_branch(branch).with_round_trips(trips.clone());
         let lazy_flush = LazyFlush { bytes: 1 << 20, delay: Duration::from_secs(3600) };
         let journal = Arc::new(JournalUsages::default());
         let fs = FxFilesystemBuilder::new()
             .format(true)
+            .hooks(fs_hooks)
             .journal_options(JournalOptions { lazy_flush: Some(lazy_flush), ..Default::default() })
             .post_commit_hook({
                 let journal = journal.clone();
@@ -7060,7 +7086,7 @@ mod tests {
             .await
             .expect("open failed");
         journal.start(fs.object_manager());
-        (fs, trips, journal)
+        (fs, trips, journal, commits, hooks)
     }
 
     async fn create_file(fs: &FxFilesystem) -> DataObjectHandle<ObjectStore> {
@@ -7220,9 +7246,14 @@ mod tests {
     struct Commits(Mutex<Vec<u64>>);
 
     impl Commits {
+        /// What each commit since the last call held.
+        fn take(&self) -> Vec<u64> {
+            std::mem::take(&mut *self.0.lock())
+        }
+
         /// The commits since the last call, and their records' bytes.
-        fn take(&self) -> (usize, u64) {
-            let commits = std::mem::take(&mut *self.0.lock());
+        fn take_sum(&self) -> (usize, u64) {
+            let commits = self.take();
             (commits.len(), commits.iter().sum())
         }
     }
@@ -7245,20 +7276,7 @@ mod tests {
             PunchAcross,
         }
         async fn run(case: Case) -> (usize, u64) {
-            let commits = Arc::new(Commits::default());
-            let (mut hooks, fs_hooks) = Hooks::new();
-            let device = FakeDevice::new(8192, BS as u32).with_branch(u64::MAX >> 1);
-            let fs = FxFilesystemBuilder::new()
-                .format(true)
-                .hooks(fs_hooks)
-                .open(DeviceHolder::new(device))
-                .await
-                .expect("open failed");
-            let counting = commits.clone();
-            hooks.set_pre_commit(move |transaction| {
-                counting.0.lock().push(transaction.journal_bytes());
-                Ok(())
-            });
+            let (fs, _, _, commits, hooks) = counted_filesystem(u64::MAX >> 1).await;
             let store = fs.root_store();
             let data = vec![7u8; BS];
             let fragmented = async |first: usize| {
@@ -7283,7 +7301,7 @@ mod tests {
                 let options = Options::default();
                 let mut transaction =
                     store.new_transaction(keys, options).await.expect("new_transaction");
-                commits.take();
+                commits.take_sum();
                 from.clone_range_in_commits(&mut transaction, 0..end, to, 0, end)
                     .await
                     .expect("clone failed");
@@ -7292,7 +7310,7 @@ mod tests {
             };
             let punch = async |file: &DataObjectHandle<ObjectStore>, range: Range<u64>| {
                 let mut transaction = file.new_transaction().await.expect("new_transaction");
-                commits.take();
+                commits.take_sum();
                 file.zero_in_commits(&mut transaction, range).await.expect("punch failed");
                 transaction.commit().await.expect("commit failed");
             };
@@ -7305,7 +7323,7 @@ mod tests {
                 }
                 Case::PunchAcross => punch(&far().await, BS as u64..FAR).await,
             }
-            let cost = commits.take();
+            let cost = commits.take_sum();
             std::mem::drop(hooks);
             fsck(fs.clone()).await.expect("fsck failed");
             fs.close().await.expect("close failed");
@@ -7333,26 +7351,13 @@ mod tests {
 
         const FRAGMENTS: usize = 2048;
         const BS: usize = 4096;
-        let commits = Arc::new(Commits::default());
-        let (mut hooks, fs_hooks) = Hooks::new();
-        let device = FakeDevice::new(8192, BS as u32).with_branch(u64::MAX >> 1);
-        let fs = FxFilesystemBuilder::new()
-            .format(true)
-            .hooks(fs_hooks)
-            .open(DeviceHolder::new(device))
-            .await
-            .expect("open failed");
-        let counting = commits.clone();
-        hooks.set_pre_commit(move |transaction| {
-            counting.0.lock().push(transaction.journal_bytes());
-            Ok(())
-        });
+        let (fs, _, _, commits, hooks) = counted_filesystem(u64::MAX >> 1).await;
         let file = create_file(&fs).await;
         let data = vec![7u8; BS];
         file.write_many(&every(&data, 0, 2, FRAGMENTS, BS)).await.expect("write_many failed");
-        commits.0.lock().clear();
+        commits.take();
         file.allocate(0..(2 * FRAGMENTS * BS) as u64).await.expect("allocate failed");
-        let taken = std::mem::take(&mut *commits.0.lock());
+        let taken = commits.take();
         assert!(taken.len() > 1, "{taken:?}");
         assert!(taken.iter().all(|bytes| *bytes <= TRANSACTION_MAX_JOURNAL_USAGE), "{taken:?}");
         std::mem::drop(hooks);
@@ -7361,18 +7366,20 @@ mod tests {
     }
 
     /// fxdax: `write_many`'s transactions, of as many writes as they have room for, that overwrite
-    /// as many records as they can, fit what a transaction may take of the journal, their records'
-    /// integers as long as a branch's and a large file's make them; and one holds the
+    /// as many records as they can, take no more than the room it counted on, which leaves what
+    /// else they take within what a transaction may take of the journal, their records' integers
+    /// as long as a branch's and a large file's make them; and one holds the
     /// BLOCKS_PER_TRANSACTION writes of a block that dirty data pays its metadata for.
     #[fuchsia::test]
     async fn test_write_many_transactions_fit_the_journal() {
         use crate::object_store::dirty_reservation::BLOCKS_PER_TRANSACTION;
         use crate::object_store::transaction::TRANSACTION_MAX_JOURNAL_USAGE;
+        use std::cell::RefCell;
 
         const WRITES: usize = BLOCKS_PER_TRANSACTION as usize;
-        let (fs, _, journal) = writeback_filesystem(u64::MAX >> 1).await;
+        let (fs, _, journal, commits, _hooks) = counted_filesystem(u64::MAX >> 1).await;
         let bs = fs.block_size().get() as usize;
-        let data = vec![7u8; 256 * bs];
+        let data = vec![7u8; 512 * bs];
         const AT: u64 = 1 << 40;
         // A file of `blocks` blocks, written a block at a time, or 256 at a time: an extent each.
         let file = async |blocks: usize, at_a_time: usize| {
@@ -7383,22 +7390,30 @@ mod tests {
             file
         };
         // What each of the transactions `write_many` makes of `writes` takes of the journal.
+        let records = RefCell::new(Vec::new());
         let journal_usages = async |file: &DataObjectHandle<ObjectStore>,
                                     writes: &[(u64, &[u8])]| {
             journal.take();
+            commits.take();
             file.write_many(writes).await.expect("write_many failed");
+            records.borrow_mut().extend(commits.take());
             journal.take()
         };
         let mut usages = Vec::new();
-        // Writes of a block or two, each with a block between, over extents of a block, or each
-        // splitting an extent.
-        for (len, at_a_time) in [(1, 1), (1, 256), (2, 1), (2, 256)] {
+        // Writes of a block, each with a block between, over extents of a block, or each splitting
+        // an extent, as many as dirty data pays for in a transaction.
+        for at_a_time in [1, 256] {
             let file = file(768, at_a_time).await;
-            let writes = every(&data[..len * bs], AT, len + 1, WRITES, bs);
+            let usage = journal_usages(&file, &every(&data[..bs], AT, 2, WRITES, bs)).await;
+            assert_eq!(usage.len(), 1, "{usage:?}");
+            usages.push(usage);
+        }
+        // Twice that, of a block or more each, so that each transaction fills up to its room.
+        for (len, at_a_time) in [(1, 1), (2, 1), (3, 1), (8, 1), (32, 1), (1, 256), (8, 256)] {
+            let writes = 2 * WRITES.min(512 / (len + 1));
+            let file = file((len + 1) * writes, at_a_time).await;
+            let writes = every(&data[..len * bs], AT, len + 1, writes, bs);
             usages.push(journal_usages(&file, &writes).await);
-            if len == 1 {
-                assert_eq!(usages.last().expect("just pushed").len(), 1);
-            }
         }
         // 127 writes of a block, and one of the rest of 1 MiB, over extents of a block.
         let blocks = file(512, 1).await;
@@ -7414,6 +7429,8 @@ mod tests {
             usages.iter().flatten().all(|usage| *usage <= TRANSACTION_MAX_JOURNAL_USAGE),
             "{usages:?} of the journal, of {TRANSACTION_MAX_JOURNAL_USAGE}"
         );
+        let records = records.into_inner();
+        assert!(records.iter().all(|bytes| *bytes <= TRANSACTION_ROOM), "{records:?}");
         fs.close().await.expect("close failed");
     }
 }
