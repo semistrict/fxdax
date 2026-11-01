@@ -1,0 +1,526 @@
+// SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
+// Copyright 2026 The fxdax Authors.
+/*
+ * A model of Fxfs, as much of fs/fxfs/fxfs.h as dax.c calls: files as arrays of blocks, in extents
+ * of the store, with the rules of guest/rust/fxfs-linux and crates/fxfs that the window's protocol
+ * rests on (txn_map_write, the allocator's staging extent, Seal):
+ *
+ * - Blocks of open extents stay where they are; others move, to the staging extent if they are at
+ *   most STAGED_MAX bytes, which files share, or an extent of their own. A move keeps what the
+ *   range's first and last blocks hold around it, or all it holds (`keep`), or `held`.
+ * - A seal, around which a transaction may fall, seals every extent known to be open: those minted
+ *   during it aren't known to be. A transaction whose device write finds its extent sealed is
+ *   dropped, and tried again.
+ * - An extent dies once nothing holds a block of it and it isn't the staging extent, and is freed at
+ *   the seal after: until then the window goes on showing it; then the device maps zeros.
+ *
+ * It has no journal, no tree, no compaction, no crash consistency: durability isn't simulated, and
+ * the real Fxfs's own bugs can't show up here. It's what the window's protocol assumes of Fxfs,
+ * written a second time; where it differs from Fxfs, a run proves nothing.
+ */
+
+#include <sim/sim.h>
+#include <sim/host.h>
+
+#include "../../linux/fs/fxfs/device.h"
+#include "../../linux/fs/fxfs/fxfs.h"
+
+#define STAGING_PAGES ((2UL << 20) >> PAGE_SHIFT)
+#define STAGED_MAX_PAGES ((256UL << 10) >> PAGE_SHIFT)
+/* How often a transaction that met a seal is tried again: MAX_SEALED_RETRIES's sense. */
+#define SEALED_RETRIES 1000
+
+struct stub_extent {
+	u64 sequence;
+	u64 pages;
+	/* Whether Fxfs knows it to be open. */
+	bool open;
+	/* Blocks files hold of it. */
+	u64 live;
+	struct list_head list;
+};
+
+/* A block of a file. */
+struct block {
+	/* 0: a hole. */
+	u64 sequence;
+	u64 page;
+};
+
+struct stub_file {
+	u64 ino;
+	u64 size;
+	u64 nr_blocks;
+	struct block *blocks;
+	struct list_head list;
+};
+
+struct fxfs {
+	struct fxfs_device *dev;
+	/* Held by each transaction: the file's lock and the journal's, in one. */
+	struct mutex lock;
+	/* One seal at a time. */
+	struct mutex seal;
+	bool sealing;
+	struct list_head extents, files;
+	struct stub_extent *staging;
+	u64 staging_next;
+	u64 next_sequence, next_ino;
+	u64 branch;
+};
+
+static u64 moves, frees;
+
+void sim_device_wrote(u64 sequence, u64 page, u64 pages);
+u64 sim_device_length(u64 sequence);
+
+void fxfs_sim_stats(u64 *moved, u64 *freed)
+{
+	*moved = moves;
+	*freed = frees;
+}
+
+struct fxfs *fxfs_sim_new(void)
+{
+	struct fxfs *fs = kzalloc(sizeof(*fs), GFP_KERNEL);
+	struct fxfs_device_info info;
+
+	fs->dev = fxfs_device_find("sim", 3, &info);
+	if (!fs->dev)
+		sim_panic("no device");
+	mutex_init(&fs->lock);
+	mutex_init(&fs->seal);
+	INIT_LIST_HEAD(&fs->extents);
+	INIT_LIST_HEAD(&fs->files);
+	fs->next_sequence = 1;
+	fs->next_ino = 100;
+	fs->branch = info.branch;
+	return fs;
+}
+
+void fxfs_sim_free(struct fxfs *fs)
+{
+	struct stub_extent *extent, *next_extent;
+	struct stub_file *file, *next_file;
+
+	list_for_each_entry_safe(file, next_file, &fs->files, list) {
+		list_del(&file->list);
+		kfree(file->blocks);
+		kfree(file);
+	}
+	list_for_each_entry_safe(extent, next_extent, &fs->extents, list) {
+		list_del(&extent->list);
+		kfree(extent);
+	}
+	fxfs_device_put(fs->dev);
+	kfree(fs);
+}
+
+struct fxfs_device *fxfs_dax_device(struct fxfs_filesystem *filesystem)
+{
+	return ((struct fxfs *)filesystem)->dev;
+}
+
+void fxfs_set_check_kept(bool on)
+{
+}
+
+u64 fxfs_sim_new_file(struct fxfs *fs)
+{
+	struct stub_file *file = kzalloc(sizeof(*file), GFP_KERNEL);
+
+	mutex_lock(&fs->lock);
+	file->ino = fs->next_ino++;
+	list_add(&file->list, &fs->files);
+	mutex_unlock(&fs->lock);
+	return file->ino;
+}
+
+static struct stub_file *find_file(struct fxfs *fs, u64 ino)
+{
+	struct stub_file *file;
+
+	list_for_each_entry(file, &fs->files, list) {
+		if (file->ino == ino)
+			return file;
+	}
+	sim_panic("no file %llu", ino);
+}
+
+static struct stub_extent *find_extent(struct fxfs *fs, u64 sequence)
+{
+	struct stub_extent *extent;
+
+	list_for_each_entry(extent, &fs->extents, list) {
+		if (extent->sequence == sequence)
+			return extent;
+	}
+	sim_panic("no extent %llu", sequence);
+}
+
+/* Room for `pages` blocks of `file`. */
+static void reserve_blocks(struct stub_file *file, u64 pages)
+{
+	if (pages <= file->nr_blocks)
+		return;
+	file->blocks = krealloc(file->blocks, pages * sizeof(*file->blocks), GFP_NOFS);
+	memset(&file->blocks[file->nr_blocks], 0, (pages - file->nr_blocks) * sizeof(*file->blocks));
+	file->nr_blocks = pages;
+}
+
+static struct stub_extent *new_extent(struct fxfs *fs, u64 pages)
+{
+	struct stub_extent *extent = kzalloc(sizeof(*extent), GFP_NOFS);
+
+	extent->sequence = fs->next_sequence++;
+	extent->pages = pages;
+	/* Extents opened during a seal are not known to be open. */
+	extent->open = !fs->sealing;
+	list_add(&extent->list, &fs->extents);
+	sim_device_new_extent(extent->sequence, pages << PAGE_SHIFT);
+	return extent;
+}
+
+/* `pages` pages of the staging extent, a new one if it's sealed or too full: the first page. */
+static u64 take_staged(struct fxfs *fs, u64 pages, struct stub_extent **extent)
+{
+	u64 page;
+
+	if (!fs->staging || !fs->staging->open || fs->staging_next + pages > fs->staging->pages) {
+		fs->staging = new_extent(fs, STAGING_PAGES);
+		fs->staging_next = 0;
+	}
+	page = fs->staging_next;
+	fs->staging_next += pages;
+	*extent = fs->staging;
+	return page;
+}
+
+static void put_block(struct fxfs *fs, struct block *block)
+{
+	if (block->sequence)
+		find_extent(fs, block->sequence)->live--;
+	block->sequence = 0;
+}
+
+static void read_block(struct fxfs *fs, const struct block *block, void *buf)
+{
+	/* Past what the device holds of it, a block reads as zeros. */
+	if (block->sequence && block->page < sim_device_length(block->sequence))
+		host_store_read(sim_device_store_offset(block->sequence) +
+				(block->page << PAGE_SHIFT), buf, PAGE_SIZE);
+	else
+		memset(buf, 0, PAGE_SIZE);
+}
+
+void fxfs_sim_read(struct fxfs *fs, u64 ino, u64 offset, void *buf, size_t len)
+{
+	struct stub_file *file = find_file(fs, ino);
+	char page[PAGE_SIZE];
+	size_t done = 0;
+
+	while (done < len) {
+		u64 at = (offset + done) >> PAGE_SHIFT;
+		size_t in_page = offset_in_page(offset + done);
+		size_t part = min_t(size_t, PAGE_SIZE - in_page, len - done);
+
+		if (at < file->nr_blocks)
+			read_block(fs, &file->blocks[at], page);
+		else
+			memset(page, 0, PAGE_SIZE);
+		memcpy(buf + done, page + in_page, part);
+		done += part;
+	}
+}
+
+u64 fxfs_sim_size(struct fxfs *fs, u64 ino)
+{
+	return find_file(fs, ino)->size;
+}
+
+ssize_t fxfs_dax_extents(struct fxfs *fs, u64 ino, u64 offset, u64 len, struct fxfs_dax_extent *out,
+			 size_t max)
+{
+	struct stub_file *file;
+	u64 page = offset >> PAGE_SHIFT, end = (offset + len) >> PAGE_SHIFT;
+	ssize_t count = 0;
+
+	mutex_lock(&fs->lock);
+	file = find_file(fs, ino);
+	end = min(end, file->nr_blocks);
+	for (; page < end; page++) {
+		const struct block *block = &file->blocks[page];
+		struct stub_extent *extent;
+
+		if (!block->sequence)
+			continue;
+		extent = find_extent(fs, block->sequence);
+		if (count && out[count - 1].sequence == block->sequence &&
+		    out[count - 1].offset + out[count - 1].len == page << PAGE_SHIFT &&
+		    out[count - 1].extent_offset + out[count - 1].len ==
+		    block->page << PAGE_SHIFT) {
+			out[count - 1].len += PAGE_SIZE;
+			continue;
+		}
+		if (count == max) {
+			count = -E2BIG;
+			break;
+		}
+		out[count++] = (struct fxfs_dax_extent) {
+			.offset = page << PAGE_SHIFT, .len = PAGE_SIZE, .branch = fs->branch,
+			.sequence = block->sequence, .extent_offset = block->page << PAGE_SHIFT,
+			.open = extent->open, .extent_size = extent->pages << PAGE_SHIFT,
+		};
+	}
+	mutex_unlock(&fs->lock);
+	return count;
+}
+
+int fxfs_dax_update_size(struct fxfs *fs, u64 ino, u64 size)
+{
+	struct stub_file *file;
+
+	mutex_lock(&fs->lock);
+	file = find_file(fs, ino);
+	file->size = max(file->size, size);
+	mutex_unlock(&fs->lock);
+	return 0;
+}
+
+/* Whether a block is anything but zeros, which new blocks hold already. */
+static bool keeps_data(const void *data)
+{
+	const u64 *word = data;
+	size_t i;
+
+	for (i = 0; i < PAGE_SIZE / sizeof(*word); i++) {
+		if (word[i])
+			return true;
+	}
+	return false;
+}
+
+/* One try at fxfs_dax_map_write's transaction: -EAGAIN if a seal came. */
+static ssize_t try_map_write(struct fxfs *fs, u64 ino, u64 offset, u64 len, u64 size, bool keep,
+			     const void *held, struct fxfs_dax_extent *out, size_t max)
+{
+	u64 first = offset >> PAGE_SHIFT, last = (offset + len - 1) >> PAGE_SHIFT, page, pages;
+	struct block *moved;
+	char *copies;
+	bool *kept, *moving;
+	struct stub_file *file;
+	struct stub_extent *extent = NULL;
+	ssize_t count = 0;
+	int err = 0;
+
+	pages = last - first + 1;
+	mutex_lock(&fs->lock);
+	file = find_file(fs, ino);
+	reserve_blocks(file, last + 1);
+	moved = kcalloc(pages, sizeof(*moved), GFP_NOFS);
+	copies = kmalloc(pages << PAGE_SHIFT, GFP_NOFS);
+	kept = kcalloc(pages, sizeof(*kept), GFP_NOFS);
+	moving = kcalloc(pages, sizeof(*moving), GFP_NOFS);
+	for (page = 0; page < pages; page++) {
+		const struct block *block = &file->blocks[first + page];
+		bool all = keep || held;
+
+		moving[page] = !block->sequence || !find_extent(fs, block->sequence)->open;
+		if (!moving[page])
+			continue;
+		moves++;
+		/* The first and last blocks hold what the range doesn't, around it. */
+		kept[page] = all || (!page && offset_in_page(offset)) ||
+			     (page == pages - 1 && offset_in_page(offset + len));
+		if (held && kept[page])
+			memcpy(copies + (page << PAGE_SHIFT), held + (page << PAGE_SHIFT),
+			       PAGE_SIZE);
+		else if (kept[page])
+			read_block(fs, block, copies + (page << PAGE_SHIFT));
+	}
+	/* The parts that move: their new blocks, and their copies to the device. */
+	for (page = 0; page < pages;) {
+		u64 run = 0, at;
+
+		if (!moving[page]) {
+			page++;
+			continue;
+		}
+		while (page + run < pages && moving[page + run])
+			run++;
+		for (at = 0; at < run;) {
+			u64 take = run - at, in_extent;
+
+			if (take <= STAGED_MAX_PAGES) {
+				in_extent = take_staged(fs, take, &extent);
+			} else {
+				extent = new_extent(fs, take);
+				in_extent = 0;
+			}
+			if (!extent->open) {
+				err = -EAGAIN;
+				goto out;
+			}
+			for (; take; take--, at++, in_extent++) {
+				moved[page + at] = (struct block) { extent->sequence, in_extent };
+				extent->live++;
+			}
+		}
+		page += run;
+	}
+	/* The device's writes: a seal may come between them, which sealed what they are of. */
+	mutex_unlock(&fs->lock);
+	for (page = 0; page < pages; page++) {
+		const void *data = copies + (page << PAGE_SHIFT);
+
+		if (!kept[page] || !moving[page] || !keeps_data(data))
+			continue;
+		sim_point("a Fxfs write");
+		if (!find_extent(fs, moved[page].sequence)->open) {
+			err = -EAGAIN;
+			break;
+		}
+		host_store_write(sim_device_store_offset(moved[page].sequence) +
+				 (moved[page].page << PAGE_SHIFT), data, PAGE_SIZE);
+		sim_device_wrote(moved[page].sequence, moved[page].page, 1);
+	}
+	mutex_lock(&fs->lock);
+out:
+	if (err) {
+		for (page = 0; page < pages; page++) {
+			if (moved[page].sequence)
+				find_extent(fs, moved[page].sequence)->live--;
+		}
+		goto done;
+	}
+	/* The commit: the new blocks in place of the old, and the size. */
+	for (page = 0; page < pages; page++) {
+		struct block *block = &file->blocks[first + page];
+
+		if (moving[page]) {
+			put_block(fs, block);
+			*block = moved[page];
+		}
+		if (count && out[count - 1].sequence == block->sequence &&
+		    out[count - 1].extent_offset + out[count - 1].len ==
+		    block->page << PAGE_SHIFT) {
+			out[count - 1].len += PAGE_SIZE;
+			continue;
+		}
+		if (count == max) {
+			sim_panic("map_write: room for %zu pieces", max);
+		}
+		extent = find_extent(fs, block->sequence);
+		out[count++] = (struct fxfs_dax_extent) {
+			.offset = (first + page) << PAGE_SHIFT, .len = PAGE_SIZE,
+			.branch = fs->branch, .sequence = block->sequence,
+			.extent_offset = block->page << PAGE_SHIFT, .open = 1,
+			.extent_size = extent->pages << PAGE_SHIFT,
+		};
+	}
+	file->size = max(file->size, size);
+done:
+	mutex_unlock(&fs->lock);
+	kfree(moved);
+	kfree(copies);
+	kfree(kept);
+	kfree(moving);
+	return err ?: count;
+}
+
+ssize_t fxfs_dax_map_write(struct fxfs *fs, u64 ino, u64 offset, u64 len, u64 size, bool keep,
+			   const void *held, struct fxfs_dax_extent *out, size_t max)
+{
+	ssize_t count = -EAGAIN;
+	int tries;
+
+	for (tries = 0; tries < SEALED_RETRIES && count == -EAGAIN; tries++)
+		count = try_map_write(fs, ino, offset, len, size, keep, held, out, max);
+	if (count == -EAGAIN)
+		sim_panic("map_write: its extents sealed still, tried at length");
+	return count;
+}
+
+bool fxfs_dax_restage(struct fxfs_filesystem *filesystem, struct fxfs_dax_extent *out)
+{
+	struct fxfs *fs = (struct fxfs *)filesystem;
+	bool restaged = false;
+
+	mutex_lock(&fs->lock);
+	if (fs->staging && fs->staging_next && !fs->staging->open) {
+		fs->staging = new_extent(fs, STAGING_PAGES);
+		fs->staging_next = 0;
+		*out = (struct fxfs_dax_extent) {
+			.branch = fs->branch, .sequence = fs->staging->sequence,
+			.extent_size = STAGING_PAGES << PAGE_SHIFT,
+		};
+		restaged = true;
+	}
+	mutex_unlock(&fs->lock);
+	return restaged;
+}
+
+/* A seal, around the COMMIT that seals what is open, and then what it left dead is freed. */
+int fxfs_fsync(struct fxfs *fs)
+{
+	struct stub_extent *extent, *next;
+
+	mutex_lock(&fs->seal);
+	fxfs_device_seal_begin(fs->dev);
+	mutex_lock(&fs->lock);
+	fs->sealing = true;
+	list_for_each_entry(extent, &fs->extents, list)
+		extent->open = false;
+	mutex_unlock(&fs->lock);
+	sim_point("a seal's COMMIT");
+	sim_device_seal();
+	sim_point("a seal's end");
+	mutex_lock(&fs->lock);
+	fs->sealing = false;
+	list_for_each_entry(extent, &fs->extents, list)
+		extent->open = false;
+	mutex_unlock(&fs->lock);
+	fxfs_device_seal_end(fs->dev);
+	mutex_lock(&fs->lock);
+	list_for_each_entry_safe(extent, next, &fs->extents, list) {
+		if (extent->live || extent == fs->staging)
+			continue;
+		list_del(&extent->list);
+		sim_device_free_extent(extent->sequence);
+		frees++;
+		kfree(extent);
+	}
+	mutex_unlock(&fs->lock);
+	mutex_unlock(&fs->seal);
+	return 0;
+}
+
+int fxfs_setattr(struct fxfs *fs, u64 ino, const struct fxfs_setattr *set)
+{
+	struct stub_file *file;
+	u64 page;
+
+	mutex_lock(&fs->lock);
+	file = find_file(fs, ino);
+	if (set->valid & FXFS_SET_SIZE) {
+		for (page = DIV_ROUND_UP(set->size, PAGE_SIZE); page < file->nr_blocks; page++)
+			put_block(fs, &file->blocks[page]);
+		file->size = set->size;
+	}
+	mutex_unlock(&fs->lock);
+	return 0;
+}
+
+int fxfs_punch(struct fxfs *fs, u64 ino, u64 offset, u64 len)
+{
+	struct stub_file *file;
+	u64 page;
+
+	mutex_lock(&fs->lock);
+	file = find_file(fs, ino);
+	for (page = offset >> PAGE_SHIFT; page < (offset + len) >> PAGE_SHIFT &&
+	     page < file->nr_blocks; page++)
+		put_block(fs, &file->blocks[page]);
+	mutex_unlock(&fs->lock);
+	return 0;
+}

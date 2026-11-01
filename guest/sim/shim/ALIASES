@@ -1,0 +1,15 @@
+# The kernel's headers the sources under test include, each made a one-line header for the
+# shim's file on the left, which holds what those sources need of it. Headers neither here nor in
+# the shim come from the kernel's own tree unchanged (REAL_HEADERS, in the Makefile).
+sim/base.h: linux/bug.h linux/build_bug.h linux/compiler.h linux/compiler_types.h linux/const.h linux/container_of.h linux/err.h linux/errno.h linux/export.h linux/init.h linux/kernel.h linux/limits.h linux/minmax.h linux/stddef.h linux/string.h linux/types.h linux/stringify.h linux/module.h linux/printk.h linux/ratelimit.h linux/sizes.h linux/align.h asm/barrier.h asm/types.h linux/math.h linux/overflow.h linux/cleanup.h linux/interrupt.h linux/of.h linux/of_platform.h linux/platform_device.h linux/device.h
+sim/atomic.h: linux/atomic.h linux/refcount.h
+sim/bitops.h: linux/bitmap.h linux/bitops.h linux/log2.h linux/find.h
+sim/rcu.h: linux/rcupdate.h
+sim/lockdep.h: linux/lockdep.h
+sim/sched.h: linux/sched.h linux/sched/signal.h linux/sched/mm.h linux/sched/debug.h linux/sched/task.h linux/mutex.h linux/rwsem.h linux/spinlock.h linux/spinlock_types.h asm/current.h linux/preempt.h linux/irqflags.h linux/jump_label.h
+sim/time.h: linux/delay.h linux/timekeeping.h linux/ktime.h linux/jiffies.h
+sim/workqueue.h: linux/workqueue.h
+sim/slab.h: linux/slab.h linux/gfp.h linux/gfp_types.h linux/vmalloc.h
+sim/mm.h: linux/mm.h linux/mm_types.h linux/mmu_notifier.h linux/highmem.h linux/rmap.h linux/memcontrol.h linux/pagevec.h linux/vmstat.h linux/pagewalk.h asm/pgalloc.h linux/mmzone.h
+sim/fs.h: linux/fs.h linux/pagemap.h linux/uio.h linux/writeback.h linux/seq_file.h linux/blkdev.h linux/buffer_head.h linux/blk_types.h linux/scatterlist.h
+sim/module.h: linux/moduleparam.h
