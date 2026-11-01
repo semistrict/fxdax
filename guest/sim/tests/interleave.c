@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
 // Copyright 2026 The fxdax Authors.
 /*
- * Tasks writing, mapping, sealing and truncating at once, their interleaving the seed's: the same
- * seed plays the same run, whose trace hash says so.
+ * Tasks writing, mapping, sealing, truncating and evicting at once, their interleaving the seed's:
+ * the same seed plays the same run, whose trace hash says so.
  *
  *   interleave SEED [OPERATIONS] [-s] [-t] [-T] [-v] [-I] [-N] [-w WINDOW_PAGE] [-a ADDRESS] [-W INO PAGE]
  *
@@ -11,15 +11,23 @@
  * file's page; -v each operation. -I leaves dax.c's fault injection off, and -N the operations that
  * take a file's own mapping for their memory.
  *
- * Tasks share files without sharing bytes, so that each knows what every byte it owns should hold
- * though pages move under all of them at once: each owns a slot of every page of the shared file,
- * and a private file. What it reads must be what it wrote; once all end, a seal's extents must
- * hold all of it. dax.c's own diagnostics are on, and each of its WARNs fails the run.
+ * Every store is stamped, as ztest's blocks carry their tags: whose it is, where it belongs, its
+ * generation and the seal it was made in. Tasks share files without sharing bytes: each owns a slot
+ * of every page of the shared files, and a private file, cells of stamps. What a task reads of its
+ * own must be its last store. What it reads of another's can't be exact, as the owner may be
+ * storing, but it is bounded, as ztest's txg bounds a block's: not older than the last store that
+ * ended before the read began, nor anything any read saw before it began, nor newer than the last
+ * store begun as it ended, and never zeros once written, unless a store was under way. So a stale
+ * read, a zero read, a read of another file's or another place's data, or from the future, is named
+ * as such as it is read, on any task's read of any slot. After an fsync, Fxfs's extents must hold
+ * every slot's last store; and once all end, the same of all of it. dax.c's own diagnostics are on,
+ * and each of its WARNs fails the run.
  */
 
 #include <sim/sim.h>
 
 #define WINDOW_LEN (64UL << 20)
+#define SMALL_WINDOW_LEN (16UL << 20)
 #define WORKERS 3
 #define SHARED_PAGES 64
 /* Past a PMD, so that a read fault can map 2 MiB of it at once. */
@@ -29,22 +37,63 @@
 #define SMALL_FILES 4
 #define SMALL_PAGES 4
 #define HUGE_LEN (2 * PMD_SIZE)
+/* How many slots an fsync checks in Fxfs's extents. */
+#define FSYNC_CHECKS 16
 #define SLOT 32
 
 #define check(cond, ...) do { if (!(cond)) sim_panic(__VA_ARGS__); } while (0)
 
+#define STAMP_MAGIC 0xfdaf5eedU
+
+/* What a store leaves in a slot. */
+struct stamp {
+	u32 magic;
+	u32 ino;
+	/* Where in the file it belongs, in slots. */
+	u32 cell;
+	u32 worker;
+	/* Of its slot, or for a private file its worker's: from 1. */
+	u64 generation;
+	/* How many seals had ended as it was made. */
+	u32 seals;
+	u32 check;
+};
+_Static_assert(sizeof(struct stamp) == SLOT, "a stamp is a slot");
+
+/* A slot of a page of a file every worker has a slot of each page of. */
+struct slot {
+	/* The last store to end. */
+	struct stamp done;
+	/* The generation of the last to begin, the newest a read saw, and if a store is under way. */
+	u64 begun, seen;
+	bool flying;
+};
+
+struct slots {
+	struct file *file;
+	unsigned long addr, pages;
+	/* By worker, then page. */
+	struct slot *slots[WORKERS];
+};
+
 struct worker {
 	int id;
-	/* What it wrote in its slot of each page of the shared and big files. */
-	char shared[SHARED_PAGES][SLOT];
-	char big[BIG_PAGES][SLOT];
-	char small[SMALL_FILES][SMALL_PAGES][SLOT];
-	/* Its private file, as it should read. */
+	/* Its private file, as it should read, cells of stamps, and how many it has made. */
 	struct file *file;
 	char *private;
 	loff_t size;
+	u64 generation;
+	/* Counts as it begins to shrink and as it ends: loads past the end may fail then. */
+	u64 shrinks;
 	/* A mapping of its private file, which writes copy from and reads copy to. */
 	unsigned long addr;
+	/* Held by those using the file, or the mapping, of another's: an inode isn't evicted so. */
+	struct rw_semaphore open;
+	/* A file that shares blocks of its private file, as it should read, and a mapping of it. */
+	struct file *twin;
+	char *twin_bytes;
+	loff_t twin_size;
+	unsigned long twin_addr;
 	/* A file of a sealed PMD's data, written again each cycle (huge_cycle). */
 	struct file *huge_file;
 	unsigned long huge_addr;
@@ -52,8 +101,7 @@ struct worker {
 
 static struct worker workers[WORKERS];
 static struct sim_mount *mount;
-static struct file *shared_file, *big_file, *small_files[SMALL_FILES];
-static unsigned long shared_addr, big_addr, small_addrs[SMALL_FILES];
+static struct slots shared, big, small[SMALL_FILES];
 static int writers_left;
 static unsigned long operations = 200;
 /*
@@ -61,6 +109,13 @@ static unsigned long operations = 200;
  * read-only the page another's copy into a mapping needs, which fails it, as it should.
  */
 static bool fault_seals;
+/* Whether Fxfs's transactions fail: writes and stores then may too. And whether a MAP does. */
+static bool failing, failing_maps;
+/*
+ * How many pages of a file slots are taken from, in a run that has them all on a few, or 0 for
+ * all: most races need two tasks on one page, or one extent.
+ */
+static unsigned long hot_pages;
 /* How many cycles a PMD did map, for the log: the path needs reaching to mean anything. */
 static unsigned long huge_mapped;
 /* Whether dax.c traces what happens to pages, and whether each operation is logged. */
@@ -78,89 +133,279 @@ static u64 between(u64 low, u64 high)
 	return low + sim_random() % (high - low + 1);
 }
 
-static void new_bytes(char *buf, size_t len)
+/* A slot's worth of bytes down from `at`, whatever it is. */
+static u64 cell_of(u64 at)
 {
-	u64 value = sim_random();
-	size_t i;
-
-	for (i = 0; i < len; i++) {
-		if (!(i % 8))
-			value = sim_random();
-		buf[i] = value >> (i % 8 * 8);
-	}
+	return round_down(at, SLOT);
 }
 
-static void check_bytes(const char *what, const struct worker *worker, struct file *file,
-			const char *got, const char *expected, size_t len, loff_t at)
+static u32 stamp_hash(const struct stamp *stamp)
 {
-	char page[48], held;
-	size_t i;
+	const u32 *word = (const u32 *)stamp;
+	u32 hash = 0x811c9dc5, i;
+
+	for (i = 0; i < offsetof(struct stamp, check) / sizeof(*word); i++)
+		hash = (hash ^ word[i]) * 0x01000193;
+	return hash;
+}
+
+static void stamp_make(struct stamp *stamp, u64 ino, loff_t at, int worker, u64 generation)
+{
+	*stamp = (struct stamp) {
+		.magic = STAMP_MAGIC, .ino = ino, .cell = at / SLOT, .worker = worker,
+		.generation = generation, .seals = fxfs_sim_seals(mount->info->fs),
+	};
+	stamp->check = stamp_hash(stamp);
+}
+
+static bool all_zeros(const void *bytes, size_t len)
+{
+	const char *byte = bytes;
+
+	return !byte[0] && !memcmp(byte, byte + 1, len - 1);
+}
+
+/* A stamp, whatever it is of. */
+static bool stamp_valid(const struct stamp *stamp)
+{
+	return stamp->magic == STAMP_MAGIC && stamp->check == stamp_hash(stamp);
+}
+
+static void stamp_log(const char *what, const void *bytes)
+{
+	struct stamp stamp;
+
+	memcpy(&stamp, bytes, SLOT);
+	if (all_zeros(&stamp, SLOT))
+		sim_log("interleave: %s: zeros\n", what);
+	else if (!stamp_valid(&stamp))
+		sim_log("interleave: %s: no stamp\n", what);
+	else
+		sim_log("interleave: %s: worker %u's generation %llu of ino %u at %llu, made after %u seals, of %llu now\n",
+			what, stamp.worker, stamp.generation, stamp.ino, (u64)stamp.cell * SLOT,
+			stamp.seals, fxfs_sim_seals(mount->info->fs));
+}
+
+/* What is wrong with `got`, read of `ino` at `at`, worker's, between generations: or NULL. */
+static const char *stamp_wrong(const struct stamp *got, u64 ino, loff_t at, int worker, u64 low,
+			       u64 high, bool overlapped)
+{
+	if (all_zeros(got, SLOT))
+		return low && !overlapped ? "a zero read" : NULL;
+	if (!stamp_valid(got))
+		return "bytes no store made";
+	if (got->ino != ino)
+		return "another file's data";
+	if (got->cell * SLOT != at)
+		return "another place's data";
+	if (got->worker != worker)
+		return "another worker's data";
+	if (got->generation < low)
+		return "a stale read";
+	if (got->generation > high || got->seals > fxfs_sim_seals(mount->info->fs))
+		return "a read from the future";
+	return NULL;
+}
+
+/* Says all that is known of a wrong read, and ends the run. */
+static __noreturn void wrong_read(const char *what, const char *why, struct file *file,
+				  const void *got, const void *expected, loff_t at)
+{
+	u64 ino = file_inode(file)->i_ino;
+	char page[48], held[SLOT];
+
+	if (got)
+		stamp_log("read", got);
+	if (expected)
+		stamp_log("expected", expected);
+	fxfs_sim_read(mount->info->fs, ino, cell_of(at), held, SLOT);
+	stamp_log("in Fxfs's extents", held);
+	sim_log("interleave: page %llu of ino %llu\n", at >> PAGE_SHIFT, ino);
+	if (tracing) {
+		snprintf(page, sizeof(page), "%llu %llu", ino, at >> PAGE_SHIFT);
+		sim_param_set("dax_trace_dump", page);
+	}
+	sim_panic("%s of ino %llu at %lld: %s", what, ino, at, why);
+}
+
+/* `got` must be `expected`, byte for byte, of the file's `len` bytes at `at`. */
+static void check_bytes(const char *what, struct file *file, const char *got, const char *expected,
+			size_t len, loff_t at)
+{
+	const char *why = "other data than the last store's";
+	size_t i, cell;
 
 	for (i = 0; i < len; i++) {
 		if (got[i] == expected[i])
 			continue;
-		fxfs_sim_read(mount->info->fs, file_inode(file)->i_ino, at + i, &held, 1);
-		sim_log("interleave: page %llu of ino %lu: Fxfs's extents hold %#x there\n",
-			(at + i) >> PAGE_SHIFT, file_inode(file)->i_ino, (u8)held);
-		if (tracing) {
-			snprintf(page, sizeof(page), "%lu %llu", file_inode(file)->i_ino,
-				 (at + i) >> PAGE_SHIFT);
-			sim_param_set("dax_trace_dump", page);
-		}
-		sim_panic("%s of worker %d at %lld: byte %zu is %#x, not %#x", what, worker->id, at,
-			  i, (u8)got[i], (u8)expected[i]);
+		if (!got[i])
+			why = "a zero read";
+		/* The stamp the byte is of, if the read has all of it. */
+		cell = cell_of(at + i) - at;
+		if (cell_of(at + i) < at || cell + SLOT > len)
+			wrong_read(what, why, file, NULL, NULL, at + i);
+		wrong_read(what, why, file, got + cell, expected + cell, at + cell);
 	}
 }
 
-/* A slot of a page of a file every worker has a slot of each page of. */
-static void slot_op(struct worker *worker, struct file *file, unsigned long addr, char *slots,
-		    unsigned long pages)
+/* Whether an operation that failed by `result` may have, as Fxfs's transactions fail. */
+static bool failed_as_asked(ssize_t result)
 {
-	unsigned long page = between(0, pages - 1);
-	loff_t at = ((loff_t)page << PAGE_SHIFT) + worker->id * SLOT;
-	char *mine = slots + page * SLOT, buf[SLOT];
-	ssize_t done;
-	int err;
+	return failing && (result == -ENOSPC || result == -EFAULT || result == -EIO);
+}
 
-	switch (between(0, 3)) {
-	case 0:
-		new_bytes(buf, SLOT);
-		memcpy(mine, buf, SLOT);
-		done = sim_write(file, at, buf, SLOT);
-		check(done == SLOT, "write: %zd", done);
-		break;
-	case 1:
-		new_bytes(buf, SLOT);
-		memcpy(mine, buf, SLOT);
-		err = sim_user_store(addr + at, buf, SLOT);
-		check(!err, "a store at page %lu of worker %d: %d", page, worker->id, err);
-		break;
-	case 2:
-		done = sim_read(file, at, buf, SLOT);
-		check(done == SLOT, "read: %zd", done);
-		check_bytes("read", worker, file, buf, mine, SLOT, at);
-		break;
-	default:
-		err = sim_user_load(addr + at, buf, SLOT);
-		check(!err, "a load at page %lu of worker %d: %d", page, worker->id, err);
-		if (memcmp(buf, mine, SLOT))
-			sim_mm_describe(addr + at);
-		check_bytes("load", worker, file, buf, mine, SLOT, at);
-		break;
+static loff_t slot_at(int worker, unsigned long page)
+{
+	return ((loff_t)page << PAGE_SHIFT) + worker * SLOT;
+}
+
+/*
+ * A store that failed: its slot may have lost its bytes, as the blocks moved, whole pages without
+ * what the write was to bring (fxfs_dax_iomap_write). So the owner reads what it holds now.
+ */
+static void slot_resync(struct worker *worker, struct slots *file, unsigned long page)
+{
+	struct slot *slot = &file->slots[worker->id][page];
+	loff_t at = slot_at(worker->id, page);
+	struct stamp got;
+	ssize_t done = sim_read(file->file, at, &got, SLOT);
+
+	check(done == SLOT, "reading a slot back: %zd", done);
+	if (all_zeros(&got, SLOT)) {
+		memset(&slot->done, 0, SLOT);
+		slot->seen = 0;
+		return;
 	}
+	check_bytes("a slot after a failed store", file->file, (char *)&got,
+		    (char *)&slot->done, SLOT, at);
+}
+
+static void slot_store(struct worker *worker, struct slots *file, unsigned long page, bool mapped)
+{
+	struct slot *slot = &file->slots[worker->id][page];
+	loff_t at = slot_at(worker->id, page);
+	struct stamp stamp;
+	ssize_t done;
+
+	stamp_make(&stamp, file_inode(file->file)->i_ino, at, worker->id, ++slot->begun);
+	slot->flying = true;
+	done = mapped ? sim_user_store(file->addr + at, &stamp, SLOT) ?: SLOT :
+	       sim_write(file->file, at, &stamp, SLOT);
+	check(done == SLOT || failed_as_asked(done), "a store at page %lu of worker %d: %zd", page,
+	      worker->id, done);
+	if (done == SLOT)
+		slot->done = stamp;
+	else
+		slot_resync(worker, file, page);
+	slot->flying = false;
+}
+
+/* A read of `owner`'s slot of the page, by read(2) or through the mapping. */
+static void slot_read(struct worker *reader, struct slots *file, unsigned long page, int owner,
+		      bool mapped)
+{
+	struct slot *slot = &file->slots[owner][page];
+	u64 low = max(slot->done.generation, slot->seen), begun = slot->begun;
+	bool flying = slot->flying, overlapped;
+	loff_t at = slot_at(owner, page);
+	const char *what = mapped ? "a load" : "a read", *wrong;
+	struct stamp got;
+	ssize_t done;
+
+	done = mapped ? sim_user_load(file->addr + at, &got, SLOT) ?: SLOT :
+	       sim_read(file->file, at, &got, SLOT);
+	check(done == SLOT, "%s of page %lu of worker %d: %zd", what, page, owner, done);
+	overlapped = flying || slot->flying || slot->begun != begun;
+	wrong = stamp_wrong(&got, file_inode(file->file)->i_ino, at, owner, low,
+			    overlapped ? slot->begun : slot->done.generation, overlapped);
+	if (wrong) {
+		if (mapped)
+			sim_mm_describe(file->addr + at);
+		wrong_read(what, wrong, file->file, &got, overlapped ? NULL : &slot->done, at);
+	}
+	slot->seen = max(slot->seen, got.generation);
+}
+
+static void slot_op(struct worker *worker, struct slots *file)
+{
+	unsigned long pages = hot_pages ? min(hot_pages, file->pages) : file->pages;
+	unsigned long page = between(0, pages - 1);
+	u64 how = between(0, 3);
+
+	operation(worker, "%s page %lu of ino %lu\n", how < 2 ? "store" : "read", page,
+		  file_inode(file->file)->i_ino);
+	if (how < 2)
+		slot_store(worker, file, page, how);
+	else
+		slot_read(worker, file, page, between(0, WORKERS - 1), how == 3);
+}
+
+/* Stamps `len` bytes for `file` at `at` from `first` on, cells of a worker's. */
+static void new_cells(struct worker *worker, struct file *file, char *to, loff_t at, size_t len)
+{
+	size_t i;
+
+	for (i = 0; i < len; i += SLOT)
+		stamp_make((struct stamp *)(to + i), file_inode(file)->i_ino, at + i, worker->id,
+			   ++worker->generation);
+}
+
+/* Whether `got` is a cell of the worker's file, but for where: its own writes copy cells around. */
+static bool private_cell(const struct worker *worker, const struct stamp *got)
+{
+	return all_zeros(got, SLOT) ||
+	       (stamp_valid(got) && got->ino == file_inode(worker->file)->i_ino &&
+		got->worker == worker->id && got->generation <= worker->generation);
+}
+
+/*
+ * What a write or a zeroing Fxfs failed left: what they reached of their cells, and of the others
+ * what they held, or zeros, as blocks moved for them hold (slot_resync). The file is read whole.
+ */
+static void private_resync(struct worker *worker)
+{
+	loff_t size = i_size_read(file_inode(worker->file)), at;
+	char *whole = kzalloc(PRIVATE_MAX, GFP_KERNEL), *held;
+	ssize_t done = sim_read(worker->file, 0, whole, size);
+
+	check(done == size, "reading a file back: %zd of %lld", done, size);
+	for (at = 0; at < size; at += SLOT) {
+		if (!memcmp(whole + at, worker->private + at, SLOT))
+			continue;
+		if (!private_cell(worker, (struct stamp *)(whole + at)))
+			wrong_read("a file after a failed write", "bytes no store made",
+				   worker->file, whole + at, worker->private + at, at);
+	}
+	/* Whatever failed, read(2) goes where Fxfs has the file. */
+	held = kmalloc(PRIVATE_MAX, GFP_KERNEL);
+	fxfs_sim_read(mount->info->fs, file_inode(worker->file)->i_ino, 0, held, size);
+	check_bytes("a file after a failed write, against Fxfs's extents", worker->file, whole, held,
+		    size, 0);
+	kfree(held);
+	memcpy(worker->private, whole, PRIVATE_MAX);
+	worker->size = size;
+	kfree(whole);
 }
 
 static void private_write(struct worker *worker)
 {
-	loff_t at = between(0, min_t(loff_t, worker->size, PRIVATE_MAX - 1));
-	size_t len = between(1, min_t(u64, PRIVATE_MAX - at, 3 * PAGE_SIZE));
+	loff_t at = cell_of(between(0, min_t(loff_t, worker->size, PRIVATE_MAX - SLOT)));
+	size_t len = cell_of(between(SLOT, min_t(u64, PRIVATE_MAX - at, 3 * PAGE_SIZE)));
+	char *buf = kmalloc(len, GFP_KERNEL);
 	ssize_t done;
 
 	operation(worker, "write %lld+%zu, size %lld\n", at, len, worker->size);
-	new_bytes(worker->private + at, len);
-	done = sim_write(worker->file, at, worker->private + at, len);
-	check(done == len, "a private write: %zd of %zu", done, len);
-	worker->size = max_t(loff_t, worker->size, at + len);
+	new_cells(worker, worker->file, buf, at, len);
+	done = sim_write(worker->file, at, buf, len);
+	check(done >= 0 ? done == len || failing : failed_as_asked(done),
+	      "a private write: %zd of %zu", done, len);
+	if (done == len) {
+		memcpy(worker->private + at, buf, len);
+		worker->size = max_t(loff_t, worker->size, at + len);
+	} else {
+		private_resync(worker);
+	}
+	kfree(buf);
 }
 
 static void private_read(struct worker *worker)
@@ -172,12 +417,12 @@ static void private_read(struct worker *worker)
 
 	if (!worker->size)
 		return;
-	at = between(0, worker->size - 1);
+	at = cell_of(between(0, worker->size - 1));
 	len = between(1, min_t(u64, worker->size - at, 3 * PAGE_SIZE));
 	buf = kmalloc(len, GFP_KERNEL);
 	done = sim_read(worker->file, at, buf, len);
 	check(done == len, "a private read: %zd of %zu", done, len);
-	check_bytes("a private read", worker, worker->file, buf, worker->private + at, len, at);
+	check_bytes("a private read", worker->file, buf, worker->private + at, len, at);
 	kfree(buf);
 }
 
@@ -194,16 +439,21 @@ static void private_self_write(struct worker *worker)
 	if (worker->size < 4 * PAGE_SIZE || fault_seals)
 		return;
 	/* Not in a page of its target, which it unmaps each time: it would fail, as dax.c says. */
-	len = between(1, PAGE_SIZE);
-	from = between(0, worker->size - 3 * PAGE_SIZE);
-	to = between(round_up(from + len, PAGE_SIZE),
-		     min_t(loff_t, worker->size, PRIVATE_MAX - len));
+	len = cell_of(between(SLOT, PAGE_SIZE));
+	from = cell_of(between(0, worker->size - 3 * PAGE_SIZE));
+	to = cell_of(between(round_up(from + len, PAGE_SIZE),
+			     min_t(loff_t, worker->size, PRIVATE_MAX - len)));
 	operation(worker, "write %lld+%zu from the mapping at %lld, size %lld\n", to, len, from,
 		  worker->size);
-	memcpy(worker->private + to, worker->private + from, len);
 	done = sim_write_user(worker->file, to, worker->addr + from, len);
-	check(done == len, "a write from its own mapping: %zd of %zu", done, len);
-	worker->size = max_t(loff_t, worker->size, to + len);
+	check(done >= 0 ? done == len || failing : failed_as_asked(done),
+	      "a write from its own mapping: %zd of %zu", done, len);
+	if (done == len) {
+		memcpy(worker->private + to, worker->private + from, len);
+		worker->size = max_t(loff_t, worker->size, to + len);
+	} else {
+		private_resync(worker);
+	}
 }
 
 /* A read into a mapping of the file it reads, whose fault may wait for the iomap of the read. */
@@ -215,20 +465,24 @@ static void private_self_read(struct worker *worker)
 
 	if (worker->size < 4 * PAGE_SIZE || fault_seals)
 		return;
-	len = between(1, PAGE_SIZE);
-	from = between(0, worker->size - 3 * PAGE_SIZE);
-	to = between(round_up(from + len, PAGE_SIZE), worker->size - len);
+	len = cell_of(between(SLOT, PAGE_SIZE));
+	from = cell_of(between(0, worker->size - 3 * PAGE_SIZE));
+	to = cell_of(between(round_up(from + len, PAGE_SIZE), worker->size - len));
 	operation(worker, "read %lld+%zu into the mapping at %lld, size %lld\n", from, len, to,
 		  worker->size);
-	memcpy(worker->private + to, worker->private + from, len);
 	done = sim_read_user(worker->file, from, worker->addr + to, len);
-	check(done == len, "a read into its own mapping: %zd of %zu", done, len);
+	check(done >= 0 ? done == len || failing : failed_as_asked(done),
+	      "a read into its own mapping: %zd of %zu", done, len);
+	if (done == len)
+		memcpy(worker->private + to, worker->private + from, len);
+	else
+		private_resync(worker);
 }
 
 /* A load through the mapping must see what read(2) does. */
 static void private_load(struct worker *worker)
 {
-	size_t len;
+	size_t len, i;
 	loff_t at;
 	char *buf;
 	int err;
@@ -241,21 +495,33 @@ static void private_load(struct worker *worker)
 	buf = kmalloc(len, GFP_KERNEL);
 	err = sim_user_load(worker->addr + at, buf, len);
 	check(!err, "a private load: %d", err);
-	check_bytes("a private load", worker, worker->file, buf, worker->private + at, len, at);
+	for (i = 0; i < len; i++) {
+		if (buf[i] != worker->private[at + i]) {
+			sim_mm_describe(worker->addr + at + i);
+			break;
+		}
+	}
+	check_bytes("a private load", worker->file, buf, worker->private + at, len, at);
 	kfree(buf);
 }
 
 static void private_truncate(struct worker *worker)
 {
-	loff_t size = between(0, PRIVATE_MAX / 2);
+	loff_t size = cell_of(between(0, PRIVATE_MAX / 2));
 	int err;
 
 	operation(worker, "truncate to %lld, size %lld\n", size, worker->size);
-	if (size < worker->size)
-		memset(worker->private + size, 0, worker->size - size);
+	worker->shrinks++;
 	err = sim_truncate(worker->file, size);
-	check(!err, "a truncate: %d", err);
-	worker->size = size;
+	check(!err || failed_as_asked(err), "a truncate: %d", err);
+	if (err) {
+		private_resync(worker);
+	} else {
+		if (size < worker->size)
+			memset(worker->private + size, 0, worker->size - size);
+		worker->size = size;
+	}
+	worker->shrinks++;
 }
 
 static void private_punch(struct worker *worker)
@@ -263,55 +529,195 @@ static void private_punch(struct worker *worker)
 	loff_t start, end;
 	int err;
 
-	if (!worker->size)
+	if (worker->size < SLOT)
 		return;
-	start = between(0, worker->size - 1);
-	end = between(start + 1, worker->size);
+	start = cell_of(between(0, worker->size - SLOT));
+	end = cell_of(between(start + SLOT, worker->size));
 	operation(worker, "punch %lld to %lld, size %lld\n", start, end, worker->size);
-	memset(worker->private + start, 0, end - start);
 	err = sim_punch(worker->file, start, end);
-	check(!err, "a punch: %d", err);
+	check(!err || failed_as_asked(err), "a punch: %d", err);
+	if (err)
+		private_resync(worker);
+	else
+		memset(worker->private + start, 0, end - start);
+}
+
+/*
+ * Blocks of the private file shared with its twin, some of them perhaps in an open extent: they
+ * read as sealed from now on, though the extent isn't, and a write moves them (TASK-140, TASK-44.21).
+ * What each file holds is its own, whatever is written to the other.
+ */
+static void private_clone(struct worker *worker)
+{
+	size_t len;
+	loff_t from, to;
+	int err;
+
+	if (worker->size < PAGE_SIZE)
+		return;
+	len = between(1, min_t(u64, 8, worker->size >> PAGE_SHIFT)) << PAGE_SHIFT;
+	from = round_down(between(0, worker->size - len), PAGE_SIZE);
+	to = round_down(between(0, PRIVATE_MAX - len), PAGE_SIZE);
+	operation(worker, "clone %lld+%zu to %lld of the twin, size %lld\n", from, len, to,
+		  worker->size);
+	err = sim_clone(worker->file, from, worker->twin, to, len);
+	check(!err, "a clone: %d", err);
+	memcpy(worker->twin_bytes + to, worker->private + from, len);
+	worker->twin_size = max_t(loff_t, worker->twin_size, to + len);
+}
+
+static void twin_read(struct worker *worker)
+{
+	char buf[2 * SLOT];
+	loff_t at;
+	int err;
+
+	if (worker->twin_size < sizeof(buf))
+		return;
+	at = cell_of(between(0, worker->twin_size - sizeof(buf)));
+	operation(worker, "read the twin at %lld, size %lld\n", at, worker->twin_size);
+	if (between(0, 1)) {
+		err = sim_user_load(worker->twin_addr + at, buf, sizeof(buf));
+		check(!err, "a load of the twin: %d", err);
+	} else {
+		check(sim_read(worker->twin, at, buf, sizeof(buf)) == sizeof(buf), "a read of the twin");
+	}
+	check_bytes("the twin", worker->twin, buf, worker->twin_bytes + at, sizeof(buf), at);
+}
+
+/*
+ * The inode goes, and another comes, of a file whose ranges stay mapped: what its entries said of
+ * its pages goes, and what the ranges say of them stays (dax_folio_put, fxfs_dax_cow).
+ */
+static void private_evict(struct worker *worker)
+{
+	operation(worker, "evict, size %lld\n", worker->size);
+	down_write(&worker->open);
+	sim_munmap(worker->addr);
+	worker->file = sim_file_read_in(mount, worker->file);
+	worker->addr = sim_mmap(worker->file, 0, PRIVATE_MAX);
+	up_write(&worker->open);
+}
+
+/*
+ * A load or a read of another's private file, as it grows and shrinks: whatever it finds is the
+ * file's, or zeros, and a load fails only past an end that moved. Its fault maps the chunk as large
+ * as the file is, racing a write that grows it (TASK-79.28).
+ */
+static void peek(struct worker *worker)
+{
+	struct worker *owner = &workers[between(0, WORKERS - 1)];
+	char buf[3 * SLOT];
+	size_t i, len = sizeof(buf);
+	u64 shrinks;
+	ssize_t done;
+	loff_t at;
+
+	if (owner == worker)
+		return;
+	down_read(&owner->open);
+	shrinks = owner->shrinks;
+	if (owner->size < sizeof(buf))
+		goto out;
+	at = cell_of(between(0, owner->size - sizeof(buf)));
+	operation(worker, "peek at worker %d's %lld, size %lld\n", owner->id, at, owner->size);
+	if (between(0, 1)) {
+		done = sim_user_load(owner->addr + at, buf, len) ?: len;
+		check(done == len || failing || shrinks % 2 || owner->shrinks != shrinks,
+		      "a peek at worker %d's page %lld: %zd", owner->id, at >> PAGE_SHIFT, done);
+		if (done != len)
+			goto out;
+	} else {
+		done = sim_read(owner->file, at, buf, len);
+		check(done >= 0, "a peek at worker %d's: %zd", owner->id, done);
+		len = cell_of(done);
+	}
+	for (i = 0; i < len; i += SLOT) {
+		if (!private_cell(owner, (struct stamp *)(buf + i)))
+			wrong_read("a peek", "bytes that aren't the file's", owner->file, buf + i,
+				   NULL, at + i);
+	}
+out:
+	up_read(&owner->open);
+}
+
+/*
+ * What a cycle stores in its file. In one extent a chunk is a slice of its region, which a page
+ * moving drops, so that a PMD's fault says shared. In two, each whole, it is a range of its own,
+ * its pages in a row, as a PMD's fault finds them; and a page that moves leaves the row (TASK-123),
+ * whose PMD entry the faults after replace (patch 0008).
+ */
+static bool huge_write(struct worker *worker, const char *data, bool pieces)
+{
+	static const size_t whole[] = { HUGE_LEN }, parts[] = { PMD_SIZE / 2, PMD_SIZE / 2, PMD_SIZE };
+	const size_t *lengths = pieces ? parts : whole;
+	size_t at = 0, count = pieces ? ARRAY_SIZE(parts) : ARRAY_SIZE(whole), i;
+	ssize_t done;
+	int err;
+
+	for (i = 0; i < count; at += lengths[i++]) {
+		done = sim_write(worker->huge_file, at, data + at, lengths[i]);
+		check(done == lengths[i] || failing, "a whole file's write: %zd", done);
+		if (done != lengths[i])
+			return false;
+		err = sim_fsync(worker->huge_file);
+		check(!err, "fsync: %d", err);
+	}
+	return true;
 }
 
 /*
  * A chunk mapped by a PMD, whose page a store then moves out of the row: its other pages must fault
- * back in, each read what it held (TASK-123). Written whole, so that one extent holds it, sealed,
- * larger than a chunk, so that its chunks are ranges of their own, not slices; truncated first, so
- * that no entries of its pages keep a PMD's fault out; and mapped anew, as a PTE table left under
- * the PMD would.
+ * back in, each read what it held (TASK-123). Truncated first, so that no entries of its pages keep
+ * a PMD's fault out; and mapped anew, as a PTE table left under the PMD would.
  */
 static void huge_cycle(struct worker *worker)
 {
 	static char data[WORKERS][HUGE_LEN];
 	char *mine = data[worker->id], buf[SLOT];
-	unsigned long moved = between(0, PTRS_PER_PTE - 1), other;
-	ssize_t done;
-	int err, i;
+	unsigned long moved = between(0, PTRS_PER_PTE - 1), others[8];
+	bool pieces = between(0, 1);
+	int err, i, round;
 
-	operation(worker, "a PMD's cycle, moving page %lu\n", moved);
+	operation(worker, "a PMD's cycle, %s, moving page %lu\n", pieces ? "in pieces" : "whole",
+		  moved);
 	sim_munmap(worker->huge_addr);
 	worker->huge_addr = sim_mmap(worker->huge_file, 0, HUGE_LEN);
 	err = sim_truncate(worker->huge_file, 0);
-	check(!err, "a truncate: %d", err);
-	new_bytes(mine, HUGE_LEN);
-	done = sim_write(worker->huge_file, 0, mine, HUGE_LEN);
-	check(done == HUGE_LEN, "a whole file's write: %zd", done);
-	err = sim_fsync(worker->huge_file);
-	check(!err, "fsync: %d", err);
+	check(!err || failed_as_asked(err), "a truncate: %d", err);
+	if (err)
+		return;
+	new_cells(worker, worker->huge_file, mine, 0, HUGE_LEN);
+	if (!huge_write(worker, mine, pieces))
+		return;
 	err = sim_user_load(worker->huge_addr, buf, SLOT);
 	check(!err, "a load of a PMD: %d", err);
-	check_bytes("a load of a PMD", worker, worker->huge_file, buf, mine, SLOT, 0);
+	check_bytes("a load of a PMD", worker->huge_file, buf, mine, SLOT, 0);
 	huge_mapped += sim_mm_is_huge(worker->huge_addr);
-	new_bytes(buf, SLOT);
-	memcpy(mine + moved * PAGE_SIZE, buf, SLOT);
+	new_cells(worker, worker->huge_file, buf, moved * PAGE_SIZE, SLOT);
 	err = sim_user_store(worker->huge_addr + moved * PAGE_SIZE, buf, SLOT);
-	check(!err, "a store into a PMD: %d", err);
-	for (i = 0; i < 8; i++) {
-		other = between(0, PTRS_PER_PTE - 1);
-		err = sim_user_load(worker->huge_addr + other * PAGE_SIZE, buf, SLOT);
-		check(!err, "a load of page %lu of a broken PMD: %d", other, err);
-		check_bytes("a load of a broken PMD", worker, worker->huge_file, buf,
-			    mine + other * PAGE_SIZE, SLOT, other * PAGE_SIZE);
+	check(!err || failed_as_asked(err), "a store into a PMD: %d", err);
+	if (err)
+		return;
+	memcpy(mine + moved * PAGE_SIZE, buf, SLOT);
+	for (i = 0; i < ARRAY_SIZE(others); i++)
+		others[i] = between(0, PTRS_PER_PTE - 1);
+	/*
+	 * Each page faults, says it is shared, and replaces its part of the PMD's entry. Then a mapping
+	 * new to the pages, whose faults, of pages relocated no more, must find their own entries
+	 * (patch 0008): as another process's would.
+	 */
+	for (round = 0; round < 2; round++) {
+		for (i = 0; i < ARRAY_SIZE(others); i++) {
+			loff_t at = others[i] * PAGE_SIZE;
+
+			err = sim_user_load(worker->huge_addr + at, buf, SLOT);
+			check(!err, "a load of page %lu of a broken PMD: %d", others[i], err);
+			check_bytes("a load of a broken PMD", worker->huge_file, buf, mine + at,
+				    SLOT, at);
+		}
+		sim_munmap(worker->huge_addr);
+		worker->huge_addr = sim_mmap(worker->huge_file, 0, HUGE_LEN);
 	}
 }
 
@@ -321,23 +727,32 @@ static void worker_task(void *arg)
 	unsigned long i;
 
 	for (i = 0; i < operations; i++) {
-		unsigned long small = between(0, SMALL_FILES - 1);
-
-		switch (between(0, 16)) {
+		switch (between(0, 21)) {
 		case 0 ... 3:
-			slot_op(worker, shared_file, shared_addr, &worker->shared[0][0],
-				SHARED_PAGES);
+			slot_op(worker, &shared);
 			break;
 		case 13 ... 15:
-			slot_op(worker, small_files[small], small_addrs[small],
-				&worker->small[small][0][0], SMALL_PAGES);
+			slot_op(worker, &small[between(0, SMALL_FILES - 1)]);
 			break;
 		case 16:
 			if (!between(0, 3))
 				huge_cycle(worker);
 			break;
+		case 17 ... 18:
+			peek(worker);
+			break;
+		case 19:
+			if (!between(0, 3))
+				private_evict(worker);
+			break;
+		case 20:
+			private_clone(worker);
+			break;
+		case 21:
+			twin_read(worker);
+			break;
 		case 4 ... 5:
-			slot_op(worker, big_file, big_addr, &worker->big[0][0], BIG_PAGES);
+			slot_op(worker, &big);
 			break;
 		case 6:
 			private_write(worker);
@@ -365,84 +780,144 @@ static void worker_task(void *arg)
 	writers_left--;
 }
 
-/* Seals as a journal does, whenever it likes. */
+/* A slot's last store, whose file hold it must through Fxfs's extents, if none came since. */
+struct fsync_check {
+	struct slots *file;
+	struct slot *slot;
+	struct stamp done;
+	u64 begun;
+	loff_t at;
+};
+
+static struct slots *any_slots(void)
+{
+	u64 which = between(0, SMALL_FILES + 1);
+
+	return which == SMALL_FILES ? &shared : which > SMALL_FILES ? &big : &small[which];
+}
+
+static void fsync_watch(struct fsync_check *watched)
+{
+	int owner = between(0, WORKERS - 1);
+
+	watched->file = any_slots();
+	watched->at = between(0, watched->file->pages - 1);
+	watched->slot = &watched->file->slots[owner][watched->at];
+	watched->at = slot_at(owner, watched->at);
+	watched->done = watched->slot->done;
+	watched->begun = watched->slot->begun;
+}
+
+/* What the seal made durable, unless a store came since or was under way. */
+static void fsync_check(const struct fsync_check *watched)
+{
+	struct stamp held;
+
+	if (watched->slot->flying || watched->slot->begun != watched->begun ||
+	    watched->done.generation != watched->begun)
+		return;
+	fxfs_sim_read(mount->info->fs, file_inode(watched->file->file)->i_ino, watched->at, &held,
+		      SLOT);
+	if (memcmp(&held, &watched->done, SLOT))
+		wrong_read("Fxfs's extents after an fsync", all_zeros(&held, SLOT) ?
+			   "a zero read" : "a stale read", watched->file->file, &held,
+			   &watched->done, watched->at);
+}
+
+/*
+ * Seals as a journal does, whenever it likes: in some runs seldom, which leave a task that needs a
+ * seal to get on going round in vain for a while.
+ */
 static void syncer_task(void *arg)
 {
-	int err;
+	struct fsync_check watched[FSYNC_CHECKS];
+	u64 pause = between(0, 3) ? 2 : 40;
+	int err, i;
 
 	while (READ_ONCE(writers_left)) {
-		err = sim_fsync(shared_file);
+		for (i = 0; i < FSYNC_CHECKS; i++)
+			fsync_watch(&watched[i]);
+		err = sim_fsync(any_slots()->file);
 		check(!err, "fsync: %d", err);
-		msleep(between(0, 2));
+		for (i = 0; i < FSYNC_CHECKS; i++)
+			fsync_check(&watched[i]);
+		msleep(between(0, pause));
+	}
+}
+
+/* Each worker's every slot of a file must be its last store, in Fxfs's extents. */
+static void check_slots(const struct slots *file)
+{
+	struct fxfs *fs = mount->info->fs;
+	u64 ino = file_inode(file->file)->i_ino;
+	struct stamp held;
+	unsigned long page;
+	int owner;
+
+	for (owner = 0; owner < WORKERS; owner++) {
+		for (page = 0; page < file->pages; page++) {
+			fxfs_sim_read(fs, ino, slot_at(owner, page), &held, SLOT);
+			check_bytes("a file's extents", file->file, (char *)&held,
+				    (char *)&file->slots[owner][page].done, SLOT,
+				    slot_at(owner, page));
+		}
 	}
 }
 
 static void check_extents(const struct worker *worker)
 {
 	struct fxfs *fs = mount->info->fs;
-	char buf[SLOT], *whole;
-	unsigned long page;
-	int i;
+	char *whole;
 
-	for (page = 0; page < SHARED_PAGES; page++) {
-		fxfs_sim_read(fs, file_inode(shared_file)->i_ino,
-			      (page << PAGE_SHIFT) + worker->id * SLOT, buf, SLOT);
-		check_bytes("the shared file's extents", worker, shared_file, buf,
-			    worker->shared[page], SLOT, page << PAGE_SHIFT);
-	}
-	for (page = 0; page < BIG_PAGES; page++) {
-		fxfs_sim_read(fs, file_inode(big_file)->i_ino,
-			      (page << PAGE_SHIFT) + worker->id * SLOT, buf, SLOT);
-		check_bytes("the big file's extents", worker, big_file, buf, worker->big[page],
-			    SLOT, page << PAGE_SHIFT);
-	}
-	for (i = 0; i < SMALL_FILES; i++) {
-		for (page = 0; page < SMALL_PAGES; page++) {
-			fxfs_sim_read(fs, file_inode(small_files[i])->i_ino,
-				      (page << PAGE_SHIFT) + worker->id * SLOT, buf, SLOT);
-			check_bytes("a small file's extents", worker, small_files[i], buf,
-				    worker->small[i][page], SLOT, page << PAGE_SHIFT);
-		}
-	}
 	check(fxfs_sim_size(fs, file_inode(worker->file)->i_ino) == worker->size,
 	      "worker %d's file is %llu bytes long, not %lld", worker->id,
 	      fxfs_sim_size(fs, file_inode(worker->file)->i_ino), worker->size);
 	whole = kmalloc(PRIVATE_MAX, GFP_KERNEL);
 	fxfs_sim_read(fs, file_inode(worker->file)->i_ino, 0, whole, worker->size);
-	check_bytes("its file's extents", worker, worker->file, whole, worker->private,
-		    worker->size, 0);
+	check_bytes("its file's extents", worker->file, whole, worker->private, worker->size, 0);
+	fxfs_sim_read(fs, file_inode(worker->twin)->i_ino, 0, whole, worker->twin_size);
+	check_bytes("its twin's extents", worker->twin, whole, worker->twin_bytes,
+		    worker->twin_size, 0);
 	kfree(whole);
 }
 
-static void setup(void)
+static void slots_new(struct slots *file, unsigned long pages)
 {
 	static char zeros[2 * PTRS_PER_PTE * PAGE_SIZE];
 	ssize_t done;
 	int i;
 
+	file->file = sim_file_new(mount);
+	file->pages = pages;
+	for (i = 0; i < WORKERS; i++)
+		file->slots[i] = kcalloc(pages, sizeof(*file->slots[i]), GFP_KERNEL);
+	done = sim_write(file->file, 0, zeros, pages << PAGE_SHIFT);
+	check(done == pages << PAGE_SHIFT, "sizing a file: %zd", done);
+}
+
+static void setup(void)
+{
+	int i;
+
 	mount = sim_mount_new();
-	shared_file = sim_file_new(mount);
-	big_file = sim_file_new(mount);
-	done = sim_write(shared_file, 0, zeros, SHARED_PAGES << PAGE_SHIFT);
-	check(done == SHARED_PAGES << PAGE_SHIFT, "sizing the shared file: %zd", done);
-	/* Nonzero, so that its blocks are written: a sealed extent of a piece, for a PMD. */
-	memset(zeros, 0, sizeof(zeros));
-	done = sim_write(big_file, 0, zeros, BIG_PAGES << PAGE_SHIFT);
-	check(done == BIG_PAGES << PAGE_SHIFT, "sizing the big file: %zd", done);
+	slots_new(&shared, SHARED_PAGES);
+	slots_new(&big, BIG_PAGES);
 	for (i = 0; i < SMALL_FILES; i++) {
-		small_files[i] = sim_file_new(mount);
-		done = sim_write(small_files[i], 0, zeros, SMALL_PAGES << PAGE_SHIFT);
-		check(done == SMALL_PAGES << PAGE_SHIFT, "sizing a small file: %zd", done);
-		small_addrs[i] = sim_mmap(small_files[i], 0, SMALL_PAGES << PAGE_SHIFT);
+		slots_new(&small[i], SMALL_PAGES);
+		small[i].addr = sim_mmap(small[i].file, 0, SMALL_PAGES << PAGE_SHIFT);
 	}
-	check(!sim_fsync(shared_file), "the first seal");
-	shared_addr = sim_mmap(shared_file, 0, SHARED_PAGES << PAGE_SHIFT);
-	big_addr = sim_mmap(big_file, 0, BIG_PAGES << PAGE_SHIFT);
+	check(!sim_fsync(shared.file), "the first seal");
+	shared.addr = sim_mmap(shared.file, 0, SHARED_PAGES << PAGE_SHIFT);
+	big.addr = sim_mmap(big.file, 0, BIG_PAGES << PAGE_SHIFT);
 	for (i = 0; i < WORKERS; i++) {
 		workers[i].id = i;
 		workers[i].file = sim_file_new(mount);
 		workers[i].private = kzalloc(PRIVATE_MAX, GFP_KERNEL);
 		workers[i].addr = sim_mmap(workers[i].file, 0, PRIVATE_MAX);
+		init_rwsem(&workers[i].open);
+		workers[i].twin = sim_file_new(mount);
+		workers[i].twin_bytes = kzalloc(PRIVATE_MAX, GFP_KERNEL);
+		workers[i].twin_addr = sim_mmap(workers[i].twin, 0, PRIVATE_MAX);
 		workers[i].huge_file = sim_file_new(mount);
 		workers[i].huge_addr = sim_mmap(workers[i].huge_file, 0, HUGE_LEN);
 	}
@@ -487,6 +962,23 @@ static void injections(void)
 		sim_param_set("dax_fail_evacuees", "1");
 	if (!(sim_random() % 4))
 		sim_param_set("dax_evacuate_every", "3");
+	/* Pieces in a range's own space, where a store lands that an evacuation's MAP may replace. */
+	if (!(sim_random() % 4))
+		sim_param_set("dax_fail_moves", "1000");
+	if (!(sim_random() % 4))
+		sim_param_set("dax_fail_map_many", "20");
+	failing = !(sim_random() % 4);
+	/* A write that fails twice so says EIO, having lost its pages' old bytes (TASK-119.13). */
+	if (failing && !(sim_random() % 2)) {
+		sim_param_set("dax_fail_maps", "20");
+		failing_maps = true;
+		/*
+		 * The range maps blocks where they were until the write drops it, for an evacuation
+		 * to find between, whose place Fxfs says is another: the failure's, not a misplacing.
+		 */
+		sim_param_set("dax_check_places", "0");
+	}
+	hot_pages = (const unsigned long[]){ 0, 0, 2, 8 }[sim_random() % 4];
 }
 
 int main(int argc, char **argv)
@@ -494,7 +986,7 @@ int main(int argc, char **argv)
 	unsigned long long seed = 0;
 	bool shadow = false, no_injections = false;
 	unsigned long watched_address = 0;
-	u64 moved, freed;
+	u64 moved, freed, opened, failed;
 	int i;
 
 	if (argc < 2 || sscanf(argv[1], "%llu", &seed) != 1)
@@ -502,7 +994,8 @@ int main(int argc, char **argv)
 	if (argc > 2 && argv[2][0] != '-')
 		sscanf(argv[2], "%lu", &operations);
 	sim_init(seed);
-	sim_device_init(WINDOW_LEN);
+	/* A window its files fill, a run in four, whose ranges are reclaimed and regions run out. */
+	sim_device_init(sim_random() % 4 ? WINDOW_LEN : SMALL_WINDOW_LEN);
 	for (i = 2; i < argc; i++) {
 		unsigned long long page;
 
@@ -535,6 +1028,11 @@ int main(int argc, char **argv)
 	if (tracing)
 		sim_param_set("dax_trace", "1");
 	setup();
+	if (failing)
+		fxfs_sim_fail(32);
+	if (verbose)
+		sim_log("interleave: %lu hot pages, Fxfs fails %d, a MAP fails %d, fault seals %d\n",
+			hot_pages, failing, failing_maps, fault_seals);
 	if (watched_address)
 		sim_mm_watch(watched_address);
 	sim_spawn("syncer", syncer_task, NULL);
@@ -543,18 +1041,22 @@ int main(int argc, char **argv)
 			  &workers[i]);
 	sim_run();
 	/* An append's size goes with the file's own fsync (TASK-92.28). */
-	check(!sim_fsync(shared_file), "the last seal");
-	check(!sim_fsync(big_file), "the last seal");
+	check(!sim_fsync(shared.file), "the last seal");
+	check(!sim_fsync(big.file), "the last seal");
 	for (i = 0; i < SMALL_FILES; i++)
-		check(!sim_fsync(small_files[i]), "the last seal");
+		check(!sim_fsync(small[i].file), "the last seal");
 	for (i = 0; i < WORKERS; i++)
 		check(!sim_fsync(workers[i].file), "the last seal");
 	sim_run();
+	check_slots(&shared);
+	check_slots(&big);
+	for (i = 0; i < SMALL_FILES; i++)
+		check_slots(&small[i]);
 	for (i = 0; i < WORKERS; i++)
 		check_extents(&workers[i]);
-	fxfs_sim_stats(&moved, &freed);
-	sim_log("interleave: seed %llu passed: %llu points, %llu switches, %llu device maps, %llu blocks moved, %llu extents freed, %lu PMDs, trace %llx\n",
-		seed, sim_points(), sim_switches(), sim_device_maps(), moved, freed, huge_mapped,
-		sim_trace_hash());
+	fxfs_sim_stats(&moved, &freed, &opened, &failed);
+	sim_log("interleave: seed %llu passed: %llu points, %llu switches, %llu device maps, %llu blocks moved, %llu extents freed, %llu reopened, %llu transactions failed, %lu PMDs, trace %llx\n",
+		seed, sim_points(), sim_switches(), sim_device_maps(), moved, freed, opened, failed,
+		huge_mapped, sim_trace_hash());
 	return 0;
 }

@@ -7,6 +7,7 @@
 
 #include <sim/sim.h>
 #include <sim/host.h>
+#include <linux/dax.h>
 
 #include "../../linux/fs/fxfs/vfs.h"
 #include "../../linux/fs/fxfs/device.h"
@@ -25,6 +26,7 @@ struct sim_mount *sim_mount_new(void)
 	struct fxfs *fs = fxfs_sim_new();
 
 	INIT_LIST_HEAD(&sim_mm.vmas);
+	init_rwsem(&sim_mm.lock);
 	current->mm = &sim_mm;
 	info->fs = fs;
 	info->dax = fxfs_dax_create((struct fxfs_filesystem *)fs);
@@ -37,9 +39,22 @@ struct sim_mount *sim_mount_new(void)
 	return mount;
 }
 
+/*
+ * fxfs_vfs_evict_inode's, for a file nothing maps: its DAX entries go, as truncate_inode_pages_final
+ * has them, and the page's stale fields with them (dax_folio_put), but its ranges stay.
+ */
 void sim_file_evict(struct file *file)
 {
-	fxfs_dax_evict(file_inode(file));
+	struct inode *inode = file_inode(file);
+	unsigned long index;
+	void *entry;
+
+	dax_break_layout_final(inode);
+	xa_for_each(&inode->i_mapping->i_pages, index, entry) {
+		if (xa_is_value(entry))
+			dax_delete_mapping_entry(inode->i_mapping, index);
+	}
+	fxfs_dax_evict(inode);
 }
 
 /* As fxfs_vfs_kill_sb's, of the last volume, its files evicted. */
@@ -55,7 +70,8 @@ void sim_mount_free(struct sim_mount *mount)
 	kfree(mount);
 }
 
-struct file *sim_file_new(struct sim_mount *mount)
+/* A new inode read in for file `ino` of the mount, opened. */
+static struct file *file_of(struct sim_mount *mount, u64 ino)
 {
 	struct fxfs_vfs_inode *fi = kzalloc(sizeof(*fi), GFP_KERNEL);
 	struct file *file = kzalloc(sizeof(*file), GFP_KERNEL);
@@ -64,7 +80,7 @@ struct file *sim_file_new(struct sim_mount *mount)
 	inode->i_mode = S_IFREG | 0644;
 	inode->i_nlink = 1;
 	inode->i_blkbits = PAGE_SHIFT;
-	inode->i_ino = fxfs_sim_new_file(mount->info->fs);
+	inode->i_ino = ino;
 	inode->i_sb = &mount->sb;
 	inode->i_mapping = &inode->i_data;
 	atomic_set(&inode->i_count, 1);
@@ -81,6 +97,25 @@ struct file *sim_file_new(struct sim_mount *mount)
 	file->f_inode = inode;
 	file->f_mapping = inode->i_mapping;
 	return file;
+}
+
+struct file *sim_file_new(struct sim_mount *mount)
+{
+	return file_of(mount, fxfs_sim_new_file(mount->info->fs));
+}
+
+struct file *sim_file_read_in(struct sim_mount *mount, struct file *file)
+{
+	struct file *again;
+	u64 ino = file_inode(file)->i_ino;
+	int err = fxfs_dax_write_size(file_inode(file));
+
+	if (err)
+		sim_panic("writing the size of ino %llu back: %d", ino, err);
+	sim_file_evict(file);
+	again = file_of(mount, ino);
+	i_size_write(file_inode(again), fxfs_sim_size(mount->info->fs, ino));
+	return again;
 }
 
 static ssize_t do_write(struct file *file, loff_t pos, struct iov_iter *from)
@@ -162,6 +197,41 @@ int sim_truncate(struct file *file, loff_t size)
 		fxfs_dax_resize_end(inode, size);
 	}
 	inode_unlock(inode);
+	return err;
+}
+
+/*
+ * fxfs_vfs_remap_file_range, for two DAX files: the VFS's preparation is writing both back, and the
+ * window's ranges of them go. Page-aligned, and past the destination's end only as far as it says.
+ */
+int sim_clone(struct file *in, loff_t pos_in, struct file *out, loff_t pos_out, loff_t len)
+{
+	struct inode *src = file_inode(in), *dst = file_inode(out);
+	loff_t size;
+	struct fxfs_attr attr;
+	int err;
+
+	inode_lock(src);
+	inode_lock(dst);
+	filemap_invalidate_lock(src->i_mapping);
+	filemap_invalidate_lock(dst->i_mapping);
+	size = max(i_size_read(dst), pos_out + len);
+	err = filemap_write_and_wait_range(src->i_mapping, pos_in, pos_in + len - 1);
+	if (!err)
+		err = filemap_write_and_wait_range(dst->i_mapping, pos_out, pos_out + len - 1);
+	if (!err)
+		err = fxfs_dax_remap(src, pos_in, len, i_size_read(src));
+	if (!err)
+		err = fxfs_dax_remap(dst, pos_out, len, size);
+	if (!err)
+		err = fxfs_nofs(fxfs_clone_range(fxfs_vfs_fs(dst->i_sb), src->i_ino, pos_in, len,
+						 dst->i_ino, pos_out, size, &attr));
+	if (!err)
+		i_size_write(dst, size);
+	filemap_invalidate_unlock(dst->i_mapping);
+	filemap_invalidate_unlock(src->i_mapping);
+	inode_unlock(dst);
+	inode_unlock(src);
 	return err;
 }
 

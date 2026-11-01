@@ -38,5 +38,7 @@ extern const struct kernel_param_ops param_ops_bool, param_ops_uint, param_ops_u
 
 /* Sets the parameter `name` as `fxfs.name=value` would: 0, or the parameter's -errno. */
 int sim_param_set(const char *name, const char *value);
+/* A numeric parameter's value. */
+unsigned long sim_param_read(const char *name);
 
 #endif

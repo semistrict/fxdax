@@ -78,7 +78,7 @@ $(BUILD)/fake/%.o: %.c $(BUILD)/.headers $(wildcard shim/sim/*.h)
 	mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(BUILD)/tests/%.o: tests/%.c $(BUILD)/.headers $(wildcard shim/sim/*.h)
+$(BUILD)/tests/%.o: tests/%.c $(BUILD)/.headers $(wildcard shim/sim/*.h tests/*.h)
 	mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 

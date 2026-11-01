@@ -1,21 +1,21 @@
 # SPDX-License-Identifier: GPL-2.0
 # Copyright 2026 The fxdax Authors.
 #
-# A candidate fix, not a mutant (found by this simulator, tests/interleave's PMD cycles): a read fault
-# of a PMD's pages that are a slice, or moved, says they are shared, as other files' entries may name
-# them. dax_associate_entry takes a page whose stale index, which dax_folio_put leaves in the union
-# with its share count, reads as a share for shared, and skips dax_folio_init: a PMD entry of an
-# order 0 folio (its WARN, fs/dax.c:458), and a PMD mapped over it. Shared pages fall back to PTEs.
+# A candidate fix, not a mutant (found by this simulator, tests/pmd_over_stale_index and
+# tests/interleave's PMD cycles): dax_folio_put leaves an order 0 folio's index, which is its share
+# count. dax_associate_entry then takes a page that had an entry at a nonzero index for shared, and
+# skips dax_folio_init: a PMD entry of an order 0 folio (its WARN, fs/dax.c:458), and a PMD mapped
+# over it. dax.c says a fault's pages are shared if a slice or a move has them in a region, or a page
+# of them is relocated. A fix in dax.c would have those faults fall back to PTEs, and so has to keep
+# fxfs_dax_cow from forgetting pages that nothing replaces: the fault that falls back never does.
 
---- a/guest/linux/fs/fxfs/dax.c
-+++ b/guest/linux/fs/fxfs/dax.c
-@@ -2893,6 +2893,9 @@
- 	     "fxfs: ino %lu page %lu read at %llx, %llx bytes, past the window's %llx: moved %llx of %u regions\n",
- 	     inode->i_ino, page, at, length, dax->window_len,
- 	     range->moved ? range->moved[page] : 0, range->nr_regions);
-+	if ((flags & IOMAP_FAULT) && length >= PMD_SIZE &&
-+	    (range->region || (range->moved && range->moved[page])))
-+		length = PMD_SIZE - PAGE_SIZE;
- 	iomap->type = IOMAP_MAPPED;
- 	iomap->addr = at + offset_in_page(pos);
- 	iomap->length = length;
+--- a/fs/dax.c
++++ b/fs/dax.c
+@@ -390,6 +390,7 @@
+ 		return ref;
+ 
+ 	folio->mapping = NULL;
++	folio->share = 0;
+ 	order = folio_order(folio);
+ 	if (!order)
+ 		return 0;

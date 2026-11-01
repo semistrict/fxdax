@@ -166,6 +166,8 @@ struct vm_operations_struct {
 };
 
 struct mm_struct {
+	/* mmap_lock: a fault holds it for reading, and mapping or unmapping for writing. */
+	struct rw_semaphore lock;
 	struct list_head vmas;
 	/* The next address a mapping takes. */
 	unsigned long next;

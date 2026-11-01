@@ -1,0 +1,97 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+#
+# A candidate fix, not a mutant (found by this simulator: tests/sealed_piece_reach, one task, and
+# seed 13464 of tests/interleave at 1,000 operations, as fxfs_device_assert_in_gate's WARN). A reflink
+# has part of an open extent read as sealed, and an extent reopened does for a while, so a reader
+# outside the gate can hold a sealed piece of a writable region. fxfs_dax_new_slice reaches for it
+# with no look at the region, and TASK-44.21's look in fxfs_dax_move comes before fxfs_dax_map_to
+# takes the region's lock, so a writer may make it writable between: a writable MAP in no gate, which
+# a seal may cross. fxfs_dax_map_to looks, under the lock that keeps `writable`, for such a caller.
+
+--- a/guest/linux/fs/fxfs/dax.c
++++ b/guest/linux/fs/fxfs/dax.c
+@@ -2143,7 +2143,7 @@
+  * space doesn't reach so far: sealed, it shrinks to what it mapped.
+  */
+ static int fxfs_dax_map_to(struct fxfs_dax *dax, struct fxfs_dax_region *region, unsigned long end,
+-			   enum fxfs_dax_why why)
++			   enum fxfs_dax_why why, bool sealed)
+ {
+ 	unsigned long from, to;
+ 	/*
+@@ -2162,6 +2162,10 @@
+ 		err = -EXDEV;
+ 		goto out;
+ 	}
++	if (sealed && writable) {
++		err = -EXDEV;
++		goto out;
++	}
+ 	to = region->pages;
+ 	if (writable)
+ 		to = min(to, max(end, from + clamp(from, FXFS_DAX_REGION_FIRST,
+@@ -2242,7 +2246,7 @@
+ 	/* In the gate, no seal makes it read-only, or shrinks it. */
+ 	mapped = READ_ONCE(region->mapped);
+ 	if (READ_ONCE(region->writable) && mapped < region->pages)
+-		err = fxfs_dax_map_to(dax, region, mapped + 1, FXFS_DAX_GROW);
++		err = fxfs_dax_map_to(dax, region, mapped + 1, FXFS_DAX_GROW, false);
+ 	fxfs_device_store_end(dax->dev);
+ 	atomic_set(&region->growing, 0);
+ 	/* fxdax: not after a failure: a MAP that keeps failing went round here until a seal. */
+@@ -2256,12 +2260,13 @@
+  * Maps `region`'s extent as far as page `end` at least (fxfs_dax_map_to), in the gate; and a
+  * writable region's further, in the background, ahead of the writes (fxfs_dax_grow_ahead).
+  */
+-static int fxfs_dax_reach(struct fxfs_dax *dax, struct fxfs_dax_region *region, unsigned long end)
++static int fxfs_dax_reach_sealed(struct fxfs_dax *dax, struct fxfs_dax_region *region,
++				 unsigned long end, bool sealed)
+ {
+ 	unsigned long reached;
+ 	int err;
+ 
+-	err = fxfs_dax_map_to(dax, region, end, FXFS_DAX_REACH);
++	err = fxfs_dax_map_to(dax, region, end, FXFS_DAX_REACH, sealed);
+ 	if (err || !READ_ONCE(region->writable))
+ 		return err;
+ 	reached = atomic_long_read(&region->reached);
+@@ -2271,6 +2276,11 @@
+ 	return 0;
+ }
+ 
++static int fxfs_dax_reach(struct fxfs_dax *dax, struct fxfs_dax_region *region, unsigned long end)
++{
++	return fxfs_dax_reach_sealed(dax, region, end, false);
++}
++
+ /*
+  * Keeps a reference to `region`, whose reference the caller passes, in `range`'s regions, unless it
+  * has one: the caller's goes then.
+@@ -2352,7 +2362,7 @@
+ 		fxfs_dax_put_region(dax, region);
+ 		return -EXDEV;
+ 	}
+-	err = fxfs_dax_reach(dax, region, first + pages);
++	err = fxfs_dax_reach_sealed(dax, region, first + pages, !e->open);
+ 	if (err) {
+ 		fxfs_dax_put_region(dax, region);
+ 		return err;
+@@ -2434,7 +2444,7 @@
+ 		fxfs_device_store_end(dax->dev);
+ 		fxfs_dax_put_region(dax, region);
+ 	}
+-	err = fxfs_dax_reach(dax, region, first + pages);
++	err = fxfs_dax_reach_sealed(dax, region, first + pages, !e.open);
+ 	if (err)
+ 		goto out;
+ 	range = fxfs_dax_new_range(region->window_offset + ((u64)first << PAGE_SHIFT), pages,
+@@ -4117,7 +4127,7 @@
+ 	if (fxfs_device_store_begin(dax->dev) == seals) {
+ 		fxfs_dax_region_open(dax, region);
+ 		if (READ_ONCE(region->writable))
+-			fxfs_dax_map_to(dax, region, 1, FXFS_DAX_RESTAGE);
++			fxfs_dax_map_to(dax, region, 1, FXFS_DAX_RESTAGE, false);
+ 	}
+ 	fxfs_device_store_end(dax->dev);
+ 	spin_lock(&dax->regions_lock);

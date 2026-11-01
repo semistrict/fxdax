@@ -36,6 +36,7 @@ struct extent {
 	u64 length;
 	/* Whether the device holds it: a writer has touched it. */
 	bool held;
+	/* Whether a seal found it held: one no request reached isn't sealed. */
 	bool sealed;
 	struct list_head list;
 };
@@ -115,6 +116,11 @@ void sim_device_wrote(u64 sequence, u64 page, u64 pages)
 	extent->length = max(extent->length, page + pages);
 }
 
+bool sim_device_sealed(u64 sequence)
+{
+	return find_extent(sequence)->sealed;
+}
+
 u64 sim_device_length(u64 sequence)
 {
 	return find_extent(sequence)->length;
@@ -126,7 +132,7 @@ void sim_device_seal(void)
 	u64 page, pages = device.window_len >> PAGE_SHIFT;
 
 	list_for_each_entry(extent, &device.extents, list)
-		extent->sealed = true;
+		extent->sealed |= extent->held;
 	for (page = 0; page < pages; page++) {
 		if (device.pages[page].state != WINDOW_WRITE)
 			continue;
@@ -181,6 +187,19 @@ static void watch(const char *what, u64 page, u64 pages, u64 sequence, u64 in_ex
 			what, current->comm, sequence, in_extent + watched - page, ktime_get_ns());
 }
 
+/*
+ * Fails the run if a page that stops being writable has a writable PTE: the host refuses the store
+ * it may yet take, with no fault for the guest to wait in, whether or not one comes.
+ */
+static void check_no_writable_mapping(const char *what, u64 first, u64 pages)
+{
+	unsigned long addr = current->mm ? sim_mm_writable_mapping(first, pages) : 0;
+
+	if (addr)
+		sim_panic("%s of window pages %llx to %llx, which address %lx maps writably", what,
+			  first, first + pages, addr);
+}
+
 static int map_one(u64 sequence, u64 offset, u64 len, u64 window_offset, bool writable)
 {
 	struct extent *extent = find_extent(sequence);
@@ -202,6 +221,8 @@ static int map_one(u64 sequence, u64 offset, u64 len, u64 window_offset, bool wr
 		extent->held = true;
 		extent->length = max(extent->length, in_extent + pages);
 	}
+	if (!writable)
+		check_no_writable_mapping("a read-only MAP", first, pages);
 	/* What of the range is past the extent's end, sealed, reads as zeros. */
 	within = !extent->sealed ? pages :
 		 in_extent >= extent->length ? 0 : min(pages, extent->length - in_extent);
@@ -230,6 +251,7 @@ static void unmap_one(u64 window_offset, u64 len)
 	u64 page, first = window_offset >> PAGE_SHIFT;
 
 	watch("UNMAP", first, len >> PAGE_SHIFT, 0, 0);
+	check_no_writable_mapping("an UNMAP", first, len >> PAGE_SHIFT);
 	for (page = first; page < first + (len >> PAGE_SHIFT); page++) {
 		device.pages[page].extent = NULL;
 		device.pages[page].state = WINDOW_NONE;

@@ -3582,6 +3582,230 @@ pub(crate) mod guest {
         fs::remove_file(&other).unwrap();
     }
 
+    /// A load through a PTE of a page a fault is moving reads the page. A store's fault moves the
+    /// page's block, a seal ends before it reaches the gate, and it goes round to move the block
+    /// again: flushes meanwhile free the extent the block left, whose window page, which another
+    /// process's read-only PTE still maps, reads as zeros until the fault ends (found by guest/sim,
+    /// TASK-149.14, whose tests/load_during_move plays these steps). Played out with pause points.
+    fn test_load_during_move() {
+        const PAGE: usize = 4096;
+        const SIZE: usize = 4 << 20;
+        // No evacuation, which would wait for the file's semaphore the paused fault holds.
+        let _evacuates = Param::set("dax_evacuates", "N");
+        let name = path("load-during-move");
+        let other = path("load-during-move-other");
+        let data: Vec<u8> = (0..SIZE).map(|i| (i % 251) as u8 + 1).collect();
+        fs::write(&name, &data).unwrap();
+        fs::File::open(&name).unwrap().sync_all().unwrap();
+        fs::write(&other, b"other").unwrap();
+        let file = fs::OpenOptions::new().read(true).write(true).open(&name).unwrap();
+        let map = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                SIZE,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                file.as_raw_fd(),
+                0,
+            )
+        };
+        assert_ne!(map, libc::MAP_FAILED, "mmap: {}", std::io::Error::last_os_error());
+        let mapped = map as usize;
+        let seal = || {
+            std::os::unix::fs::FileExt::write_all_at(
+                &fs::OpenOptions::new().write(true).open(&other).unwrap(),
+                b"sealed",
+                0,
+            )
+            .unwrap();
+            fs::File::open(&other).unwrap().sync_all().unwrap();
+        };
+        // In an extent of its own, which goes as the page moves on: a page of the file's whole
+        // extent leaves it, and the device what the page was, with the rest.
+        let page = (mapped + PAGE) as *mut u8;
+        unsafe { page.write_volatile(page.read_volatile()) };
+        seal();
+        seal();
+        // A PTE of it, read-only since the seals.
+        assert_eq!(unsafe { page.read_volatile() }, data[PAGE], "the page before the fault");
+
+        let pauses = Pauses::begin(Pauses::MOVED);
+        // The store in a process of its own: its fault, paused, holds its process's mmap_lock,
+        // which this one's load would otherwise wait for.
+        let storer = unsafe { libc::fork() };
+        assert!(storer >= 0, "fork: {}", std::io::Error::last_os_error());
+        if storer == 0 {
+            unsafe {
+                ((mapped + PAGE + 100) as *mut u8).write_volatile(0xee);
+                libc::_exit(0);
+            }
+        }
+        Pauses::wait(Pauses::MOVED);
+        // A seal ends as the fault goes on to the gate, which it finds open, and it goes round.
+        seal();
+        Pauses::set(Pauses::RESEALED);
+        Pauses::wait_or(Pauses::RESEALED, Some(storer));
+        (0..4).for_each(|_| seal());
+        // In a thread: with the page's PTE gone, the load may wait for the fault, which waits here.
+        let (loaded, load) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            loaded.send(unsafe { (mapped as *const u8).add(PAGE).read_volatile() }).unwrap();
+        });
+        let early = load.recv_timeout(std::time::Duration::from_secs(1));
+        drop(pauses);
+        let byte = early.unwrap_or_else(|_| load.recv().unwrap());
+        let mut status = 0;
+        assert_eq!(unsafe { libc::waitpid(storer, &mut status, 0) }, storer);
+        assert!(libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0, "storer: {status:#x}");
+        assert_eq!(byte, data[PAGE], "a load through a PTE during the move");
+
+        let mut expected = data;
+        expected[PAGE + 100] = 0xee;
+        assert_eq!(unsafe { libc::munmap(map, SIZE) }, 0);
+        drop(file);
+        assert!(fs::read(&name).unwrap() == expected, "the file differs from what was stored");
+        fs::remove_file(&name).unwrap();
+        fs::remove_file(&other).unwrap();
+    }
+
+    /// A read fault of a PMD that says its pages are shared finds their folio's fields clean.
+    /// dax_folio_put leaves an order 0 folio's index, which is its share count, so that a page that
+    /// had an entry at a nonzero index looks shared: dax_associate_entry doesn't make the folio
+    /// compound, WARNs (fs/dax.c:458), and a PMD goes over an order 0 folio. An inode's load gives
+    /// the second chunk's head page such an entry, a store and an evacuation leave a page of the
+    /// chunk relocated, which says shared at its next fault, and the inode's eviction ends the
+    /// entry but not the range (found by guest/sim, TASK-149.14, whose tests/pmd_over_stale_index
+    /// plays these steps). A WARN fails the check, as any does.
+    fn test_pmd_over_stale_index() {
+        use std::os::unix::fs::FileExt;
+        const PAGE: usize = 4096;
+        const PIECE: usize = CHUNK / 2;
+        let name = path("pmd-over-stale-index");
+        let other = path("pmd-over-stale-index-other");
+        let data: Vec<u8> = (0..2 * CHUNK).map(|i| (i % 251) as u8 + 1).collect();
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .read(true)
+            .write(true)
+            .open(&name)
+            .unwrap();
+        // The second chunk in two extents, each whole: a range of its own, not a slice of a region,
+        // at a chunk's alignment in the window, its pages in a row.
+        for piece in [0..CHUNK, CHUNK..CHUNK + PIECE, CHUNK + PIECE..2 * CHUNK] {
+            file.write_all_at(&data[piece.clone()], piece.start as u64).unwrap();
+            file.sync_data().unwrap();
+        }
+        let map_chunk = |file: &fs::File, len: usize, prot: libc::c_int| {
+            let map = unsafe {
+                libc::mmap(
+                    std::ptr::null_mut(),
+                    len,
+                    prot,
+                    libc::MAP_SHARED,
+                    file.as_raw_fd(),
+                    CHUNK as libc::off_t,
+                )
+            };
+            assert_ne!(map, libc::MAP_FAILED, "mmap: {}", std::io::Error::last_os_error());
+            map
+        };
+
+        // Too small for a PMD: the head page's entry, at index 512, not shared.
+        let map = map_chunk(&file, 2 * PAGE, libc::PROT_READ | libc::PROT_WRITE);
+        let bytes = map.cast::<u8>();
+        assert_eq!(unsafe { bytes.read_volatile() }, data[CHUNK], "the chunk's first page");
+        let second = unsafe { bytes.add(PAGE) };
+        assert_eq!(unsafe { second.read_volatile() }, data[CHUNK + PAGE], "its second page");
+        // The store moves the second page to the staging extent's region. Another file's fsync
+        // seals, of its creation alone, and the evacuation after it moves the page back, relocated,
+        // as its entry says it was in the region.
+        let (pauses, only) = Pauses::begin_of(Pauses::PLACED, &name);
+        unsafe { second.write_volatile(data[CHUNK + PAGE]) };
+        let other_file =
+            fs::OpenOptions::new().create(true).truncate(true).write(true).open(&other).unwrap();
+        other_file.sync_all().unwrap();
+        Pauses::wait(Pauses::PLACED);
+        drop(pauses);
+        drop(only);
+        assert_eq!(unsafe { libc::munmap(map, 2 * PAGE) }, 0);
+        drop(file);
+        // Eviction ends the entries, not the range, nor that the second page was relocated.
+        evict(&name);
+
+        let file = fs::File::open(&name).unwrap();
+        let map = map_chunk(&file, CHUNK, libc::PROT_READ);
+        let before = stats()["dax_huge_maps"];
+        let bytes = unsafe { std::slice::from_raw_parts(map as *const u8, CHUNK) };
+        assert!(bytes == &data[CHUNK..], "the chunk as mapped differs from what was written");
+        assert!(stats()["dax_huge_maps"] > before, "no fault mapped a PMD's 2 MiB: {:?}", stats());
+        assert_eq!(unsafe { libc::munmap(map, CHUNK) }, 0);
+        drop(file);
+        fs::remove_file(&name).unwrap();
+        fs::remove_file(&other).unwrap();
+    }
+
+    /// A sealed piece of a writable region is never mapped outside the gate. A clone has the end of
+    /// an open extent read as sealed, and the file, cut short of it, has the rest: its read maps
+    /// that, which makes the extent's region writable, as far as it reaches. The clone, one sealed
+    /// piece past that, is a slice of the region, read outside the gate: fxfs_dax_new_slice reaches
+    /// for it, a writable MAP no gate keeps a seal from (found by guest/sim, TASK-149.14, whose
+    /// tests/sealed_piece_reach plays these steps). It WARNs only on a kernel with lockdep, whose
+    /// fxfs_device_assert_in_gate checks: on the others this passes either way.
+    fn test_sealed_piece_reach() {
+        use std::os::unix::fs::FileExt;
+        /// `_IOW(0x94, 13, struct file_clone_range)`.
+        const FICLONERANGE: libc::c_ulong = 0x4020_940d;
+        const PAGE: usize = 4096;
+        const PIECE: usize = CHUNK / 2;
+        /// `struct file_clone_range`.
+        #[repr(C)]
+        struct CloneRange {
+            src_fd: i64,
+            src_offset: u64,
+            src_length: u64,
+            dest_offset: u64,
+        }
+        let name = path("sealed-piece-reach");
+        let clone_name = path("sealed-piece-reach-clone");
+        let keeper_name = path("sealed-piece-reach-keeper");
+        let data: Vec<u8> = (0..2 * CHUNK).map(|i| (i % 251) as u8 + 1).collect();
+        let open = fs::OpenOptions::new().create(true).truncate(true).read(true).write(true).clone();
+        let file = open.open(&name).unwrap();
+        let clone = open.open(&clone_name).unwrap();
+        let keeper = open.open(&keeper_name).unwrap();
+        file.write_all_at(&data[..CHUNK], 0).unwrap();
+        file.sync_data().unwrap();
+        // The second chunk in two extents, each whole, open: a range of its own, and no region.
+        file.write_all_at(&data[CHUNK..CHUNK + PIECE], CHUNK as u64).unwrap();
+        file.write_all_at(&data[CHUNK + PIECE..], (CHUNK + PIECE) as u64).unwrap();
+        let shared = CHUNK + PIECE - 2 * PAGE;
+        let range = CloneRange {
+            src_fd: file.as_raw_fd() as i64,
+            src_offset: shared as u64,
+            src_length: 2 * PAGE as u64,
+            dest_offset: 0,
+        };
+        // Two clones: shared still, once the file lets go of them.
+        for clone in [&clone, &keeper] {
+            let cloned = unsafe { libc::ioctl(clone.as_raw_fd(), FICLONERANGE as _, &range) };
+            assert_eq!(cloned, 0, "FICLONERANGE: {}", std::io::Error::last_os_error());
+        }
+        file.set_len(shared as u64).unwrap();
+        // The file's open part maps first: its region writable, as far as it reaches.
+        let mut byte = [0];
+        file.read_exact_at(&mut byte, CHUNK as u64).unwrap();
+        assert_eq!(byte[0], data[CHUNK], "the file's open part");
+        clone.read_exact_at(&mut byte, 0).unwrap();
+        assert_eq!(byte[0], data[shared], "the clone, a sealed piece of the region");
+        drop(file);
+        drop(clone);
+        drop(keeper);
+        for name in [name, clone_name, keeper_name] {
+            fs::remove_file(name).unwrap();
+        }
+    }
+
     /// fxdax: a file larger than a chunk, written whole by one write(2) and fsynced, then read
     /// through a mapping: each byte as written. The first load of such a file died of SIGBUS, its
     /// fault failing with no error (TASK-121's pause check). The read maps the first chunk with a
@@ -4531,6 +4755,7 @@ pub(crate) mod guest {
                     tests.push(("regions_written_once_mapped", &test_regions_written_once_mapped));
                     tests.push(("regions_truncated", &test_regions_truncated));
                     tests.push(("stale_entry_flushed", &test_stale_entry_flushed));
+                    tests.push(("pmd_over_stale_index", &test_pmd_over_stale_index));
                     tests.push(("slice_held", &test_slice_held));
                     tests.push(("evacuees_left", &test_evacuees_left));
                 }
@@ -4552,6 +4777,7 @@ pub(crate) mod guest {
                 tests.push(("map_failed_after_move", &test_map_failed_after_move));
                 tests.push(("map_many_failed", &test_map_many_failed));
                 tests.push(("move_failed", &test_move_failed));
+                tests.push(("sealed_piece_reach", &test_sealed_piece_reach));
             }
             // Files on DAX are in no page cache.
             if !dax {
@@ -4567,6 +4793,7 @@ pub(crate) mod guest {
             if dax {
                 tests.push(("moved_across_seal", &test_moved_across_seal));
                 tests.push(("moved_across_two_seals", &test_moved_across_two_seals));
+                tests.push(("load_during_move", &test_load_during_move));
             }
             // Of a small window, which it fills.
             if self.small_window {

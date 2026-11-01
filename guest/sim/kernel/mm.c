@@ -363,6 +363,28 @@ int pfn_mkclean_range(unsigned long pfn, unsigned long nr_pages, pgoff_t pgoff,
 	return cleaned;
 }
 
+/*
+ * A user's PTE maps a window page writably, of `pages` from `page`: what a store could hit, with
+ * no fault, however the host maps the page. The address, or 0.
+ */
+unsigned long sim_mm_writable_mapping(u64 page, u64 pages)
+{
+	struct vm_area_struct *vma;
+	unsigned long i, count, pfn;
+
+	list_for_each_entry(vma, &current->mm->vmas, mm_list) {
+		count = (vma->vm_end - vma->vm_start) >> PAGE_SHIFT;
+		for (i = 0; i < count; i++) {
+			if (!pte_write(vma->ptes[i]))
+				continue;
+			pfn = pte_pfn(vma->ptes[i]);
+			if (pfn >= sim_window_pfn(page) && pfn < sim_window_pfn(page + pages))
+				return vma->vm_start + (i << PAGE_SHIFT);
+		}
+	}
+	return 0;
+}
+
 static struct vm_area_struct *find_vma(struct mm_struct *mm, unsigned long addr)
 {
 	struct vm_area_struct *vma;
@@ -445,12 +467,20 @@ size_t sim_copy_user(unsigned long addr, void *buf, size_t len, bool write)
 			break;
 		at = translate(vma, addr, write);
 		if (!at) {
-			vm_fault_t ret;
+			struct mm_struct *mm = current->mm;
+			vm_fault_t ret = VM_FAULT_NOPAGE;
 
 			if (pagefault_disabled())
 				break;
-			ret = handle_fault(vma, addr, write);
-			if (ret & VM_FAULT_ERROR)
+			/* The kernel's mmap_lock: a fault keeps its VMA, as a task unmaps it. */
+			down_read(&mm->lock);
+			vma = find_vma(mm, addr);
+			current->fault_drops = 0;
+			if (vma)
+				ret = handle_fault(vma, addr, write);
+			current->fault_drops = -1;
+			up_read(&mm->lock);
+			if (!vma || (ret & VM_FAULT_ERROR))
 				break;
 			continue;
 		}
@@ -516,24 +546,31 @@ unsigned long sim_mm_map(struct mm_struct *mm, struct file *file, pgoff_t pgoff,
 	err = file->f_inode->i_fop->mmap(file, vma);
 	if (err)
 		sim_panic("mmap: %d", err);
+	down_write(&mm->lock);
 	list_add_tail(&vma->mm_list, &mm->vmas);
 	down_write(&mapping->i_mmap_rwsem);
 	list_add_tail(&vma->mapping_list, &mapping->i_mmap);
 	up_write(&mapping->i_mmap_rwsem);
+	up_write(&mm->lock);
 	return vma->vm_start;
 }
 
 void sim_munmap(unsigned long addr)
 {
-	struct vm_area_struct *vma = find_vma(current->mm, addr);
-	struct address_space *mapping = vma->vm_file->f_mapping;
+	struct mm_struct *mm = current->mm;
+	struct vm_area_struct *vma;
+	struct address_space *mapping;
 
+	down_write(&mm->lock);
+	vma = find_vma(mm, addr);
+	mapping = vma->vm_file->f_mapping;
 	unmap_mapping_pages(mapping, vma->vm_pgoff,
 			    (vma->vm_end - vma->vm_start) >> PAGE_SHIFT, false);
 	down_write(&mapping->i_mmap_rwsem);
 	list_del(&vma->mapping_list);
 	up_write(&mapping->i_mmap_rwsem);
 	list_del(&vma->mm_list);
+	up_write(&mm->lock);
 	kfree(vma->ptes);
 	kfree(vma->pmds);
 	kfree(vma);

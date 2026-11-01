@@ -49,3 +49,28 @@ jobs:
           cargo check -p test_cases --features guest --tests --target x86_64-unknown-linux-musl
       - name: Unit tests
         run: cargo nextest run --workspace
+
+  # guest/sim: dax.c in a process, over a fake kernel, as zloop.sh runs ztest (TASK-149.14).
+  guest-sim:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install the build's tools
+        run: sudo apt-get update && sudo apt-get install -y clang lld
+      - uses: actions/cache@v6
+        with:
+          path: target/sim-kernel
+          key: sim-kernel-${{ hashFiles('scripts/build-guest-kernel.sh', 'guest/linux/patches/*') }}
+      - name: Fetch the kernel's sources
+        run: guest/sim/kernel-tree.sh "$PWD/target/sim-kernel"
+      - name: Run 3,000 seeds
+        env:
+          KERNEL: ${{ github.workspace }}/target/sim-kernel
+          BUILD: ${{ github.workspace }}/target/sim
+        run: guest/sim/zloop.sh -s 3000 -d "$BUILD/logs"
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: guest-sim-logs
+          path: target/sim/logs
