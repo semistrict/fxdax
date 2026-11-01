@@ -1534,9 +1534,20 @@ struct AckState {
     /// [`Acks::park`]), by their IDs: what an acknowledgement lets go of taken off at once, however
     /// much waits for those after it.
     kept: std::collections::BTreeMap<u64, Vec<Box<dyn Send>>>,
-    /// fxdax: the operation taking access away the watchdog found unacknowledged, and when it
-    /// first did ([`Acks::unanswered`]).
-    watched: Option<(u64, std::time::Instant)>,
+    /// fxdax: what the watchdog found unacknowledged ([`Acks::unanswered`]).
+    watched: Option<Watched>,
+}
+
+/// fxdax: how the watchdog last found a VM process with stage operations taking access away
+/// unacknowledged.
+struct Watched {
+    /// The last acknowledged then, and when the watchdog first found it the last.
+    acked: u64,
+    answered: std::time::Instant,
+    /// The last sent taking access away when the watchdog looked after the one before it was
+    /// acknowledged, and when that was ([`Acks::behind`]).
+    id: u64,
+    since: std::time::Instant,
 }
 
 impl Acks {
@@ -1594,22 +1605,36 @@ impl Acks {
         state.acked < state.last_taking
     }
 
-    /// fxdax: how long, as of `now`, the VM process has left an operation taking access away
-    /// unacknowledged, as the watchdog looks every so often (TASK-79.9): since it first found it
-    /// so, or none.
+    /// fxdax: how long, as of `now`, the VM process has acknowledged nothing with an operation
+    /// taking access away unacknowledged, as the watchdog looks every so often (TASK-79.9): since it
+    /// first found that so, or none. A backlog it works through is no silence: a burst of tens of
+    /// thousands takes seconds, where each of them takes its time on a slow host (TASK-148).
     fn unanswered(&self, now: std::time::Instant) -> std::time::Duration {
         let mut state = self.state.lock().unwrap();
         if state.closed || state.acked >= state.last_taking {
             state.watched = None;
             return std::time::Duration::ZERO;
         }
-        match state.watched {
-            Some((id, since)) if state.acked < id => now.saturating_duration_since(since),
-            _ => {
-                state.watched = Some((state.last_taking, now));
-                std::time::Duration::ZERO
-            }
+        let (acked, id) = (state.acked, state.last_taking);
+        let watched = state.watched.get_or_insert(Watched { acked, answered: now, id, since: now });
+        if watched.acked != acked {
+            watched.acked = acked;
+            watched.answered = now;
         }
+        if acked >= watched.id {
+            watched.id = id;
+            watched.since = now;
+        }
+        now.saturating_duration_since(watched.answered)
+    }
+
+    /// fxdax: how long, as of `now`, the operation taking access away that the watchdog is waiting
+    /// for has been unacknowledged, whatever was acknowledged meanwhile, as of its last look
+    /// ([`Acks::unanswered`]): an acknowledgement every so often holds nothing for ever (TASK-148).
+    fn behind(&self, now: std::time::Instant) -> std::time::Duration {
+        let state = self.state.lock().unwrap();
+        let since = state.watched.as_ref().map(|watched| watched.since);
+        since.map_or(std::time::Duration::ZERO, |since| now.saturating_duration_since(since))
     }
 
     /// Waits for stage operation `id` to be acknowledged, or the VM process to be gone.
@@ -1633,11 +1658,17 @@ impl Acks {
     }
 }
 
-/// fxdax: how long a VM process may leave a stage operation that takes access to pages away
-/// unacknowledged before the daemon takes it to have stopped answering, and lets it go
-/// ([`Peer::let_go`], TASK-79.9): long past what making one takes, and well within what an
-/// allocation waits for the pages freed meanwhile, which wait for it, before it fails.
+/// fxdax: how long a VM process with a stage operation that takes access to pages away
+/// unacknowledged may acknowledge nothing before the daemon takes it to have stopped answering,
+/// and lets it go ([`Peer::let_go`], TASK-79.9): long past what making one takes, and well within
+/// what an allocation waits for the pages freed meanwhile, which wait for it, before it fails.
 const UNRESPONSIVE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// fxdax: how long a VM process that goes on acknowledging may take over a backlog of stage
+/// operations before the daemon lets it go all the same (TASK-148): long past the seconds a burst
+/// of tens of thousands takes on a slow host, where each acknowledgement frees what it waited for,
+/// and what keeps one acknowledging just often enough from holding pages for ever.
+const BEHIND: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// fxdax: how long a VM process whose connection went, and that may still reach pages, has to exit,
 /// as one exiting does just after its connection goes, before the daemon lets it go ([`Peer::gone`],
@@ -1649,8 +1680,8 @@ const WATCH_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// fxdax: a connection's VM process, as the daemon depends on it (TASK-79.9): the stage
 /// operations it acknowledges, which the pages it may reach wait for, freed ([`quarantine`]); and
-/// the process itself, which the daemon lets go once it has left one unacknowledged for
-/// [`UNRESPONSIVE`] ([`watch`]): its connection shut down, it is killed as the connection goes,
+/// the process itself, which the daemon lets go once it has acknowledged none for
+/// [`UNRESPONSIVE`], or stayed behind for [`BEHIND`] ([`watch`]): its connection shut down, it is killed as the connection goes,
 /// which waits for it to have exited, its mappings of the window gone, before the pages it may
 /// reach go back ([`Peer::gone`]). So too one that closes its connection and lives on, reaching
 /// pages still (TASK-79.100). One the daemon could not kill it refuses as it connects
@@ -1733,10 +1764,10 @@ impl Peer {
         }
     }
 
-    /// Whether it has left an operation taking access away unacknowledged for [`UNRESPONSIVE`],
-    /// as of `now`, and is to be let go.
+    /// Whether it has acknowledged no operation for [`UNRESPONSIVE`], with one taking access away
+    /// unacknowledged, or left one so for [`BEHIND`], as of `now`, and is to be let go.
     fn unresponsive(&self, now: std::time::Instant) -> bool {
-        self.acks.unanswered(now) >= UNRESPONSIVE
+        self.acks.unanswered(now) >= UNRESPONSIVE || self.acks.behind(now) >= BEHIND
     }
 
     /// Returns once its process has exited, holding no thread, its memory gone, and its mappings
@@ -1920,7 +1951,7 @@ impl Parking {
 
     /// Waits until the pages this thread freed are free: once every VM process that may reach
     /// them has made the stage operations taking them away, or the daemon let it go, which it does
-    /// once it has left one unacknowledged for [`UNRESPONSIVE`].
+    /// once it has stopped answering ([`Peer::unresponsive`]).
     pub(super) fn wait(&self) {
         // What this thread holds back would never be acknowledged.
         assert!(!AsyncSender::corked(), "waited for pages freed with stage operations held back");
@@ -1955,7 +1986,7 @@ async fn watch() {
             PEERS.lock().unwrap().iter().filter(|peer| peer.unresponsive(now)).cloned().collect();
         // Let go without holding the VM processes connected, which every page freed takes.
         for peer in unresponsive {
-            peer.let_go(format_args!("left a stage operation unacknowledged for {UNRESPONSIVE:?}"));
+            peer.let_go(format_args!("stopped answering stage operations"));
         }
     }
 }
@@ -2057,7 +2088,7 @@ impl SecondStage for RemoteStage {
 
 #[cfg(test)]
 mod acks_tests {
-    use super::Acks;
+    use super::{Acks, BEHIND};
     use std::sync::Arc;
 
     /// fxdax: what is kept until a stage operation is acknowledged goes once it, or one after it,
@@ -2105,6 +2136,47 @@ mod acks_tests {
         acks.park(&pages);
         assert_eq!(Arc::strong_count(&pages), 1);
         assert!(after > unmapped);
+    }
+
+    /// A backlog a VM process works through is no silence, however long it takes (fxfs-guest-checks
+    /// lost VMs that acknowledged 10,900 operations a second, 46,000 behind): it counts once the
+    /// VM process stops.
+    #[test]
+    fn a_backlog_worked_through_is_answered() {
+        let acks = Acks::default();
+        let start = std::time::Instant::now();
+        let at = |seconds| start + std::time::Duration::from_secs(seconds);
+        let first = acks.next(true);
+        (0..50_000).for_each(|_| drop(acks.next(true)));
+        assert_eq!(acks.unanswered(at(0)), std::time::Duration::ZERO);
+        for second in 1..=20 {
+            acks.acked(first + second * 1000);
+            assert_eq!(acks.unanswered(at(second)), std::time::Duration::ZERO);
+        }
+        assert_eq!(acks.unanswered(at(25)), std::time::Duration::from_secs(5));
+    }
+
+    /// One acknowledgement every so often holds a backlog no longer than [`BEHIND`].
+    #[test]
+    fn a_backlog_counts_as_behind_until_it_is_cleared() {
+        let acks = Acks::default();
+        let start = std::time::Instant::now();
+        let at = |seconds| start + std::time::Duration::from_secs(seconds);
+        let first = acks.next(true);
+        let last = (0..1000).map(|_| acks.next(true)).last().unwrap();
+        assert_eq!(acks.behind(at(0)), std::time::Duration::ZERO);
+        acks.unanswered(at(0));
+        for second in 1..=60 {
+            acks.acked(first + second);
+            assert_eq!(acks.unanswered(at(second)), std::time::Duration::ZERO);
+        }
+        assert_eq!(acks.behind(at(60)), BEHIND);
+        // Cleared, what comes after counts on its own.
+        acks.acked(last);
+        let next = acks.next(true);
+        assert_eq!(acks.unanswered(at(61)), std::time::Duration::ZERO);
+        assert_eq!(acks.behind(at(61)), std::time::Duration::ZERO);
+        acks.acked(next);
     }
 
     /// TASK-79.9: what the watchdog finds unacknowledged counts from when it first found it so,
