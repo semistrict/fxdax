@@ -41,6 +41,8 @@ void sim_device_watch(u64 page);
 void sim_device_describe(u64 page);
 void sim_mm_describe(unsigned long addr);
 bool sim_mm_is_huge(unsigned long addr);
+/* The address of a writable PTE of the window's `pages` pages from `page`, or 0. */
+unsigned long sim_mm_writable_mapping(u64 page, u64 pages);
 /* Logs what happens to the PTE of a task's address. */
 void sim_mm_watch(unsigned long addr);
 

@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+#
+# A candidate fix of a diagnostic, not of the window (tests/interleave 739 1000 of the first
+# workload, a truncate to 0 in the trace just before): fxfs.dax_check_places reads the file's size,
+# then asks Fxfs where its pages are, and a truncate between, which holds the invalidate lock but
+# not the file's semaphore, shrinks the inode, then Fxfs: pages past the new size are nowhere, which
+# it takes for pages misplaced. super.c's fxfs_vfs_resize has that order, so a guest under
+# fxfs-guest-checks-dax-delay can fail so too. Read after Fxfs's answer, the size says what it let go.
+
+--- a/guest/linux/fs/fxfs/dax.c
++++ b/guest/linux/fs/fxfs/dax.c
+@@ -4328,6 +4328,11 @@
+ 	if (!e)
+ 		return;
+ 	count = len ? fxfs_nofs(fxfs_dax_extents(file->volume->fs, file->ino, pos, len, e, run->pages)) : 0;
++	mutex_lock(&dax->files_lock);
++	if (file->inode)
++		size = i_size_read(file->inode);
++	mutex_unlock(&dax->files_lock);
++	len = min_t(u64, len, max_t(loff_t, round_up(size, PAGE_SIZE) - (loff_t)pos, 0));
+ 	for (i = 0; done < len; i++) {
+ 		if (WARN(i >= count || e[i].offset != pos + done || e[i].branch != map->branch ||
+ 			 e[i].sequence != map->sequence || e[i].extent_offset != map->offset + done,

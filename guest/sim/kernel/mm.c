@@ -363,6 +363,28 @@ int pfn_mkclean_range(unsigned long pfn, unsigned long nr_pages, pgoff_t pgoff,
 	return cleaned;
 }
 
+/*
+ * A user's PTE maps a window page writably, of `pages` from `page`: what a store could hit, with
+ * no fault, however the host maps the page. The address, or 0.
+ */
+unsigned long sim_mm_writable_mapping(u64 page, u64 pages)
+{
+	struct vm_area_struct *vma;
+	unsigned long i, count, pfn;
+
+	list_for_each_entry(vma, &current->mm->vmas, mm_list) {
+		count = (vma->vm_end - vma->vm_start) >> PAGE_SHIFT;
+		for (i = 0; i < count; i++) {
+			if (!pte_write(vma->ptes[i]))
+				continue;
+			pfn = pte_pfn(vma->ptes[i]);
+			if (pfn >= sim_window_pfn(page) && pfn < sim_window_pfn(page + pages))
+				return vma->vm_start + (i << PAGE_SHIFT);
+		}
+	}
+	return 0;
+}
+
 static struct vm_area_struct *find_vma(struct mm_struct *mm, unsigned long addr)
 {
 	struct vm_area_struct *vma;
