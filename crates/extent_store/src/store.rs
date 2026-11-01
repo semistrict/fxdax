@@ -1587,23 +1587,32 @@ impl<D: Dir> Store<D> {
     pub fn close_now(&self) -> Result<bool, Error> {
         let Some(unframed) = self.close_between_commits()? else { return Ok(false) };
         let number = unframed.number();
-        let framed = self.frame_durably(unframed);
+        let framed = unframed.frame(&self.lineage.dir).and_then(|framed| {
+            self.make_framed_durable(&framed)?;
+            Ok((number, framed))
+        });
+        self.framing_ended(framed).context("closing the open segment")?;
+        Ok(true)
+    }
+
+    /// fxdax: the framing of a segment closed between commits, counted in [`State::framings`], is
+    /// over, `framed` saying how: the segment reads from its framed file from now on, and its raw
+    /// file goes with the next commit, or the store fails, as it is framed, and durable, or not.
+    fn framing_ended(
+        &self,
+        framed: Result<(SegmentId, Arc<Framed<D::File>>), Error>,
+    ) -> Result<(), Error> {
         let mut state = self.state.lock().unwrap();
-        match &framed {
-            Ok(framed) => {
-                state.segments.framed(number, framed.clone());
-                state.unreferenced.doomed.push(open_segment_path(number));
-            }
-            // Framed, and durable, or the store fails.
-            Err(_) => state.failed = true,
-        }
+        let ended = framed.map(|(number, framed)| {
+            state.segments.framed(number, framed);
+            state.unreferenced.doomed.push(open_segment_path(number));
+        });
+        state.failed |= ended.is_err();
         state.framings -= 1;
         if state.framings == 0 {
             self.idle.notify_all();
         }
-        drop(state);
-        framed.context("closing the open segment")?;
-        Ok(true)
+        ended
     }
 
     /// fxdax: closes the open segment, between commits, as [`Store::close_now`] does, and returns
@@ -1634,17 +1643,16 @@ impl<D: Dir> Store<D> {
         Ok(Some(unframed))
     }
 
-    /// fxdax: frames `unframed`, a segment closed between commits, holding no lock, and makes its
-    /// framed file durable, and its entry.
-    fn frame_durably(&self, unframed: Unframed<D::File>) -> Result<Arc<Framed<D::File>>, Error> {
+    /// fxdax: makes `framed`, the framed file of a segment closed between commits, durable, and its
+    /// entry, holding no lock.
+    fn make_framed_durable(&self, framed: &Framed<D::File>) -> Result<(), Error> {
         let dir = &self.lineage.dir;
-        let framed = unframed.frame(dir)?;
         framed.file.sync()?;
         for kind in [SEGMENTS, OPEN_SEGMENTS] {
             dir.sync_dir(&branch_dir(kind, self.branch))?;
         }
         dir.barrier()?;
-        Ok(framed)
+        Ok(())
     }
 
     /// fxdax: `state`, once no segment closed between commits is being framed
