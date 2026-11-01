@@ -222,7 +222,7 @@ impl Chain {
 /// How an image was left.
 #[derive(Clone, Copy, Debug)]
 enum Ending {
-    /// Unmounted.
+    /// Compacted and unmounted, with next to nothing to replay.
     Closed,
     /// Crashed just after a sync, with a journal to replay.
     Crashed,
@@ -556,18 +556,22 @@ impl Image {
 
         let (reading, errors) = read_volume(&fs, root).await;
         assert_eq!(errors, 0);
-        crashes.mark(0);
-        crashes.last();
+        // What's recorded is the next barrier's: of a close, there are many.
         match ending {
             Ending::Closed => {
                 fs.stop_delayed().await.expect("stopping");
+                journal.force_compact().await.expect("compacting");
                 drop((fs, volumes));
                 filesystem.close().await.expect("closing");
                 let device = filesystem.take_device().await;
                 device.reopen(false);
+                crashes.mark(0);
+                crashes.last();
                 device.flush().await.expect("flushing");
             }
             Ending::Crashed => {
+                crashes.mark(0);
+                crashes.last();
                 device.flush().await.expect("flushing");
                 fs.stop_delayed().await.expect("stopping");
                 drop((fs, volumes));
@@ -785,6 +789,17 @@ fn flips_in_a_closed_image_with_barriers() {
 #[test]
 fn flips_in_a_crashed_image_with_barriers() {
     flips_never_panic(true, Ending::Crashed);
+}
+
+/// The images are what they say: flips of one that differed only in name would prove nothing more.
+#[test]
+fn a_closed_image_has_next_to_nothing_to_replay() {
+    let blocks = |image: &Image| image.chains[0].blocks.len();
+    let (closed, crashed) = run_case(async {
+        (Image::new(false, Ending::Closed).await, Image::new(false, Ending::Crashed).await)
+    })
+    .expect("no panic");
+    assert!(blocks(&closed) * 4 < blocks(&crashed), "{} {}", blocks(&closed), blocks(&crashed));
 }
 
 /// The checksums of the super-blocks prove this much, whatever else does: changing a byte of each
