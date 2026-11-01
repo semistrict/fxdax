@@ -192,6 +192,15 @@ fn run_single_test(
             let _ = child.kill();
             let _ = child.wait();
             kill_cleanup_pids(&test_dir);
+            let test_name = test_case.name.to_string();
+            let test_dir_clone = test_dir.clone();
+            let said = catch_unwind(|| {
+                let test = get_test(&test_name).unwrap();
+                test.timed_out(TestSetup { test_case: test_name, tmp_dir: test_dir_clone })
+            });
+            if let Ok(Some(said)) = said {
+                eprintln!("{said}");
+            }
             return Ok(TestResult {
                 name: test_case.name.to_string(),
                 outcome: TestOutcome::Timeout,

@@ -74,10 +74,12 @@ fn pattern(offset: usize) -> u8 {
 }
 
 #[host]
-mod host {
+pub(crate) mod host {
     use super::*;
 
     use crate::common::{fxdax_guest_should_run, setup_rootfs};
+    use crate::script::{self, Failure};
+    use crate::script_vm::{self, Replays};
     use crate::vm::Vm;
     use crate::{ShouldRun, Test, TestOutcome, TestSetup};
     use futures::executor::block_on;
@@ -122,7 +124,7 @@ mod host {
     /// fxdax: the seed of a run's random choices (random_ops's operations, fxfs.dax_delay_us's
     /// delays): FXDAX_SEED's, to replay a run, or else a new one each run, which the run says
     /// (TASK-119.2).
-    fn seed() -> u64 {
+    pub(crate) fn seed() -> u64 {
         std::env::var("FXDAX_SEED").ok().and_then(|seed| seed.parse().ok()).unwrap_or_else(|| {
             let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap();
             now.as_nanos() as u64 ^ u64::from(std::process::id()) << 32
@@ -159,7 +161,7 @@ mod host {
             let seed = seed();
             eprintln!("{}: seed {seed} (FXDAX_SEED={seed} replays it)", test_setup.test_case);
             std::fs::write(test_setup.tmp_dir.join("seed"), seed.to_string())?;
-            vm.env(&std::ffi::CString::new(format!("FXDAX_RANDOM_OPS_SEED={seed}"))?);
+            script_vm::pass_script(&mut vm, seed)?;
             if self.delay {
                 vm.module_param(c"fxfs.dax_delay_us=200");
                 // fxdax: evacuated pages placed where Fxfs holds them (TASK-119.10).
@@ -173,8 +175,23 @@ mod host {
             let output = String::from_utf8(stdout).unwrap();
             let seed = std::fs::read_to_string(test_setup.tmp_dir.join("seed")).unwrap();
             if output != "OK\n" {
+                // fxdax: random_ops, run alone, as a run of its script told what to drop can be
+                // (TASK-149.2).
+                let shrunk = Failure::parse(&output).map(|failure| {
+                    let replays = Replays {
+                        runner: std::env::current_exe().unwrap(),
+                        test_setup: &test_setup,
+                        seed: seed.parse().unwrap(),
+                        mix: script::ONE_FILE,
+                        env: &[("FXDAX_CHECKS", "random_ops")],
+                        timeout: std::time::Duration::from_secs(self.timeout_secs()),
+                        verdict: &|_, stdout| Failure::parse(&String::from_utf8_lossy(stdout)),
+                    };
+                    replays.report(&failure)
+                });
+                let shrunk = shrunk.unwrap_or_default();
                 return TestOutcome::Fail(format!(
-                    "seed {seed}: expected exactly \"OK\\n\", got {output:?}"
+                    "seed {seed}: expected exactly \"OK\\n\", got {output:?}\n{shrunk}"
                 ));
             }
             // fxdax: fsck, whichever checks ran.

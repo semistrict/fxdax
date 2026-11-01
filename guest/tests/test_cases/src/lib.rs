@@ -63,6 +63,8 @@ use test_fxfs_guest_checks::TestFxfsGuestChecks;
 pub mod script;
 #[cfg(all(feature = "guest", target_os = "linux"))]
 mod script_run;
+#[cfg(feature = "host")]
+mod script_vm;
 
 // What the guest's checks print as they fail.
 #[cfg(feature = "guest")]
@@ -470,6 +472,11 @@ pub trait Test {
     /// Per-test timeout in seconds. The runner kills the test if it exceeds this.
     fn timeout_secs(&self) -> u64 {
         15
+    }
+
+    /// fxdax: what a test that ran out of time, its VM gone, has to add to that.
+    fn timed_out(self: Box<Self>, _test_setup: TestSetup) -> Option<String> {
+        None
     }
 
     /// fxdax: whether the runner fails the test, once it passed, on its VMs' kernels complaining
