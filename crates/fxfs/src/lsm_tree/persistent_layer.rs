@@ -661,8 +661,17 @@ impl LayerLayout {
         let total_blocks = size / block_size;
         let bloom_filter_blocks =
             block_size.align_up_to_blocks(layer_info.bloom_filter_size_bytes as u64);
-        if data_blocks + bloom_filter_blocks > total_blocks - MINIMUM_LAYER_FILE_BLOCKS {
+        let blocks = data_blocks.checked_add(bloom_filter_blocks);
+        if blocks.is_none_or(|blocks| blocks > total_blocks - MINIMUM_LAYER_FILE_BLOCKS) {
             return Err(anyhow!(FxfsError::Inconsistent)).context("Invalid number of blocks");
+        }
+
+        // No longer than it says it holds, either: a caching handle keeps an entry for each of a
+        // layer's chunks. A trailer may need a block of its own, and a seek table its last.
+        let seek_blocks =
+            block_size.align_up_to_blocks(data_blocks * std::mem::size_of::<u64>() as u64);
+        if total_blocks > NUM_HEADER_BLOCKS + data_blocks + bloom_filter_blocks + seek_blocks + 2 {
+            return Err(anyhow!(FxfsError::Inconsistent)).context("Layer file too long");
         }
 
         Ok(Self {
@@ -752,8 +761,10 @@ impl<K: FuzzyHash> LayerData<K> {
                 .context("Failed to read layer info")?;
             let layer_info_len =
                 u64::from_le_bytes(buffer.subslice(bs - 8..bs).as_ptr_slice().read().unwrap());
-            let layer_info_offset = bs
-                .checked_sub(std::mem::size_of::<u64>() + layer_info_len as usize)
+            // fxdax: the length is what the image says, which may be anything.
+            let layer_info_offset = (layer_info_len as usize)
+                .checked_add(std::mem::size_of::<u64>())
+                .and_then(|len| bs.checked_sub(len))
                 .ok_or(FxfsError::Inconsistent)
                 .context("Invalid layer info length")?;
             let mut reader = buffer.subslice(layer_info_offset..).as_ptr_slice();
@@ -1492,8 +1503,12 @@ impl<W: WriteBytes, K: Key, V: LayerValue> PersistentLayerWriter<W, K, V> {
         if self.version <= OLD_KEY_SERIALIZATION_VERSION {
             item.key.serialize_into(&mut self.buf)?;
         } else {
+            // fxdax: what's written comes from layers, in order only if they were: a key below its
+            // block's base is what a compaction of a corrupt one meets.
             let base = *self.block_keys.last().unwrap();
-            item.key.serialize_key_with_base_into(&mut self.buf, base).expect("keys in order");
+            item.key
+                .serialize_key_with_base_into(&mut self.buf, base)
+                .map_err(|error| anyhow!(FxfsError::Inconsistent).context(error))?;
         }
         item.value.serialize_into(&mut self.buf)?;
         Ok(())
@@ -1561,13 +1576,14 @@ impl<W: WriteBytes + Send, K: Key, V: LayerValue> LayerWriter<K, V>
     }
 }
 
-/// Logs a warning if this object is dropped and the contained value isn't 0.
+/// Logs a warning if this object is dropped and the contained value isn't 0. fxdax: without
+/// asserting, as upstream does: a compaction that fails, as one reading a corrupt layer does, drops
+/// its writer with items in it.
 #[repr(transparent)]
 struct LayerWriterBufItemCount(u16);
 
 impl Drop for LayerWriterBufItemCount {
     fn drop(&mut self) {
-        debug_assert!(self.0 == 0, "Dropping unwritten items; did you forget to call complete?");
         if self.0 > 0 {
             warn!("Dropping unwritten items; did you forget to call complete?");
         }
@@ -1590,7 +1606,8 @@ impl std::ops::DerefMut for LayerWriterBufItemCount {
 #[cfg(test)]
 mod tests {
     use super::{
-        BlockSize, FxfsError, PersistentLayer, PersistentLayerWriter, SyncPersistentLayer,
+        BlockSize, FxfsError, LayerInfo, PersistentLayer, PersistentLayerWriter,
+        SyncPersistentLayer,
     };
     use crate::filesystem::MAX_BLOCK_SIZE;
     use crate::lsm_tree::LayerIterator;
@@ -1606,7 +1623,7 @@ mod tests {
     use crate::object_store::extent::MIN_BLOCK_SIZE;
     use crate::object_store::object_record::ObjectKey;
     use crate::round::round_up;
-    use crate::serialized_types::OLD_KEY_SERIALIZATION_VERSION;
+    use crate::serialized_types::{OLD_KEY_SERIALIZATION_VERSION, Versioned as _};
     use crate::testing::fake_object::{FakeObject, FakeObjectHandle};
     use crate::testing::writer::Writer;
     use anyhow::Error;
@@ -1848,6 +1865,139 @@ mod tests {
             iterator.advance().await.expect("failed to advance");
         }
         assert!(iterator.get().is_none());
+    }
+
+    /// fxdax: a small layer, as an object to change.
+    async fn written_layer() -> Arc<FakeObject> {
+        let object = Arc::new(FakeObject::new());
+        let handle = FakeObjectHandle::new_with_block_size(object.clone(), BlockSize::SIZE_4KIB);
+        let writer = Writer::new(&handle).await;
+        let mut writer =
+            PersistentLayerWriter::<_, i32, i32>::new(writer, 16, BlockSize::SIZE_4KIB)
+                .await
+                .expect("writer new");
+        for i in 0..16 {
+            writer.write(Item::new(i, i).as_item_ref()).await.expect("write failed");
+        }
+        writer.complete().await.expect("flush failed");
+        object
+    }
+
+    /// fxdax: the layer `object` holds, if it opens.
+    async fn open_layer(object: &Arc<FakeObject>) -> Result<(), Error> {
+        let handle = FakeObjectHandle::new_with_block_size(object.clone(), BlockSize::SIZE_4KIB);
+        PersistentLayer::<i32, i32>::open(handle).await.map(drop)
+    }
+
+    /// fxdax: makes `layer_info` what `object` ends with.
+    fn set_layer_info(object: &FakeObject, layer_info: &LayerInfo) {
+        let mut serialized = Vec::new();
+        layer_info.serialize_into(&mut serialized).expect("serializing");
+        serialized.extend((serialized.len() as u64).to_le_bytes());
+        object.change(|bytes| {
+            let start = bytes.len() - serialized.len();
+            bytes[start..].copy_from_slice(&serialized);
+        });
+    }
+
+    /// fxdax: a layer's trailing length near the largest there is overflowed what it was added to.
+    #[fuchsia::test]
+    async fn test_layer_info_length_may_be_anything() {
+        for length in [u64::MAX - 7, u64::MAX] {
+            let object = written_layer().await;
+            open_layer(&object).await.expect("the layer before it changes");
+            object.change(|bytes| {
+                let start = bytes.len() - 8;
+                bytes[start..].copy_from_slice(&length.to_le_bytes());
+            });
+            let error = open_layer(&object).await.expect_err("opened");
+            assert!(FxfsError::Inconsistent.matches(&error), "{error:?}");
+        }
+    }
+
+    /// fxdax: a layer's counts of blocks overflowed their sum, whose check they then passed.
+    #[fuchsia::test]
+    async fn test_layer_block_counts_may_be_anything() {
+        let object = written_layer().await;
+        let layer_info = LayerInfo {
+            num_items: 16,
+            num_data_blocks: u64::MAX,
+            bloom_filter_size_bytes: 8192,
+            bloom_filter_seed: 0,
+            bloom_filter_num_hashes: 1,
+        };
+        set_layer_info(&object, &layer_info);
+        let error = open_layer(&object).await.expect_err("opened");
+        assert!(FxfsError::Inconsistent.matches(&error), "{error:?}");
+    }
+
+    /// fxdax: a layer's size is how many chunks a caching handle has entries for: no more than
+    /// the layer says it holds.
+    #[fuchsia::test]
+    async fn test_layer_no_longer_than_it_says() {
+        let object = written_layer().await;
+        let layer_info = LayerInfo {
+            num_items: 16,
+            num_data_blocks: 1,
+            bloom_filter_size_bytes: 0,
+            bloom_filter_seed: 0,
+            bloom_filter_num_hashes: 0,
+        };
+        // Blocks for the seek table and the trailer, and one over.
+        for _ in 0..2 {
+            object.change(|bytes| bytes.resize(bytes.len() + 4096, 0));
+        }
+        set_layer_info(&object, &layer_info);
+        open_layer(&object).await.expect("as long as a layer may be");
+        object.change(|bytes| bytes.resize(bytes.len() + 4096, 0));
+        set_layer_info(&object, &layer_info);
+        let error = open_layer(&object).await.expect_err("opened");
+        assert!(FxfsError::Inconsistent.matches(&error), "{error:?}");
+    }
+
+    /// fxdax: a bloom filter's count of hashes is how long each query takes.
+    #[fuchsia::test]
+    async fn test_layer_bloom_hashes_may_be_anything() {
+        let object = written_layer().await;
+        let layer_info = LayerInfo {
+            num_items: 16,
+            num_data_blocks: 1,
+            bloom_filter_size_bytes: 512,
+            bloom_filter_seed: 0,
+            bloom_filter_num_hashes: usize::MAX,
+        };
+        // Room for a bloom filter.
+        object.change(|bytes| bytes.resize(bytes.len() + 4096, 0));
+        set_layer_info(&object, &layer_info);
+        let error = open_layer(&object).await.expect_err("opened");
+        let error = error.chain().find_map(|error| error.downcast_ref::<FxfsError>());
+        assert_eq!(error, Some(&FxfsError::Inconsistent));
+    }
+
+    /// fxdax: a compaction of a corrupt layer may write a key below the first of its block, which
+    /// the writer's delta encoding has no way to write.
+    #[fuchsia::test]
+    async fn test_writer_refuses_keys_below_their_block() {
+        let handle = FakeObjectHandle::new(Arc::new(FakeObject::new()));
+        let writer = Writer::new(&handle).await;
+        let mut writer = PersistentLayerWriter::<_, i32, i32>::new(writer, 2, BlockSize::SIZE_4KIB)
+            .await
+            .expect("writer new");
+        writer.write(Item::new(5, 5).as_item_ref()).await.expect("write failed");
+        let error = writer.write(Item::new(3, 3).as_item_ref()).await.expect_err("wrote");
+        assert!(FxfsError::Inconsistent.matches(&error), "{error:?}");
+    }
+
+    /// fxdax: a writer dropped with items in it is no panic: a compaction that failed drops one.
+    #[fuchsia::test]
+    async fn test_writer_dropped_with_items() {
+        let handle = FakeObjectHandle::new(Arc::new(FakeObject::new()));
+        let writer = Writer::new(&handle).await;
+        let mut writer = PersistentLayerWriter::<_, i32, i32>::new(writer, 1, BlockSize::SIZE_4KIB)
+            .await
+            .expect("writer new");
+        writer.write(Item::new(5, 5).as_item_ref()).await.expect("write failed");
+        drop(writer);
     }
 
     #[fuchsia::test]

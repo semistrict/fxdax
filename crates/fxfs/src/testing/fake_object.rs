@@ -27,6 +27,12 @@ impl FakeObject {
         FakeObject { buf: Mutex::new(Vec::new()) }
     }
 
+    /// fxdax: changes what it holds, as no write could: for a test of what reads it.
+    #[cfg(any(test, fuzz))]
+    pub fn change(&self, change: impl FnOnce(&mut Vec<u8>)) {
+        change(&mut self.buf.lock());
+    }
+
     fn read(&self, offset: u64, buf: MutableBufferRef<'_>) -> Result<usize, Error> {
         let our_buf = self.buf.lock();
         let to_do = min(buf.len(), our_buf.len() - offset as usize);

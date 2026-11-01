@@ -2,8 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+use crate::errors::FxfsError;
 use crate::lsm_tree::types::{FuzzyHash, MaybeContainsKey};
-use anyhow::{Error, Result};
+use anyhow::{Error, Result, ensure};
 use bit_vec::BitVec;
 use std::marker::PhantomData;
 use storage_ptr_slice::PtrByteSlice;
@@ -83,10 +84,15 @@ pub struct BloomFilterStats {
 /// falling back to returning true.
 pub const MAX_HASH_PARTITIONS: usize = 4;
 
+/// fxdax: the most hashes a bloom filter may say it takes for each query: `estimate_params` chooses
+/// about ten. It says so on disk, and a query spins for as many as it says.
+const MAX_NUM_HASHES: usize = 64;
+
 impl<V: FuzzyHash> BloomFilterReader<V> {
     /// Creates a BloomFilterReader by reading the serialized contents from `buf`.
     /// `seed` and `num_hashes` must match the values passed into BloomFilterWriter.
     pub fn read(buf: PtrByteSlice<'_>, seed: u64, num_hashes: usize) -> Result<Self, Error> {
+        ensure!(num_hashes <= MAX_NUM_HASHES, FxfsError::Inconsistent);
         Ok(Self {
             data: BitVec::from_bytes(&buf.to_vec()),
             seed,
@@ -349,6 +355,14 @@ mod tests {
                 .expect("read failed");
             assert_eq!(filter.maybe_contains(key), MaybeContainsKey::Maybe);
         }
+    }
+
+    /// fxdax: how many hashes a filter says it takes is how long its queries take.
+    #[test]
+    fn test_hash_count_is_bounded() {
+        let buf = [0u8; 16];
+        let read = BloomFilterReader::<u64>::read(PtrByteSlice::from(&buf[..]), 0, usize::MAX);
+        assert!(read.is_err());
     }
 
     #[test]
