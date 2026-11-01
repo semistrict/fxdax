@@ -86,7 +86,7 @@ use std::ops::Bound;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::task::{Poll, Waker};
-use storage_device::{Device, ExtentRange, NoExtent};
+use storage_device::{Device, ExtentId, ExtentRange, NoExtent};
 use storage_units::BlockSize;
 
 // The journal file is written to in blocks of this size.
@@ -484,6 +484,18 @@ pub struct JournaledChecksums {
     pub first_write: bool,
 }
 
+/// fxdax: the part of an extent of the store that `extent` of the journal is, `device_offset` on:
+/// what an image says, which may be anything.
+fn journal_extent(
+    extent: &Extent,
+    store_extent: ExtentId,
+    device_offset: u64,
+) -> Result<ExtentRange, Error> {
+    let end = device_offset.checked_add(extent.length().context("Invalid extent")?);
+    let end = end.ok_or(FxfsError::Inconsistent).context("Invalid extent")?;
+    Ok(ExtentRange::new(store_extent, device_offset..end))
+}
+
 /// Handles for journal-like objects have some additional functionality to manage their extents,
 /// since during replay we need to add extents as we find them.
 pub trait JournalHandle: ReadObjectHandle {
@@ -499,7 +511,7 @@ pub trait JournalHandle: ReadObjectHandle {
     fn discard_extents(&mut self, discard_offset: u64);
     /// fxdax: drops the extents from `offset` on, which extents pushed next replace (see
     /// `Journal::renew_tail`).
-    fn truncate_extents(&mut self, offset: u64);
+    fn truncate_extents(&mut self, offset: u64) -> Result<(), Error>;
 }
 
 // Provide a stub implementation for DataObjectHandle so we can use it in
@@ -515,8 +527,9 @@ impl<S: HandleOwner> JournalHandle for DataObjectHandle<S> {
     fn discard_extents(&mut self, _discard_offset: u64) {
         // NOP
     }
-    fn truncate_extents(&mut self, _offset: u64) {
+    fn truncate_extents(&mut self, _offset: u64) -> Result<(), Error> {
         // NOP
+        Ok(())
     }
 }
 
@@ -615,7 +628,8 @@ impl Journal {
     /// Used during replay to validate a mutation.  This should return false if the mutation is not
     /// valid and should not be applied.  This could be for benign reasons: e.g. the device flushed
     /// data out-of-order, or because of a malicious actor.
-    fn validate_mutation(&self, mutation: &Mutation, block_size: BlockSize) -> bool {
+    /// fxdax: any extent's key is checked, not only those of extents that have a value.
+    pub(super) fn validate_mutation(mutation: &Mutation, block_size: BlockSize) -> bool {
         match mutation {
             Mutation::ObjectStore(ObjectStoreMutation {
                 item:
@@ -625,7 +639,7 @@ impl Journal {
                                 data: ObjectKeyData::Attribute(_, AttributeKey::Extent(extent)),
                                 ..
                             },
-                        value: ObjectValue::Extent(ExtentValue::Some { extent_offset, mode, .. }),
+                        value,
                         ..
                     },
                 ..
@@ -633,9 +647,13 @@ impl Journal {
                 if extent.is_empty() || !block_size.is_aligned(extent) {
                     return false;
                 }
+                let ObjectValue::Extent(ExtentValue::Some { extent_offset, mode, .. }) = value
+                else {
+                    return true;
+                };
                 let len = extent.length().unwrap();
-                if let ExtentMode::Cow(checksums) = mode {
-                    if checksums.len() > 0 {
+                match mode {
+                    ExtentMode::Cow(checksums) if checksums.len() > 0 => {
                         if len % checksums.len() as u64 != 0 {
                             return false;
                         }
@@ -643,6 +661,13 @@ impl Journal {
                             return false;
                         }
                     }
+                    // fxdax: a bit a block, which reads rely on.
+                    ExtentMode::OverwritePartial(bitmap) => {
+                        if bitmap.len() as u64 != len / block_size {
+                            return false;
+                        }
+                    }
+                    _ => {}
                 }
                 // fxdax: extents have no device to fit in, only offsets that must not overflow.
                 if !block_size.is_aligned(extent_offset) || extent_offset.checked_add(len).is_none()
@@ -801,11 +826,7 @@ impl Journal {
                         }
                         handle.push_extent(
                             0, // We never discard extents from the root parent store.
-                            ExtentRange::new(
-                                *store_extent,
-                                *device_offset
-                                    ..*device_offset + extent.length().context("Invalid extent")?,
-                            ),
+                            journal_extent(extent, *store_extent, *device_offset)?,
                         );
                         true
                     }
@@ -850,7 +871,7 @@ impl Journal {
                 .chain(root_mutations)
                 .chain(non_root_mutations.iter().map(|(_, m)| m))
             {
-                if !self.validate_mutation(mutation, block_size) {
+                if !Self::validate_mutation(mutation, block_size) {
                     info!(mutation:?; "Stopping replay at bad mutation");
                     valid_to = checkpoint.file_offset;
                     break 'bad_replay;
@@ -1246,20 +1267,13 @@ impl Journal {
                                             // the journal continued after a replay (see
                                             // `Journal::renew_tail`).
                                             if extent.start < end_offset {
-                                                reader.truncate_extents(extent.start);
+                                                reader.truncate_extents(extent.start)?;
                                             }
                                         }
                                         reader.push_extent(
                                             checkpoint.file_offset,
-                                            ExtentRange::new(
-                                                *store_extent,
-                                                *device_offset
-                                                    ..*device_offset
-                                                        + extent
-                                                            .length()
-                                                            .context("Invalid extent")?,
-                                            ),
-                                        );
+                                            journal_extent(extent, *store_extent, *device_offset)?,
+                                        )?;
                                     }
                                 }
                                 *end_offset = reader.journal_file_checkpoint().file_offset;
@@ -1343,7 +1357,7 @@ impl Journal {
                 .chain(transaction.non_root_mutations.iter().map(|(_, mutation)| mutation))
             {
                 ensure!(
-                    self.validate_mutation(mutation, block_size),
+                    Self::validate_mutation(mutation, block_size),
                     anyhow!(FxfsError::Inconsistent).context(format!(
                         "A transaction at {} to follow has a bad mutation: {mutation:?}",
                         transaction.checkpoint.file_offset
@@ -2904,6 +2918,49 @@ mod tests {
             commit_records(&fs, object_id, round, 76).await;
         }
         check_replay(fs).await;
+    }
+
+    /// fxdax: a mutation of an extent says as much as a record can of what writes it to a layer.
+    #[test]
+    fn test_mutations_of_extents_are_validated() {
+        use super::Journal;
+        use crate::object_store::{AttributeId, ExtentMode, ExtentValue};
+        use bit_vec::BitVec;
+        use storage_device::ExtentId;
+        use storage_units::BlockSize;
+
+        let valid = |range, value| {
+            let key = ObjectKey::extent(1, AttributeId::DATA, range);
+            let mutation = Mutation::merge_object(key, value);
+            Journal::validate_mutation(&mutation, BlockSize::SIZE_4KIB)
+        };
+        assert!(valid(0..4096, ObjectValue::deleted_extent()));
+        assert!(!valid(1..4096, ObjectValue::deleted_extent()));
+        assert!(!valid(0..0, ObjectValue::deleted_extent()));
+
+        let extent = ExtentId::new(1, 1);
+        let bitmap = |blocks| {
+            let mode = ExtentMode::OverwritePartial(BitVec::from_elem(blocks, false));
+            ObjectValue::Extent(ExtentValue::new(extent, 0, mode, 0))
+        };
+        assert!(valid(0..8192, bitmap(2)));
+        assert!(!valid(0..8192, bitmap(1)));
+        assert!(!valid(0..8192, bitmap(0)));
+    }
+
+    /// fxdax: where a journal's extent ends is what an image says.
+    #[test]
+    fn test_journal_extents_are_checked() {
+        use crate::object_store::Extent;
+        use storage_device::{ExtentId, ExtentRange};
+
+        let store_extent = ExtentId::new(1, 1);
+        let extent = Extent(4096..8192);
+        assert_eq!(
+            super::journal_extent(&extent, store_extent, 8192).expect("a good extent"),
+            ExtentRange::new(store_extent, 8192..12288)
+        );
+        super::journal_extent(&extent, store_extent, u64::MAX).expect_err("past any offset");
     }
 
     #[fuchsia::test]

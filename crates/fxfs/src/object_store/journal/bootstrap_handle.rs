@@ -112,7 +112,8 @@ impl ReadObjectHandle for BootstrapObjectHandle {
         let block_size = self.block_size();
         ensure!(block_size.is_aligned(offset), FxfsError::InvalidArgs);
         ensure!(block_size.is_aligned(buf.len() as u64), FxfsError::InvalidArgs);
-        assert!(offset >= self.start_offset);
+        // fxdax: not an assertion: the offset is a super-block's, and may be anything.
+        ensure!(offset >= self.start_offset, FxfsError::Inconsistent);
         let trace = self.trace.load(Ordering::Relaxed);
         if trace {
             info!(len = buf.len(), offset; "JH: read");
@@ -183,8 +184,9 @@ impl JournalHandle for BootstrapObjectHandle {
         self.extents.push(Extent { added_offset, device_range });
     }
 
-    fn truncate_extents(&mut self, offset: u64) {
-        assert!(offset >= self.start_offset && offset <= self.end_offset);
+    fn truncate_extents(&mut self, offset: u64) -> Result<(), Error> {
+        // fxdax: not an assertion: the offset is a journal record's, and may be anything.
+        ensure!(offset >= self.start_offset && offset <= self.end_offset, FxfsError::Inconsistent);
         let mut extent_start = self.start_offset;
         let mut kept = 0;
         for extent in &mut self.extents {
@@ -200,6 +202,7 @@ impl JournalHandle for BootstrapObjectHandle {
         }
         self.extents.truncate(kept);
         self.end_offset = offset;
+        Ok(())
     }
 
     fn discard_extents(&mut self, discard_offset: u64) {
@@ -221,6 +224,7 @@ impl JournalHandle for BootstrapObjectHandle {
 #[cfg(test)]
 mod tests {
     use super::BootstrapObjectHandle;
+    use crate::errors::FxfsError;
     use crate::object_handle::ReadObjectHandle as _;
     use crate::object_store::journal::JournalHandle as _;
     use std::sync::Arc;
@@ -252,6 +256,22 @@ mod tests {
         handle.push_extent(0, ExtentRange::new(E, 0..1024));
         handle.read_aligned(0, buffer.as_mut()).await.expect("read first explicit extent");
         assert_eq!(buffer.to_vec(), vec![1u8; 1024]);
+    }
+
+    /// fxdax: where a read starts is a super-block's, and where extents are truncated a journal
+    /// record's: which an image says, and which fail rather than assert.
+    #[fuchsia::test]
+    async fn test_offsets_outside_a_handle() {
+        let device = Arc::new(FakeDevice::new(64, 512));
+        let mut handle = BootstrapObjectHandle::new_with_start_offset(1, device.clone(), 1024);
+        handle.push_extent(0, ExtentRange::new(E, 0..1024));
+        let mut buffer = device.allocate_buffer(512).await;
+        let error = handle.read_aligned(512, buffer.as_mut()).await.expect_err("read");
+        assert!(FxfsError::Inconsistent.matches(&error), "{error:?}");
+        for offset in [512, 4096] {
+            let error = handle.truncate_extents(offset).expect_err("truncated");
+            assert!(FxfsError::Inconsistent.matches(&error), "{error:?}");
+        }
     }
 
     #[fuchsia::test]
