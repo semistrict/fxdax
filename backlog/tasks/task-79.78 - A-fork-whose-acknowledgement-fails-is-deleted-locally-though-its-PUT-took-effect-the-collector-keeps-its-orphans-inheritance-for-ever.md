@@ -6,7 +6,7 @@ title: >-
 status: In Progress
 assignee: []
 created_date: '2026-10-23 06:12'
-updated_date: '2026-10-24 12:29'
+updated_date: '2026-11-01 07:46'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -25,7 +25,7 @@ Found reviewing TASK-79.72 (round 2a). When Remote::forked fails, ExtentStore::f
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [x] #1 A fork whose PUT took effect is either kept or deleted remotely too, whatever failed after it
-- [ ] #2 The collector frees what an orphaned fork inherited once nothing else holds it, pinned by a test
+- [x] #2 The collector frees what an orphaned fork inherited once nothing else holds it, pinned by a test
 <!-- AC:END -->
 
 ## Definition of Done
@@ -45,4 +45,6 @@ Finalization check (after the push of 47b7a348): not done. AC#1 is proven only f
 Landed with TASK-79.82 (3ca2e731): a fork failing after its commit keeps its handle and is cleaned up as a Remote::forked failure, object storage included; a handle naming a branch the lineage lacks (a crash between the commit and the record) deletes the claimed child in object storage too. AC #1 holds. AC #2 (the collector freeing an orphaned fork's inheritance) is not shown: the fix stops orphans being made rather than collecting them.
 
 Handed over (2026-10-24): landed on main; what is left is in the notes above.
+
+2026-11-01, branch test/fork-faults: AC2 ticked on forks_orphaned_by_a_lost_host_keep_what_they_inherited_until_deleted, through a real fork: the host dies once the fork's segment landed and is lost with its disk, the parent's next writer elsewhere gives the child its record, the parent frees what it inherited, a pass keeps it, the orphan is listed (branch::live against what hosts hold) and deleted as fxdax-gc --delete-branch does, and the next pass frees it. The collector does not find an orphan by itself: the operator's step (TASK-79.85) is part of what is proved. Orphans with a handle: the sweep's World::settle deletes the handle and collects, at every step and write of a fork, down to nothing left in the bucket. Not landed; not run on GCE.
 <!-- SECTION:NOTES:END -->

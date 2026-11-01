@@ -16,9 +16,11 @@ testing = []
 # threads. Only for those tests: `cargo nextest run -p fxdax --features shuttle --lib
 # shuttle_tests::`.
 shuttle = ["dep:shuttle", "physmem/shuttle"]
-# fxdax: the extent daemon's failpoints (the fail crate's), which the FAILPOINTS environment
-# variable sets: a request of a kind failing or waiting, as configured (TASK-44.10). Without the
-# feature they are nothing: scripts/test-e2e.sh builds the daemon with it for FXDAX_FAILPOINTS.
+# fxdax: the failpoints (the fail crate's) of the extent daemon's requests, and of the steps of a
+# fork's protocol here and in extent_store and extent_remote (`faults`), which the FAILPOINTS
+# environment variable sets, or FXDAX_FAULT_SEED from a seed: a request of a kind failing or
+# waiting, or a step failing, as configured (TASK-44.10). Without the feature they are nothing:
+# scripts/test-e2e.sh builds the daemon with it for FXDAX_FAILPOINTS. This crate's tests have it.
 failpoints = ["fail/failpoints"]
 
 [dependencies]
@@ -53,7 +55,7 @@ fail = "0.5.1"
 async-trait.workspace = true
 # fxfs-metabench's attributes, as Fxfs's API takes them.
 fidl-fuchsia-io.workspace = true
-fxdax = { path = ".", features = ["testing"] }
+fxdax = { path = ".", features = ["failpoints", "testing"] }
 object_store.workspace = true
 proptest.workspace = true
 tempfile.workspace = true

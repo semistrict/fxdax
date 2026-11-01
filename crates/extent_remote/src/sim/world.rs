@@ -50,6 +50,11 @@ pub struct Weights {
     pub reclaim: u32,
     /// A placement cut off deletes a branch, with the fencing token it had (TASK-45.1).
     pub stale_delete: u32,
+    /// A fork that failed is deleted, as its host's cleanup deletes it, or a crash's leftovers are
+    /// (TASK-79.82).
+    pub unfork: u32,
+    /// A fork whose segment never went is deleted as another branch takes its child's ID.
+    pub contest: u32,
     /// The store's clock advances.
     pub tick: u32,
 }
@@ -91,6 +96,8 @@ impl Default for Profile {
                 stop_collector: 1,
                 reclaim: 0,
                 stale_delete: 0,
+                unfork: 0,
+                contest: 0,
                 tick: 3,
             },
             options: Options { compact_below: 0.5, grace: 4 },
@@ -179,10 +186,28 @@ enum Event {
         stale: bool,
         result: Result<(), Error>,
     },
+    /// What deleting a failed fork's child gave ([`branch::delete_fork`]).
+    Unforked {
+        child: u64,
+        result: Result<bool, Error>,
+    },
+    /// What deleting a fork's child gave, as another branch took its ID, and what taking it gave.
+    Contested {
+        child: u64,
+        deleted: Result<bool, Error>,
+        taken: Result<u64, Error>,
+    },
     Collected {
         id: u64,
         result: Result<collector::Report, Error>,
     },
+}
+
+/// A failed fork's deletion, until it is done: where the fork's segment went, as its host knew,
+/// and the task, unless a crash stopped it, for its host's next start to go on with.
+struct Unfork {
+    origin: Option<Origin>,
+    running: Option<AbortHandle>,
 }
 
 pub struct World {
@@ -198,6 +223,7 @@ pub struct World {
     /// The commit that minted each extent.
     minted: HashMap<ExtentId, u64>,
     collectors: BTreeMap<u64, AbortHandle>,
+    unforks: BTreeMap<u64, Unfork>,
     next_id: u64,
     /// Whether requests fail.
     faults: bool,
@@ -222,6 +248,7 @@ impl World {
             commits: HashMap::new(),
             minted: HashMap::new(),
             collectors: BTreeMap::new(),
+            unforks: BTreeMap::new(),
             next_id: 1,
             faults: true,
             quiescing: false,
@@ -275,6 +302,8 @@ impl World {
             w.stop_collector,
             w.reclaim,
             w.stale_delete,
+            w.unfork,
+            w.contest,
             w.tick,
         ];
         let mut roll = self.rng.random_range(0..choices.iter().sum::<u32>());
@@ -298,6 +327,8 @@ impl World {
             11 => self.stop_collector(),
             12 => self.reclaim(),
             13 => self.stale_delete(),
+            14 => self.unfork(),
+            15 => self.contest(),
             _ => {
                 let ticks = self.rng.random_range(1..=self.profile.options.grace);
                 self.bucket.advance(ticks);
@@ -431,6 +462,34 @@ impl World {
                 Ok(()) if self.branches[&branch].deleting => {}
                 Ok(()) => self.violation(format!("a placement cut off deleted branch {branch:x}")),
                 Err(error) => self.violation(format!("branch {branch:x}'s stale delete: {error}")),
+            },
+            Event::Unforked { child, result: Ok(true) } => drop(self.unforks.remove(&child)),
+            // A later placement took it as it was deleted, as a writer that went did: it lives on.
+            Event::Unforked { child, result: Err(Error::Stale) } => {
+                self.unforks.remove(&child);
+                self.branches.get_mut(&child).unwrap().deleting = false;
+            }
+            Event::Unforked { child, result } => {
+                self.violation(format!("deleting the failed fork to {child:x}: {result:?}"));
+            }
+            Event::Contested { child, deleted, taken } => match (deleted, taken) {
+                // The fork's deletion took the ID first.
+                (Ok(true), Err(Error::Corrupt(_))) => {}
+                // The other branch did: it lives on.
+                (Ok(false), Ok(_)) => drop(self.branches.insert(
+                    child,
+                    Branch {
+                        origin: None,
+                        base: None,
+                        acked: BTreeSet::new(),
+                        deleting: false,
+                        taken: 0,
+                    },
+                )),
+                (deleted, taken) => self.violation(format!(
+                    "deleting the failed fork to {child:x} gave {deleted:?}, another branch taking \
+                     its ID {taken:?}"
+                )),
             },
             Event::Collected { id, result } => {
                 self.collectors.remove(&id);
@@ -751,6 +810,68 @@ impl World {
         if self.rng.random_bool(0.3) {
             self.hosts[host].disk.clear();
         }
+        // Whichever host's: what they had in flight may land still.
+        for unfork in self.unforks.values_mut() {
+            if let Some(running) = unfork.running.take() {
+                running.abort();
+            }
+        }
+    }
+
+    /// Deletes a fork that failed, one no writer took, as its host's cleanup does, in object storage
+    /// ([`branch::delete_fork`]): or goes on with one a crash stopped, as deleting its handle again
+    /// does.
+    fn unfork(&mut self) {
+        let stopped = self.unforks.iter().find(|(_, unfork)| unfork.running.is_none());
+        if let Some((&child, _)) = stopped {
+            return self.spawn_unfork(child);
+        }
+        let held = |branch| self.hosts.iter().any(|host| host.sessions.contains_key(branch));
+        let forked = |origin: Option<Origin>, parent| origin.is_some_and(|at| at.parent == parent);
+        let candidates: Vec<u64> = (self.branches.iter())
+            .filter(|(_, found)| found.origin.is_some() && found.acked.is_empty())
+            .filter(|(branch, found)| !found.deleting && found.taken == 0 && !held(branch))
+            .filter(|&(&branch, _)| {
+                !self.branches.values().any(|child| forked(child.origin, branch))
+            })
+            .map(|(&branch, _)| branch)
+            .collect();
+        if candidates.is_empty() {
+            return;
+        }
+        let child = candidates[self.rng.random_range(0..candidates.len())];
+        let found = self.branches.get_mut(&child).unwrap();
+        found.deleting = true;
+        self.unforks.insert(child, Unfork { origin: found.origin, running: None });
+        self.spawn_unfork(child);
+    }
+
+    /// Deletes `child`, a failed fork's, as its host does.
+    fn spawn_unfork(&mut self, child: u64) {
+        let (origin, holder) = (self.unforks[&child].origin, self.id());
+        let (bucket, events) = (self.bucket.clone(), self.events.clone());
+        let running = self.spawn(async move {
+            let result = branch::delete_fork(&*bucket, child, origin, holder, 0).await;
+            events.borrow_mut().push(Event::Unforked { child, result });
+        });
+        self.unforks.get_mut(&child).unwrap().running = Some(running);
+    }
+
+    /// Deletes a fork whose segment never went, which names no origin, as another branch takes its
+    /// child's ID, the guest having named one that was free when the fork looked: the same token
+    /// for both, as a host's stores' are.
+    fn contest(&mut self) {
+        let (child, holder, other) = (self.id(), self.id(), self.id());
+        let (bucket, events) = (self.bucket.clone(), self.events.clone());
+        self.spawn(async move {
+            let deleting = branch::delete_fork(&*bucket, child, None, holder, 0);
+            let taking = async {
+                branch::create(&*bucket, child).await?;
+                branch::take_lease(&*bucket, &crate::layout::lease(child), other, 0).await
+            };
+            let (deleted, taken) = futures::join!(deleting, taking);
+            events.borrow_mut().push(Event::Contested { child, deleted, taken });
+        });
     }
 
     /// Deletes a branch, if `bases`, one a fork of which lives.
@@ -890,6 +1011,10 @@ impl World {
         let direct = Arc::new(Direct(self.bucket.clone()));
         let mut violations = Vec::new();
         for (&id, branch) in &self.branches {
+            // A failed fork's, being deleted: no guest knows of it.
+            if self.unforks.contains_key(&id) {
+                continue;
+            }
             let record = match block_on(branch::record(&*direct, id)) {
                 Ok(Some(record)) if !record.deleted => record,
                 Ok(Some(_)) if !branch.deleting => {
@@ -1009,6 +1134,12 @@ impl World {
     /// new writer, then has each write a checkpoint while collectors run, a few times over.
     fn quiesce(&mut self) {
         self.faults = false;
+        self.settle();
+        // Those a crash stopped, their hosts up again.
+        let stopped = self.unforks.iter().filter(|(_, unfork)| unfork.running.is_none());
+        for child in stopped.map(|(&child, _)| child).collect::<Vec<_>>() {
+            self.spawn_unfork(child);
+        }
         self.settle();
         // Twice, so that extents a writer uploaded again, which it alone can tell are its, belong
         // to an earlier writer.

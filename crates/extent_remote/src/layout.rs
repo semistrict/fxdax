@@ -143,6 +143,16 @@ pub struct Record {
     pub deleted: bool,
 }
 
+impl Record {
+    /// Whether it is the record of the child of a fork made at `origin`, if the fork's segment went
+    /// anywhere: naming it, or none, as a child takes a branch of its own whose fork was not made
+    /// in object storage ([`crate::branch::create_forked`]). Any other is another branch's, whose
+    /// ID the fork's guest named (TASK-79.82).
+    pub fn of_fork(&self, origin: Option<Origin>) -> bool {
+        self.forked && (self.origin.is_none() || self.origin == origin)
+    }
+}
+
 /// Where a branch was forked from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Origin {

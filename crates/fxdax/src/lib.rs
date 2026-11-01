@@ -111,6 +111,7 @@ mod executor;
 #[cfg(target_os = "linux")]
 pub mod extentd;
 mod extents;
+pub mod faults;
 mod filesystem;
 mod host_store;
 mod image;

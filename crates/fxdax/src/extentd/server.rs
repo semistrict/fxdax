@@ -749,6 +749,7 @@ fn failpoint(kind: u32) -> Option<&'static str> {
         UNMAP => "extentd::unmap",
         COMMIT => "extentd::commit",
         FREE | FREE_MANY => "extentd::free",
+        FORK => "extentd::fork",
         _ => return None,
     })
 }
@@ -1045,6 +1046,8 @@ impl Connection {
                 forked.map_err(|err| {
                     stores::errno_of(format_args!("forking to {}", path.display()), err)
                 })?;
+                // fxdax: the fork made, its reply lost: its guest takes it to have failed.
+                fail::fail_point!("extentd::forked", |_| Err(Errno::EIO));
                 Ok(())
             }
             INFO => store.info().map(|info| {

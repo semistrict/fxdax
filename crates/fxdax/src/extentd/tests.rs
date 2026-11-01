@@ -2923,6 +2923,176 @@ fn restores_fork_anew_over_forks_that_failed() {
     assert!(!ExtentStore::fork_failed(&restored), "the new fork's handle reads as failed");
 }
 
+/// What a store of the daemon's at `path` mints next, as its guest mints: from its writer's floor,
+/// or past what it minted.
+fn minted(store: &RemoteExtentStore) -> ExtentId {
+    let info = store.info().unwrap();
+    assert!(info.sequence_floor >= 1 << extent_remote::EPOCH_SHIFT, "{info:?}");
+    ExtentId { branch: store.branch(), sequence: info.next_sequence.max(info.sequence_floor) }
+}
+
+/// The store at `path`, once the connection that had it open let it go.
+fn reopened(socket: &Path, path: &Path) -> RemoteExtentStore {
+    loop {
+        match RemoteExtentStore::connect(socket, path, 1 << 24) {
+            Err(error) if error.errno() == Some(Errno::EBUSY) => std::thread::yield_now(),
+            opened => break opened.unwrap(),
+        }
+    }
+}
+
+/// TASK-44.10: a guest's fork failing at each of its steps ([`crate::faults::FORK_STEPS`]) fails
+/// with `EIO`, leaving no handle; the store opens again, holds what it held, and forks; and
+/// another's store is served on. `remote::fork_faults` goes further, on stores alone: this is the
+/// daemon's side, its requests, connections, and errnos.
+#[test]
+fn guests_forks_failing_at_each_step_harm_nothing() {
+    host();
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("extentd.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || serve(listener));
+    let other = RemoteExtentStore::connect(&socket, &dir.path().join("other"), 1 << 24).unwrap();
+    let kept = minted(&other);
+    write(&other, kept, 0, &pattern(9, BLOCK)).unwrap();
+    other.commit(None).unwrap();
+
+    for (case, step) in crate::faults::FORK_STEPS.into_iter().enumerate() {
+        let path = dir.path().join(format!("store-{case}"));
+        let store = RemoteExtentStore::connect(&socket, &path, 1 << 24).unwrap();
+        let extent = minted(&store);
+        write(&store, extent, 0, &pattern(1, BLOCK)).unwrap();
+        store.commit(Some(b"root")).unwrap();
+        let (child, branch) = (dir.path().join(format!("child-{case}")), rand::random());
+        let failing = fail::FailGuard::new(step, "1*return").unwrap();
+        let forked = store.fork(&child, branch);
+        drop(failing);
+        assert_eq!((forked, child.exists()), (Err(Errno::EIO), false), "{step}");
+        drop(store);
+
+        let store = reopened(&socket, &path);
+        assert_eq!(store.root(), Ok(b"root".to_vec()), "{step}");
+        assert_eq!(read(&store, extent, 0, BLOCK), Ok(pattern(1, BLOCK)), "{step}");
+        let retried = dir.path().join(format!("retried-{case}"));
+        assert_eq!(store.fork(&retried, rand::random()), Ok(()), "{step}");
+        let forked = RemoteExtentStore::connect(&socket, &retried, 1 << 24).unwrap();
+        assert_eq!(read(&forked, extent, 0, BLOCK), Ok(pattern(1, BLOCK)), "{step}");
+        forked.commit(Some(b"fork")).unwrap();
+
+        assert_eq!(read(&other, kept, 0, BLOCK), Ok(pattern(9, BLOCK)), "{step}");
+        assert_eq!(other.commit(None), Ok(()), "{step}");
+    }
+}
+
+/// TASK-44.10: a fork made whose answer its guest never got, which took it to have failed: the
+/// fork stands, a retry to its path or its child's ID fails with `EEXIST`, and it is deleted as
+/// any store is. A guest's request refused before it began makes nothing, and a retry forks.
+#[test]
+fn forks_whose_answers_are_lost_stand() {
+    host();
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("extentd.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || serve(listener));
+    let path = dir.path().join("store");
+    let store = RemoteExtentStore::connect(&socket, &path, 1 << 24).unwrap();
+    let extent = minted(&store);
+    write(&store, extent, 0, &pattern(2, BLOCK)).unwrap();
+    store.commit(Some(b"root")).unwrap();
+
+    let (refused, branch) = (dir.path().join("refused"), rand::random());
+    let failing = fail::FailGuard::new("extentd::fork", "1*return").unwrap();
+    assert_eq!(store.fork(&refused, branch), Err(Errno::EIO));
+    drop(failing);
+    assert!(!refused.exists(), "a request refused made a fork");
+    assert_eq!(store.fork(&refused, branch), Ok(()));
+
+    let (child, branch) = (dir.path().join("child"), rand::random());
+    let failing = fail::FailGuard::new("extentd::forked", "1*return").unwrap();
+    assert_eq!(store.fork(&child, branch), Err(Errno::EIO));
+    drop(failing);
+    assert_eq!(store.fork(&child, rand::random()), Err(Errno::EEXIST));
+    assert_eq!(store.fork(&dir.path().join("again"), branch), Err(Errno::EEXIST));
+    assert!(!dir.path().join("again").exists(), "a refused fork left its handle");
+    assert_eq!(store.commit(Some(b"later")), Ok(()));
+    let forked = RemoteExtentStore::connect(&socket, &child, 1 << 24).unwrap();
+    assert_eq!(forked.root(), Ok(b"root".to_vec()));
+    assert_eq!(read(&forked, extent, 0, BLOCK), Ok(pattern(2, BLOCK)));
+    drop(forked);
+    let deleted = loop {
+        match delete_store(&child) {
+            Err(error) if error.errno() == Some(Errno::EBUSY) => std::thread::yield_now(),
+            deleted => break deleted,
+        }
+    };
+    assert_eq!(deleted.map_err(|err| err.to_string()), Ok(()));
+    assert!(!child.exists(), "its handle is left");
+}
+
+/// TASK-44.10: a fork of the control API's failing once its store's commits were uploaded makes
+/// nothing; a retry forks. One of a new branch, of a point kept open, whose fork fails once it is
+/// made, is made anew, of another branch, what the first left gone.
+#[test]
+fn control_forks_failing_fork_again() {
+    host();
+    let dir = tempfile::tempdir().unwrap();
+    let (base, fork, again) =
+        (dir.path().join("base"), dir.path().join("fork"), dir.path().join("again"));
+    let (store, served) = connect(&base, 1 << 24);
+    let extent = minted(&store);
+    write(&store, extent, 0, &pattern(3, BLOCK)).unwrap();
+    store.commit(Some(b"root")).unwrap();
+    drop(store);
+    served.join().unwrap();
+
+    let failing = fail::FailGuard::new("extentd::fork_uploaded", "1*return").unwrap();
+    let failed = fork_store(&base, &fork).map_err(|err| err.errno());
+    drop(failing);
+    assert_eq!((failed, fork.exists()), (Err(Some(Errno::EIO)), false));
+    fork_store(&base, &fork).unwrap();
+
+    let failing = fail::FailGuard::new("remote::forked", "1*return").unwrap();
+    let branch = control(super::stores::fork(base.clone(), again.clone(), 0)).unwrap();
+    drop(failing);
+    assert_eq!(extent_store::resolve_host(&again).unwrap().1, branch);
+    assert!(!ExtentStore::fork_failed(&again), "the fork made anew reads as failed");
+    let (forked, served) = connect(&again, 1 << 24);
+    assert_eq!(read(&forked, extent, 0, BLOCK), Ok(pattern(3, BLOCK)));
+    drop(forked);
+    served.join().unwrap();
+}
+
+/// TASK-44.10: what a host's dying, and a cleanup's failing with it, leave at a restore's path, a
+/// handle naming no branch of its store, which says nothing of its failing, opens as no store: a
+/// restore there fails, with `EIO`, until the handle is deleted, then forks.
+#[test]
+fn restores_over_what_a_dead_host_left_fail_until_it_is_deleted() {
+    host();
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("extentd.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || serve(listener));
+    let (point, restored) = (dir.path().join("point"), dir.path().join("restored"));
+    let store = RemoteExtentStore::connect(&socket, &point, 1 << 24).unwrap();
+    let extent = minted(&store);
+    write(&store, extent, 0, &pattern(4, BLOCK)).unwrap();
+    store.commit(Some(b"root")).unwrap();
+    drop(store);
+
+    let left = ["fork::committed", "delete::failed", "delete::elsewhere"];
+    let failing = left.map(|step| fail::FailGuard::new(step, "1*return").unwrap());
+    let forked = fork_store(&point, &restored).map_err(|err| err.errno());
+    drop(failing);
+    assert_eq!(forked, Err(Some(Errno::EIO)));
+    assert!(restored.exists() && !ExtentStore::fork_failed(&restored), "no leftover");
+
+    let opened = RemoteExtentStore::connect_forked(&socket, &restored, &point, 0, 0);
+    assert_eq!(opened.err().and_then(|error| error.errno()), Some(Errno::EIO));
+    delete_store(&restored).unwrap();
+    let ours = RemoteExtentStore::connect_forked(&socket, &restored, &point, 0, 0).unwrap();
+    assert_eq!(read(&ours, extent, 0, BLOCK), Ok(pattern(4, BLOCK)));
+}
+
 /// How many requests of `kind` the daemon has served, as its metrics count them.
 fn served(kind: &str) -> u64 {
     let metrics = super::metrics::render();

@@ -54,6 +54,7 @@ fn main() -> anyhow::Result<()> {
     fxdax::extentd::logging::to_stderr()?;
     // fxdax: the failpoints FAILPOINTS sets, in a daemon built with them (TASK-44.10).
     let _failpoints = fail::FailScenario::setup();
+    fxdax::faults::from_seed().map_err(anyhow::Error::msg)?;
     // fxdax: before any thread is started, which SIGQUIT would end otherwise (TASK-44.13).
     fxdax::stacks::on_sigquit().context("handling SIGQUIT")?;
     stop_on_sigterm().context("handling SIGTERM")?;

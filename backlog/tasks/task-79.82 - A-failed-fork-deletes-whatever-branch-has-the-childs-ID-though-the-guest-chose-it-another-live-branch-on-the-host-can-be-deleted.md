@@ -6,7 +6,7 @@ title: >-
 status: In Progress
 assignee: []
 created_date: '2026-10-23 09:16'
-updated_date: '2026-10-29 19:26'
+updated_date: '2026-11-01 07:46'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -48,4 +48,6 @@ Handed over (2026-10-24): landed on main; what is left is in the notes above.
 2026-10-29: AC1's race closed for forks whose segment went (an origin to claim the ID with): branch::delete_fork gives a child with no record the record its fork would ([record_fork]'s, live, naming the origin) by a create that succeeds only if none is there, before ending the child's lease; a branch taking the ID after the deletion found it free has its record there first, the create fails, and the deletion leaves it be (test forks_deleted_leave_a_branch_taking_their_childs_id_meanwhile, failing before: the other branch's lease ended, its record marked deleted). The claim is live, not deleted, so a deletion refused by a later placement (ESTALE at the lease) changes nothing wrong (forks_failed_whose_deletion_failed_keep_their_handle_and_branch); a child so claimed has its lease ended and record marked deleted alone (delete split into end_lease and mark_deleted), as delete treated a branch with no record, without recovering it (stores_are_deleted_while_their_forks_live_locally recovered a fork whose parent was gone otherwise: 'lost'). Remaining: a fork whose segment never went names no origin, and has none to claim the ID with. macOS scripts/test.sh passed (1826); GCE Linux workspace r246 pending.
 
 GCE r246 (main 3866a31d6): Linux workspace 1955/1955 and the Shuttle suites, fxfs-guest-dax passed.
+
+2026-11-01, branch test/fork-faults, each fix failing its test with the bug put back: delete_fork takes the child's ID with a record before ending its lease, naming no origin too (sim seed 0: another branch's lease ended; rule fork_claims_ids); a record is live only if the parent's branch holds the fork's segment (seed 37: 'collector: lost', every pass and the deletion's resumption failing; rule fork_claims_landed); record_fork's ChildTaken: writers go on, the fork fails with EEXIST, where every writer of the parent failed for ever; the collector recovers a child by its record's origin, where it lost what the child inherited; a handle whose child's ID another took refuses that branch, where it fenced it and uploaded into it; a child taking a record of its own (create_forked) keeps its claim and takes none of another's; a fork to a branch the store has gives EEXIST, not EIO. AC1 NOT ticked, one case left: two forks on different hosts, or of different parents, naming the same ID within one round trip, neither segment landing, and both children then taking records of their own: create_forked's bytes are the same for both, so each takes the other's for its own, and deleting one ends both. A record has nothing unique to tell them apart without a format change. A plain branch, and any fork whose segment went, is proved safe by the simulation, the sweep and the tests above. Not landed; not run on GCE.
 <!-- SECTION:NOTES:END -->

@@ -16,6 +16,16 @@
 //! `object_store` crate ([`store::Store`]), and in tests a simulation that delays, reorders and
 //! fails requests.
 
+/// fxdax: a step of the protocol, which the failpoint of its name fails (the `fail` crate's,
+/// TASK-44.10): the function it is in returns an error there, or whatever a test set the failpoint
+/// to do happens. Nothing without the crate's `failpoints` feature, which `fxdax/failpoints` turns
+/// on.
+macro_rules! failpoint {
+    ($name:literal) => {
+        fail::fail_point!($name, |_| Err($crate::Error::Read(format!("failpoint {}", $name))))
+    };
+}
+
 pub mod batch;
 pub mod branch;
 pub mod bucket;
@@ -64,6 +74,11 @@ pub enum Error {
     Stale,
     #[error("no such branch")]
     NoBranch,
+    /// A fork's child has a record naming another origin: another branch has the ID the fork's
+    /// guest gave it, which that branch took while the fork was made (TASK-79.82). The fork failed;
+    /// its parent's branch is as sound as before.
+    #[error("branch {0:x} has another origin")]
+    ChildTaken(u64),
     /// Something a branch needs is gone.
     #[error("lost: {0}")]
     Lost(String),
@@ -113,6 +128,12 @@ pub(crate) struct Rules {
     /// Readers read an extent where the footer of the object at its key says it is, not where
     /// their index does (TASK-79.18).
     pub footers: bool,
+    /// The deletion of a failed fork takes its child's ID with a record, before it ends the child's
+    /// lease, though its fork's segment never went (TASK-79.82).
+    pub fork_claims_ids: bool,
+    /// That record says the child lives only if the branch it was forked from holds the fork's
+    /// segment, which reading it needs.
+    pub fork_claims_landed: bool,
 }
 
 impl Rules {
@@ -129,6 +150,8 @@ impl Rules {
         tokens: true,
         delete_tokens: true,
         footers: true,
+        fork_claims_ids: true,
+        fork_claims_landed: true,
     };
 }
 
