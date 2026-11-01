@@ -2883,6 +2883,38 @@ mod tests {
         fs.close().await.expect("close failed");
     }
 
+    /// fxdax: a trim of an object looks for its next attribute, and past the last it finds the
+    /// object's extended attributes, which end the walk: stepping over them, from one attribute ID
+    /// to the next, the graveyard's task never ended.
+    #[fuchsia::test]
+    async fn trim_stops_at_extended_attributes() {
+        let (fs, object) = test_filesystem_and_empty_object().await;
+        object
+            .set_extended_attribute(
+                b"name".to_vec(),
+                b"value".to_vec(),
+                SetExtendedAttributeMode::Set,
+            )
+            .await
+            .expect("set_extended_attribute failed");
+        let attribute_id = AttributeId::TEST_ID;
+        let mut transaction = (*object).new_transaction(attribute_id).await.unwrap();
+        let store = object.store();
+        let trimmed = store
+            .trim_some(
+                &mut transaction,
+                object.object_id(),
+                attribute_id,
+                crate::object_store::TrimMode::UseSize,
+            )
+            .await
+            .expect("trim_some failed");
+        assert!(matches!(trimmed, crate::object_store::TrimResult::Done(None)));
+        std::mem::drop(transaction);
+        std::mem::drop(object);
+        fs.close().await.expect("close failed");
+    }
+
     #[fuchsia::test]
     async fn write_attr_trims_beyond_new_end() {
         // When writing, multi_write will deallocate old extents that overlap with the new data,

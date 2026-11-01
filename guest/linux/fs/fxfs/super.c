@@ -2390,20 +2390,29 @@ loff_t fxfs_vfs_remap_file_range(struct file *file_in, loff_t pos_in, struct fil
 	err = fxfs_dax_remap(src, pos_in, blocks, i_size_read(src));
 	if (!err)
 		err = fxfs_dax_remap(dst, pos_out, blocks, size);
-	if (!err)
-		err = fxfs_nofs(fxfs_clone_range(fxfs_vfs_fs(dst->i_sb), src->i_ino, pos_in, blocks,
-						 dst->i_ino, pos_out, size, &attr));
 	if (err)
 		goto out;
+	err = fxfs_nofs(fxfs_clone_range(fxfs_vfs_fs(dst->i_sb), src->i_ino, pos_in, blocks,
+					 dst->i_ino, pos_out, size, &attr));
+	if (err) {
+		/* With no room, what it got to stands, and the size it reached. */
+		if (fxfs_nofs(fxfs_attr_of_open(fxfs_vfs_fs(dst->i_sb), dst->i_ino, &attr)))
+			goto out;
+		size = attr.size;
+	}
 	i_size_write(dst, size);
 	dst->i_blocks = attr.blocks;
 	/*
 	 * Folios of the destination's range go whole, clean as the VFS left them: truncating a large
 	 * one partly would zero the part, which a read would find, rather than the clone's data.
 	 */
-	if (!IS_DAX(dst))
-		err = invalidate_inode_pages2_range(dst->i_mapping, pos_out >> PAGE_SHIFT,
-						    (pos_out + blocks - 1) >> PAGE_SHIFT);
+	if (!IS_DAX(dst)) {
+		int invalidated = invalidate_inode_pages2_range(dst->i_mapping,
+								pos_out >> PAGE_SHIFT,
+								(pos_out + blocks - 1) >> PAGE_SHIFT);
+
+		err = err ?: invalidated;
+	}
 out:
 	filemap_invalidate_unlock_two(src->i_mapping, dst->i_mapping);
 	unlock_two_nondirectories(src, dst);

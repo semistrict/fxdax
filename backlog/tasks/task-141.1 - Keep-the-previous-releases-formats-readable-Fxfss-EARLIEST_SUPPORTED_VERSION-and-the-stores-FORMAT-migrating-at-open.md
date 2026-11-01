@@ -9,7 +9,7 @@ created_date: '2026-10-31 20:30'
 labels: []
 dependencies: []
 parent_task_id: TASK-141
-ordinal: 488000
+ordinal: 12500
 ---
 
 ## Acceptance Criteria

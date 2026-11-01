@@ -114,6 +114,13 @@ enum Kept<'a> {
     Held(&'a [u8]),
 }
 
+/// fxdax: the extents, of either file, a commit of a clone takes: a transaction's mutations are
+/// each's reference, extent and hole, and the extent it replaces.
+const MAX_CLONED_PER_COMMIT: usize = TRANSACTION_MUTATION_THRESHOLD / 8;
+/// fxdax: the bytes a commit of a clone takes: the extent records it writes hold each block's
+/// checksum, so that a dozen extents of 1 MiB ran past TRANSACTION_MAX_JOURNAL_USAGE.
+const MAX_CLONED_BYTES_PER_COMMIT: u64 = 4 << 20;
+
 /// DataObjectHandle is a typed handle for file-like objects that store data in the default data
 /// attribute. In addition to traditional files, this means things like the journal, superblocks,
 /// and layer files.
@@ -2383,6 +2390,79 @@ impl<S: HandleOwner> DataObjectHandle<S> {
             record(transaction, offset..dst_range.end, ExtentValue::deleted_extent());
         }
         dst.update_allocated_size(transaction, allocated, deallocated).await
+    }
+
+    /// fxdax: `txn_clone_range` of a range of however many extents, in either file, in as many
+    /// commits as hold them, from its start, `dst` growing towards `size` with them: one that fails
+    /// has cloned what it got to. A clone of thousands of fragments in one transaction was larger
+    /// than a transaction may be. `transaction` holds the caller's locks, and is left for it to
+    /// commit.
+    pub async fn clone_range_in_commits<'a>(
+        &'a self,
+        transaction: &mut Transaction<'a>,
+        range: Range<u64>,
+        dst: &'a DataObjectHandle<S>,
+        dst_offset: u64,
+        size: u64,
+    ) -> Result<(), Error> {
+        let dst_of = |offset: u64| dst_offset + (offset - range.start);
+        let mut start = range.start;
+        loop {
+            let end = self.end_of_extents(start..range.end, MAX_CLONED_PER_COMMIT).await?;
+            let dst_end =
+                dst.end_of_extents(dst_of(start)..dst_of(range.end), MAX_CLONED_PER_COMMIT).await?;
+            let end = end
+                .min(start + (dst_end - dst_of(start)))
+                .min(start.saturating_add(MAX_CLONED_BYTES_PER_COMMIT));
+            self.txn_clone_range(transaction, start..end, dst, dst_of(start)).await?;
+            if end == range.end {
+                return Ok(());
+            }
+            let reached = dst_of(end).min(size);
+            if reached > dst.txn_get_size(transaction) {
+                dst.txn_update_size(transaction, reached, None).await?;
+            }
+            transaction.commit_and_continue().await?;
+            start = end;
+        }
+    }
+
+    /// fxdax: where the `most`th of this file's extents in `range` ends, or `range`, if it holds
+    /// fewer.
+    async fn end_of_extents(&self, range: Range<u64>, most: usize) -> Result<u64, Error> {
+        let store = self.store();
+        let layer_set = store.tree().layer_set();
+        let mut merger = layer_set.merger();
+        let mut iter = merger
+            .query(Query::FullRange(&ObjectKey::attribute(
+                self.object_id(),
+                self.attribute_id(),
+                AttributeKey::Extent(Extent(range.clone()).search_key()),
+            )))
+            .await?;
+        let mut extents = 0;
+        while let Some(ItemRef {
+            key:
+                ObjectKey {
+                    object_id,
+                    data: ObjectKeyData::Attribute(attribute_id, AttributeKey::Extent(key)),
+                },
+            value: ObjectValue::Extent(value),
+            ..
+        }) = iter.get()
+            && *object_id == self.object_id()
+            && *attribute_id == self.attribute_id()
+            && key.start < range.end
+        {
+            if matches!(value, ExtentValue::Some { .. }) && key.end > range.start {
+                extents += 1;
+                if extents == most {
+                    return Ok(min(key.end, range.end));
+                }
+            }
+            iter.advance().await?;
+        }
+        Ok(range.end)
     }
 
     pub async fn update_attributes<'a>(

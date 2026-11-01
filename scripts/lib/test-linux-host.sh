@@ -48,20 +48,22 @@ if [[ -z ${FXDAX_GUEST_KERNEL:-} ]]; then
 fi
 case ${FXDAX_GUEST_KERNEL_BUILD:-} in
     '') ;;
-    release | debug | kasan | coverage)
+    release | debug | kasan | coverage | rust-checks)
         echo "== guest kernel ($FXDAX_GUEST_KERNEL_BUILD)" >&2
         # Each kind in a work directory of its own, as their configurations differ. The kernel's
         # Rust builds on guest/rust's own toolchain, not the host's.
         kernel_work="$work/guest-kernel-$FXDAX_GUEST_KERNEL_BUILD"
-        kernel_debug=0 kernel_kasan=0 kernel_coverage=0
+        kernel_debug=0 kernel_kasan=0 kernel_coverage=0 kernel_rust_checks=0
         [[ $FXDAX_GUEST_KERNEL_BUILD == debug ]] && kernel_debug=1
         [[ $FXDAX_GUEST_KERNEL_BUILD == kasan ]] && kernel_kasan=1
         [[ $FXDAX_GUEST_KERNEL_BUILD == coverage ]] && kernel_coverage=1
+        [[ $FXDAX_GUEST_KERNEL_BUILD == rust-checks ]] && kernel_rust_checks=1
         channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' "$repo/guest/rust/rust-toolchain.toml")
         rustup toolchain install "$channel" --component rust-src --profile minimal > /dev/null
         if ! env -u RUSTUP_TOOLCHAIN FXDAX_GUEST_KERNEL_WORK="$kernel_work" \
             FXDAX_GUEST_KERNEL_DEBUG=$kernel_debug FXDAX_GUEST_KERNEL_KASAN=$kernel_kasan \
             FXDAX_GUEST_KERNEL_COVERAGE=$kernel_coverage \
+            FXDAX_GUEST_KERNEL_RUST_CHECKS=$kernel_rust_checks \
             "$repo/scripts/build-guest-kernel.sh" x86_64 \
             > "$results/guest-kernel.log" 2>&1; then
             echo "guest kernel: failed, see guest-kernel.log" >&2
@@ -70,7 +72,10 @@ case ${FXDAX_GUEST_KERNEL_BUILD:-} in
         export FXDAX_GUEST_KERNEL="$kernel_work/out/x86_64/vmlinux"
         sha256sum "$FXDAX_GUEST_KERNEL" > "$results/guest-kernel.txt"
         ;;
-    *) echo "FXDAX_GUEST_KERNEL_BUILD is release, debug, kasan or coverage" >&2; exit 2 ;;
+    *)
+        echo "FXDAX_GUEST_KERNEL_BUILD is release, debug, kasan, coverage or rust-checks" >&2
+        exit 2
+        ;;
 esac
 if [[ ${FXDAX_GUEST_KERNEL_BUILD:-} == coverage ]]; then
     export FXDAX_COVERAGE="$results/coverage-counts"

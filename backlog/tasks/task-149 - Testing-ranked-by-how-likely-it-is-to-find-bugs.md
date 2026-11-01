@@ -1,0 +1,31 @@
+---
+id: TASK-149
+title: Testing ranked by how likely it is to find bugs
+status: To Do
+assignee: []
+created_date: '2026-11-01 06:13'
+updated_date: '2026-11-01 06:13'
+labels: []
+dependencies: []
+priority: high
+ordinal: 501000
+---
+
+## Description
+
+<!-- SECTION:DESCRIPTION:BEGIN -->
+On 2026-10-31 a model test of fxfs-posix with power cuts, a tiny device and fragments found seven real Fxfs bugs in a day, one able to leave a volume unmountable and one a super-block recording progress the journal hadn't flushed, after xfstests and the guest suites had passed for weeks. What worked was random operations, a precise oracle, failures combined, and shrinking to a replayable case. Yet about 72% of the last 400 commits' fixes (167 of 231, by keywords) were in DAX, the VMM and the guest kernel, and 10% in Fxfs core, and the open bugs (TASK-137, 79.82, 79.78) are in the VMM and in forks. So this ranks work by how likely it is to find bugs, not by cost: its subtasks are numbered in that order, with existing tasks placed among them by ordinal: 149.1, TASK-44.15 and 149.2, TASK-44.10, 149.3, 149.4, then the rest. A rank is a judgment, not a measurement: each task's notes should record what it found, so that the ranking can be corrected.
+<!-- SECTION:DESCRIPTION:END -->
+
+## Acceptance Criteria
+<!-- AC:BEGIN -->
+- [ ] #1 Each subtask's notes say what it found, or that it found nothing
+- [ ] #2 The ranking is corrected when a result contradicts it
+<!-- AC:END -->
+
+## Definition of Done
+<!-- DOD:BEGIN -->
+- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [ ] #2 scripts/upstream-changes.py --check passes
+- [ ] #3 Deviations from upstream documented where they occur
+<!-- DOD:END -->

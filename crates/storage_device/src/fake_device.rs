@@ -138,14 +138,20 @@ impl Crashes {
         self.0.lock().mark = Some(mark);
     }
 
-    /// The crashes recorded, in order, as devices that recovered from them, with their marks.
-    pub fn take(&self) -> Vec<(u64, DeviceHolder)> {
+    /// Crashes stop being recorded, until the next mark.
+    pub fn stop(&self) {
+        self.0.lock().mark = None;
+    }
+
+    /// The crashes recorded, in order, as devices that recovered from them, with their marks: which
+    /// may record crashes of their own (`FakeDevice::record_crashes`).
+    pub fn take(&self) -> Vec<(u64, FakeDevice)> {
         std::mem::take(&mut self.0.lock().recorded)
             .into_iter()
             .map(|crash| {
                 let device = FakeDevice::with_inner(crash.inner, crash.capacity, crash.block_size)
                     .with_branch(crash.branch);
-                (crash.mark, DeviceHolder::new(device))
+                (crash.mark, device)
             })
             .collect()
     }
@@ -757,7 +763,9 @@ mod tests {
         crashes.mark(2);
         device.commit_root(b"one").await.expect("commit failed");
 
-        let recorded = crashes.take();
+        let recorded = crashes.take().into_iter();
+        let recorded: Vec<_> =
+            recorded.map(|(mark, device)| (mark, crate::DeviceHolder::new(device))).collect();
         assert_eq!(recorded.iter().map(|(mark, _)| *mark).collect::<Vec<_>>(), vec![1, 2]);
         // A crash before a flush keeps what the flush before sealed.
         let (_, before_flush) = &recorded[0];

@@ -1398,6 +1398,70 @@ mod guest {
         file.sync_all().unwrap();
     }
 
+    /// fxdax: a write whose source is a mapping of the file it grows: faulting that source in, it
+    /// mapped the chunk only as large as the file, which the write's range then couldn't reach,
+    /// again and again, until it stopped short: the write's end lost, or EIO (xfstests generic/638,
+    /// TASK-147).
+    fn test_write_from_own_mapping() {
+        use std::os::unix::fs::FileExt;
+        const PAGE: usize = 4096;
+        let name = path("write-from-own-mapping");
+        let file = fs::OpenOptions::new().create(true).read(true).write(true).open(&name).unwrap();
+        let contents: Vec<u8> = (0..2 * PAGE).map(|i| (i % 251) as u8).collect();
+        file.write_all_at(&contents, 0).unwrap();
+        file.sync_all().unwrap();
+        let map = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                2 * PAGE,
+                libc::PROT_READ,
+                libc::MAP_SHARED,
+                file.as_raw_fd(),
+                0,
+            )
+        };
+        assert_ne!(map, libc::MAP_FAILED, "mmap: {}", std::io::Error::last_os_error());
+        let wrote = unsafe { libc::pwrite(file.as_raw_fd(), map, 64, 2 * PAGE as i64) };
+        assert_eq!(wrote, 64, "pwrite: {}", std::io::Error::last_os_error());
+        assert_eq!(unsafe { libc::munmap(map, 2 * PAGE) }, 0);
+        let mut read = vec![0; 64];
+        file.read_exact_at(&mut read, 2 * PAGE as u64).unwrap();
+        assert_eq!(read, contents[..64], "what the write copied from its own mapping");
+        fs::remove_file(&name).unwrap();
+    }
+
+    /// fxdax: a read into a mapping of the file it reads, whose pages a seal made read-only: the
+    /// read's copy faults, the fault can't store to a slice, and dropping the slice waited for the
+    /// slice's users, the read among them, for ever.
+    fn test_read_into_own_mapping() {
+        use std::os::unix::fs::FileExt;
+        const PAGE: usize = 4096;
+        let name = path("read-into-own-mapping");
+        let file = fs::OpenOptions::new().create(true).read(true).write(true).open(&name).unwrap();
+        let contents: Vec<u8> = (0..2 * PAGE).map(|i| (i % 251) as u8).collect();
+        file.write_all_at(&contents, 0).unwrap();
+        file.sync_all().unwrap();
+        let map = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                2 * PAGE,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                file.as_raw_fd(),
+                0,
+            )
+        };
+        assert_ne!(map, libc::MAP_FAILED, "mmap: {}", std::io::Error::last_os_error());
+        let dest = unsafe { map.cast::<u8>().add(PAGE) }.cast();
+        let read = unsafe { libc::pread(file.as_raw_fd(), dest, PAGE, 0) };
+        assert_eq!(read, PAGE as isize, "pread: {}", std::io::Error::last_os_error());
+        assert_eq!(unsafe { libc::munmap(map, 2 * PAGE) }, 0);
+        let mut after = vec![0; PAGE];
+        file.read_exact_at(&mut after, PAGE as u64).unwrap();
+        assert_eq!(after, contents[..PAGE], "what the read copied into its own mapping");
+        fs::remove_file(&name).unwrap();
+    }
+
     /// fxdax: st_blocks follows what a file holds, the inode in the cache all along, and an unlinked
     /// file's too (TASK-138).
     fn test_blocks_follow_writes() {
@@ -4534,6 +4598,8 @@ mod guest {
                 ("delayed_unlinks", &test_delayed_unlinks),
                 ("sparse", &test_sparse),
                 ("blocks_follow_writes", &test_blocks_follow_writes),
+                ("write_from_own_mapping", &test_write_from_own_mapping),
+                ("read_into_own_mapping", &test_read_into_own_mapping),
                 ("file_handles", &test_file_handles),
                 ("unsupported", &test_unsupported),
                 ("reflinks", &test_reflinks),

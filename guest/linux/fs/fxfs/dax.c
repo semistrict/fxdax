@@ -92,6 +92,8 @@
 static unsigned long fxfs_dax_region_step = 64;
 module_param_named(dax_region_step, fxfs_dax_region_step, ulong, 0644);
 MODULE_PARM_DESC(dax_region_step, "The most pages a writable region's mapping grows by at once");
+/* fxdax: how many waits of 10 ms with nothing let go of a range waits for room for (30 s). */
+#define FXFS_DAX_NO_ROOM_WAITS 3000
 /* fxdax: how many times running a write has a chunk's range dropped before it gives up. */
 #define FXFS_DAX_MAX_DROPS 256
 /*
@@ -447,6 +449,13 @@ struct fxfs_dax_file {
 	 * of its own, so that no slice can refuse it again (xfstests generic/638).
 	 */
 	bool no_slices;
+	/*
+	 * fxdax: how far a write past the end grows the file, under the inode's write lock, which
+	 * the ranges mapped meanwhile are to reach: a fault on the write's own source, a mapping of
+	 * the file, mapped the chunk only as large as the file, again each time the write dropped it
+	 * for being too small, losing the write's end (xfstests generic/638, TASK-147).
+	 */
+	loff_t growing;
 	/*
 	 * fxdax: how many of its ranges an evacuation holds (fxfs_dax_evacuee_gather): ranges that
 	 * the paths dropping them whatever uses them, evict and truncate, wait for, so that what the
@@ -1982,7 +1991,8 @@ static bool fxfs_dax_reclaim(struct fxfs_dax *dax)
 static long fxfs_dax_alloc_window(struct fxfs_dax *dax, unsigned long pages, bool aligned,
 				  bool nowait)
 {
-	long window_offset, seen;
+	long window_offset, seen, waited;
+	unsigned int idle = 0;
 
 	for (;;) {
 		seen = atomic_long_read(&dax->released);
@@ -1994,8 +2004,15 @@ static long fxfs_dax_alloc_window(struct fxfs_dax *dax, unsigned long pages, boo
 		if (nowait)
 			return -EAGAIN;
 		/* Ranges in use, or whose inodes are locked, free up soon. */
-		if (fxfs_dax_wait_released(dax, seen, 10) < 0)
+		waited = fxfs_dax_wait_released(dax, seen, 10);
+		if (waited < 0)
 			return -EINTR;
+		idle = waited ? 0 : idle + 1;
+		/* fxdax: nothing let go of for so long isn't going to: space lost, or all pinned. */
+		if (idle > FXFS_DAX_NO_ROOM_WAITS) {
+			pr_warn_ratelimited("fxfs: no room in the window for %lu pages\n", pages);
+			return -ENOSPC;
+		}
 	}
 }
 
@@ -2219,15 +2236,18 @@ static void fxfs_dax_grow(struct work_struct *work)
 	struct fxfs_dax_region *region = container_of(work, struct fxfs_dax_region, grow);
 	struct fxfs_dax *dax = region->dax;
 	unsigned long mapped;
+	int err = 0;
 
 	fxfs_device_store_begin(dax->dev);
 	/* In the gate, no seal makes it read-only, or shrinks it. */
 	mapped = READ_ONCE(region->mapped);
 	if (READ_ONCE(region->writable) && mapped < region->pages)
-		fxfs_dax_map_to(dax, region, mapped + 1, FXFS_DAX_GROW);
+		err = fxfs_dax_map_to(dax, region, mapped + 1, FXFS_DAX_GROW);
 	fxfs_device_store_end(dax->dev);
 	atomic_set(&region->growing, 0);
-	fxfs_dax_grow_ahead(dax, region);
+	/* fxdax: not after a failure: a MAP that keeps failing went round here until a seal. */
+	if (!err)
+		fxfs_dax_grow_ahead(dax, region);
 	fxfs_dax_put_region(dax, region);
 	atomic_dec(&dax->growing);
 }
@@ -2532,14 +2552,16 @@ static struct fxfs_dax_range *fxfs_dax_get_range(struct inode *inode, pgoff_t ch
 	if (range)
 		atomic_inc(&range->users);
 	else
-		range = fxfs_dax_new_slice(dax, inode, chunk, max(i_size_read(inode), size), fault);
+		range = fxfs_dax_new_slice(dax, inode, chunk, max3(i_size_read(inode), size,
+								   READ_ONCE(file->growing)), fault);
 	up_write(&file->sem);
 	if (IS_ERR(range))
 		return range;
 	if (range)
 		goto used;
 
-	pages = fxfs_dax_range_capacity(chunk, max(i_size_read(inode), size));
+	pages = fxfs_dax_range_capacity(chunk, max3(i_size_read(inode), size,
+						    READ_ONCE(file->growing)));
 	new = fxfs_dax_alloc_range(dax, pages, fault);
 	if (IS_ERR(new))
 		return new;
@@ -3439,6 +3461,42 @@ static ssize_t fxfs_dax_read(struct kiocb *iocb, struct iov_iter *to)
 }
 
 /*
+ * fxdax: a read, whose copy takes no page fault: a read into a mapping of the file it reads holds
+ * the range through its copy, and the fault waited for that range's users, itself among them, for
+ * ever. It faults the destination in with no iomap held, as a write does its source.
+ */
+static ssize_t fxfs_dax_read_faulting_between(struct kiocb *iocb, struct iov_iter *to)
+{
+	struct inode *inode = file_inode(iocb->ki_filp);
+	ssize_t ret, done = 0;
+	unsigned int empty = 0;
+
+	for (;;) {
+		pagefault_disable();
+		ret = fxfs_dax_read(iocb, to);
+		pagefault_enable();
+		if (ret > 0) {
+			done += ret;
+			empty = 0;
+		} else if (ret != -EFAULT && ret != 0) {
+			break;
+		}
+		if (!iov_iter_count(to) || iocb->ki_pos >= i_size_read(inode))
+			break;
+		/* Nothing copied, memory there, and again: as a write's source, it won't get on. */
+		if (ret <= 0 && ++empty > FXFS_DAX_MAX_DROPS) {
+			ret = -EFAULT;
+			break;
+		}
+		if (fault_in_iov_iter_writeable(to, iov_iter_count(to)) == iov_iter_count(to)) {
+			ret = -EFAULT;
+			break;
+		}
+	}
+	return done ?: ret;
+}
+
+/*
  * A read(2), holding the inode's lock shared. fxdax: a follower's, a chunk at a time under its
  * fill barrier, taken after the inode's lock, whose copies to the reader's memory don't fault
  * (fxfs_vfs_follower_read): no batch drops the extents it copies from, nor applies, until it is
@@ -3460,7 +3518,7 @@ static ssize_t fxfs_dax_read_iter(struct kiocb *iocb, struct iov_iter *to)
 	if (fxfs_vfs_follows(inode->i_sb))
 		ret = fxfs_vfs_follower_read(iocb, to, fxfs_dax_read);
 	else
-		ret = fxfs_dax_read(iocb, to);
+		ret = fxfs_dax_read_faulting_between(iocb, to);
 	inode_unlock_shared(inode);
 	file_accessed(iocb->ki_filp);
 	return ret;
@@ -3520,6 +3578,7 @@ static ssize_t fxfs_dax_write_iter(struct kiocb *iocb, struct iov_iter *from)
 		file->append_bytes = 0;
 	/* The ranges the file's end moves into, mapped as large as they need. */
 	if (iocb->ki_pos + iov_iter_count(from) > old_size) {
+		WRITE_ONCE(file->growing, iocb->ki_pos + iov_iter_count(from));
 		filemap_invalidate_lock(inode->i_mapping);
 		ret = fxfs_dax_fit(inode, iocb->ki_pos + iov_iter_count(from));
 		filemap_invalidate_unlock(inode->i_mapping);
@@ -3565,6 +3624,14 @@ static ssize_t fxfs_dax_write_iter(struct kiocb *iocb, struct iov_iter *from)
 			if (ret == -ESTALE)
 				ret = -EIO;
 			break;
+		} else if (++drops > FXFS_DAX_MAX_DROPS) {
+			/*
+			 * fxdax: the write's own iomap unmapping what it copies from, each time: a
+			 * source overlapping the target, which fault_in maps again for nothing.
+			 */
+			pr_err("fxfs: ino %lu: a write at %lld could not read its source\n",
+			       inode->i_ino, iocb->ki_pos);
+			break;
 		}
 		/* What faulted in may be gone again: the loop faults it in once more. */
 	}
@@ -3587,6 +3654,7 @@ static ssize_t fxfs_dax_write_iter(struct kiocb *iocb, struct iov_iter *from)
 	}
 out:
 	WRITE_ONCE(file->no_slices, false);
+	WRITE_ONCE(file->growing, 0);
 	inode_unlock(inode);
 	began = ktime_get_ns() - began;
 	atomic64_inc(&fxfs_dax_of(inode)->writes);
@@ -3603,7 +3671,7 @@ static vm_fault_t fxfs_dax_do_fault(struct vm_fault *vmf, unsigned int order, bo
 	struct inode *inode = file_inode(vmf->vma->vm_file);
 	struct super_block *sb = inode->i_sb;
 	u64 began = ktime_get_ns();
-	unsigned int stale = 0;
+	unsigned int stale = 0, waits = 0;
 	vm_fault_t ret;
 	unsigned long pfn;
 	int error;
@@ -3668,7 +3736,12 @@ static vm_fault_t fxfs_dax_do_fault(struct vm_fault *vmf, unsigned int order, bo
 				break;
 			continue;
 		}
-		/* No range was free, nor could the fault reclaim one, holding the lock it holds. */
+		/*
+		 * No range was free, nor could the fault reclaim one, holding the lock it holds.
+		 * fxdax: nor, for so long, could anything: it fails rather than wait for ever.
+		 */
+		if (++waits > FXFS_DAX_NO_ROOM_WAITS)
+			break;
 		fxfs_dax_make_room(fxfs_dax_of(inode), seen);
 	}
 	/* fxdax: a SIGBUS says nothing of why: the error here does (TASK-121). */

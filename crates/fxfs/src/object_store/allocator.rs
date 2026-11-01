@@ -98,8 +98,9 @@
 //! ## Orphaned extents
 //!
 //! A crash may leave extents on the device whose transactions were lost. Their sequence numbers
-//! follow those of every allocation the journal holds, and precede the device's next sequence
-//! number: after replay, the allocator frees them, and mints from there.
+//! follow those of the allocations the tree holds, and precede the device's next sequence number,
+//! but may precede those of allocations the journal holds, as transactions commit in no particular
+//! order: after replay, the allocator frees those between that nothing holds, and mints from there.
 //!
 //! ## Volume deletion
 //!
@@ -394,6 +395,9 @@ impl SortByU64 for AllocatorKey {
         self.extent.sequence
     }
 }
+
+/// fxdax: the most sequence numbers a mount looks for orphans among, up to the device's next.
+const MAX_ORPHANS_SOUGHT: u64 = 1 << 16;
 
 const EXTENT_HASH_BUCKET_SIZE: BlockSize = BlockSize::SIZE_1MIB;
 
@@ -748,6 +752,8 @@ impl RangeCounts {
 
 struct Inner {
     info: AllocatorInfo,
+    /// fxdax: `info`'s next sequence number before replay, where orphans may start.
+    next_sequence_opened: u64,
 
     /// The allocator can only be opened if there have been no allocations and it has not already
     /// been opened or initialized.
@@ -930,6 +936,7 @@ impl Allocator {
             tree: LSMTree::new(merge, None),
             inner: Mutex::new(Inner {
                 info: AllocatorInfo::default(),
+                next_sequence_opened: 0,
                 opened: false,
                 owner_bytes: BTreeMap::new(),
                 unattributed_reserved_bytes: 0,
@@ -1031,6 +1038,7 @@ impl Allocator {
                         Saturating(bytes);
                 }
 
+                inner.next_sequence_opened = info.next_sequence;
                 inner.info = info;
             }
 
@@ -1073,8 +1081,9 @@ impl Allocator {
         let filesystem = self.filesystem.upgrade().unwrap();
         // Minting resumes past every extent of the branch the device holds, including those a
         // crash left, whose transactions were lost: orphans, which die. They are freed with the
-        // next flush, once the journal records what replay discarded, and the flush (see
-        // `Journal::flush_device`): replay verifies the checksums of writes to them otherwise.
+        // flush the mount makes (`Journal::flush_for_frees`), once the journal records what replay
+        // discarded, and the flush (see `Journal::flush_device`): replay verifies the checksums of
+        // writes to them otherwise.
         // fxdax: and past the device's floor, another writer's range's start, which no extent the
         // device holds need reach: orphans are looked for below what it holds only.
         let device_next_sequence = filesystem.device().next_sequence().await?;
@@ -1096,8 +1105,16 @@ impl Allocator {
             );
             let next_sequence = inner.info.next_sequence;
             inner.extents.mint_from(next_sequence.max(device_next_sequence).max(floor));
-            let orphans =
-                inner.extents.kill_orphans(self.branch(), next_sequence..device_next_sequence);
+            // Sequence numbers are the store's, and far apart: the search is of those since the
+            // last compaction, or since the oldest extent alive if it is older, as a filesystem's
+            // first extent may be millions past nothing, and of few of those at most.
+            let lowest = inner.extents.lowest_sequence(self.branch()).unwrap_or(next_sequence);
+            let start = inner
+                .next_sequence_opened
+                .max(lowest)
+                .min(next_sequence)
+                .max(device_next_sequence.saturating_sub(MAX_ORPHANS_SOUGHT));
+            let orphans = inner.extents.kill_orphans(self.branch(), start..device_next_sequence);
             if orphans > 0 {
                 info!(count = orphans; "Extents a crash left will be freed");
             }
@@ -1844,6 +1861,12 @@ impl Allocator {
         Reservation::new(self, owner_object_id, amount)
     }
 
+    /// fxdax: whether extents wait to be freed: those a crash orphaned among them, of a size no one
+    /// knows, which `dead_bytes` doesn't count.
+    pub fn has_dead_extents(&self) -> bool {
+        self.inner.lock().extents.dead().len() > 0
+    }
+
     /// Returns the total number of allocated bytes.
     pub fn get_allocated_bytes(&self) -> u64 {
         self.inner.lock().allocated_bytes().0
@@ -2205,9 +2228,9 @@ impl<'a> Flusher<'a> {
                 // We must capture `info` as it is when we start flushing. Subsequent transactions
                 // can end up modifying `info` and we shouldn't capture those here.
                 // fxdax: with the extents dying, of which a mount finds no records in the tree the
-                // compaction leaves.
+                // compaction leaves, and those not yet committed, which may be lost.
                 let inner = self.allocator.inner.lock();
-                AllocatorInfo { dying: inner.extents.dying(), ..inner.info.clone() }
+                AllocatorInfo { dying: inner.extents.recorded_dying(), ..inner.info.clone() }
             })
             .await?;
         Ok((layer_object_handle, info))
@@ -4007,20 +4030,137 @@ mod tests {
         drop(buffer);
 
         // The orphans die, with the sequence numbers between them, which the device may hold too,
-        // and are freed with the next flush.
+        // and the mount frees them: they take room on the device that nothing counts.
         let fs = FxFilesystemBuilder::new().open(device).await.expect("open failed");
-        assert_eq!(
-            fs.allocator().dead_extents(),
-            vec![extent(next_sequence), extent(next_sequence + 1), extent(next_sequence + 2)]
-        );
-        let range = commit_allocation(&fs).await;
-        assert_eq!(range.extent, extent(next_sequence + 3));
-        fs.sync(SyncOptions { flush_device: true, ..Default::default() })
-            .await
-            .expect("sync failed");
+        assert_eq!(fs.allocator().dead_extents(), vec![]);
         for orphan in orphans {
             assert!(!device_holds(&fs.device(), orphan).await, "{orphan:?} isn't freed");
         }
+        let range = commit_allocation(&fs).await;
+        assert_eq!(range.extent, extent(next_sequence + 3));
+        fs.close().await.expect("close failed");
+    }
+
+    /// fxdax: transactions commit in no particular order, so that one lost may have minted its
+    /// extent before one replay finds did: its extent is an orphan too, below the sequence numbers
+    /// the journal holds, and was left on the device for good.
+    #[fuchsia::test]
+    async fn test_orphans_minted_before_a_later_commit_are_freed() {
+        let (fs, allocator) = test_fs().await;
+        let root_store = fs.root_store();
+        let mut lost = root_store
+            .new_transaction(lock_keys![], Options::default())
+            .await
+            .expect("new_transaction failed");
+        let orphan = allocator
+            .allocate(&mut lost, root_store.store_object_id(), fs.block_size().get())
+            .await
+            .expect("allocate failed");
+        let device = fs.device();
+        let buffer = device.allocate_buffer(device.block_size() as usize).await;
+        device.write(orphan.extent, 0, buffer.as_ref()).await.expect("write failed");
+        let later = commit_allocation(&fs).await;
+        assert!(later.extent.sequence > orphan.extent.sequence);
+        device.write(later.extent, 0, buffer.as_ref()).await.expect("write failed");
+        drop(buffer);
+        fs.sync(SyncOptions { flush_device: true, ..Default::default() })
+            .await
+            .expect("sync failed");
+        let crashed = fs.device().snapshot().expect("snapshot failed");
+        drop(lost);
+        drop(root_store);
+        fs.close().await.expect("close failed");
+
+        crashed.reopen(false);
+        let fs = FxFilesystemBuilder::new().open(crashed).await.expect("open failed");
+        assert!(!device_holds(&fs.device(), orphan.extent).await, "{orphan:?} isn't freed");
+        assert!(device_holds(&fs.device(), later.extent).await, "{later:?} was freed");
+        fs.close().await.expect("close failed");
+    }
+
+    /// An allocation of a block a transaction not yet committed holds, its block written, after
+    /// the commit of a later one, in a filesystem whose allocator is then compacted, as a mount
+    /// then finds its next sequence number past the first.
+    async fn allocation_across_a_compaction<'a>(
+        fs: &'a OpenFxFilesystem,
+        allocator: &Arc<Allocator>,
+    ) -> (Transaction<'a>, ExtentRange) {
+        let mut transaction = fs
+            .root_store()
+            .new_transaction(lock_keys![], Options::default())
+            .await
+            .expect("new_transaction failed");
+        let range = allocator
+            .allocate(&mut transaction, 99, fs.block_size().get())
+            .await
+            .expect("allocate failed");
+        let device = fs.device();
+        let buffer = device.allocate_buffer(device.block_size() as usize).await;
+        device.write(range.extent, 0, buffer.as_ref()).await.expect("write failed");
+        drop(buffer);
+        let later = commit_allocation(fs).await;
+        assert!(later.extent.sequence > range.extent.sequence);
+        allocator.flush().await.expect("flush failed");
+        (transaction, range)
+    }
+
+    /// fxdax: an extent minted before a compaction, whose transaction a crash loses after it, is
+    /// below the sequence numbers the compaction recorded: an orphan a mount frees all the same.
+    #[fuchsia::test]
+    async fn test_orphans_minted_before_a_compaction_are_freed() {
+        let (fs, allocator) = test_fs().await;
+        let (lost, orphan) = allocation_across_a_compaction(&fs, &allocator).await;
+        fs.sync(SyncOptions { flush_device: true, ..Default::default() })
+            .await
+            .expect("sync failed");
+        let crashed = fs.device().snapshot().expect("snapshot failed");
+        drop(lost);
+        fs.close().await.expect("close failed");
+
+        crashed.reopen(false);
+        let fs = FxFilesystemBuilder::new().open(crashed).await.expect("open failed");
+        assert!(!device_holds(&fs.device(), orphan.extent).await, "{orphan:?} isn't freed");
+        fs.close().await.expect("close failed");
+    }
+
+    /// fxdax: an extent minted before a compaction, whose transaction commits after it, is alive
+    /// after a replay: that the compaction recorded it as possibly lost mustn't free it.
+    #[fuchsia::test]
+    async fn test_extents_committed_after_a_compaction_survive_replay() {
+        let (fs, allocator) = test_fs().await;
+        let (committed, range) = allocation_across_a_compaction(&fs, &allocator).await;
+        committed.commit().await.expect("commit failed");
+        fs.sync(SyncOptions { flush_device: true, ..Default::default() })
+            .await
+            .expect("sync failed");
+        let crashed = fs.device().snapshot().expect("snapshot failed");
+        fs.close().await.expect("close failed");
+
+        crashed.reopen(false);
+        let fs = FxFilesystemBuilder::new().open(crashed).await.expect("open failed");
+        assert!(device_holds(&fs.device(), range.extent).await, "{range:?} was freed");
+        assert_eq!(fs.allocator().dead_extents(), vec![]);
+        assert!(fs.allocator().extents().contains_key(&range.extent), "{range:?} isn't alive");
+        fs.close().await.expect("close failed");
+    }
+
+    /// fxdax: sequence numbers are the store's, and far apart: a mount looks for orphans among a
+    /// bounded number of them, however far the device's are from those the tree holds. Every one
+    /// between was sought once, at 2 GiB of them, and the guest panicked with no memory for them.
+    #[fuchsia::test]
+    async fn test_orphans_are_sought_among_few_sequence_numbers() {
+        let (fs, _allocator) = test_fs().await;
+        fs.close().await.expect("close failed");
+        let device = fs.take_device().await;
+        device.reopen(false);
+        let far = extent(1 << 40);
+        let buffer = device.allocate_buffer(device.block_size() as usize).await;
+        device.write(far, 0, buffer.as_ref()).await.expect("write failed");
+        drop(buffer);
+
+        let fs = FxFilesystemBuilder::new().open(device).await.expect("open failed");
+        assert!(!device_holds(&fs.device(), far).await, "{far:?} isn't freed");
+        assert_eq!(fs.allocator().dead_extents(), vec![]);
         fs.close().await.expect("close failed");
     }
 
@@ -4609,13 +4749,11 @@ mod tests {
         assert_eq!(allocator.info().layers, layers);
         assert_eq!(allocator.info().marked_for_deletion, [owner].into());
         assert_eq!(extents_of(&allocator, owner), HashMap::new());
-        assert_eq!(dead_of_owner(&allocator), extents);
         fsck(fs.clone()).await.expect("fsck failed");
 
-        // They are freed once the device is flushed past the mount, with a record of it
-        // (`FreeAfter::RecordedFlush`): a transaction, and a sync.
-        create_file(&fs.root_store(), bs).await;
-        flush_device(&fs).await;
+        // The mount frees them, the device flushed past it, with a record of it
+        // (`FreeAfter::RecordedFlush`).
+        assert_eq!(dead_of_owner(&allocator), HashSet::new());
         assert!(!allocator.inner.lock().extents.holds_dead_of(owner));
         allocator.flush().await.expect("flush failed");
         fsck(fs.clone()).await.expect("fsck failed");

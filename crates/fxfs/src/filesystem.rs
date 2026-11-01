@@ -588,6 +588,13 @@ impl FxFilesystemBuilder {
                 .await;
                 journal.resume_compactions();
                 renewed.context("Failed to renew the journal's tail")?;
+                // fxdax: the extents a crash orphaned go with a flush, now: they hold room on the
+                // device Fxfs doesn't count, so that writes would find it full before Fxfs did,
+                // with no NoSpace to say so.
+                if filesystem.allocator().has_dead_extents() {
+                    filesystem.maybe_start_flush_task();
+                    journal.flush_for_frees().await.context("Failed to free what the crash left")?;
+                }
             }
 
             if !read_only {
@@ -1993,7 +2000,7 @@ mod tests {
         let recorded = crashes.take();
         assert!(recorded.len() >= ROUNDS as usize, "{} crashes recorded", recorded.len());
         for (crash, (synced_rounds, device)) in recorded.into_iter().enumerate() {
-            let fs = FxFilesystem::open(device)
+            let fs = FxFilesystem::open(DeviceHolder::new(device))
                 .await
                 .unwrap_or_else(|e| panic!("crash {crash} doesn't mount: {e:?}"));
             fsck(fs.clone()).await.unwrap_or_else(|e| panic!("crash {crash}: fsck failed: {e:?}"));

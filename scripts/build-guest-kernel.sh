@@ -19,7 +19,7 @@
 # fxdax.config, fxdax's options over the configuration. FXDAX_GUEST_KERNEL_PROFILE (below) builds
 # one for profiling, FXDAX_GUEST_KERNEL_LOCK_STAT one counting locks' contention,
 # FXDAX_GUEST_KERNEL_DEBUG one checking its locking and races, FXDAX_GUEST_KERNEL_KASAN one checking
-# its memory accesses.
+# its memory accesses, FXDAX_GUEST_KERNEL_RUST_CHECKS one whose Rust checks itself.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -171,9 +171,18 @@ grep -q '^CONFIG_VIRTIO_EXTENT=y' "$src/.config"
 grep -q '^CONFIG_VIRTIO_PMEM=y' "$src/.config"
 grep -q '^CONFIG_SERIAL_8250_CONSOLE=y' "$src/.config"
 
-# The filesystem's Rust, against a sysroot whose std is the kernel's (guest/rust/std).
+# The filesystem's Rust, against a sysroot whose std is the kernel's (guest/rust/std). With
+# FXDAX_GUEST_KERNEL_RUST_CHECKS=1, optimized, but with its debug assertions, and arithmetic that
+# panics if it overflows: the release build's silence hid a transaction larger than it reserved
+# for, and a reservation computed from a subtraction that wrapped (TASK-149.1). Built with its own
+# FXDAX_GUEST_KERNEL_WORK.
+rust_checks=()
+if [[ ${FXDAX_GUEST_KERNEL_RUST_CHECKS:-} == 1 ]]; then
+    rust_checks=(CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS=true CARGO_PROFILE_RELEASE_OVERFLOW_CHECKS=true)
+fi
 rustflags=$("$root/scripts/build-guest-sysroot.sh" "$target" "$work/rust-$arch")
-(cd "$root/guest/rust" && RUSTFLAGS="$rustflags" CARGO_TARGET_DIR="$work/rust-$arch/target" \
+(cd "$root/guest/rust" && env "${rust_checks[@]}" RUSTFLAGS="$rustflags" \
+    CARGO_TARGET_DIR="$work/rust-$arch/target" \
     cargo build --release -p fxfs-linux --target "$target")
 cp "$work/rust-$arch/target/$target/release/libfxfs_linux.a" "$src/fs/fxfs/"
 # The kernel's memcpy and friends for Rust too, not compiler_builtins' generic ones: those are in

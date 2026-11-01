@@ -1093,9 +1093,10 @@ impl<P: Platform> Fxfs<P> {
 
     /// fxdax: makes the bytes of the file `dst` from `dst_offset` share the extents holding the
     /// file `src`'s bytes `range` (a reflink: FICLONE, FICLONERANGE, copy_file_range), copying no
-    /// data (`DataObjectHandle::txn_clone_range`), and makes `dst` `size` bytes long if it is
-    /// shorter: `dst`'s attributes. `range` and `dst_offset` are block aligned; the kernel holds
-    /// both inodes, and has checked the rest.
+    /// data (`DataObjectHandle::clone_range_in_commits`), and makes `dst` `size` bytes long if it
+    /// is shorter: `dst`'s attributes. `range` and `dst_offset` are block aligned; the kernel holds
+    /// both inodes, and has checked the rest. One that fails, with no room, has cloned what it got
+    /// to, which `dst`'s attributes say.
     pub async fn clone_range(
         &self,
         src: u64,
@@ -1113,7 +1114,9 @@ impl<P: Platform> Fxfs<P> {
             keys.push(LockKey::object(store, ino));
         }
         let mut transaction = self.volume.new_transaction(keys, Options::default()).await?;
-        source.txn_clone_range(&mut transaction, range, &target, dst_offset).await?;
+        source
+            .clone_range_in_commits(&mut transaction, range, &target, dst_offset, size)
+            .await?;
         if size > target.get_size() {
             target.txn_update_size(&mut transaction, size, None).await?;
         }

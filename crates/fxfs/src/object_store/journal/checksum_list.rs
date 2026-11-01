@@ -27,6 +27,45 @@ impl ChecksumState {
     }
 }
 
+/// A block of a `ChecksumEntry`.
+#[derive(Clone, Debug)]
+struct Block {
+    state: ChecksumState,
+    /// The journal offset at which the block was deallocated, which it holds valid until:
+    /// u64::MAX, until it is.
+    end_journal_offset: u64,
+    /// fxdax: the references it has that a reflink added, each of which goes before the block does.
+    shared: u64,
+}
+
+impl Block {
+    fn new(checksum: Checksum) -> Self {
+        Self {
+            state: ChecksumState::Unverified(vec![checksum]),
+            end_journal_offset: u64::MAX,
+            shared: 0,
+        }
+    }
+
+    /// One of the block's references goes: the block with its last.
+    fn release(&mut self, journal_offset: u64) {
+        match self.shared {
+            0 => self.end_journal_offset = journal_offset,
+            _ => self.shared -= 1,
+        }
+    }
+
+    /// The block has one more reference. One deallocated already, which is dead otherwise, was
+    /// deallocated in the same transaction as this, which replay gives in the mutations' order.
+    fn reference(&mut self) {
+        if self.end_journal_offset == u64::MAX {
+            self.shared += 1;
+        } else {
+            self.end_journal_offset = u64::MAX;
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 struct ChecksumEntry {
     // |start| is the journal_offset at which this range was written.
@@ -37,7 +76,7 @@ struct ChecksumEntry {
     // start_journal_offset..end_journal_offset.
     // |end_journal_offset| is the journal_offset at which the checksum range was deallocated.
     // |end_journal_offset| defaults to u64::MAX but may be lowered if a range is deallocated.
-    checksums: Vec<(ChecksumState, /* end_journal_offset */ u64)>,
+    checksums: Vec<Block>,
 }
 
 #[derive(Clone, Default)]
@@ -91,8 +130,8 @@ impl ChecksumList {
         // since that's the only thing we can actually roll back. On the first write, we create the
         // checksum entry, and if any further checksums come in, we add them to the existing list.
         //
-        // Fxfs currently doesn't support cloning, but if and when it does, this code may need to
-        // be revisited.
+        // fxdax: a reflink's extents share a block and never write it, so they add no checksums.
+        // What they change is when it dies (`mark_referenced`).
         let mut gap_entries = Vec::new();
         let mut r = self
             .device_offset_to_checksum_entry
@@ -130,8 +169,8 @@ impl ChecksumList {
 
             let (head, tail) = checksums.split_at(entry_checksums.len());
             checksums = tail;
-            for ((checksum_state, _), new_checksum) in entry_checksums.iter_mut().zip(head.iter()) {
-                checksum_state.checksum().unwrap().push(*new_checksum);
+            for (block, new_checksum) in entry_checksums.iter_mut().zip(head.iter()) {
+                block.state.checksum().unwrap().push(*new_checksum);
             }
             device_range.start = overlap.end;
 
@@ -143,10 +182,7 @@ impl ChecksumList {
                     start_journal_offset: journal_offset,
                     extent,
                     device_range: gap,
-                    checksums: gap_checksums
-                        .iter()
-                        .map(|c| (ChecksumState::Unverified(vec![*c]), u64::MAX))
-                        .collect(),
+                    checksums: gap_checksums.iter().map(|c| Block::new(*c)).collect(),
                 });
             }
 
@@ -166,10 +202,7 @@ impl ChecksumList {
                 start_journal_offset: journal_offset,
                 extent,
                 device_range,
-                checksums: checksums
-                    .iter()
-                    .map(|c| (ChecksumState::Unverified(vec![*c]), u64::MAX))
-                    .collect(),
+                checksums: checksums.iter().map(|c| Block::new(*c)).collect(),
             });
         }
 
@@ -177,8 +210,31 @@ impl ChecksumList {
     }
 
     /// Marks an extent as deallocated.  If this journal-offset ends up being replayed, it means
-    /// that we can skip a previously queued checksum.
+    /// that we can skip a previously queued checksum: fxdax, of the blocks with no other reference.
     pub fn mark_deallocated(&mut self, journal_offset: u64, device_range: ExtentRange) {
+        self.for_each_block(journal_offset, device_range, |block| block.release(journal_offset));
+    }
+
+    /// fxdax: marks an extent as referenced `delta` times more, or fewer: a reflink. A block a file
+    /// still holds must be right, whichever of its references went: skipping its checksum for the
+    /// first to go, a write the crash lost was replayed, and the other reference read what the
+    /// device held.
+    pub fn mark_referenced(&mut self, journal_offset: u64, device_range: ExtentRange, delta: i64) {
+        self.for_each_block(journal_offset, device_range, |block| {
+            for _ in 0..delta.unsigned_abs() {
+                if delta > 0 { block.reference() } else { block.release(journal_offset) }
+            }
+        });
+    }
+
+    /// Calls `each` for the blocks of the entries in `device_range`, unless what's at
+    /// `journal_offset` was flushed.
+    fn for_each_block(
+        &mut self,
+        journal_offset: u64,
+        device_range: ExtentRange,
+        mut each: impl FnMut(&mut Block),
+    ) {
         if journal_offset < self.flushed_offset {
             // Ignore anything that was prior to being flushed.
             return;
@@ -206,10 +262,10 @@ impl ChecksumList {
                 // This entry covers the remainder.
                 entry.checksums[checksum_index_start..checksum_index_end]
                     .iter_mut()
-                    .for_each(|c| c.1 = journal_offset);
+                    .for_each(&mut each);
                 break;
             }
-            entry.checksums[checksum_index_start..].iter_mut().for_each(|c| c.1 = journal_offset);
+            entry.checksums[checksum_index_start..].iter_mut().for_each(&mut each);
             device_range.start = entry.device_range.end;
         }
     }
@@ -232,12 +288,12 @@ impl ChecksumList {
                 let chunk_size =
                     (e.device_range.length().unwrap() / e.checksums.len() as u64) as usize;
                 let mut offset = e.device_range.start;
-                for (checksum_state, dependency) in e.checksums.iter_mut() {
+                for block in e.checksums.iter_mut() {
                     // We only need to verify the checksum if we know the dependency isn't going to
                     // be replayed and we can skip verifications that we know were done on the
                     // previous iteration of the loop.
-                    if *dependency >= journal_offset {
-                        if let Some(checksums) = checksum_state.checksum() {
+                    if block.end_journal_offset >= journal_offset {
+                        if let Some(checksums) = block.state.checksum() {
                             device.read(e.extent, offset, buf.subslice_mut(0..chunk_size)).await?;
                             let found_checksum =
                                 fletcher64_ptr(buf.subslice(0..chunk_size).as_ptr_slice(), 0);
@@ -246,12 +302,12 @@ impl ChecksumList {
                                 .find(|&&checksum| checksum == found_checksum)
                                 .is_some()
                             {
-                                *checksum_state = ChecksumState::Valid;
+                                block.state = ChecksumState::Valid;
                             } else {
-                                *checksum_state = ChecksumState::Invalid;
+                                block.state = ChecksumState::Invalid;
                             }
                         }
-                        if *checksum_state == ChecksumState::Invalid {
+                        if block.state == ChecksumState::Invalid {
                             // Verification failed, so we need to reset the journal_offset to
                             // before this entry and try again.
                             journal_offset = e.start_journal_offset;
@@ -275,6 +331,46 @@ mod tests {
 
     /// The device's one extent.
     const E: ExtentId = ExtentId::new(DEFAULT_BRANCH, 0);
+
+    /// A block a reflink shares is alive until its last reference goes, and a write of it the
+    /// device lost is found until then, whichever reference went first.
+    #[fuchsia::test]
+    async fn test_a_block_is_verified_until_its_last_reference_goes() {
+        let device = FakeDevice::new(2048, 512);
+        let mut buffer = device.allocate_buffer(512).await;
+        buffer.as_mut().copy_from_slice(&[1; 512]);
+        device.write(E, 0, buffer.as_ref()).await.expect("write failed");
+        let range = ExtentRange::new(E, 0..512);
+        let mut list = ChecksumList::new(0);
+        // What the device was to hold, which it doesn't: the write was lost.
+        list.push(1, range.clone(), &[fletcher64(&[2; 512], 0)], true).unwrap();
+        list.mark_referenced(2, range.clone(), 1);
+
+        // A reference goes, and the block stays: replay stops before its write.
+        list.mark_deallocated(3, range.clone());
+        assert_eq!(list.clone().verify(&device, 10).await.expect("verify failed"), 1);
+
+        // The last goes, and if that's replayed nothing holds the block: if not, it stops.
+        list.mark_referenced(4, range.clone(), -1);
+        assert_eq!(list.clone().verify(&device, 10).await.expect("verify failed"), 10);
+        assert_eq!(list.clone().verify(&device, 4).await.expect("verify failed"), 1);
+    }
+
+    /// A transaction that deallocates a block of one extent and references it for another, as a
+    /// reflink over a reflink of the same block does, leaves it alive.
+    #[fuchsia::test]
+    async fn test_a_block_referenced_as_it_is_deallocated_stays() {
+        let device = FakeDevice::new(2048, 512);
+        let mut buffer = device.allocate_buffer(512).await;
+        buffer.as_mut().copy_from_slice(&[1; 512]);
+        device.write(E, 0, buffer.as_ref()).await.expect("write failed");
+        let range = ExtentRange::new(E, 0..512);
+        let mut list = ChecksumList::new(0);
+        list.push(1, range.clone(), &[fletcher64(&[2; 512], 0)], true).unwrap();
+        list.mark_deallocated(2, range.clone());
+        list.mark_referenced(2, range.clone(), 1);
+        assert_eq!(list.clone().verify(&device, 10).await.expect("verify failed"), 1);
+    }
 
     #[fuchsia::test]
     async fn test_verify() {

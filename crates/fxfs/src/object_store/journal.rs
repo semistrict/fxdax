@@ -698,6 +698,9 @@ impl Journal {
             Mutation::Allocator(AllocatorMutation::Deallocate { device_range, .. }) => {
                 checksum_list.mark_deallocated(journal_offset, device_range.clone().into());
             }
+            Mutation::Allocator(AllocatorMutation::Reference { device_range, delta, .. }) => {
+                checksum_list.mark_referenced(journal_offset, device_range.clone().into(), *delta);
+            }
             _ => {}
         }
         Ok(())
@@ -1566,18 +1569,23 @@ impl Journal {
         }
         if renew {
             info!(offset, size; "Renewing the journal's tail");
+            // What the new tail takes, the old gives back as this commits, so it needs no room of
+            // its own: not of the metadata reservation, which a crash can find too borrowed to hold
+            // the tail, leaving a filesystem that mounts no more, nor of what's free, which a full
+            // filesystem hasn't.
+            let reservation = handle.store().allocator().reserve_with(None, |_| size - offset);
             let mut transaction = handle
                 .new_transaction_with_options(Options {
                     skip_journal_checks: true,
                     borrow_metadata_space: true,
-                    allocator_reservation: Some(self.objects.metadata_reservation()),
+                    allocator_reservation: Some(&reservation),
                     ..Default::default()
                 })
                 .await?;
             handle
                 .reallocate_range(&mut transaction, offset..size, EXTENT_SIZE)
                 .await
-                .context("reallocating the journal's tail")?;
+                .with_context(|| format!("reallocating the journal's tail, {offset} to {size}"))?;
             {
                 let _guard = self.writer_mutex.lock();
                 Self::write_pending_records(&mut self.inner.lock())?;
@@ -1659,7 +1667,7 @@ impl Journal {
     async fn make_room(&self, room: u64) -> Result<bool, Error> {
         let handle;
 
-        let (extension, zeroing, further) = {
+        let (extension, zeroing, further, unaccounted) = {
             let mut inner = self.inner.lock();
 
             Self::write_pending_records(&mut inner)?;
@@ -1698,7 +1706,8 @@ impl Journal {
                 return Ok(false);
             }
 
-            (extension, zeroing, wanted > extended)
+            let unaccounted = self.objects.unaccounted_journal(file_offset);
+            (extension, zeroing, wanted > extended, unaccounted)
         };
 
         let borrowing = Options {
@@ -1712,8 +1721,10 @@ impl Journal {
         // other transactions pay for theirs, and borrows it only if the filesystem is too full.
         // Borrowed, the padding of a sync in each of PostgreSQL's initdb's fsyncs drained the
         // metadata reservation of the guest's large journal, until compacting it found no room
-        // (TASK-26.6.1).
-        let mut transaction = if extension.is_none() && zeroing.is_none() {
+        // (TASK-26.6.1). What a replay discarded can be more than a transaction reserves, with its
+        // own record to pay for too: that is borrowed, as above.
+        let pays = unaccounted < TRANSACTION_MAX_JOURNAL_USAGE / 2;
+        let mut transaction = if extension.is_none() && zeroing.is_none() && pays {
             let paying = Options { skip_journal_checks: true, ..Default::default() };
             match handle.new_transaction_with_options(paying).await {
                 Err(error) if FxfsError::NoSpace.matches(&error) => {
@@ -1823,6 +1834,8 @@ impl Journal {
         let mut new_super_block_header;
         let checkpoint;
         let borrowed;
+        let journal_file_offsets;
+        let min_checkpoint;
 
         {
             let _sync_guard = debug_assert_not_too_long!(self.sync_mutex.lock());
@@ -1830,8 +1843,13 @@ impl Journal {
                 let _write_guard = self.writer_mutex.lock();
                 (checkpoint, borrowed) = self.pad_to_block()?;
                 old_layers = super_block::compact_root_parent(&*root_parent_store)?;
+                // fxdax: as of `checkpoint`, which is flushed below. Read after that flush, they
+                // said objects were flushed to where the journal wasn't yet, as commits go on
+                // while it runs: a crash then lost what they had given up replaying, a replay
+                // finding nothing where they said, and allocations the journal alone held.
+                (journal_file_offsets, min_checkpoint) = self.objects.journal_file_offsets();
             }
-            self.flush_device(checkpoint.file_offset)
+            self.flush_device(checkpoint.file_offset, false)
                 .await
                 .context("flush failed when writing superblock")?;
         }
@@ -1839,8 +1857,6 @@ impl Journal {
         new_super_block_header = self.inner.lock().super_block_header.clone();
 
         old_super_block_offset = new_super_block_header.journal_checkpoint.file_offset;
-
-        let (journal_file_offsets, min_checkpoint) = self.objects.journal_file_offsets();
 
         new_super_block_header.generation = new_super_block_header.generation.wrapping_add(1);
         new_super_block_header.super_block_journal_file_offset = checkpoint.file_offset;
@@ -1900,12 +1916,26 @@ impl Journal {
         };
 
         if let Some(sync) = sync {
-            self.flush_device(checkpoint.file_offset).await.context("sync: flush failed")?;
+            self.flush_device(checkpoint.file_offset, false).await.context("sync: flush failed")?;
             let mut inner = self.inner.lock();
             inner.synced = inner.synced.max(sync);
         }
 
         Ok(Some((checkpoint, borrowed)))
+    }
+
+    /// fxdax: flushes the device, though the journal has nothing more for it, for the extents
+    /// that wait for a flush, and frees them: a mount's orphans, the super-block it wrote having
+    /// flushed the journal, stayed on the device until something else was written, in room Fxfs
+    /// doesn't count. The flush task must be running, as a flush's record is written by it.
+    pub async fn flush_for_frees(&self) -> Result<(), Error> {
+        let _guard = debug_assert_not_too_long!(self.sync_mutex.lock());
+        let (checkpoint, _) = {
+            let _guard = self.writer_mutex.lock();
+            self.pad_to_block()?
+        };
+        self.flush_device(checkpoint.file_offset, true).await?;
+        self.objects.allocator().freed().await.context("freeing dead extents")
     }
 
     // Returns the checkpoint as it was prior to padding.  This is done because the super block
@@ -1924,7 +1954,8 @@ impl Journal {
         Ok((checkpoint, self.objects.borrowed_metadata_space()))
     }
 
-    async fn flush_device(&self, checkpoint_offset: u64) -> Result<(), Error> {
+    /// Flushes the device, `always`, or if the journal has written more than was flushed.
+    async fn flush_device(&self, checkpoint_offset: u64, always: bool) -> Result<(), Error> {
         assert!(
             self.inner.lock().image_builder_mode.is_none(),
             "flush_device called in image builder mode"
@@ -1944,7 +1975,7 @@ impl Journal {
             let written = if barriered { inner.barrier_written } else { inner.flushed_offset };
             (flushed >= checkpoint_offset, barriered, written)
         };
-        if !flushed {
+        if !flushed || always {
             let trace = self.trace.load(Ordering::Relaxed);
             if !barriered {
                 if trace {

@@ -1751,11 +1751,15 @@ impl ObjectStore {
                             return Ok(TrimResult::Done(Some(*size_attribute_id)));
                         }
                         self.block_size.align_up(*size).ok_or(FxfsError::Inconsistent)?
+                    } else if let ObjectKeyData::Attribute(found, _) = &item_ref.key.data {
+                        // Asserting that this is a size record would be brittle, so just skip to
+                        // the next attribute instead: a removed one's tombstone is not.
+                        return Ok(TrimResult::Done(Some(found.next())));
                     } else {
-                        // At time of writing, we should always see a size record or None here, but
-                        // asserting here would be brittle so just skip to the the next attribute
-                        // instead.
-                        return Ok(TrimResult::Done(Some(attribute_id.next())));
+                        // fxdax: past the attributes, there are none to trim: an object's extended
+                        // attributes sort after them, and this would find them from each attribute
+                        // ID in turn, of 2^64, the graveyard's task spinning all the while.
+                        return Ok(TrimResult::Done(None));
                     }
                 } else {
                     // End of the tree.

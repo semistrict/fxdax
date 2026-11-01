@@ -113,9 +113,11 @@ impl Inner {
         self.reservations.values().max().unwrap_or(&0)
 
         // Account for data that has been written to the journal that will need to be written
-        // to layer files when flushed.
+        // to layer files when flushed. fxdax: there is none if the earliest is ahead of what's been
+        // accounted for, as a mount's renewal of the journal's tail, its first transaction, is of
+        // a journal compacted clean, with what a replay discarded behind it.
             + self.earliest_journal_offset()
-            .map(|min| reserved_space_from_journal_usage(self.last_end_offset - min))
+            .map(|min| reserved_space_from_journal_usage(self.last_end_offset.saturating_sub(min)))
             .unwrap_or(0)
 
         // Extra reserved space
@@ -597,7 +599,11 @@ impl ObjectManager {
                 // than take the guest's kernel down with it (TASK-58, TASK-60).
                 let paid = txn_space.min(txn_reservation.amount());
                 if paid < txn_space && cfg!(debug_assertions) {
-                    panic!("Insufficient reservation space");
+                    panic!(
+                        "Insufficient reservation space: {paid} for {journal_usage} bytes of \
+                         journal, {} mutations",
+                        transaction.mutations().len()
+                    );
                 }
                 txn_reservation.move_to(reservation, paid);
                 if paid < txn_space {
@@ -843,7 +849,13 @@ impl ObjectManager {
     /// we run the risk of there not being enough reserved.  To handle this, if the amount is
     /// significant, we force the journal to borrow the space (using a journal created transaction).
     pub fn needs_borrow_for_journal(&self, checkpoint: u64) -> bool {
-        checkpoint.checked_sub(self.inner.read().last_end_offset).unwrap() > 256
+        self.unaccounted_journal(checkpoint) > 256
+    }
+
+    /// fxdax: how much of the journal, up to `checkpoint`, no transaction has paid for yet: what
+    /// the next must.
+    pub fn unaccounted_journal(&self, checkpoint: u64) -> u64 {
+        checkpoint.checked_sub(self.inner.read().last_end_offset).unwrap()
     }
 }
 

@@ -104,6 +104,11 @@ pub(super) struct ExtentTable {
     unsealed: Vec<ExtentId>,
     /// The extents freed before the device flush in progress began, whose frees it seals.
     sealing: Vec<ExtentId>,
+    /// The extents minted, of which no transaction has committed an allocation, and none has died:
+    /// a crash that loses their transactions leaves them on the device, nothing knowing of them,
+    /// and a mount can't find them by their sequence numbers if a compaction recorded later ones
+    /// meanwhile (`recorded_dying`).
+    uncommitted: HashSet<ExtentId>,
     /// The sequence number of the next extent minted.
     next_sequence: u64,
 }
@@ -367,6 +372,7 @@ impl ExtentTable {
     pub(super) fn mint(&mut self, branch: u64, device: &dyn Device) -> ExtentId {
         let extent = ExtentId::new(branch, self.next_sequence);
         self.next_sequence += 1;
+        self.uncommitted.insert(extent);
         device.opened(extent);
         extent
     }
@@ -450,6 +456,7 @@ impl ExtentTable {
         let Some(len) = NonZero::new(range.len()) else {
             bail!(anyhow!(FxfsError::Inconsistent).context(format!("{range:?} allocated empty")));
         };
+        self.uncommitted.remove(&extent);
         if let Some(owner) = self.owner(extent) {
             ensure!(
                 owner == owner_object_id,
@@ -674,9 +681,10 @@ impl ExtentTable {
     /// transactions were lost, which are freed with the next flush of the device with a record of
     /// it. Returns how many.
     pub(super) fn kill_orphans(&mut self, branch: u64, sequences: Range<u64>) -> usize {
+        let dying: HashSet<_> = self.dying().into_iter().collect();
         let orphans: Vec<_> = sequences
             .map(|sequence| ExtentId::new(branch, sequence))
-            .filter(|extent| !self.is_alive(*extent))
+            .filter(|extent| !self.is_alive(*extent) && !dying.contains(extent))
             .collect();
         for &extent in &orphans {
             self.queue_dead(DeadExtent {
@@ -705,6 +713,7 @@ impl ExtentTable {
     /// Queues `dead`: an extent that died, which the table no longer holds, or never did, taking
     /// as many bytes as its killer knows of.
     fn queue_dead(&mut self, dead: DeadExtent) {
+        self.uncommitted.remove(&dead.extent);
         self.dead_bytes += dead.size;
         self.dead.push_back(dead);
     }
@@ -773,6 +782,23 @@ impl ExtentTable {
     /// The extents that died and are not yet freed, nor being freed, in the order they died.
     pub(super) fn dead(&self) -> impl ExactSizeIterator<Item = ExtentId> + '_ {
         self.dead.iter().map(|dead| dead.extent)
+    }
+
+    /// The lowest sequence number of `branch` of the extents alive.
+    pub(super) fn lowest_sequence(&self, branch: u64) -> Option<u64> {
+        let extents = self.extents.keys().filter(|extent| extent.branch == branch);
+        extents.map(|extent| extent.sequence).min()
+    }
+
+    /// What a compaction records as `dying`, of which the tree it leaves has no records: those
+    /// `dying`, and those minted with no allocation committed yet, which replay revives if theirs
+    /// is in the journal, and a crash leaves to be freed if not.
+    pub(super) fn recorded_dying(&self) -> Vec<ExtentId> {
+        let mut dying = self.dying();
+        dying.extend(self.uncommitted.iter().copied());
+        dying.sort();
+        dying.dedup();
+        dying
     }
 
     /// The extents dead, those being freed, and those freed whose frees a crash might undo.

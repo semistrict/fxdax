@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-24 21:31'
-updated_date: '2026-10-25 03:23'
+updated_date: '2026-11-01 06:16'
 labels: []
 dependencies: []
 parent_task_id: TASK-44
@@ -41,4 +41,6 @@ GCE r83 (kernel built per mutant from HEAD): killed region_open_unlocked, map_ch
 GCE r88: prune_while_read green x3 on HEAD (pushed, da13b9094), but MISSED the prune_in_use mutant: AC2 still open.
 
 GCE r92: prune_while_read with fxfs.dax_delay_us=300 (and the new delay point between a read's iomap and its read) still MISSED prune_in_use, 6 rounds; green x6 on HEAD. The mutant may be equivalent in practice: a prune that ignores the range's users needs a reader's iomap to point into a region the prune drops, i.e. a page moved to a staging region, evacuated back, and the region's last reference dropped while the read is between iomap_begin and its copy. Next: a check that forces that sequence (write a page, fsync to seal, wait for the evacuation, read with the delay) or record the mutant as unkilled with that reasoning.
+
+dax-gate on main at 10e0d6749 (2026-10-31): suites, pgbench and probes passed; 22 of 24 mutants killed, 2 MISSED within the gate's rounds: inherited_acls_written_back (TASK-79.29: inherited ACLs written with write_inode, an fsync of another inode durable without them) and fault_ignores_fatal_signals (TASK-79.49: a fault with no room ignores its signals). The tests for those behaviours exist but didn't fail in the rounds run: find out whether they need more rounds or never reach the path. Results: /tmp/fxdax-gate-10e0d67490c3 on the machine that ran it.
 <!-- SECTION:NOTES:END -->
