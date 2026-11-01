@@ -908,12 +908,14 @@ impl Device for FakeDevice {
         }
         self.answer().await;
         // fxdax: what reads fall through to is a filesystem's never to free.
-        let holds = self.inner.lock().extents.contains_key(&extent);
-        if !holds {
-            for (device, _) in &self.attached {
-                let mut buffer = self.allocate_buffer(self.block_size() as usize).await;
-                let read = device.read(extent, 0, buffer.as_mut()).await;
-                assert!(read.is_err(), "freeing {extent:?}, which is attached");
+        for &extent in extents {
+            let holds = self.inner.lock().extents.contains_key(&extent);
+            if !holds {
+                for (device, _) in &self.attached {
+                    let mut buffer = self.allocate_buffer(self.block_size() as usize).await;
+                    let read = device.read(extent, 0, buffer.as_mut()).await;
+                    assert!(read.is_err(), "freeing {extent:?}, which is attached");
+                }
             }
         }
         let mut inner = self.inner.lock();
