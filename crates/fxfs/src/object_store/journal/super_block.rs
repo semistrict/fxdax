@@ -5,7 +5,9 @@
 // Fuchsia's `src/storage/fxfs/src/object_store/journal/super_block.rs`. fxdax: a super-block's
 // extents are ranges of extents in the extent store (backlog doc-4), not of the device, which are
 // written once: each super-block is written to new extents, freeing those it was written to before,
-// and the store's root (`Root`) names where each instance starts, rather than fixed locations.
+// and the store's root (`Root`) names where each instance starts, rather than fixed locations. What
+// a super-block says is checked where upstream trusts it (TASK-149.9): where the journal starts,
+// and each record, as the journal's are.
 
 //! We currently store two of these super-blocks (A/B), alternately, each starting in the extent the
 //! store's root names for it.
@@ -28,26 +30,26 @@
 //! of the journal code, which must hold a lock to avoid concurrent updates. However, this lock
 //! must NOT be held when saving the superblock as additional extents may need to be allocated as
 //! part of the save process.
+use crate::checksum::Checksum;
 use crate::errors::FxfsError;
 use crate::filesystem::{ApplyContext, ApplyMode, FxFilesystem, JournalingObject};
 use crate::log::*;
 use crate::lsm_tree::types::LayerIterator;
 use crate::lsm_tree::{LSMTree, LayerSet, Query};
 use crate::metrics;
-use crate::object_handle::ObjectHandle as _;
+use crate::object_handle::{INVALID_OBJECT_ID, ObjectHandle as _};
 use crate::object_store::allocator::Reservation;
 use crate::object_store::data_object_handle::OverwriteOptions;
 use crate::object_store::journal::bootstrap_handle::BootstrapObjectHandle;
 use crate::object_store::journal::reader::{JournalReader, ReadResult};
 use crate::object_store::journal::writer::JournalWriter;
-use crate::object_store::journal::{BLOCK_SIZE, JournalCheckpoint, JournalCheckpointV32};
+use crate::object_store::journal::{BLOCK_SIZE, Journal, JournalCheckpoint, JournalCheckpointV32};
 use crate::object_store::object_record::{ObjectItem, ObjectItemV60};
 use crate::object_store::transaction::{AssocObj, Options};
 use crate::object_store::tree::MajorCompactable;
 use crate::object_store::{
     DataObjectHandle, HandleOptions, HandleOwner, Mutation, ObjectKey, ObjectStore, ObjectValue,
 };
-use crate::range::RangeExt;
 use crate::serialized_types::{
     DEFAULT_MAX_SERIALIZED_RECORD_SIZE, EARLIEST_SUPPORTED_VERSION, Version, Versioned,
     VersionedLatest,
@@ -77,6 +79,9 @@ pub const SUPER_BLOCK_CHUNK_SIZE: u64 = 65536;
 
 /// Each superblock is one block but may contain records that extend its own length.
 pub(crate) const MIN_SUPER_BLOCK_SIZE: u64 = 4096;
+
+/// fxdax: past any journal's end: a super-block saying otherwise is refused.
+const MAX_JOURNAL_OFFSET: u64 = 1 << 62;
 
 /// All superblocks start with the magic bytes "FxfsSupr".
 const SUPER_BLOCK_MAGIC: &[u8; 8] = b"FxfsSupr";
@@ -259,6 +264,7 @@ pub type SuperBlockRecord = SuperBlockRecordV60;
 
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Serialize, Deserialize, TypeFingerprint, Versioned)]
+#[cfg_attr(fuzz, derive(arbitrary::Arbitrary))]
 pub enum SuperBlockRecordV60 {
     // When reading the super-block we know the initial extent, but not subsequent extents, so these
     // records need to exist to allow us to completely read the super-block.
@@ -318,6 +324,11 @@ async fn read(
             SuperBlockRecord::ObjectItem(item) => Mutation::insert_object(item.key, item.value),
             SuperBlockRecord::End => break,
         };
+        // fxdax: these are checked as the journal's are.
+        ensure!(
+            Journal::validate_mutation(&mutation, block_size),
+            anyhow!(FxfsError::Inconsistent).context("Bad record in the super-block")
+        );
         root_parent.apply_mutation(
             mutation,
             &ApplyContext {
@@ -569,10 +580,33 @@ impl SuperBlockHeader {
                 FxfsError::Inconsistent
             );
 
+            // fxdax: none is the invalid ID: a graveyard's, what adds to it asserts as much.
+            ensure!(
+                [
+                    super_block_header.root_parent_store_object_id,
+                    super_block_header.root_parent_graveyard_directory_object_id,
+                    super_block_header.root_store_object_id,
+                    super_block_header.allocator_object_id,
+                    super_block_header.journal_object_id,
+                ]
+                .iter()
+                .all(|id| *id != INVALID_OBJECT_ID),
+                FxfsError::Inconsistent
+            );
+
             // The allocator (in root_store) cannot match any store ID.
             ensure!(
                 !stores.contains(&super_block_header.allocator_object_id),
                 FxfsError::Inconsistent
+            );
+
+            // fxdax: where the journal starts is where a reader starts: within a block's contents,
+            // and nowhere near the end of what offsets can count.
+            let start = super_block_header.journal_checkpoint.file_offset;
+            ensure!(
+                start % BLOCK_SIZE < BLOCK_SIZE - std::mem::size_of::<Checksum>() as u64
+                    && start <= MAX_JOURNAL_OFFSET,
+                anyhow!(FxfsError::Inconsistent).context("Bad journal checkpoint")
             );
 
             if super_block_version < EARLIEST_SUPPORTED_VERSION {
@@ -722,12 +756,144 @@ impl RecordReader {
                 ReadResult::Reset(_) => bail!("Unexpected reset"),
                 ReadResult::ChecksumMismatch => bail!("Checksum mismatch"),
                 ReadResult::Some(SuperBlockRecord::Extent(extent)) => {
-                    ensure!(extent.range.is_valid(), FxfsError::Inconsistent);
-                    self.reader.push_extent(0, extent)
+                    self.reader.push_extent(0, extent)?
                 }
                 ReadResult::Some(x) => return Ok(x),
             }
         }
+    }
+}
+
+// fxdax: what the targets of crates/fxfs/fuzz run: a super-block written as a writer would have
+// written it, checksums right, holding what no writer would.
+#[cfg(fuzz)]
+pub mod fuzz {
+    use super::{Root, SUPER_BLOCK_MAGIC, SuperBlockHeader, SuperBlockInstance, SuperBlockRecord};
+    use crate::object_store::journal::writer::JournalWriter;
+    use crate::object_store::journal::{BLOCK_SIZE, JournalCheckpoint};
+    use crate::serialized_types::{Version, Versioned, VersionedLatest};
+    use crate::testing::fuzz::{image, mounts_without_panicking, run};
+    use arbitrary::Arbitrary;
+    use std::io::Write;
+    use std::sync::Arc;
+    use storage_device::{Device, DeviceHolder, ExtentId, ExtentRange};
+
+    /// What changes in a good super-block: each field, each by a chance of its own, so that those
+    /// left alone leave what's read past them to be found.
+    #[derive(Arbitrary, Debug)]
+    pub struct SuperBlockChanges {
+        generation: Option<u64>,
+        root_parent_store_object_id: Option<u64>,
+        root_parent_graveyard_directory_object_id: Option<u64>,
+        root_store_object_id: Option<u64>,
+        allocator_object_id: Option<u64>,
+        journal_object_id: Option<u64>,
+        journal_checkpoint: Option<JournalCheckpoint>,
+        file_offset: Option<u64>,
+        super_block_journal_file_offset: Option<u64>,
+        journal_file_offsets: Vec<(u64, u64)>,
+        borrowed_metadata_space: Option<u64>,
+        earliest_version: Option<Version>,
+        /// Records each put in place of the one at an index, or before the `End`.
+        records: Vec<(u8, SuperBlockRecord)>,
+        /// Records lost, at an index each.
+        lost: Vec<u8>,
+    }
+
+    /// Makes `bytes` the first instance of `device`'s super-block, the only one, sealed.
+    async fn replace_super_block(device: &Arc<dyn Device>, bytes: &[u8]) {
+        let mut writer = JournalWriter::new(BLOCK_SIZE, 0);
+        writer.write_all(bytes).expect("writing");
+        writer.pad_to_block().expect("padding");
+        let mut buffer = device.allocate_buffer(writer.flushable_bytes()).await;
+        writer.take_flushable(buffer.as_mut());
+        let extent = ExtentId::new(device.branch(), device.next_sequence().await.expect("numbers"));
+        device.write(extent, 0, buffer.as_ref()).await.expect("writing");
+        let range = 0..buffer.len() as u64;
+        let root = Root { a: Some(ExtentRange::new(extent, range)), b: None };
+        device.commit_root(&root.encode()).await.expect("committing");
+    }
+
+    /// A super-block whose bytes after its magic are `input`.
+    pub fn fuzz_super_block_bytes(input: Vec<u8>) {
+        run(async move {
+            let device = DeviceHolder::new(image());
+            let bytes = [SUPER_BLOCK_MAGIC.as_slice(), &input].concat();
+            replace_super_block(&device, &bytes[..bytes.len().min(1 << 20)]).await;
+            mounts_without_panicking(device).await;
+        });
+    }
+
+    /// The last super-block of a filesystem, as `changes` leaves it.
+    pub fn fuzz_super_block(changes: SuperBlockChanges) {
+        run(async move {
+            let device = DeviceHolder::new(image());
+            let (mut header, mut records) = read_all(&device).await;
+            let set = |field: &mut u64, value: Option<u64>| *field = value.unwrap_or(*field);
+            set(&mut header.generation, changes.generation);
+            set(&mut header.root_parent_store_object_id, changes.root_parent_store_object_id);
+            set(
+                &mut header.root_parent_graveyard_directory_object_id,
+                changes.root_parent_graveyard_directory_object_id,
+            );
+            set(&mut header.root_store_object_id, changes.root_store_object_id);
+            set(&mut header.allocator_object_id, changes.allocator_object_id);
+            set(&mut header.journal_object_id, changes.journal_object_id);
+            header.journal_checkpoint =
+                changes.journal_checkpoint.unwrap_or(header.journal_checkpoint);
+            set(&mut header.journal_checkpoint.file_offset, changes.file_offset);
+            set(
+                &mut header.super_block_journal_file_offset,
+                changes.super_block_journal_file_offset,
+            );
+            header.journal_file_offsets.extend(changes.journal_file_offsets);
+            set(&mut header.borrowed_metadata_space, changes.borrowed_metadata_space);
+            header.earliest_version = changes.earliest_version.unwrap_or(header.earliest_version);
+            for lost in changes.lost {
+                let index = lost as usize;
+                if index < records.len() {
+                    records.remove(index);
+                }
+            }
+            for (index, record) in changes.records {
+                match records.get_mut(index as usize) {
+                    Some(replaced) => *replaced = record,
+                    None => records.push(record),
+                }
+            }
+            records.push(SuperBlockRecord::End);
+            let mut bytes = SUPER_BLOCK_MAGIC.to_vec();
+            header.serialize_with_version(&mut bytes).expect("serializing");
+            for record in &records {
+                record.serialize_into(&mut bytes).expect("serializing");
+            }
+            replace_super_block(&device, &bytes).await;
+            mounts_without_panicking(device).await;
+        });
+    }
+
+    /// The latest super-block of `device`, and its records but for its `End`.
+    async fn read_all(device: &Arc<dyn Device>) -> (SuperBlockHeader, Vec<SuperBlockRecord>) {
+        let read = async |instance| SuperBlockHeader::read_header(device.clone(), instance).await;
+        let (a, b) = (read(SuperBlockInstance::A).await, read(SuperBlockInstance::B).await);
+        let later = match (&a, &b) {
+            (Ok((a, _)), Ok((b, _))) if b.generation > a.generation => SuperBlockInstance::B,
+            (Ok(_), _) => SuperBlockInstance::A,
+            _ => SuperBlockInstance::B,
+        };
+        let (header, mut reader) = match later {
+            SuperBlockInstance::A => a,
+            SuperBlockInstance::B => b,
+        }
+        .expect("a super-block");
+        let mut records = Vec::new();
+        loop {
+            match reader.next_item().await.expect("a record") {
+                SuperBlockRecord::End => break,
+                record => records.push(record),
+            }
+        }
+        (header, records)
     }
 }
 
@@ -742,9 +908,11 @@ mod tests {
     use crate::object_handle::ReadObjectHandle;
     use crate::object_store::journal::JournalCheckpoint;
     use crate::object_store::journal::writer::JournalWriter;
+    use crate::object_store::object_record::ObjectItem;
     use crate::object_store::transaction::{Options, lock_keys};
     use crate::object_store::{
-        DataObjectHandle, HandleOptions, ObjectHandle, ObjectKey, ObjectStore,
+        AttributeId, DataObjectHandle, HandleOptions, ObjectHandle, ObjectKey, ObjectStore,
+        ObjectValue,
     };
     use crate::serialized_types::{LATEST_VERSION, Versioned, VersionedLatest};
     use anyhow::bail;
@@ -1331,6 +1499,150 @@ mod tests {
         );
     }
 
+    /// fxdax: writes as both instances of `device`'s super-block one that starts the journal at
+    /// `file_offset`, whose records are `records`, and says whether it loads.
+    async fn loads(
+        device: &Arc<dyn Device>,
+        file_offset: u64,
+        records: &[SuperBlockRecord],
+    ) -> bool {
+        let mut header = SuperBlockHeader::new(
+            1,
+            3,
+            4,
+            5,
+            6,
+            7,
+            JournalCheckpoint { file_offset, checksum: 0, version: LATEST_VERSION },
+            LATEST_VERSION,
+        );
+        header.generation = 1;
+        let mut writer = JournalWriter::new(BlockSize::SIZE_4KIB, 0);
+        writer.write_all(SUPER_BLOCK_MAGIC).unwrap();
+        header.serialize_with_version(&mut writer).unwrap();
+        for record in records {
+            record.serialize_into(&mut writer).unwrap();
+        }
+        SuperBlockRecord::End.serialize_into(&mut writer).unwrap();
+        writer.pad_to_block().unwrap();
+        let mut buf = device.allocate_buffer(writer.flushable_bytes()).await;
+        writer.take_flushable(buf.as_mut());
+        for instance in [SuperBlockInstance::A, SuperBlockInstance::B] {
+            write_raw_super_block(device, instance, buf.as_ref()).await;
+        }
+        SuperBlockManager::new().load(device.clone(), BlockSize::SIZE_4KIB).await.is_ok()
+    }
+
+    /// fxdax: where a super-block starts the journal may be anything: a reader may start within a
+    /// block's contents, and not near the end of what offsets can count.
+    #[fuchsia::test]
+    async fn test_journal_checkpoint_validation() {
+        let device = DeviceHolder::new(FakeDevice::new(TEST_DEVICE_BLOCK_COUNT, 4096));
+        let device = (*device).clone();
+        assert!(loads(&device, 4087, &[]).await);
+        assert!(!loads(&device, 4088, &[]).await);
+        assert!(!loads(&device, 4095, &[]).await);
+        assert!(!loads(&device, u64::MAX - 4096, &[]).await);
+    }
+
+    /// fxdax: a mount of a filesystem whose super-blocks start its journal anywhere is refused,
+    /// wherever that is: in a block's seal, which panicked a reader, before the journal's extents,
+    /// which panicked their handle, past them, or near the end of what offsets can count.
+    #[fuchsia::test]
+    async fn test_mount_with_a_journal_that_starts_anywhere() {
+        let device = DeviceHolder::new(FakeDevice::new(TEST_DEVICE_BLOCK_COUNT, 4096));
+        let fs = FxFilesystem::new_empty(device).await.expect("new_empty failed");
+        for _ in 0..64 {
+            let mut transaction = fs
+                .root_store()
+                .new_transaction(lock_keys![], Options::default())
+                .await
+                .expect("new_transaction failed");
+            ObjectStore::create_object(
+                &fs.root_store(),
+                &mut transaction,
+                HandleOptions::default(),
+                None,
+            )
+            .await
+            .expect("create_object failed");
+            transaction.commit().await.expect("commit failed");
+        }
+        fs.journal().force_compact().await.expect("compacting failed");
+        fs.close().await.expect("close failed");
+        let device = fs.take_device().await;
+        device.reopen(false);
+
+        let (header, mut reader) =
+            SuperBlockHeader::read_header((*device).clone(), SuperBlockInstance::A)
+                .await
+                .expect("read failed");
+        let mut records = Vec::new();
+        loop {
+            match reader.next_item().await.expect("a record") {
+                SuperBlockRecord::End => break,
+                record => records.push(record),
+            }
+        }
+        let start = header.journal_checkpoint.file_offset;
+        for file_offset in
+            [start | 4095, (start & !4095) + 4089, 1 << 40, 1 << 61, u64::MAX - 4096, u64::MAX]
+        {
+            let device = device.snapshot().expect("snapshot failed");
+            let mut bytes = SUPER_BLOCK_MAGIC.to_vec();
+            let mut header = header.clone();
+            header.journal_checkpoint.file_offset = file_offset;
+            header.serialize_with_version(&mut bytes).unwrap();
+            for record in &records {
+                record.serialize_into(&mut bytes).unwrap();
+            }
+            SuperBlockRecord::End.serialize_into(&mut bytes).unwrap();
+            let mut writer = JournalWriter::new(BlockSize::SIZE_4KIB, 0);
+            writer.write_all(&bytes).unwrap();
+            writer.pad_to_block().unwrap();
+            {
+                let raw = (*device).clone();
+                let mut buf = raw.allocate_buffer(writer.flushable_bytes()).await;
+                writer.take_flushable(buf.as_mut());
+                for instance in [SuperBlockInstance::A, SuperBlockInstance::B] {
+                    write_raw_super_block(&raw, instance, buf.as_ref()).await;
+                }
+            }
+            assert!(FxFilesystem::open(device).await.is_err(), "mounted at {file_offset}");
+        }
+    }
+
+    /// fxdax: a super-block's records are checked as the journal's are: an extent's key must be on
+    /// the filesystem's blocks' bounds, whatever its value.
+    #[fuchsia::test]
+    async fn test_records_are_validated() {
+        let device = DeviceHolder::new(FakeDevice::new(TEST_DEVICE_BLOCK_COUNT, 4096));
+        let device = (*device).clone();
+        let key = |range| ObjectKey::extent(5, AttributeId::DATA, range);
+        let record = |range| {
+            let (key, value) = (key(range), ObjectValue::deleted_extent());
+            SuperBlockRecord::ObjectItem(ObjectItem { key, value })
+        };
+        assert!(loads(&device, 0, &[record(0..4096)]).await);
+        assert!(!loads(&device, 0, &[record(0..512)]).await);
+    }
+
+    /// fxdax: a root's extents run backwards as easily as forwards, in an image, and don't
+    /// deserialize if they do.
+    #[fuchsia::test]
+    async fn test_root_extents_are_validated() {
+        let device = FakeDevice::new(8, 4096);
+        let extent = ExtentRange::new(ExtentId::new(1, 1), 0..4096);
+        let root = Root { a: Some(extent.clone()), b: None };
+        device.commit_root(&root.encode()).await.expect("commit failed");
+        assert_eq!(Root::read(&device).await.expect("read failed"), root);
+        let (start, end) = (4096, 0);
+        let backwards = ExtentRange::new(ExtentId::new(1, 1), start..end);
+        let root = Root { a: Some(extent), b: Some(backwards) };
+        device.commit_root(&root.encode()).await.expect("commit failed");
+        Root::read(&device).await.expect_err("read");
+    }
+
     #[fuchsia::test]
     async fn test_invalid_object_ids_validation() {
         const BLOCK_SIZE: BlockSize = BlockSize::new(MIN_SUPER_BLOCK_SIZE as u32).unwrap();
@@ -1396,6 +1708,16 @@ mod tests {
         write_sb(SuperBlockInstance::A, 3, 4, 5, 6, 4).await;
         write_sb(SuperBlockInstance::B, 3, 4, 5, 6, 4).await;
         assert!(manager.load((*device).clone(), BLOCK_SIZE).await.is_err());
+
+        // Fxdax: an object ID that is none, of any, as a graveyard's panicked a compaction.
+        for ids in
+            [[0, 4, 5, 6, 7], [3, 0, 5, 6, 7], [3, 4, 0, 6, 7], [3, 4, 5, 0, 7], [3, 4, 5, 6, 0]]
+        {
+            for instance in [SuperBlockInstance::A, SuperBlockInstance::B] {
+                write_sb(instance, ids[0], ids[1], ids[2], ids[3], ids[4]).await;
+            }
+            assert!(manager.load((*device).clone(), BLOCK_SIZE).await.is_err(), "{ids:?}");
+        }
 
         // Case 5: Valid configuration
         write_sb(SuperBlockInstance::A, 3, 4, 5, 6, 7).await;

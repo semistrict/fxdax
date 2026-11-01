@@ -5,7 +5,8 @@
 // Fuchsia's `src/storage/fxfs/src/object_store/extent_record.rs`. fxdax: an extent is located by
 // an extent in the extent store and an offset within it (`ExtentValueV60`), not a device offset
 // (backlog doc-4); and an overwrite extent's bitmap, offset, is collected rather than split off
-// (`offset_by`), as bit-vec 0.10's `split_off` may leave storage its deserializer refuses.
+// (`offset_by`), as bit-vec 0.10's `split_off` may leave storage its deserializer refuses. What a
+// record holds is what an image says, so what's offset or shrunk stays within it (`entries_in`).
 
 // TODO(https://fxbug.dev/42178223): need validation after deserialization.
 
@@ -48,6 +49,17 @@ impl<'a> arbitrary::Arbitrary<'a> for ExtentMode {
             3 => ExtentMode::Overwrite,
             _ => unreachable!(),
         })
+    }
+}
+
+/// fxdax: how many of the `entries` that cover an extent of `extent_len` bytes, a checksum's or a
+/// bitmap's, cover its first `amount` bytes. A record merges as it was read, without the checks
+/// that reading it for data makes, so `entries` may be none, or more than `extent_len`: this is
+/// then all of them, however little they fit.
+fn entries_in(amount: u64, extent_len: u64, entries: usize) -> usize {
+    match extent_len.checked_div(entries as u64) {
+        Some(0) | None => entries,
+        Some(len) => (amount / len).try_into().unwrap_or(usize::MAX).min(entries),
     }
 }
 
@@ -130,7 +142,7 @@ impl ExtentValue {
                     ExtentMode::Raw => ExtentMode::Raw,
                     ExtentMode::Cow(checksums) => {
                         if checksums.len() > 0 {
-                            let index = (amount / (extent_len / checksums.len() as u64)) as usize;
+                            let index = entries_in(amount, extent_len, checksums.len());
                             ExtentMode::Cow(checksums.offset_by(index))
                         } else {
                             ExtentMode::Cow(Checksums::fletcher(Vec::new()))
@@ -138,8 +150,7 @@ impl ExtentValue {
                     }
                     ExtentMode::Overwrite => ExtentMode::Overwrite,
                     ExtentMode::OverwritePartial(bitmap) => {
-                        debug_assert!(bitmap.len() > 0);
-                        let index = (amount / (extent_len / bitmap.len() as u64)) as usize;
+                        let index = entries_in(amount, extent_len, bitmap.len());
                         // fxdax: the bits after `index`, collected: bit-vec 0.10's `split_off` can
                         // leave a word of storage more than the bits need, which its deserializer
                         // refuses, so that the record couldn't be read back.
@@ -148,7 +159,7 @@ impl ExtentValue {
                 };
                 ExtentValue::Some {
                     extent: *extent,
-                    extent_offset: extent_offset + amount,
+                    extent_offset: extent_offset.saturating_add(amount),
                     mode,
                     key_id: *key_id,
                 }
@@ -165,7 +176,7 @@ impl ExtentValue {
                     ExtentMode::Raw => ExtentMode::Raw,
                     ExtentMode::Cow(checksums) => {
                         if checksums.len() > 0 {
-                            let len = (new_len / (original_len / checksums.len() as u64)) as usize;
+                            let len = entries_in(new_len, original_len, checksums.len());
                             ExtentMode::Cow(checksums.shrunk(len))
                         } else {
                             ExtentMode::Cow(Checksums::fletcher(Vec::new()))
@@ -173,8 +184,7 @@ impl ExtentValue {
                     }
                     ExtentMode::Overwrite => ExtentMode::Overwrite,
                     ExtentMode::OverwritePartial(bitmap) => {
-                        debug_assert!(bitmap.len() > 0);
-                        let len = (new_len / (original_len / bitmap.len() as u64)) as usize;
+                        let len = entries_in(new_len, original_len, bitmap.len());
                         let mut new_bitmap = bitmap.clone();
                         new_bitmap.truncate(len);
                         ExtentMode::OverwritePartial(new_bitmap)
@@ -201,6 +211,32 @@ mod tests {
 
     /// The extent the tests' extents are in.
     const E: ExtentId = ExtentId::new(0, 0);
+
+    /// fxdax: a record's checksums and bitmap may be as many as an image says, and merging splits
+    /// them: too many for the extent, or none, stay within what there is.
+    #[test]
+    fn extent_entries_that_do_not_fit() {
+        let many = ExtentValue::with_checksum(E, 0, Checksums::fletcher(vec![1; 8]), 0);
+        assert_eq!(
+            many.offset_by(2, 4),
+            ExtentValue::with_checksum(E, 2, Checksums::fletcher(Vec::new()), 0)
+        );
+        assert_eq!(
+            many.shrunk(4, 2),
+            ExtentValue::with_checksum(E, 0, Checksums::fletcher(vec![1; 8]), 0)
+        );
+        let none = ExtentMode::OverwritePartial(BitVec::new());
+        let none = ExtentValue::Some { extent: E, extent_offset: 0, mode: none, key_id: 0 };
+        assert_eq!(none.offset_by(4096, 8192).shrunk(4096, 2048), {
+            let mode = ExtentMode::OverwritePartial(BitVec::new());
+            ExtentValue::Some { extent: E, extent_offset: 4096, mode, key_id: 0 }
+        });
+        let few = ExtentValue::with_checksum(E, u64::MAX, Checksums::fletcher(vec![1, 2]), 0);
+        assert_eq!(
+            few.offset_by(u64::MAX, 2),
+            ExtentValue::with_checksum(E, u64::MAX, Checksums::fletcher(Vec::new()), 0)
+        );
+    }
 
     #[test]
     fn extent_value_offset_by() {

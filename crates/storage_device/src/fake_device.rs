@@ -706,6 +706,43 @@ impl FakeDevice {
         Self::with_inner(inner, capacity, block_size)
     }
 
+    /// fxdax: a calm device of `branch` holding what this one does, sealed.
+    fn copy_of_branch(&self, branch: u64) -> Self {
+        let mut inner = self.inner.lock().clone();
+        inner.open.clear();
+        inner.sealing.clear();
+        if branch != self.branch {
+            // The fork's branch has written nothing.
+            inner.next_sequence = 0;
+        }
+        Self::with_inner(inner, self.capacity, self.block_size()).with_branch(branch)
+    }
+
+    /// fxdax: a copy of the device, as if it crashed losing nothing and recovered, awkward as
+    /// `seed` says, if it is: one image, many times, as `corrupt` leaves each.
+    pub fn recovered(&self, seed: u64) -> Self {
+        let copy = self.copy_of_branch(self.branch);
+        copy.inner.lock().barrier();
+        match self.awkward {
+            Some(_) => copy.recovered_awkward(seed, self.sequence_floor.load(Ordering::Relaxed)),
+            None => copy,
+        }
+    }
+
+    /// fxdax: what `extent` holds, if it exists, as `corrupt` finds it.
+    pub fn held(&self, extent: ExtentId) -> Option<Vec<u8>> {
+        self.inner.lock().extents.get(&extent).cloned()
+    }
+
+    /// fxdax: changes what the device holds, its extents and its root, as no request may: as a host
+    /// failure or a bad upload does.
+    pub fn corrupt(&self, corrupt: impl FnOnce(&mut HashMap<ExtentId, Vec<u8>>, &mut Vec<u8>)) {
+        let mut inner = self.inner.lock();
+        let inner = &mut *inner;
+        corrupt(&mut inner.extents, &mut inner.root);
+        inner.stored = inner.extents.values().map(|data| data.len() as u64).sum();
+    }
+
     /// What a free checks before it frees anything.
     fn free_begins(&self) -> Result<(), Error> {
         ensure!(!self.closed.load(Ordering::Relaxed));
@@ -994,15 +1031,7 @@ impl Device for FakeDevice {
 
     /// The snapshot is of a device that crashed, and recovered with what it held sealed.
     fn fork(&self, branch: u64) -> Result<DeviceHolder, Error> {
-        let mut inner = self.inner.lock().clone();
-        inner.open.clear();
-        inner.sealing.clear();
-        if branch != self.branch {
-            // The fork's branch has written nothing.
-            inner.next_sequence = 0;
-        }
-        let mut fork =
-            Self::with_inner(inner, self.capacity, self.block_size()).with_branch(branch);
+        let mut fork = self.copy_of_branch(branch);
         fork.attached = self.attached.clone();
         let fork = match &self.awkward {
             Some(awkward) => {

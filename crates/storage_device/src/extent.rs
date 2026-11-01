@@ -56,8 +56,28 @@ pub struct SealedExtent(pub ExtentId);
 #[error("extent {0:?} is another branch's")]
 pub struct OtherBranch(pub ExtentId);
 
+/// What deserializes as an `ExtentRange`: one only if it doesn't run backwards, as what an image
+/// says may, so that nothing that reads one need ask.
+#[derive(Deserialize)]
+struct SerdeExtentRange {
+    extent: ExtentId,
+    range: Range<u64>,
+}
+
+impl TryFrom<SerdeExtentRange> for ExtentRange {
+    type Error = &'static str;
+
+    fn try_from(range: SerdeExtentRange) -> Result<Self, Self::Error> {
+        if range.range.start > range.range.end {
+            return Err("An extent's range must not run backwards");
+        }
+        Ok(Self { extent: range.extent, range: range.range })
+    }
+}
+
 /// A range of bytes within an extent.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, TypeFingerprint)]
+#[serde(try_from = "SerdeExtentRange")]
 #[cfg_attr(fuzz, derive(arbitrary::Arbitrary))]
 pub struct ExtentRange {
     pub extent: ExtentId,

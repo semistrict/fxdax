@@ -5,12 +5,14 @@
 // Fuchsia's `src/storage/fxfs/src/object_store/journal/reader.rs`. fxdax: the reader reads the
 // journal ahead of the blocks it verifies (`ReadAhead`), and its handle's extents change only
 // through it, so that it forgets what it read ahead through those replaced (`push_extent`,
-// `truncate_extents`, `discard_extents`).
+// `truncate_extents`, `discard_extents`). What it reads of an image, which may be anything, is
+// refused, where upstream asserts (`deserialize`, TASK-149.9).
 
 use crate::checksum::{Checksum, fletcher64};
+use crate::errors::FxfsError;
 use crate::object_store::journal::{BLOCK_SIZE, JournalCheckpoint, JournalHandle, RESET_XOR};
 use crate::serialized_types::{Version, Versioned, VersionedLatest};
-use anyhow::{Context, Error, bail};
+use anyhow::{Context, Error, anyhow, bail, ensure};
 use byteorder::{ByteOrder, LittleEndian};
 use storage_device::ExtentRange;
 use storage_device::buffer::BufferRef;
@@ -196,21 +198,30 @@ impl JournalReader {
 
     /// fxdax: adds an extent at the handle's end (`JournalHandle::push_extent`). The extents
     /// before stay, and what was read ahead through them, unless the extent replaced them, as a
-    /// bootstrap handle's first replaces its initial extent.
-    pub fn push_extent(&mut self, added_offset: u64, device_range: ExtentRange) {
+    /// bootstrap handle's first replaces its initial extent. How far it reaches is what an image
+    /// says.
+    pub fn push_extent(
+        &mut self,
+        added_offset: u64,
+        device_range: ExtentRange,
+    ) -> Result<(), Error> {
         let end = self.handle.end_offset();
         let len = device_range.len();
+        let new_end = end.map(|end| end.checked_add(len).ok_or(FxfsError::Inconsistent));
+        let new_end = new_end.transpose()?;
         self.handle.push_extent(added_offset, device_range);
-        if self.handle.end_offset() != end.map(|end| end + len) {
+        if self.handle.end_offset() != new_end {
             self.forget_from(0);
         }
+        Ok(())
     }
 
     /// fxdax: drops the handle's extents from `offset` on (`JournalHandle::truncate_extents`), and
     /// what was read ahead through them.
-    pub fn truncate_extents(&mut self, offset: u64) {
-        self.handle.truncate_extents(offset);
+    pub fn truncate_extents(&mut self, offset: u64) -> Result<(), Error> {
+        self.handle.truncate_extents(offset)?;
         self.forget_from(offset);
+        Ok(())
     }
 
     /// fxdax: discards the handle's extents added at `discard_offset` or later
@@ -235,6 +246,12 @@ impl JournalReader {
         match T::deserialize_from_version(&mut cursor, version) {
             Ok(record) => {
                 let consumed = cursor.position() as usize;
+                // fxdax: what's read of a corrupt journal may be as long as a record may be, which
+                // the writer keeps shorter than a block, as `consume` asks.
+                ensure!(
+                    consumed < self.block_size().get() as usize,
+                    anyhow!(FxfsError::Inconsistent).context("Journal record too long")
+                );
                 self.consume(consumed);
                 Ok(ReadResult::Some(record))
             }
@@ -586,9 +603,9 @@ mod tests {
         }
         let mut reader = JournalReader::new(handle, &checkpoint);
         read_ahead(&mut reader).await;
-        reader.truncate_extents(2 * bs);
+        reader.truncate_extents(2 * bs).expect("truncating");
         for sequence in 12..15 {
-            reader.push_extent(0, block(sequence));
+            reader.push_extent(0, block(sequence)).expect("pushing");
         }
         read_records(&mut reader, 2..records).await;
 
@@ -601,7 +618,7 @@ mod tests {
         read_ahead(&mut reader).await;
         reader.discard_extents(bs);
         for sequence in 12..15 {
-            reader.push_extent(2 * bs, block(sequence));
+            reader.push_extent(2 * bs, block(sequence)).expect("pushing");
         }
         read_records(&mut reader, 2..records).await;
 
@@ -610,8 +627,69 @@ mod tests {
         let mut reader =
             JournalReader::new(BootstrapObjectHandle::new(1, device.clone(), initial), &checkpoint);
         read_ahead(&mut reader).await;
-        reader.push_extent(0, ExtentRange::new(extent(21), 0..5 * bs));
+        reader.push_extent(0, ExtentRange::new(extent(21), 0..5 * bs)).expect("pushing");
         read_records(&mut reader, 2..records).await;
+    }
+
+    /// fxdax: a record may be as long as a block, which a writer never writes, and `consume`
+    /// asserts it doesn't: what a corrupt journal holds.
+    #[fuchsia::test]
+    async fn test_record_as_long_as_a_block() {
+        use crate::errors::FxfsError;
+        use crate::object_store::journal::JournalRecord;
+        use crate::object_store::object_record::{ObjectKey, ObjectValue};
+        use crate::object_store::transaction::Mutation;
+        use crate::object_store::{DirType, ObjectDescriptor};
+        use crate::serialized_types::{DEFAULT_MAX_SERIALIZED_RECORD_SIZE, Versioned as _};
+
+        // A name as long as it takes.
+        let long = (0..4096).find_map(|len| {
+            let key = ObjectKey::child(7, &"n".repeat(len), DirType::Normal);
+            let value = ObjectValue::child(9, ObjectDescriptor::File);
+            let mutation = Mutation::replace_or_insert_object(key, value);
+            let mut bytes = Vec::new();
+            JournalRecord::Mutation { object_id: 1, mutation }.serialize_into(&mut bytes).ok()?;
+            (bytes.len() as u64 == DEFAULT_MAX_SERIALIZED_RECORD_SIZE).then_some(bytes)
+        });
+        let long = long.expect("a record as long as a block");
+
+        let object = Arc::new(FakeObject::new());
+        let handle = FakeObjectHandle::new(object.clone());
+        let mut buf = handle.allocate_buffer((BLOCK_SIZE * 3) as usize).await;
+        buf.fill(0u8);
+        handle.write_or_append(Some(0), buf.as_ref()).await.expect("write failed");
+        let mut writer = JournalWriter::new(BLOCK_SIZE, 0);
+        // A record first, so that a reader has more than a block's worth when it reads the next.
+        writer.write_record(&JournalRecord::Commit).unwrap();
+        assert_eq!(writer.write(&long).expect("write failed"), long.len());
+        writer.pad_to_block().expect("pad_to_block failed");
+        let mut buf = handle.allocate_buffer(writer.flushable_bytes()).await;
+        let offset = writer.take_flushable(buf.as_mut());
+        handle.write_or_append(Some(offset), buf.as_ref()).await.expect("overwrite failed");
+
+        let mut reader = JournalReader::new(
+            FakeObjectHandle::new(object.clone()),
+            &JournalCheckpoint { version: LATEST_VERSION, ..JournalCheckpoint::default() },
+        );
+        let first = reader.deserialize::<JournalRecord>().await.expect("deserialize failed");
+        assert!(matches!(first, ReadResult::Some(JournalRecord::Commit)), "{first:?}");
+        let error = reader.deserialize::<JournalRecord>().await.expect_err("read");
+        assert!(FxfsError::Inconsistent.matches(&error), "{error:?}");
+    }
+
+    /// fxdax: where an extent ends is what a super-block's record says.
+    #[fuchsia::test]
+    async fn test_extents_past_any_offset() {
+        use crate::object_store::journal::bootstrap_handle::BootstrapObjectHandle;
+        use storage_device::fake_device::{DEFAULT_BRANCH, FakeDevice};
+        use storage_device::{ExtentId, ExtentRange};
+
+        let extent = ExtentId::new(DEFAULT_BRANCH, 0);
+        let device = Arc::new(FakeDevice::new(16, 4096));
+        let handle = BootstrapObjectHandle::new_with_start_offset(1, device.clone(), 0);
+        let mut reader = JournalReader::new(handle, &JournalCheckpoint::default());
+        reader.push_extent(0, ExtentRange::new(extent, 0..u64::MAX)).expect("the largest");
+        reader.push_extent(0, ExtentRange::new(extent, 0..4096)).expect_err("past any offset");
     }
 
     #[fuchsia::test]

@@ -86,7 +86,7 @@ use std::ops::Bound;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::task::{Poll, Waker};
-use storage_device::{Device, ExtentRange, NoExtent};
+use storage_device::{Device, ExtentId, ExtentRange, NoExtent};
 use storage_units::BlockSize;
 
 // The journal file is written to in blocks of this size.
@@ -128,8 +128,9 @@ const MIN_COMPACTION_BYTES: u64 = RESERVED_SPACE / 8;
 // Whenever the journal is replayed (i.e. the system is unmounted and remounted), we reset the
 // journal stream, at which point any half-complete transactions are discarded.  We indicate a
 // journal reset by XORing the previous block's checksum with this mask, and using that value as a
-// seed for the next journal block.
-const RESET_XOR: u64 = 0xffffffffffffffff;
+// seed for the next journal block. fxdax: public for the test of corrupt images, which reseals what
+// it flips (crates/fxfs-posix/src/corrupt_tests.rs).
+pub const RESET_XOR: u64 = 0xffffffffffffffff;
 
 // To keep track of offsets within a journal file, we need both the file offset and the check-sum of
 // the preceding block, since the check-sum of the preceding block is an input to the check-sum of
@@ -137,6 +138,7 @@ const RESET_XOR: u64 = 0xffffffffffffffff;
 pub type JournalCheckpoint = JournalCheckpointV32;
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, TypeFingerprint)]
+#[cfg_attr(fuzz, derive(arbitrary::Arbitrary))]
 pub struct JournalCheckpointV32 {
     pub file_offset: u64,
 
@@ -484,6 +486,24 @@ pub struct JournaledChecksums {
     pub first_write: bool,
 }
 
+/// fxdax: whether what a journal record says is allocated could be: not empty, and on blocks, as an
+/// allocator's key, which what it says becomes, must be for a layer to hold it.
+fn valid_device_range(device_range: &ExtentRange, block_size: BlockSize) -> bool {
+    !device_range.is_empty() && block_size.is_aligned(&device_range.range)
+}
+
+/// fxdax: the part of an extent of the store that `extent` of the journal is, `device_offset` on:
+/// what an image says, which may be anything.
+fn journal_extent(
+    extent: &Extent,
+    store_extent: ExtentId,
+    device_offset: u64,
+) -> Result<ExtentRange, Error> {
+    let end = device_offset.checked_add(extent.length().context("Invalid extent")?);
+    let end = end.ok_or(FxfsError::Inconsistent).context("Invalid extent")?;
+    Ok(ExtentRange::new(store_extent, device_offset..end))
+}
+
 /// Handles for journal-like objects have some additional functionality to manage their extents,
 /// since during replay we need to add extents as we find them.
 pub trait JournalHandle: ReadObjectHandle {
@@ -499,7 +519,7 @@ pub trait JournalHandle: ReadObjectHandle {
     fn discard_extents(&mut self, discard_offset: u64);
     /// fxdax: drops the extents from `offset` on, which extents pushed next replace (see
     /// `Journal::renew_tail`).
-    fn truncate_extents(&mut self, offset: u64);
+    fn truncate_extents(&mut self, offset: u64) -> Result<(), Error>;
 }
 
 // Provide a stub implementation for DataObjectHandle so we can use it in
@@ -515,8 +535,9 @@ impl<S: HandleOwner> JournalHandle for DataObjectHandle<S> {
     fn discard_extents(&mut self, _discard_offset: u64) {
         // NOP
     }
-    fn truncate_extents(&mut self, _offset: u64) {
+    fn truncate_extents(&mut self, _offset: u64) -> Result<(), Error> {
         // NOP
+        Ok(())
     }
 }
 
@@ -615,7 +636,8 @@ impl Journal {
     /// Used during replay to validate a mutation.  This should return false if the mutation is not
     /// valid and should not be applied.  This could be for benign reasons: e.g. the device flushed
     /// data out-of-order, or because of a malicious actor.
-    fn validate_mutation(&self, mutation: &Mutation, block_size: BlockSize) -> bool {
+    /// fxdax: any extent's key is checked, not only those of extents that have a value.
+    pub(super) fn validate_mutation(mutation: &Mutation, block_size: BlockSize) -> bool {
         match mutation {
             Mutation::ObjectStore(ObjectStoreMutation {
                 item:
@@ -625,7 +647,7 @@ impl Journal {
                                 data: ObjectKeyData::Attribute(_, AttributeKey::Extent(extent)),
                                 ..
                             },
-                        value: ObjectValue::Extent(ExtentValue::Some { extent_offset, mode, .. }),
+                        value,
                         ..
                     },
                 ..
@@ -633,9 +655,13 @@ impl Journal {
                 if extent.is_empty() || !block_size.is_aligned(extent) {
                     return false;
                 }
+                let ObjectValue::Extent(ExtentValue::Some { extent_offset, mode, .. }) = value
+                else {
+                    return true;
+                };
                 let len = extent.length().unwrap();
-                if let ExtentMode::Cow(checksums) = mode {
-                    if checksums.len() > 0 {
+                match mode {
+                    ExtentMode::Cow(checksums) if checksums.len() > 0 => {
                         if len % checksums.len() as u64 != 0 {
                             return false;
                         }
@@ -643,6 +669,13 @@ impl Journal {
                             return false;
                         }
                     }
+                    // fxdax: a bit a block, which reads rely on.
+                    ExtentMode::OverwritePartial(bitmap)
+                        if bitmap.len() as u64 != len / block_size =>
+                    {
+                        return false;
+                    }
+                    _ => {}
                 }
                 // fxdax: extents have no device to fit in, only offsets that must not overflow.
                 if !block_size.is_aligned(extent_offset) || extent_offset.checked_add(len).is_none()
@@ -653,20 +686,22 @@ impl Journal {
             Mutation::ObjectStore(_) => {}
             Mutation::EncryptedObjectStore(_) => {}
             Mutation::Allocator(AllocatorMutation::Allocate { device_range, owner_object_id }) => {
-                return !device_range.is_empty() && *owner_object_id != INVALID_OBJECT_ID;
+                return valid_device_range(device_range, block_size)
+                    && *owner_object_id != INVALID_OBJECT_ID;
             }
             Mutation::Allocator(AllocatorMutation::Deallocate {
                 device_range,
                 owner_object_id,
             }) => {
-                return !device_range.is_empty() && *owner_object_id != INVALID_OBJECT_ID;
+                return valid_device_range(device_range, block_size)
+                    && *owner_object_id != INVALID_OBJECT_ID;
             }
             Mutation::Allocator(AllocatorMutation::Reference {
                 device_range,
                 owner_object_id,
                 delta,
             }) => {
-                return !device_range.is_empty()
+                return valid_device_range(device_range, block_size)
                     && *owner_object_id != INVALID_OBJECT_ID
                     && *delta != 0;
             }
@@ -801,11 +836,7 @@ impl Journal {
                         }
                         handle.push_extent(
                             0, // We never discard extents from the root parent store.
-                            ExtentRange::new(
-                                *store_extent,
-                                *device_offset
-                                    ..*device_offset + extent.length().context("Invalid extent")?,
-                            ),
+                            journal_extent(extent, *store_extent, *device_offset)?,
                         );
                         true
                     }
@@ -850,7 +881,7 @@ impl Journal {
                 .chain(root_mutations)
                 .chain(non_root_mutations.iter().map(|(_, m)| m))
             {
-                if !self.validate_mutation(mutation, block_size) {
+                if !Self::validate_mutation(mutation, block_size) {
                     info!(mutation:?; "Stopping replay at bad mutation");
                     valid_to = checkpoint.file_offset;
                     break 'bad_replay;
@@ -1246,20 +1277,13 @@ impl Journal {
                                             // the journal continued after a replay (see
                                             // `Journal::renew_tail`).
                                             if extent.start < end_offset {
-                                                reader.truncate_extents(extent.start);
+                                                reader.truncate_extents(extent.start)?;
                                             }
                                         }
                                         reader.push_extent(
                                             checkpoint.file_offset,
-                                            ExtentRange::new(
-                                                *store_extent,
-                                                *device_offset
-                                                    ..*device_offset
-                                                        + extent
-                                                            .length()
-                                                            .context("Invalid extent")?,
-                                            ),
-                                        );
+                                            journal_extent(extent, *store_extent, *device_offset)?,
+                                        )?;
                                     }
                                 }
                                 *end_offset = reader.journal_file_checkpoint().file_offset;
@@ -1343,7 +1367,7 @@ impl Journal {
                 .chain(transaction.non_root_mutations.iter().map(|(_, mutation)| mutation))
             {
                 ensure!(
-                    self.validate_mutation(mutation, block_size),
+                    Self::validate_mutation(mutation, block_size),
                     anyhow!(FxfsError::Inconsistent).context(format!(
                         "A transaction at {} to follow has a bad mutation: {mutation:?}",
                         transaction.checkpoint.file_offset
@@ -1607,7 +1631,7 @@ impl Journal {
             }
             // As in `pre_commit`, the transaction is applied directly. No flush task writes the
             // journal before it is applied: none runs yet.
-            self.write_and_apply_mutations(&mut transaction);
+            self.write_and_apply_mutations(&mut transaction)?;
         }
         Ok(renew)
     }
@@ -1657,7 +1681,7 @@ impl Journal {
         }
 
         self.pre_commit(transaction).await?;
-        Ok(self.write_and_apply_mutations(transaction))
+        self.write_and_apply_mutations(transaction)
     }
 
     // Before we commit, we might need to extend the journal or write pending records to the
@@ -1768,7 +1792,7 @@ impl Journal {
 
         // We can't use regular transaction commit, because that can cause re-entrancy issues, so
         // instead we just apply the transaction directly here.
-        self.write_and_apply_mutations(&mut transaction);
+        self.write_and_apply_mutations(&mut transaction)?;
 
         let mut inner = self.inner.lock();
 
@@ -2176,7 +2200,11 @@ impl Journal {
         Some(records)
     }
 
-    fn write_and_apply_mutations(&self, transaction: &mut Transaction<'_>) -> u64 {
+    fn write_and_apply_mutations(&self, transaction: &mut Transaction<'_>) -> Result<u64, Error> {
+        ensure!(
+            self.inner.lock().terminate_reason.is_none(),
+            anyhow!(FxfsError::JournalFlushError).context("The journal stopped on an error")
+        );
         let serialized = self.serialize_records(transaction);
         let checkpoint_before;
         let checkpoint_after;
@@ -2205,11 +2233,16 @@ impl Journal {
                 }
                 checkpoint
             };
-            let maybe_mutation =
-                self.objects.apply_transaction(transaction, &checkpoint_before).expect(
-                    "apply_transaction should not fail in live mode; \
-                     filesystem will be in an inconsistent state",
-                );
+            // fxdax: this fails on what memory holds of a corrupt image, such as a transaction
+            // that frees what the allocator says isn't allocated, which is no reason for a guest's
+            // kernel to panic, as upstream does. Nothing can go on: the filesystem is left as this
+            // left it, so the journal stops. What was written of this transaction has no Commit
+            // record, which replay discards it for.
+            let applied = self.objects.apply_transaction(transaction, &checkpoint_before);
+            let maybe_mutation = applied.inspect_err(|error| {
+                let reason = anyhow!(FxfsError::Inconsistent).context(format!("{error:#}"));
+                self.inner.lock().terminate(Some(reason.context("Failed to apply a transaction")));
+            })?;
             checkpoint_after = {
                 let mut inner = self.inner.lock();
                 if let Some(mutation) = maybe_mutation {
@@ -2261,7 +2294,7 @@ impl Journal {
             }
         }
 
-        checkpoint_before.file_offset
+        Ok(checkpoint_before.file_offset)
     }
 
     /// This task will flush journal data to the device when there is data that needs flushing, and
@@ -2904,6 +2937,124 @@ mod tests {
             commit_records(&fs, object_id, round, 76).await;
         }
         check_replay(fs).await;
+    }
+
+    /// fxdax: a mutation of an extent says as much as a record can of what writes it to a layer.
+    #[test]
+    fn test_mutations_of_extents_are_validated() {
+        use super::Journal;
+        use crate::object_store::transaction::AllocatorMutation;
+        use crate::object_store::{AttributeId, ExtentMode, ExtentValue};
+        use bit_vec::BitVec;
+        use storage_device::ExtentId;
+        use storage_units::BlockSize;
+
+        let valid = |range, value| {
+            let key = ObjectKey::extent(1, AttributeId::DATA, range);
+            let mutation = Mutation::merge_object(key, value);
+            Journal::validate_mutation(&mutation, BlockSize::SIZE_4KIB)
+        };
+        assert!(valid(0..4096, ObjectValue::deleted_extent()));
+        assert!(!valid(1..4096, ObjectValue::deleted_extent()));
+        assert!(!valid(0..0, ObjectValue::deleted_extent()));
+
+        let extent = ExtentId::new(1, 1);
+        let bitmap = |blocks| {
+            let mode = ExtentMode::OverwritePartial(BitVec::from_elem(blocks, false));
+            ObjectValue::Extent(ExtentValue::new(extent, 0, mode, 0))
+        };
+        assert!(valid(0..8192, bitmap(2)));
+        assert!(!valid(0..8192, bitmap(1)));
+        assert!(!valid(0..8192, bitmap(0)));
+
+        let allocates = |range| {
+            let device_range = storage_device::ExtentRange::new(extent, range);
+            let mutation = AllocatorMutation::Allocate { device_range, owner_object_id: 1 };
+            Journal::validate_mutation(&Mutation::Allocator(mutation), BlockSize::SIZE_4KIB)
+        };
+        assert!(allocates(4096..8192));
+        assert!(!allocates(1..4096));
+        assert!(!allocates(4096..4097));
+    }
+
+    /// fxdax: where a journal's extent ends is what an image says.
+    #[test]
+    fn test_journal_extents_are_checked() {
+        use crate::object_store::Extent;
+        use storage_device::{ExtentId, ExtentRange};
+
+        let store_extent = ExtentId::new(1, 1);
+        let extent = Extent(4096..8192);
+        assert_eq!(
+            super::journal_extent(&extent, store_extent, 8192).expect("a good extent"),
+            ExtentRange::new(store_extent, 8192..12288)
+        );
+        super::journal_extent(&extent, store_extent, u64::MAX).expect_err("past any offset");
+    }
+
+    /// fxdax: a live transaction that can't be applied, as one freeing what a corrupt allocator
+    /// doesn't have, stops the journal rather than panic, and commits nothing after it, or it.
+    #[fuchsia::test]
+    async fn test_transaction_that_cannot_be_applied_stops_the_journal() {
+        use crate::errors::FxfsError;
+        use crate::object_store::transaction::{AllocatorMutation, lock_keys};
+        use storage_device::{ExtentId, ExtentRange};
+
+        let device = DeviceHolder::new(FakeDevice::new(8192, 4096));
+        let fs = FxFilesystem::new_empty(device).await.expect("new_empty failed");
+        let store = fs.root_store();
+        let mut transaction = store
+            .new_transaction(lock_keys![], Options::default())
+            .await
+            .expect("new_transaction failed");
+        let handle =
+            ObjectStore::create_object(&store, &mut transaction, HandleOptions::default(), None)
+                .await
+                .expect("create_object failed");
+        let object_id = handle.object_id();
+        transaction.commit().await.expect("commit failed");
+        fs.sync(SyncOptions::default()).await.expect("sync failed");
+
+        let allocator = fs.allocator();
+        let mut after = store
+            .new_transaction(lock_keys![], Options::default())
+            .await
+            .expect("new_transaction failed");
+        ObjectStore::create_object(&store, &mut after, HandleOptions::default(), None)
+            .await
+            .expect("create_object failed");
+        let mut transaction = store
+            .new_transaction(lock_keys![], Options::default())
+            .await
+            .expect("new_transaction failed");
+        let device_range = ExtentRange::new(ExtentId::new(fs.device().branch(), 1 << 50), 0..4096);
+        let owner_object_id = store.store_object_id();
+        transaction.add(
+            allocator.object_id(),
+            Mutation::Allocator(AllocatorMutation::Deallocate { device_range, owner_object_id }),
+        );
+        let error = transaction.commit().await.expect_err("committed");
+        assert!(FxfsError::Inconsistent.matches(&error), "{error:?}");
+
+        let error = after.commit().await.expect_err("committed after the journal stopped");
+        assert!(FxfsError::JournalFlushError.matches(&error), "{error:?}");
+        store
+            .new_transaction(lock_keys![], Options::default())
+            .await
+            .map(drop)
+            .expect_err("a transaction began after the journal stopped");
+        drop(handle);
+
+        // What's durable mounts, without the transaction that failed.
+        let _ = fs.close().await;
+        let device = fs.take_device().await;
+        device.reopen(false);
+        let fs = FxFilesystem::open(device).await.expect("open failed");
+        fsck(fs.clone()).await.expect("fsck failed");
+        ObjectStore::open_object(&fs.root_store(), object_id, HandleOptions::default(), None)
+            .await
+            .expect("what was synced is gone");
+        fs.close().await.expect("close failed");
     }
 
     #[fuchsia::test]
@@ -4169,43 +4320,48 @@ mod tests {
     }
 }
 
+// fxdax: plain functions, which the targets of crates/fxfs/fuzz call, in place of Fuchsia's `fuzz`
+// macro, on the image of `crate::testing::fuzz`: Fxfs's blocks are 4 KiB here. What mounts is
+// checked and read too.
 #[cfg(fuzz)]
-mod fuzz {
-    use fuzz::fuzz;
+pub mod fuzz {
+    use crate::filesystem::{FxFilesystem, OpenFxFilesystem};
+    use crate::object_store::transaction::{Options, lock_keys};
+    use crate::object_store::{HandleOptions, ObjectStore};
+    use crate::testing::fuzz::{image, mounts_without_panicking, run};
+    use std::io::Write;
+    use storage_device::DeviceHolder;
 
-    #[fuzz]
-    fn fuzz_journal_bytes(input: Vec<u8>) {
-        use crate::filesystem::FxFilesystem;
-        use fuchsia_async as fasync;
-        use std::io::Write;
-        use storage_device::DeviceHolder;
-        use storage_device::fake_device::FakeDevice;
+    /// The image, mounted, one transaction committed: which starts the flush task, and writes the
+    /// reset that replay looks for.
+    async fn mounted() -> OpenFxFilesystem {
+        let fs = FxFilesystem::open(DeviceHolder::new(image())).await.expect("open failed");
+        let store = fs.root_store();
+        let mut transaction = store
+            .new_transaction(lock_keys![], Options::default())
+            .await
+            .expect("new_transaction failed");
+        ObjectStore::create_object(&store, &mut transaction, HandleOptions::default(), None)
+            .await
+            .expect("create_object failed");
+        transaction.commit().await.expect("commit failed");
+        fs
+    }
 
-        fasync::SendExecutorBuilder::new().num_threads(4).build().run(async move {
-            let device = DeviceHolder::new(FakeDevice::new(32768, 512));
-            let fs = FxFilesystem::new_empty(device).await.expect("new_empty failed");
+    pub fn fuzz_journal_bytes(input: Vec<u8>) {
+        run(async move {
+            let fs = mounted().await;
             fs.journal().inner.lock().writer.write_all(&input).expect("write failed");
             fs.close().await.expect("close failed");
             let device = fs.take_device().await;
             device.reopen(false);
-            if let Ok(fs) = FxFilesystem::open(device).await {
-                // `close()` can fail if there were objects to be tombstoned. If the said object is
-                // corrupted, there will be an error when we compact the journal.
-                let _ = fs.close().await;
-            }
+            mounts_without_panicking(device).await;
         });
     }
 
-    #[fuzz]
-    fn fuzz_journal(input: Vec<super::JournalRecord>) {
-        use crate::filesystem::FxFilesystem;
-        use fuchsia_async as fasync;
-        use storage_device::DeviceHolder;
-        use storage_device::fake_device::FakeDevice;
-
-        fasync::SendExecutorBuilder::new().num_threads(4).build().run(async move {
-            let device = DeviceHolder::new(FakeDevice::new(32768, 512));
-            let fs = FxFilesystem::new_empty(device).await.expect("new_empty failed");
+    pub fn fuzz_journal(input: Vec<super::JournalRecord>) {
+        run(async move {
+            let fs = mounted().await;
             {
                 let mut inner = fs.journal().inner.lock();
                 for record in &input {
@@ -4215,11 +4371,7 @@ mod fuzz {
             fs.close().await.expect("close failed");
             let device = fs.take_device().await;
             device.reopen(false);
-            if let Ok(fs) = FxFilesystem::open(device).await {
-                // `close()` can fail if there were objects to be tombstoned. If the said object is
-                // corrupted, there will be an error when we compact the journal.
-                let _ = fs.close().await;
-            }
+            mounts_without_panicking(device).await;
         });
     }
 }

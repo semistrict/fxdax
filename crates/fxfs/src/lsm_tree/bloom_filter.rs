@@ -2,8 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+use crate::errors::FxfsError;
 use crate::lsm_tree::types::{FuzzyHash, MaybeContainsKey};
-use anyhow::{Error, Result};
+use anyhow::{Error, Result, ensure};
 use bit_vec::BitVec;
 use std::marker::PhantomData;
 use storage_ptr_slice::PtrByteSlice;
@@ -83,10 +84,21 @@ pub struct BloomFilterStats {
 /// falling back to returning true.
 pub const MAX_HASH_PARTITIONS: usize = 4;
 
+/// fxdax: the most partitions of a key a bloom filter hashes one by one: 16 TiB's, of an extent's.
+/// Past that, which only a corrupt layer holds, it holds everything, which queries take for what it
+/// may hold: for the writer, as `MAX_HASH_PARTITIONS` is for the reader, a key's length, which is
+/// what an image says, was how long a compaction spun.
+const MAX_INSERTED_PARTITIONS: usize = 1 << 24;
+
+/// fxdax: the most hashes a bloom filter may say it takes for each query: `estimate_params` chooses
+/// about ten. It says so on disk, and a query spins for as many as it says.
+const MAX_NUM_HASHES: usize = 64;
+
 impl<V: FuzzyHash> BloomFilterReader<V> {
     /// Creates a BloomFilterReader by reading the serialized contents from `buf`.
     /// `seed` and `num_hashes` must match the values passed into BloomFilterWriter.
     pub fn read(buf: PtrByteSlice<'_>, seed: u64, num_hashes: usize) -> Result<Self, Error> {
+        ensure!(num_hashes <= MAX_NUM_HASHES, FxfsError::Inconsistent);
         Ok(Self {
             data: BitVec::from_bytes(&buf.to_vec()),
             seed,
@@ -210,7 +222,12 @@ impl<V: FuzzyHash> BloomFilterWriter<V> {
     }
 
     pub fn insert(&mut self, value: &V) {
-        for hash in value.fuzzy_hash() {
+        let hashes = value.fuzzy_hash();
+        if hashes.len() > MAX_INSERTED_PARTITIONS {
+            self.data.fill(true);
+            return;
+        }
+        for hash in hashes {
             self.insert_inner(hash);
         }
     }
@@ -349,6 +366,27 @@ mod tests {
                 .expect("read failed");
             assert_eq!(filter.maybe_contains(key), MaybeContainsKey::Maybe);
         }
+    }
+
+    /// fxdax: a key as long as an image says is hashed no longer than a key may reasonably be, and
+    /// the filter then says nothing is missing: of any part of it, or anything else.
+    #[test]
+    fn test_key_of_any_length() {
+        let mut filter = BloomFilterWriter::new(0, 2);
+        filter.insert(&AllocatorKey::new(TEST_EXTENT, 0..!511));
+        let filter = BloomFilterReader::from(filter);
+        for range in [0..512, 1 << 40..(1 << 40) + 512] {
+            let key = AllocatorKey::new(TEST_EXTENT, range);
+            assert_eq!(filter.maybe_contains(&key), MaybeContainsKey::Maybe);
+        }
+    }
+
+    /// fxdax: how many hashes a filter says it takes is how long its queries take.
+    #[test]
+    fn test_hash_count_is_bounded() {
+        let buf = [0u8; 16];
+        let read = BloomFilterReader::<u64>::read(PtrByteSlice::from(&buf[..]), 0, usize::MAX);
+        assert!(read.is_err());
     }
 
     #[test]

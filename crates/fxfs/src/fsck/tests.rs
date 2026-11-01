@@ -320,27 +320,20 @@ async fn test_extra_allocation() {
 
 #[fuchsia::test]
 async fn test_misaligned_allocation() {
-    let mut test = FsckTest::new().await;
+    let test = FsckTest::new().await;
 
     {
         let fs = test.filesystem();
-        let mut transaction = fs
-            .root_store()
-            .new_transaction(lock_keys![], Options::default())
-            .await
-            .expect("new_transaction failed");
-        // fxdax: an allocation in an extent of its own.
-        fs.allocator()
-            .mark_allocated(
-                &mut transaction,
-                99,
-                ExtentRange::new(TEST_EXTENT, 1..fs.block_size().get()),
-            )
-            .expect("mark_allocated failed");
-        transaction.commit().await.expect("commit failed");
+        // fxdax: into the allocator's mutable layer, as `test_malformed_allocation` does: replay
+        // refuses it of a journal, and layer files can't hold it.
+        let item = Item::new(
+            AllocatorKey::new(TEST_EXTENT, 1..fs.block_size().get()),
+            AllocatorValue::Abs { count: 2, owner_object_id: 9 },
+        );
+        let lower_bound = item.key.lower_bound_for_merge_into();
+        fs.allocator().tree().merge_into(item, &lower_bound);
     }
 
-    test.remount().await.expect("Remount failed");
     test.run(TestOptions { halt_on_error: true, ..Default::default() })
         .await
         .expect_err("Fsck should fail");

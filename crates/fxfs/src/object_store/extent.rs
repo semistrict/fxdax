@@ -38,8 +38,16 @@ impl TryFrom<SerdeExtent> for Extent {
 /// Extent represents a physical or logical range of bytes, aligned to a 512-byte boundary.
 #[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize, TypeFingerprint)]
 #[serde(try_from = "SerdeExtent")]
-#[cfg_attr(fuzz, derive(arbitrary::Arbitrary))]
 pub struct Extent(pub Range<u64>);
+
+// fxdax: aligned, as what deserializes is: an extent that couldn't be read is no input to fuzz.
+#[cfg(fuzz)]
+impl<'a> arbitrary::Arbitrary<'a> for Extent {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        let range = Range::<u64>::arbitrary(u)?;
+        Ok(Self(MIN_BLOCK_SIZE.align_down(range.start)..MIN_BLOCK_SIZE.align_down(range.end)))
+    }
+}
 
 impl Extent {
     /// Returns the range of bytes common between this extent and |other|.
