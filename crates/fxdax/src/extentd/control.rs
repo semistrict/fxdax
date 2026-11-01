@@ -601,6 +601,21 @@ impl Client {
         self.call(what, |mut c| async move { c.sync_store(request).await }).map(drop)
     }
 
+    /// Grants the tenant `tenant`, whose stores are in `dir`, its VM socket, given to `uid` and
+    /// `gid` where named, and returns its path (`Grant`).
+    pub fn grant(
+        &self,
+        tenant: &str,
+        dir: &Path,
+        uid: Option<u32>,
+        gid: Option<u32>,
+    ) -> Result<PathBuf, crate::Error> {
+        let request = GrantRequest { tenant: tenant.to_owned(), dir: name(dir)?, uid, gid };
+        let response =
+            self.call(format!("granting {tenant}"), |mut c| async move { c.grant(request).await })?;
+        Ok(response.socket.into())
+    }
+
     /// Limits the memory of the tenant `tenant`, or of every tenant without one, to `bytes`, or
     /// lifts the limit without them (`SetMemoryLimit`).
     pub fn set_memory_limit(

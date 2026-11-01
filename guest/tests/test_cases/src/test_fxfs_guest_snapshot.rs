@@ -18,6 +18,9 @@
 //!   leaves the snapshot, its memory and the VM's root filesystem in FXDAX_MIGRATE_BUNDLE; then
 //!   `target`, on another host, which has nothing of the store, restores it from there, at the
 //!   same paths, the root filesystem's too, which the restored VM goes on reading.
+//! - **TenantMigrate:** as Migrate, for a tenant's VM (TASK-154): the tenant's VM process names no
+//!   branch, so that the host's VM manager makes the point in the tenant's directory first, of the
+//!   branch the daemon says it is, and Firecracker restores through the tenant's socket.
 //!
 //! Each restored guest thaws, reads what was written before the snapshot (with a DAX window,
 //! through a mapping made before it, which the restored window maps again), writes its own file,
@@ -51,6 +54,7 @@ pub enum Mode {
     Zygote,
     Suspend,
     Migrate,
+    TenantMigrate,
 }
 
 impl Mode {
@@ -60,7 +64,7 @@ impl Mode {
         match self {
             Self::Zygote => &["a", "b"],
             Self::Suspend => &["resumed"],
-            Self::Migrate => &["moved"],
+            Self::Migrate | Self::TenantMigrate => &["moved"],
         }
     }
 }
@@ -150,6 +154,28 @@ mod host {
         })
     }
 
+    /// What a VM manager does for a tenant's VM to restore the snapshot at `snapshot` where its
+    /// point isn't (TASK-154): the tenant granted `dir`, and the point's branch, as the daemon says
+    /// it, not as the snapshot does, made a store at `point` in it. Returns the tenant's socket,
+    /// given to the jail's user, if Firecracker runs in one.
+    fn take_for_tenant(
+        extentd: &Path,
+        snapshot: &Path,
+        point: &Path,
+        dir: &Path,
+    ) -> anyhow::Result<PathBuf> {
+        let control = crate::common::control(extentd)?;
+        let mut taken = snapshot.as_os_str().to_owned();
+        taken.push(".extent-extents");
+        control.sync_store(Path::new(&taken))?;
+        let branch = control.stat_store(Path::new(&taken))?.branch;
+        let id = |name: &str| std::env::var(name).ok().map(|id| id.parse()).transpose();
+        let socket =
+            control.grant("restored", dir, id("FXDAX_JAIL_UID")?, id("FXDAX_JAIL_GID")?)?;
+        control.create_store(point, CAPACITY, Some(branch), None)?;
+        Ok(socket)
+    }
+
     fn read_file(fs: &Filesystem, name: &str) -> Vec<u8> {
         let (file, attr) = block_on(fs.root().lookup(name.as_bytes()))
             .unwrap_or_else(|err| panic!("host: lookup {name}: {err}"));
@@ -185,7 +211,7 @@ mod host {
             // Migrating, a daemon of the test's own, which keeps stores in a bucket, as the hosts
             // a VM moves between do: the environment's, or one in its memory.
             let extentd = match self.mode {
-                Mode::Migrate => {
+                Mode::Migrate | Mode::TenantMigrate => {
                     // In the temporary directory, as a socket's path is short (SUN_LEN), and a
                     // test's directory, a round's of a soak, may not be.
                     let socket = std::env::temp_dir()
@@ -193,10 +219,15 @@ mod host {
                     let named = std::env::var_os("FXDAX_EXTENTD_REMOTE")
                         .is_some_and(|remote| !remote.is_empty());
                     let bucket = std::ffi::OsStr::new("memory:///migrate");
-                    let env: &[(&str, &std::ffi::OsStr)] =
-                        if named { &[] } else { &[("FXDAX_EXTENTD_REMOTE", bucket)] };
+                    // Beside it, for its tenant's socket, in the jail if there is one.
+                    let tenants =
+                        std::env::temp_dir().join(format!("fxdax-{}-tenants", std::process::id()));
+                    let mut env = vec![("FXDAX_EXTENTD_TENANTS", tenants.as_os_str())];
+                    if !named {
+                        env.push(("FXDAX_EXTENTD_REMOTE", bucket));
+                    }
                     let daemon =
-                        crate::common::spawn_daemon(test_setup, &socket, "extentd", env, None)?;
+                        crate::common::spawn_daemon(test_setup, &socket, "extentd", &env, None)?;
                     std::mem::forget(daemon);
                     socket
                 }
@@ -278,6 +309,17 @@ mod host {
                             "path_on_host": store(&elsewhere, name),
                             "point_on_host": elsewhere.join("point"),
                             "extentd_socket": extentd,
+                        }])
+                    }
+                    Mode::TenantMigrate => {
+                        std::fs::create_dir_all(&elsewhere)?;
+                        let point = elsewhere.join("point");
+                        let socket = take_for_tenant(&extentd, &snapshot, &point, &elsewhere)?;
+                        serde_json::json!([{
+                            "id": "extents",
+                            "path_on_host": store(&elsewhere, name),
+                            "point_on_host": point,
+                            "extentd_socket": socket,
                         }])
                     }
                 };
@@ -362,7 +404,7 @@ mod host {
                     restores.iter().map(|name| (*name, store(&test_setup.tmp_dir, name))).collect()
                 }
                 Mode::Suspend => vec![(restores[0], store(&test_setup.tmp_dir, "source"))],
-                Mode::Migrate => vec![],
+                Mode::Migrate | Mode::TenantMigrate => vec![],
             };
             // The daemon keeps the snapshot's point open for the restores after these (TASK-92.5),
             // and with it the directory of the stores forked from it, which this process may not

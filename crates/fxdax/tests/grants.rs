@@ -5,7 +5,8 @@
 //! TASK-43.4: tenants granted VM sockets of their own through the control API. A connection's
 //! tenant is the socket it came in on: its VM process names stores in the tenant's directory
 //! alone. A revoked tenant's socket takes no more connections. A tenant's socket works
-//! bind-mounted into a jail, as the host's VM manager mounts it.
+//! bind-mounted into a jail, as the host's VM manager mounts it. TASK-154: a tenant reaches of the
+//! bucket what the VM manager puts in its directory.
 
 #![cfg(target_os = "linux")]
 
@@ -13,8 +14,8 @@ mod common;
 
 use common::daemon::{CAPACITY, Daemon, failure, write};
 use common::{cache, copies, pattern};
-use fxdax::{Errno, RemoteExtentStore};
-use std::path::Path;
+use fxdax::{Errno, ExtentId, RemoteExtentStore, VolatileSliceMut};
+use std::path::{Path, PathBuf};
 use tonic::Code;
 
 /// The errno a VM process connecting to `socket` to open the store at `path` is refused with.
@@ -175,4 +176,213 @@ fn jailed(socket: &Path) {
     let store = std::env::var_os(JAIL_STORE).unwrap();
     let vm = RemoteExtentStore::connect(socket, store, CAPACITY).unwrap();
     write(&vm, &pattern(3), b"jailed");
+}
+
+/// A host of two over one bucket: a daemon of its own, and the tenant acme's directory and socket
+/// on it. The two are threads of one process, as a bucket in memory is one process's: they share
+/// their extent cache, which [`Host::forget_what_it_read`] empties, and the bucket alone.
+struct Host {
+    daemon: Daemon,
+    acme: PathBuf,
+    socket: PathBuf,
+}
+
+impl Host {
+    fn new(dir: &Path, name: &str) -> Self {
+        let dir = dir.join(name);
+        let acme = dir.join("acme");
+        std::fs::create_dir_all(&acme).unwrap();
+        let mut daemon = Daemon::new(&dir);
+        let socket = daemon.grant(&format!("acme-{name}"), &acme, None).unwrap();
+        Self { daemon, acme, socket }
+    }
+
+    /// What the host read goes from memory, as it never had it on another host.
+    fn forget_what_it_read(&mut self) {
+        self.daemon.shrink_memory(None, 0).unwrap();
+    }
+
+    /// A snapshot of a VM of the tenant, as Firecracker takes it, in the bucket.
+    fn snapshot(&mut self) -> Snapshot {
+        let vm = RemoteExtentStore::connect(&self.socket, self.acme.join("vm"), CAPACITY).unwrap();
+        write(&vm, &pattern(5), b"snapshotted");
+        let extent = ExtentId { branch: vm.branch(), sequence: 1 };
+        let point = self.acme.join("point");
+        vm.fork_quiescent(&point, vm.branch() + 1).unwrap();
+        drop(vm);
+        self.daemon.sync(&point).unwrap();
+        // As the VM manager reads it: not the snapshot's word for it, which a VM process wrote.
+        Snapshot { branch: self.daemon.stat(&point).unwrap().branch, extent }
+    }
+}
+
+/// What the VM manager keeps of a snapshot: its point's branch. And the extent the VM wrote.
+struct Snapshot {
+    branch: u64,
+    extent: ExtentId,
+}
+
+/// A VM process's restore through `socket`, into a store of its own at `store`, of the snapshot
+/// whose point it names `point`, of `branch`: the request Firecracker's restore makes.
+fn restore(
+    socket: &Path,
+    store: &Path,
+    point: &Path,
+    branch: u64,
+) -> Result<RemoteExtentStore, Option<Errno>> {
+    RemoteExtentStore::connect_forked(socket, store, point, branch, CAPACITY)
+        .map_err(|err| err.errno())
+}
+
+/// The bytes of the VM's `extent`, as the snapshot holds them, read through `store`.
+fn snapshotted(store: &RemoteExtentStore, extent: ExtentId) -> bool {
+    let mut read = vec![0; 64 << 10];
+    store.read(extent, 0, &mut [VolatileSliceMut::from(&mut read[..])]).unwrap();
+    read == pattern(5)
+}
+
+/// TASK-154: a tenant's snapshot restores on another host, which has nothing of it, through the
+/// request every restore makes: refused until the VM manager makes the point in the tenant's
+/// directory, then served, what it reads coming from the bucket, as many restores as there are.
+#[test]
+fn tenants_restore_on_another_host_what_their_vm_manager_took() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut here, mut there) = (Host::new(dir.path(), "here"), Host::new(dir.path(), "there"));
+    let snapshot = here.snapshot();
+    here.forget_what_it_read();
+    let fetched = there.daemon.stats().fetched_bytes;
+
+    let (point, vm) = (there.acme.join("point"), there.acme.join("vm"));
+    let refused = restore(&there.socket, &vm, &point, snapshot.branch);
+    assert_eq!(refused.map(drop), Err(Some(Errno::ENOENT)));
+    assert!(!point.exists(), "a point was taken for the branch a VM process named");
+
+    assert_eq!(there.daemon.create(&point, snapshot.branch, None).unwrap(), snapshot.branch);
+    let restored = restore(&there.socket, &vm, &point, snapshot.branch).unwrap();
+    assert_ne!(restored.branch(), snapshot.branch);
+    assert_eq!(restored.root().unwrap(), b"snapshotted");
+    assert!(snapshotted(&restored, snapshot.extent), "the restored VM reads other bytes");
+    let read = there.daemon.stats().fetched_bytes - fetched;
+    assert!(read >= 64 << 10, "{read} bytes came from the bucket");
+    write(&restored, &pattern(6), b"restored");
+
+    // A zygote's other child, whatever it names, and the first's writes none of its.
+    let other = restore(&there.socket, &there.acme.join("other"), &point, 0).unwrap();
+    assert_eq!(other.root().unwrap(), b"snapshotted");
+    assert_eq!(restored.root().unwrap(), b"restored");
+}
+
+/// TASK-154: the VM manager's taking a branch for a tenant gives another tenant nothing: on one
+/// host, the same request, naming that branch and a point in its own directory, is refused, and
+/// its naming the first tenant's point too.
+#[test]
+fn tenants_take_no_branch_given_to_another() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut here, mut there) = (Host::new(dir.path(), "here"), Host::new(dir.path(), "there"));
+    let snapshot = here.snapshot();
+    let given = there.acme.join("point");
+    there.daemon.create(&given, snapshot.branch, None).unwrap();
+
+    let globex = dir.path().join("there/globex");
+    std::fs::create_dir(&globex).unwrap();
+    let socket = there.daemon.grant("globex", &globex, None).unwrap();
+    let (vm, point) = (globex.join("vm"), globex.join("point"));
+    let refused = restore(&socket, &vm, &point, snapshot.branch);
+    assert_eq!(refused.map(drop), Err(Some(Errno::ENOENT)));
+    assert!(!point.exists(), "a point was taken for the branch a VM process named");
+    let refused = restore(&socket, &vm, &given, snapshot.branch);
+    assert_eq!(refused.map(drop), Err(Some(Errno::EACCES)));
+
+    let restored = restore(&there.socket, &there.acme.join("vm"), &given, 0).unwrap();
+    assert_eq!(restored.root().unwrap(), b"snapshotted");
+}
+
+/// TASK-154: what the VM manager reads of a point, the branch to give a tenant elsewhere, a VM
+/// process can't make another tenant's: a fork names its child, and another branch's ID fails,
+/// leaving no point to read.
+#[test]
+fn vm_processes_make_no_point_of_another_branch() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut here = Host::new(dir.path(), "here");
+    let vm = RemoteExtentStore::connect(&here.socket, here.acme.join("vm"), CAPACITY).unwrap();
+    write(&vm, &pattern(1), b"ours");
+    let theirs = here.daemon.open(&dir.path().join("theirs"), CAPACITY);
+    write(&theirs, &pattern(2), b"theirs");
+
+    let point = here.acme.join("point");
+    assert_eq!(vm.fork_quiescent(&point, theirs.branch()), Err(Errno::EEXIST));
+    assert_eq!(failure(here.daemon.stat(&point)), (Code::NotFound, Errno::ENOENT));
+}
+
+/// TASK-154: DropStore ends what CreateStore gave: the same request is refused, before any restore
+/// and after, those restored going on; the branch stays, which DeleteStore would have deleted, so
+/// that a host takes it again.
+#[test]
+fn points_dropped_restore_no_more_and_leave_the_snapshot() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut here, mut there) = (Host::new(dir.path(), "here"), Host::new(dir.path(), "there"));
+    let snapshot = here.snapshot();
+    let (socket, point, vm) = (&there.socket, there.acme.join("point"), there.acme.join("vm"));
+
+    there.daemon.create(&point, snapshot.branch, None).unwrap();
+    there.daemon.drop_store(&point).unwrap();
+    assert!(!point.exists(), "the copy stayed");
+    let refused = restore(socket, &vm, &point, snapshot.branch);
+    assert_eq!(refused.map(drop), Err(Some(Errno::ENOENT)));
+
+    there.daemon.create(&point, snapshot.branch, None).unwrap();
+    let restored = restore(socket, &vm, &point, snapshot.branch).unwrap();
+    there.daemon.drop_store(&point).unwrap();
+    let other = there.acme.join("other");
+    let refused = restore(socket, &other, &point, snapshot.branch);
+    assert_eq!(refused.map(drop), Err(Some(Errno::EIO)));
+    assert!(snapshotted(&restored, snapshot.extent), "what was restored went with the point");
+    write(&restored, &pattern(6), b"restored");
+
+    // At another path while forks hold that one's directory.
+    let again = there.acme.join("point-again");
+    there.daemon.create(&again, snapshot.branch, None).unwrap();
+    assert_eq!(restore(socket, &other, &again, 0).unwrap().root().unwrap(), b"snapshotted");
+}
+
+/// TASK-154: a host's copy of a point is a writer of its branch, and a restore's fork a commit
+/// there (doc-7, Forks): once one host forks it, the others' copies are stale, the snapshot's own
+/// host's too, and refuse restores (EIO), until the VM manager takes the branch anew.
+#[test]
+fn copies_of_a_point_another_host_forked_are_taken_anew() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut here, mut there) = (Host::new(dir.path(), "here"), Host::new(dir.path(), "there"));
+    let snapshot = here.snapshot();
+    let point = there.acme.join("point");
+    there.daemon.create(&point, snapshot.branch, None).unwrap();
+    let _restored = restore(&there.socket, &there.acme.join("vm"), &point, 0).unwrap();
+
+    let (stale, vm) = (here.acme.join("point"), here.acme.join("restored"));
+    assert_eq!(restore(&here.socket, &vm, &stale, 0).map(drop), Err(Some(Errno::EIO)));
+    here.daemon.drop_store(&stale).unwrap();
+    here.daemon.create(&stale, snapshot.branch, None).unwrap();
+    assert_eq!(restore(&here.socket, &vm, &stale, 0).unwrap().root().unwrap(), b"snapshotted");
+}
+
+/// TASK-154: a point whose branch's last writer is of a later placement than this host's is taken
+/// placed: a host's own token is refused (ESTALE), as is every restore of it, and CreateStore
+/// names the placement, which no request of a VM process's could.
+#[test]
+fn points_of_later_placements_are_taken_placed() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut here, mut there) = (Host::new(dir.path(), "here"), Host::new(dir.path(), "there"));
+    let snapshot = here.snapshot();
+    let later = 7;
+    here.daemon.place(&here.acme.join("point"), later).unwrap();
+    here.daemon.sync(&here.acme.join("point")).unwrap();
+
+    let (point, vm) = (there.acme.join("point"), there.acme.join("vm"));
+    there.daemon.create(&point, snapshot.branch, None).unwrap();
+    let refused = restore(&there.socket, &vm, &point, snapshot.branch);
+    assert_eq!(refused.map(drop), Err(Some(Errno::ESTALE)));
+    there.daemon.drop_store(&point).unwrap();
+
+    there.daemon.create(&point, snapshot.branch, Some(later)).unwrap();
+    let restored = restore(&there.socket, &vm, &point, snapshot.branch).unwrap();
+    assert_eq!(restored.root().unwrap(), b"snapshotted");
 }

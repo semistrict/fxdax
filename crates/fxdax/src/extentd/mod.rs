@@ -79,6 +79,11 @@
 //! directory, for every tenant: what a VM process's user may read or write does not matter (it did
 //! before, TASK-39.2), as nothing below a tenant is separated. Its physical memory goes to a
 //! connection only once it opens a store.
+//!
+//! That directory is all a tenant's VM processes reach of the bucket: the branch they name is
+//! ignored, and a branch comes into a tenant's directory only by the VM manager's making a store of
+//! it there, as it restores the tenant's snapshot on another host, and goes by its dropping that
+//! store (TASK-154; `proto/fxdax/extentd/v1/extentd.proto` says what the VM manager does).
 
 pub(crate) mod client;
 pub mod control;
