@@ -970,7 +970,10 @@ impl Shared {
         }
     }
 
-    /// The record of the store's branch, `branch`, whose marker names `ours`, if it has one. A
+    /// The record of the store's branch, `branch`, whose marker names `ours`, if it has one: unless
+    /// it is another's, its claim naming another origin, a store being a fork's child whose ID
+    /// another branch took as the fork was made, which a crash left its handle: taking it would fence
+    /// that branch's writer, and upload this store's extents into it (TASK-79.82). A
     /// fork's child has none yet if its parent's host crashed once the fork's segment landed,
     /// before giving it its record, which the parent's next writer gives it, from the forks the
     /// parent's state names. The child attaching first takes it so too: a branch of its own, it
@@ -990,6 +993,11 @@ impl Shared {
         ours: &[u64],
     ) -> Result<Option<Record>, Failure> {
         if let Some(record) = branch::record(&**bucket, branch).await? {
+            // A claim's child's record names its origin: one of its own has no claim left.
+            let another = |claim: Option<Origin>| claim.is_none() || claim != record.origin;
+            if !record.deleted && claimed(self.store.dir().path(), branch)?.is_some_and(another) {
+                return Err(extent_remote::Error::ChildTaken(branch).into());
+            }
             return Ok(Some(record));
         }
         let Some(parent) = self.store.parent() else { return Ok(None) };
@@ -3356,6 +3364,37 @@ mod tests {
         assert_eq!(parent.attach_remote(bucket.clone(), 3, idle()), Ok(()));
         parent.commit(Some(b"later")).unwrap();
         assert_eq!(parent.wait_uploaded(), Ok(()));
+    }
+
+    /// TASK-79.82: a fork's handle whose child's ID another branch took, which its host's crash
+    /// left, takes no branch of that one's: a branch with nothing in it yet, whose state its store
+    /// would take for its own to upload to, is left as it is, its lease its writer's. Here it opens
+    /// while its fork waits for its segment, as it does restarted; the fork's cleanup goes on after.
+    #[test]
+    fn forks_left_by_a_crash_take_no_branch_that_took_their_childs_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let memory: Arc<dyn object_store::ObjectStore> = Arc::new(InMemory::new());
+        let gated = Arc::new(Gated::over(memory.clone()));
+        let bucket = Arc::new(Bucket::new(memory, ""));
+        let path = dir.path().join("child");
+        let (_, child, fork) = forking_held(dir.path(), &gated, &path);
+        futures::executor::block_on(branch::create(&*bucket, child)).unwrap();
+        let lease = extent_remote::layout::lease(child);
+        assert_eq!(futures::executor::block_on(branch::take_lease(&*bucket, &lease, 7, 0)), Ok(1));
+        let leased = || {
+            let epoch = branch::lease_epoch(&*bucket, &lease);
+            futures::executor::block_on(epoch)
+        };
+
+        let opened = ExtentStore::open(&path).unwrap();
+        let attached = opened.attach_remote(bucket.clone(), 8, idle());
+        let refused = format!("branch {child:x} has another origin");
+        assert_eq!(attached, Err(super::Failure::Other(refused)));
+        assert_eq!(leased(), Ok(1));
+        gated.hold.send_replace(Hold::Nothing);
+        drop(opened);
+        let forked = fork.join().unwrap().map_err(|err| err.to_string());
+        assert_eq!((forked, path.exists(), leased()), (anothers(child), false, Ok(1)));
     }
 
     /// TASK-79.82: so does a deletion, later, of the handle of such a fork, which its cleanup left,
