@@ -38,6 +38,8 @@ struct task_struct {
 	unsigned int __state;
 	/* Whether it wants to die: a fatal signal the tests send. */
 	bool killed;
+	/* How often the fault it is in had the kernel drop entries: -1 out of faults. */
+	int fault_drops;
 	/* Kernel copies don't fault (fxfs_dax_write_iter's, and read's). */
 	int pagefault_disabled;
 	/* Spinlocks held, and RCU readers entered: a sleep under either fails the run. */

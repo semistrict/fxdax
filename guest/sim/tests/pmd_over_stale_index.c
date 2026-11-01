@@ -29,7 +29,6 @@ static void write_file(struct file *to, loff_t at, size_t len)
 
 static void scenario(void *arg)
 {
-	u64 moved, freed;
 	unsigned long addr, i;
 	char got;
 	int err;

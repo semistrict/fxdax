@@ -66,6 +66,8 @@ ssize_t sim_read_user(struct file *file, loff_t pos, unsigned long addr, size_t 
 int sim_fsync(struct file *file);
 int sim_truncate(struct file *file, loff_t size);
 int sim_punch(struct file *file, loff_t start, loff_t end);
+/* Has `len` page-aligned bytes of `out` share those of `in`, another file. */
+int sim_clone(struct file *in, loff_t pos_in, struct file *out, loff_t pos_out, loff_t len);
 /* Maps `len` bytes of the file at `offset`, shared, into the simulated mm: the address. */
 unsigned long sim_mmap(struct file *file, loff_t offset, size_t len);
 unsigned long sim_mm_map(struct mm_struct *mm, struct file *file, pgoff_t pgoff, size_t len);
@@ -84,7 +86,12 @@ u64 fxfs_sim_size(struct fxfs *fs, u64 ino);
 u64 fxfs_sim_new_file(struct fxfs *fs);
 struct fxfs *fxfs_sim_new(void);
 void fxfs_sim_free(struct fxfs *fs);
-void fxfs_sim_stats(u64 *moves, u64 *frees);
+/* How many blocks moved, extents were freed, extents a write opened again, transactions failed. */
+void fxfs_sim_stats(u64 *moves, u64 *frees, u64 *opened, u64 *failed);
+/* Has one transaction in `odds` fail with -ENOSPC, or none if 0. */
+void fxfs_sim_fail(unsigned int odds);
+/* How many seals have ended. */
+u64 fxfs_sim_seals(struct fxfs *fs);
 /* Logs what happens to the block of `page` of file `ino`. */
 void fxfs_sim_watch(u64 ino, u64 page);
 

@@ -10,6 +10,9 @@
 #include <sim/host.h>
 #include <linux/dax.h>
 
+/* As FXFS_DAX_MAX_DROPS. */
+#define SIM_MAX_FAULT_DROPS 256
+
 ssize_t generic_write_checks(struct kiocb *iocb, struct iov_iter *from)
 {
 	return iov_iter_count(from);
@@ -69,6 +72,12 @@ int invalidate_inode_pages2_range(struct address_space *mapping, pgoff_t start, 
 	void *entry;
 	int ret = 0;
 
+	/*
+	 * A fault going round for ever: only a seal would end it, if one came (TASK-140). dax.c has a
+	 * write give up after FXFS_DAX_MAX_DROPS of these, and no fault.
+	 */
+	if (current->fault_drops >= 0 && ++current->fault_drops > SIM_MAX_FAULT_DROPS)
+		sim_panic("livelock: a fault had its range dropped %d times", current->fault_drops);
 	if (mapping_empty(mapping))
 		return 0;
 	xa_for_each_range(&mapping->i_pages, index, entry, start, end) {

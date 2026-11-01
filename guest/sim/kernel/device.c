@@ -36,6 +36,7 @@ struct extent {
 	u64 length;
 	/* Whether the device holds it: a writer has touched it. */
 	bool held;
+	/* Whether a seal found it held: one no request reached isn't sealed. */
 	bool sealed;
 	struct list_head list;
 };
@@ -115,6 +116,11 @@ void sim_device_wrote(u64 sequence, u64 page, u64 pages)
 	extent->length = max(extent->length, page + pages);
 }
 
+bool sim_device_sealed(u64 sequence)
+{
+	return find_extent(sequence)->sealed;
+}
+
 u64 sim_device_length(u64 sequence)
 {
 	return find_extent(sequence)->length;
@@ -126,7 +132,7 @@ void sim_device_seal(void)
 	u64 page, pages = device.window_len >> PAGE_SHIFT;
 
 	list_for_each_entry(extent, &device.extents, list)
-		extent->sealed = true;
+		extent->sealed |= extent->held;
 	for (page = 0; page < pages; page++) {
 		if (device.pages[page].state != WINDOW_WRITE)
 			continue;

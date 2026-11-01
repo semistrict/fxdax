@@ -296,6 +296,7 @@ struct task_struct *sim_spawn(const char *name, void (*fn)(void *arg), void *arg
 
 	memset(task, 0, sizeof(*task));
 	task->pid = next_pid++;
+	task->fault_drops = -1;
 	task->comm = name;
 	task->fn = fn;
 	task->arg = arg;

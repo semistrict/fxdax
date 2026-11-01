@@ -26,6 +26,7 @@ struct sim_mount *sim_mount_new(void)
 	struct fxfs *fs = fxfs_sim_new();
 
 	INIT_LIST_HEAD(&sim_mm.vmas);
+	init_rwsem(&sim_mm.lock);
 	current->mm = &sim_mm;
 	info->fs = fs;
 	info->dax = fxfs_dax_create((struct fxfs_filesystem *)fs);
@@ -196,6 +197,41 @@ int sim_truncate(struct file *file, loff_t size)
 		fxfs_dax_resize_end(inode, size);
 	}
 	inode_unlock(inode);
+	return err;
+}
+
+/*
+ * fxfs_vfs_remap_file_range, for two DAX files: the VFS's preparation is writing both back, and the
+ * window's ranges of them go. Page-aligned, and past the destination's end only as far as it says.
+ */
+int sim_clone(struct file *in, loff_t pos_in, struct file *out, loff_t pos_out, loff_t len)
+{
+	struct inode *src = file_inode(in), *dst = file_inode(out);
+	loff_t size;
+	struct fxfs_attr attr;
+	int err;
+
+	inode_lock(src);
+	inode_lock(dst);
+	filemap_invalidate_lock(src->i_mapping);
+	filemap_invalidate_lock(dst->i_mapping);
+	size = max(i_size_read(dst), pos_out + len);
+	err = filemap_write_and_wait_range(src->i_mapping, pos_in, pos_in + len - 1);
+	if (!err)
+		err = filemap_write_and_wait_range(dst->i_mapping, pos_out, pos_out + len - 1);
+	if (!err)
+		err = fxfs_dax_remap(src, pos_in, len, i_size_read(src));
+	if (!err)
+		err = fxfs_dax_remap(dst, pos_out, len, size);
+	if (!err)
+		err = fxfs_nofs(fxfs_clone_range(fxfs_vfs_fs(dst->i_sb), src->i_ino, pos_in, len,
+						 dst->i_ino, pos_out, size, &attr));
+	if (!err)
+		i_size_write(dst, size);
+	filemap_invalidate_unlock(dst->i_mapping);
+	filemap_invalidate_unlock(src->i_mapping);
+	inode_unlock(dst);
+	inode_unlock(src);
 	return err;
 }
 
