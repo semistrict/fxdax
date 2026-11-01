@@ -2814,7 +2814,76 @@ void fxfs_vfs_follow_epoch(void *vfs, u32 which, u64 epoch)
 		smp_store_release(at, epoch);
 }
 
-/* fxdax: a follower's directory's FXFS_IOC_FOLLOW_EPOCHS (vfs.h). */
+/* fxdax: FXFS_IOC_FLUSH (vfs.h). The lock keeps the filesystem from freezing under the flush. */
+static long fxfs_vfs_ioc_flush(struct super_block *sb)
+{
+	struct fxfs_vfs_filesystem *filesystem = fxfs_vfs_info(sb)->filesystem;
+	long err = -EBUSY;
+
+	mutex_lock(&filesystem->lock);
+	if (!filesystem->frozen)
+		err = fxfs_nofs(fxfs_flush_volume(fxfs_vfs_fs(sb)));
+	mutex_unlock(&filesystem->lock);
+	return err;
+}
+
+/* fxdax: FXFS_IOC_MANIFEST (vfs.h). The lock keeps the filesystem frozen. */
+static long fxfs_vfs_ioc_manifest(struct super_block *sb, struct fxfs_manifest __user *arg)
+{
+	struct fxfs_vfs_filesystem *filesystem = fxfs_vfs_info(sb)->filesystem;
+	struct fxfs_manifest request;
+	ssize_t size = -EINVAL;
+	void *manifest;
+
+	if (copy_from_user(&request, arg, sizeof(request)))
+		return -EFAULT;
+	manifest = kvmalloc(FXFS_MANIFEST_MAX, GFP_KERNEL);
+	if (!manifest)
+		return -ENOMEM;
+	mutex_lock(&filesystem->lock);
+	if (filesystem->frozen)
+		size = fxfs_nofs(fxfs_manifest(fxfs_vfs_fs(sb), manifest, FXFS_MANIFEST_MAX));
+	mutex_unlock(&filesystem->lock);
+	if (size >= 0 && size > request.size)
+		size = -ERANGE;
+	if (size >= 0 && (copy_to_user(u64_to_user_ptr(request.data), manifest, size) ||
+			  put_user((__u64)size, &arg->size)))
+		size = -EFAULT;
+	kvfree(manifest);
+	return size < 0 ? size : 0;
+}
+
+/* fxdax: FXFS_IOC_IMPORT (vfs.h). */
+static long fxfs_vfs_ioc_import(struct super_block *sb, struct fxfs_import __user *arg)
+{
+	struct fxfs_vfs_filesystem *filesystem = fxfs_vfs_info(sb)->filesystem;
+	struct fxfs_import request;
+	void *name, *manifest;
+	long err = -EBUSY;
+
+	if (copy_from_user(&request, arg, sizeof(request)))
+		return -EFAULT;
+	if (request.name_size > NAME_MAX || request.manifest_size > FXFS_MANIFEST_MAX)
+		return -EINVAL;
+	name = memdup_user(u64_to_user_ptr(request.name), request.name_size);
+	if (IS_ERR(name))
+		return PTR_ERR(name);
+	manifest = vmemdup_user(u64_to_user_ptr(request.manifest), request.manifest_size);
+	if (IS_ERR(manifest)) {
+		kfree(name);
+		return PTR_ERR(manifest);
+	}
+	mutex_lock(&filesystem->lock);
+	if (!filesystem->frozen)
+		err = fxfs_nofs(fxfs_import(filesystem->filesystem, name, request.name_size,
+					    manifest, request.manifest_size));
+	mutex_unlock(&filesystem->lock);
+	kvfree(manifest);
+	kfree(name);
+	return err;
+}
+
+/* fxdax: a directory's ioctls (vfs.h). */
 static long fxfs_vfs_dir_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
 	struct super_block *sb = file_inode(file)->i_sb;
@@ -2823,9 +2892,22 @@ static long fxfs_vfs_dir_ioctl(struct file *file, unsigned int cmd, unsigned lon
 	struct fxfs_follow_stats stats;
 	u64 cached;
 
-	if (cmd == FXFS_IOC_CACHED_OBJECTS) {
+	switch (cmd) {
+	case FXFS_IOC_CACHED_OBJECTS:
 		cached = fxfs_cached_objects(fxfs_vfs_fs(sb));
 		return copy_to_user((void __user *)arg, &cached, sizeof(cached)) ? -EFAULT : 0;
+	case FXFS_IOC_FLUSH:
+	case FXFS_IOC_MANIFEST:
+	case FXFS_IOC_IMPORT:
+		if (!capable(CAP_SYS_ADMIN))
+			return -EPERM;
+		if (fxfs_vfs_follows(sb))
+			return -EROFS;
+		if (cmd == FXFS_IOC_FLUSH)
+			return fxfs_vfs_ioc_flush(sb);
+		if (cmd == FXFS_IOC_MANIFEST)
+			return fxfs_vfs_ioc_manifest(sb, (void __user *)arg);
+		return fxfs_vfs_ioc_import(sb, (void __user *)arg);
 	}
 	if (!fxfs_vfs_follows(sb))
 		return -ENOTTY;

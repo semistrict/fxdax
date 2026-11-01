@@ -616,6 +616,66 @@ pub unsafe extern "C" fn fxfs_thaw(filesystem: *const Filesystem) -> c_int {
     }
 }
 
+/// fxdax: flushes the volume whole (`GuestFxfs::flush_volume`).
+///
+/// # Safety
+///
+/// `fs` is mounted.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fxfs_flush_volume(fs: *const Fxfs) -> c_int {
+    // SAFETY: As the caller promises.
+    match block_on(unsafe { &*fs }.flush_volume()) {
+        Ok(()) => 0,
+        Err(error) => -errno(&error),
+    }
+}
+
+/// fxdax: the volume's manifest (`GuestFxfs::manifest`), in `buf`: its size, or a -errno.
+///
+/// # Safety
+///
+/// `fs` is mounted, and `buf` holds `size` writable bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fxfs_manifest(fs: *const Fxfs, buf: *mut u8, size: usize) -> isize {
+    // SAFETY: As the caller promises.
+    match block_on(unsafe { &*fs }.manifest()) {
+        Ok(manifest) if manifest.len() > size => -(ERANGE as isize),
+        Ok(manifest) => {
+            // SAFETY: As the caller promises, and it fits.
+            unsafe { core::ptr::copy_nonoverlapping(manifest.as_ptr(), buf, manifest.len()) };
+            manifest.len() as isize
+        }
+        Err(error) => -errno(&error) as isize,
+    }
+}
+
+/// fxdax: makes a volume over a base (`Filesystem::import`), named with the `len` bytes of `name`.
+///
+/// # Safety
+///
+/// `filesystem` is open, `name` holds `len` bytes, and `manifest` holds `size`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fxfs_import(
+    filesystem: *const Filesystem,
+    name: *const c_char,
+    len: usize,
+    manifest: *const u8,
+    size: usize,
+) -> c_int {
+    // SAFETY: As the caller promises.
+    let (filesystem, name, manifest) = unsafe {
+        (&*filesystem, bytes(name, len), core::slice::from_raw_parts(manifest, size))
+    };
+    let imported = block_on(async {
+        let name = str::from_utf8(name).map_err(|_| FxfsError::InvalidArgs)?;
+        filesystem.import(name, manifest).await
+    });
+    match imported {
+        Ok(()) => 0,
+        Err(error) => -errno(&error),
+    }
+}
+
 /// fxdax: takes the size the host resized the store to (`Filesystem::resize`).
 ///
 /// # Safety

@@ -42,6 +42,8 @@ mod test_fxfs_guest_follow_torture;
 use test_fxfs_guest_follow_torture::{Mutant, TestFxfsGuestFollowTorture};
 mod test_fxfs_guest_import;
 use test_fxfs_guest_import::TestFxfsGuestImport;
+mod test_fxfs_guest_shared_volumes;
+use test_fxfs_guest_shared_volumes::TestFxfsGuestSharedVolumes;
 mod test_fxfs_guest_volumes;
 use test_fxfs_guest_volumes::TestFxfsGuestVolumes;
 mod test_fxfs_guest_docker;
@@ -107,6 +109,14 @@ pub fn test_cases() -> Vec<TestCase> {
         TestCase::new("fxfs-guest-live-fork", Box::new(TestFxfsGuestLiveFork)),
         TestCase::new("fxfs-guest-volumes", Box::new(TestFxfsGuestVolumes { dax: false })),
         TestCase::new("fxfs-guest-volumes-dax", Box::new(TestFxfsGuestVolumes { dax: true })),
+        TestCase::new(
+            "fxfs-guest-shared-volumes",
+            Box::new(TestFxfsGuestSharedVolumes { dax: false }),
+        ),
+        TestCase::new(
+            "fxfs-guest-shared-volumes-dax",
+            Box::new(TestFxfsGuestSharedVolumes { dax: true }),
+        ),
         TestCase::new(
             "fxfs-guest-pgbench",
             Box::new(TestFxfsGuestPgbench {

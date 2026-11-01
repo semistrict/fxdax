@@ -179,6 +179,17 @@ int fxfs_sync(struct fxfs *fs);
 int fxfs_freeze(struct fxfs_filesystem *filesystem);
 int fxfs_thaw(struct fxfs_filesystem *filesystem);
 /*
+ * fxdax: a shared volume's (backlog doc-10). fxfs_flush_volume puts all a volume holds in one layer,
+ * with the filesystem not frozen. fxfs_manifest writes what describes it to `buf`, with the
+ * filesystem frozen: its size, or a -errno (-EBUSY if the journal holds anything of it, -ERANGE if
+ * it takes more than `size` bytes). fxfs_import makes the volume named with the `len` bytes of
+ * `name` over the `size` bytes of `manifest`: 0, or a -errno.
+ */
+int fxfs_flush_volume(struct fxfs *fs);
+ssize_t fxfs_manifest(struct fxfs *fs, void *buf, size_t size);
+int fxfs_import(struct fxfs_filesystem *filesystem, const char *name, size_t len,
+		const void *manifest, size_t size);
+/*
  * Makes what the filesystem holds survive the guest's crash, before what comes after: fsync, which
  * need not wait for the host's disk (doc-2's requirement 2).
  */
