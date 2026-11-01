@@ -373,7 +373,7 @@ mod tests {
     #[test]
     fn test_key_of_any_length() {
         let mut filter = BloomFilterWriter::new(0, 2);
-        filter.insert(&AllocatorKey::new(TEST_EXTENT, 0..u64::MAX & !511));
+        filter.insert(&AllocatorKey::new(TEST_EXTENT, 0..!511));
         let filter = BloomFilterReader::from(filter);
         for range in [0..512, 1 << 40..(1 << 40) + 512] {
             let key = AllocatorKey::new(TEST_EXTENT, range);

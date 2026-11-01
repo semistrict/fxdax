@@ -670,10 +670,10 @@ impl Journal {
                         }
                     }
                     // fxdax: a bit a block, which reads rely on.
-                    ExtentMode::OverwritePartial(bitmap) => {
-                        if bitmap.len() as u64 != len / block_size {
-                            return false;
-                        }
+                    ExtentMode::OverwritePartial(bitmap)
+                        if bitmap.len() as u64 != len / block_size =>
+                    {
+                        return false;
                     }
                     _ => {}
                 }
