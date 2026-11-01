@@ -819,13 +819,14 @@ static int fxfs_vfs_zero_past_end(struct inode *inode, loff_t size, loff_t to);
 static int fxfs_vfs_resize(struct inode *inode, loff_t size, struct mnt_idmap *idmap,
 			   struct iattr *iattr)
 {
+	loff_t old_size = i_size_read(inode);
 	int err;
 
 	if (IS_DAX(inode)) {
 		err = fxfs_dax_resize_begin(inode, size);
 		if (err)
 			return err;
-	} else if (size > i_size_read(inode)) {
+	} else if (size > old_size) {
 		err = fxfs_vfs_zero_past_end(inode, i_size_read(inode), size);
 		if (err)
 			return err;
@@ -835,8 +836,15 @@ static int fxfs_vfs_resize(struct inode *inode, loff_t size, struct mnt_idmap *i
 	if (iattr)
 		setattr_copy(idmap, inode, iattr);
 	err = fxfs_vfs_write_attr(inode, FXFS_SET_SIZE | (IS_DAX(inode) ? FXFS_SET_KEEP_TAIL : 0));
+	/*
+	 * fxdax: with no room, a file grown goes back to its size: nothing is past its old end yet,
+	 * and the inode saying a size Fxfs hasn't would lose it at eviction. A cut borrows the room
+	 * it needs (TASK-60), and its pages are gone either way.
+	 */
+	if (err && size > old_size)
+		i_size_write(inode, old_size);
 	if (IS_DAX(inode))
-		fxfs_dax_resize_end(inode, size);
+		fxfs_dax_resize_end(inode, i_size_read(inode));
 	return err;
 }
 
