@@ -1,0 +1,14 @@
+diff --git a/crates/fxfs-posix/src/lib.rs b/crates/fxfs-posix/src/lib.rs
+index 3797584a4..7fe88e5d5 100644
+--- a/crates/fxfs-posix/src/lib.rs
++++ b/crates/fxfs-posix/src/lib.rs
+@@ -1632,9 +1632,6 @@ impl<P: Platform> Fxfs<P> {
+                 store.store_object_id(),
+                 Mutation::replace_or_insert_object(entry, ObjectValue::Some),
+             );
+-            if in_graveyard {
+-                store.remove_from_graveyard(transaction, ino);
+-            }
+         }
+         Ok(tombstoned)
+     }

@@ -1,0 +1,15 @@
+diff --git a/crates/fxfs/src/object_store/directory.rs b/crates/fxfs/src/object_store/directory.rs
+index 8b504aa7a..5b6a3a983 100644
+--- a/crates/fxfs/src/object_store/directory.rs
++++ b/crates/fxfs/src/object_store/directory.rs
+@@ -2005,9 +2005,7 @@ async fn replace_child_with_object_impl<'a, S: HandleOwner>(
+         }
+         Some((old_id, ObjectDescriptor::Directory)) => {
+             let dir = Directory::open(&dst.0.owner(), old_id).await?;
+-            if dir.has_children().await? {
+-                bail!(FxfsError::NotEmpty);
+-            }
++            let _ = dir;
+ 
+             // Directories might have extended attributes which might require multiple transactions
+             // to delete, so we delete directories via the graveyard.

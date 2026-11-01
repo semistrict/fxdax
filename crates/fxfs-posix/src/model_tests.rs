@@ -21,9 +21,10 @@
 //!
 //! Seeded by proptest, which says the sequence if one fails, shrunk.
 //!
-//! FXDAX_MODEL_CASES asks for more sequences, to hunt. FXDAX_MODEL_FSCK does the hunt with fsck after
-//! every transaction, slowly: corruption is found at the transaction that made it, not operations
-//! later.
+//! FXDAX_MODEL_CASES asks for more sequences, to hunt, and FXDAX_MODEL_OPS for longer ones.
+//! FXDAX_MODEL_FSCK does the hunt with fsck after every transaction, slowly: corruption is found at
+//! the transaction that made it, not operations later. FXDAX_MODEL_WORKERS has tasks apply queued
+//! unlinks as a guest's do, by the clock, which a seed then doesn't replay.
 //!
 //! Random cuts took minutes to reach some bugs. Short sequences are also cut at every barrier, with
 //! every subset of what it may lose, up to a bound (`every_cut_of_a_short_sequence`), which
@@ -194,7 +195,7 @@ impl Data {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum Entry {
     File(u64),
     Symlink(u64),
@@ -246,7 +247,7 @@ enum Op {
     Create(usize),
     Symlink(usize),
     Mkdir(usize),
-    /// A file's new name, or a tmpfile's first, as `linkat` makes.
+    /// A file's or symlink's new name, or a tmpfile's first, as `linkat` makes.
     Link(usize, usize),
     /// A name gone now, as a directory's goes.
     Unlink(usize),
@@ -279,6 +280,8 @@ enum Op {
     CloneToEnd { from: usize, to: usize, page: u64, to_page: u64 },
     SetXattr { file: usize, name: u8, len: usize, byte: u8 },
     RemoveXattr { file: usize, name: u8 },
+    /// What the attributes of the `dir`th directory are, which it takes through the graveyard.
+    SetDirXattr { dir: usize, name: u8, len: usize, byte: u8 },
     Sync,
     Fsync,
     Compact,
@@ -399,6 +402,8 @@ fn short_op() -> impl Strategy<Value = Op> {
             .prop_map(|(file, page, pages)| Op::Punch { file, page, pages }),
         1 => (file(), 0u8..3, 1usize..64, any::<u8>())
             .prop_map(|(file, name, len, byte)| Op::SetXattr { file, name, len, byte }),
+        1 => (0usize..DIRS, 0u8..3, 1024usize..8192, any::<u8>())
+            .prop_map(|(dir, name, len, byte)| Op::SetDirXattr { dir, name, len, byte }),
         2 => Just(Op::Sync),
         2 => Just(Op::Fsync),
         3 => Just(Op::Compact),
@@ -445,6 +450,8 @@ fn op() -> impl Strategy<Value = Op> {
         1 => (file(), 0u8..3, prop_oneof![1usize..64, 1024usize..8192], any::<u8>())
             .prop_map(|(file, name, len, byte)| Op::SetXattr { file, name, len, byte }),
         1 => (file(), 0u8..3).prop_map(|(file, name)| Op::RemoveXattr { file, name }),
+        1 => (0usize..DIRS, 0u8..3, prop_oneof![1usize..64, 1024usize..8192], any::<u8>())
+            .prop_map(|(dir, name, len, byte)| Op::SetDirXattr { dir, name, len, byte }),
         1 => Just(Op::Sync),
         1 => Just(Op::Fsync),
         1 => Just(Op::Compact),
@@ -468,6 +475,8 @@ struct Model {
     /// What each directory's names link.
     names: BTreeMap<(u64, usize), Entry>,
     files: BTreeMap<u64, Data>,
+    /// The extended attributes of directories that have any.
+    dir_xattrs: BTreeMap<u64, BTreeMap<u8, Vec<u8>>>,
     /// What's held open: what no name links, of these, is in the graveyard.
     open: BTreeSet<u64>,
     /// Of those, the tmpfiles no name has linked yet, which alone a VFS lets a link name with none
@@ -485,6 +494,7 @@ impl Model {
             dirs: vec![root],
             names: BTreeMap::new(),
             files: BTreeMap::new(),
+            dir_xattrs: BTreeMap::new(),
             open: BTreeSet::new(),
             linkable: BTreeSet::new(),
             queued: Vec::new(),
@@ -496,6 +506,17 @@ impl Model {
     fn file(&self, index: usize) -> Option<u64> {
         let files: Vec<u64> = self.files.keys().copied().collect();
         (!files.is_empty()).then(|| files[index % files.len()])
+    }
+
+    /// What the `index`th of the files and symlinks there are is linked as, if there are any: a
+    /// tmpfile, as what it is, by the time it's linked.
+    fn linked_as(&self, index: usize) -> Option<Entry> {
+        let symlinks = self.names.values().filter(|entry| matches!(entry, Entry::Symlink(_)));
+        let symlinks: BTreeMap<u64, Entry> = symlinks.map(|entry| (entry.ino(), *entry)).collect();
+        let mut entries: Vec<Entry> = self.files.keys().map(|ino| Entry::File(*ino)).collect();
+        entries.extend(symlinks.values());
+        entries.sort_by_key(|entry| entry.ino());
+        (!entries.is_empty()).then(|| entries[index % entries.len()])
     }
 
     /// Which directory `name` is in, and which of its names it is.
@@ -776,7 +797,7 @@ impl Setting {
 
     /// A graveyard as a guest's, for half of a run's sequences, as its seed says.
     fn with_graveyard_of_seed(self) -> Self {
-        Self { batched_graveyard: self.seed % 2 == 0, ..self }
+        Self { batched_graveyard: self.seed.is_multiple_of(2), ..self }
     }
 
     /// How often this sequence's device's requests fail, if they do.
@@ -968,6 +989,7 @@ impl World {
         let ino = entry.ino();
         if let Entry::Dir(_) = entry {
             self.model.dirs.retain(|dir| *dir != ino);
+            self.model.dir_xattrs.remove(&ino);
             let times = SetAttr { valid: SET_MTIME, mtime_ns: 1, ..SetAttr::default() };
             let written = self.fs.write_inode(ino, &times).await;
             self.unless_full(written, "a directory's times")?;
@@ -1117,6 +1139,13 @@ impl World {
         if found != names {
             return Err(format!("{dir} holds {found:?}, not {names:?}"));
         }
+        for (name, value) in model.dir_xattrs.get(&dir).into_iter().flatten() {
+            let got = self.fs.get_xattr(dir, &xattr_of(*name)).await;
+            let got = got.map_err(|e| format!("xattr {name} of {dir}: {e:#}"))?;
+            if got != *value {
+                return Err(format!("xattr {name} of {dir} isn't what was set"));
+            }
+        }
         let mut sub_dirs = 0;
         for (name, entry) in model.names_in(dir) {
             let attr = self.fs.lookup(dir, &name_of(name)).await;
@@ -1131,6 +1160,10 @@ impl World {
                     let target = target.map_err(|e| format!("readlink of {ino}: {e:#}"))?;
                     if target != SYMLINK_TARGET {
                         return Err(format!("{ino} says {target:?}"));
+                    }
+                    if attr.nlink != model.links(ino) {
+                        let links = model.links(ino);
+                        return Err(format!("{ino} has {} links, not {links}", attr.nlink));
                     }
                 }
                 Entry::Dir(_) => sub_dirs += 1,
@@ -1279,7 +1312,8 @@ impl World {
     /// `step`, leaving what's left of the filesystem if it fails, which a remount may not.
     async fn attempt(mut self, op: &Op) -> (Option<Self>, Result<(), String>) {
         if !matches!(op, Op::Remount) {
-            let done = self.act(op).await;
+            let names = self.model.names.clone();
+            let done = self.act(op).await.and_then(|()| self.keeps_the_order_of(op, &names));
             self.settle();
             return (Some(self), done);
         }
@@ -1289,6 +1323,23 @@ impl World {
                 (Some(world), checked)
             }
             Err(error) => (None, Err(error)),
+        }
+    }
+
+    /// Checks that what `op` did, which found `names`, came after every unlink queued, if it had
+    /// to: the journal has names change in the order the syscalls did, and what's durable holds
+    /// them. A cut that a name's change had overtaken an unlink would find what the model takes
+    /// for an unlink not done yet: only the rule says that it can't be.
+    fn keeps_the_order_of(
+        &self,
+        op: &Op,
+        names: &BTreeMap<(u64, usize), Entry>,
+    ) -> Result<(), String> {
+        let renamed = !matches!(op, Op::UnlinkLater(_)) && *names != self.model.names;
+        let durable = matches!(op, Op::Sync | Op::Fsync | Op::Crash);
+        match (renamed || durable) && !self.fs.delayed.queue.lock().unwrap().pending.is_empty() {
+            true => Err(format!("{op:?} went ahead of the unlinks queued")),
+            false => Ok(()),
         }
     }
 
@@ -1353,7 +1404,8 @@ impl World {
                 self.model.dirs.push(attr.ino);
             }
             Op::Link(file, name) if self.model.entry(name).is_none() => {
-                let Some(ino) = self.model.file(file) else { return Ok(()) };
+                let Some(entry) = self.model.linked_as(file) else { return Ok(()) };
+                let ino = entry.ino();
                 let unnamed = self.model.links(ino) == 0;
                 if unnamed && !self.model.linkable.contains(&ino) {
                     return Ok(());
@@ -1362,7 +1414,7 @@ impl World {
                 let linked = self.fs.link(ino, dir, &name_of(at), unnamed).await;
                 let Some([attr, _]) = self.unless_full(linked, "link")? else { return Ok(()) };
                 self.model.linkable.remove(&ino);
-                self.model.names.insert((dir, at), Entry::File(ino));
+                self.model.names.insert((dir, at), entry);
                 if attr.nlink != self.model.links(ino) {
                     let links = self.model.links(ino);
                     return Err(format!("{ino} has {} links, not {links}", attr.nlink));
@@ -1542,6 +1594,19 @@ impl World {
                     self.write_xattrs(ino, name, None).await?;
                 }
             }
+            Op::SetDirXattr { dir, name, len, byte } => {
+                let dir = self.model.dirs[dir % self.model.dirs.len()];
+                let value = vec![byte; len];
+                let mode = SetExtendedAttributeMode::Set;
+                let set = self.fs.set_xattr(dir, &xattr_of(name), &value, mode).await;
+                set.map_err(|e| format!("set_xattr: {e:#}"))?;
+                let written = self.fs.write_inode(dir, &SetAttr::default()).await;
+                if self.unless_full(written, "write_inode")?.is_none() {
+                    self.fs.xattrs.lock().unwrap().remove(&dir);
+                } else {
+                    self.model.dir_xattrs.entry(dir).or_default().insert(name, value);
+                }
+            }
             Op::Sync => self.fs.sync().await.map_err(|e| format!("sync: {e:#}"))?,
             Op::Fsync => self.fs.fsync().await.map_err(|e| format!("fsync: {e:#}"))?,
             Op::Compact => {
@@ -1578,8 +1643,8 @@ impl World {
                 }
             }
             Op::Link(file, name) => {
-                let ino = model.file(file)?;
-                model.names.insert(model.place(name), Entry::File(ino));
+                let entry = model.linked_as(file)?;
+                model.names.insert(model.place(name), entry);
             }
             Op::Unlink(name) | Op::UnlinkLater(name) => {
                 let entry = model.names.remove(&model.place(name))?;
@@ -1622,6 +1687,10 @@ impl World {
             Op::RemoveXattr { file, name } => {
                 let ino = model.file(file)?;
                 model.files.get_mut(&ino)?.xattrs.remove(&name);
+            }
+            Op::SetDirXattr { dir, name, len, byte } => {
+                let dir = model.dirs[dir % model.dirs.len()];
+                model.dir_xattrs.entry(dir).or_default().insert(name, vec![byte; len]);
             }
             _ => return None,
         }
@@ -1862,8 +1931,9 @@ fn whatever_a_vfs_asks_reads_back_as_a_model_says() {
     let fsck_each = std::env::var_os("FXDAX_MODEL_FSCK").is_some();
     let workers = std::env::var_os("FXDAX_MODEL_WORKERS").is_some();
     let config = Config { cases, failure_persistence: None, ..Config::default() };
+    let most = std::env::var("FXDAX_MODEL_OPS").map_or(48, |most| most.parse().unwrap());
     let room = prop_oneof![Just(ROOMY), Just(TIGHT)];
-    let sequences = (any::<u64>(), room, proptest::collection::vec(op(), 1..48));
+    let sequences = (any::<u64>(), room, proptest::collection::vec(op(), 1..most));
     let tally = Rc::new(Tally::default());
     let watched = watch_sequences(if fsck_each { 30 * SEQUENCE_LIMIT } else { SEQUENCE_LIMIT });
     TestRunner::new(config)
@@ -2060,8 +2130,12 @@ fn names_and_directories_move_as_one() {
         Op::Rename(0, 3),
         Op::Mkdir(in_a(4)),
         Op::Exchange(3, 1),
+        Op::SetDirXattr { dir: 1, name: 0, len: 4096, byte: 1 },
         Op::Compact,
         Op::Rename(1, 4),
+        Op::Symlink(5),
+        Op::Link(1, in_a(5)),
+        Op::Unlink(5),
     ];
     Setting::awkward(0, ROOMY).cutting_everywhere().holds(ops);
 }

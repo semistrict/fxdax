@@ -1,0 +1,13 @@
+diff --git a/crates/fxfs/src/object_store/directory.rs b/crates/fxfs/src/object_store/directory.rs
+index 8b504aa7a..8cb64b0ff 100644
+--- a/crates/fxfs/src/object_store/directory.rs
++++ b/crates/fxfs/src/object_store/directory.rs
+@@ -1897,7 +1897,7 @@ pub async fn replace_child_with_purge<'a, S: HandleOwner>(
+                     transaction,
+                     src_dir.object_id(),
+                     MutableAttributesInternal {
+-                        sub_dirs: -sub_dirs_delta,
++                        sub_dirs: 0,
+                         modification_time: Some(now.as_nanos()),
+                         change_time: Some(now),
+                         ..Default::default()

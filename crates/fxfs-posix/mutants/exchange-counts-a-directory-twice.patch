@@ -1,0 +1,13 @@
+diff --git a/crates/fxfs-posix/src/lib.rs b/crates/fxfs-posix/src/lib.rs
+index 3797584a4..99f550ac9 100644
+--- a/crates/fxfs-posix/src/lib.rs
++++ b/crates/fxfs-posix/src/lib.rs
+@@ -1070,7 +1070,7 @@ impl<P: Platform> Fxfs<P> {
+             dst.insert_child(&mut transaction, new_name, a, a_kind.clone()).await?;
+             for (directory, kind) in [(&src, &a_kind), (&dst, &b_kind)] {
+                 if *kind == ObjectDescriptor::Directory {
+-                    let less = MutableAttributesInternal::new(-1, None, None, None);
++                    let less = MutableAttributesInternal::new(0, None, None, None);
+                     directory
+                         .update_dir_attributes_internal(
+                             &mut transaction,

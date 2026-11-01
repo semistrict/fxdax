@@ -1,0 +1,14 @@
+diff --git a/crates/fxfs/src/object_store/graveyard.rs b/crates/fxfs/src/object_store/graveyard.rs
+index 4ca202c2f..97c5a2bd6 100644
+--- a/crates/fxfs/src/object_store/graveyard.rs
++++ b/crates/fxfs/src/object_store/graveyard.rs
+@@ -200,9 +200,6 @@ impl Graveyard {
+             }
+             self.process(message).await;
+         }
+-        if let Some((store_id, ids)) = objects {
+-            self.tombstone_objects(store_id, &ids).await;
+-        }
+     }
+ 
+     /// fxdax: tombstones the objects `object_ids` of the store `store_id`, logging what fails.
