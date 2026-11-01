@@ -276,10 +276,35 @@ static void fxfs_vfs_stat_flags(struct inode *inode, struct kstat *stat)
 }
 
 /*
- * fxdax: an inode's attributes, the kernel's but for a file's blocks, which Fxfs's writeback, seals
- * and moves change, each in a commit, none of which is the kernel's to see: read again as a commit
- * has been made since they last were. `du` of a file in the inode cache saw what it had as read
- * in: none, of one created here (TASK-138, xfstests generic/615).
+ * fxdax: reads a file's blocks again if a commit has been made since they last were: Fxfs's
+ * writeback, seals and moves change them, each in a commit, none of which is the kernel's to see.
+ * `du` of a file in the inode cache saw what it had as read in: none, of one created here (TASK-138,
+ * xfstests generic/615).
+ */
+static int fxfs_vfs_refresh_blocks(struct inode *inode)
+{
+	struct fxfs_vfs_inode *fi = fxfs_vfs_inode(inode);
+	struct fxfs *fs = fxfs_vfs_fs(inode->i_sb);
+	u64 offset = fxfs_journal_offset(fs);
+	struct fxfs_attr attr;
+	int err;
+
+	if (READ_ONCE(fi->blocks_as_of) == offset)
+		return 0;
+	err = fxfs_nofs(fxfs_attr_of_open(fs, inode->i_ino, &attr));
+	if (err)
+		return err;
+	inode->i_blocks = attr.blocks;
+	WRITE_ONCE(fi->blocks_as_of, offset);
+	return 0;
+}
+
+/*
+ * fxdax: an inode's attributes, the kernel's but for a file's blocks. A file with fewer blocks than
+ * bytes may have dirty pages over its holes, which have no blocks until written back, and which take
+ * new ones Fxfs alone knows: it looked sparser than it is to whatever goes by its blocks, as a backup
+ * does, so it is written back first (xfstests generic/422, as NFS does for a getattr). A file with
+ * all its blocks needs no writeback: rewriting pages leaves their number as it is.
  */
 static int fxfs_vfs_getattr(struct mnt_idmap *idmap, const struct path *path, struct kstat *stat,
 			    u32 request_mask, unsigned int flags)
@@ -288,32 +313,16 @@ static int fxfs_vfs_getattr(struct mnt_idmap *idmap, const struct path *path, st
 
 	if (S_ISREG(inode->i_mode) && request_mask & STATX_BLOCKS &&
 	    !(flags & AT_STATX_DONT_SYNC)) {
-		struct fxfs_vfs_inode *fi = fxfs_vfs_inode(inode);
-		struct fxfs *fs = fxfs_vfs_fs(inode->i_sb);
-		u64 offset;
+		int err = fxfs_vfs_refresh_blocks(inode);
 
-		/*
-		 * Dirty pages have no blocks until written back, and which take new ones Fxfs alone
-		 * knows: a file looked sparser than it is to whatever goes by its blocks, as a backup
-		 * does (xfstests generic/422, as NFS writes back for a getattr).
-		 */
-		if (!IS_DAX(inode) && mapping_tagged(inode->i_mapping, PAGECACHE_TAG_DIRTY)) {
-			int err = filemap_write_and_wait(inode->i_mapping);
-
-			if (err)
-				return err;
+		if (!err && !IS_DAX(inode) && inode_get_bytes(inode) < i_size_read(inode) &&
+		    mapping_tagged(inode->i_mapping, PAGECACHE_TAG_DIRTY)) {
+			err = filemap_write_and_wait(inode->i_mapping);
+			if (!err)
+				err = fxfs_vfs_refresh_blocks(inode);
 		}
-		offset = fxfs_journal_offset(fs);
-
-		if (READ_ONCE(fi->blocks_as_of) != offset) {
-			struct fxfs_attr attr;
-			int err = fxfs_nofs(fxfs_attr_of_open(fs, inode->i_ino, &attr));
-
-			if (err)
-				return err;
-			inode->i_blocks = attr.blocks;
-			WRITE_ONCE(fi->blocks_as_of, offset);
-		}
+		if (err)
+			return err;
 	}
 	generic_fillattr(idmap, request_mask, inode, stat);
 	fxfs_vfs_stat_flags(inode, stat);
