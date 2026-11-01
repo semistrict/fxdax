@@ -28,6 +28,7 @@
 use crate::cache::{self, CachedExtent, OpenPages};
 use crate::dax::{Dax, DaxWindow, Keep, SecondStage, Source};
 use crate::error::{Errno, Error, Result};
+use crate::faults::failpoint;
 use crate::host_store;
 use crate::memory::{VolatileSlice, VolatileSliceMut};
 use crate::pages::{Arena, ArenaId, page_size};
@@ -773,6 +774,7 @@ impl ExtentStore {
         self.writable()?;
         let path = path.as_ref();
         self.make_durable()?;
+        failpoint!("fork::durable");
         let remote = self.remote.get();
         let claimed = std::cell::Cell::new(false);
         let claim = || -> anyhow::Result<()> {

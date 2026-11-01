@@ -578,6 +578,7 @@ impl<D: Dir> Store<D> {
         // forked twice, failing for ever (TASK-79.78).
         let forking = self.lineage.forking(child)?;
         before()?;
+        failpoint!("fork::claimed");
         // At the end of its segment, which the commit closes, and whose footer names it (doc-7,
         // Forks).
         self.writable()?.segments.close_for_fork(child);
@@ -587,7 +588,9 @@ impl<D: Dir> Store<D> {
         // says so, so that what else keeps the branch's segments deletes the child there too
         // (TASK-79.82).
         let made = || -> Result<u64, Error> {
+            failpoint!("fork::committed");
             self.flush()?;
+            failpoint!("fork::flushed");
             // fxdax: and the segments closed between commits framed, from whose framed files the
             // child reads what it inherited of them (TASK-41.1).
             let mut state = self.state()?;
@@ -598,6 +601,7 @@ impl<D: Dir> Store<D> {
             drop(state);
             let epoch = origin.epoch;
             self.lineage.fork(forking, origin, capacity, layer)?;
+            failpoint!("fork::recorded");
             Ok(epoch)
         };
         made().context(ForkCommitted { child })

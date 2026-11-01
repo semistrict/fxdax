@@ -44,9 +44,13 @@ pub async fn live(bucket: &impl Bucket) -> Result<BTreeMap<u64, Record>, Error> 
 /// Gives `child` its record, forked from `origin`, unless it has one. A fork's child gets it once
 /// the fork is acknowledged, from the parent's writer, or the next one, or the parent's deletion.
 pub async fn record_fork(bucket: &impl Bucket, child: u64, origin: Origin) -> Result<(), Error> {
+    failpoint!("branch::record_fork");
     let record = Record { origin: Some(origin), forked: true, deleted: false };
     match bucket::create(bucket, &layout::record(child), layout::encode(&record)).await {
-        Created::Created => Ok(()),
+        Created::Created => {
+            failpoint!("branch::recorded_fork");
+            Ok(())
+        }
         Created::Exists(object) => {
             let existing: Record = layout::decode(&object.bytes)?;
             // Deleted before it got its record, perhaps.
@@ -119,6 +123,7 @@ pub async fn delete(
     token: u64,
 ) -> Result<(), Error> {
     end_lease(bucket, branch, holder, token).await?;
+    failpoint!("branch::lease_ended");
     let record = loop {
         if let Some(record) = record(bucket, branch).await? {
             break record;
@@ -142,6 +147,7 @@ pub async fn delete(
     for fork in &recovered.state.forks {
         record_fork(bucket, fork.child, Origin { parent: branch, at: fork.at }).await?;
     }
+    failpoint!("branch::children_recorded");
     mark_deleted(bucket, branch).await
 }
 
@@ -242,9 +248,12 @@ pub async fn delete_fork(
                 };
                 let record = Record { origin, forked: true, deleted: !live };
                 let key = layout::record(child);
-                if let Created::Created = bucket::create(bucket, &key, layout::encode(&record)).await
+                if let Created::Created =
+                    bucket::create(bucket, &key, layout::encode(&record)).await
                 {
+                    failpoint!("branch::claimed");
                     end_lease(bucket, child, holder, token).await?;
+                    failpoint!("branch::claim_lease_ended");
                     if live {
                         mark_deleted(bucket, child).await?;
                     }

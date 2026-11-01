@@ -14,6 +14,7 @@
 //! handle, which [`open`] opens.
 
 use crate::error::{Errno, Error};
+use crate::faults::failpoint;
 use anyhow::Context as _;
 use extent_store::{Description, HostDir, Options, Store};
 use std::path::Path;
@@ -122,6 +123,7 @@ pub(crate) fn delete_with(
         options(),
         |dir, branch| {
             went.set(true);
+            failpoint!("delete::elsewhere");
             Ok(elsewhere(dir, branch)?)
         },
         |dir, branch| {

@@ -16,6 +16,16 @@
 //! `object_store` crate ([`store::Store`]), and in tests a simulation that delays, reorders and
 //! fails requests.
 
+/// fxdax: a step of the protocol, which the failpoint of its name fails (the `fail` crate's,
+/// TASK-44.10): the function it is in returns an error there, or whatever a test set the failpoint
+/// to do happens. Nothing without the crate's `failpoints` feature, which `fxdax/failpoints` turns
+/// on.
+macro_rules! failpoint {
+    ($name:literal) => {
+        fail::fail_point!($name, |_| Err($crate::Error::Read(format!("failpoint {}", $name))))
+    };
+}
+
 pub mod batch;
 pub mod branch;
 pub mod bucket;

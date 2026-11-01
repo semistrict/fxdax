@@ -45,9 +45,10 @@ if [[ -n ${LIBCLANG_PATH:-} ]]; then export LIBCLANG_PATH; fi
 
 # With frame pointers, as every build here has them (.cargo/config.toml), which the bench's perf
 # call graphs walk (FXDAX_BENCH_PERF). With FXDAX_FAILPOINTS, a daemon whose failpoints it sets (FAILPOINTS, the fail crate's): requests
-# failing or waiting as it says, such as extentd::map=1%return(5) (TASK-44.10).
+# failing or waiting as it says, such as extentd::map=1%return(5) (TASK-44.10); with FXDAX_FAULT_SEED, those of a
+# fork's steps its seed says (fxdax::faults).
 extentd_features=()
-if [[ -n ${FXDAX_FAILPOINTS:-} ]]; then extentd_features=(--features failpoints); fi
+if [[ -n ${FXDAX_FAILPOINTS:-}${FXDAX_FAULT_SEED:-} ]]; then extentd_features=(--features failpoints); fi
 cargo build --release --manifest-path "$root/Cargo.toml" -p fxdax --bin fxdax-extentd \
     ${extentd_features[@]+"${extentd_features[@]}"}
 extentd_bin="$root/target/release/fxdax-extentd"

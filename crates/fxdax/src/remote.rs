@@ -33,6 +33,7 @@
 //! store closed numbered for a place the branch no longer has. Only attaching the store anew takes
 //! the branch again.
 
+use crate::faults::failpoint;
 use anyhow::Context as _;
 use event_listener::{Event, Listener as _};
 use extent_remote::batch;
@@ -315,6 +316,12 @@ impl From<extent_remote::Error> for Failure {
             extent_remote::Error::Stale => Self::Stale,
             other => Self::Other(other.to_string()),
         }
+    }
+}
+
+impl From<crate::faults::Failpoint> for Failure {
+    fn from(failpoint: crate::faults::Failpoint) -> Self {
+        Self::Other(failpoint.to_string())
     }
 }
 
@@ -628,6 +635,7 @@ impl Remote {
     /// a checkpoint at the fork is where its recovery starts. The child's marker names the fork's
     /// commit, which the child inherits, from before the segment may land ([`InFlight::upload`]).
     pub fn forked(&self, epoch: u64) -> Result<(), Failure> {
+        failpoint!("remote::forked");
         let shared = &self.shared;
         // Its commit's segment uploads now, if it is not yet uploaded.
         shared.ask(epoch, false)?;
@@ -663,6 +671,7 @@ impl Remote {
         if block_on(branch::record(&*self.bucket, child))??.is_some() {
             return Ok(false);
         }
+        failpoint!("remote::claim");
         let dir = self.shared.store.dir().path();
         claim(dir, child).map_err(|err| Failure::Other(format!("claiming branch {child:x}: {err}")))
     }
@@ -1091,6 +1100,7 @@ impl Shared {
         in_flight: &mut InFlight,
         close: bool,
     ) -> Result<Gathered, Failure> {
+        failpoint!("remote::gather");
         let room = IN_FLIGHT.saturating_sub(in_flight.len());
         // What a waiter wants is durable; then closed, if fewer segments wait than may upload, and
         // what the closing closed durable too.
@@ -1125,6 +1135,7 @@ impl Shared {
         in_flight: &mut InFlight,
     ) -> Result<(), Failure> {
         let through = writer.acknowledge().await?;
+        failpoint!("remote::acknowledged");
         let acked = blocking(|| in_flight.acknowledged(through, writer.last_commit()))?;
         let Some(epoch) = acked.last().map(Uploading::epoch) else { return Ok(()) };
         blocking(|| {
@@ -1134,6 +1145,7 @@ impl Shared {
             }
             Ok::<_, Failure>(())
         })?;
+        failpoint!("remote::released");
         let forks = acked.iter().any(|segment| !segment.forks.is_empty());
         {
             let mut progress = self.progress.lock().unwrap();
@@ -1147,6 +1159,7 @@ impl Shared {
             // Their children have their records, which the acknowledgement made: the checkpoint
             // makes the forks.
             writer.checkpoint().await?;
+            failpoint!("remote::checkpointed");
             self.progress.lock().unwrap().forked_through(epoch);
             self.changed.notify(usize::MAX);
         }
@@ -1330,12 +1343,15 @@ impl InFlight {
         for segment in &segments {
             for &child in &segment.forks {
                 self.marker.of(child).write(None, [segment.tag])?;
+                failpoint!("remote::child_marked");
                 let origin = Origin { parent: self.marker.branch, at: segment.seq };
                 claim_origin(&self.marker.dir, child, origin)?;
+                failpoint!("remote::origin_named");
             }
         }
         let tags = self.tags().chain(segments.iter().map(|segment| segment.tag));
         self.marker.write(writer.last_commit(), tags)?;
+        failpoint!("remote::marked");
         for segment in segments {
             let (writer, seq) = (writer.clone(), segment.seq);
             self.uploads.push_back(async move { writer.upload(seq).await }.boxed());
@@ -1383,6 +1399,9 @@ impl InFlight {
 }
 
 #[cfg(test)]
+mod fork_faults;
+
+#[cfg(test)]
 mod tests {
     use crate::test_data::noise;
     use crate::{ExtentId, ExtentStore, VolatileSlice};
@@ -1390,17 +1409,17 @@ mod tests {
     use extent_remote::store::Store as Bucket;
     use extent_remote::{branch, read, recover};
     use object_store::memory::InMemory;
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
     const BLOCK: usize = ExtentStore::BLOCK_SIZE as usize;
 
     /// Uploads only when a commit waits.
-    fn idle() -> super::Options {
+    pub(super) fn idle() -> super::Options {
         super::Options { interval: Duration::from_secs(3600), ..super::Options::default() }
     }
 
-    fn pattern(seed: u8, len: usize) -> Vec<u8> {
+    pub(super) fn pattern(seed: u8, len: usize) -> Vec<u8> {
         (0..len).map(|i| seed ^ (i % 251) as u8).collect()
     }
 
@@ -1411,10 +1430,10 @@ mod tests {
     }
 
     /// A branch's extents, by sequence number, with their data, and its root.
-    type Uploaded = (Vec<(u64, Vec<u8>)>, Option<Vec<u8>>);
+    pub(super) type Uploaded = (Vec<(u64, Vec<u8>)>, Option<Vec<u8>>);
 
     /// The branch's extents and root, read back from `bucket`.
-    fn uploaded(bucket: &Arc<Bucket>, branch: u64) -> Uploaded {
+    pub(super) fn uploaded(bucket: &Arc<Bucket>, branch: u64) -> Uploaded {
         futures::executor::block_on(async {
             let state = recover(&**bucket, branch, None).await.unwrap().state;
             let mut extents = Vec::new();
@@ -1855,10 +1874,41 @@ mod tests {
         }
     }
 
+    /// What goes wrong with a write through a [`Gated`] store, as it fails: requests that fail, the
+    /// host's bucket's helpers send again.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(super) enum Mishap {
+        /// It takes no effect.
+        Refused,
+        /// It takes effect, its answer lost.
+        Unanswered,
+        /// The host dies as it goes, and it takes no effect.
+        Dies,
+        /// It takes effect, and the host dies before its answer comes.
+        DiesAnswered,
+        /// The host dies as it goes, and it lands later ([`Gated::land_late`]), as a dead host's
+        /// PUT may.
+        DiesLandingLate,
+    }
+
+    /// A [`Mishap`] set to happen to a write, by its count ([`Gated::arm`]), and what a host's
+    /// dying does.
+    struct Armed {
+        write: usize,
+        mishap: Mishap,
+        die: Arc<dyn Fn() + Send + Sync>,
+    }
+
+    impl std::fmt::Debug for Armed {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{:?} at write {}", self.mishap, self.write)
+        }
+    }
+
     /// An object store whose requests fail while it is shut, and whose writes wait while they are
-    /// held.
+    /// held, go wrong as it is armed to, or reach a copy of its objects once it is severed.
     #[derive(Debug)]
-    struct Gated {
+    pub(super) struct Gated {
         store: Arc<dyn object_store::ObjectStore>,
         shut: std::sync::atomic::AtomicBool,
         hold: tokio::sync::watch::Sender<Hold>,
@@ -1866,7 +1916,17 @@ mod tests {
         held: std::sync::atomic::AtomicUsize,
         /// The writes held that went since, landing or failing.
         went: std::sync::atomic::AtomicUsize,
+        /// The objects it reaches, once severed ([`Gated::sever`]).
+        severed: Mutex<Option<Arc<dyn object_store::ObjectStore>>>,
+        /// The writes that went since it was armed.
+        writes: std::sync::atomic::AtomicUsize,
+        armed: Mutex<Option<Armed>>,
+        /// The writes that land later ([`Mishap::DiesLandingLate`]).
+        late: Mutex<Vec<LateWrite>>,
     }
+
+    /// A write that lands later: where, what, and how.
+    type LateWrite = (object_store::path::Path, object_store::PutPayload, object_store::PutOptions);
 
     impl std::fmt::Display for Gated {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -1880,14 +1940,89 @@ mod tests {
         }
 
         /// The objects of `store`, gated.
-        fn over(store: Arc<dyn object_store::ObjectStore>) -> Self {
+        pub(super) fn over(store: Arc<dyn object_store::ObjectStore>) -> Self {
             Self {
                 store,
                 shut: Default::default(),
                 hold: tokio::sync::watch::channel(Hold::Nothing).0,
                 held: Default::default(),
                 went: Default::default(),
+                severed: Default::default(),
+                writes: Default::default(),
+                armed: Default::default(),
+                late: Default::default(),
             }
+        }
+
+        /// The objects its requests reach.
+        fn reached(&self) -> Arc<dyn object_store::ObjectStore> {
+            self.severed.lock().unwrap().clone().unwrap_or_else(|| self.store.clone())
+        }
+
+        /// Cuts it off from its objects, as a host dead is: its requests reach a copy of them from
+        /// now on, which nothing else sees, so that what the host had going runs to its end, doing
+        /// nothing a dead host would not, rather than wait for ever.
+        pub(super) fn sever(&self) {
+            use object_store::{ObjectStore as _, ObjectStoreExt as _};
+            let copy = InMemory::new();
+            futures::executor::block_on(async {
+                use futures::StreamExt as _;
+                for meta in self.store.list(None).collect::<Vec<_>>().await {
+                    let location = meta.unwrap().location;
+                    let bytes = self.store.get(&location).await.unwrap().bytes().await.unwrap();
+                    copy.put(&location, bytes.into()).await.unwrap();
+                }
+            });
+            *self.severed.lock().unwrap() = Some(Arc::new(copy));
+        }
+
+        /// Has `mishap` happen to the write numbered `write`, counting from 0 from now on, `die`
+        /// being what the host's dying does.
+        pub(super) fn arm(&self, write: usize, mishap: Mishap, die: Arc<dyn Fn() + Send + Sync>) {
+            self.writes.store(0, std::sync::atomic::Ordering::Relaxed);
+            *self.armed.lock().unwrap() = Some(Armed { write, mishap, die });
+        }
+
+        /// How many writes went since it was armed.
+        pub(super) fn writes(&self) -> usize {
+            self.writes.load(std::sync::atomic::Ordering::Relaxed)
+        }
+
+        /// Lands the writes a dead host's PUTs left, whatever they find, at the objects it was cut
+        /// off from.
+        pub(super) fn land_late(&self) {
+            for (location, payload, options) in std::mem::take(&mut *self.late.lock().unwrap()) {
+                let landed = self.store.put_opts(&location, payload, options);
+                if let Err(err) = futures::executor::block_on(landed) {
+                    eprintln!("{location} landing late: {err}");
+                }
+            }
+        }
+
+        /// What happens to the write of `payload` to `location`, armed with `armed`.
+        async fn mishap(
+            &self,
+            armed: Armed,
+            location: &object_store::path::Path,
+            payload: object_store::PutPayload,
+            options: object_store::PutOptions,
+        ) -> object_store::Result<object_store::PutResult> {
+            match armed.mishap {
+                Mishap::Refused => {}
+                Mishap::Unanswered => {
+                    self.reached().put_opts(location, payload, options).await?;
+                }
+                Mishap::Dies => (armed.die)(),
+                Mishap::DiesAnswered => {
+                    self.reached().put_opts(location, payload, options).await?;
+                    (armed.die)();
+                }
+                Mishap::DiesLandingLate => {
+                    (armed.die)();
+                    self.late.lock().unwrap().push((location.clone(), payload, options));
+                }
+            }
+            Err(object_store::Error::Generic { store: "gated", source: "a mishap".into() })
         }
 
         fn check(&self) -> object_store::Result<()> {
@@ -1931,15 +2066,20 @@ mod tests {
             opts: object_store::PutOptions,
         ) -> object_store::Result<object_store::PutResult> {
             self.check()?;
+            let write = self.writes.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let armed = self.armed.lock().unwrap().take_if(|armed| armed.write == write);
+            if let Some(armed) = armed {
+                return self.mishap(armed, location, payload, opts).await;
+            }
             let key = location.as_ref();
             if !self.hold.borrow().holds(key) {
-                return self.store.put_opts(location, payload, opts).await;
+                return self.reached().put_opts(location, payload, opts).await;
             }
             let mut hold = self.hold.subscribe();
             self.held.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let _ = hold.wait_for(|hold| !hold.holds(key)).await;
             self.held.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-            let put = self.store.put_opts(location, payload, opts).await;
+            let put = self.reached().put_opts(location, payload, opts).await;
             self.went.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             put
         }
@@ -1950,7 +2090,7 @@ mod tests {
             opts: object_store::PutMultipartOptions,
         ) -> object_store::Result<Box<dyn object_store::MultipartUpload>> {
             self.check()?;
-            self.store.put_multipart_opts(location, opts).await
+            self.reached().put_multipart_opts(location, opts).await
         }
 
         async fn get_opts(
@@ -1959,7 +2099,7 @@ mod tests {
             options: object_store::GetOptions,
         ) -> object_store::Result<object_store::GetResult> {
             self.check()?;
-            self.store.get_opts(location, options).await
+            self.reached().get_opts(location, options).await
         }
 
         fn delete_stream(
@@ -1970,7 +2110,7 @@ mod tests {
             >,
         ) -> futures::stream::BoxStream<'static, object_store::Result<object_store::path::Path>>
         {
-            self.store.delete_stream(locations)
+            self.reached().delete_stream(locations)
         }
 
         fn list(
@@ -1978,14 +2118,14 @@ mod tests {
             prefix: Option<&object_store::path::Path>,
         ) -> futures::stream::BoxStream<'static, object_store::Result<object_store::ObjectMeta>>
         {
-            self.store.list(prefix)
+            self.reached().list(prefix)
         }
 
         async fn list_with_delimiter(
             &self,
             prefix: Option<&object_store::path::Path>,
         ) -> object_store::Result<object_store::ListResult> {
-            self.store.list_with_delimiter(prefix).await
+            self.reached().list_with_delimiter(prefix).await
         }
 
         async fn copy_opts(
@@ -1994,7 +2134,7 @@ mod tests {
             to: &object_store::path::Path,
             options: object_store::CopyOptions,
         ) -> object_store::Result<()> {
-            self.store.copy_opts(from, to, options).await
+            self.reached().copy_opts(from, to, options).await
         }
     }
 
@@ -2779,20 +2919,22 @@ mod tests {
     }
 
     /// The host whose disk is at `from`, crashed, restarted with its disk as the crash left it at
-    /// `to`: the parent's store and the fork's handle, copied there, the handle naming the copy;
-    /// no store of them open. What the crashed host's writes had in flight may land still, as a
-    /// dead host's PUTs may.
-    fn restart(from: &std::path::Path, to: &std::path::Path) {
+    /// `to`: the parent's store and the fork's handle, copied there, the handle naming the copy,
+    /// if it had got that far; no store of them open. What the crashed host's writes had in flight
+    /// may land still, as a dead host's PUTs may.
+    pub(super) fn restart(from: &std::path::Path, to: &std::path::Path) {
         std::fs::create_dir(to).unwrap();
-        for name in ["parent", "child"] {
-            copy_dir(&from.join(name), &to.join(name));
+        copy_dir(&from.join("parent"), &to.join("parent"));
+        if from.join("child").exists() {
+            copy_dir(&from.join("child"), &to.join("child"));
         }
         let named = |dir: &std::path::Path| dir.join("parent").canonicalize().unwrap();
         let (parent, copy) = (named(from), named(to));
         let handle = to.join("child").join("store");
-        let text = std::fs::read_to_string(&handle).unwrap();
-        let text = text.replace(parent.to_str().unwrap(), copy.to_str().unwrap());
-        std::fs::write(&handle, text).unwrap();
+        if let Ok(text) = std::fs::read_to_string(&handle) {
+            let text = text.replace(parent.to_str().unwrap(), copy.to_str().unwrap());
+            std::fs::write(&handle, text).unwrap();
+        }
     }
 
     /// TASK-79.72: a fork's child with no record, its parent's host crashing while the fork's

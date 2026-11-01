@@ -130,6 +130,7 @@ fn new_description() -> String {
 /// Writes the handle of `store`'s branch `child` into the directory `path`, durably, whole or not
 /// at all ([`describe`]).
 fn handle(store: &Store<HostDir>, path: &Path, child: u64) -> Result<(), Error> {
+    failpoint!("fork::handle");
     let text = format!(
         "{HANDLE}\nstore {}\nbranch {child}\n",
         store.dir().path().canonicalize()?.display()
@@ -157,6 +158,7 @@ const FAILED: &str = "failed 1";
 /// ([`delete_host_with`]): a deletion that stops partway leaves the handle, which [`fork_failed`]
 /// then finds so, rather than taken for a fork made (TASK-79.84).
 pub fn fail_fork(path: &Path) -> Result<(), Error> {
+    failpoint!("delete::failed");
     let text = std::fs::read_to_string(path.join(DESCRIPTION))
         .with_context(|| format!("reading {}'s description", path.display()))?;
     ensure!(text.starts_with(HANDLE), "{} is no fork's handle", path.display());
@@ -240,8 +242,10 @@ pub fn delete_host_with(
             before(&store, target)?;
             lineage.delete(target)?;
         }
+        failpoint!("delete::branch");
         after(&store, target)
     })?;
+    failpoint!("delete::after");
     if lineage.branches().is_empty() {
         OPEN.lock().unwrap().retain(|(open, _)| *open != store);
         drop(lineage);

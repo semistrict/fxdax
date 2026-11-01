@@ -147,6 +147,16 @@
 //! lineage's branches while a fork's or a deletion's I/O stalls; and the rules its concurrency
 //! relies on ([`Rules`]) can be turned off to see the tests fail (tests/shuttle/).
 
+/// fxdax: a step of a protocol, which the failpoint of its name fails (the `fail` crate's,
+/// TASK-44.10): the function it is in returns an error there, or whatever a test set the failpoint
+/// to do happens. Nothing without the crate's `failpoints` feature, which `fxdax/failpoints` turns
+/// on.
+macro_rules! failpoint {
+    ($name:literal) => {
+        fail::fail_point!($name, |_| Err(anyhow::anyhow!("failpoint {}", $name)))
+    };
+}
+
 mod branch_records;
 mod dir;
 mod durability;

@@ -211,6 +211,12 @@ impl Error {
     }
 }
 
+impl From<crate::faults::Failpoint> for Error {
+    fn from(failpoint: crate::faults::Failpoint) -> Self {
+        Self::new(anyhow::Error::new(failpoint))
+    }
+}
+
 impl From<Errno> for Error {
     fn from(errno: Errno) -> Self {
         Self::new(errno)

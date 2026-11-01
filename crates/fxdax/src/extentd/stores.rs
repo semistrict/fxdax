@@ -724,6 +724,7 @@ async fn fork_held(from: &Path, to: &Path, branch: u64, key: &Path) -> Result<()
     let to = to.to_owned();
     let forked = async {
         uploaded(&store).await?;
+        fail::fail_point!("extentd::fork_uploaded", |_| Err(Errno::EIO));
         blocking(move || {
             let store = &store.store;
             let forked =

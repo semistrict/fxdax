@@ -336,9 +336,11 @@ impl<B: Bucket> Writer<B> {
             true => Ok(()),
             false => Err(Error::Corrupt(format!("{key} ends with another footer than taken"))),
         };
+        failpoint!("writer::upload");
         match self.create(&key, &segment, taken).await {
             Err(error) => Err(self.stop(error)),
             Ok(Created::Created) => {
+                failpoint!("writer::uploaded");
                 // Its objects, uploaded, go.
                 if let Some(pending) = self.inner().pending.get_mut(&seq) {
                     pending.objects = None;
@@ -394,6 +396,7 @@ impl<B: Bucket> Writer<B> {
         {
             return Err(self.stop(Error::Fenced));
         }
+        failpoint!("writer::acknowledge");
         {
             let mut inner = self.inner();
             let inner = &mut *inner;
@@ -405,6 +408,7 @@ impl<B: Bucket> Writer<B> {
                 inner.state.apply(&layout::segment(self.branch, seq), &pending.footer);
             }
         }
+        failpoint!("writer::acknowledged");
         self.record_forks().await?;
         Ok(self.inner().state.through)
     }
@@ -469,9 +473,11 @@ impl<B: Bucket> Writer<B> {
             .try_collect()
             .await?;
         state.forks.retain(|fork| !gone.contains(&fork.child));
+        failpoint!("writer::checkpoint");
         let key = layout::checkpoint(self.branch, seq);
         // Another writer's of the same segment holds the same extents, perhaps elsewhere.
         bucket::create(&*self.bucket, &key, crate::checkpoint::encode(&state)).await;
+        failpoint!("writer::checkpointed");
         let mut inner = self.inner();
         inner.state.forks.retain(|fork| !gone.contains(&fork.child));
         for (extent, old, new) in moved {

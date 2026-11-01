@@ -9,6 +9,7 @@ publish = false
 [dependencies]
 bincode.workspace = true
 extent_frame.workspace = true
+fail = "0.5.1"
 futures.workspace = true
 libc.workspace = true
 log.workspace = true
