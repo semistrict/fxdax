@@ -48,7 +48,8 @@ struct Bench {
 
 impl Bench {
     async fn new(reclaim_size: u64) -> Self {
-        let device = DeviceHolder::new(FakeDevice::new(CAPACITY / BLOCK_SIZE as u64, BLOCK_SIZE));
+        let device =
+            DeviceHolder::new(FakeDevice::new(CAPACITY / BLOCK_SIZE as u64, BLOCK_SIZE).calm());
         let fs = FxFilesystemBuilder::new()
             .format(true)
             .object_cache_items((MEMORY / 64 / 256) as usize)

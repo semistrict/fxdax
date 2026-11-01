@@ -33,8 +33,8 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::sync::{Arc, mpsc};
 use std::time::Duration;
+use storage_device::DeviceHolder;
 use storage_device::fake_device::{Crashes, FakeDevice};
-use storage_device::{DeviceHolder, ExtentId, NoExtent};
 
 const PAGE: u64 = 4096;
 const FILE: u32 = S_IFREG | 0o644;
@@ -141,16 +141,52 @@ enum Op {
     Link(usize, usize),
     Unlink(usize),
     Rename(usize, usize),
-    Write { file: usize, at: u64, len: usize, byte: u8 },
+    Write {
+        file: usize,
+        at: u64,
+        len: usize,
+        byte: u8,
+    },
     /// Whole pages, every `stride`th of `pages`, in as few transactions as hold them, as writeback
     /// writes them.
-    Fill { file: usize, page: u64, pages: u64, stride: u64, byte: u8 },
-    Read { file: usize, at: u64, len: usize },
-    Truncate { file: usize, size: u64 },
-    Punch { file: usize, page: u64, pages: u64 },
-    Clone { from: usize, to: usize, page: u64, pages: u64, to_page: u64 },
-    SetXattr { file: usize, name: u8, len: usize, byte: u8 },
-    RemoveXattr { file: usize, name: u8 },
+    Fill {
+        file: usize,
+        page: u64,
+        pages: u64,
+        stride: u64,
+        byte: u8,
+    },
+    Read {
+        file: usize,
+        at: u64,
+        len: usize,
+    },
+    Truncate {
+        file: usize,
+        size: u64,
+    },
+    Punch {
+        file: usize,
+        page: u64,
+        pages: u64,
+    },
+    Clone {
+        from: usize,
+        to: usize,
+        page: u64,
+        pages: u64,
+        to_page: u64,
+    },
+    SetXattr {
+        file: usize,
+        name: u8,
+        len: usize,
+        byte: u8,
+    },
+    RemoveXattr {
+        file: usize,
+        name: u8,
+    },
     Sync,
     Fsync,
     Compact,
@@ -265,6 +301,56 @@ struct Tally {
     refused: Cell<u64>,
 }
 
+/// What a sequence runs on: what cuts the power, and what it has of a device.
+#[derive(Clone, Copy, Debug)]
+struct Setting {
+    seed: u64,
+    blocks: u64,
+    cuts_one_in: u32,
+    /// Whether the device is as awkward as a store, as `seed` says, or calm: answering at once and
+    /// in order, as a sequence found on a calm one must to stay what was found.
+    awkward: bool,
+}
+
+impl Setting {
+    fn calm(seed: u64, blocks: u64) -> Self {
+        Self { seed, blocks, cuts_one_in: CUTS_ONE_IN, awkward: false }
+    }
+
+    fn awkward(seed: u64, blocks: u64) -> Self {
+        Self { awkward: true, ..Self::calm(seed, blocks) }
+    }
+
+    fn cutting_one_in(self, cuts_one_in: u32) -> Self {
+        Self { cuts_one_in, ..self }
+    }
+
+    /// The seed of what cuts the replay of power cut `cut`, during operation `op`: of those of
+    /// sequences found on a calm device, as it was then.
+    fn seed_of_cut(&self, cut: usize, op: usize) -> u64 {
+        let seed = op as u64 * 31 + cut as u64 + 1;
+        if self.awkward { seed.wrapping_mul(self.seed | 1) } else { seed }
+    }
+
+    /// The device, recording `crashes`.
+    fn device(&self, crashes: &Arc<Crashes>) -> FakeDevice {
+        let device = FakeDevice::new(self.blocks, 4096);
+        let device = if self.awkward { device.awkward(self.seed) } else { device.calm() };
+        device.record_crashes(crashes.clone())
+    }
+
+    /// What `ops` come to here.
+    fn run(self, ops: Vec<Op>, tally: Rc<Tally>) -> Result<(), String> {
+        let done = run(self, ops, tally);
+        fasync::LocalExecutorBuilder::new().build().run_singlethreaded(done)
+    }
+
+    /// Checks that `ops` hold here.
+    fn holds(self, ops: Vec<Op>) {
+        assert_eq!(self.run(ops, Rc::default()), Ok(()), "{self:?}");
+    }
+}
+
 /// A filesystem and its model.
 struct World {
     filesystem: fxfs::filesystem::OpenFxFilesystem,
@@ -295,15 +381,12 @@ fn xattr_of(name: u8) -> Vec<u8> {
 }
 
 impl World {
-    async fn new(blocks: u64, crashes: &Arc<Crashes>, tally: Rc<Tally>) -> Self {
-        let device = FakeDevice::new(blocks, 4096).record_crashes(crashes.clone());
-        let filesystem =
-            FxFilesystem::new_empty(DeviceHolder::new(device)).await.expect("formatting");
+    async fn new(setting: Setting, crashes: &Arc<Crashes>, tally: Rc<Tally>) -> Self {
+        let device = DeviceHolder::new(setting.device(crashes));
+        let filesystem = FxFilesystem::new_empty(device).await.expect("formatting");
         let volumes = root_volume((*filesystem).clone()).await.expect("the root volume");
-        let volume = volumes
-            .new_volume("test", NewChildStoreOptions::default())
-            .await
-            .expect("the volume");
+        let volume =
+            volumes.new_volume("test", NewChildStoreOptions::default()).await.expect("the volume");
         let root = volume.root_directory_object_id();
         let fs = Fxfs::new((*filesystem).clone(), volume, false, Tested);
         Self { filesystem, fs, root, model: Model::default(), tally }
@@ -489,27 +572,24 @@ impl World {
     /// as what a mount reaped of a compaction cut short is: what a crash orphaned, freed by a
     /// mount, takes room Fxfs doesn't count otherwise.
     async fn holds_no_orphans(&self) -> Result<(), String> {
-        self.fs.sync().await.map_err(|e| format!("sync: {e:#}"))?;
-        let device = self.filesystem.device();
-        let known = self.filesystem.allocator().extents();
-        let mut buffer = device.allocate_buffer(device.block_size() as usize).await;
-        let next = device.next_sequence().await.map_err(|e| format!("next_sequence: {e:#}"))?;
-        let mut orphans = Vec::new();
-        for sequence in 0..next {
-            let extent = ExtentId::new(device.branch(), sequence);
-            if !known.contains_key(&extent) {
-                match device.read(extent, 0, buffer.as_mut()).await {
-                    Ok(()) => orphans.push(extent),
-                    Err(error) if error.downcast_ref::<NoExtent>().is_some() => {}
-                    Err(error) => return Err(format!("reading {extent:?}: {error:#}")),
-                }
+        // A sync starts what it lets die being freed, and what dies meanwhile waits for the next.
+        let allocator = self.filesystem.allocator();
+        loop {
+            self.fs.sync().await.map_err(|e| format!("sync: {e:#}"))?;
+            allocator.freed().await.map_err(|e| format!("freeing: {e:#}"))?;
+            if !allocator.has_dead_extents() {
+                break;
             }
         }
-        let allocator = self.filesystem.allocator();
+        let device = self.filesystem.device();
+        let known = self.filesystem.allocator().extents();
+        let (branch, held) = (device.branch(), device.extents());
+        let held = held.iter().filter(|extent| extent.branch == branch);
+        let orphans: Vec<_> = held.filter(|extent| !known.contains_key(extent)).collect();
         match orphans.len() {
             0 => Ok(()),
             count => Err(format!(
-                "{count} of {next} extents unknown, {:?} of {} used, {} allocated: {orphans:?}",
+                "{count} extents unknown, {:?} of {} used, {} allocated: {orphans:?}",
                 allocator.get_used_bytes(),
                 allocator.get_disk_bytes(),
                 allocator.get_allocated_bytes(),
@@ -722,6 +802,7 @@ impl World {
 
 /// What a sequence's model was as it went, which a power cut's device is checked against.
 struct Past {
+    setting: Setting,
     /// The model after each operation, the first before any.
     states: Vec<Model>,
     /// For each of those, the latest that was durable by then.
@@ -739,19 +820,19 @@ impl Past {
         Some(before)
     }
 
-    /// Checks what a power cut during operation `op` of `ops` leaves on `device`: it replays,
-    /// passes fsck, is the model after one of the operations since the last that was durable, and
-    /// goes on with what the sequence did next.
+    /// Checks what power cut `cut` of a sequence, during operation `op` of `ops`, leaves on
+    /// `device`: it replays, passes fsck, is the model after one of the operations since the last
+    /// that was durable, and goes on with what the sequence did next.
     async fn check_cut(
         &self,
-        op: usize,
+        (cut, op): (usize, usize),
         ops: &[Op],
         device: FakeDevice,
         root: u64,
         tally: Rc<Tally>,
     ) -> Result<(), String> {
         tally.cuts.set(tally.cuts.get() + 1);
-        let seed = op as u64 * 31 + tally.cuts.get();
+        let seed = self.setting.seed_of_cut(cut, op);
         let second_cuts = Crashes::new(seed, SECOND_CUTS_ONE_IN);
         second_cuts.mark(0);
         let device = DeviceHolder::new(device.record_crashes(second_cuts.clone()));
@@ -797,17 +878,11 @@ impl Past {
     }
 }
 
-async fn run(
-    seed: u64,
-    blocks: u64,
-    cuts_one_in: u32,
-    ops: Vec<Op>,
-    tally: Rc<Tally>,
-) -> Result<(), String> {
-    let crashes = Crashes::new(seed, cuts_one_in);
-    let mut world = World::new(blocks, &crashes, tally.clone()).await;
+async fn run(setting: Setting, ops: Vec<Op>, tally: Rc<Tally>) -> Result<(), String> {
+    let crashes = Crashes::new(setting.seed, setting.cuts_one_in);
+    let mut world = World::new(setting, &crashes, tally.clone()).await;
     let root = world.root;
-    let mut past = Past { states: vec![Model::default()], durable: vec![0] };
+    let mut past = Past { setting, states: vec![Model::default()], durable: vec![0] };
     world.fs.sync().await.map_err(|e| format!("sync: {e:#}"))?;
     crashes.mark(0);
     for (i, op) in ops.iter().enumerate() {
@@ -821,9 +896,9 @@ async fn run(
     let world = world.remount().await.map_err(|e| format!("at the end: {e}"))?;
     world.check_all().await.map_err(|e| format!("remounted at the end: {e}"))?;
     world.unmount().await?;
-    for (mark, device) in crashes.take() {
-        let cut = past.check_cut(mark as usize, &ops, device, root, tally.clone()).await;
-        cut.map_err(|e| format!("a power cut during op {mark}: {e}"))?;
+    for (cut, (mark, device)) in crashes.take().into_iter().enumerate() {
+        let checked = past.check_cut((cut, mark as usize), &ops, device, root, tally.clone()).await;
+        checked.map_err(|e| format!("a power cut during op {mark}: {e}"))?;
     }
     Ok(())
 }
@@ -860,9 +935,7 @@ fn whatever_a_vfs_asks_reads_back_as_a_model_says() {
     TestRunner::new(config)
         .run(&sequences, |(seed, blocks, ops)| {
             watched.send(format!("{seed}, {blocks}, {ops:?}")).expect("the watchdog stopped");
-            let done = run(seed, blocks, CUTS_ONE_IN, ops, tally.clone());
-            let done = fasync::LocalExecutorBuilder::new().build().run_singlethreaded(done);
-            prop_assert_eq!(done, Ok(()));
+            prop_assert_eq!(Setting::calm(seed, blocks).run(ops, tally.clone()), Ok(()));
             Ok(())
         })
         .unwrap();
@@ -881,9 +954,7 @@ fn whatever_a_vfs_asks_reads_back_as_a_model_says() {
 fn a_compaction_cut_short_mounts() {
     for blocks in [TIGHT, ROOMY] {
         for seed in 0..8 {
-            let done = run(seed, blocks, 1, vec![Op::Compact], Rc::default());
-            let done = fasync::LocalExecutorBuilder::new().build().run_singlethreaded(done);
-            assert_eq!(done, Ok(()), "{blocks} blocks, seed {seed}");
+            Setting::calm(seed, blocks).cutting_one_in(1).holds(vec![Op::Compact]);
         }
     }
 }
@@ -904,18 +975,14 @@ fn a_clone_of_many_fragments_fits_in_transactions() {
         Op::Clone { from: 1, to: 2, page: 0, pages: 4096, to_page: 0 },
         Op::Sync,
     ];
-    let done = run(0, ROOMY, CUTS_ONE_IN, ops, Rc::default());
-    let done = fasync::LocalExecutorBuilder::new().build().run_singlethreaded(done);
-    assert_eq!(done, Ok(()));
+    Setting::calm(0, ROOMY).holds(ops);
     let ops = vec![
         Op::Create(0),
         Op::Create(1),
         Op::Fill { file: 8, page: 0, pages: 2945, stride: 1, byte: 0 },
         Op::Clone { from: 2, to: 13, page: 0, pages: 2937, to_page: 0 },
     ];
-    let done = run(0, ROOMY, CUTS_ONE_IN, ops, Rc::default());
-    let done = fasync::LocalExecutorBuilder::new().build().run_singlethreaded(done);
-    assert_eq!(done, Ok(()));
+    Setting::calm(0, ROOMY).holds(ops);
 }
 
 /// The journal's padding is paid for by a transaction of its own, which a replay that discarded
@@ -943,9 +1010,7 @@ fn a_replay_discarding_much_of_the_journal_is_paid_for() {
         Op::Sync,
         Op::Truncate { file: 0, size: 4096 },
     ];
-    let done = run(8774446482155464184, ROOMY, CUTS_ONE_IN, ops, Rc::default());
-    let done = fasync::LocalExecutorBuilder::new().build().run_singlethreaded(done);
-    assert_eq!(done, Ok(()));
+    Setting::calm(8774446482155464184, ROOMY).holds(ops);
 }
 
 /// A write the device lost, of a block a clone shared, must be found on replay though the clone's
@@ -968,9 +1033,7 @@ fn a_write_lost_of_a_block_a_clone_shared_is_rolled_back() {
         Op::RemoveXattr { file: 0, name: 0 },
         Op::Read { file: 0, at: 0, len: 1 },
     ];
-    let done = run(3957436890551874953, ROOMY, CUTS_ONE_IN, ops, Rc::default());
-    let done = fasync::LocalExecutorBuilder::new().build().run_singlethreaded(done);
-    assert_eq!(done, Ok(()));
+    Setting::calm(3957436890551874953, ROOMY).holds(ops);
 }
 
 /// What a crash orphans takes room on the device Fxfs doesn't count, which it frees as it mounts,
@@ -986,9 +1049,7 @@ fn what_a_crash_orphans_leaves_the_room_it_took() {
         Op::Create(0),
         Op::Fill { file: 0, page: 0, pages: 1408, stride: 1, byte: 0 },
     ];
-    let done = run(3625385343287752248, TIGHT, CUTS_ONE_IN, ops, Rc::default());
-    let done = fasync::LocalExecutorBuilder::new().build().run_singlethreaded(done);
-    assert_eq!(done, Ok(()));
+    Setting::calm(3625385343287752248, TIGHT).holds(ops);
 }
 
 /// A super-block records how far objects are flushed as of the journal it flushed: read later, it
@@ -1021,9 +1082,7 @@ fn a_super_block_records_only_what_its_journal_flushed() {
         Op::Compact,
         Op::Create(0),
     ];
-    let done = run(1738431799382197223, ROOMY, CUTS_ONE_IN, ops, Rc::default());
-    let done = fasync::LocalExecutorBuilder::new().build().run_singlethreaded(done);
-    assert_eq!(done, Ok(()));
+    Setting::calm(1738431799382197223, ROOMY).holds(ops);
 }
 
 /// The first transaction of a mount, renewing the journal's tail, may find nothing dirty, its own
@@ -1049,9 +1108,7 @@ fn a_renewal_of_a_journal_compacted_clean_accounts_for_nothing() {
         Op::Compact,
         Op::Compact,
     ];
-    let done = run(4949468108853898276, ROOMY, CUTS_ONE_IN, ops, Rc::default());
-    let done = fasync::LocalExecutorBuilder::new().build().run_singlethreaded(done);
-    assert_eq!(done, Ok(()));
+    Setting::calm(4949468108853898276, ROOMY).holds(ops);
 }
 
 /// A hole is read: one taken for what a crash left, a punch the journal never held, wasn't, and
@@ -1074,7 +1131,5 @@ fn what_a_crash_kept_is_matched_with_its_holes() {
         Op::Sync,
         Op::Write { file: 0, at: 20481, len: 4096, byte: 0 },
     ];
-    let done = run(10934300477646575156, TIGHT, CUTS_ONE_IN, ops, Rc::default());
-    let done = fasync::LocalExecutorBuilder::new().build().run_singlethreaded(done);
-    assert_eq!(done, Ok(()));
+    Setting::calm(10934300477646575156, TIGHT).holds(ops);
 }

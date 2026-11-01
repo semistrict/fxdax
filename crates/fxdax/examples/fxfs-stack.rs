@@ -112,7 +112,7 @@ type Uses = Vec<(&'static str, usize)>;
 /// checks and reads.
 async fn workload() -> Uses {
     let mut uses = Uses::new();
-    let device = DeviceHolder::new(FakeDevice::new(16384, BLOCK_SIZE));
+    let device = DeviceHolder::new(FakeDevice::new(16384, BLOCK_SIZE).calm());
     let fs = measure(&mut uses, "format", FxFilesystem::new_empty(device)).await.unwrap();
     populate(&mut uses, &fs).await;
     measure(&mut uses, "compact the journal", fs.journal().force_compact()).await.unwrap();

@@ -7,7 +7,8 @@
 // the next barrier seals them) and only by their branch, frees them, and simulates a crash by undoing any of what happened
 // since the last barrier (writes and frees). It can record such crashes at random barriers
 // (`Crashes`), and count the round trips its reads would take to a store answering from afar
-// (`RoundTrips`).
+// (`RoundTrips`). It can be as awkward as a store (`Awkward`): its numbers start large and its floor
+// jumps, and its requests take turns of the executor to answer, in no order but what barriers keep.
 
 use crate::buffer::{BufferFuture, BufferRef, MutableBufferRef};
 use crate::buffer_allocator::{BufferAllocator, BufferSource};
@@ -20,7 +21,7 @@ use rand::rngs::StdRng;
 use rand::{RngExt as _, SeedableRng as _};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::task::Poll;
 
 pub enum Op {
@@ -49,6 +50,9 @@ struct Inner {
     next_sequence: u64,
     /// The extents written since the last barrier, which are open: the others are sealed.
     open: HashSet<ExtentId>,
+    /// fxdax: those that were open as the seal in flight began (`Awkward::seal`): the seal's own
+    /// write may yet write them, and no one may take them for open.
+    sealing: HashSet<ExtentId>,
     /// The root.
     root: Vec<u8>,
     /// What happened since the last barrier, which a simulated crash may undo.
@@ -66,7 +70,17 @@ enum Change {
 impl Inner {
     fn barrier(&mut self) {
         self.open.clear();
+        self.sealing.clear();
         self.since_barrier.clear();
+    }
+
+    fn free(&mut self, extent: ExtentId) {
+        if let Some(data) = self.extents.remove(&extent) {
+            self.open.remove(&extent);
+            self.sealing.remove(&extent);
+            self.stored -= data.len() as u64;
+            self.since_barrier.push(Change::Free { extent, data });
+        }
     }
 
     /// Undoes each write of a block and each free since the last barrier, or not, at random: a
@@ -118,6 +132,8 @@ struct Crash {
     capacity: u64,
     block_size: u32,
     branch: u64,
+    /// fxdax: the seed of the device that recovers, if it is awkward, and the floor before.
+    awkward: Option<(u64, u64)>,
 }
 
 impl Crashes {
@@ -151,6 +167,10 @@ impl Crashes {
             .map(|crash| {
                 let device = FakeDevice::with_inner(crash.inner, crash.capacity, crash.block_size)
                     .with_branch(crash.branch);
+                let device = match crash.awkward {
+                    Some((seed, floor)) => device.recovered_awkward(seed, floor),
+                    None => device,
+                };
                 (crash.mark, device)
             })
             .collect()
@@ -168,15 +188,142 @@ impl Crashes {
         crashed.discard_random(&mut crashes.rng, device.allocator.block_size());
         // What the device holds after recovering is sealed.
         crashed.barrier();
+        let awkward = (device.awkward.as_ref())
+            .map(|_| (crashes.rng.random(), device.sequence_floor.load(Ordering::Relaxed)));
         crashes.recorded.push(Crash {
             mark,
             inner: crashed,
             capacity: device.capacity,
             block_size: device.block_size(),
             branch: device.branch,
+            awkward,
         });
     }
 }
+
+/// Waits for a turn of the executor, whatever else it has to do.
+async fn turn() {
+    let mut turned = false;
+    std::future::poll_fn(|cx| {
+        if std::mem::replace(&mut turned, true) {
+            Poll::Ready(())
+        } else {
+            cx.waker().wake_by_ref();
+            Poll::Pending
+        }
+    })
+    .await;
+}
+
+/// fxdax: the most turns of the executor an awkward device's request takes to answer.
+const MOST_TURNS: u32 = 16;
+
+/// fxdax: a device as awkward as a store (backlog doc-4), which memory, answering at once and from
+/// sequence number 0, is not: a search from 0 was tiny on it, and took a guest's allocator 2 GiB.
+/// All of it follows a seed.
+///
+/// - A branch's numbers start large: what the branch wrote before this device, as a fork has, up to
+///   its `next_sequence`, and half of branches, kept in a bucket, have a floor past that, which
+///   jumps as another writer takes them over: at a crash, or a remount, of those a lease moved.
+/// - Reads, writes, frees and barriers take turns of the executor to answer, at random, so that
+///   those in flight together finish in any order. As a guest's driver holds them (`Seal` in
+///   guest/rust/fxfs-linux/src/device.rs), a barrier waits for writes in flight and keeps others
+///   out until it answers, and no one is told an extent is open from when it starts: the store
+///   would have those fall on either side of it, a write's requests on both.
+struct Awkward {
+    rng: Mutex<StdRng>,
+    /// Held by the seal in flight.
+    sealing: futures::lock::Mutex<()>,
+    /// Whether a seal keeps writes out.
+    sealed: AtomicBool,
+    /// The writes that seal nothing in flight.
+    writes: AtomicUsize,
+}
+
+impl Awkward {
+    fn new(seed: u64) -> Self {
+        Self {
+            rng: Mutex::new(StdRng::seed_from_u64(seed)),
+            sealing: futures::lock::Mutex::new(()),
+            sealed: AtomicBool::new(false),
+            writes: AtomicUsize::new(0),
+        }
+    }
+
+    /// Where `inner`'s branch, which has written nothing here, starts, and its `floor`.
+    fn start(&self, inner: &mut Inner, floor: &AtomicU64) {
+        let mut rng = self.rng.lock();
+        inner.next_sequence = rng.random_range(1 << 20..1 << 40);
+        let first_epoch = rng.random_range(1..1 << 16);
+        floor.store(if rng.random() { first_epoch << EPOCH_SHIFT } else { 0 }, Ordering::Relaxed);
+    }
+
+    /// Moves a floor on, if a lease moved: a new writer's range starts past every number of the
+    /// last's. A branch that has none, kept on the host alone, has no writer but the host's.
+    fn take_over(&self, floor: &AtomicU64) {
+        let mut rng = self.rng.lock();
+        if floor.load(Ordering::Relaxed) != 0 && rng.random() {
+            let epochs: u64 = rng.random_range(1..4);
+            floor.fetch_add(epochs << EPOCH_SHIFT, Ordering::Relaxed);
+        }
+    }
+
+    /// Takes the turns a request takes to answer: often none.
+    async fn answer(&self) {
+        let turns = {
+            let mut rng = self.rng.lock();
+            if rng.random() { rng.random_range(1..=MOST_TURNS) } else { 0 }
+        };
+        for _ in 0..turns {
+            turn().await;
+        }
+    }
+
+    /// A seal's way in: waits for another seal to end and for writes in flight, and keeps new ones
+    /// out until what this returns is dropped.
+    async fn seal(&self) -> Passage<'_> {
+        let one = self.sealing.lock().await;
+        self.sealed.store(true, Ordering::SeqCst);
+        let passage = Passage { awkward: self, sealing: Some(one) };
+        while self.writes.load(Ordering::SeqCst) > 0 {
+            turn().await;
+        }
+        passage
+    }
+
+    /// A write's way in: waits for a seal to end, and holds others off until what this returns is
+    /// dropped.
+    async fn write(&self) -> Passage<'_> {
+        loop {
+            self.writes.fetch_add(1, Ordering::SeqCst);
+            let passage = Passage { awkward: self, sealing: None };
+            if !self.sealed.load(Ordering::SeqCst) {
+                return passage;
+            }
+            drop(passage);
+            turn().await;
+        }
+    }
+}
+
+/// A write, or a seal, in flight on an awkward device (`Awkward::write`, `Awkward::seal`).
+struct Passage<'a> {
+    awkward: &'a Awkward,
+    /// The hold of a seal.
+    sealing: Option<futures::lock::MutexGuard<'a, ()>>,
+}
+
+impl Drop for Passage<'_> {
+    fn drop(&mut self) {
+        match self.sealing {
+            Some(_) => self.awkward.sealed.store(false, Ordering::SeqCst),
+            None => drop(self.awkward.writes.fetch_sub(1, Ordering::SeqCst)),
+        }
+    }
+}
+
+/// fxdax: a store's writers' ranges are this far apart (`EPOCH_SHIFT` in crates/extent_remote).
+const EPOCH_SHIFT: u32 = 40;
 
 /// fxdax: the round trips a device's reads and writes take (`FakeDevice::with_round_trips`), were
 /// each a request to a store that answers a while after, as an extent store over a VM's queue
@@ -223,16 +370,7 @@ impl Requests {
             inner.count += 1;
         }
         let in_flight = InFlight(self);
-        let mut sent = false;
-        std::future::poll_fn(|cx| {
-            if std::mem::replace(&mut sent, true) {
-                Poll::Ready(())
-            } else {
-                cx.waker().wake_by_ref();
-                Poll::Pending
-            }
-        })
-        .await;
+        turn().await;
         in_flight
     }
 }
@@ -265,6 +403,8 @@ pub struct FakeDevice {
     frees_held_by: Option<Arc<futures::lock::Mutex<()>>>,
     /// fxdax: what counts the reads' round trips, if anything (`FakeDevice::with_round_trips`).
     round_trips: Option<Arc<RoundTrips>>,
+    /// fxdax: how it is as awkward as a store, if it is (`FakeDevice::awkward`).
+    awkward: Option<Awkward>,
 }
 
 const TRANSFER_HEAP_SIZE: usize = 64 * 1024 * 1024;
@@ -292,7 +432,35 @@ impl FakeDevice {
             sequence_floor: Arc::default(),
             frees_held_by: None,
             round_trips: None,
+            awkward: None,
         }
+    }
+
+    /// fxdax: makes the device, new, as awkward as a store (`Awkward`), as `seed` says.
+    pub fn awkward(mut self, seed: u64) -> Self {
+        let awkward = Awkward::new(seed);
+        awkward.start(self.inner.get_mut(), &self.sequence_floor);
+        self.awkward = Some(awkward);
+        self
+    }
+
+    /// fxdax: makes the device, new, answer at once, in order, with numbers from 0 and no floor: a
+    /// test's counts and a benchmark's times depend on it.
+    pub fn calm(mut self) -> Self {
+        self.awkward = None;
+        self.inner.get_mut().next_sequence = 0;
+        self.sequence_floor.store(0, Ordering::Relaxed);
+        self
+    }
+
+    /// fxdax: makes the device, what a crash left of an awkward one, awkward as `seed` says: its
+    /// floor was `floor`, until someone else took over.
+    fn recovered_awkward(mut self, seed: u64, floor: u64) -> Self {
+        let awkward = Awkward::new(seed);
+        self.sequence_floor.store(floor, Ordering::Relaxed);
+        awkward.take_over(&self.sequence_floor);
+        self.awkward = Some(awkward);
+        self
     }
 
     /// Makes `branch` the branch of the device's extents.
@@ -365,11 +533,35 @@ impl FakeDevice {
         Self::with_inner(inner, capacity, block_size)
     }
 
-    /// The IDs of the extents the device holds, in order.
-    pub fn extents(&self) -> Vec<ExtentId> {
-        let mut extents: Vec<_> = self.inner.lock().extents.keys().copied().collect();
-        extents.sort();
-        extents
+    /// What a free checks before it frees anything.
+    fn free_begins(&self) -> Result<(), Error> {
+        ensure!(!self.closed.load(Ordering::Relaxed));
+        ensure!(!self.read_only.load(Ordering::Relaxed));
+        (self.operation_closure)(Op::Free)
+    }
+
+    /// fxdax: takes the turns an awkward device's read or free takes to answer.
+    async fn answer(&self) {
+        if let Some(awkward) = &self.awkward {
+            awkward.answer().await;
+        }
+    }
+
+    /// fxdax: waits for the place of a write, or of a request that `seals`, among seals, on an
+    /// awkward device, then the turns it takes to answer.
+    async fn passage(&self, seals: bool) -> Option<Passage<'_>> {
+        let awkward = self.awkward.as_ref()?;
+        let passage = if seals {
+            let passage = awkward.seal().await;
+            let mut inner = self.inner.lock();
+            let open = std::mem::take(&mut inner.open);
+            inner.sealing.extend(open);
+            passage
+        } else {
+            awkward.write().await
+        };
+        awkward.answer().await;
+        Some(passage)
     }
 
     /// A barrier: what happened before it survives a crash, and the extents written are sealed.
@@ -420,6 +612,7 @@ impl Device for FakeDevice {
             Some(trips) => Some(trips.reads.issue().await),
             None => None,
         };
+        self.answer().await;
         let inner = self.inner.lock();
         let Some(data) = inner.extents.get(&extent) else {
             return Err(NoExtent(extent).into());
@@ -448,6 +641,8 @@ impl Device for FakeDevice {
             Some(trips) => Some(trips.writes.issue().await),
             None => None,
         };
+        let seals = write_opts.flags.intersects(WriteFlags::PRE_BARRIER | WriteFlags::POST_BARRIER);
+        let _passage = self.passage(seals).await;
         let mut inner = self.inner.lock();
 
         if write_opts.flags.contains(WriteFlags::PRE_BARRIER) {
@@ -463,7 +658,10 @@ impl Device for FakeDevice {
         if extent.branch != self.branch {
             return Err(OtherBranch(extent).into());
         }
-        if inner.extents.contains_key(&extent) && !inner.open.contains(&extent) {
+        if inner.extents.contains_key(&extent)
+            && !inner.open.contains(&extent)
+            && !inner.sealing.contains(&extent)
+        {
             return Err(SealedExtent(extent).into());
         }
         let offset = offset as usize;
@@ -512,19 +710,26 @@ impl Device for FakeDevice {
     }
 
     async fn free(&self, extent: ExtentId) -> Result<(), Error> {
-        ensure!(!self.closed.load(Ordering::Relaxed));
-        ensure!(!self.read_only.load(Ordering::Relaxed));
-        (self.operation_closure)(Op::Free)?;
+        self.free_extents(&[extent]).await.pop().expect("a result")
+    }
+
+    /// fxdax: as one request, as a guest's `FREE_MANY`, which waits and answers once.
+    async fn free_extents(&self, extents: &[ExtentId]) -> Vec<Result<(), Error>> {
+        let mut results = Vec::with_capacity(extents.len());
+        for _ in extents {
+            results.push(self.free_begins());
+        }
         if let Some(held) = &self.frees_held_by {
             drop(held.lock().await);
         }
+        self.answer().await;
         let mut inner = self.inner.lock();
-        if let Some(data) = inner.extents.remove(&extent) {
-            inner.open.remove(&extent);
-            inner.stored -= data.len() as u64;
-            inner.since_barrier.push(Change::Free { extent, data });
+        for (extent, result) in extents.iter().zip(&results) {
+            if result.is_ok() {
+                inner.free(*extent);
+            }
         }
-        Ok(())
+        results
     }
 
     fn is_open(&self, extent: ExtentId) -> bool {
@@ -548,6 +753,7 @@ impl Device for FakeDevice {
         ensure!(!self.closed.load(Ordering::Relaxed));
         ensure!(!self.read_only.load(Ordering::Relaxed));
         (self.operation_closure)(Op::Flush)?;
+        let _passage = self.passage(true).await;
         let mut inner = self.inner.lock();
         self.barrier(&mut inner);
         inner.root = root.to_vec();
@@ -560,6 +766,7 @@ impl Device for FakeDevice {
     }
 
     async fn flush(&self) -> Result<(), Error> {
+        let _passage = self.passage(true).await;
         self.barrier(&mut self.inner.lock());
         (self.operation_closure)(Op::Flush)
     }
@@ -567,12 +774,21 @@ impl Device for FakeDevice {
     fn reopen(&self, read_only: bool) {
         // Whatever was written before is sealed.
         self.inner.lock().open.clear();
+        if let Some(awkward) = &self.awkward {
+            awkward.take_over(&self.sequence_floor);
+        }
         self.closed.store(false, Ordering::Relaxed);
         self.read_only.store(read_only, Ordering::Relaxed);
     }
 
     fn is_read_only(&self) -> bool {
         self.read_only.load(Ordering::Relaxed)
+    }
+
+    fn extents(&self) -> Vec<ExtentId> {
+        let mut extents: Vec<_> = self.inner.lock().extents.keys().copied().collect();
+        extents.sort();
+        extents
     }
 
     fn snapshot(&self) -> Result<DeviceHolder, Error> {
@@ -583,11 +799,23 @@ impl Device for FakeDevice {
     fn fork(&self, branch: u64) -> Result<DeviceHolder, Error> {
         let mut inner = self.inner.lock().clone();
         inner.open.clear();
+        inner.sealing.clear();
         if branch != self.branch {
             // The fork's branch has written nothing.
             inner.next_sequence = 0;
         }
         let fork = Self::with_inner(inner, self.capacity, self.block_size()).with_branch(branch);
+        let fork = match &self.awkward {
+            Some(awkward) => {
+                let seed = awkward.rng.lock().random();
+                if branch == self.branch {
+                    fork.recovered_awkward(seed, self.sequence_floor.load(Ordering::Relaxed))
+                } else {
+                    fork.awkward(seed)
+                }
+            }
+            None => fork,
+        };
         Ok(DeviceHolder::new(fork))
     }
 
@@ -619,11 +847,13 @@ impl Drop for FakeDevice {
 
 #[cfg(test)]
 mod tests {
-    use super::{Crashes, FakeDevice, RoundTrips};
+    use super::{Crashes, EPOCH_SHIFT, FakeDevice, RoundTrips};
     use crate::Device;
     use crate::{ExtentId, OtherBranch, SealedExtent};
     use block_protocol::{WriteFlags, WriteOptions};
+    use fuchsia_sync::Mutex;
     use std::sync::Arc;
+    use std::sync::atomic::Ordering;
 
     const TEST_DEVICE_BLOCK_SIZE: usize = 512;
 
@@ -642,7 +872,7 @@ mod tests {
     #[fuchsia::test]
     async fn test_extents() {
         const BS: usize = TEST_DEVICE_BLOCK_SIZE;
-        let device = FakeDevice::new(8, BS as u32).with_branch(7);
+        let device = FakeDevice::new(8, BS as u32).calm().with_branch(7);
         assert_eq!(device.branch(), 7);
         assert_eq!(device.next_sequence().await.unwrap(), 0);
         let (a, b) = (ExtentId::new(7, 1), ExtentId::new(7, 4));
@@ -786,7 +1016,7 @@ mod tests {
     async fn test_frees_held() {
         const BS: usize = TEST_DEVICE_BLOCK_SIZE;
         let held = Arc::new(futures::lock::Mutex::new(()));
-        let device = FakeDevice::new(8, BS as u32).with_frees_held_by(held.clone());
+        let device = FakeDevice::new(8, BS as u32).calm().with_frees_held_by(held.clone());
         let extent = ExtentId::new(1, 1);
         write(&device, extent, 0, 1, BS).await;
         let holding = held.lock().await;
@@ -804,7 +1034,7 @@ mod tests {
     async fn test_round_trips() {
         const BS: usize = TEST_DEVICE_BLOCK_SIZE;
         let trips = Arc::new(RoundTrips::default());
-        let device = FakeDevice::new(128, BS as u32).with_round_trips(trips.clone());
+        let device = FakeDevice::new(128, BS as u32).calm().with_round_trips(trips.clone());
         let extent = ExtentId::new(1, 1);
         write(&device, extent, 0, 1, 40 * BS).await;
         for block in 0..3 {
@@ -828,6 +1058,133 @@ mod tests {
         futures::future::join_all(writes).await;
         assert_eq!((trips.writes.count(), trips.writes.trips()), (43, 4));
         assert_eq!(read(&device, ExtentId::new(1, 3), 0, 40 * BS).await, vec![3; 40 * BS]);
+    }
+
+    /// fxdax: an awkward device's numbers start large, as its seed says, some past a floor, and
+    /// only those floors jump, as another writer takes over: all of it as its seed says.
+    #[fuchsia::test]
+    async fn test_awkward_numbers() {
+        let numbers = async |seed| {
+            let device = FakeDevice::new(8, 512).awkward(seed);
+            let next = device.next_sequence().await.unwrap();
+            assert!(next >= 1 << 20, "started from {next}");
+            let floor = device.sequence_floor().await.unwrap();
+            let mut floors = vec![floor];
+            for _ in 0..16 {
+                device.reopen(false);
+                floors.push(device.sequence_floor().await.unwrap());
+            }
+            (next, floors)
+        };
+        let mut floorless = 0;
+        for seed in 0..32 {
+            let (next, floors) = numbers(seed).await;
+            assert_eq!((next, floors.clone()), numbers(seed).await, "seed {seed}");
+            if floors[0] == 0 {
+                floorless += 1;
+                assert_eq!(floors, vec![0; floors.len()]);
+            } else {
+                assert!(floors[0] > next, "{next} isn't below its floor, {}", floors[0]);
+                assert!(floors.is_sorted());
+                assert!(floors[16] > floors[0], "seed {seed}: its floor never jumped");
+                assert_eq!(floors[16] % (1 << EPOCH_SHIFT), 0);
+            }
+        }
+        assert!((1..32).contains(&floorless), "{floorless} of 32 had no floor");
+    }
+
+    /// fxdax: what a crash leaves of an awkward device is awkward: a floor as it was, or past it,
+    /// and numbers as they were.
+    #[fuchsia::test]
+    async fn test_awkward_crashes() {
+        const BS: usize = TEST_DEVICE_BLOCK_SIZE;
+        let seed = (0..).find(|seed| {
+            let device = FakeDevice::new(8, BS as u32).awkward(*seed);
+            device.sequence_floor.load(Ordering::Relaxed) != 0
+        });
+        let crashes = Crashes::new(1, 1);
+        let device =
+            FakeDevice::new(8, BS as u32).awkward(seed.unwrap()).record_crashes(crashes.clone());
+        crashes.mark(1);
+        let floor = device.sequence_floor().await.unwrap();
+        let extent = ExtentId::new(1, floor);
+        write(&device, extent, 0, 1, BS).await;
+        device.flush().await.expect("flush failed");
+        let mut recorded = crashes.take();
+        let (_, recovered) = recorded.pop().expect("a crash");
+        assert_eq!(recovered.next_sequence().await.unwrap(), floor + 1);
+        assert!(recovered.sequence_floor().await.unwrap() >= floor);
+        assert!(recovered.awkward.is_some());
+    }
+
+    /// fxdax: reads, writes and frees issued together on an awkward device end in another order
+    /// than they were issued, as its seed says.
+    #[fuchsia::test]
+    async fn test_awkward_requests_finish_out_of_order() {
+        const BS: usize = TEST_DEVICE_BLOCK_SIZE;
+        async fn order(seed: u64) -> Vec<usize> {
+            let device = FakeDevice::new(64, BS as u32).awkward(seed);
+            let extent = ExtentId::new(1, 1 << 50);
+            let finished = Mutex::new(Vec::new());
+            let writes = (0..32).map(|block| {
+                let (device, finished) = (&device, &finished);
+                async move {
+                    write(device, extent, block as u64 * BS as u64, block as u8, BS).await;
+                    finished.lock().push(block);
+                }
+            });
+            futures::future::join_all(writes).await;
+            let reads = (0..32).map(|block| read(&device, extent, block as u64 * BS as u64, BS));
+            let read = futures::future::join_all(reads).await;
+            assert_eq!(read, (0..32).map(|block| vec![block as u8; BS]).collect::<Vec<_>>());
+            finished.into_inner()
+        }
+        let (first, again, other) = (order(1).await, order(1).await, order(2).await);
+        assert_ne!(first, (0..32).collect::<Vec<_>>());
+        assert_eq!(first, again);
+        assert_ne!(first, other);
+    }
+
+    /// fxdax: a seal on an awkward device, as a guest's: it waits for writes in flight and keeps
+    /// new ones out until it answers, and no one takes an extent for open from when it starts.
+    #[fuchsia::test]
+    async fn test_awkward_seals() {
+        const BS: usize = TEST_DEVICE_BLOCK_SIZE;
+        let device = FakeDevice::new(8, BS as u32).awkward(3);
+        let (open, other) = (ExtentId::new(1, 1 << 50), ExtentId::new(1, (1 << 50) + 1));
+        let awkward = device.awkward.as_ref().unwrap();
+        write(&device, open, 0, 1, BS).await;
+
+        let writing = awkward.write().await;
+        let mut seal = std::pin::pin!(device.flush());
+        assert!(futures::poll!(seal.as_mut()).is_pending());
+        assert!(device.is_open(open), "a seal waiting for a write has started");
+        drop(writing);
+        while !awkward.sealed.load(Ordering::SeqCst) || device.is_open(open) {
+            assert!(futures::poll!(seal.as_mut()).is_pending());
+        }
+        let mut late = std::pin::pin!(write(&device, other, 0, 2, BS));
+        assert!(futures::poll!(late.as_mut()).is_pending());
+        seal.await.expect("flush failed");
+        late.await;
+        assert!(!device.is_open(open));
+        assert!(device.is_open(other), "the write wasn't after the seal");
+    }
+
+    /// fxdax: a seal's own write may write what was open when it started.
+    #[fuchsia::test]
+    async fn test_awkward_commit_writes_what_was_open() {
+        const BS: usize = TEST_DEVICE_BLOCK_SIZE;
+        let device = FakeDevice::new(8, BS as u32).awkward(3);
+        let extent = ExtentId::new(1, 1 << 50);
+        write(&device, extent, 0, 1, BS).await;
+        let buffer = device.allocate_buffer(BS).await;
+        let options = WriteOptions { flags: WriteFlags::POST_BARRIER, ..Default::default() };
+        device
+            .write_with_opts(extent, BS as u64, buffer.as_ref(), options)
+            .await
+            .expect("write failed");
+        assert!(!device.is_open(extent));
     }
 
     #[fuchsia::test]

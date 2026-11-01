@@ -1,9 +1,11 @@
 ---
 id: TASK-149.3
 title: A fake device as awkward as a real one
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-11-01 06:13'
+updated_date: '2026-11-01 08:03'
 labels: []
 dependencies: []
 parent_task_id: TASK-149
@@ -30,3 +32,11 @@ FakeDevice numbers extents from 0, so a search from sequence 0 was tiny on it, a
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. FakeDevice as awkward as a store: random large numbers, floors jumping at takeovers, requests answering after seeded turns of the executor, with a guest driver's seal gate so that only what a real device can reorder is reordered.
+2. Run fxfs, fxfs-posix and storage_device on it by default; fix or file what fails; keep exact-count tests on a calm() device.
+3. Hunt the model test on it.
+<!-- SECTION:PLAN:END -->

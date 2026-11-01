@@ -1254,7 +1254,7 @@ mod tests {
     use std::time::Duration;
     use storage_device::DeviceHolder;
     use storage_device::fake_device::{self, FakeDevice};
-    use storage_device::{ExtentId, ExtentRange, NoExtent};
+    use storage_device::{ExtentId, ExtentRange};
     use test_case::test_case;
 
     const TEST_DEVICE_BLOCK_SIZE: u32 = 512;
@@ -1838,19 +1838,9 @@ mod tests {
     async fn leaked_extents(fs: &FxFilesystem) -> Vec<ExtentId> {
         let device = fs.device();
         let known = fs.allocator().extents();
-        let mut buffer = device.allocate_buffer(device.block_size() as usize).await;
-        let mut leaked = Vec::new();
-        for sequence in 0..device.next_sequence().await.expect("next_sequence failed") {
-            let extent = ExtentId::new(device.branch(), sequence);
-            if known.contains_key(&extent) {
-                continue;
-            }
-            match device.read(extent, 0, buffer.as_mut()).await {
-                Ok(()) => leaked.push(extent),
-                Err(error) => assert!(error.downcast_ref::<NoExtent>().is_some(), "{error:?}"),
-            }
-        }
-        leaked
+        let branch = device.branch();
+        let held = device.extents().into_iter();
+        held.filter(|extent| extent.branch == branch && !known.contains_key(extent)).collect()
     }
 
     /// fxdax: Fxfs writes, overwrites, renames and deletes files while its store crashes at
