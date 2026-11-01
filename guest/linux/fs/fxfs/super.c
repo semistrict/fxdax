@@ -19,6 +19,7 @@
 #include <linux/exportfs.h>
 #include <linux/falloc.h>
 #include <linux/fiemap.h>
+#include <linux/sizes.h>
 #include <linux/fileattr.h>
 #include <linux/fs.h>
 #include <linux/fs_context.h>
@@ -3217,7 +3218,12 @@ static int fxfs_vfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	sb->s_xattr = fxfs_vfs_xattr_handlers;
 	sb->s_blocksize = PAGE_SIZE;
 	sb->s_blocksize_bits = PAGE_SHIFT;
-	sb->s_maxbytes = MAX_LFS_FILESIZE;
+	/*
+	 * fxdax: a DAX file's offsets stop a chunk short: its ranges reckon in chunks' ends, which
+	 * at the very end overflow a loff_t: a write spun, and a read saw a hole for what was written
+	 * (xfstests generic/303, 525, 564).
+	 */
+	sb->s_maxbytes = info->dax ? round_down(MAX_LFS_FILESIZE, SZ_2M) : MAX_LFS_FILESIZE;
 	sb->s_time_gran = 1;
 	/*
 	 * fxdax: 64 bits of nanoseconds, signed: the VFS clamps a time to these as it sets it, or the

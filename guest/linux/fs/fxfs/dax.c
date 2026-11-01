@@ -443,6 +443,11 @@ struct fxfs_dax_file {
 	/* fxdax: whether memory ran out for runs of its last evacuation's (TASK-116). */
 	bool evacuees_left;
 	/*
+	 * fxdax: a write a slice refused twice, under the inode's write lock: its chunk gets a range
+	 * of its own, so that no slice can refuse it again (xfstests generic/638).
+	 */
+	bool no_slices;
+	/*
 	 * fxdax: how many of its ranges an evacuation holds (fxfs_dax_evacuee_gather): ranges that
 	 * the paths dropping them whatever uses them, evict and truncate, wait for, so that what the
 	 * evacuation maps doesn't land in window space another range took (fxfs_dax_lock_unheld).
@@ -2363,7 +2368,7 @@ static struct fxfs_dax_range *fxfs_dax_new_slice(struct fxfs_dax *dax, struct in
 
 	lockdep_assert_held_write(&file->sem);
 
-	if (end <= start)
+	if (end <= start || READ_ONCE(file->no_slices))
 		return NULL;
 	pages = (end - start) >> PAGE_SHIFT;
 	for (;;) {
@@ -3547,6 +3552,8 @@ static ssize_t fxfs_dax_write_iter(struct kiocb *iocb, struct iov_iter *from)
 				ret = -EIO;
 				break;
 			}
+			if (drops > 1)
+				WRITE_ONCE(file->no_slices, true);
 			/*
 			 * A slice the write can't use, or fxdax: a range mapping some of its blocks
 			 * where they were (TASK-79.106), once: dropped, the chunk is mapped again.
@@ -3579,6 +3586,7 @@ static ssize_t fxfs_dax_write_iter(struct kiocb *iocb, struct iov_iter *from)
 		file->append_seals = seals;
 	}
 out:
+	WRITE_ONCE(file->no_slices, false);
 	inode_unlock(inode);
 	began = ktime_get_ns() - began;
 	atomic64_inc(&fxfs_dax_of(inode)->writes);
