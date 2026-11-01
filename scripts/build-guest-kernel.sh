@@ -91,6 +91,7 @@ commit 0005-dax-entry-order.patch
 commit 0006-dax-copy-around-in-place.patch
 commit 0007-dax-say-why-a-fault-fails.patch
 commit 0008-dax-split-pmd-entry-shared-pte.patch
+commit 0009-dax-finish-copies-from-the-kernel.patch
 rm -f "$index"
 kgit reset -q --hard "$series"
 rm -f "$out"/patches/*.patch

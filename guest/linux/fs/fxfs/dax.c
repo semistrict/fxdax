@@ -3633,10 +3633,11 @@ static int fxfs_dax_source_take(struct fxfs_dax_source *source, struct iov_iter 
  * Writes through the window, copying with page faults disabled: in the gate, a fault on the
  * user's memory could wait for a seal that waits for the gate. The memory is faulted in first, and
  * again whenever a copy stops short. fxdax: and bytes are taken in hand, the rest of the chunk's,
- * and copied from there, a copy that can't stop short, once blocks moving for the copy would lose
- * what they held, as the iomap says (-ENOTBLK), or a copy stopped short with none copied (-EFAULT):
- * what faulted in may be gone again, or the write's own iomap unmaps it each time, the source a
- * page of the target. Then the write goes back to the user's memory.
+ * and copied from there, a copy that can't stop short, nor is a fatal signal to stop it
+ * (patches/0009), once blocks moving for the copy would lose what they held, as the iomap says
+ * (-ENOTBLK), or a copy stopped short with none copied (-EFAULT): what faulted in may be gone
+ * again, or the write's own iomap unmaps it each time, the source a page of the target. Then the
+ * write goes back to the user's memory.
  */
 static ssize_t fxfs_dax_write_iter(struct kiocb *iocb, struct iov_iter *from)
 {
@@ -3704,7 +3705,7 @@ static ssize_t fxfs_dax_write_iter(struct kiocb *iocb, struct iov_iter *from)
 			 * fxdax: a write that can't get on fails, and says so: it spun unkillable, with
 			 * nothing in the log (TASK-140).
 			 */
-			if (fatal_signal_pending(current)) {
+			if (source == from && fatal_signal_pending(current)) {
 				ret = -EINTR;
 				break;
 			}
