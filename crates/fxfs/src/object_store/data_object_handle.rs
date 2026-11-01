@@ -114,6 +114,21 @@ enum Kept<'a> {
     Held(&'a [u8]),
 }
 
+/// fxdax: what a DAX window may do with a file's blocks ([`DataObjectHandle::extents_in`]), by the
+/// numbers of guest/linux/fs/fxfs/fxfs.h's `enum fxfs_dax_access`.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[repr(u32)]
+pub enum ExtentAccess {
+    /// Their extent isn't known to be open: a barrier came since it was minted, which sealed it, or
+    /// found nothing of it on the device yet. They are read-only for good.
+    #[default]
+    Sealed = 0,
+    /// Their extent is open, and they aren't shared: they can be written in place until a barrier.
+    Open = 1,
+    /// Their extent is open, but a clone shares them (`Allocator::is_shared`): read-only.
+    Shared = 2,
+}
+
 /// fxdax: the extents, of either file, a commit of a clone takes: a transaction's mutations are
 /// each's reference, extent and hole, and the extent it replaces.
 const MAX_CLONED_PER_COMMIT: usize = TRANSACTION_MUTATION_THRESHOLD / 8;
@@ -1987,11 +2002,13 @@ impl<S: HandleOwner> DataObjectHandle<S> {
         Ok(ranges)
     }
 
-    /// fxdax: the extents holding the file's data in `range`, clipped to it, in order, with
-    /// whether they can be written in place: the device holds them open, and they aren't shared
-    /// (`Allocator::is_shared`, a reflink's). What a DAX window maps the range from (backlog
-    /// doc-2), writably where they can. Holes are left out.
-    pub async fn extents_in(&self, range: Range<u64>) -> Result<Vec<(FileExtent, bool)>, Error> {
+    /// fxdax: the extents holding the file's data in `range`, clipped to it, in order, with what a
+    /// DAX window may do with them. What it maps the range from (backlog doc-2). Holes are left
+    /// out.
+    pub async fn extents_in(
+        &self,
+        range: Range<u64>,
+    ) -> Result<Vec<(FileExtent, ExtentAccess)>, Error> {
         let store = self.store();
         let device = store.device();
         let layer_set = store.tree().layer_set();
@@ -2025,9 +2042,14 @@ impl<S: HandleOwner> DataObjectHandle<S> {
                 let device_start = extent_offset + (start - key.start);
                 let device_range =
                     ExtentRange::new(*extent, device_start..device_start + (end - start));
-                let writable = device.is_open(*extent)
-                    && !store.allocator().is_shared(device_range.clone()).await?;
-                extents.push((FileExtent::new(start, device_range)?, writable));
+                let access = if !device.is_open(*extent) {
+                    ExtentAccess::Sealed
+                } else if store.allocator().is_shared(device_range.clone()).await? {
+                    ExtentAccess::Shared
+                } else {
+                    ExtentAccess::Open
+                };
+                extents.push((FileExtent::new(start, device_range)?, access));
             }
             iter.advance().await?;
         }
@@ -3129,9 +3151,9 @@ mod tests {
     use crate::object_store::transaction::{Mutation, Options, lock_keys};
     use crate::object_store::volume::root_volume;
     use crate::object_store::{
-        AttributeId, AttributeKey, DataObjectHandle, DirType, Directory, Extent, ExtentMode,
-        ExtentValue, HandleOptions, LockKey, NewChildStoreOptions, ObjectKeyData, ObjectStore,
-        PosixAttributes, StoreOptions, TRANSACTION_MUTATION_THRESHOLD,
+        AttributeId, AttributeKey, DataObjectHandle, DirType, Directory, Extent, ExtentAccess,
+        ExtentMode, ExtentValue, HandleOptions, LockKey, NewChildStoreOptions, ObjectKeyData,
+        ObjectStore, PosixAttributes, StoreOptions, TRANSACTION_MUTATION_THRESHOLD,
     };
     use crate::range::RangeExt;
     use crate::round::{round_down, round_up};
@@ -3928,14 +3950,18 @@ mod tests {
                 .await
                 .expect("extents_in failed")
                 .into_iter()
-                .map(|(e, open)| (e.logical_range(), e.device_range().clone(), open))
+                .map(|(e, access)| (e.logical_range(), e.device_range().clone(), access))
                 .collect::<Vec<_>>()
         };
         assert_eq!(
             extents_in(5..3 * bs - 1).await,
             vec![
-                (5..2 * bs, ExtentRange::new(extent, 5..2 * bs), true),
-                (2 * bs..3 * bs - 1, ExtentRange::new(extent, 2 * bs..3 * bs - 1), true),
+                (5..2 * bs, ExtentRange::new(extent, 5..2 * bs), ExtentAccess::Open),
+                (
+                    2 * bs..3 * bs - 1,
+                    ExtentRange::new(extent, 2 * bs..3 * bs - 1),
+                    ExtentAccess::Open
+                ),
             ]
         );
 
@@ -3943,7 +3969,10 @@ mod tests {
         fs.sync(SyncOptions { flush_device: true, ..Default::default() })
             .await
             .expect("sync failed");
-        assert_eq!(extents_in(0..bs).await, vec![(0..bs, ExtentRange::new(extent, 0..bs), false)]);
+        assert_eq!(
+            extents_in(0..bs).await,
+            vec![(0..bs, ExtentRange::new(extent, 0..bs), ExtentAccess::Sealed)]
+        );
         let third = map(0..1).await;
         assert_eq!(third.iter().map(|e| e.logical_range()).collect::<Vec<_>>(), vec![0..bs]);
         assert_ne!(third[0].device_range().extent, extent);
@@ -6938,16 +6967,16 @@ mod tests {
         };
         let first = map(&source, 0..2 * bs).await;
         store_mapped(&clones.fs, &first, 0, &vec![3; 2 * bs as usize]).await;
-        let writable = async |object: &DataObjectHandle<ObjectStore>| {
+        let access = async |object: &DataObjectHandle<ObjectStore>| {
             let extents = object.extents_in(0..2 * bs).await.expect("extents_in failed");
-            extents.iter().map(|(_, writable)| *writable).collect::<Vec<_>>()
+            extents.iter().map(|(_, access)| *access).collect::<Vec<_>>()
         };
-        assert_eq!(writable(&source).await, vec![true], "open, and the source's alone");
+        assert_eq!(access(&source).await, vec![ExtentAccess::Open], "the source's alone");
         let clone = clones.create("clone").await;
         clones.clone(&source, 0..2 * bs, &clone, 0).await;
         // Shared: a DAX window maps them read-only, for writes to move them.
-        assert_eq!(writable(&source).await, vec![false]);
-        assert_eq!(writable(&clone).await, vec![false]);
+        assert_eq!(access(&source).await, vec![ExtentAccess::Shared]);
+        assert_eq!(access(&clone).await, vec![ExtentAccess::Shared]);
 
         let second = map(&source, 0..bs).await;
         assert_ne!(second[0].device_range(), first[0].device_range(), "the block moved");

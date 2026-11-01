@@ -303,7 +303,7 @@ ssize_t fxfs_dax_extents(struct fxfs *fs, u64 ino, u64 offset, u64 len, struct f
 	struct stub_file *file;
 	u64 page = offset >> PAGE_SHIFT, end = (offset + len) >> PAGE_SHIFT;
 	ssize_t count = 0;
-	bool open;
+	u32 access;
 
 	mutex_lock(&fs->lock);
 	file = find_file(fs, ino);
@@ -315,12 +315,13 @@ ssize_t fxfs_dax_extents(struct fxfs *fs, u64 ino, u64 offset, u64 len, struct f
 		if (!block->sequence)
 			continue;
 		extent = find_extent(fs, block->sequence);
-		open = extent->open && extent->refs[block->page] == 1;
+		access = !extent->open ? FXFS_DAX_SEALED :
+			 extent->refs[block->page] > 1 ? FXFS_DAX_SHARED : FXFS_DAX_OPEN;
 		if (count && out[count - 1].sequence == block->sequence &&
-		    out[count - 1].open == open &&
+		    out[count - 1].access == access &&
 		    out[count - 1].offset + out[count - 1].len == page << PAGE_SHIFT &&
 		    out[count - 1].extent_offset + out[count - 1].len ==
-		    block->page << PAGE_SHIFT && out[count - 1].open == open) {
+		    block->page << PAGE_SHIFT) {
 			out[count - 1].len += PAGE_SIZE;
 			continue;
 		}
@@ -331,7 +332,7 @@ ssize_t fxfs_dax_extents(struct fxfs *fs, u64 ino, u64 offset, u64 len, struct f
 		out[count++] = (struct fxfs_dax_extent) {
 			.offset = page << PAGE_SHIFT, .len = PAGE_SIZE, .branch = fs->branch,
 			.sequence = block->sequence, .extent_offset = block->page << PAGE_SHIFT,
-			.open = open, .extent_size = extent_bytes(fs, extent),
+			.access = access, .extent_size = extent_bytes(fs, extent),
 		};
 	}
 	mutex_unlock(&fs->lock);
@@ -505,7 +506,7 @@ static ssize_t try_map_write(struct fxfs *fs, u64 ino, u64 offset, u64 len, u64 
 		out[count++] = (struct fxfs_dax_extent) {
 			.offset = (first + page) << PAGE_SHIFT, .len = PAGE_SIZE,
 			.branch = fs->branch, .sequence = block->sequence,
-			.extent_offset = block->page << PAGE_SHIFT, .open = 1,
+			.extent_offset = block->page << PAGE_SHIFT, .access = FXFS_DAX_OPEN,
 			.extent_size = extent->pages << PAGE_SHIFT,
 		};
 	}
@@ -548,7 +549,7 @@ bool fxfs_dax_restage(struct fxfs_filesystem *filesystem, struct fxfs_dax_extent
 		fs->staging_next = 0;
 		*out = (struct fxfs_dax_extent) {
 			.branch = fs->branch, .sequence = fs->staging->sequence,
-			.extent_size = STAGING_PAGES << PAGE_SHIFT,
+			.access = FXFS_DAX_OPEN, .extent_size = STAGING_PAGES << PAGE_SHIFT,
 		};
 		restaged = true;
 	}

@@ -558,6 +558,10 @@ enum fxfs_dax_why {
 	FXFS_DAX_WHYS,
 };
 
+static const char *const fxfs_dax_accesses[] = {
+	[FXFS_DAX_SEALED] = "sealed", [FXFS_DAX_OPEN] = "open", [FXFS_DAX_SHARED] = "shared",
+};
+
 static const char *const fxfs_dax_whys[FXFS_DAX_WHYS] = {
 	"reach", "grow", "restage", "range", "evacuate",
 };
@@ -987,9 +991,9 @@ static int fxfs_dax_map_slice(struct fxfs_dax *dax, struct fxfs_dax_range *range
 
 		if (e->branch != region->branch || e->sequence != region->sequence ||
 		    e->extent_offset != base + (e->offset - start) || page + pages > range->pages ||
-		    (e->open && !region->writable))
+		    (e->access == FXFS_DAX_OPEN && !region->writable))
 			return -EXDEV;
-		if (!e->open)
+		if (e->access != FXFS_DAX_OPEN)
 			continue;
 		err = fxfs_dax_reach(dax, region, end >> PAGE_SHIFT, false);
 		if (err)
@@ -1381,17 +1385,17 @@ static int fxfs_dax_mapped(struct fxfs_dax *dax, struct fxfs_dax_range *range,
 	unsigned long page = (e->offset - start) >> PAGE_SHIFT;
 	unsigned long pages = e->len >> PAGE_SHIFT;
 
-	if (err == -ENOENT && !e->open)
+	if (err == -ENOENT && e->access != FXFS_DAX_OPEN)
 		return 0;
 	if (err) {
 		pr_warn("fxfs: mapping %llu bytes at %llu of extent %llx:%llu, %s, at %llu of the DAX window failed: %d\n",
 			e->len, e->extent_offset, e->branch, e->sequence,
-			e->open ? "writably" : "read-only",
+			e->access == FXFS_DAX_OPEN ? "writably" : "read-only",
 			range->window_offset + (e->offset - start), err);
 		return err;
 	}
 	bitmap_set(range->mapped, page, pages);
-	if (e->open)
+	if (e->access == FXFS_DAX_OPEN)
 		fxfs_dax_set_writable(dax, range, page, pages);
 	else
 		fxfs_dax_clear_writable(range, page, pages);
@@ -1402,7 +1406,8 @@ static int fxfs_dax_mapped(struct fxfs_dax *dax, struct fxfs_dax_range *range,
 			fxfs_dax_trace(FXFS_DAX_TRACE_MAPPED, range->file->ino,
 				       (start >> PAGE_SHIFT) + page + i,
 				       fxfs_dax_page_offset(range, page + i), e->sequence,
-				       e->extent_offset + ((u64)i << PAGE_SHIFT), e->open);
+				       e->extent_offset + ((u64)i << PAGE_SHIFT),
+				       e->access == FXFS_DAX_OPEN);
 	}
 	return 0;
 }
@@ -1415,7 +1420,8 @@ static int fxfs_dax_map_own(struct fxfs_dax *dax, struct fxfs_dax_range *range,
 	int err;
 
 	err = fxfs_dax_device_map(dax, e->branch, e->sequence, e->extent_offset, e->len,
-			      range->window_offset + (e->offset - start), e->open, true);
+				  range->window_offset + (e->offset - start),
+				  e->access == FXFS_DAX_OPEN, true);
 	atomic64_inc(&dax->maps[FXFS_DAX_RANGE]);
 	atomic64_add(e->len, &dax->map_bytes[FXFS_DAX_RANGE]);
 	if (!err)
@@ -1475,7 +1481,7 @@ static int fxfs_dax_map_extents(struct fxfs_dax *dax, struct fxfs_dax_range *ran
 					.branch = e->branch, .sequence = e->sequence,
 					.offset = e->extent_offset, .len = e->len,
 					.window_offset = range->window_offset + (e->offset - start),
-					.writable = e->open,
+					.writable = e->access == FXFS_DAX_OPEN,
 					.ahead = true,
 				};
 				own[nr_own++] = i;
@@ -1544,7 +1550,7 @@ static int fxfs_dax_map_moved(struct fxfs_dax *dax, struct fxfs_dax_range *range
 		 */
 		if (find_next_zero_bit(range->writable, page + pages, page) == page + pages)
 			continue;
-		e->open = false;
+		e->access = FXFS_DAX_SEALED;
 		err = fxfs_dax_map_own(dax, range, e);
 		/*
 		 * An extent the device doesn't hold was never written: its blocks are zeros, a hole,
@@ -1587,7 +1593,7 @@ static bool fxfs_dax_any_open(const struct fxfs_dax_extent *extents, ssize_t cou
 	ssize_t i;
 
 	for (i = 0; i < count; i++) {
-		if (extents[i].open)
+		if (extents[i].access == FXFS_DAX_OPEN)
 			return true;
 	}
 	return false;
@@ -2383,14 +2389,14 @@ static int fxfs_dax_move(struct fxfs_dax *dax, struct fxfs_dax_range *range,
 	region = fxfs_dax_get_region(dax, e, false);
 	if (IS_ERR(region))
 		return PTR_ERR(region);
-	if (e->open) {
+	if (e->access == FXFS_DAX_OPEN) {
 		fxfs_dax_region_open(dax, region);
 		if (!region->writable) {
 			fxfs_dax_put_region(dax, region);
 			return -EXDEV;
 		}
 	}
-	err = fxfs_dax_reach(dax, region, first + pages, !e->open);
+	err = fxfs_dax_reach(dax, region, first + pages, e->access != FXFS_DAX_OPEN);
 	if (err) {
 		fxfs_dax_put_region(dax, region);
 		return err;
@@ -2446,7 +2452,7 @@ static struct fxfs_dax_range *fxfs_dax_new_slice(struct fxfs_dax *dax, struct in
 			return PTR_ERR(region) == -EAGAIN ? NULL : ERR_CAST(region);
 		first = e.extent_offset >> PAGE_SHIFT;
 		/* A sealed extent maps read-only, whatever seals meanwhile, outside the gate. */
-		if (!e.open)
+		if (e.access != FXFS_DAX_OPEN)
 			break;
 		/* As in fxfs_dax_map_chunk: open still, unless a seal was in progress, or began since. */
 		gate = fxfs_dax_store_begin(dax, fault);
@@ -2472,7 +2478,7 @@ static struct fxfs_dax_range *fxfs_dax_new_slice(struct fxfs_dax *dax, struct in
 		fxfs_device_store_end(dax->dev);
 		fxfs_dax_put_region(dax, region);
 	}
-	err = fxfs_dax_reach(dax, region, first + pages, !e.open);
+	err = fxfs_dax_reach(dax, region, first + pages, e.access != FXFS_DAX_OPEN);
 	if (err)
 		goto out;
 	range = fxfs_dax_new_range(region->window_offset + ((u64)first << PAGE_SHIFT), pages,
@@ -2492,16 +2498,16 @@ static struct fxfs_dax_range *fxfs_dax_new_slice(struct fxfs_dax *dax, struct in
 		fxfs_dax_free_range(dax, range, 0);
 		goto out;
 	}
-	if (e.open && region->writable)
+	if (e.access == FXFS_DAX_OPEN && region->writable)
 		fxfs_dax_set_writable(dax, range, 0, pages);
 	spin_lock(&dax->lock);
 	list_add_tail(&range->list, &dax->used);
 	spin_unlock(&dax->lock);
-	if (e.open)
+	if (e.access == FXFS_DAX_OPEN)
 		fxfs_device_store_end(dax->dev);
 	return range;
 out:
-	if (e.open)
+	if (e.access == FXFS_DAX_OPEN)
 		fxfs_device_store_end(dax->dev);
 	if (region)
 		fxfs_dax_put_region(dax, region);
@@ -3080,7 +3086,7 @@ static s64 fxfs_dax_check_device(struct fxfs_dax *dax, struct inode *inode, loff
 		differ = err ? 0 : fxfs_dax_differ(seen, buf, 0, 0, &first);
 		pr_err("fxfs: ino %lu at %lld: Fxfs has it in extent %llu page %llu, %s, the window at %llx maps extent %lld page %lld: %d, %zu bytes differ, the first at %zu: %#x, the device's %#x\n",
 		       inode->i_ino, pos, e.sequence, e.extent_offset >> PAGE_SHIFT,
-		       e.open ? "open" : "sealed", window_offset, where >> 20,
+		       fxfs_dax_accesses[e.access], window_offset, where >> 20,
 		       where & ((1 << 20) - 1), err, differ, differ ? first : 0,
 		       differ ? seen[first] : 0, differ ? buf[first] : 0);
 		/* The same bytes, where the range hasn't followed them: wrong only if they differ. */

@@ -29,10 +29,10 @@ use fxfs::object_store::directory::{MutableAttributesInternal, ReplacedChild, re
 use fxfs::object_store::dirty_reservation::DirtyReservation;
 use fxfs::object_store::transaction::{LockKey, LockKeys, Mutation, Options, Transaction};
 use fxfs::object_store::{
-    AttributeId, AttributeKey, DataObjectHandle, Directory, FileExtent, HandleOptions,
-    MAX_INLINE_XATTR_SIZE, MAX_XATTR_NAME_SIZE, MAX_XATTR_VALUE_SIZE, ObjectDescriptor, ObjectKey,
-    ObjectKind, ObjectStore, ObjectValue, SetExtendedAttributeMode, StoreObjectHandle, Timestamp,
-    TombstoneMode, TrimMode, TrimResult,
+    AttributeId, AttributeKey, DataObjectHandle, Directory, ExtentAccess, FileExtent,
+    HandleOptions, MAX_INLINE_XATTR_SIZE, MAX_XATTR_NAME_SIZE, MAX_XATTR_VALUE_SIZE,
+    ObjectDescriptor, ObjectKey, ObjectKind, ObjectStore, ObjectValue, SetExtendedAttributeMode,
+    StoreObjectHandle, Timestamp, TombstoneMode, TrimMode, TrimResult,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::BTreeMap;
@@ -166,8 +166,8 @@ pub struct DaxExtent {
     pub branch: u64,
     pub sequence: u64,
     pub extent_offset: u64,
-    /// Whether the extent is open, which only a writable mapping maps.
-    pub open: u32,
+    /// What the window may do with the piece.
+    pub access: ExtentAccess,
     pub reserved: u32,
     /// How far the extent reaches, as allocated, or may yet if it is the staging extent, which
     /// small files share (`Allocator::extent_size`): 0 if unknown.
@@ -175,7 +175,7 @@ pub struct DaxExtent {
 }
 
 impl DaxExtent {
-    fn new(extent: &FileExtent, open: bool, allocator: &Allocator) -> Self {
+    fn new(extent: &FileExtent, access: ExtentAccess, allocator: &Allocator) -> Self {
         let device_range = extent.device_range();
         Self {
             offset: extent.logical_offset(),
@@ -183,7 +183,7 @@ impl DaxExtent {
             branch: device_range.extent.branch,
             sequence: device_range.extent.sequence,
             extent_offset: device_range.range.start,
-            open: open.into(),
+            access,
             reserved: 0,
             extent_size: allocator.extent_size(device_range.extent).unwrap_or(0),
         }
@@ -699,7 +699,10 @@ impl<P: Platform> Fxfs<P> {
         let file = self.file(ino).await?;
         let extents = file.extents_in(range).await?;
         let allocator = self.filesystem.allocator();
-        Ok(extents.iter().map(|(extent, open)| DaxExtent::new(extent, *open, &allocator)).collect())
+        Ok(extents
+            .iter()
+            .map(|(extent, access)| DaxExtent::new(extent, *access, &allocator))
+            .collect())
     }
 
     /// Records an append already written through the DAX window, whose data must not be zeroed as
@@ -802,7 +805,10 @@ impl<P: Platform> Fxfs<P> {
             }
         }
         let allocator = self.filesystem.allocator();
-        Ok(extents.iter().map(|extent| DaxExtent::new(extent, true, &allocator)).collect())
+        Ok(extents
+            .iter()
+            .map(|extent| DaxExtent::new(extent, ExtentAccess::Open, &allocator))
+            .collect())
     }
 
     /// Creates `name` in the directory `dir`, as `mode` says: a directory, or a file, which may be
