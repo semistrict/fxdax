@@ -1,9 +1,10 @@
 ---
 id: TASK-150.7
 title: A guest or VM process can wedge its own commits
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-11-01 16:51'
+updated_date: '2026-11-01 19:11'
 labels: []
 dependencies: []
 parent_task_id: TASK-150
@@ -32,3 +33,9 @@ From the static audit, unconfirmed. crates/fxdax/src/extents.rs:1081-1089: the o
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Confirmed: writes_to_extents_mapped_writably_are_of_whole_blocks, forks_seal_nothing_a_window_maps_writably (EINVAL, EPERM on later commits). Fixed: ExtentStore::write has one check, check_io, whichever way it goes; fork gives EBUSY rather than seal an extent held both ways. Blind spot: serves_whatever_a_guest_asks had no oracle that commits work, and its writes and maps almost never met. Class test: it, red for both. Structure: open has two owners (TASK-79.46, 121, this): raised with the user. Branch fix/host-audit, 3c90f8f7b, merged locally; workspace on Docker arm64 only, 2070 of 2071 (the Docker-only failure), Shuttle 60 of 60, not yet on GCE.
+<!-- SECTION:NOTES:END -->

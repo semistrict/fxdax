@@ -1,9 +1,10 @@
 ---
 id: TASK-150.4
 title: OPEN_FORK_FROM lets a VM process take any branch by its ID
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-11-01 16:50'
+updated_date: '2026-11-01 19:11'
 labels: []
 dependencies: []
 parent_task_id: TASK-150
@@ -32,3 +33,9 @@ From the static audit, unconfirmed. crates/fxdax/src/extentd/server.rs:1176-1179
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Confirmed: tenants_take_no_branch_by_naming_it. Fixed conservatively: a tenant's named branch is ignored, an absent point gives ENOENT. Side effect for the user to decide: Firecracker always passes point_branch, so a tenant's restore where the point isn't local fails unless its VM manager takes it first. The default tenant can still take any branch (snapshot_points_are_taken_from_the_bucket). Blind spot: the fuzz opened a store first, so OPEN_FORK_FROM was always EBUSY. Class test: fuzz starts unopened, red with the bug back. Structure: branches have no owner: raised with the user. Branch fix/host-audit, 3c90f8f7b, merged locally; workspace on Docker arm64 only, 2070 of 2071 (the Docker-only failure), Shuttle 60 of 60, not yet on GCE.
+<!-- SECTION:NOTES:END -->

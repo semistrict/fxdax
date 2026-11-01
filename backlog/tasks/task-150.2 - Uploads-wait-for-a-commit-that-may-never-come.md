@@ -1,9 +1,10 @@
 ---
 id: TASK-150.2
 title: Uploads wait for a commit that may never come
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-11-01 16:49'
+updated_date: '2026-11-01 19:11'
 labels: []
 dependencies: []
 parent_task_id: TASK-150
@@ -32,3 +33,9 @@ From the static audit, unconfirmed. crates/extent_store/src/store.rs:919-921, :1
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Confirmed: segments_closed_for_room_go_to_the_uploader_with_no_commit_after. Fixed: a flush with no commit ends closings for room (end_closings, rule flushes_end_closings), after a refactor to one framing_ended. Fxfs's own COMMIT_DURABLE can't hit it, Seal keeping writes out; SyncStore and a live fork can. Commits stalled on max_lag_bytes also deadlocked at store level, proven, unreachable by a guest with today's constants by reading only, a margin nothing enforces. Blind spot: no test waited for an upload with no commit after. Class test: Shuttle needs_flushes_to_end_closings and two others, red with the rule off. Structure: framing's end is driven from outside it (TASK-41.1, 79.69, 79.99, 92.16, this): raised with the user. Branch fix/host-audit, 3c90f8f7b, merged locally; workspace on Docker arm64 only, 2070 of 2071 (the Docker-only failure), Shuttle 60 of 60, not yet on GCE.
+<!-- SECTION:NOTES:END -->
