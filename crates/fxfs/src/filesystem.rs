@@ -2007,7 +2007,7 @@ mod tests {
         std::mem::drop(store);
         fs.close().await.expect("close failed");
 
-        let recorded = crashes.take();
+        let recorded: Vec<_> = crashes.take().collect();
         assert!(recorded.len() >= ROUNDS as usize, "{} crashes recorded", recorded.len());
         for (crash, (synced_rounds, device)) in recorded.into_iter().enumerate() {
             let fs = FxFilesystem::open(DeviceHolder::new(device))

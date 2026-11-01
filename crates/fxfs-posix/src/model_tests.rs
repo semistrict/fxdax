@@ -24,11 +24,16 @@
 //! FXDAX_MODEL_CASES asks for more sequences, to hunt. FXDAX_MODEL_FSCK does the hunt with fsck after
 //! every transaction, slowly: corruption is found at the transaction that made it, not operations
 //! later.
+//!
+//! Random cuts took minutes to reach some bugs. Short sequences are also cut at every barrier, with
+//! every subset of what it may lose, up to a bound (`every_cut_of_a_short_sequence`), which
+//! FXDAX_MODEL_EVERY_CUT asks for more of.
 
 use super::tests::Tested;
 use super::*;
-use fxfs::filesystem::FxFilesystemBuilder;
+use fxfs::filesystem::{FlushReason, ForceMajor, FxFilesystemBuilder};
 use fxfs::fsck::{FsckOptions, fsck_with_options};
+use fxfs::object_store::journal::JournalOptions;
 use fxfs::object_store::volume::root_volume;
 use fxfs::object_store::{NewChildStoreOptions, StoreOptions};
 use proptest::prelude::*;
@@ -62,6 +67,15 @@ const SECOND_CUTS_ONE_IN: u32 = 2;
 const SEQUENCE_LIMIT: Duration = Duration::from_secs(120);
 /// The operations a filesystem that survived a power cut goes on with.
 const GOES_ON_FOR: usize = 4;
+/// The most a barrier may lose, a free or an extent's writes each, for every subset of it to be
+/// tried: past that, losing nothing, all of it, each alone, or all but each, of the barriers the
+/// test counts. Each more than doubles what a barrier takes.
+const EVERY_SUBSET_OF: usize = 6;
+/// How long a short sequence may be, for every cut of it.
+const SHORT: usize = 6;
+/// How much of the journal a short sequence fills before compactions start, on their own, among
+/// its operations, and each extension of its file: a few transactions.
+const SHORT_RECLAIM: u64 = 16 << 10;
 
 /// A file's model: its size, the pages written, which holes aren't, and its extended attributes.
 #[derive(Clone, Debug, Default)]
@@ -146,52 +160,20 @@ enum Op {
     Link(usize, usize),
     Unlink(usize),
     Rename(usize, usize),
-    Write {
-        file: usize,
-        at: u64,
-        len: usize,
-        byte: u8,
-    },
+    Write { file: usize, at: u64, len: usize, byte: u8 },
     /// Whole pages, every `stride`th of `pages`, in as few transactions as hold them, as writeback
     /// writes them.
-    Fill {
-        file: usize,
-        page: u64,
-        pages: u64,
-        stride: u64,
-        byte: u8,
-    },
-    Read {
-        file: usize,
-        at: u64,
-        len: usize,
-    },
-    Truncate {
-        file: usize,
-        size: u64,
-    },
-    Punch {
-        file: usize,
-        page: u64,
-        pages: u64,
-    },
-    Clone {
-        from: usize,
-        to: usize,
-        page: u64,
-        pages: u64,
-        to_page: u64,
-    },
-    SetXattr {
-        file: usize,
-        name: u8,
-        len: usize,
-        byte: u8,
-    },
-    RemoveXattr {
-        file: usize,
-        name: u8,
-    },
+    Fill { file: usize, page: u64, pages: u64, stride: u64, byte: u8 },
+    /// Whole pages, a transaction each, as a compaction runs, which commits racing a super-block
+    /// fall on either side of, and if `flushing`, with the volume's store flushed after each, as
+    /// an encrypted store flushes itself when it must: as can its end.
+    FillWhileCompacting { file: usize, page: u64, pages: u64, byte: u8, flushing: bool },
+    Read { file: usize, at: u64, len: usize },
+    Truncate { file: usize, size: u64 },
+    Punch { file: usize, page: u64, pages: u64 },
+    Clone { from: usize, to: usize, page: u64, pages: u64, to_page: u64 },
+    SetXattr { file: usize, name: u8, len: usize, byte: u8 },
+    RemoveXattr { file: usize, name: u8 },
     Sync,
     Fsync,
     Compact,
@@ -210,6 +192,9 @@ impl Op {
                 let pages = (page..page + pages).step_by(stride as usize);
                 let pages = pages.map(|page| (page, Some(bytes.clone()))).collect();
                 Some(Plan { ino: model.file(file)?, pages })
+            }
+            Op::FillWhileCompacting { file, page, pages, byte, .. } => {
+                Op::Fill { file, page, pages, stride: 1, byte }.plan(model)
             }
             Op::Clone { from, to, page, pages, to_page } => {
                 let (src, dst) = (model.file(from)?, model.file(to)?);
@@ -243,6 +228,41 @@ fn fill() -> impl Strategy<Value = u64> {
     prop_oneof![8u64..64, 512u64..4096]
 }
 
+/// What a short sequence does: few pages at a time, leaning on what ends in a barrier, so that a
+/// barrier has little to lose and every subset of it can be tried.
+fn short_op() -> impl Strategy<Value = Op> {
+    let name = || 0..NAMES;
+    let file = || 0usize..16;
+    prop_oneof![
+        3 => name().prop_map(Op::Create),
+        2 => name().prop_map(Op::Unlink),
+        1 => (name(), name()).prop_map(|(from, to)| Op::Rename(from, to)),
+        1 => (file(), name()).prop_map(|(file, name)| Op::Link(file, name)),
+        4 => (file(), 0u64..(64 << 10), 1usize..(2 * PAGE as usize), any::<u8>())
+            .prop_map(|(file, at, len, byte)| Op::Write { file, at, len, byte }),
+        2 => (file(), 0u64..16, 2u64..8, 1u64..=2, any::<u8>()).prop_map(
+            |(file, page, pages, stride, byte)| Op::Fill { file, page, pages, stride, byte }
+        ),
+        6 => (file(), 0u64..16, 2u64..16, any::<u8>(), any::<bool>()).prop_map(
+            |(file, page, pages, byte, flushing)| {
+                Op::FillWhileCompacting { file, page, pages, byte, flushing }
+            }
+        ),
+        1 => (file(), file(), 0u64..8, 1u64..8, 0u64..16).prop_map(
+            |(from, to, page, pages, to_page)| Op::Clone { from, to, page, pages, to_page }
+        ),
+        1 => (file(), 0u64..(64 << 10)).prop_map(|(file, size)| Op::Truncate { file, size }),
+        1 => (file(), 0u64..16, 1u64..4)
+            .prop_map(|(file, page, pages)| Op::Punch { file, page, pages }),
+        1 => (file(), 0u8..3, 1usize..64, any::<u8>())
+            .prop_map(|(file, name, len, byte)| Op::SetXattr { file, name, len, byte }),
+        2 => Just(Op::Sync),
+        2 => Just(Op::Fsync),
+        3 => Just(Op::Compact),
+        2 => Just(Op::Remount),
+    ]
+}
+
 fn op() -> impl Strategy<Value = Op> {
     let name = || 0..NAMES;
     let file = || 0usize..16;
@@ -257,6 +277,11 @@ fn op() -> impl Strategy<Value = Op> {
             .prop_map(|(file, at, len, byte)| Op::Write { file, at, len, byte }),
         3 => (file(), 0u64..64, fill(), 1u64..=2, any::<u8>()).prop_map(
             |(file, page, pages, stride, byte)| Op::Fill { file, page, pages, stride, byte }
+        ),
+        2 => (file(), 0u64..64, 2u64..32, any::<u8>(), any::<bool>()).prop_map(
+            |(file, page, pages, byte, flushing)| {
+                Op::FillWhileCompacting { file, page, pages, byte, flushing }
+            }
         ),
         2 => (file(), offset(), length()).prop_map(|(file, at, len)| Op::Read { file, at, len }),
         3 => (file(), offset()).prop_map(|(file, size)| Op::Truncate { file, size }),
@@ -304,6 +329,10 @@ struct Tally {
     cuts: Cell<u64>,
     second_cuts: Cell<u64>,
     refused: Cell<u64>,
+    /// The barriers with anything to lose, of sequences cut at every one.
+    barriers: Cell<u64>,
+    /// Those with more to lose than every subset of it was tried for.
+    beyond_the_bound: Cell<u64>,
 }
 
 /// What a sequence runs on: what cuts the power, and what it has of a device.
@@ -317,11 +346,14 @@ struct Setting {
     awkward: bool,
     /// Whether fsck runs after every transaction.
     fsck_each: bool,
+    /// Whether every power cut is tried (`Crashes::every`), rather than some at random.
+    every_cut: bool,
 }
 
 impl Setting {
     fn calm(seed: u64, blocks: u64) -> Self {
-        Self { seed, blocks, cuts_one_in: CUTS_ONE_IN, awkward: false, fsck_each: false }
+        let (awkward, fsck_each, every_cut) = (false, false, false);
+        Self { seed, blocks, cuts_one_in: CUTS_ONE_IN, awkward, fsck_each, every_cut }
     }
 
     fn awkward(seed: u64, blocks: u64) -> Self {
@@ -336,9 +368,35 @@ impl Setting {
         Self { fsck_each, ..self }
     }
 
+    fn cutting_everywhere(self) -> Self {
+        Self { every_cut: true, ..self }
+    }
+
+    /// What cuts the power.
+    fn crashes(&self) -> Arc<Crashes> {
+        match self.every_cut {
+            true => Crashes::every(self.seed, EVERY_SUBSET_OF),
+            false => Crashes::new(self.seed, self.cuts_one_in),
+        }
+    }
+
+    /// What cuts the replay of a power cut, whose seed this is: nothing, if every cut is tried,
+    /// which is as many as can be tried.
+    fn second_cuts(&self, seed: u64) -> Arc<Crashes> {
+        Crashes::new(seed, if self.every_cut { u32::MAX } else { SECOND_CUTS_ONE_IN })
+    }
+
     /// What opens a filesystem here.
     fn builder(&self) -> FxFilesystemBuilder {
-        FxFilesystemBuilder::new().fsck_after_every_transaction(self.fsck_each)
+        let builder = FxFilesystemBuilder::new().fsck_after_every_transaction(self.fsck_each);
+        if !self.every_cut {
+            return builder;
+        }
+        builder.journal_options(JournalOptions {
+            reclaim_size: SHORT_RECLAIM,
+            chunk_size: SHORT_RECLAIM,
+            ..Default::default()
+        })
     }
 
     /// The seed of what cuts the replay of power cut `cut`, during operation `op`: of those of
@@ -724,14 +782,25 @@ impl World {
                         self.fs.write_many(plan.ino, &mut writes).await
                     }
                 };
-                let mut data = self.model.files[&plan.ino].clone();
-                if self.unless_full(done, "a plan")?.is_some() {
-                    plan.pages.iter().for_each(|(page, bytes)| data.put(*page, bytes));
-                } else {
-                    data = self.stopped_short(data, &plan).await?;
-                }
-                self.model.files.insert(plan.ino, data);
-                self.check(&self.model, plan.ino).await?;
+                self.planned(&plan, done).await?;
+            }
+            Op::FillWhileCompacting { flushing, .. } => {
+                let Some(plan) = op.plan(&self.model) else { return Ok(self) };
+                let writes = async {
+                    for (page, bytes) in &plan.pages {
+                        let bytes = bytes.as_ref().expect("written");
+                        self.fs.write(plan.ino, page * PAGE, bytes).await?;
+                        if flushing {
+                            let reason = FlushReason::Journal(ForceMajor::False);
+                            self.fs.volume.flush_with_reason(reason).await?;
+                        }
+                    }
+                    Ok(())
+                };
+                let journal = self.filesystem.journal();
+                let (compacted, done) = futures::join!(journal.force_compact(), writes);
+                compacted.map_err(|e| format!("compacting: {e:#}"))?;
+                self.planned(&plan, done).await?;
             }
             Op::Read { file, at, len } => {
                 let Some(ino) = self.model.file(file) else { return Ok(self) };
@@ -798,6 +867,18 @@ impl World {
         Ok(self)
     }
 
+    /// Takes `plan` for done, as `done` says, or for what got done before it stopped short.
+    async fn planned(&mut self, plan: &Plan, done: Result<(), Error>) -> Result<(), String> {
+        let mut data = self.model.files[&plan.ino].clone();
+        if self.unless_full(done, "a plan")?.is_some() {
+            plan.pages.iter().for_each(|(page, bytes)| data.put(*page, bytes));
+        } else {
+            data = self.stopped_short(data, plan).await?;
+        }
+        self.model.files.insert(plan.ino, data);
+        self.check(&self.model, plan.ino).await
+    }
+
     /// Writes back the change of `ino`'s extended attribute `name` to `value`, as the kernel's
     /// writeback of its inode does. One the filesystem has no room for it drops, as the model does.
     async fn write_xattrs(
@@ -853,7 +934,7 @@ impl Past {
     ) -> Result<(), String> {
         tally.cuts.set(tally.cuts.get() + 1);
         let seed = self.setting.seed_of_cut(cut, op);
-        let second_cuts = Crashes::new(seed, SECOND_CUTS_ONE_IN);
+        let second_cuts = self.setting.second_cuts(seed);
         second_cuts.mark(0);
         let device = DeviceHolder::new(device.record_crashes(second_cuts.clone()));
         let setting = self.setting;
@@ -901,7 +982,7 @@ impl Past {
 }
 
 async fn run(setting: Setting, ops: Vec<Op>, tally: Rc<Tally>) -> Result<(), String> {
-    let crashes = Crashes::new(setting.seed, setting.cuts_one_in);
+    let crashes = setting.crashes();
     let mut world = World::new(setting, &crashes, tally.clone()).await;
     let root = world.root;
     let mut past = Past { setting, states: vec![Model::default()], durable: vec![0] };
@@ -918,9 +999,12 @@ async fn run(setting: Setting, ops: Vec<Op>, tally: Rc<Tally>) -> Result<(), Str
     let world = world.remount().await.map_err(|e| format!("at the end: {e}"))?;
     world.check_all().await.map_err(|e| format!("remounted at the end: {e}"))?;
     world.unmount().await?;
-    for (cut, (mark, device)) in crashes.take().into_iter().enumerate() {
+    let counts = crashes.counts();
+    tally.barriers.set(tally.barriers.get() + counts.barriers);
+    tally.beyond_the_bound.set(tally.beyond_the_bound.get() + counts.beyond_the_bound);
+    for (cut, (mark, device)) in crashes.take().enumerate() {
         let checked = past.check_cut((cut, mark as usize), &ops, device, root, tally.clone()).await;
-        checked.map_err(|e| format!("a power cut during op {mark}: {e}"))?;
+        checked.map_err(|e| format!("cut {cut}, during op {mark}: {e}"))?;
     }
     Ok(())
 }
@@ -967,6 +1051,49 @@ fn whatever_a_vfs_asks_reads_back_as_a_model_says() {
     assert!(cuts > 0, "no power cut");
     assert!(second_cuts > 0, "no power cut of a replay");
     assert!(tally.refused.get() > 0, "no device filled");
+}
+
+/// Short sequences, cut at every barrier with every subset of what it may lose (`EVERY_SUBSET_OF`),
+/// which is complete up to a bound, as ALICE and CrashMonkey are: FXDAX_MODEL_EVERY_CUT asks for more
+/// of them. The test says how far the bound went: the barriers past it were tried with less.
+#[test]
+fn every_cut_of_a_short_sequence() {
+    let cases = std::env::var("FXDAX_MODEL_EVERY_CUT").map_or(6, |cases| cases.parse().unwrap());
+    let config = Config { cases, failure_persistence: None, ..Config::default() };
+    let sequences = (any::<u64>(), proptest::collection::vec(short_op(), 1..=SHORT));
+    let tally = Rc::new(Tally::default());
+    let watched = watch_sequences(30 * SEQUENCE_LIMIT);
+    TestRunner::new(config)
+        .run(&sequences, |(seed, ops)| {
+            watched.send(format!("{seed}, {ops:?}")).expect("the watchdog stopped");
+            let setting = Setting::awkward(seed, ROOMY).cutting_everywhere();
+            prop_assert_eq!(setting.run(ops, tally.clone()), Ok(()));
+            Ok(())
+        })
+        .unwrap();
+    let (cuts, barriers) = (tally.cuts.get(), tally.barriers.get());
+    let beyond = tally.beyond_the_bound.get();
+    println!(
+        "{cuts} power cuts at {barriers} barriers, {beyond} past every subset of {EVERY_SUBSET_OF}"
+    );
+    assert!(cuts > 0, "no power cut");
+}
+
+/// Commits don't stop for a super-block, whose offsets are of the journal it flushed: read after
+/// that flush, they took a store's flush that ended meanwhile for done, past what a crash kept, and
+/// what only the journal held was given up, an allocation among it. Every cut of a few operations
+/// finds it in seconds; at random, it took 21 and a hunt of minutes. The seed keeps when the device
+/// answers.
+#[test]
+fn every_cut_of_a_store_flushed_around_a_super_block() {
+    let ops = vec![
+        Op::Write { file: 10, at: 29721, len: 1698, byte: 234 },
+        Op::Create(3),
+        Op::Compact,
+        Op::Fill { file: 5, page: 8, pages: 5, stride: 2, byte: 114 },
+        Op::FillWhileCompacting { file: 7, page: 7, pages: 13, byte: 45, flushing: true },
+    ];
+    Setting::awkward(5713515047801504255, ROOMY).cutting_everywhere().holds(ops);
 }
 
 /// Fsck after every transaction runs, around a sequence's compactions, crashes and remounts, and

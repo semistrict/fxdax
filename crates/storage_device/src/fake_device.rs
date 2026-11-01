@@ -90,46 +90,107 @@ impl Inner {
     fn discard_random(&mut self, rng: &mut impl rand::Rng, block_size: usize) -> Vec<String> {
         let mut discarded = Vec::new();
         for change in std::mem::take(&mut self.since_barrier) {
-            if !rng.random::<bool>() {
-                continue;
-            }
-            match change {
-                Change::Write { extent, offset } => {
-                    if let Some(data) = self.extents.get_mut(&extent) {
-                        data[offset..offset + block_size].fill(0xaf);
-                        discarded.push(format!("write of {extent:?} at {offset}"));
-                    }
-                }
-                Change::Free { extent, data } => {
-                    if !self.extents.contains_key(&extent) {
-                        self.stored += data.len() as u64;
-                        self.extents.insert(extent, data);
-                        discarded.push(format!("free of {extent:?}"));
-                    }
-                }
+            if rng.random::<bool>() {
+                discarded.extend(self.undo(change, block_size));
             }
         }
         discarded
+    }
+
+    /// Undoes `change`, saying so if there was anything to undo.
+    fn undo(&mut self, change: Change, block_size: usize) -> Option<String> {
+        match change {
+            Change::Write { extent, offset } => {
+                let data = self.extents.get_mut(&extent)?;
+                data[offset..offset + block_size].fill(0xaf);
+                Some(format!("write of {extent:?} at {offset}"))
+            }
+            Change::Free { extent, data } => {
+                if self.extents.contains_key(&extent) {
+                    return None;
+                }
+                self.stored += data.len() as u64;
+                self.extents.insert(extent, data);
+                Some(format!("free of {extent:?}"))
+            }
+        }
+    }
+
+    /// fxdax: the changes since the last barrier that a crash loses together or not at all: a free,
+    /// or the writes to an extent: of those, by their indices in `since_barrier`.
+    fn lost_together(&self) -> Vec<Vec<usize>> {
+        let mut together = Vec::new();
+        let mut written = HashMap::new();
+        for (index, change) in self.since_barrier.iter().enumerate() {
+            match change {
+                Change::Write { extent, .. } => {
+                    let group = *written.entry(*extent).or_insert_with(|| {
+                        together.push(Vec::new());
+                        together.len() - 1
+                    });
+                    together[group].push(index);
+                }
+                Change::Free { .. } => together.push(vec![index]),
+            }
+        }
+        together
+    }
+
+    /// fxdax: undoes the changes at `lost` since the last barrier.
+    fn undo_lost(&mut self, lost: &[usize], block_size: usize) {
+        let changes = std::mem::take(&mut self.since_barrier);
+        let mut lost = lost.iter().copied().peekable();
+        for (index, change) in changes.into_iter().enumerate() {
+            if lost.next_if_eq(&index).is_some() {
+                self.undo(change, block_size);
+            }
+        }
     }
 }
 
 /// Crashes of a device, recorded at random barriers once marked (`Crashes::mark`): each is what the
 /// device would hold had it crashed just before the barrier, which is any of what happened since
-/// the barrier before (`FakeDevice::discard_random_since_last_flush`).
+/// the barrier before (`FakeDevice::discard_random_since_last_flush`). Or every crash, up to a bound
+/// (`Crashes::every`), as ALICE and CrashMonkey have it.
 pub struct Crashes(Mutex<CrashesInner>);
 
 struct CrashesInner {
     rng: StdRng,
-    /// A crash is recorded at one barrier in `one_in`, on average.
-    one_in: u32,
+    /// What's recorded at a barrier.
+    recording: Recording,
     /// The mark that crashes recorded from now on carry, if any are recorded.
     mark: Option<u64>,
     recorded: Vec<Crash>,
+    /// fxdax: what `recording` got to.
+    counts: CrashCounts,
+}
+
+enum Recording {
+    /// A crash at one barrier in `one_in`, on average.
+    Random { one_in: u32 },
+    /// Every crash at each barrier: every subset, where a barrier has at most `most` things to lose
+    /// (`Inner::lost_together`), and otherwise losing nothing, all, each alone, or all but each.
+    Every { most: usize },
+}
+
+/// fxdax: what `Crashes::every` went through, which its bound is honest about.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CrashCounts {
+    /// The barrier with anything to lose.
+    pub barriers: u64,
+    /// The crashes recorded.
+    pub crashes: u64,
+    /// The barriers with more to lose than every subset of it was tried for.
+    pub beyond_the_bound: u64,
 }
 
 struct Crash {
     mark: u64,
-    inner: Inner,
+    /// What the device held. Those of a barrier share it.
+    inner: Arc<Inner>,
+    /// The changes since the last barrier, by index, that this crash loses, if `inner` still holds
+    /// them.
+    lost: Vec<usize>,
     capacity: u64,
     block_size: u32,
     branch: u64,
@@ -137,16 +198,65 @@ struct Crash {
     awkward: Option<(u64, u64)>,
 }
 
+impl Crash {
+    /// The device that recovered from this crash, what it held sealed.
+    fn recovered(self) -> (u64, FakeDevice) {
+        let mut inner = Arc::unwrap_or_clone(self.inner);
+        inner.undo_lost(&self.lost, self.block_size as usize);
+        inner.barrier();
+        let device =
+            FakeDevice::with_inner(inner, self.capacity, self.block_size).with_branch(self.branch);
+        let device = match self.awkward {
+            Some((seed, floor)) => device.recovered_awkward(seed, floor),
+            None => device,
+        };
+        (self.mark, device)
+    }
+}
+
+/// Every way to lose some of `together`: all of them, if there are at most `most`.
+fn ways_to_lose(together: &[Vec<usize>], most: usize) -> Vec<Vec<usize>> {
+    let chosen = |chosen: &mut dyn FnMut(usize) -> bool| {
+        let groups = together.iter().enumerate().filter(|(index, _)| chosen(*index));
+        let mut lost: Vec<usize> = groups.flat_map(|(_, group)| group).copied().collect();
+        lost.sort_unstable();
+        lost
+    };
+    let count = together.len();
+    if count <= most {
+        return (0..1u64 << count)
+            .map(|mask| chosen(&mut |index| mask >> index & 1 == 1))
+            .collect();
+    }
+    let alone = (0..count).map(|one| chosen(&mut |index| index == one));
+    let but = (0..count).map(|one| chosen(&mut |index| index != one));
+    let ends = [chosen(&mut |_| false), chosen(&mut |_| true)];
+    ends.into_iter().chain(alone).chain(but).collect()
+}
+
 impl Crashes {
+    fn with(seed: u64, recording: Recording) -> Arc<Self> {
+        Arc::new(Self(Mutex::new(CrashesInner {
+            rng: StdRng::seed_from_u64(seed),
+            recording,
+            mark: None,
+            recorded: Vec::new(),
+            counts: CrashCounts::default(),
+        })))
+    }
+
     /// Crashes recorded at one barrier in `one_in`, chosen, as is what each crash undoes, by an RNG
     /// seeded with `seed`.
     pub fn new(seed: u64, one_in: u32) -> Arc<Self> {
-        Arc::new(Self(Mutex::new(CrashesInner {
-            rng: StdRng::seed_from_u64(seed),
-            one_in,
-            mark: None,
-            recorded: Vec::new(),
-        })))
+        Self::with(seed, Recording::Random { one_in })
+    }
+
+    /// fxdax: every crash at every barrier: every subset of what a crash may lose there, where that
+    /// is at most `most` things, a free or an extent's writes each; and otherwise losing nothing,
+    /// all, each alone, or all but each, which the counts say of how many barriers (`counts`). What
+    /// recovers from each follows `seed`, if it is awkward.
+    pub fn every(seed: u64, most: usize) -> Arc<Self> {
+        Self::with(seed, Recording::Every { most })
     }
 
     /// Crashes recorded from now on carry `mark`, which tells a test what had happened before them:
@@ -160,40 +270,63 @@ impl Crashes {
         self.0.lock().mark = None;
     }
 
-    /// The crashes recorded, in order, as devices that recovered from them, with their marks: which
-    /// may record crashes of their own (`FakeDevice::record_crashes`).
-    pub fn take(&self) -> Vec<(u64, FakeDevice)> {
-        std::mem::take(&mut self.0.lock().recorded)
-            .into_iter()
-            .map(|crash| {
-                let device = FakeDevice::with_inner(crash.inner, crash.capacity, crash.block_size)
-                    .with_branch(crash.branch);
-                let device = match crash.awkward {
-                    Some((seed, floor)) => device.recovered_awkward(seed, floor),
-                    None => device,
-                };
-                (crash.mark, device)
-            })
-            .collect()
+    /// fxdax: what was gone through so far.
+    pub fn counts(&self) -> CrashCounts {
+        self.0.lock().counts
     }
 
-    /// At random, records `device` crashing before a barrier, as it holds `inner`.
-    fn maybe_record(&self, device: &FakeDevice, inner: &Inner) {
+    /// The crashes recorded, in order, as devices that recovered from them, with their marks: which
+    /// may record crashes of their own (`FakeDevice::record_crashes`). Each is made as it is asked
+    /// for, as a sequence may have thousands.
+    pub fn take(&self) -> impl Iterator<Item = (u64, FakeDevice)> + use<> {
+        std::mem::take(&mut self.0.lock().recorded).into_iter().map(Crash::recovered)
+    }
+
+    /// At random, or always, records `device` crashing before a barrier, as it holds `inner`.
+    fn record(&self, device: &FakeDevice, inner: &Inner) {
         let mut guard = self.0.lock();
         let crashes = &mut *guard;
         let Some(mark) = crashes.mark else { return };
-        if !crashes.rng.random_ratio(1, crashes.one_in) {
-            return;
+        match crashes.recording {
+            Recording::Random { one_in } => {
+                if !crashes.rng.random_ratio(1, one_in) {
+                    return;
+                }
+                let mut crashed = inner.clone();
+                crashed.discard_random(&mut crashes.rng, device.allocator.block_size());
+                crashes.record_crash(device, mark, Arc::new(crashed), Vec::new());
+            }
+            Recording::Every { most } => {
+                let together = inner.lost_together();
+                if together.is_empty() {
+                    return;
+                }
+                crashes.counts.barriers += 1;
+                crashes.counts.beyond_the_bound += (together.len() > most) as u64;
+                let shared = Arc::new(inner.clone());
+                for lost in ways_to_lose(&together, most) {
+                    crashes.record_crash(device, mark, shared.clone(), lost);
+                }
+            }
         }
-        let mut crashed = inner.clone();
-        crashed.discard_random(&mut crashes.rng, device.allocator.block_size());
-        // What the device holds after recovering is sealed.
-        crashed.barrier();
+    }
+}
+
+impl CrashesInner {
+    fn record_crash(
+        &mut self,
+        device: &FakeDevice,
+        mark: u64,
+        inner: Arc<Inner>,
+        lost: Vec<usize>,
+    ) {
         let awkward = (device.awkward.as_ref())
-            .map(|_| (crashes.rng.random(), device.sequence_floor.load(Ordering::Relaxed)));
-        crashes.recorded.push(Crash {
+            .map(|_| (self.rng.random(), device.sequence_floor.load(Ordering::Relaxed)));
+        self.counts.crashes += 1;
+        self.recorded.push(Crash {
             mark,
-            inner: crashed,
+            inner,
+            lost,
             capacity: device.capacity,
             block_size: device.block_size(),
             branch: device.branch,
@@ -582,7 +715,7 @@ impl FakeDevice {
     /// A barrier: what happened before it survives a crash, and the extents written are sealed.
     fn barrier(&self, inner: &mut Inner) {
         if let Some(crashes) = &self.crashes {
-            crashes.maybe_record(self, inner);
+            crashes.record(self, inner);
         }
         inner.barrier();
     }
@@ -1008,7 +1141,7 @@ mod tests {
         crashes.mark(2);
         device.commit_root(b"one").await.expect("commit failed");
 
-        let recorded = crashes.take().into_iter();
+        let recorded = crashes.take();
         let recorded: Vec<_> =
             recorded.map(|(mark, device)| (mark, crate::DeviceHolder::new(device))).collect();
         assert_eq!(recorded.iter().map(|(mark, _)| *mark).collect::<Vec<_>>(), vec![1, 2]);
@@ -1023,7 +1156,82 @@ mod tests {
         let buffer = before_commit.allocate_buffer(BS).await;
         let error = before_commit.write(b, BS as u64, buffer.as_ref()).await.expect_err("rewrote");
         assert_eq!(error.downcast_ref::<SealedExtent>(), Some(&SealedExtent(b)));
-        assert!(crashes.take().is_empty());
+        assert!(crashes.take().next().is_none());
+    }
+
+    /// What a crash left of `extents`' first blocks, each `Some` of what it held.
+    async fn held(device: &FakeDevice, extents: &[ExtentId]) -> Vec<Option<u8>> {
+        let mut held = Vec::new();
+        for extent in extents {
+            let mut buffer = device.allocate_buffer(TEST_DEVICE_BLOCK_SIZE).await;
+            let read = device.read(*extent, 0, buffer.as_mut()).await;
+            held.push(read.is_ok().then(|| buffer.to_vec()[0]));
+        }
+        held
+    }
+
+    /// fxdax: every crash at a barrier is every subset of what it may lose: writes to an extent
+    /// lost together, frees alone. A barrier with nothing to lose has no crash.
+    #[fuchsia::test]
+    async fn test_every_crash() {
+        const BS: usize = TEST_DEVICE_BLOCK_SIZE;
+        let crashes = Crashes::every(1, 3);
+        let device = FakeDevice::new(8, BS as u32).calm().record_crashes(crashes.clone());
+        let extents = [ExtentId::new(1, 1), ExtentId::new(1, 2), ExtentId::new(1, 3)];
+        write(&device, extents[0], 0, 1, BS).await;
+        device.flush().await.expect("flush failed");
+        crashes.mark(1);
+        write(&device, extents[1], 0, 2, BS).await;
+        write(&device, extents[1], BS as u64, 2, BS).await;
+        write(&device, extents[2], 0, 3, BS).await;
+        device.free(extents[0]).await.expect("free failed");
+        device.flush().await.expect("flush failed");
+        device.flush().await.expect("flush failed");
+
+        let mut left = Vec::new();
+        for (mark, recovered) in crashes.take() {
+            assert_eq!(mark, 1);
+            left.push(held(&recovered, &extents).await);
+        }
+        const LOST: u8 = 0xaf;
+        let mut expected = Vec::new();
+        for b in [2, LOST] {
+            for c in [3, LOST] {
+                for freed in [None, Some(1)] {
+                    expected.push(vec![freed, Some(b), Some(c)]);
+                }
+            }
+        }
+        left.sort();
+        expected.sort();
+        assert_eq!(left, expected);
+        let counts = crashes.counts();
+        assert_eq!((counts.barriers, counts.crashes, counts.beyond_the_bound), (1, 8, 0));
+    }
+
+    /// fxdax: past its bound, a barrier's crashes are losing nothing, all, each alone, or all but
+    /// each, which the counts own up to.
+    #[fuchsia::test]
+    async fn test_every_crash_past_the_bound() {
+        const BS: usize = TEST_DEVICE_BLOCK_SIZE;
+        let crashes = Crashes::every(1, 2);
+        let device = FakeDevice::new(8, BS as u32).calm().record_crashes(crashes.clone());
+        let extents: Vec<_> = (1..=4).map(|sequence| ExtentId::new(1, sequence)).collect();
+        crashes.mark(1);
+        for extent in &extents {
+            write(&device, *extent, 0, 1, BS).await;
+        }
+        device.flush().await.expect("flush failed");
+
+        let mut lost = Vec::new();
+        for (_, recovered) in crashes.take() {
+            let left = held(&recovered, &extents).await;
+            lost.push(left.iter().filter(|block| **block != Some(1)).count());
+        }
+        lost.sort();
+        assert_eq!(lost, [0, 1, 1, 1, 1, 3, 3, 3, 3, 4]);
+        let counts = crashes.counts();
+        assert_eq!((counts.barriers, counts.crashes, counts.beyond_the_bound), (1, 10, 1));
     }
 
     /// fxdax: a free waits while the test holds the frees, and is made once it lets go.
@@ -1125,8 +1333,7 @@ mod tests {
         let extent = ExtentId::new(1, floor);
         write(&device, extent, 0, 1, BS).await;
         device.flush().await.expect("flush failed");
-        let mut recorded = crashes.take();
-        let (_, recovered) = recorded.pop().expect("a crash");
+        let (_, recovered) = crashes.take().last().expect("a crash");
         assert_eq!(recovered.next_sequence().await.unwrap(), floor + 1);
         assert!(recovered.sequence_floor().await.unwrap() >= floor);
         assert!(recovered.awkward.is_some());

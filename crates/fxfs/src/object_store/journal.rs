@@ -244,6 +244,8 @@ pub struct Journal {
     writer_mutex: Mutex<()>,
     sync_mutex: futures::lock::Mutex<()>,
     trace: AtomicBool,
+    // fxdax: what the journal's file is extended by (`JournalOptions::chunk_size`).
+    chunk_size: u64,
 
     // This event is used when we are waiting for a compaction to free up journal space.
     reclaim_event: Event,
@@ -413,6 +415,10 @@ pub struct JournalOptions {
     /// fxdax: when the flush task writes the journal: as each block fills, as upstream, unless
     /// set.
     pub lazy_flush: Option<LazyFlush>,
+
+    /// fxdax: how much the journal's file is extended by at a time: a test's sequence too short
+    /// to write 128 KiB of it extends it all the same.
+    pub chunk_size: u64,
 }
 
 /// fxdax: the flush task writes the journal once this much of it is buffered, or once the oldest
@@ -429,6 +435,7 @@ impl Default for JournalOptions {
     fn default() -> Self {
         JournalOptions {
             reclaim_size: DEFAULT_RECLAIM_SIZE,
+            chunk_size: CHUNK_SIZE,
             barriers_enabled: false,
             lazy_flush: None,
         }
@@ -562,6 +569,7 @@ impl Journal {
             writer_mutex: Mutex::new(()),
             sync_mutex: futures::lock::Mutex::new(()),
             trace: AtomicBool::new(false),
+            chunk_size: options.chunk_size,
             reclaim_event: Event::new(),
             follower: Mutex::new(None),
             stats: JournalStats::default(),
@@ -1457,7 +1465,7 @@ impl Journal {
         .await
         .context("create journal")?;
         if self.inner.lock().image_builder_mode.is_none() {
-            let mut file_range = 0..self.chunk_size();
+            let mut file_range = 0..CHUNK_SIZE;
             journal_handle
                 .preallocate_range_in_extents_of(&mut transaction, &mut file_range, EXTENT_SIZE)
                 .await
@@ -1504,7 +1512,7 @@ impl Journal {
                 Options { skip_journal_checks: true, ..Default::default() },
             )
             .await?;
-        let mut file_range = 0..self.chunk_size();
+        let mut file_range = 0..CHUNK_SIZE;
         self.handle
             .get()
             .unwrap()
@@ -1687,7 +1695,8 @@ impl Journal {
             let file_offset = inner.writer.journal_file_checkpoint().file_offset;
 
             let size = handle.get_size();
-            let wanted = (file_offset + room).saturating_sub(size).next_multiple_of(CHUNK_SIZE);
+            let wanted =
+                (file_offset + room).saturating_sub(size).next_multiple_of(self.chunk_size());
             let extended = wanted.min(MAX_EXTENDED_PER_COMMIT);
             let extension = (extended > 0).then_some(size..size + extended);
 
@@ -2130,7 +2139,7 @@ impl Journal {
     }
 
     fn chunk_size(&self) -> u64 {
-        CHUNK_SIZE
+        self.chunk_size
     }
 
     /// fxdax: how much of the journal to have ahead for `transaction`, a chunk's or the chunks that
@@ -3816,8 +3825,9 @@ mod tests {
         use storage_device::fake_device::RoundTrips;
 
         let trips = Arc::new(RoundTrips::default());
-        let device =
-            DeviceHolder::new(FakeDevice::new(1 << 16, 4096).calm().with_round_trips(trips.clone()));
+        let device = DeviceHolder::new(
+            FakeDevice::new(1 << 16, 4096).calm().with_round_trips(trips.clone()),
+        );
         let options = || super::JournalOptions { reclaim_size: 8 << 20, ..Default::default() };
         let fs = FxFilesystemBuilder::new()
             .journal_options(options())
@@ -3890,8 +3900,9 @@ mod tests {
         use storage_device::fake_device::RoundTrips;
 
         let trips = Arc::new(RoundTrips::default());
-        let device =
-            DeviceHolder::new(FakeDevice::new(1 << 16, 4096).calm().with_round_trips(trips.clone()));
+        let device = DeviceHolder::new(
+            FakeDevice::new(1 << 16, 4096).calm().with_round_trips(trips.clone()),
+        );
         let fs = FxFilesystem::new_empty(device).await.expect("new_empty failed");
         fs.sync(SyncOptions { flush_device: true, ..Default::default() })
             .await
