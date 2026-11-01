@@ -161,14 +161,15 @@ pub(crate) fn is_claimed(dir: &Path, branch: u64) -> Result<bool, Failure> {
 /// Names `origin` in the claim of `child`, a fork's child, in the store directory `dir`, durably,
 /// whole or not at all, as the fork's segment goes to object storage: if the child is claimed, its
 /// fork not deleted here meanwhile, as one failing once its commit was made is before its segment
-/// goes.
-fn claim_origin(dir: &Path, child: u64, origin: Origin) -> Result<(), Failure> {
+/// goes. Returns whether it is.
+fn claim_origin(dir: &Path, child: u64, origin: Origin) -> Result<bool, Failure> {
     if claimed(dir, child)?.is_none() {
-        return Ok(());
+        return Ok(false);
     }
     let text = format!("{:x} {:x}\n", origin.parent, origin.at);
     let written = write_durably(dir, &claim_file(child), text.as_bytes());
-    written.map_err(|err| Failure::Other(format!("recording the fork's origin: {err}")))
+    written.map_err(|err| Failure::Other(format!("recording the fork's origin: {err}")))?;
+    Ok(true)
 }
 
 /// Removes the claim of `branch` of the store directory `dir`, if it has one, durably.
@@ -1331,7 +1332,9 @@ impl InFlight {
     /// land: harmless, as the uploader fails then, and with it the forks, whose children go, and
     /// their markers with them (`ExtentStore::fork`). Each child's claim names the fork's origin,
     /// the segment's place in the branch, likewise, which the child's record has if the parent's
-    /// writers give it one: what deleting the child deletes in object storage (TASK-79.82).
+    /// writers give it one: what deleting the child deletes in object storage (TASK-79.82). A child
+    /// deleted here already has no claim, its fork having failed once its commit was made, and
+    /// gets no marker, which nothing would delete.
     fn upload(
         &mut self,
         writer: &Arc<Writer<Bucket>>,
@@ -1342,11 +1345,13 @@ impl InFlight {
         }
         for segment in &segments {
             for &child in &segment.forks {
-                self.marker.of(child).write(None, [segment.tag])?;
-                failpoint!("remote::child_marked");
                 let origin = Origin { parent: self.marker.branch, at: segment.seq };
-                claim_origin(&self.marker.dir, child, origin)?;
+                let claimed = claim_origin(&self.marker.dir, child, origin)?;
                 failpoint!("remote::origin_named");
+                if claimed {
+                    self.marker.of(child).write(None, [segment.tag])?;
+                }
+                failpoint!("remote::child_marked");
             }
         }
         let tags = self.tags().chain(segments.iter().map(|segment| segment.tag));
@@ -3391,6 +3396,9 @@ mod tests {
         // The checkpoint at the fork, its child deleted, names it no more.
         let parents = futures::executor::block_on(recover(&*bucket, parent.branch(), None));
         assert_eq!(parents.unwrap().state.forks, []);
+        // TASK-44.10: nor a marker, its commit's segment going after its child was deleted here.
+        let marker = dir.path().join("parent").join(super::marker(child));
+        assert!(!marker.exists(), "the marker of a child deleted is left");
         let unwritten = format!(
             "forking branch {child:x}: the fork to branch {child:#x} failed once its commit was \
              made: creating branches/{child:016x}.{:016x}: File exists (os error 17)",
