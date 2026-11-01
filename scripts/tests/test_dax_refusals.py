@@ -27,6 +27,12 @@ HISTORY = '    "MAP of ExtentId { branch: 1, sequence: 2 } from 0x0, writably, O
 MET = ("WARN fxdax::extents: extentd: a store refused at DAX window offset 0x1f7000, 2.7ms ago, "
        'mapping ExtentId { branch: 1, sequence: 5 } from 0x0, read-only; in the store: '
        'Ok(Some("0x1000 bytes, open")), met: UNMAP, 0x1000 bytes from 0x1f7000\n')
+REFUSED = ("2026-11-01T18:20:09.277538431 [anonymous-instance:dax faults] fxdax: the DAX window "
+           "refused {what}, at offset 0x308000, by thread 128 ({thread}): Err(Errno(EACCES))\n")
+WORKER = REFUSED.format(what="a store to a page the window maps read-only",
+                        thread="kworker/1:2+events")
+VCPU = REFUSED.format(what="a store to a page the window maps read-only", thread="fc_vcpu 1")
+LOAD = REFUSED.format(what="an access to nothing mapped", thread="fc_vcpu 1")
 
 
 class DaxRefusals(unittest.TestCase):
@@ -44,6 +50,12 @@ class DaxRefusals(unittest.TestCase):
 
     def test_what_a_refusal_met_later_is_no_refusal(self):
         self.assertEqual(dax_refusals.unexplained([MET]), [])
+
+    def test_stores_of_kernel_workers_are_no_guests(self):
+        self.assertEqual(dax_refusals.by_guests([WORKER]), [])
+
+    def test_stores_of_vcpus_are_guests(self):
+        self.assertEqual(dax_refusals.by_guests([WORKER, VCPU, LOAD]), [VCPU])
 
 
 if __name__ == "__main__":

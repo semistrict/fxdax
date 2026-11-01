@@ -10,12 +10,17 @@ fault, a kernel worker's, faults the page in for the vCPU as its guest goes on, 
 refuses it; the guest's task retries once the guest made its mapping read-only, through its own
 fault, which maps the page anew. Every DAX run has hundreds such, of pages of extents sealed. A
 store refused to a page of an extent still open, or mapped writably, is the guest and the window
-disagreeing (TASK-99): that fails the run.
+disagreeing (TASK-99): that fails the run. But the same worker's fault refused on a page the window
+just remapped, which the guest was reading, looks like that to the daemon too, and it was all 2,327
+of r422's refused stores and all 28 of r394's (TASK-150.16): given the VM processes' logs, which name
+the thread, only a store a vCPU made fails the run, whatever the page: a worker's is no store of the
+guest's, whose own access decides. The logs hold each first thousand refusals and every power of two
+after, and a vCPU's stays refused until its VM stops, so that one past that shows.
 
-Usage: scripts/dax-refusals.py EXTENTD_LOG
+Usage: scripts/dax-refusals.py EXTENTD_LOG [FIRECRACKER_LOG...]
 
-prints each refused store no seal explains, as the daemon logged it (its first line), and exits 1 if
-there are any.
+prints each refused store that fails the run, as logged (its first line), and exits 1 if there are
+any.
 """
 
 import re
@@ -32,16 +37,31 @@ SEALED = re.compile(
 )
 
 
+# A VM process's line for a store the window refused, which names the thread that made it.
+THREAD = re.compile(r"the DAX window refused a store .*, by thread \d+ \(([^)]*)\)")
+
+
 def unexplained(lines):
     """The lines of `lines` that say of a store refused that no seal explains."""
     return [line for line in lines if REFUSED.search(line) and not SEALED.search(line)]
 
 
+def by_guests(lines):
+    """The lines of `lines`, a VM process's, of stores refused that no kernel worker made."""
+    threads = ((line, THREAD.search(line)) for line in lines)
+    return [line for line, thread in threads if thread and not thread[1].startswith("kworker")]
+
+
 def main():
-    if len(sys.argv) != 2:
+    if len(sys.argv) < 2:
         raise SystemExit(__doc__)
-    with open(sys.argv[1], errors="replace") as log:
-        found = unexplained(log)
+    found = []
+    if len(sys.argv) == 2:
+        with open(sys.argv[1], errors="replace") as log:
+            found = unexplained(log)
+    for name in sys.argv[2:]:
+        with open(name, errors="replace") as log:
+            found += by_guests(log)
     for line in found:
         print(line.rstrip("\n"))
     sys.exit(1 if found else 0)

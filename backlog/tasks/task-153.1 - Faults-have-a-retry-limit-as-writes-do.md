@@ -1,9 +1,10 @@
 ---
 id: TASK-153.1
 title: 'Faults have a retry limit, as writes do'
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-11-01 22:52'
+updated_date: '2026-11-01 22:59'
 labels: []
 dependencies: []
 parent_task_id: TASK-153
@@ -31,3 +32,9 @@ Fault, semaphore and seal form a lock cycle broken only by retries, and fxfs_dax
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+On refactor/fault-limit. The limit is on -EXDEV alone, the one way round that waits for nothing: -EBUSY and -EDEADLK block until a seal or the semaphore clears, and a cap there would SIGBUS a healthy process under heavy sealing; -ESTALE and no-room had limits already. guest/sim: mutant task-153.1-fault-limit: with TASK-140's bug, the limit gives a fault that fails, 'a store to the head: -14', and without it a livelock at 257 drops. check.sh 0 failed of 16 scenarios and 200 seeds. Not yet on a real kernel. Structure: the cycle of fault, semaphore and seal stays, broken by waits: this bounds the one spin.
+<!-- SECTION:NOTES:END -->

@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-01 16:53'
-updated_date: '2026-11-01 18:44'
+updated_date: '2026-11-01 23:00'
 labels: []
 dependencies: []
 parent_task_id: TASK-150
@@ -46,4 +46,6 @@ Recurred in r422 (all 14 default suites passing): store at 0x6c0000, one of 1002
 Correction to the note above: 2 of the 8 runs since r394 with any refusals had an unexplained one (r394: 1 of 55; r422: 1 of 1002). Runs top out at 1001 or 1002 refusals logged, which looks like a cap on what the daemon logs: if so the gate sees only the first thousand and undercounts. Not yet checked.
 
 Checked: crates/fxdax/src/extentd/server.rs:1118 logs a refusal only if count <= 1000 or a power of two, so scripts/dax-refusals.py sees the first 1000 and undercounts. A blind spot in the gate itself: it needs the count of unexplained refusals from the daemon, not from what it logged.
+
+Explained, by the guest audit and checked over 9 runs: 8,378 refused stores, all by KVM's async page fault kworkers, none by a vCPU: the guest's own access decides, and wasn't refused. Not guest stores. Which route produced the two read-only MAPs of open extents stays unverified. The gate is fixed by TASK-156.
 <!-- SECTION:NOTES:END -->
