@@ -338,6 +338,9 @@ fn place_of(entry: &Extent) -> Place {
     }
 }
 
+/// fxdax: a segment closed between commits, framed: its number, and its framed file.
+type FramedSegment<F> = (SegmentId, Arc<Framed<F>>);
+
 impl<D: Dir> Store<D> {
     /// Makes a new, empty store in `dir`, which is empty, of one branch, as `description`
     /// describes, and opens that branch.
@@ -1601,7 +1604,7 @@ impl<D: Dir> Store<D> {
     /// file goes with the next commit, or the store fails, as it is framed, and durable, or not.
     fn framing_ended(
         &self,
-        framed: Result<(SegmentId, Arc<Framed<D::File>>), Error>,
+        framed: Result<FramedSegment<D::File>, Error>,
     ) -> Result<(), Error> {
         let mut state = self.state.lock().unwrap();
         let ended = framed.map(|(number, framed)| {
