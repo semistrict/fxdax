@@ -259,6 +259,9 @@ pub struct FakeDevice {
     frees_held_by: Option<Arc<futures::lock::Mutex<()>>>,
     /// fxdax: what counts the reads' round trips, if anything (`FakeDevice::with_round_trips`).
     round_trips: Option<Arc<RoundTrips>>,
+    /// fxdax: the devices reads of extents this one doesn't hold fall through to, which forks of it
+    /// fall through to too (`FakeDevice::attach`), each with what counts the reads that reach it.
+    attached: Vec<(Arc<DeviceHolder>, Arc<AtomicU64>)>,
 }
 
 const TRANSFER_HEAP_SIZE: usize = 64 * 1024 * 1024;
@@ -286,6 +289,7 @@ impl FakeDevice {
             sequence_floor: Arc::default(),
             frees_held_by: None,
             round_trips: None,
+            attached: Vec::new(),
         }
     }
 
@@ -293,6 +297,14 @@ impl FakeDevice {
     pub fn with_branch(mut self, branch: u64) -> Self {
         self.branch = branch;
         self
+    }
+
+    /// fxdax: makes reads of extents the device doesn't hold fall through to `device`, as a VM's
+    /// reads do to a fork attached to it (backlog doc-10). Returns what counts those that reach it.
+    pub fn attach(&mut self, device: DeviceHolder) -> Arc<AtomicU64> {
+        let reads = Arc::new(AtomicU64::new(0));
+        self.attached.push((Arc::new(device), reads.clone()));
+        reads
     }
 
     /// fxdax: makes `floor` the device's sequence floor (`Device::sequence_floor`), as it is when
@@ -414,18 +426,29 @@ impl Device for FakeDevice {
             Some(trips) => Some(trips.reads.issue().await),
             None => None,
         };
-        let inner = self.inner.lock();
-        let Some(data) = inner.extents.get(&extent) else {
-            return Err(NoExtent(extent).into());
-        };
-        let offset = offset as usize;
-        let held = data.len().saturating_sub(offset).min(buffer.len());
-        let (mut held_part, mut rest) = buffer.reborrow().split_at_mut(held);
-        if held > 0 {
-            held_part.copy_from_slice(&data[offset..offset + held]);
+        {
+            let inner = self.inner.lock();
+            if let Some(data) = inner.extents.get(&extent) {
+                let offset = offset as usize;
+                let held = data.len().saturating_sub(offset).min(buffer.len());
+                let (mut held_part, mut rest) = buffer.reborrow().split_at_mut(held);
+                if held > 0 {
+                    held_part.copy_from_slice(&data[offset..offset + held]);
+                }
+                rest.fill(0);
+                return Ok(());
+            }
         }
-        rest.fill(0);
-        Ok(())
+        for (device, reads) in &self.attached {
+            match device.read(extent, offset, buffer.reborrow()).await {
+                Err(error) if error.is::<NoExtent>() => {}
+                result => {
+                    reads.fetch_add(1, Ordering::Relaxed);
+                    return result;
+                }
+            }
+        }
+        Err(NoExtent(extent).into())
     }
 
     async fn write_with_opts(
@@ -512,6 +535,15 @@ impl Device for FakeDevice {
         if let Some(held) = &self.frees_held_by {
             drop(held.lock().await);
         }
+        // fxdax: what reads fall through to is a filesystem's never to free.
+        let holds = self.inner.lock().extents.contains_key(&extent);
+        if !holds {
+            for (device, _) in &self.attached {
+                let mut buffer = self.allocate_buffer(self.block_size() as usize).await;
+                let read = device.read(extent, 0, buffer.as_mut()).await;
+                assert!(read.is_err(), "freeing {extent:?}, which is attached");
+            }
+        }
         let mut inner = self.inner.lock();
         if let Some(data) = inner.extents.remove(&extent) {
             inner.open.remove(&extent);
@@ -581,7 +613,9 @@ impl Device for FakeDevice {
             // The fork's branch has written nothing.
             inner.next_sequence = 0;
         }
-        let fork = Self::with_inner(inner, self.capacity, self.block_size()).with_branch(branch);
+        let mut fork =
+            Self::with_inner(inner, self.capacity, self.block_size()).with_branch(branch);
+        fork.attached = self.attached.clone();
         Ok(DeviceHolder::new(fork))
     }
 

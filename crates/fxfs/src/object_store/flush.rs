@@ -6,7 +6,8 @@
 // share their source's layers and extents) deviate from upstream here: compaction releases a
 // store's old layers by reference count, as snapshots share them, and tombstones only those no
 // store references. A follower's store (backlog doc-8) takes the layers its writer's flush wrote
-// when it applies the flush's end (`take_flushed_layers`).
+// when it applies the flush's end (`take_flushed_layers`). A store's base layers (backlog doc-10)
+// stay at the bottom of its tree, in no compaction, and in no reservation.
 
 // This module is responsible for flushing (a.k.a. compacting) the object store trees.
 
@@ -74,7 +75,8 @@ impl ObjectStore {
         let needs_flush = object_manager.needs_flush(self.store_object_id);
         // If we don't need to do anything for the stated flush purpose, do nothing.
         if (reason == FlushReason::Journal(ForceMajor::False) && !needs_flush)
-            || (reason == FlushReason::UpgradeVersion && earliest_version == LATEST_VERSION)
+            || (reason == FlushReason::UpgradeVersion
+                && self.earliest_writable_version() == LATEST_VERSION)
             || (reason == FlushReason::EncryptedMutations
                 && self.store_info().unwrap().encrypted_mutations_object_id == INVALID_OBJECT_ID)
         {
@@ -228,12 +230,14 @@ impl ObjectStore {
             FlushReason::UpgradeVersion | FlushReason::Journal(ForceMajor::True) => true,
             _ => false,
         };
+        let base_layers = new_store_info.base_layers.len();
         let (layers_to_keep, old_layers) = tree::flush(
             &self.tree,
             writer,
             matches!(reason, FlushReason::Journal(_))
                 .then(|| filesystem.journal().get_compaction_yielder()),
             full_compaction,
+            base_layers,
         )
         .await
         .context("Failed to flush tree")?;
@@ -243,8 +247,10 @@ impl ObjectStore {
             vec![layer_from_written_handle(new_object_tree_layer, unwrapped_key, &kept).await?];
         new_layers.extend(layers_to_keep.iter().map(|l| (*l).clone()));
 
+        // fxdax: those of the store's own, above its base layers.
+        let own_layers = &new_layers[..new_layers.len() - base_layers];
         new_store_info.layers = Vec::new();
-        for layer in &new_layers {
+        for layer in own_layers {
             if let Some(handle) = layer.handle() {
                 new_store_info.layers.push(handle.object_id());
             }
@@ -321,7 +327,7 @@ impl ObjectStore {
 
         self.write_store_info(&mut end_transaction, &new_store_info).await?;
 
-        let layer_file_sizes = new_layers
+        let layer_file_sizes = own_layers
             .iter()
             .map(|l| l.handle().map(ReadObjectHandle::get_size).unwrap_or(0))
             .collect::<Vec<u64>>();
@@ -522,11 +528,14 @@ impl ObjectStore {
         );
         let parent_store = self.parent_store.as_ref().unwrap();
         let new_store_info = super::load_store_info(parent_store, self.store_object_id).await?;
-        let (new_layers, total_layer_size) =
+        let (mut new_layers, total_layer_size) =
             open_layers(parent_store, new_store_info.layers.iter().copied(), None)
                 .await
                 .context("Failed to open a flush's layers")?;
-        let old_layers = self.tree.immutable_layer_set();
+        let mut old_layers = self.tree.immutable_layer_set();
+        let own = old_layers.layers.len() - self.base_layer_count();
+        let base_layers = old_layers.layers.split_off(own);
+        new_layers.extend(base_layers.iter().map(|layer| (*layer).clone()));
         {
             let mut store_info = self.store_info.lock();
             let info = store_info.as_mut().unwrap();

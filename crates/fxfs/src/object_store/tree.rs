@@ -4,7 +4,7 @@
 
 // Fuchsia's `src/storage/fxfs/src/object_store/tree.rs`. fxdax: `flush` picks the layers it merges
 // with `layers_to_merge`, which the allocator's compactions pick theirs with too (the allocator's
-// "Compactions").
+// "Compactions"), and which leaves a store's base layers out (backlog doc-10).
 
 use crate::lsm_tree::types::{LayerIterator, MergeableKey, Value};
 use crate::lsm_tree::{LSMTree, LayerSet, LockedLayer, Query, Yielder, compact_with_iterator};
@@ -34,11 +34,12 @@ pub async fn flush<'a, K: MergeableKey, V: Value>(
     writer: impl WriteBytes + Send,
     yielder: Option<impl Yielder>,
     full_compaction: bool,
+    base_layers: usize,
 ) -> Result<(Layers<K, V>, Layers<K, V>), Error>
 where
     LSMTree<K, V>: MajorCompactable<K, V>,
 {
-    let (layer_set, layers_to_keep) = layers_to_merge(tree, full_compaction);
+    let (layer_set, layers_to_keep) = layers_to_merge(tree, full_compaction, base_layers);
 
     {
         let start_time = std::time::Instant::now();
@@ -63,19 +64,21 @@ where
 
 /// fxdax: picks the layers of `tree` that a flush merges: all its immutable layers for a full
 /// compaction, and otherwise the newest, as far as their sizes make merging them worth it. Returns
-/// them, and the older layers the flush keeps.
+/// them, and the older layers the flush keeps, which always include the `base_layers` at the
+/// bottom: what no compaction rewrites. As then some layers are kept, tombstones over them stay.
 pub fn layers_to_merge<K: MergeableKey, V: Value>(
     tree: &LSMTree<K, V>,
     full_compaction: bool,
+    base_layers: usize,
 ) -> (LayerSet<K, V>, Layers<K, V>) {
     let mut layer_set = tree.immutable_layer_set();
+    let mergeable = layer_set.layers.len() - base_layers;
     let mut total_size = 0;
     let mut layer_count = 0;
     let mut split_index = if full_compaction {
-        layer_set.layers.len()
+        mergeable
     } else {
-        layer_set
-            .layers
+        layer_set.layers[..mergeable]
             .iter()
             .position(|layer| {
                 match layer.handle() {
@@ -93,7 +96,7 @@ pub fn layers_to_merge<K: MergeableKey, V: Value>(
                 }
                 false
             })
-            .unwrap_or(layer_set.layers.len())
+            .unwrap_or(mergeable)
     };
 
     // If there's only one immutable layer to merge with and it's big, don't merge with it.

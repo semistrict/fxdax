@@ -4,8 +4,8 @@
 
 // Fuchsia's `src/storage/fxfs/src/fsck/store_scanner.rs`. fxdax snapshots (volume snapshots that
 // share their source's layers and extents) deviate from upstream here: a store's extents are its
-// data owner's except where frozen owners hold them, and a root object (a shared layer) may be
-// referenced by several stores' information.
+// data owner's except where frozen owners hold them or a base does (backlog doc-10), and a root
+// object (a shared layer) may be referenced by several stores' information.
 
 use crate::fsck::errors::{FsckError, FsckFatal, FsckWarning};
 use crate::fsck::{FragmentationStats, Fsck, FsckResult};
@@ -162,6 +162,8 @@ struct ScannedStore<'a> {
     store_id: u64,
     /// fxdax: the owner the store allocates under, which a snapshot may have changed.
     data_owner: u64,
+    // fxdax: the branches of the extents of the store's base, if it has one (backlog doc-10).
+    base_branches: HashSet<u64>,
     is_root_store: bool,
     is_encrypted: bool,
     current_object: Option<CurrentObject>,
@@ -195,6 +197,7 @@ impl<'a> ScannedStore<'a> {
             root_objects: root_objects.as_ref().into(),
             store_id,
             data_owner: store_id,
+            base_branches: HashSet::default(),
             is_root_store,
             is_encrypted,
             current_object: None,
@@ -1051,8 +1054,10 @@ impl<'a> ScannedStore<'a> {
             ))?;
         }
         // fxdax: the extent is the store's current data owner's, unless it is shared with other
-        // stores (snapshots), which fsck checks no store for.
-        if !self.fsck.is_shared(&store_extent) {
+        // stores (snapshots), which fsck checks no store for, or is its base's, which the allocator
+        // doesn't hold.
+        if !self.fsck.is_shared(&store_extent) && !self.base_branches.contains(&store_extent.branch)
+        {
             self.fsck.reference(store_extent, device_offset..device_offset + len, self.data_owner);
         }
         Ok(())
@@ -1456,6 +1461,8 @@ pub(super) async fn scan_store(
         store.root_directory_object_id(),
     );
     scanned.data_owner = store.filesystem().allocator().data_owner(store_id);
+    scanned.base_branches =
+        store.store_info().iter().flat_map(|info| info.base_branches.iter().copied()).collect();
 
     // Scan the store for objects, attributes, and parent/child relationships.
     let layer_set = store.tree().layer_set();

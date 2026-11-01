@@ -8,6 +8,7 @@
 // rather than at device offsets (backlog doc-4): the types that hold locations are V60, and nothing
 // older converts to them. AllocatorInfoV60 adds the sequence number the allocator mints extents
 // from, and the extents dying when the allocator's tree was compacted, which a mount frees again.
+// Version 61 adds StoreInfoV61: layers of a base, and the branches of its extents (backlog doc-10).
 
 use crate::blob_metadata::{BlobMetadata, BlobMetadataV53};
 use crate::lsm_tree::{
@@ -27,7 +28,7 @@ use crate::object_store::object_record::{
 use crate::object_store::transaction::{Mutation, MutationV60};
 use crate::object_store::{
     EncryptedMutations, EncryptedMutationsV49, EncryptedTransaction, EncryptedTransactionV60,
-    StoreInfo, StoreInfoV52,
+    StoreInfo, StoreInfoV52, StoreInfoV61,
 };
 use crate::serialized_types::{Version, Versioned, VersionedLatest, versioned_type};
 use std::collections::BTreeMap;
@@ -41,7 +42,7 @@ use std::collections::BTreeMap;
 ///
 /// IMPORTANT: When changing this (major or minor), update the list of possible versions at
 /// https://cs.opensource.google/fuchsia/fuchsia/+/main:third_party/cobalt_config/fuchsia/local_storage/versions.txt.
-pub const LATEST_VERSION: Version = Version { major: 60, minor: 0 };
+pub const LATEST_VERSION: Version = Version { major: 61, minor: 0 };
 
 /// The last version of the filesystem where keys in layer files used the old serialization format
 /// (prior to SerializeKey and delta encoding).
@@ -156,6 +157,7 @@ versioned_types! {
         39.. => PersistentLayerInfoV39,
     }
     StoreInfo {
+        61.. => StoreInfoV61,
         52.. => StoreInfoV52,
     }
     SuperBlockHeader {

@@ -18,7 +18,8 @@
 // from upstream too: allocations are recorded under a store's current data owner, which a snapshot
 // changes; a snapshot freezes the source's owner, whose extents the stores sharing them never
 // deallocate one by one, and which is deleted once no store shares it (AllocatorInfoV59, the
-// Snapshot mutation, `deallocate`, `is_shared`, `frozen_ranges`).
+// Snapshot mutation, `deallocate`, `is_shared`, `frozen_ranges`). A base's extents, which a store
+// reads and the allocator never holds, are treated likewise (`add_base_branches`, backlog doc-10).
 
 //! # The Allocator
 //!
@@ -764,6 +765,10 @@ struct Inner {
     /// fxdax: the extents, from their minting to the seal of their frees.
     extents: ExtentTable,
 
+    /// fxdax: the branches of the bases of the stores opened (backlog doc-10), whose extents the
+    /// tree never holds, nor does `extents`. In memory: only their stores touch those extents.
+    base_branches: HashSet<u64>,
+
     /// Tracks the number of allocations of size 1,2,...63,>=64.
     allocation_size_histogram: [u64; 64],
 }
@@ -934,6 +939,7 @@ impl Allocator {
                 owner_bytes: BTreeMap::new(),
                 unattributed_reserved_bytes: 0,
                 extents: ExtentTable::default(),
+                base_branches: HashSet::new(),
                 allocation_size_histogram: [0; 64],
             }),
             counters: Mutex::new(AllocatorCounters::default()),
@@ -1576,10 +1582,11 @@ impl Allocator {
         debug!(device_range:? = dealloc_range; "deallocate");
         ensure!(dealloc_range.range.is_valid(), FxfsError::InvalidArgs);
         // fxdax: the extents frozen owners hold are shared by stores a snapshot made (see
-        // `snapshot`), and stay allocated; only the rest are the store's to deallocate. Of those,
-        // the parts referenced more than once lose a reference (see "References").
+        // `snapshot`), and stay allocated, and a base's are not held here at all; only the rest are
+        // the store's to deallocate. Of those, the parts referenced more than once lose a reference
+        // (see "References").
         let deallocated = dealloc_range.len();
-        if self.frozen_owner(&dealloc_range).is_none() {
+        if !self.is_held_beyond_the_store(&dealloc_range) {
             let mutation = AllocatorMutation::Deallocate {
                 device_range: dealloc_range.clone(),
                 owner_object_id,
@@ -1592,6 +1599,43 @@ impl Allocator {
             }
         }
         Ok(deallocated)
+    }
+
+    /// fxdax: whether `range`'s extent is more than its store's to deallocate: a frozen owner's, or
+    /// a base's (backlog doc-10).
+    fn is_held_beyond_the_store(&self, range: &ExtentRange) -> bool {
+        self.inner.lock().base_branches.contains(&range.extent.branch)
+            || self.frozen_owner(range).is_some()
+    }
+
+    /// fxdax: notes that a store opened has a base whose extents are in `branches`.
+    pub fn add_base_branches(&self, branches: &[u64]) {
+        self.inner.lock().base_branches.extend(branches);
+    }
+
+    /// fxdax: fails unless a store may have a base whose extents are in `branches`: none may be
+    /// the device's own, or one the allocator holds extents of, as if they were a base's the
+    /// allocator would lose count of those.
+    pub fn check_base_branches(&self, branches: &[u64]) -> Result<(), Error> {
+        let branches: HashSet<u64> = branches.iter().copied().collect();
+        ensure!(
+            !branches.contains(&self.branch.load(Ordering::Relaxed))
+                && !self.inner.lock().extents.holds_any_of(&branches),
+            FxfsError::InvalidArgs
+        );
+        Ok(())
+    }
+
+    /// fxdax: the branches of the extents `owners` hold.
+    pub fn branches_of(&self, owners: &[u64]) -> Vec<u64> {
+        let inner = self.inner.lock();
+        let branches: HashSet<u64> = inner
+            .extents
+            .alive()
+            .filter(|(_, owner, _)| owners.contains(owner))
+            .map(|(extent, ..)| extent.branch)
+            .collect();
+        branches.into_iter().collect()
     }
 
     /// fxdax: the frozen owner holding `range`'s extent, if one does.
@@ -1611,10 +1655,10 @@ impl Allocator {
     }
 
     /// fxdax: whether `range` is shared, and must not be overwritten in place: its extent is a
-    /// frozen owner's, shared with other stores, or some of it is referenced more than once
-    /// (see "References").
+    /// frozen owner's, shared with other stores, or a base's, or some of it is referenced more than
+    /// once (see "References").
     pub async fn is_shared(&self, range: ExtentRange) -> Result<bool, Error> {
-        if self.frozen_owner(&range).is_some() {
+        if self.is_held_beyond_the_store(&range) {
             return Ok(true);
         }
         Ok(self.inner.lock().extents.is_referenced_more_than_once(&range))
@@ -1622,14 +1666,15 @@ impl Allocator {
 
     /// fxdax: references `range`, which `owner_object_id`'s store has allocated, once more: for
     /// another extent of a file to share it (a reflink, `DataObjectHandle::txn_clone_range`). A
-    /// frozen owner's range is shared already, and stays allocated while the store does.
+    /// frozen owner's range is shared already, and stays allocated while the store does, and a
+    /// base's is never freed.
     pub fn reference(
         &self,
         transaction: &mut Transaction<'_>,
         owner_object_id: u64,
         range: ExtentRange,
     ) {
-        if self.frozen_owner(&range).is_none() {
+        if !self.is_held_beyond_the_store(&range) {
             transaction.add_reference(self.object_id(), range, owner_object_id, 1);
         }
     }
@@ -2243,7 +2288,7 @@ impl<'a> Flusher<'a> {
             || !freed_owners.is_empty()
             || self.allocator.tree.get_earliest_version() < LATEST_VERSION;
         let (layer_set, layers_to_keep) =
-            tree::layers_to_merge(&self.allocator.tree, full_compaction);
+            tree::layers_to_merge(&self.allocator.tree, full_compaction, 0);
         let total_len = layer_set.sum_len();
         {
             let start_time = std::time::Instant::now();

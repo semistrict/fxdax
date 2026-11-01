@@ -8,9 +8,11 @@
 // `install`, `extent_mapping_iterator`): such an image is a block device's, which fxdax's extent
 // store has none of (backlog doc-4). `dirty_reservation` reserves room for the data a page cache
 // holds dirty as it dirties it, as Fuchsia's pager-backed files do in its platform crate, for the
-// guest kernel's page cache (TASK-80).
+// guest kernel's page cache (TASK-80). A store may have layers of a base, a volume another
+// filesystem wrote, below its own (StoreInfoV61, `ObjectStore::manifest`, backlog doc-10).
 
 pub mod allocator;
+pub mod base_layer;
 pub mod caching_object_handle;
 pub mod data_object_handle;
 pub mod directory;
@@ -51,9 +53,10 @@ use crate::filesystem::{
 use crate::log::*;
 use crate::lsm_tree::cache::ObjectCache;
 use crate::lsm_tree::types::{Existence, Item, ItemRef, LayerIterator};
-use crate::lsm_tree::{LSMTree, Query, open_layers};
+use crate::lsm_tree::{LSMTree, Query, layers_from_handles, open_layers};
 use crate::object_handle::{INVALID_OBJECT_ID, ObjectHandle, ObjectProperties, ReadObjectHandle};
 use crate::object_store::allocator::Allocator;
+use crate::object_store::base_layer::{BaseExtent, BaseLayer, BaseLayerObject, BaseLayerV61};
 use crate::object_store::graveyard::Graveyard;
 use crate::object_store::journal::{JournalCheckpoint, JournalCheckpointV32, JournaledTransaction};
 use crate::object_store::key_manager::KeyManager;
@@ -62,8 +65,8 @@ use crate::object_store::transaction::{
     Operation, Options, Transaction, WriteGuard, lock_keys,
 };
 use crate::serialized_types::{
-    AES_JOURNAL_ENCRYPTION_VERSION, DEFAULT_MAX_SERIALIZED_RECORD_SIZE, Version, Versioned,
-    VersionedLatest,
+    AES_JOURNAL_ENCRYPTION_VERSION, DEFAULT_MAX_SERIALIZED_RECORD_SIZE, Migrate, Version,
+    Versioned, VersionedLatest, migrate_to_version,
 };
 use anyhow::{Context, Error, anyhow, bail, ensure};
 use async_trait::async_trait;
@@ -127,9 +130,62 @@ pub trait HandleOwner: AsRef<ObjectStore> + Send + Sync + 'static {}
 
 /// StoreInfo stores information about the object store.  This is stored within the parent object
 /// store, and is used, for example, to get the persistent layer objects.
-pub type StoreInfo = StoreInfoV52;
+pub type StoreInfo = StoreInfoV61;
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, TypeFingerprint, Versioned)]
+pub struct StoreInfoV61 {
+    /// The globally unique identifier for the associated object store. If unset, will be all zero.
+    guid: [u8; 16],
+
+    /// The last used object ID.  Note that this field is not accurate in memory; ObjectStore's
+    /// last_object_id field is the one to use in that case.  Technically, this might not be the
+    /// last object ID used for the latest transaction that created an object because we use this at
+    /// the point of creating the object but before we commit the transaction.  Transactions can
+    /// then get committed in an arbitrary order (or not at all).
+    last_object_id: LastObjectIdInfo,
+
+    /// Object ids for layers.  TODO(https://fxbug.dev/42178036): need a layer of indirection here
+    /// so we can support snapshots.
+    pub layers: Vec<u64>,
+
+    /// The object ID for the root directory.
+    root_directory_object_id: u64,
+
+    /// The object ID for the graveyard.
+    graveyard_directory_object_id: u64,
+
+    /// The number of live objects in the store.  This should *not* be trusted; it can be invalid
+    /// due to filesystem inconsistencies.
+    object_count: u64,
+
+    /// The (wrapped) key that encrypted mutations should use.
+    mutations_key: Option<FxfsKeyV49>,
+
+    /// Mutations for the store are encrypted using a stream cipher.  To decrypt the mutations, we
+    /// need to know the offset in the cipher stream to start it.
+    mutations_cipher_offset: u64,
+
+    /// If we have to flush the store whilst we do not have the key, we need to write the encrypted
+    /// mutations to an object. This is the object ID of that file if it exists.
+    pub encrypted_mutations_object_id: u64,
+
+    /// A directory for storing internal files in a directory structure. Holds INVALID_OBJECT_ID
+    /// when the directory doesn't yet exist.
+    internal_directory_object_id: u64,
+
+    /// fxdax: the store's layers below `layers`, newest first: those of a volume another filesystem
+    /// wrote, which the store merges over and never rewrites (backlog doc-10).
+    pub base_layers: Vec<BaseLayerV61>,
+
+    /// fxdax: the branches of the extents the base layers, and the data they name, are in. The
+    /// allocator holds none of them.
+    pub base_branches: Vec<u64>,
+}
+
+#[derive(
+    Clone, Debug, Default, PartialEq, Serialize, Deserialize, TypeFingerprint, Versioned, Migrate,
+)]
+#[migrate_to_version(StoreInfoV61)]
 pub struct StoreInfoV52 {
     /// The globally unique identifier for the associated object store. If unset, will be all zero.
     guid: [u8; 16],
@@ -208,9 +264,32 @@ impl StoreInfo {
     }
 }
 
+impl StoreInfo {
+    /// fxdax: fails unless this describes a volume to make over a base (backlog doc-10).
+    fn check_manifest(&self) -> Result<(), Error> {
+        ensure!(
+            self.layers.is_empty()
+                && !self.base_layers.is_empty()
+                && self.mutations_key.is_none()
+                && self.encrypted_mutations_object_id == INVALID_OBJECT_ID
+                && !matches!(self.last_object_id, LastObjectIdInfo::Encrypted { .. }),
+            FxfsError::Inconsistent
+        );
+        Ok(())
+    }
+
+    /// fxdax: gives the store a new identifier, as a new store from then on.
+    fn set_new_guid(&mut self) {
+        self.guid = *Uuid::new_v4().as_bytes();
+    }
+}
+
 // TODO(https://fxbug.dev/42178037): We should test or put checks in place to ensure this limit isn't exceeded.
 // It will likely involve placing limits on the maximum number of layers.
 pub const MAX_STORE_INFO_SERIALIZED_SIZE: usize = 131072;
+
+// fxdax: the most a manifest may take of a store's information, leaving room for layers of its own.
+pub const MAX_MANIFEST_SIZE: usize = MAX_STORE_INFO_SERIALIZED_SIZE / 2;
 
 // This needs to be large enough to accommodate the maximum amount of unflushed data (data that is
 // in the journal but hasn't yet been written to layer files) for a store.  We set a limit because
@@ -2031,13 +2110,27 @@ impl ObjectStore {
         assert!(store.store_info_handle.set(handle).is_ok(), "Failed to set store_info_handle!");
 
         if !is_encrypted {
-            let object_tree_layer_object_ids =
-                store.store_info.lock().as_ref().unwrap().layers.clone();
+            let (object_tree_layer_object_ids, base_layers, base_branches) = {
+                let info = store.store_info.lock();
+                let info = info.as_ref().unwrap();
+                (info.layers.clone(), info.base_layers.clone(), info.base_branches.clone())
+            };
             total_layer_size = store
                 .tree
                 .append_layers(&parent_store, object_tree_layer_object_ids, None)
                 .await
                 .context("Failed to read object store layers")?;
+            // fxdax: below them, what the store has of a base, which is no part of the size above:
+            // no compaction rewrites it, so no reservation pays for that.
+            fs.allocator().add_base_branches(&base_branches);
+            let block_size = store.block_size();
+            let handles = base_layers
+                .into_iter()
+                .map(|layer| BaseLayerObject::new(fs.device(), block_size, layer))
+                .collect::<Result<Vec<_>, _>>()?;
+            store.tree.append_open_layers(
+                layers_from_handles(handles).await.context("Failed to read base layers")?,
+            );
         }
 
         fs.object_manager().update_reservation(
@@ -2405,6 +2498,67 @@ impl ObjectStore {
     /// fxdax: the information of a new store that is a snapshot of this one, which must be
     /// unencrypted: this store's persistent layers and root and graveyard directories as they
     /// are, the object ids it has used so far, and a new guid.
+    /// fxdax: how many layers of a base the store's tree has, at its bottom.
+    pub(crate) fn base_layer_count(&self) -> usize {
+        self.store_info.lock().as_ref().map_or(0, |info| info.base_layers.len())
+    }
+
+    /// fxdax: the earliest version of the layers a compaction can rewrite: the tree's, but for
+    /// those of a base.
+    pub fn earliest_writable_version(&self) -> Version {
+        self.tree.get_earliest_version_above(self.base_layer_count())
+    }
+
+    /// fxdax: what describes the store to a filesystem that reads its extents (backlog doc-10): a
+    /// `StoreInfo` with no layers of its own, as its layers are base layers there. `Unavailable` if
+    /// the journal holds anything of the store, which layers alone wouldn't say. The caller keeps
+    /// compactions off it, with the flush lock or by freezing the filesystem, so that its layers
+    /// stay what this says.
+    pub async fn manifest(&self) -> Result<Vec<u8>, Error> {
+        let filesystem = self.filesystem();
+        ensure!(
+            !filesystem.object_manager().needs_flush(self.store_object_id),
+            FxfsError::Unavailable
+        );
+        let mut info = self.snapshot_store_info()?;
+        ensure!(info.encrypted_mutations_object_id == INVALID_OBJECT_ID, FxfsError::NotSupported);
+        let allocator = self.allocator();
+        let mut owners = allocator.shared_owners(self.store_object_id);
+        owners.push(allocator.data_owner(self.store_object_id));
+        let mut branches = allocator.branches_of(&owners);
+        branches.append(&mut info.base_branches);
+
+        let parent_store = self.parent_store.as_ref().ok_or(FxfsError::NotSupported)?;
+        let mut layers = Vec::with_capacity(info.layers.len() + info.base_layers.len());
+        for object_id in std::mem::take(&mut info.layers) {
+            let handle =
+                ObjectStore::open_object(parent_store, object_id, HandleOptions::default(), None)
+                    .await?;
+            let mut extents = Vec::new();
+            for extent in handle.device_extents().await? {
+                let range = extent.device_range();
+                branches.push(range.extent.branch);
+                extents.push(BaseExtent {
+                    offset: extent.logical_offset(),
+                    length: extent.length(),
+                    extent: range.extent,
+                    extent_offset: range.range.start,
+                });
+            }
+            layers.push(BaseLayer { size: handle.get_size(), extents });
+        }
+        layers.append(&mut info.base_layers);
+        info.base_layers = layers;
+        branches.sort_unstable();
+        branches.dedup();
+        info.base_branches = branches;
+
+        let mut manifest = Vec::new();
+        info.serialize_with_version(&mut manifest)?;
+        ensure!(manifest.len() <= MAX_MANIFEST_SIZE, FxfsError::TooBig);
+        Ok(manifest)
+    }
+
     pub(super) fn snapshot_store_info(&self) -> Result<StoreInfo, Error> {
         ensure!(!self.is_encrypted(), FxfsError::NotSupported);
         let mut info = self.store_info.lock().clone().ok_or(FxfsError::Inconsistent)?;
@@ -4796,6 +4950,8 @@ mod tests {
             mutations_cipher_offset: 0x1234567812345678,
             encrypted_mutations_object_id: 0x1234567812345678,
             internal_directory_object_id: INVALID_OBJECT_ID,
+            base_layers: Vec::new(),
+            base_branches: Vec::new(),
         };
         let mut serialized_info = Vec::new();
         info.serialize_with_version(&mut serialized_info).unwrap();
