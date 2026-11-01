@@ -903,15 +903,14 @@ impl Shared {
         let held = blocking(|| self.store.snapshot())?;
         let found = match self.record(bucket, branch, &ours).await? {
             None => {
-                // A fork's child taking a record of its own, its fork not made there: its branch
-                // there is its own from now, which its deletion deletes as any store's
-                // (TASK-79.82). Let go of first, so that a crash in between leaves no claim of a
-                // branch whose record names no fork's origin.
-                let dir = self.store.dir().path();
-                disclaim(dir, branch).map_err(|err| {
-                    Failure::Other(format!("disclaiming branch {branch:x}, its own: {err}"))
-                })?;
-                branch::create(&**bucket, branch).await?;
+                failpoint!("remote::create_branch");
+                // A fork's child taking a record of its own, its fork not made there, which its
+                // claim, and its deletion, take for the fork's (`branch::create_forked`,
+                // TASK-79.82).
+                match claimed(self.store.dir().path(), branch)? {
+                    Some(_) => branch::create_forked(&**bucket, branch).await?,
+                    None => branch::create(&**bucket, branch).await?,
+                }
                 None
             }
             Some(record) => {
@@ -993,8 +992,7 @@ impl Shared {
         ours: &[u64],
     ) -> Result<Option<Record>, Failure> {
         if let Some(record) = branch::record(&**bucket, branch).await? {
-            // A claim's child's record names its origin: one of its own has no claim left.
-            let another = |claim: Option<Origin>| claim.is_none() || claim != record.origin;
+            let another = |claim: Option<Origin>| !record.of_fork(claim);
             if !record.deleted && claimed(self.store.dir().path(), branch)?.is_some_and(another) {
                 return Err(extent_remote::Error::ChildTaken(branch).into());
             }
@@ -3524,8 +3522,45 @@ mod tests {
         ExtentStore::place(&handle, 4).unwrap();
         let deleted = ExtentStore::delete(&handle, Some(&crashed.bucket));
         assert_eq!((deleted.map_err(|err| err.to_string()), handle.exists()), (Ok(()), false));
-        let deleted = extent_remote::layout::Record { origin: None, forked: false, deleted: true };
+        let deleted = extent_remote::layout::Record { origin: None, forked: true, deleted: true };
         assert_eq!(record(), Some(deleted));
+    }
+
+    /// TASK-79.82: a fork's child taking a record of its own takes none of another's: a branch
+    /// taking its ID as it does, whose record says the same but for being a fork's, is left as it
+    /// is, its lease its writer's; and deleting the handle leaves it so too.
+    #[test]
+    fn forks_taking_records_of_their_own_take_none_of_another_branch() {
+        let dir = tempfile::tempdir().unwrap();
+        let (crashed, fork) = CrashedFork::new(dir.path());
+        let forked = ExtentStore::open(dir.path().join("child")).unwrap();
+        let refused = forked.attach_remote(crashed.bucket.clone(), 2, idle());
+        assert_eq!((refused, crashed.take()), (Err(crashed.refusal()), Ok(())));
+        assert_eq!(crashed.end(fork), taken(crashed.child));
+
+        let (bucket, child) = (crashed.bucket.clone(), crashed.child);
+        let lease = extent_remote::layout::lease(child);
+        let leased = lease.clone();
+        let taking = fail::FailGuard::with_callback("remote::create_branch", move || {
+            futures::executor::block_on(branch::create(&*bucket, child)).unwrap();
+            let taken = branch::take_lease(&*bucket, &leased, 7, 0);
+            assert_eq!(futures::executor::block_on(taken), Ok(1));
+        });
+        let taking = taking.unwrap();
+        let attached = forked.attach_remote(crashed.bucket.clone(), 4, idle());
+        drop(taking);
+        let refused = format!("branch {child:x} has another origin");
+        assert_eq!(attached, Err(super::Failure::Other(refused)));
+        drop(forked);
+
+        let handle = dir.path().join("child");
+        ExtentStore::place(&handle, 4).unwrap();
+        let deleted = ExtentStore::delete(&handle, Some(&crashed.bucket));
+        assert_eq!((deleted.map_err(|err| err.to_string()), handle.exists()), (Ok(()), false));
+        let record = futures::executor::block_on(branch::record(&*crashed.bucket, child));
+        assert_eq!(record, Ok(Some(own_record())));
+        let epoch = branch::lease_epoch(&*crashed.bucket, &lease);
+        assert_eq!(futures::executor::block_on(epoch), Ok(1));
     }
 
     /// A marker names the last commit uploaded, or none, and those uploading, and reads back so;

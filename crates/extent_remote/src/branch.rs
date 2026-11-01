@@ -19,6 +19,18 @@ pub async fn create(bucket: &impl Bucket, branch: u64) -> Result<(), Error> {
     }
 }
 
+/// Creates `child`, a fork's child taking a branch of its own, of no parent, its fork not made in
+/// object storage. Its record says it is a fork's, and differs from what [`create`] writes, so that
+/// it takes no record of another branch's that took its ID for its own, which any create of the
+/// same bytes would ([`Error::ChildTaken`], TASK-79.82).
+pub async fn create_forked(bucket: &impl Bucket, child: u64) -> Result<(), Error> {
+    let record = Record { origin: None, forked: true, deleted: false };
+    match bucket::create(bucket, &layout::record(child), layout::encode(&record)).await {
+        Created::Created => Ok(()),
+        Created::Exists(_) => Err(Error::ChildTaken(child)),
+    }
+}
+
 pub async fn record(bucket: &impl Bucket, branch: u64) -> Result<Option<Record>, Error> {
     match bucket::get(bucket, &layout::record(branch)).await {
         Some(object) => Ok(Some(layout::decode(&object.bytes)?)),
@@ -215,7 +227,8 @@ async fn mark_deleted(bucket: &impl Bucket, branch: u64) -> Result<(), Error> {
 /// record yet, as a fork whose segment has not been acknowledged has not. A fork whose segment never
 /// went to object storage names no `origin`: its child has no record but the one its deletion
 /// gives it. A branch of another's, whose ID the fork's child was given, as a guest may give any,
-/// is left as it is (TASK-79.82); so is a branch deleted already, whoever's. Returns whether the
+/// is left as it is (TASK-79.82); so is a branch deleted already, whoever's. A child that took a
+/// branch of its own, its fork not made ([`create_forked`]), is the fork's. Returns whether the
 /// fork's branch is gone, deleted now or before: `false` for another's.
 ///
 /// A child with no record yet gets one first, before the deletion ends its lease: created only if
@@ -238,7 +251,7 @@ pub async fn delete_fork(
     loop {
         match record(bucket, child).await? {
             Some(record) if record.deleted => return Ok(true),
-            Some(record) if origin.is_none() || record.origin != origin => return Ok(false),
+            Some(record) if !record.of_fork(origin) => return Ok(false),
             Some(_) => return delete(bucket, child, holder, token).await.map(|()| true),
             None => {
                 if origin.is_none() && !rules().fork_claims_ids {
