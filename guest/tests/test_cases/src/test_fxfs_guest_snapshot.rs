@@ -259,7 +259,7 @@ mod host {
             }
 
             if self.mode == Mode::Suspend {
-                crate::common::control(&extentd)?.resize_store(&store(dir, "source"), GROWN)?;
+                resize_once_let_go(&extentd, &store(dir, "source"))?;
             }
 
             // Restored, told its name: each into its own store, but resuming.
@@ -310,6 +310,24 @@ mod host {
                 anyhow::ensure!(status.success(), "a restored VM exited {status}");
             }
             Ok(())
+        }
+    }
+
+    /// Grows the store at `path` to `GROWN`, once the daemon lets go of the VM killed just now: it
+    /// refuses a resize (`EBUSY`) while a connection whose VM process is gone holds the store.
+    fn resize_once_let_go(extentd: &Path, path: &Path) -> anyhow::Result<()> {
+        let control = crate::common::control(extentd)?;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            match control.resize_store(path, GROWN) {
+                Err(error)
+                    if error.errno() == Some(fxdax::Errno::EBUSY)
+                        && std::time::Instant::now() < deadline =>
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                resized => return Ok(resized?),
+            }
         }
     }
 

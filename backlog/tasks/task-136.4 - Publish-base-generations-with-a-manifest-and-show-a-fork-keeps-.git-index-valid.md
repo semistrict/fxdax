@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-30 09:08'
-updated_date: '2026-11-01 02:00'
+updated_date: '2026-11-01 04:45'
 labels: []
 dependencies:
   - TASK-136.3
@@ -58,6 +58,8 @@ Ramon decided on 2026-10-31 that the feature is generic shared volumes and that 
 Design change from the earlier note: no publish_volume in the guest and no hold on compaction. The host's fork refuses with anything open on the device, so the filesystem has to be frozen anyway, and a manifest taken then can't be invalidated by compaction. The flush has to come before that freeze, with the volume frozen alone, so some other volume stays mounted. Git findings: the index names a file's owner, not who runs Git, so a chown after the index is written makes every file hash (permanent check in the test). With settle_index left out, a one-off mutation run opened exactly the four files the last update wrote, d0..d3/f000, and no others.
 
 Validation: scripts/test.sh passes on macOS (1877 workspace tests) and Linux (2016, with a real FXDAX_BUILD_COMMIT), upstream-changes --check passes, check-guest passes on arm64. fxfs-guest-shared-volumes and -dax pass. Full guest suite on arm64: all OK but for these. fxfs-guest, -dax, -format and pjdfstest-fxfs-guest-dax failed for how I ran them (no commit stamp in the Lima tree, a full 7.8 GB /tmp) and pass rerun with those fixed. fxfs-guest-checks-dax, -delay and -small hit the harness's 180 s limit, but their guests printed OK and shut down at 264, 331 and 438 s. fxfs-guest-snapshot-volumes-dax fails about every second round with EBUSY from the host's resize, straight after killing the VM, with this work (round 2 of 3) and on clean 51518829a (round 2 of 8): holder_or_hold refuses a holder that is going. Not fixed here: out of scope. windows_larger_than_the_map_count_read_whole was OOM killed once in Lima and passed in the next full run. Not run: x86, dax-gate.sh, a Linux-sized checkout (TASK-136.1).
+
+After the rebase onto main: fxfs-guest-snapshot-volumes-dax's flake was the test's: the daemon refuses a resize (EBUSY) while a killed VM's connection goes, by contract, so the test now retries until it lets go: 10 of 10 rounds, with fxfs-guest-suspend-dax 10 of 10. Separately, with FXDAX_EXTENTD_REMOTE exported for the 360 s limit and one seed, fxfs-guest-checks-dax gave the same on this work and on clean 7aaa6ff26: 2 of 3 OK with all 66 checks, and 1 of 3 ending at enospc as the daemon lets the VM go, for leaving a stage operation unacknowledged for 5 s. That is main's, and not fixed here.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
