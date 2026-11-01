@@ -11,7 +11,8 @@
   Fuchsia is, MIT in crates/physmem, lifted from fxdax's port of the Zircon kernel, as Zircon is. The
   header says which, in Fuchsia's words.
 - guest/linux, built into the guest's Linux kernel, is GPL-2.0 OR BSD-3-Clause, and its patches to
-  the kernel GPL-2.0, as the kernel is: an SPDX line, then fxdax's copyright.
+  the kernel GPL-2.0, as the kernel is: an SPDX line, then fxdax's copyright. So is guest/sim, which
+  links with the kernel's sources to run guest/linux's.
 - The parts of Rust's std imported into the guest's std (scripts/import-guest-std.py) keep Rust's
   copyright and its MIT OR Apache-2.0 license.
 - libkrun's test framework, which the guest tests' harness (guest/tests) came from, keeps
@@ -98,7 +99,7 @@ def style(path):
 
 def needs(path, text):
     """What `path`'s header needs, as (kind, details)."""
-    if path.startswith("guest/linux/"):
+    if path.startswith(("guest/linux/", "guest/sim/")):
         return ("spdx", "GPL-2.0" if path.endswith(".patch") else "GPL-2.0 OR BSD-3-Clause")
     head = leading(path, text)
     if RUST.search(head) or "Rust's `library/" in head:
@@ -284,7 +285,7 @@ def fix(path, text):
         or SPDX.search(lines[at])
     ):
         at += 1
-    blank = "" if path.startswith("guest/linux/") else "\n"
+    blank = "" if path.startswith(("guest/linux/", "guest/sim/")) else "\n"
     return "".join(lines[:at]) + added + blank + "".join(lines[at:])
 
 

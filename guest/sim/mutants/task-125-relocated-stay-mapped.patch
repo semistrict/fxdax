@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+#
+# TASK-125, d464ef635: a page relocated has the user's mappings of it go at once: one left where it
+# was read the window there once its extent was freed, zeros.
+
+--- a/guest/linux/fs/fxfs/dax.c
++++ b/guest/linux/fs/fxfs/dax.c
+@@ -1166,11 +1166,6 @@
+ 		from = 0;
+ 		to = range->pages;
+ 	}
+-	inode = READ_ONCE(range->file->inode);
+-	if (inode) {
+-		start = fxfs_dax_chunk_start(range) >> PAGE_SHIFT;
+-		unmap_mapping_pages(inode->i_mapping, start + from, to - from, false);
+-	}
+ }
+ 
+ /*

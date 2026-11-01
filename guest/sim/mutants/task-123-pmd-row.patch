@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+#
+# TASK-123, c242a4e57: a page moving out of a row a PMD mapped relocates every page of the row.
+
+--- a/guest/linux/fs/fxfs/dax.c
++++ b/guest/linux/fs/fxfs/dax.c
+@@ -1157,15 +1157,7 @@
+ 	if (from == ULONG_MAX)
+ 		return;
+ 	/* fxdax: a row a PMD mapped broken up: every page of it is relocated (TASK-123). */
+-	if (READ_ONCE(range->huge)) {
+-		for_each_set_bit(i, range->mapped, range->pages) {
+-			if (!test_and_set_bit(i, range->relocated))
+-				WRITE_ONCE(range->stale[i], range->moved[i]);
+-		}
+-		WRITE_ONCE(range->huge, false);
+-		from = 0;
+-		to = range->pages;
+-	}
++	WRITE_ONCE(range->huge, false);
+ 	inode = READ_ONCE(range->file->inode);
+ 	if (inode) {
+ 		start = fxfs_dax_chunk_start(range) >> PAGE_SHIFT;

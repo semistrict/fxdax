@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+#
+# TASK-101, 3d0267f02: an evacuation holds a file's semaphore from gathering its runs to placing
+# them. Let go of around the MAP, a write's mapping of a page lands before the MAP that replaces it.
+
+--- a/guest/linux/fs/fxfs/dax.c
++++ b/guest/linux/fs/fxfs/dax.c
+@@ -4265,7 +4265,9 @@
+ 		fxfs_dax_pause_file(FXFS_DAX_STEP_GATHERED, file->ino);
+ 		fxfs_dax_delay();
+ 		began = ktime_get_ns();
++		up_write(&file->sem);
+ 		err = fxfs_nofs(fxfs_dax_device_map_many(dax, ev->maps, ev->count));
++		down_write(&file->sem);
+ 		atomic64_add(ktime_get_ns() - began, &dax->evacuate_map_ns);
+ 		fxfs_hist_add(&dax->evacuate_map_hist, ktime_get_ns() - began);
+ 		for (r = 0; r < ev->count; r++) {

@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+#
+# Patch 0008, TASK-123: a shared fault replacing a PMD entry with a PTE entry splits it: else its
+# store names the one page for all of the PMD's indices.
+
+--- a/fs/dax.c
++++ b/fs/dax.c
+@@ -1057,7 +1057,7 @@
+ 	 * of the PMD's indices, and a fault of another of them, finding an
+ 	 * entry, keeps it, and inserts a page no entry names, which fails.
+ 	 */
+-	bool split = shared && dax_is_pmd_entry(entry) && !(flags & DAX_PMD);
++	bool split = false;
+ 
+ 	if (dirty)
+ 		__mark_inode_dirty(mapping->host, I_DIRTY_PAGES);

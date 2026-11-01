@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+#
+# A candidate fix, not a mutant (found by this simulator, seed 455 of tests/interleave): blocks a
+# write or a fault moves are freed from under the mappings of where they were before the range maps
+# them where they went, when a seal between keeps it from the gate: a load through a PTE of the page
+# where it was reads zeros once the old extent is freed, until the move ends. The PTEs go as the
+# blocks do, so that a load faults, and waits for the move. TASK-125 did so once they are placed.
+
+--- a/guest/linux/fs/fxfs/dax.c
++++ b/guest/linux/fs/fxfs/dax.c
+@@ -3293,6 +3293,7 @@
+ 			goto out;
+ 		}
+ 		moved = count;
++		unmap_mapping_pages(inode->i_mapping, (start >> PAGE_SHIFT) + first, pages, false);
+ 		/* fxdax: fault injection, a seal between the move and the mapping of the new block. */
+ 		if (fault && fxfs_dax_seal_moved()) {
+ 			err = fxfs_nofs(fxfs_fsync(fxfs_vfs_fs(inode->i_sb)));

@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+#
+# TASK-147: how far a write past the end grows the file, which ranges mapped
+# meanwhile are to reach: a fault on the write's own source mapped the chunk only as large as the
+# file, and the write's end was lost (xfstests generic/638).
+
+--- a/guest/linux/fs/fxfs/dax.c
++++ b/guest/linux/fs/fxfs/dax.c
+@@ -3578,7 +3578,6 @@
+ 		file->append_bytes = 0;
+ 	/* The ranges the file's end moves into, mapped as large as they need. */
+ 	if (iocb->ki_pos + iov_iter_count(from) > old_size) {
+-		WRITE_ONCE(file->growing, iocb->ki_pos + iov_iter_count(from));
+ 		filemap_invalidate_lock(inode->i_mapping);
+ 		ret = fxfs_dax_fit(inode, iocb->ki_pos + iov_iter_count(from));
+ 		filemap_invalidate_unlock(inode->i_mapping);
