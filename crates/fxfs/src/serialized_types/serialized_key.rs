@@ -297,6 +297,11 @@ impl<'a> KeyDeserializer<'a> {
     }
 }
 
+/// fxdax: a key that a block's base is above: `SerializeKey::serialize_key_with_base_into`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+#[error("A key is below its block's base")]
+pub struct KeyBelowBase;
+
 /// Trait defining the translation logic from Fxfs types into order-consistent binaries.
 pub trait SerializeKey: Sized {
     /// The serializer state returned after writing this type (`KeySerializer` for non-terminal
@@ -322,14 +327,24 @@ pub trait SerializeKey: Sized {
     }
 
     /// Serializes this key directly into `buffer` with its length prefix and delta `base`
-    /// subtracted from the leading `u64`.
+    /// subtracted from the leading `u64`. fxdax: if it isn't below `base`, which what's being
+    /// compared or written may be, as an out of order key of a corrupt layer is: a delta is never
+    /// negative, so no caller has to know that before calling.
     #[inline]
-    fn serialize_key_with_base_into<B: Buffer>(&self, buffer: &mut B, base: u64)
+    fn serialize_key_with_base_into<B: Buffer>(
+        &self,
+        buffer: &mut B,
+        base: u64,
+    ) -> Result<(), KeyBelowBase>
     where
         Self: crate::lsm_tree::types::SortByU64,
     {
+        if self.get_leading_u64() < base {
+            return Err(KeyBelowBase);
+        }
         let serializer = KeySerializer::new(buffer, Some(base));
         let _: KeySerializerFinalized = self.serialize_key_to(serializer).into();
+        Ok(())
     }
 }
 
@@ -538,10 +553,10 @@ mod tests {
         for i in 0..keys.len() {
             for j in 0..keys.len() {
                 let mut buf_a = Vec::new();
-                keys[i].serialize_key_with_base_into(&mut buf_a, 0);
+                keys[i].serialize_key_with_base_into(&mut buf_a, 0).unwrap();
 
                 let mut buf_b = Vec::new();
-                keys[j].serialize_key_with_base_into(&mut buf_b, 0);
+                keys[j].serialize_key_with_base_into(&mut buf_b, 0).unwrap();
 
                 let cmp = keys[i].cmp_upper_bound(&keys[j]);
                 let ser_cmp = compare_keys(&buf_a, &buf_b).unwrap();
@@ -566,17 +581,17 @@ mod tests {
         for i in 0..keys.len() {
             let base = crate::lsm_tree::types::SortByU64::get_leading_u64(&keys[i]);
             let mut buf_base = Vec::new();
-            keys[i].serialize_key_with_base_into(&mut buf_base, base);
+            keys[i].serialize_key_with_base_into(&mut buf_base, base).unwrap();
             let (mut deser, _) = KeyDeserializer::new(&buf_base, Some(base)).unwrap();
             assert_eq!(AllocatorKey::deserialize_key_from(&mut deser).unwrap(), keys[i]);
             assert!(deser.is_empty());
 
             for j in 0..keys.len() {
                 let mut buf_a = Vec::new();
-                keys[i].serialize_key_with_base_into(&mut buf_a, 0);
+                keys[i].serialize_key_with_base_into(&mut buf_a, 0).unwrap();
 
                 let mut buf_b = Vec::new();
-                keys[j].serialize_key_with_base_into(&mut buf_b, 0);
+                keys[j].serialize_key_with_base_into(&mut buf_b, 0).unwrap();
 
                 let cmp = keys[i].cmp_upper_bound(&keys[j]);
                 let ser_cmp = compare_keys(&buf_a, &buf_b).unwrap();
@@ -1213,11 +1228,11 @@ mod fuzz_object_key_compare {
         }
 
         let mut buf_a = Vec::new();
-        key_a.serialize_key_with_base_into(&mut buf_a, 0);
+        key_a.serialize_key_with_base_into(&mut buf_a, 0).unwrap();
         assert_eq!(buf_a, input.0[..len_a]);
 
         let mut buf_b = Vec::new();
-        key_b.serialize_key_with_base_into(&mut buf_b, 0);
+        key_b.serialize_key_with_base_into(&mut buf_b, 0).unwrap();
         assert_eq!(buf_b, input.1[..len_b]);
 
         let cmp = key_a.cmp_upper_bound(&key_b);
@@ -1257,11 +1272,11 @@ mod fuzz_allocator_key_compare {
         }
 
         let mut buf_a = Vec::new();
-        key_a.serialize_key_with_base_into(&mut buf_a, 0);
+        key_a.serialize_key_with_base_into(&mut buf_a, 0).unwrap();
         assert_eq!(buf_a, input.0[..len_a]);
 
         let mut buf_b = Vec::new();
-        key_b.serialize_key_with_base_into(&mut buf_b, 0);
+        key_b.serialize_key_with_base_into(&mut buf_b, 0).unwrap();
         assert_eq!(buf_b, input.1[..len_b]);
 
         let cmp = key_a.cmp_upper_bound(&key_b);

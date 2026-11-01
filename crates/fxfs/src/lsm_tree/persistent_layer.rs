@@ -663,12 +663,11 @@ impl<'a, K: Key> SearchKey<'a, K> {
             KeyState::Deserialized(k) => Ok(Some(k.cmp_upper_bound(self.key))),
             KeyState::InPlace => {
                 let base = iter.current_block_base_u64;
-                if self.key.get_leading_u64() < base {
-                    return Ok(Some(Ordering::Greater));
-                }
                 if self.cached_base != Some(base) {
                     self.buf.clear();
-                    self.key.serialize_key_with_base_into(&mut self.buf, base);
+                    if self.key.serialize_key_with_base_into(&mut self.buf, base).is_err() {
+                        return Ok(Some(Ordering::Greater));
+                    }
                     self.cached_base = Some(base);
                 }
                 Ok(Some(
@@ -1477,7 +1476,8 @@ impl<W: WriteBytes, K: Key, V: LayerValue> PersistentLayerWriter<W, K, V> {
         if self.version <= OLD_KEY_SERIALIZATION_VERSION {
             item.key.serialize_into(&mut self.buf)?;
         } else {
-            item.key.serialize_key_with_base_into(&mut self.buf, *self.block_keys.last().unwrap());
+            let base = *self.block_keys.last().unwrap();
+            item.key.serialize_key_with_base_into(&mut self.buf, base).expect("keys in order");
         }
         item.value.serialize_into(&mut self.buf)?;
         Ok(())
