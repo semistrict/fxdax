@@ -544,8 +544,8 @@ static void private_punch(struct worker *worker)
 
 /*
  * Blocks of the private file shared with its twin, some of them perhaps in an open extent: they
- * read as sealed from now on, though the extent isn't, and a write moves them (TASK-140, TASK-44.21).
- * What each file holds is its own, whatever is written to the other.
+ * read as shared from now on, read-only, and a write moves them (TASK-140, TASK-44.21). What each
+ * file holds is its own, whatever is written to the other.
  */
 static void private_clone(struct worker *worker)
 {

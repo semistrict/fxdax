@@ -46,7 +46,7 @@ Written here (see each file's head for what it leaves out):
 | Page tables and faults | `kernel/mm.c` | Two flat arrays per VMA, with `mm/memory.c`'s insert and fault rules rewritten, and `mmap_lock`. No TLB, no MMU, no GUP, no private mappings |
 | VFS and page cache | `kernel/vfs.c`, `mount.c` | What dax.c calls. `super.c` is not built: its resize, punch, clone and fsync are rewritten, so that a bug in them shows on a real kernel alone |
 | Host device | `kernel/device.c`, `host.c` | The window is real memory, a memfd mapped page by page, so a store the host refuses is a SIGSEGV. Requests complete at once, or fail with EIO as a test asks: no virtqueue, no second stage, no async page faults |
-| Fxfs | `fxfs/fxfs.c` | A model of what the protocol assumes: blocks, open extents, an extent that reads as sealed then open again as a write reaches it, shared blocks, the staging extent, `FreeAfter::Flush`, one seal in four a flush, transactions that fail, `zero_tail`. No journal, tree or crash consistency |
+| Fxfs | `fxfs/fxfs.c` | A model of what the protocol assumes: blocks, open extents that go one way, shared blocks, the staging extent, `FreeAfter::Flush`, one seal in four a flush, transactions that fail, `zero_tail`. No journal, tree or crash consistency |
 
 So a run tests dax.c against a second writing of its assumptions. Where the model differs from
 Fxfs, or `kernel/mm.c` from `mm/memory.c`, a run proves nothing. Five of the first failures here

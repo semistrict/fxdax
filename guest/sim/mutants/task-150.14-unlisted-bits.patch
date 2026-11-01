@@ -15,7 +15,7 @@
  	fxfs_device_assert_in_gate(dax->dev);
  	lockdep_assert_held_write(&range->file->sem);
 @@ -983,8 +984,11 @@
- 		err = fxfs_dax_reach(dax, region, end >> PAGE_SHIFT, false);
+ 		err = fxfs_dax_reach(dax, region, end >> PAGE_SHIFT);
  		if (err)
  			return err;
 -		fxfs_dax_set_writable(dax, range, page, pages);

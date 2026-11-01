@@ -8,8 +8,8 @@
 #
 # - specs/follower: live read-only followers' protocol (doc-8);
 # - specs/dax: the guest Fxfs's DAX seal and relocation protocol (guest/linux/fs/fxfs/dax.c);
-# - specs/dax-region: a region of its window, opened while a reader's read-only MAP of it is in
-#   flight (TASK-99, TASK-44.14);
+# - specs/dax-region: a region of its window, which a reader and a writer don't meet on, as an
+#   extent goes open, sealed, and never back (TASK-99, TASK-44.14, TASK-153.3);
 # - specs/extent-open: the host's extent store opening an extent, writes, MAPs and commits racing
 #   on it (crates/fxdax/src/extents.rs, TASK-121, TASK-119.20);
 # - specs/dax-evacuate: a page's block moved by writes, seals, evacuations, prunes and truncation,

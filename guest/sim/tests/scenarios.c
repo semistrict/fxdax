@@ -222,9 +222,9 @@ static void drop_ranges(struct file *file)
 }
 
 /*
- * That a clone's blocks in an open extent aren't mapped writably outside the gate: they read as
- * sealed, past what a writable region maps. As shared blocks reach a slice with no seal at all,
- * and fxfs_dax_new_slice looked no further, its MAP was writable, which a seal may cross, and
+ * That a clone's blocks in an open extent aren't mapped writably outside the gate, past what a
+ * writable region maps: shared, they keep away from it, read-only, in a range's own space. Through
+ * it, as they read as sealed and went, their MAP was writable, which a seal may cross, and
  * fxfs_device_assert_in_gate's lockdep says so.
  */
 static void clone_past_a_writable_region(void)
@@ -252,8 +252,7 @@ static void clone_past_a_writable_region(void)
 /*
  * As clone_past_a_writable_region, the clone in two pieces, which are no slice: GCE r423's stack,
  * fxfs_dax_map_chunk outside the gate, fxfs_dax_move, a writable MAP past the region's end as a seal
- * shrank it (generic/013). fxfs_dax_move looked at the region before fxfs_dax_map_to locked it; now
- * no caller does.
+ * shrank it (generic/013), for blocks that no longer go by fxfs_dax_move.
  */
 static void clone_pieces_past_a_writable_region(void)
 {
@@ -301,10 +300,12 @@ static void write_slice(void *arg)
 
 /*
  * That a write a slice refuses part way leaves no page writable a seal doesn't forget. A clone's file
- * has blocks in an open extent, and no writable page: so a slice of it, read-only, of a writable
- * region, on no list of files, takes a write whose first page stays where it is, the file cloned
- * having let go of it, and whose second moves. The first page's bit was set, the file unlisted,
- * and the slice stayed, a reader using it, past a seal (dax_check_seals' WARN).
+ * had blocks in an open extent, and no writable page: so a slice of it, read-only, of a writable
+ * region, on no list of files, took a write whose first page stayed where it was, the file cloned
+ * having let go of it, and whose second moved. The first page's bit was set, the file unlisted,
+ * and the slice stayed, a reader using it, past a seal (dax_check_seals' WARN). Shared blocks make
+ * no slice now (TASK-153.3): the same steps, on a range of its own, whose writer waits for the fault
+ * holding the page's entry, in the gate, so that the seal comes once that is let go.
  */
 static void slice_refuses_a_piece(void)
 {
@@ -334,8 +335,8 @@ static void slice_refuses_a_piece(void)
 		msleep(1);
 	sim_spawn("writer", write_slice, NULL);
 	msleep(100);
-	check(!sim_fsync(holder), "the seal");
 	sim_param_set("dax_pause", "0");
+	check(!sim_fsync(holder), "the seal");
 }
 
 static struct file *killed_file;
