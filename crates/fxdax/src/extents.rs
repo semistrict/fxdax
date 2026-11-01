@@ -36,7 +36,7 @@ use crate::stats::{self, Counter};
 use extent_store::{HostDir, NoSpace, Spent, Store, TooLong, TooSmall, Unaligned};
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use storage_device::{NoExtent, OtherBranch, SealedExtent};
 
 /// An extent's ID: the branch that wrote it, and the sequence number that branch gave it.
@@ -185,6 +185,11 @@ struct OpenExtent {
 /// An extent store a guest's filesystem lives on. See the module docs.
 pub struct ExtentStore {
     store: Arc<Store<HostDir>>,
+    /// fxdax: where it was opened: its directory, or its handle's, which keeps what is attached to
+    /// it (backlog doc-10).
+    path: std::path::PathBuf,
+    /// fxdax: the forks of other stores attached to it, whose extents it reads through to.
+    bases: Arc<Bases>,
     /// The open extents mapped writably, until the next commit. Locked before `dax`.
     open: Mutex<HashMap<ExtentId, OpenExtent>>,
     /// fxdax: what a commit reads each open extent's memory into, kept from one to the next, under
@@ -499,7 +504,7 @@ impl ExtentStore {
         arena: Option<Arc<Arena>>,
     ) -> Result<Self, Error> {
         let store = host_store::create(path.as_ref(), capacity, branch).map_err(Error::new)?;
-        Ok(Self::new(store, arena, true))
+        Ok(Self::new(path.as_ref(), store, arena, true))
     }
 
     /// The store at `path`, or the fork whose handle `path` is ([`ExtentStore::fork`]), as of its
@@ -516,7 +521,17 @@ impl ExtentStore {
     /// forks of them share, are of the default arena.
     pub fn open_in(path: impl AsRef<Path>, arena: Option<Arc<Arena>>) -> Result<Self, Error> {
         let store = host_store::open(path.as_ref()).map_err(Error::new)?;
-        Ok(Self::new(store, arena, true))
+        Ok(Self::new(path.as_ref(), store, arena, true))
+    }
+
+    /// fxdax: the store at `path`, a fork attached to other stores (backlog doc-10), to read
+    /// through to: no guest boots from it, so that, as [`ExtentStore::open_without_profile`] says,
+    /// it reads no boot profile. Its pages are of `arena`, or the default arena if it is public,
+    /// as a public base's are, which every tenant's VM processes hold read-only.
+    pub fn open_base(path: impl AsRef<Path>, arena: Option<Arc<Arena>>) -> Result<Self, Error> {
+        let store = host_store::open(path.as_ref()).map_err(Error::new)?;
+        let public = public_branches(store.dir().path()).contains(&store.description().branch);
+        Ok(Self::new(path.as_ref(), store, arena.filter(|_| !public), false))
     }
 
     /// fxdax: the store at `path`, as [`ExtentStore::open`] has it, for work on it that boots no
@@ -526,12 +541,13 @@ impl ExtentStore {
     /// holds, nor recorded (TASK-79.17).
     pub fn open_without_profile(path: impl AsRef<Path>) -> Result<Self, Error> {
         let store = host_store::open(path.as_ref()).map_err(Error::new)?;
-        Ok(Self::new(store, None, false))
+        Ok(Self::new(path.as_ref(), store, None, false))
     }
 
-    /// The store `store`, its own extents' pages of `arena`, or the default arena without one;
-    /// its base's boot profile read or recorded if `profiled` ([`ExtentStore::profile`]).
-    fn new(store: Store<HostDir>, arena: Option<Arc<Arena>>, profiled: bool) -> Self {
+    /// The store `store`, opened at `path`, its own extents' pages of `arena`, or the default arena
+    /// without one; its base's boot profile read or recorded if `profiled`
+    /// ([`ExtentStore::profile`]).
+    fn new(path: &Path, store: Store<HostDir>, arena: Option<Arc<Arena>>, profiled: bool) -> Self {
         cache::relieve_pressure();
         let store = Arc::new(store);
         let arenas = Arenas { own: arena, public: Arc::new(public_branches(store.dir().path())) };
@@ -539,6 +555,8 @@ impl ExtentStore {
             profiling: profiled.then(|| Self::profile(&store, &arenas)).flatten(),
             arenas,
             store,
+            path: path.to_owned(),
+            bases: Default::default(),
             open: Mutex::new(HashMap::new()),
             commit_buffer: Mutex::new(Vec::new()),
             dax: Mutex::new(None),
@@ -563,6 +581,8 @@ impl ExtentStore {
             profiling: None,
             arenas: self.arenas.clone(),
             store: self.store.clone(),
+            path: self.path.clone(),
+            bases: self.bases.clone(),
             open: Mutex::new(HashMap::new()),
             commit_buffer: Mutex::new(Vec::new()),
             dax: Mutex::new(None),
@@ -644,6 +664,10 @@ impl ExtentStore {
     /// fxdax: keeps `extent`, which a follower's view holds, whatever commit it advances to,
     /// until unpinned: what its guest holds open that the writer deletes.
     pub fn pin(&self, extent: ExtentId) -> Result<()> {
+        // fxdax: nothing the writer does takes a base's extents away.
+        if self.bases.routes(extent.branch) {
+            return Ok(());
+        }
         self.view()?.pin(extent.into()).map_err(errno)
     }
 
@@ -776,6 +800,8 @@ impl ExtentStore {
         let remote = self.remote.get();
         let claimed = std::cell::Cell::new(false);
         let claim = || -> anyhow::Result<()> {
+            // fxdax: what is attached to it stays attached to the fork, a restored VM's too.
+            copy_bases(&self.path, path)?;
             let Some(remote) = remote else { return Ok(()) };
             if !remote.claim(branch)? {
                 return Err(anyhow::Error::new(Errno::EEXIST)
@@ -933,8 +959,15 @@ impl ExtentStore {
             }
             None => {
                 drop(open);
-                if !self.read_cached(extent, offset, &mut data)? {
-                    self.read_stored(extent, offset, &mut data)?;
+                match self.base_holding(extent)? {
+                    Some((base, _)) if !base.read_cached(extent, offset, &mut data)? => {
+                        base.read_stored(extent, offset, &mut data)?;
+                    }
+                    Some(_) => {}
+                    None if !self.read_cached(extent, offset, &mut data)? => {
+                        self.read_stored(extent, offset, &mut data)?;
+                    }
+                    None => {}
                 }
                 if check_sealed_reads() {
                     self.check_sealed_read(extent, offset, &data);
@@ -1502,13 +1535,19 @@ impl ExtentStore {
         writable: bool,
     ) -> Result<()> {
         self.dax.lock().unwrap().as_ref().ok_or(Errno::ENOSYS)?.check_range(window_offset, len)?;
-        let extent_len = match &self.following {
+        // fxdax: a base's is read-only, of the cache's one copy of it.
+        let base = self.base_holding(extent)?;
+        if base.is_some() && writable {
+            return Err(Errno::EPERM);
+        }
+        let extent_len = match (&base, &self.following) {
+            (Some((_, len)), _) => *len,
             // A follower's view holds sealed extents alone.
-            Some(following) => {
+            (None, Some(following)) => {
                 let view = following.view.lock().unwrap();
                 self.store.view_extent(&view, extent.into()).map_err(|e| outside_view(extent, e))?
             }
-            None => {
+            (None, None) => {
                 if self.map_open(extent, offset, len, window_offset, writable)? {
                     return Ok(());
                 }
@@ -1519,7 +1558,10 @@ impl ExtentStore {
         if !offset.is_multiple_of(page_size()) {
             return Err(Errno::EINVAL);
         }
-        let cached: Arc<dyn Source> = self.cached(extent, extent_len)?;
+        let cached: Arc<dyn Source> = match &base {
+            Some((base, _)) => base.cached(extent, extent_len)?,
+            None => self.cached(extent, extent_len)?,
+        };
         let mut dax = self.dax.lock().unwrap();
         let dax = dax.as_mut().ok_or(Errno::ENOSYS)?;
         let within = end.min(extent_len.next_multiple_of(page_size())).max(offset);
@@ -1722,21 +1764,84 @@ impl ExtentStore {
     /// Stores opened since take it so; a tenant opens no public store itself, only forks of it.
     pub fn make_public(&self) -> Result<()> {
         self.writable()?;
-        let parents: HashMap<u64, Option<u64>> =
-            self.store.lineage().branches().into_iter().collect();
-        let mut branch = Some(self.branch());
-        while let Some(public) = branch {
-            let marker = self.store.dir().path().join(public_marker(public));
+        self.mark_public(&self.ancestry())
+    }
+
+    /// fxdax: makes the store's branch public, but not those it inherited from: a fork pinning a
+    /// generation of a store that goes on being written, which attaches to tenants' stores rather
+    /// than being forked by them (backlog doc-10). Its pages are of the default arena through it
+    /// ([`ExtentStore::open_base`]).
+    pub fn make_generation_public(&self) -> Result<()> {
+        self.writable()?;
+        self.mark_public(&[self.branch()])
+    }
+
+    fn mark_public(&self, branches: &[u64]) -> Result<()> {
+        for public in branches {
+            let marker = self.store.dir().path().join(public_marker(*public));
             std::fs::File::create(&marker).and_then(|file| file.sync_all()).map_err(|err| {
                 log::error!("fxdax: marking branch {public:x} public: {err}");
                 Errno::EIO
             })?;
-            branch = parents.get(&public).copied().flatten();
         }
         std::fs::File::open(self.store.dir().path()).and_then(|dir| dir.sync_all()).map_err(|err| {
             log::error!("fxdax: marking branches public: {err}");
             Errno::EIO
         })
+    }
+
+    /// fxdax: the store's branch, and those it inherited from, nearest first.
+    pub fn ancestry(&self) -> Vec<u64> {
+        let parents: HashMap<u64, Option<u64>> =
+            self.store.lineage().branches().into_iter().collect();
+        std::iter::successors(Some(self.branch()), |branch| parents.get(branch).copied().flatten())
+            .collect()
+    }
+
+    /// fxdax: attaches the store at `base`, a fork pinning what it holds, to this one, which
+    /// `branches` of ([`ExtentStore::ancestry`]), durably: `READ` and `MAP` of its extents read
+    /// through to it from now on, and in forks of this store, which a VM restored is. Attached
+    /// already, it does nothing. The guest has no part in this (backlog doc-10).
+    pub fn attach_base(&self, base: &Path, branches: &[u64]) -> Result<()> {
+        self.writable()?;
+        record_base(&self.path, base, branches)?;
+        self.bases.add(self.routed(branches), base);
+        Ok(())
+    }
+
+    /// fxdax: of `branches`, those of a base's that its reads are routed by: not the store's own
+    /// and those it inherited, whose extents it holds, or freed.
+    fn routed(&self, branches: &[u64]) -> Vec<u64> {
+        let own = self.ancestry();
+        branches.iter().copied().filter(|branch| !own.contains(branch)).collect()
+    }
+
+    /// fxdax: routes reads to what is attached to the store, as recorded, each opened by `open`
+    /// when first read: however many are attached, they cost it nothing until then.
+    pub fn open_bases(&self, open: OpenBase) -> Result<()> {
+        let _ = self.bases.open.set(open);
+        for (branches, base) in recorded_bases(&self.path)? {
+            self.bases.add(self.routed(&branches), &base);
+        }
+        Ok(())
+    }
+
+    /// fxdax: how many of what is attached to it are open.
+    #[cfg(test)]
+    pub(crate) fn bases_opened(&self) -> usize {
+        self.bases.opened()
+    }
+
+    /// fxdax: the base attached that holds `extent`, with its length, if one does.
+    fn base_holding(&self, extent: ExtentId) -> Result<Option<(Arc<ExtentStore>, u64)>> {
+        let Some(bases) = self.bases.of(extent.branch) else { return Ok(None) };
+        for base in bases {
+            let store = base.store(self)?;
+            if let Some((len, false)) = store.store.extent(extent.into()).map_err(errno)? {
+                return Ok(Some((store, len)));
+            }
+        }
+        Ok(None)
     }
 
     /// fxdax: whether the store's branch is public ([`ExtentStore::make_public`]).
@@ -1770,6 +1875,158 @@ impl Arenas {
     /// The arena `extent`'s pages are of.
     fn of(&self, extent: ExtentId) -> ArenaId {
         if self.public.contains(&extent.branch) { ArenaId::DEFAULT } else { self.own() }
+    }
+}
+
+/// fxdax: what opens a store attached to another, the first time it is read through to.
+pub type OpenBase = Arc<dyn Fn(&Path) -> Result<Arc<ExtentStore>> + Send + Sync>;
+
+/// fxdax: a fork attached to a store (backlog doc-10).
+struct Base {
+    path: std::path::PathBuf,
+    store: Mutex<Option<Arc<ExtentStore>>>,
+}
+
+impl Base {
+    /// The fork, opened for `attached_to`, which is attached to it, once.
+    fn store(&self, attached_to: &ExtentStore) -> Result<Arc<ExtentStore>> {
+        let mut store = self.store.lock().unwrap();
+        if let Some(store) = &*store {
+            return Ok(store.clone());
+        }
+        let opened = match attached_to.bases.open.get() {
+            Some(open) => open(&self.path)?,
+            None => {
+                let arena = attached_to.arenas.own.clone();
+                let opened = ExtentStore::open_base(&self.path, arena).map_err(|err| {
+                    log::warn!("fxdax: opening {}, attached: {err:#}", self.path.display());
+                    err.errno().unwrap_or(Errno::EIO)
+                })?;
+                Arc::new(opened)
+            }
+        };
+        *store = Some(opened.clone());
+        Ok(opened)
+    }
+}
+
+/// fxdax: what is attached to a store: by the branches of the extents each holds, so that finding
+/// what reads an extent takes the same time however many are attached. A branch has more than one
+/// only for generations of one store, attached at once, the newest last.
+#[derive(Default)]
+struct Bases {
+    open: OnceLock<OpenBase>,
+    by_branch: std::sync::RwLock<HashMap<u64, Vec<Arc<Base>>>>,
+}
+
+impl Bases {
+    /// Routes `branches` to the store at `path`, if they aren't.
+    fn add(&self, branches: Vec<u64>, path: &Path) {
+        let mut by_branch = self.by_branch.write().unwrap();
+        let attached = branches
+            .iter()
+            .filter_map(|branch| by_branch.get(branch))
+            .flatten()
+            .find(|base| base.path == path)
+            .cloned();
+        let base = attached
+            .unwrap_or_else(|| Arc::new(Base { path: path.to_owned(), store: Mutex::default() }));
+        for branch in branches {
+            let routed = by_branch.entry(branch).or_default();
+            if !routed.iter().any(|routed| Arc::ptr_eq(routed, &base)) {
+                routed.push(base.clone());
+            }
+        }
+    }
+
+    /// Whether extents of `branch` are read through to what is attached.
+    fn routes(&self, branch: u64) -> bool {
+        self.by_branch.read().unwrap().contains_key(&branch)
+    }
+
+    /// What is attached that may hold extents of `branch`, newest first.
+    fn of(&self, branch: u64) -> Option<Vec<Arc<Base>>> {
+        let by_branch = self.by_branch.read().unwrap();
+        by_branch.get(&branch).map(|bases| bases.iter().rev().cloned().collect())
+    }
+
+    /// How many of those attached are open.
+    #[cfg(test)]
+    fn opened(&self) -> usize {
+        let mut opened: Vec<_> = (self.by_branch.read().unwrap().values().flatten())
+            .filter(|base| base.store.lock().unwrap().is_some())
+            .map(Arc::as_ptr)
+            .collect();
+        opened.sort();
+        opened.dedup();
+        opened.len()
+    }
+}
+
+/// fxdax: the name of the file in a store's directory, or its handle's, recording what is attached
+/// to it: a line of each's branches, in hexadecimal, comma-separated, and path.
+const BASES_FILE: &str = "attached-bases";
+
+/// fxdax: what is recorded as attached to the store at `path` ([`BASES_FILE`]).
+pub(crate) fn recorded_bases(path: &Path) -> Result<Vec<(Vec<u64>, std::path::PathBuf)>> {
+    let text = match std::fs::read_to_string(path.join(BASES_FILE)) {
+        Ok(text) => text,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => {
+            log::error!("fxdax: reading what is attached to {}: {err}", path.display());
+            return Err(Errno::EIO);
+        }
+    };
+    text.lines()
+        .map(|line| {
+            let parsed = line.split_once(' ').and_then(|(branches, base)| {
+                let branches = branches.split(',').map(|branch| u64::from_str_radix(branch, 16));
+                Some((branches.collect::<std::result::Result<_, _>>().ok()?, base.into()))
+            });
+            parsed.ok_or_else(|| {
+                log::error!("fxdax: {} says {line:?} is attached", path.display());
+                Errno::EIO
+            })
+        })
+        .collect()
+}
+
+/// fxdax: records `base`, of `branches`, as attached to the store at `path`, durably, unless it is.
+pub(crate) fn record_base(path: &Path, base: &Path, branches: &[u64]) -> Result<()> {
+    let recorded = recorded_bases(path)?;
+    if recorded.iter().any(|(_, recorded)| recorded == base) {
+        return Ok(());
+    }
+    let mut text = std::fs::read_to_string(path.join(BASES_FILE)).unwrap_or_default();
+    let branches: Vec<String> = branches.iter().map(|branch| format!("{branch:x}")).collect();
+    text.push_str(&format!(
+        "{} {}
+",
+        branches.join(","),
+        base.display()
+    ));
+    write_bases(path, &text)
+}
+
+/// fxdax: replaces what the store at `path` records as attached with `text`, whole or not at all.
+fn write_bases(path: &Path, text: &str) -> Result<()> {
+    let new = path.join(format!("{BASES_FILE}.new"));
+    let written = std::fs::write(&new, text)
+        .and_then(|()| std::fs::File::open(&new)?.sync_all())
+        .and_then(|()| std::fs::rename(&new, path.join(BASES_FILE)))
+        .and_then(|()| std::fs::File::open(path)?.sync_all());
+    written.map_err(|err| {
+        log::error!("fxdax: recording what is attached to {}: {err}", path.display());
+        Errno::EIO
+    })
+}
+
+/// fxdax: what the store at `from` records as attached goes for the fork whose handle is `to`.
+fn copy_bases(from: &Path, to: &Path) -> anyhow::Result<()> {
+    match std::fs::read_to_string(from.join(BASES_FILE)) {
+        Ok(text) => Ok(write_bases(to, &text)?),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err.into()),
     }
 }
 
@@ -3722,5 +3979,203 @@ mod tests {
         for (chunk, fault) in faults.into_iter().enumerate() {
             assert_eq!(fault.join().unwrap(), pattern(chunk as u8, BLOCK));
         }
+    }
+
+    /// A store holding `data` in one sealed extent, and the generation at `path` that pins it: the
+    /// extent, and the store's ancestry as the generation has it.
+    fn generation(path: &Path, data: &[u8]) -> (ExtentId, Vec<u64>) {
+        let publisher = ExtentStore::create(path.with_extension("publisher"), 1 << 20).unwrap();
+        let extent = id(&publisher, 1);
+        write(&publisher, extent, 0, data).unwrap();
+        publisher.commit(None).unwrap();
+        publisher.fork(path, rand::random::<u64>().max(1)).unwrap();
+        let ancestry = ExtentStore::open(path).unwrap().ancestry();
+        (extent, ancestry)
+    }
+
+    /// What opens what stores attach, one instance of each, as the extent daemon does.
+    fn one_instance_each() -> OpenBase {
+        let open: Mutex<HashMap<std::path::PathBuf, Arc<ExtentStore>>> = Mutex::default();
+        Arc::new(move |path| {
+            let mut open = open.lock().unwrap();
+            if let Some(store) = open.get(path) {
+                return Ok(store.clone());
+            }
+            let store = Arc::new(ExtentStore::open_base(path, None).unwrap());
+            open.insert(path.to_owned(), store.clone());
+            Ok(store)
+        })
+    }
+
+    /// doc-10: a base attached reads and maps through, read-only, and nothing else does: not an
+    /// extent of a base not attached, nor one a base doesn't hold.
+    #[test]
+    fn bases_attached_read_and_map_through() {
+        let (store, dir) = store(1 << 20);
+        let ps = page_size();
+        let (base, other) = (dir.path().join("base"), dir.path().join("other"));
+        let data = pattern(3, ps as usize);
+        let (extent, ancestry) = generation(&base, &data);
+        let (not_attached, _) = generation(&other, &data);
+        let window = store.create_dax_window(4 * ps, None).unwrap();
+
+        assert_eq!(read(&store, extent, 0, BLOCK), Err(Errno::ENOENT));
+        assert_eq!(store.map(extent, 0, ps, 0, false), Err(Errno::ENOENT));
+
+        store.attach_base(&base, &ancestry).unwrap();
+        assert_eq!(read(&store, extent, 0, ps as usize), Ok(data.clone()));
+        store.map(extent, 0, ps, 0, false).unwrap();
+        block_on(window.fault(0, Access::Read)).unwrap();
+        // SAFETY: The test faulted the page in, and nothing writes it.
+        let mapped = unsafe { std::slice::from_raw_parts(window.host_base(), ps as usize) };
+        assert!(mapped == data, "the window maps other data");
+
+        assert_eq!(read(&store, not_attached, 0, BLOCK), Err(Errno::ENOENT));
+        assert_eq!(store.map(not_attached, 0, ps, ps, false), Err(Errno::ENOENT));
+        let beyond = ExtentId { sequence: extent.sequence + 1, ..extent };
+        assert_eq!(read(&store, beyond, 0, BLOCK), Err(Errno::ENOENT));
+        assert_eq!(store.map(extent, 0, ps, ps, true), Err(Errno::EPERM));
+        assert_eq!(write(&store, extent, 0, &[0; BLOCK]), Err(Errno::EPERM));
+        // Attaching it again changes nothing.
+        store.attach_base(&base, &ancestry).unwrap();
+        assert_eq!(recorded_bases(&dir.path().join("store")).unwrap().len(), 1);
+    }
+
+    /// doc-10: VMs mapping a base share its pages: the cache's one copy, for the attached and for
+    /// a store that holds the extent itself.
+    #[test]
+    fn windows_share_bases_pages() {
+        let dir = tempfile::tempdir().unwrap();
+        let ps = page_size();
+        let base = dir.path().join("base");
+        let (extent, ancestry) = generation(&base, &pattern(4, ps as usize));
+        let stores: Vec<ExtentStore> = (0..2)
+            .map(|at| ExtentStore::create(dir.path().join(format!("{at}")), 1 << 20).unwrap())
+            .collect();
+        let windows: Vec<DaxWindow> =
+            stores.iter().map(|store| store.create_dax_window(ps, None).unwrap()).collect();
+        let open = one_instance_each();
+        for store in &stores {
+            store.open_bases(open.clone()).unwrap();
+            store.attach_base(&base, &ancestry).unwrap();
+            store.map(extent, 0, ps, 0, false).unwrap();
+        }
+        for window in &windows {
+            block_on(window.fault(0, Access::Read)).unwrap();
+        }
+        let extent_cached = cached(extent).expect("the extent is cached");
+        // The cache's, the test's, and each window's.
+        assert_eq!(Arc::strong_count(&extent_cached), 4);
+        let mut held = vec![0; ps as usize];
+        extent_cached.read(0, &mut held).unwrap();
+        assert!(held == pattern(4, ps as usize), "the cache holds other data");
+    }
+
+    /// doc-10: what a generation pins stays, whatever its store does next.
+    #[test]
+    fn bases_outlast_what_their_stores_free() {
+        let (store, dir) = store(1 << 20);
+        let (publisher_path, base) = (dir.path().join("publisher"), dir.path().join("base"));
+        let publisher = ExtentStore::create(&publisher_path, 1 << 20).unwrap();
+        let extent = id(&publisher, 1);
+        write(&publisher, extent, 0, &pattern(5, BLOCK)).unwrap();
+        publisher.commit(None).unwrap();
+        publisher.fork(&base, publisher.branch() + 1).unwrap();
+        publisher.free(extent).unwrap();
+        publisher.commit(None).unwrap();
+        assert_eq!(read(&publisher, extent, 0, BLOCK), Err(Errno::ENOENT));
+
+        let ancestry = ExtentStore::open(&base).unwrap().ancestry();
+        store.attach_base(&base, &ancestry).unwrap();
+        assert_eq!(read(&store, extent, 0, BLOCK), Ok(pattern(5, BLOCK)));
+    }
+
+    /// doc-10: what is attached stays attached to forks, which a restored VM's store is, and through
+    /// reopening, and doesn't reach back to the store a fork came from.
+    #[test]
+    fn bases_stay_attached_through_forks_and_reopening() {
+        let (store, dir) = store(1 << 20);
+        let path = dir.path().join("store");
+        let (base, later) = (dir.path().join("base"), dir.path().join("later"));
+        let (extent, ancestry) = generation(&base, &pattern(6, BLOCK));
+        let (only_the_fork, later_ancestry) = generation(&later, &pattern(7, BLOCK));
+        let open = one_instance_each();
+        store.open_bases(open.clone()).unwrap();
+        store.attach_base(&base, &ancestry).unwrap();
+        store.commit(None).unwrap();
+
+        let fork = dir.path().join("fork");
+        store.fork(&fork, store.branch() + 1).unwrap();
+        let forked = ExtentStore::open(&fork).unwrap();
+        forked.open_bases(open.clone()).unwrap();
+        assert_eq!(read(&forked, extent, 0, BLOCK), Ok(pattern(6, BLOCK)));
+
+        forked.attach_base(&later, &later_ancestry).unwrap();
+        assert_eq!(read(&forked, only_the_fork, 0, BLOCK), Ok(pattern(7, BLOCK)));
+        assert_eq!(read(&store, only_the_fork, 0, BLOCK), Err(Errno::ENOENT));
+
+        drop(store);
+        let store = ExtentStore::open(&path).unwrap();
+        assert_eq!(read(&store, extent, 0, BLOCK), Err(Errno::ENOENT), "not routed yet");
+        store.open_bases(open).unwrap();
+        assert_eq!(read(&store, extent, 0, BLOCK), Ok(pattern(6, BLOCK)));
+    }
+
+    /// doc-10: hundreds attached cost nothing until read: what reads one opens that one alone, and
+    /// finding it takes a lookup of its branch.
+    #[test]
+    fn bases_attached_open_when_read() {
+        const ATTACHED: usize = 300;
+        let (store, dir) = store(1 << 20);
+        let bases: Vec<(ExtentId, Vec<u64>, std::path::PathBuf)> = (0..ATTACHED)
+            .map(|at| {
+                let path = dir.path().join(format!("base-{at}"));
+                let (extent, ancestry) = generation(&path, &pattern(at as u8, BLOCK));
+                store.attach_base(&path, &ancestry).unwrap();
+                (extent, ancestry, path)
+            })
+            .collect();
+        assert_eq!(store.bases_opened(), 0);
+        assert_eq!(store.bases.by_branch.read().unwrap().len(), 2 * ATTACHED);
+
+        let (extent, ..) = &bases[ATTACHED / 2];
+        assert_eq!(read(&store, *extent, 0, BLOCK), Ok(pattern((ATTACHED / 2) as u8, BLOCK)));
+        assert_eq!(store.bases_opened(), 1);
+        drop(bases);
+    }
+
+    /// doc-10: a follower reads what its writer has attached, which it pins as nothing, as nothing
+    /// takes it away.
+    #[test]
+    fn followers_read_through_to_what_their_writers_have_attached() {
+        let (store, dir) = store(1 << 20);
+        let base = dir.path().join("base");
+        let (extent, ancestry) = generation(&base, &pattern(8, BLOCK));
+        let store = Arc::new(store);
+        store.commit(None).unwrap();
+        let follower = store.follow();
+        store.attach_base(&base, &ancestry).unwrap();
+        assert_eq!(read(&follower, extent, 0, BLOCK), Ok(pattern(8, BLOCK)));
+        assert_eq!(follower.pin(extent), Ok(()));
+        assert_eq!(follower.unpin(extent), Ok(()));
+    }
+
+    /// doc-10: a store's ancestors are never routed: what it inherited it holds, or freed.
+    #[test]
+    fn bases_are_not_routed_for_what_a_store_inherited() {
+        let (store, dir) = store(1 << 20);
+        let inherited = id(&store, 1);
+        write(&store, inherited, 0, &pattern(9, BLOCK)).unwrap();
+        store.commit(None).unwrap();
+        let (fork, base) = (dir.path().join("fork"), dir.path().join("base"));
+        store.fork(&fork, store.branch() + 1).unwrap();
+        store.fork(&base, store.branch() + 2).unwrap();
+        let forked = ExtentStore::open(&fork).unwrap();
+        forked.attach_base(&base, &ExtentStore::open(&base).unwrap().ancestry()).unwrap();
+        assert!(!forked.bases.routes(inherited.branch));
+        assert!(forked.bases.routes(store.branch() + 2));
+        forked.free(inherited).unwrap();
+        forked.commit(None).unwrap();
+        assert_eq!(read(&forked, inherited, 0, BLOCK), Err(Errno::ENOENT));
     }
 }

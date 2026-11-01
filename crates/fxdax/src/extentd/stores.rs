@@ -453,12 +453,83 @@ pub(super) fn open_store(
     arena: Option<&Arc<Arena>>,
 ) -> Result<ExtentStore, Errno> {
     let arena = arena.cloned();
-    attached(path, || match capacity {
+    let opening = arena.clone();
+    let store = attached(path, || match capacity {
         Some(capacity) if !path.exists() => {
-            ExtentStore::create_in(path, capacity, crate::host_store::new_branch(), arena)
+            ExtentStore::create_in(path, capacity, crate::host_store::new_branch(), opening)
         }
-        _ => ExtentStore::open_in(path, arena),
+        _ => ExtentStore::open_in(path, opening),
+    })?;
+    // fxdax: a fork attached to it opens when first read through to.
+    store.open_bases(Arc::new(move |base| self::base(base, arena.as_ref())))?;
+    Ok(store)
+}
+
+/// fxdax: the fork at `path`, attached to stores (backlog doc-10), for a store whose pages are of
+/// `arena` to read through to: the one instance open of it, for all that attach it, in the default
+/// arena, if public, or `arena`: `EBUSY` in another's, whose pages the connection's VM process
+/// doesn't hold.
+fn base(path: &Path, arena: Option<&Arc<Arena>>) -> Result<Arc<ExtentStore>, Errno> {
+    let open = |key: &Path| match instance(key) {
+        Some((_, true)) => Err(Errno::EBUSY),
+        Some((store, false)) if store.is_public() => Ok(Some(store)),
+        Some((store, false)) => {
+            let own = arena.map_or(crate::pages::ArenaId::DEFAULT, |arena| arena.id());
+            if store.arena() == own { Ok(Some(store)) } else { Err(Errno::EBUSY) }
+        }
+        None => Ok(None),
+    };
+    if let Some(store) = open(&store_key(path))? {
+        return Ok(store);
+    }
+    let held = Held::new(path)?;
+    if let Some(store) = open(&held.0)? {
+        return Ok(store);
+    }
+    if !path.exists() {
+        return Err(Errno::ENOENT);
+    }
+    let store = Arc::new(attached(path, || ExtentStore::open_base(path, arena.cloned()))?);
+    register(&held.0, &store);
+    Ok(store)
+}
+
+/// fxdax: attaches the fork at `base` to the store at `path` (`AttachBase`), a VM's or stopped:
+/// `EACCES` unless `allowed` says its tenant may read a store that isn't public.
+pub(super) async fn attach(
+    path: PathBuf,
+    base: PathBuf,
+    allowed: impl FnOnce(&Path, &Path) -> bool + Send + 'static,
+) -> Result<(), Errno> {
+    let base = base.canonicalize().map_err(|err| match err.kind() {
+        std::io::ErrorKind::NotFound => Errno::ENOENT,
+        _ => Errno::EIO,
+    })?;
+    let (public, ancestry) = match instance(&store_key(&base)) {
+        Some((store, _)) => (store.is_public(), store.ancestry()),
+        None => {
+            let held = Held::acquire(&base).await?;
+            let here = Here::open(&base, Some(Box::new(held))).await?;
+            let what = (here.store().store.is_public(), here.store().store.ancestry());
+            here.close().await;
+            what
+        }
+    };
+    if !public && !allowed(&store_key(&path), &base) {
+        return Err(Errno::EACCES);
+    }
+    if let Some(store) = open_by_connection(&path) {
+        return blocking(move || store.attach_base(&base, &ancestry)).await;
+    }
+    let held = Held::acquire(&path).await?;
+    blocking(move || {
+        let _held = held;
+        if !path.exists() {
+            return Err(Errno::ENOENT);
+        }
+        crate::extents::record_base(&path, &base, &ancestry)
     })
+    .await
 }
 
 /// The store at `path`, as `open` opens it, keeping its branch in the daemon's bucket.
@@ -813,13 +884,13 @@ pub(super) async fn place(path: PathBuf, token: u64) -> Result<(), Errno> {
 /// Makes the store at `path` a public base, and the branches it inherited from
 /// ([`ExtentStore::make_public`]): `EBUSY` while a connection has it open, whose guest could
 /// write it still.
-pub(super) async fn make_public(path: PathBuf) -> Result<(), Errno> {
+pub(super) async fn make_public(path: PathBuf, generation: bool) -> Result<(), Errno> {
     let held = Held::alone(&path).await?;
     blocking(move || {
         let _held = held;
         let store = ExtentStore::open_without_profile(&path)
             .map_err(|err| errno_of(format_args!("opening {}", path.display()), err))?;
-        store.make_public()
+        if generation { store.make_generation_public() } else { store.make_public() }
     })
     .await
 }

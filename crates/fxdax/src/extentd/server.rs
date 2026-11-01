@@ -694,7 +694,7 @@ fn roots() -> Option<&'static [PathBuf]> {
 
 /// Whether `path` names a store in `dir`, a canonical directory, whichever way it names it:
 /// through symlinks, or `..`.
-fn in_dir(path: &Path, dir: &Path) -> bool {
+pub(super) fn in_dir(path: &Path, dir: &Path) -> bool {
     use std::path::Component;
     let key = stores::store_key(path);
     // A path not resolved, its directory not there, holds no `..` that leads out.
