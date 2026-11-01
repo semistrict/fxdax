@@ -3005,6 +3005,7 @@ mod tests {
             Unmap(u64, u64),
             Commit,
             Free(u64),
+            Fork,
         }
         let at = || {
             prop_oneof![
@@ -3016,24 +3017,35 @@ mod tests {
         };
         let sequence = || 0u64..16;
         let bytes = || 0usize..4 * BLOCK;
+        // Those a store serves: of a few extents, whole blocks and pages, as a guest's are, each
+        // of the others' extents, so that what one opens the next finds open.
+        let ps = page_size();
+        let few = || 0u64..4;
+        let page = move || (0u64..16).prop_map(move |page| page * ps);
         let request = prop_oneof![
-            (sequence(), at(), bytes()).prop_map(|(e, at, len)| Request::Write(e, at, len)),
-            (sequence(), at(), bytes()).prop_map(|(e, at, len)| Request::Read(e, at, len)),
-            (sequence(), at(), at(), at(), any::<bool>())
+            8 => (few(), page(), 1usize..4).prop_map(|(e, at, n)| Request::Write(e, at, n * BLOCK)),
+            8 => (few(), page(), 1u64..4, page(), any::<bool>())
+                .prop_map(move |(e, at, pages, to, w)| Request::Map(e, at, pages * ps, to, w)),
+            8 => (sequence(), at(), bytes()).prop_map(|(e, at, len)| Request::Write(e, at, len)),
+            8 => (sequence(), at(), bytes()).prop_map(|(e, at, len)| Request::Read(e, at, len)),
+            8 => (sequence(), at(), at(), at(), any::<bool>())
                 .prop_map(|(e, at, len, to, w)| Request::Map(e, at, len, to, w)),
-            (at(), at()).prop_map(|(to, len)| Request::Unmap(to, len)),
-            Just(Request::Commit),
-            sequence().prop_map(Request::Free),
+            8 => (at(), at()).prop_map(|(to, len)| Request::Unmap(to, len)),
+            8 => Just(Request::Commit),
+            8 => sequence().prop_map(Request::Free),
+            1 => Just(Request::Fork),
         ];
         let config = Config { cases: 200, failure_persistence: None, ..Config::default() };
         TestRunner::new(config)
             .run(&proptest::collection::vec(request, 1..64), |requests| {
-                let (store, _dir) = store(1 << 22);
+                // Room for every extent it may open, so that nothing it did may fail a commit.
+                let (store, dir) = store(1 << 27);
                 let stage = Arc::new(RunRecordingSecondStage::default());
                 let _window = store.create_dax_window(WINDOW, Some(stage)).unwrap();
                 let kept = id(&store, KEPT);
                 write(&store, kept, 0, &pattern(9, BLOCK)).unwrap();
                 store.commit(None).unwrap();
+                let mut forks = (1u64..).map(|fork| (dir.path().join(fork.to_string()), fork));
                 for request in requests {
                     let extent = |sequence| id(&store, sequence);
                     // Failing or not as it may: what it may not do is panic.
@@ -3046,8 +3058,14 @@ mod tests {
                         Request::Unmap(to, len) => store.unmap(to, len),
                         Request::Commit => store.commit(None),
                         Request::Free(e) => store.free(extent(e)),
+                        Request::Fork => {
+                            let (path, fork) = forks.next().unwrap();
+                            store.fork(path, store.branch() + fork).map_err(|_| Errno::EIO)
+                        }
                     };
                 }
+                // Nor leave a commit it can't make: a wedged store's guest gets nothing more done.
+                prop_assert_eq!(store.commit(None), Ok(()));
                 prop_assert_eq!(read(&store, kept, 0, BLOCK), Ok(pattern(9, BLOCK)));
                 Ok(())
             })
