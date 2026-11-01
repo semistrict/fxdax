@@ -1603,6 +1603,129 @@ impl std::ops::DerefMut for LayerWriterBufItemCount {
     }
 }
 
+// fxdax: what the target of crates/fxfs/fuzz runs: a layer written as a writer would have written
+// it, changed, then opened and read, as a mount and a compaction read it.
+#[cfg(fuzz)]
+pub mod fuzz {
+    use super::{PersistentLayer, PersistentLayerWriter};
+    use crate::lsm_tree::types::{Item, Key, LayerIterator, LayerValue, LayerWriter};
+    use crate::object_handle::WriteBytes as _;
+    use crate::object_store::allocator::{AllocatorKey, AllocatorValue};
+    use crate::object_store::{ObjectKey, ObjectValue};
+    use crate::testing::fake_object::{FakeObject, FakeObjectHandle};
+    use crate::testing::fuzz::run;
+    use crate::testing::writer::Writer;
+    use arbitrary::Arbitrary;
+    use std::ops::Bound;
+    use std::sync::Arc;
+    use storage_units::BlockSize;
+
+    const BLOCK_SIZE: BlockSize = BlockSize::SIZE_4KIB;
+    /// As many as a corrupt count may make of a layer: reading one is what's tested, not its end.
+    const MOST_ITEMS: usize = 1 << 16;
+
+    /// A layer of `items`, and what's changed in it: what's at an offset, modulo its size, and the
+    /// bytes put there.
+    #[derive(Arbitrary, Debug)]
+    pub struct LayerChanges<K, V> {
+        items: Vec<Item<K, V>>,
+        finds: Vec<K>,
+        changes: Vec<(u32, Vec<u8>)>,
+    }
+
+    /// Which layer it is: one of the object stores', or the allocator's.
+    #[derive(Arbitrary, Debug)]
+    pub enum AnyLayer {
+        Object(LayerChanges<ObjectKey, ObjectValue>),
+        Allocator(LayerChanges<AllocatorKey, AllocatorValue>),
+    }
+
+    pub fn fuzz_layer(layer: AnyLayer) {
+        run(async move {
+            match layer {
+                AnyLayer::Object(layer) => written_and_changed(layer).await,
+                AnyLayer::Allocator(layer) => written_and_changed(layer).await,
+            }
+        });
+    }
+
+    /// A layer file that is `input`, or a block-aligned part of it, whatever it holds.
+    pub fn fuzz_layer_bytes(input: Vec<u8>) {
+        run(async move {
+            let object = Arc::new(FakeObject::new());
+            let handle = FakeObjectHandle::new_with_block_size(object.clone(), BLOCK_SIZE);
+            let mut writer = Writer::new(&handle).await;
+            writer.write_bytes(&input).await.expect("writing");
+            writer.complete().await.expect("completing");
+            let (keys, values) = (Vec::new(), Vec::new());
+            read_layer::<ObjectKey, ObjectValue>(&object, &keys, &values).await;
+        });
+    }
+
+    async fn written_and_changed<K: Key + Ord, V: LayerValue>(layer: LayerChanges<K, V>) {
+        let LayerChanges { mut items, finds, changes } = layer;
+        items.sort_by(|a, b| a.key.cmp(&b.key));
+        items.dedup_by(|a, b| a.key == b.key);
+        let object = Arc::new(FakeObject::new());
+        let handle = FakeObjectHandle::new_with_block_size(object.clone(), BLOCK_SIZE);
+        let writer = Writer::new(&handle).await;
+        let mut writer = PersistentLayerWriter::<_, K, V>::new(writer, items.len(), BLOCK_SIZE)
+            .await
+            .expect("the writer");
+        for item in &items {
+            writer.write(item.as_item_ref()).await.expect("writing");
+        }
+        writer.complete().await.expect("completing");
+        object.change(|bytes| {
+            for (offset, change) in changes {
+                let at = offset as usize % bytes.len();
+                let end = (at + change.len()).min(bytes.len());
+                bytes[at..end].copy_from_slice(&change[..end - at]);
+            }
+        });
+        read_layer(&object, &finds, &items).await;
+    }
+
+    /// Opens what `object` holds as a layer, and reads it, as far as it can be, then seeks to each
+    /// of what's in `keys` and `items`.
+    async fn read_layer<K: Key, V: LayerValue>(
+        object: &Arc<FakeObject>,
+        keys: &[K],
+        items: &[Item<K, V>],
+    ) {
+        let handle = FakeObjectHandle::new_with_block_size(object.clone(), BLOCK_SIZE);
+        let Ok(layer) = PersistentLayer::<K, V>::open(handle).await else { return };
+        // As a compaction does, into another layer.
+        if let Ok(mut iterator) = layer.seek(Bound::Unbounded).await {
+            let handle =
+                FakeObjectHandle::new_with_block_size(Arc::new(FakeObject::new()), BLOCK_SIZE);
+            let writer = Writer::new(&handle).await;
+            let writer = PersistentLayerWriter::<_, K, V>::new(writer, MOST_ITEMS, BLOCK_SIZE);
+            let mut writer = writer.await.expect("the writer");
+            let mut read = 0;
+            while let Some(item) = iterator.get()
+                && read < MOST_ITEMS
+                && writer.write(item).await.is_ok()
+                && iterator.advance().await.is_ok()
+            {
+                read += 1;
+            }
+            let _ = writer.complete().await;
+        }
+        let keys = keys.iter().chain(items.iter().map(|item| &item.key));
+        for key in keys.take(MOST_ITEMS) {
+            let _ = layer.maybe_contains_key(key);
+            let _ = layer.key_exists(key).await;
+            for bound in [Bound::Included(key), Bound::Excluded(key)] {
+                if let Ok(mut iterator) = layer.seek(bound).await {
+                    let _ = iterator.get();
+                    let _ = iterator.advance().await;
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{

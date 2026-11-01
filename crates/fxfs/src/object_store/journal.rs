@@ -138,6 +138,7 @@ pub const RESET_XOR: u64 = 0xffffffffffffffff;
 pub type JournalCheckpoint = JournalCheckpointV32;
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, TypeFingerprint)]
+#[cfg_attr(fuzz, derive(arbitrary::Arbitrary))]
 pub struct JournalCheckpointV32 {
     pub file_offset: u64,
 
@@ -4301,43 +4302,48 @@ mod tests {
     }
 }
 
+// fxdax: plain functions, which the targets of crates/fxfs/fuzz call, in place of Fuchsia's `fuzz`
+// macro, on the image of `crate::testing::fuzz`: Fxfs's blocks are 4 KiB here. What mounts is
+// checked and read too.
 #[cfg(fuzz)]
-mod fuzz {
-    use fuzz::fuzz;
+pub mod fuzz {
+    use crate::filesystem::{FxFilesystem, OpenFxFilesystem};
+    use crate::object_store::transaction::{Options, lock_keys};
+    use crate::object_store::{HandleOptions, ObjectStore};
+    use crate::testing::fuzz::{image, mounts_without_panicking, run};
+    use std::io::Write;
+    use storage_device::DeviceHolder;
 
-    #[fuzz]
-    fn fuzz_journal_bytes(input: Vec<u8>) {
-        use crate::filesystem::FxFilesystem;
-        use fuchsia_async as fasync;
-        use std::io::Write;
-        use storage_device::DeviceHolder;
-        use storage_device::fake_device::FakeDevice;
+    /// The image, mounted, one transaction committed: which starts the flush task, and writes the
+    /// reset that replay looks for.
+    async fn mounted() -> OpenFxFilesystem {
+        let fs = FxFilesystem::open(DeviceHolder::new(image())).await.expect("open failed");
+        let store = fs.root_store();
+        let mut transaction = store
+            .new_transaction(lock_keys![], Options::default())
+            .await
+            .expect("new_transaction failed");
+        ObjectStore::create_object(&store, &mut transaction, HandleOptions::default(), None)
+            .await
+            .expect("create_object failed");
+        transaction.commit().await.expect("commit failed");
+        fs
+    }
 
-        fasync::SendExecutorBuilder::new().num_threads(4).build().run(async move {
-            let device = DeviceHolder::new(FakeDevice::new(32768, 512));
-            let fs = FxFilesystem::new_empty(device).await.expect("new_empty failed");
+    pub fn fuzz_journal_bytes(input: Vec<u8>) {
+        run(async move {
+            let fs = mounted().await;
             fs.journal().inner.lock().writer.write_all(&input).expect("write failed");
             fs.close().await.expect("close failed");
             let device = fs.take_device().await;
             device.reopen(false);
-            if let Ok(fs) = FxFilesystem::open(device).await {
-                // `close()` can fail if there were objects to be tombstoned. If the said object is
-                // corrupted, there will be an error when we compact the journal.
-                let _ = fs.close().await;
-            }
+            mounts_without_panicking(device).await;
         });
     }
 
-    #[fuzz]
-    fn fuzz_journal(input: Vec<super::JournalRecord>) {
-        use crate::filesystem::FxFilesystem;
-        use fuchsia_async as fasync;
-        use storage_device::DeviceHolder;
-        use storage_device::fake_device::FakeDevice;
-
-        fasync::SendExecutorBuilder::new().num_threads(4).build().run(async move {
-            let device = DeviceHolder::new(FakeDevice::new(32768, 512));
-            let fs = FxFilesystem::new_empty(device).await.expect("new_empty failed");
+    pub fn fuzz_journal(input: Vec<super::JournalRecord>) {
+        run(async move {
+            let fs = mounted().await;
             {
                 let mut inner = fs.journal().inner.lock();
                 for record in &input {
@@ -4347,11 +4353,7 @@ mod fuzz {
             fs.close().await.expect("close failed");
             let device = fs.take_device().await;
             device.reopen(false);
-            if let Ok(fs) = FxFilesystem::open(device).await {
-                // `close()` can fail if there were objects to be tombstoned. If the said object is
-                // corrupted, there will be an error when we compact the journal.
-                let _ = fs.close().await;
-            }
+            mounts_without_panicking(device).await;
         });
     }
 }

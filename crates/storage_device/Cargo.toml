@@ -23,6 +23,10 @@ storage_ptr_slice.workspace = true
 thiserror.workspace = true
 zx.workspace = true
 
+# fxdax: what the fuzz targets (crates/fxfs/fuzz) make extents of.
+[target.'cfg(fuzz)'.dependencies]
+arbitrary.workspace = true
+
 [dev-dependencies]
 fuchsia.workspace = true
 fuchsia-async.workspace = true

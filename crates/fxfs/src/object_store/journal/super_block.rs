@@ -264,6 +264,7 @@ pub type SuperBlockRecord = SuperBlockRecordV60;
 
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Serialize, Deserialize, TypeFingerprint, Versioned)]
+#[cfg_attr(fuzz, derive(arbitrary::Arbitrary))]
 pub enum SuperBlockRecordV60 {
     // When reading the super-block we know the initial extent, but not subsequent extents, so these
     // records need to exist to allow us to completely read the super-block.
@@ -746,6 +747,139 @@ impl RecordReader {
                 ReadResult::Some(x) => return Ok(x),
             }
         }
+    }
+}
+
+// fxdax: what the targets of crates/fxfs/fuzz run: a super-block written as a writer would have
+// written it, checksums right, holding what no writer would.
+#[cfg(fuzz)]
+pub mod fuzz {
+    use super::{Root, SUPER_BLOCK_MAGIC, SuperBlockHeader, SuperBlockInstance, SuperBlockRecord};
+    use crate::object_store::journal::writer::JournalWriter;
+    use crate::object_store::journal::{BLOCK_SIZE, JournalCheckpoint};
+    use crate::serialized_types::{Version, Versioned, VersionedLatest};
+    use crate::testing::fuzz::{image, mounts_without_panicking, run};
+    use arbitrary::Arbitrary;
+    use std::io::Write;
+    use std::sync::Arc;
+    use storage_device::{Device, DeviceHolder, ExtentId, ExtentRange};
+
+    /// What changes in a good super-block: each field, each by a chance of its own, so that those
+    /// left alone leave what's read past them to be found.
+    #[derive(Arbitrary, Debug)]
+    pub struct SuperBlockChanges {
+        generation: Option<u64>,
+        root_parent_store_object_id: Option<u64>,
+        root_parent_graveyard_directory_object_id: Option<u64>,
+        root_store_object_id: Option<u64>,
+        allocator_object_id: Option<u64>,
+        journal_object_id: Option<u64>,
+        journal_checkpoint: Option<JournalCheckpoint>,
+        file_offset: Option<u64>,
+        super_block_journal_file_offset: Option<u64>,
+        journal_file_offsets: Vec<(u64, u64)>,
+        borrowed_metadata_space: Option<u64>,
+        earliest_version: Option<Version>,
+        /// Records each put in place of the one at an index, or before the `End`.
+        records: Vec<(u8, SuperBlockRecord)>,
+        /// Records lost, at an index each.
+        lost: Vec<u8>,
+    }
+
+    /// Makes `bytes` the first instance of `device`'s super-block, the only one, sealed.
+    async fn replace_super_block(device: &Arc<dyn Device>, bytes: &[u8]) {
+        let mut writer = JournalWriter::new(BLOCK_SIZE, 0);
+        writer.write_all(bytes).expect("writing");
+        writer.pad_to_block().expect("padding");
+        let mut buffer = device.allocate_buffer(writer.flushable_bytes()).await;
+        writer.take_flushable(buffer.as_mut());
+        let extent = ExtentId::new(device.branch(), device.next_sequence().await.expect("numbers"));
+        device.write(extent, 0, buffer.as_ref()).await.expect("writing");
+        let range = 0..buffer.len() as u64;
+        let root = Root { a: Some(ExtentRange::new(extent, range)), b: None };
+        device.commit_root(&root.encode()).await.expect("committing");
+    }
+
+    /// A super-block whose bytes after its magic are `input`.
+    pub fn fuzz_super_block_bytes(input: Vec<u8>) {
+        run(async move {
+            let device = DeviceHolder::new(image());
+            let bytes = [SUPER_BLOCK_MAGIC.as_slice(), &input].concat();
+            replace_super_block(&device, &bytes[..bytes.len().min(1 << 20)]).await;
+            mounts_without_panicking(device).await;
+        });
+    }
+
+    /// The last super-block of a filesystem, as `changes` leaves it.
+    pub fn fuzz_super_block(changes: SuperBlockChanges) {
+        run(async move {
+            let device = DeviceHolder::new(image());
+            let (mut header, mut records) = read_all(&device).await;
+            let set = |field: &mut u64, value: Option<u64>| *field = value.unwrap_or(*field);
+            set(&mut header.generation, changes.generation);
+            set(&mut header.root_parent_store_object_id, changes.root_parent_store_object_id);
+            set(
+                &mut header.root_parent_graveyard_directory_object_id,
+                changes.root_parent_graveyard_directory_object_id,
+            );
+            set(&mut header.root_store_object_id, changes.root_store_object_id);
+            set(&mut header.allocator_object_id, changes.allocator_object_id);
+            set(&mut header.journal_object_id, changes.journal_object_id);
+            header.journal_checkpoint =
+                changes.journal_checkpoint.unwrap_or(header.journal_checkpoint);
+            set(&mut header.journal_checkpoint.file_offset, changes.file_offset);
+            set(
+                &mut header.super_block_journal_file_offset,
+                changes.super_block_journal_file_offset,
+            );
+            header.journal_file_offsets.extend(changes.journal_file_offsets);
+            set(&mut header.borrowed_metadata_space, changes.borrowed_metadata_space);
+            header.earliest_version = changes.earliest_version.unwrap_or(header.earliest_version);
+            for lost in changes.lost {
+                let index = lost as usize;
+                if index < records.len() {
+                    records.remove(index);
+                }
+            }
+            for (index, record) in changes.records {
+                match records.get_mut(index as usize) {
+                    Some(replaced) => *replaced = record,
+                    None => records.push(record),
+                }
+            }
+            records.push(SuperBlockRecord::End);
+            let mut bytes = SUPER_BLOCK_MAGIC.to_vec();
+            header.serialize_with_version(&mut bytes).expect("serializing");
+            for record in &records {
+                record.serialize_into(&mut bytes).expect("serializing");
+            }
+            replace_super_block(&device, &bytes).await;
+            mounts_without_panicking(device).await;
+        });
+    }
+
+    /// The latest super-block of `device`, and its records but for its `End`.
+    async fn read_all(device: &Arc<dyn Device>) -> (SuperBlockHeader, Vec<SuperBlockRecord>) {
+        let read = async |instance| SuperBlockHeader::read_header(device.clone(), instance).await;
+        let (a, b) = (read(SuperBlockInstance::A).await, read(SuperBlockInstance::B).await);
+        let later = match (&a, &b) {
+            (Ok((a, _)), Ok((b, _))) if b.generation > a.generation => SuperBlockInstance::B,
+            (Ok(_), _) => SuperBlockInstance::A,
+            _ => SuperBlockInstance::B,
+        };
+        let (header, mut reader) = match later {
+            SuperBlockInstance::A => a,
+            SuperBlockInstance::B => b,
+        }
+        .expect("a super-block");
+        let mut records = Vec::new();
+        loop {
+            match reader.next_item().await.expect("a record") {
+                SuperBlockRecord::End => break,
+                record => records.push(record),
+            }
+        }
+        (header, records)
     }
 }
 

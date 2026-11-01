@@ -5,6 +5,8 @@
 use fuchsia_async::Task;
 
 pub mod fake_object;
+#[cfg(fuzz)]
+pub mod fuzz;
 pub mod writer;
 
 // The executor won't immediately wake threads to run tasks in parallel.  This

@@ -21,6 +21,7 @@ unexpected_cfgs = { level = "warn", check-cfg = [
     'cfg(fuchsia_api_level_at_least, values(any()))',
     'cfg(fuchsia_api_level_less_than, values(any()))',
     'cfg(fuzz)',
+    'cfg(fuzz_target, values(any()))',
     'cfg(fuzzing)',
     'cfg(vdso_next)',
 ] }
