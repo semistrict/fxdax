@@ -6,7 +6,7 @@ title: >-
 status: In Progress
 assignee: []
 created_date: '2026-10-24 21:31'
-updated_date: '2026-10-25 03:04'
+updated_date: '2026-11-01 16:54'
 labels: []
 dependencies: []
 parent_task_id: TASK-44
@@ -24,6 +24,7 @@ Some of the guest's bugs have a shape a semantic patch matches: a field read und
 <!-- AC:BEGIN -->
 - [ ] #1 Semantic patches for those shapes run in scripts/check-guest.sh
 - [x] #2 They flag TASK-99's code, put back, and pass on main
+- [ ] #3 smatch or GCC -fanalyzer runs over the guest C, its licence checked, its findings triaged; it flags a double free on an allocation fallback, put back
 <!-- AC:END -->
 
 ## Definition of Done

@@ -3647,9 +3647,10 @@ static ssize_t fxfs_dax_write_iter(struct kiocb *iocb, struct iov_iter *from)
 	/*
 	 * A write that stopped short leaves the file no longer than it wrote: Fxfs has the size its
 	 * iomap asked for (fxfs_dax_map_write), past the inode's, which grows as bytes are written.
+	 * One that wrote nothing leaves it as it was, wherever it began past the end.
 	 */
 	if (iocb->ki_pos < end && end > old_size) {
-		err = fxfs_dax_set_size(inode, max(old_size, iocb->ki_pos));
+		err = fxfs_dax_set_size(inode, done ? max(old_size, iocb->ki_pos) : old_size);
 		if (err && !done)
 			ret = err;
 	}

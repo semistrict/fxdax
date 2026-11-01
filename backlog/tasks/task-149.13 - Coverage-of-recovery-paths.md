@@ -4,6 +4,7 @@ title: Coverage of recovery paths
 status: To Do
 assignee: []
 created_date: '2026-11-01 06:13'
+updated_date: '2026-11-01 16:54'
 labels: []
 dependencies: []
 parent_task_id: TASK-149
@@ -21,6 +22,7 @@ Tests can't find bugs in code they don't reach. Replay, mount and error paths ar
 <!-- AC:BEGIN -->
 - [ ] #1 A report shows line coverage of journal, allocator and replay under the model test
 - [ ] #2 Paths no test reaches are filed or covered
+- [ ] #3 A report from the coverage guest kernel shows which error paths of dax.c and super.c no suite reaches, each filed or covered
 <!-- AC:END -->
 
 ## Definition of Done

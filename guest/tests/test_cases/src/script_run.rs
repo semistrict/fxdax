@@ -349,9 +349,9 @@ impl Run {
         )))
     }
 
-    /// Checks `file`'s size, and all of it through read(2), against the model: at once after an
-    /// operation refused, which may leave no other trace, and which a check 100 operations later
-    /// says nothing of.
+    /// Checks `file`'s size, and all of it through read(2), against the model, and again uncached
+    /// if the filesystem may refuse: at once after an operation refused, which may leave no other
+    /// trace, and which a check 100 operations later says nothing of.
     fn check_read(&self, file: usize) -> Result<(), Failed> {
         let model = &self.model.files[file];
         let size = self.length(file)?;
@@ -359,6 +359,13 @@ impl Run {
             let want = model.len();
             return Err(differs(format!("file {file} has size {size:#x}, the model's {want:#x}")));
         }
+        self.check(file, 0, size + PAGE)?;
+        if !self.full {
+            return Ok(());
+        }
+        // As the filesystem has it: a refusal can leave a cache saying what it never stored.
+        let fd = self.files[file].as_raw_fd();
+        assert_eq!(unsafe { libc::posix_fadvise(fd, 0, 0, libc::POSIX_FADV_DONTNEED) }, 0);
         self.check(file, 0, size + PAGE)
     }
 
@@ -382,8 +389,10 @@ mod tests {
     use tempdir::TempDir;
 
     /// The room left on a filesystem full enough: a script's files, full of holes, come to less
-    /// than a MiB and a half on average, and 2 MiB left saw few refusals.
-    const LEFT: u64 = 1 << 20;
+    /// than a MiB and a half on average, and 2 MiB left saw few refusals. 1 MiB left saw none on
+    /// XFS once a check after a refusal dropped the cache, whose writeback frees what XFS
+    /// reserved ahead.
+    const LEFT: u64 = 1 << 18;
 
     /// The files of a run, in `dir`.
     fn names(dir: &std::path::Path, mix: Mix) -> Vec<String> {

@@ -1081,8 +1081,14 @@ static int fxfs_vfs_punch(struct inode *inode, loff_t start, loff_t end)
 	} else {
 		filemap_invalidate_lock(inode->i_mapping);
 		err = filemap_write_and_wait_range(inode->i_mapping, start, end - 1);
+		/*
+		 * fxdax: folios go whole, clean, not zeroed in part: a partial page's zeros, in the cache
+		 * before Fxfs has them, stayed there if it had no room, what the file held coming back
+		 * when the cache let them go.
+		 */
 		if (!err)
-			truncate_pagecache_range(inode, start, end - 1);
+			err = invalidate_inode_pages2_range(inode->i_mapping, start >> PAGE_SHIFT,
+							    (end - 1) >> PAGE_SHIFT);
 		if (!err && first > last) {
 			err = fxfs_vfs_write_zeros(inode, start, end - start);
 		} else {
@@ -2395,10 +2401,14 @@ loff_t fxfs_vfs_remap_file_range(struct file *file_in, loff_t pos_in, struct fil
 	err = fxfs_nofs(fxfs_clone_range(fxfs_vfs_fs(dst->i_sb), src->i_ino, pos_in, blocks,
 					 dst->i_ino, pos_out, size, &attr));
 	if (err) {
-		/* With no room, what it got to stands, and the size it reached. */
+		/*
+		 * With no room, what it got to stands, and the size it reached, if past the inode's:
+		 * Fxfs has no more of a file than was written back, so its size may be short of the
+		 * inode's, whose dirty pages past it a smaller size would lose.
+		 */
 		if (fxfs_nofs(fxfs_attr_of_open(fxfs_vfs_fs(dst->i_sb), dst->i_ino, &attr)))
 			goto out;
-		size = attr.size;
+		size = max_t(loff_t, i_size_read(dst), attr.size);
 	}
 	i_size_write(dst, size);
 	dst->i_blocks = attr.blocks;

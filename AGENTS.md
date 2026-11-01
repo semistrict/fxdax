@@ -53,6 +53,22 @@ or don't check. The fix is half the work. For each one:
 
 It is done when those notes exist and the test went red with the bug back.
 
+## Every bug questions the structure: could this class be made impossible?
+
+Before fixing a bug, think hard about the structure of the code around it, at every level up to
+the architecture. Could the code have been shaped so that this whole class of bug can't happen: a
+type that can't hold the bad state, one owner of what two places keep in step, an interface with no
+wrong order to call it in? Is anything about how it's structured suboptimal, even at a very high
+level? Look across past bugs too: `backlog search` and `dead-ends/` show whether this one is a
+repeat.
+
+- **A small structural problem:** refactor first, in a commit of its own, then fix the bug on top.
+- **A fundamental or architectural reason, above all one a pattern of bugs points to:** bring it to
+  the user's attention, with the bugs it explains and what you'd change. Don't restructure on your
+  own, and don't let the fix hide it: fix the bug as it stands if that can't wait.
+
+Say what you concluded in the fix's task notes, even if the structure is fine.
+
 ## Dead ends: check them before you try, add to them when you stop
 
 `dead-ends/` holds every approach that was tried and given up on, a file each, kept for good, so
