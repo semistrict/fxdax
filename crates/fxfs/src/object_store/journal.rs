@@ -206,6 +206,27 @@ struct SerializedRecords {
     ends: Vec<usize>,
 }
 
+/// fxdax: the bytes of the journal `JournalRecord::Mutation { object_id, mutation }` takes.
+pub(super) fn mutation_record_bytes(object_id: u64, mutation: &Mutation) -> u64 {
+    use bincode::Options;
+    let record = JournalRecordRef::Mutation { object_id, mutation };
+    let options = bincode::DefaultOptions::new().allow_trailing_bytes();
+    options.serialized_size(&record).unwrap() // Measuring has no limit to reach.
+}
+
+/// fxdax: the bytes of the journal `JournalRecord::DataChecksums` takes, of `checksums` of `range`.
+pub(super) fn checksums_record_bytes(
+    range: &ExtentRange,
+    checksums: &[Checksum],
+    first_write: bool,
+) -> u64 {
+    use bincode::Options;
+    let sums = Checksums::fletcher(checksums.to_vec());
+    let record = JournalRecord::DataChecksums(range.clone(), sums, first_write);
+    let options = bincode::DefaultOptions::new().allow_trailing_bytes();
+    options.serialized_size(&record).unwrap() // Measuring has no limit to reach.
+}
+
 impl SerializedRecords {
     /// Serializes `JournalRecord::Mutation { object_id, mutation }`, as `write_record` would.
     fn push(&mut self, object_id: u64, mutation: &Mutation) {
@@ -2143,16 +2164,9 @@ impl Journal {
     }
 
     /// fxdax: how much of the journal to have ahead for `transaction`, a chunk's or the chunks that
-    /// hold its records: their real size if it may take more than a chunk, as a block a mutation
-    /// is the most a record can take (`JournalWriter::write_record`) and asking for that much
-    /// would take it from the metadata reservation for nothing.
+    /// hold its records.
     fn room_for(&self, transaction: &Transaction<'_>) -> u64 {
-        let most = transaction.mutations().len() as u64 * BLOCK_SIZE.get();
-        if most <= self.chunk_size() {
-            return self.chunk_size();
-        }
-        let records = self.serialize_records(transaction);
-        let bytes = records.map_or(most, |records| records.bytes.len() as u64);
+        let bytes = transaction.journal_bytes();
         // With the blocks' checksums and a record's padding.
         (bytes + bytes / 8).next_multiple_of(self.chunk_size()).max(self.chunk_size())
     }
@@ -2767,7 +2781,10 @@ mod tests {
     /// `write_record` writes.
     #[test]
     fn test_serialized_records_are_journal_records() {
-        use super::{JournalRecord, SerializedRecords};
+        use super::{
+            JournalRecord, SerializedRecords, checksums_record_bytes, mutation_record_bytes,
+        };
+        use crate::checksum::Checksums;
         use crate::object_store::transaction::Mutation;
         use crate::object_store::{DirType, ObjectDescriptor, ObjectKey, ObjectValue};
         use crate::serialized_types::Versioned;
@@ -2788,9 +2805,18 @@ mod tests {
             JournalRecord::Mutation { object_id, mutation: mutation.clone() }
                 .serialize_into(&mut record)
                 .expect("serialize_into failed");
+            assert_eq!(mutation_record_bytes(object_id, mutation), record.len() as u64);
             expected.push(record);
         }
         assert_eq!(serialized.records().map(<[u8]>::to_vec).collect::<Vec<_>>(), expected);
+
+        let range =
+            storage_device::ExtentRange::new(storage_device::ExtentId::new(1, 1 << 40), 0..8192);
+        let mut record = Vec::new();
+        JournalRecord::DataChecksums(range.clone(), Checksums::fletcher(vec![1, 2]), true)
+            .serialize_into(&mut record)
+            .expect("serialize_into failed");
+        assert_eq!(checksums_record_bytes(&range, &[1, 2], true), record.len() as u64);
     }
 
     // fxdax: a file for `commit_records` to change, with no compaction: what they borrow is more
