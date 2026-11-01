@@ -61,6 +61,8 @@ use test_fxfs_guest_checks::TestFxfsGuestChecks;
 // The scripts of operations of fxfs-guest-checks' random_ops and fxfs-guest-script: what they are,
 // the guest's running of them, and the host's replays of them in VMs.
 pub mod script;
+#[cfg(all(feature = "guest", target_os = "linux"))]
+mod script_run;
 
 // What the guest's checks print as they fail.
 #[cfg(feature = "guest")]
