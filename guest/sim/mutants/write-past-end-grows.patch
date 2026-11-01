@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+#
+# A write past the end that copies nothing grows the file to where it was to begin.
+
+--- a/guest/linux/fs/fxfs/dax.c
++++ b/guest/linux/fs/fxfs/dax.c
+@@ -3790,7 +3790,7 @@
+ 	if (iocb->ki_pos < end && end > old_size) {
+ 		/* fxdax: none written, past the end, it leaves the file as it was, not grown to `pos`. */
+-		err = fxfs_vfs_resize(inode, done ? max(old_size, iocb->ki_pos) : old_size, NULL, NULL);
++		err = fxfs_vfs_resize(inode, max(old_size, iocb->ki_pos), NULL, NULL);
+ 		if (err && !done)
+ 			ret = err;
+ 	}

@@ -1813,7 +1813,8 @@ static int fxfs_vfs_write_end(const struct kiocb *iocb, struct address_space *ma
 	} else if (copied) {
 		fxfs_vfs_dirty_range(folio, offset_in_folio(folio, pos), copied);
 	}
-	if (pos + copied > inode->i_size)
+	/* fxdax: nothing copied, past the end, the file stays as long as it was. */
+	if (copied && pos + copied > inode->i_size)
 		i_size_write(inode, pos + copied);
 out:
 	/* fxdax: the room of the pages a short copy didn't dirty (TASK-80). */

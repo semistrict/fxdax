@@ -887,6 +887,7 @@ static void fxfs_dax_shadow_check(struct fxfs_dax *dax, struct fxfs_dax_range *r
 static const struct address_space_operations fxfs_dax_aops;
 static const struct file_operations fxfs_dax_file_operations;
 static int fxfs_dax_break_layouts(struct inode *inode, loff_t start);
+static int fxfs_dax_zero_tail(struct inode *inode, loff_t old, loff_t size);
 static int fxfs_dax_reach(struct fxfs_dax *dax, struct fxfs_dax_region *region, unsigned long end,
 			  bool sealed);
 static void fxfs_dax_put_region(struct fxfs_dax *dax, struct fxfs_dax_region *region);
@@ -3674,6 +3675,8 @@ static ssize_t fxfs_dax_write_iter(struct kiocb *iocb, struct iov_iter *from)
 		WRITE_ONCE(file->growing, iocb->ki_pos + iov_iter_count(from));
 		filemap_invalidate_lock(inode->i_mapping);
 		ret = fxfs_dax_fit(inode, iocb->ki_pos + iov_iter_count(from));
+		if (!ret && iocb->ki_pos > old_size)
+			ret = fxfs_dax_zero_tail(inode, old_size, iocb->ki_pos);
 		filemap_invalidate_unlock(inode->i_mapping);
 		if (ret)
 			goto out;
@@ -3741,7 +3744,8 @@ static ssize_t fxfs_dax_write_iter(struct kiocb *iocb, struct iov_iter *from)
 	 * iomap asked for (fxfs_dax_map_write), past the inode's, which grows as bytes are written.
 	 */
 	if (iocb->ki_pos < end && end > old_size) {
-		err = fxfs_vfs_resize(inode, max(old_size, iocb->ki_pos), NULL, NULL);
+		/* fxdax: none written, past the end, it leaves the file as it was, not grown to `pos`. */
+		err = fxfs_vfs_resize(inode, done ? max(old_size, iocb->ki_pos) : old_size, NULL, NULL);
 		if (err && !done)
 			ret = err;
 	}
@@ -5215,6 +5219,19 @@ static int fxfs_dax_zero_part(struct inode *inode, loff_t pos, loff_t len)
 }
 
 /*
+ * fxdax: as a file `old` bytes long grows to `size`, zeroes what its last page holds past `old` and
+ * short of `size`: a mapping's stores there aren't the file's, and growing would have reads find
+ * them (TASK-79.53). Here, not left to Fxfs, whose size may be past `old` as a failed write's is, and
+ * which then zeroes from there. With the invalidate_lock held for writing.
+ */
+static int fxfs_dax_zero_tail(struct inode *inode, loff_t old, loff_t size)
+{
+	if (!offset_in_page(old))
+		return 0;
+	return fxfs_dax_zero_part(inode, old, min_t(loff_t, size, round_up(old, PAGE_SIZE)) - old);
+}
+
+/*
  * Their DAX entries go, once their pages are unused, and the window's ranges of them, to be mapped
  * again as they are after the reflink: a source's blocks are shared from then on, which its ranges
  * may map writably, to be written in place (fxfs_dax_map_extents), as they can't be any more; and a
@@ -5291,7 +5308,9 @@ int fxfs_dax_resize_begin(struct inode *inode, loff_t size)
 		 * otherwise the window can hide a zero-filled replacement until eviction.
 		 */
 		if (size > old && !PAGE_ALIGNED(old)) {
-			err = fxfs_nofs(fxfs_fsync(fxfs_vfs_fs(inode->i_sb)));
+			err = fxfs_dax_zero_tail(inode, old, size);
+			if (!err)
+				err = fxfs_nofs(fxfs_fsync(fxfs_vfs_fs(inode->i_sb)));
 			if (!err)
 				err = fxfs_dax_break_layouts(inode, round_down(old, PAGE_SIZE));
 			if (!err)
