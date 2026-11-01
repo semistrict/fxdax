@@ -1409,7 +1409,10 @@ static int fxfs_dax_map_extents(struct fxfs_dax *dax, struct fxfs_dax_range *ran
 				const struct fxfs_dax_extent *extents, ssize_t count)
 {
 	loff_t start = fxfs_dax_chunk_start(range);
-	/* The pieces the range's own space maps, and which they are, if it can gather them. */
+	/*
+	 * The pieces the range's own space maps, and which they are, if it can gather them: one
+	 * allocation, `own` after `maps`, so that it has both or neither (TASK-150.10).
+	 */
 	struct fxfs_device_map *maps = NULL;
 	unsigned int *own = NULL;
 	bool writable = false;
@@ -1421,13 +1424,9 @@ static int fxfs_dax_map_extents(struct fxfs_dax *dax, struct fxfs_dax_range *ran
 		return fxfs_dax_map_slice(dax, range, extents, count);
 	fxfs_dax_prune(dax, range);
 	if (count > 1) {
-		maps = kmalloc_array(count, sizeof(*maps), GFP_NOFS);
-		own = kmalloc_array(count, sizeof(*own), GFP_NOFS);
-		if (!maps || !own) {
-			kfree(maps);
-			kfree(own);
-			maps = NULL;
-		}
+		maps = kmalloc_array(count, sizeof(*maps) + sizeof(*own), GFP_NOFS);
+		if (maps)
+			own = (unsigned int *)(maps + count);
 	}
 	for (i = 0; i < count; i++) {
 		const struct fxfs_dax_extent *e = &extents[i];
@@ -1488,7 +1487,6 @@ out:
 	if (writable)
 		fxfs_dax_add_writable(dax, range->file);
 	kfree(maps);
-	kfree(own);
 	return err;
 }
 
