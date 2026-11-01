@@ -4,6 +4,7 @@ title: fxfs_dax_new_slice lacks the TASK-44.21 guard
 status: To Do
 assignee: []
 created_date: '2026-11-01 16:52'
+updated_date: '2026-11-01 19:10'
 labels: []
 dependencies: []
 parent_task_id: TASK-150
@@ -32,3 +33,11 @@ From the static audit: the missing guard is traced, the interleaving only plausi
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+guest/sim's candidate 4 (TASK-149.14, branch test/sim-next) looks the same: a writable MAP outside the gate, for a sealed piece of a writable region after a reflink. tests/sealed_piece_reach fails on dax.c with one task; seed 13464 without its fix; guest/sim/fixes/sealed-reach-locked.patch is its candidate fix. Two independent findings. The guest check sealed_piece_reach fails only on a lockdep kernel.
+
+Confirmed on a real kernel: r423 xfstests-fxfs-guest-dax generic/013: 'mapped pages to 77 ..., writably (reach), past its region's 16 pages', WARN at dax.c:2132, stack fxfs_dax_reach < fxfs_dax_move, a path past TASK-44.21's guard, not fxfs_dax_new_slice as the audit said. TASK-44.21's fix left this gap.
+<!-- SECTION:NOTES:END -->
