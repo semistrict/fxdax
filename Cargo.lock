@@ -1347,6 +1347,7 @@ dependencies = [
  "fxfs",
  "log",
  "proptest",
+ "rand 0.10.3",
  "rustc-hash",
  "storage_device",
 ]

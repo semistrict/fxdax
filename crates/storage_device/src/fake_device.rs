@@ -160,6 +160,8 @@ struct CrashesInner {
     recording: Recording,
     /// The mark that crashes recorded from now on carry, if any are recorded.
     mark: Option<u64>,
+    /// fxdax: whether the next barrier is recorded both ways (`Crashes::last`).
+    last: bool,
     recorded: Vec<Crash>,
     /// fxdax: what `recording` got to.
     counts: CrashCounts,
@@ -240,6 +242,7 @@ impl Crashes {
             rng: StdRng::seed_from_u64(seed),
             recording,
             mark: None,
+            last: false,
             recorded: Vec::new(),
             counts: CrashCounts::default(),
         })))
@@ -270,6 +273,12 @@ impl Crashes {
         self.0.lock().mark = None;
     }
 
+    /// fxdax: the next barrier records a crash whatever else it would, and one that loses nothing:
+    /// for a test that wants what a device holds, at last, as a crash leaves it, and as it stands.
+    pub fn last(&self) {
+        self.0.lock().last = true;
+    }
+
     /// fxdax: what was gone through so far.
     pub fn counts(&self) -> CrashCounts {
         self.0.lock().counts
@@ -287,9 +296,13 @@ impl Crashes {
         let mut guard = self.0.lock();
         let crashes = &mut *guard;
         let Some(mark) = crashes.mark else { return };
+        let last = std::mem::take(&mut crashes.last);
+        if last {
+            crashes.record_crash(device, mark, Arc::new(inner.clone()), Vec::new());
+        }
         match crashes.recording {
             Recording::Random { one_in } => {
-                if !crashes.rng.random_ratio(1, one_in) {
+                if !last && !crashes.rng.random_ratio(1, one_in) {
                     return;
                 }
                 let mut crashed = inner.clone();
@@ -915,8 +928,10 @@ impl Device for FakeDevice {
 
     async fn flush(&self) -> Result<(), Error> {
         let _passage = self.passage(true).await;
+        // fxdax: first: a flush that fails seals nothing, as a commit that fails doesn't.
+        (self.operation_closure)(Op::Flush)?;
         self.barrier(&mut self.inner.lock());
-        (self.operation_closure)(Op::Flush)
+        Ok(())
     }
 
     fn reopen(&self, read_only: bool) {
