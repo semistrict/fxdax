@@ -94,7 +94,7 @@ module_param_named(dax_region_step, fxfs_dax_region_step, ulong, 0644);
 MODULE_PARM_DESC(dax_region_step, "The most pages a writable region's mapping grows by at once");
 /* fxdax: how many waits of 10 ms with nothing let go of a range waits for room for (30 s). */
 #define FXFS_DAX_NO_ROOM_WAITS 3000
-/* fxdax: how many times running a write has a chunk's range dropped before it gives up. */
+/* fxdax: how many times a running write or fault has a chunk's range dropped before giving up. */
 #define FXFS_DAX_MAX_DROPS 256
 /*
  * The pages a writable region's first MAP maps: most of a millisecond each, which a small file's
@@ -3873,7 +3873,7 @@ static vm_fault_t fxfs_dax_do_fault(struct vm_fault *vmf, unsigned int order, bo
 	struct inode *inode = file_inode(vmf->vma->vm_file);
 	struct super_block *sb = inode->i_sb;
 	u64 began = ktime_get_ns();
-	unsigned int stale = 0, waits = 0;
+	unsigned int stale = 0, waits = 0, drops = 0;
 	vm_fault_t ret;
 	unsigned long pfn;
 	int error;
@@ -3932,7 +3932,13 @@ static vm_fault_t fxfs_dax_do_fault(struct vm_fault *vmf, unsigned int order, bo
 			continue;
 		}
 		if (error == -EXDEV) {
-			/* A slice can't take the store: it maps the chunk no more. */
+			/*
+			 * A slice can't take the store: it maps the chunk no more. fxdax: a fault that
+			 * can't get on fails, and says so, as a write does: this is the one way round
+			 * that waits for nothing, and only a seal would end it, if one came (TASK-140).
+			 */
+			if (++drops > FXFS_DAX_MAX_DROPS)
+				break;
 			ret = fxfs_dax_fault_drop_slice(vmf, ret);
 			if (ret)
 				break;

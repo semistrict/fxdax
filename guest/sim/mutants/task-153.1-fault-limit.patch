@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+#
+# TASK-153.1: a fault with no limit on how many times it has its range dropped, as dax.c had: with
+# TASK-140's bug it goes round for ever, unkillable. mutants.sh -b mutants/task-140-read-only-slice.patch
+# task-153.1-fault-limit says livelock; TASK-140's bug alone, a fault that fails and says so.
+
+--- a/guest/linux/fs/fxfs/dax.c
++++ b/guest/linux/fs/fxfs/dax.c
+@@ -3937,8 +3937,6 @@
+ 			 * can't get on fails, and says so, as a write does: this is the one way round
+ 			 * that waits for nothing, and only a seal would end it, if one came (TASK-140).
+ 			 */
+-			if (++drops > FXFS_DAX_MAX_DROPS)
+-				break;
+ 			ret = fxfs_dax_fault_drop_slice(vmf, ret);
+ 			if (ret)
+ 				break;
