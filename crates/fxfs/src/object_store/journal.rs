@@ -1621,7 +1621,7 @@ impl Journal {
             }
             // As in `pre_commit`, the transaction is applied directly. No flush task writes the
             // journal before it is applied: none runs yet.
-            self.write_and_apply_mutations(&mut transaction);
+            self.write_and_apply_mutations(&mut transaction)?;
         }
         Ok(renew)
     }
@@ -1671,7 +1671,7 @@ impl Journal {
         }
 
         self.pre_commit(transaction).await?;
-        Ok(self.write_and_apply_mutations(transaction))
+        self.write_and_apply_mutations(transaction)
     }
 
     // Before we commit, we might need to extend the journal or write pending records to the
@@ -1782,7 +1782,7 @@ impl Journal {
 
         // We can't use regular transaction commit, because that can cause re-entrancy issues, so
         // instead we just apply the transaction directly here.
-        self.write_and_apply_mutations(&mut transaction);
+        self.write_and_apply_mutations(&mut transaction)?;
 
         let mut inner = self.inner.lock();
 
@@ -2190,7 +2190,11 @@ impl Journal {
         Some(records)
     }
 
-    fn write_and_apply_mutations(&self, transaction: &mut Transaction<'_>) -> u64 {
+    fn write_and_apply_mutations(&self, transaction: &mut Transaction<'_>) -> Result<u64, Error> {
+        ensure!(
+            self.inner.lock().terminate_reason.is_none(),
+            anyhow!(FxfsError::JournalFlushError).context("The journal stopped on an error")
+        );
         let serialized = self.serialize_records(transaction);
         let checkpoint_before;
         let checkpoint_after;
@@ -2219,11 +2223,16 @@ impl Journal {
                 }
                 checkpoint
             };
-            let maybe_mutation =
-                self.objects.apply_transaction(transaction, &checkpoint_before).expect(
-                    "apply_transaction should not fail in live mode; \
-                     filesystem will be in an inconsistent state",
-                );
+            // fxdax: this fails on what memory holds of a corrupt image, such as a transaction
+            // that frees what the allocator says isn't allocated, which is no reason for a guest's
+            // kernel to panic, as upstream does. Nothing can go on: the filesystem is left as this
+            // left it, so the journal stops. What was written of this transaction has no Commit
+            // record, which replay discards it for.
+            let applied = self.objects.apply_transaction(transaction, &checkpoint_before);
+            let maybe_mutation = applied.inspect_err(|error| {
+                let reason = anyhow!(FxfsError::Inconsistent).context(format!("{error:#}"));
+                self.inner.lock().terminate(Some(reason.context("Failed to apply a transaction")));
+            })?;
             checkpoint_after = {
                 let mut inner = self.inner.lock();
                 if let Some(mutation) = maybe_mutation {
@@ -2275,7 +2284,7 @@ impl Journal {
             }
         }
 
-        checkpoint_before.file_offset
+        Ok(checkpoint_before.file_offset)
     }
 
     /// This task will flush journal data to the device when there is data that needs flushing, and
@@ -2961,6 +2970,71 @@ mod tests {
             ExtentRange::new(store_extent, 8192..12288)
         );
         super::journal_extent(&extent, store_extent, u64::MAX).expect_err("past any offset");
+    }
+
+    /// fxdax: a live transaction that can't be applied, as one freeing what a corrupt allocator
+    /// doesn't have, stops the journal rather than panic, and commits nothing after it, or it.
+    #[fuchsia::test]
+    async fn test_transaction_that_cannot_be_applied_stops_the_journal() {
+        use crate::errors::FxfsError;
+        use crate::object_store::transaction::{AllocatorMutation, lock_keys};
+        use storage_device::{ExtentId, ExtentRange};
+
+        let device = DeviceHolder::new(FakeDevice::new(8192, 4096));
+        let fs = FxFilesystem::new_empty(device).await.expect("new_empty failed");
+        let store = fs.root_store();
+        let mut transaction = store
+            .new_transaction(lock_keys![], Options::default())
+            .await
+            .expect("new_transaction failed");
+        let handle =
+            ObjectStore::create_object(&store, &mut transaction, HandleOptions::default(), None)
+                .await
+                .expect("create_object failed");
+        let object_id = handle.object_id();
+        transaction.commit().await.expect("commit failed");
+        fs.sync(SyncOptions::default()).await.expect("sync failed");
+
+        let allocator = fs.allocator();
+        let mut after = store
+            .new_transaction(lock_keys![], Options::default())
+            .await
+            .expect("new_transaction failed");
+        ObjectStore::create_object(&store, &mut after, HandleOptions::default(), None)
+            .await
+            .expect("create_object failed");
+        let mut transaction = store
+            .new_transaction(lock_keys![], Options::default())
+            .await
+            .expect("new_transaction failed");
+        let device_range = ExtentRange::new(ExtentId::new(fs.device().branch(), 1 << 50), 0..4096);
+        let owner_object_id = store.store_object_id();
+        transaction.add(
+            allocator.object_id(),
+            Mutation::Allocator(AllocatorMutation::Deallocate { device_range, owner_object_id }),
+        );
+        let error = transaction.commit().await.expect_err("committed");
+        assert!(FxfsError::Inconsistent.matches(&error), "{error:?}");
+
+        let error = after.commit().await.expect_err("committed after the journal stopped");
+        assert!(FxfsError::JournalFlushError.matches(&error), "{error:?}");
+        store
+            .new_transaction(lock_keys![], Options::default())
+            .await
+            .map(drop)
+            .expect_err("a transaction began after the journal stopped");
+        drop(handle);
+
+        // What's durable mounts, without the transaction that failed.
+        let _ = fs.close().await;
+        let device = fs.take_device().await;
+        device.reopen(false);
+        let fs = FxFilesystem::open(device).await.expect("open failed");
+        fsck(fs.clone()).await.expect("fsck failed");
+        ObjectStore::open_object(&fs.root_store(), object_id, HandleOptions::default(), None)
+            .await
+            .expect("what was synced is gone");
+        fs.close().await.expect("close failed");
     }
 
     #[fuchsia::test]
