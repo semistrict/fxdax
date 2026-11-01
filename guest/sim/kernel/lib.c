@@ -226,6 +226,9 @@ void sim_panic(const char *format, ...)
 	host_exit(2);
 }
 
+/* Whether a WARN logs and goes on, as a kernel without panic_on_warn does: else it fails the run. */
+bool sim_warns_continue;
+
 void sim_warn(const char *file, int line, const char *format, ...)
 {
 	char text[1024];
@@ -234,6 +237,10 @@ void sim_warn(const char *file, int line, const char *format, ...)
 	va_start(args, format);
 	vsnprintf(text, sizeof(text), format, args);
 	va_end(args);
+	if (sim_warns_continue) {
+		sim_log("sim: WARN at %s:%d: %s\n", file, line, text);
+		return;
+	}
 	sim_panic("WARN at %s:%d: %s", file, line, text);
 }
 
