@@ -10,5 +10,5 @@ append_writeback read zeros, random_ops mismatched) where main passed 5 of 5.
 was TASK-121's host race (ExtentStore::write against a writable MAP opening the extent), which late
 evacuations made likelier, fixed by cae97000a. With fxfs.dax_evacuate_every=16, checks-dax-delay
 passes 8 of 8 rounds on main (r221) and fails round 1 with that fix taken out (r218).
-**Reopen if:** The data loss no longer blocks it. Nobody has measured batching's tps since the fix;
-it needs a new measurement on the current tree and must still beat the +3-6% it gave.
+**Re-measured:** 2026-10-31, the data loss long fixed, fxfs.dax_evacuate_every=16: r365 1150/1063/1002/979/1016 tps (mean 1042) against r362 1160/1063/1003/985/1031 (1048), different hosts: no gain. Evacuations 250k -> 101k, but maps barely fell, 738k -> 660k: batches hold the same pages. Holds 181 -> 120 s.
+**Reopen if:** Evacuation's maps are made cheaper per page: the batching changes how many requests, not how many pages.
