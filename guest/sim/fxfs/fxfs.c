@@ -62,7 +62,6 @@ struct block {
 	/* 0: a hole. */
 	u64 sequence;
 	u64 page;
-	/* Whether a clone took it: `shared` says if another file still holds it. */
 };
 
 struct stub_file {
@@ -616,6 +615,7 @@ static void move_tail(struct fxfs *fs, struct stub_file *file, u64 size)
 	put_block(fs, &file->blocks[at]);
 	file->blocks[at] = (struct block) { extent->sequence, in_extent };
 	extent->live++;
+	extent->refs[in_extent]++;
 	host_store_write(sim_device_store_offset(extent->sequence) + (in_extent << PAGE_SHIFT), data,
 			 PAGE_SIZE);
 	sim_device_wrote(extent->sequence, in_extent, 1);
