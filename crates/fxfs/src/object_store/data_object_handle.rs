@@ -2429,6 +2429,27 @@ impl<S: HandleOwner> DataObjectHandle<S> {
         }
     }
 
+    /// fxdax: `zero` of a range of however many extents, in as many commits as hold them, from its
+    /// start: one that fails has zeroed what it got to. As `clone_range_in_commits`, `transaction`
+    /// holds the caller's locks, and is left for it to commit: a transaction a MiB of the range.
+    pub async fn zero_in_commits<'a>(
+        &'a self,
+        transaction: &mut Transaction<'a>,
+        range: Range<u64>,
+    ) -> Result<(), Error> {
+        const CHUNK: u64 = 1 << 20;
+        let mut start = range.start;
+        loop {
+            let end = range.end.min(start + CHUNK);
+            self.zero(transaction, start..end).await?;
+            if end == range.end {
+                return Ok(());
+            }
+            transaction.commit_and_continue().await?;
+            start = end;
+        }
+    }
+
     /// fxdax: where this file's extents in `range` reach `most` of them, or `most_bytes` of them,
     /// whichever is first, or `range`'s end, if they don't: holes count for nothing. `most_bytes`
     /// is block aligned.

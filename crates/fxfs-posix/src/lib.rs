@@ -425,20 +425,13 @@ impl<P: Platform> Fxfs<P> {
     /// fxdax: frees the blocks of the file `ino` within `range`, which is block-aligned, which
     /// then read as zeros: a hole (fallocate's FALLOC_FL_PUNCH_HOLE and FALLOC_FL_ZERO_RANGE). A
     /// transaction a MiB at a time, as each frees an extent record for each of the range's
-    /// extents.
+    /// extents (`DataObjectHandle::zero_in_commits`).
     pub async fn punch(&self, ino: u64, range: Range<u64>) -> Result<(), Error> {
-        const CHUNK: u64 = 1 << 20;
         let file = self.file(ino).await?;
         let _guard = self.filesystem.truncate_guard(self.volume.store_object_id(), ino).await;
-        let mut at = range.start;
-        while at < range.end {
-            let end = range.end.min(at + CHUNK);
-            let mut transaction = self.transaction(&[ino]).await?;
-            file.zero(&mut transaction, at..end).await?;
-            transaction.commit().await?;
-            at = end;
-        }
-        Ok(())
+        let mut transaction = self.transaction(&[ino]).await?;
+        file.zero_in_commits(&mut transaction, range).await?;
+        transaction.commit().await.map(drop)
     }
 
     /// Allocates the blocks of the file `ino` within `range`, growing the file if they are past
