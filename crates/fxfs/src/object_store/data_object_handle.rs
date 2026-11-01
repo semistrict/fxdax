@@ -123,6 +123,11 @@ const MAX_CLONED_PER_COMMIT: usize = TRANSACTION_MUTATION_THRESHOLD / 8;
 /// exabytes (generic/303) committed for ever, its commits outrunning the journal.
 const MAX_CLONED_BYTES_PER_COMMIT: u64 = 4 << 20;
 
+/// fxdax: the extents a commit of a punch frees, a mutation each, as a truncate counts them: they
+/// are all it costs. A commit a MiB of its range, counting holes, spun for as long as a file may be
+/// on `fallocate(FALLOC_FL_PUNCH_HOLE)`, the inode locked, as a clone's byte limit had.
+const MAX_ZEROED_PER_COMMIT: usize = TRANSACTION_MUTATION_THRESHOLD;
+
 /// DataObjectHandle is a typed handle for file-like objects that store data in the default data
 /// attribute. In addition to traditional files, this means things like the journal, superblocks,
 /// and layer files.
@@ -2423,6 +2428,26 @@ impl<S: HandleOwner> DataObjectHandle<S> {
             let reached = dst_of(end).min(size);
             if reached > dst.txn_get_size(transaction) {
                 dst.txn_update_size(transaction, reached, None).await?;
+            }
+            transaction.commit_and_continue().await?;
+            start = end;
+        }
+    }
+
+    /// fxdax: `zero` of a range of however many extents, in as many commits as hold them, from its
+    /// start: one that fails has zeroed what it got to. As `clone_range_in_commits`, `transaction`
+    /// holds the caller's locks, and is left for it to commit.
+    pub async fn zero_in_commits<'a>(
+        &'a self,
+        transaction: &mut Transaction<'a>,
+        range: Range<u64>,
+    ) -> Result<(), Error> {
+        let mut start = range.start;
+        loop {
+            let end = self.end_of_extents(start..range.end, MAX_ZEROED_PER_COMMIT, u64::MAX).await?;
+            self.zero(transaction, start..end).await?;
+            if end == range.end {
+                return Ok(());
             }
             transaction.commit_and_continue().await?;
             start = end;

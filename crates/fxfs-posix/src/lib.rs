@@ -423,22 +423,14 @@ impl<P: Platform> Fxfs<P> {
     }
 
     /// fxdax: frees the blocks of the file `ino` within `range`, which is block-aligned, which
-    /// then read as zeros: a hole (fallocate's FALLOC_FL_PUNCH_HOLE and FALLOC_FL_ZERO_RANGE). A
-    /// transaction a MiB at a time, as each frees an extent record for each of the range's
-    /// extents.
+    /// then read as zeros: a hole (fallocate's FALLOC_FL_PUNCH_HOLE and FALLOC_FL_ZERO_RANGE), in
+    /// as many transactions as its extents take (`DataObjectHandle::zero_in_commits`).
     pub async fn punch(&self, ino: u64, range: Range<u64>) -> Result<(), Error> {
-        const CHUNK: u64 = 1 << 20;
         let file = self.file(ino).await?;
         let _guard = self.filesystem.truncate_guard(self.volume.store_object_id(), ino).await;
-        let mut at = range.start;
-        while at < range.end {
-            let end = range.end.min(at + CHUNK);
-            let mut transaction = self.transaction(&[ino]).await?;
-            file.zero(&mut transaction, at..end).await?;
-            transaction.commit().await?;
-            at = end;
-        }
-        Ok(())
+        let mut transaction = self.transaction(&[ino]).await?;
+        file.zero_in_commits(&mut transaction, range).await?;
+        transaction.commit().await.map(drop)
     }
 
     /// Allocates the blocks of the file `ino` within `range`, growing the file if they are past
@@ -1657,10 +1649,16 @@ impl<P: Platform> Fxfs<P> {
             let options =
                 Options { borrow_metadata_space: cut, ..file.default_transaction_options() };
             file.truncate_with_options(options, set.size).await?;
-            // fxdax: once the cut has freed what it may. With no room even so what the last block
-            // holds past the end stays, as the file must still be cut.
+            // fxdax: once the cut has freed what it may, which only a sync makes room of, as a
+            // write that finds the filesystem full makes it (`fxfs_vfs_make_room`). With no room
+            // even so what the last block holds past the end stays, as the file must still be cut.
             if cut && set.valid & SET_KEEP_TAIL == 0 {
-                if let Err(error) = file.zero_tail().await {
+                let mut zeroed = file.zero_tail().await;
+                if matches!(&zeroed, Err(error) if FxfsError::NoSpace.matches(error)) {
+                    self.sync().await?;
+                    zeroed = file.zero_tail().await;
+                }
+                if let Err(error) = zeroed {
                     ensure!(FxfsError::NoSpace.matches(&error), error);
                     log::error!("fxfs: object {ino}: no room to zero past its end: {error:#}");
                 }

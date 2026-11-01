@@ -21,9 +21,10 @@
 //!
 //! Seeded by proptest, which says the sequence if one fails, shrunk.
 //!
-//! FXDAX_MODEL_CASES asks for more sequences, to hunt. FXDAX_MODEL_FSCK does the hunt with fsck after
-//! every transaction, slowly: corruption is found at the transaction that made it, not operations
-//! later.
+//! FXDAX_MODEL_CASES asks for more sequences, to hunt, and FXDAX_MODEL_OPS for longer ones.
+//! FXDAX_MODEL_FSCK does the hunt with fsck after every transaction, slowly: corruption is found at
+//! the transaction that made it, not operations later. FXDAX_MODEL_WORKERS has tasks apply queued
+//! unlinks as a guest's do, by the clock, which a seed then doesn't replay.
 //!
 //! Random cuts took minutes to reach some bugs. Short sequences are also cut at every barrier, with
 //! every subset of what it may lose, up to a bound (`every_cut_of_a_short_sequence`), which
@@ -32,11 +33,18 @@
 //! Devices fail too: some sequences' requests do, as a seed says, until an operation doesn't survive
 //! it (`a_device_that_fails_loses_nothing_durable`, FXDAX_MODEL_FAILURES): which a filesystem must
 //! say, and leave what was durable as it was, without panicking, in any task.
+//!
+//! Names are in directories that move, and go, as files do, across them and for each other, which
+//! are transactions of many objects. Files may be open as they lose their names, or be made with
+//! none, as what Fxfs keeps in the graveyard meanwhile: they stay read and written until they close.
+//! A cut closes them, and leaves nothing of them: no object, no entry in the graveyard, no extent.
+//! Only what a VFS would ask is asked: `Model::may_rename` and `Op::Link` say what it refuses, and
+//! files unlink as a guest's do, queued (`Op::UnlinkLater`), which a cut may find not yet done.
 
-use super::tests::Tested;
 use super::*;
 use fxfs::filesystem::{FlushReason, ForceMajor, FxFilesystemBuilder};
 use fxfs::fsck::{FsckOptions, fsck_with_options};
+use fxfs::object_store::graveyard::Graveyard;
 use fxfs::object_store::journal::JournalOptions;
 use fxfs::object_store::volume::root_volume;
 use fxfs::object_store::{NewChildStoreOptions, StoreOptions};
@@ -45,7 +53,7 @@ use proptest::test_runner::{Config, TestRunner};
 use rand::rngs::StdRng;
 use rand::{RngExt as _, SeedableRng as _};
 use std::cell::Cell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 use std::sync::atomic::AtomicU32;
 use std::sync::mpsc;
@@ -55,19 +63,40 @@ use storage_device::fake_device::{Crashes, FakeDevice, Op as DeviceOp};
 
 const PAGE: u64 = 4096;
 const FILE: u32 = S_IFREG | 0o644;
+const DIR: u32 = S_IFDIR | 0o755;
 /// The largest size a file may have.
 const LARGEST: u64 = i64::MAX as u64;
-/// The names a sequence uses: few, so that they meet.
+/// The whole pages a file may have.
+const PAGES_AT_MOST: u64 = LARGEST / PAGE;
+/// The names a sequence uses in a directory: few, so that they meet.
 const NAMES: usize = 6;
+/// The directories a name may be in, of those there are: it's `name / NAMES`th, the root first, so
+/// that a name of less than `NAMES` is in the root whatever there is, and sequences shrink to it.
+const DIRS: usize = 4;
+/// The objects of a volume with nothing in it: its root directory and its graveyard.
+const BARE_OBJECTS: u64 = 2;
+/// What the journal may take during what crosses extents, for each, and whatever else is going on:
+/// what it crosses between them costs nothing. A commit a run of bytes, counting holes, makes a
+/// clone across exabytes of them run until a device filled, which it may say: only this says that
+/// it shouldn't have.
+const JOURNALED_PER_EXTENT: u64 = 1 << 10;
+const JOURNALED_ANYWAY: u64 = 128 << 10;
+/// The most unlinks a sequence leaves queued: every subset of them is what a cut may find undone.
+const QUEUED_AT_MOST: usize = 4;
 /// The room a sequence has: enough, or less than a few of its fills want.
 const ROOMY: u64 = 32768;
 const TIGHT: u64 = 2048;
 /// How much of a file is read whole, holes and all: a file may be as large as a file may be.
 const WHOLLY_READ: u64 = 64 << 20;
+/// What every symlink says.
+const SYMLINK_TARGET: &[u8] = b"target";
 /// A power cut is recorded at one barrier in this many.
 const CUTS_ONE_IN: u32 = 3;
 /// A power cut of a replay is recorded at one barrier in this many.
 const SECOND_CUTS_ONE_IN: u32 = 2;
+/// How long a batched graveyard waits between batches: for as long as nothing asks it to go on, so
+/// that a seed says when it does.
+const BATCHES_APART: Duration = Duration::from_secs(3600);
 /// How long a sequence may take. A filesystem that spins forever is a failure proptest can't see,
 /// waiting for the sequence to end: a graveyard walking every attribute ID was found only by the
 /// time a run took.
@@ -121,17 +150,31 @@ impl Data {
         self.size = size;
     }
 
-    /// Makes `page` what a plan says, the file reaching it.
-    fn put(&mut self, page: u64, bytes: &Option<Arc<Vec<u8>>>) {
-        match bytes {
-            Some(bytes) => self.pages.insert(page, bytes.clone()),
-            None => self.pages.remove(&page),
-        };
-        self.size = self.size.max((page + 1) * PAGE);
+    /// Makes `run` what a plan says, the file reaching its end.
+    fn put(&mut self, run: &Run) {
+        match &run.bytes {
+            Some(bytes) => {
+                self.pages.extend(run.pages.clone().map(|page| (page, bytes.clone())));
+            }
+            None => self.punch(run.pages.clone()),
+        }
+        self.size = self.size.max(run.pages.end * PAGE);
     }
 
-    fn punch(&mut self, pages: std::ops::Range<u64>) {
-        self.pages.retain(|page, _| !pages.contains(page));
+    /// Makes this what `plan` says.
+    fn follow(&mut self, plan: &Plan) {
+        plan.runs.iter().for_each(|run| self.put(run));
+        self.size = plan.size.unwrap_or(self.size);
+    }
+
+    fn punch(&mut self, pages: Range<u64>) {
+        let punched: Vec<u64> = self.pages.range(pages).map(|(page, _)| *page).collect();
+        punched.iter().for_each(|page| drop(self.pages.remove(page)));
+    }
+
+    /// How many extents `pages` holds at most: nothing of its holes counts.
+    fn extents_in(&self, pages: Range<u64>) -> u64 {
+        self.pages.range(pages).count() as u64
     }
 
     fn read(&self, at: u64, len: usize) -> Vec<u8> {
@@ -150,26 +193,74 @@ impl Data {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum Entry {
     File(u64),
     Symlink(u64),
+    Dir(u64),
 }
 
-/// What an operation of many transactions makes of a file's pages, each in turn, a page or a hole:
-/// so one stopped short, by a full filesystem or a power cut, has made its first, and no others.
+impl Entry {
+    fn ino(self) -> u64 {
+        match self {
+            Entry::File(ino) | Entry::Symlink(ino) | Entry::Dir(ino) => ino,
+        }
+    }
+
+    /// Its type, as `readdir` says it.
+    fn kind(self) -> u32 {
+        match self {
+            Entry::File(_) => S_IFREG,
+            Entry::Symlink(_) => S_IFLNK,
+            Entry::Dir(_) => S_IFDIR,
+        }
+    }
+}
+
+/// Pages of a file a plan makes `bytes`, or a hole, which may be as long as a file may.
+struct Run {
+    pages: Range<u64>,
+    bytes: Option<Arc<Vec<u8>>>,
+}
+
+/// What an operation of many transactions makes of a file's pages, each run in turn: so one
+/// stopped short, by a full filesystem or a power cut, has made its first, and no others.
 struct Plan {
     ino: u64,
-    pages: Vec<(u64, Option<Arc<Vec<u8>>>)>,
+    runs: Vec<Run>,
+    /// The file's size if it's done, if that's not what its pages say: a clone to a source's end
+    /// takes its last block whole, and its size.
+    size: Option<u64>,
+}
+
+impl Plan {
+    /// The page after its last.
+    fn end(&self) -> u64 {
+        self.runs.last().map_or(0, |run| run.pages.end)
+    }
 }
 
 #[derive(Clone, Debug)]
 enum Op {
     Create(usize),
     Symlink(usize),
+    Mkdir(usize),
+    /// A file's or symlink's new name, or a tmpfile's first, as `linkat` makes.
     Link(usize, usize),
+    /// A name gone now, as a directory's goes.
     Unlink(usize),
+    /// A name gone in a batch with others, as a guest's file's goes: when something waits for it.
+    /// A directory's goes now, as a guest's do.
+    UnlinkLater(usize),
     Rename(usize, usize),
+    /// Two names, each linking what the other did.
+    Exchange(usize, usize),
+    /// A file with no name, open, made for the directory a name is in.
+    Tmpfile(usize),
+    /// Holds a file or a directory open: it stays until `Close`, whatever happens to its names.
+    Open(usize),
+    /// Lets go of the `index`th of what's open, as the kernel evicts it if it can.
+    Close(usize),
     Write { file: usize, at: u64, len: usize, byte: u8 },
     /// Whole pages, every `stride`th of `pages`, in as few transactions as hold them, as writeback
     /// writes them.
@@ -182,8 +273,13 @@ enum Op {
     Truncate { file: usize, size: u64 },
     Punch { file: usize, page: u64, pages: u64 },
     Clone { from: usize, to: usize, page: u64, pages: u64, to_page: u64 },
+    /// A clone to the source's end, wherever in a block that is, as the VFS lets one: the block's
+    /// taken whole, with the size where it ends. It may not end before the destination's size.
+    CloneToEnd { from: usize, to: usize, page: u64, to_page: u64 },
     SetXattr { file: usize, name: u8, len: usize, byte: u8 },
     RemoveXattr { file: usize, name: u8 },
+    /// What the attributes of the `dir`th directory are, which it takes through the graveyard.
+    SetDirXattr { dir: usize, name: u8, len: usize, byte: u8 },
     Sync,
     Fsync,
     Compact,
@@ -198,24 +294,34 @@ impl Op {
     fn plan(&self, model: &Model) -> Option<Plan> {
         match *self {
             Op::Fill { file, page, pages, stride, byte } => {
-                let bytes = Arc::new(vec![byte; PAGE as usize]);
+                let bytes = Some(Arc::new(vec![byte; PAGE as usize]));
                 let pages = (page..page + pages).step_by(stride as usize);
-                let pages = pages.map(|page| (page, Some(bytes.clone()))).collect();
-                Some(Plan { ino: model.file(file)?, pages })
+                let runs =
+                    pages.map(|page| Run { pages: page..page + 1, bytes: bytes.clone() }).collect();
+                Some(Plan { ino: model.file(file)?, runs, size: None })
             }
             Op::FillWhileCompacting { file, page, pages, byte, .. } => {
                 Op::Fill { file, page, pages, stride: 1, byte }.plan(model)
             }
+            Op::Punch { file, page, pages } => {
+                let ino = model.file(file)?;
+                let end = (page + pages).min(model.files[&ino].size / PAGE);
+                let runs = vec![Run { pages: page..end, bytes: None }];
+                (page < end).then_some(Plan { ino, runs, size: None })
+            }
             Op::Clone { from, to, page, pages, to_page } => {
                 let (src, dst) = (model.file(from)?, model.file(to)?);
-                let end = (page + pages).min(model.files[&src].size / PAGE);
-                let to_end = to_page + end.saturating_sub(page);
-                if page >= end || src == dst && page < to_end && to_page < end {
-                    return None;
-                }
-                let source = &model.files[&src].pages;
-                let pages = (page..end).map(|at| (to_page + at - page, source.get(&at).cloned()));
-                Some(Plan { ino: dst, pages: pages.collect() })
+                let end = page.saturating_add(pages).min(model.files[&src].size / PAGE);
+                let plan = model.plan_clone(src, page..end, dst, to_page)?;
+                (plan.end() <= PAGES_AT_MOST).then_some(plan)
+            }
+            Op::CloneToEnd { from, to, page, to_page } => {
+                let (src, dst) = (model.file(from)?, model.file(to)?);
+                let end = model.files[&src].size;
+                let size = (to_page * PAGE).checked_add(end.checked_sub(page * PAGE)?)?;
+                let plan = model.plan_clone(src, page..end.div_ceil(PAGE), dst, to_page)?;
+                let fits = size >= model.files[&dst].size && size <= LARGEST;
+                fits.then_some(Plan { size: Some(size), ..plan })
             }
             _ => None,
         }
@@ -238,16 +344,50 @@ fn fill() -> impl Strategy<Value = u64> {
     prop_oneof![8u64..64, 512u64..4096]
 }
 
+/// Where a clone starts or lands, a page leaning on the edges of things, as `offset`.
+fn clone_page() -> impl Strategy<Value = u64> {
+    let around = |at: u64| (0u64..16).prop_map(move |near| at / PAGE + near - 8);
+    prop_oneof![
+        6 => 0u64..32,
+        1 => around(2 << 20),
+        1 => around(1 << 32),
+        1 => around(1 << 50),
+        1 => (1u64..16).prop_map(|back| PAGES_AT_MOST - back),
+    ]
+}
+
+/// The pages of a clone, which stops at its source's end: a few, more than a transaction holds, or
+/// across as much as a hole may be: nothing of that but what extents there are may cost anything.
+fn clone_pages() -> impl Strategy<Value = u64> {
+    prop_oneof![
+        6 => 1u64..8,
+        3 => 64u64..4096,
+        2 => (1u64 << 20)..(1 << 21),
+        1 => (1u64 << 38)..(1 << 40),
+        1 => Just(PAGES_AT_MOST),
+    ]
+}
+
+/// A name, mostly the root's, of those there are (`DIRS`).
+fn name() -> impl Strategy<Value = usize> {
+    prop_oneof![3 => 0..NAMES, 1 => 0..NAMES * DIRS]
+}
+
 /// What a short sequence does: few pages at a time, leaning on what ends in a barrier, so that a
 /// barrier has little to lose and every subset of it can be tried.
 fn short_op() -> impl Strategy<Value = Op> {
-    let name = || 0..NAMES;
     let file = || 0usize..16;
     prop_oneof![
         3 => name().prop_map(Op::Create),
+        2 => name().prop_map(Op::Mkdir),
         2 => name().prop_map(Op::Unlink),
-        1 => (name(), name()).prop_map(|(from, to)| Op::Rename(from, to)),
+        2 => name().prop_map(Op::UnlinkLater),
+        2 => (name(), name()).prop_map(|(from, to)| Op::Rename(from, to)),
+        2 => (name(), name()).prop_map(|(a, b)| Op::Exchange(a, b)),
         1 => (file(), name()).prop_map(|(file, name)| Op::Link(file, name)),
+        2 => name().prop_map(Op::Tmpfile),
+        2 => file().prop_map(Op::Open),
+        1 => file().prop_map(Op::Close),
         4 => (file(), 0u64..(64 << 10), 1usize..(2 * PAGE as usize), any::<u8>())
             .prop_map(|(file, at, len, byte)| Op::Write { file, at, len, byte }),
         2 => (file(), 0u64..16, 2u64..8, 1u64..=2, any::<u8>()).prop_map(
@@ -266,6 +406,8 @@ fn short_op() -> impl Strategy<Value = Op> {
             .prop_map(|(file, page, pages)| Op::Punch { file, page, pages }),
         1 => (file(), 0u8..3, 1usize..64, any::<u8>())
             .prop_map(|(file, name, len, byte)| Op::SetXattr { file, name, len, byte }),
+        1 => (0usize..DIRS, 0u8..3, 1024usize..8192, any::<u8>())
+            .prop_map(|(dir, name, len, byte)| Op::SetDirXattr { dir, name, len, byte }),
         2 => Just(Op::Sync),
         2 => Just(Op::Fsync),
         3 => Just(Op::Compact),
@@ -274,15 +416,20 @@ fn short_op() -> impl Strategy<Value = Op> {
 }
 
 fn op() -> impl Strategy<Value = Op> {
-    let name = || 0..NAMES;
     let file = || 0usize..16;
     let length = || prop_oneof![1usize..64, Just(PAGE as usize), 1usize..(3 * PAGE as usize)];
     prop_oneof![
         3 => name().prop_map(Op::Create),
         1 => name().prop_map(Op::Symlink),
+        2 => name().prop_map(Op::Mkdir),
         1 => (file(), name()).prop_map(|(file, name)| Op::Link(file, name)),
-        2 => name().prop_map(Op::Unlink),
-        1 => (name(), name()).prop_map(|(from, to)| Op::Rename(from, to)),
+        1 => name().prop_map(Op::Unlink),
+        2 => name().prop_map(Op::UnlinkLater),
+        2 => (name(), name()).prop_map(|(from, to)| Op::Rename(from, to)),
+        1 => (name(), name()).prop_map(|(a, b)| Op::Exchange(a, b)),
+        1 => name().prop_map(Op::Tmpfile),
+        2 => file().prop_map(Op::Open),
+        1 => file().prop_map(Op::Close),
         6 => (file(), offset(), length(), any::<u8>())
             .prop_map(|(file, at, len, byte)| Op::Write { file, at, len, byte }),
         3 => (file(), 0u64..64, fill(), 1u64..=2, any::<u8>()).prop_map(
@@ -297,12 +444,18 @@ fn op() -> impl Strategy<Value = Op> {
         3 => (file(), offset()).prop_map(|(file, size)| Op::Truncate { file, size }),
         2 => (file(), 0u64..32, 1u64..8)
             .prop_map(|(file, page, pages)| Op::Punch { file, page, pages }),
-        2 => (file(), file(), 0u64..16, prop_oneof![1u64..8, 64u64..4096], 0u64..32).prop_map(
+        1 => (file(), clone_page(), clone_pages())
+            .prop_map(|(file, page, pages)| Op::Punch { file, page, pages }),
+        2 => (file(), file(), clone_page(), clone_pages(), clone_page()).prop_map(
             |(from, to, page, pages, to_page)| Op::Clone { from, to, page, pages, to_page }
         ),
+        1 => (file(), file(), clone_page(), clone_page())
+            .prop_map(|(from, to, page, to_page)| Op::CloneToEnd { from, to, page, to_page }),
         1 => (file(), 0u8..3, prop_oneof![1usize..64, 1024usize..8192], any::<u8>())
             .prop_map(|(file, name, len, byte)| Op::SetXattr { file, name, len, byte }),
         1 => (file(), 0u8..3).prop_map(|(file, name)| Op::RemoveXattr { file, name }),
+        1 => (0usize..DIRS, 0u8..3, prop_oneof![1usize..64, 1024usize..8192], any::<u8>())
+            .prop_map(|(dir, name, len, byte)| Op::SetDirXattr { dir, name, len, byte }),
         1 => Just(Op::Sync),
         1 => Just(Op::Fsync),
         1 => Just(Op::Compact),
@@ -311,24 +464,185 @@ fn op() -> impl Strategy<Value = Op> {
     ]
 }
 
+/// An unlink queued: which a cut may find not done, though the model has gone on from it.
+#[derive(Clone, Debug)]
+struct Queued {
+    place: (u64, usize),
+    entry: Entry,
+}
+
 /// What a sequence's files should be.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 struct Model {
-    names: BTreeMap<usize, Entry>,
+    /// The directories there are, the root first.
+    dirs: Vec<u64>,
+    /// What each directory's names link.
+    names: BTreeMap<(u64, usize), Entry>,
     files: BTreeMap<u64, Data>,
+    /// The extended attributes of directories that have any.
+    dir_xattrs: BTreeMap<u64, BTreeMap<u8, Vec<u8>>>,
+    /// What's held open: what no name links, of these, is in the graveyard.
+    open: BTreeSet<u64>,
+    /// Of those, the tmpfiles no name has linked yet, which alone a VFS lets a link name with none
+    /// left (`I_LINKABLE`).
+    linkable: BTreeSet<u64>,
+    /// The unlinks queued that may not be done yet.
+    queued: Vec<Queued>,
+    /// The files those leave nothing of, as a cut before them would find them.
+    gone: BTreeMap<u64, Data>,
 }
 
 impl Model {
-    /// The ino of the `index`th file a name links, if any is.
+    fn new(root: u64) -> Self {
+        Self {
+            dirs: vec![root],
+            names: BTreeMap::new(),
+            files: BTreeMap::new(),
+            dir_xattrs: BTreeMap::new(),
+            open: BTreeSet::new(),
+            linkable: BTreeSet::new(),
+            queued: Vec::new(),
+            gone: BTreeMap::new(),
+        }
+    }
+
+    /// The ino of the `index`th file there is, if there is any: one open may have no names.
     fn file(&self, index: usize) -> Option<u64> {
         let files: Vec<u64> = self.files.keys().copied().collect();
         (!files.is_empty()).then(|| files[index % files.len()])
     }
 
+    /// What the `index`th of the files and symlinks there are is linked as, if there are any: a
+    /// tmpfile, as what it is, by the time it's linked.
+    fn linked_as(&self, index: usize) -> Option<Entry> {
+        let symlinks = self.names.values().filter(|entry| matches!(entry, Entry::Symlink(_)));
+        let symlinks: BTreeMap<u64, Entry> = symlinks.map(|entry| (entry.ino(), *entry)).collect();
+        let mut entries: Vec<Entry> = self.files.keys().map(|ino| Entry::File(*ino)).collect();
+        entries.extend(symlinks.values());
+        entries.sort_by_key(|entry| entry.ino());
+        (!entries.is_empty()).then(|| entries[index % entries.len()])
+    }
+
+    /// Which directory `name` is in, and which of its names it is.
+    fn place(&self, name: usize) -> (u64, usize) {
+        (self.dirs[name / NAMES % self.dirs.len()], name % NAMES)
+    }
+
+    fn entry(&self, name: usize) -> Option<Entry> {
+        self.names.get(&self.place(name)).copied()
+    }
+
     fn links(&self, ino: u64) -> u32 {
-        (self.names.values())
-            .filter(|entry| matches!(entry, Entry::File(of) | Entry::Symlink(of) if *of == ino))
-            .count() as u32
+        self.names.values().filter(|entry| entry.ino() == ino).count() as u32
+    }
+
+    /// What's in the directory `dir`, in order.
+    fn names_in(&self, dir: u64) -> impl Iterator<Item = (usize, Entry)> + use<'_> {
+        self.names.range((dir, 0)..=(dir, usize::MAX)).map(|((_, name), entry)| (*name, *entry))
+    }
+
+    /// Whether `dir` is `other`, or anywhere under it.
+    fn is_within(&self, dir: u64, other: u64) -> bool {
+        let parent = |dir: u64| {
+            let parent = self.names.iter().find(|(_, entry)| entry.ino() == dir);
+            parent.map(|((parent, _), _)| *parent)
+        };
+        std::iter::successors(Some(dir), |dir| parent(*dir)).any(|dir| dir == other)
+    }
+
+    /// Whether a VFS asks a filesystem to move `from` to `to`: it does nothing of two names of an
+    /// inode, moves no directory under itself, replaces a directory only with a directory and a
+    /// file only with a file, and no directory a move comes from. That a directory replaced is
+    /// empty only Fxfs knows.
+    fn may_rename(&self, from: usize, to: usize) -> bool {
+        let Some(entry) = self.entry(from) else { return false };
+        let (src, dst) = (self.place(from), self.place(to));
+        let same_inode = self.entry(to).is_some_and(|replaced| replaced.ino() == entry.ino());
+        let under_itself = matches!(entry, Entry::Dir(ino) if self.is_within(dst.0, ino));
+        let replaceable = match self.entry(to) {
+            Some(Entry::Dir(ino)) => matches!(entry, Entry::Dir(_)) && !self.is_within(src.0, ino),
+            Some(_) => !matches!(entry, Entry::Dir(_)),
+            None => true,
+        };
+        src != dst && !same_inode && !under_itself && replaceable
+    }
+
+    /// Whether a VFS asks a filesystem to exchange `a` and `b`: two inodes, neither going under
+    /// itself.
+    fn may_exchange(&self, a: usize, b: usize) -> bool {
+        let (Some(first), Some(second)) = (self.entry(a), self.entry(b)) else { return false };
+        let under_itself =
+            |entry, dir| matches!(entry, Entry::Dir(ino) if self.is_within(dir, ino));
+        first.ino() != second.ino()
+            && !under_itself(first, self.place(b).0)
+            && !under_itself(second, self.place(a).0)
+    }
+
+    /// What a clone of the pages `pages` of `src` to `to_page` of `dst` makes of `dst`, if a VFS
+    /// asks for it: not of nothing, nor over itself.
+    fn plan_clone(&self, src: u64, pages: Range<u64>, dst: u64, to_page: u64) -> Option<Plan> {
+        if pages.is_empty() {
+            return None;
+        }
+        let at = |page: u64| to_page + page - pages.start;
+        let to_end = to_page.checked_add(pages.end - pages.start)?;
+        if src == dst && pages.start < to_end && to_page < pages.end {
+            return None;
+        }
+        let mut runs = Vec::new();
+        let mut hole_from = pages.start;
+        let hole = |from: u64, to: u64| Run { pages: at(from)..at(to), bytes: None };
+        for (page, bytes) in self.files[&src].pages.range(pages.clone()) {
+            if hole_from < *page {
+                runs.push(hole(hole_from, *page));
+            }
+            runs.push(Run { pages: at(*page)..at(*page) + 1, bytes: Some(bytes.clone()) });
+            hole_from = page + 1;
+        }
+        if hole_from < pages.end {
+            runs.push(hole(hole_from, pages.end));
+        }
+        Some(Plan { ino: dst, runs, size: None })
+    }
+
+    /// What's open that no name links.
+    fn unlinked(&self) -> BTreeSet<u64> {
+        self.open.iter().copied().filter(|ino| self.links(*ino) == 0).collect()
+    }
+
+    /// How many objects a volume with this in it has.
+    fn objects(&self) -> u64 {
+        let inos = self.names.values().map(|entry| entry.ino()).chain(self.open.iter().copied());
+        let inos: BTreeSet<u64> = inos.chain(self.files.keys().copied()).collect();
+        BARE_OBJECTS + inos.len() as u64
+    }
+
+    /// What a power cut leaves of this: what's open closes, and what no name links goes.
+    fn cut(mut self) -> Self {
+        let linked: BTreeSet<u64> = self.names.values().map(|entry| entry.ino()).collect();
+        self.files.retain(|ino, _| linked.contains(ino));
+        self.open.clear();
+        self.linkable.clear();
+        self.queued.clear();
+        self.gone.clear();
+        self
+    }
+
+    /// What a power cut may leave of this: of the unlinks queued, any may not be done.
+    fn cuts(&self) -> Vec<Self> {
+        let undone = |undone: u32| {
+            let mut model = self.clone();
+            for (i, Queued { place, entry }) in self.queued.iter().enumerate() {
+                if undone & 1 << i != 0 {
+                    model.names.insert(*place, *entry);
+                    if let Some(data) = self.gone.get(&entry.ino()) {
+                        model.files.insert(entry.ino(), data.clone());
+                    }
+                }
+            }
+            model.cut()
+        };
+        (0..1 << self.queued.len()).map(undone).collect()
     }
 }
 
@@ -338,6 +652,8 @@ impl Model {
 struct Tally {
     cuts: Cell<u64>,
     second_cuts: Cell<u64>,
+    /// The cuts that left a file or a directory open that no name linked.
+    cuts_of_the_unlinked: Cell<u64>,
     refused: Cell<u64>,
     /// The barriers with anything to lose, of sequences cut at every one.
     barriers: Cell<u64>,
@@ -434,12 +750,29 @@ struct Setting {
     /// Whether the device's requests fail, one in as many as `FAILS_ONE_IN` says, once the
     /// filesystem is formatted.
     failing: bool,
+    /// Whether tasks apply queued unlinks, as they're timed to, or only what waits for them does,
+    /// where a seed says.
+    workers: bool,
+    /// Whether the graveyard tombstones in batches, as a guest's does, until what waits for it
+    /// says, rather than each as it comes.
+    batched_graveyard: bool,
 }
 
 impl Setting {
     fn calm(seed: u64, blocks: u64) -> Self {
         let (awkward, fsck_each, every_cut, failing) = (false, false, false, false);
-        Self { seed, blocks, cuts_one_in: CUTS_ONE_IN, awkward, fsck_each, every_cut, failing }
+        let (cuts_one_in, workers, batched_graveyard) = (CUTS_ONE_IN, false, false);
+        Self {
+            seed,
+            blocks,
+            cuts_one_in,
+            awkward,
+            fsck_each,
+            every_cut,
+            failing,
+            workers,
+            batched_graveyard,
+        }
     }
 
     fn awkward(seed: u64, blocks: u64) -> Self {
@@ -460,6 +793,15 @@ impl Setting {
 
     fn failing(self) -> Self {
         Self { failing: true, ..self }
+    }
+
+    fn with_workers(self, workers: bool) -> Self {
+        Self { workers, ..self }
+    }
+
+    /// A graveyard as a guest's, for half of a run's sequences, as its seed says.
+    fn with_graveyard_of_seed(self) -> Self {
+        Self { batched_graveyard: self.seed.is_multiple_of(2), ..self }
     }
 
     /// How often this sequence's device's requests fail, if they do.
@@ -487,6 +829,10 @@ impl Setting {
     /// What opens a filesystem here.
     fn builder(&self) -> FxFilesystemBuilder {
         let builder = FxFilesystemBuilder::new().fsck_after_every_transaction(self.fsck_each);
+        let builder = match self.batched_graveyard {
+            true => builder.graveyard_batch_delay(BATCHES_APART),
+            false => builder,
+        };
         if !self.every_cut {
             return builder;
         }
@@ -526,11 +872,32 @@ impl Setting {
     }
 }
 
+/// As the host does, but for the tasks that apply queued unlinks: a clock wakes them, and a seed
+/// wouldn't say what a sequence does. What waits for what's queued applies it, unless `workers`.
+struct Seeded {
+    workers: bool,
+}
+
+impl Platform for Seeded {
+    const KEEPS_DIRECTORY_TIMES: bool = false;
+
+    type Durable = ();
+
+    fn durable(&self) {}
+
+    fn spawn_urgent(&self, future: impl Future<Output = ()> + Send + 'static) {
+        if self.workers {
+            fasync::Task::spawn(future).detach();
+        }
+    }
+}
+
 /// A filesystem and its model.
 struct World {
     setting: Setting,
     filesystem: fxfs::filesystem::OpenFxFilesystem,
-    fs: Fxfs<Tested>,
+    // Boxed: the tasks applying queued unlinks refer to it as a world moves.
+    fs: Box<Fxfs<Seeded>>,
     root: u64,
     model: Model,
     tally: Rc<Tally>,
@@ -543,13 +910,18 @@ async fn checked(filesystem: &fxfs::filesystem::OpenFxFilesystem) -> Result<(), 
     let on_error = Box::new(move |issue: &fxfs::fsck::errors::FsckIssue| {
         found.lock().unwrap().push(format!("{issue:?}"));
     });
-    let options = FsckOptions { on_error, ..FsckOptions::default() };
+    let options = FsckOptions { on_error, fail_on_warning: true, ..FsckOptions::default() };
     let done = fsck_with_options((**filesystem).clone(), &options).await;
     done.map(drop).map_err(|e| format!("fsck: {e:#}: {:?}", issues.lock().unwrap()))
 }
 
 fn name_of(name: usize) -> Vec<u8> {
     vec![b'a' + name as u8]
+}
+
+/// The bytes of `run`, a page a fill writes.
+fn written(run: &Run) -> &[u8] {
+    run.bytes.as_ref().expect("written")
 }
 
 fn xattr_of(name: u8) -> Vec<u8> {
@@ -569,8 +941,9 @@ impl World {
         let volume =
             volumes.new_volume("test", NewChildStoreOptions::default()).await.expect("the volume");
         let root = volume.root_directory_object_id();
-        let fs = Fxfs::new((*filesystem).clone(), volume, false, Tested);
-        Self { setting, filesystem, fs, root, model: Model::default(), tally }
+        let platform = Seeded { workers: setting.workers };
+        let fs = Box::new(Fxfs::new((*filesystem).clone(), volume, false, platform));
+        Self { setting, filesystem, fs, root, model: Model::new(root), tally }
     }
 
     /// Mounts what `device` holds, or replays it: what `model` should say.
@@ -587,7 +960,8 @@ impl World {
         let volume = volumes.volume("test", StoreOptions::default()).await;
         let volume = volume.map_err(|e| format!("the volume: {e:#}"))?;
         drop(volumes);
-        let fs = Fxfs::new((*filesystem).clone(), volume, false, Tested);
+        let platform = Seeded { workers: setting.workers };
+        let fs = Box::new(Fxfs::new((*filesystem).clone(), volume, false, platform));
         Ok(Self { setting, filesystem, fs, root, model, tally })
     }
 
@@ -613,12 +987,48 @@ impl World {
         }
     }
 
-    /// What's left of `entry`, its name gone: a file no name links goes as the kernel lets it go.
-    fn forget(&mut self, entry: Entry) {
-        let (Entry::File(ino) | Entry::Symlink(ino)) = entry;
-        if self.model.links(ino) == 0 {
-            self.model.files.remove(&ino);
-            self.fs.evict(ino, true);
+    /// What's left of `entry`, a name of it gone: what no name links goes as the kernel lets it
+    /// go, which holds a directory's inode to write back its times, as overlayfs leaves them.
+    async fn forget(&mut self, entry: Entry) -> Result<(), String> {
+        let ino = entry.ino();
+        if let Entry::Dir(_) = entry {
+            self.model.dirs.retain(|dir| *dir != ino);
+            self.model.dir_xattrs.remove(&ino);
+            let times = SetAttr { valid: SET_MTIME, mtime_ns: 1, ..SetAttr::default() };
+            let written = self.fs.write_inode(ino, &times).await;
+            self.unless_full(written, "a directory's times")?;
+        }
+        if self.model.links(ino) == 0 && !self.model.open.contains(&ino) {
+            self.evict_unlinked(ino);
+        }
+        Ok(())
+    }
+
+    /// Lets `ino`, which no name links and nothing holds, go.
+    fn evict_unlinked(&mut self, ino: u64) {
+        if let Some(data) = self.model.files.remove(&ino)
+            && self.model.queued.iter().any(|queued| queued.entry.ino() == ino)
+        {
+            self.model.gone.insert(ino, data);
+        }
+        self.fs.evict(ino, true);
+    }
+
+    /// Lets go of `ino`: the kernel may evict what nothing holds, and find it again.
+    fn close(&mut self, ino: u64) {
+        self.model.open.remove(&ino);
+        self.model.linkable.remove(&ino);
+        match self.model.links(ino) {
+            0 => self.evict_unlinked(ino),
+            _ => self.fs.evict(ino, false),
+        }
+    }
+
+    /// Forgets the unlinks queued, once none are.
+    fn settle(&mut self) {
+        if self.fs.delayed.queue.lock().unwrap().pending.is_empty() {
+            self.model.queued.clear();
+            self.model.gone.clear();
         }
     }
 
@@ -626,12 +1036,16 @@ impl World {
     /// it reads back: all of it, as far as WHOLLY_READ, then around its pages and at its end.
     async fn check(&self, model: &Model, ino: u64) -> Result<(), String> {
         let data = &model.files[&ino];
+        // As a lookup does, for the links the kernel takes from it.
+        self.fs.drain(&[ino]).await.map_err(|e| format!("draining: {e:#}"))?;
         let attr = self.fs.attr(ino).await.map_err(|e| format!("attr of {ino}: {e:#}"))?;
         if attr.size != data.size {
             return Err(format!("{ino} is {} bytes, not {}", attr.size, data.size));
         }
-        if attr.nlink != model.links(ino) {
-            return Err(format!("{ino} has {} links, not {}", attr.nlink, model.links(ino)));
+        // In the graveyard, its record counts one, which the kernel doesn't.
+        let links = model.links(ino).max(1);
+        if attr.nlink != links {
+            return Err(format!("{ino} has {} links, not {links}", attr.nlink));
         }
         let mut names = self.fs.list_xattrs(ino).await.map_err(|e| format!("xattrs: {e:#}"))?;
         names.sort();
@@ -685,39 +1099,91 @@ impl World {
         let size = self.fs.attr(ino).await.map_err(|e| format!("attr of {ino}: {e:#}"))?.size;
         let mut read = vec![0; PAGE as usize];
         let hole = read.clone();
-        for (page, bytes) in &plan.pages {
-            let at = page * PAGE;
-            let got = self.fs.read(ino, at, &mut read).await;
-            let got = got.map_err(|e| format!("read at {at} of {ino}: {e:#}"))?;
-            let expected = bytes.as_ref().map_or(&hole, |bytes| &**bytes);
-            if at + PAGE > size || got != read.len() || read != *expected {
-                break;
+        for run in &plan.runs {
+            let expected = run.bytes.as_ref().map_or(&hole, |bytes| &**bytes);
+            // All that a hole changes is what was there: it may be as long as a file may.
+            let pages: Vec<u64> = match run.bytes {
+                Some(_) => run.pages.clone().collect(),
+                None => data.pages.range(run.pages.clone()).map(|(page, _)| *page).collect(),
+            };
+            for page in pages {
+                let at = page * PAGE;
+                let got = self.fs.read(ino, at, &mut read).await;
+                let got = got.map_err(|e| format!("read at {at} of {ino}: {e:#}"))?;
+                if at + PAGE > size || got != read.len() || read != *expected {
+                    return Ok(data);
+                }
+                data.put(&Run { pages: page..page + 1, bytes: run.bytes.clone() });
             }
-            data.put(*page, bytes);
+            let reached = run.pages.end.min(size / PAGE);
+            if run.bytes.is_none() {
+                data.size = data.size.max(reached * PAGE);
+            }
+            if reached < run.pages.end {
+                return Ok(data);
+            }
         }
         Ok(data)
     }
 
-    /// Checks the names there are and each file against `model`.
-    async fn holds(&self, model: &Model) -> Result<(), String> {
+    /// Checks what the directory `dir` holds against `model`, and what its names link: their
+    /// types, each by lookup too, its links, and what a symlink says.
+    async fn holds_names(&self, model: &Model, dir: u64) -> Result<(), String> {
         let mut found = Vec::new();
-        let listed = self.fs.readdir(self.root, ReaddirStart::Index(0), |name, _, _| {
-            found.push(name.as_bytes().to_vec());
+        let listed = self.fs.readdir(dir, ReaddirStart::Index(0), |name, ino, kind| {
+            found.push((name.as_bytes().to_vec(), ino, kind));
             true
         });
-        listed.await.map_err(|e| format!("readdir: {e:#}"))?;
+        listed.await.map_err(|e| format!("readdir of {dir}: {e:#}"))?;
         found.sort();
-        let names: Vec<Vec<u8>> = model.names.keys().map(|name| name_of(*name)).collect();
+        let names: Vec<(Vec<u8>, u64, u32)> = model
+            .names_in(dir)
+            .map(|(name, entry)| (name_of(name), entry.ino(), entry.kind()))
+            .collect();
         if found != names {
-            return Err(format!("the directory holds {found:?}, not {names:?}"));
+            return Err(format!("{dir} holds {found:?}, not {names:?}"));
         }
-        for (name, entry) in &model.names {
-            let (Entry::File(ino) | Entry::Symlink(ino)) = entry;
-            let attr = self.fs.lookup(self.root, &name_of(*name)).await;
-            let attr = attr.map_err(|e| format!("lookup of {name}: {e:#}"))?;
-            if attr.ino != *ino {
-                return Err(format!("{name} is {}, not {ino}", attr.ino));
+        for (name, value) in model.dir_xattrs.get(&dir).into_iter().flatten() {
+            let got = self.fs.get_xattr(dir, &xattr_of(*name)).await;
+            let got = got.map_err(|e| format!("xattr {name} of {dir}: {e:#}"))?;
+            if got != *value {
+                return Err(format!("xattr {name} of {dir} isn't what was set"));
             }
+        }
+        let mut sub_dirs = 0;
+        for (name, entry) in model.names_in(dir) {
+            let attr = self.fs.lookup(dir, &name_of(name)).await;
+            let attr = attr.map_err(|e| format!("lookup of {name} in {dir}: {e:#}"))?;
+            if attr.ino != entry.ino() {
+                return Err(format!("{name} in {dir} is {}, not {entry:?}", attr.ino));
+            }
+            match entry {
+                Entry::File(_) => {}
+                Entry::Symlink(ino) => {
+                    let target = self.fs.readlink(ino).await;
+                    let target = target.map_err(|e| format!("readlink of {ino}: {e:#}"))?;
+                    if target != SYMLINK_TARGET {
+                        return Err(format!("{ino} says {target:?}"));
+                    }
+                    if attr.nlink != model.links(ino) {
+                        let links = model.links(ino);
+                        return Err(format!("{ino} has {} links, not {links}", attr.nlink));
+                    }
+                }
+                Entry::Dir(_) => sub_dirs += 1,
+            }
+        }
+        let attr = self.fs.attr(dir).await.map_err(|e| format!("attr of {dir}: {e:#}"))?;
+        if attr.nlink != 2 + sub_dirs {
+            return Err(format!("{dir} has {} links with {sub_dirs} subdirectories", attr.nlink));
+        }
+        Ok(())
+    }
+
+    /// Checks the names there are and each file against `model`.
+    async fn holds(&self, model: &Model) -> Result<(), String> {
+        for dir in &model.dirs {
+            self.holds_names(model, *dir).await?;
         }
         for ino in model.files.keys() {
             self.check(model, *ino).await?;
@@ -737,7 +1203,36 @@ impl World {
     async fn check_all(&self) -> Result<(), String> {
         self.holds(&self.model).await?;
         self.fs.sync().await.map_err(|e| format!("sync: {e:#}"))?;
+        self.holds_nothing_else(&self.model).await?;
         checked(&self.filesystem).await
+    }
+
+    /// Checks that the volume holds no object but `model`'s, and only what's open and no name
+    /// links in its graveyard, a sync having let go of what it can.
+    async fn holds_nothing_else(&self, model: &Model) -> Result<(), String> {
+        let volume = &self.fs.volume;
+        let objects = volume.object_count();
+        if objects != model.objects() {
+            return Err(format!("{objects} objects, not {}: {model:?}", model.objects()));
+        }
+        let layer_set = volume.tree().layer_set();
+        let mut merger = layer_set.merger();
+        let graveyard = volume.graveyard_directory_object_id();
+        let mut entries = Graveyard::iter(graveyard, &mut merger)
+            .await
+            .map_err(|e| format!("the graveyard: {e:#}"))?;
+        let mut found = BTreeSet::new();
+        while let Some(entry) = entries.get() {
+            // What a trim short of room left, of a file that stays, is no object's end.
+            if !matches!(entry.value(), ObjectValue::Trim) {
+                found.insert(entry.object_id());
+            }
+            entries.advance().await.map_err(|e| format!("the graveyard: {e:#}"))?;
+        }
+        if found != model.unlinked() {
+            return Err(format!("the graveyard has {found:?}, not {:?}", model.unlinked()));
+        }
+        Ok(())
     }
 
     /// Checks that nothing lies past the end of any file, which growing it would show: what a
@@ -788,13 +1283,17 @@ impl World {
         }
     }
 
-    /// Unmounts and mounts again, as a guest's `umount` and `mount` do.
-    async fn remount(self) -> Result<Self, String> {
+    /// Unmounts and mounts again, as a guest's `umount` and `mount` do: nothing stays open, or
+    /// it wouldn't.
+    async fn remount(mut self) -> Result<Self, String> {
+        self.model.open.clone().into_iter().for_each(|ino| self.close(ino));
         let (setting, root) = (self.setting, self.root);
         let (model, tally) = (self.model.clone(), self.tally.clone());
         let device = self.unmount().await?;
         device.reopen(false);
-        Self::mount(setting, device, root, model, tally).await
+        let mut world = Self::mount(setting, device, root, model, tally).await?;
+        world.settle();
+        Ok(world)
     }
 
     /// Checks what a crash leaves now, this filesystem going on: a copy of the device, as of a
@@ -802,7 +1301,7 @@ impl World {
     async fn crash(&self) -> Result<(), String> {
         self.fs.sync().await.map_err(|e| format!("sync: {e:#}"))?;
         let device = self.filesystem.device().snapshot().map_err(|e| format!("snapshot: {e:#}"))?;
-        let (model, tally) = (self.model.clone(), self.tally.clone());
+        let (model, tally) = (self.model.clone().cut(), self.tally.clone());
         let replayed = Self::mount(self.setting, device, self.root, model, tally).await?;
         replayed.check_all().await?;
         replayed.unmount().await.map(drop)
@@ -817,7 +1316,14 @@ impl World {
     /// `step`, leaving what's left of the filesystem if it fails, which a remount may not.
     async fn attempt(mut self, op: &Op) -> (Option<Self>, Result<(), String>) {
         if !matches!(op, Op::Remount) {
+            let (names, dirs) = (self.model.names.clone(), self.model.dirs.len());
             let done = self.act(op).await;
+            let done = done.and_then(|()| self.keeps_the_order_of(op, &names));
+            let done = match done {
+                Ok(()) => self.moved_whole(op, &names, dirs).await,
+                failed => failed,
+            };
+            self.settle();
             return (Some(self), done);
         }
         match self.remount().await {
@@ -829,59 +1335,185 @@ impl World {
         }
     }
 
+    /// Checks that what `op` did, which found `names`, came after every unlink queued, if it had
+    /// to: the journal has names change in the order the syscalls did, and what's durable holds
+    /// them. A cut that a name's change had overtaken an unlink would find what the model takes
+    /// for an unlink not done yet: only the rule says that it can't be.
+    fn keeps_the_order_of(
+        &self,
+        op: &Op,
+        names: &BTreeMap<(u64, usize), Entry>,
+    ) -> Result<(), String> {
+        let renamed = !matches!(op, Op::UnlinkLater(_)) && *names != self.model.names;
+        let durable = matches!(op, Op::Sync | Op::Fsync | Op::Crash);
+        match (renamed || durable) && !self.fs.delayed.queue.lock().unwrap().pending.is_empty() {
+            true => Err(format!("{op:?} went ahead of the unlinks queued")),
+            false => Ok(()),
+        }
+    }
+
+    /// Checks the directories what `op` did changed, which found `names` in `dirs` directories, if
+    /// it moved names or made or removed a directory: their counts of subdirectories change in the
+    /// same transaction, which nothing else shows until a cut, or the end, if then.
+    async fn moved_whole(
+        &self,
+        op: &Op,
+        names: &BTreeMap<(u64, usize), Entry>,
+        dirs: usize,
+    ) -> Result<(), String> {
+        let moved = matches!(op, Op::Rename(..) | Op::Exchange(..)) && *names != self.model.names;
+        if moved || dirs != self.model.dirs.len() {
+            for dir in &self.model.dirs {
+                self.holds_names(&self.model, *dir).await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Removes `name` now, a directory if it's empty.
+    async fn unlink(&mut self, name: usize) -> Result<(), String> {
+        let entry = self.model.entry(name).expect("looked up");
+        let (dir, at) = self.model.place(name);
+        let gone = self.fs.unlink(dir, &name_of(at), entry.ino()).await;
+        if self.is_refused_as_not_empty(Some(entry), &gone)? {
+            return Ok(());
+        }
+        gone.map_err(|e| format!("unlink: {e:#}"))?;
+        self.model.names.remove(&(dir, at));
+        self.forget(entry).await
+    }
+
+    /// Whether `done` was refused for replacing or removing `entry`, a directory with names in
+    /// it, as it must be, unless the filesystem had no room to find out.
+    fn is_refused_as_not_empty<T>(
+        &self,
+        entry: Option<Entry>,
+        done: &Result<T, Error>,
+    ) -> Result<bool, String> {
+        let Some(Entry::Dir(ino)) = entry else { return Ok(false) };
+        if self.model.names_in(ino).next().is_none() {
+            return Ok(false);
+        }
+        match done {
+            Err(error) if FxfsError::NotEmpty.matches(error) => Ok(true),
+            Err(error) if FxfsError::NoSpace.matches(error) => Ok(true),
+            Err(error) => Err(format!("a directory with names in it: {error:#}")),
+            Ok(_) => Err(format!("{ino} went with names in it")),
+        }
+    }
+
     /// Does `op`, any but a remount, and checks what it changed.
     async fn act(&mut self, op: &Op) -> Result<(), String> {
-        let root = self.root;
         match *op {
-            Op::Create(name) if !self.model.names.contains_key(&name) => {
-                let made = self.fs.create(root, &name_of(name), FILE, 0, 0, 0, &[]).await;
+            Op::Create(name) if self.model.entry(name).is_none() => {
+                let (dir, at) = self.model.place(name);
+                let made = self.fs.create(dir, &name_of(at), FILE, 0, 0, 0, &[]).await;
                 let Some([attr, _]) = self.unless_full(made, "create")? else { return Ok(()) };
                 if attr.ctime_ns < attr.mtime_ns {
                     return Err(format!("a new file's ctime is before its mtime: {attr:?}"));
                 }
-                self.model.names.insert(name, Entry::File(attr.ino));
+                self.model.names.insert((dir, at), Entry::File(attr.ino));
                 self.model.files.insert(attr.ino, Data::default());
             }
-            Op::Symlink(name) if !self.model.names.contains_key(&name) => {
-                let made = self.fs.symlink(root, &name_of(name), b"target", 0, 0).await;
+            Op::Symlink(name) if self.model.entry(name).is_none() => {
+                let (dir, at) = self.model.place(name);
+                let made = self.fs.symlink(dir, &name_of(at), SYMLINK_TARGET, 0, 0).await;
                 let Some([attr, _]) = self.unless_full(made, "symlink")? else { return Ok(()) };
                 if attr.ctime_ns < attr.mtime_ns {
                     return Err(format!("a new symlink's ctime is before its mtime: {attr:?}"));
                 }
-                self.model.names.insert(name, Entry::Symlink(attr.ino));
+                self.model.names.insert((dir, at), Entry::Symlink(attr.ino));
             }
-            Op::Link(file, name) if !self.model.names.contains_key(&name) => {
-                let Some(ino) = self.model.file(file) else { return Ok(()) };
-                let linked = self.fs.link(ino, root, &name_of(name), false).await;
+            Op::Mkdir(name) if self.model.entry(name).is_none() => {
+                let (dir, at) = self.model.place(name);
+                let made = self.fs.create(dir, &name_of(at), DIR, 0, 0, 0, &[]).await;
+                let Some([attr, _]) = self.unless_full(made, "mkdir")? else { return Ok(()) };
+                self.model.names.insert((dir, at), Entry::Dir(attr.ino));
+                self.model.dirs.push(attr.ino);
+            }
+            Op::Link(file, name) if self.model.entry(name).is_none() => {
+                let Some(entry) = self.model.linked_as(file) else { return Ok(()) };
+                let ino = entry.ino();
+                let unnamed = self.model.links(ino) == 0;
+                if unnamed && !self.model.linkable.contains(&ino) {
+                    return Ok(());
+                }
+                let (dir, at) = self.model.place(name);
+                let linked = self.fs.link(ino, dir, &name_of(at), unnamed).await;
                 let Some([attr, _]) = self.unless_full(linked, "link")? else { return Ok(()) };
-                self.model.names.insert(name, Entry::File(ino));
+                self.model.linkable.remove(&ino);
+                self.model.names.insert((dir, at), entry);
                 if attr.nlink != self.model.links(ino) {
                     let links = self.model.links(ino);
                     return Err(format!("{ino} has {} links, not {links}", attr.nlink));
                 }
             }
-            Op::Unlink(name) if self.model.names.contains_key(&name) => {
-                let entry = self.model.names.remove(&name).expect("looked up");
-                let (Entry::File(ino) | Entry::Symlink(ino)) = entry;
-                let gone = self.fs.unlink(root, &name_of(name), ino).await;
-                gone.map_err(|e| format!("unlink: {e:#}"))?;
-                self.forget(entry);
+            Op::Unlink(name) if self.model.entry(name).is_some() => self.unlink(name).await?,
+            Op::UnlinkLater(name) if self.model.entry(name).is_some() => {
+                let entry = self.model.entry(name).expect("looked up");
+                if let Entry::Dir(_) = entry {
+                    return self.unlink(name).await;
+                }
+                if self.model.queued.len() == QUEUED_AT_MOST {
+                    self.fs.drain_all().await.map_err(|e| format!("draining: {e:#}"))?;
+                    self.settle();
+                }
+                let (dir, at) = self.model.place(name);
+                let queued = self.fs.unlink_later(dir, &name_of(at), entry.ino()).await;
+                queued.map_err(|e| format!("unlink_later: {e:#}"))?;
+                self.model.names.remove(&(dir, at));
+                self.model.queued.push(Queued { place: (dir, at), entry });
+                self.forget(entry).await?;
             }
-            Op::Rename(from, to) if from != to && self.model.names.contains_key(&from) => {
-                let (Entry::File(ino) | Entry::Symlink(ino)) = self.model.names[&from];
-                let new_ino = self.model.names.get(&to).map(|replaced| {
-                    let (Entry::File(ino) | Entry::Symlink(ino)) = replaced;
-                    *ino
-                });
+            Op::Rename(from, to) if self.model.may_rename(from, to) => {
+                let entry = self.model.entry(from).expect("looked up");
+                let replaced = self.model.entry(to);
+                let (src, dst) = (self.model.place(from), self.model.place(to));
+                let (name, new_name) = (name_of(src.1), name_of(dst.1));
+                let new_ino = replaced.map(Entry::ino);
                 let renamed =
-                    self.fs.rename(root, &name_of(from), ino, root, &name_of(to), new_ino).await;
-                if self.unless_full(renamed, "rename")?.is_none() {
+                    self.fs.rename(src.0, &name, entry.ino(), dst.0, &new_name, new_ino).await;
+                if self.is_refused_as_not_empty(replaced, &renamed)?
+                    || self.unless_full(renamed, "rename")?.is_none()
+                {
                     return Ok(());
                 }
-                let entry = self.model.names.remove(&from).expect("looked up");
-                let replaced = self.model.names.insert(to, entry);
+                self.model.names.remove(&src);
+                self.model.names.insert(dst, entry);
                 if let Some(replaced) = replaced {
-                    self.forget(replaced);
+                    self.forget(replaced).await?;
+                }
+            }
+            Op::Exchange(a, b) if self.model.may_exchange(a, b) => {
+                let (first, second) = (self.model.place(a), self.model.place(b));
+                let (name, new_name) = (name_of(first.1), name_of(second.1));
+                let exchanged = self.fs.exchange(first.0, &name, second.0, &new_name).await;
+                if self.unless_full(exchanged, "exchange")?.is_none() {
+                    return Ok(());
+                }
+                let (a, b) = (self.model.entry(a), self.model.entry(b));
+                self.model.names.insert(first, b.expect("looked up"));
+                self.model.names.insert(second, a.expect("looked up"));
+            }
+            Op::Tmpfile(name) => {
+                let dir = self.model.place(name).0;
+                let made = self.fs.tmpfile(dir, FILE, 0, 0).await;
+                let Some(attr) = self.unless_full(made, "tmpfile")? else { return Ok(()) };
+                self.model.files.insert(attr.ino, Data::default());
+                self.model.open.insert(attr.ino);
+                self.model.linkable.insert(attr.ino);
+            }
+            Op::Open(index) => {
+                let subdirs = self.model.dirs[1..].iter();
+                let held: Vec<u64> = self.model.files.keys().chain(subdirs).copied().collect();
+                if !held.is_empty() {
+                    self.model.open.insert(held[index % held.len()]);
+                }
+            }
+            Op::Close(index) => {
+                let open: Vec<u64> = self.model.open.iter().copied().collect();
+                if !open.is_empty() {
+                    self.close(open[index % open.len()]);
                 }
             }
             Op::Write { file, at, len, byte } => {
@@ -894,25 +1526,27 @@ impl World {
                 }
                 self.check(&self.model, ino).await?;
             }
-            Op::Fill { .. } | Op::Clone { .. } => {
+            Op::Fill { .. } | Op::Clone { .. } | Op::CloneToEnd { .. } => {
                 let Some(plan) = op.plan(&self.model) else { return Ok(()) };
+                let journaled = self.filesystem.journal().file_offset();
                 let done = match *op {
-                    Op::Clone { from, page, to_page, .. } => {
+                    Op::Clone { from, page, to_page, .. }
+                    | Op::CloneToEnd { from, page, to_page, .. } => {
                         let src = self.model.file(from).expect("planned");
-                        let end = page + plan.pages.len() as u64;
-                        let size =
-                            self.model.files[&plan.ino].size.max((to_page + end - page) * PAGE);
-                        let range = page * PAGE..end * PAGE;
+                        let end = plan.end();
+                        let size = self.model.files[&plan.ino].size.max(end * PAGE);
+                        let size = plan.size.unwrap_or(size);
+                        let range = page * PAGE..(page + end - to_page) * PAGE;
                         let dst_offset = to_page * PAGE;
-                        self.fs.clone_range(src, range, plan.ino, dst_offset, size).await.map(drop)
+                        let cloned = self.fs.clone_range(src, range, plan.ino, dst_offset, size);
+                        let cloned = cloned.await.map(drop);
+                        let replaced = self.model.files[&plan.ino].extents_in(to_page..end);
+                        self.journaled_for(plan.runs.len() as u64 + replaced, journaled)?;
+                        cloned
                     }
                     _ => {
-                        let bytes: Vec<&[u8]> = (plan.pages.iter())
-                            .map(|(_, bytes)| bytes.as_ref().expect("written")[..].as_ref())
-                            .collect();
-                        let mut writes: Vec<(u64, &[u8])> = (plan.pages.iter())
-                            .zip(bytes)
-                            .map(|((page, _), bytes)| (page * PAGE, bytes))
+                        let mut writes: Vec<(u64, &[u8])> = (plan.runs.iter())
+                            .map(|run| (run.pages.start * PAGE, written(run)))
                             .collect();
                         self.fs.write_many(plan.ino, &mut writes).await
                     }
@@ -922,9 +1556,8 @@ impl World {
             Op::FillWhileCompacting { flushing, .. } => {
                 let Some(plan) = op.plan(&self.model) else { return Ok(()) };
                 let writes = async {
-                    for (page, bytes) in &plan.pages {
-                        let bytes = bytes.as_ref().expect("written");
-                        self.fs.write(plan.ino, page * PAGE, bytes).await?;
+                    for run in &plan.runs {
+                        self.fs.write(plan.ino, run.pages.start * PAGE, written(run)).await?;
                         if flushing {
                             let reason = FlushReason::Journal(ForceMajor::False);
                             self.fs.volume.flush_with_reason(reason).await?;
@@ -956,17 +1589,14 @@ impl World {
                 }
                 self.check(&self.model, ino).await?;
             }
-            Op::Punch { file, page, pages } => {
-                let Some(ino) = self.model.file(file) else { return Ok(()) };
-                let data = self.model.files.get_mut(&ino).expect("a file");
-                let end = (page + pages).min(data.size / PAGE);
-                if page < end {
-                    let punched = self.fs.punch(ino, page * PAGE..end * PAGE).await;
-                    if self.unless_full(punched, "punch")?.is_some() {
-                        self.model.files.get_mut(&ino).expect("a file").punch(page..end);
-                    }
-                    self.check(&self.model, ino).await?;
-                }
+            Op::Punch { .. } => {
+                let Some(plan) = op.plan(&self.model) else { return Ok(()) };
+                let pages = plan.runs[0].pages.clone();
+                let extents = self.model.files[&plan.ino].extents_in(pages.clone());
+                let journaled = self.filesystem.journal().file_offset();
+                let punched = self.fs.punch(plan.ino, pages.start * PAGE..pages.end * PAGE).await;
+                self.journaled_for(extents, journaled)?;
+                self.planned(&plan, punched).await?;
             }
             Op::SetXattr { file, name, len, byte } => {
                 let Some(ino) = self.model.file(file) else { return Ok(()) };
@@ -982,6 +1612,19 @@ impl World {
                     let removed = self.fs.remove_xattr(ino, &xattr_of(name)).await;
                     removed.map_err(|e| format!("remove_xattr: {e:#}"))?;
                     self.write_xattrs(ino, name, None).await?;
+                }
+            }
+            Op::SetDirXattr { dir, name, len, byte } => {
+                let dir = self.model.dirs[dir % self.model.dirs.len()];
+                let value = vec![byte; len];
+                let mode = SetExtendedAttributeMode::Set;
+                let set = self.fs.set_xattr(dir, &xattr_of(name), &value, mode).await;
+                set.map_err(|e| format!("set_xattr: {e:#}"))?;
+                let written = self.fs.write_inode(dir, &SetAttr::default()).await;
+                if self.unless_full(written, "write_inode")?.is_none() {
+                    self.fs.xattrs.lock().unwrap().remove(&dir);
+                } else {
+                    self.model.dir_xattrs.entry(dir).or_default().insert(name, value);
                 }
             }
             Op::Sync => self.fs.sync().await.map_err(|e| format!("sync: {e:#}"))?,
@@ -1000,33 +1643,49 @@ impl World {
     async fn had_it_worked(&self, model: &Model, op: &Op) -> Option<Model> {
         let mut model = model.clone();
         if let Some(plan) = op.plan(&model) {
-            let data = model.files.get_mut(&plan.ino)?;
-            plan.pages.iter().for_each(|(page, bytes)| data.put(*page, bytes));
+            model.files.get_mut(&plan.ino)?.follow(&plan);
             return Some(model);
         }
         match *op {
-            Op::Create(name) | Op::Symlink(name) => {
-                let ino = self.fs.lookup(self.root, &name_of(name)).await.ok()?.ino;
-                let file = matches!(op, Op::Create(_));
-                model.names.insert(name, if file { Entry::File(ino) } else { Entry::Symlink(ino) });
-                model.files.insert(ino, Data::default());
+            Op::Create(name) | Op::Symlink(name) | Op::Mkdir(name) => {
+                let (dir, at) = model.place(name);
+                let ino = self.fs.lookup(dir, &name_of(at)).await.ok()?.ino;
+                let entry = match op {
+                    Op::Create(_) => Entry::File(ino),
+                    Op::Symlink(_) => Entry::Symlink(ino),
+                    _ => Entry::Dir(ino),
+                };
+                model.names.insert((dir, at), entry);
+                match entry {
+                    Entry::File(_) => drop(model.files.insert(ino, Data::default())),
+                    Entry::Symlink(_) => {}
+                    Entry::Dir(_) => model.dirs.push(ino),
+                }
             }
             Op::Link(file, name) => {
-                model.names.insert(name, Entry::File(model.file(file)?));
+                let entry = model.linked_as(file)?;
+                model.names.insert(model.place(name), entry);
             }
-            Op::Unlink(name) => {
-                let (Entry::File(ino) | Entry::Symlink(ino)) = model.names.remove(&name)?;
-                if model.links(ino) == 0 {
-                    model.files.remove(&ino);
+            Op::Unlink(name) | Op::UnlinkLater(name) => {
+                let entry = model.names.remove(&model.place(name))?;
+                model.dirs.retain(|dir| *dir != entry.ino());
+                if model.links(entry.ino()) == 0 {
+                    model.files.remove(&entry.ino());
                 }
             }
             Op::Rename(from, to) => {
-                let entry = model.names.remove(&from)?;
-                if let Some(Entry::File(ino) | Entry::Symlink(ino)) = model.names.insert(to, entry)
-                    && model.links(ino) == 0
-                {
-                    model.files.remove(&ino);
+                let entry = model.names.remove(&model.place(from))?;
+                if let Some(replaced) = model.names.insert(model.place(to), entry) {
+                    model.dirs.retain(|dir| *dir != replaced.ino());
+                    if model.links(replaced.ino()) == 0 {
+                        model.files.remove(&replaced.ino());
+                    }
                 }
+            }
+            Op::Exchange(a, b) => {
+                let (first, second) = (model.entry(a)?, model.entry(b)?);
+                model.names.insert(model.place(a), second);
+                model.names.insert(model.place(b), first);
             }
             Op::Write { file, at, len, byte } => {
                 let ino = model.file(file)?;
@@ -1036,11 +1695,6 @@ impl World {
                 let ino = model.file(file)?;
                 model.files.get_mut(&ino)?.truncate(size);
             }
-            Op::Punch { file, page, pages } => {
-                let ino = model.file(file)?;
-                let data = model.files.get_mut(&ino)?;
-                data.punch(page..(page + pages).min(data.size / PAGE));
-            }
             Op::SetXattr { file, name, len, byte } => {
                 let ino = model.file(file)?;
                 model.files.get_mut(&ino)?.xattrs.insert(name, vec![byte; len]);
@@ -1049,16 +1703,30 @@ impl World {
                 let ino = model.file(file)?;
                 model.files.get_mut(&ino)?.xattrs.remove(&name);
             }
+            Op::SetDirXattr { dir, name, len, byte } => {
+                let dir = model.dirs[dir % model.dirs.len()];
+                model.dir_xattrs.entry(dir).or_default().insert(name, vec![byte; len]);
+            }
             _ => return None,
         }
         Some(model)
+    }
+
+    /// Checks that what the journal took since it was at `since` is what `extents` extents cost.
+    fn journaled_for(&self, extents: u64, since: u64) -> Result<(), String> {
+        let journaled = self.filesystem.journal().file_offset() - since;
+        let allowed = JOURNALED_ANYWAY + JOURNALED_PER_EXTENT * extents;
+        if journaled > allowed {
+            return Err(format!("{journaled} bytes of journal to cross {extents} extents"));
+        }
+        Ok(())
     }
 
     /// Takes `plan` for done, as `done` says, or for what got done before it stopped short.
     async fn planned(&mut self, plan: &Plan, done: Result<(), Error>) -> Result<(), String> {
         let mut data = self.model.files[&plan.ino].clone();
         if self.unless_full(done, "a plan")?.is_some() {
-            plan.pages.iter().for_each(|(page, bytes)| data.put(*page, bytes));
+            data.follow(plan);
         } else {
             data = self.stopped_short(data, plan).await?;
         }
@@ -1129,7 +1797,7 @@ impl Past {
         let device = DeviceHolder::new(device.record_crashes(second_cuts.clone()));
         let setting = self.setting;
         let mut world =
-            World::mount(setting, device, root, Model::default(), tally.clone()).await?;
+            World::mount(setting, device, root, Model::new(root), tally.clone()).await?;
         second_cuts.stop();
         checked(&world.filesystem).await?;
         world.holds_no_orphans().await?;
@@ -1137,12 +1805,13 @@ impl Past {
         let mut differs = Vec::new();
         let mut held = None;
         for state in (first..=last).rev() {
-            let mut candidates = vec![self.states[state].clone()];
+            let mut candidates = self.states[state].cuts();
             if let Some(short) = self.stopped_short(&world, state, ops).await {
-                candidates.push(short);
+                candidates.extend(short.cuts());
             }
             if self.failed == Some(state.wrapping_sub(1)) {
-                candidates.extend(world.had_it_worked(&self.states[state], &ops[state - 1]).await);
+                let worked = world.had_it_worked(&self.states[state], &ops[state - 1]).await;
+                candidates.extend(worked.map(Model::cut));
             }
             for candidate in candidates {
                 if held.is_none() {
@@ -1156,6 +1825,10 @@ impl Past {
         let Some(held) = held else {
             return Err(format!("holds none of states {first} to {last}: {differs:?}"));
         };
+        world.holds_nothing_else(&held).await?;
+        if self.states[first..=last].iter().any(|state| !state.unlinked().is_empty()) {
+            tally.cuts_of_the_unlinked.set(tally.cuts_of_the_unlinked.get() + 1);
+        }
         for (_, device) in second_cuts.take() {
             tally.second_cuts.set(tally.second_cuts.get() + 1);
             let device = DeviceHolder::new(device);
@@ -1179,7 +1852,8 @@ async fn run(setting: Setting, ops: Vec<Op>, tally: Rc<Tally>) -> Result<(), Str
     let faults = Faults::new(setting.seed);
     let world = World::new(setting, &crashes, &faults, tally.clone()).await;
     let (root, device) = (world.root, world.filesystem.device());
-    let mut past = Past { setting, states: vec![Model::default()], durable: vec![0], failed: None };
+    let states = vec![world.model.clone()];
+    let mut past = Past { setting, states, durable: vec![0], failed: None };
     world.fs.sync().await.map_err(|e| format!("sync: {e:#}"))?;
     crashes.mark(0);
     faults.arm(setting.fails_one_in());
@@ -1270,23 +1944,33 @@ fn watch_sequences(limit: Duration) -> mpsc::Sender<String> {
 fn whatever_a_vfs_asks_reads_back_as_a_model_says() {
     let cases = std::env::var("FXDAX_MODEL_CASES").map_or(96, |cases| cases.parse().unwrap());
     let fsck_each = std::env::var_os("FXDAX_MODEL_FSCK").is_some();
+    let workers = std::env::var_os("FXDAX_MODEL_WORKERS").is_some();
     let config = Config { cases, failure_persistence: None, ..Config::default() };
+    let most: u32 = std::env::var("FXDAX_MODEL_OPS").map_or(48, |most| most.parse().unwrap());
     let room = prop_oneof![Just(ROOMY), Just(TIGHT)];
-    let sequences = (any::<u64>(), room, proptest::collection::vec(op(), 1..48));
+    let sequences = (any::<u64>(), room, proptest::collection::vec(op(), 1..most as usize));
     let tally = Rc::new(Tally::default());
-    let watched = watch_sequences(if fsck_each { 30 * SEQUENCE_LIMIT } else { SEQUENCE_LIMIT });
+    let limit = SEQUENCE_LIMIT * (most / 48).max(1);
+    let watched = watch_sequences(if fsck_each { 30 * limit } else { limit });
     TestRunner::new(config)
         .run(&sequences, |(seed, blocks, ops)| {
             watched.send(format!("{seed}, {blocks}, {ops:?}")).expect("the watchdog stopped");
-            let setting = Setting::awkward(seed, blocks).with_fsck_each(fsck_each);
+            let setting = Setting::awkward(seed, blocks).with_graveyard_of_seed();
+            let setting = setting.with_fsck_each(fsck_each).with_workers(workers);
             prop_assert_eq!(setting.run(ops, tally.clone()), Ok(()));
             Ok(())
         })
         .unwrap();
     let (cuts, second_cuts) = (tally.cuts.get(), tally.second_cuts.get());
-    println!("{cuts} power cuts, {second_cuts} of replays, {} refused", tally.refused.get());
+    let unlinked = tally.cuts_of_the_unlinked.get();
+    println!(
+        "{cuts} power cuts, {second_cuts} of replays, {unlinked} of files open with no name, {} \
+         refused",
+        tally.refused.get()
+    );
     assert!(cuts > 0, "no power cut");
     assert!(second_cuts > 0, "no power cut of a replay");
+    assert!(unlinked > 0, "no power cut of a file open with no name");
     assert!(tally.refused.get() > 0, "no device filled");
 }
 
@@ -1315,7 +1999,8 @@ fn a_device_that_fails_loses_nothing_durable() {
     TestRunner::new(config)
         .run(&sequences, |(seed, blocks, ops)| {
             watched.send(format!("{seed}, {blocks}, {ops:?}")).expect("the watchdog stopped");
-            let done = Setting::awkward(seed, blocks).failing().run(ops, tally.clone());
+            let setting = Setting::awkward(seed, blocks).with_graveyard_of_seed().failing();
+            let done = setting.run(ops, tally.clone());
             prop_assert_eq!(std::mem::take(&mut *PANICS.lock().unwrap()), Vec::<String>::new());
             prop_assert_eq!(done, Ok(()));
             Ok(())
@@ -1384,17 +2069,204 @@ fn every_cut_of_a_short_sequence() {
     TestRunner::new(config)
         .run(&sequences, |(seed, ops)| {
             watched.send(format!("{seed}, {ops:?}")).expect("the watchdog stopped");
-            let setting = Setting::awkward(seed, ROOMY).cutting_everywhere();
-            prop_assert_eq!(setting.run(ops, tally.clone()), Ok(()));
+            let setting = Setting::awkward(seed, ROOMY).with_graveyard_of_seed();
+            prop_assert_eq!(setting.cutting_everywhere().run(ops, tally.clone()), Ok(()));
             Ok(())
         })
         .unwrap();
     let (cuts, barriers) = (tally.cuts.get(), tally.barriers.get());
-    let beyond = tally.beyond_the_bound.get();
+    let (beyond, unlinked) = (tally.beyond_the_bound.get(), tally.cuts_of_the_unlinked.get());
     println!(
-        "{cuts} power cuts at {barriers} barriers, {beyond} past every subset of {EVERY_SUBSET_OF}"
+        "{cuts} power cuts at {barriers} barriers, {beyond} past every subset of \
+         {EVERY_SUBSET_OF}, {unlinked} of files open with no name"
     );
     assert!(cuts > 0, "no power cut");
+}
+
+/// A file unlinked while open reads and writes as it did until it closes, and a cut anywhere around
+/// that finds it linked, or nothing of it: no object, no graveyard entry, no extent.
+#[test]
+fn a_file_open_outlives_its_names() {
+    let ops = vec![
+        Op::Create(0),
+        Op::Write { file: 0, at: 8192, len: 8192, byte: 1 },
+        Op::Open(0),
+        Op::Sync,
+        Op::UnlinkLater(0),
+        Op::Write { file: 0, at: 1, len: 4096, byte: 2 },
+        Op::Fill { file: 0, page: 2, pages: 8, stride: 1, byte: 3 },
+        Op::Sync,
+        Op::Truncate { file: 0, size: 4097 },
+        Op::Compact,
+        Op::Close(0),
+        Op::Sync,
+    ];
+    let tally = Rc::new(Tally::default());
+    let setting = Setting::awkward(0, ROOMY).cutting_everywhere();
+    assert_eq!(setting.run(ops, tally.clone()), Ok(()));
+    assert!(tally.cuts_of_the_unlinked.get() > 0, "no cut with the file open and unlinked");
+}
+
+/// A tmpfile a cut finds with no name is gone; one it finds linked is a file, which goes on.
+#[test]
+fn a_tmpfile_is_a_file_once_linked() {
+    let ops = vec![
+        Op::Tmpfile(0),
+        Op::Write { file: 0, at: 0, len: 8192, byte: 1 },
+        Op::Sync,
+        Op::Link(0, 7),
+        Op::Compact,
+        Op::Unlink(7),
+        Op::Link(0, 7),
+        Op::Sync,
+        Op::Close(0),
+        Op::Write { file: 0, at: 4096, len: 1, byte: 2 },
+    ];
+    let tally = Rc::new(Tally::default());
+    let setting = Setting::awkward(0, ROOMY).cutting_everywhere();
+    assert_eq!(setting.run(ops, tally.clone()), Ok(()));
+    assert!(tally.cuts_of_the_unlinked.get() > 0, "no cut with the tmpfile unnamed");
+}
+
+/// Names move across directories, which move, exchange and go themselves, a directory with names
+/// in it refused: each a transaction of many objects, which a cut leaves whole.
+#[test]
+fn names_and_directories_move_as_one() {
+    let in_a = |name| NAMES + name;
+    let ops = vec![
+        Op::Mkdir(0),
+        Op::Mkdir(1),
+        Op::Create(in_a(0)),
+        Op::Write { file: 0, at: 0, len: 1, byte: 1 },
+        Op::Link(0, 2),
+        Op::Sync,
+        Op::Rename(in_a(0), 2 * NAMES),
+        Op::Unlink(1),
+        Op::Exchange(0, 2),
+        Op::Rename(0, 3),
+        Op::Mkdir(in_a(4)),
+        Op::Rename(in_a(4), 5),
+        Op::Rename(5, in_a(4)),
+        Op::Exchange(3, 1),
+        Op::SetDirXattr { dir: 1, name: 0, len: 4096, byte: 1 },
+        Op::Compact,
+        Op::Rename(1, 4),
+        Op::Symlink(5),
+        Op::Link(1, in_a(5)),
+        Op::Unlink(5),
+    ];
+    Setting::awkward(0, ROOMY).cutting_everywhere().holds(ops);
+}
+
+/// Names change, and syncs complete, after the unlinks queued before them, whatever comes between:
+/// the journal keeps the order the syscalls had.
+#[test]
+fn what_comes_after_an_unlink_queued_stays_after_it() {
+    let write = Op::Write { file: 0, at: 0, len: 1, byte: 1 };
+    let ops = vec![
+        Op::Create(0),
+        Op::Create(1),
+        Op::Create(2),
+        Op::Create(3),
+        Op::UnlinkLater(0),
+        write.clone(),
+        Op::Rename(1, 4),
+        Op::UnlinkLater(2),
+        write.clone(),
+        Op::Link(0, 5),
+        Op::UnlinkLater(3),
+        write,
+        Op::Fsync,
+        Op::UnlinkLater(4),
+        Op::Sync,
+    ];
+    Setting::awkward(0, ROOMY).cutting_everywhere().holds(ops);
+}
+
+/// A clone costs what extents it crosses, whatever lies between them: counted, a hole of exabytes
+/// (generic/303) took commits for ever, which outran the journal.
+#[test]
+fn a_clone_crosses_holes_of_any_size() {
+    let far = (1 << 50) / PAGE;
+    let ops = vec![
+        Op::Create(0),
+        Op::Create(1),
+        Op::Write { file: 0, at: 0, len: 4096, byte: 1 },
+        Op::Write { file: 0, at: far * PAGE, len: 4096, byte: 2 },
+        Op::Clone { from: 0, to: 1, page: 0, pages: PAGES_AT_MOST, to_page: 0 },
+        Op::Sync,
+        Op::Write { file: 0, at: LARGEST - 4097, len: 4096, byte: 3 },
+        Op::CloneToEnd { from: 0, to: 1, page: 0, to_page: 0 },
+    ];
+    let watched = watch_sequences(SEQUENCE_LIMIT);
+    watched.send(format!("{ops:?}")).expect("the watchdog stopped");
+    Setting::awkward(0, ROOMY).holds(ops);
+}
+
+/// A punch costs what extents it frees, as a clone does: a transaction a MiB of its range spun for
+/// as long as a file may be, a guest's inode locked.
+#[test]
+fn a_punch_crosses_holes_of_any_size() {
+    let far = (1 << 50) / PAGE;
+    let ops = vec![
+        Op::Create(0),
+        Op::Write { file: 0, at: 0, len: 8192, byte: 1 },
+        Op::Write { file: 0, at: far * PAGE, len: 4096, byte: 2 },
+        Op::Sync,
+        Op::Punch { file: 0, page: 1, pages: PAGES_AT_MOST },
+        Op::Sync,
+    ];
+    let watched = watch_sequences(SEQUENCE_LIMIT);
+    watched.send(format!("{ops:?}")).expect("the watchdog stopped");
+    Setting::awkward(0, ROOMY).holds(ops);
+}
+
+/// What a truncate cuts from a file's last block stays gone, however full the filesystem is as it
+/// does: the tail's copy found no room, what the cut freed waiting for a sync, and a write past the
+/// end brought those bytes back. Found by a hunt, whose seed this keeps, as how full the device gets
+/// depends on it. With no room even after a sync they still come back, which a long hunt finds, and
+/// TASK-149.8's notes say why.
+#[test]
+fn a_truncate_on_a_full_filesystem_leaves_nothing_past_the_end() {
+    let ops = vec![
+        Op::Compact,
+        Op::Create(0),
+        Op::Create(3),
+        Op::Create(5),
+        Op::Fill { file: 11, page: 2, pages: 2695, stride: 2, byte: 1 },
+        Op::Create(1),
+        Op::CloneToEnd { from: 6, to: 13, page: 0, to_page: 0 },
+        Op::Symlink(3),
+        Op::Fill { file: 1, page: 0, pages: 512, stride: 1, byte: 0 },
+        Op::Unlink(0),
+        Op::Rename(5, 1),
+        Op::Read { file: 0, at: 0, len: 3 },
+        Op::Truncate { file: 15, size: 41646 },
+        Op::Crash,
+        Op::Create(5),
+        Op::Create(2),
+        Op::Write { file: 9, at: 51996, len: 8, byte: 83 },
+    ];
+    Setting::awkward(0, TIGHT).with_graveyard_of_seed().holds(ops);
+}
+
+/// A punch of many commits, cut, has punched what it got to, from its start: found as a false alarm
+/// by a hunt, a punch taken for one transaction, whose seed this keeps, as what the cuts lose depends
+/// on it.
+#[test]
+fn a_punch_cut_short_leaves_what_it_got_to() {
+    let ops = vec![
+        Op::Create(0),
+        Op::Sync,
+        Op::SetXattr { file: 0, name: 0, len: 4097, byte: 0 },
+        Op::Fill { file: 0, page: 0, pages: 1211, stride: 2, byte: 1 },
+        Op::SetDirXattr { dir: 0, name: 0, len: 4097, byte: 0 },
+        Op::Crash,
+        Op::Create(1),
+        Op::Sync,
+        Op::Punch { file: 2, page: 504, pages: 657 },
+    ];
+    Setting::awkward(8215753583942078673, ROOMY).with_graveyard_of_seed().holds(ops);
 }
 
 /// Commits don't stop for a super-block, whose offsets are of the journal it flushed: read after

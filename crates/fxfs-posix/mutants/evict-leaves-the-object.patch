@@ -1,0 +1,16 @@
+diff --git a/crates/fxfs-posix/src/lib.rs b/crates/fxfs-posix/src/lib.rs
+index 3797584a4..fa85b729a 100644
+--- a/crates/fxfs-posix/src/lib.rs
++++ b/crates/fxfs-posix/src/lib.rs
+@@ -1286,10 +1286,7 @@ impl<P: Platform> Fxfs<P> {
+             match queued {
+                 Some(1) => self.wake_worker(),
+                 Some(_) => {}
+-                None => {
+-                    let store = self.volume.store_object_id();
+-                    self.filesystem.graveyard().queue_tombstone_object(store, ino);
+-                }
++                None => {}
+             }
+         }
+     }

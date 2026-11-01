@@ -1,0 +1,12 @@
+diff --git a/crates/fxfs-posix/src/lib.rs b/crates/fxfs-posix/src/lib.rs
+index 3797584a4..376afcf34 100644
+--- a/crates/fxfs-posix/src/lib.rs
++++ b/crates/fxfs-posix/src/lib.rs
+@@ -1590,7 +1590,6 @@ impl<P: Platform> Fxfs<P> {
+             if let DelayedOp::Evict { ino } = op
+                 && !freed.contains(ino)
+             {
+-                self.filesystem.graveyard().queue_tombstone_object(store, *ino);
+             }
+         }
+         Ok(())

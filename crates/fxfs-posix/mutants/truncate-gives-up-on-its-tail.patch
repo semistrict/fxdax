@@ -1,0 +1,17 @@
+diff --git a/crates/fxfs-posix/src/lib.rs b/crates/fxfs-posix/src/lib.rs
+index 0172c85e8..56303e534 100644
+--- a/crates/fxfs-posix/src/lib.rs
++++ b/crates/fxfs-posix/src/lib.rs
+@@ -1653,11 +1653,7 @@ impl<P: Platform> Fxfs<P> {
+             // write that finds the filesystem full makes it (`fxfs_vfs_make_room`). With no room
+             // even so what the last block holds past the end stays, as the file must still be cut.
+             if cut && set.valid & SET_KEEP_TAIL == 0 {
+-                let mut zeroed = file.zero_tail().await;
+-                if matches!(&zeroed, Err(error) if FxfsError::NoSpace.matches(error)) {
+-                    self.sync().await?;
+-                    zeroed = file.zero_tail().await;
+-                }
++                let zeroed = file.zero_tail().await;
+                 if let Err(error) = zeroed {
+                     ensure!(FxfsError::NoSpace.matches(&error), error);
+                     log::error!("fxfs: object {ino}: no room to zero past its end: {error:#}");

@@ -1,0 +1,12 @@
+diff --git a/crates/fxfs/src/object_store/graveyard.rs b/crates/fxfs/src/object_store/graveyard.rs
+index 4ca202c2f..dcba1c33c 100644
+--- a/crates/fxfs/src/object_store/graveyard.rs
++++ b/crates/fxfs/src/object_store/graveyard.rs
+@@ -304,7 +304,6 @@ impl Graveyard {
+                         }
+                     } else {
+                         queued_objects.insert((store_id, object_id));
+-                        self.queue_tombstone_object(store_id, object_id)
+                     }
+                 }
+                 ObjectValue::Trim => {

@@ -1,0 +1,13 @@
+diff --git a/crates/fxfs/src/object_store.rs b/crates/fxfs/src/object_store.rs
+index 34e3ef679..e500ca27b 100644
+--- a/crates/fxfs/src/object_store.rs
++++ b/crates/fxfs/src/object_store.rs
+@@ -1428,8 +1428,6 @@ impl ObjectStore {
+         };
+         if *refs == 0 {
+             if add_to_graveyard {
+-                self.add_to_graveyard(transaction, object_id);
+-
+                 // We might still need to adjust the reference count if delta was something other
+                 // than -1.
+                 if delta != -1 {
