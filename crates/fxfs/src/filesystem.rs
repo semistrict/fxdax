@@ -574,33 +574,32 @@ impl FxFilesystemBuilder {
                 .context("Journal replay failed")?;
             filesystem.root_store().set_trace(self.trace);
 
-            // fxdax: no compaction runs until the initial reap is done, as the flush task may run
-            // from here on. A compaction's new layer files are in the graveyard until it commits,
-            // and the reap would tombstone them, leaving a store whose layers are gone.
-            if !read_only {
-                let journal = &filesystem.journal;
-                journal.pause_compactions().await;
-                let prepared = async {
-                    if image_builder_mode.is_none() {
-                        // fxdax: the journal continues in new extents, which a super-block records.
-                        let renewed = async {
-                            if filesystem.renew_journal_tail().await? {
-                                filesystem.record_journal_tail().await?;
-                            }
-                            anyhow::Ok(())
-                        };
-                        renewed.await.context("Failed to renew the journal's tail")?;
-                        // fxdax: the extents a crash orphaned go with a flush, now: they hold room
-                        // on the device Fxfs doesn't count, so that writes would find it full
-                        // before Fxfs did, with no NoSpace to say so.
-                        if filesystem.allocator().has_dead_extents() {
-                            filesystem.maybe_start_flush_task();
-                            journal
-                                .flush_for_frees()
-                                .await
-                                .context("Failed to free what the crash left")?;
-                        }
+            // fxdax: the journal continues in new extents, which a super-block records. No
+            // compaction, which writes a super-block too, runs meanwhile, nor until the initial
+            // reap's done: as below, it may otherwise find what a compaction just put in the
+            // graveyard, tombstoning it twice.
+            let compacts = !read_only && image_builder_mode.is_none();
+            if compacts {
+                filesystem.journal.pause_compactions().await;
+            }
+            let mounted = async {
+                if compacts {
+                    if filesystem.renew_journal_tail().await? {
+                        filesystem.record_journal_tail().await?;
                     }
+                    // fxdax: the extents a crash orphaned go with a flush, now: they hold room on
+                    // the device Fxfs doesn't count, so that writes would find it full before Fxfs
+                    // did, with no NoSpace to say so. Before any compaction, which records them
+                    // while they die: they may be as many as were sought, of numbers the device
+                    // may never have held, and no journal record pays for that room.
+                    if filesystem.allocator().has_dead_extents() {
+                        filesystem.maybe_start_flush_task();
+                        let journal = &filesystem.journal;
+                        journal.flush_for_frees().await.context("freeing what the crash left")?;
+                    }
+                }
+
+                if !read_only {
                     // Queue all purged entries for tombstoning.  Don't start the reaper yet because
                     // that can trigger a flush which can add more entries to the graveyard which
                     // might get caught in the initial reap and cause objects to be prematurely
@@ -608,12 +607,14 @@ impl FxFilesystemBuilder {
                     for store in objects.unlocked_stores() {
                         filesystem.graveyard.initial_reap(&store).await?;
                     }
-                    anyhow::Ok(())
                 }
-                .await;
-                journal.resume_compactions();
-                prepared?;
+                anyhow::Ok(())
             }
+            .await;
+            if compacts {
+                filesystem.journal.resume_compactions();
+            }
+            mounted.context("Failed to go on from the journal")?;
         }
 
         // This must be after we've formatted the filesystem; it will fail during format otherwise.
@@ -1210,20 +1211,30 @@ impl FsckAfterEveryTransaction {
 
     async fn run(self: Arc<Self>) {
         if let Some(fs) = self.fs.get().and_then(Weak::upgrade) {
+            // fxdax: says what it found, not "1 error".
+            let issues = Arc::new(Mutex::new(Vec::new()));
+            let found = issues.clone();
             let options = FsckOptions {
                 fail_on_warning: true,
                 no_lock: true,
                 quiet: true,
+                on_error: Box::new(move |issue| found.lock().push(format!("{issue:?}"))),
                 ..Default::default()
             };
-            fsck_with_options(fs.clone(), &options).await.expect("fsck failed");
+            if let Err(error) = fsck_with_options(fs.clone(), &options).await {
+                panic!("fsck after a transaction: {error:#}: {:?}", issues.lock());
+            }
             let object_manager = fs.object_manager();
             for store in object_manager.unlocked_stores() {
                 let store_id = store.store_object_id();
                 if !object_manager.is_system_store(store_id) {
-                    fsck_volume_with_options(fs.as_ref(), &options, store_id, None)
-                        .await
-                        .expect("fsck_volume_with_options failed");
+                    let checked = fsck_volume_with_options(fs.as_ref(), &options, store_id, None);
+                    if let Err(error) = checked.await {
+                        panic!(
+                            "fsck of {store_id} after a transaction: {error:#}: {:?}",
+                            issues.lock()
+                        );
+                    }
                 }
             }
         }
@@ -1263,7 +1274,7 @@ mod tests {
     use std::time::Duration;
     use storage_device::DeviceHolder;
     use storage_device::fake_device::{self, FakeDevice};
-    use storage_device::{ExtentId, ExtentRange, NoExtent};
+    use storage_device::{ExtentId, ExtentRange};
     use test_case::test_case;
 
     const TEST_DEVICE_BLOCK_SIZE: u32 = 512;
@@ -1847,19 +1858,9 @@ mod tests {
     async fn leaked_extents(fs: &FxFilesystem) -> Vec<ExtentId> {
         let device = fs.device();
         let known = fs.allocator().extents();
-        let mut buffer = device.allocate_buffer(device.block_size() as usize).await;
-        let mut leaked = Vec::new();
-        for sequence in 0..device.next_sequence().await.expect("next_sequence failed") {
-            let extent = ExtentId::new(device.branch(), sequence);
-            if known.contains_key(&extent) {
-                continue;
-            }
-            match device.read(extent, 0, buffer.as_mut()).await {
-                Ok(()) => leaked.push(extent),
-                Err(error) => assert!(error.downcast_ref::<NoExtent>().is_some(), "{error:?}"),
-            }
-        }
-        leaked
+        let branch = device.branch();
+        let held = device.extents().into_iter();
+        held.filter(|extent| extent.branch == branch && !known.contains_key(extent)).collect()
     }
 
     /// fxdax: Fxfs writes, overwrites, renames and deletes files while its store crashes at
@@ -2006,7 +2007,7 @@ mod tests {
         std::mem::drop(store);
         fs.close().await.expect("close failed");
 
-        let recorded = crashes.take();
+        let recorded: Vec<_> = crashes.take().collect();
         assert!(recorded.len() >= ROUNDS as usize, "{} crashes recorded", recorded.len());
         for (crash, (synced_rounds, device)) in recorded.into_iter().enumerate() {
             let fs = FxFilesystem::open(DeviceHolder::new(device))

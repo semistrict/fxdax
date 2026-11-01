@@ -100,7 +100,7 @@ impl Storage {
     pub fn memory(size: u64) -> Self {
         let block_size = Self::BLOCK_SIZE as u64;
         assert!(size > 0 && size.is_multiple_of(block_size), "{size} is not a multiple of blocks");
-        let device = FakeDevice::new(size / block_size, Self::BLOCK_SIZE);
+        let device = FakeDevice::new(size / block_size, Self::BLOCK_SIZE).calm();
         Self { device: DeviceHolder::new(device), kind: Kind::Memory }
     }
 

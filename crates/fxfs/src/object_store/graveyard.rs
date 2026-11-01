@@ -280,6 +280,7 @@ impl Graveyard {
         debug_assert!(
             store.store_object_id() != fs.root_store().store_object_id()
                 || fs.options().read_only
+                || fs.journal().image_builder_mode().is_some()
                 || fs.journal().compactions_paused(),
             "The root store's graveyard reaped with compactions running"
         );

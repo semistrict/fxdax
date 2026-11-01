@@ -170,6 +170,12 @@ pub trait Device: Send + Sync {
     /// Returns whether the device is read-only.
     fn is_read_only(&self) -> bool;
 
+    /// fxdax: the IDs of the extents the device holds, in order. (Only implemented for testing
+    /// devices.)
+    fn extents(&self) -> Vec<ExtentId> {
+        unreachable!();
+    }
+
     /// Returns a snapshot of the device.
     fn snapshot(&self) -> Result<DeviceHolder, Error> {
         bail!("Not supported");

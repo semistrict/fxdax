@@ -763,10 +763,10 @@ mod tests {
 
     async fn filesystem_and_super_block_handles()
     -> (OpenFxFilesystem, DataObjectHandle<ObjectStore>, DataObjectHandle<ObjectStore>) {
-        let device = DeviceHolder::new(FakeDevice::new(
-            TEST_DEVICE_BLOCK_COUNT,
-            TEST_DEVICE_BLOCK_SIZE.get() as u32,
-        ));
+        // fxdax: calm: what a super-block takes depends on the size of its extents' numbers.
+        let device = DeviceHolder::new(
+            FakeDevice::new(TEST_DEVICE_BLOCK_COUNT, TEST_DEVICE_BLOCK_SIZE.get() as u32).calm(),
+        );
         let fs = FxFilesystem::new_empty(device).await.expect("new_empty failed");
         fs.close().await.expect("Close failed");
         let device = fs.take_device().await;

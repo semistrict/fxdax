@@ -244,6 +244,8 @@ pub struct Journal {
     writer_mutex: Mutex<()>,
     sync_mutex: futures::lock::Mutex<()>,
     trace: AtomicBool,
+    // fxdax: what the journal's file is extended by (`JournalOptions::chunk_size`).
+    chunk_size: u64,
 
     // This event is used when we are waiting for a compaction to free up journal space.
     reclaim_event: Event,
@@ -299,6 +301,10 @@ struct Inner {
 
     // If true, indicates a DidFlushDevice record is pending.
     needs_did_flush_device: bool,
+
+    // fxdax: the journal goes on in extents only a super-block not yet written records
+    // (`renew_tail`), so that a replay, from the last, finds nothing of what's written there.
+    tail_unrecorded: bool,
 
     // The writer for the journal.
     writer: JournalWriter,
@@ -409,6 +415,10 @@ pub struct JournalOptions {
     /// fxdax: when the flush task writes the journal: as each block fills, as upstream, unless
     /// set.
     pub lazy_flush: Option<LazyFlush>,
+
+    /// fxdax: how much the journal's file is extended by at a time: a test's sequence too short
+    /// to write 128 KiB of it extends it all the same.
+    pub chunk_size: u64,
 }
 
 /// fxdax: the flush task writes the journal once this much of it is buffered, or once the oldest
@@ -425,6 +435,7 @@ impl Default for JournalOptions {
     fn default() -> Self {
         JournalOptions {
             reclaim_size: DEFAULT_RECLAIM_SIZE,
+            chunk_size: CHUNK_SIZE,
             barriers_enabled: false,
             lazy_flush: None,
         }
@@ -533,6 +544,7 @@ impl Journal {
                 synced: 0,
                 barrier_written: 0,
                 needs_did_flush_device: false,
+                tail_unrecorded: false,
                 writer: JournalWriter::new(BLOCK_SIZE, starting_checksum),
                 output_reset_version: false,
                 flush_waker: None,
@@ -557,6 +569,7 @@ impl Journal {
             writer_mutex: Mutex::new(()),
             sync_mutex: futures::lock::Mutex::new(()),
             trace: AtomicBool::new(false),
+            chunk_size: options.chunk_size,
             reclaim_event: Event::new(),
             follower: Mutex::new(None),
             stats: JournalStats::default(),
@@ -1452,7 +1465,7 @@ impl Journal {
         .await
         .context("create journal")?;
         if self.inner.lock().image_builder_mode.is_none() {
-            let mut file_range = 0..self.chunk_size();
+            let mut file_range = 0..CHUNK_SIZE;
             journal_handle
                 .preallocate_range_in_extents_of(&mut transaction, &mut file_range, EXTENT_SIZE)
                 .await
@@ -1499,7 +1512,7 @@ impl Journal {
                 Options { skip_journal_checks: true, ..Default::default() },
             )
             .await?;
-        let mut file_range = 0..self.chunk_size();
+        let mut file_range = 0..CHUNK_SIZE;
         self.handle
             .get()
             .unwrap()
@@ -1588,7 +1601,9 @@ impl Journal {
                 .with_context(|| format!("reallocating the journal's tail, {offset} to {size}"))?;
             {
                 let _guard = self.writer_mutex.lock();
-                Self::write_pending_records(&mut self.inner.lock())?;
+                let mut inner = self.inner.lock();
+                inner.tail_unrecorded = true;
+                Self::write_pending_records(&mut inner)?;
             }
             // As in `pre_commit`, the transaction is applied directly. No flush task writes the
             // journal before it is applied: none runs yet.
@@ -1680,7 +1695,8 @@ impl Journal {
             let file_offset = inner.writer.journal_file_checkpoint().file_offset;
 
             let size = handle.get_size();
-            let wanted = (file_offset + room).saturating_sub(size).next_multiple_of(CHUNK_SIZE);
+            let wanted =
+                (file_offset + room).saturating_sub(size).next_multiple_of(self.chunk_size());
             let extended = wanted.min(MAX_EXTENDED_PER_COMMIT);
             let extension = (extended > 0).then_some(size..size + extended);
 
@@ -1876,6 +1892,7 @@ impl Journal {
             let mut inner = self.inner.lock();
             inner.super_block_header = new_super_block_header;
             inner.zero_offset = Some(BLOCK_SIZE.align_down(old_super_block_offset));
+            inner.tail_unrecorded = false;
         }
 
         Ok(())
@@ -1925,15 +1942,18 @@ impl Journal {
     }
 
     /// fxdax: flushes the device, though the journal has nothing more for it, for the extents
-    /// that wait for a flush, and frees them: a mount's orphans, the super-block it wrote having
-    /// flushed the journal, stayed on the device until something else was written, in room Fxfs
-    /// doesn't count. The flush task must be running, as a flush's record is written by it.
+    /// that wait for a flush, frees them, and flushes it again, which seals their frees: a mount's
+    /// orphans, the super-block it wrote having flushed the journal, stayed on the device until
+    /// something else was written, in room Fxfs doesn't count, and a compaction before the seal
+    /// recorded them, in room no reservation counts. The flush task must be running, as a flush's
+    /// record is written by it.
     pub async fn flush_for_frees(&self) -> Result<(), Error> {
         let _guard = debug_assert_not_too_long!(self.sync_mutex.lock());
         let (checkpoint, _) = {
             let _guard = self.writer_mutex.lock();
             self.pad_to_block()?
         };
+        self.flush_device(checkpoint.file_offset, true).await?;
         self.flush_device(checkpoint.file_offset, true).await?;
         self.objects.allocator().freed().await.context("freeing dead extents")
     }
@@ -2002,17 +2022,25 @@ impl Journal {
                 inner.needs_did_flush_device = true;
             }
 
-            // fxdax: the allocator frees some of the extents that died before the flush only once
-            // the record of it is on the device too: replay doesn't verify the checksums of
-            // writes before it, which may be to extents freed, which can't be read.
-            let recorded = self.objects.allocator().needs_recorded_flush(checkpoint_offset);
-            if recorded {
-                self.record_device_flush().await.context("recording the device flush")?;
-            }
+            let allocator = self.objects.allocator();
+            if self.inner.lock().tail_unrecorded {
+                // fxdax: no frees until the super-block that records the journal's tail is
+                // written: until then a replay finds neither what discarded an orphan, a write to
+                // which it then verifies, nor the deaths of extents it would refer to.
+                allocator.sealed();
+            } else {
+                // fxdax: the allocator frees some of the extents that died before the flush only
+                // once the record of it is on the device too: replay doesn't verify the checksums
+                // of writes before it, which may be to extents freed, which can't be read.
+                let recorded = allocator.needs_recorded_flush(checkpoint_offset);
+                if recorded {
+                    self.record_device_flush().await.context("recording the device flush")?;
+                }
 
-            // Tell the allocator that we flushed the device so that it can now free the extents
-            // that died.
-            self.objects.allocator().did_flush_device(checkpoint_offset, recorded).await;
+                // Tell the allocator that we flushed the device so that it can now free the extents
+                // that died.
+                allocator.did_flush_device(checkpoint_offset, recorded).await;
+            }
             if trace {
                 info!("J: did flush device");
             }
@@ -2111,7 +2139,7 @@ impl Journal {
     }
 
     fn chunk_size(&self) -> u64 {
-        CHUNK_SIZE
+        self.chunk_size
     }
 
     /// fxdax: how much of the journal to have ahead for `transaction`, a chunk's or the chunks that
@@ -2291,6 +2319,7 @@ impl Journal {
                         && !inner.terminate
                         && !inner.disable_compactions
                         && !inner.compactions_paused
+                        && !inner.compaction_running
                         && inner.image_builder_mode.is_none()
                         && self.should_compact(&inner, journal_bytes)
                     {
@@ -2514,8 +2543,26 @@ impl Journal {
     /// This should generally NOT be called externally. It is public to allow use by FIDL service
     /// fxfs.Debug.
     pub async fn force_compact(&self) -> Result<(), Error> {
+        // fxdax: after the flush task's, if one runs, and in its way: two at once wrote super-blocks
+        // at once (see `write_super_block`), recording each other's work unfinished: two of them
+        // left a crash no super-block to mount from.
+        loop {
+            debug_assert_not_too_long!({
+                let mut inner = self.inner.lock();
+                if !inner.compaction_running {
+                    inner.compaction_running = true;
+                    break;
+                }
+                self.reclaim_event.listen()
+            });
+        }
         self.inner.lock().forced_compaction = true;
-        scopeguard::defer! { self.inner.lock().forced_compaction = false; }
+        scopeguard::defer! {
+            let mut inner = self.inner.lock();
+            inner.forced_compaction = false;
+            inner.compaction_running = false;
+            self.reclaim_event.notify(usize::MAX);
+        }
         self.compact().await
     }
 
@@ -2830,6 +2877,9 @@ mod tests {
     async fn test_transactions_larger_than_a_chunk_stay_within_the_journal() {
         let device = DeviceHolder::new(FakeDevice::new(65536, TEST_DEVICE_BLOCK_SIZE));
         let (fs, object_id) = filesystem_for_records(device).await;
+        // These commits borrow all they take, for what they add, which no filesystem's commits
+        // do, and which leaves a compaction too little of the metadata reservation.
+        fs.journal().pause_compactions().await;
         for round in 0..3 {
             commit_records(&fs, object_id, round, 100).await;
         }
@@ -3799,8 +3849,9 @@ mod tests {
         use storage_device::fake_device::RoundTrips;
 
         let trips = Arc::new(RoundTrips::default());
-        let device =
-            DeviceHolder::new(FakeDevice::new(1 << 16, 4096).with_round_trips(trips.clone()));
+        let device = DeviceHolder::new(
+            FakeDevice::new(1 << 16, 4096).calm().with_round_trips(trips.clone()),
+        );
         let options = || super::JournalOptions { reclaim_size: 8 << 20, ..Default::default() };
         let fs = FxFilesystemBuilder::new()
             .journal_options(options())
@@ -3873,8 +3924,9 @@ mod tests {
         use storage_device::fake_device::RoundTrips;
 
         let trips = Arc::new(RoundTrips::default());
-        let device =
-            DeviceHolder::new(FakeDevice::new(1 << 16, 4096).with_round_trips(trips.clone()));
+        let device = DeviceHolder::new(
+            FakeDevice::new(1 << 16, 4096).calm().with_round_trips(trips.clone()),
+        );
         let fs = FxFilesystem::new_empty(device).await.expect("new_empty failed");
         fs.sync(SyncOptions { flush_device: true, ..Default::default() })
             .await
