@@ -168,15 +168,13 @@ impl Data {
     }
 
     fn punch(&mut self, pages: Range<u64>) {
-        if !pages.is_empty() {
-            let punched: Vec<u64> = self.pages.range(pages).map(|(page, _)| *page).collect();
-            punched.iter().for_each(|page| drop(self.pages.remove(page)));
-        }
+        let punched: Vec<u64> = self.pages.range(pages).map(|(page, _)| *page).collect();
+        punched.iter().for_each(|page| drop(self.pages.remove(page)));
     }
 
     /// How many extents `pages` holds at most: nothing of its holes counts.
     fn extents_in(&self, pages: Range<u64>) -> u64 {
-        if pages.is_empty() { 0 } else { self.pages.range(pages).count() as u64 }
+        self.pages.range(pages).count() as u64
     }
 
     fn read(&self, at: u64, len: usize) -> Vec<u8> {
@@ -304,6 +302,12 @@ impl Op {
             }
             Op::FillWhileCompacting { file, page, pages, byte, .. } => {
                 Op::Fill { file, page, pages, stride: 1, byte }.plan(model)
+            }
+            Op::Punch { file, page, pages } => {
+                let ino = model.file(file)?;
+                let end = (page + pages).min(model.files[&ino].size / PAGE);
+                let runs = vec![Run { pages: page..end, bytes: None }];
+                (page < end).then_some(Plan { ino, runs, size: None })
             }
             Op::Clone { from, to, page, pages, to_page } => {
                 let (src, dst) = (model.file(from)?, model.file(to)?);
@@ -1561,22 +1565,14 @@ impl World {
                 }
                 self.check(&self.model, ino).await?;
             }
-            Op::Punch { file, page, pages } => {
-                let Some(ino) = self.model.file(file) else { return Ok(()) };
-                let data = &self.model.files[&ino];
-                let (end, extents) = {
-                    let end = (page + pages).min(data.size / PAGE);
-                    (end, data.extents_in(page..end))
-                };
-                if page < end {
-                    let journaled = self.filesystem.journal().file_offset();
-                    let punched = self.fs.punch(ino, page * PAGE..end * PAGE).await;
-                    self.journaled_for(extents, journaled)?;
-                    if self.unless_full(punched, "punch")?.is_some() {
-                        self.model.files.get_mut(&ino).expect("a file").punch(page..end);
-                    }
-                    self.check(&self.model, ino).await?;
-                }
+            Op::Punch { .. } => {
+                let Some(plan) = op.plan(&self.model) else { return Ok(()) };
+                let pages = plan.runs[0].pages.clone();
+                let extents = self.model.files[&plan.ino].extents_in(pages.clone());
+                let journaled = self.filesystem.journal().file_offset();
+                let punched = self.fs.punch(plan.ino, pages.start * PAGE..pages.end * PAGE).await;
+                self.journaled_for(extents, journaled)?;
+                self.planned(&plan, punched).await?;
             }
             Op::SetXattr { file, name, len, byte } => {
                 let Some(ino) = self.model.file(file) else { return Ok(()) };
@@ -1674,11 +1670,6 @@ impl World {
             Op::Truncate { file, size } => {
                 let ino = model.file(file)?;
                 model.files.get_mut(&ino)?.truncate(size);
-            }
-            Op::Punch { file, page, pages } => {
-                let ino = model.file(file)?;
-                let data = model.files.get_mut(&ino)?;
-                data.punch(page..(page + pages).min(data.size / PAGE));
             }
             Op::SetXattr { file, name, len, byte } => {
                 let ino = model.file(file)?;
@@ -1931,11 +1922,12 @@ fn whatever_a_vfs_asks_reads_back_as_a_model_says() {
     let fsck_each = std::env::var_os("FXDAX_MODEL_FSCK").is_some();
     let workers = std::env::var_os("FXDAX_MODEL_WORKERS").is_some();
     let config = Config { cases, failure_persistence: None, ..Config::default() };
-    let most = std::env::var("FXDAX_MODEL_OPS").map_or(48, |most| most.parse().unwrap());
+    let most: u32 = std::env::var("FXDAX_MODEL_OPS").map_or(48, |most| most.parse().unwrap());
     let room = prop_oneof![Just(ROOMY), Just(TIGHT)];
-    let sequences = (any::<u64>(), room, proptest::collection::vec(op(), 1..most));
+    let sequences = (any::<u64>(), room, proptest::collection::vec(op(), 1..most as usize));
     let tally = Rc::new(Tally::default());
-    let watched = watch_sequences(if fsck_each { 30 * SEQUENCE_LIMIT } else { SEQUENCE_LIMIT });
+    let limit = SEQUENCE_LIMIT * (most / 48).max(1);
+    let watched = watch_sequences(if fsck_each { 30 * limit } else { limit });
     TestRunner::new(config)
         .run(&sequences, |(seed, blocks, ops)| {
             watched.send(format!("{seed}, {blocks}, {ops:?}")).expect("the watchdog stopped");
@@ -2176,6 +2168,25 @@ fn a_punch_crosses_holes_of_any_size() {
     let watched = watch_sequences(SEQUENCE_LIMIT);
     watched.send(format!("{ops:?}")).expect("the watchdog stopped");
     Setting::awkward(0, ROOMY).holds(ops);
+}
+
+/// A punch of many commits, cut, has punched what it got to, from its start: found as a false alarm
+/// by a hunt, a punch taken for one transaction, whose seed this keeps, as what the cuts lose depends
+/// on it.
+#[test]
+fn a_punch_cut_short_leaves_what_it_got_to() {
+    let ops = vec![
+        Op::Create(0),
+        Op::Sync,
+        Op::SetXattr { file: 0, name: 0, len: 4097, byte: 0 },
+        Op::Fill { file: 0, page: 0, pages: 1211, stride: 2, byte: 1 },
+        Op::SetDirXattr { dir: 0, name: 0, len: 4097, byte: 0 },
+        Op::Crash,
+        Op::Create(1),
+        Op::Sync,
+        Op::Punch { file: 2, page: 504, pages: 657 },
+    ];
+    Setting::awkward(8215753583942078673, ROOMY).with_graveyard_of_seed().holds(ops);
 }
 
 /// Commits don't stop for a super-block, whose offsets are of the journal it flushed: read after
