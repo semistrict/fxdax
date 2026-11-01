@@ -300,6 +300,10 @@ struct Inner {
     // If true, indicates a DidFlushDevice record is pending.
     needs_did_flush_device: bool,
 
+    // fxdax: the journal goes on in extents only a super-block not yet written records
+    // (`renew_tail`), so that a replay, from the last, finds nothing of what's written there.
+    tail_unrecorded: bool,
+
     // The writer for the journal.
     writer: JournalWriter,
 
@@ -533,6 +537,7 @@ impl Journal {
                 synced: 0,
                 barrier_written: 0,
                 needs_did_flush_device: false,
+                tail_unrecorded: false,
                 writer: JournalWriter::new(BLOCK_SIZE, starting_checksum),
                 output_reset_version: false,
                 flush_waker: None,
@@ -1588,7 +1593,9 @@ impl Journal {
                 .with_context(|| format!("reallocating the journal's tail, {offset} to {size}"))?;
             {
                 let _guard = self.writer_mutex.lock();
-                Self::write_pending_records(&mut self.inner.lock())?;
+                let mut inner = self.inner.lock();
+                inner.tail_unrecorded = true;
+                Self::write_pending_records(&mut inner)?;
             }
             // As in `pre_commit`, the transaction is applied directly. No flush task writes the
             // journal before it is applied: none runs yet.
@@ -1876,6 +1883,7 @@ impl Journal {
             let mut inner = self.inner.lock();
             inner.super_block_header = new_super_block_header;
             inner.zero_offset = Some(BLOCK_SIZE.align_down(old_super_block_offset));
+            inner.tail_unrecorded = false;
         }
 
         Ok(())
@@ -2002,17 +2010,25 @@ impl Journal {
                 inner.needs_did_flush_device = true;
             }
 
-            // fxdax: the allocator frees some of the extents that died before the flush only once
-            // the record of it is on the device too: replay doesn't verify the checksums of
-            // writes before it, which may be to extents freed, which can't be read.
-            let recorded = self.objects.allocator().needs_recorded_flush(checkpoint_offset);
-            if recorded {
-                self.record_device_flush().await.context("recording the device flush")?;
-            }
+            let allocator = self.objects.allocator();
+            if self.inner.lock().tail_unrecorded {
+                // fxdax: no frees until the super-block that records the journal's tail is
+                // written: until then a replay finds neither what discarded an orphan, a write to
+                // which it then verifies, nor the deaths of extents it would refer to.
+                allocator.sealed();
+            } else {
+                // fxdax: the allocator frees some of the extents that died before the flush only
+                // once the record of it is on the device too: replay doesn't verify the checksums
+                // of writes before it, which may be to extents freed, which can't be read.
+                let recorded = allocator.needs_recorded_flush(checkpoint_offset);
+                if recorded {
+                    self.record_device_flush().await.context("recording the device flush")?;
+                }
 
-            // Tell the allocator that we flushed the device so that it can now free the extents
-            // that died.
-            self.objects.allocator().did_flush_device(checkpoint_offset, recorded).await;
+                // Tell the allocator that we flushed the device so that it can now free the extents
+                // that died.
+                allocator.did_flush_device(checkpoint_offset, recorded).await;
+            }
             if trace {
                 info!("J: did flush device");
             }

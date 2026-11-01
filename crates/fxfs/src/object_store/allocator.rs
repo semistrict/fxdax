@@ -1753,7 +1753,7 @@ impl Allocator {
     /// fxdax: freed in the background, as `freed` waits for: each free is a round trip to the
     /// device, which a sync need not wait for (`SyncOptions::background_frees`).
     pub async fn did_flush_device(self: &Arc<Self>, flush_log_offset: u64, recorded: bool) {
-        self.inner.lock().extents.sealed();
+        self.sealed();
         let device = self.filesystem.upgrade().unwrap().device();
         let this = self.clone();
         let mut freeing = self.freeing.lock().await;
@@ -1785,6 +1785,11 @@ impl Allocator {
     /// fxdax: called as the device begins a flush, which seals the frees issued before it.
     pub fn will_flush_device(&self) {
         self.inner.lock().extents.seal_begins();
+    }
+
+    /// fxdax: called as the device ends a flush, of which `did_flush_device` frees nothing.
+    pub fn sealed(&self) {
+        self.inner.lock().extents.sealed();
     }
 
     /// Frees the dead extents that a flush of the journal to `log_file_offset`, recorded if

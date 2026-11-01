@@ -1133,3 +1133,27 @@ fn what_a_crash_kept_is_matched_with_its_holes() {
     ];
     Setting::calm(10934300477646575156, TIGHT).holds(ops);
 }
+
+/// A mount that renews the journal's tail writes in extents only a super-block records. A flush
+/// let what it found dead be freed before that super-block was written: a cut then left a replay,
+/// from the last one, with no sign of what the mount discarded, verifying a write to an extent it
+/// had freed: a filesystem that mounts no more. On a calm device, the frees wait for an executor's
+/// turn the mount doesn't give them. Found by a hunt, whose seed this keeps, as what the cuts lose
+/// and when the device answers depend on it.
+#[test]
+fn a_mount_frees_nothing_until_a_super_block_records_its_journal() {
+    let ops = vec![
+        Op::Create(0),
+        Op::Write { file: 0, at: 12288, len: 4101, byte: 230 },
+        Op::Create(0),
+        Op::Write { file: 6, at: 0, len: 4096, byte: 128 },
+        Op::Write { file: 12, at: 12288, len: 47, byte: 234 },
+        Op::Crash,
+        Op::Link(7, 4),
+        Op::Fill { file: 10, page: 46, pages: 3287, stride: 2, byte: 76 },
+        Op::Write { file: 4, at: 12288, len: 4096, byte: 32 },
+        Op::Unlink(0),
+        Op::Compact,
+    ];
+    Setting::awkward(8643161789968376626, ROOMY).holds(ops);
+}
