@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-01 06:13'
-updated_date: '2026-11-01 10:09'
+updated_date: '2026-11-01 11:13'
 labels: []
 dependencies: []
 parent_task_id: TASK-149
@@ -21,16 +21,16 @@ Failed reads, writes and flushes are in no model test. The rule to check: a clea
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Sequences inject failures of reads, writes and flushes, seeded
-- [ ] #2 A failed fsync is reported, and what was synced before it stays durable
-- [ ] #3 A filesystem that hit an error remounts and passes fsck
+- [x] #1 Sequences inject failures of reads, writes and flushes, seeded
+- [x] #2 A failed fsync is reported, and what was synced before it stays durable
+- [x] #3 A filesystem that hit an error remounts and passes fsck
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -41,3 +41,15 @@ Failed reads, writes and flushes are in no model test. The rule to check: a clea
 3. Panics in any task fail the test, through a hook. A directed test of a failed fsync.
 4. Controls: swallow a flush's error, and panic in a background task; both must fail.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Failures of reads, writes, flushes and frees, one kind or all, seeded. Controls: a swallowed flush error fails on [Create, Crash, Write, Fsync], a panic in a background task fails naming it. 11,900 sequences found nothing in Fxfs. Not modelled: a write that fails yet lands, or a device that stays failed.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Seeded device failures in the model test, with both rules shown by controls; no bug found.
+<!-- SECTION:FINAL_SUMMARY:END -->
