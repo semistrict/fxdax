@@ -44,7 +44,7 @@ mod host {
     );
 
     /// Tests that fail for what Fxfs here doesn't do, which any other failure isn't.
-    const KNOWN_FAILURES: [&str; 20] = [
+    const KNOWN_FAILURES: [&str; 21] = [
         // An extent store reserves nothing, so fallocate leaves no unwritten extents, which they
         // look for with FIEMAP (`fxfs_vfs_fallocate`).
         "generic/009",
@@ -54,6 +54,9 @@ mod host {
         "generic/568",
         "generic/796",
         "generic/797",
+        // DAX appends reserve blocks ahead of them (TASK-92.58), which FIEMAP shows in what the
+        // file's writes then skipped: "an allocated extent where a hole should be".
+        "generic/225",
         // A heuristic of how few extents a reflinked file's data takes, which the allocator
         // makes it pass or not (r348, r352); its data is right either way.
         "generic/301",
