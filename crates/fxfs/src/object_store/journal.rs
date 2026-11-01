@@ -486,6 +486,12 @@ pub struct JournaledChecksums {
     pub first_write: bool,
 }
 
+/// fxdax: whether what a journal record says is allocated could be: not empty, and on blocks, as an
+/// allocator's key, which what it says becomes, must be for a layer to hold it.
+fn valid_device_range(device_range: &ExtentRange, block_size: BlockSize) -> bool {
+    !device_range.is_empty() && block_size.is_aligned(&device_range.range)
+}
+
 /// fxdax: the part of an extent of the store that `extent` of the journal is, `device_offset` on:
 /// what an image says, which may be anything.
 fn journal_extent(
@@ -680,20 +686,22 @@ impl Journal {
             Mutation::ObjectStore(_) => {}
             Mutation::EncryptedObjectStore(_) => {}
             Mutation::Allocator(AllocatorMutation::Allocate { device_range, owner_object_id }) => {
-                return !device_range.is_empty() && *owner_object_id != INVALID_OBJECT_ID;
+                return valid_device_range(device_range, block_size)
+                    && *owner_object_id != INVALID_OBJECT_ID;
             }
             Mutation::Allocator(AllocatorMutation::Deallocate {
                 device_range,
                 owner_object_id,
             }) => {
-                return !device_range.is_empty() && *owner_object_id != INVALID_OBJECT_ID;
+                return valid_device_range(device_range, block_size)
+                    && *owner_object_id != INVALID_OBJECT_ID;
             }
             Mutation::Allocator(AllocatorMutation::Reference {
                 device_range,
                 owner_object_id,
                 delta,
             }) => {
-                return !device_range.is_empty()
+                return valid_device_range(device_range, block_size)
                     && *owner_object_id != INVALID_OBJECT_ID
                     && *delta != 0;
             }
@@ -2935,6 +2943,7 @@ mod tests {
     #[test]
     fn test_mutations_of_extents_are_validated() {
         use super::Journal;
+        use crate::object_store::transaction::AllocatorMutation;
         use crate::object_store::{AttributeId, ExtentMode, ExtentValue};
         use bit_vec::BitVec;
         use storage_device::ExtentId;
@@ -2957,6 +2966,15 @@ mod tests {
         assert!(valid(0..8192, bitmap(2)));
         assert!(!valid(0..8192, bitmap(1)));
         assert!(!valid(0..8192, bitmap(0)));
+
+        let allocates = |range| {
+            let device_range = storage_device::ExtentRange::new(extent, range);
+            let mutation = AllocatorMutation::Allocate { device_range, owner_object_id: 1 };
+            Journal::validate_mutation(&Mutation::Allocator(mutation), BlockSize::SIZE_4KIB)
+        };
+        assert!(allocates(4096..8192));
+        assert!(!allocates(1..4096));
+        assert!(!allocates(4096..4097));
     }
 
     /// fxdax: where a journal's extent ends is what an image says.
