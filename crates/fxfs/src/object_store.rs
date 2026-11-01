@@ -1570,10 +1570,9 @@ impl ObjectStore {
         object_ids: &[u64],
         txn_options: Options<'_>,
     ) -> Result<(), Error> {
-        // The most objects a transaction tombstones, and the mutations it holds before it takes
-        // another: room for the next object's, as `trim_some` stops at the threshold.
+        // The most objects a transaction tombstones: the locks it takes, whatever room it has. One
+        // that fills it is finished on its own too, as `trim_some` stops there.
         const BATCH_OBJECTS: usize = 32;
-        const BATCH_MUTATIONS: usize = TRANSACTION_MUTATION_THRESHOLD / 2;
         let fs = self.filesystem();
         let store_id = self.store_object_id;
         let mut rest = object_ids;
@@ -1596,7 +1595,7 @@ impl ObjectStore {
             let mut unfinished = Vec::new();
             let mut done = 0;
             for &object_id in batch {
-                if transaction.mutations().len() >= BATCH_MUTATIONS {
+                if transaction.is_full() {
                     break;
                 }
                 done += 1;
