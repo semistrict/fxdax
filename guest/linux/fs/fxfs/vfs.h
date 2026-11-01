@@ -215,6 +215,7 @@ long fxfs_vfs_fallocate(struct file *file, int mode, loff_t offset, loff_t len);
 loff_t fxfs_vfs_llseek(struct file *file, loff_t offset, int whence);
 /* fsync(2), for files of any kind, DAX or not (super.c). */
 int fxfs_vfs_fsync(struct file *file, loff_t start, loff_t end, int datasync);
+int fxfs_vfs_resize(struct inode *inode, loff_t size, struct mnt_idmap *idmap, struct iattr *iattr);
 /* fxdax: reflinks (FICLONE, FICLONERANGE, copy_file_range), for regular files, DAX or not. */
 loff_t fxfs_vfs_remap_file_range(struct file *file_in, loff_t pos_in, struct file *file_out,
 				 loff_t pos_out, loff_t len, unsigned int remap_flags);

@@ -3529,23 +3529,6 @@ static ssize_t fxfs_dax_read_iter(struct kiocb *iocb, struct iov_iter *to)
 }
 
 /*
- * Sets the file's size, after a write made it longer than what it wrote: as setattr would,
- * with the inode locked.
- */
-static int fxfs_dax_set_size(struct inode *inode, loff_t size)
-{
-	struct fxfs_setattr set = { .valid = FXFS_SET_SIZE, .size = size };
-	int err = fxfs_dax_resize_begin(inode, size);
-
-	if (err)
-		return err;
-	truncate_setsize(inode, size);
-	err = fxfs_nofs(fxfs_setattr(fxfs_vfs_fs(inode->i_sb), inode->i_ino, &set));
-	fxfs_dax_resize_end(inode, size);
-	return err;
-}
-
-/*
  * Writes through the window, copying with page faults disabled: in the gate, a fault on the
  * user's memory could wait for a seal that waits for the gate. The memory is faulted in first, and
  * again whenever a copy stops short.
@@ -3644,7 +3627,7 @@ static ssize_t fxfs_dax_write_iter(struct kiocb *iocb, struct iov_iter *from)
 	 * iomap asked for (fxfs_dax_map_write), past the inode's, which grows as bytes are written.
 	 */
 	if (iocb->ki_pos < end && end > old_size) {
-		err = fxfs_dax_set_size(inode, max(old_size, iocb->ki_pos));
+		err = fxfs_vfs_resize(inode, max(old_size, iocb->ki_pos), NULL, NULL);
 		if (err && !done)
 			ret = err;
 	}

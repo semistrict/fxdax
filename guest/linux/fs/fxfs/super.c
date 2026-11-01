@@ -812,12 +812,13 @@ static int fxfs_vfs_rename(struct mnt_idmap *idmap, struct inode *old_dir,
  */
 /*
  * Makes `inode` `size` bytes long, with the attributes `iattr` sets, if any, and writes them back.
- * Its inode lock held.
+ * Its inode lock held. fxdax: every change of a file's size goes here: a DAX write stopped short
+ * made its own, telling Fxfs nothing of the window's last block, which Fxfs moved from under it to
+ * zero what it held past the end (TASK-150.9).
  */
 static int fxfs_vfs_zero_past_end(struct inode *inode, loff_t size, loff_t to);
 
-static int fxfs_vfs_resize(struct inode *inode, loff_t size, struct mnt_idmap *idmap,
-			   struct iattr *iattr)
+int fxfs_vfs_resize(struct inode *inode, loff_t size, struct mnt_idmap *idmap, struct iattr *iattr)
 {
 	int err;
 
