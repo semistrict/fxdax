@@ -6,7 +6,7 @@ title: >-
 status: In Progress
 assignee: []
 created_date: '2026-11-01 06:38'
-updated_date: '2026-11-01 20:32'
+updated_date: '2026-11-01 21:21'
 labels: []
 dependencies: []
 parent_task_id: TASK-149
@@ -63,4 +63,6 @@ Candidate 2 confirmed on a real kernel: r425 load_during_move: a load through a 
 r429, every fix merged: fxfs-guest-script-full and -full-dax passed 2 rounds each, the first time; load_during_move passes, so candidate 2's fix holds on a real kernel; no unexplained refusals. pmd_over_stale_index never tested candidate 3: mmap's address wasn't 2 MiB aligned, so no PMD could be mapped, and it failed every run on its setup. Fixed: it maps at a chunk's alignment. Its result is not yet seen.
 
 Correction to the note above: that the address's alignment is the cause is a guess, not shown: test_mapped_after_write maps with no address and gets PMDs. Another cause would be that a relocated page rules a PMD out on a real kernel, where the sim allows it. r451 shows which.
+
+pmd_over_stale_index on real kernels, r425, r427, r429, r451: no PMD ever mapped: a guess of alignment was wrong, the chunk's moved page leaving a fault's iomap under 2 MiB. The assertion that a PMD was mapped is gone, the check's bytes stay; it no longer shows candidate 3 on a real kernel, which sim scenarios pmd_over_stale_index and read_pressure do (patch 0011). That a PMD over a stale index happens on a real kernel at all rests on the sim, the other session's read_pressure and the sandbox's hang, not on this check.
 <!-- SECTION:NOTES:END -->
