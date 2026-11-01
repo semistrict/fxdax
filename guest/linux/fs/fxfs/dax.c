@@ -917,15 +917,25 @@ static struct fxfs_dax_extent *fxfs_dax_alloc_extents(struct fxfs_dax *dax, size
 	return extents;
 }
 
-/* Marks `file` as having writable pages in the window, which the sealer forgets. In the gate. */
-static void fxfs_dax_add_writable(struct fxfs_dax *dax, struct fxfs_dax_file *file)
+/*
+ * Has `range`'s `pages` pages from `page` writable, and its file among those with writable pages in
+ * the window, which the sealer forgets: the one way a page gets to be, as a page writable of a file
+ * not listed stays so past a seal, and a store to it is refused. fxdax: a slice refusing a write's
+ * second piece had set the first's bits, and left before it listed the file (TASK-150.14). In the
+ * gate.
+ */
+static void fxfs_dax_set_writable(struct fxfs_dax *dax, struct fxfs_dax_range *range,
+				  unsigned long page, unsigned long pages)
 {
+	struct fxfs_dax_file *file = range->file;
+
 	fxfs_device_assert_in_gate(dax->dev);
 
 	mutex_lock(&dax->writable_lock);
 	if (list_empty(&file->writable))
 		list_add_tail(&file->writable, &dax->writable);
 	mutex_unlock(&dax->writable_lock);
+	bitmap_set(range->writable, page, pages);
 }
 
 /*
@@ -941,7 +951,6 @@ static int fxfs_dax_map_slice(struct fxfs_dax *dax, struct fxfs_dax_range *range
 	loff_t start = fxfs_dax_chunk_start(range);
 	/* Where the slice starts in its extent. */
 	u64 base = range->window_offset - region->window_offset;
-	bool writable = false;
 	ssize_t i;
 	int err;
 
@@ -962,11 +971,8 @@ static int fxfs_dax_map_slice(struct fxfs_dax *dax, struct fxfs_dax_range *range
 		err = fxfs_dax_reach(dax, region, end >> PAGE_SHIFT);
 		if (err)
 			return err;
-		bitmap_set(range->writable, page, pages);
-		writable = true;
+		fxfs_dax_set_writable(dax, range, page, pages);
 	}
-	if (writable)
-		fxfs_dax_add_writable(dax, range->file);
 	return 0;
 }
 
@@ -1343,10 +1349,10 @@ static void fxfs_dax_unmap_pages(struct fxfs_dax_range *range, unsigned long pag
  * fxdax: has `range` say piece `e` of its chunk is mapped, as mapping it did (`err`): writably if
  * it is open. A sealed extent the device doesn't hold was never written: its blocks read as zeros,
  * a hole, as Fxfs reads them. (Blocks a write allocated before a seal sealed their extent
- * unwritten, which the write then moves.) Whether it is writable, or the error.
+ * unwritten, which the write then moves.) The error, if any.
  */
-static int fxfs_dax_mapped(struct fxfs_dax_range *range, const struct fxfs_dax_extent *e,
-			   int err)
+static int fxfs_dax_mapped(struct fxfs_dax *dax, struct fxfs_dax_range *range,
+			   const struct fxfs_dax_extent *e, int err)
 {
 	loff_t start = fxfs_dax_chunk_start(range);
 	unsigned long page = (e->offset - start) >> PAGE_SHIFT;
@@ -1363,7 +1369,7 @@ static int fxfs_dax_mapped(struct fxfs_dax_range *range, const struct fxfs_dax_e
 	}
 	bitmap_set(range->mapped, page, pages);
 	if (e->open)
-		bitmap_set(range->writable, page, pages);
+		fxfs_dax_set_writable(dax, range, page, pages);
 	else
 		fxfs_dax_clear_writable(range, page, pages);
 	{
@@ -1375,7 +1381,7 @@ static int fxfs_dax_mapped(struct fxfs_dax_range *range, const struct fxfs_dax_e
 				       fxfs_dax_page_offset(range, page + i), e->sequence,
 				       e->extent_offset + ((u64)i << PAGE_SHIFT), e->open);
 	}
-	return e->open;
+	return 0;
 }
 
 /* fxdax: maps piece `e` of `range`'s chunk in the range's own space, alone. */
@@ -1415,7 +1421,6 @@ static int fxfs_dax_map_extents(struct fxfs_dax *dax, struct fxfs_dax_range *ran
 	 */
 	struct fxfs_device_map *maps = NULL;
 	unsigned int *own = NULL;
-	bool writable = false;
 	ssize_t i, nr_own = 0;
 	int err, many;
 
@@ -1455,10 +1460,9 @@ static int fxfs_dax_map_extents(struct fxfs_dax *dax, struct fxfs_dax_range *ran
 			}
 			err = fxfs_dax_map_own(dax, range, e);
 		}
-		err = fxfs_dax_mapped(range, e, err);
-		if (err < 0)
+		err = fxfs_dax_mapped(dax, range, e, err);
+		if (err)
 			goto out;
-		writable |= err;
 	}
 	if (nr_own) {
 		many = fxfs_dax_device_map_many(dax, maps, nr_own);
@@ -1476,16 +1480,13 @@ static int fxfs_dax_map_extents(struct fxfs_dax *dax, struct fxfs_dax_range *ran
 						  e->len >> PAGE_SHIFT, NULL, 0);
 				err = 0;
 			}
-			err = fxfs_dax_mapped(range, e, err);
-			if (err < 0)
+			err = fxfs_dax_mapped(dax, range, e, err);
+			if (err)
 				goto out;
-			writable |= err;
 		}
 	}
 	err = 0;
 out:
-	if (writable)
-		fxfs_dax_add_writable(dax, range->file);
 	kfree(maps);
 	return err;
 }
@@ -1531,8 +1532,8 @@ static int fxfs_dax_map_moved(struct fxfs_dax *dax, struct fxfs_dax_range *range
 			fxfs_dax_unmap_pages(range, page, pages);
 			continue;
 		}
-		err = fxfs_dax_mapped(range, e, err);
-		if (err < 0)
+		err = fxfs_dax_mapped(dax, range, e, err);
+		if (err)
 			return err;
 	}
 	return 0;
@@ -2452,10 +2453,8 @@ static struct fxfs_dax_range *fxfs_dax_new_slice(struct fxfs_dax *dax, struct in
 		fxfs_dax_free_range(dax, range, 0);
 		goto out;
 	}
-	if (e.open && region->writable) {
-		bitmap_set(range->writable, 0, pages);
-		fxfs_dax_add_writable(dax, file);
-	}
+	if (e.open && region->writable)
+		fxfs_dax_set_writable(dax, range, 0, pages);
 	spin_lock(&dax->lock);
 	list_add_tail(&range->list, &dax->used);
 	spin_unlock(&dax->lock);
