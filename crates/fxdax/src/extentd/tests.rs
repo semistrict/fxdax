@@ -2352,9 +2352,12 @@ fn counting_followers_walks_no_extents() {
 /// At once, the stores' flushes run on `FLUSHES` threads at most, and the 15 they share to sync
 /// their files on beside their own (`extent_store`'s `HELPERS`, which count as theirs, named as
 /// they are), and their passes of cleaning on `CLEANINGS`: the most of each seen at once, looking
-/// every millisecond, is no more. Once their commits are durable, the daemon's runtime and those
-/// threads keep no more threads than it serves 300 forks' reads on
-/// (`serves_hundreds_of_forks_of_a_base`). One guest's commits are durable within a few of its
+/// every millisecond, is no more. Once their commits are durable, the runtime keeps threads for
+/// the requests that ran at once, not for the stores: 2 and a little over 2 for each guest
+/// committing (8 to 9 for 3 guests, 18 to 25 for 9, 58 to 70 for 33, whether 150, 300 or 600 stores
+/// were open, in a container of 15 processors), more under load, as a thread just done is not yet
+/// idle when the next request comes for one (40 beside the full workspace's tests); a thread for
+/// each store would be 297. One guest's commits are durable within a few of its
 /// store's turns, of 50 ms each and the flushes' time: told in turns, which the daemon counts
 /// ([`ExtentStore::flush_turns`]), as the full workspace's tests beside it stretch each turn's
 /// flushes to hundreds of milliseconds (TASK-110); the most one waited in time, its lag, is
@@ -2464,7 +2467,7 @@ fn hundreds_of_writers_flush_on_threads_they_share() {
     );
     let (flushing, cleaning) = (super::server::FLUSHES + 15, super::server::CLEANINGS);
     assert!(most[1] <= flushing && most[2] <= cleaning, "{most:?} named {NAMES:?} at once");
-    assert!(threads < 64, "{threads} threads kept: {kept:?} named {NAMES:?}, of {names:?}");
+    assert!(kept[0] < STORES / 4, "{threads} threads kept: {kept:?} named {NAMES:?}, of {names:?}");
     // Four turns, however long the load made them.
     assert!(turns <= 4, "ordered commits durable {turns} turns after, {lag:?}");
     drop(stores);

@@ -3366,6 +3366,15 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 	iomap->length = min_t(loff_t, end, start + ((loff_t)(first + fxfs_dax_run(range, first,
 								  first + pages)) << PAGE_SHIFT)) - pos;
 	iomap->private = range;
+	/*
+	 * fxdax: a write over holes whose pieces aren't in a row in the window takes several iomaps,
+	 * and only this one says its pages are new, as they are writable by the next. The rest of the
+	 * write's pages lose what a mapping of the file maps for them here, as dax_iomap_iter does the
+	 * iomap's own: else a load keeps reading the zeros, and a store writes them (TASK-149.14).
+	 */
+	if (fresh && pos + iomap->length < end)
+		unmap_mapping_pages(inode->i_mapping, (pos + iomap->length) >> PAGE_SHIFT,
+				    DIV_ROUND_UP(end - (pos + iomap->length), PAGE_SIZE), false);
 	fxfs_dax_cow(inode, range, first, DIV_ROUND_UP(offset_in_page(pos) + iomap->length, PAGE_SIZE),
 		     flags, iomap, srcmap);
 	up_write(&file->sem);

@@ -328,6 +328,19 @@ pub(crate) mod guest {
         fs::write("/proc/sys/vm/drop_caches", b"2").unwrap();
     }
 
+    /// Unmaps what a check that failed left mapped of the image's files, which would keep the
+    /// checks after it from unmounting, and fail them too.
+    fn unmap_what_it_left() {
+        let maps = fs::read_to_string("/proc/self/maps").unwrap();
+        for line in maps.lines().filter(|line| line.contains(MNT)) {
+            let range = line.split_whitespace().next().unwrap();
+            let (start, end) = range.split_once('-').unwrap();
+            let start = usize::from_str_radix(start, 16).unwrap();
+            let end = usize::from_str_radix(end, 16).unwrap();
+            assert_eq!(unsafe { libc::munmap(start as *mut libc::c_void, end - start) }, 0);
+        }
+    }
+
     /// Unmounts the image.
     fn unmount() {
         let target = CString::new(MNT).unwrap();
@@ -4577,6 +4590,7 @@ pub(crate) mod guest {
                 if catch_unwind(AssertUnwindSafe(test)).is_err() {
                     eprintln!("FAIL: {name}");
                     failed.push(*name);
+                    unmap_what_it_left();
                 } else {
                     eprintln!("PASS: {name}");
                 }

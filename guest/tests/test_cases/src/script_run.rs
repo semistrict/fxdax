@@ -24,6 +24,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 const FICLONE: libc::c_ulong = 0x4004_9409;
 
+/// Marks what the filesystem refused of an operation, among those done.
+const REFUSED: &str = "-- refused:";
+
 /// The operations of `mix`'s script of `seed`, each with its index in the whole of it, less those
 /// `script::DROP_VAR` drops, and the whole script's length, which is the index of its end.
 pub fn from_env(seed: u64, mix: Mix) -> (Vec<(usize, Op)>, usize) {
@@ -105,7 +108,7 @@ pub struct Run {
     model: Model,
     /// Whether the filesystem may refuse operations for lack of room.
     full: bool,
-    /// Each operation done, as it was resolved.
+    /// Each operation done, as it was resolved, and what the filesystem refused of it.
     pub done: Vec<String>,
     /// How many it refused.
     pub refused: usize,
@@ -147,7 +150,15 @@ impl Run {
     pub fn fail(&self, seed: u64, failure: &Failure) -> ! {
         println!("{failure}");
         let last = &self.done[self.done.len().saturating_sub(24)..];
-        panic!("seed {seed}: {failure}; the last before it:\n{}", last.join("\n"));
+        let refused: Vec<_> = (self.done.iter().enumerate())
+            .filter(|(_, step)| step.contains(REFUSED))
+            .map(|(index, step)| format!("{index}: {step}"))
+            .collect();
+        panic!(
+            "seed {seed}: {failure}; the last before it:\n{}\nwhat was refused:\n{}",
+            last.join("\n"),
+            refused.join("\n")
+        );
     }
 
     /// Ends the run, the files written back.
@@ -162,10 +173,17 @@ impl Run {
         Ran { model: self.model, done: self.done, refused: self.refused }
     }
 
+    /// Notes of the operation being done that the filesystem refused `what`.
+    fn note_refused(&mut self, what: &str) {
+        let step = self.done.last_mut().expect("the operation being done");
+        step.push_str(&format!(" {REFUSED} {what}"));
+    }
+
     /// Passes `err`, of `what`, if it's a lack of room the filesystem may say.
     fn refused(&mut self, err: &io::Error, what: &str) -> Result<(), Failed> {
         if self.full && err.raw_os_error() == Some(libc::ENOSPC) {
             self.refused += 1;
+            self.note_refused(what);
             return Ok(());
         }
         Err(errno(what, err))
@@ -178,7 +196,8 @@ impl Run {
                 let written =
                     unsafe { libc::pwrite(fd, data.as_ptr().cast(), data.len(), *at as i64) };
                 if written < 0 {
-                    return self.refused(&io::Error::last_os_error(), "pwrite");
+                    self.refused(&io::Error::last_os_error(), "pwrite")?;
+                    return self.check_read(file);
                 }
                 let written = written as usize;
                 if written < data.len() && !self.full {
@@ -186,6 +205,10 @@ impl Run {
                     return Err((kind::SHORT_WRITE.to_owned(), what));
                 }
                 self.model.write(file, *at, &data[..written]);
+                if written < data.len() {
+                    self.note_refused(&format!("{written:#x} bytes written"));
+                    return self.check_read(file);
+                }
             }
             Step::Store { file, at, data, child } => {
                 let stored = if *child || self.full {
@@ -208,6 +231,7 @@ impl Run {
                     if self.length(*file)? == *size {
                         self.model.truncate(*file, *size);
                     }
+                    return self.check_read(*file);
                 }
             },
             Step::Punch { file, at, len } => {
@@ -221,6 +245,7 @@ impl Run {
                     let end = (*at + *len).min(size);
                     let got = self.read(*file, *at, end.saturating_sub(*at))?;
                     self.model.punch_stopped_short(*file, *at, &got).map_err(differs)?;
+                    return self.check_read(*file);
                 }
             }
             Step::Fsync { file } => {
@@ -247,6 +272,8 @@ impl Run {
         let child = unsafe { libc::fork() };
         assert!(child >= 0, "fork: {}", io::Error::last_os_error());
         if child == 0 {
+            // No core of a death a full filesystem is allowed: a host counts one as a crash.
+            unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0) };
             for (i, &byte) in data.iter().enumerate() {
                 unsafe { mapped.add(at as usize + i).write_volatile(byte) };
                 stored.store(i + 1, Ordering::Release);
@@ -261,6 +288,7 @@ impl Run {
         let stored = stored.load(Ordering::Acquire);
         if self.full && libc::WIFSIGNALED(status) && libc::WTERMSIG(status) == libc::SIGBUS {
             self.refused += 1;
+            self.note_refused(&format!("{stored:#x} bytes stored"));
             return Ok(stored);
         }
         let what = format!("{stored:#x} bytes of {:#x} stored, the child {status:#x}", data.len());
@@ -284,7 +312,8 @@ impl Run {
         }
         self.refused(&err, "FICLONE")?;
         let got = self.read(to, 0, self.length(to)?)?;
-        self.model.clone_stopped_short(from, to, &got).map_err(differs)
+        self.model.clone_stopped_short(from, to, &got).map_err(differs)?;
+        self.check_read(to)
     }
 
     fn length(&self, file: usize) -> Result<u64, Failed> {
@@ -320,15 +349,23 @@ impl Run {
         )))
     }
 
-    /// Checks all of `file`, its size, and through read(2) and its mapping, against the model.
-    fn check_whole(&self, file: usize) -> Result<(), Failed> {
+    /// Checks `file`'s size, and all of it through read(2), against the model: at once after an
+    /// operation refused, which may leave no other trace, and which a check 100 operations later
+    /// says nothing of.
+    fn check_read(&self, file: usize) -> Result<(), Failed> {
         let model = &self.model.files[file];
         let size = self.length(file)?;
         if size != model.len() as u64 {
             let want = model.len();
             return Err(differs(format!("file {file} has size {size:#x}, the model's {want:#x}")));
         }
-        self.check(file, 0, size + PAGE)?;
+        self.check(file, 0, size + PAGE)
+    }
+
+    /// Checks all of `file`, its size, and through read(2) and its mapping, against the model.
+    fn check_whole(&self, file: usize) -> Result<(), Failed> {
+        self.check_read(file)?;
+        let model = &self.model.files[file];
         let through = unsafe { std::slice::from_raw_parts(self.maps[file].bytes, model.len()) };
         if let Some(at) = through.iter().zip(model).position(|(a, b)| a != b) {
             return Err(differs(format!("file {file}'s mapping differs at {at:#x}")));
@@ -379,11 +416,11 @@ mod tests {
         assert_hold(&names, &ran.model);
     }
 
-    /// With reflinks: a host whose temporary directory has none fails it, with EOPNOTSUPP.
     #[test]
-    fn several_files_script_passes_on_this_hosts_filesystem() {
+    fn several_files_script_passes_on_a_filesystem_with_reflinks() {
         let dir = TempDir::new("script").unwrap();
-        let names = names(dir.path(), SEVERAL_FILES);
+        let xfs = Loop::reflinks(dir.path());
+        let names = names(&xfs.mountpoint, SEVERAL_FILES);
         for seed in 1..=seeds() {
             let (script, len) = numbered(SEVERAL_FILES, seed);
             let mut run = Run::new(&names, false);
@@ -398,8 +435,9 @@ mod tests {
     #[test]
     fn clones_do_as_the_model_says() {
         let dir = TempDir::new("script").unwrap();
+        let xfs = Loop::reflinks(dir.path());
         let mix = Mix { files: 2, ..ONE_FILE };
-        let names = names(dir.path(), mix);
+        let names = names(&xfs.mountpoint, mix);
         let mut run = Run::new(&names, false);
         let block = PAGE;
         let write = |file, at, len| Op::Write { file, place: Place::At(at), len, data: 1 + at };
@@ -447,6 +485,12 @@ mod tests {
             run_ok(Command::new("mount").args(["-o", "loop"]).arg(&image).arg(&mountpoint));
             Self { mountpoint }
         }
+
+        /// XFS with reflinks, which a host's temporary directory may not have: its ext4 says
+        /// EOPNOTSUPP to FICLONE.
+        fn reflinks(dir: &std::path::Path) -> Self {
+            Self::new(dir, 300 << 20, "mkfs.xfs", &["-q", "-f", "-m", "reflink=1"])
+        }
     }
 
     impl Drop for Loop {
@@ -483,8 +527,9 @@ mod tests {
 
     /// A script's files, up to 12 MiB, don't fit, and each refusal, a store's SIGBUS among them,
     /// leaves them as the model says. Not on a tmpfs, which allocates a page for a load from a
-    /// hole, and a full one fails that with a SIGBUS, as Fxfs doesn't. These two need root, to
-    /// mount, and mkfs.ext4 and mkfs.xfs: nothing else checks what refusals leave off a guest.
+    /// hole, and a full one fails that with a SIGBUS, as Fxfs doesn't. The tests on a [`Loop`] need
+    /// root, to mount, and mkfs.ext4 or mkfs.xfs: nothing else checks what refusals leave off a
+    /// guest.
     #[test]
     fn a_filesystem_with_no_room_refuses_and_leaves_the_files_as_the_model_says() {
         let dir = TempDir::new("script").unwrap();
@@ -498,7 +543,7 @@ mod tests {
     #[test]
     fn a_filesystem_with_reflinks_and_no_room_refuses_and_leaves_the_files_as_the_model_says() {
         let dir = TempDir::new("script").unwrap();
-        let xfs = Loop::new(dir.path(), 300 << 20, "mkfs.xfs", &["-q", "-f", "-m", "reflink=1"]);
+        let xfs = Loop::reflinks(dir.path());
         refuses_on(&xfs.mountpoint, SEVERAL_FILES);
     }
 
