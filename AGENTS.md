@@ -33,11 +33,15 @@ Commit a batch once it has compiled and its unit tests have run and passed (the 
 compiled and tested. A batch may still be several commits, one logical change each, made together
 after the batch's test run.
 
-## Questions for the user go in OPEN_QUESTIONS.md, never in a reply
+## Don't wait on the user: decide, and record it in OPEN_QUESTIONS.md
 
-Never ask the user anything directly: not in a reply, not with a question tool, not as a choice at the end of a message. The user doesn't read through output for questions. If you need anything from the user, a decision, a fact only they know, an action only they can take, add it to `OPEN_QUESTIONS.md` at the repo root, and go on with whatever doesn't depend on it.
+Never ask the user anything directly: not in a reply, not with a question tool, not as a choice at the end of a message. The user doesn't read through output for questions. Everything you'd need from them goes in `OPEN_QUESTIONS.md` at the repo root.
 
-An entry says, in a few lines: what's needed, why it matters, what you recommend, and what happens until it's answered. Check the file before starting work: an answer may be there. As soon as the user answers a question, wherever they answer it, take its entry out of the file and act on the answer: the file holds open questions alone.
+A decision doesn't wait for the user. Make your best guess, act on it, and record it under `# Decisions` in `OPEN_QUESTIONS.md`: in a few lines, what you decided, why, what else was possible, and what undoing it would take. The user reads the file at leisure and overturns what they disagree with.
+
+Only what you can't do yourself stays under `# Open questions`: an action only the user can take (signing in, a push, anything the user's own instructions reserve to them, such as deleting a test), or a fact only they know with no reasonable guess. An entry says what's needed, why it matters, what you recommend, and what happens until it's answered; go on with whatever doesn't depend on it.
+
+Check the file before starting work: an answer may be there. As soon as the user answers a question or confirms or overturns a decision, wherever they say it, take its entry out of the file and act on it: the file holds only what the user hasn't seen through yet.
 
 ## Nothing uses fxdax yet: formats may change
 
