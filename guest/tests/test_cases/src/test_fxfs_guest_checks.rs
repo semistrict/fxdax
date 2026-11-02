@@ -3649,17 +3649,40 @@ pub(crate) mod guest {
         Pauses::set(Pauses::RESEALED);
         Pauses::wait_or(Pauses::RESEALED, Some(storer));
         (0..4).for_each(|_| seal());
-        // In a thread: with the page's PTE gone, the load may wait for the fault, which waits here.
-        let (loaded, load) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            loaded.send(unsafe { (mapped as *const u8).add(PAGE).read_volatile() }).unwrap();
-        });
-        let early = load.recv_timeout(std::time::Duration::from_secs(1));
+        // In a process of its own too: with the page's PTE gone, the load may wait for the fault,
+        // which waits here, holding its process's mmap_lock, which this one's next allocation, on
+        // its way to letting the fault go on, may wait for (GCE r527).
+        let mut fds = [0; 2];
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+        let [from_loader, to_parent] = fds;
+        let loader = unsafe { libc::fork() };
+        assert!(loader >= 0, "fork: {}", std::io::Error::last_os_error());
+        if loader == 0 {
+            unsafe {
+                let byte = (mapped as *const u8).add(PAGE).read_volatile();
+                let wrote = libc::write(to_parent, (&raw const byte).cast(), 1);
+                libc::_exit(if wrote == 1 { 0 } else { 1 });
+            }
+        }
+        unsafe { libc::close(to_parent) };
+        let mut early = libc::pollfd { fd: from_loader, events: libc::POLLIN, revents: 0 };
+        unsafe { libc::poll(&mut early, 1, 1000) };
         drop(pauses);
-        let byte = early.unwrap_or_else(|_| load.recv().unwrap());
-        let mut status = 0;
-        assert_eq!(unsafe { libc::waitpid(storer, &mut status, 0) }, storer);
-        assert!(libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0, "storer: {status:#x}");
+        let mut byte = 0u8;
+        assert_eq!(
+            unsafe { libc::read(from_loader, (&raw mut byte).cast(), 1) },
+            1,
+            "the loader's byte"
+        );
+        unsafe { libc::close(from_loader) };
+        for (child, name) in [(storer, "storer"), (loader, "loader")] {
+            let mut status = 0;
+            assert_eq!(unsafe { libc::waitpid(child, &mut status, 0) }, child);
+            assert!(
+                libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0,
+                "{name}: {status:#x}"
+            );
+        }
         assert_eq!(byte, data[PAGE], "a load through a PTE during the move");
 
         let mut expected = data;
