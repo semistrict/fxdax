@@ -7,8 +7,7 @@
  * dax_folio_put leaves an order 0 folio's index, which is its share count: a page that had an entry
  * at a nonzero index then looks shared, and dax_associate_entry doesn't make the folio compound for
  * a PMD (its WARN, fs/dax.c:458). An inode's first load gives a chunk's head page such an entry, in
- * the range's own space; a store and an evacuation leave a page of the chunk relocated, which says
- * shared at its next fault; and the eviction of the inode, whose ranges stay, ends the entry.
+ * the range's own space, and the eviction of the inode, whose ranges stay, ends the entry.
  */
 
 #include "pause.h"
@@ -16,7 +15,7 @@
 #define PIECE (1UL << 20)
 
 static struct sim_mount *mount;
-static struct file *file, *other;
+static struct file *file;
 static char *data;
 
 static void write_file(struct file *to, loff_t at, size_t len)
@@ -35,7 +34,6 @@ static void scenario(void *arg)
 
 	mount = sim_mount_new();
 	file = sim_file_new(mount);
-	other = sim_file_new(mount);
 	data = kmalloc(4 * PIECE, GFP_KERNEL);
 	for (i = 0; i < 4 * PIECE; i++)
 		data[i] = i % 251 + 1;
@@ -52,16 +50,9 @@ static void scenario(void *arg)
 	err = sim_user_load(addr + PAGE_SIZE, &got, 1);
 	check(!err && got == data[2 * PIECE + PAGE_SIZE], "a load of page 1: %d, %#x", err, got);
 
-	/* The store moves page 1 to the staging extent's region, and the evacuation back. */
-	pause_at(PAUSE_PLACED);
-	err = sim_user_store(addr + PAGE_SIZE, &got, 1);
-	check(!err, "a store to page 1: %d", err);
-	check(!sim_fsync(other), "a seal");
-	pause_wait(PAUSE_PLACED);
-	pause_at(0);
 	sim_munmap(addr);
 
-	/* Eviction ends the entries, not the range, nor that page 1 was relocated. */
+	/* Eviction ends the entries, not the range. */
 	check(!sim_fsync(file), "fsync");
 	file = sim_file_read_in(mount, file);
 

@@ -1,0 +1,7 @@
+# A range's pages moving to their staging extent's region as their blocks move, and evacuation moving them back
+
+**Tried:** 2026-10-15 to 2026-11-01, `25c838b90` (`fxfs_dax_move`), evacuation from 2026-10-23 (TASK-91.10). Removed by TASK-153.6, on the user's decision, without a prototype.
+**Idea:** Fxfs moves a block on the first write after a seal. Mapping the moved page where its extent's region already maps it takes no MAP, and a commit re-protects one region rather than each page. 64 MiB of 4 KiB random writes went from 3.79x to 0.60x of ext4 on DAX pmem, mmap random writes from 5.03x to 0.60x.
+**Result:** It broke `dax.c`'s promise that a file's page stays at one window address. A page's place then lived in `moved`, `stale`, `relocated`, `regions` and the kernel's entries, and every path changing one had to keep the rest true. TASK-153 counts 13 bugs of that shape, ending with the read-fault livelock of TASK-152 (`8af34848c`), where a page at another address had to say shared. Regions filled under fsyncs, so evacuation was added to move pages back, which made it 83% of pgbench's MAPs (r364), and a wait of 83 s of 403 s for writes behind `file->sem` (r453).
+**Why it's dead:** The page's address had to mean two things: where the kernel maps it, and where its block is. Every saving in `write(2)` came back as background MAPs, and as races.
+**Reopen if:** A host MAP costs so little that it no longer matters where it is paid, or never: the point of the fixed address is that nothing has to track where a page is.

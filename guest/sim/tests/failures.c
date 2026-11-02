@@ -17,7 +17,8 @@
 
 #include <sim/sim.h>
 
-#define WINDOW_LEN (64UL << 20)
+/* Each UNMAP failed keeps up to a chunk of it for good, as a real window: room for a long run's. */
+#define WINDOW_LEN (512UL << 20)
 #define WORKERS 2
 /* Past a chunk, so that a range of its own maps it, and it holds an extent of its own. */
 #define BIG_LEN (3UL << 20)

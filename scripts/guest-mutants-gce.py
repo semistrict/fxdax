@@ -30,7 +30,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 DAX = "guest/linux/fs/fxfs/dax.c"
 SUPER = "guest/linux/fs/fxfs/super.c"
-COPY_AROUND = "guest/linux/patches/0006-dax-copy-around-in-place.patch"
 
 # Each mutant: its name, what it takes out, and its edits, (old, new) text of dax.c, or (old, new,
 # path) of another file, each of which must be found there once; and, for one only an assertion of a debug kernel's finds, the
@@ -70,70 +69,15 @@ MUTANTS = [
         [("\t\t\tbitmap_zero(range->writable, range->pages);\n", "")],
     ),
     (
-        "relocate_unmarked",
-        "a page moved is not marked relocated, its old mappings kept",
-        [("\t\t\tif (!test_and_set_bit(page + i, range->relocated))\n"
-          "\t\t\t\tWRITE_ONCE(range->stale[page + i], range->moved[page + i]);\n", "")],
-    ),
-    (
-        "cow_not_shared",
-        "an iomap of a relocated page doesn't say it is shared, its entry not replaced",
-        [("\tiomap->flags |= IOMAP_F_SHARED;\n\t*srcmap = *iomap;\n", "\t*srcmap = *iomap;\n")],
-    ),
-    (
-        "prune_in_use",
-        "a range lets go of regions while another iomap uses it",
-        [("\tif (!nr || atomic_read(&range->users) != 1)\n", "\tif (!nr)\n")],
-    ),
-    (
         "held_not_written",
         "a fault's page held is not written into its new block, which holds zeros (TASK-79.11)",
         [("size, fault, held,\n", "size, false, NULL,\n")],
-    ),
-    (
-        "evacuation_unlocked",
-        "an evacuation maps a file's pages after letting go of its semaphore, which a write may map "
-        "anew meanwhile (TASK-101)",
-        [("\tfile->evacuees_left = !fxfs_dax_evacuee_gather(file, &ev);\n"
-          "\tfxfs_dax_evacuee_map(dax, file, &ev);\n",
-          "\tfile->evacuees_left = !fxfs_dax_evacuee_gather(file, &ev);\n\tup_write(&file->sem);\n"
-          "\tfxfs_dax_evacuee_map(dax, file, &ev);\n\tdown_write(&file->sem);\n"),
-         ("\tlockdep_assert_held_write(&file->sem);\n\tif (ev->count) {\n"
-          "\t\tfxfs_dax_pause_file(FXFS_DAX_STEP_GATHERED, file->ino);\n",
-          "\tif (ev->count) {\n\t\tfxfs_dax_pause_file(FXFS_DAX_STEP_GATHERED, file->ino);\n")],
     ),
     (
         "moved_unmapped",
         "a write whose blocks moved before a seal shut the gate leaves its range mapping them where "
         "they were, whose extent Fxfs frees (TASK-121)",
         [("\tif (moved) {\n\t\tint mapped", "\tif (false) {\n\t\tint mapped")],
-    ),
-    (
-        "prune_waits_unrelocated",
-        "a prune lets go of no region while any page of its range is relocated, as it did before: "
-        "mapped files' ranges kept every region their pages were ever in (TASK-128)",
-        [("\tif (!nr || atomic_read(&range->users) != 1)\n",
-          "\tif (!nr || atomic_read(&range->users) != 1 ||\n"
-          "\t    !bitmap_empty(range->relocated, range->pages))\n")],
-    ),
-    (
-        "evacuation_maps_elsewhere",
-        "an evacuation maps each run from the page after its own in its region, which "
-        "fxfs.dax_check_places finds Fxfs holds them not (TASK-119.10)",
-        [("\t\t\t\t\t.offset = (moved & U32_MAX) << PAGE_SHIFT,\n",
-          "\t\t\t\t\t.offset = ((moved & U32_MAX) + 1) << PAGE_SHIFT,\n")],
-    ),
-    (
-        "prune_misnumbers",
-        "a prune renumbers its pages' regions one past those it kept, which a moved page's region's "
-        "index then is none of (TASK-119.10)",
-        [("(moved >> 32) - 1) + 1) << 32) |", "(moved >> 32) - 1) + 2) << 32) |")],
-    ),
-    (
-        "prune_unrenumbered",
-        "a prune lets go of regions, but its pages' moved entries keep their regions' old indices, "
-        "past those it kept, which fxfs_dax_moved_index WARNs of (TASK-119.10)",
-        [("\t\trange->moved[page] = fxfs_dax_renumbered(used, range->moved[page]);\n", "")],
     ),
     (
         "map_failure_unretried",
@@ -190,13 +134,6 @@ MUTANTS = [
         [("\tbool user = vmf->flags & FAULT_FLAG_USER;\n", "\tbool user = false;\n")],
     ),
     (
-        "evacuees_not_retried",
-        "runs memory ran out for wait for a seal of their file, which keeps their regions until one "
-        "(TASK-116)",
-        [("if ((sealed || file->evacuees_left) && READ_ONCE(dax->restaging) &&",
-          "if (sealed && READ_ONCE(dax->restaging) &&")],
-    ),
-    (
         "moved_unmapped_resealed",
         "a fault whose blocks moved, finding a seal ended since, tries again, and leaves its range "
         "mapping them where they were if the next seal shuts the gate (TASK-133)",
@@ -210,32 +147,9 @@ MUTANTS = [
         [("\t\treturn fresh && (err == -EIO || err == -ENOMEM || err == -ENOSPC) ? -ESTALE : err;\n",
           "\t\treturn err;\n")],
     ),
-    (
-        "copy_onto_itself",
-        "a write(2) to a relocated page copies its edges onto themselves, undoing stores racing "
-        "the copy, the copy held open 100 ms, as no pause point splits it (TASK-122)",
-        [("+\t\t/*\n+\t\t * A source that is the destination holds the data already, as a\n"
-          "+\t\t * filesystem's whose CoW moves only where its entries map the\n"
-          "+\t\t * pages: copying it onto itself would undo stores racing the\n"
-          "+\t\t * copy, through other mappings of the pages.\n+\t\t */\n"
-          "+\t\tif (saddr == daddr)\n+\t\t\treturn 0;\n",
-          "+\t\t/* The edges read here, and copied back after. */\n"
-          "+\t\tif (saddr == daddr) {\n"
-          "+\t\t\tvoid *edges = kmalloc(size, GFP_KERNEL);\n+\n"
-          "+\t\t\tmemcpy(edges, saddr, size);\n"
-          "+\t\t\tschedule_timeout_uninterruptible(HZ / 10);\n"
-          "+\t\t\tsaddr = edges;\n+\t\t}\n", COPY_AROUND)],
-    ),
 ]
 
 # Equivalent mutants, which no suite can kill, and why:
-#
-# - pmd_row_unrelocated (TASK-123): a page moving out of a row a PMD mapped relocating itself
-#   alone, its row's other pages' faults then meeting the PMD entry: kernel patch 0008 (TASK-124)
-#   splits the PMD entry as the moved page's shared fault replaces it, the others empty, so their
-#   faults make their own whether relocated or not. Only a split whose allocation fails keeps the
-#   PMD entry, which no test can bring about: the DAX gate (GCE r225 gate) and r233, whose
-#   mapped_after_write did map the row with a PMD (dax_huge_maps), missed it.
 
 SUITES = "fxfs-guest-dax fxfs-guest-checks-dax fxfs-guest-checks-dax-delay fxfs-guest-pgbench-dax"
 

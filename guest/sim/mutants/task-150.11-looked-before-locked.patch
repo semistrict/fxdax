@@ -15,17 +15,6 @@
  		err = -EXDEV;
  		goto out;
  	}
-@@ -2380,6 +2380,10 @@
- 			return -EXDEV;
- 		}
- 	}
-+	if (!e->open && READ_ONCE(region->writable) && first + pages > READ_ONCE(region->mapped)) {
-+		fxfs_dax_put_region(dax, region);
-+		return -EXDEV;
-+	}
- 	err = fxfs_dax_reach(dax, region, first + pages, !e->open);
- 	if (err) {
- 		fxfs_dax_put_region(dax, region);
 @@ -2462,7 +2466,8 @@
  		fxfs_device_store_end(dax->dev);
  		fxfs_dax_put_region(dax, region);

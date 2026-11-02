@@ -12,8 +12,7 @@
 
 /* enum fxfs_dax_step's. */
 #define PAUSE_MOVED (1UL << 0)
-#define PAUSE_PLACED (1UL << 7)
-#define PAUSE_RESEALED (1UL << 9)
+#define PAUSE_RESEALED (1UL << 6)
 
 #define check(cond, ...) do { if (!(cond)) sim_panic(__VA_ARGS__); } while (0)
 

@@ -6,8 +6,7 @@
 """What a pgbench run's guest says of DAX's write path, and whether it got worse (TASK-146.3).
 
 Reads the last `fxfs stats:` line of a pgbench run's console, what /proc/fs/fxfs said at its end,
-and prints the mean of each probe: a window MAP request, a write(2), and an evacuation's hold of its
-file. Fails if one is past its ceiling: half as much again as measured on 2026-10-31 (GCE r365,
+and prints the mean of each probe: a window MAP request and a write(2). Fails if one is past its ceiling: half as much again as measured on 2026-10-31 (GCE r365,
 default commits, against which a host's variation is well within that).
 
 Usage: scripts/pgbench-probes.py CONSOLE
@@ -20,7 +19,6 @@ import sys
 PROBES = [
     ("window MAP request", "window_maps_ns", "window_map_requests", 560),
     ("write(2)", "dax_writes_ns", "dax_writes", 560),
-    ("evacuation's hold", "dax_evacuate_hold_ns", "dax_evacuations", 1800),
 ]
 
 
