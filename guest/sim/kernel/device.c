@@ -54,7 +54,7 @@ struct virtio_extent {
 	struct window_page *pages;
 	struct list_head extents;
 	u64 store_used;
-	u64 maps;
+	u64 maps, map_requests;
 	/*
 	 * The host's memory for open extents, in pages, if a test limits it, and those mapped writably
 	 * since the last seal, which the host can't evict, and how many MAPs it refused for them.
@@ -197,6 +197,11 @@ void sim_device_describe(u64 page)
 u64 sim_device_maps(void)
 {
 	return device.maps;
+}
+
+u64 sim_device_map_requests(void)
+{
+	return device.map_requests;
 }
 
 /* The window page sim_device_watch watches, or -1. */
@@ -352,6 +357,7 @@ int virtio_extent_call(struct virtio_extent *vext, struct vext_request *req)
 	}
 	switch (req->type) {
 	case VIRTIO_EXTENT_T_MAP:
+		device.map_requests++;
 		err = do_map(req);
 		break;
 	case VIRTIO_EXTENT_T_UNMAP:

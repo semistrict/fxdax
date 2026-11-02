@@ -2533,6 +2533,42 @@ pub(crate) mod guest {
         fs::remove_file(&name).unwrap();
     }
 
+    /// fxdax: write(2)s of pages scattered over a sealed file take no MAP each: they go through the
+    /// staging extent's region, and the pages lag, until the read after them maps them together. A
+    /// MAP of its own took 200 us of a write's 230: rand-write fell from 18,151 to 3,534 IOPS.
+    fn test_writes_through() {
+        use std::os::unix::fs::FileExt;
+        const PAGE: usize = 4096;
+        const SIZE: usize = 4 << 20;
+        const PAGES: usize = SIZE / PAGE;
+        const WRITES: usize = 256;
+        const STRIDE: usize = 677;
+        let name = path("writes-through");
+        let mut expected = vec![1; SIZE];
+        fs::write(&name, &expected).unwrap();
+        let file = fs::OpenOptions::new().read(true).write(true).open(&name).unwrap();
+        file.sync_all().unwrap();
+        let requests = || stats()["window_map_requests"];
+        let before = (stats()["dax_writes_through"], requests());
+        for write in 0..WRITES {
+            let at = (write * STRIDE % PAGES) * PAGE;
+            let data = vec![(write % 251) as u8 + 2; PAGE];
+            file.write_all_at(&data, at as u64).unwrap();
+            expected[at..at + PAGE].copy_from_slice(&data);
+        }
+        let through = stats()["dax_writes_through"] - before.0;
+        let written = requests() - before.1;
+        let before = requests();
+        assert!(fs::read(&name).unwrap() == expected, "the file differs from what was written");
+        let read = requests() - before;
+        eprintln!("writes_through: {through} of {WRITES} through, {written} MAPs, then {read}");
+        assert_eq!(through, WRITES as u64, "{through} of {WRITES} writes through a region");
+        assert!(written < (WRITES / 8) as u64, "{WRITES} writes took {written} MAPs");
+        assert!(read < (WRITES / 8) as u64, "the read after them took {read} MAPs");
+        drop(file);
+        fs::remove_file(&name).unwrap();
+    }
+
     /// fxdax: a mapped file's pages stored to one at a time, each store fsynced: five such files
     /// held 1700 regions, and the window had no room for a staging extent's (TASK-128).
     fn test_regions_stored() {
@@ -4738,6 +4774,7 @@ pub(crate) mod guest {
                 tests.push(("dropped_after_seals", &test_dropped_after_seals));
                 if !self.small_window {
                     tests.push(("reads_stay_mapped", &test_reads_stay_mapped));
+                    tests.push(("writes_through", &test_writes_through));
                     tests.push(("regions_stored", &test_regions_stored));
                     tests.push(("regions_written_once_mapped", &test_regions_written_once_mapped));
                     tests.push(("regions_truncated", &test_regions_truncated));

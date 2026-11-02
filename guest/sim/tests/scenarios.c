@@ -398,6 +398,7 @@ static struct file *sealed_file(char *bytes)
 	struct file *file;
 	char byte;
 
+	sim_param_set("dax_writes_through", "N");
 	fill(bytes, BIG_LEN, 1);
 	file = new_file(bytes, BIG_FIRST);
 	check(sim_write(file, BIG_FIRST, bytes + BIG_FIRST, BIG_LEN - BIG_FIRST) ==

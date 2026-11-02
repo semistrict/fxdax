@@ -6,7 +6,7 @@
 # and BUILD as the Makefile does.
 
 # The tests of one run, which every build has, then interleave, its seeds.
-scenarios=(read_pressure read_mappings_stay hole_mapped_then_written load_during_move pmd_over_stale_index open_extent_read_only
+scenarios=(writes_through read_pressure read_mappings_stay hole_mapped_then_written load_during_move pmd_over_stale_index open_extent_read_only
     sealed_piece_reach)
 
 sim_prepare() {

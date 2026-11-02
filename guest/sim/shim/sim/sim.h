@@ -43,6 +43,8 @@ void sim_device_seal(void);
 void sim_device_free_extent(u64 sequence);
 u64 sim_device_store_offset(u64 sequence);
 u64 sim_device_maps(void);
+/* The requests that took them, fewer with MAP_MANY. */
+u64 sim_device_map_requests(void);
 /*
  * Has `count` requests of `type` (VIRTIO_EXTENT_T_MAP or _UNMAP) fail with EIO, doing nothing, after
  * `skip` more of them; or one MAP or UNMAP in `odds`, from the seed, until told 0: how many have.
