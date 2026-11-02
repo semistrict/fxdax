@@ -1244,8 +1244,9 @@ impl Connection {
             self.authorize(std::ffi::OsStr::from_bytes(from).as_ref())?;
         }
         // fxdax: a tenant's stores are those of its directory, and nothing in the bucket says whose
-        // a branch is: a point not here it finds absent, whatever branch it names, which its VM
-        // manager takes for it first, as `fxdaxctl take` does (TASK-150.4).
+        // a branch is, so that its VM process's word for one counts for nothing: a point not here
+        // it finds absent, whatever branch it names (TASK-150.4). Its VM manager, which knows what
+        // the tenant may restore, takes a point for it first (`CreateStore`, TASK-154).
         let from =
             from.map(|(from, branch)| (from, if self.tenant.is_some() { 0 } else { branch }));
         let opening = self.opening()?;

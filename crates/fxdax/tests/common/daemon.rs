@@ -88,6 +88,11 @@ impl Daemon {
         self.runtime.block_on(self.client.delete_store(request)).map(drop)
     }
 
+    pub fn drop_store(&mut self, path: &Path) -> Result<(), tonic::Status> {
+        let request = DropStoreRequest { path: name(path) };
+        self.runtime.block_on(self.client.drop_store(request)).map(drop)
+    }
+
     pub fn import(&mut self, path: &Path, image: &Path) -> Result<u64, tonic::Status> {
         let request = ImportImageRequest {
             path: name(path),

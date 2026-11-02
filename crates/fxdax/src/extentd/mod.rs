@@ -79,6 +79,14 @@
 //! directory, for every tenant: what a VM process's user may read or write does not matter (it did
 //! before, TASK-39.2), as nothing below a tenant is separated. Its physical memory goes to a
 //! connection only once it opens a store.
+//!
+//! That directory is all a tenant's VM processes reach of the bucket: the branch they name is
+//! ignored, and a branch comes into a tenant's directory only by the VM manager's making a store of
+//! it there, as it restores the tenant's snapshot on another host, and goes by its dropping that
+//! store (TASK-154; `proto/fxdax/extentd/v1/extentd.proto` says what the VM manager does). The
+//! default tenant's VM processes name any branch: its socket is the daemon's user's alone
+//! ([`bind_owner_only`], TASK-155), whatever is mounted where, so that a jailed VM process, of
+//! another user, reaches its tenant's socket alone, which the VM manager gives it (`Grant`).
 
 pub(crate) mod client;
 pub mod control;
@@ -90,6 +98,8 @@ mod pool;
 pub(crate) mod server;
 mod stores;
 pub(crate) mod wire;
+
+use std::os::unix::net::UnixListener;
 
 pub use client::{RemoteExtentStore, spawn_on_replies};
 pub use control::serve_control;
@@ -114,6 +124,18 @@ pub fn stop_serving() {
         let mut reported = REPORTED.subscribe();
         let _ = futures::executor::block_on(reported.wait_for(|serving| !*serving));
     }
+}
+
+/// A listener at `socket`, which only this process's user may connect to (TASK-155): mode 0600
+/// from the moment it exists, whatever the process's umask, rather than open until it is changed.
+/// The umask is the process's: call this before any thread makes a file.
+pub fn bind_owner_only(socket: impl AsRef<std::path::Path>) -> std::io::Result<UnixListener> {
+    // SAFETY: Plain system calls, which set and restore a mask and cannot fail.
+    let umask = unsafe { libc::umask(0o177) };
+    let listener = UnixListener::bind(socket);
+    // SAFETY: As above.
+    unsafe { libc::umask(umask) };
+    listener
 }
 
 /// Raises the process's limit of open files to the most it may: each store it serves keeps its

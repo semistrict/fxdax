@@ -15,6 +15,35 @@
 // VM may as well be of one tenant, or of none, on the daemon's own VM socket. Grants are not kept
 // across restarts of the daemon: the caller grants again.
 //
+// A tenant's restore on another host (TASK-154). A VM process names no branch: what a tenant's
+// says in OPEN is ignored, as anyone's ID would take that branch's data, and fence its writer. A
+// tenant's stores are what is in its directory, which only this API puts a branch of the bucket
+// in, so that the caller's CreateStore of a branch in a tenant's directory grants it, and
+// DropStore ends that. A VM of a tenant moves between hosts so:
+//
+// - On the snapshot's host, once it is taken: SyncStore of its point, then StatStore's `branch`
+//   of it, kept with the snapshot. Not the snapshot file's `point_branch`, which a VM process
+//   wrote. The daemon's is sound: a fork to an ID another branch has fails (ALREADY_EXISTS).
+// - On the host to restore it, before the VMM's `PUT /snapshot/load`: CreateStore at a path in the
+//   tenant's directory, of that branch, which that host's daemon takes as the first restore forks
+//   it, with `token`, if the branch's last writer's placement is later than that host's
+//   (FAILED_PRECONDITION, ESTALE, otherwise). ALREADY_EXISTS means a store is there, a VM
+//   process's perhaps: use it only if StatStore's `branch` is the branch.
+// - Then the load, whose `extent_overrides` name that path as `point_on_host`, the VM's store in
+//   the tenant's directory as `path_on_host`, and the tenant's socket as `extentd_socket`. Each
+//   restore forks the point. Without the CreateStore, it fails with ENOENT, whatever the VMM
+//   names.
+// - Once this host restores it no more: DropStore of the point. DeleteStore would delete the
+//   branch, which is the snapshot, on every host.
+//
+// A branch so granted is the tenant's: its VM processes may open the point, and write it, as on
+// the snapshot's host. Grant one only to the tenant whose snapshot it is.
+//
+// A host's copy of a point is a writer of its branch, and a restore's fork a commit there: once
+// one host forks it, every other host's copy, the snapshot's own host's too, is stale, its restores
+// failing with EIO. Restore a snapshot on one host at a time, and DropStore and CreateStore on the
+// next.
+//
 // Stores are named by the paths of their directories on the daemon's host, UTF-8. A store a VM
 // process has open is its connection's: what would change it under the guest's feet fails with
 // FAILED_PRECONDITION and errno EBUSY, unless the call says otherwise.
@@ -54,6 +83,13 @@ service Extentd {
   // Deletes a store, or a fork, and its branch in the daemon's bucket: its data goes but for what
   // other branches share of it, which stays until the last of them goes.
   rpc DeleteStore(DeleteStoreRequest) returns (DeleteStoreResponse);
+  // Deletes this host's copy of a store, or a fork, as DeleteStore does, but for its branch in the
+  // daemon's bucket, which stays, with what else holds it: a point this host took for a tenant,
+  // which that tenant's VM processes restore no more, its snapshot living on. A store whose forks
+  // live here keeps its directory, which no longer opens, and takes no CreateStore until the last
+  // of them goes. What its commits hold that the bucket doesn't goes with it: SyncStore first, to
+  // keep it. FAILED_PRECONDITION (EBUSY) while a VM process has it open.
+  rpc DropStore(DropStoreRequest) returns (DropStoreResponse);
   // Sets a store's capacity, the size of the disk its guest sees: a store a VM has open grows at
   // once, the guest seeing it mounted, and shrinks if its guest's filesystem agrees, no lower than
   // what it holds (RESOURCE_EXHAUSTED otherwise); one none has open only grows.
@@ -109,7 +145,8 @@ message CreateStoreRequest {
   uint64 capacity = 2;
   // The branch kept in the daemon's bucket to take, or 0 for a new branch.
   uint64 branch = 3;
-  // The fencing token to place it at (PlaceStore), if any.
+  // The fencing token to place it at (PlaceStore), if any: of a placement no earlier than the
+  // last writer's of the branch to take, or the take fails (FAILED_PRECONDITION, ESTALE).
   optional uint64 token = 4;
 }
 
@@ -167,6 +204,15 @@ message DeleteStoreRequest {
 
 // The store deleted.
 message DeleteStoreResponse {}
+
+// Deletes this host's copy of a store.
+message DropStoreRequest {
+  // The store, or the fork, to delete here.
+  string path = 1;
+}
+
+// This host's copy deleted.
+message DropStoreResponse {}
 
 // Sets a store's capacity.
 message ResizeStoreRequest {

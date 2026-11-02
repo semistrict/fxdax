@@ -100,7 +100,8 @@ if [[ -n ${FXDAX_FIRECRACKER_JAIL:-} ]]; then
     export FXDAX_FIRECRACKER_JAILER="$firecracker_dir/build/cargo_target/$musl/release/jailer"
     export FXDAX_JAIL_UID=64000 FXDAX_JAIL_GID=64000
     sysctl -q vm.unprivileged_userfaultfd=0
-    # What the daemons and the tests make, sockets and images, the jailed user reaches.
+    # What the tests make, images and all, the jailed user reaches; but the daemons' sockets,
+    # their user's alone (TASK-155), which it is given once they serve.
     umask 000
 fi
 # FXDAX_MAX_MAP_COUNT sets vm.max_map_count, of which a VM process's DAX window keeps half its
@@ -172,6 +173,10 @@ while [[ ! -S $socket || ! -S $control ]]; do
     fi
     sleep 0.1
 done
+# The jailed Firecrackers use the default tenant's socket, as production's use a tenant's.
+if [[ -n ${FXDAX_FIRECRACKER_JAIL:-} ]]; then
+    chown "$FXDAX_JAIL_UID:$FXDAX_JAIL_GID" "$socket"
+fi
 export FXDAX_EXTENTD="$socket"
 # fxdax: the daemon's binary, for cases that start daemons of their own.
 export FXDAX_EXTENTD_BIN="$extentd_bin"

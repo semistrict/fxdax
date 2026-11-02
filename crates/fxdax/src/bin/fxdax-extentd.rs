@@ -23,7 +23,10 @@
 //!
 //! One daemon serves every VM on a host. Connections to SOCKET are of the default tenant: with
 //! `FXDAX_EXTENTD_ROOTS` naming directories, separated by colons, they name stores in them alone
-//! (`fxdax::extentd`, Isolation).
+//! (`fxdax::extentd`, Isolation). SOCKET is the daemon's user's alone, mode 0600: a VM process of
+//! another user, as a jail's, connects to a tenant's socket, granted to its user, and never to this
+//! one, mounted or not (TASK-155). The VM manager runs jails as another user than the daemon's, and
+//! hands them SOCKET's path no more than it does the control socket's.
 //!
 //! With `FXDAX_EXTENTD_GRPC` naming a path, the daemon serves its control API there too, gRPC over a
 //! Unix socket (`fxdax::extentd::control`; `crates/fxdax/proto/fxdax/extentd/v1/extentd.proto`),
@@ -67,7 +70,8 @@ fn main() -> anyhow::Result<()> {
         let memory: u64 = memory.parse().context("MEMORY_BYTES must be a number")?;
         fxdax::pages::configure(fxdax::pages::Config::with_memory(memory))?;
     }
-    let listener = std::os::unix::net::UnixListener::bind(&socket)
+    // Before any thread that makes a file: the one so far waits for SIGTERM alone.
+    let listener = fxdax::extentd::bind_owner_only(&socket)
         .with_context(|| format!("listening at {socket}"))?;
     if let Some(control) = std::env::var_os("FXDAX_EXTENTD_GRPC").filter(|path| !path.is_empty()) {
         let tenants = match std::env::var_os("FXDAX_EXTENTD_TENANTS").filter(|dir| !dir.is_empty())
