@@ -18,8 +18,8 @@
 /* A chunk's data and more, written so as to take two extents, which only a range of its own maps. */
 #define BIG_LEN (3UL << 20)
 #define BIG_FIRST (1UL << 20)
-#define PAUSE_READ_MAPPED BIT(5)
-#define PAUSE_WRITE_MAPPED BIT(8)
+#define PAUSE_READ_MAPPED BIT(4)
+#define PAUSE_WRITE_MAPPED BIT(5)
 
 #define check(cond, ...) do { if (!(cond)) sim_panic(__VA_ARGS__); } while (0)
 
@@ -398,7 +398,6 @@ static struct file *sealed_file(char *bytes)
 	struct file *file;
 	char byte;
 
-	sim_param_set("dax_moves", "N");
 	fill(bytes, BIG_LEN, 1);
 	file = new_file(bytes, BIG_FIRST);
 	check(sim_write(file, BIG_FIRST, bytes + BIG_FIRST, BIG_LEN - BIG_FIRST) ==

@@ -7,7 +7,7 @@
 # case many rounds, stopping at its first failing round, whose logs its results keep
 # (scripts/test-e2e.sh):
 #
-#   crash     the VM stopped mid-workload, its evacuations held at each step, its process killed
+#   crash     the VM stopped mid-workload, its process killed
 #   checks    the guest checks, with delays and on a small window
 #   sanitized the DAX checks and allocations failing, on the debug kernel (lockdep, KCSAN), too
 #             slow for the delays' and the small window's within their cases' timeouts
@@ -50,8 +50,7 @@ for group in "${groups[@]}"; do
     case $group in
         crash)
             soak crash 50 release 20 "fxfs-guest-crash fxfs-guest-crash-dax \
-fxfs-guest-crash-dax-killed fxfs-guest-crash-dax-gathered fxfs-guest-crash-dax-mapped \
-fxfs-guest-crash-dax-placed" &
+fxfs-guest-crash-dax-killed" &
             ;;
         checks)
             soak checks 10 release 20 "fxfs-guest-checks fxfs-guest-checks-dax \

@@ -928,14 +928,12 @@ static void setup(void)
 
 /*
  * dax.c's own diagnostics, each of whose WARNs fails the run, as `fxfs.NAME=1` on a command line,
- * but for dax_shadow, which `-s` adds, and whose check of the sealed pages takes it: an evacuation
- * of a page once writable in its range's own space, relocated since, WARNs (README.md).
+ * but for dax_shadow, which `-s` adds.
  */
 static void diagnostics(bool shadow)
 {
 	sim_param_set("dax_check_seals", "1");
 	sim_param_set("dax_check_moves", "1");
-	sim_param_set("dax_check_places", "1");
 	if (shadow) {
 		sim_param_set("dax_shadow", "1");
 		sim_param_set("dax_verify_seals", "1");
@@ -961,24 +959,12 @@ static void injections(void)
 	if (!(sim_random() % 4))
 		sim_param_set("dax_fail_held", "1");
 	if (!(sim_random() % 4))
-		sim_param_set("dax_fail_evacuees", "1");
-	if (!(sim_random() % 4))
-		sim_param_set("dax_evacuate_every", "3");
-	/* Pieces in a range's own space, where a store lands that an evacuation's MAP may replace. */
-	if (!(sim_random() % 4))
-		sim_param_set("dax_fail_moves", "1000");
-	if (!(sim_random() % 4))
 		sim_param_set("dax_fail_map_many", "20");
 	failing = !(sim_random() % 4);
 	/* A write that fails twice so says EIO, having lost its pages' old bytes (TASK-119.13). */
 	if (failing && !(sim_random() % 2)) {
 		sim_param_set("dax_fail_maps", "20");
 		failing_maps = true;
-		/*
-		 * The range maps blocks where they were until the write drops it, for an evacuation
-		 * to find between, whose place Fxfs says is another: the failure's, not a misplacing.
-		 */
-		sim_param_set("dax_check_places", "0");
 	}
 	hot_pages = (const unsigned long[]){ 0, 0, 2, 8 }[sim_random() % 4];
 }

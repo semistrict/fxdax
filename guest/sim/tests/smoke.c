@@ -2,7 +2,7 @@
 // Copyright 2026 The fxdax Authors.
 /*
  * One task, with no VM: mounts a file on the DAX window, writes it, reads it back, takes faults
- * through a mapping, seals, and moves pages through the staging extent until an evacuation runs.
+ * through a mapping, seals, and moves blocks through the staging extent.
  * Every step checks the bytes as read(2), the mapping and Fxfs's extents have them.
  */
 
@@ -73,11 +73,10 @@ static void scenario(void *arg)
 	memcpy(data + PAGE_SIZE + 200, "and again", 9);
 	err = sim_user_store(addr + PAGE_SIZE + 200, "and again", 9);
 	check(!err, "a store after a seal: %d", err);
-	/* Its evacuation, once the seal ends, moves the page back to the range's own space. */
 	err = sim_fsync(file);
 	check(!err, "fsync: %d", err);
 	cond_resched();
-	check_file("after an evacuation", 0, data, sizeof(data));
+	check_file("after the third seal", 0, data, sizeof(data));
 
 	/* Past the end, then cut back: truncate unmaps what is past it. */
 	err = sim_truncate(file, PAGE_SIZE + 10);

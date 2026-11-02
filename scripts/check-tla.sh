@@ -12,8 +12,6 @@
 #   flight (TASK-99, TASK-44.14);
 # - specs/extent-open: the host's extent store opening an extent, writes, MAPs and commits racing
 #   on it (crates/fxdax/src/extents.rs, TASK-121, TASK-119.20);
-# - specs/dax-evacuate: a page's block moved by writes, seals, evacuations, prunes and truncation,
-#   the host's replies in any order (guest/linux/fs/fxfs/dax.c, TASK-119.7).
 #
 #   check-tla.sh [MODEL...]
 #

@@ -32,6 +32,7 @@ sim_prepare
 logs=${logs:-$BUILD/zloop}
 mkdir -p "$logs"
 fixes=()
+shopt -s nullglob
 for fix in fixes/*.patch; do
     fixes+=("$fix")
 done

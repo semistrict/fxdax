@@ -11,8 +11,7 @@ import script
 pgbench_probes = script.load("pgbench-probes")
 
 COUNTERS = (
-    "window_maps_ns 4000000 window_map_requests 10 dax_writes_ns 3000000 dax_writes 10 "
-    "dax_evacuate_hold_ns 10000000 dax_evacuations 10"
+    "window_maps_ns 4000000 window_map_requests 10 dax_writes_ns 3000000 dax_writes 10"
 )
 
 
@@ -21,8 +20,7 @@ class Probes(unittest.TestCase):
         means = pgbench_probes.probes(pgbench_probes.stats(f"x\nfxfs stats: {COUNTERS}\n"))
         self.assertEqual(
             means,
-            [("window MAP request", 400.0, 560), ("write(2)", 300.0, 560),
-             ("evacuation's hold", 1000.0, 1800)],
+            [("window MAP request", 400.0, 560), ("write(2)", 300.0, 560)],
         )
 
     def test_takes_the_last_line(self):

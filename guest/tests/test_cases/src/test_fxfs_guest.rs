@@ -37,9 +37,6 @@ pub struct TestFxfsGuest {
     mode: Mode,
     /// Whether the device has a DAX window.
     dax: bool,
-    /// fxdax: the step of the DAX protocol (fxfs.dax_pause's bit) a crash test's VM stops with an
-    /// evacuation held at, if any (TASK-119.16).
-    crash_step: Option<u32>,
     /// fxdax: whether a crash test's VM process is killed (SIGKILL), rather than its guest reset
     /// (TASK-119.6).
     killed: bool,
@@ -55,25 +52,17 @@ pub struct TestFxfsGuest {
 impl TestFxfsGuest {
     /// fxfs-guest.
     pub fn host_formats() -> Self {
-        Self { mode: Mode::HostFormats, dax: false, crash_step: None, killed: false, daemon_killed: false, stray: false }
+        Self { mode: Mode::HostFormats, dax: false, killed: false, daemon_killed: false, stray: false }
     }
 
     /// fxfs-guest-format.
     pub fn guest_formats() -> Self {
-        Self { mode: Mode::GuestFormats, dax: false, crash_step: None, killed: false, daemon_killed: false, stray: false }
+        Self { mode: Mode::GuestFormats, dax: false, killed: false, daemon_killed: false, stray: false }
     }
 
     /// fxfs-guest-crash.
     pub fn crash() -> Self {
-        Self { mode: Mode::Crash, dax: false, crash_step: None, killed: false, daemon_killed: false, stray: false }
-    }
-
-    /// fxfs-guest-crash-dax-STEP: the crash test with DAX, its VM stopped with an evacuation of a
-    /// file held at `step` (fxfs.dax_pause's bit): its runs gathered, mapped in their ranges' own
-    /// space, or placed there (TASK-119.16). What the window shows a warm reader agrees with the
-    /// window; the store, which a crash leaves, must hold every fsync acknowledged as well.
-    pub fn crash_at(step: u32) -> Self {
-        Self { crash_step: Some(step), ..Self::crash().with_dax() }
+        Self { mode: Mode::Crash, dax: false, killed: false, daemon_killed: false, stray: false }
     }
 
     /// fxdax: fxfs-guest-crash-dax-killed: the crash test with DAX, its VM process killed
@@ -103,7 +92,7 @@ impl TestFxfsGuest {
     /// calls failing as they may; the filesystem complains of nothing, and the store holds every
     /// file whose fsync returned (TASK-44.10).
     pub fn faults() -> Self {
-        Self { mode: Mode::Faults, dax: true, crash_step: None, killed: false, daemon_killed: false, stray: false }
+        Self { mode: Mode::Faults, dax: true, killed: false, daemon_killed: false, stray: false }
     }
 
     /// The same test with a DAX window.
@@ -332,8 +321,7 @@ mod host {
         }
 
         fn timeout_secs(&self) -> u64 {
-            // fxdax: the crash test held at a step waits up to 10 s for an evacuation there.
-            if self.crash_step.is_some() { 40 } else { 15 }
+            15
         }
 
         fn start_vm(self: Box<Self>, test_setup: TestSetup) -> anyhow::Result<()> {
@@ -354,13 +342,10 @@ mod host {
 
             let mut vm = Vm::new(2, 512)?;
             vm.guest_kernel()?;
-            // fxdax: holding an evacuation, a window whose regions the writers don't fill, as
-            // they fill a small one's, after which their pages move nowhere to evacuate from.
-            let window = match (self.dax, self.crash_step) {
+            let window = match self.dax {
                 _ if self.stray => STRAY_WINDOW,
-                (false, _) => 0,
-                (true, None) => WINDOW,
-                (true, Some(_)) => 1 << 29,
+                false => 0,
+                true => WINDOW,
             };
             // fxdax: on a daemon of its own, which goes on running till its test's end otherwise.
             let daemon = if self.daemon_killed {
@@ -439,14 +424,6 @@ mod host {
                     let socket = std::env::var_os("FXDAX_EXTENTD").unwrap();
                     let other = test_setup.tmp_dir.join("after-the-stray");
                     fxdax::extentd::RemoteExtentStore::connect(socket, other, 1 << 24).unwrap();
-                }
-                // fxdax: the VM stopped with an evacuation held at the step asked (TASK-119.16).
-                if let Some(step) = self.crash_step
-                    && !output.lines().any(|line| line == format!("held at step {step}"))
-                {
-                    return TestOutcome::Fail(format!(
-                        "no evacuation was held at step {step}: {output:?}"
-                    ));
                 }
                 // The store as the crash left it, for a failure to be looked into: checking it
                 // recovers it, and mounting it replays its journal.
@@ -1065,7 +1042,7 @@ mod guest {
         let stats = fs::read_to_string("/proc/fs/fxfs/extents").unwrap();
         assert!(stats.lines().any(|line| line == "window_lost_bytes 0"), "{stats}");
         // The DAX window's latency histograms, each 24 buckets' counts (TASK-111.6).
-        for name in ["window_map_requests", "window_unmaps", "dax_faults", "dax_evacuate_map"] {
+        for name in ["window_map_requests", "window_unmaps", "dax_faults"] {
             let line = stats.lines().find_map(|line| line.strip_prefix(&format!("{name}_hist ")));
             let buckets = line.unwrap_or_else(|| panic!("{name}_hist: {stats}")).split(',');
             assert_eq!(buckets.map(|count| count.parse::<u64>().unwrap()).count(), 24, "{name}");
@@ -1260,10 +1237,9 @@ mod guest {
     }
 
     /// Stops the VM mid-workload: with two writers fsyncing, and without syncing (reboot(2)
-    /// doesn't); with an evacuation held at `step` of the DAX protocol, if asked; or, if `killed`,
-    /// has its host kill its process there ([`KILL_ME`]); or, if `stray`, touches the window where
+    /// doesn't); or, if `killed`, has its host kill its process there ([`KILL_ME`]); or, if `stray`, touches the window where
     /// nothing is mapped ([`TestFxfsGuest::crash_stray`]).
-    fn crash(dax: bool, step: Option<u32>, killed: bool, stray: bool) -> ! {
+    fn crash(dax: bool, killed: bool, stray: bool) -> ! {
         assert_eq!(names(MNT), Vec::<String>::new());
         // Files map their data from the window, if there is one: small ones too.
         let (probe, small) = (format!("{MNT}/probe"), format!("{MNT}/small"));
@@ -1292,7 +1268,7 @@ mod guest {
             fs::File::open(MNT).unwrap().sync_all().unwrap();
         }
         // fxdax: unless its process is to be killed, whose host the guest asks to (TASK-119.6).
-        let stopper = (!killed).then(|| Stopper::fork(step));
+        let stopper = (!killed).then(Stopper::fork);
         std::thread::spawn(|| fsync_files(1));
         std::thread::spawn(|| fsync_files(2));
         std::thread::spawn(|| rewrite(0));
@@ -1349,9 +1325,9 @@ mod guest {
     }
 
     /// fxdax: what stops the crash test's VM, a process of its own, forked before the writers
-    /// begin: a writer's fault on a file whose evacuation it holds waits holding its process's
-    /// memory map lock, which the agent's threads then waited for, the stop's among them, which
-    /// said nothing and stopped no VM (GCE r221); nor does it say anything through the agent's
+    /// begin: a writer's fault may wait holding its process's memory map lock, which the agent's
+    /// threads then waited for, the stop's among them, which said nothing and stopped no VM (GCE
+    /// r221); nor does it say anything through the agent's
     /// forwarders, in that process too (TASK-119.16).
     struct Stopper {
         /// The pipe whose write says to stop.
@@ -1384,9 +1360,8 @@ mod guest {
     }
 
     impl Stopper {
-        /// Forks the process that stops the VM, once told to, with an evacuation held at `step` of
-        /// the DAX protocol first, if asked.
-        fn fork(step: Option<u32>) -> Self {
+        /// Forks the process that stops the VM, once told to.
+        fn fork() -> Self {
             quiet();
             let mut fds = [0; 2];
             assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0, "pipe");
@@ -1401,9 +1376,6 @@ mod guest {
                 0 => {
                     drop(go);
                     wait.read_exact(&mut [0]).unwrap();
-                    if let Some(step) = step {
-                        hold_evacuation(step);
-                    }
                     quiet().store(true, std::sync::atomic::Ordering::Release);
                     // A reset, which ends the VM on every architecture: x86's has no power-off.
                     crate::guest_init::crash()
@@ -1418,23 +1390,6 @@ mod guest {
             let mut status = 0;
             unsafe { libc::wait(&mut status) };
             panic!("the process stopping the VM ended, status {status:#x}");
-        }
-    }
-
-    /// fxdax: holds the next evacuation of a file at `step` of the DAX protocol (fxfs.dax_pause's
-    /// bit, a pause point), which the writers' fsyncs start as they seal, and says so on the
-    /// console once one is held, for the VM to stop with it so (TASK-119.16).
-    fn hold_evacuation(step: u32) {
-        const PARAMETERS: &str = "/sys/module/fxfs/parameters";
-        fs::write(format!("{PARAMETERS}/dax_pause"), (1u64 << step).to_string()).unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while std::time::Instant::now() < deadline {
-            let paused = fs::read_to_string(format!("{PARAMETERS}/dax_paused")).unwrap();
-            if paused.trim().parse::<u64>().unwrap() & (1 << step) != 0 {
-                crate::guest_init::say(&format!("held at step {step}"));
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(1));
         }
     }
 
@@ -1694,7 +1649,7 @@ mod guest {
             assert_eq!(mount("missing").unwrap_err().raw_os_error(), Some(libc::ENOENT));
             mount("extents").unwrap();
             if self.mode == Mode::Crash {
-                crash(self.dax, self.crash_step, self.killed, self.stray);
+                crash(self.dax, self.killed, self.stray);
             }
             if self.mode == Mode::Faults {
                 faults();

@@ -6,8 +6,7 @@
 # The gate a change to the guest's DAX code passes before it is pushed (TASK-119.8): on two GCE
 # test hosts (scripts/test-gce.sh create), HEAD's DAX suites, rounds of each, the checks with
 # delays injected (fxfs-guest-checks-dax-delay) and on a small window (-small), the crash test and
-# its variants stopping the VM with an evacuation held at each step (-gathered, -mapped, -placed),
-# or killing its process (-killed),
+# its variant killing its process (-killed),
 # and pgbench-dax, whose data is checked and whose write path's latencies stay under their ceilings
 # (scripts/pgbench-probes.py); and every hand mutant of dax.c
 # (scripts/guest-mutants-gce.py) killed by the suites within FXDAX_GATE_MUTANT_ROUNDS rounds
@@ -38,8 +37,7 @@ echo "dax-gate: $commit, results in $results"
 export FXDAX_GCE_ZONE=$zone FXDAX_WORKSPACE_TESTS=0 FXDAX_GUEST_KERNEL_BUILD=release
 # fxdax: on one line, as test-gce.sh takes them: a newline in them was refused, and the gate's
 # suites never ran (TASK-119.8).
-suites=(fxfs-guest-dax fxfs-guest-crash-dax fxfs-guest-crash-dax-gathered fxfs-guest-crash-dax-mapped
-    fxfs-guest-crash-dax-placed fxfs-guest-crash-dax-killed fxfs-guest-checks-dax
+suites=(fxfs-guest-dax fxfs-guest-crash-dax fxfs-guest-crash-dax-killed fxfs-guest-checks-dax
     fxfs-guest-checks-dax-delay
     fxfs-guest-checks-dax-small)
 
