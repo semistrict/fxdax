@@ -144,7 +144,7 @@ MUTANTS = [
         "moved_write_not_retried",
         "a write whose chunk's map fails after Fxfs moved its blocks fails, those pages zeros "
         "(TASK-119.13)",
-        [("\t\treturn fresh && (err == -EIO || err == -ENOMEM || err == -ENOSPC) ? -ESTALE : err;\n",
+        [("\t\treturn prepared && (err == -EIO || err == -ENOMEM || err == -ENOSPC) ? -ESTALE : err;\n",
           "\t\treturn err;\n")],
     ),
 ]
