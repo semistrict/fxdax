@@ -84,7 +84,7 @@ static void reader_task(void *arg)
 	}
 }
 
-/* Seals go on through the reads, and evacuations with them. */
+/* Seals go on through the reads. */
 static void syncer_task(void *arg)
 {
 	struct file *file;

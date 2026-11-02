@@ -1119,9 +1119,9 @@ impl<H: HostMemory> SecondStage for UffdSecondStage<H> {
 impl<H: HostMemory> UffdSecondStage<H> {
     /// fxdax: whether memory the window maps with `protection` is mapped for the guest ahead of
     /// its accesses (`Prefault`): writable, an open extent's, which the guest maps to write now;
-    /// not read-only, a sealed extent's, most of which the window maps as the guest's DAX moves
-    /// pages written already (its evacuation, 60% of pgbench's maps), and which the guest seldom
-    /// touches again: those it maps to read next it asks for ([`Self::prefault_installed`]). Mapped for it, the hypervisor's pre-fault took a fifth of the VM process's
+    /// not read-only, a sealed extent's: those it maps to read next it asks for
+    /// ([`Self::prefault_installed`]). Mapped for it, the hypervisor's pre-fault took a fifth of
+    /// the VM process's
     /// time changing the window, and its pages, in the host's page tables, made each later unmap
     /// of them flush the host's and the hypervisor's TLBs on every CPU (TASK-109).
     fn prefaults(protection: Protection) -> bool {

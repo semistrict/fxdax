@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 #[derive(
     Debug, Default, Copy, Clone, Eq, PartialEq, PartialOrd, Serialize, Deserialize, TypeFingerprint,
 )]
+#[cfg_attr(fuzz, derive(arbitrary::Arbitrary))]
 pub struct Version {
     /// Major version indicates structural layout/encoding changes.
     /// Note that this is encoded as a u24.

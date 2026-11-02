@@ -1,0 +1,70 @@
+# What fuzzes Fxfs's records as a corrupt image has them, with cargo-fuzz (MIT OR Apache-2.0) and
+# libFuzzer: journal records, layer files and super-blocks (TASK-149.9). A workspace of its own, as
+# it needs nightly and libfuzzer-sys, which nothing else should: see README.md here.
+[package]
+name = "fxfs-fuzz"
+version = "0.1.0"
+edition = "2024"
+license = "BSD-3-Clause"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+fxfs = { path = ".." }
+libfuzzer-sys = "0.4.13"
+
+[workspace]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzz)'] }
+
+[[bin]]
+name = "journal_bytes"
+path = "fuzz_targets/journal_bytes.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "journal_records"
+path = "fuzz_targets/journal_records.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "layer_bytes"
+path = "fuzz_targets/layer_bytes.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "layer_records"
+path = "fuzz_targets/layer_records.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "super_block_bytes"
+path = "fuzz_targets/super_block_bytes.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "super_block_records"
+path = "fuzz_targets/super_block_records.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "lsm_tree_actions"
+path = "fuzz_targets/lsm_tree_actions.rs"
+test = false
+doc = false
+bench = false

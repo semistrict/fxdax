@@ -43,6 +43,8 @@ void sim_device_seal(void);
 void sim_device_free_extent(u64 sequence);
 u64 sim_device_store_offset(u64 sequence);
 u64 sim_device_maps(void);
+/* The requests that took them, fewer with MAP_MANY. */
+u64 sim_device_map_requests(void);
 /*
  * Has `count` requests of `type` (VIRTIO_EXTENT_T_MAP or _UNMAP) fail with EIO, doing nothing, after
  * `skip` more of them; or one MAP or UNMAP in `odds`, from the seed, until told 0: how many have.
@@ -50,6 +52,8 @@ u64 sim_device_maps(void);
 void sim_device_fail(u32 type, u64 skip, u64 count);
 void sim_device_fail_odds(unsigned int odds);
 u64 sim_device_failed(void);
+void sim_device_limit_open(u64 pages);
+u64 sim_device_open_refused(void);
 /* Logs every MAP and UNMAP of a window page. */
 void sim_device_watch(u64 page);
 /* Logs what a window page, or a task's address, maps now. */

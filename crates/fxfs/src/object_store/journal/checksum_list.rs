@@ -8,6 +8,7 @@
 
 use crate::checksum::{Checksum, fletcher64_ptr};
 use crate::errors::FxfsError;
+use crate::filesystem::MAX_BLOCK_SIZE;
 use crate::range::RangeExt;
 use anyhow::{Error, anyhow, ensure};
 use std::collections::BTreeMap;
@@ -115,7 +116,17 @@ impl ChecksumList {
             return Ok(());
         }
         let ExtentRange { extent, range: mut device_range } = device_range;
-        let chunk_size = device_range.length().unwrap() / checksums.len() as u64;
+        // fxdax: as a journal record says, which may be anything: they must divide the range into
+        // chunks no larger than a block may be.
+        let len = device_range.length()?;
+        ensure!(
+            !checksums.is_empty()
+                && len >= checksums.len() as u64
+                && len % checksums.len() as u64 == 0
+                && len / checksums.len() as u64 <= MAX_BLOCK_SIZE.get(),
+            anyhow!(FxfsError::Inconsistent).context("Bad checksums for a device range")
+        );
+        let chunk_size = len / checksums.len() as u64;
         if chunk_size > self.max_chunk_size {
             self.max_chunk_size = chunk_size;
         }
@@ -370,6 +381,17 @@ mod tests {
         list.mark_deallocated(2, range.clone());
         list.mark_referenced(2, range.clone(), 1);
         assert_eq!(list.clone().verify(&device, 10).await.expect("verify failed"), 1);
+    }
+
+    /// fxdax: a journal record's checksums say what chunks its range is in, which may be anything.
+    #[fuchsia::test]
+    async fn test_checksums_that_do_not_divide_a_range() {
+        let mut list = ChecksumList::new(0);
+        list.push(1, ExtentRange::new(E, 0..4096), &[], true).expect_err("no checksums");
+        list.push(1, ExtentRange::new(E, 0..1), &[1, 2], true).expect_err("more than bytes");
+        list.push(1, ExtentRange::new(E, 0..4097), &[1, 2], true).expect_err("uneven chunks");
+        list.push(1, ExtentRange::new(E, 0..1 << 40), &[1], true).expect_err("a huge chunk");
+        list.push(1, ExtentRange::new(E, 0..8192), &[1, 2], true).expect("good checksums");
     }
 
     #[fuchsia::test]

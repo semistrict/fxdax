@@ -100,7 +100,8 @@ if [[ -n ${FXDAX_FIRECRACKER_JAIL:-} ]]; then
     export FXDAX_FIRECRACKER_JAILER="$firecracker_dir/build/cargo_target/$musl/release/jailer"
     export FXDAX_JAIL_UID=64000 FXDAX_JAIL_GID=64000
     sysctl -q vm.unprivileged_userfaultfd=0
-    # What the daemons and the tests make, sockets and images, the jailed user reaches.
+    # What the tests make, images and all, the jailed user reaches; but the daemons' sockets,
+    # their user's alone (TASK-155), which it is given once they serve.
     umask 000
 fi
 # FXDAX_MAX_MAP_COUNT sets vm.max_map_count, of which a VM process's DAX window keeps half its
@@ -172,6 +173,10 @@ while [[ ! -S $socket || ! -S $control ]]; do
     fi
     sleep 0.1
 done
+# The jailed Firecrackers use the default tenant's socket, as production's use a tenant's.
+if [[ -n ${FXDAX_FIRECRACKER_JAIL:-} ]]; then
+    chown "$FXDAX_JAIL_UID:$FXDAX_JAIL_GID" "$socket"
+fi
 export FXDAX_EXTENTD="$socket"
 # fxdax: the daemon's binary, for cases that start daemons of their own.
 export FXDAX_EXTENTD_BIN="$extentd_bin"
@@ -224,10 +229,12 @@ for (comm, call), count in sorted(seen.items()):
 ' > "$results/seccomp-log.txt"
     echo "seccomp: $(wc -l < "$results/seccomp-log.txt") thread and call pairs refused" >&2
 fi
-# fxdax: the guest stores the DAX windows refused that no seal explains: the guest and the window
-# disagreeing, which fails the run (TASK-44.12).
-if ! "$root/scripts/dax-refusals.py" "$results/extentd.log" > "$results/unexplained-refusals.txt"; then
-    echo "the DAX window refused stores no seal explains: see $results/unexplained-refusals.txt" >&2
+# fxdax: the guest stores the DAX windows refused: the guest and the window disagreeing, which fails
+# the run (TASK-44.12). Not a kernel worker's, the VM processes' logs saying whose (TASK-150.16).
+mapfile -t firecracker_logs < <(find "$results" -name firecracker.log)
+if ! "$root/scripts/dax-refusals.py" "$results/extentd.log" "${firecracker_logs[@]}" \
+    > "$results/unexplained-refusals.txt"; then
+    echo "the DAX window refused a guest's stores: see $results/unexplained-refusals.txt" >&2
     status=1
 fi
 echo "Logs: $results" >&2

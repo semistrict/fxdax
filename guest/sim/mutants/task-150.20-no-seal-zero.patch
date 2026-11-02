@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+#
+# TASK-150.20: zeroing alone make no room for a MAP the host has no memory for.
+
+--- a/guest/linux/fs/fxfs/dax.c
++++ b/guest/linux/fs/fxfs/dax.c
+@@ -5397,7 +5397,7 @@
+ 		return err;
+ 	for (;;) {
+ 		err = dax_zero_range(inode, pos, len, &zeroed, &fxfs_dax_iomap_ops);
+-		sealed = fxfs_dax_make_memory(inode, &room, err);
++		sealed = 0;
+ 		if (sealed < 0)
+ 			return sealed;
+ 		if (sealed && err == -ENOMEM)

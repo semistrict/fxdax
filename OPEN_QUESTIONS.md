@@ -1,0 +1,24 @@
+# Open questions
+
+What the agents need from you, and nothing else. See AGENTS.md. Answer by editing an entry, or say so in any session.
+
+## How to close truncate on a full disk? (TASK-150.19)
+
+Rarely, truncated bytes come back on a truly full filesystem. Either every non-DAX growth takes one path that zeroes the tail, or a mid-block shrink may return `NoSpace`, partly reversing TASK-60.
+**Recommend:** the first, with one owner of file size (TASK-153.4).
+**Until then:** the default model test could very rarely go red.
+
+## What should catch a corrupted byte of file data? (TASK-153.11)
+
+The problem: a byte of a file gets damaged in storage, by a bad disk or a bad upload. Should a read fail with an error, or return the wrong byte?
+
+What protects data today:
+- **Sealed data on the host and in the bucket has a checksum:** `extent_frame` stores a CRC32C for each part and checks it when reading. I haven't checked that every read path goes through it.
+- **Fxfs's own data checksums are never read,** except at journal replay, where they show whether a write reached the device. That's how Fuchsia's code has it. In a test that flips bytes in an Fxfs image on a fake device, about 84% read back wrong with no error. That test skips the host layer, so it overstates the risk on a real host. Reading them wouldn't help DAX anyway: DAX stores skip Fxfs's write path, so they have no checksum.
+- **Once a page is in the DAX window, a read goes straight to memory,** so nothing can check it there.
+
+Not covered, as far as I know: data on a host's disk before it's sealed, and pages already in memory.
+
+Options: rely on the host's checksums and close the gaps there; or have the guest check too, which costs reads on the fast path.
+**Recommend:** rely on the host. First confirm every host read path checks its CRC, which needs no decision from you, so I'm doing that anyway.
+**Until then:** nothing changes.

@@ -54,7 +54,14 @@ struct virtio_extent {
 	struct window_page *pages;
 	struct list_head extents;
 	u64 store_used;
-	u64 maps;
+	u64 maps, map_requests;
+	/*
+	 * The host's memory for open extents, in pages, if a test limits it, and those mapped writably
+	 * since the last seal, which the host can't evict, and how many MAPs it refused for them.
+	 */
+	u64 open_limit;
+	u64 open_pages;
+	u64 open_refused;
 } device;
 
 static struct dax_device { int unused; } dax_device;
@@ -137,6 +144,7 @@ void sim_device_seal(void)
 
 	list_for_each_entry(extent, &device.extents, list)
 		extent->sealed |= extent->held;
+	device.open_pages = 0;
 	for (page = 0; page < pages; page++) {
 		if (device.pages[page].state != WINDOW_WRITE)
 			continue;
@@ -162,6 +170,21 @@ void sim_device_free_extent(u64 sequence)
 	kfree(extent);
 }
 
+/*
+ * Has a writable MAP past `pages` pages mapped writably since the last seal say ENOMEM, but with
+ * none yet: the host's rule (crates/physmem's `pin`), an open extent's pages being what it can't
+ * evict.
+ */
+void sim_device_limit_open(u64 pages)
+{
+	device.open_limit = pages;
+}
+
+u64 sim_device_open_refused(void)
+{
+	return device.open_refused;
+}
+
 void sim_device_describe(u64 page)
 {
 	static const char *const states[] = { "unmapped", "zeros", "read-only", "writable" };
@@ -174,6 +197,11 @@ void sim_device_describe(u64 page)
 u64 sim_device_maps(void)
 {
 	return device.maps;
+}
+
+u64 sim_device_map_requests(void)
+{
+	return device.map_requests;
 }
 
 /* The window page sim_device_watch watches, or -1. */
@@ -209,7 +237,7 @@ static int map_one(u64 sequence, u64 offset, u64 len, u64 window_offset, bool wr
 	struct extent *extent = find_extent(sequence);
 	u64 first = window_offset >> PAGE_SHIFT, page;
 	u64 pages = len >> PAGE_SHIFT, in_extent = offset >> PAGE_SHIFT;
-	u64 within;
+	u64 within, more;
 
 	device.maps++;
 	watch(writable ? "MAP writable" : "MAP read-only", first, pages, sequence, in_extent);
@@ -222,6 +250,13 @@ static int map_one(u64 sequence, u64 offset, u64 len, u64 window_offset, bool wr
 			return -EPERM;
 		if (offset + len > extent->size)
 			return -ENOSPC;
+		more = max(extent->length, in_extent + pages) - extent->length;
+		if (device.open_limit && device.open_pages &&
+		    device.open_pages + more > device.open_limit) {
+			device.open_refused++;
+			return -ENOMEM;
+		}
+		device.open_pages += more;
 		extent->held = true;
 		extent->length = max(extent->length, in_extent + pages);
 	}
@@ -332,6 +367,7 @@ int virtio_extent_call(struct virtio_extent *vext, struct vext_request *req)
 	}
 	switch (req->type) {
 	case VIRTIO_EXTENT_T_MAP:
+		device.map_requests++;
 		err = do_map(req);
 		break;
 	case VIRTIO_EXTENT_T_UNMAP:

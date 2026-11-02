@@ -17,7 +17,8 @@
 
 #include <sim/sim.h>
 
-#define WINDOW_LEN (64UL << 20)
+/* Each UNMAP failed keeps up to a chunk of it for good, as a real window: room for a long run's. */
+#define WINDOW_LEN (512UL << 20)
 #define WORKERS 2
 /* Past a chunk, so that a range of its own maps it, and it holds an extent of its own. */
 #define BIG_LEN (3UL << 20)
@@ -27,6 +28,8 @@
 #define ROUND 16
 /* One allocation, and one MAP or UNMAP, in so many fails. */
 #define FAIL_ODDS 25
+/* The host's memory for open extents, a run in four: what it refuses a seal makes room for. */
+#define OPEN_LIMIT PTRS_PER_PTE
 
 #define check(cond, ...) do { if (!(cond)) sim_panic(__VA_ARGS__); } while (0)
 
@@ -545,6 +548,8 @@ int main(int argc, char **argv)
 		sscanf(argv[2], "%lu", &operations);
 	sim_init(seed);
 	sim_device_init(WINDOW_LEN);
+	if (!(seed % 4))
+		sim_device_limit_open(OPEN_LIMIT);
 	for (i = 2; i < argc; i++) {
 		unsigned long long ino, page;
 

@@ -4,7 +4,9 @@
 
 // Fuchsia's `src/storage/fxfs/src/object_store/transaction.rs`. fxdax snapshots (volume snapshots
 // that share their source's layers and extents) deviate from upstream here: AllocatorMutation gains
-// a Snapshot variant, last, so that the others serialize as they did.
+// a Snapshot variant, last, so that the others serialize as they did. A transaction counts what its
+// records take of the journal, and says how much room it has left (`Transaction::room`), which
+// upstream's loops guess at, each with a constant of its own.
 
 use crate::checksum::Checksum;
 use crate::filesystem::FxFilesystem;
@@ -12,6 +14,7 @@ use crate::log::*;
 use crate::lsm_tree::types::Item;
 use crate::object_handle::INVALID_OBJECT_ID;
 use crate::object_store::allocator::{AllocatorItem, Reservation};
+use crate::object_store::journal::{checksums_record_bytes, mutation_record_bytes};
 use crate::object_store::object_manager::{ObjectManager, reserved_space_from_journal_usage};
 use crate::object_store::object_record::{
     BytesAndNodes, FxfsKey, FxfsKeyV49, ObjectItem, ObjectItemV60, ObjectKey, ObjectKeyData,
@@ -71,6 +74,13 @@ pub struct Options<'a> {
 pub const TRANSACTION_MAX_JOURNAL_USAGE: u64 = 24_576;
 pub const TRANSACTION_METADATA_MAX_AMOUNT: u64 =
     reserved_space_from_journal_usage(TRANSACTION_MAX_JOURNAL_USAGE);
+
+/// fxdax: how much of TRANSACTION_MAX_JOURNAL_USAGE a transaction's records may take before it is
+/// full (`Transaction::room`). The rest is for what comes after a loop last asked: what it adds
+/// before it next asks, a file's size and allocated size as it stops, a commit's own records, the
+/// padding of the sync before it (`ObjectManager::needs_borrow_for_journal`), and the checksums of
+/// the journal's blocks.
+pub const TRANSACTION_ROOM: u64 = TRANSACTION_MAX_JOURNAL_USAGE - 2048;
 
 #[must_use]
 pub struct TransactionLocks<'a>(pub WriteGuard<'a>);
@@ -624,6 +634,12 @@ pub struct Transaction<'a> {
 
     /// Set if this transaction contains data (i.e. includes any extent mutations).
     includes_write: bool,
+
+    /// fxdax: what the records of `mutations` take of the journal.
+    mutation_bytes: u64,
+
+    /// fxdax: what the records of `checksums` take of the journal.
+    checksum_bytes: u64,
 }
 
 impl<'a> Transaction<'a> {
@@ -655,6 +671,8 @@ impl<'a> Transaction<'a> {
             unlocked_names: BTreeSet::new(),
             checksums: Vec::new(),
             includes_write: false,
+            mutation_bytes: 0,
+            checksum_bytes: 0,
         };
 
         ScopeGuard::into_inner(guard);
@@ -665,6 +683,25 @@ impl<'a> Transaction<'a> {
 
     pub fn mutations(&self) -> &BTreeSet<TxnMutation<'a>> {
         &self.mutations
+    }
+
+    /// fxdax: what this transaction's records take of the journal, as it would write them now:
+    /// what a transaction must keep to TRANSACTION_MAX_JOURNAL_USAGE, which reserves that much
+    /// metadata space. Neither its mutations nor their extents say it: a mutation may be tens of
+    /// bytes, or a block's checksums of an extent's, thousands.
+    pub fn journal_bytes(&self) -> u64 {
+        self.mutation_bytes + self.checksum_bytes
+    }
+
+    /// fxdax: how many bytes more of records this transaction has room for: what a loop splitting
+    /// its work across commits adds up to before it commits and goes on.
+    pub fn room(&self) -> u64 {
+        TRANSACTION_ROOM.saturating_sub(self.journal_bytes())
+    }
+
+    /// fxdax: whether it has no room left, and whatever goes on adding to it should commit first.
+    pub fn is_full(&self) -> bool {
+        self.room() == 0
     }
 
     /// fxdax: has this change names in the directory `object_id` of the store `store_object_id`
@@ -679,6 +716,7 @@ impl<'a> Transaction<'a> {
 
     pub fn take_mutations(&mut self) -> BTreeSet<TxnMutation<'a>> {
         self.new_objects.clear();
+        self.mutation_bytes = 0;
         mem::take(&mut self.mutations)
     }
 
@@ -718,7 +756,7 @@ impl<'a> Transaction<'a> {
     /// Removes a mutation that matches `mutation`.
     pub fn remove(&mut self, object_id: u64, mutation: Mutation) {
         let txn_mutation = TxnMutation { object_id, mutation, associated_object: AssocObj::None };
-        if self.mutations.remove(&txn_mutation) {
+        if self.take_mutation(&txn_mutation).is_some() {
             if let Mutation::ObjectStore(ObjectStoreMutation {
                 item:
                     ObjectItem {
@@ -731,6 +769,13 @@ impl<'a> Transaction<'a> {
                 self.new_objects.remove(&(object_id, new_object_id));
             }
         }
+    }
+
+    /// fxdax: takes the mutation equal to `mutation` out, if there is one, which its size goes with.
+    fn take_mutation(&mut self, mutation: &TxnMutation<'a>) -> Option<TxnMutation<'a>> {
+        let taken = self.mutations.take(mutation)?;
+        self.mutation_bytes -= mutation_record_bytes(taken.object_id, &taken.mutation);
+        Some(taken)
     }
 
     /// Adds a mutation with an associated object. If the mutation already exists, it is replaced
@@ -783,7 +828,10 @@ impl<'a> Transaction<'a> {
         }
         let txn_mutation = TxnMutation { object_id, mutation, associated_object };
         self.verify_locks(&txn_mutation);
-        self.mutations.replace(txn_mutation).map(|m| m.mutation)
+        self.mutation_bytes += mutation_record_bytes(object_id, &txn_mutation.mutation);
+        let replaced = self.mutations.replace(txn_mutation)?;
+        self.mutation_bytes -= mutation_record_bytes(object_id, &replaced.mutation);
+        Some(replaced.mutation)
     }
 
     /// fxdax: adds `delta` to the references of `device_range` this transaction makes
@@ -814,7 +862,7 @@ impl<'a> Transaction<'a> {
                 }
             });
         if let Some(made) = made {
-            self.mutations.remove(&reference(made));
+            self.take_mutation(&reference(made));
         }
         let delta = delta + made.unwrap_or(0);
         if delta != 0 {
@@ -835,6 +883,7 @@ impl<'a> Transaction<'a> {
         checksums: Vec<Checksum>,
         first_write: bool,
     ) {
+        self.checksum_bytes += checksums_record_bytes(&range, &checksums, first_write);
         self.checksums.push((range, checksums, first_write));
     }
 
@@ -847,6 +896,7 @@ impl<'a> Transaction<'a> {
     }
 
     pub fn take_checksums(&mut self) -> Vec<(ExtentRange, Vec<Checksum>, bool)> {
+        self.checksum_bytes = 0;
         std::mem::replace(&mut self.checksums, Vec::new())
     }
 
@@ -2307,6 +2357,87 @@ mod tests {
                 ObjectValue::None,
             ),
         );
+    }
+
+    /// fxdax: a transaction counts what its records take of the journal, as they replace each
+    /// other and go, and its checksums', until a commit takes them, and is full at TRANSACTION_ROOM.
+    #[fuchsia::test]
+    async fn test_a_transaction_says_how_much_room_it_has_left() {
+        use crate::object_store::journal::{checksums_record_bytes, mutation_record_bytes};
+        use crate::object_store::transaction::{AllocatorMutation, Mutation, TRANSACTION_ROOM};
+        use storage_device::{ExtentId, ExtentRange};
+
+        let device = DeviceHolder::new(FakeDevice::new(4096, 1024));
+        let fs = FxFilesystem::new_empty(device).await.expect("new_empty failed");
+        let root_store = fs.root_store();
+        let store_id = root_store.store_object_id();
+        let allocator_id = fs.allocator().object_id();
+        let mut t = root_store
+            .new_transaction(lock_keys![], Options::default())
+            .await
+            .expect("new_transaction failed");
+        assert_eq!(t.room(), TRANSACTION_ROOM);
+
+        let key = |project| {
+            ObjectKey::project_usage(
+                root_store.root_directory_object_id(),
+                crate::object_store::ProjectId::new(project).unwrap(),
+            )
+        };
+        let usage = |project, bytes| {
+            Mutation::merge_object(key(project), BytesAndNodes { bytes, nodes: 1 }.into())
+        };
+
+        // A mutation replaced takes what the new one does.
+        t.merge_bytes_and_nodes(store_id, key(1), BytesAndNodes { bytes: 1, nodes: 1 });
+        assert_eq!(t.journal_bytes(), mutation_record_bytes(store_id, &usage(1, 1)));
+        t.merge_bytes_and_nodes(store_id, key(1), BytesAndNodes { bytes: 1 << 40, nodes: 0 });
+        let merged = usage(1, (1 << 40) + 1);
+        assert_eq!(t.journal_bytes(), mutation_record_bytes(store_id, &merged));
+
+        // References fold, as they do.
+        let range = ExtentRange::new(ExtentId::new(1, 2), 0..4096);
+        let reference = |delta| {
+            Mutation::Allocator(AllocatorMutation::Reference {
+                device_range: range.clone(),
+                owner_object_id: store_id,
+                delta,
+            })
+        };
+        let usage_bytes = t.journal_bytes();
+        t.add_reference(allocator_id, range.clone(), store_id, 1);
+        t.add_reference(allocator_id, range.clone(), store_id, 1 << 30);
+        let folded = mutation_record_bytes(allocator_id, &reference(1 + (1 << 30)));
+        assert_eq!(t.journal_bytes(), usage_bytes + folded);
+        t.add_reference(allocator_id, range.clone(), store_id, -1 - (1 << 30));
+        assert_eq!(t.journal_bytes(), usage_bytes);
+
+        // A checksums' record counts.
+        t.add_checksum(range.clone(), vec![1, 2, 3], true);
+        let checksums = checksums_record_bytes(&range, &[1, 2, 3], true);
+        assert_eq!(t.journal_bytes(), usage_bytes + checksums);
+        assert_eq!(t.room(), TRANSACTION_ROOM - usage_bytes - checksums);
+
+        // What goes takes its record with it.
+        t.remove(store_id, merged);
+        assert_eq!(t.journal_bytes(), checksums);
+        t.take_checksums();
+        assert_eq!(t.journal_bytes(), 0);
+
+        // Full at the room, with what passed it, and empty again once committed.
+        let mut project = 1;
+        while !t.is_full() {
+            assert!(t.room() > 0);
+            t.merge_bytes_and_nodes(store_id, key(project), BytesAndNodes { bytes: 1, nodes: 1 });
+            project += 1;
+        }
+        assert_eq!(t.room(), 0);
+        assert!(t.journal_bytes() >= TRANSACTION_ROOM);
+        t.commit_and_continue().await.expect("commit failed");
+        assert_eq!(t.journal_bytes(), 0);
+        assert_eq!(t.room(), TRANSACTION_ROOM);
+        std::mem::drop(t);
+        fs.close().await.expect("close failed");
     }
 
     #[fuchsia::test]

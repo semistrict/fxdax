@@ -34,6 +34,8 @@ mod test_fxfs_guest_pgbench;
 use test_fxfs_guest_pgbench::{Probe, Storage as PgbenchStorage, TestFxfsGuestPgbench};
 mod test_fxfs_guest_daemon_lost;
 use test_fxfs_guest_daemon_lost::TestFxfsGuestDaemonLost;
+mod test_fxfs_guest_host_memory;
+use test_fxfs_guest_host_memory::TestFxfsGuestHostMemory;
 mod test_fxfs_guest_follow;
 use test_fxfs_guest_follow::TestFxfsGuestFollow;
 mod test_fxfs_guest_follow_remount;
@@ -186,6 +188,7 @@ pub fn test_cases() -> Vec<TestCase> {
             }),
         ),
         TestCase::new("fxfs-guest-daemon-lost", Box::new(TestFxfsGuestDaemonLost)),
+        TestCase::new("fxfs-guest-host-memory", Box::new(TestFxfsGuestHostMemory)),
         TestCase::new("runner-deadlock", Box::new(TestRunnerDeadlock)),
         TestCase::new("fxfs-guest-follow", Box::new(TestFxfsGuestFollow { dax: false })),
         TestCase::new("fxfs-guest-follow-dax", Box::new(TestFxfsGuestFollow { dax: true })),
@@ -262,6 +265,14 @@ pub fn test_cases() -> Vec<TestCase> {
             "fxfs-guest-migrate-dax",
             Box::new(TestFxfsGuestSnapshot { dax: true, mode: SnapshotMode::Migrate, volumes: 0 }),
         ),
+        TestCase::new(
+            "fxfs-guest-migrate-tenant-dax",
+            Box::new(TestFxfsGuestSnapshot {
+                dax: true,
+                mode: SnapshotMode::TenantMigrate,
+                volumes: 0,
+            }),
+        ),
         #[cfg(any(feature = "host", target_os = "linux"))]
         TestCase::new(
             "fxfs-guest-checks",
@@ -304,11 +315,6 @@ pub fn test_cases() -> Vec<TestCase> {
         ),
         TestCase::new("fxfs-guest-dax", Box::new(TestFxfsGuest::host_formats().with_dax())),
         TestCase::new("fxfs-guest-crash-dax", Box::new(TestFxfsGuest::crash().with_dax())),
-        // fxdax: the VM stopped with an evacuation held at each of its steps, the pause points
-        // GATHERED, EVACUEES_MAPPED and PLACED of guest/linux/fs/fxfs/dax.c (TASK-119.16).
-        TestCase::new("fxfs-guest-crash-dax-gathered", Box::new(TestFxfsGuest::crash_at(4))),
-        TestCase::new("fxfs-guest-crash-dax-mapped", Box::new(TestFxfsGuest::crash_at(6))),
-        TestCase::new("fxfs-guest-crash-dax-placed", Box::new(TestFxfsGuest::crash_at(7))),
         TestCase::new("fxfs-guest-crash-dax-killed", Box::new(TestFxfsGuest::crash_killed())),
         TestCase::new(
             "fxfs-guest-crash-dax-daemon-killed",

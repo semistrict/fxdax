@@ -130,6 +130,31 @@ fn stores_are_deleted_while_their_forks_live(fxdaxctl: Fxdaxctl, dir: &Path) {
     assert!(!fork.exists() && !path.exists());
 }
 
+/// TASK-154: `fxdaxctl drop` deletes what `take` made, a copy of a branch this host holds nothing
+/// of, and a second finds nothing there.
+fn copies_are_dropped(fxdaxctl: Fxdaxctl, dir: &Path) {
+    let path = dir.join("taken");
+    let (take, capacity, branch) = (Path::new("take"), Path::new("16777216"), Path::new("ab"));
+    fxdaxctl.run(&[take, &path, capacity, branch]).unwrap();
+    assert!(path.exists(), "nothing was taken");
+    fxdaxctl.run(&[Path::new("drop"), &path]).unwrap();
+    assert!(!path.exists(), "the copy stayed");
+    assert!(fxdaxctl.run(&[Path::new("drop"), &path]).is_err(), "a second drop found a store");
+}
+
+#[test]
+fn copies_are_dropped_locally() {
+    let dir = tempfile::tempdir().unwrap();
+    copies_are_dropped(Fxdaxctl::with_env(&[]), dir.path());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn copies_are_dropped_through_the_daemon() {
+    let dir = tempfile::tempdir().unwrap();
+    copies_are_dropped(Fxdaxctl::through_daemon(dir.path(), &[]), dir.path());
+}
+
 #[test]
 fn stores_are_deleted_while_their_forks_live_locally() {
     let dir = tempfile::tempdir().unwrap();

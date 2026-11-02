@@ -1670,15 +1670,14 @@ mod tests {
     }
 }
 
+// fxdax: a plain function, which crates/fxfs/fuzz calls, in place of Fuchsia's `fuzz` macro.
 #[cfg(fuzz)]
-mod fuzz {
+pub mod fuzz {
     use crate::lsm_tree::types::{Item, Value};
     use crate::serialized_types::{
         LATEST_VERSION, Version, Versioned, VersionedLatest, versioned_type,
     };
     use arbitrary::Arbitrary;
-
-    use fuzz::fuzz;
 
     use super::testing::TestKey;
 
@@ -1689,12 +1688,8 @@ mod fuzz {
         const DELETED_MARKER: Self = 0;
     }
 
-    // Note: This code isn't really dead. it's used below in
-    // `fuzz_lsm_tree_action`. However, the `#[fuzz]` proc macro attribute
-    // obfuscates the usage enough to confuse the compiler.
-    #[allow(dead_code)]
-    #[derive(Arbitrary)]
-    enum FuzzAction {
+    #[derive(Arbitrary, Debug)]
+    pub enum FuzzAction {
         Insert(Item<TestKey, u64>),
         ReplaceOrInsert(Item<TestKey, u64>),
         MergeInto(Item<TestKey, u64>, TestKey),
@@ -1702,8 +1697,7 @@ mod fuzz {
         Seal,
     }
 
-    #[fuzz]
-    fn fuzz_lsm_tree_actions(actions: Vec<FuzzAction>) {
+    pub fn fuzz_lsm_tree_actions(actions: Vec<FuzzAction>) {
         use super::LSMTree;
         use crate::lsm_tree::merge::{MergeLayerIterator, MergeResult};
         use futures::executor::block_on;

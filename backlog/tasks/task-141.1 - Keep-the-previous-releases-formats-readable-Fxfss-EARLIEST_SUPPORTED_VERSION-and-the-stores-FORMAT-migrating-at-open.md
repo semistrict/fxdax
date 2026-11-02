@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-31 20:30'
+updated_date: '2026-11-02 03:27'
 labels: []
 dependencies: []
 parent_task_id: TASK-141
@@ -24,3 +25,9 @@ ordinal: 12500
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-11-01, the user: assume nothing uses fxdax until they say otherwise, so formats may change with no migration (AGENTS.md). On hold until then.
+<!-- SECTION:NOTES:END -->

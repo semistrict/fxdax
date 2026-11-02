@@ -7,7 +7,7 @@
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c
-@@ -2152,10 +2152,7 @@
+@@ -1834,10 +1834,7 @@
  	fxfs_device_assert_in_gate(dax->dev);
  	fxfs_dax_delay();
  	spin_lock(&dax->regions_lock);
@@ -19,7 +19,7 @@
  		region->writable = true;
  		list_add_tail(&region->writable_list, &dax->writable_regions);
  	}
-@@ -2432,8 +2429,7 @@
+@@ -2026,8 +2026,7 @@
  		if (count < 0)
  			return ERR_PTR(count);
  		if (e.offset != start || e.len != end - start || !e.extent_size ||

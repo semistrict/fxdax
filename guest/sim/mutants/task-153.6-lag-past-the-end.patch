@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+#
+# TASK-153.6: a truncate leaves pages past the end lagging, whose blocks Fxfs let go of.
+
+--- a/guest/linux/fs/fxfs/dax.c
++++ b/guest/linux/fs/fxfs/dax.c
+@@ -4768,7 +4768,6 @@ void fxfs_dax_resize_end(struct inode *inode, loff_t size)
+ 		page = first - (start >> PAGE_SHIFT);
+ 		if (page >= range->pages)
+ 			continue;
+-		bitmap_clear(range->lagging, page, range->pages - page);
+ 		if (find_next_bit(range->mapped, range->pages, page) == range->pages)
+ 			continue;
+ 		/* A slice's pages past the end stay its region's: the slice no longer maps them. */

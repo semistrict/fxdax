@@ -29,6 +29,8 @@
 (*   They did: a reader outside the gate sent a writable MAP, across a    *)
 (*   seal (TASK-44.21, TASK-150.11).                                      *)
 (*                                                                         *)
+(* Region_open needs no lock of the region's for it, nor looks at mapped:  *)
+(* TASK-99's fix, openUnderLock here, went with what made it needed.      *)
 (* specs/dax-region/mutations removes each, and must find what it stops.  *)
 (***************************************************************************)
 EXTENDS Naturals, TLC
@@ -182,4 +184,7 @@ NoRefusedStores == wpc = "store" => host = "rw"
 
 (* A reader is outside the gate, which a seal may cross: its MAP is read-only (TASK-44.21). *)
 NoWritableMapOutsideTheGate == rpc = "mapped" => ~rWritable
+
+(* TASK-99's race: a reader's MAP in flight, having read the region as it was, as a writer opens it. *)
+NoMapInFlightUnderAnOpen == rpc \in {"map", "mapped"} => ~writable
 =============================================================================

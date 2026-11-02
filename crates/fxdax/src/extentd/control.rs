@@ -238,6 +238,14 @@ impl Extentd for Control {
         reply(stores::delete(store).await.map(|()| DeleteStoreResponse {}))
     }
 
+    async fn drop_store(
+        &self,
+        request: Request<DropStoreRequest>,
+    ) -> Result<Response<DropStoreResponse>, Status> {
+        let store = path(request.into_inner().path)?;
+        reply(stores::drop_copy(store).await.map(|()| DropStoreResponse {}))
+    }
+
     async fn resize_store(
         &self,
         request: Request<ResizeStoreRequest>,
@@ -523,6 +531,14 @@ impl Client {
         self.call(what, |mut c| async move { c.delete_store(request).await }).map(drop)
     }
 
+    /// Deletes this host's copy of the store at `path`, its branch staying in the daemon's bucket
+    /// (`DropStore`).
+    pub fn drop_store(&self, path: &Path) -> Result<(), crate::Error> {
+        let request = DropStoreRequest { path: name(path)? };
+        let what = format!("dropping the store at {}", path.display());
+        self.call(what, |mut c| async move { c.drop_store(request).await }).map(drop)
+    }
+
     /// Sets the capacity of the store at `path` to `capacity` bytes (`ResizeStore`).
     pub fn resize_store(&self, path: &Path, capacity: u64) -> Result<(), crate::Error> {
         let request = ResizeStoreRequest { path: name(path)?, capacity };
@@ -583,6 +599,21 @@ impl Client {
         let request = SyncStoreRequest { path: name(path)? };
         let what = format!("waiting for the store at {} to be uploaded", path.display());
         self.call(what, |mut c| async move { c.sync_store(request).await }).map(drop)
+    }
+
+    /// Grants the tenant `tenant`, whose stores are in `dir`, its VM socket, given to `uid` and
+    /// `gid` where named, and returns its path (`Grant`).
+    pub fn grant(
+        &self,
+        tenant: &str,
+        dir: &Path,
+        uid: Option<u32>,
+        gid: Option<u32>,
+    ) -> Result<PathBuf, crate::Error> {
+        let request = GrantRequest { tenant: tenant.to_owned(), dir: name(dir)?, uid, gid };
+        let response =
+            self.call(format!("granting {tenant}"), |mut c| async move { c.grant(request).await })?;
+        Ok(response.socket.into())
     }
 
     /// Limits the memory of the tenant `tenant`, or of every tenant without one, to `bytes`, or

@@ -4116,7 +4116,9 @@ enum LastWords {
 /// tenant's VM process saying anything, of any kind, with any flags and arguments, IDs and paths
 /// that name another tenant's among them, through its window and transfer area, then breaking off
 /// however it likes, panics nothing, leaves another tenant's store as it was and served, and lets
-/// its own go. Seeded by proptest, which says the sequence if one fails.
+/// its own go. TASK-154: and it gets of the bucket what its VM manager put in its directory alone,
+/// a point it restores, and nothing of the branch it names. Seeded by proptest, which says the
+/// sequence if one fails.
 #[test]
 fn whatever_a_vm_process_says_harms_no_other() {
     use super::wire::*;
@@ -4127,13 +4129,17 @@ fn whatever_a_vm_process_says_harms_no_other() {
     use std::sync::atomic::{AtomicU64, Ordering};
     use zerocopy::IntoBytes as _;
 
-    /// A word that says the VM process's store's branch, and the other tenant's.
+    /// A word that says the VM process's store's branch, the other tenant's, and the one its VM
+    /// manager took for it.
     const OWN_BRANCH: u64 = 0xb0b0_0001;
     const OTHER_BRANCH: u64 = 0xb0b0_0002;
+    const GIVEN_BRANCH: u64 = 0xb0b0_0003;
     const WINDOW_BYTES: u64 = 1 << 20;
     const TRANSFER_BYTES: u64 = 1 << 20;
     /// The ID of the request that ends a sequence.
     const LAST: u64 = 0x1a57;
+    /// The ID of a restore's `OPEN`.
+    const RESTORE: u64 = 0x7e57;
     const KINDS: [u32; 29] = [
         OPEN, READ, WRITE, FREE, MAP, UNMAP, COMMIT, ROOT, INFO, WINDOW, FAULT, ACK, FORK, RESIZED,
         MAPPINGS, ADVANCE, LET_GO, PIN, UNPIN, TRANSFER, FREE_MANY, STAGE_COUNTS, BUILD, REPLY,
@@ -4165,6 +4171,17 @@ fn whatever_a_vm_process_says_harms_no_other() {
     let kept = ExtentId { branch: other.branch(), sequence: 1 };
     write(&other, kept, 0, &pattern(9, BLOCK)).unwrap();
     other.commit(None).unwrap();
+    let their_bytes = std::sync::Arc::new(pattern(9, BLOCK));
+
+    // A snapshot in the bucket, of a branch its VM manager makes a point of in its directory.
+    let given = RemoteExtentStore::connect(&other_socket, dir.path().join("given"), 1 << 24);
+    let given = given.unwrap();
+    let given_branch = given.branch();
+    write(&given, ExtentId { branch: given_branch, sequence: 1 }, 0, &pattern(8, BLOCK)).unwrap();
+    given.commit(Some(b"given")).unwrap();
+    drop(given);
+    let point = vms.join("point");
+    control(super::stores::create(point.clone(), 1 << 24, Some(given_branch), None)).unwrap();
 
     let ps = page_size();
     let word = prop_oneof![
@@ -4178,6 +4195,7 @@ fn whatever_a_vm_process_says_harms_no_other() {
         Just(1 << 60),
         Just(OWN_BRANCH),
         Just(OTHER_BRANCH),
+        Just(GIVEN_BRANCH),
         1u64..16,
         (0u64..64).prop_map(move |page| page * ps),
         (0u64..4096).prop_map(|back| u64::MAX - back),
@@ -4187,6 +4205,7 @@ fn whatever_a_vm_process_says_harms_no_other() {
         vms.join("fork"),
         vms.join("../escaped"),
         other_path.clone(),
+        point.clone(),
         std::path::PathBuf::from("relative"),
     ];
     let payload = prop_oneof![
@@ -4224,19 +4243,27 @@ fn whatever_a_vm_process_says_harms_no_other() {
         Just((MAPPINGS, 0, 0, [0; 5], Vec::new())),
         Just((INFO, 0, 0, [0; 5], Vec::new())),
     ];
-    // On a connection that opened nothing yet, stores any which way, a point of none named too.
+    // What the other tenant wrote, as a store of its branch would read it.
+    let reading_theirs = Just((READ, 0, 0, [OTHER_BRANCH, 1, 0, BLOCK as u64, 0], Vec::new()));
+    // On a connection that opened nothing yet, stores any which way: restores of a point of none,
+    // and of the one taken for it, naming a branch of either, or the other tenant's.
     let nothing = [&[0], vms.join("nothing").as_os_str().as_bytes()].concat();
+    let taken = [&[0], point.as_os_str().as_bytes()].concat();
     let opening = prop_oneof![
         (0u64..4, any::<bool>()).prop_map(|(store, creating)| {
             let flags = if creating { OPEN_CREATE } else { 0 };
             (OPEN, flags, 0, [1 << 24, 0, 0, 0, 0], format!("open-{store}").into_bytes())
         }),
-        (0u64..4).prop_map(move |store| {
-            let named = [format!("open-{store}").as_bytes(), &nothing].concat();
-            (OPEN, OPEN_FORK_FROM, 0, [1 << 24, OTHER_BRANCH, 0, 0, 0], named)
-        }),
+        (0u64..4, any::<bool>(), prop_oneof![Just(OTHER_BRANCH), Just(GIVEN_BRANCH)]).prop_map(
+            move |(store, absent, branch)| {
+                let point = if absent { &nothing } else { &taken };
+                let named = [format!("open-{store}").as_bytes(), point].concat();
+                (OPEN, OPEN_FORK_FROM, RESTORE, [1 << 24, branch, 0, 0, 0], named)
+            }
+        ),
     ];
-    let message = prop_oneof![6 => plausible, 2 => anything, 1 => opening];
+    let message =
+        prop_oneof![12 => plausible, 4 => anything, 2 => opening, 1 => reading_theirs];
     let last_words = prop_oneof![
         Just(LastWords::Nothing),
         Just(LastWords::PartOfAHeader),
@@ -4260,7 +4287,16 @@ fn whatever_a_vm_process_says_harms_no_other() {
 
     let cases = AtomicU64::new(0);
     let served = std::sync::Arc::new(AtomicU64::new(0));
-    let config = Config { cases: 128, failure_persistence: None, ..Config::default() };
+    let restored = std::sync::Arc::new(AtomicU64::new(0));
+    let stolen = std::sync::Arc::new(AtomicU64::new(0));
+    // A failing case shrinks for two minutes at most: each step may wait as long as `wait`, and
+    // shrinking one to the end took 38 minutes.
+    let config = Config {
+        cases: 128,
+        failure_persistence: None,
+        max_shrink_time: 120_000,
+        ..Config::default()
+    };
     TestRunner::new(config)
         .run(&sequence, |(messages, transfer, last_words, opened, window)| {
             let case = cases.fetch_add(1, Ordering::Relaxed);
@@ -4281,15 +4317,31 @@ fn whatever_a_vm_process_says_harms_no_other() {
             let sender = std::sync::Arc::new(sender);
             // Whatever comes back, its stage operations made, as far as saying so goes.
             let (answered, all_answered) = std::sync::mpsc::channel();
+            let (restore_answered, restores_answered) = std::sync::mpsc::channel();
+            let own = std::sync::Arc::new(AtomicU64::new(branch));
             let answering = {
-                let (sender, served) = (sender.clone(), served.clone());
+                let (sender, served, restored) = (sender.clone(), served.clone(), restored.clone());
+                let (stolen, their_bytes, own) = (stolen.clone(), their_bytes.clone(), own.clone());
                 std::thread::spawn(move || {
                     while let Ok(Some(message)) = receiver.receive(|| u64::MAX) {
                         if message.header.kind == REPLY && message.header.status == 0 {
                             served.fetch_add(1, Ordering::Relaxed);
+                            if message.header.id == RESTORE {
+                                restored.fetch_add(1, Ordering::Relaxed);
+                                own.store(message.header.args[0], Ordering::Relaxed);
+                            }
+                            // The other tenant's branch, or what it wrote.
+                            if message.header.args[0] == kept.branch
+                                || message.payload == *their_bytes
+                            {
+                                stolen.fetch_add(1, Ordering::Relaxed);
+                            }
                         }
                         if message.header.kind == REPLY && message.header.id == LAST {
                             let _ = answered.send(());
+                        }
+                        if message.header.kind == REPLY && message.header.id == RESTORE {
+                            let _ = restore_answered.send(());
                         }
                         if message.header.flags & STAGE_ACK != 0 {
                             let _ = sender.send(Header::new(ACK, message.header.id), &[], &[]);
@@ -4315,8 +4367,9 @@ fn whatever_a_vm_process_says_harms_no_other() {
                 sender.send(area, &[], &[fd.as_fd()]).unwrap();
             }
             let named_word = |word: u64| match word {
-                OWN_BRANCH => branch,
+                OWN_BRANCH => own.load(Ordering::Relaxed),
                 OTHER_BRANCH => kept.branch,
+                GIVEN_BRANCH => given_branch,
                 word => word,
             };
             // A path a sequence opens at, this case's.
@@ -4333,6 +4386,12 @@ fn whatever_a_vm_process_says_harms_no_other() {
                 let payload = in_vms(payload);
                 // The daemon may have let it go by now.
                 let _ = sender.send(message, &payload, &[]);
+                // What comes after a restore is said of the store it opened, as the daemon may
+                // take longer over it than over all that comes after: answered, or the daemon
+                // let it go, which ends the answers.
+                if id == RESTORE {
+                    let _ = restores_answered.recv_timeout(wait);
+                }
             }
             // Answered, or the daemon has let it go, which ends the answers.
             let _ = sender.send(Header::new(INFO, LAST), &[], &[]);
@@ -4366,7 +4425,9 @@ fn whatever_a_vm_process_says_harms_no_other() {
                 prop_assert_eq!(opened, Ok(Ok(())));
             }
 
-            // Nothing it said reached the other tenant's, which is served on.
+            // Nothing it said took a branch, nor reached the other tenant's, which is served on.
+            prop_assert!(!vms.join("nothing").exists(), "a point of a branch named was taken");
+            prop_assert_eq!(stolen.load(Ordering::Relaxed), 0);
             prop_assert_eq!(read(&other, kept, 0, BLOCK), Ok(pattern(9, BLOCK)));
             let served = ExtentId { branch: kept.branch, sequence: 2 + case };
             prop_assert_eq!(write(&other, served, 0, &pattern(7, BLOCK)), Ok(()));
@@ -4376,8 +4437,13 @@ fn whatever_a_vm_process_says_harms_no_other() {
             Ok(())
         })
         .unwrap();
-    // What it says reaches past the checks: not every request is refused.
-    let served = served.load(Ordering::Relaxed);
-    assert!(served > 1000, "{served} requests served");
+    // What it says reaches past the checks: not every request is refused. Those it heard of
+    // served, once it hung up, are fewer the busier the host: 929 at the least of 1300 or so, with
+    // the machine's other work making everything fifty times slower.
+    let (served, restored) = (served.load(Ordering::Relaxed), restored.load(Ordering::Relaxed));
+    println!("{served} requests served, {restored} of them restores");
+    assert!(served > 500, "{served} requests served");
+    // And it restores what it was given: refusing everything would pass the rest.
+    assert!(restored > 0, "{restored} restores served");
     drop(other);
 }

@@ -6,7 +6,7 @@
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c
-@@ -3290,10 +3290,6 @@
+@@ -2772,10 +2772,6 @@
  			err = -ENOTBLK;
  			goto out;
  		}

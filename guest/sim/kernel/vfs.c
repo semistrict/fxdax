@@ -74,7 +74,7 @@ int invalidate_inode_pages2_range(struct address_space *mapping, pgoff_t start, 
 
 	/*
 	 * A fault going round for ever: only a seal would end it, if one came (TASK-140). dax.c has a
-	 * write give up after FXFS_DAX_MAX_DROPS of these, and no fault.
+	 * write and a fault give up after FXFS_DAX_MAX_DROPS of these: more is that limit gone.
 	 */
 	if (current->fault_drops >= 0 && ++current->fault_drops > SIM_MAX_FAULT_DROPS)
 		sim_panic("livelock: a fault had its range dropped %d times", current->fault_drops);

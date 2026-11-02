@@ -63,9 +63,10 @@ impl Header {
 /// from a snapshot, whose store point that is), or is a fork that failed, whose deletion it
 /// finishes first (TASK-79.84). That point, if it doesn't exist either, is taken
 /// from the daemon's bucket: a store of branch `args[1]`, of `args[0]` bytes, as on another host
-/// than the snapshot's. The reply's `args[0]` is its branch, and it carries the kernel's physical
-/// memory. fxdax: with [`OPEN_READ_ONLY`], a follower of the store (backlog doc-8), as of its
-/// latest commit, whose epoch is the reply's `args[2]`.
+/// than the snapshot's: `ENOENT` for a tenant's VM process, whose `args[1]` is ignored, its VM
+/// manager making the point first (TASK-154). The reply's `args[0]` is its branch, and it carries
+/// the kernel's physical memory. fxdax: with [`OPEN_READ_ONLY`], a follower of the store (backlog
+/// doc-8), as of its latest commit, whose epoch is the reply's `args[2]`.
 pub(crate) const OPEN: u32 = 1;
 /// Reads `args[3]` bytes at `args[2]` in extent `args[0..2]` (`READ`): the reply's payload; or,
 /// with [`READ_TRANSFER`], into the connection's transfer area at `args[4]` ([`TRANSFER`]).

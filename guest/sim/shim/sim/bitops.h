@@ -54,6 +54,15 @@ unsigned long find_next_bit(const unsigned long *addr, unsigned long size, unsig
 unsigned long find_next_zero_bit(const unsigned long *addr, unsigned long size,
 				 unsigned long offset);
 #define find_first_bit(addr, size) find_next_bit(addr, size, 0)
+/* The last set bit below `size`, or `size` if there is none, as lib/find_bit.c's. */
+static inline unsigned long find_last_bit(const unsigned long *addr, unsigned long size)
+{
+	unsigned long bit, last = size;
+
+	for (bit = 0; (bit = find_next_bit(addr, size, bit)) < size; bit++)
+		last = bit;
+	return last;
+}
 #define find_first_zero_bit(addr, size) find_next_zero_bit(addr, size, 0)
 #define for_each_set_bit(bit, addr, size) \
 	for ((bit) = 0; (bit) = find_next_bit((addr), (size), (bit)), (bit) < (size); (bit)++)

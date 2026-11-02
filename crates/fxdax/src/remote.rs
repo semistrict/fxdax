@@ -3488,8 +3488,9 @@ mod tests {
         let refused = format!("branch {child:x} has another origin");
         assert_eq!(attached, Err(super::Failure::Other(refused)));
         assert_eq!(leased(), Ok(1));
-        gated.hold.send_replace(Hold::Nothing);
+        // Closed before the fork goes on: its cleanup leaves a handle open.
         drop(opened);
+        gated.hold.send_replace(Hold::Nothing);
         let forked = fork.join().unwrap().map_err(|err| err.to_string());
         assert_eq!((forked, path.exists(), leased()), (anothers(child), false, Ok(1)));
     }

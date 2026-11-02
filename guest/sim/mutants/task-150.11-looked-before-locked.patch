@@ -1,22 +1,13 @@
 # SPDX-License-Identifier: GPL-2.0
 # Copyright 2026 The fxdax Authors.
 #
-# TASK-150.11: shared blocks of an open extent go through its region by either way in, as both took a
-# sealed piece there, a slice's as well as a range's own: a writable MAP in no gate (GCE r423).
-# Region_open as it was, without its WARN, so that what shows is that MAP.
+# TASK-150.11: shared blocks of an open extent go through its region, as a sealed piece did, a writable
+# MAP in no gate (GCE r423). A range's own way there went with fafefbac7: this is task-140's cause
+# since, with region_open's look put back so that what shows is what follows, not its WARN.
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c
-@@ -1464,7 +1464,7 @@
- 		const struct fxfs_dax_extent *e = &extents[i];
- 
- 		err = -EXDEV;
--		if (READ_ONCE(fxfs_dax_moves) && e->access != FXFS_DAX_SHARED && e->extent_size &&
-+		if (READ_ONCE(fxfs_dax_moves) && e->extent_size &&
- 		    e->extent_size <= FXFS_DAX_SIZE && PAGE_ALIGNED(e->extent_offset) &&
- 		    (e->extent_offset || e->len < e->extent_size))
- 			err = i && fxfs_dax_inject(&fxfs_dax_fail_moves) ? -ENOMEM :
-@@ -2152,10 +2152,7 @@
+@@ -1834,10 +1834,7 @@
  	fxfs_device_assert_in_gate(dax->dev);
  	fxfs_dax_delay();
  	spin_lock(&dax->regions_lock);
@@ -28,7 +19,7 @@
  		region->writable = true;
  		list_add_tail(&region->writable_list, &dax->writable_regions);
  	}
-@@ -2432,8 +2429,7 @@
+@@ -2026,8 +2026,7 @@
  		if (count < 0)
  			return ERR_PTR(count);
  		if (e.offset != start || e.len != end - start || !e.extent_size ||

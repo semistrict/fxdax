@@ -9,7 +9,8 @@
 # store forked, its filesystem frozen), fxfs-guest-volumes (volumes of one device mounted side by
 # side), fxfs-guest-shared-volumes (a volume one VM keeps current with Git, published, attached to
 # another as it runs, and written over), fxfs-guest-daemon-lost (VMs whose extent daemon is
-# killed under load exit, at once, saying so), fxfs-guest-follow (a VM following a store another VM
+# killed under load exit, at once, saying so), fxfs-guest-host-memory (a VM writing more than its
+# daemon's memory holds, syncing nothing), fxfs-guest-follow (a VM following a store another VM
 # writes, read-only, as it writes it), fxfs-guest-follow-torture (two followers' readers checking
 # what they read as the writer changes it, and its mutants, whose followers drop nothing a batch
 # changes, with DAX or without, take no fill barrier, or fault in read(2)'s copies, which they must
@@ -40,12 +41,12 @@ FXDAX_GUEST_KERNEL="$results/$(basename "$built")" FXDAX_E2E_RESULTS="$results" 
     fxfs-guest-crash fxfs-guest-crash-dax fxfs-guest-crash-dax-killed fxfs-guest-resize \
     fxfs-guest-live-fork fxfs-guest-volumes fxfs-guest-volumes-dax fxfs-guest-shared-volumes \
     fxfs-guest-shared-volumes-dax fxfs-guest-snapshot-volumes \
-    fxfs-guest-snapshot-volumes-dax fxfs-guest-daemon-lost \
+    fxfs-guest-snapshot-volumes-dax fxfs-guest-daemon-lost fxfs-guest-host-memory \
     fxfs-guest-follow fxfs-guest-follow-dax fxfs-guest-follow-torture \
     fxfs-guest-follow-torture-dax fxfs-guest-follow-torture-mutant \
     fxfs-guest-follow-torture-mutant-dax fxfs-guest-follow-torture-mutant-faults-dax \
     fxfs-guest-follow-torture-mutant-barrier-dax fxfs-guest-follow-torture-mutant-nested-dax \
     fxfs-guest-import \
-    fxfs-guest-import-dax fxfs-guest-snapshot fxfs-guest-snapshot-dax fxfs-guest-suspend-dax fxfs-guest-migrate-dax fxfs-guest-checks \
+    fxfs-guest-import-dax fxfs-guest-snapshot fxfs-guest-snapshot-dax fxfs-guest-suspend-dax fxfs-guest-migrate-dax fxfs-guest-migrate-tenant-dax fxfs-guest-checks \
     fxfs-guest-checks-dax fxfs-guest-checks-dax-delay fxfs-guest-checks-dax-small \
     pjdfstest-fxfs-guest pjdfstest-fxfs-guest-dax

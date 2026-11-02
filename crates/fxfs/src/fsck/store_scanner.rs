@@ -39,8 +39,9 @@ const APPEND_RESERVATION: u64 = 64 << 10;
 
 /// fxdax: where a file `size` bytes long may have blocks up to.
 fn max_extent_end(bs: BlockSize, size: u64) -> u64 {
+    // What a corrupt file's size may be.
     let reserved = size.checked_next_multiple_of(APPEND_RESERVATION).unwrap_or(u64::MAX);
-    std::cmp::max(bs.align_up(size).unwrap(), reserved)
+    std::cmp::max(bs.align_up(size).unwrap_or(u64::MAX), reserved)
 }
 
 // Information about a specific attribute.
@@ -235,7 +236,9 @@ impl<'a> ScannedStore<'a> {
                         if let Some(project_id) = project_id {
                             self.used_project_ids.insert(*project_id, key.object_id);
                             let entry = self.total_project_usages.entry(*project_id).or_default();
-                            entry.0 += i64::try_from(*allocated_size).unwrap();
+                            // fxdax: the size is what an image says.
+                            let allocated = i64::try_from(*allocated_size).unwrap_or(i64::MAX);
+                            entry.0 = entry.0.saturating_add(allocated);
                             entry.1 += 1;
                         }
                         self.current_object = Some(CurrentObject {
@@ -1750,4 +1753,17 @@ pub(super) async fn scan_store(
     ));
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::max_extent_end;
+    use storage_units::BlockSize;
+
+    /// fxdax: a file's size is what an image says.
+    #[test]
+    fn test_max_extent_end_of_any_size() {
+        assert_eq!(max_extent_end(BlockSize::SIZE_4KIB, u64::MAX), u64::MAX);
+        assert_eq!(max_extent_end(BlockSize::SIZE_4KIB, 1), 64 << 10);
+    }
 }

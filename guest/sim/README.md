@@ -13,7 +13,7 @@ leaves one, and `kernel-tree.sh <tree>` fetches what's needed of one, in seconds
 
 ```
 make KERNEL=<tree> BUILD=<dir>
-<dir>/tests/smoke                        # one task: writes, faults, seals, an evacuation
+<dir>/tests/smoke                        # one task: writes, faults, seals
 <dir>/tests/interleave SEED [OPERATIONS] # tasks at once, the seed's interleaving
 KERNEL=<tree> BUILD=<dir> ./zloop.sh     # with fixes/*.patch in: every test, then 3,000 seeds
 KERNEL=<tree> BUILD=<dir> ./mutants.sh -b fixes/x.patch...   # puts past bugs back: which it finds
@@ -45,7 +45,7 @@ Written here (see each file's head for what it leaves out):
 | Scheduler, locks, wait queues, RCU, workqueues | `kernel/sched.c`, `locks.c`, `workqueue.c` | One task at a time; wait queues as the kernel's; rwsem order as the kernel's, not its optimistic spinning |
 | Page tables and faults | `kernel/mm.c` | Two flat arrays per VMA, with `mm/memory.c`'s insert and fault rules rewritten, and `mmap_lock`. No TLB, no MMU, no GUP, no private mappings |
 | VFS and page cache | `kernel/vfs.c`, `mount.c` | What dax.c calls. `super.c` is not built: its resize, punch, clone and fsync are rewritten, so that a bug in them shows on a real kernel alone |
-| Host device | `kernel/device.c`, `host.c` | The window is real memory, a memfd mapped page by page, so a store the host refuses is a SIGSEGV. Requests complete at once, or fail with EIO as a test asks: no virtqueue, no second stage, no async page faults |
+| Host device | `kernel/device.c`, `host.c` | The window is real memory, a memfd mapped page by page, so a store the host refuses is a SIGSEGV. Requests complete at once, or fail with EIO as a test asks, or with ENOMEM past the open pages a test lets it hold, a seed in four: no virtqueue, no second stage, no async page faults |
 | Fxfs | `fxfs/fxfs.c` | A model of what the protocol assumes: blocks, open extents that go one way, shared blocks, the staging extent, `FreeAfter::Flush`, one seal in four a flush, transactions that fail, `zero_tail`. No journal, tree or crash consistency |
 
 So a run tests dax.c against a second writing of its assumptions. Where the model differs from
@@ -116,17 +116,14 @@ In dax.c as it stood at TASK-149.14, first found here, the first since fixed:
    `fixes/moved-before-mapped.patch`, which fixes 1 too. Unconfirmed.
 3. **A shared PMD read fault WARNs at `fs/dax.c:458`.** `dax_folio_put` leaves a page's index in the
    union with its share count, so a shared association of a page that had an entry at a nonzero index
-   skips `dax_folio_init`, and a PMD goes over an order 0 folio. Slices, moved pages and a range's own
-   pages once relocated all say shared. `tests/pmd_over_stale_index`, a guest check's steps,
+   skips `dax_folio_init`, and a PMD goes over an order 0 folio. Slices say shared.
+   `tests/pmd_over_stale_index`, a guest check's steps,
    `fixes/shared-pmd.patch`, a line in `fs/dax.c`. Unconfirmed.
 4. **A writable MAP outside the gate.** A reflink has part of an open extent read as sealed, so a
    reader outside the gate holds a sealed piece of a writable region: `fxfs_dax_new_slice` reaches for
-   it with no look at the region, and `fxfs_dax_move` looks before it has the region's lock.
+   it with no look at the region.
    `tests/sealed_piece_reach`, one task, whose guest check needs a lockdep kernel; seed 13464 at 1,000
    operations without the fix. `fixes/sealed-reach-locked.patch`. Unconfirmed.
-5. **A fault dies of SIGBUS on a range that never moved a page.** `fxfs_dax_place` does nothing for a
-   range with no `moved`, so a page unmapped there (TASK-124) isn't relocated, and its entry stays.
-   Seed 8083 at 200 operations without the fix. `fixes/unmap-tracks-moves.patch`. Unconfirmed.
 
 6. **`fs/dax.c:416` WARN: a PMD over a row that broke up.** Open. A read fault of a chunk has its entry
    and its iomap; a write moves a page of the row, with no PMD yet to take away, finds the fault's
@@ -143,44 +140,27 @@ operations, a private load of zeros, Fxfs's extents holding the bytes; none in 1
 
 15,000 seeds, all at 1,000 operations as `zloop.sh` runs them, fail at 2677 alone.
 
-dax.c's diagnostics were wrong twice, both on a real kernel too, each with its fix in `fixes/`:
-
-- `dax_shadow` (49 of 900 seeds at 1,000 operations): an evacuation's read-only MAP over an own-space
-  page once writable, which a move relocated, its PTEs gone with it. The fake's check of writable PTEs
-  under such a MAP, which is what the diagnostic stands in for, stays quiet.
-- `dax_check_places`: `i_size` read, then Fxfs asked, as a truncate shrinks the inode, then Fxfs,
-  between. `fxfs-guest-checks-dax-delay` sets it, so a guest run can fail on this.
-
 ## Past bugs put back
 
-`mutants.sh`, on top of `fixes/`: 22 past bugs, picked by hand from dax.c's history for being in its
-protocol, so not a fair sample of all its bugs. 3,000 seeds at most, an eighth at 1,000 operations.
-20 show; the other two can't any more, so 20 of 20 that can. Seeds move as the workload does, and
-seed 2677 fails with no mutant (6, below), so that is as far as a mutant not found goes.
+`mutants.sh`: past bugs, picked by hand from dax.c's history for being in its protocol, so not a
+fair sample of all its bugs. 3,000 seeds at most, an eighth at 1,000 operations. Seeds move as the
+workload does.
 
 | Past bug | Found at | How |
 | --- | --- | --- |
-| dce4f144b, only a fault forgets a move | `slice_refuses_a_piece` | a load of the wrong bytes |
 | patch 0008, a PMD row broken up | seed 1 | SIGBUS, in a second mapping's fault of a page |
-| TASK-121, moved blocks left unmapped | seed 3 | diagnostic WARN |
-| TASK-128, prune ignores stale entries | seed 7 | `fs/dax.c` WARN |
+| TASK-121, moved blocks left unmapped | seed 8 | diagnostic WARN |
 | TASK-133, every way out maps what moved | seed 16 | a zero read, with Fxfs failing a transaction |
-| TASK-124, holes not relocated | seed 13 | a read into its own mapping, short |
-| TASK-92.28, a move loses an append | seed 8 | bytes wrong |
-| TASK-147, a write's own source shrinks its range | seed 9 | short write |
-| TASK-79.50, non-atomic clear of writable bits | seed 14 | a split of a bitmap write |
-| bdc653701, a fault waits for a seal | seed 213 | a hang: 120 s, no log |
-| TASK-122, a page copied onto itself | seed 72 | a stale read |
-| TASK-101, evacuation lets go of the semaphore | seed 502 | a store the host refused |
-| TASK-99, a region opens under a read-only MAP | seed 32 | a store the host refused, as the VM stopped. The look at `mapped` goes back with what made a reader and a writer meet: the model's device write reads as opening its extent |
-| TASK-153.3, a device write reopens its extent, in the model, as the Rust had it | seed 32 | `fxfs_dax_region_open`'s WARN: an open extent's region mapped read-only |
-| TASK-153.3, a slice's refusal says `-ESTALE` to its readers | `interleave 1102 1000` | SIGBUS, two refusals in a row; not by the mix of seeds below 2677 |
-| TASK-79.12, a fault waits for the semaphore | seed 24 | its deadlock |
-| TASK-123, a row's other pages not relocated | seed 1039 | `fs/dax.c:416` WARN |
-| TASK-125, relocated pages stay mapped | seed 636 | `fs/dax.c:416` WARN: `moved-before-mapped.patch` covers most of what it did |
-| TASK-140, a read-only slice of an open extent | `open_extent_read_only` | a store the host refused. Shared blocks of an open extent slice its region, as they did, and `region_open` leaves such a region be: nothing else lets it be read-only |
-| TASK-44.21, a sealed piece reached for | `open_extent_read_only` | a store the host refused. Shared blocks of an open extent go through its region, by `fxfs_dax_move`: the check that kept them from a writable one is gone, with what needed it |
-| TASK-79.104, evict doesn't wait for evacuation | no | equivalent: since TASK-101 the hold is taken and let go of under the semaphore, so no one who has it sees one |
+| TASK-92.28, a move loses an append | seed 28 | diagnostic WARN |
+| TASK-147, a write's own source shrinks its range | seed 32 | short write |
+| TASK-79.50, non-atomic clear of writable bits | seed 40 | a split of a bitmap write |
+| bdc653701, a fault waits for a seal | seed 72 | a hang: 120 s, no log |
+| TASK-99, a region opens under a read-only MAP | seed 440 | a store the host refused, as the VM stopped |
+| TASK-79.12, a fault waits for the semaphore | seed 1692 | `fs/dax.c:416` WARN, not its deadlock |
+| TASK-140, a read-only slice of an open extent | `open_extent_read_only` | a fault dropped its range 257 times |
+| TASK-150.20, a MAP the host has no memory for makes no room | `open_memory_out` | a write's EIO; and every seed that limits the host's memory, a seed in four, in `interleave` and `failures` alike |
+| TASK-150.20, each way in alone: a write, a fault, zeroing, a read | `open_memory_out`, 8, 8, 592 | a write's EIO, a fault's EFAULT, a punch's ENOMEM, and a read's failure: reads reach it least |
+| TASK-44.21, a sealed piece reached for | `sealed_piece_reach` | a writable MAP outside the gate; the mutant takes `sealed-reach-locked.patch`'s check out too |
 | TASK-79.28, a range remapped too small | no | equivalent since TASK-147: a fault sizing a range from the old end holds the invalidate lock `fxfs_dax_fit` waits for, and one after sees `growing`. `task-79.28-before-147`, with that gone too, shows at seed 31 |
 
 The `fs/dax.c:416` WARN isn't these alone now: seed 2677 shows it with no mutant (6, below).
@@ -202,6 +182,7 @@ And by `tests/scenarios`, each at once, with how many seeds of `tests/failures` 
 | TASK-79.53, a mapping's store past the end read back | 2 | bytes wrong |
 | Patch 0009, a killed writer's copy stopped | 1 | bytes wrong |
 | A write past the end that copies nothing grows the file | not run | a scenario |
+| TASK-150.20, writes past the host's memory for open extents | 200 of 200 that limit it | the write's EIO, as generic/129's |
 
 150 seeds of `interleave` and `failures` with the scenarios reach 73% of dax.c's lines and 60% of
 `fs/dax.c`'s. Not reached: reclaim (the window never fills), followers, and Fxfs failing.

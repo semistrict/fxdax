@@ -223,6 +223,33 @@ pub fn default_fd() -> BorrowedFd<'static> {
     pmm::node().phys_memory().fd()
 }
 
+/// Pins `count` more pages against `arena`, as what it holds that relief can't evict, unless they
+/// would take its budget, or the arenas' together, all but an eighth of what each may hold: returns
+/// whether it did. Past a budget a caller makes room its own way, or fails, so that what can't, as
+/// a guest's fault can't, finds pages to evict. What fits no budget pins while nothing else is
+/// pinned. A pin takes no page: its caller allocates them, and [`unpin`]s them as they go or become
+/// evictable (TASK-150.20).
+pub fn pin(arena: ArenaId, count: usize) -> bool {
+    pmm::node().pin(arena, count, false)
+}
+
+/// Pins `count` more pages against `arena`, as [`pin`] does, whatever the budgets say: of the
+/// reserve, for what has no other way.
+pub fn pin_past_budget(arena: ArenaId, count: usize) {
+    pmm::node().pin(arena, count, true);
+}
+
+/// Lets go of `count` pages pinned against `arena`, as they go, or now they can be evicted, which
+/// they must be by then: what relief found nothing to evict for may find it now.
+pub fn unpin(arena: ArenaId, count: usize) {
+    pmm::node().unpin(arena, count);
+}
+
+/// The memory pinned against `arena`, in bytes.
+pub fn pinned_bytes(arena: ArenaId) -> u64 {
+    pmm::node().pinned_bytes(arena)
+}
+
 /// Caps the memory `arena` may take, in bytes, rounded down to chunks, or lifts its cap. Lowered
 /// under what it has, it takes no more until it has less (TASK-50.3).
 pub fn set_arena_cap(arena: ArenaId, bytes: Option<u64>) {

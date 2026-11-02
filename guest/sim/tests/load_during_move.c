@@ -52,8 +52,6 @@ static void scenario(void *arg)
 	char got;
 	int err, waited;
 
-	/* No evacuation, which would wait for the file's semaphore the paused fault holds. */
-	sim_param_set("dax_evacuates", "0");
 	mount = sim_mount_new();
 	file = sim_file_new(mount);
 	other = sim_file_new(mount);
