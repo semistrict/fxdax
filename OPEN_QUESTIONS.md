@@ -4,6 +4,12 @@ None.
 
 # Decisions
 
+## Unmerged branches became `archive/` tags, not deleted outright (2026-11-02)
+
+No long-lived branches now (AGENTS.md). Branches already in main went. Unmerged ones, untouched for two days and checked out nowhere, became tags `archive/<branch>`: 50 local, 5 on GitHub, where only main is left. Kept as they were: branches checked out in a worktree or changed in the last two days, as other sessions may be on them.
+**Instead:** delete them outright, losing their commits once the reflog expires.
+**Undoing it:** `git branch <name> archive/<name>`, then delete the tag.
+
 ## Truncate on a full disk: one path zeroes the tail (TASK-150.19)
 
 Rarely, truncated bytes come back on a truly full filesystem. Decided: every non-DAX growth takes one path that zeroes the tail, with one owner of file size (TASK-153.4).
