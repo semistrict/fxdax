@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-01 22:52'
-updated_date: '2026-11-02 05:13'
+updated_date: '2026-11-02 13:04'
 labels: []
 dependencies: []
 parent_task_id: TASK-153
@@ -24,7 +24,7 @@ Open is not one fact and can go backwards: the Rust open set, region->writable, 
 <!-- AC:BEGIN -->
 - [x] #1 An extent can not read as open after sealed
 - [x] #2 The checks around open that this makes dead are gone
-- [ ] #3 guest/sim passes, those past bugs put back failing or unbuildable
+- [x] #3 guest/sim passes, those past bugs put back failing or unbuildable
 - [x] #4 Suites and pgbench-dax pass on GCE
 <!-- AC:END -->
 
@@ -84,4 +84,12 @@ GCE: r470 (before the slice fix) checks-dax, -delay, -small, script-full-dax OK,
 pgbench-dax tps, 3 rounds of 5 runs each: base r472 870, r473 934; head r471 954, r476 903. Means 902, 929: no drop. The gate's decay fails both sides: 0.85, 0.86; 0.88, 0.87.
 
 HOST, NOT DONE: ExtentStore.open and Store.uncommitted. A MAP moving an extent wholly out of the store is Store API (uncommitted's openings, overwritten, ledger), 39 sites, lock-free begin_write's opening numbers, Store::extent going None for what's mapped (read_cached, free, describe), and specs/extent-open. It needs a decision: what a fork holds of an extent mapped writably, today EBUSY (TASK-150.7). A change of its own.
+
+2026-11-02, merge of origin/main (106b6128d), and the host half.
+
+MERGE. Main took pages out of regions (fafefbac7): regions are slices and a write(2)'s way through (106b6128d). fxfs_dax_move went, and with it the Shared check in map_extents: new_slice is the one way shared blocks could reach a region. fxfs_dax_open_through opens no new way to read open: gate == seals, on a piece map_write found open; its !region->writable is dead as new_slice's was. Lagging pages keep their piece's access. NoOpenUnderLock.cfg is back (OPEN_QUESTIONS.md). zloop.sh ran every seed at 1,000 operations: fixed, own commit.
+FOUND VERIFYING, all main's before this branch: (1) 106b6128d: a fault finishing between the move's unmap and the look at `users` leaves its PTE of a page that then lags: stale read, seed 7289 at 200. Fixed, 157417ad5, mutant task-153.3-lag-under-a-pte. (2) The slice -ESTALE class: main's seed 3762 at 1,000. (3) fs/dax.c:416 WARN, a write's invalidation of a PMD entry under its PMD: 3 in 30,000 at 200 on main, 5 here. Open. (4) extents::tests::windows_share_bases_pages flakes under load, main too (strong_count 5 against 4).
+HOST HALF, d559e9e78, on the decision in OPEN_QUESTIONS.md: map_open frees the store's copy of an extent it brings into memory, after the memory holds it; the commit writes it anew. sealing_would_strand_a_mapping and the fork's EBUSY gone; forks_seal_nothing_a_window_maps_writably now asserts the fork succeeds, the store holds no copy, and the fork has none of the extent; a_mapping_takes_an_open_extent_out_of_the_store. specs/extent-open: oneOwner, a fork, NoRefusedCommit, OneOwner; TwoOwners finds the refused commit; SplitWrite still the lost write.
+RESULTS. sim: check.sh clean; zloop 3,000 at the mix 0 failed, 3,000 at 1,000 0 failed, 30,000 at 200 5 failed, all (3). Mutants: those that can show do, but task-153.3-refused-slice-stale (not in 3,000, nor 500 at 1,000), and patch-0008, task-153.1-fault-limit, task-153.6-lag-past-the-end, which main doesn't catch in 400 either. TLC by hand (check-tla.sh's pinned jar SHA-256 stale): dax-region 5 models, extent-open 3, all as expected. Workspace, Docker: 2,167 of 2,169, both grants tests needing sudo. Guest Rust type-checks, guest tests compile.
+GCE, n2-standard-4: r477 (d559e9e78) checks-dax, -delay, -small, script-full-dax, xfstests OK; xfstests 16 of 650 failed, the known list, generic/129 passing now; write_times_add_up passes; no WARN, no unexplained refusals. r478 head (157417ad5) and r479 main side by side, pgbench-dax 4 rounds of 5 runs: 968 against 960 tps.
 <!-- SECTION:NOTES:END -->
