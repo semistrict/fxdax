@@ -6,10 +6,10 @@
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c
-@@ -3218,10 +3218,6 @@
- 			return 0;
+@@ -3290,10 +3290,6 @@
+ 			err = -ENOTBLK;
+ 			goto out;
  		}
- 		fxfs_device_store_end(dax->dev);
 -		/* COW must keep the appended bytes too, beyond Fxfs's former end. */
 -		err = fxfs_dax_write_size_locked(inode);
 -		if (err)
