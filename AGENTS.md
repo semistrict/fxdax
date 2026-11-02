@@ -33,13 +33,17 @@ Commit a batch once it has compiled and its unit tests have run and passed (the 
 compiled and tested. A batch may still be several commits, one logical change each, made together
 after the batch's test run.
 
+## Work lands on main: no long-lived branches
+
+A branch lives only as long as the batch on it: once its tests pass, it goes into main, is pushed, and is deleted, locally and on the remote. Pushing to main needs no question. Never leave finished work waiting on a branch, nor start a batch from a branch other than main: merge main in often, so that nothing drifts far from it.
+
 ## Don't wait on the user: decide, and record it in OPEN_QUESTIONS.md
 
 Never ask the user anything directly: not in a reply, not with a question tool, not as a choice at the end of a message. The user doesn't read through output for questions. Everything you'd need from them goes in `OPEN_QUESTIONS.md` at the repo root.
 
 A decision doesn't wait for the user. Make your best guess, act on it, and record it under `# Decisions` in `OPEN_QUESTIONS.md`: in a few lines, what you decided, why, what else was possible, and what undoing it would take. The user reads the file at leisure and overturns what they disagree with.
 
-Only what you can't do yourself stays under `# Open questions`: an action only the user can take (signing in, a push, anything the user's own instructions reserve to them, such as deleting a test), or a fact only they know with no reasonable guess. An entry says what's needed, why it matters, what you recommend, and what happens until it's answered; go on with whatever doesn't depend on it.
+Only what you can't do yourself stays under `# Open questions`: an action only the user can take (signing in, anything the user's own instructions reserve to them, such as deleting a test), or a fact only they know with no reasonable guess. An entry says what's needed, why it matters, what you recommend, and what happens until it's answered; go on with whatever doesn't depend on it.
 
 Check the file before starting work: an answer may be there. As soon as the user answers a question or confirms or overturns a decision, wherever they say it, take its entry out of the file and act on it: the file holds only what the user hasn't seen through yet.
 
