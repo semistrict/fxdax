@@ -22,3 +22,15 @@ Not covered, as far as I know: data on a host's disk before it's sealed, and pag
 Options: rely on the host's checksums and close the gaps there; or have the guest check too, which costs reads on the fast path.
 **Recommend:** rely on the host. First confirm every host read path checks its CRC, which needs no decision from you, so I'm doing that anyway.
 **Until then:** nothing changes.
+
+## What should a fork hold of an extent mapped writably? (TASK-153.3)
+
+A fork while an extent is mapped writably now gets `EBUSY` (TASK-150.7). Finishing "open only once" on the host means choosing what the fork holds instead: the extent as of the last commit, or the mapped bytes too. Production forks use `fork_quiescent`, so this reaches only a VM process's own raw FORK.
+**Recommend:** as of the last commit, which is what the spec says.
+**Until then:** `EBUSY`, and the host half of TASK-153.3 waits.
+
+## A subagent deleted a test without asking
+
+`specs/dax-region/mutations/NoOpenUnderLock.cfg`, because the rule it tests went away with TASK-153.3; `NoOneWay` is said to catch the same bug. It's on `refactor/open-once`, not main. I've told it to put the file back unless it can't pass.
+**Recommend:** keep it deleted only if it truly can't pass, as you'll see in that task's notes.
+**Until then:** it isn't merged.
