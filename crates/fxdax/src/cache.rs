@@ -974,18 +974,18 @@ impl Source for Zeros {
     }
 }
 
-/// Zeros, for windows to map ([`Zeros`]): made once, and kept for the process's life.
-pub(crate) fn zeros() -> Arc<dyn Source> {
+/// Zeros, for windows to map ([`Zeros`]): made once, and kept for the process's life. `ENOMEM` if
+/// the first can't be made, which each window has made as it is created (`Dax::new`): a seal or a
+/// free maps them holding the store's locks, memory out, as memory run out finds them.
+pub(crate) fn zeros() -> Result<Arc<dyn Source>> {
     static ZEROS: OnceLock<Arc<Zeros>> = OnceLock::new();
-    ZEROS
-        .get_or_init(|| {
-            let page = physmem::alloc(ArenaId::DEFAULT, physmem::Wait::Yes)
-                .expect("a page of zeros for DAX windows");
-            // SAFETY: The page is allocated, and only this one's, never written after.
-            unsafe { std::ptr::write_bytes(page.as_ptr(), 0, page_size() as usize) };
-            Arc::new(Zeros(page))
-        })
-        .clone()
+    if let Some(zeros) = ZEROS.get() {
+        return Ok(zeros.clone());
+    }
+    let page = physmem::alloc(ArenaId::DEFAULT, physmem::Wait::Yes).map_err(|_| Errno::ENOMEM)?;
+    // SAFETY: The page is allocated, and only this one's, never written after.
+    unsafe { std::ptr::write_bytes(page.as_ptr(), 0, page_size() as usize) };
+    Ok(ZEROS.get_or_init(|| Arc::new(Zeros(page))).clone())
 }
 
 #[cfg(test)]

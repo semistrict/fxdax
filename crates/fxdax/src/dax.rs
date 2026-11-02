@@ -892,6 +892,9 @@ pub(crate) struct Dax<K: Keep> {
     kept: HashMap<usize, BTreeSet<u64>>,
     /// The second stage, if the window has one.
     stage: Option<Arc<dyn SecondStage>>,
+    /// Zeros, which the window maps where nothing else is to be read ([`Dax::zeros`]): had before
+    /// it maps anything, so that mapping them takes no memory.
+    zeros: Arc<dyn Source>,
     /// The thread serving the faults on the host memory a test's window was created in
     /// ([`Dax::in_host_memory`]), which runs until the window is dropped.
     #[cfg(all(test, target_os = "linux"))]
@@ -908,6 +911,7 @@ impl<K: Keep> Dax<K> {
             mappings: BTreeMap::new(),
             kept: HashMap::new(),
             stage: second_stage,
+            zeros: crate::cache::zeros()?,
             #[cfg(all(test, target_os = "linux"))]
             _faults: None,
         };
@@ -1066,7 +1070,7 @@ impl<K: Keep> Dax<K> {
     /// Zeros, which the window maps where nothing else is to be read: one page of them, read-only,
     /// wherever it maps them (`crate::cache::zeros`).
     pub fn zeros(&self) -> Arc<dyn Source> {
-        crate::cache::zeros()
+        self.zeros.clone()
     }
 
     /// The window's mappings, in order, as their starts, ends and what keeps them alive.
@@ -1295,7 +1299,7 @@ pub(crate) mod tests {
     fn replacing_what_keeps_mappings_finds_what_remains_of_them() {
         let ps = page_size();
         let source = TestSource::anonymous(8).source();
-        let zeros = crate::cache::zeros();
+        let zeros = crate::cache::zeros().unwrap();
         let (mut dax, _window) = Dax::<Arc<u8>>::new(8 * ps, None).unwrap();
         let (a, b, z) = (Arc::new(0), Arc::new(1), Arc::new(2));
         dax.map(0, a.clone(), &source, 0, 4 * ps, true).unwrap();
@@ -1639,7 +1643,7 @@ pub(crate) mod tests {
     fn freed_extents_ranges_map_zeros() {
         let ps = page_size();
         let source = TestSource::numbered(8, 1).source();
-        let zeros = crate::cache::zeros();
+        let zeros = crate::cache::zeros().unwrap();
         let (mut dax, window) = Dax::<Arc<u8>>::new(8 * ps, None).unwrap();
         let (freed, other, zero) = (Arc::new(0), Arc::new(1), Arc::new(2));
         dax.map(0, freed.clone(), &source, 0, 2 * ps, true).unwrap();
