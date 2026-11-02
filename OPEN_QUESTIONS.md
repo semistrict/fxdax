@@ -2,12 +2,6 @@
 
 What the agents need from you, and nothing else. See AGENTS.md. Answer by editing an entry, or say so in any session.
 
-## Push the batch?
-
-`fix/refusal-gate` is ahead of main with: `generic/129`'s fix, transactions reporting their room, cross-host tenant restores (your VM manager must do the steps in `docs/integrator-guide.md`), the corrupt image fixes, the fault limit, and three flaky test fixes. Main fails two tests intermittently until it lands.
-**Recommend:** push once the batch's GCE run passes.
-**Until then:** it stays local. Agents don't push without your word.
-
 ## Must one snapshot restore on several hosts at once? (TASK-158)
 
 Today, once one host forks a point, every other host's copy fails with `EIO` until it's dropped and created again. Fixing that needs a protocol change.

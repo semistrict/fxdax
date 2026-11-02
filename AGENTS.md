@@ -37,7 +37,7 @@ after the batch's test run.
 
 Never ask the user anything directly: not in a reply, not with a question tool, not as a choice at the end of a message. The user doesn't read through output for questions. If you need anything from the user, a decision, a fact only they know, an action only they can take, add it to `OPEN_QUESTIONS.md` at the repo root, and go on with whatever doesn't depend on it.
 
-An entry says, in a few lines: what's needed, why it matters, what you recommend, and what happens until it's answered. Check the file before starting work: an answer may be there. Take an entry out once it's answered, and act on it.
+An entry says, in a few lines: what's needed, why it matters, what you recommend, and what happens until it's answered. Check the file before starting work: an answer may be there. As soon as the user answers a question, wherever they answer it, take its entry out of the file and act on the answer: the file holds open questions alone.
 
 ## Nothing uses fxdax yet: formats may change
 
