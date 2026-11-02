@@ -251,8 +251,8 @@ static void clone_past_a_writable_region(void)
 
 /*
  * As clone_past_a_writable_region, the clone in two pieces, which are no slice: GCE r423's stack,
- * fxfs_dax_map_chunk outside the gate, fxfs_dax_move, a writable MAP past the region's end as a seal
- * shrank it (generic/013), for blocks that no longer go by fxfs_dax_move.
+ * fxfs_dax_map_chunk outside the gate, a writable MAP past the region's end as a seal shrank it
+ * (generic/013), by a way into regions that fafefbac7 took out.
  */
 static void clone_pieces_past_a_writable_region(void)
 {
@@ -276,7 +276,7 @@ static void clone_pieces_past_a_writable_region(void)
 }
 
 static struct file *slice_file;
-static char slice_bytes[2 * PAGE_SIZE];
+static char slice_bytes[2 * PAGE_SIZE], slice_written[2 * PAGE_SIZE];
 static unsigned long slice_addr;
 
 /* A fault, whose iomap holds the slice with no lock of the inode's that a write(2) waits for. */
@@ -285,17 +285,15 @@ static void load_slice(void *arg)
 	char got[PAGE_SIZE];
 	int err = sim_user_load(slice_addr, got, sizeof(got));
 
-	check(!err && !memcmp(got, slice_bytes, sizeof(got)), "the load: %d", err);
+	/* It paused until the write was done, which had no entry of the fault's to wait for. */
+	check(!err && !memcmp(got, slice_written, sizeof(got)), "the load: %d", err);
 }
 
 static void write_slice(void *arg)
 {
-	static char written[2 * PAGE_SIZE];
-	ssize_t done;
+	ssize_t done = sim_write(slice_file, 0, slice_written, sizeof(slice_written));
 
-	memset(written, 'w', sizeof(written));
-	done = sim_write(slice_file, 0, written, sizeof(written));
-	check(done == sizeof(written), "the write: %zd", done);
+	check(done == sizeof(slice_written), "the write: %zd", done);
 }
 
 /*
@@ -304,8 +302,8 @@ static void write_slice(void *arg)
  * region, on no list of files, took a write whose first page stayed where it was, the file cloned
  * having let go of it, and whose second moved. The first page's bit was set, the file unlisted,
  * and the slice stayed, a reader using it, past a seal (dax_check_seals' WARN). Shared blocks make
- * no slice now (TASK-153.3): the same steps, on a range of its own, whose writer waits for the fault
- * holding the page's entry, in the gate, so that the seal comes once that is let go.
+ * no slice now (TASK-153.3): the same steps, on a range of its own, whose writer doesn't wait for
+ * the fault holding the page's entry, which then reads what it wrote.
  */
 static void slice_refuses_a_piece(void)
 {
@@ -317,6 +315,7 @@ static void slice_refuses_a_piece(void)
 	sim_param_set("dax_check_seals", "1");
 	fill(one, sizeof(one), 1);
 	fill(slice_bytes, sizeof(slice_bytes), 3);
+	memset(slice_written, 'w', sizeof(slice_written));
 	holder = new_file(one, sizeof(one));
 	cloned = new_file(slice_bytes, sizeof(slice_bytes));
 	slice_file = sim_file_new(mount);
