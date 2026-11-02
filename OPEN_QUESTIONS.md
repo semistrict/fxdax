@@ -1,12 +1,5 @@
 # Open questions
 
-## Sign in to GCE
-
-gcloud's credentials expired. A Google sign-in page opened in your browser on 2026-11-02: finish it as ramon@echophase.com.
-**Until then:** no GCE runs: the `load_during_move` hang can't be repeated, and nothing new gets a real-kernel check.
-
-What the agents need from you, and nothing else. See AGENTS.md. Answer by editing an entry, or say so in any session.
-
 ## How to close truncate on a full disk? (TASK-150.19)
 
 Rarely, truncated bytes come back on a truly full filesystem. Either every non-DAX growth takes one path that zeroes the tail, or a mid-block shrink may return `NoSpace`, partly reversing TASK-60.
