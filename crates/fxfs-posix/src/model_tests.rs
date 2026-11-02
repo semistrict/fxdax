@@ -2426,6 +2426,21 @@ fn freeing_many_fragments_fits_in_transactions() {
     Setting::calm(0, ROOMY).holds(ops);
 }
 
+/// A file with more extents than its batch's transaction has room to free, unlinked and evicted in
+/// it, is left to the graveyard, which frees the rest. Only such a file goes that way: what a
+/// transaction holds decides which those are, and a hunt's fills came to reach it by chance once
+/// it held more than 200 mutations.
+#[test]
+fn a_file_too_large_for_its_batch_goes_through_the_graveyard() {
+    let ops = vec![
+        Op::Create(0),
+        Op::Fill { file: 0, page: 0, pages: 8192, stride: 2, byte: 1 },
+        Op::UnlinkLater(0),
+        Op::Sync,
+    ];
+    Setting::calm(0, ROOMY).holds(ops);
+}
+
 /// The journal's padding is paid for by a transaction of its own, which a replay that discarded
 /// more of the journal than a transaction reserves must not panic: found by a hunt, whose seed this
 /// keeps, as what the cuts lose depends on it.
