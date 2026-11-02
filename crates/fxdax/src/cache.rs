@@ -17,7 +17,10 @@
 //!
 //! An open extent a window maps writably is pages of its store's arena ([`OpenPages`]), zeros as
 //! they come in, which its commit writes to the store, then moves into the sealed extent's table,
-//! uncopied ([`CachedExtent::supply`]).
+//! uncopied ([`CachedExtent::supply`]). Only then can they be evicted, and only the guest, in a
+//! seal, can have that done: so they are pinned until then (`physmem::pin`), and a MAP past their
+//! budget tells it to, with `ENOMEM`, where memory is there still for its faults, and its seal
+//! (TASK-150.20).
 
 use crate::dax::{Deferred, Source, Window};
 use crate::error::{Errno, Result};
@@ -598,6 +601,7 @@ impl CachedExtent {
             return;
         }
         let moved = open.take(pages);
+        let count = moved.len();
         let mut table = self.pages.lock().unwrap();
         for (page, frame) in moved {
             if let Some(slot @ (Slot::Absent | Slot::Failed(_))) = table.slots.get_mut(page as usize)
@@ -607,6 +611,8 @@ impl CachedExtent {
             }
         }
         drop(table);
+        // In the table: relief, told of them, finds them.
+        physmem::unpin(self.arena, count);
         self.changed.notify(usize::MAX);
     }
 
@@ -815,9 +821,20 @@ impl Source for CachedExtent {
     }
 }
 
+/// How far an open extent's pages may go ([`OpenPages::commit`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Room {
+    /// Within the budget of pages nothing can evict (`physmem::pin`), for a MAP, which `ENOMEM`
+    /// tells the guest to seal, and try again.
+    Budget,
+    /// Into the reserve past it, for what can't go back: a write, which the guest's seal would make
+    /// a write to a sealed extent, and a fault.
+    Reserve,
+}
+
 /// The memory of an open extent a window maps writably: pages of its store's arena, zeros as they
 /// come in, until the commit that seals it moves them into its cached extent. Never evicted: its
-/// commit writes them to the store.
+/// commit writes them to the store. Each is pinned, until it moves or goes (`physmem::pin`).
 pub(crate) struct OpenPages {
     arena: ArenaId,
     pages: Mutex<Vec<Option<physmem::Page>>>,
@@ -872,7 +889,8 @@ impl OpenPages {
     /// lock while it waits for room: relief unmaps what it evicts from the windows, whose locks are
     /// taken before a source's (`Source`), so a fault on the extent holding one for this lock would
     /// hold relief up, and so this allocation, for good. What another brought in meanwhile stays.
-    pub(crate) fn commit(&self, pages: Range<u64>) -> Result<()> {
+    /// Past `room`'s limit, `ENOMEM`, the pages before it brought in.
+    pub(crate) fn commit(&self, pages: Range<u64>, room: Room) -> Result<()> {
         let mut page = pages.start as usize;
         while page < pages.end as usize {
             let chunk = physmem::CHUNK_SIZE / page_size() as usize;
@@ -890,12 +908,25 @@ impl OpenPages {
                 let before = page.checked_sub(1).and_then(|before| table[before].as_ref());
                 (end, Self::taken_after(before, end - page))
             };
+            match room {
+                Room::Budget if !physmem::pin(self.arena, end - page) => return Err(Errno::ENOMEM),
+                Room::Budget => {}
+                Room::Reserve => physmem::pin_past_budget(self.arena, end - page),
+            }
             let new = end - page - run.len();
-            let run = self.zeroed(run, new)?;
+            let run = self.zeroed(run, new).inspect_err(|_| {
+                physmem::unpin(self.arena, end - page);
+            })?;
+            let mut lost = 0;
             let mut table = self.pages.lock().unwrap();
             for (slot, frame) in table[page..end].iter_mut().zip(run) {
-                slot.get_or_insert(frame);
+                match slot {
+                    Some(_) => lost += 1,
+                    None => *slot = Some(frame),
+                }
             }
+            drop(table);
+            physmem::unpin(self.arena, lost);
             page = end;
         }
         Ok(())
@@ -923,11 +954,11 @@ impl OpenPages {
         }
     }
 
-    /// Writes `data` at `offset`, bringing the pages it writes into memory.
-    pub(crate) fn write(&self, offset: u64, data: &[u8]) -> Result<()> {
+    /// Writes `data` at `offset`, bringing the pages it writes into memory, as far as `room` says.
+    pub(crate) fn write(&self, offset: u64, data: &[u8], room: Room) -> Result<()> {
         let ps = page_size() as usize;
         let end = offset + data.len() as u64;
-        self.commit(offset / ps as u64..end.div_ceil(ps as u64))?;
+        self.commit(offset / ps as u64..end.div_ceil(ps as u64), room)?;
         let table = self.pages.lock().unwrap();
         let mut done = 0;
         while done < data.len() {
@@ -943,13 +974,21 @@ impl OpenPages {
         Ok(())
     }
 
-    /// Takes its pages of `pages`, as they move to its sealed extent.
+    /// Takes its pages of `pages`, as they move to its sealed extent: pinned still, which is for
+    /// the extent to let go of once it has them ([`CachedExtent::supply`]).
     fn take(&self, pages: Range<u64>) -> Vec<(u64, physmem::Page)> {
         let mut table = self.pages.lock().unwrap();
         let held = table.len() as u64;
         (pages.filter(|page| *page < held))
             .filter_map(|page| Some((page, table[page as usize].take()?)))
             .collect()
+    }
+}
+
+impl Drop for OpenPages {
+    fn drop(&mut self) {
+        let held = self.pages.get_mut().unwrap().iter().flatten().count();
+        physmem::unpin(self.arena, held);
     }
 }
 
@@ -964,7 +1003,7 @@ impl Source for OpenPages {
     }
 
     fn bring_in(self: Arc<Self>, page: u64) -> BoxFuture<'static, Result<bool>> {
-        Box::pin(std::future::ready(self.commit(page..page + 1).map(|()| false)))
+        Box::pin(std::future::ready(self.commit(page..page + 1, Room::Reserve).map(|()| false)))
     }
 
     fn is_open(&self) -> bool {
@@ -1027,9 +1066,9 @@ mod tests {
             row.into_iter().enumerate().partition(|(at, _)| at % 2 == 0);
         drop(freed);
         let open = OpenPages::new(ArenaId::DEFAULT);
-        open.commit(0..8).unwrap();
-        open.commit(8..12).unwrap();
-        open.write(12 * ps, &vec![1; 4 * ps as usize]).unwrap();
+        open.commit(0..8, Room::Budget).unwrap();
+        open.commit(8..12, Room::Budget).unwrap();
+        open.write(12 * ps, &vec![1; 4 * ps as usize], Room::Budget).unwrap();
         let offsets = offsets(&open);
         let first = offsets[0];
         assert_eq!(offsets, (0..16).map(|page| first + page * ps).collect::<Vec<_>>());
@@ -1059,12 +1098,45 @@ mod tests {
         .unwrap();
         let open = OpenPages::new(arena);
         std::thread::scope(|scope| {
-            let committed = scope.spawn(|| open.commit(0..1));
+            let committed = scope.spawn(|| open.commit(0..1, Room::Reserve));
             relief_asked.recv().unwrap();
             assert!(open.pages.try_lock().is_ok(), "the table is locked, waiting for room");
             drop(held);
             room.send(()).unwrap();
             assert_eq!(committed.join().unwrap(), Ok(()));
         });
+    }
+
+    const EXTENT: ExtentId = ExtentId { branch: 1, sequence: 1 };
+
+    /// Contents read of nothing: what a sealed extent's pages come from, read in.
+    struct NoContents;
+
+    impl Contents for NoContents {
+        fn read<'a>(
+            &'a self,
+            _offset: u64,
+            _buf: &'a mut [u8],
+        ) -> BoxFuture<'a, std::result::Result<(), anyhow::Error>> {
+            unreachable!("nothing is read in")
+        }
+    }
+
+    /// TASK-150.20: a page pinned is let go of however it goes: moved to the sealed extent, or
+    /// with its open extent; and one of two brought in at once counts once.
+    #[test]
+    fn open_pages_are_pinned_until_they_go() {
+        let arena = physmem::create_arena();
+        let ps = page_size();
+        let open = OpenPages::new(arena);
+        open.commit(0..8, Room::Budget).unwrap();
+        open.write(8 * ps, &[1; 8], Room::Reserve).unwrap();
+        open.commit(0..9, Room::Budget).unwrap();
+        assert_eq!(physmem::pinned_bytes(arena), 9 * ps);
+        let sealed = CachedExtent::new(arena, EXTENT, Box::new(NoContents), 4 * ps);
+        sealed.supply(0..4, &open);
+        assert_eq!(physmem::pinned_bytes(arena), 5 * ps);
+        drop(open);
+        assert_eq!(physmem::pinned_bytes(arena), 0);
     }
 }

@@ -25,7 +25,7 @@
 //! it to the store, seals it, maps the window's mappings of it to its pages in the cache, and moves
 //! its pages there.
 
-use crate::cache::{self, CachedExtent, OpenPages};
+use crate::cache::{self, CachedExtent, OpenPages, Room};
 use crate::dax::{Dax, DaxWindow, Keep, SecondStage, Source};
 use crate::error::{Errno, Error, Result};
 use crate::faults::failpoint;
@@ -1149,7 +1149,8 @@ impl ExtentStore {
         let mut open = self.open.lock().unwrap();
         if let Some(open) = open.get_mut(&extent) {
             // An open extent mapped writably is in memory, which the commit writes to the store.
-            open.pages.write(offset, &data)?;
+            // Into the reserve: a seal would leave this write nowhere to go.
+            open.pages.write(offset, &data, Room::Reserve)?;
             open.len = open.len.max(offset + len as u64);
             return Ok(());
         }
@@ -1550,7 +1551,8 @@ impl ExtentStore {
     /// then moves (doc-4), which a guest maps as it reads them meanwhile.
     /// A writable mapping is of an extent of the store's branch that is open or new
     /// (`DAX_WRITE`), within `MAX_EXTENT`, which it grows to hold the range: of another branch's,
-    /// or a sealed one, it fails with `EPERM`.
+    /// or a sealed one, it fails with `EPERM`. fxdax: past the pages open extents may hold
+    /// (`physmem::pin`), with `ENOMEM`, which leaves what it brought in: a seal makes them room.
     pub fn map(
         &self,
         extent: ExtentId,
@@ -1664,7 +1666,7 @@ impl ExtentStore {
             if len > 0 {
                 let mut data = vec![0; len as usize];
                 self.store.read(extent.into(), 0, &mut data).map_err(errno)?;
-                pages.write(0, &data)?;
+                pages.write(0, &data, Room::Budget)?;
             }
             open.insert(extent, OpenExtent { pages, len, stored: len });
         }
@@ -1679,9 +1681,14 @@ impl ExtentStore {
             // The guest maps what it is about to write: its pages are brought in and mapped now,
             // rather than one fault at a time as it writes them.
             let ps = page_size();
-            extent_open.pages.commit(offset / ps..end.div_ceil(ps)).inspect_err(|errno| {
+            let pages = offset / ps..end.div_ceil(ps);
+            extent_open.pages.commit(pages, Room::Budget).inspect_err(|errno| {
                 log::warn!(
-                    "fxdax: bringing in {len:#x} bytes at {offset:#x} of {extent:?}: {errno:?}"
+                    "fxdax: bringing in {len:#x} bytes at {offset:#x} of {extent:?}: {errno:?}: \
+                     {:#x} bytes pinned of {:#x} held of {:#x}",
+                    physmem::pinned_bytes(self.arenas.own()),
+                    physmem::arena_bytes(self.arenas.own()),
+                    physmem::count_total_bytes(),
                 )
             })?;
         }
@@ -2928,6 +2935,107 @@ mod tests {
         let _window = store.create_dax_window(len, None).unwrap();
         assert_eq!(store.map(id(&store, 1), 0, len, 0, true), Err(Errno::ENOMEM));
         assert_eq!(physmem::arena_bytes(arena), 2 * chunk);
+    }
+
+    /// A store and window over `chunks` chunks of memory, in a process of the test's own, with
+    /// what a window's chunks of open extents take: 2 MiB each.
+    fn store_in_memory(path: &Path, chunks: u64) -> (ExtentStore, DaxWindow) {
+        const CHUNK: u64 = physmem::CHUNK_SIZE as u64;
+        crate::pages::configure(crate::pages::Config::with_memory(chunks * CHUNK)).unwrap();
+        let store = ExtentStore::create(path, 16 << 30).unwrap();
+        let window = store.create_dax_window(4 * chunks * CHUNK, None).unwrap();
+        (store, window)
+    }
+
+    /// TASK-150.20: open extents are what relief can't evict, so a MAP past their budget of memory
+    /// is refused with an eighth of it left, and a seal lets it go on: round after round, with
+    /// nothing but seals to free it, each round more than memory holds altogether, as a guest's
+    /// truncate and write would (xfstests' generic/129); and what each wrote stays as written,
+    /// evicted or not.
+    #[test]
+    fn writable_maps_past_the_open_budget_are_refused_until_a_seal() {
+        const CHUNK: u64 = physmem::CHUNK_SIZE as u64;
+        const CHUNKS: u64 = 16;
+        let dir = tempfile::tempdir().unwrap();
+        let (store, window) = store_in_memory(&dir.path().join("store"), CHUNKS);
+        let ps = page_size();
+        let mut sequence = 0;
+        let mut written = Vec::new();
+        for round in 0..4 {
+            let mut mapped = 0;
+            loop {
+                sequence += 1;
+                let extent = id(&store, sequence);
+                let at = sequence % (4 * CHUNKS) * CHUNK;
+                match store.map(extent, 0, CHUNK, at, true) {
+                    Ok(()) => mapped += 1,
+                    Err(errno) => {
+                        assert_eq!(errno, Errno::ENOMEM, "round {round}");
+                        break;
+                    }
+                }
+                // SAFETY: Mapped writably just now, and nothing else accesses it.
+                unsafe { *window.host_base().add(at as usize + ps as usize) = sequence as u8 };
+                written.push(sequence);
+            }
+            assert_eq!(mapped, CHUNKS * 7 / 8, "round {round}");
+            store.commit(None).unwrap();
+            assert_eq!(physmem::pinned_bytes(ArenaId::DEFAULT), 0, "round {round}");
+        }
+        for sequence in written {
+            let held = read(&store, id(&store, sequence), ps, 1).unwrap();
+            assert_eq!(held, [sequence as u8], "extent {sequence}");
+        }
+    }
+
+    /// TASK-150.20: a write, which can't go back, and a fault, which stops the guest if it fails,
+    /// go past what stops a MAP; and with memory gone at last, every page of it pinned, a write
+    /// says ENOMEM, and all that takes no memory goes on, a seal above all: the window's zeros,
+    /// made once as the first was mapped, took a page there, panicked and poisoned the store's
+    /// locks, and every request of its guest's after that (r454). The seal then gives it all back.
+    #[test]
+    fn memory_gone_leaves_the_store_going() {
+        const CHUNK: u64 = physmem::CHUNK_SIZE as u64;
+        const CHUNKS: u64 = 16;
+        let dir = tempfile::tempdir().unwrap();
+        let (store, window) = store_in_memory(&dir.path().join("store"), CHUNKS);
+        let ps = page_size();
+        write(&store, id(&store, 1), 0, &pattern(1, BLOCK)).unwrap();
+        store.commit(None).unwrap();
+
+        let refused = (2..=CHUNKS + 2)
+            .find(|&sequence| {
+                store.map(id(&store, sequence), 0, CHUNK, sequence * CHUNK, true).is_err()
+            })
+            .expect("every MAP mapped");
+        assert_eq!(refused, CHUNKS * 7 / 8 + 2);
+        let last = id(&store, refused - 1);
+
+        write(&store, last, CHUNK, &pattern(2, ps as usize)).unwrap();
+        store.map(last, CHUNK, ps, 0, false).unwrap();
+        block_on(window.fault(0, Access::Read)).unwrap();
+        store.map(last, 2 * CHUNK, ps, ps, false).unwrap();
+        block_on(window.fault(ps, Access::Read)).unwrap();
+
+        // To the last page: a write that fails gives back the pages it had found.
+        let mut at = 3 * CHUNK;
+        let gone = loop {
+            match write(&store, last, at, &pattern(3, ps as usize)) {
+                Ok(()) => at += ps,
+                Err(errno) => break errno,
+            }
+        };
+        assert_eq!(gone, Errno::ENOMEM);
+        assert_eq!(physmem::count_free_pages(), 0);
+
+        // Past a sealed extent's end, zeros; and what a free puts in its mappings' place.
+        let sealed = id(&store, 1);
+        store.map(sealed, 0, 4 * ps, 2 * ps, false).unwrap();
+        store.free(sealed).unwrap();
+        store.commit(None).unwrap();
+        assert_eq!(physmem::pinned_bytes(ArenaId::DEFAULT), 0);
+        assert_eq!(read(&store, last, CHUNK, ps as usize).unwrap(), pattern(2, ps as usize));
+        store.map(id(&store, refused + 1), 0, CHUNK, refused * CHUNK, true).unwrap();
     }
 
     /// A store holds a block at least; one asked for less is not made, nor its directory.

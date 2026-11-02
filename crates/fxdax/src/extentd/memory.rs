@@ -7,7 +7,10 @@
 //! at runtime through the control API. Past a limit the daemon evicts the clean pages asked for
 //! longest ago, the tenant's own past the tenant's, any tenant's past the total; with none left to
 //! evict, what would take more fails with `ENOMEM` (physical memory's relief, with `crate::cache`'s
-//! evictor), and the daemon goes on. Its metrics name tenants by [`label`]s.
+//! evictor), and the daemon goes on. An open extent's pages are none of those clean pages until a
+//! seal: a guest's MAP past seven eighths of a limit in them says `ENOMEM`, for it to seal, before
+//! they could leave relief nothing (`physmem::pin`, TASK-150.20). Its metrics name tenants by
+//! [`label`]s.
 
 use super::server::{Parking, Tenant};
 use crate::Errno;
