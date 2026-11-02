@@ -125,20 +125,21 @@ In dax.c as it stood at TASK-149.14, first found here, the first since fixed:
    `tests/sealed_piece_reach`, one task, whose guest check needs a lockdep kernel; seed 13464 at 1,000
    operations without the fix. `fixes/sealed-reach-locked.patch`. Unconfirmed.
 
-6. **`fs/dax.c:416` WARN: a PMD over a row that broke up.** Open. A read fault of a chunk has its entry
-   and its iomap; a write moves a page of the row, with no PMD yet to take away, finds the fault's
-   entry, says the page is shared, and waits for that entry; the fault maps the PMD; the write's
-   `invalidate_inode_pages2_range` then disassociates the entry under it, splitting a mapped folio.
-   Seed 2677 at 1,000 operations; steps played out with `dax_pause` at READ_MAPPED fail on dax.c before
-   and after TASK-153.3. No fix here: taking the PMD away in `iomap_end` leaves a page's refault in
-   the same place. It wants the entry unmapped under its lock, in `fs/dax.c`.
+6. **`fs/dax.c:416` WARN: a write invalidates a PMD's entry under its PMD.** Open. A write says its
+   pages are new, or shared, and has `dax_iomap_iter` invalidate their entries, a PMD's over the row,
+   while the PMD maps it still: the folio is split while mapped. Before fafefbac7 the write said a
+   page that moved shared, as a read fault mapped the row; since, a write over a page a failed move
+   left a hole says it new. Main and TASK-153.3 alike: at 200 operations 3 seeds in 30,000 on main
+   (106b6128d), 5 here. It wants the entry unmapped under its lock, in `fs/dax.c`.
 
-TASK-153.3's two: a slice's refusal said `-ESTALE` to its readers, fixed, seed 1102 and on dax.c before
-it seed 12343; and a read of `-28` where `failures` had kept the window from use for want of a bound,
-which `kernel/device.c` now has. Unexplained, on dax.c before TASK-153.3 only: seed 10529 at 1,000
-operations, a private load of zeros, Fxfs's extents holding the bytes; none in 15,000 seeds after.
+TASK-153.3's, all three on main before it too: a slice's refusal said `-ESTALE` to its readers, which
+drop it once: two refusals, SIGBUS (seed 1102; main's seed 3762 at 1,000 operations). A write through a
+region left a fault's PTE of its page where its blocks were, mapped between the move's unmap and the
+look at `users`: a stale read (seed 7289 at 200). And `failures` kept window from use, for good, until
+none was left (now a quarter of it at most).
 
-15,000 seeds, all at 1,000 operations as `zloop.sh` runs them, fail at 2677 alone.
+At 106b6128d merged: 3,000 seeds at the mix, 3,000 at 1,000 operations and 30,000 at 200 fail at the
+WARN of 6 alone, 5 times, all at 200.
 
 ## Past bugs put back
 
@@ -155,15 +156,19 @@ workload does.
 | TASK-147, a write's own source shrinks its range | seed 32 | short write |
 | TASK-79.50, non-atomic clear of writable bits | seed 40 | a split of a bitmap write |
 | bdc653701, a fault waits for a seal | seed 72 | a hang: 120 s, no log |
-| TASK-99, a region opens under a read-only MAP | seed 440 | a store the host refused, as the VM stopped |
+| TASK-99, a region opens under a read-only MAP | seed 2544 | a store the host refused, as the VM stopped. The look at `mapped` goes back with what made a reader and a writer meet: the model's device write reads as opening its extent |
+| TASK-153.3, a device write reopens its extent, in the model, as the Rust had it | seed 2544 | `fxfs_dax_region_open`'s WARN: an open extent's region mapped read-only |
+| TASK-153.3, a slice's refusal says `-ESTALE` to its readers | no, in 3,000, nor 500 at 1,000 operations | found by `interleave 1102 1000` before 106b6128d; main at 106b6128d fails so at seed 3762, 1,000 operations |
+| TASK-153.3, a write through a region keeps a fault's PTE of the page it lags | `interleave 7289 200` | a stale read; by the mix, 6's WARN comes first, at seed 1486 |
 | TASK-79.12, a fault waits for the semaphore | seed 1692 | `fs/dax.c:416` WARN, not its deadlock |
-| TASK-140, a read-only slice of an open extent | `open_extent_read_only` | a fault dropped its range 257 times |
+| TASK-140, a read-only slice of an open extent | `open_extent_read_only` | a store the host refused: shared blocks of an open extent slice its region, as they did, and `region_open` leaves such a region be |
 | TASK-150.20, a MAP the host has no memory for makes no room | `open_memory_out` | a write's EIO; and every seed that limits the host's memory, a seed in four, in `interleave` and `failures` alike |
 | TASK-150.20, each way in alone: a write, a fault, zeroing, a read | `open_memory_out`, 8, 8, 592 | a write's EIO, a fault's EFAULT, a punch's ENOMEM, and a read's failure: reads reach it least |
-| TASK-44.21, a sealed piece reached for | `sealed_piece_reach` | a writable MAP outside the gate; the mutant takes `sealed-reach-locked.patch`'s check out too |
+| TASK-44.21, a sealed piece reached for | `open_extent_read_only` | `fxfs_dax_region_open`'s WARN: shared blocks of an open extent go through its region, as a slice's, the one way since fafefbac7 |
 | TASK-79.28, a range remapped too small | no | equivalent since TASK-147: a fault sizing a range from the old end holds the invalidate lock `fxfs_dax_fit` waits for, and one after sees `growing`. `task-79.28-before-147`, with that gone too, shows at seed 31 |
 
-The `fs/dax.c:416` WARN isn't these alone now: seed 2677 shows it with no mutant (6, below).
+The `fs/dax.c:416` WARN isn't these alone: it shows with no mutant (6, above), about a seed in 6,000
+at 200 operations.
 
 300 seeds of the first workload reached 72% of dax.c's lines and 62% of `fs/dax.c`'s; not measured
 since. Eviction, reflinks, reclaim (a run in four has a window its files fill) and Fxfs's failures are
