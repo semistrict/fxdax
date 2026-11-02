@@ -4437,10 +4437,12 @@ fn whatever_a_vm_process_says_harms_no_other() {
             Ok(())
         })
         .unwrap();
-    // What it says reaches past the checks: not every request is refused.
+    // What it says reaches past the checks: not every request is refused. Those it heard of
+    // served, once it hung up, are fewer the busier the host: 929 at the least of 1300 or so, with
+    // the machine's other work making everything fifty times slower.
     let (served, restored) = (served.load(Ordering::Relaxed), restored.load(Ordering::Relaxed));
     println!("{served} requests served, {restored} of them restores");
-    assert!(served > 1000, "{served} requests served");
+    assert!(served > 500, "{served} requests served");
     // And it restores what it was given: refusing everything would pass the rest.
     assert!(restored > 0, "{restored} restores served");
     drop(other);
