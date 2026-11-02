@@ -14,7 +14,7 @@ The problem: a byte of a file gets damaged in storage, by a bad disk or a bad up
 
 What protects data today:
 - **Sealed data on the host and in the bucket has a checksum:** `extent_frame` stores a CRC32C for each part and checks it when reading. I haven't checked that every read path goes through it.
-- **Fxfs's own data checksums are never read,** except at journal replay. In a test that flips bytes in an Fxfs image on a fake device, about 84% read back wrong with no error. That test skips the host layer, so it overstates the risk on a real host.
+- **Fxfs's own data checksums are never read,** except at journal replay, where they show whether a write reached the device. That's how Fuchsia's code has it. In a test that flips bytes in an Fxfs image on a fake device, about 84% read back wrong with no error. That test skips the host layer, so it overstates the risk on a real host. Reading them wouldn't help DAX anyway: DAX stores skip Fxfs's write path, so they have no checksum.
 - **Once a page is in the DAX window, a read goes straight to memory,** so nothing can check it there.
 
 Not covered, as far as I know: data on a host's disk before it's sealed, and pages already in memory.
