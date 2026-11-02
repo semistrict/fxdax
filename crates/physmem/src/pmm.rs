@@ -295,6 +295,21 @@ impl PmmNode {
         chunk_bytes(self.locked().given())
     }
 
+    /// fxdax: pins `count` pages against `arena` (`Arenas::pin`).
+    pub(crate) fn pin(&self, arena: ArenaId, count: usize, past_budget: bool) -> bool {
+        self.locked().pin(arena, count, past_budget)
+    }
+
+    /// fxdax: lets go of `count` pages pinned against `arena`.
+    pub(crate) fn unpin(&self, arena: ArenaId, count: usize) {
+        self.locked().unpin(arena, count);
+    }
+
+    /// fxdax: the bytes pinned against `arena`.
+    pub(crate) fn pinned_bytes(&self, arena: ArenaId) -> u64 {
+        (self.locked().pinned(arena) * page_bytes()) as u64
+    }
+
     /// fxdax: gives the spare chunks of `arena`, or of every arena, wholly free, back to the node:
     /// memory they hold that nothing uses (TASK-50.3).
     pub(crate) fn release_spares(&self, arena: Option<ArenaId>) {
