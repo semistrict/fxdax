@@ -29,10 +29,10 @@ use fxfs::object_store::directory::{MutableAttributesInternal, ReplacedChild, re
 use fxfs::object_store::dirty_reservation::DirtyReservation;
 use fxfs::object_store::transaction::{LockKey, LockKeys, Mutation, Options, Transaction};
 use fxfs::object_store::{
-    AttributeId, AttributeKey, DataObjectHandle, Directory, FileExtent, HandleOptions,
-    MAX_INLINE_XATTR_SIZE, MAX_XATTR_NAME_SIZE, MAX_XATTR_VALUE_SIZE, ObjectDescriptor, ObjectKey,
-    ObjectKind, ObjectStore, ObjectValue, SetExtendedAttributeMode, StoreObjectHandle, Timestamp,
-    TombstoneMode, TrimMode, TrimResult,
+    AttributeId, AttributeKey, DataObjectHandle, Directory, ExtentAccess, FileExtent,
+    HandleOptions, MAX_INLINE_XATTR_SIZE, MAX_XATTR_NAME_SIZE, MAX_XATTR_VALUE_SIZE,
+    ObjectDescriptor, ObjectKey, ObjectKind, ObjectStore, ObjectValue, SetExtendedAttributeMode,
+    StoreObjectHandle, Timestamp, TombstoneMode, TrimMode, TrimResult,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::BTreeMap;
@@ -166,8 +166,8 @@ pub struct DaxExtent {
     pub branch: u64,
     pub sequence: u64,
     pub extent_offset: u64,
-    /// Whether the extent is open, which only a writable mapping maps.
-    pub open: u32,
+    /// What the window may do with the piece.
+    pub access: ExtentAccess,
     pub reserved: u32,
     /// How far the extent reaches, as allocated, or may yet if it is the staging extent, which
     /// small files share (`Allocator::extent_size`): 0 if unknown.
@@ -175,7 +175,7 @@ pub struct DaxExtent {
 }
 
 impl DaxExtent {
-    fn new(extent: &FileExtent, open: bool, allocator: &Allocator) -> Self {
+    fn new(extent: &FileExtent, access: ExtentAccess, allocator: &Allocator) -> Self {
         let device_range = extent.device_range();
         Self {
             offset: extent.logical_offset(),
@@ -183,7 +183,7 @@ impl DaxExtent {
             branch: device_range.extent.branch,
             sequence: device_range.extent.sequence,
             extent_offset: device_range.range.start,
-            open: open.into(),
+            access,
             reserved: 0,
             extent_size: allocator.extent_size(device_range.extent).unwrap_or(0),
         }
@@ -699,7 +699,10 @@ impl<P: Platform> Fxfs<P> {
         let file = self.file(ino).await?;
         let extents = file.extents_in(range).await?;
         let allocator = self.filesystem.allocator();
-        Ok(extents.iter().map(|(extent, open)| DaxExtent::new(extent, *open, &allocator)).collect())
+        Ok(extents
+            .iter()
+            .map(|(extent, access)| DaxExtent::new(extent, *access, &allocator))
+            .collect())
     }
 
     /// Records an append already written through the DAX window, whose data must not be zeroed as
@@ -724,9 +727,9 @@ impl<P: Platform> Fxfs<P> {
 
     /// Makes room to write `range` of the file `ino` through a DAX window, without writing it, and
     /// makes the file `size` long if it is shorter, in one transaction: returns the pieces holding
-    /// the range's blocks, which are open, for the caller to store the data in before the next
-    /// seal (`DataObjectHandle::txn_map_write`, as `keep` says). fxdax: the blocks hold `held`,
-    /// if given, all they hold as the caller holds it, if they move
+    /// the range's blocks, open unless a seal came meanwhile, for the caller to store the data in
+    /// before the next (`DataObjectHandle::txn_map_write`, as `keep` says). fxdax: the blocks hold
+    /// `held`, if given, all they hold as the caller holds it, if they move
     /// (`DataObjectHandle::txn_map_write_holding`, TASK-79.11).
     pub async fn dax_map_write(
         &self,
@@ -771,8 +774,8 @@ impl<P: Platform> Fxfs<P> {
         if size > file.get_size() {
             file.txn_update_size(&mut transaction, size, None).await?;
         }
-        // The extents are open: the allocator opened them as it minted them. Recording them open
-        // now could record one a seal sealed since, whose writes would fail.
+        // The extents are open, as the allocator minted them, or found them so, unless a seal has
+        // come since, which is for the caller to find out: nothing here can open them.
         transaction.commit().await?;
         // fxdax: diagnostic (TASK-133): that the blocks hold what the caller held as it commits.
         if let Some(held) = held
@@ -802,7 +805,15 @@ impl<P: Platform> Fxfs<P> {
             }
         }
         let allocator = self.filesystem.allocator();
-        Ok(extents.iter().map(|extent| DaxExtent::new(extent, true, &allocator)).collect())
+        let device = self.filesystem.device();
+        let access = |extent: &FileExtent| match device.is_open(extent.device_range().extent) {
+            true => ExtentAccess::Open,
+            false => ExtentAccess::Sealed,
+        };
+        Ok(extents
+            .iter()
+            .map(|extent| DaxExtent::new(extent, access(extent), &allocator))
+            .collect())
     }
 
     /// Creates `name` in the directory `dir`, as `mode` says: a directory, or a file, which may be

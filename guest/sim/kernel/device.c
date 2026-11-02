@@ -329,13 +329,23 @@ u64 sim_device_failed(void)
 	return failed;
 }
 
-static bool request_fails(u32 type)
+/*
+ * Window a failed UNMAP keeps from use for good (TASK-44.22), and how much of it may go to the odds:
+ * past half of it, the ranges' half, nothing is left for a chunk, and requests fail for want of
+ * room, whatever is under test, as 4 runs in 3,000 of `tests/failures` did.
+ */
+static u64 unmap_lost;
+#define UNMAP_LOST_MAX (device.window_len / 4)
+
+static bool request_fails(const struct vext_request *req)
 {
+	u32 type = req->type;
 	bool fail = false;
 
-	if (failing_odds && !(sim_random() % failing_odds))
-		fail = true;
-	else if (failing && type == failing_type && !failing_skip--) {
+	if (failing_odds && !(sim_random() % failing_odds)) {
+		fail = type != VIRTIO_EXTENT_T_UNMAP || unmap_lost < UNMAP_LOST_MAX;
+		unmap_lost += fail && type == VIRTIO_EXTENT_T_UNMAP ? req->len : 0;
+	} else if (failing && type == failing_type && !failing_skip--) {
 		failing_skip = 0;
 		failing--;
 		fail = true;
@@ -351,7 +361,7 @@ int virtio_extent_call(struct virtio_extent *vext, struct vext_request *req)
 	/* The request crosses to the host, and others run meanwhile; a seal may end on the way. */
 	sim_point("a device request");
 	if ((req->type == VIRTIO_EXTENT_T_MAP || req->type == VIRTIO_EXTENT_T_UNMAP) &&
-	    request_fails(req->type)) {
+	    request_fails(req)) {
 		sim_point("a device reply");
 		return -EIO;
 	}

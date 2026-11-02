@@ -8,11 +8,11 @@
  * - Blocks of open extents stay where they are; others move, to the staging extent if they are at
  *   most STAGED_MAX bytes, which files share, or an extent of their own. A move keeps what the
  *   range's first and last blocks hold around it, or all it holds (`keep`), or `held`.
- * - An extent is open as it is minted, and once a device write to it ends. A seal forgets which are
- *   open as it begins and as it ends, and the device seals those it holds: so that one no request
- *   reached is taken for sealed, then reads as open again as a transaction's write reaches it, the
- *   way a reader's read-only MAP and a writer can meet on it (TASK-99, TASK-140, TASK-44.21). A
- *   transaction whose device write finds its extent sealed is dropped, and tried again.
+ * - An extent is open as it is minted, until a seal, for good: minted, open, sealed, and never back
+ *   (OpenExtents). A seal forgets which are open as it begins and as it ends, and the device seals
+ *   those it holds. One no request reached, the device takes a write to, which leaves it not open,
+ *   until the next seal seals it. A transaction whose device write finds its extent sealed is
+ *   dropped, and tried again.
  * - A cut that isn't told what the kernel keeps of the last block (FXFS_SET_KEEP_TAIL) zeros what
  *   that block holds past the end by moving it (zero_tail), and so does a grow, past the old end.
  * - An extent dies once nothing holds a block of it and it isn't the staging extent, and is freed
@@ -47,7 +47,7 @@ struct stub_extent {
 	u64 pages;
 	/* Blocks handed out, as far as a staging extent reaches: all of any other. */
 	u64 used;
-	/* Whether Fxfs knows it to be open. */
+	/* Whether Fxfs knows it to be open: true as it is minted, then false for good. */
 	bool open;
 	/* Blocks files hold of it, and how many hold each. */
 	u64 live;
@@ -88,7 +88,7 @@ struct fxfs {
 	u64 seals;
 };
 
-static u64 moves, frees, reopened, failures;
+static u64 moves, frees, failures;
 /* One transaction in so many fails, if any (fxfs_sim_fail). */
 static unsigned int fail_odds;
 /* The file and page whose blocks the log tells of, if any (fxfs_sim_watch). */
@@ -104,11 +104,10 @@ void sim_device_wrote(u64 sequence, u64 page, u64 pages);
 bool sim_device_sealed(u64 sequence);
 u64 sim_device_length(u64 sequence);
 
-void fxfs_sim_stats(u64 *moved, u64 *freed, u64 *opened, u64 *failed)
+void fxfs_sim_stats(u64 *moved, u64 *freed, u64 *failed)
 {
 	*moved = moves;
 	*freed = frees;
-	*opened = reopened;
 	*failed = failures;
 }
 
@@ -303,7 +302,7 @@ ssize_t fxfs_dax_extents(struct fxfs *fs, u64 ino, u64 offset, u64 len, struct f
 	struct stub_file *file;
 	u64 page = offset >> PAGE_SHIFT, end = (offset + len) >> PAGE_SHIFT;
 	ssize_t count = 0;
-	bool open;
+	u32 access;
 
 	mutex_lock(&fs->lock);
 	file = find_file(fs, ino);
@@ -315,12 +314,13 @@ ssize_t fxfs_dax_extents(struct fxfs *fs, u64 ino, u64 offset, u64 len, struct f
 		if (!block->sequence)
 			continue;
 		extent = find_extent(fs, block->sequence);
-		open = extent->open && extent->refs[block->page] == 1;
+		access = !extent->open ? FXFS_DAX_SEALED :
+			 extent->refs[block->page] > 1 ? FXFS_DAX_SHARED : FXFS_DAX_OPEN;
 		if (count && out[count - 1].sequence == block->sequence &&
-		    out[count - 1].open == open &&
+		    out[count - 1].access == access &&
 		    out[count - 1].offset + out[count - 1].len == page << PAGE_SHIFT &&
 		    out[count - 1].extent_offset + out[count - 1].len ==
-		    block->page << PAGE_SHIFT && out[count - 1].open == open) {
+		    block->page << PAGE_SHIFT) {
 			out[count - 1].len += PAGE_SIZE;
 			continue;
 		}
@@ -331,7 +331,7 @@ ssize_t fxfs_dax_extents(struct fxfs *fs, u64 ino, u64 offset, u64 len, struct f
 		out[count++] = (struct fxfs_dax_extent) {
 			.offset = page << PAGE_SHIFT, .len = PAGE_SIZE, .branch = fs->branch,
 			.sequence = block->sequence, .extent_offset = block->page << PAGE_SHIFT,
-			.open = open, .extent_size = extent_bytes(fs, extent),
+			.access = access, .extent_size = extent_bytes(fs, extent),
 		};
 	}
 	mutex_unlock(&fs->lock);
@@ -448,20 +448,10 @@ static ssize_t try_map_write(struct fxfs *fs, u64 ino, u64 offset, u64 len, u64 
 		down_read(&fs->writes);
 		err = sim_device_sealed(moved[page].sequence) ? -EAGAIN : 0;
 		if (!err) {
-			extent = find_extent(fs, moved[page].sequence);
 			host_store_write(sim_device_store_offset(moved[page].sequence) +
 					 (moved[page].page << PAGE_SHIFT), data, PAGE_SIZE);
 			sim_device_wrote(moved[page].sequence, moved[page].page, 1);
-			/*
-			 * The device holds it a round trip before Fxfs says it is open (TASK-91.9):
-			 * time for a reader that took it for sealed to map it, read-only.
-			 */
-			if (extent->open || sim_random() % 2)
-				sim_point("a Fxfs write's reply");
-			else
-				msleep(1);
-			reopened += !extent->open;
-			extent->open = true;
+			sim_point("a Fxfs write's reply");
 		}
 		up_read(&fs->writes);
 		if (err)
@@ -505,7 +495,8 @@ static ssize_t try_map_write(struct fxfs *fs, u64 ino, u64 offset, u64 len, u64 
 		out[count++] = (struct fxfs_dax_extent) {
 			.offset = (first + page) << PAGE_SHIFT, .len = PAGE_SIZE,
 			.branch = fs->branch, .sequence = block->sequence,
-			.extent_offset = block->page << PAGE_SHIFT, .open = 1,
+			.extent_offset = block->page << PAGE_SHIFT,
+			.access = extent->open ? FXFS_DAX_OPEN : FXFS_DAX_SEALED,
 			.extent_size = extent->pages << PAGE_SHIFT,
 		};
 	}
@@ -548,7 +539,7 @@ bool fxfs_dax_restage(struct fxfs_filesystem *filesystem, struct fxfs_dax_extent
 		fs->staging_next = 0;
 		*out = (struct fxfs_dax_extent) {
 			.branch = fs->branch, .sequence = fs->staging->sequence,
-			.extent_size = STAGING_PAGES << PAGE_SHIFT,
+			.access = FXFS_DAX_OPEN, .extent_size = STAGING_PAGES << PAGE_SHIFT,
 		};
 		restaged = true;
 	}

@@ -13,7 +13,7 @@
 
 use crate::buffer::{BufferFuture, BufferRef, MutableBufferRef};
 use crate::buffer_allocator::{BufferAllocator, BufferSource};
-use crate::{Device, DeviceHolder, ExtentId, NoExtent, OtherBranch, SealedExtent};
+use crate::{Device, DeviceHolder, ExtentId, NoExtent, OpenExtents, OtherBranch, SealedExtent};
 use anyhow::{Error, ensure};
 use async_trait::async_trait;
 use block_protocol::{ReadOptions, WriteFlags, WriteOptions};
@@ -564,6 +564,9 @@ pub struct FakeDevice {
     round_trips: Option<Arc<RoundTrips>>,
     /// fxdax: how it is as awkward as a store, unless it is calm (`FakeDevice::calm`).
     awkward: Option<Awkward>,
+    /// fxdax: what the filesystem may take for open, as a guest's device has it, which `Inner`'s
+    /// `open`, what this device would refuse, isn't: a write opens nothing here.
+    known_open: OpenExtents,
     /// fxdax: the devices reads of extents this one doesn't hold fall through to, which forks of it
     /// fall through to too (`FakeDevice::attach`), each with what counts the reads that reach it.
     attached: Vec<(Arc<DeviceHolder>, Arc<AtomicU64>)>,
@@ -597,6 +600,7 @@ impl FakeDevice {
             frees_held_by: None,
             round_trips: None,
             awkward: None,
+            known_open: OpenExtents::default(),
             attached: Vec::new(),
         }
     }
@@ -766,6 +770,7 @@ impl FakeDevice {
             let mut inner = self.inner.lock();
             let open = std::mem::take(&mut inner.open);
             inner.sealing.extend(open);
+            self.known_open.seal();
             passage
         } else {
             awkward.write().await
@@ -779,6 +784,7 @@ impl FakeDevice {
         if let Some(crashes) = &self.crashes {
             crashes.record(self, inner);
         }
+        self.known_open.seal();
         inner.barrier();
     }
 
@@ -965,14 +971,11 @@ impl Device for FakeDevice {
     }
 
     fn is_open(&self, extent: ExtentId) -> bool {
-        self.inner.lock().open.contains(&extent)
+        self.known_open.contains(extent)
     }
 
     fn opened(&self, extent: ExtentId) {
-        let mut inner = self.inner.lock();
-        if !inner.extents.contains_key(&extent) {
-            inner.open.insert(extent);
-        }
+        self.known_open.minted(extent);
     }
 
     async fn root(&self) -> Result<Vec<u8>, Error> {
@@ -1008,6 +1011,7 @@ impl Device for FakeDevice {
     fn reopen(&self, read_only: bool) {
         // Whatever was written before is sealed.
         self.inner.lock().open.clear();
+        self.known_open.seal();
         if let Some(awkward) = &self.awkward {
             awkward.take_over(&self.sequence_floor);
         }
@@ -1143,18 +1147,18 @@ mod tests {
         const BS: usize = TEST_DEVICE_BLOCK_SIZE;
         let device = FakeDevice::new(8, BS as u32);
         let (a, b) = (ExtentId::new(1, 1), ExtentId::new(1, 2));
-        // An extent is open until the next barrier.
-        assert!(!device.is_open(a));
+        // An extent can be written until the next barrier, and no write says it is open.
         write(&device, a, 0, 1, BS).await;
         write(&device, a, BS as u64, 2, BS).await;
-        assert!(device.is_open(a));
-        device.flush().await.expect("flush failed");
         assert!(!device.is_open(a));
+        device.flush().await.expect("flush failed");
         let buffer = device.allocate_buffer(BS).await;
         let error = device.write(a, 2 * BS as u64, buffer.as_ref()).await.expect_err("rewrote");
         assert_eq!(error.downcast_ref::<SealedExtent>(), Some(&SealedExtent(a)));
 
         // A write with a barrier first seals what was written before it.
+        device.opened(b);
+        assert!(device.is_open(b));
         write(&device, b, 0, 3, BS).await;
         let options = WriteOptions { flags: WriteFlags::PRE_BARRIER, ..Default::default() };
         device
@@ -1179,6 +1183,7 @@ mod tests {
         device.opened(a);
         assert!(device.is_open(a));
         write(&device, a, 0, 1, BS).await;
+        assert!(device.is_open(a));
         device.flush().await.expect("flush failed");
         assert!(!device.is_open(a));
         device.opened(a);
@@ -1188,6 +1193,30 @@ mod tests {
         device.flush().await.expect("flush failed");
         assert!(!device.is_open(b));
         assert_eq!(device.extents(), vec![a]);
+    }
+
+    /// A write reaching an extent a barrier came before opens nothing: the device takes it, the
+    /// barrier having sealed nothing of the extent, which goes on reading as sealed, as it is once
+    /// the next barrier comes (TASK-153.3).
+    #[fuchsia::test]
+    async fn test_writes_open_nothing() {
+        const BS: usize = TEST_DEVICE_BLOCK_SIZE;
+        let device = FakeDevice::new(8, BS as u32);
+        let extent = ExtentId::new(1, 1);
+        device.opened(extent);
+        device.flush().await.expect("flush failed");
+        assert!(!device.is_open(extent));
+
+        write(&device, extent, 0, 1, BS).await;
+        assert!(!device.is_open(extent));
+        write(&device, extent, BS as u64, 2, BS).await;
+        assert!(!device.is_open(extent));
+
+        device.flush().await.expect("flush failed");
+        let buffer = device.allocate_buffer(BS).await;
+        let error = device.write(extent, 0, buffer.as_ref()).await.expect_err("rewrote");
+        assert_eq!(error.downcast_ref::<SealedExtent>(), Some(&SealedExtent(extent)));
+        assert!(!device.is_open(extent));
     }
 
     #[fuchsia::test]
@@ -1455,6 +1484,7 @@ mod tests {
         let device = FakeDevice::new(8, BS as u32).awkward(3);
         let (open, other) = (ExtentId::new(1, 1 << 50), ExtentId::new(1, (1 << 50) + 1));
         let awkward = device.awkward.as_ref().unwrap();
+        device.opened(open);
         write(&device, open, 0, 1, BS).await;
 
         let writing = awkward.write().await;
@@ -1470,7 +1500,9 @@ mod tests {
         seal.await.expect("flush failed");
         late.await;
         assert!(!device.is_open(open));
-        assert!(device.is_open(other), "the write wasn't after the seal");
+        // Written before the seal, it would be sealed.
+        let buffer = device.allocate_buffer(BS).await;
+        device.write(other, BS as u64, buffer.as_ref()).await.expect("the write came before");
     }
 
     /// fxdax: a seal's own write may write what was open when it started.
@@ -1479,6 +1511,7 @@ mod tests {
         const BS: usize = TEST_DEVICE_BLOCK_SIZE;
         let device = FakeDevice::new(8, BS as u32).awkward(3);
         let extent = ExtentId::new(1, 1 << 50);
+        device.opened(extent);
         write(&device, extent, 0, 1, BS).await;
         let buffer = device.allocate_buffer(BS).await;
         let options = WriteOptions { flags: WriteFlags::POST_BARRIER, ..Default::default() };

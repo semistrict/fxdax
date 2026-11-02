@@ -381,10 +381,24 @@ void fxfs_release_dirty(struct fxfs *fs, u64 ino, u64 bytes);
 /* The extent-store device the filesystem is on (device.h). */
 struct fxfs_device *fxfs_dax_device(struct fxfs_filesystem *filesystem);
 
+/* What the DAX window may do with a piece of a file: Fxfs's ExtentAccess, by these numbers. */
+enum fxfs_dax_access {
+	/*
+	 * Its extent isn't known to be open: a seal came since it was minted, which sealed it, or
+	 * found nothing of it on the device yet. It is read-only for good, anywhere in the window,
+	 * outside the gate, whatever seals meanwhile.
+	 */
+	FXFS_DAX_SEALED,
+	/* Its extent is open, and its blocks a file's alone: writable, in place, until a seal. */
+	FXFS_DAX_OPEN,
+	/* Its extent is open, but a clone shares its blocks: read-only, as sealed blocks are. */
+	FXFS_DAX_SHARED,
+};
+
 /*
  * A piece of a file's data, which the DAX window maps (dax.c): `len` bytes at `offset` in the file,
- * at `extent_offset` in the extent {branch, sequence}, which is open if `open`: only a writable
- * mapping maps an open extent. Offsets and lengths are multiples of the block, the page.
+ * at `extent_offset` in the extent {branch, sequence}, as `access`, an enum fxfs_dax_access, says.
+ * Offsets and lengths are multiples of the block, the page.
  */
 struct fxfs_dax_extent {
 	u64 offset;
@@ -392,7 +406,8 @@ struct fxfs_dax_extent {
 	u64 branch;
 	u64 sequence;
 	u64 extent_offset;
-	u32 open;
+	/* enum fxfs_dax_access. */
+	u32 access;
 	u32 reserved;
 	/*
 	 * How far the extent reaches, as allocated, or may yet if it is the staging extent, which
@@ -416,7 +431,7 @@ bool fxfs_dax_restage(struct fxfs_filesystem *filesystem, struct fxfs_dax_extent
 /*
  * Makes room to write `len` bytes at `offset` of file `ino` through the window, without writing
  * them, and makes the file `size` bytes long if it is shorter, in one transaction. Returns the
- * pieces holding the range's blocks, as fxfs_dax_extents, which are open: blocks of open extents
+ * pieces holding the range's blocks, as fxfs_dax_extents, which were open: blocks of open extents
  * stay, and the others move to new ones, holding what the range's first and last blocks hold
  * around it: or, if the caller may store only some of the range (`keep`), as a fault does, all
  * they hold; fxdax: or `held`, if not NULL, `len` bytes, whole blocks, written in the transaction,

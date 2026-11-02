@@ -546,8 +546,8 @@ static void private_punch(struct worker *worker)
 
 /*
  * Blocks of the private file shared with its twin, some of them perhaps in an open extent: they
- * read as sealed from now on, though the extent isn't, and a write moves them (TASK-140, TASK-44.21).
- * What each file holds is its own, whatever is written to the other.
+ * read as shared from now on, read-only, and a write moves them (TASK-140, TASK-44.21). What each
+ * file holds is its own, whatever is written to the other.
  */
 static void private_clone(struct worker *worker)
 {
@@ -974,7 +974,7 @@ int main(int argc, char **argv)
 	unsigned long long seed = 0;
 	bool shadow = false, no_injections = false;
 	unsigned long watched_address = 0;
-	u64 moved, freed, opened, failed;
+	u64 moved, freed, failed;
 	int i;
 
 	if (argc < 2 || sscanf(argv[1], "%llu", &seed) != 1)
@@ -1045,9 +1045,9 @@ int main(int argc, char **argv)
 		check_slots(&small[i]);
 	for (i = 0; i < WORKERS; i++)
 		check_extents(&workers[i]);
-	fxfs_sim_stats(&moved, &freed, &opened, &failed);
-	sim_log("interleave: seed %llu passed: %llu points, %llu switches, %llu device maps, %llu blocks moved, %llu extents freed, %llu reopened, %llu transactions failed, %lu PMDs, trace %llx\n",
-		seed, sim_points(), sim_switches(), sim_device_maps(), moved, freed, opened, failed,
+	fxfs_sim_stats(&moved, &freed, &failed);
+	sim_log("interleave: seed %llu passed: %llu points, %llu switches, %llu device maps, %llu blocks moved, %llu extents freed, %llu transactions failed, %lu PMDs, trace %llx\n",
+		seed, sim_points(), sim_switches(), sim_device_maps(), moved, freed, failed,
 		huge_mapped, sim_trace_hash());
 	return 0;
 }

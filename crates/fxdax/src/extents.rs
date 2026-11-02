@@ -191,7 +191,9 @@ pub struct ExtentStore {
     path: std::path::PathBuf,
     /// fxdax: the forks of other stores attached to it, whose extents it reads through to.
     bases: Arc<Bases>,
-    /// The open extents mapped writably, until the next commit. Locked before `dax`.
+    /// The open extents mapped, until the next commit, which writes their memory to the store and
+    /// seals them: their one owner meanwhile, as the store holds none of them (TASK-153.3). Locked
+    /// before `dax`.
     open: Mutex<HashMap<ExtentId, OpenExtent>>,
     /// fxdax: what a commit reads each open extent's memory into, kept from one to the next, under
     /// `open`'s lock: one the size of each extent, zeroed for it, cost the commit more than its
@@ -797,30 +799,17 @@ impl ExtentStore {
     /// leave be; and the deletion of a fork that failed deletes there only the branch it made
     /// (`Remote::claim`, TASK-79.82).
     ///
-    /// The fork's commit seals what the store has open: an extent written, and mapped writably since,
-    /// whose memory the next commit could then write to no extent, failing with `EPERM`, and every
-    /// commit after, which it holds to be written too: such a fork fails with `EBUSY`, making nothing
-    /// (TASK-150.7).
+    /// The fork's commit seals what the store has open, which holds none of the extents the window
+    /// maps (`map_open`): the fork holds those as of the last commit, and the next commit here
+    /// writes them. It sealed them under their mapping, and the next commit's write of their memory
+    /// failed with `EPERM`, as each one's after (TASK-150.7, TASK-153.3).
     pub fn fork(&self, path: impl AsRef<Path>, branch: u64) -> Result<(), Error> {
         self.writable()?;
         self.make_durable()?;
         failpoint!("fork::durable");
         // None comes between the look and the fork's commit.
         let opening = self.opening.write().unwrap();
-        if self.sealing_would_strand_a_mapping()? {
-            return Err(Errno::EBUSY.into());
-        }
         self.fork_durable(path.as_ref(), branch, Some(opening))
-    }
-
-    /// fxdax: whether a commit of the store alone would seal an extent held open here too.
-    fn sealing_would_strand_a_mapping(&self) -> Result<bool> {
-        for extent in self.open.lock().unwrap().keys() {
-            if matches!(self.store.extent((*extent).into()).map_err(errno)?, Some((_, true))) {
-                return Ok(true);
-            }
-        }
-        Ok(false)
     }
 
     /// fxdax: forks the store, as [`ExtentStore::fork`] says, its commits made durable: `opening`,
@@ -1631,7 +1620,9 @@ impl ExtentStore {
 
     /// Maps an open extent's memory, which the commit that seals it maps the sealed pages in place
     /// of: writably if `writable`, which opens a new extent. Returns whether it did: not if the
-    /// extent is sealed, and the mapping read-only.
+    /// extent is sealed, and the mapping read-only. fxdax: one the store holds open goes into the
+    /// memory whole, and out of the store, so that it has one owner until the commit writes it back
+    /// (TASK-153.3): with two, a fork's commit of the store alone sealed it under its mapping.
     fn map_open(
         &self,
         extent: ExtentId,
@@ -1667,6 +1658,9 @@ impl ExtentStore {
                 let mut data = vec![0; len as usize];
                 self.store.read(extent.into(), 0, &mut data).map_err(errno)?;
                 pages.write(0, &data, Room::Budget)?;
+                // Held in memory, it goes from the store: the free of an extent open lets go of
+                // what it wrote, and records nothing a commit made, which writes it anew.
+                self.store.free(extent.into()).map_err(errno)?;
             }
             open.insert(extent, OpenExtent { pages, len, stored: len });
         }
@@ -2776,9 +2770,11 @@ mod tests {
         assert_eq!(store.info().map(|info| info.next_sequence), Ok(2));
     }
 
-    /// TASK-150.7: a fork, whose commit seals what the store has open, seals no extent a window
-    /// maps writably, whose memory the next commit would write to it, failing that commit and every
-    /// one after (`EPERM`): it is refused, at nothing's cost, and goes through once nothing is so.
+    /// TASK-150.7, TASK-153.3: a fork, whose commit seals what the store has open, seals no extent
+    /// a window maps writably, whose memory the next commit would write to it, failing that commit
+    /// and every one after (`EPERM`): the store holds no such extent, whose memory alone does, from
+    /// its mapping on. The fork holds it as of the last commit: none had it, so neither does the
+    /// fork; and the next commit here writes it.
     #[test]
     fn forks_seal_nothing_a_window_maps_writably() {
         let (store, dir) = store(1 << 24);
@@ -2787,13 +2783,37 @@ mod tests {
         let extent = id(&store, 1);
         write(&store, extent, 0, &pattern(1, BLOCK)).unwrap();
         store.map(extent, 0, ps, 0, true).unwrap();
+        assert_eq!(store.store.extent(extent.into()).map_err(errno), Ok(None), "two owners");
         let (path, branch) = (dir.path().join("fork"), store.branch() + 1);
-        assert_eq!(store.fork(&path, branch).map_err(|err| err.errno()), Err(Some(Errno::EBUSY)));
-        assert!(!path.exists(), "the refused fork left its handle");
-        assert_eq!(store.commit(None), Ok(()));
-        assert_eq!(read(&store, extent, 0, BLOCK), Ok(pattern(1, BLOCK)));
         store.fork(&path, branch).unwrap();
         assert_eq!(store.commit(None), Ok(()));
+        assert_eq!(read(&store, extent, 0, BLOCK), Ok(pattern(1, BLOCK)));
+        assert_eq!(store.commit(None), Ok(()));
+        let fork = ExtentStore::open(&path).unwrap();
+        assert_eq!(read(&fork, extent, 0, BLOCK), Err(Errno::ENOENT));
+    }
+
+    /// TASK-153.3: an extent the store holds open, mapped read-only, goes into memory as a writable
+    /// mapping takes it, and out of the store: what a write gave it reads back, through the window
+    /// and the store's reads, and the commit writes it.
+    #[test]
+    fn a_mapping_takes_an_open_extent_out_of_the_store() {
+        let (store, _dir) = store(1 << 24);
+        let ps = page_size();
+        let window = store.create_dax_window(ps, None).unwrap();
+        let extent = id(&store, 1);
+        write(&store, extent, 0, &pattern(2, BLOCK)).unwrap();
+        assert_eq!(store.store.extent(extent.into()).map_err(errno), Ok(Some((BLOCK as u64, true))));
+        store.map(extent, 0, ps, 0, false).unwrap();
+        assert_eq!(store.store.extent(extent.into()).map_err(errno), Ok(None));
+        assert_eq!(read(&store, extent, 0, BLOCK), Ok(pattern(2, BLOCK)));
+        block_on(window.fault(0, Access::Read)).unwrap();
+        // SAFETY: The page is mapped, and nothing else accesses it.
+        let byte = unsafe { *window.host_base() };
+        assert_eq!(byte, pattern(2, BLOCK)[0]);
+        assert_eq!(store.commit(None), Ok(()));
+        assert_eq!(store.store.extent(extent.into()).map_err(errno), Ok(Some((BLOCK as u64, false))));
+        assert_eq!(read(&store, extent, 0, BLOCK), Ok(pattern(2, BLOCK)));
     }
 
     /// TASK-50.3: makes a store at `path` of `extents` sealed extents of a MiB each, and opens it

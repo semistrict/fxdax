@@ -5,13 +5,15 @@
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c
-@@ -1564,9 +1564,6 @@
+@@ -1583,10 +1583,7 @@
  {
  	lockdep_assert_held_write(&range->file->sem);
  
--	range->behind = true;
+-	range->behind = err == -EXDEV ? err : -ESTALE;
 -	unmap_mapping_pages(inode->i_mapping, fxfs_dax_chunk_start(range) >> PAGE_SHIFT, range->pages,
 -			    false);
- 	return err == -EXDEV ? err : -ESTALE;
+-	return range->behind;
++	return err == -EXDEV ? err : -ESTALE;
  }
  
+ /* Whether any of the pieces `extents` is of an open extent. */

@@ -38,7 +38,7 @@ pub mod buffer;
 pub mod buffer_allocator;
 mod extent;
 
-pub use extent::{ExtentId, ExtentRange, NoExtent, OtherBranch, SealedExtent};
+pub use extent::{ExtentId, ExtentRange, NoExtent, OpenExtents, OtherBranch, SealedExtent};
 pub mod splittable_buffer;
 
 pub use splittable_buffer::{SplittableBuffer, SubHandle};
@@ -135,15 +135,17 @@ pub trait Device: Send + Sync {
         futures::future::join_all(extents.iter().map(|extent| self.free(*extent))).await
     }
 
-    /// Whether `extent` is open: written since the last barrier, which seals it, so that it can be
-    /// written again until the next (backlog doc-4). A device that doesn't know says it isn't.
+    /// Whether `extent` is known to be open: minted since the last barrier, which seals it, so that
+    /// it can be written again until the next (backlog doc-4, [`OpenExtents`]). One a barrier came
+    /// after, which a write then reached, the device takes, and seals at the next, is not: it never
+    /// is again. A device that doesn't know says it isn't.
     fn is_open(&self, _extent: ExtentId) -> bool {
         false
     }
 
-    /// Records that `extent`, which the filesystem minted and which nothing has written yet, is
-    /// open: it is to be written before the next barrier, which seals it, as if it had been. A
-    /// device that doesn't know whether extents are open ignores it.
+    /// Records that `extent`, which the filesystem just minted and which nothing has written yet, is
+    /// open: it is to be written before the next barrier, which seals it. A device that doesn't
+    /// know whether extents are open ignores it.
     fn opened(&self, _extent: ExtentId) {}
 
     /// Returns the root: where the filesystem on the device starts. It is empty until set.

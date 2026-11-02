@@ -110,7 +110,7 @@ u64 fxfs_sim_new_file(struct fxfs *fs);
 struct fxfs *fxfs_sim_new(void);
 void fxfs_sim_free(struct fxfs *fs);
 /* How many blocks moved, extents were freed, extents a write opened again, transactions failed. */
-void fxfs_sim_stats(u64 *moves, u64 *frees, u64 *opened, u64 *failed);
+void fxfs_sim_stats(u64 *moves, u64 *frees, u64 *failed);
 /* Has one transaction in `odds` fail with -ENOSPC, or none if 0. */
 void fxfs_sim_fail(unsigned int odds);
 /* How many seals have ended. */

@@ -1,16 +1,6 @@
 # Open questions
 
-## Push `fix/main-after-push`?
-
-Two test fixes, this file, AGENTS.md's rule to decide rather than wait, a guest watchdog that dumps every task's stack before a test's timeout, and the fix of `load_during_move`'s hang, which was the check deadlocking itself (r528: 20 rounds pass). `scripts/tests` is red on main until the first two land, because two mutants went stale. No product code changes.
-**Recommend:** push.
-**Until then:** none of this is on main, main's test run reports a failure, and `fxfs-guest-checks-dax*` can hang on `load_during_move`.
-
-## Merge and push `refactor/open-once` (TASK-153.3)?
-
-Extents open only once, guest and host: main (106b6128d) merged in, the host half done on the fork decision below, and a stale read of 106b6128d's fixed (157417ad5). Workspace, sim, TLC and GCE r477 pass; pgbench 968 tps against main's 960. The one WARN left, `fs/dax.c:416`, is main's too (TASK-150.21). Head 68f897b02, a `wip:` commit whose message wants its final wording first.
-**Recommend:** merge into main and push, after this branch.
-**Until then:** main keeps the double open of extents and the fork's `EBUSY`.
+None.
 
 # Decisions
 
@@ -35,3 +25,27 @@ A byte damaged in storage, by a bad disk or a bad upload, must make a read fail 
 Today such a fork gets `EBUSY` (TASK-150.7). Decided: the fork holds the extent as of the last commit, as the spec says, so the host half of TASK-153.3 goes ahead. This reaches only a VM process's own raw FORK: production forks use `fork_quiescent`.
 **Instead:** the fork also holds the mapped, uncommitted bytes.
 **Undoing it:** the fork path in TASK-153.3 copies the mapped bytes as well.
+
+## A device write to an extent not known to be open is taken, not refused (TASK-153.3)
+
+The task's direction had such a write retry rather than reopen its extent. Decided: the store takes it, and nothing records the extent open, ever again: the open extents are those minted since the last seal (`OpenExtents`). Plain writers (multi_write, the journal, layer files) have no retry, where `SealedExtent` is EIO, and DAX's is dax.c's `gate != seals` already.
+**Instead:** refuse it in the guest's device, and give every writer a retry.
+**Undoing it:** a check in `write_with_opts`, and retries at each writer: `dead-ends/refusing-writes-to-extents-not-known-open.md` has why not.
+
+## Shared blocks of an open extent never go through its region (TASK-153.3)
+
+A clone's blocks in an open extent read `Shared`, and get a range of their own, read-only, never a slice of the extent's region: so a region of an open extent is never mapped read-only. Costs a MAP of their own for reflinked small files' blocks until their extent seals.
+**Instead:** keep the checks in `region_open`, `map_to` and `new_slice` that let a reader and a writer share a region (TASK-99, 140, 44.21, 150.11).
+**Undoing it:** `fxfs_dax_new_slice`'s one line, and those checks back.
+
+## NoOpenUnderLock.cfg asks what it can now (TASK-153.3)
+
+Its rule, region_open under the region's lock, went with the look it guarded: a reader and a writer don't share a region. The file is back, taking away the rules that keep them apart, and `MapUnderAnOpen.cfg` asks for the race itself, a reader's MAP in flight as a writer opens the region.
+**Instead:** put the region's lock back in `region_open`, dead, for the rule to mean what it did.
+**Undoing it:** the lock back in dax.c and the rule in the spec.
+
+## 106b6128d's lag under a PTE is fixed on refactor/open-once (TASK-153.3)
+
+A write through a region left a fault's PTE of the page it lags, read stale: found here, verifying the merge, so fixed here, its own commit, with a mutant.
+**Instead:** a task of its own on main.
+**Undoing it:** revert 157417ad5.

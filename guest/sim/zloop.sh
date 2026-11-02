@@ -55,7 +55,8 @@ if [[ $(one) != "$(one)" ]]; then
 fi
 
 seed_run() { # seed
-    local seed=$1 count=${operations:-$((seed % 8 ? 200 : 1000))} log=$logs/seed-$1.log
+    local seed=$1
+    local count=${operations:-$((seed % 8 ? 200 : 1000))} log=$logs/seed-$1.log
     if timeout 300 "$bin/interleave" "$seed" "$count" $shadow > "$log" 2>&1; then
         rm -f "$log"
     else

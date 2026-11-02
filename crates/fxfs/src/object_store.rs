@@ -37,7 +37,8 @@ pub(crate) mod tree_cache;
 pub mod volume;
 
 pub use data_object_handle::{
-    DataObjectHandle, DataObjectState, DirectWriter, FileExtent, FrozenPage, FsverityStateInner,
+    DataObjectHandle, DataObjectState, DirectWriter, ExtentAccess, FileExtent, FrozenPage,
+    FsverityStateInner,
     RangeType,
 };
 pub use directory::Directory;

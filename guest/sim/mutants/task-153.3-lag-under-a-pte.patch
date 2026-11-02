@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+#
+# TASK-153.3, on 106b6128d's write through a region: a fault that finished between the move's unmap
+# and the look at `users` keeps its PTE of the page where its blocks were, which lags under it: a
+# stale read, seed 7289 at 200 operations.
+
+--- a/guest/linux/fs/fxfs/dax.c
++++ b/guest/linux/fs/fxfs/dax.c
+@@ -3075,13 +3075,4 @@
+ 				bitmap_set(range->lagging, first, pages);
+-				/*
+-				 * fxdax: a fault past its iomap as the blocks moved, which the PTEs
+-				 * went with, maps the page after, where they were, and lets go of the
+-				 * range: `users` said no fault was under way, and the page lagged
+-				 * under that PTE, which read the old block (guest/sim, TASK-153.3).
+-				 * They go again, now that the page lags, which the next fault sees.
+-				 */
+-				unmap_mapping_pages(inode->i_mapping, (start >> PAGE_SHIFT) + first, pages,
+-						    false);
+ 				atomic64_inc(&dax->writes_through);
+ 				break;
+ 			}

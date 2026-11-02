@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
 // Copyright 2026 The fxdax Authors.
 /*
- * A sealed piece of a writable region is never reached for outside the gate (TASK-44.21): one task.
+ * Shared blocks of an open extent go nowhere near its region (TASK-44.21, TASK-153.3): one task.
  *
- * A clone has the end of an open extent read as sealed, and the file, cut short of it, has the rest,
- * open. The file's read maps that first, through the gate, which makes the region writable, as far
- * as it reaches. The clone then is all sealed pieces, of the same region, past what it maps, and is
- * read outside the gate: a MAP of them would be writable, in no gate. A clone of two pieces goes by
- * fxfs_dax_map_chunk, and of one by fxfs_dax_new_slice.
+ * A clone has the end of an open extent shared, and the file, cut short of it, has the rest, open.
+ * The file's read maps that first, through the gate, which makes the region writable, as far as it
+ * reaches. The clone then is all shared pieces, of the same extent, past what the region maps, and
+ * is read outside the gate: through the region, a MAP of them would be writable, in no gate. A clone
+ * of two pieces goes by fxfs_dax_map_chunk, and of one by fxfs_dax_new_slice.
  */
 
 #include "pause.h"
