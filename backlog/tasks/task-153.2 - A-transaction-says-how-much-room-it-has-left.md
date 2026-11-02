@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-01 22:52'
-updated_date: '2026-11-02 02:13'
+updated_date: '2026-11-02 02:25'
 labels: []
 dependencies: []
 parent_task_id: TASK-153
@@ -52,6 +52,8 @@ Kept, with why: BATCH_OBJECTS bounds locks; DELAYED_BATCH bounds locks and a wak
 Step 3 found: a transaction that holds more changed which paths random sequences reach. truncate-gives-up-on-its-tail was caught only by one pinned seed, which write_many's batches moved off a full device; 4,000 cases with the bug back don't find it either. a-queued-evict-leaves-the-object fell to chance, as a batch's file must now have over 1,000 extents. Each now has a deterministic test that went red with its bug back. test_trim's expect_tombstoned used open_object, whose point lookup of the size doesn't see a tombstone in a later layer once a flush moved the record: it asks for the object's record now. Other pinned seeds may have lost their sequence the same way: only the mutants say which still bite.
 
 Validation at 27e3e7c4a (production code as hunted, 07557ca73): Linux workspace and macOS as in the final summary; hunts of 4,000 cases each, plain, workers, failing devices, fsck after every transaction (four runs of 1,000), every cut (two of 2,000), no failure, TASK-150.19 not seen; 17 mutants caught, twice. Measured by records at the refactor commit and at head: clone of 2048 fragments 82 to 20 commits, 225,046 to 220,892 bytes; over 2048 more 84 to 20, 290,495 to 286,231; punch of 2048 11 to 3, 67,344 to 66,768; clone across 2^50 bytes 1 and 253, punch across them 1 and 0, unchanged. Definition of Done #1 left unchecked: Lima wasn't run, Docker stood for it.
+
+Last Linux workspace at 27e3e7c4a (Docker): 2,111 of 2,115. Failed: tenant_sockets_work_bind_mounted_into_jails (Docker only), whatever_a_vm_process_says_harms_no_other (served > 1000, the coverage floor, about 1 run in 3 on any tree, fixed on fix/refusal-gate, a64fb76a9), guests_forks_failing_at_each_step_harm_nothing (load flake on base, as the user says), durable_commits_keep_the_open_segments_pages_cached_on_the_host (extent_store, which doesn't depend on fxfs; seen once, passed in reruns alone). The run before, at 07557ca73, failed only the first; only model_tests.rs changed since. macOS at e7aebe153: 1,963 of 1,963; fxfs and fxfs-posix at 27e3e7c4a: 769 of 769.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
