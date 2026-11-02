@@ -34,3 +34,9 @@ A fork while an extent is mapped writably now gets `EBUSY` (TASK-150.7). Finishi
 `specs/dax-region/mutations/NoOpenUnderLock.cfg`, because the rule it tests went away with TASK-153.3; `NoOneWay` is said to catch the same bug. It's on `refactor/open-once`, not main. I've told it to put the file back unless it can't pass.
 **Recommend:** keep it deleted only if it truly can't pass, as you'll see in that task's notes.
 **Until then:** it isn't merged.
+
+## Push `fix/main-after-push`?
+
+Two test fixes and this file. `scripts/tests` is red on main until they land, because two mutants went stale. No product code changes.
+**Recommend:** push.
+**Until then:** this file isn't on main, and main's test run reports a failure.
