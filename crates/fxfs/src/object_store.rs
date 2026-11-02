@@ -9,7 +9,9 @@
 // store has none of (backlog doc-4). `dirty_reservation` reserves room for the data a page cache
 // holds dirty as it dirties it, as Fuchsia's pager-backed files do in its platform crate, for the
 // guest kernel's page cache (TASK-80). A store may have layers of a base, a volume another
-// filesystem wrote, below its own (StoreInfoV61, `ObjectStore::manifest`, backlog doc-10).
+// filesystem wrote, below its own (StoreInfoV61, `ObjectStore::manifest`, backlog doc-10). What stops
+// a transaction is what it takes of the journal (`Transaction::room`), not the number of mutations
+// upstream's TRANSACTION_MUTATION_THRESHOLD stood for it with.
 
 pub mod allocator;
 pub mod base_layer;
@@ -103,9 +105,6 @@ pub use transaction::Mutation;
 // For encrypted stores, the lower 32 bits of the object ID are encrypted to make side-channel
 // attacks more difficult. This mask can be used to extract the hi part of the object ID.
 const OBJECT_ID_HI_MASK: u64 = 0xffffffff00000000;
-
-// At time of writing, this threshold limits transactions that delete extents to about 10,000 bytes.
-const TRANSACTION_MUTATION_THRESHOLD: usize = 200;
 
 // The number of keys we want to pre-cache for flushes.  We cache up to 2 keys.  One is for the
 // current flush, and one is pre-cached for the next flush so that we don't need to call the crypt
@@ -1572,10 +1571,9 @@ impl ObjectStore {
         object_ids: &[u64],
         txn_options: Options<'_>,
     ) -> Result<(), Error> {
-        // The most objects a transaction tombstones, and the mutations it holds before it takes
-        // another: room for the next object's, as `trim_some` stops at the threshold.
+        // The most objects a transaction tombstones: the locks it takes, whatever room it has. One
+        // that fills it is finished on its own too, as `trim_some` stops there.
         const BATCH_OBJECTS: usize = 32;
-        const BATCH_MUTATIONS: usize = TRANSACTION_MUTATION_THRESHOLD / 2;
         let fs = self.filesystem();
         let store_id = self.store_object_id;
         let mut rest = object_ids;
@@ -1598,7 +1596,7 @@ impl ObjectStore {
             let mut unfinished = Vec::new();
             let mut done = 0;
             for &object_id in batch {
-                if transaction.mutations().len() >= BATCH_MUTATIONS {
+                if transaction.is_full() {
                     break;
                 }
                 done += 1;
@@ -1897,8 +1895,9 @@ impl ObjectStore {
                     ensure!(block_size.is_aligned(&device_range.range), FxfsError::Inconsistent);
                     allocator.deallocate(transaction, self.store_object_id, device_range).await?;
                     deallocated += len;
-                    // Stop if the transaction is getting too big.
-                    if transaction.mutations().len() >= TRANSACTION_MUTATION_THRESHOLD {
+                    // Stop if the transaction is getting too big. fxdax: as it says, in what it
+                    // takes of the journal.
+                    if transaction.is_full() {
                         result = TrimResult::Incomplete;
                         break;
                     }
