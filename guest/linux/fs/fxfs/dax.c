@@ -3073,6 +3073,15 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 			    fxfs_dax_goes_through(range, extents, first, pages, flags) &&
 			    !fxfs_dax_open_through(dax, file, extents, pos, end, &through)) {
 				bitmap_set(range->lagging, first, pages);
+				/*
+				 * fxdax: a fault past its iomap as the blocks moved, which the PTEs
+				 * went with, maps the page after, where they were, and lets go of the
+				 * range: `users` said no fault was under way, and the page lagged
+				 * under that PTE, which read the old block (guest/sim, TASK-153.3).
+				 * They go again, now that the page lags, which the next fault sees.
+				 */
+				unmap_mapping_pages(inode->i_mapping, (start >> PAGE_SHIFT) + first, pages,
+						    false);
 				atomic64_inc(&dax->writes_through);
 				break;
 			}
