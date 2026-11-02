@@ -80,6 +80,13 @@ MUTANTS = [
         [("\tif (moved) {\n\t\tint mapped", "\tif (false) {\n\t\tint mapped")],
     ),
     (
+        "moved_ptes_kept",
+        "a write whose blocks moved leaves the PTEs of their pages, through which a load reads "
+        "zeros once Fxfs frees the old extent, until the range maps the new (TASK-149.14)",
+        [("\t\tif (moved)\n\t\t\tunmap_mapping_pages(inode->i_mapping, (start >> PAGE_SHIFT) + "
+          "first, pages, false);\n", "")],
+    ),
+    (
         "map_failure_unretried",
         "a write whose pieces' MAP failed after its blocks moved fails, its range left mapping "
         "blocks Fxfs freed, rather than dropped and the write tried again (TASK-79.106)",
