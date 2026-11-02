@@ -89,6 +89,8 @@ const QUEUED_AT_MOST: usize = 4;
 /// The room a sequence has: enough, or less than a few of its fills want.
 const ROOMY: u64 = 32768;
 const TIGHT: u64 = 2048;
+/// More blocks than a transaction of a fill holds, all of which it leaves free as it's refused.
+const BLOCKS_A_FILL_MAY_LEAVE: u64 = 1024;
 /// How much of a file is read whole, holes and all: a file may be as large as a file may be.
 const WHOLLY_READ: u64 = 64 << 20;
 /// What every symlink says.
@@ -2243,7 +2245,8 @@ fn a_punch_crosses_holes_of_any_size() {
 /// does: the tail's copy found no room, what the cut freed waiting for a sync, and a write past the
 /// end brought those bytes back. Found by a hunt, whose seed this keeps, as how full the device gets
 /// depends on it. With no room even after a sync they still come back, which a long hunt finds, and
-/// TASK-149.8's notes say why.
+/// TASK-149.8's notes say why. It no longer fills the device so, whose records changed: the test
+/// after it finds this whatever they are.
 #[test]
 fn a_truncate_on_a_full_filesystem_leaves_nothing_past_the_end() {
     let ops = vec![
@@ -2266,6 +2269,36 @@ fn a_truncate_on_a_full_filesystem_leaves_nothing_past_the_end() {
         Op::Write { file: 9, at: 51996, len: 8, byte: 83 },
     ];
     Setting::awkward(0, TIGHT).with_graveyard_of_seed().holds(ops);
+}
+
+/// What a truncate cuts from a file's last block stays gone on a device just found full, however
+/// many transactions and records that took: the tail's copy finds no room, which a sync makes of
+/// what is waiting to go, here a file's queued unlink. A sequence above found this, on a seed that
+/// fills the device just so, which lost it as `write_many` came to split its transactions by their
+/// room, and 4,000 cases of a hunt don't find it: this fills the device until a page is refused,
+/// whatever that takes. A fill is refused a transaction at a time, which leaves its room free, so
+/// pages take what it left.
+#[test]
+fn a_truncate_on_a_device_just_filled_leaves_nothing_past_the_end() {
+    let mut ops = vec![
+        Op::Create(0),
+        Op::Create(1),
+        Op::Create(2),
+        Op::Fill { file: 0, page: 0, pages: 12, stride: 1, byte: 1 },
+        Op::Fill { file: 2, page: 0, pages: 64, stride: 1, byte: 2 },
+        Op::Sync,
+        Op::Fill { file: 1, page: 0, pages: 2 * TIGHT, stride: 1, byte: 3 },
+    ];
+    let pages = 2 * TIGHT..2 * TIGHT + BLOCKS_A_FILL_MAY_LEAVE;
+    ops.extend(pages.map(|page| Op::Write { file: 1, at: page * PAGE, len: 4096, byte: 4 }));
+    ops.extend([
+        Op::UnlinkLater(2),
+        Op::Truncate { file: 0, size: 41646 },
+        // The room the write past the end wants, which shows what the cut left.
+        Op::Sync,
+        Op::Write { file: 0, at: 51996, len: 8, byte: 83 },
+    ]);
+    Setting::calm(0, TIGHT).holds(ops);
 }
 
 /// A punch of many commits, cut, has punched what it got to, from its start: found as a false alarm
