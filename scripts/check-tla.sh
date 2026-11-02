@@ -27,12 +27,14 @@
 # model, or alone as follower/traces.
 #
 # TLC runs on Java: $JAVA, or java if it runs, or Homebrew's openjdk. Its jar, the release pinned
-# below, is fetched once into ~/.cache/fxdax/tla and checked against its SHA-256.
+# below, is fetched once into ~/.cache/fxdax/tla and checked against its SHA-256. v1.8.0 is a
+# pre-release TLA+ re-cuts in place (2026-10-30's, pinned 2026-11-02), and 1.7.4, the last that
+# stays put, lacks -noGenerateSpecTE: a jar re-cut since fails the check until the pin follows it.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 specs="$root/specs"
 tla_version=1.8.0
-tla_sha256=15d103b7e5617780bcc904c0af12f1ad242e2b345c0301136c5be4588f17edac
+tla_sha256=011267fca25d0752cf18894dd585cd28b96960c112ea8a20b823ea770e7e10cd
 cache="$HOME/.cache/fxdax/tla"
 jar="$cache/tla2tools-$tla_version.jar"
 
@@ -43,7 +45,8 @@ if [[ ! -f $jar ]]; then
     mv "$jar.part" "$jar"
 fi
 echo "$tla_sha256  $jar" | shasum -a 256 -c --status ||
-    { echo "$jar does not match its SHA-256" >&2; exit 1; }
+    { echo "$jar does not match its SHA-256: if TLA+ re-cut v$tla_version, check the release's" \
+          "date and digest on GitHub, then pin the new jar here" >&2; exit 1; }
 
 java=${JAVA:-}
 if [[ -z $java ]]; then
