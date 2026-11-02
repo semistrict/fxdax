@@ -33,6 +33,12 @@ Commit a batch once it has compiled and its unit tests have run and passed (the 
 compiled and tested. A batch may still be several commits, one logical change each, made together
 after the batch's test run.
 
+## Questions for the user go in OPEN_QUESTIONS.md, never in a reply
+
+Never ask the user anything directly: not in a reply, not with a question tool, not as a choice at the end of a message. The user doesn't read through output for questions. If you need anything from the user, a decision, a fact only they know, an action only they can take, add it to `OPEN_QUESTIONS.md` at the repo root, and go on with whatever doesn't depend on it.
+
+An entry says, in a few lines: what's needed, why it matters, what you recommend, and what happens until it's answered. Check the file before starting work: an answer may be there. Take an entry out once it's answered, and act on it.
+
 ## Every bug exposes a blind spot: close it, then look around it
 
 A bug or crash, however it was found and whoever caused it, shows code the tests don't exercise
