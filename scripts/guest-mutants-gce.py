@@ -46,9 +46,9 @@ MUTANTS = [
     (
         "map_chunk_no_seals_recheck",
         "a chunk's map takes its extents for open though a seal came between",
-        [("\t\tif (gate == seals) {\n\t\t\terr = fxfs_dax_map_extents(dax, range, extents, count);\n"
+        [("\t\tif (gate == seals) {\n\t\t\terr = fxfs_dax_map_extents(dax, range, pieces, nr);\n"
           "\t\t\tfxfs_device_store_end(dax->dev);",
-          "\t\tif (true) {\n\t\t\terr = fxfs_dax_map_extents(dax, range, extents, count);\n"
+          "\t\tif (true) {\n\t\t\terr = fxfs_dax_map_extents(dax, range, pieces, nr);\n"
           "\t\t\tfxfs_device_store_end(dax->dev);")],
     ),
     (
@@ -144,8 +144,11 @@ MUTANTS = [
         "moved_write_not_retried",
         "a write whose chunk's map fails after Fxfs moved its blocks fails, those pages zeros "
         "(TASK-119.13)",
-        [("\t\treturn prepared && (err == -EIO || err == -ENOMEM || err == -ENOSPC) ? -ESTALE : err;\n",
-          "\t\treturn err;\n")],
+        [(
+            "\t\treturn prepared && (err == -EIO || err == -ENOMEM || err == -ENOSPC) ? -ESTALE : "
+            "err;\n",
+            "\t\treturn err;\n",
+        )],
     ),
 ]
 
