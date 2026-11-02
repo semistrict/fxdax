@@ -141,9 +141,9 @@ dax.c's diagnostics were wrong twice, both on a real kernel too, each with its f
 
 ## Past bugs put back
 
-`mutants.sh`, on top of `fixes/`: 21 past bugs, picked by hand from dax.c's history for being in its
+`mutants.sh`, on top of `fixes/`: 25 past bugs, picked by hand from dax.c's history for being in its
 protocol, so not a fair sample of all its bugs. 3,000 seeds at most, an eighth at 1,000 operations.
-19 show; the other two can't any more, so 19 of 19 that can. Seeds move as the workload does.
+23 show; the other two can't any more, so 23 of 23 that can. Seeds move as the workload does.
 
 | Past bug | Found at | How |
 | --- | --- | --- |
@@ -165,6 +165,7 @@ protocol, so not a fair sample of all its bugs. 3,000 seeds at most, an eighth a
 | TASK-125, relocated pages stay mapped | seed 2327 | `fs/dax.c:416` WARN: `moved-before-mapped.patch` covers most of what it did |
 | TASK-140, a read-only slice of an open extent | `open_extent_read_only` | a fault dropped its range 257 times |
 | TASK-150.20, a MAP the host has no memory for makes no room | `open_memory_out` | a write's EIO; and every seed that limits the host's memory, a seed in four, in `interleave` and `failures` alike |
+| TASK-150.20, each way in alone: a write, a fault, zeroing, a read | `open_memory_out`, 8, 8, 592 | a write's EIO, a fault's EFAULT, a punch's ENOMEM, and a read's failure: reads reach it least |
 | TASK-44.21, a sealed piece reached for | `sealed_piece_reach` | a writable MAP outside the gate; the mutant takes `sealed-reach-locked.patch`'s check out too |
 | TASK-79.104, evict doesn't wait for evacuation | no | equivalent: since TASK-101 the hold is taken and let go of under the semaphore, so no one who has it sees one |
 | TASK-79.28, a range remapped too small | no | equivalent since TASK-147: a fault sizing a range from the old end holds the invalidate lock `fxfs_dax_fit` waits for, and one after sees `growing`. `task-79.28-before-147`, with that gone too, shows at seed 31 |
