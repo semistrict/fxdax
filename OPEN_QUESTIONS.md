@@ -1,16 +1,16 @@
 # Open questions
 
-## A subagent deleted a test without asking
-
-`specs/dax-region/mutations/NoOpenUnderLock.cfg`, because the rule it tests went away with TASK-153.3; `NoOneWay` is said to catch the same bug. It's on `refactor/open-once`, not main. I've told it to put the file back unless it can't pass.
-**Recommend:** keep it deleted only if it truly can't pass, as you'll see in that task's notes.
-**Until then:** it isn't merged.
-
 ## Push `fix/main-after-push`?
 
 Two test fixes, this file, AGENTS.md's rule to decide rather than wait, a guest watchdog that dumps every task's stack before a test's timeout, and the fix of `load_during_move`'s hang, which was the check deadlocking itself (r528: 20 rounds pass). `scripts/tests` is red on main until the first two land, because two mutants went stale. No product code changes.
 **Recommend:** push.
 **Until then:** none of this is on main, main's test run reports a failure, and `fxfs-guest-checks-dax*` can hang on `load_during_move`.
+
+## Merge and push `refactor/open-once` (TASK-153.3)?
+
+Extents open only once, guest and host: main (106b6128d) merged in, the host half done on the fork decision below, and a stale read of 106b6128d's fixed (157417ad5). Workspace, sim, TLC and GCE r477 pass; pgbench 968 tps against main's 960. The one WARN left, `fs/dax.c:416`, is main's too (TASK-150.21). Head 68f897b02, a `wip:` commit whose message wants its final wording first.
+**Recommend:** merge into main and push, after this branch.
+**Until then:** main keeps the double open of extents and the fork's `EBUSY`.
 
 # Decisions
 
