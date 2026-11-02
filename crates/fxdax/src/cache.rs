@@ -829,21 +829,27 @@ impl OpenPages {
         Arc::new(Self { arena, pages: Mutex::new(Vec::new()) })
     }
 
-    /// `count` new pages of zeros, of its arena, at most a chunk's: consecutive in physical memory
-    /// where they can be, after `after` where it can, the page before them in the extent, and else
-    /// of the smallest free run that holds them (`physmem::alloc_run`), so that a window maps the
-    /// extent in runs as long as they are, each one change of its VM process's memory, rather than
-    /// a page at a time (TASK-108.1, TASK-131.1). Taken a page at a time, they would be the single
-    /// pages free among those in use, scattered. `ENOMEM` once relief finds nothing to evict for
-    /// them.
-    fn zeroed(&self, after: Option<&physmem::Page>, count: usize) -> Result<Vec<physmem::Page>> {
+    /// Those of `count` new pages, at most a chunk's, that are consecutive in physical memory after
+    /// `after`, the page before them in the extent, as far as they are free: which never waits, so
+    /// that the table can stay locked for it.
+    fn taken_after(after: Option<&physmem::Page>, count: usize) -> Vec<physmem::Page> {
         debug_assert!(count <= physmem::CHUNK_SIZE / page_size() as usize);
         let mut run: Vec<physmem::Page> = Vec::with_capacity(count);
         while run.len() < count {
             let Some(next) = run.last().or(after).and_then(physmem::alloc_after) else { break };
             run.push(next);
         }
-        let rest = physmem::alloc_run(self.arena, count - run.len(), physmem::Wait::Yes)
+        run
+    }
+
+    /// `run` and `count` new pages more, of zeros, of its arena, those new of the smallest free run
+    /// that holds them (`physmem::alloc_run`): `run` was taken after the page before them
+    /// ([`OpenPages::taken_after`]), so that a window maps the extent in runs as long as they are,
+    /// each one change of its VM process's memory, rather than a page at a time (TASK-108.1,
+    /// TASK-131.1). Taken a page at a time, they would be the single pages free among those in use,
+    /// scattered. `ENOMEM` once relief finds nothing to evict for them.
+    fn zeroed(&self, mut run: Vec<physmem::Page>, count: usize) -> Result<Vec<physmem::Page>> {
+        let rest = physmem::alloc_run(self.arena, count, physmem::Wait::Yes)
             .map_err(|_| Errno::ENOMEM)?;
         run.extend(rest);
         let ps = page_size() as usize;
@@ -862,25 +868,33 @@ impl OpenPages {
     /// Brings `pages` into memory, as a guest about to write them maps them: so that they are
     /// mapped now rather than one fault at a time as it writes them. Each run of them not in
     /// memory is allocated a chunk's pages at most at once ([`OpenPages::zeroed`]): those brought
-    /// in before an allocation fails stay, as its arena's cap refuses the rest.
+    /// in before an allocation fails stay, as its arena's cap refuses the rest. Without the table's
+    /// lock while it waits for room: relief unmaps what it evicts from the windows, whose locks are
+    /// taken before a source's (`Source`), so a fault on the extent holding one for this lock would
+    /// hold relief up, and so this allocation, for good. What another brought in meanwhile stays.
     pub(crate) fn commit(&self, pages: Range<u64>) -> Result<()> {
-        let mut table = self.pages.lock().unwrap();
-        if table.len() < pages.end as usize {
-            table.resize_with(pages.end as usize, || None);
-        }
         let mut page = pages.start as usize;
         while page < pages.end as usize {
-            if table[page].is_some() {
-                page += 1;
-                continue;
-            }
             let chunk = physmem::CHUNK_SIZE / page_size() as usize;
-            let end = (page..pages.end as usize).find(|at| table[*at].is_some());
-            let end = end.unwrap_or(pages.end as usize).min(page + chunk);
-            let before = page.checked_sub(1).and_then(|before| table[before].as_ref());
-            let run = self.zeroed(before, end - page)?;
+            let (end, run) = {
+                let mut table = self.pages.lock().unwrap();
+                if table.len() < pages.end as usize {
+                    table.resize_with(pages.end as usize, || None);
+                }
+                if table[page].is_some() {
+                    page += 1;
+                    continue;
+                }
+                let end = (page..pages.end as usize).find(|at| table[*at].is_some());
+                let end = end.unwrap_or(pages.end as usize).min(page + chunk);
+                let before = page.checked_sub(1).and_then(|before| table[before].as_ref());
+                (end, Self::taken_after(before, end - page))
+            };
+            let new = end - page - run.len();
+            let run = self.zeroed(run, new)?;
+            let mut table = self.pages.lock().unwrap();
             for (slot, frame) in table[page..end].iter_mut().zip(run) {
-                *slot = Some(frame);
+                slot.get_or_insert(frame);
             }
             page = end;
         }
@@ -1020,5 +1034,37 @@ mod tests {
         let first = offsets[0];
         assert_eq!(offsets, (0..16).map(|page| first + page * ps).collect::<Vec<_>>());
         drop(kept);
+    }
+
+    /// TASK-150.20: an open extent's allocation leaves the table's lock while it waits for room:
+    /// relief unmaps what it evicts from the windows, whose locks are taken before a source's, as
+    /// `Window::install` takes this one, so that holding it would stop relief, and the allocation.
+    /// Relief stands still here, its evictor waiting for the test, to look at the lock. Each test
+    /// runs in a process of its own (nextest), whose relief is its own.
+    #[test]
+    fn waiting_for_room_leaves_the_table_unlocked() {
+        use std::sync::mpsc::channel;
+        physmem::keep_spare_chunks(false);
+        let arena = physmem::create_arena();
+        physmem::set_arena_cap(arena, Some(physmem::CHUNK_SIZE as u64));
+        let chunk = physmem::CHUNK_SIZE / page_size() as usize;
+        let held = physmem::alloc_run(arena, chunk, physmem::Wait::No).unwrap();
+        let (asked, relief_asked) = channel();
+        let (room, room_made) = channel::<()>();
+        physmem::relieve_with(move |_, bytes| {
+            asked.send(()).unwrap();
+            room_made.recv().unwrap();
+            bytes
+        })
+        .unwrap();
+        let open = OpenPages::new(arena);
+        std::thread::scope(|scope| {
+            let committed = scope.spawn(|| open.commit(0..1));
+            relief_asked.recv().unwrap();
+            assert!(open.pages.try_lock().is_ok(), "the table is locked, waiting for room");
+            drop(held);
+            room.send(()).unwrap();
+            assert_eq!(committed.join().unwrap(), Ok(()));
+        });
     }
 }
