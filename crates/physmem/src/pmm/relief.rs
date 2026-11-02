@@ -10,7 +10,7 @@
 //! the evictor its user gives it ([`relieve_with`]), the arena's own past its own cap, any
 //! arena's past the total's or out of chunks. A pass that frees nothing for an arena starved still
 //! exhausts it: its allocations fail rather than wait for ever, until a page of it is freed, a cap
-//! changes, or a later pass, which each of them still asks for, frees something.
+//! changes, pins are let go of, or a later pass, which each of them still asks for, frees something.
 //!
 //! Without relief, nothing makes a starved arena room: its allocations fail, whether or not they
 //! may wait.
@@ -94,8 +94,9 @@ fn relieve(reliever: &Reliever, mut evict: impl FnMut(Option<ArenaId>, u64) -> u
                 Starved::Total => None,
                 Starved::Removed => unreachable!("relief asked for {arena:?}, removed"),
             };
+            let unpins = node.locked().unpins();
             let freed = evict(from, RELIEF_BYTES);
-            node.locked().relieved(arena, freed);
+            node.locked().relieved(arena, freed, unpins);
             node.room.pulse();
         }
     }

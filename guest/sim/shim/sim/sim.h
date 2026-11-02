@@ -50,6 +50,8 @@ u64 sim_device_maps(void);
 void sim_device_fail(u32 type, u64 skip, u64 count);
 void sim_device_fail_odds(unsigned int odds);
 u64 sim_device_failed(void);
+void sim_device_limit_open(u64 pages);
+u64 sim_device_open_refused(void);
 /* Logs every MAP and UNMAP of a window page. */
 void sim_device_watch(u64 page);
 /* Logs what a window page, or a task's address, maps now. */

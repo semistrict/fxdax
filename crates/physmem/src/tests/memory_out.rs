@@ -12,7 +12,7 @@
 use super::configure_chunks;
 use crate::{
     ArenaId, CHUNK_SIZE, NoMemory, Page, RELIEF_BYTES, Wait, alloc, count_free_pages, create_arena,
-    has_alloc_failed_no_mem, keep_spare_chunks, page_size, relieve_with, set_arena_cap,
+    has_alloc_failed_no_mem, keep_spare_chunks, page_size, pin, relieve_with, set_arena_cap, unpin,
 };
 use std::sync::{Arc, Mutex};
 
@@ -114,4 +114,46 @@ fn allocations_that_may_not_wait_ask_for_relief_for_those_after() {
     assert!(has_alloc_failed_no_mem(), "the failure was not recorded");
     assert_eq!(passes.recv().unwrap(), (None, RELIEF_BYTES));
     drop(alloc(ArenaId::DEFAULT, Wait::No).expect("the page relief freed"));
+}
+
+/// TASK-150.20: pages pinned, let go of, can be evicted: an arena relief found nothing to evict for
+/// is exhausted no more, and an allocation waits for relief rather than fail for what it found
+/// before them. A seal lets an open extent's go of, for a guest's MAP after it.
+#[test]
+fn pins_let_go_of_end_an_arenas_exhaustion() {
+    let mut pages = fill_memory();
+    let evictable = Arc::new(Mutex::new(Vec::new()));
+    relieve_with({
+        let evictable = evictable.clone();
+        move |_, bytes| {
+            let evicted: Vec<Page> = evictable.lock().unwrap().drain(..).collect();
+            if evicted.is_empty() { 0 } else { bytes }
+        }
+    })
+    .unwrap();
+    assert!(pin(ArenaId::DEFAULT, 1));
+    assert_eq!(alloc(ArenaId::DEFAULT, Wait::Yes).err(), Some(NoMemory), "nothing to evict");
+
+    evictable.lock().unwrap().push(pages.pop().unwrap());
+    unpin(ArenaId::DEFAULT, 1);
+    alloc(ArenaId::DEFAULT, Wait::Yes).expect("the page let go of, evicted");
+}
+
+/// TASK-150.20: and a pass that found nothing as they were let go of says nothing of them.
+#[test]
+fn pins_let_go_of_during_a_pass_leave_no_arena_exhausted() {
+    let mut pages = fill_memory();
+    assert!(pin(ArenaId::DEFAULT, 1));
+    let mut page = pages.pop();
+    let mut unpinned = false;
+    relieve_with(move |_, bytes| {
+        if !std::mem::replace(&mut unpinned, true) {
+            unpin(ArenaId::DEFAULT, 1);
+            return 0;
+        }
+        drop(page.take());
+        bytes
+    })
+    .unwrap();
+    alloc(ArenaId::DEFAULT, Wait::Yes).expect("the page let go of as a pass found nothing");
 }

@@ -624,6 +624,9 @@ struct fxfs_dax {
 	 * their ranges map read-only where they moved to (fxfs_dax_map_moved, TASK-121).
 	 */
 	atomic64_t moved_unsealed;
+	/* fxdax: MAPs the host had no memory for, and seals they had made (fxfs_dax_make_memory). */
+	atomic64_t maps_refused;
+	atomic64_t memory_seals;
 	/* The volumes mounted, each with its files. */
 	struct list_head volumes;
 	/*
@@ -735,6 +738,8 @@ static int fxfs_dax_device_map(struct fxfs_dax *dax, u64 branch, u64 sequence, u
 	if (!err) {
 		WRITE_ONCE(dax->shadow_branch, branch);
 		fxfs_dax_shadow_map(dax, window_offset, len, writable, true, sequence, offset);
+	} else if (err == -ENOMEM) {
+		atomic64_inc(&dax->maps_refused);
 	}
 	return err;
 }
@@ -752,6 +757,8 @@ static int fxfs_dax_device_map_many(struct fxfs_dax *dax, const struct fxfs_devi
 		return err ?: -EIO;
 	}
 	err = fxfs_device_map_many(dax->dev, maps, count);
+	if (err == -ENOMEM)
+		atomic64_inc(&dax->maps_refused);
 	for (i = 0; !err && i < count; i++)
 		fxfs_dax_shadow_map(dax, maps[i].window_offset, maps[i].len, maps[i].writable, true,
 				    maps[i].sequence, maps[i].offset);
@@ -1384,10 +1391,12 @@ static int fxfs_dax_mapped(struct fxfs_dax *dax, struct fxfs_dax_range *range,
 	if (err == -ENOENT && !e->open)
 		return 0;
 	if (err) {
-		pr_warn("fxfs: mapping %llu bytes at %llu of extent %llx:%llu, %s, at %llu of the DAX window failed: %d\n",
-			e->len, e->extent_offset, e->branch, e->sequence,
-			e->open ? "writably" : "read-only",
-			range->window_offset + (e->offset - start), err);
+		/* fxdax: the host short of memory is no failure yet (fxfs_dax_make_memory). */
+		if (err != -ENOMEM)
+			pr_warn("fxfs: mapping %llu bytes at %llu of extent %llx:%llu, %s, at %llu of the DAX window failed: %d\n",
+				e->len, e->extent_offset, e->branch, e->sequence,
+				e->open ? "writably" : "read-only",
+				range->window_offset + (e->offset - start), err);
 		return err;
 	}
 	bitmap_set(range->mapped, page, pages);
@@ -2240,7 +2249,7 @@ static int fxfs_dax_map_to(struct fxfs_dax *dax, struct fxfs_dax_region *region,
 	if (!err) {
 		fxfs_dax_assert_mapped_within(dax, region, to, writable, why);
 		WRITE_ONCE(region->mapped, to);
-	} else if (err != -ENOENT)
+	} else if (err != -ENOENT && err != -ENOMEM)
 		pr_warn("fxfs: mapping pages %lu to %lu of extent %llx:%llu, of %lu pages, %s, at %llu of the DAX window failed: %d\n",
 			from, to, region->branch, region->sequence, region->pages,
 			writable ? "writably" : "read-only", region->window_offset, err);
@@ -3572,6 +3581,47 @@ static ssize_t fxfs_dax_read(struct kiocb *iocb, struct iov_iter *to)
 }
 
 /*
+ * fxdax: what a way in to a file has of the MAPs refused for want of the host's memory: how many it
+ * has seen, and how many seals it has made for them since it last got on.
+ */
+struct fxfs_dax_room {
+	s64 refused;
+	unsigned int seals;
+};
+
+static struct fxfs_dax_room fxfs_dax_room(struct fxfs_dax *dax)
+{
+	return (struct fxfs_dax_room) { .refused = atomic64_read(&dax->maps_refused) };
+}
+
+/*
+ * fxdax: what follows a try that failed with `err`: 0 if that wasn't the host refusing a MAP for
+ * want of memory since `room` last saw, 1 once a seal has made room for another try, and otherwise
+ * what to fail with. The host can't evict an open extent's pages, nor seal them, and left to Fxfs's
+ * journal a seal may be far off, each write of an open extent's blocks taking more of them: so it
+ * refuses a MAP while memory is left, and what was refused seals, with no iomap held,
+ * nor a DAX entry, which a store in the gate a seal waits for may be waiting for; in the gate, a MAP
+ * can't wait for it. Whatever way the failure took: as the range fell behind (-ESTALE), a slice as
+ * one is (-EXDEV), or it had no range at all (-ENOMEM). Those are dropped as they would be. A
+ * filesystem that seals in vain, its host's memory another's, says ENOMEM, which is the truth of
+ * it: never EIO (TASK-150.20).
+ */
+static int fxfs_dax_make_memory(struct inode *inode, struct fxfs_dax_room *room, int err)
+{
+	struct fxfs_dax *dax = fxfs_dax_of(inode);
+	s64 refused = atomic64_read(&dax->maps_refused);
+
+	if ((err != -ENOMEM && err != -ESTALE && err != -EXDEV) || refused == room->refused ||
+	    fxfs_vfs_follows(inode->i_sb))
+		return 0;
+	room->refused = refused;
+	if (++room->seals > FXFS_DAX_MAX_DROPS)
+		return -ENOMEM;
+	atomic64_inc(&dax->memory_seals);
+	return fxfs_nofs(fxfs_fsync(fxfs_vfs_fs(inode->i_sb))) ?: 1;
+}
+
+/*
  * fxdax: a read, whose copy takes no page fault: a read into a mapping of the file it reads holds
  * the range through its copy, and the fault waited for that range's users, itself among them, for
  * ever. It faults the destination in with no iomap held, as a write does its source.
@@ -3579,16 +3629,31 @@ static ssize_t fxfs_dax_read(struct kiocb *iocb, struct iov_iter *to)
 static ssize_t fxfs_dax_read_faulting_between(struct kiocb *iocb, struct iov_iter *to)
 {
 	struct inode *inode = file_inode(iocb->ki_filp);
+	struct fxfs_dax_room room = fxfs_dax_room(fxfs_dax_of(inode));
 	ssize_t ret, done = 0;
 	unsigned int empty = 0, stale = 0;
+	int sealed;
 
 	for (;;) {
 		pagefault_disable();
 		ret = fxfs_dax_read(iocb, to);
 		pagefault_enable();
+		sealed = ret < 0 ? fxfs_dax_make_memory(inode, &room, ret) : 0;
 		if (ret > 0) {
 			done += ret;
 			empty = 0;
+			room.seals = 0;
+		} else if (sealed) {
+			if (sealed < 0) {
+				ret = sealed;
+				break;
+			}
+			if (ret != -ENOMEM) {
+				ret = fxfs_dax_drop_slice(inode, iocb->ki_pos, true);
+				if (ret)
+					break;
+			}
+			continue;
 		} else if (ret == -ESTALE) {
 			/* fxdax: a range behind Fxfs's blocks, once: dropped, mapped again. */
 			if (stale++) {
@@ -3730,13 +3795,14 @@ static ssize_t fxfs_dax_write_iter(struct kiocb *iocb, struct iov_iter *from)
 	struct inode *inode = file_inode(iocb->ki_filp);
 	struct fxfs_dax_file *file = fxfs_dax_file(inode);
 	struct fxfs_dax *dax = fxfs_dax_of(inode);
+	struct fxfs_dax_room room = fxfs_dax_room(dax);
 	struct fxfs_dax_source hand = {};
 	struct iov_iter *source = from;
 	loff_t old_size, end, write_pos = 0;
 	u64 seals = 0, began, lap;
 	ssize_t ret, done = 0;
 	unsigned int stale = 0, drops = 0;
-	int err;
+	int err, sealed;
 
 	if (iocb->ki_flags & IOCB_NOWAIT)
 		return -EAGAIN;
@@ -3784,9 +3850,22 @@ static ssize_t fxfs_dax_write_iter(struct kiocb *iocb, struct iov_iter *from)
 		ret = dax_iomap_rw(iocb, source, &fxfs_dax_iomap_ops);
 		pagefault_enable();
 		fxfs_dax_lap(&dax->write_rw_ns, &lap);
+		sealed = ret < 0 ? fxfs_dax_make_memory(inode, &room, ret) : 0;
 		if (ret > 0) {
 			done += ret;
 			drops = 0;
+			room.seals = 0;
+		} else if (sealed) {
+			if (sealed < 0) {
+				ret = sealed;
+				break;
+			}
+			if (ret != -ENOMEM) {
+				ret = fxfs_dax_drop_slice(inode, iocb->ki_pos, true);
+				if (ret)
+					break;
+			}
+			fxfs_dax_lap(&dax->write_retry_ns, &lap);
 		} else if (source == from && (ret == -ENOTBLK || ret == -EFAULT)) {
 			ret = fxfs_dax_source_take(&hand, from, iocb->ki_pos);
 			if (ret)
@@ -3872,11 +3951,12 @@ static vm_fault_t fxfs_dax_do_fault(struct vm_fault *vmf, unsigned int order, bo
 {
 	struct inode *inode = file_inode(vmf->vma->vm_file);
 	struct super_block *sb = inode->i_sb;
+	struct fxfs_dax_room room = fxfs_dax_room(fxfs_dax_of(inode));
 	u64 began = ktime_get_ns();
 	unsigned int stale = 0, waits = 0, drops = 0;
 	vm_fault_t ret;
 	unsigned long pfn;
-	int error;
+	int error, sealed;
 
 	if (write) {
 		sb_start_pagefault(sb);
@@ -3898,6 +3978,15 @@ static vm_fault_t fxfs_dax_do_fault(struct vm_fault *vmf, unsigned int order, bo
 		ret = dax_iomap_fault(vmf, order, &pfn, &error, &fxfs_dax_iomap_ops);
 		filemap_invalidate_unlock_shared(inode->i_mapping);
 		fxfs_vfs_fill_end(sb);
+		sealed = ret & VM_FAULT_ERROR ? fxfs_dax_make_memory(inode, &room, error) : 0;
+		if (sealed > 0) {
+			ret = error == -ENOMEM ? 0 : fxfs_dax_fault_drop_slice(vmf, ret);
+			if (ret)
+				break;
+			continue;
+		}
+		if (sealed < 0)
+			error = sealed;
 		if (!(ret & VM_FAULT_ERROR) || (error != -EAGAIN && error != -EXDEV &&
 						 error != -EBUSY && error != -ESTALE && error != -EDEADLK))
 			break;
@@ -4846,6 +4935,8 @@ void fxfs_dax_show_stats(struct fxfs_dax *dax, struct seq_file *m)
 	seq_printf(m, "dax_write_waits %lld\ndax_write_wait_ns %lld\n",
 		   atomic64_read(&dax->write_waits), atomic64_read(&dax->write_wait_ns));
 	seq_printf(m, "dax_moved_unsealed %lld\n", atomic64_read(&dax->moved_unsealed));
+	seq_printf(m, "dax_maps_refused %lld\n", atomic64_read(&dax->maps_refused));
+	seq_printf(m, "dax_memory_seals %lld\n", atomic64_read(&dax->memory_seals));
 	seq_printf(m, "dax_writes %lld\ndax_writes_ns %lld\n", atomic64_read(&dax->writes),
 		   atomic64_read(&dax->write_ns));
 	seq_printf(m, "dax_write_lock_ns %lld\ndax_write_gate_ns %lld\n",
@@ -5303,16 +5394,22 @@ static int fxfs_dax_clean(struct inode *inode, loff_t pos, loff_t len)
 
 static int fxfs_dax_zero_part(struct inode *inode, loff_t pos, loff_t len)
 {
+	struct fxfs_dax_room room = fxfs_dax_room(fxfs_dax_of(inode));
 	unsigned int stale = 0;
 	bool zeroed;
-	int err = fxfs_dax_clean(inode, pos, len);
+	int sealed, err = fxfs_dax_clean(inode, pos, len);
 
 	if (err)
 		return err;
 	for (;;) {
 		err = dax_zero_range(inode, pos, len, &zeroed, &fxfs_dax_iomap_ops);
+		sealed = fxfs_dax_make_memory(inode, &room, err);
+		if (sealed < 0)
+			return sealed;
+		if (sealed && err == -ENOMEM)
+			continue;
 		/* fxdax: a range behind Fxfs's blocks is dropped as a slice is, once (TASK-150.13). */
-		if (err == -ESTALE && stale++)
+		if (!sealed && err == -ESTALE && stale++)
 			return -EIO;
 		if (err != -EXDEV && err != -ESTALE)
 			return err;

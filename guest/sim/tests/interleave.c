@@ -40,6 +40,8 @@
 /* How many slots an fsync checks in Fxfs's extents. */
 #define FSYNC_CHECKS 16
 #define SLOT 32
+/* The host's memory for open extents, a run in four, as little as lets a chunk be mapped. */
+#define OPEN_LIMIT PTRS_PER_PTE
 
 #define check(cond, ...) do { if (!(cond)) sim_panic(__VA_ARGS__); } while (0)
 
@@ -996,6 +998,9 @@ int main(int argc, char **argv)
 	sim_init(seed);
 	/* A window its files fill, a run in four, whose ranges are reclaimed and regions run out. */
 	sim_device_init(sim_random() % 4 ? WINDOW_LEN : SMALL_WINDOW_LEN);
+	/* By the seed, not of its random numbers: what it plays otherwise stays. */
+	if (!(seed % 4))
+		sim_device_limit_open(OPEN_LIMIT);
 	for (i = 2; i < argc; i++) {
 		unsigned long long page;
 

@@ -188,7 +188,7 @@ const ATTEMPTS: usize = 100;
 pub(super) fn stores_race_seals_and_frees<G: Guest>(mut dax: Dax<Arc<u8>>, guest: Arc<G>) {
     let ps = page_size();
     let (open, sealed) = (TestSource::filled(2, OPEN).source(), TestSource::filled(2, SEALED));
-    let (sealed, zeros) = (sealed.source(), crate::cache::zeros());
+    let (sealed, zeros) = (sealed.source(), crate::cache::zeros().unwrap());
     let (opened, seal, free) = (Arc::new(0), Arc::new(1), Arc::new(2));
     dax.map(0, opened.clone(), &open, 0, 2 * ps, true).unwrap();
     let sealing = Arc::new(shuttle::sync::atomic::AtomicBool::new(false));

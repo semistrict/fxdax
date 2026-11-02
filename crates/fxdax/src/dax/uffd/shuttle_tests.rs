@@ -520,7 +520,7 @@ fn refusal_races_changes() {
     let telling = Arc::new(Telling { stage: stage.clone(), memory: memory.clone() });
     let (mut dax, _) = Dax::<Arc<u8>>::new(ps, Some(telling)).unwrap();
     let window = dax.window.clone();
-    let (sealed, zeros) = (TestSource::filled(1, SEALED).source(), crate::cache::zeros());
+    let (sealed, zeros) = (TestSource::filled(1, SEALED).source(), crate::cache::zeros().unwrap());
     dax.map(0, Arc::new(0), &sealed, 0, ps, false).unwrap();
     let guest = HostGuest { memory, stage: stage.clone(), window, base };
 

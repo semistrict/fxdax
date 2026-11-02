@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+#
+# TASK-150.20: what the host refuses for want of memory makes no room: a MAP past what it holds of
+# open extents, which only a seal lets go of, fails again, and the write says EIO.
+
+--- a/guest/linux/fs/fxfs/dax.c
++++ b/guest/linux/fs/fxfs/dax.c
+@@ -3611,7 +3611,7 @@
+ 	struct fxfs_dax *dax = fxfs_dax_of(inode);
+ 	s64 refused = atomic64_read(&dax->maps_refused);
+ 
+-	if ((err != -ENOMEM && err != -ESTALE && err != -EXDEV) || refused == room->refused ||
++	if (1 || (err != -ENOMEM && err != -ESTALE && err != -EXDEV) || refused == room->refused ||
+ 	    fxfs_vfs_follows(inode->i_sb))
+ 		return 0;
+ 	room->refused = refused;

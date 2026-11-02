@@ -34,6 +34,10 @@ use crate::sync::rules;
 use std::collections::BTreeMap;
 use std::ops::Range;
 
+/// The share of what an arena, or the arenas together, may hold that pins leave free of them: an
+/// eighth, what memory run out needs for all that isn't pinned to get on with (`Arenas::pin`).
+const RESERVED_SHARE: usize = 8;
+
 /// The pages of a chunk.
 fn chunk_page_count() -> u32 {
     (CHUNK_SIZE / crate::page_bytes()) as u32
@@ -89,8 +93,8 @@ struct Relief {
     /// begins for it.
     asked: Option<Starved>,
     /// Whether relief's last pass for it freed nothing while it was starved: its allocations fail
-    /// rather than wait for ever, until a page of it is freed, a cap changes, or a pass, which
-    /// each of them still asks for, frees something.
+    /// rather than wait for ever, until a page of it is freed, a cap changes, pins are let go of,
+    /// or a pass, which each of them still asks for, frees something.
     exhausted: bool,
 }
 
@@ -113,6 +117,8 @@ struct ArenaPages {
     /// (`pmm::quarantine`): relief exhausts it not while any is to come back, as each makes it room
     /// (TASK-106).
     quarantined: usize,
+    /// fxdax: how many pages are pinned against it ([`Arenas::pin`]).
+    pinned: usize,
     /// Whether it was removed, and goes with its last chunk: it gives no page meanwhile.
     retiring: bool,
 }
@@ -127,6 +133,7 @@ impl ArenaPages {
             cap: None,
             relief: Relief::default(),
             quarantined: 0,
+            pinned: 0,
             retiring: false,
         }
     }
@@ -162,7 +169,7 @@ impl ArenaPages {
 ///   no allocation waits for them, but for their going back.
 /// - Relief is `asked` for an arena from an allocation's asking until its next pass begins; and
 ///   the arena is `exhausted` from a pass that freed nothing while it was starved until a page of
-///   it is freed, a cap changes, or a pass frees something.
+///   it is freed, a cap changes, a pass frees something, or pins are let go of.
 /// - The host refuses chunks from its refusing to map one, or take one back, until it next does as
 ///   asked (TASK-79.37): meanwhile no arena takes a spare.
 pub(super) struct Arenas {
@@ -181,6 +188,11 @@ pub(super) struct Arenas {
     total_cap: Option<usize>,
     /// Whether arenas keep spare chunks.
     keep_spares: bool,
+    /// How many pages are pinned, of every arena's ([`Arenas::pin`]).
+    pinned: usize,
+    /// How many times pins were let go of, which may leave relief pages to evict: a pass begun
+    /// before one found none of them ([`Arenas::relieved`]).
+    unpins: u64,
     /// Whether the host refused the last chunk it was asked to map, or take back, as the process
     /// makes as many mappings as it may (TASK-79.37). Meanwhile arenas take no spare, which it
     /// would refuse too, each allocation asking it in vain under the PMM's lock; an allocation that
@@ -200,6 +212,8 @@ impl Arenas {
             chunk_used: vec![0; chunks].into(),
             total_cap: None,
             keep_spares: true,
+            pinned: 0,
+            unpins: 0,
             host_refuses: false,
         }
     }
@@ -411,24 +425,72 @@ impl Arenas {
             .collect()
     }
 
-    /// Relief's pass for `arena` freed `freed` bytes: something, and it is not exhausted; nothing,
-    /// and it is, if it is starved still, but while pages that would make it room are quarantined,
-    /// as they make it room once they come back (TASK-106): what relief evicted, a window mapped,
-    /// waits for its VM process to unmap it, and a pass after finds nothing left to evict. Its own
-    /// pages, starved at its own cap; any arena's, at the total's, which relief evicts any arena's
-    /// for (TASK-132).
-    pub(super) fn relieved(&mut self, arena: ArenaId, freed: u64) {
+    /// Relief's pass for `arena`, begun with `unpins` as [`Arenas::unpins`] said, freed `freed`
+    /// bytes: something, and it is not exhausted; nothing, and it is, if it is starved still, but
+    /// while pages that would make it room are quarantined, as they make it room once they come
+    /// back (TASK-106): what relief evicted, a window mapped, waits for its VM process to unmap it,
+    /// and a pass after finds nothing left to evict. Its own pages, starved at its own cap; any
+    /// arena's, at the total's, which relief evicts any arena's for (TASK-132). Nor if pins were let
+    /// go of since it began, which it may have looked past (TASK-150.20).
+    pub(super) fn relieved(&mut self, arena: ArenaId, freed: u64, unpins: u64) {
         let starved = self.starved(arena);
         let coming_back = match starved {
             Some(Starved::Total) => self.arenas.values().any(|entry| entry.quarantined > 0),
             _ => self.arenas.get(&arena).is_some_and(|entry| entry.quarantined > 0),
         };
+        let unpinned = self.unpins != unpins;
         let Some(entry) = self.arenas.get_mut(&arena) else { return };
         if freed > 0 {
             entry.relief.exhausted = false;
-        } else if starved.is_some() && !coming_back {
+        } else if starved.is_some() && !coming_back && !unpinned {
             entry.relief.exhausted = true;
         }
+    }
+
+    /// Pins `count` more pages against `arena`, which relief then can't evict, unless they would
+    /// take its budget, or the arenas' together: returns whether it did. What fits in no budget
+    /// pins while nothing else does, as a caller left no other way to room. `past_budget` pins them
+    /// whatever the budgets say, for what has no way to wait or go back: they go on counting.
+    /// An arena gone holds nothing, and pins nothing.
+    pub(super) fn pin(&mut self, arena: ArenaId, count: usize, past_budget: bool) -> bool {
+        let chunks = self.chunk_used.len();
+        let total = self.total_cap.map_or(chunks, |cap| cap.min(chunks));
+        let pinned = self.pinned;
+        let Some(entry) = self.arenas.get_mut(&arena) else { return false };
+        let fits = |pinned: usize, chunks: usize| {
+            let pages = chunks * chunk_page_count() as usize;
+            pinned == 0 || pinned + count <= pages - pages / RESERVED_SHARE
+        };
+        if !past_budget && !(fits(entry.pinned, entry.cap.unwrap_or(total)) && fits(pinned, total)) {
+            return false;
+        }
+        entry.pinned += count;
+        self.pinned += count;
+        true
+    }
+
+    /// Lets go of `count` pages pinned against `arena`. Evictable now, or freed, they are room: no
+    /// arena is exhausted, as relief evicts them for any at the total's cap.
+    pub(super) fn unpin(&mut self, arena: ArenaId, count: usize) {
+        if count == 0 {
+            return;
+        }
+        let Some(entry) = self.arenas.get_mut(&arena) else { return };
+        entry.pinned = entry.pinned.checked_sub(count).expect("pages unpinned, not pinned");
+        self.pinned -= count;
+        self.unpins += 1;
+        self.clear_exhausted();
+    }
+
+    /// How many times pins were let go of, which a pass of relief notes as it begins
+    /// ([`Arenas::relieved`]).
+    pub(super) fn unpins(&self) -> u64 {
+        self.unpins
+    }
+
+    /// How many pages are pinned against `arena`.
+    pub(super) fn pinned(&self, arena: ArenaId) -> usize {
+        self.arenas.get(&arena).map_or(0, |entry| entry.pinned)
     }
 
     /// Gives the spare chunks of `arena`, or of every arena, back, as the lock is dropped
@@ -897,6 +959,39 @@ mod tests {
     /// A total cap lowered under what the arenas hold: an arena takes a chunk once as many spares
     /// as bring the arenas under it with that chunk have gone back, all at once; with too few
     /// spares, it fails, starved still, those there were gone back.
+    /// TASK-150.20: pins stop at all but an eighth of what an arena may hold, its cap's or memory's,
+    /// and of what the arenas may together; past it only when told to, which goes on counting; and
+    /// what fits no budget pins while nothing else does.
+    #[test]
+    fn pins_stop_at_their_budget() {
+        let mut fixture = Fixture::new();
+        let page = pages_per_chunk();
+        let budget = (CHUNKS * page) * 7 / 8;
+        let (first, second) = (fixture.create(), fixture.create());
+        assert!(fixture.arenas.pin(first, budget, false));
+        assert!(!fixture.arenas.pin(first, 1, false));
+        assert!(!fixture.arenas.pin(second, 1, false), "the arenas' together");
+        assert!(fixture.arenas.pin(second, 1, true));
+        assert_eq!(fixture.arenas.pinned(second), 1);
+        fixture.arenas.unpin(first, 2);
+        assert!(fixture.arenas.pin(first, 1, false));
+        assert!(!fixture.arenas.pin(first, 1, false), "what went past it still counts");
+        fixture.arenas.unpin(second, 1);
+        fixture.arenas.unpin(first, budget - 1);
+        assert_eq!(fixture.arenas.pinned(first), 0);
+
+        fixture.arenas.set_cap(first, Some(2));
+        assert!(fixture.arenas.pin(first, 2 * page, false), "nothing pinned, it fits no budget");
+        assert!(!fixture.arenas.pin(first, 1, false));
+        fixture.arenas.unpin(first, 2 * page);
+        assert!(fixture.arenas.pin(first, 2 * page - page / 4, false));
+        assert!(!fixture.arenas.pin(first, 1, false), "its own cap's");
+        assert!(fixture.arenas.pin(second, budget - 2 * page, false), "the others go on");
+        let gone = ArenaId(u32::MAX);
+        assert!(!fixture.arenas.pin(gone, 1, false));
+        fixture.arenas.unpin(gone, 1);
+    }
+
     #[test]
     fn a_total_cap_lowered_under_the_arenas_takes_their_spares() {
         let mut fixture = Fixture::new();
@@ -1101,24 +1196,30 @@ mod tests {
         );
         assert!(fixture.arenas.take_asked().is_empty());
 
-        fixture.arenas.relieved(first, 0);
+        let unpins = fixture.arenas.unpins();
+        fixture.arenas.relieved(first, 0, unpins);
         assert!(fixture.arenas.ask_relief(first, Starved::Arena), "exhausted");
         let _ = fixture.put(taken.pop().unwrap());
         assert!(!fixture.arenas.ask_relief(first, Starved::Arena), "a page of it freed");
         assert_eq!(fixture.arenas.starved(first), None);
-        fixture.arenas.relieved(first, 0);
+        let unpins = fixture.arenas.unpins();
+        fixture.arenas.relieved(first, 0, unpins);
         assert!(!fixture.arenas.ask_relief(first, Starved::Arena), "not starved");
 
         taken.extend(fixture.take(first));
-        fixture.arenas.relieved(first, 0);
+        let unpins = fixture.arenas.unpins();
+        fixture.arenas.relieved(first, 0, unpins);
         assert!(fixture.arenas.ask_relief(first, Starved::Arena), "exhausted again");
-        fixture.arenas.relieved(first, crate::page_size());
+        let unpins = fixture.arenas.unpins();
+        fixture.arenas.relieved(first, crate::page_size(), unpins);
         assert!(!fixture.arenas.ask_relief(first, Starved::Arena), "a pass freed a page");
 
-        fixture.arenas.relieved(first, 0);
+        let unpins = fixture.arenas.unpins();
+        fixture.arenas.relieved(first, 0, unpins);
         fixture.arenas.set_cap(second, Some(4));
         assert!(!fixture.arenas.ask_relief(first, Starved::Arena), "another's cap changed");
-        fixture.arenas.relieved(first, 0);
+        let unpins = fixture.arenas.unpins();
+        fixture.arenas.relieved(first, 0, unpins);
         fixture.arenas.set_total_cap(None);
         assert!(!fixture.arenas.ask_relief(first, Starved::Arena), "the total cap changed");
 
@@ -1200,12 +1301,14 @@ mod tests {
         assert_eq!(fixture.arenas.starved(starved), Some(Starved::Total));
         let evicted = taken.pop().unwrap();
         fixture.arenas.quarantine(&fixture.pages, evicted, true);
-        fixture.arenas.relieved(starved, 0);
+        let unpins = fixture.arenas.unpins();
+        fixture.arenas.relieved(starved, 0, unpins);
         assert!(!fixture.arenas.ask_relief(starved, Starved::Total), "a page is to come back");
 
         fixture.arenas.quarantine(&fixture.pages, evicted, false);
         let _ = fixture.put(evicted);
-        fixture.arenas.relieved(starved, 0);
+        let unpins = fixture.arenas.unpins();
+        fixture.arenas.relieved(starved, 0, unpins);
         assert!(fixture.arenas.ask_relief(starved, Starved::Total), "none is to come back");
         fixture.put_all(taken);
     }
@@ -1223,14 +1326,16 @@ mod tests {
         assert_eq!(fixture.arenas.starved(arena), Some(Starved::Arena));
         let evicted = taken.pop().unwrap();
         fixture.arenas.quarantine(&fixture.pages, evicted, true);
-        fixture.arenas.relieved(arena, 0);
+        let unpins = fixture.arenas.unpins();
+        fixture.arenas.relieved(arena, 0, unpins);
         assert!(!fixture.arenas.ask_relief(arena, Starved::Arena), "a page is to come back");
 
         fixture.arenas.quarantine(&fixture.pages, evicted, false);
         let _ = fixture.put(evicted);
         assert!(!fixture.arenas.ask_relief(arena, Starved::Arena), "it came back");
         taken.extend(fixture.take(arena));
-        fixture.arenas.relieved(arena, 0);
+        let unpins = fixture.arenas.unpins();
+        fixture.arenas.relieved(arena, 0, unpins);
         assert!(fixture.arenas.ask_relief(arena, Starved::Arena), "none is to come back");
         fixture.put_all(taken);
     }

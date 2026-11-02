@@ -554,6 +554,30 @@ static void allocations_failed(void)
 	alloc_sweep("a load", load_op, true);
 }
 
+/*
+ * That writes never told to sync, more than the host's memory for open extents holds, each over
+ * what the last left dead, make room with a seal, and lose nothing, as xfstests' generic/129 asks
+ * (`looptest -t`): the host evicts only what is sealed (TASK-150.20).
+ */
+static void open_memory_out(void)
+{
+	static char bytes[25 * PAGE_SIZE], got[25 * PAGE_SIZE];
+	struct file *file = sim_file_new(mount);
+	int round;
+
+	sim_device_limit_open(3 * PTRS_PER_PTE);
+	for (round = 0; round < 1000; round++) {
+		fill(bytes, sizeof(bytes), round);
+		check(!sim_truncate(file, 0), "truncate %d", round);
+		check(sim_write(file, 0, bytes, sizeof(bytes)) == sizeof(bytes), "write %d", round);
+		check(sim_read(file, 0, got, sizeof(got)) == sizeof(got), "read %d", round);
+		check(!memcmp(got, bytes, sizeof(got)), "round %d reads otherwise", round);
+	}
+	check(sim_device_open_refused(), "the host refused no MAP");
+	check(sim_device_failed() == 0, "a request failed");
+	check_file("the last write", file, bytes, sizeof(bytes));
+}
+
 static const struct {
 	const char *name;
 	void (*run)(void);
@@ -575,6 +599,7 @@ static const struct {
 	SCENARIO(map_failed_killed),
 	SCENARIO(map_failed_writing),
 	SCENARIO(allocations_failed),
+	SCENARIO(open_memory_out),
 };
 
 static void scenario(void *arg)
