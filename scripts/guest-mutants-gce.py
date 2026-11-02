@@ -36,12 +36,11 @@ SUPER = "guest/linux/fs/fxfs/super.c"
 # kernel the host builds (FXDAX_GUEST_KERNEL_BUILD: debug, with lockdep), release otherwise.
 MUTANTS = [
     (
-        "region_open_unlocked",
-        "region_open looks at mapped without the region's lock (TASK-99)",
-        [("\tfxfs_dax_delay();\n\tmutex_lock(&region->lock);\n\tspin_lock(&dax->regions_lock);",
-          "\tfxfs_dax_delay();\n\tspin_lock(&dax->regions_lock);"),
-         ("\tspin_unlock(&dax->regions_lock);\n\tmutex_unlock(&region->lock);\n}",
-          "\tspin_unlock(&dax->regions_lock);\n}")],
+        "map_to_unlocked",
+        "a region's MAPs and its mapped go without the region's lock: two MAP as far as each "
+        "found mapped, and the one that ends last says so (TASK-44.17)",
+        [("\tint err = 0;\n\n\tmutex_lock(&region->lock);\n", "\tint err = 0;\n\n"),
+         ("out:\n\tmutex_unlock(&region->lock);\n\treturn err;\n}", "out:\n\treturn err;\n}")],
     ),
     (
         "map_chunk_no_seals_recheck",
@@ -92,9 +91,9 @@ MUTANTS = [
         "blocks Fxfs freed, rather than dropped and the write tried again (TASK-79.106)",
         [
             (
-                "\trange->behind = true;\n\tunmap_mapping_pages(inode->i_mapping, "
-                "fxfs_dax_chunk_start(range) >> PAGE_SHIFT, range->pages,\n\t\t\t    false);\n"
-                "\treturn err == -EXDEV ? err : -ESTALE;\n",
+                "\trange->behind = err == -EXDEV ? err : -ESTALE;\n\tunmap_mapping_pages("
+                "inode->i_mapping, fxfs_dax_chunk_start(range) >> PAGE_SHIFT, range->pages,\n"
+                "\t\t\t    false);\n\treturn range->behind;\n",
                 "\treturn err;\n",
             )
         ],
