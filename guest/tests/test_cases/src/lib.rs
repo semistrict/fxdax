@@ -265,6 +265,14 @@ pub fn test_cases() -> Vec<TestCase> {
             "fxfs-guest-migrate-dax",
             Box::new(TestFxfsGuestSnapshot { dax: true, mode: SnapshotMode::Migrate, volumes: 0 }),
         ),
+        TestCase::new(
+            "fxfs-guest-migrate-tenant-dax",
+            Box::new(TestFxfsGuestSnapshot {
+                dax: true,
+                mode: SnapshotMode::TenantMigrate,
+                volumes: 0,
+            }),
+        ),
         #[cfg(any(feature = "host", target_os = "linux"))]
         TestCase::new(
             "fxfs-guest-checks",

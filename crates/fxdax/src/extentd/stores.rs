@@ -830,11 +830,29 @@ pub(super) async fn sync(path: PathBuf) -> Result<(), Errno> {
 /// Deletes the store at `path`, or the fork whose handle it is, and its branch in the daemon's
 /// bucket ([`ExtentStore::delete`]): `EBUSY` while a connection has it open.
 pub(super) async fn delete(path: PathBuf) -> Result<(), Errno> {
+    let bucket = remote_bucket()?;
+    delete_alone(path, Some(bucket)).await
+}
+
+/// fxdax: deletes this host's copy of the store at `path`, or of the fork whose handle it is
+/// (TASK-154): as [`delete`] does, but for its branch in the daemon's bucket, which stays, for what
+/// else restores it: another host's copy, or this one's taken again. What its commits hold that
+/// the bucket doesn't goes with it. A point the VM manager took for a tenant goes so: the tenant
+/// restores it no more, and the snapshot lives on.
+pub(super) async fn drop_copy(path: PathBuf) -> Result<(), Errno> {
+    delete_alone(path, None).await
+}
+
+/// Deletes the store at `path`, and its branch in `bucket`, if given: `EBUSY` while a connection
+/// has it open.
+async fn delete_alone(
+    path: PathBuf,
+    bucket: Option<Arc<extent_remote::store::Store>>,
+) -> Result<(), Errno> {
     let held = Held::alone(&path).await?;
     blocking(move || {
         let _held = held;
-        let bucket = remote_bucket()?;
-        ExtentStore::delete(&path, Some(&bucket))
+        ExtentStore::delete(&path, bucket.as_deref())
             .map_err(|err| errno_of(format_args!("deleting {}", path.display()), err))
     })
     .await

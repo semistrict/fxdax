@@ -13,6 +13,7 @@
 //! fxdaxctl import DIR CAPACITY IMAGE [REF]
 //! fxdaxctl fork SRC DST
 //! fxdaxctl delete DIR
+//! fxdaxctl drop DIR
 //! fxdaxctl resize DIR CAPACITY
 //! fxdaxctl public DIR
 //! fxdaxctl stat DIR
@@ -51,7 +52,9 @@
 //! of it live. `delete` deletes a fork, or a store, whose data goes but for what other branches
 //! hold: a store whose forks live keeps its directory, holding what they share of it, which no
 //! longer opens, and which goes with the last of them (TASK-39.4); with `FXDAX_EXTENTD_REMOTE`, its
-//! branch there too, its forks' living on. `resize` sets the store's capacity, the size of the disk
+//! branch there too, its forks' living on. `drop` deletes the store at DIR as `delete` does, this
+//! host's copy of it, its branch staying in the bucket (TASK-154): what `take` made, once this host
+//! is done with it. `resize` sets the store's capacity, the size of the disk
 //! its guest sees, to CAPACITY bytes: through the daemon, a store its VM has open grows at once,
 //! the guest seeing the new size while mounted, and shrinks if the guest's filesystem agrees, no
 //! lower than what it holds; otherwise, it grows, and does not shrink. `public` makes the store at
@@ -71,7 +74,8 @@ fn usage() -> anyhow::Error {
     anyhow::anyhow!(
         "usage: fxdaxctl take DIR CAPACITY BRANCH [TOKEN] | fxdaxctl place DIR TOKEN | \
          fxdaxctl sync DIR | fxdaxctl import DIR CAPACITY IMAGE [REF] | fxdaxctl fork SRC DST | \
-         fxdaxctl delete DIR | fxdaxctl resize DIR CAPACITY | fxdaxctl public DIR | \
+         fxdaxctl delete DIR | fxdaxctl drop DIR | fxdaxctl resize DIR CAPACITY | \
+         fxdaxctl public DIR | \
          fxdaxctl public-generation DIR | fxdaxctl attach DIR BASE | fxdaxctl stat DIR | \
          fxdaxctl --version"
     )
@@ -85,6 +89,7 @@ enum Command {
     Import { dir: PathBuf, capacity: u64, image: PathBuf, reference: Option<String> },
     Fork { src: PathBuf, dst: PathBuf },
     Delete { dir: PathBuf },
+    Drop { dir: PathBuf },
     Resize { dir: PathBuf, capacity: u64 },
     Public { dir: PathBuf },
     PublicGeneration { dir: PathBuf },
@@ -113,6 +118,7 @@ impl Command {
             },
             ["fork", src, dst] => Self::Fork { src: src.into(), dst: dst.into() },
             ["delete", dir] => Self::Delete { dir: dir.into() },
+            ["drop", dir] => Self::Drop { dir: dir.into() },
             ["resize", dir, size] => Self::Resize { dir: dir.into(), capacity: capacity(size)? },
             ["public", dir] => Self::Public { dir: dir.into() },
             ["public-generation", dir] => Self::PublicGeneration { dir: dir.into() },
@@ -137,6 +143,7 @@ impl Command {
             }
             Self::Fork { src, dst } => println!("{:x}", daemon.fork_store(&src, &dst)?),
             Self::Delete { dir } => daemon.delete_store(&dir)?,
+            Self::Drop { dir } => daemon.drop_store(&dir)?,
             Self::Resize { dir, capacity } => daemon.resize_store(&dir, capacity)?,
             Self::Public { dir } => daemon.make_public(&dir)?,
             Self::PublicGeneration { dir } => daemon.make_generation_public(&dir)?,
@@ -167,8 +174,11 @@ impl Command {
     /// Does it here, on stores nothing has open: new ones anywhere; existing ones with the bucket
     /// and a placement token.
     fn locally(self) -> anyhow::Result<()> {
-        // What stat reads needs no branch changed.
-        let existing = !matches!(self, Self::Take { .. } | Self::Import { .. } | Self::Stat { .. });
+        // What stat reads needs no branch changed, nor does a copy dropped, its branch left be.
+        let existing = !matches!(
+            self,
+            Self::Take { .. } | Self::Import { .. } | Self::Stat { .. } | Self::Drop { .. }
+        );
         let bucket = match existing.then(fxdax::remote::Host::from_env).transpose() {
             Ok(Some(host)) => Some(
                 extent_remote::store::Store::from_url(&host.bucket).map_err(anyhow::Error::msg)?,
@@ -208,6 +218,7 @@ impl Command {
                 println!("{branch:x}");
             }
             Self::Delete { dir } => ExtentStore::delete(&dir, bucket.as_ref())?,
+            Self::Drop { dir } => ExtentStore::delete(&dir, None)?,
             Self::Resize { dir, capacity } => {
                 let store = ExtentStore::open(&dir)?;
                 if capacity < store.info()?.capacity {

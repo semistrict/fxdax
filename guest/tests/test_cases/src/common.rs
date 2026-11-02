@@ -83,11 +83,29 @@ pub fn spawn_daemon(
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         match control(socket) {
-            Ok(_) => return Ok(daemon),
+            Ok(_) => {
+                give_to_the_jail(socket)?;
+                return Ok(daemon);
+            }
             Err(_) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
             Err(err) => return Err(anyhow::anyhow!("the daemon {name}: {err:#}")),
         }
     }
+}
+
+/// Gives the extent daemon's socket at `socket`, its user's alone (TASK-155), to the user of the
+/// jails Firecracker runs in, if it does: scripts/test-e2e.sh's FXDAX_FIRECRACKER_JAIL. Each
+/// jailed Firecracker here uses the default tenant's socket, as production's use a tenant's.
+fn give_to_the_jail(socket: &Path) -> anyhow::Result<()> {
+    let id = |name: &str| -> anyhow::Result<Option<u32>> {
+        let Ok(value) = std::env::var(name) else { return Ok(None) };
+        Ok(Some(value.parse().with_context(|| format!("{name} is not a number"))?))
+    };
+    if let (Some(uid), Some(gid)) = (id("FXDAX_JAIL_UID")?, id("FXDAX_JAIL_GID")?) {
+        std::os::unix::fs::chown(socket, Some(uid), Some(gid))
+            .with_context(|| format!("giving {} to the jail's user", socket.display()))?;
+    }
+    Ok(())
 }
 
 /// A client of the control API of the extent daemon whose VM socket is at `socket`: at its control
