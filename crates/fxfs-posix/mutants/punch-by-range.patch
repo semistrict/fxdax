@@ -1,12 +1,14 @@
 diff --git a/crates/fxfs/src/object_store/data_object_handle.rs b/crates/fxfs/src/object_store/data_object_handle.rs
-index 33179a1eb..a58230061 100644
+index 4c15560f2..9728e32fc 100644
 --- a/crates/fxfs/src/object_store/data_object_handle.rs
 +++ b/crates/fxfs/src/object_store/data_object_handle.rs
-@@ -2444,7 +2444,7 @@ impl<S: HandleOwner> DataObjectHandle<S> {
+@@ -2467,9 +2467,7 @@ impl<S: HandleOwner> DataObjectHandle<S> {
      ) -> Result<(), Error> {
          let mut start = range.start;
          loop {
--            let end = self.end_of_extents(start..range.end, MAX_ZEROED_PER_COMMIT, u64::MAX).await?;
+-            let freed = |_: &Range<u64>, blocks, _: &ExtentValue| self.cost_of_freeing(blocks);
+-            let room = transaction.room();
+-            let (end, _) = self.end_of_room(start..range.end, room, freed).await?;
 +            let end = range.end.min(start + (1 << 20));
              self.zero(transaction, start..end).await?;
              if end == range.end {

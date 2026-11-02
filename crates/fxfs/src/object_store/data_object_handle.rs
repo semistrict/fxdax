@@ -13,8 +13,11 @@
 // `StoreObjectHandle::multi_overwrite`), so preallocating doesn't guarantee space. `txn_map_write`
 // makes room for writes whose data comes through a DAX window (backlog doc-2), which Fuchsia
 // doesn't have. `write_many` writes data scattered across a file in as few transactions, and
-// device writes, as hold it: the guest kernel's page-cache writeback.
+// device writes, as hold it: the guest kernel's page-cache writeback. What splits an operation
+// across commits is the room its transaction says it has left (`Transaction::room`), not a count
+// of mutations: `allocate`, `preallocate_range`.
 
+use crate::checksum::{Checksum, Checksums};
 use crate::errors::FxfsError;
 use crate::log::*;
 use crate::lsm_tree::Query;
@@ -24,6 +27,7 @@ use crate::object_handle::{
 };
 use crate::object_store::allocator::{Reservation, STAGED_MAX};
 use crate::object_store::extent_record::{ExtentMode, ExtentValue};
+use crate::object_store::journal::{checksums_record_bytes, mutation_record_bytes};
 use crate::object_store::object_manager::ObjectManager;
 use crate::object_store::object_record::{
     AttributeKey, DirType, FsverityMetadata, ObjectAttributes, ObjectItem, ObjectKey,
@@ -31,12 +35,12 @@ use crate::object_store::object_record::{
 };
 use crate::object_store::store_object_handle::{MaybeChecksums, NeedsTrim};
 use crate::object_store::transaction::{
-    self, AssocObj, AssociatedObject, LockKey, Mutation, ObjectStoreMutation, Operation, Options,
-    ReadGuard, Transaction, lock_keys,
+    self, AllocatorMutation, AssocObj, AssociatedObject, LockKey, Mutation, ObjectStoreMutation,
+    Operation, Options, ReadGuard, Transaction, lock_keys,
 };
 use crate::object_store::{
-    AttributeId, Extent, HandleOptions, HandleOwner, RootDigest, StoreObjectHandle,
-    TRANSACTION_MUTATION_THRESHOLD, TrimMode, TrimResult,
+    AttributeId, Extent, HandleOptions, HandleOwner, RootDigest, StoreObjectHandle, TrimMode,
+    TrimResult,
 };
 use crate::range::RangeExt;
 use anyhow::{Context, Error, anyhow, bail, ensure};
@@ -67,20 +71,6 @@ pub use allocated_ranges::{AllocatedRanges, RangeType};
 /// How much data each transaction will cover when writing an attribute across batches. Pulled from
 /// `FLUSH_BATCH_SIZE` in paged_object_handle.rs.
 pub const WRITE_ATTR_BATCH_SIZE: usize = 524_288;
-
-/// fxdax: the most writes one of `write_many`'s transactions holds, and the most bytes of the
-/// blocks they cover, which it writes from a buffer of as many, unless a write alone covers more.
-/// What a transaction takes of the journal grows with both: each write is a record of the file's
-/// extents, and each block it covers a checksum in that record and at most one extent it
-/// overwrites, a range of which the allocator deallocates, a record each; and the blocks are
-/// allocated together, in an extent the allocator records. Blocks are 4 KiB or more
-/// (`crate::filesystem::MIN_BLOCK_SIZE`), so a transaction covers at most 256: so many fit what a
-/// transaction may take of the journal, TRANSACTION_MAX_JOURNAL_USAGE
-/// (`test_write_many_transactions_fit_the_journal`), as upstream's page-cache flushes of
-/// `FLUSH_BATCH_SIZE`, 128 pages of 4 KiB, do. The writes' bytes would not bound the blocks: a
-/// write from a block's last byte covers up to two blocks more than its bytes fill.
-pub const WRITE_MANY_WRITES: usize = 128;
-pub const WRITE_MANY_BYTES: usize = 1 << 20;
 
 /// fxdax: one of `write_many`'s writes: `data`, its bytes, to `range` of the file, which covers
 /// `blocks`.
@@ -113,20 +103,6 @@ enum Kept<'a> {
     /// These bytes, the blocks' contents as their caller holds them.
     Held(&'a [u8]),
 }
-
-/// fxdax: the extents, of either file, a commit of a clone takes: a transaction's mutations are
-/// each's reference, extent and hole, and the extent it replaces.
-const MAX_CLONED_PER_COMMIT: usize = TRANSACTION_MUTATION_THRESHOLD / 8;
-/// fxdax: the bytes of extents a commit of a clone takes: the extent records it writes hold each
-/// block's checksum, so that a dozen extents of 1 MiB ran past TRANSACTION_MAX_JOURNAL_USAGE. Holes
-/// hold none, and cost no more than a record however long they are: counted, a clone across one of
-/// exabytes (generic/303) committed for ever, its commits outrunning the journal.
-const MAX_CLONED_BYTES_PER_COMMIT: u64 = 4 << 20;
-
-/// fxdax: the extents a commit of a punch frees, a mutation each, as a truncate counts them: they
-/// are all it costs. A commit a MiB of its range, counting holes, spun for as long as a file may be
-/// on `fallocate(FALLOC_FL_PUNCH_HOLE)`, the inode locked, as a clone's byte limit had.
-const MAX_ZEROED_PER_COMMIT: usize = TRANSACTION_MUTATION_THRESHOLD;
 
 /// DataObjectHandle is a typed handle for file-like objects that store data in the default data
 /// attribute. In addition to traditional files, this means things like the journal, superblocks,
@@ -966,10 +942,8 @@ impl<S: HandleOwner> DataObjectHandle<S> {
             AssocObj::Borrowed(self),
         );
 
-        // The maximum number of mutations we are going to allow per transaction in allocate. This
-        // is probably quite a bit lower than the actual limit, but it should be large enough to
-        // handle most non-edge-case versions of allocate without splitting the transaction.
-        const MAX_TRANSACTION_SIZE: usize = 256;
+        // fxdax: as many mutations as the transaction has room for, rather than upstream's 256,
+        // which it said was probably quite a bit lower than the limit.
         for (switch_range, (extent, extent_offset)) in to_switch {
             transaction.add_with_object(
                 self.store().store_object_id(),
@@ -983,7 +957,7 @@ impl<S: HandleOwner> DataObjectHandle<S> {
                 ),
                 AssocObj::Borrowed(self),
             );
-            if transaction.mutations().len() >= MAX_TRANSACTION_SIZE {
+            if transaction.is_full() {
                 transaction.commit_and_continue().await?;
             }
         }
@@ -1023,7 +997,7 @@ impl<S: HandleOwner> DataObjectHandle<S> {
                 allocate_range.start += device_range_len;
                 allocated += device_range_len;
 
-                if transaction.mutations().len() >= MAX_TRANSACTION_SIZE {
+                if transaction.is_full() {
                     self.update_allocated_size(&mut transaction, allocated, 0).await?;
                     transaction.commit_and_continue().await?;
                     allocated = 0;
@@ -1170,7 +1144,7 @@ impl<S: HandleOwner> DataObjectHandle<S> {
     }
 
     /// fxdax: writes `writes`, each bytes at an offset, as `txn_write` writes one, in as few
-    /// transactions as hold them (`WRITE_MANY_WRITES`), each with one `multi_write`: a
+    /// transactions as have room for them (`writes_in_room`), each with one `multi_write`: a
     /// transaction's writes have their blocks allocated together, and written with as few of the
     /// device's writes as they take, at once. They are in order of offset, and no two share a
     /// block. This is a page cache's writeback, of pages scattered across a file, with a
@@ -1200,30 +1174,17 @@ impl<S: HandleOwner> DataObjectHandle<S> {
         reserved: Option<&Reservation>,
     ) -> Result<(), Error> {
         let writes = self.blocks_of(writes)?;
-        let blocks = |writes: &[BlocksWrite<'_>]| {
-            writes.iter().map(|write| write.blocks.end - write.blocks.start).sum::<u64>()
-        };
         let mut rest = &writes[..];
         while !rest.is_empty() {
-            let mut covered = 0;
-            let held = rest
-                .iter()
-                .take(WRITE_MANY_WRITES)
-                .take_while(|write| {
-                    covered += write.blocks.end - write.blocks.start;
-                    covered <= WRITE_MANY_BYTES as u64
-                })
-                .count()
-                .max(1);
-            let (writes, after) = rest.split_at(held);
             let mut transaction = match reserved {
                 None => self.new_transaction().await?,
                 Some(reserved) => {
-                    let options =
-                        self.reserved_transaction_options(reserved, blocks(writes), blocks(after));
+                    let data = rest.iter().map(|write| write.blocks.end - write.blocks.start);
+                    let options = self.reserved_transaction_options(reserved, data.sum());
                     self.new_transaction_with_options(options).await?
                 }
             };
+            let (writes, after) = rest.split_at(self.writes_in_room(&transaction, rest));
             self.txn_write_blocks(&mut transaction, writes).await?;
             transaction.commit().await?;
             rest = after;
@@ -1231,22 +1192,62 @@ impl<S: HandleOwner> DataObjectHandle<S> {
         Ok(())
     }
 
-    /// fxdax: the options of a transaction of `write_many_reserved` writing `blocks` bytes of
-    /// blocks paid for from `reserved`, before `later` bytes of them: holding its metadata space
-    /// in what `reserved` has beyond the blocks, topped up from the allocator if it hasn't enough,
-    /// so that it never pays for metadata with room for blocks; or, the allocator full, borrowing
-    /// it, and as much room for the blocks as the allocator has, if `reserved` hasn't it (some of
-    /// it owed, `DirtyReservation::reserve_what_fits`), which then fails it as a write with no
-    /// reservation fails.
+    /// fxdax: how many of `writes`, one at least, `transaction` has room for, as written by one
+    /// `multi_write`, which has yet to find what they replace, or what it allocates. The most it
+    /// can take: for each run of them its extent's record, and a record of the checksums unless
+    /// barriers stand for them, and for each block its checksums and the record freeing an extent
+    /// of its own. What it can't say is what `TRANSACTION_ROOM` spares: the rest of an allocation
+    /// split into many.
+    fn writes_in_room(&self, transaction: &Transaction<'_>, writes: &[BlocksWrite<'_>]) -> usize {
+        let store = self.store();
+        let journaled = !store.filesystem().options().barriers_enabled;
+        // Extents' branches and sequences may be as long as they can be, but their offsets don't
+        // reach 32 bits.
+        let extent = ExtentId::new(u64::MAX, u64::MAX);
+        let blocks = ExtentRange::new(extent, u32::MAX as u64..u32::MAX as u64);
+        let sum_size = (1 + journaled as u64) * size_of::<Checksum>() as u64;
+        let per_block = self.cost_of_freeing(blocks.clone()) + sum_size;
+        let run = |write: &BlocksWrite<'_>| {
+            let extent =
+                ObjectKey::extent(self.object_id(), self.attribute_id(), write.blocks.clone());
+            let no_sums = Checksums::fletcher(Vec::new());
+            let value = ExtentValue::with_checksum(blocks.extent, blocks.range.start, no_sums, 0);
+            let extent = Mutation::merge_object(extent, ObjectValue::Extent(value));
+            mutation_record_bytes(store.store_object_id(), &extent)
+                + if journaled { checksums_record_bytes(&blocks, &[], true) } else { 0 }
+        };
+        let block_size = self.block_size();
+        let mut room = transaction.room();
+        let mut end = None;
+        let mut held = 0;
+        for write in writes {
+            let covered = (write.blocks.end - write.blocks.start) / block_size;
+            let run = if end == Some(write.blocks.start) { 0 } else { run(write) };
+            let cost = covered * per_block + run;
+            if held > 0 && cost > room {
+                break;
+            }
+            room = room.saturating_sub(cost);
+            end = Some(write.blocks.end);
+            held += 1;
+        }
+        held
+    }
+
+    /// fxdax: the options of a transaction of `write_many_reserved` of writes that have yet to
+    /// write `data` bytes of blocks, paid for from `reserved`: holding its metadata space in what
+    /// `reserved` has beyond the blocks, topped up from the allocator if it hasn't enough, so that
+    /// it never pays for metadata with room for blocks; or, the allocator full, borrowing it, and
+    /// as much room for the blocks as the allocator has, if `reserved` hasn't it (some of it owed,
+    /// `DirtyReservation::reserve_what_fits`), which then fails it as a write with no reservation
+    /// fails.
     fn reserved_transaction_options<'a>(
         &self,
         reserved: &'a Reservation,
-        blocks: u64,
-        later: u64,
+        data: u64,
     ) -> Options<'a> {
         let store = self.store();
         let (allocator, owner) = (store.allocator(), Some(store.store_object_id()));
-        let data = blocks + later;
         let short =
             (data + transaction::TRANSACTION_METADATA_MAX_AMOUNT).saturating_sub(reserved.amount());
         let holds = short == 0
@@ -1921,7 +1922,8 @@ impl<S: HandleOwner> DataObjectHandle<S> {
             ranges.push(device_range);
             // If we didn't allocate all that we requested, we'll loop around and try again.
             // ... unless we have filled the transaction. The caller should check file_range.
-            if transaction.mutations().len() > TRANSACTION_MUTATION_THRESHOLD {
+            // fxdax: as the transaction says, not upstream's 200 mutations.
+            if transaction.is_full() {
                 break;
             }
         }
@@ -2401,9 +2403,12 @@ impl<S: HandleOwner> DataObjectHandle<S> {
 
     /// fxdax: `txn_clone_range` of a range of however many extents, in either file, in as many
     /// commits as hold them, from its start, `dst` growing towards `size` with them: one that fails
-    /// has cloned what it got to. A clone of thousands of fragments in one transaction was larger
-    /// than a transaction may be. `transaction` holds the caller's locks, and is left for it to
-    /// commit.
+    /// has cloned what it got to. `transaction` holds the caller's locks, and is left for it to
+    /// commit. Each extent costs its record, which holds each of its blocks' checksums, a reference
+    /// and a hole's record, and each of `dst`'s a record freeing it; holes nothing, however long:
+    /// counted by their bytes, a clone across one of exabytes (generic/303) committed for ever, its
+    /// commits outrunning the journal; and a dozen extents of 1 MiB, counted by how many they were,
+    /// ran past what a transaction may be.
     pub async fn clone_range_in_commits<'a>(
         &'a self,
         transaction: &mut Transaction<'a>,
@@ -2412,15 +2417,34 @@ impl<S: HandleOwner> DataObjectHandle<S> {
         dst_offset: u64,
         size: u64,
     ) -> Result<(), Error> {
+        let store = self.store();
+        let (store_id, allocator_id) = (store.store_object_id(), store.allocator().object_id());
         let dst_of = |offset: u64| dst_offset + (offset - range.start);
+        let shared = |part: &Range<u64>, blocks: ExtentRange, value: &ExtentValue| {
+            let logical = dst_of(part.start)..dst_of(part.end);
+            let extent = ObjectKey::extent(dst.object_id(), dst.attribute_id(), logical);
+            let hole = ObjectValue::Extent(ExtentValue::deleted_extent());
+            let hole = Mutation::merge_object(extent.clone(), hole);
+            let extent = Mutation::merge_object(extent, ObjectValue::Extent(value.clone()));
+            let reference = Mutation::Allocator(AllocatorMutation::Reference {
+                device_range: blocks,
+                owner_object_id: store_id,
+                delta: 1,
+            });
+            mutation_record_bytes(store_id, &extent)
+                + mutation_record_bytes(store_id, &hole)
+                + mutation_record_bytes(allocator_id, &reference)
+        };
+        let freed = |_: &Range<u64>, blocks, _: &ExtentValue| dst.cost_of_freeing(blocks);
         let mut start = range.start;
         loop {
-            let end = self
-                .end_of_extents(start..range.end, MAX_CLONED_PER_COMMIT, MAX_CLONED_BYTES_PER_COMMIT)
-                .await?;
-            let dst_range = dst_of(start)..dst_of(range.end);
-            let dst_end = dst.end_of_extents(dst_range, MAX_CLONED_PER_COMMIT, u64::MAX).await?;
-            let end = end.min(start + (dst_end - dst_of(start)));
+            // Half of the room for this file's extents, and what they leave for the `dst`'s they
+            // replace, which either file's may be most of.
+            let room = transaction.room();
+            let (end, taken) = self.end_of_room(start..range.end, room / 2, &shared).await?;
+            let dst_range = dst_of(start)..dst_of(end);
+            let (dst_end, _) = dst.end_of_room(dst_range, room - taken, &freed).await?;
+            let end = start + (dst_end - dst_of(start));
             self.txn_clone_range(transaction, start..end, dst, dst_of(start)).await?;
             if end == range.end {
                 return Ok(());
@@ -2436,7 +2460,9 @@ impl<S: HandleOwner> DataObjectHandle<S> {
 
     /// fxdax: `zero` of a range of however many extents, in as many commits as hold them, from its
     /// start: one that fails has zeroed what it got to. As `clone_range_in_commits`, `transaction`
-    /// holds the caller's locks, and is left for it to commit.
+    /// holds the caller's locks, and is left for it to commit. Each extent costs a record, and
+    /// holes nothing: a commit a MiB of the range spun for as long as a file may be on
+    /// `fallocate(FALLOC_FL_PUNCH_HOLE)`, the inode locked.
     pub async fn zero_in_commits<'a>(
         &'a self,
         transaction: &mut Transaction<'a>,
@@ -2444,7 +2470,9 @@ impl<S: HandleOwner> DataObjectHandle<S> {
     ) -> Result<(), Error> {
         let mut start = range.start;
         loop {
-            let end = self.end_of_extents(start..range.end, MAX_ZEROED_PER_COMMIT, u64::MAX).await?;
+            let freed = |_: &Range<u64>, blocks, _: &ExtentValue| self.cost_of_freeing(blocks);
+            let room = transaction.room();
+            let (end, _) = self.end_of_room(start..range.end, room, freed).await?;
             self.zero(transaction, start..end).await?;
             if end == range.end {
                 return Ok(());
@@ -2454,15 +2482,25 @@ impl<S: HandleOwner> DataObjectHandle<S> {
         }
     }
 
-    /// fxdax: where this file's extents in `range` reach `most` of them, or `most_bytes` of them,
-    /// whichever is first, or `range`'s end, if they don't: holes count for nothing. `most_bytes`
-    /// is block aligned.
-    async fn end_of_extents(
+    /// fxdax: what freeing `blocks`, which an extent of this file holds, adds to a transaction.
+    fn cost_of_freeing(&self, blocks: ExtentRange) -> u64 {
+        let store = self.store();
+        let (allocator, owner_object_id) = (store.allocator(), store.store_object_id());
+        let mutation = AllocatorMutation::Deallocate { device_range: blocks, owner_object_id };
+        mutation_record_bytes(allocator.object_id(), &Mutation::Allocator(mutation))
+    }
+
+    /// fxdax: how far this file's extents in `range` fill `room` of a transaction, each costing what
+    /// `cost` says of the part of it in `range`, the blocks that part is, and the extent's value:
+    /// where the last that fits ends, or `range`'s end if they all do, and how much of `room` that
+    /// takes. Holes cost nothing, and the first extent fits whatever it costs, so that a caller
+    /// always gets somewhere.
+    async fn end_of_room(
         &self,
         range: Range<u64>,
-        most: usize,
-        most_bytes: u64,
-    ) -> Result<u64, Error> {
+        room: u64,
+        cost: impl Fn(&Range<u64>, ExtentRange, &ExtentValue) -> u64,
+    ) -> Result<(u64, u64), Error> {
         let store = self.store();
         let layer_set = store.tree().layer_set();
         let mut merger = layer_set.merger();
@@ -2473,8 +2511,8 @@ impl<S: HandleOwner> DataObjectHandle<S> {
                 AttributeKey::Extent(Extent(range.clone()).search_key()),
             )))
             .await?;
-        let mut extents = 0;
-        let mut bytes = 0;
+        let mut reached = None;
+        let mut taken = 0;
         while let Some(ItemRef {
             key:
                 ObjectKey {
@@ -2488,20 +2526,24 @@ impl<S: HandleOwner> DataObjectHandle<S> {
             && *attribute_id == self.attribute_id()
             && key.start < range.end
         {
-            if matches!(value, ExtentValue::Some { .. }) && key.end > range.start {
-                let (start, end) = (max(key.start, range.start), min(key.end, range.end));
-                extents += 1;
-                bytes += end - start;
-                if bytes >= most_bytes {
-                    return Ok(end - (bytes - most_bytes));
+            if let ExtentValue::Some { extent, extent_offset, .. } = value
+                && key.end > range.start
+            {
+                let part = max(key.start, range.start)..min(key.end, range.end);
+                let at = extent_offset + (part.start - key.start);
+                let blocks = ExtentRange::new(*extent, at..at + (part.end - part.start));
+                let cost = cost(&part, blocks, value);
+                if let Some(reached) = reached
+                    && taken + cost > room
+                {
+                    return Ok((reached, taken));
                 }
-                if extents == most {
-                    return Ok(end);
-                }
+                taken += cost;
+                reached = Some(part.end);
             }
             iter.advance().await?;
         }
-        Ok(range.end)
+        Ok((range.end, taken))
     }
 
     pub async fn update_attributes<'a>(
@@ -3114,24 +3156,23 @@ mod tests {
     use crate::fsck::{
         FsckOptions, fsck, fsck_volume, fsck_volume_with_options, fsck_with_options,
     };
+    use crate::hooks::Hooks;
     use crate::lsm_tree::Query;
     use crate::lsm_tree::types::{ItemRef, LayerIterator};
     use crate::object_handle::{
         ObjectHandle, ObjectProperties, ReadObjectHandle, WriteObjectHandle,
     };
     use crate::object_store::allocator::TEST_EXTENT;
-    use crate::object_store::data_object_handle::{
-        OverwriteOptions, WRITE_ATTR_BATCH_SIZE, WRITE_MANY_BYTES,
-    };
+    use crate::object_store::data_object_handle::{OverwriteOptions, WRITE_ATTR_BATCH_SIZE};
     use crate::object_store::directory::replace_child;
     use crate::object_store::object_manager::ObjectManager;
     use crate::object_store::object_record::{FsverityMetadata, ObjectKey, ObjectValue, Timestamp};
-    use crate::object_store::transaction::{Mutation, Options, lock_keys};
+    use crate::object_store::transaction::{Mutation, Options, TRANSACTION_ROOM, lock_keys};
     use crate::object_store::volume::root_volume;
     use crate::object_store::{
         AttributeId, AttributeKey, DataObjectHandle, DirType, Directory, Extent, ExtentMode,
         ExtentValue, HandleOptions, LockKey, NewChildStoreOptions, ObjectKeyData, ObjectStore,
-        PosixAttributes, StoreOptions, TRANSACTION_MUTATION_THRESHOLD,
+        PosixAttributes, StoreOptions,
     };
     use crate::range::RangeExt;
     use crate::round::{round_down, round_up};
@@ -5246,7 +5287,7 @@ mod tests {
     #[fuchsia::test]
     async fn test_trim() {
         // Format a new filesystem.
-        let device = DeviceHolder::new(FakeDevice::new(8192, TEST_DEVICE_BLOCK_SIZE));
+        let device = DeviceHolder::new(FakeDevice::new(16384, TEST_DEVICE_BLOCK_SIZE));
         let fs = FxFilesystem::new_empty(device).await.expect("new_empty failed");
         let block_size = fs.block_size();
         root_volume(fs.clone())
@@ -5270,19 +5311,15 @@ mod tests {
         }
         let shared_context = Arc::new(Mutex::new(Context::default()));
 
-        let object_size = (TRANSACTION_MUTATION_THRESHOLD as u64 + 10) * 2 * block_size;
+        // fxdax: more extents than a transaction has room to free, each more than 16 bytes of it.
+        let object_size = (TRANSACTION_ROOM / 16) * 2 * block_size;
 
         // Wait for an object to get tombstoned by the graveyard.
         async fn expect_tombstoned(store: &Arc<ObjectStore>, object_id: u64) {
             loop {
-                if let Err(e) =
-                    ObjectStore::open_object(store, object_id, HandleOptions::default(), None).await
-                {
-                    assert!(
-                        FxfsError::NotFound.matches(&e),
-                        "open_object didn't fail with NotFound: {:?}",
-                        e
-                    );
+                // fxdax: its record, not `open_object`: that looks up its size, whose record a
+                // tombstone in a later layer doesn't hide, once a flush has moved it to an earlier.
+                if store.tree().find(&ObjectKey::object(object_id)).await.expect("find").is_none() {
                     break;
                 }
                 // The graveyard should eventually tombstone the object.
@@ -5453,6 +5490,9 @@ mod tests {
                     .txn_write(&mut transaction, offset, buf.as_ref())
                     .await
                     .expect("write failed");
+                if transaction.is_full() {
+                    transaction.commit_and_continue().await.expect("commit failed");
+                }
             }
             transaction.commit().await.expect("commit failed");
             // This should take up more than one transaction.
@@ -7003,14 +7043,37 @@ mod tests {
     async fn writeback_filesystem(
         branch: u64,
     ) -> (OpenFxFilesystem, Arc<storage_device::fake_device::RoundTrips>, Arc<JournalUsages>) {
+        let (fs, trips, journal, ..) = counted_filesystem(branch).await;
+        (fs, trips, journal)
+    }
+
+    /// fxdax: `writeback_filesystem`, with what its commits hold of records, which `Hooks` sees
+    /// while it's kept.
+    async fn counted_filesystem(
+        branch: u64,
+    ) -> (
+        OpenFxFilesystem,
+        Arc<storage_device::fake_device::RoundTrips>,
+        Arc<JournalUsages>,
+        Arc<Commits>,
+        Hooks<'static>,
+    ) {
         use crate::object_store::journal::{JournalOptions, LazyFlush};
+        let commits = Arc::new(Commits::default());
+        let (mut hooks, fs_hooks) = Hooks::new();
+        let counting = commits.clone();
+        hooks.set_pre_commit(move |transaction| {
+            counting.0.lock().push(transaction.journal_bytes());
+            Ok(())
+        });
         let trips = Arc::new(storage_device::fake_device::RoundTrips::default());
         let device =
-            FakeDevice::new(8192, 4096).with_branch(branch).with_round_trips(trips.clone());
+            FakeDevice::new(1 << 15, 4096).with_branch(branch).with_round_trips(trips.clone());
         let lazy_flush = LazyFlush { bytes: 1 << 20, delay: Duration::from_secs(3600) };
         let journal = Arc::new(JournalUsages::default());
         let fs = FxFilesystemBuilder::new()
             .format(true)
+            .hooks(fs_hooks)
             .journal_options(JournalOptions { lazy_flush: Some(lazy_flush), ..Default::default() })
             .post_commit_hook({
                 let journal = journal.clone();
@@ -7023,7 +7086,7 @@ mod tests {
             .await
             .expect("open failed");
         journal.start(fs.object_manager());
-        (fs, trips, journal)
+        (fs, trips, journal, commits, hooks)
     }
 
     async fn create_file(fs: &FxFilesystem) -> DataObjectHandle<ObjectStore> {
@@ -7143,51 +7206,180 @@ mod tests {
         fs.close().await.expect("close failed");
     }
 
-    /// fxdax: `write_many`'s transactions hold at most WRITE_MANY_WRITES writes, and at most
-    /// WRITE_MANY_BYTES of the blocks they cover, unless one alone covers more: each a device write
-    /// here.
+    /// fxdax: `write_many`'s transactions hold the writes they have room for, by what they could
+    /// cost, unless one alone costs more: each a device write here.
     #[fuchsia::test]
     async fn test_write_many_splits_its_transactions() {
+        const LARGE: usize = 1 << 20;
         let (fs, trips, _) =
             writeback_filesystem(storage_device::fake_device::DEFAULT_BRANCH).await;
         let bs = fs.block_size().get() as usize;
-        let data = vec![5u8; WRITE_MANY_BYTES + bs];
+        let data = vec![5u8; 4 * LARGE];
         let file = create_file(&fs).await;
         let mut expected = Vec::new();
         let mut writes = every(&data[..bs], 0, 2, 300, bs);
-        // Two writes over WRITE_MANY_BYTES together, and one over it alone.
-        let half = WRITE_MANY_BYTES / 2 + bs;
-        for (len, at) in [(half, 600), (half, 1000), (WRITE_MANY_BYTES + bs, 1400)] {
+        // Two writes of more blocks than a transaction has room for together, and one alone.
+        let half = 3 * LARGE / 4;
+        for (len, at) in [(half, 600), (half, 1000), (4 * LARGE, 1400)] {
             writes.push(((at * bs) as u64, &data[..len]));
         }
-        // Two writes of WRITE_MANY_BYTES together, each from a block's last byte, whose blocks
-        // are more.
-        writes.extend(every(&data[..WRITE_MANY_BYTES / 2], (2000 * bs - 1) as u64, 200, 2, bs));
+        // Two writes each from a block's last byte, whose blocks are more than their bytes fill,
+        // which is what they are costed by.
+        writes.extend(every(&data[..3 * LARGE / 4 - 2 * bs], (2600 * bs - 1) as u64, 300, 2, bs));
         for (offset, data) in &writes {
             expected.resize(*offset as usize, 0);
             expected.extend_from_slice(data);
         }
         let before = trips.writes.count();
         file.write_many(&writes).await.expect("write_many failed");
-        // Transactions of 128 writes, 128, and 44 with the first of the large ones, then each of
-        // the others alone.
+        // Transactions of 179 writes, the rest of the 300, the two large ones, the one that costs
+        // more alone, in the three of the most an allocation may be, and the last two.
         assert_eq!(trips.writes.count() - before, 7);
         assert_eq!(file.contents(usize::MAX).await.expect("contents")[..], expected[..]);
         fsck(fs.clone()).await.expect("fsck failed");
         fs.close().await.expect("close failed");
     }
 
-    /// fxdax: the largest of `write_many`'s transactions, of WRITE_MANY_WRITES writes, or of
-    /// WRITE_MANY_BYTES of the blocks they cover, that overwrite as many records as they can, fit
-    /// what a transaction may take of the journal, their records' integers as long as a branch's
-    /// and a large file's make them.
+    /// fxdax: what each of a filesystem's commits holds of records for the journal, from when
+    /// `Commits::take` was last called, by a hook that sees every transaction committed.
+    #[derive(Default)]
+    struct Commits(Mutex<Vec<u64>>);
+
+    impl Commits {
+        /// What each commit since the last call held.
+        fn take(&self) -> Vec<u64> {
+            std::mem::take(&mut *self.0.lock())
+        }
+
+        /// The commits since the last call, and their records' bytes.
+        fn take_sum(&self) -> (usize, u64) {
+            let commits = self.take();
+            (commits.len(), commits.iter().sum())
+        }
+    }
+
+    /// fxdax: a clone of thousands of fragments, one over as many more, a punch of them, and each
+    /// across a hole of 2^50 bytes, each on a filesystem of its own: what they take, in commits and
+    /// the bytes of their records, no more than the constants that split them took.
     #[fuchsia::test]
-    async fn test_write_many_transactions_fit_the_journal() {
+    async fn test_what_clones_and_punches_cost() {
+        const FRAGMENTS: usize = 2048;
+        const FAR: u64 = 1 << 50;
+        const BS: usize = 4096;
+        const END: u64 = (2 * FRAGMENTS * BS) as u64;
+
+        enum Case {
+            Clone,
+            CloneOver,
+            Punch,
+            CloneAcross,
+            PunchAcross,
+        }
+        async fn run(case: Case) -> (usize, u64) {
+            let (fs, _, _, commits, hooks) = counted_filesystem(u64::MAX >> 1).await;
+            let store = fs.root_store();
+            let data = vec![7u8; BS];
+            let fragmented = async |first: usize| {
+                let file = create_file(&fs).await;
+                let writes = every(&data, (first * BS) as u64, 2, FRAGMENTS, BS);
+                file.write_many(&writes).await.expect("write_many failed");
+                file
+            };
+            let far = async || {
+                let file = create_file(&fs).await;
+                file.write_many(&[(0, &data), (FAR, &data)]).await.expect("write_many failed");
+                file
+            };
+            let clone = async |from: &DataObjectHandle<ObjectStore>,
+                               to: &DataObjectHandle<ObjectStore>,
+                               end: u64| {
+                let store_id = store.store_object_id();
+                let keys = lock_keys![
+                    LockKey::object(store_id, from.object_id()),
+                    LockKey::object(store_id, to.object_id()),
+                ];
+                let options = Options::default();
+                let mut transaction =
+                    store.new_transaction(keys, options).await.expect("new_transaction");
+                commits.take_sum();
+                from.clone_range_in_commits(&mut transaction, 0..end, to, 0, end)
+                    .await
+                    .expect("clone failed");
+                to.txn_update_size(&mut transaction, end, None).await.expect("size failed");
+                transaction.commit().await.expect("commit failed");
+            };
+            let punch = async |file: &DataObjectHandle<ObjectStore>, range: Range<u64>| {
+                let mut transaction = file.new_transaction().await.expect("new_transaction");
+                commits.take_sum();
+                file.zero_in_commits(&mut transaction, range).await.expect("punch failed");
+                transaction.commit().await.expect("commit failed");
+            };
+            match case {
+                Case::Clone => clone(&fragmented(0).await, &create_file(&fs).await, END).await,
+                Case::CloneOver => clone(&fragmented(0).await, &fragmented(1).await, END).await,
+                Case::Punch => punch(&fragmented(0).await, 0..END).await,
+                Case::CloneAcross => {
+                    clone(&far().await, &create_file(&fs).await, FAR + BS as u64).await
+                }
+                Case::PunchAcross => punch(&far().await, BS as u64..FAR).await,
+            }
+            let cost = commits.take_sum();
+            std::mem::drop(hooks);
+            fsck(fs.clone()).await.expect("fsck failed");
+            fs.close().await.expect("close failed");
+            cost
+        }
+        let costs = [
+            run(Case::Clone).await,
+            run(Case::CloneOver).await,
+            run(Case::Punch).await,
+            run(Case::CloneAcross).await,
+            run(Case::PunchAcross).await,
+        ];
+        // What the constants that split them took: 82 and 84 commits of clones, 11 of the punch.
+        let before = [(82, 225_046), (84, 290_495), (11, 67_344), (1, 253), (1, 0)];
+        for (cost, before) in costs.into_iter().zip(before) {
+            assert!(cost.0 <= before.0 && cost.1 <= before.1, "{cost:?}, of {before:?}");
+        }
+    }
+
+    /// fxdax: `allocate` over thousands of fragments, whose extents it changes, and whose holes it
+    /// fills, in as many transactions as it takes, none more than one may take of the journal.
+    #[fuchsia::test]
+    async fn test_allocate_fills_transactions() {
         use crate::object_store::transaction::TRANSACTION_MAX_JOURNAL_USAGE;
 
-        let (fs, _, journal) = writeback_filesystem(u64::MAX >> 1).await;
+        const FRAGMENTS: usize = 2048;
+        const BS: usize = 4096;
+        let (fs, _, _, commits, hooks) = counted_filesystem(u64::MAX >> 1).await;
+        let file = create_file(&fs).await;
+        let data = vec![7u8; BS];
+        file.write_many(&every(&data, 0, 2, FRAGMENTS, BS)).await.expect("write_many failed");
+        commits.take();
+        file.allocate(0..(2 * FRAGMENTS * BS) as u64).await.expect("allocate failed");
+        let taken = commits.take();
+        assert!(taken.len() > 1, "{taken:?}");
+        assert!(taken.iter().all(|bytes| *bytes <= TRANSACTION_MAX_JOURNAL_USAGE), "{taken:?}");
+        std::mem::drop(hooks);
+        fsck(fs.clone()).await.expect("fsck failed");
+        fs.close().await.expect("close failed");
+    }
+
+    /// fxdax: `write_many`'s transactions, of as many writes as they have room for, that overwrite
+    /// as many records as they can, take no more than the room it counted on, which leaves what
+    /// else they take within what a transaction may take of the journal, their records' integers
+    /// as long as a branch's and a large file's make them; and one holds the
+    /// BLOCKS_PER_TRANSACTION writes of a block that dirty data pays its metadata for.
+    #[fuchsia::test]
+    async fn test_write_many_transactions_fit_the_journal() {
+        use crate::object_store::dirty_reservation::BLOCKS_PER_TRANSACTION;
+        use crate::object_store::transaction::TRANSACTION_MAX_JOURNAL_USAGE;
+        use std::cell::RefCell;
+
+        const WRITES: usize = BLOCKS_PER_TRANSACTION as usize;
+        let (fs, _, journal, commits, _hooks) = counted_filesystem(u64::MAX >> 1).await;
         let bs = fs.block_size().get() as usize;
-        let data = vec![7u8; 256 * bs];
+        let data = vec![7u8; 512 * bs];
         const AT: u64 = 1 << 40;
         // A file of `blocks` blocks, written a block at a time, or 256 at a time: an extent each.
         let file = async |blocks: usize, at_a_time: usize| {
@@ -7198,34 +7390,47 @@ mod tests {
             file
         };
         // What each of the transactions `write_many` makes of `writes` takes of the journal.
+        let records = RefCell::new(Vec::new());
         let journal_usages = async |file: &DataObjectHandle<ObjectStore>,
                                     writes: &[(u64, &[u8])]| {
             journal.take();
+            commits.take();
             file.write_many(writes).await.expect("write_many failed");
+            records.borrow_mut().extend(commits.take());
             journal.take()
         };
         let mut usages = Vec::new();
-        // Writes of a block or two, each with a block between, over extents of a block, or each
-        // splitting an extent.
-        for (len, at_a_time) in [(1, 1), (1, 256), (2, 1), (2, 256)] {
+        // Writes of a block, each with a block between, over extents of a block, or each splitting
+        // an extent, as many as dirty data pays for in a transaction.
+        for at_a_time in [1, 256] {
             let file = file(768, at_a_time).await;
-            usages
-                .push(journal_usages(&file, &every(&data[..len * bs], AT, len + 1, 128, bs)).await);
+            let usage = journal_usages(&file, &every(&data[..bs], AT, 2, WRITES, bs)).await;
+            assert_eq!(usage.len(), 1, "{usage:?}");
+            usages.push(usage);
+        }
+        // Twice that, of a block or more each, so that each transaction fills up to its room.
+        for (len, at_a_time) in [(1, 1), (2, 1), (3, 1), (8, 1), (32, 1), (1, 256), (8, 256)] {
+            let writes = 2 * WRITES.min(512 / (len + 1));
+            let file = file((len + 1) * writes, at_a_time).await;
+            let writes = every(&data[..len * bs], AT, len + 1, writes, bs);
+            usages.push(journal_usages(&file, &writes).await);
         }
         // 127 writes of a block, and one of the rest of 1 MiB, over extents of a block.
         let blocks = file(512, 1).await;
-        let mut writes = every(&data[..bs], AT, 2, 127, bs);
+        let mut writes = every(&data[..bs], AT, 2, WRITES - 1, bs);
         writes.push((AT + (254 * bs) as u64, &data[..129 * bs]));
         usages.push(journal_usages(&blocks, &writes).await);
-        // WRITE_MANY_WRITES writes of two blocks and two bytes, each from a block's last byte, so
-        // covering four blocks, with a block between, over extents of a block.
+        // Writes of two blocks and two bytes, each from a block's last byte, so covering four
+        // blocks, with a block between, over extents of a block.
         let blocks = file(640, 1).await;
-        let writes = every(&data[..2 * bs + 2], AT + bs as u64 - 1, 5, 128, bs);
+        let writes = every(&data[..2 * bs + 2], AT + bs as u64 - 1, 5, WRITES, bs);
         usages.push(journal_usages(&blocks, &writes).await);
         assert!(
             usages.iter().flatten().all(|usage| *usage <= TRANSACTION_MAX_JOURNAL_USAGE),
             "{usages:?} of the journal, of {TRANSACTION_MAX_JOURNAL_USAGE}"
         );
+        let records = records.into_inner();
+        assert!(records.iter().all(|bytes| *bytes <= TRANSACTION_ROOM), "{records:?}");
         fs.close().await.expect("close failed");
     }
 }
