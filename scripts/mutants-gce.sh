@@ -19,7 +19,7 @@
 # A host lives 8 hours: shard a sweep longer than its limit (FXDAX_GCE_LIMIT,
 # default 7h). FXDAX_GCE_PROJECT is the project (default: gcloud's),
 # FXDAX_GCE_ZONE the zone to try first (default: us-east4-a) and
-# FXDAX_MUTANTS_MACHINE the machine type (default: n2-standard-8). Every other
+# FXDAX_MUTANTS_MACHINE the machine type (default: n2-standard-4). Every other
 # FXDAX_* and PJDFSTEST_* variable set here reaches the host too
 # (scripts/lib/gce.sh).
 set -euo pipefail
@@ -27,7 +27,7 @@ repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 project=${FXDAX_GCE_PROJECT:-$(gcloud config get-value project 2>/dev/null)}
 source "$repo/scripts/lib/gce.sh"
 zone=${FXDAX_GCE_ZONE:-us-east4-a}
-machine=${FXDAX_MUTANTS_MACHINE:-n2-standard-8}
+machine=${FXDAX_MUTANTS_MACHINE:-n2-standard-4}
 crates=${FXDAX_MUTANTS_CRATES:-}
 shard=${FXDAX_MUTANTS_SHARD:-}
 jobs=${FXDAX_MUTANTS_JOBS:-}

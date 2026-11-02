@@ -4,7 +4,7 @@ What the agents need from you, and nothing else. See AGENTS.md. Answer by editin
 
 ## Push the batch?
 
-`fix/refusal-gate` is ahead of main with: `generic/129`'s fix, transactions reporting their room, cross-host tenant restores, the corrupt image fixes, the fault limit, and three flaky test fixes. Main fails two tests intermittently until it lands.
+`fix/refusal-gate` is ahead of main with: `generic/129`'s fix, transactions reporting their room, cross-host tenant restores (your VM manager must do the steps in `docs/integrator-guide.md`), the corrupt image fixes, the fault limit, and three flaky test fixes. Main fails two tests intermittently until it lands.
 **Recommend:** push once the batch's GCE run passes.
 **Until then:** it stays local. Agents don't push without your word.
 
@@ -12,12 +12,7 @@ What the agents need from you, and nothing else. See AGENTS.md. Answer by editin
 
 Today, once one host forks a point, every other host's copy fails with `EIO` until it's dropped and created again. Fixing that needs a protocol change.
 **Recommend:** yes if you fan out from one base; no otherwise.
-**Until then:** one host at a time works; the limit is documented in `extentd.proto`.
-
-## Your VM manager needs a change for cross-host restores (TASK-154)
-
-Only you can make it: the steps are in `extentd.proto`, on `CreateStore` and `DropStore`, and restores on another host fail without them.
-**Until then:** those restores get `ENOENT`.
+**Until then:** one host at a time works; `docs/integrator-guide.md` says so.
 
 ## How to close truncate on a full disk? (TASK-150.19)
 
@@ -25,20 +20,17 @@ Rarely, truncated bytes come back on a truly full filesystem. Either every non-D
 **Recommend:** the first, with one owner of file size (TASK-153.4).
 **Until then:** the default model test could very rarely go red.
 
-## May the format change? (TASK-153.9, TASK-150.6)
+## What should catch a corrupted byte of file data? (TASK-153.11)
 
-Freed extent IDs can be minted again after a take, and that needs a format change: spent runs in remote checkpoints. A branch owner and the collector's in-flight list would go in the same bump.
-**Recommend:** yes, one bump, before there's a format to migrate.
-**Until then:** the bug stays open, within one tenant.
+The problem: a byte of a file gets damaged in storage, by a bad disk or a bad upload. Should a read fail with an error, or return the wrong byte?
 
-## What should guard file data on DAX? (TASK-153.11)
+What protects data today:
+- **Sealed data on the host and in the bucket has a checksum:** `extent_frame` stores a CRC32C for each part and checks it when reading. I haven't checked that every read path goes through it.
+- **Fxfs's own data checksums are never read,** except at journal replay. In a test that flips bytes in an Fxfs image on a fake device, about 84% read back wrong with no error. That test skips the host layer, so it overstates the risk on a real host.
+- **Once a page is in the DAX window, a read goes straight to memory,** so nothing can check it there.
 
-About 84% of flipped file-data bytes read back wrong with no error, because no read checks a data checksum, and a DAX read goes straight to memory. Whether to add a scrub, a host-side check, or accept it is a product decision.
-**Recommend:** read the layer checksums now, which needs no format change, and a scrub for data.
-**Until then:** silent data corruption goes undetected.
+Not covered, as far as I know: data on a host's disk before it's sealed, and pages already in memory.
 
-## Raise the GCE CPU quota?
-
-32 CPUs is 4 hosts, shared by every session, and it is what most slows this work.
-**Recommend:** 64 or more.
-**Until then:** runs queue.
+Options: rely on the host's checksums and close the gaps there; or have the guest check too, which costs reads on the fast path.
+**Recommend:** rely on the host. First confirm every host read path checks its CRC, which needs no decision from you, so I'm doing that anyway.
+**Until then:** nothing changes.

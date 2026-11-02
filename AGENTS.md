@@ -39,6 +39,10 @@ Never ask the user anything directly: not in a reply, not with a question tool, 
 
 An entry says, in a few lines: what's needed, why it matters, what you recommend, and what happens until it's answered. Check the file before starting work: an answer may be there. Take an entry out once it's answered, and act on it.
 
+## Nothing uses fxdax yet: formats may change
+
+Assume nothing depends on fxdax until the user says otherwise. On-disk, bucket and wire formats may change whenever that's the better design, with no migration, no compatibility shim, and nothing kept to read old data. Don't trade a design down to avoid a format change.
+
 ## Every bug exposes a blind spot: close it, then look around it
 
 A bug or crash, however it was found and whoever caused it, shows code the tests don't exercise
