@@ -139,7 +139,14 @@ MUTANTS = [
         "map_failure_unretried",
         "a write whose pieces' MAP failed after its blocks moved fails, its range left mapping "
         "blocks Fxfs freed, rather than dropped and the write tried again (TASK-79.106)",
-        [("\t\t\t\tif (err != -EXDEV)\n\t\t\t\t\terr = -ESTALE;\n", "")],
+        [
+            (
+                "\trange->behind = true;\n\tunmap_mapping_pages(inode->i_mapping, "
+                "fxfs_dax_chunk_start(range) >> PAGE_SHIFT, range->pages,\n\t\t\t    false);\n"
+                "\treturn err == -EXDEV ? err : -ESTALE;\n",
+                "\treturn err;\n",
+            )
+        ],
     ),
     (
         "regions_find_unlocked",
