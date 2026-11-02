@@ -145,6 +145,15 @@ fn run_single_test(
         && has_cmd("buildah")
         && has_cmd("unshare");
 
+    // Enforce a per-test timeout. If the child doesn't exit within the
+    // deadline, kill it so we don't hang the entire suite.
+    let timeout = std::time::Duration::from_secs(test_case.timeout_secs());
+    // fxdax: the deadline, for the test's VMs, whose guests say where they are stuck before it.
+    let killed_at = (std::time::SystemTime::now() + timeout)
+        .duration_since(std::time::UNIX_EPOCH)
+        .context("the clock is before the epoch")?
+        .as_secs()
+        .to_string();
     let child = if use_buildah_unshare {
         let exe = executable.display();
         let name = test_case.name;
@@ -154,6 +163,7 @@ fn run_single_test(
             .arg(format!(
                 "echo '=== namespace debug ===' >&2; id >&2; cat /proc/self/uid_map >&2; cat /proc/self/gid_map >&2; ip link >&2; ip addr add 127.0.0.1/8 dev lo && ip link set lo up; echo '=== lo setup exit: '$?' ===' >&2; ip addr >&2; echo '=== end debug ===' >&2; exec {exe} start-vm --test-case {name} --tmp-dir {dir}"
             ))
+            .env(test_cases::TEST_DEADLINE, &killed_at)
             .stdin(Stdio::piped())
             .stdout(stdout_file)
             .stderr(log_file)
@@ -170,6 +180,7 @@ fn run_single_test(
             .arg(test_case.name)
             .arg("--tmp-dir")
             .arg(&test_dir)
+            .env(test_cases::TEST_DEADLINE, &killed_at)
             .stdin(Stdio::piped())
             .stdout(stdout_file)
             .stderr(log_file)
@@ -177,9 +188,6 @@ fn run_single_test(
             .context("Failed to start subprocess for test")?
     };
 
-    // Enforce a per-test timeout. If the child doesn't exit within the
-    // deadline, kill it so we don't hang the entire suite.
-    let timeout = std::time::Duration::from_secs(test_case.timeout_secs());
     let mut child = child;
     let deadline = std::time::Instant::now() + timeout;
     let exited = loop {

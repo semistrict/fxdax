@@ -455,6 +455,14 @@ pub const STDOUT_END: u8 = 0x03;
 pub const STDERR_START: u8 = 0x0e;
 pub const STDERR_END: u8 = 0x0f;
 
+/// fxdax: in a test's environment, when the runner kills it if it runs on, in seconds since the
+/// epoch: so that its VMs' guests say where they are stuck before then ([`GUEST_WATCHDOG`]).
+pub const TEST_DEADLINE: &str = "FXDAX_TEST_DEADLINE";
+
+/// fxdax: in the guest agent's environment, the seconds after which the guest, still running,
+/// dumps its tasks' and CPUs' stacks, shortly before the runner's deadline (`guest_init`).
+pub const GUEST_WATCHDOG: &str = "FXDAX_GUEST_WATCHDOG_SECS";
+
 #[host]
 #[derive(Clone, Debug)]
 pub struct TestSetup {

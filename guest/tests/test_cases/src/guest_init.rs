@@ -89,7 +89,29 @@ pub fn set_up() -> Init {
         forward(libc::STDOUT_FILENO, (STDOUT_START, STDOUT_END), &console),
         forward(libc::STDERR_FILENO, (STDERR_START, STDERR_END), &console),
     ];
+    start_watchdog();
     Init { console, forwarded }
+}
+
+/// fxdax: says where the guest is stuck if the test still runs [`crate::GUEST_WATCHDOG`] seconds
+/// after the agent starts, shortly before the runner kills it: its CPUs', blocked tasks' and every
+/// task's stacks (sysrq l, w and t), on standard error, once. The kernel's hung task reports name
+/// only tasks in uninterruptible sleep, not one looping, or sleeping killably, holding what they
+/// wait for (load_during_move's, GCE r526).
+fn start_watchdog() {
+    let Some(secs) = std::env::var(crate::GUEST_WATCHDOG).ok().and_then(|secs| secs.parse().ok())
+    else {
+        return;
+    };
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(secs));
+        eprintln!("watchdog: still running after {secs} s: the guest's stacks follow");
+        crate::kernel_log::print_during(|| {
+            for key in [b"l", b"w", b"t"] {
+                let _ = std::fs::write("/proc/sysrq-trigger", key);
+            }
+        });
+    });
 }
 
 /// Makes `fd` a pipe, which the agent's children inherit, and forwards what is written to it to

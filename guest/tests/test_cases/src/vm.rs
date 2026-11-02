@@ -14,8 +14,9 @@
 //! says, to its standard error. Firecracker logs to its own file there too.
 
 use anyhow::{Context, ensure};
-use std::ffi::{CStr, CString};
+use std::ffi::{CStr, CString, OsStr};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Whether the VMM, fxdax's Firecracker, which FXDAX_FIRECRACKER names, is there to boot.
 pub fn has_vmm() -> bool {
@@ -337,6 +338,10 @@ impl Vm {
         {
             boot_args.push(' ');
             boot_args.push_str(extra.trim());
+        }
+        let deadline = std::env::var_os(crate::TEST_DEADLINE);
+        if let Some(secs) = watchdog_secs(deadline.as_deref(), SystemTime::now())? {
+            boot_args.push_str(&format!(" {}={secs}", crate::GUEST_WATCHDOG));
         }
         boot_args.push_str(" -- ");
         boot_args.push_str(test_case);
@@ -758,6 +763,28 @@ fn disk_letter(index: usize) -> char {
     char::from(b'a' + u8::try_from(index).expect("few disks"))
 }
 
+/// How long before the runner's deadline a guest still running dumps its stacks: time enough for
+/// them to cross the console.
+const WATCHDOG_MARGIN: Duration = Duration::from_secs(15);
+
+/// fxdax: the seconds a guest booting at `now` has before it dumps its stacks, if the runner set a
+/// deadline, `deadline` ([`crate::TEST_DEADLINE`]): a guest hung in the kernel can't say where
+/// otherwise. None too close to the deadline.
+fn watchdog_secs(deadline: Option<&OsStr>, now: SystemTime) -> anyhow::Result<Option<u64>> {
+    let Some(var) = deadline else { return Ok(None) };
+    let secs: u64 = var
+        .to_str()
+        .and_then(|secs| secs.parse().ok())
+        .with_context(|| format!("{} is {var:?}, not seconds", crate::TEST_DEADLINE))?;
+    let deadline = UNIX_EPOCH + Duration::from_secs(secs);
+    Ok(deadline
+        .duration_since(now)
+        .ok()
+        .and_then(|left| left.checked_sub(WATCHDOG_MARGIN))
+        .map(|secs| secs.as_secs())
+        .filter(|&secs| secs > 0))
+}
+
 fn push(array: &mut serde_json::Value, value: serde_json::Value) {
     array.as_array_mut().expect("an array").push(value);
 }
@@ -852,6 +879,22 @@ fn tree_size(dir: &Path) -> anyhow::Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A guest dumps its stacks the margin before the runner's deadline, if it has time to.
+    #[test]
+    fn watchdog_secs_leave_the_margin() {
+        let now = UNIX_EPOCH + Duration::from_secs(1_000);
+        let at = |secs: &str| watchdog_secs(Some(OsStr::new(secs)), now);
+        assert_eq!(at("1180").unwrap(), Some(165));
+        assert_eq!(at("1016").unwrap(), Some(1));
+        assert_eq!(at("1015").unwrap(), None);
+        assert_eq!(at("900").unwrap(), None);
+        assert_eq!(watchdog_secs(None, now).unwrap(), None);
+        assert_eq!(
+            at("soon").unwrap_err().to_string(),
+            "FXDAX_TEST_DEADLINE is \"soon\", not seconds"
+        );
+    }
     use std::io::{Read, Write};
     use std::os::unix::net::{UnixListener, UnixStream};
 
