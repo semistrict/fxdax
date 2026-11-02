@@ -2,12 +2,6 @@
 
 What the agents need from you, and nothing else. See AGENTS.md. Answer by editing an entry, or say so in any session.
 
-## Must one snapshot restore on several hosts at once? (TASK-158)
-
-Today, once one host forks a point, every other host's copy fails with `EIO` until it's dropped and created again. Fixing that needs a protocol change.
-**Recommend:** yes if you fan out from one base; no otherwise.
-**Until then:** one host at a time works; `docs/integrator-guide.md` says so.
-
 ## How to close truncate on a full disk? (TASK-150.19)
 
 Rarely, truncated bytes come back on a truly full filesystem. Either every non-DAX growth takes one path that zeroes the tail, or a mid-block shrink may return `NoSpace`, partly reversing TASK-60.

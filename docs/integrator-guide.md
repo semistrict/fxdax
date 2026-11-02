@@ -82,7 +82,7 @@ host's copy only, so run `SyncStore` first if it has commits to keep.
 **One host at a time.** A host's copy of a point is a writer of its branch, and a restore's fork is
 a commit there. Once one host forks it, every other host's copy, the snapshot's own included, fails
 with `EIO`. To restore on another host: `DropStore` here, then `CreateStore` there. Restoring one
-snapshot on several hosts at once isn't supported yet (TASK-158).
+snapshot on several hosts at once doesn't work yet, and must: that's TASK-158, in progress.
 
 **Memory.** Open pages can't be evicted until a guest seals them, and only a guest can seal. Several
 VMs share the daemon's memory, so one idle VM with many open pages can leave another short, which

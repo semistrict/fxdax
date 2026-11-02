@@ -1,9 +1,10 @@
 ---
 id: TASK-158
 title: One snapshot restored on several hosts at once
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-11-02 02:53'
+updated_date: '2026-11-02 03:29'
 labels: []
 dependencies: []
 priority: high
@@ -29,3 +30,9 @@ From TASK-154: a host copy of a point is a writer of its branch, and each restor
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-11-01, the user: yes, one snapshot must restore on several hosts at once, and that it doesn't is a basic design flaw. Formats may change, no migration (AGENTS.md).
+<!-- SECTION:NOTES:END -->
