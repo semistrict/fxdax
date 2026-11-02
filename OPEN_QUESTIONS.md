@@ -8,9 +8,9 @@
 
 ## Push `fix/main-after-push`?
 
-Two test fixes and this file. `scripts/tests` is red on main until they land, because two mutants went stale. No product code changes.
+Two test fixes, this file, AGENTS.md's rule to decide rather than wait, a guest watchdog that dumps every task's stack before a test's timeout, and the fix of `load_during_move`'s hang, which was the check deadlocking itself (r528: 20 rounds pass). `scripts/tests` is red on main until the first two land, because two mutants went stale. No product code changes.
 **Recommend:** push.
-**Until then:** this file isn't on main, and main's test run reports a failure.
+**Until then:** none of this is on main, main's test run reports a failure, and `fxfs-guest-checks-dax*` can hang on `load_during_move`.
 
 # Decisions
 
