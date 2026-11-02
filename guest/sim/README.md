@@ -45,7 +45,7 @@ Written here (see each file's head for what it leaves out):
 | Scheduler, locks, wait queues, RCU, workqueues | `kernel/sched.c`, `locks.c`, `workqueue.c` | One task at a time; wait queues as the kernel's; rwsem order as the kernel's, not its optimistic spinning |
 | Page tables and faults | `kernel/mm.c` | Two flat arrays per VMA, with `mm/memory.c`'s insert and fault rules rewritten, and `mmap_lock`. No TLB, no MMU, no GUP, no private mappings |
 | VFS and page cache | `kernel/vfs.c`, `mount.c` | What dax.c calls. `super.c` is not built: its resize, punch, clone and fsync are rewritten, so that a bug in them shows on a real kernel alone |
-| Host device | `kernel/device.c`, `host.c` | The window is real memory, a memfd mapped page by page, so a store the host refuses is a SIGSEGV. Requests complete at once, or fail with EIO as a test asks: no virtqueue, no second stage, no async page faults |
+| Host device | `kernel/device.c`, `host.c` | The window is real memory, a memfd mapped page by page, so a store the host refuses is a SIGSEGV. Requests complete at once, or fail with EIO as a test asks, or with ENOMEM past the open pages a test lets it hold, a seed in four: no virtqueue, no second stage, no async page faults |
 | Fxfs | `fxfs/fxfs.c` | A model of what the protocol assumes: blocks, open extents, an extent that reads as sealed then open again as a write reaches it, shared blocks, the staging extent, `FreeAfter::Flush`, one seal in four a flush, transactions that fail, `zero_tail`. No journal, tree or crash consistency |
 
 So a run tests dax.c against a second writing of its assumptions. Where the model differs from
@@ -141,9 +141,9 @@ dax.c's diagnostics were wrong twice, both on a real kernel too, each with its f
 
 ## Past bugs put back
 
-`mutants.sh`, on top of `fixes/`: 20 past bugs, picked by hand from dax.c's history for being in its
+`mutants.sh`, on top of `fixes/`: 21 past bugs, picked by hand from dax.c's history for being in its
 protocol, so not a fair sample of all its bugs. 3,000 seeds at most, an eighth at 1,000 operations.
-18 show; the other two can't any more, so 18 of 18 that can. Seeds move as the workload does.
+19 show; the other two can't any more, so 19 of 19 that can. Seeds move as the workload does.
 
 | Past bug | Found at | How |
 | --- | --- | --- |
@@ -164,6 +164,7 @@ protocol, so not a fair sample of all its bugs. 3,000 seeds at most, an eighth a
 | TASK-123, a row's other pages not relocated | seed 2221 | `fs/dax.c:416` WARN |
 | TASK-125, relocated pages stay mapped | seed 2327 | `fs/dax.c:416` WARN: `moved-before-mapped.patch` covers most of what it did |
 | TASK-140, a read-only slice of an open extent | `open_extent_read_only` | a fault dropped its range 257 times |
+| TASK-150.20, a MAP the host has no memory for makes no room | `open_memory_out` | a write's EIO; and every seed that limits the host's memory, a seed in four, in `interleave` and `failures` alike |
 | TASK-44.21, a sealed piece reached for | `sealed_piece_reach` | a writable MAP outside the gate; the mutant takes `sealed-reach-locked.patch`'s check out too |
 | TASK-79.104, evict doesn't wait for evacuation | no | equivalent: since TASK-101 the hold is taken and let go of under the semaphore, so no one who has it sees one |
 | TASK-79.28, a range remapped too small | no | equivalent since TASK-147: a fault sizing a range from the old end holds the invalidate lock `fxfs_dax_fit` waits for, and one after sees `growing`. `task-79.28-before-147`, with that gone too, shows at seed 31 |
@@ -189,6 +190,7 @@ And by `tests/scenarios`, each at once, with how many seeds of `tests/failures` 
 | TASK-79.53, a mapping's store past the end read back | 2 | bytes wrong |
 | Patch 0009, a killed writer's copy stopped | 1 | bytes wrong |
 | A write past the end that copies nothing grows the file | not run | a scenario |
+| TASK-150.20, writes past the host's memory for open extents | 200 of 200 that limit it | the write's EIO, as generic/129's |
 
 150 seeds of `interleave` and `failures` with the scenarios reach 73% of dax.c's lines and 60% of
 `fs/dax.c`'s. Not reached: reclaim (the window never fills), followers, and Fxfs failing.

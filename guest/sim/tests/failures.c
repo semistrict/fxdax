@@ -27,6 +27,8 @@
 #define ROUND 16
 /* One allocation, and one MAP or UNMAP, in so many fails. */
 #define FAIL_ODDS 25
+/* The host's memory for open extents, a run in four: what it refuses a seal makes room for. */
+#define OPEN_LIMIT PTRS_PER_PTE
 
 #define check(cond, ...) do { if (!(cond)) sim_panic(__VA_ARGS__); } while (0)
 
@@ -545,6 +547,8 @@ int main(int argc, char **argv)
 		sscanf(argv[2], "%lu", &operations);
 	sim_init(seed);
 	sim_device_init(WINDOW_LEN);
+	if (!(seed % 4))
+		sim_device_limit_open(OPEN_LIMIT);
 	for (i = 2; i < argc; i++) {
 		unsigned long long ino, page;
 
