@@ -404,12 +404,15 @@ struct fxfs_dax_write {
 	u64 first, pages, size;
 	struct block *moved;
 	bool *moving;
+	/* What each page's new block holds of the old, for the log: nothing, what's held, or read. */
+	const char **keeping;
 };
 
 static void free_move(struct fxfs_dax_write *move)
 {
 	kfree(move->moved);
 	kfree(move->moving);
+	kfree(move->keeping);
 	kfree(move);
 }
 
@@ -438,10 +441,11 @@ static void commit_move(struct fxfs_dax_write *move)
 		struct block *block = &file->blocks[move->first + page];
 
 		if (file->ino == watched_ino && move->first + page == watched_page)
-			sim_log("sim: ino %llu page %llu: map_write by %s commits, %s from extent %llu page %llu to extent %llu page %llu, at %llu ns\n",
+			sim_log("sim: ino %llu page %llu: map_write by %s commits, %s from extent %llu page %llu to extent %llu page %llu, keeping %s, at %llu ns\n",
 				file->ino, watched_page, current->comm,
 				move->moving[page] ? "moved" : "stays", block->sequence, block->page,
-				move->moved[page].sequence, move->moved[page].page, ktime_get_ns());
+				move->moved[page].sequence, move->moved[page].page,
+				move->keeping[page], ktime_get_ns());
 		if (move->moving[page]) {
 			put_block(move->fs, block);
 			*block = move->moved[page];
@@ -516,6 +520,7 @@ static ssize_t try_map_write(struct fxfs *fs, u64 ino, u64 offset, u64 len, u64 
 	*move = (struct fxfs_dax_write) {
 		.fs = fs, .file = file, .first = first, .pages = pages, .size = size,
 		.moved = moved, .moving = moving,
+		.keeping = kcalloc(pages, sizeof(*move->keeping), GFP_NOFS),
 	};
 	for (page = 0; page < pages; page++) {
 		const struct block *block = &file->blocks[first + page];
@@ -523,12 +528,14 @@ static ssize_t try_map_write(struct fxfs *fs, u64 ino, u64 offset, u64 len, u64 
 
 		moving[page] = !block->sequence || !find_extent(fs, block->sequence)->open ||
 			       find_extent(fs, block->sequence)->refs[block->page] > 1;
+		move->keeping[page] = "nothing";
 		if (!moving[page])
 			continue;
 		moves++;
 		/* The first and last blocks hold what the range doesn't, around it. */
 		kept[page] = all || (!page && offset_in_page(offset)) ||
 			     (page == pages - 1 && offset_in_page(offset + len));
+		move->keeping[page] = !kept[page] ? "nothing" : held ? "what's held" : "what it read";
 		if (held && kept[page])
 			memcpy(copies + (page << PAGE_SHIFT), held + (page << PAGE_SHIFT),
 			       PAGE_SIZE);
@@ -576,6 +583,8 @@ static ssize_t try_map_write(struct fxfs *fs, u64 ino, u64 offset, u64 len, u64 
 	for (page = 0; page < pages; page++) {
 		const void *data = copies + (page << PAGE_SHIFT);
 
+		if (kept[page] && moving[page] && !keeps_data(data))
+			move->keeping[page] = held ? "what's held, zeros" : "what it read, zeros";
 		if (!kept[page] || !moving[page] || !keeps_data(data))
 			continue;
 		sim_point("a Fxfs write");
