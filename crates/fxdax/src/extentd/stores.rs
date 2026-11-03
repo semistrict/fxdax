@@ -549,11 +549,7 @@ fn attached(
     let options = crate::remote::Options { cache: remote_cache()?, token, ..Default::default() };
     if let Err(err) = store.attach_remote(bucket, rand::random(), options) {
         log::warn!("extentd: keeping branch {:x} in object storage: {err}", store.branch());
-        return Err(match err {
-            crate::remote::Failure::Stale => Errno::ESTALE,
-            crate::remote::Failure::PointDeleted => Errno::ENOENT,
-            _ => Errno::EIO,
-        });
+        return Err(err.errno().unwrap_or(Errno::EIO));
     }
     Ok(store)
 }

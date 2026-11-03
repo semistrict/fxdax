@@ -137,10 +137,13 @@ pub(crate) fn delete_with(
         },
     )
     .map_err(|err| {
-        let stale = err.chain().any(|cause| {
-            cause.downcast_ref::<crate::remote::Failure>() == Some(&crate::remote::Failure::Stale)
-        });
-        if stale { Error::new(err.context(Errno::ESTALE)) } else { Error::new(err) }
+        // Its errno, if deleting the branch elsewhere failed with one: `ESTALE` for a branch a
+        // later placement holds.
+        let failure = err.chain().find_map(|cause| cause.downcast_ref::<crate::remote::Failure>());
+        match failure.and_then(crate::remote::Failure::errno) {
+            Some(errno) => Error::new(err.context(errno)),
+            None => Error::new(err),
+        }
     })
 }
 

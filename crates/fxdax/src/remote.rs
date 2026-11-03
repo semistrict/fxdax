@@ -227,9 +227,9 @@ fn claimed(dir: &Path, branch: u64) -> Result<Option<Claim>, Failure> {
     let text = match std::fs::read_to_string(&path) {
         Ok(text) => text,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(err) => return Err(Failure::Other(format!("reading {}: {err}", path.display()))),
+        Err(err) => return Err(Failure::local(err, format!("reading {}", path.display()))),
     };
-    let unparsed = || Failure::Other(format!("{}: {text:?} names no origin", path.display()));
+    let unparsed = || Failure::msg(format!("{}: {text:?} names no origin", path.display()));
     Claim::parse(&text).map(Some).ok_or_else(unparsed)
 }
 
@@ -251,7 +251,7 @@ fn claim_origin(dir: &Path, child: u64, origin: Origin) -> Result<bool, Failure>
     };
     let text = Claim { forked, ..claim }.text();
     let written = write_durably(dir, &claim_file(child), text.as_bytes());
-    written.map_err(|err| Failure::Other(format!("recording the fork's origin: {err}")))?;
+    written.map_err(|err| Failure::local(err, "recording the fork's origin"))?;
     Ok(true)
 }
 
@@ -272,7 +272,7 @@ fn block_on<F: std::future::Future>(future: F) -> Result<F::Output, Failure> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-        .map_err(|err| Failure::Other(format!("a runtime: {err}")))?;
+        .map_err(|err| Failure::local(err, "a runtime"))?;
     Ok(runtime.block_on(future))
 }
 
@@ -280,7 +280,7 @@ fn block_on<F: std::future::Future>(future: F) -> Result<F::Output, Failure> {
 /// the placement whose fencing token is `token`: its writer stops at its next acknowledgement, no
 /// writer takes it again, and the collector reclaims what no other branch inherited from it, as its
 /// forks' branches live on (TASK-39.4). Deleting it again does nothing. A later placement's
-/// branch, whose token is higher, is not deleted ([`Failure::Stale`], TASK-45.1). A fork's child
+/// branch, whose token is higher, is not deleted (`extent_remote::Error::Stale`, TASK-45.1). A fork's child
 /// claimed for its fork ([`claim`]) is deleted only if its branch there is the fork's
 /// (`extent_remote::branch::delete_fork`): a branch of another's that took the child's ID, as a
 /// guest may give any, is left as it is (TASK-79.82).
@@ -302,8 +302,7 @@ pub fn delete_branch(bucket: &Bucket, dir: &Path, branch: u64, token: u64) -> Re
             );
             Ok(())
         }
-        Err(extent_remote::Error::Stale) => Err(Failure::Stale),
-        Err(err) => Err(Failure::Other(format!("deleting branch {branch:x}: {err}"))),
+        Err(err) => Err(err.into()),
     }
 }
 
@@ -313,9 +312,9 @@ pub(crate) fn placed_token(dir: &Path, branch: u64) -> Result<Option<u64>, Failu
     let path = dir.join(fence(branch));
     match std::fs::read_to_string(&path) {
         Ok(text) => (text.trim().parse().map(Some))
-            .map_err(|err| Failure::Other(format!("{}: {err}", path.display()))),
+            .map_err(|err| Failure::local(err, path.display().to_string())),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(err) => Err(Failure::Other(format!("reading {}: {err}", path.display()))),
+        Err(err) => Err(Failure::local(err, format!("reading {}", path.display()))),
     }
 }
 
@@ -325,17 +324,18 @@ pub(crate) fn placed_token(dir: &Path, branch: u64) -> Result<Option<u64>, Failu
 /// a host without one keeps no branch (TASK-45).
 pub fn host_token() -> Result<u64, Failure> {
     let missing = || {
-        Failure::Other(
+        Failure::msg(
             "FXDAX_EXTENTD_TOKEN names no placement token: this host's placement's, from the \
-             system's control plane, which fences earlier placements"
-                .into(),
+             system's control plane, which fences earlier placements",
         )
     };
     match std::env::var("FXDAX_EXTENTD_TOKEN") {
         Ok(token) if !token.is_empty() => match token.parse() {
             Ok(0) => Err(missing()),
             Ok(token) => Ok(token),
-            Err(err) => Err(Failure::Other(format!("FXDAX_EXTENTD_TOKEN {token:?}: {err}"))),
+            Err(err) => {
+                Err(Failure::local(err, format!("FXDAX_EXTENTD_TOKEN {token:?}")))
+            }
         },
         _ => Err(missing()),
     }
@@ -382,46 +382,86 @@ pub(crate) fn unmark(dir: &Path, branch: u64) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Why uploading stopped, or a branch could not be uploaded to.
-#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+/// Why uploading stopped, or a branch could not be uploaded to: the error as it was, typed, which
+/// [`Failure::errno`] maps to its errno, in the one place.
+#[derive(Clone, Debug, thiserror::Error)]
 pub enum Failure {
-    /// Another writer took the branch, or it was deleted.
-    #[error("another writer took the branch")]
-    Taken,
-    /// A later placement, whose fencing token is higher, holds the branch (TASK-39.7).
-    #[error("a later placement holds the branch")]
-    Stale,
-    /// Another branch has the ID of a fork's child, which it took while the fork was made
-    /// (TASK-79.82).
-    #[error("another branch has the child's ID")]
-    ChildTaken,
+    /// What object storage's protocol found of the branch, as `extent_remote` says it: another
+    /// writer took it (`Fenced`, `Displaced`), it was deleted, a later placement holds it
+    /// (`Stale`, TASK-39.7), another branch has a fork's child's ID (`ChildTaken`, TASK-79.82), or
+    /// what it needs is gone or corrupt.
+    #[error(transparent)]
+    Remote(#[from] extent_remote::Error),
     /// The point a store is of was deleted: it forks no more, and its forks live on.
     #[error("the point was deleted")]
     PointDeleted,
-    /// Anything else, as it says.
-    #[error("{0}")]
-    Other(String),
+    /// This host's own: its files, a runtime, the uploader gone, as the error says.
+    #[error("{0:#}")]
+    Local(Arc<anyhow::Error>),
 }
 
-impl From<extent_remote::Error> for Failure {
-    fn from(error: extent_remote::Error) -> Self {
-        match error {
-            extent_remote::Error::Fenced | extent_remote::Error::Deleted => Self::Taken,
-            extent_remote::Error::Stale => Self::Stale,
-            other => Self::Other(other.to_string()),
+impl Failure {
+    /// This host's failure, saying `message`.
+    pub(crate) fn msg(message: impl std::fmt::Display + std::fmt::Debug + Send + Sync + 'static) -> Self {
+        Self::Local(Arc::new(anyhow::Error::msg(message)))
+    }
+
+    /// This host's failure of `what`, with `error`.
+    pub(crate) fn local(
+        error: impl std::error::Error + Send + Sync + 'static,
+        what: impl std::fmt::Display + Send + Sync + 'static,
+    ) -> Self {
+        Self::Local(Arc::new(anyhow::Error::new(error).context(what)))
+    }
+
+    /// The errno of the failure, as doc-4 and doc-7 have them: a branch this writer lost, to
+    /// another writer or deleted, or one nothing writes, is one the store takes no more commits for
+    /// (`EROFS`); one a later placement holds, which a placement cut off takes back no more,
+    /// `ESTALE`; a branch, or a point, gone, `ENOENT`; a fork's child's ID taken, `EEXIST`; a branch
+    /// of a newer format, `ENOTSUP`. None for what the store failed to read or write, here or in
+    /// object storage, which is the caller's `EIO`, logged.
+    pub(crate) fn errno(&self) -> Option<crate::Errno> {
+        use crate::Errno;
+        use extent_remote::Error;
+        match self {
+            Self::Remote(Error::Fenced | Error::Displaced | Error::Deleted | Error::Point) => {
+                Some(Errno::EROFS)
+            }
+            Self::Remote(Error::Stale) => Some(Errno::ESTALE),
+            Self::Remote(Error::NoBranch) | Self::PointDeleted => Some(Errno::ENOENT),
+            Self::Remote(Error::ChildTaken(_)) => Some(Errno::EEXIST),
+            // A branch of a newer format than this host reads, until it is upgraded (doc-11).
+            Self::Remote(Error::Format { .. }) => Some(Errno::ENOTSUP),
+            Self::Remote(Error::Lost(_) | Error::Corrupt(_) | Error::Read(_)) | Self::Local(_) => {
+                None
+            }
         }
     }
 }
 
+/// Failures are the same as they say, this host's own as their errors' messages do.
+impl PartialEq for Failure {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Remote(error), Self::Remote(other)) => error == other,
+            (Self::PointDeleted, Self::PointDeleted) => true,
+            (Self::Local(error), Self::Local(other)) => format!("{error:#}") == format!("{other:#}"),
+            (Self::Remote(_) | Self::PointDeleted | Self::Local(_), _) => false,
+        }
+    }
+}
+
+impl Eq for Failure {}
+
 impl From<crate::faults::Failpoint> for Failure {
     fn from(failpoint: crate::faults::Failpoint) -> Self {
-        Self::Other(failpoint.to_string())
+        Self::from(anyhow::Error::new(failpoint))
     }
 }
 
 impl From<anyhow::Error> for Failure {
     fn from(error: anyhow::Error) -> Self {
-        Self::Other(format!("{error:#}"))
+        Self::Local(Arc::new(error))
     }
 }
 
@@ -564,11 +604,11 @@ impl Fetcher {
         let parts = self.parts.clone();
         let read = self.runtime.spawn(async move {
             let location = location.ok_or_else(|| {
-                Failure::Other(format!("{extent:?} is not in the branch's object storage"))
+                Failure::msg(format!("{extent:?} is not in the branch's object storage"))
             })?;
             Ok(parts.read(extent, &location, offset, len, Priority::Demand).await?)
         });
-        async move { read.await.map_err(|err| Failure::Other(format!("fetching: {err}")))? }
+        async move { read.await.map_err(|err| Failure::local(err, "fetching"))? }
     }
 }
 
@@ -684,7 +724,7 @@ impl Remote {
                 let _ = stopped.recv();
                 Err(err)
             }
-            Err(_) => Err(Failure::Other("the uploader stopped".into())),
+            Err(_) => Err(Failure::msg("the uploader stopped")),
         }
     }
 
@@ -753,7 +793,7 @@ impl Remote {
     /// a checkpoint at the fork is where its recovery starts. The child's marker names the fork's
     /// commit, which the child inherits, from before the segment may land ([`InFlight::upload`]).
     /// `child`'s ID may be another branch's by then, which took it after [`Remote::claim`] found it
-    /// free ([`Failure::ChildTaken`]): the fork failed, and the uploader goes on.
+    /// free (`extent_remote::Error::ChildTaken`): the fork failed, and the uploader goes on.
     ///
     /// A fork of a point commits nothing in object storage: the child's record is the fork, and
     /// fails if the point was deleted ([`Failure::PointDeleted`]; `branch::fork_point`).
@@ -762,11 +802,10 @@ impl Remote {
         let shared = &self.shared;
         if let Some(point) = shared.fetcher.point.get() {
             let claim = claimed(shared.store.dir().path(), child)?;
-            let claim = claim.ok_or_else(|| Failure::Other(format!("{child:x} is not claimed")))?;
+            let claim = claim.ok_or_else(|| Failure::msg(format!("{child:x} is not claimed")))?;
             let (of, origin) = (point.branch, point.origin);
             let forking = branch::fork_point(&*self.bucket, child, of, origin, claim.owner);
             return match block_on(forking)? {
-                Err(extent_remote::Error::ChildTaken(_)) => Err(Failure::ChildTaken),
                 Err(extent_remote::Error::Deleted) => Err(Failure::PointDeleted),
                 forked => Ok(forked?),
             };
@@ -778,7 +817,9 @@ impl Remote {
             false => progress.failed.clone().map(Err),
         })?;
         match shared.fetcher.writer.get() {
-            Some(writer) if writer.refused(child) => Err(Failure::ChildTaken),
+            Some(writer) if writer.refused(child) => {
+                Err(extent_remote::Error::ChildTaken(child).into())
+            }
             _ => Ok(()),
         }
     }
@@ -819,7 +860,7 @@ impl Remote {
             None => Forked::Pending { point: child.point },
         };
         claim(dir, child.branch, Claim { owner: child.owner, forked })
-            .map_err(|err| Failure::Other(format!("claiming branch {:x}: {err}", child.branch)))
+            .map_err(|err| Failure::local(err, format!("claiming branch {:x}", child.branch)))
     }
 
     /// Whether the store holds a point: nothing it does goes to object storage but its forks'
@@ -832,7 +873,7 @@ impl Remote {
     /// ([`Remote::claim`]).
     pub fn disclaim(&self, child: u64) -> Result<(), Failure> {
         let dir = self.shared.store.dir().path();
-        disclaim(dir, child).map_err(|err| Failure::Other(format!("disclaiming {child:x}: {err}")))
+        disclaim(dir, child).map_err(|err| Failure::local(err, format!("disclaiming {child:x}")))
     }
 
     /// The lowest sequence number the store's guest may mint extents' IDs from, which the writer's
@@ -990,7 +1031,7 @@ impl Shared {
                     if let Err(err) = writer.checkpoint().await {
                         log::warn!("fxdax: checkpointing branch {:x}: {err}", writer.branch());
                     }
-                    return self.fail(&writer, Failure::Other("the uploader stopped".into()));
+                    return self.fail(&writer, Failure::msg("the uploader stopped"));
                 }
             }
             let woken = tokio::time::timeout(interval, self.wake.notified());
@@ -1050,7 +1091,7 @@ impl Shared {
         bucket: &Arc<Bucket>,
         holder: u64,
     ) -> Result<Option<Writer<Bucket>>, Failure> {
-        bucket.probed(holder).await.map_err(Failure::Other)?;
+        bucket.probed(holder).await.map_err(Failure::msg)?;
         let branch = self.store.description().branch;
         let ours = self.marker().read()?;
         let held = blocking(|| self.store.snapshot())?;
@@ -1063,7 +1104,7 @@ impl Shared {
                 match claimed(self.store.dir().path(), branch)? {
                     // No origin, no point: its snapshot was never made.
                     Some(Claim { forked: Forked::Pending { point: true }, .. }) => {
-                        return Err(Failure::Other(format!(
+                        return Err(Failure::msg(format!(
                             "point {branch:x} was never made in object storage"
                         )));
                     }
@@ -1147,12 +1188,12 @@ impl Shared {
             return Err(Failure::PointDeleted);
         }
         let Kind::Point(origin) = record.kind else {
-            return Err(Failure::Other(format!("branch {branch:x} is no point")));
+            return Err(Failure::msg(format!("branch {branch:x} is no point")));
         };
         let state = extent_remote::recover(&**bucket, branch, Some(origin)).await?.state;
         if !Self::holds(&state, held) {
             if !held.extents.is_empty() || !held.root.is_empty() {
-                return Err(Failure::Other(format!(
+                return Err(Failure::msg(format!(
                     "the store of point {branch:x} holds another state"
                 )));
             }
@@ -1218,9 +1259,9 @@ impl Shared {
         let forked = |state: &State| state.forks.iter().find(|fork| fork.child == branch).copied();
         if forked(&state).is_none() && ours.iter().any(|&tag| writer_of(tag) >= state.epoch) {
             state = self.take_parent(bucket, parent).await.map_err(|err| {
-                Failure::Other(format!(
+                Failure::local(err, format!(
                     "branch {branch:x}, a fork of branch {parent:x}, has no record, and the writer \
-                     that uploads the fork may land it yet: taking the parent's branch: {err}"
+                     that uploads the fork may land it yet: taking the parent's branch"
                 ))
             })?;
         }
@@ -1271,7 +1312,7 @@ impl Shared {
             Some(last) if ours.contains(&last) => Ok(Plan::Diff),
             Some(_) if ours.is_empty() && empty => Ok(Plan::Take),
             Some(_) if ours.is_empty() && Self::holds(state, held) => Ok(Plan::Claim),
-            Some(last) => Err(Failure::Other(format!(
+            Some(last) => Err(Failure::msg(format!(
                 "branch {:x} moved on elsewhere (commit {last:#x}): its store here is stale",
                 state.branch
             ))),
@@ -1455,7 +1496,7 @@ impl Shared {
 /// as its upload goes, and checked: a byte the host's disk damaged is not uploaded under the CRC
 /// it fails (`read_object`, TASK-153.11).
 fn stored(file: &Arc<HostFile>) -> Result<Body, Failure> {
-    let size = file.size().map_err(|err| Failure::Other(format!("a file to upload: {err}")))?;
+    let size = file.size().map_err(|err| Failure::local(err, "a file to upload"))?;
     let file = file.clone();
     Ok(Body::new(size, move || blocking(|| read_object(&*file))))
 }
@@ -1503,13 +1544,13 @@ impl Marker {
         let text = match std::fs::read_to_string(&path) {
             Ok(text) => text,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(err) => return Err(Failure::Other(format!("reading {}: {err}", path.display()))),
+            Err(err) => return Err(Failure::local(err, format!("reading {}", path.display()))),
         };
         text.split_whitespace()
             .filter(|word| *word != "-")
             .map(|word| u64::from_str_radix(word, 16))
             .collect::<Result<_, _>>()
-            .map_err(|err| Failure::Other(format!("{}: {err}", path.display())))
+            .map_err(|err| Failure::local(err, path.display().to_string()))
     }
 
     /// Names `acked`, the last commit uploaded, if any, and `uploading`, durably.
@@ -1524,7 +1565,7 @@ impl Marker {
         }
         text.push('\n');
         let written = write_durably(&self.dir, &marker(self.branch), text.as_bytes());
-        written.map_err(|err| Failure::Other(format!("recording the upload: {err}")))
+        written.map_err(|err| Failure::local(err, "recording the upload"))
     }
 }
 
@@ -2114,7 +2155,7 @@ mod tests {
         // The first, restarted, takes it back no more: its token is the earlier.
         let stale = ExtentStore::open(&first_path).unwrap();
         let refused = stale.attach_remote(bucket.clone(), 3, idle());
-        assert_eq!(refused.err(), Some(super::Failure::Stale));
+        assert_eq!(refused.err(), Some(super::Failure::Remote(extent_remote::Error::Stale)));
         drop(stale);
         let lease = futures::executor::block_on(extent_remote::Bucket::get(
             &*bucket,
@@ -2843,7 +2884,7 @@ mod tests {
         let stale = ExtentStore::open(dir.path().join("first")).unwrap();
         let refused = stale.attach_remote(bucket.clone(), 3, idle());
         assert!(
-            matches!(refused, Err(super::Failure::Other(ref err)) if err.contains("moved on")),
+            matches!(refused, Err(super::Failure::Local(ref err)) if err.to_string().contains("moved on")),
             "{refused:?}"
         );
         let (extents, root) = uploaded(&bucket, branch);
@@ -2936,7 +2977,7 @@ mod tests {
             taken.commit(Some(b"meanwhile")).unwrap();
         });
         assert!(
-            matches!(refused, Err(super::Failure::Other(ref err)) if err.contains("moved on")),
+            matches!(refused, Err(super::Failure::Local(ref err)) if err.to_string().contains("moved on")),
             "{refused:?}"
         );
         let (extents, root) = uploaded(&bucket, branch);
@@ -3174,7 +3215,9 @@ mod tests {
              read",
             format + 1
         );
-        assert_eq!(refused, Err(super::Failure::Other(named)));
+        assert_eq!(refused.as_ref().map_err(ToString::to_string), Err(named));
+        let newer = extent_remote::Error::Format { branch, format: format + 1 };
+        assert_eq!(refused, Err(super::Failure::Remote(newer)));
         assert_eq!(listed(), before, "a branch of a newer format was written to");
     }
 
@@ -3381,7 +3424,7 @@ mod tests {
         /// Why the child refuses to attach while the segment may land yet, the parent's store
         /// open here.
         fn refusal(&self) -> super::Failure {
-            super::Failure::Other(format!(
+            super::Failure::msg(format!(
                 "branch {:x}, a fork of branch {:x}, has no record, and the writer that uploads \
                  the fork may land it yet: taking the parent's branch: branch {:#x} is open",
                 self.child, self.branch, self.branch
@@ -3896,8 +3939,9 @@ mod tests {
 
         let opened = ExtentStore::open(&path).unwrap();
         let attached = opened.attach_remote(bucket.clone(), 8, idle());
-        let refused = format!("branch {child:x} has another origin");
-        assert_eq!(attached, Err(super::Failure::Other(refused)));
+        let refused = super::Failure::Remote(extent_remote::Error::ChildTaken(child));
+        assert_eq!(attached.as_ref().map_err(ToString::to_string), Err(refused.to_string()));
+        assert_eq!(attached, Err(refused));
         assert_eq!(leased(), Ok(1));
         // Closed before the fork goes on: its cleanup leaves a handle open.
         drop(opened);
@@ -4063,8 +4107,9 @@ mod tests {
         let taking = taking.unwrap();
         let attached = forked.attach_remote(crashed.bucket.clone(), 4, idle());
         drop(taking);
-        let refused = format!("branch {child:x} has another origin");
-        assert_eq!(attached, Err(super::Failure::Other(refused)));
+        let refused = super::Failure::Remote(extent_remote::Error::ChildTaken(child));
+        assert_eq!(attached.as_ref().map_err(ToString::to_string), Err(refused.to_string()));
+        assert_eq!(attached, Err(refused));
         drop(forked);
 
         let handle = dir.path().join("child");

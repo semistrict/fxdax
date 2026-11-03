@@ -471,18 +471,13 @@ fn is_zeros(bytes: &[u8]) -> bool {
     any == 0 && rest == 0
 }
 
-/// fxdax: the errno of the uploader's failure, as doc-4 has them: a branch another writer took, or
-/// a later placement holds, is one the store takes no more commits for.
+/// fxdax: the errno of the uploader's failure (`Failure::errno`): `EIO`, logged, for one the
+/// store failed to read or write.
 fn remote_errno(failure: crate::remote::Failure) -> Errno {
-    match failure {
-        crate::remote::Failure::Taken | crate::remote::Failure::Stale => Errno::EROFS,
-        crate::remote::Failure::ChildTaken => Errno::EEXIST,
-        crate::remote::Failure::PointDeleted => Errno::ENOENT,
-        crate::remote::Failure::Other(err) => {
-            log::error!("fxdax: uploading the store's commits: {err}");
-            Errno::EIO
-        }
-    }
+    failure.errno().unwrap_or_else(|| {
+        log::error!("fxdax: uploading the store's commits: {failure}");
+        Errno::EIO
+    })
 }
 
 /// fxdax: a follower's request for `extent`, which its view's commits don't hold and it doesn't
@@ -893,7 +888,7 @@ impl ExtentStore {
         options: crate::remote::Options,
     ) -> std::result::Result<(), crate::remote::Failure> {
         let remote = crate::remote::Remote::attach(self.store.clone(), bucket, holder, options)?;
-        let had = || crate::remote::Failure::Other("the store already has a remote".to_owned());
+        let had = || crate::remote::Failure::msg("the store already has a remote");
         self.remote.set(remote).map_err(|_| had())
     }
 
@@ -968,7 +963,9 @@ impl ExtentStore {
         let failed = match forked {
             Ok(epoch) => match remote.map(|remote| remote.forked(epoch, branch)) {
                 None | Some(Ok(())) => return Ok(()),
-                Some(Err(crate::remote::Failure::ChildTaken)) => taken(),
+                Some(Err(crate::remote::Failure::Remote(extent_remote::Error::ChildTaken(_)))) => {
+                    taken()
+                }
                 Some(Err(crate::remote::Failure::PointDeleted)) => {
                     anyhow::Error::new(Errno::ENOENT)
                         .context(format!("forking to branch {branch:x}: the point was deleted"))
@@ -2328,6 +2325,33 @@ mod tests {
     use crate::pages::PhysLocation;
     use std::sync::atomic::Ordering;
     use futures::executor::block_on;
+
+    /// Each of the uploader's failures has its errno, as doc-4 and doc-7 have them: a branch this
+    /// writer lost, to an earlier writer's segment too, is EROFS, not EIO (TASK-160.12).
+    #[test]
+    fn each_uploader_failure_has_its_errno() {
+        use crate::remote::Failure;
+        use extent_remote::Error;
+        let cases = [
+            (Failure::Remote(Error::Fenced), Errno::EROFS),
+            (Failure::Remote(Error::Displaced), Errno::EROFS),
+            (Failure::Remote(Error::Deleted), Errno::EROFS),
+            (Failure::Remote(Error::Point), Errno::EROFS),
+            (Failure::Remote(Error::Stale), Errno::ESTALE),
+            (Failure::Remote(Error::NoBranch), Errno::ENOENT),
+            (Failure::PointDeleted, Errno::ENOENT),
+            (Failure::Remote(Error::ChildTaken(3)), Errno::EEXIST),
+            (Failure::Remote(Error::Format { branch: 3, format: 99 }), Errno::ENOTSUP),
+            (Failure::Remote(Error::Lost("a segment".into())), Errno::EIO),
+            (Failure::Remote(Error::Corrupt("a footer".into())), Errno::EIO),
+            (Failure::Remote(Error::Read("a file".into())), Errno::EIO),
+            (Failure::msg("the uploader stopped"), Errno::EIO),
+        ];
+        for (failure, expected) in cases {
+            let said = failure.to_string();
+            assert_eq!(remote_errno(failure), expected, "{said}");
+        }
+    }
 
     const BLOCK: usize = ExtentStore::BLOCK_SIZE as usize;
 
