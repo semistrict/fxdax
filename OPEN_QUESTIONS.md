@@ -8,6 +8,12 @@
 
 # Decisions
 
+## The journal's own transaction past its file stops the journal, not the kernel (TASK-60, TASK-139)
+
+`make_room`'s asserts, that the journal's transaction extending its file fits within the old size and a chunk, now stop the journal (`Inner::terminate`) and fail the commit: the guest gets EIO and stays mounted, and replay ends before that transaction. With the default chunk the sizing holds, so the transaction wasn't rebuilt to fit the room it has.
+**Instead:** size the own transaction to the room left, which would keep the filesystem writable even then.
+**Undoing it:** restore the two `assert!`s in `Journal::make_room`.
+
 ## Bases fork on several hosts at once too, as points (TASK-158, 2026-11-03)
 
 A snapshot's point now restores on any number of hosts at once. A fork of anything else, such as a base from `ImportImage`, is a commit on its branch, made by its writer, one host at a time. Decided: `ForkStoreRequest.point` (and `fxdaxctl point SRC DST`) makes a point of any store, once nothing is open, and each host forks a copy of it (`CreateStore` of its branch), as a snapshot's restores do. The base stays writable on its host; what it writes after needs a new point to reach forks. A point of a point is refused (`INVALID_ARGUMENT`). `docs/integrator-guide.md` says how.

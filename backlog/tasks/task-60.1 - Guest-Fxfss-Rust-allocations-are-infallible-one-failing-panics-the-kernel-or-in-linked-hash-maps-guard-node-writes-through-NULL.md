@@ -3,10 +3,10 @@ id: TASK-60.1
 title: >-
   Guest Fxfs's Rust allocations are infallible: one failing panics the kernel,
   or, in linked-hash-map's guard node, writes through NULL
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-29 21:11'
-updated_date: '2026-10-30 01:27'
+updated_date: '2026-11-03 08:53'
 labels:
   - fxfs
   - bug
@@ -30,9 +30,9 @@ GCE r260 (fxfs-guest-faults-dax on a debug kernel failing the writers' slab and 
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Notes
@@ -41,4 +41,12 @@ GCE r260 (fxfs-guest-faults-dax on a debug kernel failing the writers' slab and 
 GCE r262 (the same test, fxfs_rt_alloc's allocations exempt): 'Kernel panic - not syncing: fxfs: panicked at linux-rt/src/executor.rs:134:5: assertion failed: no memory to schedule a task (-12)': the executor's fxfs_rt_schedule (rt.c, its work item's allocation) failing, which the executor asserts can't, as losing the poll would leave the task waiting for ever. Its parker and timer allocations (fxfs_rt_parker_new, fxfs_rt_timer_new) are the same. The runtime's C allocations need __GFP_NOFAIL, or room set aside, as much as the Rust allocator's.
 
 Fixed (b3f83cfae, on main): fxfs_rt_alloc, the parker's and the timer's allocations __GFP_NOFAIL; each task's work item (fxfs_rt_work) made with the task, from async_task's metadata, so a waker queues a poll allocating nothing (fxfs_rt_work_queue), the work freed with the task, its run reading nothing of it after calling into Rust. fxfs-guest-faults-dax no longer exempts the runtime from the injection (its allocations NOFAIL, which failslab and fail_page_alloc skip). GCE r261, debug kernel (KCSAN, lockdep, fault injection): fxfs-guest-faults-dax, -checks-dax, -dax 3 rounds each passed; KCSAN's reports the same set as before the change (r255 at 7c9948612), the kernel's own.
+
+2026-11-03: DoD verified with TASK-60's run at 155c06bb0 (b3f83cfae included): scripts/test.sh on macOS passed; the Linux workspace on GCE, 2170 tests passed (Linux runs on GCE, not Lima, per AGENTS.md); upstream-changes.py --check passes.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The guest runtime's allocations (fxfs_rt_alloc, the parker's, the timer's) are __GFP_NOFAIL and each task's work item comes with the task (b3f83cfae), so a failing allocation neither panics the kernel nor writes through NULL. Verified on GCE r261 (debug kernel, fault injection: fxfs-guest-faults-dax, -checks-dax and -dax, 3 rounds each) and with TASK-60's run on 2026-11-03.
+<!-- SECTION:FINAL_SUMMARY:END -->

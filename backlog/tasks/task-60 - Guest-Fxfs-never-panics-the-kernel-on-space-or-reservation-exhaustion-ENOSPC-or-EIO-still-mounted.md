@@ -3,11 +3,11 @@ id: TASK-60
 title: >-
   Guest Fxfs never panics the kernel on space or reservation exhaustion: ENOSPC
   or EIO, still mounted
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-21 19:54'
-updated_date: '2026-11-03 07:32'
+updated_date: '2026-11-03 08:53'
 labels: []
 dependencies: []
 priority: high
@@ -22,9 +22,9 @@ fxfs_rt_panic turns Rust panics in Fxfs (allocator.rs reservation asserts and ot
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -52,4 +52,16 @@ The enospc guest check is kept on branch enospc-check (66f6d20b) until TASK-82's
 enospc check now on main (with TASK-80, TASK-82), in fxfs-guest-checks and -dax.
 
 Handed back 2026-11-02 (triage): its own work is on main (the enospc check in fxfs-guest-checks and -dax, with TASK-80 and TASK-82). Left: TASK-60.1, the guest's infallible Rust allocations.
+
+2026-11-03 audit (claude):
+- Static: the ~400 panic sites outside tests in crates/fxfs (assert/panic/unwrap/expect), plus fxfs-posix and the guest glue (fxfs-linux, linux-rt). Those on reservation paths (allocator's Reservation::move_to, forget_some, give_back, release_reservation; did_commit_transaction; renew_metadata_reservation; DirtyReservation's file()/settle) are invariants, and their exhaustion cases already return NoSpace or borrow in release builds (05d1dd5, 6dbc848, TASK-58, TASK-80). DirtyReservation's shared pool, a writeback that owes paid from others' room, is by design (test_dirty_data_with_no_room_is_owed); its pool + owed invariant holds, so settle can't underflow. Compaction and flush errors already stop the journal (Inner::terminate) rather than panic.
+- One left, reachable by what a workload does: make_room's two asserts on the journal's own transaction (TASK-139's panic). Now it stops the journal and the commit fails (11c1c9731); test_own_transaction_past_the_journal_stops_it panicked before and passes now. Refactored first: d147626bd.
+- Dynamic: a model hunt, FXDAX_MODEL_CASES=3000 (macOS, debug: 572 refused for lack of space, 6237 power cuts), passed. xfstests' enospc group on GCE, with and without DAX: passed, but only generic/103 and 213 ran. 14 are 'not run' as _scratch_mkfs_sized doesn't know fxfs, and 4 want a block device: TASK-149.25. That is the blind spot: xfstests' ENOSPC tests never ran here. Kept out of the model test: fxfs-posix's dirty-data API (reserve_dirty, write_dirty) isn't one of its operations; DirtyReservation's own tests cover a full filesystem's writeback.
+- Proof at 155c06bb0: scripts/test.sh on macOS passed; on GCE, the workspace's 2170 tests, xfstests generic/161, 164 and 165, and fxfs-guest-checks (with the enospc check), with and without DAX, passed.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Audited the panics that space or reservation exhaustion can reach from guest operations. The only one left reachable by a workload, the journal's own-transaction asserts (TASK-139's panic), now stops the journal with an error the commit returns (11c1c9731, test red before). TASK-60.1 (infallible allocations) is done. Verified: scripts/test.sh on macOS; GCE: 2170 workspace tests, xfstests generic/161, 164, 165 and the enospc group, fxfs-guest-checks, each with and without DAX; a 3000-sequence model hunt. Blind spot left: xfstests' sized-scratch ENOSPC tests don't run on Fxfs (TASK-149.25).
+<!-- SECTION:FINAL_SUMMARY:END -->

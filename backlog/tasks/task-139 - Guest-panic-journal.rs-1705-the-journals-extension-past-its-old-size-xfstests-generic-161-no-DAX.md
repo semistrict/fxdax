@@ -3,11 +3,11 @@ id: TASK-139
 title: >-
   Guest panic: journal.rs:1705, the journal's extension past its old size
   (xfstests generic/161, no DAX)
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-31 16:32'
-updated_date: '2026-11-03 07:32'
+updated_date: '2026-11-03 08:53'
 labels:
   - bug
 dependencies: []
@@ -23,15 +23,15 @@ GCE r342, xfstests-fxfs-guest, generic/161, in writeback: 'fxfs: panicked at cra
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 generic/161 passes, without and with DAX
+- [x] #1 generic/161 passes, without and with DAX
 - [x] #2 A workload can't panic the guest here
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -45,4 +45,13 @@ GCE r342, xfstests-fxfs-guest, generic/161, in writeback: 'fxfs: panicked at cra
 
 <!-- SECTION:NOTES:BEGIN -->
 2026-10-31: the cause: pre_commit kept a chunk's room, 128 KiB, ahead of the journal, whatever the transaction it was about to write: a larger one's records ran past the file's end, and the next commit found itself there, the assertion's panic. It now keeps room for the transaction's records (room_for: their real size once a transaction may take more than a chunk), and extends by that. test_transactions_larger_than_a_chunk_stay_within_the_journal, 3 transactions of 200 mutations of 1500 bytes, replayed from a snapshot with fsck: fails without the fix, 'the journal at 314787, past its size, 262144', the panic itself. All 50 journal tests pass.
+
+2026-11-03 (verification): the fixes on main (d7a6d46a4, e9482bc21, b963ed64a) hold: GCE 2026-11-03 at 33f235911 and again at 155c06bb0, xfstests generic/161 (and 164, 165) passed on xfstests-fxfs-guest and -dax.
+Structure: the journal's own transaction (make_room) is sized by constants (MAX_EXTENDED_PER_COMMIT, MAX_ZEROED_PER_COMMIT, CHUNK_SIZE > TRANSACTION_MAX_JOURNAL_USAGE) and pre_commit keeps room_for(transaction) + 2 chunks; with the default chunk that holds. Only a smaller JournalOptions::chunk_size (tests alone) breaks it. Not restructured: the asserts that caught it no longer panic (11c1c9731, TASK-60): the journal stops, the commit fails (EIO in a guest), and replay ends before the transaction. test_own_transaction_past_the_journal_stops_it, a chunk of a block under a zeroing slice, panicked at the 'past its size' assert before, and passes now, its image passing fsck.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+generic/161's panic (journal.rs's extension past the old size) was fixed on main by d7a6d46a4, e9482bc21 and b963ed64a. Verified on GCE 2026-11-03: generic/161 passes without and with DAX, at main and at this branch. The extension path's asserts now stop the journal with an error instead of panicking (11c1c9731, with test_own_transaction_past_the_journal_stops_it, red before). scripts/test.sh passes on macOS; the Linux workspace's 2170 tests pass on GCE (Linux runs there, not Lima, per AGENTS.md); upstream-changes.py --check passes.
+<!-- SECTION:FINAL_SUMMARY:END -->
