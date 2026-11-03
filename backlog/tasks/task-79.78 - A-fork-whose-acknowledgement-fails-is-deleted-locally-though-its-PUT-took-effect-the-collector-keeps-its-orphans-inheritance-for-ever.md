@@ -3,10 +3,10 @@ id: TASK-79.78
 title: >-
   A fork whose acknowledgement fails is deleted locally though its PUT took
   effect: the collector keeps its orphan's inheritance for ever
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-23 06:12'
-updated_date: '2026-11-01 07:46'
+updated_date: '2026-11-03 02:11'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -48,3 +48,9 @@ Handed over (2026-10-24): landed on main; what is left is in the notes above.
 
 2026-11-01, branch test/fork-faults: AC2 ticked on forks_orphaned_by_a_lost_host_keep_what_they_inherited_until_deleted, through a real fork: the host dies once the fork's segment landed and is lost with its disk, the parent's next writer elsewhere gives the child its record, the parent frees what it inherited, a pass keeps it, the orphan is listed (branch::live against what hosts hold) and deleted as fxdax-gc --delete-branch does, and the next pass frees it. The collector does not find an orphan by itself: the operator's step (TASK-79.85) is part of what is proved. Orphans with a handle: the sweep's World::settle deletes the handle and collects, at every step and write of a fork, down to nothing left in the bucket. Not landed; not run on GCE.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A fork whose PUT took effect is kept or deleted remotely too, whatever fails after it (with TASK-79.82, 3ca2e731; rebased commits 938b2c2c8, f9affb5e4, 0dbcde290, 1b266facd). The collector frees what an orphaned fork inherited once the orphan is listed and deleted as fxdax-gc --delete-branch does, pinned by forks_orphaned_by_a_lost_host_keep_what_they_inherited_until_deleted (test/fork-faults, on main). Not done: the collector finding an orphan by itself (TASK-79.85).
+<!-- SECTION:FINAL_SUMMARY:END -->

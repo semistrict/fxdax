@@ -1,11 +1,11 @@
 ---
 id: TASK-149.5
 title: 'Every crash of a short sequence, not a sample'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-01 06:13'
-updated_date: '2026-11-01 11:13'
+updated_date: '2026-11-03 02:11'
 labels: []
 dependencies: []
 parent_task_id: TASK-149

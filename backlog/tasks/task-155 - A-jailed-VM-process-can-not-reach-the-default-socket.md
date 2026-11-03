@@ -1,11 +1,11 @@
 ---
 id: TASK-155
 title: A jailed VM process can not reach the default socket
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-01 22:53'
-updated_date: '2026-11-02 02:52'
+updated_date: '2026-11-03 02:11'
 labels: []
 dependencies: []
 priority: medium
@@ -49,3 +49,9 @@ bind_owner_only binds under umask 0177: 0600 from the moment the socket exists, 
 
 Verified at ef3dfc028, as TASK-154's notes say. the_default_socket_refuses_other_users passes on Docker and GCE (r483), red with the umask taken out, its child connecting. Each jailed guest case of r484 reached the socket given to the jail's user, FXDAX_FIRECRACKER_JAIL's harness change. DoD 1 is left open for the user, as on TASK-154.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The default socket refuses a process of another uid (made under a umask that leaves it the owner's), and the VM manager's duty to give the jail's user its socket is documented. the_default_socket_refuses_other_users passes on Docker and GCE (r483), red with the umask taken out; each jailed guest case of r484 reached the socket given to the jail's user (scripts/test-e2e.sh, spawn_daemon). Left as it was: the control socket's mode, which a VM manager of another group may rely on.
+<!-- SECTION:FINAL_SUMMARY:END -->

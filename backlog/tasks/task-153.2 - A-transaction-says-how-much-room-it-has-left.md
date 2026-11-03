@@ -1,11 +1,11 @@
 ---
 id: TASK-153.2
 title: A transaction says how much room it has left
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-01 22:52'
-updated_date: '2026-11-02 02:25'
+updated_date: '2026-11-03 02:11'
 labels: []
 dependencies: []
 parent_task_id: TASK-153

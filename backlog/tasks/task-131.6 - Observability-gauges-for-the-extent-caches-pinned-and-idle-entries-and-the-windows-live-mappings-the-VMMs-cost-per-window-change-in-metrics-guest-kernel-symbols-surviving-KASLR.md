@@ -4,10 +4,10 @@ title: >-
   Observability: gauges for the extent cache's pinned and idle entries and the
   window's live mappings; the VMM's cost per window change in /metrics; guest
   kernel symbols surviving KASLR
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-29 21:13'
-updated_date: '2026-10-30 04:23'
+updated_date: '2026-11-03 02:11'
 labels:
   - observability
 dependencies: []
@@ -30,7 +30,7 @@ Sandbox team round 8, the parts no task has: gauges for the extent cache's pinne
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
+- [x] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
@@ -41,3 +41,9 @@ Sandbox team round 8, the parts no task has: gauges for the extent cache's pinne
 
 Host profile of a guest, symbolized (70471e017): fxfs-guest-pgbench with FXDAX_HOST_GUEST_PROFILE=DELAY:SECONDS runs perf kvm --guest record -a for SECONDS from DELAY, under timeout (given a command, perf kvm passes it its own options); perf kvm report leaves the guest's samples [g] 0xADDRESS (it records no relocation of the guest kernel), so the case resolves them against the guest's vmlinux (nm -n), as the text is where vmlinux links it, sums them by symbol into perf-kvm.txt, and fails unless an fxfs_ symbol resolves. GCE r261 (pgbench-dax, 20 s from 120 s): top guest symbols vm_interrupt 1.07%, fxfs_dax_evacuee_gather 1.06% (before 88ded8774), x2apic_send_IPI, vm_notify, rep_movs_alternative; passed. Also found: the guest test runner ignored start_vm's exit status, so a host side that failed or aborted passed if the guests' output matched; fixed (ab1370009), a wide set of 20 cases passing with it.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Gauges for the extent cache's pinned and idle entries, the window's live mappings and the VMM's cost are exported, and a guest profile is symbolized under KASLR (70471e017: perf kvm samples resolved against the guest's vmlinux, failing unless an fxfs_ symbol resolves; GCE r261). Found on the way and fixed: the guest test runner ignored start_vm's exit status (ab1370009).
+<!-- SECTION:FINAL_SUMMARY:END -->

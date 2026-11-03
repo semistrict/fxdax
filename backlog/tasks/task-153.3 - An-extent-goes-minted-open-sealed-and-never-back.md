@@ -1,11 +1,11 @@
 ---
 id: TASK-153.3
 title: 'An extent goes minted, open, sealed, and never back'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-01 22:52'
-updated_date: '2026-11-02 13:04'
+updated_date: '2026-11-03 02:11'
 labels: []
 dependencies: []
 parent_task_id: TASK-153
@@ -32,7 +32,7 @@ Open is not one fact and can go backwards: the Rust open set, region->writable, 
 <!-- DOD:BEGIN -->
 - [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
 - [x] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Notes
@@ -93,3 +93,9 @@ HOST HALF, d559e9e78, on the decision in OPEN_QUESTIONS.md: map_open frees the s
 RESULTS. sim: check.sh clean; zloop 3,000 at the mix 0 failed, 3,000 at 1,000 0 failed, 30,000 at 200 5 failed, all (3). Mutants: those that can show do, but task-153.3-refused-slice-stale (not in 3,000, nor 500 at 1,000), and patch-0008, task-153.1-fault-limit, task-153.6-lag-past-the-end, which main doesn't catch in 400 either. TLC by hand (check-tla.sh's pinned jar SHA-256 stale): dax-region 5 models, extent-open 3, all as expected. Workspace, Docker: 2,167 of 2,169, both grants tests needing sudo. Guest Rust type-checks, guest tests compile.
 GCE, n2-standard-4: r477 (d559e9e78) checks-dax, -delay, -small, script-full-dax, xfstests OK; xfstests 16 of 650 failed, the known list, generic/129 passing now; write_times_add_up passes; no WARN, no unexplained refusals. r478 head (157417ad5) and r479 main side by side, pgbench-dax 4 rounds of 5 runs: 968 against 960 tps.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+An extent goes minted, open, sealed, and never back, guest and host: a write reaching an extent after a seal opens nothing (test_a_write_after_a_seal_reopens_nothing), a DAX piece says what the window may do with it (ExtentAccess), the checks this made dead are gone, shared blocks stay out of regions (7caa43578); TLA+ specs dax-region and extent-open model it. Verified: guest/sim check.sh and zloop clean, past bugs put back failing or unbuildable; workspace on Docker and macOS; GCE r477 (checks-dax, -delay, -small, script-full-dax, xfstests: the known 16 of 650), pgbench-dax 968 against main's 960 tps (r478/r479). Decisions in OPEN_QUESTIONS.md; follow-ups TASK-150.21 (fs/dax.c:416 WARN) and TASK-157 (load flakes).
+<!-- SECTION:FINAL_SUMMARY:END -->

@@ -1,10 +1,10 @@
 ---
 id: TASK-77
 title: Fuzz the extent protocol and the DAX fault path from the guest side
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-21 19:54'
-updated_date: '2026-10-31 21:51'
+updated_date: '2026-11-03 02:11'
 labels: []
 dependencies: []
 priority: high
@@ -28,7 +28,7 @@ Concurrency is covered by Shuttle and TLA+; nothing fuzzes the guest-facing prot
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
+- [x] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
@@ -43,3 +43,9 @@ Concurrency is covered by Shuttle and TLA+; nothing fuzzes the guest-facing prot
 
 2026-10-31: AC3: fxfs-guest-crash-stray-dax: fxfs.dax_stray, a test knob, loads or stores a word at a window offset nothing maps, within a page or across two. GCE r354, 8 of 8 rounds, all four kinds: the daemon refuses the access (an access to nothing mapped), KVM_RUN fails with EFAULT, that VM exits 1, and only it stops: the store holds every file whose fsync returned and passes the crash test's checks, and the daemon serves a new store after. r350 first took pages regions had mapped for unmapped: the window's second half is regions, so the test strays in its last 64 MiB.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The extent protocol and the DAX fault path are fuzzed from the guest side: the device's requests of any type, flags, extents and offsets against a real daemon; the store's window operations in random sequences; the daemon's wire protocol from a compromised VMM, beside another tenant's store (found WindowChanges::record overflowing, fixed); and a guest's stores and loads at window offsets it was never given (fxfs.dax_stray, fxfs-guest-crash-stray-dax: GCE r354 8 of 8, only that VM stops, the store passes the crash checks, the daemon serves on).
+<!-- SECTION:FINAL_SUMMARY:END -->

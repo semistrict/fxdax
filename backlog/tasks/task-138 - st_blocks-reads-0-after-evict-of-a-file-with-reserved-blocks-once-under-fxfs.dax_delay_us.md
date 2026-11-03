@@ -3,10 +3,10 @@ id: TASK-138
 title: >-
   st_blocks reads 0 after evict of a file with reserved blocks, once under
   fxfs.dax_delay_us
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-31 10:05'
-updated_date: '2026-10-31 22:15'
+updated_date: '2026-11-03 02:11'
 labels:
   - bug
 dependencies: []
@@ -27,7 +27,7 @@ Soak 2026-10-31 (release kernel, fxfs-guest-checks-dax-delay, tree c44da93d0), r
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
+- [x] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
@@ -38,3 +38,9 @@ Soak 2026-10-31 (release kernel, fxfs-guest-checks-dax-delay, tree c44da93d0), r
 
 2026-10-31: proven: GCE r356, the fix removed: blocks_follow_writes fails on both, left 0, right 1048576. r354 with it: checks-dax and -delay 8 of 8. xfstests generic/615 found the same bug independently.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Cause: a writer's regular file had no .getattr, so st_blocks of a cached inode was what it was read in with, 0 for a file made here; the checks passing relied on evict() evicting it. fxfs_vfs_getattr reads the blocks again once the journal has moved. Proven on GCE: r356 with the fix removed fails blocks_follow_writes (0 against 1048576), r354 with it passes checks-dax and -delay 8 of 8; xfstests generic/615 found the same bug.
+<!-- SECTION:FINAL_SUMMARY:END -->

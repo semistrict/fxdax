@@ -1,11 +1,11 @@
 ---
 id: TASK-150.20
 title: A write fails EIO when the daemon has no memory for a writable MAP
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-01 21:51'
-updated_date: '2026-11-02 01:58'
+updated_date: '2026-11-03 02:11'
 labels: []
 dependencies: []
 parent_task_id: TASK-150
@@ -55,3 +55,9 @@ LOOKED AROUND: ENOMEM turning into worse elsewhere: a read of a sealed extent fa
 STRUCTURE: small, done: what can't fail no longer shares a pool with what can (pins); a window's zeros can't be missing. Architectural, raised, not done: (a) only a guest can seal, and the daemon can neither evict an open page nor ask one to. On a shared daemon one VM's open pages, idle, can hold the budget, and another's seals free nothing: it gets ENOMEM, truthfully, but it's another's memory. Options: a device event asking a guest to seal, a per-tenant share of the budget, or open pages evicted to the store and faulted back. (b) A panic under a store's lock kills every later request of its guest: TASK-104, TASK-105, this one. All three were a lazily made resource and an expect; the class is std::sync::Mutex poisoning turning one panic into a dead store. (c) doc-4's MAP doesn't say ENOMEM means seal and try again: not edited, as this work touches only this task.
 UNVERIFIED: several VMs at once; WRITE past the reserve on a real kernel; what a seal of 896 MiB costs a writer, not measured; read and zeroing refused on a real kernel, simulated only (the case's mapping way runs the fault path for real).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A write under the daemon's memory pressure no longer fails EIO: a writable MAP refused for room makes the guest seal and try again, with a test reproducing it without xfstests, and generic/129 passing on GCE alone and in the suite (r477). The blind spot (a lazily made resource and an expect under a store's lock, poisoning the store) and the search around it are in the notes. Unverified: several VMs at once, WRITE past the reserve on a real kernel, the cost of an 896 MiB seal to a writer; one VM's idle open pages holding a shared daemon's budget is TASK-153.15's question.
+<!-- SECTION:FINAL_SUMMARY:END -->
