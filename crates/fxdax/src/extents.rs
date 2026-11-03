@@ -230,6 +230,8 @@ pub struct ExtentStore {
     /// fxdax: what each of its locks is locked through: set by a panic holding one, after which it
     /// serves nothing more (`crate::fence`, TASK-153.16).
     fence: Fence,
+    /// fxdax: the pages its open extents hold in memory ([`ExtentStore::open_bytes`]).
+    open_pages: Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// fxdax: what the latest commits wrote of the extents they sealed, and when
@@ -584,6 +586,7 @@ impl ExtentStore {
             recently_sealed: StoreMutex::new("recently_sealed", RecentlySealed::new()),
             flush_turns: Default::default(),
             fence: Fence::new(path),
+            open_pages: Default::default(),
         }
     }
 
@@ -612,12 +615,21 @@ impl ExtentStore {
             recently_sealed: StoreMutex::new("recently_sealed", RecentlySealed::new()),
             flush_turns: Default::default(),
             fence: Fence::new(&self.path),
+            open_pages: Default::default(),
         }
     }
 
     /// fxdax: whether it is a follower's ([`ExtentStore::follow`]).
     pub fn is_follower(&self) -> bool {
         self.following.is_some()
+    }
+
+    /// fxdax: the bytes of memory its open extents hold, which a window maps writably: pinned,
+    /// which nothing evicts, until its guest seals them (`crate::cache`'s `OpenPages`). What the
+    /// extent daemon asks a guest holding many to seal for, as another's MAP is refused for want
+    /// of them (TASK-153.15).
+    pub fn open_bytes(&self) -> u64 {
+        self.open_pages.load(std::sync::atomic::Ordering::Relaxed) * page_size()
     }
 
     /// fxdax: fences the store, as `why` says, unless it is already: a panic went through it past
@@ -1709,7 +1721,7 @@ impl ExtentStore {
                 }
                 None => return Err(Errno::ENOENT),
             };
-            let pages = OpenPages::new(self.arenas.own());
+            let pages = OpenPages::new(self.arenas.own(), self.open_pages.clone());
             if len > 0 {
                 let mut data = vec![0; len as usize];
                 self.store.read(extent.into(), 0, &mut data).map_err(errno)?;
@@ -3134,8 +3146,11 @@ mod tests {
                 written.push(sequence);
             }
             assert_eq!(mapped, CHUNKS * 7 / 8, "round {round}");
+            // TASK-153.15: what the daemon asks a guest to seal for.
+            assert_eq!(store.open_bytes(), mapped * CHUNK, "round {round}");
             store.commit(None).unwrap();
             assert_eq!(physmem::pinned_bytes(ArenaId::DEFAULT), 0, "round {round}");
+            assert_eq!(store.open_bytes(), 0, "round {round}");
         }
         for sequence in written {
             let held = read(&store, id(&store, sequence), ps, 1).unwrap();

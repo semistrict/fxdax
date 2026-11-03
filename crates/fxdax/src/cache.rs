@@ -834,16 +834,19 @@ pub(crate) enum Room {
 
 /// The memory of an open extent a window maps writably: pages of its store's arena, zeros as they
 /// come in, until the commit that seals it moves them into its cached extent. Never evicted: its
-/// commit writes them to the store. Each is pinned, until it moves or goes (`physmem::pin`).
+/// commit writes them to the store. Each is pinned, until it moves or goes (`physmem::pin`), and
+/// counted in its store's `held` meanwhile: what the daemon asks a guest holding many to seal for
+/// (TASK-153.15).
 pub(crate) struct OpenPages {
     arena: ArenaId,
     pages: Mutex<Vec<Option<physmem::Page>>>,
+    held: Arc<AtomicU64>,
 }
 
 impl OpenPages {
-    /// No pages yet, of `arena`.
-    pub(crate) fn new(arena: ArenaId) -> Arc<Self> {
-        Arc::new(Self { arena, pages: Mutex::new(Vec::new()) })
+    /// No pages yet, of `arena`, those it comes to hold counted in `held`.
+    pub(crate) fn new(arena: ArenaId, held: Arc<AtomicU64>) -> Arc<Self> {
+        Arc::new(Self { arena, pages: Mutex::new(Vec::new()), held })
     }
 
     /// Those of `count` new pages, at most a chunk's, that are consecutive in physical memory after
@@ -925,6 +928,7 @@ impl OpenPages {
                     None => *slot = Some(frame),
                 }
             }
+            self.held.fetch_add((end - page - lost) as u64, Ordering::Relaxed);
             drop(table);
             physmem::unpin(self.arena, lost);
             page = end;
@@ -979,9 +983,11 @@ impl OpenPages {
     fn take(&self, pages: Range<u64>) -> Vec<(u64, physmem::Page)> {
         let mut table = self.pages.lock().unwrap();
         let held = table.len() as u64;
-        (pages.filter(|page| *page < held))
+        let taken: Vec<_> = (pages.filter(|page| *page < held))
             .filter_map(|page| Some((page, table[page as usize].take()?)))
-            .collect()
+            .collect();
+        self.held.fetch_sub(taken.len() as u64, Ordering::Relaxed);
+        taken
     }
 }
 
@@ -992,6 +998,7 @@ impl Drop for OpenPages {
         // holds, however far a change of it got, is pages held (TASK-153.16).
         let pages = self.pages.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner);
         let held = pages.iter().flatten().count();
+        self.held.fetch_sub(held as u64, Ordering::Relaxed);
         physmem::unpin(self.arena, held);
     }
 }
@@ -1069,7 +1076,7 @@ mod tests {
         let (freed, kept): (Vec<_>, Vec<_>) =
             row.into_iter().enumerate().partition(|(at, _)| at % 2 == 0);
         drop(freed);
-        let open = OpenPages::new(ArenaId::DEFAULT);
+        let open = OpenPages::new(ArenaId::DEFAULT, Arc::default());
         open.commit(0..8, Room::Budget).unwrap();
         open.commit(8..12, Room::Budget).unwrap();
         open.write(12 * ps, &vec![1; 4 * ps as usize], Room::Budget).unwrap();
@@ -1100,7 +1107,7 @@ mod tests {
             bytes
         })
         .unwrap();
-        let open = OpenPages::new(arena);
+        let open = OpenPages::new(arena, Arc::default());
         std::thread::scope(|scope| {
             let committed = scope.spawn(|| open.commit(0..1, Room::Reserve));
             relief_asked.recv().unwrap();
@@ -1127,20 +1134,22 @@ mod tests {
     }
 
     /// TASK-150.20: a page pinned is let go of however it goes: moved to the sealed extent, or
-    /// with its open extent; and one of two brought in at once counts once.
+    /// with its open extent; and one of two brought in at once counts once. TASK-153.15: and its
+    /// store counts it held as long, what the daemon asks its guest to seal for.
     #[test]
     fn open_pages_are_pinned_until_they_go() {
         let arena = physmem::create_arena();
         let ps = page_size();
-        let open = OpenPages::new(arena);
+        let held = Arc::new(AtomicU64::new(0));
+        let open = OpenPages::new(arena, held.clone());
         open.commit(0..8, Room::Budget).unwrap();
         open.write(8 * ps, &[1; 8], Room::Reserve).unwrap();
         open.commit(0..9, Room::Budget).unwrap();
-        assert_eq!(physmem::pinned_bytes(arena), 9 * ps);
+        assert_eq!((physmem::pinned_bytes(arena), held.load(Ordering::Relaxed)), (9 * ps, 9));
         let sealed = CachedExtent::new(arena, EXTENT, Box::new(NoContents), 4 * ps);
         sealed.supply(0..4, &open);
-        assert_eq!(physmem::pinned_bytes(arena), 5 * ps);
+        assert_eq!((physmem::pinned_bytes(arena), held.load(Ordering::Relaxed)), (5 * ps, 5));
         drop(open);
-        assert_eq!(physmem::pinned_bytes(arena), 0);
+        assert_eq!((physmem::pinned_bytes(arena), held.load(Ordering::Relaxed)), (0, 0));
     }
 }
