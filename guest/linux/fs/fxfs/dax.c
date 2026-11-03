@@ -447,6 +447,12 @@ struct fxfs_dax_range {
 	unsigned long pages;
 	/* The iomaps using it, which keep it. */
 	atomic_t users;
+	/*
+	 * fxdax: the faults past their iomaps of it, until their iomap_end, which may yet map its pages
+	 * holding no lock of the file's: a move of its blocks waits for them (fxfs_dax_iomap_write).
+	 * Raised under its file's semaphore.
+	 */
+	atomic_t faulting;
 	/* Its pages that map an extent, and those that map one writably. */
 	unsigned long *mapped;
 	unsigned long *writable;
@@ -2264,13 +2270,8 @@ static struct fxfs_dax_range *fxfs_dax_get_range(struct inode *inode, pgoff_t ch
 
 static void fxfs_dax_put_range(struct fxfs_dax *dax, struct fxfs_dax_range *range)
 {
-	int users = atomic_dec_return(&range->users);
-
-	if (!users)
+	if (atomic_dec_and_test(&range->users))
 		fxfs_dax_released(dax);
-	/* fxdax: a write(2) may wait for its own use to be the last (fxfs_dax_iomap_write). */
-	else if (users == 1)
-		wake_up_var(&range->users);
 }
 
 /*
@@ -2627,6 +2628,8 @@ static int fxfs_dax_iomap_read(struct inode *inode, loff_t pos, loff_t length, u
 		 */
 		if (range->region)
 			iomap->flags |= IOMAP_F_SHARED;
+		/* fxdax: until its iomap_end, as moves wait for it (`faulting`). */
+		atomic_inc(&range->faulting);
 	}
 	up_read(&file->sem);
 	return 0;
@@ -3101,9 +3104,10 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 		 * a copy from them would read (TASK-150.8), or, gone through a region, lag, mapping the
 		 * old blocks, which a PTE went on reading after the commit (TASK-153.3). First the move
 		 * waits for the faults past their iomaps, which may yet map a page, as none after can,
-		 * the file's semaphore held: a fault waits for no entry of theirs, nor they for it.
+		 * the file's semaphore held: they wait for nothing it holds. Not for every use of the
+		 * range: an iomap waiting for the semaphore holds one (guest/sim, a deadlock).
 		 */
-		wait_var_event(&range->users, atomic_read(&range->users) == 1);
+		wait_var_event(&range->faulting, !atomic_read(&range->faulting));
 		unmap_mapping_pages(inode->i_mapping, (start >> PAGE_SHIFT) + first, pages, false);
 		/* As in fxfs_dax_map_chunk: unless a seal was in progress, or began since. */
 		seals = fxfs_device_seals(dax->dev);
@@ -3217,6 +3221,9 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 	     inode->i_ino, first, iomap->addr, dax->window_len);
 	iomap->length = end - pos;
 	iomap->private = range;
+	/* fxdax: a fault's, until its iomap_end, as moves wait for it (`faulting`). */
+	if (fault)
+		atomic_inc(&range->faulting);
 	/* fxdax: held until its bytes are in, and its move commits (fxfs_dax_iomap_end). */
 	if (pending)
 		file->pending = pending;
@@ -3346,8 +3353,13 @@ static int fxfs_dax_iomap_end(struct inode *inode, loff_t pos, loff_t length, ss
 		fxfs_dax_put_region(dax, file->through);
 		file->through = NULL;
 	}
-	if (iomap->private)
-		fxfs_dax_put_range(dax, iomap->private);
+	if (iomap->private) {
+		struct fxfs_dax_range *range = iomap->private;
+
+		if ((flags & IOMAP_FAULT) && atomic_dec_and_test(&range->faulting))
+			wake_up_var(&range->faulting);
+		fxfs_dax_put_range(dax, range);
+	}
 	if (written_by_write)
 		atomic64_add(ktime_get_ns() - began, &dax->write_end_ns);
 	return 0;
