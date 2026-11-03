@@ -8,8 +8,8 @@
  *   failures SEED [OPERATIONS] [-v] [-W INO PAGE] [-a ADDRESS]
  *
  * An operation that fails may have done anything to the bytes it was to change, which the task
- * then knows nothing of, but a write, which leaves those it says it didn't write as they were;
- * one that nothing failed under has done exactly what it says, and what a
+ * then knows nothing of, but a write, which leaves each of those it says it didn't write as it
+ * was or as written; one that nothing failed under has done exactly what it says, and what a
  * task knows, it must read, through read(2) and its mapping, whatever else fails meanwhile. And
  * every so often, with nothing failing, read(2) must read what Fxfs's extents hold, whatever the
  * task knows: a range left behind Fxfs's blocks reads where they were. A task killed in a write
@@ -121,6 +121,36 @@ static void check_known(const char *what, struct tracked *file, const char *got,
 	}
 }
 
+/*
+ * What a failed write didn't write of the `len` bytes at `at`: each byte as it was, or what the
+ * write's source held, of the `readable` bytes it had, which pages it found open took in place,
+ * and never zeros, as a move committed before the bytes left (TASK-153.5). Read back, which
+ * may fail too, when it is forgotten.
+ */
+static void unwritten(struct tracked *file, loff_t at, const char *source, size_t len,
+		      size_t readable)
+{
+	char *got = kmalloc(len, GFP_KERNEL);
+	u64 before = failures();
+	size_t i;
+
+	if (sim_read(file->file, at, got, len) != len || failures() != before) {
+		forget(file, at, len);
+		kfree(got);
+		return;
+	}
+	for (i = 0; i < len; i++) {
+		if (got[i] != file->bytes[at + i] && !test_bit(at + i, file->unknown) &&
+		    (i >= readable || got[i] != source[i]))
+			sim_panic("a failed write's byte %lld of ino %lu is %#x, not %#x%s",
+				  at + i, file_inode(file->file)->i_ino, (u8)got[i],
+				  (u8)file->bytes[at + i], i < readable ? " nor the write's" : "");
+		file->bytes[at + i] = got[i];
+		clear_bit(at + i, file->unknown);
+	}
+	kfree(got);
+}
+
 /* The outcome of a write of `len` bytes from `source` at `at`, which `done` says. */
 static void written(struct tracked *file, loff_t at, const char *source, size_t len, ssize_t done,
 		    size_t readable, bool failed)
@@ -136,12 +166,13 @@ static void written(struct tracked *file, loff_t at, const char *source, size_t 
 		      readable, done);
 		return;
 	}
-	/*
-	 * EFAULT of memory a fault failed for, a mapping's. What it didn't write is as it was: its
-	 * move commits after its bytes (TASK-153.5), where a move committed first kept nothing.
-	 */
+	/* EFAULT of memory a fault failed for, a mapping's. */
 	if (done < 0)
 		check(done == -EIO || done == -ENOMEM || done == -EFAULT, "a write: %zd", done);
+	if (wrote < len && at + wrote < file->size)
+		unwritten(file, at + wrote, source + wrote,
+			  min_t(loff_t, len - wrote, file->size - at - wrote),
+			  readable > wrote ? readable - wrote : 0);
 }
 
 static void op_write(struct worker *worker, struct tracked *file)
