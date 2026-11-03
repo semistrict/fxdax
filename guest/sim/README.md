@@ -169,9 +169,9 @@ workload does.
 | TASK-147, a write's own source shrinks its range | seed 32 | short write |
 | TASK-79.50, non-atomic clear of writable bits | seed 40 | a split of a bitmap write |
 | bdc653701, a fault waits for a seal | `pmd_entry_invalidated_mapped`; seed 72 before patch 0012 | a hang: 120 s, no log |
-| TASK-99, a region opens under a read-only MAP | seed 2544 | a store the host refused, as the VM stopped. The look at `mapped` goes back with what made a reader and a writer meet: the model's device write reads as opening its extent |
+| TASK-99, a region opens under a read-only MAP | seed 2544; the hunt, at 56669 and 62739 of 43,001 to 63,000 | a store the host refused, as the VM stopped. The look at `mapped` goes back with what made a reader and a writer meet: the model's device write reads as opening its extent |
 | TASK-153.3, a device write reopens its extent, in the model, as the Rust had it | seed 2544 | `fxfs_dax_region_open`'s WARN: an open extent's region mapped read-only |
-| TASK-153.3, a slice's refusal says `-ESTALE` to its readers | no, in 3,000, nor 500 at 1,000 operations | found by `interleave 1102 1000` before 106b6128d; main at 106b6128d fails so at seed 3762, 1,000 operations |
+| TASK-153.3, a slice's refusal says `-ESTALE` to its readers | no, in 3,000, nor 500 at 1,000 operations, nor the hunt's 20,000 | found by `interleave 1102 1000` before 106b6128d; main at 106b6128d fails so at seed 3762, 1,000 operations |
 | TASK-153.3, a write through a region keeps a fault's PTE of the page it lags | no, in 3,000, nor seeds 3,001 to 15,000 at 200 operations | a stale read, `interleave 7289 200`, before patch 0012 moved the seeds; then by the mix, 6's WARN came first, at seed 1486. TASK-149.26 |
 | TASK-79.12, a fault waits for the semaphore | seed 2865 | its deadlock: no task can run. Before patch 0012, `fs/dax.c:416`'s WARN came first, at seed 1692 |
 | TASK-140, a read-only slice of an open extent | `open_extent_read_only` | a store the host refused: shared blocks of an open extent slice its region, as they did, and `region_open` leaves such a region be |
