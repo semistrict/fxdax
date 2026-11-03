@@ -3,9 +3,12 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-# Run clippy's rules (clippy.toml), the test suite, the concurrency tests under Shuttle, and the
-# scripts' tests (scripts/tests).
-# Arguments are passed to the suite's `cargo nextest run`.
+# Run clippy's rules (clippy.toml), the test suite, the concurrency tests under Shuttle, the
+# scripts' tests (scripts/tests) and the mutant runners' checks, and on Linux the guest tests'
+# own tests (guest/tests, both halves): what CI runs, a part a job.
+# Arguments are passed to the suite's `cargo nextest run`. FXDAX_TEST_PARTS names the parts to
+# run, separated by spaces (default: all of clippy, workspace, shuttle, scripts, and guest on
+# Linux).
 #
 # Unicode tests compare against the Unicode Character Database, which is
 # downloaded and checksummed on first use.
@@ -26,24 +29,49 @@ echo "$SHA256  $zip" | shasum -a 256 -c - >/dev/null
 # keep, rather than the terminal they have none of: an abort said nothing else (TASK-100).
 export LIBC_FATAL_STDERR_=1
 
+parts="clippy workspace shuttle scripts"
+[[ $(uname) != Linux ]] || parts+=" guest"
+parts=${FXDAX_TEST_PARTS:-$parts}
+part() { # name: whether FXDAX_TEST_PARTS has it
+    [[ " $parts " == *" $1 "* ]]
+}
+
 # Clippy's rules the code keeps (clippy.toml): no blocking call in async code unless allowed, with
 # why (TASK-44.20). First, as it fails at once.
-UCD_ZIP="$zip" cargo clippy --manifest-path "$root/Cargo.toml" --workspace --tests -- \
-    -A clippy::all -D clippy::disallowed_methods
-UCD_ZIP="$zip" cargo nextest run --manifest-path "$root/Cargo.toml" --workspace "$@"
+if part clippy; then
+    UCD_ZIP="$zip" cargo clippy --manifest-path "$root/Cargo.toml" --workspace --tests -- \
+        -A clippy::all -D clippy::disallowed_methods
+fi
+if part workspace; then
+    UCD_ZIP="$zip" cargo nextest run --manifest-path "$root/Cargo.toml" --workspace "$@"
+fi
 # The concurrency tests under Shuttle, built with each crate's `shuttle` feature, which only they
 # can run (TASK-44).
-cargo nextest run --manifest-path "$root/Cargo.toml" -p extent_store --features shuttle \
-    --test shuttle
-cargo nextest run --manifest-path "$root/Cargo.toml" -p extent_store --features shuttle --lib \
-    shuttle_tests::
-cargo nextest run --manifest-path "$root/Cargo.toml" -p physmem --features shuttle --lib \
-    shuttle::
-cargo nextest run --manifest-path "$root/Cargo.toml" -p fxdax --features shuttle --lib \
-    shuttle_tests::
-# The followers' concurrency protocol, under Shuttle (TASK-42.5).
-cargo nextest run --manifest-path "$root/Cargo.toml" -p follower --features shuttle
-# The followers' simulation: Fxfs as writer and followers on an extent store (TASK-42.1).
-cargo nextest run --manifest-path "$root/Cargo.toml" -p follower_sim --features shuttle
-# The scripts' own tests.
-python3 -m unittest discover -s "$root/scripts/tests"
+if part shuttle; then
+    cargo nextest run --manifest-path "$root/Cargo.toml" -p extent_store --features shuttle \
+        --test shuttle
+    cargo nextest run --manifest-path "$root/Cargo.toml" -p extent_store --features shuttle --lib \
+        shuttle_tests::
+    cargo nextest run --manifest-path "$root/Cargo.toml" -p physmem --features shuttle --lib \
+        shuttle::
+    cargo nextest run --manifest-path "$root/Cargo.toml" -p fxdax --features shuttle --lib \
+        shuttle_tests::
+    # The followers' concurrency protocol, under Shuttle (TASK-42.5).
+    cargo nextest run --manifest-path "$root/Cargo.toml" -p follower --features shuttle
+    # The followers' simulation: Fxfs as writer and followers on an extent store (TASK-42.1).
+    cargo nextest run --manifest-path "$root/Cargo.toml" -p follower_sim --features shuttle
+fi
+# The scripts' own tests, and that each hand mutant's patch or edits apply as they are: one that
+# stopped applying would test nothing (guest/sim's need a kernel tree, so are CI's guest-sim job's).
+if part scripts; then
+    python3 -m unittest discover -s "$root/scripts/tests"
+    "$root/crates/fxfs-posix/mutants.sh" --check
+    "$root/scripts/guest-mutants-gce.py" --check
+fi
+# The guest tests' own tests, the host's half and the guest's, which build on Linux alone: their
+# runner's (guest/tests/test_cases/src/vm.rs, script_vm.rs) and the guest agent's, some of which
+# mount loop devices, as root, with mkfs.ext4 and mkfs.xfs: CI runs this part as root.
+if part guest; then
+    cargo nextest run --manifest-path "$root/guest/tests/Cargo.toml" -p test_cases --features host
+    cargo nextest run --manifest-path "$root/guest/tests/Cargo.toml" -p test_cases --features guest
+fi
