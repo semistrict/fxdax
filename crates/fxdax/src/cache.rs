@@ -987,7 +987,11 @@ impl OpenPages {
 
 impl Drop for OpenPages {
     fn drop(&mut self) {
-        let held = self.pages.get_mut().unwrap().iter().flatten().count();
+        // fxdax: poisoned, by a panic holding the table, they may be dropped as it unwinds, its
+        // store fenced (`crate::fence`): panicking here then aborted the daemon. What the table
+        // holds, however far a change of it got, is pages held (TASK-153.16).
+        let pages = self.pages.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let held = pages.iter().flatten().count();
         physmem::unpin(self.arena, held);
     }
 }
