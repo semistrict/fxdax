@@ -3271,6 +3271,59 @@ mod tests {
         assert!(*bytes == pattern(5, len)[..], "the window maps other data");
     }
 
+    /// fxdax: a byte the host's disk damaged in a sealed extent's file, in a part stored compressed
+    /// or raw, fails the page-ins of the part, and so the faults on it and the guest's reads of it,
+    /// rather than mapping or giving another byte; the extent's other parts read as written
+    /// (TASK-153.11).
+    #[test]
+    fn flipped_bytes_fail_page_ins_and_reads() {
+        let (store, dir) = store(64 << 20);
+        let ps = page_size();
+        let part = extent_frame::PART;
+        // Large enough to be stored on their own, in four parts: compressed, and raw.
+        let len = 4 * part as usize;
+        let contents = [
+            (id(&store, 1), pattern(5, len), extent_frame::Encoding::Zstd),
+            (id(&store, 2), crate::test_data::noise(2, len), extent_frame::Encoding::Raw),
+        ];
+        for (extent, data, _) in &contents {
+            write(&store, *extent, 0, data).unwrap();
+        }
+        let window = store.create_dax_window(2 * len as u64, None).unwrap();
+        store.commit(None).unwrap();
+        for (at, (extent, data, encoding)) in contents.iter().enumerate() {
+            // A byte of its third part, as stored: itself if raw, else the middle of the part's.
+            let path = dir
+                .path()
+                .join(format!("store/extents/{:016x}/{:016x}", extent.branch, extent.sequence));
+            let mut bytes = std::fs::read(&path).unwrap();
+            let (place, stored) = extent_frame::Parts::of(&bytes).unwrap().part(2).unwrap();
+            assert_eq!(stored.encoding, *encoding);
+            let offset = place.start + 5 * ps + 7;
+            let byte = match stored.encoding {
+                extent_frame::Encoding::Raw => stored.offset + (offset - place.start),
+                extent_frame::Encoding::Zstd => stored.offset + stored.len / 2,
+            };
+            bytes[byte as usize] ^= 0x10;
+            std::fs::write(&path, bytes).unwrap();
+
+            let start = at as u64 * len as u64;
+            store.map(*extent, 0, len as u64, start, false).unwrap();
+            let page = offset / ps * ps;
+            assert_eq!(block_on(window.fault(start + page, Access::Read)), Err(Errno::EIO));
+            assert_eq!(read(&store, *extent, page, BLOCK), Err(Errno::EIO));
+            assert_eq!(read(&store, *extent, 0, len), Err(Errno::EIO));
+            // Its first part is whole.
+            block_on(window.fault(start, Access::Read)).unwrap();
+            // SAFETY: The test faulted the page in, and nothing else accesses it.
+            let first = unsafe {
+                std::slice::from_raw_parts(window.host_base().add(start as usize), ps as usize)
+            };
+            assert!(*first == data[..ps as usize], "{extent:?}'s first page maps other data");
+            assert_eq!(read(&store, *extent, 0, BLOCK), Ok(data[..BLOCK].to_vec()));
+        }
+    }
+
     /// fxdax: a reader reading an extent from its start has the parts after the one it reads read
     /// ahead of it, before it faults on them.
     #[test]

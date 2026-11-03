@@ -134,10 +134,11 @@
 //! and count as used. Views never wait for a commit. One that lags too long, or keeps too much,
 //! is cut off ([`CutOff`]).
 //!
-//! **Reading.** Reads of open extents read their raw files; reads of sealed ones read the parts
-//! their bytes are in, and decompress those stored compressed, checked against their CRCs. The
-//! parts unpacked lately are kept, as reads are mostly of their neighbours'. [`Store::locate`]
-//! says where bytes are for a reader that reads files itself ([`Part`]).
+//! **Reading.** Reads of open extents read their raw files, which no CRC covers; reads of sealed
+//! ones read the parts their bytes are in, whole, checked against their CRCs, and decompress those
+//! stored compressed. The parts unpacked lately are kept, as reads are mostly of their
+//! neighbours'. [`Store::locate`] says where bytes are for a reader that reads files itself
+//! ([`Part`]).
 //!
 //! The store works in a [`Dir`]: a directory of the host's ([`HostDir`]), or of memory
 //! ([`MemDir`]), which simulates crashes for tests.

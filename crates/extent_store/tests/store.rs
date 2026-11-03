@@ -1682,9 +1682,9 @@ fn locating_parts_stored_compressed() {
     assert_eq!((*skip, *len, part.read_range().start % BLOCK as u64), (0, BLOCK as u64, 0));
     // Its range read, as a reader bypassing the store reads it, unpacks to its data.
     let range = part.read_range();
-    let mut bytes = vec![0; (range.end - range.start) as usize];
-    part.file.read_at(&mut bytes, range.start).unwrap();
-    assert_eq!(store.unpack(part, &bytes).unwrap()[..16 * BLOCK], pattern(1, 0, 16 * BLOCK));
+    let mut bytes = extent_store::Aligned::new((range.end - range.start) as usize);
+    part.file.read_at(bytes.as_mut_slice(), range.start).unwrap();
+    assert_eq!(store.unpack(part, bytes).unwrap()[..16 * BLOCK], pattern(1, 0, 16 * BLOCK));
     let unpacked = store.read_packed(part).unwrap();
     assert_eq!(unpacked[..16 * BLOCK], pattern(1, 0, 16 * BLOCK));
     assert_eq!(kinds(extent(1)), ["unpacked"]);

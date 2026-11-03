@@ -6,7 +6,7 @@
 
 use crate::dir::{Dir, File, not_found};
 use crate::durability::{Batch, Durability, Syncs};
-use crate::framed::{Aligned, Framed, Packed, Part, Source, read_aligned, read_data};
+use crate::framed::{Aligned, Framed, Packed, Part, Source, read_aligned};
 use crate::index::{
     Appended, IndexLog, IndexWrite, Recovered, rebuild, recover, start_fork, write_records,
 };
@@ -1089,9 +1089,9 @@ impl<D: Dir> Store<D> {
             let len = part.len() as usize;
             let out = &mut buf[at..at + len];
             match part {
-                Part::Data { file, offset, len, unframed } => {
+                Part::Data { file, offset, len } => {
                     let mut data = Aligned::new(len as usize);
-                    read_data(&*file, unframed, data.as_mut_slice(), offset)?;
+                    file.read_cached(data.as_mut_slice(), offset)?;
                     out.copy_from_slice(data.as_slice());
                 }
                 Part::Packed { part, skip, .. } => {
@@ -1108,16 +1108,16 @@ impl<D: Dir> Store<D> {
         Ok(())
     }
 
-    /// A part stored compressed, read and unpacked.
-    pub fn read_packed(&self, part: &Packed<D::File>) -> Result<Arc<[u8]>, Error> {
+    /// A part of a framed file, read, checked and unpacked.
+    pub fn read_packed(&self, part: &Packed<D::File>) -> Result<Arc<Aligned>, Error> {
         let stored = read_aligned(&*part.file, part.stored.offset, part.stored.len as usize)?;
-        self.unpack(part, stored.as_slice())
+        self.unpack(part, stored)
     }
 
-    /// A part stored compressed, unpacked from `bytes`, its stored bytes and any after them, read
+    /// A part of a framed file, unpacked from `stored`, its stored bytes and any after them, read
     /// from its file, checked against its CRC; reads of it find it unpacked for a while.
-    pub fn unpack(&self, part: &Packed<D::File>, bytes: &[u8]) -> Result<Arc<[u8]>, Error> {
-        part.unpack(bytes, &self.lineage.unpacked)
+    pub fn unpack(&self, part: &Packed<D::File>, stored: Aligned) -> Result<Arc<Aligned>, Error> {
+        part.unpack(stored, &self.lineage.unpacked)
     }
 
     /// Frees `extent`, which may be open, if the store holds it.
@@ -1616,10 +1616,7 @@ impl<D: Dir> Store<D> {
     /// fxdax: the framing of a segment closed between commits, counted in [`State::framings`], is
     /// over, `framed` saying how: the segment reads from its framed file from now on, and its raw
     /// file goes with the next commit, or the store fails, as it is framed, and durable, or not.
-    fn framing_ended(
-        &self,
-        framed: Result<FramedSegment<D::File>, Error>,
-    ) -> Result<(), Error> {
+    fn framing_ended(&self, framed: Result<FramedSegment<D::File>, Error>) -> Result<(), Error> {
         let mut state = self.state.lock().unwrap();
         let ended = framed.map(|(number, framed)| {
             state.segments.framed(number, framed);

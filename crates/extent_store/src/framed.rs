@@ -19,7 +19,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// The alignment of I/O that bypasses the host's page cache: the largest block size a store has.
 pub(crate) const ALIGNMENT: usize = 4096;
 
-/// A buffer aligned for I/O that bypasses the host's page cache.
+/// A buffer aligned for I/O that bypasses the host's page cache: what reads of extents' files
+/// read into, and what holds the parts of framed files unpacked lately.
 pub struct Aligned {
     bytes: Vec<u8>,
     start: usize,
@@ -47,6 +48,14 @@ impl Aligned {
         self.start += skip;
         self.len = len;
         self
+    }
+}
+
+impl std::ops::Deref for Aligned {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        self.as_slice()
     }
 }
 
@@ -232,7 +241,9 @@ impl<F: File> Source<F> {
 
     /// The parts of where `len` bytes at `at` in its data are, to `parts`: unpacked lately, as
     /// `unpacked` keeps them, or not. fxdax: fails with [`Corrupt`] if they are past its data, as
-    /// an index would place them that names another file made at its path (TASK-79.38).
+    /// an index would place them that names another file made at its path (TASK-79.38). A framed
+    /// file's part stored raw is read whole and checked against its CRC, as one stored compressed
+    /// is, not read in place: so no byte of a framed file reaches a reader unchecked (TASK-153.11).
     pub(crate) fn locate(
         &self,
         at: u64,
@@ -242,7 +253,7 @@ impl<F: File> Source<F> {
     ) -> Result<(), Corrupt> {
         let framed = match self {
             Self::Raw(file) => {
-                push_data(parts, file, at, len, true);
+                push_data(parts, file, at, len);
                 return Ok(());
             }
             Self::Framed(framed) => framed,
@@ -257,57 +268,49 @@ impl<F: File> Source<F> {
             let stored = framed.parts.stored[part as usize];
             let (from, to) = (at.max(place.start), (at + len).min(place.end));
             let (skip, len) = (from - place.start, to - from);
-            match stored.encoding {
-                Encoding::Raw => push_data(parts, &framed.file, stored.offset + skip, len, false),
-                Encoding::Zstd => {
-                    let key = (framed.id, part);
-                    parts.push(match unpacked.get(key) {
-                        Some(bytes) => Part::Unpacked { bytes, skip, len },
-                        None => Part::Packed {
-                            part: Packed {
-                                file: framed.file.clone(),
-                                stored,
-                                len: place.end - place.start,
-                                key,
-                            },
-                            skip,
-                            len,
-                        },
-                    });
-                }
-            }
+            let key = (framed.id, part);
+            parts.push(match unpacked.get(key) {
+                Some(bytes) => Part::Unpacked { bytes, skip, len },
+                None => Part::Packed {
+                    part: Packed {
+                        file: framed.file.clone(),
+                        stored,
+                        len: place.end - place.start,
+                        key,
+                    },
+                    skip,
+                    len,
+                },
+            });
         }
         Ok(())
     }
 }
 
-/// Adds `len` bytes at `offset` in `file`, unframed if `unframed`, to `parts`, extending the last
-/// if they follow it.
-fn push_data<F>(parts: &mut Vec<Part<F>>, file: &Arc<F>, offset: u64, len: u64, unframed: bool) {
-    if let Some(Part::Data { file: last, offset: last_offset, len: last_len, .. }) =
-        parts.last_mut()
+/// Adds `len` bytes at `offset` in `file`, a raw file, to `parts`, extending the last if they
+/// follow it.
+fn push_data<F>(parts: &mut Vec<Part<F>>, file: &Arc<F>, offset: u64, len: u64) {
+    if let Some(Part::Data { file: last, offset: last_offset, len: last_len }) = parts.last_mut()
         && Arc::ptr_eq(last, file)
         && *last_offset + *last_len == offset
     {
         *last_len += len;
         return;
     }
-    parts.push(Part::Data { file: file.clone(), offset, len, unframed });
+    parts.push(Part::Data { file: file.clone(), offset, len });
 }
 
-/// A part of a range of an extent: bytes of a file, raw; bytes of a part of a file stored
-/// compressed, which [`crate::Store::unpack`] unpacks from its stored bytes; bytes of a part
-/// unpacked lately; or zeros, where nothing was written.
+/// A part of a range of an extent: bytes of a raw file; bytes of a part of a framed file, which
+/// [`crate::Store::unpack`] checks and unpacks from its stored bytes; bytes of a part unpacked
+/// lately; or zeros, where nothing was written.
 pub enum Part<F> {
+    /// fxdax: bytes of a raw file, which the store wrote lately and has not framed: an open
+    /// segment's, or an open extent's own. No CRC covers them (TASK-153.11). Reads of them go
+    /// through the host's page cache ([`File::read_cached`](crate::File::read_cached)).
     Data {
         file: Arc<F>,
         offset: u64,
         len: u64,
-        /// fxdax: whether its file is unframed, a raw file, which the store wrote lately: not a
-        /// framed file, whose parts stored as they are ([`Encoding::Raw`]) are data too. Reads of
-        /// an unframed file go through the host's page cache
-        /// ([`File::read_cached`](crate::File::read_cached)).
-        unframed: bool,
     },
     /// `len` bytes from `skip` in the part.
     Packed {
@@ -316,7 +319,7 @@ pub enum Part<F> {
         len: u64,
     },
     Unpacked {
-        bytes: Arc<[u8]>,
+        bytes: Arc<Aligned>,
         skip: u64,
         len: u64,
     },
@@ -337,20 +340,8 @@ impl<F> Part<F> {
     }
 }
 
-/// fxdax: reads `buf.len()` bytes at `offset` in `file`, a [`Part::Data`]'s, which is `unframed`
-/// or not: through the host's page cache if it is ([`File::read_cached`]), which holds what the
-/// store wrote to it lately, else as its file's reads go. Every read of the store's of a part of
-/// data reads so: its seal copies, and `Store::read`, `read_kept` and `read_view`, whoever asks.
-pub(crate) fn read_data<F: File>(
-    file: &F,
-    unframed: bool,
-    buf: &mut [u8],
-    offset: u64,
-) -> io::Result<()> {
-    if unframed { file.read_cached(buf, offset) } else { file.read_at(buf, offset) }
-}
-
-/// A part of a file, stored compressed.
+/// A part of a framed file, stored raw or compressed: read whole, to be checked against its CRC
+/// and unpacked.
 pub struct Packed<F> {
     pub file: Arc<F>,
     pub stored: Stored,
@@ -368,18 +359,33 @@ impl<F> Packed<F> {
         start..(start + self.stored.len).next_multiple_of(ALIGN)
     }
 
-    /// The part, unpacked from `bytes`, its stored bytes and any after them, checked against its
-    /// CRC, and kept in `unpacked`: unpacked into what keeps it, rather than copied there
-    /// (TASK-92.19).
-    pub(crate) fn unpack(&self, bytes: &[u8], unpacked: &Unpacked) -> Result<Arc<[u8]>, Error> {
+    /// The part, unpacked from `stored`, its stored bytes and any after them, read from its file,
+    /// checked against its CRC, and kept in `unpacked`: one stored compressed unpacked into what
+    /// keeps it, rather than copied there (TASK-92.19); one stored raw kept in the buffer it was
+    /// read into, which a page-in reads all of, uncopied (TASK-153.11).
+    pub(crate) fn unpack(
+        &self,
+        stored: Aligned,
+        unpacked: &Unpacked,
+    ) -> Result<Arc<Aligned>, Error> {
         debug_assert!(self.len <= PART);
-        // Zeroed as it is allocated, not a byte at a time, as collecting an iterator is in a debug
-        // build, where a fork's opening spent seconds unpacking its base's parts so (TASK-92.17).
-        // SAFETY: Zeroed bytes are bytes.
-        let mut part: Arc<[u8]> = unsafe { Arc::new_zeroed_slice(self.len as usize).assume_init() };
-        let out = Arc::get_mut(&mut part).expect("a part just made is its own");
-        self.stored.unpack_into(bytes, out)?;
-        UNPACKS.fetch_add(1, Ordering::Relaxed);
+        let part = match self.stored.encoding {
+            Encoding::Raw => {
+                // A raw part's stored bytes are as long as it is (`Frame::stored_in`).
+                self.stored.check(&stored)?;
+                stored.within(0, self.len as usize)
+            }
+            Encoding::Zstd => {
+                // Zeroed as it is allocated, not a byte at a time, as collecting an iterator is in
+                // a debug build, where a fork's opening spent seconds unpacking its base's parts
+                // so (TASK-92.17).
+                let mut part = Aligned::new(self.len as usize);
+                self.stored.unpack_into(&stored, part.as_mut_slice())?;
+                UNPACKS.fetch_add(1, Ordering::Relaxed);
+                part
+            }
+        };
+        let part = Arc::new(part);
         unpacked.put(self.key, part.clone());
         Ok(part)
     }
@@ -407,7 +413,7 @@ type Key = (u64, u64);
 #[derive(Default)]
 struct Kept {
     /// Each part, and when it was last read.
-    parts: HashMap<Key, (Arc<[u8]>, u64)>,
+    parts: HashMap<Key, (Arc<Aligned>, u64)>,
     by_use: BTreeMap<u64, Key>,
     clock: u64,
 }
@@ -416,7 +422,7 @@ struct Kept {
 const UNPACKED: usize = 32;
 
 impl Unpacked {
-    fn get(&self, key: Key) -> Option<Arc<[u8]>> {
+    fn get(&self, key: Key) -> Option<Arc<Aligned>> {
         let mut kept = self.kept.lock().unwrap();
         let kept = &mut *kept;
         let (bytes, used) = kept.parts.get_mut(&key)?;
@@ -427,7 +433,7 @@ impl Unpacked {
         Some(bytes.clone())
     }
 
-    fn put(&self, key: Key, bytes: Arc<[u8]>) {
+    fn put(&self, key: Key, bytes: Arc<Aligned>) {
         let mut kept = self.kept.lock().unwrap();
         let kept = &mut *kept;
         kept.clock += 1;

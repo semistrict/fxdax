@@ -163,8 +163,8 @@ impl Device for ImageDevice {
         let mut at = 0;
         for part in self.store.locate(extent, offset, buffer.len() as u64)? {
             match part {
-                // Through the descriptor bypassing the host's page cache even for a raw file's
-                // part (`unframed`), which the store's own reads take through the cache
+                // A raw file's part, through the descriptor bypassing the host's page cache,
+                // which the store's own reads of raw files take through the cache
                 // (`File::read_cached`, TASK-91.17): such a read writes back first what it reads
                 // that is dirty yet, which is slower, not other bytes. This device is an
                 // in-process image's, which imports, host tools and tests use; guests' reads are
@@ -183,7 +183,7 @@ impl Device for ImageDevice {
                     .await?;
                     at += len as usize;
                 }
-                // Its stored bytes, in whole blocks, to unpack.
+                // Its stored bytes, in whole blocks, to check and unpack.
                 Part::Packed { part, skip, len } => {
                     let range = part.read_range();
                     let mut stored = Aligned::new((range.end - range.start) as usize);
@@ -197,7 +197,7 @@ impl Device for ImageDevice {
                         |addr, len, offset| Op::Read { addr, len, offset },
                     )
                     .await?;
-                    let bytes = self.store.unpack(&part, stored.as_slice())?;
+                    let bytes = self.store.unpack(&part, stored)?;
                     let (skip, len) = (skip as usize, len as usize);
                     let mut part = buffer.reborrow().subslice_mut(at..at + len);
                     part.copy_from_slice(&bytes[skip..skip + len]);
@@ -370,6 +370,44 @@ mod tests {
             assert!(device.read(extent(0), 1, buffer.as_mut()).await.is_err());
             let error = device.read(extent(17), 0, buffer.as_mut()).await.expect_err("read");
             assert_eq!(error.downcast_ref::<NoExtent>(), Some(&NoExtent(extent(17))));
+        });
+    }
+
+    /// fxdax: a byte the host's disk damaged in a sealed extent's file, in a part stored compressed
+    /// or raw, fails the device's reads of the part, as imports and host tools read an image,
+    /// rather than giving another byte; its other parts read as written (TASK-153.11).
+    #[test]
+    fn flipped_bytes_fail_reads() {
+        let (device, image, _dir) = device(64 * MIB as u64);
+        block_on(async {
+            // Large enough to be stored on their own, in five parts: compressed, and raw.
+            let contents = [
+                (extent(1), pattern(0, 5 * MIB), extent_frame::Encoding::Zstd),
+                (extent(2), crate::test_data::noise(2, 5 * MIB), extent_frame::Encoding::Raw),
+            ];
+            for (extent, data, _) in &contents {
+                write(&device, *extent, 0, data).await;
+            }
+            device.flush().await.unwrap();
+            for (extent, data, encoding) in &contents {
+                // The middle of its fourth part's stored bytes: of its data at 3.5 MiB, if raw.
+                let path = image.join(format!("extents/{BRANCH:016x}/{:016x}", extent.sequence));
+                let mut bytes = std::fs::read(&path).unwrap();
+                let stored = extent_frame::Parts::of(&bytes).unwrap().stored[3];
+                assert_eq!(stored.encoding, *encoding);
+                bytes[(stored.offset + stored.len / 2) as usize] ^= 0x10;
+                std::fs::write(&path, bytes).unwrap();
+
+                let mut buffer = device.allocate_buffer(BLOCK as usize).await;
+                let at = (3 * MIB + MIB / 2) as u64;
+                let Err(error) = device.read(*extent, at, buffer.as_mut()).await else {
+                    panic!("{extent:?} read a flipped byte");
+                };
+                let corrupt = extent_frame::Corrupt("an object's part, by its CRC".into());
+                assert_eq!(error.downcast_ref(), Some(&corrupt), "{error:#}");
+                let first = read(&device, *extent, 0, BLOCK as usize).await;
+                assert!(first == data[..BLOCK as usize], "{extent:?}'s first block");
+            }
         });
     }
 
