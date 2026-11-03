@@ -852,10 +852,14 @@ impl<D: Dir> Store<D> {
             Some(placement) => matches!(placement, Placement::Segment),
             None => end < self.options.large_extent,
         };
-        // fxdax: what it writes over, in a segment, takes room too (TASK-79.2). And what it adds
-        // to the branch's files: all it writes, to a segment, which it appends to; what the
-        // extent's raw file takes past what it did, as it is written in place (TASK-79.89).
-        let overwrites = if to_segment { len - grows.min(len) } else { 0 };
+        // fxdax: what it writes over, in a segment, takes room too (TASK-79.2), as the writes
+        // that finished left the extent: not its holes (TASK-160.16). And what it adds to the
+        // branch's files: all it writes, to a segment, which it appends to; what the extent's raw
+        // file takes past what it did, as it is written in place (TASK-79.89).
+        let overwrites = match state.extents.get(&extent).map(|entry| &entry.data) {
+            Some(Data::Pieces(pieces)) if to_segment => covered(pieces, offset, end),
+            _ => 0,
+        };
         let adds =
             if to_segment { len } else { end.saturating_sub(state.uncommitted.raw_of(extent)) };
         state.check_room(grows, overwrites, adds)?;
@@ -978,11 +982,14 @@ impl<D: Dir> Store<D> {
                     extent_offset: write.extent_offset,
                     len: write.len,
                 };
+                // fxdax: what the extent held of where it wrote: not its holes, which writes past
+                // its end grew it by, and which it writes over nothing in (TASK-160.16).
+                let over = covered(pieces, write.extent_offset, end);
                 add_piece(pieces, piece);
                 if state.segments.held(number, write.len) {
                     self.idle.notify_all();
                 }
-                state.uncommitted.wrote_over(extent, write.len - grew.min(write.len));
+                state.uncommitted.wrote_over(extent, over);
                 state.uncommitted.push(Change::Write { extent, piece });
             }
             // Its file is the branch's to claim once it is sealed, and framed.
@@ -2219,6 +2226,13 @@ impl<D: Dir> Drop for Store<D> {
             log::error!("extent store: making the last commits durable: {err:#}");
         }
     }
+}
+
+/// fxdax: the bytes of `start..end` of an extent that `pieces` hold: what a write there writes
+/// over, in segments (TASK-79.2, TASK-160.16).
+pub(crate) fn covered(pieces: &[Piece], start: u64, end: u64) -> u64 {
+    let spans = paint(pieces, start, end).into_iter();
+    spans.filter(|(_, _, source)| source.is_some()).map(|(start, end, _)| end - start).sum()
 }
 
 /// A part of an extent: its start and end, and the segment and offset of its data, or `None` where
