@@ -120,8 +120,9 @@ jobs:
           seeds="PROPTEST_RNG_SEED=$PROPTEST_RNG_SEED FXDAX_MODEL_CASES=$FXDAX_MODEL_CASES FXDAX_CORRUPT_SEED=$FXDAX_CORRUPT_SEED FXDAX_CORRUPT_CASES=$FXDAX_CORRUPT_CASES"
           mkdir -p hunt
           status=0
-          cargo nextest run -p fxfs-posix --no-fail-fast -E 'test(/^(model|corrupt)_tests::/)' \
-            > hunt/nextest.log 2>&1 || status=$?
+          # What passing tests said too: a known panic, counted apart, says so only there.
+          cargo nextest run -p fxfs-posix --no-fail-fast --success-output final \
+            -E 'test(/^(model|corrupt)_tests::/)' > hunt/nextest.log 2>&1 || status=$?
           cat hunt/nextest.log
           {
             echo "# At $GITHUB_SHA, each test that failed, again (a corruption case's seed alone, as"
