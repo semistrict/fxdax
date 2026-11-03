@@ -2802,6 +2802,7 @@ mod tests {
     use crate::object_store::{
         HandleOptions, LockKey, NewChildStoreOptions, ObjectStore, StoreOptions, lock_keys,
     };
+    use anyhow::Error;
     #[cfg(target_os = "fuchsia")]
     use fuchsia_async::TestExecutor;
     use fuchsia_async::{self as fasync, MonotonicDuration};
@@ -2855,9 +2856,16 @@ mod tests {
     // fxdax: a file for `commit_records` to change, with no compaction: what they borrow is more
     // than flushing them could find.
     async fn filesystem_for_records(device: DeviceHolder) -> (OpenFxFilesystem, u64) {
+        filesystem_for_records_with(device, journal_for_records()).await
+    }
+
+    async fn filesystem_for_records_with(
+        device: DeviceHolder,
+        options: JournalOptions,
+    ) -> (OpenFxFilesystem, u64) {
         let fs = FxFilesystemBuilder::new()
             .format(true)
-            .journal_options(journal_for_records())
+            .journal_options(options)
             .open(device)
             .await
             .expect("open failed");
@@ -2889,14 +2897,27 @@ mod tests {
     // A commit of about 1500 bytes of records for each of `mutations`, borrowing what more than a
     // transaction reserves, which leaves the next the chunk it may extend the file in.
     async fn commit_records(fs: &OpenFxFilesystem, object_id: u64, round: u32, mutations: usize) {
+        try_commit_records(fs, object_id, round, mutations).await.expect("commit failed");
+        let journal = fs.journal();
+        let size = journal.handle.get().expect("no handle").get_size();
+        let file_offset = journal.inner.lock().writer.journal_file_checkpoint().file_offset;
+        assert!(size - file_offset >= CHUNK_SIZE, "at {file_offset} of {size}");
+    }
+
+    // `commit_records`' commit, which may fail.
+    async fn try_commit_records(
+        fs: &OpenFxFilesystem,
+        object_id: u64,
+        round: u32,
+        mutations: usize,
+    ) -> Result<u64, Error> {
         let root_store = fs.root_store();
         let store_id = root_store.store_object_id();
         let borrow_metadata_space = mutations as u64 * 1500 > TRANSACTION_MAX_JOURNAL_USAGE;
         let options = Options { borrow_metadata_space, ..Options::default() };
         let mut transaction = root_store
             .new_transaction(lock_keys![LockKey::object(store_id, object_id)], options)
-            .await
-            .expect("new_transaction failed");
+            .await?;
         for i in 0..mutations {
             let name = format!("user.{round}-{i}").into_bytes();
             transaction.add(
@@ -2907,11 +2928,7 @@ mod tests {
                 ),
             );
         }
-        transaction.commit().await.expect("commit failed");
-        let journal = fs.journal();
-        let size = journal.handle.get().expect("no handle").get_size();
-        let file_offset = journal.inner.lock().writer.journal_file_checkpoint().file_offset;
-        assert!(size - file_offset >= CHUNK_SIZE, "at {file_offset} of {size}");
+        transaction.commit().await
     }
 
     // Syncs `fs`, and replays and checks what a crash leaves.
