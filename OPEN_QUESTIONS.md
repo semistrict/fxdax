@@ -8,6 +8,12 @@
 
 # Decisions
 
+## map_to_unlocked is killed by a scenario, not by seeds (TASK-44.19, 2026-11-03)
+
+3,000 seeds of `interleave` and `failures` missed the mutant (as did every guest DAX suite): it needs two MAPs of one region in flight at once, the nearer ending last, and a seal before the grow worker maps past it again. `guest/sim`'s device now holds a MAP back when a test asks (`sim_device_hold_map`), and `tests/scenarios`' `reaches_at_once` plays the sequence out: the mutant fails it at once, `fxfs_dax_map_to` as it is passes. `zloop.sh`, CI's sim job, now runs `tests/scenarios`' scenarios too, which only `check.sh` and `mutants.sh` ran.
+**Instead:** seeded MAP latency in `interleave`, so that seeds find this class without a scenario: it moves every seed and may surface new failures, so it's a task of its own under TASK-149, not done here.
+**Undoing it:** drop the scenario and the hold; `zloop.sh` back to the one-run binaries alone.
+
 ## 54 stale In Progress tasks triaged: 46 closed, 7 back to To Do (2026-11-02)
 
 Decided with the user: criteria are ours, so a task whose work landed, or whose rest isn't worth doing as written, is closed, and its final summary says what was decided not to do. Unmet criteria stay unchecked. Back to To Do, as real work left that nobody is on: TASK-42.11, 79.82, 91.15, 111.1 (the pgbench decay over five runs, the one task carrying it), 149.2, 149.14, 150.6 (now depending on TASK-153.9); TASK-60 too, waiting on 60.1. Left alone: TASK-158, uncommitted work in worktree t3-9b5982f8. Also closed: TASK-153.6, done by fafefbac7 and 106b6128d, and TASK-153.10, 112.5 and 109.1, about evacuation, which fafefbac7 removed.
