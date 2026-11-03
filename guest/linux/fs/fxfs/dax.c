@@ -3091,6 +3091,20 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 			if (err)
 				goto out;
 		}
+		/*
+		 * fxdax: the PTEs of the pages go before their blocks move, for good until the move
+		 * ends, so that a load faults, and waits. Moved first, a fault's blocks were freed from
+		 * under what mapped where they were, a load through a PTE reading zeros once the old
+		 * extent was, until the range mapped where they went: as a seal kept it from the gate
+		 * (TASK-149.14), or as it stalled before the PTEs went (guest/sim, interleave 2376 at
+		 * 1,000). A write(2)'s map the new blocks once MAPped, before its bytes are in, which
+		 * a copy from them would read (TASK-150.8), or, gone through a region, lag, mapping the
+		 * old blocks, which a PTE went on reading after the commit (TASK-153.3). First the move
+		 * waits for the faults past their iomaps, which may yet map a page, as none after can,
+		 * the file's semaphore held: a fault waits for no entry of theirs, nor they for it.
+		 */
+		wait_var_event(&range->users, atomic_read(&range->users) == 1);
+		unmap_mapping_pages(inode->i_mapping, (start >> PAGE_SHIFT) + first, pages, false);
 		/* As in fxfs_dax_map_chunk: unless a seal was in progress, or began since. */
 		seals = fxfs_device_seals(dax->dev);
 		/* A fault's pages hold what they held: a store may change any part of them. */
@@ -3108,25 +3122,6 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 		}
 		/* fxdax: a write(2)'s blocks stay the file's until it commits: nothing moved yet. */
 		moved = pending ? 0 : count;
-		/*
-		 * fxdax: but its pages map the new blocks once MAPped, before its bytes are in, and a
-		 * copy from a mapping of them would read their zeros (TASK-150.8); or, gone through a
-		 * region, they lag, mapping the old blocks, which a PTE of them goes on reading after
-		 * the commit (TASK-153.3). So the write waits for the faults past their iomaps, which
-		 * may yet map a page, as none after can, the file's semaphore held, and the PTEs go
-		 * below, for good until it ends: a copy from them faults, and takes the bytes in hand
-		 * (-EFAULT, fxfs_dax_write_iter), and a load waits for the write.
-		 */
-		if (pending)
-			wait_var_event(&range->users, atomic_read(&range->users) == 1);
-		/*
-		 * fxdax: blocks moved are freed from under what maps where they were before the range
-		 * maps where they went, if a seal keeps it from the gate: a load through a PTE of the
-		 * page reads zeros once the old extent is freed, until the move ends. The PTEs go as
-		 * the blocks do, so that a load faults, and waits (found by guest/sim, TASK-149.14).
-		 */
-		if (count)
-			unmap_mapping_pages(inode->i_mapping, (start >> PAGE_SHIFT) + first, pages, false);
 		/* fxdax: fault injection, a seal between the move and the mapping of the new block. */
 		if (fault && fxfs_dax_seal_moved()) {
 			err = fxfs_nofs(fxfs_fsync(fxfs_vfs_fs(inode->i_sb)));

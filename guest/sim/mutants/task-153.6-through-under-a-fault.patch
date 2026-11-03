@@ -2,26 +2,18 @@
 # Copyright 2026 The fxdax Authors.
 #
 # TASK-153.6: a write goes through a region as a fault past its iomap maps the page, for good, where
-# its blocks were. Since TASK-153.5, a write(2) waits for faults past their iomaps before its PTEs
-# go, where it looked at `users` as it went through: waiting after them, a fault's PTE stays.
+# its blocks were. Since TASK-153.5, a move waits for faults past their iomaps before its PTEs go,
+# where a write looked at `users` as it went through: waiting after them, a fault's PTE stays.
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c
-@@ -3099,8 +3099,6 @@
- 		 * below, for good until it ends: a copy from them faults, and takes the bytes in hand
- 		 * (-EFAULT, fxfs_dax_write_iter), and a load waits for the write.
+@@ -3103,8 +3103,8 @@
+ 		 * waits for the faults past their iomaps, which may yet map a page, as none after can,
+ 		 * the file's semaphore held: a fault waits for no entry of theirs, nor they for it.
  		 */
--		if (pending)
--			wait_var_event(&range->users, atomic_read(&range->users) == 1);
- 		/*
- 		 * fxdax: blocks moved are freed from under what maps where they were before the range
- 		 * maps where they went, if a seal keeps it from the gate: a load through a PTE of the
-@@ -3109,6 +3107,8 @@
- 		 */
- 		if (count)
- 			unmap_mapping_pages(inode->i_mapping, (start >> PAGE_SHIFT) + first, pages, false);
-+		if (pending)
-+			wait_var_event(&range->users, atomic_read(&range->users) == 1);
- 		/* fxdax: fault injection, a seal between the move and the mapping of the new block. */
- 		if (fault && fxfs_dax_seal_moved()) {
- 			err = fxfs_nofs(fxfs_fsync(fxfs_vfs_fs(inode->i_sb)));
+-		wait_var_event(&range->users, atomic_read(&range->users) == 1);
+ 		unmap_mapping_pages(inode->i_mapping, (start >> PAGE_SHIFT) + first, pages, false);
++		wait_var_event(&range->users, atomic_read(&range->users) == 1);
+ 		/* As in fxfs_dax_map_chunk: unless a seal was in progress, or began since. */
+ 		seals = fxfs_device_seals(dax->dev);
+ 		/* A fault's pages hold what they held: a store may change any part of them. */

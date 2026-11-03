@@ -87,8 +87,8 @@ MUTANTS = [
         "moved_ptes_kept",
         "a write whose blocks moved leaves the PTEs of their pages, through which a load reads "
         "zeros once Fxfs frees the old extent, until the range maps the new (TASK-149.14)",
-        [("\t\tif (count)\n\t\t\tunmap_mapping_pages(inode->i_mapping, (start >> PAGE_SHIFT) + "
-          "first, pages, false);\n", "")],
+        [("\t\tunmap_mapping_pages(inode->i_mapping, (start >> PAGE_SHIFT) + first, pages, "
+          "false);\n\t\t/* As in fxfs_dax_map_chunk", "\t\t/* As in fxfs_dax_map_chunk")],
     ),
     (
         "moves_before_bytes",

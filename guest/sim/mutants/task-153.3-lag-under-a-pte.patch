@@ -3,17 +3,16 @@
 #
 # TASK-153.3, on 106b6128d's write through a region: a fault that finished between the move's unmap
 # and the copy keeps its PTE of the page where its blocks were, which lags under it: a stale read,
-# seed 7289 at 200 operations. Since TASK-153.5, a write(2) waits for faults past their iomaps
-# before the PTEs go, where it looked at `users` and unmapped them again.
+# seed 7289 at 200 operations. Since TASK-153.5, a move waits for faults past their iomaps before
+# the PTEs go, where a write looked at `users` and unmapped them again.
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c
-@@ -3099,8 +3099,6 @@
- 		 * below, for good until it ends: a copy from them faults, and takes the bytes in hand
- 		 * (-EFAULT, fxfs_dax_write_iter), and a load waits for the write.
+@@ -3103,7 +3103,6 @@
+ 		 * waits for the faults past their iomaps, which may yet map a page, as none after can,
+ 		 * the file's semaphore held: a fault waits for no entry of theirs, nor they for it.
  		 */
--		if (pending)
--			wait_var_event(&range->users, atomic_read(&range->users) == 1);
- 		/*
- 		 * fxdax: blocks moved are freed from under what maps where they were before the range
- 		 * maps where they went, if a seal keeps it from the gate: a load through a PTE of the
+-		wait_var_event(&range->users, atomic_read(&range->users) == 1);
+ 		unmap_mapping_pages(inode->i_mapping, (start >> PAGE_SHIFT) + first, pages, false);
+ 		/* As in fxfs_dax_map_chunk: unless a seal was in progress, or began since. */
+ 		seals = fxfs_device_seals(dax->dev);
