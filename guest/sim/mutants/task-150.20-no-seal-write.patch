@@ -5,9 +5,9 @@
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c
-@@ -3850,7 +3850,7 @@
- 		ret = dax_iomap_rw(iocb, source, &fxfs_dax_iomap_ops);
- 		pagefault_enable();
+@@ -3686,7 +3686,7 @@
+ 		if (file->slice_left)
+ 			fxfs_dax_follow_slice(inode, file);
  		fxfs_dax_lap(&dax->write_rw_ns, &lap);
 -		sealed = ret < 0 ? fxfs_dax_make_memory(inode, &room, ret) : 0;
 +		sealed = 0;
