@@ -47,6 +47,10 @@ jobs:
         run: |
           cargo check -p test_cases --features host
           cargo check -p test_cases --features guest --tests --target x86_64-unknown-linux-musl
+      # DAX's tests take faults through /dev/userfaultfd, root's alone on the runner, as
+      # scripts/lima-setup.sh gives it to the kvm group.
+      - name: Let the tests use userfaultfd
+        run: sudo setfacl -m "u:$USER:rw" /dev/userfaultfd
       - name: Unit tests
         run: cargo nextest run --workspace
 

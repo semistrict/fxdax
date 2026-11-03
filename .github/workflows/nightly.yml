@@ -31,7 +31,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Fetch Firecracker
-        run: git -c url.https://github.com/.insteadOf=git@github.com: submodule update --init
+        # A block: in a plain scalar, the URL's ": " would begin a mapping, and the file not parse.
+        run: |
+          git -c url.https://github.com/.insteadOf=git@github.com: submodule update --init
       - uses: google-github-actions/auth@v3
         with:
           workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
