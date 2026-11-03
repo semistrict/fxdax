@@ -152,13 +152,17 @@ static void unwritten(struct tracked *file, loff_t at, const char *source, size_
 	kfree(got);
 }
 
-/* The outcome of a write of `len` bytes from `source` at `at`, which `done` says. */
+/*
+ * The outcome of a write of `len` bytes from `source` at `at`, which `done` says: NULL if the task
+ * doesn't know them all.
+ */
 static void written(struct tracked *file, loff_t at, const char *source, size_t len, ssize_t done,
 		    size_t readable, bool failed)
 {
 	size_t wrote = done > 0 ? done : 0;
 
-	memmove(file->bytes + at, source, wrote);
+	if (source)
+		memmove(file->bytes + at, source, wrote);
 	know(file, at, wrote);
 	if (wrote)
 		file->size = max_t(loff_t, file->size, at + wrote);
@@ -170,7 +174,10 @@ static void written(struct tracked *file, loff_t at, const char *source, size_t 
 	/* EFAULT of memory a fault failed for, a mapping's. */
 	if (done < 0)
 		check(done == -EIO || done == -ENOMEM || done == -EFAULT, "a write: %zd", done);
-	if (wrote < len && at + wrote < file->size)
+	/* A source of bytes the task doesn't know, its own file's, says nothing of what they got. */
+	if (wrote < len && at + wrote < file->size && !source)
+		forget(file, at + wrote, min_t(loff_t, len - wrote, file->size - at - wrote));
+	else if (wrote < len && at + wrote < file->size)
 		unwritten(file, at + wrote, source + wrote,
 			  min_t(loff_t, len - wrote, file->size - at - wrote),
 			  readable > wrote ? readable - wrote : 0);
@@ -263,7 +270,7 @@ static void op_self_write(struct worker *worker, struct tracked *file)
 	memcpy(held, file->bytes + from, len);
 	unknown = find_next_bit(file->unknown, from + len, from) != from + len;
 	done = sim_write_user(file->file, to, file->addr + from, len);
-	written(file, to, held, len, done, len, failures() != before);
+	written(file, to, unknown ? NULL : held, len, done, len, failures() != before);
 	/* What it copied of bytes it didn't know, it doesn't know. */
 	if (done > 0 && unknown)
 		forget(file, to, done);
