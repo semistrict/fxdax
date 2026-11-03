@@ -34,8 +34,24 @@ pub const ENTRY: u64 = 8 + 4 + 4 + 1;
 /// the CRC32Cs of its footer and its table, and [`MAGIC`].
 pub const TRAILER: u64 = 8 + 8 + 8 + 4 + 4 + 8;
 
+/// The format of the frames this crate writes and reads, the last byte of [`MAGIC`], as a digit:
+/// a frame says its format, and a reader of an older one names it rather than call it corrupt
+/// (doc-11, rule 3; TASK-141.2).
+pub const FORMAT: u8 = 1;
+
+/// An object's last bytes: the frame's [`FORMAT`] after them.
+const MAGIC_OF: [u8; 7] = *b"fxdaxob";
+
 /// An object's last bytes.
-const MAGIC: [u8; 8] = *b"fxdaxob1";
+const MAGIC: [u8; 8] = {
+    let mut magic = [b'0' + FORMAT; 8];
+    let mut at = 0;
+    while at < MAGIC_OF.len() {
+        magic[at] = MAGIC_OF[at];
+        at += 1;
+    }
+    magic
+};
 
 /// The zstd level parts are compressed at, unless `FXDAX_ZSTD_LEVEL` says another, to measure it
 /// against (TASK-29.4): the fastest, as sealing and closing segments wait for it. At 0, parts are
@@ -258,8 +274,16 @@ impl Frame {
     pub fn of_trailer(bytes: &[u8]) -> Result<Self, Corrupt> {
         let at = bytes.len().checked_sub(TRAILER as usize).ok_or_else(|| corrupt("trailer"))?;
         let trailer = &bytes[at..];
-        if trailer[TRAILER as usize - MAGIC.len()..] != MAGIC {
-            return Err(corrupt("trailer, by its magic"));
+        let magic = &trailer[TRAILER as usize - MAGIC.len()..];
+        if magic != MAGIC {
+            let (of, format) = magic.split_at(MAGIC_OF.len());
+            return Err(match (of == MAGIC_OF, format[0].checked_sub(b'0')) {
+                (true, Some(format @ 0..=9)) => corrupt(format_args!(
+                    "trailer: a frame of format {format}, which a reader of format {FORMAT} \
+                     doesn't read"
+                )),
+                _ => corrupt("trailer, by its magic"),
+            });
         }
         let frame = Self {
             data_len: u64_at(trailer, 0),
@@ -561,6 +585,22 @@ mod tests {
         assert_eq!(bytes.len() as u64, data.len() as u64 + 6 + 3 * ENTRY + TRAILER);
         assert_eq!(&bytes[..data.len()], &data[..]);
         assert_eq!(super::data(&bytes).unwrap(), data);
+    }
+
+    /// A frame says its format, last: one of a newer format than the reader's is refused, naming
+    /// it, rather than called corrupt (TASK-141.2).
+    #[test]
+    fn frames_of_newer_formats_are_named() {
+        let bytes = framed(b"data", b"footer");
+        assert_eq!(&bytes[bytes.len() - 8..], b"fxdaxob1");
+        let mut newer = bytes.clone();
+        *newer.last_mut().unwrap() = b'0' + FORMAT + 1;
+        let refused =
+            "an object's trailer: a frame of format 2, which a reader of format 1 doesn't read";
+        assert_eq!(Parts::of(&newer), Err(Corrupt(refused.into())));
+        assert_eq!(check(&newer), Err(Corrupt(refused.into())));
+        *newer.last_mut().unwrap() = b'x';
+        assert_eq!(Parts::of(&newer), Err(Corrupt("an object's trailer, by its magic".into())));
     }
 
     /// Objects cut short, or with any byte of them changed, fail to read, without panicking.
