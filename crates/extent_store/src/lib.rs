@@ -191,6 +191,8 @@ pub use store::{
     Cleaned, Footprint, ForkCommitted, HasBranch, Info, NoSpace, Options, Rebuilt, RemoteData, Spent, Store,
     TooLong, TooSmall, Unaligned, Usage, Write,
 };
+#[cfg(feature = "audit")]
+pub use state::AUDIT_FAILED;
 pub use sync::Rules;
 #[cfg(feature = "shuttle")]
 pub use sync::{rules, set_rules};

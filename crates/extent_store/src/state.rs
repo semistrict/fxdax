@@ -305,8 +305,8 @@ const AUDITED_EXTENTS: usize = 4096;
 
 /// fxdax: `guard`'s state, audited, in the builds of the tests ([`Locked`]), if its branch holds
 /// [`AUDITED_EXTENTS`] at most. An audit that fails panics once it has let the state go,
-/// unpoisoned: the store's drop, closing its branch, locks it again, which a lock poisoned would
-/// panic in, aborting as the audit's panic unwinds.
+/// unpoisoned, saying what it found after [`AUDIT_FAILED`]: the store's drop, closing its branch,
+/// locks it again, which a lock poisoned would panic in, aborting as the audit's panic unwinds.
 #[cfg(any(test, feature = "audit"))]
 fn audited<F: File>(guard: MutexGuard<'_, State<F>>) -> MutexGuard<'_, State<F>> {
     if guard.failed || std::thread::panicking() || guard.extents.most() > AUDITED_EXTENTS {
@@ -317,10 +317,17 @@ fn audited<F: File>(guard: MutexGuard<'_, State<F>>) -> MutexGuard<'_, State<F>>
         Ok(()) => guard,
         Err(panic) => {
             drop(guard);
-            std::panic::resume_unwind(panic)
+            let found = (panic.downcast_ref::<String>().map(String::as_str))
+                .or_else(|| panic.downcast_ref::<&str>().copied())
+                .unwrap_or("a panic");
+            panic!("{AUDIT_FAILED}: {found}")
         }
     }
 }
+
+/// fxdax: what a failed audit's panic begins with, whatever it found (TASK-160.16).
+#[cfg(any(test, feature = "audit"))]
+pub const AUDIT_FAILED: &str = "the extent store's audit found its counts drifted";
 
 /// fxdax: `guard`, audited not, in the other builds.
 #[cfg(not(any(test, feature = "audit")))]

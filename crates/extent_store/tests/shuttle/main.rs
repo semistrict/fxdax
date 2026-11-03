@@ -1564,12 +1564,16 @@ fn needs_rechecks_after_waiting_for_closings() {
 
 /// Writes to extents freed since they began recorded as they finish: the extent holds the
 /// write's data, or another placement's, which panics the store, or is sealed outside the open
-/// extents, which refuses the freer's write.
+/// extents, which refuses the freer's write; or the store's audit finds its state other than its
+/// counts say, as the extent, freed, holds the write's data again (TASK-160.16).
 #[test]
 fn needs_writes_to_freed_extents_dropped() {
     let rules = Rules { drop_writes_to_freed_extents: false, ..Rules::ALL };
-    let expected =
-        ["a write to a freed extent landed", "an extent's data is in segments or its own file"];
+    let expected = [
+        "a write to a freed extent landed",
+        "an extent's data is in segments or its own file",
+        extent_store::AUDIT_FAILED,
+    ];
     fails_without(rules, &expected, freeing_during_a_write);
 }
 
