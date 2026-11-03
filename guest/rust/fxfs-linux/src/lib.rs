@@ -15,7 +15,7 @@ mod fs;
 use anyhow::Error;
 use core::ffi::{c_char, c_int, c_void};
 use device::ExtentDevice;
-use fs::{Attr, DaxExtent, Filesystem, Fxfs, GuestFxfs, ReaddirStart, SetAttr, StatFs};
+use fs::{Attr, DaxExtent, DaxWrite, Filesystem, Fxfs, GuestFxfs, ReaddirStart, SetAttr, StatFs};
 use fxfs::errors::FxfsError;
 use fxfs::object_store::SetExtendedAttributeMode;
 use fxfs_posix::Errno;
@@ -468,6 +468,58 @@ pub unsafe extern "C" fn fxfs_dax_map_write(
         let held = (!held.is_null()).then(|| std::slice::from_raw_parts(held, len as usize));
         let result = block_on((*fs).dax_map_write(ino, range, size, keep, held));
         copy_extents(result, out, max)
+    }
+}
+
+/// Makes room for a write(2) through the DAX window as `fxfs_dax_map_write` does, committing
+/// nothing: `*write` holds the transaction, for `fxfs_dax_end_write` (`Fxfs::dax_begin_write`).
+///
+/// # Safety
+///
+/// `fs` is mounted, `out` has room for `max` extents, and `write` is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fxfs_dax_begin_write(
+    fs: *const Fxfs,
+    ino: u64,
+    offset: u64,
+    len: u64,
+    size: u64,
+    out: *mut DaxExtent,
+    max: usize,
+    write: *mut *mut DaxWrite,
+) -> isize {
+    // SAFETY: As the caller promises.
+    unsafe {
+        let range = offset..offset.saturating_add(len);
+        let (begun, extents) = match block_on((*fs).dax_begin_write(ino, range, size)) {
+            Ok(begun) => begun,
+            Err(error) => return -(errno(&error) as isize),
+        };
+        // Pieces that don't fit leave the write dropped.
+        let count = copy_extents(Ok(extents), out, max);
+        if count >= 0 {
+            write.write(Box::into_raw(Box::new(begun)));
+        }
+        count
+    }
+}
+
+/// Commits `write` if `commit`, its bytes stored, or drops it, leaving the file as it was: 0, or
+/// the commit's -errno.
+///
+/// # Safety
+///
+/// `write` is one `fxfs_dax_begin_write` returned, not yet ended.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fxfs_dax_end_write(write: *mut DaxWrite, commit: bool) -> c_int {
+    // SAFETY: As the caller promises.
+    let write = unsafe { Box::from_raw(write) };
+    if !commit {
+        return 0;
+    }
+    match block_on(write.commit()) {
+        Ok(()) => 0,
+        Err(error) => -errno(&error),
     }
 }
 

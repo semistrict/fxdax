@@ -21,7 +21,7 @@ use fxfs::filesystem::{
 use fxfs::object_store::journal::{DEFAULT_RECLAIM_SIZE, JournalOptions, LazyFlush};
 use fxfs::object_store::volume::root_volume;
 use fxfs::object_store::{ExtentAccess, NewChildStoreOptions, StoreOptions};
-pub use fxfs_posix::{Attr, DaxExtent, ReaddirStart, SetAttr, StatFs};
+pub use fxfs_posix::{Attr, DaxExtent, DaxWrite, ReaddirStart, SetAttr, StatFs};
 use fxfs_posix::{Platform, SyncCounts};
 use linux_rt::Task;
 use std::future::Future;

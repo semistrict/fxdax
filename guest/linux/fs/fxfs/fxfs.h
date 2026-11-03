@@ -446,6 +446,18 @@ bool fxfs_dax_restage(struct fxfs_filesystem *filesystem, struct fxfs_dax_extent
  */
 ssize_t fxfs_dax_map_write(struct fxfs *fs, u64 ino, u64 offset, u64 len, u64 size, bool keep,
 			   const void *held, struct fxfs_dax_extent *out, size_t max);
+/*
+ * fxdax: makes room for a write(2) of `len` bytes at `offset` of file `ino`, as fxfs_dax_map_write
+ * does without `keep` or `held`, but commits nothing: `*write` holds the transaction, and with it
+ * the file's lock and the new blocks, until fxfs_dax_end_write, which commits it once the caller
+ * has stored the bytes, or drops it, leaving the file as it was (TASK-153.5). Called holding no
+ * gate, as is fxfs_dax_end_write: a commit may wait for a seal.
+ */
+struct fxfs_dax_write;
+ssize_t fxfs_dax_begin_write(struct fxfs *fs, u64 ino, u64 offset, u64 len, u64 size,
+			     struct fxfs_dax_extent *out, size_t max, struct fxfs_dax_write **write);
+/* Commits `write` if `commit`, or drops it: 0, or the commit's -errno. Either way it is gone. */
+int fxfs_dax_end_write(struct fxfs_dax_write *write, bool commit);
 /* Records an append already written through the window, without zeroing it (TASK-92.28). */
 int fxfs_dax_update_size(struct fxfs *fs, u64 ino, u64 size);
 
