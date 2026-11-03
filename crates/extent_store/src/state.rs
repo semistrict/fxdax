@@ -296,12 +296,20 @@ impl<F: File> Drop for Locked<'_, F> {
     }
 }
 
-/// fxdax: `guard`'s state, audited, in the builds of the tests ([`Locked`]). An audit that fails
-/// panics once it has let the state go, unpoisoned: the store's drop, closing its branch, locks
-/// it again, which a lock poisoned would panic in, aborting as the audit's panic unwinds.
+/// fxdax: the most extents a branch may hold for the audit to recount its state ([`Locked`]): it
+/// goes through them all each time the state is let go, which took a test of fxdax's, writing a
+/// base of 32,768 extents one at a time and forking it a hundred times, past an hour; the stores
+/// of the store's own tests hold hundreds at most (TASK-160.16).
+#[cfg(any(test, feature = "audit"))]
+const AUDITED_EXTENTS: usize = 4096;
+
+/// fxdax: `guard`'s state, audited, in the builds of the tests ([`Locked`]), if its branch holds
+/// [`AUDITED_EXTENTS`] at most. An audit that fails panics once it has let the state go,
+/// unpoisoned: the store's drop, closing its branch, locks it again, which a lock poisoned would
+/// panic in, aborting as the audit's panic unwinds.
 #[cfg(any(test, feature = "audit"))]
 fn audited<F: File>(guard: MutexGuard<'_, State<F>>) -> MutexGuard<'_, State<F>> {
-    if guard.failed || std::thread::panicking() {
+    if guard.failed || std::thread::panicking() || guard.extents.most() > AUDITED_EXTENTS {
         return guard;
     }
     let audit = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| guard.audit()));

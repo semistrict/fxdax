@@ -244,6 +244,13 @@ impl Extents {
         self.base.as_ref()
     }
 
+    /// fxdax: at most how many extents it holds, found at once: its own entries, and its base's,
+    /// though its own may hide some of those (TASK-160.16).
+    #[cfg(any(test, feature = "audit"))]
+    pub(crate) fn most(&self) -> usize {
+        self.changed.len() + self.base.as_ref().map_or(0, |base| base.len)
+    }
+
     /// The extents it holds that its base doesn't, or holds otherwise: those it changed.
     pub(crate) fn changed(&self) -> impl Iterator<Item = (&ExtentId, &Extent)> {
         self.changed.iter()
