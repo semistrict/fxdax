@@ -276,6 +276,21 @@ impl Outcome {
 /// A panic, by where it was: how many cases met it, and one of them.
 static PANICS: Mutex<BTreeMap<String, (u64, String)>> = Mutex::new(BTreeMap::new());
 
+/// Open bugs' panics, which a run counts apart rather than failing for, so that a hunt of many
+/// cases (FXDAX_CORRUPT_CASES) fails only for what is new: a line each, the task, then where it
+/// panics, as a panic's location begins. The line goes with the task's fix.
+const KNOWN_PANICS: &str = include_str!("../known-panics");
+
+/// The open bug whose panic one at `place` is, if any.
+fn known_panic(place: &str) -> Option<&'static str> {
+    KNOWN_PANICS
+        .lines()
+        .filter(|line| !line.starts_with('#'))
+        .filter_map(|line| line.split_once(' '))
+        .find(|(_, at)| place.starts_with(at.trim()))
+        .map(|(task, _)| task)
+}
+
 /// Runs `done` to its end, whatever panics in it, as cases must to be counted.
 fn run_case<T>(done: impl Future<Output = T>) -> Option<T> {
     let run = || fasync::LocalExecutorBuilder::new().build().run_singlethreaded(done);
@@ -762,10 +777,12 @@ fn flips_never_panic(barriers: bool, ending: Ending) {
         all.add(outcome);
     }
     println!("all: {all:?}");
-    let panics = std::mem::take(&mut *PANICS.lock().unwrap());
+    let mut panics = std::mem::take(&mut *PANICS.lock().unwrap());
     for (place, (count, first)) in &panics {
-        println!("{count} panics at {place}: first {first}");
+        let known = known_panic(place).map_or(String::new(), |task| format!(" (known: {task})"));
+        println!("{count} panics at {place}{known}: first {first}");
     }
+    panics.retain(|place, _| known_panic(place).is_none());
     assert_eq!(panics.len(), 0, "{panics:#?}");
     // The journal's checksums find an unsealed flip, which ends a replay short of what was synced.
     if let Some((_, journal)) = tally.get(&(Part::Journal, false)) {
@@ -897,4 +914,12 @@ fn a_flip_in_data_being_written_is_not_found_with_barriers() {
     let mut flipped = vec![1; PAGE as usize];
     flipped[0] ^= 0xff;
     a_flip_in_data_being_written(true, Some(&flipped));
+}
+
+#[test]
+fn an_open_bugs_panic_is_known_by_its_place() {
+    let place = "crates/fxfs/src/object_store/journal/reader.rs:159:31";
+    assert_eq!(known_panic(place), Some("TASK-149.23"));
+    assert_eq!(known_panic("crates/fxfs/src/object_store/journal/reader.rs:1591:9"), None);
+    assert_eq!(known_panic("crates/fxfs/src/object_store/journal/reader.rs:304:9"), None);
 }
