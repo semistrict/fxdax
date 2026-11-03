@@ -38,6 +38,18 @@ Only a guest can seal its open extents, whose pages count against a budget its d
 **Instead:** (1) a per-tenant share of open pages: a VM still can't go past its share while others sit idle, and the shares need sizing. (2) Evict open pages to the store and fault them back: the daemon would have to take writable pages away from a running guest. (3) Also ask idle VMs on a timer.
 **Undoing it:** in `Connection::map_writably`, stop calling `seals::made_room`; take `F_SEAL` out of the device's features. The guest then never sees an ask.
 
+## The extent store's audit runs in every test build that links it (TASK-160.16, 2026-11-03)
+
+`State::audit` recounts the ~15 byte counters from everything the branch holds each time its state's lock is let go, in builds with the `audit` feature. Decided: `shuttle` implies it, and `extent_store` turns it on for its own tests by a dev-dependency on itself. Cargo unifies features in one build, so a workspace test run (`cargo nextest run --workspace`, `scripts/test.sh`, GCE) audits the stores of fxdax's and the other crates' tests too: more checking, at the cost of a walk of every extent per critical section. Only branches holding at most 4,096 extents are audited (`AUDITED_EXTENTS`). Unbounded, fxdax's `counting_followers_walks_no_extents`, which writes a 32,768-extent base one extent at a time, ran past an hour on GCE. Release builds and the daemon never audit.
+**Instead:** `cfg(debug_assertions)`, which also audits debug daemons and guest tests, whose stores are large; or an opt-in each test calls, which misses the ones that don't.
+**Undoing it:** drop the self dev-dependency (the Shuttle and lib tests still audit), or `audit = []` and the `cfg`s.
+
+## The three footer replays stay three for now (TASK-160.15, 2026-11-03)
+
+TASK-160.15's bug is fixed at the source: footers free only extents a commit held (`layout::held_frees`, which delta replay uses too), so local rebuild spends what the store spends. Merging the replays into `extent_frame::segment::Replay` is left for later. They differ on purpose: remote recovery spends only the frees of extents it held before the segment, takes the largest `next_sequence`, and has its own continuity rule and layers. Each difference needs its own decision, and TASK-153.7/.8/.9 changed the footers of both crates just now (Footer.forks of Child).
+**Instead:** merge them now, choosing one rule for each of those differences, across a format change in flight.
+**Undoing it:** nothing to undo; the merge is TASK-160.15's AC #2, still open.
+
 ## The journal's end is in the root, set by each sync's barrier (TASK-153.13)
 
 A flip mid-journal read as its end, losing synced transactions unsaid. Decided: the root records how far the journal was written when a barrier set it (`Root::journal_end`), and a replay ending before there is refused as corrupt; past it, a torn tail is still a torn tail. A sync's barrier sets it: its journal write's `WRITE_COMMIT` carries the root (`WRITE_ROOT`, new on the wire), or its flush becomes a commit of the root. Cost: no request more; the root's ~50 bytes in the sync's request and the host's commit record; barriers setting roots take turns (they did at the device already). A synced write whose data the journal's checksums find damaged now refuses the mount, where it rolled the file back.
