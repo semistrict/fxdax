@@ -1746,7 +1746,7 @@ fn deleted_stores_branches_keep_what_their_forks_need() {
         assert!(!record.deleted);
         let options = extent_remote::collector::Options { compact_below: 0.5, grace: 0 };
         extent_remote::collector::collect(&*bucket, 1, &options).await.unwrap();
-        let state = extent_remote::recover(&*bucket, fork_branch, record.origin).await.unwrap();
+        let state = extent_remote::recover(&*bucket, fork_branch, record.origin()).await.unwrap();
         let id = storage_device::ExtentId::new(base.branch, base.sequence);
         let data = extent_remote::read(&bucket, id, &state.state.extents[&id]).await.unwrap();
         assert_eq!(data, pattern(3, 2 * BLOCK));
@@ -3439,7 +3439,7 @@ fn childs_opened_during_their_forks_wait_for_them() {
     assert!(child_store.is_ok(), "opening the child: {:?}", child_store.err());
     let records = extent_remote::store::Store::new(gated.clone(), "branches");
     let record = control(extent_remote::branch::record(&records, branch)).unwrap();
-    let origin = record.and_then(|record| record.origin).map(|origin| origin.parent);
+    let origin = record.and_then(|record| record.origin()).map(|origin| origin.parent);
     assert_eq!(origin, Some(parent));
     drop((child_store, store));
 }

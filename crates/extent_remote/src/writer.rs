@@ -26,8 +26,9 @@
 
 use crate::bucket::{self, Bucket, Created};
 use crate::fetch::{Budget, Limits, Priority};
-use crate::layout::{self, Chain, Child, Contents, Footer, Location, Origin, Record, Segment};
+use crate::layout::{self, Chain, Child, Contents, Footer, Location, Origin, Segment};
 use crate::moves::MovesMaps;
+use crate::record::Record;
 use crate::recovery::{self, Recovered, State};
 use crate::{EPOCH_SHIFT, Error, branch, rules};
 use futures::{StreamExt as _, TryStreamExt as _};
@@ -161,25 +162,16 @@ impl<B: Bucket> Writer<B> {
         holder: u64,
         token: u64,
     ) -> Result<Self, Error> {
-        if record.deleted {
-            return Err(Error::Deleted);
-        }
         // Before the lease: a point has none, and nothing writes it, whoever asks.
-        if record.point && rules().points_take_no_writer {
-            return Err(Error::Point);
-        }
-        // A fork of a point not yet made holds nothing, and may be given up on.
-        if record.forking.is_some() {
-            return Err(Error::NoBranch);
-        }
+        record.writable()?;
         let epoch = branch::take_lease(&*bucket, &layout::lease(branch), holder, token).await?;
         // Deleted meanwhile, and its lease removed: the collector removes the lease taken here.
         if branch::record(&*bucket, branch).await?.is_none_or(|record| record.deleted) {
             return Err(Error::Deleted);
         }
         let recovered = match before {
-            None => recovery::recover(&*bucket, branch, record.origin).await?,
-            Some(before) => recovery::recover_on(&*bucket, record.origin, before).await?,
+            None => recovery::recover(&*bucket, branch, record.origin()).await?,
+            Some(before) => recovery::recover_on(&*bucket, record.origin(), before).await?,
         };
         let mut state = recovered.state;
         let mut seq = recovered.end;

@@ -36,6 +36,7 @@ pub mod fetch;
 pub mod layout;
 mod moves;
 pub mod object;
+pub mod record;
 pub mod recovery;
 pub mod store;
 pub mod writer;
@@ -75,7 +76,7 @@ pub enum Error {
     #[error("no such branch")]
     NoBranch,
     /// The branch is a point, which no writer takes: a point's state never changes
-    /// ([`layout::Record::point`]).
+    /// ([`record::Kind::Point`]).
     #[error("the branch is a point, which nothing writes")]
     Point,
     /// A fork's child has a record naming another origin: another branch has the ID the fork's

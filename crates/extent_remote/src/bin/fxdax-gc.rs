@@ -28,7 +28,7 @@
 
 use extent_remote::branch;
 use extent_remote::collector::{Collector, Options};
-use extent_remote::layout::Record;
+use extent_remote::record::Record;
 use extent_remote::store::{Store, probe};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -101,7 +101,7 @@ fn held_branches(text: &str) -> Result<BTreeSet<u64>, String> {
 fn listed(live: &BTreeMap<u64, Record>, held: &BTreeSet<u64>) -> String {
     let listed = live.iter().filter(|(branch, _)| !held.contains(branch));
     listed
-        .map(|(branch, record)| match record.origin {
+        .map(|(branch, record)| match record.origin() {
             Some(origin) => format!("{branch:x} {:x} {:x}\n", origin.parent, origin.at),
             None => format!("{branch:x}\n"),
         })
@@ -161,6 +161,7 @@ fn main() -> Result<(), String> {
 mod tests {
     use super::*;
     use extent_remote::layout::Origin;
+    use extent_remote::record::Kind;
 
     fn parsed(args: &[&str]) -> Result<Args, String> {
         parse(args.iter().map(|arg| arg.to_string()))
@@ -198,9 +199,8 @@ mod tests {
     /// TASK-79.85: a list names the live branches but those held, a fork's with where it forked.
     #[test]
     fn lists_leave_out_what_is_held() {
-        let base = Record::default();
-        let origin = Some(Origin { parent: 0xa, at: 0x10 });
-        let fork = Record { origin, forked: true, ..Record::default() };
+        let base = Kind::Root.of(0);
+        let fork = Kind::Fork(Origin { parent: 0xa, at: 0x10 }).of(0);
         let live = BTreeMap::from([(0xa, base), (0xb, fork), (0xc, fork)]);
         let held = held_branches("c\n").unwrap();
         assert_eq!(listed(&live, &held), "a\nb a 10\n");

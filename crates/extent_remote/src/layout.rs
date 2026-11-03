@@ -15,9 +15,9 @@ pub use extent_frame::segment::{
     Chain, Child, Contents, Footer, Location, epoch_of, tag, writer_of,
 };
 
-/// fxdax: the format of a branch's objects, which its record says first ([`Record::format`]): a
-/// reader refuses a branch of a newer one, naming it, and reads none of it (doc-11, rule 3;
-/// TASK-141.2).
+/// fxdax: the format of a branch's objects, which its record says first
+/// ([`Record::format`](crate::record::Record::format)): a reader refuses a branch of a newer one,
+/// naming it, and reads none of it (doc-11, rule 3; TASK-141.2).
 pub const FORMAT: u32 = 1;
 
 pub const BRANCHES: &str = "branches/";
@@ -130,9 +130,10 @@ pub fn kind(key: &str) -> Kind<'_> {
 pub struct Fork {
     pub child: u64,
     pub at: u64,
-    /// Whether its child is a point ([`Record::point`]).
+    /// Whether its child is a point ([`Kind::Point`](crate::record::Kind::Point)).
     pub point: bool,
-    /// fxdax: its child's owner, which every record of the child names ([`Record::owner`]).
+    /// fxdax: its child's owner, which every record of the child names
+    /// ([`Record::owner`](crate::record::Record::owner)).
     pub owner: u64,
 }
 
@@ -148,81 +149,6 @@ impl Fork {
 pub struct Segment {
     pub data: Vec<u8>,
     pub footer: Footer,
-}
-
-/// A branch's record: where it came from, and whether it was deleted.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Record {
-    /// fxdax: the format of the branch's objects ([`FORMAT`]), first, so that a reader of any
-    /// format reads it before the rest, which it can read only if it is of its own or older
-    /// ([`Record::decode`], TASK-141.2).
-    pub format: u32,
-    /// fxdax: the branch's owner: a number its maker chose at random, unique to that making, which
-    /// every record of the branch names, whoever writes it: a fork's host, its parent's writers
-    /// and its parent's deletion alike (the fork's footer names it, [`Child::owner`]). So no two
-    /// makers of one branch ID write the same bytes, and a create that finds a record there tells
-    /// its own, landed though its answer was lost, from another's (TASK-79.82, TASK-153.9).
-    pub owner: u64,
-    /// The branch it was forked from, and the segment of that branch's at whose end.
-    pub origin: Option<Origin>,
-    /// Whether it is a fork's, which a writer of its parent that is slow to record the fork could
-    /// make again were it removed: so a deleted fork's record stays.
-    pub forked: bool,
-    pub deleted: bool,
-    /// Whether it is a point, from its first: no branch to write, but a name of its origin's state,
-    /// which any number of hosts read and fork. It has no lease, no segment and no checkpoint, and
-    /// no writer takes it ([`crate::Error::Point`]; doc-7, Points).
-    pub point: bool,
-    /// The point it is being forked from, until the fork is made ([`crate::branch::fork_point`]):
-    /// until then it holds nothing, and nothing relies on it. The collector gives it up once that
-    /// point is deleted ([`crate::branch::abandon`]).
-    pub forking: Option<u64>,
-    /// Whether a failed fork's deletion made it, from what its host knew of the fork, not its
-    /// parent's writers from an acknowledged segment ([`crate::branch::delete_fork`]): what it
-    /// names may have gone before it landed, no record or state keeping that, so that recovering it
-    /// failing says nothing was lost, if no writer has it.
-    pub claimed: bool,
-}
-
-impl Default for Record {
-    /// A record of this format, of no owner, naming nothing.
-    fn default() -> Self {
-        Self {
-            format: FORMAT,
-            owner: 0,
-            origin: None,
-            forked: false,
-            deleted: false,
-            point: false,
-            forking: None,
-            claimed: false,
-        }
-    }
-}
-
-impl Record {
-    /// A record of this format, of `owner`, naming nothing.
-    pub fn of(owner: u64) -> Self {
-        Self { owner, ..Self::default() }
-    }
-
-    /// The record of `branch` that `bytes` encode, unless it is of a format newer than this one,
-    /// which its first bytes say ([`Error::Format`](crate::Error::Format)).
-    pub fn decode(branch: u64, bytes: &[u8]) -> Result<Self, crate::Error> {
-        let format: u32 = decode(bytes.get(..4).unwrap_or(bytes))?;
-        if format > FORMAT {
-            return Err(crate::Error::Format { branch, format });
-        }
-        decode(bytes)
-    }
-
-    /// Whether it is the record of the child of the fork whose child's owner is `owner`, whoever
-    /// wrote it: the fork's host, as it claimed the child or took a branch of its own for it
-    /// ([`crate::branch::create_forked`]), or its parent's writers. Any other is another branch's,
-    /// whose ID the fork's guest named (TASK-79.82).
-    pub fn of_fork(&self, owner: u64) -> bool {
-        self.forked && self.owner == owner
-    }
 }
 
 /// The child of a fork to `branch`, a branch, of no owner: tests', which name no two children
@@ -342,20 +268,6 @@ mod tests {
     fn leases_decode_as_they_were_written() {
         let lease = Lease { epoch: 4, holder: 9, token: 7 };
         assert_eq!(Lease::decode(&encode(&lease)), Ok(lease));
-    }
-
-    /// A record says its format first: one of a newer format is refused, naming it, whatever
-    /// follows, which this format may not read (TASK-141.2).
-    #[test]
-    fn records_of_newer_formats_are_refused() {
-        let record = Record { owner: 7, forked: true, ..Record::default() };
-        let bytes = encode(&record);
-        assert_eq!(&bytes[..4], &FORMAT.to_le_bytes());
-        assert_eq!(Record::decode(3, &bytes), Ok(record));
-        let mut newer = (FORMAT + 1).to_le_bytes().to_vec();
-        newer.extend_from_slice(b"what a later format holds");
-        assert_eq!(Record::decode(3, &newer), Err(crate::Error::Format { branch: 3, format: 2 }));
-        assert!(matches!(Record::decode(3, &bytes[..3]), Err(crate::Error::Corrupt(_))));
     }
 
     #[test]

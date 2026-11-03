@@ -3,7 +3,7 @@ id: doc-7
 title: 'Object storage: how the host keeps branches in S3 and GCS'
 type: specification
 created_date: '2026-10-17 01:31'
-updated_date: '2026-11-03 11:26'
+updated_date: '2026-11-03 14:39'
 ---
 # Object storage: how the host keeps branches in S3 and GCS
 
@@ -157,6 +157,18 @@ writer taking it, a host attaching it, the collector, whose pass stops, deleting
 bucket it can't read. Every framed object (segments, extents on their own, checkpoints, moves)
 ends with its frame's format, the last byte of its trailer's magic (`fxdaxob1`), which a reader of
 an older frame names rather than calls corrupt. A lease goes with its branch's record.
+
+**Kinds of record** *(added 2026-11-03, TASK-160.14).* A record's flags say together one of six
+kinds of branch, deleted or not: a root, of no parent; a fork's child with a branch of its own, its
+fork made nowhere in the bucket, or one a deletion found no record of; a fork's child, of an
+origin; a point, of an origin; a fork of a point being made, of the point's origin; and a failed
+fork's claim, of an origin. Only a root has no `forked`; only a root and a branch of its own have no
+origin; `point`, `forking` and `claimed` each go with an origin, one at most. Any other combination
+is refused as corrupt as the record is read (`record::Kind`), and what a record allows (whether a
+writer takes it, whether it is a given fork's child, whether the collector may drop it, whether
+its recovery failing lost nothing) is asked of its kind. Every create or update of a record or a
+lease is one compare-and-swap loop (`branch::transition`), its rules in what it makes of what it
+finds.
 
 ## Segments
 

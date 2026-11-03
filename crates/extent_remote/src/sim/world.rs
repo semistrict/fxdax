@@ -9,9 +9,9 @@
 
 use super::bucket::{Direct, Fault, SimBucket};
 use crate::batch::{Batch, Commit};
-use crate::branch::ForkedAt;
 use crate::collector::{self, Options};
 use crate::layout::{Child, Origin};
+use crate::record::Kind;
 use crate::writer::Writer;
 use crate::{Error, branch, recovery, rules};
 use futures::executor::{LocalPool, LocalSpawner, block_on};
@@ -262,10 +262,10 @@ enum Event {
     },
 }
 
-/// A failed fork's deletion, until it is done: where the fork's segment went, as its host knew,
-/// and the task, unless a crash stopped it, for its host's next start to go on with.
+/// A failed fork's deletion, until it is done: the record its fork gives its child, as its host
+/// knew, and the task, unless a crash stopped it, for its host's next start to go on with.
 struct Unfork {
-    origin: ForkedAt,
+    forked: Kind,
     /// Its child's owner.
     owner: u64,
     running: Option<AbortHandle>,
@@ -598,7 +598,7 @@ impl World {
                         drop(self.branches.insert(child, found))
                     }
                     // The point went, or the fork was given up on: its host deletes it.
-                    Err(Error::Deleted) => self.fail_restore(child, restore.origin, base, owner),
+                    Err(Error::Deleted) => self.fail_restore(child, &restore, base),
                     Err(error) => self.violation(format!("forking point {point:x}: {error}")),
                 }
             }
@@ -612,12 +612,13 @@ impl World {
 
     /// `child`, a fork of a point that failed, or a crash left, goes as its host's cleanup deletes
     /// it, or an operator does what no host held: which nothing relies on.
-    fn fail_restore(&mut self, child: u64, origin: Origin, base: Option<u64>, owner: u64) {
+    fn fail_restore(&mut self, child: u64, restore: &Restore, base: Option<u64>) {
+        let Restore { point, origin, owner, .. } = *restore;
         let mut found = Branch::forked(Some(origin), base, false, owner);
         found.deleting = true;
         self.branches.insert(child, found);
-        let origin = ForkedAt::OfPoint(origin);
-        self.unforks.insert(child, Unfork { origin, owner, running: None });
+        let forked = Kind::Forking { origin, point };
+        self.unforks.insert(child, Unfork { forked, owner, running: None });
         self.spawn_unfork(child);
     }
 
@@ -840,7 +841,7 @@ impl World {
             .filter(|(_, found)| found.point)
             .filter_map(|(&point, _)| {
                 let record = block_on(branch::record(&direct, point)).ok()??;
-                Some((point, record.origin?))
+                Some((point, record.origin()?))
             })
             .collect()
     }
@@ -1021,29 +1022,30 @@ impl World {
         let child = candidates[self.rng.random_range(0..candidates.len())];
         let found = self.branches.get_mut(&child).unwrap();
         found.deleting = true;
-        let origin = match found.origin {
-            Some(origin) if found.point => ForkedAt::ToPoint(origin),
-            origin => origin.into(),
+        let forked = match found.origin {
+            Some(origin) if found.point => Kind::Point(origin),
+            Some(origin) => Kind::Fork(origin),
+            None => Kind::Own,
         };
         let owner = found.owner;
-        self.unforks.insert(child, Unfork { origin, owner, running: None });
+        self.unforks.insert(child, Unfork { forked, owner, running: None });
         self.spawn_unfork(child);
     }
 
     /// Deletes what a crash left of the fork of a point to `child`.
     fn give_up_restore(&mut self, child: u64) {
-        let Restore { point, origin, owner, .. } = self.restores.remove(&child).unwrap();
-        let base = self.branches[&point].base;
-        self.fail_restore(child, origin, base, owner);
+        let restore = self.restores.remove(&child).unwrap();
+        let base = self.branches[&restore.point].base;
+        self.fail_restore(child, &restore, base);
     }
 
     /// Deletes `child`, a failed fork's, as its host does.
     fn spawn_unfork(&mut self, child: u64) {
-        let Unfork { origin, owner, .. } = self.unforks[&child];
+        let Unfork { forked, owner, .. } = self.unforks[&child];
         let holder = self.id();
         let (bucket, events) = (self.bucket.clone(), self.events.clone());
         let running = self.spawn(async move {
-            let result = branch::delete_fork(&*bucket, child, origin, owner, holder, 0).await;
+            let result = branch::delete_fork(&*bucket, child, forked, owner, holder, 0).await;
             events.borrow_mut().push(Event::Unforked { child, result });
         });
         self.unforks.get_mut(&child).unwrap().running = Some(running);
@@ -1057,7 +1059,7 @@ impl World {
         let (forks, owner) = (self.id(), self.id());
         let (bucket, events) = (self.bucket.clone(), self.events.clone());
         self.spawn(async move {
-            let deleting = branch::delete_fork(&*bucket, child, None, forks, holder, 0);
+            let deleting = branch::delete_fork(&*bucket, child, Kind::Own, forks, holder, 0);
             let taking = async {
                 branch::create(&*bucket, child, owner).await?;
                 branch::take_lease(&*bucket, &crate::layout::lease(child), other, 0).await
@@ -1091,7 +1093,7 @@ impl World {
         let holder = self.id();
         let (bucket, events) = (self.bucket.clone(), self.events.clone());
         self.spawn(async move {
-            let result = branch::delete_fork(&*bucket, child, None, owner, holder, 0).await;
+            let result = branch::delete_fork(&*bucket, child, Kind::Own, owner, holder, 0).await;
             events.borrow_mut().push(Event::Untwinned { child, result });
         });
     }
@@ -1264,13 +1266,13 @@ impl World {
                     continue;
                 }
             };
-            if record.origin != branch.origin {
-                violations.push(format!("branch {id:x}'s record says {:?}", record.origin));
+            if record.origin() != branch.origin {
+                violations.push(format!("branch {id:x}'s record says {:?}", record.origin()));
             }
-            if record.point != branch.point {
-                violations.push(format!("branch {id:x}'s record says point {}", record.point));
+            if record.is_point() != branch.point {
+                violations.push(format!("branch {id:x}'s record says {:?}", record.kind));
             }
-            if record.forking.is_some() {
+            if record.forking().is_some() {
                 violations.push(format!("branch {id:x}, told made, is being made still"));
             }
             // No placement took it back from a later one.
@@ -1288,7 +1290,7 @@ impl World {
                 }
                 None => {}
             }
-            let recovered = match block_on(recovery::recover(&*direct, id, record.origin)) {
+            let recovered = match block_on(recovery::recover(&*direct, id, record.origin())) {
                 Ok(recovered) => recovered,
                 Err(error) => {
                     violations.push(format!("branch {id:x}: {error}"));
@@ -1661,7 +1663,7 @@ impl World {
             if let crate::layout::Kind::Record { branch } = crate::layout::kind(&key)
                 && let Ok(Some(record)) = block_on(branch::record(&direct, branch))
                 && record.deleted
-                && record.forked
+                && !record.may_drop()
             {
                 continue;
             }

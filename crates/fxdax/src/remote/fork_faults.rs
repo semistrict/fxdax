@@ -281,7 +281,7 @@ impl World {
     }
 
     /// The child's record, if it has one.
-    fn record(&self, child: u64) -> Option<extent_remote::layout::Record> {
+    fn record(&self, child: u64) -> Option<extent_remote::record::Record> {
         block_on(branch::record(&*self.bucket, child)).unwrap()
     }
 
@@ -412,7 +412,7 @@ impl World {
                     !kept(branch)
                         && !self
                             .record(branch)
-                            .is_some_and(|record| record.deleted && record.forked)
+                            .is_some_and(|record| record.deleted && !record.may_drop())
                 }
                 Kind::GcLease => false,
                 Kind::Moves { .. } | Kind::Unknown => true,

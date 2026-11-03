@@ -76,7 +76,7 @@ fn copy_at(host: usize, disk: &Path) -> PathBuf {
 fn in_bucket(bucket: &Arc<Bucket>, child: u64) -> Result<Vec<(ExtentId, Vec<u8>)>, String> {
     block_on(async {
         let record = branch::record(&**bucket, child).await.map_err(|err| err.to_string())?;
-        let origin = record.ok_or("no record")?.origin;
+        let origin = record.ok_or("no record")?.origin();
         let state = recover(&**bucket, child, origin).await.map_err(|err| err.to_string())?.state;
         let mut read = Vec::new();
         for (extent, location) in &state.extents {

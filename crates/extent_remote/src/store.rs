@@ -671,7 +671,7 @@ mod tests {
         let state = recovery::recover(&*bucket, root, None).await.unwrap().state;
         assert_eq!(state.extents.keys().copied().collect::<Vec<_>>(), [large]);
         let origin = Some(Origin { parent: root, at: fork });
-        assert_eq!(branch::record(&*bucket, child).await.unwrap().unwrap().origin, origin);
+        assert_eq!(branch::record(&*bucket, child).await.unwrap().unwrap().origin(), origin);
         let inherited = recovery::recover(&*bucket, child, origin).await.unwrap().state;
         assert_eq!(inherited.extents.keys().copied().collect::<Vec<_>>(), [small, large]);
 

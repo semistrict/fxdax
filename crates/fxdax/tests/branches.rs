@@ -68,7 +68,7 @@ fn rustfs_forks_and_takes_branches() {
     let child_branch = u64::from_str_radix(&child, 16).unwrap();
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let record = runtime.block_on(extent_remote::branch::record(&*bucket, child_branch));
-    assert_eq!(record.unwrap().unwrap().origin.map(|origin| origin.parent), Some(parent_branch));
+    assert_eq!(record.unwrap().unwrap().origin().map(|origin| origin.parent), Some(parent_branch));
     let forked = attached(&path("child"), &bucket);
     assert_eq!(forked.branch(), child_branch);
     assert_eq!(read(&forked, extent, data.len()), data);

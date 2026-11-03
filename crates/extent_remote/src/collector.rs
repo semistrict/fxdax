@@ -39,8 +39,9 @@
 //! all; and a collector reads a record again only once it changed ([`Collector`], TASK-92.7).
 
 use crate::bucket::{self, Bucket, Meta};
-use crate::layout::{self, Kind, Location, Moves, Origin, Record};
+use crate::layout::{self, Kind, Location, Moves, Origin};
 use crate::moves::{Moved, MovesMaps};
+use crate::record::Record;
 use crate::recovery::{self, Checkpoints, Layers, Recovered, State};
 use crate::{Error, branch, rules};
 use futures::StreamExt as _;
@@ -190,7 +191,7 @@ impl Collector {
 async fn abandon(bucket: &impl Bucket, records: &mut BTreeMap<u64, Record>) -> Result<(), Error> {
     let gone = |point: u64| records.get(&point).is_none_or(|record| record.deleted);
     let abandoned: Vec<u64> = (records.iter())
-        .filter(|(_, record)| !record.deleted && record.forking.is_some_and(gone))
+        .filter(|(_, record)| !record.deleted && record.forking().is_some_and(gone))
         .map(|(&child, _)| child)
         .collect();
     for child in abandoned {
@@ -242,7 +243,7 @@ async fn recover_live(
     let mut queue: BTreeSet<(Option<(u64, u64)>, u64)> = records
         .iter()
         .filter(|(branch, record)| !record.deleted && !live.taken.contains(branch))
-        .map(|(&branch, record)| (origin(record.origin), branch))
+        .map(|(&branch, record)| (origin(record.origin()), branch))
         .collect();
     while !queue.is_empty() {
         // Each once, queued by its record, or by its parent's state, or both.
@@ -263,7 +264,7 @@ async fn recover_live(
                 // Nor is a failed fork's claim no writer has: nothing ever read what it names.
                 Err(Error::Lost(lost)) => match branch::record(bucket, branch).await? {
                     Some(record) if record.deleted => continue,
-                    Some(record) if record.claimed && branch::unwritten(bucket, branch).await? => {
+                    Some(record) if branch::lost_is_ok(bucket, branch, &record).await? => {
                         branch::abandon_claim(bucket, branch).await?;
                         continue;
                     }
@@ -514,7 +515,7 @@ impl Pass {
                 // A deleted branch's record goes once no branch forked from it needs it, unless it
                 // is a fork's. A lease goes with its branch: writers do not take a deleted one.
                 Kind::Record { branch } => {
-                    self.records.get(&branch).is_some_and(|record| record.deleted && !record.forked)
+                    self.records.get(&branch).is_some_and(Record::may_drop)
                         && !self.touched.contains(key)
                 }
                 Kind::Lease { branch } => {
@@ -1004,7 +1005,7 @@ mod tests {
             assert!(refused.refused(CHILD));
             refused.checkpoint().await.unwrap();
             let record = branch::record(&*bucket, CHILD).await.unwrap().unwrap();
-            assert_eq!(record.origin, Some(Origin { parent: PARENT, at }));
+            assert_eq!(record.origin(), Some(Origin { parent: PARENT, at }));
             (extent, held_in)
         });
         block_on(collect(&*bucket, 1, &KEEP)).unwrap();
@@ -1073,7 +1074,7 @@ mod tests {
     impl Bucket for DeletedAt {
         fn get(&self, key: &str) -> impl Future<Output = Result<Object, BucketError>> + Send {
             if key == self.key && !self.done.swap(true, Ordering::Relaxed) {
-                let record = Record { forked: true, deleted: true, ..Record::default() };
+                let record = Record { deleted: true, ..crate::record::Kind::Own.of(0) };
                 let (key, bytes) = (layout::record(self.child), layout::encode(&record));
                 self.bucket.put(&key, bytes, PutMode::Overwrite).now_or_never().unwrap().unwrap();
             }
@@ -1235,7 +1236,7 @@ mod tests {
         block_on(collect(&during, 1, &now)).unwrap();
         block_on(async {
             let record = branch::record(&*direct, RESTORED).await.unwrap();
-            let recovered = recovery::recover(&*direct, RESTORED, record.unwrap().origin).await;
+            let recovered = recovery::recover(&*direct, RESTORED, record.unwrap().origin()).await;
             let location = recovered.unwrap().state.extents[&extent].clone();
             assert_eq!(crate::read(&direct, extent, &location).await.unwrap(), b"held");
         });

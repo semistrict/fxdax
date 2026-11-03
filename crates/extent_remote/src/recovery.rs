@@ -19,7 +19,8 @@
 //! started from has come: if one has, the segment may be one it covers, gone, and it starts again.
 
 use crate::bucket::{self, Bucket};
-use crate::layout::{self, Footer, Fork, Location, Origin, Record, Segment};
+use crate::layout::{self, Footer, Fork, Location, Origin, Segment};
+use crate::record::Record;
 use crate::{Error, object, rules};
 use extent_frame::spent::Spent;
 use futures::future::{BoxFuture, FutureExt as _, Shared};
@@ -463,7 +464,7 @@ fn state_at<'a, B: Bucket>(
                 };
                 touched.insert(key);
                 let record = Record::decode(branch, &object.bytes)?;
-                match record.origin {
+                match record.origin() {
                     None => Layers::of(State::new(branch)),
                     Some(origin) => {
                         let inherited =
@@ -632,7 +633,7 @@ mod tests {
             parent.upload(at).await.unwrap();
             parent.acknowledge().await.unwrap();
             let origin = Some(Origin { parent: 1, at });
-            assert_eq!(branch::record(&*bucket, 2).await.unwrap().unwrap().origin, origin);
+            assert_eq!(branch::record(&*bucket, 2).await.unwrap().unwrap().origin(), origin);
 
             let child = Writer::open(bucket.clone(), 2, 11, 0).await.unwrap();
             let seq = child.checkpoint().await.unwrap().unwrap();
