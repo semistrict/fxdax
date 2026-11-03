@@ -426,6 +426,11 @@ struct fxfs_dax_file {
 	 */
 	loff_t unwritten;
 	int unwritten_err;
+	/*
+	 * fxdax: the chunk whose slice the write under way left behind its blocks, which went through
+	 * another region, plus one, or 0: under the inode's write lock (fxfs_dax_follow_slice).
+	 */
+	pgoff_t slice_left;
 };
 
 /* A range of the window. */
@@ -3144,6 +3149,7 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 				 */
 				if (range->region) {
 					fxfs_dax_fall_behind(inode, range, -EXDEV);
+					file->slice_left = range->chunk + 1;
 					atomic64_inc(&dax->writes_through);
 					break;
 				}
@@ -3588,6 +3594,26 @@ static ssize_t fxfs_dax_committed(struct kiocb *iocb, struct iov_iter *from, ssi
 }
 
 /*
+ * fxdax: maps again at once the chunk whose slice `file`'s write left behind its blocks, which went
+ * through another region (fxfs_dax_iomap_write): a slice of that region, which maps it already,
+ * as the write would have, had the blocks moved first. Else the next write found it behind, and
+ * made room in Fxfs again to map it, as for a chunk with no range. Failing, it is mapped as the
+ * next use needs it.
+ */
+static void fxfs_dax_follow_slice(struct inode *inode, struct fxfs_dax_file *file)
+{
+	pgoff_t chunk = file->slice_left - 1;
+	struct fxfs_dax_range *range;
+
+	file->slice_left = 0;
+	if (fxfs_dax_drop_slice(inode, (loff_t)chunk << FXFS_DAX_SHIFT, true))
+		return;
+	range = fxfs_dax_get_range(inode, chunk, 0, 0, false);
+	if (!IS_ERR(range))
+		fxfs_dax_put_range(fxfs_dax_of(inode), range);
+}
+
+/*
  * Writes through the window, copying with page faults disabled: in the gate, a fault on the
  * user's memory could wait for a seal that waits for the gate. The memory is faulted in first, and
  * again whenever a copy stops short. fxdax: and bytes are taken in hand, the rest of the chunk's,
@@ -3655,6 +3681,8 @@ static ssize_t fxfs_dax_write_iter(struct kiocb *iocb, struct iov_iter *from)
 		ret = dax_iomap_rw(iocb, source, &fxfs_dax_iomap_ops);
 		pagefault_enable();
 		ret = fxfs_dax_committed(iocb, source, ret);
+		if (file->slice_left)
+			fxfs_dax_follow_slice(inode, file);
 		fxfs_dax_lap(&dax->write_rw_ns, &lap);
 		sealed = ret < 0 ? fxfs_dax_make_memory(inode, &room, ret) : 0;
 		if (ret > 0) {
