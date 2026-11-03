@@ -456,6 +456,11 @@ impl Connection {
     /// fxdax: whether its VM process, should it live on, reaches pages still: those its window has
     /// mapped, or those of an operation taking access away it left unacknowledged (TASK-79.100).
     fn reaches_pages(&self) -> bool {
+        // fxdax: a fenced store's window, which a panic may have left half changed, isn't looked
+        // at: it may, as far as anyone knows (TASK-153.16).
+        if self.store.get().is_some_and(|store| store.is_fenced()) {
+            return true;
+        }
         let window = self.window.lock().unwrap();
         self.peer.acks.unacknowledged() || window.as_ref().is_some_and(DaxWindow::maps_pages)
     }
@@ -547,7 +552,8 @@ impl Drop for Turn {
 /// and not after, as its VM process's room counts it then ([`Peer::room`]), rather than both for
 /// a while, which held a VM process keeping to the protocol's bounds past them (TASK-79.16); and,
 /// its serving panicking, it answers `EIO` as it is dropped, rather than leave its VM process
-/// waiting for good, those bytes counted for good.
+/// waiting for good, those bytes counted for good; and fences its store, which the panic went
+/// through: past the store's locks, which fence it themselves (`crate::fence`, TASK-153.16).
 struct Answer {
     connection: Arc<Connection>,
     request: Header,
@@ -626,6 +632,12 @@ impl Answer {
 
 impl Drop for Answer {
     fn drop(&mut self) {
+        if std::thread::panicking()
+            && let Some(store) = self.connection.store.get()
+        {
+            let kind = self.request.kind;
+            store.fence(|| format!("a panic serving request {kind}"));
+        }
         if !self.sent {
             let reply = Header::new(REPLY, self.request.id);
             self.reply(Err(Errno::EIO), reply, Vec::new(), Vec::new());
@@ -887,6 +899,13 @@ impl Connection {
     /// (TASK-92.5).
     fn serve_in_turn(self: Arc<Self>, message: Message) {
         let (turn, answer) = (Turn::new(self.clone()), Answer::new(&self, message.header));
+        // fxdax: a store a panic went through serves nothing more, of whatever the panic left half
+        // done (`crate::fence`, TASK-153.16).
+        if self.store.get().is_some_and(|store| store.is_fenced()) {
+            let reply = Header::new(REPLY, message.header.id);
+            answer.send(Err(Errno::EIO), reply, Vec::new(), Vec::new());
+            return;
+        }
         match message.header.kind {
             FAULT => serve_future(turn, self.fault(message, answer)),
             OPEN if message.header.flags & OPEN_READ_ONLY == 0 => {
@@ -1478,9 +1497,12 @@ async fn flush_behind(store: Arc<ExtentStore>, mut stopped: tokio::sync::oneshot
                 if due && idle {
                     let cleaned = store.clone();
                     cleaning = Some(tokio::spawn(async move {
-                        if let Some(Err(err)) = CLEANERS.call(move || cleaned.clean_behind()).await
-                        {
-                            log::error!("extentd: cleaning a store: {err:?}");
+                        let cleaning = cleaned.clone();
+                        match CLEANERS.call(move || cleaning.clean_behind()).await {
+                            Some(Ok(())) => {}
+                            Some(Err(err)) => log::error!("extentd: cleaning a store: {err:?}"),
+                            // fxdax: its panic logged, which went through the store (TASK-153.16).
+                            None => cleaned.fence(|| "a panic cleaning it".into()),
                         }
                     }));
                 }
@@ -1492,8 +1514,11 @@ async fn flush_behind(store: Arc<ExtentStore>, mut stopped: tokio::sync::oneshot
                 log::error!("extentd: making a store's commits durable: {err:?}");
                 break;
             }
-            // Its panic logged.
-            None => break,
+            // Its panic logged, which went through the store (TASK-153.16).
+            None => {
+                store.fence(|| "a panic making its commits durable".into());
+                break;
+            }
         }
     }
     if let Some(cleaning) = cleaning

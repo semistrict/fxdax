@@ -4451,3 +4451,99 @@ fn whatever_a_vm_process_says_harms_no_other() {
     assert!(restored > 0, "{restored} restores served");
     drop(other);
 }
+
+/// TASK-153.16: a panic holding a store's lock, serving a VM process's request, fences the store,
+/// alone: the request fails with `EIO`, and so does each after it, which panics no more, as each
+/// did at the lock's poison in TASK-104, TASK-105 and TASK-150.20, those that take no lock of the
+/// store's too. Another VM process's store serves on. Its VM process gone, the store opens anew,
+/// as of its last commit, and serves.
+#[test]
+fn a_panic_holding_a_stores_lock_fences_it_alone() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static PANICS: AtomicU64 = AtomicU64::new(0);
+    let panicked = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        PANICS.fetch_add(1, Ordering::Relaxed);
+        panicked(info);
+    }));
+
+    host();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("store");
+    let (store, served) = connect(&path, 1 << 24);
+    let (other, other_served) = connect(&dir.path().join("other"), 1 << 24);
+    let ours = |sequence| ExtentId { branch: store.branch(), sequence };
+    let (kept, written) = (ours(1), ours(2));
+    write(&store, kept, 0, &pattern(1, BLOCK)).unwrap();
+    store.commit(None).unwrap();
+
+    crate::fence::tests::panic_holding("open");
+    assert_eq!(write(&store, written, 0, &pattern(2, BLOCK)), Err(Errno::EIO));
+    assert_eq!(PANICS.load(Ordering::Relaxed), 1);
+    assert_eq!(read(&store, kept, 0, BLOCK), Err(Errno::EIO));
+    assert_eq!(write(&store, ours(3), 0, &pattern(3, BLOCK)), Err(Errno::EIO));
+    assert_eq!(store.commit(None), Err(Errno::EIO));
+    // Which takes no lock of the store's.
+    assert_eq!(store.info().map(|info| info.capacity), Err(Errno::EIO));
+    assert_eq!(PANICS.load(Ordering::Relaxed), 1);
+
+    let theirs = ExtentId { branch: other.branch(), sequence: 1 };
+    assert_eq!(write(&other, theirs, 0, &pattern(4, BLOCK)), Ok(()));
+    assert_eq!(other.commit(None), Ok(()));
+    assert_eq!(read(&other, theirs, 0, BLOCK), Ok(pattern(4, BLOCK)));
+
+    drop(store);
+    served.join().unwrap();
+    let (store, served) = connect(&path, 1 << 24);
+    assert_eq!(read(&store, kept, 0, BLOCK), Ok(pattern(1, BLOCK)));
+    assert_eq!(write(&store, written, 0, &pattern(5, BLOCK)), Ok(()));
+    assert_eq!(store.commit(None), Ok(()));
+    assert_eq!(read(&store, written, 0, BLOCK), Ok(pattern(5, BLOCK)));
+    assert_eq!(PANICS.load(Ordering::Relaxed), 1);
+    for (store, served) in [(store, served), (other, other_served)] {
+        drop(store);
+        served.join().unwrap();
+    }
+}
+
+/// TASK-153.16: a panic serving a VM process's request past the store's locks, which poisons
+/// none of them, as one in `extent_store` beneath them may (TASK-79.1, TASK-79.80), fences the
+/// store as well: a read after it, which would find nothing amiss, fails with `EIO`. Its VM
+/// process gone, the store opens anew as of its last commit.
+#[test]
+fn a_panic_past_a_stores_locks_fences_it() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static PANICS: AtomicU64 = AtomicU64::new(0);
+    let panicked = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        PANICS.fetch_add(1, Ordering::Relaxed);
+        panicked(info);
+    }));
+
+    host();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("store");
+    let (store, served) = connect(&path, 1 << 24);
+    let ours = |sequence| ExtentId { branch: store.branch(), sequence };
+    let (kept, written) = (ours(1), ours(2));
+    write(&store, kept, 0, &pattern(1, BLOCK)).unwrap();
+    store.commit(None).unwrap();
+    write(&store, written, 0, &pattern(2, BLOCK)).unwrap();
+
+    fail::cfg("extentd::commit", "panic").unwrap();
+    assert_eq!(store.commit(None), Err(Errno::EIO));
+    fail::remove("extentd::commit");
+    assert_eq!(read(&store, kept, 0, BLOCK), Err(Errno::EIO));
+    assert_eq!(PANICS.load(Ordering::Relaxed), 1);
+
+    drop(store);
+    served.join().unwrap();
+    let (store, served) = connect(&path, 1 << 24);
+    assert_eq!(read(&store, kept, 0, BLOCK), Ok(pattern(1, BLOCK)));
+    assert_eq!(read(&store, written, 0, BLOCK), Err(Errno::ENOENT));
+    assert_eq!(PANICS.load(Ordering::Relaxed), 1);
+    drop(store);
+    served.join().unwrap();
+}
