@@ -1,9 +1,10 @@
 ---
 id: TASK-150.19
 title: 'On a truly full filesystem, truncated bytes can come back'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-01 21:43'
+updated_date: '2026-11-03 10:30'
 labels: []
 dependencies: []
 parent_task_id: TASK-150
@@ -20,15 +21,27 @@ From TASK-149.8's hunts, confirmed by the model test: zero_tail gets NoSpace on 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The user has chosen how to close it
-- [ ] #2 A test fails on the code as it stands, pinned once it can land
-- [ ] #3 Fixed, the test red again with the fix taken out
-- [ ] #4 The notes name the blind spot and what a search around it found
+- [x] #1 The user has chosen how to close it
+- [x] #2 A test fails on the code as it stands, pinned once it can land
+- [x] #3 Fixed, the test red again with the fix taken out
+- [x] #4 The notes name the blind spot and what a search around it found
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-11-03: fixed by TASK-153.4 (5afb21c77). The choice, every non-DAX growth zeroing the tail through one path, is recorded under # Decisions in OPEN_QUESTIONS.md, as the never-ask rule has it, for the user to overturn. TASK-149.8's replay now lands as a_truncate_with_no_block_to_zero_its_tail_in_leaves_nothing_past_the_end: red before the fix (differing at 54584, the truncated size, after a clone grew the file), green after, red again with txn_grow_size's zeroing taken out. Blind spot: the eager zero at the cut stood for what each growth should have done, so no test grew a file past a tail a cut had left unzeroed: every_growth_finds_what_a_cut_left_past_the_end_zeroed now does, by each way a file grows. Search around it: writes past the end, allocations and clones all grew without zeroing; a guest clone grew the inode without zeroing its cached last page (store_past_end_then_cloned).
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Truncated bytes no longer come back after a truncate with no room to zero its tail: every growth zeroes it instead (TASK-153.4, 5afb21c77). The replay is pinned, red before and with the fix out. Verified with TASK-153.4's runs: macOS, and on GCE the Linux workspace, guest checks, script oracle and xfstests, DAX and not.
+<!-- SECTION:FINAL_SUMMARY:END -->

@@ -46,9 +46,9 @@ No long-lived branches now (AGENTS.md). Branches already in main went. Unmerged 
 
 ## Truncate on a full disk: one path zeroes the tail (TASK-150.19)
 
-Rarely, truncated bytes come back on a truly full filesystem. Decided: every non-DAX growth takes one path that zeroes the tail, with one owner of file size (TASK-153.4).
+Rarely, truncated bytes come back on a truly full filesystem. Decided: every non-DAX growth takes one path that zeroes the tail, with one owner of file size (TASK-153.4). Done (2026-11-03): a write raises the size through `txn_grow_size`, and a clone and an allocation zero first. Each writes the block only if it isn't zeros already, so a writeback's growth takes no block it didn't reserve. The cut still zeroes eagerly when it has room, so that what a mapping of the last page shows past the end is zeros; with no room, it no longer matters to the data.
 **Instead:** a mid-block shrink could return `NoSpace`, partly reversing TASK-60.
-**Undoing it:** before TASK-153.4 lands, nothing; after, the single path stays and only the shrink's error changes.
+**Undoing it:** the single path stays; only the shrink's error changes.
 
 ## Corrupted file data: the host's checksums catch it (TASK-153.11)
 
