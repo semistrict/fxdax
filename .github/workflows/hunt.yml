@@ -1,0 +1,145 @@
+# Copyright 2026 The fxdax Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# Hunts for bugs the seeds CI replays on every push don't reach (TASK-160.28): each night, guest/sim's
+# zloop over 20,000 seeds of interleave and failures it hasn't run, from a first seed that moves
+# with the run's number, and fxfs-posix's model and corruption tests at 50 times their cases, from
+# seeds of the run's own. CPU alone, no secrets. What failed is kept, a run's artifact, with how to
+# run it again; an open bug's failure, as guest/sim/known-failures and crates/fxfs-posix/known-panics
+# list them, doesn't fail a hunt.
+name: Hunt
+
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+    inputs:
+      first:
+        description: "zloop's first seed (default: 3,001 + 20,000 a run before this one)"
+        required: false
+      mutant:
+        description: 'A guest/sim mutant to put in, by name (mutants/NAME.patch): to see a hunt find it'
+        required: false
+      posix:
+        description: "fxfs-posix's tests too"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  zloop:
+    name: zloop (${{ matrix.shard }} of 4)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    env:
+      KERNEL: ${{ github.workspace }}/target/sim-kernel
+      BUILD: ${{ github.workspace }}/target/sim
+      SEEDS: 5000
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install the build's tools
+        run: sudo apt-get update && sudo apt-get install -y clang lld
+      - uses: actions/cache@v6
+        with:
+          path: target/sim-kernel
+          key: sim-kernel-${{ hashFiles('scripts/build-guest-kernel.sh', 'guest/linux/patches/*') }}
+      - name: Fetch the kernel's sources
+        run: guest/sim/kernel-tree.sh "$KERNEL"
+      # Seeds past CI's 3,000, 20,000 a run, the shards a quarter each.
+      - name: Run seeds no run has
+        env:
+          FIRST: ${{ inputs.first }}
+          MUTANT: ${{ inputs.mutant }}
+          SHARD: ${{ matrix.shard }}
+        run: |
+          first=$(( ${FIRST:-$((3001 + (GITHUB_RUN_NUMBER - 1) * 4 * SEEDS))} + SHARD * SEEDS ))
+          patch=()
+          [[ -z $MUTANT ]] || patch=(-p "mutants/$MUTANT.patch")
+          mkdir -p "$BUILD/logs"
+          echo "At $GITHUB_SHA: guest/sim/kernel-tree.sh KERNEL fetches the kernel's tree; then," \
+            "with KERNEL and BUILD set, replay says how to run each failure again." > "$BUILD/logs/README"
+          status=0
+          guest/sim/zloop.sh -f "$first" -s "$SEEDS" -d "$BUILD/logs" "${patch[@]}" || status=$?
+          {
+            echo "### zloop: seeds $first to $((first + SEEDS - 1))${MUTANT:+, with $MUTANT}"
+            echo '```'
+            cat "$BUILD/logs/failures"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit $status
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: zloop-${{ matrix.shard }}
+          path: target/sim/logs
+
+  posix:
+    name: fxfs-posix (${{ matrix.shard }} of 4)
+    if: github.event_name == 'schedule' || inputs.posix
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    env:
+      # 50 times the tests' own 96 and 120, a quarter a shard.
+      FXDAX_MODEL_CASES: 1200
+      FXDAX_CORRUPT_CASES: 1500
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: hunt-posix-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: hunt-posix-${{ runner.os }}-
+      - name: Build
+        run: cargo nextest run -p fxfs-posix --no-run
+      # Seeds of this run and shard alone: the corruption cases past CI's 120, and proptest's
+      # sequences, random on every other run, from a seed that replays them.
+      - name: The model and corruption tests, at 50 times their cases
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          index=$(( (GITHUB_RUN_NUMBER - 1) * 4 + SHARD ))
+          export FXDAX_CORRUPT_SEED=$(( 120 + index * FXDAX_CORRUPT_CASES )) PROPTEST_RNG_SEED=$(( index + 1 ))
+          seeds="PROPTEST_RNG_SEED=$PROPTEST_RNG_SEED FXDAX_MODEL_CASES=$FXDAX_MODEL_CASES FXDAX_CORRUPT_SEED=$FXDAX_CORRUPT_SEED FXDAX_CORRUPT_CASES=$FXDAX_CORRUPT_CASES"
+          mkdir -p hunt
+          status=0
+          cargo nextest run -p fxfs-posix --no-fail-fast -E 'test(/^(model|corrupt)_tests::/)' \
+            > hunt/nextest.log 2>&1 || status=$?
+          cat hunt/nextest.log
+          {
+            echo "# At $GITHUB_SHA, each test that failed, again (a corruption case's seed alone, as"
+            echo "# its panic says, with FXDAX_CORRUPT_SEED=SEED FXDAX_CORRUPT_CASES=1 and --no-capture):"
+            sed -nE 's/^ *FAIL \[.*\] (\([0-9]+\/[0-9]+\) )?fxfs-posix (.*)$/\2/p' hunt/nextest.log | sort -u |
+              while read -r test; do
+                echo "$seeds cargo nextest run -p fxfs-posix -E 'test(=$test)'"
+              done
+          } > hunt/replay
+          {
+            echo "### fxfs-posix: $seeds"
+            echo '```'
+            grep -E '^ *(FAIL|SIGABRT|TIMEOUT) |panics at|Summary' hunt/nextest.log || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit $status
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: posix-${{ matrix.shard }}
+          path: hunt
