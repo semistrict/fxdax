@@ -54,6 +54,12 @@ A byte damaged in storage, by a bad disk or a bad upload, must make a read fail 
 **Instead:** the guest checks too, costing reads on the fast path.
 **Undoing it:** adding guest checks later doesn't conflict with anything this does.
 
+## A framed file's raw parts are read whole and checked, as compressed ones are (TASK-153.11)
+
+A part zstd doesn't shrink is stored raw, and reads took its bytes in place, never checking its CRC: a flipped byte in an incompressible extent, local or a fork's base's, read back wrong, and cleaning and seals copied it under a CRC of its own. Decided: a raw part is read whole, checked, and kept with the parts unpacked lately, in the buffer it was read into. Measured (pagein-bench, M-series, 256 MiB, 3 pairs of runs): a raw part's page-in, which reads it whole anyway, +10-30 µs of CPU on about 185 µs; the CRC is 16 µs a MiB. A cleaning pass of 4 KiB raw extents (store-bench `cleaning`, in memory) 15 ms → 23-37 ms for 23 MiB, as each 4 KiB read reads its 1 MiB part. The uploader also checks every file it puts as it is (`read_object`): about 0.5 ms for a 32 MiB segment.
+**Instead:** a CRC per 4 KiB block in the table, a format change, so that small reads of raw parts read only their block.
+**Undoing it:** `Source::locate` back to `Part::Data` for raw parts of framed files.
+
 ## A fork of an extent mapped writably holds it as of the last commit (TASK-153.3)
 
 Today such a fork gets `EBUSY` (TASK-150.7). Decided: the fork holds the extent as of the last commit, as the spec says, so the host half of TASK-153.3 goes ahead. This reaches only a VM process's own raw FORK: production forks use `fork_quiescent`.
