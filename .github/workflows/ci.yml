@@ -51,6 +51,14 @@ jobs:
       # scripts/lima-setup.sh gives it to the kvm group.
       - name: Let the tests use userfaultfd
         run: sudo setfacl -m "u:$USER:rw" /dev/userfaultfd
+      # The tests' stores, on the runner's scratch disk: on the root disk, beside the build, they
+      # ran out of room (ENOSPC, three extentd tests failing).
+      - name: Give the tests' files the scratch disk
+        run: |
+          sudo mkdir -p /mnt/tmp
+          sudo chown "$USER" /mnt/tmp
+          echo TMPDIR=/mnt/tmp >> "$GITHUB_ENV"
+          df -h / /mnt
       - name: Unit tests
         run: cargo nextest run --workspace
 
