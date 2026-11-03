@@ -2403,6 +2403,20 @@ loff_t fxfs_vfs_remap_file_range(struct file *file_in, loff_t pos_in, struct fil
 		goto out;
 	blocks = round_up(len, i_blocksize(src));
 	size = max(i_size_read(dst), pos_out + len);
+	/*
+	 * fxdax: as every growth past the end: what the cached page held past it, up to the clone,
+	 * is no data, stores through a mapping there for one (TASK-79.53, TASK-153.4). A clone from
+	 * before the end replaces the last block whole. Written back, as the VFS wrote back the
+	 * clone's range, so that its folio, which may reach into that range, goes clean.
+	 */
+	if (!IS_DAX(dst) && pos_out > i_size_read(dst)) {
+		err = fxfs_vfs_zero_past_end(dst, i_size_read(dst), pos_out);
+		if (!err)
+			err = filemap_write_and_wait_range(dst->i_mapping, i_size_read(dst),
+							   pos_out - 1);
+		if (err)
+			goto out;
+	}
 	err = fxfs_dax_remap(src, pos_in, blocks, i_size_read(src));
 	if (!err)
 		err = fxfs_dax_remap(dst, pos_out, blocks, size);

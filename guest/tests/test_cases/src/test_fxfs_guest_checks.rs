@@ -4136,6 +4136,46 @@ pub(crate) mod guest {
         fs::remove_file(&name).unwrap();
     }
 
+    /// As `test_store_past_end`, the file grown by a clone past its end, which grew the inode
+    /// without zeroing what the cached page held past the old end, and Fxfs's file without zeroing
+    /// what its last block held there (TASK-153.4).
+    fn test_store_past_end_then_cloned() {
+        use std::os::unix::fs::FileExt;
+        const PAGE: usize = 4096;
+        let (name, source_name) = (path("store-past-end-cloned"), path("store-past-end-source"));
+        fs::write(&source_name, vec![b'E'; PAGE]).unwrap();
+        fs::write(&name, vec![b'D'; 100]).unwrap();
+        let source = fs::File::open(&source_name).unwrap();
+        let file = fs::OpenOptions::new().read(true).write(true).open(&name).unwrap();
+        let map = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                PAGE,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                file.as_raw_fd(),
+                0,
+            )
+        };
+        assert_ne!(map, libc::MAP_FAILED, "mmap: {}", std::io::Error::last_os_error());
+        unsafe { map.cast::<u8>().add(1000).write_volatile(b'X') };
+        assert_eq!(unsafe { libc::msync(map, PAGE, libc::MS_SYNC) }, 0);
+        clone_range(&file, &source, 0, PAGE as u64, 2 * PAGE as u64);
+        let mut read = vec![0xff; 3 * PAGE];
+        file.read_exact_at(&mut read, 0).unwrap();
+        let mut expected = vec![0; 3 * PAGE];
+        expected[..100].fill(b'D');
+        expected[2 * PAGE..].fill(b'E');
+        assert!(read == expected, "past the old end: {:?}", &read[996..1004]);
+        assert_eq!(unsafe { libc::munmap(map, PAGE) }, 0);
+        drop((file, source));
+        evict(&name);
+        let read = fs::read(&name).unwrap();
+        assert!(read == expected, "read in again, past the old end: {:?}", &read[996..1004]);
+        fs::remove_file(&name).unwrap();
+        fs::remove_file(&source_name).unwrap();
+    }
+
     /// fxdax: sub-page appends into a block already writable take no Fxfs transaction of their own
     /// (TASK-92.28). fdatasync writes the deferred size, and eviction finds all the appended data.
     fn test_append_writable() {
@@ -4756,6 +4796,7 @@ pub(crate) mod guest {
                 ("direct_read_past_end", &test_direct_read_past_end),
                 ("store_past_end", &test_store_past_end),
                 ("store_past_end_then_written", &test_store_past_end_then_written),
+                ("store_past_end_then_cloned", &test_store_past_end_then_cloned),
                 ("read_into_own_mapping", &test_read_into_own_mapping),
                 ("write_over_mapped_hole", &test_write_over_mapped_hole),
                 ("file_handles", &test_file_handles),

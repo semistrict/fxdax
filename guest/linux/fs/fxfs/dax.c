@@ -4651,10 +4651,34 @@ static int fxfs_dax_zero_tail(struct inode *inode, loff_t old, loff_t size)
 }
 
 /*
+ * Readies the last block of `inode`, `old` bytes long, for Fxfs growing the file to `size` to copy
+ * it, zeroed past `old`, through the device: what the window holds past the end zeroed, its stores
+ * sealed, and its mapping dropped, which the copy replaces, or the window could hide the copy until
+ * eviction. Fxfs's growths zero the block so: a truncate's, and a clone's (TASK-153.4). With
+ * the invalidate_lock held for writing.
+ */
+static int fxfs_dax_grow_begin(struct inode *inode, loff_t old, loff_t size)
+{
+	int err;
+
+	if (size <= old || PAGE_ALIGNED(old))
+		return 0;
+	err = fxfs_dax_zero_tail(inode, old, size);
+	if (!err)
+		err = fxfs_nofs(fxfs_fsync(fxfs_vfs_fs(inode->i_sb)));
+	if (!err)
+		err = fxfs_dax_break_layouts(inode, round_down(old, PAGE_SIZE));
+	if (!err)
+		err = fxfs_dax_drop(inode, old >> FXFS_DAX_SHIFT, old >> FXFS_DAX_SHIFT, -1);
+	return err;
+}
+
+/*
  * Their DAX entries go, once their pages are unused, and the window's ranges of them, to be mapped
  * again as they are after the reflink: a source's blocks are shared from then on, which its ranges
  * may map writably, to be written in place (fxfs_dax_map_extents), as they can't be any more; and a
- * destination's are other blocks. And the destination's ranges too small for its new size.
+ * destination's are other blocks. And the destination's ranges too small for its new size, and its
+ * last block, which Fxfs zeroes past the end as it grows (fxfs_dax_grow_begin).
  */
 int fxfs_dax_remap(struct inode *inode, loff_t pos, loff_t len, loff_t size)
 {
@@ -4666,6 +4690,8 @@ int fxfs_dax_remap(struct inode *inode, loff_t pos, loff_t len, loff_t size)
 	down_write(&file->sem);
 	err = fxfs_dax_write_size_locked(inode);
 	up_write(&file->sem);
+	if (!err)
+		err = fxfs_dax_grow_begin(inode, i_size_read(inode), size);
 	if (err)
 		return err;
 	err = fxfs_dax_break_layouts(inode, round_down(pos, PAGE_SIZE));
@@ -4719,29 +4745,11 @@ int fxfs_dax_resize_begin(struct inode *inode, loff_t size)
 		return err;
 	}
 	if (size >= i_size_read(inode)) {
-		loff_t old = i_size_read(inode);
-
-		/*
-		 * An ordinary grow copies and zeroes the last partial block through the device.
-		 * Seal its window stores first, then drop its mapping, which the copy replaces:
-		 * otherwise the window can hide a zero-filled replacement until eviction.
-		 */
-		if (size > old && !PAGE_ALIGNED(old)) {
-			err = fxfs_dax_zero_tail(inode, old, size);
-			if (!err)
-				err = fxfs_nofs(fxfs_fsync(fxfs_vfs_fs(inode->i_sb)));
-			if (!err)
-				err = fxfs_dax_break_layouts(inode, round_down(old, PAGE_SIZE));
-			if (!err)
-				err = fxfs_dax_drop(inode, old >> FXFS_DAX_SHIFT,
-						    old >> FXFS_DAX_SHIFT, -1);
-			if (err) {
-				filemap_invalidate_unlock(inode->i_mapping);
-				return err;
-			}
-		}
+		/* An ordinary grow copies and zeroes the last partial block through the device. */
+		err = fxfs_dax_grow_begin(inode, i_size_read(inode), size);
 		/* The ranges the file's end moves into, mapped as large as they need. */
-		err = fxfs_dax_fit(inode, size);
+		if (!err)
+			err = fxfs_dax_fit(inode, size);
 		if (err)
 			filemap_invalidate_unlock(inode->i_mapping);
 		return err;
