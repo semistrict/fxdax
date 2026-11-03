@@ -386,7 +386,7 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
         extent: ExtentId,
         extent_offset: u64,
         crypt_ctx: Option<(u64, u8)>,
-        options: WriteOptions,
+        options: WriteOptions<'_>,
     ) -> Result<MaybeChecksums, Error> {
         if self.trace() {
             info!(
@@ -1238,7 +1238,7 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
         key_id: Option<u64>,
         extent: ExtentId,
         mut extent_offset: u64,
-        options: WriteOptions,
+        options: WriteOptions<'_>,
     ) -> Result<MaybeChecksums, Error> {
         let mut transfer_buf;
         let block_size = self.block_size();

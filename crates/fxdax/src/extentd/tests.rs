@@ -544,16 +544,52 @@ fn writes_with_barriers() {
         ExtentId { branch: store.branch(), sequence: 2 },
     );
     let data = pattern(1, BLOCK);
-    let committed = WriteBarriers { before: false, after: Some(Commit::Durable) };
+    let committed = WriteBarriers { after: Some(Commit::Durable), ..Default::default() };
     store.write_with_barriers(first, 0, &[VolatileSlice::from(&data[..])], committed).unwrap();
     assert_eq!(write(&store, first, BLOCK as u64, &data), Err(Errno::EPERM), "first is open");
     write(&store, second, 0, &data).unwrap();
-    let barrier = WriteBarriers { before: true, after: None };
+    let barrier = WriteBarriers { before: true, ..Default::default() };
     let third = ExtentId { branch: store.branch(), sequence: 3 };
     store.write_with_barriers(third, 0, &[VolatileSlice::from(&data[..])], barrier).unwrap();
     assert_eq!(write(&store, second, BLOCK as u64, &data), Err(Errno::EPERM), "second is open");
     write(&store, third, BLOCK as u64, &data).unwrap();
     assert_eq!(read(&store, first, 0, BLOCK), Ok(data));
+    drop(store);
+    served.join().unwrap();
+}
+
+/// fxdax: a write's commit sets the root it carries (`WRITE_ROOT`), its data through the transfer
+/// area or the socket alike, the root not part of the data; and a root with no commit to set it is
+/// refused, unwritten (TASK-153.13).
+#[test]
+fn a_writes_commit_sets_its_root() {
+    host();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("store");
+    let (store, served) = connect(&path, 1 << 20);
+    let extent = |sequence| ExtentId { branch: store.branch(), sequence };
+    let data = pattern(1, BLOCK);
+    let write = |sequence, root: Option<&[u8]>, after| {
+        let barriers = WriteBarriers { after, root, ..Default::default() };
+        store.write_with_barriers(extent(sequence), 0, &[VolatileSlice::from(&data[..])], barriers)
+    };
+    let committed = Some(Commit::Ordered);
+    write(1, Some(&b"one"[..]), committed).unwrap();
+    assert_eq!(store.transfers(), 1);
+    assert_eq!(store.root(), Ok(b"one".to_vec()));
+    assert_eq!(read(&store, extent(1), 0, BLOCK), Ok(data.clone()));
+
+    let taken = store.take_transfer_slots();
+    let used = store.transfers();
+    write(2, Some(&b"two"[..]), committed).unwrap();
+    assert_eq!(store.transfers(), used);
+    drop(taken);
+    assert_eq!(store.root(), Ok(b"two".to_vec()));
+    assert_eq!(read(&store, extent(2), 0, BLOCK), Ok(data.clone()));
+
+    assert_eq!(write(3, Some(&b"three"[..]), None), Err(Errno::EINVAL));
+    assert_eq!(read(&store, extent(3), 0, BLOCK), Err(Errno::ENOENT));
+    assert_eq!(store.root(), Ok(b"two".to_vec()));
     drop(store);
     served.join().unwrap();
 }
@@ -585,7 +621,7 @@ fn futures_go_on_where_their_replies_arrive() {
     let serving = store.clone();
     super::spawn_on_replies(async move {
         let data = pattern(7, BLOCK);
-        let committed = WriteBarriers { before: false, after: Some(Commit::Ordered) };
+        let committed = WriteBarriers { after: Some(Commit::Ordered), ..Default::default() };
         let wrote = serving
             .write_with_barriers_async(extent, 0, &[VolatileSlice::from(&data[..])], committed)
             .await;

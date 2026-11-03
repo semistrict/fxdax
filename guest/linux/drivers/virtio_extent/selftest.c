@@ -187,6 +187,32 @@ static void run(struct vext_selftest *st)
 		   .id = EXTENT(EXTENTS), .len = len, .data = bufs[0]);
 	if (err)
 		FAIL("WRITE with a barrier: %d", err);
+	/* fxdax: a WRITE's commit sets the root after its data. */
+	if (virtio_extent_write_commit(vext)) {
+		root[0] = 'F';
+		err = CALL(.type = VIRTIO_EXTENT_T_WRITE,
+			   .flags = VIRTIO_EXTENT_WRITE_COMMIT | VIRTIO_EXTENT_WRITE_ROOT,
+			   .id = EXTENT(EXTENTS + 1), .len = len, .data = bufs[1],
+			   .root = root, .root_len = sizeof(ROOT) - 1);
+		if (err)
+			FAIL("WRITE with a commit setting the root: %d", err);
+		memset(root, 0, config->max_root + sizeof(*root_len));
+		err = CALL(.type = VIRTIO_EXTENT_T_ROOT, .data = root,
+			   .data_len = config->max_root + sizeof(*root_len));
+		if (err || le32_to_cpu(root_len->len) != sizeof(ROOT) - 1 || root[0] != 'F' ||
+		    memcmp(root + 1, ROOT + 1, sizeof(ROOT) - 2))
+			FAIL("ROOT after a WRITE's: %d, %u bytes", err, le32_to_cpu(root_len->len));
+		/* Not counted below. */
+		err = CALL(.type = VIRTIO_EXTENT_T_FREE, .id = EXTENT(EXTENTS + 1));
+		if (err)
+			FAIL("FREE: %d", err);
+		/* The root the test leaves, which its caller reads. */
+		memcpy(root, ROOT, sizeof(ROOT) - 1);
+		err = CALL(.type = VIRTIO_EXTENT_T_COMMIT, .flags = VIRTIO_EXTENT_COMMIT_ROOT,
+			   .data = root, .data_len = sizeof(ROOT) - 1);
+		if (err)
+			FAIL("COMMIT: %d", err);
+	}
 
 	/* Read in place, with no copy, through the DAX window. */
 	window = virtio_extent_window(vext, &window_len);

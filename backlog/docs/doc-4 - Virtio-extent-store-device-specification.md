@@ -3,7 +3,7 @@ id: doc-4
 title: Virtio extent-store device specification
 type: specification
 created_date: '2026-10-13 22:18'
-updated_date: '2026-10-31 15:15'
+updated_date: '2026-11-03 07:12'
 ---
 # The virtio extent-store device
 
@@ -171,7 +171,7 @@ struct virtio_extent_resp {
 | Type | Name | Arguments | Data |
 |---:|---|---|---|
 | 1 | `READ` | `struct virtio_extent_id id; le64 offset; le32 len; le32 reserved;` | device writes `len` bytes |
-| 2 | `WRITE` | `struct virtio_extent_id id; le64 offset; le32 len; le32 reserved;` | device reads `len` bytes |
+| 2 | `WRITE` | `struct virtio_extent_id id; le64 offset; le32 len; le32 root_len;` | device reads `len` bytes, then, with `WRITE_ROOT`, `root_len` bytes: the new root |
 | 3 | `FREE` | `struct virtio_extent_id id;` | none; with `FREE_MANY`, device reads `struct virtio_extent_id`s |
 | 4 | `MAP` | `struct virtio_extent_id id; le64 offset; le64 len; le64 window_offset;` | none; with `MAP_MANY`, device reads `struct virtio_extent_map_entry`s |
 | 5 | `UNMAP` | `le64 window_offset; le64 len;` | none |
@@ -203,6 +203,10 @@ within `max_extent`.
   `COMMIT_DURABLE`; the request completes once that commit does. It seals the extent written too:
   Fxfs's `POST_BARRIER` writes, the last of a journal flush that ends a sync, one request rather
   than a `WRITE` and a `COMMIT`, each a round trip to the host.
+- With `WRITE_ROOT` (bit 3, which needs `WRITE_COMMIT`), that commit also sets the branch's root,
+  as `COMMIT_ROOT` does, to the `root_len` bytes after the data (at most `max_root`): a sync's
+  journal write records how far the journal is written in the root it sets, with no request more
+  (TASK-153.13). A `WRITE_ROOT` without `WRITE_COMMIT` fails with `EINVAL`.
 
 **Sealing.** An extent is open from its first write, or its first writable mapping (`MAP`), until
 the first barrier submitted after a write or a store to it completes. That barrier seals it. Every

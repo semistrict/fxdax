@@ -79,7 +79,8 @@ mod ffi {
         pub offset: u64,
         pub data: *mut c_void,
         pub len: u32,
-        pub reserved: u32,
+        pub root_len: u32,
+        pub root: *mut c_void,
     }
 
     unsafe extern "C" {
@@ -117,6 +118,7 @@ const FREEZE_FROZEN: u32 = 1 << 0;
 const WRITE_BARRIER: u32 = 1 << 0;
 const WRITE_COMMIT: u32 = 1 << 1;
 const WRITE_DURABLE: u32 = 1 << 2;
+const WRITE_ROOT: u32 = 1 << 3;
 const COMMIT_DURABLE: u32 = 1 << 0;
 const COMMIT_ROOT: u32 = 1 << 1;
 const FREE_MANY: u32 = 1 << 0;
@@ -613,35 +615,36 @@ impl ExtentDevice {
     /// Commits, setting the root to `root` if given: durably if `durable`, or if a sync wanting
     /// durability is in progress (`Durability`).
     async fn commit(&self, root: Option<&[u8]>, durable: bool) -> Result<(), Error> {
-        let Some(root) = root else {
-            let _seal = Seal::begin(self).await;
-            return self.commit_sealed(durable).await;
-        };
-        if root.len() > self.info.max_root as usize {
-            return Err(anyhow!(FxfsError::TooBig).context("the root is too large"));
-        }
-        // The device reads the root from memory the kernel allocated.
-        let mut root = root.to_vec();
-        let len = root.len() as u32;
+        let root = root.map(|root| self.root_to_send(root)).transpose()?;
         let _seal = Seal::begin(self).await;
-        let data = root.as_mut_ptr() as *mut c_void;
+        self.commit_sealed(root, durable).await
+    }
+
+    /// Commits, in a seal, setting the root to `root` if given (`root_to_send`), durably if
+    /// `durable` or if a sync wanting durability is in progress.
+    async fn commit_sealed(&self, root: Option<Vec<u8>>, durable: bool) -> Result<(), Error> {
         let durable = self.durable(durable);
-        let flags = COMMIT_ROOT | if durable { COMMIT_DURABLE } else { 0 };
+        let mut flags = if durable { COMMIT_DURABLE } else { 0 };
+        let (data, len) = match &root {
+            Some(root) => {
+                flags |= COMMIT_ROOT;
+                (root.as_ptr() as *mut c_void, root.len() as u32)
+            }
+            None => (std::ptr::null_mut(), 0),
+        };
         let began = Instant::now();
         let committed = self.call(op(T_COMMIT, flags, None, 0, data, len), None).await;
         self.count_commit(began, durable);
         committed
     }
 
-    /// Commits, in a seal, durably if `durable` or if a sync wanting durability is in progress.
-    async fn commit_sealed(&self, durable: bool) -> Result<(), Error> {
-        let durable = self.durable(durable);
-        let flags = if durable { COMMIT_DURABLE } else { 0 };
-        let began = Instant::now();
-        let committed =
-            self.call(op(T_COMMIT, flags, None, 0, std::ptr::null_mut(), 0), None).await;
-        self.count_commit(began, durable);
-        committed
+    /// `root`, as the device reads it, which a commit sets: in memory the kernel allocated, and no
+    /// larger than the device's roots.
+    fn root_to_send(&self, root: &[u8]) -> Result<Vec<u8>, Error> {
+        if root.len() > self.info.max_root as usize {
+            return Err(anyhow!(FxfsError::TooBig).context("the root is too large"));
+        }
+        Ok(root.to_vec())
     }
 
     /// Logs a free of `extent` if it is open: something uses it (TASK-121).
@@ -944,7 +947,8 @@ fn op(
         offset,
         data,
         len,
-        reserved: 0,
+        root_len: 0,
+        root: std::ptr::null_mut(),
     }
 }
 
@@ -1018,11 +1022,13 @@ impl Device for ExtentDevice {
         extent: ExtentId,
         offset: u64,
         buffer: BufferRef<'_>,
-        write_opts: WriteOptions,
+        write_opts: WriteOptions<'_>,
     ) -> Result<(), Error> {
         let _passage = self.gate.pass().await;
         let barrier = write_opts.flags.contains(WriteFlags::PRE_BARRIER);
         let commit = write_opts.flags.contains(WriteFlags::POST_BARRIER);
+        // fxdax: the root the commit sets, if any (TASK-153.13).
+        let root = write_opts.root.map(|root| self.root_to_send(root)).transpose()?;
         // A write with a barrier is a seal, and seals what came before it; one a commit follows
         // seals its own extent too. Another holds seals off until it ends (`Seal`).
         let seal = if barrier || commit { Some(Seal::begin(self).await) } else { None };
@@ -1041,7 +1047,17 @@ impl Device for ExtentDevice {
             flags |= WRITE_COMMIT | if self.durable(false) { WRITE_DURABLE } else { 0 };
         }
         let began = Instant::now();
-        let requests = self.io_requests(T_WRITE, flags, extent, offset, addr, len)?;
+        let requests = match root.as_ref().filter(|_| in_one) {
+            // fxdax: the write's one request, whose commit sets the root (`WRITE_ROOT`).
+            Some(root) => {
+                let data = addr as *mut c_void;
+                let mut write =
+                    op(T_WRITE, flags | WRITE_ROOT, Some(extent), offset, data, len as u32);
+                (write.root, write.root_len) = (root.as_ptr() as *mut c_void, root.len() as u32);
+                vec![self.submit(write)?]
+            }
+            None => self.io_requests(T_WRITE, flags, extent, offset, addr, len)?,
+        };
         let finished = Self::finish(requests, extent).await;
         self.sealer.stats.writes.add(began);
         self.sealer.stats.write_bytes.fetch_add(len as u64, Ordering::Relaxed);
@@ -1062,7 +1078,7 @@ impl Device for ExtentDevice {
             self.count_commit(began, flags & WRITE_DURABLE != 0);
         }
         if commit && !in_one {
-            self.commit_sealed(false).await?;
+            self.commit_sealed(root, false).await?;
         }
         Ok(())
     }

@@ -21,11 +21,14 @@ bitflags! {
     }
 }
 
-#[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct WriteOptions {
+pub struct WriteOptions<'a> {
     pub inline_crypto: InlineCryptoOptions,
     pub flags: WriteFlags,
+    /// fxdax: with `POST_BARRIER`, the root its barrier sets, as a commit of the root does
+    /// (`storage_device::Device::commit_root`): in the write's one request, where a device's
+    /// requests are round trips to its host (doc-4). Not `repr(C)`, as upstream's is, for it.
+    pub root: Option<&'a [u8]>,
 }
 
 #[repr(C)]

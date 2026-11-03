@@ -51,9 +51,10 @@ mod host {
                 .expect("open the extent store");
             assert_eq!(store.root().unwrap(), ROOT);
             let info = store.info().unwrap();
-            // 33 extents of two blocks written, of which one was freed.
+            // 34 extents of two blocks written, of which two were freed: the last, a write
+            // whose commit set the root (WRITE_ROOT), by the self-test, its root put back.
             assert_eq!(info.used, 32 * 2 * 4096);
-            assert_eq!(info.next_sequence, 33);
+            assert_eq!(info.next_sequence, 34);
             TestOutcome::Pass
         }
     }

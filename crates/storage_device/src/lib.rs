@@ -90,7 +90,8 @@ pub trait Device: Send + Sync {
     /// Writes the contents of `buffer` to `extent` at `offset`. An extent is written once: from
     /// its first write until the next barrier (a flush, a write with `PRE_BARRIER`, or one with
     /// `POST_BARRIER`, which seals the extent it writes too), after which writing it fails with
-    /// `SealedExtent`.
+    /// `SealedExtent`. fxdax: a `POST_BARRIER` write's barrier sets the root to its options'
+    /// `root`, if given, as `commit_root` would.
     fn write<'a>(
         &'a self,
         extent: ExtentId,
@@ -106,7 +107,7 @@ pub trait Device: Send + Sync {
         extent: ExtentId,
         offset: u64,
         buffer: BufferRef<'_>,
-        write_opts: WriteOptions,
+        write_opts: WriteOptions<'_>,
     ) -> Result<(), Error>;
 
     /// The branch whose extents the filesystem on the device mints: the first half of their IDs.

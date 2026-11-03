@@ -327,7 +327,7 @@ impl RemoteExtentStore {
         extent: ExtentId,
         offset: u64,
         buffers: &[VolatileSlice],
-        barriers: WriteBarriers,
+        barriers: WriteBarriers<'_>,
     ) -> Result<()> {
         blocking(self.write_with_barriers_async(extent, offset, buffers, barriers))
     }
@@ -338,7 +338,7 @@ impl RemoteExtentStore {
         extent: ExtentId,
         offset: u64,
         buffers: &[VolatileSlice<'_>],
-        barriers: WriteBarriers,
+        barriers: WriteBarriers<'_>,
     ) -> Result<()> {
         let len = buffers.iter().map(VolatileSlice::len).sum();
         let mut flags = if barriers.before { WRITE_BARRIER } else { 0 };
@@ -347,6 +347,11 @@ impl RemoteExtentStore {
             Some(Commit::Ordered) => WRITE_COMMIT,
             Some(Commit::Durable) => WRITE_COMMIT | WRITE_DURABLE,
         };
+        // fxdax: the root the commit sets, after the data in the payload (`WRITE_ROOT`).
+        let root = barriers.root.unwrap_or_default();
+        if barriers.root.is_some() {
+            flags |= WRITE_ROOT;
+        }
         let gather = |data: &mut [u8]| {
             let mut at = 0;
             for buffer in buffers {
@@ -357,11 +362,12 @@ impl RemoteExtentStore {
             gather(slot.bytes_mut(len));
             let args = [extent.branch, extent.sequence, offset, slot.offset(), len as u64];
             let header = Header::new(WRITE, 0).with_args(&args).with_flags(flags | WRITE_TRANSFER);
-            return self.client.call(header, &[]).await.map(drop);
+            return self.client.call(header, root).await.map(drop);
         }
-        let mut data = vec![0; len];
-        gather(&mut data);
-        let args = [extent.branch, extent.sequence, offset];
+        let mut data = vec![0; len + root.len()];
+        gather(&mut data[..len]);
+        data[len..].copy_from_slice(root);
+        let args = [extent.branch, extent.sequence, offset, 0, len as u64];
         let header = Header::new(WRITE, 0).with_args(&args).with_flags(flags);
         self.client.call(header, &data).await.map(drop)
     }

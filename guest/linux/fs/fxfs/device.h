@@ -54,7 +54,8 @@ void fxfs_device_put(struct fxfs_device *dev);
  * UNPIN), and where in it (READ, WRITE), or LET_GO's epoch (offset), and its data: READ's buffer,
  * WRITE's data, COMMIT's root, ROOT's buffer (max_root bytes, and a struct virtio_extent_root_len
  * after them), INFO's struct virtio_extent_info, or ADVANCE's struct virtio_extent_epoch. The data
- * must be kmalloc'd or vmalloc'd, and stay until the request is done.
+ * must be kmalloc'd or vmalloc'd, and stay until the request is done. A WRITE with
+ * VIRTIO_EXTENT_WRITE_ROOT has a root too, which its commit sets, of root_len bytes: kmalloc'd.
  */
 struct fxfs_device_op {
 	u32 type;
@@ -64,7 +65,8 @@ struct fxfs_device_op {
 	u64 offset;
 	void *data;
 	u32 len;
-	u32 reserved;
+	u32 root_len;
+	void *root;
 };
 
 /* Called once the device completes a request, from its interrupt: it must not sleep. */

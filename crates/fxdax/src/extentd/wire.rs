@@ -73,7 +73,9 @@ pub(crate) const OPEN: u32 = 1;
 pub(crate) const READ: u32 = 2;
 /// Writes the payload at `args[2]` in extent `args[0..2]` (`WRITE`), after a barrier if
 /// [`WRITE_BARRIER`], and followed by a commit if [`WRITE_COMMIT`]; or, with [`WRITE_TRANSFER`],
-/// the `args[4]` bytes at `args[3]` in the connection's transfer area ([`TRANSFER`]).
+/// the `args[4]` bytes at `args[3]` in the connection's transfer area ([`TRANSFER`]). fxdax: with
+/// [`WRITE_ROOT`] too, that commit sets the root to what of the payload follows the data, the
+/// first `args[4]` bytes of it without [`WRITE_TRANSFER`] (TASK-153.13).
 pub(crate) const WRITE: u32 = 3;
 /// Frees extent `args[0..2]` (`FREE`).
 pub(crate) const FREE: u32 = 4;
@@ -188,6 +190,8 @@ pub(crate) const WRITE_COMMIT: u32 = 1 << 1;
 /// A `WRITE`'s commit completes once durable.
 pub(crate) const WRITE_DURABLE: u32 = 1 << 2;
 pub(crate) const WRITE_TRANSFER: u32 = 1 << 3;
+/// fxdax: a `WRITE`'s commit sets the root.
+pub(crate) const WRITE_ROOT: u32 = 1 << 4;
 pub(crate) const READ_TRANSFER: u32 = 1 << 0;
 pub(crate) const FAULT_WRITE: u32 = 1 << 0;
 pub(crate) const FAULT_PAGE: u32 = 1 << 1;

@@ -131,6 +131,8 @@ int fxfs_device_submit(struct fxfs_device *dev, const struct fxfs_device_op *op,
 	r->req.len = op->len;
 	r->req.data = op->data;
 	r->req.data_len = op->len;
+	r->req.root = op->root;
+	r->req.root_len = op->root_len;
 	r->req.done = fxfs_device_done;
 	r->done = done;
 	r->arg = arg;

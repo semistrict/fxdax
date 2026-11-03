@@ -76,10 +76,14 @@
 /* The last request type. */
 #define VIRTIO_EXTENT_T_LAST VIRTIO_EXTENT_T_UNPIN
 
-/* WRITE: a barrier precedes it; a COMMIT follows it (F_WRITE_COMMIT); that commit is durable. */
+/*
+ * WRITE: a barrier precedes it; a COMMIT follows it (F_WRITE_COMMIT); that commit is durable; it
+ * sets the root, of root_len bytes after the data.
+ */
 #define VIRTIO_EXTENT_WRITE_BARRIER (1 << 0)
 #define VIRTIO_EXTENT_WRITE_COMMIT (1 << 1)
 #define VIRTIO_EXTENT_WRITE_DURABLE (1 << 2)
+#define VIRTIO_EXTENT_WRITE_ROOT (1 << 3)
 /* COMMIT: it completes once durable; it sets the root. */
 #define VIRTIO_EXTENT_COMMIT_DURABLE (1 << 0)
 #define VIRTIO_EXTENT_COMMIT_ROOT (1 << 1)
@@ -134,7 +138,8 @@ struct virtio_extent_io {
 	struct virtio_extent_id id;
 	__le64 offset;
 	__le32 len;
-	__le32 reserved;
+	/* WRITE with WRITE_ROOT: the root's bytes, after the data. */
+	__le32 root_len;
 };
 
 struct virtio_extent_map {
@@ -243,6 +248,9 @@ struct vext_request {
 	 */
 	void *data;
 	u32 data_len;
+	/* WRITE with VIRTIO_EXTENT_WRITE_ROOT: the root its commit sets, kmalloc'd, as it is small. */
+	void *root;
+	u32 root_len;
 	/* Called once the device completes the request, from its interrupt: it must not sleep. */
 	void (*done)(struct vext_request *req);
 	void *private;

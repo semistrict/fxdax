@@ -223,12 +223,15 @@ impl Device for ImageDevice {
         extent: ExtentId,
         offset: u64,
         buffer: BufferRef<'_>,
-        write_opts: WriteOptions,
+        write_opts: WriteOptions<'_>,
     ) -> Result<(), Error> {
         if write_opts.flags.contains(WriteFlags::POST_BARRIER) {
-            // The write, then the flush that follows it.
+            // The write, then the flush, or commit of the root, that follows it.
             self.write_with_opts(extent, offset, buffer, WriteOptions::default()).await?;
-            return self.flush().await;
+            return match write_opts.root {
+                Some(root) => self.commit_root(root).await,
+                None => self.flush().await,
+            };
         }
         let _writing = self.writes.write().await;
         // The store holds a write back while a commit waits for those in progress, which may be

@@ -1021,6 +1021,19 @@ impl Connection {
                 store.read(extent, args[2], &mut [VolatileSliceMut::from(&mut payload[..])])
             }
             WRITE => {
+                // The data, and the root after it in the payload, if any.
+                let (data, root) = match flags & WRITE_TRANSFER {
+                    0 if flags & WRITE_ROOT != 0 => {
+                        let len = usize::try_from(args[4]).map_err(|_| Errno::EINVAL)?;
+                        let data = message.payload.get(..len).ok_or(Errno::EINVAL)?;
+                        (VolatileSlice::from(data), &message.payload[len..])
+                    }
+                    0 => (VolatileSlice::from(&message.payload[..]), &[][..]),
+                    _ => {
+                        let area = self.transfer.get().ok_or(Errno::EINVAL)?;
+                        (area.slice(args[3], args[4])?, &message.payload[..])
+                    }
+                };
                 let barriers = WriteBarriers {
                     before: flags & WRITE_BARRIER != 0,
                     after: (flags & WRITE_COMMIT != 0).then_some(if flags & WRITE_DURABLE != 0 {
@@ -1028,10 +1041,7 @@ impl Connection {
                     } else {
                         Commit::Ordered
                     }),
-                };
-                let data = match flags & WRITE_TRANSFER {
-                    0 => VolatileSlice::from(&message.payload[..]),
-                    _ => self.transfer.get().ok_or(Errno::EINVAL)?.slice(args[3], args[4])?,
+                    root: (flags & WRITE_ROOT != 0).then_some(root),
                 };
                 store.write_with_barriers(extent, args[2], &[data], barriers)
             }

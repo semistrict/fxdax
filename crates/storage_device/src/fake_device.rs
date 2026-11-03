@@ -859,7 +859,7 @@ impl Device for FakeDevice {
         extent: ExtentId,
         offset: u64,
         buffer: BufferRef<'_>,
-        write_opts: WriteOptions,
+        write_opts: WriteOptions<'_>,
     ) -> Result<(), Error> {
         ensure!(!self.closed.load(Ordering::Relaxed));
         ensure!(!self.read_only.load(Ordering::Relaxed));
@@ -915,9 +915,13 @@ impl Device for FakeDevice {
             inner.since_barrier.push(Change::Write { extent, offset });
         }
         if write_opts.flags.contains(WriteFlags::POST_BARRIER) {
-            // As a flush after the write; failing, as a full store's commit, it seals nothing.
+            // As a flush after the write, or a commit of the root; failing, as a full store's
+            // commit, it seals nothing.
             (self.operation_closure)(Op::PostBarrier)?;
             self.barrier(&mut inner);
+            if let Some(root) = write_opts.root {
+                inner.root = root.to_vec();
+            }
         }
         Ok(())
     }
@@ -1520,6 +1524,30 @@ mod tests {
             .await
             .expect("write failed");
         assert!(!device.is_open(extent));
+    }
+
+    /// fxdax: a write's barrier sets the root it carries, which a crash after it keeps, with the
+    /// write.
+    #[fuchsia::test]
+    async fn test_post_barrier_sets_the_root() {
+        const BS: usize = TEST_DEVICE_BLOCK_SIZE;
+        let device = FakeDevice::new(8, BS as u32);
+        let extent = ExtentId::new(1, 1);
+        let mut buffer = device.allocate_buffer(BS).await;
+        buffer.fill(7);
+        let options = WriteOptions {
+            flags: WriteFlags::POST_BARRIER,
+            root: Some(b"root"),
+            ..Default::default()
+        };
+        device
+            .write_with_opts(extent, 0, buffer.as_ref(), options)
+            .await
+            .expect("write failed");
+        let snapshot = device.snapshot().expect("snapshot failed");
+        snapshot.discard_random_since_last_flush().expect("discard failed");
+        assert_eq!(snapshot.root().await.expect("root failed"), b"root");
+        assert_eq!(read(snapshot.as_ref(), extent, 0, BS).await, vec![7; BS]);
     }
 
     #[fuchsia::test]

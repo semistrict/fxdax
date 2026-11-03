@@ -80,11 +80,14 @@ impl<D: Dir + 'static> Device for StoreDevice<D> {
         extent: ExtentId,
         offset: u64,
         buffer: BufferRef<'_>,
-        write_opts: WriteOptions,
+        write_opts: WriteOptions<'_>,
     ) -> Result<(), Error> {
         self.store.write(extent, offset, &buffer.to_vec())?;
         if write_opts.flags.contains(WriteFlags::POST_BARRIER) {
-            self.flush().await?;
+            match write_opts.root {
+                Some(root) => self.commit_root(root).await?,
+                None => self.flush().await?,
+            }
         }
         Ok(())
     }
@@ -208,7 +211,7 @@ impl<D: Dir + 'static> Device for ViewDevice<D> {
         extent: ExtentId,
         _offset: u64,
         _buffer: BufferRef<'_>,
-        _write_opts: WriteOptions,
+        _write_opts: WriteOptions<'_>,
     ) -> Result<(), Error> {
         bail!("a follower's device is read-only: a write of {extent:?}")
     }

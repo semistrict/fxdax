@@ -316,7 +316,7 @@ mod bench {
         let slots = WINDOW / len;
         let (mut stage, mut commit) = (Timer::default(), Timer::default());
         let journal = vec![7u8; page_size as usize];
-        let ordered = WriteBarriers { before: false, after: Some(Commit::Ordered) };
+        let ordered = WriteBarriers { after: Some(Commit::Ordered), ..Default::default() };
         for i in 0..count {
             let staging = ExtentId { branch: store.branch(), sequence };
             let block = ExtentId { branch: store.branch(), sequence: sequence + 1 };

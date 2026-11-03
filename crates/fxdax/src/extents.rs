@@ -372,11 +372,14 @@ struct Following {
 
 /// The barriers a write is ordered with (doc-4's `WRITE` flags).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct WriteBarriers {
+pub struct WriteBarriers<'a> {
     /// A barrier precedes the write (`WRITE_BARRIER`).
     pub before: bool,
     /// A commit follows it (`WRITE_COMMIT`), which seals the extent it writes too.
     pub after: Option<Commit>,
+    /// The root that commit sets, if any (`WRITE_ROOT`), as a `COMMIT`'s with `COMMIT_ROOT` does:
+    /// a sync's journal write, whose end the guest's filesystem records there (TASK-153.13).
+    pub root: Option<&'a [u8]>,
 }
 
 /// When a commit completes.
@@ -1152,16 +1155,20 @@ impl ExtentStore {
         extent: ExtentId,
         offset: u64,
         buffers: &[VolatileSlice],
-        barriers: WriteBarriers,
+        barriers: WriteBarriers<'_>,
     ) -> Result<()> {
+        // A root is set by the commit after the write: there is none to set it.
+        if barriers.root.is_some() && barriers.after.is_none() {
+            return Err(Errno::EINVAL);
+        }
         if barriers.before {
             self.commit_ordered(None)?;
         }
         self.write(extent, offset, buffers)?;
         match barriers.after {
             None => Ok(()),
-            Some(Commit::Ordered) => self.commit_ordered(None),
-            Some(Commit::Durable) => self.commit(None),
+            Some(Commit::Ordered) => self.commit_ordered(barriers.root),
+            Some(Commit::Durable) => self.commit(barriers.root),
         }
     }
 

@@ -527,7 +527,7 @@ impl<S: HandleOwner> DataObjectHandle<S> {
         buf: MutableBufferRef<'_>,
         extent: ExtentId,
         extent_offset: u64,
-        options: WriteOptions,
+        options: WriteOptions<'_>,
     ) -> Result<MaybeChecksums, Error> {
         self.handle
             .write_at_with_options(

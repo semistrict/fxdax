@@ -224,6 +224,14 @@ static int vext_map_data(struct sg_table *sgt, void *buf, size_t len)
 	return 0;
 }
 
+/* The length of the root a WRITE's commit sets (WRITE_ROOT), after its data: 0 if none. */
+static u32 vext_root_len(struct vext_request *req)
+{
+	if (req->type == VIRTIO_EXTENT_T_WRITE && req->flags & VIRTIO_EXTENT_WRITE_ROOT)
+		return req->root_len;
+	return 0;
+}
+
 /* The arguments' length for a request of `type`, or a -errno for an unknown type. */
 static int vext_args(struct vext_request *req)
 {
@@ -234,6 +242,7 @@ static int vext_args(struct vext_request *req)
 			.id = { cpu_to_le64(req->id.branch), cpu_to_le64(req->id.sequence) },
 			.offset = cpu_to_le64(req->offset),
 			.len = cpu_to_le32(req->len),
+			.root_len = cpu_to_le32(vext_root_len(req)),
 		};
 		return sizeof(req->args.io);
 	case VIRTIO_EXTENT_T_FREE:
@@ -317,7 +326,7 @@ static void vext_data_len(struct vext_request *req, size_t *out, size_t *in)
 
 int virtio_extent_submit(struct virtio_extent *vext, struct vext_request *req)
 {
-	struct scatterlist hdr, args, resp, *sgs[4];
+	struct scatterlist hdr, args, root, resp, *sgs[5];
 	unsigned int out_sgs = 0, in_sgs = 0, descs;
 	struct vext_queue *queue;
 	size_t out_len, in_len;
@@ -335,6 +344,9 @@ int virtio_extent_submit(struct virtio_extent *vext, struct vext_request *req)
 		return args_len;
 	vext_data_len(req, &out_len, &in_len);
 	if (out_len + in_len > 0 && !req->data)
+		return -EINVAL;
+	/* The root is in one piece: kmalloc'd. */
+	if (vext_root_len(req) && (!req->root || is_vmalloc_addr(req->root)))
 		return -EINVAL;
 	req->hdr = (struct virtio_extent_req) {
 		.type = cpu_to_le32(req->type),
@@ -358,6 +370,10 @@ int virtio_extent_submit(struct virtio_extent *vext, struct vext_request *req)
 			sgs[out_sgs++] = req->data_sgt.sgl;
 		else
 			sgs[out_sgs + in_sgs++] = req->data_sgt.sgl;
+	}
+	if (vext_root_len(req)) {
+		sg_init_one(&root, req->root, vext_root_len(req));
+		sgs[out_sgs++] = &root;
 	}
 	sg_init_one(&resp, &req->resp, sizeof(req->resp));
 	sgs[out_sgs + in_sgs++] = &resp;
