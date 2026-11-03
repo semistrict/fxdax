@@ -21,7 +21,7 @@ git clone -q --depth 1 --filter=blob:none --sparse --branch "$tag" \
     https://github.com/amazonlinux/linux "$tree"
 git -C "$tree" sparse-checkout set --no-cone /fs/dax.c /fs/iomap/ /include/ /lib/xarray.c \
     /lib/radix-tree.h /lib/genalloc.c
-for patch in ../linux/patches/000[5-9]-*.patch ../linux/patches/001[01]-*.patch; do
+for patch in ../linux/patches/000[5-9]-*.patch ../linux/patches/001[0-2]-*.patch; do
     git -C "$tree" apply "$(realpath "$patch")"
 done
 touch "$tree/.sim-tree-$tag"

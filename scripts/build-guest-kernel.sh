@@ -93,6 +93,7 @@ commit 0008-dax-split-pmd-entry-shared-pte.patch
 commit 0009-dax-finish-copies-from-the-kernel.patch
 commit 0010-dax-read-replaces-no-entry-naming-its-page.patch
 commit 0011-dax-a-folio-put-for-good-keeps-no-share-count.patch
+commit 0012-dax-invalidate-unmaps-under-entry-lock.patch
 rm -f "$index"
 kgit reset -q --hard "$series"
 rm -f "$out"/patches/*.patch
