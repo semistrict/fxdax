@@ -20,7 +20,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Install the build's tools
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libclang-dev clang
+        # elfutils' eu-stack and sqlite3, which tests run, as on the GCE hosts
+        # (scripts/lib/linux-host-setup.sh).
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler libclang-dev clang elfutils sqlite3
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-unknown-linux-musl
@@ -51,14 +55,14 @@ jobs:
       # scripts/lima-setup.sh gives it to the kvm group.
       - name: Let the tests use userfaultfd
         run: sudo setfacl -m "u:$USER:rw" /dev/userfaultfd
-      # The tests' stores, on the runner's scratch disk: on the root disk, beside the build, they
-      # ran out of room (ENOSPC, three extentd tests failing).
-      - name: Give the tests' files the scratch disk
+      # The tests' stores on the root disk, which has room: in /tmp, three extentd tests ran out of
+      # it (ENOSPC).
+      - name: Give the tests' files room
         run: |
           sudo mkdir -p /mnt/tmp
           sudo chown "$USER" /mnt/tmp
           echo TMPDIR=/mnt/tmp >> "$GITHUB_ENV"
-          df -h / /mnt
+          df -h /tmp /mnt
       - name: Unit tests
         run: cargo nextest run --workspace
 
