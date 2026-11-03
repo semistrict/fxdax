@@ -88,6 +88,20 @@ MUTANTS = [
           "first, pages, false);\n", "")],
     ),
     (
+        "moves_before_bytes",
+        "a write whose blocks move without what they held copies its bytes from where it stops "
+        "short, or from those very pages, read as the zeros they moved to (TASK-150.8)",
+        [("\treturn !(flags & (IOMAP_FAULT | IOMAP_ZERO)) && round_up(pos, PAGE_SIZE) < last &&\n"
+          "\t       !READ_ONCE(fxfs_dax_file(inode)->in_hand);\n", "\treturn false;\n")],
+    ),
+    (
+        "resize_moves_the_last_block",
+        "a DAX file's change of size has Fxfs zero its last block past the end by moving it, from "
+        "under the window, which goes on mapping it writably (TASK-150.9)",
+        [("\terr = fxfs_vfs_write_attr(inode, FXFS_SET_SIZE | (IS_DAX(inode) ? FXFS_SET_KEEP_TAIL : 0));",
+          "\terr = fxfs_vfs_write_attr(inode, FXFS_SET_SIZE);", SUPER)],
+    ),
+    (
         "map_failure_unretried",
         "a write whose pieces' MAP failed after its blocks moved fails, its range left mapping "
         "blocks Fxfs freed, rather than dropped and the write tried again (TASK-79.106)",
