@@ -18,6 +18,13 @@ Every item a layer holds is now checked as it's read, as the journal's are at re
 **Recommended:** remove them and those tests; the boundary's own tests (`test_layer_items_are_checked_as_they_are_read`, `records_no_layer_may_hold_fail_what_reads_them`) cover what reaches them from an image.
 **Until then:** they stay, as defence nothing from disk reaches.
 
+## patches/0009 can go, with a test and a mutant of it (TASK-153.5, 2026-11-03)
+
+patches/0009 has the kernel's DAX copy from kernel memory ignore a fatal signal, so that a write whose move had committed before its bytes still wrote them. Since TASK-153.5 the move commits after the bytes, and a copy stopped by a signal drops it, leaving the file as it was: the patch protects nothing. Removing it means deleting guest/sim's `mutants/patch-0009-killed-copy-stops.patch` and changing its scenario `write_killed`, which deleting a test needs your approval for.
+**Recommended:** drop the patch, the mutant, and have `write_killed` expect the file as it was.
+**Until then:** the patch stays, harmless.
+
+
 # Decisions
 
 ## A layer's records cross one trust boundary, checked as they're read (TASK-153.12, 2026-11-03)
@@ -31,6 +38,12 @@ Layer records were trusted as read, then checked piecemeal where used. Decided: 
 Fxfs raises `Inconsistent` and `IntegrityError` on purpose now (TASK-153.11, 153.13), and both VFSs said EIO for them. Decided, in the one table both now call (`fxfs_posix::errno`): `Inconsistent` is `EUCLEAN` and `IntegrityError` `EBADMSG`, ext4's and XFS's `EFSCORRUPTED` and `EFSBADCRC`, logged. No caller depends on EIO for them: fs/fxfs's C compares Fxfs's errnos only with ENOENT, ENOSPC, ENODATA, EXDEV, EBUSY, ESTALE and the like, and no guest or host test expects EIO of a corrupt image. The rest of the table, where the two had drifted or said EIO: `AlreadyBound` EBUSY, `OutOfRange` and `InvalidVersion` EINVAL (ext4's mount of features it lacks), `NoKey` ENOKEY and `InconsistentEncryptionPolicy` EXDEV (fscrypt's). An error is classified by its outermost Errno, else its outermost FxfsError, context first; Fxfs's `matches` (root cause) agrees but for an FxfsError added as context. What only looked like corruption no longer says it: a manifest that doesn't parse or names no base is `InvalidArgs` (EINVAL; the guest's garbage-manifest check said EIO, and says EINVAL now), changes after a failed batch of unlinks fail with EIO, and a DAX write giving up on seals gives the seal's error (EIO). On the host, the uploader's failures keep `extent_remote::Error` (`Failure::Remote`) and map in one place (`Failure::errno`): `Displaced` is EROFS, as `Fenced` is, where it was EIO; a branch of a newer format (`Format`, TASK-141.2) ENOTSUP, until the host is upgraded; object storage's `Lost` and `Corrupt` stay EIO, doc-4's table having no other status for a store failing to read.
 **Instead:** EIO for all corruption, as before (callers can't tell a bad disk from bad metadata); `EFSCORRUPTED` on the device's wire too (doc-4 would need a status).
 **Undoing it:** the two rows in `crates/fxfs-posix/src/errno.rs` (`of_fxfs`) and their test rows.
+
+## A DAX write(2)'s move commits after its bytes, as XFS's copy on write does (TASK-153.5, 2026-11-03)
+
+A write(2) over the file's data moved its blocks and committed before its bytes were copied, so a write that failed after the move (a MAP failure, a seal, a killed writer, a copy cut short) left the new blocks' zeros where the data was (TASK-79.106, 119.13, 150.8, `map_failed_writing`). Decided: the move stays an uncommitted Fxfs transaction (`fxfs_dax_begin_write`, `DaxWrite`) from the iomap to `iomap_end`, where it commits out of the gate once the bytes are in, or is dropped, leaving the file as it was. The write holds its file's semaphore all along, and waits for faults past their iomaps first. Faults and zeroing still commit first. pgbench-dax measured equal: 826.3 against main's 834.3 tps over 25 runs a side on one host, the rounds alternating around 1 (docs/measurements/pgbench-dax-commit-after-bytes-2026-11-03.md). Landed for what it removes from write(2): bytes in hand before a move (-ENOTBLK), the -ESTALE retry after one, a second move after a seal, the second unmap of TASK-153.3; and a failed write can no longer zero data, which guest/sim's `failures` now checks.
+**Instead:** keep committing before the bytes, with the retries that mend a failure after: the same tps, and more ways to lose data.
+**Undoing it:** revert the TASK-153.5 commits (dax.c, fxfs.h, fxfs-linux, fxfs-posix's `dax_begin_write`, the sim model); the guest checks `write_killed` and `map_many_failed` go back to expecting the old behaviour.
 
 ## What a store may be asked to do is the store's, fixed as it opens (TASK-160.10, 2026-11-03)
 
