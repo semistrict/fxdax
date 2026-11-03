@@ -5,13 +5,15 @@
 //! fxdax: a byte of a framed file, a closed segment's or a sealed extent's own, that the host's
 //! disk damaged fails whatever reads it, rather than giving another byte, and goes nowhere under a
 //! CRC of its own (TASK-153.11): the store's reads, which the guest's and the extent cache's
-//! page-ins are (`Store::read`), the uploader's (`Store::read_kept`), a follower's (`Store::read_view`), a fork's of what it inherited,
+//! page-ins are (`Store::read`), the uploader's (`Store::read_kept`, and the segments it takes as
+//! they are, `Closed::bytes`), a follower's (`Store::read_view`), a fork's of what it inherited,
 //! and the copies of cleaning and of a seal. Of parts stored compressed and stored raw alike: a raw
 //! part was read in place, unchecked, until TASK-153.11.
 
 mod common;
 
 use common::noise;
+use extent_frame::segment::Chain;
 use extent_frame::{Corrupt, Encoding, PART, Parts};
 use extent_store::{Description, Dir, File as _, Lineage, MemDir, Options, Place, Store};
 use storage_device::ExtentId;
@@ -232,3 +234,26 @@ fn flipped_bytes_fail_reads_and_seals_of_open_extents_in_closed_segments() {
     corrupt(store.commit(None));
 }
 
+/// The bytes of a closed segment the uploader takes, which it uploads as they are, are checked:
+/// a byte flipped in them fails them, rather than going to object storage under the CRC it fails.
+#[test]
+fn closed_segments_with_flipped_bytes_are_not_taken() {
+    for compressed in [false, true] {
+        let dir = MemDir::new();
+        let store = create(&dir, OPTIONS);
+        assert!(store.upload(Chain::new(BRANCH, 1, 0, None, 0), 0).unwrap());
+        let data = if compressed { pattern(1, 2 * MIB) } else { noise(1, 2 * MIB) };
+        store.write(extent(1), 0, &data).unwrap();
+        store.close_segment().unwrap();
+        store.commit(None).unwrap();
+        store.flush().unwrap();
+        let [closed] = <[_; 1]>::try_from(store.closed(usize::MAX).unwrap()).ok().unwrap();
+        let bytes = closed.bytes().unwrap();
+        assert_eq!(extent_frame::data(&bytes).unwrap(), data);
+        let byte = stored(&dir, &store, extent(1), MIB as u64 + 5);
+        flip(&dir, &byte);
+        let Err(error) = closed.bytes() else { panic!("took a flipped byte") };
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(error.to_string(), "an object's part, by its CRC");
+    }
+}

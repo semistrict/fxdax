@@ -49,7 +49,7 @@ use extent_remote::fetch::{self, Budget, Limits, Priority};
 use extent_remote::layout::{Footer, Location, Origin, Record, epoch_of, writer_of};
 use extent_remote::store::Store as Bucket;
 use extent_remote::{Body, Objects, State, Writer, branch};
-use extent_store::{File as _, HostDir, HostFile, Snapshot, Store, read_whole};
+use extent_store::{File as _, HostDir, HostFile, Snapshot, Store, read_object};
 use futures::future::{BoxFuture, Either, FutureExt as _};
 use futures::stream::FuturesOrdered;
 use futures::{StreamExt as _, TryStreamExt as _};
@@ -1427,11 +1427,12 @@ impl Shared {
 }
 
 /// The bytes of `file`, a segment's the store closed or an extent's of its own it names, read only
-/// as its upload goes.
+/// as its upload goes, and checked: a byte the host's disk damaged is not uploaded under the CRC
+/// it fails (`read_object`, TASK-153.11).
 fn stored(file: &Arc<HostFile>) -> Result<Body, Failure> {
     let size = file.size().map_err(|err| Failure::Other(format!("a file to upload: {err}")))?;
     let file = file.clone();
-    Ok(Body::new(size, move || blocking(|| read_whole(&*file))))
+    Ok(Body::new(size, move || blocking(|| read_object(&*file))))
 }
 
 /// What a gather did ([`Shared::gather`]).
@@ -2014,6 +2015,34 @@ mod tests {
                 Some(b"two".to_vec())
             )
         );
+    }
+
+    /// fxdax: a byte the host's disk damaged in a file the uploader puts as it is, a sealed
+    /// extent's own, fails the upload, and the commit waiting for it, rather than going to object
+    /// storage under the CRC it fails (TASK-153.11).
+    #[test]
+    fn files_with_flipped_bytes_are_not_uploaded() {
+        use extent_remote::layout;
+        let dir = tempfile::tempdir().unwrap();
+        let store = ExtentStore::create(dir.path().join("store"), 1 << 30).unwrap();
+        let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
+        store.attach_remote(bucket.clone(), 1, idle()).unwrap();
+        let branch = store.branch();
+        // Stored on its own, raw, as it doesn't compress.
+        let extent = write(&store, 1, &noise(1, 4 << 20));
+        store.commit_ordered(None).unwrap();
+        let path = dir.path().join(format!("store/extents/{branch:016x}/{:016x}", extent.sequence));
+        let mut bytes = std::fs::read(&path).unwrap();
+        let stored = extent_frame::Parts::of(&bytes).unwrap().stored[1];
+        assert_eq!(stored.encoding, extent_frame::Encoding::Raw);
+        bytes[stored.offset as usize + 7] ^= 0x10;
+        std::fs::write(&path, bytes).unwrap();
+        assert_eq!(store.commit(None), Err(crate::error::Errno::EIO));
+        let listed = |prefix: String| -> Vec<String> {
+            let listed = extent_remote::Bucket::list(&*bucket, &prefix);
+            futures::executor::block_on(listed).unwrap().into_iter().map(|meta| meta.key).collect()
+        };
+        assert_eq!(listed(layout::extents(branch)), Vec::<String>::new());
     }
 
     /// A commit waits for its upload no longer than it takes: once another writer has the branch,

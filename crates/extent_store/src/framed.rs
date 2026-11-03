@@ -76,6 +76,16 @@ pub fn read_whole<F: File>(file: &F) -> io::Result<Vec<u8>> {
     Ok(read_aligned(file, 0, file.size()? as usize)?.as_slice().to_vec())
 }
 
+/// fxdax: the whole of the framed file `file`, checked: its frame, and each part's stored bytes
+/// against its CRC ([`extent_frame::check`]). What a host sends on as it is, as its uploader does
+/// the segments its store closed, goes so, or not at all (TASK-153.11).
+pub fn read_object<F: File>(file: &F) -> io::Result<Vec<u8>> {
+    let bytes = read_whole(file)?;
+    extent_frame::check(&bytes)
+        .map_err(|corrupt| io::Error::new(io::ErrorKind::InvalidData, corrupt))?;
+    Ok(bytes)
+}
+
 /// The parts of the framed file `file`, and its footer, if it is whole: its trailer, table and
 /// footer pass their checks. Its parts are checked as they are read.
 pub(crate) fn read_frame<F: File>(file: &F) -> Result<Option<(Parts, Vec<u8>)>, Error> {

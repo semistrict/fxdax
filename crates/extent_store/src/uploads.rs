@@ -8,7 +8,7 @@
 //! commit wrote, which bound the uploader's lag; and what the uploader starts from.
 
 use crate::dir::File;
-use crate::framed::read_whole;
+use crate::framed::read_object;
 use crate::layers::Extents;
 use crate::layout::Change;
 use crate::segments::footer_last;
@@ -38,14 +38,14 @@ pub struct Closed<F> {
 }
 
 impl<F: File> Closed<F> {
-    /// The segment's bytes: the object it is.
+    /// The segment's bytes: the object it is, checked ([`read_object`]).
     pub fn bytes(&self) -> io::Result<Vec<u8>> {
-        read_whole(&*self.file)
+        read_object(&*self.file)
     }
 
-    /// The bytes of the files of its extents stored on their own, by their keys.
+    /// The bytes of the files of its extents stored on their own, by their keys, checked.
     pub fn own_bytes(&self) -> io::Result<Vec<(String, Vec<u8>)>> {
-        self.own.iter().map(|(key, file)| Ok((key.clone(), read_whole(&**file)?))).collect()
+        self.own.iter().map(|(key, file)| Ok((key.clone(), read_object(&**file)?))).collect()
     }
 
     /// The store's epoch of the last commit it holds.

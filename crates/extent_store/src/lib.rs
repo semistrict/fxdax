@@ -178,7 +178,7 @@ mod uploads;
 mod views;
 
 pub use dir::{Dir, File, HostDir, HostFile, bypass_page_cache};
-pub use framed::{Aligned, Packed, Part, read_whole, unpacks};
+pub use framed::{Aligned, Packed, Part, read_object, read_whole, unpacks};
 pub use host::{
     Taken, create_host, delete_host, delete_host_with, fail_fork, fork_failed, fork_host,
     fork_host_with, is_handle, open_host, resolve_host,
