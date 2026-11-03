@@ -13,8 +13,8 @@ use crate::framed::read_frame;
 use crate::layers::{Extents, Layer};
 use crate::layout::{
     Change, Checkpoint, Data, Delta, Extent, FileKey, INDEX, Piece, Record, SEGMENTS, SegmentId,
-    add_piece, branch_dir, create_branch_dirs, decode, encode, index_path, list_numbers,
-    segment_path,
+    add_piece, branch_dir, create_branch_dirs, decode, encode, held_frees, index_path,
+    list_numbers, segment_path,
 };
 use crate::segments::{Reaped, footer_last, segment_footer};
 use crate::store::Options;
@@ -121,18 +121,13 @@ impl Recovered {
         if delta.epoch != self.epoch + 1 {
             return false;
         }
-        // fxdax: those it wrote in the epoch, open, whose frees spend nothing.
-        let mut written = std::collections::HashSet::new();
-        for change in delta.changes {
-            match change {
-                Change::Write { extent, .. } | Change::WriteOwn { extent, .. } => {
-                    written.insert(extent);
-                }
-                Change::Free(extent) if extent.branch == branch && !written.contains(&extent) => {
-                    self.spent.insert(extent.sequence);
-                }
-                _ => {}
+        // fxdax: but those it wrote in the epoch, open, whose frees spend nothing.
+        for extent in held_frees(&delta.changes) {
+            if extent.branch == branch {
+                self.spent.insert(extent.sequence);
             }
+        }
+        for change in delta.changes {
             apply(&mut self.extents, change);
         }
         self.epoch = delta.epoch;

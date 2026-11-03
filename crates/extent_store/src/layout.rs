@@ -7,7 +7,7 @@
 use crate::dir::Dir;
 use anyhow::{Context as _, Error, anyhow, bail, ensure};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use storage_device::ExtentId;
 
 /// The first line of a store's description: its format.
@@ -451,6 +451,27 @@ pub(crate) enum Change {
     MoveOwn { extent: ExtentId },
     /// fxdax: the store holds the extent, sealed, of `len` bytes, whose data is elsewhere.
     Adopt { extent: ExtentId, len: u64 },
+}
+
+/// fxdax: of `changes`, an epoch's, the extents it freed that a commit held: but those written in
+/// it, open, which their frees let go of before any commit held them (TASK-79.1). Those of them
+/// that are the branch's own it spends, as the store spends them as it frees them (TASK-79.6);
+/// and a footer frees them alone, so that what its readers spend of it, all its frees, is that
+/// too (TASK-160.15).
+pub(crate) fn held_frees(changes: &[Change]) -> HashSet<ExtentId> {
+    let (mut written, mut freed) = (HashSet::new(), HashSet::new());
+    for change in changes {
+        match change {
+            Change::Write { extent, .. } | Change::WriteOwn { extent, .. } => {
+                written.insert(*extent);
+            }
+            Change::Free(extent) if !written.contains(extent) => {
+                freed.insert(*extent);
+            }
+            _ => {}
+        }
+    }
+    freed
 }
 
 /// An epoch's changes to the index, which a commit records.
