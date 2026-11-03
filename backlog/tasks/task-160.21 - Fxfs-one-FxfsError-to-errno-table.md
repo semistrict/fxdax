@@ -1,9 +1,11 @@
 ---
 id: TASK-160.21
 title: 'Fxfs: one FxfsError to errno table'
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-11-03 13:08'
+updated_date: '2026-11-03 13:42'
 labels:
   - structure
 dependencies: []
@@ -31,3 +33,21 @@ The table is written twice and has drifted: guest/rust/fxfs-linux/src/lib.rs and
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Verify the review's claims against both tables and FxfsError::matches.
+2. Move Errno to fxfs-posix; one exhaustive table (of_fxfs, no _ arm) with expected/logged per row; fxfs_posix::errno and xattr_errno with one classification rule; guest and host call them.
+3. Decide corruption errnos (EUCLEAN, EBADMSG); audit what raised Inconsistent without corruption (manifest parsing, failed unlink batch, dax_map_write giving up) and fix each.
+4. Tests per variant; guest garbage-manifest check to EINVAL; record decision in OPEN_QUESTIONS.md.
+5. scripts/test.sh, GCE workspace + guest cases, upstream-changes --check.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Claims checked: AlreadyBound EBUSY (host) vs EIO (guest), OutOfRange EIO vs ERANGE: true. 'Outermost vs root cause': the tables found the first FxfsError in chain(), and FxfsError has no source, so it is always the root cause, as matches() sees; they differ only for an FxfsError added as context (anyhow's downcast_ref finds it, chain() does not), as object_store.rs's encrypted-mutations .context(FxfsError::Inconsistent). The rule now counts context (outermost Errno, else outermost FxfsError, context first), pinned by the_outermost_errno_or_fxfs_error_classifies. Corruption EIO: true; now EUCLEAN/EBADMSG (decision in OPEN_QUESTIONS.md). dax_map_write dropped its last error: true; it now returns it with context (a_dax_write_sealed_on_every_try_gives_up_with_the_seal, red with Inconsistent: EUCLEAN != EIO and no SealedExtent in the chain).
+Callers checked: fs/fxfs C compares Fxfs errnos only with ENOENT/ENOSPC/ENODATA/EXDEV/EBUSY/ESTALE/EDEADLK/EAGAIN/ENOMEM; no table row maps to EDEADLK/EAGAIN/ESTALE, EXDEV only for encryption policies (rename/link), EBUSY for Unavailable (as before) and AlreadyBound (store unlock, volume mount; not on DAX paths). Guest tests: only shared_volumes' garbage manifest expected EIO (InvalidVersion, unclassified): it is now InvalidArgs/EINVAL with a 2-byte case for the version read.
+Blind spot: errnos tested only for a handful of variants, on each side apart; the per-variant test now lists all 23 and the table is exhaustive, so a new FxfsError fails to compile. Looked around: fxdax-raised Inconsistent that wasn't corruption: check_manifest and manifest parsing (now InvalidArgs), the failed unlink batch (now plain EIO), dax_map_write's give-up (now its seal error). check_replaced and the guest's root-length check stay Inconsistent (real disagreement). Structure: the class (two tables drifting) is gone: one table, one type of errno for both VFSs.
+<!-- SECTION:NOTES:END -->
