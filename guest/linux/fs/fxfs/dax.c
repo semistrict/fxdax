@@ -3550,25 +3550,30 @@ static void fxfs_dax_show_write_times(struct seq_file *m, struct fxfs_dax *dax)
 }
 
 /*
- * fxdax: what dax_iomap_rw's `ret` says `iocb`'s write wrote, from `from`, less the bytes of iomaps
- * whose moves were then dropped, or failed to commit (fxfs_dax_iomap_end): those from
- * `file->unwritten` on aren't the file's, and the position and `from` go back to it. If none are
- * left, why not.
+ * fxdax: what dax_iomap_rw's `ret` says `iocb`'s write wrote, from `from`, less the bytes of the
+ * iomap whose move was then dropped, or failed to commit (fxfs_dax_iomap_end), and of any after it:
+ * those from `file->unwritten` on aren't the file's, and the position and `from` go back to it.
+ * The range that iomap left behind the file's blocks is dropped, to be mapped again: a write
+ * finding it behind took it for a second failure, and said EIO. If no bytes are left, why not.
  */
-static ssize_t fxfs_dax_committed(struct kiocb *iocb, struct iov_iter *from,
-				  struct fxfs_dax_file *file, ssize_t ret)
+static ssize_t fxfs_dax_committed(struct kiocb *iocb, struct iov_iter *from, ssize_t ret)
 {
-	int err = file->unwritten_err;
+	struct inode *inode = file_inode(iocb->ki_filp);
+	struct fxfs_dax_file *file = fxfs_dax_file(inode);
+	int err = file->unwritten_err, dropped;
 
 	if (!err)
 		return ret;
 	file->unwritten_err = 0;
-	if (ret <= 0)
+	if (ret > 0) {
+		ret -= iocb->ki_pos - file->unwritten;
+		iov_iter_revert(from, iocb->ki_pos - file->unwritten);
+		iocb->ki_pos = file->unwritten;
+	}
+	dropped = fxfs_dax_drop_slice(inode, file->unwritten, true);
+	if (ret)
 		return ret;
-	ret -= iocb->ki_pos - file->unwritten;
-	iov_iter_revert(from, iocb->ki_pos - file->unwritten);
-	iocb->ki_pos = file->unwritten;
-	return ret ?: err;
+	return dropped ?: err;
 }
 
 /*
@@ -3638,7 +3643,7 @@ static ssize_t fxfs_dax_write_iter(struct kiocb *iocb, struct iov_iter *from)
 		pagefault_disable();
 		ret = dax_iomap_rw(iocb, source, &fxfs_dax_iomap_ops);
 		pagefault_enable();
-		ret = fxfs_dax_committed(iocb, source, file, ret);
+		ret = fxfs_dax_committed(iocb, source, ret);
 		fxfs_dax_lap(&dax->write_rw_ns, &lap);
 		sealed = ret < 0 ? fxfs_dax_make_memory(inode, &room, ret) : 0;
 		if (ret > 0) {
