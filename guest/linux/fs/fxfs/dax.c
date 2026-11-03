@@ -20,6 +20,13 @@
  * has them (fxfs_dax_catch_up). Nothing but the write's copy uses the region's address: the kernel's
  * entries and the user's mappings know the page's alone.
  *
+ * fxdax: a write(2)'s move commits after its bytes, as XFS's copy on write does
+ * (fxfs_dax_begin_write, TASK-153.5): until then the file has its old blocks, and a write that
+ * fails before its bytes are in, or stops short, leaves it as it was, rather than the new blocks'
+ * zeros where its data was. It holds the file's semaphore from its iomap to its end, so that no
+ * fault maps the file meanwhile, and commits out of the gate, as a commit may wait for a seal. A
+ * fault's move commits first: its bytes come with the user's store, as late as it likes.
+ *
  * A chunk whose data is one piece of an extent of at most a chunk's size, as small files' are,
  * sharing extents (the allocator's staging extents), is a slice of that extent's region instead:
  * the window's mapping of the whole extent, from its start, which all the files it holds share. So
