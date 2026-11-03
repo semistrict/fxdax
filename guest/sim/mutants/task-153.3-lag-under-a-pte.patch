@@ -2,22 +2,18 @@
 # Copyright 2026 The fxdax Authors.
 #
 # TASK-153.3, on 106b6128d's write through a region: a fault that finished between the move's unmap
-# and the look at `users` keeps its PTE of the page where its blocks were, which lags under it: a
-# stale read, seed 7289 at 200 operations.
+# and the copy keeps its PTE of the page where its blocks were, which lags under it: a stale read,
+# seed 7289 at 200 operations. Since TASK-153.5, a write(2) waits for faults past their iomaps
+# before the PTEs go, where it looked at `users` and unmapped them again.
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c
-@@ -3075,13 +3075,4 @@
- 				bitmap_set(range->lagging, first, pages);
--				/*
--				 * fxdax: a fault past its iomap as the blocks moved, which the PTEs
--				 * went with, maps the page after, where they were, and lets go of the
--				 * range: `users` said no fault was under way, and the page lagged
--				 * under that PTE, which read the old block (guest/sim, TASK-153.3).
--				 * They go again, now that the page lags, which the next fault sees.
--				 */
--				unmap_mapping_pages(inode->i_mapping, (start >> PAGE_SHIFT) + first, pages,
--						    false);
- 				atomic64_inc(&dax->writes_through);
- 				break;
- 			}
+@@ -3099,8 +3099,6 @@
+ 		 * below, for good until it ends: a copy from them faults, and takes the bytes in hand
+ 		 * (-EFAULT, fxfs_dax_write_iter), and a load waits for the write.
+ 		 */
+-		if (pending)
+-			wait_var_event(&range->users, atomic_read(&range->users) == 1);
+ 		/*
+ 		 * fxdax: blocks moved are freed from under what maps where they were before the range
+ 		 * maps where they went, if a seal keeps it from the gate: a load through a PTE of the

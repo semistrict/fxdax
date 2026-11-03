@@ -8,7 +8,8 @@
  *   failures SEED [OPERATIONS] [-v] [-W INO PAGE] [-a ADDRESS]
  *
  * An operation that fails may have done anything to the bytes it was to change, which the task
- * then knows nothing of; one that nothing failed under has done exactly what it says, and what a
+ * then knows nothing of, but a write, which leaves those it says it didn't write as they were;
+ * one that nothing failed under has done exactly what it says, and what a
  * task knows, it must read, through read(2) and its mapping, whatever else fails meanwhile. And
  * every so often, with nothing failing, read(2) must read what Fxfs's extents hold, whatever the
  * task knows: a range left behind Fxfs's blocks reads where they were. A task killed in a write
@@ -135,12 +136,12 @@ static void written(struct tracked *file, loff_t at, const char *source, size_t 
 		      readable, done);
 		return;
 	}
-	/* EFAULT of memory a fault failed for, a mapping's. */
+	/*
+	 * EFAULT of memory a fault failed for, a mapping's. What it didn't write is as it was: its
+	 * move commits after its bytes (TASK-153.5), where a move committed first kept nothing.
+	 */
 	if (done < 0)
 		check(done == -EIO || done == -ENOMEM || done == -EFAULT, "a write: %zd", done);
-	/* What it didn't write it may have moved, keeping nothing. */
-	if (wrote < len && at + wrote < file->size)
-		forget(file, at + wrote, min_t(loff_t, len - wrote, file->size - at - wrote));
 }
 
 static void op_write(struct worker *worker, struct tracked *file)

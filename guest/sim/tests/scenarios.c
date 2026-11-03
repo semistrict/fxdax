@@ -473,7 +473,7 @@ static void map_failed_killed(void)
 	check_file("after the killed write", behind_file, bytes, BIG_LEN);
 }
 
-/* That a write whose MAPs fail for good says so, and that reads then follow Fxfs. */
+/* That a write whose MAPs fail for good says so, leaves the file as it was, and reads follow Fxfs. */
 static void map_failed_writing(void)
 {
 	static char bytes[BIG_LEN], written[PAGE_SIZE];
@@ -485,8 +485,7 @@ static void map_failed_writing(void)
 	done = sim_write(file, PAGE_SIZE, written, sizeof(written));
 	check(done == -EIO, "a write whose MAPs failed: %zd", done);
 	sim_device_fail(VIRTIO_EXTENT_T_MAP, 0, 0);
-	/* What the moved page holds: its blocks moved, keeping nothing of what it covered. */
-	memset(bytes + PAGE_SIZE, 0, PAGE_SIZE);
+	/* The page as it was: its move commits after its bytes, which never came (TASK-153.5). */
 	check_file("after the write failed", file, bytes, BIG_LEN);
 }
 

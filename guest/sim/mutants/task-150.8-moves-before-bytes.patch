@@ -1,18 +1,17 @@
 # SPDX-License-Identifier: GPL-2.0
 # Copyright 2026 The fxdax Authors.
 #
-# TASK-150.8: a whole page moves, keeping nothing, with the write's bytes still in the user's memory:
-# a copy stopping short, or reading the moved pages, loses what they held.
+# TASK-150.8, TASK-153.5: a write(2)'s move commits before its bytes, a whole page keeping nothing:
+# a copy stopping short, reading the moved pages, or a failure before it, loses what they held.
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c
-@@ -2819,8 +2819,7 @@
- {
- 	loff_t last = min(round_down(end, PAGE_SIZE), round_up(i_size_read(inode), PAGE_SIZE));
- 
--	return !(flags & (IOMAP_FAULT | IOMAP_ZERO)) && round_up(pos, PAGE_SIZE) < last &&
--	       !READ_ONCE(fxfs_dax_file(inode)->in_hand);
-+	return false;
- }
- 
- /* Makes room before mapping a chunk's range for the first time. */
+@@ -3078,7 +3078,7 @@
+ 		/* A fault's pages hold what they held: a store may change any part of them. */
+ 		began = ktime_get_ns();
+ 		count = fxfs_dax_reserve_write(inode, pos, end, reserved, size, fault, held,
+-					     extents, capacity, timed ? &pending : NULL);
++					     extents, capacity, NULL);
+ 		if (timed)
+ 			atomic64_add(ktime_get_ns() - began, &dax->write_fxfs_ns);
+ 		fxfs_dax_delay();

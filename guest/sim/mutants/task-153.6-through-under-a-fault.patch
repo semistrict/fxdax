@@ -2,16 +2,26 @@
 # Copyright 2026 The fxdax Authors.
 #
 # TASK-153.6: a write goes through a region as a fault past its iomap maps the page, for good, where
-# its blocks were.
+# its blocks were. Since TASK-153.5, a write(2) waits for faults past their iomaps before its PTEs
+# go, where it looked at `users` as it went through: waiting after them, a fault's PTE stays.
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c
-@@ -2775,7 +2775,7 @@
- 	       !range->region && e->access == FXFS_DAX_OPEN && e->extent_size && e->extent_size <= FXFS_DAX_SIZE &&
- 	       PAGE_ALIGNED(e->extent_offset) && (e->extent_offset || e->len < e->extent_size) &&
- 	       e->offset <= start && e->offset + e->len >= start + ((loff_t)pages << PAGE_SHIFT) &&
--	       first + pages <= range->pages && atomic_read(&range->users) == 1 &&
-+	       first + pages <= range->pages &&
- 	       find_next_bit(range->writable, first + pages, first) == first + pages;
- }
- 
+@@ -3099,8 +3099,6 @@
+ 		 * below, for good until it ends: a copy from them faults, and takes the bytes in hand
+ 		 * (-EFAULT, fxfs_dax_write_iter), and a load waits for the write.
+ 		 */
+-		if (pending)
+-			wait_var_event(&range->users, atomic_read(&range->users) == 1);
+ 		/*
+ 		 * fxdax: blocks moved are freed from under what maps where they were before the range
+ 		 * maps where they went, if a seal keeps it from the gate: a load through a PTE of the
+@@ -3109,6 +3107,8 @@
+ 		 */
+ 		if (count)
+ 			unmap_mapping_pages(inode->i_mapping, (start >> PAGE_SHIFT) + first, pages, false);
++		if (pending)
++			wait_var_event(&range->users, atomic_read(&range->users) == 1);
+ 		/* fxdax: fault injection, a seal between the move and the mapping of the new block. */
+ 		if (fault && fxfs_dax_seal_moved()) {
+ 			err = fxfs_nofs(fxfs_fsync(fxfs_vfs_fs(inode->i_sb)));

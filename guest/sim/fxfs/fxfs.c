@@ -23,6 +23,9 @@
  *   a write moves them, though the extent's other blocks may be open (TASK-140, TASK-44.21).
  * - A transaction fails, if a test asks (fxfs_sim_fail), before it does anything, as one out of space
  *   does, or a retry's: what's left of a move a fault went round for is dax.c's to mend (TASK-133).
+ *   A write(2)'s fails as it commits, too, after its bytes (fxfs_dax_end_write).
+ * - A transaction holds its file's lock, a write(2)'s from its move to its commit (TASK-153.5): until
+ *   then the file has its old blocks, and the new ones are held, not the file's.
  *
  * It has no journal, no tree, no compaction, no crash consistency: durability isn't simulated, and
  * the real Fxfs's own bugs can't show up here. It's what the window's protocol assumes of Fxfs,
@@ -65,6 +68,8 @@ struct block {
 };
 
 struct stub_file {
+	/* Held by each transaction of the file, which takes it before the filesystem's. */
+	struct mutex lock;
 	u64 ino;
 	u64 size;
 	u64 nr_blocks;
@@ -74,7 +79,7 @@ struct stub_file {
 
 struct fxfs {
 	struct fxfs_device *dev;
-	/* Held by each transaction: the file's lock and the journal's, in one. */
+	/* Held by each transaction as it changes things: the journal's lock, the files' after it. */
 	struct mutex lock;
 	/* One seal at a time. */
 	struct mutex seal;
@@ -179,6 +184,7 @@ u64 fxfs_sim_new_file(struct fxfs *fs)
 	struct stub_file *file = kzalloc(sizeof(*file), GFP_KERNEL);
 
 	mutex_lock(&fs->lock);
+	mutex_init(&file->lock);
 	file->ino = fs->next_ino++;
 	list_add(&file->list, &fs->files);
 	mutex_unlock(&fs->lock);
@@ -205,6 +211,18 @@ static struct stub_extent *find_extent(struct fxfs *fs, u64 sequence)
 			return extent;
 	}
 	sim_panic("no extent %llu", sequence);
+}
+
+/* The file `ino`, its lock held, as a transaction of it holds it. */
+static struct stub_file *lock_file(struct fxfs *fs, u64 ino)
+{
+	struct stub_file *file;
+
+	mutex_lock(&fs->lock);
+	file = find_file(fs, ino);
+	mutex_unlock(&fs->lock);
+	mutex_lock(&file->lock);
+	return file;
 }
 
 /* Room for `pages` blocks of `file`. */
@@ -346,12 +364,12 @@ ssize_t fxfs_dax_extents(struct fxfs *fs, u64 ino, u64 offset, u64 len, struct f
 
 int fxfs_dax_update_size(struct fxfs *fs, u64 ino, u64 size)
 {
-	struct stub_file *file;
+	struct stub_file *file = lock_file(fs, ino);
 
 	mutex_lock(&fs->lock);
-	file = find_file(fs, ino);
 	file->size = max(file->size, size);
 	mutex_unlock(&fs->lock);
+	mutex_unlock(&file->lock);
 	return 0;
 }
 
@@ -368,11 +386,109 @@ static bool keeps_data(const void *data)
 	return false;
 }
 
-/* One try at fxfs_dax_map_write's transaction: -EAGAIN if a seal came. */
+/*
+ * A move's new blocks, of the `pages` pages of `file` from `first` that move (`moving`), which a
+ * commit puts in place of the old: a write(2)'s, made and not committed (fxfs_dax_begin_write),
+ * holding the file's lock until it is.
+ */
+struct fxfs_dax_write {
+	struct fxfs *fs;
+	struct stub_file *file;
+	u64 first, pages, size;
+	struct block *moved;
+	bool *moving;
+};
+
+static void free_move(struct fxfs_dax_write *move)
+{
+	kfree(move->moved);
+	kfree(move->moving);
+	kfree(move);
+}
+
+/* Gives back the new blocks of `move`, uncommitted. With the filesystem's lock held. */
+static void release_move(struct fxfs_dax_write *move)
+{
+	struct stub_extent *extent;
+	u64 page;
+
+	for (page = 0; page < move->pages; page++) {
+		if (!move->moving[page])
+			continue;
+		extent = find_extent(move->fs, move->moved[page].sequence);
+		extent->live--;
+		extent->refs[move->moved[page].page]--;
+	}
+}
+
+/* The commit of `move`: the new blocks in place of the old, and the size. With both locks held. */
+static void commit_move(struct fxfs_dax_write *move)
+{
+	struct stub_file *file = move->file;
+	u64 page;
+
+	for (page = 0; page < move->pages; page++) {
+		struct block *block = &file->blocks[move->first + page];
+
+		if (file->ino == watched_ino && move->first + page == watched_page)
+			sim_log("sim: ino %llu page %llu: map_write by %s commits, %s from extent %llu page %llu to extent %llu page %llu, at %llu ns\n",
+				file->ino, watched_page, current->comm,
+				move->moving[page] ? "moved" : "stays", block->sequence, block->page,
+				move->moved[page].sequence, move->moved[page].page, ktime_get_ns());
+		if (move->moving[page]) {
+			put_block(move->fs, block);
+			*block = move->moved[page];
+		}
+	}
+	file->size = max(file->size, move->size);
+}
+
+/*
+ * The pieces of `move`'s pages, as they are once it commits, into `out`: how many. With the
+ * filesystem's lock held.
+ */
+static ssize_t move_pieces(struct fxfs_dax_write *move, struct fxfs_dax_extent *out, size_t max)
+{
+	struct fxfs *fs = move->fs;
+	ssize_t count = 0;
+	u64 page;
+
+	for (page = 0; page < move->pages; page++) {
+		const struct block *block = move->moving[page] ? &move->moved[page] :
+					    &move->file->blocks[move->first + page];
+		struct stub_extent *extent;
+
+		if (count && out[count - 1].sequence == block->sequence &&
+		    out[count - 1].extent_offset + out[count - 1].len ==
+		    block->page << PAGE_SHIFT) {
+			out[count - 1].len += PAGE_SIZE;
+			continue;
+		}
+		if (count == max) {
+			sim_panic("map_write: room for %zu pieces", max);
+		}
+		extent = find_extent(fs, block->sequence);
+		out[count++] = (struct fxfs_dax_extent) {
+			.offset = (move->first + page) << PAGE_SHIFT, .len = PAGE_SIZE,
+			.branch = fs->branch, .sequence = block->sequence,
+			.extent_offset = block->page << PAGE_SHIFT,
+			.access = extent->open ? FXFS_DAX_OPEN : FXFS_DAX_SEALED,
+			.extent_size = extent->pages << PAGE_SHIFT,
+		};
+	}
+	return count;
+}
+
+/*
+ * One try at fxfs_dax_map_write's transaction, or fxfs_dax_begin_write's if `pending`, which is
+ * left holding the move, and the file's lock: -EAGAIN if a seal came.
+ */
 static ssize_t try_map_write(struct fxfs *fs, u64 ino, u64 offset, u64 len, u64 size, bool keep,
-			     const void *held, struct fxfs_dax_extent *out, size_t max)
+			     const void *held, struct fxfs_dax_extent *out, size_t max,
+			     struct fxfs_dax_write **pending)
 {
 	u64 first = offset >> PAGE_SHIFT, last = (offset + len - 1) >> PAGE_SHIFT, page, pages;
+	struct fxfs_dax_write *move;
 	struct block *moved;
 	char *copies;
 	bool *kept, *moving;
@@ -382,13 +498,18 @@ static ssize_t try_map_write(struct fxfs *fs, u64 ino, u64 offset, u64 len, u64 
 	int err = 0;
 
 	pages = last - first + 1;
+	file = lock_file(fs, ino);
 	mutex_lock(&fs->lock);
-	file = find_file(fs, ino);
 	reserve_blocks(file, last + 1);
 	moved = kcalloc(pages, sizeof(*moved), GFP_NOFS);
 	copies = kmalloc(pages << PAGE_SHIFT, GFP_NOFS);
 	kept = kcalloc(pages, sizeof(*kept), GFP_NOFS);
 	moving = kcalloc(pages, sizeof(*moving), GFP_NOFS);
+	move = kzalloc(sizeof(*move), GFP_NOFS);
+	*move = (struct fxfs_dax_write) {
+		.fs = fs, .file = file, .first = first, .pages = pages, .size = size,
+		.moved = moved, .moving = moving,
+	};
 	for (page = 0; page < pages; page++) {
 		const struct block *block = &file->blocks[first + page];
 		bool all = keep || held;
@@ -463,61 +584,33 @@ static ssize_t try_map_write(struct fxfs *fs, u64 ino, u64 offset, u64 len, u64 
 		if (err)
 			break;
 	}
-	mutex_lock(&fs->lock);
-	if (err) {
-		for (page = 0; page < pages; page++) {
-			if (moved[page].sequence) {
-				extent = find_extent(fs, moved[page].sequence);
-				extent->live--;
-				extent->refs[moved[page].page]--;
-			}
-		}
-		goto done;
-	}
-	/* The commit: the new blocks in place of the old, and the size. */
-	for (page = 0; page < pages; page++) {
-		struct block *block = &file->blocks[first + page];
-
-		if (ino == watched_ino && first + page == watched_page)
-			sim_log("sim: ino %llu page %llu: map_write by %s, %s from extent %llu page %llu to extent %llu page %llu, %s, at %llu ns\n",
-				ino, watched_page, current->comm, moving[page] ? "moved" : "stays",
-				block->sequence, block->page, moved[page].sequence, moved[page].page,
-				!kept[page] ? "keeping nothing" : held ? "keeping what's held" :
-				"keeping what it read", ktime_get_ns());
-		if (moving[page]) {
-			put_block(fs, block);
-			*block = moved[page];
-		}
-		if (count && out[count - 1].sequence == block->sequence &&
-		    out[count - 1].extent_offset + out[count - 1].len ==
-		    block->page << PAGE_SHIFT) {
-			out[count - 1].len += PAGE_SIZE;
-			continue;
-		}
-		if (count == max) {
-			sim_panic("map_write: room for %zu pieces", max);
-		}
-		extent = find_extent(fs, block->sequence);
-		out[count++] = (struct fxfs_dax_extent) {
-			.offset = (first + page) << PAGE_SHIFT, .len = PAGE_SIZE,
-			.branch = fs->branch, .sequence = block->sequence,
-			.extent_offset = block->page << PAGE_SHIFT,
-			.access = extent->open ? FXFS_DAX_OPEN : FXFS_DAX_SEALED,
-			.extent_size = extent->pages << PAGE_SHIFT,
-		};
-	}
-	file->size = max(file->size, size);
-done:
-	mutex_unlock(&fs->lock);
-	kfree(moved);
 	kfree(copies);
 	kfree(kept);
-	kfree(moving);
-	return err ?: count;
+	mutex_lock(&fs->lock);
+	if (err) {
+		release_move(move);
+		mutex_unlock(&fs->lock);
+		mutex_unlock(&file->lock);
+		free_move(move);
+		return err;
+	}
+	count = move_pieces(move, out, max);
+	if (pending) {
+		mutex_unlock(&fs->lock);
+		*pending = move;
+		return count;
+	}
+	commit_move(move);
+	mutex_unlock(&fs->lock);
+	mutex_unlock(&file->lock);
+	free_move(move);
+	return count;
 }
 
-ssize_t fxfs_dax_map_write(struct fxfs *fs, u64 ino, u64 offset, u64 len, u64 size, bool keep,
-			   const void *held, struct fxfs_dax_extent *out, size_t max)
+/* fxfs_dax_map_write, or fxfs_dax_begin_write if `pending`. */
+static ssize_t map_write(struct fxfs *fs, u64 ino, u64 offset, u64 len, u64 size, bool keep,
+			 const void *held, struct fxfs_dax_extent *out, size_t max,
+			 struct fxfs_dax_write **pending)
 {
 	ssize_t count = -EAGAIN;
 	int tries;
@@ -527,10 +620,46 @@ ssize_t fxfs_dax_map_write(struct fxfs *fs, u64 ino, u64 offset, u64 len, u64 si
 		return -ENOSPC;
 	}
 	for (tries = 0; tries < SEALED_RETRIES && count == -EAGAIN; tries++)
-		count = try_map_write(fs, ino, offset, len, size, keep, held, out, max);
+		count = try_map_write(fs, ino, offset, len, size, keep, held, out, max, pending);
 	if (count == -EAGAIN)
 		sim_panic("map_write: its extents sealed still, tried at length");
 	return count;
+}
+
+ssize_t fxfs_dax_map_write(struct fxfs *fs, u64 ino, u64 offset, u64 len, u64 size, bool keep,
+			   const void *held, struct fxfs_dax_extent *out, size_t max)
+{
+	return map_write(fs, ino, offset, len, size, keep, held, out, max, NULL);
+}
+
+ssize_t fxfs_dax_begin_write(struct fxfs *fs, u64 ino, u64 offset, u64 len, u64 size,
+			     struct fxfs_dax_extent *out, size_t max, struct fxfs_dax_write **write)
+{
+	return map_write(fs, ino, offset, len, size, false, NULL, out, max, write);
+}
+
+int fxfs_dax_end_write(struct fxfs_dax_write *write, bool commit)
+{
+	struct fxfs *fs = write->fs;
+	int err = 0;
+
+	/* A commit takes the journal's time: a seal fits in it. */
+	if (commit && !(sim_random() % 4))
+		msleep(1);
+	if (commit && fail_odds && !(sim_random() % fail_odds)) {
+		failures++;
+		err = -EIO;
+	}
+	sim_point(commit && !err ? "a write's commit" : "a write's drop");
+	mutex_lock(&fs->lock);
+	if (commit && !err)
+		commit_move(write);
+	else
+		release_move(write);
+	mutex_unlock(&fs->lock);
+	mutex_unlock(&write->file->lock);
+	free_move(write);
+	return err;
 }
 
 bool fxfs_dax_restage(struct fxfs_filesystem *filesystem, struct fxfs_dax_extent *out)
@@ -620,11 +749,10 @@ static void move_tail(struct fxfs *fs, struct stub_file *file, u64 size)
 
 int fxfs_setattr(struct fxfs *fs, u64 ino, const struct fxfs_setattr *set)
 {
-	struct stub_file *file;
+	struct stub_file *file = lock_file(fs, ino);
 	u64 page, old;
 
 	mutex_lock(&fs->lock);
-	file = find_file(fs, ino);
 	if (set->valid & FXFS_SET_SIZE) {
 		old = file->size;
 		for (page = DIV_ROUND_UP(set->size, PAGE_SIZE); page < file->nr_blocks; page++)
@@ -639,6 +767,7 @@ int fxfs_setattr(struct fxfs *fs, u64 ino, const struct fxfs_setattr *set)
 		file->size = set->size;
 	}
 	mutex_unlock(&fs->lock);
+	mutex_unlock(&file->lock);
 	return 0;
 }
 
@@ -649,9 +778,12 @@ int fxfs_clone_range(struct fxfs *fs, u64 src, u64 offset, u64 len, u64 dst, u64
 	u64 page, pages = len >> PAGE_SHIFT;
 	struct block *block;
 
+	/* By number, as Fxfs takes a transaction's locks in order. */
+	from = lock_file(fs, min(src, dst));
+	to = src == dst ? from : lock_file(fs, max(src, dst));
+	if (src > dst)
+		swap(from, to);
 	mutex_lock(&fs->lock);
-	from = find_file(fs, src);
-	to = find_file(fs, dst);
 	reserve_blocks(from, (offset >> PAGE_SHIFT) + pages);
 	reserve_blocks(to, (dst_offset >> PAGE_SHIFT) + pages);
 	for (page = 0; page < pages; page++) {
@@ -667,16 +799,18 @@ int fxfs_clone_range(struct fxfs *fs, u64 src, u64 offset, u64 len, u64 dst, u64
 	}
 	to->size = max(to->size, size);
 	mutex_unlock(&fs->lock);
+	if (to != from)
+		mutex_unlock(&to->lock);
+	mutex_unlock(&from->lock);
 	return 0;
 }
 
 int fxfs_punch(struct fxfs *fs, u64 ino, u64 offset, u64 len)
 {
-	struct stub_file *file;
+	struct stub_file *file = lock_file(fs, ino);
 	u64 page;
 
 	mutex_lock(&fs->lock);
-	file = find_file(fs, ino);
 	for (page = offset >> PAGE_SHIFT; page < (offset + len) >> PAGE_SHIFT &&
 	     page < file->nr_blocks; page++) {
 		if (ino == watched_ino && page == watched_page)
@@ -685,5 +819,6 @@ int fxfs_punch(struct fxfs *fs, u64 ino, u64 offset, u64 len)
 		put_block(fs, &file->blocks[page]);
 	}
 	mutex_unlock(&fs->lock);
+	mutex_unlock(&file->lock);
 	return 0;
 }
