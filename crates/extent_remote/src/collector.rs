@@ -661,6 +661,64 @@ mod tests {
         });
     }
 
+    /// fxdax: an object a byte was flipped in, in storage, is compacted to no moves, where its
+    /// extents would be under CRCs of their own: the pass fails, and the object stays, as its
+    /// extents' reads fail (TASK-153.11). In a part stored compressed, the kept extent's bytes
+    /// compressing, and in one stored raw.
+    #[test]
+    fn objects_with_flipped_bytes_are_not_compacted() {
+        for compressible in [true, false] {
+            block_on(async {
+                let bucket = store();
+                branch::create(&*bucket, 1).await.unwrap();
+                let writer = Writer::open(bucket.clone(), 1, 10, 0).await.unwrap();
+                let first = writer.chain().next_sequence();
+                let (kept, freed) = (ExtentId::new(1, first), ExtentId::new(1, first + 1));
+                // The kept extent's bytes compress, or not; the freed one's don't, from a xorshift
+                // generator, so that the object is large enough to compact either way.
+                let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+                let mut bytes = |len: u32, compressible: bool| -> Vec<u8> {
+                    (0..len)
+                        .map(|i| match compressible {
+                            true => (i * 7 % 251) as u8,
+                            false => {
+                                state ^= state << 13;
+                                state ^= state >> 7;
+                                state ^= state << 17;
+                                state as u8
+                            }
+                        })
+                        .collect()
+                };
+                let extents =
+                    vec![(kept, bytes(4096, compressible)), (freed, bytes(20_000, false))];
+                commit(&writer, Commit { tag: 1, extents, ..Commit::default() }).await;
+                let segment = writer.location(kept).unwrap().key;
+                commit(&writer, Commit { tag: 2, frees: vec![freed], ..Commit::default() }).await;
+                writer.checkpoint().await.unwrap();
+                let mut bytes = bucket::get(&*bucket, &segment).await.unwrap().bytes;
+                let stored = extent_frame::Parts::of(&bytes).unwrap().stored[0];
+                let encoding = match compressible {
+                    true => extent_frame::Encoding::Zstd,
+                    false => extent_frame::Encoding::Raw,
+                };
+                assert_eq!(stored.encoding, encoding);
+                bytes[stored.offset as usize + 9] ^= 0x10;
+                bucket.put(&segment, bytes, PutMode::Overwrite).await.unwrap();
+
+                let compacting = Options { compact_below: 0.5, ..KEEP };
+                let corrupt = Error::Corrupt("an object's part, by its CRC".into());
+                assert_eq!(collect(&*bucket, 1, &compacting).await, Err(corrupt));
+                let after = keys(&*bucket).await;
+                assert!(after.contains(&segment) && !after.contains(&layout::moves(&segment)));
+                let location = writer.location(kept).unwrap();
+                let read = crate::read(&bucket, kept, &location).await;
+                let twice = format!("part 0 of {segment}, by its CRC, twice");
+                assert_eq!(read, Err(Error::Corrupt(twice)));
+            });
+        }
+    }
+
     /// Moves whose extents are all freed stay as long as the object they are of: a reader that
     /// finds it gone looks its extents up in them. They go after it.
     #[test]
