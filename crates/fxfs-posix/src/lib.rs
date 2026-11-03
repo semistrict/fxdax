@@ -751,18 +751,25 @@ impl<P: Platform> Fxfs<P> {
     ) -> Result<Vec<DaxExtent>, Error> {
         // fxdax: tried again while seals keep coming, though not for ever: a device that goes on
         // refusing an extent Fxfs takes for open would have a write spin in the kernel, with
-        // nothing to yield to (xfstests generic/111, TASK-140).
-        for _ in 0..MAX_SEALED_RETRIES {
+        // nothing to yield to (xfstests generic/111, TASK-140). It gives up with the last seal's
+        // error, an I/O error's errno: nothing is inconsistent.
+        let mut tries = 0;
+        loop {
             match self.try_dax_map_write(ino, range.clone(), size, keep, held).await {
                 // A seal came between the writes copying the first and last blocks' surroundings
                 // to an extent: the transaction is dropped, and its extents with it.
                 Err(error) if error.chain().any(|e| e.downcast_ref::<SealedExtent>().is_some()) => {
+                    tries += 1;
+                    if tries == MAX_SEALED_RETRIES {
+                        return Err(error.context(format!(
+                            "object {ino} at {range:?}: its extents sealed still, tried {tries} \
+                             times"
+                        )));
+                    }
                 }
                 result => return result,
             }
         }
-        log::error!("fxfs: object {ino} at {range:?}: its extents sealed still, tried at length");
-        Err(FxfsError::Inconsistent.into())
     }
 
     async fn try_dax_map_write(

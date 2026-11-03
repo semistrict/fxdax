@@ -9,7 +9,8 @@ use super::*;
 use fxfs::object_store::{NewChildStoreOptions, StoreOptions};
 use fxfs::object_store::volume::root_volume;
 use storage_device::DeviceHolder;
-use storage_device::fake_device::FakeDevice;
+use storage_device::ExtentId;
+use storage_device::fake_device::{FakeDevice, Op as DeviceOp};
 
 const FILE: u32 = S_IFREG | 0o644;
 const DIR: u32 = S_IFDIR | 0o755;
@@ -33,7 +34,12 @@ impl Platform for Tested {
 
 /// A new filesystem's volume, with its root directory.
 async fn volume() -> (Fxfs<Tested>, u64) {
-    let device = DeviceHolder::new(FakeDevice::new(16384, 4096));
+    volume_on(FakeDevice::new(16384, 4096)).await
+}
+
+/// A new filesystem's volume on `device`, with its root directory.
+async fn volume_on(device: FakeDevice) -> (Fxfs<Tested>, u64) {
+    let device = DeviceHolder::new(device);
     let filesystem = FxFilesystem::new_empty(device).await.expect("formatting");
     let root_volume = root_volume((*filesystem).clone()).await.expect("the root volume");
     let volume = root_volume.new_volume("test", NewChildStoreOptions::default()).await.unwrap();
@@ -333,5 +339,37 @@ async fn a_files_last_bytes_read_back_after_a_remount() {
     let mut window = vec![0xff; 4 << 20];
     let got = fs.read_into(ino, i64::MAX as u64 - (2 << 20) + 1, &mut [&mut window[..]]).await;
     assert_eq!(window[got.unwrap() - 1], b'a');
+    fs.stop_delayed().await.unwrap();
+}
+
+/// A write through a DAX window whose extents are found sealed on every try gives up with the
+/// seal's error, an I/O error's errno, as it says: not corruption's (TASK-160.21). It gave up
+/// with `Inconsistent`, the seal's error lost.
+#[fuchsia::test]
+async fn a_dax_write_sealed_on_every_try_gives_up_with_the_seal() {
+    let sealing = Arc::new(AtomicBool::new(false));
+    let mut device = FakeDevice::new(16384, 4096);
+    device.set_op_callback({
+        let sealing = sealing.clone();
+        move |op| match op {
+            DeviceOp::Write if sealing.load(Ordering::SeqCst) => {
+                Err(SealedExtent(ExtentId::new(0, 1)).into())
+            }
+            _ => Ok(()),
+        }
+    });
+    let (fs, root) = volume_on(device).await;
+    let ino = fs.new_file(root, b"a").await;
+    // What the blocks hold is written as they move, in the transaction, where the seal is met.
+    let held = vec![1; 4096];
+    sealing.store(true, Ordering::SeqCst);
+    let mapped = fs.dax_map_write(ino, 0..4096, 4096, false, Some(&held)).await;
+    sealing.store(false, Ordering::SeqCst);
+    let error = mapped.expect_err("mapped while sealed");
+    assert!(error.chain().any(|cause| cause.is::<SealedExtent>()), "{error:#}");
+    let tried = format!("its extents sealed still, tried {MAX_SEALED_RETRIES} times");
+    assert!(format!("{error:#}").contains(&tried), "{error:#}");
+    assert_eq!(errno(&error), Errno::EIO);
+    fs.dax_map_write(ino, 0..4096, 4096, false, Some(&held)).await.expect("mapped once unsealed");
     fs.stop_delayed().await.unwrap();
 }
