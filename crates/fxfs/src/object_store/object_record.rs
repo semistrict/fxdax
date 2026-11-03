@@ -28,6 +28,7 @@ use std::default::Default;
 use std::hash::Hash;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use storage_device::ExtentId;
+use storage_units::BlockSize;
 
 /// ObjectDescriptor is the set of possible records in the object store.
 pub type ObjectDescriptor = ObjectDescriptorV32;
@@ -927,6 +928,24 @@ impl From<BytesAndNodes> for (i64, i64) {
 }
 
 impl ObjectValue {
+    /// fxdax: whether this is what an object store's item of `key` may hold, in a filesystem of
+    /// `block_size` blocks: the one check of what's read, of the journal's mutations
+    /// (`Journal::validate_mutation`) and a super-block's records, after which what reads them
+    /// trusts them. Any extent's key is on blocks, not only those of extents that have a value,
+    /// and what its value says fits it.
+    pub fn is_valid_for(&self, key: &ObjectKey, block_size: BlockSize) -> bool {
+        let ObjectKeyData::Attribute(_, AttributeKey::Extent(extent)) = &key.data else {
+            return true;
+        };
+        if extent.is_empty() || !block_size.is_aligned(extent) {
+            return false;
+        }
+        match self {
+            ObjectValue::Extent(value) => value.fits(extent.end - extent.start, block_size),
+            _ => true,
+        }
+    }
+
     /// Creates an ObjectValue for a file object.
     pub fn file(
         refs: u64,

@@ -49,7 +49,7 @@ use crate::lsm_tree::types::LayerIterator;
 use crate::object_handle::{ObjectHandle as _, ReadObjectHandle};
 use crate::object_store::allocator::Allocator;
 use crate::object_store::data_object_handle::OverwriteOptions;
-use crate::object_store::extent_record::{ExtentMode, ExtentValue};
+use crate::object_store::extent_record::ExtentValue;
 use crate::object_store::graveyard::Graveyard;
 use crate::object_store::journal::bootstrap_handle::BootstrapObjectHandle;
 use crate::object_store::journal::checksum_list::ChecksumList;
@@ -660,54 +660,13 @@ impl Journal {
     /// Used during replay to validate a mutation.  This should return false if the mutation is not
     /// valid and should not be applied.  This could be for benign reasons: e.g. the device flushed
     /// data out-of-order, or because of a malicious actor.
-    /// fxdax: any extent's key is checked, not only those of extents that have a value.
+    /// fxdax: an object store's item is what its value says it may be
+    /// (`ObjectValue::is_valid_for`).
     pub(super) fn validate_mutation(mutation: &Mutation, block_size: BlockSize) -> bool {
         match mutation {
-            Mutation::ObjectStore(ObjectStoreMutation {
-                item:
-                    Item {
-                        key:
-                            ObjectKey {
-                                data: ObjectKeyData::Attribute(_, AttributeKey::Extent(extent)),
-                                ..
-                            },
-                        value,
-                        ..
-                    },
-                ..
-            }) => {
-                if extent.is_empty() || !block_size.is_aligned(extent) {
-                    return false;
-                }
-                let ObjectValue::Extent(ExtentValue::Some { extent_offset, mode, .. }) = value
-                else {
-                    return true;
-                };
-                let len = extent.length().unwrap();
-                match mode {
-                    ExtentMode::Cow(checksums) if checksums.len() > 0 => {
-                        if len % checksums.len() as u64 != 0 {
-                            return false;
-                        }
-                        if !block_size.is_aligned(len / checksums.len() as u64) {
-                            return false;
-                        }
-                    }
-                    // fxdax: a bit a block, which reads rely on.
-                    ExtentMode::OverwritePartial(bitmap)
-                        if bitmap.len() as u64 != len / block_size =>
-                    {
-                        return false;
-                    }
-                    _ => {}
-                }
-                // fxdax: extents have no device to fit in, only offsets that must not overflow.
-                if !block_size.is_aligned(extent_offset) || extent_offset.checked_add(len).is_none()
-                {
-                    return false;
-                }
+            Mutation::ObjectStore(ObjectStoreMutation { item, .. }) => {
+                return item.value.is_valid_for(&item.key, block_size);
             }
-            Mutation::ObjectStore(_) => {}
             Mutation::EncryptedObjectStore(_) => {}
             Mutation::Allocator(AllocatorMutation::Allocate { device_range, owner_object_id }) => {
                 return valid_device_range(device_range, block_size)

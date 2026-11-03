@@ -15,6 +15,7 @@ use bit_vec::BitVec;
 use fprint::TypeFingerprint;
 use serde::{Deserialize, Serialize};
 use storage_device::ExtentId;
+use storage_units::BlockSize;
 
 /// The mode the extent is operating in. This changes how writes work to this region of the file.
 pub type ExtentMode = ExtentModeV38;
@@ -130,6 +131,26 @@ impl ExtentValue {
 
     pub fn is_deleted(&self) -> bool {
         if let ExtentValue::None = self { true } else { false }
+    }
+
+    /// fxdax: whether what this says fits an extent `len` bytes long, of `block_size` blocks:
+    /// checksums each of a whole number of blocks, a bit a block, and an offset on blocks that
+    /// doesn't overflow, as an object store's records must (`ObjectValue::is_valid_for`).
+    pub fn fits(&self, len: u64, block_size: BlockSize) -> bool {
+        let ExtentValue::Some { extent_offset, mode, .. } = self else {
+            return true;
+        };
+        let entries_fit = match mode {
+            ExtentMode::Cow(checksums) if checksums.len() > 0 => {
+                let sums = checksums.len() as u64;
+                len % sums == 0 && block_size.is_aligned(len / sums)
+            }
+            ExtentMode::OverwritePartial(bitmap) => bitmap.len() as u64 == len / block_size,
+            _ => true,
+        };
+        entries_fit
+            && block_size.is_aligned(*extent_offset)
+            && extent_offset.checked_add(len).is_some()
     }
 
     /// Returns a new ExtentValue offset by `amount`.  Both `amount` and `extent_len` must be
