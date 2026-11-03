@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-03 13:08'
-updated_date: '2026-11-03 13:43'
+updated_date: '2026-11-03 18:50'
 labels:
   - structure
 dependencies: []
@@ -23,15 +23,15 @@ About 15 running byte counters (Space, Uncommitted, Segment, PartCounts, Segment
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 audit() runs after every mutation in tests
-- [ ] #2 A mutant dropping one increment fails on the first seed
+- [x] #1 audit() runs after every mutation in tests
+- [x] #2 A mutant dropping one increment fails on the first seed
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -58,4 +58,10 @@ Mutant (Segments::keep_for_uploader's for_uploader update dropped): with the aud
 Blind spot: running counts kept by hand that nothing recomputed; tests checked them only through their effects (ENOSPC, cleaning due). The class test is the audit itself, run after every critical section in every test build.
 Structure: the counts stay incremental, because the hot paths need them O(1). The audit is the one place that defines what each count means. A single owner of all counts would not remove the hand-keeping.
 Cost: Cargo unifies features in a workspace build, so the fxdax and other crates' tests audit their stores too (decision in OPEN_QUESTIONS.md).
+
+Bounded (30049162f): the audit walks every extent each time the state is let go. With feature unification it audited fxdax's counting_followers_walks_no_extents (a 32,768-extent base written one extent at a time, forked 100 times), which ran past an hour on GCE. Now only branches holding at most 4,096 extents are audited (AUDITED_EXTENTS, Extents::most). extent_store's own tests are far below the bound, and fxdax's bases_attached_open_when_read went from >60 s to 13 s.
+Rule-off Shuttle tests: on Linux, needs_writes_to_freed_extents_dropped's first failing schedule was the audit's (with the rule off, a freed extent holds the write's data again, its own file unknown to the files' count), not one of its listed messages. A failed audit's panic now begins with AUDIT_FAILED, and that test accepts it (588f44ade). The other rule-off tests still fail with their own messages on macOS and Linux.
+Verification: macOS scripts/test.sh after the rebase: workspace 2057/2057, Shuttle 61 and 7, physmem, fxdax, follower, follower_sim and the scripts' tests all pass. GCE (Linux, fxdax-test-t16016-audit): workspace 2228/2228.
+
+AC evidence: #1, every lock of the state goes through Locked and is audited as it is let go, in every test build (feature unification included); macOS scripts/test.sh is green with it. #2, the keep_for_uploader mutant fails 9 extent_store tests and 10 Shuttle tests, each on its first schedule; without the audit it fails none. DoD #2: scripts/upstream-changes.py --check exits 0. DoD #3: no upstream code changed. DoD #1 is open: Linux workspace 2228/2228 at 30049162f (GCE run5), but the Linux Shuttle and extent_store rerun after 588f44ade didn't run because gcloud's credentials expired (OPEN_QUESTIONS.md). The host fxdax-test-t16016-audit is still up, undeletable without a login.
 <!-- SECTION:NOTES:END -->
