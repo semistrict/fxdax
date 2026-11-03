@@ -13,9 +13,12 @@ its kernel's build directory, so each mutant recompiles fs/fxfs alone. A mutant 
 on is killed; one they pass, missed, needs a test, or is recorded here as equivalent, with why.
 
     scripts/guest-mutants-gce.py HOST ZONE RESULTS [MUTANT...]
+    scripts/guest-mutants-gce.py --check [MUTANT...]
 
 runs every mutant (or those named) on HOST, made with scripts/test-gce.sh create, writing each
-run's results under RESULTS, and prints each mutant's fate. FXDAX_E2E_TEST names the suites, the
+run's results under RESULTS, and prints each mutant's fate. --check runs nothing: it makes each
+mutant's edits of the sources as they are, in memory, as CI does, and fails if one isn't found
+once, which would have the mutant test nothing. FXDAX_E2E_TEST names the suites, the
 DAX ones by default; FXDAX_MUTANT_KERNEL the kernel the host builds for every mutant (debug, with
 lockdep and KCSAN, or kasan), each's own otherwise; the other FXDAX_* settings reach the host as
 scripts/test-gce.sh says.
@@ -179,13 +182,41 @@ MUTANTS = [
 SUITES = "fxfs-guest-dax fxfs-guest-checks-dax fxfs-guest-checks-dax-delay fxfs-guest-pgbench-dax"
 
 
-def mutate(tree, edits):
+class Unfound(Exception):
+    """A mutant's edit not found once in its file."""
+
+
+def mutated(tree, edits):
+    """The files of `tree` a mutant's edits change, as they make them, each in turn."""
+    texts = {}
     for old, new, *file in edits:
         path = tree / (file[0] if file else DAX)
-        text = path.read_text()
+        text = texts.get(path) or path.read_text()
         if text.count(old) != 1:
-            raise SystemExit(f"{path}: a mutant's edit is found {text.count(old)} times: {old!r}")
-        path.write_text(text.replace(old, new))
+            raise Unfound(f"{path}: a mutant's edit is found {text.count(old)} times: {old!r}")
+        texts[path] = text.replace(old, new)
+    return texts
+
+
+def mutate(tree, edits):
+    try:
+        for path, text in mutated(tree, edits).items():
+            path.write_text(text)
+    except Unfound as unfound:
+        raise SystemExit(str(unfound))
+
+
+def check(names):
+    """Each mutant's edits found once in the sources as they are: a line for each that isn't."""
+    broken = []
+    for name, _, edits, *_ in MUTANTS:
+        if names and name not in names:
+            continue
+        try:
+            mutated(ROOT, edits)
+        except Unfound as unfound:
+            broken.append(f"{name}: {unfound}")
+    return broken
 
 
 def run(host, zone, results, name, edits, build):
@@ -223,6 +254,12 @@ def fate(status, logs):
 
 
 def main():
+    if sys.argv[1:2] == ["--check"]:
+        broken = check(set(sys.argv[2:]))
+        for line in broken:
+            print(line, file=sys.stderr)
+        print(f"mutants: {len(MUTANTS)} checked, {len(broken)} broken")
+        raise SystemExit(1 if broken else 0)
     if len(sys.argv) < 4:
         raise SystemExit(__doc__)
     host, zone, results, names = sys.argv[1], sys.argv[2], sys.argv[3], set(sys.argv[4:])

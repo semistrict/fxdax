@@ -15,16 +15,13 @@ class Mutants(unittest.TestCase):
     def test_each_edit_finds_its_code_once(self):
         """TASK-44.19: the sources as they are hold each mutant's code once, which it changes: a
         mutant whose code moved would test nothing."""
-        def count(old, *file):
-            path = script.SCRIPTS.parent / (file[0] if file else guest_mutants.DAX)
-            return path.read_text().count(old)
+        self.assertEqual(guest_mutants.check(set()), [])
 
-        found = {
-            name: [count(old, *file) for old, _, *file in edits]
-            for name, _, edits, *_ in guest_mutants.MUTANTS
-        }
-        self.assertEqual(
-            found, {name: [1] * len(edits) for name, _, edits, *_ in guest_mutants.MUTANTS})
+    def test_an_edit_not_found_is_broken(self):
+        """--check says which mutant's edit isn't in the sources, as CI runs it."""
+        edits = [("no such code in dax.c", "")]
+        with self.assertRaisesRegex(guest_mutants.Unfound, "found 0 times: 'no such code"):
+            guest_mutants.mutated(guest_mutants.ROOT, edits)
 
     def test_mutants_change_the_code(self):
         """Each mutant's edit changes what it finds."""
