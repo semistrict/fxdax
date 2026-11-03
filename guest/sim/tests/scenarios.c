@@ -654,6 +654,32 @@ static void reaches_at_once(void)
 	check_file("the nearer slice", first.file, near, sizeof(near));
 }
 
+/*
+ * That a write whose move fails to commit says so, and leaves the file as it was, its MAPs' and its
+ * copy through a region's alike, and that the write then goes (TASK-153.5).
+ */
+static void commit_failed_writing(void)
+{
+	static char bytes[BIG_LEN], written[2 * PAGE_SIZE];
+	struct file *file = sealed_file(bytes);
+	const char *const through[] = { "N", "Y" };
+	ssize_t done;
+	size_t i;
+
+	for (i = 0; i < ARRAY_SIZE(through); i++) {
+		sim_param_set("dax_writes_through", through[i]);
+		memset(written, 'a' + i, sizeof(written));
+		fxfs_sim_fail_commits(1);
+		done = sim_write(file, PAGE_SIZE, written, sizeof(written));
+		check(done == -EIO, "a write whose commit failed, through %s: %zd", through[i], done);
+		check_file("after the commit failed", file, bytes, BIG_LEN);
+		done = sim_write(file, PAGE_SIZE, written, sizeof(written));
+		check(done == sizeof(written), "the write again, through %s: %zd", through[i], done);
+		memcpy(bytes + PAGE_SIZE, written, sizeof(written));
+		check_file("after the write again", file, bytes, BIG_LEN);
+	}
+}
+
 static const struct {
 	const char *name;
 	void (*run)(void);
@@ -674,6 +700,7 @@ static const struct {
 	SCENARIO(map_failed_zeroing_again),
 	SCENARIO(map_failed_killed),
 	SCENARIO(map_failed_writing),
+	SCENARIO(commit_failed_writing),
 	SCENARIO(allocations_failed),
 	SCENARIO(open_memory_out),
 	SCENARIO(reaches_at_once),

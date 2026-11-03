@@ -120,6 +120,8 @@ void fxfs_sim_free(struct fxfs *fs);
 void fxfs_sim_stats(u64 *moves, u64 *frees, u64 *failed);
 /* Has one transaction in `odds` fail with -ENOSPC, or none if 0. */
 void fxfs_sim_fail(unsigned int odds);
+/* Has the next `count` commits of write(2)s' moves fail with -EIO (fxfs_dax_end_write). */
+void fxfs_sim_fail_commits(unsigned int count);
 /* How many seals have ended. */
 u64 fxfs_sim_seals(struct fxfs *fs);
 /* Whether a seal has begun, and shut the gate, and not ended: waiting for the stores, it may be. */

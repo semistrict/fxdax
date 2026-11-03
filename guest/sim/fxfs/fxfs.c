@@ -96,6 +96,8 @@ struct fxfs {
 static u64 moves, frees, failures;
 /* One transaction in so many fails, if any (fxfs_sim_fail). */
 static unsigned int fail_odds;
+/* How many of the next commits of write(2)s' moves fail (fxfs_sim_fail_commits). */
+static unsigned int commits_to_fail;
 /* The file and page whose blocks the log tells of, if any (fxfs_sim_watch). */
 static u64 watched_ino, watched_page = ~0ULL;
 
@@ -119,6 +121,11 @@ void fxfs_sim_stats(u64 *moved, u64 *freed, u64 *failed)
 void fxfs_sim_fail(unsigned int odds)
 {
 	fail_odds = odds;
+}
+
+void fxfs_sim_fail_commits(unsigned int count)
+{
+	commits_to_fail = count;
 }
 
 u64 fxfs_sim_seals(struct fxfs *fs)
@@ -646,7 +653,8 @@ int fxfs_dax_end_write(struct fxfs_dax_write *write, bool commit)
 	/* A commit takes the journal's time: a seal fits in it. */
 	if (commit && !(sim_random() % 4))
 		msleep(1);
-	if (commit && fail_odds && !(sim_random() % fail_odds)) {
+	if (commit && (commits_to_fail || (fail_odds && !(sim_random() % fail_odds)))) {
+		commits_to_fail -= !!commits_to_fail;
 		failures++;
 		err = -EIO;
 	}
