@@ -35,7 +35,7 @@ use crate::memory::{VolatileSlice, VolatileSliceMut};
 use crate::pages::{Arena, ArenaId, page_size};
 use crate::profile::{self, Recorder};
 use crate::stats::{self, Counter};
-use extent_store::{HostDir, NoSpace, Spent, Store, TooLong, TooSmall, Unaligned};
+use extent_store::{HostDir, NoSpace, NotHeld, Spent, Store, TooLong, TooSmall, Unaligned};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
@@ -480,42 +480,27 @@ fn remote_errno(failure: crate::remote::Failure) -> Errno {
     })
 }
 
-/// fxdax: a follower's request for `extent`, which its view's commits don't hold and it doesn't
-/// pin: a bug of its guest's follower, never a stale read (doc-8, testing 1): `EIO`, logged. A
-/// view cut off is `ESTALE`.
-fn outside_view(extent: ExtentId, error: anyhow::Error) -> Errno {
-    if error.downcast_ref::<extent_store::CutOff>().is_some() {
-        return Errno::ESTALE;
-    }
-    // Written after the view's commit: as Fxfs's journal replay finds the end of the commit.
-    if error.downcast_ref::<NoExtent>().is_some()
-        && error.downcast_ref::<extent_store::NotHeld>().is_none()
-    {
-        return Errno::ENOENT;
-    }
-    log::error!("fxdax: a follower's request for {extent:?}, outside its view: {error:#}");
-    Errno::EIO
-}
-
-/// The errno of the store's error, as doc-4 has them.
-fn errno(error: anyhow::Error) -> Errno {
-    if error.downcast_ref::<extent_store::CutOff>().is_some() {
+/// The errno of the store's error, as doc-4 has them: each of the store's errors its own, and any
+/// other the store failing to read or write, `EIO`, logged. The one list of them, which a
+/// writer's requests and a follower's share.
+pub(crate) fn errno(error: anyhow::Error) -> Errno {
+    if error.is::<extent_store::CutOff>() {
         // A follower too far behind its writer (doc-8, decision 7): it remounts.
         Errno::ESTALE
-    } else if error.downcast_ref::<NoExtent>().is_some() {
+    } else if let Some(NotHeld(extent)) = error.downcast_ref::<NotHeld>() {
+        // fxdax: a follower's request for an extent its view's commits don't hold and it doesn't
+        // pin: a bug of its guest's follower, never a stale read (doc-8, testing 1).
+        log::error!("fxdax: a follower's request for {extent:?}, outside its view: {error:#}");
+        Errno::EIO
+    } else if error.is::<NoExtent>() {
+        // A follower's too, of one written after its view's commit: as Fxfs's journal replay
+        // finds the end of the commit.
         Errno::ENOENT
-    } else if error.downcast_ref::<SealedExtent>().is_some()
-        || error.downcast_ref::<Spent>().is_some()
-        || error.downcast_ref::<OtherBranch>().is_some()
-    {
+    } else if error.is::<SealedExtent>() || error.is::<Spent>() || error.is::<OtherBranch>() {
         Errno::EPERM
-    } else if error.downcast_ref::<NoSpace>().is_some()
-        || error.downcast_ref::<TooSmall>().is_some()
-    {
+    } else if error.is::<NoSpace>() || error.is::<TooSmall>() {
         Errno::ENOSPC
-    } else if error.downcast_ref::<Unaligned>().is_some()
-        || error.downcast_ref::<TooLong>().is_some()
-    {
+    } else if error.is::<Unaligned>() || error.is::<TooLong>() {
         Errno::EINVAL
     } else {
         log::error!("fxdax: extent store: {error:#}");
@@ -1225,7 +1210,6 @@ impl ExtentStore {
                 data[fetched.len()..].fill(0);
                 Ok(())
             }
-            Err(error) if self.following.is_some() => Err(outside_view(extent, error)),
             read => read.map_err(errno),
         }
     }
@@ -1719,7 +1703,7 @@ impl ExtentStore {
             // A follower's view holds sealed extents alone.
             (None, Some(following)) => {
                 let view = following.view.lock(&self.fence)?;
-                self.store.view_extent(&view, extent.into()).map_err(|e| outside_view(extent, e))?
+                self.store.view_extent(&view, extent.into()).map_err(errno)?
             }
             (None, None) => {
                 if self.map_open(extent, offset, len, window_offset, writable)? {
@@ -2325,6 +2309,31 @@ mod tests {
     use crate::pages::PhysLocation;
     use std::sync::atomic::Ordering;
     use futures::executor::block_on;
+
+    /// Each of the store's errors has its errno, as doc-4 has them, a follower's among them, in
+    /// context or not; any other is EIO (TASK-160.12).
+    #[test]
+    fn each_store_error_has_its_errno() {
+        let extent = ExtentId { branch: 1, sequence: 2 }.into();
+        let cases: [(anyhow::Error, Errno); 12] = [
+            (extent_store::CutOff.into(), Errno::ESTALE),
+            (anyhow::Error::new(NoExtent(extent)).context(NotHeld(extent)), Errno::EIO),
+            (NoExtent(extent).into(), Errno::ENOENT),
+            (SealedExtent(extent).into(), Errno::EPERM),
+            (Spent(extent).into(), Errno::EPERM),
+            (OtherBranch(extent).into(), Errno::EPERM),
+            (NoSpace.into(), Errno::ENOSPC),
+            (TooSmall { capacity: 1, held: 2 }.into(), Errno::ENOSPC),
+            (Unaligned { offset: 1, len: 2 }.into(), Errno::EINVAL),
+            (TooLong { offset: 1, len: 2 }.into(), Errno::EINVAL),
+            (extent_store::RemoteData(extent).into(), Errno::EIO),
+            (anyhow::anyhow!("the disk"), Errno::EIO),
+        ];
+        for (error, expected) in cases {
+            let said = format!("{error:#}");
+            assert_eq!(errno(error.context("in context")), expected, "{said}");
+        }
+    }
 
     /// Each of the uploader's failures has its errno, as doc-4 and doc-7 have them: a branch this
     /// writer lost, to an earlier writer's segment too, is EROFS, not EIO (TASK-160.12).
