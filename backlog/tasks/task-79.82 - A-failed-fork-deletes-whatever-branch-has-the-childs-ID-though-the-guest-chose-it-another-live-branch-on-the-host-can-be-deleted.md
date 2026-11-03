@@ -3,10 +3,10 @@ id: TASK-79.82
 title: >-
   A failed fork deletes whatever branch has the child's ID, though the guest
   chose it: another live branch on the host can be deleted
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-23 09:16'
-updated_date: '2026-11-03 02:10'
+updated_date: '2026-11-03 13:39'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -24,7 +24,7 @@ Found reviewing TASK-79.78 (round 2c). A FORK's child ID comes from the guest (e
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A fork can never delete or mark deleted a branch it did not create, whatever ID the guest gives
+- [x] #1 A fork can never delete or mark deleted a branch it did not create, whatever ID the guest gives
 - [x] #2 A fork to a child ID another branch has fails with EEXIST and leaves the parent's footers and records sound
 - [x] #3 Failures after Store::fork's commit, and a crash before its record is written, leave nothing a later deletion skips or mis-deletes, pinned by tests
 <!-- AC:END -->
@@ -52,4 +52,12 @@ GCE r246 (main 3866a31d6): Linux workspace 1955/1955 and the Shuttle suites, fxf
 2026-11-01, branch test/fork-faults, each fix failing its test with the bug put back: delete_fork takes the child's ID with a record before ending its lease, naming no origin too (sim seed 0: another branch's lease ended; rule fork_claims_ids); a record is live only if the parent's branch holds the fork's segment (seed 37: 'collector: lost', every pass and the deletion's resumption failing; rule fork_claims_landed); record_fork's ChildTaken: writers go on, the fork fails with EEXIST, where every writer of the parent failed for ever; the collector recovers a child by its record's origin, where it lost what the child inherited; a handle whose child's ID another took refuses that branch, where it fenced it and uploaded into it; a child taking a record of its own (create_forked) keeps its claim and takes none of another's; a fork to a branch the store has gives EEXIST, not EIO. AC1 NOT ticked, one case left: two forks on different hosts, or of different parents, naming the same ID within one round trip, neither segment landing, and both children then taking records of their own: create_forked's bytes are the same for both, so each takes the other's for its own, and deleting one ends both. A record has nothing unique to tell them apart without a format change. A plain branch, and any fork whose segment went, is proved safe by the simulation, the sweep and the tests above. Not landed; not run on GCE.
 
 Handed back 2026-11-02 (triage): the test/fork-faults work is all on main (707b8cb75 .. 894b4c1a1); the 'not landed' note is stale. Left (AC1): two forks, on different hosts or of different parents, can name the same child ID within one round trip with neither segment landed; both take identical create_forked records, and deleting one ends both. Needs a record format change, likely with TASK-153.9's branch owner.
+
+2026-11-03, AC1's last case closed by TASK-153.9: every record names its branch's owner, chosen by the fork's host and carried in its footer and claim, and records are compared by owner (Record::of_fork). Two forks naming one child, neither segment landing, no longer both take the child's record; deleting one leaves the other's. Tests: branch::forks_to_one_child_take_one_record; simulation action twins in failed_forks_deleted_anywhere, and forks_to_one_child_need_records_owned (seed 0 with the rule off). GCE fxdax-test-t1537-r1/r2 and macOS pass.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A fork can no longer delete or take a branch it did not make: claims, records by owner, and the collector's handling of claims (see notes). The last case, two forks naming one child within a round trip, closed by records naming their owners (TASK-153.9); shown by the simulation's twins with the rule off.
+<!-- SECTION:FINAL_SUMMARY:END -->
