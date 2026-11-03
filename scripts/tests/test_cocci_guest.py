@@ -16,15 +16,20 @@ guest_mutants = script.load("guest-mutants-gce")
 DAX = script.SCRIPTS.parent / guest_mutants.DAX
 
 
-def mutant(name):
-    """dax.c with the hand mutant `name`'s edits made."""
-    text = DAX.read_text()
-    for mutant_name, _, edits in guest_mutants.MUTANTS:
-        if mutant_name == name:
-            for old, new in edits:
-                text = text.replace(old, new)
-            return text
-    raise KeyError(name)
+# fxfs_dax_region_open with TASK-99's race: as it was before 7caa43578, its region's lock taken out.
+TASK_99_REGION_OPEN = """\
+static void fxfs_dax_region_open(struct fxfs_dax *dax, struct fxfs_dax_region *region)
+{
+\tfxfs_device_assert_in_gate(dax->dev);
+\tfxfs_dax_delay();
+\tspin_lock(&dax->regions_lock);
+\tif (!region->writable && !region->mapped) {
+\t\tregion->writable = true;
+\t\tlist_add_tail(&region->writable_list, &dax->writable_regions);
+\t}
+\tspin_unlock(&dax->regions_lock);
+}
+"""
 
 
 class RegionLock(unittest.TestCase):
@@ -35,10 +40,11 @@ class RegionLock(unittest.TestCase):
 
     def test_task_99s_unlocked_read_is_flagged(self):
         """TASK-44.17: fxfs_dax_region_open looking at a region's `mapped` under the regions lock
-        alone, as before TASK-99's fix (the mutant region_open_unlocked)."""
+        alone, as before TASK-99's fix. Its code as it was: since 7caa43578 it opens only regions
+        nothing has mapped, and takes no region's lock for a mutant to take out."""
         with tempfile.TemporaryDirectory() as scratch:
             path = Path(scratch) / "dax.c"
-            path.write_text(mutant("region_open_unlocked"))
+            path.write_text(TASK_99_REGION_OPEN)
             found = cocci.matches(self.RULE, path)
         flagged = [line for line in found.splitlines() if line.startswith("-\t")]
         self.assertEqual(flagged, ["-\tif (!region->writable && !region->mapped) {"])
