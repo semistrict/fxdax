@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
+# Copyright 2026 The fxdax Authors.
+#
+# Open bugs' failures, which zloop.sh counts apart rather than failing for: a line each, the task,
+# then an extended regex of the line saying how a run failed (lib.sh's sim_failure_line). Each is
+# in a task that is open; the line goes with its fix, and the seeds it shows at then fail zloop.sh
+# again if the fix doesn't hold.
+#
+# None now: TASK-150.21's fs/dax.c:416 WARN, the first, went with patch 0012. A line is the task,
+# a space, then the regex, as: TASK-150.21 WARN at ([^ ]*/)?fs/dax\.c:416:

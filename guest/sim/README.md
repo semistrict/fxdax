@@ -15,17 +15,24 @@ leaves one, and `kernel-tree.sh <tree>` fetches what's needed of one, in seconds
 make KERNEL=<tree> BUILD=<dir>
 <dir>/tests/smoke                        # one task: writes, faults, seals
 <dir>/tests/interleave SEED [OPERATIONS] # tasks at once, the seed's interleaving
-KERNEL=<tree> BUILD=<dir> ./zloop.sh     # with fixes/*.patch in: every test, then 3,000 seeds
+KERNEL=<tree> BUILD=<dir> ./zloop.sh     # with fixes/*.patch in: every test, then 3,000 seeds of each
 KERNEL=<tree> BUILD=<dir> ./mutants.sh -b fixes/x.patch...   # puts past bugs back: which it finds
+KERNEL=<tree> BUILD=<dir> ./mutants.sh --check                # that each still applies, in seconds
 <dir>/tests/failures SEED [OPERATIONS]   # the same, as allocations, MAPs and UNMAPs fail
 <dir>/tests/scenarios [NAME]             # paths no seed takes, each played out; none lists them
 ```
 
 `interleave`'s flags say what to log of a run; replaying its seed with them shows how it failed. The
-other tests are scenarios, one run each, some of them a guest check's steps, through `dax_pause`.
+other tests are scenarios, one run each, some of them a guest check's steps, through `dax_pause`:
+every file of `tests/` but those `lib.sh` lists as `seeded` (`interleave`, `failures`), so a new one
+runs as it is added.
 
 `zloop.sh` runs dax.c with the candidate fixes in, as bugs known aren't news. As dax.c takes a fix its
-patch stops applying, which fails `zloop.sh` until the patch is removed.
+patch stops applying, which fails `zloop.sh` until the patch is removed. An open bug's failure,
+as `known-failures` matches it, is counted apart and doesn't fail it, so that one bug doesn't fail
+every run: its line goes with its fix. CI's `guest-sim` job runs seeds 1 to 3,000; the nightly hunt
+(`.github/workflows/hunt.yml`) 20,000 more each night, from a first seed that moves, and keeps what
+failed, with `replay`, how to run each again.
 
 ## What is real, and what is simulated
 
@@ -210,5 +217,8 @@ And by `tests/scenarios`, each at once, with how many seeds of `tests/failures` 
   the seed named.
 - `mutants/`: past bugs, each a patch that takes its fix away; `fixes/`: candidate fixes of bugs
   found here, kept out of dax.c until someone decides on them, and which `mutants.sh -b` applies.
+  Each applies with no fuzz, or fails `mutants.sh --check`, which CI runs.
+- `known-failures`: open bugs' failures, which `zloop.sh` doesn't fail for.
 - `inventory.py`: what a source spells of the kernel, by libclang against the real headers.
-- `zloop.sh`, `mutants.sh`, `lib.sh`, what they share, and `kernel-tree.sh`, the sources for them.
+- `zloop.sh`, `check.sh`, `mutants.sh`, `lib.sh`, what they share, and `kernel-tree.sh`, the
+  sources for them.
