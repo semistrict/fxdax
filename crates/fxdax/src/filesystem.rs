@@ -31,14 +31,14 @@ use std::num::NonZeroU8;
 use std::path::Path;
 use std::sync::Arc;
 
-/// The errno of `error`, an Fxfs operation's.
+/// The errno of `error`, an Fxfs operation's, as Fxfs's VFSs give it (`fxfs_posix::errno`).
 fn errno(error: anyhow::Error) -> Errno {
-    Errno::of_fxfs(&error)
+    fxfs_posix::errno(&error)
 }
 
-/// The errno of `error`, an extended attribute's operation's.
+/// The errno of `error`, an extended attribute's operation's (`fxfs_posix::xattr_errno`).
 fn xattr_errno(error: anyhow::Error) -> Errno {
-    Errno::of_xattr(&error)
+    fxfs_posix::xattr_errno(&error)
 }
 
 /// The longest name a directory holds, as Linux's `NAME_MAX`.

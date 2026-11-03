@@ -399,7 +399,7 @@ impl ImageShared {
 fn volume_error(error: anyhow::Error) -> Error {
     match error.chain().any(|cause| cause.downcast_ref::<FxfsError>().is_some()) {
         true => {
-            let errno = Errno::of_fxfs(&error);
+            let errno = fxfs_posix::errno(&error);
             Error::new(error.context(errno))
         }
         false => Error::new(error),

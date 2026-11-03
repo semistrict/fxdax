@@ -13,6 +13,12 @@
 //! writer (the guest's `follow`, backlog doc-8): its tree reads are made under the follower's fill
 //! barrier, which no batch applies under (`reading`), and it keeps no handles to objects, whose
 //! sizes a batch would leave stale.
+//!
+//! What a VFS gives its callers for an error is [`errno`]'s, the one table of Fxfs's errors'.
+
+mod errno;
+
+pub use errno::{Errno, errno, xattr_errno};
 
 use anyhow::{Error, anyhow, bail, ensure};
 use event_listener::Event;
@@ -43,6 +49,10 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use storage_device::SealedExtent;
+
+/// fxdax: what a change fails with once a batch of queued unlinks failed: the I/O error's errno,
+/// as what failed, mostly the device, was; nothing on the device is inconsistent (`errno`).
+const UNLINK_FAILED: &str = "a batch of unlinks failed: changes fail until the filesystem remounts";
 
 /// fxdax: how many times `Fxfs::dax_map_write` tries again as its extents are found sealed.
 const MAX_SEALED_RETRIES: usize = 1000;
@@ -1299,7 +1309,7 @@ impl<P: Platform> Fxfs<P> {
         let name = str::from_utf8(name).map_err(|_| anyhow!(FxfsError::NotFound))?.to_owned();
         let queued = {
             let mut queue = self.delayed.queue.lock().unwrap();
-            ensure!(!queue.failed, anyhow!(FxfsError::Inconsistent).context("an unlink failed"));
+            ensure!(!queue.failed, UNLINK_FAILED);
             let op = DelayedOp::Unlink { dir, name, ino };
             for ino in op.inos() {
                 *queue.pending.entry(ino).or_default() += 1;
@@ -1807,10 +1817,7 @@ impl<P: Platform> Fxfs<P> {
         inos: &[u64],
         options: Options<'a>,
     ) -> Result<Transaction<'a>, Error> {
-        ensure!(
-            !self.delayed.queue.lock().unwrap().failed,
-            anyhow!(FxfsError::Inconsistent).context("an unlink failed")
-        );
+        ensure!(!self.delayed.queue.lock().unwrap().failed, UNLINK_FAILED);
         let store = self.volume.store_object_id();
         let mut keys = LockKeys::with_capacity(inos.len());
         for &ino in inos {

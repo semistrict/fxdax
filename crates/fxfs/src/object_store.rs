@@ -265,7 +265,8 @@ impl StoreInfo {
 }
 
 impl StoreInfo {
-    /// fxdax: fails unless this describes a volume to make over a base (backlog doc-10).
+    /// fxdax: fails unless this describes a volume to make over a base (backlog doc-10): an
+    /// argument, which a caller gives, wrong (`InvalidArgs`), not the filesystem inconsistent.
     fn check_manifest(&self) -> Result<(), Error> {
         ensure!(
             self.layers.is_empty()
@@ -273,7 +274,7 @@ impl StoreInfo {
                 && self.mutations_key.is_none()
                 && self.encrypted_mutations_object_id == INVALID_OBJECT_ID
                 && !matches!(self.last_object_id, LastObjectIdInfo::Encrypted { .. }),
-            FxfsError::Inconsistent
+            FxfsError::InvalidArgs
         );
         Ok(())
     }

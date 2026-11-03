@@ -18,64 +18,33 @@ use device::ExtentDevice;
 use fs::{Attr, DaxExtent, Filesystem, Fxfs, GuestFxfs, ReaddirStart, SetAttr, StatFs};
 use fxfs::errors::FxfsError;
 use fxfs::object_store::SetExtendedAttributeMode;
+use fxfs_posix::Errno;
 use linux_rt::block_on;
 use log::LevelFilter;
 use std::mem::ManuallyDrop;
 use std::sync::Arc;
 
-// The kernel's errnos (asm-generic/errno-base.h, asm-generic/errno.h).
-const ENOENT: c_int = 2;
-const EIO: c_int = 5;
-const EBUSY: c_int = 16;
-const EACCES: c_int = 13;
-const EEXIST: c_int = 17;
-const ENOTDIR: c_int = 20;
-const EISDIR: c_int = 21;
-const EINVAL: c_int = 22;
-const EFBIG: c_int = 27;
-const ENOSPC: c_int = 28;
-const EROFS: c_int = 30;
-const ERANGE: c_int = 34;
-const ENOTEMPTY: c_int = 39;
-const ESTALE: c_int = 116;
-const E2BIG: c_int = 7;
-const ENODATA: c_int = 61;
-const EOPNOTSUPP: c_int = 95;
+// The kernel's errnos this file gives itself.
+const E2BIG: c_int = Errno::E2BIG.raw();
+const ERANGE: c_int = Errno::ERANGE.raw();
 
-/// The errno of `error`, which is logged unless it is one a filesystem's callers expect.
+/// The errno of `error`, as Fxfs's table has it (`fxfs_posix::errno`), which logs what callers
+/// don't expect.
 fn errno(error: &Error) -> c_int {
-    // fxdax: a follower that follows no more, or was cut off, until it remounts: doc-4, doc-8.
-    if error.chain().any(|cause| cause.is::<follower::Failed>() || device::is_stale(cause)) {
-        return ESTALE;
-    }
-    let errno = match error.chain().find_map(|cause| cause.downcast_ref::<FxfsError>()) {
-        Some(FxfsError::NotFound | FxfsError::Deleted) => return ENOENT,
-        Some(FxfsError::AlreadyExists) => return EEXIST,
-        Some(FxfsError::NotDir) => return ENOTDIR,
-        Some(FxfsError::NotFile) => return EISDIR,
-        Some(FxfsError::NotEmpty) => return ENOTEMPTY,
-        Some(FxfsError::NoSpace) => return ENOSPC,
-        Some(FxfsError::ReadOnlyFilesystem) => EROFS,
-        Some(FxfsError::InvalidArgs | FxfsError::BadPath | FxfsError::WrongType) => EINVAL,
-        Some(FxfsError::TooBig) => EFBIG,
-        Some(FxfsError::OutOfRange) => ERANGE,
-        Some(FxfsError::AccessDenied) => EACCES,
-        Some(FxfsError::NotSupported) => EOPNOTSUPP,
-        Some(FxfsError::Unavailable) => EBUSY,
-        _ => EIO,
-    };
-    log::error!("{error:#}");
-    errno
+    stale(error).unwrap_or_else(|| fxfs_posix::errno(error)).raw()
 }
 
-/// The errno of `error`, an extended attribute call's: ENODATA for one that doesn't exist, as
-/// getxattr(2) has it, and E2BIG for one too large.
+/// The errno of `error`, an extended attribute call's (`fxfs_posix::xattr_errno`): ENODATA for
+/// one that doesn't exist, as getxattr(2) has it, and E2BIG for one too large.
 fn xattr_errno(error: &Error) -> c_int {
-    match error.chain().find_map(|cause| cause.downcast_ref::<FxfsError>()) {
-        Some(FxfsError::NotFound) => ENODATA,
-        Some(FxfsError::TooBig) => E2BIG,
-        _ => errno(error),
-    }
+    stale(error).unwrap_or_else(|| fxfs_posix::xattr_errno(error)).raw()
+}
+
+/// fxdax: ESTALE for a follower that follows no more, or was cut off, until it remounts: doc-4,
+/// doc-8.
+fn stale(error: &Error) -> Option<Errno> {
+    let stale = error.chain().any(|cause| cause.is::<follower::Failed>() || device::is_stale(cause));
+    stale.then_some(Errno::ESTALE)
 }
 
 /// Copies `data` to `buf`, which has room for `size` bytes, and returns its length: or only its

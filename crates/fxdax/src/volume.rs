@@ -297,7 +297,7 @@ impl Volume {
             fxfs_posix::REPLACED_DIRECTORY => true,
             fxfs_posix::REPLACED_OBJECT => match fxfs.in_graveyard(object_id).await {
                 Ok(in_graveyard) => in_graveyard,
-                Err(error) => return Err(Errno::of_fxfs(&error)),
+                Err(error) => return Err(fxfs_posix::errno(&error)),
             },
             _ => false,
         };

@@ -632,7 +632,10 @@ mod guest {
         assert_eq!(git(&newest, &["log", "-1", "--format=%s"]), "the consumer's\n");
         check_generation(&older, 0);
 
-        assert_eq!(try_import("garbage", &[0xff; 64]).unwrap_err(), nix::Error::EIO);
+        // A manifest that doesn't parse is an argument wrong: EINVAL, not an I/O error, nor
+        // corruption (TASK-160.21).
+        assert_eq!(try_import("garbage", &[0xff; 64]).unwrap_err(), nix::Error::EINVAL);
+        assert_eq!(try_import("garbage", &[0xff; 2]).unwrap_err(), nix::Error::EINVAL);
         unmount(&older);
         unmount(&newest);
     }

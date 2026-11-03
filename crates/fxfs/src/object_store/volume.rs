@@ -225,10 +225,12 @@ impl RootVolume {
         let filesystem = &self.filesystem;
         ensure!(manifest.len() <= MAX_MANIFEST_SIZE, FxfsError::TooBig);
         let mut reader = manifest;
-        let version = Version::deserialize_from(&mut reader)?;
+        // fxdax: a manifest that doesn't parse is an argument wrong, as one that names no base.
+        let version = Version::deserialize_from(&mut reader).context(FxfsError::InvalidArgs)?;
         ensure!(version <= LATEST_VERSION, FxfsError::InvalidVersion);
         let mut info = StoreInfo::deserialize_from_version(&mut reader, version)
-            .context("Failed to deserialize manifest")?;
+            .context("Failed to deserialize manifest")
+            .context(FxfsError::InvalidArgs)?;
         info.check_manifest()?;
         info.set_new_guid();
         filesystem.allocator().check_base_branches(&info.base_branches)?;
@@ -1860,7 +1862,11 @@ mod tests {
         // Of no base at all.
         let mut empty = Vec::new();
         StoreInfo::default().serialize_with_version(&mut empty).expect("serialize failed");
-        assert_eq!(error(root.new_volume_over_base("repo", &empty).await), FxfsError::Inconsistent);
+        assert_eq!(error(root.new_volume_over_base("repo", &empty).await), FxfsError::InvalidArgs);
+        // Of a version and no more.
+        let mut short = Vec::new();
+        LATEST_VERSION.serialize_into(&mut short).expect("serialize failed");
+        assert_eq!(error(root.new_volume_over_base("repo", &short).await), FxfsError::InvalidArgs);
         root.new_volume_over_base("repo", &[0xff; 16]).await.err().expect("garbage accepted");
         assert_eq!(root.volume_directory().lookup("repo").await.expect("lookup failed"), None);
         // Of a name taken.

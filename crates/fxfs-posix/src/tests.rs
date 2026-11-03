@@ -155,8 +155,10 @@ async fn a_failed_batch_keeps_what_the_kernel_evicts() {
     fs.evict(ino, true);
     fs.filesystem.graveyard().flush().await;
     assert_eq!(fs.lookup(root, b"a").await.unwrap().ino, ino);
-    fs.create(root, b"c", FILE, 0, 0, 0, &[]).await.expect_err("a change after a failed batch");
-    fs.unlink(root, b"b", other).await.expect_err("an unlink after a failed batch");
+    let created = fs.create(root, b"c", FILE, 0, 0, 0, &[]).await;
+    assert_eq!(errno(&created.expect_err("a change after a failed batch")), Errno::EIO);
+    let unlinked = fs.unlink(root, b"b", other).await;
+    assert_eq!(errno(&unlinked.expect_err("an unlink after a failed batch")), Errno::EIO);
     fs.stop_delayed().await.unwrap();
 }
 
