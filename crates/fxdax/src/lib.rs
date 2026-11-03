@@ -112,6 +112,7 @@ mod executor;
 pub mod extentd;
 mod extents;
 pub mod faults;
+mod fence;
 mod filesystem;
 mod host_store;
 mod image;

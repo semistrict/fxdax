@@ -29,6 +29,7 @@ use crate::cache::{self, CachedExtent, OpenPages, Room};
 use crate::dax::{Dax, DaxWindow, Keep, SecondStage, Source};
 use crate::error::{Errno, Error, Result};
 use crate::faults::failpoint;
+use crate::fence::{Fence, Held, StoreMutex, StoreRwLock};
 use crate::host_store;
 use crate::memory::{VolatileSlice, VolatileSliceMut};
 use crate::pages::{Arena, ArenaId, page_size};
@@ -37,7 +38,7 @@ use crate::stats::{self, Counter};
 use extent_store::{HostDir, NoSpace, Spent, Store, TooLong, TooSmall, Unaligned};
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use storage_device::{NoExtent, OtherBranch, SealedExtent};
 
 /// An extent's ID: the branch that wrote it, and the sequence number that branch gave it.
@@ -194,12 +195,12 @@ pub struct ExtentStore {
     /// The open extents mapped, until the next commit, which writes their memory to the store and
     /// seals them: their one owner meanwhile, as the store holds none of them (TASK-153.3). Locked
     /// before `dax`.
-    open: Mutex<HashMap<ExtentId, OpenExtent>>,
+    open: StoreMutex<HashMap<ExtentId, OpenExtent>>,
     /// fxdax: what a commit reads each open extent's memory into, kept from one to the next, under
     /// `open`'s lock: one the size of each extent, zeroed for it, cost the commit more than its
     /// copy did (TASK-112.3).
-    commit_buffer: Mutex<Vec<u8>>,
-    dax: Mutex<Option<Dax<Mapped>>>,
+    commit_buffer: StoreMutex<Vec<u8>>,
+    dax: StoreMutex<Option<Dax<Mapped>>>,
     /// fxdax: the arenas of physical memory its extents' pages are of (TASK-43).
     arenas: Arenas,
     /// fxdax: the uploader of the store's branch to object storage, if it has one: durable
@@ -210,7 +211,7 @@ pub struct ExtentStore {
     profiling: Option<(Arc<Recorder>, std::sync::mpsc::Sender<()>)>,
     /// fxdax: held, shared, by what opens extents, writes and writable mappings, and alone by a
     /// fork only once nothing is open, which none comes between ([`ExtentStore::fork_quiescent`]).
-    opening: std::sync::RwLock<()>,
+    opening: StoreRwLock<()>,
     /// fxdax: a follower's (backlog doc-8), what it follows ([`ExtentStore::follow`]).
     following: Option<Following>,
     /// fxdax: notified as it commits, for its followers' daemon to tell them, holding no thread
@@ -218,15 +219,22 @@ pub struct ExtentStore {
     committed: event_listener::Event,
     /// fxdax: the window's latest changes, which a refused fault's log tells of the page it was
     /// on ([`ExtentStore::refused`], TASK-44.12).
-    changes: Mutex<WindowChanges>,
+    changes: StoreMutex<WindowChanges>,
     /// fxdax: with FXDAX_CHECK_SEALED_READS, what the latest commits wrote of the extents they
     /// sealed: a read of one that the store answers otherwise is logged (TASK-121).
-    recently_sealed: Mutex<std::collections::VecDeque<(ExtentId, Vec<u8>, std::time::Instant)>>,
+    recently_sealed: StoreMutex<RecentlySealed>,
     /// fxdax: the turns its daemon has taken at making its commits durable behind them
     /// ([`ExtentStore::flush_turned`]): how a commit's lag is told in turns, which the daemon's
     /// load stretches, rather than in time (TASK-110).
     flush_turns: std::sync::atomic::AtomicU64,
+    /// fxdax: what each of its locks is locked through: set by a panic holding one, after which it
+    /// serves nothing more (`crate::fence`, TASK-153.16).
+    fence: Fence,
 }
+
+/// fxdax: what the latest commits wrote of the extents they sealed, and when
+/// ([`ExtentStore::recently_sealed`]).
+type RecentlySealed = std::collections::VecDeque<(ExtentId, Vec<u8>, std::time::Instant)>;
 
 /// fxdax: whether reads of sealed extents are compared with their memory as sealed (TASK-121).
 fn check_sealed_reads() -> bool {
@@ -359,7 +367,7 @@ impl WindowChanges {
 /// through.
 struct Following {
     writer: Arc<ExtentStore>,
-    view: Mutex<extent_store::View>,
+    view: StoreMutex<extent_store::View>,
 }
 
 /// The barriers a write is ordered with (doc-4's `WRITE` flags).
@@ -562,16 +570,17 @@ impl ExtentStore {
             store,
             path: path.to_owned(),
             bases: Default::default(),
-            open: Mutex::new(HashMap::new()),
-            commit_buffer: Mutex::new(Vec::new()),
-            dax: Mutex::new(None),
+            open: StoreMutex::new("open", HashMap::new()),
+            commit_buffer: StoreMutex::new("commit_buffer", Vec::new()),
+            dax: StoreMutex::new("dax", None),
             remote: Default::default(),
-            opening: Default::default(),
+            opening: StoreRwLock::new("opening", ()),
             following: None,
             committed: event_listener::Event::new(),
-            changes: Mutex::default(),
-            recently_sealed: Mutex::default(),
+            changes: StoreMutex::new("changes", WindowChanges::default()),
+            recently_sealed: StoreMutex::new("recently_sealed", RecentlySealed::new()),
             flush_turns: Default::default(),
+            fence: Fence::new(path),
         }
     }
 
@@ -581,29 +590,47 @@ impl ExtentStore {
     /// view's commits and its pins it refuses with `EIO`, logged; what would change the store,
     /// with `EROFS`. Its view moves to the writer's latest commit as it advances.
     pub fn follow(self: &Arc<Self>) -> ExtentStore {
-        let following = Following { writer: self.clone(), view: Mutex::new(self.store.view()) };
+        let view = StoreMutex::new("view", self.store.view());
+        let following = Following { writer: self.clone(), view };
         Self {
             profiling: None,
             arenas: self.arenas.clone(),
             store: self.store.clone(),
             path: self.path.clone(),
             bases: self.bases.clone(),
-            open: Mutex::new(HashMap::new()),
-            commit_buffer: Mutex::new(Vec::new()),
-            dax: Mutex::new(None),
+            open: StoreMutex::new("open", HashMap::new()),
+            commit_buffer: StoreMutex::new("commit_buffer", Vec::new()),
+            dax: StoreMutex::new("dax", None),
             remote: Default::default(),
-            opening: Default::default(),
+            opening: StoreRwLock::new("opening", ()),
             following: Some(following),
             committed: event_listener::Event::new(),
-            changes: Mutex::default(),
-            recently_sealed: Mutex::default(),
+            changes: StoreMutex::new("changes", WindowChanges::default()),
+            recently_sealed: StoreMutex::new("recently_sealed", RecentlySealed::new()),
             flush_turns: Default::default(),
+            fence: Fence::new(&self.path),
         }
     }
 
     /// fxdax: whether it is a follower's ([`ExtentStore::follow`]).
     pub fn is_follower(&self) -> bool {
         self.following.is_some()
+    }
+
+    /// fxdax: fences the store, as `why` says, unless it is already: a panic went through it past
+    /// its locks, as one serving a request of it, which a panic holding one of them does itself.
+    /// It serves nothing more ([`crate::fence`], TASK-153.16).
+    // The extent daemon's (Linux).
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub(crate) fn fence(&self, why: impl FnOnce() -> String) {
+        self.fence.fence(why);
+    }
+
+    /// fxdax: whether the store is fenced ([`ExtentStore::fence`]): its requests fail with `EIO`.
+    // The extent daemon's (Linux).
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub(crate) fn is_fenced(&self) -> bool {
+        self.fence.is_fenced()
     }
 
     /// fxdax: makes the store a new writer's, which its followers go on following: one opened for
@@ -616,7 +643,7 @@ impl ExtentStore {
         if !self.is_quiescent()? {
             return Err(Errno::EBUSY);
         }
-        let window = self.dax.lock().unwrap().take();
+        let window = self.dax.lock(&self.fence)?.take();
         drop(window);
         Ok(())
     }
@@ -629,9 +656,9 @@ impl ExtentStore {
     }
 
     /// fxdax: a follower's view, or `EINVAL` if it is a writer's store.
-    fn view(&self) -> Result<std::sync::MutexGuard<'_, extent_store::View>> {
+    fn view(&self) -> Result<Held<'_, MutexGuard<'_, extent_store::View>>> {
         let following = self.following.as_ref().ok_or(Errno::EINVAL)?;
-        Ok(following.view.lock().unwrap())
+        following.view.lock(&self.fence)
     }
 
     /// fxdax: `EROFS` if it is a follower's, which changes nothing.
@@ -812,7 +839,7 @@ impl ExtentStore {
         self.make_durable()?;
         failpoint!("fork::durable");
         // None comes between the look and the fork's commit.
-        let opening = self.opening.write().unwrap();
+        let opening = self.opening.write(&self.fence)?;
         self.fork_durable(path.as_ref(), branch, false, Some(opening))
     }
 
@@ -830,7 +857,7 @@ impl ExtentStore {
         path: &Path,
         branch: u64,
         point: bool,
-        opening: Option<std::sync::RwLockWriteGuard<'_, ()>>,
+        opening: Option<Held<'_, std::sync::RwLockWriteGuard<'_, ()>>>,
     ) -> Result<(), Error> {
         let remote = self.remote.get();
         let claimed = std::cell::Cell::new(false);
@@ -989,7 +1016,7 @@ impl ExtentStore {
         stats::add(Counter::Reads, 1);
         stats::add(Counter::ReadBytes, len as u64);
         let mut data = vec![0; len];
-        let open = self.open.lock().unwrap();
+        let open = self.open.lock(&self.fence)?;
         match open.get(&extent) {
             // An open extent mapped writably is in memory. Read with the open extents held, which
             // a commit moves into the cache: past them, its pages would read as zeros
@@ -1034,7 +1061,8 @@ impl ExtentStore {
     /// fxdax: logs where `data`, read from sealed `extent` at `offset`, differs from what the
     /// commit that sealed it wrote (TASK-121).
     fn check_sealed_read(&self, extent: ExtentId, offset: u64, data: &[u8]) {
-        let recent = self.recently_sealed.lock().unwrap();
+        // A fenced store's reads fail.
+        let Ok(recent) = self.recently_sealed.lock(&self.fence) else { return };
         let Some((_, written, sealed)) = recent.iter().rev().find(|(e, ..)| *e == extent) else {
             return;
         };
@@ -1094,7 +1122,7 @@ impl ExtentStore {
         stats::add(Counter::ReadStoredBytes, data.len() as u64);
         let read = match &self.following {
             Some(following) => {
-                let view = following.view.lock().unwrap();
+                let view = following.view.lock(&self.fence)?;
                 self.store.read_view(&view, extent.into(), offset, data)
             }
             None => self.store.read(extent.into(), offset, data),
@@ -1145,13 +1173,13 @@ impl ExtentStore {
         // fxdax: as the store has it of each write, of this one's whichever way it goes: a commit
         // writes an extent mapped writably to the store, which takes no other (TASK-150.7).
         self.store.check_io(offset, len as u64).map_err(errno)?;
-        let _opening = self.opening.read().unwrap();
+        let _opening = self.opening.read(&self.fence)?;
         let mut data = vec![0; len];
         let mut at = 0;
         for buffer in buffers {
             at += buffer.copy_to(&mut data[at..]);
         }
-        let mut open = self.open.lock().unwrap();
+        let mut open = self.open.lock(&self.fence)?;
         if let Some(open) = open.get_mut(&extent) {
             // An open extent mapped writably is in memory, which the commit writes to the store.
             // Into the reserve: a seal would leave this write nowhere to go.
@@ -1170,7 +1198,7 @@ impl ExtentStore {
     pub fn free(&self, extent: ExtentId) -> Result<()> {
         self.writable()?;
         // An open extent's memory is dropped as the window's mappings of it go.
-        let open = self.open.lock().unwrap().remove(&extent);
+        let open = self.open.lock(&self.fence)?.remove(&extent);
         if let Some(open) = &open {
             self.replace_kept(open.pages.identity())?;
             if self.store.extent(extent.into()).map_err(errno)?.is_none() {
@@ -1193,10 +1221,10 @@ impl ExtentStore {
     /// Maps zeros where the window maps what keeps a freed extent's pages, which has the identity
     /// `kept` (`Dax::replace_kept`).
     fn replace_kept(&self, kept: usize) -> Result<()> {
-        let mut dax = self.dax.lock().unwrap();
+        let mut dax = self.dax.lock(&self.fence)?;
         let Some(dax) = dax.as_mut() else { return Ok(()) };
         let zeros = dax.zeros();
-        let mut changes = self.changes.lock().unwrap();
+        let mut changes = self.changes.lock(&self.fence)?;
         for (start, end, _) in dax.kept(kept) {
             changes.record(start, end - start, Change::Freed);
         }
@@ -1336,8 +1364,8 @@ impl ExtentStore {
     /// commit's phases, each counted ([`stats::Stats::commits`]).
     fn commit_and_seal(&self, root: Option<&[u8]>, durable: bool) -> Result<()> {
         let started = std::time::Instant::now();
-        let mut open = self.open.lock().unwrap();
-        let mut buffer = self.commit_buffer.lock().unwrap();
+        let mut open = self.open.lock(&self.fence)?;
+        let mut buffer = self.commit_buffer.lock(&self.fence)?;
         for (extent, extent_open) in open.iter() {
             let len = extent_open.len as usize;
             if buffer.len() < len {
@@ -1353,7 +1381,7 @@ impl ExtentStore {
             let kept = (kept_len(data) as u64).max(extent_open.stored);
             self.store.write((*extent).into(), 0, &data[..kept as usize]).map_err(errno)?;
             if check_sealed_reads() {
-                let mut recent = self.recently_sealed.lock().unwrap();
+                let mut recent = self.recently_sealed.lock(&self.fence)?;
                 recent.push_back((*extent, data[..kept as usize].to_vec(), started));
                 if recent.len() > 4096 {
                     recent.pop_front();
@@ -1372,7 +1400,7 @@ impl ExtentStore {
         self.committed.notify(usize::MAX);
         stats::add_since(Counter::CommitStoreNs, committing);
         let sealing_started = std::time::Instant::now();
-        let mut dax = self.dax.lock().unwrap();
+        let mut dax = self.dax.lock(&self.fence)?;
         let sealed: Vec<(ExtentId, OpenExtent)> = open.drain().collect();
         if let Some(dax) = dax.as_mut() {
             // fxdax: the guest's access to the pages, which it is to lose, taken away without
@@ -1483,7 +1511,7 @@ impl ExtentStore {
     /// The root as of the last commit, empty if none set one (`ROOT`).
     pub fn root(&self) -> Result<Vec<u8>> {
         match &self.following {
-            Some(following) => Ok(following.view.lock().unwrap().root().to_vec()),
+            Some(following) => Ok(following.view.lock(&self.fence)?.root().to_vec()),
             None => self.store.root().map_err(errno),
         }
     }
@@ -1537,7 +1565,7 @@ impl ExtentStore {
         &self,
         create: impl FnOnce() -> Result<(Dax<Mapped>, DaxWindow), Error>,
     ) -> Result<DaxWindow, Error> {
-        let mut dax = self.dax.lock().unwrap();
+        let mut dax = self.dax.lock(&self.fence)?;
         if dax.is_some() {
             return Err(Errno::EEXIST.into());
         }
@@ -1575,7 +1603,7 @@ impl ExtentStore {
         stats::count_since(Counter::Maps, Counter::MapNs, start);
         let result = mapped.as_ref().map(|_| ()).map_err(|errno| *errno);
         let change = Change::Map { extent, offset, writable, result };
-        self.changes.lock().unwrap().record(window_offset, len, change);
+        self.changes.lock(&self.fence)?.record(window_offset, len, change);
         mapped
     }
 
@@ -1587,7 +1615,11 @@ impl ExtentStore {
         window_offset: u64,
         writable: bool,
     ) -> Result<()> {
-        self.dax.lock().unwrap().as_ref().ok_or(Errno::ENOSYS)?.check_range(window_offset, len)?;
+        self.dax
+            .lock(&self.fence)?
+            .as_ref()
+            .ok_or(Errno::ENOSYS)?
+            .check_range(window_offset, len)?;
         // fxdax: a base's is read-only, of the cache's one copy of it.
         let base = self.base_holding(extent)?;
         if base.is_some() && writable {
@@ -1597,7 +1629,7 @@ impl ExtentStore {
             (Some((_, len)), _) => *len,
             // A follower's view holds sealed extents alone.
             (None, Some(following)) => {
-                let view = following.view.lock().unwrap();
+                let view = following.view.lock(&self.fence)?;
                 self.store.view_extent(&view, extent.into()).map_err(|e| outside_view(extent, e))?
             }
             (None, None) => {
@@ -1615,7 +1647,7 @@ impl ExtentStore {
             Some((base, _)) => base.cached(extent, extent_len)?,
             None => self.cached(extent, extent_len)?,
         };
-        let mut dax = self.dax.lock().unwrap();
+        let mut dax = self.dax.lock(&self.fence)?;
         let dax = dax.as_mut().ok_or(Errno::ENOSYS)?;
         let within = end.min(extent_len.next_multiple_of(page_size())).max(offset);
         if within > offset {
@@ -1655,8 +1687,8 @@ impl ExtentStore {
         if writable && extent.branch != self.branch() {
             return Err(Errno::EPERM);
         }
-        let _opening = writable.then(|| self.opening.read().unwrap());
-        let mut open = self.open.lock().unwrap();
+        let _opening = writable.then(|| self.opening.read(&self.fence)).transpose()?;
+        let mut open = self.open.lock(&self.fence)?;
         if !open.contains_key(&extent) {
             // Its contents so far: written, and open, or none.
             let len = match self.store.extent(extent.into()).map_err(errno)? {
@@ -1686,7 +1718,7 @@ impl ExtentStore {
         if writable {
             extent_open.len = extent_open.len.max(end);
         }
-        let mut dax = self.dax.lock().unwrap();
+        let mut dax = self.dax.lock(&self.fence)?;
         let dax = dax.as_mut().ok_or(Errno::ENOSYS)?;
         if writable {
             // The guest maps what it is about to write: its pages are brought in and mapped now,
@@ -1712,20 +1744,21 @@ impl ExtentStore {
     /// Maps zeros, read-only, at `len` bytes of the DAX window at `window_offset`, as a mapping a
     /// snapshot recorded did ([`MappingContents::Zeros`]).
     pub fn map_zeros_at(&self, window_offset: u64, len: u64) -> Result<()> {
-        let mut dax = self.dax.lock().unwrap();
+        let mut dax = self.dax.lock(&self.fence)?;
         let dax = dax.as_mut().ok_or(Errno::ENOSYS)?;
         dax.check_range(window_offset, len)?;
-        self.changes.lock().unwrap().record(window_offset, len, Change::Zeros);
+        self.changes.lock(&self.fence)?.record(window_offset, len, Change::Zeros);
         self.map_zeros(dax, window_offset, len)
     }
 
     /// The DAX window's mappings, in order: what a snapshot of the VM records, to map them again
     /// where it is restored, at the same offsets, with [`ExtentStore::map`] and
     /// [`ExtentStore::map_zeros_at`]. Without a window, none.
-    pub fn window_mappings(&self) -> Vec<WindowMapping> {
-        let dax = self.dax.lock().unwrap();
-        let Some(dax) = dax.as_ref() else { return Vec::new() };
-        dax.mappings()
+    pub fn window_mappings(&self) -> Result<Vec<WindowMapping>> {
+        let dax = self.dax.lock(&self.fence)?;
+        let Some(dax) = dax.as_ref() else { return Ok(Vec::new()) };
+        let mappings = dax
+            .mappings()
             .map(|(start, end, mapped)| WindowMapping {
                 window_offset: start,
                 len: end - start,
@@ -1740,7 +1773,8 @@ impl ExtentStore {
                     Maps::Zeros => MappingContents::Zeros,
                 },
             })
-            .collect()
+            .collect();
+        Ok(mappings)
     }
 
     /// fxdax: notes the page at `window_offset` refused `what` (a guest's access), and returns
@@ -1750,7 +1784,9 @@ impl ExtentStore {
     /// (TASK-44.12).
     pub fn refused(&self, window_offset: u64, what: &str) -> String {
         let mapped = self.describe_mapping(window_offset);
-        let mut changes = self.changes.lock().unwrap();
+        let Ok(mut changes) = self.changes.lock(&self.fence) else {
+            return format!("{mapped}; the store is fenced");
+        };
         let history = changes.of(window_offset);
         changes.refuse(window_offset, what, mapped.clone());
         format!("{mapped}; the page's latest MAPs and UNMAPs: {history:#?}")
@@ -1759,7 +1795,10 @@ impl ExtentStore {
     /// fxdax: what the window maps at `window_offset`, and the extent's state here and in the
     /// store, said for a log.
     fn describe_mapping(&self, window_offset: u64) -> String {
-        let mapping = self.window_mappings().into_iter().find(|mapping| {
+        let Ok(mappings) = self.window_mappings() else {
+            return "the store is fenced".into();
+        };
+        let mapping = mappings.into_iter().find(|mapping| {
             (mapping.window_offset..mapping.window_offset + mapping.len).contains(&window_offset)
         });
         let Some(mapping) = mapping else {
@@ -1768,7 +1807,7 @@ impl ExtentStore {
         let MappingContents::Extent { extent, offset, writable } = mapping.contents else {
             return format!("zeros, {:#x} bytes from {:#x}", mapping.len, mapping.window_offset);
         };
-        let open_here = self.open.lock().unwrap().contains_key(&extent);
+        let open_here = self.open.lock(&self.fence).map(|open| open.contains_key(&extent));
         let stored = self.store.extent(extent.into()).map(|stored| {
             stored.map(|(len, open)| {
                 format!("{len:#x} bytes, {}", if open { "open" } else { "sealed" })
@@ -1780,7 +1819,11 @@ impl ExtentStore {
             mapping.len,
             mapping.window_offset,
             if writable { "writable" } else { "read-only" },
-            if open_here { "open" } else { "not open" },
+            match open_here {
+                Ok(true) => "open",
+                Ok(false) => "not open",
+                Err(_) => "fenced",
+            },
         )
     }
 
@@ -1810,7 +1853,7 @@ impl ExtentStore {
             let refused = "a point names a state already: fork it rather than make a point of it";
             return Err(Error::new(anyhow::Error::new(Errno::EINVAL).context(refused)));
         }
-        let _opening = self.opening.write().unwrap();
+        let _opening = self.opening.write(&self.fence)?;
         if !self.is_quiescent()? {
             return Err(Errno::EBUSY.into());
         }
@@ -1823,15 +1866,15 @@ impl ExtentStore {
     /// a fork of the store as of that commit would not hold; as with its guest's filesystem frozen,
     /// a point a snapshot of its VM is taken at.
     pub fn is_quiescent(&self) -> Result<bool> {
-        Ok(self.open.lock().unwrap().is_empty() && !self.store.has_open().map_err(errno)?)
+        Ok(self.open.lock(&self.fence)?.is_empty() && !self.store.has_open().map_err(errno)?)
     }
 
     /// Unmaps `len` bytes of the DAX window at `window_offset` (`UNMAP`).
     pub fn unmap(&self, window_offset: u64, len: u64) -> Result<()> {
-        let mut dax = self.dax.lock().unwrap();
+        let mut dax = self.dax.lock(&self.fence)?;
         let dax = dax.as_mut().ok_or(Errno::ENOSYS)?;
         dax.check_range(window_offset, len)?;
-        self.changes.lock().unwrap().record(window_offset, len, Change::Unmap);
+        self.changes.lock(&self.fence)?.record(window_offset, len, Change::Unmap);
         dax.unmap(window_offset, len)
     }
 
@@ -1914,7 +1957,7 @@ impl ExtentStore {
     /// fxdax: how many of what is attached to it are open.
     #[cfg(test)]
     pub(crate) fn bases_opened(&self) -> usize {
-        self.bases.opened()
+        self.bases.opened(&self.fence)
     }
 
     /// fxdax: the base attached that holds `extent`, with its length, if one does.
@@ -1969,13 +2012,17 @@ pub type OpenBase = Arc<dyn Fn(&Path) -> Result<Arc<ExtentStore>> + Send + Sync>
 /// fxdax: a fork attached to a store (backlog doc-10).
 struct Base {
     path: std::path::PathBuf,
-    store: Mutex<Option<Arc<ExtentStore>>>,
+    store: StoreMutex<Option<Arc<ExtentStore>>>,
 }
 
 impl Base {
+    fn new(path: &Path) -> Self {
+        Self { path: path.to_owned(), store: StoreMutex::new("base", None) }
+    }
+
     /// The fork, opened for `attached_to`, which is attached to it, once.
     fn store(&self, attached_to: &ExtentStore) -> Result<Arc<ExtentStore>> {
-        let mut store = self.store.lock().unwrap();
+        let mut store = self.store.lock(&attached_to.fence)?;
         if let Some(store) = &*store {
             return Ok(store.clone());
         }
@@ -2001,6 +2048,8 @@ impl Base {
 #[derive(Default)]
 struct Bases {
     open: OnceLock<OpenBase>,
+    /// Shared by a store and its followers; unlike their locks, not fenced
+    /// ([`crate::fence`]): nothing that may panic is called holding it.
     by_branch: std::sync::RwLock<HashMap<u64, Vec<Arc<Base>>>>,
 }
 
@@ -2014,8 +2063,7 @@ impl Bases {
             .flatten()
             .find(|base| base.path == path)
             .cloned();
-        let base = attached
-            .unwrap_or_else(|| Arc::new(Base { path: path.to_owned(), store: Mutex::default() }));
+        let base = attached.unwrap_or_else(|| Arc::new(Base::new(path)));
         for branch in branches {
             let routed = by_branch.entry(branch).or_default();
             if !routed.iter().any(|routed| Arc::ptr_eq(routed, &base)) {
@@ -2037,9 +2085,9 @@ impl Bases {
 
     /// How many of those attached are open.
     #[cfg(test)]
-    fn opened(&self) -> usize {
+    fn opened(&self, fence: &Fence) -> usize {
         let mut opened: Vec<_> = (self.by_branch.read().unwrap().values().flatten())
-            .filter(|base| base.store.lock().unwrap().is_some())
+            .filter(|base| base.store.lock(fence).unwrap().is_some())
             .map(Arc::as_ptr)
             .collect();
         opened.sort();
@@ -2623,6 +2671,49 @@ mod tests {
         });
     }
 
+    /// TASK-153.16: a panic holding a lock of the store's, as a lazily made resource's `expect`
+    /// was in TASK-104, TASK-105 and TASK-150.20, fences the store: what it was serving, and each
+    /// request after it, fails with `EIO`, rather than panicking at the lock's poison; those that
+    /// take none of the locks the panic held too, so that nothing reads what it left half done.
+    /// Closed, the store opens anew as of its last commit, and serves.
+    #[test]
+    fn a_panic_holding_a_lock_fences_the_store() {
+        let (store, dir) = store(1 << 26);
+        let ps = page_size();
+        let window = store.create_dax_window(2 * ps, None).unwrap();
+        let (sealed, open, next) = (id(&store, 1), id(&store, 2), id(&store, 3));
+        write(&store, sealed, 0, &pattern(1, BLOCK)).unwrap();
+        store.commit(None).unwrap();
+        store.map(open, 0, ps, 0, true).unwrap();
+        write(&store, open, 0, &pattern(2, BLOCK)).unwrap();
+
+        crate::fence::tests::panic_holding("open");
+        let writing = std::panic::AssertUnwindSafe(|| write(&store, open, 0, &pattern(3, BLOCK)));
+        assert!(std::panic::catch_unwind(writing).is_err(), "the write didn't panic");
+        assert!(store.is_fenced());
+        assert_eq!(read(&store, open, 0, BLOCK), Err(Errno::EIO));
+        assert_eq!(read(&store, sealed, 0, BLOCK), Err(Errno::EIO));
+        assert_eq!(write(&store, next, 0, &pattern(4, BLOCK)), Err(Errno::EIO));
+        assert_eq!(store.free(sealed), Err(Errno::EIO));
+        assert_eq!(store.commit(None), Err(Errno::EIO));
+        // The window's, which the panic didn't hold.
+        assert_eq!(store.map(sealed, 0, ps, ps, false), Err(Errno::EIO));
+        assert_eq!(store.unmap(0, ps), Err(Errno::EIO));
+        assert_eq!(store.window_mappings(), Err(Errno::EIO));
+        // Not quiescent, as far as anyone knows: its connection's end retires it.
+        assert_eq!(store.is_quiescent(), Err(Errno::EIO));
+        assert_eq!(store.take_over(), Err(Errno::EIO));
+        drop((window, store));
+
+        let store = ExtentStore::open(dir.path().join("store")).unwrap();
+        assert!(!store.is_fenced());
+        assert_eq!(read(&store, sealed, 0, BLOCK), Ok(pattern(1, BLOCK)));
+        assert_eq!(read(&store, open, 0, BLOCK), Err(Errno::ENOENT));
+        write(&store, next, 0, &pattern(5, BLOCK)).unwrap();
+        store.commit(None).unwrap();
+        assert_eq!(read(&store, next, 0, BLOCK), Ok(pattern(5, BLOCK)));
+    }
+
     /// A write to an extent not open racing a commit: committed by it, or by the next, which
     /// seals it.
     #[test]
@@ -2690,7 +2781,7 @@ mod tests {
         store.commit(None).unwrap();
         let extent = |extent, offset| MappingContents::Extent { extent, offset, writable: false };
         assert_eq!(
-            store.window_mappings(),
+            store.window_mappings().unwrap(),
             [
                 WindowMapping { window_offset: 0, len: ps, contents: extent(open, 0) },
                 WindowMapping { window_offset: ps, len: ps, contents: extent(sealed, 0) },
@@ -2715,7 +2806,7 @@ mod tests {
         store.commit(None).unwrap();
         let sealed = MappingContents::Extent { extent: open, offset: ps, writable: false };
         assert_eq!(
-            store.window_mappings(),
+            store.window_mappings().unwrap(),
             [WindowMapping { window_offset: 0, len: ps, contents: sealed }]
         );
     }
@@ -2744,7 +2835,7 @@ mod tests {
         store.commit(None).unwrap();
         let sealed = MappingContents::Extent { extent: open, offset: 0, writable: false };
         assert_eq!(
-            store.window_mappings(),
+            store.window_mappings().unwrap(),
             [
                 WindowMapping { window_offset: ps, len: ps, contents: sealed },
                 WindowMapping {
@@ -2770,7 +2861,7 @@ mod tests {
         store.map(sealed, 2 * ps, ps, 5 * ps, false).unwrap();
         let contents = MappingContents::Extent { extent: sealed, offset: ps, writable: false };
         assert_eq!(
-            store.window_mappings(),
+            store.window_mappings().unwrap(),
             [
                 WindowMapping { window_offset: 0, len: ps, contents },
                 WindowMapping { window_offset: ps, len: 2 * ps, contents: MappingContents::Zeros },
@@ -3160,7 +3251,7 @@ mod tests {
         write(&store, open, 0, &pattern(2, ps as usize)).unwrap();
         assert_eq!(store.is_quiescent(), Ok(false));
         assert_eq!(
-            store.window_mappings()[4],
+            store.window_mappings().unwrap()[4],
             WindowMapping {
                 window_offset: 6 * ps,
                 len: ps,
@@ -3170,7 +3261,7 @@ mod tests {
         store.commit(None).unwrap();
         assert_eq!(store.is_quiescent(), Ok(true));
         let extent = |extent, offset| MappingContents::Extent { extent, offset, writable: false };
-        let mappings = store.window_mappings();
+        let mappings = store.window_mappings().unwrap();
         assert_eq!(
             mappings,
             [
@@ -3195,7 +3286,7 @@ mod tests {
             }
             .unwrap();
         }
-        assert_eq!(fork.window_mappings(), mappings);
+        assert_eq!(fork.window_mappings().unwrap(), mappings);
         for mapping in &mappings {
             let bytes = |window: &DaxWindow| {
                 block_on(window.fault(mapping.window_offset, Access::Read)).unwrap();

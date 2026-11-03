@@ -1026,7 +1026,7 @@ impl Connection {
             MAP => store.map(extent, args[2], args[3], args[4], flags & MAP_WRITABLE != 0),
             MAPPINGS => {
                 *payload = store
-                    .window_mappings()
+                    .window_mappings()?
                     .iter()
                     .flat_map(|mapping| {
                         let words = match mapping.contents {
