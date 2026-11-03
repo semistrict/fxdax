@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-03 13:09'
-updated_date: '2026-11-03 13:29'
+updated_date: '2026-11-03 15:45'
 labels:
   - structure
 dependencies: []
@@ -43,3 +43,11 @@ Every push replays the same 3,000 zloop seeds, and the model and corruption test
 4. Artifacts: logs, failures, replay commands; known signatures (guest/sim/known-failures, crates/fxfs-posix/known-panics) keep open bugs from failing.
 5. Dispatch once; file new bugs with seeds.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Landed on main 259476d8b: .github/workflows/hunt.yml, nightly 03:00 UTC + workflow_dispatch (first, mutant, posix). zloop: 4 shards x 5,000 seeds of interleave and failures from 3001 + 20,000 per run number before; fxfs-posix: 4 shards, FXDAX_MODEL_CASES 1200 and FXDAX_CORRUPT_CASES 1500 each (50x 96 and 120), FXDAX_CORRUPT_SEED 120 + (run-1)*4+shard)*1500, PROPTEST_RNG_SEED (run-1)*4+shard+1. Artifacts zloop-N (failures, replay, logs, README with the commit) and posix-N (nextest.log, replay). Known: guest/sim/known-failures (regex of zloop's failure line; TASK-150.21's entry went with its fix on main), crates/fxfs-posix/known-panics (TASK-149.23's reader.rs:159, counted apart by corrupt_tests; seeds 700-759 pass with it, seed 741 hits it). Run 41657634400 (dispatch, as the schedule runs): seeds 3,001-23,000 of both clean, ~45 min a shard; fxfs-posix 4,800 model sequences and 6,000 corruption cases each image, all pass, ~50 min a shard, no panics, TASK-149.23's not reached in 120-6,119. Run 41657639663, mutant task-153.3-refused-slice-stale, seeds 1-20,000 of both: not found (README said none in 3,000 either): out of seeds' reach now.
+
+Correction: run 41657634400's passing tests' output wasn't kept, so whether a known panic showed there is unknown; the hunt now runs nextest with --success-output final, which shows it (checked locally: seeds 700-759 print 'known: TASK-149.23').
+<!-- SECTION:NOTES:END -->

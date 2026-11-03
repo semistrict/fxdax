@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-03 13:09'
-updated_date: '2026-11-03 13:31'
+updated_date: '2026-11-03 15:45'
 labels:
   - structure
 dependencies: []
@@ -49,4 +49,6 @@ CI runs cargo nextest --workspace alone, not scripts/test.sh (the clippy check, 
 
 <!-- SECTION:NOTES:BEGIN -->
 Claims checked (2026-11-03): CI ran cargo nextest --workspace alone, true (ci.yml); guest/tests host-feature tests ran nowhere, true: test-e2e.sh runs --features guest only, and CI's cargo check --features host compiled no test code; zloop seeded interleave only, true, and lib.sh's list missed smoke, which zloop and mutants.sh never ran; check.sh ran two of the nine one-run tests. A patch that stopped applying: mutants.sh printed to stderr and exited 0; fxfs-posix/mutants.sh went on, and never checked its reverse. scripts/tests/test_guest_mutants.py did check the Python runner's edits, but only scripts/test.sh ran it, which CI didn't. Strictly (no fuzz) 7 patches no longer applied: guest/sim task-147-growing, task-150.20-no-seal-zero, task-153.6-through-under-a-fault, task-79.28-before-147, write-past-end-grows (malformed hunk), and fxfs-posix clone-counts-holes; all applied with fuzz, to the code they meant: regenerated.
+
+Landed on main 259476d8b (rebased onto TASK-150.21's fix, so guest/sim/known-failures lists nothing now). CI is a matrix of scripts/test.sh's parts (FXDAX_TEST_PARTS): workspace ~30 min, shuttle ~14, guest (as root: script_run's tests mount loop devices, mkfs.ext4/xfs) ~3, clippy+scripts ~2; guest-sim ~27 min (failures' seeds are 3.5x interleave's). What first CI found: test_cocci_guest needs spatch on the runner (coccinelle added to apt), and script_run::tests::a_filesystem_with_no_room... needs root to mount: neither a bug, both environment, so CI runs the guest part as root as GCE does. Nothing else that had gone unrun failed: vm.rs, script_vm.rs, all 56 host and 53 guest tests pass; zloop's new failures seeds 1-3,000 clean; smoke clean. Proofs: branch run 41650394074 green (all 5 jobs); run 41657042767 with task-99-region-open.patch's context changed by one line (which fuzz 2 would have applied) and map_to_unlocked's edit changed: guest-sim red ('task-99-region-open: mutants/task-99-region-open.patch doesn't apply', 'mutants: 36 checked, 1 broken'), clippy-scripts red (test_each_edit_finds_its_code_once: 'map_to_unlocked: ... found 0 times'). main's CI 41657583988 green.
 <!-- SECTION:NOTES:END -->
