@@ -89,7 +89,7 @@
 //! another user, reaches its tenant's socket alone, which the VM manager gives it (`Grant`).
 //! What differs between tenants is a tenant's policy (`server::Policy`, TASK-160.10): where its VM
 //! processes name stores, whether the branch one names counts, and whether they follow public
-//! bases.
+//! bases. What may be done to a store is the store's, fixed as it opens ([`crate::StoreAccess`]).
 
 pub(crate) mod client;
 pub mod control;

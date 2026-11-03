@@ -13,7 +13,7 @@
 use super::fork_faults::{self, Leftover, MISHAPS, commit, host, options};
 use super::tests::{Gated, Mishap, restart};
 use crate::faults::RESTORE_STEPS;
-use crate::{Errno, ExtentId, ExtentStore};
+use crate::{Errno, ExtentId, ExtentStore, StoreRole};
 use extent_remote::layout::{self, Kind};
 use extent_remote::store::Store as Bucket;
 use extent_remote::{branch, recover};
@@ -124,7 +124,7 @@ impl Hosts {
                 _ => ExtentStore::create_for_branch(&path, 1 << 30, point).unwrap(),
             };
             copy.attach_remote(reached(host), rand::random(), options()).unwrap();
-            assert!(copy.is_point(), "host {host} holds no point");
+            assert_eq!(copy.access().role, StoreRole::Point, "host {host} holds no point");
             copies.push(Some(Arc::new(copy)));
         }
         Self {

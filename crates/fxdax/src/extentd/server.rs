@@ -12,7 +12,7 @@ use super::wire::*;
 use crate::open_stores::Holder;
 use crate::store_requests::{self, Guest, Resizes, Shrinking};
 use crate::{Access, DaxWindow, Deferred, Errno, ExtentId, ExtentStore, Protection, SecondStage};
-use crate::{Commit, MappingContents, VolatileSlice, VolatileSliceMut, WriteBarriers};
+use crate::{Commit, MappingContents, StoreRole, VolatileSlice, VolatileSliceMut, WriteBarriers};
 use std::os::fd::AsFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -516,7 +516,8 @@ impl Connection {
 /// what it committed is durable.
 fn finish_connection(connection: Arc<Connection>) {
     let path = connection.path.get().cloned();
-    if let Some(store) = connection.store.get().filter(|store| !store.is_follower()) {
+    let writer = |store: &&Arc<ExtentStore>| store.access().role != StoreRole::Follower;
+    if let Some(store) = connection.store.get().filter(writer) {
         if let Err(err) = store.flush() {
             log::error!("extentd: making a store's last commits durable: {err:?}");
         }
@@ -861,7 +862,8 @@ impl Connection {
     /// fxdax: asks its guest to seal, the ask of `number` ([`SEAL`]): whether its VM process was
     /// told. Not once it is closing, nor of a follower, which holds nothing open.
     pub(super) fn ask_to_seal(&self, number: u64) -> bool {
-        if self.closing.load(Ordering::Acquire) || self.store().is_none_or(|s| s.is_follower()) {
+        let follows = |store: &Arc<ExtentStore>| store.access().role == StoreRole::Follower;
+        if self.closing.load(Ordering::Acquire) || self.store().is_none_or(follows) {
             return false;
         }
         let header = Header::new(SEAL, 0).with_args(&[number]);
@@ -1285,7 +1287,7 @@ impl Connection {
         self.authorize(&path)?;
         let opening = self.opening()?;
         let followed = stores::followed(&path, self.arena())?;
-        if followed.is_public() && !self.tenant.policy.follows_public_bases {
+        if followed.access().public && !self.tenant.policy.follows_public_bases {
             return Err(Errno::EPERM);
         }
         let store = Arc::new(followed.follow());
@@ -1356,16 +1358,12 @@ impl Connection {
         let opening = self.opening()?;
         let key = store_key(&path);
         open_paths().hold_async(&key, self.this.clone(), CLOSING_WAIT).await?;
+        // A VM process opens no store to write that its writer may not write
+        // ([`crate::StoreAccess::may_write`]): a public base, only forks of it (TASK-43), what it
+        // wrote being every tenant's, its pages the default arena's, which every VM process holds
+        // (TASK-79.17); fxdax: nor a point, which nothing writes (doc-7, Points).
         let opened = self.open_held(&path, &key, capacity, create, from).await;
-        // A VM process opens no public base to write it, only forks of it (TASK-43): what it
-        // wrote would be every tenant's; fxdax: of no tenant as of any, as its pages would be the
-        // default arena's, which every VM process holds (TASK-79.17).
-        let opened = match opened {
-            Ok(store) if store.is_public() => Err(Errno::EPERM),
-            // fxdax: nor a point, which nothing writes (doc-7, Points): only forks of it.
-            Ok(store) if store.is_point() => Err(Errno::EROFS),
-            opened => opened,
-        };
+        let opened = opened.and_then(|store| store.access().may_write().map(|()| store));
         let started = opened.map(|store| {
             let flushed = store.clone();
             self.start_behind(move |stopped| flush_behind(flushed, stopped));

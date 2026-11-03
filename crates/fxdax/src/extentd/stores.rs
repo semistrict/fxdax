@@ -71,7 +71,8 @@ pub(super) fn retire(key: &Path, store: &ExtentStore) {
 
 /// fxdax: the store open at `key` for followers, or a writer that went, which the writer holding
 /// it takes over ([`ExtentStore::take_over`]), if one is: `EBUSY` if it is open in an arena not
-/// `arena` ([`in_arena`]), retired, or something is open in it. A point kept open for forks
+/// `arena` ([`in_arena`]), retired, or something is open in it; and as the store refuses a writer,
+/// a point or a public base ([`crate::StoreAccess::may_write`]). A point kept open for forks
 /// ([`kept`]) the writer opens anew, closed first, once the forks of it under way are done.
 pub(super) async fn take_over(
     key: &Path,
@@ -83,20 +84,18 @@ pub(super) async fn take_over(
         log::warn!("extentd: {} is open for followers in another arena: {errno}", key.display());
         return Err(errno);
     }
-    // A point open for followers has no writer: `Connection::open` refuses it.
-    if store.is_point() {
-        return Ok(Some(store));
+    match if retired { Err(Errno::EBUSY) } else { store.take_over() } {
+        Ok(()) => Ok(Some(store)),
+        Err(Errno::EBUSY) => {
+            log::warn!(
+                "extentd: {} is open for followers, which its writer that went left writes \
+                 uncommitted in",
+                key.display()
+            );
+            Err(Errno::EBUSY)
+        }
+        Err(errno) => Err(errno),
     }
-    let taken = if retired { Err(Errno::EBUSY) } else { store.take_over() };
-    if let Err(errno) = taken {
-        log::warn!(
-            "extentd: {} is open for followers, which its writer that went left writes uncommitted \
-             in: {errno}",
-            key.display()
-        );
-        return Err(errno);
-    }
-    Ok(Some(store))
 }
 
 /// fxdax: the store at `path` for a follower to follow (backlog doc-8): the one a writer's

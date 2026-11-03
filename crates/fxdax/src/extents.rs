@@ -184,6 +184,57 @@ struct OpenExtent {
     stored: u64,
 }
 
+/// fxdax: what a store opened is: who writes it, and whether every tenant reads it. It says what
+/// may be done to it, which each of its methods that changes it checks, rather than each caller
+/// (TASK-160.10). Fixed once it is open and its remote attached ([`ExtentStore::attach_remote`]),
+/// which says whether it is a point, as the extent daemon has it before anything asks it to do
+/// anything (`extentd::stores`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StoreAccess {
+    /// Who writes it.
+    pub role: StoreRole,
+    /// Whether its branch is public ([`ExtentStore::make_public`]): a base every tenant's VM
+    /// processes fork, its pages the default arena's, which each holds. As its directory said as
+    /// it opened, which fails if it can't be read: a store made public is so to those opened since.
+    pub public: bool,
+}
+
+/// fxdax: who writes a store ([`StoreAccess`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StoreRole {
+    /// Its writer: a guest's filesystem, or the work on it of whatever opened it.
+    Writer,
+    /// None: it is a follower's (backlog doc-8), reading its writer's commits through a view.
+    Follower,
+    /// None: it is a point (doc-7, Points), the name of a state, which any number of hosts read
+    /// and fork at once.
+    Point,
+}
+
+impl StoreAccess {
+    /// `Ok` if what the store holds may change: its extents, commits and capacity, which only its
+    /// writer's do, and of no public base. A follower's and a point refuse with `EROFS`; a
+    /// public base with `EPERM`, as what changed would be every tenant's that forks it (TASK-43).
+    pub fn may_write(self) -> Result<()> {
+        match self {
+            Self { role: StoreRole::Follower, .. } => Err(Errno::EROFS),
+            Self { public: true, .. } => Err(Errno::EPERM),
+            Self { role: StoreRole::Point, .. } => Err(Errno::EROFS),
+            Self { role: StoreRole::Writer, public: false } => Ok(()),
+        }
+    }
+
+    /// `Ok` if the store may be forked, made public or have a base attached, which changes none of
+    /// its extents, as a point and a public base may: `EROFS` for a follower's, whose view is all
+    /// it has of the store.
+    pub fn may_manage(self) -> Result<()> {
+        match self.role {
+            StoreRole::Follower => Err(Errno::EROFS),
+            StoreRole::Writer | StoreRole::Point => Ok(()),
+        }
+    }
+}
+
 /// An extent store a guest's filesystem lives on. See the module docs.
 pub struct ExtentStore {
     store: Arc<Store<HostDir>>,
@@ -619,9 +670,16 @@ impl ExtentStore {
         }
     }
 
-    /// fxdax: whether it is a follower's ([`ExtentStore::follow`]).
-    pub fn is_follower(&self) -> bool {
-        self.following.is_some()
+    /// fxdax: what it is, which says what may be done to it ([`StoreAccess`]).
+    pub fn access(&self) -> StoreAccess {
+        let role = match &self.following {
+            Some(_) => StoreRole::Follower,
+            None if self.remote.get().is_some_and(crate::remote::Remote::is_point) => {
+                StoreRole::Point
+            }
+            None => StoreRole::Writer,
+        };
+        StoreAccess { role, public: self.is_public() }
     }
 
     /// fxdax: the bytes of memory its open extents hold, which a window maps writably: pinned,
@@ -654,7 +712,7 @@ impl ExtentStore {
     /// its new writer's filesystem doesn't know of. The window goes, which was the writer's that
     /// went: the new one creates its own.
     pub fn take_over(&self) -> Result<()> {
-        self.writable().map_err(|_| Errno::EINVAL)?;
+        self.access().may_write()?;
         if !self.is_quiescent()? {
             return Err(Errno::EBUSY);
         }
@@ -674,11 +732,6 @@ impl ExtentStore {
     fn view(&self) -> Result<Held<'_, MutexGuard<'_, extent_store::View>>> {
         let following = self.following.as_ref().ok_or(Errno::EINVAL)?;
         following.view.lock(&self.fence)
-    }
-
-    /// fxdax: `EROFS` if it is a follower's, which changes nothing.
-    fn writable(&self) -> Result<()> {
-        if self.following.is_some() { Err(Errno::EROFS) } else { Ok(()) }
     }
 
     /// The epoch of the store's latest commit: its writer's, if a follower's.
@@ -810,7 +863,9 @@ impl ExtentStore {
 
     /// fxdax: keeps the store's branch in `bucket` from now on, as `holder` of its lease, which must
     /// differ from every other taking's: uploads what the store holds that the branch doesn't, then
-    /// its commits as `options` say; durable commits wait to be uploaded.
+    /// its commits as `options` say; durable commits wait to be uploaded. Or, if the branch is a
+    /// point there, which nothing here says, the store is one from now on ([`StoreRole::Point`]):
+    /// attached before anything is asked of it, so that nothing writes it first.
     pub fn attach_remote(
         &self,
         bucket: Arc<extent_remote::store::Store>,
@@ -850,18 +905,12 @@ impl ExtentStore {
     /// A fork of a point commits nothing in object storage: its child's record is the fork, which
     /// fails with `ENOENT` once the point is deleted (`Remote::forked`).
     pub fn fork(&self, path: impl AsRef<Path>, branch: u64) -> Result<(), Error> {
-        self.writable()?;
+        self.access().may_manage()?;
         self.make_durable()?;
         failpoint!("fork::durable");
         // None comes between the look and the fork's commit.
         let opening = self.opening.write(&self.fence)?;
         self.fork_durable(path.as_ref(), branch, false, Some(opening))
-    }
-
-    /// fxdax: whether the store holds a point, which it forks and reads, and no writer takes
-    /// (doc-7, Points).
-    pub fn is_point(&self) -> bool {
-        self.uploader().is_some_and(crate::remote::Remote::is_point)
     }
 
     /// fxdax: forks the store, as [`ExtentStore::fork`] says, its commits made durable: `opening`,
@@ -1019,7 +1068,7 @@ impl ExtentStore {
     /// than what its extents hold (`ENOSPC`). The guest's filesystem, which may hold more, agrees
     /// to a shrink first (the extent daemon's `RESIZE` asks it).
     pub fn set_capacity(&self, capacity: u64) -> Result<()> {
-        self.writable()?;
+        self.access().may_write()?;
         self.store.set_capacity(capacity).map_err(errno)
     }
 
@@ -1191,7 +1240,7 @@ impl ExtentStore {
     /// Writes the bytes of `buffers`, in order, at `offset` in `extent`, which must be the store's
     /// branch's, and open (`WRITE`).
     pub fn write(&self, extent: ExtentId, offset: u64, buffers: &[VolatileSlice]) -> Result<()> {
-        self.writable()?;
+        self.access().may_write()?;
         let len = buffers.iter().map(VolatileSlice::len).sum();
         // fxdax: as the store has it of each write, of this one's whichever way it goes: a commit
         // writes an extent mapped writably to the store, which takes no other (TASK-150.7).
@@ -1219,7 +1268,7 @@ impl ExtentStore {
 
     /// Frees `extent`, if the store holds it (`FREE`).
     pub fn free(&self, extent: ExtentId) -> Result<()> {
-        self.writable()?;
+        self.access().may_write()?;
         // An open extent's memory is dropped as the window's mappings of it go.
         let open = self.open.lock(&self.fence)?.remove(&extent);
         if let Some(open) = &open {
@@ -1259,7 +1308,7 @@ impl ExtentStore {
     /// (`COMMIT` with `COMMIT_DURABLE`). It seals the extents written before it, and those stored
     /// to through the window, whose writable mappings it maps read-only.
     pub fn commit(&self, root: Option<&[u8]>) -> Result<()> {
-        self.writable()?;
+        self.access().may_write()?;
         self.commit_with(root, true)
     }
 
@@ -1267,7 +1316,7 @@ impl ExtentStore {
     /// barrier, ordering what came before before what comes after (`COMMIT` without
     /// `COMMIT_DURABLE`). [`ExtentStore::flush`] makes the commits ordered so far durable.
     pub fn commit_ordered(&self, root: Option<&[u8]>) -> Result<()> {
-        self.writable()?;
+        self.access().may_write()?;
         self.commit_with(root, false)
     }
 
@@ -1363,7 +1412,7 @@ impl ExtentStore {
     /// fxdax: cleans the store behind its commits ([`host_store::clean_behind`], TASK-79.2). It
     /// blocks on the store's I/O.
     pub fn clean_behind(&self) -> Result<()> {
-        self.writable()?;
+        self.access().may_write()?;
         host_store::clean_behind(&self.store).map_err(errno)
     }
 
@@ -1619,7 +1668,7 @@ impl ExtentStore {
         writable: bool,
     ) -> Result<()> {
         if writable {
-            self.writable()?;
+            self.access().may_write()?;
         }
         let start = std::time::Instant::now();
         let mapped = self.map_counted(extent, offset, len, window_offset, writable);
@@ -1870,9 +1919,10 @@ impl ExtentStore {
 
     /// fxdax: forks the store as [`ExtentStore::fork_quiescent`] says, a point if `point`.
     fn fork_at_rest(&self, path: &Path, branch: u64, point: bool) -> Result<(), Error> {
-        self.writable()?;
+        let access = self.access();
+        access.may_manage()?;
         // A point of a point would name the same state: its forks fork the point itself.
-        if point && self.is_point() {
+        if point && access.role == StoreRole::Point {
             let refused = "a point names a state already: fork it rather than make a point of it";
             return Err(Error::new(anyhow::Error::new(Errno::EINVAL).context(refused)));
         }
@@ -1914,7 +1964,7 @@ impl ExtentStore {
     /// arena of physical memory, which every tenant's VM processes hold read-only.
     /// Stores opened since take it so; a tenant opens no public store itself, only forks of it.
     pub fn make_public(&self) -> Result<()> {
-        self.writable()?;
+        self.access().may_manage()?;
         self.mark_public(&self.ancestry())
     }
 
@@ -1923,7 +1973,7 @@ impl ExtentStore {
     /// than being forked by them (backlog doc-10). Its pages are of the default arena through it
     /// ([`ExtentStore::open_base`]).
     pub fn make_generation_public(&self) -> Result<()> {
-        self.writable()?;
+        self.access().may_manage()?;
         self.mark_public(&[self.branch()])
     }
 
@@ -1954,7 +2004,7 @@ impl ExtentStore {
     /// through to it from now on, and in forks of this store, which a VM restored is. Attached
     /// already, it does nothing. The guest has no part in this (backlog doc-10).
     pub fn attach_base(&self, base: &Path, branches: &[u64]) -> Result<()> {
-        self.writable()?;
+        self.access().may_manage()?;
         record_base(&self.path, base, branches)?;
         self.bases.add(self.routed(branches), base);
         Ok(())
@@ -2385,7 +2435,7 @@ mod tests {
         write(&store, a, 0, &pattern(1, BLOCK)).unwrap();
         store.commit(Some(b"one")).unwrap();
         let follower = store.follow();
-        assert!(follower.is_follower());
+        assert_eq!(follower.access().role, StoreRole::Follower);
         store.free(a).unwrap();
         write(&store, b, 0, &pattern(2, BLOCK)).unwrap();
         store.commit(Some(b"two")).unwrap();
@@ -2469,7 +2519,7 @@ mod tests {
         let (store, _dir) = store(1 << 20);
         let store = Arc::new(store);
         let follower = store.follow();
-        assert_eq!(follower.take_over(), Err(Errno::EINVAL));
+        assert_eq!(follower.take_over(), Err(Errno::EROFS));
         store.take_over().unwrap();
         let _window = store.create_dax_window(4 * page_size(), None).unwrap();
         let a = id(&store, 1);
