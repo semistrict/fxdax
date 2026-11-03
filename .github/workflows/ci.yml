@@ -2,32 +2,44 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-# Does it compile, and do its unit tests pass: no guest kernels nor VMs, which need nested KVM and
-# run on GCE (scripts/test-gce.sh).
+# Does it compile, and do its tests pass: scripts/test.sh, as on a laptop, a part a job. No guest
+# kernels nor VMs, which need nested KVM and run on GCE (scripts/test-gce.sh).
 name: CI
 
 on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 jobs:
   test:
+    name: test (${{ matrix.parts }})
     runs-on: ubuntu-24.04
     timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        # The workspace's suite takes most of an hour; the Shuttle suites, each built with its
+        # crate's feature, a build of their own; the guest tests' own, a workspace of their own; the
+        # rest, minutes.
+        parts: [workspace, shuttle, clippy scripts, guest]
     env:
-      UCD_ZIP: ${{ github.workspace }}/target/UCD-12.1.0.zip
+      FXDAX_TEST_PARTS: ${{ matrix.parts }}
     steps:
       - uses: actions/checkout@v7
       - name: Install the build's tools
         # elfutils' eu-stack and sqlite3, which tests run, as on the GCE hosts
-        # (scripts/lib/linux-host-setup.sh).
+        # (scripts/lib/linux-host-setup.sh); Coccinelle, whose rules the scripts' tests check; and
+        # xfsprogs, for the guest tests' own of reflinks.
         run: |
           sudo apt-get update
-          sudo apt-get install -y protobuf-compiler libclang-dev clang elfutils sqlite3
+          sudo apt-get install -y protobuf-compiler libclang-dev clang elfutils sqlite3 coccinelle \
+            xfsprogs
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-unknown-linux-musl
+          components: clippy
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest
@@ -37,20 +49,15 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: cargo-${{ runner.os }}-
-      - name: Fetch the Unicode Character Database
-        run: |
-          mkdir -p target
-          [ -f "$UCD_ZIP" ] || curl -fsSL -o "$UCD_ZIP" https://www.unicode.org/Public/12.1.0/ucd/UCD.zip
-          echo "25ba51a0d4c6fa41047b7a5e5733068d4a734588f055f61e85f450097834a0a6  $UCD_ZIP" | sha256sum -c -
-      - name: Compile
-        run: cargo check --workspace
-      - name: Compile the guest tests, both halves
+            guest/tests/target
+          key: cargo-${{ runner.os }}-${{ matrix.parts }}-${{ hashFiles('Cargo.lock', 'guest/tests/Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-${{ matrix.parts }}-
+      # The guest's half for its own target too, as the guest agent is built (scripts/test-e2e.sh):
+      # its tests run on the host's in scripts/test.sh.
+      - name: Compile the guest tests for the guest
+        if: matrix.parts == 'guest'
         working-directory: guest/tests
-        run: |
-          cargo check -p test_cases --features host
-          cargo check -p test_cases --features guest --tests --target x86_64-unknown-linux-musl
+        run: cargo check -p test_cases --features guest --tests --target x86_64-unknown-linux-musl
       # DAX's tests take faults through /dev/userfaultfd, root's alone on the runner, as
       # scripts/lima-setup.sh gives it to the kvm group.
       - name: Let the tests use userfaultfd
@@ -63,14 +70,23 @@ jobs:
           sudo chown "$USER" /mnt/tmp
           echo TMPDIR=/mnt/tmp >> "$GITHUB_ENV"
           df -h /tmp /mnt
-      # Every failure, not the first alone: a run is long.
-      - name: Unit tests
-        run: cargo nextest run --workspace --no-fail-fast
+      # Every failure, not the first alone: a run is long. The guest tests' own as root, as on the
+      # GCE hosts: some mount a loop device, to hold a script's model to a kernel's filesystem.
+      - name: scripts/test.sh
+        run: |
+          if [[ $FXDAX_TEST_PARTS == guest ]]; then
+            sudo --preserve-env env "PATH=$PATH" "HOME=$HOME" scripts/test.sh --no-fail-fast
+          else
+            scripts/test.sh --no-fail-fast
+          fi
 
   # guest/sim: dax.c in a process, over a fake kernel, as zloop.sh runs ztest (TASK-149.14).
   guest-sim:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
+    env:
+      KERNEL: ${{ github.workspace }}/target/sim-kernel
+      BUILD: ${{ github.workspace }}/target/sim
     steps:
       - uses: actions/checkout@v7
       - name: Install the build's tools
@@ -80,11 +96,11 @@ jobs:
           path: target/sim-kernel
           key: sim-kernel-${{ hashFiles('scripts/build-guest-kernel.sh', 'guest/linux/patches/*') }}
       - name: Fetch the kernel's sources
-        run: guest/sim/kernel-tree.sh "$PWD/target/sim-kernel"
-      - name: Run 3,000 seeds
-        env:
-          KERNEL: ${{ github.workspace }}/target/sim-kernel
-          BUILD: ${{ github.workspace }}/target/sim
+        run: guest/sim/kernel-tree.sh "$KERNEL"
+      # First, as it takes seconds: a past bug whose patch no longer applies would test nothing.
+      - name: The mutants apply
+        run: guest/sim/mutants.sh --check
+      - name: Run 3,000 seeds of each
         run: guest/sim/zloop.sh -s 3000 -d "$BUILD/logs"
       - uses: actions/upload-artifact@v7
         if: failure()
