@@ -434,11 +434,18 @@ impl<F: File> IndexLog<F> {
 
     /// Lets the segments `reaped` go, which no extent is in any more, and returns those that go
     /// now: those the branch closed since it was opened go once a checkpoint covers their footers.
+    /// fxdax: and the one its newest checkpoint names, whose footer the footers after it follow,
+    /// which rebuilding the branch begins from, once a later checkpoint names another: closed
+    /// between commits after the checkpoint's commit, its footer's last commit is the checkpoint's,
+    /// which covers it, and it went at once, the branch's footers rebuilding it as of that commit
+    /// alone (TASK-160.15).
     pub fn let_go(&mut self, reaped: Vec<Reaped>) -> Vec<FileKey> {
         let mut released = Vec::new();
         for Reaped { number, last, len } in reaped {
             match last {
-                Some(last) if last > self.checkpointed => self.uncovered.push((number, last, len)),
+                Some(last) if last > self.checkpointed || number.number == self.segment => {
+                    self.uncovered.push((number, last, len))
+                }
                 _ => released.push(FileKey::Segment(number)),
             }
         }
@@ -656,6 +663,21 @@ mod tests {
         assert_eq!((appended.write.new_file, appended.covered), (true, covered));
         // Covered, they go at once.
         assert_eq!(index.let_go(vec![reaped(4, Some(4))]), [FileKey::Segment(segment(4))]);
+    }
+
+    /// fxdax: the segment the newest checkpoint names, whose footer the footers after it follow,
+    /// stays, reaped, until a later checkpoint names another, though its footer's last commit is
+    /// the checkpoint's, which covers it (TASK-160.15).
+    #[test]
+    fn the_segment_a_checkpoint_names_stays_until_another_does() {
+        let dir = holding(&[]);
+        let state = Recovered { epoch: 2, segment: 5, ..Recovered::default() };
+        let mut index = IndexLog::open(&dir, BRANCH, &state, None, BTreeSet::new).unwrap();
+        let reaped = |number| Reaped { number: segment(number), last: Some(2), len: 4 << 10 };
+        assert_eq!(index.let_go(vec![reaped(4), reaped(5)]), [FileKey::Segment(segment(4))]);
+        index.want_checkpoint();
+        let appended = commit(&mut index, &dir, 3, &options(1 << 20));
+        assert_eq!(appended.covered, [FileKey::Segment(segment(5))]);
     }
 
     /// A branch wanting a checkpoint has its next commit's record be one, and the next a delta.

@@ -269,11 +269,16 @@ pub fn recovering(round: u64, dir: MemDir) -> (Left, bool) {
     let rebuilt = store.rebuild().unwrap();
     assert!(rebuilt.epoch <= epoch as u64, "round {round}: footers past epoch {epoch}");
 
-    // It carries on, and crashing again after a flush keeps what it committed.
+    // It carries on, and crashing again after a flush keeps what it committed. Its footers since
+    // its newest checkpoint, the open segment closed by a last commit of what it wrote since,
+    // say what it holds, and spent: the frees of extents freed while open among them
+    // (TASK-160.15).
     let recovered = epochs[epoch].clone();
     let mut epochs = vec![recovered.clone()];
-    workload(&mut rng, &store, &mut epochs, recovered, 0);
+    let (_, model) = workload(&mut rng, &store, &mut epochs, recovered, 0);
     store.flush().unwrap_or_else(|e| panic!("round {round}: a commit failed: {e:?}"));
+    epochs.push(model);
+    rebuilds(round, &store);
     let durable = epochs.len() - 1;
     drop(store);
     let crashed = crashed.crash(round + ROUNDS);
@@ -281,15 +286,23 @@ pub fn recovering(round: u64, dir: MemDir) -> (Left, bool) {
     let store = Store::open(crashed.clone(), OPTIONS).unwrap();
     assert_eq!(contents(&store), epochs[durable], "round {round}: carrying on");
     // And closing its open segment, its footers say what it holds.
+    rebuilds(round, &store);
+    drop(store);
+    left.push(("its last directory", digest(&crashed)));
+    (left, mid_commit)
+}
+
+/// Checks that `store`'s checkpoint and footers, its open segment closed by a commit, say what it
+/// holds as of that commit: its extents, its root, its next sequence number, and what it spent.
+fn rebuilds(round: u64, store: &Store<MemDir>) {
     store.close_segment().unwrap();
-    store.commit(None).unwrap();
+    store.commit(None).unwrap_or_else(|e| panic!("round {round}: a commit failed: {e:?}"));
     let rebuilt = store.rebuild().unwrap();
     assert_eq!(rebuilt.epoch, store.epoch().unwrap(), "round {round}");
     assert_eq!(rebuilt.extents, store.places().unwrap(), "round {round}");
     assert_eq!(rebuilt.root, store.root().unwrap(), "round {round}");
-    drop(store);
-    left.push(("its last directory", digest(&crashed)));
-    (left, mid_commit)
+    assert_eq!(rebuilt.next_sequence, store.info().unwrap().next_sequence, "round {round}");
+    assert_eq!(rebuilt.spent, store.spent().unwrap(), "round {round}");
 }
 
 /// The epoch `store` recovered, which must be one of `epochs` from `durable` on, and what it holds
