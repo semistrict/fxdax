@@ -47,37 +47,39 @@ const FLUSH_EVERY: std::time::Duration = std::time::Duration::from_millis(50);
 /// going: how long its going may take.
 const COMMITS_POLL: std::time::Duration = std::time::Duration::from_millis(100);
 
-/// Serves the VM processes that connect to `listener`, for as long as it listens ([`serve_as`]): of
-/// no tenant, the default tenant's, their stores' pages of its arena of the kernel's physical
-/// memory, which they hold, as a tenant's do ([`default_memory`]). Their requests run on threads
-/// every connection shares (TASK-34).
+/// Serves the VM processes that connect to `listener`, for as long as it listens ([`serve_as`]): the
+/// default tenant's ([`default_tenant`]). Their requests run on threads every connection shares
+/// (TASK-34).
 pub fn serve(listener: UnixListener) {
     super::SERVING.send_replace(true);
-    serve_as(listener, None);
+    serve_as(listener, default_tenant);
     super::SERVING.send_replace(false);
 }
 
 /// Serves the VM processes of `tenant` that connect to `listener`, as [`serve`] does (TASK-43):
 /// until its grant is revoked, which shuts the listener down.
 pub fn serve_tenant(listener: UnixListener, tenant: Arc<Tenant>) {
-    serve_as(listener, Some(tenant))
+    serve_as(listener, move || Ok(tenant.clone()))
 }
 
 /// fxdax: how long an accept that failed waits to be tried again, as files close (TASK-79.35).
 pub(super) const ACCEPT_AGAIN: std::time::Duration = std::time::Duration::from_millis(50);
 
-/// Serves the VM processes of `tenant`, if any, that connect to `listener`, until it listens no
-/// more, shut down (`EINVAL`). An accept that fails otherwise, as with as many files open as the
+/// Serves the VM processes of the tenant `tenant` gives, as each connects, that connect to
+/// `listener`, until it listens no more, shut down (`EINVAL`): one whose tenant it fails to give,
+/// logged, it closes. An accept that fails otherwise, as with as many files open as the
 /// daemon may, is tried again after [`ACCEPT_AGAIN`], and its connection served then: given up on,
 /// it would leave every VM process that connects to it unserved, a tenant's socket bound still
 /// (TASK-79.35).
-fn serve_as(listener: UnixListener, tenant: Option<Arc<Tenant>>) {
+fn serve_as(listener: UnixListener, tenant: impl Fn() -> Result<Arc<Tenant>, Errno>) {
     let mut failing = false;
     loop {
         match listener.accept() {
             Ok((stream, _)) => {
                 failing = false;
-                drop(start_connection(stream, tenant.clone()));
+                if let Ok(tenant) = tenant() {
+                    drop(start_connection(stream, tenant));
+                }
             }
             Err(err) if err.raw_os_error() == Some(libc::EINVAL) => return,
             // That connection's, gone before it was accepted.
@@ -101,20 +103,56 @@ fn serve_as(listener: UnixListener, tenant: Option<Arc<Tenant>>) {
 /// and its stores are in a directory of its own, which its VM processes name no store outside of.
 /// This is defence in depth: a VM process escaped from its guest reaches its tenant's pages and
 /// stores alone. Guest isolation is the security boundary, which nothing relies on tenants for.
+/// What else its VM processes may do its [`Policy`] says: a granted tenant's, or the default
+/// tenant's, of the daemon's own socket ([`default_tenant`]).
 ///
 /// Its arena goes, and the extents cached in it, once it is gone, as its VM processes are, and the
 /// stores opened in its arena, and what reads into the extent cache for them (`pages::Arena`).
 pub struct Tenant {
     name: String,
-    /// Its stores' directory, canonical.
-    dir: PathBuf,
+    policy: Policy,
     memory: Memory,
+}
+
+/// fxdax: what a tenant's VM processes may do (TASK-160.10), which its connections hold them to.
+struct Policy {
+    /// Where they name stores.
+    stores: Stores,
+    /// Whether the branch one names, of a point it restores from that isn't here, counts. Not a
+    /// granted tenant's: nothing in the bucket says whose a branch is, so a point not here it
+    /// finds absent, whatever branch it names (TASK-150.4); its VM manager, which knows what the
+    /// tenant may restore, takes a point for it first (`CreateStore`, TASK-154). The default
+    /// tenant's, whose VM processes are the daemon's user's (TASK-155), does.
+    names_branches: bool,
+    /// Whether they follow a public base (backlog doc-8): the default tenant's do; a granted
+    /// tenant's opens no public base, only forks of it (TASK-43).
+    follows_public_bases: bool,
+}
+
+/// fxdax: where a tenant's VM processes name stores ([`Policy`]).
+enum Stores {
+    /// In its directory alone, canonical (TASK-43.4).
+    Dir(PathBuf),
+    /// In the daemon's roots, if it has any ([`roots`]); anywhere, if it has none: the default
+    /// tenant's.
+    Roots(Option<&'static [PathBuf]>),
+}
+
+impl Policy {
+    /// A granted tenant's, whose stores are in `dir`, canonical.
+    fn granted(dir: PathBuf) -> Self {
+        Self { stores: Stores::Dir(dir), names_branches: false, follows_public_bases: false }
+    }
+
+    /// The default tenant's ([`default_tenant`]).
+    fn default_tenant() -> Self {
+        Self { stores: Stores::Roots(roots()), names_branches: true, follows_public_bases: true }
+    }
 }
 
 /// The memory a tenant's VM processes hold (TASK-43): its arena of physical memory,
 /// which its stores' own pages are of, and the default arena, read-only, whose pages are public
-/// bases'. The default tenant's, of the VM processes of no tenant, is as any other's
-/// ([`default_memory`], TASK-79.17).
+/// bases'. The default tenant's is as any other's ([`default_tenant`], TASK-79.17).
 struct Memory {
     arena: Arc<crate::pages::Arena>,
     memory: Arc<std::os::fd::OwnedFd>,
@@ -161,26 +199,30 @@ impl Drop for Counted {
     }
 }
 
-/// fxdax: the default tenant's memory, of the VM processes of no tenant (TASK-79.17): an arena of
-/// its own, as a tenant's, for as long as the daemon runs, so that the default arena holds public
-/// bases' pages, which every VM process holds read-only, and nothing of a VM process's own.
-fn default_memory() -> Result<&'static Memory, Errno> {
-    static DEFAULT: OnceLock<Memory> = OnceLock::new();
-    if let Some(memory) = DEFAULT.get() {
-        return Ok(memory);
+/// fxdax: the default tenant, of the daemon's own socket, which its user's VM processes connect to
+/// (TASK-155), made as the first does, for as long as the daemon runs: nameless, as no granted
+/// tenant is, and limited by no name. Its policy is its own ([`Policy::default_tenant`]); its
+/// memory is as a granted tenant's (TASK-79.17): an arena of its own, so that the default arena
+/// holds public bases' pages, which every VM process holds read-only, and nothing of a VM
+/// process's own. `EIO`, logged, if its memory can't be made.
+pub(super) fn default_tenant() -> Result<Arc<Tenant>, Errno> {
+    static DEFAULT: OnceLock<Arc<Tenant>> = OnceLock::new();
+    if let Some(tenant) = DEFAULT.get() {
+        return Ok(tenant.clone());
     }
     let memory = Memory::new().map_err(|err| {
         log::error!("extentd: the default tenant's memory: {err}");
         Errno::EIO
     })?;
-    Ok(DEFAULT.get_or_init(|| memory))
+    let tenant = Tenant { name: String::new(), policy: Policy::default_tenant(), memory };
+    Ok(DEFAULT.get_or_init(|| Arc::new(tenant)).clone())
 }
 
 impl Tenant {
-    /// A new tenant named `name`, whose stores are in `dir`, with an arena of its own.
+    /// A new tenant named `name`, granted, whose stores are in `dir`, with an arena of its own.
     pub fn new(name: impl Into<String>, dir: impl AsRef<Path>) -> std::io::Result<Arc<Self>> {
-        let dir = dir.as_ref().canonicalize()?;
-        let tenant = Arc::new(Self { name: name.into(), dir, memory: Memory::new()? });
+        let policy = Policy::granted(dir.as_ref().canonicalize()?);
+        let tenant = Arc::new(Self { name: name.into(), policy, memory: Memory::new()? });
         super::memory::register(&tenant);
         Ok(tenant)
     }
@@ -190,9 +232,13 @@ impl Tenant {
         &self.name
     }
 
-    /// Its stores' directory.
-    pub fn dir(&self) -> &Path {
-        &self.dir
+    /// Its stores' directory, if it is a granted tenant's: the default tenant has none
+    /// ([`Stores::Roots`]).
+    pub fn dir(&self) -> Option<&Path> {
+        match &self.policy.stores {
+            Stores::Dir(dir) => Some(dir),
+            Stores::Roots(_) => None,
+        }
     }
 
     /// Its arena of physical memory.
@@ -200,10 +246,15 @@ impl Tenant {
         self.memory.arena.id()
     }
 
-    /// Whether its VM processes may name the store at `path`: `EACCES` unless it is in its
-    /// directory, whichever way `path` names it.
+    /// Whether its VM processes may name the store at `path`, whichever way `path` names it:
+    /// `EACCES` unless it is where they name stores ([`Stores`]).
     fn holds(&self, path: &Path) -> Result<(), Errno> {
-        if in_dir(path, &self.dir) { Ok(()) } else { Err(Errno::EACCES) }
+        let held = match &self.policy.stores {
+            Stores::Dir(dir) => in_dir(path, dir),
+            Stores::Roots(Some(roots)) => roots.iter().any(|root| in_dir(path, root)),
+            Stores::Roots(None) => true,
+        };
+        if held { Ok(()) } else { Err(Errno::EACCES) }
     }
 }
 
@@ -220,29 +271,20 @@ fn reopen_read_only(fd: std::os::fd::BorrowedFd<'_>) -> std::io::Result<std::os:
     Ok(unsafe { <std::os::fd::OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(raw) })
 }
 
-/// Serves the VM process at the other end of `stream`, of `tenant`, if any, until it closes the
+/// Serves the VM process at the other end of `stream`, of `tenant`, until it closes the
 /// connection, or exits: then its store and window go. Returns then: for tests, which serve
 /// connections one by one.
 #[cfg(test)]
-pub(crate) fn serve_connection(stream: UnixStream, tenant: Option<Arc<Tenant>>) {
+pub(crate) fn serve_connection(stream: UnixStream, tenant: Arc<Tenant>) {
     let _ = start_connection(stream, tenant).recv();
 }
 
 /// Starts serving the VM process at the other end of `stream`, as [`serve_connection`] does, on
 /// the daemon's runtime: no thread of its own. What it returns says when it is done.
 /// fxdax: one of a tenant past [`MAX_CONNECTIONS`] it closes at once.
-fn start_connection(stream: UnixStream, tenant: Option<Arc<Tenant>>) -> mpsc::Receiver<()> {
+fn start_connection(stream: UnixStream, tenant: Arc<Tenant>) -> mpsc::Receiver<()> {
     let (done, finished) = mpsc::channel();
-    // fxdax: of no tenant, the default tenant's, made as its first VM process connects, which
-    // may fail, logged (`default_memory`).
-    let memory = match &tenant {
-        Some(tenant) => &tenant.memory,
-        None => match default_memory() {
-            Ok(memory) => memory,
-            Err(_) => return finished,
-        },
-    };
-    let Some(counted) = Counted::new(memory) else {
+    let Some(counted) = Counted::new(&tenant.memory) else {
         log::error!(
             "extentd: refusing a VM process's connection: its tenant has {MAX_CONNECTIONS}"
         );
@@ -287,7 +329,7 @@ pub(super) fn vm_builds() -> Vec<((u64, String), usize)> {
 
 /// Receives the VM process's messages, serving its requests ([`receive`]), until it is gone; then,
 /// once its requests are done, lets its store go.
-async fn run_connection(stream: UnixStream, tenant: Option<Arc<Tenant>>) {
+async fn run_connection(stream: UnixStream, tenant: Arc<Tenant>) {
     let sender = match stream.try_clone().and_then(|clone| {
         clone.set_nonblocking(true)?;
         AsyncSender::new(clone)
@@ -685,9 +727,9 @@ impl Holder for Connection {
     }
 }
 
-/// The directories the daemon serves stores in to connections of no tenant,
-/// `FXDAX_EXTENTD_ROOTS` (separated by colons), if it names any: the default tenant's directory
-/// (TASK-43.4). One that doesn't exist is no root, and with none, the daemon refuses every path.
+/// The directories the daemon serves stores in to the default tenant's connections,
+/// `FXDAX_EXTENTD_ROOTS` (separated by colons), if it names any (TASK-43.4). One that doesn't exist
+/// is no root, and with none, the daemon refuses every path.
 fn roots() -> Option<&'static [PathBuf]> {
     static ROOTS: OnceLock<Option<Vec<PathBuf>>> = OnceLock::new();
     ROOTS
@@ -726,8 +768,8 @@ const SHRINK_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 /// A connection's store and window.
 pub(super) struct Connection {
     this: Weak<Connection>,
-    /// fxdax: the tenant it is of, if any (TASK-43).
-    tenant: Option<Arc<Tenant>>,
+    /// fxdax: the tenant it is of (TASK-43).
+    tenant: Arc<Tenant>,
     /// Its VM process, which it sends to: fxdax: as the daemon depends on it (TASK-79.9).
     peer: Arc<Peer>,
     /// fxdax: whether an [`OPEN`] is in progress ([`Opening`]).
@@ -801,23 +843,14 @@ impl Connection {
         self.store.get()
     }
 
-    /// The memory its VM process holds: its tenant's, or, without one, the default tenant's
-    /// ([`default_memory`]).
-    fn memory(&self) -> Result<&Memory, Errno> {
-        match &self.tenant {
-            Some(tenant) => Ok(&tenant.memory),
-            None => default_memory(),
-        }
-    }
-
     /// The arena of physical memory its store's own pages are of: its tenant's.
-    fn arena(&self) -> Result<&Arc<crate::pages::Arena>, Errno> {
-        Ok(&self.memory()?.arena)
+    fn arena(&self) -> &Arc<crate::pages::Arena> {
+        &self.tenant.memory.arena
     }
 
-    /// fxdax: the arena's ID, if it has one ([`Connection::arena`]).
-    pub(super) fn arena_id(&self) -> Option<crate::pages::ArenaId> {
-        self.arena().ok().map(|arena| arena.id())
+    /// fxdax: the arena's ID ([`Connection::arena`]).
+    pub(super) fn arena_id(&self) -> crate::pages::ArenaId {
+        self.arena().id()
     }
 
     /// fxdax: what its guest was asked to seal, and has answered.
@@ -987,17 +1020,10 @@ impl Connection {
         }
     }
 
-    /// Whether it may name the store at `path`: `EACCES` unless the store is in its tenant's
-    /// directory (TASK-43.4); or, of no tenant, in one of the daemon's roots, if it has any
-    /// ([`roots`]).
+    /// Whether it may name the store at `path`: `EACCES` unless the store is where its tenant's
+    /// VM processes name stores (TASK-43.4).
     fn authorize(&self, path: &Path) -> Result<(), Errno> {
-        match (&self.tenant, roots()) {
-            (Some(tenant), _) => tenant.holds(path),
-            (None, Some(roots)) if !roots.iter().any(|root| in_dir(path, root)) => {
-                Err(Errno::EACCES)
-            }
-            (None, _) => Ok(()),
-        }
+        self.tenant.holds(path)
     }
 
     /// Serves `message`, a request, and replies, as `answer` owes.
@@ -1244,7 +1270,7 @@ impl Connection {
         fds: &mut Vec<std::os::fd::BorrowedFd<'a>>,
     ) -> Result<(), Errno> {
         use std::os::fd::AsFd;
-        let memory = self.memory()?;
+        let memory = &self.tenant.memory;
         reply.args[1] = memory.arena.id().0.into();
         fds.extend([memory.memory.as_fd(), memory.public.as_fd()]);
         Ok(())
@@ -1258,9 +1284,8 @@ impl Connection {
         let path = PathBuf::from(std::ffi::OsStr::from_bytes(path));
         self.authorize(&path)?;
         let opening = self.opening()?;
-        let followed = stores::followed(&path, self.arena()?)?;
-        // A tenant's VM process opens no public base, only forks of it (TASK-43).
-        if self.tenant.is_some() && followed.is_public() {
+        let followed = stores::followed(&path, self.arena())?;
+        if followed.is_public() && !self.tenant.policy.follows_public_bases {
             return Err(Errno::EPERM);
         }
         let store = Arc::new(followed.follow());
@@ -1325,12 +1350,9 @@ impl Connection {
         if let Some((from, _)) = from {
             self.authorize(std::ffi::OsStr::from_bytes(from).as_ref())?;
         }
-        // fxdax: a tenant's stores are those of its directory, and nothing in the bucket says whose
-        // a branch is, so that its VM process's word for one counts for nothing: a point not here
-        // it finds absent, whatever branch it names (TASK-150.4). Its VM manager, which knows what
-        // the tenant may restore, takes a point for it first (`CreateStore`, TASK-154).
-        let from =
-            from.map(|(from, branch)| (from, if self.tenant.is_some() { 0 } else { branch }));
+        // fxdax: the branch it names, if its tenant's word for one counts (TASK-150.4).
+        let named = self.tenant.policy.names_branches;
+        let from = from.map(|(from, branch)| (from, if named { branch } else { 0 }));
         let opening = self.opening()?;
         let key = store_key(&path);
         open_paths().hold_async(&key, self.this.clone(), CLOSING_WAIT).await?;
@@ -1373,7 +1395,7 @@ impl Connection {
         create: bool,
         from: Option<(&[u8], u64)>,
     ) -> Result<Arc<ExtentStore>, Errno> {
-        let arena = self.arena()?;
+        let arena = self.arena();
         if let Some(store) = stores::take_over(key, arena).await? {
             return Ok(store);
         }

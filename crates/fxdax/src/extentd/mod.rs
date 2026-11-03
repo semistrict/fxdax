@@ -87,6 +87,9 @@
 //! default tenant's VM processes name any branch: its socket is the daemon's user's alone
 //! ([`bind_owner_only`], TASK-155), whatever is mounted where, so that a jailed VM process, of
 //! another user, reaches its tenant's socket alone, which the VM manager gives it (`Grant`).
+//! What differs between tenants is a tenant's policy (`server::Policy`, TASK-160.10): where its VM
+//! processes name stores, whether the branch one names counts, and whether they follow public
+//! bases.
 
 pub(crate) mod client;
 pub mod control;

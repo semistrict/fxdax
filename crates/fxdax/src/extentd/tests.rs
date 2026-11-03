@@ -3,7 +3,7 @@
 // found in the LICENSE file.
 
 use super::client::{Opening, RemoteExtentStore};
-use super::server::{serve, serve_connection};
+use super::server::{default_tenant, serve, serve_connection};
 use crate::pages::page_size;
 use crate::{Commit, Errno, ExtentId, ExtentStore, VolatileSlice, VolatileSliceMut, WriteBarriers};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -28,7 +28,7 @@ fn host() {
 /// A daemon serving one connection, on a thread, and its client, of the store at `path`.
 fn connect(path: &Path, capacity: u64) -> (RemoteExtentStore, JoinHandle<()>) {
     let (client, server) = UnixStream::pair().unwrap();
-    let served = std::thread::spawn(move || serve_connection(server, None));
+    let served = std::thread::spawn(move || serve_connection(server, default_tenant().unwrap()));
     (RemoteExtentStore::over(client, path, Opening::Create(capacity)).unwrap(), served)
 }
 
@@ -36,7 +36,7 @@ fn connect(path: &Path, capacity: u64) -> (RemoteExtentStore, JoinHandle<()>) {
 /// at `path` (backlog doc-8).
 fn follow(path: &Path) -> Result<(RemoteExtentStore, JoinHandle<()>), Option<Errno>> {
     let (client, server) = UnixStream::pair().unwrap();
-    let served = std::thread::spawn(move || serve_connection(server, None));
+    let served = std::thread::spawn(move || serve_connection(server, default_tenant().unwrap()));
     match RemoteExtentStore::over(client, path, Opening::ReadOnly) {
         Ok(store) => Ok((store, served)),
         Err(error) => {
@@ -421,7 +421,8 @@ fn serves_a_store() {
     assert_eq!((info.capacity, info.used, info.next_sequence), (1 << 20, 2 * BLOCK as u64, 2));
     assert_eq!(write(&store, extent, 2 * BLOCK as u64, &[0; BLOCK]), Err(Errno::EPERM));
     let (other, other_server) = UnixStream::pair().unwrap();
-    let other_served = std::thread::spawn(move || serve_connection(other_server, None));
+    let other_served =
+        std::thread::spawn(move || serve_connection(other_server, default_tenant().unwrap()));
     let error = RemoteExtentStore::over(other, &path, Opening::Create(1 << 20))
         .err()
         .expect("opened it twice");
@@ -969,7 +970,7 @@ fn vm_processes_tell_the_daemon_what_their_windows_cost() {
     // SAFETY: Clears the close-on-exec flag of a descriptor this test owns.
     assert_eq!(unsafe { libc::fcntl(theirs.as_raw_fd(), libc::F_SETFD, 0) }, 0);
     let before = crate::stats::stats();
-    let served = std::thread::spawn(move || serve_connection(ours, None));
+    let served = std::thread::spawn(move || serve_connection(ours, default_tenant().unwrap()));
     let output = std::process::Command::new(std::env::current_exe().unwrap())
         .args(["--exact", "extentd::tests::child_changes_its_window", "--ignored", "--nocapture"])
         .env(CHILD_CONNECTION, theirs.as_raw_fd().to_string())
@@ -1993,7 +1994,7 @@ fn tenants_arenas_go_with_them() {
     let tenant = super::Tenant::new("acme", dir.path()).unwrap();
     let arena = tenant.arena();
     let (client, server) = UnixStream::pair().unwrap();
-    let served = std::thread::spawn(move || serve_connection(server, Some(tenant)));
+    let served = std::thread::spawn(move || serve_connection(server, tenant));
     let store =
         RemoteExtentStore::over(client, &dir.path().join("store"), Opening::Create(1 << 24))
             .unwrap();
@@ -2145,7 +2146,7 @@ fn writers_that_go_with_writes_uncommitted_cut_their_followers_off() {
     assert_eq!(follower.advance(), Err(Errno::ESTALE));
     assert_eq!(follow(&path).err(), Some(Some(Errno::EBUSY)));
     let (client, server) = UnixStream::pair().unwrap();
-    let busy = std::thread::spawn(move || serve_connection(server, None));
+    let busy = std::thread::spawn(move || serve_connection(server, default_tenant().unwrap()));
     let opened = RemoteExtentStore::over(client, &path, Opening::Create(1 << 20));
     assert_eq!(opened.err().and_then(|error| error.errno()), Some(Errno::EBUSY));
     busy.join().unwrap();
@@ -2172,7 +2173,7 @@ fn stores_open_in_another_arena_are_busy() {
     let open_as_tenant = || {
         let (client, server) = UnixStream::pair().unwrap();
         let tenant = tenant.clone();
-        let served = std::thread::spawn(move || serve_connection(server, Some(tenant)));
+        let served = std::thread::spawn(move || serve_connection(server, tenant));
         (RemoteExtentStore::over(client, &path, Opening::Create(1 << 20)), served)
     };
     let (store, served) = open_as_tenant();
@@ -3073,7 +3074,7 @@ fn tenants_connections_are_bounded() {
     std::thread::spawn(move || serve(listener));
     // Served once its store is open.
     let (ours, theirs) = UnixStream::pair().unwrap();
-    let serving = std::thread::spawn(move || serve_connection(theirs, None));
+    let serving = std::thread::spawn(move || serve_connection(theirs, default_tenant().unwrap()));
     let first = RemoteExtentStore::over(ours, &dir.path().join("first"), Opening::Create(1 << 20));
     let first = first.unwrap();
     let connected: Vec<UnixStream> = (1..super::server::MAX_CONNECTIONS)

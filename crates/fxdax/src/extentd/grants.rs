@@ -55,7 +55,7 @@ impl Grants {
         let dir = dir.canonicalize().map_err(errno)?;
         let mut granted = self.granted.lock().unwrap();
         if let Some(grant) = granted.get(name) {
-            if grant.tenant.dir() != dir {
+            if grant.tenant.dir() != Some(&dir) {
                 return Err(Errno::EEXIST);
             }
             give(&grant.socket, uid, gid)?;
@@ -91,7 +91,7 @@ impl Grants {
     pub fn same_tenant(&self, one: &Path, other: &Path) -> bool {
         let granted = self.granted.lock().unwrap();
         let tenant_of = |path: &Path| {
-            granted.values().map(|grant| grant.tenant.dir()).find(|dir| in_dir(path, dir))
+            granted.values().filter_map(|grant| grant.tenant.dir()).find(|dir| in_dir(path, dir))
         };
         tenant_of(one) == tenant_of(other)
     }

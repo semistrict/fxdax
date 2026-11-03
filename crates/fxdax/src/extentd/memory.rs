@@ -55,7 +55,7 @@ pub fn label(name: &str) -> String {
 /// processes live on, which a grant of it again goes on with (TASK-79.36).
 pub(super) fn alive(name: &str, dir: &std::path::Path) -> Option<Arc<Tenant>> {
     let registry = REGISTRY.lock().unwrap();
-    registry.alive().find(|tenant| tenant.name() == name && tenant.dir() == dir)
+    registry.alive().find(|tenant| tenant.name() == name && tenant.dir() == Some(dir))
 }
 
 /// Counts `tenant`, new, among those alive, limited as its name is.
