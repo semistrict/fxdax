@@ -734,15 +734,16 @@ static s64 fxfs_dax_read_shadowed(struct fxfs_dax *dax, unsigned long page, void
 }
 
 /*
- * fxdax: diagnostic: how many bytes pages `a` and `b` differ in, but for the `len` bytes from
- * `skip`, and in `first`, the first, or PAGE_SIZE.
+ * fxdax: diagnostic: how many of the first `limit` bytes pages `a` and `b` differ in, but for the
+ * `len` bytes from `skip`, and in `first`, the first, or PAGE_SIZE.
  */
-static size_t fxfs_dax_differ(const u8 *a, const u8 *b, size_t skip, size_t len, size_t *first)
+static size_t fxfs_dax_differ(const u8 *a, const u8 *b, size_t skip, size_t len, size_t *first,
+			      size_t limit)
 {
 	size_t i, differ = 0;
 
 	*first = PAGE_SIZE;
-	for (i = 0; i < PAGE_SIZE; i++) {
+	for (i = 0; i < limit; i++) {
 		if ((i < skip || i >= skip + len) && a[i] != b[i]) {
 			*first = min(*first, i);
 			differ++;
@@ -2691,7 +2692,7 @@ static s64 fxfs_dax_check_device(struct fxfs_dax *dax, struct inode *inode, loff
 	if (!buf)
 		return -ENOMEM;
 	where = fxfs_dax_read_shadowed(dax, window_offset >> PAGE_SHIFT, buf);
-	differ = where >= 0 ? fxfs_dax_differ(seen, buf, 0, 0, &first) : 0;
+	differ = where >= 0 ? fxfs_dax_differ(seen, buf, 0, 0, &first, PAGE_SIZE) : 0;
 	if (differ) {
 		pr_err("fxfs: window %llx, mapping extent %lld page %lld, held %zu bytes the device's doesn't before a move, the first at %zu: %#x, the device's %#x\n",
 		       window_offset, where >> 20, where & ((1 << 20) - 1), differ, first, seen[first],
@@ -2706,7 +2707,7 @@ static s64 fxfs_dax_check_device(struct fxfs_dax *dax, struct inode *inode, loff
 	} else if (where >= 0 && (e.sequence != where >> 20 ||
 				  e.extent_offset >> PAGE_SHIFT != (where & ((1 << 20) - 1)))) {
 		err = fxfs_dax_read_device_page(dax, e.branch, e.sequence, e.extent_offset, buf);
-		differ = err ? 0 : fxfs_dax_differ(seen, buf, 0, 0, &first);
+		differ = err ? 0 : fxfs_dax_differ(seen, buf, 0, 0, &first, PAGE_SIZE);
 		pr_err("fxfs: ino %lu at %lld: Fxfs has it in extent %llu page %llu, %s, the window at %llx maps extent %lld page %lld: %d, %zu bytes differ, the first at %zu: %#x, the device's %#x\n",
 		       inode->i_ino, pos, e.sequence, e.extent_offset >> PAGE_SHIFT,
 		       fxfs_dax_accesses[e.access], window_offset, where >> 20,
@@ -2738,9 +2739,12 @@ static void fxfs_dax_check_moved(struct fxfs_dax *dax, struct inode *inode,
 				 u64 before_at, s64 before_where, size_t skip, size_t len)
 {
 	u64 at = fxfs_dax_page_offset(range, page);
+	/* What the page held past the file's end, a mapping's store, isn't the file's to keep. */
+	size_t in_file = clamp_t(loff_t, i_size_read(inode) - fxfs_dax_chunk_start(range) -
+				 ((loff_t)page << PAGE_SHIFT), 0, PAGE_SIZE);
 	int id = dax_read_lock();
 	const u8 *now = fxfs_dax_window_page(dax, at), *then;
-	size_t first, differ = now ? fxfs_dax_differ(now, before, skip, len, &first) : 0;
+	size_t first, differ = now ? fxfs_dax_differ(now, before, skip, len, &first, in_file) : 0;
 	u8 moved = differ ? now[first] : 0, left = 0;
 	s64 is;
 	u8 *buf;
@@ -4097,7 +4101,7 @@ static void fxfs_dax_verify_writable(struct fxfs_dax *dax)
 			continue;
 		id = dax_read_lock();
 		window = fxfs_dax_window_page(dax, (u64)page << PAGE_SHIFT);
-		differ = window ? fxfs_dax_differ(window, buf, 0, 0, &at) : 0;
+		differ = window ? fxfs_dax_differ(window, buf, 0, 0, &at, PAGE_SIZE) : 0;
 		/*
 		 * fxdax: Fxfs's device WRITE of what a move keeps around a write is in no gate, and may
 		 * come between the two reads: the device's, read again, has it by now, if it wasn't this.
@@ -4107,7 +4111,7 @@ static void fxfs_dax_verify_writable(struct fxfs_dax *dax)
 			fxfs_dax_read_shadowed(dax, page, buf);
 			id = dax_read_lock();
 			window = fxfs_dax_window_page(dax, (u64)page << PAGE_SHIFT);
-			differ = window ? fxfs_dax_differ(window, buf, 0, 0, &at) : 0;
+			differ = window ? fxfs_dax_differ(window, buf, 0, 0, &at, PAGE_SIZE) : 0;
 		}
 		if (differ) {
 			pr_err("fxfs: window page %lx, writable at seals %llu, mapping extent %llu page %llu: %zu bytes differ from the device's, the first at %zu: %#x through the window, %#x the device's\n",
