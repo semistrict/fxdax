@@ -18,6 +18,9 @@ on:
       first:
         description: "zloop's first seed (default: 3,001 + 20,000 a run before this one)"
         required: false
+      seeds:
+        description: "zloop's seeds a shard (default: 5,000), as few as one to replay a failure"
+        required: false
       mutant:
         description: 'A guest/sim mutant to put in, by name (mutants/NAME.patch): to see a hunt find it'
         required: false
@@ -41,7 +44,7 @@ jobs:
     env:
       KERNEL: ${{ github.workspace }}/target/sim-kernel
       BUILD: ${{ github.workspace }}/target/sim
-      SEEDS: 5000
+      SEEDS: ${{ inputs.seeds || 5000 }}
     steps:
       - uses: actions/checkout@v7
       - name: Install the build's tools
