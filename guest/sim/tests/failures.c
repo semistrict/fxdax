@@ -142,9 +142,10 @@ static void unwritten(struct tracked *file, loff_t at, const char *source, size_
 	for (i = 0; i < len; i++) {
 		if (got[i] != file->bytes[at + i] && !test_bit(at + i, file->unknown) &&
 		    (i >= readable || got[i] != source[i]))
-			sim_panic("a failed write's byte %lld of ino %lu is %#x, not %#x%s",
+			sim_panic("a failed write's byte %lld of ino %lu is %#x, not %#x nor %s %#x",
 				  at + i, file_inode(file->file)->i_ino, (u8)got[i],
-				  (u8)file->bytes[at + i], i < readable ? " nor the write's" : "");
+				  (u8)file->bytes[at + i],
+				  i < readable ? "the write's" : "unreadable", (u8)source[i]);
 		file->bytes[at + i] = got[i];
 		clear_bit(at + i, file->unknown);
 	}
