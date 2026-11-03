@@ -1314,14 +1314,16 @@ static int fxfs_dax_map_found(struct fxfs_dax *dax, struct inode *inode,
 	size_t capacity = DIV_ROUND_UP(end - start, PAGE_SIZE);
 	/* The runs of lagging pages after what Fxfs found: each a page at the least. */
 	struct fxfs_dax_extent *found = fxfs_dax_alloc_extents(dax, lagging ? 2 * capacity : capacity);
-	struct fxfs_dax_extent *pieces = lagging ? found + capacity : found;
+	struct fxfs_dax_extent *pieces;
 	ssize_t count, nr;
 	long gate;
 	u64 seals;
 	int err;
 
+	/* fxdax: not before, an offset from NULL (UBSan, guest/sim failures 408 at 1,000). */
 	if (!found)
 		return -ENOMEM;
+	pieces = lagging ? found + capacity : found;
 	for (;;) {
 		/*
 		 * Extents open as Rust finds them are still once the gate is entered, unless a seal
