@@ -6,6 +6,12 @@
 **Recommended:** a workload identity pool for `semistrict/fxdax` and a service account allowed to make and delete GCE instances and write the nightly bucket.
 **Until then:** each nightly fails at its auth step; TASK-69's runs stay manual.
 
+## gcloud needs signing in again; TASK-153.5 waits on its last GCE runs (2026-11-03)
+
+gcloud's credentials expired mid-run ("Reauthentication failed. cannot prompt during non-interactive execution"): only `gcloud auth login` restores them. TASK-153.5 (a DAX write(2)'s move committed after its bytes) is built, measured equal on pgbench-dax, and passed every suite at f4ee7b196; its last commits, on branch `t1535-commit-after` (local), add fixes guest/sim found since, in the fault path main shares (a fault's PTEs unmapped before its move, not after; a fault's held bytes taken only before a move of its own), and the rebase onto TASK-153.15's dax.c. Their real-kernel run and their 3,000-seed zloop were under way on `fxdax-test-t1535-suites` and `fxdax-test-t1535-sim` (us-central1-a), which delete themselves at about 19:15 UTC; results in `~/run-*/results` and `~/zloop-ae8cd3098.log`, `~/mutants-ae8cd3098.log`.
+**Recommended:** sign in; the branch then lands on main once its DAX suites and zloop pass again (a session picking TASK-153.5 up does it).
+**Until then:** the branch waits, unpushed; main keeps committing a write's move before its bytes.
+
 # Decisions
 
 ## What a store may be asked to do is the store's, fixed as it opens (TASK-160.10, 2026-11-03)
