@@ -1818,17 +1818,25 @@ impl Journal {
         let mut inner = self.inner.lock();
 
         let file_offset = inner.writer.journal_file_checkpoint().file_offset;
-        assert!(
-            file_offset - start <= CHUNK_SIZE,
-            "the journal's own transaction took {} bytes",
-            file_offset - start
-        );
-
         // Make sure the transaction to extend the journal made it to the journal within the old
-        // size, since otherwise, it won't be possible to replay.
-        if let Some(extension) = extension {
-            let size = extension.start;
-            assert!(file_offset < size, "the journal at {file_offset}, past its size, {size}");
+        // size, since otherwise, it won't be possible to replay. fxdax: neither this nor the
+        // transaction's size, past what `pre_commit` keeps for it, is a reason for a guest's kernel
+        // to panic, as upstream's asserts did (TASK-60). The journal stops, as on a transaction
+        // that fails to apply: replay ends before this one, which has no Commit record within the
+        // file it can read.
+        let past = match &extension {
+            _ if file_offset - start > CHUNK_SIZE => {
+                Some(format!("the journal's own transaction took {} bytes", file_offset - start))
+            }
+            Some(extension) if file_offset >= extension.start => {
+                Some(format!("the journal at {file_offset}, past its size, {}", extension.start))
+            }
+            _ => None,
+        };
+        if let Some(past) = past {
+            let reason = anyhow!(FxfsError::Inconsistent).context(past.clone());
+            inner.terminate(Some(reason.context("Failed to make room in the journal")));
+            bail!(anyhow!(FxfsError::Inconsistent).context(past));
         }
 
         if let Some(zeroing) = zeroing {
@@ -2791,7 +2799,8 @@ pub use yielder::*;
 
 #[cfg(test)]
 mod tests {
-    use super::{CHUNK_SIZE, JournalOptions, SuperBlockInstance};
+    use super::{CHUNK_SIZE, EXTENT_SIZE, JournalOptions, SuperBlockInstance};
+    use crate::errors::FxfsError;
     use crate::filesystem::{FxFilesystem, FxFilesystemBuilder, OpenFxFilesystem, SyncOptions};
     use crate::fsck::fsck;
     use crate::object_handle::{ObjectHandle, ReadObjectHandle, WriteObjectHandle};
@@ -2980,6 +2989,42 @@ mod tests {
             commit_records(&fs, object_id, round, 76).await;
         }
         check_replay(fs).await;
+    }
+
+    // fxdax: the journal's own transaction, extending its file and zeroing a slice of the old
+    // space, past the file's old size, as TASK-139's were: the journal stops on the error, which
+    // the commit returns, and what it holds replays, rather than a guest's kernel panicking
+    // (TASK-60). A chunk of a block, less than the records of a slice zeroed, makes it so.
+    #[fuchsia::test]
+    async fn test_own_transaction_past_the_journal_stops_it() {
+        let device = DeviceHolder::new(FakeDevice::new(1 << 19, TEST_DEVICE_BLOCK_SIZE));
+        let options = JournalOptions { chunk_size: EXTENT_SIZE, ..journal_for_records() };
+        let (fs, object_id) = filesystem_for_records_with(device, options).await;
+        for round in 0..600 {
+            try_commit_records(&fs, object_id, round, 15).await.expect("commit failed");
+        }
+        fs.journal().force_compact().await.expect("force_compact failed");
+        fs.journal().force_compact().await.expect("force_compact failed");
+        let mut commits = 600..610;
+        let error = loop {
+            let round = commits.next().expect("no commit failed");
+            if let Err(error) = try_commit_records(&fs, object_id, round, 1).await {
+                break error;
+            }
+        };
+        assert!(FxfsError::Inconsistent.matches(&error), "{error:#}");
+        assert!(format!("{error:#}").contains("past its size"), "{error:#}");
+        let error = try_commit_records(&fs, object_id, 610, 1).await.expect_err("commit succeeded");
+        assert!(FxfsError::JournalFlushError.matches(&error), "{error:#}");
+
+        let device = fs.device().snapshot().expect("snapshot failed");
+        let replayed = FxFilesystemBuilder::new()
+            .journal_options(journal_for_records())
+            .open(device)
+            .await
+            .expect("open failed");
+        fsck(replayed.clone()).await.expect("fsck failed");
+        std::mem::forget((fs, replayed));
     }
 
     /// fxdax: a mutation of an extent says as much as a record can of what writes it to a layer.
