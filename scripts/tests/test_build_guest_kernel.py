@@ -39,6 +39,7 @@ if [[ ${@: -1} == vmlinux ]]; then
 fi
 """,
     "cargo": """\
+echo "$CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS $CARGO_PROFILE_RELEASE_OVERFLOW_CHECKS" >> "$FAKE/cargo"
 mkdir -p "$CARGO_TARGET_DIR/x86_64-unknown-none/release"
 : > "$CARGO_TARGET_DIR/x86_64-unknown-none/release/libfxfs_linux.a"
 """,
@@ -115,6 +116,14 @@ class RustInTheKernel(unittest.TestCase):
                   if line.endswith(" vmlinux")]
         self.assertEqual(len(builds), 1, builds)
         self.assertIn(" FXFS_BUILD_COMMIT=0123abcd-dirty vmlinux", builds[0])
+
+    def test_rust_checks_build_with_debug_assertions_and_overflow_checks(self):
+        """TASK-149.1: FXDAX_GUEST_KERNEL_RUST_CHECKS=1 turns both on, which are off otherwise."""
+        for checks, profile in [({}, "false false"),
+                                ({"FXDAX_GUEST_KERNEL_RUST_CHECKS": "1"}, "true true")]:
+            with self.subTest(checks):
+                self.assertEqual(self.build("", env=checks)[0], 0)
+                self.assertEqual((self.directory / "fake" / "cargo").read_text(), profile + "\n")
 
     def test_the_archive_loses_the_members_that_define_string_functions(self):
         archive = "".join(f"compiler_builtins-{i}.o {name}\n" for i, name in enumerate(FUNCTIONS))

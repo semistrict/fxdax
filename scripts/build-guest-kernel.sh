@@ -177,13 +177,15 @@ grep -q '^CONFIG_SERIAL_8250_CONSOLE=y' "$src/.config"
 # FXDAX_GUEST_KERNEL_RUST_CHECKS=1, optimized, but with its debug assertions, and arithmetic that
 # panics if it overflows: the release build's silence hid a transaction larger than it reserved
 # for, and a reservation computed from a subtraction that wrapped (TASK-149.1). Built with its own
-# FXDAX_GUEST_KERNEL_WORK.
-rust_checks=()
+# FXDAX_GUEST_KERNEL_WORK. Both always set, false being the release profile's own: an empty array
+# of them is unbound to macOS's bash 3.2 under `set -u`.
+rust_checks=false
 if [[ ${FXDAX_GUEST_KERNEL_RUST_CHECKS:-} == 1 ]]; then
-    rust_checks=(CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS=true CARGO_PROFILE_RELEASE_OVERFLOW_CHECKS=true)
+    rust_checks=true
 fi
 rustflags=$("$root/scripts/build-guest-sysroot.sh" "$target" "$work/rust-$arch")
-(cd "$root/guest/rust" && env "${rust_checks[@]}" RUSTFLAGS="$rustflags" \
+(cd "$root/guest/rust" && CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS=$rust_checks \
+    CARGO_PROFILE_RELEASE_OVERFLOW_CHECKS=$rust_checks RUSTFLAGS="$rustflags" \
     CARGO_TARGET_DIR="$work/rust-$arch/target" \
     cargo build --release -p fxfs-linux --target "$target")
 cp "$work/rust-$arch/target/$target/release/libfxfs_linux.a" "$src/fs/fxfs/"
