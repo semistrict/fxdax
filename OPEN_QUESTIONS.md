@@ -8,6 +8,18 @@
 
 # Decisions
 
+## The journal's end is in the root, set by each sync's barrier (TASK-153.13)
+
+A flip mid-journal read as its end, losing synced transactions unsaid. Decided: the root records how far the journal was written when a barrier set it (`Root::journal_end`), and a replay ending before there is refused as corrupt; past it, a torn tail is still a torn tail. A sync's barrier sets it: its journal write's `WRITE_COMMIT` carries the root (`WRITE_ROOT`, new on the wire), or its flush becomes a commit of the root. Cost: no request more; the root's ~50 bytes in the sync's request and the host's commit record; barriers setting roots take turns (they did at the device already). A synced write whose data the journal's checksums find damaged now refuses the mount, where it rolled the file back.
+**Instead:** a durable marker only on `sync`/`syncfs` (fsyncs unprotected), or an extra `COMMIT` per fsync (a round trip each), or no marker, leaving it to the host's CRCs, which bugs in ordering get past.
+**Undoing it:** drop the replay check; the root's field and `WRITE_ROOT` can stay unused.
+
+## A transaction that fails to apply still stops the journal (TASK-153.14)
+
+A live transaction whose apply fails (a corrupt image's allocator, or a bug) stops the journal: writes fail, reads go on, a remount replays without it. Decided to keep that: it is ext4's errors=remount-ro, and the failure means memory contradicts itself, which writing on would spread. Making apply unable to fail needs a dry run of every mutation against state the transaction's own earlier mutations change, or undo for each kind: a second apply to keep in step, to go on writing on metadata known to be wrong.
+**Instead:** check-then-apply under the writer's lock, failing only the transaction.
+**Undoing it:** nothing to undo; that is new work.
+
 ## A panic through a store fences it: fail-stop, usable again once reopened (TASK-153.16, 2026-11-03)
 
 A panic holding a store's lock poisoned it, and every later request of its guest panicked too (TASK-104, 105, 150.20; in `extent_store`, 79.1 and 79.80). Decided: the store is fenced. Every request after the panic fails with `EIO` without panicking, the guest's filesystem stops, and so does its VM. When the connection ends, the store is closed like a writer that left writes uncommitted: it is retired and its followers are cut off. The next open sees it as of its last commit, as after a crash. `crate::fence`: each `ExtentStore` lock can only be taken through the store's fence, and a guard dropped during a panic sets it. The daemon also fences a store when a request, flush or clean of it panics below the locks.
