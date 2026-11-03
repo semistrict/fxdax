@@ -503,8 +503,12 @@ mod tests {
     }
 
     impl Drop for Loop {
+        /// Unmounts it lazily: the test has checked all it will, and whatever else holds the mount
+        /// a moment longer, as a host's probe of the new loop device may, can't fail it. A plain
+        /// umount said "target is busy" on GCE hosts, after the test's own files and children had
+        /// gone (TASK-160.27's runs of these tests).
         fn drop(&mut self) {
-            run_ok(Command::new("umount").arg(&self.mountpoint));
+            run_ok(Command::new("umount").arg("--lazy").arg(&self.mountpoint));
         }
     }
 
