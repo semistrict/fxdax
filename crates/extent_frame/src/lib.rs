@@ -430,6 +430,19 @@ pub fn data(bytes: &[u8]) -> Result<Vec<u8>, Corrupt> {
     })
 }
 
+/// Checks a whole object [`framed`]: its trailer, table and footer, and each part's stored bytes
+/// against its CRC, unpacking none. fxdax: what a host checks of an object it sends on as it is,
+/// as an uploader does a store's closed segments (TASK-153.11).
+pub fn check(bytes: &[u8]) -> Result<(), Corrupt> {
+    let parts = Parts::of(bytes)?;
+    let footer = parts.frame.footer();
+    parts.frame.check_footer(&bytes[footer.start as usize..footer.end as usize])?;
+    for stored in &parts.stored {
+        stored.check(&bytes[stored.offset as usize..])?;
+    }
+    Ok(())
+}
+
 /// The footer of a whole object [`framed`], checked against its CRC.
 pub fn footer(bytes: &[u8]) -> Result<&[u8], Corrupt> {
     let frame = Frame::of(bytes)?;
@@ -566,11 +579,15 @@ mod tests {
             Ok((data, footer(bytes)?.to_vec()))
         };
         assert_eq!(read(&bytes).unwrap(), (data.clone(), b"footer".to_vec()));
+        assert_eq!(check(&bytes), Ok(()));
+        // What reading finds, checking finds too, unpacking nothing.
         for len in 0..bytes.len() {
             assert!(read(&bytes[..len]).is_err(), "cut to {len}");
+            assert!(check(&bytes[..len]).is_err(), "cut to {len}");
         }
         for start in 1..bytes.len() {
             assert!(read(&bytes[start..]).is_err(), "from {start}");
+            assert!(check(&bytes[start..]).is_err(), "from {start}");
         }
         // Each byte of the tail, and of every few of the parts' stored bytes, changed, is found.
         let parts = Parts::of(&bytes).unwrap();
@@ -579,6 +596,7 @@ mod tests {
             let mut flipped = bytes.clone();
             flipped[at as usize] ^= 0x10;
             assert!(read(&flipped).is_err(), "byte {at} flipped");
+            assert!(check(&flipped).is_err(), "byte {at} flipped");
         }
         // A part's stored bytes, cut short, or of another part.
         let (place, stored) = parts.part(0).unwrap();
@@ -598,6 +616,29 @@ mod tests {
         for len in [99, 101] {
             let wrong = Err(Corrupt("an object's raw part, of the wrong length".into()));
             assert_eq!(raw.unpack(&garbage, len), wrong, "{len}");
+        }
+    }
+
+    /// TASK-153.11: what checking an object's parts costs, as a host checks a part it reads and a
+    /// segment it uploads ([`check`]): the time a MiB of stored bytes takes to check, of data
+    /// stored raw and compressed, the median of 9 rounds over 64 MiB. `cargo nextest run
+    /// -p extent_frame --release --run-ignored only bench_checking_parts --no-capture`.
+    #[test]
+    #[ignore]
+    fn bench_checking_parts() {
+        let len = 64 * PART;
+        for (kind, data) in [("raw", random(len)), ("compressed", pattern(len))] {
+            let bytes = framed(&data, b"footer");
+            let stored = Parts::of(&bytes).unwrap().frame.stored_len;
+            let mut rounds: Vec<f64> = (0..9)
+                .map(|_| {
+                    let started = std::time::Instant::now();
+                    check(std::hint::black_box(&bytes)).unwrap();
+                    started.elapsed().as_secs_f64() * 1e6 / (stored as f64 / PART as f64)
+                })
+                .collect();
+            rounds.sort_by(f64::total_cmp);
+            println!("{kind:<10} {:>6.1} µs a MiB stored, {stored} bytes stored", rounds[4]);
         }
     }
 
