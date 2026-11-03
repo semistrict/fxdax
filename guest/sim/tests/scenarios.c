@@ -285,8 +285,11 @@ static void load_slice(void *arg)
 	char got[PAGE_SIZE];
 	int err = sim_user_load(slice_addr, got, sizeof(got));
 
-	/* It paused until the write was done, which had no entry of the fault's to wait for. */
-	check(!err && !memcmp(got, slice_written, sizeof(got)), "the load: %d", err);
+	/*
+	 * It paused past its iomap, which the write waits for, its blocks moving (TASK-153.5): it
+	 * reads what the file held. The write waits for no entry of the fault's.
+	 */
+	check(!err && !memcmp(got, slice_bytes, sizeof(got)), "the load: %d", err);
 }
 
 static void write_slice(void *arg)
@@ -303,7 +306,7 @@ static void write_slice(void *arg)
  * having let go of it, and whose second moved. The first page's bit was set, the file unlisted,
  * and the slice stayed, a reader using it, past a seal (dax_check_seals' WARN). Shared blocks make
  * no slice now (TASK-153.3): the same steps, on a range of its own, whose writer doesn't wait for
- * the fault holding the page's entry, which then reads what it wrote.
+ * the fault's entry, only for the fault to be done with its iomap, which then read what it held.
  */
 static void slice_refuses_a_piece(void)
 {
