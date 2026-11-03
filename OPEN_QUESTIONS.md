@@ -8,6 +8,11 @@
 
 # Decisions
 
+## The daemon asks other guests to seal when a writable MAP is refused (TASK-153.15, 2026-11-03)
+
+Only a guest can seal its open extents, whose pages count against a budget its daemon's VMs share. One idle VM's open pages could take the budget, and another VM got `ENOMEM` from writes its own seals couldn't make room for. Decided: when a writable `MAP` is refused, the daemon asks the guests holding the most open pages to seal. It asks those of its tenant first, enough to cover the `MAP`. It waits for their answers, holding no thread, 10 s at most, then tries once more. This uses a device notice (doc-4's `F_SEAL`, `seal_asked`, `SEALED`), shaped like the resize notice. The guest seals with an ordered commit. Asks are made only under pressure, not on a timer for idle VMs: the most-held ranking already picks the idle VM, and a timer would seal VMs nobody needs room from. A guest that has been asked never waits for another guest's seal, which rules out a cycle of waits. A guest that doesn't answer within 10 s isn't waited for again until it does.
+**Instead:** (1) a per-tenant share of open pages: a VM still can't go past its share while others sit idle, and the shares need sizing. (2) Evict open pages to the store and fault them back: the daemon would have to take writable pages away from a running guest. (3) Also ask idle VMs on a timer.
+**Undoing it:** in `Connection::map_writably`, stop calling `seals::made_room`; take `F_SEAL` out of the device's features. The guest then never sees an ask.
 ## The journal's end is in the root, set by each sync's barrier (TASK-153.13)
 
 A flip mid-journal read as its end, losing synced transactions unsaid. Decided: the root records how far the journal was written when a barrier set it (`Root::journal_end`), and a replay ending before there is refused as corrupt; past it, a torn tail is still a torn tail. A sync's barrier sets it: its journal write's `WRITE_COMMIT` carries the root (`WRITE_ROOT`, new on the wire), or its flush becomes a commit of the root. Cost: no request more; the root's ~50 bytes in the sync's request and the host's commit record; barriers setting roots take turns (they did at the device already). A synced write whose data the journal's checksums find damaged now refuses the mount, where it rolled the file back.

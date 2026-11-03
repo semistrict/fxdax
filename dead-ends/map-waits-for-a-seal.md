@@ -13,3 +13,9 @@ fail, leave the gate, and let the guest seal. Nor can the guest seal from `iomap
 holds its DAX entry there, which a write in the gate may wait for, the same cycle a step out.
 **Reopen if:** The daemon can take a window's writable pages away from a guest by itself: evicting
 an open extent's pages to the store and faulting them back, or asking the guest to seal.
+
+**Reopened, in part (2026-11-03, TASK-153.15):** the daemon now asks other guests to seal (doc-4's
+Sealing), and a writable MAP refused waits for their answers, 10 s at most, before it is tried once
+more. Still never for its own guest's seal, for the reason above: its own MAP fails `ENOMEM` and
+its guest seals, as before; and a guest asked to seal never waits for another's, which might wait
+for it in turn (`crates/fxdax/src/extentd/seals.rs`).

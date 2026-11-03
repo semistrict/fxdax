@@ -95,6 +95,7 @@ pub mod logging;
 pub mod memory;
 pub mod metrics;
 mod pool;
+mod seals;
 pub(crate) mod server;
 mod stores;
 pub(crate) mod wire;

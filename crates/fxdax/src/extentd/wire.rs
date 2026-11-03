@@ -168,6 +168,9 @@ pub(crate) const STAGE_COUNTS: u32 = 27;
 /// metrics show by its store's branch (TASK-111.7). Said once, after [`OPEN`]. A request, which a
 /// daemon older than it refuses (`EINVAL`), and the VM process lets be.
 pub(crate) const BUILD: u32 = 28;
+/// fxdax: the guest's answer to the [`SEAL`] that asked it to seal, of number `args[0]`: it has
+/// sealed what it held open as it was asked, or tried to, or has no way to (TASK-153.15).
+pub(crate) const SEALED: u32 = 29;
 /// fxdax: the most bytes a [`BUILD`]'s commit has.
 pub(crate) const MAX_BUILD: usize = 64;
 /// fxdax: how long a VM process's stage operations go uncounted at most while it makes them
@@ -241,6 +244,12 @@ pub(crate) const CAPACITY_ASK: u32 = 1 << 0;
 /// fxdax: the writer of a follower's store committed: its latest commit's epoch is `args[0]`,
 /// which the follower may [`ADVANCE`] to. Sent once for each run of commits.
 pub(crate) const COMMITTED: u32 = 105;
+/// fxdax: the daemon asks the guest to seal what it holds open, its open extents' pages, which
+/// nothing but its seal lets go of, as another guest's [`MAP`] was refused for want of them: the
+/// ask's number, one more than the last's, is `args[0]`, which the guest answers ([`SEALED`])
+/// once it has sealed. Asks unanswered are one: the latest answered answers them all
+/// (TASK-153.15).
+pub(crate) const SEAL: u32 = 107;
 /// A stage operation the daemon waits for the VM process to acknowledge ([`ACK`]), as it must for
 /// one that takes access to a page away, before it frees the page or shares it.
 pub(crate) const STAGE_ACK: u32 = 1 << 0;

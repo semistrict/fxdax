@@ -4180,10 +4180,10 @@ fn whatever_a_vm_process_says_harms_no_other() {
     const LAST: u64 = 0x1a57;
     /// The ID of a restore's `OPEN`.
     const RESTORE: u64 = 0x7e57;
-    const KINDS: [u32; 29] = [
+    const KINDS: [u32; 31] = [
         OPEN, READ, WRITE, FREE, MAP, UNMAP, COMMIT, ROOT, INFO, WINDOW, FAULT, ACK, FORK, RESIZED,
-        MAPPINGS, ADVANCE, LET_GO, PIN, UNPIN, TRANSFER, FREE_MANY, STAGE_COUNTS, BUILD, REPLY,
-        STAGE_MAP, STAGE_UNMAP, CAPACITY, 14, 0xffff_ffff,
+        MAPPINGS, ADVANCE, LET_GO, PIN, UNPIN, TRANSFER, FREE_MANY, STAGE_COUNTS, BUILD, SEALED,
+        REPLY, STAGE_MAP, STAGE_UNMAP, CAPACITY, SEAL, 14, 0xffff_ffff,
     ];
     let wait = std::time::Duration::from_secs(60);
 
@@ -4582,4 +4582,108 @@ fn a_panic_past_a_stores_locks_fences_it() {
     assert_eq!(PANICS.load(Ordering::Relaxed), 1);
     drop(store);
     served.join().unwrap();
+}
+
+/// TASK-153.15: two VM processes share a budget of open pages, which only a guest's seal lets go
+/// of. One holds nearly all of it and syncs nothing; the other's writable MAP, refused, asks it to
+/// seal and waits for its answer, and is mapped then, where before it failed ENOMEM, its own seals
+/// making no room. A guest asked to seal waits for no other: its own MAP refused meanwhile fails at
+/// once, though the other holds open pages, as its seal may wait for that MAP, in turn. Nor is one
+/// asked that holds none.
+#[test]
+fn maps_refused_ask_the_guests_holding_open_pages_to_seal() {
+    const CHUNK: u64 = physmem::CHUNK_SIZE as u64;
+    const CHUNKS: u64 = 16;
+    host();
+    crate::pages::configure(crate::pages::Config::with_memory(CHUNKS * CHUNK)).unwrap();
+    let ps = page_size();
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("extentd.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || serve(listener));
+    let open = |name: &str, chunks: u64| {
+        let store = RemoteExtentStore::connect(&socket, dir.path().join(name), 1 << 30).unwrap();
+        let memory = memory((chunks * CHUNK / ps) as usize);
+        // SAFETY: The memory is the test's, and outlives the store, as the test leaks it.
+        unsafe { store.create_dax_window_in_host_memory(memory, chunks * CHUNK, None) }.unwrap();
+        let (asked, asks) = std::sync::mpsc::channel();
+        store.on_seal(move |number| {
+            // Unheard once the test stops listening.
+            let _ = asked.send(number);
+            true
+        });
+        (std::sync::Arc::new(store), asks)
+    };
+    let (idle, idle_asks) = open("idle", CHUNKS);
+    let (busy, busy_asks) = open("busy", 2);
+    let extent =
+        |store: &RemoteExtentStore, sequence| ExtentId { branch: store.branch(), sequence };
+
+    // Extents a page short of a chunk each, until refused, with none to ask: at once.
+    let mut sequence = 0;
+    while idle.map(extent(&idle, sequence + 1), 0, CHUNK - ps, sequence * CHUNK, true).is_ok() {
+        sequence += 1;
+    }
+    assert_eq!(sequence, CHUNKS * 7 / 8, "the idle guest's maps");
+    // The busy guest takes a page of the room left, and holds it open.
+    busy.map(extent(&busy, 1), 0, ps, 0, true).unwrap();
+
+    let mapping = busy.clone();
+    let mapped = std::thread::spawn(move || {
+        mapping.map(ExtentId { branch: mapping.branch(), sequence: 2 }, 0, CHUNK, CHUNK, true)
+    });
+    let asked = idle_asks.recv_timeout(super::seals::SEAL_WAIT).expect("the idle guest asked");
+    assert_eq!(asked, 1);
+
+    // Asked, the idle guest's own MAP refused waits for no seal of the busy one's.
+    let started = std::time::Instant::now();
+    let refused = idle.map(extent(&idle, sequence + 1), 0, CHUNK, sequence * CHUNK, true);
+    assert_eq!(refused, Err(Errno::ENOMEM));
+    assert!(started.elapsed() < super::seals::SEAL_WAIT / 2, "it waited {:?}", started.elapsed());
+    assert!(!mapped.is_finished(), "the busy guest's MAP didn't wait for the idle guest's seal");
+
+    // The idle guest seals, and answers: the busy guest's MAP is mapped.
+    idle.commit(None).unwrap();
+    idle.sealed(asked).unwrap();
+    assert_eq!(mapped.join().unwrap(), Ok(()));
+    assert_eq!(busy_asks.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty), "busy asked");
+}
+
+/// TASK-153.15: a VM process whose device takes no asks to seal ([`RemoteExtentStore::on_seal`])
+/// answers each at once, nothing to wait for: another's MAP refused fails without waiting.
+#[test]
+fn asks_to_seal_that_nothing_takes_are_answered_at_once() {
+    const CHUNK: u64 = physmem::CHUNK_SIZE as u64;
+    const CHUNKS: u64 = 16;
+    host();
+    crate::pages::configure(crate::pages::Config::with_memory(CHUNKS * CHUNK)).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("extentd.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || serve(listener));
+    let open = |name: &str, chunks: u64| {
+        let store = RemoteExtentStore::connect(&socket, dir.path().join(name), 1 << 30).unwrap();
+        let memory = memory((chunks * CHUNK / page_size()) as usize);
+        // SAFETY: The memory is the test's, and outlives the store, as the test leaks it.
+        unsafe { store.create_dax_window_in_host_memory(memory, chunks * CHUNK, None) }.unwrap();
+        store
+    };
+    let (deaf, other) = (open("deaf", CHUNKS), open("other", 1));
+    let mut sequence = 0;
+    while deaf
+        .map(
+            ExtentId { branch: deaf.branch(), sequence: sequence + 1 },
+            0,
+            CHUNK,
+            sequence * CHUNK,
+            true,
+        )
+        .is_ok()
+    {
+        sequence += 1;
+    }
+    let started = std::time::Instant::now();
+    let refused = other.map(ExtentId { branch: other.branch(), sequence: 1 }, 0, CHUNK, 0, true);
+    assert_eq!(refused, Err(Errno::ENOMEM));
+    assert!(started.elapsed() < super::seals::SEAL_WAIT / 2, "it waited {:?}", started.elapsed());
 }

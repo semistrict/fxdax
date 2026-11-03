@@ -244,6 +244,27 @@ impl RemoteExtentStore {
         self.client.call(header, &[]).await.map(drop)
     }
 
+    /// fxdax: calls `asked` with the number of each ask the daemon makes of the guest to seal
+    /// what it holds open, as another guest's writable MAP was refused for want of memory its open
+    /// pages hold, which only its seal lets go of: which returns whether the guest is told, and
+    /// answers once it has sealed ([`RemoteExtentStore::sealed`]). An ask no guest is told of, as
+    /// with nothing called so, is answered at once: nothing will seal for it (TASK-153.15).
+    pub fn on_seal(&self, asked: impl Fn(u64) -> bool + Send + Sync + 'static) {
+        let _ = self.client.on_seal.set(Box::new(asked));
+    }
+
+    /// fxdax: answers the daemon's ask of `number` to seal, and those before it: the guest has
+    /// sealed, or tried to, or won't.
+    pub fn sealed(&self, number: u64) -> Result<()> {
+        blocking(self.sealed_async(number))
+    }
+
+    /// [`RemoteExtentStore::sealed`], waiting for the daemon holding no thread.
+    pub async fn sealed_async(&self, number: u64) -> Result<()> {
+        let header = Header::new(SEALED, 0).with_args(&[number]);
+        self.client.call(header, &[]).await.map(drop)
+    }
+
     /// The branch whose extents the guest mints.
     pub fn branch(&self) -> u64 {
         self.branch
@@ -696,6 +717,8 @@ struct Client {
     stage_counts: StageCounts,
     /// What the daemon's changes of the store's capacity go to ([`RemoteExtentStore::on_capacity`]).
     capacity: OnceLock<Box<dyn Fn(u64, bool) + Send + Sync>>,
+    /// fxdax: what the daemon's asks to seal go to ([`RemoteExtentStore::on_seal`]).
+    on_seal: OnceLock<Box<dyn Fn(u64) -> bool + Send + Sync>>,
     /// fxdax: the latest commit of a follower's writer heard of, and what hears of the next
     /// ([`RemoteExtentStore::on_committed`]).
     committed: AtomicU64,
@@ -719,6 +742,7 @@ impl Client {
             stage: OnceLock::new(),
             stage_counts: StageCounts::default(),
             capacity: OnceLock::new(),
+            on_seal: OnceLock::new(),
             committed: AtomicU64::new(0),
             on_committed: OnceLock::new(),
             closing: Default::default(),
@@ -837,6 +861,14 @@ impl Client {
                         drop(self.call(answer, &[]));
                     }
                     None => {}
+                }
+                continue;
+            }
+            if header.kind == SEAL {
+                let number = header.args[0];
+                // No guest told: nothing seals, which it says at once.
+                if !self.on_seal.get().is_some_and(|asked| asked(number)) {
+                    drop(self.call(Header::new(SEALED, 0).with_args(&[number]), &[]));
                 }
                 continue;
             }

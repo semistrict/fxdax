@@ -6,6 +6,7 @@
 //! stores, extent cache and kernel.
 
 use super::pool::Pool;
+use super::seals::{self, Seals};
 use super::stores::{self, CLOSING_WAIT, open_paths, open_store, store_key};
 use super::wire::*;
 use crate::open_stores::Holder;
@@ -316,6 +317,7 @@ async fn run_connection(stream: UnixStream, tenant: Option<Arc<Tenant>>) {
         window: Mutex::new(None),
         behind: Mutex::new(None),
         shrinking: Shrinking::new(),
+        seals: Arc::default(),
         transfer: OnceLock::new(),
         closing: AtomicBool::new(false),
         requests: Mutex::new(Requests::default()),
@@ -357,6 +359,8 @@ async fn run_connection(stream: UnixStream, tenant: Option<Arc<Tenant>>) {
     // A resize waiting for its guest's answer, which none will give, stops waiting, and holds the
     // connection no more (TASK-79.34).
     connection.shrinking.stop();
+    // fxdax: nor do others' MAPs wait for its guest to seal.
+    connection.seals.stop();
     // Its requests received are served still, as they were before it went.
     loop {
         let drained = connection.drained.listen();
@@ -738,6 +742,8 @@ pub(super) struct Connection {
     behind: Mutex<Option<(tokio::sync::oneshot::Sender<()>, tokio::task::JoinHandle<()>)>>,
     /// The shrink the guest was asked to take, and where its answer goes ([`RESIZED`]).
     shrinking: Shrinking,
+    /// fxdax: what its guest was asked to seal, and has answered ([`SEAL`], TASK-153.15).
+    seals: Arc<Seals>,
     /// Its transfer area, once its VM process gives it one ([`TRANSFER`]).
     transfer: OnceLock<TransferArea>,
     /// Whether its VM process is gone, and its store goes once durable.
@@ -807,6 +813,32 @@ impl Connection {
     /// The arena of physical memory its store's own pages are of: its tenant's.
     fn arena(&self) -> Result<&Arc<crate::pages::Arena>, Errno> {
         Ok(&self.memory()?.arena)
+    }
+
+    /// fxdax: the arena's ID, if it has one ([`Connection::arena`]).
+    pub(super) fn arena_id(&self) -> Option<crate::pages::ArenaId> {
+        self.arena().ok().map(|arena| arena.id())
+    }
+
+    /// fxdax: what its guest was asked to seal, and has answered.
+    pub(super) fn seals(&self) -> &Arc<Seals> {
+        &self.seals
+    }
+
+    /// fxdax: asks its guest to seal, the ask of `number` ([`SEAL`]): whether its VM process was
+    /// told. Not once it is closing, nor of a follower, which holds nothing open.
+    pub(super) fn ask_to_seal(&self, number: u64) -> bool {
+        if self.closing.load(Ordering::Acquire) || self.store().is_none_or(|s| s.is_follower()) {
+            return false;
+        }
+        let header = Header::new(SEAL, 0).with_args(&[number]);
+        match self.peer.sender.send(header, Vec::new(), &[]) {
+            Ok(()) => true,
+            Err(err) => {
+                log::warn!("extentd: asking a VM process's guest to seal: {err}");
+                false
+            }
+        }
     }
 
     /// Runs `work` behind its store, a task on the daemon's runtime, until it is told to stop: the
@@ -908,6 +940,9 @@ impl Connection {
         }
         match message.header.kind {
             FAULT => serve_future(turn, self.fault(message, answer)),
+            MAP if message.header.flags & MAP_WRITABLE != 0 => {
+                serve_future(turn, self.map_writably(message, answer))
+            }
             OPEN if message.header.flags & OPEN_READ_ONLY == 0 => {
                 serve_future(turn, self.serve_open(message, answer))
             }
@@ -1131,9 +1166,27 @@ impl Connection {
                 self.shrinking.answered(args[0], args[1] == 1);
                 Ok(())
             }
+            SEALED => {
+                self.seals.answered(args[0]);
+                Ok(())
+            }
             BUILD => self.said_build(store.branch(), &message.payload),
             _ => Err(Errno::EINVAL),
         }
+    }
+
+    /// fxdax: serves `message`, a writable [`MAP`], and replies: a future, served so
+    /// ([`serve_future`]). Refused for want of memory, as the pages it brings in would take the
+    /// budget of what nothing can evict, it waits for other guests asked to seal, if any, holding
+    /// no thread, and tries once more (`seals`, TASK-153.15): another guest's open pages, which
+    /// only that guest's seal lets go of, would leave this one's seals nothing to make room in.
+    async fn map_writably(self: Arc<Self>, message: Message, answer: Answer) {
+        let mut reply = Header::new(REPLY, message.header.id);
+        let mut mapped = self.handle(&message, &mut reply, &mut Vec::new(), &mut Vec::new());
+        if mapped == Err(Errno::ENOMEM) && seals::made_room(&self, message.header.args[3]).await {
+            mapped = self.handle(&message, &mut reply, &mut Vec::new(), &mut Vec::new());
+        }
+        answer.send(mapped, reply, Vec::new(), Vec::new());
     }
 
     /// fxdax: resolves the guest's fault `message` asks for ([`FAULT`]), and replies: a future,
@@ -1300,6 +1353,8 @@ impl Connection {
             Ok(store) => {
                 let branch = store.branch();
                 opening.opened(store, Some(key));
+                // fxdax: its guest may hold open pages, which only it can seal (TASK-153.15).
+                seals::writing(self.this.clone());
                 Ok(branch)
             }
             Err(errno) => {
