@@ -36,6 +36,8 @@ mod test_fxfs_guest_daemon_lost;
 use test_fxfs_guest_daemon_lost::TestFxfsGuestDaemonLost;
 mod test_fxfs_guest_host_memory;
 use test_fxfs_guest_host_memory::TestFxfsGuestHostMemory;
+mod test_fxfs_guest_host_seal;
+use test_fxfs_guest_host_seal::TestFxfsGuestHostSeal;
 mod test_fxfs_guest_follow;
 use test_fxfs_guest_follow::TestFxfsGuestFollow;
 mod test_fxfs_guest_follow_remount;
@@ -189,6 +191,7 @@ pub fn test_cases() -> Vec<TestCase> {
         ),
         TestCase::new("fxfs-guest-daemon-lost", Box::new(TestFxfsGuestDaemonLost)),
         TestCase::new("fxfs-guest-host-memory", Box::new(TestFxfsGuestHostMemory)),
+        TestCase::new("fxfs-guest-host-seal", Box::new(TestFxfsGuestHostSeal)),
         TestCase::new("runner-deadlock", Box::new(TestRunnerDeadlock)),
         TestCase::new("fxfs-guest-follow", Box::new(TestFxfsGuestFollow { dax: false })),
         TestCase::new("fxfs-guest-follow-dax", Box::new(TestFxfsGuestFollow { dax: true })),
