@@ -399,6 +399,28 @@ pub(crate) mod guest {
         fs::File::open(dir).unwrap().sync_all().unwrap();
     }
 
+    /// FICLONERANGE: makes `dst`'s `len` bytes at `dst_offset` share `src`'s at `src_offset`.
+    fn clone_range(dst: &fs::File, src: &fs::File, src_offset: u64, len: u64, dst_offset: u64) {
+        /// `_IOW(0x94, 13, struct file_clone_range)`.
+        const FICLONERANGE: libc::c_ulong = 0x4020_940d;
+        /// `struct file_clone_range`.
+        #[repr(C)]
+        struct CloneRange {
+            src_fd: i64,
+            src_offset: u64,
+            src_length: u64,
+            dest_offset: u64,
+        }
+        let range = CloneRange {
+            src_fd: src.as_raw_fd() as i64,
+            src_offset,
+            src_length: len,
+            dest_offset: dst_offset,
+        };
+        let cloned = unsafe { libc::ioctl(dst.as_raw_fd(), FICLONERANGE as _, &range) };
+        assert_eq!(cloned, 0, "FICLONERANGE: {}", std::io::Error::last_os_error());
+    }
+
     fn test_host_file() {
         assert_eq!(fs::read(path("from-host")).unwrap(), HOST_CONTENT);
     }
@@ -1713,17 +1735,7 @@ pub(crate) mod guest {
     fn test_reflinks() {
         use std::os::unix::fs::FileExt;
         const FICLONE: libc::c_ulong = 0x4004_9409;
-        /// `_IOW(0x94, 13, struct file_clone_range)`.
-        const FICLONERANGE: libc::c_ulong = 0x4020_940d;
         const BLOCK: usize = 4096;
-        /// `struct file_clone_range`.
-        #[repr(C)]
-        struct CloneRange {
-            src_fd: i64,
-            src_offset: u64,
-            src_length: u64,
-            dest_offset: u64,
-        }
         let check = |ret: libc::c_long, what: &str| {
             assert_eq!(ret, 0, "{what}: {}", std::io::Error::last_os_error());
         };
@@ -1750,16 +1762,7 @@ pub(crate) mod guest {
             "FICLONE",
         );
         let ranged_file = fs::OpenOptions::new().write(true).open(&ranged).unwrap();
-        let range = CloneRange {
-            src_fd: src.as_raw_fd() as i64,
-            src_offset: 8 * BLOCK as u64,
-            src_length: 16 * BLOCK as u64,
-            dest_offset: 4 * BLOCK as u64,
-        };
-        check(
-            unsafe { libc::ioctl(ranged_file.as_raw_fd(), FICLONERANGE as _, &range) } as _,
-            "FICLONERANGE",
-        );
+        clone_range(&ranged_file, &src, 8 * BLOCK as u64, 16 * BLOCK as u64, 4 * BLOCK as u64);
         let copied_file = fs::File::create(&copy).unwrap();
         let null = std::ptr::null_mut::<libc::loff_t>();
         let copied = unsafe {
@@ -3777,18 +3780,8 @@ pub(crate) mod guest {
     /// fxfs_device_assert_in_gate checks: on the others this passes either way.
     fn test_sealed_piece_reach() {
         use std::os::unix::fs::FileExt;
-        /// `_IOW(0x94, 13, struct file_clone_range)`.
-        const FICLONERANGE: libc::c_ulong = 0x4020_940d;
         const PAGE: usize = 4096;
         const PIECE: usize = CHUNK / 2;
-        /// `struct file_clone_range`.
-        #[repr(C)]
-        struct CloneRange {
-            src_fd: i64,
-            src_offset: u64,
-            src_length: u64,
-            dest_offset: u64,
-        }
         let name = path("sealed-piece-reach");
         let clone_name = path("sealed-piece-reach-clone");
         let keeper_name = path("sealed-piece-reach-keeper");
@@ -3803,16 +3796,9 @@ pub(crate) mod guest {
         file.write_all_at(&data[CHUNK..CHUNK + PIECE], CHUNK as u64).unwrap();
         file.write_all_at(&data[CHUNK + PIECE..], (CHUNK + PIECE) as u64).unwrap();
         let shared = CHUNK + PIECE - 2 * PAGE;
-        let range = CloneRange {
-            src_fd: file.as_raw_fd() as i64,
-            src_offset: shared as u64,
-            src_length: 2 * PAGE as u64,
-            dest_offset: 0,
-        };
         // Two clones: shared still, once the file lets go of them.
         for clone in [&clone, &keeper] {
-            let cloned = unsafe { libc::ioctl(clone.as_raw_fd(), FICLONERANGE as _, &range) };
-            assert_eq!(cloned, 0, "FICLONERANGE: {}", std::io::Error::last_os_error());
+            clone_range(clone, &file, shared as u64, 2 * PAGE as u64, 0);
         }
         file.set_len(shared as u64).unwrap();
         // The file's open part maps first: its region writable, as far as it reaches.
