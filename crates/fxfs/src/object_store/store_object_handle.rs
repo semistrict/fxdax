@@ -49,7 +49,7 @@ use std::sync::Arc;
 use std::sync::atomic::{self, AtomicBool, Ordering};
 use storage_device::buffer::{Buffer, BufferFuture, BufferRef, MutableBufferRef};
 use storage_device::{
-    ExtentId, ExtentRange, InlineCryptoOptions, NoExtent, ReadOptions, WriteFlags, WriteOptions,
+    ExtentId, ExtentRange, InlineCryptoOptions, NoExtent, ReadOptions, WriteOptions,
 };
 use storage_units::BlockSize;
 
@@ -378,15 +378,15 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
     // Writes aligned data (that should already be encrypted) to the given offset in `extent` and
     // computes checksums if requested. The aligned data must be from a single logical file range.
     //
-    // `flags` are forwarded to the underlying device as `WriteOptions::flags` (e.g.
-    // `WriteFlags::PRE_BARRIER`).
+    // fxdax: `options` are forwarded to the underlying device (e.g. `WriteFlags::PRE_BARRIER`), but
+    // for their inline crypto, which `crypt_ctx` says.
     async fn write_aligned(
         &self,
         buf: BufferRef<'_>,
         extent: ExtentId,
         extent_offset: u64,
         crypt_ctx: Option<(u64, u8)>,
-        flags: WriteFlags,
+        options: WriteOptions,
     ) -> Result<MaybeChecksums, Error> {
         if self.trace() {
             info!(
@@ -411,11 +411,17 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
                         .context("Barriers must be enabled for inline encrypted writes."));
                 }
                 (
-                    WriteOptions { inline_crypto: InlineCryptoOptions::enabled(slot, dun), flags },
+                    WriteOptions {
+                        inline_crypto: InlineCryptoOptions::enabled(slot, dun),
+                        ..options
+                    },
                     false,
                 )
             }
-            None => (WriteOptions { flags, ..Default::default() }, !self.options.skip_checksums),
+            None => (
+                WriteOptions { inline_crypto: InlineCryptoOptions::default(), ..options },
+                !self.options.skip_checksums,
+            ),
         };
 
         if compute_checksums {
@@ -1209,21 +1215,22 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
         extent: ExtentId,
         extent_offset: u64,
     ) -> Result<MaybeChecksums, Error> {
-        self.write_at_with_flags(
+        self.write_at_with_options(
             attribute_id,
             offset,
             buf,
             key_id,
             extent,
             extent_offset,
-            WriteFlags::empty(),
+            WriteOptions::default(),
         )
         .await
     }
 
-    /// Same as `write_at`, but allows passing `WriteFlags` (such as `WriteFlags::PRE_BARRIER`) to
-    /// the underlying device write.
-    pub async fn write_at_with_flags(
+    /// Same as `write_at`, but allows passing `WriteOptions` (such as `WriteFlags::PRE_BARRIER`) to
+    /// the underlying device write. fxdax: upstream's `write_at_with_flags`, which passes flags
+    /// alone.
+    pub async fn write_at_with_options(
         &self,
         attribute_id: AttributeId,
         offset: u64,
@@ -1231,7 +1238,7 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
         key_id: Option<u64>,
         extent: ExtentId,
         mut extent_offset: u64,
-        flags: WriteFlags,
+        options: WriteOptions,
     ) -> Result<MaybeChecksums, Error> {
         let mut transfer_buf;
         let block_size = self.block_size();
@@ -1259,7 +1266,8 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
                 )?;
             }
         }
-        self.write_aligned(transfer_buf_ref.as_ref(), extent, extent_offset, crypt_ctx, flags).await
+        self.write_aligned(transfer_buf_ref.as_ref(), extent, extent_offset, crypt_ctx, options)
+            .await
     }
 
     /// Writes to multiple ranges with data provided in `buf`. This function is specifically
@@ -1395,7 +1403,7 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
                             extent,
                             device_range.start,
                             crypt_ctx,
-                            WriteFlags::empty(),
+                            WriteOptions::default(),
                         )
                         .await?,
                     ))
@@ -1706,7 +1714,7 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
                     device_range.extent,
                     device_range.range.start,
                     crypt_ctx,
-                    WriteFlags::empty(),
+                    WriteOptions::default(),
                 )
                 .await?
             {

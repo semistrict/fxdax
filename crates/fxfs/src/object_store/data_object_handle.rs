@@ -60,7 +60,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{self, AtomicBool, AtomicU64, Ordering};
 use storage_device::buffer::{Buffer, BufferFuture, BufferRef, MutableBufferRef};
-use storage_device::{ExtentId, ExtentRange, WriteFlags};
+use storage_device::{ExtentId, ExtentRange, WriteFlags, WriteOptions};
 use storage_ptr_slice::PtrByteSlice;
 use storage_units::BlockSize;
 use zerocopy::FromBytes;
@@ -520,24 +520,24 @@ impl<S: HandleOwner> DataObjectHandle<S> {
     // requested. The data will be encrypted if necessary.
     // `buf` is mutable as an optimization, since the write may require encryption, we can encrypt
     // the buffer in-place rather than copying to another buffer if the write is already aligned.
-    // `flags` are forwarded to the underlying device write.
+    // `options` are forwarded to the underlying device write.
     async fn write_at(
         &self,
         offset: u64,
         buf: MutableBufferRef<'_>,
         extent: ExtentId,
         extent_offset: u64,
-        flags: WriteFlags,
+        options: WriteOptions,
     ) -> Result<MaybeChecksums, Error> {
         self.handle
-            .write_at_with_flags(
+            .write_at_with_options(
                 self.attribute_id(),
                 offset,
                 buf,
                 None,
                 extent,
                 extent_offset,
-                flags,
+                options,
             )
             .await
     }
@@ -1563,7 +1563,9 @@ impl<S: HandleOwner> DataObjectHandle<S> {
                 if last {
                     flags |= WriteFlags::POST_BARRIER;
                 }
-                let write = self.write_at(offset, current_buf, store_extent, device_offset, flags);
+                let write_options = WriteOptions { flags, ..Default::default() };
+                let write =
+                    self.write_at(offset, current_buf, store_extent, device_offset, write_options);
                 if last {
                     last_write = Some(write);
                 } else {
