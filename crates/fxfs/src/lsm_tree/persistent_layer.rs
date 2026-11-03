@@ -528,6 +528,20 @@ impl<'iter, K: Key, V: LayerValue, B: LayerBuffer> Iterator<'iter, K, V, B> {
         let item = seek_iterator.take_item()?;
         Ok(Self { inner: seek_iterator, item })
     }
+
+    /// fxdax: takes the item the inner iterator advanced to, which comes after the last
+    /// (`follows`).
+    fn take_next(&mut self) -> Result<(), Error> {
+        let next = self.inner.take_item()?;
+        if let (Some(last), Some(next)) = (&self.item, &next)
+            && !follows(&next.key, &last.key)
+        {
+            let error = format!("{:?} follows {:?}", next.key, last.key);
+            return Err(self.inner.corruption_error(error)).context("Corrupt layer (key order)");
+        }
+        self.item = next;
+        Ok(())
+    }
 }
 
 impl<'iter, K: Key, V: LayerValue> LayerIterator<K, V>
@@ -535,13 +549,12 @@ impl<'iter, K: Key, V: LayerValue> LayerIterator<K, V>
 {
     async fn advance(&mut self) -> Result<(), Error> {
         self.inner.advance().await?;
-        self.item = self.inner.take_item()?;
-        Ok(())
+        self.take_next()
     }
 
     fn advance_dyn<'a>(&'a mut self) -> Result<Option<BoxFuture<'a, Result<(), Error>>>, Error> {
         if self.inner.try_advance()? {
-            self.item = self.inner.take_item()?;
+            self.take_next()?;
             Ok(None)
         } else {
             Ok(Some(Box::pin(self.advance())))
@@ -558,19 +571,26 @@ impl<'iter, K: Key, V: LayerValue> LayerIterator<K, V>
 {
     async fn advance(&mut self) -> Result<(), Error> {
         self.inner.advance()?;
-        self.item = self.inner.take_item()?;
-        Ok(())
+        self.take_next()
     }
 
     fn advance_dyn<'a>(&'a mut self) -> Result<Option<BoxFuture<'a, Result<(), Error>>>, Error> {
         self.inner.advance()?;
-        self.item = self.inner.take_item()?;
+        self.take_next()?;
         Ok(None)
     }
 
     fn get(&self) -> Option<ItemRef<'_, K, V>> {
         self.item.as_ref().map(<&Item<K, V>>::into)
     }
+}
+
+/// fxdax: whether `next` may follow `last` in a layer, as a layer's keys do, each after the one
+/// before and overlapping none of them: what merges a layer trusts that, and fsck checks it
+/// (`check_layer_file_contents`). What a layer holds is what an image says, so they may not, which
+/// is refused as it's read (TASK-153.12).
+fn follows<K: Key>(next: &K, last: &K) -> bool {
+    last.cmp_upper_bound(next).is_lt() && !last.overlaps(next)
 }
 
 async fn load_seek_table(
@@ -2245,6 +2265,22 @@ mod tests {
         read_until_refused(&[item(0..4096, 5), item(4096..8192, 0)], 1).await;
     }
 
+    /// fxdax: a layer's keys come each after the one before, overlapping none: what merges it
+    /// trusts that, so a layer that says otherwise is refused as it's read.
+    #[fuchsia::test]
+    async fn test_layer_keys_out_of_order_are_refused_as_they_are_read() {
+        let items = [Item::new(1, 1), Item::new(3, 3), Item::new(2, 2)];
+        scan_until_refused(&items, 2).await;
+        scan_until_refused(&[Item::new(1, 1), Item::new(1, 2)], 1).await;
+        let overlapping = [Item::new(TestKey(0..10), 1), Item::new(TestKey(5..15), 2)];
+        scan_until_refused(&overlapping, 1).await;
+        let touching = [Item::new(TestKey(0..10), 1), Item::new(TestKey(10..15), 2)];
+        let layer = layer_of(&touching).await;
+        let mut iterator = layer.seek(Bound::Unbounded).await.expect("seek failed");
+        iterator.advance().await.expect("advance failed");
+        assert_eq!(iterator.get(), Some(touching[1].as_item_ref()));
+    }
+
     /// fxdax: a compaction of a corrupt layer may write a key below the first of its block, which
     /// the writer's delta encoding has no way to write.
     #[fuchsia::test]
@@ -3154,7 +3190,7 @@ mod kept_writer_tests {
 /// `cargo nextest run --release -p fxfs --run-ignored only --no-capture layer_read_cost`
 #[cfg(test)]
 mod read_cost {
-    use super::{PersistentLayer, PersistentLayerWriter};
+    use super::{PersistentLayer, PersistentLayerWriter, follows};
     use crate::checksum::Checksums;
     use crate::lsm_tree::types::{Item, LayerIterator as _, LayerKey, LayerWriter, OrdUpperBound};
     use crate::object_store::object_record::{ObjectKey, ObjectValue, Timestamp};
@@ -3239,10 +3275,12 @@ mod read_cost {
         for _ in 0..ROUNDS {
             // What a scan checks of each item, alone.
             let start = Instant::now();
-            let valid = (items.iter().map(black_box))
-                .filter(|item| item.key.is_valid_item(&item.value, BLOCK_SIZE));
-            assert_eq!(valid.count(), items.len());
-            checks.push(per(start.elapsed(), items.len()));
+            let valid = items.windows(2).filter(|pair| {
+                let [last, next] = black_box(pair) else { unreachable!() };
+                next.key.is_valid_item(&next.value, BLOCK_SIZE) && follows(&next.key, &last.key)
+            });
+            assert_eq!(valid.count(), items.len() - 1);
+            checks.push(per(start.elapsed(), items.len() - 1));
 
             let start = Instant::now();
             let mut iterator = layer.seek(Bound::Unbounded).await.expect("seeking");

@@ -862,7 +862,8 @@ async fn test_misordered_layer_file() {
     test.run(TestOptions { volume_store_id: Some(store_id), ..Default::default() })
         .await
         .expect_err("Fsck should fail");
-    assert_matches!(test.errors()[..], [FsckIssue::Fatal(FsckFatal::MisOrderedLayerFile(..))]);
+    // fxdax: a layer's keys out of order are refused as the layer is read (TASK-153.12).
+    assert_matches!(test.errors()[..], [FsckIssue::Fatal(FsckFatal::MalformedLayerFile(..))]);
 }
 
 #[fuchsia::test]
@@ -913,10 +914,8 @@ async fn test_overlapping_keys_in_layer_file() {
     test.run(TestOptions { volume_store_id: Some(store_id), ..Default::default() })
         .await
         .expect_err("Fsck should fail");
-    assert_matches!(
-        test.errors()[..],
-        [FsckIssue::Fatal(FsckFatal::OverlappingKeysInLayerFile(..))]
-    );
+    // fxdax: a layer's keys overlapping are refused as the layer is read (TASK-153.12).
+    assert_matches!(test.errors()[..], [FsckIssue::Fatal(FsckFatal::MalformedLayerFile(..))]);
 }
 
 #[fuchsia::test]
@@ -950,10 +949,8 @@ async fn test_overlapping_keys_in_root_store_layer_file() {
 
     test.remount().await.expect("Remount failed");
     test.run(TestOptions::default()).await.expect_err("Fsck should fail");
-    assert_matches!(
-        test.errors()[..],
-        [FsckIssue::Fatal(FsckFatal::OverlappingKeysInLayerFile(..))]
-    );
+    // fxdax: a layer's keys overlapping are refused as the layer is read (TASK-153.12).
+    assert_matches!(test.errors()[..], [FsckIssue::Fatal(FsckFatal::MalformedLayerFile(..))]);
 }
 
 impl Value for u32 {
