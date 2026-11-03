@@ -3,10 +3,11 @@ id: TASK-139
 title: >-
   Guest panic: journal.rs:1705, the journal's extension past its old size
   (xfstests generic/161, no DAX)
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-10-31 16:32'
-updated_date: '2026-10-31 16:43'
+updated_date: '2026-11-03 07:32'
 labels:
   - bug
 dependencies: []
@@ -32,6 +33,13 @@ GCE r342, xfstests-fxfs-guest, generic/161, in writeback: 'fxfs: panicked at cra
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Fixes already on main (d7a6d46a4, e9482bc21, b963ed64a): verify generic/161 with and without DAX on GCE.
+2. The extension path's asserts no longer panic: the journal stops with an error (with TASK-60).
+<!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
 

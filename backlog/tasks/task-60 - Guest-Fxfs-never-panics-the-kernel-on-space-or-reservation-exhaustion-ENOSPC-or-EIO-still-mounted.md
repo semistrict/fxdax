@@ -3,10 +3,11 @@ id: TASK-60
 title: >-
   Guest Fxfs never panics the kernel on space or reservation exhaustion: ENOSPC
   or EIO, still mounted
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-10-21 19:54'
-updated_date: '2026-11-03 02:10'
+updated_date: '2026-11-03 07:32'
 labels: []
 dependencies: []
 priority: high
@@ -25,6 +26,15 @@ fxfs_rt_panic turns Rust panics in Fxfs (allocator.rs reservation asserts and ot
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Static audit of fxfs's non-test panic sites (assert/panic/unwrap/expect, ~400) for those reservation or space exhaustion reaches; the guest glue (fxfs-linux, linux-rt).
+2. Journal's own transaction (make_room): its asserts become a terminated journal and an error (TASK-139's path), test with a chunk too small for a zeroing slice.
+3. Dynamic: xfstests' enospc group, with and without DAX, on GCE; a model-test hunt (FXDAX_MODEL_CASES=3000) on macOS; fix what they find, each with a test.
+4. scripts/test.sh on macOS, GCE xfstests generic/161 and the guest suites touched.
+<!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
 
