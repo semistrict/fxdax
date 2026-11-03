@@ -8,7 +8,8 @@
 //! gate writes pass ([`Gate`]), its segments ([`Segments`]), its extents' own files
 //! ([`OwnFiles`]), its index ([`IndexLog`]), what its next commit makes unreferenced
 //! ([`Unreferenced`]); fxdax: what it keeps for its uploader ([`Uploads`]), the frees it keeps
-//! ([`KeptExtents`]), and what views refuse ([`Sealed`]).
+//! ([`KeptExtents`]), and what views refuse ([`Sealed`]). fxdax: the state locked ([`Locked`]),
+//! which the builds of the tests audit as it lets it go ([`State::audit`], TASK-160.16).
 
 use crate::dir::{Dir, File};
 use crate::durability::Syncs;
@@ -19,14 +20,19 @@ use crate::layers::Extents;
 use crate::layout::{
     Change, Data, EXTENTS, Extent, FileKey, Piece, SegmentId, branch_dir, extent_path,
 };
+#[cfg(any(test, feature = "audit"))]
+use crate::segments::Recount;
 use crate::segments::{Segments, Unframed};
+#[cfg(any(test, feature = "audit"))]
+use crate::store::covered;
 use crate::store::{Info, NoSpace, TooSmall};
-use crate::sync::rules;
+use crate::sync::{Condvar, MutexGuard, rules};
 use crate::uploads::Uploads;
 use crate::views::{Keeping, NotHeld, Sealed};
 use anyhow::{Error, bail};
 use extent_frame::spent::Spent;
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 use storage_device::{ExtentId, NoExtent};
 
@@ -247,6 +253,124 @@ impl<F: File> State<F> {
     }
 }
 
+/// fxdax: the state, locked, which the builds of the tests audit as they let it go, waiting or
+/// done ([`State::audit`], TASK-160.16): so that whatever changed it, its counts are found right
+/// before anything else reads them. Unless the store failed, which changes nothing more, its
+/// state other than its files say; or the thread is panicking, which another panic would abort.
+pub(crate) struct Locked<'a, F: File> {
+    /// None only as it waits ([`Locked::wait`]).
+    guard: Option<MutexGuard<'a, State<F>>>,
+}
+
+impl<'a, F: File> Locked<'a, F> {
+    pub fn new(guard: MutexGuard<'a, State<F>>) -> Self {
+        Self { guard: Some(guard) }
+    }
+
+    /// Waits for `condvar`, letting the state go meanwhile, and returns it, locked again.
+    pub fn wait(mut self, condvar: &Condvar) -> Self {
+        let guard = audited(self.guard.take().expect("the state is locked"));
+        Self::new(condvar.wait(guard).unwrap())
+    }
+}
+
+impl<F: File> Deref for Locked<'_, F> {
+    type Target = State<F>;
+
+    fn deref(&self) -> &State<F> {
+        self.guard.as_ref().expect("the state is locked")
+    }
+}
+
+impl<F: File> DerefMut for Locked<'_, F> {
+    fn deref_mut(&mut self) -> &mut State<F> {
+        self.guard.as_mut().expect("the state is locked")
+    }
+}
+
+impl<F: File> Drop for Locked<'_, F> {
+    fn drop(&mut self) {
+        if let Some(guard) = self.guard.take() {
+            drop(audited(guard));
+        }
+    }
+}
+
+/// fxdax: `guard`'s state, audited, in the builds of the tests ([`Locked`]). An audit that fails
+/// panics once it has let the state go, unpoisoned: the store's drop, closing its branch, locks
+/// it again, which a lock poisoned would panic in, aborting as the audit's panic unwinds.
+#[cfg(any(test, feature = "audit"))]
+fn audited<F: File>(guard: MutexGuard<'_, State<F>>) -> MutexGuard<'_, State<F>> {
+    if guard.failed || std::thread::panicking() {
+        return guard;
+    }
+    let audit = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| guard.audit()));
+    match audit {
+        Ok(()) => guard,
+        Err(panic) => {
+            drop(guard);
+            std::panic::resume_unwind(panic)
+        }
+    }
+}
+
+/// fxdax: `guard`, audited not, in the other builds.
+#[cfg(not(any(test, feature = "audit")))]
+fn audited<F: File>(guard: MutexGuard<'_, State<F>>) -> MutexGuard<'_, State<F>> {
+    guard
+}
+
+/// fxdax: the audit of the state's counts, in the builds of the tests (TASK-160.16).
+#[cfg(any(test, feature = "audit"))]
+impl<F: File> State<F> {
+    /// Recounts each count the state keeps on as it changes from what it holds, and panics,
+    /// saying which, unless they agree: the bytes its extents hold ([`Space`]); what writes since
+    /// the last commit wrote over, and their raw files take ([`Uncommitted`]); what each segment
+    /// it tracks holds, part by part, and keeps for the uploader, and what their dead space and
+    /// files take ([`Segments`]); what its extents' own files take ([`OwnFiles`]); and the frees
+    /// it keeps ([`KeptExtents`]). Recounted from its extents, open and sealed, those it keeps,
+    /// cleaning's copies, and the segments it tracks. Kept by hand, as each change adds to them or
+    /// takes from them, a count drifting from what it counts showed only as a write refused room
+    /// it had, or given room it had not (TASK-79.2, TASK-79.89, TASK-79.105). What writes in
+    /// progress take, and what writes since the last commit let go of, which nothing it holds
+    /// says, it checks only as far as what it holds bounds them.
+    pub fn audit(&self) {
+        let branch = self.segments.open_segment().branch;
+        let held = self.extents.iter();
+        self.space.audit(branch, &held, self.gate.is_writing());
+        self.uncommitted.audit(&self.extents);
+        self.kept.audit();
+        let own =
+            |extent: &ExtentId, entry: &Extent| extent.branch == branch && entry.data == Data::Own;
+        let mut recount = Recount::default();
+        let mut own_files = HashSet::new();
+        for &(extent, entry) in &held {
+            let sealed = !self.uncommitted.is_open(*extent);
+            recount.holds(*extent, entry, sealed);
+            if sealed && own(extent, entry) {
+                own_files.insert(*extent);
+            }
+        }
+        let mut own_for_uploader = HashSet::new();
+        for (extent, kept) in self.kept.iter() {
+            recount.keeps(&kept.entry, kept.uploader);
+            if own(extent, &kept.entry) {
+                own_files.insert(*extent);
+                if kept.uploader {
+                    own_for_uploader.insert(*extent);
+                }
+            }
+        }
+        for copied in self.uncommitted.copies() {
+            recount.copied(copied.piece);
+        }
+        let uploads = &self.uploads;
+        let uploading = |segment| uploader_keeps(uploads, branch, segment);
+        self.segments.audit(&recount, self.extents.base(), uploading);
+        self.own_files.audit(&own_files, &own_for_uploader);
+    }
+}
+
 /// fxdax: how many times its capacity a branch's files may take of the host's disk before writes
 /// are refused ([`Space`], TASK-79.89).
 pub(crate) const FILES_PER_CAPACITY: u64 = 3;
@@ -406,6 +530,21 @@ impl Space {
             own: self.own,
             inherited: self.stored - self.own,
         }
+    }
+
+    /// fxdax: panics unless it counts what `held`, the extents of `branch`, hold, of them its own;
+    /// and, unless `writing`, writes in progress reserving none (TASK-160.16).
+    #[cfg(any(test, feature = "audit"))]
+    fn audit(&self, branch: u64, held: &[(&ExtentId, &Extent)], writing: bool) {
+        let stored: u64 = held.iter().map(|(_, entry)| entry.len).sum();
+        let own: u64 = (held.iter())
+            .filter(|(extent, _)| extent.branch == branch)
+            .map(|(_, entry)| entry.len)
+            .sum();
+        assert_eq!((self.stored, self.own), (stored, own), "the bytes the extents hold, own");
+        assert!(writing || self.reserved == 0, "{} bytes reserved, no write in progress", {
+            self.reserved
+        });
     }
 }
 
@@ -611,6 +750,41 @@ impl<F> Uncommitted<F> {
         self.raw = 0;
         std::mem::take(&mut self.changes)
     }
+
+    /// fxdax: panics unless what it counts of the open extents, which `extents` holds as the
+    /// writes that finished left them, is theirs (TASK-160.16): what their writes wrote over, in
+    /// segments, the bytes of their pieces past what the extent holds of them; and what their raw
+    /// files take, from the extent's start as far as a write to it ends, at least its length. What
+    /// writes since the last commit let go of, which nothing it holds says, it can't recount.
+    #[cfg(any(test, feature = "audit"))]
+    fn audit(&self, extents: &Extents) {
+        let overwritten: u64 = self.open.values().map(|open| open.overwritten).sum();
+        let raw: u64 = self.open.values().map(|open| open.raw).sum();
+        assert_eq!((self.overwritten, self.raw), (overwritten, raw), "written over, raw files");
+        for (extent, open) in &self.open {
+            assert!(open.opening <= self.openings, "{extent:?} opened past the openings");
+            let data = extents.get(extent).map(|entry| (entry.len, &entry.data));
+            match (&open.placement, data) {
+                (Placement::Segment, Some((len, Data::Pieces(pieces)))) => {
+                    let written: u64 = pieces.iter().map(|piece| piece.len).sum();
+                    let held = covered(pieces, 0, len);
+                    assert_eq!(open.overwritten + held, written, "{extent:?}'s writes, open");
+                    assert_eq!(open.raw, 0, "{extent:?}, written to segments, has a raw file");
+                }
+                (Placement::Segment, None) => {
+                    assert_eq!((open.overwritten, open.raw), (0, 0), "{extent:?}, unwritten");
+                }
+                (Placement::Own(_), Some((len, Data::Own))) => {
+                    assert_eq!(open.overwritten, 0, "{extent:?}, in a raw file, wrote over");
+                    assert!(open.raw >= len, "{extent:?}'s raw file takes less than it holds");
+                }
+                (Placement::Own(_), None) => {
+                    assert_eq!(open.overwritten, 0, "{extent:?}, in a raw file, wrote over");
+                }
+                (_, data) => panic!("{extent:?}, open, holds {data:?} where it is not placed"),
+            }
+        }
+    }
 }
 
 /// The gate writes pass ([`Store::begin_write`](crate::Store::begin_write)): held while a commit,
@@ -751,6 +925,21 @@ impl<F: File> OwnFiles<F> {
     /// fxdax: the bytes of those an uploader keeps (TASK-79.89).
     pub fn for_uploader(&self) -> u64 {
         self.for_uploader_bytes
+    }
+
+    /// fxdax: panics unless they are the files of `sealed`, the branch's own extents sealed in
+    /// files of their own, held or kept, `for_uploader` of them kept for the uploader, and it
+    /// counts what they take (TASK-160.16).
+    #[cfg(any(test, feature = "audit"))]
+    pub fn audit(&self, sealed: &HashSet<ExtentId>, for_uploader: &HashSet<ExtentId>) {
+        let files: HashSet<ExtentId> = self.sizes.keys().copied().collect();
+        assert_eq!(&files, sealed, "the files of the extents sealed on their own");
+        assert_eq!(&self.for_uploader, for_uploader, "the files kept for the uploader");
+        let bytes = |extents: &HashSet<ExtentId>| -> u64 {
+            extents.iter().map(|extent| self.sizes[extent]).sum()
+        };
+        assert_eq!(self.bytes, bytes(sealed), "the bytes the extents' own files take");
+        assert_eq!(self.for_uploader_bytes, bytes(for_uploader), "the bytes of those kept");
     }
 }
 

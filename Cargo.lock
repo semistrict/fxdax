@@ -768,6 +768,7 @@ dependencies = [
  "anyhow",
  "bincode",
  "extent_frame",
+ "extent_store",
  "fail",
  "libc",
  "log",

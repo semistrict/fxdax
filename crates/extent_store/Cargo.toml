@@ -21,6 +21,8 @@ storage_device.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+# Its own tests audit the store's counts (the `audit` feature).
+extent_store = { path = ".", features = ["audit"] }
 tempfile.workspace = true
 
 [lints]
@@ -30,4 +32,9 @@ workspace = true
 # The store's locks and condition variables are Shuttle's, whose scheduler chooses every
 # interleaving of its threads, and its rules may be turned off (tests/shuttle/, TASK-44.4). Only
 # for those tests: Shuttle's primitives work only in a Shuttle test.
-shuttle = ["dep:shuttle"]
+shuttle = ["dep:shuttle", "audit"]
+# fxdax: the store recounts each count it keeps of its state as each critical section ends, and
+# panics if one drifted (State::audit, TASK-160.16): for tests, whose stores are small, as it goes
+# through all the branch holds each time. Its own tests, the Shuttle and crash tests among them,
+# turn it on.
+audit = []

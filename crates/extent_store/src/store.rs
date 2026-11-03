@@ -20,7 +20,7 @@ use crate::layout::{
 use crate::lineage::Lineage;
 use crate::segments::{Segments, Unframed, Victim, close_left_open};
 use crate::state::{
-    Copied, Gate, OwnFiles, Placement, Reader, Space, State, Uncommitted, Unreferenced,
+    Copied, Gate, Locked, OwnFiles, Placement, Reader, Space, State, Uncommitted, Unreferenced,
     uploader_keeps,
 };
 use crate::sync::{Condvar, Mutex, MutexGuard, rules, spawn_or_return};
@@ -650,28 +650,34 @@ impl<D: Dir> Store<D> {
     pub fn description(&self) -> Description {
         Description {
             block_size: self.lineage.block_size,
-            capacity: self.state.lock().unwrap().space.capacity(),
+            capacity: self.lock().space.capacity(),
             branch: self.branch,
         }
     }
 
-    fn state(&self) -> Result<MutexGuard<'_, State<D::File>>, Error> {
-        let state = self.state.lock().unwrap();
+    /// The state, locked, failed or not: audited as it is let go, in the builds of the tests
+    /// ([`Locked`], TASK-160.16).
+    fn lock(&self) -> Locked<'_, D::File> {
+        Locked::new(self.state.lock().unwrap())
+    }
+
+    fn state(&self) -> Result<Locked<'_, D::File>, Error> {
+        let state = self.lock();
         ensure!(!state.failed, "the extent store failed");
         Ok(state)
     }
 
     /// The state, to change: unless the branch is closed.
-    fn writable(&self) -> Result<MutexGuard<'_, State<D::File>>, Error> {
-        self.still_writable(self.state.lock().unwrap())
+    fn writable(&self) -> Result<Locked<'_, D::File>, Error> {
+        self.still_writable(self.lock())
     }
 
     /// `state`, to change, as found again after waiting, its lock let go of meanwhile: unless the
     /// store failed, or the branch closed, since (TASK-83).
     fn still_writable<'a>(
         &self,
-        state: MutexGuard<'a, State<D::File>>,
-    ) -> Result<MutexGuard<'a, State<D::File>>, Error> {
+        state: Locked<'a, D::File>,
+    ) -> Result<Locked<'a, D::File>, Error> {
         ensure!(!state.failed, "the extent store failed");
         ensure!(!state.closed, "branch {:#x} is closed", self.branch);
         Ok(state)
@@ -690,7 +696,7 @@ impl<D: Dir> Store<D> {
             None => self.flush(),
         };
         drop(flushing);
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.lock();
         if !state.closed {
             // fxdax: once no segment is being framed, whatever closed it, a commit no flush took
             // or one that failed among them, which another store, opening the branch, would frame
@@ -755,7 +761,7 @@ impl<D: Dir> Store<D> {
     /// Whether a commit, or a closing between commits, waits for the writes in progress, holding
     /// new ones back ([`Store::begin_write`]).
     pub fn holding_writes(&self) -> bool {
-        self.state.lock().unwrap().gate.is_held()
+        self.lock().gate.is_held()
     }
 
     /// Begins writing `len` bytes at `offset` in `extent`, which must be the store's branch's and
@@ -774,7 +780,7 @@ impl<D: Dir> Store<D> {
         let mut state = self.writable()?;
         // Not while a commit, or a closing between commits, waits for the writes in progress.
         while state.gate.is_held() {
-            state = self.idle.wait(state).unwrap();
+            state = state.wait(&self.idle);
         }
         let state = self.still_writable(state)?;
         self.begin_write_locked(state, extent, offset, len)
@@ -805,9 +811,9 @@ impl<D: Dir> Store<D> {
     /// fxdax: waits, blocking the calling thread, until no commit, nor closing between commits,
     /// holds writes back ([`Store::try_begin_write`]).
     pub fn wait_until_writes_resume(&self) {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.lock();
         while state.gate.is_held() {
-            state = self.idle.wait(state).unwrap();
+            state = state.wait(&self.idle);
         }
     }
 
@@ -839,7 +845,7 @@ impl<D: Dir> Store<D> {
     /// holding writes back.
     fn begin_write_locked(
         &self,
-        mut state: MutexGuard<'_, State<D::File>>,
+        mut state: Locked<'_, D::File>,
         extent: ExtentId,
         offset: u64,
         len: u64,
@@ -950,7 +956,7 @@ impl<D: Dir> Store<D> {
     }
 
     fn finish_write(&self, write: &Write<'_, D>) {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.lock();
         let state = &mut *state;
         // A write to an extent freed since it began is dropped, as though it finished before the
         // free: the extent, if written again since, is another opening's, whose data may go
@@ -1006,7 +1012,7 @@ impl<D: Dir> Store<D> {
     }
 
     fn abandon_write(&self, write: &Write<'_, D>) {
-        self.drop_write(&mut self.state.lock().unwrap(), write);
+        self.drop_write(&mut self.lock(), write);
     }
 
     /// `write` is done, and holds nothing: abandoned, or to an extent freed since it began. What it
@@ -1396,12 +1402,12 @@ impl<D: Dir> Store<D> {
     /// are not: which its caller finds again, as it let it go meanwhile.
     fn hold_writes<'a>(
         &self,
-        mut state: MutexGuard<'a, State<D::File>>,
+        mut state: Locked<'a, D::File>,
         busy: impl Fn(&State<D::File>) -> bool,
-    ) -> MutexGuard<'a, State<D::File>> {
+    ) -> Locked<'a, D::File> {
         state.gate.hold();
         while busy(&state) {
-            state = self.idle.wait(state).unwrap();
+            state = state.wait(&self.idle);
         }
         state.gate.release();
         self.idle.notify_all();
@@ -1626,9 +1632,9 @@ impl<D: Dir> Store<D> {
     /// segment whose raw file is gone (TASK-92.16). Returns whether it closed.
     pub fn close_now(&self) -> Result<bool, Error> {
         let Some(number) = self.close_between_commits()? else { return Ok(false) };
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.lock();
         while state.segments.is_framing(number) {
-            state = self.idle.wait(state).unwrap();
+            state = state.wait(&self.idle);
         }
         match state.segments.framing_failure(number) {
             Some(error) => bail!("closing the open segment: framing it: {error}"),
@@ -1688,7 +1694,7 @@ impl<D: Dir> Store<D> {
                     (self.lineage.clone(), self.state.clone(), self.idle.clone());
                 spawn_or_return(unframed, move |unframed| {
                     let framed = unframed.frame(&lineage.dir);
-                    framing_ended(&mut shared.lock().unwrap(), number, framed);
+                    framing_ended(&mut Locked::new(shared.lock().unwrap()), number, framed);
                     idle.notify_all();
                 })
             }
@@ -1716,10 +1722,10 @@ impl<D: Dir> Store<D> {
     /// of meanwhile.
     fn framed<'a>(
         &self,
-        mut state: MutexGuard<'a, State<D::File>>,
-    ) -> MutexGuard<'a, State<D::File>> {
+        mut state: Locked<'a, D::File>,
+    ) -> Locked<'a, D::File> {
         while !state.segments.framings().is_empty() {
-            state = self.idle.wait(state).unwrap();
+            state = state.wait(&self.idle);
         }
         state
     }
@@ -1783,7 +1789,7 @@ impl<D: Dir> Store<D> {
             None => self.durability.lock().unwrap().durable(),
             Some(Batch { last, mut commits }) => {
                 if let Err(error) = self.make_durable(&mut commits) {
-                    self.state.lock().unwrap().failed = true;
+                    self.lock().failed = true;
                     return Err(error.context("committing the extent store"));
                 }
                 self.durability.lock().unwrap().finish(last);
@@ -1826,9 +1832,9 @@ impl<D: Dir> Store<D> {
         segments: impl IntoIterator<Item = SegmentId>,
     ) -> Result<(), Error> {
         let segments: Vec<SegmentId> = segments.into_iter().collect();
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.lock();
         while segments.iter().any(|&number| state.segments.is_framing(number)) {
-            state = self.idle.wait(state).unwrap();
+            state = state.wait(&self.idle);
         }
         match segments.iter().find_map(|&number| state.segments.framing_failure(number)) {
             Some(error) => bail!("framing a segment: {error}"),
@@ -1984,7 +1990,7 @@ impl<D: Dir> Store<D> {
         let mut state = self.writable()?;
         // Not while a commit, or a closing between commits, waits for the writes in progress.
         while state.gate.is_held() {
-            state = self.idle.wait(state).unwrap();
+            state = state.wait(&self.idle);
         }
         let mut state = self.still_writable(state)?;
         if state.extents.get(&extent) != Some(&entry) {
@@ -1998,7 +2004,7 @@ impl<D: Dir> Store<D> {
         }
         drop(state);
         let written = file.write_at(data.as_slice(), at);
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.lock();
         let state = &mut *state;
         let idle = match written {
             Ok(()) => {
@@ -2413,6 +2419,18 @@ mod tests {
         commit(4);
         assert!(!sealed_after(3, 2));
         assert!(!sealed_after(4, 3));
+    }
+
+    /// fxdax: a count drifted from what it counts, as a change that missed it leaves it, is found
+    /// as the state is next let go, by any call: here the bytes its extents hold (TASK-160.16).
+    #[test]
+    #[should_panic(expected = "the bytes the extents hold")]
+    fn audits_find_counts_drifted() {
+        let description = Description { block_size: 4096, capacity: 1 << 20, branch: 1 };
+        let store = Store::create(crate::MemDir::new(), description, Options::default()).unwrap();
+        store.write(ExtentId::new(1, 1), 0, &[1; 4096]).unwrap();
+        store.state.lock().unwrap().space.added(4096, true);
+        store.epoch().unwrap();
     }
 
     #[test]

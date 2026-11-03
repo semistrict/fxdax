@@ -169,6 +169,41 @@ impl KeptExtents {
             self.after_bytes -= kept.entry.len;
         }
     }
+
+    /// fxdax: those kept, in no order, for [`State::audit`](crate::state::State::audit).
+    #[cfg(any(test, feature = "audit"))]
+    pub fn iter(&self) -> impl Iterator<Item = (&ExtentId, &Kept)> {
+        self.kept.iter()
+    }
+
+    /// fxdax: panics unless its indexes, and what it counts of them, are what it keeps, recounted
+    /// (TASK-160.16): all of them by the commits that freed them, those the uploader doesn't need,
+    /// which are all the commits it released freed, and their bytes, of those freed after the
+    /// count of what views keep began. What views keep it counts as of the last trim, as views
+    /// said then, which it can't recount.
+    #[cfg(any(test, feature = "audit"))]
+    pub fn audit(&self) {
+        let by_freed: BTreeSet<(u64, ExtentId)> =
+            self.kept.iter().map(|(extent, kept)| (kept.freed, *extent)).collect();
+        let released: BTreeSet<(u64, ExtentId)> = (self.kept.iter())
+            .filter(|(_, kept)| !kept.uploader)
+            .map(|(extent, kept)| (kept.freed, *extent))
+            .collect();
+        assert_eq!(self.by_freed, by_freed, "the frees kept by the commits that freed them");
+        assert_eq!(self.released, released, "the frees kept the uploader released");
+        for (extent, kept) in &self.kept {
+            assert!(kept.freed > self.released_to || !kept.uploader, "{extent:?} kept, released");
+        }
+        let bytes = |after: Option<u64>| -> u64 {
+            (self.kept.values())
+                .filter(|kept| after.is_none_or(|after| kept.freed > after))
+                .map(|kept| kept.entry.len)
+                .sum()
+        };
+        assert_eq!(self.bytes, bytes(None), "the bytes of the frees kept");
+        let after = bytes(Some(self.counted_after));
+        assert_eq!(self.after_bytes, after, "the bytes of the frees after the count began");
+    }
 }
 
 #[cfg(test)]

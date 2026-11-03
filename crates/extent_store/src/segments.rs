@@ -12,6 +12,8 @@ use crate::dir::{Dir, File, not_found};
 use crate::durability::Syncs;
 use crate::framed::{Aligned, Files, Framed, Source, read_frame, read_parts, read_whole};
 use crate::layers::Extents;
+#[cfg(any(test, feature = "audit"))]
+use crate::layers::Layer;
 use crate::layout::{
     Change, Data, Extent, OPEN_SEGMENTS, Piece, SEGMENTS, SegmentId, branch_dir, list_numbers,
     open_segment_path, segment_path,
@@ -180,6 +182,53 @@ impl<F> Segment<F> {
             && !self.sealed.is_empty()
             && (self.live as f64) < live_fraction * self.len as f64
     }
+
+    /// fxdax: panics unless what it counts of itself, segment `number`, the branch's own, is what
+    /// it holds (TASK-160.16): `pieces` of extents' data, of which those of extents freed the
+    /// uploader keeps are `for_uploader`, and the sealed extents `sealed`; and it is the
+    /// uploader's to keep until uploaded if `uploading`. What its parts hold, which writes in
+    /// progress take too, at unknown places, is what the pieces take of them once none is.
+    #[cfg(any(test, feature = "audit"))]
+    fn audit(
+        &self,
+        number: SegmentId,
+        pieces: &[Piece],
+        for_uploader: &[Piece],
+        sealed: &BTreeSet<ExtentId>,
+        uploading: bool,
+    ) {
+        for piece in pieces {
+            assert!(piece.offset + piece.len <= self.len, "{piece:?} past {number:?}'s data");
+        }
+        let parts = &self.parts;
+        let taken = parts.taken.iter().sum::<u64>();
+        assert_eq!(taken, self.live + self.pending, "what {number:?}'s parts hold, in all");
+        let (held, counted) = (part_bytes(pieces), &parts.taken);
+        let len = held.len().max(counted.len());
+        let (held, counted) = (padded(&held, len), padded(counted, len));
+        if self.writers == 0 {
+            assert_eq!(counted, held, "what {number:?}'s parts hold");
+        } else {
+            let within = held.iter().zip(&counted).all(|(held, counted)| held <= counted);
+            assert!(within, "what {number:?}'s parts hold, {counted:?}, short of {held:?}");
+        }
+        let kept: u64 = for_uploader.iter().map(|piece| piece.len).sum();
+        assert_eq!(self.for_uploader, kept, "what {number:?} keeps for the uploader");
+        let (kept, counted) = (part_bytes(for_uploader), &parts.for_uploader);
+        let len = kept.len().max(counted.len());
+        assert_eq!(padded(counted, len), padded(&kept, len), "what {number:?}'s parts keep");
+        let stored = 0..parts.stored.len() as u64;
+        let on_disk: u64 = stored.clone().map(|part| parts.dead_on_disk_of(self.len, part)).sum();
+        assert_eq!(parts.dead_on_disk, on_disk, "what {number:?}'s dead space takes of its file");
+        let kept: u64 = stored.map(|part| parts.for_uploader_on_disk_of(self.len, part)).sum();
+        assert_eq!(parts.for_uploader_on_disk, kept, "what {number:?} keeps takes of its file");
+        let seated: BTreeSet<ExtentId> = self.sealed.iter().copied().collect();
+        assert_eq!(&seated, sealed, "the extents sealed in {number:?}");
+        if !matches!(self.phase, Phase::Closed { .. }) {
+            assert_eq!(self.size, self.len, "{number:?}'s raw file, its data");
+        }
+        assert_eq!(self.uploading, uploading, "{number:?}, kept for the uploader to upload");
+    }
 }
 
 /// fxdax: a segment's data part by part, as framing stores it, each [`PART`] bytes of it
@@ -210,10 +259,8 @@ impl PartCounts {
     /// Counts the `len` bytes at `at` of the segment's `data` bytes of data as taken, if `taken`,
     /// or as taken no more.
     fn count(&mut self, data: u64, at: u64, len: u64, taken: bool) {
-        let end = at + len;
         self.taken.resize(self.taken.len().max(data.div_ceil(PART) as usize), 0);
-        for part in at / PART..end.div_ceil(PART) {
-            let bytes = end.min((part + 1) * PART) - at.max(part * PART);
+        for (part, bytes) in spans(at, len) {
             let before = self.dead_on_disk_of(data, part);
             let count = &mut self.taken[part as usize];
             *count = if taken { *count + bytes } else { *count - bytes };
@@ -224,11 +271,9 @@ impl PartCounts {
     /// fxdax: counts the `len` bytes at `at` of the segment's `data` bytes of data, of extents
     /// freed, as an uploader's to keep, if `kept`, or no more (TASK-79.89).
     fn count_for_uploader(&mut self, data: u64, at: u64, len: u64, kept: bool) {
-        let end = at + len;
         let parts = data.div_ceil(PART) as usize;
         self.for_uploader.resize(self.for_uploader.len().max(parts), 0);
-        for part in at / PART..end.div_ceil(PART) {
-            let bytes = end.min((part + 1) * PART) - at.max(part * PART);
+        for (part, bytes) in spans(at, len) {
             let before = self.for_uploader_on_disk_of(data, part);
             let count = &mut self.for_uploader[part as usize];
             *count = if kept { *count + bytes } else { *count - bytes };
@@ -271,6 +316,39 @@ impl PartCounts {
         let dead = len - self.taken[part as usize];
         (u128::from(dead) * u128::from(stored)).div_ceil(u128::from(len)) as u64
     }
+}
+
+/// fxdax: the parts of a segment's data the `len` bytes at `at` of it are in, each with how many
+/// of them it holds.
+fn spans(at: u64, len: u64) -> impl Iterator<Item = (u64, u64)> {
+    let end = at + len;
+    (at / PART..end.div_ceil(PART))
+        .map(move |part| (part, end.min((part + 1) * PART) - at.max(part * PART)))
+}
+
+/// fxdax: the bytes of each part of a segment's data that `pieces` take, each counted as many
+/// times as they take it.
+#[cfg(any(test, feature = "audit"))]
+fn part_bytes(pieces: &[Piece]) -> Vec<u64> {
+    let mut parts = Vec::new();
+    for piece in pieces {
+        for (part, bytes) in spans(piece.offset, piece.len) {
+            if parts.len() <= part as usize {
+                parts.resize(part as usize + 1, 0);
+            }
+            parts[part as usize] += bytes;
+        }
+    }
+    parts
+}
+
+/// fxdax: `parts`, a count of each part of a segment's data, with those past the last it counts,
+/// to `len` of them, counted none.
+#[cfg(any(test, feature = "audit"))]
+fn padded(parts: &[u64], len: usize) -> Vec<u64> {
+    let mut parts = parts.to_vec();
+    parts.resize(parts.len().max(len), 0);
+    parts
 }
 
 /// The segments a branch tracks: those its extents' data is in, its own, taking writes or not,
@@ -980,6 +1058,89 @@ impl<F: File> Segments<F> {
             kept_bytes: 0,
             kept_for_views: 0,
         }
+    }
+
+    /// fxdax: panics unless what it counts of the segments it tracks is what `recount` says they
+    /// hold, as the branch holds them, and `uploading` says the uploader keeps of them, the
+    /// branch's own; and it holds those it tracks not as `base`, the state the branch shares,
+    /// holds them (TASK-160.16).
+    #[cfg(any(test, feature = "audit"))]
+    pub fn audit(
+        &self,
+        recount: &Recount,
+        base: Option<&Arc<Layer>>,
+        uploading: impl Fn(SegmentId) -> bool,
+    ) {
+        let none = (Vec::new(), BTreeSet::new());
+        for (number, segment) in &self.tracked {
+            let (pieces, sealed) = recount.held.get(number).unwrap_or(&none);
+            let live: u64 = pieces.iter().map(|piece| piece.len).sum();
+            assert_eq!(segment.live, live, "the bytes of extents' data {number:?} holds");
+            assert!(segment.writers > 0 || segment.pending == 0, "{number:?}, pending, unwritten");
+            assert_eq!(self.empty.contains(number), segment.is_empty(), "{number:?}, empty");
+            if matches!(segment.phase, Phase::Inherited) {
+                assert_eq!(segment.for_uploader, 0, "{number:?}, inherited, kept for uploads");
+                continue;
+            }
+            let for_uploader = recount.for_uploader.get(number).unwrap_or(&none.0);
+            segment.audit(*number, pieces, for_uploader, sealed, uploading(*number));
+        }
+        assert!(self.empty.iter().all(|number| self.tracked.contains_key(number)));
+        for (number, (pieces, _)) in &recount.held {
+            if self.tracked.contains_key(number) {
+                continue;
+            }
+            assert_ne!(number.branch, self.open.branch, "{number:?}, the branch's, untracked");
+            let live: u64 = pieces.iter().map(|piece| piece.len).sum();
+            let inherited = base.map_or(0, |base| base.live(*number));
+            assert_eq!(live, inherited, "{number:?}, untracked, held other than its base does");
+        }
+        let sum = |count: fn(&Segment<F>) -> u64| self.tracked.values().map(count).sum::<u64>();
+        assert_eq!(self.dead, sum(Segment::dead), "the bytes no extent is in");
+        assert_eq!(self.dead_on_disk, sum(Segment::dead_on_disk), "what they take of the disk");
+        assert_eq!(self.file_bytes, sum(Segment::file_bytes), "what the segments' files take");
+    }
+}
+
+/// fxdax: what each segment holds, recounted from what the branch holds, for [`Segments::audit`]
+/// (TASK-160.16): the pieces of extents' data in it, of the extents the branch holds, open or
+/// sealed, of those it keeps, freed, and of cleaning's copies; the extents sealed in it; and the
+/// pieces in it of those it keeps for the uploader.
+#[cfg(any(test, feature = "audit"))]
+#[derive(Default)]
+pub(crate) struct Recount {
+    held: BTreeMap<SegmentId, (Vec<Piece>, BTreeSet<ExtentId>)>,
+    for_uploader: BTreeMap<SegmentId, Vec<Piece>>,
+}
+
+#[cfg(any(test, feature = "audit"))]
+impl Recount {
+    /// The branch holds `extent` as `entry` says, sealed if `sealed`, or open.
+    pub fn holds(&mut self, extent: ExtentId, entry: &Extent, sealed: bool) {
+        let Data::Pieces(pieces) = &entry.data else { return };
+        for piece in pieces {
+            let (held, seated) = self.held.entry(piece.segment).or_default();
+            held.push(*piece);
+            if sealed {
+                seated.insert(extent);
+            }
+        }
+    }
+
+    /// The branch keeps `entry`'s data, freed: for the uploader, if `for_uploader`.
+    pub fn keeps(&mut self, entry: &Extent, for_uploader: bool) {
+        let Data::Pieces(pieces) = &entry.data else { return };
+        for piece in pieces {
+            self.held.entry(piece.segment).or_default().0.push(*piece);
+            if for_uploader {
+                self.for_uploader.entry(piece.segment).or_default().push(*piece);
+            }
+        }
+    }
+
+    /// Cleaning copied an extent's data to `piece`, which waits for the next commit.
+    pub fn copied(&mut self, piece: Piece) {
+        self.held.entry(piece.segment).or_default().0.push(piece);
     }
 }
 
