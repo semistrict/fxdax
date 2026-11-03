@@ -11,7 +11,7 @@ use std::collections::{BTreeSet, HashMap};
 use storage_device::ExtentId;
 
 /// The first line of a store's description: its format.
-pub(crate) const FORMAT: &str = "fxdax extent store 4";
+pub(crate) const FORMAT: &str = "fxdax extent store 5";
 
 /// A branch of a store, as its user sees it: the size of the blocks extents are read and written
 /// in, which is the store's, the most bytes the branch's extents may hold, and the branch, whose

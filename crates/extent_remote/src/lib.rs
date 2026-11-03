@@ -88,6 +88,13 @@ pub enum Error {
     Lost(String),
     #[error("corrupt: {0}")]
     Corrupt(String),
+    /// The branch's record says its objects are of a format newer than this one's, which reads
+    /// none of them (doc-11, rule 3; TASK-141.2).
+    #[error(
+        "branch {branch:x} is of format {format}, which this reader, of format {ours}, doesn't read",
+        ours = layout::FORMAT
+    )]
+    Format { branch: u64, format: u32 },
     /// What a writer was to upload, it could not read where it is kept: a store's file.
     #[error("reading {0}")]
     Read(String),
@@ -151,6 +158,14 @@ pub(crate) struct Rules {
     /// The collector lists the records again after it read the branches' states: a state it read
     /// names no fork deleted since, nor that fork's children, whose records came after its listing.
     pub records_relisted: bool,
+    /// Every record names its branch's owner, chosen by its maker, unique to that making: two
+    /// makers of one branch ID, two forks naming one child, never write the same bytes, which a
+    /// create reading back what it finds would take for its own (TASK-79.82, TASK-153.9).
+    pub records_owned: bool,
+    /// The collector keeps an extent stored on its own, that no state names, while the segment its
+    /// key names may yet land, not while the branch's next sequence number is below it: extents
+    /// are committed in no order of their sequence numbers (TASK-79.3, TASK-153.7).
+    pub extent_keys_name_segments: bool,
 }
 
 impl Rules {
@@ -174,6 +189,8 @@ impl Rules {
         forks_pending: true,
         collector_abandons: true,
         records_relisted: true,
+        records_owned: true,
+        extent_keys_name_segments: true,
     };
 }
 

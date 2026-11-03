@@ -216,7 +216,7 @@ impl World {
                 let (bucket, child, taken) = (self.bucket.clone(), self.child, self.taken.clone());
                 FailGuard::with_callback(step, move || {
                     if !taken.load(Ordering::SeqCst)
-                        && block_on(branch::create(&*bucket, child)).is_ok()
+                        && block_on(branch::create(&*bucket, child, 0)).is_ok()
                     {
                         taken.store(true, Ordering::SeqCst);
                         let lease = layout::lease(child);

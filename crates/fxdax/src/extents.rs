@@ -875,6 +875,10 @@ impl ExtentStore {
         opening: Option<Held<'_, std::sync::RwLockWriteGuard<'_, ()>>>,
     ) -> Result<(), Error> {
         let remote = self.remote.get();
+        // fxdax: the child's owner, which every record of it in object storage names, whoever
+        // writes it, so that another fork to its ID, whose owner differs, is told apart
+        // (TASK-79.82, TASK-153.9).
+        let child = extent_remote::layout::Child { branch, owner: rand::random(), point };
         let claimed = std::cell::Cell::new(false);
         let taken = || {
             let refused = format!("forking to branch {branch:x}: another branch has its ID");
@@ -884,13 +888,13 @@ impl ExtentStore {
             // fxdax: what is attached to it stays attached to the fork, a restored VM's too.
             copy_bases(&self.path, path)?;
             let Some(remote) = remote else { return Ok(()) };
-            if !remote.claim(branch, point)? {
+            if !remote.claim(child)? {
                 return Err(taken());
             }
             claimed.set(true);
             Ok(())
         };
-        let forked = extent_store::fork_host_with(&self.store, path, branch, point, claim);
+        let forked = extent_store::fork_host_with(&self.store, path, child, claim);
         drop(opening);
         let failed = match forked {
             Ok(epoch) => match remote.map(|remote| remote.forked(epoch, branch)) {

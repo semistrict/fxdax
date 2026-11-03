@@ -27,7 +27,7 @@ use crate::sync::{Condvar, Mutex, MutexGuard, rules, spawn_or_return};
 use crate::uploads::{Closed, Snapshot, Uploads};
 use crate::views::{Limits, Sealed, View, Views};
 use anyhow::{Context as _, Error, anyhow, bail, ensure};
-use extent_frame::segment::Chain;
+use extent_frame::segment::{Chain, Child};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io;
 use std::sync::Arc;
@@ -581,23 +581,25 @@ impl<D: Dir> Store<D> {
     /// epoch of the fork's commit, which ends the segment that names the fork. A fork to a branch
     /// the store has fails, committing nothing. fxdax: one that fails once its commit was made
     /// fails with [`ForkCommitted`]: the store has not the child, but the commit's segment names
-    /// it, as a host crashing then would leave it.
+    /// it, as a host crashing then would leave it. Its footer names the child's owner as 0: a
+    /// fork no host claimed, which object storage keeps no record of but its parent's.
     pub fn fork(&self, child: u64) -> Result<u64, Error> {
-        self.fork_with(child, false, || Ok(()))
+        self.fork_with(Child { branch: child, owner: 0, point: false }, || Ok(()))
     }
 
     /// fxdax: forks the branch as [`Store::fork`] does, calling `before` once the child is
     /// reserved, before the fork's commit: as no other fork, opening or deletion of the child here
     /// comes between them, to claim the child where else it is kept, as an uploader does
     /// (TASK-79.82). A fork whose `before` fails commits nothing. The commits of the branch wait
-    /// for `before`, as they do for the fork's own. The segment's footer says the child is a point
-    /// if `point`: a name of the branch's state there, which nothing writes (doc-7, Points).
+    /// for `before`, as they do for the fork's own. The segment's footer names the child, its
+    /// owner, which every record of it in object storage names, and whether it is a point: a name
+    /// of the branch's state there, which nothing writes (doc-7, Points).
     pub fn fork_with(
         &self,
-        child: u64,
-        point: bool,
+        forked: Child,
         before: impl FnOnce() -> Result<(), Error>,
     ) -> Result<u64, Error> {
+        let child = forked.branch;
         let committing = self.committing.lock().unwrap();
         // fxdax: the child reserved before the commit that names it: else a fork to a branch the
         // store has would fail once its footer, durable, named the branch again, from another
@@ -608,7 +610,7 @@ impl<D: Dir> Store<D> {
         failpoint!("fork::claimed");
         // At the end of its segment, which the commit closes, and whose footer names it (doc-7,
         // Forks).
-        self.writable()?.segments.close_for_fork(child, point);
+        self.writable()?.segments.close_for_fork(forked);
         let forked = self.commit_locked(&committing, None, true)?;
         let Forked { layer, origin } = forked.expect("a fork's commit freezes the branch's state");
         // fxdax: from here on the commit stands, naming the fork, though the fork fails: a failure

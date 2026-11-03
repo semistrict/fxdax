@@ -99,11 +99,7 @@ impl State {
             self.last_commit = Some(commit);
         }
         self.next_sequence = self.next_sequence.max(footer.next_sequence);
-        self.forks.extend(footer.forks.iter().map(|&child| Fork {
-            child,
-            at: footer.seq,
-            point: footer.points.contains(&child),
-        }));
+        self.forks.extend(footer.forks.iter().map(|child| Fork::at(footer.seq, child)));
         true
     }
 }
@@ -466,7 +462,7 @@ fn state_at<'a, B: Bucket>(
                     return Err(Attempt::Failed(Error::Lost(key)));
                 };
                 touched.insert(key);
-                let record: Record = layout::decode(&object.bytes)?;
+                let record = Record::decode(branch, &object.bytes)?;
                 match record.origin {
                     None => Layers::of(State::new(branch)),
                     Some(origin) => {
@@ -506,6 +502,7 @@ mod tests {
     use super::*;
     use crate::batch::{Batch, Commit};
     use crate::branch;
+    use crate::layout::child;
     use crate::sim::bucket::SimBucket;
     use crate::store::Store;
     use crate::writer::Writer;
@@ -527,7 +524,6 @@ mod tests {
             root: None,
             next_sequence: 0,
             forks: vec![],
-            points: vec![],
         };
         let bytes = Segment { data: Vec::new(), footer: footer.clone() }.encode();
         assert_eq!(super::footer("here", &bytes, 1, 2), Ok(footer));
@@ -557,7 +553,7 @@ mod tests {
     fn recoveries_read_segments_tails_a_window_at_once() {
         let bucket = SimBucket::new();
         let (writer, _) = bucket.served(async {
-            branch::create(&*bucket, 1).await.unwrap();
+            branch::create(&*bucket, 1, 0).await.unwrap();
             Writer::open(bucket.clone(), 1, 10, 0).await.unwrap()
         });
         // Its writer's fence, and five segments of a commit each.
@@ -591,7 +587,7 @@ mod tests {
     fn recoveries_recovered_on_past_a_newer_checkpoint_recover_anew() {
         let bucket = SimBucket::new();
         let (writer, _) = bucket.served(async {
-            branch::create(&*bucket, 1).await.unwrap();
+            branch::create(&*bucket, 1, 0).await.unwrap();
             Writer::open(bucket.clone(), 1, 10, 0).await.unwrap()
         });
         committed(&bucket, &writer, 1, 2);
@@ -627,12 +623,12 @@ mod tests {
     fn forks_checkpoint_their_own_states() {
         futures::executor::block_on(async {
             let bucket = Arc::new(Store::new(Arc::new(InMemory::new()), ""));
-            branch::create(&*bucket, 1).await.unwrap();
+            branch::create(&*bucket, 1, 0).await.unwrap();
             let parent = Writer::open(bucket.clone(), 1, 10, 0).await.unwrap();
             let extent = ExtentId::new(1, parent.chain().next_sequence());
             let extents = vec![(extent, b"one".to_vec())];
             let batch = Batch::from(Commit { tag: 1, extents, ..Commit::default() });
-            let at = parent.add_segment(batch.fork(2, &mut parent.chain()).frame()).unwrap();
+            let at = parent.add_segment(batch.fork(child(2), &mut parent.chain()).frame()).unwrap();
             parent.upload(at).await.unwrap();
             parent.acknowledge().await.unwrap();
             let origin = Some(Origin { parent: 1, at });

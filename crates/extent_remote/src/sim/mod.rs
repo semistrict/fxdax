@@ -109,6 +109,8 @@ fn one() {
             "forks_pending" => rules.forks_pending = false,
             "collector_abandons" => rules.collector_abandons = false,
             "records_relisted" => rules.records_relisted = false,
+            "records_owned" => rules.records_owned = false,
+            "extent_keys_name_segments" => rules.extent_keys_name_segments = false,
             other => panic!("no rule {other}"),
         }
     }
@@ -305,12 +307,14 @@ test_needs!(forks_need_records_after_acks, records_after_ack, crashes());
 
 /// Forks that fail and are deleted, as their hosts' cleanups delete them, those crashing partway
 /// and going on, while their segments land or not, the parents' next writers give them records,
-/// collectors run, and other branches take their IDs (TASK-79.82, TASK-79.78).
+/// collectors run, and other branches take their IDs, other forks' among them (TASK-79.82,
+/// TASK-79.78).
 fn failed_forks() -> Profile {
     let mut profile = weights(|weights| {
         weights.fork = 6;
         weights.unfork = 6;
         weights.contest = 2;
+        weights.twins = 2;
         weights.open = 4;
         weights.takeover = 2;
         weights.collect = 6;
@@ -326,6 +330,8 @@ test_holds!(failed_forks_deleted_anywhere, failed_forks());
 test_needs!(failed_forks_need_claims_of_ids, fork_claims_ids, failed_forks());
 
 test_needs!(failed_forks_need_claims_of_what_landed, fork_claims_landed, failed_forks());
+
+test_needs!(forks_to_one_child_need_records_owned, records_owned, failed_forks());
 
 /// Case 11: one point restored on several hosts at once (doc-7, Points): forks of it racing each
 /// other, passes of the collector, and the point's deletion, on hosts' stale copies, whose hosts

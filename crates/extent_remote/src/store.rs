@@ -625,7 +625,7 @@ mod tests {
     /// then what it and its fork freed, reclaimed.
     pub(crate) async fn branch_lifecycle(bucket: Arc<impl Bucket>, root: u64) {
         let child = root + 1;
-        branch::create(&*bucket, root).await.unwrap();
+        branch::create(&*bucket, root, 0).await.unwrap();
         let first = Writer::open(bucket.clone(), root, 10, 1).await.unwrap();
         let small = ExtentId::new(root, first.chain().next_sequence());
         let large = ExtentId::new(root, small.sequence + 1);
@@ -638,7 +638,8 @@ mod tests {
         let seq = add(&first, commit);
         first.upload(seq).await.unwrap();
         assert_eq!(first.acknowledge().await, Ok(Some(seq)));
-        let forking = Batch::default().fork(child, &mut first.chain()).frame();
+        let forking =
+            Batch::default().fork(crate::layout::child(child), &mut first.chain()).frame();
         let fork = first.add_segment(forking).unwrap();
         first.upload(fork).await.unwrap();
         first.acknowledge().await.unwrap();

@@ -46,7 +46,7 @@ use extent_remote::batch;
 use extent_remote::branch::ForkedAt;
 use extent_remote::cache::Cache;
 use extent_remote::fetch::{self, Budget, Limits, Priority};
-use extent_remote::layout::{Footer, Location, Origin, Record, epoch_of, writer_of};
+use extent_remote::layout::{Child, Footer, Location, Origin, Record, epoch_of, writer_of};
 use extent_remote::store::Store as Bucket;
 use extent_remote::{Body, Objects, State, Writer, branch};
 use extent_store::{File as _, HostDir, HostFile, Snapshot, Store, read_object};
@@ -119,8 +119,8 @@ pub(crate) fn place(dir: &Path, branch: u64, token: u64) -> std::io::Result<()> 
 
 /// The file in a store's directory that claims a branch of the store, a fork's child, for the fork
 /// in object storage ([`claim`]): the fork, made while the store kept its branch there, made no
-/// branch there but one whose record names the fork's origin, which the file names once the fork's
-/// segment goes there, or none, as its record's absence says (TASK-79.82).
+/// branch there but one whose record names the child's owner, which the file names, chosen as the
+/// fork claimed it; and the fork's origin, once its segment goes there (TASK-79.82, TASK-153.9).
 fn claim_file(branch: u64) -> String {
     format!("origin-{branch:016x}")
 }
@@ -137,32 +137,39 @@ enum Forking {
     OfPoint(u64),
 }
 
-/// A fork's child's claim: what its fork makes, and its origin, once that is known.
+/// A fork's child's claim: what its fork makes, the child's owner, which every record of it names
+/// (`Record::owner`), and its origin, once that is known.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Claim {
     forking: Forking,
     origin: Option<Origin>,
+    owner: u64,
 }
 
 impl Claim {
-    /// What its file holds: the origin's parent and segment, if known, after `point` for a fork to
-    /// a point, or `of` and the point for a fork of one, each number in hex.
+    /// What its file holds: `owner` and the owner, then the origin's parent and segment, if known,
+    /// after `point` for a fork to a point, or `of` and the point for a fork of one, each number in
+    /// hex.
     fn text(&self) -> String {
         let origin = |origin: Origin| format!("{:x} {:x}", origin.parent, origin.at);
         let origin = self.origin.map(origin).unwrap_or_default();
-        match self.forking {
-            Forking::Branch if origin.is_empty() => String::new(),
-            Forking::Branch => format!("{origin}\n"),
-            Forking::Point => format!("point {origin}\n"),
-            Forking::OfPoint(point) => format!("of {point:x} {origin}\n"),
-        }
+        let forking = match self.forking {
+            Forking::Branch => origin,
+            Forking::Point => format!("point {origin}"),
+            Forking::OfPoint(point) => format!("of {point:x} {origin}"),
+        };
+        format!("owner {:x}\n{}\n", self.owner, forking.trim_end())
     }
 
     /// The claim a file holding `text` says.
     fn parse(text: &str) -> Option<Self> {
         let hex = |word: &str| u64::from_str_radix(word, 16).ok();
         let origin = |parent: &str, at: &str| Some(Origin { parent: hex(parent)?, at: hex(at)? });
-        let (forking, origin) = match text.split_whitespace().collect::<Vec<_>>()[..] {
+        let ["owner", owner, ref forking @ ..] = text.split_whitespace().collect::<Vec<_>>()[..]
+        else {
+            return None;
+        };
+        let (forking, origin) = match *forking {
             [] => (Forking::Branch, None),
             [parent, at] => (Forking::Branch, Some(origin(parent, at)?)),
             ["point"] => (Forking::Point, None),
@@ -170,7 +177,7 @@ impl Claim {
             ["of", point, parent, at] => (Forking::OfPoint(hex(point)?), Some(origin(parent, at)?)),
             _ => return None,
         };
-        Some(Self { forking, origin })
+        Some(Self { forking, origin, owner: hex(owner)? })
     }
 
     /// Where its fork was made, as deleting its child goes by.
@@ -184,28 +191,28 @@ impl Claim {
     }
 }
 
-/// Claims `child` in the store directory `dir` for a fork of the store's ([`claim_file`]), making
-/// what `forking` says, with `origin` if known, durably, as the fork reserves it, before the fork's
-/// commit: unless it is claimed already, as by a fork to it made before, or one whose cleanup
-/// stopped. Returns whether it claimed it. The claim of a fork's segment names no origin yet, the
-/// segment not having gone.
-fn claim(
-    dir: &Path,
-    child: u64,
-    forking: Forking,
-    origin: Option<Origin>,
-) -> std::io::Result<bool> {
-    let path = dir.join(claim_file(child));
-    match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
-        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => return Ok(false),
-        created => created?.sync_all()?,
+/// Claims `child` in the store directory `dir` for a fork of the store's ([`claim_file`]), as
+/// `claim` says, durably, whole or not at all, as the fork reserves it, before the fork's commit:
+/// unless it is claimed already, as by a fork to it made before, or one whose cleanup stopped.
+/// Returns whether it claimed it. The claim of a fork's segment names no origin yet, the segment
+/// not having gone.
+fn claim(dir: &Path, child: u64, claim: Claim) -> std::io::Result<bool> {
+    let name = claim_file(child);
+    let new = dir.join(new_file(&name));
+    let mut file = std::fs::File::create(&new)?;
+    std::io::Write::write_all(&mut file, claim.text().as_bytes())?;
+    file.sync_all()?;
+    // Linked into place only if nothing is there: whole, unlike a file created and then written.
+    let linked = std::fs::hard_link(&new, dir.join(&name));
+    std::fs::remove_file(&new)?;
+    match linked {
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+        linked => {
+            linked?;
+            std::fs::File::open(dir)?.sync_all()?;
+            Ok(true)
+        }
     }
-    std::fs::File::open(dir)?.sync_all()?;
-    if forking != Forking::Branch || origin.is_some() {
-        let text = Claim { forking, origin }.text();
-        write_durably(dir, &claim_file(child), text.as_bytes())?;
-    }
-    Ok(true)
 }
 
 /// The claim of `branch` of the store directory `dir`, if it is claimed for a fork ([`claim`]).
@@ -271,7 +278,8 @@ pub fn delete_branch(bucket: &Bucket, dir: &Path, branch: u64, token: u64) -> Re
     let deleted = match claimed(dir, branch)? {
         None => block_on(branch::delete(bucket, branch, holder, token))?.map(|()| true),
         Some(claim) => {
-            block_on(branch::delete_fork(bucket, branch, claim.forked_at(), holder, token))?
+            let forked = claim.forked_at();
+            block_on(branch::delete_fork(bucket, branch, forked, claim.owner, holder, token))?
         }
     };
     match deleted {
@@ -742,7 +750,10 @@ impl Remote {
         failpoint!("remote::forked");
         let shared = &self.shared;
         if let Some(point) = shared.fetcher.point.get() {
-            let forking = branch::fork_point(&*self.bucket, child, point.branch, point.origin);
+            let claim = claimed(shared.store.dir().path(), child)?;
+            let claim = claim.ok_or_else(|| Failure::Other(format!("{child:x} is not claimed")))?;
+            let (of, origin) = (point.branch, point.origin);
+            let forking = branch::fork_point(&*self.bucket, child, of, origin, claim.owner);
             return match block_on(forking)? {
                 Err(extent_remote::Error::ChildTaken(_)) => Err(Failure::ChildTaken),
                 Err(extent_remote::Error::Deleted) => Err(Failure::PointDeleted),
@@ -782,22 +793,23 @@ impl Remote {
     /// or a fork to it here claimed it before. Returns whether it claimed it: one GET of the
     /// child's record, and a file in the store's directory ([`claim`]), whose deletion goes with
     /// the child's, which deletes in object storage only the branch the fork made
-    /// ([`Remote::unfork`], TASK-79.82). The child is a point if `point`. A claim of a fork of a
-    /// point names the point, and the origin the child's record will, so that what a crash leaves
+    /// ([`Remote::unfork`], TASK-79.82). The child, its owner, which the fork chose and every
+    /// record of it names, and whether it is a point, are `child`'s. A claim of a fork of a point
+    /// names the point, and the origin the child's record will, so that what a crash leaves
     /// finishes the fork, or deletes it, knowing that.
-    pub fn claim(&self, child: u64, point: bool) -> Result<bool, Failure> {
-        if block_on(branch::record(&*self.bucket, child))??.is_some() {
+    pub fn claim(&self, child: Child) -> Result<bool, Failure> {
+        if block_on(branch::record(&*self.bucket, child.branch))??.is_some() {
             return Ok(false);
         }
         failpoint!("remote::claim");
         let dir = self.shared.store.dir().path();
         let (forking, origin) = match self.shared.fetcher.point.get() {
             Some(of) => (Forking::OfPoint(of.branch), Some(of.origin)),
-            None if point => (Forking::Point, None),
+            None if child.point => (Forking::Point, None),
             None => (Forking::Branch, None),
         };
-        claim(dir, child, forking, origin)
-            .map_err(|err| Failure::Other(format!("claiming branch {child:x}: {err}")))
+        claim(dir, child.branch, Claim { forking, origin, owner: child.owner })
+            .map_err(|err| Failure::Other(format!("claiming branch {:x}: {err}", child.branch)))
     }
 
     /// Whether the store holds a point: nothing it does goes to object storage but its forks'
@@ -1045,8 +1057,8 @@ impl Shared {
                             "point {branch:x} was never made in object storage"
                         )));
                     }
-                    Some(_) => branch::create_forked(&**bucket, branch).await?,
-                    None => branch::create(&**bucket, branch).await?,
+                    Some(claim) => branch::create_forked(&**bucket, branch, claim.owner).await?,
+                    None => branch::create(&**bucket, branch, rand::random()).await?,
                 }
                 None
             }
@@ -1172,7 +1184,7 @@ impl Shared {
     ) -> Result<Option<Record>, Failure> {
         let claim = claimed(self.store.dir().path(), branch)?;
         if let Some(record) = branch::record(&**bucket, branch).await? {
-            let another = |claim: Claim| !record.of_fork(claim.origin);
+            let another = |claim: Claim| !record.of_fork(claim.owner);
             if !record.deleted && claim.is_some_and(another) {
                 return Err(extent_remote::Error::ChildTaken(branch).into());
             }
@@ -1182,8 +1194,8 @@ impl Shared {
             branch::finish_point_fork(&**bucket, branch, point).await?;
             return Ok(branch::record(&**bucket, branch).await?);
         }
-        if let Some(Claim { forking: Forking::OfPoint(point), origin: Some(origin) }) = claim {
-            branch::fork_point(&**bucket, branch, point, origin).await?;
+        if let Some(Claim { forking: Forking::OfPoint(of), origin: Some(origin), owner }) = claim {
+            branch::fork_point(&**bucket, branch, of, origin, owner).await?;
             return Ok(branch::record(&**bucket, branch).await?);
         }
         let Some(parent) = self.store.parent() else { return Ok(None) };
@@ -1204,7 +1216,8 @@ impl Shared {
         match forked(&state) {
             Some(fork) => {
                 let origin = Origin { parent, at: fork.at };
-                branch::record_fork(&**bucket, branch, origin, fork.point).await?;
+                let child = Child { branch, owner: fork.owner, point: fork.point };
+                branch::record_fork(&**bucket, child, origin).await?;
                 Ok(branch::record(&**bucket, branch).await?)
             }
             None => Ok(None),
@@ -1323,7 +1336,8 @@ impl Shared {
         }
         let mut segments = Vec::with_capacity(closed.len());
         for closed in closed {
-            let (tag, forks) = (closed.tag(), closed.footer.forks.clone());
+            let tag = closed.tag();
+            let forks = closed.footer.forks.iter().map(|forked| forked.branch).collect();
             let own = closed.own.iter().map(|(key, file)| Ok((key.clone(), stored(file)?)));
             let own = own.collect::<Result<_, Failure>>()?;
             let objects = Objects { footer: closed.footer, segment: stored(&closed.file)?, own };
@@ -3072,6 +3086,45 @@ mod tests {
         }
     }
 
+    /// TASK-141.2: a branch whose record says a format newer than this daemon's is refused, naming
+    /// the branch and the format, before anything of it is read or written: no store takes it, its
+    /// lease is as it was, and no segment of it is written.
+    #[test]
+    fn branches_of_newer_formats_are_refused() {
+        use extent_remote::Bucket as _;
+        use extent_remote::bucket::PutMode;
+        let dir = tempfile::tempdir().unwrap();
+        let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
+        let first = ExtentStore::create(dir.path().join("first"), 1 << 30).unwrap();
+        let branch = first.branch();
+        first.attach_remote(bucket.clone(), 1, idle()).unwrap();
+        write(&first, 1, &pattern(1, BLOCK));
+        first.commit(Some(b"root")).unwrap();
+        drop(first);
+        // A later release's record, whose format says first what follows, which this one can't
+        // read.
+        let mut newer = (extent_remote::layout::FORMAT + 1).to_le_bytes().to_vec();
+        newer.extend_from_slice(b"what a later format holds");
+        let (key, overwrite) = (extent_remote::layout::record(branch), PutMode::Overwrite);
+        futures::executor::block_on(bucket.put(&key, newer, overwrite)).unwrap();
+        let listed = || {
+            let listed = futures::executor::block_on(bucket.list("")).unwrap();
+            listed.into_iter().map(|meta| (meta.key, meta.version)).collect::<Vec<_>>()
+        };
+        let before = listed();
+
+        let taken = ExtentStore::create_for_branch(dir.path().join("taken"), 1 << 30, branch);
+        let refused = taken.unwrap().attach_remote(bucket.clone(), 2, idle());
+        let format = extent_remote::layout::FORMAT;
+        let named = format!(
+            "branch {branch:x} is of format {}, which this reader, of format {format}, doesn't \
+             read",
+            format + 1
+        );
+        assert_eq!(refused, Err(super::Failure::Other(named)));
+        assert_eq!(listed(), before, "a branch of a newer format was written to");
+    }
+
     /// TASK-79.20: a store that took its branch, its host crashing before its marker named the
     /// branch's last commit, holds what the branch holds: attaching again, the branch is its own
     /// still, and its marker names the commit again.
@@ -3183,8 +3236,9 @@ mod tests {
         let parent = ExtentStore::open(dir.path().join("parent")).unwrap();
         assert_eq!(parent.attach_remote(bucket.clone(), 2, idle()), Ok(()));
         let parents = futures::executor::block_on(recover(&*bucket, parent.branch(), None));
-        let fork = extent_remote::layout::Fork { child, at: 2, point: false };
-        assert_eq!(parents.unwrap().state.forks, [fork]);
+        let forks = parents.unwrap().state.forks;
+        let forks: Vec<_> = forks.iter().map(|fork| (fork.child, fork.at, fork.point)).collect();
+        assert_eq!(forks, [(child, 2, false)]);
     }
 
     /// A fork made while its parent kept its branch nowhere, the parent attaching after, is no fork
@@ -3507,16 +3561,18 @@ mod tests {
 
         // TASK-79.82: its deletion gave it the record its fork would first, naming the fork.
         let origin = Some(extent_remote::layout::Origin { parent: failed.branch, at: 2 });
+        // Of the fork's owner, which its footer names.
+        let owner = failed.record().unwrap().owner;
         let deleted = extent_remote::layout::Record {
             origin,
             forked: true,
             deleted: true,
             claimed: true,
-            ..Default::default()
+            ..extent_remote::layout::Record::of(owner)
         };
         assert_eq!(failed.record(), Some(deleted));
         let parents = futures::executor::block_on(recover(&*failed.bucket(), failed.branch, None));
-        let fork = extent_remote::layout::Fork { child: failed.child, at: 2, point: false };
+        let fork = extent_remote::layout::Fork { child: failed.child, at: 2, point: false, owner };
         assert_eq!(parents.unwrap().state.forks, [fork]);
     }
 
@@ -3550,14 +3606,14 @@ mod tests {
             claimed: true,
             ..Default::default()
         };
-        assert_eq!(failed.record(), Some(record(false)));
+        assert_eq!(failed.record().map(unowned), Some(record(false)));
 
         // Placed, so that deleting it in the bucket takes its placement's token: tests name no
         // host's (`host_token`).
         let (bucket, handle) = (failed.bucket(), restarted.join("child"));
         ExtentStore::place(&handle, 1).unwrap();
         ExtentStore::delete(&handle, Some(&bucket)).unwrap();
-        assert_eq!((failed.record(), handle.exists()), (Some(record(true)), false));
+        assert_eq!((failed.record().map(unowned), handle.exists()), (Some(record(true)), false));
         let inherited = ExtentId { branch: failed.branch, sequence: FailedFork::OWN };
         let parent = ExtentStore::open(restarted.join("parent")).unwrap();
         parent.attach_remote(bucket.clone(), 4, idle()).unwrap();
@@ -3583,7 +3639,7 @@ mod tests {
         // reads, and leaves the record as the restarted host's left it.
         failed.gated.hold.send_replace(Hold::Nothing);
         let forked = fork.join().unwrap().map_err(|err| err.to_string());
-        let ended = (forked, failed.record(), crashed.join("child").exists());
+        let ended = (forked, failed.record().map(unowned), crashed.join("child").exists());
         assert_eq!(ended, (taken(failed.child), Some(record(true)), false));
     }
 
@@ -3621,13 +3677,20 @@ mod tests {
             claimed: true,
             ..Default::default()
         };
-        assert_eq!(failed.record(), Some(live));
+        assert_eq!(failed.record().map(unowned), Some(live));
         assert_eq!(ExtentStore::open(&handle).unwrap().root(), Ok(b"root".to_vec()));
     }
 
-    /// The record of a branch no fork made, its store's own, of no parent.
+    /// The record of a branch no fork made, its store's own, of no parent, but for its owner
+    /// ([`unowned`]).
     fn own_record() -> extent_remote::layout::Record {
         extent_remote::layout::Record::default()
+    }
+
+    /// `record`, but for its owner, which its maker chose at random: as the tests that are not of
+    /// owners compare records.
+    fn unowned(record: extent_remote::layout::Record) -> extent_remote::layout::Record {
+        extent_remote::layout::Record { owner: 0, ..record }
     }
 
     /// The store of another branch, `branch`, at `path`, attached to `bucket`, holding an extent
@@ -3681,7 +3744,7 @@ mod tests {
         let parents = futures::executor::block_on(recover(&*bucket, parent.branch(), None));
         assert_eq!(parents.unwrap().state.forks, []);
         let record = futures::executor::block_on(branch::record(&*bucket, other)).unwrap();
-        assert_eq!((record, live(&others, &bucket)), (Some(own_record()), lives()));
+        assert_eq!((record.map(unowned), live(&others, &bucket)), (Some(own_record()), lives()));
     }
 
     /// A parent attached to the bucket through `gated`, in `dir`, holding an extent and a root,
@@ -3736,7 +3799,7 @@ mod tests {
         assert!(!path.exists(), "the handle of a fork that failed is left");
 
         let record = futures::executor::block_on(branch::record(&*bucket, child)).unwrap();
-        assert_eq!((record, live(&others, &bucket)), (Some(own_record()), lives()));
+        assert_eq!((record.map(unowned), live(&others, &bucket)), (Some(own_record()), lives()));
         let parent = ExtentStore::open(dir.path().join("parent")).unwrap();
         assert_eq!(parent.attach_remote(bucket.clone(), 3, idle()), Ok(()));
         parent.commit(Some(b"later")).unwrap();
@@ -3755,7 +3818,7 @@ mod tests {
         let bucket = Arc::new(Bucket::new(memory, ""));
         let path = dir.path().join("child");
         let (_, child, fork) = forking_held(dir.path(), &gated, &path);
-        futures::executor::block_on(branch::create(&*bucket, child)).unwrap();
+        futures::executor::block_on(branch::create(&*bucket, child, 0)).unwrap();
         let lease = extent_remote::layout::lease(child);
         assert_eq!(futures::executor::block_on(branch::take_lease(&*bucket, &lease, 7, 0)), Ok(1));
         let leased = || {
@@ -3798,7 +3861,7 @@ mod tests {
         let deleted = ExtentStore::delete(&path, Some(&bucket)).map_err(|err| err.to_string());
         assert_eq!((deleted, path.exists()), (Ok(()), false));
         let record = futures::executor::block_on(branch::record(&*bucket, child)).unwrap();
-        assert_eq!((record, live(&others, &bucket)), (Some(own_record()), lives()));
+        assert_eq!((record.map(unowned), live(&others, &bucket)), (Some(own_record()), lives()));
     }
 
     /// TASK-79.78, TASK-79.82: a fork that fails once its commit was made, here as its record
@@ -3828,7 +3891,7 @@ mod tests {
         let deleted =
             extent_remote::layout::Record { forked: true, deleted: true, ..Default::default() };
         let record = futures::executor::block_on(branch::record(&*bucket, child)).unwrap();
-        assert_eq!(record, Some(deleted));
+        assert_eq!(record.map(unowned), Some(deleted));
         // The checkpoint at the fork, its child deleted, names it no more.
         let parents = futures::executor::block_on(recover(&*bucket, parent.branch(), None));
         assert_eq!(parents.unwrap().state.forks, []);
@@ -3902,7 +3965,7 @@ mod tests {
         assert_eq!((deleted.map_err(|err| err.to_string()), handle.exists()), (Ok(()), false));
         let deleted =
             extent_remote::layout::Record { forked: true, deleted: true, ..Default::default() };
-        assert_eq!(record(), Some(deleted));
+        assert_eq!(record().map(unowned), Some(deleted));
     }
 
     /// TASK-79.82: a fork's child taking a record of its own takes none of another's: a branch
@@ -3921,7 +3984,7 @@ mod tests {
         let lease = extent_remote::layout::lease(child);
         let leased = lease.clone();
         let taking = fail::FailGuard::with_callback("remote::create_branch", move || {
-            futures::executor::block_on(branch::create(&*bucket, child)).unwrap();
+            futures::executor::block_on(branch::create(&*bucket, child, 0)).unwrap();
             let taken = branch::take_lease(&*bucket, &leased, 7, 0);
             assert_eq!(futures::executor::block_on(taken), Ok(1));
         });
@@ -3965,7 +4028,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
         let writer = futures::executor::block_on(async {
-            branch::create(&*bucket, 7).await.unwrap();
+            branch::create(&*bucket, 7, 0).await.unwrap();
             extent_remote::Writer::open(bucket.clone(), 7, 1, 0).await.unwrap()
         });
         let writer = Arc::new(writer);

@@ -7,7 +7,7 @@
 mod common;
 
 use common::noise;
-use extent_frame::segment::Chain;
+use extent_frame::segment::{Chain, Child};
 use extent_store::{
     Closed, Description, Dir, File as _, Footprint, HostDir, Lineage, MemDir, MemFile, NoSpace,
     Options, Part, Place, RemoteData, Spent, Store, TooLong, TooSmall,
@@ -1732,7 +1732,6 @@ fn segments_close_for_the_writer_of_their_chain() {
             root: Some(b"one".to_vec()),
             next_sequence: 100,
             forks: vec![],
-            points: vec![],
         }
     );
     // Its file is the object, footer and all; its extent of its own's, the extent's object.
@@ -1751,7 +1750,7 @@ fn segments_close_for_the_writer_of_their_chain() {
     assert_eq!((second.footer.seq, second.footer.after), (6, Some((5, 3))));
     assert_eq!(
         (second.footer.commits.clone(), second.footer.forks.clone()),
-        (vec![tag(3, 2)], vec![BRANCH + 1])
+        (vec![tag(3, 2)], vec![Child { branch: BRANCH + 1, owner: 0, point: false }])
     );
 
     // Freed, its extents' data goes once released, but the segment stays until uploaded.
@@ -3336,7 +3335,8 @@ fn forks_give_their_commits_epoch() {
     assert_eq!(store.fork(BRANCH + 1).unwrap(), 2);
     assert_eq!(store.epoch().unwrap(), 2);
     let forking = closed_one(&store);
-    assert_eq!((forking.last(), forking.footer.forks.clone()), (2, vec![BRANCH + 1]));
+    let forked = Child { branch: BRANCH + 1, owner: 0, point: false };
+    assert_eq!((forking.last(), forking.footer.forks.clone()), (2, vec![forked]));
 }
 
 /// fxdax: a fork to a branch the store has fails having committed nothing: no footer names the
@@ -3356,8 +3356,8 @@ fn forks_to_a_branch_the_store_has_commit_nothing() {
     let has = format!("the store has a branch {:#x}", BRANCH + 1);
     assert_eq!((again, store.epoch().unwrap()), (Err(has), 3));
     let closed = store.closed(usize::MAX).unwrap();
-    let forks: Vec<u64> = closed.into_iter().flat_map(|closed| closed.footer.forks).collect();
-    assert_eq!(forks, [BRANCH + 1]);
+    let forks = closed.into_iter().flat_map(|closed| closed.footer.forks);
+    assert_eq!(forks.map(|forked| forked.branch).collect::<Vec<_>>(), [BRANCH + 1]);
 }
 
 /// With segments closing as soon as they are old, an empty one closes not: a commit that wrote

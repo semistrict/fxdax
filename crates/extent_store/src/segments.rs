@@ -18,7 +18,7 @@ use crate::layout::{
 };
 use crate::store::{Options, Usage};
 use anyhow::{Context as _, Error, anyhow, bail, ensure};
-use extent_frame::segment::{Chain, Contents, Footer, epoch_of};
+use extent_frame::segment::{Chain, Child, Contents, Footer, epoch_of};
 use extent_frame::{PART, Stored};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Arc;
@@ -680,13 +680,10 @@ impl<F: File> Segments<F> {
     }
 
     /// Has the next commit close the open segment, at the fork of `child`, which its footer
-    /// names (doc-7, Forks), as a point if `point` (doc-7, Points).
-    pub fn close_for_fork(&mut self, child: u64, point: bool) {
+    /// names (doc-7, Forks): with its owner, and whether it is a point (doc-7, Points).
+    pub fn close_for_fork(&mut self, child: Child) {
         self.close_wanted = true;
         self.window.forks.push(child);
-        if point {
-            self.window.points.push(child);
-        }
     }
 
     /// Whether the open segment holds commits up to `epoch`, the last, or forks, which closing it
@@ -739,7 +736,6 @@ impl<F: File> Segments<F> {
             root: window.root,
             next_sequence,
             forks: window.forks,
-            points: window.points,
         });
         let segment = self.tracked.get_mut(&number).unwrap();
         let raw = match &segment.phase {
@@ -1053,9 +1049,7 @@ struct Window {
     freed: BTreeSet<ExtentId>,
     root: Option<Vec<u8>>,
     /// The branches forked at its end.
-    forks: Vec<u64>,
-    /// Those of them that are points.
-    points: Vec<u64>,
+    forks: Vec<Child>,
 }
 
 impl Window {

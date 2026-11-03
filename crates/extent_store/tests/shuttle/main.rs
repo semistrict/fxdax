@@ -682,7 +682,9 @@ fn cleaning_during_a_fork() {
     store.close_segment().unwrap();
     store.commit(None).unwrap();
     let closed = store.closed(usize::MAX).unwrap();
-    let forking = closed.iter().find(|closed| closed.footer.forks == [CHILD]).unwrap();
+    let forking = (closed.iter())
+        .find(|closed| closed.footer.forks.iter().map(|forked| forked.branch).eq([CHILD]))
+        .unwrap();
     let last = forking.last();
     assert!(last == fork, "a fork's segment ends after the fork: at commit {last}, of {fork}");
     check_partly_freed(&store);

@@ -26,7 +26,7 @@
 
 use crate::bucket::{self, Bucket, Created};
 use crate::fetch::{Budget, Limits, Priority};
-use crate::layout::{self, Chain, Contents, Footer, Location, Origin, Record, Segment};
+use crate::layout::{self, Chain, Child, Contents, Footer, Location, Origin, Record, Segment};
 use crate::moves::MovesMaps;
 use crate::recovery::{self, Recovered, State};
 use crate::{EPOCH_SHIFT, Error, branch, rules};
@@ -447,7 +447,8 @@ impl<B: Bucket> Writer<B> {
         futures::stream::iter(forks)
             .map(|fork| async move {
                 let origin = Origin { parent: self.branch, at: fork.at };
-                match branch::record_fork(&*self.bucket, fork.child, origin, fork.point).await {
+                let child = Child { branch: fork.child, owner: fork.owner, point: fork.point };
+                match branch::record_fork(&*self.bucket, child, origin).await {
                     Ok(()) => {}
                     Err(Error::ChildTaken(child)) => drop(self.inner().refused.insert(child)),
                     Err(error) => return Err(error),
@@ -517,6 +518,7 @@ impl<B: Bucket> Writer<B> {
 mod tests {
     use super::*;
     use crate::batch::{Batch, Commit};
+    use crate::layout::child;
     use crate::store::{Request, Store};
     use object_store::memory::InMemory;
 
@@ -535,7 +537,7 @@ mod tests {
     fn writers_finding_a_later_writers_segment_are_fenced() {
         futures::executor::block_on(async {
             let bucket = memory();
-            branch::create(&*bucket, 1).await.unwrap();
+            branch::create(&*bucket, 1, 0).await.unwrap();
             for _ in 0..2 {
                 branch::take_lease(&*bucket, &layout::lease(1), 9, 0).await.unwrap();
             }
@@ -553,7 +555,7 @@ mod tests {
     fn writers_taken_over_stop() {
         futures::executor::block_on(async {
             let bucket = memory();
-            branch::create(&*bucket, 1).await.unwrap();
+            branch::create(&*bucket, 1, 0).await.unwrap();
             let first = Writer::open(bucket.clone(), 1, 10, 0).await.unwrap();
             let _second = Writer::open(bucket.clone(), 1, 11, 0).await.unwrap();
             let seq = add(&first, Commit { tag: 1, ..Commit::default() }).unwrap();
@@ -570,7 +572,7 @@ mod tests {
     fn writers_displaced_by_an_earlier_writers_segment_stop() {
         futures::executor::block_on(async {
             let bucket = memory();
-            branch::create(&*bucket, 1).await.unwrap();
+            branch::create(&*bucket, 1, 0).await.unwrap();
             let first = Writer::open(bucket.clone(), 1, 10, 0).await.unwrap();
             let second = Writer::open(bucket.clone(), 1, 11, 0).await.unwrap();
             // The first's second segment in flight as the second took the branch, landing after
@@ -597,7 +599,7 @@ mod tests {
     fn extents_of_their_own_found_uploaded_are_the_writers() {
         futures::executor::block_on(async {
             let bucket = memory();
-            branch::create(&*bucket, 1).await.unwrap();
+            branch::create(&*bucket, 1, 0).await.unwrap();
             let writer = Writer::open(bucket.clone(), 1, 10, 0).await.unwrap();
             let first = writer.chain().next_sequence();
             let (again, other) = (ExtentId::new(1, first), ExtentId::new(1, first + 1));
@@ -626,7 +628,7 @@ mod tests {
     fn checkpoints_read_only_the_moves_there_are() {
         futures::executor::block_on(async {
             let bucket = memory();
-            branch::create(&*bucket, 1).await.unwrap();
+            branch::create(&*bucket, 1, 0).await.unwrap();
             let writer = Writer::open(bucket.clone(), 1, 10, 0).await.unwrap();
             let first = writer.chain().next_sequence();
             for n in 0..64 {
@@ -656,7 +658,7 @@ mod tests {
         use std::task::{Context, Poll};
         let bucket = SimBucket::new();
         let (writer, _) = bucket.served(async {
-            branch::create(&*bucket, 1).await.unwrap();
+            branch::create(&*bucket, 1, 0).await.unwrap();
             Writer::open(bucket.clone(), 1, 10, 0).await.unwrap()
         });
         let first = writer.chain().next_sequence();
@@ -684,10 +686,10 @@ mod tests {
         use std::task::{Context, Poll};
         let bucket = SimBucket::new();
         let (writer, _) = bucket.served(async {
-            branch::create(&*bucket, 1).await.unwrap();
+            branch::create(&*bucket, 1, 0).await.unwrap();
             Writer::open(bucket.clone(), 1, 10, 0).await.unwrap()
         });
-        let children: Vec<u64> = (2..2 + 2 * RECORDS_AT_ONCE as u64 + 1).collect();
+        let children = (2..2 + 2 * RECORDS_AT_ONCE as u64 + 1).map(child).collect();
         let footer = writer.chain().close(Contents { forks: children, ..Contents::default() });
         let segment = Segment { data: Vec::new(), footer: footer.clone() };
         let seq = writer.add_segment(Objects {
@@ -726,7 +728,7 @@ mod tests {
         use std::task::{Context, Poll};
         let bucket = SimBucket::new();
         let (writer, _) = bucket.served(async {
-            branch::create(&*bucket, 1).await.unwrap();
+            branch::create(&*bucket, 1, 0).await.unwrap();
             Writer::open(bucket.clone(), 1, 10, 0).await.unwrap()
         });
         let writer = writer.uploading_within(Budget::new(Limits { requests: 1, bytes: u64::MAX }));
@@ -766,7 +768,7 @@ mod tests {
     fn segments_ending_with_another_footer_than_taken_stop_their_writers() {
         futures::executor::block_on(async {
             let bucket = memory();
-            branch::create(&*bucket, 1).await.unwrap();
+            branch::create(&*bucket, 1, 0).await.unwrap();
             let writer = Writer::open(bucket.clone(), 1, 10, 0).await.unwrap();
             let close = |tag| {
                 let commit = Commit { tag, ..Commit::default() };
@@ -791,7 +793,7 @@ mod tests {
         use crate::sim::bucket::SimBucket;
         let bucket = SimBucket::new();
         let (first, _) = bucket.served(async {
-            branch::create(&*bucket, 1).await.unwrap();
+            branch::create(&*bucket, 1, 0).await.unwrap();
             Writer::open(bucket.clone(), 1, 10, 0).await.unwrap()
         });
         let commit = |tag| {
@@ -836,7 +838,7 @@ mod tests {
     fn checkpoints_are_written_once() {
         futures::executor::block_on(async {
             let bucket = memory();
-            branch::create(&*bucket, 1).await.unwrap();
+            branch::create(&*bucket, 1, 0).await.unwrap();
             let writer = Writer::open(bucket.clone(), 1, 10, 0).await.unwrap();
             let seq = writer.checkpoint().await.unwrap();
             let requests = bucket.stats().requests;
@@ -852,7 +854,7 @@ mod tests {
     fn writers_upload_segments_stores_closed() {
         futures::executor::block_on(async {
             let bucket = Arc::new(Store::new(Arc::new(InMemory::new()), ""));
-            branch::create(&*bucket, 1).await.unwrap();
+            branch::create(&*bucket, 1, 0).await.unwrap();
             let writer = Writer::open(bucket.clone(), 1, 10, 0).await.unwrap();
             let chain = writer.chain();
             let (seq, after) = (chain.next_seq(), chain.after());
@@ -870,7 +872,6 @@ mod tests {
                 root: Some(b"root".to_vec()),
                 next_sequence: 4,
                 forks: vec![],
-                points: vec![],
             };
             let segment = |footer: &Footer| -> Vec<u8> {
                 Segment { data: b"abc".to_vec(), footer: footer.clone() }.encode()

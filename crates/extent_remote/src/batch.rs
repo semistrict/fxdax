@@ -11,7 +11,7 @@
 //! planned by the lengths of the extents they seal ([`Plan`]), whose objects read their data only
 //! as they upload ([`objects`]).
 
-use crate::layout::{self, Chain, Contents, Footer, Segment};
+use crate::layout::{self, Chain, Child, Contents, Footer, Segment};
 use crate::writer::{Body, Objects};
 use std::sync::Arc;
 use storage_device::ExtentId;
@@ -171,23 +171,18 @@ impl Batch {
     /// Closes it on `chain`, its writer's, as the writer's next segment, which the chain goes on
     /// after: its footer, stamped, its data yet to be framed.
     pub fn close(self, chain: &mut Chain) -> Unframed {
-        self.close_forking(chain, Vec::new(), Vec::new())
+        self.close_forking(chain, Vec::new())
     }
 
     /// Closes it on `chain`, as [`Batch::close`] does, with a fork of the branch to `child` at its
-    /// end: a fork ends its segment, which its child inherits the whole of (doc-7, Forks).
-    pub fn fork(self, child: u64, chain: &mut Chain) -> Unframed {
-        self.close_forking(chain, vec![child], Vec::new())
+    /// end, of its owner, a point if it says so: a fork ends its segment, which its child inherits
+    /// the whole of (doc-7, Forks, Points).
+    pub fn fork(self, child: Child, chain: &mut Chain) -> Unframed {
+        self.close_forking(chain, vec![child])
     }
 
-    /// Closes it on `chain`, as [`Batch::fork`] does, the fork to `child` making a point (doc-7,
-    /// Points).
-    pub fn point(self, child: u64, chain: &mut Chain) -> Unframed {
-        self.close_forking(chain, vec![child], vec![child])
-    }
-
-    fn close_forking(self, chain: &mut Chain, forks: Vec<u64>, points: Vec<u64>) -> Unframed {
-        let footer = chain.close(Contents { forks, points, ..self.plan.contents });
+    fn close_forking(self, chain: &mut Chain, forks: Vec<Child>) -> Unframed {
+        let footer = chain.close(Contents { forks, ..self.plan.contents });
         Unframed { segment: Segment { data: self.data, footer }, own: self.own }
     }
 }
@@ -213,7 +208,7 @@ impl Unframed {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::layout::Footer;
+    use crate::layout::{Footer, child};
 
     /// The next sequence number the footer of `commit`'s segment, closed on `chain`, names.
     fn next_sequence(commit: Commit, chain: &mut Chain) -> u64 {
@@ -268,7 +263,7 @@ mod tests {
             ..Commit::default()
         });
         assert!(!batch.is_empty());
-        let objects = batch.fork(9, &mut chain).frame();
+        let objects = batch.fork(child(9), &mut chain).frame();
         let segment = objects.segment.read().unwrap();
         let footer: Footer = layout::footer(&segment).unwrap();
         assert_eq!(footer, objects.footer);
@@ -279,7 +274,7 @@ mod tests {
         assert_eq!(footer.own, [(large, layout::Location { key: key.clone(), offset: 0, len: 5 })]);
         assert_eq!(
             (footer.frees, footer.root, footer.forks),
-            (vec![freed], Some(b"two".to_vec()), vec![9])
+            (vec![freed], Some(b"two".to_vec()), vec![child(9)])
         );
         assert_eq!(layout::data(&segment).unwrap(), b"small");
         let [(own_key, own)] = &objects.own[..] else {

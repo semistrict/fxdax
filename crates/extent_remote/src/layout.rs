@@ -11,7 +11,14 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use storage_device::ExtentId;
 
-pub use extent_frame::segment::{Chain, Contents, Footer, Location, epoch_of, tag, writer_of};
+pub use extent_frame::segment::{
+    Chain, Child, Contents, Footer, Location, epoch_of, tag, writer_of,
+};
+
+/// fxdax: the format of a branch's objects, which its record says first ([`Record::format`]): a
+/// reader refuses a branch of a newer one, naming it, and reads none of it (doc-11, rule 3;
+/// TASK-141.2).
+pub const FORMAT: u32 = 1;
 
 pub const BRANCHES: &str = "branches/";
 pub const GC_LEASE: &str = "gc/lease";
@@ -59,12 +66,13 @@ pub fn moves(key: &str) -> String {
     format!("{MOVES}{key}")
 }
 
-/// What kind of object a key names, and what its key says. fxdax: an extent's names the segment
-/// that names it, `seq`, but for keys of before they did (TASK-79.3).
+/// What kind of object a key names, and what its key says. fxdax: an extent's says the segment
+/// that names it, `seq`, of the writer of `epoch`, which uploaded it before: what it may yet be
+/// named by, as its writer declares it (TASK-79.3, TASK-153.7).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind<'a> {
     Segment { branch: u64, seq: u64 },
-    Extent { branch: u64, epoch: u64, seq: Option<u64>, sequence: u64 },
+    Extent { branch: u64, epoch: u64, seq: u64, sequence: u64 },
     Checkpoint { branch: u64, seq: u64 },
     Record { branch: u64 },
     Lease { branch: u64 },
@@ -106,11 +114,10 @@ pub fn kind(key: &str) -> Kind<'_> {
         }
         if let Some(rest) = key.strip_prefix("extents/") {
             let (branch, rest) = rest.split_once('/')?;
-            let (epoch, seq, sequence) = match rest.split('.').collect::<Vec<_>>()[..] {
-                [epoch, sequence] => (hex(epoch)?, None, hex(sequence)?),
-                [epoch, seq, sequence] => (hex(epoch)?, Some(hex(seq)?), hex(sequence)?),
-                _ => return None,
+            let [epoch, seq, sequence] = rest.split('.').collect::<Vec<_>>()[..] else {
+                return None;
             };
+            let (epoch, seq, sequence) = (hex(epoch)?, hex(seq)?, hex(sequence)?);
             return Some(Kind::Extent { branch: hex(branch)?, epoch, seq, sequence });
         }
         None
@@ -125,6 +132,15 @@ pub struct Fork {
     pub at: u64,
     /// Whether its child is a point ([`Record::point`]).
     pub point: bool,
+    /// fxdax: its child's owner, which every record of the child names ([`Record::owner`]).
+    pub owner: u64,
+}
+
+impl Fork {
+    /// The fork its segment `at`'s footer names, `child`.
+    pub fn at(at: u64, child: &Child) -> Self {
+        Self { child: child.branch, at, point: child.point, owner: child.owner }
+    }
 }
 
 /// A segment: its data, then its footer.
@@ -135,8 +151,18 @@ pub struct Segment {
 }
 
 /// A branch's record: where it came from, and whether it was deleted.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Record {
+    /// fxdax: the format of the branch's objects ([`FORMAT`]), first, so that a reader of any
+    /// format reads it before the rest, which it can read only if it is of its own or older
+    /// ([`Record::decode`], TASK-141.2).
+    pub format: u32,
+    /// fxdax: the branch's owner: a number its maker chose at random, unique to that making, which
+    /// every record of the branch names, whoever writes it: a fork's host, its parent's writers
+    /// and its parent's deletion alike (the fork's footer names it, [`Child::owner`]). So no two
+    /// makers of one branch ID write the same bytes, and a create that finds a record there tells
+    /// its own, landed though its answer was lost, from another's (TASK-79.82, TASK-153.9).
+    pub owner: u64,
     /// The branch it was forked from, and the segment of that branch's at whose end.
     pub origin: Option<Origin>,
     /// Whether it is a fork's, which a writer of its parent that is slow to record the fork could
@@ -158,14 +184,52 @@ pub struct Record {
     pub claimed: bool,
 }
 
-impl Record {
-    /// Whether it is the record of the child of a fork made at `origin`, if the fork's segment went
-    /// anywhere: naming it, or none, as a child takes a branch of its own whose fork was not made
-    /// in object storage ([`crate::branch::create_forked`]). Any other is another branch's, whose
-    /// ID the fork's guest named (TASK-79.82).
-    pub fn of_fork(&self, origin: Option<Origin>) -> bool {
-        self.forked && (self.origin.is_none() || self.origin == origin)
+impl Default for Record {
+    /// A record of this format, of no owner, naming nothing.
+    fn default() -> Self {
+        Self {
+            format: FORMAT,
+            owner: 0,
+            origin: None,
+            forked: false,
+            deleted: false,
+            point: false,
+            forking: None,
+            claimed: false,
+        }
     }
+}
+
+impl Record {
+    /// A record of this format, of `owner`, naming nothing.
+    pub fn of(owner: u64) -> Self {
+        Self { owner, ..Self::default() }
+    }
+
+    /// The record of `branch` that `bytes` encode, unless it is of a format newer than this one,
+    /// which its first bytes say ([`Error::Format`](crate::Error::Format)).
+    pub fn decode(branch: u64, bytes: &[u8]) -> Result<Self, crate::Error> {
+        let format: u32 = decode(bytes.get(..4).unwrap_or(bytes))?;
+        if format > FORMAT {
+            return Err(crate::Error::Format { branch, format });
+        }
+        decode(bytes)
+    }
+
+    /// Whether it is the record of the child of the fork whose child's owner is `owner`, whoever
+    /// wrote it: the fork's host, as it claimed the child or took a branch of its own for it
+    /// ([`crate::branch::create_forked`]), or its parent's writers. Any other is another branch's,
+    /// whose ID the fork's guest named (TASK-79.82).
+    pub fn of_fork(&self, owner: u64) -> bool {
+        self.forked && self.owner == owner
+    }
+}
+
+/// The child of a fork to `branch`, a branch, of no owner: tests', which name no two children
+/// alike.
+#[cfg(test)]
+pub(crate) fn child(branch: u64) -> Child {
+    Child { branch, owner: 0, point: false }
 }
 
 /// Where a branch was forked from.
@@ -191,13 +255,8 @@ pub struct Lease {
 impl Lease {
     pub const FINAL: u64 = u64::MAX;
 
-    /// The lease `bytes` encode: as [`encode`] does, or as leases were before they had fencing
-    /// tokens, an epoch and a holder, whose token is 0 (TASK-39.7).
+    /// The lease `bytes` encode.
     pub fn decode(bytes: &[u8]) -> Result<Self, crate::Error> {
-        if bytes.len() == 16 {
-            let (epoch, holder): (u64, u64) = decode(bytes)?;
-            return Ok(Self { epoch, holder, token: 0 });
-        }
         decode(bytes)
     }
 }
@@ -265,11 +324,11 @@ mod tests {
     fn kinds() {
         let id = ExtentId::new(3, 9);
         assert_eq!(kind(&segment(3, 7)), Kind::Segment { branch: 3, seq: 7 });
-        let own = Kind::Extent { branch: 3, epoch: 2, seq: Some(4), sequence: 9 };
+        let own = Kind::Extent { branch: 3, epoch: 2, seq: 4, sequence: 9 };
         assert_eq!(kind(&extent(2, 4, id)), own);
-        // Keyed before keys named their segments.
+        // A key naming no segment declares nothing: no extent's.
         let earlier = "extents/0000000000000003/0000000000000002.0000000000000009";
-        assert_eq!(kind(earlier), Kind::Extent { branch: 3, epoch: 2, seq: None, sequence: 9 });
+        assert_eq!(kind(earlier), Kind::Unknown);
         assert_eq!(kind(&checkpoint(3, 7)), Kind::Checkpoint { branch: 3, seq: 7 });
         assert_eq!(kind(&record(3)), Kind::Record { branch: 3 });
         assert_eq!(kind(&lease(3)), Kind::Lease { branch: 3 });
@@ -279,13 +338,24 @@ mod tests {
         assert_eq!(kind("segments/3/7"), Kind::Unknown);
     }
 
-    /// Leases written before they had fencing tokens decode, with token 0.
     #[test]
     fn leases_decode_as_they_were_written() {
         let lease = Lease { epoch: 4, holder: 9, token: 7 };
         assert_eq!(Lease::decode(&encode(&lease)), Ok(lease));
-        let before = encode(&(4u64, 9u64));
-        assert_eq!(Lease::decode(&before), Ok(Lease { epoch: 4, holder: 9, token: 0 }));
+    }
+
+    /// A record says its format first: one of a newer format is refused, naming it, whatever
+    /// follows, which this format may not read (TASK-141.2).
+    #[test]
+    fn records_of_newer_formats_are_refused() {
+        let record = Record { owner: 7, forked: true, ..Record::default() };
+        let bytes = encode(&record);
+        assert_eq!(&bytes[..4], &FORMAT.to_le_bytes());
+        assert_eq!(Record::decode(3, &bytes), Ok(record));
+        let mut newer = (FORMAT + 1).to_le_bytes().to_vec();
+        newer.extend_from_slice(b"what a later format holds");
+        assert_eq!(Record::decode(3, &newer), Err(crate::Error::Format { branch: 3, format: 2 }));
+        assert!(matches!(Record::decode(3, &bytes[..3]), Err(crate::Error::Corrupt(_))));
     }
 
     #[test]
@@ -301,8 +371,7 @@ mod tests {
             frees: vec![ExtentId::new(1, 1)],
             root: Some(b"root".to_vec()),
             next_sequence: 6,
-            forks: vec![7],
-            points: vec![],
+            forks: vec![Child { branch: 7, owner: 8, point: false }],
         };
         let segment = Segment { data: b"abc".to_vec(), footer: footer.clone() };
         let bytes = segment.encode();
