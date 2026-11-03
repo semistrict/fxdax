@@ -550,6 +550,133 @@ mod tests {
         assert_eq!(block_on(record(&bucket, 2)), Ok(Some(Record { deleted: true, ..taken })));
     }
 
+    /// TASK-160.14: a fork of a branch at a segment and a fork of a point made at that segment,
+    /// which names it as its own origin, given one child ID, as guests may give any: whichever
+    /// record lands first, the other fork finds it another's, though the two name one origin and
+    /// one ID, and deleting that fork leaves it be. So they were, until records named their owners
+    /// (TASK-153.9): with the rule that they do off, each takes the other's for its own.
+    #[test]
+    fn forks_and_forks_of_points_at_one_segment_take_no_records_of_each_other() {
+        use crate::{Rules, set_rules};
+        let origin = Origin { parent: 1, at: 7 };
+        let (point, direct, of_point) = (3, Child { branch: 2, owner: 0x21, point: false }, 0x22);
+        // What each fork gave, the direct first or not, and whose the child's record is.
+        let race = |direct_first: bool| {
+            let bucket = Direct(SimBucket::new());
+            let made = Child { branch: point, owner: 0x33, point: true };
+            block_on(record_fork(&bucket, made, origin)).unwrap();
+            let fork = || block_on(record_fork(&bucket, direct, origin));
+            let restore = || block_on(fork_point(&bucket, 2, point, origin, of_point));
+            let (forked, restored, lost, at) = if direct_first {
+                let forked = fork();
+                (forked, restore(), of_point, ForkedAt::OfPoint(origin))
+            } else {
+                let restored = restore();
+                (fork(), restored, direct.owner, ForkedAt::Segment(origin))
+            };
+            // The fork that lost is deleted, as its host's cleanup deletes it.
+            let deleted = block_on(delete_fork(&bucket, 2, at, lost, 9, 0));
+            let owner = block_on(record(&bucket, 2)).unwrap().map(|record| record.owner);
+            (forked, restored, deleted, owner)
+        };
+        let taken = Err(Error::ChildTaken(2));
+        assert_eq!(race(true), (Ok(()), taken.clone(), Ok(false), Some(direct.owner)));
+        assert_eq!(race(false), (taken, Ok(()), Ok(false), Some(of_point)));
+
+        set_rules(Rules { records_owned: false, ..Rules::ALL });
+        // The loser's deletion then deletes the winner's branch, of a parent not there.
+        let unowned = |direct_first| {
+            let (forked, restored, _, owner) = race(direct_first);
+            (forked, restored, owner)
+        };
+        let unowned = (unowned(true), unowned(false));
+        set_rules(Rules::ALL);
+        let both = (Ok(()), Ok(()), Some(0));
+        assert_eq!(unowned, (both.clone(), both), "each takes the other's record");
+    }
+
+    /// TASK-160.14: whatever made a branch's record, whatever else makes one for its ID, of
+    /// another owner, as guests may give any ID, finds it another's, and changes nothing of it:
+    /// a create, a fork's child taking a branch of its own, a fork's writers recording its child,
+    /// a point or not, a fork of a point, and deleting a fork, wherever it was made.
+    #[test]
+    fn makers_of_one_id_take_nothing_of_each_others() {
+        let (origin, point, child) = (Origin { parent: 1, at: 7 }, 3, 2);
+        let said = |result: &dyn std::fmt::Debug| format!("{result:?}");
+        let fork = |owner, point| Child { branch: child, owner, point };
+        let unfork =
+            |bucket: &Direct, at, owner| block_on(delete_fork(bucket, child, at, owner, 9, 0));
+        // Each maker, of the owner it is given, and what it gives, in words, finding another's
+        // record, live. The first five make live records; deleting a fork leaves none.
+        type Maker<'a> = (&'a str, &'a dyn Fn(&Direct, u64) -> String, &'a str);
+        let makers: [Maker; 9] = [
+            (
+                "create",
+                &|bucket, owner| said(&block_on(create(bucket, child, owner))),
+                "Err(Corrupt(\"branch 2 exists\"))",
+            ),
+            (
+                "create_forked",
+                &|bucket, owner| said(&block_on(create_forked(bucket, child, owner))),
+                "Err(ChildTaken(2))",
+            ),
+            (
+                "record_fork",
+                &|bucket, owner| said(&block_on(record_fork(bucket, fork(owner, false), origin))),
+                "Err(ChildTaken(2))",
+            ),
+            (
+                "record_fork of a point",
+                &|bucket, owner| said(&block_on(record_fork(bucket, fork(owner, true), origin))),
+                "Err(ChildTaken(2))",
+            ),
+            (
+                "fork_point",
+                &|bucket, owner| said(&block_on(fork_point(bucket, child, point, origin, owner))),
+                "Err(ChildTaken(2))",
+            ),
+            (
+                "delete_fork, nowhere",
+                &|bucket, owner| said(&unfork(bucket, ForkedAt::Nowhere, owner)),
+                "Ok(false)",
+            ),
+            (
+                "delete_fork, at a segment",
+                &|bucket, owner| said(&unfork(bucket, ForkedAt::Segment(origin), owner)),
+                "Ok(false)",
+            ),
+            (
+                "delete_fork, to a point",
+                &|bucket, owner| said(&unfork(bucket, ForkedAt::ToPoint(origin), owner)),
+                "Ok(false)",
+            ),
+            (
+                "delete_fork, of a point",
+                &|bucket, owner| said(&unfork(bucket, ForkedAt::OfPoint(origin), owner)),
+                "Ok(false)",
+            ),
+        ];
+        for (first, make, _) in &makers[..5] {
+            for (second, again, another) in &makers {
+                let bucket = Direct(SimBucket::new());
+                block_on(record_fork(
+                    &bucket,
+                    Child { branch: point, owner: 0x33, point: true },
+                    origin,
+                ))
+                .unwrap();
+                assert_eq!(make(&bucket, 0x11), "Ok(())", "{first}");
+                let made = |bucket: &Direct| {
+                    let record = block_on(record(bucket, child)).unwrap();
+                    (record, block_on(lease_epoch(bucket, &layout::lease(child))))
+                };
+                let before = made(&bucket);
+                assert_eq!(again(&bucket, 0x12), *another, "{second} after {first}");
+                assert_eq!(made(&bucket), before, "{second} after {first}");
+            }
+        }
+    }
+
     /// TASK-79.82: a branch that takes a failed fork's child's ID after the fork's deletion found
     /// it free, before the deletion takes the child's lease, is left be: its record taken and its
     /// lease kept, not the deletion's.
