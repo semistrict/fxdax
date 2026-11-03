@@ -38,6 +38,12 @@ A snapshot's point now restores on any number of hosts at once. A fork of anythi
 **Instead:** bases fork on one host at a time, and the guide says so.
 **Undoing it:** drop the field and `ExtentStore::point`'s use from `stores::fork`; nothing else depends on it.
 
+## TASK-150.21 has no guest check: its steps need a staging extent the host doesn't hold (2026-11-03)
+
+guest/sim's `pmd_entry_invalidated_mapped` reaches fs/dax.c:416's WARN by failing the MAP of the staging extent's region after a seal, so that a fault's move into it, a seal shutting the gate, leaves the page a hole. A guest has no fault injection for that MAP, and the only other way, a seal between the restage and its MAP, is a race. Decided: no guest check; the sim's scenario and mutant carry it, and the DAX guest suites run patch 0012's path on a real kernel at every write that says its pages are new.
+**Instead:** a module parameter failing the restage's MAP (`fxfs.dax_fail_restage`), and a guest check of the same steps.
+**Undoing it:** add the parameter in `fxfs_dax_restage_work` and port the scenario to test_fxfs_guest_checks.rs.
+
 ## map_to_unlocked is killed by a scenario, not by seeds (TASK-44.19, 2026-11-03)
 
 3,000 seeds of `interleave` and `failures` missed the mutant (as did every guest DAX suite): it needs two MAPs of one region in flight at once, the nearer ending last, and a seal before the grow worker maps past it again. `guest/sim`'s device now holds a MAP back when a test asks (`sim_device_hold_map`), and `tests/scenarios`' `reaches_at_once` plays the sequence out: the mutant fails it at once, `fxfs_dax_map_to` as it is passes. `zloop.sh`, CI's sim job, now runs `tests/scenarios`' scenarios too, which only `check.sh` and `mutants.sh` ran.

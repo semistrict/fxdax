@@ -125,12 +125,16 @@ In dax.c as it stood at TASK-149.14, first found here, the first since fixed:
    `tests/sealed_piece_reach`, one task, whose guest check needs a lockdep kernel; seed 13464 at 1,000
    operations without the fix. `fixes/sealed-reach-locked.patch`. Unconfirmed.
 
-6. **`fs/dax.c:416` WARN: a write invalidates a PMD's entry under its PMD.** Open. A write says its
-   pages are new, or shared, and has `dax_iomap_iter` invalidate their entries, a PMD's over the row,
-   while the PMD maps it still: the folio is split while mapped. Before fafefbac7 the write said a
-   page that moved shared, as a read fault mapped the row; since, a write over a page a failed move
-   left a hole says it new. Main and TASK-153.3 alike: at 200 operations 3 seeds in 30,000 on main
-   (106b6128d), 5 here. It wants the entry unmapped under its lock, in `fs/dax.c`.
+6. **`fs/dax.c:416` WARN: a write puts a PMD's folio that a mapping still maps.** A write says its
+   pages are new, or shared, and has `dax_iomap_iter` invalidate their entries, a PMD's over the row:
+   `invalidate_inode_pages2_range` puts each entry's folio, and unmaps the range only after, with
+   nothing keeping faults out meanwhile. A PMD's folio that a PMD, or a PTE through its entry, maps
+   is split under it. Before fafefbac7 the write said a page that moved shared, as a read fault
+   mapped the row; since, a write over a page a failed move left a hole says it new. At 200
+   operations 3 seeds in 30,000 on main (106b6128d). `tests/pmd_entry_invalidated_mapped`, a fault's
+   move that a seal leaves in an extent the device doesn't hold, then a PTE of the PMD's folio,
+   then the write. Fixed in `fs/dax.c` (patches/0012, TASK-150.21): each entry's pages are unmapped
+   under its lock before its folio goes, as `grab_mapping_entry` does a PMD it downgrades.
 
 TASK-153.3's, all three on main before it too: a slice's refusal said `-ESTALE` to its readers, which
 drop it once: two refusals, SIGBUS (seed 1102; main's seed 3762 at 1,000 operations). A write through a
@@ -140,6 +144,8 @@ none was left (now a quarter of it at most).
 
 At 106b6128d merged: 3,000 seeds at the mix, 3,000 at 1,000 operations and 30,000 at 200 fail at the
 WARN of 6 alone, 5 times, all at 200.
+
+With patch 0012 (TASK-150.21): `zloop.sh`'s 3,000 seeds and every test of one run pass.
 
 ## Past bugs put back
 
@@ -155,21 +161,22 @@ workload does.
 | TASK-92.28, a move loses an append | seed 28 | diagnostic WARN |
 | TASK-147, a write's own source shrinks its range | seed 32 | short write |
 | TASK-79.50, non-atomic clear of writable bits | seed 40 | a split of a bitmap write |
-| bdc653701, a fault waits for a seal | seed 72 | a hang: 120 s, no log |
+| bdc653701, a fault waits for a seal | `pmd_entry_invalidated_mapped`; seed 72 before patch 0012 | a hang: 120 s, no log |
 | TASK-99, a region opens under a read-only MAP | seed 2544 | a store the host refused, as the VM stopped. The look at `mapped` goes back with what made a reader and a writer meet: the model's device write reads as opening its extent |
 | TASK-153.3, a device write reopens its extent, in the model, as the Rust had it | seed 2544 | `fxfs_dax_region_open`'s WARN: an open extent's region mapped read-only |
 | TASK-153.3, a slice's refusal says `-ESTALE` to its readers | no, in 3,000, nor 500 at 1,000 operations | found by `interleave 1102 1000` before 106b6128d; main at 106b6128d fails so at seed 3762, 1,000 operations |
-| TASK-153.3, a write through a region keeps a fault's PTE of the page it lags | `interleave 7289 200` | a stale read; by the mix, 6's WARN comes first, at seed 1486 |
-| TASK-79.12, a fault waits for the semaphore | seed 1692 | `fs/dax.c:416` WARN, not its deadlock |
+| TASK-153.3, a write through a region keeps a fault's PTE of the page it lags | no, in 3,000, nor seeds 3,001 to 15,000 at 200 operations | a stale read, `interleave 7289 200`, before patch 0012 moved the seeds; then by the mix, 6's WARN came first, at seed 1486. TASK-149.26 |
+| TASK-79.12, a fault waits for the semaphore | seed 2865 | its deadlock: no task can run. Before patch 0012, `fs/dax.c:416`'s WARN came first, at seed 1692 |
 | TASK-140, a read-only slice of an open extent | `open_extent_read_only` | a store the host refused: shared blocks of an open extent slice its region, as they did, and `region_open` leaves such a region be |
 | TASK-150.20, a MAP the host has no memory for makes no room | `open_memory_out` | a write's EIO; and every seed that limits the host's memory, a seed in four, in `interleave` and `failures` alike |
 | TASK-150.20, each way in alone: a write, a fault, zeroing, a read | `open_memory_out`, 8, 8, 592 | a write's EIO, a fault's EFAULT, a punch's ENOMEM, and a read's failure: reads reach it least |
 | TASK-44.21, a sealed piece reached for | `open_extent_read_only` | `fxfs_dax_region_open`'s WARN: shared blocks of an open extent go through its region, as a slice's, the one way since fafefbac7 |
 | TASK-44.19, `fxfs_dax_map_to` without the region's lock | `reaches_at_once`; no, in 3,000 | bytes wrong: two slices reach at once, the nearer MAP ends last and says the region maps less, and a seal gives the window past it back under the further slice, which reads the next region's page |
+| patch 0012, an invalidation puts a folio mapped still | `pmd_entry_invalidated_mapped` | `fs/dax.c:416`'s WARN: a PMD's folio split under a PTE of it |
 | TASK-79.28, a range remapped too small | no | equivalent since TASK-147: a fault sizing a range from the old end holds the invalidate lock `fxfs_dax_fit` waits for, and one after sees `growing`. `task-79.28-before-147`, with that gone too, shows at seed 31 |
 
-The `fs/dax.c:416` WARN isn't these alone: it shows with no mutant (6, above), about a seed in 6,000
-at 200 operations.
+Before patch 0012, the `fs/dax.c:416` WARN wasn't these alone: it showed with no mutant (6, above),
+about a seed in 6,000 at 200 operations, and came first in TASK-79.12's and the lag's.
 
 300 seeds of the first workload reached 72% of dax.c's lines and 62% of `fs/dax.c`'s; not measured
 since. Eviction, reflinks, reclaim (a run in four has a window its files fill) and Fxfs's failures are
