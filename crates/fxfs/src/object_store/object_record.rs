@@ -8,7 +8,8 @@
 
 mod legacy;
 
-// TODO(https://fxbug.dev/42178223): need validation after deserialization.
+// TODO(https://fxbug.dev/42178223): need validation after deserialization. fxdax: what a layer or
+// the journal holds is validated as it's read (`ObjectValue::is_valid_for`).
 use crate::checksum::Checksums;
 use crate::log::error;
 use crate::lsm_tree::types::{
@@ -23,6 +24,7 @@ use fxfs_crypto::{WrappedKey, WrappingKeyId};
 use fxfs_macros::SerializeKey;
 use fxfs_unicode::CasefoldString;
 use serde::{Deserialize, Serialize};
+use std::any::Any;
 use std::collections::BTreeMap;
 use std::default::Default;
 use std::hash::Hash;
@@ -439,6 +441,12 @@ impl LayerKey for ObjectKey {
             ) if *left_attr_id == *right_attr_id => left_key.overlaps(right_key),
             (a, b) => a == b,
         }
+    }
+
+    /// fxdax: an object store's item is what its value says it may be (`ObjectValue::is_valid_for`).
+    fn is_valid_item<V: 'static>(&self, value: &V, block_size: BlockSize) -> bool {
+        let value: &dyn Any = value;
+        value.downcast_ref::<ObjectValue>().is_none_or(|value| value.is_valid_for(self, block_size))
     }
 }
 
@@ -930,9 +938,9 @@ impl From<BytesAndNodes> for (i64, i64) {
 impl ObjectValue {
     /// fxdax: whether this is what an object store's item of `key` may hold, in a filesystem of
     /// `block_size` blocks: the one check of what's read, of the journal's mutations
-    /// (`Journal::validate_mutation`) and a super-block's records, after which what reads them
-    /// trusts them. Any extent's key is on blocks, not only those of extents that have a value,
-    /// and what its value says fits it.
+    /// (`Journal::validate_mutation`), a super-block's records, and a layer's items
+    /// (`LayerKey::is_valid_item`), after which what reads them trusts them. Any extent's key is
+    /// on blocks, not only those of extents that have a value, and what its value says fits it.
     pub fn is_valid_for(&self, key: &ObjectKey, block_size: BlockSize) -> bool {
         let ObjectKeyData::Attribute(_, AttributeKey::Extent(extent)) = &key.data else {
             return true;

@@ -717,7 +717,7 @@ mod tests {
     use crate::lsm_tree::skip_list_layer::SkipListLayerIter;
     use crate::lsm_tree::types::{
         DefaultOrdLowerBound, DefaultOrdUpperBound, Existence, FuzzyHash, Item, ItemRef, Layer,
-        LayerIterator, LayerIteratorMut, SortByU64,
+        LayerIterator, LayerIteratorMut, LayerKey, SortByU64,
     };
     use crate::serialized_types::{
         LATEST_VERSION, Version, Versioned, VersionedLatest, versioned_type,
@@ -759,6 +759,13 @@ mod tests {
 
     impl DefaultOrdLowerBound for TestKey {}
     impl DefaultOrdUpperBound for TestKey {}
+
+    // fxdax: a key says what a layer's item may hold (`LayerKey::is_valid_item`).
+    impl LayerKey for TestKey {
+        fn overlaps(&self, other: &Self) -> bool {
+            self == other
+        }
+    }
 
     #[fuchsia::test]
     async fn test_key_exists() {

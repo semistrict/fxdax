@@ -16,6 +16,7 @@ use std::future::Future;
 use std::hash::Hash;
 use std::marker::PhantomData;
 use std::sync::Arc;
+use storage_units::BlockSize;
 
 pub use fxfs_macros::impl_fuzzy_hash;
 
@@ -58,12 +59,14 @@ impl_fuzzy_hash!(String);
 impl_fuzzy_hash!(Vec<u8>);
 
 /// Keys and values need to implement the following traits.  For merging, they need to implement
-/// MergeableKey.  TODO: Use trait_alias when available.
+/// MergeableKey.  TODO: Use trait_alias when available. fxdax: `LayerKey` too, which says what a
+/// layer's item may hold (`LayerKey::is_valid_item`).
 pub trait Key:
     Clone
     + Debug
     + Hash
     + FuzzyHash
+    + LayerKey
     + OrdUpperBound
     + Send
     + SortByU64
@@ -81,6 +84,7 @@ impl<K> Key for K where
         + Debug
         + Hash
         + FuzzyHash
+        + LayerKey
         + OrdUpperBound
         + Send
         + SortByU64
@@ -310,6 +314,16 @@ pub trait LayerKey: Clone {
 
     /// Returns true if the keys are overlapping or equal.
     fn overlaps(&self, other: &Self) -> bool;
+
+    /// fxdax: whether `value` is what an item of this key may hold, in a filesystem of
+    /// `block_size` blocks. What a layer file holds is what an image says, which may be anything,
+    /// so each item is checked as it's read from one, once, and what reads it after trusts it, as
+    /// what replays the journal trusts what `Journal::validate_mutation` let by: the one trust
+    /// boundary of what's read (TASK-153.12). A key knows the values of its own store's items; of
+    /// any other, as tests' layers hold, and by default, anything is.
+    fn is_valid_item<V: 'static>(&self, _value: &V, _block_size: BlockSize) -> bool {
+        true
+    }
 }
 
 #[derive(Debug, Eq, PartialEq, Clone, Copy)]

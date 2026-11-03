@@ -193,6 +193,7 @@ use futures::future::BoxFuture;
 use fxfs_macros::SerializeKey;
 use merge::{filter_marked_for_deletion, filter_tombstones, merge};
 use serde::{Deserialize, Serialize};
+use std::any::Any;
 use std::borrow::Borrow;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::hash::Hash;
@@ -513,6 +514,14 @@ impl LayerKey for AllocatorKey {
     fn overlaps(&self, other: &Self) -> bool {
         self.extent == other.extent && self.range.overlaps(&other.range)
     }
+
+    /// fxdax: an allocator's item is what its value says it may be
+    /// (`AllocatorValue::is_valid_for`).
+    fn is_valid_item<V: 'static>(&self, value: &V, block_size: BlockSize) -> bool {
+        let value: &dyn Any = value;
+        (value.downcast_ref::<AllocatorValue>())
+            .is_none_or(|value| value.is_valid_for(self, block_size))
+    }
 }
 
 impl OrdUpperBound for AllocatorKey {
@@ -551,6 +560,20 @@ pub enum AllocatorValueV32 {
     // fxdax: a count of 0 is a deallocated range of an extent another range of which is still
     // allocated.
     Abs { count: u64, owner_object_id: u64 },
+}
+
+impl AllocatorValue {
+    /// fxdax: whether this is what an allocator's item of `key` may hold, in a filesystem of
+    /// `block_size` blocks: a range on blocks, of an owner, as the journal's allocations must be
+    /// (`Journal::validate_mutation`), checked of a layer's items as they're read
+    /// (`LayerKey::is_valid_item`).
+    pub fn is_valid_for(&self, key: &AllocatorKey, block_size: BlockSize) -> bool {
+        let owned = match self {
+            AllocatorValue::None => true,
+            AllocatorValue::Abs { owner_object_id, .. } => *owner_object_id != INVALID_OBJECT_ID,
+        };
+        owned && !key.range.is_empty() && block_size.is_aligned(&key.range.0)
+    }
 }
 
 pub type AllocatorItem = Item<AllocatorKey, AllocatorValue>;

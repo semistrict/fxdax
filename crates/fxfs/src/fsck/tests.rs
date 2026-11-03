@@ -824,6 +824,8 @@ async fn test_misordered_layer_file() {
 
     let store_id = {
         let fs = test.filesystem();
+        // fxdax: on the filesystem's blocks, as what a layer holds must be to be read.
+        let bs = fs.block_size().get();
         let root_volume = root_volume(fs.clone()).await.unwrap();
         let store = root_volume
             .new_volume(
@@ -843,15 +845,11 @@ async fn test_misordered_layer_file() {
             store.as_ref(),
             vec![
                 Item::new(
-                    ObjectKey::extent(
-                        5,
-                        AttributeId::TEST_ID,
-                        MIN_BLOCK_SIZE.get()..2 * MIN_BLOCK_SIZE,
-                    ),
+                    ObjectKey::extent(5, AttributeId::TEST_ID, bs..2 * bs),
                     ObjectValue::deleted_extent(),
                 ),
                 Item::new(
-                    ObjectKey::extent(5, AttributeId::TEST_ID, 0..MIN_BLOCK_SIZE.get()),
+                    ObjectKey::extent(5, AttributeId::TEST_ID, 0..bs),
                     ObjectValue::deleted_extent(),
                 ),
             ],
@@ -873,6 +871,8 @@ async fn test_overlapping_keys_in_layer_file() {
 
     let store_id = {
         let fs = test.filesystem();
+        // fxdax: on the filesystem's blocks, as what a layer holds must be to be read.
+        let bs = fs.block_size().get();
         let root_volume = root_volume(fs.clone()).await.unwrap();
         let store = root_volume
             .new_volume(
@@ -892,23 +892,15 @@ async fn test_overlapping_keys_in_layer_file() {
             store.as_ref(),
             vec![
                 Item::new(
-                    ObjectKey::extent(1, AttributeId::TEST_ID, 0..2 * MIN_BLOCK_SIZE),
+                    ObjectKey::extent(1, AttributeId::TEST_ID, 0..2 * bs),
                     ObjectValue::deleted_extent(),
                 ),
                 Item::new(
-                    ObjectKey::extent(
-                        1,
-                        AttributeId::TEST_ID,
-                        MIN_BLOCK_SIZE.get()..3 * MIN_BLOCK_SIZE,
-                    ),
+                    ObjectKey::extent(1, AttributeId::TEST_ID, bs..3 * bs),
                     ObjectValue::deleted_extent(),
                 ),
                 Item::new(
-                    ObjectKey::extent(
-                        1,
-                        AttributeId::TEST_ID,
-                        2 * MIN_BLOCK_SIZE..4 * MIN_BLOCK_SIZE,
-                    ),
+                    ObjectKey::extent(1, AttributeId::TEST_ID, 2 * bs..4 * bs),
                     ObjectValue::deleted_extent(),
                 ),
             ],
@@ -933,28 +925,22 @@ async fn test_overlapping_keys_in_root_store_layer_file() {
 
     {
         let fs = test.filesystem();
+        // fxdax: on the filesystem's blocks, as what a layer holds must be to be read.
+        let bs = fs.block_size().get();
         install_items_in_store(
             &fs,
             &fs.root_store(),
             vec![
                 Item::new(
-                    ObjectKey::extent(1, AttributeId::TEST_ID, 0..2 * MIN_BLOCK_SIZE),
+                    ObjectKey::extent(1, AttributeId::TEST_ID, 0..2 * bs),
                     ObjectValue::deleted_extent(),
                 ),
                 Item::new(
-                    ObjectKey::extent(
-                        1,
-                        AttributeId::TEST_ID,
-                        MIN_BLOCK_SIZE.get()..3 * MIN_BLOCK_SIZE,
-                    ),
+                    ObjectKey::extent(1, AttributeId::TEST_ID, bs..3 * bs),
                     ObjectValue::deleted_extent(),
                 ),
                 Item::new(
-                    ObjectKey::extent(
-                        1,
-                        AttributeId::TEST_ID,
-                        2 * MIN_BLOCK_SIZE..4 * MIN_BLOCK_SIZE,
-                    ),
+                    ObjectKey::extent(1, AttributeId::TEST_ID, 2 * bs..4 * bs),
                     ObjectValue::deleted_extent(),
                 ),
             ],
@@ -4543,10 +4529,12 @@ async fn test_invalid_bloom_filter_for_allocator() {
             // of how the items are written to the persistent layer.
             let item_count = 3000;
             let mut items: Vec<Item<AllocatorKey, AllocatorValue>> = vec![];
+            // fxdax: on the filesystem's blocks, as what a layer holds must be to be read.
+            let bs = fs.block_size().get();
             for i in 0..item_count as u64 {
                 // The range per item needs to be disjoint to avoid them being merged.
                 items.push(Item::new(
-                    AllocatorKey::new(TEST_EXTENT, (2 * i * 100 * 512)..(2 * i + 1) * 100 * 512),
+                    AllocatorKey::new(TEST_EXTENT, (2 * i * 100 * bs)..(2 * i + 1) * 100 * bs),
                     AllocatorValue::Abs { count: 1, owner_object_id: 1 },
                 ));
             }
@@ -4633,14 +4621,12 @@ async fn test_invalid_bloom_filter_for_volume() {
             // of how the items are written to the persistent layer.
             let item_count = 1000;
             let mut items: Vec<Item<ObjectKey, ObjectValue>> = vec![];
+            // fxdax: on the filesystem's blocks, as what a layer holds must be to be read.
+            let bs = fs.block_size().get();
             for i in 0..item_count as u64 {
                 // The range per item needs to be disjoint to avoid them being merged.
                 items.push(Item::new(
-                    ObjectKey::extent(
-                        100000,
-                        AttributeId::TEST_ID,
-                        (2 * i * 512)..(2 * i + 1) * 512,
-                    ),
+                    ObjectKey::extent(100000, AttributeId::TEST_ID, (2 * i * bs)..(2 * i + 1) * bs),
                     ObjectValue::deleted_extent(),
                 ));
             }

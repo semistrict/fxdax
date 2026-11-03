@@ -363,6 +363,14 @@ impl<K: Key, V: LayerValue, B: LayerBuffer> KeyOnlyIterator<'_, K, V, B> {
         let value = V::deserialize_from_version(self.buffer.by_ref(), self.layer.version)
             .map_err(|e| self.corruption_error(e))
             .context("Corrupt layer (value)")?;
+        // fxdax: the trust boundary of what a layer holds, which is what an image says: an item
+        // that couldn't be is refused here, as it's read, so that what reads it after needn't ask
+        // (`LayerKey::is_valid_item`, TASK-153.12). The block size is the store's, which its
+        // layers are written in.
+        if !key.is_valid_item(&value, self.layer.block_size) {
+            return Err(self.corruption_error(format!("{key:?} can't hold {value:?}")))
+                .context("Corrupt layer (item)");
+        }
         Ok(Some(Item { key, value }))
     }
 
@@ -1741,7 +1749,8 @@ mod tests {
     use crate::lsm_tree::persistent_layer::MINIMUM_DATA_BLOCKS_FOR_BLOOM_FILTER;
     use crate::lsm_tree::testing::TestKey;
     use crate::lsm_tree::types::{
-        Existence, Item, ItemRef, Layer, LayerWriter, MaybeContainsKey, OrdUpperBound,
+        Existence, Item, ItemRef, Key, Layer, LayerValue, LayerWriter, MaybeContainsKey,
+        OrdUpperBound,
     };
     use crate::object_handle::{
         LayerObject, ObjectHandle, ReadObjectHandle, WriteBytes, WriteObjectHandle,
@@ -2115,6 +2124,125 @@ mod tests {
         let error = open_layer(&object).await.expect_err("opened");
         let error = error.chain().find_map(|error| error.downcast_ref::<FxfsError>());
         assert_eq!(error, Some(&FxfsError::Inconsistent));
+    }
+
+    /// fxdax: a layer of `items`, as a writer would write them, in blocks of 4 KiB.
+    async fn layer_of<K: Key, V: LayerValue>(items: &[Item<K, V>]) -> Arc<dyn Layer<K, V>> {
+        let object = Arc::new(FakeObject::new());
+        let handle = FakeObjectHandle::new_with_block_size(object.clone(), BlockSize::SIZE_4KIB);
+        let writer = Writer::new(&handle).await;
+        let mut writer =
+            PersistentLayerWriter::<_, K, V>::new(writer, items.len(), BlockSize::SIZE_4KIB)
+                .await
+                .expect("writer new");
+        for item in items {
+            writer.write(item.as_item_ref()).await.expect("write failed");
+        }
+        writer.complete().await.expect("complete failed");
+        let handle = FakeObjectHandle::new_with_block_size(object, BlockSize::SIZE_4KIB);
+        PersistentLayer::open(handle).await.expect("open failed")
+    }
+
+    /// fxdax: a layer of `items` scans as far as `good` of them, then fails, Inconsistent: what a
+    /// layer holds is what an image says, and what no layer may hold is refused as it's read.
+    async fn scan_until_refused<K: Key + PartialEq, V: LayerValue + PartialEq>(
+        items: &[Item<K, V>],
+        good: usize,
+    ) -> Arc<dyn Layer<K, V>> {
+        let layer = layer_of(items).await;
+        let mut iterator = layer.seek(Bound::Unbounded).await.expect("seek failed");
+        for (index, item) in items[..good].iter().enumerate() {
+            assert_eq!(iterator.get(), Some(item.as_item_ref()));
+            if index + 1 < good {
+                iterator.advance().await.expect("advance failed");
+            }
+        }
+        let error = iterator.advance().await.expect_err("advanced past what no layer holds");
+        assert!(FxfsError::Inconsistent.matches(&error), "{error:?}");
+        drop(iterator);
+        layer
+    }
+
+    /// fxdax: as `scan_until_refused`, of an item no layer may hold, `items[good]`, which a seek
+    /// to it is refused too.
+    async fn read_until_refused<K: Key + PartialEq, V: LayerValue + PartialEq>(
+        items: &[Item<K, V>],
+        good: usize,
+    ) {
+        let layer = scan_until_refused(items, good).await;
+        let error = layer.seek(Bound::Included(&items[good].key)).await.err();
+        let error = error.expect("sought what no layer holds");
+        assert!(FxfsError::Inconsistent.matches(&error), "{error:?}");
+    }
+
+    /// fxdax: an item an object store's layer can't hold is refused as it's read: a layer's items
+    /// are what `Journal::validate_mutation` lets by, as a mutation of the journal's.
+    #[fuchsia::test]
+    async fn test_layer_items_are_checked_as_they_are_read() {
+        use crate::checksum::Checksums;
+        use crate::object_store::{ExtentMode, ExtentValue, ObjectValue};
+        use bit_vec::BitVec;
+        use storage_device::ExtentId;
+
+        let extent = ExtentId::new(1, 1);
+        let before = Item::new(ObjectKey::object(1), ObjectValue::Some);
+        let extent_item = |range: Range<u64>, offset, mode| {
+            let key = ObjectKey::extent(2, AttributeId::DATA, range);
+            Item::new(key, ObjectValue::Extent(ExtentValue::new(extent, offset, mode, 0)))
+        };
+        let sums = |count| ExtentMode::Cow(Checksums::fletcher(vec![7; count]));
+        let bits = |count| ExtentMode::OverwritePartial(BitVec::from_elem(count, true));
+        let after = Item::new(ObjectKey::object(3), ObjectValue::Some);
+
+        let valid = [extent_item(0..8192, 4096, sums(2)), extent_item(0..8192, 0, bits(2))];
+        let mut items = vec![before.clone()];
+        items.push(valid[0].clone());
+        items.push(after.clone());
+        let layer = layer_of(&items).await;
+        let mut iterator = layer.seek(Bound::Unbounded).await.expect("seek failed");
+        for item in &items {
+            assert_eq!(iterator.get(), Some(item.as_item_ref()));
+            iterator.advance().await.expect("advance failed");
+        }
+        let layer = layer_of(&[before.clone(), valid[1].clone(), after.clone()]).await;
+        layer.seek(Bound::Included(&valid[1].key)).await.expect("seek failed");
+
+        for invalid in [
+            // Off the filesystem's blocks.
+            extent_item(512..4096, 0, ExtentMode::Raw),
+            extent_item(0..4096, 512, ExtentMode::Raw),
+            // Past where any extent ends.
+            extent_item(0..8192, u64::MAX - 4095, ExtentMode::Raw),
+            // Checksums that don't divide it into blocks.
+            extent_item(0..8192, 0, sums(3)),
+            extent_item(0..8192, 0, sums(4)),
+            // Bitmaps short of a bit a block, or over.
+            extent_item(0..8192, 0, bits(1)),
+            extent_item(0..8192, 0, bits(3)),
+            extent_item(0..8192, 0, bits(0)),
+        ] {
+            read_until_refused(&[before.clone(), invalid, after.clone()], 1).await;
+        }
+    }
+
+    /// fxdax: an item an allocator's layer can't hold is refused as it's read, as of an object
+    /// store's.
+    #[fuchsia::test]
+    async fn test_allocator_layer_items_are_checked_as_they_are_read() {
+        use crate::object_store::allocator::{AllocatorKey, AllocatorValue};
+        use storage_device::ExtentId;
+
+        let extent = ExtentId::new(1, 1);
+        let item = |range, owner_object_id| {
+            let value = AllocatorValue::Abs { count: 1, owner_object_id };
+            Item::new(AllocatorKey::new(extent, range), value)
+        };
+        let layer = layer_of(&[item(0..4096, 5), item(4096..8192, 5)]).await;
+        let mut iterator = layer.seek(Bound::Unbounded).await.expect("seek failed");
+        iterator.advance().await.expect("advance failed");
+        assert_eq!(iterator.get().expect("an item").key, &AllocatorKey::new(extent, 4096..8192));
+        read_until_refused(&[item(0..4096, 5), item(4096..4608, 5)], 1).await;
+        read_until_refused(&[item(0..4096, 5), item(4096..8192, 0)], 1).await;
     }
 
     /// fxdax: a compaction of a corrupt layer may write a key below the first of its block, which
@@ -3026,14 +3154,14 @@ mod kept_writer_tests {
 /// `cargo nextest run --release -p fxfs --run-ignored only --no-capture layer_read_cost`
 #[cfg(test)]
 mod read_cost {
-    use super::PersistentLayer;
-    use super::PersistentLayerWriter;
+    use super::{PersistentLayer, PersistentLayerWriter};
     use crate::checksum::Checksums;
-    use crate::lsm_tree::types::{Item, LayerIterator as _, LayerWriter, OrdUpperBound};
+    use crate::lsm_tree::types::{Item, LayerIterator as _, LayerKey, LayerWriter, OrdUpperBound};
     use crate::object_store::object_record::{ObjectKey, ObjectValue, Timestamp};
     use crate::object_store::{AttributeId, AttributeKey};
     use crate::testing::fake_object::{FakeObject, FakeObjectHandle};
     use crate::testing::writer::Writer;
+    use std::hint::black_box;
     use std::ops::Bound;
     use std::sync::Arc;
     use std::time::{Duration, Instant};
@@ -3107,8 +3235,15 @@ mod read_cost {
             })
             .collect();
 
-        let (mut scans, mut seeks) = (Vec::new(), Vec::new());
+        let (mut scans, mut seeks, mut checks) = (Vec::new(), Vec::new(), Vec::new());
         for _ in 0..ROUNDS {
+            // What a scan checks of each item, alone.
+            let start = Instant::now();
+            let valid = (items.iter().map(black_box))
+                .filter(|item| item.key.is_valid_item(&item.value, BLOCK_SIZE));
+            assert_eq!(valid.count(), items.len());
+            checks.push(per(start.elapsed(), items.len()));
+
             let start = Instant::now();
             let mut iterator = layer.seek(Bound::Unbounded).await.expect("seeking");
             let mut read = 0;
@@ -3126,16 +3261,20 @@ mod read_cost {
             }
             seeks.push(per(start.elapsed(), keys.len()));
         }
-        scans.sort_by(f64::total_cmp);
-        seeks.sort_by(f64::total_cmp);
+        for times in [&mut scans, &mut seeks, &mut checks] {
+            times.sort_by(f64::total_cmp);
+        }
         let median = ROUNDS / 2;
         println!(
-            "{} items: scan {:.1} ns an item (min {:.1}), seek {:.1} ns (min {:.1})",
+            "{} items: scan {:.1} ns an item (min {:.1}), seek {:.1} ns (min {:.1}), \
+             checks {:.1} ns an item (min {:.1})",
             items.len(),
             scans[median],
             scans[0],
             seeks[median],
-            seeks[0]
+            seeks[0],
+            checks[median],
+            checks[0]
         );
     }
 }

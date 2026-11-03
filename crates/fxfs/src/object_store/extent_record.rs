@@ -8,7 +8,8 @@
 // (`offset_by`), as bit-vec 0.10's `split_off` may leave storage its deserializer refuses. What a
 // record holds is what an image says, so what's offset or shrunk stays within it (`entries_in`).
 
-// TODO(https://fxbug.dev/42178223): need validation after deserialization.
+// TODO(https://fxbug.dev/42178223): need validation after deserialization. fxdax: what a layer or
+// the journal holds is validated as it's read (`ExtentValue::fits`, `ObjectValue::is_valid_for`).
 
 use crate::checksum::{Checksums, ChecksumsV38};
 use bit_vec::BitVec;

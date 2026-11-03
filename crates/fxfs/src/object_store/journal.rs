@@ -660,7 +660,7 @@ impl Journal {
     /// Used during replay to validate a mutation.  This should return false if the mutation is not
     /// valid and should not be applied.  This could be for benign reasons: e.g. the device flushed
     /// data out-of-order, or because of a malicious actor.
-    /// fxdax: an object store's item is what its value says it may be
+    /// fxdax: an object store's item is what its value says it may be, as of a layer's
     /// (`ObjectValue::is_valid_for`).
     pub(super) fn validate_mutation(mutation: &Mutation, block_size: BlockSize) -> bool {
         match mutation {
