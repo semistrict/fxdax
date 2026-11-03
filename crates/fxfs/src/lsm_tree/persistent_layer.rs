@@ -3020,3 +3020,122 @@ mod kept_writer_tests {
         assert_eq!(kept.take(), None);
     }
 }
+
+/// fxdax: what reading a layer of an object store's items costs, an item at a time and a seek at a
+/// time, to compare a change to the read path with: in release, alone (TASK-153.12).
+/// `cargo nextest run --release -p fxfs --run-ignored only --no-capture layer_read_cost`
+#[cfg(test)]
+mod read_cost {
+    use super::PersistentLayer;
+    use super::PersistentLayerWriter;
+    use crate::checksum::Checksums;
+    use crate::lsm_tree::types::{Item, LayerIterator as _, LayerWriter, OrdUpperBound};
+    use crate::object_store::object_record::{ObjectKey, ObjectValue, Timestamp};
+    use crate::object_store::{AttributeId, AttributeKey};
+    use crate::testing::fake_object::{FakeObject, FakeObjectHandle};
+    use crate::testing::writer::Writer;
+    use std::ops::Bound;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+    use storage_device::ExtentId;
+    use storage_units::BlockSize;
+
+    const BLOCK_SIZE: BlockSize = BlockSize::SIZE_4KIB;
+    const OBJECTS: u64 = 20_000;
+    const EXTENTS: u64 = 8;
+    const ROUNDS: usize = 9;
+    const SEEKS: usize = 50_000;
+
+    /// A file's records: its object, its data attribute, and extents of 64 KiB, half with a
+    /// checksum a block.
+    fn items() -> Vec<Item<ObjectKey, ObjectValue>> {
+        let mut items = Vec::new();
+        let time = Timestamp::zero();
+        for object_id in 1..=OBJECTS {
+            let file = ObjectValue::file(1, EXTENTS << 16, time, time, time, time, None, None);
+            items.push(Item::new(ObjectKey::object(object_id), file));
+            let attribute =
+                ObjectKey::attribute(object_id, AttributeId::DATA, AttributeKey::Attribute);
+            items.push(Item::new(attribute, ObjectValue::attribute(EXTENTS << 16, false)));
+            let extent = ExtentId::new(object_id, 1);
+            for index in 0..EXTENTS {
+                let range = index << 16..(index + 1) << 16;
+                let key = ObjectKey::extent(object_id, AttributeId::DATA, range.clone());
+                let value = if index % 2 == 0 {
+                    ObjectValue::extent(extent, range.start, 0)
+                } else {
+                    let sums = Checksums::fletcher((0..16).map(|sum| sum * object_id).collect());
+                    ObjectValue::extent_with_checksum(extent, range.start, sums, 0)
+                };
+                items.push(Item::new(key, value));
+            }
+        }
+        items.sort_by(|a, b| a.key.cmp_upper_bound(&b.key));
+        items
+    }
+
+    fn per(elapsed: Duration, count: usize) -> f64 {
+        elapsed.as_nanos() as f64 / count as f64
+    }
+
+    #[fuchsia::test]
+    #[ignore]
+    async fn layer_read_cost() {
+        let items = items();
+        let object = Arc::new(FakeObject::new());
+        let handle = FakeObjectHandle::new_with_block_size(object.clone(), BLOCK_SIZE);
+        let mut writer = PersistentLayerWriter::<_, ObjectKey, ObjectValue>::new(
+            Writer::new(&handle).await,
+            items.len(),
+            BLOCK_SIZE,
+        )
+        .await
+        .expect("writer");
+        for item in &items {
+            writer.write(item.as_item_ref()).await.expect("writing");
+        }
+        writer.complete().await.expect("completing");
+        let handle = FakeObjectHandle::new_with_block_size(object, BLOCK_SIZE);
+        let layer = PersistentLayer::<ObjectKey, ObjectValue>::open(handle).await.expect("opening");
+
+        // Keys to seek to, spread across the layer, the same each run.
+        let mut state = 0x9e37_79b9_7f4a_7c15u64;
+        let keys: Vec<_> = (0..SEEKS)
+            .map(|_| {
+                state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                &items[(state >> 33) as usize % items.len()].key
+            })
+            .collect();
+
+        let (mut scans, mut seeks) = (Vec::new(), Vec::new());
+        for _ in 0..ROUNDS {
+            let start = Instant::now();
+            let mut iterator = layer.seek(Bound::Unbounded).await.expect("seeking");
+            let mut read = 0;
+            while iterator.get().is_some() {
+                read += 1;
+                iterator.advance().await.expect("advancing");
+            }
+            scans.push(per(start.elapsed(), read));
+            assert_eq!(read, items.len());
+
+            let start = Instant::now();
+            for key in &keys {
+                let iterator = layer.seek(Bound::Included(*key)).await.expect("seeking");
+                assert_eq!(iterator.get().expect("an item").key, *key);
+            }
+            seeks.push(per(start.elapsed(), keys.len()));
+        }
+        scans.sort_by(f64::total_cmp);
+        seeks.sort_by(f64::total_cmp);
+        let median = ROUNDS / 2;
+        println!(
+            "{} items: scan {:.1} ns an item (min {:.1}), seek {:.1} ns (min {:.1})",
+            items.len(),
+            scans[median],
+            scans[0],
+            seeks[median],
+            seeks[0]
+        );
+    }
+}
