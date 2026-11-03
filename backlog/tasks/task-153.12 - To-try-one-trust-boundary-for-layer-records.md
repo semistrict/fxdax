@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-01 23:09'
-updated_date: '2026-11-03 20:06'
+updated_date: '2026-11-03 20:19'
 labels: []
 dependencies: []
 parent_task_id: TASK-153
@@ -65,6 +65,8 @@ TASK-149.9: journal and super-block records are validated, layer records trusted
 After the rebase onto 80c4bfdb3 (branch head 280425844): macOS scripts/test.sh, workspace 2,064 of 2,064, Shuttle suites and scripts' 136 tests pass; upstream-changes.py --check passes. Not rerun on GCE after the rebase or the #[cold] commit: gcloud needs signing in (OPEN_QUESTIONS.md).
 
 On the final tree (rebased on 81e8869c5, extent_store only came in): fxfs and fxfs-posix nextest, 812 of 813 then 813 of 813; the one failure, the model test, unexplained and its output lost, is TASK-149.27. Not reproduced in 5,600 more sequences.
+
+Pushed at 704cdbead (rebased on 7dc85f28c, which brought the errno table: Inconsistent is EUCLEAN to the VFSs now): macOS scripts/test.sh 2,072 of 2,072, Shuttle suites and scripts' tests pass; upstream-changes.py --check passes.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
