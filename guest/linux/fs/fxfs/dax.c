@@ -2913,6 +2913,14 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 	u64 before_at = 0;
 	s64 before_where = -ENOENT;
 	bool fault = flags & IOMAP_FAULT;
+	/*
+	 * fxdax: whether a move of this iomap's committed, after which the window's page maps where the
+	 * blocks were, which a flush may have freed: nothing is taken from it then. A fault whose page
+	 * moved with nothing held, its allocation failed, and was sealed from the gate, held the zeros
+	 * of the freed block on the next pass, and made them the page's (guest/sim, failures 784 at
+	 * 1,000).
+	 */
+	bool moved_once = false;
 	/* A write(2)'s, of whose time write_ns counts. */
 	bool timed = !(flags & (IOMAP_FAULT | IOMAP_ZERO));
 	ssize_t count, moved = 0;
@@ -3049,7 +3057,7 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 		}
 		fresh |= find_next_zero_bit(range->mapped, first + pages, first) != first + pages;
 		if (READ_ONCE(fxfs_dax_check_moves) && pages == 1 && test_bit(first, range->mapped) &&
-		    !before) {
+		    !before && !moved_once) {
 			int id = dax_read_lock();
 			void *page;
 
@@ -3064,7 +3072,7 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 								     start + ((loff_t)first << PAGE_SHIFT),
 								     before_at, before);
 		}
-		if (fault && pages == 1 && test_bit(first, range->mapped) && !held) {
+		if (fault && pages == 1 && test_bit(first, range->mapped) && !held && !moved_once) {
 			int id;
 
 			fxfs_dax_pause(FXFS_DAX_STEP_HELD);
@@ -3126,6 +3134,7 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 		}
 		/* fxdax: a write(2)'s blocks stay the file's until it commits: nothing moved yet. */
 		moved = pending ? 0 : count;
+		moved_once |= moved;
 		/* fxdax: fault injection, a seal between the move and the mapping of the new block. */
 		if (fault && fxfs_dax_seal_moved()) {
 			err = fxfs_nofs(fxfs_fsync(fxfs_vfs_fs(inode->i_sb)));
