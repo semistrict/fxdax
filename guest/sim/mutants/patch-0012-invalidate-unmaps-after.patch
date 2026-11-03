@@ -1,0 +1,32 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+#
+# Patch 0012, TASK-150.21: an invalidation puts an entry's folio with its pages mapped still, a
+# PMD's split under a PTE of it (fs/dax.c's WARN in dax_folio_put).
+
+--- a/fs/dax.c
++++ b/fs/dax.c
+@@ -831,23 +831,6 @@
+ 	    (xas_get_mark(&xas, PAGECACHE_TAG_DIRTY) ||
+ 	     xas_get_mark(&xas, PAGECACHE_TAG_TOWRITE)))
+ 		goto out;
+-	/*
+-	 * Nothing keeps faults out of an invalidation, as a truncate's lock
+-	 * does: one may have mapped the entry since the caller unmapped its
+-	 * range, or the caller unmaps it only after. Its pages are unmapped
+-	 * now, the entry locked so that no fault maps them again, before its
+-	 * folio goes: one still mapped is split under its PMD (the WARN in
+-	 * dax_folio_put), and named by no entry.
+-	 */
+-	if (!trunc && !dax_is_empty_entry(entry)) {
+-		unsigned long nr = 1UL << dax_entry_order(entry);
+-
+-		dax_lock_entry(&xas, entry);
+-		xas_unlock_irq(&xas);
+-		unmap_mapping_pages(mapping, index & ~(nr - 1), nr, false);
+-		xas_reset(&xas);
+-		xas_lock_irq(&xas);
+-	}
+ 	dax_disassociate_entry(entry, mapping, trunc);
+ 	xas_store(&xas, NULL);
+ 	mapping->nrpages -= 1UL << dax_entry_order(entry);
