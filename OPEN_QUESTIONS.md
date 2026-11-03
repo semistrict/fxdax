@@ -35,7 +35,7 @@ Every branch record now names an owner: a random number chosen by whoever made t
 
 Five bugs came from a framing being ended by whatever came next: a commit's flush, a flush with nothing to commit, `close_now`, closing the branch, or a fork (TASK-41.1, 79.69, 79.99, 92.16, 150.2). Decided: every framing now runs on its own thread, makes its file durable, and finishes itself under the store's state lock. Everything else only waits for it: a commit's flush waits for the segment that commit closed, the uploader for segments whose commits are durable, `close_now` for its own, and forks and closing the branch for all of them. A side effect: the raw file of a segment a commit closed now goes at the first flush or close after both its framing and its commits are durable, not with that commit's own flush.
 **Instead:** keep handing each framing to whatever comes after it, as before.
-**Undoing it:** revert 30b3bc3e2.
+**Undoing it:** revert a38829973.
 
 ## Writers declare what's in flight in their keys (TASK-153.7, 2026-11-03)
 

@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-01 22:53'
-updated_date: '2026-11-03 14:10'
+updated_date: '2026-11-03 14:16'
 labels: []
 dependencies: []
 parent_task_id: TASK-153
@@ -59,10 +59,12 @@ Verified: macOS scripts/test.sh at e8e186485: workspace 2051/2051, Shuttle 61, 7
 Rebased onto main (752be3c27): the framing commit is 30b3bc3e2 (was 1477b7222 above).
 
 Rebased tree (on 752be3c27), macOS: workspace 2053 (2045 passed before an external SIGTERM ended the run; the 8 it cut short, plus the restore_faults suite, 11/11 alone), Shuttle 61, 7, 6, 21, 10, 18, scripts 135 OK.
+
+On main as a38829973 (a second rebase; 30b3bc3e2 and 1477b7222 above are that commit before it). Rebased again over TASK-153.15: clippy clean, fxdax 297/297 on macOS.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
-Decided and done (30b3bc3e2): a segment's framing ends itself, whatever closed it; a commit's flush, the uploader's take, close_now, forks and the branch's closing only wait. Removes State.closings, Pending.closings, end_closings and two rules whose classes (TASK-150.2, 79.99) are now impossible. needs_framings_to_end_themselves and needs_closes_to_wait_for_framings_after_a_failed_flush red with their rules off; a new all-rules PCT run of 150.2's scenario found and fixed a flush waiting too broadly. Verified macOS and GCE.
+Decided and done (a38829973): a segment's framing ends itself, whatever closed it; a commit's flush, the uploader's take, close_now, forks and the branch's closing only wait. Removes State.closings, Pending.closings, end_closings and two rules whose classes (TASK-150.2, 79.99) are now impossible. needs_framings_to_end_themselves and needs_closes_to_wait_for_framings_after_a_failed_flush red with their rules off; a new all-rules PCT run of 150.2's scenario found and fixed a flush waiting too broadly. Verified macOS and GCE.
 <!-- SECTION:FINAL_SUMMARY:END -->
