@@ -218,6 +218,47 @@ async fn a_truncate_keeping_its_tail_leaves_the_last_block_in_place() {
     fs.stop_delayed().await.unwrap();
 }
 
+/// Whatever grows a file past its end, what its last block held past the end reads back as zeros,
+/// though the truncate that left it there didn't zero it, as one with no room can't: the growth
+/// zeroes it, every way a file grows (TASK-150.19, TASK-153.4).
+#[fuchsia::test]
+async fn every_growth_finds_what_a_cut_left_past_the_end_zeroed() {
+    let (fs, root) = volume().await;
+    let source = fs.new_file(root, b"source").await;
+    fs.write(source, 0, &[b's'; 8192]).await.unwrap();
+    let growths: [(&str, u64); 6] = [
+        ("a write in the block", 2000),
+        ("a write past it", 65537),
+        ("a truncate", 65537),
+        ("an allocation in the block", 2000),
+        ("an allocation past it", 65537),
+        ("a clone past it", 65536 + 8192),
+    ];
+    for (i, (growth, size)) in growths.into_iter().enumerate() {
+        let ino = fs.new_file(root, format!("grown{i}").as_bytes()).await;
+        fs.write(ino, 0, &[b'c'; 8192]).await.unwrap();
+        // A cut that leaves the last block as it was: what one with no room to zero it does.
+        fs.setattr(ino, &set_size(1000, SET_KEEP_TAIL)).await.unwrap();
+        match growth {
+            "a write in the block" => fs.write(ino, 1999, b"w").await.unwrap(),
+            "a write past it" => fs.write(ino, 65536, b"w").await.unwrap(),
+            "a truncate" => fs.setattr(ino, &set_size(size, 0)).await.unwrap(),
+            "an allocation in the block" => fs.allocate(ino, 1000..2000).await.unwrap(),
+            "an allocation past it" => fs.allocate(ino, 65536..65537).await.unwrap(),
+            "a clone past it" => {
+                fs.clone_range(source, 0..8192, ino, 65536, size).await.unwrap();
+            }
+            _ => unreachable!(),
+        }
+        let mut read = vec![0xff; size as usize];
+        assert_eq!(fs.read(ino, 0, &mut read).await.unwrap(), size as usize, "{growth}");
+        let past_cut =
+            read[1000..(size as usize).min(4096)].iter().filter(|&&b| b != 0 && b != b'w').count();
+        assert_eq!(past_cut, 0, "{growth}: bytes the cut left past the end, read back");
+    }
+    fs.stop_delayed().await.unwrap();
+}
+
 /// The last bytes a file can hold are read back as written (xfstests generic/303, generic/525).
 #[fuchsia::test]
 async fn a_files_last_bytes_read_back() {

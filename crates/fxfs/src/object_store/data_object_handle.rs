@@ -836,6 +836,9 @@ impl<S: HandleOwner> DataObjectHandle<S> {
                 ),
             }
         }
+        // fxdax: growing, what the last block holds past the end is zeroed first: allocated, the
+        // block would be switched to an overwrite extent keeping it (TASK-153.4).
+        self.zero_tail_before_growth(&mut transaction, range.end, None).await?;
         let mut to_allocate = Vec::new();
         let mut to_switch = Vec::new();
         let key_id = self.get_key(None).await?.0;
@@ -1152,10 +1155,7 @@ impl<S: HandleOwner> DataObjectHandle<S> {
             transfer_buf.as_mut(),
         )
         .await?;
-        if offset + buf.len() as u64 > self.txn_get_size(transaction) {
-            self.txn_update_size(transaction, offset + buf.len() as u64, None).await?;
-        }
-        Ok(())
+        self.txn_grow_size(transaction, offset + buf.len() as u64, &[aligned]).await
     }
 
     /// fxdax: writes `writes`, each bytes at an offset, as `txn_write` writes one, in as few
@@ -1329,10 +1329,7 @@ impl<S: HandleOwner> DataObjectHandle<S> {
             }
         }
         self.multi_write(transaction, self.attribute_id(), &ranges, buf.as_mut()).await?;
-        if last.range.end > self.txn_get_size(transaction) {
-            self.txn_update_size(transaction, last.range.end, None).await?;
-        }
-        Ok(())
+        self.txn_grow_size(transaction, last.range.end, &ranges).await
     }
 
     // Writes to multiple ranges with data provided in `buf`.  The buffer can be modified in place
@@ -1720,17 +1717,19 @@ impl<S: HandleOwner> DataObjectHandle<S> {
         Ok(())
     }
 
-    /// fxdax: zeros what the last block of a file of `size` bytes holds past them. No extent of the
-    /// file may start past its last block.
+    /// fxdax: zeros what the last block of a file of `size` bytes holds past them, unless it is
+    /// zeros already, as it nearly always is: says whether it wrote the block. A growth's zeroing
+    /// writes back no block its writes didn't reserve room for, unless a cut left one so (TASK-80,
+    /// TASK-153.4). No extent of the file may start past its last block.
     async fn txn_zero_tail<'a>(
         &'a self,
         transaction: &mut Transaction<'a>,
         size: u64,
-    ) -> Result<(), Error> {
+    ) -> Result<bool, Error> {
         let store = self.store();
         let block_size = self.block_size();
         if block_size.is_aligned(size) {
-            return Ok(());
+            return Ok(false);
         }
         let layer_set = store.tree.layer_set();
         let mut merger = layer_set.merger();
@@ -1768,7 +1767,11 @@ impl<S: HandleOwner> DataObjectHandle<S> {
                 // check and blindly do it to keep it simpler here.
                 self.read_and_decrypt(*extent, device_offset, aligned_size, buf.as_mut(), *key_id)
                     .await?;
-                buf.subslice_mut((size % block_size) as usize..buf.len()).fill(0);
+                let mut past = buf.subslice_mut((size % block_size) as usize..buf.len());
+                if past.to_vec().iter().all(|&byte| byte == 0) {
+                    return Ok(false);
+                }
+                past.fill(0);
                 self.multi_write(
                     transaction,
                     *attribute_id,
@@ -1776,7 +1779,55 @@ impl<S: HandleOwner> DataObjectHandle<S> {
                     buf.as_mut(),
                 )
                 .await?;
+                return Ok(true);
             }
+        }
+        Ok(false)
+    }
+
+    /// fxdax: makes the file `size` bytes long if it is shorter, in `transaction`, which writes
+    /// `replaced` of its blocks anew (block aligned): zeroing what its last block holds past its end,
+    /// unless `replaced` has that block. What a cut left there is no data, and a cut with no room to
+    /// zero it leaves it: the growth zeroes it, as `grow` does, every way a file grows but a DAX
+    /// window's, which zeroes it in the window. A write past the end, a clone and an allocation
+    /// brought it back (TASK-150.19, TASK-153.4).
+    async fn txn_grow_size<'a>(
+        &'a self,
+        transaction: &mut Transaction<'a>,
+        size: u64,
+        replaced: &[Range<u64>],
+    ) -> Result<(), Error> {
+        let old = self.txn_get_size(transaction);
+        if size <= old {
+            return Ok(());
+        }
+        let last = self.block_size().align_down(old);
+        if !replaced.iter().any(|blocks| blocks.start <= last && last < blocks.end) {
+            self.txn_zero_tail(transaction, old).await?;
+        }
+        self.txn_update_size(transaction, size, None).await
+    }
+
+    /// fxdax: ahead of a growth to `size` that finds the file's extents before it changes them, a
+    /// clone's or an allocation's, zeros what the last block holds past the end, as `txn_grow_size`
+    /// does, unless `replaced` has that block, and commits it: in one transaction, the growth would
+    /// take the block the zeroing frees for the file's (TASK-153.4).
+    async fn zero_tail_before_growth<'a>(
+        &'a self,
+        transaction: &mut Transaction<'a>,
+        size: u64,
+        replaced: Option<Range<u64>>,
+    ) -> Result<(), Error> {
+        let old = self.txn_get_size(transaction);
+        let last = self.block_size().align_down(old);
+        if size <= old
+            || self.block_size().is_aligned(old)
+            || replaced.is_some_and(|blocks| blocks.start <= last && last < blocks.end)
+        {
+            return Ok(());
+        }
+        if self.txn_zero_tail(transaction, old).await? {
+            transaction.commit_and_continue().await?;
         }
         Ok(())
     }
@@ -2424,8 +2475,8 @@ impl<S: HandleOwner> DataObjectHandle<S> {
     }
 
     /// fxdax: `txn_clone_range` of a range of however many extents, in either file, in as many
-    /// commits as hold them, from its start, `dst` growing towards `size` with them: one that fails
-    /// has cloned what it got to. `transaction` holds the caller's locks, and is left for it to
+    /// commits as hold them, from its start, `dst` growing towards `size` with them, and to it as
+    /// the last commits: one that fails has cloned what it got to. `transaction` holds the caller's locks, and is left for it to
     /// commit. Each extent costs its record, which holds each of its blocks' checksums, a reference
     /// and a hole's record, and each of `dst`'s a record freeing it; holes nothing, however long:
     /// counted by their bytes, a clone across one of exabytes (generic/303) committed for ever, its
@@ -2458,6 +2509,8 @@ impl<S: HandleOwner> DataObjectHandle<S> {
                 + mutation_record_bytes(allocator_id, &reference)
         };
         let freed = |_: &Range<u64>, blocks, _: &ExtentValue| dst.cost_of_freeing(blocks);
+        dst.zero_tail_before_growth(transaction, size, Some(dst_of(range.start)..dst_of(range.end)))
+            .await?;
         let mut start = range.start;
         loop {
             // Half of the room for this file's extents, and what they leave for the `dst`'s they
@@ -2468,12 +2521,12 @@ impl<S: HandleOwner> DataObjectHandle<S> {
             let (dst_end, _) = dst.end_of_room(dst_range, room - taken, &freed).await?;
             let end = start + (dst_end - dst_of(start));
             self.txn_clone_range(transaction, start..end, dst, dst_of(start)).await?;
-            if end == range.end {
-                return Ok(());
-            }
-            let reached = dst_of(end).min(size);
+            let reached = if end == range.end { size } else { dst_of(end).min(size) };
             if reached > dst.txn_get_size(transaction) {
                 dst.txn_update_size(transaction, reached, None).await?;
+            }
+            if end == range.end {
+                return Ok(());
             }
             transaction.commit_and_continue().await?;
             start = end;

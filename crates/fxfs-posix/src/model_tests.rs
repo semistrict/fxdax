@@ -2271,6 +2271,46 @@ fn a_truncate_on_a_full_filesystem_leaves_nothing_past_the_end() {
     Setting::awkward(0, TIGHT).with_graveyard_of_seed().holds(ops);
 }
 
+/// What a truncate cuts from a file's last block stays gone when no block is free even after a
+/// sync, its blocks shared with a clone, so that cutting them freed nothing: a clone that grew the
+/// file after brought the bytes back. Found by a hunt (TASK-149.8's long4/11, TASK-150.19).
+#[test]
+fn a_truncate_with_no_block_to_zero_its_tail_in_leaves_nothing_past_the_end() {
+    let ops = vec![
+        Op::Create(1),
+        Op::Exchange(0, 0),
+        Op::Read { file: 0, at: 0, len: 1 },
+        Op::Open(0),
+        Op::Write { file: 0, at: 0, len: 1, byte: 1 },
+        Op::Remount,
+        Op::Truncate { file: 15, size: 4294967297 },
+        Op::Fill { file: 13, page: 58, pages: 2051, stride: 2, byte: 139 },
+        Op::Fill { file: 12, page: 5, pages: 2519, stride: 2, byte: 254 },
+        Op::Create(14),
+        Op::Write { file: 1, at: 52953, len: 4096, byte: 55 },
+        Op::Truncate { file: 4, size: 4294971308 },
+        Op::Write { file: 2, at: 32768, len: 4096, byte: 7 },
+        Op::CloneToEnd { from: 0, to: 9, page: 508, to_page: 17 },
+        Op::Truncate { file: 15, size: 54584 },
+        Op::UnlinkLater(7),
+        Op::Clone { from: 2, to: 14, page: 5, pages: 5, to_page: 515 },
+    ];
+    Setting::awkward(0, TIGHT).holds(ops);
+}
+
+/// A clone of a file to its own end, past a last block it holds part of: zeroing that block's tail
+/// in the clone's transaction freed the block the clone took for the file's, an inconsistency the
+/// plan's fsck found (the Linux workspace on GCE, TASK-153.4).
+#[test]
+fn a_clone_to_its_own_end_past_a_partial_block_holds() {
+    let ops = vec![
+        Op::Create(0),
+        Op::Write { file: 0, at: 77824, len: 1, byte: 0 },
+        Op::CloneToEnd { from: 0, to: 0, page: 0, to_page: 20 },
+    ];
+    Setting::awkward(0, ROOMY).with_graveyard_of_seed().holds(ops);
+}
+
 /// What a truncate cuts from a file's last block stays gone on a device just found full, however
 /// many transactions and records that took: the tail's copy finds no room, which a sync makes of
 /// what is waiting to go, here a file's queued unlink. A sequence above found this, on a seed that

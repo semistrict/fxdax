@@ -1120,9 +1120,6 @@ impl<P: Platform> Fxfs<P> {
         source
             .clone_range_in_commits(&mut transaction, range, &target, dst_offset, size)
             .await?;
-        if size > target.get_size() {
-            target.txn_update_size(&mut transaction, size, None).await?;
-        }
         let attr = self.attr_after(&transaction, dst).await?;
         transaction.commit().await?;
         Ok(attr)
