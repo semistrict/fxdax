@@ -3,11 +3,11 @@ id: TASK-91.13
 title: >-
   Guest virtio-extent driver: spin only as long as a request is expected to take
   (VEXT_SPIN_NS)
-status: In Progress
+status: Done
 assignee:
   - '@main-session'
 created_date: '2026-10-23 18:01'
-updated_date: '2026-10-24 16:13'
+updated_date: '2026-11-03 02:10'
 labels: []
 dependencies: []
 parent_task_id: TASK-91
@@ -30,7 +30,7 @@ Round 6: vext_wait spins up to VEXT_SPIN_NS = 100 us before sleeping; with MAPs 
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
+- [x] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
@@ -47,3 +47,9 @@ Round 6: vext_wait spins up to VEXT_SPIN_NS = 100 us before sleeping; with MAPs 
 
 GCE r65 (2026-10-24, us-east1-b, one host, pgbench-dax, guest cpu ticks from /proc/stat per step): before (kernel prune1, no adaptive spin) load 26.5 s, system 1533 ticks; runs tps 1011/927/896/783/819, system 4416/4490/4652/4553/4609. After (b4) load 20.5 s, system 865; runs tps 998/927/894/825/832, system 4865/4897/4864/4640/4667, user up too and idle down. AC2 holds for the load (-44% system, -23% time), not for the runs: their system time is ~5% higher at equal tps. Interrupt completions 171k a 60 s run, 3 polled. Open: where the runs' system time goes (a perf profile of the guest under pgbench-dax).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The virtio-extent driver keeps a moving average of latency per request type and spins only when it is under VEXT_SPIN_NS (2db1d11c6): the pgbench-dax load's guest system time -44% at equal tps on GCE. Not pursued: the runs' ~5% higher system time; TASK-146.1 later showed spinning longer costs more CPU than it saves.
+<!-- SECTION:FINAL_SUMMARY:END -->

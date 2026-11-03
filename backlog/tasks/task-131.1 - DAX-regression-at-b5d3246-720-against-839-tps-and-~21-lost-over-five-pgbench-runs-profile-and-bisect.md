@@ -3,10 +3,10 @@ id: TASK-131.1
 title: >-
   DAX regression at b5d3246: 720 against 839 tps, and ~21% lost over five
   pgbench runs: profile and bisect
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-29 21:13'
-updated_date: '2026-10-30 13:43'
+updated_date: '2026-11-03 02:10'
 labels:
   - performance
 dependencies: []
@@ -29,7 +29,7 @@ Sandbox team round 8: DAX got 14% slower at b5d3246 (720 tps against 839), and l
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
+- [x] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
@@ -64,3 +64,9 @@ r272, pgbench-dax with checkpoints off (checkpoint_timeout=1d, max_wal_size=100G
 
 perf kvm guest profiles at main, 15 s from 40 s (run 1, r287: tps 1162 1093 1028 1021 1043) and from 330 s (run 5, r288: 1184 1082 1012 992 1001), so a host each: the guest kernel's symbols add to 5.8% and 6.0% of samples, and none moves by more than 0.22 points: vm_interrupt 1.14 to 1.33, fxfs_dax_evacuee_gather 0.45 to 0.23, x2apic_send_IPI 0.69 to 0.72, vm_notify 0.64 to 0.67, __pv_queued_spin_lock_slowpath 0.20 to 0.21. The decay isn't in the guest kernel's code. Left: the rest of the samples, which the report doesn't name: Postgres in the guest, and the host's VMM and extentd threads; a host-side profile by thread, run 1 against run 5, would say.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Bisected to f897ce4a2 (r263 against r264): fxdax's own physical memory fragmented, and the windows' physical runs became a quarter as long. A buddy allocator and run-allocated open pages (e88f2c02a, 9706c857f) recovered about 19% tps, verified on GCE r264 and the Linux workspace; profiles of runs 1 and 5 in r287/r288 (8977e306d). The decay over runs is TASK-111.1's (To Do).
+<!-- SECTION:FINAL_SUMMARY:END -->

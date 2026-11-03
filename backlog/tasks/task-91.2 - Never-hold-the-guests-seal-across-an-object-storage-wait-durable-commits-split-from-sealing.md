@@ -3,11 +3,11 @@ id: TASK-91.2
 title: >-
   Never hold the guest's seal across an object-storage wait: durable commits
   split from sealing
-status: In Progress
+status: Done
 assignee:
   - '@main-session'
 created_date: '2026-10-22 18:22'
-updated_date: '2026-10-22 22:29'
+updated_date: '2026-11-03 02:10'
 labels: []
 dependencies: []
 parent_task_id: TASK-91
@@ -30,7 +30,7 @@ ExtentDevice::commit (guest/rust/fxfs-linux/src/device.rs) holds its Seal until 
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
+- [x] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
@@ -41,3 +41,9 @@ ExtentDevice::commit (guest/rust/fxfs-linux/src/device.rs) holds its Seal until 
 
 4317177, fd7a384: a checkpoint read each segment's moves serially, every 64 segments, inline in the uploader; at 25 ms that stopped uploads for tens of seconds by pgbench's third minute and commits stalled at the lag bound inside the seal. Now one listing per prefix, and reads of only the moves there are. f283bb0: the test daemon has 8 GiB, as the sandbox team's (the 1 GiB default caused fault/page-in churn). GCE, pgbench -s 50 at 25 ms: without DAX 979 / 1,010 / 1,014 tps (AC2 met: no decay, commit wait ~0); with DAX 1,001 / 862 / 171: upload lag and commit wait ~0 throughout, the fall is the DAX window filling (TASK-91.10). AC2 stays open on DAX until TASK-91.10. Still open here: sync/unmount's durable wait inside the seal (needs a non-barrier durability request).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A journal compaction's root commit is ordered and made durable only within a sync, and checkpoints read only the segments that have moves (343120ec7, 431717757, fd7a384ce, f283bb012). Verified on GCE: pgbench at 25 ms without DAX holds 979 / 1,010 / 1,014 tps, commit wait about 0; DAX's fall was the window filling, fixed by TASK-91.10. Not done: sync, syncfs and unmount still wait for durability inside the seal; rare and off fsync's path, judged not worth a non-barrier protocol request.
+<!-- SECTION:FINAL_SUMMARY:END -->

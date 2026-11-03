@@ -1,10 +1,10 @@
 ---
 id: TASK-146.2
 title: write(2) on DAX without a window round trip in the common case
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-31 22:15'
-updated_date: '2026-11-02 01:15'
+updated_date: '2026-11-03 02:10'
 labels: []
 dependencies: []
 parent_task_id: TASK-146
@@ -27,7 +27,7 @@ Their ask 2. 122,027 of 134,078 maps per run are evacuation's, not the write's o
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
+- [x] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
@@ -48,3 +48,9 @@ r453: writes wait 83.0 s of 403 s behind evacuations for file->sem, the first do
 
 Batching settled: four hosts, one zone, three rounds each: batched 1061, 1054 tps; control 987, 1021: about +5%. Recorded in dead-ends/batched-evacuation.md. The cost is per page. AC1, the split, is met by the counters; AC2 stays open. Cheaper per page is TASK-153.6; MAP with no semaphore is TASK-153.10.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Superseded. A write(2)'s time is split by counters that add up (c5ab5a789, 2e10c432b, b940ca91e, 9e83708b3; write_times_add_up, r450, AC1). r453 showed writes waiting behind evacuations; batching evacuation gave ~5% (dead-ends/batched-evacuation.md). The design behind AC2 was replaced by 106b6128d (a write takes no MAP of its own) and fafefbac7 (a page stays at one window address, evacuation removed; 1,071 against 1,011 tps). Not shown: pgbench-dax beating no-DAX with synchronous_commit=off.
+<!-- SECTION:FINAL_SUMMARY:END -->

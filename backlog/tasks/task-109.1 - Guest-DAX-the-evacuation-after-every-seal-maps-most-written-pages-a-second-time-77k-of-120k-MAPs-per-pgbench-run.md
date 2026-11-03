@@ -3,10 +3,10 @@ id: TASK-109.1
 title: >-
   Guest DAX: the evacuation after every seal maps most written pages a second
   time (77k of 120k MAPs per pgbench run)
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-25 23:26'
-updated_date: '2026-10-30 04:15'
+updated_date: '2026-11-03 02:10'
 labels: []
 dependencies: []
 parent_task_id: TASK-109
@@ -45,3 +45,9 @@ Parked (2026-10-25): placing a seal's staging pages at their ranges' addresses i
 
 AC2 on main (88ded8774): fxfs_dax_set_moved counts each range's pages moved and keeps FXFS_DAX_RANGE_MOVED (XA_MARK_1) on it in the file's ranges while it has any; fxfs_dax_evacuee_gather walks xa_for_each_marked. Verified at 3364435c6 (the batch): macOS extent_remote and fxdax 371 passed; Linux workspace on GCE r264 1965 of 1965; guest suites on GCE r263 (release), fxfs-guest-dax, -checks-dax, -crash-dax, -checks-dax-small, -checks-dax-delay, -pgbench-dax 2 rounds each passed (pgbench-dax 1051.6 -> 863.4, 997.4 -> 889.5 tps).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Superseded: evacuation is gone. fafefbac7 (TASK-153.6) keeps a file's page at one window address, so nothing moves pages back after a seal, and 106b6128d takes a write's own MAP out; nothing under guest/ mentions evacuation on main. Nothing of this task was built.
+<!-- SECTION:FINAL_SUMMARY:END -->

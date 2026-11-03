@@ -3,10 +3,10 @@ id: TASK-112.5
 title: >-
   Guest DAX: evacuate without holding the file across the MAP; writers mapping
   own space writably back off instead (TASK-101)
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-28 04:48'
-updated_date: '2026-10-31 22:15'
+updated_date: '2026-11-03 02:10'
 labels: []
 dependencies: []
 parent_task_id: TASK-112
@@ -42,3 +42,9 @@ After each seal, fxfs_dax_evacuate_file holds the file DAX semaphore for writing
 
 2026-10-31: round 9 asks for this (their ask 3): holds of about 1 ms median, 8 ms p90 and 33 ms p99 under synchronous_commit=off. r353 here: 746 us per evacuation, 176 s of hold over the run. wip/task-112-5's blocker stands: TASK-112.6's race, random_ops losing data about 1 round in 6 under dax_delay_us=200.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Superseded: evacuation is gone. fafefbac7 (TASK-153.6) keeps a file's page at one window address, so nothing moves pages back after a seal, and 106b6128d takes a write's own MAP out; nothing under guest/ mentions evacuation on main. Nothing of this task was built.
+<!-- SECTION:FINAL_SUMMARY:END -->

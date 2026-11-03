@@ -3,10 +3,10 @@ id: TASK-113
 title: >-
   Guest DAX: soft lockup in fxfs_dax_do_fault's retry loop under
   fxfs.dax_delay_us (faults_seal_holding_the_semaphore)
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-28 04:53'
-updated_date: '2026-10-29 07:00'
+updated_date: '2026-11-03 02:10'
 labels:
   - bug
 dependencies: []
@@ -40,3 +40,9 @@ GCE r202 2026-10-28 (run-20261028T044814Z-ed84aee8, round 1 of fxfs-guest-checks
 
 2026-10-29, the console (/tmp/fxdax-r202-finald, round 1, after faults_unheld, so in faults_seal_holding_the_semaphore, fxfs.dax_fault_seals on): both soft-locked CPUs run threads of the check process, guest-agent 639 and 640, on the same file (R12 ffff88800520d000 in both): 640 a read fault (do_read_fault) looping at the top of fxfs_dax_do_fault's retry loop, 639 a write-protect fault (fxfs_dax_mkwrite) going round the -EDEADLK retry, down_read then up_read then iomap_iter and get_range, for 26 to 122 s. No hung-task report names a sleeper, and the console has no blocked-task dump. So a third task, the one their retries wait on (the fault that seals holding the file's semaphore, or the seal's kworker), was runnable but got no CPU: PREEMPT(none), two vCPUs, both in kernel loops that never yield, which 3c539db1b's cond_resched breaks. Which task that was can't be told from this console: it shows the loop, not the holder. A blocked-task dump at a soft lockup (TASK-44.13) would name it if it recurs.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The fault retry loop yields before every retry (3c539db1b); checks-dax under fxfs.dax_delay_us=200 passed 5/5 (r204). A soft lockup now panics with every task's state printed (efd32b533), and 2fdb726cd bounds the -EXDEV spin. Decided not to: prove which task held the semaphore; seen once (r202), never reproduced, and that console can't name it.
+<!-- SECTION:FINAL_SUMMARY:END -->

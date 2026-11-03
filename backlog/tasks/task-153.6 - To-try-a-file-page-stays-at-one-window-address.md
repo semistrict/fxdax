@@ -1,9 +1,10 @@
 ---
 id: TASK-153.6
 title: 'To try: a file page stays at one window address'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-01 22:53'
+updated_date: '2026-11-03 02:10'
 labels: []
 dependencies: []
 parent_task_id: TASK-153
@@ -31,3 +32,9 @@ A page location lives in five places since fxfs_dax_move broke dax.c header prom
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Done: a file's page stays at one window address (fafefbac7): pages no longer move to their staging extent's region, nor does an evacuation move them back, 2,300 lines fewer; a write(2) takes no MAP of its own, its pages lagging until first use maps the chunk's together (106b6128d). Same host: pgbench 1,071 against 1,011 tps, rand-write 18,151 against 3,534 IOPS; guest/sim interleave and failures seeds pass; load_during_move's hang (r496) since found to be the test's own and fixed (r528, 20 of 20).
+<!-- SECTION:FINAL_SUMMARY:END -->

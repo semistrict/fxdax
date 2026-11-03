@@ -3,10 +3,10 @@ id: TASK-42.11
 title: >-
   Followers cost their writer's pgbench: 1.28x with two reading, 1.44x with two
   idle
-status: In Progress
+status: To Do
 assignee: []
 created_date: '2026-10-21 09:06'
-updated_date: '2026-10-24 12:30'
+updated_date: '2026-11-03 02:10'
 labels:
   - followers
   - perf
@@ -46,4 +46,6 @@ Measured again on main 0a3015b (GCE c3-standard-8 us-central1-a, 2026-10-21; doc
 2026-10-24, handed back (unassigned): state: mechanism found, not fixed. The writer waits on the store's state lock, held by the uploader's Store::close_now as it frames and syncs the open segment; with followers it gathers back to back, seven times as often (TASK-41.1, which the review session took). Left: once TASK-41.1 lands, measure pgbench alone / followed / followed-idle again (bench-gce.sh, cases bench-fs-fxfs-guest-dax{,-followed,-followed-idle}, pgbench and io, 3 iterations; scripts/bench-ab.py), and check the AC. Followers reading through the extent cache was tried and reverted (worse).
 
 From the review session (2026-10-24): TASK-41.1's close_now part is on main (round 1: 'a closing between commits frames its segment holding none of the store's locks'), and 7112b50d (TASK-91.17/79.93) reads raw files through the page cache, so a close takes ~25 ms instead of 160-270 ms. Re-measure the followers' slowdown on current main before blocking on 41.1.
+
+Handed back 2026-11-02 (triage): last measured on 0a3015b (1.28x reading, 1.43x idle); close reads (788bd2e4f/7112b50d9) and much follower and DAX code changed since. Left: rerun pgbench on main alone, followed and followed-idle (bench-gce.sh, scripts/bench-ab.py); close if within noise, else the uploader's back-to-back re-gathers (TASK-41.1 AC1) are the suspect.
 <!-- SECTION:NOTES:END -->

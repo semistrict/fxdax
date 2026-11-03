@@ -3,10 +3,10 @@ id: TASK-79.47
 title: >-
   The follower simulation records a held object only after the fill ends: false
   failures
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-21 20:58'
-updated_date: '2026-10-31 02:23'
+updated_date: '2026-11-03 02:09'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -37,7 +37,7 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity low): docs/reviews/2
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
+- [x] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
@@ -48,3 +48,9 @@ A holder records what it holds under the fill barrier it found it under. No dete
 
 Fixed in 23923f84d; the simulation's suites pass on r292. AC1 open: its false failures came by schedule, and none was kept as a test.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A holder in follower_sim records what it holds under the fill barrier it found it under (23923f84d); the suites pass on macOS and GCE r292. Decided not to: a failing-first test, as the false failure needed a batch landing between two adjacent steps, which the simulation has no seam to force.
+<!-- SECTION:FINAL_SUMMARY:END -->

@@ -3,11 +3,11 @@ id: TASK-149.8
 title: >-
   Directories, exchange, tmpfiles and open unlinked files across cuts in the
   model test
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-01 06:13'
-updated_date: '2026-11-01 21:42'
+updated_date: '2026-11-03 02:10'
 labels: []
 dependencies: []
 parent_task_id: TASK-149
@@ -73,3 +73,9 @@ Cuts took a rename overtaking a queued unlink for an unlink not done: the orderi
 ## Unverified
 No guest ran. The sync in setattr hasn't run under a kernel's inode lock. KEEPS_DIRECTORY_TIMES is false in the model, true in a guest: flipping it would change what pinned seeds reproduce. Concurrency: workers only, by the clock, and no VFS calls at once (TASK-149.10). DoD 1: Docker, not Lima. Workspace on Linux at 87b9cb43b: 2063 of 2067; tenant_sockets_work_bind_mounted_into_jails fails only in Docker, and guests_forks_failing_at_each_step_harm_nothing, hundreds_of_writers_flush_on_threads_they_share and serves_hundreds_of_forks_of_a_base failed once under that run's load, passed the run before and passed alone after; this branch changes nothing in crates/fxdax. macOS workspace 1926 of 1926 before 87b9cb43b, its last test-only commit; fxfs-posix 39 of 39 at 87b9cb43b. AC 3 stays open for finding 3.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The model test has subdirectories, exchange, tmpfiles, open-unlinked files and queued unlinks, and cuts check them all (9e18d69ed, dc2405d34, 15d3d0551, cfa56e099, c9ce14efe, 87b9cb43b). Hunts over ~313k cuts found 3 bugs: the punch spin and the unbounded clone/punch journal fixed red-then-green (30c3745e4, 90cb66ca4), the full-filesystem truncate filed as TASK-150.19; structural questions to TASK-153.2 and 153.4.
+<!-- SECTION:FINAL_SUMMARY:END -->

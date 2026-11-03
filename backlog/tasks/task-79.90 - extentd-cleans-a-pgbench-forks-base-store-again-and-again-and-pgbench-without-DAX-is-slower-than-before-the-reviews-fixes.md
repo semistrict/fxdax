@@ -3,10 +3,10 @@ id: TASK-79.90
 title: >-
   extentd cleans a pgbench fork's base store again and again, and pgbench
   without DAX is slower than before the review's fixes
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-23 16:12'
-updated_date: '2026-10-24 12:29'
+updated_date: '2026-11-03 02:10'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -32,7 +32,7 @@ Found by the main session's five-run pgbench on main 47b7a348 (GCE n2-standard-8
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
+- [x] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
@@ -43,3 +43,9 @@ r5/regress (merged with this note): the base was never cleaned. A probe of each 
 
 Handed over (2026-10-24): landed on main; what is left is in the notes above.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Its fixes landed (ebc51f45e, 7f6fa0f89, 86cb0690d). AC1's premise was false: the base store was never cleaned, the log named the fork's directory, which is the base's. AC2 went to TASK-79.91 and 79.92, closes and lag to TASK-79.93 (done), AC3's MAP growth to TASK-92.50, since superseded by TASK-131.1. Closed as superseded.
+<!-- SECTION:FINAL_SUMMARY:END -->

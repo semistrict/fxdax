@@ -3,11 +3,11 @@ id: TASK-111.1
 title: >-
   Guest DAX: page faults reaching extentd grow 4-5x over five pgbench runs (8
   GiB: 9.6k -> 49k), tps falling 13-22%
-status: In Progress
+status: To Do
 assignee:
   - '@claude'
 created_date: '2026-10-28 00:28'
-updated_date: '2026-10-28 02:33'
+updated_date: '2026-11-03 02:10'
 labels: []
 dependencies: []
 parent_task_id: TASK-111
@@ -50,4 +50,6 @@ In the sandbox team round 7 (TASK-111), with DAX the guest page faults that reac
 r201-111a (8 GiB, aging fix alone): faults still 39k, tps 1119/1004/920/970/979. r201-111b (new counters fault-stores, fault-refusals, fault-waits): of ~6k faults per 20 s after the 1.9 GiB eviction at t~190, 0 stores, 0 pager waits, 1/3 refused (KVM's async page-fault worker). So they are pages still in memory that the window lost the mapping of. Cause: Zircon's reclaim unmaps the whole aligned batch of 16 pages it looks at (UnmapAndHarvest) and keeps those too young to reclaim, unmapped; the window maps a page again only through a fault. Fix: reclaim_chosen_for_eviction picks the reclaimable pages first and unmaps only them; test evicting_a_page_leaves_the_mappings_of_those_it_keeps (fails without). r202-111a (2 GiB, aging fix): faults 12 (282 before), tps unchanged 1141/1041/981/941/946: the 2 GiB decline is window pressure, not faults. Sandbox rerun at c6d9b7e (prefault change): VMM 88-93 us per window change (was 114), DAX tps +1.6-6.5%, faults still grow ~4.5x.
 
 r201-111c (8 GiB, both fixes): faults 6 in all (40-60k before), 0 pager waits; tps 1155/1067/1061/1033/1026 (run 5 89% of run 1; before 1125->969, 86%). r202-111c (2 GiB): faults 21, tps 1124/1015/974/920/953 (85%): window pressure. What remains of the 8 GiB decline follows extentd memory fragmenting as it recycles at its cap: KB per stage map 42 -> 23, stage ops per MAP 2.6 -> 3.3 (TASK-108.1's open item). AC3 not met. Validation: zircon and fxdax tests on macOS (445); Linux workspace on GCE r201 (2661 passed); DAX guest suites fxfs-guest-dax, fxfs-guest-checks-dax, extent-guest on r202 pass; upstream-changes.py --check passes.
+
+Handed back 2026-11-02 (triage): faults fixed (7c9b7ceab: 40-60k to 6 over five runs). Left (AC3): pgbench-dax decays over five runs, run 5 at 89% of run 1 at 8 GiB and 85% at 2 GiB; TASK-131.5's decay gate 0.85 at r264. Not in the guest kernel per r287/r288; a host-side profile by thread, run 1 against run 5, would say. The one task carrying the decay since TASK-131.1 closed.
 <!-- SECTION:NOTES:END -->

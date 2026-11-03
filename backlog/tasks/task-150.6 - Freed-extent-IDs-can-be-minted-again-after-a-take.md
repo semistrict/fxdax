@@ -1,12 +1,13 @@
 ---
 id: TASK-150.6
 title: Freed extent IDs can be minted again after a take
-status: In Progress
+status: To Do
 assignee: []
 created_date: '2026-11-01 16:50'
-updated_date: '2026-11-01 19:11'
+updated_date: '2026-11-03 02:10'
 labels: []
-dependencies: []
+dependencies:
+  - TASK-153.9
 parent_task_id: TASK-150
 priority: medium
 type: bug
@@ -38,4 +39,6 @@ From the static audit, unconfirmed. crates/extent_store/src/store.rs:1171 (adopt
 
 <!-- SECTION:NOTES:BEGIN -->
 Confirmed, not fixed: extents_freed_are_spent_on_the_host_that_takes_their_branch: write Ok, expected EPERM, not committed as it would break the suite: branch A commits extent 1, frees it, commits, drops; create_for_branch elsewhere, attach_remote, write extent 1. Needs a format change: spent runs in remote checkpoints, replaying footers' frees on top. Refusing below the floor would break the journal's tail (images_opened_again_take_synced_writes). Blind spot: written-once tested on one host. A decision for the user.
+
+Handed back 2026-11-02 (triage): still a bug on main: check_opens (crates/extent_store/src/store.rs ~812) consults only the local spent set, and adopt (~1175) carries none from the bucket. Needs TASK-153.9's format change, whose AC2 is this fixed; the confirming test extents_freed_are_spent_on_the_host_that_takes_their_branch was left out as it would fail the suite.
 <!-- SECTION:NOTES:END -->

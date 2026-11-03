@@ -1,10 +1,10 @@
 ---
 id: TASK-156
 title: scripts/dax-refusals.py fails only on what a guest did
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-11-01 22:53'
-updated_date: '2026-11-01 23:00'
+updated_date: '2026-11-03 02:10'
 labels: []
 dependencies: []
 priority: medium
@@ -27,7 +27,7 @@ TASK-150.16: refused stores flagged came from KVM async page fault kworkers, not
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
+- [x] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
@@ -36,3 +36,9 @@ TASK-150.16: refused stores flagged came from KVM async page fault kworkers, not
 <!-- SECTION:NOTES:BEGIN -->
 On fix/refusal-gate. dax-refusals.py takes the VM processes' logs and fails on a store refused by a thread that is no kernel worker; test-e2e.sh passes them. Over r394, r398, r422, r423, r429, r451, r452, r456, r457: 8,378 refused stores, all kworker, none flagged, r394 and r422 passing now. Unit tests 7 of 7. Not done: a repeated vCPU EFAULT run isn't looked at; refusals past the log's cap (first 1,000 and powers of two) aren't counted, on the reading that a vCPU's refusal stays until its VM stops, so one past the cap shows at the next power of two.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The refusal gate fails only on a store refused for a guest thread, not KVM's async page-fault kworkers (bc54340d6; test_stores_of_kernel_workers_are_no_guests, test_stores_of_vcpus_are_guests); checked against nine runs (8,378 refusals, none flagged), r394 and r422 pass. Decided not to: count refusals past the daemon's 1,000-entry log cap, or check repeated vCPU EFAULT runs separately.
+<!-- SECTION:FINAL_SUMMARY:END -->

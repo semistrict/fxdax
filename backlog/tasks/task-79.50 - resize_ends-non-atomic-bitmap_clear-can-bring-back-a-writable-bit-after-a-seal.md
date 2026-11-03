@@ -3,11 +3,11 @@ id: TASK-79.50
 title: >-
   resize_end's non-atomic bitmap_clear can bring back a writable bit after a
   seal
-status: In Progress
+status: Done
 assignee:
   - '@main-session'
 created_date: '2026-10-21 20:59'
-updated_date: '2026-10-29 07:02'
+updated_date: '2026-11-03 02:09'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -38,7 +38,7 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity low): docs/reviews/2
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
+- [x] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
@@ -51,3 +51,9 @@ Fix landed in 075723b80; no deterministic test (see the notes above). GCE r65, 2
 
 2026-10-29 audit on main c981891b2: range->writable is written non-atomically only in the gate (bitmap_set in fxfs_dax_map_slice, fxfs_dax_mapped, fxfs_dax_new_slice, each for an open extent mapped in the gate, which a seal waits to close), and cleared outside it only per bit, atomically (fxfs_dax_clear_writable's clear_bit); the sealer's lockless bitmap_zero meets no read-modify-write of a word. AC1 stays open: the race is inside one word's read-modify-write, which no pause point can split.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Writable bits are cleared atomically outside the gate (fxfs_dax_clear_writable, 075723b80), checked by an audit on c981891b2 and run on GCE r65. Decided not to: a reproducing test, as the race is inside one word's read-modify-write, which no pause point can split.
+<!-- SECTION:FINAL_SUMMARY:END -->

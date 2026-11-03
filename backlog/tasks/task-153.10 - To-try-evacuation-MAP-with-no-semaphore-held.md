@@ -1,9 +1,10 @@
 ---
 id: TASK-153.10
 title: 'To try: evacuation MAP with no semaphore held'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-01 22:53'
+updated_date: '2026-11-03 02:10'
 labels: []
 dependencies: []
 parent_task_id: TASK-153
@@ -30,3 +31,9 @@ TASK-112.5, parked for a race the host bug cae97000a may have been: +2-3.5% then
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Superseded: evacuation is gone. fafefbac7 (TASK-153.6) keeps a file's page at one window address, so nothing moves pages back after a seal, and 106b6128d takes a write's own MAP out; nothing under guest/ mentions evacuation on main. Nothing of this task was built.
+<!-- SECTION:FINAL_SUMMARY:END -->

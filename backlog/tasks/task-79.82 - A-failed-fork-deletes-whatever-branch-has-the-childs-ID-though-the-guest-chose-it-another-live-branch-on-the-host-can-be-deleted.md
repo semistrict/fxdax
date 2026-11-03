@@ -3,10 +3,10 @@ id: TASK-79.82
 title: >-
   A failed fork deletes whatever branch has the child's ID, though the guest
   chose it: another live branch on the host can be deleted
-status: In Progress
+status: To Do
 assignee: []
 created_date: '2026-10-23 09:16'
-updated_date: '2026-11-01 07:46'
+updated_date: '2026-11-03 02:10'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -50,4 +50,6 @@ Handed over (2026-10-24): landed on main; what is left is in the notes above.
 GCE r246 (main 3866a31d6): Linux workspace 1955/1955 and the Shuttle suites, fxfs-guest-dax passed.
 
 2026-11-01, branch test/fork-faults, each fix failing its test with the bug put back: delete_fork takes the child's ID with a record before ending its lease, naming no origin too (sim seed 0: another branch's lease ended; rule fork_claims_ids); a record is live only if the parent's branch holds the fork's segment (seed 37: 'collector: lost', every pass and the deletion's resumption failing; rule fork_claims_landed); record_fork's ChildTaken: writers go on, the fork fails with EEXIST, where every writer of the parent failed for ever; the collector recovers a child by its record's origin, where it lost what the child inherited; a handle whose child's ID another took refuses that branch, where it fenced it and uploaded into it; a child taking a record of its own (create_forked) keeps its claim and takes none of another's; a fork to a branch the store has gives EEXIST, not EIO. AC1 NOT ticked, one case left: two forks on different hosts, or of different parents, naming the same ID within one round trip, neither segment landing, and both children then taking records of their own: create_forked's bytes are the same for both, so each takes the other's for its own, and deleting one ends both. A record has nothing unique to tell them apart without a format change. A plain branch, and any fork whose segment went, is proved safe by the simulation, the sweep and the tests above. Not landed; not run on GCE.
+
+Handed back 2026-11-02 (triage): the test/fork-faults work is all on main (707b8cb75 .. 894b4c1a1); the 'not landed' note is stale. Left (AC1): two forks, on different hosts or of different parents, can name the same child ID within one round trip with neither segment landed; both take identical create_forked records, and deleting one ends both. Needs a record format change, likely with TASK-153.9's branch owner.
 <!-- SECTION:NOTES:END -->

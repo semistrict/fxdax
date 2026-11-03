@@ -4,10 +4,10 @@ title: >-
   Guest DAX: map_to's gate assertion fires outside the gate on the KASAN kernel:
   a write's get_range reaches a writable region through map_chunk without the
   gate
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-29 20:54'
-updated_date: '2026-10-31 19:51'
+updated_date: '2026-11-03 02:10'
 labels:
   - dax
   - bug
@@ -57,5 +57,5 @@ r347 on the working tree: xfstests-fxfs-guest-dax of generic/013, 075, 091, 111 
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
-The assertion now fires only where a writable MAP is sent; KASAN rounds (r258, r261, r303-r305) show no writable MAP outside the gate, nor any report.
+The assertion fires only where a writable MAP is sent. The race it caught was real (a sealed piece of a writable region mapped writably outside the gate, xfstests generic/013) and is fixed: 8af34848c, then e59d8621f checks under the region lock (TASK-150.11), then 7caa43578 keeps shared blocks out of regions. Verified by GCE r347 (generic/013, 075, 091, 111 3/3), r477 with no WARN, and the guest/sim mutant task-44.21-sealed-reach.
 <!-- SECTION:FINAL_SUMMARY:END -->

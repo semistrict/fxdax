@@ -1,11 +1,11 @@
 ---
 id: TASK-149.2
 title: 'Seeded, replayable, shrinking operation scripts for DAX in a guest'
-status: In Progress
+status: To Do
 assignee:
   - '@claude'
 created_date: '2026-11-01 06:13'
-updated_date: '2026-11-01 06:51'
+updated_date: '2026-11-03 02:10'
 labels: []
 dependencies: []
 parent_task_id: TASK-149
@@ -51,4 +51,6 @@ Changed as built (steps 1-3, branch test/dax-scripts): a script is a list of typ
 Deviations: ENOSPC does not always leave the model unchanged: fxfs_vfs_remap_file_range says what a refused clone got to stands, and fxfs_dax_punch_begin zeroes a punch's partial blocks before the rest, so the model takes those two from what the files read, within what they could have come to (clone_stopped_short, punch_stopped_short, after fxfs-posix's stopped_short); those paths are unit tested, but no filesystem here was seen refusing one. On a full volume every store is a child's, as a store with no room is a SIGBUS, which would kill the guest's init. FICLONE onto a longer file with a partial last source block is EINVAL (generic_remap_check_len), which the model expects. Whole-file checks are operations of the script, so a shrink can drop them; the interpreter always checks at the end. random_ops keeps one file and its mix; several files, clones and forks are the new cases fxfs-guest-script, -dax, -full, -full-dax, not yet in test-e2e.sh's list.
 
 Unknown until GCE: whether 180 s holds a script, whether a script that refuses on Fxfs comes from LEFT = 1 MiB on the 64 MiB volume (a run refused nothing fails, kind 'nothing refused'), and whether replays reproduce: a timing bug may not, and then the report says it isn't shrunk.
+
+Handed back 2026-11-02 (triage): steps 1-3 on main (7bbc99422, 73d396b24, 6d787c3aa, e2a22e24b), fxfs-guest-script* pass on GCE r429. Left: step 4, kill the VM at a random line, remount, check each file against the model (AC3's kill, AC4); step 5, a past DAX bug or mutant failing on GCE and shrinking (AC5). TASK-149.16 depends on it.
 <!-- SECTION:NOTES:END -->

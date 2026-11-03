@@ -3,11 +3,11 @@ id: TASK-91.15
 title: >-
   Guest virtio-extent: fewer MMIO exits per completion (two per request:
   interrupt status read and ack)
-status: In Progress
+status: To Do
 assignee:
   - '@main-session'
 created_date: '2026-10-23 18:01'
-updated_date: '2026-10-24 00:46'
+updated_date: '2026-11-03 02:10'
 labels: []
 dependencies: []
 parent_task_id: TASK-91
@@ -45,4 +45,6 @@ Round 6: 134,886 MMIO exits to the VMM in the DAX load (JuiceFS: 2,646), ~12 us 
 06dd6a64: callers spinning poll the used ring with completions unsignalled; sysfs completions counts interrupts and polled. GCE: polled 0, ~1 interrupt per request (732,555 in five no-DAX runs), as no request type completes within the 100 us spin. Fewer exits per interrupt needs MSI-X (virtio-pci): Firecracker's PCI transport lacks the shared-memory capability the DAX window needs. Estimated cost of the exits: ~3-6% of vCPU time. Held.
 
 MSI-X (virtio-pci with the window as a shared-memory capability) left by the user until the DAX host-side fixes land (2026-10-23).
+
+Handed back 2026-11-02 (triage): about one interrupt per request (732,555 over five no-DAX runs), estimated 3-6% of vCPU time; polling while spinning catches almost none at the default spin. Left: MSI-X through virtio-pci with the window as a shared-memory capability, which Firecracker's PCI transport lacks. The hold 'until DAX's host-side fixes' has lapsed (TASK-91.16 done).
 <!-- SECTION:NOTES:END -->

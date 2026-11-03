@@ -1,8 +1,18 @@
 # Open questions
 
-None.
+## The nightly needs GCP credentials in GitHub (2026-11-02)
+
+`.github/workflows/nightly.yml` never ran: its YAML didn't parse (fixed in a1e079306). Now it parses, it needs the repository's `GCP_WORKLOAD_IDENTITY_PROVIDER` and `GCP_SERVICE_ACCOUNT` secrets and its `FXDAX_GCE_PROJECT` and `FXDAX_NIGHTLY_BUCKET` variables, none of which is set. Granting GitHub access to the GCP project is yours.
+**Recommended:** a workload identity pool for `semistrict/fxdax` and a service account allowed to make and delete GCE instances and write the nightly bucket.
+**Until then:** each nightly fails at its auth step; TASK-69's runs stay manual.
 
 # Decisions
+
+## 54 stale In Progress tasks triaged: 46 closed, 7 back to To Do (2026-11-02)
+
+Decided with the user: criteria are ours, so a task whose work landed, or whose rest isn't worth doing as written, is closed, and its final summary says what was decided not to do. Unmet criteria stay unchecked. Back to To Do, as real work left that nobody is on: TASK-42.11, 79.82, 91.15, 111.1 (the pgbench decay over five runs, the one task carrying it), 149.2, 149.14, 150.6 (now depending on TASK-153.9); TASK-60 too, waiting on 60.1. Left alone: TASK-158, uncommitted work in worktree t3-9b5982f8. Also closed: TASK-153.6, done by fafefbac7 and 106b6128d, and TASK-153.10, 112.5 and 109.1, about evacuation, which fafefbac7 removed.
+**Instead:** keep each open until its criteria are met as written.
+**Undoing it:** `backlog task edit <id> -s "To Do"`; each task's notes and summary say what was left.
 
 ## Unmerged branches became `archive/` tags, not deleted outright (2026-11-02)
 

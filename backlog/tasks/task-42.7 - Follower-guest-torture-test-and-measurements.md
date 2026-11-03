@@ -1,10 +1,10 @@
 ---
 id: TASK-42.7
 title: Follower guest torture test and measurements
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-17 22:17'
-updated_date: '2026-10-24 12:28'
+updated_date: '2026-11-03 02:10'
 labels: []
 dependencies:
   - TASK-42.6
@@ -33,7 +33,7 @@ The only test of the kernel side under real concurrency (doc-8 testing 6 and 7),
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
+- [x] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
@@ -54,3 +54,9 @@ AC4, in part: an hour each with and without DAX, OK history (docs/measurements/g
 
 2026-10-24, handed back (unassigned): AC1-3 and 5 checked; AC4 left only for the writer unchanged with followers attached, which waits on TASK-42.11 / TASK-41.1 (the hours on GCE and the lag and pinned bytes are recorded).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The follower torture test and measurements landed (c315b4fb5, 20bcea955, cae20d7b1, 1e41e9a0a, 89c4722e1); hours on GCE pass (docs/measurements/gce-follow-soak-2026-10-24), lag and pinned bytes recorded (gce-fs-bench-followed-main-2026-10-21T1016Z). The writer unchanged with followers attached is TASK-42.11's (To Do): closed here as superseded by it.
+<!-- SECTION:FINAL_SUMMARY:END -->

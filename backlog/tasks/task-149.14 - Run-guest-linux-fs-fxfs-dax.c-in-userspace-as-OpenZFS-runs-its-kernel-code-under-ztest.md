@@ -3,10 +3,10 @@ id: TASK-149.14
 title: >-
   Run guest/linux/fs/fxfs/dax.c in userspace, as OpenZFS runs its kernel code
   under ztest
-status: In Progress
+status: To Do
 assignee: []
 created_date: '2026-11-01 06:38'
-updated_date: '2026-11-01 22:33'
+updated_date: '2026-11-03 02:10'
 labels: []
 dependencies: []
 parent_task_id: TASK-149
@@ -69,4 +69,6 @@ Correction to the note above: that the address's alignment is the cause is a gue
 pmd_over_stale_index on real kernels, r425, r427, r429, r451: no PMD ever mapped: a guess of alignment was wrong, the chunk's moved page leaving a fault's iomap under 2 MiB. The assertion that a PMD was mapped is gone, the check's bytes stay; it no longer shows candidate 3 on a real kernel, which sim scenarios pmd_over_stale_index and read_pressure do (patch 0011). That a PMD over a stale index happens on a real kernel at all rests on the sim, the other session's read_pressure and the sandbox's hang, not on this check.
 
 Fault budget, from TASK-152. The read-fault livelock was invisible here: each fault succeeded, so no WARN, no wrong byte, no fault going round 256 times, and the sim has no cost model. Only read_mappings_stay reads sim_mm_faults, in one scenario. Count faults per mapping and page in kernel/mm.c, reset by a move or by unmap_mapping_pages from anything but a fault, and fail the run past one.
+
+Handed back 2026-11-02 (triage): AC6 met: ci.yml's guest-sim job runs zloop.sh -s 3000 on every push to main, passing (runs 41513855862, 41562059405). Left: AC7, count faults per mapping and page in guest/sim/kernel/mm.c (one global sim_mm_faults now), reset by a move or a non-fault unmap, failing past one; AC8, red with patch 0010 out; DoD3.
 <!-- SECTION:NOTES:END -->

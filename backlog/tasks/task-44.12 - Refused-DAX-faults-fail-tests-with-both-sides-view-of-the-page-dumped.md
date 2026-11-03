@@ -1,10 +1,10 @@
 ---
 id: TASK-44.12
 title: 'Refused DAX faults fail tests, with both sides'' view of the page dumped'
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-24 21:31'
-updated_date: '2026-10-29 18:36'
+updated_date: '2026-11-03 02:10'
 labels: []
 dependencies: []
 parent_task_id: TASK-44
@@ -28,7 +28,7 @@ A store the host refuses, the guest believing the page writable, stops the VM a 
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
+- [x] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
@@ -43,3 +43,9 @@ GCE r216 (main, kernel built): with 633ba8bc0 every DAX suite failed on refusals
 
 2026-10-29, the refusals classified (GCE r241-r244, main): extentd logs, for each refused access, the next change of the window covering the page (ExtentStore::refused), Firecracker each vCPU run of EFAULTs as it ends (38cb48619 in the fork), and the VMM the faulting thread (UFFD_FEATURE_THREAD_ID). Of r244's 133 refused stores every one was by a kworker of the system workqueue, KVM's asynchronous page faults, the guest's task faulted in as its guest went on, never a VMM thread; every one to a page mapped read-only of an extent sealed in the store; and r242's 191 refusals stalled vCPUs only 14 times, once each. A store reaching the window after a seal made its page read-only, before the guest's seal made its mapping read-only, is refused, and the guest's task retries through its own fault, which maps the page anew (at the same own-space offset, of a new extent: r241's 40 'met: MAP writably' of other extents). AC3: 5a2a6a12b, scripts/dax-refusals.py (tested), run by test-e2e.sh, fails a run with a refused store no seal explains (an extent open, or a page writable); none in r231, r240b, r241, r244 or the DAX gate's 40 suite rounds. AC2 (a refusal repeated for one page fails the run): a persistent refusal stops its VM (Firecracker's 1 s of EFAULTs), failing the test, with extentd's view logged; the guest's view at that point is not.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Refused DAX stores are logged with the page's window history (extentd, 53f33d7f0) and the vCPU's EFAULT run (Firecracker, b6f09c522); test-e2e.sh fails any run with a refused store no seal explains (scripts/dax-refusals.py, 5a2a6a12b, 11e5c7878, bc54340d6, unit-tested). A persistent refusal stops the VM, failing the test with extentd's view logged. Decided not to: capture the guest's view of the page at that point.
+<!-- SECTION:FINAL_SUMMARY:END -->

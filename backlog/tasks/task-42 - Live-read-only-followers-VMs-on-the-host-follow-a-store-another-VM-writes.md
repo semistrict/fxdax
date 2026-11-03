@@ -1,10 +1,10 @@
 ---
 id: TASK-42
 title: 'Live read-only followers: VMs on the host follow a store another VM writes'
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-17 22:17'
-updated_date: '2026-10-24 12:28'
+updated_date: '2026-11-03 02:10'
 labels: []
 dependencies: []
 documentation:
@@ -30,7 +30,7 @@ Other VMs on the writer's host mount a store read-only while a VM has it mounted
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
+- [x] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
@@ -43,3 +43,9 @@ AC1: an hour of the torture test each, with and without DAX, OK history on GCE (
 
 2026-10-24, handed back (unassigned): AC1, 2, 4 checked, everything on main (8cbb99159). Left: AC3, the writer's commit latency and pgbench unchanged with followers attached (TASK-42.11, waiting on TASK-41.1); then TASK-42.7 AC4 and this task's DoD.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Live read-only followers landed (8cbb99159, 8d3591d5e, 2c4ad25c8): AC 1, 2 and 4. AC 3, the writer's commit latency and pgbench unchanged with followers attached, is TASK-42.11's (To Do), and closed here as superseded by it.
+<!-- SECTION:FINAL_SUMMARY:END -->

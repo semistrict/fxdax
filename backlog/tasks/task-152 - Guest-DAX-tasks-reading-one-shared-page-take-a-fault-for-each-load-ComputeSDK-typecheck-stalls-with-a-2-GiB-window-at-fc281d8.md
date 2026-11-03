@@ -3,11 +3,11 @@ id: TASK-152
 title: >-
   Guest DAX: tasks reading one shared page take a fault for each load:
   ComputeSDK typecheck stalls with a 2 GiB window at fc281d8
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-01 19:39'
-updated_date: '2026-11-01 21:04'
+updated_date: '2026-11-03 02:10'
 labels: []
 dependencies: []
 priority: high
@@ -32,7 +32,7 @@ Sandbox report: with a 2 GiB DAX window, ComputeSDK's DAX benchmark hangs in typ
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
+- [x] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
@@ -51,3 +51,9 @@ Sandbox capture at fc281d8, 12 minutes into typecheck, confirms a livelock: 727,
 
 Final check, GCE r430: unpatched, 128 faults in 64 turns, and 62,887 faults for 4 readers of 256 pages in 499 ms; with patches 0010 and 0011, 2 faults, and 8 of 8 rounds of fxfs-guest-checks-dax and -delay passing; the earlier patched run took 1,024 faults for the readers in 7.7 ms. Also passing with the patches: fxfs-guest-dax, -crash-dax, -crash-dax-killed, -pgbench-dax, -docker-dax, -checks-dax-small, and xfstests generic/013, 075, 111, 303, 525, 564, 638. dax_faults_hist counts tries of a PMD that fall back as well as faults: with no page table yet a first load counts three, as a fault under the per-VMA lock retries under mmap_lock before making one. AC 3 stands on guest/sim alone (read_pressure: 190 of 400 seeds WARN unpatched, 16 with 0010 alone, 0 with both); no real kernel check reaches that path. Kept In Progress until the sandbox team reruns the benchmark, which guests here can't, having no network.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A read fault of the page its DAX entry already names no longer unmaps other mappings (patch 0010), and a folio put for good clears its share count (patch 0011) (f129c96b6, d3b8c6cdf; guest/sim read_pressure and read_mappings_stay, b5b911360). Two mappings take 2 faults instead of 128, 4 readers 1,024 instead of 62,887 (GCE r430); the DAX suites and xfstests generic/013, 075, 111 pass. Decided not to: a real-kernel check of the PMD WARN at fs/dax.c:458 (guest/sim only: 190/400 seeds before, 0 after), and waiting here for the sandbox team's rerun.
+<!-- SECTION:FINAL_SUMMARY:END -->

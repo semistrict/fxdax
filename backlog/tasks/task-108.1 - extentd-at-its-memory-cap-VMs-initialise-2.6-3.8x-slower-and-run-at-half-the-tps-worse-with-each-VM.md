@@ -3,10 +3,10 @@ id: TASK-108.1
 title: >-
   extentd at its memory cap: VMs initialise 2.6-3.8x slower and run at half the
   tps, worse with each VM
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-25 19:06'
-updated_date: '2026-10-26 16:22'
+updated_date: '2026-11-03 02:10'
 labels:
   - bug
 dependencies: []
@@ -30,7 +30,7 @@ Sandbox report round 5: with one 8 GiB daemon serving ten pgbench VMs one after 
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
+- [x] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
@@ -65,3 +65,9 @@ f7893385b: a run's first page is, of the first 32 on the free list, the first be
 
 r139 (f7893385b, take_run, 10 VMs): no change: pages per stage map 10.3, 7.9, 6.6, 5.8, 5.5, 5.3, 5.1, 5.1, 5.1, 5.1 (r134 10.1 -> 5.1); first-run tps 1110 -> 1049-1057 (-5%), VMM sys 91.8 -> 106.0 s. The runs that shorten aren't multi-page allocations' starts: reverted. The pages a window maps in runs come from allocations of a page at a time (an open extent's pages as writes reach them, page-ins), consecutive only as the free list hands them out; next: where pages of one extent are allocated, and whether it can ask for them together.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Superseded. The decay across VMs on one daemon came from physical memory fragmenting at the cap; 9c94b62e1 cut it to -6.4% tps over 10 VMs (GCE r134). That allocator went with the Zircon port (f897ce4a2); its replacement's fragmentation was fixed by TASK-131.1's buddy allocator (e88f2c02a), density is gated by TASK-131.5 (0.98 at r264), and many VMs at the cap is TASK-111.3's.
+<!-- SECTION:FINAL_SUMMARY:END -->

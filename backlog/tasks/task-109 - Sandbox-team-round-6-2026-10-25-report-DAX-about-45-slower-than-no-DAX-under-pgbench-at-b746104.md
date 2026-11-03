@@ -3,11 +3,11 @@ id: TASK-109
 title: >-
   Sandbox team, round 6 (2026-10-25 report): DAX about 45% slower than no DAX
   under pgbench at b746104
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-25 23:26'
-updated_date: '2026-10-27 22:35'
+updated_date: '2026-11-03 02:10'
 labels: []
 dependencies: []
 priority: high
@@ -30,7 +30,7 @@ Sandbox team profile at b746104 (GCE n2-standard-16, us-central1-a, nested, Rust
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
+- [x] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
@@ -49,3 +49,9 @@ Bench VMs (2 vCPU, 2 GiB, Postgres defaults, no bucket latency, scale 50, 60 s, 
 
 Profile at bf2223772 (GCE n2-standard-8, perf record-all, pgbench-dax): the VMM's 'extentd client' thread is 23% of one CPU, not saturated; of it mmap(MAP_FIXED) 38% (unmap_region's TLB shootdowns: smp_call_function_many_cond 23%, kvm_mmu_notifier_invalidate_range_start 12%), KVM_PRE_FAULT_MEMORY 20%, leave_out 17%, recvmsg 10%, userfaultfd ioctls 8%. Landed: read-only maps no longer pre-faulted: client thread 3.38% -> 2.88% of host samples, tps 1108/1004/981/936/902 -> 1151/1054/987/958/969 (2 GiB). Per fsync: guest commit 425-515 us with DAX against 263 without; extentd's commit 106-147 us against 25 (writing the open extents ~28, store commit ~21, sealing the windows' mappings 48-83 us, growing over the runs); guest MAP ~280 us against extentd's 50-67. The tps decline over the runs at 2 GiB is window pressure: reach MAPs grow 5k -> 23k a run with window_full events; at 8 GiB reach stays ~4k, window never full, 1168/1063/960/1045/1016. What remains of the gap is per-transaction design cost: a restage MAP on the write path (~280 us) and a commit ~200 us dearer than without DAX.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Superseded. Sandbox round 6: the EFAULT went with TASK-101 (32 VMs, 0 lost, AC3), the VMM's per-MAP host cost was cut in TASK-91.16, read-only maps are no longer pre-faulted (1cd309192). The user accepted one VM's DAX being slower than no DAX (2026-10-26); the gap is measured by TASK-131.5's gate.
+<!-- SECTION:FINAL_SUMMARY:END -->

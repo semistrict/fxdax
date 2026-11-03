@@ -3,10 +3,10 @@ id: TASK-44.10
 title: >-
   Fault injection across the stack, seeded: the kernel's failslab and
   fail_page_alloc in the guest, failpoints in extentd and the VMM
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-24 21:31'
-updated_date: '2026-11-01 07:46'
+updated_date: '2026-11-03 02:10'
 labels: []
 dependencies: []
 parent_task_id: TASK-44
@@ -30,7 +30,7 @@ TASK-99 hid behind a 4 KiB kmalloc that fails only under memory pressure; fxfs.d
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
+- [x] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
@@ -45,3 +45,9 @@ extentd's failpoints (fail crate, Apache-2.0; feature failpoints; FXDAX_FAILPOIN
 
 Correction to the run counts above: of three plain full runs near 8b8e1f535, one gave 753 of 754 and two also failed hundreds_of_writers_flush_on_threads_they_share; of three more with that test given the machine to itself (a local nextest override, not committed), all gave 753 of 754. tenant_sockets_work_bind_mounted_into_jails failed in every run, as expected in this container.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Fault injection runs across the stack: the guest's failslab/fail_page_alloc suite (fxfs-guest-faults-dax, GCE r270 5/5, run on demand from soak-workloads-gce.sh) found TASK-60.1 and TASK-44.22; extentd has a failpoint per request kind (FXDAX_FAILPOINTS); a fork's steps have seeded failpoints (FXDAX_FAULT_SEED, remote::fork_faults over 264 seeds; bee7356a6, 8b8e1f535). Decided not to: failpoints in the VMM, as extentd's already fail MAP/UNMAP/WRITE/COMMIT replies as the VMM sees them; seeding the kernel's injection or the fail crate, which take no seed.
+<!-- SECTION:FINAL_SUMMARY:END -->

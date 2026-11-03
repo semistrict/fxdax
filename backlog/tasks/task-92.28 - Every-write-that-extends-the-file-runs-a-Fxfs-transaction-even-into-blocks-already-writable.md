@@ -3,10 +3,10 @@ id: TASK-92.28
 title: >-
   Every write that extends the file runs a Fxfs transaction, even into blocks
   already writable
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-22 21:06'
-updated_date: '2026-10-25 00:34'
+updated_date: '2026-11-03 02:10'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -48,3 +48,9 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity medium): docs/review
 
 2026-10-25: Implemented writable-page append reuse, metadata-only deferred size persistence, serialization of writeback with truncate, and size persistence before COW/reflink/resize. A new grow-after-append test exposed a window/device coherence defect: partial-page ordinary grow now seals and drops its replaced mapping first. All five guest cases, four append checks, and macOS/Linux workspace suites passed. Controlled same-host A/B in both orders (10 observations per kernel/workload) gives batch100 gains of 10.1% DELETE/FULL, 10.4% WAL/FULL, and 13.3% WAL/NORMAL; WAL/NORMAL batch1 is effectively flat (+1.4% with broad overlapping ranges). The append test confirms zero subsequent map-write transactions, but the targeted small-transaction benefit remains unproven, so performance acceptance and task status remain open. Evidence: docs/measurements/sqlite-dax-appends-2026-10-24.md.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Extending writes into blocks already writable reuse them and persist the size without a transaction, and sustained appends reserve up to 16 pages ahead (076eba863, 898253757). Verified by append regression tests, the macOS and Linux suites, and the same-host SQLite A/B (docs/measurements/sqlite-gap-2026-10-25: WAL/NORMAL batch1 1.79x, batch100 2.28x, both ahead of ext4-DAX).
+<!-- SECTION:FINAL_SUMMARY:END -->

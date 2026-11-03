@@ -1,10 +1,10 @@
 ---
 id: TASK-150.5
 title: Concurrent write OPENs leak a path hold
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-11-01 16:50'
-updated_date: '2026-11-01 19:11'
+updated_date: '2026-11-03 02:10'
 labels: []
 dependencies: []
 parent_task_id: TASK-150
@@ -30,7 +30,7 @@ From the static audit, unconfirmed. crates/fxdax/src/extentd/server.rs:1208-1231
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
+- [x] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
@@ -39,3 +39,9 @@ From the static audit, unconfirmed. crates/fxdax/src/extentd/server.rs:1208-1231
 <!-- SECTION:NOTES:BEGIN -->
 Confirmed: connections_open_one_store_at_a_time, deterministic. Fixed: an Opening guard is the only thing giving a connection its store, so the bad state can't be built, for open and follow. Blind spot as TASK-150.4. Class test: the fuzz reopens every path a case named, red with the bug back in about 70 s; with shrinking on a failing case ran 38 minutes unfinished. Structure: small, fixed. Branch fix/host-audit, 3c90f8f7b, merged locally; workspace on Docker arm64 only, 2070 of 2071 (the Docker-only failure), Shuttle 60 of 60, not yet on GCE.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Confirmed by a deterministic test and fixed (904dce663): only an Opening guard gives a connection its store, once, for open and follow alike, so concurrent OPENs can't leak a path hold (connections_open_one_store_at_a_time). The fuzz reopens every path a case named and went red with the bug back.
+<!-- SECTION:FINAL_SUMMARY:END -->

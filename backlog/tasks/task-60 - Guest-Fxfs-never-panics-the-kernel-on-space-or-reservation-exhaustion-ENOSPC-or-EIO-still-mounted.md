@@ -3,10 +3,10 @@ id: TASK-60
 title: >-
   Guest Fxfs never panics the kernel on space or reservation exhaustion: ENOSPC
   or EIO, still mounted
-status: In Progress
+status: To Do
 assignee: []
 created_date: '2026-10-21 19:54'
-updated_date: '2026-10-27 20:29'
+updated_date: '2026-11-03 02:10'
 labels: []
 dependencies: []
 priority: high
@@ -40,4 +40,6 @@ Audit of the rest: allocator.rs's remaining release asserts (move_to, forget, re
 The enospc guest check is kept on branch enospc-check (66f6d20b) until TASK-82's fix.
 
 enospc check now on main (with TASK-80, TASK-82), in fxfs-guest-checks and -dax.
+
+Handed back 2026-11-02 (triage): its own work is on main (the enospc check in fxfs-guest-checks and -dax, with TASK-80 and TASK-82). Left: TASK-60.1, the guest's infallible Rust allocations.
 <!-- SECTION:NOTES:END -->

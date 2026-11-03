@@ -1,10 +1,10 @@
 ---
 id: TASK-131.4
 title: 'Refused guest writes (~4,000 per pgbench VM): what they cost'
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-29 21:13'
-updated_date: '2026-10-29 21:53'
+updated_date: '2026-11-03 02:10'
 labels:
   - performance
 dependencies: []
@@ -27,7 +27,7 @@ Sandbox team round 8: ~4,000 refused guest writes per pgbench VM; do they cost a
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
+- [x] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
@@ -36,3 +36,9 @@ Sandbox team round 8: ~4,000 refused guest writes per pgbench VM; do they cost a
 <!-- SECTION:NOTES:BEGIN -->
 2026-10-29, first numbers, b5d3246 pgbench-dax on GCE (r264, 5 runs, ~330 s): 103 refusals over the test (the sandbox team saw ~4,000 a VM); the daemon's time on every fault, refused or not, 89 ms for 309 (fault-ns), at most 0.29 ms each with pager waits, against 80 s of MAPs; the VMM's fault thread ('dax faults') under 10 ms of CPU over the test, the sampler's resolution. So the host side of refusals costs under 0.1 s a run, some 0.03%. Open: the guest side (the task's retry through its own fault and MAP, the async page fault's worker), and a run on main whose refusals approach the team's count (FXDAX_PGBENCH_VMS, 8 GiB) to scale it.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Refusals cost the host under 0.1 s per pgbench run, about 0.03% (r264, 62ce2bf71). They are KVM async page-fault workers racing a seal, which the guest task retries through its own fault (TASK-44.12, TASK-156). Decided not to: measure the guest side's retry cost. Reporting to the sandbox team is the user's.
+<!-- SECTION:FINAL_SUMMARY:END -->

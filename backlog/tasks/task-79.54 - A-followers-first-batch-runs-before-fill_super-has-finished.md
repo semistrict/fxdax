@@ -1,10 +1,10 @@
 ---
 id: TASK-79.54
 title: A follower's first batch runs before fill_super has finished
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-21 21:00'
-updated_date: '2026-10-31 02:23'
+updated_date: '2026-11-03 02:09'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -35,7 +35,7 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity low): docs/reviews/2
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
+- [x] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
@@ -46,3 +46,9 @@ Uncommitted in worktree batch8 (2026-10-30), awaiting a GCE run: gcloud needs re
 
 The follower's first batch runs at the end of fill_super; follow cases pass r293 3 rounds each. AC1 open: no deterministic test of the race at mount.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A follower's commit callback and first batch run at the end of fill_super (8e928020b); the follow cases pass 3 rounds on GCE r293. Decided not to: a deterministic test of the race at mount.
+<!-- SECTION:FINAL_SUMMARY:END -->

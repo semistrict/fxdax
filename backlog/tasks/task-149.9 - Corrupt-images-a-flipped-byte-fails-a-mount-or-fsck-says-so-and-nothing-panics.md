@@ -3,11 +3,11 @@ id: TASK-149.9
 title: >-
   Corrupt images: a flipped byte fails a mount, or fsck says so, and nothing
   panics
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-01 06:13'
-updated_date: '2026-11-01 23:08'
+updated_date: '2026-11-03 02:10'
 labels: []
 dependencies: []
 parent_task_id: TASK-149
@@ -108,3 +108,9 @@ Commit 72907ee3b: macOS `cargo nextest run --workspace` 1952 of 1952. Linux (Doc
 
 **Not done, or unverified.** AC 2 isn't met as written: a flip never panics, but flips outside checksummed structures give no error (see above). No guest kernel was built or booted, so nothing here ran in a kernel. test_misaligned_allocation changed its setup: a journal's misaligned allocation is now refused by replay, so it inserts into the tree directly, as test_malformed_allocation does. Fuzz ran on arm64 only.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Corrupt-image class tests (crates/fxfs-posix/src/corrupt_tests.rs, 100k cases) and seven fuzz targets (crates/fxfs/fuzz, 492de03e9, ~38 target-hours) found ~20 panics and hangs, each fixed with a pinned regression; nothing panics now. Not met: every flip gives an error, where nothing reads a checksum: moved to TASK-153.11 and 153.13, layer trust and apply to 153.12 and 153.14. Decided not to file minor follow-ups (encrypted volumes, allocate_buffer, fuzz corpus, graveyard unwrap).
+<!-- SECTION:FINAL_SUMMARY:END -->

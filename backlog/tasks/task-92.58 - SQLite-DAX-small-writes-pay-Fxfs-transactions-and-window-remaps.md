@@ -1,10 +1,10 @@
 ---
 id: TASK-92.58
 title: 'SQLite DAX: small writes pay Fxfs transactions and window remaps'
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-24 21:20'
-updated_date: '2026-10-25 00:34'
+updated_date: '2026-11-03 02:10'
 labels: []
 dependencies: []
 parent_task_id: TASK-92
@@ -50,4 +50,12 @@ The old 256-faults/MiB SQLite mmap investigation is stale: current DAX scans run
 
 ## Implementation Notes
 
+<!-- SECTION:NOTES:BEGIN -->
 2026-10-25: The first safe append-size implementation and regression coverage are complete locally. Same-host, reverse-order SQLite A/B shows repeatable 10–13% gains at batch100, while batch1 throughput is effectively flat. All ten iterations per kernel passed recovery/integrity/payload/snapshot checks; the five guest cases and macOS/Linux workspace suites passed. AC #1 remains open because meaningful WAL/NORMAL batch1 improvement is not established. Stage replacement and evacuation work (AC #2) remains unimplemented. See docs/measurements/sqlite-dax-appends-2026-10-24.md for raw runs, sample ranges, kernel identities, and validation.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Append reservation, extent buffers sized to the range, leaner cached reads and coalesced stage UNMAPs landed (898253757, 6c9e3b85a, 69f13ff2b, dac94e49b); verified by same-host GCE A/B with every SQLite recovery, integrity and snapshot check. SQLite DAX is at or above ext4-DAX except DELETE/FULL batch100 (0.93) and small checkpoints. Stage-replacement experiments gave nothing and were dropped; the remap cost left went with the 2026-11-01 redesign (fafefbac7, 106b6128d). SQLite not rerun since.
+<!-- SECTION:FINAL_SUMMARY:END -->

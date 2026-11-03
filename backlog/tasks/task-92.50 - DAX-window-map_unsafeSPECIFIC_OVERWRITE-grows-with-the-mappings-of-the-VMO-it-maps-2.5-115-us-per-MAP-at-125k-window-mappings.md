@@ -3,10 +3,10 @@ id: TASK-92.50
 title: >-
   DAX window map_unsafe(SPECIFIC_OVERWRITE) grows with the mappings of the VMO
   it maps: 2.5 -> 115 us per MAP at 125k window mappings
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-23 18:12'
-updated_date: '2026-10-24 12:29'
+updated_date: '2026-11-03 02:10'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -31,7 +31,7 @@ Found by a probe of extentd's MAP under pgbench with DAX (TASK-79.90's investiga
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
+- [x] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
@@ -44,3 +44,9 @@ The range-change walk found on the way is fixed and pushed as TASK-92.53. MAP's 
 
 Handed over (2026-10-24): 7 commits on branch review/r7-dax-unverified (on main da7726d8), not to be landed as they are. Their review found three ordering races: a deferred STAGE_UNMAP sent after another thread's fault mapped the same offset; STAGE_PROTECT not undoing a restriction the fault thread made with mprotect; ack IDs reaching the wire out of order once waited unmaps go out outside the MMU lock. They also clash by design with review/r2b-extentd, whose RemoteStage never waits and parks/quarantines replaced pages. Redo on top of r2b once it lands: what still pays is 91fc372f's seal reprotecting pages in place (STAGE_PROTECT, not munmap+mmap: the VM process's munmap cost 45 us an unmap in TLB shootdowns) and 491d3838's VM-process stage counters reported to extentd. GCE measurement on the branch: 'extentd client' sys us/MAP 189 -> 158. The kernel's map path is log-time (r6/zircon-map's bench); MAP's growth fits a waited STAGE_UNMAP per overwrite of a populated window page, which r2b removes.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Superseded. The probe showed the Zircon port's map path is log-time; the deviation found on the way was fixed as TASK-92.53 (1a805bc07), and seals reprotect in place since TASK-91.16 (5de767990). The port was deleted in f897ce4a2; what is left of MAP growth is the decay TASK-111.1 carries.
+<!-- SECTION:FINAL_SUMMARY:END -->

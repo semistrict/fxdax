@@ -3,10 +3,10 @@ id: TASK-91.17
 title: >-
   extentd: segment closes land inside the no-DAX load's fsync commits (~41 ms
   each)
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-23 18:01'
-updated_date: '2026-10-24 12:29'
+updated_date: '2026-11-03 02:10'
 labels: []
 dependencies: []
 parent_task_id: TASK-91
@@ -28,7 +28,7 @@ Round 6: without DAX, pgbench -i's 206 fsync commits average ~41 ms, 6.34 s of t
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
+- [x] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
@@ -39,3 +39,9 @@ Landed (7112b50d): the commits' slow seal copies read raw files with O_DIRECT, w
 
 Handed over (2026-10-24): landed on main; what is left is in the notes above.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A commit's seal copies read raw files through the host's page cache instead of O_DIRECT (788bd2e4f..7112b50d9). GCE: no-DAX load 21.78 s to about 18 s, store commits 3.79 s to about 0.4 s; fxfs-guest-pgbench-nofsync added. Dropped: 'within 10% of fsync=off', as the rest is PostgreSQL's own WAL fsyncs, and the no-DAX load is at parity with ext4 on virtio-blk.
+<!-- SECTION:FINAL_SUMMARY:END -->

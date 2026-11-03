@@ -3,11 +3,11 @@ id: TASK-96.1
 title: >-
   Delete the Zircon kernel port: the store, the DAX window and host Fxfs over
   plain memory
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-29 00:24'
-updated_date: '2026-10-29 02:29'
+updated_date: '2026-11-03 02:09'
 labels: []
 dependencies: []
 parent_task_id: TASK-96
@@ -32,7 +32,7 @@ fxdax runs a port of the Zircon kernel (crates/zircon, ~40k lines) inside its pr
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
+- [x] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
@@ -60,3 +60,9 @@ Landed on main as one commit (squashed): crates/zircon and the 13 crates only it
 
 The tests set aside in crates/fxdax/tests-awaiting-decision deleted, as the user agreed (2026-10-28).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The Zircon kernel port and the 13 crates only it needed are deleted (f897ce4a2); host Fxfs runs on crates/fxfs-posix, the extent cache and DAX window on crates/physmem. Tests covering only Zircon page-cache behaviour were deleted as agreed (1dbaced60); the workspace and guest suites have passed on GCE since (r246, r293). Not done: a pgbench A/B against the pre-deletion commit, as main moved on and the pgbench gate (TASK-131.5) tracks it.
+<!-- SECTION:FINAL_SUMMARY:END -->

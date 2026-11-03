@@ -4,10 +4,10 @@ title: >-
   CI performance benchmark: one entry point, five-run DAX/no-DAX pgbench and a
   density test, machine-readable, failing on regressions, against ext4 dax on
   pmem
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-29 21:13'
-updated_date: '2026-10-30 03:30'
+updated_date: '2026-11-03 02:10'
 labels:
   - performance
 dependencies: []
@@ -30,7 +30,7 @@ Sandbox team round 8: own the performance benchmark in CI: one entry point, a fi
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
+- [x] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
@@ -45,3 +45,9 @@ On main (dee940204, ad8aeef22): scripts/perf-gate-gce.sh [--bare-metal] INSTANCE
 
 GCE r264, scripts/perf-gate-gce.sh at cda03e8f8 (main, buddy allocator): no-DAX 1422-1469 tps (decay 0.998), DAX 1020, 898, 881, 813, 866 (decay 0.8495, failed; DAX/no-DAX 0.6135, failed; r261 before the allocator 0.51), ext4-dax-pmem 1125-1171 (DAX against it 0.7688), density 0.9787 passed.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+scripts/perf-gate-gce.sh runs the gate on a GCE host in one command and writes gate.json, failing on each threshold: no-DAX, DAX and ext4-DAX-on-pmem pgbench plus a density run (dee940204, ad8aeef22, 0f716038a, 96b3c1e10; test_pgbench_gate.py, test_perf_gate_gce.py). Verified on GCE r261 and r264. Not done: a bare-metal run, as GCE metal machines exceed the 32-CPU quota; --bare-metal exists, unrun.
+<!-- SECTION:FINAL_SUMMARY:END -->

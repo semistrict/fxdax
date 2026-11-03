@@ -3,10 +3,10 @@ id: TASK-44.17
 title: >-
   Coccinelle rules for the guest's C: unlocked check-then-act on region and
   range fields, unchecked allocation fallbacks
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-24 21:31'
-updated_date: '2026-11-01 16:54'
+updated_date: '2026-11-03 02:10'
 labels: []
 dependencies: []
 parent_task_id: TASK-44
@@ -30,7 +30,7 @@ Some of the guest's bugs have a shape a semantic patch matches: a field read und
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
+- [x] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
@@ -41,3 +41,9 @@ region-lock.cocci (context mode: Homebrew's spatch 1.3.3 can't load Python), scr
 
 Decision (2026-10-24, the user left it to me): an explicit list. A second rule lists every allocation whose failure path goes on rather than fails (a fallback); scripts/cocci holds the expected list, each entry naming the fault-injection test that takes that path (as fxfs.dax_fail_held does the keep path). A fallback not on the list fails check-guest.sh. Why: failslab (TASK-44.10) fails allocations at random across the kernel, so it can't show that one particular fallback is ever taken, and TASK-99's keep path was only exercised by a knob aimed at it. failslab stays as the broad backstop.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+region-lock.cocci (7f37f90f1) runs in check-guest.sh and flags TASK-99's unlocked read (test_cocci_guest, its code inline since 755e54cc6). Decided not to do, as low-yield: the allocation-fallback rule, and smatch or -fanalyzer.
+<!-- SECTION:FINAL_SUMMARY:END -->

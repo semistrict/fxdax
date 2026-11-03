@@ -3,10 +3,10 @@ id: TASK-79.93
 title: >-
   Without DAX, pgbench's segment closes are few, full and slow, and the upload
   lag reaches its bound: bisect the review's fixes
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-23 19:35'
-updated_date: '2026-10-24 12:29'
+updated_date: '2026-11-03 02:09'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -31,7 +31,7 @@ Found fixing TASK-79.90 (r5/regress). On main after the review's fixes, no-DAX p
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
+- [x] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
@@ -42,3 +42,9 @@ Landed (7112b50d). Bisect: the step is 7a600784 (TASK-41.1: framing between comm
 
 Handed over (2026-10-24): landed on main; what is left is in the notes above.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Bisected to 7a6007840 (framing without locks let writes outrun the uploader); raw segment files are read through the host page cache (788bd2e4f), so closes take 25-27 ms and pgbench without DAX stays under the lag bound (GCE r7-closes). Not done: the old guest kernel, no longer shipped, still reaches the bound; the 1 GiB bound was not shown to be the uploader's real limit at 25 ms latency.
+<!-- SECTION:FINAL_SUMMARY:END -->

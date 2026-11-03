@@ -3,11 +3,11 @@ id: TASK-91.14
 title: >-
   Guest without DAX: find the hot spinlock (__pv_queued_spin_lock_slowpath
   20-42% of guest samples)
-status: In Progress
+status: Done
 assignee:
   - '@main-session'
 created_date: '2026-10-23 18:01'
-updated_date: '2026-10-24 00:47'
+updated_date: '2026-11-03 02:10'
 labels: []
 dependencies: []
 parent_task_id: TASK-91
@@ -30,7 +30,7 @@ Round 6: in the default no-DAX run __pv_queued_spin_lock_slowpath was 20% of gue
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
+- [x] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
@@ -51,3 +51,9 @@ Sandbox team (via the user, 2026-10-23): their hosts are slightly overcommitted 
 
 Cross-CPU wakeups: waiters already spin before sleeping (fxfs_rt_park; block_on). The rest cross CPUs because virtio-mmio gives the device one interrupt line: completions land on one vCPU and wake waiters sleeping on the other, taking its rq lock. The fix is per-queue interrupts, i.e. MSI-X (TASK-91.15, left until DAX's host-side fixes). Guest-only gain without it ~1% here; the overcommit-driven part is the host's. Held with TASK-91.15.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A lock_stat guest kernel named the contended lock: the scheduler's rq->__lock, taken by cross-CPU wakeups from completions on virtio-mmio's single interrupt line, about 1% of guest time on our hosts (70d9f65ca, bcf3a7c25). The sandbox team's 20-42% is their hosts' overcommit, which they confirmed. Cutting it further needs per-queue interrupts (TASK-91.15).
+<!-- SECTION:FINAL_SUMMARY:END -->

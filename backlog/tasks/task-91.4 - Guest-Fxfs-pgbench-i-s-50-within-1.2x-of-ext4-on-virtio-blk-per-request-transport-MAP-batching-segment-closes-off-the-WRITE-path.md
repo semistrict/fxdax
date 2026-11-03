@@ -3,11 +3,11 @@ id: TASK-91.4
 title: >-
   Guest Fxfs: pgbench -i -s 50 within 1.2x of ext4 on virtio-blk: per-request
   transport, MAP batching, segment closes off the WRITE path
-status: In Progress
+status: Done
 assignee:
   - '@main-session'
 created_date: '2026-10-22 18:22'
-updated_date: '2026-10-24 18:42'
+updated_date: '2026-11-03 02:10'
 labels: []
 dependencies: []
 parent_task_id: TASK-91
@@ -30,7 +30,7 @@ The load takes 26 s on fxdax against 13.7 s on ext4 on virtio-blk, whatever the 
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
+- [x] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
@@ -43,3 +43,9 @@ Load step with DAX (pgbench -i -s 50, GCE, /proc/fs/fxfs counters, ba..): ~40,30
 
 pgbench-dax decay, per transaction, from the guest's fxfs stats per run (GCE r69 8 GiB window, r65 2 GiB, kernel b4/b6, 2026-10-24): run 1 -> 5, tps ~960 -> ~815 (2 GiB 998 -> 832, -17%; 8 GiB -15%: alike here, the sandbox team's 'decays more at 8 GiB' not reproduced). Waits summed over threads, us/tx: window_maps 704 -> 804 (MAPs/tx 2.30 -> 2.5-2.6, each ~305 -> ~325 us), device_commits 396 -> 450 (same count/tx, 0.68-0.70, each ~580 -> ~640 us), stores_held_by_seals 125 -> 202, window_unmaps 266 -> 298, seal_waits 34 -> 49; guest CPU/tx: system +~120 us, idle +~200 us, user flat. The database's growing working set takes more remaps per transaction, each a TLB shootdown in the VMM (TASK-91.16), and commits slow a little; without DAX nothing is mapped and tps stays flat (1449-1523). The lever is fewer remaps per transaction (evacuation, TASK-91.10/91.4); host map count and guest unmap policy change nothing (r68, r69).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Without DAX the load matches ext4 on virtio-blk (11.1-11.4 s against 11.8 s, TASK-109.3's rerun). The load was attributed with /proc/fs/fxfs counters and guest CPU ticks; MAP_MANY (2db1d11c6) and per-reason MAP counters (26a99ad61) landed. Not done: DAX's load (17.2 s, 1.46x), as the user accepts one VM's DAX being slower, and 106b6128d since redesigned the write path's MAPs.
+<!-- SECTION:FINAL_SUMMARY:END -->
