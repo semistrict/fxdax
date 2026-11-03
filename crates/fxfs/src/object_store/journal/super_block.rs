@@ -7,7 +7,8 @@
 // written once: each super-block is written to new extents, freeing those it was written to before,
 // and the store's root (`Root`) names where each instance starts, rather than fixed locations. What
 // a super-block says is checked where upstream trusts it (TASK-149.9): where the journal starts,
-// and each record, as the journal's are.
+// and each record, as the journal's are. The root records how far the journal was written too
+// (`Root::journal_end`), which each barrier that sets it sets one at a time (`set_root`).
 
 //! We currently store two of these super-blocks (A/B), alternately, each starting in the extent the
 //! store's root names for it.
@@ -120,6 +121,11 @@ impl SuperBlockInstance {
 pub struct Root {
     pub a: Option<ExtentRange>,
     pub b: Option<ExtentRange>,
+    /// How far the journal had been written before the barrier that set this root, which a crash
+    /// keeps with everything before it (doc-4): a replay that ends short of it ended at damage, not
+    /// at the journal's end, losing transactions a sync acknowledged, and refuses (TASK-153.13).
+    /// Past it, the journal may end anywhere, torn by a crash.
+    pub journal_end: u64,
 }
 
 /// A root starts with the magic bytes "FxfsRoot".
@@ -398,8 +404,9 @@ pub fn compact_root_parent(
 /// All super-block load/save operations should be via the methods on this type.
 pub(super) struct SuperBlockManager {
     pub next_instance: Mutex<SuperBlockInstance>,
-    /// fxdax: the store's root, as last loaded or saved.
-    root: Mutex<Root>,
+    /// fxdax: the store's root, as last loaded or set, held while a barrier sets the next
+    /// (`set_root`).
+    root: futures::lock::Mutex<Root>,
     metrics: SuperBlockMetrics,
 }
 
@@ -407,9 +414,34 @@ impl SuperBlockManager {
     pub fn new() -> Self {
         Self {
             next_instance: Mutex::new(SuperBlockInstance::A),
-            root: Mutex::new(Root::default()),
+            root: futures::lock::Mutex::new(Root::default()),
             metrics: Default::default(),
         }
+    }
+
+    /// fxdax: makes a barrier that sets the root to the last one set as `change` changes it, which
+    /// `barrier` makes, given the root's bytes, saying whether it set it (a barrier that failed may
+    /// have been made without them). Barriers set roots one at a time, each changing the last set:
+    /// two at once could set them in either order, and a root composed before another but set
+    /// after it would name super-blocks the other's replaced, and freed.
+    pub async fn set_root(
+        &self,
+        change: impl FnOnce(&mut Root),
+        barrier: impl AsyncFnOnce(Vec<u8>) -> Result<bool, Error>,
+    ) -> Result<bool, Error> {
+        let mut root = self.root.lock().await;
+        let mut next = root.clone();
+        change(&mut next);
+        let set = barrier(next.encode()).await?;
+        if set {
+            *root = next;
+        }
+        Ok(set)
+    }
+
+    /// fxdax: the journal's end the last root set records (`Root::journal_end`).
+    pub async fn journal_end(&self) -> u64 {
+        self.root.lock().await.journal_end
     }
 
     /// Loads both A/B super-blocks and root_parent ObjectStores and and returns the newest valid
@@ -424,7 +456,7 @@ impl SuperBlockManager {
         // TODO(https://fxbug.dev/42063349): Consider relaxing this.
         debug_assert!(MIN_SUPER_BLOCK_SIZE == block_size);
 
-        *self.root.lock() = Root::read(&*device).await?;
+        *self.root.lock().await = Root::read(&*device).await?;
         let (super_block, current_super_block, root_parent) = match futures::join!(
             read(device.clone(), block_size, SuperBlockInstance::A),
             read(device.clone(), block_size, SuperBlockInstance::B)
@@ -468,16 +500,13 @@ impl SuperBlockManager {
         .context("Failed to open superblock object")?;
         let first_extent = write(&super_block_header, root_parent, handle).await?;
         // The root names the new super-block once it is written.
-        let root = {
-            let mut root = self.root.lock();
-            root.set_first_extent(instance, first_extent);
-            root.clone()
-        };
-        filesystem
-            .device()
-            .commit_root(&root.encode())
-            .await
-            .context("Failed to commit the root")?;
+        let device = filesystem.device();
+        self.set_root(
+            |root| root.set_first_extent(instance, first_extent),
+            async |root| device.commit_root(&root).await.map(|()| true),
+        )
+        .await
+        .context("Failed to commit the root")?;
         *self.next_instance.lock() = instance.next();
         self.metrics
             .last_super_block_offset
@@ -810,7 +839,7 @@ pub mod fuzz {
         let extent = ExtentId::new(device.branch(), device.next_sequence().await.expect("numbers"));
         device.write(extent, 0, buffer.as_ref()).await.expect("writing");
         let range = 0..buffer.len() as u64;
-        let root = Root { a: Some(ExtentRange::new(extent, range)), b: None };
+        let root = Root { a: Some(ExtentRange::new(extent, range)), ..Root::default() };
         device.commit_root(&root.encode()).await.expect("committing");
     }
 
@@ -1244,6 +1273,8 @@ mod tests {
 
         {
             let fs = FxFilesystem::open(device).await.expect("open failed");
+            // fxdax: the filesystem's own, which alone sets the root, its barriers included.
+            let manager = &fs.journal().super_block_manager;
             // To test wrapping, we need to get into a state where the current generation is
             // u64::MAX. Since we have A and B, and wrapping comparison is used, we need to set them
             // up carefully. We will set A to u64::MAX - 1, and B to u64::MAX.
@@ -1633,12 +1664,12 @@ mod tests {
     async fn test_root_extents_are_validated() {
         let device = FakeDevice::new(8, 4096);
         let extent = ExtentRange::new(ExtentId::new(1, 1), 0..4096);
-        let root = Root { a: Some(extent.clone()), b: None };
+        let root = Root { a: Some(extent.clone()), ..Root::default() };
         device.commit_root(&root.encode()).await.expect("commit failed");
         assert_eq!(Root::read(&device).await.expect("read failed"), root);
         let (start, end) = (4096, 0);
         let backwards = ExtentRange::new(ExtentId::new(1, 1), start..end);
-        let root = Root { a: Some(extent), b: Some(backwards) };
+        let root = Root { a: Some(extent), b: Some(backwards), ..Root::default() };
         device.commit_root(&root.encode()).await.expect("commit failed");
         Root::read(&device).await.expect_err("read");
     }

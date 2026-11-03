@@ -200,13 +200,15 @@ pub struct FsverityStateInner {
 }
 
 #[derive(Debug, Default)]
-pub struct OverwriteOptions {
+pub struct OverwriteOptions<'a> {
     // If false, then all the extents for the overwrite range must have been preallocated using
     // preallocate_range or from existing writes.
     pub allow_allocations: bool,
     pub barrier_on_first_write: bool,
     /// fxdax: a barrier follows the last write, once the others are done (`POST_BARRIER`).
     pub barrier_after_last_write: bool,
+    /// fxdax: the root that barrier sets, if any (`WriteOptions::root`).
+    pub root: Option<&'a [u8]>,
 }
 
 impl FsverityStateInner {
@@ -1356,7 +1358,7 @@ impl<S: HandleOwner> DataObjectHandle<S> {
         &self,
         mut offset: u64,
         mut buf: MutableBufferRef<'_>,
-        options: OverwriteOptions,
+        options: OverwriteOptions<'_>,
     ) -> Result<(), Error> {
         ensure!((buf.len() as u32) % self.store().device.block_size() == 0, FxfsError::InvalidArgs);
         let end = offset + buf.len() as u64;
@@ -1563,7 +1565,8 @@ impl<S: HandleOwner> DataObjectHandle<S> {
                 if last {
                     flags |= WriteFlags::POST_BARRIER;
                 }
-                let write_options = WriteOptions { flags, ..Default::default() };
+                let root = if last { options.root } else { None };
+                let write_options = WriteOptions { flags, root, ..Default::default() };
                 let write =
                     self.write_at(offset, current_buf, store_extent, device_offset, write_options);
                 if last {

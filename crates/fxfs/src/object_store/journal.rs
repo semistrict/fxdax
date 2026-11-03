@@ -14,6 +14,9 @@
 // extents if a crash left any of it written, or if it is a fork's parent's branch's
 // (`renew_tail`). A read-only mount keeps its reader at the end of the last whole transaction it
 // applied, from which a follower reads on once its device holds more (`read_on`, backlog doc-8).
+// A sync's barrier records how far the journal was written in the store's root it sets
+// (`Root::journal_end`), and a replay that ends before there, at damage, is refused, where upstream
+// takes any checksum that fails for the journal's end (TASK-153.13).
 
 //! The journal is implemented as an ever extending file which contains variable length records
 //! that describe mutations to be applied to various objects.  The journal file consists of
@@ -52,7 +55,7 @@ use crate::object_store::journal::bootstrap_handle::BootstrapObjectHandle;
 use crate::object_store::journal::checksum_list::ChecksumList;
 use crate::object_store::journal::reader::{JournalReader, ReadResult};
 use crate::object_store::journal::super_block::{
-    SuperBlockHeader, SuperBlockInstance, SuperBlockManager,
+    Root, SuperBlockHeader, SuperBlockInstance, SuperBlockManager,
 };
 use crate::object_store::journal::writer::JournalWriter;
 use crate::object_store::object_manager::ObjectManager;
@@ -1034,6 +1037,17 @@ impl Journal {
                     "journal replay cut short; journal finishes at {}, but super-block was \
                      written at {}",
                     last_checkpoint.file_offset, super_block.super_block_journal_file_offset
+                )));
+            }
+            // fxdax: nor may it end before where a barrier last found it written: damage, not a
+            // crash, ended it there, and what a sync acknowledged after would be lost unsaid
+            // (TASK-153.13).
+            let journal_end = self.super_block_manager.journal_end().await;
+            if last_checkpoint.file_offset < journal_end {
+                return Err(anyhow!(FxfsError::Inconsistent).context(format!(
+                    "journal replay cut short; journal finishes at {}, but was written to {} \
+                     before a barrier",
+                    last_checkpoint.file_offset, journal_end
                 )));
             }
             let handle = ObjectStore::open_object(
@@ -2055,7 +2069,7 @@ impl Journal {
                     info!("J: start flush device");
                 }
                 self.objects.allocator().will_flush_device();
-                self.handle.get().unwrap().flush_device().await?;
+                self.flush_device_recording().await?;
                 if trace {
                     info!("J: end flush device");
                 }
@@ -2100,6 +2114,26 @@ impl Journal {
         }
 
         Ok(())
+    }
+
+    /// fxdax: flushes the device, recording in the root it sets how far the journal is written,
+    /// valid, before it (`Root::journal_end`), unless a super-block yet to be written records the
+    /// journal's tail, which a replay from the last can't read: one request, as a flush. Valid, not
+    /// written: after a replay, the journal goes on at a block past where it ended, which a replay
+    /// reaches only once something is written there.
+    async fn flush_device_recording(&self) -> Result<(), Error> {
+        let handle = self.handle.get().unwrap();
+        let (tail_unrecorded, written) = {
+            let inner = self.inner.lock();
+            (inner.tail_unrecorded, inner.valid_to)
+        };
+        if tail_unrecorded {
+            return handle.flush_device().await;
+        }
+        let device = handle.store().device();
+        let journal_end = |root: &mut Root| root.journal_end = root.journal_end.max(written);
+        let barrier = async |root: Vec<u8>| device.commit_root(&root).await.map(|()| true);
+        self.super_block_manager.set_root(journal_end, barrier).await.map(drop)
     }
 
     /// fxdax: writes the pending DidFlushDevice record now, and flushes the device again, so that
@@ -2442,27 +2476,43 @@ impl Journal {
                 inner.barrier_wanted > inner.flushed_offset && offset + len >= inner.barrier_wanted;
             (offset, len, barrier_on_first_write, barrier_after)
         };
+        let handle = self.handle.get().unwrap();
         if barrier_after_last_write {
             // The frees issued before the barrier, which it seals (`flush_device`).
             self.objects.allocator().will_flush_device();
-        }
-        let handle = self.handle.get().unwrap();
-        let options = OverwriteOptions {
-            barrier_on_first_write,
-            barrier_after_last_write,
-            ..Default::default()
-        };
-        if let Err(error) = handle.overwrite(offset, buf.as_mut(), options).await {
-            if !barrier_after_last_write {
-                return Err(error);
-            }
-            // fxdax: the barrier failing, as a full store's commit does, fails the sync that
-            // wanted it (its flush of the device, which fails too), not the journal: written
-            // again without it. The blocks are still open: a commit that fails seals nothing.
-            warn!(error:?; "The barrier after a journal write failed");
+            // fxdax: the barrier records how far the journal is written, in the root it sets
+            // (`Root::journal_end`), unless a super-block yet to be written records the journal's
+            // tail, which a replay from the last can't read.
+            let mut barrier = async |root: Option<&[u8]>| {
+                let options = OverwriteOptions {
+                    barrier_on_first_write,
+                    barrier_after_last_write: true,
+                    root,
+                    ..Default::default()
+                };
+                let Err(error) = handle.overwrite(offset, buf.as_mut(), options).await else {
+                    return Ok(true);
+                };
+                // fxdax: the barrier failing, as a full store's commit does, fails the sync that
+                // wanted it (its flush of the device, which fails too), not the journal: written
+                // again without it. The blocks are still open: a commit that fails seals nothing.
+                warn!(error:?; "The barrier after a journal write failed");
+                let options = OverwriteOptions { barrier_on_first_write, ..Default::default() };
+                handle.overwrite(offset, buf.as_mut(), options).await?;
+                Ok(false)
+            };
+            barrier_after_last_write = if self.inner.lock().tail_unrecorded {
+                barrier(None).await?
+            } else {
+                let written = offset + len;
+                let manager = &self.super_block_manager;
+                let journal_end =
+                    |root: &mut Root| root.journal_end = root.journal_end.max(written);
+                manager.set_root(journal_end, async |root| barrier(Some(&root)).await).await?
+            };
+        } else {
             let options = OverwriteOptions { barrier_on_first_write, ..Default::default() };
             handle.overwrite(offset, buf.as_mut(), options).await?;
-            barrier_after_last_write = false;
         }
 
         let mut inner = self.inner.lock();
@@ -4404,6 +4454,98 @@ mod tests {
         full.store(false, Ordering::Relaxed);
         create("room").await;
         sync().await.expect("sync after the store has room");
+        fs.close().await.expect("close failed");
+    }
+
+    /// fxdax: damage ending the journal before where a barrier last found it written is refused,
+    /// as it would lose what syncs acknowledged unsaid; past there, the journal ends where it ends,
+    /// as a crash may tear it anywhere (TASK-153.13).
+    #[fuchsia::test]
+    async fn test_a_journal_ending_before_its_synced_end_is_refused() {
+        use super::BLOCK_SIZE;
+        use crate::errors::FxfsError;
+        use storage_device::ExtentRange;
+        use storage_device::fake_device::Crashes;
+
+        let crashes = Crashes::new(0, u32::MAX);
+        let device = FakeDevice::new(16384, TEST_DEVICE_BLOCK_SIZE).record_crashes(crashes.clone());
+        let fs =
+            FxFilesystem::new_empty(DeviceHolder::new(device)).await.expect("new_empty failed");
+        let root_store = fs.root_store();
+        let root_directory = Directory::open(&root_store, root_store.root_directory_object_id())
+            .await
+            .expect("open failed");
+        let create = async |name: &str| {
+            let mut transaction = root_store
+                .new_transaction(
+                    lock_keys![LockKey::object(
+                        root_store.store_object_id(),
+                        root_store.root_directory_object_id(),
+                    )],
+                    Options::default(),
+                )
+                .await
+                .expect("new_transaction failed");
+            root_directory.create_child_file(&mut transaction, name).await.expect("create");
+            transaction.commit().await.expect("commit failed");
+        };
+        let synced: Vec<String> = (0..4).map(|i| format!("synced-{i}")).collect();
+        let unsynced: Vec<String> = (0..4).map(|i| format!("unsynced-{i}")).collect();
+        for name in &synced {
+            create(name).await;
+            fs.sync(SyncOptions { flush_device: true, ..Default::default() }).await.expect("sync");
+        }
+        let journal = fs.journal();
+        let synced_end = journal.super_block_manager.journal_end().await;
+        let super_block_offset = journal.super_block_header().super_block_journal_file_offset;
+        // Written, with no barrier after.
+        for name in &unsynced {
+            create(name).await;
+        }
+        let (checkpoint, _) = journal.sync(SyncOptions::default()).await.expect("sync").unwrap();
+        journal.wait_for_flush(checkpoint.file_offset).await.expect("written");
+        let written = journal.inner.lock().flushed_offset;
+        assert!(super_block_offset < synced_end - BLOCK_SIZE, "{super_block_offset} {synced_end}");
+        assert!(synced_end < written, "{synced_end} {written}");
+        let extents = journal.handle.get().unwrap().device_extents().await.expect("extents");
+        let block_at = |offset: u64| {
+            let extent = extents.iter().find(|extent| extent.logical_range().contains(&offset));
+            let ExtentRange { extent, range } = extent.expect("a journal block").device_range();
+            let logical = extents.iter().find(|e| e.device_range().extent == *extent).unwrap();
+            (*extent, (range.start + offset - logical.logical_range().start) as usize)
+        };
+        // As a crash leaves it, losing nothing.
+        crashes.mark(0);
+        crashes.last();
+        fs.device().flush().await.expect("flush failed");
+        fs.close().await.expect("close failed");
+        let (_, image) = crashes.take().next().expect("what the device held");
+
+        // A flip in the last block a sync wrote, or in the first after.
+        let flipped = |offset: u64| {
+            let device = image.recovered(0);
+            let (extent, at) = block_at(offset);
+            device.corrupt(|extents, _| extents.get_mut(&extent).expect("the block")[at + 8] ^= 1);
+            DeviceHolder::new(device)
+        };
+        let error = FxFilesystem::open(flipped(synced_end - BLOCK_SIZE))
+            .await
+            .map(drop)
+            .expect_err("a journal damaged before its synced end mounted");
+        assert!(FxfsError::Inconsistent.matches(&error), "{error:?}");
+
+        let fs = FxFilesystem::open(flipped(synced_end)).await.expect("open failed");
+        let root_store = fs.root_store();
+        let root_directory = Directory::open(&root_store, root_store.root_directory_object_id())
+            .await
+            .expect("open failed");
+        for name in &synced {
+            assert!(root_directory.lookup(name).await.expect("lookup").is_some(), "{name}");
+        }
+        for name in &unsynced {
+            assert!(root_directory.lookup(name).await.expect("lookup").is_none(), "{name}");
+        }
+        fsck(fs.clone()).await.expect("fsck failed");
         fs.close().await.expect("close failed");
     }
 }

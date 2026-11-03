@@ -23,10 +23,12 @@
 //!
 //! What it proves, printed for each part as it ends: a case is `refused` by the mount, `caught` by
 //! fsck, `failed` a read, was `same` as it was, or read back `different` with no one saying so. No
-//! panic is the assertion: nothing here asks that a flip be found, as only the super-blocks', the
-//! journal's and the data being written's checksums can find one, which tests of their own pin
-//! (`a_flip_in_both_super_blocks_is_refused`, `a_flip_in_data_being_written_...`). The rest, with
-//! no checksum anyone reads, is `different`, or `same` of bytes nothing looks at.
+//! panic is the assertion, and one more: a flip in the journal, unsealed, is never `different`, as
+//! the journal's checksums find it, and a replay that it ends short of where a sync wrote the
+//! journal refuses it (TASK-153.13). Otherwise, nothing here asks that a flip be found, as only the
+//! super-blocks', the journal's and the data being written's checksums can find one, which tests of
+//! their own pin (`a_flip_in_both_super_blocks_is_refused`, `a_flip_in_data_being_written_...`).
+//! The rest, with no checksum anyone reads, is `different`, or `same` of bytes nothing looks at.
 
 use super::model_tests::{checked, watch_sequences};
 use super::tests::Tested;
@@ -765,6 +767,10 @@ fn flips_never_panic(barriers: bool, ending: Ending) {
         println!("{count} panics at {place}: first {first}");
     }
     assert_eq!(panics.len(), 0, "{panics:#?}");
+    // The journal's checksums find an unsealed flip, which ends a replay short of what was synced.
+    if let Some((_, journal)) = tally.get(&(Part::Journal, false)) {
+        assert_eq!(journal.different, 0, "a flip in the journal unsaid: {journal:?}");
+    }
     // What's found, and what isn't, come of every run: one that didn't get that far says little.
     assert!(all.refused > 0, "nothing refused: {all:?}");
     assert!(all.same > 0, "nothing the same: {all:?}");
@@ -829,11 +835,12 @@ fn a_flip_in_both_super_blocks_is_refused() {
 }
 
 /// What journaling data's checksums buys: a flip of data written since the device last flushed is
-/// found, and replay stops short of what wrote it, as of a write the device lost, leaving a file
-/// as it was: with barriers it isn't, and it reads as it was changed. Past that flush, or on a
-/// read, neither finds it, as the checksums in extent records are only ever written:
-/// `flips_never_panic` counts those as `different`.
-fn a_flip_in_data_being_written(barriers: bool, expected: &[u8]) {
+/// found, and replay stops short of what wrote it, as of a write the device lost: as that was
+/// synced, the mount is refused (TASK-153.13), where it once left the file as it was. With
+/// barriers it isn't found, and it reads as it was changed. Past that flush, or on a read, neither
+/// finds it, as the checksums in extent records are only ever written: `flips_never_panic` counts
+/// those as `different`. What it reads, if it mounts.
+fn a_flip_in_data_being_written(barriers: bool, expected: Option<&[u8]>) {
     let run = async {
         let crashes = Crashes::new(0, u32::MAX);
         let device = FakeDevice::new(16384, PAGE as u32).calm().record_crashes(crashes.clone());
@@ -867,7 +874,7 @@ fn a_flip_in_data_being_written(barriers: bool, expected: &[u8]) {
 
         device.corrupt(|extents, _| extents.get_mut(&extent).unwrap()[bytes.start] ^= 0xff);
         let filesystem = builder(barriers, true).open(DeviceHolder::new(device));
-        let filesystem = filesystem.await.expect("mounting");
+        let Ok(filesystem) = filesystem.await else { return None };
         let fs = volume_of(&filesystem, true).await.expect("the volume");
         let root = fs.volume.root_directory_object_id();
         let attr = fs.lookup(root, b"file").await.expect("the file");
@@ -875,19 +882,19 @@ fn a_flip_in_data_being_written(barriers: bool, expected: &[u8]) {
         let len = fs.read(attr.ino, 0, &mut read).await.expect("reading");
         read.truncate(len);
         unmount(Some(fs), filesystem).await;
-        read
+        Some(read)
     };
-    assert_eq!(run_case(run).expect("no panic"), expected);
+    assert_eq!(run_case(run).expect("no panic").as_deref(), expected);
 }
 
 #[test]
 fn a_flip_in_data_being_written_is_found_by_journaled_checksums() {
-    a_flip_in_data_being_written(false, &[]);
+    a_flip_in_data_being_written(false, None);
 }
 
 #[test]
 fn a_flip_in_data_being_written_is_not_found_with_barriers() {
     let mut flipped = vec![1; PAGE as usize];
     flipped[0] ^= 0xff;
-    a_flip_in_data_being_written(true, &flipped);
+    a_flip_in_data_being_written(true, Some(&flipped));
 }
