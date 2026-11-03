@@ -55,8 +55,8 @@
 // Errors are gRPC statuses whose code follows the errno the daemon failed with, which the
 // `fxdax-errno` metadata entry carries, as a decimal number (Linux's): ENOENT is NOT_FOUND,
 // EEXIST ALREADY_EXISTS, EACCES and EPERM PERMISSION_DENIED, EINVAL INVALID_ARGUMENT, ENOSPC
-// RESOURCE_EXHAUSTED, ETIMEDOUT DEADLINE_EXCEEDED, EBUSY, ESTALE and ENOTSUP FAILED_PRECONDITION,
-// EIO and others INTERNAL.
+// RESOURCE_EXHAUSTED, ETIMEDOUT DEADLINE_EXCEEDED, EBUSY, ESTALE, ENOTSUP and EROFS
+// FAILED_PRECONDITION, EIO and others INTERNAL.
 //
 // Calls block for as long as their work takes: a sync until the store's commits are in object
 // storage, an import for minutes. A caller bounds them with deadlines; one that gives up does not
@@ -100,7 +100,8 @@ service Extentd {
   rpc DropStore(DropStoreRequest) returns (DropStoreResponse);
   // Sets a store's capacity, the size of the disk its guest sees: a store a VM has open grows at
   // once, the guest seeing it mounted, and shrinks if its guest's filesystem agrees, no lower than
-  // what it holds (RESOURCE_EXHAUSTED otherwise); one none has open only grows.
+  // what it holds (RESOURCE_EXHAUSTED otherwise); one none has open only grows. A point, which
+  // nothing writes, is resized nowhere (FAILED_PRECONDITION, EROFS).
   rpc ResizeStore(ResizeStoreRequest) returns (ResizeStoreResponse);
   // Places a store at a placement whose fencing token, its boot ID, is `token`: its writer takes
   // its branch in object storage with that token from then on, which a later placement's exceeds,

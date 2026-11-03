@@ -426,6 +426,27 @@ fn vm_processes_write_no_point() {
     }
 }
 
+/// TASK-160.10: a point's capacity, as all else of it, changes on no host: ResizeStore of one is
+/// refused (`EROFS`), closed on its snapshot's host, kept open for restores on another, and the
+/// restores after it have the capacity it had. Before, the daemon opened it to resize it without
+/// its remote, which says it is a point, and grew it.
+#[test]
+fn points_are_resized_nowhere() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut here, mut there) = (Host::new(dir.path(), "here"), Host::new(dir.path(), "there"));
+    let snapshot = here.snapshot();
+    let point = there.acme.join("point");
+    there.daemon.create(&point, snapshot.branch, None).unwrap();
+    drop(restore(&there.socket, &there.acme.join("vm"), &point, 0).unwrap());
+    let (refused, own) = ((Code::FailedPrecondition, Errno::EROFS), here.acme.join("point"));
+    for (host, point) in [(&mut here, own), (&mut there, point)] {
+        assert_eq!(failure(host.daemon.resize(&point, 2 * CAPACITY)), refused);
+        assert_eq!(host.daemon.stat(&point).unwrap().capacity, CAPACITY);
+        let restored = restore(&host.socket, &point.with_file_name("after"), &point, 0).unwrap();
+        assert_eq!(restored.info().unwrap().capacity, CAPACITY);
+    }
+}
+
 /// TASK-158: a point has no lease, so that a host needs no placement to restore it, however late
 /// the placement that took it. (It pinned the limit this removed, as
 /// `points_of_later_placements_are_taken_placed`: a restore refused with ESTALE until CreateStore

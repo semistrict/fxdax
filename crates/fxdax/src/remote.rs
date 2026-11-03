@@ -2947,6 +2947,48 @@ mod tests {
     /// A fork of a store kept in object storage is a fork of its branch there, recorded once the
     /// parent uploaded through it: it inherits the parent's extents rather than upload them again,
     /// and what either commits after is its own.
+    /// TASK-160.10: a point's store, once attached, which alone says it is one, refuses all that
+    /// would change what it holds, with `EROFS`, whoever asks: writes, frees, commits, writable
+    /// maps, cleaning, a resize, a writer taking it over. What changes none of its extents it
+    /// does: it forks, and is made public. Before, it refused none of these itself, and a resize
+    /// of one grew it.
+    #[test]
+    fn points_refuse_what_would_change_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
+        let source = ExtentStore::create(dir.path().join("source"), 1 << 30).unwrap();
+        source.attach_remote(bucket.clone(), 1, idle()).unwrap();
+        let extent = write(&source, 1, &pattern(1, BLOCK));
+        source.commit(Some(b"root")).unwrap();
+        let path = dir.path().join("point");
+        source.point(&path, source.branch() + 1).unwrap();
+        drop(source);
+
+        let point = ExtentStore::open(&path).unwrap();
+        assert_eq!(point.access().role, crate::StoreRole::Writer, "unattached, it can't know");
+        point.attach_remote(bucket.clone(), 2, idle()).unwrap();
+        assert_eq!(point.access().role, crate::StoreRole::Point);
+        let capacity = point.info().unwrap().capacity;
+        let own = ExtentId { branch: point.branch(), sequence: 1 };
+        let refused = [
+            ("set_capacity", point.set_capacity(2 * capacity)),
+            ("write", point.write(own, 0, &[VolatileSlice::from(&pattern(2, BLOCK)[..])])),
+            ("free", point.free(extent)),
+            ("commit", point.commit(Some(b"changed"))),
+            ("commit_ordered", point.commit_ordered(None)),
+            ("map", point.map(own, 0, BLOCK as u64, 0, true)),
+            ("clean_behind", point.clean_behind()),
+            ("take_over", point.take_over()),
+        ];
+        for (what, result) in refused {
+            assert_eq!(result, Err(crate::Errno::EROFS), "{what}");
+        }
+        assert_eq!(point.info().unwrap().capacity, capacity);
+        assert_eq!(point.root().unwrap(), b"root");
+        point.fork(dir.path().join("fork"), point.branch() + 1).unwrap();
+        point.make_public().unwrap();
+    }
+
     #[test]
     fn forks_inherit_their_parents_extents() {
         let dir = tempfile::tempdir().unwrap();

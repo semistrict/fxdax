@@ -237,6 +237,11 @@ impl Command {
             Self::Drop { dir } => ExtentStore::delete(&dir, None)?,
             Self::Resize { dir, capacity } => {
                 let store = ExtentStore::open(&dir)?;
+                // Attached, which says whether it is a point, whose capacity changes nowhere
+                // (TASK-160.10).
+                if let Some(bucket) = bucket {
+                    attach(&store, bucket)?;
+                }
                 if capacity < store.info()?.capacity {
                     bail!(
                         "shrinking a store needs its guest to agree: resize it through the \

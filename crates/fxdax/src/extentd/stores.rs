@@ -882,7 +882,9 @@ async fn delete_alone(
 /// Sets the capacity of the store at `path` to `capacity` bytes: through the connection that has
 /// it open, if one does, which grows it, or shrinks it if its guest agrees, holding no thread while
 /// it waits for the guest's answer; or, if none does, here, growing it (`EBUSY` to shrink it, its
-/// guest not here to agree), no connection opening it meanwhile.
+/// guest not here to agree), no connection opening it meanwhile. fxdax: as the store's access says
+/// ([`crate::StoreAccess::may_resize`]): a point's capacity, as all else of it, changes nowhere
+/// (`EROFS`).
 pub(super) async fn resize(path: PathBuf, capacity: u64) -> Result<(), Errno> {
     let key = store_key(&path);
     let open = |held: Option<Released<'static, Connection>>| {
@@ -890,16 +892,16 @@ pub(super) async fn resize(path: PathBuf, capacity: u64) -> Result<(), Errno> {
         let held = held.map(|held| Box::new(held) as Box<dyn Send + Sync>);
         blocking(move || {
             // fxdax: open for followers, it grows as it is; the point kept open of it for forks,
-            // it opens anew, closed first (TASK-92.5).
+            // it opens anew, closed first (TASK-92.5): attached, as any store the daemon opens,
+            // which says whether it is a point (TASK-160.10).
             let store = match instance(&key) {
                 Some((store, _)) => store,
                 None => {
                     close_kept_now(&key);
-                    Arc::new(ExtentStore::open_without_profile(&key).map_err(|err| {
-                        let path = key.display();
-                        log::warn!("extentd: opening the store at {path} to resize it: {err:#}");
-                        Errno::ENOENT
-                    })?)
+                    if !key.exists() {
+                        return Err(Errno::ENOENT);
+                    }
+                    Arc::new(open_here(&key)?)
                 }
             };
             Ok(Here::of(store, held))

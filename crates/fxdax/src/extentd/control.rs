@@ -137,7 +137,7 @@ fn status(errno: Errno) -> Status {
         Errno::EINVAL => Code::InvalidArgument,
         Errno::ENOSPC => Code::ResourceExhausted,
         Errno::ETIMEDOUT => Code::DeadlineExceeded,
-        Errno::EBUSY | Errno::ESTALE | Errno::ENOTSUP => Code::FailedPrecondition,
+        Errno::EBUSY | Errno::ESTALE | Errno::ENOTSUP | Errno::EROFS => Code::FailedPrecondition,
         _ => Code::Internal,
     };
     let mut status = Status::new(code, format!("{errno:?}"));

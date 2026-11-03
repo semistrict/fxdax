@@ -212,8 +212,8 @@ pub enum StoreRole {
 }
 
 impl StoreAccess {
-    /// `Ok` if what the store holds may change: its extents, commits and capacity, which only its
-    /// writer's do, and of no public base. A follower's and a point refuse with `EROFS`; a
+    /// `Ok` if what the store holds may change: its extents and commits, which only its writer's
+    /// do, and of no public base. A follower's and a point refuse with `EROFS`; a
     /// public base with `EPERM`, as what changed would be every tenant's that forks it (TASK-43).
     pub fn may_write(self) -> Result<()> {
         match self {
@@ -221,6 +221,16 @@ impl StoreAccess {
             Self { public: true, .. } => Err(Errno::EPERM),
             Self { role: StoreRole::Point, .. } => Err(Errno::EROFS),
             Self { role: StoreRole::Writer, public: false } => Ok(()),
+        }
+    }
+
+    /// `Ok` if the store's capacity may change, its writer's alone: `EROFS` for a follower's, and
+    /// for a point, whose forks take it as it is. A public base's grows, as no fork it made shares
+    /// it.
+    pub fn may_resize(self) -> Result<()> {
+        match self.role {
+            StoreRole::Writer => Ok(()),
+            StoreRole::Follower | StoreRole::Point => Err(Errno::EROFS),
         }
     }
 
@@ -1068,7 +1078,7 @@ impl ExtentStore {
     /// than what its extents hold (`ENOSPC`). The guest's filesystem, which may hold more, agrees
     /// to a shrink first (the extent daemon's `RESIZE` asks it).
     pub fn set_capacity(&self, capacity: u64) -> Result<()> {
-        self.access().may_write()?;
+        self.access().may_resize()?;
         self.store.set_capacity(capacity).map_err(errno)
     }
 
