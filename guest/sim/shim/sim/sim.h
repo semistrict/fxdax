@@ -54,6 +54,13 @@ void sim_device_fail_odds(unsigned int odds);
 u64 sim_device_failed(void);
 void sim_device_limit_open(u64 pages);
 u64 sim_device_open_refused(void);
+/*
+ * Has the next MAP wait on its way to the host, others running meanwhile, until released: the
+ * pages of the MAP held, or 0 if none is.
+ */
+void sim_device_hold_map(void);
+u64 sim_device_held_map(void);
+void sim_device_release_map(void);
 /* Logs every MAP and UNMAP of a window page. */
 void sim_device_watch(u64 page);
 /* Logs what a window page, or a task's address, maps now. */
@@ -115,6 +122,8 @@ void fxfs_sim_stats(u64 *moves, u64 *frees, u64 *failed);
 void fxfs_sim_fail(unsigned int odds);
 /* How many seals have ended. */
 u64 fxfs_sim_seals(struct fxfs *fs);
+/* Whether a seal has begun, and shut the gate, and not ended: waiting for the stores, it may be. */
+bool fxfs_sim_sealing(struct fxfs *fs);
 /* Logs what happens to the block of `page` of file `ino`. */
 void fxfs_sim_watch(u64 ino, u64 page);
 

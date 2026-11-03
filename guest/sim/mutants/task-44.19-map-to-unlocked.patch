@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+#
+# TASK-44.19: a region's MAPs and its `mapped` without the region's lock. Two writers of slices of
+# one staging extent each MAP from what they found mapped, and the one that ends last says how far:
+# `mapped` may go back, and a seal gives the window past it back, under a slice still using it. No
+# guest suite found it (GCE, 2026-11-02, scripts/guest-mutants-gce.py map_to_unlocked), nor 3,000
+# seeds here; tests/scenarios' reaches_at_once does.
+
+--- a/guest/linux/fs/fxfs/dax.c
++++ b/guest/linux/fs/fxfs/dax.c
+@@ -1884,7 +1884,6 @@
+ 	bool writable;
+ 	int err = 0;
+
+-	mutex_lock(&region->lock);
+ 	writable = READ_ONCE(region->writable);
+ 	from = region->mapped;
+ 	if (end <= from)
+@@ -1926,7 +1925,6 @@
+ 			from, to, region->branch, region->sequence, region->pages,
+ 			writable ? "writably" : "read-only", region->window_offset, err);
+ out:
+-	mutex_unlock(&region->lock);
+ 	return err;
+ }
+

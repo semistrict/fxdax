@@ -8,7 +8,8 @@
  * memory, so that a store the host would refuse faults, and fails the run (kernel/host.c).
  *
  * Requests complete in place, each a scheduling point: no queues, no interrupts, no async faults,
- * none of the host's own concurrency, and no latency but what the clock is told.
+ * none of the host's own concurrency, and no latency but what the clock is told, or a MAP a test
+ * holds back (sim_device_hold_map).
  */
 
 #include <sim/sim.h>
@@ -312,6 +313,36 @@ static int do_map(struct vext_request *req)
 	return err;
 }
 
+/* Whether a test holds the next MAP back, and the pages of the one it holds, if any. */
+static bool hold_next;
+static u64 holding;
+
+void sim_device_hold_map(void)
+{
+	hold_next = true;
+}
+
+u64 sim_device_held_map(void)
+{
+	return holding;
+}
+
+void sim_device_release_map(void)
+{
+	holding = 0;
+}
+
+/* Holds `req`, a MAP, on its way to the host, if a test asked, until the test releases it. */
+static void hold_map(const struct vext_request *req)
+{
+	if (!hold_next)
+		return;
+	hold_next = false;
+	holding = req->len >> PAGE_SHIFT;
+	while (holding)
+		msleep(1);
+}
+
 void sim_device_fail(u32 type, u64 skip, u64 count)
 {
 	failing_type = type;
@@ -367,6 +398,7 @@ int virtio_extent_call(struct virtio_extent *vext, struct vext_request *req)
 	}
 	switch (req->type) {
 	case VIRTIO_EXTENT_T_MAP:
+		hold_map(req);
 		device.map_requests++;
 		err = do_map(req);
 		break;

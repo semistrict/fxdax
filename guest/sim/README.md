@@ -45,7 +45,7 @@ Written here (see each file's head for what it leaves out):
 | Scheduler, locks, wait queues, RCU, workqueues | `kernel/sched.c`, `locks.c`, `workqueue.c` | One task at a time; wait queues as the kernel's; rwsem order as the kernel's, not its optimistic spinning |
 | Page tables and faults | `kernel/mm.c` | Two flat arrays per VMA, with `mm/memory.c`'s insert and fault rules rewritten, and `mmap_lock`. No TLB, no MMU, no GUP, no private mappings |
 | VFS and page cache | `kernel/vfs.c`, `mount.c` | What dax.c calls. `super.c` is not built: its resize, punch, clone and fsync are rewritten, so that a bug in them shows on a real kernel alone |
-| Host device | `kernel/device.c`, `host.c` | The window is real memory, a memfd mapped page by page, so a store the host refuses is a SIGSEGV. Requests complete at once, or fail with EIO as a test asks, or with ENOMEM past the open pages a test lets it hold, a seed in four: no virtqueue, no second stage, no async page faults |
+| Host device | `kernel/device.c`, `host.c` | The window is real memory, a memfd mapped page by page, so a store the host refuses is a SIGSEGV. Requests complete at once, or fail with EIO as a test asks, or with ENOMEM past the open pages a test lets it hold, a seed in four, or a MAP waits on its way as a test holds it: no virtqueue, no second stage, no async page faults |
 | Fxfs | `fxfs/fxfs.c` | A model of what the protocol assumes: blocks, open extents that go one way, shared blocks, the staging extent, `FreeAfter::Flush`, one seal in four a flush, transactions that fail, `zero_tail`. No journal, tree or crash consistency |
 
 So a run tests dax.c against a second writing of its assumptions. Where the model differs from
@@ -165,6 +165,7 @@ workload does.
 | TASK-150.20, a MAP the host has no memory for makes no room | `open_memory_out` | a write's EIO; and every seed that limits the host's memory, a seed in four, in `interleave` and `failures` alike |
 | TASK-150.20, each way in alone: a write, a fault, zeroing, a read | `open_memory_out`, 8, 8, 592 | a write's EIO, a fault's EFAULT, a punch's ENOMEM, and a read's failure: reads reach it least |
 | TASK-44.21, a sealed piece reached for | `open_extent_read_only` | `fxfs_dax_region_open`'s WARN: shared blocks of an open extent go through its region, as a slice's, the one way since fafefbac7 |
+| TASK-44.19, `fxfs_dax_map_to` without the region's lock | `reaches_at_once`; no, in 3,000 | bytes wrong: two slices reach at once, the nearer MAP ends last and says the region maps less, and a seal gives the window past it back under the further slice, which reads the next region's page |
 | TASK-79.28, a range remapped too small | no | equivalent since TASK-147: a fault sizing a range from the old end holds the invalidate lock `fxfs_dax_fit` waits for, and one after sees `growing`. `task-79.28-before-147`, with that gone too, shows at seed 31 |
 
 The `fs/dax.c:416` WARN isn't these alone: it shows with no mutant (6, above), about a seed in 6,000

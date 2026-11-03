@@ -2,8 +2,8 @@
 // Copyright 2026 The fxdax Authors.
 /*
  * Paths no seed of tests/interleave takes, each played out exactly: memory that ends part way
- * through a write, a write from the pages it writes, what a clone does to an open extent, and
- * allocations and device requests that fail.
+ * through a write, a write from the pages it writes, what a clone does to an open extent,
+ * allocations and device requests that fail, and a MAP the host is slow to take.
  *
  *   scenarios [NAME]
  *
@@ -578,6 +578,83 @@ static void open_memory_out(void)
 	check_file("the last write", file, bytes, sizeof(bytes));
 }
 
+/* A file's write, as a task of its own. */
+struct reach {
+	struct file *file;
+	const char *bytes;
+	size_t len;
+};
+
+static void write_reach(void *arg)
+{
+	struct reach *write = arg;
+	ssize_t done = sim_write(write->file, 0, write->bytes, write->len);
+
+	check(done == write->len, "a write of %zu bytes: %zd", write->len, done);
+}
+
+static void seal_reach(void *arg)
+{
+	check(!sim_fsync(arg), "the seal");
+}
+
+static void wait_for(struct task_struct *task)
+{
+	while (!task->done)
+		msleep(1);
+}
+
+/*
+ * That a region's `mapped` never goes back. Two new files' slices of the staging extent reach at
+ * once: the first's MAP, as far as the region's first step, held at the host, the second's, further,
+ * and a seal begun, which waits for the first. Without the region's lock, the second MAPs from what
+ * the first found mapped, and the first, ending last, says the region maps less than it does: the
+ * seal shrinks the region to that, and gives the window past it back, under the second's slice. The
+ * next staging extent's region takes it, where the first's write, sealed before its copy, moves its
+ * page: the second file reads the first's bytes (TASK-44.19's map_to_unlocked, which no guest suite
+ * found, nor 3,000 seeds of interleave and failures).
+ */
+static void reaches_at_once(void)
+{
+	static char near[PAGE_SIZE], far[40 * PAGE_SIZE], got[sizeof(far)];
+	struct reach first = { sim_file_new(mount), near, sizeof(near) };
+	struct reach second = { sim_file_new(mount), far, sizeof(far) };
+	struct file *sealed = sim_file_new(mount);
+	struct task_struct *nearer, *further, *sealer;
+	size_t page;
+	ssize_t done;
+	u64 held;
+
+	fill(near, sizeof(near), 1);
+	fill(far, sizeof(far), 2);
+	sim_device_hold_map();
+	nearer = sim_spawn("nearer", write_reach, &first);
+	while (!(held = sim_device_held_map()))
+		msleep(1);
+	/* The region's first MAP, FXFS_DAX_REGION_FIRST's pages, short of the second slice's end. */
+	check(held == 16, "the MAP held is of %llu pages", held);
+	further = sim_spawn("further", write_reach, &second);
+	/* As far as it goes: its write's end, or, as the region is locked, its MAP's beginning. */
+	msleep(100);
+	sealer = sim_spawn("sealer", seal_reach, sealed);
+	while (!fxfs_sim_sealing(mount->info->fs))
+		msleep(1);
+	sim_device_release_map();
+	wait_for(nearer);
+	wait_for(further);
+	wait_for(sealer);
+	done = sim_read(second.file, 0, got, sizeof(got));
+	check(done == sizeof(got), "the further file's read: %zd", done);
+	for (page = 0; page < ARRAY_SIZE(far) / PAGE_SIZE; page++) {
+		check(!memcmp(got + page * PAGE_SIZE, far + page * PAGE_SIZE, PAGE_SIZE),
+		      "the further file's page %zu reads %s", page,
+		      !memcmp(got + page * PAGE_SIZE, near, PAGE_SIZE) ? "the nearer file's bytes" :
+		      "bytes of neither file");
+	}
+	check_file("the further slice", second.file, far, sizeof(far));
+	check_file("the nearer slice", first.file, near, sizeof(near));
+}
+
 static const struct {
 	const char *name;
 	void (*run)(void);
@@ -600,6 +677,7 @@ static const struct {
 	SCENARIO(map_failed_writing),
 	SCENARIO(allocations_failed),
 	SCENARIO(open_memory_out),
+	SCENARIO(reaches_at_once),
 };
 
 static void scenario(void *arg)

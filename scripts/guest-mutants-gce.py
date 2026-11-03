@@ -35,6 +35,8 @@ SUPER = "guest/linux/fs/fxfs/super.c"
 # path) of another file, each of which must be found there once; and, for one only an assertion of a debug kernel's finds, the
 # kernel the host builds (FXDAX_GUEST_KERNEL_BUILD: debug, with lockdep), release otherwise.
 MUTANTS = [
+    # Missed by every suite here (2026-11-02); killed by guest/sim's reaches_at_once, which holds a
+    # MAP at the host as a second one, further, ends (TASK-44.19).
     (
         "map_to_unlocked",
         "a region's MAPs and its mapped go without the region's lock: two MAP as far as each "

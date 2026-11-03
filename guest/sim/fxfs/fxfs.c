@@ -121,6 +121,12 @@ u64 fxfs_sim_seals(struct fxfs *fs)
 	return fs->seals;
 }
 
+bool fxfs_sim_sealing(struct fxfs *fs)
+{
+	/* The device counts a seal's beginning and its end. */
+	return fxfs_device_seals(fs->dev) % 2;
+}
+
 struct fxfs *fxfs_sim_new(void)
 {
 	struct fxfs *fs = kzalloc(sizeof(*fs), GFP_KERNEL);
