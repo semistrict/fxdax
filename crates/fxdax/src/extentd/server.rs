@@ -1062,7 +1062,7 @@ impl Connection {
                 let path = PathBuf::from(std::ffi::OsStr::from_bytes(&message.payload));
                 self.authorize(&path)?;
                 let forked = if flags & FORK_QUIESCENT != 0 {
-                    store.fork_quiescent(&path, args[0])
+                    store.point(&path, args[0])
                 } else {
                     store.fork(&path, args[0])
                 };
@@ -1258,6 +1258,8 @@ impl Connection {
         // default arena's, which every VM process holds (TASK-79.17).
         let opened = match opened {
             Ok(store) if store.is_public() => Err(Errno::EPERM),
+            // fxdax: nor a point, which nothing writes (doc-7, Points): only forks of it.
+            Ok(store) if store.is_point() => Err(Errno::EROFS),
             opened => opened,
         };
         let started = opened.map(|store| {

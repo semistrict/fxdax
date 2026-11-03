@@ -20,7 +20,10 @@
 //!   same paths, the root filesystem's too, which the restored VM goes on reading.
 //! - **TenantMigrate:** as Migrate, for a tenant's VM (TASK-154): the tenant's VM process names no
 //!   branch, so that the host's VM manager makes the point in the tenant's directory first, of the
-//!   branch the daemon says it is, and Firecracker restores through the tenant's socket.
+//!   branch the daemon says it is, and Firecracker restores through the tenant's socket. Several
+//!   times at once (TASK-158), each from a copy of the point of its own, as on hosts of their own,
+//!   for tenants of their own, and once from the snapshot's own copy, all at the same moment: each
+//!   copy a read-only ancestor, which no restore takes from the others.
 //!
 //! Each restored guest thaws, reads what was written before the snapshot (with a DAX window,
 //! through a mapping made before it, which the restored window maps again), writes its own file,
@@ -64,7 +67,8 @@ impl Mode {
         match self {
             Self::Zygote => &["a", "b"],
             Self::Suspend => &["resumed"],
-            Self::Migrate | Self::TenantMigrate => &["moved"],
+            Self::Migrate => &["moved"],
+            Self::TenantMigrate => &["moved", "moved-too", "moved-last", "here"],
         }
     }
 }
@@ -163,15 +167,15 @@ mod host {
         snapshot: &Path,
         point: &Path,
         dir: &Path,
+        tenant: &str,
     ) -> anyhow::Result<PathBuf> {
         let control = crate::common::control(extentd)?;
         let mut taken = snapshot.as_os_str().to_owned();
         taken.push(".extent-extents");
-        control.sync_store(Path::new(&taken))?;
+        // In the bucket once taken: no sync.
         let branch = control.stat_store(Path::new(&taken))?.branch;
         let id = |name: &str| std::env::var(name).ok().map(|id| id.parse()).transpose();
-        let socket =
-            control.grant("restored", dir, id("FXDAX_JAIL_UID")?, id("FXDAX_JAIL_GID")?)?;
+        let socket = control.grant(tenant, dir, id("FXDAX_JAIL_UID")?, id("FXDAX_JAIL_GID")?)?;
         control.create_store(point, CAPACITY, Some(branch), None)?;
         Ok(socket)
     }
@@ -295,8 +299,9 @@ mod host {
 
             // Restored, told its name: each into its own store, but resuming.
             let mut restored = Vec::new();
+            let mut loads = Vec::new();
             for &name in self.restores(phase) {
-                let elsewhere = dir.join("elsewhere");
+                let elsewhere = dir.join(format!("elsewhere-{name}"));
                 let overrides = match self.mode {
                     Mode::Zygote => serde_json::json!([
                         { "id": "extents", "path_on_host": store(dir, name) },
@@ -311,10 +316,16 @@ mod host {
                             "extentd_socket": extentd,
                         }])
                     }
+                    // The snapshot's own copy, where it is: only the store to name.
+                    Mode::TenantMigrate if name == "here" => serde_json::json!([
+                        { "id": "extents", "path_on_host": store(dir, name) },
+                    ]),
                     Mode::TenantMigrate => {
                         std::fs::create_dir_all(&elsewhere)?;
                         let point = elsewhere.join("point");
-                        let socket = take_for_tenant(&extentd, &snapshot, &point, &elsewhere)?;
+                        let tenant = format!("restored-{name}");
+                        let socket =
+                            take_for_tenant(&extentd, &snapshot, &point, &elsewhere, &tenant)?;
                         serde_json::json!([{
                             "id": "extents",
                             "path_on_host": store(&elsewhere, name),
@@ -326,17 +337,13 @@ mod host {
                 let uds = uds(name);
                 let listener = listen(&uds)?;
                 let firecracker = Firecracker::spawn(dir, name, &Vm::api_socket(name), None, &[])?;
-                firecracker.request(
-                    "PUT",
-                    "/snapshot/load",
-                    &serde_json::json!({
-                        "snapshot_path": snapshot,
-                        "mem_backend": { "backend_type": "File", "backend_path": memory },
-                        "resume_vm": true,
-                        "vsock_override": { "uds_path": uds },
-                        "extent_overrides": overrides,
-                    }),
-                )?;
+                loads.push(serde_json::json!({
+                    "snapshot_path": snapshot,
+                    "mem_backend": { "backend_type": "File", "backend_path": memory },
+                    "resume_vm": true,
+                    "vsock_override": { "uds_path": uds },
+                    "extent_overrides": overrides,
+                }));
                 // Each connection the guest makes, as one reset by the restore is made again.
                 std::thread::spawn(move || -> std::io::Result<()> {
                     for stream in listener.incoming() {
@@ -346,6 +353,18 @@ mod host {
                 });
                 restored.push(firecracker);
             }
+            // All at once: no restore of one point waits for another's.
+            std::thread::scope(|scope| {
+                let loading: Vec<_> = (restored.iter().zip(&loads))
+                    .map(|(firecracker, load)| {
+                        scope.spawn(move || firecracker.request("PUT", "/snapshot/load", load))
+                    })
+                    .collect();
+                for load in loading {
+                    load.join().expect("a load")?;
+                }
+                anyhow::Ok(())
+            })?;
             for firecracker in restored {
                 let (status, console) = firecracker.wait()?;
                 crate::vm::split_console(std::fs::File::open(&console)?)?;

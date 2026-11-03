@@ -462,9 +462,11 @@ impl RemoteExtentStore {
         self.client.call_blocking(header, path.as_os_str().as_bytes()).map(drop)
     }
 
-    /// Forks the store, as [`RemoteExtentStore::fork`] does, but only at a point nothing is open
+    /// Makes a point of the store ([`ExtentStore::point`](crate::ExtentStore::point)), at `path`,
+    /// `branch`, once nothing is open
     /// ([`ExtentStore::is_quiescent`](crate::ExtentStore::is_quiescent)), as with its guest's
-    /// filesystem frozen: the point a snapshot of the VM is taken at. Otherwise, `EBUSY`.
+    /// filesystem frozen, `EBUSY` otherwise: what a snapshot of the VM is taken at, which any
+    /// number of hosts restore at once, and none writes.
     pub fn fork_quiescent(&self, path: &Path, branch: u64) -> Result<()> {
         let header = Header::new(FORK, 0).with_args(&[branch]).with_flags(FORK_QUIESCENT);
         self.client.call_blocking(header, path.as_os_str().as_bytes()).map(drop)

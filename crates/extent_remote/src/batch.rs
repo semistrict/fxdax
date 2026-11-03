@@ -171,17 +171,23 @@ impl Batch {
     /// Closes it on `chain`, its writer's, as the writer's next segment, which the chain goes on
     /// after: its footer, stamped, its data yet to be framed.
     pub fn close(self, chain: &mut Chain) -> Unframed {
-        self.close_forking(chain, Vec::new())
+        self.close_forking(chain, Vec::new(), Vec::new())
     }
 
     /// Closes it on `chain`, as [`Batch::close`] does, with a fork of the branch to `child` at its
     /// end: a fork ends its segment, which its child inherits the whole of (doc-7, Forks).
     pub fn fork(self, child: u64, chain: &mut Chain) -> Unframed {
-        self.close_forking(chain, vec![child])
+        self.close_forking(chain, vec![child], Vec::new())
     }
 
-    fn close_forking(self, chain: &mut Chain, forks: Vec<u64>) -> Unframed {
-        let footer = chain.close(Contents { forks, ..self.plan.contents });
+    /// Closes it on `chain`, as [`Batch::fork`] does, the fork to `child` making a point (doc-7,
+    /// Points).
+    pub fn point(self, child: u64, chain: &mut Chain) -> Unframed {
+        self.close_forking(chain, vec![child], vec![child])
+    }
+
+    fn close_forking(self, chain: &mut Chain, forks: Vec<u64>, points: Vec<u64>) -> Unframed {
+        let footer = chain.close(Contents { forks, points, ..self.plan.contents });
         Unframed { segment: Segment { data: self.data, footer }, own: self.own }
     }
 }

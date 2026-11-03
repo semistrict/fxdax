@@ -211,8 +211,7 @@ impl Host {
         let point = self.acme.join("point");
         vm.fork_quiescent(&point, vm.branch() + 1).unwrap();
         drop(vm);
-        self.daemon.sync(&point).unwrap();
-        // As the VM manager reads it: not the snapshot's word for it, which a VM process wrote.
+        // In the bucket once taken, with no sync. As the VM manager reads it: not the snapshot's word for it, which a VM process wrote.
         Snapshot { branch: self.daemon.stat(&point).unwrap().branch, extent }
     }
 }
@@ -346,30 +345,87 @@ fn points_dropped_restore_no_more_and_leave_the_snapshot() {
     assert_eq!(restore(socket, &other, &again, 0).unwrap().root().unwrap(), b"snapshotted");
 }
 
-/// TASK-154: a host's copy of a point is a writer of its branch, and a restore's fork a commit
-/// there (doc-7, Forks): once one host forks it, the others' copies are stale, the snapshot's own
-/// host's too, and refuse restores (EIO), until the VM manager takes the branch anew.
+/// TASK-158: a point is read by any number of hosts and written by none: copies of it on hosts
+/// that forked it, in any order, restore on, the snapshot's own host's too, and none went stale.
+/// (It pinned the limit this removed, as `copies_of_a_point_another_host_forked_are_taken_anew`:
+/// the other hosts' copies failing with EIO until DropStore and CreateStore.)
 #[test]
-fn copies_of_a_point_another_host_forked_are_taken_anew() {
+fn copies_of_a_point_another_host_forked_restore_on() {
     let dir = tempfile::tempdir().unwrap();
     let (mut here, mut there) = (Host::new(dir.path(), "here"), Host::new(dir.path(), "there"));
     let snapshot = here.snapshot();
     let point = there.acme.join("point");
     there.daemon.create(&point, snapshot.branch, None).unwrap();
-    let _restored = restore(&there.socket, &there.acme.join("vm"), &point, 0).unwrap();
+    let restored = restore(&there.socket, &there.acme.join("vm"), &point, 0).unwrap();
 
-    let (stale, vm) = (here.acme.join("point"), here.acme.join("restored"));
-    assert_eq!(restore(&here.socket, &vm, &stale, 0).map(drop), Err(Some(Errno::EIO)));
-    here.daemon.drop_store(&stale).unwrap();
-    here.daemon.create(&stale, snapshot.branch, None).unwrap();
-    assert_eq!(restore(&here.socket, &vm, &stale, 0).unwrap().root().unwrap(), b"snapshotted");
+    let (own, vm) = (here.acme.join("point"), here.acme.join("restored"));
+    let again = restore(&here.socket, &vm, &own, 0).unwrap();
+    assert_eq!(again.root().unwrap(), b"snapshotted");
+    let other = restore(&there.socket, &there.acme.join("other"), &point, 0).unwrap();
+    assert_eq!(other.root().unwrap(), b"snapshotted");
+    assert!(snapshotted(&restored, snapshot.extent), "the first restore lost what it holds");
 }
 
-/// TASK-154: a point whose branch's last writer is of a later placement than this host's is taken
-/// placed: a host's own token is refused (ESTALE), as is every restore of it, and CreateStore
-/// names the placement, which no request of a VM process's could.
+/// TASK-158: one snapshot restored on several hosts at once: the requests of each race, on threads
+/// of their own, and each host's VMs read the snapshot, and write on their own.
 #[test]
-fn points_of_later_placements_are_taken_placed() {
+fn several_hosts_restore_one_snapshot_at_once() {
+    const HOSTS: usize = 3;
+    const RESTORES: usize = 4;
+    let dir = tempfile::tempdir().unwrap();
+    let mut hosts: Vec<_> =
+        (0..HOSTS).map(|host| Host::new(dir.path(), &format!("host{host}"))).collect();
+    let snapshot = hosts[0].snapshot();
+    for host in &mut hosts[1..] {
+        host.daemon.create(&host.acme.join("point"), snapshot.branch, None).unwrap();
+    }
+    let restored: Vec<_> = std::thread::scope(|scope| {
+        let hosts = &hosts;
+        let restores: Vec<_> = (0..HOSTS * RESTORES)
+            .map(|at| {
+                let host = &hosts[at % HOSTS];
+                let vm = host.acme.join(format!("restored{at}"));
+                scope.spawn(move || restore(&host.socket, &vm, &host.acme.join("point"), 0))
+            })
+            .collect();
+        restores.into_iter().map(|restore| restore.join().unwrap().unwrap()).collect()
+    });
+    let mut branches: Vec<_> = restored.iter().map(RemoteExtentStore::branch).collect();
+    branches.sort();
+    branches.dedup();
+    assert_eq!(branches.len(), HOSTS * RESTORES, "two restores of one branch");
+    for (at, vm) in restored.iter().enumerate() {
+        assert_eq!(vm.root().unwrap(), b"snapshotted", "restore {at}");
+        assert!(snapshotted(vm, snapshot.extent), "restore {at} reads other bytes");
+        write(vm, &pattern(at as u64), format!("restored {at}").as_bytes());
+    }
+    for (at, vm) in restored.iter().enumerate() {
+        assert_eq!(vm.root().unwrap(), format!("restored {at}").as_bytes());
+    }
+}
+
+/// TASK-158: a point has no writer: a VM process opening one to write it, on its snapshot's host
+/// or another, is refused, and the snapshot stays as it was. Before, it could write it.
+#[test]
+fn vm_processes_write_no_point() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut here, mut there) = (Host::new(dir.path(), "here"), Host::new(dir.path(), "there"));
+    let snapshot = here.snapshot();
+    let point = there.acme.join("point");
+    there.daemon.create(&point, snapshot.branch, None).unwrap();
+    for (socket, point) in [(&here.socket, &here.acme.join("point")), (&there.socket, &point)] {
+        assert_eq!(refused(socket, point), Some(Errno::EROFS));
+        let restored = restore(socket, &point.with_file_name("vm-after"), point, 0).unwrap();
+        assert_eq!(restored.root().unwrap(), b"snapshotted");
+    }
+}
+
+/// TASK-158: a point has no lease, so that a host needs no placement to restore it, however late
+/// the placement that took it. (It pinned the limit this removed, as
+/// `points_of_later_placements_are_taken_placed`: a restore refused with ESTALE until CreateStore
+/// named the token.) Placing a copy changes nothing.
+#[test]
+fn points_restore_whatever_placement_took_them() {
     let dir = tempfile::tempdir().unwrap();
     let (mut here, mut there) = (Host::new(dir.path(), "here"), Host::new(dir.path(), "there"));
     let snapshot = here.snapshot();
@@ -379,13 +435,10 @@ fn points_of_later_placements_are_taken_placed() {
 
     let (point, vm) = (there.acme.join("point"), there.acme.join("vm"));
     there.daemon.create(&point, snapshot.branch, None).unwrap();
-    let refused = restore(&there.socket, &vm, &point, snapshot.branch);
-    assert_eq!(refused.map(drop), Err(Some(Errno::ESTALE)));
-    there.daemon.drop_store(&point).unwrap();
-
-    there.daemon.create(&point, snapshot.branch, Some(later)).unwrap();
     let restored = restore(&there.socket, &vm, &point, snapshot.branch).unwrap();
     assert_eq!(restored.root().unwrap(), b"snapshotted");
+    let own = restore(&here.socket, &here.acme.join("restored"), &here.acme.join("point"), 0);
+    assert_eq!(own.unwrap().root().unwrap(), b"snapshotted");
 }
 
 /// The environment of this test's process as another user ([`as_another_user`]): the daemon's

@@ -91,18 +91,19 @@ pub fn create_host(
 /// it as a host crashing then would, naming the branch the store has not, so that deleting it
 /// deletes the child where else the store's segments are kept ([`delete_host_with`]'s `after`).
 pub fn fork_host(store: &Store<HostDir>, path: &Path, child: u64) -> Result<u64, Error> {
-    fork_host_with(store, path, child, || Ok(()))
+    fork_host_with(store, path, child, false, || Ok(()))
 }
 
 /// fxdax: forks `store`'s branch as [`fork_host`] does, calling `before` once the fork's handle
 /// is in place and the child reserved, before the fork's commit ([`Store::fork_with`]): to claim
 /// the child where else the store's segments are kept, so that a host crashing after leaves the
 /// handle, whose deletion finds the claim (TASK-79.82). A fork whose `before` fails leaves
-/// nothing.
+/// nothing. The child is a point if `point` ([`Store::fork_with`]).
 pub fn fork_host_with(
     store: &Store<HostDir>,
     path: &Path,
     child: u64,
+    point: bool,
     before: impl FnOnce() -> Result<(), Error>,
 ) -> Result<u64, Error> {
     std::fs::create_dir(path).map_err(|err| match err.kind() {
@@ -112,7 +113,7 @@ pub fn fork_host_with(
     // The handle first, then the fork: a host crashing between them leaves a handle naming a
     // branch the store has not, which deleting it removes, never a branch no handle names, which
     // would keep what it inherited for ever.
-    let forked = handle(store, path, child).and_then(|()| store.fork_with(child, before));
+    let forked = handle(store, path, child).and_then(|()| store.fork_with(child, point, before));
     // Leave no handle of a fork not made behind, but of one whose commit was made, whose
     // deletion deletes the child elsewhere (TASK-79.82).
     forked.inspect_err(|err| {
@@ -898,7 +899,8 @@ mod tests {
             seen.set(Some((is_handle(&fork), store.lineage().has(4), store.epoch().unwrap())));
             Err(anyhow!("refused"))
         };
-        let refused = fork_host_with(&store, &fork, 4, refusing).map_err(|err| err.to_string());
+        let refused =
+            fork_host_with(&store, &fork, 4, false, refusing).map_err(|err| err.to_string());
         assert_eq!((refused, seen.get()), (Err("refused".to_owned()), Some((true, false, epoch))));
         let left = (fork.exists(), store.epoch().unwrap(), store.lineage().has(4));
         assert_eq!(left, (false, epoch, false));

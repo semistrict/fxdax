@@ -99,7 +99,11 @@ impl State {
             self.last_commit = Some(commit);
         }
         self.next_sequence = self.next_sequence.max(footer.next_sequence);
-        self.forks.extend(footer.forks.iter().map(|&child| Fork { child, at: footer.seq }));
+        self.forks.extend(footer.forks.iter().map(|&child| Fork {
+            child,
+            at: footer.seq,
+            point: footer.points.contains(&child),
+        }));
         true
     }
 }
@@ -523,6 +527,7 @@ mod tests {
             root: None,
             next_sequence: 0,
             forks: vec![],
+            points: vec![],
         };
         let bytes = Segment { data: Vec::new(), footer: footer.clone() }.encode();
         assert_eq!(super::footer("here", &bytes, 1, 2), Ok(footer));

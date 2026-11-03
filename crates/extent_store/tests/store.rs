@@ -1732,6 +1732,7 @@ fn segments_close_for_the_writer_of_their_chain() {
             root: Some(b"one".to_vec()),
             next_sequence: 100,
             forks: vec![],
+            points: vec![],
         }
     );
     // Its file is the object, footer and all; its extent of its own's, the extent's object.

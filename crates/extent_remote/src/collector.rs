@@ -16,6 +16,19 @@
 //! not yet in it. Segments go only once a checkpoint covers them, so that a reader that finds one
 //! missing knows, from the checkpoints, whether it is the branch's end.
 //!
+//! A fork of a point is its child's record alone (doc-7, Points): its child names what the point
+//! names, and a pass that read the point deleted lists the records after that, and so finds every
+//! child whose fork can succeed ([`branch::fork_point`]). A child still being made of a point
+//! deleted the pass gives up on, first ([`abandon`]): nothing relies on it, and it may name what is
+//! gone, which would stop this pass and every other.
+//!
+//! A state read names no fork deleted before it, a writer's checkpoint dropping those, and the
+//! fork's record and its children's may have come after the pass listed the records. So it lists
+//! them again after it read the states, and recovers what it finds, again while a state it read
+//! may have dropped a fork: while it recovers a branch with a checkpoint of its own. A record made
+//! after that names what the pass kept, or what it never listed: what a fork after a state read
+//! inherited, that state holds, or a later object; and a fork before it that state names.
+//!
 //! Objects mostly freed are compacted: their live extents copied to their moves, one object,
 //! written whole, before the object goes, a grace period later. Writers record moves in their next
 //! checkpoints, after which the moves go too, unless a state's way to its extents still goes through
@@ -93,8 +106,23 @@ impl Collector {
         let epoch = branch::take_lease(bucket, layout::GC_LEASE, holder, 0).await?;
         let early = rules().candidates_first;
         let mut objects = if early { listing(bucket).await } else { BTreeMap::new() };
-        let records = self.records(bucket).await?;
-        let live = live(bucket, &records).await?;
+        let mut records = self.records(bucket).await?;
+        let mut live = Live::default();
+        loop {
+            if rules().collector_abandons {
+                abandon(bucket, &mut records).await?;
+            }
+            let checkpointed = recover_live(bucket, &records, &mut live).await?;
+            if !checkpointed || !rules().records_relisted {
+                break;
+            }
+            let again = self.records(bucket).await?;
+            let found = again.keys().any(|branch| !records.contains_key(branch));
+            records.extend(again);
+            if !found {
+                break;
+            }
+        }
         if !early {
             objects = listing(bucket).await;
         }
@@ -157,6 +185,20 @@ impl Collector {
     }
 }
 
+/// Gives up on the forks being made of points that were deleted, as `records` say, which it says
+/// are deleted then, or made, if that came first ([`branch::abandon`]).
+async fn abandon(bucket: &impl Bucket, records: &mut BTreeMap<u64, Record>) -> Result<(), Error> {
+    let gone = |point: u64| records.get(&point).is_none_or(|record| record.deleted);
+    let abandoned: Vec<u64> = (records.iter())
+        .filter(|(_, record)| !record.deleted && record.forking.is_some_and(gone))
+        .map(|(&child, _)| child)
+        .collect();
+    for child in abandoned {
+        records.insert(child, branch::abandon(bucket, child).await?);
+    }
+    Ok(())
+}
+
 /// The record at the key of `meta`, which a listing gave, if there is one, and the version read:
 /// as `known` has it, if it read it at the version listed; or read now.
 async fn read_record(
@@ -178,27 +220,31 @@ async fn listing(bucket: &impl Bucket) -> BTreeMap<String, Meta> {
     bucket::list(bucket, "").await.into_iter().map(|meta| (meta.key.clone(), meta)).collect()
 }
 
-/// The live branches, recovered, several at once: those whose records are not deleted, and the
-/// children of forks in their states that have no records yet. Forks of a branch at one segment
-/// are recovered together, those without checkpoints of their own starting from the branch's
-/// state there, read once for them ([`Checkpoints`]); and the states are folded into what the
-/// pass needs of them as they are recovered, what forks inherited together once for them all,
-/// rather than each fork's copy of it ([`Layers`]).
-async fn live(bucket: &impl Bucket, records: &BTreeMap<u64, Record>) -> Result<Live, Error> {
+/// Recovers the live branches `live` has not yet, several at once, folding them into it: those
+/// whose records are not deleted, and the children of forks in their states that have no records
+/// yet. Returns whether one has a checkpoint of its own, which a fork deleted may have gone from.
+/// Forks of a branch at one segment are recovered together, those without checkpoints of their own
+/// starting from the branch's state there, read once for them ([`Checkpoints`]); and the states are
+/// folded into what the pass needs of them as they are recovered, what forks inherited together
+/// once for them all, rather than each fork's copy of it ([`Layers`]).
+async fn recover_live(
+    bucket: &impl Bucket,
+    records: &BTreeMap<u64, Record>,
+    live: &mut Live,
+) -> Result<bool, Error> {
     let checkpoints = Checkpoints::new(bucket, CHECKPOINTS_KEPT);
-    let mut live = Live::default();
+    let mut checkpointed = false;
     let origin = |origin: Option<Origin>| origin.map(|origin| (origin.parent, origin.at));
     // Forks made at the same segment next to each other, in the same rounds.
     let mut queue: BTreeSet<(Option<(u64, u64)>, u64)> = records
         .iter()
-        .filter(|(_, record)| !record.deleted)
+        .filter(|(branch, record)| !record.deleted && !live.taken.contains(branch))
         .map(|(&branch, record)| (origin(record.origin), branch))
         .collect();
-    let mut taken = BTreeSet::new();
     while !queue.is_empty() {
         // Each once, queued by its record, or by its parent's state, or both.
         let round: Vec<_> = std::iter::from_fn(|| queue.pop_first())
-            .filter(|&(_, branch)| taken.insert(branch))
+            .filter(|&(_, branch)| live.taken.insert(branch))
             .take(RECOVERIES_AT_ONCE)
             .collect();
         let recoveries = round.into_iter().map(|(origin, branch)| {
@@ -211,9 +257,15 @@ async fn live(bucket: &impl Bucket, records: &BTreeMap<u64, Record>) -> Result<L
             let recovered = match recovered {
                 Ok(recovered) => recovered,
                 // Deleted since its record was read, what it needed may be gone: it is not live.
+                // Nor is a failed fork's claim no writer has: nothing ever read what it names.
                 Err(Error::Lost(lost)) => match branch::record(bucket, branch).await? {
-                    Some(record) if !record.deleted => return Err(Error::Lost(lost)),
-                    _ => continue,
+                    Some(record) if record.deleted => continue,
+                    Some(record) if record.claimed && branch::unwritten(bucket, branch).await? => {
+                        branch::abandon_claim(bucket, branch).await?;
+                        continue;
+                    }
+                    Some(_) => return Err(Error::Lost(lost)),
+                    None => continue,
                 },
                 Err(error) => return Err(error),
             };
@@ -221,21 +273,24 @@ async fn live(bucket: &impl Bucket, records: &BTreeMap<u64, Record>) -> Result<L
             // as the fork was made has another origin than its parent's state says (TASK-79.82).
             for fork in &recovered.state.own.forks {
                 let recorded = records.contains_key(&fork.child);
-                if recorded || !rules().forks_from_states || taken.contains(&fork.child) {
+                if recorded || !rules().forks_from_states || live.taken.contains(&fork.child) {
                     continue;
                 }
                 queue.insert((Some((branch, fork.at)), fork.child));
             }
+            checkpointed |= recovered.checkpoint.is_some();
             live.add(recovered, &mut inherited);
         }
         live.inherit(inherited);
     }
-    Ok(live)
+    Ok(checkpointed)
 }
 
 /// What a pass needs of the live branches' states, folded in as they are recovered.
 #[derive(Default)]
 struct Live {
+    /// Those recovered, or being: each once.
+    taken: BTreeSet<u64>,
     branches: BTreeMap<u64, Ended>,
     /// What recovering them read.
     touched: BTreeSet<String>,
@@ -316,7 +371,7 @@ impl Pass {
         records: BTreeMap<u64, Record>,
         live: Live,
     ) -> Result<Self, Error> {
-        let Live { branches, touched, located } = live;
+        let Live { branches, touched, located, .. } = live;
         let mut named: BTreeMap<String, BTreeMap<ExtentId, Location>> = BTreeMap::new();
         let mut hops = BTreeSet::new();
         let mut maps = MovesMaps::default();
@@ -920,7 +975,7 @@ mod tests {
     impl Bucket for DeletedAt {
         fn get(&self, key: &str) -> impl Future<Output = Result<Object, BucketError>> + Send {
             if key == self.key && !self.done.swap(true, Ordering::Relaxed) {
-                let record = Record { origin: None, forked: true, deleted: true };
+                let record = Record { forked: true, deleted: true, ..Record::default() };
                 let (key, bytes) = (layout::record(self.child), layout::encode(&record));
                 self.bucket.put(&key, bytes, PutMode::Overwrite).now_or_never().unwrap().unwrap();
             }
@@ -964,6 +1019,123 @@ mod tests {
         }
     }
 
+    /// A bucket that runs `meanwhile` once, as a pass first lists the checkpoints of `branch`:
+    /// having listed the records, as it starts to read that branch's state.
+    struct Meanwhile<F> {
+        bucket: Arc<Direct>,
+        branch: u64,
+        meanwhile: std::sync::Mutex<Option<F>>,
+    }
+
+    impl<F: FnOnce() + Send + 'static> Bucket for Meanwhile<F> {
+        fn get(&self, key: &str) -> impl Future<Output = Result<Object, BucketError>> + Send {
+            self.bucket.get(key)
+        }
+
+        fn get_range(
+            &self,
+            key: &str,
+            range: ByteRange,
+        ) -> impl Future<Output = Result<Vec<u8>, BucketError>> + Send {
+            self.bucket.get_range(key, range)
+        }
+
+        fn head(&self, key: &str) -> impl Future<Output = Result<Meta, BucketError>> + Send {
+            self.bucket.head(key)
+        }
+
+        fn list(
+            &self,
+            prefix: &str,
+        ) -> impl Future<Output = Result<Vec<Meta>, BucketError>> + Send {
+            if prefix == layout::checkpoints(self.branch)
+                && let Some(meanwhile) = self.meanwhile.lock().unwrap().take()
+            {
+                meanwhile();
+            }
+            self.bucket.list(prefix)
+        }
+
+        fn put(
+            &self,
+            key: &str,
+            bytes: Vec<u8>,
+            mode: PutMode,
+        ) -> impl Future<Output = Result<Version, BucketError>> + Send {
+            self.bucket.put(key, bytes, mode)
+        }
+
+        fn delete(&self, key: &str) -> impl Future<Output = Result<(), BucketError>> + Send {
+            self.bucket.delete(key)
+        }
+
+        fn now(&self) -> u64 {
+            self.bucket.now()
+        }
+    }
+
+    /// TASK-158: everything between a pass's listing the records and its reading a branch's state:
+    /// a snapshot of it, a restore of that, the point deleted, what the point held freed, and a
+    /// checkpoint, which drops the fork deleted. The state the pass reads names none of it, and it
+    /// listed neither record: only listing them again finds the restored branch, which keeps what
+    /// it inherited. Found by the simulation, seed 5310 of its `restores`.
+    #[test]
+    fn forks_of_points_made_and_gone_within_a_pass_keep_what_they_hold() {
+        let sim = SimBucket::new();
+        let direct = Arc::new(Direct(sim.clone()));
+        const POINT: u64 = 2;
+        const RESTORED: u64 = 3;
+        let writer = block_on(async {
+            branch::create(&*direct, 1).await.unwrap();
+            Arc::new(Writer::open(direct.clone(), 1, 10, 0).await.unwrap())
+        });
+        let extent = ExtentId::new(1, writer.chain().next_sequence());
+        let extents = vec![(extent, b"held".to_vec())];
+        block_on(async {
+            let batch = Batch::from(Commit { tag: 1, extents, ..Commit::default() });
+            let seq = writer.add_segment(batch.close(&mut writer.chain()).frame()).unwrap();
+            writer.upload(seq).await.unwrap();
+            writer.acknowledge().await.unwrap();
+            writer.checkpoint().await.unwrap();
+        });
+        let meanwhile = {
+            let (direct, writer) = (direct.clone(), writer.clone());
+            move || {
+                let work = async {
+                    let batch = Batch::from(Commit { tag: 2, ..Commit::default() });
+                    let seq = writer
+                        .add_segment(batch.point(POINT, &mut writer.chain()).frame())
+                        .unwrap();
+                    writer.upload(seq).await.unwrap();
+                    writer.acknowledge().await.unwrap();
+                    let origin = Origin { parent: 1, at: seq };
+                    branch::fork_point(&*direct, RESTORED, POINT, origin).await.unwrap();
+                    branch::delete(&*direct, POINT, 20, 0).await.unwrap();
+                    let frees = vec![extent];
+                    let batch = Batch::from(Commit { tag: 3, frees, ..Commit::default() });
+                    let seq = writer.add_segment(batch.close(&mut writer.chain()).frame()).unwrap();
+                    writer.upload(seq).await.unwrap();
+                    writer.acknowledge().await.unwrap();
+                    writer.checkpoint().await.unwrap();
+                };
+                work.now_or_never().expect("a direct bucket answers at once");
+            }
+        };
+        let during = Meanwhile {
+            bucket: direct.clone(),
+            branch: 1,
+            meanwhile: std::sync::Mutex::new(Some(meanwhile)),
+        };
+        let now = Options { compact_below: 0.0, grace: 0 };
+        block_on(collect(&during, 1, &now)).unwrap();
+        block_on(async {
+            let record = branch::record(&*direct, RESTORED).await.unwrap();
+            let recovered = recovery::recover(&*direct, RESTORED, record.unwrap().origin).await;
+            let location = recovered.unwrap().state.extents[&extent].clone();
+            assert_eq!(crate::read(&direct, extent, &location).await.unwrap(), b"held");
+        });
+    }
+
     /// A live branch whose recovery finds what it needs gone fails the pass, which deletes
     /// nothing; one deleted meanwhile is live no longer, and the pass goes on.
     #[test]
@@ -974,7 +1146,7 @@ mod tests {
         let sim = SimBucket::new();
         let direct = Direct(sim.clone());
         block_on(async {
-            branch::record_fork(&direct, 2, origin).await.unwrap();
+            branch::record_fork(&direct, 2, origin, false).await.unwrap();
             let bytes = layout::with_footer(b"", &());
             assert!(matches!(bucket::create(&direct, &stray, bytes).await, Created::Created));
         });

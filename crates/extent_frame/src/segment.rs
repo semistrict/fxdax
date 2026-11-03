@@ -46,6 +46,9 @@ pub struct Footer {
     pub next_sequence: u64,
     /// Forks of the branch made at its end.
     pub forks: Vec<u64>,
+    /// fxdax: those of them that are points: names of the branch's state there, which nothing
+    /// writes (doc-7, Points).
+    pub points: Vec<u64>,
 }
 
 impl Footer {
@@ -63,7 +66,8 @@ impl Footer {
 /// length, and the branch's extents stored on their own, by their sequence numbers, of a length, at
 /// the writer's keys: an inherited extent a branch uploads goes in its data, as a key of the extents
 /// a branch uploads names that branch alone (TASK-150.1); the extents they free; the root, if they
-/// set one; the branch's next sequence number as of them, at least; and the forks made at its end.
+/// set one; the branch's next sequence number as of them, at least; the forks made at its end; and
+/// those of them that are points.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Contents {
     pub commits: Vec<u64>,
@@ -73,6 +77,7 @@ pub struct Contents {
     pub root: Option<Vec<u8>>,
     pub next_sequence: u64,
     pub forks: Vec<u64>,
+    pub points: Vec<u64>,
 }
 
 /// One writer's footers, in the order its segments close (doc-7, Fencing): numbered on without
@@ -160,6 +165,7 @@ impl Chain {
             root: contents.root,
             next_sequence: contents.next_sequence.max(self.next_sequence),
             forks: contents.forks,
+            points: contents.points,
         };
         self.follow(&footer);
         footer
@@ -246,7 +252,8 @@ mod tests {
             frees: vec![ExtentId { branch: 1, sequence: 1 }],
             root: Some(b"root".to_vec()),
             next_sequence: 13,
-            forks: vec![3],
+            forks: vec![3, 4],
+            points: vec![4],
         };
         let bytes = footer.encode();
         assert_eq!(Footer::decode(&bytes).unwrap(), footer);
@@ -293,6 +300,7 @@ mod tests {
                 root: None,
                 next_sequence: 100,
                 forks: vec![],
+                points: vec![],
             }
         );
         let second = chain.close(Contents { next_sequence: 200, ..Contents::default() });

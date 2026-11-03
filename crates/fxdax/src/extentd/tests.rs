@@ -1525,11 +1525,13 @@ fn snapshots_restore_into_forks_of_their_point() {
     assert!(read(&restored[1], theirs, 0, BLOCK).is_err());
     assert_eq!(read(&restored[1], open, 0, BLOCK), Ok(pattern(2, BLOCK)));
 
-    // A point a connection has open is busy.
-    let opened = RemoteExtentStore::connect(&socket, &point, 1 << 24).unwrap();
-    let busy = RemoteExtentStore::connect_forked(&socket, dir.path().join("c"), &point, 0, 0);
-    assert_eq!(busy.err().and_then(|error| error.errno()), Some(Errno::EBUSY));
-    drop(opened);
+    // TASK-158: no connection opens a point to write it, and it restores on. (Till then, one
+    // could, and a restore then was busy.)
+    let opened = RemoteExtentStore::connect(&socket, &point, 1 << 24);
+    assert_eq!(opened.err().and_then(|error| error.errno()), Some(Errno::EROFS));
+    let forked = RemoteExtentStore::connect_forked(&socket, dir.path().join("c"), &point, 0, 0);
+    let root = forked.map(|store| store.root()).map_err(|error| error.errno());
+    assert_eq!(root, Ok(Ok(b"root".to_vec())));
 }
 
 /// TASK-39.1: a VM restored on another host than its snapshot's, whose point it doesn't have, takes
@@ -3623,8 +3625,8 @@ fn faults_waiting_for_object_storage_hold_up_no_request() {
 
 /// TASK-92.5: the restores of a zygote's snapshot, all at once, here with object storage as far
 /// away as another region's (50 ms), fork its point as it is, opened once for them and kept open:
-/// none fails, and the point's branch is taken once, by the writer of the point kept open, not
-/// once by each. Each restore opened the point, attached it (taking its branch), forked and closed
+/// none fails, and nothing takes the point's branch, which has no writer (TASK-158), let alone
+/// once each. Each restore opened the point, attached it (taking its branch), forked and closed
 /// it, in turn, the k-th waiting for all those before it, a second or more each, and those that
 /// waited past `CLOSING_WAIT` failed (`EBUSY`). Their forks are made in object storage one at a
 /// time still, each waiting for a checkpoint of the point's branch that reads the record of every
@@ -3674,7 +3676,7 @@ fn a_zygotes_restores_open_its_point_once() {
     for (n, (root, _)) in restored.iter().enumerate() {
         assert_eq!(root, &Ok(b"zygote".to_vec()), "restore {n}");
     }
-    assert_eq!(taken, 1, "the point's branch was taken by more writers than one");
+    assert_eq!(taken, 0, "a writer took the point's branch");
 }
 
 /// TASK-79.9: a follower's VM process that stops reading, frozen as SIGSTOP freezes it, holds as
@@ -3885,11 +3887,11 @@ fn vm_processes_of_no_tenant_write_no_public_base() {
     assert_eq!(opened.map_err(|error| error.errno()), Ok(forked));
 }
 
-/// TASK-92.5: a restore of a snapshot whose point the daemon keeps open, once another writer of
-/// the point's branch has taken it, of this host's placement, as fxdaxctl's `take` of it is, or a
-/// VM's opening of a copy of it, forks the point opened anew, taking the branch back, as each
-/// restore did before points were kept: not the point kept open, whose fork fails, its writer
-/// fenced.
+/// TASK-92.5: a restore from a store that is no point (TASK-158), which the daemon keeps open, once
+/// another writer of its branch has taken it, of this host's placement, as fxdaxctl's `take` of it
+/// is, or a VM's opening of a copy of it, forks the store opened anew, taking the branch back, as
+/// each restore did before stores were kept open: not the one kept open, whose fork fails, its
+/// writer fenced.
 #[test]
 fn restores_fork_their_point_anew_once_another_writer_took_its_branch() {
     host();
@@ -3902,7 +3904,7 @@ fn restores_fork_their_point_anew_once_another_writer_took_its_branch() {
     write(&store, extent, 0, &pattern(5, BLOCK)).unwrap();
     store.commit(Some(b"point")).unwrap();
     let (point, point_branch) = (dir.path().join("point"), store.branch() + 1);
-    store.fork_quiescent(&point, point_branch).unwrap();
+    control(super::stores::fork(dir.path().join("store"), point.clone(), point_branch)).unwrap();
     drop(store);
     let restore = |name: &str| {
         let restored =
@@ -3919,8 +3921,8 @@ fn restores_fork_their_point_anew_once_another_writer_took_its_branch() {
     assert_eq!(restore("second"), Ok(b"point".to_vec()));
 }
 
-/// TASK-79.103: as a restore, so a control fork of a point kept open: once another writer took its
-/// branch, the fork of the point opened anew takes it back.
+/// TASK-79.103: as a restore, so a control fork of a store that is no point (TASK-158) kept open:
+/// once another writer took its branch, the fork of the store opened anew takes it back.
 #[test]
 fn control_forks_of_a_point_fork_it_anew_once_another_writer_took_its_branch() {
     host();
@@ -3933,7 +3935,7 @@ fn control_forks_of_a_point_fork_it_anew_once_another_writer_took_its_branch() {
     write(&store, extent, 0, &pattern(5, BLOCK)).unwrap();
     store.commit(Some(b"point")).unwrap();
     let (point, point_branch) = (dir.path().join("point"), store.branch() + 1);
-    store.fork_quiescent(&point, point_branch).unwrap();
+    control(super::stores::fork(dir.path().join("store"), point.clone(), point_branch)).unwrap();
     drop(store);
     // A restore keeps the point open.
     let restored =

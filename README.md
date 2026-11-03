@@ -258,8 +258,9 @@ is separated.
 A tenant's VM process names no branch: what it says is ignored, so that another
 tenant's ID gets it nothing. A snapshot restored on another host needs its point
 there, which the VM manager makes in the tenant's directory first (`CreateStore`
-of the point's branch), and drops once done (`DropStore`, which leaves the
-branch in the bucket); the proto says how (TASK-154).
+of the point's branch), and may drop once done (`DropStore`, which leaves the
+branch in the bucket); the proto says how (TASK-154). A point is immutable: any
+number of hosts restore one at once, and none writes it (TASK-158).
 The daemon must be able to kill each VM process (it is the daemon's user's, or
 the daemon has `CAP_KILL`), and refuses a connection whose process it could
 not kill: one that stops acknowledging the daemon's changes to its window,

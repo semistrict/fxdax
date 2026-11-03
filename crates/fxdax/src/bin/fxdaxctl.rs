@@ -32,7 +32,8 @@
 //!
 //! `take` makes an empty store at DIR, of CAPACITY bytes, of BRANCH (hex): once extentd opens it,
 //! with `FXDAX_EXTENTD_REMOTE` naming the branch's bucket, it takes what the branch holds there,
-//! whose data it fetches as it is read; placed at TOKEN, if given, as `place` places it. `place`
+//! whose data it fetches as it is read; placed at TOKEN, if given, as `place` places it. A
+//! snapshot's point it reads, taking no lease, as any number of hosts do at once. `place`
 //! places the store at DIR, or the fork whose handle it is, at the placement whose fencing token,
 //! its boot ID, is TOKEN (TASK-39.7): its writer takes its branch in object storage with that token
 //! from then on, which a later placement's exceeds, so that a placement cut off takes no branch

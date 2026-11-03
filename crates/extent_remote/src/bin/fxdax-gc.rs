@@ -198,9 +198,9 @@ mod tests {
     /// TASK-79.85: a list names the live branches but those held, a fork's with where it forked.
     #[test]
     fn lists_leave_out_what_is_held() {
-        let base = Record { origin: None, forked: false, deleted: false };
+        let base = Record::default();
         let origin = Some(Origin { parent: 0xa, at: 0x10 });
-        let fork = Record { origin, forked: true, deleted: false };
+        let fork = Record { origin, forked: true, ..Record::default() };
         let live = BTreeMap::from([(0xa, base), (0xb, fork), (0xc, fork)]);
         let held = held_branches("c\n").unwrap();
         assert_eq!(listed(&live, &held), "a\nb a 10\n");

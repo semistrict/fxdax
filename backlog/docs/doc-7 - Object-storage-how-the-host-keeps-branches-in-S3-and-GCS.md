@@ -3,7 +3,7 @@ id: doc-7
 title: 'Object storage: how the host keeps branches in S3 and GCS'
 type: specification
 created_date: '2026-10-17 01:31'
-updated_date: '2026-10-31 21:45'
+updated_date: '2026-11-02 05:00'
 ---
 # Object storage: how the host keeps branches in S3 and GCS
 
@@ -103,6 +103,8 @@ Settled with the user on 2026-10-16:
 5. **A fork is local at once, and remote once the parent's fork point is uploaded.** The child's
    `branches/` record is created only after the parent's uploads reach the fork point.
 6. **Forks are of a branch's head only.** No snapshots or forks of past points, for now.
+   *Refined 2026-11-02 (TASK-158):* a fork at a point in time is a point: a record naming a place in
+   its parent (Points).
 7. **Compression, no encryption** in this milestone. *Revised 2026-10-17 (TASK-29):* the first
    ruling, no compression, held because compressed bytes cannot land straight in DAX pages. They
    need not: the DAX window maps extentd's memory, which the pager fills by reading the store, and
@@ -132,7 +134,7 @@ Per bucket prefix, for every branch of every lineage:
 | `segments/<branch>/<seq>` | sealed extents and a footer; `seq` dense from 0 | create-only, by the branch's writers |
 | `extents/<branch>/<epoch>.<seq>.<sequence>` | an extent of 4 MiB or more, raw, uploaded by the writer of `epoch` before its segment `seq`, which names it (so the collector can tell an object ahead of its segment, which may yet land, from a landed one's; keys of older writers lack `seq`) | create-only, before the segment naming it |
 | `checkpoints/<branch>/<seq>` | the branch's state as of segment `seq` | create-only, by the branch's writers |
-| `branches/<branch>` | where it was forked from, whether it is a fork's, whether deleted | create; updated with a condition |
+| `branches/<branch>` | where it was forked from, whether it is a fork's, whether deleted, whether a point, whether its fork of a point is being made, whether a failed fork's claim | create; updated with a condition |
 | `leases/<branch>` | the writer's epoch, who took it, and its placement's fencing token | created, then updated with a condition |
 | `gc/lease` | the collector's epoch | likewise |
 | `moves/<key>` | the live extents of the object at `key`, compacted, and where in it each is | create-only, by the collector |
@@ -157,7 +159,7 @@ its own, or raw where that does not shrink it, at offsets in the object that are
 - the extents of their own committed with it, and where they are;
 - the frees committed with it, the branch's own extents and inherited ones;
 - the root, if a commit in it set one, and the branch's next sequence;
-- the forks made at its end;
+- the forks made at its end, and which of them are points;
 - then, as in every object that holds data (segments, extents of their own, compaction's moves,
   checkpoints), a table of each part's stored offset and length, the CRC32C of its stored bytes,
   and its encoding, and a trailer: the lengths of the data, of the parts stored and of the
@@ -292,6 +294,61 @@ and the footers after it, and serves the guest from an empty cache.
 - This replaced `copy_store`, which forked by copying every file: locally, a fork is a record in
   its parent's store (Where it stands).
 
+## Points
+
+*Added 2026-11-02 (TASK-158).* A snapshot must restore on any number of hosts at once, which a fork
+by a commit of its parent's rules out: every host's copy would be a writer of one branch. A point is
+immutable instead.
+
+- **A point is a name for a state.** The fork that makes one, what a snapshot sends, is an ordinary
+  fork of the VM's branch S, a commit of S's, whose footer lists the child in `points` too. Its
+  record says `point` from the first, and names S at the segment `at`. It has no lease, no segment
+  and no checkpoint, then or ever: no writer takes it (`Error::Point`), before touching a lease, so
+  that no path can. Its state is S's at `at`, for ever.
+- **A fork of a point is its child's record alone.** It names the point's origin as its own, so that
+  to recovery and the collector the child is a fork of S at `at`, and nothing of the point's or S's
+  is written. Any number of hosts do this at once, none's being any other's business.
+- **A host's copy** recovers the state from the bucket, takes it if it holds nothing, and has no
+  writer. Nothing it commits goes to the bucket. It can't go stale. A VM opening it to write fails
+  with `EROFS`.
+
+The steps of a fork of point P to child C:
+
+1. C's record, created saying the fork is being made (`forking: P`).
+2. A read of P's record: deleted, the fork fails.
+3. C's record, updated with a condition: no longer being made. Only then does the fork succeed.
+
+**What keeps C's data.** C needs just what P does. A pass that finds P live keeps that; so does one
+that finds C. The danger is a pass that finds neither, or takes P for deleted with C unseen:
+
+- A pass that read P deleted did so after the deletion. If step 2 found P live, step 1 came before
+  the deletion, and so before that read, and the pass lists the records again after it reads any
+  new one, so it finds C.
+- It then gives C up if C is still being made, with a condition (`branch::abandon`): if that wins,
+  step 3 fails and no one was told; if step 3 wins, C is live, and kept. So nothing being made
+  stops a pass, whatever it names, nor stays for ever.
+- A pass that listed the records before P's existed may read S's state after P was forked, restored,
+  deleted and dropped from S's state by a checkpoint (the *fork deleted* rule of Checkpoints),
+  and S freed what P held. So a pass lists the records **again after it reads the states**, and
+  recovers what it finds, again as long as what it recovers has a checkpoint of its own, as only
+  such a state can have dropped a fork. A record made after that holds what the pass kept, or what
+  it never listed: a fork after a state it read inherits what that state holds or a later object;
+  a fork before it, that state names.
+
+**A host dying** at any step leaves a claim, as any fork's does (Forks), naming the point: opening
+what it left finishes the fork, or fails once the point is gone; deleting it gives it a deleted
+record, which a dead host's create landing late finds, and its update, being conditional, fails.
+With its disk lost too, C stays a record being made, holding what P holds, until the collector gives
+it up, once P goes, or an operator deletes it.
+
+**A failed fork's claim.** The deletion of a fork whose child has no record makes one, live, in case a
+later placement holds the child. That its parent has a segment of that number proves nothing: it may
+not be the fork's. So the record says `claimed`, and a pass that can't recover a claim no writer has
+deletes it and goes on: nothing ever read it. Every other `Lost` stops the pass.
+
+**Deleting a point** is deleting a branch: its forks keep what they inherited, by their records, and
+its moves stay for as long as it lives, as it has no writer to record them in a checkpoint.
+
 ## Reading
 
 - **The pager must not block on a fetch.** Page-ins call a synchronous `ExtentSource::read` on two
@@ -326,7 +383,9 @@ one for the next pass to reclaim. A pass:
    would be deleted, and the child's next writer would mint IDs another had.
 3. **Finds the live branches:** the records not deleted, listed again after reading them until no
    new one appears (a deleted branch's children got their records before it was marked), and the
-   forks in live branches' states, whose children may lack their records yet.
+   forks in live branches' states, whose children may lack their records yet. It gives up on forks
+   being made of points deleted (Points). Once it has read the states it lists the records again,
+   and goes on with what it finds, while what it recovers has a checkpoint of its own (Points).
 4. **Recovers each**, keeping what the recoveries read (checkpoints, segments to replay, records of
    parents a child's state starts from). A branch whose recovery fails because it was deleted
    meanwhile is not live; any other failure stops the pass, which never deletes what it could not
@@ -372,6 +431,9 @@ rules need a model and tests before code"): `crates/extent_remote`, its `sim` mo
   minted twice.
 - **At the end** it lets everything finish, takes every branch over twice more, and runs the
   collector until nothing changes: the bucket must hold only what the live branches need.
+- **Every acknowledged segment's objects exist:** after each step, what recovering each live branch
+  read, and what holds each extent it names, or the moves saying where that went. Nothing writes a
+  point: no segment, checkpoint or writer's lease of one exists.
 - **Each case** the survey found is a profile that makes it likely, run over hundreds of seeds:
   1. frees before and after a fork, by parent and child (`forks_and_frees`);
   2. chains of generations, with branches in the middle deleted (`forks_and_frees`);
@@ -384,12 +446,16 @@ rules need a model and tests before code"): `crates/extent_remote`, its `sim` mo
   8. writers' indexes older than compactions (`collectors_stopping_and_racing`, the writers' reads);
   9. a stale writer recreating a deleted object, its create held past the deleting pass (the
      `recreated` profile: `stale_creates_landing_past_deletions`);
-  10. IDs minted after a takeover (every profile).
+  10. IDs minted after a takeover (every profile);
+  11. one point restored on several hosts at once, racing each other, passes of the collector and
+     the point's deletion, on copies gone stale, hosts dying at each step (`restores`).
 - **Each rule** has a test that turns it off and expects a seed to find what it violates: fences,
   links between segments, acknowledging after a lease read, minting from the epoch's range,
   recording forks after their acknowledgement, listing before reading states, finding forks in
-  states, deleting an earlier writer's extents only after a later one's segment, and readers
-  checking for a newer checkpoint. These tests search seeds: a change to the simulation can move the
+  states, deleting an earlier writer's extents only after a later one's segment, readers
+  checking for a newer checkpoint, points refusing writers, forks of points reading the point after
+  their records and saying they are being made, the collector giving those up, and its listing the
+  records after the states. These tests search seeds: a change to the simulation can move the
   seed that finds a violation past a test's range, which then fails; widen it, or make its profile
   likelier to find the case.
 - `SIM_SOAK=<n>` runs the profiles over n times the seeds; `SIM_SEED`, `SIM_SEEDS`, `SIM_PROFILE` and

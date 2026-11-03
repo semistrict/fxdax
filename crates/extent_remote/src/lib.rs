@@ -74,6 +74,10 @@ pub enum Error {
     Stale,
     #[error("no such branch")]
     NoBranch,
+    /// The branch is a point, which no writer takes: a point's state never changes
+    /// ([`layout::Record::point`]).
+    #[error("the branch is a point, which nothing writes")]
+    Point,
     /// A fork's child has a record naming another origin: another branch has the ID the fork's
     /// guest gave it, which that branch took while the fork was made (TASK-79.82). The fork failed;
     /// its parent's branch is as sound as before.
@@ -132,8 +136,21 @@ pub(crate) struct Rules {
     /// lease, though its fork's segment never went (TASK-79.82).
     pub fork_claims_ids: bool,
     /// That record says the child lives only if the branch it was forked from holds the fork's
-    /// segment, which reading it needs.
+    /// segment, which reading it needs; and that it is a claim, which that proves no more than.
     pub fork_claims_landed: bool,
+    /// No writer takes a point (doc-7, Points).
+    pub points_take_no_writer: bool,
+    /// A fork of a point reads the point's record after it creates its own: a point deleted before
+    /// that fails it, its pass of the collector not having seen the child.
+    pub forks_check_points: bool,
+    /// A fork of a point's record says it is being made until that read found the point live, so
+    /// that what never was made holds up no pass of the collector, whatever it names.
+    pub forks_pending: bool,
+    /// The collector gives up on the forks being made of points deleted.
+    pub collector_abandons: bool,
+    /// The collector lists the records again after it read the branches' states: a state it read
+    /// names no fork deleted since, nor that fork's children, whose records came after its listing.
+    pub records_relisted: bool,
 }
 
 impl Rules {
@@ -152,6 +169,11 @@ impl Rules {
         footers: true,
         fork_claims_ids: true,
         fork_claims_landed: true,
+        points_take_no_writer: true,
+        forks_check_points: true,
+        forks_pending: true,
+        collector_abandons: true,
+        records_relisted: true,
     };
 }
 

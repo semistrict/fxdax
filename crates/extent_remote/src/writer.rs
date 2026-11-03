@@ -164,6 +164,14 @@ impl<B: Bucket> Writer<B> {
         if record.deleted {
             return Err(Error::Deleted);
         }
+        // Before the lease: a point has none, and nothing writes it, whoever asks.
+        if record.point && rules().points_take_no_writer {
+            return Err(Error::Point);
+        }
+        // A fork of a point not yet made holds nothing, and may be given up on.
+        if record.forking.is_some() {
+            return Err(Error::NoBranch);
+        }
         let epoch = branch::take_lease(&*bucket, &layout::lease(branch), holder, token).await?;
         // Deleted meanwhile, and its lease removed: the collector removes the lease taken here.
         if branch::record(&*bucket, branch).await?.is_none_or(|record| record.deleted) {
@@ -439,7 +447,7 @@ impl<B: Bucket> Writer<B> {
         futures::stream::iter(forks)
             .map(|fork| async move {
                 let origin = Origin { parent: self.branch, at: fork.at };
-                match branch::record_fork(&*self.bucket, fork.child, origin).await {
+                match branch::record_fork(&*self.bucket, fork.child, origin, fork.point).await {
                     Ok(()) => {}
                     Err(Error::ChildTaken(child)) => drop(self.inner().refused.insert(child)),
                     Err(error) => return Err(error),
@@ -862,6 +870,7 @@ mod tests {
                 root: Some(b"root".to_vec()),
                 next_sequence: 4,
                 forks: vec![],
+                points: vec![],
             };
             let segment = |footer: &Footer| -> Vec<u8> {
                 Segment { data: b"abc".to_vec(), footer: footer.clone() }.encode()

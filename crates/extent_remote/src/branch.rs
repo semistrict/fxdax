@@ -3,6 +3,10 @@
 // found in the LICENSE file.
 
 //! Branches' records and leases: creating a branch, forking one, taking one over, deleting one.
+//!
+//! A fork of a branch with a writer is the writer's commit ([`record_fork`] gives its child its
+//! record once the commit is acknowledged). A fork of a point is its child's record alone, which
+//! writes nothing of the point's, so that any number of hosts fork one at once ([`fork_point`]).
 
 use crate::bucket::{self, Bucket, Created, Updated};
 use crate::layout::{self, Kind, Lease, Origin, Record};
@@ -12,7 +16,7 @@ use std::collections::BTreeMap;
 
 /// Creates `branch`, of no parent.
 pub async fn create(bucket: &impl Bucket, branch: u64) -> Result<(), Error> {
-    let record = Record { origin: None, forked: false, deleted: false };
+    let record = Record::default();
     match bucket::create(bucket, &layout::record(branch), layout::encode(&record)).await {
         Created::Created => Ok(()),
         Created::Exists(_) => Err(Error::Corrupt(format!("branch {branch:x} exists"))),
@@ -24,7 +28,7 @@ pub async fn create(bucket: &impl Bucket, branch: u64) -> Result<(), Error> {
 /// it takes no record of another branch's that took its ID for its own, which any create of the
 /// same bytes would ([`Error::ChildTaken`], TASK-79.82).
 pub async fn create_forked(bucket: &impl Bucket, child: u64) -> Result<(), Error> {
-    let record = Record { origin: None, forked: true, deleted: false };
+    let record = Record { forked: true, ..Record::default() };
     match bucket::create(bucket, &layout::record(child), layout::encode(&record)).await {
         Created::Created => Ok(()),
         Created::Exists(_) => Err(Error::ChildTaken(child)),
@@ -53,11 +57,17 @@ pub async fn live(bucket: &impl Bucket) -> Result<BTreeMap<u64, Record>, Error> 
     Ok(live)
 }
 
-/// Gives `child` its record, forked from `origin`, unless it has one. A fork's child gets it once
-/// the fork is acknowledged, from the parent's writer, or the next one, or the parent's deletion.
-pub async fn record_fork(bucket: &impl Bucket, child: u64, origin: Origin) -> Result<(), Error> {
+/// Gives `child` its record, forked from `origin`, a point if `point`, unless it has one. A fork's
+/// child gets it once the fork is acknowledged, from the parent's writer, or the next one, or the
+/// parent's deletion.
+pub async fn record_fork(
+    bucket: &impl Bucket,
+    child: u64,
+    origin: Origin,
+    point: bool,
+) -> Result<(), Error> {
     failpoint!("branch::record_fork");
-    let record = Record { origin: Some(origin), forked: true, deleted: false };
+    let record = Record { origin: Some(origin), forked: true, point, ..Record::default() };
     match bucket::create(bucket, &layout::record(child), layout::encode(&record)).await {
         Created::Created => {
             failpoint!("branch::recorded_fork");
@@ -71,6 +81,109 @@ pub async fn record_fork(bucket: &impl Bucket, child: u64, origin: Origin) -> Re
             } else {
                 Err(Error::ChildTaken(child))
             }
+        }
+    }
+}
+
+/// Forks `point`, whose record names `origin`, to `child`: `child`'s record, naming `origin` as
+/// its own, and writes nothing of the point's or of the branch it names, so that any number of
+/// hosts fork a point at once, and none's fork is any other's business (doc-7, Points). To recovery
+/// and the collector, `child` is then a fork of that branch at that segment.
+///
+/// What keeps what `child` inherited until it has a record is the point's. So the record comes
+/// first, saying the fork is being made ([`Record::forking`]), then a read of the point's record
+/// ([`finish_point_fork`]): a pass of the collector that went on the point's being deleted read
+/// that after the deletion, and so after this read if it found the point live, and so listed
+/// `child`'s record after it was made, and keeps what it names. Otherwise the fork fails
+/// ([`Error::Deleted`]), and its host deletes `child` ([`delete_fork`]). Forked again, as a store
+/// left by a crash finishes it, it goes on from where it stopped. A child with another's record is
+/// another branch's ([`Error::ChildTaken`]).
+pub async fn fork_point(
+    bucket: &impl Bucket,
+    child: u64,
+    point: u64,
+    origin: Origin,
+) -> Result<(), Error> {
+    failpoint!("point::record");
+    let forking = rules().forks_pending.then_some(point);
+    let record = Record { origin: Some(origin), forked: true, forking, ..Record::default() };
+    match bucket::create(bucket, &layout::record(child), layout::encode(&record)).await {
+        Created::Created => {}
+        Created::Exists(object) => {
+            let existing: Record = layout::decode(&object.bytes)?;
+            if existing.deleted {
+                return Err(Error::Deleted);
+            }
+            if existing.origin != Some(origin) || !existing.forked {
+                return Err(Error::ChildTaken(child));
+            }
+            if existing.forking.is_none() {
+                return Ok(());
+            }
+        }
+    }
+    failpoint!("point::recorded");
+    finish_point_fork(bucket, child, point).await
+}
+
+/// Makes the fork being made of `point` to `child` ([`fork_point`]), whose record is created: fails
+/// with [`Error::Deleted`] if the point was deleted, or the fork was given up on.
+pub async fn finish_point_fork(bucket: &impl Bucket, child: u64, point: u64) -> Result<(), Error> {
+    if rules().forks_check_points
+        && !record(bucket, point).await?.is_some_and(|record| !record.deleted)
+    {
+        return Err(Error::Deleted);
+    }
+    failpoint!("point::checked");
+    let key = layout::record(child);
+    loop {
+        let Some(object) = bucket::get(bucket, &key).await else { return Err(Error::NoBranch) };
+        let record: Record = layout::decode(&object.bytes)?;
+        if record.deleted {
+            return Err(Error::Deleted);
+        }
+        if record.forking.is_none() {
+            return Ok(());
+        }
+        let made = layout::encode(&Record { forking: None, ..record });
+        // Conditional, against its being deleted, or given up on ([`abandon`]). A record's bytes
+        // repeat only for the same change, which is then made.
+        if let Updated::Updated = bucket::update(bucket, &key, made, &object.meta.version).await {
+            failpoint!("point::made");
+            return Ok(());
+        }
+    }
+}
+
+/// Whether no writer has `branch`: it has no lease, or its deletion's.
+pub(crate) async fn unwritten(bucket: &impl Bucket, branch: u64) -> Result<bool, Error> {
+    let epoch = lease_epoch(bucket, &layout::lease(branch)).await?;
+    Ok(epoch == 0 || epoch == Lease::FINAL)
+}
+
+/// Deletes `branch`, whose record says a failed fork's deletion claimed it ([`Record::claimed`]),
+/// and whose state is lost, as what it named went before that landed: unless it was given another
+/// record since. Nothing ever read it: no writer recovers what a record not there names.
+pub(crate) async fn abandon_claim(bucket: &impl Bucket, branch: u64) -> Result<(), Error> {
+    mark_deleted(bucket, branch).await
+}
+
+/// Gives up on `child`, a fork being made of a point that was deleted ([`Record::forking`]), so
+/// that nothing keeps what it names, unless the fork was made first: returns its record as it then
+/// stands. Its fork, which fails then, wrote nothing: a branch that holds nothing and that nothing
+/// relies on, what it names perhaps gone, which recovering it would stop the collector on.
+pub(crate) async fn abandon(bucket: &impl Bucket, child: u64) -> Result<Record, Error> {
+    let key = layout::record(child);
+    loop {
+        let Some(object) = bucket::get(bucket, &key).await else { return Err(Error::NoBranch) };
+        let record: Record = layout::decode(&object.bytes)?;
+        if record.deleted || record.forking.is_none() {
+            return Ok(record);
+        }
+        let abandoned = Record { deleted: true, ..record };
+        let bytes = layout::encode(&abandoned);
+        if let Updated::Updated = bucket::update(bucket, &key, bytes, &object.meta.version).await {
+            return Ok(abandoned);
         }
     }
 }
@@ -142,7 +255,7 @@ pub async fn delete(
         }
         // A fork's child before its record, or no branch: either way none is, from now, unless
         // its record came meanwhile.
-        let deleted = Record { origin: None, forked: true, deleted: true };
+        let deleted = Record { forked: true, deleted: true, ..Record::default() };
         if let Created::Created =
             bucket::create(bucket, &layout::record(branch), layout::encode(&deleted)).await
         {
@@ -154,12 +267,21 @@ pub async fn delete(
     if record.deleted {
         return Ok(());
     }
-    // Its children get their records, so that the collector finds them without its state.
-    let recovered = recover(bucket, branch, record.origin).await?;
-    for fork in &recovered.state.forks {
-        match record_fork(bucket, fork.child, Origin { parent: branch, at: fork.at }).await {
-            Ok(()) | Err(Error::ChildTaken(_)) => {}
+    // Its children get their records, so that the collector finds them without its state. A fork
+    // of a point still being made has none, and may name what is gone; so may a claim, with
+    // neither a writer nor a child, if it does.
+    if record.forking.is_none() {
+        let forks = match recover(bucket, branch, record.origin).await {
+            Ok(recovered) => recovered.state.forks,
+            Err(Error::Lost(_)) if record.claimed && unwritten(bucket, branch).await? => Vec::new(),
             Err(error) => return Err(error),
+        };
+        for fork in &forks {
+            let origin = Origin { parent: branch, at: fork.at };
+            match record_fork(bucket, fork.child, origin, fork.point).await {
+                Ok(()) | Err(Error::ChildTaken(_)) => {}
+                Err(error) => return Err(error),
+            }
         }
     }
     failpoint!("branch::children_recorded");
@@ -222,6 +344,36 @@ async fn mark_deleted(bucket: &impl Bucket, branch: u64) -> Result<(), Error> {
     }
 }
 
+/// Where a fork's host knows it was made, which deleting its child goes by ([`delete_fork`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ForkedAt {
+    /// Nowhere in object storage: its segment never went there.
+    Nowhere,
+    /// At the end of a segment of its parent's, which may have landed, and whose branch's writers
+    /// then give the child a record.
+    Segment(Origin),
+    /// So, its child a point: whatever record it gets says so, whoever gives it.
+    ToPoint(Origin),
+    /// Of a point, which names this origin. Nothing but the fork itself gives its child a record.
+    OfPoint(Origin),
+}
+
+impl ForkedAt {
+    /// The origin its child's record names, if any.
+    fn origin(self) -> Option<Origin> {
+        match self {
+            Self::Nowhere => None,
+            Self::Segment(origin) | Self::ToPoint(origin) | Self::OfPoint(origin) => Some(origin),
+        }
+    }
+}
+
+impl From<Option<Origin>> for ForkedAt {
+    fn from(origin: Option<Origin>) -> Self {
+        origin.map_or(Self::Nowhere, Self::Segment)
+    }
+}
+
 /// Deletes `child`, the child of a fork, as [`delete`] does, but only if its branch is the one the
 /// fork made: its record names `origin`, the fork's place in its parent's branch, or it has no
 /// record yet, as a fork whose segment has not been acknowledged has not. A fork whose segment never
@@ -239,15 +391,23 @@ async fn mark_deleted(bucket: &impl Bucket, branch: u64) -> Result<(), Error> {
 /// deletion a later placement refuses ([`Error::Stale`]) changes nothing, only if its parent's
 /// branch holds the fork's segment, as a live branch's record must say: a child naming a segment
 /// that is not there recovers from nothing, which fails its deletion, should one stopping go on,
-/// and every pass of the collector. Otherwise it is deleted from the first, for good: no other
-/// placement took a branch nothing of which landed; and a segment landing after finds it so.
+/// and every pass of the collector. It says it is a claim ([`Record::claimed`]): that the parent's
+/// branch holds a segment of that number is no proof it is the fork's, and nothing keeps what it
+/// names until the record lands, a dead host's perhaps, long after. Otherwise it is deleted from
+/// the first, for good: no other
+/// placement took a branch nothing of which landed; and a segment landing after finds it so. So
+/// is a fork of a point with no record, which holds nothing, a create of its record, a dead host's
+/// landing late, finding it so too; and a point with none: no placement refuses a deletion of what
+/// has no lease, and a stale copy finds no live record naming a segment that may not be its fork's.
 pub async fn delete_fork(
     bucket: &impl Bucket,
     child: u64,
-    origin: Option<Origin>,
+    forked: impl Into<ForkedAt>,
     holder: u64,
     token: u64,
 ) -> Result<bool, Error> {
+    let forked = forked.into();
+    let origin = forked.origin();
     loop {
         match record(bucket, child).await? {
             Some(record) if record.deleted => return Ok(true),
@@ -257,12 +417,22 @@ pub async fn delete_fork(
                 if origin.is_none() && !rules().fork_claims_ids {
                     return delete(bucket, child, holder, token).await.map(|()| true);
                 }
-                let live = match origin {
-                    Some(_) if !rules().fork_claims_landed => true,
-                    Some(origin) => recovery::holds(bucket, origin.parent, origin.at).await?,
-                    None => false,
+                let live = match forked {
+                    ForkedAt::Segment(_) if !rules().fork_claims_landed => true,
+                    ForkedAt::Segment(origin) => {
+                        recovery::holds(bucket, origin.parent, origin.at).await?
+                    }
+                    ForkedAt::Nowhere | ForkedAt::ToPoint(_) | ForkedAt::OfPoint(_) => false,
                 };
-                let record = Record { origin, forked: true, deleted: !live };
+                let point = matches!(forked, ForkedAt::ToPoint(_));
+                let record = Record {
+                    origin,
+                    forked: true,
+                    deleted: !live,
+                    point,
+                    claimed: live && rules().fork_claims_landed,
+                    ..Record::default()
+                };
                 let key = layout::record(child);
                 if let Created::Created =
                     bucket::create(bucket, &key, layout::encode(&record)).await
@@ -321,8 +491,8 @@ mod tests {
         assert_eq!((live(2), live(4)), (Some(false), Some(false)));
 
         block_on(create(&*bucket, 5)).unwrap();
-        block_on(record_fork(&*bucket, 6, Origin { at: origin.at + 1, ..origin })).unwrap();
-        block_on(record_fork(&*bucket, 7, origin)).unwrap();
+        block_on(record_fork(&*bucket, 6, Origin { at: origin.at + 1, ..origin }, false)).unwrap();
+        block_on(record_fork(&*bucket, 7, origin, false)).unwrap();
         for (child, origin) in [(5, Some(origin)), (6, Some(origin)), (7, None)] {
             assert_eq!(block_on(delete_fork(&*bucket, child, origin, 9, 0)), Ok(false), "{child}");
             assert_eq!(live(child), Some(true), "{child}");
@@ -337,12 +507,13 @@ mod tests {
     fn a_child_gets_one_record() {
         let bucket = Direct(SimBucket::new());
         let origin = Origin { parent: 1, at: 7 };
-        block_on(record_fork(&bucket, 2, origin)).unwrap();
-        block_on(record_fork(&bucket, 2, origin)).unwrap();
+        block_on(record_fork(&bucket, 2, origin, false)).unwrap();
+        block_on(record_fork(&bucket, 2, origin, false)).unwrap();
         let other = Origin { parent: 1, at: 8 };
-        assert_eq!(block_on(record_fork(&bucket, 2, other)), Err(Error::ChildTaken(2)));
+        assert_eq!(block_on(record_fork(&bucket, 2, other, false)), Err(Error::ChildTaken(2)));
         let record = block_on(record(&bucket, 2)).unwrap();
-        assert_eq!(record, Some(Record { origin: Some(origin), forked: true, deleted: false }));
+        let forked = Record { origin: Some(origin), forked: true, ..Record::default() };
+        assert_eq!(record, Some(forked));
     }
 
     /// TASK-79.82: a branch that takes a failed fork's child's ID after the fork's deletion found
@@ -421,7 +592,7 @@ mod tests {
         let origin = Origin { parent: 1, at: 7 };
         assert_eq!(block_on(delete_fork(&racing, 3, Some(origin), 9, 0)), Ok(false));
         let record = block_on(record(&racing.bucket, 3)).unwrap();
-        assert_eq!(record, Some(Record { origin: None, forked: false, deleted: false }));
+        assert_eq!(record, Some(Record::default()));
         let lease = block_on(bucket::get(&racing.bucket, &layout::lease(3))).unwrap();
         let lease = Lease::decode(&lease.bytes).unwrap();
         assert_eq!((lease.epoch, lease.holder), (1, 7), "the other branch's lease");
@@ -445,8 +616,59 @@ mod tests {
             assert_eq!(parent.acknowledge().await, Ok(Some(at)));
             assert!(parent.refused(2));
             assert_eq!(delete(&*bucket, 1, 20, 0).await, Ok(()));
-            let own = Record { origin: None, forked: false, deleted: false };
-            assert_eq!(record(&*bucket, 2).await, Ok(Some(own)));
+            assert_eq!(record(&*bucket, 2).await, Ok(Some(Record::default())));
+        });
+    }
+
+    /// A failed fork's claim landing, as a dead host's write may, once a pass of the collector
+    /// took what it names, nothing having kept that: at 2 of the parent's, in fact the fence of its
+    /// next writer, its fork's segment void. It holds up no pass, and its deletion finishes. Found
+    /// by the simulation, seed 3184 of its `restores`.
+    #[test]
+    fn claims_landing_after_what_they_name_went_hold_up_nothing() {
+        use crate::batch::{Batch, Commit};
+        use crate::collector::{Options, collect};
+        use crate::writer::Writer;
+        let memory = std::sync::Arc::new(object_store::memory::InMemory::new());
+        let bucket = std::sync::Arc::new(crate::store::Store::new(memory, ""));
+        const NOW: Options = Options { compact_below: 0.0, grace: 0 };
+        block_on(async {
+            create(&*bucket, 1).await.unwrap();
+            let parent = Writer::open(bucket.clone(), 1, 10, 0).await.unwrap();
+            for tag in 1..=3 {
+                let commit = Batch::from(Commit { tag, ..Commit::default() });
+                let seq = parent.add_segment(commit.close(&mut parent.chain()).frame()).unwrap();
+                parent.upload(seq).await.unwrap();
+                parent.acknowledge().await.unwrap();
+            }
+            parent.checkpoint().await.unwrap();
+            collect(&*bucket, 1, &NOW).await.unwrap();
+            let origin = Some(Origin { parent: 1, at: 1 });
+            let lost = "branch 3: what its recovery starts from keeps going".to_owned();
+            assert_eq!(recover(&*bucket, 3, origin).await.map(drop), Err(Error::Lost(lost)));
+
+            let claim = Record { origin, forked: true, claimed: true, ..Record::default() };
+            let (key, bytes) = (layout::record(3), layout::encode(&claim));
+            assert!(matches!(bucket::create(&*bucket, &key, bytes).await, Created::Created));
+            collect(&*bucket, 2, &NOW).await.unwrap();
+            let deleted = Record { deleted: true, ..claim };
+            assert_eq!(record(&*bucket, 3).await, Ok(Some(deleted)));
+
+            // Its deletion, which stopped, finds it so; or, the pass not there first, finishes it.
+            let claim = Record { origin, forked: true, claimed: true, ..Record::default() };
+            let (key, bytes) = (layout::record(4), layout::encode(&claim));
+            assert!(matches!(bucket::create(&*bucket, &key, bytes).await, Created::Created));
+            assert_eq!(delete_fork(&*bucket, 4, origin, 9, 0).await, Ok(true));
+            assert_eq!(record(&*bucket, 4).await, Ok(Some(Record { deleted: true, ..claim })));
+
+            // But one a writer has lost something: it stops the pass, as any branch's.
+            let claim = Record { origin, forked: true, claimed: true, ..Record::default() };
+            let (key, bytes) = (layout::record(5), layout::encode(&claim));
+            assert!(matches!(bucket::create(&*bucket, &key, bytes).await, Created::Created));
+            take_lease(&*bucket, &layout::lease(5), 11, 0).await.unwrap();
+            let lost = "branch 5: what its recovery starts from keeps going".to_owned();
+            assert_eq!(collect(&*bucket, 3, &NOW).await, Err(Error::Lost(lost)));
+            assert_eq!(record(&*bucket, 5).await, Ok(Some(claim)));
         });
     }
 
@@ -458,7 +680,8 @@ mod tests {
         assert_eq!(block_on(take_lease(&bucket, &lease, 1, 0)).unwrap(), 1);
         block_on(delete(&bucket, 3, 2, 0)).unwrap();
         let record = block_on(record(&bucket, 3)).unwrap();
-        assert_eq!(record, Some(Record { origin: None, forked: true, deleted: true }));
+        let deleted = Record { forked: true, deleted: true, ..Record::default() };
+        assert_eq!(record, Some(deleted));
         let taken = block_on(take_lease(&bucket, &lease, 3, 0));
         assert!(matches!(taken, Err(Error::Deleted)), "{taken:?}");
     }
@@ -498,7 +721,7 @@ mod tests {
             assert_eq!(recover(&*bucket, 2, origin).await.map(drop), Err(Error::Lost(lost)));
 
             assert_eq!(delete(&*bucket, 2, 21, 0).await, Ok(()));
-            let deleted = Record { origin, forked: true, deleted: true };
+            let deleted = Record { origin, forked: true, deleted: true, ..Record::default() };
             assert_eq!(record(&*bucket, 2).await, Ok(Some(deleted)));
         });
     }

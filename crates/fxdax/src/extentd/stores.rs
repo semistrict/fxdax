@@ -83,6 +83,10 @@ pub(super) async fn take_over(
         log::warn!("extentd: {} is open for followers in another arena: {errno}", key.display());
         return Err(errno);
     }
+    // A point open for followers has no writer: `Connection::open` refuses it.
+    if store.is_point() {
+        return Ok(Some(store));
+    }
     let taken = if retired { Err(Errno::EBUSY) } else { store.take_over() };
     if let Err(errno) = taken {
         log::warn!(
@@ -548,6 +552,7 @@ fn attached(
         log::warn!("extentd: keeping branch {:x} in object storage: {err}", store.branch());
         return Err(match err {
             crate::remote::Failure::Stale => Errno::ESTALE,
+            crate::remote::Failure::PointDeleted => Errno::ENOENT,
             _ => Errno::EIO,
         });
     }
@@ -660,11 +665,12 @@ pub(super) fn deleted_if_failed(path: &Path) -> Result<(), Errno> {
 /// of one snapshot, a zygote's, fork its point at once, as it is, kept open for them ([`point`],
 /// TASK-92.5); a connection having it open makes it busy (`EBUSY`), unless its VM process is gone.
 /// A point that doesn't exist is taken from the daemon's bucket, a store of `branch` of
-/// `capacity` bytes, as on another host than the snapshot's. Its waits hold no thread; its fork
-/// blocks. A point kept open since an earlier restore whose fork fails, as once another host, or
+/// `capacity` bytes, as on another host than the snapshot's: read, as any number of hosts do at
+/// once, and written by none (doc-7, Points). Its waits hold no thread; its fork blocks. A store
+/// that is no point, kept open since an earlier restore whose fork fails, as once another host, or
 /// this one's fxdaxctl, took its branch, which fences it, is let go of, and opened anew for a fork
-/// once more, which takes the branch back, as each restore's did before points were kept: a
-/// restore fails only if the point it opened fails it.
+/// once more, which takes the branch back, as each restore's did before stores were kept open: a
+/// restore fails only if the store it opened fails it.
 pub(super) async fn fork_from(
     from: &Path,
     branch: u64,

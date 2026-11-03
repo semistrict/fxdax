@@ -403,6 +403,7 @@ fn remote_errno(failure: crate::remote::Failure) -> Errno {
     match failure {
         crate::remote::Failure::Taken | crate::remote::Failure::Stale => Errno::EROFS,
         crate::remote::Failure::ChildTaken => Errno::EEXIST,
+        crate::remote::Failure::PointDeleted => Errno::ENOENT,
         crate::remote::Failure::Other(err) => {
             log::error!("fxdax: uploading the store's commits: {err}");
             Errno::EIO
@@ -803,21 +804,32 @@ impl ExtentStore {
     /// maps (`map_open`): the fork holds those as of the last commit, and the next commit here
     /// writes them. It sealed them under their mapping, and the next commit's write of their memory
     /// failed with `EPERM`, as each one's after (TASK-150.7, TASK-153.3).
+    ///
+    /// A fork of a point commits nothing in object storage: its child's record is the fork, which
+    /// fails with `ENOENT` once the point is deleted (`Remote::forked`).
     pub fn fork(&self, path: impl AsRef<Path>, branch: u64) -> Result<(), Error> {
         self.writable()?;
         self.make_durable()?;
         failpoint!("fork::durable");
         // None comes between the look and the fork's commit.
         let opening = self.opening.write().unwrap();
-        self.fork_durable(path.as_ref(), branch, Some(opening))
+        self.fork_durable(path.as_ref(), branch, false, Some(opening))
+    }
+
+    /// fxdax: whether the store holds a point, which it forks and reads, and no writer takes
+    /// (doc-7, Points).
+    pub fn is_point(&self) -> bool {
+        self.uploader().is_some_and(crate::remote::Remote::is_point)
     }
 
     /// fxdax: forks the store, as [`ExtentStore::fork`] says, its commits made durable: `opening`,
-    /// if given, held until the fork's commit is made, and not as the fork's upload goes.
+    /// if given, held until the fork's commit is made, and not as the fork's upload goes. The child
+    /// is a point if `point`.
     fn fork_durable(
         &self,
         path: &Path,
         branch: u64,
+        point: bool,
         opening: Option<std::sync::RwLockWriteGuard<'_, ()>>,
     ) -> Result<(), Error> {
         let remote = self.remote.get();
@@ -830,18 +842,22 @@ impl ExtentStore {
             // fxdax: what is attached to it stays attached to the fork, a restored VM's too.
             copy_bases(&self.path, path)?;
             let Some(remote) = remote else { return Ok(()) };
-            if !remote.claim(branch)? {
+            if !remote.claim(branch, point)? {
                 return Err(taken());
             }
             claimed.set(true);
             Ok(())
         };
-        let forked = extent_store::fork_host_with(&self.store, path, branch, claim);
+        let forked = extent_store::fork_host_with(&self.store, path, branch, point, claim);
         drop(opening);
         let failed = match forked {
             Ok(epoch) => match remote.map(|remote| remote.forked(epoch, branch)) {
                 None | Some(Ok(())) => return Ok(()),
                 Some(Err(crate::remote::Failure::ChildTaken)) => taken(),
+                Some(Err(crate::remote::Failure::PointDeleted)) => {
+                    anyhow::Error::new(Errno::ENOENT)
+                        .context(format!("forking to branch {branch:x}: the point was deleted"))
+                }
                 Some(Err(err)) => anyhow::anyhow!("forking branch {branch:x}: {err}"),
             },
             Err(err) if err.downcast_ref::<extent_store::ForkCommitted>().is_some() => {
@@ -1245,7 +1261,8 @@ impl ExtentStore {
     /// fxdax: what the store's uploader has done, and has left to do, if it has one
     /// ([`ExtentStore::attach_remote`], TASK-50.5).
     pub fn upload_status(&self) -> Result<Option<crate::remote::UploadStatus>> {
-        self.remote.get().map(|remote| remote.status().map_err(remote_errno)).transpose()
+        let uploading = self.remote.get().filter(|remote| !remote.is_point());
+        uploading.map(|remote| remote.status().map_err(remote_errno)).transpose()
     }
 
     /// fxdax: waits until every commit ordered so far is durable and in object storage, as before
@@ -1772,6 +1789,20 @@ impl ExtentStore {
     /// fork, which would seal it under its writer: `EBUSY` otherwise. So a running VM's store forks,
     /// its guest's filesystem frozen (TASK-39.3), as a snapshot of the VM does (TASK-39.1).
     pub fn fork_quiescent(&self, path: impl AsRef<Path>, branch: u64) -> Result<(), Error> {
+        self.fork_at_rest(path.as_ref(), branch, false)
+    }
+
+    /// fxdax: makes a point of the store (doc-7, Points), once nothing is open, as
+    /// [`ExtentStore::fork_quiescent`] forks it: its child, whose handle is at `path`, is no branch
+    /// to write, but a name of the store's state as of the fork, which any number of hosts read and
+    /// fork at once, written by none: what a snapshot of a VM is taken at. Once it returns, the
+    /// point is in object storage.
+    pub fn point(&self, path: impl AsRef<Path>, branch: u64) -> Result<(), Error> {
+        self.fork_at_rest(path.as_ref(), branch, true)
+    }
+
+    /// fxdax: forks the store as [`ExtentStore::fork_quiescent`] says, a point if `point`.
+    fn fork_at_rest(&self, path: &Path, branch: u64, point: bool) -> Result<(), Error> {
         self.writable()?;
         let _opening = self.opening.write().unwrap();
         if !self.is_quiescent()? {
@@ -1779,7 +1810,7 @@ impl ExtentStore {
         }
         self.make_durable()?;
         failpoint!("fork::durable");
-        self.fork_durable(path.as_ref(), branch, None)
+        self.fork_durable(path, branch, point, None)
     }
 
     /// Whether nothing is open: no extent written or mapped writably since the last commit, which

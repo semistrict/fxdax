@@ -671,10 +671,13 @@ impl<F: File> Segments<F> {
     }
 
     /// Has the next commit close the open segment, at the fork of `child`, which its footer
-    /// names (doc-7, Forks).
-    pub fn close_for_fork(&mut self, child: u64) {
+    /// names (doc-7, Forks), as a point if `point` (doc-7, Points).
+    pub fn close_for_fork(&mut self, child: u64, point: bool) {
         self.close_wanted = true;
         self.window.forks.push(child);
+        if point {
+            self.window.points.push(child);
+        }
     }
 
     /// Whether the open segment holds commits up to `epoch`, the last, or forks, which closing it
@@ -727,6 +730,7 @@ impl<F: File> Segments<F> {
             root: window.root,
             next_sequence,
             forks: window.forks,
+            points: window.points,
         });
         let segment = self.tracked.get_mut(&number).unwrap();
         let raw = match &segment.phase {
@@ -1057,6 +1061,8 @@ struct Window {
     root: Option<Vec<u8>>,
     /// The branches forked at its end.
     forks: Vec<u64>,
+    /// Those of them that are points.
+    points: Vec<u64>,
 }
 
 impl Window {

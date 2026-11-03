@@ -54,6 +54,25 @@ pub const FORK_STEPS: [&str; 23] = [
     "remote::checkpointed",
 ];
 
+/// The steps of a restore: a fork of a point, in the order it takes them, on any host holding a
+/// copy of it (doc-7, Points): its child's claim, the fork in that host's copy alone, then its child's
+/// record, a read of the point's, and the record made. No upload, as it commits nothing in object
+/// storage.
+pub const RESTORE_STEPS: [&str; 12] = [
+    "fork::durable",
+    "fork::handle",
+    "remote::claim",
+    "fork::claimed",
+    "fork::committed",
+    "fork::flushed",
+    "fork::recorded",
+    "remote::forked",
+    "point::record",
+    "point::recorded",
+    "point::checked",
+    "point::made",
+];
+
 /// The steps of the daemon's around a fork: a guest's request, and a fork the control API asked
 /// for once its store's commits are uploaded; and the fork made, the answer to its guest lost.
 pub const DAEMON_STEPS: [&str; 3] = ["extentd::fork", "extentd::fork_uploaded", "extentd::forked"];

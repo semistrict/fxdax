@@ -104,6 +104,11 @@ fn one() {
             "footers" => rules.footers = false,
             "fork_claims_ids" => rules.fork_claims_ids = false,
             "fork_claims_landed" => rules.fork_claims_landed = false,
+            "points_take_no_writer" => rules.points_take_no_writer = false,
+            "forks_check_points" => rules.forks_check_points = false,
+            "forks_pending" => rules.forks_pending = false,
+            "collector_abandons" => rules.collector_abandons = false,
+            "records_relisted" => rules.records_relisted = false,
             other => panic!("no rule {other}"),
         }
     }
@@ -122,6 +127,7 @@ fn one() {
         "children" => children(),
         "recovering" => recovering(),
         "failed" => failed_forks(),
+        "restores" => restores(),
         other => panic!("no profile {other}"),
     };
     let count = std::env::var("SIM_SEEDS").map_or(1, |count| count.parse().unwrap());
@@ -320,6 +326,44 @@ test_holds!(failed_forks_deleted_anywhere, failed_forks());
 test_needs!(failed_forks_need_claims_of_ids, fork_claims_ids, failed_forks());
 
 test_needs!(failed_forks_need_claims_of_what_landed, fork_claims_landed, failed_forks());
+
+/// Case 11: one point restored on several hosts at once (doc-7, Points): forks of it racing each
+/// other, passes of the collector, and the point's deletion, on hosts' stale copies, whose hosts
+/// die at each step, what they leave opened or deleted; while the branch it names goes on, frees
+/// what it held, and is deleted in turn. Requests land late, after their hosts die.
+fn restores() -> Profile {
+    let mut profile = weights(|weights| {
+        weights.fork = 1;
+        weights.point = 4;
+        weights.restore = 10;
+        weights.write_point = 1;
+        weights.open = 8;
+        weights.delete = 3;
+        weights.delete_base = 2;
+        weights.unfork = 3;
+        weights.collect = 8;
+        weights.stop_collector = 1;
+        weights.crash = 3;
+        weights.checkpoint = 3;
+        weights.tick = 4;
+    });
+    profile.fail_after = 0.1;
+    profile.options.compact_below = 0.9;
+    profile.options.grace = 1;
+    profile
+}
+
+test_holds!(points_restored_on_many_hosts_at_once, restores());
+
+test_needs!(points_need_refuse_writers, points_take_no_writer, restores());
+
+test_needs!(restores_need_points_read_after_their_records, forks_check_points, restores());
+
+test_needs!(restores_need_records_saying_they_are_being_made, forks_pending, restores());
+
+test_needs!(collection_needs_abandoning_restores, collector_abandons, restores());
+
+test_needs!(collection_needs_records_listed_after_states, records_relisted, restores());
 
 /// Case 7: collectors stopping midway, two at once, one fenced by another. Case 8: writers' indexes
 /// older than compactions.

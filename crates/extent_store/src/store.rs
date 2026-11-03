@@ -566,17 +566,19 @@ impl<D: Dir> Store<D> {
     /// fails with [`ForkCommitted`]: the store has not the child, but the commit's segment names
     /// it, as a host crashing then would leave it.
     pub fn fork(&self, child: u64) -> Result<u64, Error> {
-        self.fork_with(child, || Ok(()))
+        self.fork_with(child, false, || Ok(()))
     }
 
     /// fxdax: forks the branch as [`Store::fork`] does, calling `before` once the child is
     /// reserved, before the fork's commit: as no other fork, opening or deletion of the child here
     /// comes between them, to claim the child where else it is kept, as an uploader does
     /// (TASK-79.82). A fork whose `before` fails commits nothing. The commits of the branch wait
-    /// for `before`, as they do for the fork's own.
+    /// for `before`, as they do for the fork's own. The segment's footer says the child is a point
+    /// if `point`: a name of the branch's state there, which nothing writes (doc-7, Points).
     pub fn fork_with(
         &self,
         child: u64,
+        point: bool,
         before: impl FnOnce() -> Result<(), Error>,
     ) -> Result<u64, Error> {
         let committing = self.committing.lock().unwrap();
@@ -589,7 +591,7 @@ impl<D: Dir> Store<D> {
         failpoint!("fork::claimed");
         // At the end of its segment, which the commit closes, and whose footer names it (doc-7,
         // Forks).
-        self.writable()?.segments.close_for_fork(child);
+        self.writable()?.segments.close_for_fork(child, point);
         let forked = self.commit_locked(&committing, None, true)?;
         let Forked { layer, origin } = forked.expect("a fork's commit freezes the branch's state");
         // fxdax: from here on the commit stands, naming the fork, though the fork fails: a failure

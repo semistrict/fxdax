@@ -32,7 +32,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// The fencing token of the placement of this host, and of the others.
 const TOKEN: u64 = 1;
 
-const BLOCK: usize = ExtentStore::BLOCK_SIZE as usize;
+pub(super) const BLOCK: usize = ExtentStore::BLOCK_SIZE as usize;
 
 /// What goes wrong in a fork.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -51,7 +51,7 @@ enum Fault {
 
 /// What the host's control plane does with what a dead host left at a fork's handle.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Leftover {
+pub(super) enum Leftover {
     /// Deletes it, as of a fork that failed.
     Deleted,
     /// Opens it, as of a fork made, if it opens; and deletes it if not.
@@ -59,7 +59,7 @@ enum Leftover {
 }
 
 /// The writes of a bucket's that go wrong one after another.
-const MISHAPS: [Mishap; 5] = [
+pub(super) const MISHAPS: [Mishap; 5] = [
     Mishap::Refused,
     Mishap::Unanswered,
     Mishap::Dies,
@@ -102,20 +102,25 @@ fn write(store: &ExtentStore, extent: ExtentId, data: &[u8]) {
     store.write(extent, 0, &[VolatileSlice::from(data)]).unwrap();
 }
 
-fn read(store: &ExtentStore, extent: ExtentId, len: usize) -> Vec<u8> {
+pub(super) fn read(store: &ExtentStore, extent: ExtentId, len: usize) -> Vec<u8> {
     let mut data = vec![0; len];
     store.read(extent, 0, &mut [VolatileSliceMut::from(&mut data[..])]).unwrap();
     data
 }
 
 /// Options of a store of this host's or another's.
-fn options() -> super::Options {
+pub(super) fn options() -> super::Options {
     super::Options { token: TOKEN, ..idle() }
 }
 
 /// Mints `extents` of `store`'s, of those lengths, with data from `seed`, and commits them, the
 /// root `root`: returns them.
-fn commit(store: &ExtentStore, seed: u8, lens: &[usize], root: &[u8]) -> Vec<(ExtentId, Vec<u8>)> {
+pub(super) fn commit(
+    store: &ExtentStore,
+    seed: u8,
+    lens: &[usize],
+    root: &[u8],
+) -> Vec<(ExtentId, Vec<u8>)> {
     let minted = mint(store, lens.len() as u64);
     let extents: Vec<_> = (minted.into_iter().zip(lens))
         .enumerate()
@@ -129,7 +134,7 @@ fn commit(store: &ExtentStore, seed: u8, lens: &[usize], root: &[u8]) -> Vec<(Ex
 }
 
 /// Makes this process a host: deleting a store takes its placement's token.
-fn host() {
+pub(super) fn host() {
     // SAFETY: nextest runs each test in a process of its own, whose other threads don't read the
     // environment yet.
     unsafe { std::env::set_var("FXDAX_EXTENTD_TOKEN", TOKEN.to_string()) };

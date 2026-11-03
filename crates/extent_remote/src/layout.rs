@@ -123,6 +123,8 @@ pub fn kind(key: &str) -> Kind<'_> {
 pub struct Fork {
     pub child: u64,
     pub at: u64,
+    /// Whether its child is a point ([`Record::point`]).
+    pub point: bool,
 }
 
 /// A segment: its data, then its footer.
@@ -133,7 +135,7 @@ pub struct Segment {
 }
 
 /// A branch's record: where it came from, and whether it was deleted.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Record {
     /// The branch it was forked from, and the segment of that branch's at whose end.
     pub origin: Option<Origin>,
@@ -141,6 +143,19 @@ pub struct Record {
     /// make again were it removed: so a deleted fork's record stays.
     pub forked: bool,
     pub deleted: bool,
+    /// Whether it is a point, from its first: no branch to write, but a name of its origin's state,
+    /// which any number of hosts read and fork. It has no lease, no segment and no checkpoint, and
+    /// no writer takes it ([`crate::Error::Point`]; doc-7, Points).
+    pub point: bool,
+    /// The point it is being forked from, until the fork is made ([`crate::branch::fork_point`]):
+    /// until then it holds nothing, and nothing relies on it. The collector gives it up once that
+    /// point is deleted ([`crate::branch::abandon`]).
+    pub forking: Option<u64>,
+    /// Whether a failed fork's deletion made it, from what its host knew of the fork, not its
+    /// parent's writers from an acknowledged segment ([`crate::branch::delete_fork`]): what it
+    /// names may have gone before it landed, no record or state keeping that, so that recovering it
+    /// failing says nothing was lost, if no writer has it.
+    pub claimed: bool,
 }
 
 impl Record {
@@ -287,6 +302,7 @@ mod tests {
             root: Some(b"root".to_vec()),
             next_sequence: 6,
             forks: vec![7],
+            points: vec![],
         };
         let segment = Segment { data: b"abc".to_vec(), footer: footer.clone() };
         let bytes = segment.encode();
