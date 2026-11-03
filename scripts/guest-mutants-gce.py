@@ -87,15 +87,15 @@ MUTANTS = [
         "moved_ptes_kept",
         "a write whose blocks moved leaves the PTEs of their pages, through which a load reads "
         "zeros once Fxfs frees the old extent, until the range maps the new (TASK-149.14)",
-        [("\t\tif (moved)\n\t\t\tunmap_mapping_pages(inode->i_mapping, (start >> PAGE_SHIFT) + "
+        [("\t\tif (count)\n\t\t\tunmap_mapping_pages(inode->i_mapping, (start >> PAGE_SHIFT) + "
           "first, pages, false);\n", "")],
     ),
     (
         "moves_before_bytes",
-        "a write whose blocks move without what they held copies its bytes from where it stops "
-        "short, or from those very pages, read as the zeros they moved to (TASK-150.8)",
-        [("\treturn !(flags & (IOMAP_FAULT | IOMAP_ZERO)) && round_up(pos, PAGE_SIZE) < last &&\n"
-          "\t       !READ_ONCE(fxfs_dax_file(inode)->in_hand);\n", "\treturn false;\n")],
+        "a write whose blocks move without what they held, committed before its bytes, copies them "
+        "from where it stops short, or from those very pages, read as the zeros they moved to, or "
+        "fails before it copies (TASK-150.8, TASK-153.5)",
+        [("extents, capacity, timed ? &pending : NULL);", "extents, capacity, NULL);")],
     ),
     (
         "resize_moves_the_last_block",
@@ -167,12 +167,12 @@ MUTANTS = [
     ),
     (
         "moved_write_not_retried",
-        "a write whose chunk's map fails after Fxfs moved its blocks fails, those pages zeros "
-        "(TASK-119.13)",
+        "a write over a chunk with no range moves its blocks and commits before its bytes, and "
+        "fails if the chunk's map fails, those pages zeros (TASK-119.13, TASK-153.5)",
         [(
-            "\t\treturn prepared && (err == -EIO || err == -ENOMEM || err == -ENOSPC) ? -ESTALE : "
-            "err;\n",
-            "\t\treturn err;\n",
+            "\tif (!(flags & IOMAP_ZERO) && !xa_load(&file->ranges, pos >> FXFS_DAX_SHIFT) &&\n"
+            "\t    !fxfs_dax_overwrites(inode, flags, pos, end)) {\n",
+            "\tif (!(flags & IOMAP_ZERO) && !xa_load(&file->ranges, pos >> FXFS_DAX_SHIFT)) {\n",
         )],
     ),
 ]
