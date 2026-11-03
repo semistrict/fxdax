@@ -287,6 +287,11 @@ static int vext_args(struct vext_request *req)
 			.capacity = cpu_to_le64(req->offset),
 		};
 		return sizeof(req->args.resized);
+	case VIRTIO_EXTENT_T_SEALED:
+		req->args.sealed = (struct virtio_extent_sealed) {
+			.asked = cpu_to_le64(req->offset),
+		};
+		return sizeof(req->args.sealed);
 	default:
 		return -EINVAL;
 	}
@@ -609,7 +614,7 @@ static const char *const request_names[] = {
 	[VIRTIO_EXTENT_T_RESIZED] = "resized",
 	[VIRTIO_EXTENT_T_FREEZE] = "freeze", [VIRTIO_EXTENT_T_ADVANCE] = "advance",
 	[VIRTIO_EXTENT_T_LET_GO] = "let_go", [VIRTIO_EXTENT_T_PIN] = "pin",
-	[VIRTIO_EXTENT_T_UNPIN] = "unpin",
+	[VIRTIO_EXTENT_T_UNPIN] = "unpin",  [VIRTIO_EXTENT_T_SEALED] = "sealed",
 };
 
 /* Shows `counters`, one per request type, each on a line of its own after the type's name. */
@@ -881,6 +886,23 @@ u64 virtio_extent_committed(struct virtio_extent *vext)
 }
 EXPORT_SYMBOL_GPL(virtio_extent_committed);
 
+u64 virtio_extent_seal_asked(struct virtio_extent *vext)
+{
+	struct virtio_device *vdev = vext->vdev;
+	u64 asked, again;
+
+	if (!virtio_has_feature(vdev, VIRTIO_EXTENT_F_SEAL))
+		return 0;
+	/* Read whole: the same twice, as the device may change it between halves. */
+	virtio_cread_le(vdev, struct virtio_extent_config, seal_asked, &asked);
+	do {
+		again = asked;
+		virtio_cread_le(vdev, struct virtio_extent_config, seal_asked, &asked);
+	} while (asked != again);
+	return asked;
+}
+EXPORT_SYMBOL_GPL(virtio_extent_seal_asked);
+
 void virtio_extent_set_config_changed(struct virtio_extent *vext, vext_config_changed_t changed,
 				      void *arg)
 {
@@ -1011,6 +1033,7 @@ static const unsigned int vext_features[] = {
 	VIRTIO_EXTENT_F_FREE_MANY,
 	VIRTIO_EXTENT_F_MAP_MANY,
 	VIRTIO_EXTENT_F_MAP_AHEAD,
+	VIRTIO_EXTENT_F_SEAL,
 };
 
 static struct virtio_driver vext_driver = {

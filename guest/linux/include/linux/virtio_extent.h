@@ -52,6 +52,13 @@
  * device maps them for it ahead of its accesses, as it does writable ones (fxdax's TASK-112.1).
  */
 #define VIRTIO_EXTENT_F_MAP_AHEAD 8
+/*
+ * The configuration's `seal_asked` asks the guest to seal what it holds open, changing as the host
+ * asks, which tells it with a configuration change; the guest answers with SEALED. Its open
+ * extents' pages, which only its seal lets go of, hold the memory another guest's writable MAP was
+ * refused for (fxdax's TASK-153.15).
+ */
+#define VIRTIO_EXTENT_F_SEAL 9
 
 #define VIRTIO_EXTENT_T_READ 1
 #define VIRTIO_EXTENT_T_WRITE 2
@@ -73,8 +80,10 @@
 /* F_READ_ONLY: keeps an extent the view holds, whatever commit it advances to, until UNPIN. */
 #define VIRTIO_EXTENT_T_PIN 13
 #define VIRTIO_EXTENT_T_UNPIN 14
+/* F_SEAL: the guest has sealed, as the ask its arguments name asked. */
+#define VIRTIO_EXTENT_T_SEALED 15
 /* The last request type. */
-#define VIRTIO_EXTENT_T_LAST VIRTIO_EXTENT_T_UNPIN
+#define VIRTIO_EXTENT_T_LAST VIRTIO_EXTENT_T_SEALED
 
 /*
  * WRITE: a barrier precedes it; a COMMIT follows it (F_WRITE_COMMIT); that commit is durable; it
@@ -116,6 +125,8 @@ struct virtio_extent_config {
 	__le64 asked;
 	/* F_READ_ONLY: the epoch of the writer's latest commit. */
 	__le64 committed;
+	/* F_SEAL: the host's ask that the guest seal, its number, or 0 if none. */
+	__le64 seal_asked;
 } __packed;
 
 struct virtio_extent_id {
@@ -174,6 +185,11 @@ struct virtio_extent_root_len {
 /* RESIZED: the capacity the guest was asked to shrink to. */
 struct virtio_extent_resized {
 	__le64 capacity;
+};
+
+/* SEALED: the ask answered, as seal_asked said it. */
+struct virtio_extent_sealed {
+	__le64 asked;
 };
 
 /* ADVANCE: the epoch of the commit the view is as of now. LET_GO: the epoch it lets go up to. */
@@ -235,7 +251,8 @@ struct vext_request {
 	struct vext_id id;
 	/*
 	 * READ, WRITE, MAP: where in the extent. MAP, UNMAP: how much, and where in the window.
-	 * RESIZED: the capacity asked (offset). LET_GO: the epoch (offset).
+	 * RESIZED: the capacity asked (offset). LET_GO: the epoch (offset). SEALED: the ask
+	 * answered (offset).
 	 */
 	u64 offset;
 	u64 len;
@@ -271,6 +288,7 @@ struct vext_request {
 		struct virtio_extent_commit commit;
 		struct virtio_extent_resized resized;
 		struct virtio_extent_epoch epoch;
+		struct virtio_extent_sealed sealed;
 	} args;
 	struct virtio_extent_resp resp;
 	struct sg_table data_sgt;
@@ -318,6 +336,11 @@ bool virtio_extent_read_only(struct virtio_extent *vext);
 /* F_READ_ONLY: the epoch of the writer's latest commit, as the configuration says now. */
 u64 virtio_extent_committed(struct virtio_extent *vext);
 /*
+ * F_SEAL: the host's ask that the guest seal, its number, as the configuration says now: 0 if
+ * none, or without F_SEAL. The guest answers it with SEALED, the number as its offset.
+ */
+u64 virtio_extent_seal_asked(struct virtio_extent *vext);
+/*
  * fxdax: F_READ_ONLY: a follower's device has a connection to its store, which keeps its writer
  * from opening it once it was cut off (doc-4). virtio_extent_close, as its filesystem unmounts,
  * nothing in flight that any task waits for, resets the device, which lets the store go.
@@ -335,8 +358,8 @@ int virtio_extent_open(struct virtio_extent *vext);
 bool virtio_extent_capacity(struct virtio_extent *vext, u64 *capacity, u64 *asked);
 /*
  * Has the driver call `changed(arg)` as the device's configuration changes, its capacity or a
- * shrink asked, or its writer's latest commit; or none, if `changed` is NULL. Called from the
- * device's interrupt: it must not sleep.
+ * shrink asked, an ask to seal, or its writer's latest commit; or none, if `changed` is NULL.
+ * Called from the device's interrupt: it must not sleep.
  */
 typedef void (*vext_config_changed_t)(void *arg);
 void virtio_extent_set_config_changed(struct virtio_extent *vext, vext_config_changed_t changed,

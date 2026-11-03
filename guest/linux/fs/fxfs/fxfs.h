@@ -199,6 +199,12 @@ int fxfs_fsync(struct fxfs *fs);
  * grows the filesystem, or, asked to shrink, shrinks it if it holds no more, and answers.
  */
 int fxfs_resize(struct fxfs_filesystem *filesystem);
+/*
+ * fxdax: seals what is open, as the host asks: the journal synced, which commits the device,
+ * ordered, not durable. Another guest's writable MAP was refused for want of the memory the open
+ * extents hold, which only their seal lets go of (TASK-153.15).
+ */
+int fxfs_seal(struct fxfs_filesystem *filesystem);
 int fxfs_statfs(struct fxfs *fs, struct fxfs_statfs *statfs);
 
 /* Frees the blocks of file `ino` within the `len` bytes at `offset`, block-aligned: a hole. */

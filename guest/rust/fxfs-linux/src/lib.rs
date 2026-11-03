@@ -676,6 +676,21 @@ pub unsafe extern "C" fn fxfs_import(
     }
 }
 
+/// fxdax: seals what is open, as the host asks (`Filesystem::seal`).
+///
+/// # Safety
+///
+/// `filesystem` is open.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fxfs_seal(filesystem: *const Filesystem) -> c_int {
+    // SAFETY: As the caller promises.
+    let filesystem = unsafe { &*filesystem };
+    match block_on(filesystem.seal()) {
+        Ok(()) => 0,
+        Err(error) => -errno(&error),
+    }
+}
+
 /// fxdax: takes the size the host resized the store to (`Filesystem::resize`).
 ///
 /// # Safety

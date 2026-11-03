@@ -53,6 +53,8 @@ struct fxfs_device {
 	struct fxfs_hist map_hist, unmap_hist;
 	/* fxdax: the requests the maps took, fewer than the maps with MAP_MANY (TASK-91.4). */
 	atomic64_t map_requests;
+	/* fxdax: the host's asks to seal answered (TASK-153.15). */
+	atomic64_t seals_asked;
 };
 
 struct fxfs_device_request {
@@ -165,6 +167,26 @@ void fxfs_device_set_changed(struct fxfs_device *dev, fxfs_device_changed_t chan
 u64 fxfs_device_committed(struct fxfs_device *dev)
 {
 	return virtio_extent_committed(dev->vext);
+}
+
+u64 fxfs_device_seal_asked(struct fxfs_device *dev)
+{
+	return virtio_extent_seal_asked(dev->vext);
+}
+
+int fxfs_device_sealed(struct fxfs_device *dev, u64 asked)
+{
+	struct vext_request *req = kzalloc(sizeof(*req), GFP_NOFS);
+	int err;
+
+	if (!req)
+		return -ENOMEM;
+	req->type = VIRTIO_EXTENT_T_SEALED;
+	req->offset = asked;
+	err = virtio_extent_call(dev->vext, req);
+	kfree(req);
+	atomic64_inc(&dev->seals_asked);
+	return err;
 }
 
 u64 fxfs_device_store_begin(struct fxfs_device *dev)
@@ -438,4 +460,5 @@ void fxfs_device_show_stats(struct fxfs_device *dev, struct seq_file *m)
 	fxfs_hist_show(m, "window_unmaps", &dev->unmap_hist);
 	seq_printf(m, "stores_held_by_seals %lld\nstores_held_by_seals_ns %lld\n",
 		   atomic64_read(&dev->stores_held), atomic64_read(&dev->stores_held_ns));
+	seq_printf(m, "seals_asked %lld\n", atomic64_read(&dev->seals_asked));
 }

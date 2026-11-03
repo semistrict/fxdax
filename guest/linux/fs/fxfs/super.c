@@ -2735,12 +2735,43 @@ static void fxfs_vfs_resize_work(struct work_struct *work)
 		pr_warn("fxfs: resizing: %d\n", err);
 }
 
-/* fxdax: the host resized the store, or asks the guest to shrink: from the device's interrupt. */
-static void fxfs_vfs_resized(void *arg)
+/*
+ * fxdax: seals what is open, as the host asks, and answers: another guest's writable MAP was
+ * refused for want of the memory this one's open extents hold, which only its seal lets go of,
+ * however long it goes on syncing nothing (TASK-153.15). Its answer says it sealed, or tried to:
+ * a seal failing fails the filesystem, which seals nothing more.
+ */
+static void fxfs_vfs_seal_asked(struct fxfs_vfs_filesystem *filesystem)
+{
+	struct fxfs_device *dev = fxfs_dax_device(filesystem->filesystem);
+	u64 asked = fxfs_device_seal_asked(dev);
+	int err;
+
+	if (!asked)
+		return;
+	err = fxfs_nofs(fxfs_seal(filesystem->filesystem));
+	if (err)
+		pr_warn("fxfs: sealing as the host asks: %d\n", err);
+	err = fxfs_device_sealed(dev, asked);
+	if (err)
+		pr_warn("fxfs: answering the host's ask to seal: %d\n", err);
+}
+
+static void fxfs_vfs_seal_work(struct work_struct *work)
+{
+	fxfs_vfs_seal_asked(container_of(work, struct fxfs_vfs_filesystem, seal));
+}
+
+/*
+ * fxdax: the host resized the store, or asks the guest to shrink, or to seal: from the device's
+ * interrupt. Each work finds what changed, if anything did, in the device's configuration.
+ */
+static void fxfs_vfs_changed(void *arg)
 {
 	struct fxfs_vfs_filesystem *filesystem = arg;
 
 	schedule_work(&filesystem->resize);
+	schedule_work(&filesystem->seal);
 }
 
 DEFINE_STATIC_KEY_FALSE(fxfs_vfs_followers);
@@ -3165,6 +3196,7 @@ static struct fxfs_vfs_filesystem *fxfs_vfs_filesystem_of(struct virtio_extent *
 		filesystem->vext = vext;
 		mutex_init(&filesystem->lock);
 		INIT_WORK(&filesystem->resize, fxfs_vfs_resize_work);
+		INIT_WORK(&filesystem->seal, fxfs_vfs_seal_work);
 		list_add(&filesystem->list, &fxfs_vfs_filesystems);
 	}
 out:
@@ -3181,9 +3213,14 @@ static void fxfs_vfs_filesystem_close(struct fxfs_vfs_filesystem *filesystem)
 	proc_remove(filesystem->stats);
 	filesystem->stats = NULL;
 	if (filesystem->filesystem) {
-		/* No resize comes once closing. */
+		/*
+		 * No resize comes once closing, nor ask to seal; one asked is answered still, the
+		 * host waiting for it.
+		 */
 		fxfs_device_set_changed(fxfs_dax_device(filesystem->filesystem), NULL, NULL);
 		cancel_work_sync(&filesystem->resize);
+		cancel_work_sync(&filesystem->seal);
+		fxfs_vfs_seal_asked(filesystem);
 	}
 	/* Its volumes' inodes evicted, their folios' reads unlocked them: what's left is its free. */
 	if (filesystem->readahead)
@@ -3222,7 +3259,7 @@ static int fxfs_vfs_filesystem_open(struct fxfs_vfs_filesystem *filesystem, stru
 	filesystem->filesystem = fs;
 	/* fxdax: readahead off the reader; a follower's in it (fxfs_vfs_readahead). */
 	if (!fxfs_filesystem_follows(fs)) {
-		fxfs_device_set_changed(fxfs_dax_device(fs), fxfs_vfs_resized, filesystem);
+		fxfs_device_set_changed(fxfs_dax_device(fs), fxfs_vfs_changed, filesystem);
 		filesystem->readahead = alloc_workqueue("fxfs-read", WQ_UNBOUND, 0);
 		if (!filesystem->readahead) {
 			err = -ENOMEM;

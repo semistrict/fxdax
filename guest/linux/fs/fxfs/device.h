@@ -101,13 +101,23 @@ void fxfs_device_set_sealer(struct fxfs_device *dev, fxfs_device_sealer_t sealer
 int fxfs_device_capacity(struct fxfs_device *dev, u64 *capacity, u64 *asked);
 /*
  * Has `changed(arg)` called as the device's configuration changes: the host resizes the store, or
- * a shrink is asked; or, a follower's (FXFS_DEVICE_READ_ONLY), its writer commits. Or nothing, if
- * `changed` is NULL. Called from the device's interrupt: it must not sleep.
+ * a shrink is asked, or the host asks the guest to seal; or, a follower's (FXFS_DEVICE_READ_ONLY),
+ * its writer commits. Or nothing, if `changed` is NULL. Called from the device's interrupt: it
+ * must not sleep.
  */
 typedef void (*fxfs_device_changed_t)(void *arg);
 void fxfs_device_set_changed(struct fxfs_device *dev, fxfs_device_changed_t changed, void *arg);
 /* fxdax: a follower's device's writer's latest commit, as its configuration says now. */
 u64 fxfs_device_committed(struct fxfs_device *dev);
+/*
+ * fxdax: the host's ask that the guest seal what it holds open, its number, as the configuration
+ * says now: 0 if none, or if the device asks none (VIRTIO_EXTENT_F_SEAL). Another guest's writable
+ * MAP was refused for want of the memory this one's open extents hold, which only its seal lets go
+ * of (fxdax's TASK-153.15).
+ */
+u64 fxfs_device_seal_asked(struct fxfs_device *dev);
+/* fxdax: answers the ask of `asked`: the guest has sealed, or tried to. 0, or a -errno. */
+int fxfs_device_sealed(struct fxfs_device *dev, u64 asked);
 /*
  * Waits for a seal in progress to end, and enters the gate. Returns the seal count (as
  * fxfs_device_seals): extents found open when it was the same are still.

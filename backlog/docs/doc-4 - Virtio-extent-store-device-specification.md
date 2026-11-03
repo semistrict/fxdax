@@ -3,7 +3,7 @@ id: doc-4
 title: Virtio extent-store device specification
 type: specification
 created_date: '2026-10-13 22:18'
-updated_date: '2026-11-03 07:12'
+updated_date: '2026-11-03 11:03'
 ---
 # The virtio extent-store device
 
@@ -88,6 +88,7 @@ Settled in a design review on 2026-10-13:
 | 6 | `VIRTIO_EXTENT_F_FREE_MANY` | `FREE` takes `FREE_MANY`: its data names more extents to free (TASK-41). Excludes `READ_ONLY`. |
 | 7 | `VIRTIO_EXTENT_F_MAP_MANY` | `MAP` takes `MAP_MANY`: its data holds more maps (TASK-91.4). Needs `DAX`. |
 | 8 | `VIRTIO_EXTENT_F_MAP_AHEAD` | `MAP`, and each of its further maps, takes `MAP_AHEAD`: the guest accesses the pages next (TASK-112.1). Needs `DAX`. |
+| 9 | `VIRTIO_EXTENT_F_SEAL` | The configuration holds `seal_asked`, which changes while the device runs (Sealing); the guest answers it with `SEALED`. Excludes `READ_ONLY`. |
 | 29 | `VIRTIO_RING_F_EVENT_IDX` | The ring's notification suppression: the device offers it, so that a guest's requests queued while it takes them, and its completions while the driver takes them, cost no exit each. |
 | 32 | `VIRTIO_F_VERSION_1` | Required. |
 
@@ -107,11 +108,12 @@ struct virtio_extent_config {
 	le64 capacity;            /* F_RESIZE: the store's capacity, as INFO's */
 	le64 asked;               /* F_RESIZE: the shrink the guest is asked to take, or 0 */
 	le64 committed;           /* F_READ_ONLY: the epoch of the writer's latest commit */
+	le64 seal_asked;          /* F_SEAL: the host's ask that the guest seal, its number, or 0 */
 };
 ```
 
 The configuration never changes while the device runs, but for `capacity` and `asked`, with
-`F_RESIZE`, and `committed`, with `F_READ_ONLY`.
+`F_RESIZE`, `committed`, with `F_READ_ONLY`, and `seal_asked`, with `F_SEAL`.
 
 ### Resizing
 
@@ -124,6 +126,21 @@ guest shrinks if its filesystem holds less than `asked`, with room left for its 
 (16 MiB, in fxdax's Fxfs), and answers with `RESIZED`, whether it took it; the store shrinks only
 then, never below what its extents hold. The host waits 10 s for the answer. A store no VM has
 open grows, and does not shrink.
+
+### Sealing
+
+*Added 2026-11-03 (TASK-153.15).* The pages of an open extent a writable `MAP` maps are the host's
+memory, which nothing on the host can evict, nor seal: only the guest's barrier lets go of them. So
+the host bounds them, and a writable `MAP` past the bound fails with `ENOMEM` (TASK-150.20): the
+guest seals, and maps again. But the bound is the host's, which its VMs share: another guest's open
+pages, held for as long as it seals nothing, would leave the one refused nothing its own seals make
+room in. So the host asks the guests holding the most to seal: it sets `seal_asked` to the ask's
+number, not 0, and raises a configuration change; the guest seals what is open (a `COMMIT`, which
+need not be durable) and answers with `SEALED`, the number it read; `seal_asked` is 0 again, unless
+the host has asked again since. The `MAP` refused waits for the answers, 10 s at most, and is tried
+once more before it fails. A guest asked to seal is never made to wait so for another's, as its own
+seal may wait for that `MAP`. A device whose driver doesn't take `F_SEAL`, or reset, answers for its
+guest, at once: nothing will seal.
 
 ### Virtqueues
 
@@ -184,6 +201,7 @@ struct virtio_extent_resp {
 | 12 | `LET_GO` | `struct virtio_extent_epoch` | none |
 | 13 | `PIN` | `struct virtio_extent_id id;` | none |
 | 14 | `UNPIN` | `struct virtio_extent_id id;` | none |
+| 15 | `SEALED` | `le64 asked;` (the `seal_asked` it answers) | none |
 
 ### `WRITE`
 
@@ -258,6 +276,8 @@ multiples of `map_alignment`, and the range lies within the window.
 - Stores through a writable mapping belong to the current epoch. The barrier that seals the extent
   makes its writable mappings read-only; they keep its contents.
 - `MAP_WRITE` of a sealed extent, or of another branch's, fails with `EPERM`.
+- `MAP_WRITE` past the host's bound on open extents' memory fails with `ENOMEM`: the guest seals,
+  and maps again (Sealing).
 - A `MAP` replaces whatever the window held there.
 
 With `MAP_MANY` (bit 1, `F_MAP_MANY`), the data holds more maps, each a
@@ -348,6 +368,7 @@ its own count and the floor there may be 2^40 numbers.
 | `ENOENT` (2) | A `READ` or `MAP` of an extent that does not exist, or was freed. |
 | `EIO` (5) | The store failed to read or write. |
 | `EINVAL` (22) | An unknown type or flag, a misaligned or out-of-range offset, length or window offset, or a feature's flag the device does not offer. |
+| `ENOMEM` (12) | A writable `MAP` past the host's bound on open extents' memory (Sealing): the guest seals, and maps again. |
 | `ENOSPC` (28) | The store cannot hold more for this branch. |
 | `EROFS` (30) | The store stopped taking writes for this branch: another host took its lease (milestone 4), or the host is shutting it down. Reads still work. With `F_READ_ONLY`, every `WRITE`, `FREE`, `COMMIT`, writable `MAP` and `RESIZED`. |
 | `ESTALE` (116) | `F_READ_ONLY`: the follower was cut off (Followers). |

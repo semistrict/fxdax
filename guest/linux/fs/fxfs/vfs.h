@@ -53,6 +53,8 @@ struct fxfs_vfs_filesystem {
 	struct workqueue_struct *readahead;
 	/* fxdax: takes the size the host resizes the store to (fxfs_resize), off the interrupt. */
 	struct work_struct resize;
+	/* fxdax: seals as the host asks (fxfs_seal), off the interrupt (TASK-153.15). */
+	struct work_struct seal;
 	/* Its superblocks, and how many of those are frozen. */
 	unsigned int volumes;
 	unsigned int volumes_frozen;
