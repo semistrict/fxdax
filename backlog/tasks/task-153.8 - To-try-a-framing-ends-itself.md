@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-01 22:53'
-updated_date: '2026-11-03 13:39'
+updated_date: '2026-11-03 14:10'
 labels: []
 dependencies: []
 parent_task_id: TASK-153
@@ -55,10 +55,14 @@ Structure: one record of running framings (Segments.framing, by segment), each f
 Tests: needs_framings_to_end_themselves (rule framings_end_themselves off: a closing for room framed by the next commit, 150.2's shape) red as expected; needs_closes_to_wait_for_framings_after_a_failed_flush (79.99's scenario, close_waits_for_framings off) red as expected; new uploads_of_what_a_closing_for_room_closed_by_pct runs the 150.2 scenario under PCT with every rule, which had no all-rules run before, and found the flush-waiting mistake above. extent_store 219/219, Shuttle 61/61 and 7/7 (macOS).
 
 Verified: macOS scripts/test.sh at e8e186485: workspace 2051/2051, Shuttle 61, 7, 6, 21, 10, 18, scripts 135 OK; the extent_remote simulation 37/37. GCE fxdax-test-t1537-r1 (us-east4-a, n2-standard-4): Linux workspace 2215/2215 and the same Shuttle suites; its guest stage stopped at a test_cases host test (XFS loop umount busy, no fxdax code), so r2 ran the guest cases alone: fxfs-guest-dax, -live-fork, -migrate-dax, -migrate-tenant-dax, -snapshot, -snapshot-dax, -snapshot-volumes, -snapshot-volumes-dax, -suspend-dax all OK, test_cases 53/53. Both hosts deleted. scripts/upstream-changes.py --check passes.
+
+Rebased onto main (752be3c27): the framing commit is 30b3bc3e2 (was 1477b7222 above).
+
+Rebased tree (on 752be3c27), macOS: workspace 2053 (2045 passed before an external SIGTERM ended the run; the 8 it cut short, plus the restore_faults suite, 11/11 alone), Shuttle 61, 7, 6, 21, 10, 18, scripts 135 OK.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
-Decided and done (1477b7222): a segment's framing ends itself, whatever closed it; a commit's flush, the uploader's take, close_now, forks and the branch's closing only wait. Removes State.closings, Pending.closings, end_closings and two rules whose classes (TASK-150.2, 79.99) are now impossible. needs_framings_to_end_themselves and needs_closes_to_wait_for_framings_after_a_failed_flush red with their rules off; a new all-rules PCT run of 150.2's scenario found and fixed a flush waiting too broadly. Verified macOS and GCE.
+Decided and done (30b3bc3e2): a segment's framing ends itself, whatever closed it; a commit's flush, the uploader's take, close_now, forks and the branch's closing only wait. Removes State.closings, Pending.closings, end_closings and two rules whose classes (TASK-150.2, 79.99) are now impossible. needs_framings_to_end_themselves and needs_closes_to_wait_for_framings_after_a_failed_flush red with their rules off; a new all-rules PCT run of 150.2's scenario found and fixed a flush waiting too broadly. Verified macOS and GCE.
 <!-- SECTION:FINAL_SUMMARY:END -->
