@@ -7,11 +7,11 @@
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c
-@@ -3578,7 +3578,6 @@
+@@ -3491,7 +3491,6 @@
  		file->append_bytes = 0;
  	/* The ranges the file's end moves into, mapped as large as they need. */
  	if (iocb->ki_pos + iov_iter_count(from) > old_size) {
 -		WRITE_ONCE(file->growing, iocb->ki_pos + iov_iter_count(from));
  		filemap_invalidate_lock(inode->i_mapping);
  		ret = fxfs_dax_fit(inode, iocb->ki_pos + iov_iter_count(from));
- 		filemap_invalidate_unlock(inode->i_mapping);
+ 		if (!ret && iocb->ki_pos > old_size)

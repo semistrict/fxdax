@@ -1,13 +1,11 @@
-diff --git a/crates/fxfs/src/object_store/data_object_handle.rs b/crates/fxfs/src/object_store/data_object_handle.rs
-index 4c15560f2..0c7a07b1e 100644
 --- a/crates/fxfs/src/object_store/data_object_handle.rs
 +++ b/crates/fxfs/src/object_store/data_object_handle.rs
-@@ -2441,7 +2441,7 @@ impl<S: HandleOwner> DataObjectHandle<S> {
+@@ -2524,7 +2524,7 @@
              let (end, taken) = self.end_of_room(start..range.end, room / 2, &shared).await?;
              let dst_range = dst_of(start)..dst_of(end);
              let (dst_end, _) = dst.end_of_room(dst_range, room - taken, &freed).await?;
 -            let end = start + (dst_end - dst_of(start));
 +            let end = (start + (dst_end - dst_of(start))).min(start.saturating_add(4 << 20));
              self.txn_clone_range(transaction, start..end, dst, dst_of(start)).await?;
-             if end == range.end {
-                 return Ok(());
+             let reached = if end == range.end { size } else { dst_of(end).min(size) };
+             if reached > dst.txn_get_size(transaction) {

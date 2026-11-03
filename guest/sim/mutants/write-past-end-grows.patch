@@ -5,7 +5,8 @@
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c
-@@ -3790,7 +3790,7 @@
+@@ -3585,7 +3585,7 @@
+ 	 */
  	if (iocb->ki_pos < end && end > old_size) {
  		/* fxdax: none written, past the end, it leaves the file as it was, not grown to `pos`. */
 -		err = fxfs_vfs_resize(inode, done ? max(old_size, iocb->ki_pos) : old_size, NULL, NULL);

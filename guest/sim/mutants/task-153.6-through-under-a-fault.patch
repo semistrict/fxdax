@@ -6,8 +6,8 @@
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c
-@@ -2787,7 +2787,7 @@ static bool fxfs_dax_goes_through(const struct fxfs_dax_range *range,
- 	       !range->region && e->open && e->extent_size && e->extent_size <= FXFS_DAX_SIZE &&
+@@ -2775,7 +2775,7 @@
+ 	       !range->region && e->access == FXFS_DAX_OPEN && e->extent_size && e->extent_size <= FXFS_DAX_SIZE &&
  	       PAGE_ALIGNED(e->extent_offset) && (e->extent_offset || e->len < e->extent_size) &&
  	       e->offset <= start && e->offset + e->len >= start + ((loff_t)pages << PAGE_SHIFT) &&
 -	       first + pages <= range->pages && atomic_read(&range->users) == 1 &&
