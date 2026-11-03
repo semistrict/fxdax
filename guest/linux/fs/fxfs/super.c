@@ -3182,7 +3182,7 @@ static void fxfs_vfs_filesystem_close(struct fxfs_vfs_filesystem *filesystem)
 	filesystem->stats = NULL;
 	if (filesystem->filesystem) {
 		/* No resize comes once closing. */
-		fxfs_device_set_resized(fxfs_dax_device(filesystem->filesystem), NULL, NULL);
+		fxfs_device_set_changed(fxfs_dax_device(filesystem->filesystem), NULL, NULL);
 		cancel_work_sync(&filesystem->resize);
 	}
 	/* Its volumes' inodes evicted, their folios' reads unlocked them: what's left is its free. */
@@ -3222,7 +3222,7 @@ static int fxfs_vfs_filesystem_open(struct fxfs_vfs_filesystem *filesystem, stru
 	filesystem->filesystem = fs;
 	/* fxdax: readahead off the reader; a follower's in it (fxfs_vfs_readahead). */
 	if (!fxfs_filesystem_follows(fs)) {
-		fxfs_device_set_resized(fxfs_dax_device(fs), fxfs_vfs_resized, filesystem);
+		fxfs_device_set_changed(fxfs_dax_device(fs), fxfs_vfs_resized, filesystem);
 		filesystem->readahead = alloc_workqueue("fxfs-read", WQ_UNBOUND, 0);
 		if (!filesystem->readahead) {
 			err = -ENOMEM;
@@ -3385,7 +3385,7 @@ static int fxfs_vfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	 * (TASK-79.54).
 	 */
 	if (info->follows) {
-		fxfs_device_set_resized(fxfs_dax_device(filesystem), fxfs_vfs_committed, info);
+		fxfs_device_set_changed(fxfs_dax_device(filesystem), fxfs_vfs_committed, info);
 		schedule_work(&info->follow);
 	}
 	return 0;
@@ -3527,7 +3527,7 @@ static void fxfs_vfs_kill_sb(struct super_block *sb)
 	 * ends before they go.
 	 */
 	if (info->follows) {
-		fxfs_device_set_resized(fxfs_dax_device(info->filesystem->filesystem), NULL, NULL);
+		fxfs_device_set_changed(fxfs_dax_device(info->filesystem->filesystem), NULL, NULL);
 		cancel_work_sync(&info->follow);
 	}
 	kill_anon_super(sb);

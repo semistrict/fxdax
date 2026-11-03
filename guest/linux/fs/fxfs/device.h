@@ -100,12 +100,12 @@ void fxfs_device_set_sealer(struct fxfs_device *dev, fxfs_device_sealer_t sealer
  */
 int fxfs_device_capacity(struct fxfs_device *dev, u64 *capacity, u64 *asked);
 /*
- * Has `resized(arg)` called as the host resizes the store, or a shrink is asked, or, a follower's
- * (FXFS_DEVICE_READ_ONLY), its writer commits; or nothing, if `resized` is NULL. Called from the
- * device's interrupt: it must not sleep.
+ * Has `changed(arg)` called as the device's configuration changes: the host resizes the store, or
+ * a shrink is asked; or, a follower's (FXFS_DEVICE_READ_ONLY), its writer commits. Or nothing, if
+ * `changed` is NULL. Called from the device's interrupt: it must not sleep.
  */
-typedef void (*fxfs_device_resized_t)(void *arg);
-void fxfs_device_set_resized(struct fxfs_device *dev, fxfs_device_resized_t resized, void *arg);
+typedef void (*fxfs_device_changed_t)(void *arg);
+void fxfs_device_set_changed(struct fxfs_device *dev, fxfs_device_changed_t changed, void *arg);
 /* fxdax: a follower's device's writer's latest commit, as its configuration says now. */
 u64 fxfs_device_committed(struct fxfs_device *dev);
 /*

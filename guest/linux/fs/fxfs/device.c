@@ -157,9 +157,9 @@ int fxfs_device_capacity(struct fxfs_device *dev, u64 *capacity, u64 *asked)
 	return virtio_extent_capacity(dev->vext, capacity, asked) ? 0 : -EOPNOTSUPP;
 }
 
-void fxfs_device_set_resized(struct fxfs_device *dev, fxfs_device_resized_t resized, void *arg)
+void fxfs_device_set_changed(struct fxfs_device *dev, fxfs_device_changed_t changed, void *arg)
 {
-	virtio_extent_set_config_changed(dev->vext, resized, arg);
+	virtio_extent_set_config_changed(dev->vext, changed, arg);
 }
 
 u64 fxfs_device_committed(struct fxfs_device *dev)
