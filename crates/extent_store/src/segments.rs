@@ -15,8 +15,8 @@ use crate::layers::Extents;
 #[cfg(any(test, feature = "audit"))]
 use crate::layers::Layer;
 use crate::layout::{
-    Change, Data, Extent, OPEN_SEGMENTS, Piece, SEGMENTS, SegmentId, branch_dir, list_numbers,
-    open_segment_path, segment_path,
+    Change, Data, Extent, OPEN_SEGMENTS, Piece, SEGMENTS, SegmentId, branch_dir, held_frees,
+    list_numbers, open_segment_path, segment_path,
 };
 use crate::store::{Options, Usage};
 use anyhow::{Context as _, Error, anyhow, bail, ensure};
@@ -1218,8 +1218,12 @@ impl Window {
         Self { first, ..Self::default() }
     }
 
-    /// Records what a commit changed, `extents` the branch's extents as of it.
+    /// Records what a commit changed, `extents` the branch's extents as of it. fxdax: of its frees,
+    /// those of extents a commit held, which the store spent, if its own: so that the footer's
+    /// readers spend all it frees, as the store did (TASK-160.15). Those of extents written in it,
+    /// open, it frees not: no commit held them, nor names them, and the store writes them again.
     fn commit(&mut self, changes: &[Change], root: Option<&[u8]>, extents: &Extents) {
+        let held = held_frees(changes);
         let mut touched = BTreeSet::new();
         for change in changes {
             match change {
@@ -1233,7 +1237,9 @@ impl Window {
                 Change::Free(extent) => {
                     touched.remove(extent);
                     self.touched.remove(extent);
-                    self.freed.insert(*extent);
+                    if held.contains(extent) {
+                        self.freed.insert(*extent);
+                    }
                 }
             }
         }

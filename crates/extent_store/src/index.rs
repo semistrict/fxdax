@@ -322,8 +322,8 @@ pub(crate) fn rebuild<D: Dir>(
             state.extents.insert(extent, Extent { len: location.len, data: Data::Own });
         }
         for extent in footer.frees {
-            // fxdax: as a delta's frees (`Recovered::apply`), of what the footer's segments
-            // sealed before, all of it: a footer records an epoch's last state of each.
+            // fxdax: as a delta's frees (`Recovered::apply`): a footer frees those a commit held
+            // alone, which the store spent ([`held_frees`], TASK-160.15).
             if extent.branch == branch {
                 state.spent.insert(extent.sequence);
             }

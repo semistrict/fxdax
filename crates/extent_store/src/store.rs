@@ -322,6 +322,9 @@ pub struct Rebuilt {
     pub next_sequence: u64,
     /// The extents, with their lengths and where they are, in order.
     pub extents: Vec<(ExtentId, u64, Place)>,
+    /// fxdax: the sequence numbers of its own extents it freed once sealed, which it writes no
+    /// more ([`Store::spent`], TASK-160.15).
+    pub spent: extent_frame::spent::Spent,
 }
 
 /// Where `entry`'s data is.
@@ -546,7 +549,14 @@ impl<D: Dir> Store<D> {
             root: state.root,
             next_sequence: state.next_sequence,
             extents,
+            spent: state.spent,
         })
+    }
+
+    /// fxdax: the sequence numbers of the branch's own extents it freed once sealed, which it
+    /// writes no more ([`Spent`], TASK-79.6).
+    pub fn spent(&self) -> Result<extent_frame::spent::Spent, Error> {
+        Ok(self.state()?.spent.clone())
     }
 
     /// Where `extent`'s data is, if the branch holds it.

@@ -1285,6 +1285,31 @@ fn closed_state<D: Dir>(store: &Store<D>) -> extent_store::Rebuilt {
         root: store.root().unwrap(),
         next_sequence: store.info().unwrap().next_sequence,
         extents: store.places().unwrap(),
+        spent: store.spent().unwrap(),
+    }
+}
+
+/// fxdax: an extent freed while open, which no commit held, is not spent: the store writes it
+/// again, and so does the branch its footers rebuild, which spends those freed once sealed alone,
+/// as the store does (TASK-160.15). One sealed, and freed by a later commit of the same segment,
+/// is spent, though no footer names it held.
+#[test]
+fn rebuilding_spends_what_the_store_spends() {
+    let store = create(MemDir::new(), 1 << 20);
+    for (sequence, len) in [(1, BLOCK), (2, BLOCK), (3, 40 << 10)] {
+        store.write(extent(sequence), 0, &pattern(sequence as u8, 0, len)).unwrap();
+    }
+    // Freed open, in segments and in a raw file of its own.
+    store.free(extent(2)).unwrap();
+    store.free(extent(3)).unwrap();
+    store.commit(None).unwrap();
+    // Sealed, then freed.
+    store.free(extent(1)).unwrap();
+    let state = closed_state(&store);
+    assert_eq!(state.spent.runs().collect::<Vec<_>>(), [(1, 2)]);
+    assert_eq!(store.rebuild().unwrap(), state);
+    for sequence in [2, 3] {
+        store.write(extent(sequence), 0, &pattern(9, 0, BLOCK)).unwrap();
     }
 }
 
