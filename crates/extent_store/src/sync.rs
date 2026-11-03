@@ -77,23 +77,24 @@ pub(crate) mod thread {
     }
 }
 
-/// Runs `f` on a thread of its own, as `thread::spawn` does; or on the caller's, if the host
-/// refuses one, where `thread::spawn` panics, through whatever locks the caller holds, poisoning
-/// them: for work that must be done, which the caller can wait for (TASK-79.80).
-pub(crate) fn spawn_or_run(f: impl FnOnce() + Send + 'static) {
-    // A thread the host refuses drops what it was to run: so `f` is the thread's to take, and,
+/// Runs `run` of `work` on a thread of its own, as `thread::spawn` does; or gives `work` back, if
+/// the host refuses one, where `thread::spawn` panics, through whatever locks the caller holds,
+/// poisoning them: for work that must be done, which the caller then does itself (TASK-79.80).
+pub(crate) fn spawn_or_return<T: Send + 'static>(
+    work: T,
+    run: impl FnOnce(T) + Send + 'static,
+) -> Option<T> {
+    // A thread the host refuses drops what it was to run: so `work` is the thread's to take, and,
     // if there is none, the caller's.
-    let job = Arc::new(Mutex::new(Some(f)));
+    let job = Arc::new(Mutex::new(Some(work)));
     let theirs = job.clone();
     let spawned = thread::Builder::new().spawn(move || {
-        let f = theirs.lock().unwrap().take();
-        f.expect("a thread runs what its caller has not")();
+        let work = theirs.lock().unwrap().take();
+        run(work.expect("a thread runs what its caller has not"));
     });
-    if let Err(error) = spawned {
-        log::warn!("extent store: running on the caller's thread, the host refusing one: {error}");
-        let f = job.lock().unwrap().take();
-        f.expect("no thread ran it")();
-    }
+    let error = spawned.err()?;
+    log::warn!("extent store: running on the caller's thread, the host refusing one: {error}");
+    Some(job.lock().unwrap().take().expect("no thread ran it"))
 }
 
 /// The host's refusal of a thread, `EAGAIN`, if a test has it refuse them (`refuse_threads`).
@@ -147,17 +148,16 @@ pub struct Rules {
     pub durable_once_synced: bool,
     /// Closing a branch waits for a flush in flight to finish.
     pub close_waits_for_flushes: bool,
-    /// Closing a branch waits for the segments closed between commits to be framed (TASK-41.1).
+    /// Closing a branch waits for every segment being framed, whatever closed it, a commit no
+    /// flush took or one that failed among them (TASK-41.1, TASK-79.99).
     pub close_waits_for_framings: bool,
-    /// A flush whose commits' framings fail waits for every one of them to end before it says so,
-    /// and closing a branch for those of the commits no flush took (TASK-79.99).
-    pub flushes_wait_for_every_framing: bool,
-    /// A fork waits for the segments closed between commits to be framed, which its child reads
-    /// from their framed files (TASK-41.1).
+    /// A fork waits for the segments being framed, which its child reads from their framed files
+    /// (TASK-41.1).
     pub forks_wait_for_framings: bool,
-    /// A flush with no commit to take ends what writes closed for want of room, which holds
-    /// commits an uploader waits for, whether or not one comes after (TASK-150.2).
-    pub flushes_end_closings: bool,
+    /// A segment closed is framed at once, and its framing ends itself, whatever closed it: a
+    /// closing for want of room waits for no commit after it, which may never come, to frame it,
+    /// as a commit an uploader waits for is in it (TASK-150.2, TASK-153.8).
+    pub framings_end_themselves: bool,
     /// A free of an extent sealed before keeps its data while a view older than the free lives.
     pub keep_frees_for_views: bool,
     /// A free of an extent a view pins keeps its data while it does.
@@ -187,9 +187,8 @@ impl Rules {
         durable_once_synced: true,
         close_waits_for_flushes: true,
         close_waits_for_framings: true,
-        flushes_wait_for_every_framing: true,
         forks_wait_for_framings: true,
-        flushes_end_closings: true,
+        framings_end_themselves: true,
         keep_frees_for_views: true,
         keep_pins: true,
         decide_at_publish: true,

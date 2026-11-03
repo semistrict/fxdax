@@ -14,16 +14,16 @@ use crate::kept::{Kept, KeptExtents};
 use crate::layers::Layer;
 use crate::layout::{
     BranchRecord, Change, Checkpoint, Data, Delta, Description, Extent, FileKey, OPEN_EXTENTS,
-    OPEN_SEGMENTS, Origin, Piece, Place, SEGMENTS, SegmentId, add_piece, branch_dir, extent_path,
-    list_numbers, open_extent_path, open_segment_path,
+    Origin, Piece, Place, SegmentId, add_piece, branch_dir, extent_path, list_numbers,
+    open_extent_path,
 };
 use crate::lineage::Lineage;
-use crate::segments::{Closing, Segments, Unframed, Victim, close_left_open};
+use crate::segments::{Segments, Unframed, Victim, close_left_open};
 use crate::state::{
     Copied, Gate, OwnFiles, Placement, Reader, Space, State, Uncommitted, Unreferenced,
     uploader_keeps,
 };
-use crate::sync::{Condvar, Mutex, MutexGuard, rules};
+use crate::sync::{Condvar, Mutex, MutexGuard, rules, spawn_or_return};
 use crate::uploads::{Closed, Snapshot, Uploads};
 use crate::views::{Limits, Sealed, View, Views};
 use anyhow::{Context as _, Error, anyhow, bail, ensure};
@@ -219,7 +219,9 @@ pub struct Store<D: Dir> {
     /// changed over it (TASK-31).
     origin: Option<Arc<Layer>>,
     options: Options,
-    state: Mutex<State<D::File>>,
+    /// fxdax: shared with the framings of its segments, each of which ends itself in it, on a
+    /// thread of its own (TASK-153.8).
+    state: Arc<Mutex<State<D::File>>>,
     /// Held by a commit, or by cleaning, which commits.
     committing: Mutex<()>,
     /// When its commits are durable: those ordered that no flush has taken yet, oldest first, for
@@ -228,9 +230,9 @@ pub struct Store<D: Dir> {
     /// Held by a flush: commits become durable in order.
     flushing: Mutex<()>,
     /// Notified when the open segment has no write in progress, and when it closed: what
-    /// [`Store::close_now`] and the writes it holds up wait for; fxdax: and when the segments it
-    /// closed are framed, which forks and the branch's closing wait for.
-    idle: Condvar,
+    /// [`Store::close_now`] and the writes it holds up wait for; fxdax: and as each framing of a
+    /// segment ends, which flushes, the uploader, forks and the branch's closing wait for.
+    idle: Arc<Condvar>,
     /// fxdax: its views, which followers read it through ([`Store::view`]).
     views: Arc<Views>,
     /// fxdax: how often the branch changed as may make cleaning behind its commits due, each
@@ -258,12 +260,12 @@ struct Pending<F> {
     syncs: Syncs<F>,
     /// Its record in the index.
     write: IndexWrite<F>,
-    /// The files of the branch's alone it made unreferenced ([`Unreferenced::doomed`]), and the
-    /// raw files of the segments it closed, once framed: they go once it is durable.
+    /// The files of the branch's alone it made unreferenced ([`Unreferenced::doomed`]): they go
+    /// once it is durable.
     doomed: Vec<String>,
-    /// fxdax: the segment it closed, if any, and those closed for want of room since the last
-    /// commit ([`State::closings`]), being framed, whose framed files it waits for and syncs.
-    closings: Vec<Closing<F>>,
+    /// fxdax: the segment it closed, if any, being framed: it is durable once that is, which its
+    /// flush waits for, its data being in it (TASK-153.8).
+    closed: Option<SegmentId>,
 }
 
 /// A write in progress (see [`Store::begin_write`]): its data goes to `file()` at `offset()`.
@@ -338,8 +340,24 @@ fn place_of(entry: &Extent) -> Place {
     }
 }
 
-/// fxdax: a segment closed between commits, framed: its number, and its framed file.
-type FramedSegment<F> = (SegmentId, Arc<Framed<F>>);
+/// fxdax: ends the framing of segment `number`, `framed` saying how ([`Store::frame_behind`]), in
+/// `state`: the segment is read from its framed file from now on, its raw file going once the
+/// commits its footer names are durable; or its framing failed, and the store with it, as it is
+/// ahead of its files.
+fn framing_ended<F: File>(
+    state: &mut State<F>,
+    number: SegmentId,
+    framed: Result<Arc<Framed<F>>, Error>,
+) {
+    match framed {
+        Ok(framed) => state.segments.framed(number, framed),
+        Err(error) => {
+            log::error!("extent store: framing segment {number:?}: {error:#}");
+            state.failed = true;
+            state.segments.framing_failed(number, format!("{error:#}"));
+        }
+    }
+}
 
 impl<D: Dir> Store<D> {
     /// Makes a new, empty store in `dir`, which is empty, of one branch, as `description`
@@ -482,7 +500,7 @@ impl<D: Dir> Store<D> {
             parent: record.origin.map(|origin| origin.parent),
             origin,
             options,
-            state: Mutex::new(State {
+            state: Arc::new(Mutex::new(State {
                 extents,
                 space: Space::new(record.capacity, stored, own_stored),
                 epoch,
@@ -500,13 +518,12 @@ impl<D: Dir> Store<D> {
                 sealed: Sealed::default(),
                 failed: false,
                 closed: false,
-                framings: 0,
-                closings: Vec::new(),
-            }),
+                deferred: Vec::new(),
+            })),
             committing: Mutex::new(()),
             durability: Mutex::new(Durability::new(epoch)),
             flushing: Mutex::new(()),
-            idle: Condvar::new(),
+            idle: Arc::new(Condvar::new()),
             views,
             changes: AtomicU64::new(0),
         })
@@ -673,31 +690,22 @@ impl<D: Dir> Store<D> {
         drop(flushing);
         let mut state = self.state.lock().unwrap();
         if !state.closed {
-            // fxdax: once the segments closed between commits are framed, which another store,
-            // opening the branch, would close again meanwhile (TASK-41.1); and those closed for
-            // want of room since the last commit, or by a commit that failed, which no flush waited
-            // for: the opening keeps their framed files, if whole, or frames their raw files anew
-            // (TASK-79.2).
+            // fxdax: once no segment is being framed, whatever closed it, a commit no flush took
+            // or one that failed among them, which another store, opening the branch, would frame
+            // again meanwhile from its raw file (TASK-41.1, TASK-79.99): each framing ends itself,
+            // and the segments say which are running (TASK-153.8). The opening keeps their framed
+            // files, if whole, or frames their raw files anew.
             if rules().close_waits_for_framings {
                 state = self.framed(state);
             }
-            let mut closings = std::mem::take(&mut state.closings);
             state.closed = true;
+            // Their raw files, of commits durable, go as a flush's would.
+            let raw = match state.failed {
+                false => state.segments.raw(self.durability.lock().unwrap().durable()),
+                true => Vec::new(),
+            };
             drop(state);
-            // fxdax: and those of the commits no flush took, as none does once the store failed
-            // (TASK-79.99).
-            if rules().close_waits_for_framings && rules().flushes_wait_for_every_framing {
-                let durability = self.durability.lock().unwrap();
-                let waiting = durability.waiting().flat_map(|pending| pending.closings.iter());
-                closings.extend(waiting.cloned());
-            }
-            if rules().close_waits_for_framings {
-                for closing in &closings {
-                    if let Err(err) = closing.wait() {
-                        log::warn!("extent store: {err:#}, which opening the branch does again");
-                    }
-                }
-            }
+            self.remove(raw);
             self.lineage.closed(self.branch, self.token);
         }
         flushed
@@ -910,13 +918,12 @@ impl<D: Dir> Store<D> {
 
     /// fxdax: makes room in the open segment for a write of `len` bytes, if it has none: writes
     /// go to the next (TASK-79.2). The open segment, full, is set aside, holding no commit's data,
-    /// or else closed, as between commits, and framed behind, which the next flush waits for, the
-    /// next commit's as for its own closing ([`State::closings`]), or one with no commit to take,
-    /// as an uploader's ([`Store::end_closings`]): holding the state alone, so that the
-    /// write waits neither for a commit in progress, nor for the writes in the segment, nor for
-    /// the framing, as the uploader's closing between commits does ([`Store::close_now`]). Those
-    /// writes go on: their extents are open, which the next commit copies out, from the segment's
-    /// raw file, which reads read until its flush has the framed file.
+    /// or else closed, as between commits, and framed behind, a framing that ends itself, whether
+    /// or not a commit comes after ([`Store::frame_behind`], TASK-150.2): holding the state alone,
+    /// so that the write waits neither for a commit in progress, nor for the writes in the
+    /// segment, nor for the framing, as the uploader's closing between commits does
+    /// ([`Store::close_now`]). Those writes go on: their extents are open, which the next commit
+    /// copies out, from the segment's raw file, which reads read until it is framed.
     fn make_room(&self, state: &mut State<D::File>, len: u64) -> Result<(), Error> {
         if state.segments.fits(len, self.options.segment_limit()) {
             return Ok(());
@@ -924,7 +931,10 @@ impl<D: Dir> Store<D> {
         let full = state.segments.open_segment();
         if state.segments.has_commits(state.epoch) {
             let unframed = self.close_open_segment(state, state.epoch)?;
-            state.closings.push(unframed.frame_behind(self.lineage.clone()));
+            match rules().framings_end_themselves {
+                true => self.frame_behind(state, unframed),
+                false => state.deferred.push(unframed),
+            }
         } else {
             state.segments.retire(&self.lineage.dir)?;
             state.index.set_aside(full.number);
@@ -1315,12 +1325,14 @@ impl<D: Dir> Store<D> {
         if let Some(uploads) = &mut state.uploads {
             uploads.record(epoch, &changes, &state.extents);
         }
-        // The open segment's footer records them, before the segment closes. fxdax: with those
-        // closed for want of room since the last commit, which it waits for, framed, too.
+        // The open segment's footer records them, before the segment closes.
         state.segments.record(&changes, root, &state.extents);
-        if let Some(closing) = self.close_if_due(state, epoch)? {
-            state.closings.push(closing);
+        // fxdax: with the rule off, the closings for room since the last commit are framed only
+        // now, by a commit that may never come (TASK-150.2).
+        for unframed in std::mem::take(&mut state.deferred) {
+            self.frame_behind(state, unframed);
         }
+        let closed = self.close_if_due(state, epoch)?;
         // What its flush syncs, after the closing, whose directories its flush must sync: the
         // framed file's entry is durable before its raw file goes.
         let mut syncs = Syncs::default();
@@ -1356,8 +1368,7 @@ impl<D: Dir> Store<D> {
             Forked { layer, origin }
         });
         // Queued while the state is locked, so that commits queue in their order.
-        let closings = std::mem::take(&mut state.closings);
-        let pending = Pending { syncs, write: appended.write, doomed, closings };
+        let pending = Pending { syncs, write: appended.write, doomed, closed };
         self.durability.lock().unwrap().push(epoch, pending);
         self.changed(state);
         Ok(forked)
@@ -1429,17 +1440,19 @@ impl<D: Dir> Store<D> {
 
     /// Closes the open segment after commit `epoch`, once no write is in progress in it, if it is
     /// due: full, old, wanted closed, or at a fork; writes go to a new one. fxdax: it is framed
-    /// off the commit, which its flush waits for.
+    /// off the commit ([`Store::frame_behind`]), which its flush waits for. Returns it.
     fn close_if_due(
         &self,
         state: &mut State<D::File>,
         epoch: u64,
-    ) -> Result<Option<Closing<D::File>>, Error> {
+    ) -> Result<Option<SegmentId>, Error> {
         if !state.segments.due(&self.options) {
             return Ok(None);
         }
         let unframed = self.close_open_segment(state, epoch)?;
-        Ok(Some(unframed.frame_behind(self.lineage.clone())))
+        let number = unframed.number();
+        self.frame_behind(state, unframed);
+        Ok(Some(number))
     }
 
     /// Appends commit `epoch`'s record, of `changes` and `root`, if it sets one, to the index:
@@ -1595,72 +1608,29 @@ impl<D: Dir> Store<D> {
 
     /// fxdax: closes the open segment now, between commits, once no write is in progress in it,
     /// if commits made since it opened, or forks: for its uploader to upload what the commits made
-    /// so far without waiting for the next. Writes wait for the closing alone: it frames the
-    /// segment, and makes it durable, holding no lock, as a commit's closing does, so that the
-    /// store serves its writes, reads and commits meanwhile, which read the segment from its raw
-    /// file (TASK-41.1). Its framed file is durable when this returns; its raw file goes with the
-    /// next commit, once durable, as the commits its footer names are then, as a commit's closing
-    /// does: so that opening the branch reads no segment whose raw file is gone (TASK-92.16).
-    /// Returns whether it closed.
+    /// so far without waiting for the next. Writes wait for the closing alone: it is framed, and
+    /// made durable, by a framing that ends itself, as a commit's closing is
+    /// ([`Store::frame_behind`]), waited for holding no lock, so that the store serves its writes,
+    /// reads and commits meanwhile, which read the segment from its raw file (TASK-41.1). Its
+    /// framed file is durable when this returns; its raw file goes once the commits its footer
+    /// names are durable, as a commit's closing's does: so that opening the branch reads no
+    /// segment whose raw file is gone (TASK-92.16). Returns whether it closed.
     pub fn close_now(&self) -> Result<bool, Error> {
-        let Some(unframed) = self.close_between_commits()? else { return Ok(false) };
-        let number = unframed.number();
-        let framed = unframed.frame(&self.lineage.dir).and_then(|framed| {
-            self.make_framed_durable(&framed)?;
-            Ok((number, framed))
-        });
-        self.framing_ended(framed).context("closing the open segment")?;
-        Ok(true)
-    }
-
-    /// fxdax: the framing of a segment closed between commits, counted in [`State::framings`], is
-    /// over, `framed` saying how: the segment reads from its framed file from now on, and its raw
-    /// file goes with the next commit, or the store fails, as it is framed, and durable, or not.
-    fn framing_ended(&self, framed: Result<FramedSegment<D::File>, Error>) -> Result<(), Error> {
+        let Some(number) = self.close_between_commits()? else { return Ok(false) };
         let mut state = self.state.lock().unwrap();
-        let ended = framed.map(|(number, framed)| {
-            state.segments.framed(number, framed);
-            state.unreferenced.doomed.push(open_segment_path(number));
-        });
-        state.failed |= ended.is_err();
-        state.framings -= 1;
-        if state.framings == 0 {
-            self.idle.notify_all();
+        while state.segments.is_framing(number) {
+            state = self.idle.wait(state).unwrap();
         }
-        ended
+        match state.segments.framing_failure(number) {
+            Some(error) => bail!("closing the open segment: framing it: {error}"),
+            None => Ok(true),
+        }
     }
 
-    /// fxdax: waits for the segments writes closed for want of room since the last commit, with
-    /// no commit to wait for them, and makes them durable, so that what the commits they hold made
-    /// goes to the uploader, whatever comes next: a sync of the store, or a fork, waiting for the
-    /// upload of a commit in one, has nothing else to end its wait with once the guest is done
-    /// committing (TASK-150.2). As a closing between commits, they end here: a fork, and the
-    /// branch's closing, wait for them.
-    fn end_closings(&self) -> Result<(), Error> {
-        let mut state = self.state.lock().unwrap();
-        let closings = std::mem::take(&mut state.closings);
-        if closings.is_empty() {
-            return Ok(());
-        }
-        state.framings += closings.len();
-        drop(state);
-        // Each ended, whatever became of the one before, so that none is counted for good.
-        let ended: Vec<_> = (closings.iter())
-            .map(|closing| {
-                self.framing_ended(closing.wait().and_then(|framed| {
-                    self.make_framed_durable(&framed.1)?;
-                    Ok(framed)
-                }))
-            })
-            .collect();
-        self.changed(&self.state.lock().unwrap());
-        ended.into_iter().collect::<Result<(), Error>>().context("framing closed segments")
-    }
-
-    /// fxdax: closes the open segment, between commits, as [`Store::close_now`] does, and returns
-    /// it, to be framed: none if no commit came since it opened, nor fork, or the branch is closed.
-    /// A fork, and the branch's closing, wait for it to be framed.
-    fn close_between_commits(&self) -> Result<Option<Unframed<D::File>>, Error> {
+    /// fxdax: closes the open segment, between commits, as [`Store::close_now`] does, framing it
+    /// behind, and returns it: none if no commit came since it opened, nor fork, or the branch is
+    /// closed.
+    fn close_between_commits(&self) -> Result<Option<SegmentId>, Error> {
         let _committing = self.committing.lock().unwrap();
         let state = self.state()?;
         // Closed, it changes nothing: its last segment closes when it is next opened.
@@ -1680,30 +1650,66 @@ impl<D: Dir> Store<D> {
         let epoch = state.epoch;
         let unframed = state.failing(|state| self.close_open_segment(state, epoch));
         let unframed = unframed.context("closing the open segment")?;
-        state.framings += 1;
+        let number = unframed.number();
+        self.frame_behind(&mut state, unframed);
         self.changed(&state);
-        Ok(Some(unframed))
+        Ok(Some(number))
     }
 
-    /// fxdax: makes `framed`, the framed file of a segment closed between commits, durable, and its
-    /// entry, holding no lock.
-    fn make_framed_durable(&self, framed: &Framed<D::File>) -> Result<(), Error> {
-        let dir = &self.lineage.dir;
-        framed.file.sync()?;
-        for kind in [SEGMENTS, OPEN_SEGMENTS] {
-            dir.sync_dir(&branch_dir(kind, self.branch))?;
+    /// fxdax: frames `unframed`, a segment just closed, which `state` holds, off what closed it:
+    /// a commit, a write finding no room, a closing between commits or a fork's commit, alike. Its
+    /// framing makes it durable ([`Unframed::frame`]), then ends itself, holding the state: the
+    /// segment read from its framed file from now on, its raw file going once the commits its
+    /// footer names are durable ([`Segments::framed`]); or the store failed. Whatever comes next,
+    /// or never does, only waits for that, as the flush of the commit that closed it, a fork, the
+    /// branch's closing and [`Store::close_now`] do (TASK-153.8): it ends whether or not a commit
+    /// comes after (TASK-150.2), and a closing waits for every one, being counted
+    /// ([`Segments::framings`], TASK-79.99). On a thread of its own, which would otherwise hold up
+    /// every write and commit behind it for as long as reading, compressing, writing and syncing a
+    /// segment takes (TASK-41: 67 ms under pgbench, the store's commits' time); on the caller's,
+    /// holding them up as before TASK-41, if the directory's I/O is its callers' alone
+    /// ([`Dir::concurrent`], TASK-79.79), or if the host refuses a thread, rather than panic
+    /// through the store's locks, which the caller holds (TASK-79.80).
+    fn frame_behind(&self, state: &mut State<D::File>, unframed: Unframed<D::File>) {
+        let number = unframed.number();
+        state.segments.framing_begun(number);
+        let unframed = match self.lineage.dir.concurrent() {
+            true => {
+                let (lineage, shared, idle) =
+                    (self.lineage.clone(), self.state.clone(), self.idle.clone());
+                spawn_or_return(unframed, move |unframed| {
+                    let framed = unframed.frame(&lineage.dir);
+                    framing_ended(&mut shared.lock().unwrap(), number, framed);
+                    idle.notify_all();
+                })
+            }
+            false => Some(unframed),
+        };
+        if let Some(unframed) = unframed {
+            framing_ended(state, number, unframed.frame(&self.lineage.dir));
+            self.idle.notify_all();
         }
-        dir.barrier()?;
-        Ok(())
     }
 
-    /// fxdax: `state`, once no segment closed between commits is being framed
-    /// ([`Store::close_now`]), which it let go of meanwhile.
+    /// fxdax: removes the files at `paths`, as nothing refers to them: logging what it can't,
+    /// which opening the store removes.
+    fn remove(&self, paths: impl IntoIterator<Item = String>) {
+        for path in paths {
+            if let Err(err) = self.lineage.dir.remove(&path)
+                && !not_found(&err)
+            {
+                log::warn!("extent store: failed to remove {path}: {err}");
+            }
+        }
+    }
+
+    /// fxdax: `state`, once no segment is being framed ([`Store::frame_behind`]), which it let go
+    /// of meanwhile.
     fn framed<'a>(
         &self,
         mut state: MutexGuard<'a, State<D::File>>,
     ) -> MutexGuard<'a, State<D::File>> {
-        while state.framings > 0 {
+        while !state.segments.framings().is_empty() {
             state = self.idle.wait(state).unwrap();
         }
         state
@@ -1711,8 +1717,13 @@ impl<D: Dir> Store<D> {
 
     /// fxdax: the segments closed and not yet taken whose commits are durable, oldest first,
     /// `limit` of them at most, for the uploader, which has them until it says they are uploaded
-    /// ([`Store::uploaded`]): the rest it takes later, their files not opened meanwhile.
+    /// ([`Store::uploaded`]): the rest it takes later, their files not opened meanwhile. fxdax:
+    /// those being framed among them it waits for, holding no lock: each framing ends itself,
+    /// whatever comes next, which may be nothing, as after a write that closed one for want of room
+    /// (TASK-150.2, TASK-153.8).
     pub fn closed(&self, limit: usize) -> Result<Vec<Closed<D::File>>, Error> {
+        let framing = self.state()?.segments.framing_through(self.uploadable());
+        self.wait_for_framings(framing)?;
         let mut state = self.state()?;
         let state = &mut *state;
         let Some(uploads) = &mut state.uploads else { return Ok(Vec::new()) };
@@ -1749,8 +1760,7 @@ impl<D: Dir> Store<D> {
 
     /// fxdax: makes the commits ordered so far durable, in order, as few syncs as they need
     /// together: their data, then their records in the index, then the files they made
-    /// unreferenced go. With none to take, it ends what writes closed for want of room since
-    /// the last ([`Store::end_closings`]).
+    /// unreferenced go; and the raw files of the segments framed whose commits are durable.
     pub fn flush(&self) -> Result<(), Error> {
         self.flush_locked(&self.flushing.lock().unwrap())
     }
@@ -1760,55 +1770,37 @@ impl<D: Dir> Store<D> {
         // A store that failed makes nothing more durable.
         drop(self.state()?);
         let batch = self.durability.lock().unwrap().take();
-        let Some(Batch { last, mut commits }) = batch else {
-            self.state().map(drop)?;
-            return if rules().flushes_end_closings { self.end_closings() } else { Ok(()) };
-        };
-        if let Err(error) = self.make_durable(&mut commits) {
-            self.state.lock().unwrap().failed = true;
-            return Err(error.context("committing the extent store"));
-        }
-        self.durability.lock().unwrap().finish(last);
-        // The files of extents' data no branch holds extents in go, once the commits that let
-        // them go are durable.
-        self.lineage.durable(self.branch, last);
-        for path in commits.into_iter().flat_map(|pending| pending.doomed) {
-            if let Err(err) = self.lineage.dir.remove(&path)
-                && !not_found(&err)
-            {
-                // Opening the store removes it, as nothing refers to it.
-                log::warn!("extent store: failed to remove {path}: {err}");
+        let durable = match batch {
+            None => self.durability.lock().unwrap().durable(),
+            Some(Batch { last, mut commits }) => {
+                if let Err(error) = self.make_durable(&mut commits) {
+                    self.state.lock().unwrap().failed = true;
+                    return Err(error.context("committing the extent store"));
+                }
+                self.durability.lock().unwrap().finish(last);
+                // The files of extents' data no branch holds extents in go, once the commits that
+                // let them go are durable.
+                self.lineage.durable(self.branch, last);
+                self.remove(commits.into_iter().flat_map(|pending| pending.doomed));
+                last
             }
-        }
+        };
+        // fxdax: and the raw files of the segments framed, whose footers name commits durable now
+        // (TASK-153.8).
+        let raw = self.state()?.segments.raw(durable);
+        self.remove(raw);
         Ok(())
     }
 
     /// Makes `commits`, a flush's, durable, in order: once the segments they closed are framed,
     /// their data, then their records in the index; but for the files they made unreferenced.
     fn make_durable(&self, commits: &mut [Pending<D::File>]) -> Result<(), Error> {
-        // fxdax: the segments the commits closed, framed, waited for holding no lock: read from
-        // their framed files from now on, which are synced with the commits' data, their raw files
-        // going once the commits are durable.
+        // fxdax: the segments the commits closed, holding their data, framed and synced by their
+        // framings, which end themselves, waited for holding no lock (TASK-153.8).
+        let closed = commits.iter().filter_map(|pending| pending.closed);
+        self.wait_for_framings(closed)?;
         let mut syncs = Syncs::default();
-        // Every commit's waited for, before any failure is said, so that none goes on framing as
-        // the branch is opened again (TASK-79.99).
-        let mut framings = Vec::with_capacity(commits.len());
         for pending in commits.iter_mut() {
-            let closings = std::mem::take(&mut pending.closings);
-            let framed: Vec<_> = closings.iter().map(Closing::wait).collect();
-            let failed = framed.iter().any(Result::is_err);
-            framings.push(framed);
-            if failed && !rules().flushes_wait_for_every_framing {
-                break;
-            }
-        }
-        for (pending, framed) in commits.iter_mut().zip(framings) {
-            for framed in framed {
-                let (number, framed) = framed?;
-                pending.syncs.file(framed.file.clone());
-                pending.doomed.push(open_segment_path(number));
-                self.state.lock().unwrap().segments.framed(number, framed);
-            }
             syncs.extend(std::mem::take(&mut pending.syncs));
         }
         syncs.sync(&self.lineage.dir)?;
@@ -1816,6 +1808,23 @@ impl<D: Dir> Store<D> {
         write_records(&self.lineage.dir, self.branch, writes)?;
         self.lineage.dir.barrier()?;
         Ok(())
+    }
+
+    /// fxdax: waits, holding no lock, for the framings of `segments` to end, each of which ends
+    /// itself ([`Store::frame_behind`]): fails if one failed.
+    fn wait_for_framings(
+        &self,
+        segments: impl IntoIterator<Item = SegmentId>,
+    ) -> Result<(), Error> {
+        let segments: Vec<SegmentId> = segments.into_iter().collect();
+        let mut state = self.state.lock().unwrap();
+        while segments.iter().any(|&number| state.segments.is_framing(number)) {
+            state = self.idle.wait(state).unwrap();
+        }
+        match segments.iter().find_map(|&number| state.segments.framing_failure(number)) {
+            Some(error) => bail!("framing a segment: {error}"),
+            None => Ok(()),
+        }
     }
 
     /// fxdax: whether commits are waiting for [`Store::flush`] to make them durable: ordered, and
@@ -2348,7 +2357,7 @@ mod tests {
                 let committed = store.commit(None);
                 crate::sync::refuse_threads(false);
                 committed.unwrap();
-                let framed = dir.list(&branch_dir(SEGMENTS, 1)).unwrap();
+                let framed = dir.list(&branch_dir(crate::layout::SEGMENTS, 1)).unwrap();
                 assert_eq!(framed, ["0000000000000000"]);
                 store.write(extent(1), 0, &[2; 4096]).unwrap();
                 store.commit(None).unwrap();

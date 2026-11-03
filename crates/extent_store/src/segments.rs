@@ -16,9 +16,7 @@ use crate::layout::{
     Change, Data, Extent, OPEN_SEGMENTS, Piece, SEGMENTS, SegmentId, branch_dir, list_numbers,
     open_segment_path, segment_path,
 };
-use crate::lineage::Lineage;
 use crate::store::{Options, Usage};
-use crate::sync::{Condvar, Mutex, spawn_or_run};
 use anyhow::{Context as _, Error, anyhow, bail, ensure};
 use extent_frame::segment::{Chain, Contents, Footer, epoch_of};
 use extent_frame::{PART, Stored};
@@ -31,9 +29,12 @@ use storage_device::ExtentId;
 enum Phase<F> {
     /// Taking writes, in its raw file.
     Open(Arc<F>),
-    /// fxdax: closed by commit `last`, its data being framed off the commit ([`Closing`]): read
-    /// from its raw file, which stays open, until the commit's flush has its framed file.
+    /// fxdax: closed by commit `last`, its data being framed off the commit, on a thread of its
+    /// own, which ends the framing itself ([`Segments::framed`], TASK-153.8): read from its raw
+    /// file, which stays open, until then.
     Framing { raw: Arc<F>, last: u64 },
+    /// fxdax: its framing failed, which failed the store: read from its raw file, which stays.
+    Failed { raw: Arc<F>, error: String },
     /// Closed: the epoch of its footer's last commit, if the branch closed it since it was opened.
     /// Its framed file, if open, is among those kept open (`Segments::files`).
     Closed { last: Option<u64> },
@@ -321,6 +322,12 @@ pub(crate) struct Segments<F> {
     /// fxdax: how often branches had let go of files others made, as the lineage counts it, when
     /// it last took its segments shared for shared no more ([`Segments::unshare`]).
     unshared: u64,
+    /// fxdax: the segments whose framings are running, each of which ends itself (TASK-153.8).
+    framing: BTreeSet<SegmentId>,
+    /// fxdax: the segments framed whose raw files are still there, each with the last commit its
+    /// footer names: a raw file goes once that commit is durable, so that an opening finding it not
+    /// durable frames the segment again from it ([`close_left_open`], TASK-92.16).
+    raw: Vec<(u64, SegmentId)>,
 }
 
 /// A segment cleaning takes: the bytes of its data, and of extents' data in it. fxdax: and the
@@ -421,6 +428,8 @@ impl<F: File> Segments<F> {
             dead_on_disk,
             file_bytes,
             unshared: 0,
+            framing: BTreeSet::new(),
+            raw: Vec::new(),
         })
     }
 
@@ -739,8 +748,8 @@ impl<F: File> Segments<F> {
         };
         segment.phase = Phase::Framing { raw: raw.clone(), last: epoch };
         let len = segment.len;
-        // What was written to it is durable once framed: the commit's flush syncs its framed
-        // file, or the closing between commits does.
+        // What was written to it since the last commit is durable once framed: its framing syncs
+        // its framed file, which the flush of the commit that closed it waits for.
         self.written = false;
         self.tracked.insert(next, Segment::new(Phase::Open(file), 0));
         self.open = next;
@@ -779,11 +788,13 @@ impl<F: File> Segments<F> {
         Ok(())
     }
 
-    /// fxdax: segment `number`, closed and being framed, is in `framed` from now on, its raw file
-    /// no more: what no extent is in of it takes of the host's disk its share of its parts' stored
-    /// bytes from now on (TASK-79.2).
+    /// fxdax: segment `number`, closed and being framed, is in `framed` from now on, durable, its
+    /// raw file no more, which goes once the commits its footer names are ([`Segments::raw`]):
+    /// what no extent is in of it takes of the host's disk its share of its parts' stored bytes
+    /// from now on (TASK-79.2).
     pub fn framed(&mut self, number: SegmentId, framed: Arc<Framed<F>>) {
         let parts = &framed.parts;
+        let mut closed = 0;
         self.change(number, |segment| {
             let Phase::Framing { last, .. } = segment.phase else {
                 unreachable!("{number:?}, framed, was being framed")
@@ -791,13 +802,66 @@ impl<F: File> Segments<F> {
             segment.size = framed.size();
             segment.parts.framed(segment.len, &parts.stored, parts.frame.stored_len);
             segment.phase = Phase::Closed { last: Some(last) };
+            closed = last;
         });
         self.files.insert(number, framed);
+        self.raw.push((closed, number));
+        self.framing.remove(&number);
+    }
+
+    /// fxdax: segment `number`'s framing failed, for `error`, which failed the store: it is read
+    /// from its raw file, which stays.
+    pub fn framing_failed(&mut self, number: SegmentId, error: String) {
+        let segment = self.tracked.get_mut(&number).expect("a segment being framed is tracked");
+        let Phase::Framing { raw, .. } = &segment.phase else {
+            unreachable!("{number:?}, whose framing failed, was being framed")
+        };
+        segment.phase = Phase::Failed { raw: raw.clone(), error };
+        self.framing.remove(&number);
+    }
+
+    /// fxdax: segment `number`, closed, is being framed from now on, by a framing that ends itself
+    /// ([`Segments::framed`], [`Segments::framing_failed`]).
+    pub fn framing_begun(&mut self, number: SegmentId) {
+        debug_assert!(self.is_framing(number), "{number:?}, being framed, was closed");
+        self.framing.insert(number);
     }
 
     /// fxdax: whether segment `number` is being framed.
     pub fn is_framing(&self, number: SegmentId) -> bool {
         matches!(self.tracked.get(&number), Some(Segment { phase: Phase::Framing { .. }, .. }))
+    }
+
+    /// fxdax: why segment `number`'s framing failed, if it did.
+    pub fn framing_failure(&self, number: SegmentId) -> Option<&str> {
+        match self.tracked.get(&number) {
+            Some(Segment { phase: Phase::Failed { error, .. }, .. }) => Some(error),
+            _ => None,
+        }
+    }
+
+    /// fxdax: the segments whose framings are running.
+    pub fn framings(&self) -> &BTreeSet<SegmentId> {
+        &self.framing
+    }
+
+    /// fxdax: the segments whose framings are running whose footers name no commit past `epoch`.
+    pub fn framing_through(&self, epoch: u64) -> Vec<SegmentId> {
+        let through = |number: &&SegmentId| match self.tracked[*number].phase {
+            Phase::Framing { last, .. } => last <= epoch,
+            _ => false,
+        };
+        self.framing.iter().filter(through).copied().collect()
+    }
+
+    /// fxdax: the paths of the raw files of the segments framed whose footers name no commit past
+    /// `durable`, the last durable, which may go: an opening reads their framed files (TASK-153.8).
+    pub fn raw(&mut self, durable: u64) -> Vec<String> {
+        let (going, staying) = std::mem::take(&mut self.raw)
+            .into_iter()
+            .partition::<Vec<_>, _>(|(last, _)| *last <= durable);
+        self.raw = staying;
+        going.into_iter().map(|(_, number)| open_segment_path(number)).collect()
     }
 
     /// The file of segment `number`, the branch's own, opened in `dir` if it isn't: the raw file
@@ -809,7 +873,10 @@ impl<F: File> Segments<F> {
     ) -> Result<Source<F>, Error> {
         let segment = self.tracked.get(&number).ok_or_else(|| anyhow!("no segment {number:?}"))?;
         match &segment.phase {
-            Phase::Open(raw) | Phase::Framing { raw, .. } | Phase::Retired(raw) => {
+            Phase::Open(raw)
+            | Phase::Framing { raw, .. }
+            | Phase::Failed { raw, .. }
+            | Phase::Retired(raw) => {
                 return Ok(Source::Raw(raw.clone()));
             }
             Phase::Closed { .. } => {}
@@ -920,8 +987,9 @@ impl<F: File> Segments<F> {
     }
 }
 
-/// fxdax: a segment just closed, whose data is yet to be framed, with `footer`: now
-/// ([`Unframed::frame`]), or off the commit that closed it ([`Unframed::frame_behind`]).
+/// fxdax: a segment just closed, whose data is yet to be framed, with `footer`
+/// ([`Unframed::frame`]): off the commit that closed it, on a thread of its own, whose framing
+/// ends itself (TASK-153.8).
 pub(crate) struct Unframed<F> {
     number: SegmentId,
     raw: Arc<F>,
@@ -935,93 +1003,18 @@ impl<F: File> Unframed<F> {
         self.number
     }
 
-    /// Frames it now, in its framed file in `dir`, and returns that.
+    /// Frames it in its framed file in `dir`, made durable with its entry and the directory of
+    /// raw files', and returns that: the commit that closed it, whose data is in it, is durable
+    /// once it is, and its raw file may go once the commits its footer names are too.
     pub fn frame<D: Dir<File = F>>(self, dir: &D) -> Result<Arc<Framed<F>>, Error> {
         let footer = self.footer.encode();
-        frame_segment(dir, &segment_path(self.number), &self.raw, self.len, &footer)
-    }
-
-    /// Frames it on a thread of its own, in its framed file in `lineage`'s directory, which the
-    /// flush of the commit that closed it waits for; fxdax: or now, if the directory's I/O is its
-    /// callers' alone ([`Dir::concurrent`], TASK-79.79), or if the host refuses a thread
-    /// (TASK-79.80).
-    pub fn frame_behind<D: Dir<File = F>>(self, lineage: Arc<Lineage<D>>) -> Closing<F> {
-        let (path, footer) = (segment_path(self.number), self.footer.encode());
-        let framing = Framing::start(lineage, path, self.raw, self.len, footer);
-        Closing { number: self.number, framing }
-    }
-}
-
-/// fxdax: a segment a commit closed, being framed off it: what the commit's flush waits for.
-pub(crate) struct Closing<F> {
-    number: SegmentId,
-    framing: Arc<Framing<F>>,
-}
-
-impl<F> Clone for Closing<F> {
-    fn clone(&self) -> Self {
-        Self { number: self.number, framing: self.framing.clone() }
-    }
-}
-
-impl<F: File> Closing<F> {
-    /// The segment, and its framed file, once framed; or what failed.
-    pub fn wait(&self) -> Result<(SegmentId, Arc<Framed<F>>), Error> {
-        Ok((self.number, self.framing.wait()?))
-    }
-}
-
-/// fxdax: a closed segment's data being framed, with its footer, into its framed file, off the
-/// commit that closed it, which would otherwise hold up every write and commit behind it for as
-/// long as reading, compressing and writing a segment takes (TASK-41: 67 ms under pgbench, the
-/// store's commits' time). The flush of that commit waits for it
-/// ([`Store::flush`](crate::Store::flush)).
-struct Framing<F> {
-    framed: Mutex<Option<Result<Arc<Framed<F>>, String>>>,
-    done: Condvar,
-}
-
-impl<F: File> Framing<F> {
-    /// Frames, on a thread of its own, the `len` bytes of data of the segment whose raw file is
-    /// `raw`, with `footer`, into the framed file at `path` in `lineage`'s directory; fxdax: on
-    /// the caller's, if the directory's I/O is its callers' alone ([`Dir::concurrent`],
-    /// TASK-79.79), or if the host refuses a thread, holding up the writes and commits behind it
-    /// for the while, as before TASK-41, rather than panic through the store's locks, which the
-    /// caller holds (TASK-79.80).
-    fn start<D: Dir<File = F>>(
-        lineage: Arc<Lineage<D>>,
-        path: String,
-        raw: Arc<F>,
-        len: u64,
-        footer: Vec<u8>,
-    ) -> Arc<Self> {
-        let framing = Arc::new(Self { framed: Mutex::new(None), done: Condvar::new() });
-        let framing_here = framing.clone();
-        let concurrent = lineage.dir.concurrent();
-        let frame = move || {
-            let framed = frame_segment(&lineage.dir, &path, &raw, len, &footer);
-            *framing_here.framed.lock().unwrap() =
-                Some(framed.map_err(|error| format!("{error:#}")));
-            framing_here.done.notify_all();
-        };
-        if concurrent {
-            spawn_or_run(frame);
-        } else {
-            frame();
+        let framed = frame_segment(dir, &segment_path(self.number), &self.raw, self.len, &footer)?;
+        framed.file.sync()?;
+        for kind in [SEGMENTS, OPEN_SEGMENTS] {
+            dir.sync_dir(&branch_dir(kind, self.number.branch))?;
         }
-        framing
-    }
-
-    /// Its framed file, once framed, or what failed.
-    fn wait(&self) -> Result<Arc<Framed<F>>, Error> {
-        let mut framed = self.framed.lock().unwrap();
-        loop {
-            match &*framed {
-                Some(Ok(file)) => return Ok(file.clone()),
-                Some(Err(error)) => bail!("framing a segment: {error}"),
-                None => framed = self.done.wait(framed).unwrap(),
-            }
-        }
+        dir.barrier()?;
+        Ok(framed)
     }
 }
 

@@ -1379,6 +1379,13 @@ fn closing_during_a_framing_for_room_by_pct() {
 }
 
 #[test]
+fn uploads_of_what_a_closing_for_room_closed_by_pct() {
+    set_rules(Rules::ALL);
+    let scheduler = PctScheduler::new(3, runs());
+    Runner::new(scheduler, config()).run(uploading_what_a_closing_for_room_closed);
+}
+
+#[test]
 fn writer_and_follower_by_pct() {
     set_rules(Rules::ALL);
     Runner::new(PctScheduler::new(3, runs()), config()).run(following);
@@ -1412,8 +1419,8 @@ fn replay() {
             "durable_once_synced" => rules.durable_once_synced = false,
             "close_waits_for_flushes" => rules.close_waits_for_flushes = false,
             "close_waits_for_framings" => rules.close_waits_for_framings = false,
-            "flushes_wait_for_every_framing" => rules.flushes_wait_for_every_framing = false,
             "forks_wait_for_framings" => rules.forks_wait_for_framings = false,
+            "framings_end_themselves" => rules.framings_end_themselves = false,
             "keep_frees_for_views" => rules.keep_frees_for_views = false,
             "keep_pins" => rules.keep_pins = false,
             "decide_at_publish" => rules.decide_at_publish = false,
@@ -1445,6 +1452,9 @@ fn replay() {
         Ok("closing_during_a_framing") => closing_during_a_framing,
         Ok("closing_after_a_failed_flush") => closing_after_a_failed_flush,
         Ok("forking_during_a_framing") => forking_during_a_framing,
+        Ok("serving_during_a_framing_for_room") => serving_during_a_framing_for_room,
+        Ok("closing_during_a_framing_for_room") => closing_during_a_framing_for_room,
+        Ok("uploading_what_a_closing_for_room_closed") => uploading_what_a_closing_for_room_closed,
         Ok("deleting_stalled_marking") => lineage::deleting_stalled_marking,
         Ok("deleting_stalled_removing_its_index") => lineage::deleting_stalled_removing_its_index,
         Ok("forking_stalled") => lineage::forking_stalled,
@@ -1620,20 +1630,23 @@ fn needs_closes_to_wait_for_framings() {
     fails_without(rules, &["raced the branch's closing"], closing_during_a_framing);
 }
 
-/// A failed flush, and the branch's closing after it, not waiting for the framings of its later
-/// commits, and of those it didn't take: another store, opening the branch, frames their segments
-/// again meanwhile, from their raw files, and finds a framed file made, or its own removed.
+/// The branch's closing, after a failed flush, not waiting for the framings of the flush's later
+/// commits, and of those it didn't take (TASK-79.99): another store, opening the branch, frames
+/// their segments again meanwhile, from their raw files, and finds a framed file made, or its own
+/// removed. Every framing counted, whatever closed it, the closing waits for each, as it does for
+/// one between commits (TASK-153.8).
 #[test]
-fn needs_flushes_to_wait_for_every_framing() {
-    let rules = Rules { flushes_wait_for_every_framing: false, ..Rules::ALL };
+fn needs_closes_to_wait_for_framings_after_a_failed_flush() {
+    let rules = Rules { close_waits_for_framings: false, ..Rules::ALL };
     fails_without(rules, &["after a failed flush"], closing_after_a_failed_flush);
 }
 
-/// A flush leaving a closing for want of room to the next commit: an uploader that waits for a
-/// commit in the segment closed waits for as long as no commit comes.
+/// A closing for want of room framed only by the next commit, as its end was driven by what came
+/// after it (TASK-150.2): an uploader that waits for a commit in the segment closed waits for as
+/// long as no commit comes. A framing that ends itself ends whatever comes (TASK-153.8).
 #[test]
-fn needs_flushes_to_end_closings() {
-    let rules = Rules { flushes_end_closings: false, ..Rules::ALL };
+fn needs_framings_to_end_themselves() {
+    let rules = Rules { framings_end_themselves: false, ..Rules::ALL };
     fails_without(rules, &["no commit's segment"], uploading_what_a_closing_for_room_closed);
 }
 

@@ -19,7 +19,7 @@ use crate::layers::Extents;
 use crate::layout::{
     Change, Data, EXTENTS, Extent, FileKey, Piece, SegmentId, branch_dir, extent_path,
 };
-use crate::segments::{Closing, Segments};
+use crate::segments::{Segments, Unframed};
 use crate::store::{Info, NoSpace, TooSmall};
 use crate::sync::rules;
 use crate::uploads::Uploads;
@@ -68,15 +68,9 @@ pub(crate) struct State<F> {
     /// Whether it was closed ([`Store::close`](crate::Store::close)): it reads what it holds, and
     /// changes nothing.
     pub closed: bool,
-    /// fxdax: the segments closed between commits being framed, holding no lock
-    /// ([`Store::close_now`](crate::Store::close_now)): a fork, and the branch's closing, wait for
-    /// them (TASK-41.1).
-    pub framings: usize,
-    /// fxdax: the segments closed since the last commit, being framed behind, which the next
-    /// commit's flush waits for: those closed for want of room, full between commits (TASK-79.2),
-    /// and one a commit that failed closed. The branch's closing waits for them, if no commit
-    /// comes after.
-    pub closings: Vec<Closing<F>>,
+    /// fxdax: the segments closed for want of room since the last commit, which the next frames,
+    /// with the rule that framings end themselves off alone (TASK-150.2's shape, TASK-153.8).
+    pub deferred: Vec<Unframed<F>>,
 }
 
 /// Whom a read is for: the store's own, of what it holds; the uploader's, of what it holds or
