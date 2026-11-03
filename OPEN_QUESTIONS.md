@@ -25,6 +25,30 @@ A live transaction whose apply fails (a corrupt image's allocator, or a bug) sto
 **Instead:** check-then-apply under the writer's lock, failing only the transaction.
 **Undoing it:** nothing to undo; that is new work.
 
+## A branch's owner is who made it, not a tenant (TASK-153.9, 2026-11-03)
+
+Every branch record now names an owner: a random number chosen by whoever made the branch, unique to that making, and the same in every copy of the record whoever writes it. A fork's host picks its child's owner when it claims the child, and the fork's footer carries it. Two forks naming one child no longer both win, and a fork's cleanup deletes only its own child (TASK-79.82, AC1). Decided: the owner says who made the branch, not which tenant it belongs to. Tenants stay authorized per host by their directory and the VM manager's `CreateStore` (TASK-154).
+**Instead:** put the tenant's name in the record, and let a tenant's `OPEN_FORK_FROM` take a point it owns by naming it, which would spare the VM manager a `CreateStore` before a restore on another host. But nothing makes a tenant name mean the same on every host, and it would bring back the tenant-named-branch check that TASK-150.4 removed.
+**Undoing it:** a `tenant` field next to `owner`, set by `CreateStore` and passed down from parent to fork, plus a check in `extentd/server.rs`'s `open`.
+
+## A segment's framing ends itself (TASK-153.8, 2026-11-03)
+
+Five bugs came from a framing being ended by whatever came next: a commit's flush, a flush with nothing to commit, `close_now`, closing the branch, or a fork (TASK-41.1, 79.69, 79.99, 92.16, 150.2). Decided: every framing now runs on its own thread, makes its file durable, and finishes itself under the store's state lock. Everything else only waits for it: a commit's flush waits for the segment that commit closed, the uploader for segments whose commits are durable, `close_now` for its own, and forks and closing the branch for all of them. A side effect: the raw file of a segment a commit closed now goes at the first flush or close after both its framing and its commits are durable, not with that commit's own flush.
+**Instead:** keep handing each framing to whatever comes after it, as before.
+**Undoing it:** revert 1477b7222.
+
+## Writers declare what's in flight in their keys (TASK-153.7, 2026-11-03)
+
+The collector decides whether an unreferenced object may still be needed from its key. An extent's key names the writer that uploaded it and the segment that will name it. Decided: keep that key as the writer's declaration, and make it exact. Keys always name their segment now (old keys without one are no longer read), and one function, `Pass::may_land`, decides for segments and extents alike.
+**Instead:** a separate declaration object or lease field. It would have to land before the objects it covers and be read after the listing, it needs garbage-collecting itself, and it says nothing the key doesn't (`dead-ends/collector-in-flight-declarations.md`).
+**Undoing it:** nothing to undo; a declaration object would be added alongside.
+
+## Bucket branches say their format (TASK-141.2, 2026-11-03)
+
+Every branch record now starts with `layout::FORMAT` (1). A reader refuses a newer format with `Error::Format`, naming the branch and the format, before reading or writing anything else of it, and the collector's pass stops without deleting. Framed objects already end with their frame's format (`fxdaxob1`); a newer one is now reported by name instead of as corrupt. The old-lease decoding from before fencing tokens is gone (no migration, AGENTS.md). Store files went to `fxdax extent store 5`, since footers' forks changed.
+**Instead:** a format field in every object, footers and checkpoints included. Every reader reaches a branch's objects through its record, so the record is where the check goes.
+**Undoing it:** drop `Record::format` and `Record::decode`'s check.
+
 ## A panic through a store fences it: fail-stop, usable again once reopened (TASK-153.16, 2026-11-03)
 
 A panic holding a store's lock poisoned it, and every later request of its guest panicked too (TASK-104, 105, 150.20; in `extent_store`, 79.1 and 79.80). Decided: the store is fenced. Every request after the panic fails with `EIO` without panicking, the guest's filesystem stops, and so does its VM. When the connection ends, the store is closed like a writer that left writes uncommitted: it is retired and its followers are cut off. The next open sees it as of its last commit, as after a crash. `crate::fence`: each `ExtentStore` lock can only be taken through the store's fence, and a guard dropped during a panic sets it. The daemon also fences a store when a request, flush or clean of it panics below the locks.

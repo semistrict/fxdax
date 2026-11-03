@@ -3,7 +3,7 @@ id: doc-7
 title: 'Object storage: how the host keeps branches in S3 and GCS'
 type: specification
 created_date: '2026-10-17 01:31'
-updated_date: '2026-11-03 07:05'
+updated_date: '2026-11-03 11:26'
 ---
 # Object storage: how the host keeps branches in S3 and GCS
 
@@ -64,7 +64,11 @@ This document says how. Where it differs from doc-2's sketch, it says so.
   its writer's lease epoch, the segment number to go on from and the segment to follow
   (`extent_store::Footing`), and the store numbers and chains its segments so, tags their commits
   with the writer's epoch, names its extents of their own at the writer's keys, and keeps each
-  closed segment until it is uploaded. A local checkpoint names the segment open then, whose
+  closed segment until it is uploaded. *Added 2026-11-03 (TASK-153.8):* whatever closes a
+  segment, a commit, a write finding no room, the uploader between commits or a fork, its framing
+  runs on a thread of its own and ends itself, the segment's framed file synced and its raw file
+  going once the commits its footer names are durable: a commit's flush, the uploader's take, a
+  fork and the branch's closing only wait for it. A local checkpoint names the segment open then, whose
   footer and those after it follow it; extents held without their data (taken from the bucket)
   are named by a checkpoint, which adopting them makes the next commit write. A store's segment
   may close between commits, when the uploader asks, once no write is in progress in it.
@@ -132,9 +136,9 @@ Per bucket prefix, for every branch of every lineage:
 | Key | What | Written |
 |---|---|---|
 | `segments/<branch>/<seq>` | sealed extents and a footer; `seq` dense from 0 | create-only, by the branch's writers |
-| `extents/<branch>/<epoch>.<seq>.<sequence>` | an extent of 4 MiB or more, raw, uploaded by the writer of `epoch` before its segment `seq`, which names it (so the collector can tell an object ahead of its segment, which may yet land, from a landed one's; keys of older writers lack `seq`) | create-only, before the segment naming it |
+| `extents/<branch>/<epoch>.<seq>.<sequence>` | an extent of 4 MiB or more, raw, uploaded by the writer of `epoch` before its segment `seq`, which names it: the key is the writer's declaration of what may yet name it, which the collector goes by (Garbage collection) | create-only, before the segment naming it |
 | `checkpoints/<branch>/<seq>` | the branch's state as of segment `seq` | create-only, by the branch's writers |
-| `branches/<branch>` | where it was forked from, whether it is a fork's, whether deleted, whether a point, whether its fork of a point is being made, whether a failed fork's claim | create; updated with a condition |
+| `branches/<branch>` | the format of the branch's objects, first; its owner; where it was forked from, whether it is a fork's, whether deleted, whether a point, whether its fork of a point is being made, whether a failed fork's claim | create; updated with a condition |
 | `leases/<branch>` | the writer's epoch, who took it, and its placement's fencing token | created, then updated with a condition |
 | `gc/lease` | the collector's epoch | likewise |
 | `moves/<key>` | the live extents of the object at `key`, compacted, and where in it each is | create-only, by the collector |
@@ -144,6 +148,15 @@ and its frees, and a branch's history can be rebuilt from its segments alone. A 
 (frees, a root, forks) is a segment with only a footer.
 
 Numbers are fixed-width hex, so listings sort.
+
+**Formats** *(added 2026-11-03, TASK-141.2; doc-11, rule 3).* A branch's record says first the
+format of its objects (`layout::FORMAT`, now 1), so that a reader of any format reads it before the
+rest: one of a newer format is refused (`Error::Format`, naming the branch and the format) before
+anything else of the branch is read or written. Every reader of a branch reads its record first: a
+writer taking it, a host attaching it, the collector, whose pass stops, deleting nothing in a
+bucket it can't read. Every framed object (segments, extents on their own, checkpoints, moves)
+ends with its frame's format, the last byte of its trailer's magic (`fxdaxob1`), which a reader of
+an older frame names rather than calls corrupt. A lease goes with its branch's record.
 
 ## Segments
 
@@ -159,7 +172,7 @@ its own, or raw where that does not shrink it, at offsets in the object that are
 - the extents of their own committed with it, and where they are;
 - the frees committed with it, the branch's own extents and inherited ones;
 - the root, if a commit in it set one, and the branch's next sequence;
-- the forks made at its end, and which of them are points;
+- the forks made at its end: each child's branch, its owner (Forks), and whether it is a point;
 - then, as in every object that holds data (segments, extents of their own, compaction's moves,
   checkpoints), a table of each part's stored offset and length, the CRC32C of its stored bytes,
   and its encoding, and a trailer: the lengths of the data, of the parts stored and of the
@@ -279,6 +292,16 @@ and the footers after it, and serves the guest from an empty cache.
   segment is acknowledged (decision 5): by the parent's writer, or the next one, which records the
   forks in the state it recovers, or the parent's deletion. A child gets no record for a fork whose
   segment never made it into the branch.
+- **Owners** *(added 2026-11-03, TASK-153.9).* Every record names its branch's owner: a number
+  its maker chose at random, unique to that making. A fork's host chooses its child's as it claims
+  the child, and the fork's footer names it, so that whoever writes the child's record, the fork's
+  host, the parent's writers or the parent's deletion, writes the same bytes; a plain branch's is
+  its creator's. A record is a fork's if it names the fork's owner: a fork's deletion deletes no
+  other, and two forks naming one child, neither's segment landing, both taking a record of their
+  own, no longer both succeed, which a create reading back identical bytes took for its own
+  (TASK-79.82). Every create-only write's bytes are so unique to their writer: segments by their
+  epochs, leases by their holders, records by their owners. An owner is no tenant: tenants are
+  authorized on each host by their directory and their VM manager (TASK-154).
 - **Inheriting is free:** the child's state starts as its parent's at the fork point, and the
   child's first checkpoint records it in full. Extents keep their IDs and locations in the parent's
   objects, which the collector keeps while the child holds them.
@@ -406,9 +429,14 @@ one for the next pass to reclaim. A pass:
    - segments a checkpoint covers that hold no live extent, or were compacted a grace period ago;
      never a live branch's segments at or past its end, which may be uploaded and not yet in it;
    - checkpoints no recovery read;
-   - extents of their own no state names, once a later writer's segment is in the branch (an
-     earlier writer's, whose segment can no longer land in it), or minted and uploaded by the
-     current writer and below the sequence its segments in the branch reached;
+   - extents of their own no state names, once no segment will name them: by what their keys
+     declare, the writer that uploaded each and the segment that names it, an earlier writer's once
+     a later one's segment is in the branch, and the current writer's once a segment is at its
+     segment's place. Not by the branch's next sequence number: extents are committed in no order
+     of their sequence numbers (TASK-79.3). *Decided 2026-11-03 (TASK-153.7):* a writer declares
+     what it has in flight by these keys, written with the objects, rather than by an object of
+     its own, which would have to land before what it covers and be read after the listing, two
+     orderings more (`dead-ends/collector-in-flight-declarations.md`);
    - moves no state's way goes through, once compacted in turn or once their object is gone;
    - deleted branches' records no live branch's recovery read, unless a fork's; leases of branches
      with no live record.
@@ -454,14 +482,18 @@ rules need a model and tests before code"): `crates/extent_remote`, its `sim` mo
      `recreated` profile: `stale_creates_landing_past_deletions`);
   10. IDs minted after a takeover (every profile);
   11. one point restored on several hosts at once, racing each other, passes of the collector and
-     the point's deletion, on copies gone stale, hosts dying at each step (`restores`).
+     the point's deletion, on copies gone stale, hosts dying at each step (`restores`);
+  12. two forks naming one child within a round trip, neither's segment landing, each taking a
+     record of its own (`failed_forks_deleted_anywhere`, its `twins`).
 - **Each rule** has a test that turns it off and expects a seed to find what it violates: fences,
   links between segments, acknowledging after a lease read, minting from the epoch's range,
   recording forks after their acknowledgement, listing before reading states, finding forks in
   states, deleting an earlier writer's extents only after a later one's segment, readers
   checking for a newer checkpoint, points refusing writers, forks of points reading the point after
-  their records and saying they are being made, the collector giving those up, and its listing the
-  records after the states. These tests search seeds: a change to the simulation can move the
+  their records and saying they are being made, the collector giving those up, its listing the
+  records after the states, and records naming their owners. The collector going by the segments
+  extents' keys name is shown needed by a test of its own
+  (`extents_ahead_of_their_segments_need_keys_naming_them`). These tests search seeds: a change to the simulation can move the
   seed that finds a violation past a test's range, which then fails; widen it, or make its profile
   likelier to find the case.
 - `SIM_SOAK=<n>` runs the profiles over n times the seeds; `SIM_SEED`, `SIM_SEEDS`, `SIM_PROFILE` and

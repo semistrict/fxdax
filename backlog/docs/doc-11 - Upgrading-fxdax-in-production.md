@@ -3,7 +3,7 @@ id: doc-11
 title: Upgrading fxdax in production
 type: other
 created_date: '2026-10-31 20:30'
-updated_date: '2026-10-31 20:30'
+updated_date: '2026-11-03 11:26'
 ---
 # Upgrading fxdax in production (TASK-141)
 
@@ -12,8 +12,8 @@ updated_date: '2026-10-31 20:30'
 | Layer | How it is versioned | What a mismatch does today |
 |---|---|---|
 | Fxfs format (guest kernel, `crates/fxfs`) | `LATEST_VERSION` 60, `EARLIEST_SUPPORTED_VERSION` 60 | Any bump strands every store: nothing reads an older one |
-| Store files (`extent_store`) | `FORMAT`, "fxdax extent store 4", matched exactly | A daemon of another format refuses to open the store |
-| Branches in a bucket (`extent_remote`) | Not versioned | Nothing detects a mismatch |
+| Store files (`extent_store`) | `FORMAT`, "fxdax extent store 5", matched exactly | A daemon of another format refuses to open the store |
+| Branches in a bucket (`extent_remote`) | `layout::FORMAT`, first in each branch's record; each framed object's trailer ends with its frame's (2026-11-03, TASK-141.2) | A daemon refuses a branch of a newer format, naming it, reading nothing else of it; the collector's pass stops, deleting nothing |
 | VM process and daemon (`extentd/wire.rs`) | No handshake. New requests are new kinds, refused with `EINVAL` by an older daemon | Works if each new request is optional; nothing checks that |
 | Guest and device (virtio) | Feature bits (doc-4) | Negotiated; sound |
 | VM snapshots (Firecracker) | `SNAPSHOT_VERSION`: same major, minor no newer | Refused on restore |
@@ -27,7 +27,7 @@ Nothing here has run in production, so the first real release sets the baseline:
 
 **2. Every release reads the format of the release before it.** `EARLIEST_SUPPORTED_VERSION` and the store's accepted formats span at least two releases, and a release with stores to migrate migrates them at open.
 
-**3. Every persistent format says its version, and a reader refuses a newer one.** That includes the bucket's branches, which don't yet.
+**3. Every persistent format says its version, and a reader refuses a newer one.** That includes the bucket's branches, whose records say it since 2026-11-03 (TASK-141.2).
 
 **4. Components upgrade in one order: daemon, then VMM, then guest kernel.** Each must work with the release before it on the side that hasn't upgraded yet. A daemon of N serves a VMM of N-1, and a VMM of N serves a guest of N-1. A request a new VMM adds stays optional, as `BUILD` is: an `EINVAL` from an older daemon is not an error. Rollback runs in the reverse order.
 
