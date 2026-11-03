@@ -3358,8 +3358,9 @@ pub(crate) mod guest {
     }
 
     /// fxdax: a writer killed once its blocks moved, keeping nothing of what they held, before its
-    /// copy: the kernel's copy stopped at the signal, and left zeros where the file's data was
-    /// (patches/0009). Played out with a pause point.
+    /// copy: the kernel's copy stops at the signal, and the move, which commits after the bytes,
+    /// is dropped, leaving the file as it was (TASK-153.5). Committed first, it left zeros where
+    /// the file's data was (patches/0009). Played out with a pause point.
     fn test_write_killed() {
         use std::os::unix::fs::FileExt;
         const PAGE: usize = 4096;
@@ -3383,10 +3384,10 @@ pub(crate) mod guest {
         assert_eq!(libc::WTERMSIG(status), libc::SIGKILL);
         let mut read = vec![0; 4 * PAGE];
         file.read_exact_at(&mut read, 0).unwrap();
-        assert!(read.iter().all(|byte| *byte == 2), "the file: {:?}", &read[..4]);
+        assert!(read.iter().all(|byte| *byte == 1), "the file: {:?}", &read[..4]);
         drop(file);
         evict(&name);
-        assert!(fs::read(&name).unwrap().iter().all(|byte| *byte == 2), "the file evicted");
+        assert!(fs::read(&name).unwrap().iter().all(|byte| *byte == 1), "the file evicted");
         fs::remove_file(&name).unwrap();
     }
 
@@ -3399,8 +3400,9 @@ pub(crate) mod guest {
     /// fxdax: a chunk of a file in pieces, which its range's own space maps in one request: that
     /// request fails having mapped the first (fxfs.dax_fail_map_many), and the pieces are mapped
     /// one by one; and that fails too at the second (fxfs.dax_fail_fallbacks), the range left with
-    /// the first alone: a read fails, and the next maps it all; a write, whose blocks moved first,
-    /// is tried again, having lost the pages' old bytes otherwise. Each on a clone of the file:
+    /// the first alone: a read fails, and the next maps it all; so does a write, whose blocks move
+    /// only after, committed after its bytes (TASK-153.5): moved first, it was tried again, having
+    /// lost the pages' old bytes otherwise. Each on a clone of the file:
     /// evicted, a file keeps what its ranges map, which needs no map (TASK-119.13).
     fn test_map_many_failed() {
         use std::os::unix::fs::FileExt;
@@ -3447,11 +3449,15 @@ pub(crate) mod guest {
         {
             let _many = Param::set("dax_fail_map_many", "1");
             let _fallback = Param::set("dax_fail_fallbacks", "1");
-            // Fxfs moved the write's blocks before its chunk's map failed, whole pages without
-            // their old bytes: tried again, it writes them.
-            clone_write.write_all_at(&[0xc0; 17 * PAGE], 0).unwrap();
+            // The write's chunk's map failed before its blocks moved, whose move commits after
+            // its bytes (TASK-153.5): it fails, and leaves the file as it was. Moved first, whole
+            // pages without their old bytes, it was tried again, to write them.
+            let failed = clone_write.write_at(&[0xc0; 17 * PAGE], 0).unwrap_err();
+            assert_eq!(failed.raw_os_error(), Some(libc::EIO), "{failed}");
             assert_injected("dax_fail_fallbacks");
         }
+        assert!(fs::read(&write_failed).unwrap() == expected, "the file, read after it failed");
+        clone_write.write_all_at(&[0xc0; 17 * PAGE], 0).unwrap();
         expected[..17 * PAGE].fill(0xc0);
         assert!(fs::read(&write_failed).unwrap() == expected, "the file, read after the write");
         drop(clone_write);
