@@ -3,10 +3,10 @@ id: TASK-44.19
 title: >-
   Hand mutants of the guest's DAX locks and rechecks: which removed lock no test
   notices
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-10-24 21:31'
-updated_date: '2026-11-02 19:51'
+updated_date: '2026-11-03 05:50'
 labels: []
 dependencies: []
 parent_task_id: TASK-44
@@ -32,6 +32,12 @@ Before TASK-99's fix, taking region->lock out of fxfs_dax_region_open would have
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+map_to_unlocked (2026-11-03): put it in guest/sim's mutants (task-44.19-map-to-unlocked.patch), whose seeded interleavings reach two map_to's of one region at once, and run mutants.sh's 3,000 seeds on GCE against a baseline of the same seeds. Found: the patch stays as a past bug the sim finds. Not found: a scenario in guest/sim/tests that plays two slices of one staging extent reaching at once, and a seal after.
+<!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
 

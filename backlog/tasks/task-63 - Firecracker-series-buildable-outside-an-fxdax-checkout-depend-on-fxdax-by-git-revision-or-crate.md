@@ -3,12 +3,13 @@ id: TASK-63
 title: >-
   Firecracker series buildable outside an fxdax checkout: depend on fxdax by git
   revision or crate
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-21 19:54'
+updated_date: '2026-11-03 06:16'
 labels: []
 dependencies: []
-priority: high
+priority: low
 ordinal: 172000
 ---
 
@@ -24,3 +25,15 @@ vendor/firecracker src/vmm/Cargo.toml names fxdax by path = ../../../../crates/f
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-11-03: the user: the sandbox team has all the source and handles config and integration themselves; not ours to do.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Dropped, not done (2026-11-03): the sandbox team has all of fxdax's source and handles building and integrating it themselves; the user said not to work on it.
+<!-- SECTION:FINAL_SUMMARY:END -->

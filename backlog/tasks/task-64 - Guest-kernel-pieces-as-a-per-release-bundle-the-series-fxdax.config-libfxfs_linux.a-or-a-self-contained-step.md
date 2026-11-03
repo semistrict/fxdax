@@ -3,12 +3,13 @@ id: TASK-64
 title: >-
   Guest kernel pieces as a per-release bundle: the series, fxdax.config,
   libfxfs_linux.a or a self-contained step
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-21 19:54'
+updated_date: '2026-11-03 06:16'
 labels: []
 dependencies: []
-priority: high
+priority: low
 ordinal: 173000
 ---
 
@@ -24,3 +25,15 @@ build-guest-kernel.sh owns .config and builds libfxfs_linux.a with a pinned nigh
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-11-03: the user: the sandbox team has all the source and handles config and integration themselves; not ours to do.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Dropped, not done (2026-11-03): the sandbox team has all of fxdax's source and handles building and integrating it themselves; the user said not to work on it.
+<!-- SECTION:FINAL_SUMMARY:END -->
