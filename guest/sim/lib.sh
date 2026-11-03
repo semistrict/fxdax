@@ -9,6 +9,16 @@
 scenarios=(writes_through read_pressure read_mappings_stay hole_mapped_then_written load_during_move pmd_over_stale_index open_extent_read_only
     sealed_piece_reach)
 
+# Every run of one a build in `dir` has, a line each, the test and its arguments: the tests of one
+# run, then each of what tests/scenarios plays out, by name.
+sim_one_runs() { # dir
+    local test
+    printf '%s\n' "${scenarios[@]}"
+    for test in $("$1/scenarios" 2>&1 | grep -v WARNING); do
+        echo "scenarios $test"
+    done
+}
+
 sim_prepare() {
     make -s "KERNEL=${KERNEL:?}" "BUILD=${BUILD:?}" compile || exit 1
     eval "$(make -s "KERNEL=$KERNEL" "BUILD=$BUILD" flags)"

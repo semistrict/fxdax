@@ -49,7 +49,7 @@ failed() { # dir, test, arguments...
 }
 
 run() { # name
-    local name=$1 dir=$BUILD/mutants/$1 patches=("${bases[@]}") found="" seed first test began took i stop=0
+    local name=$1 dir=$BUILD/mutants/$1 patches=("${bases[@]}") found="" seed first one runs began took i stop=0
     [[ -f mutants/$name.patch ]] && patches+=("mutants/$name.patch")
     sim_build "$name" "${patches[@]}" || return
     for ((i = 0; i < seed_jobs; i++)); do
@@ -57,22 +57,14 @@ run() { # name
         cp "$dir/interleave" "$dir/failures" "$dir/$i/"
     done
     began=$(date +%s.%N)
-    for test in "${scenarios[@]}"; do
-        if found=$(failed "$dir" "$test"); then
-            found=${found:-$test}
-            seed=$test
+    mapfile -t runs < <(sim_one_runs "$dir")
+    for one in "${runs[@]}"; do
+        # shellcheck disable=SC2086
+        if found=$(failed "$dir" $one); then
+            found=${found:-$one}
+            seed=${one#scenarios }
             break
         fi
-    if [[ -z $found ]]; then
-        # Each of what tests/scenarios plays out, by name.
-        for test in $("$dir/scenarios" 2>&1 | grep -v WARNING); do
-            if found=$(failed "$dir" scenarios "$test"); then
-                found=${found:-scenarios $test}
-                seed=$test
-                break
-            fi
-        done
-    fi
     done
     if [[ -z $found ]]; then
         # Seeds at once, a batch at a time: the first of a batch to fail is the one to say.

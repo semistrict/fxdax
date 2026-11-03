@@ -40,9 +40,12 @@ sim_build zloop "${fixes[@]}" || exit 1
 bin=$BUILD/mutants/zloop
 failures=0
 
-for test in "${scenarios[@]}"; do
-    if ! timeout 120 "$bin/$test" > "$logs/$test.log" 2>&1; then
-        echo "zloop: $test failed: $(sim_failure "$logs/$test.log")"
+mapfile -t runs < <(sim_one_runs "$bin")
+for one in "${runs[@]}"; do
+    log=$logs/${one#scenarios }.log
+    # shellcheck disable=SC2086
+    if ! timeout 120 "$bin/"$one > "$log" 2>&1; then
+        echo "zloop: $one failed: $(sim_failure "$log")"
         failures=$((failures + 1))
     fi
 done
