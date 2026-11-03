@@ -63,8 +63,9 @@ jobs:
           sudo chown "$USER" /mnt/tmp
           echo TMPDIR=/mnt/tmp >> "$GITHUB_ENV"
           df -h /tmp /mnt
+      # Every failure, not the first alone: a run is long.
       - name: Unit tests
-        run: cargo nextest run --workspace
+        run: cargo nextest run --workspace --no-fail-fast
 
   # guest/sim: dax.c in a process, over a fake kernel, as zloop.sh runs ztest (TASK-149.14).
   guest-sim:
