@@ -12,6 +12,7 @@
 //! fxdaxctl sync DIR
 //! fxdaxctl import DIR CAPACITY IMAGE [REF]
 //! fxdaxctl fork SRC DST
+//! fxdaxctl point SRC DST
 //! fxdaxctl delete DIR
 //! fxdaxctl drop DIR
 //! fxdaxctl resize DIR CAPACITY
@@ -50,10 +51,13 @@
 //! (TASK-39.3). With `FXDAX_EXTENTD_REMOTE`, the new branch is a fork of SRC's there, made once
 //! SRC's commits are uploaded, holding its extents without uploading them again. DST is a handle
 //! naming SRC's store, which holds the fork's data: SRC's directory must not be removed while forks
-//! of it live. `delete` deletes a fork, or a store, whose data goes but for what other branches
-//! hold: a store whose forks live keeps its directory, holding what they share of it, which no
-//! longer opens, and which goes with the last of them (TASK-39.4); with `FXDAX_EXTENTD_REMOTE`, its
-//! branch there too, its forks' living on. `drop` deletes the store at DIR as `delete` does, this
+//! of it live. `point` forks so, once nothing is open, to a point (TASK-158): a name of SRC's
+//! state as it is, written by none, which any number of hosts fork at once, each from a copy `take`
+//! makes of its branch, as a snapshot's restores do; for a base forked on several hosts. `delete`
+//! deletes a fork, or a store, whose data goes but for what other branches hold: a store whose
+//! forks live keeps its directory, holding what they share of it, which no longer opens, and
+//! which goes with the last of them (TASK-39.4); with `FXDAX_EXTENTD_REMOTE`, its branch there too,
+//! its forks' living on. `drop` deletes the store at DIR as `delete` does, this
 //! host's copy of it, its branch staying in the bucket (TASK-154): what `take` made, once this host
 //! is done with it. `resize` sets the store's capacity, the size of the disk
 //! its guest sees, to CAPACITY bytes: through the daemon, a store its VM has open grows at once,
@@ -75,8 +79,8 @@ fn usage() -> anyhow::Error {
     anyhow::anyhow!(
         "usage: fxdaxctl take DIR CAPACITY BRANCH [TOKEN] | fxdaxctl place DIR TOKEN | \
          fxdaxctl sync DIR | fxdaxctl import DIR CAPACITY IMAGE [REF] | fxdaxctl fork SRC DST | \
-         fxdaxctl delete DIR | fxdaxctl drop DIR | fxdaxctl resize DIR CAPACITY | \
-         fxdaxctl public DIR | \
+         fxdaxctl point SRC DST | fxdaxctl delete DIR | fxdaxctl drop DIR | \
+         fxdaxctl resize DIR CAPACITY | fxdaxctl public DIR | \
          fxdaxctl public-generation DIR | fxdaxctl attach DIR BASE | fxdaxctl stat DIR | \
          fxdaxctl --version"
     )
@@ -88,7 +92,8 @@ enum Command {
     Place { dir: PathBuf, token: u64 },
     Sync { dir: PathBuf },
     Import { dir: PathBuf, capacity: u64, image: PathBuf, reference: Option<String> },
-    Fork { src: PathBuf, dst: PathBuf },
+    /// A fork, a point if `point`.
+    Fork { src: PathBuf, dst: PathBuf, point: bool },
     Delete { dir: PathBuf },
     Drop { dir: PathBuf },
     Resize { dir: PathBuf, capacity: u64 },
@@ -117,7 +122,8 @@ impl Command {
                 image: image.into(),
                 reference: rest.first().map(|reference| reference.to_string()),
             },
-            ["fork", src, dst] => Self::Fork { src: src.into(), dst: dst.into() },
+            ["fork", src, dst] => Self::Fork { src: src.into(), dst: dst.into(), point: false },
+            ["point", src, dst] => Self::Fork { src: src.into(), dst: dst.into(), point: true },
             ["delete", dir] => Self::Delete { dir: dir.into() },
             ["drop", dir] => Self::Drop { dir: dir.into() },
             ["resize", dir, size] => Self::Resize { dir: dir.into(), capacity: capacity(size)? },
@@ -142,7 +148,12 @@ impl Command {
             Self::Import { dir, capacity, image, reference } => {
                 daemon.import_image(&dir, capacity, &image, reference.as_deref())?;
             }
-            Self::Fork { src, dst } => println!("{:x}", daemon.fork_store(&src, &dst)?),
+            Self::Fork { src, dst, point: false } => {
+                println!("{:x}", daemon.fork_store(&src, &dst)?);
+            }
+            Self::Fork { src, dst, point: true } => {
+                println!("{:x}", daemon.point_store(&src, &dst)?);
+            }
             Self::Delete { dir } => daemon.delete_store(&dir)?,
             Self::Drop { dir } => daemon.drop_store(&dir)?,
             Self::Resize { dir, capacity } => daemon.resize_store(&dir, capacity)?,
@@ -209,13 +220,17 @@ impl Command {
                 futures::executor::block_on(made)
                     .with_context(|| format!("importing {}", image.display()))?;
             }
-            Self::Fork { src, dst } => {
+            Self::Fork { src, dst, point } => {
                 let store = ExtentStore::open(&src)?;
                 if let Some(bucket) = bucket {
                     attach(&store, bucket)?;
                 }
                 let branch = rand::random::<u64>().max(1);
-                store.fork(&dst, branch)?;
+                if point {
+                    store.point(&dst, branch)?;
+                } else {
+                    store.fork(&dst, branch)?;
+                }
                 println!("{branch:x}");
             }
             Self::Delete { dir } => ExtentStore::delete(&dir, bucket.as_ref())?,

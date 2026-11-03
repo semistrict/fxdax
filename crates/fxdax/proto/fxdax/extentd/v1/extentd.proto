@@ -45,7 +45,8 @@
 // it fails with EROFS. Grant one only to the tenant whose snapshot it is.
 //
 // A fork of anything but a point is a commit of its branch, which takes its branch's writer: a
-// store forks on one host at a time.
+// store forks on one host at a time. A base, or any store, forked on several hosts is made a point
+// first, by ForkStore's `point`, and forked as a snapshot's is, from a copy on each host.
 //
 // Stores are named by the paths of their directories on the daemon's host, UTF-8. A store a VM
 // process has open is its connection's: what would change it under the guest's feet fails with
@@ -76,13 +77,15 @@ package fxdax.extentd.v1;
 service Extentd {
   // Makes an empty store: of a new branch; or of a branch kept in the daemon's bucket, which the
   // daemon takes once it opens the store (a VM on another host than the branch's), or reads, if it
-  // is a snapshot's point, which any number of hosts hold at once.
+  // is a point, a snapshot's or ForkStore's, which any number of hosts hold at once.
   rpc CreateStore(CreateStoreRequest) returns (CreateStoreResponse);
   // Makes a store holding an Fxfs filesystem of a container image: a base for VMs to fork.
   rpc ImportImage(ImportImageRequest) returns (ImportImageResponse);
   // Forks a store to a new branch, a new store sharing its data: live, if a VM has it open, at a
   // point nothing is open on it (as with its guest's filesystem frozen), FAILED_PRECONDITION
-  // (EBUSY) otherwise.
+  // (EBUSY) otherwise. A fork of a store with a writer is a commit of its branch, made where that
+  // writer is, one host at a time; a fork of a point is its child's record alone, made on any
+  // number of hosts at once. So a base forked on many hosts is made a point first (`point`).
   rpc ForkStore(ForkStoreRequest) returns (ForkStoreResponse);
   // Deletes a store, or a fork, and its branch in the daemon's bucket: its data goes but for what
   // other branches share of it, which stays until the last of them goes. A snapshot's point deleted
@@ -194,6 +197,12 @@ message ForkStoreRequest {
   string to = 2;
   // The fork's branch, or 0 for a new one.
   uint64 branch = 3;
+  // Whether the fork is a point (TASK-158): a name of `from`'s state as it is, which any number of
+  // hosts read and fork at once, and none writes, as a snapshot's is. Forks of it on another host:
+  // CreateStore of its branch there, then ForkStore from that copy, as many and on as many hosts
+  // at once as wanted. `from` must have nothing open (FAILED_PRECONDITION, EBUSY), as a fork of a
+  // store a VM has open does, and be no point itself (INVALID_ARGUMENT): fork that instead.
+  bool point = 4;
 }
 
 // The fork made.

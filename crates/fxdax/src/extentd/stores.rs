@@ -753,27 +753,40 @@ async fn point(from: &Path, branch: u64, capacity: u64) -> Result<(Arc<HeldStore
 /// and returned: a point kept open whose fork fails then, as once another host took its branch, is
 /// opened anew for a fork once more, as a restore's ([`fork_from`], TASK-79.103), to another new
 /// branch: the failed fork's ID stays taken in the bucket, so a `branch` the caller named gets the
-/// one try.
-pub(super) async fn fork(from: PathBuf, to: PathBuf, branch: u64) -> Result<u64, Errno> {
+/// one try. The fork is a point if `point` ([`ExtentStore::point`], TASK-158), live or not, once
+/// nothing is open.
+pub(super) async fn fork(
+    from: PathBuf,
+    to: PathBuf,
+    branch: u64,
+    point: bool,
+) -> Result<u64, Errno> {
     let _child = Held::to_fork(&to).await?;
     let key = store_key(&from);
     let named = branch != 0;
     let new = || if named { branch } else { crate::host_store::new_branch() };
     let was_kept = kept(&key).is_some();
     let first = new();
-    match fork_held(&from, &to, first, &key).await {
+    match fork_held(&from, &to, first, point, &key).await {
         Err(errno) if !named && was_kept && errno != Errno::EEXIST => {
             deleted_if_failed(&to)?;
             let second = new();
-            fork_held(&from, &to, second, &key).await.map(|()| second)
+            fork_held(&from, &to, second, point, &key).await.map(|()| second)
         }
         forked => forked.map(|()| first),
     }
 }
 
 /// fxdax: forks the store at `from`, whose key is `key`, to `to`, which the caller holds, as
-/// [`fork`] does, once. A point whose fork fails is let go of ([`let_go_failed`]).
-async fn fork_held(from: &Path, to: &Path, branch: u64, key: &Path) -> Result<(), Errno> {
+/// [`fork`] does, once, making a point if `point`. A point whose fork fails is let go of
+/// ([`let_go_failed`]).
+async fn fork_held(
+    from: &Path,
+    to: &Path,
+    branch: u64,
+    point: bool,
+    key: &Path,
+) -> Result<(), Errno> {
     let live = |connection: &Connection| {
         let store = connection.store().cloned()?;
         Some(Forked { store: Here::of(store, None), live: true })
@@ -797,15 +810,18 @@ async fn fork_held(from: &Path, to: &Path, branch: u64, key: &Path) -> Result<()
         None => store_requests::forking(open_paths(), key, live, CLOSING_WAIT, open).await?,
     };
     let (store, live) = (forking.store.store().clone(), forking.live);
-    let point = Arc::downgrade(&store);
+    let held = Arc::downgrade(&store);
     let to = to.to_owned();
     let forked = async {
         uploaded(&store).await?;
         fail::fail_point!("extentd::fork_uploaded", |_| Err(Errno::EIO));
         blocking(move || {
             let store = &store.store;
-            let forked =
-                if live { store.fork_quiescent(&to, branch) } else { store.fork(&to, branch) };
+            let forked = match (point, live) {
+                (true, _) => store.point(&to, branch),
+                (false, true) => store.fork_quiescent(&to, branch),
+                (false, false) => store.fork(&to, branch),
+            };
             forked.map_err(|err| errno_of(format_args!("forking to {}", to.display()), err))
         })
         .await
@@ -814,7 +830,7 @@ async fn fork_held(from: &Path, to: &Path, branch: u64, key: &Path) -> Result<()
     forking.close().await;
     // fxdax: but for its being there already, which is no fault of the point's.
     if forked.as_ref().is_err_and(|errno| *errno != Errno::EEXIST) {
-        let_go_failed(key, point).await;
+        let_go_failed(key, held).await;
     }
     forked
 }

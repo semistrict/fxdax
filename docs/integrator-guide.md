@@ -98,11 +98,31 @@ DeleteStore(point)
 their data. New restores fail with `ENOENT`, on every host. A restore racing the deletion either
 fails or succeeds whole: one that succeeded keeps everything it inherited.
 
+## Forking a base on any number of hosts at once
+
+A fork of a store that isn't a point, such as a base from `ImportImage`, is a commit on that
+store's branch, so only the branch's writer makes it, one host at a time. To fork a base on many
+hosts, make a point of it once, then fork the point, as a snapshot's is restored:
+
+```
+# On the base's host, once nothing has it open:
+branch = ForkStore(from = <base>, to = <base point>, point = true).branch
+# On each host that forks it, once:
+CreateStore(path = <base point>, capacity, branch)
+# Then, as often as you like, on every host at the same time:
+ForkStore(from = <base point>, to = <VM's store>)
+```
+
+The base stays writable on its host. What it writes after reaches no fork of the point: make a new
+point to pass that on. `DeleteStore(<base point>)` ends the point everywhere, and the forks keep
+what they inherited. A point of a point fails with `INVALID_ARGUMENT`: fork the point itself.
+`fxdaxctl point SRC DST` makes one from a shell.
+
 ## Limits
 
-**Only snapshots.** A point is what a snapshot takes (`PUT /snapshot/create`). A fork of anything
-else, a VM's store or an imported image, is a commit on that store's branch, so its host needs to be
-the branch's writer. Fork those on one host at a time.
+**Forks of a store with a writer.** A fork of anything but a point, a VM's store or a base, is a
+commit on that store's branch, so its host needs to be the branch's writer. Fork those on one host
+at a time, or make a point first (above).
 
 **Memory.** Open pages can't be evicted until a guest seals them, and only a guest can seal. Several
 VMs share the daemon's memory, so one idle VM with many open pages can leave another short, which

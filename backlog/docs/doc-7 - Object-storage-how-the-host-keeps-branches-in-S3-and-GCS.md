@@ -3,7 +3,7 @@ id: doc-7
 title: 'Object storage: how the host keeps branches in S3 and GCS'
 type: specification
 created_date: '2026-10-17 01:31'
-updated_date: '2026-11-02 05:00'
+updated_date: '2026-11-03 07:05'
 ---
 # Object storage: how the host keeps branches in S3 and GCS
 
@@ -345,6 +345,12 @@ it up, once P goes, or an operator deletes it.
 later placement holds the child. That its parent has a segment of that number proves nothing: it may
 not be the fork's. So the record says `claimed`, and a pass that can't recover a claim no writer has
 deletes it and goes on: nothing ever read it. Every other `Lost` stops the pass.
+
+**Any store makes one.** ForkStore's `point` makes a point of a store as a snapshot does, so that a
+base, from `ImportImage` or anything else, forks on any number of hosts at once: each takes a copy of
+the point (CreateStore of its branch) and forks that. The base keeps its writer, and what it writes
+after reaches no fork of the point. A point of a point is refused (`EINVAL`): it would name the same
+state, and its forks fork the point itself (TASK-158).
 
 **Deleting a point** is deleting a branch: its forks keep what they inherited, by their records, and
 its moves stay for as long as it lives, as it has no writer to record them in a checkpoint.

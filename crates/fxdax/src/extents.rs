@@ -1795,8 +1795,9 @@ impl ExtentStore {
     /// fxdax: makes a point of the store (doc-7, Points), once nothing is open, as
     /// [`ExtentStore::fork_quiescent`] forks it: its child, whose handle is at `path`, is no branch
     /// to write, but a name of the store's state as of the fork, which any number of hosts read and
-    /// fork at once, written by none: what a snapshot of a VM is taken at. Once it returns, the
-    /// point is in object storage.
+    /// fork at once, written by none: what a snapshot of a VM is taken at, and what a base forked
+    /// on several hosts is made (ForkStore's `point`). Once it returns, the point is in object
+    /// storage. A point makes none of its own (`EINVAL`).
     pub fn point(&self, path: impl AsRef<Path>, branch: u64) -> Result<(), Error> {
         self.fork_at_rest(path.as_ref(), branch, true)
     }
@@ -1804,6 +1805,11 @@ impl ExtentStore {
     /// fxdax: forks the store as [`ExtentStore::fork_quiescent`] says, a point if `point`.
     fn fork_at_rest(&self, path: &Path, branch: u64, point: bool) -> Result<(), Error> {
         self.writable()?;
+        // A point of a point would name the same state: its forks fork the point itself.
+        if point && self.is_point() {
+            let refused = "a point names a state already: fork it rather than make a point of it";
+            return Err(Error::new(anyhow::Error::new(Errno::EINVAL).context(refused)));
+        }
         let _opening = self.opening.write().unwrap();
         if !self.is_quiescent()? {
             return Err(Errno::EBUSY.into());

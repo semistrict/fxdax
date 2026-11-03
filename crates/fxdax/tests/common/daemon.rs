@@ -59,7 +59,16 @@ impl Daemon {
     }
 
     pub fn fork(&mut self, from: &Path, to: &Path) -> Result<u64, tonic::Status> {
-        let request = ForkStoreRequest { from: name(from), to: name(to), branch: 0 };
+        self.fork_store(from, to, false)
+    }
+
+    /// Makes a point of the store at `from`, at `to` (ForkStore's `point`).
+    pub fn point(&mut self, from: &Path, to: &Path) -> Result<u64, tonic::Status> {
+        self.fork_store(from, to, true)
+    }
+
+    fn fork_store(&mut self, from: &Path, to: &Path, point: bool) -> Result<u64, tonic::Status> {
+        let request = ForkStoreRequest { from: name(from), to: name(to), branch: 0, point };
         Ok(self.runtime.block_on(self.client.fork_store(request))?.into_inner().branch)
     }
 

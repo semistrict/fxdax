@@ -225,9 +225,10 @@ impl Extentd for Control {
         &self,
         request: Request<ForkStoreRequest>,
     ) -> Result<Response<ForkStoreResponse>, Status> {
-        let ForkStoreRequest { from, to, branch } = request.into_inner();
+        let ForkStoreRequest { from, to, branch, point } = request.into_inner();
         let (from, to) = (path(from)?, path(to)?);
-        reply(stores::fork(from, to, branch).await.map(|branch| ForkStoreResponse { branch }))
+        let forked = stores::fork(from, to, branch, point).await;
+        reply(forked.map(|branch| ForkStoreResponse { branch }))
     }
 
     async fn delete_store(
@@ -518,7 +519,17 @@ impl Client {
 
     /// Forks the store at `from` to a new branch at `to`, and returns the branch (`ForkStore`).
     pub fn fork_store(&self, from: &Path, to: &Path) -> Result<u64, crate::Error> {
-        let request = ForkStoreRequest { from: name(from)?, to: name(to)?, branch: 0 };
+        self.fork_or_point(from, to, false)
+    }
+
+    /// Makes a point of the store at `from`, at `to`, and returns its branch (`ForkStore` with
+    /// `point`): which any number of hosts fork at once, from copies of it (TASK-158).
+    pub fn point_store(&self, from: &Path, to: &Path) -> Result<u64, crate::Error> {
+        self.fork_or_point(from, to, true)
+    }
+
+    fn fork_or_point(&self, from: &Path, to: &Path, point: bool) -> Result<u64, crate::Error> {
+        let request = ForkStoreRequest { from: name(from)?, to: name(to)?, branch: 0, point };
         let what = format!("forking the store at {} to {}", from.display(), to.display());
         let response = self.call(what, |mut c| async move { c.fork_store(request).await })?;
         Ok(response.branch)

@@ -211,7 +211,8 @@ impl Host {
         let point = self.acme.join("point");
         vm.fork_quiescent(&point, vm.branch() + 1).unwrap();
         drop(vm);
-        // In the bucket once taken, with no sync. As the VM manager reads it: not the snapshot's word for it, which a VM process wrote.
+        // In the bucket once taken, with no sync. As the VM manager reads it: not the snapshot's
+        // word for it, which a VM process wrote.
         Snapshot { branch: self.daemon.stat(&point).unwrap().branch, extent }
     }
 }
@@ -236,9 +237,14 @@ fn restore(
 
 /// The bytes of the VM's `extent`, as the snapshot holds them, read through `store`.
 fn snapshotted(store: &RemoteExtentStore, extent: ExtentId) -> bool {
+    read(store, extent) == pattern(5)
+}
+
+/// What `store` holds of `extent`, a block.
+fn read(store: &RemoteExtentStore, extent: ExtentId) -> Vec<u8> {
     let mut read = vec![0; 64 << 10];
     store.read(extent, 0, &mut [VolatileSliceMut::from(&mut read[..])]).unwrap();
-    read == pattern(5)
+    read
 }
 
 /// TASK-154: a tenant's snapshot restores on another host, which has nothing of it, through the
@@ -440,6 +446,74 @@ fn points_restore_whatever_placement_took_them() {
     let own = restore(&here.socket, &here.acme.join("restored"), &here.acme.join("point"), 0);
     assert_eq!(own.unwrap().root().unwrap(), b"snapshotted");
 }
+
+/// TASK-158: a base, as any store, made a point by ForkStore's `point`, forks on several hosts at
+/// once, as a snapshot's point restores: every host's copy forks while the others' do, into
+/// branches of their own, which read the base and write on their own. The base is its writer's
+/// still: what it writes after reaches no fork of the point. No point makes one of its own, and no
+/// VM process opens one to write it.
+#[test]
+fn bases_made_points_fork_on_several_hosts_at_once() {
+    const HOSTS: usize = 3;
+    const FORKS: usize = 3;
+    let dir = tempfile::tempdir().unwrap();
+    let mut hosts: Vec<_> =
+        (0..HOSTS).map(|host| Host::new(dir.path(), &format!("host{host}"))).collect();
+    let base = hosts[0].acme.join("base");
+    let vm = hosts[0].daemon.open(&base, CAPACITY);
+    write(&vm, &pattern(7), b"base");
+    let extent = ExtentId { branch: vm.branch(), sequence: 1 };
+    drop(vm);
+    let point = hosts[0].acme.join("point");
+    let branch = hosts[0].daemon.point(&base, &point).unwrap();
+    for host in &mut hosts[1..] {
+        host.daemon.create(&host.acme.join("point"), branch, None).unwrap();
+    }
+
+    let forks: Vec<(usize, PathBuf, u64)> = std::thread::scope(|scope| {
+        let forking: Vec<_> = (hosts.iter_mut().enumerate())
+            .map(|(at, host)| {
+                scope.spawn(move || {
+                    let copy = host.acme.join("point");
+                    let fork = |n| {
+                        let to = host.acme.join(format!("fork{n}"));
+                        let branch = host.daemon.fork(&copy, &to).unwrap();
+                        (at, to, branch)
+                    };
+                    (0..FORKS).map(fork).collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        forking.into_iter().flat_map(|forking| forking.join().unwrap()).collect()
+    });
+    let mut branches: Vec<_> = forks.iter().map(|&(_, _, branch)| branch).collect();
+    branches.sort();
+    branches.dedup();
+    assert_eq!(branches.len(), HOSTS * FORKS, "two forks of one branch");
+    let opened: Vec<_> =
+        forks.iter().map(|(at, to, _)| hosts[*at].daemon.open(to, CAPACITY)).collect();
+    for (n, vm) in opened.iter().enumerate() {
+        assert_eq!(vm.root().unwrap(), b"base", "fork {n}");
+        assert!(read(vm, extent) == pattern(7), "fork {n} reads other bytes");
+        write(vm, &pattern(10 + n as u64), format!("fork {n}").as_bytes());
+    }
+    for (n, vm) in opened.iter().enumerate() {
+        assert_eq!(vm.root().unwrap(), format!("fork {n}").as_bytes());
+    }
+
+    let vm = hosts[0].daemon.open(&base, CAPACITY);
+    vm.commit(Some(b"base, later")).unwrap();
+    drop(vm);
+    let other = &mut hosts[1];
+    let (copy, later) = (other.acme.join("point"), other.acme.join("later"));
+    other.daemon.fork(&copy, &later).unwrap();
+    assert_eq!(other.daemon.open(&later, CAPACITY).root().unwrap(), b"base");
+
+    let again = other.daemon.point(&copy, &other.acme.join("again"));
+    assert_eq!(failure(again), (Code::InvalidArgument, Errno::EINVAL));
+    assert_eq!(refused(&other.daemon.vms, &copy), Some(Errno::EROFS));
+}
+
 
 /// The environment of this test's process as another user ([`as_another_user`]): the daemon's
 /// socket, mounted where a jail would have it, and a socket beside it anyone may connect to.
