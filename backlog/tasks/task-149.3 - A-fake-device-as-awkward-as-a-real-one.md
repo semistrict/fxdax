@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-01 06:13'
-updated_date: '2026-11-03 02:11'
+updated_date: '2026-11-03 02:21'
 labels: []
 dependencies: []
 parent_task_id: TASK-149
@@ -28,7 +28,7 @@ FakeDevice numbers extents from 0, so a search from sequence 0 was tiny on it, a
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
 - [x] #2 scripts/upstream-changes.py --check passes
 - [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
@@ -45,6 +45,8 @@ FakeDevice numbers extents from 0, so a search from sequence 0 was tiny on it, a
 
 <!-- SECTION:NOTES:BEGIN -->
 FakeDevice::new is awkward by default, FXDAX_DEVICE_SEED picks the seed, .calm() opts out. 752 tests of fxfs and storage_device pass at each of 26 device seeds. Three real bugs fixed: frees before a renewed tail's super-block (mount fails 'no extent'), orphan numbers recorded by a compaction past the metadata reservation (NoSpace closes the journal), compaction racing the initial reap (object tombstoned twice). test_transactions_larger_than_a_chunk was the test's fault: it borrows all it takes for what it adds, which no commit does; it pauses compactions. Open: a Linux workspace run in Lima; a guest run of the journal and mount commits.
+
+2026-11-02: workspace at main passes on macOS (2,010 of 2,010, 1fc28f48c) and Linux (GCE r530, 2,169 of 2,169, Shuttle suites too).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

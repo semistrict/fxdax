@@ -6,7 +6,7 @@ title: >-
 status: Done
 assignee: []
 created_date: '2026-10-24 21:31'
-updated_date: '2026-11-03 02:10'
+updated_date: '2026-11-03 02:21'
 labels: []
 dependencies: []
 parent_task_id: TASK-44
@@ -29,7 +29,7 @@ Some of the guest's bugs have a shape a semantic patch matches: a field read und
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
 - [x] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
@@ -40,6 +40,8 @@ Some of the guest's bugs have a shape a semantic patch matches: a field read und
 region-lock.cocci (context mode: Homebrew's spatch 1.3.3 can't load Python), scripts/cocci-guest.py, check-guest.sh runs it; test_cocci_guest: flags region_open_unlocked's line alone, main clean. The allocation-fallback shape is not written: it needs a policy for which fallbacks are allowed (map_extents' MAP_MANY fallback and the keep path are both intended), e.g. an expected list of fallbacks each naming its fault-injection test, or failslab (TASK-44.10) covering them all.
 
 Decision (2026-10-24, the user left it to me): an explicit list. A second rule lists every allocation whose failure path goes on rather than fails (a fallback); scripts/cocci holds the expected list, each entry naming the fault-injection test that takes that path (as fxfs.dax_fail_held does the keep path). A fallback not on the list fails check-guest.sh. Why: failslab (TASK-44.10) fails allocations at random across the kernel, so it can't show that one particular fallback is ever taken, and TASK-99's keep path was only exercised by a knob aimed at it. failslab stays as the broad backstop.
+
+2026-11-02: workspace at main passes on macOS (2,010 of 2,010, 1fc28f48c) and Linux (GCE r530, 2,169 of 2,169, Shuttle suites too).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

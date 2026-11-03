@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-01 21:51'
-updated_date: '2026-11-03 02:11'
+updated_date: '2026-11-03 02:21'
 labels: []
 dependencies: []
 parent_task_id: TASK-150
@@ -30,7 +30,7 @@ xfstests generic/129 on DAX: r452 in the suite, and r454 and r455 alone, on the 
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
 - [x] #2 scripts/upstream-changes.py --check passes
 - [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
@@ -54,6 +54,8 @@ RESULTS: r461 (before the exhaustion fix) and r463 (head) generic/129 alone: 6 r
 LOOKED AROUND: ENOMEM turning into worse elsewhere: a read of a sealed extent falls back to the store, fine. A MAP in fxfs_dax_grow, restage or evacuation is tolerated. WRITE into an open extent past the reserve still fails, and the guest's errno() makes it EIO, fatal for a journal write. A fault that fails ENOMEM aborts the VM process (dax/uffd.rs, 'unresolved DAX window fault'): the reserve is what keeps both unreached, not a fix of either. Both need memory truly gone past an eighth of it, which a first refused MAP should stop. Two flakes met, both on the base too, neither this change's: windows_share_bases_pages (read_part's Arc outlives its waiter: 136 of 500 on the base, 41 of 500 on head, under load), and guests_forks_failing_at_each_step_harm_nothing (the uploader's own gather takes remote::gather's one failure: 10 of 10 on the base, 8 of 10 on head, under load). Mutants stood in for guest-coverage.py, which wasn't run.
 STRUCTURE: small, done: what can't fail no longer shares a pool with what can (pins); a window's zeros can't be missing. Architectural, raised, not done: (a) only a guest can seal, and the daemon can neither evict an open page nor ask one to. On a shared daemon one VM's open pages, idle, can hold the budget, and another's seals free nothing: it gets ENOMEM, truthfully, but it's another's memory. Options: a device event asking a guest to seal, a per-tenant share of the budget, or open pages evicted to the store and faulted back. (b) A panic under a store's lock kills every later request of its guest: TASK-104, TASK-105, this one. All three were a lazily made resource and an expect; the class is std::sync::Mutex poisoning turning one panic into a dead store. (c) doc-4's MAP doesn't say ENOMEM means seal and try again: not edited, as this work touches only this task.
 UNVERIFIED: several VMs at once; WRITE past the reserve on a real kernel; what a seal of 896 MiB costs a writer, not measured; read and zeroing refused on a real kernel, simulated only (the case's mapping way runs the fault path for real).
+
+2026-11-02: workspace at main passes on macOS (2,010 of 2,010, 1fc28f48c) and Linux (GCE r530, 2,169 of 2,169, Shuttle suites too).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

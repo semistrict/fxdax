@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-01 22:53'
-updated_date: '2026-11-03 02:11'
+updated_date: '2026-11-03 02:21'
 labels: []
 dependencies: []
 priority: medium
@@ -28,7 +28,7 @@ A jail reaches only what is bind-mounted into its mount namespace, so the defaul
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
 - [x] #2 scripts/upstream-changes.py --check passes
 - [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
@@ -48,6 +48,8 @@ A jail reaches only what is bind-mounted into its mount namespace, so the defaul
 bind_owner_only binds under umask 0177: 0600 from the moment the socket exists, no window, whatever the daemon's umask. Default socket users: fxdaxctl, tests and scripts use the control socket or the daemon's own user, but FXDAX_FIRECRACKER_JAIL relied on it, Firecracker as uid 64000 under umask 000. Harness fixed: scripts/test-e2e.sh and spawn_daemon give the socket to the jail's user. Looked around: the control socket's mode still follows the umask, and is world-connectable under umask 000, as that same jail mode has it; left, as a VM manager of another group may rely on it: raised with the user. Test the_default_socket_refuses_other_users: the real daemon under umask 0, bind-mounted, uid 64000 refused EACCES, a socket beside it connecting as the positive control; red with the umask taken out.
 
 Verified at ef3dfc028, as TASK-154's notes say. the_default_socket_refuses_other_users passes on Docker and GCE (r483), red with the umask taken out, its child connecting. Each jailed guest case of r484 reached the socket given to the jail's user, FXDAX_FIRECRACKER_JAIL's harness change. DoD 1 is left open for the user, as on TASK-154.
+
+2026-11-02: workspace at main passes on macOS (2,010 of 2,010, 1fc28f48c) and Linux (GCE r530, 2,169 of 2,169, Shuttle suites too).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

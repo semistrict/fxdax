@@ -6,7 +6,7 @@ title: >-
 status: Done
 assignee: []
 created_date: '2026-10-23 16:12'
-updated_date: '2026-11-03 02:10'
+updated_date: '2026-11-03 02:21'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -31,7 +31,7 @@ Found by the main session's five-run pgbench on main 47b7a348 (GCE n2-standard-8
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
 - [x] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
@@ -42,6 +42,8 @@ Found by the main session's five-run pgbench on main 47b7a348 (GCE n2-standard-8
 r5/regress (merged with this note): the base was never cleaned. A probe of each pass's branch found all 405 passes on the fork's branch, with the copy guard holding; a fork's directory is its base's, and the log named the directory. Logs now name the branch (forks_are_named_by_their_branch). Cleaning was due for the raw bytes of dead data while closed segments are framed and compressed (about 1/15 here), so it ran about once a second and copied 11.1 GB; it is now due for the disk it frees, counted part by part, the passes freeing the most disk going first, and the capacity backstop counts disk too. GCE, no-DAX pgbench, five runs: main 807-881 / probe 881-768 tps; fixed 977 falling to 835; cleaning off 1054-1083; mark at 512 MiB 955-1057. Linux workspace 2549 passed at the fixed tree. What is left: cleaning's pace at the 64 MiB mark (TASK-79.91, a decision with TASK-79.89), its copies recopied from the open segment (TASK-79.92), the closes and the upload lag (TASK-79.93, not cleaning's). AC #1's premise did not hold (no store nothing writes was cleaned); AC #2 is TASK-79.91's; AC #3's MAP growth is measured and is TASK-92.50's.
 
 Handed over (2026-10-24): landed on main; what is left is in the notes above.
+
+2026-11-02: workspace at main passes on macOS (2,010 of 2,010, 1fc28f48c) and Linux (GCE r530, 2,169 of 2,169, Shuttle suites too).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

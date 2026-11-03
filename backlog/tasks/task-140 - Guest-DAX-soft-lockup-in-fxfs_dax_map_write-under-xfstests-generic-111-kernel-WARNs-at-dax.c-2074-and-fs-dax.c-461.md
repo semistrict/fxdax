@@ -6,7 +6,7 @@ title: >-
 status: Done
 assignee: []
 created_date: '2026-10-31 16:32'
-updated_date: '2026-11-03 02:10'
+updated_date: '2026-11-03 02:21'
 labels:
   - bug
   - dax
@@ -28,7 +28,7 @@ GCE r342, xfstests-fxfs-guest-dax: generic/111 (reflinks): xfs_io stuck 26 s in 
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
 - [x] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
@@ -37,6 +37,8 @@ GCE r342, xfstests-fxfs-guest-dax: generic/111 (reflinks): xfs_io stuck 26 s in 
 
 <!-- SECTION:NOTES:BEGIN -->
 2026-10-31: the hang is a livelock, caught with sysrq l every 300 s (GCE r357, 14 minutes in, xfs_io in one pwrite: fxfs_dax_write_iter, dax_iomap_rw, fxfs_dax_iomap_write, fxfs_dax_reserve_write, fxfs_dax_map_write, in all three samples). The test's files are small, and non-DAX it takes 0-1 s. fxfs_dax_new_slice could make a slice of an open extent whose region stayed read-only (fxfs_dax_region_open: already mapped): Fxfs leaves the blocks in place, fxfs_dax_map_slice refuses them (-EXDEV), the write drops the slice, and the chunk is made the same slice again, with no bound. Such a chunk now gets a range of its own; the retry is bounded and takes a fatal signal.
+
+2026-11-02: workspace at main passes on macOS (2,010 of 2,010, 1fc28f48c) and Linux (GCE r530, 2,169 of 2,169, Shuttle suites too).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

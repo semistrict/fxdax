@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-28 03:23'
-updated_date: '2026-11-03 02:10'
+updated_date: '2026-11-03 02:21'
 labels: []
 dependencies: []
 parent_task_id: TASK-112
@@ -30,7 +30,7 @@ doc-9: fxfs_dax_evacuate_file takes the file semaphore for writing, gathers the 
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
 - [x] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
@@ -51,6 +51,8 @@ doc-9: fxfs_dax_evacuate_file takes the file semaphore for writing, gathers the 
 r203-112w (counters, before the fix): tps 1181/1053/1016/970/989; run 1 dax_read_waits 45,698 (17.83 s), dax_fault_waits 0, dax_write_waits 4,968 (1.6 ms), evacuations 54,607 holding 32.66 s, stores_held_by_seals 11,577 (4.97 s).
 
 2026-10-28 night: none of the evacuation changes landed. Batching (16 seals / 20 ms): +3-6% tps but delay-injected checks failed 2/8 (TASK-112.6). Semaphore downgraded for the MAP: writers (the WAL's) still waited (7.5 s), and the placing wait deadlocked. No evacuation (TASK-109.1): fast until region space fills, then 667 -> 210 tps. Evacuating by dropping instead of mapping: pages became holes (mapped means data). The read/fault wait counters were not landed either: the tree carrying them soft-locked once in faults_seal_holding_the_semaphore under fxfs.dax_delay_us (TASK-113), not shown to be theirs. The fix left is TASK-112.5.
+
+2026-11-02: workspace at main passes on macOS (2,010 of 2,010, 1fc28f48c) and Linux (GCE r530, 2,169 of 2,169, Shuttle suites too).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

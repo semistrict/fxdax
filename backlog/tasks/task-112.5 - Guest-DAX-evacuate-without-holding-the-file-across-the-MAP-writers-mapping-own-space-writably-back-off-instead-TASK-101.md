@@ -6,7 +6,7 @@ title: >-
 status: Done
 assignee: []
 created_date: '2026-10-28 04:48'
-updated_date: '2026-11-03 02:10'
+updated_date: '2026-11-03 02:21'
 labels: []
 dependencies: []
 parent_task_id: TASK-112
@@ -30,7 +30,7 @@ After each seal, fxfs_dax_evacuate_file holds the file DAX semaphore for writing
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
@@ -41,6 +41,8 @@ After each seal, fxfs_dax_evacuate_file holds the file DAX semaphore for writing
 2026-10-28 attempt (branch wip/task-112-5, unpushed): gather and place under the semaphore, MAP without it; own-space MAPs wait for an evacuation's in flight (fxfs_dax_wait_evacuee; check evacuee_waited, fault injection fxfs.dax_evacuee_delay_ms, AC2 shown 5/5); placing waits for the ranges' other users. GCE r205: DAX suites green, pgbench-dax 1216/1105/1044/1018/1017 vs 1172/1085/1022/983/983 on main (same host, +2-3.5%), dax_write_wait_ns 72 ms total. Not landed: under fxfs.dax_delay_us=200 random_ops loses data ~1 round in 6 (TASK-112.6's race, which any lateness of the evacuation exposes).
 
 2026-10-31: round 9 asks for this (their ask 3): holds of about 1 ms median, 8 ms p90 and 33 ms p99 under synchronous_commit=off. r353 here: 746 us per evacuation, 176 s of hold over the run. wip/task-112-5's blocker stands: TASK-112.6's race, random_ops losing data about 1 round in 6 under dax_delay_us=200.
+
+2026-11-02: workspace at main passes on macOS (2,010 of 2,010, 1fc28f48c) and Linux (GCE r530, 2,169 of 2,169, Shuttle suites too).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

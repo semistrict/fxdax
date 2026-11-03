@@ -6,7 +6,7 @@ title: >-
 status: Done
 assignee: []
 created_date: '2026-10-24 21:31'
-updated_date: '2026-11-03 02:10'
+updated_date: '2026-11-03 02:21'
 labels: []
 dependencies: []
 parent_task_id: TASK-44
@@ -29,7 +29,7 @@ TASK-99 hid behind a 4 KiB kmalloc that fails only under memory pressure; fxfs.d
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
 - [x] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
@@ -44,6 +44,8 @@ extentd's failpoints (fail crate, Apache-2.0; feature failpoints; FXDAX_FAILPOIN
 2026-11-01, host side, on branch test/fork-faults (from e14371f81, 8b8e1f535; not on main, not pushed): failpoints at each step of a fork and of a failed fork's cleanup, in extent_store, extent_remote, fxdax and the daemon (fxdax::faults: FORK_STEPS, DAEMON_STEPS, CLEANUP_STEPS), nothing without the fail crate's failpoints feature, which fxdax's tests have. FXDAX_FAULT_SEED sets them from a seed, reproducibly, one step in eight failing once at its first, second or third pass; the MAP, UNMAP, WRITE and COMMIT points stay configuration only (FAILPOINTS), not in the seed's plan. remote::fork_faults drives a fork through every step failing, the host dying there, another branch taking the child's ID there, every write of the bucket's going wrong (refused, answer lost, host dying, landing late), every cleanup step, and 64 seeds; World::settle checks the rule after each. extent_remote's simulation deletes failed forks too (failed_forks_deleted_anywhere, 1,000 seeds; rules fork_claims_ids, fork_claims_landed). extentd::tests: guests_forks_failing_at_each_step_harm_nothing and three more. Linux container: 753 of 754 at 8b8e1f535 in 4 of 5 runs, tenant_sockets_work_bind_mounted_into_jails failing as expected; the fifth also failed hundreds_of_writers_flush_on_threads_they_share, which failed 1 of 4 runs at e14371f81 too. 200 more seeds (64..263) passed. A host dying is modelled in-process: a copy of its disk, every write kept whether synced or not; no daemon was killed. AC2 stays open: the VMM's failpoints, and a seed for the requests' points. Failslab is out of scope here. No GCE run.
 
 Correction to the run counts above: of three plain full runs near 8b8e1f535, one gave 753 of 754 and two also failed hundreds_of_writers_flush_on_threads_they_share; of three more with that test given the machine to itself (a local nextest override, not committed), all gave 753 of 754. tenant_sockets_work_bind_mounted_into_jails failed in every run, as expected in this container.
+
+2026-11-02: workspace at main passes on macOS (2,010 of 2,010, 1fc28f48c) and Linux (GCE r530, 2,169 of 2,169, Shuttle suites too).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

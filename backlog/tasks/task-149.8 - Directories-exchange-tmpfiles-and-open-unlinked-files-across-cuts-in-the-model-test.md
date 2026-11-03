@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-01 06:13'
-updated_date: '2026-11-03 02:10'
+updated_date: '2026-11-03 02:21'
 labels: []
 dependencies: []
 parent_task_id: TASK-149
@@ -30,7 +30,7 @@ The model has one directory and no open files. Unlinked but open files and tmpfi
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
 - [x] #2 scripts/upstream-changes.py --check passes
 - [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
@@ -72,6 +72,8 @@ Cuts took a rename overtaking a queued unlink for an unlink not done: the orderi
 
 ## Unverified
 No guest ran. The sync in setattr hasn't run under a kernel's inode lock. KEEPS_DIRECTORY_TIMES is false in the model, true in a guest: flipping it would change what pinned seeds reproduce. Concurrency: workers only, by the clock, and no VFS calls at once (TASK-149.10). DoD 1: Docker, not Lima. Workspace on Linux at 87b9cb43b: 2063 of 2067; tenant_sockets_work_bind_mounted_into_jails fails only in Docker, and guests_forks_failing_at_each_step_harm_nothing, hundreds_of_writers_flush_on_threads_they_share and serves_hundreds_of_forks_of_a_base failed once under that run's load, passed the run before and passed alone after; this branch changes nothing in crates/fxdax. macOS workspace 1926 of 1926 before 87b9cb43b, its last test-only commit; fxfs-posix 39 of 39 at 87b9cb43b. AC 3 stays open for finding 3.
+
+2026-11-02: workspace at main passes on macOS (2,010 of 2,010, 1fc28f48c) and Linux (GCE r530, 2,169 of 2,169, Shuttle suites too).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

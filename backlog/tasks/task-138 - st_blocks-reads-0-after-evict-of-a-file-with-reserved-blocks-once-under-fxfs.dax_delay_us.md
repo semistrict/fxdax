@@ -6,7 +6,7 @@ title: >-
 status: Done
 assignee: []
 created_date: '2026-10-31 10:05'
-updated_date: '2026-11-03 02:11'
+updated_date: '2026-11-03 02:21'
 labels:
   - bug
 dependencies: []
@@ -26,7 +26,7 @@ Soak 2026-10-31 (release kernel, fxfs-guest-checks-dax-delay, tree c44da93d0), r
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
 - [x] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
@@ -37,6 +37,8 @@ Soak 2026-10-31 (release kernel, fxfs-guest-checks-dax-delay, tree c44da93d0), r
 2026-10-31: the cause: a writer's regular file has no .getattr, and nothing sets i_blocks but reading the inode in, so st_blocks of a cached inode is what it was read in with: 0 for a file created here. Each check that passed relied on evict() evicting it; under fxfs.dax_delay_us something held the inode through drop_caches in round 6. Fix: fxfs_vfs_getattr reads the blocks again as the journal has moved since (fxfs_journal_offset), which covers every path, and costs a stat nothing while nothing commits.
 
 2026-10-31: proven: GCE r356, the fix removed: blocks_follow_writes fails on both, left 0, right 1048576. r354 with it: checks-dax and -delay 8 of 8. xfstests generic/615 found the same bug independently.
+
+2026-11-02: workspace at main passes on macOS (2,010 of 2,010, 1fc28f48c) and Linux (GCE r530, 2,169 of 2,169, Shuttle suites too).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

@@ -4,7 +4,7 @@ title: A guest or VM process can wedge its own commits
 status: Done
 assignee: []
 created_date: '2026-11-01 16:51'
-updated_date: '2026-11-03 02:10'
+updated_date: '2026-11-03 02:21'
 labels: []
 dependencies: []
 parent_task_id: TASK-150
@@ -29,7 +29,7 @@ From the static audit, unconfirmed. crates/fxdax/src/extents.rs:1081-1089: the o
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
 - [x] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
@@ -38,6 +38,8 @@ From the static audit, unconfirmed. crates/fxdax/src/extents.rs:1081-1089: the o
 
 <!-- SECTION:NOTES:BEGIN -->
 Confirmed: writes_to_extents_mapped_writably_are_of_whole_blocks, forks_seal_nothing_a_window_maps_writably (EINVAL, EPERM on later commits). Fixed: ExtentStore::write has one check, check_io, whichever way it goes; fork gives EBUSY rather than seal an extent held both ways. Blind spot: serves_whatever_a_guest_asks had no oracle that commits work, and its writes and maps almost never met. Class test: it, red for both. Structure: open has two owners (TASK-79.46, 121, this): raised with the user. Branch fix/host-audit, 3c90f8f7b, merged locally; workspace on Docker arm64 only, 2070 of 2071 (the Docker-only failure), Shuttle 60 of 60, not yet on GCE.
+
+2026-11-02: workspace at main passes on macOS (2,010 of 2,010, 1fc28f48c) and Linux (GCE r530, 2,169 of 2,169, Shuttle suites too).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

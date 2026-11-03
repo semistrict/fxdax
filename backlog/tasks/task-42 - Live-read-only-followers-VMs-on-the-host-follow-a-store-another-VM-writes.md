@@ -4,7 +4,7 @@ title: 'Live read-only followers: VMs on the host follow a store another VM writ
 status: Done
 assignee: []
 created_date: '2026-10-17 22:17'
-updated_date: '2026-11-03 02:10'
+updated_date: '2026-11-03 02:21'
 labels: []
 dependencies: []
 documentation:
@@ -29,7 +29,7 @@ Other VMs on the writer's host mount a store read-only while a VM has it mounted
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
 - [x] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
@@ -42,6 +42,8 @@ Other VMs on the writer's host mount a store read-only while a VM has it mounted
 AC1: an hour of the torture test each, with and without DAX, OK history on GCE (2026-10-24, docs/measurements/gce-follow-soak-2026-10-24), after TASK-42.12's fix; two hours in all.
 
 2026-10-24, handed back (unassigned): AC1, 2, 4 checked, everything on main (8cbb99159). Left: AC3, the writer's commit latency and pgbench unchanged with followers attached (TASK-42.11, waiting on TASK-41.1); then TASK-42.7 AC4 and this task's DoD.
+
+2026-11-02: workspace at main passes on macOS (2,010 of 2,010, 1fc28f48c) and Linux (GCE r530, 2,169 of 2,169, Shuttle suites too).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

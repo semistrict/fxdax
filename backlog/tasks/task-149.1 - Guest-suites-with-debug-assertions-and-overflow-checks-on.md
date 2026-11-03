@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-01 06:13'
-updated_date: '2026-11-03 02:10'
+updated_date: '2026-11-03 02:21'
 labels: []
 dependencies: []
 parent_task_id: TASK-149
@@ -28,7 +28,7 @@ Release builds hid real faults: Insufficient reservation space panics only in de
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
 - [x] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
@@ -45,6 +45,8 @@ Release builds hid real faults: Insufficient reservation space panics only in de
 r382 (default suites) and r383 (xfstests) run FXDAX_GUEST_KERNEL_BUILD=rust-checks on the uncommitted batch of the model fixes.
 
 r382 (default suites) and r383 (xfstests) ran FXDAX_GUEST_KERNEL_BUILD=rust-checks, on a batch with the endless clone and the freed layer. It builds and runs. It found no new bug: the guest hit no assertion or overflow in the default suites, and all 650 DAX xfstests ran to the end. Its one guest panic was generic/303's clone, already found by the release run (r381), reported 60 s sooner as a lock wait (debug_assert_not_too_long in txn_lock, from setattr), which is a clearer symptom than the release build's journal overflow. So its ranking at 1 was too high on this evidence; keep it for the clearer failures, and run it once more when the batch is clean, as both runs had failures hiding what came after.
+
+2026-11-02: workspace at main passes on macOS (2,010 of 2,010, 1fc28f48c) and Linux (GCE r530, 2,169 of 2,169, Shuttle suites too).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

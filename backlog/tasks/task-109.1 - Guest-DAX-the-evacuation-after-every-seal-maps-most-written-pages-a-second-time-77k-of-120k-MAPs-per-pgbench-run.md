@@ -6,7 +6,7 @@ title: >-
 status: Done
 assignee: []
 created_date: '2026-10-25 23:26'
-updated_date: '2026-11-03 02:10'
+updated_date: '2026-11-03 02:21'
 labels: []
 dependencies: []
 parent_task_id: TASK-109
@@ -29,7 +29,7 @@ TASK-91.10's evacuation (fxfs_dax_evacuate_work) moves every sealed staging exte
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
@@ -44,6 +44,8 @@ r112 (exp/evacuate-delay 5492cf523, pgbench-dax 1 VM, per run): delay 0: 1104/10
 Parked (2026-10-25): placing a seal's staging pages at their ranges' addresses inside the seal would put ~2 host mappings (~0.35 ms) on every fsync's critical path, where the async evacuation now costs none; the per-MAP host cost (TASK-91.16) is the root and is worked first.
 
 AC2 on main (88ded8774): fxfs_dax_set_moved counts each range's pages moved and keeps FXFS_DAX_RANGE_MOVED (XA_MARK_1) on it in the file's ranges while it has any; fxfs_dax_evacuee_gather walks xa_for_each_marked. Verified at 3364435c6 (the batch): macOS extent_remote and fxdax 371 passed; Linux workspace on GCE r264 1965 of 1965; guest suites on GCE r263 (release), fxfs-guest-dax, -checks-dax, -crash-dax, -checks-dax-small, -checks-dax-delay, -pgbench-dax 2 rounds each passed (pgbench-dax 1051.6 -> 863.4, 997.4 -> 889.5 tps).
+
+2026-11-02: workspace at main passes on macOS (2,010 of 2,010, 1fc28f48c) and Linux (GCE r530, 2,169 of 2,169, Shuttle suites too).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

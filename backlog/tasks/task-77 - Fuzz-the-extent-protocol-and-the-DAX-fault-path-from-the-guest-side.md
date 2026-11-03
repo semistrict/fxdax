@@ -4,7 +4,7 @@ title: Fuzz the extent protocol and the DAX fault path from the guest side
 status: Done
 assignee: []
 created_date: '2026-10-21 19:54'
-updated_date: '2026-11-03 02:11'
+updated_date: '2026-11-03 02:21'
 labels: []
 dependencies: []
 priority: high
@@ -27,7 +27,7 @@ Concurrency is covered by Shuttle and TLA+; nothing fuzzes the guest-facing prot
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
 - [x] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
@@ -42,6 +42,8 @@ Concurrency is covered by Shuttle and TLA+; nothing fuzzes the guest-facing prot
 2026-10-31: AC4: whatever_a_vm_process_says_harms_no_other (extentd/tests.rs): 128 sequences a run, up to 64 messages each, of any kind, flags and arguments, 3 in 4 plausible requests of its own extents and window, through a real window and transfer area, ending in broken framing; of a tenant, beside another tenant's store. Asserts no panic, the other store unchanged and served, its own store let go of and reopened, and over 1000 requests served (2475 in the run measured). Found one bug: WindowChanges::record overflowed on a refused request's offset+len with a page refused waiting. 6 further runs clean.
 
 2026-10-31: AC3: fxfs-guest-crash-stray-dax: fxfs.dax_stray, a test knob, loads or stores a word at a window offset nothing maps, within a page or across two. GCE r354, 8 of 8 rounds, all four kinds: the daemon refuses the access (an access to nothing mapped), KVM_RUN fails with EFAULT, that VM exits 1, and only it stops: the store holds every file whose fsync returned and passes the crash test's checks, and the daemon serves a new store after. r350 first took pages regions had mapped for unmapped: the window's second half is regions, so the test strays in its last 64 MiB.
+
+2026-11-02: workspace at main passes on macOS (2,010 of 2,010, 1fc28f48c) and Linux (GCE r530, 2,169 of 2,169, Shuttle suites too).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

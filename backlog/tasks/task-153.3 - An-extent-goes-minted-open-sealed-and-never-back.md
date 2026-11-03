@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-01 22:52'
-updated_date: '2026-11-03 02:11'
+updated_date: '2026-11-03 02:21'
 labels: []
 dependencies: []
 parent_task_id: TASK-153
@@ -30,7 +30,7 @@ Open is not one fact and can go backwards: the Rust open set, region->writable, 
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
 - [x] #2 scripts/upstream-changes.py --check passes
 - [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
@@ -92,6 +92,8 @@ FOUND VERIFYING, all main's before this branch: (1) 106b6128d: a fault finishing
 HOST HALF, d559e9e78, on the decision in OPEN_QUESTIONS.md: map_open frees the store's copy of an extent it brings into memory, after the memory holds it; the commit writes it anew. sealing_would_strand_a_mapping and the fork's EBUSY gone; forks_seal_nothing_a_window_maps_writably now asserts the fork succeeds, the store holds no copy, and the fork has none of the extent; a_mapping_takes_an_open_extent_out_of_the_store. specs/extent-open: oneOwner, a fork, NoRefusedCommit, OneOwner; TwoOwners finds the refused commit; SplitWrite still the lost write.
 RESULTS. sim: check.sh clean; zloop 3,000 at the mix 0 failed, 3,000 at 1,000 0 failed, 30,000 at 200 5 failed, all (3). Mutants: those that can show do, but task-153.3-refused-slice-stale (not in 3,000, nor 500 at 1,000), and patch-0008, task-153.1-fault-limit, task-153.6-lag-past-the-end, which main doesn't catch in 400 either. TLC by hand (check-tla.sh's pinned jar SHA-256 stale): dax-region 5 models, extent-open 3, all as expected. Workspace, Docker: 2,167 of 2,169, both grants tests needing sudo. Guest Rust type-checks, guest tests compile.
 GCE, n2-standard-4: r477 (d559e9e78) checks-dax, -delay, -small, script-full-dax, xfstests OK; xfstests 16 of 650 failed, the known list, generic/129 passing now; write_times_add_up passes; no WARN, no unexplained refusals. r478 head (157417ad5) and r479 main side by side, pgbench-dax 4 rounds of 5 runs: 968 against 960 tps.
+
+2026-11-02: workspace at main passes on macOS (2,010 of 2,010, 1fc28f48c) and Linux (GCE r530, 2,169 of 2,169, Shuttle suites too).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

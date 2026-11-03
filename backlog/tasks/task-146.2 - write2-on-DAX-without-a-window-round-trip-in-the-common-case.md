@@ -4,7 +4,7 @@ title: write(2) on DAX without a window round trip in the common case
 status: Done
 assignee: []
 created_date: '2026-10-31 22:15'
-updated_date: '2026-11-03 02:10'
+updated_date: '2026-11-03 02:21'
 labels: []
 dependencies: []
 parent_task_id: TASK-146
@@ -26,7 +26,7 @@ Their ask 2. 122,027 of 134,078 maps per run are evacuation's, not the write's o
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
 - [x] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
@@ -47,6 +47,8 @@ r450, the merged tree, pgbench-dax: 1,031,541 writes, 365.7 s, 354.5 us each, tp
 r453: writes wait 83.0 s of 403 s behind evacuations for file->sem, the first down_read in fxfs_dax_get_range: the wait AC1 asked for, which write_wait_ns never counted: dead-ends/theory-wal-writers-wait-on-evacuation.md's counters missed it, and its 'writes hardly wait' no longer holds. r458 against r459 (main, one zone, 3 rounds a side): fxfs.dax_evacuate_every=16 gives 1,061 tps against 987, round means not overlapping, writes 362 against 384 us, wait behind evacuations 57 against 78 s, holds 119 against 178 s, evacuations 100k against 233k, MAPs not fewer, writes' own MAP time 26% up. Against dead-ends/batched-evacuation.md, which measured no gain on 2026-10-31. Two hosts, so it may be the host: r491 (batched, with delay injection and full scripts) and r492 (control) repeat it on other hosts.
 
 Batching settled: four hosts, one zone, three rounds each: batched 1061, 1054 tps; control 987, 1021: about +5%. Recorded in dead-ends/batched-evacuation.md. The cost is per page. AC1, the split, is met by the counters; AC2 stays open. Cheaper per page is TASK-153.6; MAP with no semaphore is TASK-153.10.
+
+2026-11-02: workspace at main passes on macOS (2,010 of 2,010, 1fc28f48c) and Linux (GCE r530, 2,169 of 2,169, Shuttle suites too).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

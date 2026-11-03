@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-29 00:24'
-updated_date: '2026-11-03 02:09'
+updated_date: '2026-11-03 02:21'
 labels: []
 dependencies: []
 parent_task_id: TASK-96
@@ -31,7 +31,7 @@ fxdax runs a port of the Zircon kernel (crates/zircon, ~40k lines) inside its pr
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
 - [x] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
@@ -59,6 +59,8 @@ Host Fxfs (branch zircon-removal-fxfs, 972759d4e, 3280d1c3c): the guest's file l
 Landed on main as one commit (squashed): crates/zircon and the 13 crates only it or fxfs-platform needed deleted; crates/physmem (the port's PMM lifted, with run allocation, is_free); crates/fxfs-posix shared by guest and host; extent cache (crate::cache) and DAX window page tables (crate::dax) over physmem; storage_device buffers plain memory; zx types only (page size from the host). Verified: macOS scripts/test.sh, 1816 workspace tests and all Shuttle suites pass (one scripts test fails on main too: TASK-127); Linux cargo check --workspace --tests, fxdax/physmem --features shuttle, bins and examples clean in OrbStack Docker (arm64). Not run yet: Linux tests, guest DAX/crash suites, pgbench A/B on GCE (CPU quota full). Tests set aside verbatim in crates/fxdax/tests-awaiting-decision/ for the user (see its README).
 
 The tests set aside in crates/fxdax/tests-awaiting-decision deleted, as the user agreed (2026-10-28).
+
+2026-11-02: workspace at main passes on macOS (2,010 of 2,010, 1fc28f48c) and Linux (GCE r530, 2,169 of 2,169, Shuttle suites too).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

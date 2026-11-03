@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@main-session'
 created_date: '2026-10-21 20:59'
-updated_date: '2026-11-03 02:09'
+updated_date: '2026-11-03 02:21'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -37,7 +37,7 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity low): docs/reviews/2
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
 - [x] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
@@ -50,6 +50,8 @@ No deterministic seam: the race is a seal's lockless bitmap_zero of range->writa
 Fix landed in 075723b80; no deterministic test (see the notes above). GCE r65, 2026-10-24, batch on main+round 2b: Linux workspace 2620 passed, Firecracker extent tests, and 17 guest cases (checks, crash, fxfs-guest, follow, follow-torture, snapshot with and without DAX; extent-guest, live-fork, daemon-lost, pgbench both) green on vmlinux-b3/b4; macOS scripts/test.sh 2508 passed.
 
 2026-10-29 audit on main c981891b2: range->writable is written non-atomically only in the gate (bitmap_set in fxfs_dax_map_slice, fxfs_dax_mapped, fxfs_dax_new_slice, each for an open extent mapped in the gate, which a seal waits to close), and cleared outside it only per bit, atomically (fxfs_dax_clear_writable's clear_bit); the sealer's lockless bitmap_zero meets no read-modify-write of a word. AC1 stays open: the race is inside one word's read-modify-write, which no pause point can split.
+
+2026-11-02: workspace at main passes on macOS (2,010 of 2,010, 1fc28f48c) and Linux (GCE r530, 2,169 of 2,169, Shuttle suites too).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@main-session'
 created_date: '2026-10-23 18:01'
-updated_date: '2026-11-03 02:10'
+updated_date: '2026-11-03 02:21'
 labels: []
 dependencies: []
 parent_task_id: TASK-91
@@ -29,7 +29,7 @@ Round 6: in the default no-DAX run __pv_queued_spin_lock_slowpath was 20% of gue
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
 - [x] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
@@ -50,6 +50,8 @@ Lock named with lock_stat (vmlinux-lockstat, fxfs-guest-pgbench-locks, no DAX, s
 Sandbox team (via the user, 2026-10-23): their hosts are slightly overcommitted at times, which fits lock-holder preemption making rq->__lock's waits long there.
 
 Cross-CPU wakeups: waiters already spin before sleeping (fxfs_rt_park; block_on). The rest cross CPUs because virtio-mmio gives the device one interrupt line: completions land on one vCPU and wake waiters sleeping on the other, taking its rq lock. The fix is per-queue interrupts, i.e. MSI-X (TASK-91.15, left until DAX's host-side fixes). Guest-only gain without it ~1% here; the overcommit-driven part is the host's. Held with TASK-91.15.
+
+2026-11-02: workspace at main passes on macOS (2,010 of 2,010, 1fc28f48c) and Linux (GCE r530, 2,169 of 2,169, Shuttle suites too).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

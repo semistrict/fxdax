@@ -6,7 +6,7 @@ title: >-
 status: Done
 assignee: []
 created_date: '2026-10-21 21:00'
-updated_date: '2026-11-03 02:09'
+updated_date: '2026-11-03 02:21'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -36,7 +36,7 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity low): docs/reviews/2
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
 - [x] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
@@ -49,6 +49,8 @@ The local check of a held victim takes EMPTY too; the history's check_held judge
 GCE r292: fxfs-guest-follow-torture passed; r293 3 rounds.
 
 The local check takes EMPTY, follower_history judges it; fxfs-guest-follow-torture passes r292 and r293 3 rounds. AC1 open: no deterministic reproduction.
+
+2026-11-02: workspace at main passes on macOS (2,010 of 2,010, 1fc28f48c) and Linux (GCE r530, 2,169 of 2,169, Shuttle suites too).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-01 22:53'
-updated_date: '2026-11-03 02:11'
+updated_date: '2026-11-03 02:21'
 labels: []
 dependencies: []
 priority: high
@@ -28,7 +28,7 @@ Required: the system must handle cross-host restores. TASK-150.4 stopped a tenan
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
 - [x] #2 scripts/upstream-changes.py --check passes
 - [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
@@ -55,6 +55,8 @@ Finding, not fixed, for the user: a host's copy of a point is a writer of its br
 Structure: the rule stays one rule, a tenant's directory. Nothing in the code to get wrong: no tenant's word for a branch is read. Branches having no owner remains TASK-153.9's.
 
 Verified at ef3dfc028. Docker arm64 workspace 2118 of 2118; macOS workspace 1959 of 1959; GCE r483 x86-64 2117 of 2118, the one failure windows_share_bases_pages (5 holders, not 4), in extents.rs, which this branch leaves alone, passing alone on r484. Guest: r483 scripts/test-e2e.sh's default list, exit 0; r484 under the jailer, uid 64000, production seccomp filter: fxfs-guest-migrate-tenant-dax, -migrate-dax, -snapshot-dax, fxfs-guest-dax, all OK, Firecracker's logs naming the jailer's --id. Each commit compiled alone. Soak: 12 of 12 after the served bound was loosened. Red with the bug back: tenant's branch honoured (4 tests, the fuzz in under a second, 'a point of a branch named was taken'); DropStore deleting the branch; DropStore doing nothing; a take ignoring its branch; a take ignoring its token; the fuzz with no point given (restores 0). scripts/tests' test_each_edit_finds_its_code_once fails, at eeaf2f0bb too. Unverified: two daemon processes over one real bucket: the test's two daemons are one process, sharing the memory bucket; a real host pair needs two hosts, past this run's limit. DoD 1 is left open for the user: no Lima run, and the failure above.
+
+2026-11-02: workspace at main passes on macOS (2,010 of 2,010, 1fc28f48c) and Linux (GCE r530, 2,169 of 2,169, Shuttle suites too).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

@@ -6,7 +6,7 @@ title: >-
 status: Done
 assignee: []
 created_date: '2026-10-29 21:13'
-updated_date: '2026-11-03 02:10'
+updated_date: '2026-11-03 02:21'
 labels:
   - performance
 dependencies: []
@@ -28,7 +28,7 @@ Sandbox team round 8: DAX got 14% slower at b5d3246 (720 tps against 839), and l
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
 - [x] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
@@ -63,6 +63,8 @@ Per pgbench run (batch 2 and batch 5 alike, r261): what decays is how much a com
 r272, pgbench-dax with checkpoints off (checkpoint_timeout=1d, max_wal_size=100GB, experiment 2cf31e1f9): tps 1075.4, 977.1, 985.9, 990.8, 1000.9; window_maps_reach 3294 3432 3077 2928 2940 (with checkpoints 4742 5028 20150 22386 18608), window_unmaps 41-45K a run (50-61K), window_regions_read +322 +86 +66 +91 +119 (+357 +265 +102 -1644 -769). So checkpoints cause the churn: their rewrites of heap pages are what breaks up the read regions. But tps barely gains: run 5 1001 against 1017 with them, run 1 lower, 1075 against 1170, on different hosts. What decays is not simply that churn: the runs flat from run 2 at the level the checkpointed runs fall to. Compare run 1, which alone stands above it. Its pg_ctl restart after the runs failed: recovering all the WAL took past pg_ctl's 60 s, the experiment's own doing.
 
 perf kvm guest profiles at main, 15 s from 40 s (run 1, r287: tps 1162 1093 1028 1021 1043) and from 330 s (run 5, r288: 1184 1082 1012 992 1001), so a host each: the guest kernel's symbols add to 5.8% and 6.0% of samples, and none moves by more than 0.22 points: vm_interrupt 1.14 to 1.33, fxfs_dax_evacuee_gather 0.45 to 0.23, x2apic_send_IPI 0.69 to 0.72, vm_notify 0.64 to 0.67, __pv_queued_spin_lock_slowpath 0.20 to 0.21. The decay isn't in the guest kernel's code. Left: the rest of the samples, which the report doesn't name: Postgres in the guest, and the host's VMM and extentd threads; a host-side profile by thread, run 1 against run 5, would say.
+
+2026-11-02: workspace at main passes on macOS (2,010 of 2,010, 1fc28f48c) and Linux (GCE r530, 2,169 of 2,169, Shuttle suites too).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

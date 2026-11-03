@@ -6,7 +6,7 @@ title: >-
 status: Done
 assignee: []
 created_date: '2026-10-21 20:58'
-updated_date: '2026-11-03 02:09'
+updated_date: '2026-11-03 02:21'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -36,7 +36,7 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity medium): docs/review
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
 - [x] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
@@ -47,6 +47,8 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity medium): docs/review
 Uncommitted in worktree batch8 (2026-10-30), awaiting a GCE run: gcloud needs reauthentication, r289 stopped at it. fxfs-guest-daemon-lost: each VM its own root image. NOT YET RUN.
 
 Each VM has its own root image; fxfs-guest-daemon-lost passes r293 3 rounds. AC1 open: the race of the shared image was never reproduced.
+
+2026-11-02: workspace at main passes on macOS (2,010 of 2,010, 1fc28f48c) and Linux (GCE r530, 2,169 of 2,169, Shuttle suites too).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

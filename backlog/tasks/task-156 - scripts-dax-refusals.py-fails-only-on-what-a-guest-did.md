@@ -4,7 +4,7 @@ title: scripts/dax-refusals.py fails only on what a guest did
 status: Done
 assignee: []
 created_date: '2026-11-01 22:53'
-updated_date: '2026-11-03 02:10'
+updated_date: '2026-11-03 02:21'
 labels: []
 dependencies: []
 priority: medium
@@ -26,7 +26,7 @@ TASK-150.16: refused stores flagged came from KVM async page fault kworkers, not
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
 - [x] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
@@ -35,6 +35,8 @@ TASK-150.16: refused stores flagged came from KVM async page fault kworkers, not
 
 <!-- SECTION:NOTES:BEGIN -->
 On fix/refusal-gate. dax-refusals.py takes the VM processes' logs and fails on a store refused by a thread that is no kernel worker; test-e2e.sh passes them. Over r394, r398, r422, r423, r429, r451, r452, r456, r457: 8,378 refused stores, all kworker, none flagged, r394 and r422 passing now. Unit tests 7 of 7. Not done: a repeated vCPU EFAULT run isn't looked at; refusals past the log's cap (first 1,000 and powers of two) aren't counted, on the reading that a vCPU's refusal stays until its VM stops, so one past the cap shows at the next power of two.
+
+2026-11-02: workspace at main passes on macOS (2,010 of 2,010, 1fc28f48c) and Linux (GCE r530, 2,169 of 2,169, Shuttle suites too).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

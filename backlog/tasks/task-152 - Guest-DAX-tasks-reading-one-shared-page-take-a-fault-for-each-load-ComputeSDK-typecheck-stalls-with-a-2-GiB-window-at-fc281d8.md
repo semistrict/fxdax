@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-01 19:39'
-updated_date: '2026-11-03 02:10'
+updated_date: '2026-11-03 02:21'
 labels: []
 dependencies: []
 priority: high
@@ -31,7 +31,7 @@ Sandbox report: with a 2 GiB DAX window, ComputeSDK's DAX benchmark hangs in typ
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
 - [x] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
@@ -50,6 +50,8 @@ Red on a real kernel, GCE r430, at fc281d8 with the new check: two mappings took
 Sandbox capture at fc281d8, 12 minutes into typecheck, confirms a livelock: 727,884 faults in 10 s (about 73,000 a second, p50 66 us), 14 window MAPs, no seals, writes or device requests; 38 tsgo threads in one read fault, the entry's holder in unmap_mapping_pages from dax_insert_entry; all 4 vCPUs running, extentd idle.
 
 Final check, GCE r430: unpatched, 128 faults in 64 turns, and 62,887 faults for 4 readers of 256 pages in 499 ms; with patches 0010 and 0011, 2 faults, and 8 of 8 rounds of fxfs-guest-checks-dax and -delay passing; the earlier patched run took 1,024 faults for the readers in 7.7 ms. Also passing with the patches: fxfs-guest-dax, -crash-dax, -crash-dax-killed, -pgbench-dax, -docker-dax, -checks-dax-small, and xfstests generic/013, 075, 111, 303, 525, 564, 638. dax_faults_hist counts tries of a PMD that fall back as well as faults: with no page table yet a first load counts three, as a fault under the per-VMA lock retries under mmap_lock before making one. AC 3 stands on guest/sim alone (read_pressure: 190 of 400 seeds WARN unpatched, 16 with 0010 alone, 0 with both); no real kernel check reaches that path. Kept In Progress until the sandbox team reruns the benchmark, which guests here can't, having no network.
+
+2026-11-02: workspace at main passes on macOS (2,010 of 2,010, 1fc28f48c) and Linux (GCE r530, 2,169 of 2,169, Shuttle suites too).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

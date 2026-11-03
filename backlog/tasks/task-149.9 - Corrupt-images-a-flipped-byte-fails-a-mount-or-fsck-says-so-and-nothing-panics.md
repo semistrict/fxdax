@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-01 06:13'
-updated_date: '2026-11-03 02:10'
+updated_date: '2026-11-03 02:21'
 labels: []
 dependencies: []
 parent_task_id: TASK-149
@@ -30,7 +30,7 @@ A guest's disk is trusted by nobody after a host failure or a bad upload. Fxfs h
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
 - [x] #2 scripts/upstream-changes.py --check passes
 - [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
@@ -107,6 +107,8 @@ Guest mounts use the default, `barriers_enabled` false: data checksums journaled
 Commit 72907ee3b: macOS `cargo nextest run --workspace` 1952 of 1952. Linux (Docker, not Lima) 2090 of 2091: only tenant_sockets_work_bind_mounted_into_jails, the known Docker failure. Under fuzz's load the_daemon_stops_on_sigterm, hundreds_of_writers_flush_on_threads_they_share and durable_commits_keep_the_open_segments_pages_cached_on_the_host each failed once: alone, and in the final run, they pass. `scripts/upstream-changes.py --check`: passes. `cargo check -p fxfs-linux` for aarch64-unknown-none-softfloat at the final commit: passes. Every commit up to 492de03e9 was compile-checked alone; those after were tested as they were made.
 
 **Not done, or unverified.** AC 2 isn't met as written: a flip never panics, but flips outside checksummed structures give no error (see above). No guest kernel was built or booted, so nothing here ran in a kernel. test_misaligned_allocation changed its setup: a journal's misaligned allocation is now refused by replay, so it inserts into the tree directly, as test_malformed_allocation does. Fuzz ran on arm64 only.
+
+2026-11-02: workspace at main passes on macOS (2,010 of 2,010, 1fc28f48c) and Linux (GCE r530, 2,169 of 2,169, Shuttle suites too).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

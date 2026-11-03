@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-01 06:13'
-updated_date: '2026-11-03 02:11'
+updated_date: '2026-11-03 02:21'
 labels: []
 dependencies: []
 parent_task_id: TASK-149
@@ -27,7 +27,7 @@ FxFilesystemBuilder has fsck_after_every_transaction, which the model test doesn
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
 - [x] #2 scripts/upstream-changes.py --check passes
 - [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
@@ -44,6 +44,8 @@ FxFilesystemBuilder has fsck_after_every_transaction, which the model test doesn
 
 <!-- SECTION:NOTES:BEGIN -->
 FXDAX_MODEL_FSCK=1 hunts with fsck after every transaction, about 65 a sequence; the hook now says what fsck found. Control: an allocated size wrong by a block fails in 11 ms naming AllocatedSizeMismatch. 2,000 sequences on the final code, and 5,000 earlier, found nothing. Transactions of a mount before the hook is armed aren't checked (about 17 a sequence).
+
+2026-11-02: workspace at main passes on macOS (2,010 of 2,010, 1fc28f48c) and Linux (GCE r530, 2,169 of 2,169, Shuttle suites too).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

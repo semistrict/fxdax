@@ -7,7 +7,7 @@ title: >-
 status: Done
 assignee: []
 created_date: '2026-10-29 20:54'
-updated_date: '2026-11-03 02:10'
+updated_date: '2026-11-03 02:21'
 labels:
   - dax
   - bug
@@ -31,7 +31,7 @@ GCE r257 (main 88032eb67, FXDAX_GUEST_KERNEL_BUILD=kasan: KASAN, KFENCE, lockdep
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
 - [x] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
@@ -52,6 +52,8 @@ GCE r304, r305 (2026-10-31), the KASAN kernel at cc4f61cf0: the checks r303's ti
 2026-10-31: reopened. xfstests generic/013 (fsstress), release kernel: 'mapped pages to 29 of extent ..., writably (reach), past its region's 16 pages': a writable MAP from fxfs_dax_map_chunk's unguarded path, of a sealed piece of a region a seal had yet to mark, the seal giving the space past what was mapped back meanwhile. So AC2's race is real: the rounds of checks that showed none didn't reach it. Fix: fxfs_dax_move gives such a piece to the range's own space (-EXDEV).
 
 r347 on the working tree: xfstests-fxfs-guest-dax of generic/013, 075, 091, 111 3/3, fxfs-guest-checks-dax 3/3, fxfs-guest-crash-dax 3/3, fxfs-guest-dax 3/3. Both WARNs gone: a sealed piece of a writable region falls to the range's own space (-EXDEV), and a read fault of a block the range moved or a slice maps asks for a copy.
+
+2026-11-02: workspace at main passes on macOS (2,010 of 2,010, 1fc28f48c) and Linux (GCE r530, 2,169 of 2,169, Shuttle suites too).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

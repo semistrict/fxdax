@@ -4,7 +4,7 @@ title: Follower guest torture test and measurements
 status: Done
 assignee: []
 created_date: '2026-10-17 22:17'
-updated_date: '2026-11-03 02:10'
+updated_date: '2026-11-03 02:21'
 labels: []
 dependencies:
   - TASK-42.6
@@ -32,7 +32,7 @@ The only test of the kernel side under real concurrency (doc-8 testing 6 and 7),
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
 - [x] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
@@ -53,6 +53,8 @@ The only test of the kernel side under real concurrency (doc-8 testing 6 and 7),
 AC4, in part: an hour each with and without DAX, OK history (docs/measurements/gce-follow-soak-2026-10-24); followers' lag and pinned bytes recorded in docs/measurements (gce-fs-bench-followed-main-2026-10-21T1016Z: at most 409 commits and 2.4 s behind, 436 MiB of frees kept). Left: the writer unchanged with followers attached (TASK-42.11).
 
 2026-10-24, handed back (unassigned): AC1-3 and 5 checked; AC4 left only for the writer unchanged with followers attached, which waits on TASK-42.11 / TASK-41.1 (the hours on GCE and the lag and pinned bytes are recorded).
+
+2026-11-02: workspace at main passes on macOS (2,010 of 2,010, 1fc28f48c) and Linux (GCE r530, 2,169 of 2,169, Shuttle suites too).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

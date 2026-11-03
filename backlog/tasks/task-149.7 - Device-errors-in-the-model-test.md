@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-01 06:13'
-updated_date: '2026-11-03 02:11'
+updated_date: '2026-11-03 02:21'
 labels: []
 dependencies: []
 parent_task_id: TASK-149
@@ -28,7 +28,7 @@ Failed reads, writes and flushes are in no model test. The rule to check: a clea
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
 - [x] #2 scripts/upstream-changes.py --check passes
 - [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
@@ -46,6 +46,8 @@ Failed reads, writes and flushes are in no model test. The rule to check: a clea
 
 <!-- SECTION:NOTES:BEGIN -->
 Failures of reads, writes, flushes and frees, one kind or all, seeded. Controls: a swallowed flush error fails on [Create, Crash, Write, Fsync], a panic in a background task fails naming it. 11,900 sequences found nothing in Fxfs. Not modelled: a write that fails yet lands, or a device that stays failed.
+
+2026-11-02: workspace at main passes on macOS (2,010 of 2,010, 1fc28f48c) and Linux (GCE r530, 2,169 of 2,169, Shuttle suites too).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

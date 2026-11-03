@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@main-session'
 created_date: '2026-10-21 20:58'
-updated_date: '2026-11-03 02:09'
+updated_date: '2026-11-03 02:21'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -37,7 +37,7 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity low): docs/reviews/2
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
 - [x] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
@@ -54,6 +54,8 @@ Round 2b audit (2026-10-24): on main and green (Verified on main at 043d413da (2
 the SyncStore early release has no failing-first test (99e00fe92: its test passes on the base); the holder_or_hold and teardown/cancelled-ForkStore paths were red before (c0153b197, 99e00fe92).
 
 Tried again (2026-10-24, GCE r70, r73): a sync then, on the same long-lived runtime, (a) a second sync, (b) holding the path and probing the store directory's flock without waiting: both pass on c0153b197^ too. After a sync everything is uploaded, so the close the old code left to a blocking thread finishes before the next holder looks; the early release shows only with a close slower than that, which nothing in the store makes so (latency 200 ms didn't). A red needs a hook slowing Here's close in the test build, on both trees. Left at that: low severity, the fix's mechanism (HeldStore) is the cancelled fork's, which the Shuttle tests show red.
+
+2026-11-02: workspace at main passes on macOS (2,010 of 2,010, 1fc28f48c) and Linux (GCE r530, 2,169 of 2,169, Shuttle suites too).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

@@ -6,7 +6,7 @@ title: >-
 status: Done
 assignee: []
 created_date: '2026-10-21 19:54'
-updated_date: '2026-11-03 02:11'
+updated_date: '2026-11-03 02:21'
 labels: []
 dependencies: []
 priority: medium
@@ -21,7 +21,7 @@ ordinal: 178000
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
 - [x] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
@@ -30,6 +30,8 @@ ordinal: 178000
 
 <!-- SECTION:NOTES:BEGIN -->
 2026-10-31: every suite of scripts/test-e2e.sh's default list, in the jailer under the production seccomp filter (real) with branches in real GCS: r353, all but four; r355, those four after TASK-142's fix and a remote run's 360 s for the checks: fxfs-guest-pgbench, checks-dax, -delay, -small. .github/workflows/nightly.yml runs this nightly, once its secrets are set.
+
+2026-11-02: workspace at main passes on macOS (2,010 of 2,010, 1fc28f48c) and Linux (GCE r530, 2,169 of 2,169, Shuttle suites too).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

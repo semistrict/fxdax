@@ -4,7 +4,7 @@ title: The bench fork cases' per-VM child processes survive a runner timeout
 status: Done
 assignee: []
 created_date: '2026-10-21 21:00'
-updated_date: '2026-11-03 02:09'
+updated_date: '2026-11-03 02:21'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -34,7 +34,7 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity low): docs/reviews/2
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
 - [x] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
@@ -45,6 +45,8 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity low): docs/reviews/2
 Uncommitted in worktree batch8 (2026-10-30): role() registers its child for the runner's cleanup, which its timeout runs; its VM has PDEATHSIG. Not exercised: compile only.
 
 role() registers its child for the runner's cleanup; compiled, never run through a timeout, so both ACs stay open.
+
+2026-11-02: workspace at main passes on macOS (2,010 of 2,010, 1fc28f48c) and Linux (GCE r530, 2,169 of 2,169, Shuttle suites too).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
