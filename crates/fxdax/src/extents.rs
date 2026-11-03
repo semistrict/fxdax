@@ -583,7 +583,8 @@ impl ExtentStore {
         arena: Option<Arc<Arena>>,
     ) -> Result<Self, Error> {
         let store = host_store::create(path.as_ref(), capacity, branch).map_err(Error::new)?;
-        Ok(Self::new(path.as_ref(), store, arena, true))
+        let public = public_branches(store.dir().path())?;
+        Ok(Self::new(path.as_ref(), store, public, arena, true))
     }
 
     /// The store at `path`, or the fork whose handle `path` is ([`ExtentStore::fork`]), as of its
@@ -600,7 +601,8 @@ impl ExtentStore {
     /// forks of them share, are of the default arena.
     pub fn open_in(path: impl AsRef<Path>, arena: Option<Arc<Arena>>) -> Result<Self, Error> {
         let store = host_store::open(path.as_ref()).map_err(Error::new)?;
-        Ok(Self::new(path.as_ref(), store, arena, true))
+        let public = public_branches(store.dir().path())?;
+        Ok(Self::new(path.as_ref(), store, public, arena, true))
     }
 
     /// fxdax: the store at `path`, a fork attached to other stores (backlog doc-10), to read
@@ -609,8 +611,9 @@ impl ExtentStore {
     /// as a public base's are, which every tenant's VM processes hold read-only.
     pub fn open_base(path: impl AsRef<Path>, arena: Option<Arc<Arena>>) -> Result<Self, Error> {
         let store = host_store::open(path.as_ref()).map_err(Error::new)?;
-        let public = public_branches(store.dir().path()).contains(&store.description().branch);
-        Ok(Self::new(path.as_ref(), store, arena.filter(|_| !public), false))
+        let public = public_branches(store.dir().path())?;
+        let arena = arena.filter(|_| !public.contains(&store.description().branch));
+        Ok(Self::new(path.as_ref(), store, public, arena, false))
     }
 
     /// fxdax: the store at `path`, as [`ExtentStore::open`] has it, for work on it that boots no
@@ -620,16 +623,23 @@ impl ExtentStore {
     /// holds, nor recorded (TASK-79.17).
     pub fn open_without_profile(path: impl AsRef<Path>) -> Result<Self, Error> {
         let store = host_store::open(path.as_ref()).map_err(Error::new)?;
-        Ok(Self::new(path.as_ref(), store, None, false))
+        let public = public_branches(store.dir().path())?;
+        Ok(Self::new(path.as_ref(), store, public, None, false))
     }
 
-    /// The store `store`, opened at `path`, its own extents' pages of `arena`, or the default arena
-    /// without one; its base's boot profile read or recorded if `profiled`
-    /// ([`ExtentStore::profile`]).
-    fn new(path: &Path, store: Store<HostDir>, arena: Option<Arc<Arena>>, profiled: bool) -> Self {
+    /// The store `store`, opened at `path`, of whose lineage the branches `public` are public
+    /// ([`public_branches`]), its own extents' pages of `arena`, or the default arena without one;
+    /// its base's boot profile read or recorded if `profiled` ([`ExtentStore::profile`]).
+    fn new(
+        path: &Path,
+        store: Store<HostDir>,
+        public: std::collections::BTreeSet<u64>,
+        arena: Option<Arc<Arena>>,
+        profiled: bool,
+    ) -> Self {
         cache::relieve_pressure();
         let store = Arc::new(store);
-        let arenas = Arenas { own: arena, public: Arc::new(public_branches(store.dir().path())) };
+        let arenas = Arenas { own: arena, public: Arc::new(public) };
         Self {
             profiling: profiled.then(|| Self::profile(&store, &arenas)).flatten(),
             arenas,
@@ -2251,19 +2261,28 @@ fn public_marker(branch: u64) -> String {
     format!("public-{branch:016x}")
 }
 
-/// fxdax: the branches of the store in `dir` marked public.
-fn public_branches(dir: &Path) -> std::collections::BTreeSet<u64> {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(entries) => entries,
-        Err(err) => {
-            log::warn!("fxdax: listing {} for public branches: {err}", dir.display());
-            return Default::default();
+/// fxdax: the branches of the store in `dir` marked public; `EIO`, logged, if its directory can't
+/// be listed, as with as many files open as the process may: read as none, a public base would
+/// open private, its writer's (TASK-160.10).
+fn public_branches(dir: &Path) -> Result<std::collections::BTreeSet<u64>> {
+    let listed = || -> std::io::Result<_> {
+        fail::fail_point!("extents::public_branches", |_| {
+            Err(std::io::Error::from_raw_os_error(libc::EMFILE))
+        });
+        let mut public = std::collections::BTreeSet::new();
+        for entry in std::fs::read_dir(dir)? {
+            let name = entry?.file_name();
+            let marked = name.to_str().and_then(|name| name.strip_prefix("public-"));
+            if let Some(branch) = marked.and_then(|branch| u64::from_str_radix(branch, 16).ok()) {
+                public.insert(branch);
+            }
         }
+        Ok(public)
     };
-    entries
-        .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
-        .filter_map(|name| u64::from_str_radix(name.strip_prefix("public-")?, 16).ok())
-        .collect()
+    listed().map_err(|err| {
+        log::error!("fxdax: listing {} for public branches: {err}", dir.display());
+        Errno::EIO
+    })
 }
 
 /// How many threads read a boot profile's units into the cache at once.
@@ -4673,5 +4692,28 @@ mod tests {
         forked.free(inherited).unwrap();
         forked.commit(None).unwrap();
         assert_eq!(read(&forked, inherited, 0, BLOCK), Err(Errno::ENOENT));
+    }
+
+    /// TASK-160.10: a store whose directory can't be listed for its public markers, as with as
+    /// many files open as the process may (`EMFILE`), fails to open, whichever way, with `EIO`:
+    /// read as none, a public base opened private, its writer's, which a VM process opened to
+    /// write.
+    #[test]
+    fn stores_whose_public_markers_go_unread_fail_to_open() {
+        let (base, dir) = store(1 << 20);
+        base.make_public().unwrap();
+        drop(base);
+        let path = dir.path().join("store");
+        fail::cfg("extents::public_branches", "return").unwrap();
+        let opened = [
+            ExtentStore::open(&path).map(|store| store.is_public()),
+            ExtentStore::open_base(&path, None).map(|store| store.is_public()),
+            ExtentStore::open_without_profile(&path).map(|store| store.is_public()),
+        ];
+        fail::remove("extents::public_branches");
+        for opened in opened {
+            assert_eq!(opened.map_err(|err| err.errno()), Err(Some(Errno::EIO)));
+        }
+        assert!(ExtentStore::open(&path).unwrap().is_public());
     }
 }
