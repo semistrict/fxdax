@@ -29,19 +29,27 @@
 //! super-blocks', the journal's and the data being written's checksums can find one, which tests of
 //! their own pin (`a_flip_in_both_super_blocks_is_refused`, `a_flip_in_data_being_written_...`).
 //! The rest, with no checksum anyone reads, is `different`, or `same` of bytes nothing looks at.
+//!
+//! A flip rarely makes a record that parses. So a layer file is also rewritten as a writer would
+//! have written it, holding a record no layer may (`Record`): every such record is refused as the
+//! layer is read, so it fails what reads it, or reads as it was, never differently
+//! (`records_no_layer_may_hold_fail_what_reads_them`).
 
 use super::model_tests::{checked, watch_sequences};
 use super::tests::Tested;
 use super::*;
 use fxfs::checksum::fletcher64;
 use fxfs::filesystem::{FxFilesystemBuilder, OpenFxFilesystem};
-use fxfs::lsm_tree::Query;
-use fxfs::lsm_tree::types::{ItemRef, LayerIterator as _};
+use fxfs::lsm_tree::persistent_layer::PersistentLayerWriter;
+use fxfs::lsm_tree::types::{Item, ItemRef, Key, LayerIterator as _, LayerValue, LayerWriter as _};
+use fxfs::lsm_tree::{LockedLayer, Query};
+use fxfs::object_handle::WriteBytes;
+use fxfs::object_store::allocator::{AllocatorKey, AllocatorValue};
 use fxfs::object_store::journal::RESET_XOR;
 use fxfs::object_store::journal::super_block::SuperBlockInstance;
-use fxfs::object_store::object_record::ObjectKeyData;
+use fxfs::object_store::object_record::{ObjectKey, ObjectKeyData};
 use fxfs::object_store::volume::root_volume;
-use fxfs::object_store::{ExtentValue, NewChildStoreOptions, StoreOptions};
+use fxfs::object_store::{ExtentMode, ExtentValue, NewChildStoreOptions, StoreOptions};
 use rand::rngs::StdRng;
 use rand::{RngExt as _, SeedableRng as _};
 use std::alloc::{GlobalAlloc, Layout, System};
@@ -52,10 +60,13 @@ use std::sync::atomic::AtomicUsize;
 use std::time::Duration;
 use storage_device::fake_device::{Crashes, FakeDevice};
 use storage_device::{DeviceHolder, ExtentId};
+use storage_units::BlockSize;
 
 const FILE: u32 = S_IFREG | 0o644;
 const DIR: u32 = S_IFDIR | 0o755;
 const PAGE: u64 = 4096;
+/// The filesystem's blocks, which its layer files are written in.
+const LAYER_BLOCK: BlockSize = BlockSize::SIZE_4KIB;
 /// The journal's and the super-blocks' blocks, each sealed by a checksum in its last bytes.
 const SEALED_BLOCK: usize = PAGE as usize;
 const SEAL: usize = std::mem::size_of::<u64>();
@@ -233,12 +244,30 @@ enum Ending {
 /// What a volume reads as, by path, as a hash of each entry's attributes and contents.
 type Reading = BTreeMap<String, u64>;
 
+/// A part of a file: where it is in the file, and in an extent.
+type FilePart = (std::ops::Range<u64>, ExtentId, std::ops::Range<usize>);
+
+/// A layer file of an image: its items, as what mounts it reads them, and where its bytes are.
+struct LayerFile<K, V> {
+    items: Vec<Item<K, V>>,
+    size: u64,
+    /// Each part of the file, in order.
+    parts: Vec<FilePart>,
+}
+
+/// An image's layer files, of the volume `test`'s store and of the allocator.
+struct LayerFiles {
+    volume: Vec<LayerFile<ObjectKey, ObjectValue>>,
+    allocator: Vec<LayerFile<AllocatorKey, AllocatorValue>>,
+}
+
 /// An image to corrupt: what's on it, where, and what it reads as.
 struct Image {
     barriers: bool,
     device: FakeDevice,
     regions: Vec<Region>,
     chains: Vec<Chain>,
+    layers: LayerFiles,
     reading: Reading,
 }
 
@@ -472,8 +501,8 @@ async fn extents_of(
     }
 }
 
-/// Where the parts of what `device` holds are, as what mounts it knows.
-async fn map(device: &FakeDevice, barriers: bool) -> (Vec<Region>, Vec<Chain>) {
+/// Where the parts of what `device` holds are, as what mounts it knows, and its layer files.
+async fn map(device: &FakeDevice, barriers: bool) -> (Vec<Region>, Vec<Chain>, LayerFiles) {
     let filesystem = builder(barriers, true).open(DeviceHolder::new(device.recovered(0))).await;
     let filesystem = filesystem.expect("mounting what was made");
     let header = filesystem.super_block_header();
@@ -513,7 +542,9 @@ async fn map(device: &FakeDevice, barriers: bool) -> (Vec<Region>, Vec<Chain>) {
     let root_layers = root_store.parent_objects();
     let allocator_layers = allocator.parent_objects();
     let super_blocks = [SuperBlockInstance::A.object_id(), SuperBlockInstance::B.object_id()];
-    extents_of(&root_store, |object, _, extent, bytes| {
+    let mut parts = HashMap::<u64, Vec<_>>::new();
+    extents_of(&root_store, |object, range, extent, bytes| {
+        parts.entry(object).or_default().push((range, extent, bytes.clone()));
         let part = if super_blocks.contains(&object) {
             in_super_blocks
                 .entry(object)
@@ -537,6 +568,10 @@ async fn map(device: &FakeDevice, barriers: bool) -> (Vec<Region>, Vec<Chain>) {
     })
     .await;
     extents_of(&test, |_, _, extent, bytes| region(Part::FileData, extent, bytes)).await;
+    let layers = LayerFiles {
+        volume: layer_files(&test.tree().layer_set().layers, &parts).await,
+        allocator: layer_files(&allocator.tree().layer_set().layers, &parts).await,
+    };
 
     let mut chains = vec![Chain::of(device, checkpoint.checksum, in_journal)];
     chains.extend(in_super_blocks.into_values().map(|blocks| Chain::of(device, 0, blocks)));
@@ -545,7 +580,29 @@ async fn map(device: &FakeDevice, barriers: bool) -> (Vec<Region>, Vec<Chain>) {
     }
     drop((test, snapshot, volumes, root_parent, root_store, allocator));
     unmount(None, filesystem).await;
-    (regions, chains)
+    (regions, chains, layers)
+}
+
+/// The files of `layers`, read as what mounts them reads them, each where `parts` says it is.
+async fn layer_files<K: Key, V: LayerValue>(
+    layers: &[LockedLayer<K, V>],
+    parts: &HashMap<u64, Vec<FilePart>>,
+) -> Vec<LayerFile<K, V>> {
+    let mut files = Vec::new();
+    for layer in layers {
+        // What's in memory has no file.
+        let Some(handle) = layer.handle() else { continue };
+        let mut items = Vec::new();
+        let mut iterator = layer.seek(std::ops::Bound::Unbounded).await.expect("reading a layer");
+        while let Some(item) = iterator.get() {
+            items.push(item.cloned());
+            iterator.advance().await.expect("reading a layer");
+        }
+        let mut parts = parts[&handle.object_id()].clone();
+        parts.sort_by_key(|(range, ..)| range.start);
+        files.push(LayerFile { items, size: handle.get_size(), parts });
+    }
+    files
 }
 
 impl Image {
@@ -596,8 +653,8 @@ impl Image {
             }
         }
         let (_, device) = crashes.take().next().expect("what the device held");
-        let (regions, chains) = map(&device, barriers).await;
-        Self { barriers, device, regions, chains, reading }
+        let (regions, chains, layers) = map(&device, barriers).await;
+        Self { barriers, device, regions, chains, layers, reading }
     }
 
     /// The image, as `case` leaves it.
@@ -628,6 +685,210 @@ impl Image {
             }
         });
         device
+    }
+
+    /// The image, with a layer file holding `record`, written as a writer would have written it,
+    /// at the first place from where `seed` says on that can hold it and the file stay as long.
+    async fn with_record(&self, record: Record, seed: u64) -> FakeDevice {
+        let written = match record {
+            Record::AllocationOffBlocks => {
+                written_with(&self.layers.allocator, seed, |items, at| record.allocation(items, at))
+                    .await
+            }
+            _ => {
+                written_with(&self.layers.volume, seed, |items, at| record.object(items, at)).await
+            }
+        };
+        let (bytes, parts) = written.expect("somewhere to hold it");
+        let device = self.device.recovered(seed);
+        device.corrupt(|extents, _| {
+            for (in_file, extent, at) in parts {
+                let start = (in_file.start as usize).min(bytes.len());
+                let part = &bytes[start..(in_file.end as usize).min(bytes.len())];
+                let held = extents.get_mut(&extent).expect("a layer's extent");
+                held[at.start..at.start + part.len()].copy_from_slice(part);
+            }
+        });
+        device
+    }
+}
+
+/// A record no layer may hold, which no check of a layer's bytes can find, as a writer with a bug
+/// would write it, or anyone who wrote the image.
+#[derive(Clone, Copy, Debug)]
+enum Record {
+    /// An extent's key off the filesystem's blocks.
+    KeyOffBlocks,
+    /// Where an extent's data is in its extent, off blocks.
+    OffsetOffBlocks,
+    /// An extent's checksums, of a block more than it has.
+    SumsOverKey,
+    /// A key before the one before it.
+    OutOfOrder,
+    /// An extent's key over the one before it.
+    Overlapping,
+    /// An allocation off the filesystem's blocks.
+    AllocationOffBlocks,
+}
+
+/// Cases each `Record` gets.
+const RECORD_CASES: u64 = 8;
+
+impl Record {
+    const ALL: [Record; 6] = [
+        Record::KeyOffBlocks,
+        Record::OffsetOffBlocks,
+        Record::SumsOverKey,
+        Record::OutOfOrder,
+        Record::Overlapping,
+        Record::AllocationOffBlocks,
+    ];
+
+    /// Whether no read of what holds this record reads differently, with nothing saying so. A
+    /// seek trusts the keys it searches to be in order, so a key out of order may not be found,
+    /// unless what reads finds the one before it, as a scan does.
+    fn never_read_differently(self) -> bool {
+        !matches!(self, Record::OutOfOrder)
+    }
+
+    /// An object store's `items` holding this record, made of what's at `at`, if that can be.
+    fn object(
+        self,
+        items: &[Item<ObjectKey, ObjectValue>],
+        at: usize,
+    ) -> Option<Vec<Item<ObjectKey, ObjectValue>>> {
+        let mut items = items.to_vec();
+        match self {
+            Record::KeyOffBlocks => extent_range(&mut items[at].key)?.end += 512,
+            Record::OffsetOffBlocks => {
+                let ObjectValue::Extent(ExtentValue::Some { extent_offset, .. }) =
+                    &mut items[at].value
+                else {
+                    return None;
+                };
+                *extent_offset += 1;
+            }
+            Record::SumsOverKey => {
+                let ObjectValue::Extent(ExtentValue::Some { mode: ExtentMode::Cow(sums), .. }) =
+                    &items[at].value
+                else {
+                    return None;
+                };
+                if sums.len() < 2 {
+                    return None;
+                }
+                extent_range(&mut items[at].key)?.end -= PAGE;
+            }
+            Record::OutOfOrder => {
+                if items.get(at + 1)?.key.object_id != items[at].key.object_id {
+                    return None;
+                }
+                items.swap(at, at + 1);
+            }
+            Record::Overlapping => {
+                let (object, attribute, range) = extent_of(&items[at].key)?;
+                let next = &mut items.get_mut(at + 1)?.key;
+                let (next_object, next_attribute, _) = extent_of(next)?;
+                if (object, attribute) != (next_object, next_attribute) {
+                    return None;
+                }
+                // The next one starting in this one's last block.
+                extent_range(next)?.start = range.end - PAGE;
+            }
+            Record::AllocationOffBlocks => return None,
+        }
+        Some(items)
+    }
+
+    /// The allocator's `items` holding this record, made of what's at `at`, if that can be.
+    fn allocation(
+        self,
+        items: &[Item<AllocatorKey, AllocatorValue>],
+        at: usize,
+    ) -> Option<Vec<Item<AllocatorKey, AllocatorValue>>> {
+        let Record::AllocationOffBlocks = self else { return None };
+        let mut items = items.to_vec();
+        items[at].key.range.0.end += 512;
+        Some(items)
+    }
+}
+
+/// The object, attribute and range of `key`, if it's an extent's.
+fn extent_of(key: &ObjectKey) -> Option<(u64, AttributeId, std::ops::Range<u64>)> {
+    match &key.data {
+        ObjectKeyData::Attribute(attribute, AttributeKey::Extent(extent)) => {
+            Some((key.object_id, *attribute, extent.0.clone()))
+        }
+        _ => None,
+    }
+}
+
+/// The range of `key`, if it's an extent's.
+fn extent_range(key: &mut ObjectKey) -> Option<&mut std::ops::Range<u64>> {
+    match &mut key.data {
+        ObjectKeyData::Attribute(_, AttributeKey::Extent(extent)) => Some(&mut extent.0),
+        _ => None,
+    }
+}
+
+/// The first of `files`' items, from where `seed` says on, that `change` makes a file of as long
+/// as it was: its bytes, written as a writer would write them, and where they go.
+async fn written_with<K: Key, V: LayerValue>(
+    files: &[LayerFile<K, V>],
+    seed: u64,
+    change: impl Fn(&[Item<K, V>], usize) -> Option<Vec<Item<K, V>>>,
+) -> Option<(Vec<u8>, Vec<FilePart>)> {
+    let places: Vec<(usize, usize)> = (files.iter().enumerate())
+        .flat_map(|(file, layer)| (0..layer.items.len()).map(move |at| (file, at)))
+        .collect();
+    let start = StdRng::seed_from_u64(seed).random_range(0..places.len());
+    for &(file, at) in places[start..].iter().chain(&places[..start]) {
+        let file = &files[file];
+        let Some(items) = change(&file.items, at) else { continue };
+        if let Some(bytes) = layer_bytes(&items).await
+            && bytes.len() as u64 == file.size
+        {
+            return Some((bytes, file.parts.clone()));
+        }
+    }
+    None
+}
+
+/// `items` as a layer file, as a writer writes one, if one would.
+async fn layer_bytes<K: Key, V: LayerValue>(items: &[Item<K, V>]) -> Option<Vec<u8>> {
+    let written = Arc::new(Mutex::new(Vec::new()));
+    let writer = Written(written.clone());
+    let writer = PersistentLayerWriter::<_, K, V>::new(writer, items.len(), LAYER_BLOCK);
+    let mut writer = writer.await.expect("a writer");
+    for item in items {
+        writer.write(item.as_item_ref()).await.ok()?;
+    }
+    writer.complete().await.expect("completing");
+    Some(std::mem::take(&mut *written.lock().unwrap()))
+}
+
+/// What a layer's writer writes, kept.
+struct Written(Arc<Mutex<Vec<u8>>>);
+
+impl WriteBytes for Written {
+    fn block_size(&self) -> BlockSize {
+        LAYER_BLOCK
+    }
+
+    async fn write_bytes(&mut self, buf: &[u8]) -> Result<(), Error> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(())
+    }
+
+    async fn complete(self) -> Result<u64, Error> {
+        Ok(self.0.lock().unwrap().len() as u64)
+    }
+
+    async fn skip(&mut self, amount: u64) -> Result<(), Error> {
+        let mut written = self.0.lock().unwrap();
+        let len = written.len() + amount as usize;
+        written.resize(len, 0);
+        Ok(())
     }
 }
 
@@ -689,41 +950,99 @@ fn damage_extent(
     }
 }
 
-/// Mounts `case` read-only, which changes nothing, to see what a checking tool would: what it is
-/// that came of the case.
-async fn read_only(image: &Image, case: Case) -> Outcome {
-    let mut outcome = Outcome::default();
-    let device = DeviceHolder::new(image.damaged(case));
-    let Ok(filesystem) = builder(image.barriers, true).open(device).await else {
-        outcome.refused = 1;
-        return outcome;
+/// What a read-only mount of an image came to.
+#[derive(Clone, Copy, Debug, Default)]
+struct Seen {
+    /// The mount, or the volume's, failed.
+    refused: bool,
+    /// Fsck failed.
+    caught: bool,
+    /// How many reads of the volume failed.
+    errors: u64,
+    /// The volume read as it was.
+    same: bool,
+}
+
+impl Seen {
+    /// Whether the volume read differently, with nothing saying so.
+    fn different(&self) -> bool {
+        !self.refused && self.errors == 0 && !self.same
+    }
+
+    /// What came of the case, the first of refused, caught, failed, same and different.
+    fn outcome(&self) -> Outcome {
+        let mut outcome = Outcome::default();
+        if self.refused {
+            outcome.refused = 1;
+        } else if self.caught {
+            outcome.caught = 1;
+        } else if self.errors > 0 {
+            outcome.failed = 1;
+        } else if self.same {
+            outcome.same = 1;
+        } else {
+            outcome.different = 1;
+        }
+        outcome
+    }
+}
+
+/// Mounts `device` read-only, which changes nothing, to see what a checking tool would: what it
+/// is that came of the change to it.
+async fn read_only(image: &Image, device: FakeDevice) -> Seen {
+    let refused = Seen { refused: true, ..Seen::default() };
+    let Ok(filesystem) = builder(image.barriers, true).open(DeviceHolder::new(device)).await else {
+        return refused;
     };
     let caught = checked(&filesystem).await.is_err();
     let fs = volume_of(&filesystem, true).await;
-    match &fs {
-        Err(_) => outcome.refused = 1,
+    let seen = match &fs {
+        Err(_) => Seen { caught, ..refused },
         Ok(fs) => {
             let (reading, errors) = read_volume(fs, fs.volume.root_directory_object_id()).await;
-            if caught {
-                outcome.caught = 1;
-            } else if errors > 0 {
-                outcome.failed = 1;
-            } else if reading == image.reading {
-                outcome.same = 1;
-            } else {
-                outcome.different = 1;
-            }
+            Seen { refused: false, caught, errors, same: reading == image.reading }
         }
-    }
+    };
     unmount(fs.ok(), filesystem).await;
-    outcome
+    seen
 }
 
-/// Mounts `case` writably, as a guest would, reads it, changes it and checks it. A filesystem that
-/// mounted may fail any of it.
-async fn writable(image: &Image, case: Case, outcome: &mut Outcome) {
-    let device = DeviceHolder::new(image.damaged(case));
-    let Ok(filesystem) = builder(image.barriers, false).open(device).await else { return };
+/// Whether a scan of all a read-only mount of `device` holds fails: its stores' and its
+/// allocator's records, and the volume's.
+async fn scan_fails(image: &Image, device: FakeDevice) -> bool {
+    let Ok(filesystem) = builder(image.barriers, true).open(DeviceHolder::new(device)).await else {
+        return true;
+    };
+    let fs = volume_of(&filesystem, true).await;
+    let failed = match &fs {
+        Err(_) => true,
+        Ok(fs) => {
+            let layer_set = fs.volume.tree().layer_set();
+            let mut merger = layer_set.merger();
+            match merger.query(Query::FullScan).await {
+                Err(_) => true,
+                Ok(mut items) => loop {
+                    if items.get().is_none() {
+                        break false;
+                    }
+                    if items.advance().await.is_err() {
+                        break true;
+                    }
+                },
+            }
+        }
+    };
+    unmount(fs.ok(), filesystem).await;
+    failed
+}
+
+/// Mounts `device` writably, as a guest would, reads it, changes it and checks it. A filesystem
+/// that mounted may fail any of it.
+async fn writable(image: &Image, device: FakeDevice, outcome: &mut Outcome) {
+    let Ok(filesystem) = builder(image.barriers, false).open(DeviceHolder::new(device)).await
+    else {
+        return;
+    };
     let fs = volume_of(&filesystem, false).await.ok();
     if let Some(fs) = &fs {
         let root = fs.volume.root_directory_object_id();
@@ -741,8 +1060,8 @@ async fn writable(image: &Image, case: Case, outcome: &mut Outcome) {
 }
 
 async fn try_case(image: &Image, case: Case) -> Outcome {
-    let mut outcome = read_only(image, case).await;
-    writable(image, case, &mut outcome).await;
+    let mut outcome = read_only(image, image.damaged(case)).await.outcome();
+    writable(image, image.damaged(case), &mut outcome).await;
     outcome
 }
 
@@ -812,6 +1131,49 @@ fn flips_in_a_closed_image_with_barriers() {
 #[test]
 fn flips_in_a_crashed_image_with_barriers() {
     flips_never_panic(true, Ending::Crashed);
+}
+
+/// Records no layer may hold, each written into a layer file as a writer would have written it,
+/// which no check of a layer's bytes can find: none panics, each is refused as its layer is read,
+/// by the mount or by a scan of the volume, and none reads differently with nothing saying so but
+/// as `Record::never_read_differently` says (TASK-153.12).
+#[test]
+fn records_no_layer_may_hold_fail_what_reads_them() {
+    let image = run_case(Image::new(false, Ending::Closed)).expect("an image");
+    count_panics();
+    let watched = watch_sequences(CASE_LIMIT);
+    LIMIT.store(HELD.load(Ordering::Relaxed) + MOST_HELD, Ordering::Relaxed);
+    let mut wrong = Vec::new();
+    for record in Record::ALL {
+        let mut tally = Outcome::default();
+        for seed in 0..RECORD_CASES {
+            let said = format!("{record:?}, seed {seed}");
+            watched.send(said.clone()).expect("the watchdog stopped");
+            *CASE.lock().unwrap() = Some(said.clone());
+            let seen = run_case(async {
+                let seen = read_only(&image, image.with_record(record, seed).await).await;
+                let scan_failed = scan_fails(&image, image.with_record(record, seed).await).await;
+                let mut outcome = seen.outcome();
+                writable(&image, image.with_record(record, seed).await, &mut outcome).await;
+                (seen, scan_failed, outcome)
+            });
+            // A panic is counted where it was.
+            let Some((seen, scan_failed, outcome)) = seen else { continue };
+            tally.add(&outcome);
+            let differed = seen.different() && record.never_read_differently();
+            if !(seen.refused || scan_failed) || differed {
+                wrong.push(format!("{said}: {seen:?}, scan failed {scan_failed}"));
+            }
+        }
+        println!("{record:?}: {RECORD_CASES} cases: {tally:?}");
+    }
+    LIMIT.store(0, Ordering::Relaxed);
+    let panics = std::mem::take(&mut *PANICS.lock().unwrap());
+    for (place, (count, first)) in &panics {
+        println!("{count} panics at {place}: first {first}");
+    }
+    assert_eq!(panics.len(), 0, "{panics:#?}");
+    assert_eq!(wrong, Vec::<String>::new());
 }
 
 /// The images are what they say: flips of one that differed only in name would prove nothing more.

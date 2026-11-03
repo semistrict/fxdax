@@ -22,6 +22,7 @@ storage_device.workspace = true
 fuchsia.workspace = true
 proptest.workspace = true
 rand.workspace = true
+storage_units.workspace = true
 
 [lints]
 workspace = true

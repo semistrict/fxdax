@@ -1353,6 +1353,7 @@ dependencies = [
  "rand 0.10.3",
  "rustc-hash",
  "storage_device",
+ "storage_units",
 ]
 
 [[package]]
