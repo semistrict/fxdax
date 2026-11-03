@@ -170,7 +170,6 @@ mod ledger;
 mod lineage;
 mod mem;
 mod segments;
-mod spent;
 mod state;
 mod store;
 mod sync;

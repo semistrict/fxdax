@@ -20,12 +20,12 @@ use crate::layout::{
     Change, Data, EXTENTS, Extent, FileKey, Piece, SegmentId, branch_dir, extent_path,
 };
 use crate::segments::{Closing, Segments};
-use crate::spent::Spent;
 use crate::store::{Info, NoSpace, TooSmall};
 use crate::sync::rules;
 use crate::uploads::Uploads;
 use crate::views::{Keeping, NotHeld, Sealed};
 use anyhow::{Error, bail};
+use extent_frame::spent::Spent;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use storage_device::{ExtentId, NoExtent};

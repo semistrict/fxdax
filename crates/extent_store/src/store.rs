@@ -1186,6 +1186,18 @@ impl<D: Dir> Store<D> {
         Ok(())
     }
 
+    /// fxdax: spends what `spent` says of the store's branch, as its commits would have: its
+    /// extents freed where else it is kept, which a store taking it there knows of by this alone,
+    /// and writes no more (TASK-150.6). Its next commit keeps it, in a checkpoint.
+    pub fn spend(&self, spent: &extent_frame::spent::Spent) -> Result<(), Error> {
+        let mut state = self.writable()?;
+        for (start, end) in spent.runs() {
+            state.spent.insert_run(start, end);
+        }
+        state.index.want_checkpoint();
+        Ok(())
+    }
+
     /// fxdax: what the store holds as of now.
     pub fn snapshot(&self) -> Result<Snapshot, Error> {
         let state = self.state()?;

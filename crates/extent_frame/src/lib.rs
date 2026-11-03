@@ -15,6 +15,7 @@
 //! extents are ([`table`]).
 
 pub mod segment;
+pub mod spent;
 pub mod table;
 
 use std::ops::Range;

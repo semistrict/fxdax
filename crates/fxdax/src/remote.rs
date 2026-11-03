@@ -1231,6 +1231,7 @@ impl Shared {
         for (extent, location) in &state.extents {
             self.store.adopt(*extent, location.len)?;
         }
+        self.store.spend(&state.spent)?;
         self.store.commit(Some(state.root.as_deref().unwrap_or_default()))?;
         self.marker().write(state.last_commit, [])
     }
@@ -2813,6 +2814,41 @@ mod tests {
         let forked = ExtentStore::open(dir.path().join("child")).unwrap();
         assert_eq!(forked.attach_remote(bucket.clone(), 2, idle()), Ok(()));
         assert_eq!(forked.root(), Ok(b"root".to_vec()));
+    }
+
+    /// TASK-150.6: an extent's ID is its branch's to write once, on any host: one sealed and freed
+    /// is spent on a host that takes the branch, whose local index knows nothing of it, whether
+    /// the branch's state there comes from a checkpoint or from its segments' footers; and one
+    /// freed while open, never sealed, as a journal's tail is, is written still.
+    #[test]
+    fn extents_freed_are_spent_on_the_host_that_takes_their_branch() {
+        for checkpointed in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
+            let first = ExtentStore::create(dir.path().join("first"), 1 << 30).unwrap();
+            let branch = first.branch();
+            first.attach_remote(bucket.clone(), 1, idle()).unwrap();
+            let sealed = write(&first, 1, &pattern(1, BLOCK));
+            first.commit(Some(b"root")).unwrap();
+            first.free(sealed).unwrap();
+            let open = write(&first, 2, &pattern(2, BLOCK));
+            first.free(open).unwrap();
+            first.commit(None).unwrap();
+            // The store closing checkpoints the branch; a host lost doesn't.
+            if checkpointed {
+                drop(first);
+            } else {
+                std::mem::forget(first);
+            }
+
+            let taken = ExtentStore::create_for_branch(dir.path().join("taken"), 1 << 30, branch);
+            let taken = taken.unwrap();
+            taken.attach_remote(bucket, 2, idle()).unwrap();
+            let data = pattern(3, BLOCK);
+            let again = [crate::VolatileSlice::from(&data[..])];
+            assert_eq!(taken.write(sealed, 0, &again), Err(crate::Errno::EPERM), "{checkpointed}");
+            assert_eq!(taken.write(open, 0, &again), Ok(()), "{checkpointed}");
+        }
     }
 
     /// TASK-79.20: a store that took its branch, its host crashing before its marker named the

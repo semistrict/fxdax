@@ -9,14 +9,17 @@
 //! own and wrote the ID again would have them take its new data for the old, in another branch's.
 //! A sealed extent the branch holds is refused as sealed; one it freed, by this record, which its
 //! index keeps: a delta's frees, and a checkpoint's rows. Those minted and never written, as
-//! Fxfs's journal mints its tail's blocks ahead of its writes, across mounts, it may write.
+//! Fxfs's journal mints its tail's blocks ahead of its writes, across mounts, it may write. Object
+//! storage keeps it too, in a branch's state, so that a store taking the branch on another host
+//! has it (TASK-150.6).
 
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 /// Sequence numbers, as the runs they make: a branch frees most of what it wrote, sooner or later,
 /// so that the runs are few, the gaps the extents it holds.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct Spent {
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Spent {
     /// Each run's end, past its last, by its first.
     runs: BTreeMap<u64, u64>,
 }

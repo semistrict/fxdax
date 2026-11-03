@@ -17,9 +17,9 @@ use crate::layout::{
     segment_path,
 };
 use crate::segments::{Reaped, footer_last, segment_footer};
-use crate::spent::Spent;
 use crate::store::Options;
 use anyhow::{Error, anyhow, bail, ensure};
+use extent_frame::spent::Spent;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use storage_device::ExtentId;

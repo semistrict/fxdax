@@ -21,6 +21,7 @@
 use crate::bucket::{self, Bucket};
 use crate::layout::{self, Footer, Fork, Location, Origin, Record, Segment};
 use crate::{Error, object, rules};
+use extent_frame::spent::Spent;
 use futures::future::{BoxFuture, FutureExt as _, Shared};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
@@ -43,6 +44,9 @@ pub struct State {
     pub epoch: u64,
     /// The last segment applied.
     pub through: Option<u64>,
+    /// The branch's own extents it held and freed, whose IDs it writes no more, for a store taking
+    /// it on another host, which its local index isn't on (TASK-150.6).
+    pub spent: Spent,
 }
 
 impl State {
@@ -57,6 +61,7 @@ impl State {
             forks: Vec::new(),
             epoch: 0,
             through: None,
+            spent: Spent::default(),
         }
     }
 
@@ -80,8 +85,12 @@ impl State {
         for (extent, location) in &footer.own {
             self.extents.insert(*extent, location.clone());
         }
+        // Those it held: a footer frees extents freed while open too, which may be written anew.
+        // One sealed and freed in one segment no other branch or host ever saw.
         for extent in &footer.frees {
-            self.extents.remove(extent);
+            if self.extents.remove(extent).is_some() && extent.branch == self.branch {
+                self.spent.insert(extent.sequence);
+            }
         }
         if let Some(root) = &footer.root {
             self.root = Some(root.clone());
