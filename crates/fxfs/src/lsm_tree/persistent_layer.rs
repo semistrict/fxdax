@@ -368,10 +368,18 @@ impl<K: Key, V: LayerValue, B: LayerBuffer> KeyOnlyIterator<'_, K, V, B> {
         // (`LayerKey::is_valid_item`, TASK-153.12). The block size is the store's, which its
         // layers are written in.
         if !key.is_valid_item(&value, self.layer.block_size) {
-            return Err(self.corruption_error(format!("{key:?} can't hold {value:?}")))
-                .context("Corrupt layer (item)");
+            return Err(self.invalid_item(&key, &value));
         }
         Ok(Some(Item { key, value }))
+    }
+
+    /// fxdax: what refuses an item no layer may hold (`take_item`), out of the way of what reads
+    /// one: no layer Fxfs writes holds one.
+    #[cold]
+    #[inline(never)]
+    fn invalid_item(&self, key: &K, value: &V) -> Error {
+        self.corruption_error(format!("{key:?} can't hold {value:?}"))
+            .context("Corrupt layer (item)")
     }
 
     fn read_block_header(&mut self) -> Result<(), Error> {
@@ -536,11 +544,19 @@ impl<'iter, K: Key, V: LayerValue, B: LayerBuffer> Iterator<'iter, K, V, B> {
         if let (Some(last), Some(next)) = (&self.item, &next)
             && !follows(&next.key, &last.key)
         {
-            let error = format!("{:?} follows {:?}", next.key, last.key);
-            return Err(self.inner.corruption_error(error)).context("Corrupt layer (key order)");
+            return Err(self.out_of_order(&next.key, &last.key));
         }
         self.item = next;
         Ok(())
+    }
+
+    /// fxdax: what refuses a key out of order (`take_next`), out of the way of what reads one.
+    #[cold]
+    #[inline(never)]
+    fn out_of_order(&self, next: &K, last: &K) -> Error {
+        self.inner
+            .corruption_error(format!("{next:?} follows {last:?}"))
+            .context("Corrupt layer (key order)")
     }
 }
 
