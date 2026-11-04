@@ -5,6 +5,11 @@
 //! A VM process's side of a connection: an extent store the daemon serves, and the store's window
 //! in the VM's memory.
 
+pub(crate) use super::codec::Opening;
+use super::codec::{
+    Advanced, Area, Data, Encoded, Fault, Info, Made, Opened, ReadInto, Request, StageOp, Told,
+    stream_bytes,
+};
 use super::wire::*;
 use crate::dax::Faults;
 use crate::dax::uffd::{FaultThread, UffdSecondStage};
@@ -15,9 +20,9 @@ use crate::{
 };
 use futures::channel::oneshot;
 use futures::future::BoxFuture;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::os::fd::{AsFd, OwnedFd};
-use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::ptr::NonNull;
@@ -39,17 +44,6 @@ pub struct RemoteExtentStore {
     /// Its transfer area, which reads and writes move their data through ([`TRANSFER`]), unless
     /// the daemon took none.
     transfer: Option<Transfer>,
-}
-
-/// How a connection opens its store ([`OPEN`]).
-pub(crate) enum Opening<'a> {
-    /// Created with this many bytes of capacity if it doesn't exist.
-    Create(u64),
-    /// Forked from the store at this path if it doesn't exist, of this branch and capacity, which
-    /// the daemon takes from its bucket if it doesn't exist either.
-    ForkFrom(&'a Path, u64, u64),
-    /// fxdax: followed, read-only (backlog doc-8).
-    ReadOnly,
 }
 
 impl RemoteExtentStore {
@@ -88,7 +82,9 @@ impl RemoteExtentStore {
                 socket.as_ref().display()
             )))
         })?;
-        Self::over(stream, store.as_ref(), Opening::ForkFrom(from.as_ref(), from_branch, capacity))
+        let from = from.as_ref().to_owned();
+        let opening = Opening::ForkFrom { from, branch: from_branch, capacity };
+        Self::over(stream, store.as_ref(), opening)
     }
 
     /// fxdax: a follower of the store at `store` that the daemon listening at `socket` serves
@@ -111,20 +107,9 @@ impl RemoteExtentStore {
     /// The store at `store`, served over `stream`.
     pub(crate) fn over(stream: UnixStream, store: &Path, opening: Opening) -> Result<Self, Error> {
         let client = Client::start(stream).map_err(Error::new)?;
-        let mut path = store.as_os_str().as_bytes().to_vec();
         let read_only = matches!(opening, Opening::ReadOnly);
-        let open = match opening {
-            Opening::Create(capacity) => {
-                Header::new(OPEN, 0).with_args(&[capacity]).with_flags(OPEN_CREATE)
-            }
-            Opening::ForkFrom(from, branch, capacity) => {
-                path.push(0);
-                path.extend_from_slice(from.as_os_str().as_bytes());
-                Header::new(OPEN, 0).with_args(&[capacity, branch]).with_flags(OPEN_FORK_FROM)
-            }
-            Opening::ReadOnly => Header::new(OPEN, 0).with_flags(OPEN_READ_ONLY),
-        };
-        let reply = client.call_blocking(open, &path).map_err(|errno| {
+        let open = Request::Open { path: store.to_owned(), opening };
+        let reply = client.request_blocking(&open).map_err(|errno| {
             client.sender.shutdown();
             Error::new(
                 anyhow::Error::new(errno)
@@ -135,18 +120,15 @@ impl RemoteExtentStore {
         let (Some(own), Some(public)) = (fds.next(), fds.next()) else {
             return Err(Error::msg("the daemon sent no physical memory"));
         };
-        let arena = u32::try_from(reply.header.args[1])
+        let Opened { branch, arena, epoch } = Opened::from_args(reply.header.args)
             .map_err(|_| Error::msg("the daemon named no arena"))?;
         // Its tenant's arena, and the default one, read-only.
-        let memories =
-            vec![(crate::pages::ArenaId(arena), own), (crate::pages::ArenaId::DEFAULT, public)];
+        let memories = vec![(arena, own), (crate::pages::ArenaId::DEFAULT, public)];
         // A follower's view's commit, which it has heard of.
-        client.committed.fetch_max(reply.header.args[2], Ordering::AcqRel);
-        let branch = reply.header.args[0];
+        client.committed.fetch_max(epoch, Ordering::AcqRel);
         // fxdax: its build, which the daemon's metrics show (TASK-111.7): a daemon older than that
         // refuses it, which costs nothing.
-        let build = Header::new(BUILD, 0);
-        if let Err(errno) = client.call_blocking(build, crate::BUILD_COMMIT.as_bytes()) {
+        if let Err(errno) = client.request_blocking(&Request::Build(crate::BUILD_COMMIT)) {
             log::debug!("extentd: the daemon took no build ({}): {errno:?}", crate::BUILD_COMMIT);
         }
         let transfer = match Transfer::give(&client) {
@@ -188,7 +170,8 @@ impl RemoteExtentStore {
 
     /// [`RemoteExtentStore::advance`], waiting for the daemon holding no thread.
     pub async fn advance_async(&self) -> Result<u64> {
-        Ok(self.client.call(Header::new(ADVANCE, 0), &[]).await?.header.args[0])
+        let reply = self.client.request(&Request::Advance).await?;
+        Ok(Advanced::from_args(reply.header.args).epoch)
     }
 
     /// fxdax: lets go of what a follower's view held of the commits before the commit of
@@ -199,8 +182,7 @@ impl RemoteExtentStore {
 
     /// [`RemoteExtentStore::let_go`], waiting for the daemon holding no thread.
     pub async fn let_go_async(&self, epoch: u64) -> Result<()> {
-        let header = Header::new(LET_GO, 0).with_args(&[epoch]);
-        self.client.call(header, &[]).await.map(drop)
+        self.client.request(&Request::LetGo { epoch }).await.map(drop)
     }
 
     /// fxdax: keeps `extent`, which a follower's view holds, whatever commit it advances to, until
@@ -211,8 +193,7 @@ impl RemoteExtentStore {
 
     /// [`RemoteExtentStore::pin`], waiting for the daemon holding no thread.
     pub async fn pin_async(&self, extent: ExtentId) -> Result<()> {
-        let header = Header::new(PIN, 0).with_args(&[extent.branch, extent.sequence]);
-        self.client.call(header, &[]).await.map(drop)
+        self.client.request(&Request::Pin(extent)).await.map(drop)
     }
 
     /// fxdax: lets go of `extent`, pinned (`UNPIN`).
@@ -222,8 +203,7 @@ impl RemoteExtentStore {
 
     /// [`RemoteExtentStore::unpin`], waiting for the daemon holding no thread.
     pub async fn unpin_async(&self, extent: ExtentId) -> Result<()> {
-        let header = Header::new(UNPIN, 0).with_args(&[extent.branch, extent.sequence]);
-        self.client.call(header, &[]).await.map(drop)
+        self.client.request(&Request::Unpin(extent)).await.map(drop)
     }
 
     /// Calls `changed` with the store's capacity each time the daemon resizes it (the control API's `ResizeStore`), and
@@ -240,8 +220,7 @@ impl RemoteExtentStore {
 
     /// [`RemoteExtentStore::resized`], waiting for the daemon holding no thread.
     pub async fn resized_async(&self, capacity: u64, took: bool) -> Result<()> {
-        let header = Header::new(RESIZED, 0).with_args(&[capacity, took as u64]);
-        self.client.call(header, &[]).await.map(drop)
+        self.client.request(&Request::Resized { capacity, took }).await.map(drop)
     }
 
     /// fxdax: calls `asked` with the number of each ask the daemon makes of the guest to seal
@@ -261,8 +240,7 @@ impl RemoteExtentStore {
 
     /// [`RemoteExtentStore::sealed`], waiting for the daemon holding no thread.
     pub async fn sealed_async(&self, number: u64) -> Result<()> {
-        let header = Header::new(SEALED, 0).with_args(&[number]);
-        self.client.call(header, &[]).await.map(drop)
+        self.client.request(&Request::Sealed { number }).await.map(drop)
     }
 
     /// The branch whose extents the guest mints.
@@ -290,9 +268,7 @@ impl RemoteExtentStore {
 
     /// [`RemoteExtentStore::info`], waiting for the daemon holding no thread.
     pub async fn info_async(&self) -> Result<ExtentInfo> {
-        let [capacity, used, available, next_sequence, sequence_floor] =
-            self.client.call(Header::new(INFO, 0), &[]).await?.header.args;
-        Ok(ExtentInfo { capacity, used, available, next_sequence, sequence_floor })
+        Ok(Info::from_args(self.client.request(&Request::Info).await?.header.args).0)
     }
 
     /// Reads into `buffers` the bytes at `offset` in `extent` (`READ`).
@@ -313,11 +289,9 @@ impl RemoteExtentStore {
         buffers: &mut [VolatileSliceMut<'_>],
     ) -> Result<()> {
         let len: usize = buffers.iter().map(VolatileSliceMut::len).sum();
-        let args = [extent.branch, extent.sequence, offset, len as u64];
+        let read = |into| Request::Read { extent, offset, len: len as u64, into };
         if let Some(slot) = self.transfer.as_ref().and_then(|transfer| transfer.take(len)) {
-            let args = [extent.branch, extent.sequence, offset, len as u64, slot.offset()];
-            let header = Header::new(READ, 0).with_args(&args).with_flags(READ_TRANSFER);
-            self.client.call(header, &[]).await?;
+            self.client.request(&read(ReadInto::Transfer { at: slot.offset() })).await?;
             let data = slot.bytes(len);
             let mut at = 0;
             for buffer in buffers {
@@ -325,7 +299,7 @@ impl RemoteExtentStore {
             }
             return Ok(());
         }
-        let reply = self.client.call(Header::new(READ, 0).with_args(&args), &[]).await?;
+        let reply = self.client.request(&read(ReadInto::Reply)).await?;
         if reply.payload.len() != len {
             return Err(Errno::EIO);
         }
@@ -362,35 +336,21 @@ impl RemoteExtentStore {
         barriers: WriteBarriers<'_>,
     ) -> Result<()> {
         let len = buffers.iter().map(VolatileSlice::len).sum();
-        let mut flags = if barriers.before { WRITE_BARRIER } else { 0 };
-        flags |= match barriers.after {
-            None => 0,
-            Some(Commit::Ordered) => WRITE_COMMIT,
-            Some(Commit::Durable) => WRITE_COMMIT | WRITE_DURABLE,
-        };
-        // fxdax: the root the commit sets, after the data in the payload (`WRITE_ROOT`).
-        let root = barriers.root.unwrap_or_default();
-        if barriers.root.is_some() {
-            flags |= WRITE_ROOT;
-        }
         let gather = |data: &mut [u8]| {
             let mut at = 0;
             for buffer in buffers {
                 at += buffer.copy_to(&mut data[at..]);
             }
         };
+        let write = |data| Request::Write { extent, offset, data, barriers };
         if let Some(mut slot) = self.transfer.as_ref().and_then(|transfer| transfer.take(len)) {
             gather(slot.bytes_mut(len));
-            let args = [extent.branch, extent.sequence, offset, slot.offset(), len as u64];
-            let header = Header::new(WRITE, 0).with_args(&args).with_flags(flags | WRITE_TRANSFER);
-            return self.client.call(header, root).await.map(drop);
+            let data = Data::Transfer { at: slot.offset(), len: len as u64 };
+            return self.client.request(&write(data)).await.map(drop);
         }
-        let mut data = vec![0; len + root.len()];
-        gather(&mut data[..len]);
-        data[len..].copy_from_slice(root);
-        let args = [extent.branch, extent.sequence, offset, 0, len as u64];
-        let header = Header::new(WRITE, 0).with_args(&args).with_flags(flags);
-        self.client.call(header, &data).await.map(drop)
+        let mut data = vec![0; len];
+        gather(&mut data);
+        self.client.request(&write(Data::Inline(&data))).await.map(drop)
     }
 
     /// How many reads and writes moved their data through the transfer area.
@@ -406,7 +366,8 @@ impl RemoteExtentStore {
         std::iter::from_fn(|| transfer.take(1)).collect()
     }
 
-    /// Sends `header`, `payload` and `fds`, a request, and returns its reply.
+    /// Sends `header`, `payload` and `fds`, a request, as they are, however malformed, and
+    /// returns its reply.
     #[cfg(test)]
     pub(super) fn call(
         &self,
@@ -414,7 +375,7 @@ impl RemoteExtentStore {
         payload: &[u8],
         fds: &[std::os::fd::BorrowedFd<'_>],
     ) -> std::result::Result<Message, Errno> {
-        blocking(self.client.call_with_fds(header, payload, fds))
+        blocking(self.client.call(header, &[payload], fds))
     }
 
     /// Frees `extent` (`FREE`).
@@ -424,8 +385,7 @@ impl RemoteExtentStore {
 
     /// [`RemoteExtentStore::free`], waiting for the daemon holding no thread.
     pub async fn free_async(&self, extent: ExtentId) -> Result<()> {
-        let header = Header::new(FREE, 0).with_args(&[extent.branch, extent.sequence]);
-        self.client.call(header, &[]).await.map(drop)
+        self.client.request(&Request::Free(extent)).await.map(drop)
     }
 
     /// fxdax: frees `extents`, each as [`RemoteExtentStore::free`] does, in order: the first that
@@ -441,10 +401,14 @@ impl RemoteExtentStore {
         // Each request names its first extent in its arguments, and those after it its payload.
         let most = 1 + MAX_PAYLOAD as usize / EXTENT_ID_BYTES;
         for extents in extents.chunks(most) {
-            let (first, rest) = extents.split_first().expect("chunks aren't empty");
-            let kind = if rest.is_empty() { FREE } else { FREE_MANY };
-            let header = Header::new(kind, 0).with_args(&[first.branch, first.sequence]);
-            self.client.call(header, &extent_ids_payload(rest)).await?;
+            let free = match extents {
+                [first] => Request::Free(*first),
+                [first, rest @ ..] => {
+                    Request::FreeMany { first: *first, rest: Cow::Borrowed(rest) }
+                }
+                [] => unreachable!("chunks aren't empty"),
+            };
+            self.client.request(&free).await?;
         }
         Ok(())
     }
@@ -464,12 +428,7 @@ impl RemoteExtentStore {
     /// the daemon holding no thread ([`RemoteExtentStore::commit`],
     /// [`RemoteExtentStore::commit_ordered`]).
     pub async fn commit_async(&self, root: Option<&[u8]>, commit: Commit) -> Result<()> {
-        let mut flags = if root.is_some() { COMMIT_ROOT } else { 0 };
-        if commit == Commit::Durable {
-            flags |= COMMIT_DURABLE;
-        }
-        let header = Header::new(COMMIT, 0).with_flags(flags);
-        self.client.call(header, root.unwrap_or_default()).await.map(drop)
+        self.client.request(&Request::Commit { commit, root }).await.map(drop)
     }
 
     /// The root as of the last commit (`ROOT`).
@@ -479,14 +438,14 @@ impl RemoteExtentStore {
 
     /// [`RemoteExtentStore::root`], waiting for the daemon holding no thread.
     pub async fn root_async(&self) -> Result<Vec<u8>> {
-        Ok(self.client.call(Header::new(ROOT, 0), &[]).await?.payload)
+        Ok(self.client.request(&Request::Root).await?.payload)
     }
 
     /// Forks the store, as of its last commit made durable, to a new branch `branch`, whose handle
     /// is a new directory at `path`, which the daemon serves sharing the store's pages (`FORK`).
     pub fn fork(&self, path: &Path, branch: u64) -> Result<()> {
-        let header = Header::new(FORK, 0).with_args(&[branch]);
-        self.client.call_blocking(header, path.as_os_str().as_bytes()).map(drop)
+        let fork = Request::Fork { path: path.to_owned(), branch, quiescent: false };
+        self.client.request_blocking(&fork).map(drop)
     }
 
     /// Makes a point of the store ([`ExtentStore::point`](crate::ExtentStore::point)), at `path`,
@@ -495,51 +454,21 @@ impl RemoteExtentStore {
     /// filesystem frozen, `EBUSY` otherwise: what a snapshot of the VM is taken at, which any
     /// number of hosts restore at once, and none writes.
     pub fn fork_quiescent(&self, path: &Path, branch: u64) -> Result<()> {
-        let header = Header::new(FORK, 0).with_args(&[branch]).with_flags(FORK_QUIESCENT);
-        self.client.call_blocking(header, path.as_os_str().as_bytes()).map(drop)
+        let point = Request::Fork { path: path.to_owned(), branch, quiescent: true };
+        self.client.request_blocking(&point).map(drop)
     }
 
     /// The window's mappings, which a snapshot of the VM records (`MAPPINGS`).
     pub fn window_mappings(&self) -> Result<Vec<WindowMapping>> {
-        let payload = self.client.call_blocking(Header::new(MAPPINGS, 0), &[])?.payload;
-        if !payload.len().is_multiple_of(MAPPING_BYTES as usize) {
-            return Err(Errno::EIO);
-        }
-        let words: Vec<u64> = payload
-            .chunks_exact(8)
-            .map(|word| u64::from_le_bytes(word.try_into().unwrap()))
-            .collect();
-        Ok(words
-            .chunks_exact(6)
-            .map(|mapping| WindowMapping {
-                window_offset: mapping[0],
-                len: mapping[1],
-                contents: if mapping[5] & MAPPING_ZEROS != 0 {
-                    MappingContents::Zeros
-                } else {
-                    MappingContents::Extent {
-                        extent: ExtentId { branch: mapping[2], sequence: mapping[3] },
-                        offset: mapping[4],
-                        writable: mapping[5] & MAPPING_WRITABLE != 0,
-                    }
-                },
-            })
-            .collect())
+        let payload = self.client.request_blocking(&Request::Mappings)?.payload;
+        // A reply the daemon malformed.
+        super::codec::mappings(&payload).map_err(|_| Errno::EIO)
     }
 
     /// Maps `mapping`, one of a snapshot's [`window_mappings`](RemoteExtentStore::window_mappings),
     /// again, at the same offset in the window: its extent's bytes, or zeros (`MAP`).
     pub fn map_again(&self, mapping: &WindowMapping) -> Result<()> {
-        match mapping.contents {
-            MappingContents::Extent { extent, offset, writable } => {
-                self.map(extent, offset, mapping.len, mapping.window_offset, writable)
-            }
-            MappingContents::Zeros => {
-                let args = [0, 0, 0, mapping.len, mapping.window_offset];
-                let header = Header::new(MAP, 0).with_args(&args).with_flags(MAP_ZEROS);
-                self.client.call_blocking(header, &[]).map(drop)
-            }
-        }
+        self.client.request_blocking(&Request::Map(*mapping)).map(drop)
     }
 
     /// Maps `len` bytes at `offset` in `extent` into the window at `window_offset` (`MAP`).
@@ -563,12 +492,9 @@ impl RemoteExtentStore {
         window_offset: u64,
         writable: bool,
     ) -> Result<()> {
-        let args = [extent.branch, extent.sequence, offset, len, window_offset];
-        let flags = if writable { MAP_WRITABLE } else { 0 };
-        self.client
-            .call(Header::new(MAP, 0).with_args(&args).with_flags(flags), &[])
-            .await
-            .map(drop)
+        let contents = MappingContents::Extent { extent, offset, writable };
+        let map = Request::Map(WindowMapping { window_offset, len, contents });
+        self.client.request(&map).await.map(drop)
     }
 
     /// fxdax: maps the pages of the window's `len` bytes at `window_offset` that its memory holds
@@ -588,8 +514,7 @@ impl RemoteExtentStore {
 
     /// [`RemoteExtentStore::unmap`], waiting for the daemon holding no thread.
     pub async fn unmap_async(&self, window_offset: u64, len: u64) -> Result<()> {
-        let header = Header::new(UNMAP, 0).with_args(&[window_offset, len]);
-        self.client.call(header, &[]).await.map(drop)
+        self.client.request(&Request::Unmap { window_offset, len }).await.map(drop)
     }
 
     /// fxdax: the stage operations this process made of the store's window so far, and the
@@ -637,7 +562,7 @@ impl RemoteExtentStore {
         // SAFETY: As the caller promises.
         let stage = unsafe { UffdSecondStage::new(base.as_ptr() as usize, size, phys, prefault) }?;
         let _ = self.client.stage.set(stage.clone());
-        self.client.call_blocking(Header::new(WINDOW, 0).with_args(&[size]), &[])?;
+        self.client.request_blocking(&Request::Window { size })?;
         *faults = Some(stage.serve(Arc::new(RemoteFaults { client: self.client.clone(), size }))?);
         Ok(())
     }
@@ -754,22 +679,28 @@ impl Client {
         Ok(client)
     }
 
-    /// Sends `header` and `payload`, a request, and returns its reply.
-    fn call(&self, header: Header, payload: &[u8]) -> BoxFuture<'static, Reply> {
-        self.call_with_fds(header, payload, &[])
+    /// Sends `request`, encoded ([`Request::encode`]), and returns its reply.
+    fn request(&self, request: &Request<'_>) -> BoxFuture<'static, Reply> {
+        let Encoded { header, payload, fd } = request.encode();
+        let payload = payload.each_ref().map(|part| &**part);
+        self.call(header, &payload, fd.as_slice())
     }
 
-    /// Sends `header`, `payload` and `fds`, a request, and returns its reply: once the protocol's
-    /// bounds of what is in flight leave room for it, waiting for replies to make it, but on the
-    /// thread receiving them (TASK-79.16).
-    fn call_with_fds(
+    fn request_blocking(&self, request: &Request<'_>) -> Reply {
+        blocking(self.request(request))
+    }
+
+    /// Sends `header`, `payload`'s parts and `fds`, a request, and returns its reply: once the
+    /// protocol's bounds of what is in flight leave room for it, waiting for replies to make it,
+    /// but on the thread receiving them (TASK-79.16).
+    fn call(
         &self,
         mut header: Header,
-        payload: &[u8],
+        payload: &[&[u8]],
         fds: &[std::os::fd::BorrowedFd<'_>],
     ) -> BoxFuture<'static, Reply> {
         header.id = self.next.fetch_add(1, Ordering::Relaxed);
-        header.len = payload.len() as u64;
+        header.len = payload.iter().map(|part| part.len() as u64).sum();
         let bytes = stream_bytes(&header);
         let (reply, replied) = oneshot::channel();
         {
@@ -789,7 +720,7 @@ impl Client {
                 None => return Box::pin(std::future::ready(Err(Errno::EIO))),
             }
         }
-        if let Err(err) = self.sender.send(header, payload, fds) {
+        if let Err(err) = self.sender.send_parts(header, payload, fds) {
             log::error!("sending to the extent daemon: {err}");
             self.answered(header.id);
             return Box::pin(std::future::ready(Err(Errno::EIO)));
@@ -811,10 +742,6 @@ impl Client {
             self.room.notify_all();
         }
         answered
-    }
-
-    fn call_blocking(&self, header: Header, payload: &[u8]) -> Reply {
-        blocking(self.call(header, payload))
     }
 
     /// Receives from the daemon until it closes the connection: makes the stage operations, in
@@ -840,7 +767,7 @@ impl Client {
                     break;
                 }
             };
-            let mut header = message.header;
+            let header = message.header;
             if header.kind == REPLY {
                 let reply = match header.status {
                     0 => Ok(message),
@@ -851,37 +778,42 @@ impl Client {
                 }
                 continue;
             }
-            if header.kind == CAPACITY {
-                let ask = header.flags & CAPACITY_ASK != 0;
-                match self.capacity.get() {
-                    Some(changed) => changed(header.args[0], ask),
-                    // No guest to ask: it refuses.
-                    None if ask => {
-                        let answer = Header::new(RESIZED, 0).with_args(&[header.args[0], 0]);
-                        drop(self.call(answer, &[]));
+            // fxdax: as the codec has it, which refuses what the daemon gives no meaning
+            // (TASK-160.9).
+            let mut stage = match Told::decode(&header) {
+                Ok(Told::Stage(stage)) => stage,
+                Ok(Told::Capacity { capacity, ask }) => {
+                    match self.capacity.get() {
+                        Some(changed) => changed(capacity, ask),
+                        // No guest to ask: it refuses.
+                        None if ask => {
+                            drop(self.request(&Request::Resized { capacity, took: false }));
+                        }
+                        None => {}
                     }
-                    None => {}
+                    continue;
                 }
-                continue;
-            }
-            if header.kind == SEAL {
-                let number = header.args[0];
-                // No guest told: nothing seals, which it says at once.
-                if !self.on_seal.get().is_some_and(|asked| asked(number)) {
-                    drop(self.call(Header::new(SEALED, 0).with_args(&[number]), &[]));
+                Ok(Told::Seal { number }) => {
+                    // No guest told: nothing seals, which it says at once.
+                    if !self.on_seal.get().is_some_and(|asked| asked(number)) {
+                        drop(self.request(&Request::Sealed { number }));
+                    }
+                    continue;
                 }
-                continue;
-            }
-            if header.kind == COMMITTED {
-                let epoch = header.args[0];
-                if self.committed.fetch_max(epoch, Ordering::AcqRel) < epoch
-                    && let Some(committed) = self.on_committed.get()
-                {
-                    committed(epoch);
+                Ok(Told::Committed { epoch }) => {
+                    if self.committed.fetch_max(epoch, Ordering::AcqRel) < epoch
+                        && let Some(committed) = self.on_committed.get()
+                    {
+                        committed(epoch);
+                    }
+                    continue;
                 }
-                continue;
-            }
-            let anew = match receiver.take_change(&mut header) {
+                Err(errno) => {
+                    log::error!("the extent daemon's message refused ({errno:?}): {header:?}");
+                    break;
+                }
+            };
+            let anew = match receiver.take_change(&mut stage) {
                 Ok(anew) => anew,
                 Err(err) => {
                     log::error!("receiving a change to the window: {err}");
@@ -889,22 +821,21 @@ impl Client {
                 }
             };
             let start = std::time::Instant::now();
-            let made =
-                if anew.is_empty() { self.make(&header) } else { self.remap(&header, &anew) };
+            let made = self.make(stage.op, &anew);
             self.stage_counts.count_since(start);
             let counts = self.stage_counts();
             if let Err(err) = made {
                 log::error!("making the extent daemon's change to the window: {err}");
                 break;
             }
-            let tell = if header.flags & STAGE_ACK != 0 {
-                Header::new(ACK, header.id)
+            let tell = if stage.op.taking() {
+                Made::Ack { id: stage.id, counts }
             } else if told.elapsed() >= STAGE_COUNTS_EVERY {
-                Header::new(STAGE_COUNTS, 0)
+                Made::Counts(counts)
             } else {
                 continue;
             };
-            if let Err(err) = self.sender.send(tell.with_args(&counts), &[], &[]) {
+            if let Err(err) = self.sender.send(tell.encode(), &[], &[]) {
                 log::error!("telling the extent daemon of the window's changes made: {err}");
                 break;
             }
@@ -931,7 +862,7 @@ impl Client {
         if counts[0] == 0 {
             return;
         }
-        let told = self.sender.send(Header::new(STAGE_COUNTS, 0).with_args(&counts), &[], &[]);
+        let told = self.sender.send(Made::Counts(counts).encode(), &[], &[]);
         // A daemon gone counts nothing more.
         if let Err(err) = told
             && !self.lost.load(Ordering::Acquire)
@@ -950,50 +881,21 @@ impl Client {
         [ops, ns, overwritten, left_out, write_protected]
     }
 
-    /// Makes the stage operation `header` says to the window.
-    fn make(&self, header: &Header) -> std::io::Result<()> {
+    /// Makes the stage operation `op` to the window; or, an unmap, with what follows it within
+    /// what it unmaps, `anew`, as [`Receiver::take_change`] takes them, at once (TASK-91.16).
+    fn make(&self, op: StageOp, anew: &[crate::dax::Anew]) -> std::io::Result<()> {
         let stage = self.stage.get().ok_or_else(|| std::io::Error::other("no window"))?;
-        let args = header.args;
-        match header.kind {
-            STAGE_MAP => {
-                let phys = phys_location(&args)?;
-                stage.map(args[0], phys, args[2], protection(args[3])?)
+        match op {
+            StageOp::Unmap { offset, len } if !anew.is_empty() => stage.remap(offset, len, anew),
+            StageOp::Map { offset, phys, len, protection } => {
+                stage.map(offset, phys, len, protection)
             }
-            STAGE_PROTECT => stage.protect(args[0], args[1], protection(args[2])?),
-            STAGE_UNMAP => stage.unmap(args[0], args[1]),
-            STAGE_MAPPED => stage.window_mapped(args[0], args[1]),
-            kind => return Err(std::io::Error::other(format!("an unknown message, {kind}"))),
+            StageOp::Protect { offset, len, protection } => stage.protect(offset, len, protection),
+            StageOp::Unmap { offset, len } => stage.unmap(offset, len),
+            StageOp::Mapped { offset, len } => stage.window_mapped(offset, len),
         }
         Ok(())
     }
-
-    /// fxdax: makes the stage unmap `unmap` and what follows it within what it unmaps, `anew`, as
-    /// [`Receiver::take_change`] takes them, at once (TASK-91.16).
-    fn remap(&self, unmap: &Header, anew: &[Header]) -> std::io::Result<()> {
-        let stage = self.stage.get().ok_or_else(|| std::io::Error::other("no window"))?;
-        let anew = (anew.iter())
-            .map(|header| {
-                let args = header.args;
-                Ok(match header.kind {
-                    STAGE_MAPPED => crate::dax::Anew::Mapped { offset: args[0], len: args[1] },
-                    _ => crate::dax::Anew::Map {
-                        offset: args[0],
-                        phys: phys_location(&args)?,
-                        len: args[2],
-                        protection: protection(args[3])?,
-                    },
-                })
-            })
-            .collect::<std::io::Result<Vec<_>>>()?;
-        stage.remap(unmap.args[0], unmap.args[1], &anew);
-        Ok(())
-    }
-}
-
-/// The physical memory a [`STAGE_MAP`] with `args` maps.
-fn phys_location(args: &[u64; 5]) -> std::io::Result<crate::pages::PhysLocation> {
-    let arena = crate::pages::ArenaId(u32::try_from(args[4]).map_err(std::io::Error::other)?);
-    Ok(crate::pages::PhysLocation { arena, offset: args[1] })
 }
 
 /// The requests a client sent that wait for replies, by ID, with their bytes of stream data
@@ -1112,8 +1014,8 @@ impl Transfer {
             free: Mutex::new((0..Self::SLOTS).rev().collect()),
             used: AtomicU64::new(0),
         };
-        let header = Header::new(TRANSFER, 0).with_args(&[len as u64]);
-        blocking(client.call_with_fds(header, &[], &[file.as_fd()]))
+        let area = Request::Transfer { len: len as u64, area: Area(file.as_fd()) };
+        client.request_blocking(&area)
             .map_err(|errno| std::io::Error::from_raw_os_error(errno.raw()))?;
         Ok(transfer)
     }
@@ -1187,10 +1089,8 @@ struct RemoteFaults {
 }
 
 impl RemoteFaults {
-    fn fault_with(&self, offset: u64, access: Access, flags: u32) -> BoxFuture<'_, Result<()>> {
-        let flags = flags | if access == Access::Write { FAULT_WRITE } else { 0 };
-        let reply =
-            self.client.call(Header::new(FAULT, 0).with_args(&[offset]).with_flags(flags), &[]);
+    fn fault_with(&self, offset: u64, access: Access, page: bool) -> BoxFuture<'_, Result<()>> {
+        let reply = self.client.request(&Request::Fault(Fault { offset, access, page }));
         Box::pin(async move { reply.await.map(drop) })
     }
 }
@@ -1201,10 +1101,10 @@ impl Faults for RemoteFaults {
     }
 
     fn fault(&self, offset: u64, access: Access) -> BoxFuture<'_, Result<()>> {
-        self.fault_with(offset, access, 0)
+        self.fault_with(offset, access, false)
     }
 
     fn fault_page(&self, offset: u64, access: Access) -> BoxFuture<'_, Result<()>> {
-        self.fault_with(offset, access, FAULT_PAGE)
+        self.fault_with(offset, access, true)
     }
 }

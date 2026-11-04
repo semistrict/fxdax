@@ -8,7 +8,11 @@
 //! [`MAX_FDS`] file descriptors, as `SCM_RIGHTS`, with its first bytes: the daemon's reply to
 //! [`OPEN`] carries its physical memory, the VM process's tenant's arena of it, `args[1]`,
 //! the default tenant's if it is of none, and the default arena, read-only (TASK-43, TASK-79.17).
+//!
+//! fxdax: each message's fields, its flags and arguments, payload and descriptors, are encoded and
+//! decoded in [`super::codec`] alone (TASK-160.9), which refuses what a kind gives no meaning.
 
+use super::codec::{Stage, StageOp};
 use std::io::{self, Read, Write};
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
@@ -141,12 +145,13 @@ pub(crate) const UNPIN: u32 = 24;
 /// rather than the stream, whose sending and receiving copy it twice more (TASK-26.18.6). The VM
 /// process says which part of it each uses, which it has no other use for meanwhile.
 pub(crate) const TRANSFER: u32 = 25;
-/// fxdax: frees extent `args[0..2]`, and those the payload names after it ([`extent_ids`]), each
-/// as [`FREE`] frees it, in order: the first that fails fails the request, those before it freed,
-/// as a guest's `FREE` with doc-4's `FREE_MANY` does, a flush's dead extents in one round trip, not
-/// one each (TASK-92.13). A request of its own, not a flag of `FREE`'s: a daemon older than it,
-/// which ignores flags it doesn't know, would free the first alone and succeed, the rest leaked,
-/// where it refuses a request it doesn't know (`EINVAL`).
+/// fxdax: frees extent `args[0..2]`, and those the payload names after it ([`EXTENT_ID_BYTES`]),
+/// each as [`FREE`] frees it, in order: the first that fails fails the request, those before it
+/// freed, as a guest's `FREE` with doc-4's `FREE_MANY` does, a flush's dead extents in one round
+/// trip, not one each (TASK-92.13). A request of its own, not a flag of `FREE`'s: a daemon older
+/// than it, which ignored flags it didn't know, would free the first alone and succeed, the rest
+/// leaked, where it refuses a request it doesn't know (`EINVAL`). fxdax: a daemon refuses flags it
+/// doesn't know now too (TASK-160.9).
 pub(crate) const FREE_MANY: u32 = 26;
 /// The most bytes a transfer area holds.
 pub(crate) const MAX_TRANSFER_AREA: u64 = 64 << 20;
@@ -202,34 +207,13 @@ pub(crate) const FAULT_PAGE: u32 = 1 << 1;
 /// sequence, little-endian words.
 pub(crate) const EXTENT_ID_BYTES: usize = 16;
 
-/// fxdax: `extents`, as a [`FREE_MANY`]'s payload names them.
-pub(crate) fn extent_ids_payload(extents: &[crate::ExtentId]) -> Vec<u8> {
-    (extents.iter())
-        .flat_map(|extent| [extent.branch, extent.sequence])
-        .flat_map(u64::to_le_bytes)
-        .collect()
-}
-
-/// fxdax: the extents a [`FREE_MANY`]'s payload names: `EINVAL` unless it is whole IDs.
-pub(crate) fn extent_ids(
-    payload: &[u8],
-) -> Result<impl Iterator<Item = crate::ExtentId> + '_, crate::Errno> {
-    let (ids, []) = payload.as_chunks::<EXTENT_ID_BYTES>() else {
-        return Err(crate::Errno::EINVAL);
-    };
-    let word = |bytes: &[u8]| u64::from_le_bytes(bytes.try_into().expect("a word's bytes"));
-    Ok(ids
-        .iter()
-        .map(move |id| crate::ExtentId { branch: word(&id[..8]), sequence: word(&id[8..]) }))
-}
-
 // From the daemon.
 
 /// The reply to request `id`.
 pub(crate) const REPLY: u32 = 100;
 /// Maps `args[2]` bytes of physical memory at `args[1]` in arena `args[4]`'s object
-/// into the window at `args[0]`, with protection `args[3]` ([`Protection`](crate::Protection) as
-/// [`protection_code`]).
+/// into the window at `args[0]`, with protection `args[3]` ([`Protection`](crate::Protection):
+/// 1 to read, 2 to read and write).
 pub(crate) const STAGE_MAP: u32 = 101;
 /// Changes the protection of `args[1]` bytes of the window at `args[0]` to `args[2]`.
 pub(crate) const STAGE_PROTECT: u32 = 102;
@@ -254,23 +238,6 @@ pub(crate) const SEAL: u32 = 107;
 /// one that takes access to a page away, before it frees the page or shares it.
 pub(crate) const STAGE_ACK: u32 = 1 << 0;
 
-/// `protection` on the wire.
-pub(crate) fn protection_code(protection: crate::Protection) -> u64 {
-    match protection {
-        crate::Protection::Read => 1,
-        crate::Protection::ReadWrite => 2,
-    }
-}
-
-/// The protection `code` stands for.
-pub(crate) fn protection(code: u64) -> io::Result<crate::Protection> {
-    match code {
-        1 => Ok(crate::Protection::Read),
-        2 => Ok(crate::Protection::ReadWrite),
-        _ => Err(io::Error::new(io::ErrorKind::InvalidData, "an unknown protection")),
-    }
-}
-
 /// The most bytes of payload a message carries: a `READ` or `WRITE` of a whole extent, or less.
 pub(crate) const MAX_PAYLOAD: u64 = crate::ExtentStore::MAX_EXTENT;
 
@@ -280,21 +247,11 @@ pub(crate) const MAX_PAYLOAD: u64 = crate::ExtentStore::MAX_EXTENT;
 pub(crate) const MAX_REQUESTS: usize = 4096;
 
 /// fxdax: the most bytes of data a VM process's requests not answered move through the stream
-/// ([`stream_bytes`], TASK-79.16): `WRITE`s' payloads and `READ`s' replies, but those through the
-/// transfer area ([`TRANSFER`]); a few times its largest. A VM process past it, as the daemon
-/// finds what it holds of it, and what it has queued for it, unread, the daemon lets go.
+/// ([`stream_bytes`](super::codec::stream_bytes), TASK-79.16): `WRITE`s' payloads and `READ`s'
+/// replies, but those through the transfer area ([`TRANSFER`]); a few times its largest. A VM
+/// process past it, as the daemon finds what it holds of it, and what it has queued for it,
+/// unread, the daemon lets go.
 pub(crate) const MAX_STREAM_BYTES: u64 = 4 * MAX_PAYLOAD;
-
-/// fxdax: the bytes of data the request `header` is of moves through the stream: its payload, and,
-/// a `READ`'s, its reply's: [`MAX_PAYLOAD`] at most, as one asking for more is refused (`EINVAL`),
-/// its reply's payload empty, whatever the VM process asks for: so a word that would overflow the
-/// bytes counted is counted as no more (TASK-79.16).
-pub(crate) fn stream_bytes(header: &Header) -> u64 {
-    match header.kind {
-        READ if header.flags & READ_TRANSFER == 0 => header.len + header.args[3].min(MAX_PAYLOAD),
-        _ => header.len,
-    }
-}
 
 /// The most file descriptors a message carries.
 pub(crate) const MAX_FDS: usize = 2;
@@ -316,14 +273,20 @@ impl Sender {
     }
 
     /// Sends `header`, with `payload` as its payload, and `fds`, at most [`MAX_FDS`].
-    pub fn send(
+    pub fn send(&self, header: Header, payload: &[u8], fds: &[BorrowedFd<'_>]) -> io::Result<()> {
+        self.send_parts(header, &[payload], fds)
+    }
+
+    /// fxdax: sends `header`, with `payload`'s parts, one after another, as its payload, and
+    /// `fds`, at most [`MAX_FDS`]: a write's data and its root, which no copy joins (TASK-160.9).
+    pub fn send_parts(
         &self,
         mut header: Header,
-        payload: &[u8],
+        payload: &[&[u8]],
         fds: &[BorrowedFd<'_>],
     ) -> io::Result<()> {
         assert!(fds.len() <= MAX_FDS, "too many descriptors for a message");
-        header.len = payload.len() as u64;
+        header.len = payload.iter().map(|part| part.len() as u64).sum();
         header.fds = fds.len() as u32;
         let stream = self.0.lock().unwrap();
         let header = header.as_bytes();
@@ -336,7 +299,7 @@ impl Sender {
             }
         };
         write_all(&stream, &header[sent..])?;
-        write_all(&stream, payload)
+        payload.iter().try_for_each(|part| write_all(&stream, part))
     }
 
     /// Shuts the connection down, which ends its receiver's messages.
@@ -742,79 +705,74 @@ impl Receiver {
         Self { stream, buffer, start: 0, end: 0, fds: Default::default() }
     }
 
-    /// fxdax: takes what follows the stage unmap `header`, already waiting whole in the socket, of
+    /// fxdax: takes what follows the stage unmap `unmap`, already waiting whole in the socket, of
     /// the window's change it begins (TASK-91.16): first the acknowledged unmaps adjacent to it or
     /// overlapping it, which it joins, then the window's mapping anew of the range they unmap
     /// ([`STAGE_MAPPED`]) and its pages ([`STAGE_MAP`]), each within it, which it returns, in
     /// order, for the VM process to make with the unmap at once. Up to 63 messages, without
     /// crossing another, a gap, or partial input. The unmap's ID becomes the largest of those it
     /// joined: never a later map's, as operations taking access away that haven't reached the
-    /// wire yet may own the IDs between, whose pages kept must stay quarantined.
-    pub fn take_change(&mut self, header: &mut Header) -> io::Result<Vec<Header>> {
-        let is_unmap = |h: &Header| {
-            h.kind == STAGE_UNMAP
-                && h.flags == STAGE_ACK
-                && h.status == 0
-                && h.fds == 0
-                && h.args[1] != 0
+    /// wire yet may own the IDs between, whose pages kept must stay quarantined. Each message is
+    /// taken as [`Stage::decode`] has it: one it refuses, it leaves.
+    pub fn take_change(&mut self, unmap: &mut Stage) -> io::Result<Vec<crate::dax::Anew>> {
+        let StageOp::Unmap { offset, len } = unmap.op else { return Ok(Vec::new()) };
+        let (mut start, Some(mut end)) = (offset, offset.checked_add(len)) else {
+            return Ok(Vec::new());
         };
-        if !is_unmap(header) || header.len != 0 {
+        if len == 0 {
             return Ok(Vec::new());
         }
-        let (mut start, Some(mut end)) =
-            (header.args[0], header.args[0].checked_add(header.args[1]))
-        else {
-            return Ok(Vec::new());
-        };
-        let mut id = header.id;
+        let mut id = unmap.id;
         let mut anew = false;
         let taken = self.take_waiting(|next| {
-            let len = match next.kind {
-                STAGE_UNMAP if !anew && is_unmap(next) => {
-                    let Some(next_end) = next.args[0].checked_add(next.args[1]) else {
-                        return false;
-                    };
-                    if next.args[0] > end || next_end < start {
-                        return false;
+            let next = Stage::decode(next).ok()?;
+            let (at, len, made) = match next.op {
+                StageOp::Unmap { offset, len } if !anew && len != 0 => {
+                    let next_end = offset.checked_add(len)?;
+                    if offset > end || next_end < start {
+                        return None;
                     }
-                    (start, end) = (start.min(next.args[0]), end.max(next_end));
+                    (start, end) = (start.min(offset), end.max(next_end));
                     id = id.max(next.id);
-                    return true;
+                    return Some(None);
                 }
-                STAGE_MAPPED => next.args[1],
-                STAGE_MAP => next.args[2],
-                _ => return false,
+                StageOp::Mapped { offset, len } => {
+                    (offset, len, crate::dax::Anew::Mapped { offset, len })
+                }
+                StageOp::Map { offset, phys, len, protection } => {
+                    (offset, len, crate::dax::Anew::Map { offset, phys, len, protection })
+                }
+                _ => return None,
             };
             anew = true;
-            next.flags == 0
-                && next.status == 0
-                && next.fds == 0
-                && len != 0
-                && next.args[0] >= start
-                && next.args[0].checked_add(len).is_some_and(|next_end| next_end <= end)
+            let within = at >= start && at.checked_add(len).is_some_and(|at_end| at_end <= end);
+            (len != 0 && within).then_some(Some(made))
         })?;
-        header.id = id;
-        header.args[0] = start;
-        header.args[1] = end - start;
-        Ok(taken.into_iter().filter(|taken| taken.kind != STAGE_UNMAP).collect())
+        unmap.id = id;
+        unmap.op = StageOp::Unmap { offset: start, len: end - start };
+        Ok(taken.into_iter().flatten().collect())
     }
 
     /// fxdax: receives the messages already read or waiting whole in the socket, up to 63, as long
     /// as `take` takes each, in order, none with a payload or descriptors: a read of the socket's,
     /// at most, that waits for nothing. Bounded, so that what is made of them together, and
-    /// acknowledged once all is, waits for no more.
-    fn take_waiting(&mut self, mut take: impl FnMut(&Header) -> bool) -> io::Result<Vec<Header>> {
+    /// acknowledged once all is, waits for no more. What `take` makes of each, it returns.
+    fn take_waiting<T>(
+        &mut self,
+        mut take: impl FnMut(&Header) -> Option<T>,
+    ) -> io::Result<Vec<T>> {
         const MOST: usize = 63;
         self.read(libc::MSG_DONTWAIT)?;
         let mut taken = Vec::new();
         while taken.len() < MOST
             && let Some(next) = self.buffered_header()
         {
-            if next.len != 0 || next.fds != 0 || !take(&next) {
+            if next.len != 0 || next.fds != 0 {
                 break;
             }
+            let Some(made) = take(&next) else { break };
             self.start += size_of::<Header>();
-            taken.push(next);
+            taken.push(made);
         }
         Ok(taken)
     }
@@ -1018,32 +976,54 @@ pub(crate) fn pair() -> ((Sender, Receiver), (Sender, Receiver)) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dax::Anew;
     use std::os::fd::AsFd;
 
-    fn unmap(id: u64, offset: u64, len: u64) -> Header {
-        Header::new(STAGE_UNMAP, id).with_flags(STAGE_ACK).with_args(&[offset, len])
+    fn unmap(id: u64, offset: u64, len: u64) -> Stage {
+        Stage { id, op: StageOp::Unmap { offset, len } }
+    }
+
+    fn map(id: u64, offset: u64, len: u64) -> Stage {
+        let phys = crate::pages::PhysLocation { arena: crate::pages::ArenaId(0), offset: 1 << 20 };
+        Stage { id, op: StageOp::Map { offset, phys, len, protection: crate::Protection::Read } }
+    }
+
+    fn mapped(id: u64, offset: u64, len: u64) -> Stage {
+        Stage { id, op: StageOp::Mapped { offset, len } }
+    }
+
+    /// What a change takes of `stage`, a map or a mapping anew.
+    fn anew(stage: Stage) -> Anew {
+        match stage.op {
+            StageOp::Map { offset, phys, len, protection } => {
+                Anew::Map { offset, phys, len, protection }
+            }
+            StageOp::Mapped { offset, len } => Anew::Mapped { offset, len },
+            op => panic!("{op:?} is taken as no map"),
+        }
     }
 
     #[test]
     fn unmaps_join_adjacent_ranges_and_ack_only_consumed_taking_ids() {
         let ((sender, _), (_, mut receiver)) = pair();
         // Includes reversed address order, overlap, and IDs allocated in a different order.
-        for h in [
+        for stage in [
             unmap(7, 8192, 4096),
             unmap(3, 4096, 4096),
             unmap(5, 4096, 8192),
             unmap(6, 12288, 4096),
         ] {
-            sender.send(h, &[], &[]).unwrap();
+            sender.send(stage.encode(), &[], &[]).unwrap();
         }
-        let mapped = Header::new(STAGE_MAPPED, 99).with_args(&[4096, 12288]);
-        sender.send(mapped, &[], &[]).unwrap();
+        let mapped = mapped(99, 4096, 12288);
+        sender.send(mapped.encode(), &[], &[]).unwrap();
         let reply = Header::new(REPLY, 100);
         let file = tempfile::tempfile().unwrap();
         sender.send(reply, &[], &[file.as_fd()]).unwrap();
-        let mut h = receiver.receive(|| 0).unwrap().unwrap().header;
-        assert_eq!(receiver.take_change(&mut h).unwrap(), [mapped]);
-        assert_eq!(h, unmap(7, 4096, 12288));
+        let header = receiver.receive(|| 0).unwrap().unwrap().header;
+        let mut stage = Stage::decode(&header).unwrap();
+        assert_eq!(receiver.take_change(&mut stage).unwrap(), [anew(mapped)]);
+        assert_eq!(stage, unmap(7, 4096, 12288));
         let message = receiver.receive(|| 0).unwrap().unwrap();
         assert_eq!(message.header, Header { fds: 1, ..reply }, "the header says its descriptor");
         assert_eq!(message.fds.len(), 1);
@@ -1054,25 +1034,28 @@ mod tests {
     /// one of another kind, or an unmap after them, which begins the next change.
     #[test]
     fn unmaps_take_the_maps_within_them() {
-        let map =
-            |id, offset, len| Header::new(STAGE_MAP, id).with_args(&[offset, 1 << 20, len, 1, 0]);
-        let mapped = Header::new(STAGE_MAPPED, 2).with_args(&[4096, 8192]);
+        let protect = StageOp::Protect {
+            offset: 4096,
+            len: 4096,
+            protection: crate::Protection::ReadWrite,
+        };
         for (after, taken) in [
             (map(5, 8192, 8192), 3),
             (unmap(5, 4096, 4096), 3),
-            (Header::new(STAGE_PROTECT, 5).with_args(&[4096, 4096, 2]), 3),
+            (Stage { id: 5, op: protect }, 3),
             (map(5, 4096, 8192), 4),
         ] {
             let ((sender, _), (_, mut receiver)) = pair();
-            let sent = [mapped, map(3, 4096, 4096), map(4, 8192, 4096), after];
-            for h in sent {
-                sender.send(h, &[], &[]).unwrap();
+            let sent = [mapped(2, 4096, 8192), map(3, 4096, 4096), map(4, 8192, 4096), after];
+            for stage in sent {
+                sender.send(stage.encode(), &[], &[]).unwrap();
             }
             let mut first = unmap(1, 4096, 8192);
-            assert_eq!(receiver.take_change(&mut first).unwrap(), sent[..taken]);
+            let made: Vec<_> = sent[..taken].iter().copied().map(anew).collect();
+            assert_eq!(receiver.take_change(&mut first).unwrap(), made);
             assert_eq!(first, unmap(1, 4096, 8192), "the unmap's ID is never a map's");
             if taken < sent.len() {
-                assert_eq!(receiver.receive(|| 0).unwrap().unwrap().header, after);
+                assert_eq!(receiver.receive(|| 0).unwrap().unwrap().header, after.encode());
             }
         }
     }
@@ -1082,8 +1065,8 @@ mod tests {
         for variation in 0..6 {
             let ((sender, _), (_, mut receiver)) = pair();
             let mut first = unmap(1, 4096, 4096);
-            assert_eq!(receiver.take_change(&mut first).unwrap(), Vec::<Header>::new());
-            let mut next = unmap(2, 8192, 4096);
+            assert_eq!(receiver.take_change(&mut first).unwrap(), Vec::<Anew>::new());
+            let mut next = unmap(2, 8192, 4096).encode();
             match variation {
                 0 => next.args[0] += 4096,
                 1 => {
@@ -1098,15 +1081,15 @@ mod tests {
             }
             if variation == 4 {
                 write_all(&sender.0.lock().unwrap(), &next.as_bytes()[..17]).unwrap();
-                assert_eq!(receiver.take_change(&mut first).unwrap(), Vec::<Header>::new());
+                assert_eq!(receiver.take_change(&mut first).unwrap(), Vec::<Anew>::new());
                 assert_eq!(first, unmap(1, 4096, 4096));
                 write_all(&sender.0.lock().unwrap(), &next.as_bytes()[17..]).unwrap();
-                assert_eq!(receiver.take_change(&mut first).unwrap(), Vec::<Header>::new());
+                assert_eq!(receiver.take_change(&mut first).unwrap(), Vec::<Anew>::new());
                 assert_eq!(first, unmap(2, 4096, 8192));
             } else {
                 let payload = vec![9; next.len as usize];
                 sender.send(next, &payload, &[]).unwrap();
-                assert_eq!(receiver.take_change(&mut first).unwrap(), Vec::<Header>::new());
+                assert_eq!(receiver.take_change(&mut first).unwrap(), Vec::<Anew>::new());
                 assert_eq!(first, unmap(1, 4096, 4096));
                 let received = receiver.receive(|| 0).unwrap().unwrap();
                 assert_eq!((received.header, received.payload), (next, payload));
@@ -1118,17 +1101,19 @@ mod tests {
     fn unmap_batches_bound_the_work_taken_from_the_socket() {
         let ((sender, _), (_, mut receiver)) = pair();
         for id in 1..=128 {
-            sender.send(unmap(id, id * 4096, 4096), &[], &[]).unwrap();
+            sender.send(unmap(id, id * 4096, 4096).encode(), &[], &[]).unwrap();
         }
         let mut next_id = 1;
         let mut total_joined = 0;
         while next_id <= 128 {
-            let mut header = receiver.receive(|| 0).unwrap().unwrap().header;
-            assert_eq!(header.id, next_id);
-            assert_eq!(receiver.take_change(&mut header).unwrap(), Vec::<Header>::new());
-            let count = header.args[1] / 4096;
+            let header = receiver.receive(|| 0).unwrap().unwrap().header;
+            let mut stage = Stage::decode(&header).unwrap();
+            assert_eq!(stage.id, next_id);
+            assert_eq!(receiver.take_change(&mut stage).unwrap(), Vec::<Anew>::new());
+            let StageOp::Unmap { len, .. } = stage.op else { panic!("{stage:?} is no unmap") };
+            let count = len / 4096;
             assert!(count <= 64, "{count} unmaps joined");
-            assert_eq!(header, unmap(next_id + count - 1, next_id * 4096, count * 4096));
+            assert_eq!(stage, unmap(next_id + count - 1, next_id * 4096, count * 4096));
             total_joined += count - 1;
             next_id += count;
         }
@@ -1249,19 +1234,5 @@ mod tests {
         sender.uncork();
         assert_eq!(ids(3), [(4, 0), (5, 1), (6, 0)]);
         assert!(!AsyncSender::corked());
-    }
-
-    /// fxdax: the extents a `FREE_MANY`'s payload names are those put in it, in order; one that
-    /// holds part of an ID is refused (TASK-92.13).
-    #[test]
-    fn free_many_payloads_name_their_extents() {
-        let extents = [
-            crate::ExtentId { branch: 1, sequence: 2 },
-            crate::ExtentId { branch: u64::MAX, sequence: 1 << 40 },
-        ];
-        let payload = extent_ids_payload(&extents);
-        assert_eq!(payload.len(), 2 * EXTENT_ID_BYTES);
-        assert_eq!(extent_ids(&payload).unwrap().collect::<Vec<_>>(), extents);
-        assert_eq!(extent_ids(&payload[..EXTENT_ID_BYTES + 8]).err(), Some(crate::Errno::EINVAL));
     }
 }

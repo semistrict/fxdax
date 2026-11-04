@@ -5,16 +5,19 @@
 //! The daemon's side of a connection: a VM process's store and window, served from this process's
 //! stores, extent cache and kernel.
 
+use super::codec::{
+    self, Advanced, Data, Fault, Info, Made, Opened, ReadInto, Request, Stage, StageOp, Told,
+    stream_bytes,
+};
 use super::pool::Pool;
 use super::seals::{self, Seals};
 use super::stores::{self, CLOSING_WAIT, open_paths, open_store, store_key};
 use super::wire::*;
 use crate::open_stores::Holder;
 use crate::store_requests::{self, Guest, Resizes, Shrinking};
-use crate::{Access, DaxWindow, Deferred, Errno, ExtentId, ExtentStore, Protection, SecondStage};
-use crate::{Commit, MappingContents, StoreRole, VolatileSlice, VolatileSliceMut, WriteBarriers};
+use crate::{DaxWindow, Deferred, Errno, ExtentStore, Protection, SecondStage};
+use crate::{Commit, MappingContents, StoreRole, VolatileSlice, VolatileSliceMut, WindowMapping};
 use std::os::fd::AsFd;
-use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -457,13 +460,21 @@ fn receive(
         loop {
             match receiver.receive(|header| connection.within_bounds(header)).await {
                 // fxdax: what the stage operations cost, counted before what waits for them goes
-                // on (TASK-91.16).
-                Ok(Some(message)) if message.header.kind == ACK => {
-                    connection.stage_counted(message.header.args);
-                    connection.peer.acks.acked(message.header.id)
-                }
-                Ok(Some(message)) if message.header.kind == STAGE_COUNTS => {
-                    connection.stage_counted(message.header.args)
+                // on (TASK-91.16). What says so malformed, nothing replies to: it is dropped, as
+                // what isn't said (TASK-160.9).
+                Ok(Some(message)) if [ACK, STAGE_COUNTS].contains(&message.header.kind) => {
+                    match Made::decode(&message) {
+                        Ok(Made::Ack { id, counts }) => {
+                            connection.stage_counted(counts);
+                            connection.peer.acks.acked(id)
+                        }
+                        Ok(Made::Counts(counts)) => connection.stage_counted(counts),
+                        Err(errno) => log::warn!(
+                            "extentd: a VM process's malformed {}, dropped ({errno:?}): {:?}",
+                            if message.header.kind == ACK { "ACK" } else { "STAGE_COUNTS" },
+                            message.header,
+                        ),
+                    }
                 }
                 Ok(Some(message)) => {
                     let Some(message) = connection.admit(message) else { continue };
@@ -615,6 +626,11 @@ impl Answer {
         Self { connection: connection.clone(), request, started, sent: false }
     }
 
+    /// The header of its reply, before what the reply says.
+    fn reply_header(&self) -> Header {
+        Header::new(REPLY, self.request.id)
+    }
+
     /// Replies with `reply`, `payload` and `fds`, if `result` says the request succeeded, or its
     /// error.
     fn send(
@@ -686,7 +702,7 @@ impl Drop for Answer {
             store.fence(|| format!("a panic serving request {kind}"));
         }
         if !self.sent {
-            let reply = Header::new(REPLY, self.request.id);
+            let reply = self.reply_header();
             self.reply(Err(Errno::EIO), reply, Vec::new(), Vec::new());
         }
     }
@@ -866,8 +882,7 @@ impl Connection {
         if self.closing.load(Ordering::Acquire) || self.store().is_none_or(follows) {
             return false;
         }
-        let header = Header::new(SEAL, 0).with_args(&[number]);
-        match self.peer.sender.send(header, Vec::new(), &[]) {
+        match self.peer.sender.send(Told::Seal { number }.encode(), Vec::new(), &[]) {
             Ok(()) => true,
             Err(err) => {
                 log::warn!("extentd: asking a VM process's guest to seal: {err}");
@@ -930,15 +945,10 @@ impl Connection {
         }
     }
 
-    /// fxdax: records the build its VM process says, `payload` ([`BUILD`]), with its store's
-    /// `branch`, for the daemon's metrics while it is connected (TASK-111.7): `EINVAL` unless a
-    /// label's characters, as many as [`MAX_BUILD`] at most; `EEXIST` said again.
-    fn said_build(&self, branch: u64, payload: &[u8]) -> Result<(), Errno> {
-        let commit = std::str::from_utf8(payload).map_err(|_| Errno::EINVAL)?;
-        let label = |byte: u8| byte.is_ascii_alphanumeric() || b"._-".contains(&byte);
-        if commit.is_empty() || commit.len() > MAX_BUILD || !commit.bytes().all(label) {
-            return Err(Errno::EINVAL);
-        }
+    /// fxdax: records the build its VM process says, `commit` ([`BUILD`]), with its store's
+    /// `branch`, for the daemon's metrics while it is connected (TASK-111.7): `EEXIST` said again.
+    /// A label's characters, as many as [`MAX_BUILD`] at most, as the codec has it.
+    fn said_build(&self, branch: u64, commit: &str) -> Result<(), Errno> {
         if self.said_build.swap(true, Ordering::AcqRel) {
             return Err(Errno::EEXIST);
         }
@@ -963,25 +973,36 @@ impl Connection {
     /// which would otherwise leave it counted running for good (TASK-79.1). fxdax: a fault, and a
     /// writer's opening, are futures, deferred as they wait ([`serve_future`]): for the pager
     /// (TASK-92.20), and for a connection going to let the store go, or a restore's point
-    /// (TASK-92.5).
+    /// (TASK-92.5). A request its kind gives no meaning ([`Request::decode`]), or naming a store
+    /// its tenant's VM processes don't ([`Connection::authorize`]), is refused, whatever it is, in
+    /// one place (TASK-160.9).
     fn serve_in_turn(self: Arc<Self>, message: Message) {
         let (turn, answer) = (Turn::new(self.clone()), Answer::new(&self, message.header));
+        let refuse = |answer: Answer, errno| {
+            let reply = answer.reply_header();
+            answer.send(Err(errno), reply, Vec::new(), Vec::new())
+        };
         // fxdax: a store a panic went through serves nothing more, of whatever the panic left half
         // done (`crate::fence`, TASK-153.16).
         if self.store.get().is_some_and(|store| store.is_fenced()) {
-            let reply = Header::new(REPLY, message.header.id);
-            answer.send(Err(Errno::EIO), reply, Vec::new(), Vec::new());
-            return;
+            return refuse(answer, Errno::EIO);
         }
-        match message.header.kind {
-            FAULT => serve_future(turn, self.fault(message, answer)),
-            MAP if message.header.flags & MAP_WRITABLE != 0 => {
-                serve_future(turn, self.map_writably(message, answer))
+        let request = Request::decode(&message).and_then(|request| {
+            request.paths().try_for_each(|path| self.authorize(path))?;
+            Ok(request)
+        });
+        match request {
+            Err(errno) => refuse(answer, errno),
+            Ok(Request::Fault(fault)) => serve_future(turn, self.fault(fault, answer)),
+            Ok(Request::Map(map))
+                if matches!(map.contents, MappingContents::Extent { writable: true, .. }) =>
+            {
+                serve_future(turn, self.map_writably(map, answer))
             }
-            OPEN if message.header.flags & OPEN_READ_ONLY == 0 => {
-                serve_future(turn, self.serve_open(message, answer))
+            Ok(Request::Open { path, opening }) if opening != codec::Opening::ReadOnly => {
+                serve_future(turn, self.serve_open(path, opening, answer))
             }
-            _ => self.serve(message, answer),
+            Ok(request) => self.serve(&request, answer),
         }
     }
 
@@ -1028,31 +1049,29 @@ impl Connection {
         self.tenant.holds(path)
     }
 
-    /// Serves `message`, a request, and replies, as `answer` owes.
-    fn serve(&self, message: Message, answer: Answer) {
-        let mut reply = Header::new(REPLY, message.header.id);
+    /// Serves `request`, and replies, as `answer` owes.
+    fn serve(&self, request: &Request<'_>, answer: Answer) {
+        let mut reply = answer.reply_header();
         let mut payload = Vec::new();
         let mut fds = Vec::new();
-        let result = self.handle(&message, &mut reply, &mut payload, &mut fds);
+        let result = self.handle(request, &mut reply, &mut payload, &mut fds);
         answer.send(result, reply, payload, fds);
     }
 
+    /// Serves `request`: what its reply says in `reply`, `payload` and `fds`.
     fn handle<'a>(
         &'a self,
-        message: &Message,
+        request: &Request<'_>,
         reply: &mut Header,
         payload: &mut Vec<u8>,
         fds: &mut Vec<std::os::fd::BorrowedFd<'a>>,
     ) -> Result<(), Errno> {
-        let Header { kind, flags, args, .. } = message.header;
-        let extent = ExtentId { branch: args[0], sequence: args[1] };
-        if kind == OPEN && flags & OPEN_READ_ONLY != 0 {
-            if flags & (OPEN_CREATE | OPEN_FORK_FROM) != 0 {
-                return Err(Errno::EINVAL);
-            }
-            reply.args[0] = self.follow(&message.payload)?;
-            reply.args[2] = self.store.get().ok_or(Errno::EBADF)?.epoch()?;
-            return self.memories(reply, fds);
+        if let Request::Open { path, opening: codec::Opening::ReadOnly } = request {
+            let branch = self.follow(path)?;
+            let epoch = self.store.get().ok_or(Errno::EBADF)?.epoch()?;
+            reply.args = Opened { branch, arena: self.arena_id(), epoch }.args();
+            fds.extend(self.memories());
+            return Ok(());
         }
         let store = self.store.get().ok_or(Errno::EBADF)?;
         // fxdax: a request failing, with the errno given (EIO by default), or waiting, as
@@ -1060,104 +1079,65 @@ impl Connection {
         // `extentd::map=1%return(5)` fails one MAP in a hundred with EIO, `extentd::commit=
         // sleep(50)` delays each COMMIT 50 ms.
         #[cfg(feature = "failpoints")]
-        if let Some(point) = failpoint(kind) {
+        if let Some(point) = failpoint(request.kind()) {
             fail::fail_point!(point, |errno: Option<String>| {
                 let errno = errno.and_then(|errno| errno.parse().ok());
                 Err(Errno::from_raw(errno.unwrap_or(Errno::EIO.raw())))
             });
         }
-        match kind {
-            TRANSFER => {
-                let fd = message.fds.first().ok_or(Errno::EINVAL)?;
-                let area = TransferArea::map(fd.as_fd(), args[0])?;
+        match request {
+            Request::Transfer { len, area } => {
+                let area = TransferArea::map(area.0, *len)?;
                 self.transfer.set(area).map_err(|_| Errno::EEXIST)
             }
-            READ if flags & READ_TRANSFER != 0 => {
+            Request::Read { extent, offset, len, into: ReadInto::Transfer { at } } => {
                 let area = self.transfer.get().ok_or(Errno::EINVAL)?;
-                store.read(extent, args[2], &mut [area.slice_mut(args[4], args[3])?])
+                store.read(*extent, *offset, &mut [area.slice_mut(*at, *len)?])
             }
-            READ => {
-                if args[3] > MAX_PAYLOAD {
-                    return Err(Errno::EINVAL);
+            // As much as a reply holds, the codec has it (TASK-79.16).
+            Request::Read { extent, offset, len, into: ReadInto::Reply } => {
+                payload.resize(*len as usize, 0);
+                store.read(*extent, *offset, &mut [VolatileSliceMut::from(&mut payload[..])])
+            }
+            Request::Write { extent, offset, data, barriers } => {
+                let data = match *data {
+                    Data::Inline(data) => VolatileSlice::from(data),
+                    Data::Transfer { at, len } => {
+                        self.transfer.get().ok_or(Errno::EINVAL)?.slice(at, len)?
+                    }
+                };
+                store.write_with_barriers(*extent, *offset, &[data], *barriers)
+            }
+            Request::Free(extent) => store.free(*extent),
+            // fxdax: and those after it, in order (TASK-92.13).
+            Request::FreeMany { first, rest } => {
+                let mut extents = std::iter::once(first).chain(rest.iter());
+                extents.try_for_each(|extent| store.free(*extent))
+            }
+            Request::Map(WindowMapping { window_offset, len, contents }) => match *contents {
+                MappingContents::Zeros => store.map_zeros_at(*window_offset, *len),
+                MappingContents::Extent { extent, offset, writable } => {
+                    store.map(extent, offset, *len, *window_offset, writable)
                 }
-                payload.resize(args[3] as usize, 0);
-                store.read(extent, args[2], &mut [VolatileSliceMut::from(&mut payload[..])])
-            }
-            WRITE => {
-                // The data, and the root after it in the payload, if any.
-                let (data, root) = match flags & WRITE_TRANSFER {
-                    0 if flags & WRITE_ROOT != 0 => {
-                        let len = usize::try_from(args[4]).map_err(|_| Errno::EINVAL)?;
-                        let data = message.payload.get(..len).ok_or(Errno::EINVAL)?;
-                        (VolatileSlice::from(data), &message.payload[len..])
-                    }
-                    0 => (VolatileSlice::from(&message.payload[..]), &[][..]),
-                    _ => {
-                        let area = self.transfer.get().ok_or(Errno::EINVAL)?;
-                        (area.slice(args[3], args[4])?, &message.payload[..])
-                    }
-                };
-                let barriers = WriteBarriers {
-                    before: flags & WRITE_BARRIER != 0,
-                    after: (flags & WRITE_COMMIT != 0).then_some(if flags & WRITE_DURABLE != 0 {
-                        Commit::Durable
-                    } else {
-                        Commit::Ordered
-                    }),
-                    root: (flags & WRITE_ROOT != 0).then_some(root),
-                };
-                store.write_with_barriers(extent, args[2], &[data], barriers)
-            }
-            FREE => store.free(extent),
-            // fxdax: and those its payload names after it, in order (TASK-92.13).
-            FREE_MANY => {
-                let more = extent_ids(&message.payload)?;
-                std::iter::once(extent).chain(more).try_for_each(|extent| store.free(extent))
-            }
-            MAP if flags & MAP_ZEROS != 0 => store.map_zeros_at(args[4], args[3]),
-            MAP => store.map(extent, args[2], args[3], args[4], flags & MAP_WRITABLE != 0),
-            MAPPINGS => {
-                *payload = store
-                    .window_mappings()?
-                    .iter()
-                    .flat_map(|mapping| {
-                        let words = match mapping.contents {
-                            MappingContents::Extent { extent, offset, writable } => [
-                                extent.branch,
-                                extent.sequence,
-                                offset,
-                                if writable { MAPPING_WRITABLE } else { 0 },
-                            ],
-                            MappingContents::Zeros => [0, 0, 0, MAPPING_ZEROS],
-                        };
-                        [mapping.window_offset, mapping.len].into_iter().chain(words)
-                    })
-                    .flat_map(u64::to_le_bytes)
-                    .collect();
+            },
+            Request::Mappings => {
+                *payload = codec::mappings_payload(&store.window_mappings()?);
                 Ok(())
             }
-            UNMAP => store.unmap(args[0], args[1]),
-            COMMIT => {
-                let root = (flags & COMMIT_ROOT != 0).then_some(&message.payload[..]);
-                if flags & COMMIT_DURABLE != 0 {
-                    store.commit(root)
-                } else {
-                    store.commit_ordered(root)
-                }
+            Request::Unmap { window_offset, len } => store.unmap(*window_offset, *len),
+            Request::Commit { commit: Commit::Durable, root } => store.commit(*root),
+            Request::Commit { commit: Commit::Ordered, root } => store.commit_ordered(*root),
+            Request::Root => store.root().map(|root| *payload = root),
+            Request::Advance => {
+                store.advance().map(|epoch| reply.args = Advanced { epoch }.args())
             }
-            ROOT => store.root().map(|root| *payload = root),
-            ADVANCE => store.advance().map(|epoch| reply.args[0] = epoch),
-            LET_GO => store.let_go(args[0]),
-            PIN => store.pin(extent),
-            UNPIN => store.unpin(extent),
-            FORK => {
-                let path = PathBuf::from(std::ffi::OsStr::from_bytes(&message.payload));
-                self.authorize(&path)?;
-                let forked = if flags & FORK_QUIESCENT != 0 {
-                    store.point(&path, args[0])
-                } else {
-                    store.fork(&path, args[0])
-                };
+            Request::LetGo { epoch } => store.let_go(*epoch),
+            Request::Pin(extent) => store.pin(*extent),
+            Request::Unpin(extent) => store.unpin(*extent),
+            // Authorized, as every path a request names ([`Connection::serve_in_turn`]).
+            Request::Fork { path, branch, quiescent } => {
+                let forked =
+                    if *quiescent { store.point(path, *branch) } else { store.fork(path, *branch) };
                 forked.map_err(|err| {
                     stores::errno_of(format_args!("forking to {}", path.display()), err)
                 })?;
@@ -1165,22 +1145,12 @@ impl Connection {
                 fail::fail_point!("extentd::forked", |_| Err(Errno::EIO));
                 Ok(())
             }
-            INFO => store.info().map(|info| {
-                reply.args = [
-                    info.capacity,
-                    info.used,
-                    info.available,
-                    info.next_sequence,
-                    info.sequence_floor,
-                ];
-            }),
-            WINDOW => {
-                if args[0] > MAX_WINDOW {
-                    return Err(Errno::EINVAL);
-                }
+            Request::Info => store.info().map(|info| reply.args = Info(info).args()),
+            // No larger than the daemon makes room for, the codec has it (TASK-150.3).
+            Request::Window { size } => {
                 let (sender, acks) = (self.peer.sender.clone(), self.peer.acks.clone());
                 let stage = Arc::new(RemoteStage { sender, acks });
-                let window = store.create_dax_window(args[0], Some(stage)).map_err(|err| {
+                let window = store.create_dax_window(*size, Some(stage)).map_err(|err| {
                     log::warn!("extentd: creating a window: {err:#}");
                     Errno::EINVAL
                 })?;
@@ -1190,49 +1160,48 @@ impl Connection {
                 *self.window.lock().unwrap() = Some(window);
                 Ok(())
             }
-            RESIZED => {
-                self.shrinking.answered(args[0], args[1] == 1);
+            Request::Resized { capacity, took } => {
+                self.shrinking.answered(*capacity, *took);
                 Ok(())
             }
-            SEALED => {
-                self.seals.answered(args[0]);
+            Request::Sealed { number } => {
+                self.seals.answered(*number);
                 Ok(())
             }
-            BUILD => self.said_build(store.branch(), &message.payload),
-            _ => Err(Errno::EINVAL),
+            Request::Build(commit) => self.said_build(store.branch(), commit),
+            // Served apart, as futures ([`Connection::serve_in_turn`]).
+            Request::Open { .. } | Request::Fault(_) => Err(Errno::EINVAL),
         }
     }
 
-    /// fxdax: serves `message`, a writable [`MAP`], and replies: a future, served so
+    /// fxdax: serves `map`, a writable [`MAP`], and replies: a future, served so
     /// ([`serve_future`]). Refused for want of memory, as the pages it brings in would take the
     /// budget of what nothing can evict, it waits for other guests asked to seal, if any, holding
     /// no thread, and tries once more (`seals`, TASK-153.15): another guest's open pages, which
     /// only that guest's seal lets go of, would leave this one's seals nothing to make room in.
-    async fn map_writably(self: Arc<Self>, message: Message, answer: Answer) {
-        let mut reply = Header::new(REPLY, message.header.id);
-        let mut mapped = self.handle(&message, &mut reply, &mut Vec::new(), &mut Vec::new());
-        if mapped == Err(Errno::ENOMEM) && seals::made_room(&self, message.header.args[3]).await {
-            mapped = self.handle(&message, &mut reply, &mut Vec::new(), &mut Vec::new());
+    async fn map_writably(self: Arc<Self>, map: WindowMapping, answer: Answer) {
+        let mut reply = answer.reply_header();
+        let mut mapped =
+            self.handle(&Request::Map(map), &mut reply, &mut Vec::new(), &mut Vec::new());
+        if mapped == Err(Errno::ENOMEM) && seals::made_room(&self, map.len).await {
+            mapped = self.handle(&Request::Map(map), &mut reply, &mut Vec::new(), &mut Vec::new());
         }
         answer.send(mapped, reply, Vec::new(), Vec::new());
     }
 
-    /// fxdax: resolves the guest's fault `message` asks for ([`FAULT`]), and replies: a future,
-    /// which holds no thread while it waits for the pager (TASK-92.20), served so
-    /// ([`serve_future`]).
-    async fn fault(self: Arc<Self>, message: Message, answer: Answer) {
-        let Header { flags, args, .. } = message.header;
+    /// fxdax: resolves the guest's `fault` ([`FAULT`]), and replies: a future, which holds no
+    /// thread while it waits for the pager (TASK-92.20), served so ([`serve_future`]).
+    async fn fault(self: Arc<Self>, fault: Fault, answer: Answer) {
+        let Fault { offset, access, page } = fault;
         let faulted = async {
             let window = self.window.lock().unwrap().clone().ok_or(Errno::EBADF)?;
-            let access = if flags & FAULT_WRITE != 0 { Access::Write } else { Access::Read };
-            if flags & FAULT_PAGE != 0 {
-                window.fault_page(args[0], access).await
-            } else {
-                window.fault(args[0], access).await
+            match page {
+                true => window.fault_page(offset, access).await,
+                false => window.fault(offset, access).await,
             }
         };
         let faulted = faulted.await;
-        if flags & FAULT_PAGE == 0 {
+        if !page {
             crate::stats::add(crate::stats::Counter::FaultStores, 1);
         }
         // fxdax: a store refused, or an access to a page the window maps nothing at, stops its
@@ -1254,39 +1223,31 @@ impl Connection {
             if (count <= 1000 || count.is_power_of_two())
                 && let Some(store) = self.store.get()
             {
-                let offset = args[0];
                 log::warn!(
                     "extentd: {what} at DAX window offset {offset:#x} refused ({count} so far): {}",
                     store.refused(offset - offset % crate::pages::page_size(), what)
                 );
             }
         }
-        answer.send(faulted, Header::new(REPLY, message.header.id), Vec::new(), Vec::new());
+        let reply = answer.reply_header();
+        answer.send(faulted, reply, Vec::new(), Vec::new());
     }
 
-    /// Hands the VM process its physical memory, in `reply`: its tenant's arena, and the default
-    /// one, read-only (TASK-43); the default tenant's as any other's (TASK-79.17).
-    fn memories<'a>(
-        &'a self,
-        reply: &mut Header,
-        fds: &mut Vec<std::os::fd::BorrowedFd<'a>>,
-    ) -> Result<(), Errno> {
-        use std::os::fd::AsFd;
+    /// The VM process's physical memory, which the reply to its `OPEN` hands it, of the arena
+    /// it says ([`Opened`]): its tenant's arena, and the default one, read-only (TASK-43); the
+    /// default tenant's as any other's (TASK-79.17).
+    fn memories(&self) -> [std::os::fd::BorrowedFd<'_>; 2] {
         let memory = &self.tenant.memory;
-        reply.args[1] = memory.arena.id().0.into();
-        fds.extend([memory.memory.as_fd(), memory.public.as_fd()]);
-        Ok(())
+        [memory.memory.as_fd(), memory.public.as_fd()]
     }
 
-    /// fxdax: opens a follower of the store at the path `path` holds (backlog doc-8), of the store
+    /// fxdax: opens a follower of the store at `path`, authorized (backlog doc-8), of the store
     /// a writer's connection, or followers', have open, or, if none has, of the store as of its
     /// last commit, which a writer opening it then takes over ([`stores::followed`]); tells its VM
     /// process of the writer's commits after its view's ([`COMMITTED`]); and returns its branch.
-    fn follow(&self, path: &[u8]) -> Result<u64, Errno> {
-        let path = PathBuf::from(std::ffi::OsStr::from_bytes(path));
-        self.authorize(&path)?;
+    fn follow(&self, path: &Path) -> Result<u64, Errno> {
         let opening = self.opening()?;
-        let followed = stores::followed(&path, self.arena())?;
+        let followed = stores::followed(path, self.arena())?;
         if followed.access().public && !self.tenant.policy.follows_public_bases {
             return Err(Errno::EPERM);
         }
@@ -1312,57 +1273,43 @@ impl Connection {
         }
     }
 
-    /// fxdax: serves `message`, an [`OPEN`] of a store to write ([`Connection::open`]), and
-    /// replies with its branch and physical memory: a future, which holds no thread while it
-    /// waits (TASK-92.5), served so ([`serve_future`]).
-    async fn serve_open(self: Arc<Self>, message: Message, answer: Answer) {
-        let Header { flags, args, id, .. } = message.header;
-        let mut reply = Header::new(REPLY, id);
-        let mut fds = Vec::new();
-        let opened = async {
-            let (path, from) = if flags & OPEN_FORK_FROM != 0 {
-                let payload = &message.payload;
-                let nul = payload.iter().position(|byte| *byte == 0).ok_or(Errno::EINVAL)?;
-                (&payload[..nul], Some((&payload[nul + 1..], args[1])))
-            } else {
-                (&message.payload[..], None)
-            };
-            reply.args[0] = self.open(path, args[0], flags & OPEN_CREATE != 0, from).await?;
-            self.memories(&mut reply, &mut fds)
+    /// fxdax: serves an [`OPEN`] of the store at `path` to write, as `how` says
+    /// ([`Connection::open`]), and replies with its branch and physical memory: a future, which
+    /// holds no thread while it waits (TASK-92.5), served so ([`serve_future`]).
+    async fn serve_open(self: Arc<Self>, path: PathBuf, how: codec::Opening, answer: Answer) {
+        let mut reply = answer.reply_header();
+        let opened = self.open(&path, how).await;
+        let fds = match &opened {
+            Ok(branch) => {
+                reply.args = Opened { branch: *branch, arena: self.arena_id(), epoch: 0 }.args();
+                Vec::from(self.memories())
+            }
+            Err(_) => Vec::new(),
         };
-        let opened = opened.await;
-        answer.send(opened, reply, Vec::new(), fds);
+        answer.send(opened.map(drop), reply, Vec::new(), fds);
     }
 
-    /// Opens the store at the path `path` holds, creating it with `capacity` bytes if `create` and
-    /// it doesn't exist, or, if `from` names a store and its branch, forking it from that one if it
-    /// doesn't exist ([`fork_from`]); unless another connection has it open; and returns its
-    /// branch. fxdax: a store followers have open, it takes over ([`stores::take_over`]). Its
-    /// waits, for a connection whose VM process is gone to let the store go, and for a restore's
-    /// point ([`stores::fork_from`]), hold no thread (TASK-92.5); its I/O blocks.
-    async fn open(
-        &self,
-        path: &[u8],
-        capacity: u64,
-        create: bool,
-        from: Option<(&[u8], u64)>,
-    ) -> Result<u64, Errno> {
-        let path = PathBuf::from(std::ffi::OsStr::from_bytes(path));
-        self.authorize(&path)?;
-        if let Some((from, _)) = from {
-            self.authorize(std::ffi::OsStr::from_bytes(from).as_ref())?;
-        }
+    /// Opens the store at `path`, authorized, as `how` says: creating it if it doesn't exist, or
+    /// forking it from the store `how` names if it doesn't exist ([`stores::fork_from`]); unless
+    /// another connection has it open; and returns its branch. fxdax: a store followers have open,
+    /// it takes over ([`stores::take_over`]). Its waits, for a connection whose VM process is gone
+    /// to let the store go, and for a restore's point ([`stores::fork_from`]), hold no thread
+    /// (TASK-92.5); its I/O blocks.
+    async fn open(&self, path: &Path, mut how: codec::Opening) -> Result<u64, Errno> {
         // fxdax: the branch it names, if its tenant's word for one counts (TASK-150.4).
-        let named = self.tenant.policy.names_branches;
-        let from = from.map(|(from, branch)| (from, if named { branch } else { 0 }));
+        if let codec::Opening::ForkFrom { branch, .. } = &mut how
+            && !self.tenant.policy.names_branches
+        {
+            *branch = 0;
+        }
         let opening = self.opening()?;
-        let key = store_key(&path);
+        let key = store_key(path);
         open_paths().hold_async(&key, self.this.clone(), CLOSING_WAIT).await?;
         // A VM process opens no store to write that its writer may not write
         // ([`crate::StoreAccess::may_write`]): a public base, only forks of it (TASK-43), what it
         // wrote being every tenant's, its pages the default arena's, which every VM process holds
         // (TASK-79.17); fxdax: nor a point, which nothing writes (doc-7, Points).
-        let opened = self.open_held(&path, &key, capacity, create, from).await;
+        let opened = self.open_held(path, &key, &how).await;
         let opened = opened.and_then(|store| store.access().may_write().map(|()| store));
         let started = opened.map(|store| {
             let flushed = store.clone();
@@ -1389,24 +1336,24 @@ impl Connection {
         &self,
         path: &Path,
         key: &Path,
-        capacity: u64,
-        create: bool,
-        from: Option<(&[u8], u64)>,
+        how: &codec::Opening,
     ) -> Result<Arc<ExtentStore>, Errno> {
         let arena = self.arena();
         if let Some(store) = stores::take_over(key, arena).await? {
             return Ok(store);
         }
-        let opened = match from {
+        let opened = match how {
             // fxdax: or where a fork of it failed, whose deletion stopped partway, which is no
             // store: its deletion finished first, as deleting it would (TASK-79.84).
-            Some((from, branch)) if !path.exists() || ExtentStore::fork_failed(path) => {
-                let from: &Path = std::ffi::OsStr::from_bytes(from).as_ref();
+            codec::Opening::ForkFrom { from, branch, capacity }
+                if !path.exists() || ExtentStore::fork_failed(path) =>
+            {
                 stores::deleted_if_failed(path)?;
-                stores::fork_from(from, branch, capacity, path).await?;
+                stores::fork_from(from, *branch, *capacity, path).await?;
                 open_store(path, None, Some(arena))
             }
-            _ => open_store(path, create.then_some(capacity), Some(arena)),
+            codec::Opening::Create(capacity) => open_store(path, Some(*capacity), Some(arena)),
+            _ => open_store(path, None, Some(arena)),
         };
         let store = Arc::new(opened?);
         stores::register(key, &store);
@@ -1447,9 +1394,8 @@ impl Guest for Connection {
     /// Tells the VM process the store's capacity is `capacity` bytes, or, if `ask`, asks its guest
     /// to shrink to it ([`CAPACITY`]).
     fn tell(&self, capacity: u64, ask: bool) -> Result<(), Errno> {
-        let flags = if ask { CAPACITY_ASK } else { 0 };
-        let header = Header::new(CAPACITY, 0).with_args(&[capacity]).with_flags(flags);
-        self.peer.sender.send(header, Vec::new(), &[]).map_err(|err| {
+        let told = Told::Capacity { capacity, ask }.encode();
+        self.peer.sender.send(told, Vec::new(), &[]).map_err(|err| {
             log::warn!("extentd: telling a VM process its capacity: {err}");
             Errno::EIO
         })
@@ -1659,8 +1605,7 @@ async fn tell_commits(
         };
         epoch = latest;
         // Sent holding no thread, as a send never waits (TASK-79.9).
-        let told = Header::new(COMMITTED, 0).with_args(&[latest]);
-        if let Err(err) = sender.send_latest(told) {
+        if let Err(err) = sender.send_latest(Told::Committed { epoch: latest }.encode()) {
             log::warn!("extentd: telling a VM process of a commit: {err}");
             return;
         }
@@ -2166,13 +2111,12 @@ thread_local! {
 }
 
 impl RemoteStage {
-    /// Sends a stage operation of `kind`, with `args`, which the VM process acknowledges if it
-    /// takes access to pages away (`taking`).
-    fn send(&self, kind: u32, args: &[u64], taking: bool) {
+    /// Sends the stage operation `op`, which the VM process acknowledges if it takes access to
+    /// pages away ([`StageOp::taking`]).
+    fn send(&self, op: StageOp) {
+        let taking = op.taking();
         let id = self.acks.next(taking);
-        let header =
-            Header::new(kind, id).with_args(args).with_flags(if taking { STAGE_ACK } else { 0 });
-        if self.sender.send(header, Vec::new(), &[]).is_err() {
+        if self.sender.send(Stage { id, op }.encode(), Vec::new(), &[]).is_err() {
             // The VM process is gone, and its mappings with it.
             return;
         }
@@ -2206,15 +2150,13 @@ impl SecondStage for RemoteStage {
         len: u64,
         protection: Protection,
     ) {
-        let args = [offset, phys.offset, len, protection_code(protection), phys.arena.0.into()];
-        self.send(STAGE_MAP, &args, false);
+        self.send(StageOp::Map { offset, phys, len, protection });
         crate::stats::add(crate::stats::Counter::StageMaps, 1);
         crate::stats::add(crate::stats::Counter::StageMapBytes, len);
     }
 
     fn protect(&self, offset: u64, len: u64, protection: Protection) {
-        let taking = protection != Protection::ReadWrite;
-        self.send(STAGE_PROTECT, &[offset, len, protection_code(protection)], taking);
+        self.send(StageOp::Protect { offset, len, protection });
     }
 
     fn begin_change(&self) {
@@ -2235,11 +2177,11 @@ impl SecondStage for RemoteStage {
     }
 
     fn unmap(&self, offset: u64, len: u64) {
-        self.send(STAGE_UNMAP, &[offset, len], true);
+        self.send(StageOp::Unmap { offset, len });
     }
 
     fn window_mapped(&self, offset: u64, len: u64) {
-        self.send(STAGE_MAPPED, &[offset, len], false);
+        self.send(StageOp::Mapped { offset, len });
     }
 }
 

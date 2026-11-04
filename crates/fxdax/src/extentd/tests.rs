@@ -532,6 +532,33 @@ fn transfer_areas_are_checked() {
     served.join().unwrap();
 }
 
+/// TASK-160.9: a request with a flag its kind doesn't know is refused (`EINVAL`), rather than
+/// served as though it had none, as the daemon did: a `WRITE` of any flag a write doesn't know
+/// writes nothing, a `COMMIT` of one commits nothing, and the store is served on.
+#[test]
+fn requests_with_flags_the_daemon_doesnt_know_are_refused() {
+    use super::wire::{COMMIT, COMMIT_ROOT, Header, WRITE};
+    host();
+    let dir = tempfile::tempdir().unwrap();
+    let (store, served) = connect(&dir.path().join("store"), 1 << 24);
+    let extent = ExtentId { branch: store.branch(), sequence: 1 };
+    let args = [extent.branch, extent.sequence, 0, 0, BLOCK as u64];
+    for bit in 5..32 {
+        let unknown = Header::new(WRITE, 0).with_args(&args).with_flags(1 << bit);
+        let written = store.call(unknown, &pattern(1, BLOCK), &[]).map(drop);
+        assert_eq!(written, Err(Errno::EINVAL), "flag {bit}");
+    }
+    assert_eq!(read(&store, extent, 0, BLOCK), Err(Errno::ENOENT));
+    assert_eq!(write(&store, extent, 0, &pattern(2, BLOCK)), Ok(()));
+    assert_eq!(store.commit(Some(b"before")), Ok(()));
+    let unknown = Header::new(COMMIT, 0).with_flags(COMMIT_ROOT | 1 << 2);
+    assert_eq!(store.call(unknown, b"after", &[]).map(drop), Err(Errno::EINVAL));
+    assert_eq!(store.root(), Ok(b"before".to_vec()));
+    assert_eq!(read(&store, extent, 0, BLOCK), Ok(pattern(2, BLOCK)));
+    drop(store);
+    served.join().unwrap();
+}
+
 /// A write a commit follows is sealed by it, and a write a barrier precedes seals what came
 /// before: each one round trip, as the store has them (`WriteBarriers`).
 #[test]

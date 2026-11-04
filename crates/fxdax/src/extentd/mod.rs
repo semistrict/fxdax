@@ -92,6 +92,7 @@
 //! bases. What may be done to a store is the store's, fixed as it opens ([`crate::StoreAccess`]).
 
 pub(crate) mod client;
+mod codec;
 pub mod control;
 mod grants;
 pub mod logging;
