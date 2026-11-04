@@ -4688,3 +4688,48 @@ fn asks_to_seal_that_nothing_takes_are_answered_at_once() {
     assert_eq!(refused, Err(Errno::ENOMEM));
     assert!(started.elapsed() < super::seals::SEAL_WAIT / 2, "it waited {:?}", started.elapsed());
 }
+
+/// TASK-159: a tenant's socket is of its mode, 0660, from the moment it is at its path, whatever
+/// the daemon's umask, even none: bound where no one else reaches, given its mode there, and only
+/// then put at its path, rather than open there until it is given.
+#[test]
+fn tenants_sockets_are_of_their_mode_from_the_first() {
+    use std::os::unix::fs::PermissionsExt as _;
+    host();
+    let dir = tempfile::tempdir().unwrap();
+    let (stores, sockets) = (dir.path().join("acme"), dir.path().join("tenants"));
+    std::fs::create_dir(&stores).unwrap();
+    std::fs::create_dir(&sockets).unwrap();
+    let socket = sockets.join("acme.sock");
+    let (seen, modes) = std::sync::mpsc::channel();
+    let at = socket.clone();
+    fail::cfg_callback("extentd::bound", move || {
+        let mode = std::fs::symlink_metadata(&at).unwrap().permissions().mode();
+        seen.send(mode & 0o777).unwrap();
+    })
+    .unwrap();
+    // SAFETY: Plain system calls. Nothing else of this test's process, its own, makes a file
+    // meanwhile.
+    let umask = unsafe { libc::umask(0) };
+    let granted = super::grants::Grants::new(sockets.clone()).grant("acme", &stores, None, None);
+    // SAFETY: As above.
+    unsafe { libc::umask(umask) };
+    fail::remove("extentd::bound");
+    assert_eq!(granted, Ok(socket));
+    assert_eq!(modes.try_iter().collect::<Vec<_>>(), [0o660]);
+    // Where it was bound went.
+    assert_eq!(std::fs::read_dir(&sockets).unwrap().count(), 1);
+}
+
+/// TASK-159: a socket bound where one is already, as a running daemon's, fails with `EEXIST`, and
+/// leaves that one there, serving.
+#[test]
+fn sockets_are_not_bound_over_another() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("extentd.sock");
+    let _running = super::bind_owner_only(&socket).unwrap();
+    let again = super::bind_owner_only(&socket).unwrap_err();
+    assert_eq!(again.kind(), std::io::ErrorKind::AlreadyExists);
+    UnixStream::connect(&socket).unwrap();
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+}

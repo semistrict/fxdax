@@ -4,9 +4,9 @@
 
 // The extent daemon's control API (TASK-43.3): what the host's VM manager, which launches the
 // VMMs, asks fxdax-extentd to do with the VMs' disks, the extent stores it serves them. It is
-// served over a Unix socket (`FXDAX_EXTENTD_GRPC`), whose permissions say who may call it: every
-// caller may do everything. VM processes do not use it: they keep the extent protocol on the
-// daemon's VM sockets, which carries their memory as file descriptors.
+// served over a Unix socket (`FXDAX_EXTENTD_GRPC`), the daemon's user's alone, mode 0600 whatever
+// its umask (TASK-159), as every caller may do everything. VM processes do not use it: they keep
+// the extent protocol on the daemon's VM sockets, which carries their memory as file descriptors.
 //
 // Tenants (Grant, Revoke) are defence in depth, should a guest escape into its VMM: a tenant's
 // VM processes connect to the tenant's own socket, through which they name stores in the

@@ -31,11 +31,13 @@
 //! With `FXDAX_EXTENTD_GRPC` naming a path, the daemon serves its control API there too, gRPC over a
 //! Unix socket (`fxdax::extentd::control`; `crates/fxdax/proto/fxdax/extentd/v1/extentd.proto`),
 //! through which the host's VM manager makes, forks, syncs and deletes stores, and grants tenants
-//! VM sockets of their own: whoever the socket's permissions let connect may do all of it. The
-//! tenants' sockets go in the directory `FXDAX_EXTENTD_TENANTS` names, or `tenants` beside the
-//! control socket. The control socket serves the standard gRPC health service too
-//! (`grpc.health.v1.Health`, TASK-48): SERVING while the daemon accepts VM processes, NOT_SERVING
-//! as it starts and as it stops. SIGTERM stops it: once the health service reports so, it exits.
+//! VM sockets of their own: whoever connects may do all of it, so that it is the daemon's user's
+//! alone, mode 0600, as SOCKET is, whatever the umask (TASK-159): the VM manager runs as that
+//! user, or as root. The tenants' sockets go in the directory `FXDAX_EXTENTD_TENANTS` names, or
+//! `tenants` beside the control socket, each mode 0660 from the first. The control socket serves
+//! the standard gRPC health service too (`grpc.health.v1.Health`, TASK-48): SERVING while the
+//! daemon accepts VM processes, NOT_SERVING as it starts and as it stops. SIGTERM stops it: once
+//! the health service reports so, it exits.
 //!
 //! With `FXDAX_EXTENTD_METRICS` naming an address (`HOST:PORT`), the daemon serves its metrics
 //! there, over HTTP, at `/metrics`, in Prometheus' text format (`fxdax::extentd::metrics`,
@@ -70,7 +72,6 @@ fn main() -> anyhow::Result<()> {
         let memory: u64 = memory.parse().context("MEMORY_BYTES must be a number")?;
         fxdax::pages::configure(fxdax::pages::Config::with_memory(memory))?;
     }
-    // Before any thread that makes a file: the one so far waits for SIGTERM alone.
     let listener = fxdax::extentd::bind_owner_only(&socket)
         .with_context(|| format!("listening at {socket}"))?;
     if let Some(control) = std::env::var_os("FXDAX_EXTENTD_GRPC").filter(|path| !path.is_empty()) {
@@ -81,7 +82,8 @@ fn main() -> anyhow::Result<()> {
         };
         std::fs::create_dir_all(&tenants)
             .with_context(|| format!("making {}", tenants.display()))?;
-        let control = std::os::unix::net::UnixListener::bind(&control)
+        // It can do everything: its user's alone, as the VM socket (TASK-159).
+        let control = fxdax::extentd::bind_owner_only(&control)
             .with_context(|| format!("listening at {}", control.display()))?;
         std::thread::Builder::new().name("extentd control".into()).spawn(move || {
             if let Err(err) = fxdax::extentd::serve_control(control, tenants) {

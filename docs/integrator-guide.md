@@ -10,8 +10,8 @@ follows from that.
 ## Per-host setup
 
 1. Start `fxdax-extentd` with `FXDAX_EXTENTD_GRPC` naming its control socket. Keep that socket away
-   from jails, and set the daemon's umask so that only the VM manager can reach it: it can do
-   everything, and unlike the VM socket it follows the umask (TASK-159).
+   from jails. It can do everything, so it is mode 0600, the daemon's user's, whatever the umask
+   (TASK-159): run the VM manager as that user, or as root.
 2. For each tenant, call `Grant` with the tenant's name, the directory of its stores, and its jails'
    uid and gid. It returns the path of a socket.
 3. Bind-mount **that socket alone** into the tenant's jails. Never mount the daemon's default VM

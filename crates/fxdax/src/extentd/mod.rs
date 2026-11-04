@@ -104,6 +104,7 @@ mod stores;
 pub(crate) mod wire;
 
 use std::os::unix::net::UnixListener;
+use std::path::Path;
 
 pub use client::{RemoteExtentStore, spawn_on_replies};
 pub use control::serve_control;
@@ -131,15 +132,59 @@ pub fn stop_serving() {
 }
 
 /// A listener at `socket`, which only this process's user may connect to (TASK-155): mode 0600
-/// from the moment it exists, whatever the process's umask, rather than open until it is changed.
-/// The umask is the process's: call this before any thread makes a file.
-pub fn bind_owner_only(socket: impl AsRef<std::path::Path>) -> std::io::Result<UnixListener> {
-    // SAFETY: Plain system calls, which set and restore a mask and cannot fail.
-    let umask = unsafe { libc::umask(0o177) };
-    let listener = UnixListener::bind(socket);
-    // SAFETY: As above.
-    unsafe { libc::umask(umask) };
+/// from the moment it is there, whatever the process's umask, rather than open until it is
+/// changed. The daemon's own VM socket and its control socket (TASK-159) are.
+pub fn bind_owner_only(socket: impl AsRef<Path>) -> std::io::Result<UnixListener> {
+    bind_given(socket.as_ref(), 0o600, None, None)
+}
+
+/// A listener at `socket`, of mode `mode` and given to `uid` and `gid` where given, from the moment
+/// it is there, whatever the process's umask and whatever its other threads do (TASK-159): bound
+/// in a directory beside it that this process's user alone may enter, given its mode and owner
+/// there, and only then linked at `socket`, which fails with `EEXIST` if anything is there already,
+/// as a running daemon's socket. A directory a process stopped mid-way left goes first.
+///
+/// Not under a umask set around the bind, which is the process's, all its threads': another
+/// thread's file would take it, and a grant comes while they serve.
+pub(crate) fn bind_given(
+    socket: &Path,
+    mode: u32,
+    uid: Option<u32>,
+    gid: Option<u32>,
+) -> std::io::Result<UnixListener> {
+    use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
+    let name = socket.file_name().ok_or(std::io::ErrorKind::InvalidInput)?;
+    // `socket`'s path and 3 bytes more, as a socket's path is short (108 bytes, with its NUL).
+    let mut hidden = std::ffi::OsString::from(".");
+    hidden.push(name);
+    let private = socket.with_file_name(hidden);
+    let bound = private.join("s");
+    remove_unfinished(&private, &bound)?;
+    std::fs::DirBuilder::new().mode(0o700).create(&private)?;
+    let listener = UnixListener::bind(&bound).and_then(|listener| {
+        std::os::unix::fs::chown(&bound, uid, gid)?;
+        std::fs::set_permissions(&bound, std::fs::Permissions::from_mode(mode))?;
+        std::fs::hard_link(&bound, socket)?;
+        // The moment it is at `socket`, which tests look at.
+        fail::fail_point!("extentd::bound");
+        Ok(listener)
+    });
+    // At `socket` alone, or nowhere if it failed: where it was bound goes.
+    if let Err(err) = remove_unfinished(&private, &bound) {
+        log::warn!("extentd: removing {}: {err}", private.display());
+    }
     listener
+}
+
+/// Removes the directory `private` that [`bind_given`] binds in, and the socket `bound` in it,
+/// whichever of them is there.
+fn remove_unfinished(private: &Path, bound: &Path) -> std::io::Result<()> {
+    let gone = |removed: std::io::Result<()>| match removed {
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        removed => removed,
+    };
+    gone(std::fs::remove_file(bound))?;
+    gone(std::fs::remove_dir(private))
 }
 
 /// Raises the process's limit of open files to the most it may: each store it serves keeps its

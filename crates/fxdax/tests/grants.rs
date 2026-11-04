@@ -536,9 +536,9 @@ fn bases_made_points_fork_on_several_hosts_at_once() {
 }
 
 
-/// The environment of this test's process as another user ([`as_another_user`]): the daemon's
-/// socket, mounted where a jail would have it, and a socket beside it anyone may connect to.
-const DEFAULT_SOCKET: &str = "FXDAX_TEST_DEFAULT_SOCKET";
+/// The environment of this test's process as another user ([`as_another_user`]): a socket of the
+/// daemon's, mounted where a jail would have it, and a socket beside it anyone may connect to.
+const JAILED_SOCKET: &str = "FXDAX_TEST_JAILED_SOCKET";
 const OPEN_SOCKET: &str = "FXDAX_TEST_OPEN_SOCKET";
 
 /// The user a jail's VM process runs as, as scripts/test-e2e.sh has it.
@@ -558,9 +558,29 @@ impl Drop for KillOnDrop {
 /// kernel, where a socket beside it connects. Needs `sudo -n`, as Lima's VMs have it.
 #[test]
 fn the_default_socket_refuses_other_users() {
+    refuses_other_users("the_default_socket_refuses_other_users", |sockets| sockets.vms);
+}
+
+/// TASK-159: so is its control socket, which can do everything.
+#[test]
+fn the_control_socket_refuses_other_users() {
+    refuses_other_users("the_control_socket_refuses_other_users", |sockets| sockets.control);
+}
+
+/// The sockets of a daemon [`refuses_other_users`] runs.
+struct Sockets {
+    vms: PathBuf,
+    control: PathBuf,
+}
+
+/// That the real daemon, under no umask, refuses a process of another user the socket of its that
+/// `jailed` picks, mounted into the process's mount namespace: the test `test`, which this process
+/// runs again as that user.
+fn refuses_other_users(test: &str, jailed: fn(Sockets) -> PathBuf) {
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+    use std::os::unix::net::UnixStream;
     use std::os::unix::process::CommandExt as _;
-    if let Some(socket) = std::env::var_os(DEFAULT_SOCKET) {
+    if let Some(socket) = std::env::var_os(JAILED_SOCKET) {
         return as_another_user(socket.as_ref());
     }
     // Where the other user reaches, so that what refuses it is the socket.
@@ -569,9 +589,9 @@ fn the_default_socket_refuses_other_users() {
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
     };
     everyone(dir.path(), 0o755);
-    let socket = dir.path().join("extentd.sock");
+    let (vms, control) = (dir.path().join("extentd.sock"), dir.path().join("extentd.control"));
     let mut daemon = std::process::Command::new(env!("CARGO_BIN_EXE_fxdax-extentd"));
-    daemon.arg(&socket);
+    daemon.arg(&vms).env("FXDAX_EXTENTD_GRPC", &control);
     daemon.env("FXDAX_EXTENTD_REMOTE", "memory:///branches").env("FXDAX_EXTENTD_TOKEN", "1");
     // SAFETY: umask is async-signal-safe.
     unsafe {
@@ -582,10 +602,11 @@ fn the_default_socket_refuses_other_users() {
     };
     let _daemon = KillOnDrop(daemon.spawn().unwrap());
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    while std::os::unix::net::UnixStream::connect(&socket).is_err() {
+    while UnixStream::connect(&vms).is_err() || UnixStream::connect(&control).is_err() {
         assert!(std::time::Instant::now() < deadline, "the daemon never served");
         std::thread::yield_now();
     }
+    let socket = jailed(Sockets { vms, control });
 
     let open = dir.path().join("open.sock");
     let _open = std::os::unix::net::UnixListener::bind(&open).unwrap();
@@ -600,10 +621,10 @@ fn the_default_socket_refuses_other_users() {
         .args(["-n", "unshare", "--mount", "--propagation", "private", "sh", "-c", script, "sh"])
         .arg(&socket)
         .arg(&jail_socket)
-        .arg(format!("{DEFAULT_SOCKET}={}", jail_socket.display()))
+        .arg(format!("{JAILED_SOCKET}={}", jail_socket.display()))
         .arg(format!("{OPEN_SOCKET}={}", open.display()))
         .arg(std::env::current_exe().unwrap())
-        .arg("the_default_socket_refuses_other_users")
+        .arg(test)
         .status()
         .unwrap();
     assert!(status.success(), "the other user connected, or failed to try: {status}");

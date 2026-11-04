@@ -67,16 +67,15 @@ impl Grants {
         };
         let socket = self.sockets.join(format!("{name}.sock"));
         remove_stale(&socket)?;
-        let listener = UnixListener::bind(&socket).map_err(errno)?;
-        let served = give(&socket, uid, gid)
-            .and_then(|()| listener.try_clone().map_err(errno))
-            .and_then(|accepting| {
-                let serving = tenant.clone();
-                std::thread::Builder::new()
-                    .name("extentd tenant".into())
-                    .spawn(move || serve_tenant(accepting, serving))
-                    .map_err(errno)
-            });
+        // Its mode and owner from the moment it is there, not the umask's until given (TASK-159).
+        let listener = super::bind_given(&socket, MODE, uid, gid).map_err(errno)?;
+        let served = listener.try_clone().map_err(errno).and_then(|accepting| {
+            let serving = tenant.clone();
+            std::thread::Builder::new()
+                .name("extentd tenant".into())
+                .spawn(move || serve_tenant(accepting, serving))
+                .map_err(errno)
+        });
         if let Err(errno) = served {
             let _ = std::fs::remove_file(&socket);
             return Err(errno);
@@ -124,10 +123,13 @@ pub(super) fn check_name(name: &str) -> Result<(), Errno> {
     if fits && name.chars().all(allowed) { Ok(()) } else { Err(Errno::EINVAL) }
 }
 
+/// A tenant's socket's mode: its owner and group alone connect, those it is given to.
+const MODE: u32 = 0o660;
+
 /// Gives the socket at `socket` to `uid` and `gid`, where given, connectable by them alone.
 fn give(socket: &Path, uid: Option<u32>, gid: Option<u32>) -> Result<(), Errno> {
     std::os::unix::fs::chown(socket, uid, gid).map_err(errno)?;
-    std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o660)).map_err(errno)
+    std::fs::set_permissions(socket, std::fs::Permissions::from_mode(MODE)).map_err(errno)
 }
 
 /// Removes the socket at `socket` that a daemon before this one left, whose grants went with it:
