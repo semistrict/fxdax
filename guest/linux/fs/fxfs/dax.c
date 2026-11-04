@@ -3728,7 +3728,7 @@ static ssize_t fxfs_dax_write_iter(struct kiocb *iocb, struct iov_iter *from)
 			 * fxdax: a write that can't get on fails, and says so: it spun unkillable, with
 			 * nothing in the log (TASK-140).
 			 */
-			if (source == from && fatal_signal_pending(current)) {
+			if (fatal_signal_pending(current)) {
 				ret = -EINTR;
 				break;
 			}

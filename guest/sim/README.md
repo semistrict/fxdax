@@ -41,7 +41,7 @@ Compiled as they are, from the tree or the repo:
 | Real | From |
 | --- | --- |
 | `dax.c`, `device.c`, `hist.h`, `vfs.h`, `fxfs.h`, `device.h` | fs/fxfs: all of the window's protocol and the gate |
-| `fs/dax.c` | with guest/linux/patches/0005-0009: DAX entries, their locks, shared folios |
+| `fs/dax.c` | with guest/linux/patches/0005-0012: DAX entries, their locks, shared folios |
 | `fs/iomap/iter.c`, `lib/xarray.c`, `lib/genalloc.c` | the kernel's |
 | `linux/{list,rculist,hash,hashtable,xarray,iomap,dax,genalloc,wait,wait_bit}.h` | the kernel's headers |
 
@@ -200,7 +200,6 @@ And by `tests/scenarios`, each at once, with how many seeds of `tests/failures` 
 | TASK-150.13, a range behind its blocks left in use | no, in 400 | a scenario: its extent has to die |
 | TASK-150.14, writable bits of a file not listed | no, in 2,676 | not found: its scenario took a slice of a clone's blocks, which shared blocks no longer make. `fxfs_dax_set_writable` keeps it unbuildable by hand, not by a test |
 | TASK-79.53, a mapping's store past the end read back | 2 | bytes wrong |
-| Patch 0009, a killed writer's copy stopped | 1 | bytes wrong |
 | A write past the end that copies nothing grows the file | not run | a scenario |
 | TASK-150.20, writes past the host's memory for open extents | 200 of 200 that limit it | the write's EIO, as generic/129's |
 

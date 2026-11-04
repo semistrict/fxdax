@@ -3360,7 +3360,7 @@ pub(crate) mod guest {
     /// fxdax: a writer killed once its blocks moved, keeping nothing of what they held, before its
     /// copy: the kernel's copy stops at the signal, and the move, which commits after the bytes,
     /// is dropped, leaving the file as it was (TASK-153.5). Committed first, it left zeros where
-    /// the file's data was (patches/0009). Played out with a pause point.
+    /// the file's data was. Played out with a pause point.
     fn test_write_killed() {
         use std::os::unix::fs::FileExt;
         const PAGE: usize = 4096;

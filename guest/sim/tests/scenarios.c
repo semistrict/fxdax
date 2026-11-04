@@ -348,12 +348,13 @@ static void write_killed_file(void *arg)
 {
 	ssize_t done = sim_write(killed_file, 0, killed_bytes, sizeof(killed_bytes));
 
-	check(done == sizeof(killed_bytes), "the write: %zd", done);
+	check(done == -EINTR, "the write, its task killed: %zd", done);
 }
 
 /*
- * That a writer killed once its blocks moved, keeping nothing of what they held, still writes them:
- * dax_iomap_iter stopped at the signal, before its copy, which left zeros (patches/0009).
+ * That a writer killed past its iomap, before its copy, leaves the file as it was: dax_iomap_iter
+ * stops at the signal, and the move, which commits after the bytes, is dropped (TASK-153.5).
+ * Committed first, it left zeros where the file's data was.
  */
 static void write_killed(void)
 {
@@ -375,7 +376,9 @@ static void write_killed(void)
 	writer->killed = true;
 	sim_param_set("dax_pause", "0");
 	msleep(100);
-	check_file("the write, its task killed", killed_file, killed_bytes, sizeof(killed_bytes));
+	check(i_size_read(file_inode(killed_file)) == sizeof(bytes), "the file is %lld bytes long",
+	      i_size_read(file_inode(killed_file)));
+	check_file("the write, its task killed", killed_file, bytes, sizeof(bytes));
 }
 
 /* That a failed UNMAP's pages, kept from use for good, don't stop the filesystem unmounting. */
