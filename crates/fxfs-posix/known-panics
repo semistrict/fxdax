@@ -6,6 +6,3 @@
 # the task, then where it panics, as a panic's location begins (file:line:). Each is in a task that
 # is open; the line goes with its fix, and the cases it shows at then fail again if the fix doesn't
 # hold.
-
-# A sealed flip in a super-block: journal_file_checkpoint indexes checksums it hasn't read.
-TASK-149.23 crates/fxfs/src/object_store/journal/reader.rs:159:

@@ -1097,11 +1097,6 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
                             );
                             // The iterator shouldn't start entirely before the offset.
                             ensure!(extent_key.end > offset, FxfsError::Inconsistent);
-                            // fxdax: a bit a block, what a record says being anything.
-                            if let ExtentMode::OverwritePartial(bitmap) = mode {
-                                let blocks = extent_key.length()? / block_size;
-                                ensure!(bitmap.len() as u64 == blocks, FxfsError::Inconsistent);
-                            }
                             (extent_key.0.clone(), *extent, *extent_offset, *key_id, mode)
                         }
                         ExtentValue::None => {
@@ -2192,12 +2187,11 @@ mod tests {
     const TEST_DEVICE_BLOCK_SIZE: u32 = 512;
     const TEST_OBJECT_NAME: &str = "foo";
 
-    /// fxdax: an attribute's size and an extent's bitmap are what an image says: a size past what
-    /// a transfer buffer could ever hold, or a bitmap shorter than the extent, fail a read.
+    /// fxdax: an attribute's size is what an image says: a size past what a transfer buffer could
+    /// ever hold fails a read.
     #[fuchsia::test]
     async fn test_reads_of_what_an_image_says() {
-        use crate::object_store::{AttributeId, ExtentMode, ExtentValue};
-        use bit_vec::BitVec;
+        use crate::object_store::AttributeId;
 
         let fs = FxFilesystem::new_empty(DeviceHolder::new(FakeDevice::new(16384, 4096)))
             .await
@@ -2211,30 +2205,13 @@ mod tests {
             ObjectStore::create_object(&store, &mut transaction, HandleOptions::default(), None)
                 .await
                 .expect("create_object failed");
-        let object_id = handle.object_id();
-        let extent = store.device().branch();
-        let extent = storage_device::ExtentId::new(extent, 1);
-        let mode = ExtentMode::OverwritePartial(BitVec::from_elem(1, true));
-        let value = ObjectValue::Extent(ExtentValue::new(extent, 0, mode, 0));
-        transaction.add(
-            store.store_object_id(),
-            Mutation::merge_object(ObjectKey::extent(object_id, AttributeId::DATA, 0..8192), value),
-        );
-        for (attribute_id, size) in [(AttributeId::TEST_ID, u64::MAX), (AttributeId::DATA, 8192)] {
-            let key = ObjectKey::attribute(object_id, attribute_id, AttributeKey::Attribute);
-            let value = ObjectValue::attribute(size, false);
-            transaction
-                .add(store.store_object_id(), Mutation::replace_or_insert_object(key, value));
-        }
+        let key =
+            ObjectKey::attribute(handle.object_id(), AttributeId::TEST_ID, AttributeKey::Attribute);
+        let value = ObjectValue::attribute(u64::MAX, false);
+        transaction.add(store.store_object_id(), Mutation::replace_or_insert_object(key, value));
         transaction.commit().await.expect("commit failed");
 
         let error = handle.read_attr(AttributeId::TEST_ID).await.expect_err("read");
-        is_error(error, FxfsError::Inconsistent);
-        let handle = ObjectStore::open_object(&store, object_id, HandleOptions::default(), None)
-            .await
-            .expect("open_object failed");
-        let mut buffer = handle.allocate_buffer(8192).await;
-        let error = handle.read_aligned(0, buffer.as_mut()).await.expect_err("read");
         is_error(error, FxfsError::Inconsistent);
     }
 

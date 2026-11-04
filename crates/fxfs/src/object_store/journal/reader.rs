@@ -6,7 +6,9 @@
 // journal ahead of the blocks it verifies (`ReadAhead`), and its handle's extents change only
 // through it, so that it forgets what it read ahead through those replaced (`push_extent`,
 // `truncate_extents`, `discard_extents`). What it reads of an image, which may be anything, is
-// refused, where upstream asserts (`deserialize`, TASK-149.9).
+// refused, where upstream asserts (`deserialize`, TASK-149.9). Nothing is consumed past the blocks
+// it verified, and each block end crossed takes that block's checksum, however many one record
+// crosses (`consume`, TASK-149.23).
 
 use crate::checksum::{Checksum, fletcher64};
 use crate::errors::FxfsError;
@@ -182,12 +184,15 @@ impl JournalReader {
 
     /// To allow users to flush a block, they can store a record that indicates the rest of the
     /// block should be skipped.  When that record is read, users should call this function.
-    pub fn skip_to_end_of_block(&mut self) {
+    /// fxdax: it fails if the block wasn't read, as one a journal starts in that doesn't verify
+    /// (`consume`).
+    pub fn skip_to_end_of_block(&mut self) -> Result<(), Error> {
         let bs = self.block_size();
         let block_offset = self.buf_file_offset % bs;
         if block_offset > 0 {
-            self.consume((bs - block_offset) as usize - std::mem::size_of::<Checksum>());
+            self.consume((bs - block_offset) as usize - std::mem::size_of::<Checksum>())?;
         }
+        Ok(())
     }
 
     /// fxdax: the handle, whose extents change only through the reader (`push_extent`,
@@ -247,12 +252,12 @@ impl JournalReader {
             Ok(record) => {
                 let consumed = cursor.position() as usize;
                 // fxdax: what's read of a corrupt journal may be as long as a record may be, which
-                // the writer keeps shorter than a block, as `consume` asks.
+                // the writer keeps shorter than a block.
                 ensure!(
                     consumed < self.block_size().get() as usize,
                     anyhow!(FxfsError::Inconsistent).context("Journal record too long")
                 );
-                self.consume(consumed);
+                self.consume(consumed)?;
                 Ok(ReadResult::Some(record))
             }
             Err(e) => {
@@ -260,7 +265,7 @@ impl JournalReader {
                     self.found_reset = false;
 
                     // Fix up buf_range now...
-                    self.consume(self.buf_range.end - self.buf_range.start);
+                    self.consume(self.buf_range.end - self.buf_range.start)?;
                     self.buf_range =
                         self.buf_range.end..self.buf.len() - std::mem::size_of::<Checksum>();
                     let (version, to_consume) = {
@@ -270,7 +275,7 @@ impl JournalReader {
                         (version, cursor.position() as usize)
                     };
                     self.version = version.clone();
-                    self.consume(to_consume);
+                    self.consume(to_consume)?;
                     return Ok(ReadResult::Reset(version));
                 } else if let Some(io_error) = e.downcast_ref::<std::io::Error>() {
                     if io_error.kind() == std::io::ErrorKind::UnexpectedEof && self.bad_checksum {
@@ -398,19 +403,30 @@ impl JournalReader {
     }
 
     // Used after deserializing to indicate how many bytes were deserialized and adjusts the buffer
-    // pointers accordingly.
-    pub fn consume(&mut self, amount: usize) {
-        let bs = self.block_size();
-        assert!(amount < bs.get() as usize);
-        let block_offset_before = self.buf_file_offset % bs;
-        self.buf_file_offset += amount as u64;
-        // If we crossed a block boundary, then the file offset needs be incremented by the size of
-        // the checksum.
-        if block_offset_before + amount as u64 >= bs - std::mem::size_of::<Checksum>() as u64 {
-            self.buf_file_offset += std::mem::size_of::<Checksum>() as u64;
+    // pointers accordingly. fxdax: no more than the buffer holds, of the blocks verified, so that
+    // each block end crossed has the checksum it takes, and a checkpoint always has one: a skip to
+    // the end of a block a journal started in that didn't verify, which was never read, took the
+    // only one, and the checkpoint after indexed none (TASK-149.23). It takes one for each end
+    // crossed, where upstream takes one for any: a record of a corrupt journal may cross two.
+    pub fn consume(&mut self, amount: usize) -> Result<(), Error> {
+        ensure!(
+            amount <= self.buf_range.len(),
+            anyhow!(FxfsError::Inconsistent).context("Journal consumed past what was read")
+        );
+        let bs = self.block_size().get();
+        let seal = std::mem::size_of::<Checksum>() as u64;
+        let mut left = amount as u64;
+        // Past each block end crossed is the block's checksum, which seeds the next block: the
+        // offset moves past it, and it is the checkpoint's from there.
+        while self.buf_file_offset % bs + left >= bs - seal {
+            let to_end = bs - seal - self.buf_file_offset % bs;
+            self.buf_file_offset += to_end + seal;
+            left -= to_end;
             self.checksums.drain(0..1);
         }
-        self.buf_range.start += amount
+        self.buf_file_offset += left;
+        self.buf_range.start += amount;
+        Ok(())
     }
 
     pub fn buffer(&self) -> &[u8] {
@@ -515,7 +531,7 @@ mod tests {
                 ReadResult::Some(record)
             );
         }
-        reader.skip_to_end_of_block();
+        reader.skip_to_end_of_block().expect("skip_to_end_of_block failed");
         assert_eq!(
             reader.deserialize::<u64>().await.expect("deserialize failed"),
             ReadResult::ChecksumMismatch
@@ -631,8 +647,8 @@ mod tests {
         read_records(&mut reader, 2..records).await;
     }
 
-    /// fxdax: a record may be as long as a block, which a writer never writes, and `consume`
-    /// asserts it doesn't: what a corrupt journal holds.
+    /// fxdax: a record may be as long as a block, which a writer never writes: what a corrupt
+    /// journal holds is refused.
     #[fuchsia::test]
     async fn test_record_as_long_as_a_block() {
         use crate::errors::FxfsError;
@@ -675,6 +691,82 @@ mod tests {
         assert!(matches!(first, ReadResult::Some(JournalRecord::Commit)), "{first:?}");
         let error = reader.deserialize::<JournalRecord>().await.expect_err("read");
         assert!(FxfsError::Inconsistent.matches(&error), "{error:?}");
+    }
+
+    /// fxdax: a reader that starts within a block that doesn't verify read none of it, and can't
+    /// skip to its end: that took the one checksum it had, and the checkpoint after indexed none,
+    /// as a mount does when a super-block says the journal starts there (TASK-149.23).
+    #[fuchsia::test]
+    async fn test_no_skip_through_a_block_not_read() {
+        use crate::errors::FxfsError;
+
+        let object = Arc::new(FakeObject::new());
+        let handle = FakeObjectHandle::new(object.clone());
+        let mut buf = handle.allocate_buffer((BLOCK_SIZE * 2) as usize).await;
+        buf.fill(0u8);
+        handle.write_or_append(Some(0), buf.as_ref()).await.expect("write failed");
+        write_items(FakeObjectHandle::new(object.clone()), &[4u32, 7u32]).await;
+
+        // The block was sealed from 0, not 1.
+        let checkpoint = JournalCheckpoint { file_offset: 4, checksum: 1, version: LATEST_VERSION };
+        let mut reader = JournalReader::new(FakeObjectHandle::new(object.clone()), &checkpoint);
+        assert_eq!(
+            reader.deserialize::<u32>().await.expect("deserialize failed"),
+            ReadResult::ChecksumMismatch
+        );
+        let error = reader.skip_to_end_of_block().expect_err("skipped what it never read");
+        assert!(FxfsError::Inconsistent.matches(&error), "{error:?}");
+        assert_eq!(reader.journal_file_checkpoint(), checkpoint);
+    }
+
+    /// fxdax: a record of a corrupt journal may cross two block ends, as no writer's does: the
+    /// reader moves past both checksums, and the checkpoint after is where the record ends, with
+    /// the checksum of the block it ends in (TASK-149.23).
+    #[fuchsia::test]
+    async fn test_record_crossing_two_block_ends() {
+        use crate::object_store::journal::JournalRecord;
+        use crate::object_store::object_record::{ObjectKey, ObjectValue};
+        use crate::object_store::transaction::Mutation;
+        use crate::object_store::{DirType, ObjectDescriptor};
+        use crate::serialized_types::Versioned as _;
+
+        let bs = BLOCK_SIZE.get() as usize;
+        let contents = bs - std::mem::size_of::<Checksum>();
+        // From a block's last byte to the end of the next.
+        let len = 1 + contents;
+        let record = (0..bs).find_map(|name| {
+            let key = ObjectKey::child(7, &"n".repeat(name), DirType::Normal);
+            let value = ObjectValue::child(9, ObjectDescriptor::File);
+            let mutation = Mutation::replace_or_insert_object(key, value);
+            let mut bytes = Vec::new();
+            JournalRecord::Mutation { object_id: 1, mutation }.serialize_into(&mut bytes).ok()?;
+            (bytes.len() == len).then_some(bytes)
+        });
+        let record = record.expect("a record as long as that");
+
+        let object = Arc::new(FakeObject::new());
+        let handle = FakeObjectHandle::new(object.clone());
+        let mut buf = handle.allocate_buffer(bs * 3).await;
+        buf.fill(0u8);
+        handle.write_or_append(Some(0), buf.as_ref()).await.expect("write failed");
+        let mut writer = JournalWriter::new(BLOCK_SIZE, 0);
+        writer.write_all(&vec![0u8; contents - 1]).expect("write failed");
+        writer.write_all(&record).expect("write failed");
+        let end = writer.journal_file_checkpoint();
+        assert_eq!(end.file_offset, BLOCK_SIZE * 2);
+        let mut buf = handle.allocate_buffer(writer.flushable_bytes()).await;
+        let offset = writer.take_flushable(buf.as_mut());
+        handle.write_or_append(Some(offset), buf.as_ref()).await.expect("overwrite failed");
+
+        let start = JournalCheckpoint {
+            file_offset: (contents - 1) as u64,
+            checksum: 0,
+            version: LATEST_VERSION,
+        };
+        let mut reader = JournalReader::new(FakeObjectHandle::new(object.clone()), &start);
+        let read = reader.deserialize::<JournalRecord>().await.expect("deserialize failed");
+        assert!(matches!(read, ReadResult::Some(JournalRecord::Mutation { .. })), "{read:?}");
+        assert_eq!(reader.journal_file_checkpoint(), end);
     }
 
     /// fxdax: where an extent ends is what a super-block's record says.
@@ -764,7 +856,7 @@ mod tests {
         assert_eq!(reader.deserialize().await.expect("deserialize failed"), ReadResult::Some(4u32));
         let checkpoint = reader.journal_file_checkpoint();
         assert_eq!(reader.deserialize().await.expect("deserialize failed"), ReadResult::Some(5u32));
-        reader.skip_to_end_of_block();
+        reader.skip_to_end_of_block().expect("skip_to_end_of_block failed");
         assert_eq!(
             reader.deserialize::<u32>().await.expect("deserialize failed"),
             ReadResult::ChecksumMismatch
@@ -774,7 +866,7 @@ mod tests {
         reader.rewind(&checkpoint);
         assert_eq!(reader.journal_file_checkpoint(), checkpoint);
         assert_eq!(reader.deserialize().await.expect("deserialize failed"), ReadResult::Some(5u32));
-        reader.skip_to_end_of_block();
+        reader.skip_to_end_of_block().expect("skip_to_end_of_block failed");
         assert_eq!(reader.deserialize().await.expect("deserialize failed"), ReadResult::Some(7u32));
     }
 
@@ -800,7 +892,7 @@ mod tests {
             &JournalCheckpoint { version: LATEST_VERSION, ..JournalCheckpoint::default() },
         );
         assert_eq!(reader.deserialize().await.expect("deserialize failed"), ReadResult::Some(4u32));
-        reader.skip_to_end_of_block();
+        reader.skip_to_end_of_block().expect("skip_to_end_of_block failed");
         assert_eq!(reader.deserialize().await.expect("deserialize failed"), ReadResult::Some(7u32));
     }
 
@@ -874,7 +966,7 @@ mod tests {
         );
         assert_eq!(reader.deserialize().await.expect("deserialize failed"), ReadResult::Some(4u32));
         assert_eq!(reader.deserialize().await.expect("deserialize failed"), ReadResult::Some(7u32));
-        reader.skip_to_end_of_block();
+        reader.skip_to_end_of_block().expect("skip_to_end_of_block failed");
         assert_eq!(
             reader.deserialize::<u32>().await.expect("deserialize failed"),
             ReadResult::ChecksumMismatch
@@ -904,7 +996,7 @@ mod tests {
         );
         assert_eq!(reader.deserialize().await.expect("deserialize failed"), ReadResult::Some(4u32));
         assert_eq!(reader.deserialize().await.expect("deserialize failed"), ReadResult::Some(7u32));
-        reader.skip_to_end_of_block();
+        reader.skip_to_end_of_block().expect("skip_to_end_of_block failed");
         assert_eq!(
             reader.deserialize::<u32>().await.expect("deserialize failed"),
             ReadResult::Reset(new_version),
@@ -918,7 +1010,7 @@ mod tests {
             reader.deserialize().await.expect("deserialize failed"),
             ReadResult::Some(78u32)
         );
-        reader.skip_to_end_of_block();
+        reader.skip_to_end_of_block().expect("skip_to_end_of_block failed");
         assert_eq!(
             reader.deserialize().await.expect("deserialize failed"),
             ReadResult::Some(90u32)
@@ -930,7 +1022,7 @@ mod tests {
             reader.deserialize().await.expect("deserialize failed"),
             ReadResult::Some(78u32)
         );
-        reader.skip_to_end_of_block();
+        reader.skip_to_end_of_block().expect("skip_to_end_of_block failed");
         assert_eq!(
             reader.deserialize().await.expect("deserialize failed"),
             ReadResult::Some(90u32)
@@ -967,7 +1059,7 @@ mod tests {
             buf = &buf[..amount];
             assert_eq!(&buf[..amount], vec![78; amount]);
             offset += amount;
-            reader.consume(amount);
+            reader.consume(amount).expect("consume failed");
         }
     }
 
@@ -1002,7 +1094,7 @@ mod tests {
 
         assert_eq!(&reader.buffer()[..len], &buf.subslice(..len).to_vec());
 
-        reader.consume(len);
+        reader.consume(len).expect("consume failed");
 
         assert_eq!(reader.journal_file_checkpoint(), writer_checkpoint);
     }

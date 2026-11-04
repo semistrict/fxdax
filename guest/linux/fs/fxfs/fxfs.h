@@ -397,7 +397,11 @@ enum fxfs_dax_access {
 	FXFS_DAX_SEALED,
 	/* Its extent is open, and its blocks a file's alone: writable, in place, until a seal. */
 	FXFS_DAX_OPEN,
-	/* Its extent is open, but a clone shares its blocks: read-only, as sealed blocks are. */
+	/*
+	 * Its extent is open, but its blocks may not be written in place: a clone shares them, or
+	 * Fxfs's record of them keeps their checksums, or, an allocation's, which were written.
+	 * Read-only, as sealed blocks are, for a write to move them.
+	 */
 	FXFS_DAX_SHARED,
 };
 

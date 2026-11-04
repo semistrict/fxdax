@@ -660,7 +660,7 @@ impl SuperBlockHeader {
             }
 
             cursor.position() as usize
-        });
+        })?;
 
         // If guid is zeroed (e.g. in a newly imaged system), assign one randomly.
         if super_block_header.guid.0.is_nil() {
@@ -1578,9 +1578,12 @@ mod tests {
 
     /// fxdax: a mount of a filesystem whose super-blocks start its journal anywhere is refused,
     /// wherever that is: in a block's seal, which panicked a reader, before the journal's extents,
-    /// which panicked their handle, past them, or near the end of what offsets can count.
+    /// which panicked their handle, past them, near the end of what offsets can count, or within
+    /// a block that doesn't verify, which panicked replay's end.
     #[fuchsia::test]
     async fn test_mount_with_a_journal_that_starts_anywhere() {
+        use crate::errors::FxfsError;
+
         let device = DeviceHolder::new(FakeDevice::new(TEST_DEVICE_BLOCK_COUNT, 4096));
         let fs = FxFilesystem::new_empty(device).await.expect("new_empty failed");
         for _ in 0..64 {
@@ -1615,14 +1618,13 @@ mod tests {
                 record => records.push(record),
             }
         }
-        let start = header.journal_checkpoint.file_offset;
-        for file_offset in
-            [start | 4095, (start & !4095) + 4089, 1 << 40, 1 << 61, u64::MAX - 4096, u64::MAX]
-        {
+        // Mounts a snapshot of the device whose super-blocks are `header` but for where they start
+        // the journal.
+        let mount_from = async |checkpoint: JournalCheckpoint| {
             let device = device.snapshot().expect("snapshot failed");
             let mut bytes = SUPER_BLOCK_MAGIC.to_vec();
             let mut header = header.clone();
-            header.journal_checkpoint.file_offset = file_offset;
+            header.journal_checkpoint = checkpoint;
             header.serialize_with_version(&mut bytes).unwrap();
             for record in &records {
                 record.serialize_into(&mut bytes).unwrap();
@@ -1639,8 +1641,25 @@ mod tests {
                     write_raw_super_block(&raw, instance, buf.as_ref()).await;
                 }
             }
-            assert!(FxFilesystem::open(device).await.is_err(), "mounted at {file_offset}");
+            FxFilesystem::open(device).await.map(drop)
+        };
+        let at =
+            |file_offset| JournalCheckpoint { file_offset, ..header.journal_checkpoint.clone() };
+        let start = header.journal_checkpoint.file_offset;
+        for file_offset in
+            [start | 4095, (start & !4095) + 4089, 1 << 40, 1 << 61, u64::MAX - 4096, u64::MAX]
+        {
+            assert!(mount_from(at(file_offset)).await.is_err(), "mounted at {file_offset}");
         }
+
+        // Within a block past where the journal was written, which its checksum doesn't seed, so
+        // that none of the block is read: the end of replay skipped to the block's end, which
+        // took the reader's one checksum, and the checkpoint after indexed none (TASK-149.23).
+        let journal_end = Root::read(&**device).await.expect("read root failed").journal_end;
+        let written = start.max(header.super_block_journal_file_offset).max(journal_end);
+        let past = (written / 4096 + 1) * 4096 + 8;
+        let error = mount_from(at(past)).await.expect_err("mounted in a block not read");
+        assert!(FxfsError::Inconsistent.matches(&error), "{error:?}");
     }
 
     /// fxdax: a super-block's records are checked as the journal's are: an extent's key must be on

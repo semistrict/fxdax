@@ -4,15 +4,17 @@
 
 // Fuchsia's `src/storage/fxfs/src/object_store/data_object_handle.rs`. fxdax snapshots (volume
 // snapshots that share their source's layers and extents) deviate from upstream here: `overwrite`
-// refuses to overwrite blocks a snapshot shares in place, and `frozen_pages` finds the pages whose
-// data frozen owners hold, which can be cached and shared by extent and offset. Data lives in
-// extents of an extent store (backlog doc-4), written once: `overwrite` writes raw extents in place,
-// which its users (the journal and super-blocks) do once per block; preallocation can limit the
-// extents it allocates to a length (`preallocate_range_in_extents_of`), and `reallocate_range`
-// moves a preallocated range to new extents. Files in overwrite mode are written copy-on-write (see
+// writes blocks in place only as `in_place` says, which refuses those a snapshot shares, and
+// `frozen_pages` finds the pages whose data frozen owners hold, which can be cached and shared by
+// extent and offset. Data lives in extents of an extent store (backlog doc-4), written once:
+// `overwrite` writes raw extents in place, which its users (the journal and super-blocks) do once
+// per block; preallocation can limit the extents it allocates to a length
+// (`preallocate_range_in_extents_of`), and `reallocate_range` moves a preallocated range to new
+// extents. Files in overwrite mode are written copy-on-write (see
 // `StoreObjectHandle::multi_overwrite`), so preallocating doesn't guarantee space. `txn_map_write`
 // makes room for writes whose data comes through a DAX window (backlog doc-2), which Fuchsia
-// doesn't have. `write_many` writes data scattered across a file in as few transactions, and
+// doesn't have, and `extents_in` says what the window may write in place, by `in_place` too
+// (`window_access`). `write_many` writes data scattered across a file in as few transactions, and
 // device writes, as hold it: the guest kernel's page-cache writeback. What splits an operation
 // across commits is the room its transaction says it has left (`Transaction::room`), not a count
 // of mutations: `allocate`, `preallocate_range`.
@@ -113,10 +115,30 @@ pub enum ExtentAccess {
     /// found nothing of it on the device yet. They are read-only for good.
     #[default]
     Sealed = 0,
-    /// Their extent is open, and they aren't shared: they can be written in place until a barrier.
+    /// Their extent is open, and they may be written in place (`InPlace::Writable`): they can be
+    /// until a barrier.
     Open = 1,
-    /// Their extent is open, but a clone shares them (`Allocator::is_shared`): read-only.
+    /// Their extent is open, but they may not be written in place: a clone shares them, or their
+    /// record keeps something of what they hold (`InPlace`). Read-only, for a write to move them.
     Shared = 2,
+}
+
+/// fxdax: whether a file's blocks may be written in place, and if not, why: the one rule
+/// ([`DataObjectHandle::in_place`]) for `overwrite`, which writes them through the device, and DAX
+/// windows, which store to them (`extents_in`, `txn_map_write`), which moves those they may not
+/// (TASK-160.22).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum InPlace {
+    /// They may: their record is raw, and theirs alone.
+    Writable,
+    /// Their record keeps something of what they hold, which a write in place would leave stale:
+    /// checksums (`ExtentMode::Cow`), which a replay of the journal checks a transaction's blocks
+    /// against (barriers off), stopping where they don't match; or that they are an allocation's
+    /// (`ExtentMode::Overwrite`), and which of them were written (`OverwritePartial`), the others
+    /// reading as zeros. Fxfs's own writes of them go to new blocks (`multi_overwrite`).
+    Recorded,
+    /// Another record shares them: a clone's or a snapshot's (`Allocator::is_shared`).
+    Shared,
 }
 
 /// DataObjectHandle is a typed handle for file-like objects that store data in the default data
@@ -1428,7 +1450,7 @@ impl<S: HandleOwner> DataObjectHandle<S> {
                             ObjectValue::Extent(ExtentValue::Some {
                                 extent: store_extent,
                                 extent_offset: device_offset,
-                                mode: ExtentMode::Raw,
+                                mode,
                                 ..
                             }) => {
                                 ensure!(
@@ -1442,23 +1464,34 @@ impl<S: HandleOwner> DataObjectHandle<S> {
                                     .checked_sub(offset)
                                     .ok_or(FxfsError::Inconsistent)?)
                                     as usize;
+                                let bytes_to_write = min(buf.len(), remaining_length_of_extent);
+                                let device_offset = device_offset + offset_within_extent;
+                                // fxdax: the blocks are written in place as `in_place` says, the
+                                // rule DAX windows' stores follow too: none a snapshot shares.
+                                let blocks = ExtentRange::new(
+                                    *store_extent,
+                                    device_offset..device_offset + bytes_to_write as u64,
+                                );
+                                match self.in_place(mode, &blocks).await? {
+                                    InPlace::Writable => {}
+                                    InPlace::Recorded => {
+                                        // TODO(https://fxbug.dev/42066056): Maybe we should create
+                                        // a new extent without checksums?
+                                        bail!(
+                                            "extent from ({},{}) which overlaps offset \
+                                                {} has the wrong extent mode",
+                                            extent.start,
+                                            extent.end,
+                                            offset
+                                        )
+                                    }
+                                    InPlace::Shared => {
+                                        return Err(anyhow!(FxfsError::NotSupported)
+                                            .context("overwriting blocks a snapshot shares"));
+                                    }
+                                }
                                 // Yields ((extent, offset), bytes_to_write, should_advance)
-                                (
-                                    (*store_extent, device_offset + offset_within_extent),
-                                    min(buf.len(), remaining_length_of_extent),
-                                    true,
-                                )
-                            }
-                            ObjectValue::Extent(ExtentValue::Some { .. }) => {
-                                // TODO(https://fxbug.dev/42066056): Maybe we should create
-                                // a new extent without checksums?
-                                bail!(
-                                    "extent from ({},{}) which overlaps offset \
-                                        {} has the wrong extent mode",
-                                    extent.start,
-                                    extent.end,
-                                    offset
-                                )
+                                ((*store_extent, device_offset), bytes_to_write, true)
                             }
                             _ => {
                                 bail!(
@@ -1541,19 +1574,7 @@ impl<S: HandleOwner> DataObjectHandle<S> {
                         }
                     }
                 };
-                // fxdax: blocks a snapshot shares are never overwritten in place.
                 let (store_extent, device_offset) = device_offset;
-                if should_advance {
-                    let range = ExtentRange::new(
-                        store_extent,
-                        device_offset..device_offset + bytes_to_write as u64,
-                    );
-                    ensure!(
-                        !self.store().allocator().is_shared(range).await?,
-                        anyhow!(FxfsError::NotSupported)
-                            .context("overwriting blocks a snapshot shares")
-                    );
-                }
                 let (current_buf, remaining_buf) = buf.split_at_mut(bytes_to_write);
                 let mut flags = if first_write {
                     first_write = false;
@@ -2060,15 +2081,44 @@ impl<S: HandleOwner> DataObjectHandle<S> {
         Ok(ranges)
     }
 
+    /// fxdax: whether `blocks` of the file, which a record of `mode` holds, may be written in place,
+    /// whoever writes them: the one rule (`InPlace`). A DAX window asks too that their extent be
+    /// open (`window_access`); `overwrite` doesn't, as the device takes or refuses its writes itself.
+    async fn in_place(&self, mode: &ExtentMode, blocks: &ExtentRange) -> Result<InPlace, Error> {
+        Ok(if !matches!(mode, ExtentMode::Raw) {
+            InPlace::Recorded
+        } else if self.store().allocator().is_shared(blocks.clone()).await? {
+            InPlace::Shared
+        } else {
+            InPlace::Writable
+        })
+    }
+
+    /// fxdax: what a DAX window may do with `blocks` of the file, which a record of `mode` holds:
+    /// write them in place, if they may be (`in_place`) and their extent is open, as its stores
+    /// reach the device with nothing to refuse them once a barrier has sealed it (backlog doc-4).
+    async fn window_access(
+        &self,
+        mode: &ExtentMode,
+        blocks: &ExtentRange,
+    ) -> Result<ExtentAccess, Error> {
+        if !self.store().device().is_open(blocks.extent) {
+            return Ok(ExtentAccess::Sealed);
+        }
+        Ok(match self.in_place(mode, blocks).await? {
+            InPlace::Writable => ExtentAccess::Open,
+            InPlace::Recorded | InPlace::Shared => ExtentAccess::Shared,
+        })
+    }
+
     /// fxdax: the extents holding the file's data in `range`, clipped to it, in order, with what a
-    /// DAX window may do with them. What it maps the range from (backlog doc-2). Holes are left
-    /// out.
+    /// DAX window may do with them (`window_access`). What it maps the range from (backlog doc-2).
+    /// Holes are left out.
     pub async fn extents_in(
         &self,
         range: Range<u64>,
     ) -> Result<Vec<(FileExtent, ExtentAccess)>, Error> {
         let store = self.store();
-        let device = store.device();
         let layer_set = store.tree().layer_set();
         let mut merger = layer_set.merger();
         let mut iter = merger
@@ -2092,7 +2142,8 @@ impl<S: HandleOwner> DataObjectHandle<S> {
             && *attribute_id == self.attribute_id()
             && key.start < range.end
         {
-            if let ObjectValue::Extent(ExtentValue::Some { extent, extent_offset, .. }) = value
+            if let ObjectValue::Extent(ExtentValue::Some { extent, extent_offset, mode, .. }) =
+                value
                 && key.end > range.start
             {
                 let start = max(key.start, range.start);
@@ -2100,13 +2151,7 @@ impl<S: HandleOwner> DataObjectHandle<S> {
                 let device_start = extent_offset + (start - key.start);
                 let device_range =
                     ExtentRange::new(*extent, device_start..device_start + (end - start));
-                let access = if !device.is_open(*extent) {
-                    ExtentAccess::Sealed
-                } else if store.allocator().is_shared(device_range.clone()).await? {
-                    ExtentAccess::Shared
-                } else {
-                    ExtentAccess::Open
-                };
+                let access = self.window_access(mode, &device_range).await?;
                 extents.push((FileExtent::new(start, device_range)?, access));
             }
             iter.advance().await?;
@@ -2117,13 +2162,12 @@ impl<S: HandleOwner> DataObjectHandle<S> {
     /// fxdax: makes room to write the bytes `range` of the file through a DAX window (backlog
     /// doc-2), without writing them here: returns the extents holding the range's blocks, in
     /// order, for the caller to write before the device's next barrier seals them (doc-4), which
-    /// the caller holds off until it has. Blocks in extents the device holds open, unshared and
-    /// without checksums, stay there, as they can be written again; the others move to new
-    /// extents, recorded in place of the old in `transaction`, to which what the range's first and
-    /// last blocks hold around it is copied: or, if the caller may write only some of the range
-    /// (`keep`), as a fault on a mapping does, all they hold, unless zeros, which new blocks hold
-    /// already. Parts of at most STAGED_MAX bytes
-    /// move to the staging extent, which other files' share. The caller updates the file's size.
+    /// the caller holds off until it has. Blocks a window may write in place (`window_access`)
+    /// stay there; the others move to new extents, recorded in place of the old in `transaction`,
+    /// to which what the range's first and last blocks hold around it is copied: or, if the caller
+    /// may write only some of the range (`keep`), as a fault on a mapping does, all they hold,
+    /// unless zeros, which new blocks hold already. Parts of at most STAGED_MAX bytes move to the
+    /// staging extent, which other files' share. The caller updates the file's size.
     pub async fn txn_map_write<'a>(
         &'a self,
         transaction: &mut Transaction<'a>,
@@ -2195,20 +2239,17 @@ impl<S: HandleOwner> DataObjectHandle<S> {
                 && key.start < aligned.end
             {
                 if let ObjectValue::Extent(ExtentValue::Some {
-                    extent,
-                    extent_offset,
-                    mode: ExtentMode::Raw,
-                    ..
+                    extent, extent_offset, mode, ..
                 }) = value
                     && key.end > offset
-                    && device.is_open(*extent)
                 {
                     let start = max(key.start, offset);
                     let end = min(key.end, aligned.end);
                     let device_start = extent_offset + (start - key.start);
                     let device_range =
                         ExtentRange::new(*extent, device_start..device_start + (end - start));
-                    if !allocator.is_shared(device_range.clone()).await? {
+                    // As `extents_in` says, to the window mapping them.
+                    if self.window_access(mode, &device_range).await? == ExtentAccess::Open {
                         if offset < start {
                             moving.push(offset..start);
                         }
@@ -4034,6 +4075,81 @@ mod tests {
         );
         let second = map(0..bs).await;
         assert_ne!(second[0].device_range().extent, extent, "the block stayed");
+        fs.close().await.expect("close failed");
+    }
+
+    /// fxdax: a growth zeroing what a DAX file's last block holds past its end writes the block
+    /// anew, with checksums, in an extent open still, the file's alone, which no window may then
+    /// write in place, as `txn_map_write` moves it: `extents_in` said it open, and a window's
+    /// stores there left its checksums stale, for a replay of the journal to stop before the
+    /// growth, at a crash before the device's flush was recorded, and refuse the mount if a barrier
+    /// had found the journal written past it (TASK-160.22).
+    #[fuchsia::test]
+    async fn test_a_growths_zeroed_tail_is_not_written_in_place() {
+        let (fs, object) = test_filesystem_and_object_with_key(None, false).await;
+        let bs = fs.block_size().get();
+        let map = async |range: Range<u64>| {
+            let mut transaction = object.new_transaction().await.expect("new_transaction failed");
+            let extents =
+                object.txn_map_write(&mut transaction, range.clone(), false).await.expect("map");
+            if range.end > object.txn_get_size(&transaction) {
+                object.txn_update_size(&mut transaction, range.end, None).await.expect("size");
+            }
+            transaction.commit().await.expect("commit failed");
+            extents
+        };
+        let access = async |range: Range<u64>| {
+            let extents = object.extents_in(range).await.expect("extents_in failed");
+            extents.iter().map(|(_, access)| *access).collect::<Vec<_>>()
+        };
+
+        // A block a window wrote whole, cut to 10 bytes, which leaves what is past them.
+        let first = map(0..bs).await;
+        store_mapped(&fs, &first, 0, &vec![3; bs as usize]).await;
+        assert_eq!(access(0..bs).await, [ExtentAccess::Open]);
+        object.truncate(10).await.expect("truncate failed");
+
+        // The growth zeroes what is past them, writing the block anew.
+        object.truncate(2 * bs).await.expect("truncate failed");
+        let expected = [vec![3; 10], vec![0; 2 * bs as usize - 10]].concat();
+        assert_eq!(&object.contents(usize::MAX).await.expect("contents")[..], &expected[..]);
+        let zeroed = object.extents_in(0..bs).await.expect("extents_in failed");
+        assert_ne!(zeroed[0].0.device_range(), first[0].device_range(), "the block stayed");
+        assert!(fs.device().is_open(zeroed[0].0.device_range().extent));
+        assert_eq!(access(0..bs).await, [ExtentAccess::Shared]);
+
+        // A window's write moves it, to blocks it may write in place.
+        let second = map(0..bs).await;
+        assert_ne!(second[0].device_range(), zeroed[0].0.device_range(), "the block stayed");
+        assert_eq!(access(0..bs).await, [ExtentAccess::Open]);
+        fs.close().await.expect("close failed");
+    }
+
+    /// fxdax: an allocation's blocks, whose record says which of them were written, are written in
+    /// place by no DAX window, as `txn_map_write` moves them: in an extent open still, `extents_in`
+    /// said them open, and what a window stored there Fxfs read as zeros, the record saying nothing
+    /// was written (TASK-160.22).
+    #[fuchsia::test]
+    async fn test_allocated_blocks_are_not_written_in_place() {
+        let (fs, object) = test_filesystem_and_object_with_key(None, false).await;
+        let bs = fs.block_size().get();
+        object.allocate(0..bs).await.expect("allocate failed");
+        let allocated = object.extents_in(0..bs).await.expect("extents_in failed");
+        assert!(fs.device().is_open(allocated[0].0.device_range().extent));
+        assert_eq!(
+            allocated.iter().map(|(_, access)| *access).collect::<Vec<_>>(),
+            [ExtentAccess::Shared]
+        );
+
+        let mut transaction = object.new_transaction().await.expect("new_transaction failed");
+        let moved = object.txn_map_write(&mut transaction, 0..bs, false).await.expect("map");
+        transaction.commit().await.expect("commit failed");
+        assert_ne!(moved[0].device_range(), allocated[0].0.device_range(), "the block stayed");
+        let expected = vec![3; bs as usize];
+        store_mapped(&fs, &moved, 0, &expected).await;
+        // The test's object holds more than the block, which this leaves as it was.
+        let contents = object.contents(usize::MAX).await.expect("contents");
+        assert_eq!(&contents[..bs as usize], &expected[..]);
         fs.close().await.expect("close failed");
     }
 

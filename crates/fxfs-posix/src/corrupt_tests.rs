@@ -312,7 +312,12 @@ const KNOWN_PANICS: &str = include_str!("../known-panics");
 
 /// The open bug whose panic one at `place` is, if any.
 fn known_panic(place: &str) -> Option<&'static str> {
-    KNOWN_PANICS
+    known_in(KNOWN_PANICS, place)
+}
+
+/// The bug of `known`, a list as KNOWN_PANICS is, whose panic one at `place` is, if any.
+fn known_in<'a>(known: &'a str, place: &str) -> Option<&'a str> {
+    known
         .lines()
         .filter(|line| !line.starts_with('#'))
         .filter_map(|line| line.split_once(' '))
@@ -721,8 +726,12 @@ enum Record {
     KeyOffBlocks,
     /// Where an extent's data is in its extent, off blocks.
     OffsetOffBlocks,
+    /// Where an extent's data is in its extent, so far in that it would end past any extent's end.
+    OffsetPastAnyEnd,
     /// An extent's checksums, of a block more than it has.
     SumsOverKey,
+    /// An overwrite extent's bitmap, a bit short of a bit a block.
+    BitsShortOfKey,
     /// A key before the one before it.
     OutOfOrder,
     /// An extent's key over the one before it.
@@ -735,10 +744,12 @@ enum Record {
 const RECORD_CASES: u64 = 8;
 
 impl Record {
-    const ALL: [Record; 6] = [
+    const ALL: [Record; 8] = [
         Record::KeyOffBlocks,
         Record::OffsetOffBlocks,
+        Record::OffsetPastAnyEnd,
         Record::SumsOverKey,
+        Record::BitsShortOfKey,
         Record::OutOfOrder,
         Record::Overlapping,
         Record::AllocationOffBlocks,
@@ -768,6 +779,15 @@ impl Record {
                 };
                 *extent_offset += 1;
             }
+            Record::OffsetPastAnyEnd => {
+                let ObjectValue::Extent(ExtentValue::Some { extent_offset, .. }) =
+                    &mut items[at].value
+                else {
+                    return None;
+                };
+                // On blocks, so that only where it ends is wrong.
+                *extent_offset = u64::MAX - (PAGE - 1);
+            }
             Record::SumsOverKey => {
                 let ObjectValue::Extent(ExtentValue::Some { mode: ExtentMode::Cow(sums), .. }) =
                     &items[at].value
@@ -778,6 +798,19 @@ impl Record {
                     return None;
                 }
                 extent_range(&mut items[at].key)?.end -= PAGE;
+            }
+            Record::BitsShortOfKey => {
+                let (.., range) = extent_of(&items[at].key)?;
+                let ObjectValue::Extent(ExtentValue::Some {
+                    extent, extent_offset, key_id, ..
+                }) = &items[at].value
+                else {
+                    return None;
+                };
+                let bits = ((range.end - range.start) / PAGE - 1) as usize;
+                let value =
+                    ExtentValue::blank_overwrite_extent(*extent, *extent_offset, bits, *key_id);
+                items[at].value = ObjectValue::Extent(value);
             }
             Record::OutOfOrder => {
                 if items.get(at + 1)?.key.object_id != items[at].key.object_id {
@@ -1280,8 +1313,11 @@ fn a_flip_in_data_being_written_is_not_found_with_barriers() {
 
 #[test]
 fn an_open_bugs_panic_is_known_by_its_place() {
+    let known = "# A bug.\nTASK-1 crates/fxfs/src/object_store/journal/reader.rs:159:\n";
     let place = "crates/fxfs/src/object_store/journal/reader.rs:159:31";
-    assert_eq!(known_panic(place), Some("TASK-149.23"));
-    assert_eq!(known_panic("crates/fxfs/src/object_store/journal/reader.rs:1591:9"), None);
-    assert_eq!(known_panic("crates/fxfs/src/object_store/journal/reader.rs:304:9"), None);
+    assert_eq!(known_in(known, place), Some("TASK-1"));
+    assert_eq!(known_in(known, "crates/fxfs/src/object_store/journal/reader.rs:1591:9"), None);
+    assert_eq!(known_in(known, "crates/fxfs/src/object_store/journal/reader.rs:304:9"), None);
+    // TASK-149.23's, fixed.
+    assert_eq!(known_panic(place), None);
 }

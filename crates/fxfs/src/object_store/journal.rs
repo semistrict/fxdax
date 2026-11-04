@@ -16,7 +16,8 @@
 // applied, from which a follower reads on once its device holds more (`read_on`, backlog doc-8).
 // A sync's barrier records how far the journal was written in the store's root it sets
 // (`Root::journal_end`), and a replay that ends before there, at damage, is refused, where upstream
-// takes any checksum that fails for the journal's end (TASK-153.13).
+// takes any checksum that fails for the journal's end (TASK-153.13). So is a journal that starts
+// within a block that doesn't verify, where upstream's reader panics (TASK-149.23).
 
 //! The journal is implemented as an ever extending file which contains variable length records
 //! that describe mutations to be applied to various objects.  The journal file consists of
@@ -1024,7 +1025,9 @@ impl Journal {
             })?;
             let _ = self.handle.set(handle);
             let mut inner = self.inner.lock();
-            reader.skip_to_end_of_block();
+            // fxdax: which fails if the block the journal ends in wasn't read: one it started in
+            // that didn't verify (TASK-149.23).
+            reader.skip_to_end_of_block()?;
             let mut writer_checkpoint = reader.journal_file_checkpoint();
 
             // Make sure we don't accidentally use the reader from now onwards. fxdax: but for a
@@ -1105,7 +1108,7 @@ impl Journal {
                 ReadResult::Some(record) => {
                     match record {
                         JournalRecord::EndBlock => {
-                            reader.skip_to_end_of_block();
+                            reader.skip_to_end_of_block()?;
                         }
                         JournalRecord::Mutation { object_id, mutation } => {
                             let current_transaction = match current_transaction.as_mut() {
