@@ -1,11 +1,5 @@
 # Open questions
 
-## gcloud needs a fresh login; a test host is left running (TASK-160.16, 2026-11-03)
-
-gcloud's credentials for ramon@echophase.com expired at about 11:50 EST: every `gcloud` command fails with "Reauthentication failed. cannot prompt during non-interactive execution". Agents can't log in. So TASK-160.16's host `fxdax-test-t16016-audit` (us-east1-b, n2-standard-4) is still running, undeleted. And the last Linux run never ran: the Shuttle suites after 588f44ade, which fixed the one Linux Shuttle failure (macOS passes it), and the workspace's extent_store, extent_remote and extent_frame tests.
-**Recommended:** `gcloud auth login`, then `scripts/test-gce.sh delete fxdax-test-t16016-audit /tmp/gce-t16016/run6`. A rerun is `FXDAX_GUEST_TESTS=0 scripts/test-gce.sh all fxdax-test-t16016-audit DIR`.
-**Until then:** the host costs money, other agents' GCE runs fail too, and TASK-160.16 stays In Progress on its Linux DoD. `fxdax-test-t16021-errno4` (TASK-160.21's guest rerun, hung on the expired token) deletes itself 8 hours after it was made (`--max-run-duration`), by 2026-11-04 03:30 UTC.
-
 ## The nightly needs GCP credentials in GitHub (2026-11-02)
 
 `.github/workflows/nightly.yml` never ran: its YAML didn't parse (fixed in a1e079306). Now it parses, it needs the repository's `GCP_WORKLOAD_IDENTITY_PROVIDER` and `GCP_SERVICE_ACCOUNT` secrets and its `FXDAX_GCE_PROJECT` and `FXDAX_NIGHTLY_BUCKET` variables, none of which is set. Granting GitHub access to the GCP project is yours.

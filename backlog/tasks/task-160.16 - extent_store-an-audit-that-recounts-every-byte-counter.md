@@ -1,11 +1,11 @@
 ---
 id: TASK-160.16
 title: 'extent_store: an audit that recounts every byte counter'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-03 13:08'
-updated_date: '2026-11-03 18:50'
+updated_date: '2026-11-04 03:44'
 labels:
   - structure
 dependencies: []
@@ -29,7 +29,7 @@ About 15 running byte counters (Space, Uncommitted, Segment, PartCounts, Segment
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
 - [x] #2 scripts/upstream-changes.py --check passes
 - [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
@@ -64,4 +64,12 @@ Rule-off Shuttle tests: on Linux, needs_writes_to_freed_extents_dropped's first 
 Verification: macOS scripts/test.sh after the rebase: workspace 2057/2057, Shuttle 61 and 7, physmem, fxdax, follower, follower_sim and the scripts' tests all pass. GCE (Linux, fxdax-test-t16016-audit): workspace 2228/2228.
 
 AC evidence: #1, every lock of the state goes through Locked and is audited as it is let go, in every test build (feature unification included); macOS scripts/test.sh is green with it. #2, the keep_for_uploader mutant fails 9 extent_store tests and 10 Shuttle tests, each on its first schedule; without the audit it fails none. DoD #2: scripts/upstream-changes.py --check exits 0. DoD #3: no upstream code changed. DoD #1 is open: Linux workspace 2228/2228 at 30049162f (GCE run5), but the Linux Shuttle and extent_store rerun after 588f44ade didn't run because gcloud's credentials expired (OPEN_QUESTIONS.md). The host fxdax-test-t16016-audit is still up, undeletable without a login.
+
+2026-11-03: Linux at main c0b423abc, after 383e9f512 (588f44ade rebased): GCE r531, workspace 2244/2244, Shuttle 61 and 7, the rest passing; macOS scripts/test.sh green as noted.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+extent_store's state is audited in every test build: each lock of it goes through Locked, and every byte counter (Space, Uncommitted, Segment, PartCounts, Segments, OwnFiles, KeptExtents) is recomputed from the state as the lock is let go, a failed audit's panic beginning AUDIT_FAILED (383e9f512), for branches of up to 4,096 extents (AUDITED_EXTENTS). The keep_for_uploader mutant fails 9 extent_store tests and 10 Shuttle tests on their first schedule, none without the audit. Verified: macOS scripts/test.sh; Linux GCE r531 at c0b423abc, workspace 2244/2244 and the Shuttle suites.
+<!-- SECTION:FINAL_SUMMARY:END -->
