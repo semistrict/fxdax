@@ -2,26 +2,67 @@
 # Copyright 2026 The fxdax Authors. All rights reserved.
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
-"""Gates a GCE run of the sandbox team's pgbench on its throughput (TASK-131.5).
+"""Gates a GCE run of pgbench and of copy-on-write DAX's cases on throughput and memory.
 
-Reads the pgbench cases' logs of scripts/test-gce.sh results directories (fxfs-guest-pgbench,
-without a DAX window, fxfs-guest-pgbench-dax, with one, and pgbench-ext4-dax-pmem, ext4 with DAX on
-virtio-pmem, a static DAX device: e2e/CASE/CASE/log.txt, or each round's, round-K/CASE/log.txt),
-their pgbench runs' tps in order, RUNS a VM as the guest's output beside it says (stdout.txt's
-`OK runs RUNS`), as many VMs as one daemon served (FXDAX_PGBENCH_VMS),
-each directory's rounds after the last's; writes them, and the gates, as JSON; and fails unless
-every gate passes:
+The sandbox team's pgbench (TASK-131.5), and copy-on-write DAX's cases (TASK-164.5). Reads the
+cases' logs of scripts/test-gce.sh results directories (e2e/CASE/CASE/log.txt, or each round's,
+round-K/CASE/log.txt), each directory's rounds after the last's:
 
-- decay: each of the guest Fxfs's cases' last run of its first VM against its first run (the
+- pgbench's (test_fxfs_guest_pgbench.rs): their runs' tps in order, RUNS a VM as the guest's output
+  beside the log says (stdout.txt's `OK runs RUNS`), as many VMs as one daemon served
+  (FXDAX_PGBENCH_VMS). On the guest's Fxfs without a DAX window (fxfs-guest-pgbench: no-dax), with
+  one (-dax: dax), its DAX writes copying on write (-dax-cow: dax-cow, `fxfs.dax_cow=1`), each VM
+  making its database; on a database a base holds, each VM running on a fork of it
+  (fxfs-guest-pgbench-forked, -dax-forked, -dax-cow-forked: no-dax-forked, ...), its files read in,
+  which DAX maps; so, each VM kept running until the last's runs are done, the host's memory
+  measured as each is added (fxfs-guest-pgbench-density, -dax-density, -dax-cow-density:
+  no-dax-density, ...); and on ext4 with DAX on virtio-pmem, a static DAX device
+  (pgbench-ext4-dax-pmem: ext4-dax-pmem).
+- bigmap's (test_fxfs_guest_bigmap.rs): a file four times the guest's memory, in a base, mapped
+  shared by a VM on a fork of it, read all over, 5% of it written, and synced: its results
+  (`bigmap: NAME VALUE` on the console), without a DAX window (fxfs-guest-bigmap: bigmap-no-dax),
+  with one (-dax: bigmap-dax), its writes copying on write (-dax-cow: bigmap-dax-cow).
+- the host's memory, which the density and bigmap cases say as their guests ask
+  (`memory: vm=VM phase=PHASE NAME=VALUE...`, test_cases' measure.rs): MemTotal less MemAvailable
+  (`host_used`), the VM process's, the daemon's, the guest's.
+- whether the guests' DAX writes copied on write (`fxfs dax_cow: on|off|absent`), as
+  FXDAX_GUEST_CMDLINE may have them do in any case.
+
+It writes them, and the gates, as JSON, and fails unless every gate passes. Each gate's value is at
+least its threshold, or at most for those marked so; those marked provisional are first guesses, to
+be set from the first runs measured (docs/measurements/dax-cow-gate.md):
+
+- decay: each guest Fxfs pgbench case's last run of its first VM against its first run (the
   sandbox team saw ~21% lost over five), at least DECAY;
 - dax: DAX against no DAX, each case's median run of its first VM, at least DAX;
+- dax-cow (provisional): DAX copying on write against no DAX, as `dax`: a database made in the run
+  is files created in the mount, which take the page cache's path (doc-13), at least DAX_COW;
+- forked-dax: DAX against no DAX on a base's database, as `dax`, at least FORKED_DAX, by default 0,
+  reported and not gated: writable DAX's, which copy-on-write DAX replaces;
+- forked-dax-cow (provisional): DAX copying on write against no DAX on a base's database: a fault
+  on the host for each page's first store, nothing after (doc-13 expects 0.9 to 1), at least
+  FORKED_DAX_COW;
 - static-dax: DAX against ext4 with DAX on pmem, as `dax`: the gap to a static DAX device, at least
   STATIC_DAX, by default 0, reported and not gated;
 - density: of one daemon serving many VMs, the first round that had more than one, its last VM's
-  median run against its first's, at least DENSITY.
+  median run against its first's, at least DENSITY;
+- density-memory (provisional): each DAX density case's host memory per added VM against no DAX's,
+  at most DENSITY_MEMORY;
+- density-memory-mib (provisional): each DAX density case's host memory per added VM, in MiB, at
+  most DENSITY_MEMORY_MIB;
+- bigmap-read (provisional): each DAX bigmap case's cold random reads, MiB/s, against no DAX's, at
+  least BIGMAP_READ;
+- bigmap-guest-cache (provisional): each DAX bigmap case's guest page cache grown over its cold
+  reads, a share of the file, at most BIGMAP_GUEST_CACHE: DAX reads cost the guest no memory;
+- bigmap-written-memory (provisional): copy-on-write's host memory grown over the writes, per byte
+  written, at most BIGMAP_WRITTEN_MEMORY: only the written pages cost memory (doc-13).
 
-Each run's guest latencies (TASK-111.6), the histograms the guest's Fxfs keeps of its faults, seals
-and window MAPs (`NAME_hist` in /proc/fs/fxfs/extents, which the case's log has before
+A density case's host memory per added VM is its first round's host_used after each VM's runs, less
+after the VM's before (or, for the first, before any VM): the mean over the VMs after the first,
+which pays for what they share, the base's pages in the daemon.
+
+Each pgbench run's guest latencies (TASK-111.6), the histograms the guest's Fxfs keeps of its
+faults, seals and window MAPs (`NAME_hist` in /proc/fs/fxfs/extents, which the case's log has before
 and after each run on its `fxfs stats:` lines), are reported as their percentiles, in us: the upper
 bound of the bucket each falls in, bucket k's 1.024 us times 2 to the k, the last's none.
 
@@ -31,8 +72,7 @@ first-touch mappings cost more nested), never compared across.
 
 Usage: scripts/pgbench-gate.py [--host nested|bare-metal] [--json PATH] RESULTS...
 
-The thresholds: FXDAX_GATE_DECAY (default 0.9), FXDAX_GATE_DAX (0.95), FXDAX_GATE_STATIC_DAX (0),
-FXDAX_GATE_DENSITY (0.9).
+The thresholds: FXDAX_GATE_<GATE> (its name in capitals, dashes as underscores), or DEFAULTS'.
 """
 
 import argparse
@@ -43,23 +83,74 @@ import statistics
 import sys
 from pathlib import Path
 
-# The cases, by the name the JSON gives them.
+# The pgbench cases, by the name the JSON gives them.
 CASES = {
     "fxfs-guest-pgbench": "no-dax",
     "fxfs-guest-pgbench-dax": "dax",
+    "fxfs-guest-pgbench-dax-cow": "dax-cow",
     "pgbench-ext4-dax-pmem": "ext4-dax-pmem",
+    "fxfs-guest-pgbench-forked": "no-dax-forked",
+    "fxfs-guest-pgbench-dax-forked": "dax-forked",
+    "fxfs-guest-pgbench-dax-cow-forked": "dax-cow-forked",
+    "fxfs-guest-pgbench-density": "no-dax-density",
+    "fxfs-guest-pgbench-dax-density": "dax-density",
+    "fxfs-guest-pgbench-dax-cow-density": "dax-cow-density",
 }
 # Those of the guest's Fxfs, which its gates of decay and density hold to.
-FXFS = ("no-dax", "dax")
+FXFS = tuple(name for name in CASES.values() if name != "ext4-dax-pmem")
+# The gates of a case against another's median run of its first VM: the case and the other.
+AGAINST = {
+    "dax": ("dax", "no-dax"),
+    "dax-cow": ("dax-cow", "no-dax"),
+    "forked-dax": ("dax-forked", "no-dax-forked"),
+    "forked-dax-cow": ("dax-cow-forked", "no-dax-forked"),
+    "static-dax": ("dax", "ext4-dax-pmem"),
+}
+# The DAX density cases, gated on their memory against no DAX's.
+DENSITY_DAX = ("dax-density", "dax-cow-density")
+# The bigmap cases, by the name the JSON gives them.
+BIGMAP = {
+    "fxfs-guest-bigmap": "bigmap-no-dax",
+    "fxfs-guest-bigmap-dax": "bigmap-dax",
+    "fxfs-guest-bigmap-dax-cow": "bigmap-dax-cow",
+}
+# The steps of a bigmap case at which the host measures, in order, the host before the VM first.
+BIGMAP_PHASES = ("base", "mounted", "read-cold", "read-warm", "written", "synced", "end")
 # A run's result, as pgbench prints it.
 TPS = re.compile(r"^tps = ([0-9.]+) \(without initial connection time\)")
 # The runs a VM makes, as its guest says once they are done (test_fxfs_guest_pgbench.rs).
 RUNS = re.compile(r"^OK runs ([0-9]+)$")
 # The guest's Fxfs's stats, names and values, on one line, as the case logs them around each run.
 STATS = re.compile(r"^fxfs stats: (.*)$")
+# The host's memory, as the host says it when a guest asks (measure.rs).
+MEMORY = re.compile(r"^memory: (.*)$")
+# A bigmap case's result (test_fxfs_guest_bigmap.rs).
+RESULT = re.compile(r"^bigmap: ([a-z0-9_]+) (-?[0-9.]+)$")
+# Whether a guest's DAX writes copy on write (measure.rs).
+MODE = re.compile(r"^fxfs dax_cow: (on|off|absent)$")
 # The percentiles of each run's latencies reported.
 PERCENTILES = (50, 90, 99)
-DEFAULTS = {"decay": 0.9, "dax": 0.95, "static-dax": 0.0, "density": 0.9}
+DEFAULTS = {
+    "decay": 0.9,
+    "dax": 0.95,
+    "dax-cow": 0.95,
+    "forked-dax": 0.0,
+    "forked-dax-cow": 0.9,
+    "static-dax": 0.0,
+    "density": 0.9,
+    "density-memory": 0.8,
+    "density-memory-mib": 768.0,
+    "bigmap-read": 1.0,
+    "bigmap-guest-cache": 0.05,
+    "bigmap-written-memory": 2.0,
+}
+# The gates whose value is at most their threshold; every other's is at least its.
+AT_MOST = frozenset({"density-memory", "density-memory-mib", "bigmap-guest-cache",
+                     "bigmap-written-memory"})
+# The gates whose thresholds are first guesses, to be set from what the first runs measure.
+PROVISIONAL = frozenset({"dax-cow", "forked-dax-cow", "density-memory", "density-memory-mib",
+                         "bigmap-read", "bigmap-guest-cache", "bigmap-written-memory"})
+MIB = 1 << 20
 
 
 def records(lines):
@@ -122,11 +213,36 @@ def percentiles(counts):
     return {"count": total, **found}
 
 
-def logs(results, case):
-    """The logs of `case` in `results`, a test-gce.sh results directory: each round's, in order:
-    its artifacts' (round-K/CASE/log.txt), or, of a round that passed, whose artifacts aren't kept,
-    its whole log (round-K.log), which has its console and its guest's output both."""
-    root = Path(results) / "e2e" / case
+def samples(lines):
+    """The host's memory said in `lines`, a case's log, in order: each a dict of its `NAME=VALUE`
+    words, `phase` a name, every other a number."""
+    found = []
+    for line in lines:
+        if match := MEMORY.match(line.strip()):
+            words = dict(word.split("=", 1) for word in match.group(1).split())
+            found.append({name: value if name == "phase" else int(value)
+                          for name, value in words.items()})
+    return found
+
+
+def results(lines):
+    """A bigmap case's results said in `lines`, its log, by name."""
+    return {match.group(1): float(match.group(2))
+            for line in lines if (match := RESULT.match(line.strip()))}
+
+
+def modes(lines):
+    """Whether the guests in `lines`, a case's log, copied on write: `on`, `off` or `absent`, as
+    they all said, or `mixed`; or None, if none said."""
+    said = {match.group(1) for line in lines if (match := MODE.match(line.strip()))}
+    return None if not said else said.pop() if len(said) == 1 else "mixed"
+
+
+def logs(results_dir, case):
+    """The logs of `case` in `results_dir`, a test-gce.sh results directory: each round's, in
+    order: its artifacts' (round-K/CASE/log.txt), or, of a round that passed, whose artifacts
+    aren't kept, its whole log (round-K.log), which has its console and its guest's output both."""
+    root = Path(results_dir) / "e2e" / case
     single = root / case / "log.txt"
     if single.exists():
         return [single]
@@ -148,61 +264,192 @@ def said(log):
     return lines
 
 
-def measure(*results):
-    """Each case's rounds in the `results` directories, by its JSON name: each round's VMs' runs'
-    tps, each directory's rounds after the last's."""
-    return measure_each(results, lambda found: [tps for tps, _ in found])
+def rounds_of(directories, case):
+    """The lines of each round's log of `case` in the results `directories`, each directory's
+    rounds after the last's."""
+    return [said(log) for directory in directories for log in logs(directory, case)]
 
 
-def measure_latencies(*results):
+def measure(*directories):
+    """Each pgbench case's rounds in the results `directories`, by its JSON name: each round's VMs'
+    runs' tps, each directory's rounds after the last's."""
+    return measure_each(directories, lambda found: [tps for tps, _ in found])
+
+
+def measure_latencies(*directories):
     """As `measure`, each run's guest latencies' percentiles (`latencies`): of the cases whose
     guests keep them."""
-    measured = measure_each(results, lambda found: [between for _, between in found])
+    measured = measure_each(directories, lambda found: [between for _, between in found])
     return {name: rounds for name, rounds in measured.items()
             if any(run for vms in rounds for runs in vms for run in runs)}
 
 
-def measure_each(results, values):
-    """Each case's rounds in the `results` directories, by its JSON name: each round's VMs' runs'
-    `values`, of its runs' records (`records`), each directory's rounds after the last's."""
+def measure_each(directories, values):
+    """Each pgbench case's rounds in the results `directories`, by its JSON name: each round's VMs'
+    runs' `values`, of its runs' records (`records`), each directory's rounds after the last's."""
     measured = {}
     for case, name in CASES.items():
         rounds = []
-        for directory in results:
-            for log in logs(directory, case):
-                found, per_vm = records(said(log))
-                rounds.append(by_vm(values(found), per_vm) if found else [])
+        for lines in rounds_of(directories, case):
+            found, per_vm = records(lines)
+            rounds.append(by_vm(values(found), per_vm) if found else [])
         if any(rounds):
             measured[name] = [vms for vms in rounds if vms]
     return measured
 
 
-def gates(measured, thresholds):
-    """The gates of `measured`, as `measure` has it, against `thresholds`, by gate: each a dict of
-    its name, the case, the value and its threshold, and whether it passed. Of each case's first
-    round, but density's, of its first round of more than one VM."""
+def measure_modes(*directories):
+    """Whether each case's guests copied on write (`modes`), of its first round that said, by its
+    JSON name: of the cases whose guests said."""
+    found = {}
+    for case, name in {**CASES, **BIGMAP}.items():
+        said_modes = [mode for lines in rounds_of(directories, case)
+                      if (mode := modes(lines)) is not None]
+        if said_modes:
+            found[name] = said_modes[0]
+    return found
+
+
+def mib(value):
+    """`value` bytes in MiB, to a tenth; None as None."""
+    return None if value is None else round(value / MIB, 1)
+
+
+def density_memory(memory):
+    """What a density case's VMs cost the host, of its first round's `memory` (`samples`): what
+    the first VM cost (`first_vm_mib`), the mean of what each after it did (`per_added_vm_mib`),
+    and the host's, each VM process's, the daemon's and each guest's memory after each VM's runs;
+    or None, without the host's memory before the first VM and after one."""
+    before = [sample for sample in memory if sample["vm"] == 0]
+    ran = sorted((sample for sample in memory if sample["vm"] > 0), key=lambda s: s["vm"])
+    if not before or not ran:
+        return None
+    used = [before[0]["host_used"]] + [sample["host_used"] for sample in ran]
+    added = [now - then for then, now in zip(used, used[1:])]
+
+    def column(name):
+        return [mib(sample.get(name)) for sample in ran]
+
+    summary = {
+        "vms": len(ran),
+        "first_vm_mib": mib(added[0]),
+        "per_added_vm_mib": mib(statistics.mean(added[1:])) if len(added) > 1 else None,
+        "host_used_mib": [mib(value) for value in used],
+        "vmm_pss_mib": column("vmm_pss"),
+        "vmm_anon_mib": column("vmm_anon"),
+        "vmm_shmem_mib": column("vmm_shmem"),
+        "extentd_memory_mib": column("extentd_memory_bytes"),
+        "guest_used_mib": [mib(sample["guest_total"] - sample["guest_available"])
+                           if "guest_total" in sample else None for sample in ran],
+        "guest_cached_mib": column("guest_cached"),
+    }
+    # Copy-on-write DAX's private pages, as the daemon or the guest counts them, if they do.
+    for name in sorted({name for sample in ran for name in sample if "private" in name}):
+        summary[name] = [sample.get(name) for sample in ran]
+    return summary
+
+
+def bigmap_summary(said_results, memory):
+    """A bigmap case's `said_results` (`results`), with what its steps cost, of its `memory`
+    (`samples`): the guest's page cache grown over the cold reads, a share of the file
+    (`guest_cache_share`); the host's memory grown over them and over the writes, in MiB, and over
+    the writes per byte written (`written_memory_per_byte`); the host's, the VM process's and the
+    daemon's at each step, against the host's before the VM; and the private pages counted at each.
+    None without every step."""
+    at = {sample["phase"]: sample for sample in memory}
+    if any(phase not in at for phase in BIGMAP_PHASES) or any(
+            name not in said_results for name in ("file_bytes", "read_cold_mib_s", "write_pages")):
+        return None
+
+    def grown(name, then, now):
+        return at[now][name] - at[then][name]
+
+    written = said_results["write_pages"] * 4096
+    summary = dict(said_results)
+    summary.update({
+        "guest_cache_share": round(grown("guest_cached", "mounted", "read-cold")
+                                   / said_results["file_bytes"], 4),
+        "host_read_mib": mib(grown("host_used", "mounted", "read-cold")),
+        "host_written_mib": mib(grown("host_used", "read-warm", "written")),
+        "written_memory_per_byte": round(grown("host_used", "read-warm", "written") / written, 4),
+        "host_used_mib": {phase: mib(grown("host_used", "base", phase))
+                          for phase in BIGMAP_PHASES[1:]},
+        "vmm_pss_mib": {phase: mib(at[phase].get("vmm_pss")) for phase in BIGMAP_PHASES[1:]},
+        "extentd_memory_mib": {phase: mib(at[phase].get("extentd_memory_bytes"))
+                               for phase in BIGMAP_PHASES},
+    })
+    # Copy-on-write DAX's private pages, as the daemon or the guest counts them, if they do.
+    for name in sorted({name for sample in memory for name in sample if "private" in name}):
+        summary[name] = {phase: at[phase].get(name) for phase in BIGMAP_PHASES}
+    return summary
+
+
+def measure_memory(*directories):
+    """Each density case's host memory (`density_memory`), and each bigmap case's results and
+    what its steps cost (`bigmap_summary`), by its JSON name, each of its first round that has
+    them."""
+    density, bigmap = {}, {}
+    for case, name in CASES.items():
+        for lines in rounds_of(directories, case):
+            if summary := density_memory(samples(lines)):
+                density[name] = summary
+                break
+    for case, name in BIGMAP.items():
+        for lines in rounds_of(directories, case):
+            if summary := bigmap_summary(results(lines), samples(lines)):
+                bigmap[name] = summary
+                break
+    return density, bigmap
+
+
+def judge(name, case, value, thresholds):
+    """Gate `name` of `case`, of `value`, against its threshold in `thresholds`: at most it, for
+    those of AT_MOST, at least it for the others."""
+    threshold, most = thresholds[name], name in AT_MOST
+    return {"gate": name, "case": case, "value": round(value, 4), "threshold": threshold,
+            "bound": "at most" if most else "at least",
+            "passed": value <= threshold if most else value >= threshold}
+
+
+def gates(measured, thresholds, density=None, bigmap=None):
+    """The gates of `measured`, as `measure` has it, and of `density` and `bigmap`, as
+    `measure_memory` has them, against `thresholds`, by gate (`judge`). Of each pgbench case's
+    first round, but density's, of its first round of more than one VM."""
     found = []
-
-    def gate(name, case, value):
-        found.append({"gate": name, "case": case, "value": round(value, 4),
-                      "threshold": thresholds[name], "passed": value >= thresholds[name]})
-
-    def median_against(case, other):
-        return statistics.median(first[case][0]) / statistics.median(first[other][0])
-
     first = {case: rounds[0] for case, rounds in measured.items()}
     for case in FXFS:
         if case not in measured:
             continue
         vms = first[case]
-        gate("decay", case, vms[0][-1] / vms[0][0])
+        found.append(judge("decay", case, vms[0][-1] / vms[0][0], thresholds))
         dense = next((vms for vms in measured[case] if len(vms) > 1), None)
         if dense:
-            gate("density", case, statistics.median(dense[-1]) / statistics.median(dense[0]))
-    if "dax" in first and "no-dax" in first:
-        gate("dax", "dax", median_against("dax", "no-dax"))
-    if "dax" in first and "ext4-dax-pmem" in first:
-        gate("static-dax", "dax", median_against("dax", "ext4-dax-pmem"))
+            value = statistics.median(dense[-1]) / statistics.median(dense[0])
+            found.append(judge("density", case, value, thresholds))
+    for name, (case, other) in AGAINST.items():
+        if case in first and other in first:
+            value = statistics.median(first[case][0]) / statistics.median(first[other][0])
+            found.append(judge(name, case, value, thresholds))
+    density, bigmap = density or {}, bigmap or {}
+    no_dax = (density.get("no-dax-density") or {}).get("per_added_vm_mib")
+    for case in DENSITY_DAX:
+        per_vm = (density.get(case) or {}).get("per_added_vm_mib")
+        if per_vm is None:
+            continue
+        if no_dax:
+            found.append(judge("density-memory", case, per_vm / no_dax, thresholds))
+        found.append(judge("density-memory-mib", case, per_vm, thresholds))
+    for case in ("bigmap-dax", "bigmap-dax-cow"):
+        if case not in bigmap:
+            continue
+        if "bigmap-no-dax" in bigmap:
+            value = bigmap[case]["read_cold_mib_s"] / bigmap["bigmap-no-dax"]["read_cold_mib_s"]
+            found.append(judge("bigmap-read", case, value, thresholds))
+        found.append(judge("bigmap-guest-cache", case, bigmap[case]["guest_cache_share"],
+                           thresholds))
+    if "bigmap-dax-cow" in bigmap:
+        found.append(judge("bigmap-written-memory", "bigmap-dax-cow",
+                           bigmap["bigmap-dax-cow"]["written_memory_per_byte"], thresholds))
     return found
 
 
@@ -219,18 +466,29 @@ def main():
     parser.add_argument("results", nargs="+")
     args = parser.parse_args()
     measured = measure(*args.results)
-    if not measured:
+    density, bigmap = measure_memory(*args.results)
+    if not measured and not bigmap:
         raise SystemExit(f"no pgbench runs in {' '.join(args.results)}")
-    report = {"host": args.host, "tps": measured, "gates": gates(measured, thresholds())}
+    found = gates(measured, thresholds(), density, bigmap)
+    report = {"host": args.host, "tps": measured, "gates": found}
+    if provisional := sorted({gate["gate"] for gate in found} & PROVISIONAL):
+        report["provisional"] = provisional
     if latency := measure_latencies(*args.results):
         report["latency"] = latency
+    if density:
+        report["memory"] = density
+    if bigmap:
+        report["bigmap"] = bigmap
+    if dax_cow := measure_modes(*args.results):
+        report["dax_cow"] = dax_cow
     text = json.dumps(report, indent=2)
     if args.json:
         Path(args.json).write_text(text + "\n")
     print(text)
     failed = [gate for gate in report["gates"] if not gate["passed"]]
     for gate in failed:
-        print(f"failed: {gate['gate']} of {gate['case']}: {gate['value']} under "
+        side = "over" if gate["bound"] == "at most" else "under"
+        print(f"failed: {gate['gate']} of {gate['case']}: {gate['value']} {side} "
               f"{gate['threshold']}", file=sys.stderr)
     sys.exit(1 if failed else 0)
 

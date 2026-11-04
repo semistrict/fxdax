@@ -31,7 +31,13 @@ use test_fxfs_guest_resize::TestFxfsGuestResize;
 mod test_fxfs_guest_live_fork;
 use test_fxfs_guest_live_fork::TestFxfsGuestLiveFork;
 mod test_fxfs_guest_pgbench;
-use test_fxfs_guest_pgbench::{Probe, Storage as PgbenchStorage, TestFxfsGuestPgbench};
+use test_fxfs_guest_pgbench::{
+    Database as PgbenchDatabase, Probe, Storage as PgbenchStorage, TestFxfsGuestPgbench,
+};
+mod test_fxfs_guest_bigmap;
+use test_fxfs_guest_bigmap::TestFxfsGuestBigmap;
+// fxdax: what a VM costs its host's memory, measured when its guest asks (TASK-164.5).
+mod measure;
 mod test_fxfs_guest_daemon_lost;
 use test_fxfs_guest_daemon_lost::TestFxfsGuestDaemonLost;
 mod test_fxfs_guest_host_memory;
@@ -79,6 +85,11 @@ mod script_vm;
 // What the guest's checks print as they fail.
 #[cfg(feature = "guest")]
 mod kernel_log;
+
+// fxdax: what the guest halves of the guest's Fxfs's tests share: evicting, DAX, a mount's counts,
+// and copying on write's files read in from sealed extents (doc-13).
+#[cfg(feature = "guest")]
+mod guest_fxfs;
 
 // What the guest's tests unbind the extent driver with.
 #[cfg(feature = "guest")]
@@ -135,59 +146,92 @@ pub fn test_cases() -> Vec<TestCase> {
         ),
         TestCase::new(
             "fxfs-guest-pgbench",
-            Box::new(TestFxfsGuestPgbench {
-                storage: PgbenchStorage::Fxfs,
-                probe: Probe::None,
-                fsync: true,
-            }),
+            Box::new(TestFxfsGuestPgbench::on(PgbenchStorage::Fxfs)),
         ),
         TestCase::new(
             "fxfs-guest-pgbench-dax",
-            Box::new(TestFxfsGuestPgbench {
-                storage: PgbenchStorage::FxfsDax,
-                probe: Probe::None,
-                fsync: true,
-            }),
+            Box::new(TestFxfsGuestPgbench::on(PgbenchStorage::FxfsDax)),
         ),
         TestCase::new(
             "fxfs-guest-pgbench-profile",
-            Box::new(TestFxfsGuestPgbench {
-                storage: PgbenchStorage::Fxfs,
-                probe: Probe::Profile,
-                fsync: true,
-            }),
+            Box::new(TestFxfsGuestPgbench::on(PgbenchStorage::Fxfs).probed(Probe::Profile)),
         ),
         TestCase::new(
             "fxfs-guest-pgbench-dax-profile",
-            Box::new(TestFxfsGuestPgbench {
-                storage: PgbenchStorage::FxfsDax,
-                probe: Probe::Profile,
-                fsync: true,
-            }),
+            Box::new(TestFxfsGuestPgbench::on(PgbenchStorage::FxfsDax).probed(Probe::Profile)),
         ),
         TestCase::new(
             "fxfs-guest-pgbench-locks",
-            Box::new(TestFxfsGuestPgbench {
-                storage: PgbenchStorage::Fxfs,
-                probe: Probe::Locks,
-                fsync: true,
-            }),
+            Box::new(TestFxfsGuestPgbench::on(PgbenchStorage::Fxfs).probed(Probe::Locks)),
         ),
         TestCase::new(
             "fxfs-guest-pgbench-nofsync",
-            Box::new(TestFxfsGuestPgbench {
-                storage: PgbenchStorage::Fxfs,
-                probe: Probe::None,
-                fsync: false,
-            }),
+            Box::new(TestFxfsGuestPgbench::on(PgbenchStorage::Fxfs).without_fsync()),
         ),
         TestCase::new(
             "pgbench-ext4-dax-pmem",
-            Box::new(TestFxfsGuestPgbench {
-                storage: PgbenchStorage::Ext4DaxPmem,
-                probe: Probe::None,
-                fsync: true,
-            }),
+            Box::new(TestFxfsGuestPgbench::on(PgbenchStorage::Ext4DaxPmem)),
+        ),
+        // fxdax: copy-on-write DAX's (TASK-164.5).
+        TestCase::new(
+            "fxfs-guest-pgbench-dax-cow",
+            Box::new(TestFxfsGuestPgbench::on(PgbenchStorage::FxfsDax).with_dax_cow()),
+        ),
+        TestCase::new(
+            "fxfs-guest-pgbench-forked",
+            Box::new(
+                TestFxfsGuestPgbench::on(PgbenchStorage::Fxfs)
+                    .with_database(PgbenchDatabase::Forked),
+            ),
+        ),
+        TestCase::new(
+            "fxfs-guest-pgbench-dax-forked",
+            Box::new(
+                TestFxfsGuestPgbench::on(PgbenchStorage::FxfsDax)
+                    .with_database(PgbenchDatabase::Forked),
+            ),
+        ),
+        TestCase::new(
+            "fxfs-guest-pgbench-dax-cow-forked",
+            Box::new(
+                TestFxfsGuestPgbench::on(PgbenchStorage::FxfsDax)
+                    .with_database(PgbenchDatabase::Forked)
+                    .with_dax_cow(),
+            ),
+        ),
+        TestCase::new(
+            "fxfs-guest-pgbench-density",
+            Box::new(
+                TestFxfsGuestPgbench::on(PgbenchStorage::Fxfs)
+                    .with_database(PgbenchDatabase::Density),
+            ),
+        ),
+        TestCase::new(
+            "fxfs-guest-pgbench-dax-density",
+            Box::new(
+                TestFxfsGuestPgbench::on(PgbenchStorage::FxfsDax)
+                    .with_database(PgbenchDatabase::Density),
+            ),
+        ),
+        TestCase::new(
+            "fxfs-guest-pgbench-dax-cow-density",
+            Box::new(
+                TestFxfsGuestPgbench::on(PgbenchStorage::FxfsDax)
+                    .with_database(PgbenchDatabase::Density)
+                    .with_dax_cow(),
+            ),
+        ),
+        TestCase::new(
+            "fxfs-guest-bigmap",
+            Box::new(TestFxfsGuestBigmap { dax: false, dax_cow: false }),
+        ),
+        TestCase::new(
+            "fxfs-guest-bigmap-dax",
+            Box::new(TestFxfsGuestBigmap { dax: true, dax_cow: false }),
+        ),
+        TestCase::new(
+            "fxfs-guest-bigmap-dax-cow",
+            Box::new(TestFxfsGuestBigmap { dax: true, dax_cow: true }),
         ),
         TestCase::new("fxfs-guest-daemon-lost", Box::new(TestFxfsGuestDaemonLost)),
         TestCase::new("fxfs-guest-host-memory", Box::new(TestFxfsGuestHostMemory)),

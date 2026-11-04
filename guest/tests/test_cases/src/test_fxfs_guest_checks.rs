@@ -278,6 +278,8 @@ pub(crate) mod host {
 pub(crate) mod guest {
     use super::*;
     use crate::Test;
+    pub(crate) use crate::guest_fxfs::evict;
+    use crate::guest_fxfs::{cow_base_file, is_dax, read_in_sealed};
     use crate::posix_acl;
     use crate::script::{self, Rng};
     use crate::script_run::{self, Run};
@@ -291,6 +293,9 @@ pub(crate) mod guest {
     use std::panic::{AssertUnwindSafe, catch_unwind};
 
     const MNT: &str = "/mnt/fxdax";
+    /// The device's tag, which the image is mounted by, and its mount's counts are named by
+    /// (/proc/fs/fxfs/<tag>).
+    const TAG: &str = "fxdax";
 
     pub(crate) fn path(name: &str) -> String {
         format!("{MNT}/{name}")
@@ -304,25 +309,13 @@ pub(crate) mod guest {
     /// Mounts the image with the kernel's Fxfs, if it can.
     fn try_mount() -> std::io::Result<()> {
         fs::create_dir_all(MNT).unwrap();
-        let source = CString::new("fxdax").unwrap();
+        let source = CString::new(TAG).unwrap();
         let target = CString::new(MNT).unwrap();
         let fstype = CString::new("fxfs").unwrap();
         let ret = unsafe {
             libc::mount(source.as_ptr(), target.as_ptr(), fstype.as_ptr(), 0, std::ptr::null())
         };
         if ret == 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) }
-    }
-
-    /// Evicts `path`'s inode, for it to be read in again: written back, and its pages dropped,
-    /// as an inode that has any isn't evicted (dropping every cache would drop the filesystem's
-    /// metadata's too).
-    pub(crate) fn evict(path: &str) {
-        let file = fs::File::open(path).unwrap();
-        file.sync_all().unwrap();
-        let fd = file.as_raw_fd();
-        assert_eq!(unsafe { libc::posix_fadvise(fd, 0, 0, libc::POSIX_FADV_DONTNEED) }, 0);
-        drop(file);
-        fs::write("/proc/sys/vm/drop_caches", b"2").unwrap();
     }
 
     /// Unmaps what a check that failed left mapped of the image's files, which would keep the
@@ -345,26 +338,10 @@ pub(crate) mod guest {
         assert_eq!(ret, 0, "umount: {}", std::io::Error::last_os_error());
     }
 
-    /// Whether the kernel accesses `path` through the DAX window.
-    fn is_dax(path: &str) -> bool {
-        const STATX_ATTR_DAX: u64 = 0x200000;
-        // struct statx: stx_attributes at byte 8, stx_attributes_mask at 56
-        let mut buf = [0u64; 32];
-        let c_path = CString::new(path).unwrap();
-        let ret = unsafe {
-            libc::syscall(
-                libc::SYS_statx,
-                libc::AT_FDCWD,
-                c_path.as_ptr(),
-                0,
-                0x7ff, // STATX_BASIC_STATS
-                buf.as_mut_ptr(),
-            )
-        };
-        assert_eq!(ret, 0, "statx: {}", std::io::Error::last_os_error());
-        let (attributes, mask) = (buf[1], buf[7]);
-        assert_ne!(mask & STATX_ATTR_DAX, 0, "kernel does not report DAX");
-        attributes & STATX_ATTR_DAX != 0
+    /// fxdax: whether the window copies on write (fxfs.dax_cow, doc-13), as the mount's counts say
+    /// ([`crate::guest_fxfs::dax_cow`]).
+    fn dax_cow() -> bool {
+        crate::guest_fxfs::dax_cow(TAG)
     }
 
     /// fxdax: what a coverage kernel counted of fs/fxfs so far, copied to the store for the host:
@@ -435,8 +412,9 @@ pub(crate) mod guest {
             .unwrap();
         file.set_len(MAPPED_SIZE as u64).unwrap();
         // The guest's Fxfs maps a file's data from the window as it is created; its mappings
-        // outlive its inode, which is read in again.
-        assert_eq!(is_dax(&path("dax-mapped")), dax, "dax-mapped's DAX attribute");
+        // outlive its inode, which is read in again. fxdax: copying on write, a file created in
+        // the mount is a page-cache inode until read in again (TASK-164.3).
+        assert_eq!(is_dax(&path("dax-mapped")), dax && !dax_cow(), "dax-mapped's DAX attribute");
 
         let map = unsafe {
             libc::mmap(
@@ -815,27 +793,27 @@ pub(crate) mod guest {
         (entry & PRESENT != 0).then_some(entry & PFN)
     }
 
-    /// fxdax: what /proc/fs/fxfs/<tag> counts (TASK-91.7), by name: a histogram (NAME_hist, its
-    /// buckets' counts comma-separated, TASK-111.6) as how many it counts.
+    /// fxdax: what the mount counts ([`crate::guest_fxfs::stats`]), by name.
     fn stats() -> std::collections::BTreeMap<String, u64> {
-        let text = fs::read_to_string("/proc/fs/fxfs/fxdax").unwrap();
-        (text.lines())
-            .map(|line| {
-                let (name, value) = line.split_once(' ').unwrap();
-                let counts = value.split(',').map(|count| count.parse::<u64>().unwrap());
-                (name.to_owned(), counts.sum())
-            })
-            .collect()
+        crate::guest_fxfs::stats(TAG)
     }
 
     /// fxdax: dax_writes_ns adds up (TASK-146.2): what writes of a file's every kind of page spent
     /// is in the parts /proc/fs/fxfs/<tag> says, the copy among them: a new step in the write would
-    /// show as dax_write_other_ns. 45% of a pgbench's writes' time had no part to be in.
+    /// show as dax_write_other_ns. 45% of a pgbench's writes' time had no part to be in. fxdax:
+    /// copying on write (doc-13), of a file read in from sealed extents, whose writes are the
+    /// window's (a file created here is a page-cache inode, TASK-164.3): its iomaps and its copies
+    /// are counted too. Fails if a copy-on-write write's time is in no part.
     fn test_write_times_add_up() {
         use std::os::unix::fs::FileExt;
         const PAGE: usize = 4096;
         let name = path("write-times");
-        let mut file = fs::File::create(&name).unwrap();
+        let mut file = if dax_cow() {
+            cow_base_file(&name, 0, 0);
+            fs::OpenOptions::new().write(true).open(&name).unwrap()
+        } else {
+            fs::File::create(&name).unwrap()
+        };
         let before = stats();
         let data = vec![7u8; 3 * PAGE / 2];
         for round in 0..64 {
@@ -2454,6 +2432,9 @@ pub(crate) mod guest {
     /// on the entries of their binary's hot pages for minutes on end (TASK-152). Then processes
     /// reading all of the region's pages at once: a fault for each page of each, at most, and tries
     /// of a PMD where no page table covers their mapping yet, which dax_faults_hist counts too.
+    /// fxdax: copying on write (doc-13), the file, created here, is a page-cache inode until read
+    /// in again (TASK-164.3), whose writeback packs it in the staging extent: read in again, from
+    /// that extent sealed, it is a slice of its region, read-only, as without.
     fn test_reads_stay_mapped() {
         use std::os::unix::fs::FileExt;
         const PAGE: usize = 4096;
@@ -2464,11 +2445,19 @@ pub(crate) mod guest {
         const PASSES: usize = 64;
         let name = path("reads-stay-mapped");
         fs::write(&name, vec![1; SIZE]).unwrap();
-        let file = fs::OpenOptions::new().read(true).write(true).open(&name).unwrap();
+        let open = || fs::OpenOptions::new().read(true).write(true).open(&name).unwrap();
+        let file = open();
         file.sync_all().unwrap();
         // The file's blocks move to the staging extent, which the fsync seals: a slice of it.
         file.write_all_at(&[2; SIZE], 0).unwrap();
         file.sync_data().unwrap();
+        let file = if dax_cow() {
+            drop(file);
+            read_in_sealed(&name);
+            open()
+        } else {
+            file
+        };
         let map = |at: *mut libc::c_void, flags| {
             let map = unsafe {
                 libc::mmap(at, SIZE, libc::PROT_READ, libc::MAP_SHARED | flags, file.as_raw_fd(), 0)
@@ -2539,6 +2528,10 @@ pub(crate) mod guest {
     /// fxdax: write(2)s of pages scattered over a sealed file take no MAP each: they go through the
     /// staging extent's region, and the pages lag, until the read after them maps them together. A
     /// MAP of its own took 200 us of a write's 230: rand-write fell from 18,151 to 3,534 IOPS.
+    /// fxdax: copying on write (doc-13), of a file read in from sealed extents, each write makes
+    /// its page private where the window maps it, a page more each, with no MAP, and no PRIVATE
+    /// ahead of a page alone (fxfs.dax_private_ahead's 4). Fails if a write's iomap made more than
+    /// its page private, or mapped its chunk again.
     fn test_writes_through() {
         use std::os::unix::fs::FileExt;
         const PAGE: usize = 4096;
@@ -2546,13 +2539,23 @@ pub(crate) mod guest {
         const PAGES: usize = SIZE / PAGE;
         const WRITES: usize = 256;
         const STRIDE: usize = 677;
+        let cow = dax_cow();
         let name = path("writes-through");
         let mut expected = vec![1; SIZE];
         fs::write(&name, &expected).unwrap();
+        if cow {
+            read_in_sealed(&name);
+        }
         let file = fs::OpenOptions::new().read(true).write(true).open(&name).unwrap();
         file.sync_all().unwrap();
         let requests = || stats()["window_map_requests"];
+        // Copying on write: the pages private, and the PRIVATE requests sent.
+        let cow_counts = || {
+            let stats = stats();
+            (stats["dax_cow_private_pages"], stats["dax_cow_privates"])
+        };
         let before = (stats()["dax_writes_through"], requests());
+        let cow_before = cow_counts();
         for write in 0..WRITES {
             let at = (write * STRIDE % PAGES) * PAGE;
             let data = vec![(write % 251) as u8 + 2; PAGE];
@@ -2561,11 +2564,18 @@ pub(crate) mod guest {
         }
         let through = stats()["dax_writes_through"] - before.0;
         let written = requests() - before.1;
+        let cow_after = cow_counts();
         let before = requests();
         assert!(fs::read(&name).unwrap() == expected, "the file differs from what was written");
         let read = requests() - before;
         eprintln!("writes_through: {through} of {WRITES} through, {written} MAPs, then {read}");
-        assert_eq!(through, WRITES as u64, "{through} of {WRITES} writes through a region");
+        if cow {
+            let private = cow_before.0 + WRITES as u64;
+            assert_eq!(cow_after.0, private, "private pages after {WRITES} writes of a page");
+            assert_eq!(cow_after.1, cow_before.1, "PRIVATE requests for writes of a page");
+        } else {
+            assert_eq!(through, WRITES as u64, "{through} of {WRITES} writes through a region");
+        }
         assert!(written < (WRITES / 8) as u64, "{WRITES} writes took {written} MAPs");
         assert!(read < (WRITES / 8) as u64, "the read after them took {read} MAPs");
         drop(file);
@@ -3275,6 +3285,9 @@ pub(crate) mod guest {
         const HELD: u64 = 1 << 3;
         const WRITE_MAPPED: u64 = 1 << 5;
         const RESEALED: u64 = 1 << 6;
+        /// Copying on write, a rebind about to MAP over a file's private pages, holding its
+        /// semaphore for writing (FXFS_DAX_STEP_REBIND, fxfs_dax_cow_rebind).
+        const REBIND: u64 = 1 << 7;
 
         fn set(steps: u64) {
             fs::write(Self::PAUSE, steps.to_string()).unwrap();
@@ -3330,6 +3343,9 @@ pub(crate) mod guest {
     /// again from Fxfs's extents, and the write tried again, which writes the pages, as read(2)
     /// finds them, and the file evicted (TASK-79.106).
     fn test_map_failed_after_move() {
+        if dax_cow() {
+            return map_failed_copying_on_write();
+        }
         const PAGE: usize = 4096;
         let name = path("map-failed-after-move");
         // Larger than a chunk, in one extent: a range of its own, not a slice of a region.
@@ -3357,15 +3373,64 @@ pub(crate) mod guest {
         fs::remove_file(&name).unwrap();
     }
 
+    /// fxdax: copying on write (doc-13), `test_map_failed_after_move`'s write: nothing moves, but
+    /// the chunk is in pieces, written back as the page cache's (created here, a page-cache inode
+    /// until read in again, TASK-164.3) whole, then pages 0 and 2 again, and read in again, no
+    /// range mapping it yet: the write's MAP of its range fails after the first piece
+    /// (fxfs.dax_fail_maps). The write fails (EIO), and leaves the file as it was; the next
+    /// writes it, as read(2) finds it, and the file evicted. Fails if the write went on into a
+    /// range mapped in part (EIO lost, or the pages past the first piece other data), or if the
+    /// failure left the range so that the next write or read failed too.
+    fn map_failed_copying_on_write() {
+        use std::os::unix::fs::FileExt;
+        const PAGE: usize = 4096;
+        const SIZE: usize = 4 << 20;
+        let name = path("map-failed-after-move");
+        let open = || fs::OpenOptions::new().read(true).write(true).open(&name).unwrap();
+        let mut expected: Vec<u8> = (0..SIZE).map(|i| (i % 251) as u8 + 1).collect();
+        fs::write(&name, &expected).unwrap();
+        let file = open();
+        file.sync_all().unwrap();
+        file.write_all_at(&[0xa0; PAGE], 0).unwrap();
+        file.write_all_at(&[0xa2; PAGE], 2 * PAGE as u64).unwrap();
+        expected[..PAGE].fill(0xa0);
+        expected[2 * PAGE..3 * PAGE].fill(0xa2);
+        file.sync_all().unwrap();
+        drop(file);
+        read_in_sealed(&name);
+        let file = open();
+        {
+            let _fail = Param::set("dax_fail_maps", "1");
+            let failed = file.write_at(&[0xc0; 3 * PAGE], 0).unwrap_err();
+            assert_eq!(failed.raw_os_error(), Some(libc::EIO), "{failed}");
+            assert_injected("dax_fail_maps");
+        }
+        assert!(fs::read(&name).unwrap() == expected, "the file, read after the write failed");
+        file.write_all_at(&[0xc0; 3 * PAGE], 0).unwrap();
+        expected[..3 * PAGE].fill(0xc0);
+        assert!(fs::read(&name).unwrap() == expected, "the file, read after the write");
+        drop(file);
+        evict(&name);
+        assert!(fs::read(&name).unwrap() == expected, "the file evicted");
+        fs::remove_file(&name).unwrap();
+    }
+
     /// fxdax: a writer killed once its blocks moved, keeping nothing of what they held, before its
     /// copy: the kernel's copy stops at the signal, and the move, which commits after the bytes,
     /// is dropped, leaving the file as it was (TASK-153.5). Committed first, it left zeros where
-    /// the file's data was. Played out with a pause point.
+    /// the file's data was. Played out with a pause point. fxdax: copying on write (doc-13), of a
+    /// file read in again from sealed extents (created here, it is a page-cache inode until then,
+    /// TASK-164.3), killed with its pages made private and dirty, before its copy: they hold what
+    /// they held, written back as it was. Fails if the copy went on after the signal, or if the
+    /// private pages read as anything but the file's (zeros, a page not copied from its extent's).
     fn test_write_killed() {
         use std::os::unix::fs::FileExt;
         const PAGE: usize = 4096;
         let name = path("write-killed");
         fs::write(&name, vec![1; 4 * PAGE]).unwrap();
+        if dax_cow() {
+            read_in_sealed(&name);
+        }
         let file = fs::OpenOptions::new().read(true).write(true).open(&name).unwrap();
         file.sync_all().unwrap();
         let (pauses, only) = Pauses::begin_of(Pauses::WRITE_MAPPED, &name);
@@ -3403,15 +3468,25 @@ pub(crate) mod guest {
     /// the first alone: a read fails, and the next maps it all; so does a write, whose blocks move
     /// only after, committed after its bytes (TASK-153.5): moved first, it was tried again, having
     /// lost the pages' old bytes otherwise. Each on a clone of the file:
-    /// evicted, a file keeps what its ranges map, which needs no map (TASK-119.13).
+    /// evicted, a file keeps what its ranges map, which needs no map (TASK-119.13). fxdax: copying
+    /// on write (doc-13), the file is read in again from sealed extents, and its pages rewritten
+    /// are written back to new ones; each clone, created here, a page-cache inode until read in
+    /// again (TASK-164.3), is synced and read in again, and its range's MAP of the pieces fails in
+    /// fxfs_dax_cow_map_all as in fxfs_dax_map_extents: the read fails, and so does the write,
+    /// leaving the file as it was. Fails if a range mapped in part is kept, for reads to go on to
+    /// what it doesn't map, or a write into it to succeed.
     fn test_map_many_failed() {
         use std::os::unix::fs::FileExt;
         const FICLONE: libc::c_ulong = 0x4004_9409;
         const PAGE: usize = 4096;
         const SIZE: usize = 4 << 20;
+        let cow = dax_cow();
         let name = path("map-many-failed");
         let mut expected: Vec<u8> = (0..SIZE).map(|i| (i % 251) as u8 + 1).collect();
         fs::write(&name, &expected).unwrap();
+        if cow {
+            read_in_sealed(&name);
+        }
         let file = fs::OpenOptions::new().read(true).write(true).open(&name).unwrap();
         file.sync_all().unwrap();
         for at in [0, 8 * PAGE, 16 * PAGE] {
@@ -3425,6 +3500,12 @@ pub(crate) mod guest {
             let clone = open.open(&name).unwrap();
             let cloned = unsafe { libc::ioctl(clone.as_raw_fd(), FICLONE as _, file.as_raw_fd()) };
             assert_eq!(cloned, 0, "FICLONE: {}", std::io::Error::last_os_error());
+            if !cow {
+                return (name, clone);
+            }
+            drop(clone);
+            read_in_sealed(&name);
+            let clone = open.open(&name).unwrap();
             (name, clone)
         };
         let (one_by_one, clone_read) = clone("one-by-one");
@@ -3825,13 +3906,21 @@ pub(crate) mod guest {
     /// through a mapping: each byte as written. The first load of such a file died of SIGBUS, its
     /// fault failing with no error (TASK-121's pause check). The read maps the first chunk with a
     /// PMD, which the store after breaks up (TASK-123): a read that mapped none would leave
-    /// pmd_row_unrelocated unkilled, as the DAX gate found it (TASK-119.8).
+    /// pmd_row_unrelocated unkilled, as the DAX gate found it (TASK-119.8). fxdax: copying on write
+    /// (doc-13), the file read in again from sealed extents (created here, it is a page-cache
+    /// inode until then, TASK-164.3): the store splits the PMD, making its page alone private,
+    /// which the fsync after writes back. Fails if the store made the PMD's 2 MiB private, or
+    /// none, or if the fsync lost the store.
     fn test_mapped_after_write() {
         const SIZE: usize = 4 << 20;
+        let cow = dax_cow();
         let name = path("mapped-after-write");
         let data: Vec<u8> = (0..SIZE).map(|i| (i % 251) as u8 + 1).collect();
         fs::write(&name, &data).unwrap();
         fs::File::open(&name).unwrap().sync_all().unwrap();
+        if cow {
+            read_in_sealed(&name);
+        }
         let file = fs::OpenOptions::new().read(true).write(true).open(&name).unwrap();
         let map = unsafe {
             libc::mmap(
@@ -3851,8 +3940,13 @@ pub(crate) mod guest {
         // A store to the second page moves it, which the first chunk's mapping, read in 2 MiB at
         // once, mapped in a row with the rest; then the chunk is read again, page by page.
         let mut data = data;
+        let private = || stats()["dax_cow_private_pages"];
+        let before = cow.then(private);
         unsafe { (map as *mut u8).add(4096 + 100).write_volatile(0xee) };
         data[4096 + 100] = 0xee;
+        if let Some(before) = before {
+            assert_eq!(private(), before + 1, "private pages after a store to a PMD's page");
+        }
         file.sync_all().unwrap();
         let bytes = unsafe { std::slice::from_raw_parts(map as *const u8, SIZE) };
         assert!(bytes == &data[..], "the file as mapped differs after a store moved a page");
@@ -4441,13 +4535,18 @@ pub(crate) mod guest {
     /// fxdax: an append grows the file as it ends, its bytes written, not as it begins: one paused
     /// with its iomap made, before its copy (WRITE_MAPPED), leaves the file as long as it was, so
     /// that a reader finding the file longer reads what was appended there, never zeros
-    /// (append_while_mapped, TASK-133).
+    /// (append_while_mapped, TASK-133). fxdax: copying on write (doc-13), of a file read in again
+    /// from sealed extents (created here, it is a page-cache inode until then, TASK-164.3), whose
+    /// append pauses with its pages made private, before its copy.
     fn test_append_size_follows_data() {
         use std::io::Write as _;
         const OLD: usize = 4096;
         const APPENDED: usize = 64 << 10;
         let name = path("append-size");
         fs::write(&name, vec![1; OLD]).unwrap();
+        if dax_cow() {
+            read_in_sealed(&name);
+        }
         let (pauses, only) = Pauses::begin_of(Pauses::WRITE_MAPPED, &name);
         std::thread::scope(|scope| {
             let appender = scope.spawn(|| {
@@ -4588,7 +4687,11 @@ pub(crate) mod guest {
         evict(&name);
         assert_eq!(fs::read(&name).unwrap(), expected);
         let allocated = fs::metadata(&name).unwrap().blocks() * 512;
-        assert_eq!(allocated, (expected.len() as u64).next_multiple_of(64 << 10));
+        // fxdax: copying on write (doc-13), created here, the file is a page-cache inode
+        // (TASK-164.3), whose writeback allocates the blocks it writes, and reserves none past
+        // them.
+        let reserved: u64 = if dax_cow() { PAGE as u64 } else { 64 << 10 };
+        assert_eq!(allocated, (expected.len() as u64).next_multiple_of(reserved));
     }
 
     /// fxdax: a soft lockup dumps every CPU's stack, as the guest's command line asks (vm::CMDLINE),
@@ -4764,10 +4867,431 @@ pub(crate) mod guest {
         fs::remove_file(path("after-full")).unwrap();
     }
 
+    /// fxdax: a shared, writable mapping of `len` bytes of `file`, unmapped as it drops.
+    struct CowMapping {
+        addr: *mut libc::c_void,
+        len: usize,
+    }
+
+    impl CowMapping {
+        fn new(file: &fs::File, len: usize) -> Self {
+            let addr = unsafe {
+                libc::mmap(
+                    std::ptr::null_mut(),
+                    len,
+                    libc::PROT_READ | libc::PROT_WRITE,
+                    libc::MAP_SHARED,
+                    file.as_raw_fd(),
+                    0,
+                )
+            };
+            assert_ne!(addr, libc::MAP_FAILED, "mmap: {}", std::io::Error::last_os_error());
+            Self { addr, len }
+        }
+
+        fn bytes(&self) -> &mut [u8] {
+            unsafe { std::slice::from_raw_parts_mut(self.addr.cast::<u8>(), self.len) }
+        }
+
+        fn msync(&self) {
+            assert_eq!(unsafe { libc::msync(self.addr, self.len, libc::MS_SYNC) }, 0);
+        }
+    }
+
+    impl Drop for CowMapping {
+        fn drop(&mut self) {
+            unsafe { libc::munmap(self.addr, self.len) };
+        }
+    }
+
+    /// fxdax: has the budget's worker write back, seal and rebind every private page it can, and
+    /// waits for it (fxfs.dax_rebind_now).
+    fn cow_rebind_now() {
+        fs::write("/sys/module/fxfs/parameters/dax_rebind_now", b"1").unwrap();
+    }
+
+    /// fxdax: copying on write (doc-13, TASK-164.2), a file read in from sealed extents, DAX, stored
+    /// to through a shared mapping and written with write(2): the bytes reach its new extents by
+    /// writeback (msync, fsync), committed after them, and are there after a remount, which maps
+    /// the file again from Fxfs. Fails if writeback wrote the extents' old pages (no copy from the
+    /// window, or the copy before the stores), if write(2)'s pages never joined the dirty set (no
+    /// writepages comes for them: fsync writes them back), or if a rebind mapped a page back to its
+    /// old extent before its new one was sealed.
+    fn test_cow_store_persists() {
+        const PAGE: usize = 4096;
+        let name = path("cow-store");
+        let mut expected = cow_base_file(&name, 16 * PAGE, 0x11);
+        let file = fs::OpenOptions::new().read(true).write(true).open(&name).unwrap();
+        let map = CowMapping::new(&file, 16 * PAGE);
+        map.bytes()[3 * PAGE + 10..3 * PAGE + 21].copy_from_slice(b"stored once");
+        expected[3 * PAGE + 10..3 * PAGE + 21].copy_from_slice(b"stored once");
+        map.msync();
+        // Stored again after the writeback: the page faults writable again, dirty again.
+        map.bytes()[3 * PAGE + 100] = 0xee;
+        expected[3 * PAGE + 100] = 0xee;
+        std::os::unix::fs::FileExt::write_all_at(&file, &[0x5a; 2 * PAGE], 7 * PAGE as u64).unwrap();
+        expected[7 * PAGE..9 * PAGE].fill(0x5a);
+        // What the window shows, the stores' and the write's, before any writeback.
+        assert!(map.bytes()[..] == expected[..], "the mapping before fsync");
+        file.sync_all().unwrap();
+        // Rebound to the new extents, the window shows the same bytes.
+        cow_rebind_now();
+        assert!(map.bytes()[..] == expected[..], "the mapping after rebinding");
+        assert_eq!(stats()["dax_cow_open_maps"], 0, "the window was asked to map an open extent");
+        drop(map);
+        drop(file);
+        unmount();
+        mount();
+        assert!(is_dax(&name), "{name} isn't DAX after a remount");
+        assert!(fs::read(&name).unwrap() == expected, "{name} after a remount");
+        fs::remove_file(&name).unwrap();
+    }
+
+    /// fxdax: copying on write, per page (doc-13, the 400 GB case at small scale): of a large file
+    /// read in from sealed extents, mapped shared, three pages stored to cost three private pages,
+    /// and the rest stay mapped from the extents, shared, costing none, read as they were; written
+    /// back, sealed and rebound, the three are private no more, and read as stored. Fails if the
+    /// file left DAX as it was written, if a store or a read made other pages private (a range's
+    /// pages mapped writable, or a write iomap wider than its page), or if rebinding lost a store.
+    fn test_cow_unwritten_stay_shared() {
+        const PAGE: usize = 4096;
+        const LEN: usize = 8 << 20;
+        let name = path("cow-shared");
+        let mut expected = cow_base_file(&name, LEN, 0x22);
+        let file = fs::OpenOptions::new().read(true).write(true).open(&name).unwrap();
+        // Every private page so far written back and rebound: none left.
+        cow_rebind_now();
+        assert_eq!(stats()["dax_cow_private_pages"], 0, "private pages before the stores");
+        let map = CowMapping::new(&file, LEN);
+        // Read whole, through the mapping: nothing private.
+        assert!(map.bytes()[..] == expected[..], "the mapping before the stores");
+        assert_eq!(stats()["dax_cow_private_pages"], 0, "private pages after reading");
+        for page in [5, 700, 1900] {
+            map.bytes()[page * PAGE + 1] = 0xab;
+            expected[page * PAGE + 1] = 0xab;
+        }
+        assert_eq!(stats()["dax_cow_private_pages"], 3, "private pages after three stores");
+        assert!(is_dax(&name), "{name} left DAX as it was stored to");
+        assert!(map.bytes()[..] == expected[..], "the mapping after the stores");
+        assert_eq!(stats()["dax_cow_private_pages"], 3, "private pages after reading again");
+        map.msync();
+        cow_rebind_now();
+        assert_eq!(stats()["dax_cow_private_pages"], 0, "private pages once rebound");
+        assert!(map.bytes()[..] == expected[..], "the mapping once rebound");
+        drop(map);
+        drop(file);
+        evict(&name);
+        assert!(fs::read(&name).unwrap() == expected, "{name} evicted");
+        fs::remove_file(&name).unwrap();
+    }
+
+    /// fxdax: copying on write, a punch, a clone and a truncate of a file with dirty private pages,
+    /// stored through a mapping and written with write(2), none written back: the punched page
+    /// reads as zeros and the others as stored; the clone, into a file created here (a page-cache
+    /// inode beside the DAX one, TASK-164.3), has the stores; the truncate drops the dirty pages
+    /// past the end, which read as zeros once it grows again; all of it as written after a
+    /// remount. Fails if an UNMAP of a range dropped its dirty pages unwritten (the punch's or
+    /// clone's drop of the chunk not writing back first), if the clone shared the extents' old
+    /// blocks (write(2)'s pages, which tag nothing, not written back for it), or if the dirty page
+    /// past the end was written back after the truncate, or kept in the window.
+    fn test_cow_dirty_truncate_punch_clone() {
+        use std::os::unix::fs::FileExt;
+        const PAGE: usize = 4096;
+        const LEN: usize = 16 * PAGE;
+        let name = path("cow-dirty");
+        let clone = path("cow-dirty-clone");
+        let mut expected = cow_base_file(&name, LEN, 0x33);
+        let file = fs::OpenOptions::new().read(true).write(true).open(&name).unwrap();
+        let map = CowMapping::new(&file, LEN);
+        for page in [2, 5, 9] {
+            map.bytes()[page * PAGE..(page + 1) * PAGE].fill(0xaa);
+            expected[page * PAGE..(page + 1) * PAGE].fill(0xaa);
+        }
+        file.write_all_at(&[0xbb; PAGE], 12 * PAGE as u64).unwrap();
+        expected[12 * PAGE..13 * PAGE].fill(0xbb);
+        drop(map);
+
+        // A hole over page 5, beside the dirty pages 2 and 9 of its chunk.
+        let punch = libc::FALLOC_FL_PUNCH_HOLE | libc::FALLOC_FL_KEEP_SIZE;
+        let fd = file.as_raw_fd();
+        assert_eq!(unsafe { libc::fallocate(fd, punch, 5 * PAGE as i64, PAGE as i64) }, 0);
+        expected[5 * PAGE..6 * PAGE].fill(0);
+        assert!(fs::read(&name).unwrap() == expected, "{name} punched");
+
+        // Page 9 dirty again, then the whole file cloned.
+        file.write_all_at(&[0xcc; 10], 9 * PAGE as u64).unwrap();
+        expected[9 * PAGE..9 * PAGE + 10].fill(0xcc);
+        let dst = fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .read(true)
+            .write(true)
+            .open(&clone)
+            .unwrap();
+        assert!(!is_dax(&clone), "{clone}, created here, is DAX");
+        clone_range(&dst, &file, 0, LEN as u64, 0);
+        assert!(fs::read(&clone).unwrap() == expected, "{clone} as cloned");
+
+        // Page 12 dirty again, then cut, with page 10's end, and the file grown again.
+        file.write_all_at(&[0xdd; 10], 12 * PAGE as u64).unwrap();
+        file.set_len(10 * PAGE as u64 + 100).unwrap();
+        file.set_len(LEN as u64).unwrap();
+        expected[10 * PAGE + 100..].fill(0);
+        assert!(fs::read(&name).unwrap() == expected, "{name} truncated and grown");
+        file.sync_all().unwrap();
+        dst.sync_all().unwrap();
+        let cloned = fs::read(&clone).unwrap();
+        drop(file);
+        drop(dst);
+        unmount();
+        mount();
+        assert!(fs::read(&name).unwrap() == expected, "{name} after a remount");
+        assert!(fs::read(&clone).unwrap() == cloned, "{clone} after a remount");
+        fs::remove_file(&name).unwrap();
+        fs::remove_file(&clone).unwrap();
+    }
+
+    /// fxdax: copying on write, a writeback whose transaction fails once its bytes are written,
+    /// before it commits, as a crash between the two (fxfs.dax_fail_commits, Fxfs's FAIL_COMMITS):
+    /// fsync says so (EIO), and the file holds its old data, all of it, never a mix of old and new
+    /// pages, after a remount, which maps it again from what Fxfs committed; written again, it
+    /// holds the new. Fails if the writeback committed before its bytes, or in pieces with
+    /// commits between, or if the failure was lost (fsync returning 0).
+    fn test_cow_commit_after_bytes() {
+        use std::os::unix::fs::FileExt;
+        const PAGE: usize = 4096;
+        let name = path("cow-commit");
+        let old = cow_base_file(&name, 4 * PAGE, 0x44);
+        let file = fs::OpenOptions::new().read(true).write(true).open(&name).unwrap();
+        file.write_all_at(&[0x55; 4 * PAGE], 0).unwrap();
+        fs::write("/sys/module/fxfs/parameters/dax_fail_commits", b"1").unwrap();
+        let synced = file.sync_all();
+        fs::write("/sys/module/fxfs/parameters/dax_fail_commits", b"0").unwrap();
+        let err = synced.expect_err("fsync of a writeback whose commit failed");
+        assert_eq!(err.raw_os_error(), Some(libc::EIO), "{err}");
+        drop(file);
+        unmount();
+        mount();
+        assert!(fs::read(&name).unwrap() == old, "{name} after a failed commit");
+        let file = fs::OpenOptions::new().read(true).write(true).open(&name).unwrap();
+        file.write_all_at(&[0x66; 4 * PAGE], 0).unwrap();
+        file.sync_all().unwrap();
+        drop(file);
+        unmount();
+        mount();
+        assert!(fs::read(&name).unwrap() == vec![0x66; 4 * PAGE], "{name} written again");
+        fs::remove_file(&name).unwrap();
+    }
+
+    /// fxdax: copying on write, a file created in the mount is a page-cache inode, its writes the
+    /// page cache's (TASK-164.3): not DAX, costing no private page, until it is read in again,
+    /// once a barrier has sealed its writes; written back and read in again before that barrier,
+    /// it is a page-cache inode again, as the window would find its extents open. Fails if a
+    /// created inode got S_DAX, if a sealed one read in didn't, or if one read in before its seal
+    /// mapped its open extents (dax_cow_open_maps, or a seal the mapping had to make). The last,
+    /// with no seal of the journal's between the writeback and the read-in, a few milliseconds.
+    fn test_cow_created_in_page_cache() {
+        let name = path("cow-created");
+        let before = stats()["dax_cow_private_pages"];
+        fs::write(&name, vec![0x77; 3 << 20]).unwrap();
+        assert!(!is_dax(&name), "{name}, created here, is DAX");
+        assert_eq!(stats()["dax_cow_private_pages"], before, "a created file's writes went private");
+        evict(&name);
+        assert!(is_dax(&name), "{name}, read in once sealed, isn't DAX");
+        fs::remove_file(&name).unwrap();
+
+        // Written back, its writes unsealed, evicted, read in again: the page cache's still.
+        let name = path("cow-unsealed");
+        let file = fs::File::create(&name).unwrap();
+        (&file).write_all(&[0x78; 1 << 20]).unwrap();
+        let fd = file.as_raw_fd();
+        let wrote = unsafe {
+            libc::sync_file_range(
+                fd,
+                0,
+                0,
+                libc::SYNC_FILE_RANGE_WAIT_BEFORE
+                    | libc::SYNC_FILE_RANGE_WRITE
+                    | libc::SYNC_FILE_RANGE_WAIT_AFTER,
+            )
+        };
+        assert_eq!(wrote, 0, "sync_file_range: {}", std::io::Error::last_os_error());
+        assert_eq!(unsafe { libc::posix_fadvise(fd, 0, 0, libc::POSIX_FADV_DONTNEED) }, 0);
+        drop(file);
+        let seals = stats()["dax_cow_seals"];
+        fs::write("/proc/sys/vm/drop_caches", b"2").unwrap();
+        assert!(!is_dax(&name), "{name}, read in before its writes were sealed, is DAX");
+        assert!(fs::read(&name).unwrap() == vec![0x78; 1 << 20], "{name} read in again");
+        // Sealed, evicted, read in: DAX, mapping what is sealed.
+        evict(&name);
+        assert!(is_dax(&name), "{name}, read in once sealed, isn't DAX");
+        assert!(fs::read(&name).unwrap() == vec![0x78; 1 << 20], "{name} read through the window");
+        assert_eq!(stats()["dax_cow_seals"], seals, "mapping {name} had to seal");
+        assert_eq!(stats()["dax_cow_open_maps"], 0, "the window was asked to map an open extent");
+        fs::remove_file(&name).unwrap();
+    }
+
+    /// fxdax: copying on write (doc-13), a rebind paused before its MAP over a private page,
+    /// holding the file's semaphore for writing (Pauses::REBIND): a load through another process's
+    /// PTE of the page reads what was stored there, and a store to it by a process with no PTE of
+    /// it waits for the rebind, then lands, the page private again. The rebind rebinds that page
+    /// alone, and the file, through the mapping and evicted, holds both stores. Fails if a store
+    /// went in during the rebind (one taking the semaphore shared), if the rebind's MAP lost it,
+    /// or came before the writeback's bytes were in the extent (the stores gone), or if a load had
+    /// to wait for it. Replaces moved_across_seal's and load_during_move's races, of moves, which
+    /// copying on write has none of.
+    fn test_rebind_against_loads_and_stores() {
+        const PAGE: usize = 4096;
+        const LEN: usize = 16 * PAGE;
+        const STORED: usize = 3 * PAGE + 10;
+        const AGAIN: usize = 3 * PAGE + 100;
+        let name = path("rebind-against-loads-and-stores");
+        let mut expected = cow_base_file(&name, LEN, 0x88);
+        // Every other file's private pages rebound first: the rebind pauses at this file's.
+        cow_rebind_now();
+        let file = fs::OpenOptions::new().read(true).write(true).open(&name).unwrap();
+        let map = CowMapping::new(&file, LEN);
+        map.bytes()[STORED..STORED + 6].copy_from_slice(b"stored");
+        expected[STORED..STORED + 6].copy_from_slice(b"stored");
+        // Written back and sealed, its page clean and private: the next rebind's.
+        map.msync();
+        let mapped = map.addr as usize;
+        let pipe = || {
+            let mut fds = [0; 2];
+            let made = unsafe { libc::pipe(fds.as_mut_ptr()) };
+            assert_eq!(made, 0, "pipe: {}", std::io::Error::last_os_error());
+            fds
+        };
+        // A byte a child writes to `fd`, within `ms` milliseconds, if it does.
+        let heard = |fd: libc::c_int, ms: libc::c_int| {
+            let mut ready = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+            if unsafe { libc::poll(&mut ready, 1, ms) } != 1 {
+                return None;
+            }
+            let mut byte = 0u8;
+            assert_eq!(unsafe { libc::read(fd, (&raw mut byte).cast(), 1) }, 1, "a child's byte");
+            Some(byte)
+        };
+
+        // The loader, in a process of its own: a load now makes its PTE of the page, through
+        // which it loads again once told to.
+        let [from_loader, loader_says] = pipe();
+        let [loader_hears, to_loader] = pipe();
+        let loader = unsafe { libc::fork() };
+        assert!(loader >= 0, "fork: {}", std::io::Error::last_os_error());
+        if loader == 0 {
+            unsafe {
+                let at = (mapped + STORED) as *const u8;
+                let mut byte = at.read_volatile();
+                libc::write(loader_says, (&raw const byte).cast(), 1);
+                libc::read(loader_hears, (&raw mut byte).cast(), 1);
+                byte = at.read_volatile();
+                let wrote = libc::write(loader_says, (&raw const byte).cast(), 1);
+                libc::_exit(if wrote == 1 { 0 } else { 1 });
+            }
+        }
+        assert_eq!(heard(from_loader, 10_000), Some(b's'), "the loader's first load");
+
+        let rebound = stats()["dax_cow_rebound_pages"];
+        let (pauses, only) = Pauses::begin_of(Pauses::REBIND, &name);
+        let rebinder = std::thread::spawn(cow_rebind_now);
+        Pauses::wait(Pauses::REBIND);
+        let go = 0u8;
+        assert_eq!(unsafe { libc::write(to_loader, (&raw const go).cast(), 1) }, 1, "go");
+        assert_eq!(heard(from_loader, 1000), Some(b's'), "a load during the rebind");
+        // The storer, in a process of its own: its store's fault, waiting, holds its process's
+        // mmap_lock, which this one's threads would otherwise wait for.
+        let [from_storer, storer_says] = pipe();
+        let storer = unsafe { libc::fork() };
+        assert!(storer >= 0, "fork: {}", std::io::Error::last_os_error());
+        if storer == 0 {
+            unsafe {
+                ((mapped + AGAIN) as *mut u8).write_volatile(0xee);
+                let done = 1u8;
+                let wrote = libc::write(storer_says, (&raw const done).cast(), 1);
+                libc::_exit(if wrote == 1 { 0 } else { 1 });
+            }
+        }
+        assert_eq!(heard(from_storer, 200), None, "a store went in during the rebind");
+        drop(pauses);
+        drop(only);
+        rebinder.join().unwrap();
+        assert_eq!(heard(from_storer, 10_000), Some(1), "the store after the rebind");
+        for (child, who) in [(loader, "the loader"), (storer, "the storer")] {
+            let status = wait_for_child(child, std::time::Duration::from_secs(10));
+            let exited = libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0;
+            assert!(exited, "{who}: {status:#x}");
+        }
+        for fd in [from_loader, loader_says, loader_hears, to_loader, from_storer, storer_says] {
+            unsafe { libc::close(fd) };
+        }
+        expected[AGAIN] = 0xee;
+        assert_eq!(stats()["dax_cow_rebound_pages"], rebound + 1, "the pages rebound");
+        assert!(map.bytes()[..] == expected[..], "the mapping after the rebind");
+        drop(map);
+        drop(file);
+        evict(&name);
+        assert!(fs::read(&name).unwrap() == expected, "{name} evicted");
+        fs::remove_file(&name).unwrap();
+    }
+
+    /// fxdax: copying on write (doc-13), stores through a mapping and write(2)s to a file's pages,
+    /// one after another for two seconds, while the budget's worker writes back, seals and rebinds
+    /// every private page it can every 10 ms (fxfs.dax_rebind_every, doc-13's stage 2): each reads
+    /// back as stored, then and at the end, and the file evicted holds them all. Fails if a rebind
+    /// lost a store (a page mapped back to its extent before the writeback of a store to it was
+    /// sealed, or with a store to it under way), or if a writeback lost one made after its
+    /// write-protect (a store into its swapped-out set, its page left clean).
+    fn test_stores_under_rebinds() {
+        use std::os::unix::fs::FileExt;
+        use std::time::{Duration, Instant};
+        const PAGE: usize = 4096;
+        const PAGES: usize = 64;
+        const LEN: usize = PAGES * PAGE;
+        let name = path("stores-under-rebinds");
+        let mut expected = cow_base_file(&name, LEN, 0x99);
+        let file = fs::OpenOptions::new().read(true).write(true).open(&name).unwrap();
+        let map = CowMapping::new(&file, LEN);
+        let rebound = stats()["dax_cow_rebound_pages"];
+        let every = Param::set("dax_rebind_every", "10");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut round: usize = 0;
+        while Instant::now() < deadline {
+            // Pages in an order that varies, each at an offset of its own, stored and written in
+            // turn.
+            let at = (round * 7 % PAGES) * PAGE + round * 61 % (PAGE - 8);
+            let value = (round as u64).to_le_bytes();
+            if round % 2 == 0 {
+                map.bytes()[at..at + 8].copy_from_slice(&value);
+            } else {
+                file.write_all_at(&value, at as u64).unwrap();
+            }
+            expected[at..at + 8].copy_from_slice(&value);
+            assert!(map.bytes()[at..at + 8] == value, "round {round}: the bytes at {at}");
+            if round % 256 == 0 {
+                assert!(map.bytes()[..] == expected[..], "round {round}: the mapping");
+            }
+            round += 1;
+        }
+        drop(every);
+        let rebinds = stats()["dax_cow_rebound_pages"] - rebound;
+        eprintln!("stores_under_rebinds: {round} rounds, {rebinds} pages rebound");
+        assert!(map.bytes()[..] == expected[..], "the mapping after {round} rounds");
+        assert_ne!(rebinds, 0, "no page rebound in {round} rounds");
+        drop(map);
+        drop(file);
+        evict(&name);
+        assert!(fs::read(&name).unwrap() == expected, "{name} evicted");
+        fs::remove_file(&name).unwrap();
+    }
+
     impl Test for TestFxfsGuestChecks {
         fn in_guest(self: Box<Self>) {
             let dax = self.dax;
             mount();
+            // fxdax: copying on write (doc-13, TASK-164.2, 164.3), as FXDAX_GUEST_CMDLINE's
+            // fxfs.dax_cow=1 turns it on for a run, if the device offers it.
+            let cow = dax && dax_cow();
 
             let mmap_write = || test_mmap_write(dax);
             let show_options = || test_show_options(dax);
@@ -4856,6 +5380,18 @@ pub(crate) mod guest {
                 tests.push(("sealed_piece_reach", &test_sealed_piece_reach));
                 tests.push(("write_killed", &test_write_killed));
             }
+            if cow {
+                tests.push(("cow_store_persists", &test_cow_store_persists));
+                tests.push(("cow_unwritten_stay_shared", &test_cow_unwritten_stay_shared));
+                tests.push(("cow_dirty_truncate_punch_clone", &test_cow_dirty_truncate_punch_clone));
+                tests.push(("cow_commit_after_bytes", &test_cow_commit_after_bytes));
+                tests.push(("cow_created_in_page_cache", &test_cow_created_in_page_cache));
+                tests.push((
+                    "rebind_against_loads_and_stores",
+                    &test_rebind_against_loads_and_stores,
+                ));
+                tests.push(("stores_under_rebinds", &test_stores_under_rebinds));
+            }
             // Files on DAX are in no page cache.
             if !dax {
                 tests.push(("large_folios", &test_large_folios));
@@ -4863,8 +5399,10 @@ pub(crate) mod guest {
                 tests.push(("partial_writeback", &test_partial_writeback));
             }
             // fxdax: it dies of SIGBUS (TASK-121's pause check, the fault path's SIGBUS open):
-            // after the others, which it would stop.
-            if dax {
+            // after the others, which it would stop. Copying on write, nothing moves (doc-13):
+            // the moves they play out are the writable window's, rebind_against_loads_and_stores
+            // copying on write's race.
+            if dax && !cow {
                 tests.push(("moved_across_seal", &test_moved_across_seal));
                 tests.push(("moved_across_two_seals", &test_moved_across_two_seals));
                 tests.push(("load_during_move", &test_load_during_move));

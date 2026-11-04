@@ -22,17 +22,59 @@
 //! against on the same host (TASK-91.17). And on ext4 with DAX on writable virtio-pmem
 //! (pgbench-ext4-dax-pmem), a copy of a base image of its own: a static DAX device, storage as
 //! memory, which the sandbox team measure the DAX window against (TASK-131.5).
+//!
+//! fxdax: and for copy-on-write DAX (doc-13, TASK-164.5), whose DAX writes copy on write
+//! (`fxfs.dax_cow=1`: fxfs-guest-pgbench-dax-cow), on a database the base's VM makes, which each
+//! VM runs pgbench on a fork of, its files read in, not created, which DAX maps
+//! (fxfs-guest-pgbench-forked, -dax-forked, -dax-cow-forked); and so, each VM kept running once its
+//! runs are done, the host's memory measured as each is added (`crate::measure`): what a VM more
+//! costs the host (fxfs-guest-pgbench-density, -dax-density, -dax-cow-density). FXDAX_PGBENCH_RUNS
+//! and FXDAX_PGBENCH_RUN_SECS set the runs, and FXDAX_PGBENCH_DENSITY_MEMORY_MIB the density
+//! cases' VMs' memory (1024).
 
 use macros::{guest, host};
 
 pub struct TestFxfsGuestPgbench {
     #[cfg_attr(feature = "guest", allow(dead_code))]
-    pub storage: Storage,
+    storage: Storage,
     #[cfg_attr(feature = "host", allow(dead_code))]
-    pub probe: Probe,
+    probe: Probe,
     /// Whether PostgreSQL fsyncs, as it does by default.
     #[cfg_attr(feature = "host", allow(dead_code))]
-    pub fsync: bool,
+    fsync: bool,
+    #[cfg_attr(feature = "guest", allow(dead_code))]
+    database: Database,
+    /// fxdax: whether the guest's DAX writes copy on write (`fxfs.dax_cow=1`, doc-13).
+    #[cfg_attr(feature = "guest", allow(dead_code))]
+    dax_cow: bool,
+}
+
+impl TestFxfsGuestPgbench {
+    /// The case on `storage`: each VM making its database, PostgreSQL fsyncing, no run probed.
+    pub fn on(storage: Storage) -> Self {
+        let database = Database::Made;
+        Self { storage, probe: Probe::None, fsync: true, database, dax_cow: false }
+    }
+
+    /// The case with pgbench's first run probed for `probe`.
+    pub fn probed(self, probe: Probe) -> Self {
+        Self { probe, ..self }
+    }
+
+    /// The case with PostgreSQL's fsync off.
+    pub fn without_fsync(self) -> Self {
+        Self { fsync: false, ..self }
+    }
+
+    /// fxdax: the case with its VMs' databases from `database` (TASK-164.5).
+    pub fn with_database(self, database: Database) -> Self {
+        Self { database, ..self }
+    }
+
+    /// fxdax: the case with its guests' DAX writes copying on write (TASK-164.5).
+    pub fn with_dax_cow(self) -> Self {
+        Self { dax_cow: true, ..self }
+    }
 }
 
 /// What the database is stored on.
@@ -56,15 +98,42 @@ pub enum Probe {
     Locks,
 }
 
+/// fxdax: where each VM's database comes from, and how the VMs run (TASK-164.5).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Database {
+    /// Each VM makes its own, on a fork of an empty base, one VM after another.
+    Made,
+    /// The base's VM makes it; each VM runs pgbench on a fork of the base, one after another: on
+    /// files read in, not created, which a DAX window maps.
+    Forked,
+    /// As `Forked`, but each VM, its runs done, keeps running until the last VM's are: the host's
+    /// memory measured before the first and as each is done (`crate::measure`), what each VM more
+    /// costs the host.
+    Density,
+}
+
 /// pgbench's scale: 100,000 accounts a unit.
-#[cfg_attr(feature = "host", allow(dead_code))]
 const SCALE: u64 = 50;
 
-/// The pgbench runs after the load, and each one's seconds, as the sandbox team's.
-#[cfg_attr(feature = "host", allow(dead_code))]
-const RUNS: usize = 5;
-#[cfg_attr(feature = "host", allow(dead_code))]
-const RUN_SECS: u64 = 60;
+/// The pgbench runs a VM makes, FXDAX_PGBENCH_RUNS, or the sandbox team's five.
+fn runs() -> usize {
+    count("FXDAX_PGBENCH_RUNS", 5).max(1) as usize
+}
+
+/// Each run's seconds: FXDAX_PGBENCH_RUN_SECS, or the sandbox team's 60.
+fn run_secs() -> u64 {
+    count("FXDAX_PGBENCH_RUN_SECS", 60).max(1)
+}
+
+/// The environment's `name`, a count, or `default`, unset or empty.
+fn count(name: &str, default: u64) -> u64 {
+    match std::env::var(name) {
+        Ok(value) if !value.is_empty() => {
+            value.parse().unwrap_or_else(|_| panic!("{name} is a count, not {value:?}"))
+        }
+        _ => default,
+    }
+}
 
 #[host]
 mod host {
@@ -104,10 +173,16 @@ mod host {
         Ok(u32::try_from(setting("FXDAX_PGBENCH_MEMORY_MIB", 4096)?)?)
     }
 
-    /// How many VMs load and run pgbench, one after another, each on a fork of the base of its own,
-    /// all served by the one daemon: FXDAX_PGBENCH_VMS, or 1. The sandbox team's runs had one
-    /// daemon serve many, whose memory reached its cap from the third on, where most of their
-    /// crashes came (TASK-102, TASK-103).
+    /// fxdax: the memory of a density case's VMs, in MiB: FXDAX_PGBENCH_DENSITY_MEMORY_MIB, or
+    /// 1024, as many of them as a GCE n2-standard-4 host holds at once (TASK-164.5).
+    fn density_memory() -> anyhow::Result<u32> {
+        Ok(u32::try_from(setting("FXDAX_PGBENCH_DENSITY_MEMORY_MIB", 1024)?)?)
+    }
+
+    /// How many VMs run pgbench, one after another, each on a fork of the base of its own, all
+    /// served by the one daemon: FXDAX_PGBENCH_VMS, or 1. The sandbox team's runs had one daemon
+    /// serve many, whose memory reached its cap from the third on, where most of their crashes
+    /// came (TASK-102, TASK-103).
     fn vms() -> usize {
         setting("FXDAX_PGBENCH_VMS", 1).map_or(1, |vms| vms.max(1) as usize)
     }
@@ -134,16 +209,10 @@ RUN apk add --no-cache postgresql postgresql-contrib perf e2fsprogs
         Pmem(&'a Path),
     }
 
-    /// A VM named `name`, of `memory` MiB, on `device`, run in Firecracker: its guest's role what
-    /// its name begins with (`load-1`, a load's), its API socket and files named after it, each
-    /// VM's its own, as one's socket outlives it.
-    fn run(
-        test_setup: &TestSetup,
-        root: &Path,
-        name: &str,
-        device: Device,
-        memory: u32,
-    ) -> anyhow::Result<Firecracker> {
+    /// A VM of `memory` MiB on `device`, its guest in role `role`: `base`, which makes the base's
+    /// filesystem, and its database too with FXDAX_PGBENCH_BASE_DATABASE; `load`, which makes the
+    /// database and runs pgbench on it; or `run`, which runs pgbench on the base's.
+    fn machine(role: &str, device: Device, memory: u32) -> anyhow::Result<Vm> {
         let mut vm = Vm::new(vcpus()?, memory)?;
         vm.guest_kernel()?;
         match device {
@@ -155,12 +224,28 @@ RUN apk add --no-cache postgresql postgresql-contrib perf e2fsprogs
                 vm.env(&CString::new(format!("FXDAX_PGBENCH_PMEM={device}"))?);
             }
         }
-        let role = name.split('-').next().unwrap_or(name);
         vm.env(&CString::new(format!("FXDAX_PGBENCH_ROLE={role}"))?);
         // Every run's commits not waiting for the journal: what's left is writes' own cost.
         if std::env::var_os("FXDAX_PGBENCH_ASYNC").is_some() {
             vm.env(c"FXDAX_PGBENCH_ASYNC=1");
         }
+        // fxdax: the runs, as the host has them (TASK-164.5).
+        for var in ["FXDAX_PGBENCH_RUNS", "FXDAX_PGBENCH_RUN_SECS"] {
+            if let Ok(value) = std::env::var(var) {
+                vm.env(&CString::new(format!("{var}={value}"))?);
+            }
+        }
+        Ok(vm)
+    }
+
+    /// Boots `vm`, named `name`, in Firecracker: its API socket and files named after it, each
+    /// VM's its own, as one's socket outlives it.
+    fn boot(
+        test_setup: &TestSetup,
+        root: &Path,
+        name: &str,
+        vm: Vm,
+    ) -> anyhow::Result<Firecracker> {
         vm.spawn_api(root, &test_setup.test_case, name, &Vm::api_socket(name))
     }
 
@@ -354,6 +439,40 @@ RUN apk add --no-cache postgresql postgresql-contrib perf e2fsprogs
         }
     }
 
+    /// The base's store, and the daemon serving it and its forks.
+    struct Served<'a> {
+        test_setup: &'a TestSetup,
+        root: &'a Path,
+        /// The daemon's VM socket.
+        socket: PathBuf,
+        /// Its stats file (FXDAX_EXTENTD_STATS).
+        stats: PathBuf,
+        base: PathBuf,
+        /// The DAX window of the VMs on forks of the base, if not 0.
+        window: u64,
+    }
+
+    /// A VM running on a fork of the base, and what samples it.
+    struct Running {
+        firecracker: Firecracker,
+        stop: Arc<AtomicBool>,
+        sampler: std::thread::JoinHandle<anyhow::Result<()>>,
+        profiler: Option<std::thread::JoinHandle<anyhow::Result<()>>>,
+    }
+
+    impl Running {
+        /// Waits for the VM to end, passing on what its guest said, then for what sampled it.
+        fn finish(self) -> anyhow::Result<()> {
+            let ended = wait(self.firecracker);
+            self.stop.store(true, Ordering::Relaxed);
+            self.sampler.join().expect("the sampler panicked")?;
+            if let Some(profiler) = self.profiler {
+                profiler.join().expect("the profiler panicked")?;
+            }
+            ended
+        }
+    }
+
     impl TestFxfsGuestPgbench {
         fn run(&self, test_setup: &TestSetup) -> anyhow::Result<()> {
             let root = setup_rootfs(test_setup)?;
@@ -371,23 +490,23 @@ RUN apk add --no-cache postgresql postgresql-contrib perf e2fsprogs
             std::fs::create_dir_all(&images)?;
             let base = images.join("base.img");
             std::fs::File::create(&base)?.set_len(PMEM_SIZE)?;
-            wait(run(test_setup, root, "base", Device::Pmem(&base), 512)?)?;
+            wait(boot(test_setup, root, "base", machine("base", Device::Pmem(&base), 512)?)?)?;
             for vm in 0..vms() {
                 let image = images.join(format!("{}.img", nth("load", vm)));
                 let status =
                     Command::new("cp").arg("--sparse=always").arg(&base).arg(&image).status()?;
                 anyhow::ensure!(status.success(), "copying the base's image: {status}");
-                let firecracker =
-                    run(test_setup, root, &nth("load", vm), Device::Pmem(&image), load_memory()?)?;
-                let loaded = wait(firecracker);
+                let machine = machine("load", Device::Pmem(&image), load_memory()?)?;
+                let loaded = wait(boot(test_setup, root, &nth("load", vm), machine)?);
                 std::fs::remove_file(&image)?;
                 loaded.with_context(|| format!("VM {} of {}", vm + 1, vms()))?;
             }
             Ok(())
         }
 
-        /// The base's VM makes the guest's Fxfs on a store, then each VM loads and runs pgbench on
-        /// a fork of it, a daemon of the case's own serving them all.
+        /// The base's VM makes the guest's Fxfs on a store, and the database too if the VMs run on
+        /// its; then each VM runs pgbench on a fork of it, making its database first if not, a
+        /// daemon of the case's own serving them all.
         fn run_stores(&self, test_setup: &TestSetup, root: &Path) -> anyhow::Result<()> {
             let dir = &test_setup.tmp_dir;
             // A daemon of its own, whose bucket answers 25 ms late, as the sandbox team's RustFS
@@ -397,45 +516,105 @@ RUN apk add --no-cache postgresql postgresql-contrib perf e2fsprogs
             let socket = sockets.path().join("extentd.sock");
             let latency = std::env::var_os("FXDAX_REMOTE_LATENCY_MS");
             let stats = dir.join("extentd-stats.txt");
+            // fxdax: its metrics, which say what its memory holds (`crate::measure`).
+            let metrics = crate::measure::metrics_address()?;
+            let metrics_at = metrics.to_string();
             let env = [
                 ("FXDAX_REMOTE_LATENCY_MS", latency.as_deref().unwrap_or(OsStr::new("25"))),
                 ("FXDAX_EXTENTD_STATS", stats.as_os_str()),
+                ("FXDAX_EXTENTD_METRICS", OsStr::new(&metrics_at)),
             ];
             // As much memory as the sandbox team's daemon has: with its default, 1 GiB, the guest's
             // working set, a 2 GiB window's, didn't fit, and faults paged in and unpacked again
             // what was evicted, slower as the database grew.
             let memory = Some(8 << 30);
-            let _daemon =
-                crate::common::spawn_daemon(test_setup, &socket, "extentd", &env, memory)?;
+            let daemon = crate::common::spawn_daemon(test_setup, &socket, "extentd", &env, memory)?;
             let base = dir.join("base");
+            let forked = self.database != Database::Made;
+            // fxdax: the base's VM, making the database, as much memory as a VM loading it needs.
+            let memory = if forked { load_memory()? } else { 512 };
             let device = Device::Store { store: &base, extentd: &socket, window: 0 };
-            wait(run(test_setup, root, "base", device, 512)?)?;
+            let mut machine = machine("base", device, memory)?;
+            if forked {
+                machine.env(c"FXDAX_PGBENCH_BASE_DATABASE=1");
+            }
+            wait(boot(test_setup, root, "base", machine)?)?;
             let window = if self.storage == Storage::FxfsDax { window()? } else { 0 };
+            let served = Served { test_setup, root, socket, stats, base, window };
+            if self.database == Database::Density {
+                let host = crate::measure::HostMemory::new(daemon.id(), metrics);
+                return self.run_held(&served, &host);
+            }
+            let role = if forked { "run" } else { "load" };
             for vm in 0..vms() {
-                let fork = dir.join(nth("fork", vm));
-                let samples = dir.join(format!("{}.txt", nth("samples", vm)));
-                crate::common::control(&socket)?.fork_store(&base, &fork)?;
-                let device = Device::Store { store: &fork, extentd: &socket, window };
-                let firecracker = run(test_setup, root, &nth("load", vm), device, load_memory()?)?;
-                let stop = Arc::new(AtomicBool::new(false));
-                let sampler = sample(
-                    socket.clone(),
-                    fork.clone(),
-                    stats.clone(),
-                    samples,
-                    firecracker.pid(),
-                    stop.clone(),
-                );
-                let profiler = profile_guest(dir.join(format!("{}.txt", nth("perf-kvm", vm))));
-                let loaded = wait(firecracker);
-                stop.store(true, Ordering::Relaxed);
-                sampler.join().expect("the sampler panicked")?;
-                if let Some(profiler) = profiler {
-                    profiler.join().expect("the profiler panicked")?;
-                }
-                loaded.with_context(|| format!("VM {} of {}", vm + 1, vms()))?;
+                let running = self.start(&served, role, vm, load_memory()?, None)?;
+                running.finish().with_context(|| format!("VM {} of {}", vm + 1, vms()))?;
             }
             Ok(())
+        }
+
+        /// fxdax: the VMs of a density case (TASK-164.5), each on a fork of the base, booted one
+        /// after another, and kept running once its runs are done, its guest waiting for the
+        /// host's word, until the last's are: the host's memory said before the first VM boots
+        /// and as each is done, by `host`, what each VM more costs it; then let go, in order.
+        fn run_held(
+            &self,
+            served: &Served,
+            host: &crate::measure::HostMemory,
+        ) -> anyhow::Result<()> {
+            host.say(0, "base", None, "")?;
+            let mut held = Vec::new();
+            for vm in 0..vms() {
+                let requests = crate::measure::Requests::new(&nth("run", vm))?;
+                let memory = density_memory()?;
+                let mut running = self.start(served, "run", vm, memory, Some(&requests))?;
+                let request = (requests.next(&mut running.firecracker))
+                    .with_context(|| format!("VM {} of {}", vm + 1, vms()))?;
+                host.say(vm + 1, &request.phase, Some(running.firecracker.pid()), &request.guest)?;
+                held.push((running, request, requests));
+            }
+            for (vm, (running, request, _requests)) in held.into_iter().enumerate() {
+                request.answer()?;
+                running.finish().with_context(|| format!("VM {} of {}", vm + 1, vms()))?;
+            }
+            Ok(())
+        }
+
+        /// Boots VM `vm`, of `memory` MiB, its guest in role `role`, on a fork of the base of its
+        /// own, sampling it; its guest asks the host to measure it at `requests`, if given.
+        fn start(
+            &self,
+            served: &Served,
+            role: &str,
+            vm: usize,
+            memory: u32,
+            requests: Option<&crate::measure::Requests>,
+        ) -> anyhow::Result<Running> {
+            let dir = &served.test_setup.tmp_dir;
+            let fork = dir.join(nth("fork", vm));
+            crate::common::control(&served.socket)?.fork_store(&served.base, &fork)?;
+            let device =
+                Device::Store { store: &fork, extentd: &served.socket, window: served.window };
+            let mut machine = machine(role, device, memory)?;
+            if self.dax_cow {
+                crate::measure::ask_dax_cow(&mut machine)?;
+            }
+            if let Some(requests) = requests {
+                machine.vsock(requests.uds());
+                machine.env(c"FXDAX_PGBENCH_MEASURE=1");
+            }
+            let firecracker = boot(served.test_setup, served.root, &nth(role, vm), machine)?;
+            let stop = Arc::new(AtomicBool::new(false));
+            let sampler = sample(
+                served.socket.clone(),
+                fork,
+                served.stats.clone(),
+                dir.join(format!("{}.txt", nth("samples", vm))),
+                firecracker.pid(),
+                stop.clone(),
+            );
+            let profiler = profile_guest(dir.join(format!("{}.txt", nth("perf-kvm", vm))));
+            Ok(Running { firecracker, stop, sampler, profiler })
         }
     }
 
@@ -449,7 +628,9 @@ RUN apk add --no-cache postgresql postgresql-contrib perf e2fsprogs
         }
 
         fn timeout_secs(&self) -> u64 {
-            1200 * vms() as u64
+            // fxdax: a base's VM making the database, as each VM does otherwise.
+            let base = if self.database == Database::Made { 0 } else { 600 };
+            base + (runs() as u64 * run_secs() + 900) * vms() as u64
         }
 
         fn start_vm(self: Box<Self>, test_setup: TestSetup) -> anyhow::Result<()> {
@@ -462,8 +643,14 @@ RUN apk add --no-cache postgresql postgresql-contrib perf e2fsprogs
 
         fn check(self: Box<Self>, stdout: Vec<u8>, test_setup: TestSetup) -> TestOutcome {
             let output = String::from_utf8(stdout).unwrap();
-            let each = format!("OK load {}\nOK runs {RUNS}\nOK checked\n", SCALE * 100_000);
-            let expected = format!("OK base\n{}", each.repeat(vms()));
+            let loaded = format!("OK load {}\n", SCALE * 100_000);
+            let ran = format!("OK runs {}\nOK checked\n", runs());
+            let expected = match self.database {
+                Database::Made => format!("OK base\n{}", format!("{loaded}{ran}").repeat(vms())),
+                Database::Forked | Database::Density => {
+                    format!("{loaded}OK base\n{}", ran.repeat(vms()))
+                }
+            };
             if output != expected {
                 return TestOutcome::Fail(format!("expected {expected:?}, got {output:?}"));
             }
@@ -652,7 +839,7 @@ mod guest {
     fn profile() -> std::process::Child {
         Command::new("perf")
             .args(["record", "-e", "cpu-clock", "-a", "-g", "-o", "/tmp/perf.data", "--"])
-            .args(["sleep", &(RUN_SECS - 5).to_string()])
+            .args(["sleep", &run_secs().saturating_sub(5).max(1).to_string()])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
@@ -682,101 +869,139 @@ mod guest {
         perf(&["--sort", "symbol", "-S", lock, "-g", "caller,0.5,callee", "--percent-limit", "1"]);
     }
 
+    /// The database's directory, and the server's socket's.
+    const DATA: &str = "/mnt/fxfs/pgdata";
+    const SOCKET: &str = "/run/postgresql";
+
+    impl TestFxfsGuestPgbench {
+        /// Starts the server on the database at [`DATA`]: its output to a log of its own, as it
+        /// would hold `as_postgres`'s pipe open, which waits for its end.
+        fn start(&self) {
+            let fsync = if self.fsync { "" } else { " -c fsync=off" };
+            let options =
+                format!("-c shared_buffers=256MB -k {SOCKET} -c listen_addresses=''{fsync}");
+            as_postgres(&format!(
+                "pg_ctl -D {DATA} -l {DATA}/server.log -o \"{options}\" -w -t 900 start"
+            ));
+        }
+
+        /// Makes the database in [`DATA`], with its server, and loads it, every account once.
+        fn load(&self) {
+            // fxdax: every page checksummed, which reading it checks (TASK-119.4).
+            as_postgres(&format!("initdb -D {DATA} -A trust --data-checksums"));
+            self.start();
+            as_postgres(&format!("createdb -h {SOCKET} bench"));
+            as_postgres(&format!("pgbench -h {SOCKET} -i -q -s {SCALE} bench"));
+            // Every account once: the primary key's build found one twice (TASK-59).
+            let query = "select count(*), count(distinct aid) from pgbench_accounts";
+            let counted = as_postgres(&format!("psql -h {SOCKET} -At -c '{query}' bench"));
+            let accounts = SCALE * 100_000;
+            assert_eq!(
+                String::from_utf8_lossy(&counted.stdout).trim(),
+                format!("{accounts}|{accounts}")
+            );
+            println!("OK load {accounts}");
+        }
+
+        /// Runs pgbench on the database, its server running, as the sandbox team's runs, each of
+        /// which must end well, checking it after each; then has it recover from a crash, and
+        /// checks it again. fxdax: with FXDAX_PGBENCH_MEASURE, asks the host to measure it once its
+        /// runs are done, and waits for the host's word (`crate::measure`, TASK-164.5).
+        fn run(&self) {
+            // pgbench says each run's tps, on the console, to compare, and PostgreSQL what it wrote
+            // so far, its WAL and its relations' pages, to set beside what the device was written
+            // (TASK-91.12).
+            let written = "select (select wal_bytes from pg_stat_wal), \
+                (select sum(writes * op_bytes) from pg_stat_io)";
+            // The balances' sum before the last run, and after it.
+            let (mut before, mut after) = (0, 0);
+            for i in 0..runs() {
+                let probe = if i == 0 { self.probe } else { Probe::None };
+                let profiler = (probe == Probe::Profile).then(profile);
+                if probe == Probe::Locks {
+                    count_locks(true);
+                }
+                let asynchronous = std::env::var_os("FXDAX_PGBENCH_ASYNC").is_some();
+                let options = if probe == Probe::Locks || asynchronous {
+                    "PGOPTIONS='-c synchronous_commit=off' "
+                } else {
+                    ""
+                };
+                let secs = run_secs();
+                let run =
+                    as_postgres(&format!("{options}pgbench -h {SOCKET} -c 4 -j 2 -T {secs} bench"));
+                if let Some(profiler) = profiler {
+                    report(profiler);
+                }
+                if probe == Probe::Locks {
+                    count_locks(false);
+                }
+                eprint!("{}", String::from_utf8_lossy(&run.stdout));
+                let written = as_postgres(&format!("psql -h {SOCKET} -At -c '{written}' bench"));
+                eprint!("postgres wal|pages written: {}", String::from_utf8_lossy(&written.stdout));
+                before = after;
+                after = check_data(SOCKET, before);
+            }
+            println!("OK runs {}", runs());
+            // fxdax: what this VM costs the host, its server running still (TASK-164.5).
+            if std::env::var_os("FXDAX_PGBENCH_MEASURE").is_some() {
+                crate::measure::measure("ran");
+            }
+            // fxdax: stopped as if it had crashed, with no checkpoint, it recovers from its WAL,
+            // as the filesystem kept it, to a whole database (TASK-119.4).
+            as_postgres(&format!("pg_ctl -D {DATA} -w -m immediate stop"));
+            self.start();
+            assert_eq!(check_data(SOCKET, before), after, "the balances recovered");
+            as_postgres(&format!("pg_ctl -D {DATA} -w -m fast stop"));
+            // Every page's checksum, the indexes' too, with the server stopped.
+            as_postgres(&format!("pg_checksums --check -D {DATA}"));
+            println!("OK checked");
+        }
+    }
+
+    /// Makes the server's socket's directory, and gives it and the database's to PostgreSQL.
+    fn prepare() {
+        fs::create_dir_all(SOCKET).unwrap();
+        let status = Command::new("chown").args(["postgres:postgres", DATA, SOCKET]).status();
+        assert!(status.expect("chown").success(), "chown {DATA} {SOCKET}");
+    }
+
     impl Test for TestFxfsGuestPgbench {
         fn in_guest(self: Box<Self>) {
             // Every message on the console: a task hung says where, its stack logged at KERN_INFO.
             fs::write("/proc/sys/kernel/printk", "7").unwrap();
             let role = std::env::var("FXDAX_PGBENCH_ROLE").unwrap();
             mount(&role);
+            // fxdax: whether its DAX writes copy on write, as the case asked (TASK-164.5).
+            if role != "base" && std::env::var_os("FXDAX_PGBENCH_PMEM").is_none() {
+                crate::measure::dax_cow();
+            }
             match role.as_str() {
-                // The base's filesystem, made as it mounts, with a directory for the database.
+                // The base's filesystem, made as it mounts, with a directory for the database;
+                // fxdax: or with the database, made, loaded and stopped cleanly, which each VM
+                // runs pgbench on a fork of (TASK-164.5).
                 "base" => {
-                    fs::create_dir_all(format!("{MNT}/pgdata")).unwrap();
+                    fs::create_dir_all(DATA).unwrap();
+                    if std::env::var_os("FXDAX_PGBENCH_BASE_DATABASE").is_some() {
+                        prepare();
+                        self.load();
+                        as_postgres(&format!("pg_ctl -D {DATA} -w -m fast stop"));
+                    }
                     unmount();
                     println!("OK base");
                 }
+                // Makes the database, then runs pgbench on it.
                 "load" => {
-                    let data = format!("{MNT}/pgdata");
-                    let socket = "/run/postgresql";
-                    fs::create_dir_all(socket).unwrap();
-                    Command::new("chown")
-                        .args(["postgres:postgres", &data, socket])
-                        .status()
-                        .unwrap();
-                    // fxdax: every page checksummed, which reading it checks (TASK-119.4).
-                    as_postgres(&format!("initdb -D {data} -A trust --data-checksums"));
-                    let fsync = if self.fsync { "" } else { " -c fsync=off" };
-                    let options = format!(
-                        "-c shared_buffers=256MB -k {socket} -c listen_addresses=''{fsync}"
-                    );
-                    // The server's output to a log of its own: it would hold `as_postgres`'s pipe
-                    // open, which waits for its end.
-                    let start = || {
-                        as_postgres(&format!(
-                            "pg_ctl -D {data} -l {data}/server.log -o \"{options}\" -w -t 900 start"
-                        ))
-                    };
-                    start();
-                    as_postgres(&format!("createdb -h {socket} bench"));
-                    as_postgres(&format!("pgbench -h {socket} -i -q -s {SCALE} bench"));
-                    // Every account once: the primary key's build found one twice (TASK-59).
-                    let count = "select count(*), count(distinct aid) from pgbench_accounts";
-                    let counted = as_postgres(&format!("psql -h {socket} -At -c '{count}' bench"));
-                    let accounts = SCALE * 100_000;
-                    assert_eq!(
-                        String::from_utf8_lossy(&counted.stdout).trim(),
-                        format!("{accounts}|{accounts}")
-                    );
-                    println!("OK load {accounts}");
-                    // Then as the sandbox team's runs, each of which must end well: pgbench says
-                    // so (its tps, on the console, to compare), and what PostgreSQL wrote so far,
-                    // its WAL and its relations' pages, to set beside what the device was written
-                    // (TASK-91.12).
-                    let written = "select (select wal_bytes from pg_stat_wal), \
-                        (select sum(writes * op_bytes) from pg_stat_io)";
-                    // The balances' sum before the last run, and after it.
-                    let (mut before, mut after) = (0, 0);
-                    for i in 0..RUNS {
-                        let probe = if i == 0 { self.probe } else { Probe::None };
-                        let profiler = (probe == Probe::Profile).then(profile);
-                        if probe == Probe::Locks {
-                            count_locks(true);
-                        }
-                        let asynchronous = std::env::var_os("FXDAX_PGBENCH_ASYNC").is_some();
-                        let options = if probe == Probe::Locks || asynchronous {
-                            "PGOPTIONS='-c synchronous_commit=off' "
-                        } else {
-                            ""
-                        };
-                        let run = as_postgres(&format!(
-                            "{options}pgbench -h {socket} -c 4 -j 2 -T {RUN_SECS} bench"
-                        ));
-                        if let Some(profiler) = profiler {
-                            report(profiler);
-                        }
-                        if probe == Probe::Locks {
-                            count_locks(false);
-                        }
-                        eprint!("{}", String::from_utf8_lossy(&run.stdout));
-                        let written =
-                            as_postgres(&format!("psql -h {socket} -At -c '{written}' bench"));
-                        eprint!(
-                            "postgres wal|pages written: {}",
-                            String::from_utf8_lossy(&written.stdout)
-                        );
-                        before = after;
-                        after = check_data(socket, before);
-                    }
-                    println!("OK runs {RUNS}");
-                    // fxdax: stopped as if it had crashed, with no checkpoint, it recovers from
-                    // its WAL, as the filesystem kept it, to a whole database (TASK-119.4).
-                    as_postgres(&format!("pg_ctl -D {data} -w -m immediate stop"));
-                    start();
-                    assert_eq!(check_data(socket, before), after, "the balances recovered");
-                    as_postgres(&format!("pg_ctl -D {data} -w -m fast stop"));
-                    // Every page's checksum, the indexes' too, with the server stopped.
-                    as_postgres(&format!("pg_checksums --check -D {data}"));
-                    println!("OK checked");
+                    prepare();
+                    self.load();
+                    self.run();
+                    unmount();
+                }
+                // fxdax: runs pgbench on the base's database.
+                "run" => {
+                    prepare();
+                    self.start();
+                    self.run();
                     unmount();
                 }
                 role => panic!("no role {role}"),
