@@ -8,14 +8,12 @@
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c
-@@ -3894,8 +3894,8 @@
- 	cleaned = dax_writeback_mapping_range(inode->i_mapping, dax->dax_dev, &all);
+@@ -3982,7 +3982,7 @@
+ 	fxfs_dax_cow_protect(inode->i_mapping, batch, nr);
  	/* Before it reads its ranges' window pages, which nothing may free (pause points). */
  	fxfs_dax_pause_file(FXFS_DAX_STEP_WRITEBACK, inode->i_ino);
 -	err = fxfs_dax_cow_write_pages(dax, inode, batch, nr, parts);
--	err = err ?: cleaned;
 +	fxfs_dax_cow_write_pages(dax, inode, batch, nr, parts);
-+	err = cleaned;
  	for (i = 0; i < nr; i++)
  		fxfs_dax_put_range(dax, batch[i].range);
  	atomic64_inc(&dax->cow_writebacks);

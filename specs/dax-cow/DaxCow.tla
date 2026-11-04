@@ -5,41 +5,61 @@
 (* found in the LICENSE file.                                              *)
 (*                                                                         *)
 (* Copy-on-write DAX (backlog doc-13, TASK-164): the guest Fxfs's window  *)
-(* maps sealed extents, or zeros, read-only; a store to a window page has *)
-(* the host give the VM a private copy of it at the same address (the     *)
-(* device's DAX_COW). Fxfs allocates the blocks at writeback, as the page *)
-(* cache's path does, and commits after their bytes. Behind fxfs.dax_cow, *)
+(* maps sealed extents, or zeros, read-only; a window page the guest      *)
+(* dirties, the host makes the VM's own, a private copy of it at the same *)
+(* address (the device's DAX_COW), before any store reaches it. Fxfs      *)
+(* allocates the blocks at writeback, as the page cache's path does, and  *)
+(* commits after their bytes. Behind fxfs.dax_cow,                        *)
 (* guest/linux/fs/fxfs/dax.c.                                              *)
 (*                                                                         *)
 (* A file of a few pages (Pages), one task storing to them, one doing the *)
 (* rest, and the host:                                                     *)
 (*                                                                         *)
-(* - the storer: a fault, whose iomap_begin (IOMAP_WRITE) puts the page in*)
-(*   the file's dirty set, counts it private, and maps it writable, after *)
-(*   which the store, through the PTE, if it is writable still, or a fault*)
-(*   again; or a write(2), whose copy into the window is between its      *)
-(*   iomap_begin and iomap_end, holding the file's semaphore shared. Before*)
-(*   either, a page not counted waits, holding nothing, for the budget to *)
-(*   have room for it (private_max).                                       *)
+(* - the storer: a fault, whose iomap_begin (IOMAP_WRITE) has the host   *)
+(*   make the page private (PRIVATE), puts it in the file's dirty set,     *)
+(*   counts it private, and maps it writable; the fault holds the page's  *)
+(*   DAX entry past its iomap_end until it returns, after which the store,*)
+(*   through the PTE, if it is writable still, or a fault again. Or a     *)
+(*   write(2), whose copy into the window is between its iomap_begin and  *)
+(*   iomap_end, holding the file's semaphore shared. Before either, a page*)
+(*   not counted waits, holding nothing, for the budget to have room for  *)
+(*   it (private_max).                                                     *)
 (* - the other task: writeback (->writepages), fsync (writeback, then the *)
 (*   seal that makes it durable), rebinding (a private page MAPped back to*)
 (*   its extent's page, freeing it), and punching a page (truncate).      *)
 (*   Writeback swaps the dirty set out for an empty one (the writeback    *)
-(*   set), write-protects the PTEs (dax_writeback_mapping_range), copies  *)
-(*   the pages from the window, WRITEs them to a new extent, commits the  *)
+(*   set), write-protects the PTEs (by the page tables), copies the pages *)
+(*   from the window, WRITEs them to a new extent, commits the            *)
 (*   transaction naming it, and keeps the pages until the seal after that *)
-(*   commit, which seals the extent.                                       *)
-(* - the host: copies on write, refusing a store past private_max, which *)
-(*   stops the VM; seals (a COMMIT: the journal's, or any fsync's) at any *)
-(*   time; and refuses a MAP of an open extent (EPERM).                    *)
+(*   commit, which seals the extent. The extent that held a page's block  *)
+(*   before dies at that seal (Fxfs frees it after the flush), and a      *)
+(*   window page mapping it reads zeros from then on.                      *)
+(* - the host: copies on write, at a PRIVATE or at a store to a page not  *)
+(*   private, refusing either past private_max, which stops the VM; seals *)
+(*   (a COMMIT: the journal's, or any fsync's) at any time; and refuses a *)
+(*   MAP of an open extent (EPERM).                                        *)
 (*                                                                         *)
 (* Data are versions: each store writes the next, a punch writes zeros as *)
-(* the next, and a page's copy holds every store before it. `durable` is  *)
-(* what a crash leaves: Fxfs's file as of the last seal.                   *)
+(* the next, and a page's copy holds every store before it. A store is to *)
+(* part of a page: one the host copies a freed block's zeros for leaves   *)
+(* the rest of the page lost (Torn). `durable` is what a crash leaves:    *)
+(* Fxfs's file as of the last seal.                                        *)
 (*                                                                         *)
 (* The rules, each a member of Rules; specs/dax-cow/mutations removes one *)
 (* each, and must find the violation it prevents:                          *)
 (*                                                                         *)
+(* - privateAtIomap: the iomap that dirties a page has the host make it   *)
+(*   private first (PRIVATE), so that dirty implies private (the invariant*)
+(*   DirtyImpliesPrivate), and no store ever has the host copy a window   *)
+(*   page: the store of a fault comes after its iomap_end, maybe after a  *)
+(*   writeback took the page, moved its block, and the seal after freed   *)
+(*   the old one, whose zeros the host would copy (guest/sim's seed 2802; *)
+(*   TASK-164.9, dax.c's fxfs_dax_cow_dirty).                              *)
+(* - protectByPageTables: writeback write-protects every PTE of its pages, *)
+(*   by the page tables; dax_writeback_mapping_range, by the DAX entries, *)
+(*   passes by an entry a fault holds past its iomap_end, whose PTE stays *)
+(*   writable, and a store through it after the writeback's copy is in no *)
+(*   set (guest/sim's seed 22).                                            *)
 (* - swapFirst: writeback swaps the dirty set before it write-protects, so*)
 (*   that a store after the write-protect faults into the new dirty set.  *)
 (* - swapExclusive: the swap holds the semaphore exclusively, so that no  *)
@@ -59,7 +79,8 @@
 (*   what Fxfs says is sealed, and leaves a page private on the host's     *)
 (*   EPERM (fxfs_dax_cow_map), so guest/sim has no mutant of them.          *)
 (* - countPrivate: iomap_begin counts its page private, which the budget  *)
-(*   waits on, so that the guest never stores past private_max.            *)
+(*   waits on, so that the guest never asks the host for a private page   *)
+(*   past private_max.                                                     *)
 (* - bytesFirst: writeback commits after its bytes are written (Fxfs's     *)
 (*   fxfs_write_many), so that a crash shows old or new data, never what   *)
 (*   a new extent held unwritten.                                           *)
@@ -68,10 +89,12 @@
 (* which doc-13 doesn't say: else one meets a copy whose commit is to come, *)
 (* which undoes it. Dax.c has a lock for it, `wb_lock`, which they take    *)
 (* before the semaphore; here writeback holds the semaphore shared to the  *)
-(* commit, which they take exclusively. The kernel's DAX entry             *)
-(* locks aren't modelled: a fault trylocks the semaphore, holding its      *)
-(* entry, as dax.c's do since TASK-79.12, else writeback waiting for the   *)
-(* entry under the semaphore deadlocks with a rebind queued for it.        *)
+(* commit, which they take exclusively. The kernel's DAX entries are      *)
+(* modelled only as a fault holds its page's (EntryHeld), which nothing of*)
+(* the protocol waits for: a fault trylocks the semaphore, holding its     *)
+(* entry, as dax.c's do since TASK-79.12. Their dirty tags aren't: no rule *)
+(* reads them (dax.c cleans them for the kernel's sake alone, and a range's*)
+(* release, which needs them clean, is the kernel's, outside this model).  *)
 (***************************************************************************)
 EXTENDS Integers, FiniteSets, TLC
 
@@ -82,19 +105,25 @@ CONSTANTS
     MaxPunches,     \* the punches
     Rules           \* the protocol's rules in force
 
-AllRules == {"swapFirst", "swapExclusive", "rebindExclusive", "rebindAfterSeal",
-             "keepUntilSealed", "countPrivate", "bytesFirst"}
+AllRules == {"privateAtIomap", "protectByPageTables", "swapFirst", "swapExclusive",
+             "rebindExclusive", "rebindAfterSeal", "keepUntilSealed", "countPrivate",
+             "bytesFirst"}
 
 ASSUME Rules \subseteq AllRules
 ASSUME PrivateMax \in Nat \ {0}
 
 \* What a new extent holds where nothing was written to it.
 Garbage == -1
+\* What a freed block reads as, through the window: zeros.
+Zeroed == -2
+\* A page the host copied a freed block's zeros for, then a store changed a part of.
+Torn == -3
 
 VARIABLES
     \* The host.
-    win,        \* win[p]: the window's page: [kind: "extent", "zeros" or "private", data]
-    refused,    \* whether the host refused a store, which stops the VM
+    win,        \* win[p]: the window's page: [kind: "extent", "zeros", "private", "doomed"
+                \* (an extent's block Fxfs replaced, freed at the next seal) or "freed", data]
+    refused,    \* whether the host refused a store or a PRIVATE, which stops the VM
     \* Fxfs.
     file,       \* file[p]: the file's committed block: [state: "hole", "open" or "sealed", data]
     durable,    \* durable[p]: what a crash shows: file[p]'s data as of the last seal
@@ -129,26 +158,42 @@ HostPrivate == Cardinality({p \in Pages : win[p].kind = "private"})
 \* Whether the host takes a store to p: a private page's, or a copy within private_max.
 CanStore(p) == win[p].kind = "private" \/ HostPrivate < PrivateMax
 
-\* A store of the next version to p, through the window: the host copies on write, or refuses.
+\* A store of the next version to part of p, through the window: the host copies on write, what
+\* the window maps there (a freed block's zeros, the rest of the page lost), or refuses.
 Store(p) ==
     IF CanStore(p)
-    THEN /\ win' = [win EXCEPT ![p] = [kind |-> "private", data |-> next]]
+    THEN /\ win' = [win EXCEPT ![p] = [kind |-> "private",
+                                       data |-> IF win[p].kind = "freed" THEN Torn ELSE next]]
          /\ latest' = [latest EXCEPT ![p] = next]
          /\ next' = next + 1
          /\ UNCHANGED refused
     ELSE /\ refused' = TRUE
          /\ UNCHANGED <<win, latest, next>>
 
-\* dax_writeback_mapping_range: every writable PTE read-only.
-WriteProtected == [p \in Pages |-> IF pte[p] = "rw" THEN "ro" ELSE pte[p]]
+\* PRIVATE of p: the host copies it now, what the window maps there, within private_max.
+MadePrivate(p) ==
+    IF win[p].kind = "private" THEN win[p]
+    ELSE [kind |-> "private", data |-> win[p].data]
 
-\* A seal: the open extents sealed, the commits so far durable, the writeback set let go of.
+\* Whether the storer's fault holds p's DAX entry: from before its iomap_begin until it returns.
+EntryHeld(p) == sWay = "fault" /\ sPage = p /\ spc \in {"lock", "begin", "unlock", "entry"}
+
+\* Writeback's write-protect: every writable PTE read-only, by the page tables; or, by the DAX
+\* entries, as dax_writeback_mapping_range does, every one but that of an entry a fault holds.
+WriteProtected ==
+    [p \in Pages |-> IF pte[p] = "rw" /\ ("protectByPageTables" \in Rules \/ ~EntryHeld(p))
+                     THEN "ro" ELSE pte[p]]
+
+\* A seal: the open extents sealed, the commits so far durable, the writeback set let go of, and
+\* the extents the commits replaced freed: a window page mapping one reads zeros.
 SealEffect ==
     /\ file' = [p \in Pages |->
                    IF file[p].state = "open" THEN [file[p] EXCEPT !.state = "sealed"]
                    ELSE file[p]]
     /\ durable' = [p \in Pages |-> file[p].data]
     /\ sealing' = {}
+    /\ win' = [p \in Pages |-> IF win[p].kind = "doomed" THEN [kind |-> "freed", data |-> Zeroed]
+                               ELSE win[p]]
 
 -----------------------------------------------------------------------------
 (* The storer. *)
@@ -176,16 +221,23 @@ SLock ==
     /\ UNCHANGED <<hostVars, fxfsVars, ghostVars, pte, dirty, wb, sealing, counted, semX, sPage,
                    sWay, stores, wVars>>
 
-\* fxfs_dax_iomap_begin, IOMAP_WRITE: the page dirty, counted private (countPrivate); a fault
+\* fxfs_dax_iomap_begin, IOMAP_WRITE (fxfs_dax_cow_dirty): the page made private on the host
+\* (privateAtIomap), unless the host refuses, then dirty, counted private (countPrivate); a fault
 \* maps it writable before its iomap_end.
 SBegin ==
     /\ spc = "begin"
-    /\ dirty' = dirty \cup {sPage}
-    /\ counted' = IF "countPrivate" \in Rules THEN counted \cup {sPage} ELSE counted
-    /\ pte' = IF sWay = "fault" THEN [pte EXCEPT ![sPage] = "rw"] ELSE pte
-    /\ spc' = IF sWay = "fault" THEN "unlock" ELSE "copy"
-    /\ UNCHANGED <<hostVars, fxfsVars, ghostVars, wb, sealing, semX, semR, sPage, sWay, stores,
-                   wVars>>
+    /\ IF "privateAtIomap" \in Rules /\ ~CanStore(sPage)
+       THEN /\ refused' = TRUE
+            /\ spc' = "stopped"
+            /\ UNCHANGED <<win, pte, dirty, counted>>
+       ELSE /\ win' = IF "privateAtIomap" \in Rules
+                      THEN [win EXCEPT ![sPage] = MadePrivate(sPage)] ELSE win
+            /\ dirty' = dirty \cup {sPage}
+            /\ counted' = IF "countPrivate" \in Rules THEN counted \cup {sPage} ELSE counted
+            /\ pte' = IF sWay = "fault" THEN [pte EXCEPT ![sPage] = "rw"] ELSE pte
+            /\ spc' = IF sWay = "fault" THEN "unlock" ELSE "copy"
+            /\ UNCHANGED refused
+    /\ UNCHANGED <<fxfsVars, ghostVars, wb, sealing, semX, semR, sPage, sWay, stores, wVars>>
 
 \* A write(2)'s copy into the window, between its iomap_begin and iomap_end.
 SCopy ==
@@ -195,18 +247,24 @@ SCopy ==
     /\ spc' = IF CanStore(sPage) THEN "unlock" ELSE "stopped"
     /\ UNCHANGED <<fxfsVars, errors, guestVars, sPage, sWay, wVars>>
 
-\* fxfs_dax_iomap_end.
+\* fxfs_dax_iomap_end; a fault holds its page's DAX entry until it returns (SReturn).
 SUnlock ==
     /\ spc = "unlock"
     /\ semR' = semR \ {"S"}
     /\ IF sWay = "fault"
-       THEN /\ spc' = "store"
+       THEN /\ spc' = "entry"
             /\ UNCHANGED <<sPage, sWay>>
        ELSE /\ spc' = "idle"
             /\ sPage' = 0
             /\ sWay' = "none"
     /\ UNCHANGED <<hostVars, fxfsVars, ghostVars, pte, dirty, wb, sealing, counted, semX, stores,
                    wVars>>
+
+\* The fault returns, its page's DAX entry let go of, and the store is retried.
+SReturn ==
+    /\ spc = "entry"
+    /\ spc' = "store"
+    /\ UNCHANGED <<hostVars, fxfsVars, ghostVars, guestVars, sPage, sWay, stores, wVars>>
 
 \* The store through the PTE, writable still; or, write-protected or unmapped since, a fault again.
 SStore ==
@@ -221,7 +279,7 @@ SStore ==
             /\ UNCHANGED <<win, refused, latest, next, stores, sPage, sWay>>
     /\ UNCHANGED <<fxfsVars, errors, guestVars, wVars>>
 
-StorerNext == SStart \/ SThrottle \/ SLock \/ SBegin \/ SCopy \/ SUnlock \/ SStore
+StorerNext == SStart \/ SThrottle \/ SLock \/ SBegin \/ SCopy \/ SUnlock \/ SReturn \/ SStore
 
 -----------------------------------------------------------------------------
 (* The other task: writeback, fsync, rebinding, punching. *)
@@ -298,7 +356,8 @@ WWrite ==
     /\ UNCHANGED <<hostVars, durable, ghostVars, pte, dirty, sealing, counted, semX, semR, sVars,
                    wOp, wPage, floor, buf, punches>>
 
-\* The transaction naming the new extent, open; its pages kept until it is sealed.
+\* The transaction naming the new extent, open; its pages kept until it is sealed. The blocks it
+\* replaces die at the next seal: a window page mapping one, not private, is doomed.
 WCommit ==
     /\ wpc = "commit"
     /\ file' = [p \in Pages |->
@@ -306,10 +365,13 @@ WCommit ==
                    THEN [state |-> "open",
                          data |-> IF "bytesFirst" \in Rules THEN buf[p] ELSE Garbage]
                    ELSE file[p]]
+    /\ win' = [p \in Pages |->
+                  IF p \in wb /\ win[p].kind = "extent" THEN [win[p] EXCEPT !.kind = "doomed"]
+                  ELSE win[p]]
     /\ sealing' = IF "keepUntilSealed" \in Rules THEN sealing \cup wb ELSE sealing
     /\ wb' = IF "bytesFirst" \in Rules THEN {} ELSE wb
     /\ wpc' = IF "bytesFirst" \in Rules THEN "unlock" ELSE "write"
-    /\ UNCHANGED <<hostVars, durable, ghostVars, pte, dirty, counted, semX, semR, sVars, wOp,
+    /\ UNCHANGED <<refused, durable, ghostVars, pte, dirty, counted, semX, semR, sVars, wOp,
                    wPage, floor, buf, punches>>
 
 WUnlock ==
@@ -327,7 +389,7 @@ WFsSeal ==
     /\ wpc = "fsSeal"
     /\ SealEffect
     /\ wpc' = "fsDone"
-    /\ UNCHANGED <<hostVars, ghostVars, pte, dirty, wb, counted, semX, semR, sVars, wOp, wPage,
+    /\ UNCHANGED <<refused, ghostVars, pte, dirty, wb, counted, semX, semR, sVars, wOp, wPage,
                    floor, buf, punches>>
 
 \* The fsync returns.
@@ -410,7 +472,7 @@ OtherNext ==
 Seal ==
     /\ \E p \in Pages : file[p].state = "open"
     /\ SealEffect
-    /\ UNCHANGED <<hostVars, ghostVars, pte, dirty, wb, counted, semX, semR, sVars, wVars>>
+    /\ UNCHANGED <<refused, ghostVars, pte, dirty, wb, counted, semX, semR, sVars, wVars>>
 
 -----------------------------------------------------------------------------
 
@@ -457,8 +519,12 @@ NoOpenMap == "a MAP of an open extent" \notin errors
 \* A crash shows each page old or new, as a commit left it, never a new extent's unwritten block.
 CrashOldOrNew == \A p \in Pages : durable[p] # Garbage
 
-\* The host never refuses a store: the guest keeps within private_max.
-NoRefusedStore == ~refused
+\* The host never refuses a store, nor a PRIVATE: the guest keeps within private_max.
+NoRefusal == ~refused
+
+\* A dirty page, or one being written back, is private on the host: a store to it reaches no
+\* extent's block, which the writeback moves, and the seal after it frees (privateAtIomap).
+DirtyImpliesPrivate == \A p \in dirty \cup wb : win[p].kind = "private"
 
 \* At most private_max private pages: the host's to keep, by refusing.
 PrivateWithinMax == HostPrivate <= PrivateMax

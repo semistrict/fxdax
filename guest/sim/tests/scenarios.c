@@ -1432,6 +1432,47 @@ static void cow_truncate_held(void)
 	cow_check_file("the second file", 24 * PAGE_SIZE);
 }
 
+/*
+ * That the iomap that dirties a page has the host make it private first, and fails the write if
+ * the host doesn't (TASK-164.9): the file's pages rebound, mapping its sealed extent, a write(2) to
+ * page 2 and a store to page 5, each with the device failing its PRIVATE, fail (-EIO, the fault's
+ * SIGBUS), dirtying nothing, reserving nothing; tried again, they succeed. A page dirtied without
+ * its PRIVATE is the window's mapping of an old block, which a writeback may move and Fxfs free
+ * before its store comes (cow_writeback_before_store): the host, which this one makes refuse a
+ * store to a page no PRIVATE made private, as the oracle of the rule, would have copied zeros.
+ */
+static void cow_private_failed(void)
+{
+	static const u64 pages[] = { 2, 5 };
+	u64 freed, reserved, round = 1;
+	size_t i;
+	int err;
+
+	cow_mapped_file(8);
+	freed = sim_device_private_freed();
+	wait_for(sim_spawn("rebinder", cow_rebind_now, NULL));
+	check(sim_device_private_freed() >= freed + 8, "the file's pages weren't rebound");
+	for (i = 0; i < ARRAY_SIZE(pages); i++) {
+		loff_t at = pages[i] * PAGE_SIZE;
+		bool mapped = i;
+
+		reserved = fxfs_sim_reserved(mount->info->fs, file_inode(cow_target)->i_ino);
+		sim_device_fail(VIRTIO_EXTENT_T_PRIVATE, 0, 1);
+		err = mapped ? sim_user_store(cow_addr + at, &round, sizeof(round)) :
+			       (int)sim_write(cow_target, at, &round, sizeof(round));
+		check(err == (mapped ? -EFAULT : -EIO), "a %s whose PRIVATE failed: %d",
+		      mapped ? "store" : "write", err);
+		check(sim_device_failed() == i + 1, "no PRIVATE failed");
+		check(fxfs_sim_reserved(mount->info->fs, file_inode(cow_target)->i_ino) == reserved,
+		      "a %s whose PRIVATE failed left %llu bytes of room reserved, of %llu before",
+		      mapped ? "store" : "write",
+		      fxfs_sim_reserved(mount->info->fs, file_inode(cow_target)->i_ino), reserved);
+		cow_check(pages[i], mapped, "after its PRIVATE failed");
+		cow_put(pages[i], round, mapped);
+	}
+	cow_check_file("after PRIVATEs failed", 8 * PAGE_SIZE);
+}
+
 static const struct {
 	const char *name;
 	void (*run)(void);
@@ -1476,6 +1517,7 @@ static const struct {
 	COW_SCENARIO(cow_reclaim_after_writeback_met_a_fault),
 	COW_SCENARIO(cow_writeback_before_store),
 	COW_SCENARIO(cow_map_during_seal),
+	COW_SCENARIO(cow_private_failed),
 };
 
 static void scenario(void *arg)

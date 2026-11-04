@@ -4,20 +4,31 @@
 # TASK-164.4, doc-13: writeback takes pages the host hasn't made private, an iomap having dirtied
 # them before their stores: their window pages map the old blocks, which die as the writeback moves
 # them, and read zeros once Fxfs frees them, which the store copies. cow_writeback_before_store;
-# interleave's seed 2802 at 1,000 operations.
+# interleave's seed 2802 at 1,000 operations. Since TASK-164.9 the iomap that dirties a page makes
+# it private (fxfs_dax_cow_dirty), and writeback has nothing of it to forget: this has the iomap
+# leave it to the store, as the host would copy at it, which guest/sim's host refuses, the oracle of
+# dirty implies private, at the first store of any cow_ scenario.
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c
-@@ -3933,12 +3933,6 @@
- 		goto out;
+@@ -4285,20 +4285,6 @@
+ 		err = -ENOBUFS;
+ 		goto unreserve;
  	}
- 	down_write(&file->sem);
--	/* Its pages the VM's own before they are the set's: one that can't be stays dirty. */
--	err = fxfs_dax_cow_own(dax, file);
--	if (err) {
--		up_write(&file->sem);
--		goto out;
+-	if (newly) {
+-		/* The pages private already, those others' iomaps made so meanwhile too, stay so. */
+-		err = fxfs_device_private(dax->dev, fxfs_dax_page_offset(range, first),
+-					  (u64)pages << PAGE_SHIFT);
+-		atomic64_inc(&dax->cow_privates);
+-		if (err) {
+-			pr_warn_ratelimited("fxfs: making %lu pages at %llx of the window private: %d\n",
+-					    pages, fxfs_dax_page_offset(range, first), err);
+-			atomic_long_sub(newly, &dax->private);
+-			wake_up_all(&dax->cow_wait);
+-			err = -EIO;
+-			goto unreserve;
+-		}
 -	}
- 	xa_for_each(&file->ranges, chunk, range) {
- 		if (nr == most || !fxfs_dax_cow_busy(range))
- 			continue;
+ 	for (page = first; page < first + pages; page++) {
+ 		privated += !test_and_set_bit(page, range->private);
+ 		dirtied += !test_and_set_bit(page, range->dirty);

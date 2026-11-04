@@ -2,19 +2,19 @@
 # Copyright 2026 The fxdax Authors.
 #
 # TASK-164.4, doc-13: a range with no dirty page is released with its DAX entries as they are: one
-# a writeback left tagged dirty, a fault holding it, fails the invalidation for ever, so that the
-# range is never reclaimed. cow_reclaim_after_writeback_met_a_fault; interleave's seed
+# tagged dirty, a writeback having left it so, a fault holding it (or, since TASK-164.9, any a write
+# fault tagged, which only writepages and the release clean), fails the invalidation for ever, so
+# that the range is never reclaimed. cow_reclaim_after_writeback_met_a_fault; interleave's seed
 # 3390 at 1,000 operations.
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c
-@@ -2065,9 +2065,7 @@
- 	 * invalidation failed for ever, and a fault waiting for room reclaimed the range again and
- 	 * again (guest/sim, seed 3390 at 1,000 operations), as a drop of it waits.
+@@ -2135,8 +2135,7 @@
+ 	 * fault holding it, failed the invalidation for ever, and a fault waiting for room reclaimed
+ 	 * the range again and again (guest/sim, seed 3390 at 1,000 operations).
  	 */
--	if (range->dirty ?
--	    dax_writeback_mapping_range(mapping, fxfs_dax_of(inode)->dax_dev, &clean) :
--	    filemap_fdatawrite_range(mapping, start, end))
+-	if (range->dirty ? fxfs_dax_cow_clean_entries(inode, start, end) :
+-			   filemap_fdatawrite_range(mapping, start, end))
 +	if (!range->dirty && filemap_fdatawrite_range(mapping, start, end))
  		return false;
  	return !invalidate_inode_pages2_range(mapping, start >> PAGE_SHIFT, end >> PAGE_SHIFT);

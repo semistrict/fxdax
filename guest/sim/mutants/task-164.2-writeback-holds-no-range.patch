@@ -7,16 +7,16 @@
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c
-@@ -3845,7 +3845,7 @@
+@@ -3932,7 +3932,7 @@
  	struct fxfs_write_part *parts = NULL;
  	struct fxfs_dax_range *range;
  	unsigned long chunk, word;
 -	size_t nr = 0, most = 0, i;
 +	size_t nr = 0, most = 0;
  	long pages = 0;
- 	int err = 0, cleaned;
+ 	int err = 0;
  
-@@ -3878,8 +3878,6 @@
+@@ -3965,8 +3965,6 @@
  		if (nr == most || !fxfs_dax_cow_busy(range))
  			continue;
  		batch[nr].range = range;
@@ -24,11 +24,11 @@
 -		atomic_inc(&range->users);
  		bitmap_zero(batch[nr].pages, FXFS_DAX_PAGES);
  		for (word = 0; word < BITS_TO_LONGS(range->pages); word++) {
- 			batch[nr].pages[word] = range->dirty[word];
-@@ -3896,8 +3894,6 @@
+ 			/* Dirty implies private: a page the host maps from an extent may lose it. */
+@@ -3983,8 +3981,6 @@
+ 	/* Before it reads its ranges' window pages, which nothing may free (pause points). */
  	fxfs_dax_pause_file(FXFS_DAX_STEP_WRITEBACK, inode->i_ino);
  	err = fxfs_dax_cow_write_pages(dax, inode, batch, nr, parts);
- 	err = err ?: cleaned;
 -	for (i = 0; i < nr; i++)
 -		fxfs_dax_put_range(dax, batch[i].range);
  	atomic64_inc(&dax->cow_writebacks);

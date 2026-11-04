@@ -8,9 +8,9 @@
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c
-@@ -3849,17 +3849,9 @@
+@@ -3936,17 +3936,9 @@
  	long pages = 0;
- 	int err = 0, cleaned;
+ 	int err = 0;
  
 -	if (!file)
 +	if (!file || !atomic_long_read(&file->dirty_pages))

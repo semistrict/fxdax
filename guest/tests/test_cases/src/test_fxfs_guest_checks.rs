@@ -2529,8 +2529,8 @@ pub(crate) mod guest {
     /// staging extent's region, and the pages lag, until the read after them maps them together. A
     /// MAP of its own took 200 us of a write's 230: rand-write fell from 18,151 to 3,534 IOPS.
     /// fxdax: copying on write (doc-13), of a file read in from sealed extents, each write makes
-    /// its page private where the window maps it, a page more each, with no MAP, and no PRIVATE
-    /// ahead of a page alone (fxfs.dax_private_ahead's 4). Fails if a write's iomap made more than
+    /// its page private where the window maps it, a page more each, with no MAP, by one PRIVATE
+    /// each, its iomap's, before its store (TASK-164.9). Fails if a write's iomap made more than
     /// its page private, or mapped its chunk again.
     fn test_writes_through() {
         use std::os::unix::fs::FileExt;
@@ -2572,7 +2572,8 @@ pub(crate) mod guest {
         if cow {
             let private = cow_before.0 + WRITES as u64;
             assert_eq!(cow_after.0, private, "private pages after {WRITES} writes of a page");
-            assert_eq!(cow_after.1, cow_before.1, "PRIVATE requests for writes of a page");
+            let requests = cow_before.1 + WRITES as u64;
+            assert_eq!(cow_after.1, requests, "PRIVATE requests for writes of a page");
         } else {
             assert_eq!(through, WRITES as u64, "{through} of {WRITES} writes through a region");
         }

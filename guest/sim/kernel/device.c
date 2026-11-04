@@ -7,13 +7,14 @@
  * seal makes writable pages read-only, and a freed extent's pages map zeros. The window is real
  * memory, so that a store the host would refuse faults, and fails the run (kernel/host.c).
  *
- * With copy on write (DAX_COW, doc-13), as a test turns it on (sim_device_dax_cow): a store to a
- * page mapped read-only, a sealed extent's or zeros, makes it private, the VM's own, holding what
- * it held, at the same address, until a MAP or UNMAP over it frees it; past private_max the host
- * refuses the store. PRIVATE makes pages private ahead of stores, ENOMEM past private_max;
- * MAP_ZEROS maps zeros. The window maps sealed extents and zeros alone: a MAP of an open extent
- * fails EPERM, which tests count, as Fxfs may take an extent a seal forgot for sealed; a writable
- * one, which a guest copying on write never sends, fails the run.
+ * With copy on write (DAX_COW, doc-13), as a test turns it on (sim_device_dax_cow): PRIVATE makes
+ * pages mapped read-only, a sealed extent's or zeros, private, the VM's own, holding what they
+ * held, at the same address, until a MAP or UNMAP over them frees them; ENOMEM past private_max.
+ * A store to a page mapped read-only, which the host would copy so, fails the run: the guest makes
+ * every page private before a store can reach it (window_store). MAP_ZEROS maps zeros. The window
+ * maps sealed extents and zeros alone: a MAP of an open extent fails EPERM, which tests count, as
+ * Fxfs may take an extent a seal forgot for sealed; a writable one, which a guest copying on write
+ * never sends, fails the run.
  *
  * Requests complete in place, each a scheduling point: no queues, no interrupts, no async faults,
  * none of the host's own concurrency, and no latency but what the clock is told, or a MAP a test
@@ -272,27 +273,23 @@ static void free_private(u64 first, u64 pages)
 }
 
 /*
- * A store the window faulted on, at `offset`: with DAX_COW, a page mapped read-only, sealed or
- * zeros, is copied, within private_max. From the fault, in the store: no scheduling point, and no
- * lock. NULL if the page is the VM's now, or why the host refuses the store.
+ * A store the window faulted on, at `offset`: why the host refuses it. With DAX_COW, the host would
+ * copy a page mapped read-only, sealed or zeros, within private_max; but the guest makes each page
+ * it dirties private first, by the PRIVATE of the iomap that dirties it (dax.c's
+ * fxfs_dax_cow_dirty, TASK-164.9), so that a store never reaches one: a store the host would copy
+ * at is to a page no iomap made the VM's, whose block a writeback may move, and Fxfs free under it,
+ * before the store lands (guest/sim's seed 2802). Refused, as the oracle of that rule: dirty
+ * implies private. From the fault, in the store: no scheduling point, and no lock.
  */
 static const char *window_store(u64 offset)
 {
-	static char why[80];
-	u64 page = offset >> PAGE_SHIFT;
-	const struct window_page *at = &device.pages[page];
+	const struct window_page *at = &device.pages[offset >> PAGE_SHIFT];
 
 	if (!device.dax_cow)
 		return "no copy on write";
 	if (at->state != WINDOW_READ && at->state != WINDOW_ZEROS)
 		return "nothing mapped there";
-	if (device.private_pages >= device.private_max) {
-		snprintf(why, sizeof(why), "past private_max, %llu private pages",
-			 device.private_pages);
-		return why;
-	}
-	make_private(page);
-	return NULL;
+	return "a store to a page no PRIVATE made the VM's: dirty without private";
 }
 
 void sim_device_describe(u64 page)

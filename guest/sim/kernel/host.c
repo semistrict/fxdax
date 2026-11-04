@@ -4,8 +4,9 @@
  * The process under the fake kernel: the one file built against libc rather than the shim.
  * Coroutines are ucontexts, told to ASan as it asks. The window is one mapping of address space,
  * and a store through it that the host would refuse is a real SIGSEGV. One it would copy on write
- * (doc-13's DAX_COW) faults too, as the host's userfaultfd write-protect does: the device's model
- * says whether to copy, and the store goes on into a private page at the same address.
+ * (doc-13's DAX_COW) faults too, as the host's userfaultfd write-protect does, and the device's
+ * model says why it refuses it: the guest makes every page private (PRIVATE) before a store can
+ * reach it, so a store the host would copy at is a bug of the guest's (TASK-164.9).
  */
 
 #define _GNU_SOURCE

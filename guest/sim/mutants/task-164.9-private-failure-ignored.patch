@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+#
+# TASK-164.9, doc-13: the iomap whose PRIVATE fails goes on, its pages dirty, as a write(2)'s
+# PRIVATE ahead of its copy did before: dirty without private, the store left to the host's copy,
+# after a writeback may have moved the page's block. cow_private_failed: the write succeeds, and the
+# store reaches a page no PRIVATE made the VM's.
+
+--- a/guest/linux/fs/fxfs/dax.c
++++ b/guest/linux/fs/fxfs/dax.c
+@@ -4293,10 +4293,7 @@
+ 		if (err) {
+ 			pr_warn_ratelimited("fxfs: making %lu pages at %llx of the window private: %d\n",
+ 					    pages, fxfs_dax_page_offset(range, first), err);
+-			atomic_long_sub(newly, &dax->private);
+-			wake_up_all(&dax->cow_wait);
+-			err = -EIO;
+-			goto unreserve;
++			err = 0;
+ 		}
+ 	}
+ 	for (page = first; page < first + pages; page++) {
