@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+#
+# TASK-160.1: a read finding its range behind Fxfs's blocks gives up rather than drop it, as
+# TASK-150.13's ways in did: a read after a write whose MAPs failed says EIO. A cell of
+# fxfs_dax_rules, the read's row. scenarios map_failed_writing.
+
+--- a/guest/linux/fs/fxfs/dax.c
++++ b/guest/linux/fs/fxfs/dax.c
+@@ -3451,7 +3451,7 @@
+ 	[FXFS_DAX_READ] = {
+ 		.name = "read",
+ 		.exdev = FXFS_DAX_DROP,
+-		.estale = FXFS_DAX_DROP_ONCE,
++		.estale = FXFS_DAX_FAIL,
+ 	},
+ 	[FXFS_DAX_WRITE] = {
+ 		.name = "write",

@@ -18,6 +18,7 @@
 /* A chunk's data and more, written so as to take two extents, which only a range of its own maps. */
 #define BIG_LEN (3UL << 20)
 #define BIG_FIRST (1UL << 20)
+#define PAUSE_SEALING BIT(1)
 #define PAUSE_READ_MAPPED BIT(4)
 #define PAUSE_WRITE_MAPPED BIT(5)
 
@@ -683,6 +684,85 @@ static void commit_failed_writing(void)
 	}
 }
 
+/*
+ * That zeroing a slice refuses drops it and zeroes again, as a write does (fxfs_dax_retry_next): a
+ * punch in a page of a small file, sealed, whose block moves to the next staging extent, which
+ * the slice of the sealed one can't map (-EXDEV). No scenario took zeroing's way round that
+ * (TASK-160.1).
+ */
+static void zeroing_over_a_sealed_slice(void)
+{
+	static char bytes[2 * PAGE_SIZE], got[2 * PAGE_SIZE];
+	struct file *file;
+	ssize_t done;
+	int err;
+
+	fill(bytes, sizeof(bytes), 5);
+	file = new_file(bytes, sizeof(bytes));
+	check(!sim_fsync(file), "fsync");
+	msleep(10);
+	/* Its slice of the extent the seal sealed, mapped. */
+	done = sim_read(file, 0, got, sizeof(got));
+	check(done == sizeof(got) && !memcmp(got, bytes, sizeof(got)), "the read: %zd", done);
+	err = sim_punch(file, 100, 200);
+	check(!err, "the punch: %d", err);
+	memset(bytes + 100, 0, 100);
+	check_file("after the punch", file, bytes, sizeof(bytes));
+}
+
+static unsigned long killed_addr;
+static int killed_stored = 1;
+
+/* A store through the mapping at killed_addr, its task killed. */
+static void store_killed(void *arg)
+{
+	char byte = 'k';
+
+	current->killed = true;
+	killed_stored = sim_user_store(killed_addr, &byte, 1);
+}
+
+static void seal_other(void *arg)
+{
+	check(sim_write(arg, 0, "sealed", 6) == 6, "the other file's write");
+	check(!sim_fsync(arg), "the seal");
+}
+
+/*
+ * That a fault killed meanwhile tries no more (TASK-79.49): a store whose task was killed faults
+ * as a seal is in progress, which it would wait for (-EBUSY), and gives up at once, SIGBUS. No
+ * scenario took a fault's way round killed (TASK-160.1).
+ */
+static void fault_killed_in_a_seal(void)
+{
+	static char bytes[PAGE_SIZE], got[PAGE_SIZE];
+	struct task_struct *sealer, *storer;
+	struct file *file;
+	char value[24];
+	ssize_t done;
+
+	fill(bytes, sizeof(bytes), 6);
+	file = new_file(bytes, sizeof(bytes));
+	check(!sim_fsync(file), "fsync");
+	msleep(10);
+	/* Its range mapped, and caught up, so that the store's fault goes to the gate. */
+	done = sim_read(file, 0, got, sizeof(got));
+	check(done == sizeof(got) && !memcmp(got, bytes, sizeof(got)), "the read: %zd", done);
+	killed_addr = sim_mmap(file, 0, sizeof(bytes));
+	snprintf(value, sizeof(value), "%lu", PAUSE_SEALING);
+	sim_param_set("dax_pause", value);
+	sealer = sim_spawn("sealer", seal_other, sim_file_new(mount));
+	while (!(sim_param_read("dax_paused") & PAUSE_SEALING))
+		msleep(1);
+	storer = sim_spawn("storer", store_killed, NULL);
+	msleep(100);
+	check(storer->done, "the killed task's fault waits for the seal");
+	check(killed_stored == -EFAULT, "the killed task's store: %d", killed_stored);
+	sim_param_set("dax_pause", "0");
+	wait_for(sealer);
+	check_file("after the killed store", file, bytes, sizeof(bytes));
+}
+
 static const struct {
 	const char *name;
 	void (*run)(void);
@@ -701,12 +781,14 @@ static const struct {
 	SCENARIO(unmap_failed),
 	SCENARIO(map_failed_zeroing),
 	SCENARIO(map_failed_zeroing_again),
+	SCENARIO(zeroing_over_a_sealed_slice),
 	SCENARIO(map_failed_killed),
 	SCENARIO(map_failed_writing),
 	SCENARIO(commit_failed_writing),
 	SCENARIO(allocations_failed),
 	SCENARIO(open_memory_out),
 	SCENARIO(reaches_at_once),
+	SCENARIO(fault_killed_in_a_seal),
 };
 
 static void scenario(void *arg)

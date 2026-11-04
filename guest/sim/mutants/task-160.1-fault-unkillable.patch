@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+#
+# TASK-160.1: a fault killed goes on waiting, as fxfs_dax_rules' fault row had it not killable: a
+# killed task's store, a seal in progress, waits for the seal to end (TASK-79.49).
+# scenarios fault_killed_in_a_seal.
+
+--- a/guest/linux/fs/fxfs/dax.c
++++ b/guest/linux/fs/fxfs/dax.c
+@@ -3469,7 +3469,6 @@
+ 		.edeadlk = FXFS_DAX_WAIT_FILE,
+ 		.eagain = FXFS_DAX_WAIT_ROOM,
+ 		.most_drops = FXFS_DAX_MAX_DROPS,
+-		.killable = true,
+ 	},
+ 	[FXFS_DAX_ZERO] = {
+ 		.name = "zeroing",

@@ -1,16 +1,17 @@
 # SPDX-License-Identifier: GPL-2.0
 # Copyright 2026 The fxdax Authors.
 #
-# TASK-150.20: reads alone make no room for a MAP the host has no memory for.
+# TASK-150.20: reads alone make no room for a MAP the host has no memory for: the one way
+# round, fxfs_dax_retry_next, seals for every way in but this one (TASK-160.1).
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c
-@@ -3638,7 +3638,7 @@
- 		pagefault_disable();
- 		ret = fxfs_dax_read(iocb, to);
- 		pagefault_enable();
--		sealed = ret < 0 ? fxfs_dax_make_memory(inode, &room, ret) : 0;
-+		sealed = 0;
- 		if (ret > 0) {
- 			done += ret;
- 			empty = 0;
+@@ -3612,7 +3612,7 @@
+ 	enum fxfs_dax_then then;
+ 	int sealed;
+ 
+-	sealed = fxfs_dax_make_memory(inode, &retry->room, err);
++	sealed = retry->way == FXFS_DAX_READ ? 0 : fxfs_dax_make_memory(inode, &retry->room, err);
+ 	if (sealed < 0)
+ 		return sealed;
+ 	if (sealed) {

@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+#
+# TASK-160.1: zeroing that a slice refuses, its blocks moved out of the slice's extent, gives up
+# rather than drop the slice: a punch says EXDEV. A cell of fxfs_dax_rules, zeroing's row.
+# scenarios zeroing_over_a_sealed_slice.
+
+--- a/guest/linux/fs/fxfs/dax.c
++++ b/guest/linux/fs/fxfs/dax.c
+@@ -3473,7 +3473,7 @@
+ 	},
+ 	[FXFS_DAX_ZERO] = {
+ 		.name = "zeroing",
+-		.exdev = FXFS_DAX_DROP,
++		.exdev = FXFS_DAX_FAIL,
+ 		.estale = FXFS_DAX_DROP_ONCE,
+ 		.invalidating = true,
+ 	},

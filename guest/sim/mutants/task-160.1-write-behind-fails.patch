@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+#
+# TASK-160.1: a write finding its range behind Fxfs's blocks gives up rather than drop it once:
+# EIO where a write killed meanwhile says EINTR. A cell of fxfs_dax_rules, the write's row.
+# scenarios map_failed_killed.
+
+--- a/guest/linux/fs/fxfs/dax.c
++++ b/guest/linux/fs/fxfs/dax.c
+@@ -3456,7 +3456,7 @@
+ 	[FXFS_DAX_WRITE] = {
+ 		.name = "write",
+ 		.exdev = FXFS_DAX_DROP,
+-		.estale = FXFS_DAX_DROP_ONCE,
++		.estale = FXFS_DAX_FAIL,
+ 		.most_drops = FXFS_DAX_MAX_DROPS,
+ 		.killable = true,
+ 		.no_slices = true,

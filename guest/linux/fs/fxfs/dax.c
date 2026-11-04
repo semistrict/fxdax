@@ -1240,7 +1240,7 @@ static bool fxfs_dax_any_open(const struct fxfs_dax_extent *extents, ssize_t cou
  * -EDEADLK. A fault holds its page's DAX entry, which a write(2) in the gate may wait for, while
  * the semaphore's holder, another fault, waits in Fxfs (fxfs_dax_map_write) for compaction, whose
  * seal waits for that write: the fault lets go of its entry and waits for the semaphore instead
- * (fxfs_dax_do_fault), then tries again (TASK-79.12).
+ * (fxfs_dax_retry_next), then tries again (TASK-79.12).
  */
 static int fxfs_dax_down_read(struct fxfs_dax_file *file, bool fault)
 {
@@ -1266,7 +1266,7 @@ static int fxfs_dax_down_write(struct fxfs_dax_file *file, bool fault)
  * -EBUSY rather than wait for a seal in progress. A fault holds its page's DAX entry, which a
  * write(2) in the gate may wait for (dax_iomap_iter invalidating the page's entries), while the
  * seal waits for that write: the fault lets go of its entry and waits for the seal instead
- * (fxfs_dax_do_fault), then tries again.
+ * (fxfs_dax_retry_next), then tries again.
  */
 static long fxfs_dax_store_begin(struct fxfs_dax *dax, bool fault)
 {
@@ -2388,24 +2388,6 @@ static int fxfs_dax_drop_slice(struct inode *inode, loff_t pos, bool pinned)
 }
 
 /*
- * fxdax: drops the slice a fault can't use: 0 to try again, or what it returns, which is `ret` if
- * the slice stays. A fault from user mode holds no pins, so it waits for those others hold, as a
- * truncate does, the mapping lock held, and a signal sends it back to fault again. One from the
- * kernel may hold them itself, as get_user_pages does while it faults, and fails rather than wait
- * for itself (TASK-79.49).
- */
-static vm_fault_t fxfs_dax_fault_drop_slice(struct vm_fault *vmf, vm_fault_t ret)
-{
-	bool user = vmf->flags & FAULT_FLAG_USER;
-	int err = fxfs_dax_drop_slice(file_inode(vmf->vma->vm_file),
-				      (loff_t)vmf->pgoff << PAGE_SHIFT, user);
-
-	if (!err)
-		return 0;
-	return user && (err == -EINTR || err == -ERESTARTSYS) ? VM_FAULT_NOPAGE : ret;
-}
-
-/*
  * fxdax: makes room for `len` bytes at `pos`, as fxfs_dax_map_write does, or, for a write(2) whose
  * move commits after its bytes (`pending`), as fxfs_dax_begin_write does.
  */
@@ -3425,6 +3407,262 @@ static int fxfs_dax_make_memory(struct inode *inode, struct fxfs_dax_room *room,
 	return fxfs_nofs(fxfs_fsync(fxfs_vfs_fs(inode->i_sb))) ?: 1;
 }
 
+/* fxdax: the ways into a file's data, each going round through fxfs_dax_retry_next. */
+enum fxfs_dax_way {
+	FXFS_DAX_READ,
+	FXFS_DAX_WRITE,
+	FXFS_DAX_FAULT,
+	FXFS_DAX_ZERO,
+	FXFS_DAX_WAYS,
+};
+
+/* fxdax: what a way in does about an error its iomaps said (fxfs_dax_retry_next). */
+enum fxfs_dax_then {
+	/* Gives up, with the error: -ESTALE, dax.c's own word, as -EIO. */
+	FXFS_DAX_FAIL,
+	/* Drops the chunk's range, to be mapped again where its blocks are now. */
+	FXFS_DAX_DROP,
+	/* As FXFS_DAX_DROP, once: a second time, -EIO. */
+	FXFS_DAX_DROP_ONCE,
+	/* Waits for the seal in progress to end. */
+	FXFS_DAX_WAIT_SEAL,
+	/* Waits for the file's semaphore to be free. */
+	FXFS_DAX_WAIT_FILE,
+	/* Reclaims a range, or waits a moment for one let go of. */
+	FXFS_DAX_WAIT_ROOM,
+};
+
+/* fxdax: a way in's row of the table at fxfs_dax_retry_next. */
+struct fxfs_dax_rules {
+	const char *name;
+	/* What each error its iomaps say has it do; FXFS_DAX_FAIL for any other. */
+	enum fxfs_dax_then exdev, estale, ebusy, edeadlk, eagain;
+	/* The most drops, of either error, with nothing got on: 0 for no limit. */
+	unsigned int most_drops;
+	/* Whether a fatal signal ends it, rather than another try. */
+	bool killable;
+	/* Whether a drop after its first has the chunk mapped by a range of its own: `no_slices`. */
+	bool no_slices;
+	/* Whether it holds the inode's invalidate_lock for writing, which a drop takes otherwise. */
+	bool invalidating;
+};
+
+static const struct fxfs_dax_rules fxfs_dax_rules[FXFS_DAX_WAYS] = {
+	[FXFS_DAX_READ] = {
+		.name = "read",
+		.exdev = FXFS_DAX_DROP,
+		.estale = FXFS_DAX_DROP_ONCE,
+	},
+	[FXFS_DAX_WRITE] = {
+		.name = "write",
+		.exdev = FXFS_DAX_DROP,
+		.estale = FXFS_DAX_DROP_ONCE,
+		.most_drops = FXFS_DAX_MAX_DROPS,
+		.killable = true,
+		.no_slices = true,
+	},
+	[FXFS_DAX_FAULT] = {
+		.name = "fault",
+		.exdev = FXFS_DAX_DROP,
+		.estale = FXFS_DAX_DROP_ONCE,
+		.ebusy = FXFS_DAX_WAIT_SEAL,
+		.edeadlk = FXFS_DAX_WAIT_FILE,
+		.eagain = FXFS_DAX_WAIT_ROOM,
+		.most_drops = FXFS_DAX_MAX_DROPS,
+		.killable = true,
+	},
+	[FXFS_DAX_ZERO] = {
+		.name = "zeroing",
+		.exdev = FXFS_DAX_DROP,
+		.estale = FXFS_DAX_DROP_ONCE,
+		.invalidating = true,
+	},
+};
+
+/* fxdax: a way in's tries at a file, which fxfs_dax_retry_next goes round. */
+struct fxfs_dax_retry {
+	struct inode *inode;
+	enum fxfs_dax_way way;
+	/*
+	 * Whether a fatal signal ends it, as its way's may: not a write's while it writes bytes in
+	 * hand, taken from the user's memory (fxfs_dax_write_iter).
+	 */
+	bool killable;
+	/*
+	 * Whether its drops wait for pages pinned. A fault from user mode holds no pins, so it waits
+	 * for those others hold, as a truncate does, the mapping lock held, and a signal sends it
+	 * back to fault again. One from the kernel may hold them itself, as get_user_pages does
+	 * while it faults, and fails rather than wait for itself (TASK-79.49).
+	 */
+	bool pinned;
+	/* The MAPs the host refused for want of memory, and the seals made for them. */
+	struct fxfs_dax_room room;
+	/* Its drops since it last got on, its drops once (-ESTALE) ever, and its waits for room. */
+	unsigned int drops, once, waits;
+	/* The window's ranges let go of as the try began: a wait for room waits for more. */
+	long seen;
+	/* Why it gave up, which a fault says its own way (fxfs_dax_fault_gave_up). */
+	bool killed, drop_failed;
+};
+
+static struct fxfs_dax_retry fxfs_dax_retry(struct inode *inode, enum fxfs_dax_way way)
+{
+	struct fxfs_dax *dax = fxfs_dax_of(inode);
+
+	return (struct fxfs_dax_retry) {
+		.inode = inode, .way = way, .killable = fxfs_dax_rules[way].killable, .pinned = true,
+		.room = fxfs_dax_room(dax), .seen = atomic_long_read(&dax->released),
+	};
+}
+
+/* fxdax: the way in got on: its drops, and its seals for memory, count from none again. */
+static void fxfs_dax_retry_got_on(struct fxfs_dax_retry *retry)
+{
+	retry->drops = 0;
+	retry->room.seals = 0;
+}
+
+/* fxdax: what `rules` has a way in do about `err`. */
+static enum fxfs_dax_then fxfs_dax_then(const struct fxfs_dax_rules *rules, int err)
+{
+	switch (err) {
+	case -EXDEV:
+		return rules->exdev;
+	case -ESTALE:
+		return rules->estale;
+	case -EBUSY:
+		return rules->ebusy;
+	case -EDEADLK:
+		return rules->edeadlk;
+	case -EAGAIN:
+		return rules->eagain;
+	default:
+		return FXFS_DAX_FAIL;
+	}
+}
+
+/* fxdax: drops the range of the chunk at `pos`, to be mapped again as the next try needs it. */
+static int fxfs_dax_retry_drop(struct fxfs_dax_retry *retry, loff_t pos)
+{
+	pgoff_t chunk = pos >> FXFS_DAX_SHIFT;
+	int err;
+
+	if (fxfs_dax_rules[retry->way].invalidating)
+		err = fxfs_dax_drop_pinned(retry->inode, chunk, chunk, -1, retry->pinned);
+	else
+		err = fxfs_dax_drop_slice(retry->inode, pos, retry->pinned);
+	retry->drop_failed = err != 0;
+	return err;
+}
+
+/*
+ * fxdax: readies the next try, which yields first: retries that found the file's semaphore, or the
+ * gate, busy as soon as they looked again kept the task holding it off both of a 2-vCPU guest's
+ * CPUs, without preemption, for minutes (TASK-113). 0.
+ */
+static int fxfs_dax_retry_again(struct fxfs_dax_retry *retry)
+{
+	retry->seen = atomic_long_read(&fxfs_dax_of(retry->inode)->released);
+	cond_resched();
+	return 0;
+}
+
+/*
+ * fxdax: what a way in does after a try that failed with `err`, its iomaps' word for why, of the
+ * chunk at `pos`: 0 to try again, or what to give up with. Every way into a file's data comes round
+ * here: read(2), write(2), a fault of a mapping, and zeroing. Each read the errors its own way, and
+ * TASK-150.13, 150.20, 153.1 and xfstests generic/638 were each one way in missing what another
+ * did (TASK-160.1). In this order:
+ *
+ * 1. The host refused a MAP for want of memory since the way in last saw, and the try failed of it
+ *    (-ENOMEM, -ESTALE, -EXDEV): a seal makes room (fxfs_dax_make_memory), and the range is
+ *    dropped, unless there was none (-ENOMEM). More than FXFS_DAX_MAX_DROPS seals with nothing got
+ *    on: -ENOMEM. Every way alike; a follower seals nothing.
+ * 2. Else, by the error, as its way's row of fxfs_dax_rules has it:
+ *
+ *      error               read        write         fault              zeroing
+ *      -EXDEV (moved)      drop        drop, limit   drop, limit        drop
+ *      -ESTALE (behind)    drop once   drop once,    drop once, limit   drop once
+ *                                      limit
+ *      -EBUSY (sealing)    fail        fail          wait for the seal  fail
+ *      -EDEADLK (locked)   fail        fail          wait for the file  fail
+ *      -EAGAIN (no room)   fail        fail          make room, 3,000   fail
+ *      any other           fail        fail          fail               fail
+ *      killed              -           -EINTR        SIGBUS             -
+ *
+ *    Failing, -ESTALE says -EIO. A range behind twice, -EIO: it is dropped once.
+ * 3. Killed, a way that may be: -EINTR, which a fault says as SIGBUS (TASK-79.49). A write spun
+ *    unkillable, with nothing in the log (TASK-140).
+ * 4. The limits. More drops, of either error, than FXFS_DAX_MAX_DROPS with nothing got on: -EIO,
+ *    said in the log. More waits for room than FXFS_DAX_NO_ROOM_WAITS: the error. A write's drop
+ *    after its first has the chunk mapped by a range of its own, which no slice can refuse
+ *    (`no_slices`, generic/638).
+ * 5. A drop that fails gives up with its error, which a fault from user mode stopped by a signal
+ *    says as a fault to take again (fxfs_dax_fault_gave_up). Each try again yields first.
+ *
+ * It holds no iomap, nor a DAX entry: a fault waits here for what its iomap won't wait for holding
+ * its page's entry, which a write(2) in the gate may wait for, while the seal, or the semaphore's
+ * holder, waits for that write (TASK-79.12).
+ */
+static int fxfs_dax_retry_next(struct fxfs_dax_retry *retry, int err, loff_t pos)
+{
+	const struct fxfs_dax_rules *rules = &fxfs_dax_rules[retry->way];
+	struct inode *inode = retry->inode;
+	struct fxfs_dax *dax = fxfs_dax_of(inode);
+	enum fxfs_dax_then then;
+	int sealed;
+
+	sealed = fxfs_dax_make_memory(inode, &retry->room, err);
+	if (sealed < 0)
+		return sealed;
+	if (sealed) {
+		if (err != -ENOMEM) {
+			err = fxfs_dax_retry_drop(retry, pos);
+			if (err)
+				return err;
+		}
+		return fxfs_dax_retry_again(retry);
+	}
+	then = fxfs_dax_then(rules, err);
+	if (then == FXFS_DAX_FAIL)
+		return err == -ESTALE ? -EIO : err;
+	if (then == FXFS_DAX_DROP_ONCE && retry->once++)
+		return -EIO;
+	if (retry->killable && fatal_signal_pending(current)) {
+		retry->killed = true;
+		return -EINTR;
+	}
+	switch (then) {
+	case FXFS_DAX_WAIT_SEAL:
+		fxfs_device_wait_unsealed(dax->dev);
+		break;
+	case FXFS_DAX_WAIT_FILE:
+		down_read(&fxfs_dax_file(inode)->sem);
+		up_read(&fxfs_dax_file(inode)->sem);
+		break;
+	case FXFS_DAX_WAIT_ROOM:
+		/* Nor, for so long, could anything let go of one: it fails, not wait for ever. */
+		if (++retry->waits > FXFS_DAX_NO_ROOM_WAITS)
+			return err;
+		fxfs_dax_make_room(dax, retry->seen);
+		break;
+	default:
+		/* FXFS_DAX_DROP and FXFS_DAX_DROP_ONCE. */
+		if (++retry->drops > rules->most_drops && rules->most_drops) {
+			pr_err_ratelimited("fxfs: ino %lu: a %s at %lld found no range to take it\n",
+					   inode->i_ino, rules->name, pos);
+			return -EIO;
+		}
+		if (rules->no_slices && retry->drops > 1)
+			WRITE_ONCE(fxfs_dax_file(inode)->no_slices, true);
+		err = fxfs_dax_retry_drop(retry, pos);
+		if (err)
+			return err;
+		break;
+	}
+	return fxfs_dax_retry_again(retry);
+}
+
 /*
  * fxdax: a read, whose copy takes no page fault: a read into a mapping of the file it reads holds
  * the range through its copy, and the fault waited for that range's users, itself among them, for
@@ -3433,43 +3671,23 @@ static int fxfs_dax_make_memory(struct inode *inode, struct fxfs_dax_room *room,
 static ssize_t fxfs_dax_read_faulting_between(struct kiocb *iocb, struct iov_iter *to)
 {
 	struct inode *inode = file_inode(iocb->ki_filp);
-	struct fxfs_dax_room room = fxfs_dax_room(fxfs_dax_of(inode));
+	struct fxfs_dax_retry retry = fxfs_dax_retry(inode, FXFS_DAX_READ);
 	ssize_t ret, done = 0;
-	unsigned int empty = 0, stale = 0;
-	int sealed;
+	unsigned int empty = 0;
 
 	for (;;) {
 		pagefault_disable();
 		ret = fxfs_dax_read(iocb, to);
 		pagefault_enable();
-		sealed = ret < 0 ? fxfs_dax_make_memory(inode, &room, ret) : 0;
 		if (ret > 0) {
 			done += ret;
 			empty = 0;
-			room.seals = 0;
-		} else if (sealed) {
-			if (sealed < 0) {
-				ret = sealed;
-				break;
-			}
-			if (ret != -ENOMEM) {
-				ret = fxfs_dax_drop_slice(inode, iocb->ki_pos, true);
-				if (ret)
-					break;
-			}
-			continue;
-		} else if (ret == -ESTALE || ret == -EXDEV) {
-			/* fxdax: a range behind Fxfs's blocks, once: dropped, mapped again. */
-			if (ret == -ESTALE && stale++) {
-				ret = -EIO;
-				break;
-			}
-			ret = fxfs_dax_drop_slice(inode, iocb->ki_pos, true);
+			fxfs_dax_retry_got_on(&retry);
+		} else if (ret < 0 && ret != -EFAULT) {
+			ret = fxfs_dax_retry_next(&retry, ret, iocb->ki_pos);
 			if (ret)
 				break;
 			continue;
-		} else if (ret != -EFAULT && ret != 0) {
-			break;
 		}
 		if (!iov_iter_count(to) || iocb->ki_pos >= i_size_read(inode))
 			break;
@@ -3644,14 +3862,13 @@ static ssize_t fxfs_dax_write_iter(struct kiocb *iocb, struct iov_iter *from)
 	struct inode *inode = file_inode(iocb->ki_filp);
 	struct fxfs_dax_file *file = fxfs_dax_file(inode);
 	struct fxfs_dax *dax = fxfs_dax_of(inode);
-	struct fxfs_dax_room room = fxfs_dax_room(dax);
+	struct fxfs_dax_retry retry = fxfs_dax_retry(inode, FXFS_DAX_WRITE);
 	struct fxfs_dax_source hand = {};
 	struct iov_iter *source = from;
 	loff_t old_size, end, write_pos = 0;
 	u64 seals = 0, began, lap;
 	ssize_t ret, done = 0;
-	unsigned int stale = 0, drops = 0;
-	int err, sealed;
+	int err;
 
 	if (iocb->ki_flags & IOCB_NOWAIT)
 		return -EAGAIN;
@@ -3702,56 +3919,27 @@ static ssize_t fxfs_dax_write_iter(struct kiocb *iocb, struct iov_iter *from)
 		if (file->slice_left)
 			fxfs_dax_follow_slice(inode, file);
 		fxfs_dax_lap(&dax->write_rw_ns, &lap);
-		sealed = ret < 0 ? fxfs_dax_make_memory(inode, &room, ret) : 0;
 		if (ret > 0) {
 			done += ret;
-			drops = 0;
-			room.seals = 0;
-		} else if (sealed) {
-			if (sealed < 0) {
-				ret = sealed;
-				break;
-			}
-			if (ret != -ENOMEM) {
-				ret = fxfs_dax_drop_slice(inode, iocb->ki_pos, true);
-				if (ret)
-					break;
-			}
-			fxfs_dax_lap(&dax->write_retry_ns, &lap);
+			fxfs_dax_retry_got_on(&retry);
 		} else if (source == from && ret == -EFAULT) {
 			ret = fxfs_dax_source_take(&hand, from, iocb->ki_pos);
 			if (ret)
 				break;
 			source = &hand.iter;
-		} else if (ret == -EXDEV || (ret == -ESTALE && !stale++)) {
-			/*
-			 * fxdax: a write that can't get on fails, and says so: it spun unkillable, with
-			 * nothing in the log (TASK-140).
-			 */
-			if (source == from && fatal_signal_pending(current)) {
-				ret = -EINTR;
-				break;
-			}
-			if (++drops > FXFS_DAX_MAX_DROPS) {
-				pr_err("fxfs: ino %lu: a write at %lld found no range to take it\n",
-				       inode->i_ino, iocb->ki_pos);
-				ret = -EIO;
-				break;
-			}
-			if (drops > 1)
-				WRITE_ONCE(file->no_slices, true);
+		} else if (!ret) {
+			break;
+		} else {
 			/*
 			 * A slice the write can't use, or fxdax: a range mapping some of its blocks
-			 * where they were (TASK-79.106), once: dropped, the chunk is mapped again.
+			 * where they were (TASK-79.106), once: dropped, the chunk is mapped again. A
+			 * write killed meanwhile writes no more, but the bytes it has in hand.
 			 */
-			ret = fxfs_dax_drop_slice(inode, iocb->ki_pos, true);
+			retry.killable = source == from;
+			ret = fxfs_dax_retry_next(&retry, ret, iocb->ki_pos);
 			fxfs_dax_lap(&dax->write_retry_ns, &lap);
 			if (ret)
 				break;
-		} else {
-			if (ret == -ESTALE)
-				ret = -EIO;
-			break;
 		}
 		if (source != from && !iov_iter_count(source))
 			source = from;
@@ -3793,31 +3981,39 @@ out:
 	return ret;
 }
 
+/*
+ * fxdax: what a fault whose try returned `ret` returns, as fxfs_dax_retry_next gave up with `err`:
+ * SIGBUS if it was killed meanwhile (TASK-79.49). A fault from user mode whose drop a signal
+ * stopped goes back to user mode, to fault again once the signal is handled. Else what the try
+ * returned.
+ */
+static vm_fault_t fxfs_dax_fault_gave_up(const struct fxfs_dax_retry *retry, vm_fault_t ret,
+					 int err)
+{
+	if (retry->killed)
+		return VM_FAULT_SIGBUS;
+	if (retry->drop_failed && retry->pinned && (err == -EINTR || err == -ERESTARTSYS))
+		return VM_FAULT_NOPAGE;
+	return ret;
+}
+
 /* A fault of `order`, PAGE's or PMD's, writing if `write`. */
 static vm_fault_t fxfs_dax_do_fault(struct vm_fault *vmf, unsigned int order, bool write)
 {
 	struct inode *inode = file_inode(vmf->vma->vm_file);
 	struct super_block *sb = inode->i_sb;
-	struct fxfs_dax_room room = fxfs_dax_room(fxfs_dax_of(inode));
+	struct fxfs_dax_retry retry = fxfs_dax_retry(inode, FXFS_DAX_FAULT);
 	u64 began = ktime_get_ns();
-	unsigned int stale = 0, waits = 0, drops = 0;
 	vm_fault_t ret;
 	unsigned long pfn;
-	int error, sealed;
+	int error, err;
 
+	retry.pinned = vmf->flags & FAULT_FLAG_USER;
 	if (write) {
 		sb_start_pagefault(sb);
 		file_update_time(vmf->vma->vm_file);
 	}
 	for (;;) {
-		long seen = atomic_long_read(&fxfs_dax_of(inode)->released);
-
-		/*
-		 * fxdax: each try after the first yields first: retries that find the file's semaphore,
-		 * or the gate, busy as soon as they look again kept the task holding it off both of a
-		 * 2-vCPU guest's CPUs, without preemption, for minutes (TASK-113).
-		 */
-		cond_resched();
 		error = 0;
 		/* fxdax: a follower's extents read and mapped under its fill barrier, as of one state. */
 		fxfs_vfs_fill_begin(sb);
@@ -3825,73 +4021,26 @@ static vm_fault_t fxfs_dax_do_fault(struct vm_fault *vmf, unsigned int order, bo
 		ret = dax_iomap_fault(vmf, order, &pfn, &error, &fxfs_dax_iomap_ops);
 		filemap_invalidate_unlock_shared(inode->i_mapping);
 		fxfs_vfs_fill_end(sb);
-		sealed = ret & VM_FAULT_ERROR ? fxfs_dax_make_memory(inode, &room, error) : 0;
-		if (sealed > 0) {
-			ret = error == -ENOMEM ? 0 : fxfs_dax_fault_drop_slice(vmf, ret);
-			if (ret)
-				break;
-			continue;
-		}
-		if (sealed < 0)
-			error = sealed;
-		if (!(ret & VM_FAULT_ERROR) || (error != -EAGAIN && error != -EXDEV &&
-						 error != -EBUSY && error != -ESTALE && error != -EDEADLK))
+		err = error;
+		if (!(ret & VM_FAULT_ERROR) || !error)
 			break;
-		/* fxdax: a fault killed meanwhile tries no more (TASK-79.49). */
-		if (fatal_signal_pending(current)) {
-			ret = VM_FAULT_SIGBUS;
-			break;
-		}
-		/* fxdax: a range mapping blocks where they were, dropped once (TASK-79.106). */
-		if (error == -ESTALE) {
-			if (stale++)
-				break;
-			ret = fxfs_dax_fault_drop_slice(vmf, ret);
-			if (ret)
-				break;
-			continue;
-		}
-		if (error == -EBUSY) {
-			/* A seal was in progress: waited for without the page's DAX entry. */
-			fxfs_device_wait_unsealed(fxfs_dax_of(inode)->dev);
-			continue;
-		}
-		if (error == -EDEADLK) {
-			/*
-			 * fxdax: the file's semaphore was held: waited for without the page's DAX
-			 * entry, which a write(2) its holder waits for may wait for (TASK-79.12).
-			 */
-			struct fxfs_dax_file *file = fxfs_dax_file(inode);
-
-			down_read(&file->sem);
-			up_read(&file->sem);
-			continue;
-		}
-		if (error == -EXDEV) {
-			/*
-			 * A slice can't take the store: it maps the chunk no more. fxdax: a fault that
-			 * can't get on fails, and says so, as a write does: this is the one way round
-			 * that waits for nothing, and only a seal would end it, if one came (TASK-140).
-			 */
-			if (++drops > FXFS_DAX_MAX_DROPS)
-				break;
-			ret = fxfs_dax_fault_drop_slice(vmf, ret);
-			if (ret)
-				break;
-			continue;
-		}
 		/*
-		 * No range was free, nor could the fault reclaim one, holding the lock it holds.
-		 * fxdax: nor, for so long, could anything: it fails rather than wait for ever.
+		 * A slice can't take the store: it maps the chunk no more. fxdax: or a seal was in
+		 * progress, or the file's semaphore held, which the fault waits for without its
+		 * page's DAX entry; or no range was free, nor could it reclaim one, holding the lock
+		 * it holds.
 		 */
-		if (++waits > FXFS_DAX_NO_ROOM_WAITS)
-			break;
-		fxfs_dax_make_room(fxfs_dax_of(inode), seen);
+		err = fxfs_dax_retry_next(&retry, error, (loff_t)vmf->pgoff << PAGE_SHIFT);
+		if (!err)
+			continue;
+		ret = fxfs_dax_fault_gave_up(&retry, ret, err);
+		break;
 	}
-	/* fxdax: a SIGBUS says nothing of why: the error here does (TASK-121). */
+	/* fxdax: a SIGBUS says nothing of why: the errors here do (TASK-121). */
 	if (ret & VM_FAULT_SIGBUS)
-		pr_err_ratelimited("fxfs: a %s fault of order %u at page %lu of ino %lu failed: %d\n",
-				   write ? "write" : "read", order, vmf->pgoff, inode->i_ino, error);
+		pr_err_ratelimited("fxfs: a %s fault of order %u at page %lu of ino %lu failed: %d, its iomap's %d\n",
+				   write ? "write" : "read", order, vmf->pgoff, inode->i_ino, err,
+				   error);
 	if (write)
 		sb_end_pagefault(sb);
 	fxfs_hist_add(&fxfs_dax_of(inode)->fault_hist, ktime_get_ns() - began);
@@ -4793,28 +4942,20 @@ static int fxfs_dax_break_layouts(struct inode *inode, loff_t start)
 
 /*
  * Zeroes the `len` bytes of `inode` at `pos`, in one page, through the window: dropping a slice
- * that can't take them where it is, to be mapped again. With the invalidate_lock held for writing.
+ * that can't take them where it is, to be mapped again, and fxdax: a range behind Fxfs's blocks,
+ * once (TASK-150.13, fxfs_dax_retry_next). With the invalidate_lock held for writing.
  */
 static int fxfs_dax_zero_part(struct inode *inode, loff_t pos, loff_t len)
 {
-	struct fxfs_dax_room room = fxfs_dax_room(fxfs_dax_of(inode));
-	unsigned int stale = 0;
+	struct fxfs_dax_retry retry = fxfs_dax_retry(inode, FXFS_DAX_ZERO);
 	bool zeroed;
-	int sealed, err;
+	int err;
 
 	for (;;) {
 		err = dax_zero_range(inode, pos, len, &zeroed, &fxfs_dax_iomap_ops);
-		sealed = fxfs_dax_make_memory(inode, &room, err);
-		if (sealed < 0)
-			return sealed;
-		if (sealed && err == -ENOMEM)
-			continue;
-		/* fxdax: a range behind Fxfs's blocks is dropped as a slice is, once (TASK-150.13). */
-		if (!sealed && err == -ESTALE && stale++)
-			return -EIO;
-		if (err != -EXDEV && err != -ESTALE)
-			return err;
-		err = fxfs_dax_drop(inode, pos >> FXFS_DAX_SHIFT, pos >> FXFS_DAX_SHIFT, -1);
+		if (!err)
+			return 0;
+		err = fxfs_dax_retry_next(&retry, err, pos);
 		if (err)
 			return err;
 	}
