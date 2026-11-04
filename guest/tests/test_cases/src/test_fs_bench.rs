@@ -485,13 +485,13 @@ RUN wget -q -O /opt/lua-5.4.7.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz \\
     /// it writes as it does, each with a root image of its own, on a core of the host's of their
     /// own, and the writer on the rest, so that what the followers cost the writer is what
     /// following does, not their reading's taking its CPUs: theirs from its SMT siblings too. The
-    /// followers start once the writer has mounted its filesystem, and must still be following
-    /// when it is done; what they
-    /// read, and how many of their reads failed, are observations.
+    /// followers start once the writer has mounted its filesystem, its workloads once they have,
+    /// and they must still be following when it is done; what they read, and how many of their
+    /// reads failed, are observations.
     mod followed {
         use super::*;
         use crate::vm::Firecracker;
-        use std::io::{BufRead, BufReader};
+        use std::io::{BufRead, BufReader, Write};
         use std::os::unix::net::UnixListener;
         use std::path::Path;
 
@@ -510,14 +510,17 @@ RUN wget -q -O /opt/lua-5.4.7.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz \\
             let listener = UnixListener::bind(&ready)?;
             let mut writer = spawn(test_setup, &root, "writer", &store, Some(&uds), &writers)?;
             // Until the writer says its filesystem is mounted, unless it is gone first.
-            let stream = writer.accept(&listener)?;
+            let mut stream = writer.accept(&listener)?;
             let mut said = String::new();
-            BufReader::new(stream).read_line(&mut said)?;
+            BufReader::new(&stream).read_line(&mut said)?;
             anyhow::ensure!(said == "ready\n", "the writer said {said:?}");
             let followers = FOLLOWERS
                 .iter()
                 .map(|role| spawn(test_setup, &root, role, &store, None, &theirs))
                 .collect::<anyhow::Result<Vec<_>>>()?;
+            // The writer's workloads wait for its followers' root images, which spawning them
+            // makes and syncs, onto the host's filesystem its store is on too (TASK-92.38).
+            stream.write_all(b"go\n")?;
             let (status, console) = writer.wait()?;
             // The writer's output is the case's.
             crate::vm::split_console(std::fs::File::open(&console)?)?;
@@ -815,9 +818,12 @@ mod guest {
     /// Small enough for fxdax's extent daemon, of 1 GiB by default, to cache whole.
     const DATA_SIZE: u64 = 256 << 20;
     /// What the random I/O workloads that are not timed read or write, and the timed ones' time.
-    /// What the random writes write: 16384 writes, which take seconds, as their time is measured
-    /// to a quarter of a second (fio's exit).
+    /// What the random writes write: 16384 writes, which take seconds.
     const RANDOM_SIZE: u64 = 64 << 20;
+    /// What the fsynced appends write: 2048 appends of 4 KiB, which take a second or more where an
+    /// fsync takes half a millisecond or more, so that fio's runtime, in milliseconds, measures
+    /// them finely.
+    const APPENDED_SIZE: u64 = 8 << 20;
     const RUNTIME: &str = "--runtime=2";
     const MIB: f64 = (1 << 20) as f64;
     /// The number of files the metadata workloads create, stat, list and remove: FXDAX_BENCH_FILES,
@@ -862,15 +868,21 @@ mod guest {
     }
 
     /// fxdax: the followed case's writer says it is ready, its filesystem mounted and synced, for
-    /// its followers to start.
+    /// its followers to start, and waits for the host to say they have (`go`), so that its
+    /// workloads do not run beside the making of their root images (TASK-92.38).
     fn ready() {
         use nix::sys::socket::{AddressFamily, SockFlag, SockType, VsockAddr, connect, socket};
+        use std::io::BufRead as _;
         use std::os::fd::AsRawFd as _;
         let socket = socket(AddressFamily::Vsock, SockType::Stream, SockFlag::empty(), None)
             .expect("a vsock socket");
         connect(socket.as_raw_fd(), &VsockAddr::new(2, FOLLOW_READY_PORT))
             .expect("connecting to the host");
-        fs::File::from(socket).write_all(b"ready\n").unwrap();
+        let mut host = fs::File::from(socket);
+        host.write_all(b"ready\n").unwrap();
+        let mut said = String::new();
+        std::io::BufReader::new(host).read_line(&mut said).unwrap();
+        assert_eq!(said, "go\n", "the host said {said:?}");
     }
 
     /// fxdax: a follower of a followed case reads what its writer writes, as it does, if `read`,
@@ -997,23 +1009,44 @@ mod guest {
         std::io::stdout().flush().unwrap();
     }
 
-    /// What fio measured of a job, and how long it took.
+    /// What fio measured of a job: its reads, and its writes.
     struct Fio {
-        /// The job's reads per second, and bytes read per second.
-        read_iops: f64,
-        read_bytes_per_sec: f64,
-        /// From starting fio to its exit, including a write job's final fsync.
-        secs: f64,
+        read: Rates,
+        write: Rates,
+    }
+
+    /// A job's operations and bytes per second, in one direction, over fio's runtime of it: from
+    /// the job's first I/O to its last, a write job's fsyncs among them, its final one
+    /// (`--end_fsync`) too. Not fio's starting up, laying out the file and exiting, on a 250 ms
+    /// tick, which a clock around fio would take in (TASK-92.11).
+    struct Rates {
+        iops: f64,
+        bytes_per_sec: f64,
+    }
+
+    impl Rates {
+        /// The rates of fio's JSON of a job's direction (`jobs[].read`, `jobs[].write`).
+        fn of(direction: &serde_json::Value) -> Self {
+            Self {
+                iops: direction["iops"].as_f64().expect("fio's iops"),
+                bytes_per_sec: direction["bw_bytes"].as_f64().expect("fio's bw_bytes"),
+            }
+        }
     }
 
     /// Runs fio on the data file.
     fn fio(args: &[&str]) -> Fio {
+        fio_on(DATA, DATA_SIZE, args)
+    }
+
+    /// Runs fio on `file`, of `size` bytes.
+    fn fio_on(file: &str, size: u64, args: &[&str]) -> Fio {
         let output = "/tmp/fio.json";
-        let size = format!("--size={DATA_SIZE}");
+        let size = format!("--size={size}");
         let mut all = vec![
             "--name=bench",
             "--filename",
-            DATA,
+            file,
             &size,
             // fio would drop the file's cached pages before each job: drop_caches makes the cold
             // jobs cold.
@@ -1023,88 +1056,62 @@ mod guest {
             output,
         ];
         all.extend_from_slice(args);
-        let start = Instant::now();
         run("fio", &all);
-        let secs = start.elapsed().as_secs_f64();
         let json: serde_json::Value =
             serde_json::from_slice(&fs::read(output).unwrap()).expect("fio's JSON");
-        let read = &json["jobs"][0]["read"];
-        Fio {
-            read_iops: read["iops"].as_f64().expect("read iops"),
-            read_bytes_per_sec: read["bw_bytes"].as_f64().expect("read bw_bytes"),
-            secs,
-        }
+        let job = &json["jobs"][0];
+        Fio { read: Rates::of(&job["read"]), write: Rates::of(&job["write"]) }
     }
 
-    /// Reports the rate of 4 KiB writes over `bytes` done in `secs`.
-    fn write_iops(workload: &str, bytes: u64, secs: f64) {
-        result(workload, "IOPS", true, (bytes / 4096) as f64 / secs);
-    }
-
-    /// Reads report fio's own rates, which leave out fio starting up. Writes are timed from
-    /// starting fio to its exit, so that they include the fsync that makes them durable.
+    /// Each reports fio's own rates (`Rates`): a write's include the fsyncs that make it durable.
     fn io_workloads() {
         let blocks = (DATA_SIZE / 4096) as usize;
         let random_blocks = (RANDOM_SIZE / 4096) as usize;
         let job =
             observed("seq-write", blocks, || fio(&["--rw=write", "--bs=1M", "--end_fsync=1"]));
-        result("seq-write", "MiB/s", true, DATA_SIZE as f64 / MIB / job.secs);
+        result("seq-write", "MiB/s", true, job.write.bytes_per_sec / MIB);
 
         let random = format!("--io_size={RANDOM_SIZE}");
         drop_caches();
         let job = observed("rand-read-cold", random_blocks, || {
             fio(&["--rw=randread", "--bs=4k", &random])
         });
-        result("rand-read-cold", "IOPS", true, job.read_iops);
+        result("rand-read-cold", "IOPS", true, job.read.iops);
         drop_caches();
         let job = fio(&["--rw=read", "--bs=1M"]);
-        result("seq-read-cold", "MiB/s", true, job.read_bytes_per_sec / MIB);
+        result("seq-read-cold", "MiB/s", true, job.read.bytes_per_sec / MIB);
         // A warm read of the file takes milliseconds, which fio's runtimes would quantize, so
         // it reads for a while.
         let job = fio(&["--rw=read", "--bs=1M", "--time_based", RUNTIME]);
-        result("seq-read-warm", "MiB/s", true, job.read_bytes_per_sec / MIB);
+        result("seq-read-warm", "MiB/s", true, job.read.bytes_per_sec / MIB);
         let job = fio(&["--rw=randread", "--bs=4k", "--time_based", RUNTIME]);
-        result("rand-read-warm", "IOPS", true, job.read_iops);
+        result("rand-read-warm", "IOPS", true, job.read.iops);
         // fxdax: the file read once through a new mapping, which faults each part in (TASK-26.18.8):
         // before the random writes, which would leave it in small extents.
         let faults = page_faults();
         let job = fio(&["--ioengine=mmap", "--rw=read", "--bs=1M"]);
-        result("mmap-seq-read", "MiB/s", true, job.read_bytes_per_sec / MIB);
+        result("mmap-seq-read", "MiB/s", true, job.read.bytes_per_sec / MIB);
         faults_per_mib("mmap-seq-read", page_faults() - faults, DATA_SIZE);
 
         let job = observed("rand-write", random_blocks, || {
             fio(&["--rw=randwrite", "--bs=4k", &random, "--end_fsync=1"])
         });
-        write_iops("rand-write", RANDOM_SIZE, job.secs);
+        result("rand-write", "IOPS", true, job.write.iops);
 
         let job = fio(&["--ioengine=mmap", "--rw=randread", "--bs=4k", "--time_based", RUNTIME]);
-        result("mmap-rand-read", "IOPS", true, job.read_iops);
+        result("mmap-rand-read", "IOPS", true, job.read.iops);
         let job = observed("mmap-rand-write", random_blocks, || {
             fio(&["--ioengine=mmap", "--rw=randwrite", "--bs=4k", &random, "--end_fsync=1"])
         });
-        write_iops("mmap-rand-write", RANDOM_SIZE, job.secs);
+        result("mmap-rand-write", "IOPS", true, job.write.iops);
         fs::remove_file(DATA).unwrap();
 
         // A log: each 4 KiB append is fsynced.
         let log = format!("{MNT}/log");
-        let appended = 1 << 20;
-        let start = Instant::now();
-        observed("fsync-append", (appended / 4096) as usize, || {
-            run(
-                "fio",
-                &[
-                    "--name=log",
-                    "--filename",
-                    &log,
-                    "--size=1M",
-                    "--rw=write",
-                    "--bs=4k",
-                    "--fsync=1",
-                    "--output=/dev/null",
-                ],
-            )
+        let job = observed("fsync-append", (APPENDED_SIZE / 4096) as usize, || {
+            fio_on(&log, APPENDED_SIZE, &["--rw=write", "--bs=4k", "--fsync=1"])
         });
-        write_iops("fsync-append", appended, start.elapsed().as_secs_f64());
+        result("fsync-append", "IOPS", true, job.write.iops);
         fs::remove_file(&log).unwrap();
     }
 
@@ -1940,8 +1947,8 @@ mod guest {
                     mount(&device, "ext4", "");
                 }
                 Backend::FxfsGuest | Backend::FxfsGuestDax => mount("bench", "fxfs", ""),
-                // fxdax: the writer runs the workloads once its followers can start; they read, or
-                // only follow.
+                // fxdax: the writer runs the workloads once its followers have started; they read,
+                // or only follow.
                 Backend::FxfsGuestDaxFollowed | Backend::FxfsGuestDaxFollowedIdle => {
                     mount("bench", "fxfs", "");
                     if std::env::var(ROLE).unwrap() != "writer" {
