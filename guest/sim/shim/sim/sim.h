@@ -55,6 +55,18 @@ u64 sim_device_failed(void);
 void sim_device_limit_open(u64 pages);
 u64 sim_device_open_refused(void);
 /*
+ * Has the device copy on write (DAX_COW, doc-13), holding at most `private_max` private pages: a
+ * store to a page mapped read-only makes it private, a MAP or UNMAP over it frees it. Before the
+ * mount. The private pages it holds; the most it held at once; how many MAPs and UNMAPs freed; how
+ * many PRIVATEs it refused for want of room; how many maps of open extents it refused (EPERM).
+ */
+void sim_device_dax_cow(u64 private_max);
+u64 sim_device_private(void);
+u64 sim_device_private_most(void);
+u64 sim_device_private_freed(void);
+u64 sim_device_private_refused(void);
+u64 sim_device_open_maps_refused(void);
+/*
  * Has the next MAP wait on its way to the host, others running meanwhile, until released: the
  * pages of the MAP held, or 0 if none is.
  */
@@ -122,6 +134,22 @@ void fxfs_sim_stats(u64 *moves, u64 *frees, u64 *failed);
 void fxfs_sim_fail(unsigned int odds);
 /* Has the next `count` commits of write(2)s' moves fail with -EIO (fxfs_dax_end_write). */
 void fxfs_sim_fail_commits(unsigned int count);
+/*
+ * Has fxfs_write_many, writeback's, wait between its bytes and its commit while `hold`: a crash
+ * then leaves the file as fxfs_sim_read reads it, and the commit would as fxfs_sim_read_pending
+ * does. Whether a write waits so now.
+ */
+void fxfs_sim_hold_commits(bool hold);
+bool fxfs_sim_commit_held(void);
+/*
+ * Has a seal wait while `hold` between its beginning, when Fxfs takes no extent minted before it for
+ * open (OpenExtents::seal), and its COMMIT, which seals them on the device. Whether one waits so.
+ */
+void fxfs_sim_hold_seals(bool hold);
+bool fxfs_sim_seal_held(void);
+void fxfs_sim_read_pending(struct fxfs *fs, u64 ino, u64 offset, void *buf, size_t len);
+/* The bytes of file `ino`'s dirty pages Fxfs holds room for (fxfs_reserve_dirty). */
+u64 fxfs_sim_reserved(struct fxfs *fs, u64 ino);
 /* How many seals have ended. */
 u64 fxfs_sim_seals(struct fxfs *fs);
 /* Whether a seal has begun, and shut the gate, and not ended: waiting for the stores, it may be. */

@@ -12,6 +12,8 @@
 #   extent goes open, sealed, and never back (TASK-99, TASK-44.14, TASK-153.3);
 # - specs/extent-open: the host's extent store opening an extent, writes, MAPs and commits racing
 #   on it (crates/fxdax/src/extents.rs, TASK-121, TASK-119.20);
+# - specs/dax-cow: copy-on-write DAX, the window mapping sealed extents and zeros, a store's page
+#   private on the host, written back and rebound (doc-13, TASK-164.4);
 #
 #   check-tla.sh [MODEL...]
 #

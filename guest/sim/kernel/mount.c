@@ -41,7 +41,12 @@ struct sim_mount *sim_mount_new(void)
 
 /*
  * fxfs_vfs_evict_inode's, for a file nothing maps: its DAX entries go, as truncate_inode_pages_final
- * has them, and the page's stale fields with them (dax_folio_put), but its ranges stay.
+ * has them, and the page's stale fields with them (dax_folio_put), but its ranges stay. As the
+ * kernel's eviction, at the last reference: none taken from now (igrab), it waits for those taken
+ * already, as reclaim's and the budget's worker's (igrab). Evicted under them, as it was, it read
+ * in another inode whose faults mapped the ranges, which reclaim then released through the old
+ * one's mapping alone, and freed under the new one's DAX entries (interleave's seed 222 at 1,000
+ * operations: `fs/dax.c`'s WARN as another file's fault found the page associated).
  */
 void sim_file_evict(struct file *file)
 {
@@ -49,6 +54,9 @@ void sim_file_evict(struct file *file)
 	unsigned long index;
 	void *entry;
 
+	inode->i_state |= I_FREEING;
+	while (atomic_read(&inode->i_count) > 1)
+		msleep(1);
 	dax_break_layout_final(inode);
 	xa_for_each(&inode->i_mapping->i_pages, index, entry) {
 		if (xa_is_value(entry))
@@ -57,11 +65,17 @@ void sim_file_evict(struct file *file)
 	fxfs_dax_evict(inode);
 }
 
-/* As fxfs_vfs_kill_sb's, of the last volume, its files evicted. */
+/*
+ * As fxfs_vfs_kill_sb's, of the last volume, its files evicted: synced first, as the VFS syncs a
+ * filesystem it unmounts, copying on write its window's dirty pages written back.
+ */
 void sim_mount_free(struct sim_mount *mount)
 {
 	struct fxfs_vfs_info *info = mount->info;
+	int err = fxfs_dax_settle(info->dax);
 
+	if (err)
+		sim_panic("syncing the mount: %d", err);
 	fxfs_dax_quiesce(info->dax);
 	fxfs_dax_remove_volume(info->dax, info->dax_volume);
 	fxfs_dax_destroy(info->dax);
@@ -91,8 +105,11 @@ static struct file *file_of(struct sim_mount *mount, u64 ino)
 	init_rwsem(&inode->i_data.i_mmap_rwsem);
 	INIT_LIST_HEAD(&inode->i_data.i_mmap);
 	fxfs_dax_inode_init(&fi->dax);
-	fxfs_dax_set_inode(inode);
-	if (!IS_DAX(inode))
+	/*
+	 * As read in, whether new or not: created, copying on write, it would be a page-cache inode
+	 * (TASK-164.3), which the sim doesn't build.
+	 */
+	if (!fxfs_dax_set_inode(inode, false) || !IS_DAX(inode))
 		sim_panic("the file isn't a DAX file");
 	file->f_inode = inode;
 	file->f_mapping = inode->i_mapping;
@@ -160,6 +177,19 @@ ssize_t sim_read_user(struct file *file, loff_t pos, unsigned long addr, size_t 
 	struct iov_iter to = { .count = len, .user = true, .uaddr = addr };
 
 	return do_read(file, pos, &to);
+}
+
+/*
+ * super.c's, which syncs the filesystem, as a write found it full: the window's dirty pages
+ * written back, copying on write, which frees the room reserved beyond what writeback took, and
+ * sealed.
+ */
+void fxfs_vfs_make_room(struct super_block *sb)
+{
+	struct fxfs_vfs_info *info = fxfs_vfs_info(sb);
+
+	if (!fxfs_dax_settle(info->dax))
+		fxfs_nofs(fxfs_fsync(info->fs));
 }
 
 /* fxfs_vfs_fsync, a DAX file's: file_write_and_wait_range, the size, and the seal. */

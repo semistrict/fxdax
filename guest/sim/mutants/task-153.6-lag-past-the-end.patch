@@ -5,11 +5,11 @@
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c
-@@ -4768,7 +4768,6 @@ void fxfs_dax_resize_end(struct inode *inode, loff_t size)
+@@ -6243,7 +6243,6 @@
  		page = first - (start >> PAGE_SHIFT);
  		if (page >= range->pages)
  			continue;
 -		bitmap_clear(range->lagging, page, range->pages - page);
  		if (find_next_bit(range->mapped, range->pages, page) == range->pages)
  			continue;
- 		/* A slice's pages past the end stay its region's: the slice no longer maps them. */
+ 		/*

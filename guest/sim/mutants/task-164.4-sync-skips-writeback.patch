@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+#
+# TASK-164.4, doc-13: a sync's settle writes back only files with pages dirty, passing by one whose
+# pages a writeback under way swapped out and has yet to commit: the sync seals without them.
+# cow_fsync_during_writeback's sync.
+
+--- a/guest/linux/fs/fxfs/dax.c
++++ b/guest/linux/fs/fxfs/dax.c
+@@ -5781,7 +5781,8 @@
+ 	 */
+ 	nr = fxfs_dax_cow_files(dax, &files);
+ 	for (i = 0; i < nr; i++) {
+-		struct inode *inode = fxfs_dax_cow_inode(dax, files[i]);
++		struct inode *inode = atomic_long_read(&files[i]->dirty_pages) ?
++				      fxfs_dax_cow_inode(dax, files[i]) : NULL;
+ 
+ 		if (inode) {
+ 			int wrote = fxfs_dax_cow_write_back(inode);

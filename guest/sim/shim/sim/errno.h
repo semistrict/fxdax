@@ -25,6 +25,7 @@
 #define EDEADLK 35
 #define ENOSYS 38
 #define EOPNOTSUPP 95
+#define ENOBUFS 105
 #define ETIMEDOUT 110
 #define ESTALE 116
 #define EDQUOT 122

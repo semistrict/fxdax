@@ -1,0 +1,29 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+#
+# TASK-164.4, doc-13: writeback returns at once, nothing being dirty, without waiting for one under
+# way, which swapped the pages out and has yet to commit them: an fsync meeting the worker's
+# writeback returns with the stores before it neither written nor sealed.
+# cow_fsync_during_writeback; interleave's seed 962, 3 of 300 copying on write.
+
+--- a/guest/linux/fs/fxfs/dax.c
++++ b/guest/linux/fs/fxfs/dax.c
+@@ -3849,17 +3849,9 @@
+ 	long pages = 0;
+ 	int err = 0, cleaned;
+ 
+-	if (!file)
++	if (!file || !atomic_long_read(&file->dirty_pages))
+ 		return 0;
+-	/*
+-	 * Whatever is dirty now: a writeback under way, the budget's or the flusher's, swapped out
+-	 * pages dirtied before this began, which it holds the lock over until Fxfs has committed
+-	 * them, and an fsync returns only once they are durable. Returning at once, as no page was
+-	 * dirty, an fsync met by the worker's writeback sealed none of its pages (guest/sim, seed 962).
+-	 */
+ 	mutex_lock(&file->wb_lock);
+-	if (!atomic_long_read(&file->dirty_pages))
+-		goto out;
+ 	down_read(&file->sem);
+ 	xa_for_each(&file->ranges, chunk, range)
+ 		most += fxfs_dax_cow_busy(range);

@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+#
+# TASK-164.4, doc-13: copying on write, a slice's region maps the extent Fxfs says sealed as a seal
+# in progress has yet to seal it on the device: the host refuses the MAP (-EPERM), and the chunk is
+# mapped as a range of its own instead. cow_map_during_seal's read.
+
+--- a/guest/linux/fs/fxfs/dax.c
++++ b/guest/linux/fs/fxfs/dax.c
+@@ -2525,12 +2525,6 @@
+ 		 * beginning (fxfs_dax_cow_extents): looked up again after it, or, for a fault, -EBUSY,
+ 		 * which waits for it without its DAX entry.
+ 		 */
+-		if (dax->cow && ((seals & 1) || fxfs_device_seals(dax->dev) != seals)) {
+-			if (fault)
+-				return ERR_PTR(-EBUSY);
+-			fxfs_device_wait_unsealed(dax->dev);
+-			continue;
+-		}
+ 		region = fxfs_dax_get_region(dax, &e, true);
+ 		if (IS_ERR(region))
+ 			return PTR_ERR(region) == -EAGAIN ? NULL : ERR_CAST(region);

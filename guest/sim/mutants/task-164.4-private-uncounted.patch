@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+#
+# TASK-164.4, doc-13: an iomap doesn't count its pages private: the budget never holds a write up,
+# nor has the worker rebind, and a store past private_max is refused, as the VM stops.
+# cow_rebind_against_stores, writing twice private_max.
+
+--- a/guest/linux/fs/fxfs/dax.c
++++ b/guest/linux/fs/fxfs/dax.c
+@@ -4031,7 +4031,7 @@
+  */
+ static bool fxfs_dax_cow_take(struct fxfs_dax *dax, long pages)
+ {
+-	long now = atomic_long_add_return(pages, &dax->private);
++	long now = atomic_long_read(&dax->private);
+ 
+ 	if (now > dax->private_max) {
+ 		atomic_long_sub(pages, &dax->private);

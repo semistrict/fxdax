@@ -3,7 +3,9 @@
 /*
  * The process under the fake kernel: the one file built against libc rather than the shim.
  * Coroutines are ucontexts, told to ASan as it asks. The window is one mapping of address space,
- * and a store through it that the host would refuse is a real SIGSEGV.
+ * and a store through it that the host would refuse is a real SIGSEGV. One it would copy on write
+ * (doc-13's DAX_COW) faults too, as the host's userfaultfd write-protect does: the device's model
+ * says whether to copy, and the store goes on into a private page at the same address.
  */
 
 #define _GNU_SOURCE
@@ -39,6 +41,9 @@ static struct sim_fiber main_fiber;
 static int store_fd = -1;
 static char *window;
 static uint64_t window_len;
+/* Takes a store the window faulted on: NULL if it made the page writable, or why the host refused. */
+/* The device model's, whose u64 is unsigned long long: a pointer of another type is no call UBSan allows. */
+static const char *(*window_store)(unsigned long long offset);
 
 static void die(const char *what)
 {
@@ -183,20 +188,30 @@ void host_store_zero(uint64_t offset, size_t len)
 		die("fallocate");
 }
 
+/*
+ * A store the window faults on may be one the host copies on write: the device's model makes the
+ * page private, and the store, returned to, goes on. It runs in the middle of the store, with no
+ * scheduling point, as the host's copy runs with the vCPU stopped.
+ */
 static void window_segv(int sig, siginfo_t *info, void *context)
 {
 	uintptr_t at = (uintptr_t)info->si_addr, base = (uintptr_t)window;
+	const char *why = "nothing mapped writable there";
 
-	if (window && at >= base && at < base + window_len)
-		fprintf(stderr, "sim: the window refused an access at %#lx: a host would have stopped the VM\n",
-			at - base);
-	else
+	if (window && at >= base && at < base + window_len) {
+		if (sig == SIGSEGV && window_store)
+			why = window_store(at - base);
+		if (!why)
+			return;
+		fprintf(stderr, "sim: the window refused an access at %#lx (%s): a host would have stopped the VM\n",
+			at - base, why);
+	} else
 		fprintf(stderr, "sim: SIGSEGV at %#lx\n", at);
 	__sanitizer_print_stack_trace();
 	_exit(3);
 }
 
-void *host_window_init(uint64_t len)
+void *host_window_init(uint64_t len, const char *(*store)(unsigned long long offset))
 {
 	struct sigaction action = { .sa_sigaction = window_segv, .sa_flags = SA_SIGINFO };
 
@@ -207,6 +222,7 @@ void *host_window_init(uint64_t len)
 		die("mmap");
 	window = (char *)(((uintptr_t)base + (2UL << 20) - 1) & ~((2UL << 20) - 1));
 	window_len = len;
+	window_store = store;
 	if (sigaction(SIGSEGV, &action, NULL) || sigaction(SIGBUS, &action, NULL))
 		die("sigaction");
 	return window;
@@ -237,6 +253,29 @@ void host_window_read_only(uint64_t offset, uint64_t len)
 {
 	if (mprotect(window + offset, len, PROT_READ))
 		die("mprotect");
+}
+
+/*
+ * The host's copy on write: memory of the VM's own in place of what the window maps, writable,
+ * holding what it held, or zeros. The copy is made aside and moved into place, so that the window
+ * never shows the page empty.
+ */
+void host_window_private(uint64_t offset, uint64_t len, bool zeros)
+{
+	char *copy;
+
+	if (zeros) {
+		if (mmap(window + offset, len, PROT_READ | PROT_WRITE,
+			 MAP_PRIVATE | MAP_FIXED | MAP_ANONYMOUS, -1, 0) == MAP_FAILED)
+			die("mmap of a private page of zeros");
+		return;
+	}
+	copy = mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	if (copy == MAP_FAILED)
+		die("mmap of a private page");
+	memcpy(copy, window + offset, len);
+	if (mremap(copy, len, len, MREMAP_MAYMOVE | MREMAP_FIXED, window + offset) == MAP_FAILED)
+		die("mremap of a private page");
 }
 
 void host_stack_trace(void)

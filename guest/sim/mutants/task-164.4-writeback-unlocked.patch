@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+#
+# TASK-164.4, doc-13: writeback holds no wb_lock from its swap to its commit: a rebind finds the
+# pages it swapped out clean, their extents Fxfs's old ones, and maps those over the private pages
+# it is writing. cow_rebind_during_writeback.
+
+--- a/guest/linux/fs/fxfs/dax.c
++++ b/guest/linux/fs/fxfs/dax.c
+@@ -3857,7 +3857,6 @@
+ 	 * them, and an fsync returns only once they are durable. Returning at once, as no page was
+ 	 * dirty, an fsync met by the worker's writeback sealed none of its pages (guest/sim, seed 962).
+ 	 */
+-	mutex_lock(&file->wb_lock);
+ 	if (!atomic_long_read(&file->dirty_pages))
+ 		goto out;
+ 	down_read(&file->sem);
+@@ -3904,7 +3903,6 @@
+ 	if (err)
+ 		mapping_set_error(inode->i_mapping, err);
+ out:
+-	mutex_unlock(&file->wb_lock);
+ 	kfree(parts);
+ 	kvfree(batch);
+ 	return err;

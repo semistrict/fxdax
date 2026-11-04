@@ -24,6 +24,7 @@
 #define I_DIRTY_SYNC (1 << 0)
 #define I_DIRTY_DATASYNC (1 << 1)
 #define I_DIRTY_PAGES (1 << 2)
+#define I_FREEING (1 << 5)
 #define IOCB_NOWAIT (1 << 7)
 #define IOCB_ATOMIC (1 << 9)
 #define PAGECACHE_TAG_DIRTY XA_MARK_0
@@ -63,6 +64,8 @@ struct address_space {
 	struct list_head i_mmap;
 	unsigned long nrpages;
 	const struct address_space_operations *a_ops;
+	/* A writeback's error, which the next fsync returns, and clears: errseq_t's, and AS_EIO's. */
+	int wb_err;
 };
 
 struct address_space_operations {
@@ -162,10 +165,18 @@ static inline int iov_iter_rw(const struct iov_iter *i) { return i->data_source;
 #define file_update_time(file) 0
 #define file_remove_privs(file) 0
 #define mapping_gfp_mask(mapping) GFP_KERNEL
-#define mapping_set_error(mapping, err) sim_panic("writeback failed: %d", err)
+static inline void mapping_set_error(struct address_space *mapping, int error)
+{
+	if (error)
+		mapping->wb_err = error;
+}
 static inline bool mapping_empty(const struct address_space *mapping)
 {
 	return xa_empty(&mapping->i_pages);
+}
+static inline bool mapping_tagged(struct address_space *mapping, xa_mark_t tag)
+{
+	return xa_marked(&mapping->i_pages, tag);
 }
 
 ssize_t generic_write_checks(struct kiocb *iocb, struct iov_iter *from);

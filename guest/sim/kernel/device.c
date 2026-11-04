@@ -7,6 +7,14 @@
  * seal makes writable pages read-only, and a freed extent's pages map zeros. The window is real
  * memory, so that a store the host would refuse faults, and fails the run (kernel/host.c).
  *
+ * With copy on write (DAX_COW, doc-13), as a test turns it on (sim_device_dax_cow): a store to a
+ * page mapped read-only, a sealed extent's or zeros, makes it private, the VM's own, holding what
+ * it held, at the same address, until a MAP or UNMAP over it frees it; past private_max the host
+ * refuses the store. PRIVATE makes pages private ahead of stores, ENOMEM past private_max;
+ * MAP_ZEROS maps zeros. The window maps sealed extents and zeros alone: a MAP of an open extent
+ * fails EPERM, which tests count, as Fxfs may take an extent a seal forgot for sealed; a writable
+ * one, which a guest copying on write never sends, fails the run.
+ *
  * Requests complete in place, each a scheduling point: no queues, no interrupts, no async faults,
  * none of the host's own concurrency, and no latency but what the clock is told, or a MAP a test
  * holds back (sim_device_hold_map).
@@ -27,6 +35,8 @@ enum window_state {
 	WINDOW_ZEROS,
 	WINDOW_READ,
 	WINDOW_WRITE,
+	/* DAX_COW: the VM's own page, which no extent names. */
+	WINDOW_PRIVATE,
 };
 
 struct extent {
@@ -63,6 +73,18 @@ struct virtio_extent {
 	u64 open_limit;
 	u64 open_pages;
 	u64 open_refused;
+	/*
+	 * DAX_COW: whether the device copies on write, the most private pages it holds, how many it
+	 * holds, the most it held at once, how many MAPs and UNMAPs freed, how many PRIVATEs it
+	 * refused for want of room, and how many maps of open extents it refused.
+	 */
+	bool dax_cow;
+	u64 private_max;
+	u64 private_pages;
+	u64 private_most;
+	u64 private_freed;
+	u64 private_refused;
+	u64 open_maps_refused;
 } device;
 
 static struct dax_device { int unused; } dax_device;
@@ -72,10 +94,12 @@ static u64 failing_skip, failing, failed;
 static unsigned int failing_odds;
 static int dax_readers;
 
+static const char *window_store(u64 offset);
+
 void sim_device_init(u64 window_len)
 {
 	host_store_init(STORE_LEN);
-	device.window = host_window_init(window_len);
+	device.window = host_window_init(window_len, window_store);
 	device.window_len = window_len;
 	device.dax = &dax_device;
 	device.pages = kcalloc(window_len >> PAGE_SHIFT, sizeof(*device.pages), GFP_KERNEL);
@@ -186,9 +210,96 @@ u64 sim_device_open_refused(void)
 	return device.open_refused;
 }
 
+/*
+ * The device offers DAX_COW, and the driver takes it in place of DAX_WRITE, as fxfs.dax_cow, the
+ * driver's, has it (drivers/virtio_extent, which isn't built here).
+ */
+void sim_device_dax_cow(u64 private_max)
+{
+	device.dax_cow = true;
+	device.private_max = private_max;
+	device.config.private_max = private_max;
+}
+
+u64 sim_device_private(void)
+{
+	return device.private_pages;
+}
+
+u64 sim_device_private_most(void)
+{
+	return device.private_most;
+}
+
+u64 sim_device_private_freed(void)
+{
+	return device.private_freed;
+}
+
+u64 sim_device_private_refused(void)
+{
+	return device.private_refused;
+}
+
+u64 sim_device_open_maps_refused(void)
+{
+	return device.open_maps_refused;
+}
+
+/* Makes window page `page` private: a copy of what it maps, or zeros, as the host's fault does. */
+static void make_private(u64 page)
+{
+	struct window_page *at = &device.pages[page];
+
+	host_window_private(page << PAGE_SHIFT, PAGE_SIZE, at->state == WINDOW_ZEROS);
+	at->extent = NULL;
+	at->state = WINDOW_PRIVATE;
+	device.private_pages++;
+	device.private_most = max(device.private_most, device.private_pages);
+}
+
+/* The private pages of `pages` from `first` go, which a MAP or UNMAP over them frees. */
+static void free_private(u64 first, u64 pages)
+{
+	u64 page;
+
+	for (page = first; page < first + pages; page++) {
+		if (device.pages[page].state != WINDOW_PRIVATE)
+			continue;
+		device.private_pages--;
+		device.private_freed++;
+	}
+}
+
+/*
+ * A store the window faulted on, at `offset`: with DAX_COW, a page mapped read-only, sealed or
+ * zeros, is copied, within private_max. From the fault, in the store: no scheduling point, and no
+ * lock. NULL if the page is the VM's now, or why the host refuses the store.
+ */
+static const char *window_store(u64 offset)
+{
+	static char why[80];
+	u64 page = offset >> PAGE_SHIFT;
+	const struct window_page *at = &device.pages[page];
+
+	if (!device.dax_cow)
+		return "no copy on write";
+	if (at->state != WINDOW_READ && at->state != WINDOW_ZEROS)
+		return "nothing mapped there";
+	if (device.private_pages >= device.private_max) {
+		snprintf(why, sizeof(why), "past private_max, %llu private pages",
+			 device.private_pages);
+		return why;
+	}
+	make_private(page);
+	return NULL;
+}
+
 void sim_device_describe(u64 page)
 {
-	static const char *const states[] = { "unmapped", "zeros", "read-only", "writable" };
+	static const char *const states[] = {
+		"unmapped", "zeros", "read-only", "writable", "private",
+	};
 	const struct window_page *at = &device.pages[page];
 
 	sim_log("window page %llx: %s, extent %llu\n", page, states[at->state],
@@ -233,6 +344,27 @@ static void check_no_writable_mapping(const char *what, u64 first, u64 pages)
 			  first, first + pages, addr);
 }
 
+/* MAP_ZEROS: zeros over `len` bytes at `window_offset`, whatever was there, private pages freed. */
+static int map_zeros(u64 len, u64 window_offset)
+{
+	u64 first = window_offset >> PAGE_SHIFT, pages = len >> PAGE_SHIFT, page;
+
+	device.maps++;
+	watch("MAP zeros", first, pages, 0, 0);
+	if (!device.dax_cow)
+		sim_panic("a MAP_ZEROS, which the device takes with DAX_COW alone");
+	if (window_offset + len > device.window_len)
+		return -EINVAL;
+	check_no_writable_mapping("a MAP of zeros", first, pages);
+	free_private(first, pages);
+	for (page = first; page < first + pages; page++) {
+		device.pages[page].extent = NULL;
+		device.pages[page].state = WINDOW_ZEROS;
+	}
+	host_window_map_zeros(window_offset, len);
+	return 0;
+}
+
 static int map_one(u64 sequence, u64 offset, u64 len, u64 window_offset, bool writable)
 {
 	struct extent *extent = find_extent(sequence);
@@ -244,8 +376,16 @@ static int map_one(u64 sequence, u64 offset, u64 len, u64 window_offset, bool wr
 	watch(writable ? "MAP writable" : "MAP read-only", first, pages, sequence, in_extent);
 	if (window_offset + len > device.window_len)
 		return -EINVAL;
+	if (device.dax_cow && writable)
+		sim_panic("a writable MAP of extent %llu: with DAX_COW the window maps sealed extents and zeros alone",
+			  sequence);
 	if (!extent || (!writable && !extent->held))
 		return writable ? -EPERM : -ENOENT;
+	/* Doc-13's invariant 1: the window maps no open extent. */
+	if (device.dax_cow && !extent->sealed) {
+		device.open_maps_refused++;
+		return -EPERM;
+	}
 	if (writable) {
 		if (extent->sealed)
 			return -EPERM;
@@ -263,6 +403,7 @@ static int map_one(u64 sequence, u64 offset, u64 len, u64 window_offset, bool wr
 	}
 	if (!writable)
 		check_no_writable_mapping("a read-only MAP", first, pages);
+	free_private(first, pages);
 	/* What of the range is past the extent's end, sealed, reads as zeros. */
 	within = !extent->sealed ? pages :
 		 in_extent >= extent->length ? 0 : min(pages, extent->length - in_extent);
@@ -292,6 +433,7 @@ static void unmap_one(u64 window_offset, u64 len)
 
 	watch("UNMAP", first, len >> PAGE_SHIFT, 0, 0);
 	check_no_writable_mapping("an UNMAP", first, len >> PAGE_SHIFT);
+	free_private(first, len >> PAGE_SHIFT);
 	for (page = first; page < first + (len >> PAGE_SHIFT); page++) {
 		device.pages[page].extent = NULL;
 		device.pages[page].state = WINDOW_NONE;
@@ -299,18 +441,55 @@ static void unmap_one(u64 window_offset, u64 len)
 	host_window_unmap(window_offset, len);
 }
 
+/* A MAP's map, or one of MAP_MANY's: of an extent, or, with MAP_ZEROS, of zeros. */
+static int map_flags(u32 flags, u64 sequence, u64 offset, u64 len, u64 window_offset)
+{
+	if (flags & VIRTIO_EXTENT_MAP_ZEROS)
+		return map_zeros(len, window_offset);
+	return map_one(sequence, offset, len, window_offset, flags & VIRTIO_EXTENT_MAP_WRITE);
+}
+
 static int do_map(struct vext_request *req)
 {
 	const struct virtio_extent_map_entry *entries = req->data;
 	size_t i, count = req->flags & VIRTIO_EXTENT_MAP_MANY ? req->data_len / sizeof(*entries) : 0;
-	int err = map_one(req->id.sequence, req->offset, req->len, req->window_offset,
-			  req->flags & VIRTIO_EXTENT_MAP_WRITE);
+	int err = map_flags(req->flags, req->id.sequence, req->offset, req->len, req->window_offset);
 
 	for (i = 0; !err && i < count; i++)
-		err = map_one(entries[i].map.id.sequence, entries[i].map.offset, entries[i].map.len,
-			      entries[i].map.window_offset,
-			      entries[i].flags & VIRTIO_EXTENT_MAP_WRITE);
+		err = map_flags(entries[i].flags, entries[i].map.id.sequence, entries[i].map.offset,
+				entries[i].map.len, entries[i].map.window_offset);
 	return err;
+}
+
+/*
+ * PRIVATE: `len` bytes at `window_offset` private now, as stores would make them, all or none:
+ * ENOMEM past private_max. Of pages mapped read-only alone, as a store to another is refused.
+ */
+static int do_private(u64 window_offset, u64 len)
+{
+	u64 first = window_offset >> PAGE_SHIFT, pages = len >> PAGE_SHIFT, page, more = 0;
+
+	if (!device.dax_cow)
+		sim_panic("a PRIVATE, which the device takes with DAX_COW alone");
+	watch("PRIVATE", first, pages, 0, 0);
+	if (!IS_ALIGNED(window_offset | len, PAGE_SIZE) || window_offset + len > device.window_len)
+		return -EINVAL;
+	for (page = first; page < first + pages; page++) {
+		u8 state = device.pages[page].state;
+
+		if (state != WINDOW_READ && state != WINDOW_ZEROS && state != WINDOW_PRIVATE)
+			return -EINVAL;
+		more += state != WINDOW_PRIVATE;
+	}
+	if (device.private_pages + more > device.private_max) {
+		device.private_refused++;
+		return -ENOMEM;
+	}
+	for (page = first; page < first + pages; page++) {
+		if (device.pages[page].state != WINDOW_PRIVATE)
+			make_private(page);
+	}
+	return 0;
 }
 
 /* Whether a test holds the next MAP back, and the pages of the one it holds, if any. */
@@ -391,8 +570,8 @@ int virtio_extent_call(struct virtio_extent *vext, struct vext_request *req)
 
 	/* The request crosses to the host, and others run meanwhile; a seal may end on the way. */
 	sim_point("a device request");
-	if ((req->type == VIRTIO_EXTENT_T_MAP || req->type == VIRTIO_EXTENT_T_UNMAP) &&
-	    request_fails(req)) {
+	if ((req->type == VIRTIO_EXTENT_T_MAP || req->type == VIRTIO_EXTENT_T_UNMAP ||
+	     req->type == VIRTIO_EXTENT_T_PRIVATE) && request_fails(req)) {
 		sim_point("a device reply");
 		return -EIO;
 	}
@@ -405,6 +584,9 @@ int virtio_extent_call(struct virtio_extent *vext, struct vext_request *req)
 	case VIRTIO_EXTENT_T_UNMAP:
 		unmap_one(req->window_offset, req->len);
 		err = 0;
+		break;
+	case VIRTIO_EXTENT_T_PRIVATE:
+		err = do_private(req->window_offset, req->len);
 		break;
 	default:
 		sim_panic("request %u", req->type);
@@ -452,9 +634,21 @@ struct dax_device *virtio_extent_dax(struct virtio_extent *vext)
 	return vext->dax;
 }
 
+/* The device offers DAX_WRITE and, if a test asks, DAX_COW: the driver takes one, as asked. */
 bool virtio_extent_dax_write(struct virtio_extent *vext)
 {
-	return true;
+	return !vext->dax_cow;
+}
+
+bool virtio_extent_dax_cow(struct virtio_extent *vext)
+{
+	return vext->dax_cow;
+}
+
+/* DAX_COW: the most private pages the device holds at once. */
+u64 virtio_extent_private_max(struct virtio_extent *vext)
+{
+	return vext->private_max;
 }
 
 bool virtio_extent_map_many(struct virtio_extent *vext)

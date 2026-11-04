@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+#
+# TASK-164.4, doc-13: a writeback whose Fxfs commit failed, after its bytes, says nothing: fsync
+# returns as if the pages were in Fxfs, which holds the file as it was. cow_commit_failed. (That the
+# commit follows the bytes is Fxfs's, fxfs_write_many's, which the model keeps and
+# cow_crash_between_bytes_and_commit checks; dax.c has no order of the two to mutate.)
+
+--- a/guest/linux/fs/fxfs/dax.c
++++ b/guest/linux/fs/fxfs/dax.c
+@@ -3894,8 +3894,8 @@
+ 	cleaned = dax_writeback_mapping_range(inode->i_mapping, dax->dax_dev, &all);
+ 	/* Before it reads its ranges' window pages, which nothing may free (pause points). */
+ 	fxfs_dax_pause_file(FXFS_DAX_STEP_WRITEBACK, inode->i_ino);
+-	err = fxfs_dax_cow_write_pages(dax, inode, batch, nr, parts);
+-	err = err ?: cleaned;
++	fxfs_dax_cow_write_pages(dax, inode, batch, nr, parts);
++	err = cleaned;
+ 	for (i = 0; i < nr; i++)
+ 		fxfs_dax_put_range(dax, batch[i].range);
+ 	atomic64_inc(&dax->cow_writebacks);

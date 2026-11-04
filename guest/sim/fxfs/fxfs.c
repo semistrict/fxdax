@@ -26,6 +26,12 @@
  *   A write(2)'s fails as it commits, too, after its bytes (fxfs_dax_end_write).
  * - A transaction holds its file's lock, a write(2)'s from its move to its commit (TASK-153.5): until
  *   then the file has its old blocks, and the new ones are held, not the file's.
+ * - Writeback (fxfs_write_many), the page cache's and copy-on-write DAX's (doc-13), allocates at
+ *   writeback: it copies its pages, a page at a time, into its own buffer, writes them to a new
+ *   extent, in one device write no seal comes into, and commits after the bytes: a crash before
+ *   the commit leaves the old blocks, which a test may look at, holding the commit
+ *   (fxfs_sim_hold_commits), or have fail (fxfs_set_fail_commits). It takes the room the dirty
+ *   pages reserved (fxfs_reserve_dirty), done or failed, which nothing may give back twice.
  *
  * It has no journal, no tree, no compaction, no crash consistency: durability isn't simulated, and
  * the real Fxfs's own bugs can't show up here. It's what the window's protocol assumes of Fxfs,
@@ -74,6 +80,8 @@ struct stub_file {
 	u64 size;
 	u64 nr_blocks;
 	struct block *blocks;
+	/* The bytes of its dirty pages it holds room for (fxfs_reserve_dirty). */
+	u64 reserved;
 	struct list_head list;
 };
 
@@ -699,7 +707,24 @@ bool fxfs_dax_restage(struct fxfs_filesystem *filesystem, struct fxfs_dax_extent
 	return restaged;
 }
 
-/* A seal, around the COMMIT that seals what is open, and then what it left dead is freed. */
+/* Whether seals wait before their COMMIT (fxfs_sim_hold_seals), and whether one does. */
+static bool hold_seals, seal_held;
+
+void fxfs_sim_hold_seals(bool hold)
+{
+	hold_seals = hold;
+}
+
+bool fxfs_sim_seal_held(void)
+{
+	return seal_held;
+}
+
+/*
+ * A seal, around the COMMIT that seals what is open, and then what it left dead is freed. As the
+ * guest's Fxfs's (fxfs-linux's Seal::begin_with), what was minted before it is no longer open from
+ * its beginning, before the COMMIT has sealed it on the device.
+ */
 int fxfs_fsync(struct fxfs *fs)
 {
 	struct stub_extent *extent, *next;
@@ -714,13 +739,22 @@ int fxfs_fsync(struct fxfs *fs)
 	/* A commit takes the device's time: long enough, at times, for transactions to fall in it. */
 	if (!(sim_random() % 4))
 		msleep(1);
+	seal_held = hold_seals;
+	while (hold_seals)
+		msleep(1);
+	seal_held = false;
 	sim_point("a seal's COMMIT");
-	sim_device_seal();
-	sim_point("a seal's end");
+	/*
+	 * Those minted meanwhile are forgotten as the COMMIT seals what of them was written, in one
+	 * step: between the two, a truncate's move_tail, which takes no `writes`, found the staging
+	 * extent open still, and wrote it, sealed (interleave -C, seed 32826).
+	 */
 	mutex_lock(&fs->lock);
+	sim_device_seal();
 	list_for_each_entry(extent, &fs->extents, list)
 		extent->open = false;
 	mutex_unlock(&fs->lock);
+	sim_point("a seal's end");
 	fxfs_device_seal_end(fs->dev);
 	up_write(&fs->writes);
 	mutex_lock(&fs->lock);
@@ -837,5 +871,223 @@ int fxfs_punch(struct fxfs *fs, u64 ino, u64 offset, u64 len)
 	}
 	mutex_unlock(&fs->lock);
 	mutex_unlock(&file->lock);
+	return 0;
+}
+
+/*
+ * Room for `bytes` of file `ino`'s dirty pages, which writeback pays with: -ENOSPC as a
+ * transaction fails (fxfs_sim_fail), when the filesystem has none, as a fault's SIGBUS and a
+ * write(2)'s ENOSPC say.
+ */
+int fxfs_reserve_dirty(struct fxfs *fs, u64 ino, u64 bytes)
+{
+	struct stub_file *file;
+
+	if (fail_odds && !(sim_random() % fail_odds)) {
+		failures++;
+		return -ENOSPC;
+	}
+	mutex_lock(&fs->lock);
+	file = find_file(fs, ino);
+	file->reserved += bytes;
+	mutex_unlock(&fs->lock);
+	return 0;
+}
+
+void fxfs_reserve_dirty_what_fits(struct fxfs *fs, u64 ino, u64 bytes)
+{
+	mutex_lock(&fs->lock);
+	find_file(fs, ino)->reserved += bytes;
+	mutex_unlock(&fs->lock);
+}
+
+/* Gives back room of `bytes` of dirty pages, dropped unwritten: what was reserved, once. */
+static void unreserve(struct stub_file *file, u64 bytes, const char *what)
+{
+	if (bytes > file->reserved)
+		sim_panic("file %llu's %s gives back %llu bytes of dirty pages' room, of %llu reserved",
+			  file->ino, what, bytes, file->reserved);
+	file->reserved -= bytes;
+}
+
+void fxfs_release_dirty(struct fxfs *fs, u64 ino, u64 bytes)
+{
+	mutex_lock(&fs->lock);
+	unreserve(find_file(fs, ino), bytes, "release");
+	mutex_unlock(&fs->lock);
+}
+
+u64 fxfs_sim_reserved(struct fxfs *fs, u64 ino)
+{
+	return find_file(fs, ino)->reserved;
+}
+
+/* A page fxfs_write_many writes: the file's, and the new block that takes its place. */
+struct written {
+	u64 page;
+	struct block block;
+};
+
+/* How many of fxfs_write_many's next transactions fail as they commit (fxfs_set_fail_commits). */
+static u64 writebacks_to_fail;
+
+/*
+ * The guest's fault injection (TASK-164.2): the next `count` writebacks fail with EIO, their bytes
+ * written, before their commits, which leaves the file as a crash between the two would.
+ */
+void fxfs_set_fail_commits(u64 count)
+{
+	writebacks_to_fail = count;
+}
+
+/* Whether writeback's commits wait (fxfs_sim_hold_commits), and the one waiting, of file held_ino. */
+static bool hold_commits;
+static const struct written *held;
+static size_t held_count;
+static u64 held_ino;
+
+void fxfs_sim_hold_commits(bool hold)
+{
+	hold_commits = hold;
+}
+
+bool fxfs_sim_commit_held(void)
+{
+	return held;
+}
+
+void fxfs_sim_read_pending(struct fxfs *fs, u64 ino, u64 offset, void *buf, size_t len)
+{
+	size_t i, done;
+
+	fxfs_sim_read(fs, ino, offset, buf, len);
+	if (!held || ino != held_ino)
+		return;
+	for (i = 0; i < held_count; i++) {
+		u64 at = held[i].page << PAGE_SHIFT;
+		char page[PAGE_SIZE];
+
+		if (at + PAGE_SIZE <= offset || at >= offset + len)
+			continue;
+		read_block(fs, &held[i].block, page);
+		for (done = 0; done < PAGE_SIZE; done++) {
+			if (at + done >= offset && at + done < offset + len)
+				((char *)buf)[at + done - offset] = page[done];
+		}
+	}
+}
+
+/*
+ * fxfs_write_many: the transaction holds the file's lock throughout. Each page copied, a page at a
+ * time, others running between, as the window's page may change under writeback: what it copied
+ * is what it writes, and a page part of which a part covers keeps the rest of its block. Then a new
+ * extent for them all, minted and written with no seal between, which would forget it open while
+ * the device took it as open, until the next; then, unless a test holds it, the commit.
+ */
+int fxfs_write_many(struct fxfs *fs, u64 ino, const struct fxfs_write_part *parts, size_t count,
+		    u64 dirty)
+{
+	struct stub_file *file = lock_file(fs, ino);
+	struct stub_extent *extent;
+	struct written *pages;
+	char *copies;
+	size_t i, n = 0, total = 0;
+	u64 page, end = 0, store;
+
+	/* The room, taken first, whatever the writes come to, as fxfs-posix's write_dirty takes it. */
+	mutex_lock(&fs->lock);
+	unreserve(file, dirty, "writeback");
+	mutex_unlock(&fs->lock);
+	for (i = 0; i < count; i++) {
+		if (parts[i].len)
+			total += ((parts[i].offset + parts[i].len - 1) >> PAGE_SHIFT) -
+				 (parts[i].offset >> PAGE_SHIFT) + 1;
+	}
+	pages = kcalloc(max_t(size_t, total, 1), sizeof(*pages), GFP_NOFS);
+	copies = kmalloc(max_t(size_t, total, 1) << PAGE_SHIFT, GFP_NOFS);
+	for (i = 0; i < count; i++) {
+		u64 from = parts[i].offset, to = parts[i].offset + parts[i].len;
+
+		if (!parts[i].len)
+			continue;
+		end = max(end, to);
+		for (page = from >> PAGE_SHIFT; page << PAGE_SHIFT < to; page++, n++) {
+			u64 at = max(from, page << PAGE_SHIFT);
+			u64 stop = min(to, (page + 1) << PAGE_SHIFT);
+			char *copy = copies + (n << PAGE_SHIFT);
+
+			if (at > page << PAGE_SHIFT || stop < (page + 1) << PAGE_SHIFT) {
+				mutex_lock(&fs->lock);
+				reserve_blocks(file, page + 1);
+				read_block(fs, &file->blocks[page], copy);
+				mutex_unlock(&fs->lock);
+			}
+			memcpy(copy + offset_in_page(at), parts[i].data + (at - from), stop - at);
+			pages[n].page = page;
+			sim_point("a Fxfs copy");
+		}
+	}
+	/* One device write, which no seal comes into: a seal between would leave it unsealed. */
+	down_read(&fs->writes);
+	mutex_lock(&fs->lock);
+	extent = n ? new_extent(fs, n) : NULL;
+	for (i = 0; i < n; i++) {
+		pages[i].block = (struct block) { extent->sequence, i };
+		extent->live++;
+		extent->refs[i]++;
+	}
+	mutex_unlock(&fs->lock);
+	if (n) {
+		sim_point("a Fxfs write");
+		store = sim_device_store_offset(extent->sequence);
+		host_store_write(store, copies, n << PAGE_SHIFT);
+		sim_device_wrote(extent->sequence, 0, n);
+		sim_point("a Fxfs write's reply");
+	}
+	up_read(&fs->writes);
+	kfree(copies);
+	/* A crash now leaves the file's old blocks, and the new ones orphans, which a test may see. */
+	if (hold_commits) {
+		held = pages;
+		held_count = n;
+		held_ino = ino;
+		while (hold_commits)
+			msleep(1);
+		held = NULL;
+	}
+	sim_point("writeback's commit");
+	mutex_lock(&fs->lock);
+	if (writebacks_to_fail) {
+		/*
+		 * The new blocks named by no record, which die; the room was taken all the same.
+		 */
+		writebacks_to_fail--;
+		failures++;
+		for (i = 0; i < n; i++) {
+			extent->live--;
+			extent->refs[i]--;
+		}
+		if (extent)
+			extent->died = fs->seals;
+		mutex_unlock(&fs->lock);
+		mutex_unlock(&file->lock);
+		kfree(pages);
+		return -EIO;
+	}
+	for (i = 0; i < n; i++) {
+		page = pages[i].page;
+		reserve_blocks(file, page + 1);
+		if (ino == watched_ino && page == watched_page)
+			sim_log("sim: ino %llu page %llu: written back by %s, from extent %llu page %llu to extent %llu page %llu, at %llu ns\n",
+				ino, page, current->comm, file->blocks[page].sequence,
+				file->blocks[page].page, pages[i].block.sequence,
+				pages[i].block.page, ktime_get_ns());
+		put_block(fs, &file->blocks[page]);
+		file->blocks[page] = pages[i].block;
+	}
+	file->size = max(file->size, end);
+	mutex_unlock(&fs->lock);
+	mutex_unlock(&file->lock);
+	kfree(pages);
 	return 0;
 }

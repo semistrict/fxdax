@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+#
+# TASK-164.4, doc-13: a resize doesn't write the file's dirty pages back first. Expected equivalent
+# here: a grow from a partial page drops the chunk there, which writes it back, and the model's
+# Fxfs zeroes nothing a later writeback doesn't write over. cow_truncate_dirty, if anything.
+
+--- a/guest/linux/fs/fxfs/dax.c
++++ b/guest/linux/fs/fxfs/dax.c
+@@ -6188,7 +6188,7 @@
+ 	 * so that it is the inode's (doc-13).
+ 	 */
+ 	if (cow) {
+-		err = fxfs_dax_cow_write_back(inode);
++		err = 0;
+ 	} else {
+ 		down_write(&file->sem);
+ 		err = fxfs_dax_write_size_locked(inode);

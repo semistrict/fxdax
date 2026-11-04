@@ -5,10 +5,10 @@
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c
-@@ -4621,7 +4621,7 @@
- 
- 	for (;;) {
- 		err = dax_zero_range(inode, pos, len, &zeroed, &fxfs_dax_iomap_ops);
+@@ -6062,7 +6062,7 @@
+ 				return err;
+ 			continue;
+ 		}
 -		sealed = fxfs_dax_make_memory(inode, &room, err);
 +		sealed = 0;
  		if (sealed < 0)

@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+#
+# TASK-164.4, doc-13: a rebind takes dirty pages too, which no extent holds yet: the MAP of what
+# Fxfs has discards their stores. cow_rebind_skips_dirty.
+
+--- a/guest/linux/fs/fxfs/dax.c
++++ b/guest/linux/fs/fxfs/dax.c
+@@ -3878,11 +3878,8 @@
+ 		for (page = find_first_bit(range->private, range->pages); page < range->pages;
+ 		     page = find_next_bit(range->private, range->pages, end)) {
+ 			end = page + 1;
+-			if (test_bit(page, range->dirty))
+-				continue;
+-			while (end < range->pages && test_bit(end, range->private) &&
+-			       !test_bit(end, range->dirty))
++			while (end < range->pages && test_bit(end, range->private))
+ 				end++;
+ 			/* Before the MAP over them, holding what a rebind holds (pause points). */
+ 			fxfs_dax_pause_file(FXFS_DAX_STEP_REBIND, file->ino);
+ 			done = fxfs_dax_cow_map(dax, volume->fs, range, page, end, true);

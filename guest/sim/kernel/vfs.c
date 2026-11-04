@@ -28,8 +28,11 @@ void __mark_inode_dirty(struct inode *inode, int flags)
 	inode->i_state |= flags;
 }
 
+/* As the kernel's: none of an inode being evicted, which goes once the last reference does. */
 struct inode *igrab(struct inode *inode)
 {
+	if (inode->i_state & I_FREEING)
+		return NULL;
 	atomic_inc(&inode->i_count);
 	return inode;
 }
@@ -99,6 +102,10 @@ void tag_pages_for_writeback(struct address_space *mapping, pgoff_t start, pgoff
 	xas_unlock_irq(&xas);
 }
 
+/*
+ * As filemap_fdatawrite_wbc: writepages only if the mapping has dirty entries, which a DAX file's
+ * write faults tag, and its write(2)s don't.
+ */
 int filemap_fdatawrite_range(struct address_space *mapping, loff_t start, loff_t end)
 {
 	struct writeback_control wbc = {
@@ -106,12 +113,18 @@ int filemap_fdatawrite_range(struct address_space *mapping, loff_t start, loff_t
 		.range_start = start, .range_end = end,
 	};
 
+	if (!mapping_tagged(mapping, PAGECACHE_TAG_DIRTY))
+		return 0;
 	return mapping->a_ops->writepages(mapping, &wbc);
 }
 
+/* With the error a writeback recorded since the last (mapping_set_error), which it clears. */
 int filemap_write_and_wait_range(struct address_space *mapping, loff_t start, loff_t end)
 {
-	return filemap_fdatawrite_range(mapping, start, end);
+	int err = filemap_fdatawrite_range(mapping, start, end);
+	int recorded = xchg(&mapping->wb_err, 0);
+
+	return err ?: recorded;
 }
 
 size_t iov_iter_zero(size_t bytes, struct iov_iter *i)

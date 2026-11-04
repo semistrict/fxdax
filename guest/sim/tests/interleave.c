@@ -4,12 +4,13 @@
  * Tasks writing, mapping, sealing, truncating and evicting at once, their interleaving the seed's:
  * the same seed plays the same run, whose trace hash says so.
  *
- *   interleave SEED [OPERATIONS] [-s] [-t] [-T] [-v] [-I] [-N] [-w WINDOW_PAGE] [-a ADDRESS] [-W INO PAGE]
+ *   interleave SEED [OPERATIONS] [-s] [-t] [-T] [-v] [-I] [-N] [-C] [-w WINDOW_PAGE] [-a ADDRESS] [-W INO PAGE]
  *
  * -s runs dax_shadow too, -t logs each scheduling point, -T has dax.c's trace of the page that
  * fails logged, -w logs the window page's MAPs, -a the address's PTE, and -W what Fxfs does to the
  * file's page; -v each operation. -I leaves dax.c's fault injection off, and -N the operations that
- * take a file's own mapping for their memory.
+ * take a file's own mapping for their memory. -C runs copy-on-write DAX (doc-13: the device's
+ * DAX_COW, as fxfs.dax_cow has the driver take it), as a seed in four does by its number.
  *
  * Every store is stamped, as ztest's blocks carry their tags: whose it is, where it belongs, its
  * generation and the seal it was made in. Tasks share files without sharing bytes: each owns a slot
@@ -20,8 +21,8 @@
  * store begun as it ended, and never zeros once written, unless a store was under way. So a stale
  * read, a zero read, a read of another file's or another place's data, or from the future, is named
  * as such as it is read, on any task's read of any slot. After an fsync, Fxfs's extents must hold
- * every slot's last store; and once all end, the same of all of it. dax.c's own diagnostics are on,
- * and each of its WARNs fails the run.
+ * every slot's last store, copying on write the synced file's; and once all end, the same of all
+ * of it. dax.c's own diagnostics are on, and each of its WARNs fails the run.
  */
 
 #include <sim/sim.h>
@@ -42,6 +43,8 @@
 #define SLOT 32
 /* The host's memory for open extents, a run in four, as little as lets a chunk be mapped. */
 #define OPEN_LIMIT PTRS_PER_PTE
+/* Copy-on-write DAX's private pages, a run in two: few, so that the budget throttles and rebinds. */
+#define COW_PRIVATE_FEW 256
 
 #define check(cond, ...) do { if (!(cond)) sim_panic(__VA_ARGS__); } while (0)
 
@@ -122,6 +125,8 @@ static unsigned long hot_pages;
 static unsigned long huge_mapped;
 /* Whether dax.c traces what happens to pages, and whether each operation is logged. */
 static bool tracing, verbose;
+/* Whether the run is of copy-on-write DAX (doc-13). */
+static bool cow;
 
 #define operation(worker, ...) do {					\
 	if (verbose) {							\
@@ -256,6 +261,44 @@ static bool failed_as_asked(ssize_t result)
 	return failing && (result == -ENOSPC || result == -EFAULT || result == -EIO);
 }
 
+/*
+ * Whether a read or a load that fell short (`cut`) was made to by fxfs.dax_fail_maps, whose
+ * count was `left` before it. Writing through, it fails writes alone, whose failures are asked for
+ * (failed_as_asked); copying on write, any range's map of more than one piece, whichever way in
+ * mapped it, a read's too, which says EIO, or stops short, or a load's fault SIGBUS, as of a
+ * device's MAP error. Another task's taking one meanwhile passes for this one's.
+ */
+static bool map_failure_injected(bool cut, unsigned long left)
+{
+	return cow && cut && sim_param_read("dax_fail_maps") < left;
+}
+
+/* sim_read, again as long as fxfs.dax_fail_maps cuts it short: a read never fails else. */
+static ssize_t read_file(struct file *file, loff_t at, void *buf, size_t len)
+{
+	unsigned long left;
+	ssize_t done;
+
+	do {
+		left = sim_param_read("dax_fail_maps");
+		done = sim_read(file, at, buf, len);
+	} while (map_failure_injected(done != len, left));
+	return done;
+}
+
+/* sim_user_load, again as read_file reads. */
+static int user_load(unsigned long addr, void *buf, size_t len)
+{
+	unsigned long left;
+	int err;
+
+	do {
+		left = sim_param_read("dax_fail_maps");
+		err = sim_user_load(addr, buf, len);
+	} while (map_failure_injected(err, left));
+	return err;
+}
+
 static loff_t slot_at(int worker, unsigned long page)
 {
 	return ((loff_t)page << PAGE_SHIFT) + worker * SLOT;
@@ -270,7 +313,7 @@ static void slot_resync(struct worker *worker, struct slots *file, unsigned long
 	struct slot *slot = &file->slots[worker->id][page];
 	loff_t at = slot_at(worker->id, page);
 	struct stamp got;
-	ssize_t done = sim_read(file->file, at, &got, SLOT);
+	ssize_t done = read_file(file->file, at, &got, SLOT);
 
 	check(done == SLOT, "reading a slot back: %zd", done);
 	if (all_zeros(&got, SLOT)) {
@@ -314,8 +357,8 @@ static void slot_read(struct worker *reader, struct slots *file, unsigned long p
 	struct stamp got;
 	ssize_t done;
 
-	done = mapped ? sim_user_load(file->addr + at, &got, SLOT) ?: SLOT :
-	       sim_read(file->file, at, &got, SLOT);
+	done = mapped ? user_load(file->addr + at, &got, SLOT) ?: SLOT :
+	       read_file(file->file, at, &got, SLOT);
 	check(done == SLOT, "%s of page %lu of worker %d: %zd", what, page, owner, done);
 	overlapped = flying || slot->flying || slot->begun != begun;
 	wrong = stamp_wrong(&got, file_inode(file->file)->i_ino, at, owner, low,
@@ -368,7 +411,7 @@ static void private_resync(struct worker *worker)
 {
 	loff_t size = i_size_read(file_inode(worker->file)), at;
 	char *whole = kzalloc(PRIVATE_MAX, GFP_KERNEL), *held;
-	ssize_t done = sim_read(worker->file, 0, whole, size);
+	ssize_t done = read_file(worker->file, 0, whole, size);
 
 	check(done == size, "reading a file back: %zd of %lld", done, size);
 	for (at = 0; at < size; at += SLOT) {
@@ -378,7 +421,12 @@ static void private_resync(struct worker *worker)
 			wrong_read("a file after a failed write", "bytes no store made",
 				   worker->file, whole + at, worker->private + at, at);
 	}
-	/* Whatever failed, read(2) goes where Fxfs has the file. */
+	/*
+	 * Whatever failed, read(2) goes where Fxfs has the file: copying on write, once it is written
+	 * back, its dirty pages, what the failure left among them, being in the window alone.
+	 */
+	if (cow)
+		check(!sim_fsync(worker->file), "an fsync after a failed write");
 	held = kmalloc(PRIVATE_MAX, GFP_KERNEL);
 	fxfs_sim_read(mount->info->fs, file_inode(worker->file)->i_ino, 0, held, size);
 	check_bytes("a file after a failed write, against Fxfs's extents", worker->file, whole, held,
@@ -422,7 +470,7 @@ static void private_read(struct worker *worker)
 	at = cell_of(between(0, worker->size - 1));
 	len = between(1, min_t(u64, worker->size - at, 3 * PAGE_SIZE));
 	buf = kmalloc(len, GFP_KERNEL);
-	done = sim_read(worker->file, at, buf, len);
+	done = read_file(worker->file, at, buf, len);
 	check(done == len, "a private read: %zd of %zu", done, len);
 	check_bytes("a private read", worker->file, buf, worker->private + at, len, at);
 	kfree(buf);
@@ -495,7 +543,7 @@ static void private_load(struct worker *worker)
 	len = between(1, min_t(u64, worker->size - at, 3 * PAGE_SIZE));
 	operation(worker, "load %lld+%zu, size %lld\n", at, len, worker->size);
 	buf = kmalloc(len, GFP_KERNEL);
-	err = sim_user_load(worker->addr + at, buf, len);
+	err = user_load(worker->addr + at, buf, len);
 	check(!err, "a private load: %d", err);
 	for (i = 0; i < len; i++) {
 		if (buf[i] != worker->private[at + i]) {
@@ -579,10 +627,10 @@ static void twin_read(struct worker *worker)
 	at = cell_of(between(0, worker->twin_size - sizeof(buf)));
 	operation(worker, "read the twin at %lld, size %lld\n", at, worker->twin_size);
 	if (between(0, 1)) {
-		err = sim_user_load(worker->twin_addr + at, buf, sizeof(buf));
+		err = user_load(worker->twin_addr + at, buf, sizeof(buf));
 		check(!err, "a load of the twin: %d", err);
 	} else {
-		check(sim_read(worker->twin, at, buf, sizeof(buf)) == sizeof(buf), "a read of the twin");
+		check(read_file(worker->twin, at, buf, sizeof(buf)) == sizeof(buf), "a read of the twin");
 	}
 	check_bytes("the twin", worker->twin, buf, worker->twin_bytes + at, sizeof(buf), at);
 }
@@ -624,13 +672,13 @@ static void peek(struct worker *worker)
 	at = cell_of(between(0, owner->size - sizeof(buf)));
 	operation(worker, "peek at worker %d's %lld, size %lld\n", owner->id, at, owner->size);
 	if (between(0, 1)) {
-		done = sim_user_load(owner->addr + at, buf, len) ?: len;
+		done = user_load(owner->addr + at, buf, len) ?: len;
 		check(done == len || failing || shrinks % 2 || owner->shrinks != shrinks,
 		      "a peek at worker %d's page %lld: %zd", owner->id, at >> PAGE_SHIFT, done);
 		if (done != len)
 			goto out;
 	} else {
-		done = sim_read(owner->file, at, buf, len);
+		done = read_file(owner->file, at, buf, len);
 		check(done >= 0, "a peek at worker %d's: %zd", owner->id, done);
 		len = cell_of(done);
 	}
@@ -692,7 +740,7 @@ static void huge_cycle(struct worker *worker)
 	new_cells(worker, worker->huge_file, mine, 0, HUGE_LEN);
 	if (!huge_write(worker, mine, pieces))
 		return;
-	err = sim_user_load(worker->huge_addr, buf, SLOT);
+	err = user_load(worker->huge_addr, buf, SLOT);
 	check(!err, "a load of a PMD: %d", err);
 	check_bytes("a load of a PMD", worker->huge_file, buf, mine, SLOT, 0);
 	huge_mapped += sim_mm_is_huge(worker->huge_addr);
@@ -713,7 +761,7 @@ static void huge_cycle(struct worker *worker)
 		for (i = 0; i < ARRAY_SIZE(others); i++) {
 			loff_t at = others[i] * PAGE_SIZE;
 
-			err = sim_user_load(worker->huge_addr + at, buf, SLOT);
+			err = user_load(worker->huge_addr + at, buf, SLOT);
 			check(!err, "a load of page %lu of a broken PMD: %d", others[i], err);
 			check_bytes("a load of a broken PMD", worker->huge_file, buf, mine + at,
 				    SLOT, at);
@@ -798,11 +846,11 @@ static struct slots *any_slots(void)
 	return which == SMALL_FILES ? &shared : which > SMALL_FILES ? &big : &small[which];
 }
 
-static void fsync_watch(struct fsync_check *watched)
+static void fsync_watch(struct fsync_check *watched, struct slots *file)
 {
 	int owner = between(0, WORKERS - 1);
 
-	watched->file = any_slots();
+	watched->file = file;
 	watched->at = between(0, watched->file->pages - 1);
 	watched->slot = &watched->file->slots[owner][watched->at];
 	watched->at = slot_at(owner, watched->at);
@@ -828,18 +876,26 @@ static void fsync_check(const struct fsync_check *watched)
 
 /*
  * Seals as a journal does, whenever it likes: in some runs seldom, which leave a task that needs a
- * seal to get on going round in vain for a while.
+ * seal to get on going round in vain for a while. Writing through, a store is in Fxfs's extents
+ * as it ends, so that any file's slots must be there after the seal, whichever file's fsync made
+ * it; copying on write, a store is in a private page until its file's writeback, and the fsync
+ * makes its own file's slots durable, no other's, which are those watched then, the file picked
+ * first. Writing through, it is picked after them, as it always was, so that those seeds play as
+ * they did.
  */
 static void syncer_task(void *arg)
 {
 	struct fsync_check watched[FSYNC_CHECKS];
 	u64 pause = between(0, 3) ? 2 : 40;
+	struct slots *synced;
 	int err, i;
 
 	while (READ_ONCE(writers_left)) {
+		synced = cow ? any_slots() : NULL;
 		for (i = 0; i < FSYNC_CHECKS; i++)
-			fsync_watch(&watched[i]);
-		err = sim_fsync(any_slots()->file);
+			fsync_watch(&watched[i], synced ?: any_slots());
+		synced = synced ?: any_slots();
+		err = sim_fsync(synced->file);
 		check(!err, "fsync: %d", err);
 		for (i = 0; i < FSYNC_CHECKS; i++)
 			fsync_check(&watched[i]);
@@ -973,6 +1029,7 @@ int main(int argc, char **argv)
 {
 	unsigned long long seed = 0;
 	bool shadow = false, no_injections = false;
+	u64 window_len;
 	unsigned long watched_address = 0;
 	u64 moved, freed, failed;
 	int i;
@@ -983,10 +1040,12 @@ int main(int argc, char **argv)
 		sscanf(argv[2], "%lu", &operations);
 	sim_init(seed);
 	/* A window its files fill, a run in four, whose ranges are reclaimed and regions run out. */
-	sim_device_init(sim_random() % 4 ? WINDOW_LEN : SMALL_WINDOW_LEN);
+	window_len = sim_random() % 4 ? WINDOW_LEN : SMALL_WINDOW_LEN;
+	sim_device_init(window_len);
 	/* By the seed, not of its random numbers: what it plays otherwise stays. */
 	if (!(seed % 4))
 		sim_device_limit_open(OPEN_LIMIT);
+	cow = seed % 4 == 2;
 	for (i = 2; i < argc; i++) {
 		unsigned long long page;
 
@@ -1000,6 +1059,8 @@ int main(int argc, char **argv)
 			no_injections = true;
 		else if (!strcmp(argv[i], "-N"))
 			fault_seals = true;
+		else if (!strcmp(argv[i], "-C"))
+			cow = true;
 		else if (!strcmp(argv[i], "-v"))
 			verbose = true;
 		else if (!strcmp(argv[i], "-a"))
@@ -1013,6 +1074,9 @@ int main(int argc, char **argv)
 		} else if (!strcmp(argv[i], "-w") && sscanf(argv[i + 1], "%llx", &page) == 1)
 			sim_device_watch(page);
 	}
+	/* The host's copy on write, offered and taken, before the mount. */
+	if (cow)
+		sim_device_dax_cow(sim_random() % 2 ? COW_PRIVATE_FEW : window_len / PAGE_SIZE / 4);
 	diagnostics(shadow);
 	if (!no_injections)
 		injections();
@@ -1022,8 +1086,8 @@ int main(int argc, char **argv)
 	if (failing)
 		fxfs_sim_fail(32);
 	if (verbose)
-		sim_log("interleave: %lu hot pages, Fxfs fails %d, a MAP fails %d, fault seals %d\n",
-			hot_pages, failing, failing_maps, fault_seals);
+		sim_log("interleave: %lu hot pages, Fxfs fails %d, a MAP fails %d, fault seals %d, copy on write %d\n",
+			hot_pages, failing, failing_maps, fault_seals, cow);
 	if (watched_address)
 		sim_mm_watch(watched_address);
 	sim_spawn("syncer", syncer_task, NULL);

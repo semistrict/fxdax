@@ -1,0 +1,41 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+#
+# TASK-164.4, doc-13: writeback swaps the dirty set out under the file's semaphore shared, as doc-13
+# had it: a write(2) between the iomap that dirtied its page and its copy straddles it, its bytes in
+# neither set. cow_swap_during_write: the next fsync writes nothing of them.
+
+--- a/guest/linux/fs/fxfs/dax.c
++++ b/guest/linux/fs/fxfs/dax.c
+@@ -3894,7 +3894,7 @@
+ 	unsigned long chunk, page, end;
+ 	int err;
+ 
+-	lockdep_assert_held_write(&file->sem);
++	lockdep_assert_held(&file->sem);
+ 	xa_for_each(&file->ranges, chunk, range) {
+ 		if (!fxfs_dax_cow_busy(range))
+ 			continue;
+@@ -3966,11 +3966,11 @@
+ 		err = -ENOMEM;
+ 		goto out;
+ 	}
+-	down_write(&file->sem);
++	down_read(&file->sem);
+ 	/* Its pages the VM's own before they are the set's: one that can't be stays dirty. */
+ 	err = fxfs_dax_cow_own(dax, file);
+ 	if (err) {
+-		up_write(&file->sem);
++		up_read(&file->sem);
+ 		goto out;
+ 	}
+ 	xa_for_each(&file->ranges, chunk, range) {
+@@ -3988,7 +3988,7 @@
+ 		nr++;
+ 	}
+ 	fxfs_dax_cow_count(dax, file, 0, -pages);
+-	up_write(&file->sem);
++	up_read(&file->sem);
+ 	fxfs_dax_cow_protect(inode->i_mapping, batch, nr);
+ 	cleaned = dax_writeback_mapping_range(inode->i_mapping, dax->dax_dev, &all);
+ 	/* Before it reads its ranges' window pages, which nothing may free (pause points). */

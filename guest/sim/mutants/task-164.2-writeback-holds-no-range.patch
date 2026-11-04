@@ -1,0 +1,36 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+#
+# TASK-164.2, doc-13, GCE r544's class: a writeback holds no range of the pages it reads from the
+# window, so reclaim frees one under it, its space given to another range, and the writeback reads
+# that range's pages, or nothing mapped, for the file's. cow_reclaim_during_writeback.
+
+--- a/guest/linux/fs/fxfs/dax.c
++++ b/guest/linux/fs/fxfs/dax.c
+@@ -3845,7 +3845,7 @@
+ 	struct fxfs_write_part *parts = NULL;
+ 	struct fxfs_dax_range *range;
+ 	unsigned long chunk, word;
+-	size_t nr = 0, most = 0, i;
++	size_t nr = 0, most = 0;
+ 	long pages = 0;
+ 	int err = 0, cleaned;
+ 
+@@ -3878,8 +3878,6 @@
+ 		if (nr == most || !fxfs_dax_cow_busy(range))
+ 			continue;
+ 		batch[nr].range = range;
+-		/* Kept, mapped, while the writeback reads it: no reclaim, no drop. */
+-		atomic_inc(&range->users);
+ 		bitmap_zero(batch[nr].pages, FXFS_DAX_PAGES);
+ 		for (word = 0; word < BITS_TO_LONGS(range->pages); word++) {
+ 			batch[nr].pages[word] = range->dirty[word];
+@@ -3896,8 +3894,6 @@
+ 	fxfs_dax_pause_file(FXFS_DAX_STEP_WRITEBACK, inode->i_ino);
+ 	err = fxfs_dax_cow_write_pages(dax, inode, batch, nr, parts);
+ 	err = err ?: cleaned;
+-	for (i = 0; i < nr; i++)
+-		fxfs_dax_put_range(dax, batch[i].range);
+ 	atomic64_inc(&dax->cow_writebacks);
+ 	atomic64_add(pages, &dax->cow_written);
+ 	/* As the page cache's writeback: the pages are clean, the error the file's (fsync's). */

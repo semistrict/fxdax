@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+#
+# TASK-164.4, doc-13: writeback's write-protect left to dax_writeback_mapping_range, by the DAX
+# entries, as it was: a fault past its iomap_end holds its page's entry, which dax_writeback_one,
+# finding it locked, gives up on, and the fault's writable PTE stays. cow_writeback_during_fault:
+# the rebind's read-only MAP under it, refused; interleave's seed 22, 15 of CI's 3,000.
+
+--- a/guest/linux/fs/fxfs/dax.c
++++ b/guest/linux/fs/fxfs/dax.c
+@@ -3890,7 +3890,6 @@
+ 	}
+ 	fxfs_dax_cow_count(dax, file, 0, -pages);
+ 	up_write(&file->sem);
+-	fxfs_dax_cow_protect(inode->i_mapping, batch, nr);
+ 	cleaned = dax_writeback_mapping_range(inode->i_mapping, dax->dax_dev, &all);
+ 	/* Before it reads its ranges' window pages, which nothing may free (pause points). */
+ 	fxfs_dax_pause_file(FXFS_DAX_STEP_WRITEBACK, inode->i_ino);

@@ -8,7 +8,7 @@
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c
-@@ -2026,8 +2026,7 @@
+@@ -2430,8 +2430,7 @@
  		if (count < 0)
  			return ERR_PTR(count);
  		if (e.offset != start || e.len != end - start || !e.extent_size ||
@@ -16,5 +16,5 @@
 -		    e.access == FXFS_DAX_SHARED)
 +		    e.extent_size > FXFS_DAX_SIZE || !PAGE_ALIGNED(e.extent_offset))
  			return NULL;
- 		region = fxfs_dax_get_region(dax, &e, true);
- 		if (IS_ERR(region))
+ 		/*
+ 		 * fxdax: copying on write, nothing maps an open extent: a range of its own maps the

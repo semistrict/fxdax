@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+#
+# TASK-164.4, doc-13: writeback write-protects nothing, as when it left it to
+# dax_writeback_mapping_range, not forced to WB_SYNC_ALL, which alone acts: a fault's PTE stays
+# writable, and a store through it after the copy is in no set. cow_rebind_skips_dirty: the store
+# after the rebind never reaches Fxfs; and cow_writeback_against_stores, an fsync missing a store
+# before it.
+
+--- a/guest/linux/fs/fxfs/dax.c
++++ b/guest/linux/fs/fxfs/dax.c
+@@ -3836,7 +3836,7 @@
+ 	struct fxfs_dax_file *file = fxfs_dax_file(inode);
+ 	struct fxfs_dax *dax = fxfs_dax_of(inode);
+ 	struct writeback_control all = {
+-		.sync_mode = WB_SYNC_ALL,
++		.sync_mode = WB_SYNC_NONE,
+ 		.nr_to_write = LONG_MAX,
+ 		.range_start = 0,
+ 		.range_end = LLONG_MAX,
+@@ -3890,7 +3890,6 @@
+ 	}
+ 	fxfs_dax_cow_count(dax, file, 0, -pages);
+ 	up_write(&file->sem);
+-	fxfs_dax_cow_protect(inode->i_mapping, batch, nr);
+ 	cleaned = dax_writeback_mapping_range(inode->i_mapping, dax->dax_dev, &all);
+ 	/* Before it reads its ranges' window pages, which nothing may free (pause points). */
+ 	fxfs_dax_pause_file(FXFS_DAX_STEP_WRITEBACK, inode->i_ino);
