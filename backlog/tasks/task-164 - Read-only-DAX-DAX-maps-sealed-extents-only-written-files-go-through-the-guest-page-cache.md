@@ -1,12 +1,12 @@
 ---
 id: TASK-164
 title: >-
-  Read-only DAX: DAX maps sealed extents only; written files go through the
-  guest page cache
+  Copy-on-write DAX: the window maps sealed extents read-only; a store gets a
+  private page, allocated at writeback
 status: To Do
 assignee: []
 created_date: '2026-11-04 07:34'
-updated_date: '2026-11-04 07:35'
+updated_date: '2026-11-04 07:58'
 labels: []
 dependencies: []
 priority: high
@@ -17,7 +17,7 @@ ordinal: 609000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Decided by the user on 2026-11-04 from the first-principles review (docs/reviews/2026-11-04-first-principles.md, section 1, option a). Writable DAX (a window page being the open extent's block, every fsync sealing every open extent) costs DAX ~0.55x no-DAX under pgbench, ~47% of bug tasks, 37-39 of 65 dead-ends and ~25k lines, while density comes from reading shared sealed base pages. New design: DAX maps only sealed extents, read-only; a file switches to the guest page cache at its first write (per inode); writes take the no-DAX path. Removes the gate, seals' write-protects, moves on store, restaging, the open-page budget and ENOMEM, refused stores, exit 159, most fs/dax.c patches, specs dax/dax-region/extent-open and most of guest/sim; host-side open extents in the window go. Plan: a design doc first (the per-inode switch: Linux allows changing DAX mode only at eviction; mmap of a file being written; reads of a written file's sealed blocks; followers frozen), then a prototype behind a mount option judged by the perf gate (pgbench-dax vs no-DAX, first reads of a base, density memory per VM) and the crash and DAX suites, then deletion of the writable path.
+Decided by the user on 2026-11-04 (docs/reviews/2026-11-04-first-principles.md, doc-13). The window maps only sealed extents (or zeros), read-only. A guest's first store to such a page gets a private host copy at the same window address, nothing moving; Fxfs allocates extents at writeback (delayed allocation), fsync writing dirty window pages as the no-DAX path writes and committing after the bytes; once a page's new extent is sealed the guest maps it back to it. Per page, not per file: a 400 GB file mapped read-write with 5% written keeps the rest on DAX, only written pages costing memory, up to private_max per VM (a quarter of the window by default, the user's choice). Files created in a mount stay page-cache inodes until read in again. Removes the gate, seals' write-protects, moves, staging and restaging, lagging pages, held copies, the open-page budget and ENOMEM, seal asks, writable MAPs, txn_map_write*, ExtentAccess, patches 0005/0008/0009 and the dax, dax-region and extent-open specs. Stages in doc-13; subtasks below.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
@@ -38,4 +38,6 @@ Decided by the user on 2026-11-04 from the first-principles review (docs/reviews
 
 <!-- SECTION:NOTES:BEGIN -->
 2026-11-04, the user: the design must serve a Redis-like workload. A 400 GB file mmapped read-write (MAP_SHARED), 5% of it written in this fork: the unwritten 95%, including blocks written in earlier forks (sealed now), stays DAX, and only the written pages cost extra memory. So the switch can't be per file: it is per page within one mapping. Candidates: host copy-on-write with writeback allocation (the review's option 1b), or a guest-side per-page mix of DAX entries and page-cache folios. The design doc decides.
+
+2026-11-04, the user: per page by host copy-on-write over per file; private_max a quarter of the window, configurable; density targets set from the density gate's measurements, not fixed now.
 <!-- SECTION:NOTES:END -->
