@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-21 09:06'
-updated_date: '2026-11-04 07:34'
+updated_date: '2026-11-04 09:36'
 labels:
   - followers
   - perf
@@ -50,4 +50,6 @@ From the review session (2026-10-24): TASK-41.1's close_now part is on main (rou
 Handed back 2026-11-02 (triage): last measured on 0a3015b (1.28x reading, 1.43x idle); close reads (788bd2e4f/7112b50d9) and much follower and DAX code changed since. Left: rerun pgbench on main alone, followed and followed-idle (bench-gce.sh, scripts/bench-ab.py); close if within noise, else the uploader's back-to-back re-gathers (TASK-41.1 AC1) are the suspect.
 
 Frozen 2026-11-04 by the user: followers and the standalone store layer have no customer now; resumed after read-only DAX (TASK-164) and the storage collapse (TASK-165) land (docs/reviews/2026-11-04-first-principles.md, section 6).
+
+2026-11-04 re-measure on main cfd41e1a0 (c3-standard-8, bench-gce.sh, 3 iterations, /Users/ramon/fxdax-gce/remeasure-20261104/c/followed/comparison.md): alone 1,583 tps (1,557-1,590), two followers reading 1,375 (1.15x), two idle 1,417 (1.12x); better than 1.28x and 1.43x, ranges not overlapping. No commits stalled at the lag bound. Left: run each case alone (the bench's cases share one daemon), the uploader's back-to-back re-gathers the suspect. Frozen with followers.
 <!-- SECTION:NOTES:END -->

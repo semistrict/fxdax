@@ -3,9 +3,10 @@ id: TASK-91.11
 title: >-
   extentd: a WRITE's time grows with the store under pgbench without DAX (152 to
   211 us over five runs)
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-23 09:50'
+updated_date: '2026-11-04 09:36'
 labels: []
 dependencies: []
 parent_task_id: TASK-91
@@ -31,3 +32,15 @@ Sandbox team round 5 at a8e2e02 (2026-10-23), fxdax-nodax at 25 ms: five 60 s pg
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-11-04 on main cfd41e1a0: extentd's average WRITE, run 1 to run 5, over seven five-run no-DAX GCE runs: 64.7 to 65.5 us (+1.2%); main's three alone 64.9 to 67.1 us; not monotonic (runs 3-4 lowest, 51-57 us) (/Users/ramon/fxdax-gce/remeasure-20261104).
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Not reproduced on main cfd41e1a0: extentd's average WRITE is 65 us in run 1 and in run 5, averaged over seven five-run no-DAX pgbench runs on GCE, where it grew from 152 to 211 us at round 5's build (a8e2e02). Nothing grows, so finding what grew (AC1) is moot.
+<!-- SECTION:FINAL_SUMMARY:END -->

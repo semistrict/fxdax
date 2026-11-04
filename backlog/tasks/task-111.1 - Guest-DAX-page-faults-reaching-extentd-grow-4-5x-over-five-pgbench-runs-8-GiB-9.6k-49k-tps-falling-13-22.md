@@ -3,11 +3,11 @@ id: TASK-111.1
 title: >-
   Guest DAX: page faults reaching extentd grow 4-5x over five pgbench runs (8
   GiB: 9.6k -> 49k), tps falling 13-22%
-status: To Do
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-28 00:28'
-updated_date: '2026-11-03 02:10'
+updated_date: '2026-11-04 09:36'
 labels: []
 dependencies: []
 parent_task_id: TASK-111
@@ -52,4 +52,12 @@ r201-111a (8 GiB, aging fix alone): faults still 39k, tps 1119/1004/920/970/979.
 r201-111c (8 GiB, both fixes): faults 6 in all (40-60k before), 0 pager waits; tps 1155/1067/1061/1033/1026 (run 5 89% of run 1; before 1125->969, 86%). r202-111c (2 GiB): faults 21, tps 1124/1015/974/920/953 (85%): window pressure. What remains of the 8 GiB decline follows extentd memory fragmenting as it recycles at its cap: KB per stage map 42 -> 23, stage ops per MAP 2.6 -> 3.3 (TASK-108.1's open item). AC3 not met. Validation: zircon and fxdax tests on macOS (445); Linux workspace on GCE r201 (2661 passed); DAX guest suites fxfs-guest-dax, fxfs-guest-checks-dax, extent-guest on r202 pass; upstream-changes.py --check passes.
 
 Handed back 2026-11-02 (triage): faults fixed (7c9b7ceab: 40-60k to 6 over five runs). Left (AC3): pgbench-dax decays over five runs, run 5 at 89% of run 1 at 8 GiB and 85% at 2 GiB; TASK-131.5's decay gate 0.85 at r264. Not in the guest kernel per r287/r288; a host-side profile by thread, run 1 against run 5, would say. The one task carrying the decay since TASK-131.1 closed.
+
+2026-11-04 re-measure on main cfd41e1a0 (/Users/ramon/fxdax-gce/remeasure-20261104/a, b): 2 GiB window run 5 / run 1 0.973, 0.930, 0.934; 8 GiB 0.934, 0.901, 0.960; perf gate decay 0.973 (pass). Faults reaching extentd 0-729 a run. tps dips in runs 2-3 and partly recovers; MAP ~60 to 75-80 us, WRITE ~140 to 160-178 us across runs.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Faults reaching extentd stopped growing (7c9b7ceab: reclaim unmaps only what it evicts, window pages aged), and on main cfd41e1a0 run 5 is 0.93-0.97 of run 1 at a 2 GiB window and 0.90-0.96 at 8 GiB over six GCE runs, all at or above 0.90 (the perf gate's decay 0.973). The 8 GiB margin is thin (one run 0.901); copy-on-write DAX (TASK-164) replaces this path.
+<!-- SECTION:FINAL_SUMMARY:END -->
