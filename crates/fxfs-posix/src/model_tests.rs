@@ -1149,6 +1149,17 @@ impl World {
     /// Checks what the directory `dir` holds against `model`, and what its names link: their
     /// types, each by lookup too, its links, and what a symlink says.
     async fn holds_names(&self, model: &Model, dir: u64) -> Result<(), String> {
+        // A lookup finds no name queued to go, though its record is there until the readdir below
+        // applies what is queued in the directory: a lookup applies only what its name's inode
+        // waits for (TASK-92.26).
+        for &Queued { place: (in_dir, name), .. } in &model.queued {
+            if in_dir == dir && !model.names.contains_key(&(dir, name)) {
+                match self.fs.lookup(dir, &name_of(name)).await {
+                    Err(error) if errno(&error) == Errno::ENOENT => {}
+                    found => return Err(format!("{name} in {dir}, gone, was found: {found:?}")),
+                }
+            }
+        }
         let mut found = Vec::new();
         let listed = self.fs.readdir(dir, ReaddirStart::Index(0), |name, ino, kind| {
             found.push((name.as_bytes().to_vec(), ino, kind));

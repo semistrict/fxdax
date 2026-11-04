@@ -70,6 +70,13 @@ impl Fxfs<Tested> {
     async fn new_dir(&self, dir: u64, name: &[u8]) -> u64 {
         self.create(dir, name, DIR, 0, 0, 0, &[]).await.expect("creating")[0].ino
     }
+
+    /// Queues the unlink of `name`, which links `ino`, from `dir`, as `unlink_later` does, but
+    /// waking no worker: it stays queued until something waits for it.
+    fn queue_unlink(&self, dir: u64, name: &str, ino: u64) {
+        let op = DelayedOp::Unlink { dir, name: name.to_owned(), ino };
+        self.delayed.queue.lock().unwrap().push(op);
+    }
 }
 
 /// An unlink no others join goes by itself: it holds its room, and its place in the journal, for
@@ -131,6 +138,57 @@ async fn lookups_count_links_queued_to_go() {
     fs.unlink_later(a, b"one", ino).await.unwrap();
     assert_eq!(fs.lookup(b, b"two").await.unwrap().nlink, 1);
     fs.stop_delayed().await.unwrap();
+}
+
+/// A lookup applies no unlink queued of the directory's other names: with the kernel's dentries
+/// cold, each unlinkat's lookup applied the unlink before it, alone (TASK-92.26). It finds no name
+/// queued to go, though the name's record is there until the unlink is made.
+#[fuchsia::test]
+async fn a_lookup_leaves_the_unlinks_of_other_names_queued() {
+    let (fs, root) = volume().await;
+    let (a, b) = (fs.new_file(root, b"a").await, fs.new_file(root, b"b").await);
+    fs.queue_unlink(root, "a", a);
+    assert_eq!(fs.lookup(root, b"b").await.unwrap().ino, b);
+    assert_eq!(fs.queued(), 1, "a lookup of another name applied the unlink queued");
+    let found = fs.lookup(root, b"a").await.expect_err("a name queued to go, found");
+    assert_eq!(errno(&found), Errno::ENOENT);
+    assert_eq!(fs.queued(), 0);
+    fs.stop_delayed().await.unwrap();
+}
+
+/// Nor one another case of it names, in a casefolding directory, which looks the name up as it is
+/// in neither.
+#[fuchsia::test]
+async fn a_lookup_finds_no_name_queued_to_go_in_another_case() {
+    let (fs, root) = volume().await;
+    let dir = fs.new_dir(root, b"folded").await;
+    fs.directory(dir).await.unwrap().set_casefold(true).await.unwrap();
+    let ino = fs.new_file(dir, b"Name").await;
+    assert_eq!(fs.lookup(dir, b"name").await.unwrap().ino, ino);
+    fs.queue_unlink(dir, "Name", ino);
+    let found = fs.lookup(dir, b"name").await.expect_err("a name queued to go, found");
+    assert_eq!(errno(&found), Errno::ENOENT);
+    fs.stop_delayed().await.unwrap();
+}
+
+/// A drain of what is queued, an fsync's or a sync's, applies what was queued before it began,
+/// not what is queued while it goes on: another's bulk delete held an fsync for as long as it went
+/// on (TASK-92.27).
+#[fuchsia::test]
+async fn a_drain_leaves_what_is_queued_after_it_began() {
+    let (fs, root) = volume().await;
+    let (a, b) = (fs.new_file(root, b"a").await, fs.new_file(root, b"b").await);
+    fs.queue_unlink(root, "a", a);
+    // The batch unlinking `a` waits for the object's truncate guard (`apply_unlinks`).
+    let guard = fs.filesystem.truncate_guard(fs.volume.store_object_id(), a).await;
+    let mut drain = pin!(fs.drain_all());
+    assert!(futures::poll!(drain.as_mut()).is_pending(), "the batch didn't wait");
+    fs.queue_unlink(root, "b", b);
+    drop(guard);
+    drain.await.unwrap();
+    assert_eq!(fs.queued(), 1, "the drain applied what was queued after it began");
+    fs.stop_delayed().await.unwrap();
+    assert_eq!(fs.queued(), 0);
 }
 
 /// As does an exchange of names, its attributes being what the kernel keeps.

@@ -41,7 +41,7 @@ use fxfs::object_store::{
     StoreObjectHandle, Timestamp, TombstoneMode, TrimMode, TrimResult,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::ops::Range;
 use std::pin::pin;
@@ -238,9 +238,10 @@ const DELAYED_WAIT: Duration = Duration::from_millis(10);
 /// fxdax: unlinks the syscalls queued rather than made (doc-6): the kernel holds the directory's
 /// lock while it unlinks, which each of Fxfs's commits held up for most of the call; a batch of
 /// them in one transaction costs a fraction of each alone. Each inode's apply in the order
-/// queued, before anything reads what they change (`drain`), and all of them before syncs and
-/// before any change of names (`drain_all`), so that the journal has names change in the order the
-/// syscalls did, and stays a prefix of them after a crash (doc-2, doc-6), and within
+/// queued, before anything reads what they change (`drain`): a lookup, before it reads the inode a
+/// name links, which an unlink of the name changes too. Those queued before a sync or a change of
+/// names apply before it (`drain_all`), so that the journal has names change in the order the
+/// syscalls did, and stays a prefix of them after a crash (doc-2, doc-6), and the rest within
 /// `DELAYED_WAIT` of no more coming; batches unlinking different inodes apply at once, from one
 /// directory too: the kernel writes back a directory's times (write_inode), and its names are
 /// records of their own, which nothing else changes while unlinks of them are queued.
@@ -273,7 +274,12 @@ unsafe impl<P: Platform> Send for FxfsRef<P> {}
 
 #[derive(Default)]
 struct DelayedQueue {
-    ops: Vec<DelayedOp>,
+    /// The ops queued, in the order queued, each with its number in it.
+    ops: Vec<(u64, DelayedOp)>,
+    /// How many ops were ever queued: the next one's number.
+    queued: u64,
+    /// The numbers of the ops queued or applying: what a drain waits for those of (`drain_all`).
+    unapplied: BTreeSet<u64>,
     /// The ops queued or applying for each inode they change: directories and the inodes unlinked.
     pending: FxHashMap<u64, usize>,
     /// The inodes the batches applying unlink or free, which no other batch may meanwhile.
@@ -311,29 +317,46 @@ impl DelayedOp {
 }
 
 impl DelayedQueue {
-    /// Takes a batch of the ops queued to apply, marking the inodes they unlink or free applying:
-    /// in order, those of no inode another batch applying has, nor one an op queued before them
-    /// and left has, so that each inode's ops apply in the order queued.
-    fn take_batch(&mut self) -> Vec<DelayedOp> {
+    /// Queues `op`: how many ops then are.
+    fn push(&mut self, op: DelayedOp) -> usize {
+        for ino in op.inos() {
+            *self.pending.entry(ino).or_default() += 1;
+        }
+        let number = self.queued;
+        self.queued += 1;
+        self.unapplied.insert(number);
+        self.ops.push((number, op));
+        self.ops.len()
+    }
+
+    /// Takes a batch of the ops queued before the `before`th to apply, marking the inodes they
+    /// unlink or free applying: in order, those of no inode another batch applying has, nor one an
+    /// op queued before them and left has, so that each inode's ops apply in the order queued.
+    fn take_batch(&mut self, before: u64) -> Vec<(u64, DelayedOp)> {
         let mut batch = Vec::new();
         // The inodes of the ops left.
         let mut blocked = FxHashSet::default();
-        let mut ops = std::mem::take(&mut self.ops).into_iter();
-        for op in ops.by_ref() {
+        let mut ops = std::mem::take(&mut self.ops).into_iter().peekable();
+        while let Some((number, op)) = ops.next_if(|&(number, _)| number < before) {
             let ino = op.ino();
             if self.applying.contains(&ino) || blocked.contains(&ino) {
                 blocked.insert(ino);
-                self.ops.push(op);
+                self.ops.push((number, op));
                 continue;
             }
-            batch.push(op);
+            batch.push((number, op));
             if batch.len() == DELAYED_BATCH {
                 break;
             }
         }
         self.ops.extend(ops);
-        self.applying.extend(batch.iter().map(DelayedOp::ino));
+        self.applying.extend(batch.iter().map(|(_, op)| op.ino()));
         batch
+    }
+
+    /// Whether the ops queued before the `before`th are all applied.
+    fn applied_before(&self, before: u64) -> bool {
+        self.unapplied.first().is_none_or(|&first| first >= before)
     }
 }
 
@@ -562,15 +585,21 @@ impl<P: Platform> Fxfs<P> {
         Ok(data_size(self.volume.tree().find(&data_key(ino)).await?.map(|item| item.value)))
     }
 
-    /// The attributes of `name` in the directory `dir`.
+    /// The attributes of `name` in the directory `dir`. fxdax: unlinks of the directory's other
+    /// names stay queued: with the kernel's dentries cold, as after a boot, each unlinkat's lookup
+    /// applied the unlink before it, alone, under the directory's lock (TASK-92.26).
     pub async fn lookup(&self, dir: u64, name: &[u8]) -> Result<Attr, Error> {
-        self.drain(&[dir]).await?;
         // Fxfs's names are UTF-8: no other name is in a directory.
         let name = str::from_utf8(name).map_err(|_| anyhow!(FxfsError::NotFound))?;
-        let (ino, _, _) =
-            self.directory(dir).await?.lookup(name).await?.ok_or(FxfsError::NotFound)?;
-        // Another of its names may be queued to go: the kernel takes its link count from here.
-        self.drain(&[ino]).await?;
+        let dir = self.directory(dir).await?;
+        let (mut ino, _, _) = dir.lookup(name).await?.ok_or(FxfsError::NotFound)?;
+        // The name may be queued to go, which changes the inode it links, as may another of its
+        // names, the kernel taking its link count from here: once they are made, it is looked up
+        // again. The kernel holds the directory: no other inode takes the name meanwhile.
+        if self.delayed.queue.lock().unwrap().pending.contains_key(&ino) {
+            self.drain(&[ino]).await?;
+            (ino, _, _) = dir.lookup(name).await?.ok_or(FxfsError::NotFound)?;
+        }
         self.attr(ino).await
     }
 
@@ -1362,12 +1391,8 @@ impl<P: Platform> Fxfs<P> {
                     log::error!("inode {ino} evicted unlinked, with unlinks failed: it stays");
                     return;
                 }
-                let pending = queue.pending.get_mut(&ino);
-                let queued = pending.map(|pending| *pending += 1).is_some();
-                if queued {
-                    queue.ops.push(DelayedOp::Evict { ino });
-                }
-                queued.then_some(queue.ops.len())
+                let queued = queue.pending.contains_key(&ino);
+                queued.then(|| queue.push(DelayedOp::Evict { ino }))
             };
             match queued {
                 Some(1) => self.wake_worker(),
@@ -1388,12 +1413,7 @@ impl<P: Platform> Fxfs<P> {
         let queued = {
             let mut queue = self.delayed.queue.lock().unwrap();
             ensure!(!queue.failed, UNLINK_FAILED);
-            let op = DelayedOp::Unlink { dir, name, ino };
-            for ino in op.inos() {
-                *queue.pending.entry(ino).or_default() += 1;
-            }
-            queue.ops.push(op);
-            queue.ops.len()
+            queue.push(DelayedOp::Unlink { dir, name, ino })
         };
         // Whenever a batch's worth waits: the queue may come down to a multiple of a batch from
         // above, as the batches applied leave it, and up from there again without reaching one.
@@ -1405,7 +1425,7 @@ impl<P: Platform> Fxfs<P> {
             // Far behind: help apply the queue. (Waiting for the workers instead spends more:
             // waking every unlinker waiting after each batch, and leaving the CPU idle while they
             // wait for the workers' commits.)
-            self.apply_until(|queue| queue.ops.len() < DELAYED_QUEUE).await
+            self.apply_until(u64::MAX, |queue| queue.ops.len() < DELAYED_QUEUE).await
         } else {
             Ok(())
         }
@@ -1462,7 +1482,7 @@ impl<P: Platform> Fxfs<P> {
                 break;
             }
             // A batch failing fails later changes (`apply_batch`).
-            let _ = self.apply_until(|queue| queue.ops.len() < DELAYED_BATCH).await;
+            let _ = self.apply_until(u64::MAX, |queue| queue.ops.len() < DELAYED_BATCH).await;
             queued.await;
         }
     }
@@ -1486,7 +1506,7 @@ impl<P: Platform> Fxfs<P> {
             let waited = pin!(fasync::Timer::new(Instant::now() + DELAYED_WAIT));
             if let Either::Left(_) = select(waited, queued).await {
                 // A batch failing fails later changes (`apply_batch`).
-                let _ = self.apply_until(|queue| queue.ops.is_empty()).await;
+                let _ = self.apply_until(u64::MAX, |queue| queue.ops.is_empty()).await;
             }
         }
     }
@@ -1504,30 +1524,39 @@ impl<P: Platform> Fxfs<P> {
                 let _ = worker_stopped.await;
             }
         }
-        self.drain_all().await
+        // All of it, an unlink's racing this too: no worker is left to apply it.
+        self.apply_until(u64::MAX, |queue| queue.pending.is_empty()).await
     }
 
     /// Applies the queued unlinks if any changes one of `inos`: before reading them.
     async fn drain(&self, inos: &[u64]) -> Result<(), Error> {
-        self.apply_until(|queue| !inos.iter().any(|ino| queue.pending.contains_key(ino))).await
+        let done = |queue: &DelayedQueue| !inos.iter().any(|ino| queue.pending.contains_key(ino));
+        self.apply_until(u64::MAX, done).await
     }
 
-    /// Applies the queued unlinks: before anything that must come after them.
+    /// Applies the unlinks queued before it is called: before anything that must come after them.
+    /// Not those queued since, by calls it needn't come after: they held an fsync for as long as
+    /// another's bulk delete went on, hundreds of milliseconds (TASK-92.27).
     async fn drain_all(&self) -> Result<(), Error> {
-        self.apply_until(|queue| queue.pending.is_empty()).await
+        let before = self.delayed.queue.lock().unwrap().queued;
+        self.apply_until(before, |queue| queue.applied_before(before)).await
     }
 
-    /// Applies batches of the queued unlinks, or waits for those other calls apply, until `done`
-    /// says the queue is as it should be.
-    async fn apply_until(&self, done: impl Fn(&DelayedQueue) -> bool) -> Result<(), Error> {
+    /// Applies batches of the ops queued before the `before`th (`u64::MAX`: of all of them), or
+    /// waits for those other calls apply, until `done` says the queue is as it should be.
+    async fn apply_until(
+        &self,
+        before: u64,
+        done: impl Fn(&DelayedQueue) -> bool,
+    ) -> Result<(), Error> {
         loop {
             let (batch, listener) = {
                 let mut queue = self.delayed.queue.lock().unwrap();
                 if done(&queue) {
                     return Ok(());
                 }
-                let batch = queue.take_batch();
-                // Every op queued waits for inodes other calls' batches change: wait for one.
+                let batch = queue.take_batch(before);
+                // Every op it may take waits for inodes other calls' batches change: wait for one.
                 let listener = batch.is_empty().then(|| self.delayed.applied.listen());
                 (batch, listener)
             };
@@ -1538,11 +1567,15 @@ impl<P: Platform> Fxfs<P> {
         }
     }
 
-    /// Applies `ops`, which `DelayedQueue::take_batch` took.
-    async fn apply_batch(&self, ops: Vec<DelayedOp>) -> Result<(), Error> {
+    /// Applies `batch`, which `DelayedQueue::take_batch` took.
+    async fn apply_batch(&self, batch: Vec<(u64, DelayedOp)>) -> Result<(), Error> {
+        let (numbers, ops): (Vec<u64>, Vec<DelayedOp>) = batch.into_iter().unzip();
         let result = self.apply_unlinks(&ops).await;
         {
             let mut queue = self.delayed.queue.lock().unwrap();
+            for number in numbers {
+                queue.unapplied.remove(&number);
+            }
             for op in &ops {
                 queue.applying.remove(&op.ino());
             }
