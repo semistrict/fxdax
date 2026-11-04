@@ -145,10 +145,17 @@ struct dax_device;
 
 /*
  * The DAX window's dax_device, if files' data can be mapped from it: the device maps open extents
- * writably (DAX_WRITE), or, a follower's, maps sealed ones alone, at the page size, which is a
- * block. Sets `window_len`.
+ * writably (DAX_WRITE), or fxdax: copies on write (DAX_COW), or, a follower's, maps sealed ones
+ * alone, at the page size, which is a block. Sets `window_len`.
  */
 struct dax_device *fxfs_device_dax(struct fxfs_device *dev, u64 *window_len);
+/*
+ * fxdax: whether the window copies on write (DAX_COW, doc-13): it maps sealed extents and zeros
+ * alone, read-only, a store to a page making it the VM's own, private, until a MAP or UNMAP over
+ * it; and the most private pages the device holds at once, past which a store stops the VM.
+ */
+bool fxfs_device_dax_cow(struct fxfs_device *dev);
+u64 fxfs_device_private_max(struct fxfs_device *dev);
 /*
  * Maps `len` bytes at `offset` in the extent {branch, sequence} at `window_offset` in the window,
  * writably if `writable` (MAP), or unmaps `len` bytes there (UNMAP), and waits for the device.
@@ -158,7 +165,10 @@ struct dax_device *fxfs_device_dax(struct fxfs_device *dev, u64 *window_len);
 int fxfs_device_map(struct fxfs_device *dev, u64 branch, u64 sequence, u64 offset, u64 len,
 		    u64 window_offset, bool writable, bool ahead);
 
-/* fxdax: one of fxfs_device_map_many's maps, as fxfs_device_map's arguments say it. */
+/*
+ * fxdax: one of fxfs_device_map_many's maps, as fxfs_device_map's arguments say it; or, with
+ * `zeros`, fxfs_device_map_zeros's, its extent ignored.
+ */
 struct fxfs_device_map {
 	u64 branch;
 	u64 sequence;
@@ -167,6 +177,7 @@ struct fxfs_device_map {
 	u64 window_offset;
 	bool writable;
 	bool ahead;
+	bool zeros;
 };
 
 /*
@@ -176,6 +187,14 @@ struct fxfs_device_map {
 int fxfs_device_map_many(struct fxfs_device *dev, const struct fxfs_device_map *maps,
 			 size_t count);
 int fxfs_device_unmap(struct fxfs_device *dev, u64 window_offset, u64 len);
+/*
+ * fxdax: with DAX_COW, maps zeros at `len` bytes of the window at `window_offset` (MAP_ZEROS), read-
+ * only, as holes and pages past a file's end are; and makes `len` bytes there private now, as
+ * stores would, mapped for the guest ahead of its accesses (PRIVATE): -ENOMEM past private_max.
+ * Each waits for the device.
+ */
+int fxfs_device_map_zeros(struct fxfs_device *dev, u64 window_offset, u64 len);
+int fxfs_device_private(struct fxfs_device *dev, u64 window_offset, u64 len);
 /*
  * fxdax: shows what the window's requests took, and the stores seals held off, as lines of a name
  * and a number (TASK-91.7).

@@ -383,6 +383,12 @@ int fxfs_reserve_dirty(struct fxfs *fs, u64 ino, u64 bytes);
 void fxfs_reserve_dirty_what_fits(struct fxfs *fs, u64 ino, u64 bytes);
 /* fxdax: releases the room of `bytes` of file `ino`'s dirty pages, dropped unwritten. */
 void fxfs_release_dirty(struct fxfs *fs, u64 ino, u64 bytes);
+/*
+ * fxdax: fault injection (TASK-164.2): the next `count` of fxfs_write_many's transactions fail with
+ * EIO once their blocks are written, before they commit, leaving the file as a crash between the
+ * two would: its old blocks, the new ones named by no record.
+ */
+void fxfs_set_fail_commits(u64 count);
 
 /* The extent-store device the filesystem is on (device.h). */
 struct fxfs_device *fxfs_dax_device(struct fxfs_filesystem *filesystem);

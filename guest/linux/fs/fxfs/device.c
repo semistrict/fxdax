@@ -55,6 +55,8 @@ struct fxfs_device {
 	atomic64_t map_requests;
 	/* fxdax: the host's asks to seal answered (TASK-153.15). */
 	atomic64_t seals_asked;
+	/* fxdax: the PRIVATE requests, and the bytes they made private (doc-13). */
+	atomic64_t privates, private_bytes;
 };
 
 struct fxfs_device_request {
@@ -305,8 +307,9 @@ struct dax_device *fxfs_device_dax(struct fxfs_device *dev, u64 *window_len)
 {
 	const struct vext_config *config = virtio_extent_config(dev->vext);
 
-	/* A follower maps sealed extents alone, read-only. */
-	bool maps = virtio_extent_dax_write(dev->vext) || virtio_extent_read_only(dev->vext);
+	/* A follower maps sealed extents alone, read-only; fxdax: as does a window copying on write. */
+	bool maps = virtio_extent_dax_write(dev->vext) || virtio_extent_read_only(dev->vext) ||
+		    virtio_extent_dax_cow(dev->vext);
 
 	if (!maps || config->block_size != PAGE_SIZE ||
 	    config->map_alignment > PAGE_SIZE || !virtio_extent_window(dev->vext, window_len))
@@ -322,18 +325,22 @@ static bool fxfs_device_maps_ahead = true;
 module_param_named(map_ahead, fxfs_device_maps_ahead, bool, 0644);
 MODULE_PARM_DESC(map_ahead, "Ask the device to map pages ahead of the guest's accesses (diagnostic)");
 
-/* fxdax: the flags of a map, `writable` and accessed next if `ahead`, that the device takes. */
-static u32 fxfs_device_map_flags(struct fxfs_device *dev, bool writable, bool ahead)
+/*
+ * fxdax: the flags of `map`, writable, accessed next if `ahead`, or zeros, that the device takes.
+ */
+static u32 fxfs_device_map_flags(struct fxfs_device *dev, const struct fxfs_device_map *map)
 {
-	u32 flags = writable ? VIRTIO_EXTENT_MAP_WRITE : 0;
+	u32 flags = map->writable ? VIRTIO_EXTENT_MAP_WRITE : 0;
 
-	if (ahead && READ_ONCE(fxfs_device_maps_ahead) && virtio_extent_map_ahead(dev->vext))
+	if (map->zeros)
+		flags |= VIRTIO_EXTENT_MAP_ZEROS;
+	if (map->ahead && READ_ONCE(fxfs_device_maps_ahead) && virtio_extent_map_ahead(dev->vext))
 		flags |= VIRTIO_EXTENT_MAP_AHEAD;
 	return flags;
 }
 
-int fxfs_device_map(struct fxfs_device *dev, u64 branch, u64 sequence, u64 offset, u64 len,
-		    u64 window_offset, bool writable, bool ahead)
+/* fxdax: `map`, alone, in a MAP request of its own. */
+static int fxfs_device_map_one(struct fxfs_device *dev, const struct fxfs_device_map *map)
 {
 	struct vext_request *req = kzalloc(sizeof(*req), GFP_NOFS);
 	u64 began;
@@ -342,11 +349,13 @@ int fxfs_device_map(struct fxfs_device *dev, u64 branch, u64 sequence, u64 offse
 	if (!req)
 		return -ENOMEM;
 	req->type = VIRTIO_EXTENT_T_MAP;
-	req->flags = fxfs_device_map_flags(dev, writable, ahead);
-	req->id = (struct vext_id) { branch, sequence };
-	req->offset = offset;
-	req->len = len;
-	req->window_offset = window_offset;
+	req->flags = fxfs_device_map_flags(dev, map);
+	/* Zeros name no extent. */
+	if (!map->zeros)
+		req->id = (struct vext_id) { map->branch, map->sequence };
+	req->offset = map->zeros ? 0 : map->offset;
+	req->len = map->len;
+	req->window_offset = map->window_offset;
 	began = ktime_get_ns();
 	err = virtio_extent_call(dev->vext, req);
 	atomic64_inc(&dev->maps);
@@ -355,6 +364,55 @@ int fxfs_device_map(struct fxfs_device *dev, u64 branch, u64 sequence, u64 offse
 	fxfs_hist_add(&dev->map_hist, ktime_get_ns() - began);
 	kfree(req);
 	return err;
+}
+
+int fxfs_device_map(struct fxfs_device *dev, u64 branch, u64 sequence, u64 offset, u64 len,
+		    u64 window_offset, bool writable, bool ahead)
+{
+	const struct fxfs_device_map map = {
+		.branch = branch, .sequence = sequence, .offset = offset, .len = len,
+		.window_offset = window_offset, .writable = writable, .ahead = ahead,
+	};
+
+	return fxfs_device_map_one(dev, &map);
+}
+
+int fxfs_device_map_zeros(struct fxfs_device *dev, u64 window_offset, u64 len)
+{
+	const struct fxfs_device_map map = {
+		.len = len, .window_offset = window_offset, .zeros = true,
+	};
+
+	return fxfs_device_map_one(dev, &map);
+}
+
+int fxfs_device_private(struct fxfs_device *dev, u64 window_offset, u64 len)
+{
+	struct vext_request *req = kzalloc(sizeof(*req), GFP_NOFS);
+	int err;
+
+	if (!req)
+		return -ENOMEM;
+	req->type = VIRTIO_EXTENT_T_PRIVATE;
+	req->len = len;
+	req->window_offset = window_offset;
+	err = virtio_extent_call(dev->vext, req);
+	atomic64_inc(&dev->privates);
+	if (!err)
+		atomic64_add(len, &dev->private_bytes);
+	kfree(req);
+	return err;
+}
+
+bool fxfs_device_dax_cow(struct fxfs_device *dev)
+{
+	/* A device writing through open extents copies nothing (asked first: guest/sim's has it). */
+	return !virtio_extent_dax_write(dev->vext) && virtio_extent_dax_cow(dev->vext);
+}
+
+u64 fxfs_device_private_max(struct fxfs_device *dev)
+{
+	return virtio_extent_private_max(dev->vext);
 }
 
 /* fxdax: the most maps one MAP_MANY request holds: its further ones a page's worth. */
@@ -371,20 +429,25 @@ static int fxfs_device_map_one_request(struct fxfs_device *dev, const struct fxf
 
 	if (!req)
 		return -ENOMEM;
+	/* fxdax: zeros name no extent. */
 	for (i = 1; i < count; i++)
 		entries[i - 1] = (struct virtio_extent_map_entry) {
 			.map = {
-				.id = { cpu_to_le64(maps[i].branch), cpu_to_le64(maps[i].sequence) },
-				.offset = cpu_to_le64(maps[i].offset),
+				.id = {
+					cpu_to_le64(maps[i].zeros ? 0 : maps[i].branch),
+					cpu_to_le64(maps[i].zeros ? 0 : maps[i].sequence),
+				},
+				.offset = cpu_to_le64(maps[i].zeros ? 0 : maps[i].offset),
 				.len = cpu_to_le64(maps[i].len),
 				.window_offset = cpu_to_le64(maps[i].window_offset),
 			},
-			.flags = cpu_to_le32(fxfs_device_map_flags(dev, maps[i].writable, maps[i].ahead)),
+			.flags = cpu_to_le32(fxfs_device_map_flags(dev, &maps[i])),
 		};
 	req->type = VIRTIO_EXTENT_T_MAP;
-	req->flags = VIRTIO_EXTENT_MAP_MANY | fxfs_device_map_flags(dev, maps[0].writable, maps[0].ahead);
-	req->id = (struct vext_id) { maps[0].branch, maps[0].sequence };
-	req->offset = maps[0].offset;
+	req->flags = VIRTIO_EXTENT_MAP_MANY | fxfs_device_map_flags(dev, &maps[0]);
+	if (!maps[0].zeros)
+		req->id = (struct vext_id) { maps[0].branch, maps[0].sequence };
+	req->offset = maps[0].zeros ? 0 : maps[0].offset;
 	req->len = maps[0].len;
 	req->window_offset = maps[0].window_offset;
 	req->data = entries;
@@ -408,10 +471,7 @@ int fxfs_device_map_many(struct fxfs_device *dev, const struct fxfs_device_map *
 
 	if (count == 1 || !virtio_extent_map_many(dev->vext)) {
 		for (done = 0; done < count && !err; done++)
-			err = fxfs_device_map(dev, maps[done].branch, maps[done].sequence,
-					      maps[done].offset, maps[done].len,
-					      maps[done].window_offset, maps[done].writable,
-					      maps[done].ahead);
+			err = fxfs_device_map_one(dev, &maps[done]);
 		return err;
 	}
 	entries = kmalloc_array(FXFS_DEVICE_MAP_MANY - 1, sizeof(*entries), GFP_NOFS);
@@ -461,4 +521,6 @@ void fxfs_device_show_stats(struct fxfs_device *dev, struct seq_file *m)
 	seq_printf(m, "stores_held_by_seals %lld\nstores_held_by_seals_ns %lld\n",
 		   atomic64_read(&dev->stores_held), atomic64_read(&dev->stores_held_ns));
 	seq_printf(m, "seals_asked %lld\n", atomic64_read(&dev->seals_asked));
+	seq_printf(m, "window_privates %lld\nwindow_private_bytes %lld\n",
+		   atomic64_read(&dev->privates), atomic64_read(&dev->private_bytes));
 }

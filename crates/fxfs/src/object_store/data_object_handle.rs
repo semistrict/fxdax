@@ -86,6 +86,12 @@ struct BlocksWrite<'d> {
 /// it keeps that read short or as zeros, and those whose copy reads back other from the device.
 pub static CHECK_KEPT: AtomicBool = AtomicBool::new(false);
 
+/// fxdax: fault injection (TASK-164.2): the next this many of [`DataObjectHandle::write_many`]'s
+/// transactions fail once their blocks are written, before they commit, leaving the file as a
+/// crash between the two would: its old blocks, the new ones named by no record. A guest's
+/// copy-on-write writeback commits after its bytes, as the page cache's does, which this checks.
+pub static FAIL_COMMITS: AtomicU64 = AtomicU64::new(0);
+
 /// fxdax: whether to log the `CHECK_KEPT` block kept that read short or as zeros, as holes and new
 /// files' blocks do: the first hundred, and every power of two after. Each a line on a guest's
 /// serial console, they slowed fxfs-guest-checks-dax past its timeout (TASK-119.21, GCE r237).
@@ -1225,6 +1231,13 @@ impl<S: HandleOwner> DataObjectHandle<S> {
             };
             let (writes, after) = rest.split_at(self.writes_in_room(&transaction, rest));
             self.txn_write_blocks(&mut transaction, writes).await?;
+            // fxdax: fault injection, a crash between the bytes and the commit (`FAIL_COMMITS`).
+            let injected = FAIL_COMMITS
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |left| left.checked_sub(1))
+                .is_ok();
+            if injected {
+                return Err(anyhow!(FxfsError::Internal).context("write_many: an injected failure"));
+            }
             transaction.commit().await?;
             rest = after;
         }

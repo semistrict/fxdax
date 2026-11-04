@@ -323,6 +323,15 @@ pub extern "C" fn fxfs_set_check_kept(on: bool) {
         .store(on, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// fxdax: fault injection (TASK-164.2): the next `count` of `fxfs_write_many`'s transactions fail
+/// once their blocks are written, before they commit
+/// (`fxfs::object_store::data_object_handle::FAIL_COMMITS`).
+#[unsafe(no_mangle)]
+pub extern "C" fn fxfs_set_fail_commits(count: u64) {
+    fxfs::object_store::data_object_handle::FAIL_COMMITS
+        .store(count, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// fxdax: whether a volume mounted on `filesystem` follows its device's writer.
 ///
 /// # Safety
