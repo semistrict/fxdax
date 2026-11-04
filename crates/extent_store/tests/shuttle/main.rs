@@ -30,7 +30,8 @@
 //! go to the next as each is full. A cleaner cleans behind the commits, too, whose copies the
 //! commits after make the extents' places. And the store fails, and the branch closes, while a
 //! commit waits for a write in progress, which fails then. Two writes race at the bound on what
-//! the branch's files take of the host's disk, too, of which one is refused (TASK-79.89).
+//! the branch's files take of the host's disk, too, of which one is refused (TASK-79.89). And the
+//! guest's requests are served while a commit's flush writes its checkpoint, stalling (TASK-92.56).
 //!
 //! So are a lineage's branches, while a fork's or a deletion's I/O stalls (lineage.rs); and the
 //! crash tests' rounds, the store framing segments and syncing flushes on threads of its own while
@@ -1241,6 +1242,51 @@ fn uploading_what_a_closing_for_room_closed() {
     assert_eq!(taken, [1], "no commit's segment reached the uploader");
 }
 
+/// One run of a guest's requests while the flush of a commit whose record is a checkpoint writes
+/// it, and the creation of the index file it begins stalls, as on a slow disk (TASK-92.56): the
+/// commit took what it holds, holding the store's state, and its flush makes its file and encodes
+/// it holding none of the store's locks but its own. So the store serves its writes, reads and
+/// commits meanwhile, which a commit doing that, holding the state, held up 89-143 ms of a load's;
+/// Shuttle, whose waits that can't end are deadlocks it reports, finds so. Both commits are
+/// durable after, in their order.
+fn serving_during_a_checkpoint() {
+    let dir = Stalling::new();
+    let description = Description { block_size: BLOCK as u32, capacity: 1 << 20, branch: BRANCH };
+    // A checkpoint at each commit.
+    let options = Options { checkpoint_after: 0, ..OPTIONS };
+    let store = Arc::new(Store::create(dir.clone(), description, options).unwrap());
+    store.write(extent(1), 0, &pattern(1, BLOCK)).unwrap();
+    // Index file 0 is the store's creation's, 1 its opening's: the commit's checkpoint begins 2.
+    dir.arm(Op::Create, &format!("index/{BRANCH:016x}/{:016x}", 2));
+    let committing = {
+        let store = store.clone();
+        thread::spawn(move || store.commit(None).unwrap())
+    };
+    dir.wait_until_stalled();
+    store.write(extent(2), 0, &pattern(2, BLOCK)).unwrap();
+    check_checkpointed(&store, "a read while a checkpoint is written");
+    store.commit_ordered(None).unwrap();
+    dir.let_go(Ok(()));
+    committing.join().unwrap();
+    store.flush().unwrap();
+    let lineage = store.lineage().clone();
+    drop(store);
+    let reopened = lineage.open_branch(BRANCH).unwrap();
+    assert_eq!(reopened.epoch().unwrap(), 2, "the commits made durable were not");
+    check_checkpointed(&reopened, "the branch opened again");
+}
+
+/// Reads extents 1 and 2 of a store [`serving_during_a_checkpoint`] wrote, through `store`, which
+/// must be as written.
+fn check_checkpointed(store: &Store<Stalling>, failure: &str) {
+    for sequence in 1..=2 {
+        let mut read = vec![0; BLOCK];
+        let reading = store.read(extent(sequence), 0, &mut read);
+        reading.unwrap_or_else(|error| panic!("{failure}: extent {sequence}: {error:#}"));
+        assert!(read == pattern(sequence as u8, BLOCK), "{failure}: extent {sequence} differs");
+    }
+}
+
 /// Shuttle's configuration: threads' stacks large enough for the store's (Shuttle runs each on a
 /// stack of its own, of 60 KiB by default).
 fn config() -> Config {
@@ -1385,6 +1431,12 @@ fn uploads_of_what_a_closing_for_room_closed_by_pct() {
     set_rules(Rules::ALL);
     let scheduler = PctScheduler::new(3, runs());
     Runner::new(scheduler, config()).run(uploading_what_a_closing_for_room_closed);
+}
+
+#[test]
+fn requests_served_during_a_checkpoint_by_pct() {
+    set_rules(Rules::ALL);
+    Runner::new(PctScheduler::new(3, runs()), config()).run(serving_during_a_checkpoint);
 }
 
 #[test]

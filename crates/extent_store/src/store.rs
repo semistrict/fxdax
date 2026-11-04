@@ -8,7 +8,7 @@ use crate::dir::{Dir, File, not_found};
 use crate::durability::{Batch, Durability, Syncs};
 use crate::framed::{Aligned, Framed, Packed, Part, Source, read_aligned};
 use crate::index::{
-    Appended, IndexLog, IndexWrite, Recovered, rebuild, recover, start_fork, write_records,
+    Appended, IndexLog, IndexTail, IndexWrite, Recovered, rebuild, recover, start_fork,
 };
 use crate::kept::{Kept, KeptExtents};
 use crate::layers::Layer;
@@ -227,8 +227,10 @@ pub struct Store<D: Dir> {
     /// When its commits are durable: those ordered that no flush has taken yet, oldest first, for
     /// [`Store::flush`] to make durable, and the last that is.
     durability: Mutex<Durability<Pending<D::File>>>,
-    /// Held by a flush: commits become durable in order.
-    flushing: Mutex<()>,
+    /// Held by a flush: commits become durable in order. fxdax: and where their records go in the
+    /// index, which each flush writes after the last's, a checkpoint made and encoded only then,
+    /// holding no other lock (TASK-92.56).
+    flushing: Mutex<IndexTail<D::File>>,
     /// Notified when the open segment has no write in progress, and when it closed: what
     /// [`Store::close_now`] and the writes it holds up wait for; fxdax: and as each framing of a
     /// segment ends, which flushes, the uploader, forks and the branch's closing wait for.
@@ -259,7 +261,7 @@ struct Pending<F> {
     /// The files whose data it refers to, and the directories whose entries changed, to sync.
     syncs: Syncs<F>,
     /// Its record in the index.
-    write: IndexWrite<F>,
+    write: IndexWrite,
     /// The files of the branch's alone it made unreferenced ([`Unreferenced::doomed`]): they go
     /// once it is durable.
     doomed: Vec<String>,
@@ -482,7 +484,7 @@ impl<D: Dir> Store<D> {
         let segment = open_segment.number;
         let state = Recovered { epoch, next_sequence, root, segment, extents, spent };
         let pinned = || lineage.pinned(branch);
-        let index = IndexLog::open(dir, branch, &state, origin.as_ref(), pinned)?;
+        let (index, tail) = IndexLog::open(dir, branch, &state, origin.as_ref(), pinned)?;
         let Recovered { root, mut extents, spent, .. } = state;
         let mut holdings = extents.holdings();
         holdings.own.insert(FileKey::Segment(open_segment));
@@ -525,7 +527,7 @@ impl<D: Dir> Store<D> {
             })),
             committing: Mutex::new(()),
             durability: Mutex::new(Durability::new(epoch)),
-            flushing: Mutex::new(()),
+            flushing: Mutex::new(tail),
             idle: Arc::new(Condvar::new()),
             views,
             changes: AtomicU64::new(0),
@@ -699,8 +701,8 @@ impl<D: Dir> Store<D> {
     pub fn close(&self) -> Result<(), Error> {
         // After a flush in flight: its commits are durable, and the files they made unreferenced
         // gone, before another store may open the branch.
-        let flushing = rules().close_waits_for_flushes.then(|| self.flushing.lock().unwrap());
-        let flushed = match &flushing {
+        let mut flushing = rules().close_waits_for_flushes.then(|| self.flushing.lock().unwrap());
+        let flushed = match &mut flushing {
             _ if !self.flush_pending() => Ok(()),
             Some(flushing) => self.flush_locked(flushing),
             None => self.flush(),
@@ -1370,7 +1372,7 @@ impl<D: Dir> Store<D> {
         let reaped = state.segments.reap(|segment| uploader_keeps(uploads, self.branch, segment));
         let released = state.index.let_go(reaped);
         state.unreferenced.released.extend(released);
-        let appended = self.append_record(state, epoch, root, changes)?;
+        let appended = self.append_record(state, epoch, root, changes);
         state.unreferenced.doomed.extend(appended.replaced);
         state.unreferenced.released.extend(appended.covered);
         let Unreferenced { doomed, released } = state.unreferenced.take();
@@ -1482,14 +1484,17 @@ impl<D: Dir> Store<D> {
 
     /// Appends commit `epoch`'s record, of `changes` and `root`, if it sets one, to the index:
     /// its delta, or, if one is due, a checkpoint of the branch as of it, in a new file, which
-    /// replaces the last once the commit is durable.
+    /// replaces the last once the commit is durable. fxdax: what the checkpoint holds is taken
+    /// here, holding the state; its flush makes its file and encodes it there, holding the flushes'
+    /// lock alone, so that writes wait for neither, as they did for 89-143 ms of a load's commits
+    /// (TASK-92.56).
     fn append_record(
         &self,
         state: &mut State<D::File>,
         epoch: u64,
         root: Option<&[u8]>,
         changes: Vec<Change>,
-    ) -> Result<Appended<D::File>, Error> {
+    ) -> Appended {
         let next_sequence = state.next_sequence;
         let delta = Delta { epoch, next_sequence, root: root.map(<[u8]>::to_vec), changes };
         let checkpoint = || {
@@ -1499,7 +1504,7 @@ impl<D: Dir> Store<D> {
             Checkpoint::of(epoch, next_sequence, root, segment.number, extents, origin, spent)
         };
         let pinned = || self.lineage.pinned(self.branch);
-        state.index.append(&self.lineage.dir, delta, checkpoint, &self.options, pinned)
+        state.index.append(delta, checkpoint, &self.options, pinned)
     }
 
     /// Seals `extent`, which a commit seals, in one run in the open segment, or in a file of its
@@ -1787,18 +1792,18 @@ impl<D: Dir> Store<D> {
     /// together: their data, then their records in the index, then the files they made
     /// unreferenced go; and the raw files of the segments framed whose commits are durable.
     pub fn flush(&self) -> Result<(), Error> {
-        self.flush_locked(&self.flushing.lock().unwrap())
+        self.flush_locked(&mut self.flushing.lock().unwrap())
     }
 
-    /// [`Store::flush`], holding `flushing`.
-    fn flush_locked(&self, _flushing: &MutexGuard<'_, ()>) -> Result<(), Error> {
+    /// [`Store::flush`], holding `flushing`, and so `tail`, where the index's next record goes.
+    fn flush_locked(&self, tail: &mut IndexTail<D::File>) -> Result<(), Error> {
         // A store that failed makes nothing more durable.
         drop(self.state()?);
         let batch = self.durability.lock().unwrap().take();
         let durable = match batch {
             None => self.durability.lock().unwrap().durable(),
             Some(Batch { last, mut commits }) => {
-                if let Err(error) = self.make_durable(&mut commits) {
+                if let Err(error) = self.make_durable(tail, &mut commits) {
                     self.lock().failed = true;
                     return Err(error.context("committing the extent store"));
                 }
@@ -1818,8 +1823,13 @@ impl<D: Dir> Store<D> {
     }
 
     /// Makes `commits`, a flush's, durable, in order: once the segments they closed are framed,
-    /// their data, then their records in the index; but for the files they made unreferenced.
-    fn make_durable(&self, commits: &mut [Pending<D::File>]) -> Result<(), Error> {
+    /// their data, then their records in the index, at `tail`; but for the files they made
+    /// unreferenced.
+    fn make_durable(
+        &self,
+        tail: &mut IndexTail<D::File>,
+        commits: &mut [Pending<D::File>],
+    ) -> Result<(), Error> {
         // fxdax: the segments the commits closed, holding their data, framed and synced by their
         // framings, which end themselves, waited for holding no lock (TASK-153.8).
         let closed = commits.iter().filter_map(|pending| pending.closed);
@@ -1829,8 +1839,7 @@ impl<D: Dir> Store<D> {
             syncs.extend(std::mem::take(&mut pending.syncs));
         }
         syncs.sync(&self.lineage.dir)?;
-        let writes = commits.iter().map(|pending| &pending.write);
-        write_records(&self.lineage.dir, self.branch, writes)?;
+        tail.write(&self.lineage.dir, commits.iter().map(|pending| &pending.write))?;
         self.lineage.dir.barrier()?;
         Ok(())
     }

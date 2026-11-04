@@ -3610,30 +3610,30 @@ fn damaged_index_records_are_none() {
 /// A commit that fails part way, which leaves the store's state ahead of its files, fails the store:
 /// it does nothing more, though its file system works again. Here the file system fails the
 /// commit's first change to it: a seal's copy of an extent written in two writes, its second
-/// block first, which are not one run, the creation of the next open segment's file as the commit
-/// closes the last, or that of the index file a checkpoint begins.
+/// block first, which are not one run, or the creation of the next open segment's file as the
+/// commit closes the last. fxdax: not that of the index file a checkpoint begins, which the
+/// commit's flush makes (`checkpoints_failing_in_their_flushes_fail_the_store`, TASK-92.56).
 #[test]
 fn commits_failing_part_way_fail_the_store() {
-    let created = |options| {
+    let created = || {
         let dir = MemDir::new();
         let description =
             Description { block_size: BLOCK as u32, capacity: 1 << 20, branch: BRANCH };
-        let store = Store::create(dir.clone(), description, options).unwrap();
+        let store = Store::create(dir.clone(), description, OPTIONS).unwrap();
         (dir, store)
     };
     let sealing = || {
-        let (dir, store) = created(OPTIONS);
+        let (dir, store) = created();
         store.write(extent(1), BLOCK as u64, &[2; BLOCK]).unwrap();
         store.write(extent(1), 0, &[1; BLOCK]).unwrap();
         (dir, store)
     };
     let closing = || {
-        let (dir, store) = created(OPTIONS);
+        let (dir, store) = created();
         store.close_segment().unwrap();
         (dir, store)
     };
-    let checkpointing = || created(Options { checkpoint_after: 0, ..OPTIONS });
-    for (dir, store) in [sealing(), closing(), checkpointing()] {
+    for (dir, store) in [sealing(), closing()] {
         dir.fail_after(Some(0));
         let failed = store.commit_ordered(None).unwrap_err();
         assert_eq!(failed.to_string(), "committing the extent store");
@@ -3648,6 +3648,31 @@ fn commits_failing_part_way_fail_the_store() {
             assert_eq!(failure(store.epoch().map(drop)), "the extent store failed");
         }
     }
+}
+
+/// fxdax: a commit whose record is a checkpoint takes what it holds, holding the branch's state;
+/// its flush makes the index file it begins, and encodes it there, holding none of the store's
+/// locks but its own, so that writes do not wait for that (TASK-92.56). Ordered, the commit made
+/// no file; its flush failing to make it fails the store, as a flush failing does, its state ahead
+/// of its files. A crash before it leaves the store as of the commit before.
+#[test]
+fn checkpoints_failing_in_their_flushes_fail_the_store() {
+    let dir = MemDir::new();
+    let description = Description { block_size: BLOCK as u32, capacity: 1 << 20, branch: BRANCH };
+    // A checkpoint at each commit.
+    let options = Options { checkpoint_after: 0, ..OPTIONS };
+    let store = Store::create(dir.clone(), description, options).unwrap();
+    let index = dir.list(&of("index", BRANCH)).unwrap();
+    store.commit_ordered(Some(b"ordered")).unwrap();
+    let listed = dir.list(&of("index", BRANCH)).unwrap();
+    assert_eq!(listed, index, "a commit made the file of its checkpoint");
+    assert_eq!(Store::open(dir.crash(0), options).unwrap().epoch().unwrap(), 0);
+    dir.fail_after(Some(0));
+    let failure = |result: Result<(), anyhow::Error>| result.unwrap_err().to_string();
+    assert_eq!(failure(store.flush()), "committing the extent store");
+    dir.fail_after(None);
+    assert_eq!(failure(store.commit(None)), "the extent store failed");
+    assert_eq!(failure(store.flush()), "the extent store failed");
 }
 
 /// Parts stored compressed are unpacked once while they are kept unpacked, the 32 read last.

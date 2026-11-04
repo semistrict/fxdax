@@ -6,7 +6,8 @@
 //! deltas after it, or rebuilt from that checkpoint and the footers of its closed segments after
 //! it; its states as of its forks, which they inherited, read from the index files it keeps for
 //! them; and the log its open store appends its commits' records to ([`IndexLog`]), whose
-//! checkpoints replace the files before, but for those forks need.
+//! checkpoints replace the files before, but for those forks need, and where its flushes write
+//! those records ([`IndexTail`]).
 
 use crate::dir::{Dir, File, read_file};
 use crate::framed::read_frame;
@@ -341,13 +342,14 @@ pub(crate) fn rebuild<D: Dir>(
 /// The index an open branch appends its commits' records to: a delta each, in its current file,
 /// or a checkpoint, in a new file, once the deltas are many, the closed segments only their
 /// footers keep take a segment's room, or the branch wants one. Every index file of the branch's
-/// but the current is retained, as forks need it, or is to go.
-pub(crate) struct IndexLog<F> {
+/// but the current is retained, as forks need it, or is to go. fxdax: it says what each record
+/// is, which the flush making its commit durable writes ([`IndexTail`]), and so holds no file:
+/// a checkpoint's file is made by that flush, holding none of the store's locks but its own, so
+/// that the commit, holding the state, does not (TASK-92.56).
+pub(crate) struct IndexLog {
     branch: u64,
-    /// The current file, its number, its bytes, and the bytes of deltas it holds.
+    /// The current file's number, and the bytes of deltas it holds.
     number: u64,
-    file: Arc<F>,
-    len: u64,
     deltas: u64,
     /// The branch's index files replaced, which forks not yet opened need still.
     retained: BTreeSet<u64>,
@@ -363,35 +365,88 @@ pub(crate) struct IndexLog<F> {
     uncovered: Vec<(SegmentId, u64, u64)>,
 }
 
-/// A commit's record, to be written at `offset` in `file`, the index's, by the flush that makes the
-/// commit durable: a checkpoint, beginning a new file, if `new_file`.
-pub(crate) struct IndexWrite<F> {
-    record: Vec<u8>,
-    file: Arc<F>,
-    offset: u64,
-    new_file: bool,
+/// A commit's record, to be written by the flush that makes the commit durable, after the records
+/// of the commits before it ([`IndexTail::write`]).
+pub(crate) enum IndexWrite {
+    /// Its delta, encoded, appended to the index's current file.
+    Delta(Vec<u8>),
+    /// fxdax: a checkpoint of the branch as of it, beginning index file `number`: what the commit
+    /// took of the branch's state, holding it, alone; the flush makes the file and encodes the
+    /// checkpoint into it, holding none of the store's locks but its own, which took the commit
+    /// 89-143 ms of a load's, writes waiting for it (TASK-92.56).
+    Checkpoint { number: u64, checkpoint: Checkpoint },
 }
 
 /// A commit's record, appended ([`IndexLog::append`]), and what it made unreferenced, if it is a
 /// checkpoint: the index files it replaced, but those forks need, which go once it is durable;
 /// and the closed segments it covers the footers of, which no extent is in.
-pub(crate) struct Appended<F> {
-    pub write: IndexWrite<F>,
+pub(crate) struct Appended {
+    pub write: IndexWrite,
     pub replaced: Vec<String>,
     pub covered: Vec<FileKey>,
 }
 
-impl<F: File> IndexLog<F> {
+/// fxdax: where `branch`'s index's next record goes: the end of its current file, as the flushes
+/// wrote it (TASK-92.56). The flushes', which hold it, one at a time, and write the commits'
+/// records in their order: so that it is each's to know where the last ended, a checkpoint's
+/// length being known only once encoded.
+pub(crate) struct IndexTail<F> {
+    branch: u64,
+    file: Arc<F>,
+    len: u64,
+}
+
+impl<F: File> IndexTail<F> {
+    /// Writes `writes`, commits' records, in order, durably but for the barrier: the records, a
+    /// checkpoint's in a new file, which becomes the current; then the files they are in, each
+    /// synced once; then, if a record began a file, the branch's directory of index files.
+    pub fn write<'a, D: Dir<File = F>>(
+        &mut self,
+        dir: &D,
+        writes: impl IntoIterator<Item = &'a IndexWrite>,
+    ) -> Result<(), Error> {
+        let mut files: Vec<Arc<F>> = Vec::new();
+        let mut new_file = false;
+        for write in writes {
+            match write {
+                IndexWrite::Delta(record) => {
+                    self.file.write_at(record, self.len)?;
+                    self.len += record.len() as u64;
+                }
+                IndexWrite::Checkpoint { number, checkpoint } => {
+                    let record = encode(&Record::Checkpoint(checkpoint.table()?));
+                    let file = dir.create(&index_path(self.branch, *number), false)?;
+                    file.write_at(&record, 0)?;
+                    (self.file, self.len) = (Arc::new(file), record.len() as u64);
+                    new_file = true;
+                }
+            }
+            if !files.iter().any(|file| Arc::ptr_eq(file, &self.file)) {
+                files.push(self.file.clone());
+            }
+        }
+        for file in &files {
+            file.sync()?;
+        }
+        if new_file {
+            dir.sync_dir(&branch_dir(INDEX, self.branch))?;
+        }
+        Ok(())
+    }
+}
+
+impl IndexLog {
     /// `branch`'s index as its opening starts it: a new file, of a checkpoint of `state`, of what
     /// it holds over `origin`, the layer its index is over, if any, which replaces the files before
-    /// once durable, but for those forks need, which `pinned` says.
-    pub fn open<D: Dir<File = F>>(
+    /// once durable, but for those forks need, which `pinned` says; and where its next record goes,
+    /// past that checkpoint.
+    pub fn open<D: Dir>(
         dir: &D,
         branch: u64,
         state: &Recovered,
         origin: Option<&Arc<Layer>>,
         pinned: impl FnOnce() -> BTreeSet<u64>,
-    ) -> Result<Self, Error> {
+    ) -> Result<(Self, IndexTail<D::File>), Error> {
         let numbers = list_numbers(dir, &branch_dir(INDEX, branch))?;
         let number = numbers.last().map_or(0, |number| number + 1);
         let (file, len) = write_checkpoint(dir, branch, number, state, origin)?;
@@ -399,8 +454,6 @@ impl<F: File> IndexLog<F> {
         let mut index = Self {
             branch,
             number,
-            file: Arc::new(file),
-            len,
             deltas: 0,
             retained: BTreeSet::new(),
             checkpointed: state.epoch,
@@ -411,7 +464,7 @@ impl<F: File> IndexLog<F> {
         for path in index.replace(numbers, &pinned()) {
             dir.remove(&path)?;
         }
-        Ok(index)
+        Ok((index, IndexTail { branch, file: Arc::new(file), len }))
     }
 
     /// The number of its current file.
@@ -453,17 +506,17 @@ impl<F: File> IndexLog<F> {
     }
 
     /// Appends a commit's record: its delta, `delta`, or, if one is due, as `options` say, a
-    /// checkpoint of the branch's state as of it, `checkpoint()`, in a new file in `dir`, which
-    /// replaces the files before once the commit is durable, but for those forks need, which
-    /// `pinned` says.
-    pub fn append<D: Dir<File = F>>(
+    /// checkpoint of the branch's state as of it, `checkpoint()`, in a new file, which replaces the
+    /// files before once the commit is durable, but for those forks need, which `pinned` says.
+    /// fxdax: the flush making the commit durable writes it, the checkpoint encoded then, and its
+    /// file made then (TASK-92.56).
+    pub fn append(
         &mut self,
-        dir: &D,
         delta: Delta,
         checkpoint: impl FnOnce() -> Checkpoint,
         options: &Options,
         pinned: impl FnOnce() -> BTreeSet<u64>,
-    ) -> Result<Appended<F>, Error> {
+    ) -> Appended {
         // A checkpoint once the index holds enough deltas, or the closed segments only footers need
         // take a segment's room, or the branch wants one: which any answers (TASK-84).
         let uncovered: u64 = self.uncovered.iter().map(|(_, _, size)| size).sum();
@@ -473,22 +526,17 @@ impl<F: File> IndexLog<F> {
         if !due {
             // After the records before it.
             let record = encode(&Record::Delta(delta));
-            let offset = self.len;
-            self.len += record.len() as u64;
             self.deltas += record.len() as u64;
-            let write = IndexWrite { record, file: self.file.clone(), offset, new_file: false };
-            return Ok(Appended { write, replaced: Vec::new(), covered: Vec::new() });
+            let write = IndexWrite::Delta(record);
+            return Appended { write, replaced: Vec::new(), covered: Vec::new() };
         }
         let checkpoint = checkpoint();
-        let record = encode(&Record::Checkpoint(checkpoint.table()?));
         // A new file, which replaces the last once this is durable, but for what forks need.
         let number = self.number + 1;
-        let file = Arc::new(dir.create(&index_path(self.branch, number), false)?);
         let mut numbers = std::mem::take(&mut self.retained);
         numbers.insert(self.number);
         let replaced = self.replace(numbers, &pinned());
-        (self.number, self.file, self.len, self.deltas) =
-            (number, file.clone(), record.len() as u64, 0);
+        (self.number, self.deltas) = (number, 0);
         // The closed segments its checkpoint covers no longer need their footers.
         (self.checkpointed, self.segment) = (delta.epoch, checkpoint.segment);
         let (covered, uncovered): (Vec<_>, Vec<_>) = std::mem::take(&mut self.uncovered)
@@ -496,8 +544,8 @@ impl<F: File> IndexLog<F> {
             .partition(|(_, last, _)| *last <= delta.epoch);
         self.uncovered = uncovered;
         let covered = covered.into_iter().map(|(number, ..)| FileKey::Segment(number)).collect();
-        let write = IndexWrite { record, file, offset: 0, new_file: true };
-        Ok(Appended { write, replaced, covered })
+        let write = IndexWrite::Checkpoint { number, checkpoint };
+        Appended { write, replaced, covered }
     }
 
     /// Replaces the branch's index files `numbers`, by the current: retains those forks need,
@@ -512,32 +560,6 @@ impl<F: File> IndexLog<F> {
         self.retained = retained;
         gone.into_iter().map(|number| index_path(self.branch, number)).collect()
     }
-}
-
-/// Writes `writes`, commits' records in `branch`'s index in `dir`, in order, durably but for the
-/// barrier: the records, then the files they are in, each synced once, then, if a record began a
-/// file, the branch's directory of index files.
-pub(crate) fn write_records<'a, D: Dir>(
-    dir: &D,
-    branch: u64,
-    writes: impl IntoIterator<Item = &'a IndexWrite<D::File>>,
-) -> Result<(), Error> {
-    let mut files: Vec<&Arc<D::File>> = Vec::new();
-    let mut new_file = false;
-    for write in writes {
-        write.file.write_at(&write.record, write.offset)?;
-        if !files.iter().any(|file| Arc::ptr_eq(file, &write.file)) {
-            files.push(&write.file);
-        }
-        new_file |= write.new_file;
-    }
-    for file in files {
-        file.sync()?;
-    }
-    if new_file {
-        dir.sync_dir(&branch_dir(INDEX, branch))?;
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -592,17 +614,21 @@ mod tests {
         list_numbers(dir, &branch_dir(INDEX, BRANCH)).unwrap()
     }
 
-    /// Appends commit `epoch`'s record, and writes it, as its flush does.
+    /// Appends commit `epoch`'s record, and writes it at `tail`, as its flush does.
     fn commit(
-        index: &mut IndexLog<MemFile>,
+        index: &mut IndexLog,
+        tail: &mut IndexTail<MemFile>,
         dir: &MemDir,
         epoch: u64,
         options: &Options,
-    ) -> Appended<MemFile> {
-        let appended =
-            index.append(dir, delta(epoch), checkpoint(epoch), options, BTreeSet::new).unwrap();
-        write_records(dir, BRANCH, [&appended.write]).unwrap();
+    ) -> Appended {
+        let appended = index.append(delta(epoch), checkpoint(epoch), options, BTreeSet::new);
+        tail.write(dir, [&appended.write]).unwrap();
         appended
+    }
+
+    fn is_checkpoint(write: &IndexWrite) -> bool {
+        matches!(write, IndexWrite::Checkpoint { .. })
     }
 
     /// Opening the index replaces its files, at once, but those forks need, which it retains; a
@@ -610,14 +636,12 @@ mod tests {
     #[test]
     fn replaced_index_files_are_retained_while_forks_need_them() {
         let dir = holding(&[0, 1, 2]);
-        let mut index = IndexLog::open(&dir, BRANCH, &state(5), None, || [1].into()).unwrap();
+        let (mut index, _) = IndexLog::open(&dir, BRANCH, &state(5), None, || [1].into()).unwrap();
         assert_eq!((index.number(), numbers(&dir)), (3, vec![1, 3]));
         let options = options(0);
-        let appended =
-            index.append(&dir, delta(6), checkpoint(6), &options, || [1].into()).unwrap();
+        let appended = index.append(delta(6), checkpoint(6), &options, || [1].into());
         assert_eq!((index.number(), appended.replaced), (4, vec![index_path(BRANCH, 3)]));
-        let appended =
-            index.append(&dir, delta(7), checkpoint(7), &options, BTreeSet::new).unwrap();
+        let appended = index.append(delta(7), checkpoint(7), &options, BTreeSet::new);
         let replaced = vec![index_path(BRANCH, 1), index_path(BRANCH, 4)];
         assert_eq!((index.number(), appended.replaced), (5, replaced));
     }
@@ -627,21 +651,44 @@ mod tests {
     #[test]
     fn deltas_append_until_a_checkpoint_is_due() {
         let dir = holding(&[]);
-        let mut index = IndexLog::open(&dir, BRANCH, &state(0), None, BTreeSet::new).unwrap();
+        let (mut index, mut tail) =
+            IndexLog::open(&dir, BRANCH, &state(0), None, BTreeSet::new).unwrap();
         let delta_len = len(Record::Delta(delta(1)));
         let options = options(2 * delta_len);
-        let places: Vec<_> = (1..=4)
+        let ends: Vec<_> = (1..=4)
             .map(|epoch| {
-                let write = commit(&mut index, &dir, epoch, &options).write;
-                (index.number(), write.offset, write.new_file)
+                let write = commit(&mut index, &mut tail, &dir, epoch, &options).write;
+                (index.number(), tail.len, is_checkpoint(&write))
             })
             .collect();
         let (first, second) = (checkpoint_len(0), checkpoint_len(3));
         assert_eq!(
-            places,
-            [(0, first, false), (0, first + delta_len, false), (1, 0, true), (1, second, false)]
+            ends,
+            [
+                (0, first + delta_len, false),
+                (0, first + 2 * delta_len, false),
+                (1, second, true),
+                (1, second + delta_len, false),
+            ]
         );
         assert_eq!(recover(&dir, BRANCH, None).unwrap().epoch, 4);
+    }
+
+    /// fxdax: a commit's checkpoint is what the branch held as of it, but its file is made, and
+    /// it is encoded into it, only by the flush that writes it, which holds none of the store's
+    /// locks but its own (TASK-92.56): appended, the index has no file of it yet; written, it is
+    /// the newest, which recovery begins from.
+    #[test]
+    fn checkpoints_are_made_by_the_flushes_that_write_them() {
+        let dir = holding(&[]);
+        let (mut index, mut tail) =
+            IndexLog::open(&dir, BRANCH, &state(0), None, BTreeSet::new).unwrap();
+        index.want_checkpoint();
+        let appended = index.append(delta(1), checkpoint(1), &options(1 << 20), BTreeSet::new);
+        assert_eq!((index.number(), numbers(&dir)), (1, vec![0]));
+        tail.write(&dir, [&appended.write]).unwrap();
+        assert_eq!((numbers(&dir), tail.len), (vec![0, 1], checkpoint_len(1)));
+        assert_eq!(recover(&dir, BRANCH, None).unwrap().epoch, 1);
     }
 
     /// The segments reaped that the branch closed after its newest checkpoint stay, their footers
@@ -649,18 +696,19 @@ mod tests {
     #[test]
     fn reaped_segments_go_once_a_checkpoint_covers_their_footers() {
         let dir = holding(&[]);
-        let mut index = IndexLog::open(&dir, BRANCH, &state(2), None, BTreeSet::new).unwrap();
+        let (mut index, mut tail) =
+            IndexLog::open(&dir, BRANCH, &state(2), None, BTreeSet::new).unwrap();
         let reaped = |number, last| Reaped { number: segment(number), last, len: 40 << 10 };
         // Closed by an earlier opening, and before the checkpoint it opened with.
         let released = index.let_go(vec![reaped(0, None), reaped(1, Some(2)), reaped(2, Some(3))]);
         assert_eq!(released, [FileKey::Segment(segment(0)), FileKey::Segment(segment(1))]);
         let options = options(1 << 20);
-        let appended = commit(&mut index, &dir, 3, &options);
-        assert_eq!((appended.write.new_file, appended.covered), (false, vec![]));
+        let appended = commit(&mut index, &mut tail, &dir, 3, &options);
+        assert_eq!((is_checkpoint(&appended.write), appended.covered), (false, vec![]));
         assert_eq!(index.let_go(vec![reaped(3, Some(4))]), []);
-        let appended = commit(&mut index, &dir, 4, &options);
+        let appended = commit(&mut index, &mut tail, &dir, 4, &options);
         let covered = vec![FileKey::Segment(segment(2)), FileKey::Segment(segment(3))];
-        assert_eq!((appended.write.new_file, appended.covered), (true, covered));
+        assert_eq!((is_checkpoint(&appended.write), appended.covered), (true, covered));
         // Covered, they go at once.
         assert_eq!(index.let_go(vec![reaped(4, Some(4))]), [FileKey::Segment(segment(4))]);
     }
@@ -672,11 +720,12 @@ mod tests {
     fn the_segment_a_checkpoint_names_stays_until_another_does() {
         let dir = holding(&[]);
         let state = Recovered { epoch: 2, segment: 5, ..Recovered::default() };
-        let mut index = IndexLog::open(&dir, BRANCH, &state, None, BTreeSet::new).unwrap();
+        let (mut index, mut tail) =
+            IndexLog::open(&dir, BRANCH, &state, None, BTreeSet::new).unwrap();
         let reaped = |number| Reaped { number: segment(number), last: Some(2), len: 4 << 10 };
         assert_eq!(index.let_go(vec![reaped(4), reaped(5)]), [FileKey::Segment(segment(4))]);
         index.want_checkpoint();
-        let appended = commit(&mut index, &dir, 3, &options(1 << 20));
+        let appended = commit(&mut index, &mut tail, &dir, 3, &options(1 << 20));
         assert_eq!(appended.covered, [FileKey::Segment(segment(5))]);
     }
 
@@ -684,12 +733,14 @@ mod tests {
     #[test]
     fn a_wish_for_a_checkpoint_is_answered() {
         let dir = holding(&[]);
-        let mut index = IndexLog::open(&dir, BRANCH, &state(0), None, BTreeSet::new).unwrap();
+        let (mut index, mut tail) =
+            IndexLog::open(&dir, BRANCH, &state(0), None, BTreeSet::new).unwrap();
         let options = options(1 << 20);
         index.want_checkpoint();
-        let new_files: Vec<_> =
-            (1..=2).map(|epoch| commit(&mut index, &dir, epoch, &options).write.new_file).collect();
-        assert_eq!(new_files, [true, false]);
+        let checkpoints: Vec<_> = (1..=2)
+            .map(|epoch| is_checkpoint(&commit(&mut index, &mut tail, &dir, epoch, &options).write))
+            .collect();
+        assert_eq!(checkpoints, [true, false]);
     }
 
     /// A checkpoint, whatever called for it, answers a wish for one: the deltas being many, the
@@ -697,13 +748,15 @@ mod tests {
     #[test]
     fn a_checkpoint_due_answers_a_wish_for_one() {
         let dir = holding(&[]);
-        let mut index = IndexLog::open(&dir, BRANCH, &state(0), None, BTreeSet::new).unwrap();
+        let (mut index, mut tail) =
+            IndexLog::open(&dir, BRANCH, &state(0), None, BTreeSet::new).unwrap();
         let options = options(len(Record::Delta(delta(1))));
-        commit(&mut index, &dir, 1, &options);
+        commit(&mut index, &mut tail, &dir, 1, &options);
         index.want_checkpoint();
-        let new_files: Vec<_> =
-            (2..=3).map(|epoch| commit(&mut index, &dir, epoch, &options).write.new_file).collect();
-        assert_eq!(new_files, [true, false]);
+        let checkpoints: Vec<_> = (2..=3)
+            .map(|epoch| is_checkpoint(&commit(&mut index, &mut tail, &dir, epoch, &options).write))
+            .collect();
+        assert_eq!(checkpoints, [true, false]);
     }
 
     /// Recovery starts from the newest index file whose checkpoint is whole, with the whole deltas
@@ -711,16 +764,17 @@ mod tests {
     #[test]
     fn recovery_and_rebuilding_start_from_the_newest_whole_checkpoint() {
         let dir = holding(&[]);
-        let mut index = IndexLog::open(&dir, BRANCH, &state(1), None, BTreeSet::new).unwrap();
+        let (mut index, mut tail) =
+            IndexLog::open(&dir, BRANCH, &state(1), None, BTreeSet::new).unwrap();
         let options = options(1 << 20);
         // File 0: checkpoint 1, and deltas 2 and 3. File 1: checkpoint 4, delta 5, a torn record.
         for epoch in 2..=3 {
-            commit(&mut index, &dir, epoch, &options);
+            commit(&mut index, &mut tail, &dir, epoch, &options);
         }
         index.want_checkpoint();
-        commit(&mut index, &dir, 4, &options);
-        let write = commit(&mut index, &dir, 5, &options).write;
-        write.file.write_at(&[1; 7], write.offset + write.record.len() as u64).unwrap();
+        commit(&mut index, &mut tail, &dir, 4, &options);
+        commit(&mut index, &mut tail, &dir, 5, &options);
+        tail.file.write_at(&[1; 7], tail.len).unwrap();
         // File 2: begun by a checkpoint not yet written.
         dir.create(&index_path(BRANCH, 2), false).unwrap();
         assert_eq!(numbers(&dir), [0, 1, 2]);

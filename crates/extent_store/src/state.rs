@@ -59,7 +59,7 @@ pub(crate) struct State<F> {
     /// The files of its extents stored on their own.
     pub own_files: OwnFiles<F>,
     /// The index the next commit appends its record to.
-    pub index: IndexLog<F>,
+    pub index: IndexLog,
     /// The files the next commit makes unreferenced.
     pub unreferenced: Unreferenced,
     /// fxdax: what an uploader takes, if one does.

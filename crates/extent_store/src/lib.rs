@@ -66,7 +66,9 @@
 //! then writes the commits' deltas to the index and syncs that. Only then does it remove the files
 //! they made unreferenced: extents' own files freed, segments whose extents were all freed or
 //! moved, and index files replaced by a checkpoint, which a commit writes in a new file once its
-//! file holds `Options::checkpoint_after` of deltas.
+//! file holds `Options::checkpoint_after` of deltas. fxdax: the commit, holding the branch's state,
+//! takes what the checkpoint holds; its flush makes its file and encodes it there, holding none of
+//! the store's locks but its own, so that writes do not wait for that (TASK-92.56).
 //!
 //! **Recovery.** Opening a branch reads the newest index file of its whose checkpoint is whole, and
 //! the deltas after it that are whole and follow on, which is the branch as of a commit. Commits
