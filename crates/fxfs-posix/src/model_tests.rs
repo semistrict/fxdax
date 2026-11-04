@@ -1347,6 +1347,9 @@ impl World {
     /// `step`, leaving what's left of the filesystem if it fails, which a remount may not.
     async fn attempt(mut self, op: &Op) -> (Option<Self>, Result<(), String>) {
         if !matches!(op, Op::Remount) {
+            // Before `op`, not after: what applied the unlinks may be `op`'s check, after what
+            // `op` changed, which a cut may keep without them (a truncate, then a read back).
+            self.settle();
             let (names, dirs) = (self.model.names.clone(), self.model.dirs.len());
             let done = self.act(op).await;
             let done = done.and_then(|()| self.keeps_the_order_of(op, &names));
@@ -1354,7 +1357,6 @@ impl World {
                 Ok(()) => self.moved_whole(op, &names, dirs).await,
                 failed => failed,
             };
-            self.settle();
             return (Some(self), done);
         }
         match self.remount().await {
@@ -2709,4 +2711,73 @@ fn a_mount_compacts_nothing_before_its_initial_reap() {
         Op::Fill { file: 7, page: 22, pages: 4041, stride: 1, byte: 176 },
     ];
     Setting::awkward(5760810855262097532, ROOMY).holds(ops);
+}
+
+/// The staging extent, emptied, took a small write a cut lost: its replay discarded the write's
+/// transaction, so the extent died at the deallocation that emptied it, and was freed as the mount
+/// began. A cut before the journal recorded the discard had the next replay read the write again,
+/// and verify it in an extent the device no longer held: a filesystem that mounted no more. Found
+/// by CI (run 41876989384), whose seed this keeps, as what the cuts lose depends on it.
+#[test]
+fn a_mount_frees_what_replay_found_dead_once_its_discard_is_recorded() {
+    let ops = vec![
+        Op::Remount,
+        Op::Symlink(0),
+        Op::Create(1),
+        Op::Read { file: 0, at: 0, len: 1 },
+        Op::Compact,
+        Op::Open(0),
+        Op::Write { file: 0, at: 2093056, len: 4096, byte: 0 },
+        Op::Read { file: 0, at: 0, len: 1 },
+        Op::RemoveXattr { file: 0, name: 0 },
+        Op::Symlink(0),
+        Op::Write { file: 0, at: 16384, len: 1, byte: 0 },
+        Op::Write { file: 0, at: 2093057, len: 28, byte: 156 },
+        Op::Create(4),
+        Op::Rename(0, 20),
+        Op::UnlinkLater(1),
+        Op::Truncate { file: 0, size: 14044 },
+        Op::Fill { file: 8, page: 42, pages: 24, stride: 1, byte: 215 },
+        Op::Clone { from: 4, to: 2, page: 8, pages: 166, to_page: 20 },
+        Op::Mkdir(2),
+        Op::UnlinkLater(15),
+        Op::Rename(1, 3),
+        Op::Clone { from: 6, to: 14, page: 28, pages: 1, to_page: 1048577 },
+        Op::Fill { file: 2, page: 10, pages: 1761, stride: 2, byte: 146 },
+        Op::Write { file: 10, at: 38692, len: 4096, byte: 244 },
+        Op::Mkdir(1),
+        Op::Exchange(15, 3),
+        Op::Truncate { file: 2, size: 63582 },
+    ];
+    Setting::awkward(16794538089474069855, ROOMY).with_graveyard_of_seed().holds(ops);
+}
+
+/// A truncate of a file with an unlink of another of its names queued, which the truncate needn't
+/// wait for, but the read back after it applies: a cut may keep the truncate and lose the unlink.
+/// The model forgot the unlink as done once the read back had applied it, after the truncate, and
+/// found none of its states on the device. Found by a hunt, whose seed this keeps, as what the
+/// cuts lose depends on it.
+#[test]
+fn an_unlink_applied_after_an_operation_may_be_cut_with_it_kept() {
+    let ops = vec![
+        Op::Create(0),
+        Op::Write { file: 0, at: 53248, len: 8193, byte: 0 },
+        Op::Write { file: 0, at: 77824, len: 1, byte: 0 },
+        Op::Write { file: 0, at: 1, len: 4096, byte: 0 },
+        Op::Write { file: 0, at: 49152, len: 4096, byte: 1 },
+        Op::Sync,
+        Op::Fill { file: 0, page: 44, pages: 2579, stride: 2, byte: 0 },
+        Op::Write { file: 0, at: 0, len: 4096, byte: 0 },
+        Op::Link(0, 3),
+        Op::Write { file: 0, at: 4294963200, len: 1, byte: 0 },
+        Op::Fill { file: 0, page: 43, pages: 38, stride: 1, byte: 0 },
+        Op::Crash,
+        Op::Fill { file: 0, page: 7, pages: 1979, stride: 2, byte: 0 },
+        Op::Compact,
+        Op::Create(1),
+        Op::SetXattr { file: 1, name: 0, len: 1024, byte: 69 },
+        Op::UnlinkLater(3),
+        Op::Truncate { file: 0, size: 52592 },
+    ];
+    Setting::awkward(6784763639641074038, ROOMY).with_graveyard_of_seed().holds(ops);
 }

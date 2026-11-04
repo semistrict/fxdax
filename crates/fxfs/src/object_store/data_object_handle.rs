@@ -3962,6 +3962,72 @@ mod tests {
         fs.close().await.expect("close failed");
     }
 
+    /// fxdax: the staging extent, emptied, takes another small write, which a crash loses: replay
+    /// discards that write's transaction, after the deallocation that emptied the extent, so the
+    /// extent dies there. A mount freed it at once, and a cut before the journal recorded the
+    /// discard had the next replay read the write again, and verify it in an extent the device no
+    /// longer held: a filesystem that mounted no more (CI run 41876989384). Every cut of the mount
+    /// mounts.
+    #[fuchsia::test]
+    async fn test_every_cut_of_a_mount_discarding_a_write_to_the_staging_extent_emptied() {
+        use storage_device::fake_device::Crashes;
+        let crashes = Crashes::new(0, u32::MAX);
+        let device = FakeDevice::new(32768, TEST_DEVICE_BLOCK_SIZE).record_crashes(crashes.clone());
+        let fs = FxFilesystem::new_empty(DeviceHolder::new(device)).await.expect("new_empty");
+        let bs = fs.block_size().get();
+        let first = create_object_with_key(fs.clone(), None, false).await;
+        let second = create_object_with_key(fs.clone(), None, false).await;
+        fs.sync(SyncOptions { flush_device: true, ..Default::default() }).await.expect("sync");
+        let staged = async |object: &DataObjectHandle<ObjectStore>| {
+            let extents = object.extents_in(0..bs).await.expect("extents_in failed");
+            let [(extent, _)] = &extents[..] else { panic!("not one extent: {extents:?}") };
+            extent.device_range().clone()
+        };
+        first.write_many(&[(0, &vec![1; bs as usize])]).await.expect("write_many failed");
+        let staging = staged(&first).await.extent;
+        first.truncate(0).await.expect("truncate failed");
+        second.write_many(&[(0, &vec![2; bs as usize])]).await.expect("write_many failed");
+        let lost = staged(&second).await;
+        assert_eq!(lost, ExtentRange::new(staging, bs..2 * bs));
+
+        // The journal is written, with no barrier after, so that replay verifies the write.
+        let journal = fs.journal();
+        let (checkpoint, _) = journal.sync(SyncOptions::default()).await.expect("sync").unwrap();
+        journal.wait_for_flush(checkpoint.file_offset).await.expect("written");
+        crashes.mark(0);
+        crashes.last();
+        fs.device().flush().await.expect("flush failed");
+        drop((first, second));
+        fs.close().await.expect("close failed");
+        let (_, image) = crashes.take().next().expect("what the device held");
+        let device = image.recovered(0);
+        device.corrupt(|extents, _| {
+            let data = extents.get_mut(&staging).expect("the staging extent");
+            data[lost.range.start as usize..lost.range.end as usize].fill(0xaf);
+        });
+
+        let cuts = Crashes::every(0, 8);
+        cuts.mark(0);
+        let device = DeviceHolder::new(device.record_crashes(cuts.clone()));
+        let fs = FxFilesystem::open(device).await.expect("open failed");
+        // What goes on after the mount: a transaction, and a sync.
+        drop(create_object_with_key(fs.clone(), None, false).await);
+        fs.sync(SyncOptions { flush_device: true, ..Default::default() }).await.expect("sync");
+        cuts.stop();
+        fsck(fs.clone()).await.expect("fsck failed");
+        fs.close().await.expect("close failed");
+        let mut count = 0;
+        for (_, device) in cuts.take() {
+            count += 1;
+            let fs = FxFilesystem::open(DeviceHolder::new(device))
+                .await
+                .unwrap_or_else(|error| panic!("cut {count} of the mount: {error:#}"));
+            fsck(fs.clone()).await.expect("fsck failed");
+            fs.close().await.expect("close failed");
+        }
+        assert!(count > 0, "no cut of the mount");
+    }
+
     /// fxdax: a small write back whose blocks of the staging extent another file's small write
     /// reaches, and a sync then seals, each time it is about to write them, as a guest's writers
     /// racing syncs can have it as often as they like (r549): the device refuses the packed write

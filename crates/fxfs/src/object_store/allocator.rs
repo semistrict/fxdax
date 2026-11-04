@@ -1108,7 +1108,13 @@ impl Allocator {
         Ok(())
     }
 
-    pub async fn on_replay_complete(self: &Arc<Self>) -> Result<(), Error> {
+    /// fxdax: `discarded`, the extents named by what replay read of the journal but discarded,
+    /// which a replay after may read again, settles when what the mount found dead may be freed
+    /// (`extent_table::FreeAfter::Settling`).
+    pub async fn on_replay_complete(
+        self: &Arc<Self>,
+        discarded: &HashSet<ExtentId>,
+    ) -> Result<(), Error> {
         let filesystem = self.filesystem.upgrade().unwrap();
         // Minting resumes past every extent of the branch the device holds, including those a
         // crash left, whose transactions were lost: orphans, which die. They are freed with the
@@ -1145,13 +1151,17 @@ impl Allocator {
                 .max(lowest)
                 .min(next_sequence)
                 .max(device_next_sequence.saturating_sub(MAX_ORPHANS_SOUGHT));
+            inner.extents.settle_replay(discarded);
             let orphans = inner.extents.kill_orphans(self.branch(), start..device_next_sequence);
             if orphans > 0 {
                 info!(count = orphans; "Extents a crash left will be freed");
             }
             assert_eq!(std::mem::replace(&mut inner.opened, true), false);
         }
-        // The extents whose deallocation replay found are freed now.
+        // Those dying when the tree was last compacted are freed now, as no transaction since
+        // can allocate in them, and so is what replay found dead, unless what it discarded names
+        // it, when it waits for the journal to record the discard, and the mount's flush frees it
+        // (`Journal::flush_for_frees`).
         if !filesystem.options().read_only {
             self.free_dead(&*filesystem.device(), 0, false)
                 .await
@@ -2045,7 +2055,7 @@ impl JournalingObject for Allocator {
         _assoc_obj: AssocObj<'_>,
     ) -> Result<(), Error> {
         // fxdax: extents that die are freed once the device is flushed past this transaction, or,
-        // for those whose deallocation replay finds, after replay (`Applied`).
+        // for those whose deallocation replay finds, as the mount settles them (`Applied`).
         match mutation {
             Mutation::Allocator(AllocatorMutation::MarkForDeletion(owner_object_id)) => {
                 let mut inner = self.inner.lock();

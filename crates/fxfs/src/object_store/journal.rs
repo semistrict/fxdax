@@ -718,6 +718,33 @@ impl Journal {
         true
     }
 
+    /// fxdax: the extents whose blocks a replay of `transactions` may read to verify checksums:
+    /// those they write, and those whose blocks they change the references to, which may make a
+    /// block deallocated before alive again (`update_checksum_list`).
+    fn extents_verified_by<'a>(
+        transactions: impl Iterator<Item = &'a JournaledTransaction>,
+    ) -> HashSet<ExtentId> {
+        let mut extents = HashSet::new();
+        for transaction in transactions {
+            let written = transaction.checksums.iter().map(|checksums| &checksums.device_range);
+            extents.extend(written.map(|range| range.extent));
+            let mutations = (transaction.root_parent_mutations.iter())
+                .chain(&transaction.root_mutations)
+                .chain(transaction.non_root_mutations.iter().map(|(_, mutation)| mutation));
+            for mutation in mutations {
+                if let Mutation::Allocator(
+                    AllocatorMutation::Allocate { device_range, .. }
+                    | AllocatorMutation::Deallocate { device_range, .. }
+                    | AllocatorMutation::Reference { device_range, .. },
+                ) = mutation
+                {
+                    extents.insert(device_range.extent);
+                }
+            }
+        }
+        extents
+    }
+
     // Assumes that `mutation` has been validated.
     fn update_checksum_list(
         &self,
@@ -883,6 +910,14 @@ impl Journal {
         // fxdax: a read-only mount that applies every transaction it read can follow its writer.
         let followable = filesystem.options().read_only
             && valid_to == reader.journal_file_checkpoint().file_offset;
+        // fxdax: what a replay after this one may read again, until the journal records the
+        // discard: an extent this replay finds dead mustn't be freed until then (see the
+        // allocator's `on_replay_complete`).
+        let discarded = Self::extents_verified_by(
+            transactions
+                .iter()
+                .filter(|transaction| transaction.checkpoint.file_offset >= valid_to),
+        );
 
         // Apply the mutations...
 
@@ -981,7 +1016,10 @@ impl Journal {
                 .context("Failed to replay mutations")?;
         }
 
-        allocator.on_replay_complete().await.context("Failed to complete replay for allocator")?;
+        allocator
+            .on_replay_complete(&discarded)
+            .await
+            .context("Failed to complete replay for allocator")?;
 
         let discarded_to =
             if last_checkpoint.file_offset != reader.journal_file_checkpoint().file_offset {
@@ -2111,7 +2149,7 @@ impl Journal {
     }
 
     /// Waits for the journal to be written to the device up to `offset`.
-    async fn wait_for_flush(&self, offset: u64) -> Result<(), Error> {
+    pub(crate) async fn wait_for_flush(&self, offset: u64) -> Result<(), Error> {
         debug_assert_not_too_long!(poll_fn(|ctx| {
             let mut inner = self.inner.lock();
             if inner.flushed_offset >= offset {

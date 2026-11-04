@@ -66,9 +66,11 @@
 //! removals that hide their records in older layers.
 //!
 //! Replay applies the transactions the journal holds, which pins aren't in: there, an extent dies
-//! with its last deallocation, to be freed once replay is done. An allocation replayed in an extent
-//! that died in this replay, and isn't yet freed, revives it, as one of a shared extent that pins
-//! kept alive, live.
+//! with its last deallocation. An allocation replayed in an extent that died in this replay, and
+//! isn't yet freed, revives it, as one of a shared extent that pins kept alive, live. One that replay
+//! discards, as it does a transaction whose writes a crash lost, doesn't; and the next replay reads
+//! it again, unless the journal recorded the discard: what dies in replay, if what it discarded
+//! names it, is freed only after that record, with a flush's (`FreeAfter::Settling`).
 
 use crate::errors::FxfsError;
 use crate::filesystem::{ApplyContext, ApplyMode};
@@ -224,17 +226,28 @@ struct DeadExtent {
 /// What has to be on the device before a dead extent is freed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FreeAfter {
-    /// Nothing: it died in a transaction dropped, which wrote no record of it, or in a
-    /// deallocation replay found on the device.
+    /// Nothing: it died in a transaction dropped, which wrote no record of it, or before the
+    /// tree was last compacted, which no transaction since can allocate in.
     Now,
     /// The journal up to this offset, where it died, so that a crash can't bring it back. A replay
     /// that verifies the checksums of writes to it also replays its deallocation, which spares
     /// them.
     Flush(u64),
-    /// That, and a record of the flush (see `Journal::flush_device`): its owner was deleted, or a
-    /// crash left it (an orphan), so that a replay may verify the checksums of writes to it, unless
-    /// the record says they are on the device. Offset 0 is any flush.
+    /// That, and a record of the flush (see `Journal::flush_device`): its owner was deleted, a
+    /// crash left it (an orphan), or a mount found it dead, and its replay discarded transactions
+    /// that name it (`Settling`), so that a replay may verify the checksums of writes to it, unless
+    /// the record says they are on the device, or the journal before it, the discard. Offset 0 is
+    /// any flush.
     RecordedFlush(u64),
+    /// A mount found it dead, in replay or empty in the tree, and hasn't settled when it may be
+    /// freed (`ExtentTable::settle_replay`), which nothing allows until then. A death replay finds
+    /// isn't final while what replay discarded may be read again: a shared extent emptied lives on
+    /// with its pins, which aren't journaled, and takes allocations again, which replay discards
+    /// as it does a transaction whose writes a crash lost. A crash before the journal records the
+    /// discard has the next replay read the allocation again and verify its write, which it can't
+    /// in an extent freed (CI run 41876989384). Unless replay discarded nothing, then, it waits for
+    /// a recorded flush, which the discard's record comes before, if what it discarded names it.
+    Settling,
 }
 
 impl FreeAfter {
@@ -245,6 +258,7 @@ impl FreeAfter {
             FreeAfter::Now => true,
             FreeAfter::Flush(offset) => offset < log_file_offset,
             FreeAfter::RecordedFlush(offset) => recorded && offset < log_file_offset,
+            FreeAfter::Settling => false,
         }
     }
 }
@@ -268,13 +282,13 @@ impl Applied {
     }
 
     /// When an extent that dies in the transaction can be freed: live, once the device is flushed
-    /// past the transaction, and in replay, at once; with a record of the flush if `recorded`,
-    /// which any flush has, in replay.
+    /// past the transaction, with a record of the flush if `recorded`; and in replay, as the mount
+    /// settles it (`FreeAfter::Settling`), with a record of any flush if `recorded`.
     fn free_after(self, recorded: bool) -> FreeAfter {
         match (self, recorded) {
             (Applied::Live(offset), false) => FreeAfter::Flush(offset),
             (Applied::Live(offset), true) => FreeAfter::RecordedFlush(offset),
-            (Applied::Replayed, false) => FreeAfter::Now,
+            (Applied::Replayed, false) => FreeAfter::Settling,
             (Applied::Replayed, true) => FreeAfter::RecordedFlush(0),
         }
     }
@@ -654,7 +668,9 @@ impl ExtentTable {
                 self.alive_bytes += size;
                 self.extents.insert(extent, ExtentState::Allocated { info, pins: 0 });
             } else {
-                let free_after = FreeAfter::Now;
+                // Empty when the tree was compacted, as the staging extent emptied may be: an
+                // allocation in it since is in the journal, which replay may discard.
+                let free_after = FreeAfter::Settling;
                 self.queue_dead(DeadExtent { free_after, extent, size, owner_object_id });
                 records.add_removal(extent, size);
             }
@@ -701,6 +717,21 @@ impl ExtentTable {
         self.uncommitted.remove(&dead.extent);
         self.dead_bytes += dead.size;
         self.dead.push_back(dead);
+    }
+
+    /// Settles when the extents a mount found dead may be freed, once replay is done: those that
+    /// what it discarded of the journal names, which a replay after may read again, once a flush
+    /// is recorded, which the journal's record of the discard comes before; the rest at once, as
+    /// a replay after reads what it says of them as this one did.
+    pub(super) fn settle_replay(&mut self, discarded: &HashSet<ExtentId>) {
+        for dead in &mut self.dead {
+            if dead.free_after == FreeAfter::Settling {
+                dead.free_after = match discarded.contains(&dead.extent) {
+                    true => FreeAfter::RecordedFlush(0),
+                    false => FreeAfter::Now,
+                };
+            }
+        }
     }
 
     /// Starts freeing the dead extents that a flush of the journal to `log_file_offset`, recorded
@@ -1296,7 +1327,7 @@ mod tests {
         assert_eq!(
             dead,
             [
-                (empty, FreeAfter::Now, BS, OWNER),
+                (empty, FreeAfter::Settling, BS, OWNER),
                 (deleted, FreeAfter::RecordedFlush(0), BS, OTHER_OWNER)
             ]
         );
@@ -1311,11 +1342,11 @@ mod tests {
         table.check();
     }
 
-    /// Replay, which pins aren't in, kills an extent with its last deallocation, to be freed at
-    /// once; an allocation replayed in it after revives it, as far as that allocation reaches, as
-    /// one of a shared extent that pins kept alive, live.
+    /// Replay, which pins aren't in, kills an extent with its last deallocation, which nothing
+    /// frees until the mount settles it; an allocation replayed in it after revives it, as far as
+    /// that allocation reaches, as one of a shared extent that pins kept alive, live.
     #[fuchsia::test]
-    fn replay_kills_an_emptied_extent_at_once_and_revives_it() {
+    fn replay_kills_an_emptied_extent_unsettled_and_revives_it() {
         let device = FakeDevice::new(64, BS as u32);
         let mut table = ExtentTable::default();
         let extent = ExtentId::new(DEFAULT_BRANCH, 5);
@@ -1323,7 +1354,8 @@ mod tests {
         commit(&mut table, &second, Applied::Replayed);
         let recount = table.recount(&second, -1, Applied::Replayed).expect("recount failed");
         assert_eq!(recount.records.0, [removed(extent, 2 * BS)]);
-        assert_eq!(table.dead_extents(), [(extent, FreeAfter::Now, 2 * BS, OWNER)]);
+        assert_eq!(table.dead_extents(), [(extent, FreeAfter::Settling, 2 * BS, OWNER)]);
+        assert!(table.start_freeing(u64::MAX, true).is_empty());
         table.check();
 
         commit(&mut table, &ExtentRange::new(extent, 0..BS), Applied::Replayed);
@@ -1331,5 +1363,33 @@ mod tests {
         assert_eq!(table.alive().collect::<Vec<_>>(), [(extent, OWNER, BS)]);
         assert_eq!(table.extent_size(extent, &device), Some(BS));
         assert_eq!((table.alive_bytes(), table.dead_bytes()), (BS, 0));
+    }
+
+    /// What replay found dead is freed once a flush is recorded, which the journal's record of
+    /// the discard comes before, if what it discarded names it: an allocation discarded may be in
+    /// it, which the next replay, after a crash before that record, reads and verifies (CI run
+    /// 41876989384). Otherwise at once, as a replay after reads what it says of it as this one did.
+    #[fuchsia::test]
+    fn a_mount_settles_what_replay_found_dead_by_what_it_discarded() {
+        let mut table = ExtentTable::default();
+        let [named, unnamed] =
+            [5, 6].map(|s| ExtentRange::new(ExtentId::new(DEFAULT_BRANCH, s), 0..BS));
+        for range in [&named, &unnamed] {
+            commit(&mut table, range, Applied::Replayed);
+            let _ = table.recount(range, -1, Applied::Replayed).expect("recount failed");
+        }
+        assert_eq!(table.kill_orphans(DEFAULT_BRANCH, 7..8), 1);
+        table.settle_replay(&HashSet::from([named.extent, ExtentId::new(DEFAULT_BRANCH, 9)]));
+        let orphan = ExtentId::new(DEFAULT_BRANCH, 7);
+        assert_eq!(
+            table.dead_extents(),
+            [
+                (named.extent, FreeAfter::RecordedFlush(0), BS, OWNER),
+                (unnamed.extent, FreeAfter::Now, BS, OWNER),
+                (orphan, FreeAfter::RecordedFlush(0), 0, INVALID_OBJECT_ID),
+            ]
+        );
+        assert_eq!(table.start_freeing(0, false), [unnamed.extent]);
+        table.check();
     }
 }
