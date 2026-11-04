@@ -1,11 +1,11 @@
 ---
 id: TASK-153.5
 title: 'To try: commit a write after its bytes, as XFS does'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-01 22:52'
-updated_date: '2026-11-03 17:53'
+updated_date: '2026-11-04 03:58'
 labels: []
 dependencies: []
 parent_task_id: TASK-153
@@ -29,9 +29,9 @@ fxfs_dax_map_write commits the move, losing the old bytes, before the copy. Expl
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -69,4 +69,12 @@ Structure: TASK-160.6 (per-write state on fxfs_dax_file) gets four fields of thi
 Found and fixed on the way, each by guest/sim, in code main shares: an offset from NULL in fxfs_dax_map_found (UBSan, failures 408/448 at 1,000); fxfs.dax_check_moves comparing what a mapping stored past EOF (interleave 611); a fault's move committed before the PTEs went, a stall across two seals leaving a stale PTE that read zeros (interleave 2376 at 1,000): now every move waits for faults past their iomaps (range->faulting, not range->users: an iomap waiting for the semaphore holds a user, which deadlocked) and unmaps before; a fault taking its held bytes from the window after a move of its own, the zeros of a freed block (failures 784 at 1,000).
 
 State 2026-11-03 18:00 UTC: everything through f4ee7b196 passed (macOS scripts/test.sh; GCE workspace 2214/2214 and fxfs-guest-dax, checks-dax, checks-dax-delay, script-full-dax, xfstests-dax; zloop 3000; failures 3000; scenarios). The commits after it (rebase onto TASK-153.15's dax.c, the fault-path fixes above) passed macOS scripts/test.sh, the scenarios and the seeds above in guest/sim, but not yet a real kernel nor a full zloop: gcloud's credentials expired (OPEN_QUESTIONS). Branch t1535-commit-after, head ae8cd3098, local, not pushed.
+
+2026-11-03/04, rebased onto c0b423abc (80cd4e16b; conflicts: retrying_sealed carries 77be80480's give-up with the seal's error, EIO; both sides' decisions kept). macOS scripts/test.sh: workspace 2075/2075, Shuttle and scripts' tests pass. GitHub CI on the branch (run 41762577720): workspace, Shuttle, guest, clippy and scripts, guest-sim zloop 3,000 seeds and mutants all pass; the workspace's one failure, the_daemon_past_its_limit_evicts_any_tenants_pages, passed on rerun and is filed as TASK-161 (no host crate changed here). GCE r532 at 80cd4e16b, real kernel: fxfs-guest-dax, -checks-dax, -checks-dax-delay, -checks-dax-small, -script-full-dax and xfstests-fxfs-guest-dax all OK. No code ported from Fuchsia changed; upstream-changes.py --check passes.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A DAX write(2)'s move of a file's blocks commits after its bytes are in, as XFS's copy on write does: it stays an uncommitted Fxfs transaction (fxfs_dax_begin_write, DaxWrite) from the iomap to iomap_end, where it commits out of the gate, or is dropped on failure, leaving the file as it was; a write no longer zeros data when it fails after its move (TASK-79.106, 119.13, 150.8). Removed with it: bytes in hand before a move, the -ESTALE retry, a second move after a seal. guest/sim found and fixed fault-path bugs main shared (a fault's PTEs unmapped before its move; a fault's held bytes taken only before a move of its own). pgbench-dax equal (826 against 834 tps, 25 runs a side). Verified: macOS scripts/test.sh, GitHub CI on the branch (Linux workspace, guest-sim 3,000 seeds), GCE r532 real-kernel DAX suites with xfstests. patches/0009's removal waits on the user (OPEN_QUESTIONS.md).
+<!-- SECTION:FINAL_SUMMARY:END -->
