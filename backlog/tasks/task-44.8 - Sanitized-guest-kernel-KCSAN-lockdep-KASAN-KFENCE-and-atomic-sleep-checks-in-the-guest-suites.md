@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-24 21:31'
-updated_date: '2026-10-29 22:04'
+updated_date: '2026-11-04 08:04'
 labels: []
 dependencies: []
 parent_task_id: TASK-44
@@ -46,4 +46,6 @@ FXDAX_GUEST_KERNEL_BUILD=kasan (KASAN, KFENCE, lockdep, no KCSAN): the kernel bu
 AC3, GCE r261 (mutant region_open_unlocked, TASK-99's race put back, on the debug kernel, FXDAX_MUTANT_KERNEL=debug): killed in round 1 of checks-dax, but not by KCSAN: the VM stopped (the guest's output empty) and test-e2e.sh's check found refused stores no seal explains (scripts/dax-refusals.py, TASK-44.12), TASK-99's symptom. KCSAN, non-strict (CONFIG_KCSAN_STRICT off), reported no race in region_open or map_to; its reports were the reviewed PF_MEMALLOC_NOFS change (fxfs_dax_write_size_locked / kthread_is_per_cpu) and two of the kernel's. AC3 open: KCSAN_STRICT, or a race window held open (a pause point in region_open), may let KCSAN see it.
 
 2026-10-29, GCE r255 debug kernel (KCSAN): fxfs-guest-checks-dax reported fxfs_dax_cow's unlocked find_next_bit racing another read iomap's test_and_clear_bit of range->relocated: benign, marked data_race (TASK-44.22's commit). Also seen, not ours: genalloc's lockless bitmap (_find_next_bit / gen_pool_alloc_algo_owner), virtio_ring, workqueue.
+
+2026-11-04 at cfd41e1a0. Debug kernel (lockdep, KCSAN non-strict, atomic sleep), /tmp/fxdax-s448-debug: fxfs-guest-dax, checks-dax, checks-dax-delay, script-full-dax 4/4; no lockdep, WARN, BUG, atomic-sleep or hung-task report; KCSAN's fxfs reports all known: fxfs_nofs's PF_MEMALLOC_NOFS against the load balancer (reviewed), genalloc's lockless bitmap (a new pairing, _find_next_zero_bit / bitmap_clear_ll, the free side of the same race), kernel and virtio races; plus __mark_inode_dirty / inode_cgwb_move_to_attached via file_update_time, the kernel's. checks-dax-delay took 177 s of 180. KASAN kernel, /tmp/fxdax-s448-kasan: dax and script-full pass, no report; checks-dax and checks-dax-delay time out in enospc from KASAN's slowness, so enospc, write_times_add_up and unbind_waits_for_unmount haven't run under KASAN. Decided: run those three alone under KASAN (FXDAX_CHECKS) rather than lengthen every timeout; AC3 dropped, guest/sim's seeded schedules catching TASK-99's race and copy-on-write DAX (TASK-164) removing its code.
 <!-- SECTION:NOTES:END -->

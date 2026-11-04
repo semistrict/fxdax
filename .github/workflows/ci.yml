@@ -80,6 +80,25 @@ jobs:
             scripts/test.sh --no-fail-fast
           fi
 
+  # vendor/firecracker only goes forward: b781ff302 took main's back to before F_SEAL, and nothing
+  # here builds Firecracker to notice (TASK-166).
+  firecracker-forward:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: vendor/firecracker is ahead of the base's
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [[ -z $BASE || $BASE == 0000000000000000000000000000000000000000 ]]; then
+            BASE=$(git merge-base origin/main HEAD)
+          fi
+          scripts/firecracker-forward.sh "$BASE" HEAD
+
   # guest/sim: dax.c in a process, over a fake kernel, as zloop.sh runs ztest (TASK-149.14).
   guest-sim:
     runs-on: ubuntu-24.04
