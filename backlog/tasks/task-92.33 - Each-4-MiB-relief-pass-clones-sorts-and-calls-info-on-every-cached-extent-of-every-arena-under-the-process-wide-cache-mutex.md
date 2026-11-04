@@ -3,10 +3,10 @@ id: TASK-92.33
 title: >-
   Each 4 MiB relief pass clones, sorts and calls info() on every cached extent
   of every arena, under the process-wide cache mutex
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-22 21:06'
-updated_date: '2026-10-30 10:18'
+updated_date: '2026-11-04 07:06'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -46,3 +46,9 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity medium): docs/review
 <!-- SECTION:NOTES:BEGIN -->
 Relief leaves out extents with nothing in memory, by a count of present pages, and asks each its order past the cache's lock; every entry is still cloned under that lock. relief_evicts_what_no_window_maps_first checks eviction_order is None once evicted. GCE r273.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Relief clones only Arcs under the cache lock, orders candidates past it and leaves out evicted extents (eviction_order None, 75e45b561); GCE r273.
+<!-- SECTION:FINAL_SUMMARY:END -->

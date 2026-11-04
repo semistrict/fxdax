@@ -3,10 +3,10 @@ id: TASK-150.15
 title: >-
   A refused operation leaves a file other than the model says, on a full
   filesystem
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-01 16:53'
-updated_date: '2026-11-01 19:44'
+updated_date: '2026-11-04 07:06'
 labels: []
 dependencies: []
 parent_task_id: TASK-150
@@ -45,3 +45,9 @@ Punch theory confirmed. r399, with no punch fix and the oracle rereading uncache
 
 Fourth of the kind: r424, and r426 replaying seed 1793924532607807615: script-1 evicted 2633728 bytes where the model has 2760020, the bytes they share equal: operation 3030's Truncate. fxfs_vfs_resize changed the inode's size before Fxfs, and on ENOSPC the inode kept a size Fxfs never had, lost at eviction. Fixed for a file grown: the size goes back. A cut refused is not handled: fxfs_vfs_write_inode writes no size, so nothing retries it, and i_size would stay below Fxfs's; TASK-60's borrowed room should keep it from happening, unverified. Harness blind spot: this check panicked, read as 'a run that died' by every replay since r395, and could not shrink. r424's 'died' results are likely all this. Not yet run with the fix.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Four refused-operation bugs (write size, punch, clone, resize rollback) fixed in super.c so each leaves the file as the model says, the scripts checking the file after each refusal; the refused cut is TASK-150.19's and TASK-153.4's.
+<!-- SECTION:FINAL_SUMMARY:END -->

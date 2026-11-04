@@ -3,10 +3,10 @@ id: TASK-44.18
 title: >-
   Production-shaped guest soaks: small guest memory, more vCPUs than cores,
   small windows, bucket latency, rounds
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-24 21:31'
-updated_date: '2026-10-31 08:40'
+updated_date: '2026-11-04 07:06'
 labels: []
 dependencies: []
 parent_task_id: TASK-44
@@ -40,3 +40,9 @@ The sandbox team's 2 GiB DAX VM hit TASK-99 under memory pressure the suites don
 
 Correction: the rerun's 2048:4:512 rounds: 316 139 108 67 58, 320 133 107 67 57, 320 135 108 67 59; the failed first run's 252 to 68.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+scripts/soak-gce.sh runs the DAX suites over a memory, vCPU and window matrix with bucket latency, rounds each, keeping every round's measurements and logs.
+<!-- SECTION:FINAL_SUMMARY:END -->

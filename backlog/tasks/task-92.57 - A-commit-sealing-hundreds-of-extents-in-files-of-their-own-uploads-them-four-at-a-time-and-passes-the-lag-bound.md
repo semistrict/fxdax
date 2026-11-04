@@ -3,9 +3,10 @@ id: TASK-92.57
 title: >-
   A commit sealing hundreds of extents in files of their own uploads them four
   at a time and passes the lag bound
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-24 07:32'
+updated_date: '2026-11-04 07:06'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -32,3 +33,9 @@ Found measuring TASK-91.17 with PostgreSQL's fsync off. A commit that seals hund
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Own-file extents upload 32 at once within the writer's budget (8b70c6495); GCE r355's pgbench in GCS no longer blocks at the lag bound.
+<!-- SECTION:FINAL_SUMMARY:END -->

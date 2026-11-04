@@ -1,11 +1,11 @@
 ---
 id: TASK-26.18.9
 title: 'Guest DAX: 2 MiB read faults for files written in small pieces (SQLite)'
-status: To Do
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-21 15:19'
-updated_date: '2026-10-21 20:44'
+updated_date: '2026-11-04 07:06'
 labels: []
 dependencies: []
 parent_task_id: TASK-26.18
@@ -47,3 +47,9 @@ TASK-26.18.8 gave guest Fxfs 2 MiB (PMD) read faults on DAX mappings: a large fi
 <!-- SECTION:NOTES:BEGIN -->
 2026-10-21: paused for the sandbox team's pilot blockers (TASK-57). A diagnostic run (tagged [DEBUG-small] logs of the pieces of chunks with 16 or more, removed from the tree) was under way; earlier logs showed SQLite's chunks in runs of 1 to 6 pages. Working guess: SQLite's database pages are written in order but interleaved with its rollback journal, so the allocator restages at each switch of owner and a chunk is a few runs in different staging extents; a fix could map such a chunk into its own aligned space on its first PMD fault.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Moot: scattered staging was removed by fafefbac7 (a page stays at one window address; PMDs common now).
+<!-- SECTION:FINAL_SUMMARY:END -->

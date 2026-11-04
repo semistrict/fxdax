@@ -3,9 +3,10 @@ id: TASK-92.51
 title: >-
   zircon port: RegionList::get_alloc_spot walks every child of a VMAR to find a
   gap
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-23 19:20'
+updated_date: '2026-11-04 07:06'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -33,3 +34,9 @@ Found reviewing TASK-92.50 (r6/zircon-map). crates/zircon/src/vm/vm_address_regi
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Moot: the Zircon VMAR this concerned was deleted with the kernel port (f897ce4a2, TASK-96.1).
+<!-- SECTION:FINAL_SUMMARY:END -->

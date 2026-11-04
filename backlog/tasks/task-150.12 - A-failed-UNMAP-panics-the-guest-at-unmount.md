@@ -1,9 +1,10 @@
 ---
 id: TASK-150.12
 title: A failed UNMAP panics the guest at unmount
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-01 16:52'
+updated_date: '2026-11-04 07:06'
 labels: []
 dependencies: []
 parent_task_id: TASK-150
@@ -32,3 +33,9 @@ From the static audit, unconfirmed, and traced against linux-7.1.2, not the 6.18
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The window's pools are destroyed whatever a failed UNMAP left taken, so unmount no longer hits gen_pool_destroy's BUG_ON (7035cdabe); the sim mutant task-150.12-pool-kept pins it.
+<!-- SECTION:FINAL_SUMMARY:END -->

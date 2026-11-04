@@ -1,9 +1,10 @@
 ---
 id: TASK-79
 title: Correctness bugs found by the 2026-10-21 review of main
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-21 20:58'
+updated_date: '2026-11-04 07:07'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -31,3 +32,9 @@ A multi-agent review of fxdax's own code at 6a0a3f8 (docs/reviews/2026-10-21-mai
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Every correctness bug from the 2026-10-21 review of main is fixed (105 of 107 subtasks). Its two left, TASK-79.91 and 79.92, are performance work on segment cleaning, kept open beneath it as To Do.
+<!-- SECTION:FINAL_SUMMARY:END -->

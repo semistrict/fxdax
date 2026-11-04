@@ -1,10 +1,10 @@
 ---
 id: TASK-150.11
 title: fxfs_dax_new_slice lacks the TASK-44.21 guard
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-01 16:52'
-updated_date: '2026-11-01 19:10'
+updated_date: '2026-11-04 07:06'
 labels: []
 dependencies: []
 parent_task_id: TASK-150
@@ -41,3 +41,9 @@ guest/sim's candidate 4 (TASK-149.14, branch test/sim-next) looks the same: a wr
 
 Confirmed on a real kernel: r423 xfstests-fxfs-guest-dax generic/013: 'mapped pages to 77 ..., writably (reach), past its region's 16 pages', WARN at dax.c:2132, stack fxfs_dax_reach < fxfs_dax_move, a path past TASK-44.21's guard, not fxfs_dax_new_slice as the audit said. TASK-44.21's fix left this gap.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Confirmed by r423 through fxfs_dax_move; fixed in e59d8621f, then made impossible by 7caa43578, which keeps shared blocks out of regions; open_extent_read_only kills the mutant task-150.11-looked-before-locked.
+<!-- SECTION:FINAL_SUMMARY:END -->

@@ -3,10 +3,10 @@ id: TASK-131.2
 title: >-
   fsync without a seal: commit without write-protecting and evacuating, sealing
   only at fork, snapshot or reclaim
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-29 21:13'
-updated_date: '2026-10-30 00:05'
+updated_date: '2026-11-04 07:06'
 labels:
   - performance
 dependencies: []
@@ -40,3 +40,9 @@ Measured, GCE r261 at 9601cd2ba (nested n2, release kernel, 1 VM, 5 x 60 s pgben
 
 Correction, the guest's side (r261 /proc/fs/fxfs stats): the guest sees a seal at 587 us (seals_ns 103.1 s / 175724; device commit 577 us), not extentd's 120 us; without DAX 408 us (device commit 407 us, of which extentd's 288). So ~457 us of each DAX commit is outside extentd's commit handling, against ~119 us without DAX: the request waiting behind window MAPs and the VMM's stage operations (127 s of its time over the 300 s run). Evacuation, which follows each seal: 199289 evacuations, 506714 of the guest's 779119 window maps (65%, 7.7 GB), 105.5 s of MAP time and 183.4 s with a file's semaphore held for writing. So the seal itself is cheap at extentd; what costs is the evacuation after it and the stage-op volume both cause. Next: fewer stage ops per map (TASK-131.1), then whether evacuation can be skipped or deferred for pages rewritten soon.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Moot: the seal costs 44 us at extentd (r261); the cost was the evacuation after each seal, which fafefbac7 removed; doc-9 says why fsync seals.
+<!-- SECTION:FINAL_SUMMARY:END -->

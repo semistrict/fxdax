@@ -3,9 +3,10 @@ id: TASK-41.1
 title: >-
   The uploader re-gathers back to back, closing small segments under the
   writer's locks
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-22 08:54'
+updated_date: '2026-11-04 07:06'
 labels:
   - perf
 dependencies: []
@@ -33,3 +34,9 @@ Found by TASK-42.11's diagnosis (2026-10-21, GCE c3-standard-8, pgbench, main 0a
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The uploader gathers only when a commit waits, a fork or stop asks, or the interval is up (21d2be98f), and close_now frames its segment holding none of the store's locks (7a6007840); the pgbench before/after is TASK-42.11's re-measure.
+<!-- SECTION:FINAL_SUMMARY:END -->

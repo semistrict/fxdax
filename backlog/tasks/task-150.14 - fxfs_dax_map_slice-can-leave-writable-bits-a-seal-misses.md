@@ -1,9 +1,10 @@
 ---
 id: TASK-150.14
 title: fxfs_dax_map_slice can leave writable bits a seal misses
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-01 16:52'
+updated_date: '2026-11-04 07:06'
 labels: []
 dependencies: []
 parent_task_id: TASK-150
@@ -32,3 +33,9 @@ From the static audit, unconfirmed, the window narrow. dax.c:965, with an early 
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+fxfs_dax_set_writable is the only way a page becomes writable and lists its file first (74f5b2007). Its mutant is unkilled by any seed: TASK-149.26 carries that.
+<!-- SECTION:FINAL_SUMMARY:END -->

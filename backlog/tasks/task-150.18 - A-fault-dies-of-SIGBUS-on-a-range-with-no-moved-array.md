@@ -1,9 +1,10 @@
 ---
 id: TASK-150.18
 title: A fault dies of SIGBUS on a range with no moved array
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-01 19:09'
+updated_date: '2026-11-04 07:06'
 labels: []
 dependencies: []
 parent_task_id: TASK-150
@@ -32,3 +33,9 @@ guest/sim's candidate 5, unconfirmed on a real kernel: fxfs_dax_place returns ea
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Moot: the code is gone; fafefbac7 removed page moves and the relocation path (fxfs_dax_place, the moved arrays).
+<!-- SECTION:FINAL_SUMMARY:END -->

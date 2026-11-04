@@ -1,9 +1,10 @@
 ---
 id: TASK-149.21
 title: 'The sim''s writers upload inherited extents, as diff does'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-01 19:12'
+updated_date: '2026-11-04 07:06'
 labels: []
 dependencies: []
 parent_task_id: TASK-149
@@ -30,3 +31,9 @@ TASK-150.1's blind spot: extent_remote's simulation seals only IDs its writers m
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Moot: the same work as TASK-149.18's AC2 and AC4, which carries it; 28e086b53 keys inherited uploads by the uploader's segment.
+<!-- SECTION:FINAL_SUMMARY:END -->

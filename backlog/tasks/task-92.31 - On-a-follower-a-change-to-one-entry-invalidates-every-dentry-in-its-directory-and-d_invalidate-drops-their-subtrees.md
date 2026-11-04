@@ -6,13 +6,14 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-22 21:06'
+updated_date: '2026-11-04 07:34'
 labels:
   - review-2026-10-21
 dependencies: []
 references:
   - docs/reviews/2026-10-21-main.md
 parent_task_id: TASK-92
-priority: medium
+priority: low
 type: enhancement
 ordinal: 306000
 ---
@@ -39,3 +40,9 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity medium): docs/review
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Frozen 2026-11-04 by the user: followers and the standalone store layer have no customer now; resumed after read-only DAX (TASK-164) and the storage collapse (TASK-165) land (docs/reviews/2026-11-04-first-principles.md, section 6).
+<!-- SECTION:NOTES:END -->

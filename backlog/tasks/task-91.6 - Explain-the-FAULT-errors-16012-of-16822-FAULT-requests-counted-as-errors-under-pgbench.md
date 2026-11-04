@@ -3,9 +3,10 @@ id: TASK-91.6
 title: >-
   Explain the FAULT errors: 16,012 of 16,822 FAULT requests counted as errors
   under pgbench
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-22 18:22'
+updated_date: '2026-11-04 07:06'
 labels: []
 dependencies: []
 parent_task_id: TASK-91
@@ -30,3 +31,9 @@ extentd's counters in the sandbox team's matrix run counted 16,012 of 16,822 FAU
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Moot: the paths behind those errors are gone; any refusal is now counted, logged with the window's state and failed by dax-refusals.py (TASK-44.12).
+<!-- SECTION:FINAL_SUMMARY:END -->

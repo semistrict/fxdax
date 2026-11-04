@@ -3,10 +3,10 @@ id: TASK-92.32
 title: >-
   Relief orders extents by last lookup, not last use, so DAX-hot extents are
   evicted first, and whole
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-22 21:06'
-updated_date: '2026-10-30 10:18'
+updated_date: '2026-11-04 07:06'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -46,3 +46,9 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity medium): docs/review
 <!-- SECTION:NOTES:BEGIN -->
 Relief orders extents by whether a window maps them, then by when last used, a fault counting (cache.rs, CachedExtent::eviction_order). Tests: relief_evicts_what_no_window_maps_first, relief_evicts_what_was_faulted_on_longest_ago_first, each failing without it (mutant: (0, 64) for (64, 0) held). macOS and Linux, GCE r273. Whole extents still go for a smaller request.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Relief evicts unmapped extents first, then those faulted on longest ago (CachedExtent::eviction_order, 75e45b561, 36adb1ce4), each order checked by a test that fails without it; GCE r273.
+<!-- SECTION:FINAL_SUMMARY:END -->

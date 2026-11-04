@@ -1,9 +1,10 @@
 ---
 id: TASK-147
 title: 'Guest DAX: generic/638''s write at 8192 ends in EIO after 256 dropped ranges'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-01 00:53'
+updated_date: '2026-11-04 07:06'
 labels: []
 dependencies: []
 priority: medium
@@ -27,3 +28,9 @@ GCE r363 and r368: 'a write at 8192 found no range to take it', in generic/638, 
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A write past EOF records how far it grows the file, so ranges a fault maps meanwhile reach its end (loff_t growing, e14371f81; xfstests generic/638); guest/sim's mutant task-147-growing puts the bug back.
+<!-- SECTION:FINAL_SUMMARY:END -->

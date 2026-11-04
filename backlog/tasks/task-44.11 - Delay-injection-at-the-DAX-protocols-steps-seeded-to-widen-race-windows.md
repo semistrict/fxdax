@@ -1,10 +1,10 @@
 ---
 id: TASK-44.11
 title: 'Delay injection at the DAX protocol''s steps, seeded, to widen race windows'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-24 21:31'
-updated_date: '2026-10-25 01:30'
+updated_date: '2026-11-04 07:06'
 labels: []
 dependencies: []
 parent_task_id: TASK-44
@@ -39,3 +39,9 @@ c7dacce4d: fxfs.dax_delay_us / dax_delay_seed, seeded sleeps a quarter of the ti
 
 r83: TASK-99's mutant (region_open_unlocked) with fxfs.dax_delay_us=300 and no held-copy failures: fxfs-guest-checks-dax with faults_writes_compaction and seal_race passed, fxfs-guest-pgbench-dax failed (the load died): delays expose it under pgbench, not those two checks. AC2 as written not met.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Seeded delays at DAX steps landed (c7dacce4d); catching TASK-99's race, AC2's aim, is done by guest/sim's seeded schedules (mutant task-99-region-open).
+<!-- SECTION:FINAL_SUMMARY:END -->

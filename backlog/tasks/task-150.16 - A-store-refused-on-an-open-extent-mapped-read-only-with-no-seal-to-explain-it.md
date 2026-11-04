@@ -3,10 +3,10 @@ id: TASK-150.16
 title: >-
   A store refused on an open extent, mapped read-only, with no seal to explain
   it
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-01 16:53'
-updated_date: '2026-11-01 23:00'
+updated_date: '2026-11-04 07:06'
 labels: []
 dependencies: []
 parent_task_id: TASK-150
@@ -49,3 +49,9 @@ Checked: crates/fxdax/src/extentd/server.rs:1118 logs a refusal only if count <=
 
 Explained, by the guest audit and checked over 9 runs: 8,378 refused stores, all by KVM's async page fault kworkers, none by a vCPU: the guest's own access decides, and wasn't refused. Not guest stores. Which route produced the two read-only MAPs of open extents stays unverified. The gate is fixed by TASK-156.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The refusals were KVM async page-fault kworkers' stores, not guest stores (8,378 over 9 runs): TASK-156 fixed the gate (bc54340d6), and 7caa43578 with TASK-153.3 made a read-only region of an open extent impossible (region_open WARNs).
+<!-- SECTION:FINAL_SUMMARY:END -->

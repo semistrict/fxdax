@@ -3,9 +3,10 @@ id: TASK-119
 title: >-
   DAX data-loss tests: checks that verify contents under concurrency, delays and
   crashes, and a gate
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-28 19:26'
+updated_date: '2026-11-04 07:06'
 labels:
   - testing
 dependencies: []
@@ -30,3 +31,9 @@ A survey on 2026-10-28 found: 7 of 28 guest DAX correctness bugs were first foun
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Every DAX data-loss test asked for has landed, or was overtaken by guest/sim and the removal of evacuation.
+<!-- SECTION:FINAL_SUMMARY:END -->

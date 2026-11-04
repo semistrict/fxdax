@@ -6,9 +6,10 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-24 15:24'
+updated_date: '2026-11-04 07:34'
 labels: []
 dependencies: []
-priority: high
+priority: low
 ordinal: 382000
 ---
 
@@ -64,3 +65,9 @@ Prior art in the repo: doc-7 (object storage layout, leases, fencing, forks, col
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Frozen 2026-11-04 by the user: followers and the standalone store layer have no customer now; resumed after read-only DAX (TASK-164) and the storage collapse (TASK-165) land (docs/reviews/2026-11-04-first-principles.md, section 6).
+<!-- SECTION:NOTES:END -->

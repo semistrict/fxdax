@@ -3,9 +3,10 @@ id: TASK-150
 title: >-
   Bugs found on 2026-11-01: confirm each with a test, fix it, close its blind
   spot
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-01 16:49'
+updated_date: '2026-11-04 07:07'
 labels: []
 dependencies: []
 priority: high
@@ -31,3 +32,9 @@ Two static audits (extentd, stores and VMM; guest kernel Fxfs and DAX) each repo
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+All 23 findings of 2026-11-01 are fixed, explained or made moot, each with its test, and each blind spot ranked into TASK-149.
+<!-- SECTION:FINAL_SUMMARY:END -->

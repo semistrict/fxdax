@@ -1,9 +1,10 @@
 ---
 id: TASK-150.13
 title: Failed MAPs after a move can leave a range stale
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-01 16:52'
+updated_date: '2026-11-04 07:06'
 labels: []
 dependencies: []
 parent_task_id: TASK-150
@@ -32,3 +33,9 @@ From the static audit, unconfirmed. dax.c:3386 leaves fxfs_dax_map_moved errors 
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A range behind blocks it failed to follow is one state, dropped by every way in (07ab65415, 1e0cf9634); a sim scenario kills the mutant task-150.13-behind-unmarked.
+<!-- SECTION:FINAL_SUMMARY:END -->

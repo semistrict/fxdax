@@ -3,9 +3,10 @@ id: TASK-119.5
 title: >-
   dax_torture: concurrent model-based check of writes, live mappings, seals,
   evictions and truncates
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-28 19:27'
+updated_date: '2026-11-04 07:06'
 labels:
   - testing
 dependencies: []
@@ -33,3 +34,9 @@ No check runs concurrent writers, long-lived mmap stores, fsync/syncfs from othe
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The guest check torture runs threads' random writes, stores and syncs on shared pages, byte-owned and modelled, with seals, truncates, punches and evictions between phases (dba300cfc); reproducing 112.6 is moot with evacuation gone.
+<!-- SECTION:FINAL_SUMMARY:END -->

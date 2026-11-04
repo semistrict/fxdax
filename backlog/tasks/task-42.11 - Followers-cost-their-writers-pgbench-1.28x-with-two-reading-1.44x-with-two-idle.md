@@ -6,13 +6,13 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-21 09:06'
-updated_date: '2026-11-03 02:10'
+updated_date: '2026-11-04 07:34'
 labels:
   - followers
   - perf
 dependencies: []
 parent_task_id: TASK-42
-priority: high
+priority: low
 ordinal: 164000
 ---
 
@@ -48,4 +48,6 @@ Measured again on main 0a3015b (GCE c3-standard-8 us-central1-a, 2026-10-21; doc
 From the review session (2026-10-24): TASK-41.1's close_now part is on main (round 1: 'a closing between commits frames its segment holding none of the store's locks'), and 7112b50d (TASK-91.17/79.93) reads raw files through the page cache, so a close takes ~25 ms instead of 160-270 ms. Re-measure the followers' slowdown on current main before blocking on 41.1.
 
 Handed back 2026-11-02 (triage): last measured on 0a3015b (1.28x reading, 1.43x idle); close reads (788bd2e4f/7112b50d9) and much follower and DAX code changed since. Left: rerun pgbench on main alone, followed and followed-idle (bench-gce.sh, scripts/bench-ab.py); close if within noise, else the uploader's back-to-back re-gathers (TASK-41.1 AC1) are the suspect.
+
+Frozen 2026-11-04 by the user: followers and the standalone store layer have no customer now; resumed after read-only DAX (TASK-164) and the storage collapse (TASK-165) land (docs/reviews/2026-11-04-first-principles.md, section 6).
 <!-- SECTION:NOTES:END -->

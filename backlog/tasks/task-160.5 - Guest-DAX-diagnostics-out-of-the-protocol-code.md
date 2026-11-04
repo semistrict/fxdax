@@ -4,9 +4,11 @@ title: 'Guest DAX: diagnostics out of the protocol code'
 status: To Do
 assignee: []
 created_date: '2026-11-03 13:08'
+updated_date: '2026-11-04 07:34'
 labels:
   - structure
-dependencies: []
+dependencies:
+  - TASK-164
 parent_task_id: TASK-160
 priority: low
 type: task
@@ -31,3 +33,9 @@ About 900 of dax.c's lines are diagnostics (shadow, trace, move checks, seal ver
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-11-04: waits for TASK-164 (read-only DAX), which changes what this covers; re-scope it then.
+<!-- SECTION:NOTES:END -->

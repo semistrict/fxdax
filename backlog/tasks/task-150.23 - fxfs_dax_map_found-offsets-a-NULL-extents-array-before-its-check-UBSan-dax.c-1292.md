@@ -3,9 +3,10 @@ id: TASK-150.23
 title: >-
   fxfs_dax_map_found offsets a NULL extents array before its check (UBSan,
   dax.c:1292)
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-03 16:34'
+updated_date: '2026-11-04 07:06'
 labels: []
 dependencies: []
 parent_task_id: TASK-150
@@ -32,3 +33,9 @@ Found by the hunt (TASK-160.28), run 41667054404, mutant task-99-region-open in:
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+fxfs_dax_map_found takes its lagging pieces only once the allocation is known to have succeeded (7ae639eac); failures seeds 408 and 448 at 1,000 operations were UBSan-red before.
+<!-- SECTION:FINAL_SUMMARY:END -->

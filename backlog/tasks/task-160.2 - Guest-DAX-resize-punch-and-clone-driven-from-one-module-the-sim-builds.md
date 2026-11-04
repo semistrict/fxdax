@@ -4,9 +4,11 @@ title: 'Guest DAX: resize, punch and clone driven from one module the sim builds
 status: To Do
 assignee: []
 created_date: '2026-11-03 13:08'
+updated_date: '2026-11-04 07:34'
 labels:
   - structure
-dependencies: []
+dependencies:
+  - TASK-164
 parent_task_id: TASK-160
 priority: medium
 type: task
@@ -31,3 +33,9 @@ super.c isn't built in guest/sim; its resize, punch, clone and fsync are rewritt
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-11-04: waits for TASK-164 (read-only DAX), which changes what this covers; re-scope it then.
+<!-- SECTION:NOTES:END -->

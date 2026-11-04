@@ -1,9 +1,10 @@
 ---
 id: TASK-160.1
 title: 'Guest DAX: one retry loop for every way into a file'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-03 13:08'
+updated_date: '2026-11-04 07:34'
 labels:
   - structure
 dependencies: []
@@ -32,3 +33,9 @@ Error codes are the control channel between the iomap callbacks and the four way
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Superseded by TASK-164 (read-only DAX, decided 2026-11-04): DAX maps only sealed extents and writes go through the guest page cache, so the write and store paths this restructured, the gate and the per-write state go. TASK-160.1's driver, written but never compiled, is archived as tag archive/task-160.1-retry-driver (dead-ends/one-retry-driver-for-writable-dax.md).
+<!-- SECTION:FINAL_SUMMARY:END -->

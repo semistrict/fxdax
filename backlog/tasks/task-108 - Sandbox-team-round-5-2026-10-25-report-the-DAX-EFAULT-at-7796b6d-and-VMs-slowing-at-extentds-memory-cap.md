@@ -3,9 +3,10 @@ id: TASK-108
 title: >-
   Sandbox team, round 5 (2026-10-25 report): the DAX EFAULT at 7796b6d, and VMs
   slowing at extentd's memory cap
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-25 19:06'
+updated_date: '2026-11-04 07:06'
 labels: []
 dependencies: []
 priority: high
@@ -24,3 +25,9 @@ Sandbox team retest at 7796b6d (before TASK-102, TASK-104 and TASK-101 reached m
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The EFAULT was fixed under TASK-99 and the memory-cap slowdown under TASK-108.1.
+<!-- SECTION:FINAL_SUMMARY:END -->

@@ -3,9 +3,10 @@ id: TASK-119.17
 title: >-
   User-space harness running dax.c bookkeeping (relocate, prune, gather/place,
   map publication) against a fake device with a random scheduler
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-28 19:45'
+updated_date: '2026-11-04 07:06'
 labels:
   - testing
 dependencies: []
@@ -31,3 +32,9 @@ Fable/Astra: 1-2 weeks; kernel tools/testing/radix-tree shims cover xarray/bitma
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+guest/sim runs dax.c unmodified over a fake kernel with seeded interleavings, ASan and hand mutants (3f8573f65, 0a30c4c53; TASK-149.14), in CI on every push.
+<!-- SECTION:FINAL_SUMMARY:END -->

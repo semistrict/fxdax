@@ -3,9 +3,10 @@ id: TASK-112
 title: >-
   Sandbox team, round 7b (2026-10-28 report): DAX sharing across VMs, and the
   gap to static virtio-pmem
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-28 02:30'
+updated_date: '2026-11-04 07:06'
 labels: []
 dependencies: []
 priority: high
@@ -28,3 +29,9 @@ Their estimate against ext4 dax=always on a read-only virtio-pmem base: 1-3 us p
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+All six of round 7b's items are done.
+<!-- SECTION:FINAL_SUMMARY:END -->

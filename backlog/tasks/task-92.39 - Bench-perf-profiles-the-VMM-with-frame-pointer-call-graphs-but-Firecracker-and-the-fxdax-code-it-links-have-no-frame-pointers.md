@@ -3,10 +3,10 @@ id: TASK-92.39
 title: >-
   Bench perf profiles the VMM with frame-pointer call graphs, but Firecracker
   and the fxdax code it links have no frame pointers
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-22 21:06'
-updated_date: '2026-10-27 13:41'
+updated_date: '2026-11-04 07:06'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -46,3 +46,9 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity medium): docs/review
 <!-- SECTION:NOTES:BEGIN -->
 2026-10-27: every Rust build keeps frame pointers now, by the user's request: .cargo/config.toml's build.rustflags (-Cforce-frame-pointers=yes), and Firecracker's .cargo/config.toml likewise; test-e2e.sh's separate frame-pointers extentd build and example-linux-host.sh's RUSTFLAGS are gone (example perf keeps its own target for line tables). The guest's Rust had them already (build-guest-sysroot.sh). Left: a bench perf profile of the VMM showing whole stacks (AC #1/#2).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Every Rust build, Firecracker included, keeps frame pointers (d25104e23), so VMM perf call graphs walk whole stacks.
+<!-- SECTION:FINAL_SUMMARY:END -->

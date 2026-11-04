@@ -3,10 +3,10 @@ id: TASK-61
 title: >-
   40 s COMMITs and half-second WRITEs under the sandbox team's pgbench (object
   store with 25 ms latency, nested)
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-21 19:54'
-updated_date: '2026-10-22 13:01'
+updated_date: '2026-11-04 07:06'
 labels: []
 dependencies: []
 priority: high
@@ -31,3 +31,9 @@ Their device counters at VM exit (queue 0): COMMIT 7 at 40.2 s avg, WRITE 2,578 
 <!-- SECTION:NOTES:BEGIN -->
 2026-10-22: fxfs-guest-pgbench-dax (TASK-62) runs the sandbox team's load, pgbench -i -s 50 on a fork through a 2 GiB DAX window, against a bucket 25 ms away (FXDAX_REMOTE_LATENCY_MS=25, object_store's ThrottledStore, on every request). On a GCE n2-standard-8 (one level of nesting) it took 25.8 s: generate 14.75 s, vacuum 3.35 s, primary keys 7.62 s. So bucket latency alone doesn't make it slow; their triple nesting (MAP 4.2 ms against our 48 µs) remains the lead.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Moot: superseded by rounds 3 to 7, measured on later builds; the cause pointed at their triple nesting.
+<!-- SECTION:FINAL_SUMMARY:END -->

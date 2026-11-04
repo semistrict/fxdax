@@ -1,10 +1,10 @@
 ---
 id: TASK-3
 title: Port upstream file.rs and volume.rs tests
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-28 02:41'
-updated_date: '2026-09-29 00:49'
+updated_date: '2026-11-04 07:06'
 labels: []
 milestone: m-0
 dependencies: []
@@ -39,3 +39,9 @@ Step 5 runs pager.rs and paged_object_handle.rs tests verbatim, but FxFile's own
 <!-- SECTION:NOTES:BEGIN -->
 TASK-4 ported the three background-flush tests of volume.rs and three tests of volumes_directory.rs (test_volume_creation, test_dirty_pages_accumulate_in_parent, test_flush_before_mark_dirty_under_critical_memory_pressure).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Moot: the FxFile/FxVolume upstream tests went with the Zircon port (f897ce4a2); host Fxfs runs on fxfs-posix.
+<!-- SECTION:FINAL_SUMMARY:END -->

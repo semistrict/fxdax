@@ -4,9 +4,10 @@ title: >-
   Bench CI thresholds: DAX tps against no DAX, run 5 at least 90% of run 1, no
   MAP latency step within a VM, one long-lived daemon at its memory cap serving
   many VMs
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-28 01:25'
+updated_date: '2026-11-04 07:06'
 labels: []
 dependencies: []
 parent_task_id: TASK-111
@@ -34,3 +35,9 @@ The sandbox team asks for pass/fail checks on the pgbench comparison so regressi
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Moot: the CI thresholds landed as pgbench-gate.py's decay, DAX and density gates (TASK-131.5); the MAP-latency step gate went with evacuation.
+<!-- SECTION:FINAL_SUMMARY:END -->

@@ -6,20 +6,19 @@
 **Recommended:** a workload identity pool for `semistrict/fxdax` and a service account allowed to make and delete GCE instances and write the nightly bucket.
 **Until then:** each nightly fails at its auth step; TASK-69's runs stay manual.
 
-## Remove the per-use checks TASK-153.12's boundary makes dead, and their tests? (2026-11-03)
-
-Every item a layer holds is now checked as it's read, as the journal's are at replay, so no record from an image reaches what reads it unchecked; what's in memory is the code's. Checks TASK-149.9 added where records are used are now dead for what an image says: `entries_in` in `extent_record.rs` (offset or shrunk entries that don't fit), the read path's bitmap length check in `store_object_handle.rs`, and the tolerance in `ExtentValue::offset_by`/`shrunk`. Removing them brings those files back to upstream, but takes deleting or rewriting their tests (`extent_entries_that_do_not_fit`, and the bitmap half of `test_reads_of_what_an_image_says`, which puts a short bitmap in memory, not in a layer), which is yours.
-**Recommended:** remove them and those tests; the boundary's own tests (`test_layer_items_are_checked_as_they_are_read`, `records_no_layer_may_hold_fail_what_reads_them`) cover what reaches them from an image.
-**Until then:** they stay, as defence nothing from disk reaches.
-
-## patches/0009 can go, with a test and a mutant of it (TASK-153.5, 2026-11-03)
-
-patches/0009 has the kernel's DAX copy from kernel memory ignore a fatal signal, so that a write whose move had committed before its bytes still wrote them. Since TASK-153.5 the move commits after the bytes, and a copy stopped by a signal drops it, leaving the file as it was: the patch protects nothing. Removing it means deleting guest/sim's `mutants/patch-0009-killed-copy-stops.patch` and changing its scenario `write_killed`, which deleting a test needs your approval for.
-**Recommended:** drop the patch, the mutant, and have `write_killed` expect the file as it was.
-**Until then:** the patch stays, harmless.
-
-
 # Decisions
+
+## The control socket is owner-only (TASK-159, 2026-11-04)
+
+The control socket (`FXDAX_EXTENTD_GRPC`) followed the umask, world-connectable under the jailer's umask 000, and grants bound their tenants' sockets then chmodded them, a window at the umask's mode. Decided: the control socket is 0600, the daemon's user's, whatever the umask; a tenant's socket is 0660 (its jail's uid and gid) from the moment it appears at its path. Both go through `extentd::bind_given`, which binds in a private 0700 directory, sets the owner and mode there, and hard-links the socket into place (`EEXIST` if anything is there). No code or doc gave a group the control socket; every caller found runs as the daemon's user or root.
+**Instead:** a configured group (a gid, mode 0660) for a VM manager of another user.
+**Undoing it:** the mode in `fxdax-extentd.rs`'s call of `bind_owner_only`.
+
+## DAX writes Fxfs's own blocks in place only if their record is raw (TASK-160.22, 2026-11-04)
+
+A window wrote in place any blocks of an open extent the file alone held, whatever their record said. Blocks under a checksummed record (a growth's zeroed tail, ordinary writes) then held bytes their checksums didn't, which journal replay checks; blocks under an allocation's record read as zeros to Fxfs whatever the window stored. Decided: one rule, `in_place`, used by `extents_in`, `txn_map_write` and `overwrite`: in place only if the record is raw and nothing shares the blocks. Such blocks in an open extent are `ExtentAccess::Shared` to the window (read-only, the extent open), and a window's first write moves them once.
+**Instead:** write in place and drop the record's checksums or allocation bitmap as the window writes: a transaction per first store.
+**Undoing it:** `window_access`'s `InPlace::Recorded` arm back to `Open`.
 
 ## A layer's records cross one trust boundary, checked as they're read (TASK-153.12, 2026-11-03)
 

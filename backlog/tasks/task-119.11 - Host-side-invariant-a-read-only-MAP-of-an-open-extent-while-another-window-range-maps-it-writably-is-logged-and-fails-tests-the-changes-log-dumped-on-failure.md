@@ -4,10 +4,10 @@ title: >-
   Host-side invariant: a read-only MAP of an open extent while another window
   range maps it writably is logged and fails tests; the changes log dumped on
   failure
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-28 19:45'
-updated_date: '2026-10-29 20:22'
+updated_date: '2026-11-04 07:06'
 labels:
   - testing
 dependencies: []
@@ -40,3 +40,9 @@ Fable: map_open (crates/fxdax/src/extents.rs) is where an evacuation of an unsea
 <!-- SECTION:NOTES:BEGIN -->
 2026-10-29, tried (5fc790ffd, not on main): extentd checked each read-only MAP of an open extent against the window's writable mappings of it elsewhere (FXDAX_CHECK_OPEN_MAPS), the run failing on any. GCE r252, checks-dax, -delay, -small, crash-dax and pgbench-dax all passing: 3720 found, nearly all a small file's slice mapping a page of the open staging extent read-only (a read before the seal) while the staging extent's region maps it writably, and some a range's own space's read-only map of a piece in an open extent (map_extents' fallback). The host maps an open extent's memory, one for every mapping of it, so a read through either sees every store: no disagreement, and no data lost. The invariant as stated is not one the design keeps; an evacuation of an unsealed region would need telling apart from these on the guest's side (its gather sees only sealed regions: region->evacuate). Not pursued further without a narrower invariant.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Moot: open extents mapped read-only and writable at once are by design, and evacuation is gone (fafefbac7).
+<!-- SECTION:FINAL_SUMMARY:END -->

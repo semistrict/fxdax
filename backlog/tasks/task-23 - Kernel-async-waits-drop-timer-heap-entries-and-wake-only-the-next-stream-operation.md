@@ -3,9 +3,10 @@ id: TASK-23
 title: >-
   Kernel async waits: drop timer heap entries and wake only the next stream
   operation
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-10 14:41'
+updated_date: '2026-11-04 07:06'
 labels: []
 dependencies: []
 type: chore
@@ -32,3 +33,9 @@ Found in the pre-commit review of TASK-16. (1) crates/zircon/src/kernel/timer.rs
 - [ ] #3 Deviations from upstream documented where they occur
 - [ ] #4 cargo nextest run --workspace passes on macOS and Linux (Lima)
 <!-- DOD:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Moot: crates/zircon's timer and stream_size_manager were deleted with the Zircon port (f897ce4a2).
+<!-- SECTION:FINAL_SUMMARY:END -->

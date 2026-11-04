@@ -3,10 +3,10 @@ id: TASK-100
 title: >-
   fxdax::memory tenants_past_their_limits_evict_then_refuse aborts (SIGABRT)
   intermittently on Linux
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-24 20:28'
-updated_date: '2026-10-30 18:30'
+updated_date: '2026-11-04 07:06'
 labels:
   - bug
 dependencies: []
@@ -34,3 +34,9 @@ GCE r70 (2026-10-24, us-central1-a, main at 42cd8328c plus a test): SIGABRT afte
 
 2026-10-30, Docker arm64 at batch8 (uncommitted batch on 8977e306d), LIBC_FATAL_STDERR_=1, 30 spinners on 15 CPUs: --stress-count 100 alone, 100 of 100 passed, no abort. Not reproduced; cause still unknown.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Moot: the Zircon-era SIGABRT was never reproduced after LIBC_FATAL_STDERR_; the memory code was replaced by physmem (f897ce4a2), and this test's flake now is TASK-161's.
+<!-- SECTION:FINAL_SUMMARY:END -->

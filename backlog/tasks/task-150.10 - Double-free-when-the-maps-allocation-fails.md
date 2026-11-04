@@ -1,9 +1,10 @@
 ---
 id: TASK-150.10
 title: Double free when the maps allocation fails
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-01 16:51'
+updated_date: '2026-11-04 07:06'
 labels: []
 dependencies: []
 parent_task_id: TASK-150
@@ -32,3 +33,9 @@ From the static audit, unconfirmed. dax.c:1426-1430 frees own without clearing i
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A map's gathered pieces share one allocation, so a failed maps allocation can't free twice (0a3813ff9); guest/sim's scenario and failures seed 1 catch it under ASan.
+<!-- SECTION:FINAL_SUMMARY:END -->

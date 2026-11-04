@@ -1,9 +1,10 @@
 ---
 id: TASK-26.8
 title: Measure milestone 1 and decide the write path
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-13 19:54'
+updated_date: '2026-11-04 07:06'
 labels: []
 milestone: m-3
 dependencies:
@@ -37,3 +38,9 @@ Milestone 1's purpose (doc-2) is to show metadata at ext4 speeds with guest-owne
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Moot: the write path was settled by implementation, DAX writes (TASK-26.13, 26.14, then TASK-153.5); ext4 parity measured by TASK-26.18.
+<!-- SECTION:FINAL_SUMMARY:END -->
