@@ -11,6 +11,9 @@
 //! arena's past the total's or out of chunks. A pass that frees nothing for an arena starved still
 //! exhausts it: its allocations fail rather than wait for ever, until a page of it is freed, a cap
 //! changes, pins are let go of, or a later pass, which each of them still asks for, frees something.
+//! What a pass evicts that is quarantined (`quarantine`) is owed to the arena it evicted for until
+//! it comes back, and no pass evicts for the arena meanwhile (`Arenas::wants_relief`, TASK-161):
+//! its allocations wait for what is on its way rather than have relief evict the rest.
 //!
 //! Without relief, nothing makes a starved arena room: its allocations fail, whether or not they
 //! may wait.
@@ -20,6 +23,7 @@ use super::{Failed, NodeGuard, PmmNode, node};
 use crate::Wait;
 use crate::physmap::{ArenaId, CHUNK_SIZE};
 use crate::sync::Signal;
+use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 
@@ -39,6 +43,17 @@ struct Reliever {
 /// The relief thread's, if [`relieve_with`] started it.
 static RELIEVER: OnceLock<Option<Arc<Reliever>>> = OnceLock::new();
 
+thread_local! {
+    /// fxdax: on the relief thread, the arena its evictor is evicting for, while it is (TASK-161).
+    static RELIEVING: Cell<Option<ArenaId>> = const { Cell::new(None) };
+}
+
+/// fxdax: the arena relief's pass is evicting for, if this is the relief thread, in its evictor:
+/// the pages it frees, quarantined, are owed to it until they come back (`Arenas::owe`).
+pub(super) fn relieving() -> Option<ArenaId> {
+    RELIEVING.get()
+}
+
 fn reliever() -> Option<&'static Reliever> {
     RELIEVER.get()?.as_deref()
 }
@@ -47,11 +62,14 @@ fn reliever() -> Option<&'static Reliever> {
 /// with `evict`: given the arena whose pages to free, or none for any arena's, and how many bytes
 /// at least, it frees what it may of them and returns the bytes it freed. It is called without the
 /// PMM's lock, and must not wait for an allocation that waits for relief, as its own thread
-/// relieves them.
+/// relieves them. The pages it frees on its thread that are quarantined ([`quarantine_with`]) are
+/// owed to the arena it was called for, which no pass evicts for again until they come back.
 ///
 /// Relief starts once: a later call fails with `AlreadyExists`, whether or not the first started
 /// its thread. Under Shuttle no thread starts (`crate::sync`), and starved arenas' allocations
 /// fail, as without relief.
+///
+/// [`quarantine_with`]: crate::quarantine_with
 pub fn relieve_with(
     evict: impl FnMut(Option<ArenaId>, u64) -> u64 + Send + 'static,
 ) -> std::io::Result<()> {
@@ -71,10 +89,10 @@ pub fn relieve_with(
     started
 }
 
-/// The relief thread: frees pages with `evict` for each arena asked for since its last pass, and
-/// starved still at the cap it was asked at, without the PMM's lock, the arena's own at its own
-/// cap, any arena's at the total's, and records what it freed, which the arena's allocations
-/// waiting then try again with.
+/// The relief thread: frees pages with `evict` for each arena asked for since its last pass,
+/// starved still at the cap it was asked at, and owed nothing a pass before quarantined, without
+/// the PMM's lock, the arena's own at its own cap, any arena's at the total's, and records what it
+/// freed, which the arena's allocations waiting then try again with.
 fn relieve(reliever: &Reliever, mut evict: impl FnMut(Option<ArenaId>, u64) -> u64) {
     let _gone = Gone(reliever);
     loop {
@@ -84,9 +102,10 @@ fn relieve(reliever: &Reliever, mut evict: impl FnMut(Option<ArenaId>, u64) -> u
         for (arena, starved) in asked {
             // An ask made stale, by a pass that relieved the arena since, as its allocations asked
             // again while it ran (TASK-79.76), or by a cap changed, has nothing to relieve: a pass
-            // would evict as much again for no allocation. Those waiting were woken as the arena
-            // changed, and ask again if they must.
-            if node.locked().starved(arena) != Some(starved) {
+            // would evict as much again for no allocation. Nor has one made while what a pass
+            // evicted for it is quarantined still (TASK-161). Those waiting were woken as the arena
+            // changed, or are as what it is owed comes back, and ask again if they must.
+            if !node.locked().wants_relief(arena, starved) {
                 continue;
             }
             let from = match starved {
@@ -95,7 +114,9 @@ fn relieve(reliever: &Reliever, mut evict: impl FnMut(Option<ArenaId>, u64) -> u
                 Starved::Removed => unreachable!("relief asked for {arena:?}, removed"),
             };
             let unpins = node.locked().unpins();
+            RELIEVING.set(Some(arena));
             let freed = evict(from, RELIEF_BYTES);
+            RELIEVING.set(None);
             node.locked().relieved(arena, freed, unpins);
             node.room.pulse();
         }

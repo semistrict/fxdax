@@ -96,6 +96,10 @@ struct Relief {
     /// rather than wait for ever, until a page of it is freed, a cap changes, pins are let go of,
     /// or a pass, which each of them still asks for, frees something.
     exhausted: bool,
+    /// fxdax: the pages relief's passes for it evicted, and quarantined, which come back once every
+    /// second stage has made the changes taking them away (`pmm::quarantine`): room on its way,
+    /// which its next pass waits for rather than evict more for it (TASK-161).
+    owed: usize,
 }
 
 /// An arena's pages, and what holds it to them.
@@ -169,7 +173,9 @@ impl ArenaPages {
 ///   no allocation waits for them, but for their going back.
 /// - Relief is `asked` for an arena from an allocation's asking until its next pass begins; and
 ///   the arena is `exhausted` from a pass that freed nothing while it was starved until a page of
-///   it is freed, a cap changes, a pass frees something, or pins are let go of.
+///   it is freed, a cap changes, a pass frees something, or pins are let go of. It is `owed` the
+///   pages relief's passes for it quarantined until they come back, and no pass evicts for it
+///   meanwhile ([`Arenas::wants_relief`]).
 /// - The host refuses chunks from its refusing to map one, or take one back, until it next does as
 ///   asked (TASK-79.37): meanwhile no arena takes a spare.
 pub(super) struct Arenas {
@@ -423,6 +429,33 @@ impl Arenas {
         (self.arenas.iter_mut())
             .filter_map(|(&arena, entry)| Some((arena, entry.relief.asked.take()?)))
             .collect()
+    }
+
+    /// Whether relief's pass for `arena`, asked for as it was starved, held to `starved`, evicts for
+    /// it: it is starved still, held to the same cap, and owed no page a pass before evicted for it,
+    /// still to come back (TASK-161). An ask made stale, by a pass that relieved it since or a cap changed,
+    /// would evict for no allocation; one made as what a pass evicted for it waits in quarantine,
+    /// for its VM processes to unmap it, would evict as much again for each of the allocation's
+    /// asks, which it makes as each pass ends, until nothing was left: under load, the whole of an
+    /// arena's cache for one page-in. Its allocations wait for what is owed, and ask again as it
+    /// comes back.
+    pub(super) fn wants_relief(&self, arena: ArenaId, starved: Starved) -> bool {
+        self.starved(arena) == Some(starved)
+            && self.arenas.get(&arena).is_none_or(|entry| entry.relief.owed == 0)
+    }
+
+    /// `count` pages relief's pass for `arena` evicted are quarantined (`owed`), or, `owed` false,
+    /// came back. Returns whether it is owed none now that it was, which its allocations waiting
+    /// for them, to ask for relief again, are told. An arena gone is owed nothing.
+    pub(super) fn owe(&mut self, arena: ArenaId, count: usize, owed: bool) -> bool {
+        let Some(entry) = self.arenas.get_mut(&arena) else { return false };
+        if owed {
+            entry.relief.owed += count;
+            return false;
+        }
+        entry.relief.owed = (entry.relief.owed.checked_sub(count))
+            .expect("pages came back that relief wasn't owed");
+        entry.relief.owed == 0
     }
 
     /// Relief's pass for `arena`, begun with `unpins` as [`Arenas::unpins`] said, freed `freed`

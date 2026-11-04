@@ -18,6 +18,7 @@
 
 use super::node;
 use crate::frames::Frames;
+use crate::physmap::ArenaId;
 use crate::sync::rules;
 #[cfg(all(test, feature = "shuttle"))]
 use std::sync::Arc;
@@ -27,14 +28,18 @@ use std::sync::OnceLock;
 /// dropped.
 pub struct Quarantined {
     frames: Vec<u32>,
+    /// fxdax: the arena relief's pass evicted them for, freed on its thread, which is owed them
+    /// until they come back (`relief::relieving`, TASK-161).
+    relieving: Option<ArenaId>,
 }
 
 impl Quarantined {
     /// fxdax: `frames`' pages, freed, quarantined, as their arenas count them until they come back
-    /// (TASK-106).
+    /// (TASK-106), and the arena relief evicts them for, if it does, as it is owed them (TASK-161).
     fn new(frames: Vec<u32>) -> Self {
-        node().quarantining(&frames);
-        Self { frames }
+        let relieving = super::relief::relieving();
+        node().quarantining(&frames, relieving);
+        Self { frames, relieving }
     }
 
     /// How many pages it holds.
@@ -58,7 +63,7 @@ impl Drop for Quarantined {
     fn drop(&mut self) {
         // The pages are the quarantine's, which their holder gave up as it freed them, and which
         // their arenas counted as they were quarantined.
-        node().free_quarantined(&self.frames);
+        node().free_quarantined(&self.frames, self.relieving);
     }
 }
 

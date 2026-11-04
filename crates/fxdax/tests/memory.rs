@@ -92,6 +92,14 @@ fn metric(name: &str) -> u64 {
     line.parse().unwrap()
 }
 
+/// Asserts that the memory the metric `name` shows is within `limit`, read past it. Within it, not
+/// at it: the pages relief evicted come back as the VM process unmaps them, which may be after the
+/// last page-in, and a chunk they empty then goes back, with nothing to take it again (TASK-161).
+fn assert_within(name: &str, limit: u64) {
+    let held = metric(name);
+    assert!(held <= limit, "{name}: {held} bytes, past the limit of {limit}");
+}
+
 /// A tenant whose VM reads through its window twice what its limit holds keeps within it, its
 /// pages read longest ago evicted, read again as they are touched; its metrics name it by a hash.
 /// ShrinkMemory frees its pages, and returns once they are, its VM's window having unmapped them.
@@ -111,7 +119,7 @@ fn tenants_past_their_limits_evict_then_refuse() {
     assert_eq!(label("acme"), "822b33ad87c148a0");
     assert!(!render().contains("acme"), "the metrics name the tenant");
     assert_eq!(metric(&format!("fxdax_extentd_tenant_memory_limit_bytes{tenant}")), 2 * CHUNK);
-    assert_eq!(metric(&format!("fxdax_extentd_tenant_memory_bytes{tenant}")), 2 * CHUNK);
+    assert_within(&format!("fxdax_extentd_tenant_memory_bytes{tenant}"), 2 * CHUNK);
 
     assert_eq!(daemon.shrink_memory(Some("acme"), 0).unwrap(), 0);
     assert_eq!(metric(&format!("fxdax_extentd_tenant_memory_bytes{tenant}")), 0);
@@ -134,7 +142,7 @@ fn the_daemon_past_its_limit_evicts_any_tenants_pages() {
     read_through(&theirs);
     let ours = daemon.open(&dir.path().join("vm"), CAPACITY);
     read_through(&ours);
-    assert_eq!(metric("fxdax_extentd_memory_bytes"), 4 * CHUNK);
+    assert_within("fxdax_extentd_memory_bytes", 4 * CHUNK);
 
     assert_eq!(daemon.shrink_memory(None, CHUNK).unwrap(), CHUNK);
     assert_eq!(metric("fxdax_extentd_memory_bytes"), CHUNK);

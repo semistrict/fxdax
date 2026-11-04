@@ -347,23 +347,33 @@ impl PmmNode {
     }
 
     /// fxdax: counts `frames`' pages, freed, quarantined in their arenas, as relief finds them
-    /// (`Arenas::relieved`, TASK-106).
-    pub(crate) fn quarantining(&self, frames: &[u32]) {
+    /// (`Arenas::relieved`, TASK-106); and owed to the arena `relieving`, if relief evicted them
+    /// for it (`Arenas::owe`, TASK-161).
+    pub(crate) fn quarantining(&self, frames: &[u32], relieving: Option<ArenaId>) {
         let mut locked = self.locked();
         for &frame in frames {
             locked.quarantine(&self.pages, frame, true);
         }
+        if let Some(arena) = relieving {
+            let _ = locked.owe(arena, frames.len(), true);
+        }
     }
 
     /// fxdax: frees the pages of `frames`, quarantined, now that every second stage has made the
-    /// changes taking them away: as `free` does, as their arenas count them back, under the lock
-    /// relief finds them under. They were quarantined, counted (`quarantining`).
-    pub(crate) fn free_quarantined(&self, frames: &[u32]) {
+    /// changes taking them away: as `free` does, as their arenas count them back, and the arena
+    /// relief evicted them for, `relieving`, is owed them no more, under the lock relief finds them
+    /// under. They were quarantined, counted (`quarantining`). The arena owed none now, its
+    /// allocations waiting ask for relief again.
+    pub(crate) fn free_quarantined(&self, frames: &[u32], relieving: Option<ArenaId>) {
         let mut locked = self.locked();
         for &frame in frames {
             locked.quarantine(&self.pages, frame, false);
         }
+        let repaid = relieving.is_some_and(|arena| locked.owe(arena, frames.len(), false));
         self.free_locked(locked, frames);
+        if repaid {
+            self.room.pulse();
+        }
     }
 
     /// Frees the pages of `frames` back to this node, under the lock, `locked`: on their arenas'

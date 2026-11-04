@@ -8,8 +8,8 @@
 //! (`pmm::quarantine`, TASK-79.9, TASK-106).
 
 use crate::{
-    ArenaId, CHUNK_SIZE, NoMemory, Quarantined, Wait, alloc, count_free_pages, create_arena,
-    keep_spare_chunks, quarantine_with, relieve_with, set_arena_cap,
+    ArenaId, CHUNK_SIZE, NoMemory, Page, Quarantined, Wait, alloc, count_free_pages, create_arena,
+    keep_spare_chunks, page_size, quarantine_with, relieve_with, set_arena_cap,
 };
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -111,4 +111,56 @@ fn relief_waits_for_quarantined_pages_to_come_back() {
     assert!(!waiter.is_finished(), "the allocation failed, or found room");
     drop(pages_back);
     assert_eq!(waiter.join().unwrap(), Ok(frame));
+}
+
+/// TASK-161: what relief's pass evicted for an arena, quarantined, is room on its way: no pass
+/// evicts for the arena again until it comes back, however often its allocations ask, while an
+/// arena asked for after it is relieved; and as it comes back, the allocation waiting takes it.
+/// Passes evicting again for each ask evicted the whole of an arena's cache for one page-in while
+/// its VM processes were slow to unmap what the first pass evicted.
+#[test]
+fn relief_evicts_no_more_for_an_arena_while_what_it_evicted_for_it_is_to_come_back() {
+    keep_spare_chunks(false);
+    let quarantined: Arc<Mutex<Vec<Quarantined>>> = Arc::default();
+    quarantine_with({
+        let quarantined = quarantined.clone();
+        move |pages| quarantined.lock().unwrap().push(pages)
+    });
+    let (arena, other) = (create_arena(), create_arena());
+    for capped in [arena, other] {
+        set_arena_cap(capped, Some(CHUNK_SIZE as u64));
+    }
+    let evictable: Vec<Page> = std::iter::from_fn(|| alloc(arena, Wait::No).ok()).collect();
+    evictable.iter().for_each(Page::mark_staged);
+    let evicted = evictable.last().unwrap().frame();
+    let evictable = Arc::new(Mutex::new(evictable));
+    let _others: Vec<Page> = std::iter::from_fn(|| alloc(other, Wait::No).ok()).collect();
+    let (relieved, passes) = std::sync::mpsc::channel();
+    relieve_with(move |from, _| {
+        let freed = if from == Some(arena) {
+            // A page of the arena's own, at its cap, freed on relief's thread: quarantined, as a
+            // window mapped it.
+            drop(evictable.lock().unwrap().pop().unwrap());
+            page_size()
+        } else {
+            // The other arena has nothing to evict.
+            0
+        };
+        relieved.send(from).unwrap();
+        freed
+    })
+    .unwrap();
+
+    assert_eq!(alloc(arena, Wait::No).err(), Some(NoMemory));
+    assert_eq!(passes.recv().unwrap(), Some(arena));
+    let owed = quarantined.lock().unwrap().pop().expect("the page evicted, quarantined");
+    // Asked for again as it is to come back, and then for the other arena, which relief takes
+    // after it.
+    assert_eq!(alloc(arena, Wait::No).err(), Some(NoMemory));
+    assert_eq!(alloc(other, Wait::No).err(), Some(NoMemory));
+    assert_eq!(passes.recv().unwrap(), Some(other), "relief evicted for the arena again");
+
+    let waiter = std::thread::spawn(move || alloc(arena, Wait::Yes).map(|page| page.frame()));
+    drop(owed);
+    assert_eq!(waiter.join().unwrap(), Ok(evicted));
 }
