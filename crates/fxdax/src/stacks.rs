@@ -7,6 +7,10 @@
 //! user then needed gdb on the host to see. elfutils' eu-stack reads them, from a child of this
 //! process: Yama's ptrace_scope lets a process trace its descendants alone, so this one names the
 //! child its tracer (`PR_SET_PTRACER`) before the child, waiting for that, becomes eu-stack.
+//!
+//! Threads alone, not tokio's tasks: its task dump (`Handle::dump`) builds only with
+//! `--cfg tokio_unstable` and its `taskdump` feature, which this workspace doesn't set. A task
+//! that waits shows as its runtime's worker parked, or, blocked, as the thread it blocks.
 
 use std::io::Write;
 use std::process::{Command, Stdio};

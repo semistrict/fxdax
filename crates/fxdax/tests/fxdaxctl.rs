@@ -41,18 +41,7 @@ impl Fxdaxctl {
     /// ([`HOST`]), with `env` in its environment too.
     #[cfg(target_os = "linux")]
     fn through_daemon(dir: &Path, env: &[(&str, &str)]) -> Self {
-        use std::time::{Duration, Instant};
-        let control = dir.join("control.sock");
-        let mut command = Command::new(env!("CARGO_BIN_EXE_fxdax-extentd"));
-        command.arg(dir.join("vms.sock")).env("FXDAX_EXTENTD_GRPC", &control);
-        let child = command.envs(HOST).envs(env.iter().copied()).spawn().unwrap();
-        let child = KillOnDrop(child);
-        let deadline = Instant::now() + Duration::from_secs(30);
-        while std::os::unix::net::UnixStream::connect(&control).is_err() {
-            assert!(Instant::now() < deadline, "the daemon never served");
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        Self { daemon: Some((control, child)), env: Vec::new() }
+        Self { daemon: Some(daemon(dir, env, std::process::Stdio::inherit())), env: Vec::new() }
     }
 
     /// Runs fxdaxctl with `args`: what it prints, or, if it fails, what it says.
@@ -72,6 +61,25 @@ impl Fxdaxctl {
             false => Err(String::from_utf8_lossy(&output.stderr).into_owned()),
         }
     }
+}
+
+/// An extent daemon serving in `dir`, a host as tests have it ([`HOST`]), with `env` in its
+/// environment too, and its standard error `stderr`, once it serves its control API: the control
+/// socket, and the daemon, which goes with this.
+#[cfg(target_os = "linux")]
+fn daemon(dir: &Path, env: &[(&str, &str)], stderr: std::process::Stdio) -> (PathBuf, KillOnDrop) {
+    use std::time::{Duration, Instant};
+    let control = dir.join("control.sock");
+    let mut command = Command::new(env!("CARGO_BIN_EXE_fxdax-extentd"));
+    command.arg(dir.join("vms.sock")).env("FXDAX_EXTENTD_GRPC", &control).stderr(stderr);
+    let child = command.envs(HOST).envs(env.iter().copied()).spawn().unwrap();
+    let child = KillOnDrop(child);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while std::os::unix::net::UnixStream::connect(&control).is_err() {
+        assert!(Instant::now() < deadline, "the daemon never served");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    (control, child)
 }
 
 struct KillOnDrop(std::process::Child);
@@ -233,6 +241,98 @@ fn commands_through_the_daemon() {
     assert_eq!(base.info().unwrap().capacity, 134217728);
     assert!(base.is_public());
     assert_eq!(format!("{:x}", ExtentStore::open(&fork).unwrap().branch()), branch);
+}
+
+/// What `child`, whose standard error is piped, writes there once sent SIGQUIT (TASK-44.13): its
+/// threads' stacks, from their heading to the first line after it naming `waiting`, a function a
+/// thread of it waits in. Its standard error is read to its end, so that its writes never fail.
+#[cfg(target_os = "linux")]
+fn stacks_on_sigquit(child: &mut std::process::Child, waiting: &str) -> String {
+    use std::io::BufRead;
+    use std::time::{Duration, Instant};
+    const HEADING: &str = "fxdax: the threads' stacks, on SIGQUIT:";
+    let stderr = child.stderr.take().expect("its standard error, piped");
+    let (sent, lines) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in std::io::BufReader::new(stderr).lines().map_while(Result::ok) {
+            // Once the test has what it needs, nothing receives the rest.
+            let _ = sent.send(line);
+        }
+    });
+    // SAFETY: Signals a process this test started.
+    assert_eq!(unsafe { libc::kill(child.id() as i32, libc::SIGQUIT) }, 0);
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let (mut printed, mut heading) = (String::new(), None);
+    loop {
+        let line = match lines.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            Ok(line) => line,
+            Err(err) => panic!("no stack naming {waiting} ({err}); it wrote:\n{printed}"),
+        };
+        if heading.is_none() && line.starts_with(HEADING) {
+            heading = Some(printed.len());
+        }
+        printed += &line;
+        printed.push('\n');
+        if let Some(heading) = heading.filter(|_| line.contains(waiting)) {
+            return printed.split_off(heading);
+        }
+    }
+}
+
+/// TASK-44.13: SIGQUIT has the daemon write its threads' stacks, naming where they wait: here, the
+/// thread that waits for SIGTERM. It goes on running, and SIGTERM still stops it, successfully.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_daemon_writes_its_stacks_on_sigquit() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_, mut child) = daemon(dir.path(), &[], std::process::Stdio::piped());
+    let stacks = stacks_on_sigquit(&mut child.0, "stop_on_sigterm");
+    assert_eq!(child.0.try_wait().unwrap(), None, "SIGQUIT stopped the daemon:\n{stacks}");
+    // SAFETY: Signals the daemon this test started.
+    assert_eq!(unsafe { libc::kill(child.0.id() as i32, libc::SIGTERM) }, 0);
+    let status = child.0.wait().unwrap();
+    assert!(status.success(), "{status}");
+}
+
+/// TASK-44.13: SIGQUIT has fxdaxctl write its threads' stacks, naming where they wait, as an import
+/// that hung needed (TASK-98): here, its call through a daemon that never answers. It goes on
+/// waiting.
+#[cfg(target_os = "linux")]
+#[test]
+fn fxdaxctl_writes_its_stacks_on_sigquit() {
+    use std::io::Read;
+    use std::time::{Duration, Instant};
+    let dir = tempfile::tempdir().unwrap();
+    // A control socket that takes connections and never answers them.
+    let control = dir.path().join("control.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&control).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let child = Command::new(env!("CARGO_BIN_EXE_fxdaxctl"))
+        .args([Path::new("stat"), &dir.path().join("store")])
+        .env("FXDAX_EXTENTD_GRPC", &control)
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut child = KillOnDrop(child);
+    // Connected, so past the first thing it does, handling SIGQUIT, which would end it before.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let _connection = loop {
+        match listener.accept() {
+            Ok((connection, _)) => break connection,
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                if let Some(status) = child.0.try_wait().unwrap() {
+                    let mut said = String::new();
+                    child.0.stderr.take().unwrap().read_to_string(&mut said).unwrap();
+                    panic!("fxdaxctl stopped before it connected, {status}: {said}");
+                }
+                assert!(Instant::now() < deadline, "fxdaxctl never connected");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(err) => panic!("accepting fxdaxctl's connection: {err}"),
+        }
+    };
+    let stacks = stacks_on_sigquit(&mut child.0, "through");
+    assert_eq!(child.0.try_wait().unwrap(), None, "SIGQUIT stopped fxdaxctl:\n{stacks}");
 }
 
 /// TASK-48: SIGTERM stops the daemon: it exits, successfully.
