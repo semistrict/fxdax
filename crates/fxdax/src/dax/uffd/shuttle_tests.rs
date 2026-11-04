@@ -7,16 +7,16 @@
 //! memory in, turned off, fails.
 
 use super::super::shuttle_tests::{
-    Event, Guest, Outcome, RUNS, SEALED, byte, reaching, stores_race_seals_and_frees,
+    ATTEMPTS, Event, Guest, Outcome, RUNS, SEALED, byte, reaching, stores_race_seals_and_frees,
 };
 use super::super::tests::TestSource;
-use super::super::{Dax, Window};
+use super::super::{Dax, Source as _, Window};
 use super::*;
 use crate::pages::PhysLocation;
 use crate::shuttle_testing::{config, fails_with, runs};
 use shuttle::scheduler::{PctScheduler, RandomScheduler};
 use shuttle::{Runner, future, thread};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::os::fd::RawFd;
 
 /// A page of host memory, as the second stage made it.
@@ -40,6 +40,12 @@ struct Model {
     /// fxdax: how many times memory was mapped (`mmap`): each over memory mapped before unmaps it,
     /// which flushes the host's TLBs and the hypervisor's mappings (TASK-91.16).
     maps: usize,
+    /// fxdax: the private memory of a window that copies on write, if the stage made it, and the
+    /// offsets of it filled: a page of it unfilled faults as anonymous memory (backlog doc-13).
+    private: Option<RawFd>,
+    filled: BTreeSet<u64>,
+    /// fxdax: where the address space the stage reserves next is.
+    reserved: usize,
 }
 
 impl Model {
@@ -48,6 +54,14 @@ impl Model {
     fn writable(&self, offset: u64) -> bool {
         let rw = Some(Protection::ReadWrite);
         self.told.get(&offset).is_some_and(|(made, making)| *made == rw || *making == Some(rw))
+    }
+
+    /// fxdax: whether `page` is memory with nothing in it: anonymous, or private memory unfilled.
+    fn unfilled(&self, page: &Page) -> bool {
+        match page.file {
+            None => true,
+            Some((fd, at)) => self.private == Some(fd) && !self.filled.contains(&at),
+        }
     }
 }
 
@@ -105,6 +119,49 @@ impl HostMemory for ModelMemory {
     }
 
     fn wake(&self, _addr: usize, _len: usize) {}
+
+    fn private_memory(&self, len: usize) -> std::io::Result<OwnedFd> {
+        let fd = Syscalls::private_memory_fd(len)?;
+        self.0.lock().unwrap().private = Some(fd.as_raw_fd());
+        Ok(fd)
+    }
+
+    fn reserve(&self, len: usize) -> std::io::Result<usize> {
+        // Where it is doesn't matter to the model, but that it is apart from the rest.
+        let mut model = self.0.lock().unwrap();
+        let addr = (1 << 40) + model.reserved;
+        model.reserved += len.next_multiple_of(1 << 30);
+        Ok(addr)
+    }
+
+    fn unreserve(&self, addr: usize, len: usize) {
+        let mut model = self.0.lock().unwrap();
+        model.pages.retain(|at, _| !(addr..addr + len).contains(at));
+    }
+
+    fn fill(&self, addr: usize, bytes: &[u8]) {
+        let mut model = self.0.lock().unwrap();
+        let page = model.pages[&addr];
+        let registered = page.registered & UFFDIO_REGISTER_MODE_MISSING != 0;
+        let Some((fd, at)) = page.file.filter(|_| registered) else {
+            drop(model);
+            panic!("filled {addr:#x}, which isn't registered for missing faults");
+        };
+        if !model.unfilled(&page) {
+            drop(model);
+            panic!("filled {addr:#x} twice");
+        }
+        model.filled.insert(at);
+        // SAFETY: Writes `bytes` to the private memory, whose page it is.
+        let written = unsafe { libc::pwrite(fd, bytes.as_ptr().cast(), bytes.len(), at as _) };
+        assert_eq!(written, bytes.len() as isize, "{}", std::io::Error::last_os_error());
+    }
+
+    fn punch(&self, fd: RawFd, offset: u64, len: usize) {
+        let mut model = self.0.lock().unwrap();
+        model.filled.retain(|at| !(offset..offset + len as u64).contains(at));
+        Syscalls::punch_hole(fd, offset, len);
+    }
 }
 
 /// The stage, telling the model what the window tells it.
@@ -147,6 +204,11 @@ impl SecondStage for Telling {
         self.stage.window_mapped(offset, len);
     }
 
+    fn make_private(&self, offset: u64, from: Option<PhysLocation>) {
+        let (ps, rw) = (page_size(), Some(Protection::ReadWrite));
+        self.change(offset, ps, rw, || self.stage.make_private(offset, from));
+    }
+
     fn remap(&self, offset: u64, len: u64, anew: &[Anew]) {
         let ps = page_size();
         // What each page of the range has once the change is made: what a map of it gives it, or
@@ -180,6 +242,7 @@ enum Op {
     Mapped(u64, u64),
     Map(u64, PhysLocation, u64, Protection),
     Protect(u64, u64, Protection),
+    Private(u64, Option<PhysLocation>),
 }
 
 /// The window's changes, held back and made as the extent daemon sends them and its VM process
@@ -251,6 +314,7 @@ impl Remapping {
                 Op::Mapped(offset, len) => self.stage.window_mapped(offset, len),
                 Op::Map(offset, phys, len, prot) => self.stage.map(offset, phys, len, prot),
                 Op::Protect(offset, len, prot) => self.stage.protect(offset, len, prot),
+                Op::Private(offset, from) => self.stage.make_private(offset, from),
             }
         }
     }
@@ -271,6 +335,10 @@ impl SecondStage for Remapping {
 
     fn window_mapped(&self, offset: u64, len: u64) {
         self.make(Op::Mapped(offset, len));
+    }
+
+    fn make_private(&self, offset: u64, from: Option<PhysLocation>) {
+        self.make(Op::Private(offset, from));
     }
 
     fn begin_change(&self) {
@@ -304,10 +372,22 @@ struct HostGuest {
     base: usize,
 }
 
-impl Guest for HostGuest {
-    type Where = (RawFd, u64);
+/// fxdax: the threads' IDs, as userfaultfd reports them, of a vCPU, the guest's own, which tests of
+/// windows that copy on write say so of ([`guest_thread`]), and of KVM's asynchronous page fault's
+/// worker, not the guest's.
+const VCPU: u32 = 1;
+const WORKER: u32 = 2;
 
-    fn access(&self, offset: u64, kind: Access, write: Option<u8>) -> Outcome<'_> {
+impl HostGuest {
+    /// fxdax: the host memory the guest reaches, the window's: not the stage's other mapping of
+    /// its private memory, which it fills them through (backlog doc-13).
+    fn window_memory(&self) -> std::ops::Range<usize> {
+        self.base..self.base + self.window.size() as usize
+    }
+
+    /// fxdax: an access as [`Guest::access`] makes it, by thread `thread`: a vCPU's, or KVM's
+    /// worker's for it, which makes a store with no bytes to write (`write` none).
+    fn access_by(&self, thread: u32, offset: u64, kind: Access, write: Option<u8>) -> Outcome<'_> {
         let addr = self.base + offset as usize;
         let model = self.memory.0.lock().unwrap();
         let page = model.pages[&addr];
@@ -322,7 +402,8 @@ impl Guest for HostGuest {
         // Shuttle's mutex, its holder panicked, fails the other tasks' locks with a panic that
         // can't unwind, which aborts the process (TASK-55).
         let fault = match page.file {
-            None => {
+            // fxdax: private memory unfilled too (backlog doc-13).
+            _ if model.unfilled(&page) => {
                 if page.registered & UFFDIO_REGISTER_MODE_MISSING == 0 {
                     drop(model);
                     panic!("a page of zeros faulted in at {offset:#x}");
@@ -343,20 +424,29 @@ impl Guest for HostGuest {
                 }
                 return Outcome::Made(byte(fd, at, write));
             }
+            None => unreachable!("anonymous memory is unfilled"),
         };
         drop(model);
         Outcome::Faulted(Box::pin(async move {
-            self.stage.resolve(&*self.window, addr, fault, 0).await;
+            self.stage.resolve(&*self.window, addr, fault, thread).await;
             Ok(())
         }))
+    }
+}
+
+impl Guest for HostGuest {
+    type Where = (RawFd, u64);
+
+    fn access(&self, offset: u64, kind: Access, write: Option<u8>) -> Outcome<'_> {
+        self.access_by(VCPU, offset, kind, write)
     }
 
     fn writable(&self) -> Vec<u64> {
         let model = self.memory.0.lock().unwrap();
         let tracked =
             |page: &Page| page.registered & UFFDIO_REGISTER_MODE_WP != 0 && page.write_protected;
-        (model.pages.iter())
-            .filter(|(_, page)| page.file.is_some() && page.prot & libc::PROT_WRITE != 0)
+        (model.pages.range(self.window_memory()))
+            .filter(|(_, page)| !model.unfilled(page) && page.prot & libc::PROT_WRITE != 0)
             .filter(|(_, page)| !tracked(page))
             .map(|(addr, _)| (addr - self.base) as u64)
             .collect()
@@ -364,7 +454,7 @@ impl Guest for HostGuest {
 
     fn mapped(&self) -> Vec<(u64, (RawFd, u64))> {
         let model = self.memory.0.lock().unwrap();
-        (model.pages.iter())
+        (model.pages.range(self.window_memory()))
             .filter_map(|(addr, page)| Some(((addr - self.base) as u64, page.file?)))
             .collect()
     }
@@ -712,4 +802,255 @@ fn needs_protections_to_lift_restrictions() {
 fn needs_refused_stores_read_only() {
     let rules = Rules { refused_store_read_only: false, ..Rules::ALL };
     fails_without(rules, "never completed");
+}
+
+/// fxdax TASK-164.1 (backlog doc-13): on a window that copies on write, KVM's worker's write of a
+/// page not here, as it makes for a vCPU's load and store alike, copies nothing: resolved as a
+/// load, the page made read-only here, the write, retried, fails. The vCPU's own access decides:
+/// a load is made, of the extent's page; a store fails, as `KVM_RUN` does with `EFAULT`, until the
+/// VMM, retrying it, says so (`guest_access_failed`), which lifts the restriction, and the store,
+/// retried, faults as one, and is made, in a private copy.
+fn worker_writes_copy_nothing(vcpu_stores: bool) {
+    let ps = page_size();
+    let memory = ModelMemory::default();
+    let base = 64 * ps as usize;
+    // SAFETY: The model changes no memory.
+    let stage = unsafe {
+        UffdSecondStage::with_host(base, ps, memory.clone(), Memories::InProcess, None, usize::MAX)
+    }
+    .unwrap();
+    stage.copy_on_write().unwrap();
+    guest_thread(VCPU);
+    let telling = Arc::new(Telling { stage: stage.clone(), memory: memory.clone() });
+    let (mut dax, _) = super::super::tests::copying::<()>(1, 1, Some(telling));
+    let window = dax.window.clone();
+    // Not in memory as it is mapped, and zeros as it is brought in: not here until a fault.
+    let file = TestSource::anonymous(1).source();
+    dax.map(0, (), &file, 0, ps, false).unwrap();
+    let guest = HostGuest { memory, stage: stage.clone(), window: window.clone(), base };
+
+    // The worker's write, retried as get_user_pages retries it, until it fails or is made.
+    for _ in 0..ATTEMPTS {
+        match guest.access_by(WORKER, 0, Access::Write, None) {
+            Outcome::Faulted(fault) => future::block_on(fault).unwrap(),
+            Outcome::Failed | Outcome::Made(_) => break,
+        }
+    }
+    assert_eq!(window.private_pages(), 0, "a worker's write copied the page");
+
+    let (kind, write) = if vcpu_stores { (Access::Write, Some(7)) } else { (Access::Read, None) };
+    let mut failed = false;
+    let read = 'access: {
+        for _ in 0..ATTEMPTS {
+            match guest.access(0, kind, write) {
+                Outcome::Made(read) => break 'access read,
+                Outcome::Faulted(fault) => future::block_on(fault).unwrap(),
+                // As fxdax's Firecracker says a vCPU's KVM_RUN failing, and retries it.
+                Outcome::Failed => {
+                    failed = true;
+                    stage.lift_worker_restrictions();
+                }
+            }
+        }
+        panic!("the vCPU's {kind:?} never completed");
+    };
+    match vcpu_stores {
+        true => {
+            assert_eq!((read, failed, window.private_pages()), (7, true, 1));
+            assert_eq!(guest.writable(), [0], "the private page isn't writable here");
+        }
+        false => assert_eq!((read, failed, window.private_pages()), (0, false, 0)),
+    }
+}
+
+#[test]
+fn worker_writes_before_loads_copy_nothing() {
+    Runner::new(RandomScheduler::new(1), config()).run(|| worker_writes_copy_nothing(false));
+}
+
+#[test]
+fn worker_writes_before_stores_copy_nothing() {
+    Runner::new(RandomScheduler::new(1), config()).run(|| worker_writes_copy_nothing(true));
+}
+
+/// fxdax: a worker's write of a page not here, resolved as a load, leaving the page writable here:
+/// the write, retried, faults as a store, and copies the page for a load.
+#[test]
+fn needs_worker_writes_restricted() {
+    *RULES.lock().unwrap() = Rules { worker_writes_restricted: false, ..Rules::ALL };
+    fails_with("a worker's write copied the page", || {
+        Runner::new(RandomScheduler::new(1), config()).run(|| worker_writes_copy_nothing(false));
+    });
+}
+
+/// fxdax: a page a worker's write restricted, left so as the guest's store fails: the store fails
+/// for ever.
+#[test]
+fn needs_failures_to_lift_worker_restrictions() {
+    *RULES.lock().unwrap() = Rules { failures_lift_worker_restrictions: false, ..Rules::ALL };
+    fails_with("never completed", || {
+        Runner::new(RandomScheduler::new(1), config()).run(|| worker_writes_copy_nothing(true));
+    });
+}
+
+/// fxdax TASK-164.1: on a window that copies on write, a vCPU's store to a page here, mapped
+/// read-only, write-protected, faults as a store, whoever's thread reports it, as only a store
+/// faults so (KVM's worker's for the vCPU's store, which waits for it): the page is copied,
+/// mapped writable here in its place, and holds the store; the extent's page is as it was.
+fn stores_to_pages_here_copy_them() {
+    let ps = page_size();
+    let memory = ModelMemory::default();
+    let base = 64 * ps as usize;
+    // SAFETY: The model changes no memory.
+    let stage = unsafe {
+        UffdSecondStage::with_host(base, ps, memory.clone(), Memories::InProcess, None, usize::MAX)
+    }
+    .unwrap();
+    stage.copy_on_write().unwrap();
+    let telling = Arc::new(Telling { stage: stage.clone(), memory: memory.clone() });
+    let (mut dax, _) = super::super::tests::copying::<()>(1, 1, Some(telling));
+    let window = dax.window.clone();
+    let sealed = TestSource::filled(1, SEALED);
+    dax.map(0, (), &sealed.source(), 0, ps, false).unwrap();
+    let guest = HostGuest { memory, stage, window: window.clone(), base };
+    let mut shared = None;
+    sealed.each_present(0..1, &mut |_, frame| shared = Some(frame.location()));
+    let shared = shared.unwrap();
+
+    match guest.access_by(WORKER, 0, Access::Write, None) {
+        Outcome::Faulted(fault) => future::block_on(fault).unwrap(),
+        _ => panic!("a store to a page mapped read-only was made, or failed"),
+    }
+    assert_eq!(window.private_pages(), 1);
+    match guest.access(0, Access::Write, Some(7)) {
+        Outcome::Made(read) => assert_eq!(read, 7),
+        _ => panic!("a store to a private page faulted, or failed"),
+    }
+    let arena = crate::pages::arena_memory(shared.arena).unwrap();
+    use std::os::fd::AsRawFd as _;
+    assert_eq!(byte(arena.as_raw_fd(), shared.offset, None), SEALED, "the store reached the extent");
+}
+
+#[test]
+fn stores_to_pages_here_copy_them_once() {
+    Runner::new(RandomScheduler::new(1), config()).run(stores_to_pages_here_copy_them);
+}
+
+/// fxdax: a stage over a model of its host memory, of a window that copies on write, of `pages`
+/// pages, holding as many private pages, and the window through it, which tells the model of its
+/// changes in steps.
+fn modelled_copying(pages: u64) -> (ModelMemory, Arc<UffdSecondStage<ModelMemory>>, Dax<()>) {
+    let ps = page_size();
+    let memory = ModelMemory::default();
+    // SAFETY: The model changes no memory.
+    let stage = unsafe {
+        UffdSecondStage::with_host(
+            64 * ps as usize,
+            pages * ps,
+            memory.clone(),
+            Memories::InProcess,
+            None,
+            usize::MAX,
+        )
+    }
+    .unwrap();
+    stage.copy_on_write().unwrap();
+    let telling = Arc::new(Telling { stage: stage.clone(), memory: memory.clone() });
+    let (dax, _) = super::super::tests::copying::<()>(pages, pages, Some(telling));
+    (memory, stage, dax)
+}
+
+/// fxdax TASK-164.1 (backlog doc-13): a vCPU loads from a page that a window copying on write
+/// maps read-only, a sealed extent's, while the window makes it private, as `PRIVATE` does: each
+/// load reads the extent's bytes, from its page or its copy. The private memory mapped in place of
+/// the page is filled first: mapped unfilled, before it is registered, a load meanwhile faults a
+/// page of zeros in, as the kernel would.
+fn private_pages_race_loads() {
+    let ps = page_size();
+    let (memory, stage, mut dax) = modelled_copying(1);
+    let sealed = TestSource::filled(1, SEALED).source();
+    dax.map(0, (), &sealed, 0, ps, false).unwrap();
+    let window = dax.window.clone();
+    let guest = HostGuest { memory, stage, window: window.clone(), base: 64 * ps as usize };
+    let guest = Arc::new(guest);
+    let loading = guest.clone();
+    let loads = thread::spawn(move || {
+        for _ in 0..2 {
+            let read = 'load: {
+                for _ in 0..ATTEMPTS {
+                    match loading.access(0, Access::Read, None) {
+                        Outcome::Made(read) => break 'load read,
+                        Outcome::Faulted(fault) => future::block_on(fault).unwrap(),
+                        Outcome::Failed => thread::yield_now(),
+                    }
+                }
+                panic!("a load never completed");
+            };
+            assert_eq!(read, SEALED, "a load read other bytes");
+            thread::yield_now();
+        }
+    });
+    future::block_on(window.make_private(0, ps)).unwrap();
+    loads.join().unwrap();
+    assert_eq!(window.private_pages(), 1);
+    assert_eq!(guest.writable(), [0], "the private page isn't writable here");
+}
+
+#[test]
+fn private_pages_race_loads_by_pct() {
+    Runner::new(PctScheduler::new(3, runs(RUNS)), config()).run(private_pages_race_loads);
+}
+
+/// fxdax: a private page's memory mapped in place of the page before it is filled: a load
+/// meanwhile finds it unfilled, and not yet registered.
+#[test]
+fn needs_private_pages_filled_before_mapped() {
+    *RULES.lock().unwrap() = Rules { private_filled_before_mapped: false, ..Rules::ALL };
+    fails_with("a page of zeros faulted in", || {
+        Runner::new(PctScheduler::new(3, runs(10 * RUNS)), config()).run(private_pages_race_loads);
+    });
+}
+
+/// fxdax: what a vCPU stores to a private page in [`private_pages_go_with_their_unmaps`].
+const STORED: u8 = 0x5a;
+
+/// fxdax TASK-164.1 (backlog doc-13): the guest's `UNMAP` of a private page ends it: an access to
+/// the page after it finds nothing there, as the window maps nothing, and fails, withheld; never
+/// what was stored to the private page, which its memory, mapped there anew, would hold for good
+/// unless emptied.
+fn private_pages_go_with_their_unmaps() {
+    let ps = page_size();
+    let (memory, stage, mut dax) = modelled_copying(1);
+    let sealed = TestSource::filled(1, SEALED).source();
+    dax.map(0, (), &sealed, 0, ps, false).unwrap();
+    let window = dax.window.clone();
+    future::block_on(window.make_private(0, ps)).unwrap();
+    let guest = HostGuest { memory, stage, window, base: 64 * ps as usize };
+    match guest.access(0, Access::Write, Some(STORED)) {
+        Outcome::Made(read) => assert_eq!(read, STORED),
+        _ => panic!("a store to a private page faulted, or failed"),
+    }
+    dax.unmap(0, ps).unwrap();
+    for _ in 0..ATTEMPTS {
+        match guest.access(0, Access::Read, None) {
+            Outcome::Made(read) => panic!("an access found a private page gone: {read:#x}"),
+            Outcome::Faulted(fault) => future::block_on(fault).unwrap(),
+            Outcome::Failed => return,
+        }
+    }
+    panic!("an access to a page unmapped never failed");
+}
+
+#[test]
+fn private_pages_go_with_their_unmaps_once() {
+    Runner::new(RandomScheduler::new(1), config()).run(private_pages_go_with_their_unmaps);
+}
+
+/// fxdax: a private page that went left filled: the memory mapped there anew holds it for good.
+#[test]
+fn needs_private_pages_emptied_as_they_go() {
+    *RULES.lock().unwrap() = Rules { private_emptied_as_it_goes: false, ..Rules::ALL };
+    fails_with("found a private page gone", || {
+        Runner::new(RandomScheduler::new(1), config()).run(private_pages_go_with_their_unmaps);
+    });
 }

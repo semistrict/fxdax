@@ -1036,6 +1036,10 @@ impl Source for Zeros {
     fn bring_in(self: Arc<Self>, _page: u64) -> BoxFuture<'static, Result<bool>> {
         Box::pin(std::future::ready(Ok(false)))
     }
+
+    fn is_zeros(&self) -> bool {
+        true
+    }
 }
 
 /// Zeros, for windows to map ([`Zeros`]): made once, and kept for the process's life. `ENOMEM` if

@@ -50,8 +50,10 @@ pub(crate) enum Request<'a> {
     Root,
     /// [`INFO`].
     Info,
-    /// [`WINDOW`]: of `size` bytes, [`MAX_WINDOW`] at most.
-    Window { size: u64 },
+    /// [`WINDOW`]: of `size` bytes, [`MAX_WINDOW`] at most; fxdax: copying on write, of
+    /// `private_max` private pages at most, as many as it has pages at most, if given
+    /// ([`WINDOW_COPY_ON_WRITE`]).
+    Window { size: u64, private_max: Option<u64> },
     /// [`FAULT`].
     Fault(Fault),
     /// [`FORK`]: to `branch`, a new directory at `path`; a point if `quiescent`.
@@ -75,6 +77,8 @@ pub(crate) enum Request<'a> {
     Build(&'a str),
     /// [`SEALED`]: the guest's answer to the ask to seal of `number`.
     Sealed { number: u64 },
+    /// fxdax: [`PRIVATE`].
+    Private { window_offset: u64, len: u64 },
 }
 
 /// How an [`OPEN`] opens its store.
@@ -119,6 +123,9 @@ pub(crate) struct Fault {
     pub access: Access,
     /// On that page alone ([`FAULT_PAGE`]).
     pub page: bool,
+    /// fxdax: the VM process's probe of the page, to read, not the guest's access
+    /// ([`FAULT_PROBE`]): on that page alone.
+    pub probe: bool,
 }
 
 /// The shared memory a [`TRANSFER`] carries, its descriptor.
@@ -178,10 +185,11 @@ fn known_flags(kind: u32) -> Result<u32, Errno> {
         WRITE => WRITE_BARRIER | WRITE_COMMIT | WRITE_DURABLE | WRITE_TRANSFER | WRITE_ROOT,
         MAP => MAP_WRITABLE | MAP_ZEROS,
         COMMIT => COMMIT_ROOT | COMMIT_DURABLE,
-        FAULT => FAULT_WRITE | FAULT_PAGE,
+        FAULT => FAULT_WRITE | FAULT_PAGE | FAULT_PROBE,
         FORK => FORK_QUIESCENT,
-        FREE | FREE_MANY | UNMAP | ROOT | INFO | WINDOW | RESIZED | MAPPINGS | ADVANCE | LET_GO
-        | PIN | UNPIN | TRANSFER | BUILD | SEALED => 0,
+        WINDOW => WINDOW_COPY_ON_WRITE,
+        FREE | FREE_MANY | UNMAP | ROOT | INFO | RESIZED | MAPPINGS | ADVANCE | LET_GO | PIN
+        | UNPIN | TRANSFER | BUILD | SEALED | PRIVATE => 0,
         _ => return Err(Errno::EINVAL),
     })
 }
@@ -212,6 +220,7 @@ impl<'a> Request<'a> {
             Request::Transfer { .. } => TRANSFER,
             Request::Build(_) => BUILD,
             Request::Sealed { .. } => SEALED,
+            Request::Private { .. } => PRIVATE,
         }
     }
 
@@ -300,9 +309,14 @@ impl<'a> Request<'a> {
             Request::Root | Request::Info | Request::Mappings | Request::Advance => {
                 message(0, [0; 5])
             }
-            Request::Window { size } => message(0, [*size, 0, 0, 0, 0]),
-            Request::Fault(Fault { offset, access, page }) => {
-                let flags = flag(*access == Access::Write, FAULT_WRITE) | flag(*page, FAULT_PAGE);
+            Request::Window { size, private_max: None } => message(0, [*size, 0, 0, 0, 0]),
+            Request::Window { size, private_max: Some(most) } => {
+                message(WINDOW_COPY_ON_WRITE, [*size, *most, 0, 0, 0])
+            }
+            Request::Fault(Fault { offset, access, page, probe }) => {
+                let flags = flag(*access == Access::Write, FAULT_WRITE)
+                    | flag(*page, FAULT_PAGE)
+                    | flag(*probe, FAULT_PROBE);
                 message(flags, [*offset, 0, 0, 0, 0])
             }
             Request::Fork { path, branch, quiescent } => {
@@ -318,6 +332,9 @@ impl<'a> Request<'a> {
             }
             Request::Build(commit) => message(0, [0; 5]).carrying(commit.as_bytes()),
             Request::Sealed { number } => message(0, [*number, 0, 0, 0, 0]),
+            Request::Private { window_offset, len } => {
+                message(0, [*window_offset, *len, 0, 0, 0])
+            }
         }
     }
 
@@ -438,12 +455,23 @@ impl<'a> Request<'a> {
                 if args[0] > MAX_WINDOW {
                     return Err(Errno::EINVAL);
                 }
-                Request::Window { size: args[0] }
+                // fxdax: some private pages, no more than the window's (backlog doc-13).
+                let private_max = has(WINDOW_COPY_ON_WRITE).then_some(args[1]);
+                let pages = args[0] / crate::pages::page_size();
+                if private_max.is_some_and(|most| most == 0 || most > pages) {
+                    return Err(Errno::EINVAL);
+                }
+                Request::Window { size: args[0], private_max }
             }
             FAULT => {
                 nothing()?;
                 let access = if has(FAULT_WRITE) { Access::Write } else { Access::Read };
-                Request::Fault(Fault { offset: args[0], access, page: has(FAULT_PAGE) })
+                // fxdax: a probe is of a page alone, to read.
+                let probe = has(FAULT_PROBE);
+                if probe && (access == Access::Write || !has(FAULT_PAGE)) {
+                    return Err(Errno::EINVAL);
+                }
+                Request::Fault(Fault { offset: args[0], access, page: has(FAULT_PAGE), probe })
             }
             FORK => {
                 let quiescent = has(FORK_QUIESCENT);
@@ -474,6 +502,10 @@ impl<'a> Request<'a> {
             SEALED => {
                 nothing()?;
                 Request::Sealed { number: args[0] }
+            }
+            PRIVATE => {
+                nothing()?;
+                Request::Private { window_offset: args[0], len: args[1] }
             }
             _ => return Err(Errno::EINVAL),
         })
@@ -629,13 +661,18 @@ pub(crate) enum StageOp {
     Unmap { offset: u64, len: u64 },
     /// fxdax: [`STAGE_MAPPED`].
     Mapped { offset: u64, len: u64 },
+    /// fxdax: [`STAGE_PRIVATE`]: the page at `offset` private, holding the page's at `from`, or
+    /// zeros.
+    Private { offset: u64, from: Option<PhysLocation> },
 }
 
 impl StageOp {
     /// Whether it takes access to pages away, which its VM process acknowledges ([`STAGE_ACK`]).
     pub fn taking(&self) -> bool {
         match self {
-            StageOp::Unmap { .. } => true,
+            // fxdax: a private page takes the page mapped there away, and copies the page `from`,
+            // which the daemon keeps until it is made.
+            StageOp::Unmap { .. } | StageOp::Private { .. } => true,
             StageOp::Protect { protection, .. } => *protection != Protection::ReadWrite,
             StageOp::Map { .. } | StageOp::Mapped { .. } => false,
         }
@@ -654,6 +691,10 @@ impl Stage {
             }
             StageOp::Unmap { offset, len } => (STAGE_UNMAP, [offset, len, 0, 0, 0]),
             StageOp::Mapped { offset, len } => (STAGE_MAPPED, [offset, len, 0, 0, 0]),
+            StageOp::Private { offset, from: None } => (STAGE_PRIVATE, [offset, 0, 0, 0, 0]),
+            StageOp::Private { offset, from: Some(from) } => {
+                (STAGE_PRIVATE, [offset, from.offset, 1, 0, from.arena.0.into()])
+            }
         };
         let flags = if self.op.taking() { STAGE_ACK } else { 0 };
         Header { kind, flags, id: self.id, args, ..Default::default() }
@@ -679,6 +720,17 @@ impl Stage {
             }
             STAGE_UNMAP => StageOp::Unmap { offset: args[0], len: args[1] },
             STAGE_MAPPED => StageOp::Mapped { offset: args[0], len: args[1] },
+            STAGE_PRIVATE => {
+                let from = match args[2] {
+                    0 => None,
+                    1 => {
+                        let arena = ArenaId(u32::try_from(args[4]).map_err(|_| Errno::EINVAL)?);
+                        Some(PhysLocation { arena, offset: args[1] })
+                    }
+                    _ => return Err(Errno::EINVAL),
+                };
+                StageOp::Private { offset: args[0], from }
+            }
             _ => return Err(Errno::EINVAL),
         };
         let acknowledged = if op.taking() { STAGE_ACK } else { 0 };
@@ -870,8 +922,13 @@ mod tests {
             Request::Commit { commit, root: one.then_some(&fields.data[..]) },
             Request::Root,
             Request::Info,
-            Request::Window { size: a % (MAX_WINDOW + 1) },
-            Request::Fault(Fault { offset: a, access: fields.access, page: one }),
+            Request::Window { size: a % (MAX_WINDOW + 1), private_max: None },
+            Request::Window {
+                size: MAX_WINDOW,
+                private_max: Some(1 + b % (MAX_WINDOW / crate::pages::page_size())),
+            },
+            Request::Fault(Fault { offset: a, access: fields.access, page: one, probe: false }),
+            Request::Fault(Fault { offset: a, access: Access::Read, page: true, probe: true }),
             Request::Fork { path: path.clone(), branch: b, quiescent: one },
             Request::Resized { capacity: a, took: one },
             Request::Mappings,
@@ -882,13 +939,14 @@ mod tests {
             Request::Transfer { len: a, area: Area(area) },
             Request::Build(&fields.build),
             Request::Sealed { number: a },
+            Request::Private { window_offset: a, len: b },
         ]
     }
 
     /// Every kind of request.
-    const KINDS: [u32; 22] = [
+    const KINDS: [u32; 23] = [
         OPEN, READ, WRITE, FREE, MAP, UNMAP, COMMIT, ROOT, INFO, WINDOW, FAULT, FORK, RESIZED,
-        MAPPINGS, ADVANCE, LET_GO, PIN, UNPIN, TRANSFER, FREE_MANY, BUILD, SEALED,
+        MAPPINGS, ADVANCE, LET_GO, PIN, UNPIN, TRANSFER, FREE_MANY, BUILD, SEALED, PRIVATE,
     ];
 
     /// `request`, as its receiver receives it: of ID `id`.
@@ -945,6 +1003,7 @@ mod tests {
                 COMMIT => 0b11,
                 FAULT => 0b11,
                 FORK => 0b1,
+                WINDOW => 0b1,
                 _ => 0,
             }
         };
@@ -983,6 +1042,9 @@ mod tests {
         refused(WRITE, WRITE_DURABLE, b"data");
         refused(WRITE, WRITE_ROOT, b"data");
         refused(MAP, MAP_ZEROS | MAP_WRITABLE, b"");
+        // fxdax: a probe is of a page alone, to read.
+        refused(FAULT, FAULT_PROBE, b"");
+        refused(FAULT, FAULT_PROBE | FAULT_PAGE | FAULT_WRITE, b"");
         // What the daemon tells, and VM processes say of their stage operations, the same: a
         // stage operation is acknowledged if, and only if, it takes access away.
         let phys = PhysLocation { arena: ArenaId::DEFAULT, offset: 0 };
@@ -991,6 +1053,8 @@ mod tests {
             StageOp::Protect { offset: 0, len: 4096, protection: Protection::Read },
             StageOp::Unmap { offset: 0, len: 4096 },
             StageOp::Mapped { offset: 0, len: 4096 },
+            StageOp::Private { offset: 0, from: Some(phys) },
+            StageOp::Private { offset: 0, from: None },
         ];
         let told = ops.map(|op| Told::Stage(Stage { id: 1, op })).into_iter().chain([
             Told::Capacity { capacity: 4096, ask: false },
@@ -1027,6 +1091,12 @@ mod tests {
         refused(Header::new(TRANSFER, 1).with_args(&[4096]), b"", vec![]);
         refused(Header::new(TRANSFER, 1).with_args(&[4096]), b"", vec![area(), area()]);
         refused(Header::new(WINDOW, 1).with_args(&[MAX_WINDOW + 1]), b"", vec![]);
+        // fxdax: a window copying on write of no private pages, or of more than it has pages.
+        let copying = Header::new(WINDOW, 1).with_flags(WINDOW_COPY_ON_WRITE);
+        refused(copying.with_args(&[1 << 20, 0]), b"", vec![]);
+        let pages = (1 << 20) / crate::pages::page_size();
+        refused(copying.with_args(&[1 << 20, pages + 1]), b"", vec![]);
+        refused(Header::new(PRIVATE, 1).with_args(&[0, 4096]), b"extra", vec![]);
         refused(Header::new(RESIZED, 1).with_args(&[4096, 2]), b"", vec![]);
         refused(Header { status: -1, ..Header::new(INFO, 1) }, b"", vec![]);
         refused(Header::new(FREE_MANY, 1).with_args(&[1, 1]), &[0; EXTENT_ID_BYTES + 8], vec![]);
@@ -1132,8 +1202,18 @@ mod tests {
                 b"r".to_vec(),
             ),
             (
-                Request::Fault(Fault { offset: 5, access: Access::Write, page: true }),
+                Request::Fault(Fault {
+                    offset: 5,
+                    access: Access::Write,
+                    page: true,
+                    probe: false,
+                }),
                 header(FAULT, FAULT_WRITE | FAULT_PAGE, &[5]),
+                vec![],
+            ),
+            (
+                Request::Fault(Fault { offset: 5, access: Access::Read, page: true, probe: true }),
+                header(FAULT, FAULT_PAGE | FAULT_PROBE, &[5]),
                 vec![],
             ),
             (
@@ -1149,6 +1229,17 @@ mod tests {
             (
                 Request::Transfer { len: 4096, area: Area(area.as_fd()) },
                 header(TRANSFER, 0, &[4096]),
+                vec![],
+            ),
+            (Request::Window { size: 8192, private_max: None }, header(WINDOW, 0, &[8192]), vec![]),
+            (
+                Request::Window { size: 8192, private_max: Some(2) },
+                header(WINDOW, WINDOW_COPY_ON_WRITE, &[8192, 2]),
+                vec![],
+            ),
+            (
+                Request::Private { window_offset: 4096, len: 8192 },
+                header(PRIVATE, 0, &[4096, 8192]),
                 vec![],
             ),
         ];
@@ -1174,6 +1265,13 @@ mod tests {
         let protect = StageOp::Protect { offset: 1, len: 2, protection: Protection::ReadWrite };
         let protect = Stage { id: 4, op: protect }.encode();
         assert_eq!(protect, Header::new(STAGE_PROTECT, 4).with_args(&[1, 2, 2]));
+        // fxdax: a private page, a copy of a page or zeros, acknowledged (backlog doc-13).
+        let from = Some(PhysLocation { arena: ArenaId(6), offset: 2 });
+        let private = Stage { id: 4, op: StageOp::Private { offset: 1, from } }.encode();
+        let copied = Header::new(STAGE_PRIVATE, 4).with_args(&[1, 2, 1, 0, 6]);
+        assert_eq!(private, copied.with_flags(STAGE_ACK));
+        let zeros = Stage { id: 4, op: StageOp::Private { offset: 1, from: None } }.encode();
+        assert_eq!(zeros, Header::new(STAGE_PRIVATE, 4).with_args(&[1]).with_flags(STAGE_ACK));
         let ask = Told::Capacity { capacity: 4096, ask: true }.encode();
         assert_eq!(ask, Header::new(CAPACITY, 0).with_args(&[4096]).with_flags(CAPACITY_ASK));
         let ack = Made::Ack { id: 4, counts: [1, 2, 3, 4, 5] }.encode();
@@ -1201,6 +1299,8 @@ mod tests {
                 StageOp::Protect { offset: a, len: b, protection },
                 StageOp::Unmap { offset: a, len: b },
                 StageOp::Mapped { offset: a, len: b },
+                StageOp::Private { offset: a, from: Some(phys) },
+                StageOp::Private { offset: a, from: None },
             ];
             let told = stages.map(|op| Told::Stage(Stage { id, op })).into_iter().chain([
                 Told::Capacity { capacity: a, ask },

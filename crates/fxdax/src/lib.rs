@@ -142,6 +142,8 @@ mod volume;
 
 #[cfg(target_os = "linux")]
 pub use dax::Prefault;
+#[cfg(target_os = "linux")]
+pub use dax::uffd::{describe_windows, guest_access_failed, guest_thread_started};
 pub use dax::{Access, DaxWindow, Deferred, Protection, SecondStage};
 pub use error::{Errno, Error, Result};
 #[cfg(target_os = "linux")]

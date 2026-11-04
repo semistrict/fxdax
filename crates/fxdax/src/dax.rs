@@ -20,6 +20,16 @@
 //! KVM takes there itself, with userfaultfd, to the daemon, which passes them to the window
 //! ([`DaxWindow::fault`]). A window without a second stage, as tests' are, has its pages mapped at
 //! its host address.
+//!
+//! fxdax: a window may copy on write (backlog doc-13, [`CopyOnWrite`]): a store to a page it maps
+//! read-only, a sealed extent's or zeros, gives the page a private copy holding what the page
+//! held, mapped writable at the same offset; the mapping stays the source's. Only the guest's
+//! `MAP` or `UNMAP` over a private page ends it: a source evicting its pages, a free mapping zeros
+//! and a seal leave it. A window holds a bound of them, reserved against the tenant's memory as it
+//! is made, past which a store is refused, as one to a read-only page of a window that doesn't
+//! copy. The private pages are the second stage's memory ([`SecondStage::make_private`]): the VM
+//! process's own, laid out as the window is, so that they cost it no mapping each (`dax::uffd`);
+//! the window keeps where they are and how many.
 
 #[cfg(all(test, feature = "shuttle"))]
 mod shuttle_tests;
@@ -120,6 +130,15 @@ pub trait SecondStage: Send + Sync {
             }
         }
     }
+
+    /// fxdax: makes the page at `offset` private (backlog doc-13), in place of what is mapped
+    /// there, if anything: a page of the stage's own memory, holding the bytes of the page at
+    /// `from`, the source's, which stays in memory until the change is made, or zeros, mapped
+    /// writable. An unmap or a map over it ends it. Only a window that copies on write makes one,
+    /// and only a stage of such a window need know how.
+    fn make_private(&self, offset: u64, from: Option<PhysLocation>) {
+        unimplemented!("{offset:#x} made private ({from:?}) in a stage that doesn't copy");
+    }
 }
 
 /// fxdax: what a window's change makes of a range it unmapped ([`SecondStage::remap`]).
@@ -168,6 +187,12 @@ pub(crate) trait Faults: Send + Sync {
     /// Resolves a fault at `offset` for `access` on that page alone, for a fault whose access may
     /// not be the guest's.
     fn fault_page(&self, offset: u64, access: Access) -> BoxFuture<'_, Result<()>>;
+
+    /// fxdax: maps the page at `offset`, to read, ahead of the guest's accesses, as
+    /// [`fault_page`](Self::fault_page) does a load's: a probe of the stage's own, of a page the
+    /// guest may map nothing at, which fails then as quietly as it may (`ENOENT`), as no access of
+    /// the guest's was refused.
+    fn probe(&self, offset: u64) -> BoxFuture<'_, Result<()>>;
 }
 
 /// A test's window in this process's host memory resolves the faults on it itself.
@@ -183,6 +208,10 @@ impl Faults for Window {
 
     fn fault_page(&self, offset: u64, access: Access) -> BoxFuture<'_, Result<()>> {
         Box::pin(Window::fault_page(self, offset, access))
+    }
+
+    fn probe(&self, offset: u64) -> BoxFuture<'_, Result<()>> {
+        Box::pin(Window::fault_page(self, offset, Access::Read))
     }
 }
 
@@ -234,6 +263,12 @@ pub(crate) trait Source: Send + Sync {
 
     /// fxdax: whether it is an open extent's pages, for the windows' stats (`stage_maps_open`).
     fn is_open(&self) -> bool {
+        false
+    }
+
+    /// fxdax: whether its pages are zeros, which a store's private page is made of without a
+    /// copy, nor bringing anything in (backlog doc-13).
+    fn is_zeros(&self) -> bool {
         false
     }
 }
@@ -291,6 +326,18 @@ impl DaxWindow {
     pub fn maps_pages(&self) -> bool {
         !self.0.state.lock().unwrap().ptes.is_empty()
     }
+
+    /// fxdax: makes the `len` bytes at `offset` private now, as stores to each page would, and
+    /// maps them writable (doc-13's `PRIVATE`). See [`Window::make_private`].
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub(crate) async fn make_private(&self, offset: u64, len: u64) -> Result<()> {
+        self.0.make_private(offset, len).await
+    }
+
+    /// fxdax: the private pages it holds (backlog doc-13): none unless it copies on write.
+    pub fn private_pages(&self) -> u64 {
+        self.0.private_pages()
+    }
 }
 
 impl std::fmt::Debug for DaxWindow {
@@ -322,11 +369,14 @@ struct Mapping {
     writable: bool,
 }
 
-/// A page the window has mapped: where it is in physical memory, and which page of it it is.
+/// A page the window has mapped.
 #[derive(Clone, Copy)]
-struct Pte {
-    location: PhysLocation,
-    frame: u32,
+enum Pte {
+    /// A page of its mapping's source: which page of physical memory it is.
+    Source { frame: u32 },
+    /// fxdax: a private page (backlog doc-13), of the second stage's memory, or, without one, of
+    /// this process's, mapped in place ([`Window::map_private`]).
+    Private,
 }
 
 /// A window's mappings and the pages it has mapped, under its lock.
@@ -336,16 +386,68 @@ struct WindowState {
     mappings: BTreeMap<u64, Mapping>,
     /// The starts of the mappings, by the identity of their source ([`source_identity`]).
     by_source: HashMap<usize, BTreeSet<u64>>,
-    /// The pages mapped, by offset: each within a mapping, and its source's.
+    /// The pages mapped, by offset: each within a mapping, and its source's, or a private page.
     ptes: BTreeMap<u64, Pte>,
+    /// fxdax: the private pages' offsets, of a window that copies on write ([`CopyOnWrite`]):
+    /// each mapped there, writable, in `ptes`, within a mapping, which is still its source's.
+    private: BTreeSet<u64>,
+}
+
+/// fxdax: what a private page holds of its source's page ([`Window::private_bytes`]).
+enum Held {
+    /// The page at a location of physical memory, which the second stage copies.
+    At(PhysLocation),
+    /// The page's bytes, copied, for a window without a second stage.
+    Bytes(Box<[u8]>),
+}
+
+/// fxdax: what a change to a window's range does to the private pages in it (backlog doc-13).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Private {
+    /// They go, as the guest's `MAP` or `UNMAP` over them ends them.
+    Free,
+    /// They stay, as the host's own changes leave them: a free's zeros, a seal's remap.
+    Keep,
+}
+
+/// fxdax: how a window copies on write (backlog doc-13): against which arena its private pages are
+/// counted, its tenant's, and how many it holds at most, which it reserved against the arena as it
+/// was made (`physmem::pin`), and lets go of as it goes. The pages are its second stage's memory
+/// ([`SecondStage::make_private`]), its VM process's, not the arena's: the reservation still counts
+/// them against the tenant as they are reserved, and no store waits for the arena's memory.
+pub(crate) struct CopyOnWrite {
+    arena: crate::pages::ArenaId,
+    most: u64,
+}
+
+impl CopyOnWrite {
+    /// Reserves `most` pages of `arena`'s memory for a window's private pages: `EINVAL` for none,
+    /// `ENOMEM` past what the arena may hold that nothing can evict.
+    pub(crate) fn reserve(arena: crate::pages::ArenaId, most: u64) -> Result<Self> {
+        let count = usize::try_from(most).map_err(|_| Errno::EINVAL)?;
+        if count == 0 {
+            return Err(Errno::EINVAL);
+        }
+        if !physmem::pin(arena, count) {
+            return Err(Errno::ENOMEM);
+        }
+        Ok(Self { arena, most })
+    }
+}
+
+impl Drop for CopyOnWrite {
+    fn drop(&mut self) {
+        physmem::unpin(self.arena, self.most as usize);
+    }
 }
 
 /// The process's windows' mappings, their bytes, and the pages they have mapped, all windows'
 /// together, as their states change: the extent daemon's gauges (`crate::extentd::metrics`,
-/// TASK-131.6).
+/// TASK-131.6). fxdax: and their private pages, of those (backlog doc-13).
 static LIVE_MAPPINGS: AtomicU64 = AtomicU64::new(0);
 static LIVE_MAPPED_BYTES: AtomicU64 = AtomicU64::new(0);
 static LIVE_PTES: AtomicU64 = AtomicU64::new(0);
+static LIVE_PRIVATE: AtomicU64 = AtomicU64::new(0);
 
 /// The process's windows' mappings, as of now.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -358,6 +460,8 @@ pub(crate) struct Live {
     /// The pages they have mapped in their second stages: of those bytes, those the guest reaches
     /// without a fault.
     pub pages: u64,
+    /// fxdax: of those pages, the private ones of windows that copy on write (backlog doc-13).
+    pub private_pages: u64,
 }
 
 /// The process's windows' mappings, as of now.
@@ -367,6 +471,7 @@ pub(crate) fn live() -> Live {
         mappings: LIVE_MAPPINGS.load(Ordering::Relaxed),
         mapped_bytes: LIVE_MAPPED_BYTES.load(Ordering::Relaxed),
         pages: LIVE_PTES.load(Ordering::Relaxed),
+        private_pages: LIVE_PRIVATE.load(Ordering::Relaxed),
     }
 }
 
@@ -376,6 +481,7 @@ impl Drop for WindowState {
         LIVE_MAPPINGS.fetch_sub(self.mappings.len() as u64, Ordering::Relaxed);
         LIVE_MAPPED_BYTES.fetch_sub(bytes, Ordering::Relaxed);
         LIVE_PTES.fetch_sub(self.ptes.len() as u64, Ordering::Relaxed);
+        LIVE_PRIVATE.fetch_sub(self.private.len() as u64, Ordering::Relaxed);
     }
 }
 
@@ -385,6 +491,25 @@ impl WindowState {
         let previous = self.ptes.insert(offset, pte);
         debug_assert!(previous.is_none(), "a page mapped over another at {offset:#x}");
         LIVE_PTES.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// fxdax: records that the window has mapped a private page at `offset`, where it had mapped
+    /// nothing.
+    fn insert_private(&mut self, offset: u64) {
+        self.insert_pte(offset, Pte::Private);
+        let inserted = self.private.insert(offset);
+        debug_assert!(inserted, "a private page over another at {offset:#x}");
+        LIVE_PRIVATE.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// fxdax: forgets the private pages of `start..end`, which the window has unmapped, the stage
+    /// letting go of them with what it unmapped.
+    fn forget_private(&mut self, start: u64, end: u64) {
+        let offsets: Vec<u64> = self.private.range(start..end).copied().collect();
+        LIVE_PRIVATE.fetch_sub(offsets.len() as u64, Ordering::Relaxed);
+        for offset in offsets {
+            self.private.remove(&offset);
+        }
     }
 
     /// Records that the window has unmapped the page at `offset`, which it had mapped.
@@ -464,22 +589,33 @@ pub(crate) struct Window {
     /// Where a store fault following on from the last would be: the page after those it brought
     /// in.
     next_store: AtomicU64,
+    /// fxdax: how it copies on write, if it does (backlog doc-13).
+    copy_on_write: Option<CopyOnWrite>,
 }
 
 impl Window {
     /// A window of `size` bytes, which must be a multiple of the page size, whose pages are mapped
-    /// in `second_stage`, or, without one, in this process's memory.
-    fn new(size: u64, second_stage: Option<Arc<dyn SecondStage>>) -> Result<Self> {
+    /// in `second_stage`, or, without one, in this process's memory; copying on write as
+    /// `copy_on_write` says, if given.
+    fn new(
+        size: u64,
+        second_stage: Option<Arc<dyn SecondStage>>,
+        copy_on_write: Option<CopyOnWrite>,
+    ) -> Result<Self> {
         if size == 0 || !size.is_multiple_of(page_size()) {
             return Err(Errno::EINVAL);
         }
         let len = usize::try_from(size).map_err(|_| Errno::EINVAL)?;
+        // fxdax: no more private pages than the window has pages.
+        if copy_on_write.as_ref().is_some_and(|copying| copying.most > size / page_size()) {
+            return Err(Errno::EINVAL);
+        }
         let translation = match second_stage {
             Some(stage) => Translation::Stage(stage),
             None => Translation::Host { base: reserve(None, len).map_err(|_| Errno::ENOMEM)? },
         };
         let (state, next_store) = (Mutex::new(WindowState::default()), AtomicU64::new(u64::MAX));
-        Ok(Self { size, translation, state, next_store })
+        Ok(Self { size, translation, state, next_store, copy_on_write })
     }
 
     fn size(&self) -> u64 {
@@ -549,25 +685,35 @@ impl Window {
     /// Maps the page at `offset`, which a fault for `access` was on, and the `pages - 1` after it
     /// within its mapping, bringing them into memory first, and those its source brought in with
     /// it (`Source::brought_in_with`), and returns whether it waited for the page to be brought
-    /// in. A page evicted, or mapped anew, meanwhile is resolved as it is then.
+    /// in. A page evicted, or mapped anew, meanwhile is resolved as it is then. fxdax: a store to
+    /// a page mapped read-only makes it private, that page alone, in a window that copies on
+    /// write ([`Window::copy`]); in one that doesn't, it is refused.
     async fn resolve(&self, offset: u64, access: Access, pages: usize) -> Result<bool> {
         let ps = page_size();
         let mut waited = false;
         loop {
-            let (source, page, count, mapped) = {
+            let found = {
                 let state = self.state.lock().unwrap();
                 let (start, mapping) = state.mapping_at(offset).ok_or(Errno::ENOENT)?;
                 if access == Access::Write && !mapping.writable {
-                    return Err(Errno::EACCES);
+                    if self.copy_on_write.is_none() {
+                        return Err(Errno::EACCES);
+                    }
+                    None
+                } else {
+                    let left = (mapping.end - offset) / ps;
+                    let count = left.min(pages as u64);
+                    if count == 1 && state.ptes.contains_key(&offset) {
+                        return Ok(waited);
+                    }
+                    let page = mapping.page + (offset - start) / ps;
+                    let mapped = left.min(mapping.source.brought_in_with(page).max(count));
+                    Some((mapping.source.clone(), page, count, mapped))
                 }
-                let left = (mapping.end - offset) / ps;
-                let count = left.min(pages as u64);
-                if count == 1 && state.ptes.contains_key(&offset) {
-                    return Ok(waited);
-                }
-                let page = mapping.page + (offset - start) / ps;
-                let mapped = left.min(mapping.source.brought_in_with(page).max(count));
-                (mapping.source.clone(), page, count, mapped)
+            };
+            // fxdax: a store to a page mapped read-only, of a window that copies on write.
+            let Some((source, page, count, mapped)) = found else {
+                return Ok(self.copy(offset).await? | waited);
             };
             waited |= source.clone().bring_in(page).await?;
             for next in 1..count {
@@ -591,9 +737,167 @@ impl Window {
         }
     }
 
-    /// Maps `len` bytes of `source`'s pages from `source_offset` into the window at `offset`,
-    /// replacing what was mapped there, and then its pages in memory: one change to the second
-    /// stage, if there is one (`SecondStage::begin_change`).
+    /// fxdax: makes the page at `offset` private, as a store to it does in a window that copies on
+    /// write (backlog doc-13), unless it is already: a page holding what the page held, its
+    /// source's bytes, brought in first, or, of zeros, zeros, nothing copied; mapped writable in
+    /// its place ([`Window::map_private`]), one change of the second stage, the mapping still its
+    /// source's. The guest's view doesn't change: what it read there it reads, and no store was
+    /// lost, as the page was read-only. Returns whether it waited for the source's page. `EACCES`
+    /// past the window's private pages, which the guest keeps within: the store is refused, as one
+    /// to a read-only page of a window that doesn't copy, and its VM stops.
+    async fn copy(&self, offset: u64) -> Result<bool> {
+        let ps = page_size();
+        let copying = self.copy_on_write.as_ref().expect("a window that copies on write");
+        let mut waited = false;
+        loop {
+            let (source, page) = {
+                let state = self.state.lock().unwrap();
+                let (start, mapping) = state.mapping_at(offset).ok_or(Errno::ENOENT)?;
+                if state.private.contains(&offset) {
+                    return Ok(waited);
+                }
+                if state.private.len() as u64 >= copying.most {
+                    return Err(Errno::EACCES);
+                }
+                (mapping.source.clone(), mapping.page + (offset - start) / ps)
+            };
+            let zeros = source.is_zeros();
+            if !zeros {
+                waited |= source.clone().bring_in(page).await?;
+            }
+            let _change = self.stage().map(|stage| Change::begin(stage.as_ref()));
+            let mut state = self.state.lock().unwrap();
+            // Mapped anew meanwhile, by the guest's MAP or a free's zeros, the store is to what is
+            // mapped now.
+            let same = state.mapping_at(offset).is_some_and(|(start, mapping)| {
+                source_identity(&mapping.source) == source_identity(&source)
+                    && mapping.page + (offset - start) / ps == page
+            });
+            if !same && rules().copy_rechecks_mapping {
+                continue;
+            }
+            if state.private.contains(&offset) {
+                return Ok(waited);
+            }
+            // Counted as it is mapped: two stores may have found room for one.
+            if state.private.len() as u64 >= copying.most && rules().copy_counts_under_lock {
+                return Err(Errno::EACCES);
+            }
+            // What it holds: the source's page, in memory still, which the window's lock keeps so,
+            // as a source evicting it unmaps it here first, under the lock; or zeros.
+            let mut held = None;
+            if !zeros {
+                source.each_present(page..page + 1, &mut |_, frame| {
+                    held = Some(self.private_bytes(frame));
+                });
+                // Evicted since it was brought in: brought in again.
+                if held.is_none() {
+                    continue;
+                }
+            }
+            if state.ptes.contains_key(&offset) {
+                state.remove_pte(offset);
+            }
+            state.insert_private(offset);
+            self.map_private(offset, held);
+            return Ok(waited);
+        }
+    }
+
+    /// fxdax: what a private page copies of the source's page `frame` ([`Window::map_private`]):
+    /// where it is, for the second stage to copy it, which it keeps from being freed until the
+    /// stage has made the copy, as it took the page away; or, without a stage, its bytes.
+    fn private_bytes(&self, frame: &physmem::Page) -> Held {
+        match self.translation {
+            Translation::Stage(_) => {
+                // Once freed, it waits for the stage to copy it (`physmem::quarantine_with`).
+                frame.mark_staged();
+                Held::At(frame.location())
+            }
+            Translation::Host { .. } => {
+                let ps = page_size() as usize;
+                // SAFETY: The source's page is in memory while its lock is held, and never changes,
+                // a sealed extent's.
+                Held::Bytes(unsafe { std::slice::from_raw_parts(frame.as_ptr(), ps) }.into())
+            }
+        }
+    }
+
+    /// fxdax: maps a private page at `offset` (backlog doc-13), writable, in place of what was
+    /// mapped there: in the second stage, its own memory, holding what `held` says, or zeros
+    /// ([`SecondStage::make_private`]); or, without a stage, anonymous memory of this process.
+    fn map_private(&self, offset: u64, held: Option<Held>) {
+        match &self.translation {
+            Translation::Stage(stage) => {
+                let from = held.map(|held| match held {
+                    Held::At(location) => location,
+                    Held::Bytes(_) => unreachable!("a stage's private page held as bytes"),
+                });
+                stage.make_private(offset, from);
+            }
+            Translation::Host { base } => {
+                let ps = page_size() as usize;
+                let at = (base + offset as usize) as *mut libc::c_void;
+                let (prot, flags) = (
+                    libc::PROT_READ | libc::PROT_WRITE,
+                    libc::MAP_PRIVATE | libc::MAP_ANON | libc::MAP_FIXED,
+                );
+                // SAFETY: Anonymous memory over the window's reservation, which only the guest, a
+                // test, accesses: zeros.
+                let addr = unsafe { libc::mmap(at, ps, prot, flags, -1, 0) };
+                assert_eq!(addr, at, "map a private page: {}", std::io::Error::last_os_error());
+                if let Some(Held::Bytes(bytes)) = held {
+                    // SAFETY: The page just mapped, `ps` bytes, as `bytes` are.
+                    unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), at.cast(), ps) };
+                }
+            }
+        }
+    }
+
+    /// fxdax: makes the `len` bytes at `offset` private now, as stores to each of their pages
+    /// would ([`Window::copy`]), mapped writable, so for the guest ahead of its accesses as the
+    /// stage maps writable pages: doc-13's `PRIVATE`, a `write(2)`'s pages in one round trip
+    /// rather than a host fault each. `ENOMEM`, nothing made private, if they would take the
+    /// window past its private pages; `EINVAL` for a window that doesn't copy on write, a range
+    /// not within it, or one with a page mapped nothing at, none made private.
+    async fn make_private(&self, offset: u64, len: u64) -> Result<()> {
+        let copying = self.copy_on_write.as_ref().ok_or(Errno::EINVAL)?;
+        self.check_range(offset, len)?;
+        let ps = page_size();
+        let pages = (offset..offset + len).step_by(ps as usize);
+        {
+            let state = self.state.lock().unwrap();
+            let mut more = 0;
+            for at in pages.clone() {
+                let (_, mapping) = state.mapping_at(at).ok_or(Errno::EINVAL)?;
+                more += u64::from(!mapping.writable && !state.private.contains(&at));
+            }
+            if state.private.len() as u64 + more > copying.most {
+                return Err(Errno::ENOMEM);
+            }
+        }
+        for at in pages {
+            // A store to a page mapped writable, of a window that maps none so, needs no copy.
+            let writable = (self.state.lock().unwrap().mapping_at(at))
+                .is_some_and(|(_, mapping)| mapping.writable);
+            if writable {
+                continue;
+            }
+            // Past the bound, room taken by stores meanwhile.
+            if let Err(errno) = self.copy(at).await {
+                return Err(if errno == Errno::EACCES { Errno::ENOMEM } else { errno });
+            }
+        }
+        Ok(())
+    }
+
+    /// fxdax: the private pages it holds (backlog doc-13): none unless it copies on write.
+    pub(crate) fn private_pages(&self) -> u64 {
+        self.state.lock().unwrap().private.len() as u64
+    }
+
+    /// Maps as [`Window::map_as`] does, as the guest's `MAP`, which ends the private pages there.
+    #[cfg(test)]
     fn map(
         self: &Arc<Self>,
         offset: u64,
@@ -602,10 +906,27 @@ impl Window {
         len: u64,
         writable: bool,
     ) -> Result<()> {
+        self.map_as(offset, source, source_offset, len, writable, Private::Free)
+    }
+
+    /// Maps `len` bytes of `source`'s pages from `source_offset` into the window at `offset`,
+    /// replacing what was mapped there, and then its pages in memory: one change to the second
+    /// stage, if there is one (`SecondStage::begin_change`). fxdax: the private pages there go or
+    /// stay as `private` says: the guest's `MAP` ends them (`Private::Free`), the host's own changes
+    /// leave them, a free's zeros and a seal's remaps.
+    fn map_as(
+        self: &Arc<Self>,
+        offset: u64,
+        source: &Arc<dyn Source>,
+        source_offset: u64,
+        len: u64,
+        writable: bool,
+        private: Private,
+    ) -> Result<()> {
         let _change = self.stage().map(|stage| Change::begin(stage.as_ref()));
         let end = offset + len;
         let mut state = self.state.lock().unwrap();
-        self.unmap_ptes(&mut state, offset, end);
+        self.unmap_ptes(&mut state, offset, end, private);
         let forgotten = state.forget(offset, end);
         let identity = source_identity(source);
         let first = !state.by_source.contains_key(&identity);
@@ -618,7 +939,7 @@ impl Window {
             stage.window_mapped(offset, len);
         }
         // Its pages in memory are mapped now, so that the guest's first accesses to them do not
-        // fault.
+        // fault. fxdax: but where a private page stays.
         self.install(&mut state, offset, end);
         self.unmapped(&state, forgotten);
         Ok(())
@@ -631,11 +952,18 @@ impl Window {
         self.install(&mut state, offset, offset + len);
     }
 
-    /// Unmaps `len` bytes of the window at `offset`.
+    /// Unmaps `len` bytes of the window at `offset`: fxdax: the guest's `UNMAP`, which ends the
+    /// private pages there.
     fn unmap(&self, offset: u64, len: u64) {
+        self.unmap_as(offset, len, Private::Free);
+    }
+
+    /// fxdax: unmaps as [`Window::unmap`] does, its private pages there going or staying as
+    /// `private` says.
+    fn unmap_as(&self, offset: u64, len: u64, private: Private) {
         let end = offset + len;
         let mut state = self.state.lock().unwrap();
-        self.unmap_ptes(&mut state, offset, end);
+        self.unmap_ptes(&mut state, offset, end, private);
         let forgotten = state.forget(offset, end);
         self.unmapped(&state, forgotten);
     }
@@ -652,7 +980,8 @@ impl Window {
     }
 
     /// Unmaps the pages the window has mapped of `source`, by its identity, that `evicted` says
-    /// are of the frames it evicts: before it lets go of them.
+    /// are of the frames it evicts: before it lets go of them. fxdax: a private page within its
+    /// mappings is none of its pages, and stays (backlog doc-13).
     pub(crate) fn unmap_pages_of(&self, source: usize, evicted: &dyn Fn(u32) -> bool) {
         let mut state = self.state.lock().unwrap();
         let Some(starts) = state.by_source.get(&source) else { return };
@@ -662,7 +991,10 @@ impl Window {
         for (start, end) in ranges {
             gone.extend(
                 (state.ptes.range(start..end))
-                    .filter(|(_, pte)| evicted(pte.frame))
+                    .filter(|(_, pte)| match pte {
+                        Pte::Source { frame, .. } => evicted(*frame),
+                        Pte::Private => !rules().eviction_skips_private,
+                    })
                     .map(|(offset, _)| *offset),
             );
         }
@@ -700,11 +1032,11 @@ impl Window {
                 if staged {
                     frame.mark_staged();
                 }
-                found.push((offset, Pte { location: frame.location(), frame: frame.frame() }));
+                found.push((offset, frame.location(), frame.frame()));
             });
-            for (offset, pte) in found {
-                state.insert_pte(offset, pte);
-                pages.push((offset, pte.location, protection, open));
+            for (offset, location, frame) in found {
+                state.insert_pte(offset, Pte::Source { frame });
+                pages.push((offset, location, protection, open));
             }
         }
         // fxdax: the runs of pages consecutive in the window, which the maps below are made of
@@ -743,13 +1075,21 @@ impl Window {
         }
     }
 
-    /// Unmaps the pages the window has mapped of `start..end`.
-    fn unmap_ptes(&self, state: &mut WindowState, start: u64, end: u64) {
-        let gone: Vec<u64> = state.ptes.range(start..end).map(|(offset, _)| *offset).collect();
+    /// Unmaps the pages the window has mapped of `start..end`. fxdax: its private pages there too,
+    /// which the stage lets go of as it unmaps them, if `private` says they go; else they stay
+    /// mapped.
+    fn unmap_ptes(&self, state: &mut WindowState, start: u64, end: u64, private: Private) {
+        let gone: Vec<u64> = (state.ptes.range(start..end))
+            .map(|(offset, _)| *offset)
+            .filter(|offset| private == Private::Free || !state.private.contains(offset))
+            .collect();
         for offset in &gone {
             state.remove_pte(*offset);
         }
         self.unmap_runs(&gone);
+        if private == Private::Free {
+            state.forget_private(start, end);
+        }
     }
 
     /// Unmaps the pages at `offsets`, in order, in runs of consecutive pages.
@@ -843,10 +1183,23 @@ pub(crate) struct Rules {
     /// A freed extent's mappings map zeros rather than nothing: a store racing the free faults on
     /// them as on any read-only page.
     pub free_maps_zeros: bool,
+    /// fxdax: a store's private copy is mapped only if the page still maps what it copied: a
+    /// `MAP` meanwhile maps what the store is to (backlog doc-13).
+    pub copy_rechecks_mapping: bool,
+    /// fxdax: a private copy is counted against the window's bound as it is mapped, not only
+    /// before it is made: two stores at once may each have found room for one.
+    pub copy_counts_under_lock: bool,
+    /// fxdax: a source evicting its pages leaves the private pages within its mappings.
+    pub eviction_skips_private: bool,
 }
 
 impl Rules {
-    pub const ALL: Self = Self { free_maps_zeros: true };
+    pub const ALL: Self = Self {
+        free_maps_zeros: true,
+        copy_rechecks_mapping: true,
+        copy_counts_under_lock: true,
+        eviction_skips_private: true,
+    };
 }
 
 #[cfg(not(feature = "shuttle"))]
@@ -905,7 +1258,17 @@ impl<K: Keep> Dax<K> {
     /// A window of `size` bytes whose pages are mapped in `second_stage`, or, without one, in this
     /// process's memory, and a handle to it.
     pub fn new(size: u64, second_stage: Option<Arc<dyn SecondStage>>) -> Result<(Self, DaxWindow)> {
-        let window = Arc::new(Window::new(size, second_stage.clone())?);
+        Self::copying(size, second_stage, None)
+    }
+
+    /// fxdax: as [`Dax::new`], a window that copies on write as `copy_on_write` says, if given
+    /// (backlog doc-13).
+    pub fn copying(
+        size: u64,
+        second_stage: Option<Arc<dyn SecondStage>>,
+        copy_on_write: Option<CopyOnWrite>,
+    ) -> Result<(Self, DaxWindow)> {
+        let window = Arc::new(Window::new(size, second_stage.clone(), copy_on_write)?);
         let dax = Self {
             window: window.clone(),
             mappings: BTreeMap::new(),
@@ -925,9 +1288,32 @@ impl<K: Keep> Dax<K> {
     pub fn in_host_memory(
         stage: Arc<uffd::UffdSecondStage>,
     ) -> crate::error::Result<(Self, DaxWindow), crate::Error> {
-        let (mut dax, window) = Self::new(stage.size(), Some(stage.clone()))?;
+        Self::in_host_memory_copying(stage, None)
+    }
+
+    /// fxdax: as [`Dax::in_host_memory`], a window that copies on write as `copy_on_write` says,
+    /// if given, its stage told so.
+    #[cfg(all(test, target_os = "linux"))]
+    pub fn in_host_memory_copying(
+        stage: Arc<uffd::UffdSecondStage>,
+        copy_on_write: Option<CopyOnWrite>,
+    ) -> crate::error::Result<(Self, DaxWindow), crate::Error> {
+        if copy_on_write.is_some() {
+            stage.copy_on_write()?;
+        }
+        let (mut dax, window) = Self::copying(stage.size(), Some(stage.clone()), copy_on_write)?;
         dax._faults = Some(stage.serve(dax.window.clone())?);
         Ok((dax, window))
+    }
+
+    /// fxdax: whether the window copies on write (backlog doc-13).
+    pub fn copies_on_write(&self) -> bool {
+        self.window.copy_on_write.is_some()
+    }
+
+    /// fxdax: the private pages the window holds (backlog doc-13).
+    pub fn private_pages(&self) -> u64 {
+        self.window.private_pages()
     }
 
     /// fxdax: runs `f`, whose changes to the window's mappings are one change to the second stage
@@ -985,7 +1371,23 @@ impl<K: Keep> Dax<K> {
         len: u64,
         writable: bool,
     ) -> Result<()> {
-        self.window.map(offset, source, source_offset, len, writable)?;
+        self.map_as(offset, keep, source, source_offset, len, writable, Private::Free)
+    }
+
+    /// fxdax: maps as [`Dax::map`] does, the window's private pages there going or staying as
+    /// `private` says.
+    #[allow(clippy::too_many_arguments)]
+    fn map_as(
+        &mut self,
+        offset: u64,
+        keep: K,
+        source: &Arc<dyn Source>,
+        source_offset: u64,
+        len: u64,
+        writable: bool,
+        private: Private,
+    ) -> Result<()> {
+        self.window.map_as(offset, source, source_offset, len, writable, private)?;
         let end = offset + len;
         self.forget(offset, end);
         self.insert(offset, end, keep);
@@ -1014,7 +1416,9 @@ impl<K: Keep> Dax<K> {
         let mut mapped = Vec::with_capacity(parts.len());
         for (start, part_end) in parts {
             let (source_offset, len) = (source_offset + (start - offset), part_end - start);
-            self.map(start, keep.clone(), source, source_offset, len, false)?;
+            // fxdax: a seal's, the host's, which leaves the private pages there.
+            let private = Private::Keep;
+            self.map_as(start, keep.clone(), source, source_offset, len, false, private)?;
             mapped.push((start, len));
         }
         Ok(mapped)
@@ -1037,16 +1441,17 @@ impl<K: Keep> Dax<K> {
     /// freed extent mapped, from `zeros` instead, read-only, kept alive by `keep`: their memory
     /// goes with their old mappings. The guest may still touch such a range, as a store racing the
     /// move of what it maps, which faults as on any read-only page; unmapped, its fault would find
-    /// nothing to map.
+    /// nothing to map. fxdax: the private pages there stay, the guest's, which only its own `MAP`
+    /// or `UNMAP` ends (backlog doc-13).
     pub fn replace_kept(&mut self, kept: usize, keep: K, zeros: &Arc<dyn Source>) -> Result<()> {
         let starts: Vec<u64> =
             self.kept.get(&kept).map(|starts| starts.iter().copied().collect()).unwrap_or_default();
         for start in starts {
             let end = self.mappings[&start].0;
             if rules().free_maps_zeros {
-                self.window.map(start, zeros, 0, end - start, false)?;
+                self.window.map_as(start, zeros, 0, end - start, false, Private::Keep)?;
             } else {
-                self.window.unmap(start, end - start);
+                self.window.unmap_as(start, end - start, Private::Keep);
             }
             self.remove(start);
             self.insert(start, end, keep.clone());
@@ -1360,25 +1765,39 @@ pub(crate) mod tests {
     }
 
     /// A second stage that keeps the window's pages as the window maps them in it, the ranges the
-    /// window maps anew, and its deferrals, each of which defers changes.
+    /// window maps anew, and its deferrals, each of which defers changes. fxdax: and its private
+    /// pages, with what each was made of (backlog doc-13).
     #[derive(Default)]
     pub(crate) struct Recorded {
         pages: std::sync::Mutex<BTreeMap<u64, (PhysLocation, Protection)>>,
+        private: std::sync::Mutex<BTreeMap<u64, Option<PhysLocation>>>,
         mapped: std::sync::Mutex<Vec<(u64, u64)>>,
         deferrals: std::sync::Mutex<Vec<&'static str>>,
     }
 
     impl Recorded {
-        /// The pages mapped, by their numbers.
+        /// The pages mapped, by their numbers: fxdax: private pages too, writable.
         pub fn pages(&self) -> Vec<(u64, Protection)> {
             let pages = self.pages.lock().unwrap();
-            pages.iter().map(|(offset, (_, protection))| (offset / page_size(), *protection)).collect()
+            let private = self.private.lock().unwrap();
+            let mut all: Vec<(u64, Protection)> = (pages.iter())
+                .map(|(offset, (_, protection))| (*offset, *protection))
+                .chain(private.keys().map(|offset| (*offset, Protection::ReadWrite)))
+                .collect();
+            all.sort_by_key(|(offset, _)| *offset);
+            all.into_iter().map(|(offset, protection)| (offset / page_size(), protection)).collect()
         }
 
-        /// Where the pages mapped are, by their numbers.
+        /// Where the pages mapped are, by their numbers: those of physical memory alone.
         pub fn locations(&self) -> Vec<(u64, PhysLocation)> {
             let pages = self.pages.lock().unwrap();
             pages.iter().map(|(offset, (location, _))| (offset / page_size(), *location)).collect()
+        }
+
+        /// fxdax: the private pages, by their numbers, with the page each copied, if any.
+        pub fn private(&self) -> Vec<(u64, Option<PhysLocation>)> {
+            let private = self.private.lock().unwrap();
+            private.iter().map(|(offset, from)| (offset / page_size(), *from)).collect()
         }
 
         fn each_page(offset: u64, len: u64) -> impl Iterator<Item = u64> {
@@ -1389,10 +1808,12 @@ pub(crate) mod tests {
     impl SecondStage for Recorded {
         fn map(&self, offset: u64, phys: PhysLocation, len: u64, protection: Protection) {
             let mut pages = self.pages.lock().unwrap();
+            let private = self.private.lock().unwrap();
             for page in Self::each_page(offset, len) {
                 let at = PhysLocation { arena: phys.arena, offset: phys.offset + (page - offset) };
                 let before = pages.insert(page, (at, protection));
                 assert!(before.is_none(), "{page:#x} mapped twice");
+                assert!(!private.contains_key(&page), "{page:#x} mapped over a private page");
             }
         }
 
@@ -1405,13 +1826,22 @@ pub(crate) mod tests {
 
         fn unmap(&self, offset: u64, len: u64) {
             let mut pages = self.pages.lock().unwrap();
+            let mut private = self.private.lock().unwrap();
             for page in Self::each_page(offset, len) {
-                pages.remove(&page).expect("a page mapped");
+                let unmapped = pages.remove(&page).is_some() || private.remove(&page).is_some();
+                assert!(unmapped, "{page:#x} unmapped, not mapped");
             }
         }
 
         fn window_mapped(&self, offset: u64, len: u64) {
             self.mapped.lock().unwrap().push((offset, len));
+        }
+
+        fn make_private(&self, offset: u64, from: Option<PhysLocation>) {
+            // In place of what is mapped there.
+            self.pages.lock().unwrap().remove(&offset);
+            let before = self.private.lock().unwrap().insert(offset, from);
+            assert!(before.is_none(), "{offset:#x} made private twice");
         }
 
         fn begin_deferring(&self) {
@@ -1553,6 +1983,7 @@ pub(crate) mod tests {
             mappings,
             mapped_bytes: mapped_pages * ps,
             pages,
+            private_pages: 0,
         };
         let (source, other) = (TestSource::numbered(4, 1), TestSource::paged(2));
         let (mut dax, window) =
@@ -1692,5 +2123,193 @@ pub(crate) mod tests {
         }
         assert_eq!(Dax::<()>::new(ps + 1, None).err(), Some(Errno::EINVAL));
         assert_eq!(Dax::<()>::new(0, None).err(), Some(Errno::EINVAL));
+    }
+
+    /// fxdax: a window of `pages` pages that copies on write, holding `most` private pages at
+    /// most, of the default arena, through `stage`, or in this process's memory without one.
+    pub(crate) fn copying<K: Keep>(
+        pages: u64,
+        most: u64,
+        stage: Option<Arc<dyn SecondStage>>,
+    ) -> (Dax<K>, DaxWindow) {
+        let copying = CopyOnWrite::reserve(crate::pages::ArenaId::DEFAULT, most).unwrap();
+        Dax::copying(pages * page_size(), stage, Some(copying)).unwrap()
+    }
+
+    /// The byte at `at` in page `page` of a window with no second stage, as it maps it now, after
+    /// storing `write` there, if given.
+    fn byte_of(window: &DaxWindow, page: u64, at: usize, write: Option<u8>) -> u8 {
+        // SAFETY: The page is mapped, as the test faulted it in, and nothing else accesses it.
+        unsafe {
+            let byte = window.host_base().add((page * page_size()) as usize + at);
+            if let Some(value) = write {
+                byte.write_volatile(value);
+            }
+            byte.read_volatile()
+        }
+    }
+
+    /// The store fault at `offset` of `window`, resolved.
+    fn store(window: &DaxWindow, offset: u64) -> Result<()> {
+        futures::executor::block_on(window.fault(offset, Access::Write))
+    }
+
+    /// fxdax TASK-164.1 (backlog doc-13): in a window that copies on write, a store to a page
+    /// mapped read-only, a sealed extent's, gives it a private copy, holding what the page held,
+    /// mapped writable in its place, once; the source's page is as it was, as another mapping of
+    /// it reads. A store to zeros gives the page a private page of zeros, the shared zeros as they
+    /// were. A window that doesn't copy refuses the store, as before (`EACCES`).
+    #[test]
+    fn stores_to_read_only_pages_copy_them_once() {
+        let ps = page_size();
+        let source = TestSource::numbered(2, 1);
+        let zeros = crate::cache::zeros().unwrap();
+        let (mut dax, window) = copying::<()>(4, 3, None);
+        dax.map(0, (), &source.source(), 0, 2 * ps, false).unwrap();
+        dax.map(2 * ps, (), &zeros, 0, ps, false).unwrap();
+        assert_eq!(load(&window, 1), 2);
+
+        assert_eq!(store(&window, ps + 5), Ok(()));
+        assert_eq!(window.private_pages(), 1);
+        assert_eq!(byte_of(&window, 1, 0, None), 2, "the copy holds other bytes");
+        assert_eq!(byte_of(&window, 1, 7, Some(9)), 9);
+        dax.map(3 * ps, (), &source.source(), ps, ps, false).unwrap();
+        assert_eq!(load(&window, 3), 2);
+        assert_eq!(byte_of(&window, 3, 7, None), 2, "the store reached the source's page");
+        // A second store's fault finds the page private, and copies nothing.
+        assert_eq!(store(&window, ps), Ok(()));
+        assert_eq!(window.private_pages(), 1);
+        assert_eq!(byte_of(&window, 1, 7, None), 9);
+
+        assert_eq!(store(&window, 2 * ps), Ok(()));
+        assert_eq!(window.private_pages(), 2);
+        assert_eq!(byte_of(&window, 2, 100, Some(4)), 4);
+        assert_eq!(byte_of(&window, 2, 101, None), 0);
+        let mut shared = 1;
+        // SAFETY: The zeros' page is in memory while its lock is held.
+        zeros.each_present(0..1, &mut |_, frame| shared = unsafe { *frame.as_ptr().add(100) });
+        assert_eq!(shared, 0, "the store reached the shared zeros");
+
+        let (mut plain, plain_window) = Dax::<()>::new(ps, None).unwrap();
+        plain.map(0, (), &source.source(), 0, ps, false).unwrap();
+        assert_eq!(store(&plain_window, 0), Err(Errno::EACCES));
+        assert_eq!(plain_window.private_pages(), 0);
+    }
+
+    /// fxdax TASK-164.1: a window's private pages are the guest's until its own `MAP` or `UNMAP`
+    /// over them ends them: a source evicting its pages leaves those within its mappings, which
+    /// aren't its own, and so does a free mapping zeros where the freed extent was mapped. Shown
+    /// red by unmap_pages_of taking private pages too (`Rules::eviction_skips_private`), or
+    /// replace_kept mapping with `Private::Free`.
+    #[test]
+    fn private_pages_end_with_the_guests_maps_alone() {
+        let ps = page_size();
+        let (old, new) = (TestSource::numbered(4, 1), TestSource::numbered(4, 0x11));
+        let stage = Arc::new(Recorded::default());
+        let (mut dax, window) = copying::<Arc<u8>>(4, 4, Some(stage.clone()));
+        let (kept, freed, zero) = (Arc::new(0), Arc::new(1), Arc::new(2));
+        dax.map(0, kept.clone(), &old.source(), 0, 2 * ps, false).unwrap();
+        dax.map(2 * ps, freed.clone(), &old.source(), 2 * ps, 2 * ps, false).unwrap();
+        for page in 0..4 {
+            assert_eq!(store(&window, page * ps), Ok(()), "page {page}");
+        }
+        assert_eq!(window.private_pages(), 4);
+        let writable: Vec<_> = (0..4).map(|page| (page, Protection::ReadWrite)).collect();
+        assert_eq!(stage.pages(), writable);
+        // Each a copy of the source's page, which is mapped no more.
+        let mut sources = Vec::new();
+        old.each_present(0..4, &mut |page, frame| sources.push((page, Some(frame.location()))));
+        assert_eq!(stage.private(), sources);
+        assert_eq!(stage.locations(), [], "a source's page mapped");
+
+        // Every page of the source evicted.
+        dax.window.unmap_pages_of(source_identity(&old), &|_| true);
+        assert_eq!(stage.private(), sources, "evicted");
+        dax.replace_kept(freed.identity(), zero, &crate::cache::zeros().unwrap()).unwrap();
+        assert_eq!(stage.private(), sources, "freed");
+        assert_eq!(stage.locations(), [], "zeros mapped over private pages");
+        assert_eq!(window.private_pages(), 4);
+
+        dax.map(0, kept, &new.source(), 0, ps, false).unwrap();
+        assert_eq!(window.private_pages(), 3);
+        dax.unmap(3 * ps, ps).unwrap();
+        assert_eq!(window.private_pages(), 2);
+        let pages = [(0, Protection::Read), (1, Protection::ReadWrite), (2, Protection::ReadWrite)];
+        assert_eq!(stage.pages(), pages);
+        assert_eq!(stage.private(), sources[1..3]);
+        let mut first = None;
+        new.each_present(0..1, &mut |_, frame| first = Some(frame.location()));
+        assert_eq!(stage.locations(), [(0, first.unwrap())]);
+        assert_eq!(live().private_pages, 2);
+        drop((dax, window));
+        assert_eq!(live().private_pages, 0);
+    }
+
+    /// fxdax TASK-164.1: past its private pages, a window refuses a store to a read-only page, as
+    /// one that doesn't copy does (`EACCES`, which stops the VM), the page read as it was; an
+    /// `UNMAP` of a private page makes room for another.
+    #[test]
+    fn stores_past_the_private_pages_are_refused() {
+        let ps = page_size();
+        let source = TestSource::numbered(2, 1);
+        let (mut dax, window) = copying::<()>(2, 1, None);
+        dax.map(0, (), &source.source(), 0, 2 * ps, false).unwrap();
+        assert_eq!(store(&window, 0), Ok(()));
+        assert_eq!(store(&window, ps), Err(Errno::EACCES));
+        assert_eq!(window.private_pages(), 1);
+        assert_eq!(load(&window, 1), 2);
+        dax.unmap(0, ps).unwrap();
+        assert_eq!(store(&window, ps), Ok(()));
+        assert_eq!(window.private_pages(), 1);
+    }
+
+    /// fxdax TASK-164.1: `PRIVATE` makes a range's pages private at once, mapped writable, those
+    /// private already counted once; past the window's private pages it makes none
+    /// (`ENOMEM`). A window that doesn't copy on write takes none (`EINVAL`), nor a range with a
+    /// page mapped nothing at (`EINVAL`, as guest/sim's host has it).
+    #[test]
+    fn ranges_are_made_private_at_once_within_the_bound() {
+        let ps = page_size();
+        let source = TestSource::numbered(4, 1);
+        let stage = Arc::new(Recorded::default());
+        let (mut dax, window) = copying::<()>(4, 3, Some(stage.clone()));
+        dax.map(0, (), &source.source(), 0, 3 * ps, false).unwrap();
+        let private = |offset, len| futures::executor::block_on(window.make_private(offset, len));
+        assert_eq!(private(0, 4 * ps), Err(Errno::EINVAL));
+        dax.map(3 * ps, (), &source.source(), 3 * ps, ps, false).unwrap();
+        assert_eq!(private(0, 4 * ps), Err(Errno::ENOMEM));
+        assert_eq!(window.private_pages(), 0);
+
+        assert_eq!(private(ps, 2 * ps), Ok(()));
+        let (read, written) = (Protection::Read, Protection::ReadWrite);
+        assert_eq!(stage.pages(), [(0, read), (1, written), (2, written), (3, read)]);
+        assert_eq!(private(ps, 2 * ps), Ok(()));
+        assert_eq!(window.private_pages(), 2);
+        assert_eq!(private(0, ps), Ok(()));
+        assert_eq!(private(3 * ps, ps), Err(Errno::ENOMEM));
+        assert_eq!(private(4 * ps, ps), Err(Errno::EINVAL));
+
+        let (mut plain, plain_window) = Dax::<()>::new(ps, None).unwrap();
+        plain.map(0, (), &source.source(), 0, ps, false).unwrap();
+        let refused = futures::executor::block_on(plain_window.make_private(0, ps));
+        assert_eq!(refused, Err(Errno::EINVAL));
+    }
+
+    /// fxdax TASK-164.1: a window's private pages are reserved against its arena as it is made,
+    /// all of them, and let go of as it goes, so that a store never waits for memory; a bound of
+    /// none, or of more pages than the window has, is refused.
+    #[test]
+    fn private_pages_are_reserved_as_windows_are_made() {
+        let (ps, arena) = (page_size(), crate::pages::ArenaId::DEFAULT);
+        let before = physmem::pinned_bytes(arena);
+        let (dax, window) = copying::<()>(8, 4, None);
+        assert_eq!(physmem::pinned_bytes(arena) - before, 4 * ps);
+        drop((dax, window));
+        assert_eq!(physmem::pinned_bytes(arena), before);
+
+        let too_many = CopyOnWrite::reserve(arena, 9).unwrap();
+        assert_eq!(Dax::<()>::copying(8 * ps, None, Some(too_many)).err(), Some(Errno::EINVAL));
+        assert_eq!(physmem::pinned_bytes(arena), before);
+        assert_eq!(CopyOnWrite::reserve(arena, 0).err(), Some(Errno::EINVAL));
     }
 }

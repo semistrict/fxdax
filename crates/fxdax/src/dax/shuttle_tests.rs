@@ -141,11 +141,15 @@ pub(super) enum Event {
     Failed,
     /// A store failed once the seal began.
     StoreRefused,
+    /// fxdax: a store's private copy that a `MAP` after it ended.
+    MapEndedCopy,
+    /// fxdax: a store's private copy of what a `MAP` before it mapped.
+    CopiedAfterMap,
 }
 
 /// How often each event happened, over a test's runs (each test is a process of its own).
-static REACHED: [std::sync::atomic::AtomicUsize; 6] =
-    [const { std::sync::atomic::AtomicUsize::new(0) }; 6];
+static REACHED: [std::sync::atomic::AtomicUsize; 8] =
+    [const { std::sync::atomic::AtomicUsize::new(0) }; 8];
 
 fn reached(event: Event) {
     REACHED[event as usize].fetch_add(1, Ordering::Relaxed);
@@ -176,7 +180,7 @@ pub(super) fn reaching<S: Scheduler + 'static>(
 
 /// The attempts an access makes before it is taken never to complete, as a vCPU faulting on a
 /// page for ever: a few races' worth.
-const ATTEMPTS: usize = 100;
+pub(super) const ATTEMPTS: usize = 100;
 
 /// Two vCPUs read and write two pages of an open extent's writable mapping while the store seals
 /// it, mapping its sealed copy read-only in its place, then frees that, mapping zeros instead.
@@ -267,33 +271,86 @@ pub(super) fn stores_race_seals_and_frees<G: Guest>(mut dax: Dax<Arc<u8>>, guest
     store.join().unwrap();
 }
 
-/// A guest's second stage, as the window makes it: each page's physical page and protection.
+/// Where a page of a [`FakeStage`] is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Frame {
+    /// A page of physical memory.
+    Phys(PhysLocation),
+    /// fxdax: a private page (backlog doc-13), the stage's own, by the number it was made as,
+    /// which tells copies apart.
+    Private(u64),
+}
+
+/// A guest's second stage, as the window makes it.
 #[derive(Default)]
-struct FakeStage(shuttle::sync::Mutex<BTreeMap<u64, (PhysLocation, Protection)>>);
+struct Fake {
+    /// Each page's memory and protection.
+    pages: BTreeMap<u64, (Frame, Protection)>,
+    /// fxdax: the private pages' bytes, by their numbers.
+    private: BTreeMap<u64, Vec<u8>>,
+}
+
+#[derive(Default)]
+struct FakeStage(shuttle::sync::Mutex<Fake>);
 
 impl SecondStage for FakeStage {
     fn map(&self, offset: u64, phys: PhysLocation, len: u64, prot: Protection) {
-        let mut pages = self.0.lock().unwrap();
+        let mut fake = self.0.lock().unwrap();
         for at in (0..len).step_by(page_size() as usize) {
             let page = PhysLocation { arena: phys.arena, offset: phys.offset + at };
-            let replaced = pages.insert(offset + at, (page, prot));
+            let replaced = fake.pages.insert(offset + at, (Frame::Phys(page), prot));
             assert!(replaced.is_none(), "mapped over the page at {:#x}", offset + at);
         }
     }
 
     fn protect(&self, offset: u64, len: u64, prot: Protection) {
-        let mut pages = self.0.lock().unwrap();
+        let mut fake = self.0.lock().unwrap();
         for at in (offset..offset + len).step_by(page_size() as usize) {
-            pages.get_mut(&at).unwrap_or_else(|| panic!("protected unmapped {at:#x}")).1 = prot;
+            let page = fake.pages.get_mut(&at);
+            page.unwrap_or_else(|| panic!("protected unmapped {at:#x}")).1 = prot;
         }
     }
 
     fn unmap(&self, offset: u64, len: u64) {
-        let mut pages = self.0.lock().unwrap();
+        let mut fake = self.0.lock().unwrap();
         for at in (offset..offset + len).step_by(page_size() as usize) {
-            assert!(pages.remove(&at).is_some(), "unmapped unmapped {at:#x}");
+            match fake.pages.remove(&at) {
+                Some((Frame::Private(number), _)) => drop(fake.private.remove(&number)),
+                Some((Frame::Phys(_), _)) => {}
+                None => panic!("unmapped unmapped {at:#x}"),
+            }
         }
     }
+
+    /// fxdax: the page at `offset` a private page, in place of what was there, holding the page's
+    /// at `from`, or zeros.
+    fn make_private(&self, offset: u64, from: Option<PhysLocation>) {
+        let bytes = from.map_or_else(|| vec![0; page_size() as usize], page_bytes);
+        let mut fake = self.0.lock().unwrap();
+        let number = fake.private.keys().next_back().map_or(0, |last| last + 1);
+        fake.private.insert(number, bytes);
+        if let Some((Frame::Private(was), _)) =
+            fake.pages.insert(offset, (Frame::Private(number), Protection::ReadWrite))
+        {
+            panic!("{offset:#x} made private over private page {was}");
+        }
+    }
+}
+
+/// fxdax: the bytes of the page at `phys`.
+fn page_bytes(phys: PhysLocation) -> Vec<u8> {
+    let arena = crate::pages::arena_memory(phys.arena).expect("the page's arena");
+    let len = page_size() as usize;
+    let (prot, flags, fd) = (libc::PROT_READ, libc::MAP_SHARED, arena.as_raw_fd());
+    // SAFETY: A new mapping of a page of the memory, which outlives it.
+    let page =
+        unsafe { libc::mmap(std::ptr::null_mut(), len, prot, flags, fd, phys.offset as _) };
+    assert_ne!(page, libc::MAP_FAILED, "{}", std::io::Error::last_os_error());
+    // SAFETY: `page` is the mapping, `len` bytes.
+    let bytes = unsafe { std::slice::from_raw_parts(page.cast::<u8>(), len) }.to_vec();
+    // SAFETY: The mapping made above.
+    assert_eq!(unsafe { libc::munmap(page, len) }, 0);
+    bytes
 }
 
 /// A guest whose second stage is a [`FakeStage`], as the extent daemon's connection to a VM
@@ -305,34 +362,45 @@ struct StageGuest {
 }
 
 impl Guest for StageGuest {
-    type Where = PhysLocation;
+    type Where = Frame;
 
     fn access(&self, offset: u64, kind: Access, write: Option<u8>) -> Outcome<'_> {
-        let pages = self.stage.0.lock().unwrap();
-        match pages.get(&offset) {
-            Some(&(phys, protection))
+        let mut fake = self.stage.0.lock().unwrap();
+        match fake.pages.get(&offset).copied() {
+            Some((frame, protection))
                 if protection == Protection::ReadWrite
                     || (kind == Access::Read && protection == Protection::Read) =>
             {
-                let arena = crate::pages::arena_memory(phys.arena).expect("the page's arena");
-                Outcome::Made(byte(arena.as_raw_fd(), phys.offset, write))
+                match frame {
+                    Frame::Phys(phys) => {
+                        let arena =
+                            crate::pages::arena_memory(phys.arena).expect("the page's arena");
+                        Outcome::Made(byte(arena.as_raw_fd(), phys.offset, write))
+                    }
+                    Frame::Private(number) => {
+                        let bytes = fake.private.get_mut(&number).expect("a private page's bytes");
+                        if let Some(value) = write {
+                            bytes[0] = value;
+                        }
+                        Outcome::Made(bytes[0])
+                    }
+                }
             }
             _ => Outcome::Faulted(Box::pin(self.window.fault(offset, kind))),
         }
     }
 
     fn writable(&self) -> Vec<u64> {
-        let pages = self.stage.0.lock().unwrap();
-        pages
-            .iter()
+        let fake = self.stage.0.lock().unwrap();
+        (fake.pages.iter())
             .filter(|(_, (_, prot))| *prot == Protection::ReadWrite)
             .map(|(at, _)| *at)
             .collect()
     }
 
-    fn mapped(&self) -> Vec<(u64, PhysLocation)> {
-        let pages = self.stage.0.lock().unwrap();
-        pages.iter().map(|(at, (phys, _))| (*at, *phys)).collect()
+    fn mapped(&self) -> Vec<(u64, Frame)> {
+        let fake = self.stage.0.lock().unwrap();
+        fake.pages.iter().map(|(at, (frame, _))| (*at, *frame)).collect()
     }
 }
 
@@ -359,9 +427,139 @@ fn stores_race_seals_and_frees_by_pct() {
 /// on a page the window maps nothing at.
 #[test]
 fn needs_frees_to_map_zeros() {
-    *RULES.lock().unwrap() = Rules { free_maps_zeros: false };
+    *RULES.lock().unwrap() = Rules { free_maps_zeros: false, ..Rules::ALL };
     fails_with("ENOENT", || {
         Runner::new(PctScheduler::new(3, runs(10 * RUNS)), config())
             .run(seals_and_frees_on_a_fake_stage);
+    });
+}
+
+/// fxdax: what pages of a window that copies on write hold (backlog doc-13): an extent's, another
+/// mapped after it, and what a vCPU stores.
+const FIRST: u8 = 0x1a;
+const SECOND: u8 = 0x1b;
+const STORED: u8 = 0x1c;
+
+/// fxdax: a vCPU's store of [`STORED`] to the page at `offset`, retried as each fault is resolved:
+/// whether it was made, or refused (`EACCES`).
+fn stored(guest: &StageGuest, offset: u64) -> bool {
+    for _ in 0..ATTEMPTS {
+        match guest.access(offset, Access::Write, Some(STORED)) {
+            Outcome::Made(read) => {
+                assert_eq!(read, STORED, "the store at {offset:#x} read back otherwise");
+                return true;
+            }
+            Outcome::Faulted(fault) => match future::block_on(fault) {
+                Ok(()) => {}
+                Err(Errno::EACCES) => return false,
+                Err(err) => panic!("a store's fault at {offset:#x}: {err:?}"),
+            },
+            Outcome::Failed => unreachable!("a fake stage's accesses fault"),
+        }
+    }
+    panic!("a store at {offset:#x} never completed");
+}
+
+/// fxdax TASK-164.1: a vCPU stores to a page that a window copying on write maps read-only, an
+/// extent's, while the guest's `MAP` maps another's there: as the guest doesn't (it holds its
+/// file's semaphore), but the host stays whole whatever it does. Checked once both are done: the
+/// page maps the `MAP`'s, read-only, the copy the store made before ended; or a private copy of
+/// it, holding the store: never a copy of what the `MAP` replaced. The window counts the private
+/// pages the stage maps writable.
+fn copies_race_maps() {
+    let ps = page_size();
+    let stage = Arc::new(FakeStage::default());
+    let (mut dax, window) = super::tests::copying::<()>(1, 1, Some(stage.clone()));
+    let (first, second) = (TestSource::filled(1, FIRST), TestSource::filled(1, SECOND));
+    dax.map(0, (), &first.source(), 0, ps, false).unwrap();
+    let guest = Arc::new(StageGuest { stage: stage.clone(), window: window.clone() });
+    let storing = guest.clone();
+    let vcpu = thread::spawn(move || assert!(stored(&storing, 0), "the store was refused"));
+    let mapped = second.source();
+    let map = thread::spawn(move || {
+        dax.map(0, (), &mapped, 0, ps, false).unwrap();
+        dax
+    });
+    vcpu.join().unwrap();
+    let _dax = map.join().unwrap();
+
+    let mut shared = None;
+    second.each_present(0..1, &mut |_, frame| shared = Some(Frame::Phys(frame.location())));
+    let (frame, protection) = stage.0.lock().unwrap().pages[&0];
+    let writable = guest.writable();
+    assert_eq!(window.private_pages(), writable.len() as u64, "private pages miscounted");
+    match (frame, protection) {
+        (_, Protection::Read) => {
+            assert_eq!(Some(frame), shared, "the page maps neither the MAP's nor a copy");
+            reached(Event::MapEndedCopy);
+        }
+        (Frame::Private(number), Protection::ReadWrite) => {
+            let bytes = stage.0.lock().unwrap().private[&number].clone();
+            assert_eq!(bytes[0], STORED, "the private page lost the store");
+            assert_eq!(bytes[1], SECOND, "a copy of what the MAP replaced");
+            reached(Event::CopiedAfterMap);
+        }
+        (Frame::Phys(_), Protection::ReadWrite) => panic!("the MAP's page made writable"),
+    }
+}
+
+const COPY_EVENTS: [Event; 2] = [Event::MapEndedCopy, Event::CopiedAfterMap];
+
+/// For the invariants alone: a random schedule practically never lets the store's copy finish
+/// before the `MAP` (none of 800), which the PCT schedules below reach.
+#[test]
+fn copies_race_maps_randomly() {
+    Runner::new(RandomScheduler::new(runs(RUNS)), config()).run(copies_race_maps);
+}
+
+#[test]
+fn copies_race_maps_by_pct() {
+    reaching(|| PctScheduler::new(3, runs(RUNS)), copies_race_maps, &COPY_EVENTS);
+}
+
+/// fxdax: a store's copy mapped whatever the window maps by then: one of what a `MAP` replaced
+/// meanwhile is mapped in place of the `MAP`'s pages.
+#[test]
+fn needs_copies_to_recheck_their_mappings() {
+    *RULES.lock().unwrap() = Rules { copy_rechecks_mapping: false, ..Rules::ALL };
+    fails_with("a copy of what the MAP replaced", || {
+        Runner::new(PctScheduler::new(3, runs(10 * RUNS)), config()).run(copies_race_maps);
+    });
+}
+
+/// fxdax TASK-164.1: two vCPUs store to two pages of a window that holds one private page at
+/// most: one store is made, in a private copy, and the other refused, never both copied.
+fn copies_race_their_bound() {
+    let ps = page_size();
+    let stage = Arc::new(FakeStage::default());
+    let (mut dax, window) = super::tests::copying::<()>(2, 1, Some(stage.clone()));
+    let source = TestSource::filled(2, FIRST);
+    dax.map(0, (), &source.source(), 0, 2 * ps, false).unwrap();
+    let guest = Arc::new(StageGuest { stage, window: window.clone() });
+    let vcpus: Vec<_> = (0..2)
+        .map(|page| {
+            let guest = guest.clone();
+            thread::spawn(move || stored(&guest, page * ps))
+        })
+        .collect();
+    let made: Vec<bool> = vcpus.into_iter().map(|vcpu| vcpu.join().unwrap()).collect();
+    let (private, writable) = (window.private_pages(), guest.writable().len());
+    assert!(private <= 1 && writable <= 1, "past the window's private pages: {private}, {writable}");
+    assert_eq!(made.iter().filter(|made| **made).count(), 1, "stores made: {made:?}");
+    drop(dax);
+}
+
+#[test]
+fn copies_race_their_bound_by_pct() {
+    Runner::new(PctScheduler::new(3, runs(RUNS)), config()).run(copies_race_their_bound);
+}
+
+/// fxdax: copies counted against the bound before they are made alone: two stores each find room
+/// for one, and both are mapped.
+#[test]
+fn needs_copies_counted_as_they_are_mapped() {
+    *RULES.lock().unwrap() = Rules { copy_counts_under_lock: false, ..Rules::ALL };
+    fails_with("past the window's private pages", || {
+        Runner::new(PctScheduler::new(3, runs(10 * RUNS)), config()).run(copies_race_their_bound);
     });
 }

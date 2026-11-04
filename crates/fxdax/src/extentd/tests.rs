@@ -728,6 +728,97 @@ fn maps_a_window_in_the_vm_process() {
     assert_eq!(unsafe { libc::munmap(memory.as_ptr().cast(), 4 * ps) }, 0);
 }
 
+/// A byte of a pipe's read into the page at `addr`, as the kernel writes it, faulting for writing
+/// as KVM does for a vCPU: `Err` with the errno it failed with.
+fn kernel_store(addr: usize) -> Result<(), i32> {
+    let mut pipe = [0; 2];
+    // SAFETY: Makes a pipe, writes a byte to it, and reads one into `addr`, closing it after.
+    unsafe {
+        assert_eq!(libc::pipe(pipe.as_mut_ptr()), 0);
+        assert_eq!(libc::write(pipe[1], [0x77u8].as_ptr().cast(), 1), 1);
+        let read = libc::read(pipe[0], addr as *mut libc::c_void, 1);
+        let errno = std::io::Error::last_os_error().raw_os_error().unwrap();
+        libc::close(pipe[0]);
+        libc::close(pipe[1]);
+        if read == 1 { Ok(()) } else { Err(errno) }
+    }
+}
+
+/// fxdax TASK-164.1 (backlog doc-13): a window that copies on write, in the VM process, maps
+/// sealed extents and zeros alone (a `MAP` of an open extent, or a writable one, `EPERM`). The
+/// guest's store to a sealed extent's page makes the page private, the tenant's memory mapped in
+/// its place, the extent as the store's reads have it and another mapping of it; to zeros, a page
+/// of zeros. Past the window's private pages a store is refused (`EFAULT`, as `KVM_RUN` fails,
+/// which stops the VM); an `UNMAP` frees a private page, and `PRIVATE` makes pages private at once,
+/// within the bound (`ENOMEM` past it, `EINVAL` where nothing is mapped). A snapshot's fork is
+/// refused while the window has private pages (`EBUSY`).
+#[test]
+fn windows_copy_on_write_in_the_vm_process() {
+    host();
+    let ps = page_size() as usize;
+    let dir = tempfile::tempdir().unwrap();
+    let (store, served) = connect(&dir.path().join("store"), 1 << 24);
+    let memory = memory(4);
+    // SAFETY: The memory is the test's, and outlives the store.
+    unsafe { store.create_copying_dax_window_in_host_memory(memory, 4 * ps as u64, None, 2) }
+        .unwrap();
+    assert!(store.copies_on_write());
+    crate::guest_thread_started();
+    let base = memory.as_ptr() as usize;
+    let (sealed, open) = (
+        ExtentId { branch: store.branch(), sequence: 1 },
+        ExtentId { branch: store.branch(), sequence: 2 },
+    );
+    write(&store, sealed, 0, &pattern(3, ps)).unwrap();
+    store.commit(None).unwrap();
+    write(&store, open, 0, &pattern(4, ps)).unwrap();
+    assert_eq!(store.map(open, 0, ps as u64, 0, false), Err(Errno::EPERM));
+    assert_eq!(store.map(sealed, 0, ps as u64, 0, true), Err(Errno::EPERM));
+    store.commit(None).unwrap();
+    store.map(sealed, 0, ps as u64, 0, false).unwrap();
+    store.map(sealed, 0, ps as u64, ps as u64, false).unwrap();
+    futures::executor::block_on(store.map_zeros_async(2 * ps as u64, ps as u64)).unwrap();
+    // The window's bytes from `at` to `end`, as the guest reads them.
+    let window = |at: usize, end: usize| -> Vec<u8> {
+        // SAFETY: The window's memory, whose faults the store serves.
+        (at..end).map(|at| unsafe { memory.as_ptr().add(at).read_volatile() }).collect()
+    };
+    assert_eq!(window(0, ps), pattern(3, ps), "the sealed extent holds other data");
+    // Both read, so that both are mapped, from the one page the extent has in memory.
+    assert_eq!(window(ps, 2 * ps), pattern(3, ps), "the sealed extent holds other data");
+    assert_eq!(mapped_from(base), mapped_from(base + ps), "the extent's page isn't shared");
+
+    // SAFETY: As above, a store of the guest's.
+    unsafe { memory.as_ptr().write_volatile(0xee) };
+    assert_ne!(mapped_from(base), mapped_from(base + ps), "the store reached the shared page");
+    assert_eq!(window(0, 1), [0xee]);
+    assert_eq!(window(1, ps), pattern(3, ps)[1..], "the private page holds other data");
+    assert_eq!(window(ps, 2 * ps), pattern(3, ps), "the other mapping changed");
+    assert_eq!(read(&store, sealed, 0, ps), Ok(pattern(3, ps)));
+    assert_eq!(kernel_store(base + 2 * ps), Ok(()));
+    assert_eq!(window(2 * ps, 2 * ps + 1), [0x77]);
+    assert_eq!(window(2 * ps + 1, 3 * ps), vec![0; ps - 1], "zeros copied otherwise");
+
+    // Past the window's two private pages.
+    assert_eq!(kernel_store(base + ps), Err(libc::EFAULT));
+    assert_eq!(window(ps, 2 * ps), pattern(3, ps), "a store refused was made");
+    let point = dir.path().join("point");
+    assert_eq!(store.fork_quiescent(&point, store.branch() + 1), Err(Errno::EBUSY));
+    store.unmap(0, ps as u64).unwrap();
+    assert_eq!(store.make_private(ps as u64, ps as u64), Ok(()));
+    assert_eq!(kernel_store(base + ps), Ok(()));
+    assert_eq!(store.make_private(3 * ps as u64, ps as u64), Err(Errno::EINVAL));
+    store.map(sealed, 0, ps as u64, 3 * ps as u64, false).unwrap();
+    assert_eq!(store.make_private(3 * ps as u64, ps as u64), Err(Errno::ENOMEM));
+    store.unmap(0, 4 * ps as u64).unwrap();
+    assert_eq!(store.fork_quiescent(&point, store.branch() + 1), Ok(()));
+
+    drop(store);
+    served.join().unwrap();
+    // SAFETY: Unmaps the memory, which nothing uses any more.
+    assert_eq!(unsafe { libc::munmap(memory.as_ptr().cast(), 4 * ps) }, 0);
+}
+
 /// TASK-131.6: the daemon's gauges of its extent cache and its windows' mappings follow a window's
 /// mappings: an open extent's, its page stored to; sealed, the cached extent its two mappings hold
 /// (pinned), its pages faulted in; and unmapped, the cached extent nothing holds (idle).
@@ -4185,8 +4276,9 @@ enum LastWords {
 /// that name another tenant's among them, through its window and transfer area, then breaking off
 /// however it likes, panics nothing, leaves another tenant's store as it was and served, and lets
 /// its own go. TASK-154: and it gets of the bucket what its VM manager put in its directory alone,
-/// a point it restores, and nothing of the branch it names. Seeded by proptest, which says the
-/// sequence if one fails.
+/// a point it restores, and nothing of the branch it names. TASK-164.1: through a window that
+/// copies on write too, its stores' faults copying pages of its tenant's memory, and its `PRIVATE`s.
+/// Seeded by proptest, which says the sequence if one fails.
 #[test]
 fn whatever_a_vm_process_says_harms_no_other() {
     use super::wire::*;
@@ -4208,10 +4300,10 @@ fn whatever_a_vm_process_says_harms_no_other() {
     const LAST: u64 = 0x1a57;
     /// The ID of a restore's `OPEN`.
     const RESTORE: u64 = 0x7e57;
-    const KINDS: [u32; 31] = [
+    const KINDS: [u32; 32] = [
         OPEN, READ, WRITE, FREE, MAP, UNMAP, COMMIT, ROOT, INFO, WINDOW, FAULT, ACK, FORK, RESIZED,
         MAPPINGS, ADVANCE, LET_GO, PIN, UNPIN, TRANSFER, FREE_MANY, STAGE_COUNTS, BUILD, SEALED,
-        REPLY, STAGE_MAP, STAGE_UNMAP, CAPACITY, SEAL, 14, 0xffff_ffff,
+        PRIVATE, REPLY, STAGE_MAP, STAGE_UNMAP, CAPACITY, SEAL, 14, 0xffff_ffff,
     ];
     let wait = std::time::Duration::from_secs(60);
 
@@ -4306,6 +4398,8 @@ fn whatever_a_vm_process_says_harms_no_other() {
         }),
         (page(), length()).prop_map(|(at, len)| (UNMAP, 0, 0, [at, len, 0, 0, 0], Vec::new())),
         (page(), 0u32..4).prop_map(|(at, flags)| (FAULT, flags, 0, [at, 0, 0, 0, 0], Vec::new())),
+        // fxdax: of a window that copies on write, or not (backlog doc-13).
+        (page(), length()).prop_map(|(at, len)| (PRIVATE, 0, 0, [at, len, 0, 0, 0], Vec::new())),
         sequence().prop_map(|extent| (FREE, 0, 0, [OWN_BRANCH, extent, 0, 0, 0], Vec::new())),
         (0u32..4).prop_map(|flags| (COMMIT, flags, 0, [0; 5], Vec::new())),
         Just((MAPPINGS, 0, 0, [0; 5], Vec::new())),
@@ -4345,12 +4439,20 @@ fn whatever_a_vm_process_says_harms_no_other() {
         1 => Just(MAX_WINDOW + ps),
         1 => Just(1 << 60),
     ];
+    // fxdax: copying on write, of some private pages, none, or more than it has (backlog doc-13).
+    let copying = prop_oneof![
+        3 => Just(None),
+        3 => (1u64..16).prop_map(Some),
+        1 => Just(Some(0)),
+        1 => Just(Some(u64::MAX)),
+    ];
     let sequence = (
         proptest::collection::vec(message, 1..64),
         any::<bool>(),
         last_words,
         any::<bool>(),
         window,
+        copying,
     );
 
     let cases = AtomicU64::new(0);
@@ -4366,7 +4468,7 @@ fn whatever_a_vm_process_says_harms_no_other() {
         ..Config::default()
     };
     TestRunner::new(config)
-        .run(&sequence, |(messages, transfer, last_words, opened, window)| {
+        .run(&sequence, |(messages, transfer, last_words, opened, window, copying)| {
             let case = cases.fetch_add(1, Ordering::Relaxed);
             let path = vms.join(format!("store-{case}"));
             let (sender, mut receiver, stream, branch) = if opened {
@@ -4417,7 +4519,11 @@ fn whatever_a_vm_process_says_harms_no_other() {
                     }
                 })
             };
-            let window = Header::new(WINDOW, 2).with_args(&[window]);
+            let window = match copying {
+                None => Header::new(WINDOW, 2).with_args(&[window]),
+                Some(most) => (Header::new(WINDOW, 2).with_args(&[window, most]))
+                    .with_flags(WINDOW_COPY_ON_WRITE),
+            };
             sender.send(window, &[], &[]).unwrap();
             if transfer {
                 // SAFETY: Makes a descriptor, which is owned below.

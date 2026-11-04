@@ -299,6 +299,29 @@ pub struct ExtentStore {
 /// ([`ExtentStore::recently_sealed`]).
 type RecentlySealed = std::collections::VecDeque<(ExtentId, Vec<u8>, std::time::Instant)>;
 
+/// fxdax: the `MAP`s of open extents windows that copy on write refused (backlog doc-13), which no
+/// guest makes: a tripwire, which the daemon's metrics show.
+static OPEN_MAPS_REFUSED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// fxdax: the `MAP`s of open extents windows that copy on write refused so far.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn open_maps_refused() -> u64 {
+    OPEN_MAPS_REFUSED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// fxdax: refuses a `MAP` of `extent`, open, of a window that copies on write: counts and logs it
+/// (each of the first thousand, and every power of two after), and returns `EPERM`.
+fn refuse_open_map(extent: ExtentId) -> Errno {
+    let count = OPEN_MAPS_REFUSED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    if count <= 1000 || count.is_power_of_two() {
+        log::warn!(
+            "fxdax: a MAP of {extent:?}, open, refused: a window that copies on write maps sealed \
+             extents alone ({count} so far)"
+        );
+    }
+    Errno::EPERM
+}
+
 /// fxdax: whether reads of sealed extents are compared with their memory as sealed (TASK-121).
 fn check_sealed_reads() -> bool {
     static CHECK: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -1603,6 +1626,30 @@ impl ExtentStore {
         self.install_dax(|| Ok(Dax::new(size, second_stage)?))
     }
 
+    /// fxdax: creates the DAX window as [`create_dax_window`](Self::create_dax_window) does, one
+    /// that copies on write (backlog doc-13): a store to a page it maps read-only gives the page a
+    /// private copy, of the store's arena's memory, of which it holds `private_max` pages at most,
+    /// reserved against the arena now (`ENOMEM` past what it may hold that nothing can evict). It
+    /// maps no open extent, nor maps writably (`EPERM`). A store whose extents can't change, a
+    /// follower's, a point or a public base, takes none (as [`StoreAccess::may_write`]).
+    pub fn create_copying_dax_window(
+        &self,
+        size: u64,
+        second_stage: Option<Arc<dyn SecondStage>>,
+        private_max: u64,
+    ) -> Result<DaxWindow, Error> {
+        self.access().may_write()?;
+        let copying = crate::dax::CopyOnWrite::reserve(self.arenas.own(), private_max)?;
+        self.install_dax(|| Ok(Dax::copying(size, second_stage, Some(copying))?))
+    }
+
+    /// fxdax: the private pages the DAX window holds (backlog doc-13): none without a window, or
+    /// with one that doesn't copy on write.
+    pub fn private_pages(&self) -> Result<u64> {
+        let dax = self.dax.lock(&self.fence)?;
+        Ok(dax.as_ref().map_or(0, Dax::private_pages))
+    }
+
     /// Creates the DAX window in the `size` bytes of host memory at `base`, for a hypervisor that
     /// follows host memory, such as KVM: the store takes the memory over, maps the window's pages
     /// there, and serves the faults on the rest with userfaultfd, on a thread of its own.
@@ -1688,11 +1735,17 @@ impl ExtentStore {
         window_offset: u64,
         writable: bool,
     ) -> Result<()> {
-        self.dax
-            .lock(&self.fence)?
-            .as_ref()
-            .ok_or(Errno::ENOSYS)?
-            .check_range(window_offset, len)?;
+        let copying = {
+            let dax = self.dax.lock(&self.fence)?;
+            let dax = dax.as_ref().ok_or(Errno::ENOSYS)?;
+            dax.check_range(window_offset, len)?;
+            dax.copies_on_write()
+        };
+        // fxdax: a window that copies on write maps sealed extents and zeros alone, read-only
+        // (backlog doc-13).
+        if copying && writable {
+            return Err(Errno::EPERM);
+        }
         // fxdax: a base's is read-only, of the cache's one copy of it.
         let base = self.base_holding(extent)?;
         if base.is_some() && writable {
@@ -1704,6 +1757,17 @@ impl ExtentStore {
             (None, Some(following)) => {
                 let view = following.view.lock(&self.fence)?;
                 self.store.view_extent(&view, extent.into()).map_err(errno)?
+            }
+            // fxdax: an open extent, held in memory or written to the store, maps nowhere: a
+            // guest's bug, counted, as a tripwire (`open_maps_refused`).
+            (None, None) if copying => {
+                let held = self.open.lock(&self.fence)?.contains_key(&extent);
+                match self.store.extent(extent.into()).map_err(errno)? {
+                    _ if held => return Err(refuse_open_map(extent)),
+                    Some((_, true)) => return Err(refuse_open_map(extent)),
+                    Some((len, false)) => len,
+                    None => return Err(Errno::ENOENT),
+                }
             }
             (None, None) => {
                 if self.map_open(extent, offset, len, window_offset, writable)? {
@@ -4748,5 +4812,45 @@ mod tests {
             assert_eq!(opened.map_err(|err| err.errno()), Err(Some(Errno::EIO)));
         }
         assert!(ExtentStore::open(&path).unwrap().is_public());
+    }
+
+    /// fxdax TASK-164.1 (backlog doc-13): a window that copies on write maps sealed extents and
+    /// zeros alone, read-only: an extent written since the last commit it refuses to map (`EPERM`),
+    /// as it does a writable mapping of any, the open extent's bytes left in the store. Sealed, a
+    /// store to its page copies the page, the extent as the store's reads have it, and a commit
+    /// leaves the private page. A follower takes no such window.
+    #[test]
+    fn copying_windows_map_sealed_extents_alone() {
+        let (store, _dir) = store(1 << 24);
+        let ps = page_size();
+        let window = store.create_copying_dax_window(4 * ps, None, 2).unwrap();
+        let (sealed, open, never) = (id(&store, 1), id(&store, 2), id(&store, 3));
+        write(&store, sealed, 0, &pattern(1, BLOCK)).unwrap();
+        store.commit(None).unwrap();
+        write(&store, open, 0, &pattern(2, BLOCK)).unwrap();
+        assert_eq!(store.map(open, 0, ps, 0, false), Err(Errno::EPERM));
+        assert_eq!(open_maps_refused(), 1, "an open extent's MAP uncounted");
+        assert_eq!(store.map(never, 0, ps, 0, false), Err(Errno::ENOENT));
+        assert_eq!(store.map(sealed, 0, ps, 0, true), Err(Errno::EPERM));
+        assert_eq!(store.map(never, 0, ps, 0, true), Err(Errno::EPERM));
+        assert_eq!(store.store.extent(open.into()).map_err(errno), Ok(Some((BLOCK as u64, true))));
+        assert_eq!(read(&store, open, 0, BLOCK), Ok(pattern(2, BLOCK)));
+
+        store.map(sealed, 0, ps, 0, false).unwrap();
+        block_on(window.fault(0, Access::Write)).unwrap();
+        // SAFETY: The page is mapped, private, and nothing else accesses it.
+        unsafe { *window.host_base() = 0xee };
+        assert_eq!(store.private_pages(), Ok(1));
+        assert_eq!(read(&store, sealed, 0, BLOCK), Ok(pattern(1, BLOCK)));
+        store.commit(None).unwrap();
+        assert_eq!(store.private_pages(), Ok(1));
+        // SAFETY: As above.
+        assert_eq!(unsafe { *window.host_base() }, 0xee);
+
+        let again = store.create_copying_dax_window(ps, None, 1);
+        assert_eq!(again.err().and_then(|error| error.errno()), Some(Errno::EEXIST));
+        let follower = Arc::new(store).follow();
+        let following = follower.create_copying_dax_window(ps, None, 1);
+        assert_eq!(following.err().and_then(|error| error.errno()), Some(Errno::EROFS));
     }
 }

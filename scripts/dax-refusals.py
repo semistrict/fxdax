@@ -37,8 +37,10 @@ SEALED = re.compile(
 )
 
 
-# A VM process's line for a store the window refused, which names the thread that made it.
-THREAD = re.compile(r"the DAX window refused a store .*, by thread \d+ \(([^)]*)\)")
+# A VM process's line for a store the window refused, which names the thread that made it, and
+# says whether it is one of the VMM's vCPUs, by the VMM's own registry: a jailed VMM has no /proc to
+# name a thread by (TASK-167). Lines from before it name the thread alone.
+THREAD = re.compile(r"the DAX window refused a store .*, by thread \d+ \(([^,)]*)(?:, ([^)]*))?\)")
 
 
 def unexplained(lines):
@@ -47,9 +49,18 @@ def unexplained(lines):
 
 
 def by_guests(lines):
-    """The lines of `lines`, a VM process's, of stores refused that no kernel worker made."""
+    """The lines of `lines`, a VM process's, of stores refused that a vCPU made: no kernel worker,
+    as KVM's asynchronous page faults' are."""
     threads = ((line, THREAD.search(line)) for line in lines)
-    return [line for line, thread in threads if thread and not thread[1].startswith("kworker")]
+    return [line for line, thread in threads if thread and guests(thread[1], thread[2])]
+
+
+def guests(name, whose):
+    """Whether a store refused of thread `name`, which the VMM says is `whose` (or doesn't), was
+    the guest's own."""
+    if whose is not None:
+        return whose == "a vCPU"
+    return not name.startswith("kworker")
 
 
 def main():

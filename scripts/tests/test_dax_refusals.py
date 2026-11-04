@@ -33,6 +33,11 @@ WORKER = REFUSED.format(what="a store to a page the window maps read-only",
                         thread="kworker/1:2+events")
 VCPU = REFUSED.format(what="a store to a page the window maps read-only", thread="fc_vcpu 1")
 LOAD = REFUSED.format(what="an access to nothing mapped", thread="fc_vcpu 1")
+# As a jailed VMM logs them, with no /proc to name a thread by: whose by its registry (TASK-167).
+JAILED_WORKER = REFUSED.format(what="a store to a page the window maps read-only",
+                               thread="gone, not a vCPU")
+JAILED_VCPU = REFUSED.format(what="a store to a page the window maps read-only",
+                             thread="gone, a vCPU")
 
 
 class DaxRefusals(unittest.TestCase):
@@ -56,6 +61,10 @@ class DaxRefusals(unittest.TestCase):
 
     def test_stores_of_vcpus_are_guests(self):
         self.assertEqual(dax_refusals.by_guests([WORKER, VCPU, LOAD]), [VCPU])
+
+    def test_the_vmm_says_whose_a_store_was(self):
+        """TASK-167: a jailed VMM's thread is gone to /proc, its registry saying whose it was."""
+        self.assertEqual(dax_refusals.by_guests([JAILED_WORKER, JAILED_VCPU]), [JAILED_VCPU])
 
 
 if __name__ == "__main__":

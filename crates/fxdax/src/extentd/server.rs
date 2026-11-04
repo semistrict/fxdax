@@ -994,6 +994,10 @@ impl Connection {
         match request {
             Err(errno) => refuse(answer, errno),
             Ok(Request::Fault(fault)) => serve_future(turn, self.fault(fault, answer)),
+            // fxdax: as a fault, which waits for its pages to be brought in (backlog doc-13).
+            Ok(Request::Private { window_offset, len }) => {
+                serve_future(turn, self.make_private(window_offset, len, answer))
+            }
             Ok(Request::Map(map))
                 if matches!(map.contents, MappingContents::Extent { writable: true, .. }) =>
             {
@@ -1136,6 +1140,12 @@ impl Connection {
             Request::Unpin(extent) => store.unpin(*extent),
             // Authorized, as every path a request names ([`Connection::serve_in_turn`]).
             Request::Fork { path, branch, quiescent } => {
+                // fxdax: a snapshot's, whose window maps extents and zeros alone, the guest's
+                // freeze having rebound its private pages, whose bytes no extent holds (backlog
+                // doc-13).
+                if *quiescent && store.private_pages()? > 0 {
+                    return Err(Errno::EBUSY);
+                }
                 let forked =
                     if *quiescent { store.point(path, *branch) } else { store.fork(path, *branch) };
                 forked.map_err(|err| {
@@ -1147,12 +1157,22 @@ impl Connection {
             }
             Request::Info => store.info().map(|info| reply.args = Info(info).args()),
             // No larger than the daemon makes room for, the codec has it (TASK-150.3).
-            Request::Window { size } => {
+            Request::Window { size, private_max } => {
                 let (sender, acks) = (self.peer.sender.clone(), self.peer.acks.clone());
                 let stage = Arc::new(RemoteStage { sender, acks });
-                let window = store.create_dax_window(*size, Some(stage)).map_err(|err| {
+                let window = match private_max {
+                    None => store.create_dax_window(*size, Some(stage)),
+                    // fxdax: one that copies on write (backlog doc-13).
+                    Some(most) => store.create_copying_dax_window(*size, Some(stage), *most),
+                };
+                let window = window.map_err(|err| {
                     log::warn!("extentd: creating a window: {err:#}");
-                    Errno::EINVAL
+                    // fxdax: its private pages past what the tenant may hold, or a store that
+                    // takes none, say so.
+                    match err.errno() {
+                        Some(errno @ (Errno::ENOMEM | Errno::EROFS | Errno::EPERM)) => errno,
+                        _ => Errno::EINVAL,
+                    }
                 })?;
                 // fxdax: its mappings' reply, as many as it may have, its VM process's room
                 // holds (TASK-79.43).
@@ -1170,7 +1190,9 @@ impl Connection {
             }
             Request::Build(commit) => self.said_build(store.branch(), commit),
             // Served apart, as futures ([`Connection::serve_in_turn`]).
-            Request::Open { .. } | Request::Fault(_) => Err(Errno::EINVAL),
+            Request::Open { .. } | Request::Fault(_) | Request::Private { .. } => {
+                Err(Errno::EINVAL)
+            }
         }
     }
 
@@ -1192,7 +1214,7 @@ impl Connection {
     /// fxdax: resolves the guest's `fault` ([`FAULT`]), and replies: a future, which holds no
     /// thread while it waits for the pager (TASK-92.20), served so ([`serve_future`]).
     async fn fault(self: Arc<Self>, fault: Fault, answer: Answer) {
-        let Fault { offset, access, page } = fault;
+        let Fault { offset, access, page, .. } = fault;
         let faulted = async {
             let window = self.window.lock().unwrap().clone().ok_or(Errno::EBADF)?;
             match page {
@@ -1209,11 +1231,7 @@ impl Connection {
         // so: what the window had there, and its latest MAPs and UNMAPs, each refusal of the
         // first thousand, a run's few, and every power of two after (TASK-99, TASK-101). Those of
         // pages mapped nothing too: a guest took one as mapped writably (TASK-119.21).
-        let refused = match faulted {
-            Err(Errno::EACCES) => Some("a store"),
-            Err(Errno::ENOENT) => Some("an access to nothing mapped"),
-            _ => None,
-        };
+        let refused = refusal(&fault, faulted);
         if faulted == Err(Errno::EACCES) {
             crate::stats::add(crate::stats::Counter::FaultRefusals, 1);
         }
@@ -1231,6 +1249,19 @@ impl Connection {
         }
         let reply = answer.reply_header();
         answer.send(faulted, reply, Vec::new(), Vec::new());
+    }
+
+    /// fxdax: makes `len` bytes of the window at `window_offset` private ([`PRIVATE`], backlog
+    /// doc-13), and replies: a future, as a fault is, which holds no thread while it waits for the
+    /// pages it copies to be brought in.
+    async fn make_private(self: Arc<Self>, window_offset: u64, len: u64, answer: Answer) {
+        let made = async {
+            let window = self.window.lock().unwrap().clone().ok_or(Errno::EBADF)?;
+            window.make_private(window_offset, len).await
+        };
+        let made = made.await;
+        let reply = answer.reply_header();
+        answer.send(made, reply, Vec::new(), Vec::new());
     }
 
     /// The VM process's physical memory, which the reply to its `OPEN` hands it, of the arena
@@ -1993,6 +2024,42 @@ fn peer_process(stream: &UnixStream) -> std::io::Result<Option<std::os::fd::Owne
     Ok(Some(process))
 }
 
+/// fxdax: what of the guest's access a fault the window resolved as `faulted` refused, if it
+/// refused any, to tell of: a store to a page mapped read-only, or an access to a page mapped
+/// nothing at. A probe ([`FAULT_PROBE`]) is the VM process's own, of the page after one a store
+/// faulted on, which the guest may map nothing at: its refusal refuses the guest nothing. Told of
+/// as the guest's, it filled extentd's log with refusals no access of the guest's met (r544).
+fn refusal(fault: &Fault, faulted: Result<(), Errno>) -> Option<&'static str> {
+    match faulted {
+        _ if fault.probe => None,
+        Err(Errno::EACCES) => Some("a store"),
+        Err(Errno::ENOENT) => Some("an access to nothing mapped"),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod refusal_tests {
+    use super::{Errno, Fault, refusal};
+    use crate::Access;
+
+    /// fxdax: a probe of a page mapped nothing at, the VM process's own after a store's fault,
+    /// refuses the guest nothing, and isn't told of; the guest's own access to it is, as a store
+    /// refused is. Red with probes told of as the guest's accesses.
+    #[test]
+    fn probes_refuse_the_guest_nothing() {
+        let (load, store) = (Access::Read, Access::Write);
+        let probe = Fault { offset: 0x1000, access: load, page: true, probe: true };
+        let guests = Fault { probe: false, ..probe };
+        let nothing_mapped = Err(Errno::ENOENT);
+        assert_eq!(refusal(&probe, nothing_mapped), None);
+        assert_eq!(refusal(&guests, nothing_mapped), Some("an access to nothing mapped"));
+        let stored = Fault { access: store, page: false, ..guests };
+        assert_eq!(refusal(&stored, Err(Errno::EACCES)), Some("a store"));
+        assert_eq!(refusal(&guests, Ok(())), None);
+    }
+}
+
 /// fxdax: quarantines `pages`, freed, which a VM process may still reach, as a stage operation
 /// taking them away may be unacknowledged (`physmem::quarantine_with`, TASK-79.9): until
 /// every VM process connected has made those it was sent so far, or gone. The pages are freed as
@@ -2183,6 +2250,10 @@ impl SecondStage for RemoteStage {
     fn window_mapped(&self, offset: u64, len: u64) {
         self.send(StageOp::Mapped { offset, len });
     }
+
+    fn make_private(&self, offset: u64, from: Option<crate::pages::PhysLocation>) {
+        self.send(StageOp::Private { offset, from });
+    }
 }
 
 #[cfg(test)]
@@ -2246,7 +2317,9 @@ mod acks_tests {
         let start = std::time::Instant::now();
         let at = |seconds| start + std::time::Duration::from_secs(seconds);
         let first = acks.next(true);
-        (0..50_000).for_each(|_| drop(acks.next(true)));
+        (0..50_000).for_each(|_| {
+            acks.next(true);
+        });
         assert_eq!(acks.unanswered(at(0)), std::time::Duration::ZERO);
         for second in 1..=20 {
             acks.acked(first + second * 1000);

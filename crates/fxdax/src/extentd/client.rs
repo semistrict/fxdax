@@ -44,6 +44,8 @@ pub struct RemoteExtentStore {
     /// Its transfer area, which reads and writes move their data through ([`TRANSFER`]), unless
     /// the daemon took none.
     transfer: Option<Transfer>,
+    /// fxdax: whether its window copies on write (backlog doc-13), once created so.
+    copying: std::sync::atomic::AtomicBool,
 }
 
 impl RemoteExtentStore {
@@ -140,7 +142,9 @@ impl RemoteExtentStore {
                 None
             }
         };
-        Ok(Self { client, branch, memories, faults: Mutex::new(None), read_only, transfer })
+        let copying = std::sync::atomic::AtomicBool::new(false);
+        let faults = Mutex::new(None);
+        Ok(Self { client, branch, memories, faults, read_only, transfer, copying })
     }
 
     /// fxdax: whether it is a follower's, read-only ([`RemoteExtentStore::connect_read_only`]).
@@ -497,6 +501,32 @@ impl RemoteExtentStore {
         self.client.request(&map).await.map(drop)
     }
 
+    /// fxdax: maps zeros, read-only, at `len` bytes of the window at `window_offset` (doc-4's
+    /// `MAP_ZEROS`, backlog doc-13): a hole's, or what is past a file's end, whose store makes a
+    /// private page of zeros, nothing copied.
+    pub async fn map_zeros_async(&self, window_offset: u64, len: u64) -> Result<()> {
+        let zeros = WindowMapping { window_offset, len, contents: MappingContents::Zeros };
+        self.client.request(&Request::Map(zeros)).await.map(drop)
+    }
+
+    /// fxdax: makes `len` bytes of the window at `window_offset` private now, as stores to each of
+    /// their pages would, mapped writable (doc-4's `PRIVATE`, backlog doc-13): `ENOMEM` past its
+    /// private pages, none made private; `EINVAL` unless the window copies on write.
+    pub fn make_private(&self, window_offset: u64, len: u64) -> Result<()> {
+        blocking(self.make_private_async(window_offset, len))
+    }
+
+    /// [`RemoteExtentStore::make_private`], waiting for the daemon holding no thread.
+    pub async fn make_private_async(&self, window_offset: u64, len: u64) -> Result<()> {
+        self.client.request(&Request::Private { window_offset, len }).await.map(drop)
+    }
+
+    /// fxdax: whether its window copies on write
+    /// ([`create_copying_dax_window_in_host_memory`](Self::create_copying_dax_window_in_host_memory)).
+    pub fn copies_on_write(&self) -> bool {
+        self.copying.load(Ordering::Acquire)
+    }
+
     /// fxdax: maps the pages of the window's `len` bytes at `window_offset` that its memory holds
     /// for the guest ahead of its accesses, through the window's `Prefault`: the pages a guest maps
     /// read-only to read next (doc-4's `MAP_AHEAD`), which the window leaves to its accesses
@@ -550,6 +580,43 @@ impl RemoteExtentStore {
         size: u64,
         prefault: Option<Arc<dyn Prefault>>,
     ) -> Result<(), Error> {
+        // SAFETY: As the caller promises.
+        unsafe { self.create_window(base, size, prefault, None) }
+    }
+
+    /// fxdax: creates the store's window as
+    /// [`create_dax_window_in_host_memory`](Self::create_dax_window_in_host_memory) does, one that
+    /// copies on write (backlog doc-13), of `private_max` private pages at most, which the daemon
+    /// reserves against its tenant's memory (`ENOMEM` past it): for a guest that took doc-4's
+    /// `DAX_COW`. A store to a page it maps read-only, by the guest's own threads
+    /// ([`crate::guest_thread_started`]), or one of a page mapped here, makes the page private.
+    ///
+    /// # Safety
+    ///
+    /// As [`create_dax_window_in_host_memory`](Self::create_dax_window_in_host_memory).
+    pub unsafe fn create_copying_dax_window_in_host_memory(
+        &self,
+        base: NonNull<u8>,
+        size: u64,
+        prefault: Option<Arc<dyn Prefault>>,
+        private_max: u64,
+    ) -> Result<(), Error> {
+        // SAFETY: As the caller promises.
+        unsafe { self.create_window(base, size, prefault, Some(private_max)) }
+    }
+
+    /// The window, made as `private_max` says: copying on write if given.
+    ///
+    /// # Safety
+    ///
+    /// As [`create_dax_window_in_host_memory`](Self::create_dax_window_in_host_memory).
+    unsafe fn create_window(
+        &self,
+        base: NonNull<u8>,
+        size: u64,
+        prefault: Option<Arc<dyn Prefault>>,
+        private_max: Option<u64>,
+    ) -> Result<(), Error> {
         let mut faults = self.faults.lock().unwrap();
         if faults.is_some() {
             return Err(Error::new(Errno::EEXIST));
@@ -561,8 +628,12 @@ impl RemoteExtentStore {
         let phys = crate::dax::uffd::Memories::Given(memories);
         // SAFETY: As the caller promises.
         let stage = unsafe { UffdSecondStage::new(base.as_ptr() as usize, size, phys, prefault) }?;
+        if private_max.is_some() {
+            stage.copy_on_write()?;
+        }
         let _ = self.client.stage.set(stage.clone());
-        self.client.request_blocking(&Request::Window { size })?;
+        self.client.request_blocking(&Request::Window { size, private_max })?;
+        self.copying.store(private_max.is_some(), Ordering::Release);
         *faults = Some(stage.serve(Arc::new(RemoteFaults { client: self.client.clone(), size }))?);
         Ok(())
     }
@@ -893,6 +964,11 @@ impl Client {
             StageOp::Protect { offset, len, protection } => stage.protect(offset, len, protection),
             StageOp::Unmap { offset, len } => stage.unmap(offset, len),
             StageOp::Mapped { offset, len } => stage.window_mapped(offset, len),
+            // fxdax: refused, as the daemon's error, of a window that doesn't copy.
+            StageOp::Private { .. } if !stage.copying() => {
+                return Err(std::io::Error::other("a private page of a window that doesn't copy"));
+            }
+            StageOp::Private { offset, from } => stage.make_private(offset, from),
         }
         Ok(())
     }
@@ -1089,8 +1165,8 @@ struct RemoteFaults {
 }
 
 impl RemoteFaults {
-    fn fault_with(&self, offset: u64, access: Access, page: bool) -> BoxFuture<'_, Result<()>> {
-        let reply = self.client.request(&Request::Fault(Fault { offset, access, page }));
+    fn fault_with(&self, fault: Fault) -> BoxFuture<'_, Result<()>> {
+        let reply = self.client.request(&Request::Fault(fault));
         Box::pin(async move { reply.await.map(drop) })
     }
 }
@@ -1101,10 +1177,14 @@ impl Faults for RemoteFaults {
     }
 
     fn fault(&self, offset: u64, access: Access) -> BoxFuture<'_, Result<()>> {
-        self.fault_with(offset, access, false)
+        self.fault_with(Fault { offset, access, page: false, probe: false })
     }
 
     fn fault_page(&self, offset: u64, access: Access) -> BoxFuture<'_, Result<()>> {
-        self.fault_with(offset, access, true)
+        self.fault_with(Fault { offset, access, page: true, probe: false })
+    }
+
+    fn probe(&self, offset: u64) -> BoxFuture<'_, Result<()>> {
+        self.fault_with(Fault { offset, access: Access::Read, page: true, probe: true })
     }
 }

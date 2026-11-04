@@ -97,7 +97,11 @@ pub(crate) const ROOT: u32 = 8;
 /// fields in order.
 pub(crate) const INFO: u32 = 9;
 /// Creates the store's window, of `args[0]` bytes, which the VM process maps in its own memory as
-/// the daemon's [stage operations](STAGE_MAP) say.
+/// the daemon's [stage operations](STAGE_MAP) say. fxdax: with [`WINDOW_COPY_ON_WRITE`], one that
+/// copies on write, of `args[1]` private pages at most, which the daemon reserves against its
+/// tenant's memory (`ENOMEM` past it), for a guest that took doc-4's `DAX_COW` (backlog doc-13):
+/// a store to a page it maps read-only makes the page private, and it maps no open extent, nor
+/// anything writably.
 pub(crate) const WINDOW: u32 = 10;
 /// Resolves the guest's fault at `args[0]` in the window: a store if [`FAULT_WRITE`], on that page
 /// alone if [`FAULT_PAGE`]. The stage operations it takes come before the reply.
@@ -178,6 +182,12 @@ pub(crate) const BUILD: u32 = 28;
 pub(crate) const SEALED: u32 = 29;
 /// fxdax: the most bytes a [`BUILD`]'s commit has.
 pub(crate) const MAX_BUILD: usize = 64;
+/// fxdax: makes the `args[1]` bytes of a window that copies on write at `args[0]` private now, as
+/// stores to each page would, mapped writable, for the guest ahead of its accesses: doc-4's
+/// `PRIVATE` (backlog doc-13). `ENOMEM`, none made private, past the window's private pages;
+/// `EINVAL` of a window that doesn't copy on write. The stage operations it takes come before the
+/// reply.
+pub(crate) const PRIVATE: u32 = 30;
 /// fxdax: how long a VM process's stage operations go uncounted at most while it makes them
 /// ([`STAGE_COUNTS`]): within a sample of the daemon's stats file (`FXDAX_EXTENTD_STATS`).
 pub(crate) const STAGE_COUNTS_EVERY: std::time::Duration = std::time::Duration::from_millis(500);
@@ -203,6 +213,12 @@ pub(crate) const WRITE_ROOT: u32 = 1 << 4;
 pub(crate) const READ_TRANSFER: u32 = 1 << 0;
 pub(crate) const FAULT_WRITE: u32 = 1 << 0;
 pub(crate) const FAULT_PAGE: u32 = 1 << 1;
+/// fxdax: a [`FAULT`] on a page alone, to read, that is the VM process's own probe of the page,
+/// mapping it ahead of the guest's accesses, not the guest's access: the daemon tells of no
+/// refusal of it, as the guest may map nothing there.
+pub(crate) const FAULT_PROBE: u32 = 1 << 2;
+/// fxdax: a [`WINDOW`] that copies on write.
+pub(crate) const WINDOW_COPY_ON_WRITE: u32 = 1 << 0;
 /// fxdax: the bytes an extent's ID takes in a [`FREE_MANY`]'s payload: its branch and its
 /// sequence, little-endian words.
 pub(crate) const EXTENT_ID_BYTES: usize = 16;
@@ -221,6 +237,12 @@ pub(crate) const STAGE_PROTECT: u32 = 102;
 pub(crate) const STAGE_UNMAP: u32 = 103;
 /// fxdax: the window maps `args[1]` bytes at `args[0]` anew (`SecondStage::window_mapped`).
 pub(crate) const STAGE_MAPPED: u32 = 106;
+/// fxdax: the page of the window at `args[0]` is private from now on (backlog doc-13,
+/// `SecondStage::make_private`), the VM process's own memory, holding the bytes of the page at
+/// `args[1]` in arena `args[4]`'s object if `args[2]` is 1, or zeros if it is 0, in place of what
+/// is mapped there. Acknowledged ([`STAGE_ACK`]): it takes the page mapped there away, and the
+/// daemon keeps the page it is copied from until it is made.
+pub(crate) const STAGE_PRIVATE: u32 = 108;
 /// The store's capacity is `args[0]` bytes now, which the guest takes (the control API's `ResizeStore`); or, with
 /// [`CAPACITY_ASK`], the guest is asked to shrink to `args[0]` bytes, and answers ([`RESIZED`]).
 pub(crate) const CAPACITY: u32 = 104;

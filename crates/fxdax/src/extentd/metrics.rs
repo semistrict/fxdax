@@ -19,7 +19,9 @@
 //!   (`crate::cache::entries`); `fxdax_extentd_window_mappings`,
 //!   `fxdax_extentd_window_mapped_bytes` and `fxdax_extentd_window_pages`: the ranges the VMs'
 //!   windows map, their bytes, and the pages of them mapped in the VM processes (`crate::dax::live`,
-//!   TASK-131.6).
+//!   TASK-131.6); fxdax: `fxdax_extentd_window_private_pages`, of those, the private copies of
+//!   windows that copy on write, and `fxdax_extentd_window_open_maps_refused_total`, the `MAP`s of
+//!   open extents they refused, which no guest makes (backlog doc-13).
 //! - `fxdax_extentd_<counter>_total`: the counters the control API's `GetStats` reports
 //!   (`crate::stats::Stats::named`, its dashes underscores): maps, faults, page-ins, reads and
 //!   their nanoseconds and bytes; the VM processes' changes to their windows (`stage_ops`) and
@@ -48,7 +50,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 /// The kinds of request metrics are kept of, and their names.
-const KINDS: [(u32, &str); 20] = [
+const KINDS: [(u32, &str); 21] = [
     (OPEN, "open"),
     (READ, "read"),
     (WRITE, "write"),
@@ -69,6 +71,8 @@ const KINDS: [(u32, &str); 20] = [
     (UNPIN, "unpin"),
     (TRANSFER, "transfer"),
     (FREE_MANY, "free_many"),
+    // fxdax: backlog doc-13.
+    (PRIVATE, "private"),
 ];
 
 /// The upper bounds of the requests' duration histograms' buckets, in seconds: from what the
@@ -203,12 +207,26 @@ pub fn render() -> String {
             "Pages the VMs' DAX windows have mapped in their VM processes, all windows'.",
             live.pages,
         ),
+        (
+            "window_private_pages",
+            "Of those, private copies of pages stores made, of windows that copy on write.",
+            live.private_pages,
+        ),
     ];
     for (name, help, value) in gauges {
         let _ = writeln!(out, "# HELP fxdax_extentd_{name} {help}");
         let _ = writeln!(out, "# TYPE fxdax_extentd_{name} gauge");
         let _ = writeln!(out, "fxdax_extentd_{name} {value}");
     }
+    // fxdax: a tripwire (backlog doc-13): no guest maps an open extent in a window that copies on
+    // write.
+    let name = "fxdax_extentd_window_open_maps_refused_total";
+    let _ = writeln!(
+        out,
+        "# HELP {name} MAPs of open extents that windows copying on write refused."
+    );
+    let _ = writeln!(out, "# TYPE {name} counter");
+    let _ = writeln!(out, "{name} {}", crate::extents::open_maps_refused());
 
     let memory = [
         ("memory_bytes", "Memory extents' pages hold, every tenant's.", Some(physmem::arenas_bytes())),
