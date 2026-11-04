@@ -3,9 +3,10 @@ id: TASK-167
 title: >-
   Refusal gate: in the jailer every refused store's thread reads as gone, so
   KVM's workers count as the guest's
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-04 08:37'
+updated_date: '2026-11-04 16:35'
 labels: []
 dependencies: []
 priority: high
@@ -31,3 +32,9 @@ GCE r534 (batch 2026-11-04b, FXDAX_FIRECRACKER_JAIL=1, FXDAX_FIRECRACKER_SECCOMP
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A refused store's log says whether a vCPU made it, from the VMM's own registry of its vCPU threads, not /proc, which a jailed VMM lacks; scripts/dax-refusals.py fails only on a vCPU's (test_the_vmm_says_whose_a_store_was, red under the old rule). GCE r543 and r546: jailed pgbench-dax passes the gate. Verified: macOS scripts/test.sh (workspace 2,089/2,089, Shuttle, scripts); GitHub CI, every job (run 41859737932: Linux workspace, Shuttle incl. the uffd private-memory models, guest-sim's 3,000 seeds and mutants); GCE r546 copy-on-write off in the jailer under the production seccomp filter (5 suites, refusal gate clean), r547 copy-on-write on (crash-dax, pgbench-dax-cow, pgbench-dax-cow-forked, bigmap-dax-cow pass).
+<!-- SECTION:FINAL_SUMMARY:END -->

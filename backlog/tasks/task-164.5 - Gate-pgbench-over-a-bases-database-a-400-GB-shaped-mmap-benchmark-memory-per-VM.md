@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-04 07:58'
+updated_date: '2026-11-04 16:35'
 labels: []
 dependencies: []
 parent_task_id: TASK-164
@@ -32,3 +33,9 @@ The density gate measures memory per VM, from which the user's density targets a
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-11-04: the gate's cases landed; a recorded run in docs/measurements (AC2) waits for writable DAX's deletion (batch 2026-11-04e).
+<!-- SECTION:NOTES:END -->
