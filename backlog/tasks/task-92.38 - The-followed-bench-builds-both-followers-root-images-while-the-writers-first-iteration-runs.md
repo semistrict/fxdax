@@ -3,9 +3,10 @@ id: TASK-92.38
 title: >-
   The followed bench builds both followers' root images while the writer's first
   iteration runs
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-22 21:06'
+updated_date: '2026-11-04 10:39'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -35,7 +36,15 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity medium): docs/review
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A followed bench's writer waits for both followers to be spawned, their root images built, before its first iteration. Verified: macOS scripts/test.sh (workspace 2,083/2,083, Shuttle, scripts); GitHub CI on the branch (Linux workspace, guest-sim 3,000 seeds); GCE r539 at 8da75b3cc with Firecracker a2db2b3b0 (fxfs-guest-dax, checks-dax, -delay, -small, script-full-dax, xfstests-fxfs-guest-dax, checks, crash-dax, pgbench-dax all pass).
+
+Not measured: decided the handshake stands on its own, the overlap it removes being plain from the code.
+<!-- SECTION:FINAL_SUMMARY:END -->

@@ -3,9 +3,10 @@ id: TASK-92.26
 title: >-
   Lookups drain a directory's whole unlink queue, so deletes with a cold dcache
   apply one at a time under i_rwsem
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-22 21:06'
+updated_date: '2026-11-04 10:39'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -29,13 +30,19 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity medium): docs/review
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A measurement or a test shows the cost before the change (requests, copies, lock hold or time on the workload named)
-- [ ] #2 The change removes or bounds it, shown by the same measurement, and the macOS and Linux (GCE) suites pass
+- [x] #1 A measurement or a test shows the cost before the change (requests, copies, lock hold or time on the workload named)
+- [x] #2 The change removes or bounds it, shown by the same measurement, and the macOS and Linux (GCE) suites pass
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A lookup drains only the inode it finds, so deletes with a cold dcache no longer apply unlinks one at a time; names queued to go still give ENOENT, casefold included (two unit tests and the model test's holds_names). Not measured: a cold-dcache rm -rf bench. Verified: macOS scripts/test.sh (workspace 2,083/2,083, Shuttle, scripts); GitHub CI on the branch (Linux workspace, guest-sim 3,000 seeds); GCE r539 at 8da75b3cc with Firecracker a2db2b3b0 (fxfs-guest-dax, checks-dax, -delay, -small, script-full-dax, xfstests-fxfs-guest-dax, checks, crash-dax, pgbench-dax all pass).
+<!-- SECTION:FINAL_SUMMARY:END -->
