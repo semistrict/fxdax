@@ -8,6 +8,13 @@
 
 # Decisions
 
+## Copy-on-write DAX's private pages are the VM process's memory, laid out as the window is (TASK-164.1, 2026-11-04)
+
+Each private page was a page of the tenant's arena, mapped in the VM process on its own: a mapping each, as the arena's frames aren't laid out by window offset, so the second stage's run budget (about 30k) trimmed and reinstalled them by the thousand; r544 held 110,857 and its fault thread trimmed instead of lifting a vCPU's restriction (`KVM_RUN` kept failing with `EFAULT`, exit 159). Decided: a window that copies on write has the VM process's private memory (`dax::uffd::PrivateMemory`), a memfd as large as the window, mapped shared at the window's offsets wherever nothing is installed, only private pages filled (`UFFDIO_COPY` through a second view, holes elsewhere so faults still go to the stage). `STAGE_PRIVATE` (108) has the VM process copy the source page (pread of the arena it holds) or zeros in; an unmap or map over it punches the hole. Adjacent private pages and the memory around them are one mapping; trims never touch them. The daemon keeps only their offsets and count; `private_max` is still pinned against the tenant's arena as the window is made.
+**Cost:** the private pages' memory is the VM process's (its memcg), no longer in the arena's bytes: a tenant's limit no longer bounds it, `private_max` does.
+**Instead:** (1) private frames allocated next to their window neighbours' (`alloc_after`): best effort, and scattered pages (pgbench's) still cost a mapping each; (2) a per-window physmem arena laid out by window offset: chunk-granular accounting charges 2 MiB per scattered page; (3) charging the memfd against the tenant's cap (physmem `charge`): possible follow-up.
+**Undoing it:** `Window::copy` back to `physmem::alloc` + `map_run`, and `leave_out` to anonymous memory.
+
 ## The control socket is owner-only (TASK-159, 2026-11-04)
 
 The control socket (`FXDAX_EXTENTD_GRPC`) followed the umask, world-connectable under the jailer's umask 000, and grants bound their tenants' sockets then chmodded them, a window at the umask's mode. Decided: the control socket is 0600, the daemon's user's, whatever the umask; a tenant's socket is 0660 (its jail's uid and gid) from the moment it appears at its path. Both go through `extentd::bind_given`, which binds in a private 0700 directory, sets the owner and mode there, and hard-links the socket into place (`EEXIST` if anything is there). No code or doc gave a group the control socket; every caller found runs as the daemon's user or root.
