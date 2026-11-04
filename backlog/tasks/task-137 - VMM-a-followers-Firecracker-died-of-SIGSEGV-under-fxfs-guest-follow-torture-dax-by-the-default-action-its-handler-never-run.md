@@ -3,10 +3,10 @@ id: TASK-137
 title: >-
   VMM: a follower's Firecracker died of SIGSEGV under
   fxfs-guest-follow-torture-dax, by the default action, its handler never run
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-31 07:09'
-updated_date: '2026-10-31 12:46'
+updated_date: '2026-11-04 10:40'
 labels:
   - bug
   - followers
@@ -29,9 +29,9 @@ Soak 2026-10-31 (scripts/soak-workloads-gce.sh replicas, FXDAX_FOLLOW_SECONDS=60
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Notes
@@ -43,3 +43,9 @@ Soak 2026-10-31 (scripts/soak-workloads-gce.sh replicas, FXDAX_FOLLOW_SECONDS=60
 
 2026-10-31, r329: 9 of 9, no crash: 26 clean rounds at 10 minutes since the crash, 30 of 31 in all, Firecracker 412e0b8d4 throughout. Unexplained: nothing changed for it, and at this rate it could come back: results/cores keeps its stacks if it does. Left open for that.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Firecracker's fault handlers run on an alternate signal stack of 256 KiB (SA_ONSTACK) on every thread (vCPUs, API, gdb, the extent device's, main), installed before each thread's seccomp filter, and log the faulting thread, address and whether it overflowed its stack. test_stack_overflow_runs_the_handler fails with the stack taken out, the process killed by the signal as the follower's VMM was; the original crash's cause stays unknown until it recurs, when the log will say. Verified: macOS scripts/test.sh on the tree merged with batch 2026-11-04 (workspace 2,083/2,083, Shuttle, scripts); GitHub CI on the branch, every job (run 41806511048, Linux workspace with the codec's tests); GCE r540 in the jailer under the production seccomp filter (fxfs-guest-dax, checks-dax, crash-dax, migrate-tenant-dax, pgbench pass; the refusal gate's failure is TASK-167's, the jailer never mounting /proc).
+<!-- SECTION:FINAL_SUMMARY:END -->
