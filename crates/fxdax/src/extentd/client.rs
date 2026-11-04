@@ -7,8 +7,8 @@
 
 pub(crate) use super::codec::Opening;
 use super::codec::{
-    Advanced, Area, Data, Encoded, Fault, Info, Made, Opened, ReadInto, Request, StageOp, Told,
-    stream_bytes,
+    Advanced, Area, Data, Encoded, Fault, Info, Made, Opened, ReadInto, Request, StageCosts,
+    StageOp, Told, stream_bytes,
 };
 use super::wire::*;
 use crate::dax::Faults;
@@ -225,26 +225,6 @@ impl RemoteExtentStore {
     /// [`RemoteExtentStore::resized`], waiting for the daemon holding no thread.
     pub async fn resized_async(&self, capacity: u64, took: bool) -> Result<()> {
         self.client.request(&Request::Resized { capacity, took }).await.map(drop)
-    }
-
-    /// fxdax: calls `asked` with the number of each ask the daemon makes of the guest to seal
-    /// what it holds open, as another guest's writable MAP was refused for want of memory its open
-    /// pages hold, which only its seal lets go of: which returns whether the guest is told, and
-    /// answers once it has sealed ([`RemoteExtentStore::sealed`]). An ask no guest is told of, as
-    /// with nothing called so, is answered at once: nothing will seal for it (TASK-153.15).
-    pub fn on_seal(&self, asked: impl Fn(u64) -> bool + Send + Sync + 'static) {
-        let _ = self.client.on_seal.set(Box::new(asked));
-    }
-
-    /// fxdax: answers the daemon's ask of `number` to seal, and those before it: the guest has
-    /// sealed, or tried to, or won't.
-    pub fn sealed(&self, number: u64) -> Result<()> {
-        blocking(self.sealed_async(number))
-    }
-
-    /// [`RemoteExtentStore::sealed`], waiting for the daemon holding no thread.
-    pub async fn sealed_async(&self, number: u64) -> Result<()> {
-        self.client.request(&Request::Sealed { number }).await.map(drop)
     }
 
     /// The branch whose extents the guest mints.
@@ -475,16 +455,10 @@ impl RemoteExtentStore {
         self.client.request_blocking(&Request::Map(*mapping)).map(drop)
     }
 
-    /// Maps `len` bytes at `offset` in `extent` into the window at `window_offset` (`MAP`).
-    pub fn map(
-        &self,
-        extent: ExtentId,
-        offset: u64,
-        len: u64,
-        window_offset: u64,
-        writable: bool,
-    ) -> Result<()> {
-        blocking(self.map_async(extent, offset, len, window_offset, writable))
+    /// Maps `len` bytes at `offset` in `extent`, sealed, into the window at `window_offset`,
+    /// read-only (`MAP`).
+    pub fn map(&self, extent: ExtentId, offset: u64, len: u64, window_offset: u64) -> Result<()> {
+        blocking(self.map_async(extent, offset, len, window_offset))
     }
 
     /// [`RemoteExtentStore::map`], waiting for the daemon holding no thread.
@@ -494,9 +468,8 @@ impl RemoteExtentStore {
         offset: u64,
         len: u64,
         window_offset: u64,
-        writable: bool,
     ) -> Result<()> {
-        let contents = MappingContents::Extent { extent, offset, writable };
+        let contents = MappingContents::Extent { extent, offset };
         let map = Request::Map(WindowMapping { window_offset, len, contents });
         self.client.request(&map).await.map(drop)
     }
@@ -521,8 +494,8 @@ impl RemoteExtentStore {
         self.client.request(&Request::Private { window_offset, len }).await.map(drop)
     }
 
-    /// fxdax: whether its window copies on write
-    /// ([`create_copying_dax_window_in_host_memory`](Self::create_copying_dax_window_in_host_memory)).
+    /// fxdax: whether its window copies on write, a writer's
+    /// ([`create_dax_window_in_host_memory`](Self::create_dax_window_in_host_memory)).
     pub fn copies_on_write(&self) -> bool {
         self.copying.load(Ordering::Acquire)
     }
@@ -550,7 +523,7 @@ impl RemoteExtentStore {
     /// fxdax: the stage operations this process made of the store's window so far, and the
     /// nanoseconds they took, which it tells the daemon ([`STAGE_COUNTS`]).
     #[cfg(test)]
-    pub(super) fn stage_counts(&self) -> [u64; 5] {
+    pub(super) fn stage_counts(&self) -> StageCosts {
         self.client.stage_counts()
     }
 
@@ -567,8 +540,14 @@ impl RemoteExtentStore {
     }
 
     /// Creates the store's window in the `size` bytes of this process's memory at `base`, which
-    /// a hypervisor such as KVM maps as guest memory: the daemon maps its pages there,
-    /// and the guest's faults there go to it. `prefault`, if any, is told of the pages mapped.
+    /// a hypervisor such as KVM maps as guest memory: the daemon maps its pages there, read-only,
+    /// and the guest's faults there go to it. `prefault`, if any, is told of the pages mapped
+    /// for the guest ahead of its accesses. fxdax: a writer's copies on write (backlog doc-13), of
+    /// `private_max` private pages at most, one at least, which the daemon reserves against its
+    /// tenant's memory (`ENOMEM` past it): a store to a page, by the guest's own threads
+    /// ([`crate::guest_thread_started`]), or one of a page mapped here, makes the page private. A
+    /// follower's copies nothing, refusing every store, its `private_max` 0 (`EINVAL` otherwise, as
+    /// a writer's of 0).
     ///
     /// # Safety
     ///
@@ -579,44 +558,12 @@ impl RemoteExtentStore {
         base: NonNull<u8>,
         size: u64,
         prefault: Option<Arc<dyn Prefault>>,
-    ) -> Result<(), Error> {
-        // SAFETY: As the caller promises.
-        unsafe { self.create_window(base, size, prefault, None) }
-    }
-
-    /// fxdax: creates the store's window as
-    /// [`create_dax_window_in_host_memory`](Self::create_dax_window_in_host_memory) does, one that
-    /// copies on write (backlog doc-13), of `private_max` private pages at most, which the daemon
-    /// reserves against its tenant's memory (`ENOMEM` past it): for a guest that took doc-4's
-    /// `DAX_COW`. A store to a page it maps read-only, by the guest's own threads
-    /// ([`crate::guest_thread_started`]), or one of a page mapped here, makes the page private.
-    ///
-    /// # Safety
-    ///
-    /// As [`create_dax_window_in_host_memory`](Self::create_dax_window_in_host_memory).
-    pub unsafe fn create_copying_dax_window_in_host_memory(
-        &self,
-        base: NonNull<u8>,
-        size: u64,
-        prefault: Option<Arc<dyn Prefault>>,
         private_max: u64,
     ) -> Result<(), Error> {
-        // SAFETY: As the caller promises.
-        unsafe { self.create_window(base, size, prefault, Some(private_max)) }
-    }
-
-    /// The window, made as `private_max` says: copying on write if given.
-    ///
-    /// # Safety
-    ///
-    /// As [`create_dax_window_in_host_memory`](Self::create_dax_window_in_host_memory).
-    unsafe fn create_window(
-        &self,
-        base: NonNull<u8>,
-        size: u64,
-        prefault: Option<Arc<dyn Prefault>>,
-        private_max: Option<u64>,
-    ) -> Result<(), Error> {
+        let private_max = (private_max != 0).then_some(private_max);
+        if private_max.is_some() == self.read_only {
+            return Err(Error::new(Errno::EINVAL));
+        }
         let mut faults = self.faults.lock().unwrap();
         if faults.is_some() {
             return Err(Error::new(Errno::EEXIST));
@@ -713,8 +660,6 @@ struct Client {
     stage_counts: StageCounts,
     /// What the daemon's changes of the store's capacity go to ([`RemoteExtentStore::on_capacity`]).
     capacity: OnceLock<Box<dyn Fn(u64, bool) + Send + Sync>>,
-    /// fxdax: what the daemon's asks to seal go to ([`RemoteExtentStore::on_seal`]).
-    on_seal: OnceLock<Box<dyn Fn(u64) -> bool + Send + Sync>>,
     /// fxdax: the latest commit of a follower's writer heard of, and what hears of the next
     /// ([`RemoteExtentStore::on_committed`]).
     committed: AtomicU64,
@@ -738,7 +683,6 @@ impl Client {
             stage: OnceLock::new(),
             stage_counts: StageCounts::default(),
             capacity: OnceLock::new(),
-            on_seal: OnceLock::new(),
             committed: AtomicU64::new(0),
             on_committed: OnceLock::new(),
             closing: Default::default(),
@@ -864,13 +808,6 @@ impl Client {
                     }
                     continue;
                 }
-                Ok(Told::Seal { number }) => {
-                    // No guest told: nothing seals, which it says at once.
-                    if !self.on_seal.get().is_some_and(|asked| asked(number)) {
-                        drop(self.request(&Request::Sealed { number }));
-                    }
-                    continue;
-                }
                 Ok(Told::Committed { epoch }) => {
                     if self.committed.fetch_max(epoch, Ordering::AcqRel) < epoch
                         && let Some(committed) = self.on_committed.get()
@@ -945,11 +882,10 @@ impl Client {
     /// fxdax: what the stage operations made so far cost, as [`STAGE_COUNTS`] says it: how many,
     /// the nanoseconds they took, and the changes among them that took access away from pages
     /// installed, by how (`dax::uffd::Taken`).
-    fn stage_counts(&self) -> [u64; 5] {
+    fn stage_counts(&self) -> StageCosts {
         let [ops, ns] = self.stage_counts.counts();
-        let [overwritten, left_out, write_protected] =
-            self.stage.get().map_or([0; 3], |stage| stage.taken());
-        [ops, ns, overwritten, left_out, write_protected]
+        let [overwritten, left_out] = self.stage.get().map_or([0; 2], |stage| stage.taken());
+        [ops, ns, overwritten, left_out]
     }
 
     /// Makes the stage operation `op` to the window; or, an unmap, with what follows it within
@@ -958,10 +894,7 @@ impl Client {
         let stage = self.stage.get().ok_or_else(|| std::io::Error::other("no window"))?;
         match op {
             StageOp::Unmap { offset, len } if !anew.is_empty() => stage.remap(offset, len, anew),
-            StageOp::Map { offset, phys, len, protection } => {
-                stage.map(offset, phys, len, protection)
-            }
-            StageOp::Protect { offset, len, protection } => stage.protect(offset, len, protection),
+            StageOp::Map { offset, phys, len } => stage.map(offset, phys, len),
             StageOp::Unmap { offset, len } => stage.unmap(offset, len),
             StageOp::Mapped { offset, len } => stage.window_mapped(offset, len),
             // fxdax: refused, as the daemon's error, of a window that doesn't copy.

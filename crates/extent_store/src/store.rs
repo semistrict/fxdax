@@ -829,17 +829,8 @@ impl<D: Dir> Store<D> {
         }
     }
 
-    /// fxdax: fails unless `extent` may be opened, as a write opens it, or a writable mapping of it
-    /// that the store's user keeps until it writes it: unless it is the branch's, and open, or
-    /// never sealed by the branch, held or freed ([`Spent`], TASK-79.6).
-    pub fn may_open(&self, extent: ExtentId) -> Result<(), Error> {
-        if extent.branch != self.branch {
-            bail!(OtherBranch(extent));
-        }
-        Self::check_opens(&*self.writable()?, extent)
-    }
-
-    /// Fails unless `extent`, the branch's, may be opened, as [`Store::may_open`] says, by `state`.
+    /// fxdax: fails unless `extent`, the branch's, may be opened, as a write opens it, by `state`:
+    /// unless it is open, or never sealed by the branch, held or freed ([`Spent`], TASK-79.6).
     fn check_opens(state: &State<D::File>, extent: ExtentId) -> Result<(), Error> {
         if state.uncommitted.is_open(extent) {
             return Ok(());

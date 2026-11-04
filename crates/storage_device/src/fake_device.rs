@@ -18,6 +18,7 @@ use anyhow::{Error, ensure};
 use async_trait::async_trait;
 use block_protocol::{ReadOptions, WriteFlags, WriteOptions};
 use fuchsia_sync::Mutex;
+use futures::future::BoxFuture;
 use rand::rngs::StdRng;
 use rand::{RngExt as _, SeedableRng as _};
 use std::collections::{HashMap, HashSet};
@@ -552,6 +553,8 @@ pub struct FakeDevice {
     branch: u64,
     closed: AtomicBool,
     operation_closure: Box<dyn Fn(Op) -> Result<(), Error> + Send + Sync>,
+    /// fxdax: what each write waits for first, if anything (`FakeDevice::set_write_hook`).
+    write_hook: Option<WriteHook>,
     read_only: AtomicBool,
     poisoned: AtomicBool,
     observer: Option<Box<dyn Observer>>,
@@ -574,6 +577,9 @@ pub struct FakeDevice {
 
 const TRANSFER_HEAP_SIZE: usize = 64 * 1024 * 1024;
 
+/// fxdax: what a write to an extent waits for first (`FakeDevice::set_write_hook`).
+type WriteHook = Box<dyn Fn(ExtentId) -> BoxFuture<'static, ()> + Send + Sync>;
+
 impl FakeDevice {
     /// A device holding at most `block_count` blocks of `block_size` bytes, as awkward as a store,
     /// as FXDAX_DEVICE_SEED says (`FakeDevice::awkward`).
@@ -592,6 +598,7 @@ impl FakeDevice {
             branch: DEFAULT_BRANCH,
             closed: AtomicBool::new(false),
             operation_closure: Box::new(|_: Op| Ok(())),
+            write_hook: None,
             read_only: AtomicBool::new(false),
             poisoned: AtomicBool::new(false),
             observer: None,
@@ -671,6 +678,16 @@ impl FakeDevice {
     pub fn record_crashes(mut self, crashes: Arc<Crashes>) -> Self {
         self.crashes = Some(crashes);
         self
+    }
+
+    /// fxdax: makes each write to an extent wait first for what `hook` returns for it, which may
+    /// make requests of the device, flushes among them: what came between the write's allocation
+    /// and its arrival, as another's writes and syncs do on a guest.
+    pub fn set_write_hook(
+        &mut self,
+        hook: impl Fn(ExtentId) -> BoxFuture<'static, ()> + Send + Sync + 'static,
+    ) {
+        self.write_hook = Some(Box::new(hook));
     }
 
     pub fn set_observer(&mut self, observer: Box<dyn Observer>) {
@@ -861,6 +878,9 @@ impl Device for FakeDevice {
         buffer: BufferRef<'_>,
         write_opts: WriteOptions<'_>,
     ) -> Result<(), Error> {
+        if let Some(hook) = &self.write_hook {
+            hook(extent).await;
+        }
         ensure!(!self.closed.load(Ordering::Relaxed));
         ensure!(!self.read_only.load(Ordering::Relaxed));
         self.check_alignment(offset, buffer.len())?;

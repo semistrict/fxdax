@@ -2,15 +2,14 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-//! The daemon's memory, which its cached extents' pages, and its stores' open extents', are of
-//! (TASK-50.3): the memory a tenant holds, its arena's, and every tenant's together, each limited
-//! at runtime through the control API. Past a limit the daemon evicts the clean pages asked for
-//! longest ago, the tenant's own past the tenant's, any tenant's past the total; with none left to
-//! evict, what would take more fails with `ENOMEM` (physical memory's relief, with `crate::cache`'s
-//! evictor), and the daemon goes on. An open extent's pages are none of those clean pages until a
-//! seal: a guest's MAP past seven eighths of a limit in them says `ENOMEM`, for it to seal, before
-//! they could leave relief nothing (`physmem::pin`, TASK-150.20). Its metrics name tenants by
-//! [`label`]s.
+//! The daemon's memory, which its cached extents' pages are of (TASK-50.3): the memory a tenant
+//! holds, its arena's, and every tenant's together, each limited at runtime through the control
+//! API. Past a limit the daemon evicts the clean pages asked for longest ago, the tenant's own
+//! past the tenant's, any tenant's past the total; with none left to evict, what would take more
+//! fails with `ENOMEM` (physical memory's relief, with `crate::cache`'s evictor), and the daemon
+//! goes on. fxdax: the private pages of a window that copies on write, its VM process's memory,
+//! are reserved against its tenant's as the window is made (`physmem::pin`), so that relief
+//! keeps room for them (backlog doc-13). Its metrics name tenants by [`label`]s.
 
 use super::server::{Parking, Tenant};
 use crate::Errno;

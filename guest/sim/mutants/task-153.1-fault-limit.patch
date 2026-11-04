@@ -7,9 +7,9 @@
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c
-@@ -3937,8 +3937,6 @@
- 			 * can't get on fails, and says so, as a write does: this is the one way round
- 			 * that waits for nothing, and only a seal would end it, if one came (TASK-140).
+@@ -3012,8 +3012,6 @@
+ 			 * A slice can't take the store: it maps the chunk no more. fxdax: a fault that
+ 			 * can't get on fails, and says so, as a write does (TASK-140).
  			 */
 -			if (++drops > FXFS_DAX_MAX_DROPS)
 -				break;

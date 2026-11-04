@@ -30,7 +30,6 @@ use fxfs::errors::FxfsError;
 use fxfs::filesystem::{FxFilesystem, SyncOptions, TruncateGuard};
 use fxfs::object_handle::{ObjectHandle, ReadObjectHandle};
 use fxfs::object_store::allocator::Allocator;
-use fxfs::object_store::data_object_handle::CHECK_KEPT;
 use fxfs::object_store::directory::{MutableAttributesInternal, ReplacedChild, replace_child};
 use fxfs::object_store::dirty_reservation::DirtyReservation;
 use fxfs::object_store::transaction::{LockKey, LockKeys, Mutation, Options, Transaction};
@@ -48,15 +47,10 @@ use std::pin::pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use storage_device::SealedExtent;
 
 /// fxdax: what a change fails with once a batch of queued unlinks failed: the I/O error's errno,
 /// as what failed, mostly the device, was; nothing on the device is inconsistent (`errno`).
 const UNLINK_FAILED: &str = "a batch of unlinks failed: changes fail until the filesystem remounts";
-
-/// fxdax: how many times a DAX write's transaction is tried again as its extents are found sealed
-/// (`Fxfs::retrying_sealed`).
-const MAX_SEALED_RETRIES: usize = 1000;
 
 /// What a filesystem's VFS gives it, and keeps for it: the platform it runs on.
 pub trait Platform: Send + Sync + Sized + 'static {
@@ -177,7 +171,7 @@ pub struct DaxExtent {
     pub branch: u64,
     pub sequence: u64,
     pub extent_offset: u64,
-    /// What the window may do with the piece.
+    /// Whether the piece's extent is sealed, which the window maps only then (backlog doc-13).
     pub access: ExtentAccess,
     pub reserved: u32,
     /// How far the extent reaches, as allocated, or may yet if it is the staging extent, which
@@ -198,25 +192,6 @@ impl DaxExtent {
             reserved: 0,
             extent_size: allocator.extent_size(device_range.extent).unwrap_or(0),
         }
-    }
-}
-
-/// fxdax: a DAX write's room, made and not committed (`Fxfs::dax_begin_write`): its transaction,
-/// which holds the file's lock and its new blocks, and the file's handle, which it borrows.
-pub struct DaxWrite {
-    // Declared before `_file`, so dropped before it: it borrows the handle.
-    transaction: Transaction<'static>,
-    _file: Arc<DataObjectHandle<ObjectStore>>,
-}
-
-impl DaxWrite {
-    /// Commits the write, its bytes stored: the file's blocks are the new ones, and its size the
-    /// write's, if longer.
-    pub async fn commit(self) -> Result<(), Error> {
-        let DaxWrite { transaction, _file: file } = self;
-        transaction.commit().await?;
-        drop(file);
-        Ok(())
     }
 }
 
@@ -762,175 +737,6 @@ impl<P: Platform> Fxfs<P> {
             .iter()
             .map(|(extent, access)| DaxExtent::new(extent, *access, &allocator))
             .collect())
-    }
-
-    /// Records an append already written through the DAX window, whose data must not be zeroed as
-    /// an ordinary grow would zero it, in one transaction (TASK-92.28).
-    pub async fn dax_update_size(&self, ino: u64, size: u64) -> Result<(), Error> {
-        let file = self.file(ino).await?;
-        if size <= file.get_size() {
-            return Ok(());
-        }
-        // The data is written: recording its size, which changes a record, borrows the metadata
-        // space it needs, as setting attributes does, so that a full filesystem's fsync doesn't
-        // fail it (TASK-82).
-        let options = Options { borrow_metadata_space: true, ..file.default_transaction_options() };
-        let mut transaction = file.new_transaction_with_options(options).await?;
-        // Recheck with the file locked: another size update may have committed meanwhile.
-        if size <= file.get_size() {
-            return Ok(());
-        }
-        file.txn_update_size(&mut transaction, size, None).await?;
-        transaction.commit().await.map(|_| ())
-    }
-
-    /// Makes room to write `range` of the file `ino` through a DAX window, without writing it, and
-    /// makes the file `size` long if it is shorter, in one transaction: returns the pieces holding
-    /// the range's blocks, open unless a seal came meanwhile, for the caller to store the data in
-    /// before the next (`DataObjectHandle::txn_map_write`, as `keep` says). fxdax: the blocks hold
-    /// `held`, if given, all they hold as the caller holds it, if they move
-    /// (`DataObjectHandle::txn_map_write_holding`, TASK-79.11).
-    pub async fn dax_map_write(
-        &self,
-        ino: u64,
-        range: Range<u64>,
-        size: u64,
-        keep: bool,
-        held: Option<&[u8]>,
-    ) -> Result<Vec<DaxExtent>, Error> {
-        let (start, range) = (range.start, &range);
-        let extents = Self::retrying_sealed(ino, range, move || async move {
-            let file = self.file(ino).await?;
-            let mut transaction = file.new_transaction().await?;
-            let extents =
-                Self::txn_dax_map_write(&file, &mut transaction, range.clone(), size, keep, held)
-                    .await?;
-            // The extents are open, as the allocator minted them, or found them so, unless a seal
-            // has come since, which is for the caller to find out: nothing here can open them.
-            transaction.commit().await?;
-            Ok(extents)
-        })
-        .await?;
-        // fxdax: diagnostic (TASK-133): that the blocks hold what the caller held as it commits.
-        if let Some(held) = held
-            && CHECK_KEPT.load(Ordering::Relaxed)
-        {
-            let device = self.filesystem.device();
-            for extent in &extents {
-                let (logical, on_device) = (extent.logical_range(), extent.device_range());
-                let at = (logical.start - start) as usize;
-                let len = (logical.end - logical.start) as usize;
-                let mut back = device.allocate_buffer(len).await;
-                // A block of zeros isn't written, nor an extent with nothing else in it there.
-                let read =
-                    device.read(on_device.extent, on_device.range.start, back.as_mut()).await;
-                let back = back.as_ptr_slice().to_vec();
-                let differ = (0..len)
-                    .filter(|&i| held[at + i] != if read.is_ok() { back[i] } else { 0 })
-                    .count();
-                if differ > 0 {
-                    log::error!(
-                        "fxfs: object {ino} at {logical:?} in {:?} at {:#x}: {differ} of {len} bytes \
-                         read back other than held as its transaction commits (read: {read:?})",
-                        on_device.extent,
-                        on_device.range.start
-                    );
-                }
-            }
-        }
-        Ok(self.dax_extents_of(&extents))
-    }
-
-    /// fxdax: makes room to write `range` of the file `ino`, as [`dax_map_write`](Self::dax_map_write)
-    /// does for a write(2), keeping what the first and last blocks hold around it, but commits
-    /// nothing: the write commits once the caller has stored its bytes in the pieces returned
-    /// ([`DaxWrite::commit`]), or, dropped, leaves the file as it was, its old blocks and size. So a
-    /// write that fails before its bytes are in leaves what the file held, where a move committed
-    /// first left the new blocks' zeros (TASK-153.5), as XFS's copy on write commits a write's new
-    /// blocks after its bytes (`xfs_reflink_end_cow`). Until then the write holds the file's lock,
-    /// and the blocks: a crash before the commit leaves them free.
-    pub async fn dax_begin_write(
-        &self,
-        ino: u64,
-        range: Range<u64>,
-        size: u64,
-    ) -> Result<(DaxWrite, Vec<DaxExtent>), Error> {
-        let range = &range;
-        let (write, extents) = Self::retrying_sealed(ino, range, move || async move {
-            let file = self.file(ino).await?;
-            // SAFETY: The handle outlives the transaction borrowing it: a `DaxWrite` drops its
-            // transaction before its `file`, which keeps the handle where it is, as this future
-            // drops `transaction` before `file`, declared first, if it fails.
-            let handle: &'static DataObjectHandle<ObjectStore> = unsafe { &*Arc::as_ptr(&file) };
-            let mut transaction: Transaction<'static> = handle.new_transaction().await?;
-            let extents =
-                Self::txn_dax_map_write(handle, &mut transaction, range.clone(), size, false, None)
-                    .await?;
-            Ok((DaxWrite { transaction, _file: file }, extents))
-        })
-        .await?;
-        Ok((write, self.dax_extents_of(&extents)))
-    }
-
-    /// fxdax: runs `attempt`, a transaction making room for a DAX write of `range` of the file
-    /// `ino`, again while a seal comes between the writes copying the first and last blocks'
-    /// surroundings to an extent, and the transaction is dropped, and its extents with it; though not
-    /// for ever: a device that goes on refusing an extent Fxfs takes for open would have a write spin
-    /// in the kernel, with nothing to yield to (xfstests generic/111, TASK-140).
-    async fn retrying_sealed<T, F: Future<Output = Result<T, Error>>>(
-        ino: u64,
-        range: &Range<u64>,
-        mut attempt: impl FnMut() -> F,
-    ) -> Result<T, Error> {
-        // It gives up with the last seal's error, an I/O error's errno: nothing is inconsistent
-        // (TASK-160.21).
-        let mut tries = 0;
-        loop {
-            match attempt().await {
-                Err(error) if error.chain().any(|e| e.downcast_ref::<SealedExtent>().is_some()) => {
-                    tries += 1;
-                    if tries == MAX_SEALED_RETRIES {
-                        return Err(error.context(format!(
-                            "object {ino} at {range:?}: its extents sealed still, tried {tries} \
-                             times"
-                        )));
-                    }
-                }
-                result => return result,
-            }
-        }
-    }
-
-    /// fxdax: makes room for a DAX write of `range` of `file` in `transaction`, as
-    /// [`dax_map_write`](Self::dax_map_write) says, and the file `size` long if it is shorter.
-    async fn txn_dax_map_write<'a>(
-        file: &'a DataObjectHandle<ObjectStore>,
-        transaction: &mut Transaction<'a>,
-        range: Range<u64>,
-        size: u64,
-        keep: bool,
-        held: Option<&[u8]>,
-    ) -> Result<Vec<FileExtent>, Error> {
-        let extents = match held {
-            Some(held) => file.txn_map_write_holding(transaction, range, held).await?,
-            None => file.txn_map_write(transaction, range, keep).await?,
-        };
-        // The transaction locks the file: its size is as it was.
-        if size > file.get_size() {
-            file.txn_update_size(transaction, size, None).await?;
-        }
-        Ok(extents)
-    }
-
-    /// fxdax: `extents`, as a DAX window maps them, open unless a seal has come since they were.
-    fn dax_extents_of(&self, extents: &[FileExtent]) -> Vec<DaxExtent> {
-        let allocator = self.filesystem.allocator();
-        let device = self.filesystem.device();
-        let access = |extent: &FileExtent| match device.is_open(extent.device_range().extent) {
-            true => ExtentAccess::Open,
-            false => ExtentAccess::Sealed,
-        };
-        extents.iter().map(|extent| DaxExtent::new(extent, access(extent), &allocator)).collect()
     }
 
     /// Creates `name` in the directory `dir`, as `mode` says: a directory, or a file, which may be

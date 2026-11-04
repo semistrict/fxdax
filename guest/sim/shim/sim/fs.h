@@ -217,8 +217,11 @@ struct writeback_control {
 	enum writeback_sync_modes sync_mode;
 };
 
-/* What dax.c shows of itself, which goes to the log. */
-struct seq_file;
+/* What dax.c shows of itself, to a test's buffer (sim_dax_stat), or, given none, the log. */
+struct seq_file {
+	char *buf;
+	size_t size, count;
+};
 __printf(2, 3) void seq_printf(struct seq_file *m, const char *format, ...);
 void seq_putc(struct seq_file *m, char c);
 

@@ -90,6 +90,10 @@ struct Inner {
     // the same as the start offset for the next transaction because of padding.
     last_end_offset: u64,
 
+    // fxdax: what the last transaction applied took of the journal, as it was charged: from the
+    // last's end, past the padding before it that the journal's own transaction accounted for.
+    last_journal_usage: u64,
+
     // A running counter that tracks metadata space that has been borrowed on the understanding that
     // eventually it will be recovered (potentially after a full compaction).
     borrowed_metadata_space: u64,
@@ -145,6 +149,7 @@ impl ObjectManager {
                 journal_checkpoints: HashMap::default(),
                 reservations: HashMap::default(),
                 last_end_offset: 0,
+                last_journal_usage: 0,
                 borrowed_metadata_space: 0,
                 max_transaction_size: (0, metrics::detail().create_uint("max_transaction_size", 0)),
                 reserved_space: journal::RESERVED_SPACE,
@@ -527,6 +532,7 @@ impl ObjectManager {
         let reservation = self.metadata_reservation();
         let mut inner = self.inner.write();
         let journal_usage = end_offset - std::mem::replace(&mut inner.last_end_offset, end_offset);
+        inner.last_journal_usage = journal_usage;
 
         if journal_usage > inner.max_transaction_size.0 {
             inner.max_transaction_size.0 = journal_usage;
@@ -771,6 +777,12 @@ impl ObjectManager {
 
     pub fn last_end_offset(&self) -> u64 {
         self.inner.read().last_end_offset
+    }
+
+    /// fxdax: what the last transaction applied took of the journal, as its reservation was
+    /// charged (`did_commit_transaction`).
+    pub fn last_journal_usage(&self) -> u64 {
+        self.inner.read().last_journal_usage
     }
 
     pub fn set_last_end_offset(&self, v: u64) {

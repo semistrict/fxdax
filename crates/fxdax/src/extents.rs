@@ -20,12 +20,12 @@
 //! Reads of open extents, and a follower's, go to the store. The store's files bypass the host's
 //! page cache.
 //!
-//! The guest's open extents map writably (doc-4's `DAX_WRITE`): an extent mapped so is pages of
-//! physical memory until the next commit, which reads and writes of it use too. The commit writes
-//! it to the store, seals it, maps the window's mappings of it to its pages in the cache, and moves
-//! its pages there.
+//! fxdax: windows map sealed extents and zeros alone, read-only (backlog doc-13): an open extent
+//! is written only by `WRITE`, and a `MAP` of one fails (`EPERM`). A writer's window copies on
+//! write: a store to a page gives the window a private copy of it (`crate::dax`), which no extent
+//! names, so that no commit changes anything in a window.
 
-use crate::cache::{self, CachedExtent, OpenPages, Room};
+use crate::cache::{self, CachedExtent};
 use crate::dax::{Dax, DaxWindow, Keep, SecondStage, Source};
 use crate::error::{Errno, Error, Result};
 use crate::faults::failpoint;
@@ -83,8 +83,8 @@ pub struct StoreBytes {
     pub inherited: u64,
 }
 
-/// A window's mapping: whose pages it maps, an open extent's memory, a sealed extent in the cache,
-/// or zeros, which the window keeps while it maps them, by their identity
+/// A window's mapping: whose pages it maps, a sealed extent in the cache, or zeros, which the
+/// window keeps while it maps them, by their identity
 /// (`dax::source_identity`); and what it maps, which a snapshot of its VM maps again where the VM
 /// is restored ([`ExtentStore::window_mappings`]).
 #[derive(Clone)]
@@ -102,41 +102,17 @@ enum Maps {
         extent: ExtentId,
         window_offset: u64,
         offset: u64,
-        writable: bool,
     },
     Zeros,
 }
 
 impl Mapped {
-    fn extent(
-        pages: &Arc<dyn Source>,
-        extent: ExtentId,
-        window_offset: u64,
-        offset: u64,
-        writable: bool,
-    ) -> Self {
-        let pages = pages.identity();
-        Self { pages, maps: Maps::Extent { extent, window_offset, offset, writable } }
+    fn extent(pages: &Arc<dyn Source>, extent: ExtentId, window_offset: u64, offset: u64) -> Self {
+        Self { pages: pages.identity(), maps: Maps::Extent { extent, window_offset, offset } }
     }
 
     fn zeros(zeros: &Arc<dyn Source>) -> Self {
         Self { pages: zeros.identity(), maps: Maps::Zeros }
-    }
-
-    /// Whether it keeps `pages` alive.
-    fn keeps<T: ?Sized>(&self, pages: &Arc<T>) -> bool {
-        self.identity() == pages.identity()
-    }
-
-    /// Where in its extent the window's byte at `window_offset`, which it maps, is: none for
-    /// zeros.
-    fn extent_offset(&self, window_offset: u64) -> Option<u64> {
-        match self.maps {
-            Maps::Extent { window_offset: start, offset, .. } => {
-                Some(offset + (window_offset - start))
-            }
-            Maps::Zeros => None,
-        }
     }
 }
 
@@ -158,30 +134,18 @@ pub struct WindowMapping {
     pub contents: MappingContents,
 }
 
-/// What a [`WindowMapping`] maps.
+/// What a [`WindowMapping`] maps, read-only.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MappingContents {
-    /// An extent's bytes.
+    /// A sealed extent's bytes.
     Extent {
         /// The extent.
         extent: ExtentId,
         /// Where in it the bytes mapped start.
         offset: u64,
-        /// Whether the mapping is writable: of an open extent.
-        writable: bool,
     },
-    /// Zeros, read-only.
+    /// Zeros.
     Zeros,
-}
-
-/// An open extent that a window maps writably: its contents, in physical memory, and how long it
-/// is.
-struct OpenExtent {
-    pages: Arc<OpenPages>,
-    len: u64,
-    /// fxdax: how long the store held it as written when it was opened here, which its commit
-    /// keeps at least.
-    stored: u64,
 }
 
 /// fxdax: what a store opened is: who writes it, and whether every tenant reads it. It says what
@@ -253,14 +217,6 @@ pub struct ExtentStore {
     path: std::path::PathBuf,
     /// fxdax: the forks of other stores attached to it, whose extents it reads through to.
     bases: Arc<Bases>,
-    /// The open extents mapped, until the next commit, which writes their memory to the store and
-    /// seals them: their one owner meanwhile, as the store holds none of them (TASK-153.3). Locked
-    /// before `dax`.
-    open: StoreMutex<HashMap<ExtentId, OpenExtent>>,
-    /// fxdax: what a commit reads each open extent's memory into, kept from one to the next, under
-    /// `open`'s lock: one the size of each extent, zeroed for it, cost the commit more than its
-    /// copy did (TASK-112.3).
-    commit_buffer: StoreMutex<Vec<u8>>,
     dax: StoreMutex<Option<Dax<Mapped>>>,
     /// fxdax: the arenas of physical memory its extents' pages are of (TASK-43).
     arenas: Arenas,
@@ -270,8 +226,8 @@ pub struct ExtentStore {
     /// fxdax: what records the store's page-ins for its base's boot profile, if it is a fork of a
     /// base that has none yet, and what writes it at the window's end, which closing stops early.
     profiling: Option<(Arc<Recorder>, std::sync::mpsc::Sender<()>)>,
-    /// fxdax: held, shared, by what opens extents, writes and writable mappings, and alone by a
-    /// fork only once nothing is open, which none comes between ([`ExtentStore::fork_quiescent`]).
+    /// fxdax: held, shared, by writes, which open extents, and alone by a fork only once nothing
+    /// is open, which none comes between ([`ExtentStore::fork_quiescent`]).
     opening: StoreRwLock<()>,
     /// fxdax: a follower's (backlog doc-8), what it follows ([`ExtentStore::follow`]).
     following: Option<Following>,
@@ -281,9 +237,6 @@ pub struct ExtentStore {
     /// fxdax: the window's latest changes, which a refused fault's log tells of the page it was
     /// on ([`ExtentStore::refused`], TASK-44.12).
     changes: StoreMutex<WindowChanges>,
-    /// fxdax: with FXDAX_CHECK_SEALED_READS, what the latest commits wrote of the extents they
-    /// sealed: a read of one that the store answers otherwise is logged (TASK-121).
-    recently_sealed: StoreMutex<RecentlySealed>,
     /// fxdax: the turns its daemon has taken at making its commits durable behind them
     /// ([`ExtentStore::flush_turned`]): how a commit's lag is told in turns, which the daemon's
     /// load stretches, rather than in time (TASK-110).
@@ -291,51 +244,38 @@ pub struct ExtentStore {
     /// fxdax: what each of its locks is locked through: set by a panic holding one, after which it
     /// serves nothing more (`crate::fence`, TASK-153.16).
     fence: Fence,
-    /// fxdax: the pages its open extents hold in memory ([`ExtentStore::open_bytes`]).
-    open_pages: Arc<std::sync::atomic::AtomicU64>,
 }
 
-/// fxdax: what the latest commits wrote of the extents they sealed, and when
-/// ([`ExtentStore::recently_sealed`]).
-type RecentlySealed = std::collections::VecDeque<(ExtentId, Vec<u8>, std::time::Instant)>;
-
-/// fxdax: the `MAP`s of open extents windows that copy on write refused (backlog doc-13), which no
-/// guest makes: a tripwire, which the daemon's metrics show.
+/// fxdax: the `MAP`s of open extents refused (backlog doc-13), which no guest makes: a tripwire,
+/// which the daemon's metrics show.
 static OPEN_MAPS_REFUSED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// fxdax: the `MAP`s of open extents windows that copy on write refused so far.
+/// fxdax: the `MAP`s of open extents refused so far.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) fn open_maps_refused() -> u64 {
     OPEN_MAPS_REFUSED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// fxdax: refuses a `MAP` of `extent`, open, of a window that copies on write: counts and logs it
-/// (each of the first thousand, and every power of two after), and returns `EPERM`.
+/// fxdax: refuses a `MAP` of `extent`, open: counts and logs it (each of the first thousand, and
+/// every power of two after), and returns `EPERM`.
 fn refuse_open_map(extent: ExtentId) -> Errno {
     let count = OPEN_MAPS_REFUSED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
     if count <= 1000 || count.is_power_of_two() {
         log::warn!(
-            "fxdax: a MAP of {extent:?}, open, refused: a window that copies on write maps sealed \
-             extents alone ({count} so far)"
+            "fxdax: a MAP of {extent:?}, open, refused: windows map sealed extents alone ({count} \
+             so far)"
         );
     }
     Errno::EPERM
 }
 
-/// fxdax: whether reads of sealed extents are compared with their memory as sealed (TASK-121).
-fn check_sealed_reads() -> bool {
-    static CHECK: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *CHECK.get_or_init(|| std::env::var_os("FXDAX_CHECK_SEALED_READS").is_some())
-}
-
 /// fxdax: the latest of a window's MAPs and UNMAPs, as [`WindowChanges::MOST`] of them: which
-/// mapped a page as it was refused, and what mapped it before, read-only or writably (TASK-44.12).
+/// mapped a page as it was refused, and what mapped it before (TASK-44.12).
 #[derive(Default)]
 struct WindowChanges {
     changes: std::collections::VecDeque<WindowChange>,
     /// fxdax: the pages whose accesses the window refused, until a change of the window covers
-    /// them, which is logged then, with what it did: a guest's store a seal refused, which a later
-    /// MAP lets through, may land in another extent than the one it was to (TASK-44.12).
+    /// them, which is logged then, with what it did (TASK-44.12).
     refused: Vec<Refused>,
 }
 
@@ -358,11 +298,10 @@ struct WindowChange {
 
 /// What a [`WindowChange`] did.
 enum Change {
-    /// A MAP of `extent`'s bytes from `offset`, writably or not, and how it ended.
+    /// A MAP of `extent`'s bytes from `offset`, and how it ended.
     Map {
         extent: ExtentId,
         offset: u64,
-        writable: bool,
         result: std::result::Result<(), Errno>,
     },
     /// A MAP of zeros.
@@ -376,9 +315,8 @@ impl Change {
     /// What the change did, said for a log.
     fn describe(&self) -> String {
         match self {
-            Change::Map { extent, offset, writable, result } => {
-                let how = if *writable { "writably" } else { "read-only" };
-                format!("MAP of {extent:?} from {offset:#x}, {how}, {result:?}")
+            Change::Map { extent, offset, result } => {
+                format!("MAP of {extent:?} from {offset:#x}, {result:?}")
             }
             Change::Zeros => "MAP of zeros".into(),
             Change::Freed => "zeros in place of a freed extent's".into(),
@@ -388,8 +326,8 @@ impl Change {
 }
 
 impl WindowChanges {
-    /// fxdax: enough that a refused store's page's history reaches back past the many MAPs of a
-    /// guest sealing every millisecond, to the change that made it read-only (TASK-121).
+    /// fxdax: enough that a refused access's page's history reaches back past the many MAPs of a
+    /// busy guest (TASK-121).
     const MOST: usize = 1 << 16;
 
     /// The most refused pages awaiting a change ([`WindowChanges::refused`]): the oldest go first.
@@ -477,23 +415,6 @@ pub enum Commit {
     Durable,
 }
 
-/// fxdax: how much of an open extent's `data` its commit keeps: as far as its last block holding
-/// anything but zeros, and one block at least, so that the extent is there to read.
-fn kept_len(data: &[u8]) -> usize {
-    let block = ExtentStore::BLOCK_SIZE as usize;
-    let blocks = data.chunks(block).rposition(|block| !is_zeros(block));
-    blocks.map_or(block, |last| (last + 1) * block).min(data.len())
-}
-
-/// Whether `bytes` are all zeros: as words, which the compiler vectorizes, rather than byte by
-/// byte; a commit scans the pages mapped ahead of a guest's writes.
-fn is_zeros(bytes: &[u8]) -> bool {
-    let words = bytes.chunks_exact(8);
-    let rest = words.remainder().iter().fold(0, |any, byte| any | *byte);
-    let any = words.fold(0u64, |any, word| any | u64::from_ne_bytes(word.try_into().unwrap()));
-    any == 0 && rest == 0
-}
-
 /// fxdax: the errno of the uploader's failure (`Failure::errno`): `EIO`, logged, for one the
 /// store failed to read or write.
 fn remote_errno(failure: crate::remote::Failure) -> Errno {
@@ -556,9 +477,6 @@ impl ExtentStore {
 
     /// The most bytes an extent holds (doc-4's `max_extent`).
     pub const MAX_EXTENT: u64 = 64 << 20;
-    /// fxdax: the most of a commit's buffer a store keeps for the next (`commit_buffer`): a
-    /// staging extent's few pages, and the pages mapped ahead of them, are far less.
-    const COMMIT_BUFFER_KEPT: usize = 4 << 20;
 
     /// A new store at `path`, which must not exist, holding at most `capacity` bytes, with a branch
     /// of its own.
@@ -649,18 +567,14 @@ impl ExtentStore {
             store,
             path: path.to_owned(),
             bases: Default::default(),
-            open: StoreMutex::new("open", HashMap::new()),
-            commit_buffer: StoreMutex::new("commit_buffer", Vec::new()),
             dax: StoreMutex::new("dax", None),
             remote: Default::default(),
             opening: StoreRwLock::new("opening", ()),
             following: None,
             committed: event_listener::Event::new(),
             changes: StoreMutex::new("changes", WindowChanges::default()),
-            recently_sealed: StoreMutex::new("recently_sealed", RecentlySealed::new()),
             flush_turns: Default::default(),
             fence: Fence::new(path),
-            open_pages: Default::default(),
         }
     }
 
@@ -678,18 +592,14 @@ impl ExtentStore {
             store: self.store.clone(),
             path: self.path.clone(),
             bases: self.bases.clone(),
-            open: StoreMutex::new("open", HashMap::new()),
-            commit_buffer: StoreMutex::new("commit_buffer", Vec::new()),
             dax: StoreMutex::new("dax", None),
             remote: Default::default(),
             opening: StoreRwLock::new("opening", ()),
             following: Some(following),
             committed: event_listener::Event::new(),
             changes: StoreMutex::new("changes", WindowChanges::default()),
-            recently_sealed: StoreMutex::new("recently_sealed", RecentlySealed::new()),
             flush_turns: Default::default(),
             fence: Fence::new(&self.path),
-            open_pages: Default::default(),
         }
     }
 
@@ -703,14 +613,6 @@ impl ExtentStore {
             None => StoreRole::Writer,
         };
         StoreAccess { role, public: self.is_public() }
-    }
-
-    /// fxdax: the bytes of memory its open extents hold, which a window maps writably: pinned,
-    /// which nothing evicts, until its guest seals them (`crate::cache`'s `OpenPages`). What the
-    /// extent daemon asks a guest holding many to seal for, as another's MAP is refused for want
-    /// of them (TASK-153.15).
-    pub fn open_bytes(&self) -> u64 {
-        self.open_pages.load(std::sync::atomic::Ordering::Relaxed) * page_size()
     }
 
     /// fxdax: fences the store, as `why` says, unless it is already: a panic went through it past
@@ -920,11 +822,6 @@ impl ExtentStore {
     /// leave be; and the deletion of a fork that failed deletes there only the branch it made
     /// (`Remote::claim`, TASK-79.82).
     ///
-    /// The fork's commit seals what the store has open, which holds none of the extents the window
-    /// maps (`map_open`): the fork holds those as of the last commit, and the next commit here
-    /// writes them. It sealed them under their mapping, and the next commit's write of their memory
-    /// failed with `EPERM`, as each one's after (TASK-150.7, TASK-153.3).
-    ///
     /// A fork of a point commits nothing in object storage: its child's record is the fork, which
     /// fails with `ENOENT` once the point is deleted (`Remote::forked`).
     pub fn fork(&self, path: impl AsRef<Path>, branch: u64) -> Result<(), Error> {
@@ -1108,72 +1005,24 @@ impl ExtentStore {
         let len = buffers.iter().map(VolatileSliceMut::len).sum();
         stats::add(Counter::Reads, 1);
         stats::add(Counter::ReadBytes, len as u64);
+        // fxdax: nothing a panic went through is read (`crate::fence`).
+        self.fence.check()?;
         let mut data = vec![0; len];
-        let open = self.open.lock(&self.fence)?;
-        match open.get(&extent) {
-            // An open extent mapped writably is in memory. Read with the open extents held, which
-            // a commit moves into the cache: past them, its pages would read as zeros
-            // (TASK-79.46).
-            Some(extent_open) => {
-                let end = offset.checked_add(len as u64).ok_or(Errno::EINVAL)?;
-                if end > Self::MAX_EXTENT {
-                    return Err(Errno::EINVAL);
-                }
-                #[cfg(test)]
-                {
-                    let found = tests::OPEN_READ_FOUND.lock().unwrap().take();
-                    found.into_iter().for_each(|found| found());
-                }
-                extent_open.pages.read(offset, &mut data);
-                drop(open);
+        match self.base_holding(extent)? {
+            Some((base, _)) if !base.read_cached(extent, offset, &mut data)? => {
+                base.read_stored(extent, offset, &mut data)?;
             }
-            None => {
-                drop(open);
-                match self.base_holding(extent)? {
-                    Some((base, _)) if !base.read_cached(extent, offset, &mut data)? => {
-                        base.read_stored(extent, offset, &mut data)?;
-                    }
-                    Some(_) => {}
-                    None if !self.read_cached(extent, offset, &mut data)? => {
-                        self.read_stored(extent, offset, &mut data)?;
-                    }
-                    None => {}
-                }
-                if check_sealed_reads() {
-                    self.check_sealed_read(extent, offset, &data);
-                }
+            Some(_) => {}
+            None if !self.read_cached(extent, offset, &mut data)? => {
+                self.read_stored(extent, offset, &mut data)?;
             }
+            None => {}
         }
         let mut at = 0;
         for buffer in buffers {
             at += buffer.copy_from(&data[at..]);
         }
         Ok(())
-    }
-
-    /// fxdax: logs where `data`, read from sealed `extent` at `offset`, differs from what the
-    /// commit that sealed it wrote (TASK-121).
-    fn check_sealed_read(&self, extent: ExtentId, offset: u64, data: &[u8]) {
-        // A fenced store's reads fail.
-        let Ok(recent) = self.recently_sealed.lock(&self.fence) else { return };
-        let Some((_, written, sealed)) = recent.iter().rev().find(|(e, ..)| *e == extent) else {
-            return;
-        };
-        let held = (written.len() as u64).saturating_sub(offset).min(data.len() as u64) as usize;
-        if held == 0 {
-            return;
-        }
-        let memory = &written[offset as usize..][..held];
-        if let Some(at) = (0..held).find(|&at| memory[at] != data[at]) {
-            let differ = (0..held).filter(|&at| memory[at] != data[at]).count();
-            log::warn!(
-                "extentd: a read of sealed {extent:?} at {offset:#x} differs from what its commit wrote, {:?} ago: {differ} bytes, the first at {:#x}: {:#x}, written {:#x}",
-                sealed.elapsed(),
-                offset + at as u64,
-                data[at],
-                memory[at]
-            );
-        }
     }
 
     /// fxdax: reads `extent`'s bytes at `offset` from the extent cache, if it is sealed: which pages
@@ -1266,41 +1115,20 @@ impl ExtentStore {
     pub fn write(&self, extent: ExtentId, offset: u64, buffers: &[VolatileSlice]) -> Result<()> {
         self.access().may_write()?;
         let len = buffers.iter().map(VolatileSlice::len).sum();
-        // fxdax: as the store has it of each write, of this one's whichever way it goes: a commit
-        // writes an extent mapped writably to the store, which takes no other (TASK-150.7).
-        self.store.check_io(offset, len as u64).map_err(errno)?;
         let _opening = self.opening.read(&self.fence)?;
         let mut data = vec![0; len];
         let mut at = 0;
         for buffer in buffers {
             at += buffer.copy_to(&mut data[at..]);
         }
-        let mut open = self.open.lock(&self.fence)?;
-        if let Some(open) = open.get_mut(&extent) {
-            // An open extent mapped writably is in memory, which the commit writes to the store.
-            // Into the reserve: a seal would leave this write nowhere to go.
-            open.pages.write(offset, &data, Room::Reserve)?;
-            open.len = open.len.max(offset + len as u64);
-            return Ok(());
-        }
-        // fxdax: to the store with the open extents held, so that a writable mapping opening the
-        // extent, which reads its memory from the store, does so before the write or after it:
-        // between, it read the store without the write, and its commit wrote that memory over it,
-        // a moved page's surroundings Fxfs had copied to a new staging extent lost (TASK-121).
         self.store.write(extent.into(), offset, &data).map_err(errno)
     }
 
     /// Frees `extent`, if the store holds it (`FREE`).
     pub fn free(&self, extent: ExtentId) -> Result<()> {
         self.access().may_write()?;
-        // An open extent's memory is dropped as the window's mappings of it go.
-        let open = self.open.lock(&self.fence)?.remove(&extent);
-        if let Some(open) = &open {
-            self.replace_kept(open.pages.identity())?;
-            if self.store.extent(extent.into()).map_err(errno)?.is_none() {
-                return Ok(());
-            }
-        }
+        // fxdax: nothing a panic went through is changed (`crate::fence`).
+        self.fence.check()?;
         self.store.free(extent.into()).map_err(errno)?;
         // fxdax: its pages, unless another store that asked for them holds it still, which reads
         // them through itself (TASK-79.7): one that holds it reads them anew.
@@ -1329,8 +1157,8 @@ impl ExtentStore {
     }
 
     /// Commits what was written and freed, and `root` as the store's root if given, durably
-    /// (`COMMIT` with `COMMIT_DURABLE`). It seals the extents written before it, and those stored
-    /// to through the window, whose writable mappings it maps read-only.
+    /// (`COMMIT` with `COMMIT_DURABLE`). It seals the extents written before it; fxdax: no window
+    /// maps any of them, and nothing in a window changes.
     pub fn commit(&self, root: Option<&[u8]>) -> Result<()> {
         self.access().may_write()?;
         self.commit_with(root, true)
@@ -1450,71 +1278,21 @@ impl ExtentStore {
     }
 
     fn commit_with(&self, root: Option<&[u8]>, durable: bool) -> Result<()> {
+        // fxdax: nothing a panic went through is committed (`crate::fence`).
+        self.fence.check()?;
         let started = std::time::Instant::now();
-        let committed = self.commit_and_seal(root, durable);
+        let committed = self.commit_and_wait(root, durable);
         stats::count_since(Counter::Commits, Counter::CommitNs, started);
         committed
     }
 
-    /// Commits, seals the open extents, and waits for object storage as `durable` says: the
-    /// commit's phases, each counted ([`stats::Stats::commits`]).
-    fn commit_and_seal(&self, root: Option<&[u8]>, durable: bool) -> Result<()> {
-        let started = std::time::Instant::now();
-        let mut open = self.open.lock(&self.fence)?;
-        let mut buffer = self.commit_buffer.lock(&self.fence)?;
-        for (extent, extent_open) in open.iter() {
-            let len = extent_open.len as usize;
-            if buffer.len() < len {
-                buffer.resize(len, 0);
-            }
-            let data = &mut buffer[..len];
-            extent_open.pages.read(0, data);
-            // fxdax: what was mapped writably, past what was stored to, the store leaves out: the
-            // pages a guest maps ahead of its writes, which read as zeros past the extent's end as
-            // they would within it (doc-4). Written whole, they took the store's room. The cached
-            // extent, which pages them in from the store, is as long as the window maps it still,
-            // so that one mapping of it replaces each, as before.
-            let kept = (kept_len(data) as u64).max(extent_open.stored);
-            self.store.write((*extent).into(), 0, &data[..kept as usize]).map_err(errno)?;
-            if check_sealed_reads() {
-                let mut recent = self.recently_sealed.lock(&self.fence)?;
-                recent.push_back((*extent, data[..kept as usize].to_vec(), started));
-                if recent.len() > 4096 {
-                    recent.pop_front();
-                }
-            }
-            stats::add(Counter::CommitWrittenBytes, kept);
-        }
-        // An extent up to MAX_EXTENT, rare, a store keeps the memory of no longer than its commit.
-        if buffer.len() > Self::COMMIT_BUFFER_KEPT {
-            *buffer = Vec::new();
-        }
-        drop(buffer);
-        stats::add_since(Counter::CommitWriteNs, started);
+    /// Commits, and waits for object storage as `durable` says: the commit's phases, each counted
+    /// ([`stats::Stats::commits`]).
+    fn commit_and_wait(&self, root: Option<&[u8]>, durable: bool) -> Result<()> {
         let committing = std::time::Instant::now();
         self.store.commit_ordered(root).map_err(errno)?;
         self.committed.notify(usize::MAX);
         stats::add_since(Counter::CommitStoreNs, committing);
-        let sealing_started = std::time::Instant::now();
-        let mut dax = self.dax.lock(&self.fence)?;
-        let sealed: Vec<(ExtentId, OpenExtent)> = open.drain().collect();
-        if let Some(dax) = dax.as_mut() {
-            // fxdax: the guest's access to the pages, which it is to lose, taken away without
-            // waiting for its VM process to make the change: what it may reach meanwhile, the
-            // open extents' memory, is kept until then, and nothing shares their pages with
-            // another guest before then (`cached`). It may still store to them meanwhile, as it
-            // must not: what it stores is what it reads, until they are paged out, its own.
-            let (sealing, deferred) = dax.deferring(|dax| self.seal_mapped(dax, &sealed));
-            if let Some(deferred) = deferred {
-                let keys = sealed.iter().map(|(extent, _)| (self.arenas.of(*extent), *extent));
-                cache::sealing(&self.store, keys, &deferred);
-                deferred.keep_until_made(Box::new(sealed));
-            }
-            sealing?;
-        }
-        // Durable without holding up the next writes and commits meanwhile.
-        drop((dax, open));
-        stats::add_since(Counter::CommitSealNs, sealing_started);
         let waiting = std::time::Instant::now();
         let waited = if durable {
             self.make_durable()
@@ -1532,78 +1310,6 @@ impl ExtentStore {
         waited
     }
 
-    /// Maps the `sealed` extents, open until the commit that sealed them, read-only where the
-    /// window maps them, from their sealed pages, which their memory becomes.
-    fn seal_mapped(&self, dax: &mut Dax<Mapped>, sealed: &[(ExtentId, OpenExtent)]) -> Result<()> {
-        for &(extent, ref extent_open) in sealed {
-            let started = std::time::Instant::now();
-            let sealed = self.cached(extent, extent_open.len)?;
-            let source: Arc<dyn Source> = sealed.clone();
-            stats::add_since(Counter::CommitSealCachedNs, started);
-            // The window maps the sealed extent first, so that nothing reads its memory once its
-            // pages move: a read meanwhile pages in from the store, which holds them.
-            let pages = extent_open.len.next_multiple_of(page_size());
-            let is_kept = |mapped: &Mapped| mapped.keeps(&extent_open.pages);
-            // fxdax: one change to the second stage, each mapping of the extent followed by its
-            // pages mapped again, so that a VM process makes it in place: the pages, the very same,
-            // write-protected where they are, where in steps it would leave them out, as the
-            // sealed extent is mapped before it has them, then install them again, each a flush
-            // of the guest's TLBs, and the guest fault them in again (TASK-91.16).
-            dax.changing(|dax| -> Result<()> {
-                let remapping = std::time::Instant::now();
-                let mut mapped = Vec::new();
-                let mut past = Vec::new();
-                // fxdax: as the window maps it now, each mapping at the offset it maps: a range
-                // unmapped and mapped again to another part of the extent was sealed to the part
-                // it mapped first (TASK-79.10).
-                for (window_offset, end, keep) in dax.kept(extent_open.pages.identity()) {
-                    let Some(offset) = keep.extent_offset(window_offset) else { continue };
-                    let len = end - window_offset;
-                    // What a read-only mapping maps past the sealed extent, zeros.
-                    let within = (offset + len).min(pages).max(offset) - offset;
-                    if within > 0 {
-                        let keep =
-                            Mapped::extent(&source, extent, window_offset, offset, false);
-                        mapped.extend(dax.make_read_only(
-                            window_offset,
-                            within,
-                            keep,
-                            &source,
-                            offset,
-                            is_kept,
-                        )?);
-                    }
-                    if within < len {
-                        past.push((window_offset + within, len - within));
-                    }
-                }
-                stats::add_since(Counter::CommitSealRemapNs, remapping);
-                // Its memory is the sealed extent's pages, but for those paged in meanwhile.
-                let supplying = std::time::Instant::now();
-                sealed.supply(0..pages / page_size(), &extent_open.pages);
-                stats::add_since(Counter::CommitSealSupplyNs, supplying);
-                let populating = std::time::Instant::now();
-                // Mapped again, read-only, so that the guest's next loads of them do not fault
-                // one page at a time, each a trip to the store's process from the guest's.
-                for (window_offset, len) in mapped {
-                    // The faults the pages are otherwise mapped on would show what fails.
-                    if let Err(err) = dax.populate(window_offset, len) {
-                        log::warn!("mapping sealed extent {extent:?}'s pages again: {err:?}");
-                    }
-                }
-                stats::add_since(Counter::CommitSealPopulateNs, populating);
-                // Past the extent, zeros, which have no pages of the extent's: after its pages
-                // mapped again, which a mapping between would part from their mapping anew.
-                for (past, len) in past {
-                    let zeros = dax.zeros();
-                    dax.make_read_only(past, len, Mapped::zeros(&zeros), &zeros, past, is_kept)?;
-                }
-                Ok(())
-            })?;
-        }
-        Ok(())
-    }
-
     /// The root as of the last commit, empty if none set one (`ROOT`).
     pub fn root(&self) -> Result<Vec<u8>> {
         match &self.following {
@@ -1617,7 +1323,8 @@ impl ExtentStore {
     /// memory: the extent daemon's connection to the VM process (`crate::extentd`), which makes it
     /// in the VM's memory. The guest's faults on the window must be passed to
     /// [`DaxWindow::fault`], as the daemon passes those its VM process reports. A store has one
-    /// window.
+    /// window. fxdax: it refuses every store, as a follower's must; a writer's guest takes one
+    /// that copies on write ([`create_copying_dax_window`](Self::create_copying_dax_window)).
     pub fn create_dax_window(
         &self,
         size: u64,
@@ -1627,11 +1334,11 @@ impl ExtentStore {
     }
 
     /// fxdax: creates the DAX window as [`create_dax_window`](Self::create_dax_window) does, one
-    /// that copies on write (backlog doc-13): a store to a page it maps read-only gives the page a
-    /// private copy, of the store's arena's memory, of which it holds `private_max` pages at most,
-    /// reserved against the arena now (`ENOMEM` past what it may hold that nothing can evict). It
-    /// maps no open extent, nor maps writably (`EPERM`). A store whose extents can't change, a
-    /// follower's, a point or a public base, takes none (as [`StoreAccess::may_write`]).
+    /// that copies on write (backlog doc-13): a store to a page gives the page a private copy,
+    /// counted against the store's arena's memory, of which it holds `private_max` pages at most,
+    /// reserved against the arena now (`ENOMEM` past what it may hold that nothing can evict). A
+    /// store whose extents can't change, a follower's, a point or a public base, takes none (as
+    /// [`StoreAccess::may_write`]).
     pub fn create_copying_dax_window(
         &self,
         size: u64,
@@ -1694,35 +1401,19 @@ impl ExtentStore {
         Ok(window)
     }
 
-    /// Maps `len` bytes at `offset` in `extent` into the DAX window at `window_offset`, replacing
-    /// what was mapped there (`MAP`). Offsets and length must be multiples of the page size.
-    /// Without a window, fails with `ENOSYS`.
+    /// Maps `len` bytes at `offset` in `extent` into the DAX window at `window_offset`, read-only,
+    /// replacing what was mapped there (`MAP`), the private pages there too. Offsets and length
+    /// must be multiples of the page size. Without a window, fails with `ENOSYS`.
     ///
-    /// Unless `writable`, the mapping is of a sealed extent's cached pages, or of an open one's
-    /// memory as it is stored to and written, until the commit that seals it maps the sealed pages
-    /// there. fxdax: what of the range is past the extent reads as zeros, as the padding of its
-    /// last page does: blocks a write allocated, which a seal sealed unwritten, and which the write
-    /// then moves (doc-4), which a guest maps as it reads them meanwhile.
-    /// A writable mapping is of an extent of the store's branch that is open or new
-    /// (`DAX_WRITE`), within `MAX_EXTENT`, which it grows to hold the range: of another branch's,
-    /// or a sealed one, it fails with `EPERM`. fxdax: past the pages open extents may hold
-    /// (`physmem::pin`), with `ENOMEM`, which leaves what it brought in: a seal makes them room.
-    pub fn map(
-        &self,
-        extent: ExtentId,
-        offset: u64,
-        len: u64,
-        window_offset: u64,
-        writable: bool,
-    ) -> Result<()> {
-        if writable {
-            self.access().may_write()?;
-        }
+    /// The mapping is of a sealed extent's cached pages: fxdax: of an open one, it fails with
+    /// `EPERM`, a guest's bug, counted (backlog doc-13). What of the range is past the extent
+    /// reads as zeros, as the padding of its last page does.
+    pub fn map(&self, extent: ExtentId, offset: u64, len: u64, window_offset: u64) -> Result<()> {
         let start = std::time::Instant::now();
-        let mapped = self.map_counted(extent, offset, len, window_offset, writable);
+        let mapped = self.map_counted(extent, offset, len, window_offset);
         stats::count_since(Counter::Maps, Counter::MapNs, start);
         let result = mapped.as_ref().map(|_| ()).map_err(|errno| *errno);
-        let change = Change::Map { extent, offset, writable, result };
+        let change = Change::Map { extent, offset, result };
         self.changes.lock(&self.fence)?.record(window_offset, len, change);
         mapped
     }
@@ -1733,24 +1424,13 @@ impl ExtentStore {
         offset: u64,
         len: u64,
         window_offset: u64,
-        writable: bool,
     ) -> Result<()> {
-        let copying = {
+        {
             let dax = self.dax.lock(&self.fence)?;
-            let dax = dax.as_ref().ok_or(Errno::ENOSYS)?;
-            dax.check_range(window_offset, len)?;
-            dax.copies_on_write()
-        };
-        // fxdax: a window that copies on write maps sealed extents and zeros alone, read-only
-        // (backlog doc-13).
-        if copying && writable {
-            return Err(Errno::EPERM);
+            dax.as_ref().ok_or(Errno::ENOSYS)?.check_range(window_offset, len)?;
         }
-        // fxdax: a base's is read-only, of the cache's one copy of it.
+        // fxdax: a base's is of the cache's one copy of it.
         let base = self.base_holding(extent)?;
-        if base.is_some() && writable {
-            return Err(Errno::EPERM);
-        }
         let extent_len = match (&base, &self.following) {
             (Some((_, len)), _) => *len,
             // A follower's view holds sealed extents alone.
@@ -1758,23 +1438,13 @@ impl ExtentStore {
                 let view = following.view.lock(&self.fence)?;
                 self.store.view_extent(&view, extent.into()).map_err(errno)?
             }
-            // fxdax: an open extent, held in memory or written to the store, maps nowhere: a
-            // guest's bug, counted, as a tripwire (`open_maps_refused`).
-            (None, None) if copying => {
-                let held = self.open.lock(&self.fence)?.contains_key(&extent);
-                match self.store.extent(extent.into()).map_err(errno)? {
-                    _ if held => return Err(refuse_open_map(extent)),
-                    Some((_, true)) => return Err(refuse_open_map(extent)),
-                    Some((len, false)) => len,
-                    None => return Err(Errno::ENOENT),
-                }
-            }
-            (None, None) => {
-                if self.map_open(extent, offset, len, window_offset, writable)? {
-                    return Ok(());
-                }
-                self.store.extent(extent.into()).map_err(errno)?.ok_or(Errno::ENOENT)?.0
-            }
+            // fxdax: an open extent maps nowhere: a guest's bug, counted, as a tripwire
+            // (`open_maps_refused`).
+            (None, None) => match self.store.extent(extent.into()).map_err(errno)? {
+                Some((_, true)) => return Err(refuse_open_map(extent)),
+                Some((len, false)) => len,
+                None => return Err(Errno::ENOENT),
+            },
         };
         let end = offset.checked_add(len).ok_or(Errno::EINVAL)?;
         if !offset.is_multiple_of(page_size()) {
@@ -1788,8 +1458,8 @@ impl ExtentStore {
         let dax = dax.as_mut().ok_or(Errno::ENOSYS)?;
         let within = end.min(extent_len.next_multiple_of(page_size())).max(offset);
         if within > offset {
-            let keep = Mapped::extent(&cached, extent, window_offset, offset, false);
-            dax.map(window_offset, keep, &cached, offset, within - offset, false)?;
+            let keep = Mapped::extent(&cached, extent, window_offset, offset);
+            dax.map(window_offset, keep, &cached, offset, within - offset)?;
         }
         self.map_zeros(dax, window_offset + (within - offset), end - within)
     }
@@ -1801,81 +1471,7 @@ impl ExtentStore {
             return Ok(());
         }
         let zeros = dax.zeros();
-        dax.map(window_offset, Mapped::zeros(&zeros), &zeros, 0, len, false)
-    }
-
-    /// Maps an open extent's memory, which the commit that seals it maps the sealed pages in place
-    /// of: writably if `writable`, which opens a new extent. Returns whether it did: not if the
-    /// extent is sealed, and the mapping read-only. fxdax: one the store holds open goes into the
-    /// memory whole, and out of the store, so that it has one owner until the commit writes it back
-    /// (TASK-153.3): with two, a fork's commit of the store alone sealed it under its mapping.
-    fn map_open(
-        &self,
-        extent: ExtentId,
-        offset: u64,
-        len: u64,
-        window_offset: u64,
-        writable: bool,
-    ) -> Result<bool> {
-        let end = offset.checked_add(len).ok_or(Errno::EINVAL)?;
-        if !offset.is_multiple_of(page_size()) || end > Self::MAX_EXTENT {
-            return Err(Errno::EINVAL);
-        }
-        if writable && extent.branch != self.branch() {
-            return Err(Errno::EPERM);
-        }
-        let _opening = writable.then(|| self.opening.read(&self.fence)).transpose()?;
-        let mut open = self.open.lock(&self.fence)?;
-        if !open.contains_key(&extent) {
-            // Its contents so far: written, and open, or none.
-            let len = match self.store.extent(extent.into()).map_err(errno)? {
-                Some((_, false)) if writable => return Err(Errno::EPERM),
-                Some((_, false)) => return Ok(false),
-                Some((len, true)) => len,
-                // fxdax: one its branch never wrote, nor sealed (TASK-79.6).
-                None if writable => {
-                    self.store.may_open(extent.into()).map_err(errno)?;
-                    0
-                }
-                None => return Err(Errno::ENOENT),
-            };
-            let pages = OpenPages::new(self.arenas.own(), self.open_pages.clone());
-            if len > 0 {
-                let mut data = vec![0; len as usize];
-                self.store.read(extent.into(), 0, &mut data).map_err(errno)?;
-                pages.write(0, &data, Room::Budget)?;
-                // Held in memory, it goes from the store: the free of an extent open lets go of
-                // what it wrote, and records nothing a commit made, which writes it anew.
-                self.store.free(extent.into()).map_err(errno)?;
-            }
-            open.insert(extent, OpenExtent { pages, len, stored: len });
-        }
-        let extent_open = open.get_mut(&extent).unwrap();
-        // Its memory past what was written is zeros, until it is written and stored to.
-        if writable {
-            extent_open.len = extent_open.len.max(end);
-        }
-        let mut dax = self.dax.lock(&self.fence)?;
-        let dax = dax.as_mut().ok_or(Errno::ENOSYS)?;
-        if writable {
-            // The guest maps what it is about to write: its pages are brought in and mapped now,
-            // rather than one fault at a time as it writes them.
-            let ps = page_size();
-            let pages = offset / ps..end.div_ceil(ps);
-            extent_open.pages.commit(pages, Room::Budget).inspect_err(|errno| {
-                log::warn!(
-                    "fxdax: bringing in {len:#x} bytes at {offset:#x} of {extent:?}: {errno:?}: \
-                     {:#x} bytes pinned of {:#x} held of {:#x}",
-                    physmem::pinned_bytes(self.arenas.own()),
-                    physmem::arena_bytes(self.arenas.own()),
-                    physmem::count_total_bytes(),
-                )
-            })?;
-        }
-        let pages: Arc<dyn Source> = extent_open.pages.clone();
-        let keep = Mapped::extent(&pages, extent, window_offset, offset, writable);
-        dax.map(window_offset, keep, &pages, offset, len, writable)?;
-        Ok(true)
+        dax.map(window_offset, Mapped::zeros(&zeros), &zeros, 0, len)
     }
 
     /// Maps zeros, read-only, at `len` bytes of the DAX window at `window_offset`, as a mapping a
@@ -1900,13 +1496,10 @@ impl ExtentStore {
                 window_offset: start,
                 len: end - start,
                 contents: match mapped.maps {
-                    Maps::Extent { extent, window_offset, offset, writable } => {
-                        MappingContents::Extent {
-                            extent,
-                            offset: offset + (start - window_offset),
-                            writable,
-                        }
-                    }
+                    Maps::Extent { extent, window_offset, offset } => MappingContents::Extent {
+                        extent,
+                        offset: offset + (start - window_offset),
+                    },
                     Maps::Zeros => MappingContents::Zeros,
                 },
             })
@@ -1941,32 +1534,23 @@ impl ExtentStore {
         let Some(mapping) = mapping else {
             return "nothing mapped".into();
         };
-        let MappingContents::Extent { extent, offset, writable } = mapping.contents else {
+        let MappingContents::Extent { extent, offset } = mapping.contents else {
             return format!("zeros, {:#x} bytes from {:#x}", mapping.len, mapping.window_offset);
         };
-        let open_here = self.open.lock(&self.fence).map(|open| open.contains_key(&extent));
         let stored = self.store.extent(extent.into()).map(|stored| {
             stored.map(|(len, open)| {
                 format!("{len:#x} bytes, {}", if open { "open" } else { "sealed" })
             })
         });
         format!(
-            "{extent:?} from {offset:#x}, {:#x} bytes from {:#x}, {}; {} in the window; in the \
-             store: {stored:?}",
-            mapping.len,
-            mapping.window_offset,
-            if writable { "writable" } else { "read-only" },
-            match open_here {
-                Ok(true) => "open",
-                Ok(false) => "not open",
-                Err(_) => "fenced",
-            },
+            "{extent:?} from {offset:#x}, {:#x} bytes from {:#x}; in the store: {stored:?}",
+            mapping.len, mapping.window_offset,
         )
     }
 
     /// Forks the store as [`ExtentStore::fork`] does, but only once nothing is open
-    /// ([`ExtentStore::is_quiescent`]), and no write or writable mapping comes between that and the
-    /// fork, which would seal it under its writer: `EBUSY` otherwise. So a running VM's store forks,
+    /// ([`ExtentStore::is_quiescent`]), and no write comes between that and the fork, which would
+    /// seal it under its writer: `EBUSY` otherwise. So a running VM's store forks,
     /// its guest's filesystem frozen (TASK-39.3), as a snapshot of the VM does (TASK-39.1).
     pub fn fork_quiescent(&self, path: impl AsRef<Path>, branch: u64) -> Result<(), Error> {
         self.fork_at_rest(path.as_ref(), branch, false)
@@ -2000,11 +1584,13 @@ impl ExtentStore {
         self.fork_durable(path, branch, point, None)
     }
 
-    /// Whether nothing is open: no extent written or mapped writably since the last commit, which
-    /// a fork of the store as of that commit would not hold; as with its guest's filesystem frozen,
-    /// a point a snapshot of its VM is taken at.
+    /// Whether nothing is open: no extent written since the last commit, which a fork of the
+    /// store as of that commit would not hold; as with its guest's filesystem frozen, a point a
+    /// snapshot of its VM is taken at.
     pub fn is_quiescent(&self) -> Result<bool> {
-        Ok(self.open.lock(&self.fence)?.is_empty() && !self.store.has_open().map_err(errno)?)
+        // fxdax: not, as far as anyone knows, once a panic went through it (`crate::fence`).
+        self.fence.check()?;
+        self.store.has_open().map(|open| !open).map_err(errno)
     }
 
     /// Unmaps `len` bytes of the DAX window at `window_offset` (`UNMAP`).
@@ -2369,7 +1955,7 @@ fn replay(store: Arc<Store<HostDir>>, arenas: Arenas, units: Vec<profile::Unit>)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dax::{Access, Deferred, Protection, SecondStage};
+    use crate::dax::{Access, SecondStage};
     use crate::pages::PhysLocation;
     use std::sync::atomic::Ordering;
     use futures::executor::block_on;
@@ -2608,8 +2194,9 @@ mod tests {
         assert_eq!(follower.set_capacity(2 << 20), Err(Errno::EROFS));
         let forked = follower.fork(dir.path().join("fork"), host_store::new_branch());
         assert_eq!(forked.map_err(|err| err.errno()), Err(Some(Errno::EROFS)));
-        let _window = follower.create_dax_window(4 * page_size(), None).unwrap();
-        assert_eq!(follower.map(id(&store, 2), 0, page_size(), 0, true), Err(Errno::EROFS));
+        // fxdax: a window that copies on write, nor so.
+        let copying = follower.create_copying_dax_window(4 * page_size(), None, 1);
+        assert_eq!(copying.map_err(|err| err.errno()).map(drop), Err(Some(Errno::EROFS)));
         assert_eq!(store.follow().advance().map(|_| ()), Ok(()));
         assert_eq!(store.advance(), Err(Errno::EINVAL));
     }
@@ -2629,8 +2216,8 @@ mod tests {
         write(&store, b, 0, &pattern(5, ps as usize)).unwrap();
         store.commit(None).unwrap();
         let window = follower.create_dax_window(4 * ps, None).unwrap();
-        follower.map(a, 0, ps, 0, false).unwrap();
-        assert_eq!(follower.map(b, 0, ps, ps, false), Err(Errno::ENOENT));
+        follower.map(a, 0, ps, 0).unwrap();
+        assert_eq!(follower.map(b, 0, ps, ps), Err(Errno::ENOENT));
         block_on(window.fault(0, Access::Read)).unwrap();
         // SAFETY: The test faulted the page in, and nothing else accesses it.
         let bytes = unsafe { std::slice::from_raw_parts(window.host_base(), ps as usize) };
@@ -2688,13 +2275,13 @@ mod tests {
         // Not a whole number of pages where pages are 16 KiB.
         let len = ps as usize + BLOCK;
         write(&store, extent, 0, &pattern(5, len)).unwrap();
-        assert_eq!(store.map(extent, 0, ps, 0, false), Err(Errno::ENOSYS));
+        assert_eq!(store.map(extent, 0, ps, 0), Err(Errno::ENOSYS));
         let window = store.create_dax_window(6 * ps, None).unwrap();
         store.commit(None).unwrap();
-        store.map(extent, 0, 2 * ps, ps, false).unwrap();
+        store.map(extent, 0, 2 * ps, ps).unwrap();
         // Past the extent, zeros.
-        store.map(extent, 0, 3 * ps, 3 * ps, false).unwrap();
-        assert_eq!(store.map(id(&store, 9), 0, ps, 0, false), Err(Errno::ENOENT));
+        store.map(extent, 0, 3 * ps, 3 * ps).unwrap();
+        assert_eq!(store.map(id(&store, 9), 0, ps, 0), Err(Errno::ENOENT));
 
         block_on(async {
             window.fault(ps, Access::Read).await.unwrap();
@@ -2716,44 +2303,6 @@ mod tests {
         store.unmap(ps, 2 * ps).unwrap();
         assert!(!window.is_mapped(ps));
         assert_eq!(block_on(window.fault(2 * ps, Access::Read)), Err(Errno::ENOENT));
-    }
-
-    /// fxdax (TASK-112.3): a commit writes what the guest stored through each open extent's
-    /// writable mapping: of a smaller extent after a larger one, nothing of the larger's, whose
-    /// memory the commit read before into the buffer it reads the smaller's into.
-    #[test]
-    fn commits_write_what_was_stored_through_the_window() {
-        let (store, _dir) = store(1 << 20);
-        let ps = page_size();
-        let (large, small) = (id(&store, 1), id(&store, 2));
-        let window = store.create_dax_window(8 * ps, None).unwrap();
-        // Stores `data` through the window at `offset`, as a guest's stores reach it.
-        let store_through = |offset: u64, data: &[u8]| {
-            for page in (offset..offset + data.len() as u64).step_by(ps as usize) {
-                block_on(window.fault(page, Access::Write)).unwrap();
-            }
-            // SAFETY: The test faulted the pages in writably, and nothing else accesses them.
-            unsafe {
-                std::ptr::copy_nonoverlapping(
-                    data.as_ptr(),
-                    window.host_base().add(offset as usize),
-                    data.len(),
-                )
-            };
-        };
-        store.map(large, 0, 4 * ps, 0, true).unwrap();
-        store_through(0, &pattern(1, 4 * ps as usize));
-        store.commit(None).unwrap();
-        // Mapped four pages ahead of its writes, as the guest maps a staging extent: one stored.
-        store.map(small, 0, 4 * ps, 4 * ps, true).unwrap();
-        store_through(4 * ps, &pattern(2, ps as usize));
-        store.commit(None).unwrap();
-
-        assert_eq!(read(&store, large, 0, 4 * ps as usize), Ok(pattern(1, 4 * ps as usize)));
-        assert_eq!(read(&store, small, 0, ps as usize), Ok(pattern(2, ps as usize)));
-        // Past the page stored, zeros, as the window maps: none of the larger extent's bytes.
-        let past = [pattern(2, ps as usize), vec![0; ps as usize]].concat();
-        assert_eq!(read(&store, small, 0, 2 * ps as usize), Ok(past));
     }
 
     /// Races `steps` on one extent, `rounds` times, a fresh extent each: `prepare` alone first,
@@ -2789,87 +2338,6 @@ mod tests {
     /// How many times each race is run: the race TASK-121 lost lost within a few.
     const ROUNDS: u64 = 2000;
 
-    /// TASK-121: a write to an extent not open yet, as Fxfs copies a moved page's surroundings to a
-    /// new staging extent, racing a writable mapping that opens it, as the guest maps the extent's
-    /// region ahead of the writes to it: the write's bytes are the open extent's, which its commit
-    /// writes. The write checked the extent wasn't open, then wrote to the store, which the
-    /// mapping, opening it between, had read: the commit wrote the extent's memory, zeros, over
-    /// them.
-    #[test]
-    fn writes_racing_the_mapping_that_opens_their_extent_are_committed() {
-        let (store, _dir) = store(1 << 26);
-        let ps = page_size();
-        let _window = store.create_dax_window(ps, None).unwrap();
-        let data = pattern(7, BLOCK);
-        let write = |extent| write(&store, extent, 0, &data).unwrap();
-        let map = |extent| store.map(extent, 0, ps, 0, true).unwrap();
-        race(&store, ROUNDS, |_| {}, &[&write, &map], &data);
-    }
-
-    /// As `writes_racing_the_mapping_that_opens_their_extent_are_committed`, two writes to other
-    /// blocks of the extent, both racing the mapping.
-    #[test]
-    fn writes_to_other_blocks_racing_the_mapping_that_opens_their_extent_are_committed() {
-        let (store, _dir) = store(1 << 26);
-        let len = (2 * BLOCK as u64).next_multiple_of(page_size());
-        let _window = store.create_dax_window(len, None).unwrap();
-        let (first, second) = (pattern(1, BLOCK), pattern(2, BLOCK));
-        let write_first = |extent| write(&store, extent, 0, &first).unwrap();
-        let write_second = |extent| write(&store, extent, BLOCK as u64, &second).unwrap();
-        let map = |extent| store.map(extent, 0, len, 0, true).unwrap();
-        let expected = [first.clone(), second.clone()].concat();
-        race(&store, ROUNDS, |_| {}, &[&write_first, &write_second, &map], &expected);
-    }
-
-    /// A write to an extent written before, held open in the store, racing a read-only mapping,
-    /// which opens it from the store too: the commit writes both writes.
-    #[test]
-    fn writes_racing_a_read_only_mapping_that_opens_their_extent_are_committed() {
-        let (store, _dir) = store(1 << 26);
-        let len = (2 * BLOCK as u64).next_multiple_of(page_size());
-        let _window = store.create_dax_window(len, None).unwrap();
-        let (first, second) = (pattern(1, BLOCK), pattern(2, BLOCK));
-        let prepare = |extent| write(&store, extent, 0, &first).unwrap();
-        let write_second = |extent| write(&store, extent, BLOCK as u64, &second).unwrap();
-        let map = |extent| store.map(extent, 0, len, 0, false).unwrap();
-        let expected = [first.clone(), second.clone()].concat();
-        race(&store, ROUNDS, prepare, &[&write_second, &map], &expected);
-    }
-
-    /// Run by a read of an open extent once it has found it, before it reads its pages.
-    pub(super) static OPEN_READ_FOUND: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>> =
-        std::sync::Mutex::new(None);
-
-    /// TASK-79.46: a read of an open extent holds off the commit that seals it, which would move
-    /// its pages into the cache between the read finding them and reading them, and they would
-    /// read as zeros. The read gives a commit it let in time to end.
-    #[test]
-    fn reads_of_open_extents_hold_off_their_commit() {
-        let (store, _dir) = store(1 << 26);
-        let ps = page_size();
-        let _window = store.create_dax_window(ps, None).unwrap();
-        let extent = id(&store, 1);
-        let data = pattern(3, BLOCK);
-        store.map(extent, 0, ps, 0, true).unwrap();
-        write(&store, extent, 0, &data).unwrap();
-        let (found, read_found) = std::sync::mpsc::channel();
-        let (committed, commit_ended) = std::sync::mpsc::channel();
-        *OPEN_READ_FOUND.lock().unwrap() = Some(Box::new(move || {
-            found.send(()).unwrap();
-            let waited = std::time::Duration::from_millis(200);
-            commit_ended.recv_timeout(waited).ok();
-        }));
-        std::thread::scope(|scope| {
-            let store = &store;
-            scope.spawn(move || {
-                read_found.recv().unwrap();
-                store.commit_ordered(None).unwrap();
-                committed.send(()).ok();
-            });
-            assert_eq!(read(store, extent, 0, BLOCK), Ok(data.clone()));
-        });
-    }
-
     /// TASK-153.16: a panic holding a lock of the store's, as a lazily made resource's `expect`
     /// was in TASK-104, TASK-105 and TASK-150.20, fences the store: what it was serving, and each
     /// request after it, fails with `EIO`, rather than panicking at the lock's poison; those that
@@ -2883,10 +2351,9 @@ mod tests {
         let (sealed, open, next) = (id(&store, 1), id(&store, 2), id(&store, 3));
         write(&store, sealed, 0, &pattern(1, BLOCK)).unwrap();
         store.commit(None).unwrap();
-        store.map(open, 0, ps, 0, true).unwrap();
         write(&store, open, 0, &pattern(2, BLOCK)).unwrap();
 
-        crate::fence::tests::panic_holding("open");
+        crate::fence::tests::panic_holding("opening");
         let writing = std::panic::AssertUnwindSafe(|| write(&store, open, 0, &pattern(3, BLOCK)));
         assert!(std::panic::catch_unwind(writing).is_err(), "the write didn't panic");
         assert!(store.is_fenced());
@@ -2896,7 +2363,7 @@ mod tests {
         assert_eq!(store.free(sealed), Err(Errno::EIO));
         assert_eq!(store.commit(None), Err(Errno::EIO));
         // The window's, which the panic didn't hold.
-        assert_eq!(store.map(sealed, 0, ps, ps, false), Err(Errno::EIO));
+        assert_eq!(store.map(sealed, 0, ps, ps), Err(Errno::EIO));
         assert_eq!(store.unmap(0, ps), Err(Errno::EIO));
         assert_eq!(store.window_mappings(), Err(Errno::EIO));
         // Not quiescent, as far as anyone knows: its connection's end retires it.
@@ -2924,92 +2391,6 @@ mod tests {
         race(&store, ROUNDS, |_| {}, &[&write, &commit], &data);
     }
 
-    /// A read-only mapping of an extent written, open in the store, racing a commit that seals it:
-    /// it maps the open extent, or the sealed one, and the commit writes what was written.
-    #[test]
-    fn read_only_mappings_racing_a_commit_keep_what_was_written() {
-        let (store, _dir) = store(1 << 26);
-        let ps = page_size();
-        let _window = store.create_dax_window(ps, None).unwrap();
-        let data = pattern(4, BLOCK);
-        let prepare = |extent| write(&store, extent, 0, &data).unwrap();
-        let map = |extent| store.map(extent, 0, ps, 0, false).unwrap();
-        let commit = |_: ExtentId| store.commit_ordered(None).unwrap();
-        race(&store, ROUNDS, prepare, &[&map, &commit], &data);
-    }
-
-    /// A writable mapping opening an extent never written, racing a commit: it opens the extent,
-    /// which the commit seals or the next, and the extent reads as zeros.
-    #[test]
-    fn writable_mappings_racing_a_commit_open_their_extent() {
-        let (store, _dir) = store(1 << 26);
-        let ps = page_size();
-        let _window = store.create_dax_window(ps, None).unwrap();
-        let map = |extent| store.map(extent, 0, ps, 0, true).unwrap();
-        let commit = |_: ExtentId| store.commit_ordered(None).unwrap();
-        race(&store, ROUNDS, |_| {}, &[&map, &commit], &vec![0; BLOCK]);
-    }
-
-    /// A writable and a read-only mapping of an extent written, open in the store, racing, either
-    /// opening it: the commit writes what was written.
-    #[test]
-    fn writable_and_read_only_mappings_racing_keep_what_was_written() {
-        let (store, _dir) = store(1 << 26);
-        let ps = page_size();
-        let _window = store.create_dax_window(2 * ps, None).unwrap();
-        let data = pattern(5, BLOCK);
-        let prepare = |extent| write(&store, extent, 0, &data).unwrap();
-        let writable = |extent| store.map(extent, 0, ps, 0, true).unwrap();
-        let read_only = |extent| store.map(extent, 0, ps, ps, false).unwrap();
-        race(&store, ROUNDS, prepare, &[&writable, &read_only], &data);
-    }
-
-    /// A commit that seals an open extent maps it read-only where the window still maps it, and
-    /// leaves what was mapped over part of its mapping since.
-    #[test]
-    fn seals_map_what_the_open_extent_still_maps() {
-        let (store, _dir) = store(1 << 20);
-        let ps = page_size();
-        let (sealed, open) = (id(&store, 1), id(&store, 2));
-        write(&store, sealed, 0, &pattern(1, ps as usize)).unwrap();
-        store.commit(None).unwrap();
-        let _window = store.create_dax_window(4 * ps, None).unwrap();
-        store.map(open, 0, 2 * ps, 0, true).unwrap();
-        write(&store, open, 0, &pattern(2, 2 * ps as usize)).unwrap();
-        store.map(sealed, 0, ps, ps, false).unwrap();
-        store.commit(None).unwrap();
-        let extent = |extent, offset| MappingContents::Extent { extent, offset, writable: false };
-        assert_eq!(
-            store.window_mappings().unwrap(),
-            [
-                WindowMapping { window_offset: 0, len: ps, contents: extent(open, 0) },
-                WindowMapping { window_offset: ps, len: ps, contents: extent(sealed, 0) },
-            ]
-        );
-    }
-
-    /// A window range unmapped, then mapped again to another offset of the same open extent, is
-    /// sealed to that offset, not to the one it mapped before: the guest's loads there would read
-    /// another part of the extent (TASK-79.10; the sandbox team's pgbench, whose index build found
-    /// a key duplicated, TASK-59).
-    #[test]
-    fn seals_map_a_reused_range_at_its_offset() {
-        let (store, _dir) = store(1 << 20);
-        let ps = page_size();
-        let open = id(&store, 1);
-        let _window = store.create_dax_window(4 * ps, None).unwrap();
-        write(&store, open, 0, &pattern(1, 2 * ps as usize)).unwrap();
-        store.map(open, 0, ps, 0, true).unwrap();
-        store.unmap(0, ps).unwrap();
-        store.map(open, ps, ps, 0, true).unwrap();
-        store.commit(None).unwrap();
-        let sealed = MappingContents::Extent { extent: open, offset: ps, writable: false };
-        assert_eq!(
-            store.window_mappings().unwrap(),
-            [WindowMapping { window_offset: 0, len: ps, contents: sealed }]
-        );
-    }
-
     /// Commits ordered wait for a flush, which makes them durable.
     #[test]
     fn ordered_commits_wait_for_a_flush() {
@@ -3019,31 +2400,6 @@ mod tests {
         assert!(store.flush_pending());
         store.flush().unwrap();
         assert!(!store.flush_pending());
-    }
-
-    /// What a read-only mapping of an open extent maps past its last page, which a writable one
-    /// would have grown it to, is zeros, read-only, once a commit seals it.
-    #[test]
-    fn seals_map_zeros_past_the_extents_end() {
-        let (store, _dir) = store(1 << 20);
-        let ps = page_size();
-        let open = id(&store, 1);
-        let _window = store.create_dax_window(4 * ps, None).unwrap();
-        write(&store, open, 0, &pattern(2, ps as usize)).unwrap();
-        store.map(open, 0, 3 * ps, ps, false).unwrap();
-        store.commit(None).unwrap();
-        let sealed = MappingContents::Extent { extent: open, offset: 0, writable: false };
-        assert_eq!(
-            store.window_mappings().unwrap(),
-            [
-                WindowMapping { window_offset: ps, len: ps, contents: sealed },
-                WindowMapping {
-                    window_offset: 2 * ps,
-                    len: 2 * ps,
-                    contents: MappingContents::Zeros
-                },
-            ]
-        );
     }
 
     /// A read-only mapping of a sealed extent maps zeros past its last page, and only zeros if it
@@ -3056,9 +2412,9 @@ mod tests {
         write(&store, sealed, 0, &pattern(3, 2 * ps as usize)).unwrap();
         store.commit(None).unwrap();
         let _window = store.create_dax_window(8 * ps, None).unwrap();
-        store.map(sealed, ps, 3 * ps, 0, false).unwrap();
-        store.map(sealed, 2 * ps, ps, 5 * ps, false).unwrap();
-        let contents = MappingContents::Extent { extent: sealed, offset: ps, writable: false };
+        store.map(sealed, ps, 3 * ps, 0).unwrap();
+        store.map(sealed, 2 * ps, ps, 5 * ps).unwrap();
+        let contents = MappingContents::Extent { extent: sealed, offset: ps };
         assert_eq!(
             store.window_mappings().unwrap(),
             [
@@ -3067,80 +2423,6 @@ mod tests {
                 WindowMapping { window_offset: 5 * ps, len: ps, contents: MappingContents::Zeros },
             ]
         );
-    }
-
-    /// Mappings of open extents are of pages within the largest extent.
-    #[test]
-    fn open_mappings_are_pages_within_the_largest_extent() {
-        let (store, _dir) = store(1 << 30);
-        let ps = page_size();
-        let _window = store.create_dax_window(ps, None).unwrap();
-        let last = ExtentStore::MAX_EXTENT - ps;
-        assert_eq!(store.map(id(&store, 1), ps / 2, ps, 0, true), Err(Errno::EINVAL));
-        assert_eq!(store.map(id(&store, 1), last + ps, ps, 0, true), Err(Errno::EINVAL));
-        store.map(id(&store, 1), last, ps, 0, true).unwrap();
-    }
-
-    /// TASK-150.7: a write to an extent mapped writably is held to what a store's are, whole
-    /// blocks: one that isn't is refused there and then, leaving the extent as it was, not as long
-    /// as no commit can write it, which would fail every commit after (`EINVAL`).
-    #[test]
-    fn writes_to_extents_mapped_writably_are_of_whole_blocks() {
-        let (store, _dir) = store(1 << 24);
-        let ps = page_size();
-        let _window = store.create_dax_window(2 * ps, None).unwrap();
-        let extent = id(&store, 1);
-        store.map(extent, 0, 2 * ps, 0, true).unwrap();
-        assert_eq!(write(&store, extent, ps, &pattern(1, BLOCK + 1)), Err(Errno::EINVAL));
-        assert_eq!(write(&store, extent, ps + 1, &pattern(1, BLOCK)), Err(Errno::EINVAL));
-        assert_eq!(store.commit(None), Ok(()));
-        assert_eq!(store.info().map(|info| info.next_sequence), Ok(2));
-    }
-
-    /// TASK-150.7, TASK-153.3: a fork, whose commit seals what the store has open, seals no extent
-    /// a window maps writably, whose memory the next commit would write to it, failing that commit
-    /// and every one after (`EPERM`): the store holds no such extent, whose memory alone does, from
-    /// its mapping on. The fork holds it as of the last commit: none had it, so neither does the
-    /// fork; and the next commit here writes it.
-    #[test]
-    fn forks_seal_nothing_a_window_maps_writably() {
-        let (store, dir) = store(1 << 24);
-        let ps = page_size();
-        let _window = store.create_dax_window(ps, None).unwrap();
-        let extent = id(&store, 1);
-        write(&store, extent, 0, &pattern(1, BLOCK)).unwrap();
-        store.map(extent, 0, ps, 0, true).unwrap();
-        assert_eq!(store.store.extent(extent.into()).map_err(errno), Ok(None), "two owners");
-        let (path, branch) = (dir.path().join("fork"), store.branch() + 1);
-        store.fork(&path, branch).unwrap();
-        assert_eq!(store.commit(None), Ok(()));
-        assert_eq!(read(&store, extent, 0, BLOCK), Ok(pattern(1, BLOCK)));
-        assert_eq!(store.commit(None), Ok(()));
-        let fork = ExtentStore::open(&path).unwrap();
-        assert_eq!(read(&fork, extent, 0, BLOCK), Err(Errno::ENOENT));
-    }
-
-    /// TASK-153.3: an extent the store holds open, mapped read-only, goes into memory as a writable
-    /// mapping takes it, and out of the store: what a write gave it reads back, through the window
-    /// and the store's reads, and the commit writes it.
-    #[test]
-    fn a_mapping_takes_an_open_extent_out_of_the_store() {
-        let (store, _dir) = store(1 << 24);
-        let ps = page_size();
-        let window = store.create_dax_window(ps, None).unwrap();
-        let extent = id(&store, 1);
-        write(&store, extent, 0, &pattern(2, BLOCK)).unwrap();
-        assert_eq!(store.store.extent(extent.into()).map_err(errno), Ok(Some((BLOCK as u64, true))));
-        store.map(extent, 0, ps, 0, false).unwrap();
-        assert_eq!(store.store.extent(extent.into()).map_err(errno), Ok(None));
-        assert_eq!(read(&store, extent, 0, BLOCK), Ok(pattern(2, BLOCK)));
-        block_on(window.fault(0, Access::Read)).unwrap();
-        // SAFETY: The page is mapped, and nothing else accesses it.
-        let byte = unsafe { *window.host_base() };
-        assert_eq!(byte, pattern(2, BLOCK)[0]);
-        assert_eq!(store.commit(None), Ok(()));
-        assert_eq!(store.store.extent(extent.into()).map_err(errno), Ok(Some((BLOCK as u64, false))));
-        assert_eq!(read(&store, extent, 0, BLOCK), Ok(pattern(2, BLOCK)));
     }
 
     /// TASK-50.3: makes a store at `path` of `extents` sealed extents of a MiB each, and opens it
@@ -3157,7 +2439,7 @@ mod tests {
         let store = ExtentStore::open_in(path, Some(arena.clone())).unwrap();
         let window = store.create_dax_window(extents * EXTENT, None).unwrap();
         for sequence in 1..=extents {
-            store.map(id(&store, sequence), 0, EXTENT, (sequence - 1) * EXTENT, false).unwrap();
+            store.map(id(&store, sequence), 0, EXTENT, (sequence - 1) * EXTENT).unwrap();
         }
         (store, window)
     }
@@ -3265,129 +2547,6 @@ mod tests {
         assert_eq!(physmem::count_free_chunks(), 0, "memory never ran out");
     }
 
-    /// TASK-50.3: a store whose arena is capped, with nothing it holds to evict, as an open
-    /// extent's pages, refuses to map more for the guest to write than the cap holds: the mapping
-    /// fails, with ENOMEM, rather than wait, and the arena stays within its cap.
-    #[test]
-    fn capped_arenas_refuse_what_they_cannot_evict() {
-        let chunk = 2u64 << 20;
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("store");
-        drop(ExtentStore::create(&path, 1 << 30).unwrap());
-        let held = Arena::new();
-        let arena = held.id();
-        physmem::set_arena_cap(arena, Some(2 * chunk));
-        let store = ExtentStore::open_in(&path, Some(held)).unwrap();
-        let len = 4 * chunk;
-        let _window = store.create_dax_window(len, None).unwrap();
-        assert_eq!(store.map(id(&store, 1), 0, len, 0, true), Err(Errno::ENOMEM));
-        assert_eq!(physmem::arena_bytes(arena), 2 * chunk);
-    }
-
-    /// A store and window over `chunks` chunks of memory, in a process of the test's own, with
-    /// what a window's chunks of open extents take: 2 MiB each.
-    fn store_in_memory(path: &Path, chunks: u64) -> (ExtentStore, DaxWindow) {
-        const CHUNK: u64 = physmem::CHUNK_SIZE as u64;
-        crate::pages::configure(crate::pages::Config::with_memory(chunks * CHUNK)).unwrap();
-        let store = ExtentStore::create(path, 16 << 30).unwrap();
-        let window = store.create_dax_window(4 * chunks * CHUNK, None).unwrap();
-        (store, window)
-    }
-
-    /// TASK-150.20: open extents are what relief can't evict, so a MAP past their budget of memory
-    /// is refused with an eighth of it left, and a seal lets it go on: round after round, with
-    /// nothing but seals to free it, each round more than memory holds altogether, as a guest's
-    /// truncate and write would (xfstests' generic/129); and what each wrote stays as written,
-    /// evicted or not.
-    #[test]
-    fn writable_maps_past_the_open_budget_are_refused_until_a_seal() {
-        const CHUNK: u64 = physmem::CHUNK_SIZE as u64;
-        const CHUNKS: u64 = 16;
-        let dir = tempfile::tempdir().unwrap();
-        let (store, window) = store_in_memory(&dir.path().join("store"), CHUNKS);
-        let ps = page_size();
-        let mut sequence = 0;
-        let mut written = Vec::new();
-        for round in 0..4 {
-            let mut mapped = 0;
-            loop {
-                sequence += 1;
-                let extent = id(&store, sequence);
-                let at = sequence % (4 * CHUNKS) * CHUNK;
-                match store.map(extent, 0, CHUNK, at, true) {
-                    Ok(()) => mapped += 1,
-                    Err(errno) => {
-                        assert_eq!(errno, Errno::ENOMEM, "round {round}");
-                        break;
-                    }
-                }
-                // SAFETY: Mapped writably just now, and nothing else accesses it.
-                unsafe { *window.host_base().add(at as usize + ps as usize) = sequence as u8 };
-                written.push(sequence);
-            }
-            assert_eq!(mapped, CHUNKS * 7 / 8, "round {round}");
-            // TASK-153.15: what the daemon asks a guest to seal for.
-            assert_eq!(store.open_bytes(), mapped * CHUNK, "round {round}");
-            store.commit(None).unwrap();
-            assert_eq!(physmem::pinned_bytes(ArenaId::DEFAULT), 0, "round {round}");
-            assert_eq!(store.open_bytes(), 0, "round {round}");
-        }
-        for sequence in written {
-            let held = read(&store, id(&store, sequence), ps, 1).unwrap();
-            assert_eq!(held, [sequence as u8], "extent {sequence}");
-        }
-    }
-
-    /// TASK-150.20: a write, which can't go back, and a fault, which stops the guest if it fails,
-    /// go past what stops a MAP; and with memory gone at last, every page of it pinned, a write
-    /// says ENOMEM, and all that takes no memory goes on, a seal above all: the window's zeros,
-    /// made once as the first was mapped, took a page there, panicked and poisoned the store's
-    /// locks, and every request of its guest's after that (r454). The seal then gives it all back.
-    #[test]
-    fn memory_gone_leaves_the_store_going() {
-        const CHUNK: u64 = physmem::CHUNK_SIZE as u64;
-        const CHUNKS: u64 = 16;
-        let dir = tempfile::tempdir().unwrap();
-        let (store, window) = store_in_memory(&dir.path().join("store"), CHUNKS);
-        let ps = page_size();
-        write(&store, id(&store, 1), 0, &pattern(1, BLOCK)).unwrap();
-        store.commit(None).unwrap();
-
-        let refused = (2..=CHUNKS + 2)
-            .find(|&sequence| {
-                store.map(id(&store, sequence), 0, CHUNK, sequence * CHUNK, true).is_err()
-            })
-            .expect("every MAP mapped");
-        assert_eq!(refused, CHUNKS * 7 / 8 + 2);
-        let last = id(&store, refused - 1);
-
-        write(&store, last, CHUNK, &pattern(2, ps as usize)).unwrap();
-        store.map(last, CHUNK, ps, 0, false).unwrap();
-        block_on(window.fault(0, Access::Read)).unwrap();
-        store.map(last, 2 * CHUNK, ps, ps, false).unwrap();
-        block_on(window.fault(ps, Access::Read)).unwrap();
-
-        // To the last page: a write that fails gives back the pages it had found.
-        let mut at = 3 * CHUNK;
-        let gone = loop {
-            match write(&store, last, at, &pattern(3, ps as usize)) {
-                Ok(()) => at += ps,
-                Err(errno) => break errno,
-            }
-        };
-        assert_eq!(gone, Errno::ENOMEM);
-        assert_eq!(physmem::count_free_pages(), 0);
-
-        // Past a sealed extent's end, zeros; and what a free puts in its mappings' place.
-        let sealed = id(&store, 1);
-        store.map(sealed, 0, 4 * ps, 2 * ps, false).unwrap();
-        store.free(sealed).unwrap();
-        store.commit(None).unwrap();
-        assert_eq!(physmem::pinned_bytes(ArenaId::DEFAULT), 0);
-        assert_eq!(read(&store, last, CHUNK, ps as usize).unwrap(), pattern(2, ps as usize));
-        store.map(id(&store, refused + 1), 0, CHUNK, refused * CHUNK, true).unwrap();
-    }
-
     /// A store holds a block at least; one asked for less is not made, nor its directory.
     #[test]
     fn stores_hold_a_block_at_least() {
@@ -3399,20 +2558,6 @@ mod tests {
         assert!(!small.exists());
         let store = ExtentStore::create(dir.path().join("one"), block).unwrap();
         assert_eq!(store.info().unwrap().capacity, block);
-    }
-
-    /// Bytes are zeros when every one is, words and the bytes after them alike.
-    #[test]
-    fn zeros_are_every_byte() {
-        assert!(is_zeros(&[0; 17]));
-        assert!(is_zeros(&[]));
-        let mut tail = [0; 9];
-        tail[8] = 5;
-        assert!(!is_zeros(&tail));
-        let mut pair = [0; 10];
-        pair[8..].copy_from_slice(&[3, 3]);
-        assert!(!is_zeros(&pair));
-        assert!(!is_zeros(&[7; 16]));
     }
 
     /// TASK-79.83: a fork that fails otherwise than for something at its path fails with the
@@ -3443,26 +2588,19 @@ mod tests {
         write(&store, sealed, 0, &pattern(1, 2 * ps as usize)).unwrap();
         store.commit(None).unwrap();
         let window = store.create_dax_window(8 * ps, None).unwrap();
-        store.map(sealed, 0, 2 * ps, 0, false).unwrap();
-        store.map(sealed, ps, ps, 4 * ps, false).unwrap();
+        store.map(sealed, 0, 2 * ps, 0).unwrap();
+        store.map(sealed, ps, ps, 4 * ps).unwrap();
         store.map_zeros_at(2 * ps, ps).unwrap();
         // Zeros over the first page of the first mapping: what is left of it maps the extent's
         // second page.
         store.map_zeros_at(0, ps).unwrap();
-        store.map(open, 0, ps, 6 * ps, true).unwrap();
         write(&store, open, 0, &pattern(2, ps as usize)).unwrap();
         assert_eq!(store.is_quiescent(), Ok(false));
-        assert_eq!(
-            store.window_mappings().unwrap()[4],
-            WindowMapping {
-                window_offset: 6 * ps,
-                len: ps,
-                contents: MappingContents::Extent { extent: open, offset: 0, writable: true },
-            }
-        );
+        assert_eq!(store.map(open, 0, ps, 6 * ps), Err(Errno::EPERM), "an open extent mapped");
         store.commit(None).unwrap();
         assert_eq!(store.is_quiescent(), Ok(true));
-        let extent = |extent, offset| MappingContents::Extent { extent, offset, writable: false };
+        store.map(open, 0, ps, 6 * ps).unwrap();
+        let extent = |extent, offset| MappingContents::Extent { extent, offset };
         let mappings = store.window_mappings().unwrap();
         assert_eq!(
             mappings,
@@ -3481,8 +2619,8 @@ mod tests {
         let fork_window = fork.create_dax_window(8 * ps, None).unwrap();
         for mapping in &mappings {
             match mapping.contents {
-                MappingContents::Extent { extent, offset, writable } => {
-                    fork.map(extent, offset, mapping.len, mapping.window_offset, writable)
+                MappingContents::Extent { extent, offset } => {
+                    fork.map(extent, offset, mapping.len, mapping.window_offset)
                 }
                 MappingContents::Zeros => fork.map_zeros_at(mapping.window_offset, mapping.len),
             }
@@ -3517,7 +2655,7 @@ mod tests {
         write(&store, extent, 0, &pattern(5, len)).unwrap();
         let window = store.create_dax_window(len as u64, None).unwrap();
         store.commit(None).unwrap();
-        store.map(extent, 0, len as u64, 0, false).unwrap();
+        store.map(extent, 0, len as u64, 0).unwrap();
         let before = stats::stats();
         // From its end, so that nothing is read ahead.
         block_on(async {
@@ -3548,7 +2686,7 @@ mod tests {
         // Its segment closed, compressed in parts, the extent 300 KiB into the first.
         store.store.close_segment().unwrap();
         store.commit(None).unwrap();
-        store.map(extent, 0, len as u64, 0, false).unwrap();
+        store.map(extent, 0, len as u64, 0).unwrap();
         let counted = stats::stats();
         // From its end, so that nothing is read ahead.
         block_on(async {
@@ -3601,7 +2739,7 @@ mod tests {
             std::fs::write(&path, bytes).unwrap();
 
             let start = at as u64 * len as u64;
-            store.map(*extent, 0, len as u64, start, false).unwrap();
+            store.map(*extent, 0, len as u64, start).unwrap();
             let page = offset / ps * ps;
             assert_eq!(block_on(window.fault(start + page, Access::Read)), Err(Errno::EIO));
             assert_eq!(read(&store, *extent, page, BLOCK), Err(Errno::EIO));
@@ -3627,7 +2765,7 @@ mod tests {
         write(&store, extent, 0, &pattern(5, len)).unwrap();
         let window = store.create_dax_window(len as u64, None).unwrap();
         store.commit(None).unwrap();
-        store.map(extent, 0, len as u64, 0, false).unwrap();
+        store.map(extent, 0, len as u64, 0).unwrap();
         let before = stats::stats();
         block_on(window.fault(0, Access::Read)).unwrap();
         // The first part, and the two after it, read ahead, in time.
@@ -3661,7 +2799,7 @@ mod tests {
         // The first fork reads two of the extent's parts, from its end.
         let fork = ExtentStore::open(&first).unwrap();
         let window = fork.create_dax_window(len as u64, None).unwrap();
-        fork.map(extent, 0, len as u64, 0, false).unwrap();
+        fork.map(extent, 0, len as u64, 0).unwrap();
         block_on(async {
             window.fault(3 * part + ps, Access::Read).await.unwrap();
             window.fault(part, Access::Read).await.unwrap();
@@ -3700,7 +2838,7 @@ mod tests {
         let window = store.create_dax_window(len as u64, Some(stage.clone())).unwrap();
         store.commit(None).unwrap();
         // Nothing of it is in memory: mapping it maps no page yet.
-        store.map(extent, 0, len as u64, 0, false).unwrap();
+        store.map(extent, 0, len as u64, 0).unwrap();
         assert_eq!(*stage.0.lock().unwrap(), []);
         // A fault on each part's first page maps the part.
         block_on(async {
@@ -3710,7 +2848,7 @@ mod tests {
         });
         let mapped: std::collections::BTreeSet<u64> = (stage.0.lock().unwrap().iter())
             .filter(|(op, ..)| *op == "map")
-            .map(|(_, page, _)| *page)
+            .map(|(_, page)| *page)
             .collect();
         let pages: std::collections::BTreeSet<u64> = (0..len as u64).step_by(ps as usize).collect();
         assert_eq!(mapped, pages);
@@ -3731,7 +2869,7 @@ mod tests {
         base.commit(None).unwrap();
         let forked = dir.path().join("fork");
         base.fork(&forked, base.branch() + 1).unwrap();
-        base.map(extent, 0, len, 0, false).unwrap();
+        base.map(extent, 0, len, 0).unwrap();
         // Each part paged in by a fault of its own, at once, as a guest's threads fault.
         std::thread::scope(|scope| {
             for start in (0..len).step_by(part as usize) {
@@ -3742,7 +2880,7 @@ mod tests {
         let fork = ExtentStore::open(&forked).unwrap();
         let stage = Arc::new(RunRecordingSecondStage::default());
         let _window = fork.create_dax_window(len, Some(stage.clone())).unwrap();
-        fork.map(extent, 0, len, 0, false).unwrap();
+        fork.map(extent, 0, len, 0).unwrap();
         let runs = stage.0.lock().unwrap().clone();
         let in_one_run: Vec<bool> = (0..parts)
             .map(|at| {
@@ -3769,7 +2907,7 @@ mod tests {
         enum Request {
             Write(u64, u64, usize),
             Read(u64, u64, usize),
-            Map(u64, u64, u64, u64, bool),
+            Map(u64, u64, u64, u64),
             Unmap(u64, u64),
             Commit,
             Free(u64),
@@ -3786,18 +2924,18 @@ mod tests {
         let sequence = || 0u64..16;
         let bytes = || 0usize..4 * BLOCK;
         // Those a store serves: of a few extents, whole blocks and pages, as a guest's are, each
-        // of the others' extents, so that what one opens the next finds open.
+        // of the others' extents, so that what one writes the next finds open, or sealed.
         let ps = page_size();
         let few = || 0u64..4;
         let page = move || (0u64..16).prop_map(move |page| page * ps);
         let request = prop_oneof![
             8 => (few(), page(), 1usize..4).prop_map(|(e, at, n)| Request::Write(e, at, n * BLOCK)),
-            8 => (few(), page(), 1u64..4, page(), any::<bool>())
-                .prop_map(move |(e, at, pages, to, w)| Request::Map(e, at, pages * ps, to, w)),
+            8 => (few(), page(), 1u64..4, page())
+                .prop_map(move |(e, at, pages, to)| Request::Map(e, at, pages * ps, to)),
             8 => (sequence(), at(), bytes()).prop_map(|(e, at, len)| Request::Write(e, at, len)),
             8 => (sequence(), at(), bytes()).prop_map(|(e, at, len)| Request::Read(e, at, len)),
-            8 => (sequence(), at(), at(), at(), any::<bool>())
-                .prop_map(|(e, at, len, to, w)| Request::Map(e, at, len, to, w)),
+            8 => (sequence(), at(), at(), at())
+                .prop_map(|(e, at, len, to)| Request::Map(e, at, len, to)),
             8 => (at(), at()).prop_map(|(to, len)| Request::Unmap(to, len)),
             8 => Just(Request::Commit),
             8 => sequence().prop_map(Request::Free),
@@ -3820,9 +2958,7 @@ mod tests {
                     let _ = match request {
                         Request::Write(e, at, len) => write(&store, extent(e), at, &vec![1; len]),
                         Request::Read(e, at, len) => read(&store, extent(e), at, len).map(drop),
-                        Request::Map(e, at, len, to, writable) => {
-                            store.map(extent(e), at, len, to, writable)
-                        }
+                        Request::Map(e, at, len, to) => store.map(extent(e), at, len, to),
                         Request::Unmap(to, len) => store.unmap(to, len),
                         Request::Commit => store.commit(None),
                         Request::Free(e) => store.free(extent(e)),
@@ -3845,11 +2981,9 @@ mod tests {
     struct RunRecordingSecondStage(std::sync::Mutex<Vec<(u64, u64)>>);
 
     impl SecondStage for RunRecordingSecondStage {
-        fn map(&self, offset: u64, _: PhysLocation, len: u64, _: Protection) {
+        fn map(&self, offset: u64, _: PhysLocation, len: u64) {
             self.0.lock().unwrap().push((offset, len));
         }
-
-        fn protect(&self, _: u64, _: u64, _: Protection) {}
 
         fn unmap(&self, _: u64, _: u64) {}
     }
@@ -3879,7 +3013,7 @@ mod tests {
         store.attach_remote(bucket, 2, options).unwrap();
         assert_eq!(read(&store, extent, 0, len), Ok(pattern(7, len)));
         let window = store.create_dax_window(4 * ps, None).unwrap();
-        store.map(extent, 0, 2 * ps, ps, false).unwrap();
+        store.map(extent, 0, 2 * ps, ps).unwrap();
         block_on(async {
             window.fault(ps, Access::Read).await.unwrap();
             window.fault(2 * ps, Access::Read).await.unwrap();
@@ -3892,109 +3026,51 @@ mod tests {
         assert!(bytes[len..].iter().all(|byte| *byte == 0), "the padding isn't zeros");
     }
 
-    /// A window maps as many open extents writably as it has room for, each written first, as a
-    /// guest's filesystem writes many small files.
-    #[test]
-    fn maps_many_open_extents_writably() {
-        const EXTENTS: u64 = 1024;
-        let (store, _dir) = store(1 << 30);
-        let ps = page_size();
-        let chunk = 2 << 20;
-        let _window = store.create_dax_window(EXTENTS * chunk, None).unwrap();
-        for i in 0..EXTENTS {
-            let extent = id(&store, 1000 + i);
-            write(&store, extent, 0, &pattern(i as u8, BLOCK)).unwrap();
-            assert_eq!(store.map(extent, 0, ps, i * chunk, true), Ok(()), "extent {i}");
-        }
-    }
-
-    /// A second stage recording the changes made to it, page by page: each, the page, and the
-    /// protection it gives it, if any.
+    /// A second stage recording the changes made to it, page by page: each, and the page.
     #[derive(Default)]
-    struct RecordingSecondStage(std::sync::Mutex<Vec<(&'static str, u64, Option<Protection>)>>);
+    struct RecordingSecondStage(std::sync::Mutex<Vec<(&'static str, u64)>>);
 
     impl SecondStage for RecordingSecondStage {
-        fn map(&self, offset: u64, _: PhysLocation, len: u64, protection: Protection) {
+        fn map(&self, offset: u64, _: PhysLocation, len: u64) {
             let mut ops = self.0.lock().unwrap();
             for page in (0..len).step_by(page_size() as usize) {
-                ops.push(("map", offset + page, Some(protection)));
-            }
-        }
-
-        fn protect(&self, offset: u64, len: u64, protection: Protection) {
-            let mut ops = self.0.lock().unwrap();
-            for page in (0..len).step_by(page_size() as usize) {
-                ops.push(("protect", offset + page, Some(protection)));
+                ops.push(("map", offset + page));
             }
         }
 
         fn unmap(&self, offset: u64, len: u64) {
             let mut ops = self.0.lock().unwrap();
             for page in (0..len).step_by(page_size() as usize) {
-                ops.push(("unmap", offset + page, None));
+                ops.push(("unmap", offset + page));
             }
         }
     }
 
-    /// fxdax: a commit keeps an open extent as far as what was stored to it, one block at least:
-    /// the pages mapped writably past it, which nothing was stored to, read as zeros past its end,
-    /// through the store and the window alike, and take no room.
-    #[test]
-    fn commit_leaves_out_what_nothing_was_stored_to() {
-        let (store, _dir) = store(1 << 20);
-        let ps = page_size();
-        let window = store.create_dax_window(8 * ps, None).unwrap();
-        let (stored, unused) = (id(&store, 1), id(&store, 2));
-        store.map(stored, 0, 4 * ps, 0, true).unwrap();
-        store.map(unused, 0, 4 * ps, 4 * ps, true).unwrap();
-        write(&store, stored, 0, &pattern(4, BLOCK)).unwrap();
-        let used = store.info().unwrap().used;
-        store.commit(None).unwrap();
-
-        assert_eq!(store.info().unwrap().used, used + 2 * BLOCK as u64);
-        assert_eq!(
-            read(&store, stored, 0, 2 * BLOCK),
-            Ok([pattern(4, BLOCK), vec![0; BLOCK]].concat())
-        );
-        assert_eq!(read(&store, unused, 0, BLOCK), Ok(vec![0; BLOCK]));
-        block_on(async {
-            window.fault(3 * ps, Access::Read).await.unwrap();
-            window.fault(7 * ps, Access::Read).await.unwrap();
-        });
-        // SAFETY: The test faulted the pages in, and nothing else accesses them.
-        let bytes = unsafe { std::slice::from_raw_parts(window.host_base(), 8 * ps as usize) };
-        assert!(bytes[..BLOCK] == pattern(4, BLOCK)[..], "the stored data");
-        assert!(bytes[3 * ps as usize..4 * ps as usize].iter().all(|byte| *byte == 0));
-        assert!(bytes[7 * ps as usize..].iter().all(|byte| *byte == 0));
-    }
-
-    /// The hypervisor's second stage follows the window: an open extent's pages are mapped
-    /// writable as the guest maps them, and read-only once a commit seals them; a sealed extent's
-    /// are mapped read-only as the guest faults on them; unmapping unmaps them.
+    /// The hypervisor's second stage follows the window: a sealed extent's pages are mapped as
+    /// the guest faults on them, or as they are mapped, if in memory; unmapping unmaps them; a
+    /// commit changes nothing there.
     #[test]
     fn second_stage_follows_the_window() {
-        let (read, read_write) = (Some(Protection::Read), Some(Protection::ReadWrite));
         let (store, _dir) = store(1 << 20);
         let ps = page_size();
         let stage = Arc::new(RecordingSecondStage::default());
         let window = store.create_dax_window(4 * ps, Some(stage.clone())).unwrap();
         let take = || std::mem::take(&mut *stage.0.lock().unwrap());
-        let open = id(&store, 1);
-        store.map(open, 0, 2 * ps, 0, true).unwrap();
-        assert_eq!(take(), [("map", 0, read_write), ("map", ps, read_write)]);
-        // What the extent holds: a commit leaves out what nothing was stored to.
-        write(&store, open, 0, &pattern(3, 2 * ps as usize)).unwrap();
-        // Sealed, the pages are mapped again, read-only, from the sealed extent.
+        let extent = id(&store, 1);
+        write(&store, extent, 0, &pattern(3, 2 * ps as usize)).unwrap();
         store.commit(None).unwrap();
-        assert_eq!(
-            take(),
-            [("unmap", 0, None), ("unmap", ps, None), ("map", 0, read), ("map", ps, read)]
-        );
-        store.map(open, 0, ps, 3 * ps, false).unwrap();
-        block_on(window.fault(3 * ps, Access::Read)).unwrap();
-        assert_eq!(take(), [("map", 3 * ps, read)]);
+        store.map(extent, 0, 2 * ps, 0).unwrap();
+        assert_eq!(take(), [], "pages not in memory mapped");
+        block_on(window.fault(ps, Access::Read)).unwrap();
+        assert_eq!(take(), [("map", ps)]);
+        // The extent's first page, paged in with the second, is mapped as the range is.
+        store.map(extent, 0, ps, 3 * ps).unwrap();
+        assert_eq!(take(), [("map", 3 * ps)]);
+        write(&store, id(&store, 2), 0, &pattern(4, BLOCK)).unwrap();
+        store.commit(None).unwrap();
+        assert_eq!(take(), [], "a commit changed the window");
         store.unmap(0, 2 * ps).unwrap();
-        assert_eq!(take(), [("unmap", 0, None), ("unmap", ps, None)]);
+        assert_eq!(take(), [("unmap", ps)]);
     }
 
     /// TASK-79.45: a writer taking a store over maps zeros through a window of its own, however
@@ -4017,135 +3093,35 @@ mod tests {
     }
 
     /// fxdax: freeing an extent maps zeros where the window mapped it, read-only, rather than
-    /// what kept its pages: a sealed extent's, and an open one's; others stay.
+    /// what kept its pages; others stay.
     #[test]
     fn freeing_an_extent_maps_zeros_in_its_place() {
         let (store, _dir) = store(1 << 20);
         let ps = page_size();
         let window = store.create_dax_window(8 * ps, None).unwrap();
-        let (sealed, kept, open) = (id(&store, 1), id(&store, 2), id(&store, 3));
-        store.map(sealed, 0, 2 * ps, 0, true).unwrap();
-        store.map(kept, 0, ps, 4 * ps, true).unwrap();
+        let (sealed, kept) = (id(&store, 1), id(&store, 2));
+        write(&store, sealed, 0, &pattern(1, 2 * ps as usize)).unwrap();
+        write(&store, kept, 0, &pattern(2, ps as usize)).unwrap();
         store.commit(None).unwrap();
-        store.map(open, 0, ps, 6 * ps, true).unwrap();
-        assert!(window.is_mapped(0) && window.is_mapped(ps) && window.is_mapped(6 * ps));
+        store.map(sealed, 0, 2 * ps, 0).unwrap();
+        store.map(kept, 0, ps, 4 * ps).unwrap();
+        assert!(window.is_mapped(0) && window.is_mapped(ps));
 
         let sealed_pages = cached(sealed).unwrap();
         let weak = Arc::downgrade(&sealed_pages);
         drop(sealed_pages);
         store.free(sealed).unwrap();
-        store.free(open).unwrap();
-        // Mapped, but no longer keeping the extents' pages: the sealed extent is gone.
-        assert!(window.is_mapped(0) && window.is_mapped(ps) && window.is_mapped(6 * ps));
+        // Mapped, but no longer keeping the extent's pages: the sealed extent is gone.
+        assert!(window.is_mapped(0) && window.is_mapped(ps));
         assert!(weak.upgrade().is_none(), "the window still keeps the freed extent's pages");
         assert!(cached(sealed).is_none());
         // Zeros, read-only: a store faults rather than writing them.
-        block_on(async {
-            window.fault(0, Access::Read).await.unwrap();
-            window.fault(6 * ps, Access::Read).await.unwrap();
-        });
+        assert_eq!(block_on(window.fault(0, Access::Write)), Err(Errno::EACCES));
+        block_on(window.fault(0, Access::Read)).unwrap();
         // SAFETY: The test faulted the pages in, and nothing else accesses them.
         let bytes = unsafe { std::slice::from_raw_parts(window.host_base(), ps as usize) };
         assert!(bytes.iter().all(|byte| *byte == 0), "a freed extent's range doesn't read zeros");
         assert!(window.is_mapped(4 * ps), "an extent not freed was unmapped");
-    }
-
-    /// A second stage that defers the changes that take access away until the test makes them.
-    #[derive(Default)]
-    struct DeferringStage {
-        deferral: Arc<TestDeferral>,
-    }
-
-    #[derive(Default)]
-    struct TestDeferral {
-        /// Whether the changes are made, what is kept until they are, and how many waited.
-        state: std::sync::Mutex<(bool, Vec<Box<dyn Send>>, usize)>,
-        changed: std::sync::Condvar,
-    }
-
-    impl TestDeferral {
-        fn make(&self) {
-            let kept = {
-                let mut state = self.state.lock().unwrap();
-                state.0 = true;
-                std::mem::take(&mut state.1)
-            };
-            self.changed.notify_all();
-            drop(kept);
-        }
-
-        fn waiting(&self) -> usize {
-            self.state.lock().unwrap().2
-        }
-    }
-
-    impl Deferred for TestDeferral {
-        fn wait(&self) {
-            let mut state = self.state.lock().unwrap();
-            state.2 += 1;
-            self.changed.notify_all();
-            while !state.0 {
-                state = self.changed.wait(state).unwrap();
-            }
-        }
-
-        fn keep_until_made(&self, keep: Box<dyn Send>) {
-            self.state.lock().unwrap().1.push(keep);
-        }
-    }
-
-    impl SecondStage for DeferringStage {
-        fn map(&self, _: u64, _: PhysLocation, _: u64, _: Protection) {}
-        fn protect(&self, _: u64, _: u64, _: Protection) {}
-        fn unmap(&self, _: u64, _: u64) {}
-        fn end_deferring(&self) -> Option<Arc<dyn Deferred>> {
-            Some(self.deferral.clone())
-        }
-    }
-
-    /// fxdax: a commit takes its guest's access to the pages it seals away without waiting for the
-    /// change to be made, keeping what the guest may still reach until it is: another store, a
-    /// fork's, that maps the extent waits for it; the store that sealed it doesn't.
-    #[test]
-    fn forks_wait_for_seals_to_be_made() {
-        let (store, dir) = store(1 << 20);
-        let ps = page_size();
-        let stage = Arc::new(DeferringStage::default());
-        let _window = store.create_dax_window(4 * ps, Some(stage.clone())).unwrap();
-        let extent = id(&store, 1);
-        store.map(extent, 0, ps, 0, true).unwrap();
-        write(&store, extent, 0, &pattern(6, BLOCK)).unwrap();
-        store.commit(None).unwrap();
-        assert!(stage.deferral.state.lock().unwrap().1.len() == 1, "nothing kept");
-        store.map(extent, 0, ps, ps, false).unwrap();
-        assert_eq!(stage.deferral.waiting(), 0, "the sealing store waited");
-
-        let fork = dir.path().join("fork");
-        store.fork(&fork, store.branch() + 1).unwrap();
-        let fork = Arc::new(ExtentStore::open(&fork).unwrap());
-        let _fork_window = fork.create_dax_window(4 * ps, None).unwrap();
-        let mapped = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let mapping = std::thread::spawn({
-            let (fork, mapped, deferral) = (fork.clone(), mapped.clone(), stage.deferral.clone());
-            move || {
-                fork.map(extent, 0, ps, 0, false).unwrap();
-                mapped.store(true, std::sync::atomic::Ordering::SeqCst);
-                let _state = deferral.state.lock().unwrap();
-                deferral.changed.notify_all();
-            }
-        });
-        // The fork's MAP waits for the seal.
-        let deferral = &stage.deferral;
-        let mut state = deferral.state.lock().unwrap();
-        while state.2 == 0 && !mapped.load(std::sync::atomic::Ordering::SeqCst) {
-            state = deferral.changed.wait(state).unwrap();
-        }
-        drop(state);
-        assert!(!mapped.load(std::sync::atomic::Ordering::SeqCst), "the fork didn't wait");
-        deferral.make();
-        mapping.join().unwrap();
-        assert!(mapped.load(std::sync::atomic::Ordering::SeqCst));
-        assert!(deferral.state.lock().unwrap().1.is_empty(), "kept after the seal was made");
     }
 
     /// A window in host memory takes whole pages.
@@ -4163,68 +3139,6 @@ mod tests {
         assert_eq!(error, "DAX window memory must be whole pages");
     }
 
-    /// A writable mapping of an open extent maps its pages as it is made, for the guest to store
-    /// to without faulting on each.
-    #[test]
-    fn maps_open_extents_pages_writably_at_once() {
-        let (store, _dir) = store(1 << 20);
-        let ps = page_size();
-        let window = store.create_dax_window(4 * ps, None).unwrap();
-        store.map(id(&store, 1), 0, 2 * ps, ps, true).unwrap();
-        let mapped: Vec<bool> = (0..4).map(|page| window.is_mapped(page * ps)).collect();
-        assert_eq!(mapped, [false, true, true, false]);
-    }
-
-    /// A hypervisor that maps a window's host memory for the guest, recording the pages it is told
-    /// the window maps there.
-    #[cfg(target_os = "linux")]
-    #[derive(Default)]
-    struct RecordingPrefault(std::sync::Mutex<Vec<u64>>);
-
-    #[cfg(target_os = "linux")]
-    impl crate::Prefault for RecordingPrefault {
-        fn prefault(&self, offset: u64, len: u64) {
-            let ps = page_size();
-            self.0.lock().unwrap().extend((offset..offset + len).step_by(ps as usize));
-        }
-    }
-
-    /// The hypervisor maps an open extent's pages for the guest as the window maps them writably,
-    /// so that the guest's stores to them do not fault.
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn prefaults_open_extents_pages() {
-        let (store, _dir) = store(1 << 20);
-        let ps = page_size();
-        // SAFETY: Maps anonymous memory, which the test owns.
-        let memory = unsafe {
-            libc::mmap(
-                std::ptr::null_mut(),
-                4 * ps as usize,
-                libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
-                -1,
-                0,
-            )
-        };
-        assert_ne!(memory, libc::MAP_FAILED);
-        let prefault = Arc::new(RecordingPrefault::default());
-        // SAFETY: The memory is the test's, and outlives the store, whose window is leaked with it.
-        let _window = unsafe {
-            store.create_dax_window_in_host_memory(
-                std::ptr::NonNull::new(memory.cast()).unwrap(),
-                4 * ps,
-                Some(prefault.clone()),
-            )
-        }
-        .unwrap();
-        store.map(id(&store, 1), 0, 2 * ps, ps, true).unwrap();
-        assert_eq!(*prefault.0.lock().unwrap(), [ps, 2 * ps]);
-        drop(store);
-        // SAFETY: Unmaps the memory, which nothing uses any more.
-        assert_eq!(unsafe { libc::munmap(memory, 4 * ps as usize) }, 0);
-    }
-
     /// Windows mapping the same extent, from a store and a fork of it, map the same pages.
     #[test]
     fn windows_share_extents_pages() {
@@ -4238,8 +3152,8 @@ mod tests {
         let copy = ExtentStore::open(&copy_path).unwrap();
         let (window, copy_window) =
             (store.create_dax_window(ps, None).unwrap(), copy.create_dax_window(ps, None).unwrap());
-        store.map(extent, 0, ps, 0, false).unwrap();
-        copy.map(extent, 0, ps, 0, false).unwrap();
+        store.map(extent, 0, ps, 0).unwrap();
+        copy.map(extent, 0, ps, 0).unwrap();
 
         // Counted before anything pages in: a page-in holds the extent too, a while after the
         // fault it serves returns.
@@ -4248,7 +3162,7 @@ mod tests {
         assert_eq!(Arc::strong_count(&extent_cached), 4);
         copy.unmap(0, ps).unwrap();
         assert_eq!(Arc::strong_count(&extent_cached), 3, "unmapped, the mapping let go");
-        copy.map(extent, 0, ps, 0, false).unwrap();
+        copy.map(extent, 0, ps, 0).unwrap();
         block_on(async {
             window.fault(0, Access::Read).await.unwrap();
             copy_window.fault(0, Access::Read).await.unwrap();
@@ -4273,7 +3187,7 @@ mod tests {
         assert!(cached(extent).is_none());
     }
 
-    /// TASK-79.6: an extent freed once sealed is mapped writably, and written, no more: a fork
+    /// TASK-79.6: an extent freed once sealed is mapped, and written, no more: a fork
     /// that shares its pages through the cache, by its ID, would read what its writer stored in
     /// them as its own.
     #[test]
@@ -4291,7 +3205,7 @@ mod tests {
         store.free(extent).unwrap();
         store.commit(None).unwrap();
         let window = store.create_dax_window(ps, None).unwrap();
-        assert_eq!(store.map(extent, 0, ps, 0, true), Err(Errno::EPERM));
+        assert_eq!(store.map(extent, 0, ps, 0), Err(Errno::ENOENT));
         assert_eq!(write(&store, extent, 0, &pattern(7, BLOCK)), Err(Errno::EPERM));
         drop(window);
         assert_eq!(read(&fork, extent, 0, BLOCK), Ok(pattern(6, BLOCK)));
@@ -4318,7 +3232,7 @@ mod tests {
         let windows: Vec<DaxWindow> =
             forks.iter().map(|fork| fork.create_dax_window(ps, None).unwrap()).collect();
         for fork in &forks {
-            fork.map(extent, 0, ps, 0, false).unwrap();
+            fork.map(extent, 0, ps, 0).unwrap();
         }
         forks[0].free(extent).unwrap();
         forks[0].commit(None).unwrap();
@@ -4344,49 +3258,34 @@ mod tests {
         assert!(closed.upgrade().is_none(), "the cache keeps the store");
     }
 
-    /// A read-only mapping of an open extent maps its memory, which sees what is written and
-    /// stored to it, until the commit that seals it maps the sealed pages there: as a guest maps an
-    /// extent it takes for sealed while a seal is in flight.
+    /// fxdax (backlog doc-13): a `MAP` of an open extent, written and not yet sealed, is refused
+    /// (`EPERM`), and counted, the window as it was: the guest maps sealed extents alone. Sealed
+    /// by a commit, it maps, zeros past what was written; one never written maps nothing
+    /// (`ENOENT`).
     #[test]
-    fn maps_open_extents_read_only() {
+    fn open_extents_map_nowhere() {
         let (store, _dir) = store(1 << 20);
         let ps = page_size();
-        let window = store.create_dax_window(4 * ps, None).unwrap();
-        let (written, stored) = (id(&store, 1), id(&store, 2));
+        let window = store.create_dax_window(2 * ps, None).unwrap();
+        let written = id(&store, 1);
         write(&store, written, 0, &pattern(1, ps as usize)).unwrap();
-        store.map(written, 0, ps, 0, false).unwrap();
-        // One only stored to, through a writable mapping.
-        store.map(stored, 0, ps, ps, true).unwrap();
-        store.map(stored, 0, ps, 2 * ps, false).unwrap();
-        // Past what was written, zeros; not of one never written.
-        store.map(written, ps, ps, 3 * ps, false).unwrap();
-        assert_eq!(store.map(id(&store, 3), 0, ps, 3 * ps, false), Err(Errno::ENOENT));
-        block_on(async {
-            for page in 0..4 {
-                let access = if page == 1 { Access::Write } else { Access::Read };
-                window.fault(page * ps, access).await.unwrap();
-            }
-        });
-        // SAFETY: The test faulted the pages in, and only it accesses them.
-        let bytes = unsafe { std::slice::from_raw_parts_mut(window.host_base(), 4 * ps as usize) };
-        bytes[ps as usize..2 * ps as usize].copy_from_slice(&pattern(2, ps as usize));
-        assert!(bytes[..ps as usize] == pattern(1, ps as usize)[..], "the written data");
-        assert!(bytes[2 * ps as usize..3 * ps as usize] == pattern(2, ps as usize)[..]);
-        assert!(bytes[3 * ps as usize..].iter().all(|byte| *byte == 0), "past what was written");
-        assert!(block_on(window.fault(0, Access::Write)).is_err(), "the mapping is writable");
+        let refused = open_maps_refused();
+        assert_eq!(store.map(written, 0, ps, 0), Err(Errno::EPERM));
+        assert_eq!(open_maps_refused(), refused + 1);
+        assert!(!window.is_mapped(0), "an open extent mapped");
+        assert_eq!(store.map(id(&store, 3), 0, ps, 0), Err(Errno::ENOENT));
 
         store.commit(None).unwrap();
+        store.map(written, 0, 2 * ps, 0).unwrap();
         block_on(async {
-            for page in [0, 2, 3] {
+            for page in 0..2 {
                 window.fault(page * ps, Access::Read).await.unwrap();
             }
         });
-        // SAFETY: As above.
-        let bytes = unsafe { std::slice::from_raw_parts(window.host_base(), 4 * ps as usize) };
+        // SAFETY: The test faulted the pages in, and nothing else accesses them.
+        let bytes = unsafe { std::slice::from_raw_parts(window.host_base(), 2 * ps as usize) };
         assert!(bytes[..ps as usize] == pattern(1, ps as usize)[..], "the sealed written data");
-        assert!(bytes[2 * ps as usize..3 * ps as usize] == pattern(2, ps as usize)[..]);
-        assert!(bytes[3 * ps as usize..].iter().all(|byte| *byte == 0), "past the sealed extent");
-        assert_eq!(Arc::strong_count(&cached(stored).unwrap()), 4);
+        assert!(bytes[ps as usize..].iter().all(|byte| *byte == 0), "past the sealed extent");
     }
 
     /// TASK-104: the cache keeps no more extents than its bound, letting go of those asked for
@@ -4402,7 +3301,7 @@ mod tests {
         }
         store.commit(None).unwrap();
         let window = store.create_dax_window(ps, None).unwrap();
-        store.map(id(&store, 1), 0, ps, 0, false).unwrap();
+        store.map(id(&store, 1), 0, ps, 0).unwrap();
         for sequence in 2..=20 {
             let extent = id(&store, sequence);
             drop(cache::cached(&store.store, ArenaId::DEFAULT, None, None, extent, ps).unwrap());
@@ -4429,7 +3328,7 @@ mod tests {
         store.commit(None).unwrap();
         let window = store.create_dax_window(mapped * ps, None).unwrap();
         for sequence in 1..=mapped {
-            store.map(id(&store, sequence), 0, ps, (sequence - 1) * ps, false).unwrap();
+            store.map(id(&store, sequence), 0, ps, (sequence - 1) * ps).unwrap();
         }
         let before = stats::stats();
         for sequence in mapped + 1..=mapped + looked_up {
@@ -4446,63 +3345,6 @@ mod tests {
     /// The process's cached sealed `extent`, if it is cached.
     fn cached(extent: ExtentId) -> Option<Arc<CachedExtent>> {
         cache::find(ArenaId::DEFAULT, extent)
-    }
-
-    /// Stores through a writable mapping of a new extent are its data once a commit seals it, after
-    /// which the mapping is read-only, and the sealed extent's pages the ones stored to.
-    #[test]
-    fn maps_open_extents_writably() {
-        let (store, dir) = store(1 << 20);
-        let ps = page_size();
-        let window = store.create_dax_window(4 * ps, None).unwrap();
-        let (new, written) = (id(&store, 1), id(&store, 2));
-        // One with data written to it before, which the mapping holds.
-        write(&store, written, 0, &pattern(7, ps as usize)).unwrap();
-        store.map(new, ps, ps, 0, true).unwrap();
-        store.map(written, ps, ps, ps, true).unwrap();
-        store.map(written, 0, ps, 2 * ps, true).unwrap();
-        block_on(async {
-            for page in 0..2 {
-                window.fault(page * ps, Access::Write).await.unwrap();
-            }
-            window.fault(2 * ps, Access::Read).await.unwrap();
-        });
-        // SAFETY: The test faulted the pages in, and nothing else accesses them.
-        let bytes = unsafe { std::slice::from_raw_parts_mut(window.host_base(), 3 * ps as usize) };
-        assert!(bytes[2 * ps as usize..] == pattern(7, ps as usize)[..], "the old data is gone");
-        bytes[..ps as usize].copy_from_slice(&pattern(8, ps as usize));
-        bytes[ps as usize..2 * ps as usize].copy_from_slice(&pattern(9, ps as usize));
-        // Reads of an open extent see the stores.
-        assert_eq!(read(&store, new, ps, BLOCK), Ok(pattern(8, BLOCK)));
-
-        // Not another branch's, nor once sealed.
-        let other = ExtentId { branch: store.branch() + 1, sequence: 1 };
-        assert_eq!(store.map(other, 0, ps, 3 * ps, true), Err(Errno::EPERM));
-        store.commit(None).unwrap();
-        assert_eq!(store.map(new, 0, ps, 3 * ps, true), Err(Errno::EPERM));
-        // The mapping is read-only, of the sealed extent's cached pages.
-        assert!(block_on(window.fault(0, Access::Write)).is_err(), "the mapping is writable");
-        let new_cached = cached(new).unwrap();
-        // Another window mapping the sealed extent, of a fork of the store, maps the same pages.
-        let copy_path = dir.path().join("copy");
-        store.fork(&copy_path, store.branch() + 1).unwrap();
-        let copy = ExtentStore::open(&copy_path).unwrap();
-        let copy_window = copy.create_dax_window(ps, None).unwrap();
-        copy.map(new, ps, ps, 0, false).unwrap();
-        block_on(copy_window.fault(0, Access::Read)).unwrap();
-        // The cache, the two windows' mappings, and this.
-        assert_eq!(Arc::strong_count(&new_cached), 4);
-        // SAFETY: The test faulted the page in, and nothing writes it.
-        let copied = unsafe { std::slice::from_raw_parts(copy_window.host_base(), ps as usize) };
-        assert!(copied == pattern(8, ps as usize), "the copy's window maps other data");
-        drop((new_cached, copy_window, copy));
-
-        drop(store);
-        let store = ExtentStore::open(dir.path().join("store")).unwrap();
-        let new_data = [vec![0; ps as usize], pattern(8, ps as usize)].concat();
-        assert_eq!(read(&store, new, 0, 2 * ps as usize), Ok(new_data));
-        let written_data = [pattern(7, ps as usize), pattern(9, ps as usize)].concat();
-        assert_eq!(read(&store, written, 0, 2 * ps as usize), Ok(written_data));
     }
 
     /// What one page-in reads: a part.
@@ -4632,21 +3474,22 @@ mod tests {
         let window = store.create_dax_window(4 * ps, None).unwrap();
 
         assert_eq!(read(&store, extent, 0, BLOCK), Err(Errno::ENOENT));
-        assert_eq!(store.map(extent, 0, ps, 0, false), Err(Errno::ENOENT));
+        assert_eq!(store.map(extent, 0, ps, 0), Err(Errno::ENOENT));
 
         store.attach_base(&base, &ancestry).unwrap();
         assert_eq!(read(&store, extent, 0, ps as usize), Ok(data.clone()));
-        store.map(extent, 0, ps, 0, false).unwrap();
+        store.map(extent, 0, ps, 0).unwrap();
         block_on(window.fault(0, Access::Read)).unwrap();
         // SAFETY: The test faulted the page in, and nothing writes it.
         let mapped = unsafe { std::slice::from_raw_parts(window.host_base(), ps as usize) };
         assert!(mapped == data, "the window maps other data");
 
         assert_eq!(read(&store, not_attached, 0, BLOCK), Err(Errno::ENOENT));
-        assert_eq!(store.map(not_attached, 0, ps, ps, false), Err(Errno::ENOENT));
+        assert_eq!(store.map(not_attached, 0, ps, ps), Err(Errno::ENOENT));
         let beyond = ExtentId { sequence: extent.sequence + 1, ..extent };
         assert_eq!(read(&store, beyond, 0, BLOCK), Err(Errno::ENOENT));
-        assert_eq!(store.map(extent, 0, ps, ps, true), Err(Errno::EPERM));
+        // A base's extent maps read-only anywhere, as every MAP does; it is never written.
+        store.map(extent, 0, ps, ps).unwrap();
         assert_eq!(write(&store, extent, 0, &[0; BLOCK]), Err(Errno::EPERM));
         // Attaching it again changes nothing.
         store.attach_base(&base, &ancestry).unwrap();
@@ -4670,7 +3513,7 @@ mod tests {
         for store in &stores {
             store.open_bases(open.clone()).unwrap();
             store.attach_base(&base, &ancestry).unwrap();
-            store.map(extent, 0, ps, 0, false).unwrap();
+            store.map(extent, 0, ps, 0).unwrap();
         }
         for window in &windows {
             block_on(window.fault(0, Access::Read)).unwrap();
@@ -4816,7 +3659,7 @@ mod tests {
 
     /// fxdax TASK-164.1 (backlog doc-13): a window that copies on write maps sealed extents and
     /// zeros alone, read-only: an extent written since the last commit it refuses to map (`EPERM`),
-    /// as it does a writable mapping of any, the open extent's bytes left in the store. Sealed, a
+    /// the open extent's bytes left in the store. Sealed, a
     /// store to its page copies the page, the extent as the store's reads have it, and a commit
     /// leaves the private page. A follower takes no such window.
     #[test]
@@ -4828,15 +3671,13 @@ mod tests {
         write(&store, sealed, 0, &pattern(1, BLOCK)).unwrap();
         store.commit(None).unwrap();
         write(&store, open, 0, &pattern(2, BLOCK)).unwrap();
-        assert_eq!(store.map(open, 0, ps, 0, false), Err(Errno::EPERM));
+        assert_eq!(store.map(open, 0, ps, 0), Err(Errno::EPERM));
         assert_eq!(open_maps_refused(), 1, "an open extent's MAP uncounted");
-        assert_eq!(store.map(never, 0, ps, 0, false), Err(Errno::ENOENT));
-        assert_eq!(store.map(sealed, 0, ps, 0, true), Err(Errno::EPERM));
-        assert_eq!(store.map(never, 0, ps, 0, true), Err(Errno::EPERM));
+        assert_eq!(store.map(never, 0, ps, 0), Err(Errno::ENOENT));
         assert_eq!(store.store.extent(open.into()).map_err(errno), Ok(Some((BLOCK as u64, true))));
         assert_eq!(read(&store, open, 0, BLOCK), Ok(pattern(2, BLOCK)));
 
-        store.map(sealed, 0, ps, 0, false).unwrap();
+        store.map(sealed, 0, ps, 0).unwrap();
         block_on(window.fault(0, Access::Write)).unwrap();
         // SAFETY: The page is mapped, private, and nothing else accesses it.
         unsafe { *window.host_base() = 0xee };

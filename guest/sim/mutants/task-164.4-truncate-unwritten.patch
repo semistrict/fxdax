@@ -7,12 +7,12 @@
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c
-@@ -6188,7 +6188,7 @@
- 	 * so that it is the inode's (doc-13).
+@@ -3852,7 +3852,7 @@
+ 	 * An ordinary grow zeroes from Fxfs's end, which is as writeback leaves it: what is dirty is
+ 	 * written first, so that it is the inode's (doc-13).
  	 */
- 	if (cow) {
--		err = fxfs_dax_cow_write_back(inode);
-+		err = 0;
- 	} else {
- 		down_write(&file->sem);
- 		err = fxfs_dax_write_size_locked(inode);
+-	err = fxfs_dax_write_back(inode);
++	err = 0;
+ 	if (err) {
+ 		filemap_invalidate_unlock(inode->i_mapping);
+ 		return err;

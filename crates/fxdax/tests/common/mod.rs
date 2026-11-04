@@ -105,8 +105,9 @@ pub fn cache(store: &RemoteExtentStore, bytes: &[u8]) {
     let window = memory(bytes.len() / fxdax::pages::page_size() as usize);
     // SAFETY: The memory is this function's, which it leaks: the window maps it while the
     // process lives.
-    unsafe { store.create_dax_window_in_host_memory(window, bytes.len() as u64, None) }.unwrap();
-    store.map(extent, 0, bytes.len() as u64, 0, false).unwrap();
+    unsafe { store.create_dax_window_in_host_memory(window, bytes.len() as u64, None, 1) }
+        .unwrap();
+    store.map(extent, 0, bytes.len() as u64, 0).unwrap();
     // SAFETY: The window's memory, whose faults the store serves.
     let mapped = unsafe { std::slice::from_raw_parts(window.as_ptr(), bytes.len()) };
     assert!(mapped == bytes, "the window maps other bytes");

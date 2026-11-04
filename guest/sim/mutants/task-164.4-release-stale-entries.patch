@@ -9,13 +9,12 @@
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c
-@@ -2135,8 +2135,7 @@
- 	 * fault holding it, failed the invalidation for ever, and a fault waiting for room reclaimed
- 	 * the range again and again (guest/sim, seed 3390 at 1,000 operations).
+@@ -1193,7 +1193,7 @@
+ 	 * and a fault waiting for room reclaimed the range again and again (guest/sim, seed 3390 at
+ 	 * 1,000 operations).
  	 */
--	if (range->dirty ? fxfs_dax_cow_clean_entries(inode, start, end) :
--			   filemap_fdatawrite_range(mapping, start, end))
-+	if (!range->dirty && filemap_fdatawrite_range(mapping, start, end))
+-	if (fxfs_dax_clean_entries(inode, start, end))
++	if (filemap_fdatawrite_range(mapping, start, end))
  		return false;
  	return !invalidate_inode_pages2_range(mapping, start >> PAGE_SHIFT, end >> PAGE_SHIFT);
  }

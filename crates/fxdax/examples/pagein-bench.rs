@@ -71,7 +71,7 @@ fn round(mib: u64, mask: u8) -> (f64, f64) {
     store.commit(None).unwrap();
     for sequence in 1..=extents {
         let extent = ExtentId { branch: store.branch(), sequence };
-        store.map(extent, 0, len, (sequence - 1) * len, false).unwrap();
+        store.map(extent, 0, len, (sequence - 1) * len).unwrap();
     }
     let (start, cpu) = (Instant::now(), cpu_micros());
     block_on(async {

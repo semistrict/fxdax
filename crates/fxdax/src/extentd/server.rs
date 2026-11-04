@@ -10,12 +10,11 @@ use super::codec::{
     stream_bytes,
 };
 use super::pool::Pool;
-use super::seals::{self, Seals};
 use super::stores::{self, CLOSING_WAIT, open_paths, open_store, store_key};
 use super::wire::*;
 use crate::open_stores::Holder;
 use crate::store_requests::{self, Guest, Resizes, Shrinking};
-use crate::{DaxWindow, Deferred, Errno, ExtentStore, Protection, SecondStage};
+use crate::{DaxWindow, Errno, ExtentStore, SecondStage};
 use crate::{Commit, MappingContents, StoreRole, VolatileSlice, VolatileSliceMut, WindowMapping};
 use std::os::fd::AsFd;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -362,7 +361,6 @@ async fn run_connection(stream: UnixStream, tenant: Arc<Tenant>) {
         window: Mutex::new(None),
         behind: Mutex::new(None),
         shrinking: Shrinking::new(),
-        seals: Arc::default(),
         transfer: OnceLock::new(),
         closing: AtomicBool::new(false),
         requests: Mutex::new(Requests::default()),
@@ -404,8 +402,6 @@ async fn run_connection(stream: UnixStream, tenant: Arc<Tenant>) {
     // A resize waiting for its guest's answer, which none will give, stops waiting, and holds the
     // connection no more (TASK-79.34).
     connection.shrinking.stop();
-    // fxdax: nor do others' MAPs wait for its guest to seal.
-    connection.seals.stop();
     // Its requests received are served still, as they were before it went.
     loop {
         let drained = connection.drained.listen();
@@ -801,8 +797,6 @@ pub(super) struct Connection {
     behind: Mutex<Option<(tokio::sync::oneshot::Sender<()>, tokio::task::JoinHandle<()>)>>,
     /// The shrink the guest was asked to take, and where its answer goes ([`RESIZED`]).
     shrinking: Shrinking,
-    /// fxdax: what its guest was asked to seal, and has answered ([`SEAL`], TASK-153.15).
-    seals: Arc<Seals>,
     /// Its transfer area, once its VM process gives it one ([`TRANSFER`]).
     transfer: OnceLock<TransferArea>,
     /// Whether its VM process is gone, and its store goes once durable.
@@ -811,7 +805,7 @@ pub(super) struct Connection {
     requests: Mutex<Requests>,
     drained: Arc<event_listener::Event>,
     /// fxdax: what its VM process last said its stage operations cost it ([`STAGE_COUNTS`]).
-    stage_counts: [std::sync::atomic::AtomicU64; 5],
+    stage_counts: [std::sync::atomic::AtomicU64; 4],
     /// fxdax: whether its VM process said its build ([`BUILD`]), once.
     said_build: AtomicBool,
     /// What says, as it drops, that the connection has: its last field, dropped after its store,
@@ -870,27 +864,6 @@ impl Connection {
         self.arena().id()
     }
 
-    /// fxdax: what its guest was asked to seal, and has answered.
-    pub(super) fn seals(&self) -> &Arc<Seals> {
-        &self.seals
-    }
-
-    /// fxdax: asks its guest to seal, the ask of `number` ([`SEAL`]): whether its VM process was
-    /// told. Not once it is closing, nor of a follower, which holds nothing open.
-    pub(super) fn ask_to_seal(&self, number: u64) -> bool {
-        let follows = |store: &Arc<ExtentStore>| store.access().role == StoreRole::Follower;
-        if self.closing.load(Ordering::Acquire) || self.store().is_none_or(follows) {
-            return false;
-        }
-        match self.peer.sender.send(Told::Seal { number }.encode(), Vec::new(), &[]) {
-            Ok(()) => true,
-            Err(err) => {
-                log::warn!("extentd: asking a VM process's guest to seal: {err}");
-                false
-            }
-        }
-    }
-
     /// Runs `work` behind its store, a task on the daemon's runtime, until it is told to stop: the
     /// sender of the receiver it is given dropped.
     fn start_behind<F: std::future::Future<Output = ()> + Send + 'static>(
@@ -928,14 +901,13 @@ impl Connection {
     /// fxdax: counts what its VM process says its stage operations have cost it so far, `args`
     /// as [`STAGE_COUNTS`] has them, as the daemon's (`Stats::stage_ops`): what it didn't say
     /// before. A count only grows: one said again, or smaller, adds nothing.
-    fn stage_counted(&self, args: [u64; 5]) {
+    fn stage_counted(&self, args: codec::StageCosts) {
         use crate::stats::Counter;
         let said = [
             (args[0], Counter::StageOps),
             (args[1], Counter::StageNs),
             (args[2], Counter::StageOverwrites),
             (args[3], Counter::StageLeaveOuts),
-            (args[4], Counter::StageWriteProtects),
         ];
         for (before, (count, counter)) in self.stage_counts.iter().zip(said) {
             crate::stats::add(
@@ -997,11 +969,6 @@ impl Connection {
             // fxdax: as a fault, which waits for its pages to be brought in (backlog doc-13).
             Ok(Request::Private { window_offset, len }) => {
                 serve_future(turn, self.make_private(window_offset, len, answer))
-            }
-            Ok(Request::Map(map))
-                if matches!(map.contents, MappingContents::Extent { writable: true, .. }) =>
-            {
-                serve_future(turn, self.map_writably(map, answer))
             }
             Ok(Request::Open { path, opening }) if opening != codec::Opening::ReadOnly => {
                 serve_future(turn, self.serve_open(path, opening, answer))
@@ -1120,8 +1087,8 @@ impl Connection {
             }
             Request::Map(WindowMapping { window_offset, len, contents }) => match *contents {
                 MappingContents::Zeros => store.map_zeros_at(*window_offset, *len),
-                MappingContents::Extent { extent, offset, writable } => {
-                    store.map(extent, offset, *len, *window_offset, writable)
+                MappingContents::Extent { extent, offset } => {
+                    store.map(extent, offset, *len, *window_offset)
                 }
             },
             Request::Mappings => {
@@ -1160,10 +1127,14 @@ impl Connection {
             Request::Window { size, private_max } => {
                 let (sender, acks) = (self.peer.sender.clone(), self.peer.acks.clone());
                 let stage = Arc::new(RemoteStage { sender, acks });
+                // fxdax: a writer's copies on write, and only a writer's (backlog doc-13).
+                let writer = store.access().role == StoreRole::Writer;
                 let window = match private_max {
-                    None => store.create_dax_window(*size, Some(stage)),
-                    // fxdax: one that copies on write (backlog doc-13).
-                    Some(most) => store.create_copying_dax_window(*size, Some(stage), *most),
+                    Some(most) if writer => {
+                        store.create_copying_dax_window(*size, Some(stage), *most)
+                    }
+                    None if !writer => store.create_dax_window(*size, Some(stage)),
+                    _ => return Err(Errno::EINVAL),
                 };
                 let window = window.map_err(|err| {
                     log::warn!("extentd: creating a window: {err:#}");
@@ -1184,10 +1155,6 @@ impl Connection {
                 self.shrinking.answered(*capacity, *took);
                 Ok(())
             }
-            Request::Sealed { number } => {
-                self.seals.answered(*number);
-                Ok(())
-            }
             Request::Build(commit) => self.said_build(store.branch(), commit),
             // Served apart, as futures ([`Connection::serve_in_turn`]).
             Request::Open { .. } | Request::Fault(_) | Request::Private { .. } => {
@@ -1196,31 +1163,13 @@ impl Connection {
         }
     }
 
-    /// fxdax: serves `map`, a writable [`MAP`], and replies: a future, served so
-    /// ([`serve_future`]). Refused for want of memory, as the pages it brings in would take the
-    /// budget of what nothing can evict, it waits for other guests asked to seal, if any, holding
-    /// no thread, and tries once more (`seals`, TASK-153.15): another guest's open pages, which
-    /// only that guest's seal lets go of, would leave this one's seals nothing to make room in.
-    async fn map_writably(self: Arc<Self>, map: WindowMapping, answer: Answer) {
-        let mut reply = answer.reply_header();
-        let mut mapped =
-            self.handle(&Request::Map(map), &mut reply, &mut Vec::new(), &mut Vec::new());
-        if mapped == Err(Errno::ENOMEM) && seals::made_room(&self, map.len).await {
-            mapped = self.handle(&Request::Map(map), &mut reply, &mut Vec::new(), &mut Vec::new());
-        }
-        answer.send(mapped, reply, Vec::new(), Vec::new());
-    }
-
     /// fxdax: resolves the guest's `fault` ([`FAULT`]), and replies: a future, which holds no
     /// thread while it waits for the pager (TASK-92.20), served so ([`serve_future`]).
     async fn fault(self: Arc<Self>, fault: Fault, answer: Answer) {
         let Fault { offset, access, page, .. } = fault;
         let faulted = async {
             let window = self.window.lock().unwrap().clone().ok_or(Errno::EBADF)?;
-            match page {
-                true => window.fault_page(offset, access).await,
-                false => window.fault(offset, access).await,
-            }
+            window.fault(offset, access).await
         };
         let faulted = faulted.await;
         if !page {
@@ -1351,8 +1300,6 @@ impl Connection {
             Ok(store) => {
                 let branch = store.branch();
                 opening.opened(store, Some(key));
-                // fxdax: its guest may hold open pages, which only it can seal (TASK-153.15).
-                seals::writing(self.this.clone());
                 Ok(branch)
             }
             Err(errno) => {
@@ -1648,7 +1595,6 @@ async fn tell_commits(
 #[derive(Default)]
 struct Acks {
     state: Mutex<AckState>,
-    acked: Condvar,
 }
 
 #[derive(Default)]
@@ -1662,8 +1608,8 @@ struct AckState {
     acked: u64,
     /// The VM process is gone, and nothing it acknowledges is waited for.
     closed: bool,
-    /// fxdax: what is kept until stage operations are acknowledged (`Deferred::keep_until_made`,
-    /// [`Acks::park`]), by their IDs: what an acknowledgement lets go of taken off at once, however
+    /// fxdax: what is kept until stage operations are acknowledged ([`Acks::park`]), by their
+    /// IDs: what an acknowledgement lets go of taken off at once, however
     /// much waits for those after it.
     kept: std::collections::BTreeMap<u64, Vec<Box<dyn Send>>>,
     /// fxdax: what the watchdog found unacknowledged ([`Acks::unanswered`]).
@@ -1697,28 +1643,12 @@ impl Acks {
         let released = {
             let mut state = self.state.lock().unwrap();
             state.acked = state.acked.max(id);
-            self.acked.notify_all();
             let after = state.acked.saturating_add(1);
             let kept = state.kept.split_off(&after);
             std::mem::replace(&mut state.kept, kept)
         };
         // What the VM process no longer reaches, dropped without holding the lock.
         drop(released);
-    }
-
-    /// Keeps `keep` until stage operation `id` is acknowledged, or the VM process is gone.
-    fn keep(&self, id: u64, keep: Box<dyn Send>) {
-        let refused = {
-            let mut state = self.state.lock().unwrap();
-            if state.acked < id && !state.closed {
-                state.kept.entry(id).or_default().push(keep);
-                None
-            } else {
-                Some(keep)
-            }
-        };
-        // Dropped without holding the lock, as what it frees may park here (`quarantine`).
-        drop(refused);
     }
 
     /// fxdax: keeps `pages`, freed, until the VM process has made the stage operations sent it so
@@ -1769,23 +1699,12 @@ impl Acks {
         since.map_or(std::time::Duration::ZERO, |since| now.saturating_duration_since(since))
     }
 
-    /// Waits for stage operation `id` to be acknowledged, or the VM process to be gone.
-    fn wait(&self, id: u64) {
-        // What this thread holds back would never be acknowledged.
-        assert!(!AsyncSender::corked(), "waited for a stage operation held back");
-        let mut state = self.state.lock().unwrap();
-        while state.acked < id && !state.closed {
-            state = self.acked.wait(state).unwrap();
-        }
-    }
-
     fn close(&self) {
         let kept = {
             let mut state = self.state.lock().unwrap();
             state.closed = true;
             std::mem::take(&mut state.kept)
         };
-        self.acked.notify_all();
         drop(kept);
     }
 }
@@ -2165,16 +2084,10 @@ async fn watch() {
 /// kernel makes them with its locks held, which a VM process that stopped answering would hold for
 /// good (TASK-79.9): one that takes access to pages away is acknowledged, and the guest has no
 /// access to a page the kernel frees, reuses or shares next, as what was freed waits for it
-/// ([`quarantine`]), and a seal's sharing too (`end_deferring`).
+/// ([`quarantine`]).
 struct RemoteStage {
     sender: Arc<AsyncSender>,
     acks: Arc<Acks>,
-}
-
-thread_local! {
-    /// fxdax: while this thread defers what waits for stage operations
-    /// (`SecondStage::begin_deferring`), the last one it sent that takes access away.
-    static DEFERRED: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
 }
 
 impl RemoteStage {
@@ -2183,47 +2096,16 @@ impl RemoteStage {
     fn send(&self, op: StageOp) {
         let taking = op.taking();
         let id = self.acks.next(taking);
-        if self.sender.send(Stage { id, op }.encode(), Vec::new(), &[]).is_err() {
-            // The VM process is gone, and its mappings with it.
-            return;
-        }
-        if taking && let Some(last) = DEFERRED.get() {
-            DEFERRED.set(Some(last.max(id)));
-        }
-    }
-}
-
-/// fxdax: stage operations deferred, up to `id`, which the VM process makes in order.
-struct Deferral {
-    acks: Arc<Acks>,
-    id: u64,
-}
-
-impl Deferred for Deferral {
-    fn wait(&self) {
-        self.acks.wait(self.id);
-    }
-
-    fn keep_until_made(&self, keep: Box<dyn Send>) {
-        self.acks.keep(self.id, keep);
+        // Failing, the VM process is gone, and its mappings with it.
+        let _ = self.sender.send(Stage { id, op }.encode(), Vec::new(), &[]);
     }
 }
 
 impl SecondStage for RemoteStage {
-    fn map(
-        &self,
-        offset: u64,
-        phys: crate::pages::PhysLocation,
-        len: u64,
-        protection: Protection,
-    ) {
-        self.send(StageOp::Map { offset, phys, len, protection });
+    fn map(&self, offset: u64, phys: crate::pages::PhysLocation, len: u64) {
+        self.send(StageOp::Map { offset, phys, len });
         crate::stats::add(crate::stats::Counter::StageMaps, 1);
         crate::stats::add(crate::stats::Counter::StageMapBytes, len);
-    }
-
-    fn protect(&self, offset: u64, len: u64, protection: Protection) {
-        self.send(StageOp::Protect { offset, len, protection });
     }
 
     fn begin_change(&self) {
@@ -2232,15 +2114,6 @@ impl SecondStage for RemoteStage {
 
     fn end_change(&self) {
         self.sender.uncork();
-    }
-
-    fn begin_deferring(&self) {
-        DEFERRED.set(Some(0));
-    }
-
-    fn end_deferring(&self) -> Option<Arc<dyn Deferred>> {
-        let id = DEFERRED.take().filter(|id| *id > 0)?;
-        Some(Arc::new(Deferral { acks: self.acks.clone(), id }))
     }
 
     fn unmap(&self, offset: u64, len: u64) {
@@ -2260,26 +2133,6 @@ impl SecondStage for RemoteStage {
 mod acks_tests {
     use super::{Acks, BEHIND};
     use std::sync::Arc;
-
-    /// fxdax: what is kept until a stage operation is acknowledged goes once it, or one after it,
-    /// is, or the VM process is: not before.
-    #[test]
-    fn kept_until_acknowledged() {
-        let acks = Acks::default();
-        let (first, second, third) = (Arc::new(()), Arc::new(()), Arc::new(()));
-        let ids: Vec<u64> = (0..3).map(|_| acks.next(true)).collect();
-        acks.keep(ids[1], Box::new(first.clone()));
-        acks.keep(ids[2], Box::new(second.clone()));
-        acks.acked(ids[0]);
-        assert_eq!((Arc::strong_count(&first), Arc::strong_count(&second)), (2, 2));
-        acks.acked(ids[1]);
-        assert_eq!((Arc::strong_count(&first), Arc::strong_count(&second)), (1, 2));
-        // Acknowledged already, it isn't kept.
-        acks.keep(ids[0], Box::new(third.clone()));
-        assert_eq!(Arc::strong_count(&third), 1);
-        acks.close();
-        assert_eq!(Arc::strong_count(&second), 1);
-    }
 
     /// TASK-79.9: pages freed are parked until the VM process has made what it was sent so far
     /// that takes access to pages away, not what it was sent after, nor what gives access; and

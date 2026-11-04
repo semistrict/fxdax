@@ -7,21 +7,21 @@
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c
-@@ -3960,7 +3960,7 @@
+@@ -2067,7 +2067,7 @@
  		err = -ENOMEM;
  		goto out;
  	}
 -	down_write(&file->sem);
 +	down_read(&file->sem);
  	xa_for_each(&file->ranges, chunk, range) {
- 		if (nr == most || !fxfs_dax_cow_busy(range))
+ 		if (nr == most || !fxfs_dax_range_dirty(range))
  			continue;
-@@ -3978,7 +3978,7 @@
+@@ -2085,7 +2085,7 @@
  		nr++;
  	}
- 	fxfs_dax_cow_count(dax, file, 0, -pages);
+ 	fxfs_dax_count(dax, file, 0, -pages);
 -	up_write(&file->sem);
 +	up_read(&file->sem);
- 	fxfs_dax_cow_protect(inode->i_mapping, batch, nr);
+ 	fxfs_dax_protect(inode->i_mapping, batch, nr);
  	/* Before it reads its ranges' window pages, which nothing may free (pause points). */
  	fxfs_dax_pause_file(FXFS_DAX_STEP_WRITEBACK, inode->i_ino);

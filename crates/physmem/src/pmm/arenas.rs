@@ -449,10 +449,9 @@ impl Arenas {
 
     /// Pins `count` more pages against `arena`, which relief then can't evict, unless they would
     /// take its budget, or the arenas' together: returns whether it did. What fits in no budget
-    /// pins while nothing else does, as a caller left no other way to room. `past_budget` pins them
-    /// whatever the budgets say, for what has no way to wait or go back: they go on counting.
-    /// An arena gone holds nothing, and pins nothing.
-    pub(super) fn pin(&mut self, arena: ArenaId, count: usize, past_budget: bool) -> bool {
+    /// pins while nothing else does, as a caller left no other way to room. An arena gone holds
+    /// nothing, and pins nothing.
+    pub(super) fn pin(&mut self, arena: ArenaId, count: usize) -> bool {
         let chunks = self.chunk_used.len();
         let total = self.total_cap.map_or(chunks, |cap| cap.min(chunks));
         let pinned = self.pinned;
@@ -461,7 +460,7 @@ impl Arenas {
             let pages = chunks * chunk_page_count() as usize;
             pinned == 0 || pinned + count <= pages - pages / RESERVED_SHARE
         };
-        if !past_budget && !(fits(entry.pinned, entry.cap.unwrap_or(total)) && fits(pinned, total)) {
+        if !(fits(entry.pinned, entry.cap.unwrap_or(total)) && fits(pinned, total)) {
             return false;
         }
         entry.pinned += count;
@@ -960,35 +959,34 @@ mod tests {
     /// as bring the arenas under it with that chunk have gone back, all at once; with too few
     /// spares, it fails, starved still, those there were gone back.
     /// TASK-150.20: pins stop at all but an eighth of what an arena may hold, its cap's or memory's,
-    /// and of what the arenas may together; past it only when told to, which goes on counting; and
-    /// what fits no budget pins while nothing else does.
+    /// and of what the arenas may together; and what fits no budget pins while nothing else does.
     #[test]
     fn pins_stop_at_their_budget() {
         let mut fixture = Fixture::new();
         let page = pages_per_chunk();
         let budget = (CHUNKS * page) * 7 / 8;
         let (first, second) = (fixture.create(), fixture.create());
-        assert!(fixture.arenas.pin(first, budget, false));
-        assert!(!fixture.arenas.pin(first, 1, false));
-        assert!(!fixture.arenas.pin(second, 1, false), "the arenas' together");
-        assert!(fixture.arenas.pin(second, 1, true));
+        assert!(fixture.arenas.pin(first, budget));
+        assert!(!fixture.arenas.pin(first, 1));
+        assert!(!fixture.arenas.pin(second, 1), "the arenas' together");
+        assert_eq!(fixture.arenas.pinned(second), 0);
+        fixture.arenas.unpin(first, 1);
+        assert!(fixture.arenas.pin(second, 1));
         assert_eq!(fixture.arenas.pinned(second), 1);
-        fixture.arenas.unpin(first, 2);
-        assert!(fixture.arenas.pin(first, 1, false));
-        assert!(!fixture.arenas.pin(first, 1, false), "what went past it still counts");
+        assert!(!fixture.arenas.pin(first, 1), "the other's pin counts");
         fixture.arenas.unpin(second, 1);
         fixture.arenas.unpin(first, budget - 1);
         assert_eq!(fixture.arenas.pinned(first), 0);
 
         fixture.arenas.set_cap(first, Some(2));
-        assert!(fixture.arenas.pin(first, 2 * page, false), "nothing pinned, it fits no budget");
-        assert!(!fixture.arenas.pin(first, 1, false));
+        assert!(fixture.arenas.pin(first, 2 * page), "nothing pinned, it fits no budget");
+        assert!(!fixture.arenas.pin(first, 1));
         fixture.arenas.unpin(first, 2 * page);
-        assert!(fixture.arenas.pin(first, 2 * page - page / 4, false));
-        assert!(!fixture.arenas.pin(first, 1, false), "its own cap's");
-        assert!(fixture.arenas.pin(second, budget - 2 * page, false), "the others go on");
+        assert!(fixture.arenas.pin(first, 2 * page - page / 4));
+        assert!(!fixture.arenas.pin(first, 1), "its own cap's");
+        assert!(fixture.arenas.pin(second, budget - 2 * page), "the others go on");
         let gone = ArenaId(u32::MAX);
-        assert!(!fixture.arenas.pin(gone, 1, false));
+        assert!(!fixture.arenas.pin(gone, 1));
         fixture.arenas.unpin(gone, 1);
     }
 

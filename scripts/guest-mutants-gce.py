@@ -6,8 +6,9 @@
 """Hand mutants of the guest's DAX code (guest/linux/fs/fxfs/dax.c), run on a GCE test host
 (TASK-44.19).
 
-cargo-mutants changes Rust alone; the guest's C has its locks, gate checks and seals rechecks,
-which a mutant here takes out, one at a time: in a worktree of HEAD, the mutant's edits made,
+cargo-mutants changes Rust alone; the guest's C has its locks, and its checks of signals and pins,
+which a mutant here takes out, one at a time (writable DAX's, of its gate, seals and moves, went
+with it, 2026-11-04): in a worktree of HEAD, the mutant's edits made,
 scripts/test-gce.sh runs the DAX suites on a guest kernel the host builds from it. The host keeps
 its kernel's build directory, so each mutant recompiles fs/fxfs alone. A mutant the suites fail
 on is killed; one they pass, missed, needs a test, or is recorded here as equivalent, with why.
@@ -38,8 +39,8 @@ SUPER = "guest/linux/fs/fxfs/super.c"
 # path) of another file, each of which must be found there once; and, for one only an assertion of a debug kernel's finds, the
 # kernel the host builds (FXDAX_GUEST_KERNEL_BUILD: debug, with lockdep), release otherwise.
 MUTANTS = [
-    # Missed by every suite here (2026-11-02); killed by guest/sim's reaches_at_once, which holds a
-    # MAP at the host as a second one, further, ends (TASK-44.19).
+    # Missed by every suite here (2026-11-02); killed by guest/sim's reaches_at_once, which held a
+    # MAP at the host as a second one, further, ended (TASK-44.19), and went with writable DAX.
     (
         "map_to_unlocked",
         "a region's MAPs and its mapped go without the region's lock: two MAP as far as each "
@@ -48,74 +49,11 @@ MUTANTS = [
          ("out:\n\tmutex_unlock(&region->lock);\n\treturn err;\n}", "out:\n\treturn err;\n}")],
     ),
     (
-        "map_chunk_no_seals_recheck",
-        "a chunk's map takes its extents for open though a seal came between",
-        [("\t\tif (gate == seals) {\n\t\t\terr = fxfs_dax_map_extents(dax, range, pieces, nr);\n"
-          "\t\t\tfxfs_device_store_end(dax->dev);",
-          "\t\tif (true) {\n\t\t\terr = fxfs_dax_map_extents(dax, range, pieces, nr);\n"
-          "\t\t\tfxfs_device_store_end(dax->dev);")],
-    ),
-    (
-        "new_slice_no_seals_recheck",
-        "a slice's region is opened though a seal came between",
-        [("\t\tif (gate == seals) {\n\t\t\tfxfs_dax_region_open(dax, region);",
-          "\t\tif (true) {\n\t\t\tfxfs_dax_region_open(dax, region);")],
-    ),
-    (
-        "write_no_seals_recheck",
-        "a write maps the blocks it moved though a seal came between",
-        [("\t\tif (gate == seals) {\n\t\t\tbool fail = count > 1 &&",
-          "\t\tif (true) {\n\t\t\tbool fail = count > 1 &&")],
-    ),
-    (
-        "seal_keeps_writable",
-        "a seal leaves ranges' pages taken for writable",
-        [("\t\t\tbitmap_zero(range->writable, range->pages);\n", "")],
-    ),
-    (
-        "held_not_written",
-        "a fault's page held is not written into its new block, which holds zeros (TASK-79.11)",
-        [("size, fault, held,\n", "size, false, NULL,\n")],
-    ),
-    (
-        "moved_unmapped",
-        "a write whose blocks moved before a seal shut the gate leaves its range mapping them where "
-        "they were, whose extent Fxfs frees (TASK-121)",
-        [("\tif (moved) {\n\t\tint mapped", "\tif (false) {\n\t\tint mapped")],
-    ),
-    (
-        "moved_ptes_kept",
-        "a write whose blocks moved leaves the PTEs of their pages, through which a load reads "
-        "zeros once Fxfs frees the old extent, until the range maps the new (TASK-149.14)",
-        [("\t\tunmap_mapping_pages(inode->i_mapping, (start >> PAGE_SHIFT) + first, pages, "
-          "false);\n\t\t/* As in fxfs_dax_map_chunk", "\t\t/* As in fxfs_dax_map_chunk")],
-    ),
-    (
-        "moves_before_bytes",
-        "a write whose blocks move without what they held, committed before its bytes, copies them "
-        "from where it stops short, or from those very pages, read as the zeros they moved to, or "
-        "fails before it copies (TASK-150.8, TASK-153.5)",
-        [("extents, capacity, timed ? &pending : NULL);", "extents, capacity, NULL);")],
-    ),
-    (
         "resize_moves_the_last_block",
         "a DAX file's change of size has Fxfs zero its last block past the end by moving it, from "
-        "under the window, which goes on mapping it writably (TASK-150.9)",
+        "under the window, which goes on mapping it (TASK-150.9)",
         [("\terr = fxfs_vfs_write_attr(inode, FXFS_SET_SIZE | (IS_DAX(inode) ? FXFS_SET_KEEP_TAIL : 0));",
           "\terr = fxfs_vfs_write_attr(inode, FXFS_SET_SIZE);", SUPER)],
-    ),
-    (
-        "map_failure_unretried",
-        "a write whose pieces' MAP failed after its blocks moved fails, its range left mapping "
-        "blocks Fxfs freed, rather than dropped and the write tried again (TASK-79.106)",
-        [
-            (
-                "\trange->behind = err == -EXDEV ? err : -ESTALE;\n\tunmap_mapping_pages("
-                "inode->i_mapping, fxfs_dax_chunk_start(range) >> PAGE_SHIFT, range->pages,\n"
-                "\t\t\t    false);\n\treturn range->behind;\n",
-                "\treturn err;\n",
-            )
-        ],
     ),
     (
         "regions_find_unlocked",
@@ -158,28 +96,12 @@ MUTANTS = [
         "a SIGBUS where the pin goes soon (TASK-79.49)",
         [("\tbool user = vmf->flags & FAULT_FLAG_USER;\n", "\tbool user = false;\n")],
     ),
-    (
-        "moved_unmapped_resealed",
-        "a fault whose blocks moved, finding a seal ended since, tries again, and leaves its range "
-        "mapping them where they were if the next seal shuts the gate (TASK-133)",
-        [("\t\t\t\tfxfs_dax_pause(FXFS_DAX_STEP_RESEALED);\n\t\t\tcontinue;\n",
-          "\t\t\t\tfxfs_dax_pause(FXFS_DAX_STEP_RESEALED);\n\t\t\tmoved = 0;\n\t\t\tcontinue;\n")],
-    ),
-    (
-        "moved_write_not_retried",
-        "a write over a chunk with no range moves its blocks and commits before its bytes, and "
-        "fails if the chunk's map fails, those pages zeros (TASK-119.13, TASK-153.5)",
-        [(
-            "\tif (!(flags & IOMAP_ZERO) && !xa_load(&file->ranges, pos >> FXFS_DAX_SHIFT) &&\n"
-            "\t    !fxfs_dax_overwrites(inode, flags, pos, end)) {\n",
-            "\tif (!(flags & IOMAP_ZERO) && !xa_load(&file->ranges, pos >> FXFS_DAX_SHIFT)) {\n",
-        )],
-    ),
 ]
 
 # Equivalent mutants, which no suite can kill, and why:
 
-SUITES = "fxfs-guest-dax fxfs-guest-checks-dax fxfs-guest-checks-dax-delay fxfs-guest-pgbench-dax"
+SUITES = ("fxfs-guest-dax fxfs-guest-checks-dax fxfs-guest-checks-dax-delay "
+          "fxfs-guest-pgbench-dax-forked")
 
 
 class Unfound(Exception):

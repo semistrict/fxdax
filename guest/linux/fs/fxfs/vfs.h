@@ -53,8 +53,6 @@ struct fxfs_vfs_filesystem {
 	struct workqueue_struct *readahead;
 	/* fxdax: takes the size the host resizes the store to (fxfs_resize), off the interrupt. */
 	struct work_struct resize;
-	/* fxdax: seals as the host asks (fxfs_seal), off the interrupt (TASK-153.15). */
-	struct work_struct seal;
 	/* Its superblocks, and how many of those are frozen. */
 	unsigned int volumes;
 	unsigned int volumes_frozen;
@@ -248,8 +246,7 @@ long fxfs_vfs_fallocate(struct file *file, int mode, loff_t offset, loff_t len);
 loff_t fxfs_vfs_llseek(struct file *file, loff_t offset, int whence);
 /*
  * fxdax: makes room in a filesystem a write found full, by writing back what is dirty, which frees
- * what was reserved for it beyond what its writeback takes (super.c): a DAX write copying on write
- * too (dax.c).
+ * what was reserved for it beyond what its writeback takes (super.c): a DAX write's too (dax.c).
  */
 void fxfs_vfs_make_room(struct super_block *sb);
 /* fsync(2), for files of any kind, DAX or not (super.c). */
@@ -305,25 +302,22 @@ struct fxfs_dax_volume *fxfs_dax_add_volume(struct fxfs_dax *dax, struct fxfs *f
  * it: the window goes on for the other volumes.
  */
 void fxfs_dax_remove_volume(struct fxfs_dax *dax, struct fxfs_dax_volume *volume);
-/*
- * Waits for `dax`'s regions growing in the background, before a sync. fxdax: copying on write,
- * writes back every file's dirty pages: 0, or the first error.
- */
+/* Writes back every DAX file's dirty pages, before a sync: 0, or the first error. */
 int fxfs_dax_settle(struct fxfs_dax *dax);
 /*
- * fxdax: copying on write, stops the budget's worker (dax.c), and waits for it, before a volume
- * unmounts; fxfs_dax_start starts it again, unless the filesystem is frozen.
+ * fxdax: stops the budget's worker (dax.c), and waits for it, before a volume unmounts;
+ * fxfs_dax_start starts it again, unless the filesystem is frozen.
  */
 void fxfs_dax_stop(struct fxfs_dax *dax);
 void fxfs_dax_start(struct fxfs_dax *dax);
 /*
- * fxdax: the filesystem is frozen, durably, nothing dirty: copying on write, every private page is
- * mapped back to its extent's, for a snapshot to take the window (doc-13). fxfs_dax_thaw ends it.
+ * fxdax: the filesystem is frozen, durably, nothing dirty: every private page is mapped back to
+ * its extent's, for a snapshot to take the window (doc-13). fxfs_dax_thaw ends it.
  */
 void fxfs_dax_frozen(struct fxfs_dax *dax);
 /*
- * Waits for `dax`'s background work, once nothing writes, and stops it, before the filesystem
- * unmounts, or freezes, leaving nothing open on the device; fxfs_dax_thaw starts it again.
+ * Stops `dax`'s background work, once nothing writes, before the filesystem unmounts, or freezes;
+ * fxfs_dax_thaw starts it again.
  */
 void fxfs_dax_quiesce(struct fxfs_dax *dax);
 void fxfs_dax_thaw(struct fxfs_dax *dax);
@@ -334,27 +328,26 @@ void fxfs_dax_show_stats(struct fxfs_dax *dax, struct seq_file *m);
 void fxfs_dax_inode_init(struct fxfs_dax_inode *di);
 /*
  * Makes the regular file `inode` a DAX inode, as it is read in, or `created`, and returns whether
- * it did. fxdax: copying on write, one created in this mount isn't, nor one read in again before
- * the barrier sealing its page-cache writes (doc-13, TASK-164.3).
+ * it did. fxdax: one created in this mount isn't, nor one read in again before the barrier sealing
+ * its page-cache writes (doc-13, TASK-164.3).
  */
 bool fxfs_dax_set_inode(struct inode *inode, bool created);
 /*
  * Detaches `inode`, which the kernel evicts, from its file's window mappings, which stay for the
- * next inode read in for it: unless no name links it, when they go. fxdax: copying on write, its
- * dirty pages written back first.
+ * next inode read in for it, its dirty pages written back first: unless no name links it, when
+ * they go.
  */
 void fxfs_dax_evict(struct inode *inode);
 /*
- * fxdax: copying on write, the page-cache file `inode`'s writeback wrote its data to extents, open
- * until the barrier after: read in again before it, it is a page-cache inode still
- * (fxfs_dax_set_inode, doc-13).
+ * fxdax: the page-cache file `inode`'s writeback wrote its data to extents, open until the barrier
+ * after: read in again before it, it is a page-cache inode still (fxfs_dax_set_inode, doc-13).
  */
 void fxfs_dax_written(struct inode *inode);
 /*
- * Records a DAX file's deferred append size, for writeback and fsync (TASK-92.28). fxdax: copying
- * on write, writes back its dirty pages, which Fxfs takes its size from.
+ * fxdax: writes back a DAX file's dirty pages, which Fxfs takes its size from, for fsync, seeks,
+ * fiemap and the like (doc-13): 0, or a -errno. Nothing for another file.
  */
-int fxfs_dax_write_size(struct inode *inode);
+int fxfs_dax_write_back(struct inode *inode);
 /*
  * Before and after a DAX file's size changes to `size`, under its inode's lock: the first waits
  * for the pages past the size to be unused, and zeroes the last page past it; the second unmaps
@@ -431,7 +424,7 @@ static inline bool fxfs_dax_set_inode(struct inode *inode, bool created)
 }
 static inline void fxfs_dax_evict(struct inode *inode) {}
 static inline void fxfs_dax_written(struct inode *inode) {}
-static inline int fxfs_dax_write_size(struct inode *inode)
+static inline int fxfs_dax_write_back(struct inode *inode)
 {
 	return 0;
 }

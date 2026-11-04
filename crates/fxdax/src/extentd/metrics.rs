@@ -21,13 +21,13 @@
 //!   windows map, their bytes, and the pages of them mapped in the VM processes (`crate::dax::live`,
 //!   TASK-131.6); fxdax: `fxdax_extentd_window_private_pages`, of those, the private copies of
 //!   windows that copy on write, and `fxdax_extentd_window_open_maps_refused_total`, the `MAP`s of
-//!   open extents they refused, which no guest makes (backlog doc-13).
+//!   open extents refused, which no guest makes (backlog doc-13).
 //! - `fxdax_extentd_<counter>_total`: the counters the control API's `GetStats` reports
 //!   (`crate::stats::Stats::named`, its dashes underscores): maps, faults, page-ins, reads and
 //!   their nanoseconds and bytes; the VM processes' changes to their windows (`stage_ops`) and
 //!   their nanoseconds in them (`stage_ns`), whose ratio is what a window change costs a VM process.
 //! - `fxdax_extentd_memory_bytes`, `fxdax_extentd_memory_limit_bytes` and
-//!   `fxdax_extentd_memory_capacity_bytes`: the memory the daemon's cached and open extents' pages
+//!   `fxdax_extentd_memory_capacity_bytes`: the memory the daemon's cached extents' pages
 //!   hold, every tenant's together, its limit, if any, and the most the daemon's kernel has
 //!   (TASK-50.3); `fxdax_extentd_tenant_memory_bytes{tenant}` and
 //!   `fxdax_extentd_tenant_memory_limit_bytes{tenant}`: each tenant's alive, by a hash of its name
@@ -218,13 +218,9 @@ pub fn render() -> String {
         let _ = writeln!(out, "# TYPE fxdax_extentd_{name} gauge");
         let _ = writeln!(out, "fxdax_extentd_{name} {value}");
     }
-    // fxdax: a tripwire (backlog doc-13): no guest maps an open extent in a window that copies on
-    // write.
+    // fxdax: a tripwire (backlog doc-13): no guest maps an open extent.
     let name = "fxdax_extentd_window_open_maps_refused_total";
-    let _ = writeln!(
-        out,
-        "# HELP {name} MAPs of open extents that windows copying on write refused."
-    );
+    let _ = writeln!(out, "# HELP {name} MAPs of open extents refused.");
     let _ = writeln!(out, "# TYPE {name} counter");
     let _ = writeln!(out, "{name} {}", crate::extents::open_maps_refused());
 

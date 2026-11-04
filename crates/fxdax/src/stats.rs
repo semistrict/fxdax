@@ -40,7 +40,7 @@ pub struct Stats {
     /// The parts of extents stored compressed decompressed (`extent_store::unpacks`).
     pub unpacks: u64,
     /// The changes to their DAX windows the extent daemon sent its VM processes, which they made
-    /// (`extentd::client`'s stage operations: maps, protections, unmaps), as they told it
+    /// (`extentd::client`'s stage operations: maps, unmaps, private pages), as they told it
     /// (`extentd::wire::STAGE_COUNTS`, TASK-91.16). An unmap and the maps a VM process makes with
     /// it at once (`dax::SecondStage::remap`), and adjacent unmaps joined, count as one.
     pub stage_ops: u64,
@@ -50,14 +50,8 @@ pub struct Stats {
     pub commits: u64,
     /// The nanoseconds they took, all of them.
     pub commit_ns: u64,
-    /// Of those, writing the open extents' data to the store.
-    pub commit_write_ns: u64,
-    /// The bytes of open extents' data they wrote.
-    pub commit_written_bytes: u64,
-    /// Of those nanoseconds, committing the store.
+    /// Of those, committing the store.
     pub commit_store_ns: u64,
-    /// Of those, mapping the extents they sealed read-only in the window.
-    pub commit_seal_ns: u64,
     /// Of those, waiting for object storage: for the upload of a durable commit, or for the
     /// uploads to come within the lag an ordered one allows.
     pub commit_wait_ns: u64,
@@ -79,8 +73,6 @@ pub struct Stats {
     pub stage_overwrites: u64,
     /// Theirs left out, as an unmap, or what a map anew leaves uncovered, makes it.
     pub stage_leave_outs: u64,
-    /// Theirs write-protected, as a seal makes it.
-    pub stage_write_protects: u64,
     /// fxdax: the extent cache's passes letting go of extents past its bound (TASK-109.2).
     pub cache_trims: u64,
     /// The nanoseconds they took, under the cache's lock.
@@ -89,34 +81,16 @@ pub struct Stats {
     /// installed read-only (`extentd::wire::FAULT` without `FAULT_PAGE`); the rest were on pages
     /// they hadn't installed (TASK-111.1).
     pub fault_stores: u64,
-    /// Of `faults`, the stores refused, to pages the window maps read-only.
+    /// Of `faults`, the stores refused: to a window that doesn't copy on write, or past its private
+    /// pages.
     pub fault_refusals: u64,
     /// Of `faults`, those that waited for the pager to read their pages in.
     pub fault_waits: u64,
-    /// fxdax: of `commit_seal_ns`, finding or making the cached extents of the extents sealed
-    /// (TASK-112.3).
-    pub commit_seal_cached_ns: u64,
-    /// Of those, mapping the cached extents read-only where the windows mapped the open ones.
-    pub commit_seal_remap_ns: u64,
-    /// Of those, handing the open extents' pages to the cached extents.
-    pub commit_seal_supply_ns: u64,
-    /// Of those, mapping the pages in the windows again.
-    pub commit_seal_populate_ns: u64,
     /// fxdax: of the maps of pages the windows made (`stage_maps`), the runs of pages consecutive in
     /// the window and present together that they were made of: as many as the maps, a window maps
     /// short runs as its pages are short of each other; fewer, as the pages are apart in physical
     /// memory (TASK-131.1).
     pub stage_segments: u64,
-    /// Of `stage_maps`, those of open extents' pages.
-    pub stage_maps_open: u64,
-    /// fxdax: the allocations of open extents' pages, each of a run of them not yet in memory
-    /// (TASK-131.1).
-    pub open_allocs: u64,
-    /// Their pages.
-    pub open_alloc_pages: u64,
-    /// The runs of pages consecutive in physical memory they were: as many as the pages, physical
-    /// memory gave them a page at a time.
-    pub open_alloc_runs: u64,
 }
 
 /// The counters, in the order of [`Stats`]' fields.
@@ -137,34 +111,22 @@ pub(crate) enum Counter {
     StageNs,
     Commits,
     CommitNs,
-    CommitWriteNs,
-    CommitWrittenBytes,
     CommitStoreNs,
-    CommitSealNs,
     CommitWaitNs,
     StageMaps,
     StageMapBytes,
     StageOverwrites,
     StageLeaveOuts,
-    StageWriteProtects,
     CacheTrims,
     CacheTrimNs,
     FaultStores,
     FaultRefusals,
     FaultWaits,
-    CommitSealCachedNs,
-    CommitSealRemapNs,
-    CommitSealSupplyNs,
-    CommitSealPopulateNs,
     StageSegments,
-    StageMapsOpen,
-    OpenAllocs,
-    OpenAllocPages,
-    OpenAllocRuns,
 }
 
 /// The counters [`Counter`] names, which this module keeps.
-const COUNTED: usize = 39;
+const COUNTED: usize = 27;
 
 /// The counters a snapshot holds: those it keeps, and the extent store's.
 const COUNTERS: usize = COUNTED + 3;
@@ -207,10 +169,7 @@ pub fn stats() -> Stats {
         stage_ns: count(Counter::StageNs),
         commits: count(Counter::Commits),
         commit_ns: count(Counter::CommitNs),
-        commit_write_ns: count(Counter::CommitWriteNs),
-        commit_written_bytes: count(Counter::CommitWrittenBytes),
         commit_store_ns: count(Counter::CommitStoreNs),
-        commit_seal_ns: count(Counter::CommitSealNs),
         commit_wait_ns: count(Counter::CommitWaitNs),
         segment_closes: extent_store::segment_closes().0,
         segment_close_ns: extent_store::segment_closes().1,
@@ -218,21 +177,12 @@ pub fn stats() -> Stats {
         stage_map_bytes: count(Counter::StageMapBytes),
         stage_overwrites: count(Counter::StageOverwrites),
         stage_leave_outs: count(Counter::StageLeaveOuts),
-        stage_write_protects: count(Counter::StageWriteProtects),
         cache_trims: count(Counter::CacheTrims),
         cache_trim_ns: count(Counter::CacheTrimNs),
         fault_stores: count(Counter::FaultStores),
         fault_refusals: count(Counter::FaultRefusals),
         fault_waits: count(Counter::FaultWaits),
-        commit_seal_cached_ns: count(Counter::CommitSealCachedNs),
-        commit_seal_remap_ns: count(Counter::CommitSealRemapNs),
-        commit_seal_supply_ns: count(Counter::CommitSealSupplyNs),
-        commit_seal_populate_ns: count(Counter::CommitSealPopulateNs),
         stage_segments: count(Counter::StageSegments),
-        stage_maps_open: count(Counter::StageMapsOpen),
-        open_allocs: count(Counter::OpenAllocs),
-        open_alloc_pages: count(Counter::OpenAllocPages),
-        open_alloc_runs: count(Counter::OpenAllocRuns),
     }
 }
 
@@ -256,10 +206,7 @@ impl Stats {
             self.stage_ns,
             self.commits,
             self.commit_ns,
-            self.commit_write_ns,
-            self.commit_written_bytes,
             self.commit_store_ns,
-            self.commit_seal_ns,
             self.commit_wait_ns,
             self.segment_closes,
             self.segment_close_ns,
@@ -267,21 +214,12 @@ impl Stats {
             self.stage_map_bytes,
             self.stage_overwrites,
             self.stage_leave_outs,
-            self.stage_write_protects,
             self.cache_trims,
             self.cache_trim_ns,
             self.fault_stores,
             self.fault_refusals,
             self.fault_waits,
-            self.commit_seal_cached_ns,
-            self.commit_seal_remap_ns,
-            self.commit_seal_supply_ns,
-            self.commit_seal_populate_ns,
             self.stage_segments,
-            self.stage_maps_open,
-            self.open_allocs,
-            self.open_alloc_pages,
-            self.open_alloc_runs,
         ]
     }
 
@@ -305,32 +243,20 @@ impl Stats {
             stage_ns: word(13),
             commits: word(14),
             commit_ns: word(15),
-            commit_write_ns: word(16),
-            commit_written_bytes: word(17),
-            commit_store_ns: word(18),
-            commit_seal_ns: word(19),
-            commit_wait_ns: word(20),
-            segment_closes: word(21),
-            segment_close_ns: word(22),
-            stage_maps: word(23),
-            stage_map_bytes: word(24),
-            stage_overwrites: word(25),
-            stage_leave_outs: word(26),
-            stage_write_protects: word(27),
-            cache_trims: word(28),
-            cache_trim_ns: word(29),
-            fault_stores: word(30),
-            fault_refusals: word(31),
-            fault_waits: word(32),
-            commit_seal_cached_ns: word(33),
-            commit_seal_remap_ns: word(34),
-            commit_seal_supply_ns: word(35),
-            commit_seal_populate_ns: word(36),
-            stage_segments: word(37),
-            stage_maps_open: word(38),
-            open_allocs: word(39),
-            open_alloc_pages: word(40),
-            open_alloc_runs: word(41),
+            commit_store_ns: word(16),
+            commit_wait_ns: word(17),
+            segment_closes: word(18),
+            segment_close_ns: word(19),
+            stage_maps: word(20),
+            stage_map_bytes: word(21),
+            stage_overwrites: word(22),
+            stage_leave_outs: word(23),
+            cache_trims: word(24),
+            cache_trim_ns: word(25),
+            fault_stores: word(26),
+            fault_refusals: word(27),
+            fault_waits: word(28),
+            stage_segments: word(29),
         }
     }
 
@@ -361,10 +287,7 @@ impl Stats {
             "stage-ns",
             "commits",
             "commit-ns",
-            "commit-write-ns",
-            "commit-written-bytes",
             "commit-store-ns",
-            "commit-seal-ns",
             "commit-wait-ns",
             "segment-closes",
             "segment-close-ns",
@@ -372,21 +295,12 @@ impl Stats {
             "stage-map-bytes",
             "stage-overwrites",
             "stage-leave-outs",
-            "stage-write-protects",
             "cache-trims",
             "cache-trim-ns",
             "fault-stores",
             "fault-refusals",
             "fault-waits",
-            "commit-seal-cached-ns",
-            "commit-seal-remap-ns",
-            "commit-seal-supply-ns",
-            "commit-seal-populate-ns",
             "stage-segments",
-            "stage-maps-open",
-            "open-allocs",
-            "open-alloc-pages",
-            "open-alloc-runs",
         ];
         std::array::from_fn(|at| (names[at], words[at]))
     }

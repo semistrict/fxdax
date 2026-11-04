@@ -140,6 +140,20 @@ Segments closed and framed: 2, 15.0 ms each.
             "150.0 µs, waiting for object storage 25.0 µs.\n\n",
         )
 
+    def test_commits_by_the_phases_a_copy_on_write_daemon_counts(self):
+        # Copy-on-write DAX's commits write no open extents and seal no windows' mappings.
+        daemon = (
+            "daemon: maps=10 map-ns=2000000 commits=4 commit-ns=1200000 commit-store-ns=200000 "
+            "commit-wait-ns=100000\n"
+        )
+        requests = "requests: write=4 write-ns=1400000\n"
+        section = report(self.results(STATS + daemon + requests)).split("Commits: ", 1)[1]
+        self.assertEqual(
+            section,
+            "4, 300.0 µs each: committing the store 50.0 µs, waiting for object storage 25.0 µs."
+            "\n\n",
+        )
+
     def test_no_requests_no_section(self):
         self.assertNotIn("Extent daemon", report(self.results(STATS + "requests:\n")))
 

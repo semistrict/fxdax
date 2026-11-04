@@ -136,18 +136,6 @@ struct dax_device *virtio_extent_dax(struct virtio_extent *vext)
 }
 EXPORT_SYMBOL_GPL(virtio_extent_dax);
 
-bool virtio_extent_dax_write(struct virtio_extent *vext)
-{
-	return vext->window && virtio_has_feature(vext->vdev, VIRTIO_EXTENT_F_DAX_WRITE);
-}
-EXPORT_SYMBOL_GPL(virtio_extent_dax_write);
-
-bool virtio_extent_dax_cow(struct virtio_extent *vext)
-{
-	return vext->window && virtio_has_feature(vext->vdev, VIRTIO_EXTENT_F_DAX_COW);
-}
-EXPORT_SYMBOL_GPL(virtio_extent_dax_cow);
-
 u64 virtio_extent_private_max(struct virtio_extent *vext)
 {
 	return vext->config.private_max;
@@ -200,8 +188,6 @@ static bool vext_writes(const struct vext_request *req)
 	case VIRTIO_EXTENT_T_RESIZED:
 	case VIRTIO_EXTENT_T_PRIVATE:
 		return true;
-	case VIRTIO_EXTENT_T_MAP:
-		return req->flags & VIRTIO_EXTENT_MAP_WRITE;
 	default:
 		return false;
 	}
@@ -306,11 +292,6 @@ static int vext_args(struct vext_request *req)
 			.capacity = cpu_to_le64(req->offset),
 		};
 		return sizeof(req->args.resized);
-	case VIRTIO_EXTENT_T_SEALED:
-		req->args.sealed = (struct virtio_extent_sealed) {
-			.asked = cpu_to_le64(req->offset),
-		};
-		return sizeof(req->args.sealed);
 	default:
 		return -EINVAL;
 	}
@@ -633,19 +614,23 @@ static const char *const request_names[] = {
 	[VIRTIO_EXTENT_T_RESIZED] = "resized",
 	[VIRTIO_EXTENT_T_FREEZE] = "freeze", [VIRTIO_EXTENT_T_ADVANCE] = "advance",
 	[VIRTIO_EXTENT_T_LET_GO] = "let_go", [VIRTIO_EXTENT_T_PIN] = "pin",
-	[VIRTIO_EXTENT_T_UNPIN] = "unpin",  [VIRTIO_EXTENT_T_SEALED] = "sealed",
-	[VIRTIO_EXTENT_T_PRIVATE] = "private",
+	[VIRTIO_EXTENT_T_UNPIN] = "unpin",  [VIRTIO_EXTENT_T_PRIVATE] = "private",
 };
 
-/* Shows `counters`, one per request type, each on a line of its own after the type's name. */
+/*
+ * Shows `counters`, one per request type, each on a line of its own after the type's name. fxdax:
+ * not the types no longer used, which have none.
+ */
 static ssize_t request_counters_show(char *buf, atomic64_t *counters)
 {
 	ssize_t len = 0;
 	int type;
 
-	for (type = VIRTIO_EXTENT_T_READ; type <= VIRTIO_EXTENT_T_LAST; type++)
-		len += sysfs_emit_at(buf, len, "%s %lld\n", request_names[type],
-				     atomic64_read(&counters[type]));
+	for (type = VIRTIO_EXTENT_T_READ; type <= VIRTIO_EXTENT_T_LAST; type++) {
+		if (request_names[type])
+			len += sysfs_emit_at(buf, len, "%s %lld\n", request_names[type],
+					     atomic64_read(&counters[type]));
+	}
 	return len;
 }
 
@@ -725,7 +710,7 @@ static void vext_read_config(struct virtio_extent *vext)
 	virtio_cread_le(vdev, struct virtio_extent_config, max_extent, &config->max_extent);
 	/* fxdax: set as the device opens, and never changed (doc-13). */
 	config->private_max = 0;
-	if (virtio_has_feature(vdev, VIRTIO_EXTENT_F_DAX_COW))
+	if (virtio_has_feature(vdev, VIRTIO_EXTENT_F_DAX))
 		virtio_cread_le(vdev, struct virtio_extent_config, private_max, &config->private_max);
 }
 
@@ -863,11 +848,10 @@ static int vext_probe(struct virtio_device *vdev)
 	mutex_lock(&devices_lock);
 	list_add(&vext->node, &devices);
 	mutex_unlock(&devices_lock);
-	dev_info(&vdev->dev, "extent store \"%s\", branch %llx, %u request queue%s%s%s%s%s\n",
+	dev_info(&vdev->dev, "extent store \"%s\", branch %llx, %u request queue%s%s%s\n",
 		 vext->config.tag, vext->config.branch, vext->nr_queues,
-		 vext->nr_queues == 1 ? "" : "s", vext->window ? ", with a DAX window" : "",
-		 virtio_extent_dax_write(vext) ? " to write through" : "",
-		 virtio_extent_dax_cow(vext) ? " copying on write" : "",
+		 vext->nr_queues == 1 ? "" : "s",
+		 vext->window ? ", with a DAX window copying on write" : "",
 		 virtio_extent_read_only(vext) ? ", following its writer read-only" : "");
 	return 0;
 }
@@ -910,23 +894,6 @@ u64 virtio_extent_committed(struct virtio_extent *vext)
 	return committed;
 }
 EXPORT_SYMBOL_GPL(virtio_extent_committed);
-
-u64 virtio_extent_seal_asked(struct virtio_extent *vext)
-{
-	struct virtio_device *vdev = vext->vdev;
-	u64 asked, again;
-
-	if (!virtio_has_feature(vdev, VIRTIO_EXTENT_F_SEAL))
-		return 0;
-	/* Read whole: the same twice, as the device may change it between halves. */
-	virtio_cread_le(vdev, struct virtio_extent_config, seal_asked, &asked);
-	do {
-		again = asked;
-		virtio_cread_le(vdev, struct virtio_extent_config, seal_asked, &asked);
-	} while (asked != again);
-	return asked;
-}
-EXPORT_SYMBOL_GPL(virtio_extent_seal_asked);
 
 void virtio_extent_set_config_changed(struct virtio_extent *vext, vext_config_changed_t changed,
 				      void *arg)
@@ -1048,36 +1015,8 @@ static const struct virtio_device_id vext_ids[] = {
 	{ 0 },
 };
 
-/*
- * fxdax: fxfs.dax_cow (off by default): the guest's window copies on write (doc-13, TASK-164.2),
- * if its device offers it, rather than mapping open extents writably. It is the filesystem's
- * choice, under the filesystem's name, but taken here, as the driver binds the device: a guest
- * takes one of DAX_WRITE and DAX_COW, and the device then knows which. The filesystem follows what
- * was taken (virtio_extent_dax_cow).
- */
-#undef MODULE_PARAM_PREFIX
-#define MODULE_PARAM_PREFIX "fxfs."
-static bool vext_dax_cow;
-module_param_named(dax_cow, vext_dax_cow, bool, 0444);
-MODULE_PARM_DESC(dax_cow, "Have the DAX window copy on write, if the device offers it (doc-13)");
-
-/* fxdax: of DAX_WRITE and DAX_COW, the one fxfs.dax_cow asks for, if the device offers it. */
-static int vext_validate(struct virtio_device *vdev)
-{
-	if (vext_dax_cow && virtio_has_feature(vdev, VIRTIO_EXTENT_F_DAX_COW)) {
-		__virtio_clear_bit(vdev, VIRTIO_EXTENT_F_DAX_WRITE);
-		return 0;
-	}
-	if (vext_dax_cow)
-		dev_warn(&vdev->dev, "fxfs.dax_cow, but the device doesn't copy on write\n");
-	__virtio_clear_bit(vdev, VIRTIO_EXTENT_F_DAX_COW);
-	return 0;
-}
-
 static const unsigned int vext_features[] = {
 	VIRTIO_EXTENT_F_DAX,
-	VIRTIO_EXTENT_F_DAX_WRITE,
-	VIRTIO_EXTENT_F_DAX_COW,
 	VIRTIO_EXTENT_F_WRITE_COMMIT,
 	VIRTIO_EXTENT_F_RESIZE,
 	VIRTIO_EXTENT_F_FREEZE,
@@ -1085,7 +1024,6 @@ static const unsigned int vext_features[] = {
 	VIRTIO_EXTENT_F_FREE_MANY,
 	VIRTIO_EXTENT_F_MAP_MANY,
 	VIRTIO_EXTENT_F_MAP_AHEAD,
-	VIRTIO_EXTENT_F_SEAL,
 };
 
 static struct virtio_driver vext_driver = {
@@ -1093,7 +1031,6 @@ static struct virtio_driver vext_driver = {
 	.id_table = vext_ids,
 	.feature_table = vext_features,
 	.feature_table_size = ARRAY_SIZE(vext_features),
-	.validate = vext_validate,
 	.probe = vext_probe,
 	.remove = vext_remove,
 	.config_changed = vext_config_changed,

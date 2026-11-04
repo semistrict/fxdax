@@ -83,9 +83,9 @@ pub(crate) const READ: u32 = 2;
 pub(crate) const WRITE: u32 = 3;
 /// Frees extent `args[0..2]` (`FREE`).
 pub(crate) const FREE: u32 = 4;
-/// Maps `args[3]` bytes at `args[2]` in extent `args[0..2]` into the window at `args[4]`
-/// (`MAP`), writably if [`MAP_WRITABLE`]; or zeros there, read-only, with [`MAP_ZEROS`], as a
-/// snapshot's mappings may ([`MAPPINGS`]).
+/// Maps `args[3]` bytes at `args[2]` in extent `args[0..2]`, sealed, into the window at `args[4]`,
+/// read-only (`MAP`); or zeros there, with [`MAP_ZEROS`], as a snapshot's mappings may
+/// ([`MAPPINGS`]). fxdax: flag 1, writably, was writable DAX's, not reused (backlog doc-13).
 pub(crate) const MAP: u32 = 5;
 /// Unmaps `args[1]` bytes of the window at `args[0]` (`UNMAP`).
 pub(crate) const UNMAP: u32 = 6;
@@ -97,11 +97,11 @@ pub(crate) const ROOT: u32 = 8;
 /// fields in order.
 pub(crate) const INFO: u32 = 9;
 /// Creates the store's window, of `args[0]` bytes, which the VM process maps in its own memory as
-/// the daemon's [stage operations](STAGE_MAP) say. fxdax: with [`WINDOW_COPY_ON_WRITE`], one that
-/// copies on write, of `args[1]` private pages at most, which the daemon reserves against its
-/// tenant's memory (`ENOMEM` past it), for a guest that took doc-4's `DAX_COW` (backlog doc-13):
-/// a store to a page it maps read-only makes the page private, and it maps no open extent, nor
-/// anything writably.
+/// the daemon's [stage operations](STAGE_MAP) say. fxdax: a writer's copies on write (backlog
+/// doc-13), of `args[1]` private pages at most, one at least, which the daemon reserves against
+/// its tenant's memory (`ENOMEM` past it): a store to a page makes the page private. A follower's
+/// copies nothing, refusing every store, its `args[1]` 0 (`EINVAL` otherwise, as a writer's of
+/// 0).
 pub(crate) const WINDOW: u32 = 10;
 /// Resolves the guest's fault at `args[0]` in the window: a store if [`FAULT_WRITE`], on that page
 /// alone if [`FAULT_PAGE`]. The stage operations it takes come before the reply.
@@ -123,8 +123,8 @@ pub(crate) const FORK: u32 = 13;
 pub(crate) const RESIZED: u32 = 16;
 /// The window's mappings ([`ExtentStore::window_mappings`](crate::ExtentStore::window_mappings)):
 /// the reply's payload, each six little-endian words ([`MAPPING_BYTES`]): its offset in the
-/// window, its length, the extent's branch and sequence and the offset in it, and
-/// [`MAPPING_WRITABLE`] or [`MAPPING_ZEROS`]. As many as a window of its size holds, a mapping a
+/// window, its length, the extent's branch and sequence and the offset in it, and 0 or
+/// [`MAPPING_ZEROS`]. As many as a window of its size holds, a mapping a
 /// page at most, which may be more than [`MAX_PAYLOAD`] holds (TASK-79.43).
 pub(crate) const MAPPINGS: u32 = 17;
 /// The bytes of a mapping in a [`MAPPINGS`] reply.
@@ -167,7 +167,7 @@ pub(crate) const MAX_TRANSFER_AREA: u64 = 64 << 20;
 pub(crate) const MAX_WINDOW: u64 = 64 << 30;
 /// fxdax: the stage operations the VM process has made of the connection's, `args[0]`, the
 /// nanoseconds they took it, `args[1]`, and those of them that took access away from pages it had
-/// installed, by how, `args[2..5]` (`Stats::stage_overwrites`), so far, which the daemon counts as
+/// installed, by how, `args[2..4]` (`Stats::stage_overwrites`), so far, which the daemon counts as
 /// its own (`Stats::stage_ops`, TASK-91.16): said with each [`ACK`]; otherwise once [`STAGE_COUNTS_EVERY`]
 /// has passed since it last said, as it makes them; and as it closes the connection. Nothing
 /// replies.
@@ -177,15 +177,13 @@ pub(crate) const STAGE_COUNTS: u32 = 27;
 /// metrics show by its store's branch (TASK-111.7). Said once, after [`OPEN`]. A request, which a
 /// daemon older than it refuses (`EINVAL`), and the VM process lets be.
 pub(crate) const BUILD: u32 = 28;
-/// fxdax: the guest's answer to the [`SEAL`] that asked it to seal, of number `args[0]`: it has
-/// sealed what it held open as it was asked, or tried to, or has no way to (TASK-153.15).
-pub(crate) const SEALED: u32 = 29;
+// 29 was the guest's answer to an ask to seal, writable DAX's (TASK-153.15), not reused.
 /// fxdax: the most bytes a [`BUILD`]'s commit has.
 pub(crate) const MAX_BUILD: usize = 64;
-/// fxdax: makes the `args[1]` bytes of a window that copies on write at `args[0]` private now, as
-/// stores to each page would, mapped writable, for the guest ahead of its accesses: doc-4's
-/// `PRIVATE` (backlog doc-13). `ENOMEM`, none made private, past the window's private pages;
-/// `EINVAL` of a window that doesn't copy on write. The stage operations it takes come before the
+/// fxdax: makes the `args[1]` bytes of the window at `args[0]` private now, as stores to each page
+/// would, mapped writable, for the guest ahead of its accesses: doc-4's `PRIVATE` (backlog
+/// doc-13). `ENOMEM`, none made private, past the window's private pages; `EINVAL` of a
+/// follower's window, which copies nothing. The stage operations it takes come before the
 /// reply.
 pub(crate) const PRIVATE: u32 = 30;
 /// fxdax: how long a VM process's stage operations go uncounted at most while it makes them
@@ -195,10 +193,8 @@ pub(crate) const STAGE_COUNTS_EVERY: std::time::Duration = std::time::Duration::
 pub(crate) const OPEN_CREATE: u32 = 1 << 0;
 pub(crate) const OPEN_FORK_FROM: u32 = 1 << 1;
 pub(crate) const OPEN_READ_ONLY: u32 = 1 << 2;
-pub(crate) const MAP_WRITABLE: u32 = 1 << 0;
 pub(crate) const MAP_ZEROS: u32 = 1 << 1;
 pub(crate) const FORK_QUIESCENT: u32 = 1 << 0;
-pub(crate) const MAPPING_WRITABLE: u64 = 1 << 0;
 pub(crate) const MAPPING_ZEROS: u64 = 1 << 1;
 pub(crate) const COMMIT_ROOT: u32 = 1 << 0;
 /// fxdax: a `COMMIT` that completes once durable, not once ordered.
@@ -217,8 +213,6 @@ pub(crate) const FAULT_PAGE: u32 = 1 << 1;
 /// mapping it ahead of the guest's accesses, not the guest's access: the daemon tells of no
 /// refusal of it, as the guest may map nothing there.
 pub(crate) const FAULT_PROBE: u32 = 1 << 2;
-/// fxdax: a [`WINDOW`] that copies on write.
-pub(crate) const WINDOW_COPY_ON_WRITE: u32 = 1 << 0;
 /// fxdax: the bytes an extent's ID takes in a [`FREE_MANY`]'s payload: its branch and its
 /// sequence, little-endian words.
 pub(crate) const EXTENT_ID_BYTES: usize = 16;
@@ -228,11 +222,9 @@ pub(crate) const EXTENT_ID_BYTES: usize = 16;
 /// The reply to request `id`.
 pub(crate) const REPLY: u32 = 100;
 /// Maps `args[2]` bytes of physical memory at `args[1]` in arena `args[4]`'s object
-/// into the window at `args[0]`, with protection `args[3]` ([`Protection`](crate::Protection):
-/// 1 to read, 2 to read and write).
+/// into the window at `args[0]`, read-only.
 pub(crate) const STAGE_MAP: u32 = 101;
-/// Changes the protection of `args[1]` bytes of the window at `args[0]` to `args[2]`.
-pub(crate) const STAGE_PROTECT: u32 = 102;
+// 102 changed a range's protection, as writable DAX's seals did, not reused.
 /// Unmaps `args[1]` bytes of the window at `args[0]`.
 pub(crate) const STAGE_UNMAP: u32 = 103;
 /// fxdax: the window maps `args[1]` bytes at `args[0]` anew (`SecondStage::window_mapped`).
@@ -250,12 +242,7 @@ pub(crate) const CAPACITY_ASK: u32 = 1 << 0;
 /// fxdax: the writer of a follower's store committed: its latest commit's epoch is `args[0]`,
 /// which the follower may [`ADVANCE`] to. Sent once for each run of commits.
 pub(crate) const COMMITTED: u32 = 105;
-/// fxdax: the daemon asks the guest to seal what it holds open, its open extents' pages, which
-/// nothing but its seal lets go of, as another guest's [`MAP`] was refused for want of them: the
-/// ask's number, one more than the last's, is `args[0]`, which the guest answers ([`SEALED`])
-/// once it has sealed. Asks unanswered are one: the latest answered answers them all
-/// (TASK-153.15).
-pub(crate) const SEAL: u32 = 107;
+// 107 asked the guest to seal, writable DAX's (TASK-153.15), not reused.
 /// A stage operation the daemon waits for the VM process to acknowledge ([`ACK`]), as it must for
 /// one that takes access to a page away, before it frees the page or shares it.
 pub(crate) const STAGE_ACK: u32 = 1 << 0;
@@ -761,8 +748,8 @@ impl Receiver {
                 StageOp::Mapped { offset, len } => {
                     (offset, len, crate::dax::Anew::Mapped { offset, len })
                 }
-                StageOp::Map { offset, phys, len, protection } => {
-                    (offset, len, crate::dax::Anew::Map { offset, phys, len, protection })
+                StageOp::Map { offset, phys, len } => {
+                    (offset, len, crate::dax::Anew::Map { offset, phys, len })
                 }
                 _ => return None,
             };
@@ -1007,7 +994,7 @@ mod tests {
 
     fn map(id: u64, offset: u64, len: u64) -> Stage {
         let phys = crate::pages::PhysLocation { arena: crate::pages::ArenaId(0), offset: 1 << 20 };
-        Stage { id, op: StageOp::Map { offset, phys, len, protection: crate::Protection::Read } }
+        Stage { id, op: StageOp::Map { offset, phys, len } }
     }
 
     fn mapped(id: u64, offset: u64, len: u64) -> Stage {
@@ -1017,9 +1004,7 @@ mod tests {
     /// What a change takes of `stage`, a map or a mapping anew.
     fn anew(stage: Stage) -> Anew {
         match stage.op {
-            StageOp::Map { offset, phys, len, protection } => {
-                Anew::Map { offset, phys, len, protection }
-            }
+            StageOp::Map { offset, phys, len } => Anew::Map { offset, phys, len },
             StageOp::Mapped { offset, len } => Anew::Mapped { offset, len },
             op => panic!("{op:?} is taken as no map"),
         }
@@ -1056,15 +1041,11 @@ mod tests {
     /// one of another kind, or an unmap after them, which begins the next change.
     #[test]
     fn unmaps_take_the_maps_within_them() {
-        let protect = StageOp::Protect {
-            offset: 4096,
-            len: 4096,
-            protection: crate::Protection::ReadWrite,
-        };
+        let private = StageOp::Private { offset: 4096, from: None };
         for (after, taken) in [
             (map(5, 8192, 8192), 3),
             (unmap(5, 4096, 4096), 3),
-            (Stage { id: 5, op: protect }, 3),
+            (Stage { id: 5, op: private }, 3),
             (map(5, 4096, 8192), 4),
         ] {
             let ((sender, _), (_, mut receiver)) = pair();
@@ -1091,10 +1072,7 @@ mod tests {
             let mut next = unmap(2, 8192, 4096).encode();
             match variation {
                 0 => next.args[0] += 4096,
-                1 => {
-                    next.kind = STAGE_PROTECT;
-                    next.args[2] = 1;
-                }
+                1 => next.kind = STAGE_PRIVATE,
                 2 => next.flags = 0,
                 3 => next.args = [u64::MAX - 1024, 4096, 0, 0, 0],
                 4 => {}

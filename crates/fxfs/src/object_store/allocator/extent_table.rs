@@ -15,7 +15,7 @@
 //!   has committed: the staging extent, or one transactions not yet committed have allocated in.
 //!   Each of those pins it, as being the staging extent does. `commit` makes it allocated. It dies
 //!   with its last pin, taking nothing, as nothing records it: as `drop_allocation` drops it, or
-//!   as `stage` or `restage` replaces it as the staging extent.
+//!   as `stage` replaces it as the staging extent.
 //! - Allocated ([`ExtentState::Allocated`]), by `commit` or `load`: alive, with some of it
 //!   allocated. It reaches as far as its last range, allocated or not, and each range allocated is
 //!   referenced by one file's extents, or by more (reflinks). `commit` allocates more of it, and
@@ -50,7 +50,7 @@
 //!   references any more is counted 0, so that its extent's size is known while the rest is alive.
 //! - The removal from the tree of an extent that dies, in three cases. One is `recount`'s, with
 //!   the extent's last deallocation, which its transaction journals. Another is an empty extent's,
-//!   with its last pin (`stage`, `restage`, `drop_allocation`), which no transaction journals:
+//!   with its last pin (`stage`, `drop_allocation`), which no transaction journals:
 //!   replay, which pins aren't in, kills the extent with its last deallocation instead, unless
 //!   the tree was compacted since. The third is `load`'s, of an extent it finds with nothing
 //!   allocated: one empty when the tree was last compacted, as the staging extent emptied may be,
@@ -401,7 +401,7 @@ impl ExtentTable {
         let records = if fits {
             Records::default()
         } else {
-            self.replace_staging(branch, owner_object_id, device).1
+            self.replace_staging(branch, owner_object_id, device)
         };
         let staging = self.staging.as_mut().unwrap();
         let range = ExtentRange::new(staging.extent, staging.next..staging.next + len);
@@ -410,29 +410,14 @@ impl ExtentTable {
         (range, records)
     }
 
-    /// Replaces the staging extent, if a barrier sealed it since blocks were taken of it, with a
-    /// new one of `branch`, opened on `device`, for the same owner, and returns it.
-    pub(super) fn restage(
-        &mut self,
-        branch: u64,
-        device: &dyn Device,
-    ) -> Option<(ExtentId, Records)> {
-        let staging = self.staging.as_ref()?;
-        if staging.next == 0 || device.is_open(staging.extent) {
-            return None;
-        }
-        let owner_object_id = staging.owner_object_id;
-        Some(self.replace_staging(branch, owner_object_id, device))
-    }
-
     /// Makes a new extent of `branch`, opened on `device`, the staging extent of
-    /// `owner_object_id`, in place of the last, which it no longer pins.
+    /// `owner_object_id`, in place of the last, which it no longer pins: the records that implies.
     fn replace_staging(
         &mut self,
         branch: u64,
         owner_object_id: u64,
         device: &dyn Device,
-    ) -> (ExtentId, Records) {
+    ) -> Records {
         let records = match self.staging.take() {
             Some(old) => self.unpin(old.extent),
             None => Records::default(),
@@ -440,7 +425,7 @@ impl ExtentTable {
         let extent = self.mint(branch, device);
         self.extents.insert(extent, ExtentState::Pending { pins: NonZero::<usize>::MIN });
         self.staging = Some(Staging { extent, owner_object_id, next: 0 });
-        (extent, records)
+        records
     }
 
     /// Commits the allocation of `range` for `owner_object_id`, in a transaction `applied`, and
@@ -1086,10 +1071,11 @@ mod tests {
         assert!(table.dead_extents().is_empty());
         table.check();
 
-        // Sealed, it is replaced, and dies.
+        // Sealed, it is replaced by the next shared allocation's, and dies.
         device.flush().await.expect("flush failed");
-        let (spare, records) = table.restage(DEFAULT_BRANCH, &device).expect("not restaged");
-        assert_eq!(spare, ExtentId::new(DEFAULT_BRANCH, staging.sequence + 1));
+        let (next, records) = table.stage(DEFAULT_BRANCH, OWNER, BS, &device);
+        let spare = ExtentId::new(DEFAULT_BRANCH, staging.sequence + 1);
+        assert_eq!(next, ExtentRange::new(spare, 0..BS));
         assert_eq!(records.0, [removed(staging, 2 * BS)]);
         assert!(!table.is_alive(staging));
         assert_eq!(table.extent_size(staging, &device), None);
@@ -1110,11 +1096,11 @@ mod tests {
         assert!(table.is_pinned(staging));
         assert!(table.dead_extents().is_empty());
         table.check();
-        // Open still, it isn't replaced.
-        assert!(table.restage(DEFAULT_BRANCH, &device).is_none());
 
+        // Sealed, it is replaced by the next shared allocation's.
         device.flush().await.expect("flush failed");
-        let (_, records) = table.restage(DEFAULT_BRANCH, &device).expect("not restaged");
+        let (next, records) = table.stage(DEFAULT_BRANCH, OWNER, BS, &device);
+        assert_ne!(next.extent, staging);
         assert!(records.0.is_empty());
         assert!(!table.is_pinned(staging));
         assert_eq!(table.dead_extents(), [(staging, FreeAfter::Now, 0, INVALID_OBJECT_ID)]);

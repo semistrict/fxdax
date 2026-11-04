@@ -548,9 +548,9 @@ mod host {
                         );
                     }
                 }
-                // fxdax: a page synced, then stored to through a mapping, the fault's block moved
-                // and a seal right after: it holds what was synced, but for the byte stored, which
-                // it may or may not hold. It held zeros (TASK-79.11).
+                // fxdax: a page synced, then stored to through a mapping, and written back again
+                // and again as the VM stops: it holds what was synced, but for the byte stored,
+                // which it may or may not hold. It held zeros (TASK-79.11).
                 if self.dax {
                     assert!(
                         output.lines().any(|line| line == "stored mapped"),
@@ -641,14 +641,9 @@ mod guest {
 
     const MNT: &str = "/mnt/fxfs";
 
-    /// fxdax: whether the window copies on write (doc-13), as the mount's counts say.
-    fn dax_cow() -> bool {
-        crate::guest_fxfs::dax_cow("extents")
-    }
-
     /// fxdax: how many of the window's pages are private, copying on write (doc-13).
     fn private_pages() -> u64 {
-        crate::guest_fxfs::stats("extents")["dax_cow_private_pages"]
+        crate::guest_fxfs::stats("extents")["dax_private_pages"]
     }
 
     fn mount(source: &str) -> std::io::Result<()> {
@@ -1260,19 +1255,15 @@ mod guest {
         std::mem::forget(unnamed);
         inherit_acls();
         let mapped = format!("{MNT}/{MAPPED_SYNCED}");
-        // fxdax: copying on write (doc-13), which the window does if the mount says so.
-        let cow = dax && dax_cow();
         if dax {
             let mut file = fs::File::create(&mapped).unwrap();
             file.write_all(&mapped_synced()).unwrap();
             file.sync_all().unwrap();
             fs::File::open(MNT).unwrap().sync_all().unwrap();
-            // fxdax: copying on write, created here, it is a page-cache inode until read in again
-            // (TASK-164.3): read in again, DAX, its store is the window's.
-            if cow {
-                drop(file);
-                read_in_sealed(&mapped);
-            }
+            // fxdax: created here, it is a page-cache inode until read in again (doc-13,
+            // TASK-164.3): read in again, DAX, its store is the window's.
+            drop(file);
+            read_in_sealed(&mapped);
         }
         // fxdax: unless its process is to be killed, whose host the guest asks to (TASK-119.6).
         let stopper = (!killed).then(Stopper::fork);
@@ -1287,7 +1278,7 @@ mod guest {
         let crash_ms: u64 = std::env::var("FXDAX_CRASH_MS").unwrap().parse().unwrap();
         if dax {
             std::thread::sleep(std::time::Duration::from_secs(1));
-            store_mapped(&mapped, cow);
+            store_mapped(&mapped);
             PAUSED.store(false, std::sync::atomic::Ordering::Release);
             std::thread::sleep(std::time::Duration::from_millis(crash_ms.saturating_sub(1000)));
         } else {
@@ -1401,15 +1392,12 @@ mod guest {
     }
 
     /// fxdax: stores a byte to the page at `path`, synced, through a mapping, as the VM is about
-    /// to stop, with the writers waiting: the fault moves the page's block, and a seal comes right
-    /// after (the fxfs.dax_fault_seals_moved fault injection), with none after it (TASK-79.11).
-    /// Copying on write (`cow`, doc-13), nothing moves: the store makes the page private, one page
-    /// more, and a thread of its own stores the byte again and writes the page back, again and
-    /// again, so that the VM stops with a writeback of it under way, or just done. The store holds
-    /// what was synced, but for the byte, either way: a writeback that wrote the extent's page,
-    /// not the window's, or committed before its bytes, leaves other data.
-    fn store_mapped(path: &str, cow: bool) {
-        const SEALS_MOVED: &str = "/sys/module/fxfs/parameters/dax_fault_seals_moved";
+    /// to stop, with the writers waiting (TASK-79.11): the store makes the page private, one page
+    /// more (doc-13), and a thread of its own stores the byte again and writes the page back, again
+    /// and again, so that the VM stops with a writeback of it under way, or just done. The store
+    /// holds what was synced, but for the byte, either way: a writeback that wrote the extent's
+    /// page, not the window's, or committed before its bytes, leaves other data.
+    fn store_mapped(path: &str) {
         PAUSED.store(true, std::sync::atomic::Ordering::Release);
         // A writer's fsync in progress, done.
         std::thread::sleep(std::time::Duration::from_millis(200));
@@ -1429,25 +1417,18 @@ mod guest {
         // then finds the page mapped, read-only, as a fault holding it does.
         let loaded = unsafe { map.cast::<u8>().add(MAPPED_STORE).read_volatile() };
         assert_eq!(loaded, mapped_synced()[MAPPED_STORE], "the mapping maps other data");
-        if cow {
-            let before = private_pages();
-            unsafe { map.cast::<u8>().add(MAPPED_STORE).write_volatile(0xee) };
-            assert_eq!(private_pages(), before + 1, "the store's private pages");
-            let page = map as usize;
-            std::thread::spawn(move || {
-                let page = page as *mut u8;
-                loop {
-                    unsafe { page.add(MAPPED_STORE).write_volatile(0xee) };
-                    let synced = unsafe { libc::msync(page.cast(), 4096, libc::MS_SYNC) };
-                    assert_eq!(synced, 0, "msync: {}", std::io::Error::last_os_error());
-                }
-            });
-        } else {
-            fs::write(SEALS_MOVED, "1").unwrap();
-            unsafe { map.cast::<u8>().add(MAPPED_STORE).write_volatile(0xee) };
-            let left = fs::read_to_string(SEALS_MOVED).unwrap();
-            assert_eq!(left.trim(), "0", "no seal after a move");
-        }
+        let before = private_pages();
+        unsafe { map.cast::<u8>().add(MAPPED_STORE).write_volatile(0xee) };
+        assert_eq!(private_pages(), before + 1, "the store's private pages");
+        let page = map as usize;
+        std::thread::spawn(move || {
+            let page = page as *mut u8;
+            loop {
+                unsafe { page.add(MAPPED_STORE).write_volatile(0xee) };
+                let synced = unsafe { libc::msync(page.cast(), 4096, libc::MS_SYNC) };
+                assert_eq!(synced, 0, "msync: {}", std::io::Error::last_os_error());
+            }
+        });
         let mut stdout = std::io::stdout().lock();
         writeln!(stdout, "stored mapped").unwrap();
         stdout.flush().unwrap();
@@ -1461,25 +1442,19 @@ mod guest {
             .unwrap_or_else(|| panic!("no count of {kind} requests"))
     }
 
-    /// A file's data is written through the window, and its window ranges outlive its inode:
-    /// evicted and read in again, it takes no MAP and no READ. fxdax: copying on write (doc-13), a
-    /// file created here is a page-cache inode until read in again (TASK-164.3): read in, DAX, its
-    /// first read maps it, and read in again after that, it takes neither. Fails if its ranges went
-    /// with the inode the first read mapped them for.
+    /// A file's window ranges outlive its inode. fxdax: a file created here is a page-cache inode
+    /// until read in again (doc-13, TASK-164.3): read in, DAX, its first read maps it, and read in
+    /// again after that, it takes no MAP and no READ. Fails if its ranges went with the inode the
+    /// first read mapped them for.
     fn read_maps() {
-        let cow = dax_cow();
         let path = format!("{MNT}/mapped-read");
         let data = pattern((3 << 20) + 5, 0x3c);
         fs::write(&path, &data).unwrap();
-        if cow {
-            evict(&path);
-        }
-        assert!(is_dax(&path), "{path} is not DAX");
-        if cow {
-            assert_eq!(fs::read(&path).unwrap(), data, "{path} read in again");
-        }
         evict(&path);
-        // The spare a seal leaves mapped, before counting: a sync waits for it.
+        assert!(is_dax(&path), "{path} is not DAX");
+        assert_eq!(fs::read(&path).unwrap(), data, "{path} read in again");
+        evict(&path);
+        // What earlier writes left to do in the background, done, before counting.
         unsafe { libc::sync() };
         unsafe { libc::sync() };
         let (reads, maps) = (requests("read"), requests("map"));
@@ -1489,25 +1464,18 @@ mod guest {
         fs::remove_file(&path).unwrap();
     }
 
-    /// Small files are DAX, and share an extent, which the window maps once for them all: as the
-    /// files' blocks are handed out, further each time, 16 pages first, then doubling, a step
-    /// ahead of them once they reach the second half of what is mapped. The first 16 pages are
-    /// mapped as a seal ends, before the writes (the spare), and the next extent's once the next
-    /// seal does, so 32 files of a block take 3 MAPs (to 64 pages, and the next spare), and no
-    /// READ. Evicted and read in again, they take neither. fxdax: copying on write (doc-13), files
-    /// created here are page-cache inodes until read in again (TASK-164.3): their writes take no
+    /// Small files share an extent, which the window maps once for them all. fxdax: files created
+    /// here are page-cache inodes until read in again (doc-13, TASK-164.3): their writes take no
     /// MAP, and their writeback packs them in an extent, sealed, which, read in again, DAX, they
     /// share: their reads take one MAP of its region, and no READ; evicted and read in again, they
     /// take neither. Fails if a created file got S_DAX, if the files read in again didn't, or if
     /// they didn't share a region (a MAP each).
     fn small_files_share() {
-        let cow = dax_cow();
         let dir = format!("{MNT}/small");
         fs::create_dir(&dir).unwrap();
         let files: Vec<(String, Vec<u8>)> =
             (0..32).map(|i| (format!("{dir}/file-{i}"), pattern(100 + i, i as u8))).collect();
-        // Sealed, the next small write takes a new extent, mapped ahead of it: a sync waits for
-        // the spare the seal before it left to be mapped.
+        // What earlier writes left to do in the background, done, before counting.
         fs::write(format!("{dir}/seed"), b"seed").unwrap();
         unsafe { libc::sync() };
         unsafe { libc::sync() };
@@ -1515,28 +1483,26 @@ mod guest {
         for (path, data) in &files {
             fs::write(path, data).unwrap();
         }
-        // A sync waits for the region to grow as far ahead of the writes as it does.
+        // Their writeback, which maps nothing.
         unsafe { libc::sync() };
         unsafe { libc::sync() };
-        assert_eq!(requests("map"), maps + if cow { 0 } else { 3 }, "the small files' MAPs");
+        assert_eq!(requests("map"), maps, "the small files' MAPs");
         assert_eq!(requests("read"), reads, "writing small files read from the device");
-        assert_eq!(is_dax(&files[0].0), !cow, "a small file's DAX attribute");
+        assert!(!is_dax(&files[0].0), "a small file created here is DAX");
         for (path, _) in &files {
             evict(path);
         }
-        // fxdax: copying on write, read in again, DAX, they map the extent their writeback packed
-        // them in, sealed, once for them all.
-        if cow {
-            let (reads, maps) = (requests("read"), requests("map"));
-            for (path, data) in &files {
-                assert_eq!(&fs::read(path).unwrap(), data, "{path}");
-            }
-            assert!(is_dax(&files[0].0), "a small file read in again is not DAX");
-            assert_eq!(requests("map"), maps + 1, "reading small files in again: their MAPs");
-            assert_eq!(requests("read"), reads, "reading them in again read from the device");
-            for (path, _) in &files {
-                evict(path);
-            }
+        // Read in again, DAX, they map the extent their writeback packed them in, sealed, once for
+        // them all.
+        let (reads, maps) = (requests("read"), requests("map"));
+        for (path, data) in &files {
+            assert_eq!(&fs::read(path).unwrap(), data, "{path}");
+        }
+        assert!(is_dax(&files[0].0), "a small file read in again is not DAX");
+        assert_eq!(requests("map"), maps + 1, "reading small files in again: their MAPs");
+        assert_eq!(requests("read"), reads, "reading them in again read from the device");
+        for (path, _) in &files {
+            evict(path);
         }
         let (reads, maps) = (requests("read"), requests("map"));
         for (path, data) in &files {
@@ -1645,7 +1611,7 @@ mod guest {
         let _ = names(MNT);
         let _ = fs::metadata(format!("{MNT}/guest-dir/renamed")).unwrap();
         // What earlier writes left to do in the background, done: a sync waits for the frees,
-        // and the next for the spare mapped once the first's seal ended.
+        // and the next for what the first's seal left.
         unsafe { libc::sync() };
         unsafe { libc::sync() };
         let before = device_requests();

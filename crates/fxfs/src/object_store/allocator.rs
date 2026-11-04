@@ -88,8 +88,10 @@
 //! ## Shared extents (fxdax)
 //!
 //! Small allocations share extents, so that a directory of many small files doesn't take an extent
-//! each (`allocate_shared`): they take the next blocks of the staging extent, minted for them and
-//! open until the device's next barrier seals it, or until it is full, when the next is minted.
+//! each (`allocate_shared`, as writeback's small writes allocate: `write_many`): they take the next
+//! blocks of the staging extent, minted for them and open until the device's next barrier seals
+//! it, or until it is full, when the next is minted. A write that finds it sealed between its
+//! allocation and its write is refused by the device, and tried again in a new transaction.
 //! Such an extent dies, as any does, once its last range is deallocated; but not while it is the
 //! staging extent, or while transactions not yet committed have allocated in it (it is pinned): it
 //! dies, if nothing is allocated in it, once neither holds. Its dead ranges stay stored until it
@@ -1371,18 +1373,6 @@ impl Allocator {
         len: u64,
     ) -> Result<ExtentRange, Error> {
         self.allocate_in(transaction, owner_object_id, len.min(STAGED_MAX), true).await
-    }
-
-    /// fxdax: replaces the staging extent, if a barrier sealed it since blocks were taken of it,
-    /// with a new one, opened on the device, which the next shared allocations take blocks of:
-    /// returned, so that a guest's DAX window can map it before a write waits for that. One left
-    /// unused is sealed by the next barrier, and dies, as the staging extent no more, then.
-    pub fn restage(&self) -> Option<ExtentId> {
-        let device = self.filesystem.upgrade()?.device();
-        let mut inner = self.inner.lock();
-        let (extent, records) = inner.extents.restage(self.branch(), &*device)?;
-        self.record(records);
-        Some(extent)
     }
 
     /// fxdax: how far `extent` reaches, as allocated, or for the staging extent, while it is open,
@@ -4365,41 +4355,6 @@ mod tests {
         let fs = FxFilesystemBuilder::new().open(device).await.expect("open failed");
         assert!(!fs.allocator().extents().contains_key(&extent));
         fsck(fs.clone()).await.expect("fsck failed");
-        fs.close().await.expect("close failed");
-    }
-
-    /// fxdax: a staging extent sealed since blocks were taken of it is replaced at once, ahead of
-    /// the next shared allocation, which takes it; one unused, or open still, is not, and an unused
-    /// one sealed dies when it is replaced.
-    #[fuchsia::test]
-    async fn test_restage() {
-        let (fs, allocator) = test_fs().await;
-        let bs = fs.block_size().get();
-        let (transaction, first) = shared_allocation(&fs).await;
-        transaction.commit().await.expect("commit failed");
-        assert_eq!(allocator.restage(), None, "it is open");
-        flush_device(&fs).await;
-
-        let spare = allocator.restage().expect("no spare");
-        assert_eq!(spare, ExtentId::new(DEFAULT_BRANCH, first.extent.sequence + 1));
-        assert!(fs.device().is_open(spare));
-        assert_eq!(allocator.extent_size(spare), Some(STAGING_SIZE));
-        assert_eq!(allocator.restage(), None, "the spare is unused");
-        let (transaction, second) = shared_allocation(&fs).await;
-        transaction.commit().await.expect("commit failed");
-        assert_eq!(second, ExtentRange::new(spare, 0..bs));
-
-        // Unused, a spare sealed is replaced by the next shared allocation, and dies.
-        flush_device(&fs).await;
-        let unused = allocator.restage().expect("no spare");
-        // A barrier with nothing new in the journal, which seals the spare.
-        fs.device().flush().await.expect("flush failed");
-        assert!(!fs.device().is_open(unused));
-        assert_eq!(allocator.restage(), None, "the sealed spare is unused");
-        let (transaction, third) = shared_allocation(&fs).await;
-        transaction.commit().await.expect("commit failed");
-        assert_eq!(third.extent, ExtentId::new(DEFAULT_BRANCH, unused.sequence + 1));
-        assert_eq!(allocator.extent_size(unused), None);
         fs.close().await.expect("close failed");
     }
 

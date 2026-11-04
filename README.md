@@ -31,10 +31,16 @@ extent store             crates/extent_store: segments, large extents' files,
 
 - **Requests:** the guest's Fxfs reads, writes, frees and commits extents
   through the device, which forwards each request to the daemon.
-- **DAX:** `MAP` maps a range of an extent into the VM's DAX window, a range
-  of guest physical memory the daemon keeps the page tables of: a sealed
-  extent's pages from the cache, which reads them in from the store, an open
-  extent's from the memory the guest writes it in, until a commit seals it.
+- **DAX:** `MAP` maps a range of a sealed extent into the VM's DAX window, a
+  range of guest physical memory the daemon keeps the page tables of, read-only:
+  the extent's pages from the cache, which reads them in from the store, or
+  zeros. The window copies on write (backlog doc-13): a page the guest writes
+  becomes the VM's own, a private copy at the same address, at most
+  `private_max` of them, until a `MAP` or `UNMAP` over it. The guest writes its
+  dirty pages back as it would without DAX, with `WRITE`s to new extents and a
+  commit, and once a commit seals those, maps the pages back to them, sharing
+  them again. Files a mount creates go through the guest's page cache until
+  their inodes are next read in.
 - **Hypervisor mirror:** the daemon maps pages at the window's addresses, and
   the VM process maps the same pages of the daemon's physical memory (memfds)
   into the host memory KVM follows for the window, keeping it in step with
@@ -85,7 +91,7 @@ their leading comment:
   shared extents, and the on-disk format is version 59.
 ### `crates/physmem`: physical memory
 
-The extent cache's pages, open extents', and the DAX windows', are host shared
+The extent cache's pages, and the DAX windows', are host shared
 memory: physical memory in arenas, each its own shared memory object (a memfd
 on Linux, POSIX shared memory on macOS), which a process given an arena's
 object maps the arena's pages from (TASK-43). An arena takes memory 2 MiB at a
@@ -125,8 +131,7 @@ of these stands in with the items the code copied from Fuchsia uses:
   it: its I/O, and `MAP` and `UNMAP` into its DAX window.
 - `cache.rs` holds the cache of sealed extents' pages, shared by every store
   in the process, each extent a table of its pages, read in a part at a time
-  and evicted as memory runs out; and open extents' memory, which a commit
-  moves into the cache uncopied.
+  and evicted as memory runs out.
 - `extentd/` holds the daemon (`bin/fxdax-extentd.rs`) and its client,
   `RemoteExtentStore`, which a VMM's device is; see the extent daemon below.
 - `dax.rs` holds DAX windows, their mappings and the pages they have mapped,
@@ -200,12 +205,12 @@ like this:
   than resolving wrongly, and the VMM retries the vCPU.
 
 x86 KVM faults pages in for writing from a worker, whatever the guest's
-access. So a write the window refuses is resolved as a read, and a load may
-dirty a page in a writable mapping.
+access. So a write the window refuses is resolved as a read, and the vCPU's own
+access decides: a load copies nothing, and a store to a page mapped read-only
+copies it once, to the VM's private page.
 
 KVM would map each page for the guest on a fault of its own, which nested
-virtualization makes slow. Mapping an extent maps the pages it has in memory
-(an open extent's all of them, committed as they are mapped), and the window
+virtualization makes slow. Mapping an extent maps the pages it has in memory, and the window
 tells the VMM of the pages it maps (`Prefault`), which the VMM has KVM map
 ahead of the guest (`KVM_PRE_FAULT_MEMORY`).
 
@@ -239,8 +244,10 @@ its own memfd (TASK-43): a tenant's stores' pages are of its arena, and public
 bases' pages, which every tenant's forks share, one copy, of the default arena.
 A tenant's VM process holds its tenant's arena and the default one, read-only
 (mapped private, so the window can track stores to it), and nothing of another
-tenant's. An extent's pages are of the arena it is cached in alone: a commit
-moves an open extent's pages into its cached extent only within one arena.
+tenant's. An extent's pages are of the arena it is cached in alone. A VM's
+private DAX pages, those its guest wrote, are its VM process's own memory,
+laid out as its window is, at most `private_max` of them, which the daemon
+reserves against the tenant's memory as the window is made.
 The host's VM manager drives the daemon
 through a gRPC control API on a Unix socket of its own (`FXDAX_EXTENTD_GRPC`;
 `crates/fxdax/proto/fxdax/extentd/v1/extentd.proto`, TASK-43.3): it makes,
@@ -336,7 +343,7 @@ What a host can tell from a VM process's status (TASK-70):
 | 152, 153 | `BadConfiguration`, `ArgParsing` | How it was started. |
 | 157 | `SIGILL` | A VMM bug, or a host of another CPU. |
 | 158 | `ExtentdLost` | Storage: its extent daemon went, and the VM can't go on. What it was told stays as doc-12 says. |
-| 159 | `AccessRefused` | The guest: an access stayed refused, of a part of its DAX window nothing maps, or that it may not store to. That VM alone stops (TASK-77). |
+| 159 | `AccessRefused` | The guest: an access stayed refused, of a part of its DAX window nothing maps, or a store past its private pages' bound (`private_max`, backlog doc-13). That VM alone stops (TASK-77). |
 | Killed by SIGABRT | A panic | A VMM bug: Firecracker panics abort, and an unresolved DAX window fault does. |
 
 ### `guest/`: Fxfs in the guest's kernel
@@ -394,8 +401,9 @@ suites' `unsupported` check pins the first two):
 - Extents written in place (Fxfs's overwrite modes, which nothing in the guest
   makes) can't be shared: a reflink of them fails with `EOPNOTSUPP`.
 - `MAP_SYNC` mmaps fail with `EOPNOTSUPP`: the DAX window is the host's
-  memory, not persistent memory, and what is stored through it is durable once
-  an fsync commits it, never at the fault.
+  memory, not persistent memory, and what is stored through it is in a private
+  page until writeback writes it to the store, and durable once an fsync
+  commits it, never at the fault.
 - chattr's other flags (`FS_IOC_FSSETXATTR`'s project IDs and extent sizes,
   synchronous, compressed, no-COW) fail with `EOPNOTSUPP`.
 - No change counter (`i_version`): the change attribute, an NFS server's or
@@ -450,11 +458,11 @@ labelled n2 host with nested KVM, which deletes itself after 8 hours, and
 
 The protocols whose bugs are rare interleavings have TLA+ specs, which TLC
 model-checks exhaustively over small bounds (`specs/`): live read-only
-followers (`specs/follower`, backlog doc-8) and the guest Fxfs's DAX seal and
-relocation protocol (`specs/dax`, `guest/linux/fs/fxfs/dax.c`). Each rule of a
-protocol has a mutation, the spec with that rule removed, which TLC must find
-the violation of: `specs/dax`'s include dce4f14's bug, which TLC finds as the
-guest's seal_race did.
+followers (`specs/follower`, backlog doc-8) and the guest Fxfs's copy-on-write
+DAX (`specs/dax-cow`, backlog doc-13, `guest/linux/fs/fxfs/dax.c`). Each rule
+of a protocol has a mutation, the spec with that rule removed, which TLC must
+find the violation of: `specs/dax-cow`'s include a writeback leaving a fault's
+PTE writable, which guest/sim found (`guest/sim`).
 
 ```sh
 make check-tla             # a few minutes, on Java; fetches TLC once

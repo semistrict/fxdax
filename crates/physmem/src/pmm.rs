@@ -296,8 +296,8 @@ impl PmmNode {
     }
 
     /// fxdax: pins `count` pages against `arena` (`Arenas::pin`).
-    pub(crate) fn pin(&self, arena: ArenaId, count: usize, past_budget: bool) -> bool {
-        self.locked().pin(arena, count, past_budget)
+    pub(crate) fn pin(&self, arena: ArenaId, count: usize) -> bool {
+        self.locked().pin(arena, count)
     }
 
     /// fxdax: lets go of `count` pages pinned against `arena`.

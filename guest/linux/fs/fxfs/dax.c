@@ -5,35 +5,37 @@
  * maps a host's files (fs/fuse/dax.c), instead of the page cache: reads, writes and mappings of
  * files reach the extents the host shares, through the window.
  *
- * The window is split into ranges, each mapping a chunk of FXFS_DAX_SIZE bytes of one file: the
- * extents holding the chunk's data, page by page, read-only, or writably for open extents (doc-4),
- * and holes left out. A range is as large as its chunk of the file, in pages: a small file's takes
- * what it needs of the window, rounded up to a power of two, so that a file growing a page at a
- * time maps its data again only as often as it doubles. A write first makes room for its data in
- * open extents (fxfs_dax_map_write), which the range then maps writably, and stores through the
- * mapping; mappings of files map the window's pages. A file's page stays at one window address,
- * whatever extent holds it: a block that moves is mapped again there.
+ * The window is split into ranges, each mapping a chunk of FXFS_DAX_SIZE bytes of one file. A
+ * range is as large as its chunk of the file, in pages: a small file's takes what it needs of the
+ * window, rounded up to a power of two, so that a file growing a page at a time maps its data again
+ * only as often as it doubles.
  *
- * Not at once, for a write(2): a MAP of its own for each page took 200 us of a write's 230. Its bytes
- * go through the staging extent's region, already mapped, and the page lags: the window's page maps
- * what it held, until the first use of it maps the chunk's lagging pages together, from where Fxfs
- * has them (fxfs_dax_catch_up). Nothing but the write's copy uses the region's address: the kernel's
- * entries and the user's mappings know the page's alone.
+ * The window copies on write (backlog doc-13, TASK-164). It maps sealed extents, and zeros for
+ * holes and pages past a file's end, read-only, nothing open: every page of a range has a window
+ * page. A store to a page (a fault's, a write(2)'s copy) makes it private on the host, the VM's
+ * own, holding what it held, at the same address. A page's state is dax.c's alone, its range's
+ * `private` and `dirty` bits, each changed by one function, one transition each: the iomap that
+ * dirties a page has the host make it private first (PRIVATE), so that a page is dirty only if
+ * private, whenever its store lands, and joins its file's dirty set, with room reserved in Fxfs for
+ * its writeback, counted against the device's private_max (fxfs_dax_dirty). Writeback (fsync,
+ * sync, writepages, the budget) swaps the set out, the writeback set, write-protects what faults
+ * made writable by the page tables, and has Fxfs write the pages' bytes from the window to new
+ * extents, allocated then, committing after them, as the page cache's writeback does
+ * (fxfs_dax_write_back). Once the barrier after it has sealed those extents, a private page in
+ * neither set may be mapped back to its extent's page, the same bytes at the same address
+ * (fxfs_dax_rebind), under its file's semaphore held for writing, which sees no store to it under
+ * way. An UNMAP, or a truncate's MAP of zeros, ends what it covers (fxfs_dax_forget). The kernel's
+ * DAX entries' dirty tags and locks decide none of it: they are cleaned for the kernel's sake alone
+ * (fxfs_dax_clean_entries). Nothing moves, so nothing seals but what Fxfs commits; files created in
+ * a mount are page-cache inodes until read in again (fxfs_dax_set_inode).
  *
- * fxdax: a write(2)'s move commits after its bytes, as XFS's copy on write does
- * (fxfs_dax_begin_write, TASK-153.5): until then the file has its old blocks, and a write that
- * fails before its bytes are in, or stops short, leaves it as it was, rather than the new blocks'
- * zeros where its data was. It holds the file's semaphore from its iomap to its end, so that no
- * fault maps the file meanwhile, and commits out of the gate, as a commit may wait for a seal. A
- * fault's move commits first: its bytes come with the user's store, as late as it likes.
- *
- * A chunk whose data is one piece of an extent of at most a chunk's size, as small files' are,
- * sharing extents (the allocator's staging extents), is a slice of that extent's region instead:
- * the window's mapping of the whole extent, from its start, which all the files it holds share. So
- * a file written, or read, takes no request of its own, once its extent is mapped: a region of an
- * open extent is mapped writably, further than its blocks are handed out yet, doubling. A region
- * goes with its last slice. A write a slice can't take where it is, as its blocks move, drops the
- * slice (-EXDEV), and the chunk is mapped again.
+ * A chunk whose data is one piece of a sealed extent of at most a chunk's size, as small files'
+ * are, sharing extents (the allocator's staging extents), is a slice of that extent's region
+ * instead: the window's mapping of the whole extent, from its start, read-only, which all the files
+ * it holds share. So a file read takes no request of its own, once its extent is mapped. A region
+ * goes with its last slice. A write to a slice's chunk drops the slice (-EXDEV), and the chunk is
+ * mapped again as a range of its own: a store to the region's page would change it for every file
+ * sharing it.
  *
  * Ranges belong to a file (struct fxfs_dax_file, by inode number), not to an inode: they outlive
  * the inodes read in for the file, so that a file read again maps from the window what it mapped
@@ -41,40 +43,10 @@
  * go as its data does (unlinked, truncated); others are reclaimed, least recently used, when the
  * window runs out.
  *
- * Requests that seal open extents make their writable mappings read-only. Stores are made in the
- * device's gate (device.h), which such requests wait for; before them, the sealer makes user
- * mappings of writable pages read-only, so that a store faults, and forgets which pages are
- * writable, so that a write makes room again. Kernel copies through the window are made with page
- * faults disabled, as one waiting for the gate to open may hold what a seal needs.
- *
- * fxdax: with fxfs.dax_cow, and a device that copies on write (DAX_COW, backlog doc-13, TASK-164),
- * none of that writes. The window maps sealed extents, and zeros for holes and pages past a file's
- * end, read-only, nothing open: a store to a page (a fault's, a write(2)'s copy) makes it private
- * on the host, the VM's own, holding what it held, at the same address. A page's state is dax.c's
- * alone, its range's `private` and `dirty` bits, each changed by one function, one transition each:
- * the iomap that dirties a page has the host make it private first (PRIVATE), so that a page is
- * dirty only if private, whenever its store lands, and joins its file's dirty set, with room
- * reserved in Fxfs for its writeback, counted against the device's private_max
- * (fxfs_dax_cow_dirty). Writeback (fsync, sync, writepages, the budget) swaps the set out, the
- * writeback set, write-protects what faults made writable by the page tables, and has Fxfs write
- * the pages' bytes from the window to new extents, allocated then, committing after them, as the
- * page cache's writeback does (fxfs_dax_cow_write_back). Once the barrier after it has sealed
- * those extents, a private page in neither set may be mapped back to its extent's page, the same
- * bytes at the same address (fxfs_dax_cow_rebind), under its file's semaphore held for writing,
- * which sees no store to it under way. An UNMAP, or a truncate's MAP of zeros, ends what it covers
- * (fxfs_dax_cow_forget). The kernel's DAX entries' dirty tags and locks decide none of it: they
- * are cleaned for the kernel's sake alone (fxfs_dax_cow_clean_entries). Nothing moves, so nothing
- * seals but what Fxfs commits; files created in a mount are page-cache inodes until read in again
- * (fxfs_dax_set_inode). The gate, seals' write-protects, moves, staging and lagging pages are the
- * writable window's alone.
- *
  * Locks are taken in this order: an inode's lock (read and write); fxdax: a follower's fill
  * barrier (vfs.h), which a batch takes holding no inode's lock; an inode's invalidate_lock
- * (faults, truncation and reclaim); fxdax: copying on write, its file's writeback lock
- * (`wb_lock`); then its file's DAX semaphore, then the gate. Another inode's
- * are only tried, when reclaiming its ranges. Rust is called holding no gate. fxdax: a write(2)
- * moving its blocks holds its file's semaphore from its iomap to its end, across its copy, and
- * with it the Fxfs transaction of the move, which commits after the bytes (fxfs_dax_begin_write).
+ * (faults, truncation and reclaim); its file's writeback lock (`wb_lock`); then its file's DAX
+ * semaphore. Another inode's are only tried, when reclaiming its ranges.
  */
 
 #include <linux/dax.h>
@@ -96,7 +68,6 @@
 #include <linux/vmalloc.h>
 #include <linux/virtio_extent.h>
 #include <linux/wait.h>
-#include <linux/wait_bit.h>
 #include <linux/workqueue.h>
 #include <linux/writeback.h>
 
@@ -109,12 +80,10 @@
 #define FXFS_DAX_SIZE (1ULL << FXFS_DAX_SHIFT)
 #define FXFS_DAX_PAGES (FXFS_DAX_SIZE >> PAGE_SHIFT)
 /*
- * fxdax: copying on write, the most pages one write's iomap makes private: an eighth of the
- * device's private_max, if less (fxfs_dax_cow_iomap_write).
+ * fxdax: the most pages one write's iomap makes private: an eighth of the device's private_max, if
+ * less (fxfs_dax_iomap_write).
  */
-#define FXFS_DAX_COW_PAGES 64UL
-/* fxdax: a sustained, unsealed append stream reserves this many bytes at a time (TASK-92.58). */
-#define FXFS_DAX_APPEND_SIZE (16UL << PAGE_SHIFT)
+#define FXFS_DAX_PRIVATE_PAGES 64UL
 
 /*
  * The window's space is handed out from a pool, page by page, at this offset: the pool takes no
@@ -122,48 +91,14 @@
  */
 #define FXFS_DAX_POOL_BASE (1UL << 48)
 
-/*
- * The most pages a writable region's mapping grows by at once. fxdax: a MAP in a write holds the
- * inode's lock, which the file's other writes queue for (TASK-146.2).
- */
-static unsigned long fxfs_dax_region_step = 64;
-module_param_named(dax_region_step, fxfs_dax_region_step, ulong, 0644);
-MODULE_PARM_DESC(dax_region_step, "The most pages a writable region's mapping grows by at once");
 /* fxdax: how many waits of 10 ms with nothing let go of a range waits for room for (30 s). */
 #define FXFS_DAX_NO_ROOM_WAITS 3000
-/* fxdax: how many times a running write or fault has a chunk's range dropped before giving up. */
+/*
+ * fxdax: how many times a write or a fault has a slice dropped, its chunk mapped again as a range
+ * of its own, before giving up, as a reader may make it a slice again each time; and how many
+ * reads of a range copy nothing, memory there, before one gives up.
+ */
 #define FXFS_DAX_MAX_DROPS 256
-/*
- * The pages a writable region's first MAP maps: most of a millisecond each, which a small file's
- * write waits for, so more than a page, though they make the extent at least that long.
- */
-#define FXFS_DAX_REGION_FIRST 16UL
-
-/*
- * fxdax: fault injection: a fault's copy of the page it holds fails to allocate, as it may when
- * memory is short, and Fxfs keeps the page's contents through the device instead (keep, in
- * fxfs_dax_iomap_write; TASK-79.107, TASK-99).
- */
-static bool fxfs_dax_fail_held;
-module_param_named(dax_fail_held, fxfs_dax_fail_held, bool, 0644);
-MODULE_PARM_DESC(dax_fail_held, "Fail every DAX fault's held copy of its page (fault injection)");
-
-/*
- * fxdax: fault injection: a write fault that makes room for its page in Fxfs seals first, holding
- * the file's semaphore, as Fxfs's map_write may wait for compaction, whose seal waits for the
- * stores in the gate (TASK-79.12).
- */
-static bool fxfs_dax_fault_seals;
-module_param_named(dax_fault_seals, fxfs_dax_fault_seals, bool, 0644);
-MODULE_PARM_DESC(dax_fault_seals, "Seal in every DAX write fault making room, holding the file's semaphore (fault injection)");
-
-/*
- * fxdax: fault injection: the next this many write faults whose blocks Fxfs moved seal right after
- * the move, as a seal may come between it and the fault's mapping of the new block (TASK-79.11).
- */
-static unsigned int fxfs_dax_fault_seals_moved;
-module_param_named(dax_fault_seals_moved, fxfs_dax_fault_seals_moved, uint, 0644);
-MODULE_PARM_DESC(dax_fault_seals_moved, "Seal right after the next this many DAX write faults move their blocks (fault injection)");
 
 /* fxdax: whether a fault injection counting down in `left` injects once more, counting it. */
 static bool fxfs_dax_inject(unsigned int *left)
@@ -180,28 +115,18 @@ static bool fxfs_dax_inject(unsigned int *left)
 	return false;
 }
 
-/* fxdax: whether to seal after a fault's move, as fxfs.dax_fault_seals_moved asks, counting it. */
-static bool fxfs_dax_seal_moved(void)
-{
-	return fxfs_dax_inject(&fxfs_dax_fault_seals_moved);
-}
-
-/*
- * fxdax: fault injection: of the next this many writes whose blocks Fxfs moved into more than one
- * piece, the range maps the first piece alone, then fails as if the device's MAP of the next had,
- * the others mapping the blocks where they were, which Fxfs freed (TASK-79.106).
- */
+/* fxdax: fault injection: inodes fail to attach to their files, which leaves them in the page cache. */
 static bool fxfs_dax_fail_attach;
 module_param_named(dax_fail_attach, fxfs_dax_fail_attach, bool, 0644);
 MODULE_PARM_DESC(dax_fail_attach, "Fail inodes' attaching to their files, which leaves them in the page cache (fault injection)");
 
 /*
- * fxdax: copying on write, of the next this many maps of a range's pages in more than one piece,
- * the range maps the first piece alone, then fails (fxfs_dax_cow_map_all).
+ * fxdax: fault injection: of the next this many maps of a range's pages in more than one piece, the
+ * range maps the first piece alone, then fails (fxfs_dax_map_all).
  */
 static unsigned int fxfs_dax_fail_maps;
 module_param_named(dax_fail_maps, fxfs_dax_fail_maps, uint, 0644);
-MODULE_PARM_DESC(dax_fail_maps, "Fail the MAP of the second piece of the next this many writes whose blocks moved, or, copying on write, ranges' maps of more than one piece (fault injection)");
+MODULE_PARM_DESC(dax_fail_maps, "Fail ranges' maps of more than one piece after the first, the next this many (fault injection)");
 
 /*
  * fxdax: fault injection of a chunk's map failing part way (TASK-119.13): a MAP_MANY that maps its
@@ -230,104 +155,34 @@ module_param_named(dax_delay_seed, fxfs_dax_delay_seed, ulong, 0444);
 MODULE_PARM_DESC(dax_delay_seed, "The seed of fxfs.dax_delay_us's delays");
 
 /*
- * fxdax: diagnostic: whether a write(2)'s bytes go through the staging extent's region, its pages
- * lagging (fxfs_dax_catch_up), rather than each mapped in its range's own space: off, a failing
- * check says whether this path is the one losing data.
- */
-static bool fxfs_dax_writes_through = true;
-module_param_named(dax_writes_through, fxfs_dax_writes_through, bool, 0644);
-MODULE_PARM_DESC(dax_writes_through, "Write through staging extents' regions, mapping pages together later (diagnostic)");
-/*
- * fxdax: diagnostic (TASK-121): after each seal's sealer, checks that no range of any file has a
- * page writable still, which the sealer would have kept the user's mappings writable of, while
- * the device makes it read-only: the stores the window refused.
- */
-static bool fxfs_dax_check_seals;
-module_param_named(dax_check_seals, fxfs_dax_check_seals, bool, 0644);
-MODULE_PARM_DESC(dax_check_seals, "WARN of pages left writable by a seal (diagnostic)");
-/*
- * fxdax: diagnostic (TASK-121): a write moving a page of one page copies it, as the window maps
- * it, first, and WARNs if the page where it moved holds other data, but for the write's own bytes:
- * the copy the move kept of the page wasn't the page's.
- */
-static bool fxfs_dax_check_moves;
-
-/* Fxfs checks the blocks it keeps as pages move with it (fxfs_set_check_kept). */
-static int fxfs_dax_set_check_moves(const char *val, const struct kernel_param *kp)
-{
-	int err = param_set_bool(val, kp);
-
-	if (!err)
-		fxfs_set_check_kept(fxfs_dax_check_moves);
-	return err;
-}
-
-static const struct kernel_param_ops fxfs_dax_check_moves_ops = {
-	.set = fxfs_dax_set_check_moves,
-	.get = param_get_bool,
-};
-module_param_cb(dax_check_moves, &fxfs_dax_check_moves_ops, &fxfs_dax_check_moves, 0644);
-MODULE_PARM_DESC(dax_check_moves, "WARN of a page moved holding other data (diagnostic)");
-/*
- * fxdax: diagnostic (TASK-121): with the shadow, as each seal begins, the pages the guest mapped
- * writably since the seal before are read through the window and from the device, what the seal's
- * commit is about to write, and where they differ logged: stores the window took that the extent
- * doesn't hold (fxfs_dax_verify_writable). fxdax: it read the regions of staging extents sealed
- * after the seal too, which writes may have emptied and Fxfs freed meanwhile, the window mapping
- * zeros or nothing there: false findings, and accesses the host refused, which
- * stopped a VM (TASK-119.21).
- */
-static bool fxfs_dax_verify_seals;
-module_param_named(dax_verify_seals, fxfs_dax_verify_seals, bool, 0644);
-MODULE_PARM_DESC(dax_verify_seals, "Compare pages written since the last seal through the window with the device, as a seal begins, with dax_shadow (diagnostic)");
-
-/*
- * fxdax: a diagnostic found the window, or the guest's view of it, wrong: WARNs, once, so that a
- * test with diagnostics on fails, as the runner fails a test whose kernel WARNs (TASK-44.8), the
- * diagnostic's own lines saying what it found. They logged alone, and a test passed on them
- * (TASK-119.3).
- */
-static void fxfs_dax_diagnosed(void)
-{
-	WARN_ONCE(1, "fxfs: a DAX diagnostic found the window wrong\n");
-}
-
-/*
  * fxdax: pause points (TASK-119.9): a task reaching a step whose bit fxfs.dax_pause sets waits
  * there until the bit is cleared, the bit set in fxfs.dax_paused meanwhile: a check plays an
- * interleaving out exactly, where fxfs.dax_delay_us's random sleeps only make it likely.
+ * interleaving out exactly, where fxfs.dax_delay_us's random sleeps only make it likely. The bits
+ * of the steps writable DAX had (0 to 3, and 6) are unused, so that the others keep theirs.
  */
 enum fxfs_dax_step {
-	/* A fault's blocks moved, before it enters the gate. */
-	FXFS_DAX_STEP_MOVED,
-	/* A seal's sealer, the seal in progress. */
-	FXFS_DAX_STEP_SEALING,
-	/* A fault whose blocks moved found the gate shut by a seal. */
-	FXFS_DAX_STEP_SHUT,
-	/* A fault about to copy the page it holds. */
-	FXFS_DAX_STEP_HELD,
 	/* A read of a file, its iomap made, before the copy of what it maps, holding its range. */
-	FXFS_DAX_STEP_READ_MAPPED,
-	/* A write of a file, its iomap made, in the gate, before the copy into what it maps. */
-	FXFS_DAX_STEP_WRITE_MAPPED,
-	/* A fault whose blocks moved, the gate open but a seal ended since, before it gives up. */
-	FXFS_DAX_STEP_RESEALED,
+	FXFS_DAX_STEP_READ_MAPPED = 4,
 	/*
-	 * fxdax: copying on write, a rebind about to MAP a run of a file's clean private pages over,
-	 * holding the file's writeback lock and its semaphore for writing (fxfs_dax_cow_rebind).
+	 * A write(2) of a file, its iomap made, its pages dirty, before the copy into what it maps,
+	 * holding the file's semaphore shared (fxfs_dax_iomap_write).
 	 */
-	FXFS_DAX_STEP_REBIND,
+	FXFS_DAX_STEP_WRITE_MAPPED = 5,
 	/*
-	 * fxdax: copying on write, a writeback, its dirty set swapped out, before it reads the set's
-	 * pages from the window, holding their ranges and the file's writeback lock
-	 * (fxfs_dax_cow_write_back).
+	 * A rebind about to MAP a run of a file's clean private pages over, holding the file's
+	 * writeback lock and its semaphore for writing (fxfs_dax_rebind).
 	 */
-	FXFS_DAX_STEP_WRITEBACK,
+	FXFS_DAX_STEP_REBIND = 7,
 	/*
-	 * fxdax: copying on write, a write fault past its iomap_end, its PTE writable and the file's
-	 * semaphore let go, holding its page's DAX entry until it returns (fxfs_dax_cow_protect).
+	 * A writeback, its dirty set swapped out, before it reads the set's pages from the window,
+	 * holding their ranges and the file's writeback lock (fxfs_dax_write_back).
 	 */
-	FXFS_DAX_STEP_FAULTED,
+	FXFS_DAX_STEP_WRITEBACK = 8,
+	/*
+	 * A write fault past its iomap_end, its PTE writable and the file's semaphore let go, holding
+	 * its page's DAX entry until it returns (fxfs_dax_protect).
+	 */
+	FXFS_DAX_STEP_FAULTED = 9,
 };
 static unsigned long fxfs_dax_pause_steps;
 module_param_named(dax_pause, fxfs_dax_pause_steps, ulong, 0644);
@@ -340,24 +195,17 @@ static unsigned long fxfs_dax_pause_ino;
 module_param_named(dax_pause_ino, fxfs_dax_pause_ino, ulong, 0644);
 MODULE_PARM_DESC(dax_pause_ino, "The inode whose tasks wait at fxfs.dax_pause's steps of a file, or 0 for any (pause points)");
 
-/* fxdax: waits at `step` while fxfs.dax_pause asks. Where the caller may sleep. */
-static void fxfs_dax_pause(enum fxfs_dax_step step)
+/* fxdax: waits at `step`, of file `ino`, while fxfs.dax_pause asks, if fxfs.dax_pause_ino names it. */
+static void fxfs_dax_pause_file(enum fxfs_dax_step step, u64 ino)
 {
-	if (likely(!(READ_ONCE(fxfs_dax_pause_steps) & BIT(step))))
+	unsigned long only = READ_ONCE(fxfs_dax_pause_ino);
+
+	if (likely(!(READ_ONCE(fxfs_dax_pause_steps) & BIT(step))) || (only && only != ino))
 		return;
 	set_bit(step, &fxfs_dax_paused_steps);
 	while (READ_ONCE(fxfs_dax_pause_steps) & BIT(step))
 		msleep(1);
 	clear_bit(step, &fxfs_dax_paused_steps);
-}
-
-/* fxdax: waits at `step`, of file `ino`, as fxfs_dax_pause, if fxfs.dax_pause_ino names it. */
-static void fxfs_dax_pause_file(enum fxfs_dax_step step, u64 ino)
-{
-	unsigned long only = READ_ONCE(fxfs_dax_pause_ino);
-
-	if (!only || only == ino)
-		fxfs_dax_pause(step);
 }
 
 static DEFINE_SPINLOCK(fxfs_dax_delay_lock);
@@ -384,40 +232,23 @@ static void fxfs_dax_delay(void)
 	fsleep(chance / 4 % most + 1);
 }
 
-/* The window's mapping of a whole extent, from its start, which slices of files share. */
+/* The window's mapping of a whole sealed extent, from its start, which slices of files share. */
 struct fxfs_dax_region {
 	/* In the filesystem's regions, by extent. */
 	struct hlist_node node;
 	u64 branch;
 	u64 sequence;
 	u64 window_offset;
-	/* Its space in the window, in pages: as far as the extent reaches, or may yet. */
+	/* Its space in the window, in pages: as far as the extent reaches. */
 	unsigned long pages;
-	/* Its slices, and its growth. Guarded by the regions lock. */
+	/* Its slices. Guarded by the regions lock. */
 	unsigned int refs;
 	/* Guards `mapped`, and the region's MAPs. */
 	struct mutex lock;
 	/* How many of its pages are mapped, from its start. */
 	unsigned long mapped;
-	/*
-	 * Whether it maps its extent writably, while it is open: with the gate closed, a seal makes it
-	 * read-only. Set in the gate, under the regions lock.
-	 */
-	bool writable;
-	/* On the filesystem's writable regions, while it is. Guarded by the regions lock. */
-	struct list_head writable_list;
-	/*
-	 * Maps a writable region further ahead of the writes that will use it, so that they don't
-	 * wait for the MAP: while `growing`, it holds a reference to the region.
-	 */
-	struct fxfs_dax *dax;
-	struct work_struct grow;
-	atomic_t growing;
-	/* The furthest page writes reached, which the region grows ahead of. */
-	atomic_long_t reached;
 };
 
-/* A file's ranges of the window, which outlive its inodes. */
 /* A mounted volume's share of the window: the files of its inode numbers, which are its own. */
 struct fxfs_dax_volume {
 	struct fxfs *fs;
@@ -426,40 +257,32 @@ struct fxfs_dax_volume {
 	/* On the filesystem's volumes. Guarded by its files lock. */
 	struct list_head list;
 	/*
-	 * fxdax: copying on write, the page-cache inodes whose writeback wrote since the last seal
-	 * began, by inode number, each the seal count at which a barrier will have sealed it
-	 * (fxfs_dax_written, fxfs_dax_seal_target): read in before then, an inode is a page-cache
-	 * inode again, as the window would find its extents open, which it maps none of (doc-13,
-	 * TASK-164.3). The worker prunes it as seals come.
+	 * fxdax: the page-cache inodes whose writeback wrote since the last seal began, by inode
+	 * number, each the seal count at which a barrier will have sealed it (fxfs_dax_written,
+	 * fxfs_dax_seal_target): read in before then, an inode is a page-cache inode again, as the
+	 * window would find its extents open, which it maps none of (doc-13, TASK-164.3). The worker
+	 * prunes it as seals come.
 	 */
 	struct xarray unsealed;
 };
 
+/* A file's ranges of the window, which outlive its inodes. */
 struct fxfs_dax_file {
 	/* Its volume, until the volume goes (fxfs_dax_remove_volume). Guarded by the files lock. */
 	struct fxfs_dax_volume *volume;
 	u64 ino;
-	/* fxdax: the append stream since the last seal, under the inode's write lock (TASK-92.58). */
-	loff_t append_next;
-	u64 append_bytes, append_seals;
 	/* The filesystem's (`files`), and others' while they use it. */
 	refcount_t refs;
 	/* The inode read in for the file, if there is one. Guarded by the filesystem's files lock. */
 	struct inode *inode;
-	/* Guards `ranges`, and which pages of them are mapped. */
+	/* Guards `ranges`, and which pages of them are mapped, private and dirty. */
 	struct rw_semaphore sem;
 	/* The window's ranges mapping chunks of the file, by chunk. */
 	struct xarray ranges;
-	/* On the filesystem's list of files with writable window pages, if it has some. */
-	struct list_head writable;
 	/*
-	 * fxdax: the region the write under way copies through, which it holds a reference to, for its
-	 * iomap's length: under the inode's write lock.
-	 */
-	struct fxfs_dax_region *through;
-	/*
-	 * fxdax: a write a slice refused twice, under the inode's write lock: its chunk gets a range
-	 * of its own, so that no slice can refuse it again (xfstests generic/638).
+	 * fxdax: a write whose chunk a reader made a slice again, after the write had it dropped, under
+	 * the inode's write lock: its chunk gets a range of its own, so that no slice can refuse it
+	 * again (xfstests generic/638).
 	 */
 	bool no_slices;
 	/*
@@ -470,30 +293,12 @@ struct fxfs_dax_file {
 	 */
 	loff_t growing;
 	/*
-	 * fxdax: the move of the write(2) under way, from its iomap to its end, which commits it once
-	 * its bytes are in, holding the file's semaphore for writing all along (TASK-153.5).
-	 */
-	struct fxfs_dax_write *pending;
-	/*
-	 * fxdax: where the write under way's bytes stop being the file's, if an iomap's move was
-	 * dropped, or failed to commit, once dax_iomap_rw had counted them, and why (0 if none):
-	 * under the inode's write lock (fxfs_dax_committed).
-	 */
-	loff_t unwritten;
-	int unwritten_err;
-	/*
-	 * fxdax: the chunk whose slice the write under way left behind its blocks, which went through
-	 * another region, plus one, or 0: under the inode's write lock (fxfs_dax_follow_slice).
-	 */
-	pgoff_t slice_left;
-	/*
-	 * fxdax: copying on write (doc-13): held by the file's writeback, from before it swaps the
-	 * dirty set out until Fxfs has committed the pages it wrote, which rebinding and truncation
-	 * wait for: a writeback's pages, its writeback set, are those it holds it for. Taken before
-	 * the semaphore.
+	 * fxdax: held by the file's writeback, from before it swaps the dirty set out until Fxfs has
+	 * committed the pages it wrote, which rebinding and truncation wait for: a writeback's pages,
+	 * its writeback set, are those it holds it for. Taken before the semaphore (doc-13).
 	 */
 	struct mutex wb_lock;
-	/* Its ranges' pages in its dirty set, and counted private (fxfs_dax_cow_count). */
+	/* Its ranges' pages in its dirty set, and counted private (fxfs_dax_count). */
 	atomic_long_t dirty_pages, private_pages;
 };
 
@@ -509,70 +314,38 @@ struct fxfs_dax_range {
 	struct fxfs_dax_region *region;
 	/* Its size, in pages: its chunk's, up to the file's end when it was mapped. */
 	unsigned long pages;
-	/* The iomaps using it, which keep it. */
+	/* The iomaps and writebacks using it, which keep it. */
 	atomic_t users;
-	/*
-	 * fxdax: the faults past their iomaps of it, until their iomap_end, which may yet map its pages
-	 * holding no lock of the file's: a move of its blocks waits for them (fxfs_dax_iomap_write).
-	 * Raised under its file's semaphore.
-	 */
-	atomic_t faulting;
-	/* Its pages that map an extent, and those that map one writably. */
+	/* Its pages that map something: an extent's page, zeros, or a private page. */
 	unsigned long *mapped;
-	unsigned long *writable;
 	/*
-	 * fxdax: its pages whose blocks moved, written through a region, which the window doesn't map
-	 * where they are yet (fxfs_dax_catch_up): whatever `mapped` says, they hold nothing to read.
-	 * Under its file's semaphore.
-	 */
-	unsigned long *lagging;
-	/*
-	 * fxdax: if Fxfs moved blocks it maps where they were, which it failed to follow, what its
-	 * iomaps say: nothing uses it from then on, but to drop it (fxfs_dax_fall_behind). Set and read
-	 * under its file's semaphore.
-	 */
-	int behind;
-	/*
-	 * fxdax: copying on write (doc-13), each NULL otherwise: its pages the host holds private,
-	 * counted against private_max, from the PRIVATE of the iomap that dirtied them to the MAP or
-	 * UNMAP over them; in its file's dirty set, each private too (dirty implies private); and
-	 * mapped as zeros, not a file's data, as holes and pages past its end are. `private` and
-	 * `dirty` are set by fxfs_dax_cow_dirty alone, under its file's semaphore held shared
-	 * (atomically), and cleared under it held for writing: `dirty` by the writeback's swap
-	 * (fxfs_dax_cow_write_back), `private` by a rebind's MAP (fxfs_dax_cow_rebound), and both by
-	 * an UNMAP or a MAP of zeros (fxfs_dax_cow_forget).
+	 * fxdax: its pages the host holds private, counted against private_max, from the PRIVATE of
+	 * the iomap that dirtied them to the MAP or UNMAP over them; in its file's dirty set, each
+	 * private too (dirty implies private); and mapped as zeros, not a file's data, as holes and
+	 * pages past its end are. `private` and `dirty` are set by fxfs_dax_dirty alone, under its
+	 * file's semaphore held shared (atomically), and cleared under it held for writing: `dirty` by
+	 * the writeback's swap (fxfs_dax_write_back), `private` by a rebind's MAP (fxfs_dax_rebound),
+	 * and both by an UNMAP or a MAP of zeros (fxfs_dax_forget).
 	 */
 	unsigned long *private;
 	unsigned long *dirty;
 	unsigned long *zeros;
-	/*
-	 * Freed after a grace period: the sealer walks files' ranges without their semaphores,
-	 * which writers hold waiting for the gate the sealer keeps closed.
-	 */
+	/* Freed after a grace period: the stats walk files' ranges without their semaphores. */
 	struct rcu_head rcu;
 };
 
 /*
- * fxdax: why the window maps: a region as far as a write or a fault needs, ahead of the writes
- * in the background, the staging extent's spare, a piece in a range's own space (TASK-91.4), or
- * pages a seal sealed in a staging extent's region in their ranges' own space (TASK-91.10). The
- * first and the fourth are for the access at hand, which the device maps ahead of (MAP_AHEAD,
- * TASK-112.1).
+ * fxdax: why the window maps: a region as far as a slice needs, or pages in a range's own space
+ * (TASK-91.4), both for the access at hand, which the device maps ahead of (MAP_AHEAD, TASK-112.1).
  */
 enum fxfs_dax_why {
 	FXFS_DAX_REACH,
-	FXFS_DAX_GROW,
-	FXFS_DAX_RESTAGE,
 	FXFS_DAX_RANGE,
 	FXFS_DAX_WHYS,
 };
 
-static const char *const fxfs_dax_accesses[] = {
-	[FXFS_DAX_SEALED] = "sealed", [FXFS_DAX_OPEN] = "open", [FXFS_DAX_SHARED] = "shared",
-};
-
 static const char *const fxfs_dax_whys[FXFS_DAX_WHYS] = {
-	"reach", "grow", "restage", "range",
+	"reach", "range",
 };
 
 struct fxfs_dax {
@@ -590,16 +363,17 @@ struct fxfs_dax {
 	/* fxdax: the window's size, which no page's place is past (fxfs_dax_page_offset). */
 	u64 window_len;
 	/*
+	 * fxdax: whether the device follows a store another VM writes (FXFS_DEVICE_READ_ONLY): its
+	 * window takes no store, nor maps zeros, its holes left unmapped.
+	 */
+	bool read_only;
+	/*
 	 * fxdax: how often the window had no room for a range, or for a region in their own space,
 	 * how many ranges were reclaimed for room, and how many regions there are (TASK-91.7).
 	 */
 	atomic_long_t window_full, regions_full, reclaims, region_count;
 	/* fxdax: the window's MAPs, and the bytes they mapped, by why (`enum fxfs_dax_why`). */
 	atomic64_t maps[FXFS_DAX_WHYS], map_bytes[FXFS_DAX_WHYS];
-	/* fxdax: the writes that made room through a Fxfs transaction (TASK-92.28). */
-	atomic64_t map_writes;
-	/* fxdax: the writes through regions, the catch-ups after them, and the pages those mapped. */
-	atomic64_t writes_through, catch_ups, caught_up;
 	/* fxdax: the window's bytes kept from use as their UNMAP failed (TASK-44.22). */
 	atomic64_t lost_bytes;
 	/* fxdax: the faults whose iomap mapped a PMD's 2 MiB, its pages in a row (TASK-123). */
@@ -607,51 +381,18 @@ struct fxfs_dax {
 	/* Requested bytes of extent-result buffers, before allocator rounding. */
 	atomic64_t extent_alloc_bytes;
 	/*
-	 * fxdax: the writes that waited for their file's semaphore, and how long, in ns (TASK-91.16).
+	 * fxdax: where write(2)'s time goes (TASK-146.2): in all, waiting for the inode's lock, what
+	 * comes before its first iomap, faulting in its source, dax_iomap_rw (of which its iomaps'
+	 * begin and end, the rest being the copy, a store's faults on the window among it), dropping
+	 * a slice to try again, and what comes after.
 	 */
-	atomic64_t write_waits, write_wait_ns;
-	/*
-	 * fxdax: where write(2)'s time goes (TASK-146.2): in all, waiting for the inode's lock, for
-	 * the gate, in Fxfs making room, and mapping what moved.
-	 */
-	atomic64_t writes, write_ns, write_lock_ns, write_gate_ns, write_fxfs_ns, write_map_ns;
-	/*
-	 * fxdax: where else a write(2)'s time goes, so that write_ns adds up: what comes before its
-	 * first iomap, faulting in its source, dax_iomap_rw (of which its iomaps' begin and end, the
-	 * rest being the copy, a store's EPT faults on the window among it), dropping a range to try
-	 * again, and what comes after (TASK-146.2).
-	 */
-	atomic64_t write_setup_ns, write_fault_in_ns, write_rw_ns, write_begin_ns, write_end_ns;
-	atomic64_t write_retry_ns, write_tail_ns, write_prepare_ns, write_range_ns;
-	/* Of write_range_ns, what it spent waiting for the file's semaphore. */
-	atomic64_t write_range_wait_ns;
+	atomic64_t writes, write_ns, write_lock_ns, write_setup_ns, write_fault_in_ns, write_rw_ns;
+	atomic64_t write_begin_ns, write_end_ns, write_retry_ns, write_tail_ns;
 	struct fxfs_hist write_hist;
 	/* fxdax: what each fault of a mapping took (TASK-111.6). */
 	struct fxfs_hist fault_hist;
-	/*
-	 * fxdax: the writes whose blocks Fxfs moved before a seal kept them from the gate, which
-	 * their ranges map read-only where they moved to (fxfs_dax_map_moved, TASK-121).
-	 */
-	atomic64_t moved_unsealed;
-	/* fxdax: write(2)s' moves dropped, uncommitted: a seal, a failure, a copy cut short. */
-	atomic64_t writes_dropped;
-	/* fxdax: MAPs the host had no memory for, and seals they had made (fxfs_dax_make_memory). */
-	atomic64_t maps_refused;
-	atomic64_t memory_seals;
 	/* The volumes mounted, each with its files. */
 	struct list_head volumes;
-	/*
-	 * fxdax: with fxfs.dax_shadow, the window's pages as the guest mapped them last, by page:
-	 * the device's seal count then, shifted, and whether writably (TASK-121).
-	 */
-	struct xarray shadow;
-	/*
-	 * fxdax: with the shadow, what each window page maps: its extent's sequence, shifted 20 bits,
-	 * and its page in the extent (fxfs.dax_verify_seals, TASK-121).
-	 */
-	struct xarray shadow_extent;
-	/* fxdax: the branch of the extents the window maps, the device's (TASK-121). */
-	u64 shadow_branch;
 	/* Guards `volumes`, their files, and files' inodes. */
 	struct mutex files_lock;
 	/* Guards the used list. */
@@ -661,62 +402,48 @@ struct fxfs_dax {
 	/* Woken as ranges are freed, or their last users done, which counts in `released`. */
 	wait_queue_head_t wait;
 	atomic_long_t released;
-	/* Guards `writable`: the files with writable pages in the window. */
-	struct mutex writable_lock;
-	struct list_head writable;
 	/* The regions mapping extents, by extent. */
 	DECLARE_HASHTABLE(regions, 12);
-	/* Guards `regions`, regions' references, and the writable regions. */
+	/* Guards `regions`, and regions' references. */
 	spinlock_t regions_lock;
-	struct list_head writable_regions;
-	/* Where writable regions grow ahead of their writes (fxfs_dax_grow), and how many do. */
-	struct workqueue_struct *grow_wq;
-	atomic_t growing;
+	/* Where the budget's worker runs. */
+	struct workqueue_struct *wq;
 	/*
-	 * fxdax: the staging extent's region, mapped once a seal ends, before the next writes' blocks
-	 * move there (fxfs_dax_restage_work): a reference to it, until the next. Guarded by the regions
-	 * lock.
+	 * fxdax: the most pages the device holds private at once, which the guest keeps under, and the
+	 * pages counted private, and in files' dirty sets (fxfs_dax_count).
 	 */
-	struct fxfs_dax_region *spare;
-	struct work_struct restage;
-	/* Whether seals restage: until the filesystem unmounts. */
-	bool restaging;
-	/*
-	 * fxdax: whether the window copies on write (doc-13, fxfs.dax_cow): the device took DAX_COW.
-	 * Then the most pages it holds private at once, which the guest keeps under, and the pages
-	 * counted private, and in files' dirty sets (fxfs_dax_cow_count).
-	 */
-	bool cow;
 	long private_max;
-	/* fxdax: the most pages one write's iomap makes private: a slice of the budget. */
-	unsigned long cow_pages;
 	atomic_long_t private, dirty;
+	/* fxdax: the most pages one write's iomap makes private: a slice of the budget. */
+	unsigned long iomap_pages;
 	/*
-	 * fxdax: the budget's worker (fxfs_dax_cow_work): writes back dirty files, and rebinds clean
+	 * fxdax: the budget's worker (fxfs_dax_work): writes back dirty files, and rebinds clean
 	 * private pages, as the private pages near private_max, the window runs out of room, or a
-	 * test asks; its rounds, which those it throttles wait for (`cow_wait`); whether it is to
-	 * write back whatever is dirty (`cow_clean`) and rebind everything it can (`cow_rebind_all`),
-	 * as asked since its last round; and whether it stops, the filesystem unmounting or freezing,
-	 * and whether it is frozen, when it writes nothing.
+	 * test asks; its rounds, which those it throttles wait for (`budget_wait`); whether it is to
+	 * write back whatever is dirty (`clean`), as asked since its last round; the asks to rebind
+	 * everything it can (fxfs.dax_rebind_now), and those its rounds have served, which a check
+	 * waits for; and whether it stops, the filesystem unmounting or freezing, and whether it is
+	 * frozen, when it writes nothing.
 	 */
-	struct work_struct cow_work;
-	wait_queue_head_t cow_wait;
-	atomic64_t cow_rounds;
-	atomic_t cow_clean, cow_rebind_all;
-	bool cow_stopping, frozen;
+	struct work_struct work;
+	wait_queue_head_t budget_wait;
+	atomic64_t rounds;
+	atomic_t clean;
+	atomic64_t rebinds_asked, rebinds_done;
+	bool stopping, frozen;
 	/* fxdax: the page-cache inodes in the volumes' `unsealed`, which the worker prunes. */
 	atomic_long_t unsealed;
 	/*
 	 * fxdax: the writebacks, the pages they wrote, the pages rebound, the iomaps the budget held
-	 * up, the seals made for a range or an UNMAP, and the PRIVATE requests of the iomaps that
+	 * up, the seals made for a range or the budget, and the PRIVATE requests of the iomaps that
 	 * dirtied pages (TASK-164.2, TASK-164.9).
 	 */
-	atomic64_t cow_writebacks, cow_written, cow_rebound, cow_throttled, cow_seals, cow_privates;
+	atomic64_t writebacks, written, rebound, throttled, seals_made, privates;
 	/*
 	 * fxdax: MAPs the device refused as of an open extent (-EPERM), which Fxfs had taken for
 	 * sealed: none is meant to be asked for (doc-13's invariant 1), a tripwire the checks read.
 	 */
-	atomic64_t cow_open_maps;
+	atomic64_t open_maps;
 };
 
 /* Each of `dax`'s files, of each volume, with its files lock held. */
@@ -727,209 +454,32 @@ struct fxfs_dax {
 static const struct iomap_ops fxfs_dax_iomap_ops;
 
 /*
- * fxdax: diagnostic (TASK-121): the guest keeps a shadow of how it mapped each page of the window
- * (fxfs_dax_shadow_map), and WARNs of a write's iomap mapping a page writably that it mapped
- * read-only last, or before the last seal, which made it read-only: a store there the window
- * refuses.
+ * fxdax: the `count` maps `maps`, in as few requests as the device takes: or, with
+ * fxfs.dax_fail_map_many, the first alone, then a failure, as a device's MAP_MANY may.
  */
-static bool fxfs_dax_shadowed;
-module_param_named(dax_shadow, fxfs_dax_shadowed, bool, 0644);
-MODULE_PARM_DESC(dax_shadow, "WARN of writes to pages the window maps read-only (diagnostic)");
-
-/* fxdax: records `len` bytes at `window_offset` as mapped, writably if `writable`, or unmapped. */
-static void fxfs_dax_shadow_map(struct fxfs_dax *dax, u64 window_offset, u64 len, bool writable,
-				bool mapped, u64 sequence, u64 offset)
-{
-	u64 seals = fxfs_device_seals(dax->dev);
-	unsigned long page;
-
-	if (!READ_ONCE(fxfs_dax_shadowed))
-		return;
-	for (page = 0; mapped && page < len >> PAGE_SHIFT; page++)
-		xa_store(&dax->shadow_extent, (window_offset >> PAGE_SHIFT) + page,
-			 xa_mk_value((sequence << 20) | ((offset >> PAGE_SHIFT) + page)), GFP_NOFS);
-	for (page = window_offset >> PAGE_SHIFT; page < (window_offset + len) >> PAGE_SHIFT; page++) {
-		void *entry = xa_load(&dax->shadow, page);
-		u64 then = entry ? xa_to_value(entry) >> 1 : 0;
-
-		/*
-		 * A page mapped writably since the last seal, or before one begun and waiting, which
-		 * the user's mappings may map writably still: mapped read-only, or unmapped, their
-		 * stores are refused.
-		 */
-		if (mapped && !writable && entry && (xa_to_value(entry) & 1) &&
-		    (then == seals || ((seals & 1) && then == seals - 1))) {
-			pr_err("fxfs: window page %lx, mapped writably at seals %llu, mapped read-only at %llu by %pS\n",
-			       page, then, seals, __builtin_return_address(1));
-			fxfs_dax_diagnosed();
-		}
-		if (mapped)
-			xa_store(&dax->shadow, page, xa_mk_value((seals << 1) | writable), GFP_NOFS);
-		else
-			xa_erase(&dax->shadow, page);
-	}
-}
-
-static int fxfs_dax_device_map(struct fxfs_dax *dax, u64 branch, u64 sequence, u64 offset,
-			       u64 len, u64 window_offset, bool writable, bool ahead)
-{
-	int err = fxfs_device_map(dax->dev, branch, sequence, offset, len, window_offset, writable,
-				  ahead);
-
-	if (!err) {
-		WRITE_ONCE(dax->shadow_branch, branch);
-		fxfs_dax_shadow_map(dax, window_offset, len, writable, true, sequence, offset);
-	} else if (err == -ENOMEM) {
-		atomic64_inc(&dax->maps_refused);
-	}
-	return err;
-}
-
 static int fxfs_dax_device_map_many(struct fxfs_dax *dax, const struct fxfs_device_map *maps,
 				    unsigned int count)
 {
-	unsigned int i;
 	int err;
 
 	if (count > 1 && fxfs_dax_inject(&fxfs_dax_fail_map_many)) {
-		err = fxfs_dax_device_map(dax, maps[0].branch, maps[0].sequence, maps[0].offset,
-					  maps[0].len, maps[0].window_offset, maps[0].writable,
-					  maps[0].ahead);
+		err = fxfs_device_map_many(dax->dev, maps, 1);
 		return err ?: -EIO;
 	}
-	err = fxfs_device_map_many(dax->dev, maps, count);
-	if (err == -ENOMEM)
-		atomic64_inc(&dax->maps_refused);
-	for (i = 0; !err && i < count; i++)
-		fxfs_dax_shadow_map(dax, maps[i].window_offset, maps[i].len, maps[i].writable, true,
-				    maps[i].sequence, maps[i].offset);
-	return err;
+	return fxfs_device_map_many(dax->dev, maps, count);
 }
 
-static int fxfs_dax_device_unmap(struct fxfs_dax *dax, u64 window_offset, u64 len)
-{
-	int err = fxfs_device_unmap(dax->dev, window_offset, len);
-
-	fxfs_dax_shadow_map(dax, window_offset, len, false, false, 0, 0);
-	return err;
-}
-
-struct fxfs_dax_read_wait {
-	struct completion done;
-	int status;
-};
-
-static void fxfs_dax_read_done(void *arg, int status)
-{
-	struct fxfs_dax_read_wait *wait = arg;
-
-	wait->status = status;
-	complete(&wait->done);
-}
-
-/* fxdax: diagnostic: reads the page at `offset` in an extent from the device into `buf`. */
-static int fxfs_dax_read_device_page(struct fxfs_dax *dax, u64 branch, u64 sequence, u64 offset,
-				     void *buf)
-{
-	struct fxfs_device_op op = {
-		.type = VIRTIO_EXTENT_T_READ, .branch = branch, .sequence = sequence,
-		.offset = offset, .data = buf, .len = PAGE_SIZE,
-	};
-	struct fxfs_dax_read_wait wait;
-	int err;
-
-	init_completion(&wait.done);
-	err = fxfs_device_submit(dax->dev, &op, fxfs_dax_read_done, &wait);
-	if (err)
-		return err;
-	wait_for_completion(&wait.done);
-	return wait.status;
-}
-
-/*
- * fxdax: diagnostic: reads from the device the extent's page the shadow has the window map at
- * window page `page` into `buf`, and returns where it is, (sequence << 20) | page, or -ENOENT.
- */
-static s64 fxfs_dax_read_shadowed(struct fxfs_dax *dax, unsigned long page, void *buf)
-{
-	void *entry = xa_load(&dax->shadow_extent, page);
-	u64 where;
-	int err;
-
-	if (!entry)
-		return -ENOENT;
-	where = xa_to_value(entry);
-	err = fxfs_dax_read_device_page(dax, READ_ONCE(dax->shadow_branch), where >> 20,
-					(where & ((1 << 20) - 1)) << PAGE_SHIFT, buf);
-	return err ? err : where;
-}
-
-/*
- * fxdax: diagnostic: how many of the first `limit` bytes pages `a` and `b` differ in, but for the
- * `len` bytes from `skip`, and in `first`, the first, or PAGE_SIZE.
- */
-static size_t fxfs_dax_differ(const u8 *a, const u8 *b, size_t skip, size_t len, size_t *first,
-			      size_t limit)
-{
-	size_t i, differ = 0;
-
-	*first = PAGE_SIZE;
-	for (i = 0; i < limit; i++) {
-		if ((i < skip || i >= skip + len) && a[i] != b[i]) {
-			*first = min(*first, i);
-			differ++;
-		}
-	}
-	return differ;
-}
-
-/* Where `range`'s page `page` is in the window, whatever extent holds it. */
+/* Where `range`'s page `page` is in the window. */
 static u64 fxfs_dax_page_offset(const struct fxfs_dax_range *range, unsigned long page)
 {
 	return range->window_offset + ((u64)page << PAGE_SHIFT);
 }
 
-/*
- * fxdax: WARNs unless the window maps `range`'s `pages` pages from `page` writably, as the
- * shadow has them, since the last seal: a write's iomap that takes them for writable (TASK-121).
- */
-static void fxfs_dax_shadow_check(struct fxfs_dax *dax, struct fxfs_dax_range *range,
-				  unsigned long page, unsigned long pages, const char *why)
-{
-	u64 seals = fxfs_device_seals(dax->dev);
-	unsigned long i, at;
-	void *entry;
-
-	if (!READ_ONCE(fxfs_dax_shadowed))
-		return;
-	for (i = page; i < page + pages; i++) {
-		at = fxfs_dax_page_offset(range, i) >> PAGE_SHIFT;
-		entry = xa_load(&dax->shadow, at);
-		/*
-		 * Mapped writably since the last seal; or before one that has begun (odd), which waits
-		 * for this store in the gate to end before it seals.
-		 */
-		WARN(!entry || !(xa_to_value(entry) & 1) ||
-		     ((xa_to_value(entry) >> 1) != seals &&
-		      !((seals & 1) && (xa_to_value(entry) >> 1) == seals - 1)),
-		     "fxfs: %s: ino %llu chunk %lu page %lu writable at window page %lx, which the guest %s (seals %llu, then %lu, %s %llx)\n",
-		     why, range->file->ino, range->chunk, i, at,
-		     !entry ? "never mapped" : !(xa_to_value(entry) & 1) ? "mapped read-only last" :
-		     "mapped writably before a seal",
-		     seals, entry ? xa_to_value(entry) >> 1 : 0,
-		     range->region ? "a slice of region" : "in its own space at",
-		     range->region ? range->region->window_offset : range->window_offset);
-	}
-}
 static const struct address_space_operations fxfs_dax_aops;
 static const struct file_operations fxfs_dax_file_operations;
 static int fxfs_dax_break_layouts(struct inode *inode, loff_t start);
 static int fxfs_dax_zero_tail(struct inode *inode, loff_t old, loff_t size);
-static int fxfs_dax_reach(struct fxfs_dax *dax, struct fxfs_dax_region *region, unsigned long end);
 static void fxfs_dax_put_region(struct fxfs_dax *dax, struct fxfs_dax_region *region);
-static void fxfs_dax_grow(struct work_struct *work);
-static void fxfs_dax_restage_work(struct work_struct *work);
-static int fxfs_dax_cow_write_back(struct inode *inode);
 
 static struct fxfs_dax *fxfs_dax_of(struct inode *inode)
 {
@@ -965,76 +515,19 @@ static struct fxfs_dax_extent *fxfs_dax_alloc_extents(struct fxfs_dax *dax, size
 }
 
 /*
- * Has `range`'s `pages` pages from `page` writable, and its file among those with writable pages in
- * the window, which the sealer forgets: the one way a page gets to be, as a page writable of a file
- * not listed stays so past a seal, and a store to it is refused. fxdax: a slice refusing a write's
- * second piece had set the first's bits, and left before it listed the file (TASK-150.14). In the
- * gate.
- */
-static void fxfs_dax_set_writable(struct fxfs_dax *dax, struct fxfs_dax_range *range,
-				  unsigned long page, unsigned long pages)
-{
-	struct fxfs_dax_file *file = range->file;
-
-	fxfs_device_assert_in_gate(dax->dev);
-
-	mutex_lock(&dax->writable_lock);
-	if (list_empty(&file->writable))
-		list_add_tail(&file->writable, &dax->writable);
-	mutex_unlock(&dax->writable_lock);
-	bitmap_set(range->writable, page, pages);
-}
-
-/*
- * Takes the pieces `extents` of the chunk the slice `range` maps where it maps them, which a write
- * found open, writably, its region mapped as far as they reach; or -EXDEV if they are elsewhere, as
- * moved blocks are, which the slice can't map. In the gate, with the file's DAX semaphore held for
- * writing.
- */
-static int fxfs_dax_map_slice(struct fxfs_dax *dax, struct fxfs_dax_range *range,
-			      const struct fxfs_dax_extent *extents, ssize_t count)
-{
-	struct fxfs_dax_region *region = range->region;
-	loff_t start = fxfs_dax_chunk_start(range);
-	/* Where the slice starts in its extent. */
-	u64 base = range->window_offset - region->window_offset;
-	ssize_t i;
-	int err;
-
-	fxfs_device_assert_in_gate(dax->dev);
-	lockdep_assert_held_write(&range->file->sem);
-	for (i = 0; i < count; i++) {
-		const struct fxfs_dax_extent *e = &extents[i];
-		unsigned long page = (e->offset - start) >> PAGE_SHIFT;
-		unsigned long pages = e->len >> PAGE_SHIFT;
-		u64 end = base + (e->offset - start) + e->len;
-
-		if (e->branch != region->branch || e->sequence != region->sequence ||
-		    e->extent_offset != base + (e->offset - start) || page + pages > range->pages)
-			return -EXDEV;
-		err = fxfs_dax_reach(dax, region, end >> PAGE_SHIFT);
-		if (err)
-			return err;
-		fxfs_dax_set_writable(dax, range, page, pages);
-	}
-	return 0;
-}
-
-/*
  * fxdax: diagnostic (TASK-121): with fxfs.dax_trace set as the filesystem mounts, the latest of
  * what happened to files' pages, which writing `ino page` to fxfs.dax_trace_dump logs for that
- * page: where Fxfs had its blocks, where the window maps it, the iomaps of it, and the seals.
+ * page: where the window maps it, and the iomaps of it.
  */
 enum fxfs_dax_trace_kind {
 	FXFS_DAX_TRACE_MAPPED,
 	FXFS_DAX_TRACE_WRITE,
 	FXFS_DAX_TRACE_FAULT,
 	FXFS_DAX_TRACE_READ,
-	FXFS_DAX_TRACE_SEAL,
 };
 
 static const char *const fxfs_dax_trace_kinds[] = {
-	"mapped", "write iomap", "fault iomap", "read iomap", "seal",
+	"mapped", "write iomap", "fault iomap", "read iomap",
 };
 
 struct fxfs_dax_trace_event {
@@ -1099,8 +592,6 @@ static int fxfs_dax_trace_dump(const char *val, const struct kernel_param *kp)
 		       next - first);
 	for (at = first; at < next; at++) {
 		e = &events[at % FXFS_DAX_TRACE_EVENTS];
-		if (e->kind == FXFS_DAX_TRACE_SEAL)
-			continue;
 		if (by_window ? e->window != window : e->ino != ino || e->page != page)
 			continue;
 		pr_err("fxfs:   %llu ns seals %llu: ino %llu page %llu: %s window %llx extent %llu at %llx flags %x\n",
@@ -1117,250 +608,17 @@ module_param_cb(dax_trace_dump, &fxfs_dax_trace_dump_ops, NULL, 0200);
 MODULE_PARM_DESC(dax_trace_dump, "Log the traced events of `ino page`, or `pfn N` (hex), the window's page at page frame N (diagnostic)");
 
 /*
- * fxdax: makes `range`'s `pages` pages from `page` on not writable, a bit at a time, atomically:
- * outside the gate, as the sealer clears them all locklessly (fxfs_dax_seal), a word written back
- * whole could set again bits it had just cleared, and a store went to a sealed page (TASK-79.50).
+ * fxdax: whether `range` holds pages an UNMAP, or a MAP over them, would lose: those of its file's
+ * dirty set, which no extent holds yet. Under its file's semaphore.
  */
-static void fxfs_dax_clear_writable(struct fxfs_dax_range *range, unsigned long page,
-				    unsigned long pages)
+static bool fxfs_dax_range_dirty(const struct fxfs_dax_range *range)
 {
-	unsigned long i;
-
-	for (i = page; i < page + pages; i++)
-		clear_bit(i, range->writable);
-}
-
-/*
- * fxdax: has `range` map its `pages` pages from `page` on no longer, holes, in its own space. The
- * user's mappings of them go now (TASK-125): one left read what the window maps there no more, and
- * held the page's folio as its DAX entry went. With the file's DAX semaphore held for writing, and
- * its inode live: an iomap's.
- */
-static void fxfs_dax_unmap_pages(struct fxfs_dax_range *range, unsigned long page,
-				 unsigned long pages)
-{
-	struct inode *inode = READ_ONCE(range->file->inode);
-
-	if (inode)
-		unmap_mapping_pages(inode->i_mapping,
-				    (fxfs_dax_chunk_start(range) >> PAGE_SHIFT) + page, pages, false);
-	fxfs_dax_clear_writable(range, page, pages);
-	bitmap_clear(range->mapped, page, pages);
-	bitmap_clear(range->lagging, page, pages);
-}
-
-/* fxdax: `range`'s pages lagging still, for which Fxfs found no blocks, holes. */
-static void fxfs_dax_unlag_holes(struct fxfs_dax_range *range)
-{
-	unsigned long page;
-
-	for_each_set_bit(page, range->lagging, range->pages)
-		fxfs_dax_unmap_pages(range, page, 1);
-}
-
-/*
- * fxdax: has `range` say piece `e` of its chunk is mapped, as mapping it did (`err`): writably if
- * it is open. A sealed extent the device doesn't hold was never written: its blocks read as zeros,
- * a hole, as Fxfs reads them. (Blocks a write allocated before a seal sealed their extent
- * unwritten, which the write then moves.) The error, if any.
- */
-static int fxfs_dax_mapped(struct fxfs_dax *dax, struct fxfs_dax_range *range,
-			   const struct fxfs_dax_extent *e, int err)
-{
-	loff_t start = fxfs_dax_chunk_start(range);
-	unsigned long page = (e->offset - start) >> PAGE_SHIFT;
-	unsigned long pages = e->len >> PAGE_SHIFT;
-
-	if (err == -ENOENT && e->access != FXFS_DAX_OPEN)
-		return 0;
-	if (err) {
-		/* fxdax: the host short of memory is no failure yet (fxfs_dax_make_memory). */
-		if (err != -ENOMEM)
-			pr_warn("fxfs: mapping %llu bytes at %llu of extent %llx:%llu, %s, at %llu of the DAX window failed: %d\n",
-				e->len, e->extent_offset, e->branch, e->sequence,
-				e->access == FXFS_DAX_OPEN ? "writably" : "read-only",
-				range->window_offset + (e->offset - start), err);
-		return err;
-	}
-	bitmap_set(range->mapped, page, pages);
-	if (e->access == FXFS_DAX_OPEN)
-		fxfs_dax_set_writable(dax, range, page, pages);
-	else
-		fxfs_dax_clear_writable(range, page, pages);
-	{
-		unsigned long i;
-
-		for (i = 0; i < pages; i++)
-			fxfs_dax_trace(FXFS_DAX_TRACE_MAPPED, range->file->ino,
-				       (start >> PAGE_SHIFT) + page + i,
-				       fxfs_dax_page_offset(range, page + i), e->sequence,
-				       e->extent_offset + ((u64)i << PAGE_SHIFT),
-				       e->access == FXFS_DAX_OPEN);
-	}
-	return 0;
-}
-
-/* fxdax: maps piece `e` of `range`'s chunk in the range's own space, alone. */
-static int fxfs_dax_map_own(struct fxfs_dax *dax, struct fxfs_dax_range *range,
-			    const struct fxfs_dax_extent *e)
-{
-	loff_t start = fxfs_dax_chunk_start(range);
-	int err;
-
-	err = fxfs_dax_device_map(dax, e->branch, e->sequence, e->extent_offset, e->len,
-				  range->window_offset + (e->offset - start),
-				  e->access == FXFS_DAX_OPEN, true);
-	atomic64_inc(&dax->maps[FXFS_DAX_RANGE]);
-	atomic64_add(e->len, &dax->map_bytes[FXFS_DAX_RANGE]);
-	return err;
-}
-
-/*
- * Maps the pieces `extents` of the chunk `range` maps, at their places in it: open extents
- * writably, a range of its own in its own space, in a row with the rest of the chunk, which a fault
- * then maps at once (fxfs_dax_huge_fault, TASK-26.18.8). fxdax: those pieces all in one request, if
- * the device takes them so (fxfs_device_map_many, TASK-91.4), or one by one if that fails, to say
- * which did. In the gate if any is open, with the file's DAX semaphore held for writing.
- */
-static int fxfs_dax_map_extents(struct fxfs_dax *dax, struct fxfs_dax_range *range,
-				const struct fxfs_dax_extent *extents, ssize_t count)
-{
-	loff_t start = fxfs_dax_chunk_start(range);
-	struct fxfs_device_map *maps = NULL;
-	ssize_t i;
-	int err, many = -ENOMEM;
-
-	lockdep_assert_held_write(&range->file->sem);
-	if (range->region)
-		return fxfs_dax_map_slice(dax, range, extents, count);
-	if (count > 1)
-		maps = kmalloc_array(count, sizeof(*maps), GFP_NOFS);
-	if (maps) {
-		for (i = 0; i < count; i++) {
-			const struct fxfs_dax_extent *e = &extents[i];
-
-			maps[i] = (struct fxfs_device_map) {
-				.branch = e->branch, .sequence = e->sequence,
-				.offset = e->extent_offset, .len = e->len,
-				.window_offset = range->window_offset + (e->offset - start),
-				.writable = e->access == FXFS_DAX_OPEN,
-				.ahead = true,
-			};
-		}
-		many = fxfs_dax_device_map_many(dax, maps, count);
-		kfree(maps);
-		atomic64_add(count, &dax->maps[FXFS_DAX_RANGE]);
-	}
-	for (i = 0; i < count; i++) {
-		const struct fxfs_dax_extent *e = &extents[i];
-
-		if (!many) {
-			atomic64_add(e->len, &dax->map_bytes[FXFS_DAX_RANGE]);
-			err = 0;
-		} else {
-			/* If they failed, mapped again one by one, to say which, and why. */
-			err = i && fxfs_dax_inject(&fxfs_dax_fail_fallbacks) ? -EIO :
-			      fxfs_dax_map_own(dax, range, e);
-		}
-		err = fxfs_dax_mapped(dax, range, e, err);
-		if (err)
-			return err;
-	}
-	return 0;
-}
-
-/*
- * fxdax: has `range` map the pieces `extents`, where Fxfs just moved its pages, read-only in its
- * own space, outside the gate: a seal came between the move and the gate, which seals, or sealed,
- * their extents. The range mapped the pages where they were, whose blocks the move freed: once
- * their extent was freed, the device mapped zeros there, which reads returned, and a fault's copy
- * of its page took, losing the page's data (TASK-121). A slice maps its region's pages alone:
- * -EXDEV, for it to be dropped. With the file's DAX semaphore held for writing.
- */
-static int fxfs_dax_map_moved(struct fxfs_dax *dax, struct fxfs_dax_range *range,
-			      struct fxfs_dax_extent *extents, ssize_t count)
-{
-	ssize_t i;
-	int err;
-
-	lockdep_assert_held_write(&range->file->sem);
-	atomic64_inc(&dax->moved_unsealed);
-	if (range->region)
-		return -EXDEV;
-	for (i = 0; i < count; i++) {
-		struct fxfs_dax_extent *e = &extents[i];
-		unsigned long page = (e->offset - fxfs_dax_chunk_start(range)) >> PAGE_SHIFT;
-		unsigned long pages = e->len >> PAGE_SHIFT;
-
-		/*
-		 * A piece writable already stayed where it was, in its open extent, which the user's
-		 * mappings may map writably until the seal's sealer makes them read-only: mapped
-		 * read-only now, their stores would be refused. Those the sealer forgot are mapped.
-		 */
-		if (find_next_zero_bit(range->writable, page + pages, page) == page + pages)
-			continue;
-		e->access = FXFS_DAX_SEALED;
-		err = fxfs_dax_map_own(dax, range, e);
-		/*
-		 * An extent the device doesn't hold was never written: its blocks are zeros, a hole,
-		 * as fxfs_dax_mapped has them; moved from where they were, which faults replace, and
-		 * no longer writable, nor mapped, as the range had them (TASK-121).
-		 */
-		if (err == -ENOENT) {
-			fxfs_dax_unmap_pages(range, page, pages);
-			continue;
-		}
-		err = fxfs_dax_mapped(dax, range, e, err);
-		if (err)
-			return err;
-	}
-	return 0;
-}
-
-/*
- * fxdax: `range` didn't follow blocks Fxfs moved, as mapping them failed with `err`: it maps them
- * where they were, in an extent Fxfs frees, where the device puts zeros. Dropped, the chunk is mapped
- * from where Fxfs has them; until then nothing reads it. The kernel's mappings of it go, and the
- * iomaps of it say -ESTALE, whose callers drop it, each way in, whichever failed before: those
- * that gave up left it mapping the blocks, or never tried (TASK-150.13). Or -EXDEV of a slice
- * refusing blocks that moved, which is no failure, as often as writes move them: said to its
- * readers too, a fault that met two in a row, as -ESTALE, which it drops once, died of SIGBUS
- * (guest/sim, TASK-153.3). Returns what it says. With the file's DAX semaphore held for writing.
- */
-static int fxfs_dax_fall_behind(struct inode *inode, struct fxfs_dax_range *range, int err)
-{
-	lockdep_assert_held_write(&range->file->sem);
-
-	range->behind = err == -EXDEV ? err : -ESTALE;
-	unmap_mapping_pages(inode->i_mapping, fxfs_dax_chunk_start(range) >> PAGE_SHIFT, range->pages,
-			    false);
-	return range->behind;
-}
-
-/* Whether any of the pieces `extents` is of an open extent. */
-static bool fxfs_dax_any_open(const struct fxfs_dax_extent *extents, ssize_t count)
-{
-	ssize_t i;
-
-	for (i = 0; i < count; i++) {
-		if (extents[i].access == FXFS_DAX_OPEN)
-			return true;
-	}
-	return false;
-}
-
-/*
- * fxdax: copying on write (doc-13). Whether `range` holds pages an UNMAP, or a MAP over them, would
- * lose: those of its file's dirty set, which no extent holds yet. Under its file's semaphore.
- */
-static bool fxfs_dax_cow_busy(const struct fxfs_dax_range *range)
-{
-	return range->dirty && !bitmap_empty(range->dirty, range->pages);
+	return !bitmap_empty(range->dirty, range->pages);
 }
 
 /* fxdax: counts `private` more pages private, and `dirty` more dirty, of `file`'s, or fewer. */
-static void fxfs_dax_cow_count(struct fxfs_dax *dax, struct fxfs_dax_file *file, long private,
-			       long dirty)
+static void fxfs_dax_count(struct fxfs_dax *dax, struct fxfs_dax_file *file, long private,
+			   long dirty)
 {
 	if (private) {
 		atomic_long_add(private, &dax->private);
@@ -1372,49 +630,46 @@ static void fxfs_dax_cow_count(struct fxfs_dax *dax, struct fxfs_dax_file *file,
 	}
 	/* Room among the private pages, for what the budget holds up. */
 	if (private < 0)
-		wake_up_all(&dax->cow_wait);
+		wake_up_all(&dax->budget_wait);
 }
 
 /*
- * fxdax: has the budget's worker run a round (fxfs_dax_cow_work), which writes back and rebinds as
- * the private pages near private_max: and write back whatever is dirty, if `clean`, as a window
- * whose ranges are all dirty has nothing to reclaim. Not while it stops.
+ * fxdax: has the budget's worker run a round (fxfs_dax_work), which writes back and rebinds as the
+ * private pages near private_max: and write back whatever is dirty, if `clean`, as a window whose
+ * ranges are all dirty has nothing to reclaim. Not while it stops. It only queues the round.
  */
-static void fxfs_dax_cow_kick(struct fxfs_dax *dax, bool clean)
+static void fxfs_dax_kick(struct fxfs_dax *dax, bool clean)
 {
 	if (clean)
-		atomic_set(&dax->cow_clean, 1);
-	if (!READ_ONCE(dax->cow_stopping))
-		queue_work(dax->grow_wq, &dax->cow_work);
+		atomic_set(&dax->clean, 1);
+	if (!READ_ONCE(dax->stopping))
+		queue_work(dax->wq, &dax->work);
 }
 
 /*
- * fxdax: copying on write, the transition of pages whose data goes (doc-13): `range`'s `pages`
- * pages from `page` lose what copying on write had of them, as an UNMAP, or a truncate's MAP of
- * zeros over them, ends their private pages: their dirty pages' room released, dropped unwritten,
- * as a truncate's, or an unlinked file's are; and, once the host has freed them (`freed`), their
- * private pages no longer counted. Not before the request ends: the budget let another's store
- * have the room, which the host, holding the pages still, refused past private_max (guest/sim,
- * seed 90). Nor if it failed, the host holding them for good: counted still, lost, as the window's
- * pages an UNMAP failed for are (fxfs_dax_give_unmapped). With its file's semaphore held for
- * writing.
+ * fxdax: the transition of pages whose data goes (doc-13): `range`'s `pages` pages from `page`
+ * lose what the window had of them, as an UNMAP, or a truncate's MAP of zeros over them, ends their
+ * private pages: their dirty pages' room released, dropped unwritten, as a truncate's, or an
+ * unlinked file's are; and, once the host has freed them (`freed`), their private pages no longer
+ * counted. Not before the request ends: the budget let another's store have the room, which the
+ * host, holding the pages still, refused past private_max (guest/sim, seed 90). Nor if it failed,
+ * the host holding them for good: counted still, lost, as the window's pages an UNMAP failed for
+ * are (fxfs_dax_give_unmapped). With its file's semaphore held for writing.
  */
-static void fxfs_dax_cow_forget(struct fxfs_dax *dax, struct fxfs_dax_range *range,
-				unsigned long page, unsigned long pages, bool freed)
+static void fxfs_dax_forget(struct fxfs_dax *dax, struct fxfs_dax_range *range,
+			    unsigned long page, unsigned long pages, bool freed)
 {
 	struct fxfs_dax_file *file = range->file;
 	unsigned long i, end = min(page + pages, range->pages);
 	struct fxfs_dax_volume *volume;
 	long private = 0, dirty = 0;
 
-	if (!range->private)
-		return;
 	for (i = page; i < end; i++) {
 		private += test_and_clear_bit(i, range->private);
 		dirty += test_and_clear_bit(i, range->dirty);
 		clear_bit(i, range->zeros);
 	}
-	fxfs_dax_cow_count(dax, file, freed ? -private : 0, -dirty);
+	fxfs_dax_count(dax, file, freed ? -private : 0, -dirty);
 	if (!freed)
 		atomic_long_sub(private, &file->private_pages);
 	/* A volume going (fxfs_dax_remove_volume) was synced: nothing of it is dirty. */
@@ -1424,10 +679,11 @@ static void fxfs_dax_cow_forget(struct fxfs_dax *dax, struct fxfs_dax_range *ran
 }
 
 /* fxdax: has `range` say what `map`, of its pages, mapped: an extent's page, or zeros. */
-static void fxfs_dax_cow_mapped(struct fxfs_dax_range *range, const struct fxfs_device_map *map)
+static void fxfs_dax_mapped(struct fxfs_dax_range *range, const struct fxfs_device_map *map)
 {
 	unsigned long page = (map->window_offset - range->window_offset) >> PAGE_SHIFT;
 	unsigned long end = page + (map->len >> PAGE_SHIFT), i;
+	u64 first = fxfs_dax_chunk_start(range) >> PAGE_SHIFT;
 
 	bitmap_set(range->mapped, page, end - page);
 	for (i = page; i < end; i++) {
@@ -1435,18 +691,21 @@ static void fxfs_dax_cow_mapped(struct fxfs_dax_range *range, const struct fxfs_
 			set_bit(i, range->zeros);
 		else
 			clear_bit(i, range->zeros);
+		fxfs_dax_trace(FXFS_DAX_TRACE_MAPPED, range->file->ino, first + i,
+			       fxfs_dax_page_offset(range, i), map->zeros ? 0 : map->sequence,
+			       map->zeros ? 0 : map->offset + ((u64)(i - page) << PAGE_SHIFT),
+			       map->zeros);
 	}
 }
 
 /*
- * fxdax: copying on write, a rebind's transition (doc-13): `range`'s pages its `map` mapped, private
- * and clean, written back and sealed, are private no more, the host having freed them for the
- * extent's page, or zeros, holding the same bytes: how many. The one place a page stops being
- * private but an UNMAP or a truncate's MAP of zeros (fxfs_dax_cow_forget). With the file's
- * semaphore held for writing.
+ * fxdax: a rebind's transition (doc-13): `range`'s pages its `map` mapped, private and clean,
+ * written back and sealed, are private no more, the host having freed them for the extent's page,
+ * or zeros, holding the same bytes: how many. The one place a page stops being private but an
+ * UNMAP or a truncate's MAP of zeros (fxfs_dax_forget). With the file's semaphore held for writing.
  */
-static long fxfs_dax_cow_rebound(struct fxfs_dax *dax, struct fxfs_dax_range *range,
-				 const struct fxfs_device_map *map)
+static long fxfs_dax_rebound(struct fxfs_dax *dax, struct fxfs_dax_range *range,
+			     const struct fxfs_device_map *map)
 {
 	unsigned long page = (map->window_offset - range->window_offset) >> PAGE_SHIFT;
 	unsigned long end = page + (map->len >> PAGE_SHIFT), i;
@@ -1458,26 +717,26 @@ static long fxfs_dax_cow_rebound(struct fxfs_dax *dax, struct fxfs_dax_range *ra
 	for (i = page; i < end; i++)
 		rebound += test_and_clear_bit(i, range->private);
 	if (rebound)
-		fxfs_dax_cow_count(dax, range->file, -rebound, 0);
+		fxfs_dax_count(dax, range->file, -rebound, 0);
 	return rebound;
 }
 
 /*
- * fxdax: maps the `count` maps `maps`, of `range`'s pages, in as few requests as the device takes, or
- * one by one if that fails, to say which: a sealed extent the device doesn't hold (-ENOENT), never
- * written, as zeros, a hole, as Fxfs reads it. An extent open still (-EPERM: the window maps
- * none), Fxfs having taken it for sealed, as one minted before a seal and written after it is
- * (storage_device's OpenExtents), fails them, unless a `rebind`'s, when it is left as it is, its
- * pages private. Has the range say what it mapped (fxfs_dax_cow_mapped), and a rebind's pages
- * private no more (fxfs_dax_cow_rebound): how many that rebound, or the first error. A range's own
- * maps are of pages it maps nothing at, none private. With its file's semaphore held for writing.
- * fxdax: with fxfs.dax_fail_maps, a map of a range's pages (not a rebind's) of more than one piece
- * maps the first, then fails, as a device's MAP of the second may; with fxfs.dax_fail_fallbacks,
- * the MAPs one by one after a failed MAP_MANY fail past the first, as fxfs_dax_map_extents' do
- * (TASK-164.2).
+ * fxdax: maps the `count` maps `maps`, of `range`'s pages, in as few requests as the device takes,
+ * or one by one if that fails, to say which: a sealed extent the device doesn't hold (-ENOENT),
+ * never written, as zeros, a hole, as Fxfs reads it, or, a follower's, left unmapped, a hole. An
+ * extent open still (-EPERM: the window maps none), Fxfs having taken it for sealed, as one minted
+ * before a seal and written after it is (storage_device's OpenExtents), fails them, unless a
+ * `rebind`'s, when it is left as it is, its pages private. Has the range say what it mapped
+ * (fxfs_dax_mapped), and a rebind's pages private no more (fxfs_dax_rebound): how many that
+ * rebound, or the first error. A range's own maps are of pages it maps nothing at, none private.
+ * With its file's semaphore held for writing. fxdax: with fxfs.dax_fail_maps, a map of a range's
+ * pages (not a rebind's) of more than one piece maps the first, then fails, as a device's MAP of
+ * the second may; with fxfs.dax_fail_fallbacks, the MAPs one by one after a failed MAP_MANY fail
+ * past the first (TASK-164.2).
  */
-static long fxfs_dax_cow_map_all(struct fxfs_dax *dax, struct fxfs_dax_range *range,
-				 struct fxfs_device_map *maps, size_t count, bool rebind)
+static long fxfs_dax_map_all(struct fxfs_dax *dax, struct fxfs_dax_range *range,
+			     struct fxfs_device_map *maps, size_t count, bool rebind)
 {
 	long rebound = 0;
 	size_t i;
@@ -1486,7 +745,7 @@ static long fxfs_dax_cow_map_all(struct fxfs_dax *dax, struct fxfs_dax_range *ra
 	if (!count)
 		return 0;
 	if (count > 1 && !rebind && fxfs_dax_inject(&fxfs_dax_fail_maps)) {
-		rebound = fxfs_dax_cow_map_all(dax, range, maps, 1, rebind);
+		rebound = fxfs_dax_map_all(dax, range, maps, 1, rebind);
 		return rebound < 0 ? rebound : -EIO;
 	}
 	err = fxfs_dax_device_map_many(dax, maps, count);
@@ -1499,15 +758,17 @@ static long fxfs_dax_cow_map_all(struct fxfs_dax *dax, struct fxfs_dax_range *ra
 			int one = i && fxfs_dax_inject(&fxfs_dax_fail_fallbacks) ? -EIO :
 				  map->zeros ?
 				  fxfs_device_map_zeros(dax->dev, map->window_offset, map->len) :
-				  fxfs_dax_device_map(dax, map->branch, map->sequence, map->offset,
-						      map->len, map->window_offset, false, map->ahead);
+				  fxfs_device_map(dax->dev, map->branch, map->sequence, map->offset,
+						  map->len, map->window_offset, map->ahead);
 
+			if (one == -ENOENT && !map->zeros && dax->read_only)
+				continue;
 			if (one == -ENOENT && !map->zeros) {
 				map->zeros = true;
 				one = fxfs_device_map_zeros(dax->dev, map->window_offset, map->len);
 			}
 			if (one == -EPERM)
-				atomic64_inc(&dax->cow_open_maps);
+				atomic64_inc(&dax->open_maps);
 			if (one == -EPERM && rebind)
 				continue;
 			if (one) {
@@ -1518,9 +779,9 @@ static long fxfs_dax_cow_map_all(struct fxfs_dax *dax, struct fxfs_dax_range *ra
 			}
 		}
 		atomic64_add(map->len, &dax->map_bytes[FXFS_DAX_RANGE]);
-		fxfs_dax_cow_mapped(range, map);
+		fxfs_dax_mapped(range, map);
 		if (rebind)
-			rebound += fxfs_dax_cow_rebound(dax, range, map);
+			rebound += fxfs_dax_rebound(dax, range, map);
 	}
 	return rebound;
 }
@@ -1538,16 +799,16 @@ static bool fxfs_dax_any_unsealed(const struct fxfs_dax_extent *extents, ssize_t
 }
 
 /*
- * fxdax: copying on write, the pieces of file `ino`'s `len` bytes at `offset`, as fxfs_dax_extents,
- * once no seal was in progress as Fxfs looked: one says sealed from its beginning of what it has
- * yet to seal on the device (OpenExtents::seal, as fxfs-linux's Seal::begin_with has it), which
- * the host refuses to map (-EPERM). Looked up again after it, as long as seals keep coming:
- * mapping them, a range's map sealed and tried again, and a rebind left them private, in the
- * cow_ scenarios' schedules a mutant moved (cow_map_during_seal). A slice's region, likewise
- * (fxfs_dax_new_slice).
+ * fxdax: the pieces of file `ino`'s `len` bytes at `offset`, as fxfs_dax_extents, once no seal was
+ * in progress as Fxfs looked: one says sealed from its beginning of what it has yet to seal on the
+ * device (OpenExtents::seal, as fxfs-linux's Seal::begin_with has it), which the host refuses to
+ * map (-EPERM). Looked up again after it, as long as seals keep coming: mapping them, a range's
+ * map sealed and tried again, and a rebind left them private, in the cow_ scenarios' schedules a
+ * mutant moved (cow_map_during_seal). A slice's region, likewise (fxfs_dax_new_slice).
  */
-static ssize_t fxfs_dax_cow_extents(struct fxfs_dax *dax, struct fxfs *fs, u64 ino, loff_t offset,
-				    u64 len, struct fxfs_dax_extent *found, size_t capacity)
+static ssize_t fxfs_dax_sealed_extents(struct fxfs_dax *dax, struct fxfs *fs, u64 ino,
+				       loff_t offset, u64 len, struct fxfs_dax_extent *found,
+				       size_t capacity)
 {
 	ssize_t count;
 	u64 seals;
@@ -1562,17 +823,18 @@ static ssize_t fxfs_dax_cow_extents(struct fxfs_dax *dax, struct fxfs *fs, u64 i
 }
 
 /*
- * fxdax: maps `range`'s pages `first` to `last`, exclusive, read-only, as copying on write has them
- * (doc-13): each from the sealed extent holding the file's bytes there, or zeros where it has none,
- * holes and pages past its end, so that every page of a range has a window page, which the iomap
- * that dirties it makes private, and no write is new (IOMAP_F_NEW). Nothing maps an open extent: mapping the range
- * (`rebind` false), what is open is sealed first (fxfs_fsync), as a page-cache inode's writes read
- * in before their seal, or a growth's copy of the last block, may leave; rebinding private pages
- * (`rebind`), as their writeback left them, those whose extent is open stay private. How many
- * private pages it rebound, or a -errno. With the file's semaphore held for writing.
+ * fxdax: maps `range`'s pages `first` to `last`, exclusive, read-only (doc-13): each from the
+ * sealed extent holding the file's bytes there, or zeros where it has none, holes and pages past
+ * its end, so that every page of a range has a window page, which the iomap that dirties it makes
+ * private, and no write is new (IOMAP_F_NEW); a follower's window leaves those unmapped, holes, as
+ * it takes no store. Nothing maps an open extent: mapping the range (`rebind` false), what is open
+ * is sealed first (fxfs_fsync), as a page-cache inode's writes read in before their seal, or a
+ * growth's copy of the last block, may leave; rebinding private pages (`rebind`), as their
+ * writeback left them, those whose extent is open stay private. How many private pages it
+ * rebound, or a -errno. With the file's semaphore held for writing.
  */
-static long fxfs_dax_cow_map(struct fxfs_dax *dax, struct fxfs *fs, struct fxfs_dax_range *range,
-			     unsigned long first, unsigned long last, bool rebind)
+static long fxfs_dax_map_pages(struct fxfs_dax *dax, struct fxfs *fs, struct fxfs_dax_range *range,
+			       unsigned long first, unsigned long last, bool rebind)
 {
 	loff_t start = fxfs_dax_chunk_start(range);
 	size_t capacity = last - first, n;
@@ -1594,9 +856,9 @@ static long fxfs_dax_cow_map(struct fxfs_dax *dax, struct fxfs *fs, struct fxfs_
 	for (tries = 0;; tries++) {
 		unsigned long page = first;
 
-		count = fxfs_dax_cow_extents(dax, fs, range->file->ino,
-					     start + ((loff_t)first << PAGE_SHIFT),
-					     (u64)capacity << PAGE_SHIFT, found, capacity);
+		count = fxfs_dax_sealed_extents(dax, fs, range->file->ino,
+						start + ((loff_t)first << PAGE_SHIFT),
+						(u64)capacity << PAGE_SHIFT, found, capacity);
 		if (count < 0) {
 			ret = count;
 			goto out;
@@ -1612,7 +874,7 @@ static long fxfs_dax_cow_map(struct fxfs_dax *dax, struct fxfs *fs, struct fxfs_
 					from = clamp_t(unsigned long, (e->offset - start) >> PAGE_SHIFT,
 						       page, last);
 				/* The hole before it, or past the last: zeros. */
-				if (from > page)
+				if (from > page && !dax->read_only)
 					maps[n++] = (struct fxfs_device_map) {
 						.window_offset = fxfs_dax_page_offset(range, page),
 						.len = (u64)(from - page) << PAGE_SHIFT,
@@ -1633,7 +895,7 @@ static long fxfs_dax_cow_map(struct fxfs_dax *dax, struct fxfs *fs, struct fxfs_
 					};
 				page = max(page, to);
 			}
-			ret = fxfs_dax_cow_map_all(dax, range, maps, n, rebind);
+			ret = fxfs_dax_map_all(dax, range, maps, n, rebind);
 			if (ret != -EPERM || rebind)
 				break;
 		}
@@ -1647,7 +909,7 @@ static long fxfs_dax_cow_map(struct fxfs_dax *dax, struct fxfs *fs, struct fxfs_
 			ret = -EIO;
 			break;
 		}
-		atomic64_inc(&dax->cow_seals);
+		atomic64_inc(&dax->seals_made);
 		ret = fxfs_nofs(fxfs_fsync(fs));
 		if (ret)
 			break;
@@ -1656,197 +918,6 @@ out:
 	kfree(maps);
 	kvfree(found);
 	return ret;
-}
-
-/*
- * fxdax: takes the file's semaphore for reading; for a fault (`fault`), only if it is free, or
- * -EDEADLK. A fault holds its page's DAX entry, which a write(2) in the gate may wait for, while
- * the semaphore's holder, another fault, waits in Fxfs (fxfs_dax_map_write) for compaction, whose
- * seal waits for that write: the fault lets go of its entry and waits for the semaphore instead
- * (fxfs_dax_do_fault), then tries again (TASK-79.12).
- */
-static int fxfs_dax_down_read(struct fxfs_dax_file *file, bool fault)
-{
-	if (!fault) {
-		down_read(&file->sem);
-		return 0;
-	}
-	return down_read_trylock(&file->sem) ? 0 : -EDEADLK;
-}
-
-/* fxdax: as fxfs_dax_down_read, for writing. */
-static int fxfs_dax_down_write(struct fxfs_dax_file *file, bool fault)
-{
-	if (!fault) {
-		down_write(&file->sem);
-		return 0;
-	}
-	return down_write_trylock(&file->sem) ? 0 : -EDEADLK;
-}
-
-/*
- * Enters the device's gate (fxfs_device_store_begin), and returns the seal count: or, for a fault,
- * -EBUSY rather than wait for a seal in progress. A fault holds its page's DAX entry, which a
- * write(2) in the gate may wait for (dax_iomap_iter invalidating the page's entries), while the
- * seal waits for that write: the fault lets go of its entry and waits for the seal instead
- * (fxfs_dax_do_fault), then tries again.
- */
-static long fxfs_dax_store_begin(struct fxfs_dax *dax, bool fault)
-{
-	u64 seals;
-
-	if (!fault)
-		return fxfs_device_store_begin(dax->dev);
-	return fxfs_device_store_try_begin(dax->dev, &seals) ? (long)seals : -EBUSY;
-}
-
-/*
- * fxdax: of the pieces `found`, those of `range`'s lagging pages, into `lagging`, one for each run,
- * of which there are no more than it has pages: how many.
- */
-static ssize_t fxfs_dax_lagging_pieces(struct fxfs_dax_range *range,
-				       const struct fxfs_dax_extent *found, ssize_t count,
-				       struct fxfs_dax_extent *lagging)
-{
-	loff_t start = fxfs_dax_chunk_start(range);
-	ssize_t i, nr = 0;
-
-	for (i = 0; i < count; i++) {
-		const struct fxfs_dax_extent *e = &found[i];
-		unsigned long first = (e->offset - start) >> PAGE_SHIFT;
-		unsigned long end = first + (e->len >> PAGE_SHIFT), page, next;
-
-		end = min(end, range->pages);
-		for (page = find_next_bit(range->lagging, end, first); page < end;
-		     page = find_next_bit(range->lagging, end, next)) {
-			u64 skipped = (u64)(page - first) << PAGE_SHIFT;
-
-			next = find_next_zero_bit(range->lagging, end, page);
-			lagging[nr] = *e;
-			lagging[nr].offset += skipped;
-			lagging[nr].extent_offset += skipped;
-			lagging[nr++].len = (u64)(next - page) << PAGE_SHIFT;
-		}
-	}
-	return nr;
-}
-
-/*
- * Maps the extents holding `inode`'s bytes from `start` to `end` of the chunk `range` is for: all of
- * them, or fxdax: if `lagging`, its lagging pages' alone, which then lag no more. For a fault
- * (`fault`), -EBUSY rather than wait for a seal (fxfs_dax_store_begin).
- */
-static int fxfs_dax_map_found(struct fxfs_dax *dax, struct inode *inode,
-			      struct fxfs_dax_range *range, loff_t start, loff_t end, bool lagging,
-			      bool fault)
-{
-	size_t capacity = DIV_ROUND_UP(end - start, PAGE_SIZE);
-	/* The runs of lagging pages after what Fxfs found: each a page at the least. */
-	struct fxfs_dax_extent *found = fxfs_dax_alloc_extents(dax, lagging ? 2 * capacity : capacity);
-	struct fxfs_dax_extent *pieces;
-	ssize_t count, nr;
-	long gate;
-	u64 seals;
-	int err;
-
-	/* fxdax: not before, an offset from NULL (UBSan, guest/sim failures 408 at 1,000). */
-	if (!found)
-		return -ENOMEM;
-	pieces = lagging ? found + capacity : found;
-	for (;;) {
-		/*
-		 * Extents open as Rust finds them are still once the gate is entered, unless a seal
-		 * was in progress then, or began since.
-		 */
-		seals = fxfs_device_seals(dax->dev);
-		count = fxfs_nofs(fxfs_dax_extents(fxfs_vfs_fs(inode->i_sb), inode->i_ino, start, end - start,
-						   found, capacity));
-		fxfs_dax_delay();
-		if (count < 0) {
-			err = count;
-			break;
-		}
-		nr = lagging ? fxfs_dax_lagging_pieces(range, found, count, pieces) : count;
-		/* Sealed extents map read-only, whatever seals meanwhile, outside the gate. */
-		if (!fxfs_dax_any_open(pieces, nr)) {
-			err = fxfs_dax_map_extents(dax, range, pieces, nr);
-			break;
-		}
-		gate = fxfs_dax_store_begin(dax, fault);
-		if (gate < 0) {
-			err = gate;
-			break;
-		}
-		if (gate == seals) {
-			err = fxfs_dax_map_extents(dax, range, pieces, nr);
-			fxfs_device_store_end(dax->dev);
-			break;
-		}
-		fxfs_device_store_end(dax->dev);
-	}
-	if (!err && lagging) {
-		atomic64_inc(&dax->catch_ups);
-		atomic64_add(bitmap_weight(range->lagging, range->pages), &dax->caught_up);
-		/* Pages Fxfs has no blocks for are holes now, as a truncate or a punch left them. */
-		for (count = 0; count < nr; count++)
-			bitmap_clear(range->lagging, (pieces[count].offset - fxfs_dax_chunk_start(range)) >>
-				     PAGE_SHIFT, pieces[count].len >> PAGE_SHIFT);
-		fxfs_dax_unlag_holes(range);
-	}
-	kvfree(found);
-	return err;
-}
-
-/*
- * Maps the extents holding the data of the chunk `range` is for, which is unmapped, as far as the
- * file goes, or the write it is for grows it to (`grows`): for a fault (`fault`), -EBUSY rather
- * than wait for a seal (fxfs_dax_store_begin). fxdax: a write grows the file as it ends, its
- * bytes written (fxfs_dax_iomap_end, TASK-133), so `grows` maps the extents it reserved past it.
- */
-static int fxfs_dax_map_chunk(struct fxfs_dax *dax, struct inode *inode,
-			      struct fxfs_dax_range *range, loff_t grows, bool fault)
-{
-	loff_t start = fxfs_dax_chunk_start(range);
-	loff_t end = min_t(loff_t, start + ((loff_t)range->pages << PAGE_SHIFT),
-			   round_up(max(i_size_read(inode), grows), PAGE_SIZE));
-	long mapped;
-
-	/* fxdax: copying on write, every page of it, zeros past the file's end (doc-13). */
-	if (dax->cow) {
-		mapped = fxfs_dax_cow_map(dax, fxfs_vfs_fs(inode->i_sb), range, 0, range->pages,
-					  false);
-		return mapped < 0 ? mapped : 0;
-	}
-	if (end <= start)
-		return 0;
-	return fxfs_dax_map_found(dax, inode, range, start, end, false, fault);
-}
-
-/*
- * fxdax: maps `range`'s lagging pages where Fxfs has them, in as few requests as it can: every one
- * of the chunk, for the first use of any. With the file's DAX semaphore held for writing.
- */
-static int fxfs_dax_catch_up(struct fxfs_dax *dax, struct inode *inode,
-			     struct fxfs_dax_range *range, bool fault)
-{
-	loff_t start = fxfs_dax_chunk_start(range);
-	unsigned long first = find_first_bit(range->lagging, range->pages);
-	unsigned long last = find_last_bit(range->lagging, range->pages);
-
-	lockdep_assert_held_write(&range->file->sem);
-	if (first >= range->pages)
-		return 0;
-	return fxfs_dax_map_found(dax, inode, range, start + ((loff_t)first << PAGE_SHIFT),
-				  start + ((loff_t)(last + 1) << PAGE_SHIFT), true, fault);
-}
-
-/* fxdax: whether any of `range`'s `pages` pages from `page` lags, under its file's semaphore. */
-static bool fxfs_dax_lags(const struct fxfs_dax_range *range, unsigned long page,
-			  unsigned long pages)
-{
-	unsigned long end = min(page + pages, range->pages);
-
-	return find_next_bit(range->lagging, end, page) < end;
 }
 
 /* Wakes those waiting for a range to be freed, or for its last user to be done. */
@@ -1929,8 +1000,6 @@ static void fxfs_dax_give_unmapped(struct fxfs_dax *dax, u64 window_offset, unsi
 static void fxfs_dax_free_range_memory(struct fxfs_dax_range *range)
 {
 	bitmap_free(range->mapped);
-	bitmap_free(range->writable);
-	bitmap_free(range->lagging);
 	bitmap_free(range->private);
 	bitmap_free(range->dirty);
 	bitmap_free(range->zeros);
@@ -1939,10 +1008,10 @@ static void fxfs_dax_free_range_memory(struct fxfs_dax_range *range)
 
 /*
  * A new range of `pages` pages at `window_offset`, unmapped and on no list: of its own, or a slice
- * of `region`, whose slice it takes. fxdax: with copy on write's state, if `cow`.
+ * of `region`, whose slice it takes.
  */
 static struct fxfs_dax_range *fxfs_dax_new_range(u64 window_offset, unsigned long pages,
-						 struct fxfs_dax_region *region, bool cow)
+						 struct fxfs_dax_region *region)
 {
 	struct fxfs_dax_range *range;
 
@@ -1950,15 +1019,10 @@ static struct fxfs_dax_range *fxfs_dax_new_range(u64 window_offset, unsigned lon
 	if (!range)
 		return ERR_PTR(-ENOMEM);
 	range->mapped = bitmap_zalloc(pages, GFP_NOFS);
-	range->writable = bitmap_zalloc(pages, GFP_NOFS);
-	range->lagging = bitmap_zalloc(pages, GFP_NOFS);
-	if (cow) {
-		range->private = bitmap_zalloc(pages, GFP_NOFS);
-		range->dirty = bitmap_zalloc(pages, GFP_NOFS);
-		range->zeros = bitmap_zalloc(pages, GFP_NOFS);
-	}
-	if (!range->mapped || !range->writable || !range->lagging ||
-	    (cow && (!range->private || !range->dirty || !range->zeros))) {
+	range->private = bitmap_zalloc(pages, GFP_NOFS);
+	range->dirty = bitmap_zalloc(pages, GFP_NOFS);
+	range->zeros = bitmap_zalloc(pages, GFP_NOFS);
+	if (!range->mapped || !range->private || !range->dirty || !range->zeros) {
 		fxfs_dax_free_range_memory(range);
 		return ERR_PTR(-ENOMEM);
 	}
@@ -2002,10 +1066,9 @@ static void fxfs_dax_put_region(struct fxfs_dax *dax, struct fxfs_dax_region *re
 		return;
 	}
 	hash_del(&region->node);
-	list_del(&region->writable_list);
 	spin_unlock(&dax->regions_lock);
 	if (region->mapped)
-		err = fxfs_dax_device_unmap(dax, region->window_offset,
+		err = fxfs_device_unmap(dax->dev, region->window_offset,
 					(u64)region->mapped << PAGE_SHIFT);
 	fxfs_dax_give_unmapped(dax, region->window_offset, region->pages, err);
 	kfree(region);
@@ -2054,10 +1117,10 @@ static void fxfs_dax_unmap_range(struct fxfs_dax *dax, struct fxfs_dax_range *ra
 
 	xa_erase(&range->file->ranges, range->chunk);
 	if (!range->region && !bitmap_empty(range->mapped, range->pages))
-		err = fxfs_dax_device_unmap(dax, range->window_offset,
+		err = fxfs_device_unmap(dax->dev, range->window_offset,
 					(u64)range->pages << PAGE_SHIFT);
-	/* fxdax: copying on write, the UNMAP freed its private pages, unless it failed. */
-	fxfs_dax_cow_forget(dax, range, 0, range->pages, !err);
+	/* fxdax: the UNMAP freed its private pages, unless it failed. */
+	fxfs_dax_forget(dax, range, 0, range->pages, !err);
 	fxfs_dax_free_range(dax, range, err);
 }
 
@@ -2066,18 +1129,13 @@ static void fxfs_dax_put_file(struct fxfs_dax *dax, struct fxfs_dax_file *file)
 {
 	if (!refcount_dec_and_test(&file->refs))
 		return;
-	mutex_lock(&dax->writable_lock);
-	list_del_init(&file->writable);
-	mutex_unlock(&dax->writable_lock);
 	xa_destroy(&file->ranges);
 	kfree(file);
 }
 
 /*
  * Forgets `file` if no inode is read in for it and it has no ranges, with the files lock held:
- * returns whether it did, when the caller drops the filesystem's reference to it, once it has
- * unlocked the files lock (fxfs_dax_put_file takes the writable lock, which the sealer takes
- * before it).
+ * returns whether it did, when the caller drops the filesystem's reference to it.
  */
 static bool fxfs_dax_forget_file(struct fxfs_dax *dax, struct fxfs_dax_file *file)
 {
@@ -2090,17 +1148,17 @@ static bool fxfs_dax_forget_file(struct fxfs_dax *dax, struct fxfs_dax_file *fil
 }
 
 /*
- * fxdax: copying on write (doc-13), cleans the kernel's dirty tags of `inode`'s DAX entries from
- * `start` to `end`, for the kernel's sake alone: a write fault tags its page's entry, and nothing
- * of dax.c reads the tags, its dirty sets saying what to write back, and its writeback
- * write-protecting by the page tables (fxfs_dax_cow_write_back). But a mapping tagged dirty keeps
- * its inode dirty (__writeback_single_inode sets I_DIRTY_PAGES again), so the flusher's for ever
- * and off the inode LRU (writepages); and invalidate_inode_pages2_range refuses an entry tagged so
+ * fxdax: cleans the kernel's dirty tags of `inode`'s DAX entries from `start` to `end`, for the
+ * kernel's sake alone: a write fault tags its page's entry, and nothing of dax.c reads the tags,
+ * its dirty sets saying what to write back, and its writeback write-protecting by the page tables
+ * (fxfs_dax_write_back). But a mapping tagged dirty keeps its inode dirty
+ * (__writeback_single_inode sets I_DIRTY_PAGES again), so the flusher's for ever and off the inode
+ * LRU (writepages); and invalidate_inode_pages2_range refuses an entry tagged so
  * (fxfs_dax_release). An entry a fault holds, dax_writeback_one passes by, tagged still, which the
  * next writepages, or the range's release, with no fault under way, cleans. Its PTEs are
  * write-protected with it: a store after faults again, its page dirty already.
  */
-static int fxfs_dax_cow_clean_entries(struct inode *inode, loff_t start, loff_t end)
+static int fxfs_dax_clean_entries(struct inode *inode, loff_t start, loff_t end)
 {
 	struct writeback_control clean = {
 		.sync_mode = WB_SYNC_ALL,
@@ -2115,8 +1173,8 @@ static int fxfs_dax_cow_clean_entries(struct inode *inode, loff_t start, loff_t 
 /*
  * Removes the inode's mappings of the chunk `range` maps, and the DAX entries for them, unless
  * a page is in use (pinned): with the inode's invalidate_lock held for writing. fxdax: and its
- * file's semaphore. Copying on write, unless the range holds dirty pages, which its UNMAP would
- * lose: their writeback (fxfs_dax_cow_write_back) takes the semaphore.
+ * file's semaphore. Unless the range holds dirty pages, which its UNMAP would lose: their
+ * writeback (fxfs_dax_write_back) takes the semaphore.
  */
 static bool fxfs_dax_release(struct inode *inode, struct fxfs_dax_range *range)
 {
@@ -2124,19 +1182,18 @@ static bool fxfs_dax_release(struct inode *inode, struct fxfs_dax_range *range)
 	loff_t start = fxfs_dax_chunk_start(range);
 	loff_t end = start + ((loff_t)range->pages << PAGE_SHIFT) - 1;
 
-	if (range->dirty && fxfs_dax_cow_busy(range))
+	if (fxfs_dax_range_dirty(range))
 		return false;
 	if (dax_layout_busy_page_range(mapping, start, end))
 		return false;
 	/*
-	 * Dirty entries go only once written back, which only cleans them. fxdax: copying on write,
-	 * with no page dirty, an entry tagged dirty is the kernel's alone, cleaned here, which the
-	 * invalidate_lock makes whole, no fault holding an entry: one a writeback left tagged, a
-	 * fault holding it, failed the invalidation for ever, and a fault waiting for room reclaimed
-	 * the range again and again (guest/sim, seed 3390 at 1,000 operations).
+	 * Dirty entries go only once cleaned. fxdax: with no page dirty, an entry tagged dirty is the
+	 * kernel's alone, cleaned here, which the invalidate_lock makes whole, no fault holding an
+	 * entry: one a writeback left tagged, a fault holding it, failed the invalidation for ever,
+	 * and a fault waiting for room reclaimed the range again and again (guest/sim, seed 3390 at
+	 * 1,000 operations).
 	 */
-	if (range->dirty ? fxfs_dax_cow_clean_entries(inode, start, end) :
-			   filemap_fdatawrite_range(mapping, start, end))
+	if (fxfs_dax_clean_entries(inode, start, end))
 		return false;
 	return !invalidate_inode_pages2_range(mapping, start >> PAGE_SHIFT, end >> PAGE_SHIFT);
 }
@@ -2179,8 +1236,8 @@ static bool fxfs_dax_reclaim_range(struct fxfs_dax *dax, struct fxfs_dax_file *f
 	/* An inode read in since may map the range: it is reclaimed with it next time. */
 	if (!file->inode) {
 		range = xa_load(&file->ranges, chunk);
-		/* fxdax: copying on write, an evicted inode's were written back: kept if not. */
-		if (range && !atomic_read(&range->users) && !fxfs_dax_cow_busy(range)) {
+		/* fxdax: an evicted inode's were written back: kept if not. */
+		if (range && !atomic_read(&range->users) && !fxfs_dax_range_dirty(range)) {
 			fxfs_dax_unmap_range(dax, range);
 			reclaimed = true;
 		}
@@ -2240,12 +1297,8 @@ static long fxfs_dax_alloc_window(struct fxfs_dax *dax, unsigned long pages, boo
 			return window_offset;
 		if (fxfs_dax_reclaim(dax))
 			continue;
-		/*
-		 * fxdax: copying on write, ranges holding dirty pages aren't reclaimed: written back,
-		 * they are.
-		 */
-		if (dax->cow)
-			fxfs_dax_cow_kick(dax, true);
+		/* fxdax: ranges holding dirty pages aren't reclaimed: written back, they are. */
+		fxfs_dax_kick(dax, true);
 		if (nowait)
 			return -EAGAIN;
 		/* Ranges in use, or whose inodes are locked, free up soon. */
@@ -2270,7 +1323,7 @@ static struct fxfs_dax_range *fxfs_dax_alloc_range(struct fxfs_dax *dax, unsigne
 
 	if (window_offset < 0)
 		return ERR_PTR(window_offset);
-	range = fxfs_dax_new_range(window_offset, pages, NULL, dax->cow);
+	range = fxfs_dax_new_range(window_offset, pages, NULL);
 	if (IS_ERR(range))
 		fxfs_dax_give_window(dax, window_offset, pages);
 	return range;
@@ -2278,13 +1331,13 @@ static struct fxfs_dax_range *fxfs_dax_alloc_range(struct fxfs_dax *dax, unsigne
 
 /*
  * The region mapping extent `e`'s, made, unmapped, if there is none: with a reference more, the
- * caller's. -EAGAIN if the window has no room for it now, reclaiming ranges for it if `reclaim`
- * says and regions share the ranges' space: the caller holds a file's DAX semaphore, and can't
- * wait for room. fxdax: in a space of their own, regions reclaim nothing: their callers map what
- * they would have in ranges' (TASK-91.10).
+ * caller's. -EAGAIN if the window has no room for it now, reclaiming ranges for it if regions
+ * share the ranges' space: the caller holds a file's DAX semaphore, and can't wait for room.
+ * fxdax: in a space of their own, regions reclaim nothing: their callers map what they would have
+ * in ranges' (TASK-91.10).
  */
 static struct fxfs_dax_region *fxfs_dax_get_region(struct fxfs_dax *dax,
-						   const struct fxfs_dax_extent *e, bool reclaim)
+						   const struct fxfs_dax_extent *e)
 {
 	unsigned long pages = DIV_ROUND_UP(e->extent_size, PAGE_SIZE);
 	struct fxfs_dax_region *region, *new;
@@ -2305,8 +1358,7 @@ static struct fxfs_dax_region *fxfs_dax_get_region(struct fxfs_dax *dax,
 	if (dax->region_pool != dax->pool)
 		window_offset = fxfs_dax_take_region_window(dax, pages);
 	else
-		window_offset = reclaim ? fxfs_dax_alloc_window(dax, pages, false, true) :
-					  fxfs_dax_take_window(dax, pages, false);
+		window_offset = fxfs_dax_alloc_window(dax, pages, false, true);
 	if (window_offset < 0) {
 		kfree(new);
 		return ERR_PTR(window_offset);
@@ -2317,11 +1369,6 @@ static struct fxfs_dax_region *fxfs_dax_get_region(struct fxfs_dax *dax,
 	new->pages = pages;
 	new->refs = 1;
 	mutex_init(&new->lock);
-	INIT_LIST_HEAD(&new->writable_list);
-	new->dax = dax;
-	INIT_WORK(&new->grow, fxfs_dax_grow);
-	atomic_set(&new->growing, 0);
-	atomic_long_set(&new->reached, 0);
 	spin_lock(&dax->regions_lock);
 	/* Another may have made it meanwhile. */
 	region = fxfs_dax_find_region(dax, e->branch, e->sequence);
@@ -2340,69 +1387,17 @@ static struct fxfs_dax_region *fxfs_dax_get_region(struct fxfs_dax *dax,
 }
 
 /*
- * Makes `region`, of an open extent, writable. In the gate, where only writable regions are mapped
- * further. Nothing has mapped it read-only: what maps a region read-only is a slice of a sealed
- * extent, which is never open again, and shared blocks make no slice (fxfs_dax_new_slice). A
- * read-only MAP meeting a writer here was how the host came to refuse stores, and stop the VM, and
- * a slice to refuse a write for ever (TASK-99, TASK-140).
+ * Maps `region`'s sealed extent as far as page `end` at least, read-only: all of it if it can, so
+ * that the next slices need no MAP; else as far as `end`, as a sealed extent may end before what
+ * was allocated of it, past what was written. -EXDEV if the region's space doesn't reach so far.
  */
-static void fxfs_dax_region_open(struct fxfs_dax *dax, struct fxfs_dax_region *region)
-{
-	fxfs_device_assert_in_gate(dax->dev);
-	fxfs_dax_delay();
-	spin_lock(&dax->regions_lock);
-	if (!region->writable) {
-		WARN_ONCE(READ_ONCE(region->mapped),
-			  "fxfs: extent %llx:%llu open, its region mapped read-only\n",
-			  region->branch, region->sequence);
-		region->writable = true;
-		list_add_tail(&region->writable_list, &dax->writable_regions);
-	}
-	spin_unlock(&dax->regions_lock);
-}
-
-/*
- * fxdax: warns unless pages up to `to` of `region`, which a MAP mapped, are still the region's: a
- * seal shrinks a writable region to what it maps, giving the rest of its space back, which the
- * next region may take at once (fxfs_dax_restage_work); a MAP past that maps another region's
- * window pages, whose stores the host then refuses.
- */
-static void fxfs_dax_assert_mapped_within(struct fxfs_dax *dax, struct fxfs_dax_region *region,
-					  unsigned long to, bool writable, enum fxfs_dax_why why)
-{
-	unsigned long pages;
-
-	spin_lock(&dax->regions_lock);
-	pages = region->pages;
-	spin_unlock(&dax->regions_lock);
-	WARN(to > pages,
-	     "fxfs: mapped pages to %lu of extent %llx:%llu, %s (%s), past its region's %lu pages at %llu of the DAX window\n",
-	     to, region->branch, region->sequence, writable ? "writably" : "read-only",
-	     fxfs_dax_whys[why], pages, region->window_offset);
-}
-
-/*
- * Maps `region`'s extent as far as page `end` at least: read-only, all of it if it can, outside the
- * gate, whatever seals, a sealed extent's; or, in the gate, while the extent is open, writably, and
- * further, doubling what is mapped by up to fxfs_dax_region_step pages, from
- * FXFS_DAX_REGION_FIRST, so that the next blocks it hands out need no MAP. -EXDEV if the region's
- * space doesn't reach so far: sealed, it shrinks to what it mapped.
- *
- * A region is one or the other for as long as this looks. A piece found sealed was so after the
- * sealer forgot the region was writable, which nothing makes it again, as the extent is never open
- * again: no MAP of it outside the gate is writable, past a seal that gives the space past what is
- * mapped back (xfstests generic/013, TASK-44.21, TASK-150.11).
- */
-static int fxfs_dax_map_to(struct fxfs_dax *dax, struct fxfs_dax_region *region, unsigned long end,
-			   enum fxfs_dax_why why)
+static int fxfs_dax_region_map(struct fxfs_dax *dax, struct fxfs_dax_region *region,
+			       unsigned long end)
 {
 	unsigned long from, to;
-	/* A seal clears it with no store in progress, so during no writable MAP. */
-	bool writable;
 	int err = 0;
 
 	mutex_lock(&region->lock);
-	writable = READ_ONCE(region->writable);
 	from = region->mapped;
 	if (end <= from)
 		goto out;
@@ -2411,121 +1406,44 @@ static int fxfs_dax_map_to(struct fxfs_dax *dax, struct fxfs_dax_region *region,
 		goto out;
 	}
 	to = region->pages;
-	if (writable)
-		to = min(to, max(end, from + clamp(from, FXFS_DAX_REGION_FIRST,
-						   READ_ONCE(fxfs_dax_region_step))));
-	/* A read-only MAP may be a reader's, outside the gate; a writable one is in it. */
-	if (writable)
-		fxfs_device_assert_in_gate(dax->dev);
 	for (;;) {
-		err = fxfs_dax_device_map(dax, region->branch, region->sequence,
+		err = fxfs_device_map(dax->dev, region->branch, region->sequence,
 				      (u64)from << PAGE_SHIFT, (u64)(to - from) << PAGE_SHIFT,
-				      region->window_offset + ((u64)from << PAGE_SHIFT), writable,
-				      why == FXFS_DAX_REACH);
+				      region->window_offset + ((u64)from << PAGE_SHIFT), true);
 		fxfs_dax_delay();
-		atomic64_inc(&dax->maps[why]);
-		atomic64_add((u64)(to - from) << PAGE_SHIFT, &dax->map_bytes[why]);
-		/* A sealed extent may end before what was allocated of it: past what was written. */
-		if (!err || writable || to == end)
+		atomic64_inc(&dax->maps[FXFS_DAX_REACH]);
+		atomic64_add((u64)(to - from) << PAGE_SHIFT, &dax->map_bytes[FXFS_DAX_REACH]);
+		if (!err || to == end)
 			break;
 		to = end;
 	}
 	/*
 	 * An extent the device doesn't hold (-ENOENT) maps nothing: its callers read its pages as
 	 * holes, which the region must not claim as mapped, or a slice of it would hand the guest
-	 * window pages the host never mapped.
+	 * window pages the host never mapped. One open still (-EPERM), which Fxfs had taken for
+	 * sealed, is mapped by a range of its own, which seals it first.
 	 */
-	if (!err) {
-		fxfs_dax_assert_mapped_within(dax, region, to, writable, why);
+	if (!err)
 		WRITE_ONCE(region->mapped, to);
-	} else if (err != -ENOENT && err != -ENOMEM)
-		pr_warn("fxfs: mapping pages %lu to %lu of extent %llx:%llu, of %lu pages, %s, at %llu of the DAX window failed: %d\n",
+	else if (err == -EPERM)
+		atomic64_inc(&dax->open_maps);
+	else if (err != -ENOENT)
+		pr_warn("fxfs: mapping pages %lu to %lu of extent %llx:%llu, of %lu pages, at %llu of the DAX window failed: %d\n",
 			from, to, region->branch, region->sequence, region->pages,
-			writable ? "writably" : "read-only", region->window_offset, err);
+			region->window_offset, err);
 out:
 	mutex_unlock(&region->lock);
 	return err;
 }
 
 /*
- * Has `region`'s writable extent mapped a step further in the background, unless it is mapped
- * far enough ahead of the writes already: once they reach the second half of what it maps, the
- * next step, so that they rarely wait for a MAP (a MAP of a step takes most of a millisecond).
- */
-static void fxfs_dax_grow_ahead(struct fxfs_dax *dax, struct fxfs_dax_region *region)
-{
-	unsigned long mapped = READ_ONCE(region->mapped);
-	unsigned long reached = atomic_long_read(&region->reached);
-
-	/* Outside the gate, a hint: a seal may shrink it meanwhile, which fxfs_dax_grow sees. */
-	if (!READ_ONCE(region->writable) || mapped >= READ_ONCE(region->pages) ||
-	    reached + clamp(mapped, FXFS_DAX_REGION_FIRST, READ_ONCE(fxfs_dax_region_step)) / 2 <=
-	    mapped)
-		return;
-	if (atomic_cmpxchg(&region->growing, 0, 1))
-		return;
-	spin_lock(&dax->regions_lock);
-	region->refs++;
-	spin_unlock(&dax->regions_lock);
-	atomic_inc(&dax->growing);
-	queue_work(dax->grow_wq, &region->grow);
-}
-
-/*
- * fxdax: maps `region`'s writable extent one step further, in the gate (unless it is sealed by
- * then), and again if the writes went on meanwhile; and drops the reference its queuing took.
- */
-static void fxfs_dax_grow(struct work_struct *work)
-{
-	struct fxfs_dax_region *region = container_of(work, struct fxfs_dax_region, grow);
-	struct fxfs_dax *dax = region->dax;
-	unsigned long mapped;
-	int err = 0;
-
-	fxfs_device_store_begin(dax->dev);
-	/* In the gate, no seal makes it read-only, or shrinks it. */
-	mapped = READ_ONCE(region->mapped);
-	if (READ_ONCE(region->writable) && mapped < region->pages)
-		err = fxfs_dax_map_to(dax, region, mapped + 1, FXFS_DAX_GROW);
-	fxfs_device_store_end(dax->dev);
-	atomic_set(&region->growing, 0);
-	/* fxdax: not after a failure: a MAP that keeps failing went round here until a seal. */
-	if (!err)
-		fxfs_dax_grow_ahead(dax, region);
-	fxfs_dax_put_region(dax, region);
-	atomic_dec(&dax->growing);
-}
-
-/*
- * Maps `region`'s extent as far as page `end` at least (fxfs_dax_map_to), in the gate unless it is
- * sealed; and a writable region's further, in the background, ahead of the writes
- * (fxfs_dax_grow_ahead).
- */
-static int fxfs_dax_reach(struct fxfs_dax *dax, struct fxfs_dax_region *region, unsigned long end)
-{
-	unsigned long reached;
-	int err;
-
-	err = fxfs_dax_map_to(dax, region, end, FXFS_DAX_REACH);
-	if (err || !READ_ONCE(region->writable))
-		return err;
-	reached = atomic_long_read(&region->reached);
-	while (reached < end && !atomic_long_try_cmpxchg(&region->reached, &reached, end))
-		;
-	fxfs_dax_grow_ahead(dax, region);
-	return 0;
-}
-
-/*
  * Makes `inode`'s chunk `chunk` a slice of its extent's region, if its data in the file's `size`
- * bytes is one piece of an extent the window maps whole, and returns it, kept, in its file's
- * ranges: writable if the extent is open. NULL if it isn't such a piece, its blocks are shared with
- * a clone while the extent is open, which a region of that extent can't map read-only for a writer
- * to find, or the window has no room for its region now; for a fault (`fault`), -EBUSY rather than
- * wait for a seal. With its file's DAX semaphore held for writing.
+ * bytes is one piece of a sealed extent the window maps whole, and returns it, kept, in its file's
+ * ranges. NULL if it isn't such a piece, or the window has no room for its region now. With its
+ * file's DAX semaphore held for writing.
  */
 static struct fxfs_dax_range *fxfs_dax_new_slice(struct fxfs_dax *dax, struct inode *inode,
-						 pgoff_t chunk, loff_t size, bool fault)
+						 pgoff_t chunk, loff_t size)
 {
 	struct fxfs_dax_file *file = fxfs_dax_file(inode);
 	loff_t start = (loff_t)chunk << FXFS_DAX_SHIFT;
@@ -2535,8 +1453,6 @@ static struct fxfs_dax_range *fxfs_dax_new_slice(struct fxfs_dax *dax, struct in
 	struct fxfs_dax_extent e;
 	unsigned long first, pages;
 	ssize_t count;
-	long gate;
-	u64 seals;
 	int err;
 
 	lockdep_assert_held_write(&file->sem);
@@ -2544,61 +1460,28 @@ static struct fxfs_dax_range *fxfs_dax_new_slice(struct fxfs_dax *dax, struct in
 	if (end <= start || READ_ONCE(file->no_slices))
 		return NULL;
 	pages = (end - start) >> PAGE_SHIFT;
-	for (;;) {
-		seals = fxfs_device_seals(dax->dev);
-		count = fxfs_nofs(fxfs_dax_extents(fxfs_vfs_fs(inode->i_sb), inode->i_ino, start, end - start, &e, 1));
-		fxfs_dax_delay();
-		/* Holes, or more than one piece. */
-		if (count == 0 || count == -E2BIG)
-			return NULL;
-		if (count < 0)
-			return ERR_PTR(count);
-		if (e.offset != start || e.len != end - start || !e.extent_size ||
-		    e.extent_size > FXFS_DAX_SIZE || !PAGE_ALIGNED(e.extent_offset) ||
-		    e.access == FXFS_DAX_SHARED)
-			return NULL;
-		/*
-		 * fxdax: copying on write, nothing maps an open extent: a range of its own maps the
-		 * chunk, sealing it first (fxfs_dax_cow_map).
-		 */
-		if (dax->cow && e.access != FXFS_DAX_SEALED)
-			return NULL;
-		/*
-		 * fxdax: nor what a seal in progress has yet to seal, which Fxfs says sealed from its
-		 * beginning (fxfs_dax_cow_extents): looked up again after it, or, for a fault, -EBUSY,
-		 * which waits for it without its DAX entry.
-		 */
-		if (dax->cow && ((seals & 1) || fxfs_device_seals(dax->dev) != seals)) {
-			if (fault)
-				return ERR_PTR(-EBUSY);
-			fxfs_device_wait_unsealed(dax->dev);
-			continue;
-		}
-		region = fxfs_dax_get_region(dax, &e, true);
-		if (IS_ERR(region))
-			return PTR_ERR(region) == -EAGAIN ? NULL : ERR_CAST(region);
-		first = e.extent_offset >> PAGE_SHIFT;
-		/* A sealed extent maps read-only, whatever seals meanwhile, outside the gate. */
-		if (e.access != FXFS_DAX_OPEN)
-			break;
-		/* As in fxfs_dax_map_chunk: open still, unless a seal was in progress, or began since. */
-		gate = fxfs_dax_store_begin(dax, fault);
-		if (gate < 0) {
-			fxfs_dax_put_region(dax, region);
-			return ERR_PTR(gate);
-		}
-		if (gate == seals) {
-			fxfs_dax_region_open(dax, region);
-			break;
-		}
-		fxfs_device_store_end(dax->dev);
-		fxfs_dax_put_region(dax, region);
-	}
-	err = fxfs_dax_reach(dax, region, first + pages);
+	count = fxfs_dax_sealed_extents(dax, fxfs_vfs_fs(inode->i_sb), inode->i_ino, start,
+					end - start, &e, 1);
+	fxfs_dax_delay();
+	/* Holes, or more than one piece. */
+	if (count == 0 || count == -E2BIG)
+		return NULL;
+	if (count < 0)
+		return ERR_PTR(count);
+	/* Nothing maps an open extent: a range of its own maps the chunk, sealing it first. */
+	if (e.offset != start || e.len != end - start || !e.extent_size ||
+	    e.extent_size > FXFS_DAX_SIZE || !PAGE_ALIGNED(e.extent_offset) ||
+	    e.access != FXFS_DAX_SEALED)
+		return NULL;
+	region = fxfs_dax_get_region(dax, &e);
+	if (IS_ERR(region))
+		return PTR_ERR(region) == -EAGAIN ? NULL : ERR_CAST(region);
+	first = e.extent_offset >> PAGE_SHIFT;
+	err = fxfs_dax_region_map(dax, region, first + pages);
 	if (err)
 		goto out;
 	range = fxfs_dax_new_range(region->window_offset + ((u64)first << PAGE_SHIFT), pages,
-				   region, dax->cow);
+				   region);
 	if (IS_ERR(range)) {
 		err = PTR_ERR(range);
 		goto out;
@@ -2610,28 +1493,20 @@ static struct fxfs_dax_range *fxfs_dax_new_slice(struct fxfs_dax *dax, struct in
 	err = xa_err(xa_store(&file->ranges, chunk, range, GFP_NOFS));
 	if (err) {
 		/* Its slice goes with it. */
-		region = NULL;
 		fxfs_dax_free_range(dax, range, 0);
-		goto out;
+		return ERR_PTR(err);
 	}
-	if (e.access == FXFS_DAX_OPEN)
-		fxfs_dax_set_writable(dax, range, 0, pages);
 	spin_lock(&dax->lock);
 	list_add_tail(&range->list, &dax->used);
 	spin_unlock(&dax->lock);
-	if (e.access == FXFS_DAX_OPEN)
-		fxfs_device_store_end(dax->dev);
 	return range;
 out:
-	if (e.access == FXFS_DAX_OPEN)
-		fxfs_device_store_end(dax->dev);
-	if (region)
-		fxfs_dax_put_region(dax, region);
+	fxfs_dax_put_region(dax, region);
 	/*
-	 * Its region can't reach it, or its extent was never written: a range of its own maps it,
-	 * or the holes it is.
+	 * Its region can't reach it, its extent was never written, or is open still: a range of its
+	 * own maps it, or the holes it is.
 	 */
-	return err == -EXDEV || err == -ENOENT || (dax->cow && err == -EPERM) ? NULL : ERR_PTR(err);
+	return err == -EXDEV || err == -ENOENT || err == -EPERM ? NULL : ERR_PTR(err);
 }
 
 /*
@@ -2678,29 +1553,21 @@ static void fxfs_dax_use_range(struct fxfs_dax *dax, struct fxfs_dax_range *rang
 
 /*
  * The range mapping `inode`'s chunk `chunk`, mapped first if it isn't, for a file at least `size`
- * bytes long, kept for an iomap: a slice of its extent's region if it can be, or a range of its
- * own, its extents mapped as far as the write it is for grows the file to (`grows`,
- * fxfs_dax_map_chunk). For a fault (`fault`), -EBUSY rather than wait for a seal
- * (fxfs_dax_store_begin), and fxdax: -EDEADLK rather than for the file's semaphore
- * (fxfs_dax_down_read). fxdax: no slice unless `slice`: a copy-on-write store's chunk is a range of
- * its own (doc-13).
+ * bytes long, kept for an iomap: a slice of its extent's region if it can be and `slice` allows,
+ * or a range of its own, every page of it mapped (fxfs_dax_map_pages). A write's chunk is a range
+ * of its own (doc-13). For a fault (`fault`), -EAGAIN rather than wait for room in the window.
  */
-static struct fxfs_dax_range *fxfs_dax_get_range_timed(struct inode *inode, pgoff_t chunk,
-						       loff_t size, loff_t grows, bool fault,
-						       bool timed, bool slice)
+static struct fxfs_dax_range *fxfs_dax_get_range(struct inode *inode, pgoff_t chunk, loff_t size,
+						 bool fault, bool slice)
 {
 	struct fxfs_dax_file *file = fxfs_dax_file(inode);
 	struct fxfs_dax *dax = fxfs_dax_of(inode);
 	struct fxfs_dax_range *range, *new;
 	unsigned long pages;
-	u64 began = ktime_get_ns();
+	long mapped;
 	int err;
 
-	err = fxfs_dax_down_read(file, fault);
-	if (timed)
-		atomic64_add(ktime_get_ns() - began, &dax->write_range_wait_ns);
-	if (err)
-		return ERR_PTR(err);
+	down_read(&file->sem);
 	range = xa_load(&file->ranges, chunk);
 	if (range)
 		atomic_inc(&range->users);
@@ -2708,15 +1575,13 @@ static struct fxfs_dax_range *fxfs_dax_get_range_timed(struct inode *inode, pgof
 	if (range)
 		goto used;
 
-	err = fxfs_dax_down_write(file, fault);
-	if (err)
-		return ERR_PTR(err);
+	down_write(&file->sem);
 	range = xa_load(&file->ranges, chunk);
 	if (range)
 		atomic_inc(&range->users);
 	else if (slice)
 		range = fxfs_dax_new_slice(dax, inode, chunk, max3(i_size_read(inode), size,
-								   READ_ONCE(file->growing)), fault);
+								   READ_ONCE(file->growing)));
 	up_write(&file->sem);
 	if (IS_ERR(range))
 		return range;
@@ -2728,11 +1593,7 @@ static struct fxfs_dax_range *fxfs_dax_get_range_timed(struct inode *inode, pgof
 	new = fxfs_dax_alloc_range(dax, pages, fault);
 	if (IS_ERR(new))
 		return new;
-	err = fxfs_dax_down_write(file, fault);
-	if (err) {
-		fxfs_dax_free_range(dax, new, 0);
-		return ERR_PTR(err);
-	}
+	down_write(&file->sem);
 	/* Another iomap may have mapped it meanwhile. */
 	range = xa_load(&file->ranges, chunk);
 	if (range) {
@@ -2749,7 +1610,10 @@ static struct fxfs_dax_range *fxfs_dax_get_range_timed(struct inode *inode, pgof
 		spin_lock(&dax->lock);
 		list_add_tail(&new->list, &dax->used);
 		spin_unlock(&dax->lock);
-		err = fxfs_dax_map_chunk(dax, inode, new, grows, fault);
+		/* Every page of it, zeros past the file's end (doc-13). */
+		mapped = fxfs_dax_map_pages(dax, fxfs_vfs_fs(inode->i_sb), new, 0, new->pages,
+					    false);
+		err = mapped < 0 ? mapped : 0;
 		/* Its one user, this, which no one else saw, the semaphore held throughout. */
 		if (err) {
 			atomic_dec(&new->users);
@@ -2767,12 +1631,6 @@ used:
 	return range;
 }
 
-static struct fxfs_dax_range *fxfs_dax_get_range(struct inode *inode, pgoff_t chunk, loff_t size,
-						 loff_t grows, bool fault)
-{
-	return fxfs_dax_get_range_timed(inode, chunk, size, grows, fault, false, true);
-}
-
 static void fxfs_dax_put_range(struct fxfs_dax *dax, struct fxfs_dax_range *range)
 {
 	if (atomic_dec_and_test(&range->users))
@@ -2782,8 +1640,9 @@ static void fxfs_dax_put_range(struct fxfs_dax *dax, struct fxfs_dax_range *rang
 /*
  * Drops `inode`'s ranges of chunks `first` to `last` too small for the file to be `size` bytes
  * long, or all of them if `size` is negative, once nothing uses their pages: they are mapped again
- * as needed. With the inode's invalidate_lock held for writing. fxdax: unless `pinned`, -EBUSY
- * rather than wait for a page pinned (TASK-79.49).
+ * as needed. A range's dirty pages are written back first: the UNMAP frees their private pages,
+ * and the range maps again what Fxfs then has. With the inode's invalidate_lock held for writing.
+ * fxdax: unless `pinned`, -EBUSY rather than wait for a page pinned (TASK-79.49).
  */
 static int fxfs_dax_drop_pinned(struct inode *inode, pgoff_t first, pgoff_t last, loff_t size,
 				bool pinned)
@@ -2802,11 +1661,7 @@ static int fxfs_dax_drop_pinned(struct inode *inode, pgoff_t first, pgoff_t last
 		xa_for_each_range(&file->ranges, chunk, range, first, last) {
 			if (size >= 0 && range->pages >= fxfs_dax_range_pages(chunk, size))
 				continue;
-			/*
-			 * fxdax: copying on write, its dirty pages are written back first: the UNMAP
-			 * frees their private pages, and the range maps again what Fxfs then has.
-			 */
-			dirty = fxfs_dax_cow_busy(range);
+			dirty = fxfs_dax_range_dirty(range);
 			if (dirty || atomic_read(&range->users) || !fxfs_dax_release(inode, range)) {
 				busy = true;
 				break;
@@ -2817,7 +1672,7 @@ static int fxfs_dax_drop_pinned(struct inode *inode, pgoff_t first, pgoff_t last
 		if (!busy)
 			return 0;
 		if (dirty) {
-			err = fxfs_dax_cow_write_back(inode);
+			err = fxfs_dax_write_back(inode);
 			if (err)
 				return err;
 			continue;
@@ -2859,45 +1714,8 @@ static int fxfs_dax_fit(struct inode *inode, loff_t size)
 }
 
 /*
- * Records appends already stored through writable pages, before Fxfs reads or changes their
- * blocks using its size (TASK-92.28). With the file's semaphore held for writing.
- */
-static int fxfs_dax_write_size_locked(struct inode *inode)
-{
-	return fxfs_nofs(fxfs_dax_update_size(fxfs_vfs_fs(inode->i_sb), inode->i_ino,
-					   i_size_read(inode)));
-}
-
-/*
- * Inode writeback takes no i_rwsem: the caller may hold it while waiting for writeback. The
- * invalidate_lock excludes truncate and reflink, and the file's semaphore excludes extending
- * iomaps, from reading the size until committing it. No old writeback can undo a later truncate.
- */
-int fxfs_dax_write_size(struct inode *inode)
-{
-	struct fxfs_dax_file *file = fxfs_dax_file(inode);
-	int err;
-
-	if (!IS_DAX(inode))
-		return 0;
-	/*
-	 * fxdax: copying on write, Fxfs takes a file's size as its writeback writes its pages, as the
-	 * page cache's: the dirty pages are written back, which a write(2)'s leave the mapping
-	 * untagged for, so that writepages isn't called for them (doc-13).
-	 */
-	if (fxfs_dax_of(inode)->cow)
-		return fxfs_dax_cow_write_back(inode);
-	filemap_invalidate_lock_shared(inode->i_mapping);
-	down_write(&file->sem);
-	err = fxfs_dax_write_size_locked(inode);
-	up_write(&file->sem);
-	filemap_invalidate_unlock_shared(inode->i_mapping);
-	return err;
-}
-
-/*
  * Drops `inode`'s range of the chunk at `pos`, a slice a write can't use (-EXDEV), to be mapped
- * again where its data now is. fxdax: unless `pinned`, -EBUSY rather than wait for pages pinned
+ * again as a range of its own. fxdax: unless `pinned`, -EBUSY rather than wait for pages pinned
  * (TASK-79.49).
  */
 static int fxfs_dax_drop_slice(struct inode *inode, loff_t pos, bool pinned)
@@ -2928,104 +1746,6 @@ static vm_fault_t fxfs_dax_fault_drop_slice(struct vm_fault *vmf, vm_fault_t ret
 	return user && (err == -EINTR || err == -ERESTARTSYS) ? VM_FAULT_NOPAGE : ret;
 }
 
-/*
- * fxdax: makes room for `len` bytes at `pos`, as fxfs_dax_map_write does, or, for a write(2) whose
- * move commits after its bytes (`pending`), as fxfs_dax_begin_write does.
- */
-static ssize_t fxfs_dax_room_for_write(struct inode *inode, loff_t pos, loff_t len, loff_t size,
-				       bool keep, const void *held, struct fxfs_dax_extent *extents,
-				       size_t capacity, struct fxfs_dax_write **pending)
-{
-	struct fxfs *fs = fxfs_vfs_fs(inode->i_sb);
-
-	atomic64_inc(&fxfs_dax_of(inode)->map_writes);
-	if (pending)
-		return fxfs_nofs(fxfs_dax_begin_write(fs, inode->i_ino, pos, len, size, extents,
-						      capacity, pending));
-	return fxfs_nofs(fxfs_dax_map_write(fs, inode->i_ino, pos, len, size, keep, held, extents,
-					    capacity));
-}
-
-/*
- * Makes room through `reserved`, recording only `size`, with an exact-write fallback. fxdax: the
- * blocks hold `held`, if not NULL, which is `reserved - pos` bytes (fxfs_dax_map_write); or the
- * move is a write(2)'s, committed after its bytes, if `pending` isn't NULL (fxfs_dax_begin_write).
- */
-static ssize_t fxfs_dax_reserve_write(struct inode *inode, loff_t pos, loff_t end,
-				    loff_t reserved, loff_t size, bool keep, const void *held,
-				    struct fxfs_dax_extent *extents, size_t capacity,
-				    struct fxfs_dax_write **pending)
-{
-	ssize_t count;
-
-	count = fxfs_dax_room_for_write(inode, pos, reserved - pos, size, keep, held, extents,
-					capacity, pending);
-	/* Speculation must not refuse a write that its own bytes have room for. */
-	if (!held && reserved > end &&
-	    (count == -ENOSPC || count == -EDQUOT || count == -ENOMEM))
-		count = fxfs_dax_room_for_write(inode, pos, end - pos, size, keep, NULL, extents,
-						capacity, pending);
-	return count;
-}
-
-/*
- * fxdax: after two pages appended with no seal between, reserve the rest of a small aligned
- * run. Its new blocks are zeros beyond EOF; only the write's actual end becomes the file's size.
- * One-off writes and writes after every barrier keep their former allocation size (TASK-92.58).
- */
-static loff_t fxfs_dax_append_end(struct inode *inode, loff_t pos, loff_t end)
-{
-	struct fxfs_dax_file *file = fxfs_dax_file(inode);
-	loff_t base;
-
-	if (pos != i_size_read(inode) || file->append_next != pos ||
-	    file->append_bytes < 2 * PAGE_SIZE ||
-	    file->append_seals != fxfs_device_seals(fxfs_dax_of(inode)->dev))
-		return end;
-	base = round_down(end - 1, FXFS_DAX_APPEND_SIZE);
-	if (base > inode->i_sb->s_maxbytes - (loff_t)FXFS_DAX_APPEND_SIZE)
-		return end;
-	return base + FXFS_DAX_APPEND_SIZE;
-}
-
-/*
- * fxdax: whether a write of the bytes from `pos` to `end` overwrites whole pages of the file's data,
- * which a move committed before its bytes would lose: moving a whole page, Fxfs keeps nothing of
- * what it held, for the write to fill, and a copy from the user's memory can stop short, where the
- * memory ends, or be of those very pages, or the write fail before it copies (TASK-150.8, 79.106,
- * 119.13). Such a write's move commits after its bytes (fxfs_dax_begin_write). A fault keeps what
- * it moves, zeroing is meant to lose it, and pages past the file's end hold nothing.
- */
-static bool fxfs_dax_overwrites(struct inode *inode, unsigned int flags, loff_t pos, loff_t end)
-{
-	loff_t last = min(round_down(end, PAGE_SIZE), round_up(i_size_read(inode), PAGE_SIZE));
-
-	return !(flags & (IOMAP_FAULT | IOMAP_ZERO)) && round_up(pos, PAGE_SIZE) < last;
-}
-
-/* Makes room before mapping a chunk's range for the first time. */
-static int fxfs_dax_prepare_write(struct inode *inode, loff_t pos, loff_t len, loff_t size,
-				  loff_t reserved, bool fault, struct fxfs_dax_extent *extents,
-				  size_t capacity)
-{
-	struct fxfs_dax_file *file = fxfs_dax_file(inode);
-	ssize_t count;
-
-	count = fxfs_dax_down_write(file, fault);
-	if (count)
-		return count;
-	if (!xa_load(&file->ranges, pos >> FXFS_DAX_SHIFT)) {
-		count = fxfs_dax_write_size_locked(inode);
-		if (count)
-			goto out;
-		count = fxfs_dax_reserve_write(inode, pos, pos + len, max(pos + len, reserved),
-					     size, fault, NULL, extents, capacity, NULL);
-	}
-out:
-	up_write(&file->sem);
-	return count < 0 ? count : 0;
-}
-
 /* Fills in `iomap` for a hole of `length` bytes. */
 static void fxfs_dax_hole(struct iomap *iomap, loff_t length)
 {
@@ -3035,10 +1755,48 @@ static void fxfs_dax_hole(struct iomap *iomap, loff_t length)
 }
 
 /*
+ * fxdax: maps those of `range`'s pages `first` to `last`, exclusive, that have no window page, as
+ * a truncate's MAP of zeros that failed leaves the pages past its end (fxfs_dax_resize_end), which
+ * a growth brings back into `inode`, so that every page of the file has one (fxfs_dax_map_pages):
+ * 0 holding the file's semaphore shared, as an iomap does, or a -errno holding nothing of it.
+ * Before any iomap of such a page, a read's as a write's: a read's hole has a fault map the
+ * kernel's zero page, which nothing takes away, no write being new (IOMAP_F_NEW), so that a load
+ * read zeros where read(2) read a write's bytes, and a write from the mapping copied them (guest/sim,
+ * failures seed 1669). Not a follower's, whose holes have none, as it takes no write.
+ */
+static int fxfs_dax_map_missing(struct inode *inode, struct fxfs_dax_range *range,
+				unsigned long first, unsigned long last)
+{
+	struct fxfs_dax_file *file = range->file;
+	struct fxfs_dax *dax = fxfs_dax_of(inode);
+	unsigned long page, to;
+	long mapped;
+	int err;
+
+	for (;;) {
+		down_read(&file->sem);
+		if (dax->read_only || find_next_zero_bit(range->mapped, last, first) == last)
+			return 0;
+		up_read(&file->sem);
+		down_write(&file->sem);
+		err = 0;
+		while (!err && (page = find_next_zero_bit(range->mapped, last, first)) < last) {
+			to = find_next_bit(range->mapped, last, page);
+			mapped = fxfs_dax_map_pages(dax, fxfs_vfs_fs(inode->i_sb), range, page, to,
+						    false);
+			err = mapped < 0 ? mapped : 0;
+		}
+		up_write(&file->sem);
+		if (err)
+			return err;
+	}
+}
+
+/*
  * Maps a read of up to `length` bytes at `pos`: a run of mapped pages, or of holes.
  */
 static int fxfs_dax_iomap_read(struct inode *inode, loff_t pos, loff_t length, unsigned int flags,
-			       struct iomap *iomap, struct iomap *srcmap)
+			       struct iomap *iomap)
 {
 	struct fxfs_dax_file *file = fxfs_dax_file(inode);
 	struct fxfs_dax *dax = fxfs_dax_of(inode);
@@ -3055,39 +1813,23 @@ static int fxfs_dax_iomap_read(struct inode *inode, loff_t pos, loff_t length, u
 		return 0;
 	}
 	/* A cache hit keeps the lookup's read lock through its iomap, rather than taking it twice. */
-	err = fxfs_dax_down_read(file, fault);
-	if (err)
-		return err;
+	down_read(&file->sem);
 	range = xa_load(&file->ranges, pos >> FXFS_DAX_SHIFT);
 	if (range) {
 		atomic_inc(&range->users);
 		fxfs_dax_use_range(dax, range);
 	} else {
 		up_read(&file->sem);
-		range = fxfs_dax_get_range(inode, pos >> FXFS_DAX_SHIFT, 0, 0, fault);
+		range = fxfs_dax_get_range(inode, pos >> FXFS_DAX_SHIFT, 0, fault, true);
 		if (IS_ERR(range))
 			return PTR_ERR(range);
-		err = fxfs_dax_down_read(file, fault);
-		if (err) {
-			fxfs_dax_put_range(dax, range);
-			return err;
-		}
+		down_read(&file->sem);
 	}
 	/* fxdax: the window between a follower's extents read and its mapping, widened in tests. */
 	if (fxfs_vfs_follows(inode->i_sb) && fxfs_follow_iomap_delay_us) {
 		up_read(&file->sem);
 		fsleep(fxfs_follow_iomap_delay_us);
-		err = fxfs_dax_down_read(file, fault);
-		if (err) {
-			fxfs_dax_put_range(dax, range);
-			return err;
-		}
-	}
-	if (range->behind) {
-		err = range->behind;
-		up_read(&file->sem);
-		fxfs_dax_put_range(dax, range);
-		return err;
+		down_read(&file->sem);
 	}
 	start = fxfs_dax_chunk_start(range);
 	page = (pos - start) >> PAGE_SHIFT;
@@ -3097,19 +1839,13 @@ static int fxfs_dax_iomap_read(struct inode *inode, loff_t pos, loff_t length, u
 		fxfs_dax_put_range(dax, range);
 		return -EIO;
 	}
-	/* fxdax: what it reads, in the window at last, with the rest that lagged. */
-	if (fxfs_dax_lags(range, page, DIV_ROUND_UP(offset_in_page(pos) + length, PAGE_SIZE))) {
+	/* fxdax: a page of the file with no window page is no hole: mapped first. */
+	if (!dax->read_only && !test_bit(page, range->mapped)) {
 		up_read(&file->sem);
-		err = fxfs_dax_down_write(file, fault);
-		if (!err) {
-			err = range->behind ?: fxfs_dax_catch_up(dax, inode, range, fault);
-			up_write(&file->sem);
-		}
-		if (err) {
-			fxfs_dax_put_range(dax, range);
-			return err;
-		}
-		err = fxfs_dax_down_read(file, fault);
+		err = fxfs_dax_map_missing(inode, range, page,
+					   min_t(u64, range->pages,
+						 page + DIV_ROUND_UP(offset_in_page(pos) + length,
+								     PAGE_SIZE)));
 		if (err) {
 			fxfs_dax_put_range(dax, range);
 			return err;
@@ -3138,7 +1874,7 @@ static int fxfs_dax_iomap_read(struct inode *inode, loff_t pos, loff_t length, u
 	iomap->addr = at + offset_in_page(pos);
 	iomap->length = length;
 	iomap->private = range;
-	if (flags & IOMAP_FAULT) {
+	if (fault) {
 		fxfs_dax_trace(FXFS_DAX_TRACE_READ, inode->i_ino, (start >> PAGE_SHIFT) + page, at, 0,
 			       length >> PAGE_SHIFT, 0);
 		if (length >= PMD_SIZE)
@@ -3151,8 +1887,6 @@ static int fxfs_dax_iomap_read(struct inode *inode, loff_t pos, loff_t length, u
 		 */
 		if (range->region)
 			iomap->flags |= IOMAP_F_SHARED;
-		/* fxdax: until its iomap_end, as moves wait for it (`faulting`). */
-		atomic_inc(&range->faulting);
 	}
 	up_read(&file->sem);
 	return 0;
@@ -3173,7 +1907,10 @@ static void *fxfs_dax_window_page(struct fxfs_dax *dax, u64 window_offset)
 	return kaddr;
 }
 
-/* fxdax: the window of the filesystem mounted last, for fxfs.dax_stray; it goes as the mount does. */
+/*
+ * fxdax: the window of the filesystem mounted last, for fxfs.dax_stray and the tests' knobs; it
+ * goes as the mount does.
+ */
 static struct fxfs_dax *fxfs_dax_stray_dax;
 
 /*
@@ -3211,594 +1948,14 @@ module_param_cb(dax_stray, &fxfs_dax_stray_ops, NULL, 0200);
 MODULE_PARM_DESC(dax_stray, "`load N` or `store N`: access byte N of the window, whatever maps it");
 
 /*
- * fxdax: with fxfs.dax_check_moves and the shadow, logs where `seen`, the window's page at
- * `window_offset` as copied, differs from the extent's page the shadow has the window map there,
- * as the device has it; and where Fxfs has file `inode`'s page at `pos` elsewhere, and what the
- * device has there: what a write that moves the page reads around what it writes (TASK-121).
- * Returns where the window maps it, as fxfs_dax_read_shadowed does. fxdax: a page the shadow
- * doesn't know of it can't place, and finds nothing wrong with: it said Fxfs had it elsewhere than
- * the window, which it said mapped extent -1, and failed a test (TASK-119.21, GCE r239).
- */
-static s64 fxfs_dax_check_device(struct fxfs_dax *dax, struct inode *inode, loff_t pos,
-				 u64 window_offset, const u8 *seen)
-{
-	u8 *buf = READ_ONCE(fxfs_dax_shadowed) ? kmalloc(PAGE_SIZE, GFP_NOFS) : NULL;
-	struct fxfs_dax_extent e;
-	size_t first, differ;
-	ssize_t count;
-	s64 where;
-	int err;
-
-	if (!buf)
-		return -ENOMEM;
-	where = fxfs_dax_read_shadowed(dax, window_offset >> PAGE_SHIFT, buf);
-	differ = where >= 0 ? fxfs_dax_differ(seen, buf, 0, 0, &first, PAGE_SIZE) : 0;
-	if (differ) {
-		pr_err("fxfs: window %llx, mapping extent %lld page %lld, held %zu bytes the device's doesn't before a move, the first at %zu: %#x, the device's %#x\n",
-		       window_offset, where >> 20, where & ((1 << 20) - 1), differ, first, seen[first],
-		       buf[first]);
-		fxfs_dax_diagnosed();
-	}
-	count = fxfs_nofs(fxfs_dax_extents(fxfs_vfs_fs(inode->i_sb), inode->i_ino, pos, PAGE_SIZE,
-					   &e, 1));
-	if (count != 1) {
-		pr_err("fxfs: ino %lu at %lld, mapped at window %llx: %zd extents in Fxfs\n",
-		       inode->i_ino, pos, window_offset, count);
-	} else if (where >= 0 && (e.sequence != where >> 20 ||
-				  e.extent_offset >> PAGE_SHIFT != (where & ((1 << 20) - 1)))) {
-		err = fxfs_dax_read_device_page(dax, e.branch, e.sequence, e.extent_offset, buf);
-		differ = err ? 0 : fxfs_dax_differ(seen, buf, 0, 0, &first, PAGE_SIZE);
-		pr_err("fxfs: ino %lu at %lld: Fxfs has it in extent %llu page %llu, %s, the window at %llx maps extent %lld page %lld: %d, %zu bytes differ, the first at %zu: %#x, the device's %#x\n",
-		       inode->i_ino, pos, e.sequence, e.extent_offset >> PAGE_SHIFT,
-		       fxfs_dax_accesses[e.access], window_offset, where >> 20,
-		       where & ((1 << 20) - 1), err, differ, differ ? first : 0,
-		       differ ? seen[first] : 0, differ ? buf[first] : 0);
-		/* The same bytes, where the range hasn't followed them: wrong only if they differ. */
-		if (differ)
-			fxfs_dax_diagnosed();
-		/* fxdax: how it fell behind, what the trace, if on, has of the page (TASK-133). */
-		if (READ_ONCE(fxfs_dax_trace_events)) {
-			char of[48];
-
-			snprintf(of, sizeof(of), "%lu %llu", inode->i_ino,
-				 (unsigned long long)pos >> PAGE_SHIFT);
-			fxfs_dax_trace_dump(of, NULL);
-		}
-	}
-	kfree(buf);
-	return where;
-}
-
-/*
- * fxdax: with fxfs.dax_check_moves, WARNs unless `range`'s page `page`, where it moved, holds what
- * it held at `before_at` (`before`), but for the `len` bytes from `skip` a write writes (TASK-121).
- * In the gate, which keeps both still.
- */
-static void fxfs_dax_check_moved(struct fxfs_dax *dax, struct inode *inode,
-				 struct fxfs_dax_range *range, unsigned long page, const u8 *before,
-				 u64 before_at, s64 before_where, size_t skip, size_t len)
-{
-	u64 at = fxfs_dax_page_offset(range, page);
-	/* What the page held past the file's end, a mapping's store, isn't the file's to keep. */
-	size_t in_file = clamp_t(loff_t, i_size_read(inode) - fxfs_dax_chunk_start(range) -
-				 ((loff_t)page << PAGE_SHIFT), 0, PAGE_SIZE);
-	int id = dax_read_lock();
-	const u8 *now = fxfs_dax_window_page(dax, at), *then;
-	size_t first, differ = now ? fxfs_dax_differ(now, before, skip, len, &first, in_file) : 0;
-	u8 moved = differ ? now[first] : 0, left = 0;
-	s64 is;
-	u8 *buf;
-	int err;
-
-	/* Where it was, as the window has it now. */
-	then = differ ? fxfs_dax_window_page(dax, before_at) : NULL;
-	if (then)
-		left = then[first];
-	dax_read_unlock(id);
-	if (!differ)
-		return;
-	pr_err("fxfs: ino %lu page %lu moved from %llx to %llx holds %zu other bytes, the first at %zu: %#x, not %#x\n",
-	       inode->i_ino, (unsigned long)(fxfs_dax_chunk_start(range) >> PAGE_SHIFT) + page,
-	       before_at, at, differ, first, moved, before[first]);
-	fxfs_dax_diagnosed();
-	/* fxdax: what the trace, if on, has of the page. */
-	if (READ_ONCE(fxfs_dax_trace_events)) {
-		char of[48];
-
-		snprintf(of, sizeof(of), "%lu %lu", inode->i_ino,
-			 (unsigned long)(fxfs_dax_chunk_start(range) >> PAGE_SHIFT) + page);
-		fxfs_dax_trace_dump(of, NULL);
-	}
-	/*
-	 * With the shadow, the extents' pages the window maps at both, as the device has them: the
-	 * window's view of where the page was against what the device holds there, which a write
-	 * reads around what it writes (TASK-121).
-	 */
-	buf = READ_ONCE(fxfs_dax_shadowed) ? kmalloc(PAGE_SIZE, GFP_NOFS) : NULL;
-	if (!buf)
-		return;
-	err = before_where < 0 ? before_where :
-	      fxfs_dax_read_device_page(dax, READ_ONCE(dax->shadow_branch), before_where >> 20,
-					(before_where & ((1 << 20) - 1)) << PAGE_SHIFT, buf);
-	if (!err)
-		pr_err("fxfs:   from %llx, mapping extent %lld page %lld, the device has %#x there, the window %#x now\n",
-		       before_at, before_where >> 20, before_where & ((1 << 20) - 1), buf[first],
-		       left);
-	else
-		pr_err("fxfs:   from %llx: %d\n", before_at, err);
-	is = fxfs_dax_read_shadowed(dax, at >> PAGE_SHIFT, buf);
-	if (is >= 0)
-		pr_err("fxfs:   to %llx, mapping extent %lld page %lld, the device has %#x there\n",
-		       at, is >> 20, is & ((1 << 20) - 1), buf[first]);
-	else
-		pr_err("fxfs:   to %llx: %lld\n", at, is);
-	kfree(buf);
-}
-
-/* fxdax: drops a write(2)'s move, `pending`, uncommitted, which leaves the file as it was. */
-static void fxfs_dax_drop_pending(struct fxfs_dax *dax, struct fxfs_dax_write *pending)
-{
-	atomic64_inc(&dax->writes_dropped);
-	fxfs_nofs(fxfs_dax_end_write(pending, false));
-}
-
-/*
- * fxdax: whether a write(2) (`flags`) of `range`'s `pages` pages from `first`, whose blocks went to
- * the one piece `e`, may go through its extent's region: a staging extent's, open, as a slice's is,
- * the pages none of them writable where they are, so that they all moved. The range may be a
- * slice, of the region they moved out of. No fault past its iomap uses it, as the write waited for
- * them: one about to map a page mapped where its blocks were, for good (fxfs_dax_iomap_write).
- */
-static bool fxfs_dax_goes_through(struct fxfs_dax_range *range,
-				  const struct fxfs_dax_extent *e, unsigned long first,
-				  unsigned long pages, unsigned int flags)
-{
-	loff_t start = fxfs_dax_chunk_start(range) + ((loff_t)first << PAGE_SHIFT);
-
-	return READ_ONCE(fxfs_dax_writes_through) && !(flags & (IOMAP_FAULT | IOMAP_ZERO)) &&
-	       e->access == FXFS_DAX_OPEN && e->extent_size && e->extent_size <= FXFS_DAX_SIZE &&
-	       PAGE_ALIGNED(e->extent_offset) && (e->extent_offset || e->len < e->extent_size) &&
-	       e->offset <= start && e->offset + e->len >= start + ((loff_t)pages << PAGE_SHIFT) &&
-	       first + pages <= range->pages &&
-	       find_next_bit(range->writable, first + pages, first) == first + pages;
-}
-
-/*
- * fxdax: has the region of the piece `e` writable as far as the bytes from `pos` to `end`, kept for
- * the iomap (`file`'s `through`), and says where in the window `pos` is: -ENOSPC or -EAGAIN if the
- * window has no room for it now, -EXDEV if its space doesn't reach them, when the range's own space
- * maps the piece. The next writes keep it too, as the spare: else each mapped it anew. In the gate.
- */
-static int fxfs_dax_open_through(struct fxfs_dax *dax, struct fxfs_dax_file *file,
-				 const struct fxfs_dax_extent *e, loff_t pos, loff_t end, u64 *at)
-{
-	u64 offset = e->extent_offset + (pos - e->offset);
-	struct fxfs_dax_region *region, *old = NULL;
-	int err;
-
-	/* Not reclaiming other ranges for it, in the gate: the range's own space maps it then. */
-	region = fxfs_dax_get_region(dax, e, false);
-	if (IS_ERR(region))
-		return PTR_ERR(region);
-	fxfs_dax_region_open(dax, region);
-	err = fxfs_dax_reach(dax, region, DIV_ROUND_UP(offset + (end - pos), PAGE_SIZE));
-	if (err) {
-		fxfs_dax_put_region(dax, region);
-		return err;
-	}
-	spin_lock(&dax->regions_lock);
-	if (READ_ONCE(dax->restaging) && dax->spare != region) {
-		old = dax->spare;
-		dax->spare = region;
-		region->refs++;
-	}
-	spin_unlock(&dax->regions_lock);
-	if (old)
-		fxfs_dax_put_region(dax, old);
-	file->through = region;
-	*at = region->window_offset + offset;
-	return 0;
-}
-
-/*
- * Maps a write of up to `length` bytes at `pos` writably, making room for it in open extents
- * unless its pages are writable already, and returns in the gate, which fxfs_dax_iomap_end leaves.
- * A zeroing write leaves holes be. A write past the file's end grows it, unless it is a fault's.
- * fxdax: a write(2)'s move of its blocks commits there too, after its bytes, out of the gate, the
- * file's semaphore held from here until then (`pending`, TASK-153.5).
- */
-static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
-				unsigned int flags, struct iomap *iomap, struct iomap *srcmap)
-{
-	struct fxfs_dax_file *file = fxfs_dax_file(inode);
-	struct fxfs_dax *dax = fxfs_dax_of(inode);
-	struct fxfs_dax_extent *extents = NULL;
-	struct fxfs_dax_range *range;
-	unsigned long first, pages;
-	loff_t start, end, size, reserved;
-	size_t capacity;
-	/*
-	 * Whether pages it maps were holes, which mappings of the file may map zeros for: and only
-	 * those, in a range that says so. A chunk with no range yet has no entries to replace but what a
-	 * fault mapped since, data, a PMD's maybe, which the kernel's entries of new pages then lost
-	 * from under its mapping (dax_folio_put's WARN).
-	 */
-	bool fresh = false;
-	/*
-	 * A fault's page, which a store may change any part of, as it held it: copied here from its
-	 * mapping, for Fxfs to write into the block it moves the page to, in the moving transaction,
-	 * rather than read the old block through the device. fxdax: not copied back after the
-	 * transaction, which a seal between made the new block's zeros durable (TASK-79.11).
-	 */
-	void *held = NULL;
-	/* fxdax: the page as the window mapped it before it moved (fxfs.dax_check_moves). */
-	void *before = NULL;
-	u64 before_at = 0;
-	s64 before_where = -ENOENT;
-	bool fault = flags & IOMAP_FAULT;
-	/*
-	 * fxdax: whether a move of this iomap's committed, after which the window's page maps where the
-	 * blocks were, which a flush may have freed: nothing is taken from it then. A fault whose page
-	 * moved with nothing held, its allocation failed, and was sealed from the gate, held the zeros
-	 * of the freed block on the next pass, and made them the page's (guest/sim, failures 784 at
-	 * 1,000).
-	 */
-	bool moved_once = false;
-	/* A write(2)'s, of whose time write_ns counts. */
-	bool timed = !(flags & (IOMAP_FAULT | IOMAP_ZERO));
-	ssize_t count, moved = 0;
-	long gate;
-	u64 seals, began;
-	/* fxdax: where in the window its bytes go, if through a region (fxfs_dax_open_through). */
-	u64 through = 0;
-	/*
-	 * fxdax: a write(2)'s move, its transaction not committed until fxfs_dax_iomap_end, once the
-	 * bytes are in: until then the file has its old blocks, which the window maps where it doesn't
-	 * map the new ones, and nothing is lost if the write fails, as it was when the move committed
-	 * first (TASK-153.5). A fault's bytes come with the user's store, as late as it likes: its
-	 * move commits first, keeping what the page holds.
-	 */
-	struct fxfs_dax_write *pending = NULL;
-	int err = 0;
-
-	/* Faults and zeroing don't grow the file. */
-	size = flags & (IOMAP_FAULT | IOMAP_ZERO) ? 0 :
-	       min_t(loff_t, pos + length, round_up(pos + 1, FXFS_DAX_SIZE));
-	reserved = size ? fxfs_dax_append_end(inode, pos, size) : 0;
-	end = max(reserved, min_t(loff_t, pos + length, round_up(pos + 1, FXFS_DAX_SIZE)));
-	capacity = DIV_ROUND_UP(offset_in_page(pos) + end - pos, PAGE_SIZE);
-	/*
-	 * A chunk with no range yet: room for the write first. Zeroing leaves holes be. fxdax: unless
-	 * the write overwrites the file's data, whose move the loop below makes, to commit after the
-	 * bytes: moved first, a failure after the move lost the file's data (TASK-79.106, 119.13).
-	 */
-	if (!(flags & IOMAP_ZERO) && !xa_load(&file->ranges, pos >> FXFS_DAX_SHIFT) &&
-	    !fxfs_dax_overwrites(inode, flags, pos, end)) {
-		extents = fxfs_dax_alloc_extents(dax, capacity);
-		if (!extents)
-			return -ENOMEM;
-		began = ktime_get_ns();
-		err = fxfs_dax_prepare_write(inode, pos,
-					     min_t(loff_t, pos + length, round_up(pos + 1, FXFS_DAX_SIZE)) - pos,
-					     size, reserved, fault, extents, capacity);
-		if (timed)
-			atomic64_add(ktime_get_ns() - began, &dax->write_prepare_ns);
-		if (err) {
-			kvfree(extents);
-			return err;
-		}
-	}
-	began = ktime_get_ns();
-	range = fxfs_dax_get_range_timed(inode, pos >> FXFS_DAX_SHIFT, max(size, reserved), size,
-					 fault, timed, true);
-	/* Nor may reserving window space refuse a write whose own range fits. */
-	if (IS_ERR(range) && reserved > size &&
-	    (PTR_ERR(range) == -ENOMEM || PTR_ERR(range) == -ENOSPC))
-		range = fxfs_dax_get_range_timed(inode, pos >> FXFS_DAX_SHIFT, size, size, fault, timed,
-						 true);
-	if (timed)
-		atomic64_add(ktime_get_ns() - began, &dax->write_range_ns);
-	if (IS_ERR(range)) {
-		kvfree(extents);
-		return PTR_ERR(range);
-	}
-	start = fxfs_dax_chunk_start(range);
-	end = min_t(loff_t, pos + length, start + ((loff_t)range->pages << PAGE_SHIFT));
-	/*
-	 * A range covers the file's chunk as its size grows (fxfs_dax_fit). fxdax: unless a fault
-	 * mapped it again as small as the file was, between the write's fit and its iomap: dropped,
-	 * as a slice the write can't use is, and mapped again as large as it needs (-EXDEV). It was
-	 * a WARN and EIO (TASK-79.28).
-	 */
-	if (end <= pos) {
-		kvfree(extents);
-		fxfs_dax_put_range(dax, range);
-		return -EXDEV;
-	}
-	if (size)
-		size = end;
-	reserved = max(end, min(reserved, start + ((loff_t)range->pages << PAGE_SHIFT)));
-	first = (pos - start) >> PAGE_SHIFT;
-	pages = DIV_ROUND_UP(end - start, PAGE_SIZE) - first;
-
-	if (!down_write_trylock(&file->sem)) {
-		u64 began = ktime_get_ns();
-
-		/* fxdax: a fault waits for it without its DAX entry (fxfs_dax_down_read). */
-		if (fault) {
-			kvfree(extents);
-			fxfs_dax_put_range(dax, range);
-			return -EDEADLK;
-		}
-		down_write(&file->sem);
-		if (timed) {
-			atomic64_inc(&dax->write_waits);
-			atomic64_add(ktime_get_ns() - began, &dax->write_wait_ns);
-		}
-	}
-	if (range->behind) {
-		err = range->behind;
-		goto out;
-	}
-	/* fxdax: a page lagging is in the window first, as the next steps have it. */
-	if (fxfs_dax_lags(range, first, pages)) {
-		err = fxfs_dax_catch_up(dax, inode, range, fault);
-		if (err)
-			goto out;
-	}
-	for (;;) {
-		began = ktime_get_ns();
-		gate = fxfs_dax_store_begin(dax, fault);
-		if (timed)
-			atomic64_add(ktime_get_ns() - began, &dax->write_gate_ns);
-		if (gate < 0) {
-			err = gate;
-			goto out;
-		}
-		/* Writable pages take the write as they are. */
-		if (find_next_zero_bit(range->writable, first + pages, first) == first + pages)
-			break;
-		if (flags & IOMAP_ZERO && find_next_bit(range->mapped, first + pages, first) ==
-						  first + pages) {
-			fxfs_device_store_end(dax->dev);
-			up_write(&file->sem);
-			fxfs_dax_put_range(dax, range);
-			fxfs_dax_hole(iomap, end - pos);
-			return 0;
-		}
-		fxfs_device_store_end(dax->dev);
-		/* COW must keep the appended bytes too, beyond Fxfs's former end. */
-		err = fxfs_dax_write_size_locked(inode);
-		if (err)
-			goto out;
-
-		if (!extents) {
-			extents = fxfs_dax_alloc_extents(dax, capacity);
-			if (!extents) {
-				err = -ENOMEM;
-				goto out;
-			}
-		}
-		fresh |= find_next_zero_bit(range->mapped, first + pages, first) != first + pages;
-		if (READ_ONCE(fxfs_dax_check_moves) && pages == 1 && test_bit(first, range->mapped) &&
-		    !before && !moved_once) {
-			int id = dax_read_lock();
-			void *page;
-
-			before_at = fxfs_dax_page_offset(range, first);
-			page = fxfs_dax_window_page(dax, before_at);
-			before = page ? kmalloc(PAGE_SIZE, GFP_NOFS) : NULL;
-			if (before)
-				memcpy(before, page, PAGE_SIZE);
-			dax_read_unlock(id);
-			if (before)
-				before_where = fxfs_dax_check_device(dax, inode,
-								     start + ((loff_t)first << PAGE_SHIFT),
-								     before_at, before);
-		}
-		if (fault && pages == 1 && test_bit(first, range->mapped) && !held && !moved_once) {
-			int id;
-
-			fxfs_dax_pause(FXFS_DAX_STEP_HELD);
-			id = dax_read_lock();
-			void *page = fxfs_dax_window_page(dax, fxfs_dax_page_offset(range, first));
-
-			held = page && !fxfs_dax_fail_held ? kmalloc(PAGE_SIZE, GFP_NOFS) : NULL;
-			if (held) {
-				loff_t page_pos = start + ((loff_t)first << PAGE_SHIFT);
-				loff_t in_file = clamp_t(loff_t, i_size_read(inode) - page_pos, 0,
-							 PAGE_SIZE);
-
-				/* What the page holds past the file's end isn't the file's. */
-				memcpy(held, page, in_file);
-				memset(held + in_file, 0, PAGE_SIZE - in_file);
-			}
-			dax_read_unlock(id);
-		}
-		/* fxdax: diagnostic (TASK-133): what the move will keep is what the window showed. */
-		if (held && before && memcmp(held, before, PAGE_SIZE))
-			pr_err("fxfs: ino %lu page %lu: held differs from the window's before the move: size %lld, seals %llu\n",
-			       inode->i_ino, (start >> PAGE_SHIFT) + first, i_size_read(inode),
-			       fxfs_device_seals(dax->dev));
-		/* fxdax: fault injection, as fxfs_dax_map_write waiting for compaction's seal. */
-		if (fault && READ_ONCE(fxfs_dax_fault_seals)) {
-			err = fxfs_nofs(fxfs_fsync(fxfs_vfs_fs(inode->i_sb)));
-			if (err)
-				goto out;
-		}
-		/*
-		 * fxdax: the PTEs of the pages go before their blocks move, for good until the move
-		 * ends, so that a load faults, and waits. Moved first, a fault's blocks were freed from
-		 * under what mapped where they were, a load through a PTE reading zeros once the old
-		 * extent was, until the range mapped where they went: as a seal kept it from the gate
-		 * (TASK-149.14), or as it stalled before the PTEs went (guest/sim, interleave 2376 at
-		 * 1,000). A write(2)'s map the new blocks once MAPped, before its bytes are in, which
-		 * a copy from them would read (TASK-150.8), or, gone through a region, lag, mapping the
-		 * old blocks, which a PTE went on reading after the commit (TASK-153.3). First the move
-		 * waits for the faults past their iomaps, which may yet map a page, as none after can,
-		 * the file's semaphore held: they wait for nothing it holds. Not for every use of the
-		 * range: an iomap waiting for the semaphore holds one (guest/sim, a deadlock).
-		 */
-		wait_var_event(&range->faulting, !atomic_read(&range->faulting));
-		unmap_mapping_pages(inode->i_mapping, (start >> PAGE_SHIFT) + first, pages, false);
-		/* As in fxfs_dax_map_chunk: unless a seal was in progress, or began since. */
-		seals = fxfs_device_seals(dax->dev);
-		/* A fault's pages hold what they held: a store may change any part of them. */
-		began = ktime_get_ns();
-		count = fxfs_dax_reserve_write(inode, pos, end, reserved, size, fault, held,
-					     extents, capacity, timed ? &pending : NULL);
-		if (timed)
-			atomic64_add(ktime_get_ns() - began, &dax->write_fxfs_ns);
-		fxfs_dax_delay();
-		if (fault && count >= 0)
-			fxfs_dax_pause(FXFS_DAX_STEP_MOVED);
-		if (count < 0) {
-			err = count;
-			goto out;
-		}
-		/* fxdax: a write(2)'s blocks stay the file's until it commits: nothing moved yet. */
-		moved = pending ? 0 : count;
-		moved_once |= moved;
-		/* fxdax: fault injection, a seal between the move and the mapping of the new block. */
-		if (fault && fxfs_dax_seal_moved()) {
-			err = fxfs_nofs(fxfs_fsync(fxfs_vfs_fs(inode->i_sb)));
-			if (err)
-				goto out;
-		}
-		began = ktime_get_ns();
-		gate = fxfs_dax_store_begin(dax, fault);
-		if (timed)
-			atomic64_add(ktime_get_ns() - began, &dax->write_gate_ns);
-		if (gate == seals) {
-			bool fail = count > 1 && fxfs_dax_inject(&fxfs_dax_fail_maps);
-
-			if (count == 1 && !fail &&
-			    fxfs_dax_goes_through(range, extents, first, pages, flags) &&
-			    !fxfs_dax_open_through(dax, file, extents, pos, end, &through)) {
-				/*
-				 * fxdax: a slice, whose region the blocks moved out of, falls behind
-				 * them, for the file's next use to map it again: a slice of the region
-				 * they went to, which the bytes go through (TASK-153.5). Moved before
-				 * the bytes, the slice refused them, and the write went round again.
-				 */
-				if (range->region) {
-					fxfs_dax_fall_behind(inode, range, -EXDEV);
-					file->slice_left = range->chunk + 1;
-					atomic64_inc(&dax->writes_through);
-					break;
-				}
-				bitmap_set(range->lagging, first, pages);
-				atomic64_inc(&dax->writes_through);
-				break;
-			}
-			began = ktime_get_ns();
-			err = fxfs_dax_map_extents(dax, range, extents, fail ? 1 : count);
-			if (timed)
-				atomic64_add(ktime_get_ns() - began, &dax->write_map_ns);
-			if (!err && fail)
-				err = -EIO;
-			if (!err && before)
-				fxfs_dax_check_moved(dax, inode, range, first, before, before_at,
-						     before_where,
-						     fault ? 0 : offset_in_page(pos),
-						     fault ? 0 : min_t(loff_t, end - pos,
-								       PAGE_SIZE - offset_in_page(pos)));
-			if (err) {
-				fxfs_device_store_end(dax->dev);
-				/*
-				 * fxdax: the blocks moved, but the range maps some where they were:
-				 * dropped, and mapped again from where Fxfs has them (TASK-79.106). Or,
-				 * a write(2)'s move dropped, below, it maps some where they would have
-				 * gone.
-				 */
-				err = fxfs_dax_fall_behind(inode, range, err);
-				moved = 0;
-				goto out;
-			}
-			break;
-		}
-		/*
-		 * fxdax: a seal came between the move and the gate. The blocks move again, from where
-		 * Fxfs has them now, unless the gate is shut, for a fault, which gives up its page to
-		 * wait for the seal, and with it the semaphore (`moved`, below). A write(2)'s move,
-		 * whose new blocks the seal sealed, is dropped, which leaves them as they were.
-		 */
-		if (gate >= 0) {
-			fxfs_device_store_end(dax->dev);
-			if (pending) {
-				fxfs_dax_drop_pending(dax, pending);
-				pending = NULL;
-			}
-			if (fault)
-				fxfs_dax_pause(FXFS_DAX_STEP_RESEALED);
-			continue;
-		}
-		fxfs_dax_pause(FXFS_DAX_STEP_SHUT);
-		err = gate;
-		goto out;
-	}
-	kfree(held);
-	kfree(before);
-	kvfree(extents);
-	if (!through)
-		fxfs_dax_shadow_check(dax, range, first, pages, fault ? "a fault" : "a write");
-	iomap->type = IOMAP_MAPPED;
-	/* Holes a mapping of the file maps zeros for are gone. */
-	iomap->flags |= IOMAP_F_PRIVATE | (fresh ? IOMAP_F_NEW : 0);
-	iomap->addr = through ?: fxfs_dax_page_offset(range, first) + offset_in_page(pos);
-	fxfs_dax_trace(fault ? FXFS_DAX_TRACE_FAULT : FXFS_DAX_TRACE_WRITE, inode->i_ino,
-		       (start >> PAGE_SHIFT) + first, fxfs_dax_page_offset(range, first), 0, pages, 0);
-	/* fxdax: a page's place within the window, or its fault dies of SIGBUS (TASK-121). */
-	WARN(iomap->addr >= dax->window_len,
-	     "fxfs: ino %lu page %lu written at %llx, past the window's %llx\n",
-	     inode->i_ino, first, iomap->addr, dax->window_len);
-	iomap->length = end - pos;
-	iomap->private = range;
-	/* fxdax: a fault's, until its iomap_end, as moves wait for it (`faulting`). */
-	if (fault)
-		atomic_inc(&range->faulting);
-	/* fxdax: held until its bytes are in, and its move commits (fxfs_dax_iomap_end). */
-	if (pending)
-		file->pending = pending;
-	else
-		up_write(&file->sem);
-	if (size)
-		fxfs_dax_pause_file(FXFS_DAX_STEP_WRITE_MAPPED, inode->i_ino);
-	return 0;
-out:
-	/*
-	 * fxdax: blocks Fxfs moved that the range doesn't map yet, leaving: it maps them where they
-	 * moved, read-only, whatever the way out. Else it goes on mapping them where they were, in an
-	 * extent Fxfs frees, where the device puts zeros, which the next fault's copy of the page
-	 * held: a seal shutting the gate as a fault went to map them (TASK-121), or as it went to
-	 * move them again, a seal having ended meanwhile (TASK-133).
-	 */
-	if (moved) {
-		int mapped = fxfs_dax_map_moved(dax, range, extents, moved);
-
-		if (mapped)
-			err = fxfs_dax_fall_behind(inode, range, mapped);
-	}
-	/* fxdax: a write(2)'s move, dropped, leaves the file as it was. */
-	if (pending)
-		fxfs_dax_drop_pending(dax, pending);
-	up_write(&file->sem);
-	kfree(held);
-	kfree(before);
-	kvfree(extents);
-	fxfs_dax_put_range(dax, range);
-	return err;
-}
-
-/*
- * fxdax: copying on write, for tests (doc-13's stage 2): every this many milliseconds, the budget's
- * worker writes back, seals and rebinds every private page it can, under whatever stores go on; 0
- * never. Setting it starts it, on the filesystem mounted last.
+ * fxdax: for tests (doc-13's stage 2): every this many milliseconds, the budget's worker writes
+ * back, seals and rebinds every private page it can, under whatever stores go on; 0 never. Setting
+ * it starts it, on the filesystem mounted last.
  */
 static unsigned int fxfs_dax_rebind_every;
 
-/* fxdax: copying on write, a writeback's pages of a range: the dirty set it swapped out. */
-struct fxfs_dax_cow_batch {
+/* fxdax: a writeback's pages of a range: the dirty set it swapped out. */
+struct fxfs_dax_batch {
 	struct fxfs_dax_range *range;
 	unsigned long pages[BITS_TO_LONGS(FXFS_DAX_PAGES)];
 };
@@ -3807,14 +1964,14 @@ struct fxfs_dax_cow_batch {
  * fxdax: the most pages one fxfs_write_many writes back: a megabyte, as one of the page cache's
  * writeback's (FXFS_IO_MAX, super.c).
  */
-#define FXFS_DAX_COW_RUN 256
+#define FXFS_DAX_WRITEBACK_RUN 256
 
 /*
- * fxdax: has Fxfs write the `nr` parts `parts` of file `ino`, `pages` dirty pages, paid for with their
- * room; or, with no part, of pages past the file's end, releases it.
+ * fxdax: has Fxfs write the `nr` parts `parts` of file `ino`, `pages` dirty pages, paid for with
+ * their room; or, with no part, of pages past the file's end, releases it.
  */
-static int fxfs_dax_cow_write_run(struct fxfs *fs, u64 ino, const struct fxfs_write_part *parts,
-				  size_t nr, unsigned long pages)
+static int fxfs_dax_write_run(struct fxfs *fs, u64 ino, const struct fxfs_write_part *parts,
+			      size_t nr, unsigned long pages)
 {
 	if (nr)
 		return fxfs_nofs(fxfs_write_many(fs, ino, parts, nr, (u64)pages << PAGE_SHIFT));
@@ -3826,14 +1983,15 @@ static int fxfs_dax_cow_write_run(struct fxfs *fs, u64 ino, const struct fxfs_wr
 /*
  * fxdax: has Fxfs write the `nr` ranges' pages `batch`, of `inode`, from the window, where stores
  * made them private, to new extents, as the page cache's writeback writes folios
- * (fxfs_vfs_writepages): FXFS_DAX_COW_RUN pages a call at most, each with the room its dirtying
- * reserved, up to the file's end. Fxfs copies them into its transfer buffer, checksums that, and
- * commits after the bytes; a store meanwhile reaches the copy or not, its page dirty again either
- * way. `parts` has room for FXFS_DAX_COW_RUN. The first error, the rest written still.
+ * (fxfs_vfs_writepages): FXFS_DAX_WRITEBACK_RUN pages a call at most, each with the room its
+ * dirtying reserved, up to the file's end. Fxfs copies them into its transfer buffer, checksums
+ * that, and commits after the bytes; a store meanwhile reaches the copy or not, its page dirty
+ * again either way. `parts` has room for FXFS_DAX_WRITEBACK_RUN. The first error, the rest written
+ * still.
  */
-static int fxfs_dax_cow_write_pages(struct fxfs_dax *dax, struct inode *inode,
-				    struct fxfs_dax_cow_batch *batch, size_t nr,
-				    struct fxfs_write_part *parts)
+static int fxfs_dax_write_pages(struct fxfs_dax *dax, struct inode *inode,
+				struct fxfs_dax_batch *batch, size_t nr,
+				struct fxfs_write_part *parts)
 {
 	struct fxfs *fs = fxfs_vfs_fs(inode->i_sb);
 	loff_t size = i_size_read(inode);
@@ -3853,7 +2011,7 @@ static int fxfs_dax_cow_write_pages(struct fxfs_dax *dax, struct inode *inode,
 			long had;
 
 			end = min(find_next_zero_bit(batch[i].pages, range->pages, page),
-				  page + FXFS_DAX_COW_RUN - run);
+				  page + FXFS_DAX_WRITEBACK_RUN - run);
 			had = dax_direct_access(dax->dax_dev,
 						fxfs_dax_page_offset(range, page) >> PAGE_SHIFT,
 						end - page, DAX_ACCESS, &kaddr, NULL);
@@ -3868,32 +2026,32 @@ static int fxfs_dax_cow_write_pages(struct fxfs_dax *dax, struct inode *inode,
 			else if (pos < size)
 				err = err ?: -EIO;
 			run += end - page;
-			if (run == FXFS_DAX_COW_RUN) {
-				ran = fxfs_dax_cow_write_run(fs, inode->i_ino, parts, n, run);
+			if (run == FXFS_DAX_WRITEBACK_RUN) {
+				ran = fxfs_dax_write_run(fs, inode->i_ino, parts, n, run);
 				err = err ?: ran;
 				n = 0;
 				run = 0;
 			}
 		}
 	}
-	ran = fxfs_dax_cow_write_run(fs, inode->i_ino, parts, n, run);
+	ran = fxfs_dax_write_run(fs, inode->i_ino, parts, n, run);
 	dax_read_unlock(id);
 	return err ?: ran;
 }
 
 /*
- * fxdax: copying on write, makes the user's mappings of the `nr` ranges' pages `batch`, a
- * writeback's, read-only, as the sealer does a file's (wp_shared_mapping_range): a store to one
- * after this faults, and dirties its page again. By the page tables, which see every PTE, not the
- * DAX entries: a fault past its iomap, which made its page dirty and its PTE writable, holds the
- * page's entry until it returns, after its iomap_end let the semaphore go and a writeback swapped
- * the page out; and dax_writeback_mapping_range, finding the entry locked, gives up on it rather
- * than wait (dax_writeback_one's get_next_unlocked_entry, mid-walk, says it gone). That PTE stayed
- * writable: a rebind mapped the page read-only under it, which the host refuses a store to, or a
- * store through it after the writeback's copy went in no writeback (guest/sim, seed 22).
+ * fxdax: makes the user's mappings of the `nr` ranges' pages `batch`, a writeback's, read-only
+ * (wp_shared_mapping_range): a store to one after this faults, and dirties its page again. By the
+ * page tables, which see every PTE, not the DAX entries: a fault past its iomap, which made its
+ * page dirty and its PTE writable, holds the page's entry until it returns, after its iomap_end
+ * let the semaphore go and a writeback swapped the page out; and dax_writeback_mapping_range,
+ * finding the entry locked, gives up on it rather than wait (dax_writeback_one's
+ * get_next_unlocked_entry, mid-walk, says it gone). That PTE stayed writable: a rebind mapped the
+ * page read-only under it, which the host refuses a store to, or a store through it after the
+ * writeback's copy went in no writeback (guest/sim, seed 22).
  */
-static void fxfs_dax_cow_protect(struct address_space *mapping,
-				 const struct fxfs_dax_cow_batch *batch, size_t nr)
+static void fxfs_dax_protect(struct address_space *mapping, const struct fxfs_dax_batch *batch,
+			     size_t nr)
 {
 	unsigned long page, end;
 	size_t i;
@@ -3911,24 +2069,24 @@ static void fxfs_dax_cow_protect(struct address_space *mapping,
 }
 
 /*
- * fxdax: copying on write, the writeback transition (doc-13): writes back `inode`'s dirty pages, as
- * fsync, msync, sync, the flusher (writepages), the budget, an UNMAP of a range and eviction need,
- * from dax.c's dirty set alone. Under its file's semaphore held for writing, so that no write's
- * iomap is between dirtying a page and its store or PTE, the dirty set is swapped for an empty
- * one: the writeback set, each page of it the VM's own on the host since the iomap that dirtied it
- * (fxfs_dax_cow_dirty), so that its block may move under it. The writeback lock (`wb_lock`) keeps
- * the set from rebinding until Fxfs has committed it. Then what faults made writable is
- * write-protected (fxfs_dax_cow_protect), so that a store after faults, and dirties its page
- * again; and the set's bytes are written to new extents, which Fxfs allocates now, committing
- * after them (fxfs_dax_cow_write_pages). Swapped under the semaphore shared, a fault between its
- * iomap and its PTE left a writable PTE to a page the set took, which a rebind then lost the
- * stores of.
+ * fxdax: the writeback transition (doc-13): writes back `inode`'s dirty pages, as fsync, msync,
+ * sync, the flusher (writepages), the budget, an UNMAP of a range, a size's change and eviction
+ * need, from dax.c's dirty set alone. Under its file's semaphore held for writing, so that no
+ * write's iomap is between dirtying a page and its store or PTE, the dirty set is swapped for an
+ * empty one: the writeback set, each page of it the VM's own on the host since the iomap that
+ * dirtied it (fxfs_dax_dirty), so that its block may move under it. The writeback lock (`wb_lock`)
+ * keeps the set from rebinding until Fxfs has committed it. Then what faults made writable is
+ * write-protected (fxfs_dax_protect), so that a store after faults, and dirties its page again;
+ * and the set's bytes are written to new extents, which Fxfs allocates now, committing after them
+ * (fxfs_dax_write_pages). Swapped under the semaphore shared, a fault between its iomap and its PTE
+ * left a writable PTE to a page the set took, which a rebind then lost the stores of. Fxfs takes a
+ * file's size as its writeback writes its pages, as the page cache's.
  */
-static int fxfs_dax_cow_write_back(struct inode *inode)
+int fxfs_dax_write_back(struct inode *inode)
 {
 	struct fxfs_dax_file *file = fxfs_dax_file(inode);
 	struct fxfs_dax *dax = fxfs_dax_of(inode);
-	struct fxfs_dax_cow_batch *batch = NULL;
+	struct fxfs_dax_batch *batch = NULL;
 	struct fxfs_write_part *parts = NULL;
 	struct fxfs_dax_range *range;
 	unsigned long chunk, word;
@@ -3936,7 +2094,7 @@ static int fxfs_dax_cow_write_back(struct inode *inode)
 	long pages = 0;
 	int err = 0;
 
-	if (!file)
+	if (!IS_DAX(inode) || !file)
 		return 0;
 	/*
 	 * Whatever is dirty now: a writeback under way, the budget's or the flusher's, swapped out
@@ -3949,20 +2107,20 @@ static int fxfs_dax_cow_write_back(struct inode *inode)
 		goto out;
 	down_read(&file->sem);
 	xa_for_each(&file->ranges, chunk, range)
-		most += fxfs_dax_cow_busy(range);
+		most += fxfs_dax_range_dirty(range);
 	up_read(&file->sem);
 	if (!most)
 		goto out;
 	/* Before the swap: a writeback that can't write leaves the set dirty. */
 	batch = fxfs_nofs(kvmalloc_array(most, sizeof(*batch), GFP_KERNEL));
-	parts = kmalloc_array(FXFS_DAX_COW_RUN, sizeof(*parts), GFP_NOFS);
+	parts = kmalloc_array(FXFS_DAX_WRITEBACK_RUN, sizeof(*parts), GFP_NOFS);
 	if (!batch || !parts) {
 		err = -ENOMEM;
 		goto out;
 	}
 	down_write(&file->sem);
 	xa_for_each(&file->ranges, chunk, range) {
-		if (nr == most || !fxfs_dax_cow_busy(range))
+		if (nr == most || !fxfs_dax_range_dirty(range))
 			continue;
 		batch[nr].range = range;
 		/* Kept, mapped, while the writeback reads it: no reclaim, no drop. */
@@ -3977,16 +2135,16 @@ static int fxfs_dax_cow_write_back(struct inode *inode)
 		pages += bitmap_weight(batch[nr].pages, range->pages);
 		nr++;
 	}
-	fxfs_dax_cow_count(dax, file, 0, -pages);
+	fxfs_dax_count(dax, file, 0, -pages);
 	up_write(&file->sem);
-	fxfs_dax_cow_protect(inode->i_mapping, batch, nr);
+	fxfs_dax_protect(inode->i_mapping, batch, nr);
 	/* Before it reads its ranges' window pages, which nothing may free (pause points). */
 	fxfs_dax_pause_file(FXFS_DAX_STEP_WRITEBACK, inode->i_ino);
-	err = fxfs_dax_cow_write_pages(dax, inode, batch, nr, parts);
+	err = fxfs_dax_write_pages(dax, inode, batch, nr, parts);
 	for (i = 0; i < nr; i++)
 		fxfs_dax_put_range(dax, batch[i].range);
-	atomic64_inc(&dax->cow_writebacks);
-	atomic64_add(pages, &dax->cow_written);
+	atomic64_inc(&dax->writebacks);
+	atomic64_add(pages, &dax->written);
 	/* As the page cache's writeback: the pages are clean, the error the file's (fsync's). */
 	if (err)
 		mapping_set_error(inode->i_mapping, err);
@@ -3998,16 +2156,16 @@ out:
 }
 
 /*
- * fxdax: copying on write, the rebinding transition (doc-13): rebinds `file`'s clean private pages,
- * those in no dirty set, nor in a writeback's under way, which the writeback lock waits for, each
- * MAPped to the sealed extent's page holding its bytes, as Fxfs has them, or to zeros where it has
- * none: the same bytes at the same address, the host's private page freed, nothing in the guest
- * changed, and the page private no more (fxfs_dax_cow_rebound). Under the file's semaphore held
- * for writing, which sees each with no writable PTE (the fault that made one dirtied its page,
- * which its writeback write-protected) and no copy into it under way (invariant 3). A page whose
- * extent is open yet, its writeback's barrier not come, stays private. How many it rebound.
+ * fxdax: the rebinding transition (doc-13): rebinds `file`'s clean private pages, those in no dirty
+ * set, nor in a writeback's under way, which the writeback lock waits for, each MAPped to the
+ * sealed extent's page holding its bytes, as Fxfs has them, or to zeros where it has none: the
+ * same bytes at the same address, the host's private page freed, nothing in the guest changed, and
+ * the page private no more (fxfs_dax_rebound). Under the file's semaphore held for writing, which
+ * sees each with no writable PTE (the fault that made one dirtied its page, which its writeback
+ * write-protected) and no copy into it under way (invariant 3). A page whose extent is open yet,
+ * its writeback's barrier not come, stays private. How many it rebound.
  */
-static long fxfs_dax_cow_rebind(struct fxfs_dax *dax, struct fxfs_dax_file *file)
+static long fxfs_dax_rebind(struct fxfs_dax *dax, struct fxfs_dax_file *file)
 {
 	struct fxfs_dax_volume *volume;
 	struct fxfs_dax_range *range;
@@ -4021,8 +2179,8 @@ static long fxfs_dax_cow_rebind(struct fxfs_dax *dax, struct fxfs_dax_file *file
 	/* A volume going (fxfs_dax_remove_volume) stops the worker first. */
 	volume = READ_ONCE(file->volume);
 	xa_for_each(&file->ranges, chunk, range) {
-		if (!volume || !range->private || range->behind)
-			continue;
+		if (!volume)
+			break;
 		for (page = find_first_bit(range->private, range->pages); page < range->pages;
 		     page = find_next_bit(range->private, range->pages, end)) {
 			end = page + 1;
@@ -4033,7 +2191,7 @@ static long fxfs_dax_cow_rebind(struct fxfs_dax *dax, struct fxfs_dax_file *file
 				end++;
 			/* Before the MAP over them, holding what a rebind holds (pause points). */
 			fxfs_dax_pause_file(FXFS_DAX_STEP_REBIND, file->ino);
-			done = fxfs_dax_cow_map(dax, volume->fs, range, page, end, true);
+			done = fxfs_dax_map_pages(dax, volume->fs, range, page, end, true);
 			if (done < 0)
 				pr_warn_ratelimited("fxfs: rebinding ino %llu chunk %lu pages %lu to %lu: %ld\n",
 						    file->ino, chunk, page, end, done);
@@ -4043,7 +2201,7 @@ static long fxfs_dax_cow_rebind(struct fxfs_dax *dax, struct fxfs_dax_file *file
 	}
 	up_write(&file->sem);
 	mutex_unlock(&file->wb_lock);
-	atomic64_add(rebound, &dax->cow_rebound);
+	atomic64_add(rebound, &dax->rebound);
 	return rebound;
 }
 
@@ -4051,7 +2209,7 @@ static long fxfs_dax_cow_rebind(struct fxfs_dax *dax, struct fxfs_dax_file *file
  * fxdax: references to every volume's files with dirty or private pages, in `*files`, which the
  * caller frees, putting each: how many.
  */
-static size_t fxfs_dax_cow_files(struct fxfs_dax *dax, struct fxfs_dax_file ***files)
+static size_t fxfs_dax_busy_files(struct fxfs_dax *dax, struct fxfs_dax_file ***files)
 {
 	struct fxfs_dax_volume *volume;
 	struct fxfs_dax_file *file;
@@ -4079,7 +2237,7 @@ static size_t fxfs_dax_cow_files(struct fxfs_dax *dax, struct fxfs_dax_file ***f
 }
 
 /* fxdax: the inode read in for `file`, with a reference, if there is one. */
-static struct inode *fxfs_dax_cow_inode(struct fxfs_dax *dax, struct fxfs_dax_file *file)
+static struct inode *fxfs_dax_inode_of(struct fxfs_dax *dax, struct fxfs_dax_file *file)
 {
 	struct inode *inode = NULL;
 
@@ -4095,10 +2253,10 @@ static struct inode *fxfs_dax_cow_inode(struct fxfs_dax *dax, struct fxfs_dax_fi
  * if `write`, not while frozen; seals what that wrote, for its pages' extents to map; and rebinds
  * clean private pages, file by file, until no more than `target` are private.
  */
-static void fxfs_dax_cow_relieve(struct fxfs_dax *dax, long target, bool write)
+static void fxfs_dax_relieve(struct fxfs_dax *dax, long target, bool write)
 {
 	struct fxfs_dax_file **files;
-	size_t nr = fxfs_dax_cow_files(dax, &files), i;
+	size_t nr = fxfs_dax_busy_files(dax, &files), i;
 	struct fxfs *wrote = NULL;
 	int err;
 
@@ -4108,10 +2266,10 @@ static void fxfs_dax_cow_relieve(struct fxfs_dax *dax, long target, bool write)
 
 		if (!volume || !atomic_long_read(&files[i]->dirty_pages))
 			continue;
-		inode = fxfs_dax_cow_inode(dax, files[i]);
+		inode = fxfs_dax_inode_of(dax, files[i]);
 		if (!inode)
 			continue;
-		err = fxfs_dax_cow_write_back(inode);
+		err = fxfs_dax_write_back(inode);
 		if (err)
 			pr_warn_ratelimited("fxfs: writing back ino %lu's private pages: %d\n",
 					    inode->i_ino, err);
@@ -4120,14 +2278,14 @@ static void fxfs_dax_cow_relieve(struct fxfs_dax *dax, long target, bool write)
 	}
 	/* The barrier after them, which the journal's flush makes, seals them. */
 	if (wrote) {
-		atomic64_inc(&dax->cow_seals);
+		atomic64_inc(&dax->seals_made);
 		err = fxfs_nofs(fxfs_fsync(wrote));
 		if (err)
 			pr_warn_ratelimited("fxfs: sealing what the budget wrote back: %d\n", err);
 	}
 	for (i = 0; i < nr; i++) {
 		if (atomic_long_read(&dax->private) > target)
-			fxfs_dax_cow_rebind(dax, files[i]);
+			fxfs_dax_rebind(dax, files[i]);
 		fxfs_dax_put_file(dax, files[i]);
 	}
 	kvfree(files);
@@ -4145,7 +2303,7 @@ static u64 fxfs_dax_seal_target(struct fxfs_dax *dax)
 }
 
 /* fxdax: forgets the page-cache inodes of the volumes' `unsealed` whose barrier has come. */
-static void fxfs_dax_cow_prune(struct fxfs_dax *dax)
+static void fxfs_dax_prune(struct fxfs_dax *dax)
 {
 	u64 seals = fxfs_device_seals(dax->dev);
 	struct fxfs_dax_volume *volume;
@@ -4167,28 +2325,31 @@ static void fxfs_dax_cow_prune(struct fxfs_dax *dax)
 
 /*
  * fxdax: the budget's worker (doc-13): past seven eighths of private_max, it writes back dirty
- * files and rebinds clean private pages, to three quarters; asked to (`cow_clean`, as the window
- * runs out of room for ranges), it writes back whatever is dirty; asked to rebind all
- * (`cow_rebind_all`, fxfs.dax_rebind_every), as many as it can. Then it prunes the page-cache
- * inodes sealed since, and wakes those the budget held up, and the window's reclaim.
+ * files and rebinds clean private pages, to three quarters; asked to (`clean`, as the window runs
+ * out of room for ranges), it writes back whatever is dirty; asked to rebind all
+ * (fxfs.dax_rebind_now, fxfs.dax_rebind_every), as many as it can. Then it prunes the page-cache
+ * inodes sealed since, says which asks to rebind all it served, those made before it began, and
+ * wakes those the budget held up, and the window's reclaim.
  */
-static void fxfs_dax_cow_work(struct work_struct *work)
+static void fxfs_dax_work(struct work_struct *work)
 {
-	struct fxfs_dax *dax = container_of(work, struct fxfs_dax, cow_work);
+	struct fxfs_dax *dax = container_of(work, struct fxfs_dax, work);
 	unsigned int every = READ_ONCE(fxfs_dax_rebind_every);
-	bool clean = atomic_cmpxchg(&dax->cow_clean, 1, 0) == 1;
-	bool all = atomic_cmpxchg(&dax->cow_rebind_all, 1, 0) == 1 || every;
+	s64 asked = atomic64_read(&dax->rebinds_asked);
+	bool clean = atomic_cmpxchg(&dax->clean, 1, 0) == 1;
+	bool all = asked != atomic64_read(&dax->rebinds_done) || every;
 	long max = dax->private_max;
 
 	if (clean || all || atomic_long_read(&dax->private) > max - max / 8)
-		fxfs_dax_cow_relieve(dax, all ? 0 : max - max / 4, !READ_ONCE(dax->frozen));
-	fxfs_dax_cow_prune(dax);
-	atomic64_inc(&dax->cow_rounds);
-	wake_up_all(&dax->cow_wait);
+		fxfs_dax_relieve(dax, all ? 0 : max - max / 4, !READ_ONCE(dax->frozen));
+	fxfs_dax_prune(dax);
+	atomic64_set(&dax->rebinds_done, asked);
+	atomic64_inc(&dax->rounds);
+	wake_up_all(&dax->budget_wait);
 	fxfs_dax_released(dax);
-	if (every && !READ_ONCE(dax->cow_stopping)) {
+	if (every && !READ_ONCE(dax->stopping)) {
 		msleep(every);
-		fxfs_dax_cow_kick(dax, false);
+		fxfs_dax_kick(dax, false);
 	}
 }
 
@@ -4197,18 +2358,18 @@ static void fxfs_dax_cow_work(struct work_struct *work)
  * so, if private_max has room for them; else none, and false, for the iomap to wait for the worker
  * (doc-13's budget). Past seven eighths of it, the worker writes back and rebinds.
  */
-static bool fxfs_dax_cow_take(struct fxfs_dax *dax, long pages)
+static bool fxfs_dax_take_private(struct fxfs_dax *dax, long pages)
 {
 	long now = atomic_long_add_return(pages, &dax->private);
 
 	if (now > dax->private_max) {
 		atomic_long_sub(pages, &dax->private);
-		atomic64_inc(&dax->cow_throttled);
-		fxfs_dax_cow_kick(dax, false);
+		atomic64_inc(&dax->throttled);
+		fxfs_dax_kick(dax, false);
 		return false;
 	}
 	if (now > dax->private_max - dax->private_max / 8)
-		fxfs_dax_cow_kick(dax, false);
+		fxfs_dax_kick(dax, false);
 	return true;
 }
 
@@ -4218,14 +2379,14 @@ static bool fxfs_dax_cow_take(struct fxfs_dax *dax, long pages)
  * to try again, -EINTR if killed, or -ENOMEM once FXFS_DAX_NO_ROOM_WAITS rounds or waits of 10 ms
  * made none, as for a range.
  */
-static int fxfs_dax_cow_throttle(struct fxfs_dax *dax, unsigned int *waits)
+static int fxfs_dax_throttle(struct fxfs_dax *dax, unsigned int *waits)
 {
-	s64 round = atomic64_read(&dax->cow_rounds);
+	s64 round = atomic64_read(&dax->rounds);
 	long waited;
 
-	fxfs_dax_cow_kick(dax, false);
-	waited = wait_event_killable_timeout(dax->cow_wait,
-					     atomic64_read(&dax->cow_rounds) != round,
+	fxfs_dax_kick(dax, false);
+	waited = wait_event_killable_timeout(dax->budget_wait,
+					     atomic64_read(&dax->rounds) != round,
 					     msecs_to_jiffies(10));
 	if (waited < 0)
 		return -EINTR;
@@ -4235,30 +2396,30 @@ static int fxfs_dax_cow_throttle(struct fxfs_dax *dax, unsigned int *waits)
 }
 
 /* fxdax: whether `range`'s page `page` maps zeros, written never: a hole, or past the file's end. */
-static bool fxfs_dax_cow_hole(const struct fxfs_dax_range *range, unsigned long page)
+static bool fxfs_dax_zero_page(const struct fxfs_dax_range *range, unsigned long page)
 {
 	return test_bit(page, range->zeros) && !test_bit(page, range->private);
 }
 
 /*
- * fxdax: copying on write, the dirtying transition (doc-13), the one way a page joins its file's
- * dirty set: `range`'s `pages` pages from `first`, a write's (a fault's, a write(2)'s or
- * zeroing's), about to be stored to. Each not dirty yet gets room in Fxfs for its writeback (a
- * fault without it fails SIGBUS, a write(2) ENOSPC, as the page cache's do; zeroing, a truncate's
- * or a punch's, takes what there is). Each not private yet is counted private, within private_max,
- * else -ENOBUFS, for the caller to wait for the budget's worker, holding nothing
- * (fxfs_dax_cow_throttle); and the host makes them the VM's own now (PRIVATE), holding what they
- * held, before they are dirty: so a dirty page is private, whenever its store lands. A fault's
- * store lands after its iomap_end, maybe after a writeback has taken its page, moved its block,
- * and had Fxfs free the old one: the host copying the page at the store, as it would, copied the
- * zeros the window reads there then (guest/sim, seed 2802 at 1,000 operations). A failed PRIVATE
- * fails the write, -EIO, nothing dirty, the room given back; what the host made private of it
- * stays so, uncounted until a write makes it dirty, or a MAP or UNMAP frees it. With the file's
- * semaphore held shared, which the caller holds until the store or the copy is done
- * (fxfs_dax_iomap_end): no writeback swaps the page out, nor a rebind maps over it, meanwhile.
+ * fxdax: the dirtying transition (doc-13), the one way a page joins its file's dirty set:
+ * `range`'s `pages` pages from `first`, a write's (a fault's, a write(2)'s or zeroing's), about to
+ * be stored to. Each not dirty yet gets room in Fxfs for its writeback (a fault without it fails
+ * SIGBUS, a write(2) ENOSPC, as the page cache's do; zeroing, a truncate's or a punch's, takes
+ * what there is). Each not private yet is counted private, within private_max, else -ENOBUFS, for
+ * the caller to wait for the budget's worker, holding nothing (fxfs_dax_throttle); and the host
+ * makes them the VM's own now (PRIVATE), holding what they held, before they are dirty: so a dirty
+ * page is private, whenever its store lands. A fault's store lands after its iomap_end, maybe after
+ * a writeback has taken its page, moved its block, and had Fxfs free the old one: the host copying
+ * the page at the store, as it would, copied the zeros the window reads there then (guest/sim,
+ * seed 2802 at 1,000 operations). A failed PRIVATE fails the write, -EIO, nothing dirty, the room
+ * given back; what the host made private of it stays so, uncounted until a write makes it dirty,
+ * or a MAP or UNMAP frees it. With the file's semaphore held shared, which the caller holds until
+ * the store or the copy is done (fxfs_dax_iomap_end): no writeback swaps the page out, nor a rebind
+ * maps over it, meanwhile.
  */
-static int fxfs_dax_cow_dirty(struct inode *inode, struct fxfs_dax_range *range,
-			      unsigned long first, unsigned long pages, bool zero)
+static int fxfs_dax_dirty(struct inode *inode, struct fxfs_dax_range *range, unsigned long first,
+			  unsigned long pages, bool zero)
 {
 	struct fxfs_dax *dax = fxfs_dax_of(inode);
 	struct fxfs *fs = fxfs_vfs_fs(inode->i_sb);
@@ -4281,7 +2442,7 @@ static int fxfs_dax_cow_dirty(struct inode *inode, struct fxfs_dax_range *range,
 		if (err)
 			return err;
 	}
-	if (newly && !fxfs_dax_cow_take(dax, newly)) {
+	if (newly && !fxfs_dax_take_private(dax, newly)) {
 		err = -ENOBUFS;
 		goto unreserve;
 	}
@@ -4289,12 +2450,12 @@ static int fxfs_dax_cow_dirty(struct inode *inode, struct fxfs_dax_range *range,
 		/* The pages private already, those others' iomaps made so meanwhile too, stay so. */
 		err = fxfs_device_private(dax->dev, fxfs_dax_page_offset(range, first),
 					  (u64)pages << PAGE_SHIFT);
-		atomic64_inc(&dax->cow_privates);
+		atomic64_inc(&dax->privates);
 		if (err) {
 			pr_warn_ratelimited("fxfs: making %lu pages at %llx of the window private: %d\n",
 					    pages, fxfs_dax_page_offset(range, first), err);
 			atomic_long_sub(newly, &dax->private);
-			wake_up_all(&dax->cow_wait);
+			wake_up_all(&dax->budget_wait);
 			err = -EIO;
 			goto unreserve;
 		}
@@ -4323,28 +2484,28 @@ unreserve:
 }
 
 /*
- * fxdax: copying on write, maps a write of up to `length` bytes at `pos`, a fault's, a write(2)'s or
- * zeroing's, at its pages' own places in the window (doc-13), made dirty and private
- * (fxfs_dax_cow_dirty): no MAP, no transaction, nothing moved. Returns holding the file's
- * semaphore shared until fxfs_dax_iomap_end: no writeback swaps the dirty set out, nor rebinding
- * maps a page over, while the store or the copy goes on. A slice's chunk, whose pages its region's
- * other slices map, or a range too small, is dropped (-EXDEV), and mapped again as a range of its
- * own, as large as the write needs. Zeroing leaves holes, and pages of zeros never written, be.
+ * fxdax: maps a write of up to `length` bytes at `pos`, a fault's, a write(2)'s or zeroing's, at its
+ * pages' own places in the window (doc-13), made dirty and private (fxfs_dax_dirty): no MAP, no
+ * transaction, nothing moved. Returns holding the file's semaphore shared until
+ * fxfs_dax_iomap_end: no writeback swaps the dirty set out, nor rebinding maps a page over, while
+ * the store or the copy goes on. A slice's chunk, whose pages its region's other slices map, or a
+ * range too small, is dropped (-EXDEV), and mapped again as a range of its own, as large as the
+ * write needs. Zeroing leaves holes, and pages of zeros never written, be. A write past the file's
+ * end grows it as it ends (fxfs_dax_iomap_end), unless it is a fault's.
  */
-static int fxfs_dax_cow_iomap_write(struct inode *inode, loff_t pos, loff_t length,
-				    unsigned int flags, struct iomap *iomap)
+static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
+				unsigned int flags, struct iomap *iomap)
 {
 	struct fxfs_dax_file *file = fxfs_dax_file(inode);
 	struct fxfs_dax *dax = fxfs_dax_of(inode);
-	struct fxfs *fs = fxfs_vfs_fs(inode->i_sb);
 	bool fault = flags & IOMAP_FAULT, zero = flags & IOMAP_ZERO;
 	loff_t start, end = min_t(loff_t, pos + length, round_up(pos + 1, FXFS_DAX_SIZE));
-	unsigned long first, pages, page, to;
+	unsigned long first, pages, page;
 	struct fxfs_dax_range *range;
 	int err;
 
-	range = fxfs_dax_get_range_timed(inode, pos >> FXFS_DAX_SHIFT, fault || zero ? 0 : end, 0,
-					 fault, false, false);
+	range = fxfs_dax_get_range(inode, pos >> FXFS_DAX_SHIFT, fault || zero ? 0 : end, fault,
+				   false);
 	if (IS_ERR(range))
 		return PTR_ERR(range);
 	start = fxfs_dax_chunk_start(range);
@@ -4353,41 +2514,16 @@ static int fxfs_dax_cow_iomap_write(struct inode *inode, loff_t pos, loff_t leng
 		return -EXDEV;
 	}
 	first = (pos - start) >> PAGE_SHIFT;
-	end = min_t(loff_t, end, start + ((loff_t)min(range->pages, first + dax->cow_pages) <<
+	end = min_t(loff_t, end, start + ((loff_t)min(range->pages, first + dax->iomap_pages) <<
 					  PAGE_SHIFT));
 	pages = DIV_ROUND_UP(end - start, PAGE_SIZE) - first;
-	for (;;) {
-		err = fxfs_dax_down_read(file, fault);
-		if (err)
-			goto put;
-		if (range->behind) {
-			err = range->behind;
-			goto unlock;
-		}
-		if (find_next_zero_bit(range->mapped, first + pages, first) == first + pages)
-			break;
-		/* A page a truncate's MAP of zeros failed to map (fxfs_dax_resize_end): mapped now. */
-		up_read(&file->sem);
-		err = fxfs_dax_down_write(file, fault);
-		if (err)
-			goto put;
-		while (!err &&
-		       (page = find_next_zero_bit(range->mapped, first + pages, first)) <
-		       first + pages) {
-			long mapped;
-
-			to = find_next_bit(range->mapped, first + pages, page);
-			mapped = fxfs_dax_cow_map(dax, fs, range, page, to, false);
-			err = mapped < 0 ? mapped : 0;
-		}
-		up_write(&file->sem);
-		if (err)
-			goto put;
-	}
+	err = fxfs_dax_map_missing(inode, range, first, first + pages);
+	if (err)
+		goto put;
 	if (zero) {
-		bool hole = fxfs_dax_cow_hole(range, first);
+		bool hole = fxfs_dax_zero_page(range, first);
 
-		for (page = first + 1; page < first + pages && fxfs_dax_cow_hole(range, page) == hole;
+		for (page = first + 1; page < first + pages && fxfs_dax_zero_page(range, page) == hole;
 		     page++)
 			;
 		pages = page - first;
@@ -4399,7 +2535,7 @@ static int fxfs_dax_cow_iomap_write(struct inode *inode, loff_t pos, loff_t leng
 			return 0;
 		}
 	}
-	err = fxfs_dax_cow_dirty(inode, range, first, pages, zero);
+	err = fxfs_dax_dirty(inode, range, first, pages, zero);
 	if (err)
 		goto unlock;
 	iomap->type = IOMAP_MAPPED;
@@ -4424,25 +2560,27 @@ put:
 }
 
 /*
- * fxdax: copying on write, rebinds every private page it can, as freezing does (fxfs_dax_frozen),
- * or as writing to fxfs.dax_rebind_now asks, on the filesystem mounted last: written back, sealed
- * and rebound, by the worker, waited for.
+ * fxdax: for tests, as freezing does (fxfs_dax_frozen): writing to fxfs.dax_rebind_now asks the
+ * budget's worker of the filesystem mounted last to write back, seal and rebind every private page
+ * it can, and returns, the round queued. A check waits for it by the filesystem's stats: once
+ * dax_rebinds_done reaches dax_rebinds_asked as read after the write, a round begun after the ask
+ * has ended. Waited for here, the setter held kernel_param_lock (param_attr_store) through a
+ * rebind a pause point held, and every later read of a parameter waited for it (GCE).
  */
 static int fxfs_dax_rebind_now_set(const char *val, const struct kernel_param *kp)
 {
 	struct fxfs_dax *dax = READ_ONCE(fxfs_dax_stray_dax);
 
-	if (!dax || !dax->cow)
+	if (!dax)
 		return -EINVAL;
-	atomic_set(&dax->cow_rebind_all, 1);
-	fxfs_dax_cow_kick(dax, true);
-	flush_work(&dax->cow_work);
+	atomic64_inc(&dax->rebinds_asked);
+	fxfs_dax_kick(dax, true);
 	return 0;
 }
 
 static const struct kernel_param_ops fxfs_dax_rebind_now_ops = { .set = fxfs_dax_rebind_now_set };
 module_param_cb(dax_rebind_now, &fxfs_dax_rebind_now_ops, NULL, 0200);
-MODULE_PARM_DESC(dax_rebind_now, "Copying on write, write back, seal and rebind every private page now, on the filesystem mounted last (tests)");
+MODULE_PARM_DESC(dax_rebind_now, "Have the worker write back, seal and rebind every private page, on the filesystem mounted last, not waited for: dax_rebinds_done reaches dax_rebinds_asked (tests)");
 
 /* fxdax: fxfs.dax_rebind_every, set, starts the worker's rounds on the filesystem mounted last. */
 static int fxfs_dax_rebind_every_set(const char *val, const struct kernel_param *kp)
@@ -4450,8 +2588,8 @@ static int fxfs_dax_rebind_every_set(const char *val, const struct kernel_param 
 	struct fxfs_dax *dax = READ_ONCE(fxfs_dax_stray_dax);
 	int err = param_set_uint(val, kp);
 
-	if (!err && dax && dax->cow && READ_ONCE(fxfs_dax_rebind_every))
-		fxfs_dax_cow_kick(dax, false);
+	if (!err && dax && READ_ONCE(fxfs_dax_rebind_every))
+		fxfs_dax_kick(dax, false);
 	return err;
 }
 
@@ -4460,7 +2598,7 @@ static const struct kernel_param_ops fxfs_dax_rebind_every_ops = {
 	.get = param_get_uint,
 };
 module_param_cb(dax_rebind_every, &fxfs_dax_rebind_every_ops, &fxfs_dax_rebind_every, 0644);
-MODULE_PARM_DESC(dax_rebind_every, "Copying on write, write back, seal and rebind every private page every this many ms (tests; 0: never)");
+MODULE_PARM_DESC(dax_rebind_every, "Write back, seal and rebind every private page every this many ms (tests; 0: never)");
 
 /*
  * fxdax: fault injection (TASK-164.2): the next this many of Fxfs's write_many transactions fail
@@ -4485,7 +2623,6 @@ static const struct kernel_param_ops fxfs_dax_fail_commits_ops = {
 module_param_cb(dax_fail_commits, &fxfs_dax_fail_commits_ops, &fxfs_dax_fail_commits, 0644);
 MODULE_PARM_DESC(dax_fail_commits, "Fail the next this many write_many transactions after their bytes, before they commit (fault injection)");
 
-
 static int fxfs_dax_iomap_begin(struct inode *inode, loff_t pos, loff_t length,
 				unsigned int flags, struct iomap *iomap, struct iomap *srcmap)
 {
@@ -4508,22 +2645,13 @@ static int fxfs_dax_iomap_begin(struct inode *inode, loff_t pos, loff_t length,
 		/* fxdax: a follower's filesystem is read-only: nothing writes. */
 		if (WARN_ON_ONCE(fxfs_vfs_follows(inode->i_sb)))
 			return -EROFS;
-		/*
-		 * fxdax: nor past an iomap whose bytes aren't the file's: dax_iomap_rw goes on after
-		 * a copy cut short, which wrote the rest after a gap (fxfs_dax_committed).
-		 */
-		if (!(flags & (IOMAP_FAULT | IOMAP_ZERO)) && fxfs_dax_file(inode)->unwritten_err)
-			return fxfs_dax_file(inode)->unwritten_err;
-		/* fxdax: copying on write, its pages made private and dirty, nothing moved (doc-13). */
-		if (fxfs_dax_of(inode)->cow)
-			err = fxfs_dax_cow_iomap_write(inode, pos, length, flags, iomap);
-		else
-			err = fxfs_dax_iomap_write(inode, pos, length, flags, iomap, srcmap);
+		/* fxdax: its pages made private and dirty, nothing moved (doc-13). */
+		err = fxfs_dax_iomap_write(inode, pos, length, flags, iomap);
 		if (!(flags & (IOMAP_FAULT | IOMAP_ZERO)))
 			atomic64_add(ktime_get_ns() - began, &fxfs_dax_of(inode)->write_begin_ns);
 		return err;
 	}
-	err = fxfs_dax_iomap_read(inode, pos, length, flags, iomap, srcmap);
+	err = fxfs_dax_iomap_read(inode, pos, length, flags, iomap);
 	/* fxdax: between the iomap and the read of what it maps, which its range keeps mapped. */
 	if (!err) {
 		fxfs_dax_pause_file(FXFS_DAX_STEP_READ_MAPPED, inode->i_ino);
@@ -4532,89 +2660,36 @@ static int fxfs_dax_iomap_begin(struct inode *inode, loff_t pos, loff_t length,
 	return err;
 }
 
+/*
+ * A write's iomap held the file's semaphore shared, which goes now its store or copy is done
+ * (fxfs_dax_iomap_write). A write(2) past the file's end grows it as it ends, by what it wrote, not
+ * as it begins: a reader finding the file longer reads what the write wrote there, never the zeros
+ * before it (TASK-133), as ext4's and XFS's DAX writes grow theirs.
+ */
 static int fxfs_dax_iomap_end(struct inode *inode, loff_t pos, loff_t length, ssize_t written,
 			      unsigned int flags, struct iomap *iomap)
 {
 	struct fxfs_dax *dax = fxfs_dax_of(inode);
 	struct fxfs_dax_file *file = fxfs_dax_file(inode);
 	bool written_by_write = (flags & IOMAP_WRITE) && !(flags & (IOMAP_FAULT | IOMAP_ZERO));
-	struct fxfs_dax_write *pending = written_by_write ? file->pending : NULL;
 	u64 began = ktime_get_ns();
-	int err = 0;
 
-	/*
-	 * fxdax: copying on write, a write's iomap held the file's semaphore shared, which goes now
-	 * its store or copy is done (fxfs_dax_cow_iomap_write): a write(2) past the file's end grows
-	 * it by what it wrote, as below.
-	 */
-	if (dax->cow && (flags & (IOMAP_WRITE | IOMAP_ZERO))) {
-		if (written_by_write && written > 0 && pos + written > i_size_read(inode)) {
-			i_size_write(inode, pos + written);
-			__mark_inode_dirty(inode, I_DIRTY_SYNC | I_DIRTY_DATASYNC);
-		}
-		if (iomap->private) {
-			up_read(&file->sem);
+	if (!(flags & (IOMAP_WRITE | IOMAP_ZERO))) {
+		if (iomap->private)
 			fxfs_dax_put_range(dax, iomap->private);
-		}
-		/* A fault's PTE in, its page's DAX entry held still (pause points). */
-		if (flags & IOMAP_FAULT)
-			fxfs_dax_pause_file(FXFS_DAX_STEP_FAULTED, inode->i_ino);
-		if (written_by_write)
-			atomic64_add(ktime_get_ns() - began, &dax->write_end_ns);
 		return 0;
 	}
-
-	/*
-	 * A write past the file's end grows it as it ends, by what it wrote, not as it begins: a
-	 * reader finding the file longer reads what the write wrote there, never the zeros before
-	 * it (TASK-133), as ext4's and XFS's DAX writes grow theirs. In the gate still, so that a
-	 * seal takes the size with the bytes. An append's size goes with the inode's next writeback,
-	 * not a transaction of its own for every write (TASK-92.28). fxdax: a write(2) whose move
-	 * commits now, with the size, grows it once that has, below.
-	 */
-	if (!pending && written_by_write && written > 0 && pos + written > i_size_read(inode)) {
+	if (written_by_write && written > 0 && pos + written > i_size_read(inode)) {
 		i_size_write(inode, pos + written);
 		__mark_inode_dirty(inode, I_DIRTY_SYNC | I_DIRTY_DATASYNC);
 	}
-	if (iomap->flags & IOMAP_F_PRIVATE)
-		fxfs_device_store_end(dax->dev);
-	/*
-	 * fxdax: a write(2)'s move commits, now its bytes are in, out of the gate, as a commit may
-	 * wait for a seal. A copy cut short drops it instead, leaving the file as it was, and so
-	 * does a failed commit: the range, mapping the new blocks, falls behind them, and none of the
-	 * iomap's bytes are the file's (fxfs_dax_committed). Then the file's semaphore goes, which
-	 * kept faults from mapping the file meanwhile (TASK-153.5).
-	 */
-	if (pending) {
-		file->pending = NULL;
-		if (written == length)
-			err = fxfs_nofs(fxfs_dax_end_write(pending, true));
-		else
-			fxfs_dax_drop_pending(dax, pending);
-		if (written != length || err) {
-			struct fxfs_dax_range *range = iomap->private;
-
-			/* A slice can't map the blocks but where they are: -EXDEV, to be dropped. */
-			fxfs_dax_fall_behind(inode, range, range->region ? -EXDEV : -ESTALE);
-			file->unwritten = pos;
-			file->unwritten_err = err ?: -EFAULT;
-		} else if (pos + written > i_size_read(inode)) {
-			i_size_write(inode, pos + written);
-			__mark_inode_dirty(inode, I_DIRTY_SYNC | I_DIRTY_DATASYNC);
-		}
-		up_write(&file->sem);
-	}
-	if (written_by_write && file->through) {
-		fxfs_dax_put_region(dax, file->through);
-		file->through = NULL;
-	}
 	if (iomap->private) {
-		struct fxfs_dax_range *range = iomap->private;
-
-		if ((flags & IOMAP_FAULT) && atomic_dec_and_test(&range->faulting))
-			wake_up_var(&range->faulting);
-		fxfs_dax_put_range(dax, range);
+		up_read(&file->sem);
+		fxfs_dax_put_range(dax, iomap->private);
 	}
+	/* A fault's PTE in, its page's DAX entry held still (pause points). */
+	if (flags & IOMAP_FAULT)
+		fxfs_dax_pause_file(FXFS_DAX_STEP_FAULTED, inode->i_ino);
 	if (written_by_write)
 		atomic64_add(ktime_get_ns() - began, &dax->write_end_ns);
 	return 0;
@@ -4631,89 +2706,24 @@ static ssize_t fxfs_dax_read(struct kiocb *iocb, struct iov_iter *to)
 }
 
 /*
- * fxdax: what a way in to a file has of the MAPs refused for want of the host's memory: how many it
- * has seen, and how many seals it has made for them since it last got on.
- */
-struct fxfs_dax_room {
-	s64 refused;
-	unsigned int seals;
-};
-
-static struct fxfs_dax_room fxfs_dax_room(struct fxfs_dax *dax)
-{
-	return (struct fxfs_dax_room) { .refused = atomic64_read(&dax->maps_refused) };
-}
-
-/*
- * fxdax: what follows a try that failed with `err`: 0 if that wasn't the host refusing a MAP for
- * want of memory since `room` last saw, 1 once a seal has made room for another try, and otherwise
- * what to fail with. The host can't evict an open extent's pages, nor seal them, and left to Fxfs's
- * journal a seal may be far off, each write of an open extent's blocks taking more of them: so it
- * refuses a MAP while memory is left, and what was refused seals, with no iomap held,
- * nor a DAX entry, which a store in the gate a seal waits for may be waiting for; in the gate, a MAP
- * can't wait for it. Whatever way the failure took: as the range fell behind (-ESTALE), a slice as
- * one is (-EXDEV), or it had no range at all (-ENOMEM). Those are dropped as they would be. A
- * filesystem that seals in vain, its host's memory another's, says ENOMEM, which is the truth of
- * it: never EIO (TASK-150.20).
- */
-static int fxfs_dax_make_memory(struct inode *inode, struct fxfs_dax_room *room, int err)
-{
-	struct fxfs_dax *dax = fxfs_dax_of(inode);
-	s64 refused = atomic64_read(&dax->maps_refused);
-
-	if ((err != -ENOMEM && err != -ESTALE && err != -EXDEV) || refused == room->refused ||
-	    fxfs_vfs_follows(inode->i_sb))
-		return 0;
-	room->refused = refused;
-	if (++room->seals > FXFS_DAX_MAX_DROPS)
-		return -ENOMEM;
-	atomic64_inc(&dax->memory_seals);
-	return fxfs_nofs(fxfs_fsync(fxfs_vfs_fs(inode->i_sb))) ?: 1;
-}
-
-/*
  * fxdax: a read, whose copy takes no page fault: a read into a mapping of the file it reads holds
- * the range through its copy, and the fault waited for that range's users, itself among them, for
- * ever. It faults the destination in with no iomap held, as a write does its source.
+ * the range through its copy, which a fault on it may wait for, or the file's semaphore shared,
+ * which a writeback waits behind. It faults the destination in with no iomap held, as a write
+ * does its source.
  */
 static ssize_t fxfs_dax_read_faulting_between(struct kiocb *iocb, struct iov_iter *to)
 {
 	struct inode *inode = file_inode(iocb->ki_filp);
-	struct fxfs_dax_room room = fxfs_dax_room(fxfs_dax_of(inode));
 	ssize_t ret, done = 0;
-	unsigned int empty = 0, stale = 0;
-	int sealed;
+	unsigned int empty = 0;
 
 	for (;;) {
 		pagefault_disable();
 		ret = fxfs_dax_read(iocb, to);
 		pagefault_enable();
-		sealed = ret < 0 ? fxfs_dax_make_memory(inode, &room, ret) : 0;
 		if (ret > 0) {
 			done += ret;
 			empty = 0;
-			room.seals = 0;
-		} else if (sealed) {
-			if (sealed < 0) {
-				ret = sealed;
-				break;
-			}
-			if (ret != -ENOMEM) {
-				ret = fxfs_dax_drop_slice(inode, iocb->ki_pos, true);
-				if (ret)
-					break;
-			}
-			continue;
-		} else if (ret == -ESTALE || ret == -EXDEV) {
-			/* fxdax: a range behind Fxfs's blocks, once: dropped, mapped again. */
-			if (ret == -ESTALE && stale++) {
-				ret = -EIO;
-				break;
-			}
-			ret = fxfs_dax_drop_slice(inode, iocb->ki_pos, true);
-			if (ret)
-				break;
-			continue;
 		} else if (ret != -EFAULT && ret != 0) {
 			break;
 		}
@@ -4769,9 +2779,9 @@ struct fxfs_dax_source {
 /*
  * fxdax: takes the next of a write's bytes at `pos`, as many as reach the chunk's end, from `from`
  * into `source`, which the write then copies from, a copy having stopped short
- * (fxfs_dax_write_iter). With page faults enabled, holding no iomap and outside the gate, so that a
- * fault on a mapping of the file itself gets what it needs. -EFAULT if the user's memory holds none
- * of them; if it holds fewer, those are what the write writes.
+ * (fxfs_dax_write_iter). With page faults enabled, holding no iomap, so that a fault on a mapping
+ * of the file itself gets what it needs. -EFAULT if the user's memory holds none of them; if it
+ * holds fewer, those are what the write writes.
  */
 static int fxfs_dax_source_take(struct fxfs_dax_source *source, struct iov_iter *from, loff_t pos)
 {
@@ -4800,9 +2810,9 @@ static void fxfs_dax_lap(atomic64_t *into, u64 *at)
 }
 
 /*
- * fxdax: where write_ns went (TASK-146.2), each part apart, so that they add up: dax_write_begin_ns
- * less the waits within it that have counters of their own, the copy, which is dax_iomap_rw less
- * its iomaps', and what none of them holds, which a new step in the write would show as.
+ * fxdax: where write_ns went (TASK-146.2), each part apart, so that they add up: the copy, which is
+ * dax_iomap_rw less its iomaps', and what none of them holds, which a new step in the write would
+ * show as.
  */
 static void fxfs_dax_show_write_times(struct seq_file *m, struct fxfs_dax *dax)
 {
@@ -4811,19 +2821,13 @@ static void fxfs_dax_show_write_times(struct seq_file *m, struct fxfs_dax *dax)
 	s64 fault_in = atomic64_read(&dax->write_fault_in_ns);
 	s64 retry = atomic64_read(&dax->write_retry_ns), tail = atomic64_read(&dax->write_tail_ns);
 	s64 lock = atomic64_read(&dax->write_lock_ns);
-	s64 prepare = atomic64_read(&dax->write_prepare_ns);
-	s64 range = atomic64_read(&dax->write_range_ns);
 
+	seq_printf(m, "dax_writes %lld\ndax_writes_ns %lld\ndax_write_lock_ns %lld\n",
+		   atomic64_read(&dax->writes), atomic64_read(&dax->write_ns), lock);
 	seq_printf(m, "dax_write_setup_ns %lld\ndax_write_fault_in_ns %lld\n", setup, fault_in);
-	seq_printf(m, "dax_write_prepare_ns %lld\ndax_write_range_ns %lld\n", prepare, range);
-	seq_printf(m, "dax_write_range_wait_ns %lld\n", atomic64_read(&dax->write_range_wait_ns));
 	/* Read apart, as writes go on: a difference may come out below zero by a little. */
-	seq_printf(m, "dax_write_begin_ns %lld\ndax_write_begin_other_ns %lld\n", begin,
-		   max_t(s64, 0, begin - prepare - range - atomic64_read(&dax->write_gate_ns) -
-			 atomic64_read(&dax->write_fxfs_ns) - atomic64_read(&dax->write_map_ns) -
-			 atomic64_read(&dax->write_wait_ns)));
-	seq_printf(m, "dax_write_copy_ns %lld\ndax_write_end_ns %lld\n",
-		   max_t(s64, 0, rw - begin - end), end);
+	seq_printf(m, "dax_write_begin_ns %lld\ndax_write_copy_ns %lld\ndax_write_end_ns %lld\n",
+		   begin, max_t(s64, 0, rw - begin - end), end);
 	seq_printf(m, "dax_write_retry_ns %lld\ndax_write_tail_ns %lld\n", retry, tail);
 	seq_printf(m, "dax_write_other_ns %lld\n",
 		   max_t(s64, 0, atomic64_read(&dax->write_ns) - lock - setup - fault_in - rw -
@@ -4831,74 +2835,27 @@ static void fxfs_dax_show_write_times(struct seq_file *m, struct fxfs_dax *dax)
 }
 
 /*
- * fxdax: what dax_iomap_rw's `ret` says `iocb`'s write wrote, from `from`, less the bytes of the
- * iomap whose move was then dropped, or failed to commit (fxfs_dax_iomap_end), and of any after it:
- * those from `file->unwritten` on aren't the file's, and the position and `from` go back to it.
- * The range that iomap left behind the file's blocks is dropped, to be mapped again: a write
- * finding it behind took it for a second failure, and said EIO. If no bytes are left, why not.
- */
-static ssize_t fxfs_dax_committed(struct kiocb *iocb, struct iov_iter *from, ssize_t ret)
-{
-	struct inode *inode = file_inode(iocb->ki_filp);
-	struct fxfs_dax_file *file = fxfs_dax_file(inode);
-	int err = file->unwritten_err, dropped;
-
-	if (!err)
-		return ret;
-	file->unwritten_err = 0;
-	if (ret > 0) {
-		ret -= iocb->ki_pos - file->unwritten;
-		iov_iter_revert(from, iocb->ki_pos - file->unwritten);
-		iocb->ki_pos = file->unwritten;
-	}
-	dropped = fxfs_dax_drop_slice(inode, file->unwritten, true);
-	if (ret)
-		return ret;
-	return dropped ?: err;
-}
-
-/*
- * fxdax: maps again at once the chunk whose slice `file`'s write left behind its blocks, which went
- * through another region (fxfs_dax_iomap_write): a slice of that region, which maps it already,
- * as the write would have, had the blocks moved first. Else the next write found it behind, and
- * made room in Fxfs again to map it, as for a chunk with no range. Failing, it is mapped as the
- * next use needs it.
- */
-static void fxfs_dax_follow_slice(struct inode *inode, struct fxfs_dax_file *file)
-{
-	pgoff_t chunk = file->slice_left - 1;
-	struct fxfs_dax_range *range;
-
-	file->slice_left = 0;
-	if (fxfs_dax_drop_slice(inode, (loff_t)chunk << FXFS_DAX_SHIFT, true))
-		return;
-	range = fxfs_dax_get_range(inode, chunk, 0, 0, false);
-	if (!IS_ERR(range))
-		fxfs_dax_put_range(fxfs_dax_of(inode), range);
-}
-
-/*
- * Writes through the window, copying with page faults disabled: in the gate, a fault on the
- * user's memory could wait for a seal that waits for the gate. The memory is faulted in first, and
- * again whenever a copy stops short. fxdax: and bytes are taken in hand, the rest of the chunk's,
- * and copied from there, a copy that can't stop short, once a copy stopped short with none copied
- * (-EFAULT): what faulted in may be gone again, or the write's own iomap unmaps it each time, the
- * source a page of the target. Then the write goes back to the user's memory.
+ * Writes through the window, copying with page faults disabled: the copy holds the file's
+ * semaphore shared (fxfs_dax_iomap_write), and a fault on the user's memory, a mapping of the file
+ * itself, would take it again, behind a writeback waiting for it. The memory is faulted in first,
+ * and again whenever a copy stops short. fxdax: and bytes are taken in hand, the rest of the
+ * chunk's, and copied from there, a copy that can't stop short, once a copy stopped short with
+ * none copied (-EFAULT): what faulted in may be gone again. Then the write goes back to the user's
+ * memory.
  */
 static ssize_t fxfs_dax_write_iter(struct kiocb *iocb, struct iov_iter *from)
 {
 	struct inode *inode = file_inode(iocb->ki_filp);
 	struct fxfs_dax_file *file = fxfs_dax_file(inode);
 	struct fxfs_dax *dax = fxfs_dax_of(inode);
-	struct fxfs_dax_room room = fxfs_dax_room(dax);
 	struct fxfs_dax_source hand = {};
 	struct iov_iter *source = from;
-	loff_t old_size, end, write_pos = 0;
-	u64 seals = 0, began, lap;
+	loff_t old_size, end;
+	u64 began, lap;
 	ssize_t ret, done = 0;
-	unsigned int stale = 0, drops = 0, throttles = 0;
+	unsigned int drops = 0, throttles = 0;
 	bool made_room = false;
-	int err, sealed;
+	int err;
 
 	if (iocb->ki_flags & IOCB_NOWAIT)
 		return -EAGAIN;
@@ -4915,16 +2872,12 @@ static ssize_t fxfs_dax_write_iter(struct kiocb *iocb, struct iov_iter *from)
 	ret = file_update_time(iocb->ki_filp);
 	if (ret)
 		goto out;
-	write_pos = iocb->ki_pos;
-	end = write_pos + iov_iter_count(from);
-	seals = fxfs_device_seals(fxfs_dax_of(inode)->dev);
-	if (write_pos != old_size || file->append_next != write_pos || file->append_seals != seals)
-		file->append_bytes = 0;
+	end = iocb->ki_pos + iov_iter_count(from);
 	/* The ranges the file's end moves into, mapped as large as they need. */
-	if (iocb->ki_pos + iov_iter_count(from) > old_size) {
-		WRITE_ONCE(file->growing, iocb->ki_pos + iov_iter_count(from));
+	if (end > old_size) {
+		WRITE_ONCE(file->growing, end);
 		filemap_invalidate_lock(inode->i_mapping);
-		ret = fxfs_dax_fit(inode, iocb->ki_pos + iov_iter_count(from));
+		ret = fxfs_dax_fit(inode, end);
 		if (!ret && iocb->ki_pos > old_size)
 			ret = fxfs_dax_zero_tail(inode, old_size, iocb->ki_pos);
 		filemap_invalidate_unlock(inode->i_mapping);
@@ -4945,35 +2898,19 @@ static ssize_t fxfs_dax_write_iter(struct kiocb *iocb, struct iov_iter *from)
 		pagefault_disable();
 		ret = dax_iomap_rw(iocb, source, &fxfs_dax_iomap_ops);
 		pagefault_enable();
-		ret = fxfs_dax_committed(iocb, source, ret);
-		if (file->slice_left)
-			fxfs_dax_follow_slice(inode, file);
 		fxfs_dax_lap(&dax->write_rw_ns, &lap);
-		sealed = ret < 0 ? fxfs_dax_make_memory(inode, &room, ret) : 0;
 		if (ret > 0) {
 			done += ret;
 			drops = 0;
-			room.seals = 0;
-		} else if (sealed) {
-			if (sealed < 0) {
-				ret = sealed;
-				break;
-			}
-			if (ret != -ENOMEM) {
-				ret = fxfs_dax_drop_slice(inode, iocb->ki_pos, true);
-				if (ret)
-					break;
-			}
-			fxfs_dax_lap(&dax->write_retry_ns, &lap);
 		} else if (ret == -ENOBUFS) {
 			/*
-			 * fxdax: copying on write, no room among the private pages: waited for,
-			 * holding nothing of the file's but the inode's lock (doc-13's budget).
+			 * fxdax: no room among the private pages: waited for, holding nothing of the
+			 * file's but the inode's lock (doc-13's budget).
 			 */
-			ret = fxfs_dax_cow_throttle(dax, &throttles);
+			ret = fxfs_dax_throttle(dax, &throttles);
 			if (ret)
 				break;
-		} else if (ret == -ENOSPC && dax->cow && !made_room) {
+		} else if (ret == -ENOSPC && !made_room) {
 			/* fxdax: room made once, as the page cache's write_begin does. */
 			fxfs_vfs_make_room(inode->i_sb);
 			made_room = true;
@@ -4982,7 +2919,7 @@ static ssize_t fxfs_dax_write_iter(struct kiocb *iocb, struct iov_iter *from)
 			if (ret)
 				break;
 			source = &hand.iter;
-		} else if (ret == -EXDEV || (ret == -ESTALE && !stale++)) {
+		} else if (ret == -EXDEV) {
 			/*
 			 * fxdax: a write that can't get on fails, and says so: it spun unkillable, with
 			 * nothing in the log (TASK-140).
@@ -4999,17 +2936,12 @@ static ssize_t fxfs_dax_write_iter(struct kiocb *iocb, struct iov_iter *from)
 			}
 			if (drops > 1)
 				WRITE_ONCE(file->no_slices, true);
-			/*
-			 * A slice the write can't use, or fxdax: a range mapping some of its blocks
-			 * where they were (TASK-79.106), once: dropped, the chunk is mapped again.
-			 */
+			/* A slice, or a range too small: dropped, the chunk is mapped again. */
 			ret = fxfs_dax_drop_slice(inode, iocb->ki_pos, true);
 			fxfs_dax_lap(&dax->write_retry_ns, &lap);
 			if (ret)
 				break;
 		} else {
-			if (ret == -ESTALE)
-				ret = -EIO;
 			break;
 		}
 		if (source != from && !iov_iter_count(source))
@@ -5020,24 +2952,16 @@ static ssize_t fxfs_dax_write_iter(struct kiocb *iocb, struct iov_iter *from)
 		iov_iter_revert(from, iov_iter_count(source));
 	kvfree(hand.kvec.iov_base);
 	/*
-	 * A write that stopped short leaves the file no longer than it wrote: Fxfs has the size its
-	 * iomap asked for (fxfs_dax_map_write), past the inode's, which grows as bytes are written.
-	 * One that wrote nothing leaves it as it was, wherever it began past the end.
+	 * A write that stopped short leaves the file no longer than it wrote: one that wrote nothing
+	 * leaves it as it was, wherever it began past the end.
 	 */
 	if (iocb->ki_pos < end && end > old_size) {
-		/* fxdax: none written, past the end, it leaves the file as it was, not grown to `pos`. */
 		err = fxfs_vfs_resize(inode, done ? max(old_size, iocb->ki_pos) : old_size, NULL, NULL);
 		if (err && !done)
 			ret = err;
 	}
-	if (done) {
+	if (done)
 		ret = done;
-		file->append_bytes = write_pos == old_size &&
-			seals == fxfs_device_seals(fxfs_dax_of(inode)->dev) ?
-			min_t(u64, 2 * PAGE_SIZE, file->append_bytes + done) : 0;
-		file->append_next = iocb->ki_pos;
-		file->append_seals = seals;
-	}
 	fxfs_dax_lap(&dax->write_tail_ns, &lap);
 out:
 	WRITE_ONCE(file->no_slices, false);
@@ -5056,26 +2980,26 @@ out:
 static vm_fault_t fxfs_dax_do_fault(struct vm_fault *vmf, unsigned int order, bool write)
 {
 	struct inode *inode = file_inode(vmf->vma->vm_file);
+	struct fxfs_dax *dax = fxfs_dax_of(inode);
 	struct super_block *sb = inode->i_sb;
-	struct fxfs_dax_room room = fxfs_dax_room(fxfs_dax_of(inode));
 	u64 began = ktime_get_ns();
-	unsigned int stale = 0, waits = 0, drops = 0, throttles = 0;
+	unsigned int waits = 0, drops = 0, throttles = 0;
 	bool made_room = false;
 	vm_fault_t ret;
 	unsigned long pfn;
-	int error, sealed;
+	int error;
 
 	if (write) {
 		sb_start_pagefault(sb);
 		file_update_time(vmf->vma->vm_file);
 	}
 	for (;;) {
-		long seen = atomic_long_read(&fxfs_dax_of(inode)->released);
+		long seen = atomic_long_read(&dax->released);
 
 		/*
-		 * fxdax: each try after the first yields first: retries that find the file's semaphore,
-		 * or the gate, busy as soon as they look again kept the task holding it off both of a
-		 * 2-vCPU guest's CPUs, without preemption, for minutes (TASK-113).
+		 * fxdax: each try after the first yields first: retries that find what they wait for
+		 * busy as soon as they look again kept the task off both of a 2-vCPU guest's CPUs,
+		 * without preemption, for minutes (TASK-113).
 		 */
 		cond_resched();
 		error = 0;
@@ -5085,21 +3009,14 @@ static vm_fault_t fxfs_dax_do_fault(struct vm_fault *vmf, unsigned int order, bo
 		ret = dax_iomap_fault(vmf, order, &pfn, &error, &fxfs_dax_iomap_ops);
 		filemap_invalidate_unlock_shared(inode->i_mapping);
 		fxfs_vfs_fill_end(sb);
-		sealed = ret & VM_FAULT_ERROR ? fxfs_dax_make_memory(inode, &room, error) : 0;
-		if (sealed > 0) {
-			ret = error == -ENOMEM ? 0 : fxfs_dax_fault_drop_slice(vmf, ret);
-			if (ret)
-				break;
-			continue;
-		}
-		if (sealed < 0)
-			error = sealed;
+		if (!(ret & VM_FAULT_ERROR))
+			break;
 		/*
-		 * fxdax: copying on write, no room among the private pages: waited for, holding
-		 * nothing of the file's, as balance_dirty_pages after a fault (doc-13's budget).
+		 * fxdax: no room among the private pages: waited for, holding nothing of the file's,
+		 * as balance_dirty_pages after a fault (doc-13's budget).
 		 */
-		if ((ret & VM_FAULT_ERROR) && error == -ENOBUFS) {
-			error = fxfs_dax_cow_throttle(fxfs_dax_of(inode), &throttles);
+		if (error == -ENOBUFS) {
+			error = fxfs_dax_throttle(dax, &throttles);
 			if (error) {
 				ret = VM_FAULT_SIGBUS;
 				break;
@@ -5110,50 +3027,22 @@ static vm_fault_t fxfs_dax_do_fault(struct vm_fault *vmf, unsigned int order, bo
 		 * fxdax: no room in Fxfs for the page's writeback: once, room made by writing back
 		 * what is dirty, as the page cache's page_mkwrite does (fxfs_vfs_make_room).
 		 */
-		if ((ret & VM_FAULT_ERROR) && error == -ENOSPC && fxfs_dax_of(inode)->cow &&
-		    !made_room) {
+		if (error == -ENOSPC && !made_room) {
 			fxfs_vfs_make_room(sb);
 			made_room = true;
 			continue;
 		}
-		if (!(ret & VM_FAULT_ERROR) || (error != -EAGAIN && error != -EXDEV &&
-						 error != -EBUSY && error != -ESTALE && error != -EDEADLK))
+		if (error != -EAGAIN && error != -EXDEV)
 			break;
 		/* fxdax: a fault killed meanwhile tries no more (TASK-79.49). */
 		if (fatal_signal_pending(current)) {
 			ret = VM_FAULT_SIGBUS;
 			break;
 		}
-		/* fxdax: a range mapping blocks where they were, dropped once (TASK-79.106). */
-		if (error == -ESTALE) {
-			if (stale++)
-				break;
-			ret = fxfs_dax_fault_drop_slice(vmf, ret);
-			if (ret)
-				break;
-			continue;
-		}
-		if (error == -EBUSY) {
-			/* A seal was in progress: waited for without the page's DAX entry. */
-			fxfs_device_wait_unsealed(fxfs_dax_of(inode)->dev);
-			continue;
-		}
-		if (error == -EDEADLK) {
-			/*
-			 * fxdax: the file's semaphore was held: waited for without the page's DAX
-			 * entry, which a write(2) its holder waits for may wait for (TASK-79.12).
-			 */
-			struct fxfs_dax_file *file = fxfs_dax_file(inode);
-
-			down_read(&file->sem);
-			up_read(&file->sem);
-			continue;
-		}
 		if (error == -EXDEV) {
 			/*
 			 * A slice can't take the store: it maps the chunk no more. fxdax: a fault that
-			 * can't get on fails, and says so, as a write does: this is the one way round
-			 * that waits for nothing, and only a seal would end it, if one came (TASK-140).
+			 * can't get on fails, and says so, as a write does (TASK-140).
 			 */
 			if (++drops > FXFS_DAX_MAX_DROPS)
 				break;
@@ -5168,7 +3057,7 @@ static vm_fault_t fxfs_dax_do_fault(struct vm_fault *vmf, unsigned int order, bo
 		 */
 		if (++waits > FXFS_DAX_NO_ROOM_WAITS)
 			break;
-		fxfs_dax_make_room(fxfs_dax_of(inode), seen);
+		fxfs_dax_make_room(dax, seen);
 	}
 	/* fxdax: a SIGBUS says nothing of why: the error here does (TASK-121). */
 	if (ret & VM_FAULT_SIGBUS)
@@ -5176,7 +3065,7 @@ static vm_fault_t fxfs_dax_do_fault(struct vm_fault *vmf, unsigned int order, bo
 				   write ? "write" : "read", order, vmf->pgoff, inode->i_ino, error);
 	if (write)
 		sb_end_pagefault(sb);
-	fxfs_hist_add(&fxfs_dax_of(inode)->fault_hist, ktime_get_ns() - began);
+	fxfs_hist_add(&dax->fault_hist, ktime_get_ns() - began);
 	return ret;
 }
 
@@ -5191,8 +3080,8 @@ static vm_fault_t fxfs_dax_fault(struct vm_fault *vmf)
  * fxdax: a read fault of a PMD-aligned 2 MiB of a mapping maps them with one PMD, read-only, where
  * the window holds them in a row, as it does a chunk of a large file mapped whole (the iomap says
  * so); otherwise the kernel faults them a page at a time (VM_FAULT_FALLBACK, TASK-26.18.8). A store
- * falls back to pages, so that no PMD is ever writable: the sealer write-protects user mappings
- * page by page (wp_shared_mapping_range), which would leave a writable PMD writable.
+ * falls back to pages, so that dirty pages are 4 KiB, and writeback write-protects them page by
+ * page (wp_shared_mapping_range), which would leave a writable PMD writable.
  */
 static vm_fault_t fxfs_dax_huge_fault(struct vm_fault *vmf, unsigned int order)
 {
@@ -5223,20 +3112,18 @@ static int fxfs_dax_mmap(struct file *file, struct vm_area_struct *vma)
 }
 
 /*
- * fxdax: copying on write, the file's dirty pages written back (fxfs_dax_cow_write_back), whatever
- * `wbc` asks: the flusher's, every 30 s or so, and fsync's and sync's (doc-13); then the kernel's
- * dirty tags cleaned, which say nothing to dax.c, so that the kernel takes the inode for clean
- * (fxfs_dax_cow_clean_entries).
+ * fxdax: the file's dirty pages written back (fxfs_dax_write_back), whatever `wbc` asks: the
+ * flusher's, every 30 s or so, and fsync's and sync's (doc-13); then the kernel's dirty tags
+ * cleaned, which say nothing to dax.c, so that the kernel takes the inode for clean
+ * (fxfs_dax_clean_entries).
  */
 static int fxfs_dax_writepages(struct address_space *mapping, struct writeback_control *wbc)
 {
 	struct inode *inode = mapping->host;
 	int err, cleaned;
 
-	if (!fxfs_dax_of(inode)->cow)
-		return dax_writeback_mapping_range(mapping, fxfs_dax_of(inode)->dax_dev, wbc);
-	err = fxfs_dax_cow_write_back(inode);
-	cleaned = fxfs_dax_cow_clean_entries(inode, 0, LLONG_MAX);
+	err = fxfs_dax_write_back(inode);
+	cleaned = fxfs_dax_clean_entries(inode, 0, LLONG_MAX);
 	return err ?: cleaned;
 }
 
@@ -5264,273 +3151,8 @@ static const struct file_operations fxfs_dax_file_operations = {
 };
 
 /*
- * fxdax: with fxfs.dax_check_seals, WARNs of a range with pages writable after a seal's sealer,
- * no store in progress: its file wasn't on the writable files, whose pages the sealer forgets
- * and the user's mappings of which it makes read-only (TASK-121).
- */
-struct fxfs_dax_writable_ptes {
-	unsigned long count, addr;
-	pgoff_t pgoff;
-	/* fxdax: with the shadow, the window's first pfn, and the writable PTEs it disowns. */
-	struct fxfs_dax *dax;
-	unsigned long base, disowned;
-	u64 file;
-};
-
-static int fxfs_dax_writable_pte(pte_t *pte, unsigned long addr, unsigned long next,
-				 struct mm_walk *walk)
-{
-	struct fxfs_dax_writable_ptes *found = walk->private;
-	pte_t entry = ptep_get(pte);
-	unsigned long page;
-	u64 seals, then;
-	void *shadow;
-
-	if (!pte_present(entry) || !pte_write(entry))
-		return 0;
-	if (!found->count++) {
-		found->addr = addr;
-		found->pgoff = linear_page_index(walk->vma, addr);
-	}
-	if (!found->dax)
-		return 0;
-	/* A writable PTE of a window page the guest mapped writably this seal, or none. */
-	page = pte_pfn(entry) - found->base;
-	shadow = xa_load(&found->dax->shadow, page);
-	seals = fxfs_device_seals(found->dax->dev);
-	then = shadow ? xa_to_value(shadow) >> 1 : 0;
-	if (shadow && (xa_to_value(shadow) & 1) && (then == seals || then == seals - 1))
-		return 0;
-	if (found->disowned++ < 8)
-		pr_err("fxfs: ino %llu page %lu mapped writably at %lx, window page %lx, which the guest %s (seals %llu, then %llu)\n",
-		       found->file, linear_page_index(walk->vma, addr), addr, page,
-		       !shadow ? "never mapped" : !(xa_to_value(shadow) & 1) ? "mapped read-only" :
-		       "mapped writably before a seal", seals, then);
-	fxfs_dax_diagnosed();
-	return 0;
-}
-
-static const struct mm_walk_ops fxfs_dax_writable_ops = {
-	.pte_entry = fxfs_dax_writable_pte,
-	.walk_lock = PGWALK_RDLOCK,
-};
-
-/*
- * fxdax: with fxfs.dax_shadow, as a seal begins, before its sealer makes them read-only: logs the
- * user's writable PTEs of window pages the guest didn't map writably this seal, whose stores the
- * window refuses (TASK-121).
- */
-static void fxfs_dax_check_ptes(struct fxfs_dax *dax)
-{
-	struct fxfs_dax_writable_ptes found;
-	struct fxfs_dax_volume *volume;
-	struct fxfs_dax_file *file;
-	unsigned long ino, base;
-	void *kaddr;
-	int id;
-
-	if (!READ_ONCE(fxfs_dax_shadowed))
-		return;
-	id = dax_read_lock();
-	if (dax_direct_access(dax->dax_dev, 0, 1, DAX_ACCESS, &kaddr, &base) < 1)
-		base = 0;
-	dax_read_unlock(id);
-	if (!base)
-		return;
-	mutex_lock(&dax->files_lock);
-	fxfs_dax_for_each_file(dax, volume, ino, file) {
-		struct address_space *mapping;
-
-		if (!file->inode)
-			continue;
-		mapping = file->inode->i_mapping;
-		found = (struct fxfs_dax_writable_ptes) { .dax = dax, .base = base, .file = file->ino };
-		i_mmap_lock_read(mapping);
-		walk_page_mapping(mapping, 0, ULONG_MAX, &fxfs_dax_writable_ops, &found);
-		i_mmap_unlock_read(mapping);
-	}
-	mutex_unlock(&dax->files_lock);
-}
-
-static void fxfs_dax_check_sealed(struct fxfs_dax *dax)
-{
-	struct fxfs_dax_writable_ptes found;
-	struct fxfs_dax_volume *volume;
-	struct fxfs_dax_range *range;
-	struct fxfs_dax_file *file;
-	unsigned long ino, chunk;
-
-	mutex_lock(&dax->files_lock);
-	fxfs_dax_for_each_file(dax, volume, ino, file) {
-		/* The user's mappings of its pages, none writable after the sealer. */
-		if (file->inode) {
-			struct address_space *mapping = file->inode->i_mapping;
-
-			found = (struct fxfs_dax_writable_ptes) {};
-			i_mmap_lock_read(mapping);
-			walk_page_mapping(mapping, 0, ULONG_MAX, &fxfs_dax_writable_ops, &found);
-			i_mmap_unlock_read(mapping);
-			WARN(found.count,
-			     "fxfs: ino %llu: %lu user mappings writable after a seal, the first at %lx, page %lu (%s the writable files)\n",
-			     file->ino, found.count, found.addr, found.pgoff,
-			     list_empty(&file->writable) ? "not on" : "on");
-		}
-		rcu_read_lock();
-		xa_for_each(&file->ranges, chunk, range) {
-			unsigned long page = find_first_bit(range->writable, range->pages);
-
-			WARN(page < range->pages,
-			     "fxfs: ino %llu chunk %lu page %lu writable after a seal (%s, slice %d)\n",
-			     file->ino, chunk, page, file->inode ? "inode" : "no inode",
-			     !!range->region);
-		}
-		rcu_read_unlock();
-	}
-	mutex_unlock(&dax->files_lock);
-}
-
-/*
- * fxdax: the region whose extent page `where` ((sequence << 20) | page, as the shadow has it) the
- * window maps at window page `page`, with a reference taken, which keeps it mapped there; or NULL,
- * if no region maps it so, as a range's own space or a region gone do.
- */
-static struct fxfs_dax_region *fxfs_dax_hold_shadowed(struct fxfs_dax *dax, unsigned long page,
-						      s64 where)
-{
-	struct fxfs_dax_region *region;
-	u64 at = (u64)page << PAGE_SHIFT;
-	unsigned long in_extent = where & ((1 << 20) - 1);
-
-	spin_lock(&dax->regions_lock);
-	region = fxfs_dax_find_region(dax, READ_ONCE(dax->shadow_branch), where >> 20);
-	if (region && region->window_offset + ((u64)in_extent << PAGE_SHIFT) == at &&
-	    in_extent < READ_ONCE(region->mapped))
-		region->refs++;
-	else
-		region = NULL;
-	spin_unlock(&dax->regions_lock);
-	return region;
-}
-
-/*
- * fxdax: with fxfs.dax_verify_seals and the shadow, as a seal begins, no store in progress: each
- * window page of a region the guest mapped writably since the seal before, read through the
- * window, as the guest's stores reached it, is compared with its extent's page read from the
- * device, what the seal's commit is about to write, and where they differ logged (TASK-121).
- * fxdax: holding the region, which keeps it mapped: a restage's work unmapped a spare region the
- * shadow had as writable, and the read of it, which the host refused, stopped the VM (TASK-119.21,
- * GCE r236). A range's own space it can't hold, and leaves be.
- */
-static void fxfs_dax_verify_writable(struct fxfs_dax *dax)
-{
-	u64 seals = fxfs_device_seals(dax->dev), then;
-	struct fxfs_dax_region *region;
-	unsigned long page;
-	size_t at, differ;
-	void *entry, *buf, *window;
-	unsigned int checked = 0;
-	s64 where;
-	int id;
-
-	buf = kmalloc(PAGE_SIZE, GFP_NOFS);
-	if (!buf)
-		return;
-	xa_for_each(&dax->shadow, page, entry) {
-		then = xa_to_value(entry) >> 1;
-		if (!(xa_to_value(entry) & 1) || (then != seals - 1 && then != seals))
-			continue;
-		if (checked++ == 4096)
-			break;
-		where = fxfs_dax_read_shadowed(dax, page, buf);
-		if (where < 0)
-			continue;
-		region = fxfs_dax_hold_shadowed(dax, page, where);
-		if (!region)
-			continue;
-		id = dax_read_lock();
-		window = fxfs_dax_window_page(dax, (u64)page << PAGE_SHIFT);
-		differ = window ? fxfs_dax_differ(window, buf, 0, 0, &at, PAGE_SIZE) : 0;
-		/*
-		 * fxdax: Fxfs's device WRITE of what a move keeps around a write is in no gate, and may
-		 * come between the two reads: the device's, read again, has it by now, if it wasn't this.
-		 */
-		if (differ) {
-			dax_read_unlock(id);
-			fxfs_dax_read_shadowed(dax, page, buf);
-			id = dax_read_lock();
-			window = fxfs_dax_window_page(dax, (u64)page << PAGE_SHIFT);
-			differ = window ? fxfs_dax_differ(window, buf, 0, 0, &at, PAGE_SIZE) : 0;
-		}
-		if (differ) {
-			pr_err("fxfs: window page %lx, writable at seals %llu, mapping extent %llu page %llu: %zu bytes differ from the device's, the first at %zu: %#x through the window, %#x the device's\n",
-			       page, then, where >> 20, where & ((1 << 20) - 1), differ, at,
-			       ((u8 *)window)[at], ((u8 *)buf)[at]);
-			fxfs_dax_diagnosed();
-		}
-		dax_read_unlock(id);
-		fxfs_dax_put_region(dax, region);
-	}
-	kfree(buf);
-}
-
-/*
- * Before a seal: makes user mappings of writable pages read-only, and forgets which pages are
- * writable, and which regions, whose extents grow no more: their space in the window past what
- * they map is free again. With no store in progress.
- */
-static void fxfs_dax_seal(void *arg)
-{
-	struct fxfs_dax *dax = arg;
-	struct fxfs_dax_region *region, *next_region;
-	struct fxfs_dax_file *file, *next;
-	struct fxfs_dax_range *range;
-	unsigned long chunk;
-
-	fxfs_dax_pause(FXFS_DAX_STEP_SEALING);
-	/*
-	 * fxdax: copying on write, a seal changes nothing in the window (doc-13): its writable PTEs
-	 * are stores the host copies, which the seal leaves be.
-	 */
-	if (dax->cow)
-		return;
-	fxfs_dax_check_ptes(dax);
-	spin_lock(&dax->regions_lock);
-	list_for_each_entry_safe(region, next_region, &dax->writable_regions, writable_list) {
-		WRITE_ONCE(region->writable, false);
-		list_del_init(&region->writable_list);
-		fxfs_dax_give_window(dax, region->window_offset + ((u64)region->mapped << PAGE_SHIFT),
-				     region->pages - region->mapped);
-		/* fxdax: as fxfs_dax_grow_ahead reads it, outside the gate (KCSAN, GCE r255). */
-		WRITE_ONCE(region->pages, region->mapped);
-	}
-	spin_unlock(&dax->regions_lock);
-	/* fxdax: between the regions sealed and the files' pages (TASK-119.3). */
-	fxfs_dax_delay();
-
-	mutex_lock(&dax->writable_lock);
-	list_for_each_entry_safe(file, next, &dax->writable, writable) {
-		/* A file with no inode has nothing mapping its pages but the window. */
-		mutex_lock(&dax->files_lock);
-		if (file->inode)
-			wp_shared_mapping_range(file->inode->i_mapping, 0, ULONG_MAX);
-		mutex_unlock(&dax->files_lock);
-		/* Ranges freed meanwhile are freed after a grace period (fxfs_dax_free_range). */
-		rcu_read_lock();
-		xa_for_each(&file->ranges, chunk, range)
-			bitmap_zero(range->writable, range->pages);
-		rcu_read_unlock();
-		list_del_init(&file->writable);
-	}
-	mutex_unlock(&dax->writable_lock);
-	if (READ_ONCE(fxfs_dax_check_seals))
-		fxfs_dax_check_sealed(dax);
-	if (READ_ONCE(fxfs_dax_verify_seals) && READ_ONCE(fxfs_dax_shadowed))
-		fxfs_dax_verify_writable(dax);
-}
-
-/*
- * fxdax: once a seal ends, has the staging extent the seal sealed replaced in the background, if
- * writes took blocks of it, and the new one's region mapped (fxfs_dax_restage_work).
+ * fxdax: once a seal ends: page-cache inodes evicted before it may be read in to DAX, which the
+ * worker finds (fxfs_dax_prune).
  */
 static void fxfs_dax_sealed(void *arg)
 {
@@ -5538,44 +3160,8 @@ static void fxfs_dax_sealed(void *arg)
 
 	/* fxdax: between the seal's end and what follows it (TASK-119.3). */
 	fxfs_dax_delay();
-	if (READ_ONCE(dax->restaging) && queue_work(dax->grow_wq, &dax->restage))
-		atomic_inc(&dax->growing);
-	/* fxdax: copying on write, page-cache inodes evicted before it may be read in to DAX. */
-	if (dax->cow && atomic_long_read(&dax->unsealed))
-		fxfs_dax_cow_kick(dax, false);
-}
-
-/*
- * fxdax: replaces the staging extent sealed, if writes took blocks of it, and maps the new one's
- * region writably, as the first write to it would: so that the next small files, slices of it,
- * wait for no MAP. It keeps the region until the next replaces it. The new extent is open only while no seal comes between
- * it and its mapping: if one does, it isn't mapped, and the allocator takes another.
- */
-static void fxfs_dax_restage_work(struct work_struct *work)
-{
-	struct fxfs_dax *dax = container_of(work, struct fxfs_dax, restage);
-	struct fxfs_dax_region *region, *old;
-	struct fxfs_dax_extent e;
-	u64 seals = fxfs_device_seals(dax->dev);
-
-	if (!fxfs_nofs(fxfs_dax_restage(dax->filesystem, &e)))
-		goto out;
-	region = fxfs_dax_get_region(dax, &e, false);
-	if (IS_ERR(region))
-		goto out;
-	if (fxfs_device_store_begin(dax->dev) == seals) {
-		fxfs_dax_region_open(dax, region);
-		fxfs_dax_map_to(dax, region, 1, FXFS_DAX_RESTAGE);
-	}
-	fxfs_device_store_end(dax->dev);
-	spin_lock(&dax->regions_lock);
-	old = dax->spare;
-	dax->spare = region;
-	spin_unlock(&dax->regions_lock);
-	if (old)
-		fxfs_dax_put_region(dax, old);
-out:
-	atomic_dec(&dax->growing);
+	if (atomic_long_read(&dax->unsealed))
+		fxfs_dax_kick(dax, false);
 }
 
 /*
@@ -5600,28 +3186,21 @@ static size_t fxfs_dax_largest_free(struct gen_pool *pool)
 	return (size_t)largest << pool->min_alloc_order;
 }
 
-/*
- * fxdax: the window's regions by what they map, writably, or a sealed extent's, with the references
- * held to them; and the slices that hold them.
- */
+/* fxdax: the window's regions' space, the references held to them, and the slices that hold them. */
 static void fxfs_dax_show_regions(struct fxfs_dax *dax, struct seq_file *m)
 {
-	static const char *const kinds[] = { "writable", "read" };
-	unsigned long count[2] = {}, pages[2] = {}, refs[2] = {}, slices = 0;
+	unsigned long pages = 0, refs = 0, slices = 0;
 	struct fxfs_dax_region *region;
 	struct fxfs_dax_volume *volume;
 	struct fxfs_dax_range *range;
 	struct fxfs_dax_file *file;
 	unsigned long ino, chunk;
 	unsigned int bucket;
-	int kind;
 
 	spin_lock(&dax->regions_lock);
 	hash_for_each(dax->regions, bucket, region, node) {
-		kind = region->writable ? 0 : 1;
-		count[kind]++;
-		pages[kind] += region->pages;
-		refs[kind] += region->refs;
+		pages += region->pages;
+		refs += region->refs;
 	}
 	spin_unlock(&dax->regions_lock);
 	mutex_lock(&dax->files_lock);
@@ -5636,11 +3215,8 @@ static void fxfs_dax_show_regions(struct fxfs_dax *dax, struct seq_file *m)
 		rcu_read_unlock();
 	}
 	mutex_unlock(&dax->files_lock);
-	for (kind = 0; kind < ARRAY_SIZE(kinds); kind++)
-		seq_printf(m, "window_regions_%s %lu\nwindow_regions_%s_bytes %lu\nwindow_regions_%s_refs %lu\n",
-			   kinds[kind], count[kind], kinds[kind], pages[kind] << PAGE_SHIFT,
-			   kinds[kind], refs[kind]);
-	seq_printf(m, "window_slices %lu\n", slices);
+	seq_printf(m, "window_regions_bytes %lu\nwindow_regions_refs %lu\nwindow_slices %lu\n",
+		   pages << PAGE_SHIFT, refs, slices);
 }
 
 void fxfs_dax_show_stats(struct fxfs_dax *dax, struct seq_file *m)
@@ -5660,37 +3236,23 @@ void fxfs_dax_show_stats(struct fxfs_dax *dax, struct seq_file *m)
 		   atomic_long_read(&dax->reclaims));
 	seq_printf(m, "window_regions %ld\n", atomic_long_read(&dax->region_count));
 	fxfs_dax_show_regions(dax, m);
-	seq_printf(m, "dax_map_writes %lld\n", atomic64_read(&dax->map_writes));
-	seq_printf(m, "dax_writes_through %lld\ndax_catch_ups %lld\ndax_caught_up_pages %lld\n",
-		   atomic64_read(&dax->writes_through), atomic64_read(&dax->catch_ups),
-		   atomic64_read(&dax->caught_up));
 	seq_printf(m, "window_lost_bytes %lld\n", atomic64_read(&dax->lost_bytes));
 	seq_printf(m, "dax_huge_maps %lld\n", atomic64_read(&dax->huge_maps));
 	seq_printf(m, "dax_extent_alloc_bytes %lld\n", atomic64_read(&dax->extent_alloc_bytes));
-	seq_printf(m, "dax_write_waits %lld\ndax_write_wait_ns %lld\n",
-		   atomic64_read(&dax->write_waits), atomic64_read(&dax->write_wait_ns));
-	seq_printf(m, "dax_moved_unsealed %lld\n", atomic64_read(&dax->moved_unsealed));
-	seq_printf(m, "dax_writes_dropped %lld\n", atomic64_read(&dax->writes_dropped));
-	seq_printf(m, "dax_maps_refused %lld\n", atomic64_read(&dax->maps_refused));
-	seq_printf(m, "dax_memory_seals %lld\n", atomic64_read(&dax->memory_seals));
-	/* fxdax: copying on write (doc-13, TASK-164.2): 0s without it. */
-	seq_printf(m, "dax_cow %d\ndax_cow_private_max %ld\n", dax->cow, dax->private_max);
-	seq_printf(m, "dax_cow_private_pages %ld\ndax_cow_dirty_pages %ld\n",
+	/* fxdax: the private pages, writeback and rebinding (doc-13, TASK-164.2). */
+	seq_printf(m, "dax_private_max %ld\n", dax->private_max);
+	seq_printf(m, "dax_private_pages %ld\ndax_dirty_pages %ld\n",
 		   atomic_long_read(&dax->private), atomic_long_read(&dax->dirty));
-	seq_printf(m, "dax_cow_writebacks %lld\ndax_cow_written_pages %lld\n",
-		   atomic64_read(&dax->cow_writebacks), atomic64_read(&dax->cow_written));
-	seq_printf(m, "dax_cow_rebound_pages %lld\ndax_cow_throttled %lld\n",
-		   atomic64_read(&dax->cow_rebound), atomic64_read(&dax->cow_throttled));
-	seq_printf(m, "dax_cow_seals %lld\ndax_cow_privates %lld\ndax_cow_open_maps %lld\n",
-		   atomic64_read(&dax->cow_seals), atomic64_read(&dax->cow_privates),
-		   atomic64_read(&dax->cow_open_maps));
-	seq_printf(m, "dax_cow_unsealed_inodes %ld\n", atomic_long_read(&dax->unsealed));
-	seq_printf(m, "dax_writes %lld\ndax_writes_ns %lld\n", atomic64_read(&dax->writes),
-		   atomic64_read(&dax->write_ns));
-	seq_printf(m, "dax_write_lock_ns %lld\ndax_write_gate_ns %lld\n",
-		   atomic64_read(&dax->write_lock_ns), atomic64_read(&dax->write_gate_ns));
-	seq_printf(m, "dax_write_fxfs_ns %lld\ndax_write_map_ns %lld\n",
-		   atomic64_read(&dax->write_fxfs_ns), atomic64_read(&dax->write_map_ns));
+	seq_printf(m, "dax_writebacks %lld\ndax_written_pages %lld\n",
+		   atomic64_read(&dax->writebacks), atomic64_read(&dax->written));
+	seq_printf(m, "dax_rebound_pages %lld\ndax_throttled %lld\n",
+		   atomic64_read(&dax->rebound), atomic64_read(&dax->throttled));
+	seq_printf(m, "dax_rebinds_asked %lld\ndax_rebinds_done %lld\n",
+		   atomic64_read(&dax->rebinds_asked), atomic64_read(&dax->rebinds_done));
+	seq_printf(m, "dax_seals %lld\ndax_privates %lld\ndax_open_maps %lld\n",
+		   atomic64_read(&dax->seals_made), atomic64_read(&dax->privates),
+		   atomic64_read(&dax->open_maps));
+	seq_printf(m, "dax_unsealed_inodes %ld\n", atomic_long_read(&dax->unsealed));
 	fxfs_dax_show_write_times(m, dax);
 	fxfs_hist_show(m, "dax_write", &dax->write_hist);
 	fxfs_hist_show(m, "dax_faults", &dax->fault_hist);
@@ -5730,13 +3292,15 @@ struct fxfs_dax *fxfs_dax_create(struct fxfs_filesystem *filesystem)
 	struct dax_device *dax_dev;
 	struct fxfs_dax *dax;
 	u64 window_len;
+	bool read_only;
 
 	dax_dev = fxfs_device_dax(dev, &window_len);
 	if (!dax_dev || window_len < FXFS_DAX_SIZE)
 		return NULL;
-	/* fxdax: copying on write, a few iomaps' worth of private pages at least (doc-13). */
-	if (fxfs_device_dax_cow(dev) && fxfs_device_private_max(dev) < 8) {
-		pr_warn("fxfs: the DAX window copies on write, but holds %llu private pages: no DAX\n",
+	/* fxdax: a few iomaps' worth of private pages at least, but for a follower's (doc-13). */
+	read_only = fxfs_device_read_only(dev);
+	if (!read_only && fxfs_device_private_max(dev) < 8) {
+		pr_warn("fxfs: the DAX window holds %llu private pages: no DAX\n",
 			fxfs_device_private_max(dev));
 		return NULL;
 	}
@@ -5764,6 +3328,7 @@ struct fxfs_dax *fxfs_dax_create(struct fxfs_filesystem *filesystem)
 	}
 	dax->filesystem = filesystem;
 	dax->dev = dev;
+	dax->read_only = read_only;
 	WRITE_ONCE(fxfs_dax_stray_dax, dax);
 	/* fxdax: the trace, if asked for, of the filesystem mounted last (TASK-121). */
 	if (fxfs_dax_tracing) {
@@ -5780,40 +3345,25 @@ struct fxfs_dax *fxfs_dax_create(struct fxfs_filesystem *filesystem)
 	}
 	dax->dax_dev = dax_dev;
 	INIT_LIST_HEAD(&dax->volumes);
-	xa_init(&dax->shadow);
-	xa_init(&dax->shadow_extent);
 	mutex_init(&dax->files_lock);
 	spin_lock_init(&dax->lock);
 	INIT_LIST_HEAD(&dax->used);
 	init_waitqueue_head(&dax->wait);
 	atomic_long_set(&dax->released, 0);
-	mutex_init(&dax->writable_lock);
-	INIT_LIST_HEAD(&dax->writable);
 	hash_init(dax->regions);
 	spin_lock_init(&dax->regions_lock);
-	INIT_LIST_HEAD(&dax->writable_regions);
-	atomic_set(&dax->growing, 0);
-	dax->grow_wq = alloc_workqueue("fxfs_dax_grow", WQ_UNBOUND | WQ_MEM_RECLAIM, 0);
-	if (!dax->grow_wq) {
+	dax->wq = alloc_workqueue("fxfs_dax", WQ_UNBOUND | WQ_MEM_RECLAIM, 0);
+	if (!dax->wq) {
 		fxfs_dax_destroy_pools(dax);
 		kfree(dax);
 		return ERR_PTR(-ENOMEM);
 	}
-	INIT_WORK(&dax->restage, fxfs_dax_restage_work);
-	/*
-	 * fxdax: copying on write (doc-13), as the driver took DAX_COW for fxfs.dax_cow: no staging
-	 * extent's region, nothing written through the window; the budget's worker; and at least a
-	 * few iomaps' worth of private pages, else no DAX.
-	 */
-	dax->cow = fxfs_device_dax_cow(dev);
-	dax->restaging = !dax->cow;
-	INIT_WORK(&dax->cow_work, fxfs_dax_cow_work);
-	init_waitqueue_head(&dax->cow_wait);
-	if (dax->cow) {
-		dax->private_max = min_t(u64, fxfs_device_private_max(dev), LONG_MAX);
-		dax->cow_pages = clamp_t(unsigned long, dax->private_max / 8, 1, FXFS_DAX_COW_PAGES);
-	}
-	fxfs_device_set_sealer(dev, fxfs_dax_seal, fxfs_dax_sealed, dax);
+	/* fxdax: the budget's worker, and the slice of the budget an iomap takes (doc-13). */
+	INIT_WORK(&dax->work, fxfs_dax_work);
+	init_waitqueue_head(&dax->budget_wait);
+	dax->private_max = min_t(u64, fxfs_device_private_max(dev), LONG_MAX);
+	dax->iomap_pages = clamp_t(unsigned long, dax->private_max / 8, 1, FXFS_DAX_PRIVATE_PAGES);
+	fxfs_device_set_sealed(dev, fxfs_dax_sealed, dax);
 	return dax;
 }
 
@@ -5839,15 +3389,8 @@ void fxfs_dax_remove_volume(struct fxfs_dax *dax, struct fxfs_dax_volume *volume
 	unsigned long ino, chunk;
 	void *entry;
 
-	/* fxdax: copying on write, the budget's worker, which uses the volume's files, waits. */
+	/* fxdax: the budget's worker, which uses the volume's files, waits. */
 	fxfs_dax_stop(dax);
-	mutex_lock(&dax->writable_lock);
-	mutex_lock(&dax->files_lock);
-	xa_for_each(&volume->files, ino, file)
-		list_del_init(&file->writable);
-	mutex_unlock(&dax->files_lock);
-	mutex_unlock(&dax->writable_lock);
-
 	/* Reclaim may hold one of its files still: it finds it has no volume. */
 	mutex_lock(&dax->files_lock);
 	list_del(&volume->list);
@@ -5878,33 +3421,24 @@ void fxfs_dax_remove_volume(struct fxfs_dax *dax, struct fxfs_dax_volume *volume
 }
 
 /*
- * Waits for the regions growing in the background to be as far ahead of the writes so far as
- * they grow, and for the spare to be mapped (fxfs_dax_restage_work): before a sync seals them. A
- * few rounds at most, as writes may go on meanwhile.
+ * fxdax: before a sync seals what is written, every file's dirty pages written back, which a
+ * write(2)'s leave the mapping untagged for, so that sync's writepages miss them (doc-13); and
+ * those of a writeback under way committed, which fxfs_dax_write_back waits for: a file whose
+ * pages the budget's writeback had swapped out had none dirty, and was sealed without them. Each
+ * holding dirty or private pages, as a writeback's are until a rebind after its commit.
  */
 int fxfs_dax_settle(struct fxfs_dax *dax)
 {
 	struct fxfs_dax_file **files;
 	size_t nr, i;
-	int round, err = 0;
+	int err = 0;
 
-	for (round = 0; round < 8 && atomic_read(&dax->growing); round++)
-		flush_workqueue(dax->grow_wq);
-	if (!dax->cow)
-		return 0;
-	/*
-	 * fxdax: copying on write, every file's dirty pages written back, which a write(2)'s leave
-	 * the mapping untagged for, so that sync's writepages miss them (doc-13); and those of a
-	 * writeback under way committed, which fxfs_dax_cow_write_back waits for: a file whose pages
-	 * the budget's writeback had swapped out had none dirty, and was sealed without them. Each
-	 * holding dirty or private pages, as a writeback's are until a rebind after its commit.
-	 */
-	nr = fxfs_dax_cow_files(dax, &files);
+	nr = fxfs_dax_busy_files(dax, &files);
 	for (i = 0; i < nr; i++) {
-		struct inode *inode = fxfs_dax_cow_inode(dax, files[i]);
+		struct inode *inode = fxfs_dax_inode_of(dax, files[i]);
 
 		if (inode) {
-			int wrote = fxfs_dax_cow_write_back(inode);
+			int wrote = fxfs_dax_write_back(inode);
 
 			err = err ?: wrote;
 			iput(inode);
@@ -5916,13 +3450,13 @@ int fxfs_dax_settle(struct fxfs_dax *dax)
 }
 
 /*
- * fxdax: copying on write, stops the budget's worker, and waits for it: before a volume goes, or the
- * filesystem unmounts, or freezes. A write it would have made room for waits meanwhile.
+ * fxdax: stops the budget's worker, and waits for it: before a volume goes, or the filesystem
+ * unmounts, or freezes. A write it would have made room for waits meanwhile.
  */
 void fxfs_dax_stop(struct fxfs_dax *dax)
 {
-	WRITE_ONCE(dax->cow_stopping, true);
-	cancel_work_sync(&dax->cow_work);
+	WRITE_ONCE(dax->stopping, true);
+	cancel_work_sync(&dax->work);
 }
 
 /* fxdax: starts the budget's worker again, unless the filesystem is frozen, and has it run. */
@@ -5930,56 +3464,37 @@ void fxfs_dax_start(struct fxfs_dax *dax)
 {
 	if (READ_ONCE(dax->frozen))
 		return;
-	WRITE_ONCE(dax->cow_stopping, false);
-	if (dax->cow)
-		fxfs_dax_cow_kick(dax, false);
+	WRITE_ONCE(dax->stopping, false);
+	fxfs_dax_kick(dax, false);
 }
 
 /*
- * fxdax: copying on write, the filesystem frozen, durably, its writers stopped and their pages
- * written back as the VFS synced it: every private page is rebound, mapping its extent's page,
- * sealed now, so that the snapshot's window holds extents and zeros alone, as the device has it
- * (doc-13). Those it can't, warned of: the device refuses the snapshot.
+ * fxdax: the filesystem frozen, durably, its writers stopped and their pages written back as the
+ * VFS synced it: every private page is rebound, mapping its extent's page, sealed now, so that the
+ * snapshot's window holds extents and zeros alone, as the device has it (doc-13). Those it can't,
+ * warned of: the device refuses the snapshot.
  */
 void fxfs_dax_frozen(struct fxfs_dax *dax)
 {
 	WRITE_ONCE(dax->frozen, true);
-	if (!dax->cow)
-		return;
-	fxfs_dax_cow_relieve(dax, 0, false);
+	fxfs_dax_relieve(dax, 0, false);
 	if (atomic_long_read(&dax->private))
 		pr_warn("fxfs: frozen with %ld private pages, %ld dirty: no snapshot\n",
 			atomic_long_read(&dax->private), atomic_long_read(&dax->dirty));
 }
 
 /*
- * Waits for the regions growing in the background, once nothing writes any more: before the
- * filesystem unmounts, or freezes, while its device takes requests. The spare region, whose
- * extent is open, goes, so that the seal after leaves nothing open.
+ * Stops the budget's worker, once nothing writes any more: before the filesystem unmounts, or
+ * freezes, while its device takes requests.
  */
 void fxfs_dax_quiesce(struct fxfs_dax *dax)
 {
-	struct fxfs_dax_region *spare;
-
-	/* fxdax: nor rounds of the budget's worker, which may requeue itself. */
 	fxfs_dax_stop(dax);
-	/* No more spares: the filesystem's last seals come as it unmounts, or freezes. */
-	WRITE_ONCE(dax->restaging, false);
-	if (cancel_work_sync(&dax->restage))
-		atomic_dec(&dax->growing);
-	drain_workqueue(dax->grow_wq);
-	spin_lock(&dax->regions_lock);
-	spare = dax->spare;
-	dax->spare = NULL;
-	spin_unlock(&dax->regions_lock);
-	if (spare)
-		fxfs_dax_put_region(dax, spare);
 }
 
-/* Has the next seals map a spare region again, as the filesystem thaws (fxfs_dax_quiesce). */
+/* Starts the budget's worker again, as the filesystem thaws (fxfs_dax_quiesce). */
 void fxfs_dax_thaw(struct fxfs_dax *dax)
 {
-	WRITE_ONCE(dax->restaging, !dax->cow);
 	WRITE_ONCE(dax->frozen, false);
 	fxfs_dax_start(dax);
 }
@@ -5999,9 +3514,6 @@ void fxfs_dax_destroy(struct fxfs_dax *dax)
 	int bucket;
 
 	/* As fxfs_dax_quiesce, where mounting failed. */
-	WRITE_ONCE(dax->restaging, false);
-	if (cancel_work_sync(&dax->restage))
-		atomic_dec(&dax->growing);
 	fxfs_dax_stop(dax);
 	/* fxdax: no longer traced: the device goes with the mount. */
 	if (READ_ONCE(fxfs_dax_trace_dev) == dax->dev)
@@ -6027,9 +3539,7 @@ void fxfs_dax_destroy(struct fxfs_dax *dax)
 		xa_destroy(&volume->unsealed);
 		kfree(volume);
 	}
-	xa_destroy(&dax->shadow);
-	xa_destroy(&dax->shadow_extent);
-	destroy_workqueue(dax->grow_wq);
+	destroy_workqueue(dax->wq);
 	fxfs_dax_destroy_pools(dax);
 	kfree(dax);
 }
@@ -6060,7 +3570,6 @@ static struct fxfs_dax_file *fxfs_dax_attach(struct fxfs_dax *dax, struct inode 
 		init_rwsem(&file->sem);
 		mutex_init(&file->wb_lock);
 		xa_init(&file->ranges);
-		INIT_LIST_HEAD(&file->writable);
 		if (xa_err(xa_store(&volume->files, inode->i_ino, file, GFP_NOFS))) {
 			kfree(file);
 			file = NULL;
@@ -6075,11 +3584,11 @@ out:
 }
 
 /*
- * fxdax: copying on write, whether the page-cache inode `ino`, of `volume`, has writes no barrier
- * has sealed yet (`unsealed`): read in now, the window would find their extents open, which it
- * maps none of (doc-13).
+ * fxdax: whether the page-cache inode `ino`, of `volume`, has writes no barrier has sealed yet
+ * (`unsealed`): read in now, the window would find their extents open, which it maps none of
+ * (doc-13).
  */
-static bool fxfs_dax_cow_unsealed(struct fxfs_dax *dax, struct fxfs_dax_volume *volume, u64 ino)
+static bool fxfs_dax_unsealed(struct fxfs_dax *dax, struct fxfs_dax_volume *volume, u64 ino)
 {
 	void *entry = xa_load(&volume->unsealed, ino);
 
@@ -6098,7 +3607,7 @@ void fxfs_dax_written(struct inode *inode)
 	struct fxfs_dax_volume *volume;
 	void *was;
 
-	if (!dax || !dax->cow || IS_DAX(inode))
+	if (!dax || IS_DAX(inode))
 		return;
 	volume = fxfs_dax_volume_of(inode);
 	was = xa_store(&volume->unsealed, inode->i_ino, xa_mk_value(fxfs_dax_seal_target(dax)),
@@ -6114,12 +3623,11 @@ bool fxfs_dax_set_inode(struct inode *inode, bool created)
 	struct fxfs_dax_file *file = NULL;
 
 	/*
-	 * fxdax: copying on write, an inode created in this mount is a page-cache inode while it is in
-	 * memory, as one whose writes no barrier has sealed yet, read in again: S_DAX is set as an
-	 * inode is read in, never on a live one, as ext4 and XFS have it (doc-13, TASK-164.3).
+	 * fxdax: an inode created in this mount is a page-cache inode while it is in memory, as one
+	 * whose writes no barrier has sealed yet, read in again: S_DAX is set as an inode is read in,
+	 * never on a live one, as ext4 and XFS have it (doc-13, TASK-164.3).
 	 */
-	if (dax->cow && (created || fxfs_dax_cow_unsealed(dax, fxfs_dax_volume_of(inode),
-							  inode->i_ino)))
+	if (created || fxfs_dax_unsealed(dax, fxfs_dax_volume_of(inode), inode->i_ino))
 		return false;
 	if (!READ_ONCE(fxfs_dax_fail_attach))
 		file = fxfs_dax_attach(dax, inode);
@@ -6135,7 +3643,7 @@ bool fxfs_dax_set_inode(struct inode *inode, bool created)
 
 /*
  * Detaches `inode`, which the kernel evicts, from its file, whose ranges stay mapped for the next
- * inode read in for it: unless no name links it, when they go.
+ * inode read in for it, its dirty pages written back first: unless no name links it, when they go.
  */
 void fxfs_dax_evict(struct inode *inode)
 {
@@ -6148,13 +3656,11 @@ void fxfs_dax_evict(struct inode *inode)
 
 	if (!dax || !IS_DAX(inode) || !file)
 		return;
-	/* fxdax: copying on write, its dirty pages written back, which its ranges outlive. */
-	if (dax->cow && inode->i_nlink) {
-		err = fxfs_dax_cow_write_back(inode);
+	if (inode->i_nlink) {
+		err = fxfs_dax_write_back(inode);
 		if (err)
 			pr_warn("fxfs: writing back ino %lu as it is evicted: %d\n", inode->i_ino, err);
-	}
-	if (!inode->i_nlink) {
+	} else {
 		down_write(&file->sem);
 		xa_for_each(&file->ranges, chunk, range)
 			fxfs_dax_unmap_range(dax, range);
@@ -6255,33 +3761,25 @@ static int fxfs_dax_break_layouts(struct inode *inode, loff_t start)
 
 /*
  * Zeroes the `len` bytes of `inode` at `pos`, in one page, through the window: dropping a slice
- * that can't take them where it is, to be mapped again. With the invalidate_lock held for writing.
+ * that can't take them, to be mapped again as a range of its own. With the invalidate_lock held
+ * for writing.
  */
 static int fxfs_dax_zero_part(struct inode *inode, loff_t pos, loff_t len)
 {
-	struct fxfs_dax_room room = fxfs_dax_room(fxfs_dax_of(inode));
-	unsigned int stale = 0, throttles = 0;
+	unsigned int throttles = 0;
 	bool zeroed;
-	int sealed, err;
+	int err;
 
 	for (;;) {
 		err = dax_zero_range(inode, pos, len, &zeroed, &fxfs_dax_iomap_ops);
-		/* fxdax: copying on write, no room among the private pages: the worker makes some. */
+		/* fxdax: no room among the private pages: the worker makes some. */
 		if (err == -ENOBUFS) {
-			err = fxfs_dax_cow_throttle(fxfs_dax_of(inode), &throttles);
+			err = fxfs_dax_throttle(fxfs_dax_of(inode), &throttles);
 			if (err)
 				return err;
 			continue;
 		}
-		sealed = fxfs_dax_make_memory(inode, &room, err);
-		if (sealed < 0)
-			return sealed;
-		if (sealed && err == -ENOMEM)
-			continue;
-		/* fxdax: a range behind Fxfs's blocks is dropped as a slice is, once (TASK-150.13). */
-		if (!sealed && err == -ESTALE && stale++)
-			return -EIO;
-		if (err != -EXDEV && err != -ESTALE)
+		if (err != -EXDEV)
 			return err;
 		err = fxfs_dax_drop(inode, pos >> FXFS_DAX_SHIFT, pos >> FXFS_DAX_SHIFT, -1);
 		if (err)
@@ -6305,9 +3803,9 @@ static int fxfs_dax_zero_tail(struct inode *inode, loff_t old, loff_t size)
 /*
  * Readies the last block of `inode`, `old` bytes long, for Fxfs growing the file to `size` to copy
  * it, zeroed past `old`, through the device: what the window holds past the end zeroed, its stores
- * sealed, and its mapping dropped, which the copy replaces, or the window could hide the copy until
- * eviction. Fxfs's growths zero the block so: a truncate's, and a clone's (TASK-153.4). With
- * the invalidate_lock held for writing.
+ * written back and sealed, and its mapping dropped, which the copy replaces, or the window could
+ * hide the copy until eviction. Fxfs's growths zero the block so: a truncate's, and a clone's
+ * (TASK-153.4). With the invalidate_lock held for writing.
  */
 static int fxfs_dax_grow_begin(struct inode *inode, loff_t old, loff_t size)
 {
@@ -6327,30 +3825,20 @@ static int fxfs_dax_grow_begin(struct inode *inode, loff_t old, loff_t size)
 
 /*
  * Their DAX entries go, once their pages are unused, and the window's ranges of them, to be mapped
- * again as they are after the reflink: a source's blocks are shared from then on, which its ranges
- * may map writably, to be written in place (fxfs_dax_map_extents), as they can't be any more; and a
- * destination's are other blocks. And the destination's ranges too small for its new size, and its
- * last block, which Fxfs zeroes past the end as it grows (fxfs_dax_grow_begin).
+ * again as they are after the reflink, a range's dirty pages written back first
+ * (fxfs_dax_drop_pinned), as XFS writes back both files' ranges: a destination's are other blocks.
+ * And the destination's ranges too small for its new size, and its last block, which Fxfs zeroes
+ * past the end as it grows (fxfs_dax_grow_begin).
  */
 int fxfs_dax_remap(struct inode *inode, loff_t pos, loff_t len, loff_t size)
 {
-	struct fxfs_dax_file *file = fxfs_dax_file(inode);
 	int err;
 
 	if (!IS_DAX(inode) || !fxfs_dax_file(inode) || !len)
 		return 0;
-	/*
-	 * fxdax: copying on write, Fxfs's size is as writeback leaves it: the ranges dropped below
-	 * are written back first (fxfs_dax_drop_pinned), as XFS writes back both files' ranges.
-	 */
-	down_write(&file->sem);
-	err = fxfs_dax_of(inode)->cow ? 0 : fxfs_dax_write_size_locked(inode);
-	up_write(&file->sem);
+	err = fxfs_dax_grow_begin(inode, i_size_read(inode), size);
 	if (!err)
-		err = fxfs_dax_grow_begin(inode, i_size_read(inode), size);
-	if (err)
-		return err;
-	err = fxfs_dax_break_layouts(inode, round_down(pos, PAGE_SIZE));
+		err = fxfs_dax_break_layouts(inode, round_down(pos, PAGE_SIZE));
 	if (!err)
 		err = fxfs_dax_drop(inode, pos >> FXFS_DAX_SHIFT, (pos + len - 1) >> FXFS_DAX_SHIFT, -1);
 	if (!err)
@@ -6389,22 +3877,14 @@ void fxfs_dax_punch_end(struct inode *inode)
 int fxfs_dax_resize_begin(struct inode *inode, loff_t size)
 {
 	struct fxfs_dax_file *file = fxfs_dax_file(inode);
-	bool cow = fxfs_dax_of(inode)->cow;
 	int err;
 
 	filemap_invalidate_lock(inode->i_mapping);
 	/*
-	 * An ordinary grow zeroes from Fxfs's end: first record data appended since it. fxdax:
-	 * copying on write, Fxfs's end is as writeback leaves it, which writes what is dirty first,
-	 * so that it is the inode's (doc-13).
+	 * An ordinary grow zeroes from Fxfs's end, which is as writeback leaves it: what is dirty is
+	 * written first, so that it is the inode's (doc-13).
 	 */
-	if (cow) {
-		err = fxfs_dax_cow_write_back(inode);
-	} else {
-		down_write(&file->sem);
-		err = fxfs_dax_write_size_locked(inode);
-		up_write(&file->sem);
-	}
+	err = fxfs_dax_write_back(inode);
 	if (err) {
 		filemap_invalidate_unlock(inode->i_mapping);
 		return err;
@@ -6426,12 +3906,11 @@ int fxfs_dax_resize_begin(struct inode *inode, loff_t size)
 		return err;
 	}
 	/*
-	 * fxdax: copying on write, no writeback until fxfs_dax_resize_end: one that read the size
-	 * before the change wrote the pages past the new end after Fxfs cut them, and grew the file
-	 * again. Taken last, as zeroing above may wait for the budget's worker, which writes back.
+	 * fxdax: no writeback until fxfs_dax_resize_end: one that read the size before the change
+	 * wrote the pages past the new end after Fxfs cut them, and grew the file again. Taken last,
+	 * as zeroing above may wait for the budget's worker, which writes back.
 	 */
-	if (cow)
-		mutex_lock(&file->wb_lock);
+	mutex_lock(&file->wb_lock);
 	return 0;
 }
 
@@ -6454,19 +3933,18 @@ void fxfs_dax_resize_end(struct inode *inode, loff_t size)
 		page = first - (start >> PAGE_SHIFT);
 		if (page >= range->pages)
 			continue;
-		bitmap_clear(range->lagging, page, range->pages - page);
 		if (find_next_bit(range->mapped, range->pages, page) == range->pages)
 			continue;
 		/*
-		 * fxdax: copying on write, the pages past the end map zeros, which every page of a
-		 * range maps (fxfs_dax_cow_map), the MAP freeing their private pages, their dirty
-		 * pages' room released; unmapped if it fails, as a write maps them again.
+		 * fxdax: the pages past the end map zeros, which every page of a range maps
+		 * (fxfs_dax_map_pages), the MAP freeing their private pages, their dirty pages' room
+		 * released; unmapped if it fails, as a write maps them again.
 		 */
-		if (dax->cow && !range->region) {
+		if (!range->region) {
 			err = fxfs_device_map_zeros(dax->dev, fxfs_dax_page_offset(range, page),
 						    (u64)(range->pages - page) << PAGE_SHIFT);
 			if (!err) {
-				fxfs_dax_cow_forget(dax, range, page, range->pages - page, true);
+				fxfs_dax_forget(dax, range, page, range->pages - page, true);
 				bitmap_set(range->zeros, page, range->pages - page);
 				continue;
 			}
@@ -6475,18 +3953,16 @@ void fxfs_dax_resize_end(struct inode *inode, loff_t size)
 		}
 		/* A slice's pages past the end stay its region's: the slice no longer maps them. */
 		err = range->region ? 0 :
-		      fxfs_dax_device_unmap(dax, range->window_offset + ((u64)page << PAGE_SHIFT),
+		      fxfs_device_unmap(dax->dev, range->window_offset + ((u64)page << PAGE_SHIFT),
 					(u64)(range->pages - page) << PAGE_SHIFT);
 		if (err)
 			pr_warn("fxfs: unmapping the DAX window at %llx failed: %d\n",
 				range->window_offset, err);
-		/* fxdax: copying on write, the UNMAP freed their private pages, unless it failed. */
-		fxfs_dax_cow_forget(dax, range, page, range->pages - page, !err);
+		/* fxdax: the UNMAP freed their private pages, unless it failed. */
+		fxfs_dax_forget(dax, range, page, range->pages - page, !err);
 		bitmap_clear(range->mapped, page, range->pages - page);
-		fxfs_dax_clear_writable(range, page, range->pages - page);
 	}
 	up_write(&file->sem);
-	if (dax->cow)
-		mutex_unlock(&file->wb_lock);
+	mutex_unlock(&file->wb_lock);
 	filemap_invalidate_unlock(inode->i_mapping);
 }

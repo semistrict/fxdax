@@ -20,8 +20,8 @@ use fxfs::filesystem::{
 };
 use fxfs::object_store::journal::{DEFAULT_RECLAIM_SIZE, JournalOptions, LazyFlush};
 use fxfs::object_store::volume::root_volume;
-use fxfs::object_store::{ExtentAccess, NewChildStoreOptions, StoreOptions};
-pub use fxfs_posix::{Attr, DaxExtent, DaxWrite, ReaddirStart, SetAttr, StatFs};
+use fxfs::object_store::{NewChildStoreOptions, StoreOptions};
+pub use fxfs_posix::{Attr, DaxExtent, ReaddirStart, SetAttr, StatFs};
 use fxfs_posix::{Platform, SyncCounts};
 use linux_rt::Task;
 use std::future::Future;
@@ -38,9 +38,8 @@ pub type Fxfs = fxfs_posix::Fxfs<Guest>;
 const VOLUME: &str = "default";
 
 /// When the journal is written, but for syncs: metadata operations stay in memory, as ext4's do
-/// between its commits. A write of the journal after data seals the extents open (a barrier),
-/// and the next small file's write waits for its staging extent's first MAP: at 128 KiB, that was
-/// every few dozen files, a fifth of a small file's create and write.
+/// between its commits. A write of the journal after data seals the extents open (a barrier): at
+/// 128 KiB, that was every few dozen files.
 const LAZY_FLUSH: LazyFlush = LazyFlush { bytes: 1 << 20, delay: Duration::from_secs(5) };
 
 /// The share of memory, and of the device, the journal takes, at most `JOURNAL_MAX`: Fxfs flushes
@@ -325,20 +324,6 @@ impl Filesystem {
             resizer.set_capacity(capacity);
         }
         Ok(())
-    }
-
-    /// fxdax: the staging extent, new, in place of one sealed since blocks were taken of it, which
-    /// the DAX window maps before the next write's blocks move there (`Allocator::restage`).
-    pub fn restage(&self) -> Option<DaxExtent> {
-        let allocator = self.filesystem.allocator();
-        let extent = allocator.restage()?;
-        Some(DaxExtent {
-            branch: extent.branch,
-            sequence: extent.sequence,
-            access: ExtentAccess::Open,
-            extent_size: allocator.extent_size(extent).unwrap_or(0),
-            ..Default::default()
-        })
     }
 
     /// The device, as C has it, for DAX (`struct fxfs_device`).

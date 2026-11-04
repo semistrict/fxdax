@@ -2,11 +2,10 @@
 // Copyright 2026 The fxdax Authors.
 /*
  * Paths no seed of tests/interleave takes, each played out exactly: memory that ends part way
- * through a write, a write from the pages it writes, what a clone does to an open extent,
- * allocations and device requests that fail, and a MAP the host is slow to take. And copy-on-write
- * DAX's (doc-13: the device's DAX_COW, as fxfs.dax_cow has the driver take it): rebinding and
- * writeback against stores,
- * truncating and punching dirty pages, and a crash between writeback's bytes and its commit.
+ * through a write, a write from the pages it writes, a writer killed, allocations and device
+ * requests that fail. And copy-on-write DAX's own (doc-13): rebinding and writeback against
+ * stores, truncating and punching dirty pages, and a crash between writeback's bytes and its
+ * commit.
  *
  *   scenarios [NAME]
  *
@@ -18,9 +17,8 @@
 #include <linux/virtio_extent.h>
 
 #define WINDOW_LEN (64UL << 20)
-/* A chunk's data and more, written so as to take two extents, which only a range of its own maps. */
+/* A chunk's data and more, which only a range of its own maps. */
 #define BIG_LEN (3UL << 20)
-#define BIG_FIRST (1UL << 20)
 #define PAUSE_READ_MAPPED BIT(4)
 #define PAUSE_WRITE_MAPPED BIT(5)
 #define PAUSE_WRITEBACK BIT(8)
@@ -28,8 +26,8 @@
 /* A chunk's range, the window's whole ranges, at a chunk's alignment. */
 #define CHUNK_LEN (2UL << 20)
 /*
- * Copy-on-write DAX's private pages, few, so that the budget, past seven eighths of them, has the
- * worker write back and rebind while tasks store.
+ * The device's private pages, few, so that the budget, past seven eighths of them, has the worker
+ * write back and rebind while tasks store.
  */
 #define COW_PRIVATE_MAX 64
 
@@ -46,8 +44,8 @@ static void fill(char *buf, size_t len, unsigned char seed)
 }
 
 /*
- * That read(2) and Fxfs's extents hold `expected`, now and once what the writes before left dead is
- * freed, as a range mapping blocks where they were then reads zeros.
+ * That read(2), and Fxfs's extents once written back, hold `expected`, now and once what the
+ * writes before left dead is freed, as a range mapping blocks where they were then reads zeros.
  */
 static void check_file(const char *what, struct file *file, const char *expected, size_t len)
 {
@@ -57,6 +55,7 @@ static void check_file(const char *what, struct file *file, const char *expected
 	ssize_t read;
 
 	for (round = 0; round < 2; round++) {
+		check(!sim_fsync(file), "%s: fsync", what);
 		read = sim_read(file, 0, got, len);
 		check(read == len, "%s: read %zd of %zu", what, read, len);
 		check(!memcmp(got, expected, len), "%s: read(2) differs, round %d", what, round);
@@ -141,7 +140,7 @@ static void same_page(void)
 	done = sim_write_user(file, 0, addr, PAGE_SIZE);
 	check(done == PAGE_SIZE, "a write from its own page: %zd", done);
 	check_file("the page written from itself", file, expected, sizeof(expected));
-	/* Each page from the one after it, which the page before's move mustn't take. */
+	/* Each page from the one after it, which the page before's copy mustn't take. */
 	done = sim_write_user(file, 0, addr + PAGE_SIZE, 2 * PAGE_SIZE);
 	check(done == 2 * PAGE_SIZE, "a write from the next pages: %zd", done);
 	memmove(expected, expected + PAGE_SIZE, 2 * PAGE_SIZE);
@@ -155,8 +154,9 @@ static void same_page(void)
 }
 
 /*
- * That an append stopped short leaves the range where Fxfs has the file's last block: Fxfs moved
- * it as the file was cut to what was written, and the next append's bytes went where it was.
+ * That an append stopped short leaves the file, and Fxfs's once written back, as long as it wrote,
+ * and the next append's bytes where they go. On writable DAX, Fxfs moved the last block as the file
+ * was cut to what was written, and the next append's bytes went where it was.
  */
 static void append_stopped_short_in_a_page(void)
 {
@@ -169,6 +169,7 @@ static void append_stopped_short_in_a_page(void)
 	memcpy(expected, source + sizeof(source) - readable, readable);
 	done = sim_write_user(file, 0, stops_after(source, readable), 2 * PAGE_SIZE);
 	check(done == readable, "an append from memory ending part way: %zd", done);
+	check(!sim_fsync(file), "fsync");
 	check(fxfs_sim_size(mount->info->fs, file_inode(file)->i_ino) == readable,
 	      "Fxfs's size, after an append stopped short: %llu",
 	      fxfs_sim_size(mount->info->fs, file_inode(file)->i_ino));
@@ -233,126 +234,6 @@ static void drop_ranges(struct file *file)
 	check(!err, "dropping its ranges: %d", err);
 }
 
-/*
- * That a clone's blocks in an open extent aren't mapped writably outside the gate, past what a
- * writable region maps: shared, they keep away from it, read-only, in a range's own space. Through
- * it, as they read as sealed and went, their MAP was writable, which a seal may cross, and
- * fxfs_device_assert_in_gate's lockdep says so.
- */
-static void clone_past_a_writable_region(void)
-{
-	static char one[PAGE_SIZE], many[32 * PAGE_SIZE], got[32 * PAGE_SIZE];
-	struct file *first, *cloned, *clone = sim_file_new(mount);
-	ssize_t done;
-
-	fill(one, sizeof(one), 1);
-	fill(many, sizeof(many), 9);
-	first = new_file(one, sizeof(one));
-	cloned = new_file(many, sizeof(many));
-	/* What grows the region in the background holds it: over, the region goes with the ranges. */
-	msleep(10);
-	check(!sim_clone(cloned, 0, clone, 0, ARRAY_SIZE(many)), "the clone");
-	drop_ranges(first);
-	done = sim_read(first, 0, got, sizeof(one));
-	check(done == sizeof(one) && !memcmp(got, one, sizeof(one)), "the first file: %zd", done);
-	done = sim_read(cloned, 0, got, sizeof(many));
-	check(done == sizeof(many) && !memcmp(got, many, sizeof(many)), "the cloned file: %zd", done);
-	done = sim_read(clone, 0, got, sizeof(many));
-	check(done == sizeof(many) && !memcmp(got, many, sizeof(many)), "its clone: %zd", done);
-}
-
-/*
- * As clone_past_a_writable_region, the clone in two pieces, which are no slice: GCE r423's stack,
- * fxfs_dax_map_chunk outside the gate, a writable MAP past the region's end as a seal shrank it
- * (generic/013), by a way into regions that fafefbac7 took out.
- */
-static void clone_pieces_past_a_writable_region(void)
-{
-	static char one[PAGE_SIZE], many[32 * PAGE_SIZE], got[2 * PAGE_SIZE];
-	struct file *first, *cloned, *clone = sim_file_new(mount);
-	ssize_t done;
-
-	fill(one, sizeof(one), 1);
-	fill(many, sizeof(many), 9);
-	first = new_file(one, sizeof(one));
-	cloned = new_file(many, sizeof(many));
-	msleep(10);
-	check(!sim_clone(cloned, 20 * PAGE_SIZE, clone, 20 * PAGE_SIZE, 2 * PAGE_SIZE), "the clone");
-	check(!sim_clone(cloned, 24 * PAGE_SIZE, clone, 24 * PAGE_SIZE, 2 * PAGE_SIZE), "the second clone");
-	drop_ranges(first);
-	done = sim_read(first, 0, got, sizeof(one));
-	check(done == sizeof(one) && !memcmp(got, one, sizeof(one)), "the first file: %zd", done);
-	done = sim_read(clone, 24 * PAGE_SIZE, got, sizeof(got));
-	check(done == sizeof(got) && !memcmp(got, many + 24 * PAGE_SIZE, sizeof(got)),
-	      "its clone: %zd", done);
-}
-
-static struct file *slice_file;
-static char slice_bytes[2 * PAGE_SIZE], slice_written[2 * PAGE_SIZE];
-static unsigned long slice_addr;
-
-/* A fault, whose iomap holds the slice with no lock of the inode's that a write(2) waits for. */
-static void load_slice(void *arg)
-{
-	char got[PAGE_SIZE];
-	int err = sim_user_load(slice_addr, got, sizeof(got));
-
-	/*
-	 * It paused past its iomap, which the write waits for, its blocks moving (TASK-153.5): it
-	 * reads what the file held. The write waits for no entry of the fault's.
-	 */
-	check(!err && !memcmp(got, slice_bytes, sizeof(got)), "the load: %d", err);
-}
-
-static void write_slice(void *arg)
-{
-	ssize_t done = sim_write(slice_file, 0, slice_written, sizeof(slice_written));
-
-	check(done == sizeof(slice_written), "the write: %zd", done);
-}
-
-/*
- * That a write a slice refuses part way leaves no page writable a seal doesn't forget. A clone's file
- * had blocks in an open extent, and no writable page: so a slice of it, read-only, of a writable
- * region, on no list of files, took a write whose first page stayed where it was, the file cloned
- * having let go of it, and whose second moved. The first page's bit was set, the file unlisted,
- * and the slice stayed, a reader using it, past a seal (dax_check_seals' WARN). Shared blocks make
- * no slice now (TASK-153.3): the same steps, on a range of its own, whose writer doesn't wait for
- * the fault's entry, only for the fault to be done with its iomap, which then read what it held.
- */
-static void slice_refuses_a_piece(void)
-{
-	static char one[PAGE_SIZE], got[2 * PAGE_SIZE];
-	struct file *holder, *cloned;
-	char ino[24];
-	ssize_t done;
-
-	sim_param_set("dax_check_seals", "1");
-	fill(one, sizeof(one), 1);
-	fill(slice_bytes, sizeof(slice_bytes), 3);
-	memset(slice_written, 'w', sizeof(slice_written));
-	holder = new_file(one, sizeof(one));
-	cloned = new_file(slice_bytes, sizeof(slice_bytes));
-	slice_file = sim_file_new(mount);
-	check(!sim_clone(cloned, 0, slice_file, 0, 2 * PAGE_SIZE), "the clone");
-	done = sim_read(slice_file, 0, got, sizeof(got));
-	check(done == sizeof(got) && !memcmp(got, slice_bytes, sizeof(got)), "the read: %zd", done);
-	check(!sim_punch(cloned, 0, PAGE_SIZE), "the punch");
-
-	snprintf(ino, sizeof(ino), "%lu", file_inode(slice_file)->i_ino);
-	sim_param_set("dax_pause_ino", ino);
-	snprintf(ino, sizeof(ino), "%lu", PAUSE_READ_MAPPED);
-	sim_param_set("dax_pause", ino);
-	slice_addr = sim_mmap(slice_file, 0, sizeof(slice_bytes));
-	sim_spawn("reader", load_slice, NULL);
-	while (!(sim_param_read("dax_paused") & PAUSE_READ_MAPPED))
-		msleep(1);
-	sim_spawn("writer", write_slice, NULL);
-	msleep(100);
-	sim_param_set("dax_pause", "0");
-	check(!sim_fsync(holder), "the seal");
-}
-
 static struct file *killed_file;
 static char killed_bytes[4 * PAGE_SIZE];
 
@@ -365,8 +246,9 @@ static void write_killed_file(void *arg)
 
 /*
  * That a writer killed past its iomap, before its copy, leaves the file as it was: dax_iomap_iter
- * stops at the signal, and the move, which commits after the bytes, is dropped (TASK-153.5).
- * Committed first, it left zeros where the file's data was.
+ * stops at the signal, the pages it made private and dirty holding what they held, which writeback
+ * writes as they were. On writable DAX, a move committed before its bytes left zeros where the
+ * file's data was (TASK-153.5).
  */
 static void write_killed(void)
 {
@@ -408,103 +290,6 @@ static void unmap_failed(void)
 	sim_file_evict(file);
 	sim_mount_free(mount);
 	mount = NULL;
-}
-
-/* A file whose chunk's blocks a write moves, and which its range's own space maps at each move. */
-static struct file *sealed_file(char *bytes)
-{
-	struct file *file;
-	char byte;
-
-	sim_param_set("dax_writes_through", "N");
-	fill(bytes, BIG_LEN, 1);
-	file = new_file(bytes, BIG_FIRST);
-	check(sim_write(file, BIG_FIRST, bytes + BIG_FIRST, BIG_LEN - BIG_FIRST) ==
-	      BIG_LEN - BIG_FIRST, "the second write");
-	check(!sim_fsync(file), "fsync");
-	/* The work after a seal over, its MAP of the next staging extent is no test's to fail. */
-	msleep(10);
-	check(sim_read(file, 0, &byte, 1) == 1, "the first read");
-	return file;
-}
-
-/* That a MAP failing as a tail page is zeroed, once, is tried again, and truncate says nothing. */
-static void map_failed_zeroing(void)
-{
-	static char bytes[BIG_LEN];
-	struct file *file = sealed_file(bytes);
-	const size_t size = PAGE_SIZE + 10;
-	int err;
-
-	sim_device_fail(VIRTIO_EXTENT_T_MAP, 0, 1);
-	err = sim_truncate(file, size);
-	check(!err, "a truncate whose zeroing's MAP failed: %d", err);
-	check(sim_device_failed() == 1, "no MAP failed");
-	check_file("after the truncate", file, bytes, size);
-}
-
-/* That MAPs failing for good fail a truncate, and leave no range mapping blocks where they were. */
-static void map_failed_zeroing_again(void)
-{
-	static char bytes[BIG_LEN];
-	struct file *file = sealed_file(bytes);
-	int err;
-
-	sim_device_fail(VIRTIO_EXTENT_T_MAP, 0, 3);
-	err = sim_truncate(file, PAGE_SIZE + 10);
-	check(err == -EIO, "a truncate whose MAPs failed: %d", err);
-	sim_device_fail(VIRTIO_EXTENT_T_MAP, 0, 0);
-	check_file("after the truncate failed", file, bytes, BIG_LEN);
-}
-
-static struct file *behind_file;
-
-static void write_part_killed(void *arg)
-{
-	char some[100];
-	ssize_t done;
-
-	memset(some, 'w', sizeof(some));
-	current->killed = true;
-	done = sim_write(behind_file, PAGE_SIZE + 10, some, sizeof(some));
-	check(done == -EINTR, "a write its task was killed in: %zd", done);
-}
-
-/*
- * That a range behind Fxfs's blocks isn't used, with no one left to drop it: a write gives up on
- * it, its task killed, which reads then took for what the file holds, until Fxfs freed the blocks.
- */
-static void map_failed_killed(void)
-{
-	static char bytes[BIG_LEN];
-
-	/* The page alone in its extent, which then dies as the page moves, and is freed. */
-	behind_file = sealed_file(bytes);
-	memset(bytes + PAGE_SIZE, 'p', PAGE_SIZE);
-	check(sim_write(behind_file, PAGE_SIZE, bytes + PAGE_SIZE, PAGE_SIZE) == PAGE_SIZE, "a page");
-	check(!sim_fsync(behind_file), "fsync");
-	msleep(10);
-	sim_device_fail(VIRTIO_EXTENT_T_MAP, 0, 1);
-	sim_spawn("writer", write_part_killed, NULL);
-	msleep(100);
-	check(sim_device_failed() == 1, "no MAP failed");
-	check_file("after the killed write", behind_file, bytes, BIG_LEN);
-}
-
-/* That a write whose MAPs fail for good says so, leaves the file as it was, and reads follow Fxfs. */
-static void map_failed_writing(void)
-{
-	static char bytes[BIG_LEN], written[PAGE_SIZE];
-	struct file *file = sealed_file(bytes);
-	ssize_t done;
-
-	memset(written, 'w', sizeof(written));
-	sim_device_fail(VIRTIO_EXTENT_T_MAP, 0, 3);
-	done = sim_write(file, PAGE_SIZE, written, sizeof(written));
-	check(done == -EIO, "a write whose MAPs failed: %zd", done);
-	sim_device_fail(VIRTIO_EXTENT_T_MAP, 0, 0);
-	/* The page as it was: its move commits after its bytes, which never came (TASK-153.5). */
-	check_file("after the write failed", file, bytes, BIG_LEN);
 }
 
 static char sweep_bytes[PAGE_SIZE * 64];
@@ -549,7 +334,7 @@ static void read_op(struct file *file, unsigned long addr, int skip)
 
 static void write_op(struct file *file, unsigned long addr, int skip)
 {
-	/* What it holds, so that a write that fails after its move is one that's tried again. */
+	/* What it holds, so that a write that fails part way leaves the file as it was. */
 	char same[PAGE_SIZE];
 
 	memcpy(same, sweep_bytes + 3 * PAGE_SIZE, sizeof(same));
@@ -571,133 +356,11 @@ static void allocations_failed(void)
 	alloc_sweep("a load", load_op, true);
 }
 
-/*
- * That writes never told to sync, more than the host's memory for open extents holds, each over
- * what the last left dead, make room with a seal, and lose nothing, as xfstests' generic/129 asks
- * (`looptest -t`): the host evicts only what is sealed (TASK-150.20).
- */
-static void open_memory_out(void)
-{
-	static char bytes[25 * PAGE_SIZE], got[25 * PAGE_SIZE];
-	struct file *file = sim_file_new(mount);
-	int round;
-
-	sim_device_limit_open(3 * PTRS_PER_PTE);
-	for (round = 0; round < 1000; round++) {
-		fill(bytes, sizeof(bytes), round);
-		check(!sim_truncate(file, 0), "truncate %d", round);
-		check(sim_write(file, 0, bytes, sizeof(bytes)) == sizeof(bytes), "write %d", round);
-		check(sim_read(file, 0, got, sizeof(got)) == sizeof(got), "read %d", round);
-		check(!memcmp(got, bytes, sizeof(got)), "round %d reads otherwise", round);
-	}
-	check(sim_device_open_refused(), "the host refused no MAP");
-	check(sim_device_failed() == 0, "a request failed");
-	check_file("the last write", file, bytes, sizeof(bytes));
-}
-
-/* A file's write, as a task of its own. */
-struct reach {
-	struct file *file;
-	const char *bytes;
-	size_t len;
-};
-
-static void write_reach(void *arg)
-{
-	struct reach *write = arg;
-	ssize_t done = sim_write(write->file, 0, write->bytes, write->len);
-
-	check(done == write->len, "a write of %zu bytes: %zd", write->len, done);
-}
-
-static void seal_reach(void *arg)
-{
-	check(!sim_fsync(arg), "the seal");
-}
-
 static void wait_for(struct task_struct *task)
 {
 	while (!task->done)
 		msleep(1);
 }
-
-/*
- * That a region's `mapped` never goes back. Two new files' slices of the staging extent reach at
- * once: the first's MAP, as far as the region's first step, held at the host, the second's, further,
- * and a seal begun, which waits for the first. Without the region's lock, the second MAPs from what
- * the first found mapped, and the first, ending last, says the region maps less than it does: the
- * seal shrinks the region to that, and gives the window past it back, under the second's slice. The
- * next staging extent's region takes it, where the first's write, sealed before its copy, moves its
- * page: the second file reads the first's bytes (TASK-44.19's map_to_unlocked, which no guest suite
- * found, nor 3,000 seeds of interleave and failures).
- */
-static void reaches_at_once(void)
-{
-	static char near[PAGE_SIZE], far[40 * PAGE_SIZE], got[sizeof(far)];
-	struct reach first = { sim_file_new(mount), near, sizeof(near) };
-	struct reach second = { sim_file_new(mount), far, sizeof(far) };
-	struct file *sealed = sim_file_new(mount);
-	struct task_struct *nearer, *further, *sealer;
-	size_t page;
-	ssize_t done;
-	u64 held;
-
-	fill(near, sizeof(near), 1);
-	fill(far, sizeof(far), 2);
-	sim_device_hold_map();
-	nearer = sim_spawn("nearer", write_reach, &first);
-	while (!(held = sim_device_held_map()))
-		msleep(1);
-	/* The region's first MAP, FXFS_DAX_REGION_FIRST's pages, short of the second slice's end. */
-	check(held == 16, "the MAP held is of %llu pages", held);
-	further = sim_spawn("further", write_reach, &second);
-	/* As far as it goes: its write's end, or, as the region is locked, its MAP's beginning. */
-	msleep(100);
-	sealer = sim_spawn("sealer", seal_reach, sealed);
-	while (!fxfs_sim_sealing(mount->info->fs))
-		msleep(1);
-	sim_device_release_map();
-	wait_for(nearer);
-	wait_for(further);
-	wait_for(sealer);
-	done = sim_read(second.file, 0, got, sizeof(got));
-	check(done == sizeof(got), "the further file's read: %zd", done);
-	for (page = 0; page < ARRAY_SIZE(far) / PAGE_SIZE; page++) {
-		check(!memcmp(got + page * PAGE_SIZE, far + page * PAGE_SIZE, PAGE_SIZE),
-		      "the further file's page %zu reads %s", page,
-		      !memcmp(got + page * PAGE_SIZE, near, PAGE_SIZE) ? "the nearer file's bytes" :
-		      "bytes of neither file");
-	}
-	check_file("the further slice", second.file, far, sizeof(far));
-	check_file("the nearer slice", first.file, near, sizeof(near));
-}
-
-/*
- * That a write whose move fails to commit says so, and leaves the file as it was, its MAPs' and its
- * copy through a region's alike, and that the write then goes (TASK-153.5).
- */
-static void commit_failed_writing(void)
-{
-	static char bytes[BIG_LEN], written[2 * PAGE_SIZE];
-	struct file *file = sealed_file(bytes);
-	const char *const through[] = { "N", "Y" };
-	ssize_t done;
-	size_t i;
-
-	for (i = 0; i < ARRAY_SIZE(through); i++) {
-		sim_param_set("dax_writes_through", through[i]);
-		memset(written, 'a' + i, sizeof(written));
-		fxfs_sim_fail_commits(1);
-		done = sim_write(file, PAGE_SIZE, written, sizeof(written));
-		check(done == -EIO, "a write whose commit failed, through %s: %zd", through[i], done);
-		check_file("after the commit failed", file, bytes, BIG_LEN);
-		done = sim_write(file, PAGE_SIZE, written, sizeof(written));
-		check(done == sizeof(written), "the write again, through %s: %zd", through[i], done);
-		memcpy(bytes + PAGE_SIZE, written, sizeof(written));
-		check_file("after the write again", file, bytes, BIG_LEN);
-	}
-}
-
 
 /*
  * Copy-on-write DAX (doc-13): what a file's pages hold, each a round in its first 8 bytes, which
@@ -963,7 +626,7 @@ static void cow_fsync(void *arg)
  * That a crash between writeback's bytes and its commit shows the file as it was, whole pages, and
  * the commit as writeback copied them: a commit before its bytes would show what its extent held
  * unwritten. A store meanwhile, which takes no lock a writeback holds, goes to the private page,
- * dirty again, which the fsync's writeback for its size (fxfs_dax_write_size) writes after.
+ * dirty again, which the fsync's writeback of its dirty pages (fxfs_dax_write_back) writes after.
  */
 static void cow_crash_between_bytes_and_commit(void)
 {
@@ -1004,10 +667,18 @@ static void cow_write_page3(void *arg)
 	cow_put(3, (uintptr_t)arg, false);
 }
 
-/* fxfs.dax_rebind_now: the budget's worker writes back, seals and rebinds all it can, waited for. */
+/*
+ * fxfs.dax_rebind_now: the budget's worker writes back, seals and rebinds all it can, waited for as
+ * a guest check waits: until the rounds it served reach the asks, as read after this one.
+ */
 static void cow_rebind_now(void *arg)
 {
+	u64 asked;
+
 	check(!sim_param_set("dax_rebind_now", "1"), "rebinding now");
+	asked = sim_dax_stat(mount, "dax_rebinds_asked");
+	while (sim_dax_stat(mount, "dax_rebinds_done") < asked)
+		msleep(1);
 }
 
 /* A file of `pages` pages, written back, sealed and mapped, each page private and clean. */
@@ -1088,7 +759,7 @@ static void cow_rebind_during_writeback(void)
  * That a rebind takes no dirty page, nor one a fault left writable: the worker's own writeback
  * held after its copy, a write(2) dirties page 1 again, which the rebind after must leave, while
  * it rebinds the rest, whose PTEs, made writable by faults, the writeback write-protected
- * (fxfs_dax_cow_protect): through one left writable, a store makes the page
+ * (fxfs_dax_protect): through one left writable, a store makes the page
  * private again on the host, which the guest never learns of, and no fsync writes.
  */
 static void cow_rebind_skips_dirty(void)
@@ -1114,28 +785,47 @@ static void cow_rebind_skips_dirty(void)
 	cow_check_file("after the rebind", 8 * PAGE_SIZE);
 }
 
+static void cow_store_page3(void *arg)
+{
+	cow_put(3, (uintptr_t)arg, true);
+}
+
+static void cow_load_page3_checked(void *arg)
+{
+	cow_check(3, true, "a load's fault as a rebind's MAP was on its way");
+}
+
 /*
  * That a rebind holds the file's semaphore exclusively from its look at the dirty sets to its MAP:
- * the MAP held on its way to the host, a write(2) to a page it found clean waits. Under the
- * semaphore shared, the write dirtied and stored to the private page, which the MAP then replaced
- * with the extent's.
+ * the MAP held on its way to the host, a write(2) to a page it found clean waits, and so does a
+ * fault, a store's or a load's, which blocks on the semaphore holding its DAX entry. Under the
+ * semaphore shared, the write or the store dirtied and stored to the private page, which the MAP
+ * then replaced with the extent's. Every other file's private pages are rebound first, so that the
+ * MAP held is this file's.
  */
 static void cow_rebind_against_write(void)
 {
-	struct task_struct *rebinder, *writer;
+	static void (*const ways[])(void *) = {
+		cow_write_page3, cow_store_page3, cow_load_page3_checked,
+	};
+	struct task_struct *rebinder, *other;
+	size_t way;
 
-	cow_mapped_file(8);
-	sim_device_hold_map();
-	rebinder = sim_spawn("rebinder", cow_rebind_now, NULL);
-	while (!sim_device_held_map())
-		msleep(1);
-	writer = sim_spawn("writer", cow_write_page3, (void *)1UL);
-	msleep(50);
-	sim_device_release_map();
-	wait_for(rebinder);
-	wait_for(writer);
-	cow_check(3, false, "the write as a rebind's MAP was on its way");
-	cow_check_file("after the rebind", 8 * PAGE_SIZE);
+	for (way = 0; way < ARRAY_SIZE(ways); way++) {
+		wait_for(sim_spawn("rebinder", cow_rebind_now, NULL));
+		cow_mapped_file(8);
+		sim_device_hold_map();
+		rebinder = sim_spawn("rebinder", cow_rebind_now, NULL);
+		while (!sim_device_held_map())
+			msleep(1);
+		other = sim_spawn("other", ways[way], (void *)1UL);
+		msleep(50);
+		sim_device_release_map();
+		wait_for(rebinder);
+		wait_for(other);
+		cow_check(3, way == 1, "after a rebind's MAP was on its way");
+		cow_check_file("after the rebind", 8 * PAGE_SIZE);
+	}
 }
 
 /*
@@ -1201,11 +891,6 @@ static void cow_reclaim_during_writeback(void)
 	sim_param_set("dax_pause", "0");
 	wait_for(syncer);
 	cow_check_file("after reclaim met a writeback", 8 * PAGE_SIZE);
-}
-
-static void cow_store_page3(void *arg)
-{
-	cow_put(3, (uintptr_t)arg, true);
 }
 
 /*
@@ -1356,18 +1041,30 @@ static void cow_write_page1(void *arg)
 	cow_put(1, 2, false);
 }
 
+static void cow_load_page0(void *arg)
+{
+	cow_check(0, true, "a load's fault as a seal was under way");
+}
+
+static void cow_store_page1(void *arg)
+{
+	cow_put(1, 2, true);
+}
+
 /*
  * That a range maps no extent a seal in progress has yet to seal. An fsync's writeback writes the
  * file to a new extent, and its seal is held once it has begun (fxfs_sim_hold_seals): Fxfs takes the
  * extent for sealed already, as the guest's does (OpenExtents::seal), the device not. The file's
  * ranges dropped, a read maps the chunk again, as a slice of the extent's region, and then a write,
- * as a range of its own: each from the extent, at once, which the host refused (-EPERM), dax.c
- * dropping the slice, or sealing and trying again; doc-13's invariant 1, the cow_ scenarios'
- * tripwire, which mutants' schedules of cow_punch_dirty met.
+ * as a range of its own; and a load's fault, and a store's, which block on the seal holding their
+ * DAX entry: each from the extent, at once, which the host refused (-EPERM); doc-13's invariant 1,
+ * the cow_ scenarios' tripwire, which mutants' schedules of cow_punch_dirty met.
  */
 static void cow_map_during_seal(void)
 {
-	static void (*const ways[])(void *) = { cow_read_page0, cow_write_page1 };
+	static void (*const ways[])(void *) = {
+		cow_read_page0, cow_write_page1, cow_load_page0, cow_store_page1,
+	};
 	struct task_struct *syncer, *mapper;
 	size_t way;
 
@@ -1384,8 +1081,7 @@ static void cow_map_during_seal(void)
 		fxfs_sim_hold_seals(false);
 		wait_for(syncer);
 		wait_for(mapper);
-		cow_check_file(way ? "after a write's map met a seal" : "after a read's map met a seal",
-			       8 * PAGE_SIZE);
+		cow_check_file("after a map met a seal", 8 * PAGE_SIZE);
 	}
 }
 
@@ -1476,8 +1172,8 @@ static void cow_private_failed(void)
 static const struct {
 	const char *name;
 	void (*run)(void);
-	/* Whether it runs with copy-on-write DAX: the device's DAX_COW, taken (fxfs.dax_cow). */
-	bool cow;
+	/* Whether the device holds few private pages (COW_PRIVATE_MAX), for the budget to throttle. */
+	bool few;
 } scenarios[] = {
 #define SCENARIO(name) { #name, name, false }
 #define COW_SCENARIO(name) { #name, name, true }
@@ -1487,19 +1183,9 @@ static const struct {
 	SCENARIO(append_stopped_short_in_a_page),
 	SCENARIO(store_past_end_then_written),
 	SCENARIO(write_past_end_copies_nothing),
-	SCENARIO(clone_past_a_writable_region),
-	SCENARIO(clone_pieces_past_a_writable_region),
-	SCENARIO(slice_refuses_a_piece),
 	SCENARIO(write_killed),
 	SCENARIO(unmap_failed),
-	SCENARIO(map_failed_zeroing),
-	SCENARIO(map_failed_zeroing_again),
-	SCENARIO(map_failed_killed),
-	SCENARIO(map_failed_writing),
-	SCENARIO(commit_failed_writing),
 	SCENARIO(allocations_failed),
-	SCENARIO(open_memory_out),
-	SCENARIO(reaches_at_once),
 	COW_SCENARIO(cow_rebind_against_stores),
 	COW_SCENARIO(cow_writeback_against_stores),
 	COW_SCENARIO(cow_truncate_dirty),
@@ -1536,8 +1222,8 @@ int main(int argc, char **argv)
 			sim_log("%s\n", scenarios[i].name);
 		} else if (!strcmp(argv[1], scenarios[i].name)) {
 			sim_device_init(WINDOW_LEN);
-			if (scenarios[i].cow)
-				sim_device_dax_cow(COW_PRIVATE_MAX);
+			if (scenarios[i].few)
+				sim_device_private_max(COW_PRIVATE_MAX);
 			sim_spawn(scenarios[i].name, scenario, scenarios[i].run);
 			sim_run();
 			sim_log("%s: passed\n", scenarios[i].name);

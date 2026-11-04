@@ -14,7 +14,7 @@
 #define CONFIG_DAX 1
 #define CONFIG_XARRAY_MULTI 1
 #define CONFIG_TRANSPARENT_HUGEPAGE 1
-/* The gate's lockdep map, which fxfs_device_assert_in_gate checks: see sim/lockdep.h. */
+/* Lockdep's assertions in the sources, which the tasks' held locks check: see sim/lockdep.h. */
 #define CONFIG_LOCKDEP 1
 #define CONFIG_ILLEGAL_POINTER_VALUE 0xdead000000000000
 #define CONFIG_BASE_SMALL 0

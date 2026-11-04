@@ -338,10 +338,7 @@ impl Extentd for Control {
             stage_ns: _,
             commits,
             commit_ns,
-            commit_write_ns,
-            commit_written_bytes,
             commit_store_ns,
-            commit_seal_ns,
             commit_wait_ns,
             segment_closes,
             segment_close_ns,
@@ -352,7 +349,6 @@ impl Extentd for Control {
             // And the VM processes' changes that took access away, as they told it (TASK-91.16).
             stage_overwrites: _,
             stage_leave_outs: _,
-            stage_write_protects: _,
             // And the extent cache's trims (TASK-109.2).
             cache_trims: _,
             cache_trim_ns: _,
@@ -360,17 +356,8 @@ impl Extentd for Control {
             fault_stores: _,
             fault_refusals: _,
             fault_waits: _,
-            // And the seal's phases (TASK-112.3).
-            commit_seal_cached_ns: _,
-            commit_seal_remap_ns: _,
-            commit_seal_supply_ns: _,
-            commit_seal_populate_ns: _,
-            // And the windows' runs of pages and open extents' maps (TASK-131.1).
+            // And the windows' runs of pages (TASK-131.1).
             stage_segments: _,
-            stage_maps_open: _,
-            open_allocs: _,
-            open_alloc_pages: _,
-            open_alloc_runs: _,
         } = crate::stats::stats();
         use extent_remote::store::{Request, Upload};
         let bucket = stores::remote_bucket().map_err(status)?.stats();
@@ -399,10 +386,7 @@ impl Extentd for Control {
             object_storage,
             commits,
             commit_ns,
-            commit_write_ns,
-            commit_written_bytes,
             commit_store_ns,
-            commit_seal_ns,
             commit_wait_ns,
             segment_closes,
             segment_close_ns,
@@ -677,10 +661,7 @@ impl Client {
             stage_ns: 0,
             commits: response.commits,
             commit_ns: response.commit_ns,
-            commit_write_ns: response.commit_write_ns,
-            commit_written_bytes: response.commit_written_bytes,
             commit_store_ns: response.commit_store_ns,
-            commit_seal_ns: response.commit_seal_ns,
             commit_wait_ns: response.commit_wait_ns,
             segment_closes: response.segment_closes,
             segment_close_ns: response.segment_close_ns,
@@ -689,21 +670,12 @@ impl Client {
             stage_map_bytes: 0,
             stage_overwrites: 0,
             stage_leave_outs: 0,
-            stage_write_protects: 0,
             cache_trims: 0,
             cache_trim_ns: 0,
             fault_stores: 0,
             fault_refusals: 0,
             fault_waits: 0,
-            commit_seal_cached_ns: 0,
-            commit_seal_remap_ns: 0,
-            commit_seal_supply_ns: 0,
-            commit_seal_populate_ns: 0,
             stage_segments: 0,
-            stage_maps_open: 0,
-            open_allocs: 0,
-            open_alloc_pages: 0,
-            open_alloc_runs: 0,
         })
     }
 

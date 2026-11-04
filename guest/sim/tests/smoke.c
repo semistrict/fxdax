@@ -2,8 +2,8 @@
 // Copyright 2026 The fxdax Authors.
 /*
  * One task, with no VM: mounts a file on the DAX window, writes it, reads it back, takes faults
- * through a mapping, seals, and moves blocks through the staging extent.
- * Every step checks the bytes as read(2), the mapping and Fxfs's extents have them.
+ * through a mapping, whose stores copy on write (doc-13), and writes it back and seals.
+ * Every step checks the bytes as read(2), the mapping and Fxfs's extents, written back, have them.
  */
 
 #include <sim/sim.h>
@@ -32,6 +32,8 @@ static void check_file(const char *what, size_t at, const char *expected, size_t
 
 	check(read == len, "%s: read %zd of %zu", what, read, len);
 	check(!memcmp(got, expected, len), "%s: read(2) differs", what);
+	/* Written back, as the window's private pages are only by writeback. */
+	check(!sim_fsync(file), "%s: fsync", what);
 	fxfs_sim_read(fs, inode->i_ino, at, got, len);
 	check(!memcmp(got, expected, len), "%s: Fxfs's extents differ", what);
 	kfree(got);
@@ -47,7 +49,7 @@ static void scenario(void *arg)
 	mount = sim_mount_new();
 	file = sim_file_new(mount);
 
-	/* A write through the window, of data in open extents, and a read of it. */
+	/* A write through the window, its pages private, and a read of it. */
 	fill(data, sizeof(data), 1);
 	done = sim_write(file, 0, data, sizeof(data));
 	check(done == sizeof(data), "write: %zd", done);
@@ -57,7 +59,7 @@ static void scenario(void *arg)
 	check(!err, "fsync: %d", err);
 	check_file("after a seal", 0, data, sizeof(data));
 
-	/* A read fault, then a write fault: the page is sealed, so its block moves. */
+	/* A read fault, then a write fault: the page, sealed, is made private. */
 	addr = sim_mmap(file, 0, sizeof(data));
 	err = sim_user_load(addr + PAGE_SIZE + 5, back, 16);
 	check(!err && !memcmp(back, data + PAGE_SIZE + 5, 16), "a load through a mapping: %d", err);
@@ -66,7 +68,7 @@ static void scenario(void *arg)
 	check(!err, "a store through a mapping: %d", err);
 	check_file("after a store", 0, data, sizeof(data));
 
-	/* A seal makes the mapping read-only, and the next store faults again. */
+	/* Writeback write-protects the page, and the next store faults again. */
 	err = sim_fsync(file);
 	check(!err, "fsync: %d", err);
 	check_file("after the second seal", 0, data, sizeof(data));
@@ -94,14 +96,14 @@ static void scenario(void *arg)
 
 int main(void)
 {
-	u64 moved, freed, failed;
+	u64 written, freed, failed;
 
 	sim_init(1);
 	sim_device_init(WINDOW_LEN);
 	sim_spawn("scenario", scenario, NULL);
 	sim_run();
-	fxfs_sim_stats(&moved, &freed, &failed);
-	sim_log("smoke: passed: %llu points, %llu switches, %llu device maps, %llu blocks moved, %llu extents freed, trace %llx\n",
-		sim_points(), sim_switches(), sim_device_maps(), moved, freed, sim_trace_hash());
+	fxfs_sim_stats(&written, &freed, &failed);
+	sim_log("smoke: passed: %llu points, %llu switches, %llu device maps, %llu blocks written back, %llu extents freed, trace %llx\n",
+		sim_points(), sim_switches(), sim_device_maps(), written, freed, sim_trace_hash());
 	return 0;
 }

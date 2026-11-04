@@ -9,9 +9,7 @@
 # store forked, its filesystem frozen), fxfs-guest-volumes (volumes of one device mounted side by
 # side), fxfs-guest-shared-volumes (a volume one VM keeps current with Git, published, attached to
 # another as it runs, and written over), fxfs-guest-daemon-lost (VMs whose extent daemon is
-# killed under load exit, at once, saying so), fxfs-guest-host-memory (a VM writing more than its
-# daemon's memory holds, syncing nothing), fxfs-guest-host-seal (two VMs sharing a daemon's open
-# pages, the idle one asked to seal for the busy one), fxfs-guest-follow (a VM following a store another VM
+# killed under load exit, at once, saying so), fxfs-guest-follow (a VM following a store another VM
 # writes, read-only, as it writes it), fxfs-guest-follow-torture (two followers' readers checking
 # what they read as the writer changes it, and its mutants, whose followers drop nothing a batch
 # changes, with DAX or without, take no fill barrier, or fault in read(2)'s copies, which they must
@@ -42,7 +40,7 @@ FXDAX_GUEST_KERNEL="$results/$(basename "$built")" FXDAX_E2E_RESULTS="$results" 
     fxfs-guest-crash fxfs-guest-crash-dax fxfs-guest-crash-dax-killed fxfs-guest-resize \
     fxfs-guest-live-fork fxfs-guest-volumes fxfs-guest-volumes-dax fxfs-guest-shared-volumes \
     fxfs-guest-shared-volumes-dax fxfs-guest-snapshot-volumes \
-    fxfs-guest-snapshot-volumes-dax fxfs-guest-daemon-lost fxfs-guest-host-memory fxfs-guest-host-seal \
+    fxfs-guest-snapshot-volumes-dax fxfs-guest-daemon-lost \
     fxfs-guest-follow fxfs-guest-follow-dax fxfs-guest-follow-torture \
     fxfs-guest-follow-torture-dax fxfs-guest-follow-torture-mutant \
     fxfs-guest-follow-torture-mutant-dax fxfs-guest-follow-torture-mutant-faults-dax \

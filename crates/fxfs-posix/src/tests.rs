@@ -9,8 +9,7 @@ use super::*;
 use fxfs::object_store::{NewChildStoreOptions, StoreOptions};
 use fxfs::object_store::volume::root_volume;
 use storage_device::DeviceHolder;
-use storage_device::ExtentId;
-use storage_device::fake_device::{FakeDevice, Op as DeviceOp};
+use storage_device::fake_device::FakeDevice;
 
 const FILE: u32 = S_IFREG | 0o644;
 const DIR: u32 = S_IFDIR | 0o755;
@@ -397,103 +396,5 @@ async fn a_files_last_bytes_read_back_after_a_remount() {
     let mut window = vec![0xff; 4 << 20];
     let got = fs.read_into(ino, i64::MAX as u64 - (2 << 20) + 1, &mut [&mut window[..]]).await;
     assert_eq!(window[got.unwrap() - 1], b'a');
-    fs.stop_delayed().await.unwrap();
-}
-
-/// A write through a DAX window whose extents are found sealed on every try gives up with the
-/// seal's error, an I/O error's errno, as it says: not corruption's (TASK-160.21). It gave up
-/// with `Inconsistent`, the seal's error lost.
-#[fuchsia::test]
-async fn a_dax_write_sealed_on_every_try_gives_up_with_the_seal() {
-    let sealing = Arc::new(AtomicBool::new(false));
-    let mut device = FakeDevice::new(16384, 4096);
-    device.set_op_callback({
-        let sealing = sealing.clone();
-        move |op| match op {
-            DeviceOp::Write if sealing.load(Ordering::SeqCst) => {
-                Err(SealedExtent(ExtentId::new(0, 1)).into())
-            }
-            _ => Ok(()),
-        }
-    });
-    let (fs, root) = volume_on(device).await;
-    let ino = fs.new_file(root, b"a").await;
-    // What the blocks hold is written as they move, in the transaction, where the seal is met.
-    let held = vec![1; 4096];
-    sealing.store(true, Ordering::SeqCst);
-    let mapped = fs.dax_map_write(ino, 0..4096, 4096, false, Some(&held)).await;
-    sealing.store(false, Ordering::SeqCst);
-    let error = mapped.expect_err("mapped while sealed");
-    assert!(error.chain().any(|cause| cause.is::<SealedExtent>()), "{error:#}");
-    let tried = format!("its extents sealed still, tried {MAX_SEALED_RETRIES} times");
-    assert!(format!("{error:#}").contains(&tried), "{error:#}");
-    assert_eq!(errno(&error), Errno::EIO);
-    fs.dax_map_write(ino, 0..4096, 4096, false, Some(&held)).await.expect("mapped once unsealed");
-}
-
-/// A file's DAX pieces of `range`, to compare.
-async fn pieces(fs: &Fxfs<Tested>, ino: u64, range: Range<u64>) -> String {
-    format!("{:?}", fs.dax_extents(ino, range).await.unwrap())
-}
-
-/// A file of 8192 bytes of `c`, in sealed extents, which a DAX write moves.
-async fn sealed_file(fs: &Fxfs<Tested>, root: u64) -> u64 {
-    let ino = fs.new_file(root, b"a").await;
-    fs.write(ino, 0, &[b'c'; 8192]).await.unwrap();
-    fs.sync().await.unwrap();
-    ino
-}
-
-/// A DAX write's move, dropped before it commits, leaves the file as it was: its blocks, its bytes
-/// and its size, which a move committed before the bytes lost to the new blocks' zeros (TASK-153.5).
-#[fuchsia::test]
-async fn a_dax_write_dropped_leaves_the_file_as_it_was() {
-    let (fs, root) = volume().await;
-    let ino = sealed_file(&fs, root).await;
-    let before = pieces(&fs, ino, 0..8192).await;
-    let (write, moved) = fs.dax_begin_write(ino, 0..12288, 12288).await.unwrap();
-    assert_ne!(format!("{moved:?}"), before, "the blocks didn't move");
-    assert_eq!(pieces(&fs, ino, 0..8192).await, before, "the move is seen uncommitted");
-    drop(write);
-
-    assert_eq!(pieces(&fs, ino, 0..8192).await, before);
-    assert_eq!(fs.attr(ino).await.unwrap().size, 8192);
-    let mut read = vec![0; 8192];
-    assert_eq!(fs.read(ino, 0, &mut read).await.unwrap(), 8192);
-    assert_eq!(read, [b'c'; 8192]);
-    fs.stop_delayed().await.unwrap();
-}
-
-/// Committed, the file has the write's new blocks, holding what the first block held around the
-/// write and nothing else of the old, and the size the write asked for.
-#[fuchsia::test]
-async fn a_dax_write_committed_has_its_blocks_and_size() {
-    let (fs, root) = volume().await;
-    let ino = sealed_file(&fs, root).await;
-    let (write, moved) = fs.dax_begin_write(ino, 100..12288, 12288).await.unwrap();
-    write.commit().await.unwrap();
-
-    assert_eq!(pieces(&fs, ino, 0..12288).await, format!("{moved:?}"));
-    assert_eq!(fs.attr(ino).await.unwrap().size, 12288);
-    let mut read = vec![0xff; 12288];
-    assert_eq!(fs.read(ino, 0, &mut read).await.unwrap(), 12288);
-    let mut expected = vec![0; 12288];
-    expected[..4096].fill(b'c');
-    assert_eq!(read, expected);
-    fs.stop_delayed().await.unwrap();
-}
-
-/// Until it ends, a DAX write holds the file's lock: a transaction of the file waits for it, and
-/// then sees what it committed.
-#[fuchsia::test]
-async fn a_dax_write_holds_the_file_until_it_commits() {
-    let (fs, root) = volume().await;
-    let ino = sealed_file(&fs, root).await;
-    let (write, _) = fs.dax_begin_write(ino, 0..4096, 8192).await.unwrap();
-    let mut update = pin!(fs.dax_update_size(ino, 4096 * 3));
-    assert!(futures::poll!(update.as_mut()).is_pending(), "a transaction of the file went on");
-    write.commit().await.unwrap();
-    update.await.unwrap();
-    assert_eq!(fs.attr(ino).await.unwrap().size, 4096 * 3);
     fs.stop_delayed().await.unwrap();
 }

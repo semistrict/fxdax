@@ -13,10 +13,15 @@
 
 #define VIRTIO_ID_EXTENT 0x4658 /* "FX" */
 
-/* Shared memory region 0 is a DAX window, and MAP and UNMAP work. */
+/*
+ * Shared memory region 0 is a DAX window, and MAP and UNMAP work. fxdax: the window copies on write
+ * (fxdax's doc-13): it maps sealed extents and zeros alone, read-only, and a store to one of its
+ * pages gives the device a private page holding what the page held, at the same address, until a
+ * MAP or UNMAP over it; at most the configuration's `private_max` of them. MAP takes MAP_ZEROS, and
+ * PRIVATE works. A follower's window (READ_ONLY) takes no store, nor PRIVATE. Bits 1, 9 and 10,
+ * which were writable DAX's, are unused.
+ */
 #define VIRTIO_EXTENT_F_DAX 0
-/* MAP maps open extents writably. */
-#define VIRTIO_EXTENT_F_DAX_WRITE 1
 /* WRITE takes WRITE_COMMIT: a COMMIT follows the write, in one request. */
 #define VIRTIO_EXTENT_F_WRITE_COMMIT 2
 /*
@@ -49,24 +54,9 @@
 #define VIRTIO_EXTENT_F_MAP_MANY 7
 /*
  * MAP takes MAP_AHEAD: the guest accesses the pages it maps next, as it maps them to read, and the
- * device maps them for it ahead of its accesses, as it does writable ones (fxdax's TASK-112.1).
+ * device maps them for it ahead of its accesses (fxdax's TASK-112.1).
  */
 #define VIRTIO_EXTENT_F_MAP_AHEAD 8
-/*
- * The configuration's `seal_asked` asks the guest to seal what it holds open, changing as the host
- * asks, which tells it with a configuration change; the guest answers with SEALED. Its open
- * extents' pages, which only its seal lets go of, hold the memory another guest's writable MAP was
- * refused for (fxdax's TASK-153.15).
- */
-#define VIRTIO_EXTENT_F_SEAL 9
-/*
- * fxdax: the window copies on write (fxdax's doc-13, TASK-164): it maps sealed extents and zeros
- * alone, read-only, and a store to one of its pages gives the device a private page holding what
- * the page held, at the same address, until a MAP or UNMAP over it; at most `private_max` of them.
- * MAP takes MAP_ZEROS, and PRIVATE works. A guest takes it or DAX_WRITE, not both. Needs DAX;
- * excludes READ_ONLY.
- */
-#define VIRTIO_EXTENT_F_DAX_COW 10
 
 #define VIRTIO_EXTENT_T_READ 1
 #define VIRTIO_EXTENT_T_WRITE 2
@@ -88,10 +78,9 @@
 /* F_READ_ONLY: keeps an extent the view holds, whatever commit it advances to, until UNPIN. */
 #define VIRTIO_EXTENT_T_PIN 13
 #define VIRTIO_EXTENT_T_UNPIN 14
-/* F_SEAL: the guest has sealed, as the ask its arguments name asked. */
-#define VIRTIO_EXTENT_T_SEALED 15
+/* 15 was writable DAX's SEALED, unused. */
 /*
- * F_DAX_COW: makes the window's pages its arguments name private now, as stores would, and maps
+ * F_DAX: makes the window's pages its arguments name private now, as stores would, and maps
  * them for the guest ahead of its accesses: a write(2) of many pages in one round trip, rather than
  * a fault of the host's each. ENOMEM past private_max.
  */
@@ -111,10 +100,9 @@
 #define VIRTIO_EXTENT_COMMIT_DURABLE (1 << 0)
 #define VIRTIO_EXTENT_COMMIT_ROOT (1 << 1)
 /*
- * MAP: writable; its data holds more maps (F_MAP_MANY); accessed next (F_MAP_AHEAD); fxdax: zeros,
- * its extent ignored (F_DAX_COW), which a store makes a private page of zeros.
+ * MAP: its data holds more maps (F_MAP_MANY); accessed next (F_MAP_AHEAD); fxdax: zeros, its extent
+ * ignored, which a store makes a private page of zeros. Bit 0, writable DAX's MAP_WRITE, is unused.
  */
-#define VIRTIO_EXTENT_MAP_WRITE (1 << 0)
 #define VIRTIO_EXTENT_MAP_MANY (1 << 1)
 #define VIRTIO_EXTENT_MAP_AHEAD (1 << 2)
 #define VIRTIO_EXTENT_MAP_ZEROS (1 << 3)
@@ -143,9 +131,7 @@ struct virtio_extent_config {
 	__le64 asked;
 	/* F_READ_ONLY: the epoch of the writer's latest commit. */
 	__le64 committed;
-	/* F_SEAL: the host's ask that the guest seal, its number, or 0 if none. */
-	__le64 seal_asked;
-	/* F_DAX_COW: the most private pages the device holds at once (pages of map_alignment). */
+	/* F_DAX: the most private pages the device holds at once (pages of map_alignment). */
 	__le64 private_max;
 } __packed;
 
@@ -180,7 +166,7 @@ struct virtio_extent_map {
 	__le64 window_offset;
 };
 
-/* One of a MAP_MANY's further maps: its flags MAP_WRITE, MAP_AHEAD and MAP_ZEROS alone. */
+/* One of a MAP_MANY's further maps: its flags MAP_AHEAD and MAP_ZEROS alone. */
 struct virtio_extent_map_entry {
 	struct virtio_extent_map map;
 	__le32 flags;
@@ -211,11 +197,6 @@ struct virtio_extent_root_len {
 /* RESIZED: the capacity the guest was asked to shrink to. */
 struct virtio_extent_resized {
 	__le64 capacity;
-};
-
-/* SEALED: the ask answered, as seal_asked said it. */
-struct virtio_extent_sealed {
-	__le64 asked;
 };
 
 /* ADVANCE: the epoch of the commit the view is as of now. LET_GO: the epoch it lets go up to. */
@@ -260,7 +241,7 @@ struct vext_config {
 	u32 max_root;
 	u64 branch;
 	u64 max_extent;
-	/* F_DAX_COW: the most private pages the device holds at once, or 0 without it. */
+	/* F_DAX: the most private pages the device holds at once, or 0 without it. */
 	u64 private_max;
 };
 
@@ -280,8 +261,7 @@ struct vext_request {
 	/*
 	 * READ, WRITE, MAP: where in the extent. MAP, UNMAP, PRIVATE: how much, and where in the
 	 * window.
-	 * RESIZED: the capacity asked (offset). LET_GO: the epoch (offset). SEALED: the ask
-	 * answered (offset).
+	 * RESIZED: the capacity asked (offset). LET_GO: the epoch (offset).
 	 */
 	u64 offset;
 	u64 len;
@@ -318,7 +298,6 @@ struct vext_request {
 		struct virtio_extent_commit commit;
 		struct virtio_extent_resized resized;
 		struct virtio_extent_epoch epoch;
-		struct virtio_extent_sealed sealed;
 	} args;
 	struct virtio_extent_resp resp;
 	struct sg_table data_sgt;
@@ -346,13 +325,7 @@ int virtio_extent_call(struct virtio_extent *vext, struct vext_request *req);
 void *virtio_extent_window(struct virtio_extent *vext, u64 *len);
 /* The DAX window's dax_device, with FS_DAX, or NULL. */
 struct dax_device *virtio_extent_dax(struct virtio_extent *vext);
-/* Whether the device has a DAX window that maps open extents writably (DAX_WRITE). */
-bool virtio_extent_dax_write(struct virtio_extent *vext);
-/*
- * fxdax: whether the device has a DAX window that copies on write (DAX_COW), which the driver
- * takes in place of DAX_WRITE with fxfs.dax_cow; and the most private pages it holds at once.
- */
-bool virtio_extent_dax_cow(struct virtio_extent *vext);
+/* fxdax: the most private pages the device's DAX window holds at once (F_DAX), or 0. */
 u64 virtio_extent_private_max(struct virtio_extent *vext);
 /* Whether a WRITE may carry WRITE_COMMIT (F_WRITE_COMMIT). */
 bool virtio_extent_write_commit(struct virtio_extent *vext);
@@ -372,11 +345,6 @@ bool virtio_extent_read_only(struct virtio_extent *vext);
 /* F_READ_ONLY: the epoch of the writer's latest commit, as the configuration says now. */
 u64 virtio_extent_committed(struct virtio_extent *vext);
 /*
- * F_SEAL: the host's ask that the guest seal, its number, as the configuration says now: 0 if
- * none, or without F_SEAL. The guest answers it with SEALED, the number as its offset.
- */
-u64 virtio_extent_seal_asked(struct virtio_extent *vext);
-/*
  * fxdax: F_READ_ONLY: a follower's device has a connection to its store, which keeps its writer
  * from opening it once it was cut off (doc-4). virtio_extent_close, as its filesystem unmounts,
  * nothing in flight that any task waits for, resets the device, which lets the store go.
@@ -394,7 +362,7 @@ int virtio_extent_open(struct virtio_extent *vext);
 bool virtio_extent_capacity(struct virtio_extent *vext, u64 *capacity, u64 *asked);
 /*
  * Has the driver call `changed(arg)` as the device's configuration changes, its capacity or a
- * shrink asked, an ask to seal, or its writer's latest commit; or none, if `changed` is NULL.
+ * shrink asked, or its writer's latest commit; or none, if `changed` is NULL.
  * Called from the device's interrupt: it must not sleep.
  */
 typedef void (*vext_config_changed_t)(void *arg);

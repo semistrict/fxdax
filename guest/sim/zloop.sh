@@ -6,20 +6,20 @@
 # (interleave, failures) at once, all of them whatever fails, each failure's log kept with how to
 # replay it. Exits 1 if anything failed but an open bug's failure, as known-failures lists them.
 #
-#   zloop.sh [-s SEEDS] [-f FIRST] [-o OPERATIONS] [-j JOBS] [-d LOGS] [-p PATCH]... [-S]
+#   zloop.sh [-s SEEDS] [-f FIRST] [-o OPERATIONS] [-j JOBS] [-d LOGS] [-p PATCH]...
 #
 # Runs dax.c with fixes/*.patch in, until they are decided on: bugs already known aren't news. Those
 # fixes stop applying once dax.c takes them, which fails this, to have them removed. -p puts a patch
-# in too, as many as asked, such as a mutant, to see a hunt find it. -S runs dax_shadow too. Takes
-# KERNEL and BUILD as the Makefile does; a seed in 8 at 1,000 operations, which reach what 200
+# in too, as many as asked, such as a mutant, to see a hunt find it. Takes KERNEL and BUILD as the
+# Makefile does; a seed in 8 at 1,000 operations, which reach what 200
 # don't, unless -o says otherwise. LOGS/failures lists what failed, a line each, and LOGS/replay how
 # to run each again.
 
 set -u -o pipefail
 cd "$(dirname "$0")"
 
-first=1 seeds=3000 operations="" jobs=$(nproc) logs="" shadow="" patches=()
-while getopts s:f:o:j:d:p:S opt; do
+first=1 seeds=3000 operations="" jobs=$(nproc) logs="" patches=()
+while getopts s:f:o:j:d:p: opt; do
     case $opt in
         s) seeds=$OPTARG ;;
         f) first=$OPTARG ;;
@@ -27,7 +27,6 @@ while getopts s:f:o:j:d:p:S opt; do
         j) jobs=$OPTARG ;;
         d) logs=$OPTARG ;;
         p) patches+=("$OPTARG") ;;
-        S) shadow=-s ;;
         *) exit 2 ;;
     esac
 done
@@ -76,22 +75,19 @@ for test in "${seeded[@]}"; do
 done
 
 seed_run() { # seed
-    local seed=$1 test log flags
+    local seed=$1 test log
     local count=${operations:-$((seed % 8 ? 200 : 1000))}
     for test in $seeded_tests; do
-        log=$logs/$test-$seed.log flags=""
-        [[ $test == interleave ]] && flags=$shadow
-        # shellcheck disable=SC2086
-        if timeout 300 "$bin/$test" "$seed" "$count" $flags > "$log" 2>&1; then
+        log=$logs/$test-$seed.log
+        if timeout 300 "$bin/$test" "$seed" "$count" > "$log" 2>&1; then
             rm -f "$log"
         else
-            # shellcheck disable=SC2086
-            failed "$log" "$test" "$seed" "$count" $flags
+            failed "$log" "$test" "$seed" "$count"
         fi
     done
 }
 export -f seed_run failed sim_failure sim_failure_line sim_known
-export bin logs operations shadow seeded_tests="${seeded[*]}"
+export bin logs operations seeded_tests="${seeded[*]}"
 
 began=$SECONDS
 seq "$first" $((first + seeds - 1)) | xargs -P "$jobs" -I{} bash -c 'seed_run {}'

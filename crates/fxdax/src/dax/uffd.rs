@@ -17,7 +17,7 @@
 //! - An unmapped page is anonymous memory registered for missing faults.
 //! - A mapped page maps the window's page again, read-write, from physical memory
 //!   (a memfd, which the process that owns the kernel may share with this one), registered for
-//!   write-protect faults, and is write-protected while the window maps it read-only.
+//!   write-protect faults, and write-protected, as the window maps every page read-only.
 //!
 //! A fault thread passes the faults to the window, which maps the page (and so maps it here), and
 //! wakes the faulting thread. It resolves faults concurrently, as futures it polls as they make
@@ -26,10 +26,9 @@
 //!
 //! A fault's access is not always the guest's. x86 KVM hands a fault it cannot resolve without
 //! waiting, as it cannot one userfaultfd reports, to a worker that faults the page in for writing
-//! (`async_pf_execute`), and lets the vCPU retry its own access once the page is in. So a page a
-//! writable mapping maps may be dirtied by a load, and written back needlessly; and a write to a
-//! page the window maps read-only is resolved as a read, and the page made read-only here, so that
-//! the worker's write fails and the vCPU's own access decides.
+//! (`async_pf_execute`), and lets the vCPU retry its own access once the page is in. So a write to
+//! a page a window that doesn't copy on write maps, read-only, is resolved as a read, and the page
+//! made read-only here, so that the worker's write fails and the vCPU's own access decides.
 //!
 //! fxdax: a window that copies on write (backlog doc-13, `CopyOnWrite`) makes a page private for a
 //! store, which a load mustn't: the worker's write, of a page not here, is a load's as much as a
@@ -87,7 +86,7 @@
 //! The userfaultfd must handle faults taken in the kernel, such as KVM's. That needs access to
 //! `/dev/userfaultfd`, or the `vm.unprivileged_userfaultfd` sysctl.
 
-use super::{Access, Anew, Faults, Prefault, Protection, SecondStage};
+use super::{Access, Anew, Faults, Prefault, SecondStage};
 use crate::error::{Errno, Error, Result};
 use crate::pages::page_size;
 use futures::StreamExt;
@@ -324,18 +323,17 @@ pub fn guest_access_failed() {
 }
 
 /// fxdax: the changes a second stage made that took access away from pages it had installed, by
-/// how: memory installed over theirs, theirs left out, or theirs write-protected. Each flushes the
-/// host's TLBs of the process's threads and the hypervisor's of the guest's vCPUs, interrupting
-/// them, which those that took access from no installed page needn't (TASK-91.16).
+/// how: memory installed over theirs, or theirs left out. Each flushes the host's TLBs of the
+/// process's threads and the hypervisor's of the guest's vCPUs, interrupting them, which those
+/// that took access from no installed page needn't (TASK-91.16).
 #[derive(Default)]
 struct Taken {
     overwritten: AtomicU64,
     left_out: AtomicU64,
-    write_protected: AtomicU64,
 }
 
-/// fxdax: as [`Taken`] counts them: installed over, left out, write-protected.
-pub(crate) type TakenCounts = [u64; 3];
+/// fxdax: as [`Taken`] counts them: installed over, left out.
+pub(crate) type TakenCounts = [u64; 2];
 
 /// How many mappings a VM process keeps for itself beside its window's: Firecracker's, its
 /// libraries', guest memory's, its threads' stacks'.
@@ -403,8 +401,7 @@ struct PageChanges {
     /// mapping it anew gives back.
     withheld: bool,
     /// fxdax: whether a fault whose store the window refused made the page read-only here, which
-    /// the window's making it writable in place lifts, and its memory replaced does away with
-    /// (TASK-102): left so, its stores failed, KVM_RUN with EFAULT, for ever.
+    /// its memory replaced does away with (TASK-102).
     restricted: bool,
     /// fxdax: whether it was restricted for a worker's write, on a window that copies on write,
     /// which a guest's access failing lifts ([`guest_access_failed`]): meaningful while
@@ -420,12 +417,11 @@ struct PageChanges {
     mapped: Option<Mapped>,
 }
 
-/// A page the window maps here: its memory, the window's protection of it, whether it is
-/// installed in host memory or left out, and when it was installed or faulted on last.
+/// A page the window maps here, read-only: its memory, whether it is installed in host memory or
+/// left out, and when it was installed or faulted on last.
 #[derive(Clone, Copy)]
 struct Mapped {
     phys: crate::pages::PhysLocation,
-    protection: Protection,
     installed: bool,
     used: u64,
 }
@@ -495,26 +491,18 @@ impl Pages {
         runs
     }
 
-    /// fxdax: the protection the pages of `range` are installed with, if each is installed, in one
-    /// run of memory from `phys` on, all with one protection, and none restricted by a fault: what
-    /// a map of the very same pages there changes in place (TASK-91.16).
-    fn installed_as(
-        &self,
-        range: std::ops::Range<usize>,
-        phys: crate::pages::PhysLocation,
-    ) -> Option<Protection> {
-        let mut protection = None;
-        for (at, page) in self.pages[range].iter().enumerate() {
-            let mapped = page.mapped.filter(|mapped| mapped.installed)?;
+    /// fxdax: whether the pages of `range` are each installed, in one run of memory from `phys`
+    /// on, none restricted by a fault: what a map of the very same pages there leaves in place
+    /// (TASK-91.16).
+    fn installed_at(&self, range: std::ops::Range<usize>, phys: crate::pages::PhysLocation) -> bool {
+        self.pages[range].iter().enumerate().all(|(at, page)| {
             let offset = phys.offset + at as u64 * page_size();
-            if page.restricted || mapped.phys != (crate::pages::PhysLocation { offset, ..phys }) {
-                return None;
-            }
-            if *protection.get_or_insert(mapped.protection) != mapped.protection {
-                return None;
-            }
-        }
-        protection
+            !page.restricted
+                && page.mapped.is_some_and(|mapped| {
+                    mapped.installed
+                        && mapped.phys == (crate::pages::PhysLocation { offset, ..phys })
+                })
+        })
     }
 }
 
@@ -539,12 +527,8 @@ pub(crate) trait HostMemory: Send + Sync {
     /// Registers the `len` bytes at `addr` with userfaultfd for faults of `mode`.
     fn register(&self, addr: usize, len: usize, mode: u64);
 
-    /// Write-protects the `len` bytes at `addr` with userfaultfd, or removes their write
-    /// protection and wakes the threads faulting on it.
-    fn write_protect(&self, addr: usize, len: usize, protect: bool);
-
-    /// Faults in the `len` bytes at `addr` for writing, without changing them.
-    fn populate_write(&self, addr: usize, len: usize);
+    /// Write-protects the `len` bytes at `addr` with userfaultfd.
+    fn write_protect(&self, addr: usize, len: usize);
 
     /// Wakes the threads faulting on the `len` bytes at `addr`.
     fn wake(&self, addr: usize, len: usize);
@@ -605,18 +589,11 @@ impl HostMemory for Syscalls {
             .unwrap_or_else(|err| panic!("register {addr:#x} with userfaultfd: {err}"));
     }
 
-    fn write_protect(&self, addr: usize, len: usize, protect: bool) {
+    fn write_protect(&self, addr: usize, len: usize) {
         let range = UffdioRange { start: addr as u64, len: len as u64 };
-        let mode = if protect { UFFDIO_WRITEPROTECT_MODE_WP } else { 0 };
-        let mut write_protect = UffdioWriteprotect { range, mode };
+        let mut write_protect = UffdioWriteprotect { range, mode: UFFDIO_WRITEPROTECT_MODE_WP };
         ioctl(&self.uffd, UFFDIO_WRITEPROTECT, &mut write_protect)
             .unwrap_or_else(|err| panic!("write-protect {addr:#x} with userfaultfd: {err}"));
-    }
-
-    fn populate_write(&self, addr: usize, len: usize) {
-        // SAFETY: Faults in the second stage's pages, without changing them.
-        let status = unsafe { libc::madvise(addr as *mut _, len, libc::MADV_POPULATE_WRITE) };
-        assert_eq!(status, 0, "populate {addr:#x}: {}", std::io::Error::last_os_error());
     }
 
     fn wake(&self, addr: usize, len: usize) {
@@ -690,9 +667,9 @@ impl Syscalls {
 /// tests show to be needed by turning it off (TASK-44.3).
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Rules {
-    /// A page mapped here has the window's protection until its stores are tracked.
+    /// A page mapped here is read-only until its stores are tracked.
     pub map_with_window_protection: bool,
-    /// A page the window maps read-only is write-protected before it is made writable.
+    /// A page mapped here is write-protected before it is made writable.
     pub write_protect_before_writable: bool,
     /// Memory unmapped here is inaccessible until it is registered for missing faults.
     pub register_before_accessible: bool,
@@ -704,9 +681,6 @@ pub(crate) struct Rules {
     pub restrict_between_changes: bool,
     /// A page withheld is given back when the window maps it anew.
     pub mapping_gives_back_withheld: bool,
-    /// fxdax: a page a refused store made read-only is made writable again when the window makes
-    /// it writable in place (TASK-102).
-    pub protection_lifts_restriction: bool,
     /// fxdax: a worker's write of a page not here, on a window that copies on write, resolved as a
     /// load, makes the page read-only here, so that the worker's write, retried, fails rather than
     /// copying it for a load (backlog doc-13).
@@ -730,7 +704,6 @@ impl Rules {
         refused_store_read_only: true,
         restrict_between_changes: true,
         mapping_gives_back_withheld: true,
-        protection_lifts_restriction: true,
         worker_writes_restricted: true,
         failures_lift_worker_restrictions: true,
         private_filled_before_mapped: true,
@@ -1111,9 +1084,9 @@ impl<H: HostMemory> UffdSecondStage<H> {
     }
 
     /// fxdax: restricts the page at `addr` to reads for a worker's write, resolved as a load, on a
-    /// window that copies on write (see the module docs), if the window maps it read-only, here, so
-    /// that the worker's write fails; until a guest's access fails ([`guest_access_failed`]). A
-    /// page it maps writable, a private one, takes the write.
+    /// window that copies on write (see the module docs), if the window maps it here, read-only,
+    /// so that the worker's write fails; until a guest's access fails ([`guest_access_failed`]). A
+    /// private page takes the write.
     fn restrict_for_worker(&self, addr: usize) {
         if !rules().worker_writes_restricted {
             return;
@@ -1121,9 +1094,8 @@ impl<H: HostMemory> UffdSecondStage<H> {
         let page_size = page_size() as usize;
         let at = self.page_range(addr, 1).start;
         let mut pages = self.pages.lock().unwrap();
-        let read_only = (pages.pages[at].mapped)
-            .is_some_and(|mapped| mapped.installed && mapped.protection == Protection::Read);
-        if pages.released || !read_only {
+        let installed = pages.pages[at].mapped.is_some_and(|mapped| mapped.installed);
+        if pages.released || !installed {
             return;
         }
         self.host.protect(addr, page_size, libc::PROT_READ);
@@ -1162,8 +1134,7 @@ impl<H: HostMemory> UffdSecondStage<H> {
     /// ([`Taken`]).
     pub(crate) fn taken(&self) -> TakenCounts {
         let taken = &self.taken;
-        [&taken.overwritten, &taken.left_out, &taken.write_protected]
-            .map(|count| count.load(Ordering::Relaxed))
+        [&taken.overwritten, &taken.left_out].map(|count| count.load(Ordering::Relaxed))
     }
 
     /// fxdax: counts a change that took access away from pages installed, `count` by how.
@@ -1316,18 +1287,12 @@ impl<H: HostMemory> UffdSecondStage<H> {
 }
 
 impl<H: HostMemory> SecondStage for UffdSecondStage<H> {
-    fn map(
-        &self,
-        offset: u64,
-        phys: crate::pages::PhysLocation,
-        len: u64,
-        protection: Protection,
-    ) {
+    fn map(&self, offset: u64, phys: crate::pages::PhysLocation, len: u64) {
         let (addr, len) = self.addr(offset, len);
-        let memory = self.memory(phys, protection);
+        let memory = self.memory(phys);
         let range = self.page_range(addr, len);
         let page_size = page_size();
-        let made = self.change(
+        self.change(
             addr,
             len,
             |pages| {
@@ -1339,7 +1304,7 @@ impl<H: HostMemory> SecondStage for UffdSecondStage<H> {
                     for (at, page) in pages.iter_mut().enumerate() {
                         let offset = phys.offset + at as u64 * page_size;
                         let phys = crate::pages::PhysLocation { arena: phys.arena, offset };
-                        page.mapped = Some(Mapped { phys, protection, installed: true, used });
+                        page.mapped = Some(Mapped { phys, installed: true, used });
                         page.restricted = false;
                     }
                 });
@@ -1347,65 +1312,10 @@ impl<H: HostMemory> SecondStage for UffdSecondStage<H> {
             },
             |private| {
                 self.empty_private(&private);
-                self.install(addr, len, protection, memory)
+                self.install(addr, len, memory)
             },
         );
         self.trim();
-        if made && let Some(prefault) = &self.prefault
-            && Self::prefaults(protection)
-        {
-            prefault.prefault(offset, len as u64);
-        }
-    }
-
-    fn protect(&self, offset: u64, len: u64, protection: Protection) {
-        let (addr, len) = self.addr(offset, len);
-        let range = self.page_range(addr, len);
-        let page_size = page_size() as usize;
-        // The pages left out take the protection when they are installed again. fxdax: those a
-        // refused store made read-only made writable again, if the window makes them writable.
-        let lifts = protection == Protection::ReadWrite && rules().protection_lifts_restriction;
-        let installed = |pages: &mut Pages| {
-            let mut installed: Vec<std::ops::Range<usize>> = Vec::new();
-            let mut lifted = Vec::new();
-            for at in range.clone() {
-                let page = &mut pages.pages[at];
-                // Installed or not: memory left out, made writable, faults to the window.
-                if lifts && page.restricted {
-                    page.restricted = false;
-                    lifted.push((at, page.made));
-                }
-                let Some(mapped) = &mut page.mapped else { continue };
-                mapped.protection = protection;
-                if !mapped.installed {
-                    continue;
-                }
-                match installed.last_mut() {
-                    Some(run) if run.end == at => run.end = at + 1,
-                    _ => installed.push(at..at + 1),
-                }
-            }
-            (installed, lifted)
-        };
-        self.change(addr, len, installed, |(installed, lifted)| {
-            for (at, made) in lifted {
-                self.host.protect(
-                    self.base + at * page_size,
-                    page_size,
-                    libc::PROT_READ | libc::PROT_WRITE,
-                );
-                changed_protection("made writable again", (at * page_size) as u64, made, None);
-            }
-            for run in installed {
-                let addr = self.base + run.start * page_size;
-                Self::took(&self.taken.write_protected, protection == Protection::Read);
-                self.host.write_protect(
-                    addr,
-                    run.len() * page_size,
-                    protection == Protection::Read,
-                );
-            }
-        });
     }
 
     fn unmap(&self, offset: u64, len: u64) {
@@ -1429,32 +1339,32 @@ impl<H: HostMemory> SecondStage for UffdSecondStage<H> {
     }
 
     /// fxdax: the window's change of a range it mapped, made at once (TASK-91.16): each map of the
-    /// very pages installed where it maps them, as a seal's of the open extent's pages, read-only
-    /// now, changes their protection in place, the memory staying; another's memory is installed
-    /// over what was there, in one `mmap`; and only what no map covers is left out. Made in steps,
-    /// each page would be left out, then installed again: an unmap of the old memory, flushing
-    /// the host's TLBs and the hypervisor's mappings, then a map, its registration and its
-    /// protection, then the guest's accesses faulting the pages in again.
+    /// very pages installed where it maps them, as a `MAP` of what a range maps already, leaves
+    /// them in place, the memory staying; another's memory is installed over what was there, in
+    /// one `mmap`; and only what no map covers is left out. Made in steps, each page would be left
+    /// out, then installed again: an unmap of the old memory, flushing the host's TLBs and the
+    /// hypervisor's mappings, then a map, its registration and its protection, then the guest's
+    /// accesses faulting the pages in again.
     fn remap(&self, offset: u64, len: u64, anew: &[Anew]) {
         let (addr, len) = self.addr(offset, len);
         let range = self.page_range(addr, len);
         let page_size = page_size() as usize;
-        let maps: Vec<(usize, usize, crate::pages::PhysLocation, Protection)> = (anew.iter())
+        let maps: Vec<(usize, usize, crate::pages::PhysLocation)> = (anew.iter())
             .filter_map(|anew| match *anew {
-                Anew::Map { offset, phys, len, protection } => {
+                Anew::Map { offset, phys, len } => {
                     let (addr, len) = self.addr(offset, len);
-                    Some((addr, len, phys, protection))
+                    Some((addr, len, phys))
                 }
                 Anew::Mapped { .. } => None,
             })
             .collect();
         let record = |pages: &mut Pages| {
             let used = pages.tick();
-            let in_place: Vec<Option<Protection>> = (maps.iter())
-                .map(|&(addr, len, phys, _)| pages.installed_as(self.page_range(addr, len), phys))
+            let in_place: Vec<bool> = (maps.iter())
+                .map(|&(addr, len, phys)| pages.installed_at(self.page_range(addr, len), phys))
                 .collect();
-            for (&(addr, len, ..), in_place) in maps.iter().zip(&in_place) {
-                let over = in_place.is_none() && pages.any_installed(self.page_range(addr, len));
+            for (&(addr, len, _), in_place) in maps.iter().zip(&in_place) {
+                let over = !in_place && pages.any_installed(self.page_range(addr, len));
                 Self::took(&self.taken.overwritten, over);
             }
             let installed_before: Vec<bool> = (range.clone())
@@ -1466,14 +1376,14 @@ impl<H: HostMemory> SecondStage for UffdSecondStage<H> {
                 pages.iter_mut().for_each(|page| (page.mapped, page.restricted) = (None, false))
             });
             let mut covered = vec![false; range.len()];
-            for &(addr, len, phys, protection) in &maps {
+            for &(addr, len, phys) in &maps {
                 let mapping = self.page_range(addr, len);
                 covered[mapping.start - range.start..mapping.end - range.start].fill(true);
                 pages.update(mapping, |pages| {
                     for (at, page) in pages.iter_mut().enumerate() {
                         let offset = phys.offset + at as u64 * page_size as u64;
                         let phys = crate::pages::PhysLocation { offset, ..phys };
-                        page.mapped = Some(Mapped { phys, protection, installed: true, used });
+                        page.mapped = Some(Mapped { phys, installed: true, used });
                     }
                 });
             }
@@ -1492,42 +1402,13 @@ impl<H: HostMemory> SecondStage for UffdSecondStage<H> {
             }
             (in_place, left_out, private)
         };
-        // Whether each map was made in place.
-        let mut reprotected = Vec::with_capacity(maps.len());
-        let made = self.change(addr, len, record, |(in_place, left_out, private)| {
+        self.change(addr, len, record, |(in_place, left_out, private)| {
             self.empty_private(&private);
-            // fxdax: the maps made in place one after another in the window, their protections
-            // alike, reprotected at once: a seal's of an open extent's pages, one write protection
-            // of the range rather than one of each run of physical memory its pages are in, which
-            // the window maps apart (TASK-131.1). In order with the rest: a run is reprotected
-            // before any memory is installed after it.
-            let mut run: Option<(usize, usize, Protection, Protection)> = None;
-            for (&(addr, len, phys, protection), was) in maps.iter().zip(in_place) {
-                reprotected.push(was.is_some());
-                let Some(was) = was else {
-                    if let Some((addr, len, was, now)) = run.take() {
-                        self.reprotect(addr, len, was, now);
-                    }
-                    self.install(addr, len, protection, self.memory(phys, protection));
-                    continue;
-                };
-                match &mut run {
-                    Some((start, run_len, run_was, now))
-                        if *start + *run_len == addr && *run_was == was && *now == protection =>
-                    {
-                        *run_len += len;
-                    }
-                    _ => {
-                        if let Some((addr, len, was, now)) =
-                            run.replace((addr, len, was, protection))
-                        {
-                            self.reprotect(addr, len, was, now);
-                        }
-                    }
+            // The maps made in place need nothing: their memory stays, as it is.
+            for (&(addr, len, phys), in_place) in maps.iter().zip(in_place) {
+                if !in_place {
+                    self.install(addr, len, self.memory(phys));
                 }
-            }
-            if let Some((addr, len, was, now)) = run {
-                self.reprotect(addr, len, was, now);
             }
             for run in left_out {
                 self.leave_out(self.base + run.start * page_size, run.len() * page_size);
@@ -1539,17 +1420,6 @@ impl<H: HostMemory> SecondStage for UffdSecondStage<H> {
             }
         }
         self.trim();
-        // The memory installed is mapped for the guest ahead of its accesses, as `map` has it;
-        // the pages reprotected in place aren't: the hypervisor maps those the guest touches
-        // again as it does, which a seal's, written and done with, mostly aren't, rather than
-        // each at once (r116 against r117: 87 against 83 us of host time a window change).
-        if made && let Some(prefault) = &self.prefault {
-            for (&(addr, len, _, protection), reprotected) in maps.iter().zip(reprotected) {
-                if !reprotected && Self::prefaults(protection) {
-                    prefault.prefault((addr - self.base) as u64, len as u64);
-                }
-            }
-        }
     }
 
     fn window_mapped(&self, offset: u64, len: u64) {
@@ -1639,19 +1509,12 @@ fn read_at(fd: RawFd, bytes: &mut [u8], offset: u64) {
 }
 
 impl<H: HostMemory> UffdSecondStage<H> {
-    /// fxdax: whether memory the window maps with `protection` is mapped for the guest ahead of
-    /// its accesses (`Prefault`): writable, an open extent's, which the guest maps to write now;
-    /// not read-only, a sealed extent's: those it maps to read next it asks for
-    /// ([`Self::prefault_installed`]). Mapped for it, the hypervisor's pre-fault took a fifth of
-    /// the VM process's
-    /// time changing the window, and its pages, in the host's page tables, made each later unmap
-    /// of them flush the host's and the hypervisor's TLBs on every CPU (TASK-109).
-    fn prefaults(protection: Protection) -> bool {
-        protection == Protection::ReadWrite
-    }
-
-    /// The memory of the page at `phys`, which the window maps with `protection`.
-    fn memory(&self, phys: crate::pages::PhysLocation, protection: Protection) -> Memory {
+    /// The memory of the page at `phys`, which the window maps read-only. Not mapped for the guest
+    /// ahead of its accesses (`Prefault`) but those it asks for ([`Self::prefault_installed`]):
+    /// mapped for it, the hypervisor's pre-fault took a fifth of the VM process's time changing the
+    /// window, and its pages, in the host's page tables, made each later unmap of them flush the
+    /// host's and the hypervisor's TLBs on every CPU (TASK-109).
+    fn memory(&self, phys: crate::pages::PhysLocation) -> Memory {
         // A page of an arena the window may not map is the daemon's error, which the guest must
         // not get past.
         let (fd, read_only) =
@@ -1659,60 +1522,28 @@ impl<H: HostMemory> UffdSecondStage<H> {
         // Memory this process holds read-only, the default arena's, public bases' pages, is mapped
         // private: userfaultfd tracks stores to a mapping that may be made writable alone, and a
         // store to a private one could only copy the page into this process, which the window
-        // never lets it make, as it maps such pages read-only. Its loads read the very pages.
-        assert!(!read_only || protection == Protection::Read, "a read-only page mapped writably");
+        // never lets it make, as it write-protects every page it maps. Its loads read the very
+        // pages.
         Memory::File { fd, offset: phys.offset, shared: !read_only }
     }
 
-    /// Installs `memory` at the `len` bytes at `addr`, which the window maps with `protection`.
-    fn install(&self, addr: usize, len: usize, protection: Protection, memory: Memory) {
+    /// Installs `memory` at the `len` bytes at `addr`, which the window maps read-only.
+    fn install(&self, addr: usize, len: usize, memory: Memory) {
         let writable = libc::PROT_READ | libc::PROT_WRITE;
-        let prot = match protection {
-            Protection::Read if rules().map_with_window_protection => libc::PROT_READ,
-            _ => writable,
-        };
+        let prot = if rules().map_with_window_protection { libc::PROT_READ } else { writable };
         self.host.map(addr, len, prot, memory);
         // Stores are tracked by write-protecting the page, rather than by its protection, whose
-        // faults userfaultfd does not report. The new mapping has the window's protection until it
-        // is write-protected, so that a store meanwhile fails rather than going untracked.
+        // faults userfaultfd does not report. The new mapping is read-only until it is
+        // write-protected, so that a store meanwhile fails rather than going untracked.
         self.host.register(addr, len, UFFDIO_REGISTER_MODE_WP);
-        let write_protect = protection == Protection::Read;
         // Mapped writable already, it needs no protection changed (TASK-26.18.3).
         let make_writable = prot != writable;
         if make_writable && !rules().write_protect_before_writable {
             self.host.protect(addr, len, writable);
         }
-        if write_protect {
-            self.host.write_protect(addr, len, true);
-        }
+        self.host.write_protect(addr, len);
         if make_writable && rules().write_protect_before_writable {
             self.host.protect(addr, len, writable);
-        }
-        // The pages are mapped for the guest ahead of its accesses, as when a file is mapped, an
-        // open extent's pages are mapped for the guest to write, or a fault maps the pages after
-        // its own. A writable page is mapped writable here first: its first access through the new
-        // mapping would map it read-only, as the mapping tracks stores, and the guest's first store
-        // would then fault anyway.
-        if protection == Protection::ReadWrite {
-            self.host.populate_write(addr, len);
-        }
-    }
-
-    /// fxdax: changes the protection of the pages installed at the `len` bytes at `addr`, which
-    /// the window mapped with `was`, to `now`, their memory staying, as [`install`](Self::install)
-    /// leaves memory it installs: tracked by write protection while read-only, and faulted in for
-    /// writing once writable.
-    fn reprotect(&self, addr: usize, len: usize, was: Protection, now: Protection) {
-        match now {
-            _ if now == was => {}
-            Protection::Read => {
-                Self::took(&self.taken.write_protected, true);
-                self.host.write_protect(addr, len, true)
-            }
-            Protection::ReadWrite => {
-                self.host.write_protect(addr, len, false);
-                self.host.populate_write(addr, len);
-            }
         }
     }
 
@@ -1797,12 +1628,11 @@ impl<H: HostMemory> UffdSecondStage<H> {
             mapped.used = used;
             return false;
         }
-        let (phys, protection) = (mapped.phys, mapped.protection);
+        let phys = mapped.phys;
         // The pages around it left out with it, of memory following on, as far as a chunk's.
         let left_out_with = |page: &PageChanges, distance: i64| {
             page.mapped.is_some_and(|other| {
                 !other.installed
-                    && other.protection == protection
                     && other.phys.arena == phys.arena
                     && other.phys.offset as i64 - phys.offset as i64 == distance * page_size as i64
             })
@@ -1839,12 +1669,7 @@ impl<H: HostMemory> UffdSecondStage<H> {
         });
         let len = (end - start) * page_size;
         let busy = self.busy.doing(Doing::Reinstall, now);
-        self.install(
-            self.base + start * page_size,
-            len,
-            protection,
-            self.memory(first, protection),
-        );
+        self.install(self.base + start * page_size, len, self.memory(first));
         drop(busy);
         drop(pages);
         self.trim();
@@ -1902,9 +1727,8 @@ impl<H: HostMemory> UffdSecondStage<H> {
             let state = match page.mapped {
                 _ if page.private => "private".to_owned(),
                 Some(mapped) => format!(
-                    "{} {:?} of {:?} at {:#x}",
+                    "{} of {:?} at {:#x}",
                     if mapped.installed { "installed" } else { "left out" },
-                    mapped.protection,
                     mapped.phys.arena,
                     mapped.phys.offset
                 ),
@@ -2083,7 +1907,7 @@ mod tests {
         // SAFETY: Only the test uses the memory, which outlives the window.
         let stage = unsafe { UffdSecondStage::in_process(base, 2 * ps as u64, None) }.unwrap();
         let (dax, _window) = Dax::<()>::in_host_memory(stage).unwrap();
-        dax.window.map(0, &pager.source(), 0, 2 * ps as u64, false).unwrap();
+        dax.window.map(0, &pager.source(), 0, 2 * ps as u64).unwrap();
 
         // SAFETY: The memory is the window's, whose faults the fault thread serves.
         let load =
@@ -2127,13 +1951,12 @@ mod tests {
         // SAFETY: Only the test uses the memory, which outlives the window.
         let stage = unsafe { UffdSecondStage::in_process(base, 2 * ps as u64, None) }.unwrap();
         let (dax, _window) = Dax::<()>::in_host_memory(stage.clone()).unwrap();
-        dax.window.map(0, &file, 0, ps as u64, false).unwrap();
+        dax.window.map(0, &file, 0, ps as u64).unwrap();
         // SAFETY: The memory is the window's, whose faults the fault thread serves.
         assert_eq!(unsafe { (base as *const u8).read_volatile() }, 7);
 
         stage.release();
-        dax.window.map(ps as u64, &file, ps as u64, ps as u64, false).unwrap();
-        stage.protect(0, ps as u64, Protection::ReadWrite);
+        dax.window.map(ps as u64, &file, ps as u64, ps as u64).unwrap();
         stage.unmap(0, ps as u64);
         let maps = std::fs::read_to_string("/proc/self/maps").unwrap();
         let window: Vec<&str> = (maps.lines())
@@ -2150,49 +1973,6 @@ mod tests {
         drop(dax);
         // SAFETY: Unmaps the memory, which nothing uses any more.
         assert_eq!(unsafe { libc::munmap(memory, 2 * ps) }, 0);
-    }
-
-    /// fxdax TASK-109: the hypervisor is told of the pages the window maps writable, to map them
-    /// for the guest ahead of its accesses, and not of those it maps read-only, which the guest's
-    /// accesses map.
-    #[test]
-    fn writable_maps_alone_are_prefaulted() {
-        struct Told(Mutex<Vec<(u64, u64)>>);
-        impl Prefault for Told {
-            fn prefault(&self, offset: u64, len: u64) {
-                self.0.lock().unwrap().push((offset, len));
-            }
-        }
-        let ps = page_size() as usize;
-        // SAFETY: Maps anonymous memory, which this test owns.
-        let memory = unsafe {
-            libc::mmap(
-                std::ptr::null_mut(),
-                4 * ps,
-                libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
-                -1,
-                0,
-            )
-        };
-        assert_ne!(memory, libc::MAP_FAILED);
-        let base = memory as usize;
-        let file = TestSource::filled(4, 7).source();
-        let told = Arc::new(Told(Mutex::new(Vec::new())));
-        // SAFETY: Only the test uses the memory, which outlives the window.
-        let stage =
-            unsafe { UffdSecondStage::in_process(base, 4 * ps as u64, Some(told.clone())) }
-                .unwrap();
-        let (dax, _window) = Dax::<()>::in_host_memory(stage).unwrap();
-        dax.window.map(0, &file, 0, 2 * ps as u64, false).unwrap();
-        dax.window.map(2 * ps as u64, &file, 2 * ps as u64, 2 * ps as u64, true).unwrap();
-        assert_eq!(*told.0.lock().unwrap(), [(2 * ps as u64, 2 * ps as u64)]);
-        // SAFETY: The memory is the window's, whose faults the fault thread serves.
-        assert_eq!(unsafe { (base as *const u8).read_volatile() }, 7);
-
-        drop(dax);
-        // SAFETY: Unmaps the memory, which nothing uses any more.
-        assert_eq!(unsafe { libc::munmap(memory, 4 * ps) }, 0);
     }
 
     /// fxdax TASK-112.1: the pages the guest asks for ahead of its reads, of what the window maps,
@@ -2226,8 +2006,8 @@ mod tests {
             unsafe { UffdSecondStage::in_process(memory as usize, 4 * ps, Some(told.clone())) }
                 .unwrap();
         let (dax, _window) = Dax::<()>::in_host_memory(stage.clone()).unwrap();
-        dax.window.map(0, &file, 0, 2 * ps, false).unwrap();
-        dax.window.map(3 * ps, &file, 3 * ps, ps, false).unwrap();
+        dax.window.map(0, &file, 0, 2 * ps).unwrap();
+        dax.window.map(3 * ps, &file, 3 * ps, ps).unwrap();
         assert_eq!(*told.0.lock().unwrap(), []);
 
         stage.prefault_installed(0, 4 * ps);
@@ -2277,7 +2057,7 @@ mod tests {
         }
         .unwrap();
         let (dax, _window) = Dax::<()>::in_host_memory(stage.clone()).unwrap();
-        dax.window.map(0, &file, 0, (PAGES * ps) as u64, false).unwrap();
+        dax.window.map(0, &file, 0, (PAGES * ps) as u64).unwrap();
 
         // The mappings in the window's memory: its runs installed, and what lies between them.
         let mappings = || {
@@ -2325,9 +2105,9 @@ mod tests {
     }
 
     /// TASK-91.16: the changes that take access away from pages installed are counted by how,
-    /// each a flush of the host's TLBs and the hypervisor's: a map of other memory over them, a map
-    /// of the very same pages read-only, made in place, and an unmap. A map where nothing is
-    /// installed takes nothing away.
+    /// each a flush of the host's TLBs and the hypervisor's: a map of other memory over them, and
+    /// an unmap. A map where nothing is installed takes nothing away, nor does a map of the very
+    /// same pages, left in place.
     #[test]
     fn changes_taking_access_from_pages_installed_are_counted() {
         let ps = page_size() as usize;
@@ -2350,48 +2130,24 @@ mod tests {
             unsafe { UffdSecondStage::new(base, (2 * ps) as u64, Memories::InProcess, None) }
                 .unwrap();
         let (dax, _window) = Dax::<()>::in_host_memory(stage.clone()).unwrap();
-        dax.window.map(0, &file, 0, (2 * ps) as u64, true).unwrap();
-        assert_eq!(stage.taken(), [0, 0, 0], "mapped where nothing was");
+        dax.window.map(0, &file, 0, (2 * ps) as u64).unwrap();
+        assert_eq!(stage.taken(), [0, 0], "mapped where nothing was");
         let phys = |page: usize| stage.pages.lock().unwrap().pages[page].mapped.unwrap().phys;
         let first = phys(0);
-        // The first page's own read-only, in place; and the first page's again at the second's.
+        // The first page's own, in place; and the first page's again at the second's.
         stage.remap(
             0,
             (2 * ps) as u64,
             &[
-                Anew::Map { offset: 0, phys: first, len: ps as u64, protection: Protection::Read },
-                Anew::Map {
-                    offset: ps as u64,
-                    phys: first,
-                    len: ps as u64,
-                    protection: Protection::Read,
-                },
+                Anew::Map { offset: 0, phys: first, len: ps as u64 },
+                Anew::Map { offset: ps as u64, phys: first, len: ps as u64 },
             ],
         );
-        assert_eq!(stage.taken(), [1, 0, 1], "the second page installed over, the first protected");
+        assert_eq!(stage.taken(), [1, 0], "the second page installed over, the first in place");
         stage.unmap(0, (2 * ps) as u64);
-        assert_eq!(stage.taken(), [1, 1, 1], "both left out");
+        assert_eq!(stage.taken(), [1, 1], "both left out");
         stage.unmap(0, (2 * ps) as u64);
-        assert_eq!(stage.taken(), [1, 1, 1], "nothing installed to leave out");
-
-        // TASK-131.1: maps in place one after another in the window, each a page apart in memory
-        // or not, read-only alike, are one write protection.
-        dax.window.map(0, &file, 0, (2 * ps) as u64, true).unwrap();
-        let (first, second) = (phys(0), phys(1));
-        stage.remap(
-            0,
-            (2 * ps) as u64,
-            &[
-                Anew::Map { offset: 0, phys: first, len: ps as u64, protection: Protection::Read },
-                Anew::Map {
-                    offset: ps as u64,
-                    phys: second,
-                    len: ps as u64,
-                    protection: Protection::Read,
-                },
-            ],
-        );
-        assert_eq!(stage.taken(), [1, 1, 2], "the two pages protected at once");
+        assert_eq!(stage.taken(), [1, 1], "nothing installed to leave out");
 
         drop(dax);
         // SAFETY: Unmaps the memory, which nothing uses any more.
@@ -2430,7 +2186,7 @@ mod tests {
             unsafe { UffdSecondStage::new(base, (pages * ps) as u64, Memories::InProcess, None) }
                 .unwrap();
         let (dax, _window) = Dax::<()>::in_host_memory(stage.clone()).unwrap();
-        dax.window.map(0, &file, 0, (pages * ps) as u64, false).unwrap();
+        dax.window.map(0, &file, 0, (pages * ps) as u64).unwrap();
         // SAFETY: The memory is the window's, whose faults the fault thread serves.
         let load = |page: usize| unsafe { ((base + page * ps) as *const u8).read_volatile() };
         for round in 0..2 {
@@ -2480,7 +2236,7 @@ mod tests {
 
         // Not yet written, the source has no page in memory, and its first is zeros.
         let source = TestSource::anonymous(1).source();
-        dax.window.map(0, &source, 0, ps as u64, false).unwrap();
+        dax.window.map(0, &source, 0, ps as u64).unwrap();
         assert_eq!(write(), ps as isize);
         let mut read = vec![1u8; ps];
         // SAFETY: Reads into `read`, which is `ps` bytes.
@@ -2527,7 +2283,7 @@ mod tests {
             Dax::<()>::in_host_memory_copying(stage.clone(), Some(copying)).unwrap();
         // Not in memory as it is mapped, and zeros as it is brought in: not here until a fault.
         let file = TestSource::anonymous(1);
-        dax.map(0, (), &file.source(), 0, ps as u64, false).unwrap();
+        dax.map(0, (), &file.source(), 0, ps as u64).unwrap();
         let mut pipe = [0; 2];
         // SAFETY: Creates a pipe, which the test closes.
         assert_eq!(unsafe { libc::pipe(pipe.as_mut_ptr()) }, 0);
@@ -2617,7 +2373,7 @@ mod tests {
             Dax::<()>::in_host_memory_copying(stage.clone(), Some(copying)).unwrap();
         let tag = |page: usize| (page % 251) as u8 + 1;
         let file = TestSource::scattered(PAGES as u64, |page| tag(page as usize)).source();
-        dax.map(0, (), &file, 0, size, false).unwrap();
+        dax.map(0, (), &file, 0, size).unwrap();
         for page in (0..PAGES).rev() {
             let (offset, len) = ((page * ps) as u64, ps as u64);
             futures::executor::block_on(window.make_private(offset, len)).unwrap();
@@ -2664,7 +2420,7 @@ mod tests {
             Dax::<()>::in_host_memory_copying(stage.clone(), Some(copying)).unwrap();
         let tag = |page: usize| (page % 251) as u8 + 1;
         let file = TestSource::scattered(PAGES as u64, |page| tag(page as usize)).source();
-        dax.map(0, (), &file, 0, size, false).unwrap();
+        dax.map(0, (), &file, 0, size).unwrap();
         // Every other page private, stored to.
         for page in (0..PAGES).step_by(2) {
             let (offset, len) = ((page * ps) as u64, ps as u64);
@@ -2723,7 +2479,7 @@ mod tests {
         let (mut dax, window) =
             Dax::<()>::in_host_memory_copying(stage.clone(), Some(copying)).unwrap();
         let file = TestSource::filled(2, 7).source();
-        dax.map(0, (), &file, 0, (2 * ps) as u64, false).unwrap();
+        dax.map(0, (), &file, 0, (2 * ps) as u64).unwrap();
         futures::executor::block_on(window.make_private(0, ps as u64)).unwrap();
 
         let told = describe_windows(Some(base + 5));
@@ -2731,7 +2487,7 @@ mod tests {
         assert!(told.contains("1 pages installed, 0 left out, 1 private, 0 withheld"), "{told}");
         assert!(told.contains("; offset 0x0: private, changed "), "{told}");
         let told = describe_windows(Some(base + ps));
-        let installed = format!("; offset {ps:#x}: installed Read of {arena:?} at ");
+        let installed = format!("; offset {ps:#x}: installed of {arena:?} at ");
         assert!(told.contains(&installed), "{told}");
         let told = describe_windows(Some(base + 2 * ps));
         assert!(!told.contains("; offset"), "a page outside the window told of: {told}");

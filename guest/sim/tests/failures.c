@@ -3,9 +3,13 @@
 /*
  * What tests/interleave leaves out: things that fail. Tasks write, map, truncate and clone their
  * files, from memory that ends part way through, and from the files' own mappings, as allocations
- * and the device's MAPs and UNMAPs fail, one in so many, the seed's.
+ * and the device's MAPs, UNMAPs and PRIVATEs fail, one in so many, the seed's. Stores copy on
+ * write (doc-13).
  *
- *   failures SEED [OPERATIONS] [-v] [-W INO PAGE] [-a ADDRESS]
+ *   failures SEED [OPERATIONS] [-v] [-W INO PAGE] [-a ADDRESS] [-w WINDOW_PAGE]
+ *
+ * -v logs each operation, and where each file is mapped; -W what Fxfs does to the file's page, -a
+ * the address's PTE, and -w the window page's MAPs, UNMAPs and PRIVATEs.
  *
  * An operation that fails may have done anything to the bytes it was to change, which the task
  * then knows nothing of, but a write, which leaves each of those it says it didn't write as it
@@ -27,10 +31,8 @@
 /* What a write copies at most, and how often, in operations, all of it is checked. */
 #define WRITE_MAX (3 * PAGE_SIZE)
 #define ROUND 16
-/* One allocation, and one MAP or UNMAP, in so many fails. */
+/* One allocation, and one MAP, UNMAP or PRIVATE, in so many fails. */
 #define FAIL_ODDS 25
-/* The host's memory for open extents, a run in four: what it refuses a seal makes room for. */
-#define OPEN_LIMIT PTRS_PER_PTE
 
 #define check(cond, ...) do { if (!(cond)) sim_panic(__VA_ARGS__); } while (0)
 
@@ -123,8 +125,8 @@ static void check_known(const char *what, struct tracked *file, const char *got,
 
 /*
  * What a failed write didn't write of the `len` bytes at `at`: each byte as it was, or what the
- * write's source held, of the `readable` bytes it had, which pages it found open took in place,
- * and never zeros, as a move committed before the bytes left (TASK-153.5). Read back, which
+ * write's source held, of the `readable` bytes it had, copied into its private pages, and never
+ * zeros, as writable DAX's moves committed before the bytes left (TASK-153.5). Read back, which
  * may fail too, when it is forgotten.
  */
 static void unwritten(struct tracked *file, loff_t at, const char *source, size_t len,
@@ -364,7 +366,7 @@ static void op_truncate(struct worker *worker, struct tracked *file)
 	err = sim_truncate(file->file, size);
 	if (err) {
 		check(failures() != before && (err == -EIO || err == -ENOMEM), "a truncate: %d", err);
-		/* Its zeroing moved the page it was to zero. */
+		/* Its zeroing may have been done or not. */
 		forget(file, round_down(min(size, old), PAGE_SIZE),
 		       min_t(loff_t, PAGE_SIZE, old - round_down(min(size, old), PAGE_SIZE)));
 		return;
@@ -437,10 +439,12 @@ static void check_whole(struct worker *worker, struct tracked *file)
 	char *got = kmalloc(file->max, GFP_KERNEL), *held = kmalloc(file->max, GFP_KERNEL);
 	ssize_t done = file->size ? sim_read(file->file, 0, got, file->size) : 0;
 	loff_t i;
+	int err;
 
 	check(done == file->size, "reading it all: %zd of %lld", done, file->size);
 	check_known("reading it all", file, got, 0, file->size);
-	check(!sim_fsync(file->file), "fsync");
+	err = sim_fsync(file->file);
+	check(!err, "fsync: %d", err);
 	fxfs_sim_read(mount->info->fs, file_inode(file->file)->i_ino, 0, held, file->size);
 	for (i = 0; i < file->size; i++) {
 		if (got[i] == held[i])
@@ -508,11 +512,20 @@ static void worker_task(void *arg)
 	writers_left--;
 }
 
-/* Seals as a journal does, whenever it likes. */
+/*
+ * Seals as a journal does, whenever it likes. Copying on write, an fsync writes back first, which
+ * fails ENOMEM if its batch can't be allocated, the pages left dirty for the next: an allocation
+ * failed meanwhile, or nothing may fail it.
+ */
 static void syncer_task(void *arg)
 {
+	u64 before;
+	int err;
+
 	while (READ_ONCE(writers_left)) {
-		check(!sim_fsync(workers[0].big.file), "fsync");
+		before = sim_allocs_failed();
+		err = sim_fsync(workers[0].big.file);
+		check(!err || (err == -ENOMEM && sim_allocs_failed() != before), "fsync: %d", err);
 		msleep(between(0, 2));
 	}
 }
@@ -552,6 +565,8 @@ static void track(struct tracked *file, loff_t size, loff_t max)
 	done = sim_write(file->file, 0, file->bytes, size);
 	check(done == size, "the first write: %zd", done);
 	file->addr = sim_mmap(file->file, 0, max);
+	if (verbose)
+		sim_log("failures: ino %lu mapped at %lx\n", file_inode(file->file)->i_ino, file->addr);
 }
 
 static void setup(void)
@@ -559,8 +574,6 @@ static void setup(void)
 	int i;
 
 	mount = sim_mount_new();
-	/* Not dax_check_moves: stores past a file's end aren't the file's, which it takes them for. */
-	sim_param_set("dax_check_seals", "1");
 	new_bytes(source_bytes, sizeof(source_bytes));
 	source_file = sim_file_new(mount);
 	check(sim_write(source_file, 0, source_bytes, sizeof(source_bytes)) == sizeof(source_bytes),
@@ -583,13 +596,11 @@ int main(int argc, char **argv)
 	int i;
 
 	if (argc < 2 || sscanf(argv[1], "%llu", &seed) != 1)
-		sim_panic("usage: failures SEED [OPERATIONS] [-v]");
+		sim_panic("usage: failures SEED [OPERATIONS] [-v] [-W INO PAGE] [-a ADDRESS] [-w WINDOW_PAGE]");
 	if (argc > 2 && argv[2][0] != '-')
 		sscanf(argv[2], "%lu", &operations);
 	sim_init(seed);
 	sim_device_init(WINDOW_LEN);
-	if (!(seed % 4))
-		sim_device_limit_open(OPEN_LIMIT);
 	for (i = 2; i < argc; i++) {
 		unsigned long long ino, page;
 
@@ -597,6 +608,9 @@ int main(int argc, char **argv)
 			verbose = true;
 		else if (!strcmp(argv[i], "-a") && i + 1 < argc)
 			sscanf(argv[i + 1], "%lx", &watched_address);
+		else if (!strcmp(argv[i], "-w") && i + 1 < argc &&
+			 sscanf(argv[i + 1], "%llx", &page) == 1)
+			sim_device_watch(page);
 		else if (!strcmp(argv[i], "-W") && i + 2 < argc &&
 			 sscanf(argv[i + 1], "%llu", &ino) == 1 &&
 			 sscanf(argv[i + 2], "%llu", &page) == 1)

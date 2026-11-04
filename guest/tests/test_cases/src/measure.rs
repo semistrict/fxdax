@@ -19,10 +19,7 @@
 //!   hold, every tenant's extents' pages (`extentd_memory_bytes`), the pages the windows map, its
 //!   faults, and any gauge of private pages it keeps (copy-on-write DAX's, TASK-164.1);
 //! - `guest_*`: what the guest said of itself: its memory (/proc/meminfo), faults (/proc/vmstat),
-//!   and its Fxfs's counts of copy-on-write DAX, its private pages among them (`guest_fxfs_*`).
-//!
-//! And whether the guest's DAX writes copy on write (`fxfs.dax_cow`, doc-13), which a case may ask
-//! for, the guest says on its console ([`DAX_COW`]).
+//!   and its Fxfs's counts of copy-on-write DAX's private pages (`guest_fxfs_*`).
 
 use macros::{guest, host};
 use std::collections::BTreeMap;
@@ -32,10 +29,6 @@ pub const PORT: u32 = 5056;
 
 /// The phase a guest that asks to be measured more than once says last.
 pub const LAST: &str = "end";
-
-/// In a guest's environment, that its case asks its DAX writes to copy on write, which it fails
-/// without.
-const DAX_COW: &str = "FXDAX_DAX_COW";
 
 /// /proc/meminfo's `text`, each value by its name, in bytes, but for counts, which have no unit.
 pub fn meminfo(text: &str) -> BTreeMap<String, u64> {
@@ -55,7 +48,7 @@ pub fn meminfo(text: &str) -> BTreeMap<String, u64> {
 #[host]
 mod host {
     use super::*;
-    use crate::vm::{Firecracker, Vm};
+    use crate::vm::Firecracker;
     use anyhow::Context;
     use std::fmt::Write as _;
     use std::io::{BufRead, BufReader, Read, Write};
@@ -79,14 +72,6 @@ mod host {
     /// this returns.
     pub fn metrics_address() -> anyhow::Result<SocketAddr> {
         Ok(TcpListener::bind("127.0.0.1:0")?.local_addr()?)
-    }
-
-    /// Has the guest of `vm` copy on write as its DAX writes (`fxfs.dax_cow=1`, doc-13), and fail
-    /// unless its kernel does.
-    pub fn ask_dax_cow(vm: &mut Vm) -> anyhow::Result<()> {
-        vm.module_param(c"fxfs.dax_cow=1");
-        vm.env(&std::ffi::CString::new(format!("{DAX_COW}=1"))?);
-        Ok(())
     }
 
     /// The host's memory, and the extent daemon's, of process `daemon`, which serves its metrics at
@@ -180,8 +165,8 @@ mod host {
             .collect())
     }
 
-    /// The vsock of a VM, to give it ([`Vm::vsock`]), on which its guest asks to be measured: the
-    /// host's end of [`PORT`].
+    /// The vsock of a VM, to give it ([`crate::vm::Vm::vsock`]), on which its guest asks to be
+    /// measured: the host's end of [`PORT`].
     pub struct Requests {
         uds: PathBuf,
         path: PathBuf,
@@ -291,33 +276,17 @@ mod guest {
         .collect();
         said.push(format!("guest_faults={}", count("pgfault")));
         said.push(format!("guest_major_faults={}", count("pgmajfault")));
-        // fxdax: what its Fxfs counts of copy-on-write DAX, its private pages among it, if it is
-        // mounted and does (/proc/fs/fxfs/<tag>, the first's).
+        // fxdax: what its Fxfs counts of copy-on-write DAX's private pages, if it is mounted
+        // (/proc/fs/fxfs/<tag>, the first's).
         let stats = fs::read_dir("/proc/fs/fxfs").ok().and_then(|mut dir| dir.find_map(Result::ok));
         let stats = stats.and_then(|stats| fs::read_to_string(stats.path()).ok());
         for line in stats.as_deref().unwrap_or_default().lines() {
             let Some((name, value)) = line.split_once(' ') else { continue };
-            if (name.contains("private") || name.contains("cow")) && value.parse::<u64>().is_ok() {
+            if name.contains("private") && value.parse::<u64>().is_ok() {
                 said.push(format!("guest_fxfs_{name}={value}"));
             }
         }
         said.join(" ")
-    }
-
-    /// Says on the console whether the guest's Fxfs's DAX writes copy on write (doc-13): its
-    /// `dax_cow` parameter, `on`, `off`, or `absent` from a kernel without it, which
-    /// scripts/pgbench-gate.py reports with its case; and fails if the case asked for it
-    /// ([`DAX_COW`]) and it is not on.
-    pub fn dax_cow() {
-        let mode = match fs::read_to_string("/sys/module/fxfs/parameters/dax_cow") {
-            Ok(value) if matches!(value.trim(), "Y" | "1") => "on",
-            Ok(_) => "off",
-            Err(_) => "absent",
-        };
-        eprintln!("fxfs dax_cow: {mode}");
-        if std::env::var_os(DAX_COW).is_some() {
-            assert_eq!(mode, "on", "the case asked for fxfs.dax_cow=1");
-        }
     }
 }
 

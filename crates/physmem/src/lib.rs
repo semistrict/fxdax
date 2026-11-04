@@ -227,16 +227,10 @@ pub fn default_fd() -> BorrowedFd<'static> {
 /// would take its budget, or the arenas' together, all but an eighth of what each may hold: returns
 /// whether it did. Past a budget a caller makes room its own way, or fails, so that what can't, as
 /// a guest's fault can't, finds pages to evict. What fits no budget pins while nothing else is
-/// pinned. A pin takes no page: its caller allocates them, and [`unpin`]s them as they go or become
-/// evictable (TASK-150.20).
+/// pinned. A pin takes no page: its caller allocates them, or reserves them for its own memory, and
+/// [`unpin`]s them as they go (TASK-150.20).
 pub fn pin(arena: ArenaId, count: usize) -> bool {
-    pmm::node().pin(arena, count, false)
-}
-
-/// Pins `count` more pages against `arena`, as [`pin`] does, whatever the budgets say: of the
-/// reserve, for what has no other way.
-pub fn pin_past_budget(arena: ArenaId, count: usize) {
-    pmm::node().pin(arena, count, true);
+    pmm::node().pin(arena, count)
 }
 
 /// Lets go of `count` pages pinned against `arena`, as they go, or now they can be evicted, which

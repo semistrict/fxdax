@@ -9,19 +9,19 @@
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c
-@@ -1884,7 +1884,6 @@
- 	bool writable;
+@@ -1397,7 +1397,6 @@
+ 	unsigned long from, to;
  	int err = 0;
-
+ 
 -	mutex_lock(&region->lock);
- 	writable = READ_ONCE(region->writable);
  	from = region->mapped;
  	if (end <= from)
-@@ -1926,7 +1925,6 @@
+ 		goto out;
+@@ -1432,7 +1431,6 @@
  			from, to, region->branch, region->sequence, region->pages,
- 			writable ? "writably" : "read-only", region->window_offset, err);
+ 			region->window_offset, err);
  out:
 -	mutex_unlock(&region->lock);
  	return err;
  }
-
+ 

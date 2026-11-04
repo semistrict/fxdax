@@ -3,7 +3,7 @@ id: doc-4
 title: Virtio extent-store device specification
 type: specification
 created_date: '2026-10-13 22:18'
-updated_date: '2026-11-03 11:03'
+updated_date: '2026-11-04 16:32'
 ---
 # The virtio extent-store device
 
@@ -11,6 +11,12 @@ Specification, 2026-10-13 (TASK-26.2, revised the same day). This is the only in
 guest's Fxfs and the host's extent store (doc-2). The guest's driver is TASK-26.5, and the VMM's
 device is fxdax's Firecracker's (vendor/firecracker), first libkrun's (TASK-26.4; libkrun was
 removed in TASK-40).
+
+*Revised 2026-11-04 (TASK-164, doc-13):* the DAX window maps sealed extents and zeros alone,
+read-only, and copies on write: a page the guest writes is the VM's own, a private copy at the same
+address. Writable mappings of open extents (`DAX_WRITE`, `MAP_WRITE`), the host's bound on their
+memory (`ENOMEM`) and its asks that guests seal (`SEAL`, `seal_asked`, `SEALED`) went with them
+(dead-ends/writable-dax.md).
 
 ## Purpose
 
@@ -79,18 +85,19 @@ Settled in a design review on 2026-10-13:
 
 | Bit | Name | Meaning |
 |---:|---|---|
-| 0 | `VIRTIO_EXTENT_F_DAX` | Shared memory region 0 is a DAX window, and `MAP`/`UNMAP` work. |
-| 1 | `VIRTIO_EXTENT_F_DAX_WRITE` | `MAP` maps open extents writably. Needs `DAX`. |
+| 0 | `VIRTIO_EXTENT_F_DAX` | Shared memory region 0 is a DAX window, which maps sealed extents and zeros, read-only, and copies on write (Shared memory): `MAP`, `UNMAP` and `PRIVATE` work, `MAP` takes `MAP_ZEROS`, and the configuration holds `private_max`. |
 | 2 | `VIRTIO_EXTENT_F_WRITE_COMMIT` | `WRITE` takes `WRITE_COMMIT`: a commit follows the write. |
 | 3 | `VIRTIO_EXTENT_F_RESIZE` | The configuration holds `capacity` and `asked`, which change while the device runs (Resizing); the guest answers a shrink with `RESIZED`. |
 | 4 | `VIRTIO_EXTENT_F_FREEZE` | `FREEZE` works, and `INFO` says the `branch` (Snapshots). |
-| 5 | `VIRTIO_EXTENT_F_READ_ONLY` | The device follows a store another VM writes, read-only (Followers): `ADVANCE`, `LET_GO`, `PIN` and `UNPIN` work, and the configuration holds `committed`, which changes while the device runs. Excludes `DAX_WRITE`, `WRITE_COMMIT` and `RESIZE`. |
+| 5 | `VIRTIO_EXTENT_F_READ_ONLY` | The device follows a store another VM writes, read-only (Followers): `ADVANCE`, `LET_GO`, `PIN` and `UNPIN` work, and the configuration holds `committed`, which changes while the device runs. Excludes `WRITE_COMMIT` and `RESIZE`. With `DAX`, its window copies nothing: a store to it is refused, `PRIVATE` fails with `EROFS`, and `private_max` is 0. |
 | 6 | `VIRTIO_EXTENT_F_FREE_MANY` | `FREE` takes `FREE_MANY`: its data names more extents to free (TASK-41). Excludes `READ_ONLY`. |
 | 7 | `VIRTIO_EXTENT_F_MAP_MANY` | `MAP` takes `MAP_MANY`: its data holds more maps (TASK-91.4). Needs `DAX`. |
 | 8 | `VIRTIO_EXTENT_F_MAP_AHEAD` | `MAP`, and each of its further maps, takes `MAP_AHEAD`: the guest accesses the pages next (TASK-112.1). Needs `DAX`. |
-| 9 | `VIRTIO_EXTENT_F_SEAL` | The configuration holds `seal_asked`, which changes while the device runs (Sealing); the guest answers it with `SEALED`. Excludes `READ_ONLY`. |
 | 29 | `VIRTIO_RING_F_EVENT_IDX` | The ring's notification suppression: the device offers it, so that a guest's requests queued while it takes them, and its completions while the driver takes them, cost no exit each. |
 | 32 | `VIRTIO_F_VERSION_1` | Required. |
+
+Bits 1, 9 and 10 were `DAX_WRITE`, `SEAL` and `DAX_COW` (copy on write beside writable mappings,
+2026-11-04), which went as copying on write became the only DAX.
 
 ### Configuration space
 
@@ -108,12 +115,14 @@ struct virtio_extent_config {
 	le64 capacity;            /* F_RESIZE: the store's capacity, as INFO's */
 	le64 asked;               /* F_RESIZE: the shrink the guest is asked to take, or 0 */
 	le64 committed;           /* F_READ_ONLY: the epoch of the writer's latest commit */
-	le64 seal_asked;          /* F_SEAL: the host's ask that the guest seal, its number, or 0 */
+	le64 private_max;         /* F_DAX: the most private pages the window holds at once, in
+	                             pages of map_alignment; 0 with F_READ_ONLY */
 };
 ```
 
 The configuration never changes while the device runs, but for `capacity` and `asked`, with
-`F_RESIZE`, `committed`, with `F_READ_ONLY`, and `seal_asked`, with `F_SEAL`.
+`F_RESIZE`, and `committed`, with `F_READ_ONLY`. The host sets `private_max` as it opens the
+device, and reserves that much memory for the VM then, so that a store never waits for memory.
 
 ### Resizing
 
@@ -126,21 +135,6 @@ guest shrinks if its filesystem holds less than `asked`, with room left for its 
 (16 MiB, in fxdax's Fxfs), and answers with `RESIZED`, whether it took it; the store shrinks only
 then, never below what its extents hold. The host waits 10 s for the answer. A store no VM has
 open grows, and does not shrink.
-
-### Sealing
-
-*Added 2026-11-03 (TASK-153.15).* The pages of an open extent a writable `MAP` maps are the host's
-memory, which nothing on the host can evict, nor seal: only the guest's barrier lets go of them. So
-the host bounds them, and a writable `MAP` past the bound fails with `ENOMEM` (TASK-150.20): the
-guest seals, and maps again. But the bound is the host's, which its VMs share: another guest's open
-pages, held for as long as it seals nothing, would leave the one refused nothing its own seals make
-room in. So the host asks the guests holding the most to seal: it sets `seal_asked` to the ask's
-number, not 0, and raises a configuration change; the guest seals what is open (a `COMMIT`, which
-need not be durable) and answers with `SEALED`, the number it read; `seal_asked` is 0 again, unless
-the host has asked again since. The `MAP` refused waits for the answers, 10 s at most, and is tried
-once more before it fails. A guest asked to seal is never made to wait so for another's, as its own
-seal may wait for that `MAP`. A device whose driver doesn't take `F_SEAL`, or reset, answers for its
-guest, at once: nothing will seal.
 
 ### Virtqueues
 
@@ -159,6 +153,16 @@ The driver may have as many requests in flight as the queues hold.
 
 With `VIRTIO_EXTENT_F_DAX`, shared memory region 0 is the DAX window: guest-physical memory whose
 contents `MAP` sets. The transport gives its size, as virtio-fs's does.
+
+Every window page is one of three: a sealed extent's page, which every window that maps it shares;
+zeros; or a **private page**, the VM's own, which no extent names. A store to either of the first
+two makes it private, holding what it held, at the same address, mapped writable: nothing the guest
+maps moves, and no guest page table changes for a store. Only a `MAP` or `UNMAP` over a private
+page, which the guest sends, ends it. The device holds at most `private_max` private pages: a store
+past them is refused, and the VM stops (fxdax's Firecracker: 159, `AccessRefused`). The guest keeps
+under the bound, and writes back what it stored: its dirty pages' bytes, read from the window, are
+`WRITE`s to new extents, then a commit; once a commit seals those, it maps the pages back to them,
+which frees the private pages. A commit changes nothing in any window.
 
 The host's VMM takes KVM's faults on the window through userfaultfd, so the host's kernel must be
 Linux 6.1 or later (TASK-50.4): `/dev/userfaultfd` (6.1), which a jailed VMM opens in its jail
@@ -201,7 +205,7 @@ struct virtio_extent_resp {
 | 12 | `LET_GO` | `struct virtio_extent_epoch` | none |
 | 13 | `PIN` | `struct virtio_extent_id id;` | none |
 | 14 | `UNPIN` | `struct virtio_extent_id id;` | none |
-| 15 | `SEALED` | `le64 asked;` (the `seal_asked` it answers) | none |
+| 16 | `PRIVATE` | `le64 window_offset; le64 len;` | none |
 
 ### `WRITE`
 
@@ -226,8 +230,8 @@ within `max_extent`.
   journal write records how far the journal is written in the root it sets, with no request more
   (TASK-153.13). A `WRITE_ROOT` without `WRITE_COMMIT` fails with `EINVAL`.
 
-**Sealing.** An extent is open from its first write, or its first writable mapping (`MAP`), until
-the first barrier submitted after a write or a store to it completes. That barrier seals it. Every
+**Sealing.** An extent is open from its first write until the first barrier submitted after a
+write to it completes. That barrier seals it. Every
 write to an extent must therefore complete before the next barrier is submitted: Fxfs writes an
 extent's data, then commits the transaction that refers to it, so this holds.
 
@@ -236,8 +240,8 @@ extent's data, then commits the transaction that refers to it, so this holds.
 Reads `len` bytes at `offset` in extent `id`. Both are multiples of `block_size`, and the range lies
 within the extent's length. The extent is the guest's, one its branch inherited from the branch
 it was forked from, or one a fork attached to the store holds (Branches and forks). A `READ` sees
-every `WRITE`, and every store through a writable mapping,
-completed before it was submitted.
+every `WRITE` completed before it was submitted. Stores to the window reach no extent: they are in
+private pages until the guest writes them.
 
 Reading an extent the store doesn't hold, one never written or one freed, fails with `ENOENT`. The
 guest's Fxfs reads such an extent as zeros where it may never have been written: preallocated
@@ -257,54 +261,52 @@ each: each request a round trip, which nested virtualization makes dear.
 - The guest must not free an extent while requests on it are in flight, and never mints the same ID
   twice.
 
-### `MAP` and `UNMAP`
+### `MAP`, `UNMAP` and `PRIVATE`
 
 `MAP` maps `len` bytes at `offset` in extent `id` into the window at `window_offset`. All three are
 multiples of `map_alignment`, and the range lies within the window.
 
-- Loads see the extent's contents. What of a read-only mapping lies past the extent reads as zeros,
-  as blocks within it never written do: blocks a write allocated, which a barrier sealed unwritten,
-  and which the write then moves elsewhere, which the guest may map as it reads them meanwhile.
-- The mapping is read-only, unless `MAP_WRITE` (bit 0) is set, which needs `DAX_WRITE`. Stores to a
-  read-only mapping fault in the guest.
-- A read-only mapping of an open extent sees its contents as they are written and stored to, until
-  the barrier that seals it: a guest may take an extent for sealed while that barrier is in flight.
-- A writable mapping is of an extent of the guest's branch that is open, or that does not exist yet,
-  which it opens as a first write would: an extent the guest mints for data it stores through the
-  window. The extent is then at least as long as the furthest end of a writable mapping or a write
-  to it, up to `max_extent`, and bytes neither written nor stored to read as zeros.
-- Stores through a writable mapping belong to the current epoch. The barrier that seals the extent
-  makes its writable mappings read-only; they keep its contents.
-- `MAP_WRITE` of a sealed extent, or of another branch's, fails with `EPERM`.
-- `MAP_WRITE` past the host's bound on open extents' memory fails with `ENOMEM`: the guest seals,
-  and maps again (Sealing).
-- A `MAP` replaces whatever the window held there.
+- The extent is sealed: a `MAP` of an open extent fails with `EPERM`. A guest that takes an
+  extent for sealed while the barrier that seals it is in flight maps it again once that barrier
+  completes.
+- Loads see the extent's contents. What of the mapping lies past the extent reads as zeros, as
+  blocks within it never written do.
+- The mapping is read-only to the extent: a store to one of its pages makes the page private
+  (Shared memory), and the extent never changes.
+- With `MAP_ZEROS` (bit 3), the range maps zeros, `id` and `offset` ignored: holes, and pages past
+  a file's end, which a store then makes private pages of zeros, with nothing to copy.
+- A `MAP` replaces whatever the window held there, freeing its private pages.
 
 With `MAP_MANY` (bit 1, `F_MAP_MANY`), the data holds more maps, each a
 `struct virtio_extent_map_entry { struct virtio_extent_map map; le32 flags; le32 reserved; }`: the
-arguments of a `MAP` and its flags, `MAP_WRITE` and `MAP_AHEAD` alone, each mapped as a `MAP` of its own would be,
+arguments of a `MAP` and its flags, `MAP_AHEAD` and `MAP_ZEROS` alone, each mapped as a `MAP` of its own would be,
 in any order. The first that fails fails the request, whichever others mapped, and the guest maps
 them all again, one by one, to learn which failed. A guest maps the pieces of a file's chunk it
 reads, scattered across extents as rewrites move its blocks, in one request rather than one each:
 each request a round trip, which nested virtualization makes dear.
 
 With `MAP_AHEAD` (bit 2, `F_MAP_AHEAD`), the guest accesses the pages it maps next, as a read does:
-the device maps them for the guest ahead of its accesses, those its host holds in memory, as it may
-map writable ones, rather than the hypervisor one first access at a time, which nested
-virtualization makes dear (TASK-112.1). Pages mapped to stay where a seal moved them, which the
-guest seldom touches again, it maps without. The flag changes nothing the guest sees but the time
-its first accesses take.
+the device maps them for the guest ahead of its accesses, those its host holds in memory, rather
+than the hypervisor one first access at a time, which nested virtualization makes dear
+(TASK-112.1). The flag changes nothing the guest sees but the time its first accesses take.
 
-`UNMAP` makes `len` bytes of the window at `window_offset` inaccessible.
+`UNMAP` makes `len` bytes of the window at `window_offset` inaccessible, freeing its private
+pages.
+
+`PRIVATE` makes `len` bytes of the window at `window_offset` private now, as stores would, all or
+none, and maps them for the guest ahead of its accesses, as `MAP_AHEAD` does: a guest about to
+write many pages that aren't private yet, as a `write(2)` of them, makes them so in one round trip,
+rather than a fault of the host's each. Pages already private stay as they are. It fails with
+`ENOMEM` past `private_max`, and with `EINVAL` where nothing is mapped.
 
 Every VM on a host that maps the same extent maps the same host pages, which is safe because
 extents never change once sealed.
 
 ### `COMMIT`
 
-A barrier: every request completed before the `COMMIT` was submitted, and every store through a
-writable mapping before then, is ordered before every request submitted after it completes. It
-seals every extent written before it.
+A barrier: every request completed before the `COMMIT` was submitted is ordered before every
+request submitted after it completes. It seals every extent written before it, and changes nothing
+in any window.
 
 - **With `COMMIT_ROOT`** (bit 1), the commit also sets the branch's root to the `root_len` bytes it
   carries (at most `max_root`), ordered with everything before it.
@@ -364,13 +366,13 @@ its own count and the floor there may be 2^40 numbers.
 | Status | When |
 |---|---|
 | `0` | Success. |
-| `EPERM` (1) | A write, or a writable `MAP`, to a sealed extent, or to another branch's. |
+| `EPERM` (1) | A write to a sealed extent, or to another branch's; a `MAP` of an open extent. |
 | `ENOENT` (2) | A `READ` or `MAP` of an extent that does not exist, or was freed. |
 | `EIO` (5) | The store failed to read or write. |
 | `EINVAL` (22) | An unknown type or flag, a misaligned or out-of-range offset, length or window offset, or a feature's flag the device does not offer. |
-| `ENOMEM` (12) | A writable `MAP` past the host's bound on open extents' memory (Sealing): the guest seals, and maps again. |
+| `ENOMEM` (12) | A `PRIVATE` past `private_max`. |
 | `ENOSPC` (28) | The store cannot hold more for this branch. |
-| `EROFS` (30) | The store stopped taking writes for this branch: another host took its lease (milestone 4), or the host is shutting it down. Reads still work. With `F_READ_ONLY`, every `WRITE`, `FREE`, `COMMIT`, writable `MAP` and `RESIZED`. |
+| `EROFS` (30) | The store stopped taking writes for this branch: another host took its lease (milestone 4), or the host is shutting it down. Reads still work. With `F_READ_ONLY`, every `WRITE`, `FREE`, `COMMIT`, `PRIVATE` and `RESIZED`. |
 | `ESTALE` (116) | `F_READ_ONLY`: the follower was cut off (Followers). |
 
 With `F_READ_ONLY`, a `READ` or `MAP` of an extent the follower's view let go of (freed before
@@ -432,7 +434,8 @@ barriers of `WRITE_BARRIER`s and `WRITE_COMMIT`s, divide the requests into **epo
 - A request completed before a barrier was submitted belongs to an epoch before it.
 - A request submitted after a barrier completed belongs to an epoch after it.
 - A request in flight while a barrier is may fall on either side.
-- Stores through writable mappings belong to the epoch in which they were made.
+- Stores to the window belong to no epoch: they are in private pages, which no crash keeps, until
+  the guest `WRITE`s them.
 
 After a crash of the guest, the VMM or the host, the store holds:
 
@@ -460,7 +463,8 @@ each VM sees it as follows (TASK-50.2):
   the next daemon, or another process, as of its last durable commit; its branch in object storage
   is the writer's as of its last upload.
 - **Nothing reconnects.** A device does not connect to a daemon started again: its window's
-  mappings, the extents it had open and its requests in flight are not recovered. The VM is
+  mappings, its private pages, the extents it had open and its requests in flight are not
+  recovered. The VM is
   started again, from its store or a snapshot, by its manager.
 - **Grants** (per-tenant sockets) are not kept across the daemon's restarts: its manager grants
   them again, as the control API's documentation says.
@@ -477,10 +481,9 @@ Each VM's filesystem is a branch, with its own ID and root.
 - **Reads** of inherited extents, and mappings of them, are as of the fork. Extents never change, so
   this needs no copying.
 - **Attached forks.** The host's control API may attach a fork of another store to a branch
-  (`AttachBase`, doc-10). `READ`, and read-only `MAP`, of an extent of a branch in that fork's
-  ancestry, and not in the attached-to branch's, read through to the fork: as of it, whatever its
-  store did since. A writable `MAP` of one fails with `EPERM`, as of any other branch's, and `FREE`
-  does nothing, as of any extent the store doesn't hold. An extent no attached fork holds fails with
+  (`AttachBase`, doc-10). `READ`, and `MAP`, of an extent of a branch in that fork's ancestry,
+  and not in the attached-to branch's, read through to the fork: as of it, whatever its store did
+  since. `FREE` of one does nothing, as of any extent the store doesn't hold. An extent no attached fork holds fails with
   `ENOENT`. What a branch has attached stays attached to its forks. The guest cannot ask for this,
   and everything an attached fork holds is readable to it.
 
@@ -496,7 +499,9 @@ had in its memory, so the snapshot is taken at a point nothing is open:
 - **Freezing.** The guest's filesystem freezes first (fsfreeze): it commits durably, sealing what
   is open, holds its background work, and sends no `WRITE`, `FREE` or `COMMIT` until it thaws;
   `READ`, `MAP` of sealed extents and `UNMAP` go on. It tells the device with `FREEZE` and
-  `FREEZE_FROZEN`. A VMM refuses to snapshot a device whose guest isn't frozen.
+  `FREEZE_FROZEN`. Freezing writes back every dirty page and maps every private page back to the
+  extent that now holds it, so that the window maps extents and zeros alone. A VMM refuses to
+  snapshot a device whose guest isn't frozen, or whose window holds a private page.
 - **The snapshot** holds the device's state, its window's place in guest memory and what each
   mapping of the window maps (an extent's bytes, or zeros), and a point of the store: the host
   forks the store, as of its last commit, which with nothing open is all the guest wrote.

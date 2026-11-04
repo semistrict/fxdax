@@ -23,14 +23,13 @@
 //! (pgbench-ext4-dax-pmem), a copy of a base image of its own: a static DAX device, storage as
 //! memory, which the sandbox team measure the DAX window against (TASK-131.5).
 //!
-//! fxdax: and for copy-on-write DAX (doc-13, TASK-164.5), whose DAX writes copy on write
-//! (`fxfs.dax_cow=1`: fxfs-guest-pgbench-dax-cow), on a database the base's VM makes, which each
-//! VM runs pgbench on a fork of, its files read in, not created, which DAX maps
-//! (fxfs-guest-pgbench-forked, -dax-forked, -dax-cow-forked); and so, each VM kept running once its
-//! runs are done, the host's memory measured as each is added (`crate::measure`): what a VM more
-//! costs the host (fxfs-guest-pgbench-density, -dax-density, -dax-cow-density). FXDAX_PGBENCH_RUNS
-//! and FXDAX_PGBENCH_RUN_SECS set the runs, and FXDAX_PGBENCH_DENSITY_MEMORY_MIB the density
-//! cases' VMs' memory (1024).
+//! fxdax: and for copy-on-write DAX (doc-13, TASK-164.5), on a database the base's VM makes, which
+//! each VM runs pgbench on a fork of, its files read in, not created, which DAX maps, every first
+//! store to a page a copy on the host (fxfs-guest-pgbench-forked, -dax-forked); and so, each VM
+//! kept running once its runs are done, the host's memory measured as each is added
+//! (`crate::measure`): what a VM more costs the host (fxfs-guest-pgbench-density, -dax-density).
+//! FXDAX_PGBENCH_RUNS and FXDAX_PGBENCH_RUN_SECS set the runs, and
+//! FXDAX_PGBENCH_DENSITY_MEMORY_MIB the density cases' VMs' memory (1024).
 
 use macros::{guest, host};
 
@@ -44,16 +43,13 @@ pub struct TestFxfsGuestPgbench {
     fsync: bool,
     #[cfg_attr(feature = "guest", allow(dead_code))]
     database: Database,
-    /// fxdax: whether the guest's DAX writes copy on write (`fxfs.dax_cow=1`, doc-13).
-    #[cfg_attr(feature = "guest", allow(dead_code))]
-    dax_cow: bool,
 }
 
 impl TestFxfsGuestPgbench {
     /// The case on `storage`: each VM making its database, PostgreSQL fsyncing, no run probed.
     pub fn on(storage: Storage) -> Self {
         let database = Database::Made;
-        Self { storage, probe: Probe::None, fsync: true, database, dax_cow: false }
+        Self { storage, probe: Probe::None, fsync: true, database }
     }
 
     /// The case with pgbench's first run probed for `probe`.
@@ -69,11 +65,6 @@ impl TestFxfsGuestPgbench {
     /// fxdax: the case with its VMs' databases from `database` (TASK-164.5).
     pub fn with_database(self, database: Database) -> Self {
         Self { database, ..self }
-    }
-
-    /// fxdax: the case with its guests' DAX writes copying on write (TASK-164.5).
-    pub fn with_dax_cow(self) -> Self {
-        Self { dax_cow: true, ..self }
     }
 }
 
@@ -596,9 +587,6 @@ RUN apk add --no-cache postgresql postgresql-contrib perf e2fsprogs
             let device =
                 Device::Store { store: &fork, extentd: &served.socket, window: served.window };
             let mut machine = machine(role, device, memory)?;
-            if self.dax_cow {
-                crate::measure::ask_dax_cow(&mut machine)?;
-            }
             if let Some(requests) = requests {
                 machine.vsock(requests.uds());
                 machine.env(c"FXDAX_PGBENCH_MEASURE=1");
@@ -972,10 +960,6 @@ mod guest {
             fs::write("/proc/sys/kernel/printk", "7").unwrap();
             let role = std::env::var("FXDAX_PGBENCH_ROLE").unwrap();
             mount(&role);
-            // fxdax: whether its DAX writes copy on write, as the case asked (TASK-164.5).
-            if role != "base" && std::env::var_os("FXDAX_PGBENCH_PMEM").is_none() {
-                crate::measure::dax_cow();
-            }
             match role.as_str() {
                 // The base's filesystem, made as it mounts, with a directory for the database;
                 // fxdax: or with the database, made, loaded and stopped cleanly, which each VM

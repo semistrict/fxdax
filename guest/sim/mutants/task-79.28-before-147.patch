@@ -8,24 +8,23 @@
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c
-@@ -2912,10 +2912,10 @@
- 	 * as a slice the write can't use is, and mapped again as large as it needs (-EXDEV). It was
- 	 * a WARN and EIO (TASK-79.28).
- 	 */
--	if (end <= pos) {
-+	if (WARN_ON_ONCE(end <= pos)) {
- 		kvfree(extents);
+@@ -2460,8 +2460,10 @@
+ 		return PTR_ERR(range);
+ 	start = fxfs_dax_chunk_start(range);
+ 	if (range->region || start + ((loff_t)range->pages << PAGE_SHIFT) <= pos) {
++		bool short_of_pos = !range->region;
++
  		fxfs_dax_put_range(dax, range);
 -		return -EXDEV;
-+		return -EIO;
++		return WARN_ON_ONCE(short_of_pos) ? -EIO : -EXDEV;
  	}
- 	if (size)
- 		size = end;
-@@ -3491,7 +3491,6 @@
- 		file->append_bytes = 0;
+ 	first = (pos - start) >> PAGE_SHIFT;
+ 	end = min_t(loff_t, end, start + ((loff_t)min(range->pages, first + dax->iomap_pages) <<
+@@ -2843,7 +2845,6 @@
+ 	end = iocb->ki_pos + iov_iter_count(from);
  	/* The ranges the file's end moves into, mapped as large as they need. */
- 	if (iocb->ki_pos + iov_iter_count(from) > old_size) {
--		WRITE_ONCE(file->growing, iocb->ki_pos + iov_iter_count(from));
+ 	if (end > old_size) {
+-		WRITE_ONCE(file->growing, end);
  		filemap_invalidate_lock(inode->i_mapping);
- 		ret = fxfs_dax_fit(inode, iocb->ki_pos + iov_iter_count(from));
+ 		ret = fxfs_dax_fit(inode, end);
  		if (!ret && iocb->ki_pos > old_size)

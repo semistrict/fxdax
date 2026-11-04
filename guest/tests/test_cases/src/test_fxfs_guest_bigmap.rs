@@ -6,9 +6,8 @@
 //! a GCE n2-standard-4 host: a file four times the guest's memory, in a base, mapped `MAP_SHARED`
 //! read-write by a VM on a fork of it, read all over at random, then 5% of its pages written, at
 //! random, and synced. A base VM writes the file, through its page cache; the host forks the base;
-//! a VM on the fork, through a DAX window (fxfs-guest-bigmap-dax), its DAX writes copying on write
-//! (fxfs-guest-bigmap-dax-cow, `fxfs.dax_cow=1`), or without a window (fxfs-guest-bigmap), maps the
-//! file whole, and:
+//! a VM on the fork, through a DAX window (fxfs-guest-bigmap-dax), its stores copying on write, or
+//! without a window (fxfs-guest-bigmap), maps the file whole, and:
 //!
 //! 1. reads a word of each page once, in a random order (`read-cold`), then of pages at random for
 //!    FXDAX_BIGMAP_READ_SECS (10, `read-warm`);
@@ -29,9 +28,6 @@ pub struct TestFxfsGuestBigmap {
     /// Whether the VM mapping the file has a DAX window.
     #[cfg_attr(feature = "guest", allow(dead_code))]
     pub dax: bool,
-    /// Whether its DAX writes copy on write (`fxfs.dax_cow=1`).
-    #[cfg_attr(feature = "guest", allow(dead_code))]
-    pub dax_cow: bool,
 }
 
 #[host]
@@ -128,9 +124,6 @@ mod host {
             // Room for the file twice over, which window reclaim then needn't take back.
             let window = if self.dax { 2 * bytes } else { 0 };
             let mut machine = machine("map", &fork, &socket, capacity, window)?;
-            if self.dax_cow {
-                crate::measure::ask_dax_cow(&mut machine)?;
-            }
             let requests = Requests::new("map")?;
             machine.vsock(requests.uds());
             let host = HostMemory::new(daemon.id(), metrics);
@@ -359,7 +352,6 @@ mod guest {
     /// Maps the base's file of `bytes`, reads it all over, writes some of it, syncs it, and checks
     /// it, saying how each step went, and asking the host to measure after each.
     fn map(bytes: usize) {
-        crate::measure::dax_cow();
         let pages = bytes / PAGE;
         let file = fs::OpenOptions::new().read(true).write(true).open(FILE).unwrap();
         assert_eq!(file.metadata().unwrap().len(), bytes as u64, "the base's file's size");

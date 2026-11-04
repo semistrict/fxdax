@@ -171,7 +171,7 @@ static struct inode *fxfs_vfs_iget_as(struct super_block *sb, const struct fxfs_
 		inode->i_mapping->a_ops = &fxfs_vfs_aops;
 		/*
 		 * Small files too: they share extents, and the window's mappings of them. fxdax:
-		 * copying on write, not those created in this mount (fxfs_dax_set_inode, TASK-164.3).
+		 * not those created in this mount (fxfs_dax_set_inode, TASK-164.3).
 		 */
 		if (fxfs_vfs_info(sb)->dax && fxfs_dax_set_inode(inode, created))
 			break;
@@ -994,12 +994,12 @@ loff_t fxfs_vfs_llseek(struct file *file, loff_t offset, int whence)
 	}
 	seek.found = whence == SEEK_DATA ? size : offset;
 	/*
-	 * Data in the page cache has no pieces until written back. fxdax: nor a DAX file's copied on
-	 * write (fxfs_dax_write_size).
+	 * Data in the page cache has no pieces until written back. fxdax: nor a DAX file's dirty
+	 * pages (fxfs_dax_write_back).
 	 */
 	err = filemap_write_and_wait(inode->i_mapping);
 	if (!err)
-		err = fxfs_dax_write_size(inode);
+		err = fxfs_dax_write_back(inode);
 	if (!err)
 		err = fxfs_vfs_each_extent(inode, offset, size, fxfs_vfs_seek_extent, &seek);
 	inode_unlock_shared(inode);
@@ -1066,9 +1066,9 @@ static int fxfs_vfs_fiemap(struct inode *inode, struct fiemap_extent_info *fiein
 	size = i_size_read(inode);
 	end = start >= size ? start : min_t(u64, size, start + len);
 	err = filemap_write_and_wait(inode->i_mapping);
-	/* fxdax: a DAX file's pages copied on write too (fxfs_dax_write_size). */
+	/* fxdax: a DAX file's dirty pages too (fxfs_dax_write_back). */
 	if (!err)
-		err = fxfs_dax_write_size(inode);
+		err = fxfs_dax_write_back(inode);
 	if (!err)
 		err = fxfs_vfs_each_extent(inode, start, end, fxfs_vfs_fiemap_extent, &m);
 	if (!err)
@@ -1885,7 +1885,7 @@ static int fxfs_vfs_write_run(struct fxfs_vfs_run *run)
 	if (run->nr_parts) {
 		err = fxfs_write_many(fs, run->inode->i_ino, run->parts, run->nr_parts,
 				      run->reserved);
-		/* fxdax: in a DAX mount copying on write, read in to the page cache until sealed. */
+		/* fxdax: in a DAX mount, read in to the page cache until sealed. */
 		fxfs_dax_written(run->inode);
 	} else if (run->reserved)
 		fxfs_release_dirty(fs, run->inode->i_ino, run->reserved);
@@ -2075,22 +2075,24 @@ static const struct address_space_operations fxfs_vfs_aops = {
 
 /*
  * Writes back the file's data and times, and the filesystem's changes, in order (fxfs_fsync),
- * sealing what was stored through the DAX window. And a file's directory's times, which creates
+ * sealing what was written back. And a file's directory's times, which creates
  * and unlinks leave to the kernel (write_inode), as a journaling filesystem's fsync of a file
  * commits the change to its directory that made it: so that a sync of the directory after it has
  * nothing of its own to commit. fxdax: fdatasync writes back neither's times, as data doesn't
  * need them to be read back: only what does (I_DIRTY_DATASYNC), as generic_file_fsync. Fxfs has a
- * file's size already, which its writes of the data change, except a DAX append into a block
- * writable already, whose size this writes, and write_inode outside a sync (TASK-41, TASK-92.28).
+ * file's size already, which its writes of the data change (TASK-41).
  */
 int fxfs_vfs_fsync(struct file *file, loff_t start, loff_t end, int datasync)
 {
 	struct inode *inode = file_inode(file);
 	int err = file_write_and_wait_range(file, start, end);
 
-	/* A DAX append's last size, not one a racing inode writeback took (TASK-92.28). */
+	/*
+	 * fxdax: a DAX file's dirty pages, which a write(2)'s leave the mapping untagged for, so that
+	 * the writeback above may not have been asked for them (doc-13).
+	 */
 	if (!err)
-		err = fxfs_dax_write_size(inode);
+		err = fxfs_dax_write_back(inode);
 	if (!err && (!datasync || (READ_ONCE(inode->i_state) & I_DIRTY_DATASYNC)))
 		err = sync_inode_metadata(inode, 1);
 	if (!err && !datasync && !S_ISDIR(inode->i_mode)) {
@@ -2521,8 +2523,8 @@ static void fxfs_vfs_evict_inode(struct inode *inode)
 /* Writes back the attributes the kernel keeps (fxfs_vfs_write_attr). */
 static int fxfs_vfs_write_inode(struct inode *inode, struct writeback_control *wbc)
 {
-	/* DAX appends into writable blocks defer their size to this writeback (TASK-92.28). */
-	int err = fxfs_dax_write_size(inode);
+	/* fxdax: a DAX file's dirty pages first, which Fxfs takes its size from (doc-13). */
+	int err = fxfs_dax_write_back(inode);
 
 	if (err)
 		return err;
@@ -2535,8 +2537,8 @@ static int fxfs_vfs_sync_fs(struct super_block *sb, int wait)
 	if (sb->s_writers.frozen == SB_FREEZE_COMPLETE)
 		return 0;
 	/*
-	 * What the writes so far map, mapped before the sync seals it. fxdax: copying on write, the
-	 * window's dirty pages written back, which sync's writepages may not have been asked for.
+	 * fxdax: the window's dirty pages written back before the sync seals them, which sync's
+	 * writepages may not have been asked for.
 	 */
 	if (fxfs_vfs_info(sb)->dax) {
 		int err = fxfs_dax_settle(fxfs_vfs_info(sb)->dax);
@@ -2571,7 +2573,7 @@ static int fxfs_vfs_filesystem_freeze(struct fxfs_vfs_filesystem *filesystem)
 			fxfs_dax_thaw(dax);
 		return err;
 	}
-	/* fxdax: copying on write, the window's private pages rebound, for the snapshot (doc-13). */
+	/* fxdax: the window's private pages rebound, for the snapshot (doc-13). */
 	if (dax)
 		fxfs_dax_frozen(dax);
 	filesystem->frozen = true;
@@ -2767,42 +2769,14 @@ static void fxfs_vfs_resize_work(struct work_struct *work)
 }
 
 /*
- * fxdax: seals what is open, as the host asks, and answers: another guest's writable MAP was
- * refused for want of the memory this one's open extents hold, which only its seal lets go of,
- * however long it goes on syncing nothing (TASK-153.15). Its answer says it sealed, or tried to:
- * a seal failing fails the filesystem, which seals nothing more.
- */
-static void fxfs_vfs_seal_asked(struct fxfs_vfs_filesystem *filesystem)
-{
-	struct fxfs_device *dev = fxfs_dax_device(filesystem->filesystem);
-	u64 asked = fxfs_device_seal_asked(dev);
-	int err;
-
-	if (!asked)
-		return;
-	err = fxfs_nofs(fxfs_seal(filesystem->filesystem));
-	if (err)
-		pr_warn("fxfs: sealing as the host asks: %d\n", err);
-	err = fxfs_device_sealed(dev, asked);
-	if (err)
-		pr_warn("fxfs: answering the host's ask to seal: %d\n", err);
-}
-
-static void fxfs_vfs_seal_work(struct work_struct *work)
-{
-	fxfs_vfs_seal_asked(container_of(work, struct fxfs_vfs_filesystem, seal));
-}
-
-/*
- * fxdax: the host resized the store, or asks the guest to shrink, or to seal: from the device's
- * interrupt. Each work finds what changed, if anything did, in the device's configuration.
+ * fxdax: the host resized the store, or asks the guest to shrink: from the device's interrupt. The
+ * work finds what changed, if anything did, in the device's configuration.
  */
 static void fxfs_vfs_changed(void *arg)
 {
 	struct fxfs_vfs_filesystem *filesystem = arg;
 
 	schedule_work(&filesystem->resize);
-	schedule_work(&filesystem->seal);
 }
 
 DEFINE_STATIC_KEY_FALSE(fxfs_vfs_followers);
@@ -3227,7 +3201,6 @@ static struct fxfs_vfs_filesystem *fxfs_vfs_filesystem_of(struct virtio_extent *
 		filesystem->vext = vext;
 		mutex_init(&filesystem->lock);
 		INIT_WORK(&filesystem->resize, fxfs_vfs_resize_work);
-		INIT_WORK(&filesystem->seal, fxfs_vfs_seal_work);
 		list_add(&filesystem->list, &fxfs_vfs_filesystems);
 	}
 out:
@@ -3244,14 +3217,9 @@ static void fxfs_vfs_filesystem_close(struct fxfs_vfs_filesystem *filesystem)
 	proc_remove(filesystem->stats);
 	filesystem->stats = NULL;
 	if (filesystem->filesystem) {
-		/*
-		 * No resize comes once closing, nor ask to seal; one asked is answered still, the
-		 * host waiting for it.
-		 */
+		/* No resize comes once closing. */
 		fxfs_device_set_changed(fxfs_dax_device(filesystem->filesystem), NULL, NULL);
 		cancel_work_sync(&filesystem->resize);
-		cancel_work_sync(&filesystem->seal);
-		fxfs_vfs_seal_asked(filesystem);
 	}
 	/* Its volumes' inodes evicted, their folios' reads unlocked them: what's left is its free. */
 	if (filesystem->readahead)
@@ -3263,7 +3231,7 @@ static void fxfs_vfs_filesystem_close(struct fxfs_vfs_filesystem *filesystem)
 		memalloc_nofs_restore(nofs);
 	}
 	filesystem->filesystem = NULL;
-	/* Once closed: the last seals call the DAX's sealer. */
+	/* Once closed: the last seals call the DAX's `sealed`. */
 	if (filesystem->dax)
 		fxfs_dax_destroy(filesystem->dax);
 	filesystem->dax = NULL;
@@ -3602,7 +3570,7 @@ static void fxfs_vfs_kill_sb(struct super_block *sb)
 		cancel_work_sync(&info->follow);
 	}
 	/*
-	 * fxdax: copying on write, the DAX's budget's worker holds no inode of the volume as the VFS
+	 * fxdax: the DAX's budget's worker holds no inode of the volume as the VFS
 	 * evicts them all: it is started again as the volume leaves, if others stay.
 	 */
 	if (info->dax)

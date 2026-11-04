@@ -17,7 +17,7 @@
 
 use super::wire::*;
 use crate::pages::{ArenaId, PhysLocation};
-use crate::{Access, Commit, Errno, ExtentId, ExtentInfo, MappingContents, Protection};
+use crate::{Access, Commit, Errno, ExtentId, ExtentInfo, MappingContents};
 use crate::{WindowMapping, WriteBarriers};
 use std::borrow::Cow;
 use std::os::fd::{AsFd, BorrowedFd};
@@ -51,8 +51,8 @@ pub(crate) enum Request<'a> {
     /// [`INFO`].
     Info,
     /// [`WINDOW`]: of `size` bytes, [`MAX_WINDOW`] at most; fxdax: copying on write, of
-    /// `private_max` private pages at most, as many as it has pages at most, if given
-    /// ([`WINDOW_COPY_ON_WRITE`]).
+    /// `private_max` private pages at most, as many as it has pages at most, if given, a writer's;
+    /// or not, a follower's, its `args[1]` 0.
     Window { size: u64, private_max: Option<u64> },
     /// [`FAULT`].
     Fault(Fault),
@@ -75,8 +75,6 @@ pub(crate) enum Request<'a> {
     /// [`BUILD`]: the commit the VM process was built of, a label's characters, [`MAX_BUILD`] at
     /// most.
     Build(&'a str),
-    /// [`SEALED`]: the guest's answer to the ask to seal of `number`.
-    Sealed { number: u64 },
     /// fxdax: [`PRIVATE`].
     Private { window_offset: u64, len: u64 },
 }
@@ -183,13 +181,12 @@ fn known_flags(kind: u32) -> Result<u32, Errno> {
         OPEN => OPEN_CREATE | OPEN_FORK_FROM | OPEN_READ_ONLY,
         READ => READ_TRANSFER,
         WRITE => WRITE_BARRIER | WRITE_COMMIT | WRITE_DURABLE | WRITE_TRANSFER | WRITE_ROOT,
-        MAP => MAP_WRITABLE | MAP_ZEROS,
+        MAP => MAP_ZEROS,
         COMMIT => COMMIT_ROOT | COMMIT_DURABLE,
         FAULT => FAULT_WRITE | FAULT_PAGE | FAULT_PROBE,
         FORK => FORK_QUIESCENT,
-        WINDOW => WINDOW_COPY_ON_WRITE,
-        FREE | FREE_MANY | UNMAP | ROOT | INFO | RESIZED | MAPPINGS | ADVANCE | LET_GO | PIN
-        | UNPIN | TRANSFER | BUILD | SEALED | PRIVATE => 0,
+        FREE | FREE_MANY | UNMAP | ROOT | INFO | WINDOW | RESIZED | MAPPINGS | ADVANCE | LET_GO
+        | PIN | UNPIN | TRANSFER | BUILD | PRIVATE => 0,
         _ => return Err(Errno::EINVAL),
     })
 }
@@ -219,7 +216,6 @@ impl<'a> Request<'a> {
             Request::Unpin(_) => UNPIN,
             Request::Transfer { .. } => TRANSFER,
             Request::Build(_) => BUILD,
-            Request::Sealed { .. } => SEALED,
             Request::Private { .. } => PRIVATE,
         }
     }
@@ -294,9 +290,8 @@ impl<'a> Request<'a> {
                 message(0, args).carrying(extent_ids_payload(rest))
             }
             Request::Map(WindowMapping { window_offset, len, contents }) => match *contents {
-                MappingContents::Extent { extent, offset, writable } => {
-                    let args = [extent.branch, extent.sequence, offset, *len, *window_offset];
-                    message(flag(writable, MAP_WRITABLE), args)
+                MappingContents::Extent { extent, offset } => {
+                    message(0, [extent.branch, extent.sequence, offset, *len, *window_offset])
                 }
                 MappingContents::Zeros => message(MAP_ZEROS, [0, 0, 0, *len, *window_offset]),
             },
@@ -309,9 +304,8 @@ impl<'a> Request<'a> {
             Request::Root | Request::Info | Request::Mappings | Request::Advance => {
                 message(0, [0; 5])
             }
-            Request::Window { size, private_max: None } => message(0, [*size, 0, 0, 0, 0]),
-            Request::Window { size, private_max: Some(most) } => {
-                message(WINDOW_COPY_ON_WRITE, [*size, *most, 0, 0, 0])
+            Request::Window { size, private_max } => {
+                message(0, [*size, private_max.unwrap_or(0), 0, 0, 0])
             }
             Request::Fault(Fault { offset, access, page, probe }) => {
                 let flags = flag(*access == Access::Write, FAULT_WRITE)
@@ -331,7 +325,6 @@ impl<'a> Request<'a> {
                 Encoded { fd: Some(area.0), ..message(0, [*len, 0, 0, 0, 0]) }
             }
             Request::Build(commit) => message(0, [0; 5]).carrying(commit.as_bytes()),
-            Request::Sealed { number } => message(0, [*number, 0, 0, 0, 0]),
             Request::Private { window_offset, len } => {
                 message(0, [*window_offset, *len, 0, 0, 0])
             }
@@ -418,13 +411,9 @@ impl<'a> Request<'a> {
             }
             MAP => {
                 nothing()?;
-                let contents = match (has(MAP_ZEROS), has(MAP_WRITABLE)) {
-                    (false, writable) => {
-                        MappingContents::Extent { extent, offset: args[2], writable }
-                    }
-                    (true, false) => MappingContents::Zeros,
-                    // Zeros are read-only.
-                    (true, true) => return Err(Errno::EINVAL),
+                let contents = match has(MAP_ZEROS) {
+                    false => MappingContents::Extent { extent, offset: args[2] },
+                    true => MappingContents::Zeros,
                 };
                 Request::Map(WindowMapping { window_offset: args[4], len: args[3], contents })
             }
@@ -455,10 +444,9 @@ impl<'a> Request<'a> {
                 if args[0] > MAX_WINDOW {
                     return Err(Errno::EINVAL);
                 }
-                // fxdax: some private pages, no more than the window's (backlog doc-13).
-                let private_max = has(WINDOW_COPY_ON_WRITE).then_some(args[1]);
-                let pages = args[0] / crate::pages::page_size();
-                if private_max.is_some_and(|most| most == 0 || most > pages) {
+                // fxdax: some private pages, no more than the window's, or none (backlog doc-13).
+                let private_max = (args[1] != 0).then_some(args[1]);
+                if args[1] > args[0] / crate::pages::page_size() {
                     return Err(Errno::EINVAL);
                 }
                 Request::Window { size: args[0], private_max }
@@ -499,10 +487,6 @@ impl<'a> Request<'a> {
                 Request::Transfer { len: args[0], area: Area(fd.ok_or(Errno::EINVAL)?) }
             }
             BUILD => Request::Build(build(payload)?),
-            SEALED => {
-                nothing()?;
-                Request::Sealed { number: args[0] }
-            }
             PRIVATE => {
                 nothing()?;
                 Request::Private { window_offset: args[0], len: args[1] }
@@ -569,10 +553,15 @@ fn word(bytes: &[u8]) -> u64 {
 pub(crate) enum Made {
     /// [`ACK`]: it made stage operation `id`, and those before it; and its operations so far
     /// cost it `counts`, as [`STAGE_COUNTS`] says them.
-    Ack { id: u64, counts: [u64; 5] },
+    Ack { id: u64, counts: StageCosts },
     /// fxdax: [`STAGE_COUNTS`] (TASK-91.16).
-    Counts([u64; 5]),
+    Counts(StageCosts),
 }
+
+/// fxdax: what a VM process's stage operations cost it so far, as [`STAGE_COUNTS`] says it, its
+/// first four words: how many, their nanoseconds, and those that took access away from pages it
+/// had installed, by how: installed over, left out.
+pub(crate) type StageCosts = [u64; 4];
 
 impl Made {
     pub fn encode(&self) -> Header {
@@ -589,9 +578,10 @@ impl Made {
         if flags != 0 || status != 0 || !message.payload.is_empty() || !message.fds.is_empty() {
             return Err(Errno::EINVAL);
         }
+        let counts = [args[0], args[1], args[2], args[3]];
         match kind {
-            ACK => Ok(Made::Ack { id, counts: args }),
-            STAGE_COUNTS => Ok(Made::Counts(args)),
+            ACK => Ok(Made::Ack { id, counts }),
+            STAGE_COUNTS => Ok(Made::Counts(counts)),
             _ => Err(Errno::EINVAL),
         }
     }
@@ -607,8 +597,6 @@ pub(crate) enum Told {
     Capacity { capacity: u64, ask: bool },
     /// fxdax: [`COMMITTED`].
     Committed { epoch: u64 },
-    /// fxdax: [`SEAL`].
-    Seal { number: u64 },
 }
 
 impl Told {
@@ -618,7 +606,6 @@ impl Told {
             Told::Capacity { capacity, ask } => (Header::new(CAPACITY, 0).with_args(&[capacity]))
                 .with_flags(if ask { CAPACITY_ASK } else { 0 }),
             Told::Committed { epoch } => Header::new(COMMITTED, 0).with_args(&[epoch]),
-            Told::Seal { number } => Header::new(SEAL, 0).with_args(&[number]),
         }
     }
 
@@ -635,7 +622,6 @@ impl Told {
                 Ok(Told::Capacity { capacity: args[0], ask: flags & CAPACITY_ASK != 0 })
             }
             COMMITTED => known(0).map(|()| Told::Committed { epoch: args[0] }),
-            SEAL => known(0).map(|()| Told::Seal { number: args[0] }),
             _ => Stage::decode(header).map(Told::Stage),
         }
     }
@@ -653,10 +639,8 @@ pub(crate) struct Stage {
 /// What a [`Stage`] operation does, to the window's bytes at `offset`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum StageOp {
-    /// [`STAGE_MAP`]: maps `len` bytes of physical memory at `phys`, with `protection`.
-    Map { offset: u64, phys: PhysLocation, len: u64, protection: Protection },
-    /// [`STAGE_PROTECT`].
-    Protect { offset: u64, len: u64, protection: Protection },
+    /// [`STAGE_MAP`]: maps `len` bytes of physical memory at `phys`, read-only.
+    Map { offset: u64, phys: PhysLocation, len: u64 },
     /// [`STAGE_UNMAP`].
     Unmap { offset: u64, len: u64 },
     /// fxdax: [`STAGE_MAPPED`].
@@ -673,7 +657,6 @@ impl StageOp {
             // fxdax: a private page takes the page mapped there away, and copies the page `from`,
             // which the daemon keeps until it is made.
             StageOp::Unmap { .. } | StageOp::Private { .. } => true,
-            StageOp::Protect { protection, .. } => *protection != Protection::ReadWrite,
             StageOp::Map { .. } | StageOp::Mapped { .. } => false,
         }
     }
@@ -682,12 +665,8 @@ impl StageOp {
 impl Stage {
     pub fn encode(&self) -> Header {
         let (kind, args) = match self.op {
-            StageOp::Map { offset, phys, len, protection } => {
-                let arena = phys.arena.0.into();
-                (STAGE_MAP, [offset, phys.offset, len, protection_code(protection), arena])
-            }
-            StageOp::Protect { offset, len, protection } => {
-                (STAGE_PROTECT, [offset, len, protection_code(protection), 0, 0])
+            StageOp::Map { offset, phys, len } => {
+                (STAGE_MAP, [offset, phys.offset, len, 0, phys.arena.0.into()])
             }
             StageOp::Unmap { offset, len } => (STAGE_UNMAP, [offset, len, 0, 0, 0]),
             StageOp::Mapped { offset, len } => (STAGE_MAPPED, [offset, len, 0, 0, 0]),
@@ -711,12 +690,7 @@ impl Stage {
             STAGE_MAP => {
                 let arena = ArenaId(u32::try_from(args[4]).map_err(|_| Errno::EINVAL)?);
                 let phys = PhysLocation { arena, offset: args[1] };
-                let protection = protection(args[3])?;
-                StageOp::Map { offset: args[0], phys, len: args[2], protection }
-            }
-            STAGE_PROTECT => {
-                let protection = protection(args[2])?;
-                StageOp::Protect { offset: args[0], len: args[1], protection }
+                StageOp::Map { offset: args[0], phys, len: args[2] }
             }
             STAGE_UNMAP => StageOp::Unmap { offset: args[0], len: args[1] },
             STAGE_MAPPED => StageOp::Mapped { offset: args[0], len: args[1] },
@@ -738,23 +712,6 @@ impl Stage {
             return Err(Errno::EINVAL);
         }
         Ok(Stage { id, op })
-    }
-}
-
-/// `protection` on the wire.
-fn protection_code(protection: Protection) -> u64 {
-    match protection {
-        Protection::Read => 1,
-        Protection::ReadWrite => 2,
-    }
-}
-
-/// The protection `code` stands for.
-fn protection(code: u64) -> Result<Protection, Errno> {
-    match code {
-        1 => Ok(Protection::Read),
-        2 => Ok(Protection::ReadWrite),
-        _ => Err(Errno::EINVAL),
     }
 }
 
@@ -818,9 +775,8 @@ pub(crate) fn mappings_payload(mappings: &[WindowMapping]) -> Vec<u8> {
     (mappings.iter())
         .flat_map(|mapping| {
             let words = match mapping.contents {
-                MappingContents::Extent { extent, offset, writable } => {
-                    let flags = if writable { MAPPING_WRITABLE } else { 0 };
-                    [extent.branch, extent.sequence, offset, flags]
+                MappingContents::Extent { extent, offset } => {
+                    [extent.branch, extent.sequence, offset, 0]
                 }
                 MappingContents::Zeros => [0, 0, 0, MAPPING_ZEROS],
             };
@@ -831,7 +787,7 @@ pub(crate) fn mappings_payload(mappings: &[WindowMapping]) -> Vec<u8> {
 }
 
 /// The mappings a reply to [`MAPPINGS`] carries, `payload`: `EINVAL` unless whole ones, of flags
-/// known, zeros read-only.
+/// known.
 pub(crate) fn mappings(payload: &[u8]) -> Result<Vec<WindowMapping>, Errno> {
     let (mappings, []) = payload.as_chunks::<{ MAPPING_BYTES as usize }>() else {
         return Err(Errno::EINVAL);
@@ -841,11 +797,7 @@ pub(crate) fn mappings(payload: &[u8]) -> Result<Vec<WindowMapping>, Errno> {
             let [window_offset, len, branch, sequence, offset, flags] =
                 std::array::from_fn(|at| word(&mapping[8 * at..8 * (at + 1)]));
             let contents = match flags {
-                0 | MAPPING_WRITABLE => MappingContents::Extent {
-                    extent: ExtentId { branch, sequence },
-                    offset,
-                    writable: flags == MAPPING_WRITABLE,
-                },
+                0 => MappingContents::Extent { extent: ExtentId { branch, sequence }, offset },
                 MAPPING_ZEROS => MappingContents::Zeros,
                 _ => return Err(Errno::EINVAL),
             };
@@ -916,7 +868,7 @@ mod tests {
             write(Data::Transfer { at: d, len: e }),
             Request::Free(extent),
             Request::FreeMany { first: extent, rest: Cow::Borrowed(&fields.extents[..]) },
-            map(MappingContents::Extent { extent: other, offset: a, writable: one }),
+            map(MappingContents::Extent { extent: other, offset: a }),
             map(MappingContents::Zeros),
             Request::Unmap { window_offset: a, len: b },
             Request::Commit { commit, root: one.then_some(&fields.data[..]) },
@@ -938,15 +890,14 @@ mod tests {
             Request::Unpin(other),
             Request::Transfer { len: a, area: Area(area) },
             Request::Build(&fields.build),
-            Request::Sealed { number: a },
             Request::Private { window_offset: a, len: b },
         ]
     }
 
     /// Every kind of request.
-    const KINDS: [u32; 23] = [
+    const KINDS: [u32; 22] = [
         OPEN, READ, WRITE, FREE, MAP, UNMAP, COMMIT, ROOT, INFO, WINDOW, FAULT, FORK, RESIZED,
-        MAPPINGS, ADVANCE, LET_GO, PIN, UNPIN, TRANSFER, FREE_MANY, BUILD, SEALED, PRIVATE,
+        MAPPINGS, ADVANCE, LET_GO, PIN, UNPIN, TRANSFER, FREE_MANY, BUILD, PRIVATE,
     ];
 
     /// `request`, as its receiver receives it: of ID `id`.
@@ -999,11 +950,11 @@ mod tests {
                 OPEN => 0b111,
                 READ => 0b1,
                 WRITE => 0b1_1111,
-                MAP => 0b11,
+                // fxdax: zeros; bit 0, writably, writable DAX's, is gone (backlog doc-13).
+                MAP => 0b10,
                 COMMIT => 0b11,
                 FAULT => 0b11,
                 FORK => 0b1,
-                WINDOW => 0b1,
                 _ => 0,
             }
         };
@@ -1041,7 +992,6 @@ mod tests {
         refused(OPEN, OPEN_FORK_FROM | OPEN_READ_ONLY, b"store\0from");
         refused(WRITE, WRITE_DURABLE, b"data");
         refused(WRITE, WRITE_ROOT, b"data");
-        refused(MAP, MAP_ZEROS | MAP_WRITABLE, b"");
         // fxdax: a probe is of a page alone, to read.
         refused(FAULT, FAULT_PROBE, b"");
         refused(FAULT, FAULT_PROBE | FAULT_PAGE | FAULT_WRITE, b"");
@@ -1049,8 +999,7 @@ mod tests {
         // stage operation is acknowledged if, and only if, it takes access away.
         let phys = PhysLocation { arena: ArenaId::DEFAULT, offset: 0 };
         let ops = [
-            StageOp::Map { offset: 0, phys, len: 4096, protection: Protection::Read },
-            StageOp::Protect { offset: 0, len: 4096, protection: Protection::Read },
+            StageOp::Map { offset: 0, phys, len: 4096 },
             StageOp::Unmap { offset: 0, len: 4096 },
             StageOp::Mapped { offset: 0, len: 4096 },
             StageOp::Private { offset: 0, from: Some(phys) },
@@ -1059,7 +1008,6 @@ mod tests {
         let told = ops.map(|op| Told::Stage(Stage { id: 1, op })).into_iter().chain([
             Told::Capacity { capacity: 4096, ask: false },
             Told::Committed { epoch: 1 },
-            Told::Seal { number: 1 },
         ]);
         for told in told {
             let header = told.encode();
@@ -1091,11 +1039,9 @@ mod tests {
         refused(Header::new(TRANSFER, 1).with_args(&[4096]), b"", vec![]);
         refused(Header::new(TRANSFER, 1).with_args(&[4096]), b"", vec![area(), area()]);
         refused(Header::new(WINDOW, 1).with_args(&[MAX_WINDOW + 1]), b"", vec![]);
-        // fxdax: a window copying on write of no private pages, or of more than it has pages.
-        let copying = Header::new(WINDOW, 1).with_flags(WINDOW_COPY_ON_WRITE);
-        refused(copying.with_args(&[1 << 20, 0]), b"", vec![]);
+        // fxdax: a window copying on write of more private pages than it has pages.
         let pages = (1 << 20) / crate::pages::page_size();
-        refused(copying.with_args(&[1 << 20, pages + 1]), b"", vec![]);
+        refused(Header::new(WINDOW, 1).with_args(&[1 << 20, pages + 1]), b"", vec![]);
         refused(Header::new(PRIVATE, 1).with_args(&[0, 4096]), b"extra", vec![]);
         refused(Header::new(RESIZED, 1).with_args(&[4096, 2]), b"", vec![]);
         refused(Header { status: -1, ..Header::new(INFO, 1) }, b"", vec![]);
@@ -1182,9 +1128,9 @@ mod tests {
                 Request::Map(WindowMapping {
                     window_offset: 5,
                     len: 4,
-                    contents: MappingContents::Extent { extent, offset: 3, writable: true },
+                    contents: MappingContents::Extent { extent, offset: 3 },
                 }),
-                header(MAP, MAP_WRITABLE, &[7, 9, 3, 4, 5]),
+                header(MAP, 0, &[7, 9, 3, 4, 5]),
                 vec![],
             ),
             (
@@ -1234,7 +1180,7 @@ mod tests {
             (Request::Window { size: 8192, private_max: None }, header(WINDOW, 0, &[8192]), vec![]),
             (
                 Request::Window { size: 8192, private_max: Some(2) },
-                header(WINDOW, WINDOW_COPY_ON_WRITE, &[8192, 2]),
+                header(WINDOW, 0, &[8192, 2]),
                 vec![],
             ),
             (
@@ -1255,16 +1201,12 @@ mod tests {
                 offset: 1,
                 phys: PhysLocation { arena: ArenaId(6), offset: 2 },
                 len: 3,
-                protection: Protection::Read,
             },
         };
-        assert_eq!(map.encode(), Header::new(STAGE_MAP, 4).with_args(&[1, 2, 3, 1, 6]));
+        assert_eq!(map.encode(), Header::new(STAGE_MAP, 4).with_args(&[1, 2, 3, 0, 6]));
         let unmap = Stage { id: 4, op: StageOp::Unmap { offset: 1, len: 2 } };
         let acked = Header::new(STAGE_UNMAP, 4).with_args(&[1, 2]).with_flags(STAGE_ACK);
         assert_eq!(unmap.encode(), acked);
-        let protect = StageOp::Protect { offset: 1, len: 2, protection: Protection::ReadWrite };
-        let protect = Stage { id: 4, op: protect }.encode();
-        assert_eq!(protect, Header::new(STAGE_PROTECT, 4).with_args(&[1, 2, 2]));
         // fxdax: a private page, a copy of a page or zeros, acknowledged (backlog doc-13).
         let from = Some(PhysLocation { arena: ArenaId(6), offset: 2 });
         let private = Stage { id: 4, op: StageOp::Private { offset: 1, from } }.encode();
@@ -1274,12 +1216,8 @@ mod tests {
         assert_eq!(zeros, Header::new(STAGE_PRIVATE, 4).with_args(&[1]).with_flags(STAGE_ACK));
         let ask = Told::Capacity { capacity: 4096, ask: true }.encode();
         assert_eq!(ask, Header::new(CAPACITY, 0).with_args(&[4096]).with_flags(CAPACITY_ASK));
-        let ack = Made::Ack { id: 4, counts: [1, 2, 3, 4, 5] }.encode();
-        assert_eq!(ack, Header::new(ACK, 4).with_args(&[1, 2, 3, 4, 5]));
-    }
-
-    fn protection_strategy() -> impl Strategy<Value = Protection> {
-        prop_oneof![Just(Protection::Read), Just(Protection::ReadWrite)]
+        let ack = Made::Ack { id: 4, counts: [1, 2, 3, 4] }.encode();
+        assert_eq!(ack, Header::new(ACK, 4).with_args(&[1, 2, 3, 4]));
     }
 
     proptest! {
@@ -1290,13 +1228,11 @@ mod tests {
             id in any::<u64>(),
             [a, b, c, d, e] in any::<[u64; 5]>(),
             arena in any::<u32>(),
-            protection in protection_strategy(),
             ask in any::<bool>(),
         ) {
             let phys = PhysLocation { arena: ArenaId(arena), offset: b };
             let stages = [
-                StageOp::Map { offset: a, phys, len: c, protection },
-                StageOp::Protect { offset: a, len: b, protection },
+                StageOp::Map { offset: a, phys, len: c },
                 StageOp::Unmap { offset: a, len: b },
                 StageOp::Mapped { offset: a, len: b },
                 StageOp::Private { offset: a, from: Some(phys) },
@@ -1305,12 +1241,11 @@ mod tests {
             let told = stages.map(|op| Told::Stage(Stage { id, op })).into_iter().chain([
                 Told::Capacity { capacity: a, ask },
                 Told::Committed { epoch: a },
-                Told::Seal { number: a },
             ]);
             for told in told {
                 prop_assert_eq!(Told::decode(&told.encode()), Ok(told));
             }
-            for made in [Made::Ack { id, counts: [a, b, c, d, e] }, Made::Counts([a, b, c, d, e])] {
+            for made in [Made::Ack { id, counts: [a, b, c, d] }, Made::Counts([b, c, d, e])] {
                 let message = Message { header: made.encode(), payload: vec![], fds: vec![] };
                 prop_assert_eq!(Made::decode(&message), Ok(made));
             }
@@ -1321,7 +1256,7 @@ mod tests {
         fn replies_decode_as_encoded(
             [a, b, c, d, e] in any::<[u64; 5]>(),
             arena in any::<u32>(),
-            mappings_of in proptest::collection::vec((any::<[u64; 5]>(), 0u8..3), 0..16),
+            mappings_of in proptest::collection::vec((any::<[u64; 5]>(), any::<bool>()), 0..16),
         ) {
             let opened = Opened { branch: a, arena: ArenaId(arena), epoch: b };
             prop_assert_eq!(Opened::from_args(opened.args()), Ok(opened));
@@ -1336,16 +1271,15 @@ mod tests {
             let advanced = Advanced { epoch: a };
             prop_assert_eq!(Advanced::from_args(advanced.args()), advanced);
             let mapped: Vec<WindowMapping> = (mappings_of.into_iter())
-                .map(|([window_offset, len, branch, sequence, offset], way)| WindowMapping {
+                .map(|([window_offset, len, branch, sequence, offset], zeros)| WindowMapping {
                     window_offset,
                     len,
-                    contents: match way {
-                        0 => MappingContents::Zeros,
-                        way => MappingContents::Extent {
-                            extent: ExtentId { branch, sequence },
-                            offset,
-                            writable: way == 2,
-                        },
+                    contents: match zeros {
+                        true => MappingContents::Zeros,
+                        false => {
+                            let extent = ExtentId { branch, sequence };
+                            MappingContents::Extent { extent, offset }
+                        }
                     },
                 })
                 .collect();
@@ -1362,7 +1296,8 @@ mod tests {
         assert_eq!(Opened::from_args([1, 1 << 32, 0, 0, 0]).err(), Some(Errno::EINVAL));
         let mapping = |flags: u64| [0u64, 4096, 1, 1, 0, flags].map(u64::to_le_bytes).concat();
         assert_eq!(mappings(&mapping(0)[..40]).err(), Some(Errno::EINVAL));
-        for flags in [MAPPING_ZEROS | MAPPING_WRITABLE, 1 << 2, 1 << 63] {
+        // fxdax: bit 0, writable, writable DAX's (backlog doc-13).
+        for flags in [1, MAPPING_ZEROS | 1, 1 << 2, 1 << 63] {
             assert_eq!(mappings(&mapping(flags)).err(), Some(Errno::EINVAL), "{flags:#x}");
         }
     }

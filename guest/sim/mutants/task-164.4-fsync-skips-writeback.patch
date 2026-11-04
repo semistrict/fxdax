@@ -8,12 +8,12 @@
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c
-@@ -3936,17 +3936,9 @@
+@@ -2043,17 +2043,9 @@
  	long pages = 0;
  	int err = 0;
  
--	if (!file)
-+	if (!file || !atomic_long_read(&file->dirty_pages))
+-	if (!IS_DAX(inode) || !file)
++	if (!IS_DAX(inode) || !file || !atomic_long_read(&file->dirty_pages))
  		return 0;
 -	/*
 -	 * Whatever is dirty now: a writeback under way, the budget's or the flusher's, swapped out
@@ -26,4 +26,4 @@
 -		goto out;
  	down_read(&file->sem);
  	xa_for_each(&file->ranges, chunk, range)
- 		most += fxfs_dax_cow_busy(range);
+ 		most += fxfs_dax_range_dirty(range);

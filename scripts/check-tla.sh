@@ -7,13 +7,10 @@
 # one spec (its .tla) and its models (backlog doc-8 testing 0; TASK-42.8, TASK-44):
 #
 # - specs/follower: live read-only followers' protocol (doc-8);
-# - specs/dax: the guest Fxfs's DAX seal and relocation protocol (guest/linux/fs/fxfs/dax.c);
-# - specs/dax-region: a region of its window, which a reader and a writer don't meet on, as an
-#   extent goes open, sealed, and never back (TASK-99, TASK-44.14, TASK-153.3);
-# - specs/extent-open: the host's extent store opening an extent, writes, MAPs and commits racing
-#   on it (crates/fxdax/src/extents.rs, TASK-121, TASK-119.20);
-# - specs/dax-cow: copy-on-write DAX, the window mapping sealed extents and zeros, a store's page
-#   private on the host, written back and rebound (doc-13, TASK-164.4);
+# - specs/dax-cow: the guest Fxfs's DAX, copying on write: the window mapping sealed extents and
+#   zeros, a store's page private on the host, written back and rebound (guest/linux/fs/fxfs/dax.c,
+#   doc-13, TASK-164.4). Writable DAX's specs (dax, dax-region, extent-open) went with it
+#   (dead-ends/writable-dax.md);
 #
 #   check-tla.sh [MODEL...]
 #

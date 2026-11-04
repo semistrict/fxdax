@@ -10,10 +10,6 @@
 
 #include <sim/sim.h>
 
-/* enum fxfs_dax_step's. */
-#define PAUSE_MOVED (1UL << 0)
-#define PAUSE_RESEALED (1UL << 6)
-
 #define check(cond, ...) do { if (!(cond)) sim_panic(__VA_ARGS__); } while (0)
 
 static inline void pause_at(unsigned long steps)

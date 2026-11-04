@@ -40,10 +40,6 @@ use test_fxfs_guest_bigmap::TestFxfsGuestBigmap;
 mod measure;
 mod test_fxfs_guest_daemon_lost;
 use test_fxfs_guest_daemon_lost::TestFxfsGuestDaemonLost;
-mod test_fxfs_guest_host_memory;
-use test_fxfs_guest_host_memory::TestFxfsGuestHostMemory;
-mod test_fxfs_guest_host_seal;
-use test_fxfs_guest_host_seal::TestFxfsGuestHostSeal;
 mod test_fxfs_guest_follow;
 use test_fxfs_guest_follow::TestFxfsGuestFollow;
 mod test_fxfs_guest_follow_remount;
@@ -172,11 +168,6 @@ pub fn test_cases() -> Vec<TestCase> {
             "pgbench-ext4-dax-pmem",
             Box::new(TestFxfsGuestPgbench::on(PgbenchStorage::Ext4DaxPmem)),
         ),
-        // fxdax: copy-on-write DAX's (TASK-164.5).
-        TestCase::new(
-            "fxfs-guest-pgbench-dax-cow",
-            Box::new(TestFxfsGuestPgbench::on(PgbenchStorage::FxfsDax).with_dax_cow()),
-        ),
         TestCase::new(
             "fxfs-guest-pgbench-forked",
             Box::new(
@@ -189,14 +180,6 @@ pub fn test_cases() -> Vec<TestCase> {
             Box::new(
                 TestFxfsGuestPgbench::on(PgbenchStorage::FxfsDax)
                     .with_database(PgbenchDatabase::Forked),
-            ),
-        ),
-        TestCase::new(
-            "fxfs-guest-pgbench-dax-cow-forked",
-            Box::new(
-                TestFxfsGuestPgbench::on(PgbenchStorage::FxfsDax)
-                    .with_database(PgbenchDatabase::Forked)
-                    .with_dax_cow(),
             ),
         ),
         TestCase::new(
@@ -213,29 +196,9 @@ pub fn test_cases() -> Vec<TestCase> {
                     .with_database(PgbenchDatabase::Density),
             ),
         ),
-        TestCase::new(
-            "fxfs-guest-pgbench-dax-cow-density",
-            Box::new(
-                TestFxfsGuestPgbench::on(PgbenchStorage::FxfsDax)
-                    .with_database(PgbenchDatabase::Density)
-                    .with_dax_cow(),
-            ),
-        ),
-        TestCase::new(
-            "fxfs-guest-bigmap",
-            Box::new(TestFxfsGuestBigmap { dax: false, dax_cow: false }),
-        ),
-        TestCase::new(
-            "fxfs-guest-bigmap-dax",
-            Box::new(TestFxfsGuestBigmap { dax: true, dax_cow: false }),
-        ),
-        TestCase::new(
-            "fxfs-guest-bigmap-dax-cow",
-            Box::new(TestFxfsGuestBigmap { dax: true, dax_cow: true }),
-        ),
+        TestCase::new("fxfs-guest-bigmap", Box::new(TestFxfsGuestBigmap { dax: false })),
+        TestCase::new("fxfs-guest-bigmap-dax", Box::new(TestFxfsGuestBigmap { dax: true })),
         TestCase::new("fxfs-guest-daemon-lost", Box::new(TestFxfsGuestDaemonLost)),
-        TestCase::new("fxfs-guest-host-memory", Box::new(TestFxfsGuestHostMemory)),
-        TestCase::new("fxfs-guest-host-seal", Box::new(TestFxfsGuestHostSeal)),
         TestCase::new("runner-deadlock", Box::new(TestRunnerDeadlock)),
         TestCase::new("fxfs-guest-follow", Box::new(TestFxfsGuestFollow { dax: false })),
         TestCase::new("fxfs-guest-follow-dax", Box::new(TestFxfsGuestFollow { dax: true })),

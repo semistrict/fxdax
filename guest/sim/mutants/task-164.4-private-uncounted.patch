@@ -7,9 +7,9 @@
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c
-@@ -4031,7 +4031,7 @@
+@@ -2309,7 +2309,7 @@
   */
- static bool fxfs_dax_cow_take(struct fxfs_dax *dax, long pages)
+ static bool fxfs_dax_take_private(struct fxfs_dax *dax, long pages)
  {
 -	long now = atomic_long_add_return(pages, &dax->private);
 +	long now = atomic_long_read(&dax->private);

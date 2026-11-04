@@ -15,7 +15,7 @@ mod fs;
 use anyhow::Error;
 use core::ffi::{c_char, c_int, c_void};
 use device::ExtentDevice;
-use fs::{Attr, DaxExtent, DaxWrite, Filesystem, Fxfs, GuestFxfs, ReaddirStart, SetAttr, StatFs};
+use fs::{Attr, DaxExtent, Filesystem, Fxfs, GuestFxfs, ReaddirStart, SetAttr, StatFs};
 use fxfs::errors::FxfsError;
 use fxfs::object_store::SetExtendedAttributeMode;
 use fxfs_posix::Errno;
@@ -315,14 +315,6 @@ pub unsafe extern "C" fn fxfs_unmount(fs: *mut Fxfs) {
     block_on(fs.unmount());
 }
 
-/// fxdax: diagnostic (TASK-121): has Fxfs log the blocks a DAX write's move keeps that read short
-/// or as zeros, or read back other (`fxfs::object_store::data_object_handle::CHECK_KEPT`).
-#[unsafe(no_mangle)]
-pub extern "C" fn fxfs_set_check_kept(on: bool) {
-    fxfs::object_store::data_object_handle::CHECK_KEPT
-        .store(on, std::sync::atomic::Ordering::Relaxed);
-}
-
 /// fxdax: fault injection (TASK-164.2): the next `count` of `fxfs_write_many`'s transactions fail
 /// once their blocks are written, before they commit
 /// (`fxfs::object_store::data_object_handle::FAIL_COMMITS`).
@@ -454,112 +446,6 @@ pub unsafe extern "C" fn fxfs_dax_extents(
     let result = block_on(fs.reading(|| fs.dax_extents(ino, range.clone())));
     // SAFETY: As the caller promises.
     unsafe { copy_extents(result, out, max) }
-}
-
-/// # Safety
-///
-/// `fs` is mounted, `held` is null or `len` readable bytes, and `out` has room for `max` extents.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn fxfs_dax_map_write(
-    fs: *const Fxfs,
-    ino: u64,
-    offset: u64,
-    len: u64,
-    size: u64,
-    keep: bool,
-    held: *const u8,
-    out: *mut DaxExtent,
-    max: usize,
-) -> isize {
-    // SAFETY: As the caller promises.
-    unsafe {
-        let range = offset..offset.saturating_add(len);
-        let held = (!held.is_null()).then(|| std::slice::from_raw_parts(held, len as usize));
-        let result = block_on((*fs).dax_map_write(ino, range, size, keep, held));
-        copy_extents(result, out, max)
-    }
-}
-
-/// Makes room for a write(2) through the DAX window as `fxfs_dax_map_write` does, committing
-/// nothing: `*write` holds the transaction, for `fxfs_dax_end_write` (`Fxfs::dax_begin_write`).
-///
-/// # Safety
-///
-/// `fs` is mounted, `out` has room for `max` extents, and `write` is writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn fxfs_dax_begin_write(
-    fs: *const Fxfs,
-    ino: u64,
-    offset: u64,
-    len: u64,
-    size: u64,
-    out: *mut DaxExtent,
-    max: usize,
-    write: *mut *mut DaxWrite,
-) -> isize {
-    // SAFETY: As the caller promises.
-    unsafe {
-        let range = offset..offset.saturating_add(len);
-        let (begun, extents) = match block_on((*fs).dax_begin_write(ino, range, size)) {
-            Ok(begun) => begun,
-            Err(error) => return -(errno(&error) as isize),
-        };
-        // Pieces that don't fit leave the write dropped.
-        let count = copy_extents(Ok(extents), out, max);
-        if count >= 0 {
-            write.write(Box::into_raw(Box::new(begun)));
-        }
-        count
-    }
-}
-
-/// Commits `write` if `commit`, its bytes stored, or drops it, leaving the file as it was: 0, or
-/// the commit's -errno.
-///
-/// # Safety
-///
-/// `write` is one `fxfs_dax_begin_write` returned, not yet ended.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn fxfs_dax_end_write(write: *mut DaxWrite, commit: bool) -> c_int {
-    // SAFETY: As the caller promises.
-    let write = unsafe { Box::from_raw(write) };
-    if !commit {
-        return 0;
-    }
-    match block_on(write.commit()) {
-        Ok(()) => 0,
-        Err(error) => -errno(&error),
-    }
-}
-
-/// Records an append already written through the DAX window (`Fxfs::dax_update_size`).
-///
-/// # Safety
-///
-/// `fs` is mounted.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn fxfs_dax_update_size(fs: *const Fxfs, ino: u64, size: u64) -> c_int {
-    // SAFETY: As the caller promises.
-    match unsafe { block_on((*fs).dax_update_size(ino, size)) } {
-        Ok(()) => 0,
-        Err(error) => -errno(&error),
-    }
-}
-
-/// # Safety
-///
-/// `filesystem` is open, and `out` is writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn fxfs_dax_restage(
-    filesystem: *const Filesystem,
-    out: *mut DaxExtent,
-) -> bool {
-    // SAFETY: As the caller promises.
-    unsafe {
-        let Some(extent) = (*filesystem).restage() else { return false };
-        out.write(extent);
-        true
-    }
 }
 
 /// Writes `result`'s attributes to `attr`: 0, or its error's -errno.

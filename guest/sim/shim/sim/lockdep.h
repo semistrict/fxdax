@@ -14,7 +14,7 @@ struct lock_class_key {
 	int unused;
 };
 
-/* A lock that exists only for lockdep, as the gate's. */
+/* A lock that exists only for lockdep. */
 struct lockdep_map {
 	const char *name;
 };

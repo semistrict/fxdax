@@ -1,11 +1,18 @@
 ---
 id: doc-13
-title: Read-only DAX
+title: Copy-on-write DAX
 type: specification
 created_date: '2026-11-04 07:55'
-updated_date: '2026-11-04 07:55'
+updated_date: '2026-11-04 16:33'
 ---
-# Read-only DAX: the window maps sealed extents only; a store gets a private copy
+# Copy-on-write DAX: the window maps sealed extents only; a store gets a private copy
+
+**Landed, 2026-11-04 (batch 2026-11-04e): the only DAX.** Writable DAX, the window page an open
+extent's block, was deleted outright at stage 4, with no flag and no A/B batch (the user: "we can
+always revert it"): dead-ends/writable-dax.md. `VIRTIO_EXTENT_F_DAX` means copy on write; the
+`DAX_WRITE` and `DAX_COW` feature bits, `MAP_WRITE`, `F_SEAL`, `seal_asked`, `SEALED` and the
+`fxfs.dax_cow` parameter are gone; `MAP_ZEROS`, `PRIVATE` and `private_max` stay. What follows is
+the design as it was written, its stages and lists marked as they went.
 
 Design, 2026-11-04 (TASK-164). The user chose read-only DAX that day (docs/reviews/2026-11-04-first-principles.md,
 section 1, option a), then asked for one case it must meet: a process maps a 400 GB file
@@ -111,11 +118,11 @@ memory without asking other VMs anything.
 
 ## The device (doc-4 changes)
 
-- **`VIRTIO_EXTENT_F_DAX_COW`** (bit 1, in place of `DAX_WRITE`, which goes): a store to a page of
-  the window gives the device a private page holding what the page held, mapped writable at the
-  same address, until a `MAP` or `UNMAP` replaces it. Excludes `READ_ONLY` (a follower's stores stay
-  refused).
-- **`private_max`** (configuration, with `DAX_COW`): the most private pages the device holds at
+- **`VIRTIO_EXTENT_F_DAX` copies on write** (bit 0; `DAX_WRITE`, bit 1, went; stages 1-3 offered
+  this as `DAX_COW`, bit 10, beside it, gone too at stage 4): a store to a page of the window gives
+  the device a private page holding what the page held, mapped writable at the same address, until
+  a `MAP` or `UNMAP` replaces it. Not with `READ_ONLY`: a follower's stores stay refused.
+- **`private_max`** (configuration, with `DAX`): the most private pages the device holds at
   once. A store past it is refused, and the VM stops (159). The host sets it as it opens the device,
   and counts it against the tenant's memory then, not as pages come: a store never waits for memory.
 - **`MAP_ZEROS`** (a `MAP` flag): maps zeros, `id` ignored: holes and past-the-end pages of a range,
@@ -267,7 +274,7 @@ goes: nothing moves, and a `write(2)` cut short leaves the bytes it copied, as o
 | The 400 GB case | met: unwritten pages DAX; written pages private, at most `private_max`, the rest written back, sealed and shared again | not met: the whole file through the guest's page cache once opened for writing |
 | Lines (estimates) | net about -10k: the same ~-11.5k, then +~800 guest, +~500 host | net about -11k: ~-11.5k, then +~300 guest for the switch |
 | Kernel | stock fs/dax.c paths only; patches 0005, 0008, 0009 go | the same, plus a live `S_DAX` switch no in-tree filesystem makes |
-| Protocol | +`DAX_COW`, `private_max`, `MAP_ZEROS`, `PRIVATE`; -`DAX_WRITE`, `MAP_WRITE`, `SEAL`, `ENOMEM` | -`DAX_WRITE`, `MAP_WRITE`, `SEAL`, `ENOMEM` |
+| Protocol | `DAX` copies on write, +`private_max`, `MAP_ZEROS`, `PRIVATE`; -`DAX_WRITE`, `MAP_WRITE`, `SEAL`, `ENOMEM` | -`DAX_WRITE`, `MAP_WRITE`, `SEAL`, `ENOMEM` |
 | New invariants | 4 (above), none involving a seal | 2: the switch's exclusion; a page-cache inode never maps the window |
 | pgbench, DB made in the run | no-DAX's (created files: page cache) | no-DAX's |
 | pgbench, DB from a base or fork | to measure; expected 0.9-1.0x no-DAX: a host fault the first store of each page | no-DAX's, after the switch |
@@ -286,6 +293,9 @@ page cache, a second copy in guest RAM, missing to a `READ`; the 400 GB case; an
 written file's unchanged pages. **Recommended: per page.**
 
 ## What goes
+
+*Done at stage 4, 2026-11-04 (batch 2026-11-04e, TASK-164.7 and 164.8), split four ways: the guest
+kernel's dax.c, Fxfs, the host, and the tests, simulator, specs, scripts and docs.*
 
 - **Guest, dax.c** (4,983 lines, an estimated half): the gate (`fxfs_dax_store_begin`, device.c's),
   seals' write-protects and forgetting writable pages (`fxfs_dax_seal`, `fxfs_dax_sealed`,
@@ -318,7 +328,8 @@ written file's unchanged pages. **Recommended: per page.**
   `open_extent_read_only`, `writes_through`, `sealed_piece_reach`); reads' stay.
 - **Docs:** doc-4 (above), doc-9 (a note: superseded but for its section 3; a seal no longer touches
   a window), doc-12 (above), doc-2 (open decision 1 settled: writes copy on write in host memory,
-  allocated at writeback), README's exits (159's causes). A dead end, `dead-ends/writable-dax-on-write-once-extents.md`, for the whole approach.
+  allocated at writeback), README's exits (159's causes). A dead end, `dead-ends/writable-dax.md`,
+  for the whole approach.
 - **Tasks:** TASK-160.2, 160.4, 160.5 are re-scoped to what's left of dax.c once this lands.
 
 ## What stays, and why
@@ -357,6 +368,9 @@ private.
 
 ## Stages, each landable on main with the workspace and guest suites passing
 
+*Stages 1, 2 and 4 done, 2026-11-04; 3 skipped: the user had writable DAX deleted with no A/B
+batch.*
+
 1. **Host copy-on-write** (`DAX_COW`, `private_max`, `MAP_ZEROS`, `PRIVATE`), offered beside
    `DAX_WRITE`; a guest takes one. Tests: dax.rs units (a store to a read-only page copies once;
    zeros copy nothing; `MAP`/`UNMAP` free private pages; a source's eviction skips them; past
@@ -372,8 +386,10 @@ private.
    write, new scenarios and the mutants above; `specs/dax-cow`. The perf gate with the new cases,
    judged by TASK-164's AC #2.
 3. **The default:** `fxfs.dax_cow` on; the writable path kept one batch for an A/B on one host.
+   Skipped.
 4. **Deletion** of the writable path: the lists above, the parameter, `DAX_WRITE`, `SEAL`; the
-   docs.
+   docs. Done: `DAX_COW` went too, `DAX` meaning copy on write; the gate's and suites' `-dax-cow`
+   cases merged into their `-dax` ones.
 5. **Measured, if the gate asks:** `PRIVATE` ahead of append streams of read-in files; rebinding
    at writeback for files written once; `private_max`'s default.
 
@@ -412,6 +428,8 @@ private.
   and a host fault or a `PRIVATE` per page, where the page cache costs a copy. Undoing it: the
   conditions in `fxfs_vfs_inode_init` and create; a pool of window space mapped as zeros and made
   private ahead would be needed instead.
+- Writable DAX deleted outright at stage 4, no flag kept and no A/B batch run (the user,
+  2026-11-04). Undoing it: revert batch 2026-11-04e, whose commits dead-ends/writable-dax.md names.
 - `private_max` reserved against the tenant at open, not charged as pages come, so that a store
   never waits for memory and no VM asks another to seal. Its default (a quarter of the window is
   the proposal) waits on the density target, the review's open decision 5.

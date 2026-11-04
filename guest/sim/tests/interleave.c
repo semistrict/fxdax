@@ -4,13 +4,13 @@
  * Tasks writing, mapping, sealing, truncating and evicting at once, their interleaving the seed's:
  * the same seed plays the same run, whose trace hash says so.
  *
- *   interleave SEED [OPERATIONS] [-s] [-t] [-T] [-v] [-I] [-N] [-C] [-w WINDOW_PAGE] [-a ADDRESS] [-W INO PAGE]
+ *   interleave SEED [OPERATIONS] [-t] [-T] [-v] [-I] [-N] [-w WINDOW_PAGE] [-a ADDRESS]
+ *              [-W INO PAGE]
  *
- * -s runs dax_shadow too, -t logs each scheduling point, -T has dax.c's trace of the page that
- * fails logged, -w logs the window page's MAPs, -a the address's PTE, and -W what Fxfs does to the
- * file's page; -v each operation. -I leaves dax.c's fault injection off, and -N the operations that
- * take a file's own mapping for their memory. -C runs copy-on-write DAX (doc-13: the device's
- * DAX_COW, as fxfs.dax_cow has the driver take it), as a seed in four does by its number.
+ * -t logs each scheduling point, -T has dax.c's trace of the page that fails logged, -w logs the
+ * window page's MAPs, -a the address's PTE, and -W what Fxfs does to the file's page; -v each
+ * operation. -I leaves dax.c's fault injection off, and -N the operations that take a file's own
+ * mapping for their memory. Stores copy on write (doc-13).
  *
  * Every store is stamped, as ztest's blocks carry their tags: whose it is, where it belongs, its
  * generation and the seal it was made in. Tasks share files without sharing bytes: each owns a slot
@@ -21,8 +21,8 @@
  * store begun as it ended, and never zeros once written, unless a store was under way. So a stale
  * read, a zero read, a read of another file's or another place's data, or from the future, is named
  * as such as it is read, on any task's read of any slot. After an fsync, Fxfs's extents must hold
- * every slot's last store, copying on write the synced file's; and once all end, the same of all
- * of it. dax.c's own diagnostics are on, and each of its WARNs fails the run.
+ * every slot's last store of the synced file, a store being in a private page until its file's
+ * writeback; and once all end, the same of all of it. Each of dax.c's WARNs fails the run.
  */
 
 #include <sim/sim.h>
@@ -41,9 +41,7 @@
 /* How many slots an fsync checks in Fxfs's extents. */
 #define FSYNC_CHECKS 16
 #define SLOT 32
-/* The host's memory for open extents, a run in four, as little as lets a chunk be mapped. */
-#define OPEN_LIMIT PTRS_PER_PTE
-/* Copy-on-write DAX's private pages, a run in two: few, so that the budget throttles and rebinds. */
+/* The device's private pages, a run in two: few, so that the budget throttles and rebinds. */
 #define COW_PRIVATE_FEW 256
 
 #define check(cond, ...) do { if (!(cond)) sim_panic(__VA_ARGS__); } while (0)
@@ -109,11 +107,8 @@ static struct sim_mount *mount;
 static struct slots shared, big, small[SMALL_FILES];
 static int writers_left;
 static unsigned long operations = 200;
-/*
- * Whether every write fault seals: tasks then undo each other's faults for ever, each seal making
- * read-only the page another's copy into a mapping needs, which fails it, as it should.
- */
-static bool fault_seals;
+/* Whether the operations that take a file's own mapping for their memory are left out (-N). */
+static bool no_self;
 /* Whether Fxfs's transactions fail: writes and stores then may too. And whether a MAP does. */
 static bool failing, failing_maps;
 /*
@@ -125,8 +120,6 @@ static unsigned long hot_pages;
 static unsigned long huge_mapped;
 /* Whether dax.c traces what happens to pages, and whether each operation is logged. */
 static bool tracing, verbose;
-/* Whether the run is of copy-on-write DAX (doc-13). */
-static bool cow;
 
 #define operation(worker, ...) do {					\
 	if (verbose) {							\
@@ -263,14 +256,13 @@ static bool failed_as_asked(ssize_t result)
 
 /*
  * Whether a read or a load that fell short (`cut`) was made to by fxfs.dax_fail_maps, whose
- * count was `left` before it. Writing through, it fails writes alone, whose failures are asked for
- * (failed_as_asked); copying on write, any range's map of more than one piece, whichever way in
+ * count was `left` before it: it fails any range's map of more than one piece, whichever way in
  * mapped it, a read's too, which says EIO, or stops short, or a load's fault SIGBUS, as of a
  * device's MAP error. Another task's taking one meanwhile passes for this one's.
  */
 static bool map_failure_injected(bool cut, unsigned long left)
 {
-	return cow && cut && sim_param_read("dax_fail_maps") < left;
+	return cut && sim_param_read("dax_fail_maps") < left;
 }
 
 /* sim_read, again as long as fxfs.dax_fail_maps cuts it short: a read never fails else. */
@@ -305,8 +297,8 @@ static loff_t slot_at(int worker, unsigned long page)
 }
 
 /*
- * A store that failed: its slot may have lost its bytes, as the blocks moved, whole pages without
- * what the write was to bring (fxfs_dax_iomap_write). So the owner reads what it holds now.
+ * A store that failed: its slot may hold what it held, or zeros, as writable DAX's moved blocks
+ * held. So the owner reads what it holds now.
  */
 static void slot_resync(struct worker *worker, struct slots *file, unsigned long page)
 {
@@ -405,7 +397,7 @@ static bool private_cell(const struct worker *worker, const struct stamp *got)
 
 /*
  * What a write or a zeroing Fxfs failed left: what they reached of their cells, and of the others
- * what they held, or zeros, as blocks moved for them hold (slot_resync). The file is read whole.
+ * what they held, or zeros (slot_resync). The file is read whole.
  */
 static void private_resync(struct worker *worker)
 {
@@ -422,11 +414,10 @@ static void private_resync(struct worker *worker)
 				   worker->file, whole + at, worker->private + at, at);
 	}
 	/*
-	 * Whatever failed, read(2) goes where Fxfs has the file: copying on write, once it is written
-	 * back, its dirty pages, what the failure left among them, being in the window alone.
+	 * Whatever failed, read(2) goes where Fxfs has the file once it is written back, its dirty
+	 * pages, what the failure left among them, being in the window alone.
 	 */
-	if (cow)
-		check(!sim_fsync(worker->file), "an fsync after a failed write");
+	check(!sim_fsync(worker->file), "an fsync after a failed write");
 	held = kmalloc(PRIVATE_MAX, GFP_KERNEL);
 	fxfs_sim_read(mount->info->fs, file_inode(worker->file)->i_ino, 0, held, size);
 	check_bytes("a file after a failed write, against Fxfs's extents", worker->file, whole, held,
@@ -486,7 +477,7 @@ static void private_self_write(struct worker *worker)
 	loff_t from, to;
 	ssize_t done;
 
-	if (worker->size < 4 * PAGE_SIZE || fault_seals)
+	if (worker->size < 4 * PAGE_SIZE || no_self)
 		return;
 	/* Not in a page of its target, which it unmaps each time: it would fail, as dax.c says. */
 	len = cell_of(between(SLOT, PAGE_SIZE));
@@ -513,7 +504,7 @@ static void private_self_read(struct worker *worker)
 	loff_t from, to;
 	ssize_t done;
 
-	if (worker->size < 4 * PAGE_SIZE || fault_seals)
+	if (worker->size < 4 * PAGE_SIZE || no_self)
 		return;
 	len = cell_of(between(SLOT, PAGE_SIZE));
 	from = cell_of(between(0, worker->size - 3 * PAGE_SIZE));
@@ -637,7 +628,7 @@ static void twin_read(struct worker *worker)
 
 /*
  * The inode goes, and another comes, of a file whose ranges stay mapped: what its entries said of
- * its pages goes, and what the ranges say of them stays (dax_folio_put, fxfs_dax_cow).
+ * its pages goes, and what the ranges say of them stays (dax_folio_put).
  */
 static void private_evict(struct worker *worker)
 {
@@ -717,20 +708,20 @@ static bool huge_write(struct worker *worker, const char *data, bool pieces)
 }
 
 /*
- * A chunk mapped by a PMD, whose page a store then moves out of the row: its other pages must fault
- * back in, each read what it held (TASK-123). Truncated first, so that no entries of its pages keep
- * a PMD's fault out; and mapped anew, as a PTE table left under the PMD would.
+ * A chunk mapped by a PMD, whose page a store then makes private, which splits the PMD: its other
+ * pages must fault back in, each read what it held (TASK-123). Truncated first, so that no entries
+ * of its pages keep a PMD's fault out; and mapped anew, as a PTE table left under the PMD would.
  */
 static void huge_cycle(struct worker *worker)
 {
 	static char data[WORKERS][HUGE_LEN];
 	char *mine = data[worker->id], buf[SLOT];
-	unsigned long moved = between(0, PTRS_PER_PTE - 1), others[8];
+	unsigned long stored = between(0, PTRS_PER_PTE - 1), others[8];
 	bool pieces = between(0, 1);
 	int err, i, round;
 
-	operation(worker, "a PMD's cycle, %s, moving page %lu\n", pieces ? "in pieces" : "whole",
-		  moved);
+	operation(worker, "a PMD's cycle, %s, storing to page %lu\n",
+		  pieces ? "in pieces" : "whole", stored);
 	sim_munmap(worker->huge_addr);
 	worker->huge_addr = sim_mmap(worker->huge_file, 0, HUGE_LEN);
 	err = sim_truncate(worker->huge_file, 0);
@@ -744,18 +735,17 @@ static void huge_cycle(struct worker *worker)
 	check(!err, "a load of a PMD: %d", err);
 	check_bytes("a load of a PMD", worker->huge_file, buf, mine, SLOT, 0);
 	huge_mapped += sim_mm_is_huge(worker->huge_addr);
-	new_cells(worker, worker->huge_file, buf, moved * PAGE_SIZE, SLOT);
-	err = sim_user_store(worker->huge_addr + moved * PAGE_SIZE, buf, SLOT);
+	new_cells(worker, worker->huge_file, buf, stored * PAGE_SIZE, SLOT);
+	err = sim_user_store(worker->huge_addr + stored * PAGE_SIZE, buf, SLOT);
 	check(!err || failed_as_asked(err), "a store into a PMD: %d", err);
 	if (err)
 		return;
-	memcpy(mine + moved * PAGE_SIZE, buf, SLOT);
+	memcpy(mine + stored * PAGE_SIZE, buf, SLOT);
 	for (i = 0; i < ARRAY_SIZE(others); i++)
 		others[i] = between(0, PTRS_PER_PTE - 1);
 	/*
-	 * Each page faults, says it is shared, and replaces its part of the PMD's entry. Then a mapping
-	 * new to the pages, whose faults, of pages relocated no more, must find their own entries
-	 * (patch 0008): as another process's would.
+	 * Each page faults, and replaces its part of the PMD's entry. Then a mapping new to the
+	 * pages, whose faults must find their own entries: as another process's would.
 	 */
 	for (round = 0; round < 2; round++) {
 		for (i = 0; i < ARRAY_SIZE(others); i++) {
@@ -875,13 +865,9 @@ static void fsync_check(const struct fsync_check *watched)
 }
 
 /*
- * Seals as a journal does, whenever it likes: in some runs seldom, which leave a task that needs a
- * seal to get on going round in vain for a while. Writing through, a store is in Fxfs's extents
- * as it ends, so that any file's slots must be there after the seal, whichever file's fsync made
- * it; copying on write, a store is in a private page until its file's writeback, and the fsync
- * makes its own file's slots durable, no other's, which are those watched then, the file picked
- * first. Writing through, it is picked after them, as it always was, so that those seeds play as
- * they did.
+ * Seals as a journal does, whenever it likes: in some runs seldom. A store is in a private page
+ * until its file's writeback, and the fsync makes its own file's slots durable, no other's, which
+ * are those watched then.
  */
 static void syncer_task(void *arg)
 {
@@ -891,10 +877,9 @@ static void syncer_task(void *arg)
 	int err, i;
 
 	while (READ_ONCE(writers_left)) {
-		synced = cow ? any_slots() : NULL;
+		synced = any_slots();
 		for (i = 0; i < FSYNC_CHECKS; i++)
-			fsync_watch(&watched[i], synced ?: any_slots());
-		synced = synced ?: any_slots();
+			fsync_watch(&watched[i], synced);
 		err = sim_fsync(synced->file);
 		check(!err, "fsync: %d", err);
 		for (i = 0; i < FSYNC_CHECKS; i++)
@@ -982,20 +967,6 @@ static void setup(void)
 	writers_left = WORKERS;
 }
 
-/*
- * dax.c's own diagnostics, each of whose WARNs fails the run, as `fxfs.NAME=1` on a command line,
- * but for dax_shadow, which `-s` adds.
- */
-static void diagnostics(bool shadow)
-{
-	sim_param_set("dax_check_seals", "1");
-	sim_param_set("dax_check_moves", "1");
-	if (shadow) {
-		sim_param_set("dax_shadow", "1");
-		sim_param_set("dax_verify_seals", "1");
-	}
-}
-
 /* dax.c's fault injection, as the seed picks: each widens or takes a way the protocol goes. */
 static void injections(void)
 {
@@ -1006,18 +977,10 @@ static void injections(void)
 	sim_param_set("dax_delay_us", value);
 	snprintf(value, sizeof(value), "%llu", sim_random());
 	sim_param_set("dax_delay_seed", value);
-	if (!(sim_random() % 8)) {
-		fault_seals = true;
-		sim_param_set("dax_fault_seals", "1");
-	}
-	if (!(sim_random() % 2))
-		sim_param_set("dax_fault_seals_moved", "20");
-	if (!(sim_random() % 4))
-		sim_param_set("dax_fail_held", "1");
 	if (!(sim_random() % 4))
 		sim_param_set("dax_fail_map_many", "20");
 	failing = !(sim_random() % 4);
-	/* A write that fails twice so says EIO, having lost its pages' old bytes (TASK-119.13). */
+	/* A range's map of more than one piece fails, as a device's MAP error (TASK-119.13). */
 	if (failing && !(sim_random() % 2)) {
 		sim_param_set("dax_fail_maps", "20");
 		failing_maps = true;
@@ -1028,39 +991,33 @@ static void injections(void)
 int main(int argc, char **argv)
 {
 	unsigned long long seed = 0;
-	bool shadow = false, no_injections = false;
+	bool no_injections = false;
 	u64 window_len;
 	unsigned long watched_address = 0;
-	u64 moved, freed, failed;
+	u64 written, freed, failed;
 	int i;
 
 	if (argc < 2 || sscanf(argv[1], "%llu", &seed) != 1)
-		sim_panic("usage: interleave SEED [OPERATIONS] [-s] [-t] [-T] [-v] [-I] [-N] [-w WINDOW_PAGE] [-a ADDRESS] [-W INO PAGE]");
+		sim_panic("usage: interleave SEED [OPERATIONS] [-t] [-T] [-v] [-I] [-N] [-w WINDOW_PAGE] [-a ADDRESS] [-W INO PAGE]");
 	if (argc > 2 && argv[2][0] != '-')
 		sscanf(argv[2], "%lu", &operations);
 	sim_init(seed);
 	/* A window its files fill, a run in four, whose ranges are reclaimed and regions run out. */
 	window_len = sim_random() % 4 ? WINDOW_LEN : SMALL_WINDOW_LEN;
 	sim_device_init(window_len);
-	/* By the seed, not of its random numbers: what it plays otherwise stays. */
-	if (!(seed % 4))
-		sim_device_limit_open(OPEN_LIMIT);
-	cow = seed % 4 == 2;
+	/* The device's private pages, before the mount: few, or the host's default. */
+	sim_device_private_max(sim_random() % 2 ? COW_PRIVATE_FEW : window_len / PAGE_SIZE / 4);
 	for (i = 2; i < argc; i++) {
 		unsigned long long page;
 
 		if (!strcmp(argv[i], "-t"))
 			sim_trace_on();
-		else if (!strcmp(argv[i], "-s"))
-			shadow = true;
 		else if (!strcmp(argv[i], "-T"))
 			tracing = true;
 		else if (!strcmp(argv[i], "-I"))
 			no_injections = true;
 		else if (!strcmp(argv[i], "-N"))
-			fault_seals = true;
-		else if (!strcmp(argv[i], "-C"))
-			cow = true;
+			no_self = true;
 		else if (!strcmp(argv[i], "-v"))
 			verbose = true;
 		else if (!strcmp(argv[i], "-a"))
@@ -1074,10 +1031,6 @@ int main(int argc, char **argv)
 		} else if (!strcmp(argv[i], "-w") && sscanf(argv[i + 1], "%llx", &page) == 1)
 			sim_device_watch(page);
 	}
-	/* The host's copy on write, offered and taken, before the mount. */
-	if (cow)
-		sim_device_dax_cow(sim_random() % 2 ? COW_PRIVATE_FEW : window_len / PAGE_SIZE / 4);
-	diagnostics(shadow);
 	if (!no_injections)
 		injections();
 	if (tracing)
@@ -1086,8 +1039,8 @@ int main(int argc, char **argv)
 	if (failing)
 		fxfs_sim_fail(32);
 	if (verbose)
-		sim_log("interleave: %lu hot pages, Fxfs fails %d, a MAP fails %d, fault seals %d, copy on write %d\n",
-			hot_pages, failing, failing_maps, fault_seals, cow);
+		sim_log("interleave: %lu hot pages, Fxfs fails %d, a MAP fails %d\n", hot_pages,
+			failing, failing_maps);
 	if (watched_address)
 		sim_mm_watch(watched_address);
 	sim_spawn("syncer", syncer_task, NULL);
@@ -1109,9 +1062,9 @@ int main(int argc, char **argv)
 		check_slots(&small[i]);
 	for (i = 0; i < WORKERS; i++)
 		check_extents(&workers[i]);
-	fxfs_sim_stats(&moved, &freed, &failed);
-	sim_log("interleave: seed %llu passed: %llu points, %llu switches, %llu device maps, %llu blocks moved, %llu extents freed, %llu transactions failed, %lu PMDs, trace %llx\n",
-		seed, sim_points(), sim_switches(), sim_device_maps(), moved, freed, failed,
+	fxfs_sim_stats(&written, &freed, &failed);
+	sim_log("interleave: seed %llu passed: %llu points, %llu switches, %llu device maps, %llu blocks written back, %llu extents freed, %llu transactions failed, %lu PMDs, trace %llx\n",
+		seed, sim_points(), sim_switches(), sim_device_maps(), written, freed, failed,
 		huge_mapped, sim_trace_hash());
 	return 0;
 }

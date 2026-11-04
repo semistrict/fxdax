@@ -3,9 +3,9 @@
 // found in the LICENSE file.
 
 //! fxdax: what the guest halves of the tests of the guest's Fxfs share (fxfs-guest's,
-//! fxfs-guest-checks'): evicting a file's inode, whether a file is DAX, what a mount counts, and,
-//! copying on write (doc-13), whether the window does, and files read in from sealed extents, as a
-//! base's are, whose writes are the window's.
+//! fxfs-guest-checks'): evicting a file's inode, whether a file is DAX, what a mount counts, and
+//! files read in from sealed extents, as a base's are, whose writes copy on write in the window
+//! (doc-13).
 
 use nix::libc;
 use std::ffi::CString;
@@ -60,24 +60,17 @@ pub fn stats(tag: &str) -> std::collections::BTreeMap<String, u64> {
         .collect()
 }
 
-/// Whether the window of the device tagged `tag` copies on write (fxfs.dax_cow, doc-13): the device
-/// took DAX_COW, as the mount's counts say (dax_cow), not merely that it was asked for. Turned on
-/// for a whole run by FXDAX_GUEST_CMDLINE=fxfs.dax_cow=1, as the kernel's command line takes it.
-pub fn dax_cow(tag: &str) -> bool {
-    stats(tag).get("dax_cow").is_some_and(|cow| *cow == 1)
-}
-
 /// Has the file `path`, written here, read in again once its writes are sealed: evicted, which
-/// writes it back, and a barrier seals. Copying on write, a file created in the mount is a
-/// page-cache inode until then, its writes the page cache's (TASK-164.3); read in again, it is DAX,
-/// mapped from sealed extents, its writes the window's, as a base's files are.
+/// writes it back, and a barrier seals. A file created in the mount is a page-cache inode until
+/// then, its writes the page cache's (TASK-164.3); read in again, it is DAX, mapped from sealed
+/// extents, its writes the window's, copying on write, as a base's files are.
 pub fn read_in_sealed(path: &str) {
     evict(path);
     assert!(is_dax(path), "{path}, read in again once sealed, isn't DAX");
 }
 
 /// A file of `len` bytes of `byte`'s pattern, written, and read in again once sealed
-/// ([`read_in_sealed`]): copying on write, a DAX file, as a base's are. Its bytes.
+/// ([`read_in_sealed`]): a DAX file, as a base's are. Its bytes.
 pub fn cow_base_file(path: &str, len: usize, byte: u8) -> Vec<u8> {
     let data: Vec<u8> = (0..len).map(|i| byte ^ (i % 251) as u8).collect();
     fs::write(path, &data).unwrap();

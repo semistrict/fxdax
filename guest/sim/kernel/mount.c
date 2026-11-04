@@ -116,6 +116,25 @@ static struct file *file_of(struct sim_mount *mount, u64 ino)
 	return file;
 }
 
+u64 sim_dax_stat(struct sim_mount *mount, const char *name)
+{
+	struct seq_file m = { .size = 64 << 10 };
+	size_t len = strlen(name);
+	unsigned long long value;
+	char *line;
+
+	m.buf = kzalloc(m.size, GFP_KERNEL);
+	fxfs_dax_show_stats(mount->info->dax, &m);
+	for (line = m.buf; *line; line++) {
+		if ((line == m.buf || line[-1] == '\n') && !strncmp(line, name, len) &&
+		    line[len] == ' ' && sscanf(line + len + 1, "%llu", &value) == 1) {
+			kfree(m.buf);
+			return value;
+		}
+	}
+	sim_panic("dax.c shows no %s", name);
+}
+
 struct file *sim_file_new(struct sim_mount *mount)
 {
 	return file_of(mount, fxfs_sim_new_file(mount->info->fs));
@@ -125,10 +144,10 @@ struct file *sim_file_read_in(struct sim_mount *mount, struct file *file)
 {
 	struct file *again;
 	u64 ino = file_inode(file)->i_ino;
-	int err = fxfs_dax_write_size(file_inode(file));
+	int err = fxfs_dax_write_back(file_inode(file));
 
 	if (err)
-		sim_panic("writing the size of ino %llu back: %d", ino, err);
+		sim_panic("writing ino %llu back: %d", ino, err);
 	sim_file_evict(file);
 	again = file_of(mount, ino);
 	i_size_write(file_inode(again), fxfs_sim_size(mount->info->fs, ino));
@@ -192,14 +211,14 @@ void fxfs_vfs_make_room(struct super_block *sb)
 		fxfs_nofs(fxfs_fsync(info->fs));
 }
 
-/* fxfs_vfs_fsync, a DAX file's: file_write_and_wait_range, the size, and the seal. */
+/* fxfs_vfs_fsync, a DAX file's: file_write_and_wait_range, its dirty pages, and the seal. */
 int fxfs_vfs_fsync(struct file *file, loff_t start, loff_t end, int datasync)
 {
 	struct inode *inode = file_inode(file);
 	int err = filemap_write_and_wait_range(inode->i_mapping, start, end);
 
 	if (!err)
-		err = fxfs_dax_write_size(inode);
+		err = fxfs_dax_write_back(inode);
 	if (!err)
 		err = fxfs_nofs(fxfs_fsync(fxfs_vfs_fs(inode->i_sb)));
 	return err;

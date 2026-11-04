@@ -14,9 +14,9 @@
 # at a case's first failing round, whose logs it keeps, in ROUND-K under the
 # case's, and drops the passing rounds' but for what their guests said, in
 # round-K.log there, which measurements repeated round by round need (pgbench's
-# tps). FXDAX_FIRECRACKER_SECCOMP (real, log) runs
-# Firecracker under its production seccomp filter, and FXDAX_FIRECRACKER_JAIL=1 in its jailer's
-# jail, as an unprivileged user (see below).
+# tps). Firecracker runs under its production seccomp filter (FXDAX_FIRECRACKER_SECCOMP, real by
+# default; log, or none), and FXDAX_FIRECRACKER_JAIL=1 in its jailer's jail, as an unprivileged
+# user (see below).
 #
 # The guests' extent stores are served by fxdax's extent daemon, which this
 # starts, as FXDAX_EXTENTD tells the tests; its control API is beside it, at
@@ -53,14 +53,16 @@ cargo build --release --manifest-path "$root/Cargo.toml" -p fxdax --bin fxdax-ex
     ${extentd_features[@]+"${extentd_features[@]}"}
 extentd_bin="$root/target/release/fxdax-extentd"
 # From its directory, whose .cargo/config.toml sets its target directory and build environment.
-# For the host's target, Firecracker has no seccomp filter of its own, and allows every system
-# call. FXDAX_FIRECRACKER_SECCOMP builds it as production does, for musl, which compiles in its
-# filter (TASK-50.1): `real` runs under that; `log` under a copy of it that allows what it would
-# refuse, logging it, which $results/seccomp-log.txt lists afterwards, by thread and system call.
+# FXDAX_FIRECRACKER_SECCOMP builds Firecracker as production does, for musl, which compiles in its
+# filter (TASK-50.1): `real`, the default, runs under that; `log` under a copy of it that allows
+# what it would refuse, logging it, which $results/seccomp-log.txt lists afterwards, by thread and
+# system call; `none` for the host's target, with no filter of its own, allowing every system
+# call. Real by default: copy-on-write DAX's private memory needed three system calls the filter
+# lacked, and only jailed runs, which ask for it, would have shown it (TASK-164).
 firecracker_dir="$root/vendor/firecracker"
-seccomp=${FXDAX_FIRECRACKER_SECCOMP:-}
+seccomp=${FXDAX_FIRECRACKER_SECCOMP:-real}
 case "$seccomp" in
-    "")
+    none)
         (cd "$firecracker_dir" && cargo build --release -p firecracker --features fxdax)
         export FXDAX_FIRECRACKER="$firecracker_dir/build/cargo_target/release/firecracker"
         ;;
@@ -89,13 +91,13 @@ PY
             dmesg --clear
         fi
         ;;
-    *) echo "FXDAX_FIRECRACKER_SECCOMP is real or log" >&2; exit 2 ;;
+    *) echo "FXDAX_FIRECRACKER_SECCOMP is real, log or none" >&2; exit 2 ;;
 esac
 # FXDAX_FIRECRACKER_JAIL=1 runs each Firecracker as production does (TASK-50.1, TASK-50.4): in
 # the jail Firecracker's jailer makes, as an unprivileged user (64000), with /dev/userfaultfd in
-# the jail and vm.unprivileged_userfaultfd off; with FXDAX_FIRECRACKER_SECCOMP set, for musl.
+# the jail and vm.unprivileged_userfaultfd off; under a seccomp filter, for musl.
 if [[ -n ${FXDAX_FIRECRACKER_JAIL:-} ]]; then
-    [[ -n $seccomp ]] || { echo "FXDAX_FIRECRACKER_JAIL needs FXDAX_FIRECRACKER_SECCOMP" >&2; exit 2; }
+    [[ $seccomp != none ]] || { echo "FXDAX_FIRECRACKER_JAIL needs a seccomp filter" >&2; exit 2; }
     (cd "$firecracker_dir" && env "$musl_cflags" cargo build --release -p jailer --target "$musl")
     export FXDAX_FIRECRACKER_JAILER="$firecracker_dir/build/cargo_target/$musl/release/jailer"
     export FXDAX_JAIL_UID=64000 FXDAX_JAIL_GID=64000

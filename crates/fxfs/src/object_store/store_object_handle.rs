@@ -7,7 +7,8 @@
 // `multi_overwrite` writes to new blocks (`overwrite_with_new_blocks`) rather than in place, which
 // also keeps fxdax snapshots' shared blocks as they were. Reads of extents that may never have been
 // written (raw and preallocated, or overwrite extents none of whose blocks read is written) read
-// zeros if the store doesn't hold them.
+// zeros if the store doesn't hold them. `multi_write_packed` packs small writes into the staging
+// extent, which other small writes share (`Allocator::allocate_shared`): a guest's writeback.
 
 use crate::checksum::{Checksum, Checksums};
 use crate::errors::FxfsError;
@@ -16,6 +17,7 @@ use crate::lsm_tree::Query;
 use crate::lsm_tree::merge::{Merger, MergerIterator};
 use crate::lsm_tree::types::{ItemRef, LayerIterator};
 use crate::object_handle::ObjectHandle;
+use crate::object_store::allocator::STAGED_MAX;
 use crate::object_store::extent_record::{ExtentMode, ExtentValue};
 use crate::object_store::object_manager::ObjectManager;
 use crate::object_store::object_record::{
@@ -1278,13 +1280,14 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
         ranges: &[Range<u64>],
         buf: MutableBufferRef<'_>,
     ) -> Result<(), Error> {
-        self.multi_write_internal(transaction, attribute_id, key_id, ranges, buf).await?;
+        self.multi_write_internal(transaction, attribute_id, key_id, ranges, buf, false).await?;
         Ok(())
     }
 
     /// This is a low-level write function that writes to multiple ranges. Users should generally
     /// use `multi_write` instead of this function as this does not update the object's allocated
-    /// size, mtime, atime, etc.
+    /// size, mtime, atime, etc. fxdax: if `packed`, a write of at most STAGED_MAX bytes takes its
+    /// blocks of the staging extent (`multi_write_packed`).
     ///
     /// Returns (allocated, deallocated) bytes on success.
     async fn multi_write_internal(
@@ -1294,10 +1297,13 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
         key_id: Option<u64>,
         ranges: &[Range<u64>],
         mut buf: MutableBufferRef<'_>,
+        packed: bool,
     ) -> Result<(u64, u64), Error> {
         if buf.is_empty() {
             return Ok((0, 0));
         }
+        // Decided for the write as a whole, so that a large one's last allocation, short, doesn't.
+        let shared = packed && buf.len() as u64 <= STAGED_MAX;
         let block_size = self.block_size();
         let store = self.store();
         let store_id = store.store_object_id();
@@ -1345,10 +1351,13 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
         let mut current_range = logical_ranges.next().unwrap().clone();
 
         while !buf.is_empty() {
-            let allocated_range = allocator
-                .allocate(transaction, store_id, buf.len() as u64)
-                .await
-                .context("allocation failed")?;
+            let len = buf.len() as u64;
+            let allocated_range = if shared {
+                allocator.allocate_shared(transaction, store_id, len).await
+            } else {
+                allocator.allocate(transaction, store_id, len).await
+            }
+            .context("allocation failed")?;
             if trace {
                 info!(
                     store_id,
@@ -1487,8 +1496,39 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
         ranges: &[Range<u64>],
         buf: MutableBufferRef<'_>,
     ) -> Result<(), Error> {
-        let (allocated, deallocated) =
-            self.multi_write_internal(transaction, attribute_id, key_id, ranges, buf).await?;
+        self.multi_write_allocating(transaction, attribute_id, key_id, ranges, buf, false).await
+    }
+
+    /// fxdax: as `multi_write`, but a write of at most STAGED_MAX bytes takes its blocks of the
+    /// staging extent, which other small writes share (`Allocator::allocate_shared`, the
+    /// allocator's "Shared extents"), so that a directory of small files doesn't take an extent
+    /// each, nor a DAX window a MAP each to read them. The staging extent may be sealed between the
+    /// allocation and the write, by another's write to it and a barrier after, which the device
+    /// then refuses (`SealedExtent`): the caller tries again in a new transaction, with
+    /// `multi_write`, whose extents are its own, which nothing else reaches before it.
+    pub async fn multi_write_packed(
+        &self,
+        transaction: &mut Transaction<'_>,
+        attribute_id: AttributeId,
+        key_id: Option<u64>,
+        ranges: &[Range<u64>],
+        buf: MutableBufferRef<'_>,
+    ) -> Result<(), Error> {
+        self.multi_write_allocating(transaction, attribute_id, key_id, ranges, buf, true).await
+    }
+
+    async fn multi_write_allocating(
+        &self,
+        transaction: &mut Transaction<'_>,
+        attribute_id: AttributeId,
+        key_id: Option<u64>,
+        ranges: &[Range<u64>],
+        buf: MutableBufferRef<'_>,
+        packed: bool,
+    ) -> Result<(), Error> {
+        let (allocated, deallocated) = self
+            .multi_write_internal(transaction, attribute_id, key_id, ranges, buf, packed)
+            .await?;
         if allocated == 0 && deallocated == 0 {
             return Ok(());
         }

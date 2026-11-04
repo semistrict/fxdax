@@ -6,16 +6,15 @@
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c
-@@ -3173,10 +3173,10 @@
- 	 * as a slice the write can't use is, and mapped again as large as it needs (-EXDEV). It was
- 	 * a WARN and EIO (TASK-79.28).
- 	 */
--	if (end <= pos) {
-+	if (WARN_ON_ONCE(end <= pos)) {
- 		kvfree(extents);
+@@ -2460,8 +2460,10 @@
+ 		return PTR_ERR(range);
+ 	start = fxfs_dax_chunk_start(range);
+ 	if (range->region || start + ((loff_t)range->pages << PAGE_SHIFT) <= pos) {
++		bool short_of_pos = !range->region;
++
  		fxfs_dax_put_range(dax, range);
 -		return -EXDEV;
-+		return -EIO;
++		return WARN_ON_ONCE(short_of_pos) ? -EIO : -EXDEV;
  	}
- 	if (size)
- 		size = end;
+ 	first = (pos - start) >> PAGE_SHIFT;
+ 	end = min_t(loff_t, end, start + ((loff_t)min(range->pages, first + dax->iomap_pages) <<

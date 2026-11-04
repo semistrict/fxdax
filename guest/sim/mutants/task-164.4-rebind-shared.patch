@@ -3,12 +3,12 @@
 #
 # TASK-164.4, doc-13: a rebind under the file's semaphore shared: a write(2) dirties and stores to a
 # page between the rebind's look and its MAP, which replaces it with the extent's.
-# cow_rebind_against_write; fxfs_dax_cow_map's lockdep assertion fails first, in every scenario that
-# rebinds.
+# cow_rebind_against_write; fxfs_dax_map_pages' lockdep assertion fails first, in every scenario
+# that rebinds.
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c
-@@ -3851,7 +3851,7 @@
+@@ -2124,7 +2124,7 @@
  	if (!atomic_long_read(&file->private_pages))
  		return 0;
  	mutex_lock(&file->wb_lock);
@@ -17,12 +17,12 @@
  	/* A volume going (fxfs_dax_remove_volume) stops the worker first. */
  	volume = READ_ONCE(file->volume);
  	xa_for_each(&file->ranges, chunk, range) {
-@@ -3873,7 +3873,7 @@
+@@ -2148,7 +2148,7 @@
  				rebound += done;
  		}
  	}
 -	up_write(&file->sem);
 +	up_read(&file->sem);
  	mutex_unlock(&file->wb_lock);
- 	atomic64_add(rebound, &dax->cow_rebound);
+ 	atomic64_add(rebound, &dax->rebound);
  	return rebound;

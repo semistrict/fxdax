@@ -146,7 +146,9 @@ def served(requests, daemon):
         def each(name):
             return daemon[name] / commits / 1e3
 
-        # The phases the daemon counted: an older one did not count the writing apart.
+        # The phases the daemon counted: older ones counted writing open extents and sealing
+        # windows' mappings, which copy-on-write DAX's commits no longer do, and the oldest did
+        # not count the writing apart.
         phases = []
         if "commit-write-ns" in daemon:
             written = daemon["commit-written-bytes"] / commits / 1024
@@ -160,6 +162,7 @@ def served(requests, daemon):
                 ("sealing the windows' mappings", "commit-seal-ns"),
                 ("waiting for object storage", "commit-wait-ns"),
             ]
+            if name in daemon
         ]
         lines += [
             "",

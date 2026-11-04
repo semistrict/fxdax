@@ -6,7 +6,7 @@
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c
-@@ -3878,11 +3878,8 @@
+@@ -2133,10 +2133,7 @@
  		for (page = find_first_bit(range->private, range->pages); page < range->pages;
  		     page = find_next_bit(range->private, range->pages, end)) {
  			end = page + 1;
@@ -18,4 +18,3 @@
  				end++;
  			/* Before the MAP over them, holding what a rebind holds (pause points). */
  			fxfs_dax_pause_file(FXFS_DAX_STEP_REBIND, file->ino);
- 			done = fxfs_dax_cow_map(dax, volume->fs, range, page, end, true);

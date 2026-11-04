@@ -80,19 +80,14 @@ int fxfs_device_submit(struct fxfs_device *dev, const struct fxfs_device_op *op,
 		       fxfs_device_done_t done, void *arg);
 
 /*
- * Stores through the DAX window's writable mappings, and requests that seal the extents they map,
- * which make them read-only (doc-4): a COMMIT, or a WRITE with a barrier. A store is made between
- * fxfs_device_store_begin and fxfs_device_store_end, and a request that seals is submitted between
- * fxfs_device_seal_begin, which waits for the stores in progress and keeps new ones out, and
- * fxfs_device_seal_end, once the device completes it. Seal_begin then calls the sealer, which
- * makes what may store later, such as user mappings, ask again, and forgets which window pages are
- * writable. Neither stores nor the sealer may wait for the filesystem's Rust, which seals.
+ * Requests that seal the extents open (doc-4), a COMMIT, or a WRITE with a barrier, are submitted
+ * between fxfs_device_seal_begin and fxfs_device_seal_end, once the device completes it, which
+ * count seals (fxfs_device_seals): extents Fxfs takes for sealed from a seal's beginning are on the
+ * device only at its end, and the DAX window maps sealed extents alone (doc-13). `sealed(arg)` is
+ * called once each seal ends; it may not wait for the filesystem's Rust, which seals.
  */
-typedef void (*fxfs_device_sealer_t)(void *arg);
-/* Called once a seal ends; it may not wait either. */
 typedef void (*fxfs_device_sealed_t)(void *arg);
-void fxfs_device_set_sealer(struct fxfs_device *dev, fxfs_device_sealer_t sealer,
-			    fxfs_device_sealed_t sealed, void *arg);
+void fxfs_device_set_sealed(struct fxfs_device *dev, fxfs_device_sealed_t sealed, void *arg);
 
 /*
  * The store's capacity, and the shrink the guest is asked to take, or 0, as the device's
@@ -101,41 +96,18 @@ void fxfs_device_set_sealer(struct fxfs_device *dev, fxfs_device_sealer_t sealer
 int fxfs_device_capacity(struct fxfs_device *dev, u64 *capacity, u64 *asked);
 /*
  * Has `changed(arg)` called as the device's configuration changes: the host resizes the store, or
- * a shrink is asked, or the host asks the guest to seal; or, a follower's (FXFS_DEVICE_READ_ONLY),
- * its writer commits. Or nothing, if `changed` is NULL. Called from the device's interrupt: it
+ * a shrink is asked; or, a follower's (FXFS_DEVICE_READ_ONLY), its writer commits. Or nothing, if `changed` is NULL. Called from the device's interrupt: it
  * must not sleep.
  */
 typedef void (*fxfs_device_changed_t)(void *arg);
 void fxfs_device_set_changed(struct fxfs_device *dev, fxfs_device_changed_t changed, void *arg);
 /* fxdax: a follower's device's writer's latest commit, as its configuration says now. */
 u64 fxfs_device_committed(struct fxfs_device *dev);
-/*
- * fxdax: the host's ask that the guest seal what it holds open, its number, as the configuration
- * says now: 0 if none, or if the device asks none (VIRTIO_EXTENT_F_SEAL). Another guest's writable
- * MAP was refused for want of the memory this one's open extents hold, which only its seal lets go
- * of (fxdax's TASK-153.15).
- */
-u64 fxfs_device_seal_asked(struct fxfs_device *dev);
-/* fxdax: answers the ask of `asked`: the guest has sealed, or tried to. 0, or a -errno. */
-int fxfs_device_sealed(struct fxfs_device *dev, u64 asked);
-/*
- * Waits for a seal in progress to end, and enters the gate. Returns the seal count (as
- * fxfs_device_seals): extents found open when it was the same are still.
- */
-u64 fxfs_device_store_begin(struct fxfs_device *dev);
-/*
- * Enters the gate, setting `seals`, unless a seal is in progress: false then, and the caller may
- * wait for it to end (fxfs_device_wait_unsealed), having let go of what a store in the gate may
- * wait for, such as a DAX entry a fault holds.
- */
-bool fxfs_device_store_try_begin(struct fxfs_device *dev, u64 *seals);
+/* Waits for a seal in progress, if any, to end. */
 void fxfs_device_wait_unsealed(struct fxfs_device *dev);
-void fxfs_device_store_end(struct fxfs_device *dev);
-/* fxdax: with lockdep, warns unless this task is in the gate (TASK-44.9). */
-void fxfs_device_assert_in_gate(struct fxfs_device *dev);
 /*
  * The seal count: how many seals have begun and ended, odd while one is in progress, whose request
- * may seal extents opened meanwhile. The gate never returns an odd count.
+ * may seal extents opened meanwhile.
  */
 u64 fxfs_device_seals(struct fxfs_device *dev);
 void fxfs_device_seal_begin(struct fxfs_device *dev);
@@ -144,26 +116,27 @@ void fxfs_device_seal_end(struct fxfs_device *dev);
 struct dax_device;
 
 /*
- * The DAX window's dax_device, if files' data can be mapped from it: the device maps open extents
- * writably (DAX_WRITE), or fxdax: copies on write (DAX_COW), or, a follower's, maps sealed ones
- * alone, at the page size, which is a block. Sets `window_len`.
+ * The DAX window's dax_device, if files' data can be mapped from it, at the page size, which is a
+ * block: fxdax: the window copies on write (doc-13), mapping sealed extents and zeros alone,
+ * read-only, a store to a page making it the VM's own, private, until a MAP or UNMAP over it; or,
+ * a follower's, takes no store. Sets `window_len`.
  */
 struct dax_device *fxfs_device_dax(struct fxfs_device *dev, u64 *window_len);
 /*
- * fxdax: whether the window copies on write (DAX_COW, doc-13): it maps sealed extents and zeros
- * alone, read-only, a store to a page making it the VM's own, private, until a MAP or UNMAP over
- * it; and the most private pages the device holds at once, past which a store stops the VM.
+ * fxdax: the most private pages the device holds at once, past which a store stops the VM; and
+ * whether it follows a store another VM writes, read-only (FXFS_DEVICE_READ_ONLY): its window
+ * takes no store, nor maps zeros.
  */
-bool fxfs_device_dax_cow(struct fxfs_device *dev);
 u64 fxfs_device_private_max(struct fxfs_device *dev);
+bool fxfs_device_read_only(struct fxfs_device *dev);
 /*
  * Maps `len` bytes at `offset` in the extent {branch, sequence} at `window_offset` in the window,
- * writably if `writable` (MAP), or unmaps `len` bytes there (UNMAP), and waits for the device.
- * fxdax: `ahead` if the guest accesses the pages next, as a read does, which the device then maps
- * for it ahead of its accesses, if it can (MAP_AHEAD, TASK-112.1).
+ * read-only (MAP), or unmaps `len` bytes there (UNMAP), and waits for the device. fxdax: `ahead`
+ * if the guest accesses the pages next, as a read does, which the device then maps for it ahead of
+ * its accesses, if it can (MAP_AHEAD, TASK-112.1).
  */
 int fxfs_device_map(struct fxfs_device *dev, u64 branch, u64 sequence, u64 offset, u64 len,
-		    u64 window_offset, bool writable, bool ahead);
+		    u64 window_offset, bool ahead);
 
 /*
  * fxdax: one of fxfs_device_map_many's maps, as fxfs_device_map's arguments say it; or, with
@@ -175,7 +148,6 @@ struct fxfs_device_map {
 	u64 offset;
 	u64 len;
 	u64 window_offset;
-	bool writable;
 	bool ahead;
 	bool zeros;
 };
@@ -188,17 +160,14 @@ int fxfs_device_map_many(struct fxfs_device *dev, const struct fxfs_device_map *
 			 size_t count);
 int fxfs_device_unmap(struct fxfs_device *dev, u64 window_offset, u64 len);
 /*
- * fxdax: with DAX_COW, maps zeros at `len` bytes of the window at `window_offset` (MAP_ZEROS), read-
+ * fxdax: maps zeros at `len` bytes of the window at `window_offset` (MAP_ZEROS), read-
  * only, as holes and pages past a file's end are; and makes `len` bytes there private now, as
  * stores would, mapped for the guest ahead of its accesses (PRIVATE): -ENOMEM past private_max.
  * Each waits for the device.
  */
 int fxfs_device_map_zeros(struct fxfs_device *dev, u64 window_offset, u64 len);
 int fxfs_device_private(struct fxfs_device *dev, u64 window_offset, u64 len);
-/*
- * fxdax: shows what the window's requests took, and the stores seals held off, as lines of a name
- * and a number (TASK-91.7).
- */
+/* fxdax: shows what the window's requests took, as lines of a name and a number (TASK-91.7). */
 void fxfs_device_show_stats(struct fxfs_device *dev, struct seq_file *m);
 
 #endif

@@ -19,9 +19,8 @@
 //! - The window's changes go to the VM process as stage operations ([`wire::STAGE_MAP`] and the
 //!   others), which it makes in order, before it takes the replies sent after them: a fault's or a
 //!   `MAP`'s mappings are made before the guest is told they are. One that takes access to a page
-//!   away (an unmap, or making a page read-only) is acknowledged, so that no VM has access to a
-//!   page the kernel frees, reuses, or seals and shares: what the kernel frees waits for it, and a
-//!   seal's sharing too. The daemon waits for none, as the kernel sends them with its locks held:
+//!   away (an unmap, or a page made private in its place) is acknowledged, so that no VM has
+//!   access to a page the kernel frees or reuses: what the kernel frees waits for it. The daemon waits for none, as the kernel sends them with its locks held:
 //!   a VM process that stopped answering would hold them, and every VM's faults, for good; one
 //!   that leaves one unacknowledged for long, it kills (TASK-79.9).
 //! - The guest's faults on the window reach the VM process through userfaultfd, which sends them
@@ -99,7 +98,6 @@ pub mod logging;
 pub mod memory;
 pub mod metrics;
 mod pool;
-mod seals;
 pub(crate) mod server;
 mod stores;
 pub(crate) mod wire;

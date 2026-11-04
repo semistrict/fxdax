@@ -8,6 +8,16 @@
 
 # Decisions
 
+## The host's copy-on-write DAX protocol once writable DAX is deleted (TASK-164.7, 2026-11-04)
+
+Writable DAX is deleted from the host (vendor/firecracker's extent device, crates/fxdax, physmem, extent_store). Decided, where the brief left it open:
+- **Daemon wire `WINDOW`:** no flag. `args[1]` is the private pages a window holds; a writer's window must copy on write (`args[1]` ≥ 1), a follower's must not (`args[1]` 0), `EINVAL` otherwise; the codec refuses any flag, and more private pages than the window has. The client's `create_dax_window_in_host_memory` takes `private_max` (0 for a follower); `create_copying_dax_window_in_host_memory` is gone. In-process, `ExtentStore::create_dax_window` (refusing every store) stays beside `create_copying_dax_window`, for followers and tests.
+- **Retired numbers, not reused:** device feature bits 1, 9, 10, `MAP` flag bit 0, request 15 (`T_SEALED`); daemon requests 29 (`SEALED`), 107 (`SEAL`), 102 (`STAGE_PROTECT`), `MAP` flag bit 0, `MAPPING` flag bit 0, `WINDOW` flag bit 0. The config drops `seal_asked`: `private_max` follows `committed`. `STAGE_MAP`'s `args[3]` (its protection) is unused, ignored as words a kind doesn't use are. `STAGE_COUNTS`/`ACK` say four counts: write-protects went with seals.
+- **`Protection` is gone from `SecondStage::map`:** every map is read-only; only `make_private` makes a page writable.
+- **Stats and the control API:** `commit-write-ns`, `commit-written-bytes`, `commit-seal-*`, `stage-write-protects`, `stage-maps-open`, `open-alloc-*` are gone; `GetStatsResponse` reserves fields 16, 17, 19. scripts/bench-report.py reads `commit-seal-ns` unconditionally and needs the same change.
+- **`FXDAX_CHECK_SEALED_READS` is gone:** it compared reads with what commits wrote of open extents' memory, which no longer exists.
+**Undoing it:** none of this has a flag; restoring writable DAX is reverting the change.
+
 ## Copy-on-write DAX's private pages are the VM process's memory, laid out as the window is (TASK-164.1, 2026-11-04)
 
 Each private page was a page of the tenant's arena, mapped in the VM process on its own: a mapping each, as the arena's frames aren't laid out by window offset, so the second stage's run budget (about 30k) trimmed and reinstalled them by the thousand; r544 held 110,857 and its fault thread trimmed instead of lifting a vCPU's restriction (`KVM_RUN` kept failing with `EFAULT`, exit 159). Decided: a window that copies on write has the VM process's private memory (`dax::uffd::PrivateMemory`), a memfd as large as the window, mapped shared at the window's offsets wherever nothing is installed, only private pages filled (`UFFDIO_COPY` through a second view, holes elsewhere so faults still go to the stage). `STAGE_PRIVATE` (108) has the VM process copy the source page (pread of the arena it holds) or zeros in; an unmap or map over it punches the hole. Adjacent private pages and the memory around them are one mapping; trims never touch them. The daemon keeps only their offsets and count; `private_max` is still pinned against the tenant's arena as the window is made.
@@ -23,6 +33,7 @@ The control socket (`FXDAX_EXTENTD_GRPC`) followed the umask, world-connectable 
 
 ## DAX writes Fxfs's own blocks in place only if their record is raw (TASK-160.22, 2026-11-04)
 
+**Superseded (2026-11-04):** writable DAX is deleted (doc-13, TASK-164); no window writes in place, `txn_map_write` and `window_access` are gone, and `in_place` serves `overwrite` alone.
 A window wrote in place any blocks of an open extent the file alone held, whatever their record said. Blocks under a checksummed record (a growth's zeroed tail, ordinary writes) then held bytes their checksums didn't, which journal replay checks; blocks under an allocation's record read as zeros to Fxfs whatever the window stored. Decided: one rule, `in_place`, used by `extents_in`, `txn_map_write` and `overwrite`: in place only if the record is raw and nothing shares the blocks. Such blocks in an open extent are `ExtentAccess::Shared` to the window (read-only, the extent open), and a window's first write moves them once.
 **Instead:** write in place and drop the record's checksums or allocation bitmap as the window writes: a transaction per first store.
 **Undoing it:** `window_access`'s `InPlace::Recorded` arm back to `Open`.
@@ -41,6 +52,7 @@ Fxfs raises `Inconsistent` and `IntegrityError` on purpose now (TASK-153.11, 153
 
 ## A DAX write(2)'s move commits after its bytes, as XFS's copy on write does (TASK-153.5, 2026-11-03)
 
+**Superseded (2026-11-04):** writable DAX is deleted (doc-13, TASK-164); `fxfs_dax_begin_write` and `DaxWrite` are gone, and copy-on-write writeback commits after its bytes through `fxfs_write_many`.
 A write(2) over the file's data moved its blocks and committed before its bytes were copied, so a write that failed after the move (a MAP failure, a seal, a killed writer, a copy cut short) left the new blocks' zeros where the data was (TASK-79.106, 119.13, 150.8, `map_failed_writing`). Decided: the move stays an uncommitted Fxfs transaction (`fxfs_dax_begin_write`, `DaxWrite`) from the iomap to `iomap_end`, where it commits out of the gate once the bytes are in, or is dropped, leaving the file as it was. The write holds its file's semaphore all along, and waits for faults past their iomaps first. Faults and zeroing still commit first. pgbench-dax measured equal: 826.3 against main's 834.3 tps over 25 runs a side on one host, the rounds alternating around 1 (docs/measurements/pgbench-dax-commit-after-bytes-2026-11-03.md). Landed for what it removes from write(2): bytes in hand before a move (-ENOTBLK), the -ESTALE retry after one, a second move after a seal, the second unmap of TASK-153.3; and a failed write can no longer zero data, which guest/sim's `failures` now checks.
 **Instead:** keep committing before the bytes, with the retries that mend a failure after: the same tps, and more ways to lose data.
 **Undoing it:** revert the TASK-153.5 commits (dax.c, fxfs.h, fxfs-linux, fxfs-posix's `dax_begin_write`, the sim model); the guest checks `write_killed` and `map_many_failed` go back to expecting the old behaviour.
@@ -65,6 +77,7 @@ A record's six flags (origin, forked, deleted, point, forking, claimed) were rea
 
 ## The daemon asks other guests to seal when a writable MAP is refused (TASK-153.15, 2026-11-03)
 
+**Superseded (2026-11-04):** writable DAX is deleted (doc-13, TASK-164); with no open pages there is nothing to seal for, and `F_SEAL`, `seal_asked`, `SEALED`, the daemon's `SEAL` and `extentd/seals.rs` are gone.
 Only a guest can seal its open extents, whose pages count against a budget its daemon's VMs share. One idle VM's open pages could take the budget, and another VM got `ENOMEM` from writes its own seals couldn't make room for. Decided: when a writable `MAP` is refused, the daemon asks the guests holding the most open pages to seal. It asks those of its tenant first, enough to cover the `MAP`. It waits for their answers, holding no thread, 10 s at most, then tries once more. This uses a device notice (doc-4's `F_SEAL`, `seal_asked`, `SEALED`), shaped like the resize notice. The guest seals with an ordered commit. Asks are made only under pressure, not on a timer for idle VMs: the most-held ranking already picks the idle VM, and a timer would seal VMs nobody needs room from. A guest that has been asked never waits for another guest's seal, which rules out a cycle of waits. A guest that doesn't answer within 10 s isn't waited for again until it does.
 **Instead:** (1) a per-tenant share of open pages: a VM still can't go past its share while others sit idle, and the shares need sizing. (2) Evict open pages to the store and fault them back: the daemon would have to take writable pages away from a running guest. (3) Also ask idle VMs on a timer.
 **Undoing it:** in `Connection::map_writably`, stop calling `seals::made_room`; take `F_SEAL` out of the device's features. The guest then never sees an ask.

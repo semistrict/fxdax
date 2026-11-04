@@ -4,13 +4,12 @@
 # found in the LICENSE file.
 """Finds the guest stores an extent daemon's DAX windows refused that no seal explains (TASK-44.12).
 
-A guest's store to a page of the extent being sealed may reach the window after the seal made the
-page read-only, before the guest's own seal makes its mappings read-only: KVM's asynchronous page
-fault, a kernel worker's, faults the page in for the vCPU as its guest goes on, and the window
-refuses it; the guest's task retries once the guest made its mapping read-only, through its own
-fault, which maps the page anew. Every DAX run has hundreds such, of pages of extents sealed. A
-store refused to a page of an extent still open, or mapped writably, is the guest and the window
-disagreeing (TASK-99): that fails the run. But the same worker's fault refused on a page the window
+The window copies on write (doc-13): a vCPU's store to a page mapped read-only gets a private copy,
+and the window refuses a store to a page it maps nothing at, or past private_max, which stops the
+VM. KVM's asynchronous page fault, a kernel worker's, faulting a page in for a vCPU as its guest
+goes on, may find it refused, of a page of a sealed extent, which writable DAX's seals made
+read-only: hundreds a run then. A store refused to a page of an extent still open is the guest and
+the window disagreeing (TASK-99): that fails the run. But the same worker's fault refused on a page the window
 just remapped, which the guest was reading, looks like that to the daemon too, and it was all 2,327
 of r422's refused stores and all 28 of r394's (TASK-150.16): given the VM processes' logs, which name
 the thread, only a store a vCPU made fails the run, whatever the page: a worker's is no store of the

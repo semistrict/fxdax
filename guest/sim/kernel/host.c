@@ -3,10 +3,11 @@
 /*
  * The process under the fake kernel: the one file built against libc rather than the shim.
  * Coroutines are ucontexts, told to ASan as it asks. The window is one mapping of address space,
- * and a store through it that the host would refuse is a real SIGSEGV. One it would copy on write
- * (doc-13's DAX_COW) faults too, as the host's userfaultfd write-protect does, and the device's
- * model says why it refuses it: the guest makes every page private (PRIVATE) before a store can
- * reach it, so a store the host would copy at is a bug of the guest's (TASK-164.9).
+ * read-only but for private pages, and a store through it that the host would refuse is a real
+ * SIGSEGV. One it would copy on write (doc-13) faults too, as the host's userfaultfd write-protect
+ * does, and the device's model says why it refuses it: the guest makes every page private
+ * (PRIVATE) before a store can reach it, so a store the host would copy at is a bug of the guest's
+ * (TASK-164.9).
  */
 
 #define _GNU_SOURCE
@@ -42,7 +43,10 @@ static struct sim_fiber main_fiber;
 static int store_fd = -1;
 static char *window;
 static uint64_t window_len;
-/* Takes a store the window faulted on: NULL if it made the page writable, or why the host refused. */
+/*
+ * Takes a store the window faulted on: NULL if it made the page private, or why the host
+ * refused it.
+ */
 /* The device model's, whose u64 is unsigned long long: a pointer of another type is no call UBSan allows. */
 static const char *(*window_store)(unsigned long long offset);
 
@@ -197,7 +201,7 @@ void host_store_zero(uint64_t offset, size_t len)
 static void window_segv(int sig, siginfo_t *info, void *context)
 {
 	uintptr_t at = (uintptr_t)info->si_addr, base = (uintptr_t)window;
-	const char *why = "nothing mapped writable there";
+	const char *why = "nothing mapped private there";
 
 	if (window && at >= base && at < base + window_len) {
 		if (sig == SIGSEGV && window_store)
@@ -229,10 +233,10 @@ void *host_window_init(uint64_t len, const char *(*store)(unsigned long long off
 	return window;
 }
 
-void host_window_map(uint64_t offset, uint64_t store_offset, uint64_t len, bool writable)
+void host_window_map(uint64_t offset, uint64_t store_offset, uint64_t len)
 {
-	if (mmap(window + offset, len, PROT_READ | (writable ? PROT_WRITE : 0),
-		 MAP_SHARED | MAP_FIXED, store_fd, store_offset) == MAP_FAILED)
+	if (mmap(window + offset, len, PROT_READ, MAP_SHARED | MAP_FIXED, store_fd, store_offset) ==
+	    MAP_FAILED)
 		die("mmap of the store");
 }
 
@@ -248,12 +252,6 @@ void host_window_unmap(uint64_t offset, uint64_t len)
 	if (mmap(window + offset, len, PROT_NONE, MAP_PRIVATE | MAP_FIXED | MAP_ANONYMOUS, -1, 0) ==
 	    MAP_FAILED)
 		die("mmap of nothing");
-}
-
-void host_window_read_only(uint64_t offset, uint64_t len)
-{
-	if (mprotect(window + offset, len, PROT_READ))
-		die("mprotect");
 }
 
 /*

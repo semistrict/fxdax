@@ -152,12 +152,12 @@ fn windows_let_go_of_the_daemons_pages_as_their_connection_goes() {
     let (store, served) = connect(&dir.path().join("store"), 1 << 24);
     let memory = memory(2);
     // SAFETY: The memory is the test's, and outlives the store.
-    unsafe { store.create_dax_window_in_host_memory(memory, 2 * ps as u64, None) }.unwrap();
+    unsafe { store.create_dax_window_in_host_memory(memory, 2 * ps as u64, None, 1) }.unwrap();
     let base = memory.as_ptr() as usize;
     let extent = ExtentId { branch: store.branch(), sequence: 1 };
     write(&store, extent, 0, &pattern(4, ps)).unwrap();
     store.commit(None).unwrap();
-    store.map(extent, 0, ps as u64, 0, false).unwrap();
+    store.map(extent, 0, ps as u64, 0).unwrap();
     // SAFETY: The window's memory, whose faults the store serves.
     let page = unsafe { std::slice::from_raw_parts(memory.as_ptr(), ps) };
     assert!(*page == pattern(4, ps)[..], "the window maps other data");
@@ -261,7 +261,7 @@ fn keeps_object_storage_and_follower_stats() {
     assert_eq!(count(&requests, "commit"), Some(3), "{kept}");
     let ns = |fields: &[(String, u64)], name: &str| count(fields, name).unwrap();
     assert!(ns(&requests, "commit-ns") >= ns(&daemon, "commit-ns"), "{kept}");
-    let phases = ["commit-write-ns", "commit-store-ns", "commit-seal-ns", "commit-wait-ns"];
+    let phases = ["commit-store-ns", "commit-wait-ns"];
     assert!(
         ns(&daemon, "commit-ns") >= phases.map(|phase| ns(&daemon, phase)).iter().sum::<u64>(),
         "{kept}"
@@ -691,9 +691,9 @@ fn blocking_calls_where_replies_arrive_fail() {
     served.join().unwrap();
 }
 
-/// The window is the daemon's, in this process's memory: a store to a writable mapping of a new
-/// extent faults, which the daemon resolves, and the data is the extent's; sealed, the mapping is
-/// read-only, of the sealed extent's pages, which another mapping of it maps too.
+/// The window is the daemon's, in this process's memory: a load of a sealed extent's page faults,
+/// which the daemon resolves, mapping the extent's page, which another mapping of it maps too;
+/// unmapped, the page is the window's private memory again, as one it never mapped.
 #[test]
 fn maps_a_window_in_the_vm_process() {
     host();
@@ -702,25 +702,28 @@ fn maps_a_window_in_the_vm_process() {
     let (store, served) = connect(&dir.path().join("store"), 1 << 24);
     let memory = memory(4);
     // SAFETY: The memory is the test's, and outlives the store.
-    unsafe { store.create_dax_window_in_host_memory(memory, 4 * ps as u64, None) }.unwrap();
+    unsafe { store.create_dax_window_in_host_memory(memory, 4 * ps as u64, None, 1) }.unwrap();
     let base = memory.as_ptr() as usize;
     let extent = ExtentId { branch: store.branch(), sequence: 1 };
-    store.map(extent, 0, ps as u64, 0, true).unwrap();
-    // SAFETY: The window's memory, whose faults the store serves.
-    unsafe { std::ptr::copy_nonoverlapping(pattern(3, ps).as_ptr(), memory.as_ptr(), ps) };
-    assert_eq!(read(&store, extent, 0, BLOCK), Ok(pattern(3, BLOCK)));
-
+    write(&store, extent, 0, &pattern(3, ps)).unwrap();
     store.commit(None).unwrap();
-    store.map(extent, 0, ps as u64, 2 * ps as u64, false).unwrap();
-    // SAFETY: As above.
+    store.map(extent, 0, ps as u64, 0).unwrap();
+    store.map(extent, 0, ps as u64, 2 * ps as u64).unwrap();
+    // SAFETY: The window's memory, whose faults the store serves.
     let window = unsafe { std::slice::from_raw_parts(memory.as_ptr(), 3 * ps) };
     assert!(window[..ps] == pattern(3, ps)[..], "the sealed extent holds other data");
     assert!(window[2 * ps..] == pattern(3, ps)[..], "its other mapping maps other data");
     assert_eq!(mapped_from(base + 2 * ps), mapped_from(base));
     assert_ne!(mapped_from(base).0, ANONYMOUS, "the window maps no file");
-    // Unmapped, the page is gone from this process's memory once the daemon replies.
+    // A page the window never mapped is its private memory, laid out as the window is (backlog
+    // doc-13): not anonymous memory, nor the extent's.
+    let (private, at) = mapped_from(base + 3 * ps);
+    assert_eq!(at, 3 * ps as u64, "the private memory is laid out otherwise");
+    assert_ne!(private, mapped_from(base).0, "the window maps the extent where it maps nothing");
+    // Unmapped, the extent's page is gone from this process's memory once the daemon replies: the
+    // private memory is there in its place, as where the window never mapped anything.
     store.unmap(2 * ps as u64, ps as u64).unwrap();
-    assert_eq!(mapped_from(base + 2 * ps).0, ANONYMOUS);
+    assert_eq!(mapped_from(base + 2 * ps), (private, 2 * ps as u64));
 
     drop(store);
     served.join().unwrap();
@@ -745,7 +748,7 @@ fn kernel_store(addr: usize) -> Result<(), i32> {
 }
 
 /// fxdax TASK-164.1 (backlog doc-13): a window that copies on write, in the VM process, maps
-/// sealed extents and zeros alone (a `MAP` of an open extent, or a writable one, `EPERM`). The
+/// sealed extents and zeros alone (a `MAP` of an open extent `EPERM`). The
 /// guest's store to a sealed extent's page makes the page private, the tenant's memory mapped in
 /// its place, the extent as the store's reads have it and another mapping of it; to zeros, a page
 /// of zeros. Past the window's private pages a store is refused (`EFAULT`, as `KVM_RUN` fails,
@@ -760,8 +763,7 @@ fn windows_copy_on_write_in_the_vm_process() {
     let (store, served) = connect(&dir.path().join("store"), 1 << 24);
     let memory = memory(4);
     // SAFETY: The memory is the test's, and outlives the store.
-    unsafe { store.create_copying_dax_window_in_host_memory(memory, 4 * ps as u64, None, 2) }
-        .unwrap();
+    unsafe { store.create_dax_window_in_host_memory(memory, 4 * ps as u64, None, 2) }.unwrap();
     assert!(store.copies_on_write());
     crate::guest_thread_started();
     let base = memory.as_ptr() as usize;
@@ -772,11 +774,10 @@ fn windows_copy_on_write_in_the_vm_process() {
     write(&store, sealed, 0, &pattern(3, ps)).unwrap();
     store.commit(None).unwrap();
     write(&store, open, 0, &pattern(4, ps)).unwrap();
-    assert_eq!(store.map(open, 0, ps as u64, 0, false), Err(Errno::EPERM));
-    assert_eq!(store.map(sealed, 0, ps as u64, 0, true), Err(Errno::EPERM));
+    assert_eq!(store.map(open, 0, ps as u64, 0), Err(Errno::EPERM));
     store.commit(None).unwrap();
-    store.map(sealed, 0, ps as u64, 0, false).unwrap();
-    store.map(sealed, 0, ps as u64, ps as u64, false).unwrap();
+    store.map(sealed, 0, ps as u64, 0).unwrap();
+    store.map(sealed, 0, ps as u64, ps as u64).unwrap();
     futures::executor::block_on(store.map_zeros_async(2 * ps as u64, ps as u64)).unwrap();
     // The window's bytes from `at` to `end`, as the guest reads them.
     let window = |at: usize, end: usize| -> Vec<u8> {
@@ -808,7 +809,7 @@ fn windows_copy_on_write_in_the_vm_process() {
     assert_eq!(store.make_private(ps as u64, ps as u64), Ok(()));
     assert_eq!(kernel_store(base + ps), Ok(()));
     assert_eq!(store.make_private(3 * ps as u64, ps as u64), Err(Errno::EINVAL));
-    store.map(sealed, 0, ps as u64, 3 * ps as u64, false).unwrap();
+    store.map(sealed, 0, ps as u64, 3 * ps as u64).unwrap();
     assert_eq!(store.make_private(3 * ps as u64, ps as u64), Err(Errno::ENOMEM));
     store.unmap(0, 4 * ps as u64).unwrap();
     assert_eq!(store.fork_quiescent(&point, store.branch() + 1), Ok(()));
@@ -820,8 +821,8 @@ fn windows_copy_on_write_in_the_vm_process() {
 }
 
 /// TASK-131.6: the daemon's gauges of its extent cache and its windows' mappings follow a window's
-/// mappings: an open extent's, its page stored to; sealed, the cached extent its two mappings hold
-/// (pinned), its pages faulted in; and unmapped, the cached extent nothing holds (idle).
+/// mappings: a sealed extent's, the cached extent its mappings hold (pinned), its page faulted in,
+/// then mapped at once again; and unmapped, the cached extent nothing holds (idle).
 #[test]
 fn metrics_gauge_the_extent_cache_and_the_windows_mappings() {
     host();
@@ -845,18 +846,18 @@ fn metrics_gauge_the_extent_cache_and_the_windows_mappings() {
     let (store, served) = connect(&dir.path().join("store"), 1 << 24);
     let memory = memory(4);
     // SAFETY: The memory is the test's, and outlives the store.
-    unsafe { store.create_dax_window_in_host_memory(memory, 4 * ps as u64, None) }.unwrap();
+    unsafe { store.create_dax_window_in_host_memory(memory, 4 * ps as u64, None, 1) }.unwrap();
     assert_eq!(gauges(), [0, 0, 0, 0, 0]);
     let extent = ExtentId { branch: store.branch(), sequence: 1 };
-    store.map(extent, 0, ps as u64, 0, true).unwrap();
-    // SAFETY: The window's memory, whose faults the store serves.
-    unsafe { std::ptr::copy_nonoverlapping(pattern(3, ps).as_ptr(), memory.as_ptr(), ps) };
-    assert_eq!(gauges(), [0, 0, 1, ps as u64, 1]);
-
+    write(&store, extent, 0, &pattern(3, ps)).unwrap();
     store.commit(None).unwrap();
-    store.map(extent, 0, ps as u64, 2 * ps as u64, false).unwrap();
-    // SAFETY: As above.
+    store.map(extent, 0, ps as u64, 0).unwrap();
+    // SAFETY: The window's memory, whose faults the store serves.
     let window = unsafe { std::slice::from_raw_parts(memory.as_ptr(), 3 * ps) };
+    assert!(window[..ps] == pattern(3, ps)[..], "its mapping maps other data");
+    assert_eq!(gauges(), [1, 0, 1, ps as u64, 1]);
+
+    store.map(extent, 0, ps as u64, 2 * ps as u64).unwrap();
     assert!(window[2 * ps..] == pattern(3, ps)[..], "its other mapping maps other data");
     assert_eq!(gauges(), [1, 0, 2, 2 * ps as u64, 2]);
 
@@ -945,8 +946,8 @@ fn map_first_page(socket: &Path, store: &Path, extent: ExtentId) -> (RemoteExten
     let store = connect_once_free(socket, store);
     let memory = memory(1);
     // SAFETY: The memory is this function's, and outlives the store.
-    unsafe { store.create_dax_window_in_host_memory(memory, ps as u64, None) }.unwrap();
-    store.map(extent, 0, ps as u64, 0, false).unwrap();
+    unsafe { store.create_dax_window_in_host_memory(memory, ps as u64, None, 1) }.unwrap();
+    store.map(extent, 0, ps as u64, 0).unwrap();
     // SAFETY: The window's memory, whose faults the store serves.
     let page = unsafe { std::slice::from_raw_parts(memory.as_ptr(), ps) };
     assert!(*page == pattern(9, ps)[..], "the window maps other data");
@@ -1057,22 +1058,22 @@ fn child_changes_its_window() {
     let store = store.unwrap();
     let memory = memory(1);
     // SAFETY: The memory is this function's, and outlives the store.
-    unsafe { store.create_dax_window_in_host_memory(memory, ps, None) }.unwrap();
+    unsafe { store.create_dax_window_in_host_memory(memory, ps, None, 1) }.unwrap();
     let extent = ExtentId { branch: store.branch(), sequence: 1 };
     write(&store, extent, 0, &pattern(3, ps as usize)).unwrap();
     store.commit(None).unwrap();
     // The window maps the extent anew, with none of its pages in memory yet.
-    store.map(extent, 0, ps, 0, false).unwrap();
+    store.map(extent, 0, ps, 0).unwrap();
     // A load faults its page in, which the window maps.
     // SAFETY: The window's memory, whose faults the store serves.
     assert_eq!(unsafe { memory.as_ptr().read_volatile() }, pattern(3, 1)[0]);
     // Unmapped, which the daemon waits for.
     store.unmap(0, ps).unwrap();
     // Mapped anew, with its page in memory, which the window maps at once.
-    store.map(extent, 0, ps, 0, false).unwrap();
-    let [ops, ns, overwritten, left_out, write_protected] = store.stage_counts();
+    store.map(extent, 0, ps, 0).unwrap();
+    let [ops, ns, overwritten, left_out] = store.stage_counts();
     drop(store);
-    println!("STAGE {ops} {ns} {overwritten} {left_out} {write_protected}");
+    println!("STAGE {ops} {ns} {overwritten} {left_out}");
 }
 
 /// TASK-91.16: what its VM processes' changes to their windows cost them, which they make, the
@@ -1103,92 +1104,22 @@ fn vm_processes_tell_the_daemon_what_their_windows_cost() {
         .find_map(|line| line.strip_prefix("STAGE "))
         .unwrap_or_else(|| panic!("the child changed nothing: {stdout}"));
     let said: Vec<u64> = stage.split(' ').map(|count| count.parse().unwrap()).collect();
-    let [ops, ns, overwritten, left_out, write_protected] = said[..] else {
-        panic!("not five counts: {stage}");
+    let [ops, ns, overwritten, left_out] = said[..] else {
+        panic!("not four counts: {stage}");
     };
     assert_eq!(ops, 5, "{stdout}");
     // fxdax: the unmap alone took access away, from the page the load faulted in (TASK-91.16).
-    assert_eq!((overwritten, left_out, write_protected), (0, 1, 0), "{stdout}");
+    assert_eq!((overwritten, left_out), (0, 1), "{stdout}");
     // Once the daemon is done with the connection, which the child closed.
     served.join().unwrap();
     let counted = crate::stats::stats().since(&before);
     assert_eq!((counted.stage_ops, counted.stage_ns), (ops, ns));
-    let taken = (counted.stage_overwrites, counted.stage_leave_outs, counted.stage_write_protects);
-    assert_eq!(taken, (overwritten, left_out, write_protected));
+    let taken = (counted.stage_overwrites, counted.stage_leave_outs);
+    assert_eq!(taken, (overwritten, left_out));
     // fxdax: the daemon's maps of pages, one a page: the fault's, and the map's anew, of the page
     // in memory by then (TASK-108.1).
     let ps = page_size();
     assert_eq!((counted.stage_maps, counted.stage_map_bytes), (2, 2 * ps));
-}
-
-/// TASK-91.16: a seal of an extent the window maps writably write-protects its pages where they are
-/// in the VM process, one change: none left out, as the sealed extent mapped before it has them
-/// would, each a flush of the guest's TLBs, then installed again, and faulted in again.
-#[test]
-fn seals_write_protect_the_pages_mapped_in_place() {
-    host();
-    let ps = page_size() as usize;
-    let dir = tempfile::tempdir().unwrap();
-    let socket = dir.path().join("extentd.sock");
-    let listener = UnixListener::bind(&socket).unwrap();
-    std::thread::spawn(move || serve(listener));
-    let store = RemoteExtentStore::connect(&socket, dir.path().join("store"), 1 << 24).unwrap();
-    let memory = memory(1);
-    // SAFETY: The memory is the test's, and outlives the store.
-    unsafe { store.create_dax_window_in_host_memory(memory, ps as u64, None) }.unwrap();
-    let open = ExtentId { branch: store.branch(), sequence: 1 };
-    store.map(open, 0, ps as u64, 0, true).unwrap();
-    // SAFETY: The window's memory, whose faults the store serves.
-    unsafe { std::ptr::copy_nonoverlapping(pattern(1, ps).as_ptr(), memory.as_ptr(), ps) };
-    let [_, _, overwritten, left_out, write_protected] = store.stage_counts();
-    store.commit(None).unwrap();
-    let [_, _, overwritten_after, left_out_after, write_protected_after] = store.stage_counts();
-    assert_eq!(
-        (
-            overwritten_after - overwritten,
-            left_out_after - left_out,
-            write_protected_after - write_protected
-        ),
-        (0, 0, 1),
-        "installed over, left out, write-protected by the seal"
-    );
-    // SAFETY: As above.
-    let window = unsafe { std::slice::from_raw_parts(memory.as_ptr(), ps) };
-    assert_eq!(window, pattern(1, ps), "the sealed page, where it was");
-}
-
-/// TASK-121: an open extent's page the window maps writably at two offsets, as a staging extent's
-/// region and a range's own space map it in the guest: the two are one page, and a store through
-/// either is what its commit writes, and reads read after.
-#[test]
-fn stores_through_either_writable_mapping_of_a_page_are_committed() {
-    host();
-    let ps = page_size() as usize;
-    let dir = tempfile::tempdir().unwrap();
-    let socket = dir.path().join("extentd.sock");
-    let listener = UnixListener::bind(&socket).unwrap();
-    std::thread::spawn(move || serve(listener));
-    let store = RemoteExtentStore::connect(&socket, dir.path().join("store"), 1 << 24).unwrap();
-    let memory = memory(2);
-    // SAFETY: The memory is the test's, and outlives the store.
-    unsafe { store.create_dax_window_in_host_memory(memory, 2 * ps as u64, None) }.unwrap();
-    let open = ExtentId { branch: store.branch(), sequence: 1 };
-    store.map(open, 0, ps as u64, 0, true).unwrap();
-    // SAFETY: The window's memory, whose faults the store serves.
-    unsafe { std::ptr::copy_nonoverlapping(pattern(1, ps).as_ptr(), memory.as_ptr(), ps) };
-    store.map(open, 0, ps as u64, ps as u64, true).unwrap();
-    // SAFETY: As above, the window's second page.
-    unsafe { memory.as_ptr().add(ps + 7).write_volatile(0xee) };
-    let mut expected = pattern(1, ps);
-    expected[7] = 0xee;
-    // SAFETY: As above.
-    let first = unsafe { std::slice::from_raw_parts(memory.as_ptr(), ps) };
-    assert_eq!(first, expected, "the first mapping, one page with the second");
-    store.commit(None).unwrap();
-    assert_eq!(read(&store, open, 0, ps).unwrap(), expected, "the sealed extent read");
-    // SAFETY: As above.
-    let second = unsafe { std::slice::from_raw_parts(memory.as_ptr().add(ps), ps) };
-    assert_eq!(second, expected, "the second mapping, sealed");
 }
 
 /// What `work` returns, run on a thread of its own, unless it takes longer than `wait`: what a
@@ -1606,33 +1537,30 @@ fn snapshots_restore_into_forks_of_their_point() {
     let store = RemoteExtentStore::connect(&socket, dir.path().join("store"), 1 << 24).unwrap();
     let ours = memory(4);
     // SAFETY: The memory is the test's, and outlives the store.
-    unsafe { store.create_dax_window_in_host_memory(ours, 4 * ps as u64, None) }.unwrap();
+    unsafe { store.create_dax_window_in_host_memory(ours, 4 * ps as u64, None, 1) }.unwrap();
     let (sealed, open) = (
         ExtentId { branch: store.branch(), sequence: 1 },
         ExtentId { branch: store.branch(), sequence: 2 },
     );
     write(&store, sealed, 0, &pattern(1, ps)).unwrap();
     store.commit(Some(b"root")).unwrap();
-    store.map(sealed, 0, ps as u64, 0, false).unwrap();
+    store.map(sealed, 0, ps as u64, 0).unwrap();
     let zeros = crate::WindowMapping {
         window_offset: 2 * ps as u64,
         len: ps as u64,
         contents: crate::MappingContents::Zeros,
     };
     store.map_again(&zeros).unwrap();
-    store.map(open, 0, ps as u64, 3 * ps as u64, true).unwrap();
-    // SAFETY: The window's memory, whose faults the store serves.
-    unsafe {
-        std::ptr::copy_nonoverlapping(pattern(2, ps).as_ptr(), ours.as_ptr().add(3 * ps), ps)
-    };
+    write(&store, open, 0, &pattern(2, ps)).unwrap();
     let point = dir.path().join("point");
     assert_eq!(store.fork_quiescent(&point, store.branch() + 1), Err(Errno::EBUSY));
     store.commit(None).unwrap();
+    store.map(open, 0, ps as u64, 3 * ps as u64).unwrap();
     let point_branch = store.branch() + 1;
     store.fork_quiescent(&point, point_branch).unwrap();
     let mappings = store.window_mappings().unwrap();
     let extent =
-        |extent, offset| crate::MappingContents::Extent { extent, offset, writable: false };
+        |extent, offset| crate::MappingContents::Extent { extent, offset };
     assert_eq!(
         mappings,
         [
@@ -1659,7 +1587,7 @@ fn snapshots_restore_into_forks_of_their_point() {
             assert_eq!(restored.root().unwrap(), b"root");
             let memory = memory(4);
             // SAFETY: As above.
-            unsafe { restored.create_dax_window_in_host_memory(memory, 4 * ps as u64, None) }
+            unsafe { restored.create_dax_window_in_host_memory(memory, 4 * ps as u64, None, 1) }
                 .unwrap();
             for mapping in &mappings {
                 restored.map_again(mapping).unwrap();
@@ -2121,8 +2049,8 @@ fn tenants_arenas_go_with_them() {
     store.commit(None).unwrap();
     let memory = memory(1);
     // SAFETY: The memory is this test's, and outlives the store.
-    unsafe { store.create_dax_window_in_host_memory(memory, ps as u64, None) }.unwrap();
-    store.map(extent, 0, ps as u64, 0, false).unwrap();
+    unsafe { store.create_dax_window_in_host_memory(memory, ps as u64, None, 1) }.unwrap();
+    store.map(extent, 0, ps as u64, 0).unwrap();
     // SAFETY: The window's memory, whose faults the store serves: the extent cached, in the arena.
     let page = unsafe { std::slice::from_raw_parts(memory.as_ptr(), ps) };
     assert!(*page == pattern(4, ps)[..], "the window maps other data");
@@ -2941,7 +2869,7 @@ fn window_mappings_past_a_messages_payload_arrive() {
     assert_ne!(memory, libc::MAP_FAILED);
     let memory = NonNull::new(memory.cast()).unwrap();
     // SAFETY: The memory is the test's, and outlives the store.
-    unsafe { store.create_dax_window_in_host_memory(memory, size, None) }.unwrap();
+    unsafe { store.create_dax_window_in_host_memory(memory, size, None, 1) }.unwrap();
     let mappings = store.window_mappings().unwrap();
     assert_eq!(mappings.len() as u64, count);
     let last = crate::WindowMapping {
@@ -3064,7 +2992,7 @@ fn vm_processes_naming_vast_windows_are_let_go_all_the_same() {
     std::thread::spawn(move || serve(listener));
     let (sender, mut receiver, stream, branch) =
         raw_connection(&socket, &dir.path().join("store"), 1 << 24);
-    let window = Header::new(WINDOW, 2).with_args(&[1 << 60]);
+    let window = Header::new(WINDOW, 2).with_args(&[1 << 60, 1]);
     let answered = call(&sender, &mut receiver, window, &[]).header.status;
     let len = 8 << 20;
     let written = Header::new(WRITE, 3).with_args(&[branch, 1, 0]);
@@ -3096,7 +3024,8 @@ fn windows_go_up_to_the_most_the_daemon_makes_room_for() {
     {
         let (sender, mut receiver, _stream, _) =
             raw_connection(&socket, &dir.path().join(name), 1 << 24);
-        let window = Header::new(WINDOW, 2).with_args(&[size]);
+        // fxdax: a writer's, copying on write (backlog doc-13).
+        let window = Header::new(WINDOW, 2).with_args(&[size, 1]);
         assert_eq!(call(&sender, &mut receiver, window, &[]).header.status, status, "{name}");
     }
 }
@@ -3742,10 +3671,10 @@ fn faults_waiting_for_object_storage_hold_up_no_request() {
     .unwrap();
     let memory = memory(FAULTS);
     // SAFETY: The memory is the test's, and outlives the store.
-    unsafe { ours.create_dax_window_in_host_memory(memory, (FAULTS * ps) as u64, None) }.unwrap();
+    unsafe { ours.create_dax_window_in_host_memory(memory, (FAULTS * ps) as u64, None, 1) }.unwrap();
     for n in 0..FAULTS {
         let extent = ExtentId { branch, sequence: n as u64 + 1 };
-        ours.map(extent, 0, ps as u64, (n * ps) as u64, false).unwrap();
+        ours.map(extent, 0, ps as u64, (n * ps) as u64).unwrap();
     }
     gated.hold(true);
     let base = memory.as_ptr() as usize;
@@ -3967,7 +3896,7 @@ fn shrinks_return_once_the_pages_they_evict_are_free() {
         let read = Header::new(READ, 3 + sequence).with_args(&[branch, sequence, 0, CHUNK]);
         assert_eq!(served(read, &[]).payload, pattern(sequence as u8, CHUNK as usize));
     }
-    served(Header::new(WINDOW, 6).with_args(&[2 * CHUNK]), &[]);
+    served(Header::new(WINDOW, 6).with_args(&[2 * CHUNK, 1]), &[]);
     for sequence in 1..=2 {
         let at = (sequence - 1) * CHUNK;
         served(Header::new(MAP, 6 + sequence).with_args(&[branch, sequence, 0, CHUNK, at]), &[]);
@@ -4186,7 +4115,8 @@ fn window_mappings_are_answered_beside_the_stream_data_in_flight() {
     std::thread::spawn(move || serve(listener));
     let path = dir.path().join("store");
     let (sender, mut receiver, _stream, branch) = raw_connection(&socket, &path, 1 << 30);
-    call(&sender, &mut receiver, Header::new(WINDOW, 2).with_args(&[2 * count * ps]), &[]);
+    let window = Header::new(WINDOW, 2).with_args(&[2 * count * ps, 1]);
+    call(&sender, &mut receiver, window, &[]);
     // The mappings, as many in flight as a thread taking their replies leaves room for.
     let sender = std::sync::Arc::new(sender);
     let (answered, answers) = std::sync::mpsc::channel();
@@ -4302,8 +4232,9 @@ fn whatever_a_vm_process_says_harms_no_other() {
     const RESTORE: u64 = 0x7e57;
     const KINDS: [u32; 32] = [
         OPEN, READ, WRITE, FREE, MAP, UNMAP, COMMIT, ROOT, INFO, WINDOW, FAULT, ACK, FORK, RESIZED,
-        MAPPINGS, ADVANCE, LET_GO, PIN, UNPIN, TRANSFER, FREE_MANY, STAGE_COUNTS, BUILD, SEALED,
-        PRIVATE, REPLY, STAGE_MAP, STAGE_UNMAP, CAPACITY, SEAL, 14, 0xffff_ffff,
+        // fxdax: and 29 and 107, writable DAX's asks to seal and their answers, retired.
+        MAPPINGS, ADVANCE, LET_GO, PIN, UNPIN, TRANSFER, FREE_MANY, STAGE_COUNTS, BUILD, 29,
+        PRIVATE, REPLY, STAGE_MAP, STAGE_UNMAP, CAPACITY, 107, 14, 0xffff_ffff,
     ];
     let wait = std::time::Duration::from_secs(60);
 
@@ -4441,10 +4372,9 @@ fn whatever_a_vm_process_says_harms_no_other() {
     ];
     // fxdax: copying on write, of some private pages, none, or more than it has (backlog doc-13).
     let copying = prop_oneof![
-        3 => Just(None),
-        3 => (1u64..16).prop_map(Some),
-        1 => Just(Some(0)),
-        1 => Just(Some(u64::MAX)),
+        1 => Just(0u64),
+        6 => 1u64..16,
+        1 => Just(u64::MAX),
     ];
     let sequence = (
         proptest::collection::vec(message, 1..64),
@@ -4519,11 +4449,7 @@ fn whatever_a_vm_process_says_harms_no_other() {
                     }
                 })
             };
-            let window = match copying {
-                None => Header::new(WINDOW, 2).with_args(&[window]),
-                Some(most) => (Header::new(WINDOW, 2).with_args(&[window, most]))
-                    .with_flags(WINDOW_COPY_ON_WRITE),
-            };
+            let window = Header::new(WINDOW, 2).with_args(&[window, copying]);
             sender.send(window, &[], &[]).unwrap();
             if transfer {
                 // SAFETY: Makes a descriptor, which is owned below.
@@ -4648,7 +4574,7 @@ fn a_panic_holding_a_stores_lock_fences_it_alone() {
     write(&store, kept, 0, &pattern(1, BLOCK)).unwrap();
     store.commit(None).unwrap();
 
-    crate::fence::tests::panic_holding("open");
+    crate::fence::tests::panic_holding("opening");
     assert_eq!(write(&store, written, 0, &pattern(2, BLOCK)), Err(Errno::EIO));
     assert_eq!(PANICS.load(Ordering::Relaxed), 1);
     assert_eq!(read(&store, kept, 0, BLOCK), Err(Errno::EIO));
@@ -4716,110 +4642,6 @@ fn a_panic_past_a_stores_locks_fences_it() {
     assert_eq!(PANICS.load(Ordering::Relaxed), 1);
     drop(store);
     served.join().unwrap();
-}
-
-/// TASK-153.15: two VM processes share a budget of open pages, which only a guest's seal lets go
-/// of. One holds nearly all of it and syncs nothing; the other's writable MAP, refused, asks it to
-/// seal and waits for its answer, and is mapped then, where before it failed ENOMEM, its own seals
-/// making no room. A guest asked to seal waits for no other: its own MAP refused meanwhile fails at
-/// once, though the other holds open pages, as its seal may wait for that MAP, in turn. Nor is one
-/// asked that holds none.
-#[test]
-fn maps_refused_ask_the_guests_holding_open_pages_to_seal() {
-    const CHUNK: u64 = physmem::CHUNK_SIZE as u64;
-    const CHUNKS: u64 = 16;
-    host();
-    crate::pages::configure(crate::pages::Config::with_memory(CHUNKS * CHUNK)).unwrap();
-    let ps = page_size();
-    let dir = tempfile::tempdir().unwrap();
-    let socket = dir.path().join("extentd.sock");
-    let listener = UnixListener::bind(&socket).unwrap();
-    std::thread::spawn(move || serve(listener));
-    let open = |name: &str, chunks: u64| {
-        let store = RemoteExtentStore::connect(&socket, dir.path().join(name), 1 << 30).unwrap();
-        let memory = memory((chunks * CHUNK / ps) as usize);
-        // SAFETY: The memory is the test's, and outlives the store, as the test leaks it.
-        unsafe { store.create_dax_window_in_host_memory(memory, chunks * CHUNK, None) }.unwrap();
-        let (asked, asks) = std::sync::mpsc::channel();
-        store.on_seal(move |number| {
-            // Unheard once the test stops listening.
-            let _ = asked.send(number);
-            true
-        });
-        (std::sync::Arc::new(store), asks)
-    };
-    let (idle, idle_asks) = open("idle", CHUNKS);
-    let (busy, busy_asks) = open("busy", 2);
-    let extent =
-        |store: &RemoteExtentStore, sequence| ExtentId { branch: store.branch(), sequence };
-
-    // Extents a page short of a chunk each, until refused, with none to ask: at once.
-    let mut sequence = 0;
-    while idle.map(extent(&idle, sequence + 1), 0, CHUNK - ps, sequence * CHUNK, true).is_ok() {
-        sequence += 1;
-    }
-    assert_eq!(sequence, CHUNKS * 7 / 8, "the idle guest's maps");
-    // The busy guest takes a page of the room left, and holds it open.
-    busy.map(extent(&busy, 1), 0, ps, 0, true).unwrap();
-
-    let mapping = busy.clone();
-    let mapped = std::thread::spawn(move || {
-        mapping.map(ExtentId { branch: mapping.branch(), sequence: 2 }, 0, CHUNK, CHUNK, true)
-    });
-    let asked = idle_asks.recv_timeout(super::seals::SEAL_WAIT).expect("the idle guest asked");
-    assert_eq!(asked, 1);
-
-    // Asked, the idle guest's own MAP refused waits for no seal of the busy one's.
-    let started = std::time::Instant::now();
-    let refused = idle.map(extent(&idle, sequence + 1), 0, CHUNK, sequence * CHUNK, true);
-    assert_eq!(refused, Err(Errno::ENOMEM));
-    assert!(started.elapsed() < super::seals::SEAL_WAIT / 2, "it waited {:?}", started.elapsed());
-    assert!(!mapped.is_finished(), "the busy guest's MAP didn't wait for the idle guest's seal");
-
-    // The idle guest seals, and answers: the busy guest's MAP is mapped.
-    idle.commit(None).unwrap();
-    idle.sealed(asked).unwrap();
-    assert_eq!(mapped.join().unwrap(), Ok(()));
-    assert_eq!(busy_asks.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty), "busy asked");
-}
-
-/// TASK-153.15: a VM process whose device takes no asks to seal ([`RemoteExtentStore::on_seal`])
-/// answers each at once, nothing to wait for: another's MAP refused fails without waiting.
-#[test]
-fn asks_to_seal_that_nothing_takes_are_answered_at_once() {
-    const CHUNK: u64 = physmem::CHUNK_SIZE as u64;
-    const CHUNKS: u64 = 16;
-    host();
-    crate::pages::configure(crate::pages::Config::with_memory(CHUNKS * CHUNK)).unwrap();
-    let dir = tempfile::tempdir().unwrap();
-    let socket = dir.path().join("extentd.sock");
-    let listener = UnixListener::bind(&socket).unwrap();
-    std::thread::spawn(move || serve(listener));
-    let open = |name: &str, chunks: u64| {
-        let store = RemoteExtentStore::connect(&socket, dir.path().join(name), 1 << 30).unwrap();
-        let memory = memory((chunks * CHUNK / page_size()) as usize);
-        // SAFETY: The memory is the test's, and outlives the store, as the test leaks it.
-        unsafe { store.create_dax_window_in_host_memory(memory, chunks * CHUNK, None) }.unwrap();
-        store
-    };
-    let (deaf, other) = (open("deaf", CHUNKS), open("other", 1));
-    let mut sequence = 0;
-    while deaf
-        .map(
-            ExtentId { branch: deaf.branch(), sequence: sequence + 1 },
-            0,
-            CHUNK,
-            sequence * CHUNK,
-            true,
-        )
-        .is_ok()
-    {
-        sequence += 1;
-    }
-    let started = std::time::Instant::now();
-    let refused = other.map(ExtentId { branch: other.branch(), sequence: 1 }, 0, CHUNK, 0, true);
-    assert_eq!(refused, Err(Errno::ENOMEM));
-    assert!(started.elapsed() < super::seals::SEAL_WAIT / 2, "it waited {:?}", started.elapsed());
 }
 
 /// TASK-159: a tenant's socket is of its mode, 0660, from the moment it is at its path, whatever

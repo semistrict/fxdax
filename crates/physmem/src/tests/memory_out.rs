@@ -118,7 +118,7 @@ fn allocations_that_may_not_wait_ask_for_relief_for_those_after() {
 
 /// TASK-150.20: pages pinned, let go of, can be evicted: an arena relief found nothing to evict for
 /// is exhausted no more, and an allocation waits for relief rather than fail for what it found
-/// before them. A seal lets an open extent's go of, for a guest's MAP after it.
+/// before them. A copy-on-write window going lets its private pages' reservation go.
 #[test]
 fn pins_let_go_of_end_an_arenas_exhaustion() {
     let mut pages = fill_memory();

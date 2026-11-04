@@ -1,0 +1,31 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+#
+# guest/sim's failures, seed 1669 (CI run 41876989384): a read's iomap of a page the file has with
+# no window page, as a truncate's failed MAP of zeros leaves those past its end, which a write past
+# them grows the file over, says a hole, so that a fault maps the kernel's zero page; a write(2)
+# then maps the page and copies into it, none of its iomaps new (IOMAP_F_NEW), and the zero page
+# stays mapped: a load reads zeros where read(2) reads the write's bytes, and a write from the
+# mapping copies them. hole_mapped_then_written: a load of page 2 reads 0 where read(2) reads 'b'.
+
+--- a/guest/linux/fs/fxfs/dax.c
++++ b/guest/linux/fs/fxfs/dax.c
+@@ -1838,18 +1838,6 @@
+ 		up_read(&file->sem);
+ 		fxfs_dax_put_range(dax, range);
+ 		return -EIO;
+-	}
+-	/* fxdax: a page of the file with no window page is no hole: mapped first. */
+-	if (!dax->read_only && !test_bit(page, range->mapped)) {
+-		up_read(&file->sem);
+-		err = fxfs_dax_map_missing(inode, range, page,
+-					   min_t(u64, range->pages,
+-						 page + DIV_ROUND_UP(offset_in_page(pos) + length,
+-								     PAGE_SIZE)));
+-		if (err) {
+-			fxfs_dax_put_range(dax, range);
+-			return err;
+-		}
+ 	}
+ 	mapped = test_bit(page, range->mapped);
+ 	end_page = mapped ? find_next_zero_bit(range->mapped, range->pages, page) :

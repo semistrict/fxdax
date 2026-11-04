@@ -7,8 +7,10 @@
 # test hosts (scripts/test-gce.sh create), HEAD's DAX suites, rounds of each, the checks with
 # delays injected (fxfs-guest-checks-dax-delay) and on a small window (-small), the crash test and
 # its variant killing its process (-killed),
-# and pgbench-dax, whose data is checked and whose write path's latencies stay under their ceilings
-# (scripts/pgbench-probes.py); and every hand mutant of dax.c
+# and pgbench-dax-forked, on a base's database, whose files are DAX and whose stores copy on write,
+# whose data is checked and whose write path's latencies stay under their ceilings
+# (scripts/pgbench-probes.py): a database made in the run is files created in the mount, which the
+# page cache writes (doc-13); and every hand mutant of dax.c
 # (scripts/guest-mutants-gce.py) killed by the suites within FXDAX_GATE_MUTANT_ROUNDS rounds
 # (default 3). A pass is recorded as a note on HEAD (`git notes --ref=dax-gate`), which
 # scripts/hooks/pre-push asks for of a push changing the guest's DAX code:
@@ -19,7 +21,7 @@
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
-(( $# >= 2 )) || { sed -n '6,19p' "$0" >&2; exit 2; }
+(( $# >= 2 )) || { sed -n '6,20p' "$0" >&2; exit 2; }
 host_a=$1 host_b=$2 zone=${3:-us-east4-a}
 rounds=${FXDAX_GATE_ROUNDS:-5}
 mutant_rounds=${FXDAX_GATE_MUTANT_ROUNDS:-3}
@@ -46,13 +48,13 @@ FXDAX_E2E_TEST="${suites[*]}" FXDAX_E2E_ROUNDS=$rounds \
     scripts/test-gce.sh run "$host_a" "$results/suites" > "$results/suites.log" 2>&1 &
 suites_pid=$!
 
-# Host B: pgbench-dax, then every mutant, each of which a round of the suites must kill.
+# Host B: pgbench-dax-forked, then every mutant, each of which a round of the suites must kill.
 (
-    FXDAX_E2E_TEST=fxfs-guest-pgbench-dax FXDAX_E2E_ROUNDS=1 \
+    FXDAX_E2E_TEST=fxfs-guest-pgbench-dax-forked FXDAX_E2E_ROUNDS=1 \
         scripts/test-gce.sh run "$host_b" "$results/pgbench" > "$results/pgbench.log" 2>&1
-    echo "pgbench-dax passed"
-    scripts/pgbench-probes.py \
-        "$results/pgbench/e2e/fxfs-guest-pgbench-dax/fxfs-guest-pgbench-dax/load.console.txt"
+    echo "pgbench-dax-forked passed"
+    pgbench=$results/pgbench/e2e/fxfs-guest-pgbench-dax-forked/fxfs-guest-pgbench-dax-forked
+    scripts/pgbench-probes.py "$pgbench/run.console.txt"
     FXDAX_E2E_TEST="fxfs-guest-dax fxfs-guest-checks-dax fxfs-guest-checks-dax-delay" \
         FXDAX_E2E_ROUNDS=$mutant_rounds \
         scripts/guest-mutants-gce.py "$host_b" "$zone" "$results/mutants" \
@@ -62,7 +64,7 @@ host_b_pid=$!
 
 failed=()
 wait "$suites_pid" || failed+=("the suites ($results/suites.log)")
-wait "$host_b_pid" || failed+=("pgbench-dax ($results/pgbench.log)")
+wait "$host_b_pid" || failed+=("pgbench-dax-forked ($results/pgbench.log)")
 if [[ -f $results/mutants.txt ]] && grep -q '^MISSED' "$results/mutants.txt"; then
     failed+=("mutants missed: $(grep '^MISSED' "$results/mutants.txt" | cut -d: -f1 | tr '\n' ' ')")
 fi

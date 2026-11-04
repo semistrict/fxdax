@@ -31,7 +31,7 @@ fn stores_hold_their_arenas() {
     // What made it lets go of it, as a tenant's going does.
     drop(held);
     let window = store.create_dax_window(ps, None).unwrap();
-    store.map(extent, 0, ps, 0, false).unwrap();
+    store.map(extent, 0, ps, 0).unwrap();
     block_on(window.fault(0, Access::Read)).expect("the extent paged in");
     assert!(physmem::arena_bytes(arena) > 0, "the page is another arena's");
     let page = physmem::alloc(arena, physmem::Wait::No).expect("a page of the store's arena");

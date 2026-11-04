@@ -7,28 +7,28 @@
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c
-@@ -1999,11 +1999,10 @@
+@@ -1116,11 +1116,10 @@
  	     range->file->ino, range->chunk, range->window_offset, atomic_read(&range->users));
  
  	xa_erase(&range->file->ranges, range->chunk);
-+	fxfs_dax_cow_forget(dax, range, 0, range->pages, true);
++	fxfs_dax_forget(dax, range, 0, range->pages, true);
  	if (!range->region && !bitmap_empty(range->mapped, range->pages))
- 		err = fxfs_dax_device_unmap(dax, range->window_offset,
+ 		err = fxfs_device_unmap(dax->dev, range->window_offset,
  					(u64)range->pages << PAGE_SHIFT);
--	/* fxdax: copying on write, the UNMAP freed its private pages, unless it failed. */
--	fxfs_dax_cow_forget(dax, range, 0, range->pages, !err);
+-	/* fxdax: the UNMAP freed its private pages, unless it failed. */
+-	fxfs_dax_forget(dax, range, 0, range->pages, !err);
  	fxfs_dax_free_range(dax, range, err);
  }
  
-@@ -6341,10 +6340,10 @@
- 		 * pages' room released; unmapped if it fails, as a write maps them again.
+@@ -3909,10 +3908,10 @@
+ 		 * released; unmapped if it fails, as a write maps them again.
  		 */
- 		if (dax->cow && !range->region) {
-+			fxfs_dax_cow_forget(dax, range, page, range->pages - page, true);
+ 		if (!range->region) {
++			fxfs_dax_forget(dax, range, page, range->pages - page, true);
  			err = fxfs_device_map_zeros(dax->dev, fxfs_dax_page_offset(range, page),
  						    (u64)(range->pages - page) << PAGE_SHIFT);
  			if (!err) {
--				fxfs_dax_cow_forget(dax, range, page, range->pages - page, true);
+-				fxfs_dax_forget(dax, range, page, range->pages - page, true);
  				bitmap_set(range->zeros, page, range->pages - page);
  				continue;
  			}

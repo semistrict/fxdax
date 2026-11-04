@@ -7,16 +7,14 @@
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c
-@@ -2525,12 +2525,6 @@
- 		 * beginning (fxfs_dax_cow_extents): looked up again after it, or, for a fault, -EBUSY,
- 		 * which waits for it without its DAX entry.
- 		 */
--		if (dax->cow && ((seals & 1) || fxfs_device_seals(dax->dev) != seals)) {
--			if (fault)
--				return ERR_PTR(-EBUSY);
--			fxfs_device_wait_unsealed(dax->dev);
--			continue;
--		}
- 		region = fxfs_dax_get_region(dax, &e, true);
- 		if (IS_ERR(region))
- 			return PTR_ERR(region) == -EAGAIN ? NULL : ERR_CAST(region);
+@@ -1460,8 +1460,8 @@
+ 	if (end <= start || READ_ONCE(file->no_slices))
+ 		return NULL;
+ 	pages = (end - start) >> PAGE_SHIFT;
+-	count = fxfs_dax_sealed_extents(dax, fxfs_vfs_fs(inode->i_sb), inode->i_ino, start,
+-					end - start, &e, 1);
++	count = fxfs_nofs(fxfs_dax_extents(fxfs_vfs_fs(inode->i_sb), inode->i_ino, start,
++						 end - start, &e, 1));
+ 	fxfs_dax_delay();
+ 	/* Holes, or more than one piece. */
+ 	if (count == 0 || count == -E2BIG)

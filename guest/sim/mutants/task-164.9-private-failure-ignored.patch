@@ -8,12 +8,12 @@
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c
-@@ -4293,10 +4293,7 @@
+@@ -2403,10 +2403,7 @@
  		if (err) {
  			pr_warn_ratelimited("fxfs: making %lu pages at %llx of the window private: %d\n",
  					    pages, fxfs_dax_page_offset(range, first), err);
 -			atomic_long_sub(newly, &dax->private);
--			wake_up_all(&dax->cow_wait);
+-			wake_up_all(&dax->budget_wait);
 -			err = -EIO;
 -			goto unreserve;
 +			err = 0;

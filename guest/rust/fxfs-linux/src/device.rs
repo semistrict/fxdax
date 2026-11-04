@@ -10,13 +10,13 @@
 //! allocator made, as the device needs, and which a request's future holds until the device is
 //! done with it, waiting for the device if the future is dropped first.
 //!
-//! Extents are open from their first write, or their first writable mapping, until the next
-//! request that seals them (doc-4): a COMMIT, or a WRITE with a barrier. What Fxfs may take for
-//! open is what the allocator minted since (`OpenExtents`), which it writes, or the DAX window
-//! maps writably, before the next, and requests that seal go through the gate between them and
-//! stores through the window (device.h). A seal waits for the writes in flight, and keeps others
-//! out until it ends (`Seal`): the device applies a request in flight while a barrier is on either
-//! side of it, a write's several requests on both.
+//! Extents are open from their first write until the next request that seals them (doc-4): a
+//! COMMIT, or a WRITE with a barrier. What Fxfs may take for open is what the allocator minted
+//! since (`OpenExtents`), which it writes before the next; the DAX window maps only what is sealed
+//! (backlog doc-13), and requests that seal go through the device's seal count, which tells it when
+//! (device.h). A seal waits for the writes in flight, and keeps others out until it ends (`Seal`):
+//! the device applies a request in flight while a barrier is on either side of it, a write's
+//! several requests on both.
 //!
 //! fxdax: frozen with its filesystem (`Freezer`), the device takes no writes, frees or commits
 //! until it thaws: those wait at its `Gate`, as a snapshot of the VM is taken, which a VM restored
@@ -439,12 +439,12 @@ unsafe impl Sync for Sealer {}
 unsafe impl Send for Seal<'_> {}
 
 impl<'a> Seal<'a> {
-    /// Waits for another seal to end, for writes in flight, and for stores through the window's
-    /// writable mappings, and keeps new ones out until it ends, around a request that seals the
-    /// extents open, which then are not. The stores are the kernel's, which no future of the
-    /// filesystem's holds up. The device applies a request in flight while a barrier is on either
-    /// side of it (doc-4), and a write's several requests on both: those after it failed on the
-    /// extent it sealed, as the write's first opened it (TASK-91.1).
+    /// Waits for another seal to end and for writes in flight, and keeps new ones out until it
+    /// ends, around a request that seals the extents open, which then are not; the device's seal
+    /// count tells the DAX window of it (`fxfs_device_seal_begin`). The device applies a request
+    /// in flight while a barrier is on either side of it (doc-4), and a write's several requests on
+    /// both: those after it failed on the extent it sealed, as the write's first opened it
+    /// (TASK-91.1).
     async fn begin(device: &'a ExtentDevice) -> Self {
         Self::begin_with(&device.sealer).await
     }

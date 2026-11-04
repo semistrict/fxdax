@@ -384,14 +384,12 @@ message GetStatsResponse {
   uint64 commits = 14;
   // The nanoseconds they took, all of them.
   uint64 commit_ns = 15;
-  // Of those, writing the open extents' data to the store.
-  uint64 commit_write_ns = 16;
-  // The bytes of open extents' data they wrote.
-  uint64 commit_written_bytes = 17;
+  // Writing writable DAX's open extents' data, its bytes, and sealing windows' mappings, which
+  // copy-on-write DAX (backlog doc-13) does none of.
+  reserved 16, 17, 19;
+  reserved "commit_write_ns", "commit_written_bytes", "commit_seal_ns";
   // Of those nanoseconds, committing the store.
   uint64 commit_store_ns = 18;
-  // Of those, mapping the extents they sealed read-only in VMs' windows.
-  uint64 commit_seal_ns = 19;
   // Of those, waiting for object storage: for the upload of a durable commit, or for the uploads
   // to come within the lag an ordered one allows.
   uint64 commit_wait_ns = 20;

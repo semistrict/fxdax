@@ -7,7 +7,7 @@
 //! memory in, turned off, fails.
 
 use super::super::shuttle_tests::{
-    ATTEMPTS, Event, Guest, Outcome, RUNS, SEALED, byte, reaching, stores_race_seals_and_frees,
+    ATTEMPTS, Event, Guest, Outcome, RUNS, SEALED, byte, reaching, stores_race_frees,
 };
 use super::super::tests::TestSource;
 use super::super::{Dax, Source as _, Window};
@@ -31,12 +31,12 @@ struct Page {
 }
 
 /// The second stage's host memory, as `mmap`, `mprotect` and userfaultfd change it, and what the
-/// window told the stage of each page, by its offset: its protection once the last change made to
-/// it returned, and what a change being made gives it.
+/// window told the stage of each page, by its offset: whether a store may change it, a private
+/// page, once the last change made to it returned, and what a change being made gives it.
 #[derive(Default)]
 struct Model {
     pages: BTreeMap<usize, Page>,
-    told: BTreeMap<u64, (Option<Protection>, Option<Option<Protection>>)>,
+    told: BTreeMap<u64, (bool, Option<bool>)>,
     /// fxdax: how many times memory was mapped (`mmap`): each over memory mapped before unmaps it,
     /// which flushes the host's TLBs and the hypervisor's mappings (TASK-91.16).
     maps: usize,
@@ -49,11 +49,10 @@ struct Model {
 }
 
 impl Model {
-    /// Whether the window lets a store change the page at `offset`: as it was told it does, or
-    /// as a change being made to it says.
+    /// Whether the window lets a store change the page at `offset`, a private page: as it was told
+    /// it does, or as a change being made to it says.
     fn writable(&self, offset: u64) -> bool {
-        let rw = Some(Protection::ReadWrite);
-        self.told.get(&offset).is_some_and(|(made, making)| *made == rw || *making == Some(rw))
+        self.told.get(&offset).is_some_and(|(made, making)| *made || *making == Some(true))
     }
 
     /// fxdax: whether `page` is memory with nothing in it: anonymous, or private memory unfilled.
@@ -103,19 +102,15 @@ impl HostMemory for ModelMemory {
         self.pages(addr, len, |page| page.registered = mode);
     }
 
-    fn write_protect(&self, addr: usize, len: usize, protect: bool) {
+    fn write_protect(&self, addr: usize, len: usize) {
         self.pages(addr, len, |page| {
             assert_ne!(
                 page.registered & UFFDIO_REGISTER_MODE_WP,
                 0,
                 "write-protected unregistered"
             );
-            page.write_protected = protect;
+            page.write_protected = true;
         });
-    }
-
-    fn populate_write(&self, addr: usize, len: usize) {
-        self.pages(addr, len, |page| assert!(page.file.is_some(), "populated anonymous memory"));
     }
 
     fn wake(&self, _addr: usize, _len: usize) {}
@@ -171,33 +166,30 @@ struct Telling {
 }
 
 impl Telling {
-    /// Tells the model of a change to `protection` of the `len` bytes at `offset`, made by `make`.
-    fn change(&self, offset: u64, len: u64, protection: Option<Protection>, make: impl FnOnce()) {
+    /// Tells the model of a change of the `len` bytes at `offset`, made by `make`, which makes
+    /// them private pages, a store's to change, if `writable`.
+    fn change(&self, offset: u64, len: u64, writable: bool, make: impl FnOnce()) {
         let offsets = (offset..offset + len).step_by(page_size() as usize);
         let mut model = self.memory.0.lock().unwrap();
         for at in offsets.clone() {
-            model.told.entry(at).or_default().1 = Some(protection);
+            model.told.entry(at).or_default().1 = Some(writable);
         }
         drop(model);
         make();
         let mut model = self.memory.0.lock().unwrap();
         for at in offsets {
-            model.told.insert(at, (protection, None));
+            model.told.insert(at, (writable, None));
         }
     }
 }
 
 impl SecondStage for Telling {
-    fn map(&self, offset: u64, phys: PhysLocation, len: u64, prot: Protection) {
-        self.change(offset, len, Some(prot), || self.stage.map(offset, phys, len, prot));
-    }
-
-    fn protect(&self, offset: u64, len: u64, prot: Protection) {
-        self.change(offset, len, Some(prot), || self.stage.protect(offset, len, prot));
+    fn map(&self, offset: u64, phys: PhysLocation, len: u64) {
+        self.change(offset, len, false, || self.stage.map(offset, phys, len));
     }
 
     fn unmap(&self, offset: u64, len: u64) {
-        self.change(offset, len, None, || self.stage.unmap(offset, len));
+        self.change(offset, len, false, || self.stage.unmap(offset, len));
     }
 
     fn window_mapped(&self, offset: u64, len: u64) {
@@ -205,33 +197,12 @@ impl SecondStage for Telling {
     }
 
     fn make_private(&self, offset: u64, from: Option<PhysLocation>) {
-        let (ps, rw) = (page_size(), Some(Protection::ReadWrite));
-        self.change(offset, ps, rw, || self.stage.make_private(offset, from));
+        self.change(offset, page_size(), true, || self.stage.make_private(offset, from));
     }
 
+    /// Every page of the range read-only once it is made, mapped or not: its private pages gone.
     fn remap(&self, offset: u64, len: u64, anew: &[Anew]) {
-        let ps = page_size();
-        // What each page of the range has once the change is made: what a map of it gives it, or
-        // nothing.
-        let mut protections: BTreeMap<u64, Option<Protection>> =
-            (offset..offset + len).step_by(ps as usize).map(|at| (at, None)).collect();
-        for anew in anew {
-            if let Anew::Map { offset, len, protection, .. } = *anew {
-                for at in (offset..offset + len).step_by(ps as usize) {
-                    protections.insert(at, Some(protection));
-                }
-            }
-        }
-        let mut model = self.memory.0.lock().unwrap();
-        for (&at, &protection) in &protections {
-            model.told.entry(at).or_default().1 = Some(protection);
-        }
-        drop(model);
-        self.stage.remap(offset, len, anew);
-        let mut model = self.memory.0.lock().unwrap();
-        for (at, protection) in protections {
-            model.told.insert(at, (protection, None));
-        }
+        self.change(offset, len, false, || self.stage.remap(offset, len, anew));
     }
 }
 
@@ -240,8 +211,7 @@ impl SecondStage for Telling {
 enum Op {
     Unmap(u64, u64),
     Mapped(u64, u64),
-    Map(u64, PhysLocation, u64, Protection),
-    Protect(u64, u64, Protection),
+    Map(u64, PhysLocation, u64),
     Private(u64, Option<PhysLocation>),
 }
 
@@ -296,10 +266,8 @@ impl Remapping {
                             Some(&Op::Mapped(offset, len)) if within(offset, len) => {
                                 anew.push(Anew::Mapped { offset, len })
                             }
-                            Some(&Op::Map(offset, phys, len, protection))
-                                if within(offset, len) =>
-                            {
-                                anew.push(Anew::Map { offset, phys, len, protection })
+                            Some(&Op::Map(offset, phys, len)) if within(offset, len) => {
+                                anew.push(Anew::Map { offset, phys, len })
                             }
                             _ => break,
                         }
@@ -312,8 +280,7 @@ impl Remapping {
                     }
                 }
                 Op::Mapped(offset, len) => self.stage.window_mapped(offset, len),
-                Op::Map(offset, phys, len, prot) => self.stage.map(offset, phys, len, prot),
-                Op::Protect(offset, len, prot) => self.stage.protect(offset, len, prot),
+                Op::Map(offset, phys, len) => self.stage.map(offset, phys, len),
                 Op::Private(offset, from) => self.stage.make_private(offset, from),
             }
         }
@@ -321,12 +288,8 @@ impl Remapping {
 }
 
 impl SecondStage for Remapping {
-    fn map(&self, offset: u64, phys: PhysLocation, len: u64, prot: Protection) {
-        self.make(Op::Map(offset, phys, len, prot));
-    }
-
-    fn protect(&self, offset: u64, len: u64, prot: Protection) {
-        self.make(Op::Protect(offset, len, prot));
+    fn map(&self, offset: u64, phys: PhysLocation, len: u64) {
+        self.make(Op::Map(offset, phys, len));
     }
 
     fn unmap(&self, offset: u64, len: u64) {
@@ -458,9 +421,19 @@ impl Guest for HostGuest {
             .filter_map(|(addr, page)| Some(((addr - self.base) as u64, page.file?)))
             .collect()
     }
+
+    fn place(&self, phys: PhysLocation) -> (RawFd, u64) {
+        let (fd, _) = Memories::InProcess.fd(phys.arena).expect("the page's arena");
+        (fd, phys.offset)
+    }
 }
 
-fn seals_and_frees_through_userfaultfd() {
+/// fxdax: the race of stores and loads with a free ([`stores_race_frees`]) through the stage, over
+/// the model of its memory, of a window of two pages that copies on write, one private page at
+/// most, which the window's changes reach as the window makes them, or, `at_once`, as the extent
+/// daemon's VM process makes them ([`Remapping`], TASK-91.16). Its vCPUs' threads are the guest's
+/// own, whose stores to pages not here are stores.
+fn frees_through_userfaultfd(at_once: bool) {
     let ps = page_size();
     let memory = ModelMemory::default();
     // Where the memory is doesn't matter to the model.
@@ -477,35 +450,24 @@ fn seals_and_frees_through_userfaultfd() {
         )
     }
     .unwrap();
+    stage.copy_on_write().unwrap();
+    guest_thread(VCPU);
     let telling = Arc::new(Telling { stage: stage.clone(), memory: memory.clone() });
-    let (dax, _) = Dax::<Arc<u8>>::new(2 * ps, Some(telling)).unwrap();
+    let second_stage: Arc<dyn SecondStage> = match at_once {
+        true => Arc::new(Remapping { stage: telling, held: Default::default() }),
+        false => telling,
+    };
+    let (dax, _) = super::super::tests::copying::<Arc<u8>>(2, 1, Some(second_stage));
     let window = dax.window.clone();
-    stores_race_seals_and_frees(dax, Arc::new(HostGuest { memory, stage, window, base }));
+    stores_race_frees(dax, Arc::new(HostGuest { memory, stage, window, base }));
 }
 
-/// fxdax: as [`seals_and_frees_through_userfaultfd`], with the window's changes made at once, as
-/// the extent daemon's VM process makes them ([`Remapping`], TASK-91.16).
-fn seals_and_frees_remapped() {
-    let ps = page_size();
-    let memory = ModelMemory::default();
-    let base = 64 * ps as usize;
-    // SAFETY: The model changes no memory.
-    let stage = unsafe {
-        UffdSecondStage::with_host(
-            base,
-            2 * ps,
-            memory.clone(),
-            Memories::InProcess,
-            None,
-            usize::MAX,
-        )
-    }
-    .unwrap();
-    let telling = Arc::new(Telling { stage: stage.clone(), memory: memory.clone() });
-    let remapping = Arc::new(Remapping { stage: telling, held: Default::default() });
-    let (dax, _) = Dax::<Arc<u8>>::new(2 * ps, Some(remapping)).unwrap();
-    let window = dax.window.clone();
-    stores_race_seals_and_frees(dax, Arc::new(HostGuest { memory, stage, window, base }));
+fn frees_in_steps() {
+    frees_through_userfaultfd(false);
+}
+
+fn frees_remapped() {
+    frees_through_userfaultfd(true);
 }
 
 /// fxdax: a stage over a model of its host memory, and a window of `pages` pages through it,
@@ -538,15 +500,14 @@ fn modelled(
 }
 
 /// fxdax: the window's changes made at once leave the host memory as made in steps (TASK-91.16),
-/// with fewer `mmap`s: none for a seal's map of the very pages installed, read-only now, nor for
-/// a map of them writable again, their protection changed in place; one for a map of other
-/// memory, installed over the old; and pages no map covers, as a file's not in memory, left out.
-/// A page a refused store restricted is installed anew, as in steps, which lifts it.
+/// with fewer `mmap`s: none for a map of the very pages installed, left in place; one for a map
+/// of other memory, installed over the old; and pages no map covers, as a file's not in memory,
+/// left out. A page a refused store restricted is installed anew, as in steps, which lifts it.
 fn remaps_end_as_steps_do() {
     let ps = page_size();
     let (steps, steps_stage, mut steps_dax) = modelled(2, false);
     let (at_once, at_once_stage, mut at_once_dax) = modelled(2, true);
-    let (open, other) = (TestSource::filled(2, 1).source(), TestSource::filled(2, 2).source());
+    let (sealed, other) = (TestSource::filled(2, 1).source(), TestSource::filled(2, 2).source());
     // Not yet written, it has no page in memory.
     let unwritten = TestSource::paged(2).source();
     let pages = |memory: &ModelMemory| memory.0.lock().unwrap().pages.clone();
@@ -558,17 +519,17 @@ fn remaps_end_as_steps_do() {
         assert_eq!(pages(&at_once), pages(&steps), "{what}: the memory differs");
         assert_eq!(maps(&at_once) - before, mmaps, "{what}: mmaps");
     };
-    change("open, writable", 1, &|dax| dax.map(0, (), &open, 0, 2 * ps, true).unwrap());
-    change("sealed, the same pages", 0, &|dax| dax.map(0, (), &open, 0, 2 * ps, false).unwrap());
-    // A store faulted on the second page, which the window refused, as it maps it read-only.
+    change("sealed", 1, &|dax| dax.map(0, (), &sealed, 0, 2 * ps).unwrap());
+    change("the same pages", 0, &|dax| dax.map(0, (), &sealed, 0, 2 * ps).unwrap());
+    // A store faulted on the second page, which the window refused, as it doesn't copy on write.
     for stage in [&steps_stage, &at_once_stage] {
         let addr = 64 * ps as usize + ps as usize;
         stage.restrict(addr, stage.seen(addr), libc::PROT_READ);
     }
     // The first page in place, the second, restricted, installed anew.
-    change("writable again", 1, &|dax| dax.map(0, (), &open, 0, 2 * ps, true).unwrap());
-    change("other memory", 1, &|dax| dax.map(0, (), &other, 0, 2 * ps, false).unwrap());
-    change("nothing in memory", 1, &|dax| dax.map(0, (), &unwritten, 0, 2 * ps, false).unwrap());
+    change("the same, one restricted", 1, &|dax| dax.map(0, (), &sealed, 0, 2 * ps).unwrap());
+    change("other memory", 1, &|dax| dax.map(0, (), &other, 0, 2 * ps).unwrap());
+    change("nothing in memory", 1, &|dax| dax.map(0, (), &unwritten, 0, 2 * ps).unwrap());
 }
 
 #[test]
@@ -577,25 +538,26 @@ fn remaps_end_as_steps_do_once() {
 }
 
 /// fxdax: the events the race reaches with the window's changes made at once: all but an access
-/// failing, which the schedules reach no more (TASK-91.16). Made in steps, a seal and a free each
-/// left the pages out, inaccessible until registered, which an access found; made at once, a seal
-/// leaves its pages in place, and a free's zeros, installed over the sealed copy, refuse a store
-/// only until they are registered, a step no schedule found in thousands.
+/// failing for a moment, which the schedules reach no more (TASK-91.16). Made in steps, a free
+/// leaves the pages out, inaccessible until registered, which an access finds; made at once, its
+/// zeros, installed over the extent, refuse a store only until they are registered, a step no
+/// schedule found in thousands.
 const REMAPPED_EVENTS: [Event; 5] =
-    [Event::ReadOpen, Event::ReadSealed, Event::ReadZeros, Event::Faulted, Event::StoreRefused];
+    [Event::ReadSealed, Event::ReadZeros, Event::ReadStored, Event::Faulted, Event::StoreRefused];
 
 #[test]
-fn remapped_stores_race_seals_and_frees_randomly() {
-    reaching(|| RandomScheduler::new(runs(RUNS)), seals_and_frees_remapped, &REMAPPED_EVENTS);
+fn remapped_stores_race_frees_randomly() {
+    reaching(|| RandomScheduler::new(runs(RUNS)), frees_remapped, &REMAPPED_EVENTS);
 }
 
 #[test]
-fn remapped_stores_race_seals_and_frees_by_pct() {
-    reaching(|| PctScheduler::new(3, runs(RUNS)), seals_and_frees_remapped, &REMAPPED_EVENTS);
+fn remapped_stores_race_frees_by_pct() {
+    reaching(|| PctScheduler::new(3, runs(RUNS)), frees_remapped, &REMAPPED_EVENTS);
 }
 
-/// The window maps zeros over a page it mapped read-only, as a free does a sealed extent, while
-/// the fault thread refuses a store to the page, as `resolve` does, and a vCPU then loads from it:
+/// The window maps zeros over a page it mapped, as a free does a sealed extent, while the fault
+/// thread refuses a store to the page, as `resolve` does of a window that doesn't copy on write,
+/// and a vCPU then loads from it:
 /// the window's change unmaps the page here, then maps the zeros. The load finds the page as the
 /// window mapped it, or not yet registered, so inaccessible: never memory not registered.
 fn refusal_races_changes() {
@@ -611,50 +573,16 @@ fn refusal_races_changes() {
     let (mut dax, _) = Dax::<Arc<u8>>::new(ps, Some(telling)).unwrap();
     let window = dax.window.clone();
     let (sealed, zeros) = (TestSource::filled(1, SEALED).source(), crate::cache::zeros().unwrap());
-    dax.map(0, Arc::new(0), &sealed, 0, ps, false).unwrap();
+    dax.map(0, Arc::new(0), &sealed, 0, ps).unwrap();
     let guest = HostGuest { memory, stage: stage.clone(), window, base };
 
-    let change = thread::spawn(move || dax.map(0, Arc::new(1), &zeros, 0, ps, false).unwrap());
+    let change = thread::spawn(move || dax.map(0, Arc::new(1), &zeros, 0, ps).unwrap());
     // A store faulted on the page, which the window refused, as it maps it read-only.
     let seen = stage.seen(base);
     stage.restrict(base, seen, libc::PROT_READ);
     // The load is made, or faults, or fails, as the page is.
     drop(guest.access(0, Access::Read, None));
     change.join().unwrap();
-}
-
-/// TASK-102: a store the window refused, as it mapped the page read-only, its page restricted to
-/// reads; then the window makes the page writable in place, as the kernel's address space does
-/// once a pager has dirtied it: the guest's next store is made, or faults to the window, never
-/// fails. Left read-only here, it failed for ever, KVM_RUN with EFAULT, until the VM stopped (the
-/// sandbox team's 2 GiB DAX VMs, at ae54e01: a page r--s, uffd_wp set).
-fn refusal_lifted_by_protection() {
-    let ps = page_size();
-    let memory = ModelMemory::default();
-    let base = 64 * ps as usize;
-    // SAFETY: The model changes no memory.
-    let stage = unsafe {
-        UffdSecondStage::with_host(base, ps, memory.clone(), Memories::InProcess, None, usize::MAX)
-    }
-    .unwrap();
-    let telling = Arc::new(Telling { stage: stage.clone(), memory: memory.clone() });
-    let (mut dax, _) = Dax::<Arc<u8>>::new(ps, Some(telling.clone())).unwrap();
-    let window = dax.window.clone();
-    let page = TestSource::anonymous(1).source();
-    dax.map(0, Arc::new(0), &page, 0, ps, false).unwrap();
-    let guest = HostGuest { memory, stage: stage.clone(), window, base };
-    // A store faulted on the page, which the window refused, as it maps it read-only.
-    let seen = stage.seen(base);
-    stage.restrict(base, seen, libc::PROT_READ);
-    telling.protect(0, ps, Protection::ReadWrite);
-    if let Outcome::Failed = guest.access(0, Access::Write, Some(7)) {
-        panic!("a store to a page the window maps writable failed");
-    }
-}
-
-#[test]
-fn refusals_are_lifted_by_protections() {
-    Runner::new(RandomScheduler::new(1), config()).run(refusal_lifted_by_protection);
 }
 
 #[test]
@@ -684,7 +612,7 @@ fn withholding_races_maps() {
     let guest = HostGuest { memory, stage: stage.clone(), window: window.clone(), base };
 
     let map = thread::spawn(move || {
-        dax.map(0, Arc::new(0), &file, 0, ps, false).unwrap();
+        dax.map(0, Arc::new(0), &file, 0, ps).unwrap();
         dax
     });
     // A load's fault, as KVM makes for the guest.
@@ -703,22 +631,22 @@ fn withholding_races_maps_by_pct() {
 }
 
 const EVENTS: [Event; 6] = [
-    Event::ReadOpen,
     Event::ReadSealed,
     Event::ReadZeros,
+    Event::ReadStored,
     Event::Faulted,
     Event::Failed,
     Event::StoreRefused,
 ];
 
 #[test]
-fn stores_race_seals_and_frees_randomly() {
-    reaching(|| RandomScheduler::new(runs(RUNS)), seals_and_frees_through_userfaultfd, &EVENTS);
+fn stores_race_frees_randomly() {
+    reaching(|| RandomScheduler::new(runs(RUNS)), frees_in_steps, &EVENTS);
 }
 
 #[test]
-fn stores_race_seals_and_frees_by_pct() {
-    reaching(|| PctScheduler::new(3, runs(RUNS)), seals_and_frees_through_userfaultfd, &EVENTS);
+fn stores_race_frees_by_pct() {
+    reaching(|| PctScheduler::new(3, runs(RUNS)), frees_in_steps, &EVENTS);
 }
 
 /// Runs the race with `rules`, expecting a schedule to fail saying `expected`. A rule turned off
@@ -726,20 +654,19 @@ fn stores_race_seals_and_frees_by_pct() {
 fn fails_without(rules: Rules, expected: &str) {
     *RULES.lock().unwrap() = rules;
     fails_with(expected, || {
-        Runner::new(PctScheduler::new(3, runs(10 * RUNS)), config())
-            .run(seals_and_frees_through_userfaultfd);
+        Runner::new(PctScheduler::new(3, runs(10 * RUNS)), config()).run(frees_in_steps);
     });
 }
 
-/// A page mapped read-only, mapped writable until it is write-protected: a store meanwhile
-/// changes the sealed copy, untracked.
+/// A page mapped writable until it is write-protected: a store meanwhile changes the extent's
+/// page, untracked.
 #[test]
 fn needs_maps_with_the_window_protection() {
     let rules = Rules { map_with_window_protection: false, ..Rules::ALL };
     fails_without(rules, "went untracked");
 }
 
-/// A page mapped read-only, made writable before it is write-protected.
+/// A page mapped, made writable before it is write-protected.
 #[test]
 fn needs_write_protection_before_writable() {
     let rules = Rules { write_protect_before_writable: false, ..Rules::ALL };
@@ -757,7 +684,8 @@ fn needs_registers_before_accessible() {
 /// A store the window refuses made read-only whenever its fault is resolved: midway through the
 /// window's unmapping of the page, the memory is left accessible before it is registered, and a
 /// load faults in a page of zeros. A random schedule of the seals and frees found it (seed
-/// 4939094435187741046) once in thousands; the race alone is reached at once.
+/// 4939094435187741046) once in thousands, before copy on write; the race alone is reached at
+/// once.
 #[test]
 fn needs_refusals_between_changes() {
     *RULES.lock().unwrap() = Rules { restrict_between_changes: false, ..Rules::ALL };
@@ -783,16 +711,6 @@ fn needs_mapping_to_give_back_withheld() {
     *RULES.lock().unwrap() = Rules { mapping_gives_back_withheld: false, ..Rules::ALL };
     fails_with("a page mapped was withheld", || {
         Runner::new(PctScheduler::new(3, runs(10 * RUNS)), config()).run(withholding_races_maps);
-    });
-}
-
-/// A refused store's page left read-only when the window makes it writable in place: its stores
-/// fail for ever (TASK-102).
-#[test]
-fn needs_protections_to_lift_restrictions() {
-    *RULES.lock().unwrap() = Rules { protection_lifts_restriction: false, ..Rules::ALL };
-    fails_with("a store to a page the window maps writable failed", || {
-        Runner::new(RandomScheduler::new(1), config()).run(refusal_lifted_by_protection);
     });
 }
 
@@ -826,7 +744,7 @@ fn worker_writes_copy_nothing(vcpu_stores: bool) {
     let window = dax.window.clone();
     // Not in memory as it is mapped, and zeros as it is brought in: not here until a fault.
     let file = TestSource::anonymous(1).source();
-    dax.map(0, (), &file, 0, ps, false).unwrap();
+    dax.map(0, (), &file, 0, ps).unwrap();
     let guest = HostGuest { memory, stage: stage.clone(), window: window.clone(), base };
 
     // The worker's write, retried as get_user_pages retries it, until it fails or is made.
@@ -911,7 +829,7 @@ fn stores_to_pages_here_copy_them() {
     let (mut dax, _) = super::super::tests::copying::<()>(1, 1, Some(telling));
     let window = dax.window.clone();
     let sealed = TestSource::filled(1, SEALED);
-    dax.map(0, (), &sealed.source(), 0, ps, false).unwrap();
+    dax.map(0, (), &sealed.source(), 0, ps).unwrap();
     let guest = HostGuest { memory, stage, window: window.clone(), base };
     let mut shared = None;
     sealed.each_present(0..1, &mut |_, frame| shared = Some(frame.location()));
@@ -969,7 +887,7 @@ fn private_pages_race_loads() {
     let ps = page_size();
     let (memory, stage, mut dax) = modelled_copying(1);
     let sealed = TestSource::filled(1, SEALED).source();
-    dax.map(0, (), &sealed, 0, ps, false).unwrap();
+    dax.map(0, (), &sealed, 0, ps).unwrap();
     let window = dax.window.clone();
     let guest = HostGuest { memory, stage, window: window.clone(), base: 64 * ps as usize };
     let guest = Arc::new(guest);
@@ -1022,7 +940,7 @@ fn private_pages_go_with_their_unmaps() {
     let ps = page_size();
     let (memory, stage, mut dax) = modelled_copying(1);
     let sealed = TestSource::filled(1, SEALED).source();
-    dax.map(0, (), &sealed, 0, ps, false).unwrap();
+    dax.map(0, (), &sealed, 0, ps).unwrap();
     let window = dax.window.clone();
     future::block_on(window.make_private(0, ps)).unwrap();
     let guest = HostGuest { memory, stage, window, base: 64 * ps as usize };

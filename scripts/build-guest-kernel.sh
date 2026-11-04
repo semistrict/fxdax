@@ -87,9 +87,7 @@ commit 0001-sched-fxfs-tls.patch include/linux/fxfs_tls.h
 commit 0002-stack-size.patch
 commit 0003-virtio-extent.patch drivers/virtio_extent include/linux/virtio_extent.h
 commit 0004-fxfs.patch fs/fxfs
-commit 0005-dax-entry-order.patch
 commit 0007-dax-say-why-a-fault-fails.patch
-commit 0008-dax-split-pmd-entry-shared-pte.patch
 commit 0010-dax-read-replaces-no-entry-naming-its-page.patch
 commit 0011-dax-a-folio-put-for-good-keeps-no-share-count.patch
 commit 0012-dax-invalidate-unmaps-under-entry-lock.patch

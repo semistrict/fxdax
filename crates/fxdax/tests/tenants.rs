@@ -97,9 +97,9 @@ fn public_bases_are_shared_read_only() {
         let window = memory(pages);
         // SAFETY: The memory is this test's, which it leaks: the window maps it while the process
         // lives.
-        unsafe { store.create_dax_window_in_host_memory(window, base_bytes.len() as u64, None) }
+        unsafe { store.create_dax_window_in_host_memory(window, base_bytes.len() as u64, None, 1) }
             .unwrap();
-        store.map(extent, 0, base_bytes.len() as u64, 0, false).unwrap();
+        store.map(extent, 0, base_bytes.len() as u64, 0).unwrap();
         // SAFETY: The window's memory, whose faults the store serves.
         let mapped = unsafe { std::slice::from_raw_parts(window.as_ptr(), base_bytes.len()) };
         assert!(mapped == base_bytes, "the fork maps other bytes");

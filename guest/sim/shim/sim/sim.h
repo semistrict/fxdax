@@ -36,7 +36,11 @@ void sim_alloc_fail(u64 skip, u64 count);
 void sim_alloc_fail_odds(unsigned int odds);
 u64 sim_allocs_failed(void);
 
-/* The fake device under the window: seals what is open, frees extents. */
+/*
+ * The fake device under the window, which copies on write (doc-13): seals what is open, frees
+ * extents. A store to a page mapped read-only makes it private, a MAP or UNMAP over it frees it; it
+ * holds at most a quarter of the window's pages private, unless told otherwise before the mount.
+ */
 void sim_device_init(u64 window_len);
 void sim_device_new_extent(u64 sequence, u64 size);
 void sim_device_seal(void);
@@ -52,15 +56,12 @@ u64 sim_device_map_requests(void);
 void sim_device_fail(u32 type, u64 skip, u64 count);
 void sim_device_fail_odds(unsigned int odds);
 u64 sim_device_failed(void);
-void sim_device_limit_open(u64 pages);
-u64 sim_device_open_refused(void);
 /*
- * Has the device copy on write (DAX_COW, doc-13), holding at most `private_max` private pages: a
- * store to a page mapped read-only makes it private, a MAP or UNMAP over it frees it. Before the
- * mount. The private pages it holds; the most it held at once; how many MAPs and UNMAPs freed; how
- * many PRIVATEs it refused for want of room; how many maps of open extents it refused (EPERM).
+ * Has the device hold at most `private_max` private pages, before the mount. The private pages it
+ * holds; the most it held at once; how many MAPs and UNMAPs freed; how many PRIVATEs it refused for
+ * want of room; how many maps of open extents it refused (EPERM).
  */
-void sim_device_dax_cow(u64 private_max);
+void sim_device_private_max(u64 private_max);
 u64 sim_device_private(void);
 u64 sim_device_private_most(void);
 u64 sim_device_private_freed(void);
@@ -91,6 +92,8 @@ struct sim_mount {
 };
 struct sim_mount *sim_mount_new(void);
 void sim_mount_free(struct sim_mount *mount);
+/* One of the counts dax.c shows of the mount (fxfs_dax_show_stats), by name, as /proc/fs/fxfs. */
+u64 sim_dax_stat(struct sim_mount *mount, const char *name);
 struct file *sim_file_new(struct sim_mount *mount);
 void sim_file_evict(struct file *file);
 /* Evicts `file`'s inode, which nothing maps, and reads a new one in for it: that inode, opened. */
@@ -128,12 +131,10 @@ u64 fxfs_sim_size(struct fxfs *fs, u64 ino);
 u64 fxfs_sim_new_file(struct fxfs *fs);
 struct fxfs *fxfs_sim_new(void);
 void fxfs_sim_free(struct fxfs *fs);
-/* How many blocks moved, extents were freed, extents a write opened again, transactions failed. */
-void fxfs_sim_stats(u64 *moves, u64 *frees, u64 *failed);
+/* How many blocks writeback wrote, extents were freed, transactions failed. */
+void fxfs_sim_stats(u64 *written, u64 *frees, u64 *failed);
 /* Has one transaction in `odds` fail with -ENOSPC, or none if 0. */
 void fxfs_sim_fail(unsigned int odds);
-/* Has the next `count` commits of write(2)s' moves fail with -EIO (fxfs_dax_end_write). */
-void fxfs_sim_fail_commits(unsigned int count);
 /*
  * Has fxfs_write_many, writeback's, wait between its bytes and its commit while `hold`: a crash
  * then leaves the file as fxfs_sim_read reads it, and the commit would as fxfs_sim_read_pending
@@ -152,7 +153,7 @@ void fxfs_sim_read_pending(struct fxfs *fs, u64 ino, u64 offset, void *buf, size
 u64 fxfs_sim_reserved(struct fxfs *fs, u64 ino);
 /* How many seals have ended. */
 u64 fxfs_sim_seals(struct fxfs *fs);
-/* Whether a seal has begun, and shut the gate, and not ended: waiting for the stores, it may be. */
+/* Whether a seal has begun and not ended. */
 bool fxfs_sim_sealing(struct fxfs *fs);
 /* Logs what happens to the block of `page` of file `ino`. */
 void fxfs_sim_watch(u64 ino, u64 page);

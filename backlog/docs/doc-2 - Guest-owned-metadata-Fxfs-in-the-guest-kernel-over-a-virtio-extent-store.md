@@ -3,7 +3,7 @@ id: doc-2
 title: 'Guest-owned metadata: Fxfs in the guest kernel over a virtio extent store'
 type: specification
 created_date: '2026-10-13 19:53'
-updated_date: '2026-10-17 19:48'
+updated_date: '2026-11-04 16:32'
 ---
 # Guest-owned metadata: Fxfs in the guest kernel over a virtio extent store
 
@@ -119,7 +119,10 @@ In the guest these run as upstream wrote them, with three changes:
   - nothing is written in place: superblocks go to new extents that a root record names, each
     journal flush writes new extents, and overwrite mode becomes copy-on-write.
 - **Data path.** File pages are not in the guest's page cache. A read maps the extent's range from the DAX
-  window, which is one copy on the host shared by every VM. For writes, see Open decisions.
+  window, which is one copy on the host shared by every VM. A write copies on write (doc-13, settled
+  below): the page becomes the VM's own private copy, at the same window address, until writeback
+  `WRITE`s it to a new extent and maps the page back to it once a commit seals it. Files a mount
+  creates go through the guest's page cache, as without DAX, until their inodes are next read in.
 - **Runtime.** Fxfs's async code, its allocations and its Fuchsia-specific dependencies are adapted to
   the kernel (Rust for Linux). How is the first spike.
 
@@ -204,12 +207,16 @@ with only its filesystem.
 
 Provisional choices, which milestone 1 or the fork milestone settles:
 
-1. **The write path.**
-   - DAX writes with barriers on commit: no copies and no request per write, with ordering explicit at
-     commits. The provisional choice.
-   - `WRITE` requests: one copy each, and ordered by the queue.
-
-   Milestone 1 measures both.
+1. **The write path.** Settled 2026-11-04 (doc-13, TASK-164): writes copy on write in host memory,
+   and are allocated at writeback. A store makes its window page a private page of the VM's, at the
+   same address; writeback (fsync, msync, sync, the flusher) sends the dirty pages' bytes as `WRITE`
+   requests to extents Fxfs allocates then, and commits after them, as the page cache's path does;
+   once sealed, the pages are mapped back to those extents, shared again.
+   - The provisional choice, DAX writes with barriers on commit (the window page the open extent's
+     block, sealed by the next barrier), was built and given up: every fsync sealed, so the next
+     store to any page moved its block, racing the next seal, and DAX ran at 0.51-0.61x no-DAX's
+     pgbench (dead-ends/writable-dax.md).
+   - `WRITE` requests, one copy each and ordered by the queue, are what writeback sends.
 2. **Immutable extents.** Settled by doc-4: extents are write-once, sealed by the next barrier, and
    Fxfs no longer writes in place.
 3. **How a fork's writes stay private.** Settled by doc-4: each branch mints extents under its own ID,

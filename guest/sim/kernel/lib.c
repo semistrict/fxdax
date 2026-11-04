@@ -244,6 +244,19 @@ void sim_warn(const char *file, int line, const char *format, ...)
 	sim_panic("WARN at %s:%d: %s", file, line, text);
 }
 
+/* Appends `len` bytes of `text` to `m`'s buffer, as far as it has room, or logs them. */
+static void seq_put(struct seq_file *m, const char *text, size_t len)
+{
+	if (!m) {
+		sim_log("%.*s", (int)len, text);
+		return;
+	}
+	len = min(len, m->size - 1 - m->count);
+	memcpy(m->buf + m->count, text, len);
+	m->count += len;
+	m->buf[m->count] = 0;
+}
+
 void seq_printf(struct seq_file *m, const char *format, ...)
 {
 	char line[1024];
@@ -252,12 +265,12 @@ void seq_printf(struct seq_file *m, const char *format, ...)
 	va_start(args, format);
 	vsnprintf(line, sizeof(line), format, args);
 	va_end(args);
-	sim_log("%s", line);
+	seq_put(m, line, strlen(line));
 }
 
 void seq_putc(struct seq_file *m, char c)
 {
-	sim_log("%c", c);
+	seq_put(m, &c, 1);
 }
 
 /* Parameters: the two kinds the source names, and a lookup by name. */

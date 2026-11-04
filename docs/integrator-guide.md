@@ -124,6 +124,9 @@ what they inherited. A point of a point fails with `INVALID_ARGUMENT`: fork the 
 commit on that store's branch, so its host needs to be the branch's writer. Fork those on one host
 at a time, or make a point first (above).
 
-**Memory.** Open pages can't be evicted until a guest seals them, and only a guest can seal. Several
-VMs share the daemon's memory, so one idle VM with many open pages can leave another short, which
-it sees as `ENOMEM`. This hasn't been run with several VMs at once.
+**Memory.** The pages a guest writes through its DAX window are its own, private copies, in its VM
+process's memory (backlog doc-13): at most the device's `dax_private_max` (a quarter of the window's
+pages by default), reserved against the store's tenant as the guest activates the device, so that a
+store never waits for memory. The guest writes them back and lets them go below that bound; a store
+past it stops that VM (exit 159). Everything else the window maps is sealed extents' pages, shared
+and evictable.

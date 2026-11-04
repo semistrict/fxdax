@@ -43,9 +43,9 @@ fn read_through(store: &RemoteExtentStore) -> std::ptr::NonNull<u8> {
     let window = memory((size / fxdax::pages::page_size()) as usize);
     // SAFETY: The memory is this test's, which it leaks: the window maps it while the process
     // lives.
-    unsafe { store.create_dax_window_in_host_memory(window, size, None) }.unwrap();
+    unsafe { store.create_dax_window_in_host_memory(window, size, None, 1) }.unwrap();
     for sequence in 1..=EXTENTS {
-        store.map(extent(sequence), 0, EXTENT, (sequence - 1) * EXTENT, false).unwrap();
+        store.map(extent(sequence), 0, EXTENT, (sequence - 1) * EXTENT).unwrap();
     }
     for round in 0..2 {
         for sequence in 1..=EXTENTS {
@@ -94,9 +94,7 @@ fn metric(name: &str) -> u64 {
 
 /// A tenant whose VM reads through its window twice what its limit holds keeps within it, its
 /// pages read longest ago evicted, read again as they are touched; its metrics name it by a hash.
-/// Mapping more for its guest to write than it can evict fails with ENOMEM, and the daemon goes
-/// on. ShrinkMemory frees its pages, and returns once they are, its VM's window having unmapped
-/// them.
+/// ShrinkMemory frees its pages, and returns once they are, its VM's window having unmapped them.
 #[test]
 fn tenants_past_their_limits_evict_then_refuse() {
     let dir = tempfile::tempdir().unwrap();
@@ -118,14 +116,6 @@ fn tenants_past_their_limits_evict_then_refuse() {
     assert_eq!(daemon.shrink_memory(Some("acme"), 0).unwrap(), 0);
     assert_eq!(metric(&format!("fxdax_extentd_tenant_memory_bytes{tenant}")), 0);
     assert_eq!(failure(daemon.shrink_memory(Some("globex"), 0)), (Code::NotFound, Errno::ENOENT));
-
-    // Its guest maps an extent to write, twice what its limit holds.
-    let open = ExtentId { branch: vm.branch(), sequence: EXTENTS + 1 };
-    assert_eq!(vm.map(open, 0, 4 * CHUNK, 0, true), Err(Errno::ENOMEM));
-    assert_eq!(metric(&format!("fxdax_extentd_tenant_memory_bytes{tenant}")), 2 * CHUNK);
-    // The daemon goes on, and the tenant with it, once its limit is lifted.
-    daemon.set_memory_limit(Some("acme"), None).unwrap();
-    vm.map(open, 0, 4 * CHUNK, 0, true).unwrap();
     assert_eq!(daemon.stat(&acme.join("vm")).unwrap().open, true);
 }
 

@@ -110,8 +110,6 @@ int fxfs_mount(struct fxfs_filesystem *filesystem, const char *volume, size_t le
 /* fxdax: whether a volume mounted on the filesystem follows its device's writer. */
 bool fxfs_filesystem_follows(struct fxfs_filesystem *filesystem);
 /* fxdax: whether the filesystem is mounted read-only, and whether it follows its writer. */
-/* fxdax: diagnostic: Fxfs logs the blocks a DAX write's move keeps that read short or as zeros. */
-void fxfs_set_check_kept(bool on);
 bool fxfs_read_only(struct fxfs *fs);
 bool fxfs_follows(struct fxfs *fs);
 /*
@@ -199,12 +197,6 @@ int fxfs_fsync(struct fxfs *fs);
  * grows the filesystem, or, asked to shrink, shrinks it if it holds no more, and answers.
  */
 int fxfs_resize(struct fxfs_filesystem *filesystem);
-/*
- * fxdax: seals what is open, as the host asks: the journal synced, which commits the device,
- * ordered, not durable. Another guest's writable MAP was refused for want of the memory the open
- * extents hold, which only their seal lets go of (TASK-153.15).
- */
-int fxfs_seal(struct fxfs_filesystem *filesystem);
 int fxfs_statfs(struct fxfs *fs, struct fxfs_statfs *statfs);
 
 /* Frees the blocks of file `ino` within the `len` bytes at `offset`, block-aligned: a hole. */
@@ -393,22 +385,19 @@ void fxfs_set_fail_commits(u64 count);
 /* The extent-store device the filesystem is on (device.h). */
 struct fxfs_device *fxfs_dax_device(struct fxfs_filesystem *filesystem);
 
-/* What the DAX window may do with a piece of a file: Fxfs's ExtentAccess, by these numbers. */
+/*
+ * Whether the DAX window may map a piece of a file: Fxfs's ExtentAccess, by these numbers. The
+ * window maps sealed extents alone (doc-13).
+ */
 enum fxfs_dax_access {
 	/*
 	 * Its extent isn't known to be open: a seal came since it was minted, which sealed it, or
-	 * found nothing of it on the device yet. It is read-only for good, anywhere in the window,
-	 * outside the gate, whatever seals meanwhile.
+	 * found nothing of it on the device yet. Read-only for good, anywhere in the window, whatever
+	 * seals meanwhile.
 	 */
 	FXFS_DAX_SEALED,
-	/* Its extent is open, and its blocks a file's alone: writable, in place, until a seal. */
+	/* Its extent is open still, which a seal must come for first; as is any other number. */
 	FXFS_DAX_OPEN,
-	/*
-	 * Its extent is open, but its blocks may not be written in place: a clone shares them, or
-	 * Fxfs's record of them keeps their checksums, or, an allocation's, which were written.
-	 * Read-only, as sealed blocks are, for a write to move them.
-	 */
-	FXFS_DAX_SHARED,
 };
 
 /*
@@ -438,39 +427,6 @@ struct fxfs_dax_extent {
  */
 ssize_t fxfs_dax_extents(struct fxfs *fs, u64 ino, u64 offset, u64 len,
 			 struct fxfs_dax_extent *out, size_t max);
-/*
- * fxdax: replaces the staging extent, if a barrier sealed it since blocks were taken of it, with a
- * new one, open, which `out` describes (its extent and extent_size), for the window to map before
- * the blocks of the next writes move there: true if it did.
- */
-bool fxfs_dax_restage(struct fxfs_filesystem *filesystem, struct fxfs_dax_extent *out);
-/*
- * Makes room to write `len` bytes at `offset` of file `ino` through the window, without writing
- * them, and makes the file `size` bytes long if it is shorter, in one transaction. Returns the
- * pieces holding the range's blocks, as fxfs_dax_extents, which were open: blocks of open extents
- * stay, and the others move to new ones, holding what the range's first and last blocks hold
- * around it: or, if the caller may store only some of the range (`keep`), as a fault does, all
- * they hold; fxdax: or `held`, if not NULL, `len` bytes, whole blocks, written in the transaction,
- * as a fault holds its page (TASK-79.11). The caller stores the data through writable mappings
- * before the extents are sealed.
- */
-ssize_t fxfs_dax_map_write(struct fxfs *fs, u64 ino, u64 offset, u64 len, u64 size, bool keep,
-			   const void *held, struct fxfs_dax_extent *out, size_t max);
-/*
- * fxdax: makes room for a write(2) of `len` bytes at `offset` of file `ino`, as fxfs_dax_map_write
- * does without `keep` or `held`, but commits nothing: `*write` holds the transaction, and with it
- * the file's lock and the new blocks, until fxfs_dax_end_write, which commits it once the caller
- * has stored the bytes, or drops it, leaving the file as it was (TASK-153.5). Called holding no
- * gate, as is fxfs_dax_end_write: a commit may wait for a seal.
- */
-struct fxfs_dax_write;
-ssize_t fxfs_dax_begin_write(struct fxfs *fs, u64 ino, u64 offset, u64 len, u64 size,
-			     struct fxfs_dax_extent *out, size_t max, struct fxfs_dax_write **write);
-/* Commits `write` if `commit`, or drops it: 0, or the commit's -errno. Either way it is gone. */
-int fxfs_dax_end_write(struct fxfs_dax_write *write, bool commit);
-/* Records an append already written through the window, without zeroing it (TASK-92.28). */
-int fxfs_dax_update_size(struct fxfs *fs, u64 ino, u64 size);
-
 /*
  * Extended attributes of inode `ino`, by their full names (`user.x`): getxattr(2)'s and
  * listxattr(2)'s semantics, ssize_t results as theirs (the length, or with `size` 0 the length

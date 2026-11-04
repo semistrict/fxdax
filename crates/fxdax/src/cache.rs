@@ -2,8 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-//! The process's cache of sealed extents, and the memory of open ones (`crate::extents`), in pages
-//! of physical memory (`crate::pages`).
+//! The process's cache of sealed extents (`crate::extents`), in pages of physical memory
+//! (`crate::pages`).
 //!
 //! A sealed extent is cached once, keyed by its ID and the arena its pages are of, which every store
 //! and window in the process shares: a table of its pages ([`CachedExtent`]), each read in from a
@@ -14,15 +14,8 @@
 //! changes once sealed, its ID its branch's to write once, which the store keeps to (TASK-79.6).
 //! A page evicted is unmapped from each window that maps it first; freed, it waits in quarantine
 //! for the VM processes that may reach it still (`physmem::quarantine_with`, TASK-79.9).
-//!
-//! An open extent a window maps writably is pages of its store's arena ([`OpenPages`]), zeros as
-//! they come in, which its commit writes to the store, then moves into the sealed extent's table,
-//! uncopied ([`CachedExtent::supply`]). Only then can they be evicted, and only the guest, in a
-//! seal, can have that done: so they are pinned until then (`physmem::pin`), and a MAP past their
-//! budget tells it to, with `ENOMEM`, where memory is there still for its faults, and its seal
-//! (TASK-150.20).
 
-use crate::dax::{Deferred, Source, Window};
+use crate::dax::{Source, Window};
 use crate::error::{Errno, Result};
 use crate::extents::ExtentId;
 use crate::pages::{ArenaId, page_size};
@@ -50,16 +43,6 @@ pub(crate) struct Cached {
     extent: Arc<CachedExtent>,
     /// The stores it is read through (TASK-79.7).
     holders: Arc<Holders>,
-    /// What waits for the guest that sealed it to lose its access to its pages, if the sealing
-    /// commit didn't (`ExtentStore::commit`): another store's guest, a fork's, waits for it before
-    /// it maps them.
-    sealing: Option<Sealing>,
-}
-
-/// A seal of a cached extent not yet made: its store's guest may store to its pages until it is.
-struct Sealing {
-    store: Weak<Store<HostDir>>,
-    made: Arc<dyn Deferred>,
 }
 
 /// The stores a cached extent's pages are read from (TASK-79.7): each that asked for it, as forks
@@ -224,44 +207,31 @@ pub(crate) fn cached(
     len: u64,
 ) -> Result<Arc<CachedExtent>> {
     let cache = extent_cache();
-    let (cached, sealing) = {
-        let mut extents = cache.extents.lock().unwrap();
-        let key = (arena, extent);
-        let cached = extents.entry(key).or_insert_with(|| {
-            let holders = Arc::new(Holders::default());
-            let stored =
-                StoredExtent::new(holders.clone(), store, remote.as_deref(), extent, recorder);
-            Cached {
-                extent: Arc::new(CachedExtent::new(arena, extent, Box::new(stored), len)),
-                holders,
-                sealing: None,
-            }
-        });
-        cached.extent.used();
-        cached.holders.add(store, remote.as_ref());
-        let sealing = (cached.sealing.as_ref())
-            .filter(|sealing| !std::ptr::eq(sealing.store.as_ptr(), Arc::as_ptr(store)))
-            .map(|sealing| sealing.made.clone());
-        let found = (cached.extent.clone(), sealing);
-        let most = MOST_CACHED.load(Ordering::Relaxed);
-        let gone = (extents.len() > most.max(TRIM_AT.load(Ordering::Relaxed))).then(|| {
-            let started = std::time::Instant::now();
-            let gone = let_go_least_used(&mut extents, most);
-            TRIM_AT.store(extents.len() + most / 8, Ordering::Relaxed);
-            stats::count_since(Counter::CacheTrims, Counter::CacheTrimNs, started);
-            gone
-        });
-        drop(extents);
-        // Freed past the cache's lock.
-        drop(gone);
-        found
-    };
-    // Another store's extent, a fork's parent's, whose guest may still store to its pages until its
-    // seal is made: not shared with this store's guest before then.
-    if let Some(sealing) = sealing {
-        sealing.wait();
-    }
-    Ok(cached)
+    let mut extents = cache.extents.lock().unwrap();
+    let key = (arena, extent);
+    let cached = extents.entry(key).or_insert_with(|| {
+        let holders = Arc::new(Holders::default());
+        let stored = StoredExtent::new(holders.clone(), store, remote.as_deref(), extent, recorder);
+        Cached {
+            extent: Arc::new(CachedExtent::new(arena, extent, Box::new(stored), len)),
+            holders,
+        }
+    });
+    cached.extent.used();
+    cached.holders.add(store, remote.as_ref());
+    let found = cached.extent.clone();
+    let most = MOST_CACHED.load(Ordering::Relaxed);
+    let gone = (extents.len() > most.max(TRIM_AT.load(Ordering::Relaxed))).then(|| {
+        let started = std::time::Instant::now();
+        let gone = let_go_least_used(&mut extents, most);
+        TRIM_AT.store(extents.len() + most / 8, Ordering::Relaxed);
+        stats::count_since(Counter::CacheTrims, Counter::CacheTrimNs, started);
+        gone
+    });
+    drop(extents);
+    // Freed past the cache's lock.
+    drop(gone);
+    Ok(found)
 }
 
 /// The cached `extent` of `arena`, if it is cached.
@@ -270,21 +240,6 @@ pub(crate) fn find(arena: ArenaId, extent: ExtentId) -> Option<Arc<CachedExtent>
     let cache = EXTENT_CACHE.get()?;
     let extents = cache.extents.lock().unwrap();
     extents.get(&(arena, extent)).map(|cached| cached.extent.clone())
-}
-
-/// Records, of each cached extent of `sealed` by `arena`, that `store`'s guest may store to its
-/// pages until `made` (`ExtentStore::commit`).
-pub(crate) fn sealing(
-    store: &Arc<Store<HostDir>>,
-    sealed: impl Iterator<Item = (ArenaId, ExtentId)>,
-    made: &Arc<dyn Deferred>,
-) {
-    let mut extents = extent_cache().extents.lock().unwrap();
-    for key in sealed {
-        if let Some(cached) = extents.get_mut(&key) {
-            cached.sealing = Some(Sealing { store: Arc::downgrade(store), made: made.clone() });
-        }
-    }
 }
 
 /// Lets go of the cached `extent` of `arena`, which `store` frees, unless another store that asked
@@ -592,30 +547,6 @@ impl CachedExtent {
         Ok(())
     }
 
-    /// Moves the pages of `open` in `pages` that it doesn't have in memory, its own as the commit
-    /// that sealed it wrote them, into its table, uncopied: the commit's (`ExtentStore::commit`).
-    /// Those of another arena's than its own stay, read in from the store as they are asked for,
-    /// so that no arena's memory holds another's data.
-    pub(crate) fn supply(&self, pages: Range<u64>, open: &OpenPages) {
-        if open.arena != self.arena {
-            return;
-        }
-        let moved = open.take(pages);
-        let count = moved.len();
-        let mut table = self.pages.lock().unwrap();
-        for (page, frame) in moved {
-            if let Some(slot @ (Slot::Absent | Slot::Failed(_))) = table.slots.get_mut(page as usize)
-            {
-                *slot = Slot::Present(frame);
-                self.present.fetch_add(1, Ordering::Relaxed);
-            }
-        }
-        drop(table);
-        // In the table: relief, told of them, finds them.
-        physmem::unpin(self.arena, count);
-        self.changed.notify(usize::MAX);
-    }
-
     /// Evicts its pages in memory: unmaps them from the windows that map them, then lets go of
     /// them, those a window's second stage mapped into quarantine (`physmem::quarantine_with`).
     /// Returns the bytes it evicted.
@@ -821,207 +752,6 @@ impl Source for CachedExtent {
     }
 }
 
-/// How far an open extent's pages may go ([`OpenPages::commit`]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Room {
-    /// Within the budget of pages nothing can evict (`physmem::pin`), for a MAP, which `ENOMEM`
-    /// tells the guest to seal, and try again.
-    Budget,
-    /// Into the reserve past it, for what can't go back: a write, which the guest's seal would make
-    /// a write to a sealed extent, and a fault.
-    Reserve,
-}
-
-/// The memory of an open extent a window maps writably: pages of its store's arena, zeros as they
-/// come in, until the commit that seals it moves them into its cached extent. Never evicted: its
-/// commit writes them to the store. Each is pinned, until it moves or goes (`physmem::pin`), and
-/// counted in its store's `held` meanwhile: what the daemon asks a guest holding many to seal for
-/// (TASK-153.15).
-pub(crate) struct OpenPages {
-    arena: ArenaId,
-    pages: Mutex<Vec<Option<physmem::Page>>>,
-    held: Arc<AtomicU64>,
-}
-
-impl OpenPages {
-    /// No pages yet, of `arena`, those it comes to hold counted in `held`.
-    pub(crate) fn new(arena: ArenaId, held: Arc<AtomicU64>) -> Arc<Self> {
-        Arc::new(Self { arena, pages: Mutex::new(Vec::new()), held })
-    }
-
-    /// Those of `count` new pages, at most a chunk's, that are consecutive in physical memory after
-    /// `after`, the page before them in the extent, as far as they are free: which never waits, so
-    /// that the table can stay locked for it.
-    fn taken_after(after: Option<&physmem::Page>, count: usize) -> Vec<physmem::Page> {
-        debug_assert!(count <= physmem::CHUNK_SIZE / page_size() as usize);
-        let mut run: Vec<physmem::Page> = Vec::with_capacity(count);
-        while run.len() < count {
-            let Some(next) = run.last().or(after).and_then(physmem::alloc_after) else { break };
-            run.push(next);
-        }
-        run
-    }
-
-    /// `run` and `count` new pages more, of zeros, of its arena, those new of the smallest free run
-    /// that holds them (`physmem::alloc_run`): `run` was taken after the page before them
-    /// ([`OpenPages::taken_after`]), so that a window maps the extent in runs as long as they are,
-    /// each one change of its VM process's memory, rather than a page at a time (TASK-108.1,
-    /// TASK-131.1). Taken a page at a time, they would be the single pages free among those in use,
-    /// scattered. `ENOMEM` once relief finds nothing to evict for them.
-    fn zeroed(&self, mut run: Vec<physmem::Page>, count: usize) -> Result<Vec<physmem::Page>> {
-        let rest = physmem::alloc_run(self.arena, count, physmem::Wait::Yes)
-            .map_err(|_| Errno::ENOMEM)?;
-        run.extend(rest);
-        let ps = page_size() as usize;
-        let breaks = (run.windows(2))
-            .filter(|pair| pair[1].as_ptr() as usize != pair[0].as_ptr() as usize + ps);
-        stats::add(Counter::OpenAllocs, 1);
-        stats::add(Counter::OpenAllocPages, run.len() as u64);
-        stats::add(Counter::OpenAllocRuns, 1 + breaks.count() as u64);
-        for page in &run {
-            // SAFETY: The page is allocated, and only this extent's.
-            unsafe { std::ptr::write_bytes(page.as_ptr(), 0, page_size() as usize) };
-        }
-        Ok(run)
-    }
-
-    /// Brings `pages` into memory, as a guest about to write them maps them: so that they are
-    /// mapped now rather than one fault at a time as it writes them. Each run of them not in
-    /// memory is allocated a chunk's pages at most at once ([`OpenPages::zeroed`]): those brought
-    /// in before an allocation fails stay, as its arena's cap refuses the rest. Without the table's
-    /// lock while it waits for room: relief unmaps what it evicts from the windows, whose locks are
-    /// taken before a source's (`Source`), so a fault on the extent holding one for this lock would
-    /// hold relief up, and so this allocation, for good. What another brought in meanwhile stays.
-    /// Past `room`'s limit, `ENOMEM`, the pages before it brought in.
-    pub(crate) fn commit(&self, pages: Range<u64>, room: Room) -> Result<()> {
-        let mut page = pages.start as usize;
-        while page < pages.end as usize {
-            let chunk = physmem::CHUNK_SIZE / page_size() as usize;
-            let (end, run) = {
-                let mut table = self.pages.lock().unwrap();
-                if table.len() < pages.end as usize {
-                    table.resize_with(pages.end as usize, || None);
-                }
-                if table[page].is_some() {
-                    page += 1;
-                    continue;
-                }
-                let end = (page..pages.end as usize).find(|at| table[*at].is_some());
-                let end = end.unwrap_or(pages.end as usize).min(page + chunk);
-                let before = page.checked_sub(1).and_then(|before| table[before].as_ref());
-                (end, Self::taken_after(before, end - page))
-            };
-            match room {
-                Room::Budget if !physmem::pin(self.arena, end - page) => return Err(Errno::ENOMEM),
-                Room::Budget => {}
-                Room::Reserve => physmem::pin_past_budget(self.arena, end - page),
-            }
-            let new = end - page - run.len();
-            let run = self.zeroed(run, new).inspect_err(|_| {
-                physmem::unpin(self.arena, end - page);
-            })?;
-            let mut lost = 0;
-            let mut table = self.pages.lock().unwrap();
-            for (slot, frame) in table[page..end].iter_mut().zip(run) {
-                match slot {
-                    Some(_) => lost += 1,
-                    None => *slot = Some(frame),
-                }
-            }
-            self.held.fetch_add((end - page - lost) as u64, Ordering::Relaxed);
-            drop(table);
-            physmem::unpin(self.arena, lost);
-            page = end;
-        }
-        Ok(())
-    }
-
-    /// Reads its bytes at `offset` into `data`: zeros where it has no page.
-    pub(crate) fn read(&self, offset: u64, data: &mut [u8]) {
-        let ps = page_size() as usize;
-        let table = self.pages.lock().unwrap();
-        let mut done = 0;
-        while done < data.len() {
-            let at = offset as usize + done;
-            let (page, within) = (at / ps, at % ps);
-            let len = (ps - within).min(data.len() - done);
-            match table.get(page).and_then(Option::as_ref) {
-                Some(frame) => {
-                    // SAFETY: The page is the extent's, in memory while its lock is held; a guest
-                    // storing to it meanwhile changes what is read, as it would its own memory.
-                    let memory = unsafe { std::slice::from_raw_parts(frame.as_ptr(), ps) };
-                    data[done..done + len].copy_from_slice(&memory[within..within + len]);
-                }
-                None => data[done..done + len].fill(0),
-            }
-            done += len;
-        }
-    }
-
-    /// Writes `data` at `offset`, bringing the pages it writes into memory, as far as `room` says.
-    pub(crate) fn write(&self, offset: u64, data: &[u8], room: Room) -> Result<()> {
-        let ps = page_size() as usize;
-        let end = offset + data.len() as u64;
-        self.commit(offset / ps as u64..end.div_ceil(ps as u64), room)?;
-        let table = self.pages.lock().unwrap();
-        let mut done = 0;
-        while done < data.len() {
-            let at = offset as usize + done;
-            let (page, within) = (at / ps, at % ps);
-            let len = (ps - within).min(data.len() - done);
-            let frame = table[page].as_ref().expect("a page brought in");
-            // SAFETY: As in `read`, written.
-            let memory = unsafe { std::slice::from_raw_parts_mut(frame.as_ptr(), ps) };
-            memory[within..within + len].copy_from_slice(&data[done..done + len]);
-            done += len;
-        }
-        Ok(())
-    }
-
-    /// Takes its pages of `pages`, as they move to its sealed extent: pinned still, which is for
-    /// the extent to let go of once it has them ([`CachedExtent::supply`]).
-    fn take(&self, pages: Range<u64>) -> Vec<(u64, physmem::Page)> {
-        let mut table = self.pages.lock().unwrap();
-        let held = table.len() as u64;
-        let taken: Vec<_> = (pages.filter(|page| *page < held))
-            .filter_map(|page| Some((page, table[page as usize].take()?)))
-            .collect();
-        self.held.fetch_sub(taken.len() as u64, Ordering::Relaxed);
-        taken
-    }
-}
-
-impl Drop for OpenPages {
-    fn drop(&mut self) {
-        // fxdax: poisoned, by a panic holding the table, they may be dropped as it unwinds, its
-        // store fenced (`crate::fence`): panicking here then aborted the daemon. What the table
-        // holds, however far a change of it got, is pages held (TASK-153.16).
-        let pages = self.pages.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let held = pages.iter().flatten().count();
-        self.held.fetch_sub(held as u64, Ordering::Relaxed);
-        physmem::unpin(self.arena, held);
-    }
-}
-
-impl Source for OpenPages {
-    fn each_present(&self, pages: Range<u64>, found: &mut dyn FnMut(u64, &physmem::Page)) {
-        let table = self.pages.lock().unwrap();
-        for page in pages {
-            if let Some(Some(frame)) = table.get(page as usize) {
-                found(page, frame);
-            }
-        }
-    }
-
-    fn bring_in(self: Arc<Self>, page: u64) -> BoxFuture<'static, Result<bool>> {
-        Box::pin(std::future::ready(self.commit(page..page + 1, Room::Reserve).map(|()| false)))
-    }
-
-    fn is_open(&self) -> bool {
-        true
-    }
-}
-
 /// Zeros, which windows map read-only where nothing else is to be read: one page of them, of the
 /// default arena, which every VM process maps, wherever they are mapped.
 struct Zeros(physmem::Page);
@@ -1043,8 +773,8 @@ impl Source for Zeros {
 }
 
 /// Zeros, for windows to map ([`Zeros`]): made once, and kept for the process's life. `ENOMEM` if
-/// the first can't be made, which each window has made as it is created (`Dax::new`): a seal or a
-/// free maps them holding the store's locks, memory out, as memory run out finds them.
+/// the first can't be made, which each window has made as it is created (`Dax::new`): a free maps
+/// them holding the store's locks, memory out, as memory run out finds them.
 pub(crate) fn zeros() -> Result<Arc<dyn Source>> {
     static ZEROS: OnceLock<Arc<Zeros>> = OnceLock::new();
     if let Some(zeros) = ZEROS.get() {
@@ -1054,106 +784,4 @@ pub(crate) fn zeros() -> Result<Arc<dyn Source>> {
     // SAFETY: The page is allocated, and only this one's, never written after.
     unsafe { std::ptr::write_bytes(page.as_ptr(), 0, page_size() as usize) };
     Ok(ZEROS.get_or_init(|| Arc::new(Zeros(page))).clone())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The physical memory offsets of `open`'s pages, in order.
-    fn offsets(open: &OpenPages) -> Vec<u64> {
-        let table = open.pages.lock().unwrap();
-        table
-            .iter()
-            .map(|page| page.as_ref().expect("a page brought in").location().offset)
-            .collect()
-    }
-
-    /// An open extent's pages brought in are consecutive in physical memory, each run after the
-    /// page before it in the extent, though single pages are free among pages in use, which pages
-    /// taken a page at a time would be (TASK-131.1). Each test runs in a process of its own
-    /// (nextest), whose arena is its own.
-    #[test]
-    fn open_pages_are_brought_in_in_runs() {
-        let ps = page_size();
-        let row = physmem::alloc_run(ArenaId::DEFAULT, 64, physmem::Wait::No).unwrap();
-        let (freed, kept): (Vec<_>, Vec<_>) =
-            row.into_iter().enumerate().partition(|(at, _)| at % 2 == 0);
-        drop(freed);
-        let open = OpenPages::new(ArenaId::DEFAULT, Arc::default());
-        open.commit(0..8, Room::Budget).unwrap();
-        open.commit(8..12, Room::Budget).unwrap();
-        open.write(12 * ps, &vec![1; 4 * ps as usize], Room::Budget).unwrap();
-        let offsets = offsets(&open);
-        let first = offsets[0];
-        assert_eq!(offsets, (0..16).map(|page| first + page * ps).collect::<Vec<_>>());
-        drop(kept);
-    }
-
-    /// TASK-150.20: an open extent's allocation leaves the table's lock while it waits for room:
-    /// relief unmaps what it evicts from the windows, whose locks are taken before a source's, as
-    /// `Window::install` takes this one, so that holding it would stop relief, and the allocation.
-    /// Relief stands still here, its evictor waiting for the test, to look at the lock. Each test
-    /// runs in a process of its own (nextest), whose relief is its own.
-    #[test]
-    fn waiting_for_room_leaves_the_table_unlocked() {
-        use std::sync::mpsc::channel;
-        physmem::keep_spare_chunks(false);
-        let arena = physmem::create_arena();
-        physmem::set_arena_cap(arena, Some(physmem::CHUNK_SIZE as u64));
-        let chunk = physmem::CHUNK_SIZE / page_size() as usize;
-        let held = physmem::alloc_run(arena, chunk, physmem::Wait::No).unwrap();
-        let (asked, relief_asked) = channel();
-        let (room, room_made) = channel::<()>();
-        physmem::relieve_with(move |_, bytes| {
-            asked.send(()).unwrap();
-            room_made.recv().unwrap();
-            bytes
-        })
-        .unwrap();
-        let open = OpenPages::new(arena, Arc::default());
-        std::thread::scope(|scope| {
-            let committed = scope.spawn(|| open.commit(0..1, Room::Reserve));
-            relief_asked.recv().unwrap();
-            assert!(open.pages.try_lock().is_ok(), "the table is locked, waiting for room");
-            drop(held);
-            room.send(()).unwrap();
-            assert_eq!(committed.join().unwrap(), Ok(()));
-        });
-    }
-
-    const EXTENT: ExtentId = ExtentId { branch: 1, sequence: 1 };
-
-    /// Contents read of nothing: what a sealed extent's pages come from, read in.
-    struct NoContents;
-
-    impl Contents for NoContents {
-        fn read<'a>(
-            &'a self,
-            _offset: u64,
-            _buf: &'a mut [u8],
-        ) -> BoxFuture<'a, std::result::Result<(), anyhow::Error>> {
-            unreachable!("nothing is read in")
-        }
-    }
-
-    /// TASK-150.20: a page pinned is let go of however it goes: moved to the sealed extent, or
-    /// with its open extent; and one of two brought in at once counts once. TASK-153.15: and its
-    /// store counts it held as long, what the daemon asks its guest to seal for.
-    #[test]
-    fn open_pages_are_pinned_until_they_go() {
-        let arena = physmem::create_arena();
-        let ps = page_size();
-        let held = Arc::new(AtomicU64::new(0));
-        let open = OpenPages::new(arena, held.clone());
-        open.commit(0..8, Room::Budget).unwrap();
-        open.write(8 * ps, &[1; 8], Room::Reserve).unwrap();
-        open.commit(0..9, Room::Budget).unwrap();
-        assert_eq!((physmem::pinned_bytes(arena), held.load(Ordering::Relaxed)), (9 * ps, 9));
-        let sealed = CachedExtent::new(arena, EXTENT, Box::new(NoContents), 4 * ps);
-        sealed.supply(0..4, &open);
-        assert_eq!((physmem::pinned_bytes(arena), held.load(Ordering::Relaxed)), (5 * ps, 5));
-        drop(open);
-        assert_eq!((physmem::pinned_bytes(arena), held.load(Ordering::Relaxed)), (0, 0));
-    }
 }

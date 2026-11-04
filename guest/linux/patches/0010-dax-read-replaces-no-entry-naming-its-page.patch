@@ -37,7 +37,7 @@ diff --git a/fs/dax.c b/fs/dax.c
  /*
   * By this point grab_mapping_entry() has ensured that we have a locked entry
   * of the appropriate size so we don't have to worry about downgrading PMDs to
-@@ -1050,7 +1062,14 @@ static void *dax_insert_entry(struct xa_state *xas, struct vm_fault *vmf,
+@@ -1047,7 +1059,14 @@ static void *dax_insert_entry(struct xa_state *xas, struct vm_fault *vmf,
  	void *new_entry = dax_make_entry(pfn, flags);
  	bool write = iter->flags & IOMAP_WRITE;
  	bool dirty = write && !dax_fault_is_synchronous(iter, vmf->vma);
@@ -50,6 +50,6 @@ diff --git a/fs/dax.c b/fs/dax.c
 +	 */
 +	bool shared = (iter->iomap.flags & IOMAP_F_SHARED) &&
 +		      (write || !dax_entry_names(entry, xas->xa_index, pfn));
- 	/*
- 	 * A shared fault replacing a PMD entry with a PTE entry splits it: else
- 	 * its store over the PMD's multi-index slot names the one page for all
+ 
+ 	if (dirty)
+ 		__mark_inode_dirty(mapping->host, I_DIRTY_PAGES);

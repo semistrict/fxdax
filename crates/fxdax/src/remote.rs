@@ -2989,8 +2989,8 @@ mod tests {
     /// parent uploaded through it: it inherits the parent's extents rather than upload them again,
     /// and what either commits after is its own.
     /// TASK-160.10: a point's store, once attached, which alone says it is one, refuses all that
-    /// would change what it holds, with `EROFS`, whoever asks: writes, frees, commits, writable
-    /// maps, cleaning, a resize, a writer taking it over. What changes none of its extents it
+    /// would change what it holds, with `EROFS`, whoever asks: writes, frees, commits, cleaning,
+    /// a resize, a writer taking it over. What changes none of its extents it
     /// does: it forks, and is made public. Before, it refused none of these itself, and a resize
     /// of one grew it.
     #[test]
@@ -3017,7 +3017,6 @@ mod tests {
             ("free", point.free(extent)),
             ("commit", point.commit(Some(b"changed"))),
             ("commit_ordered", point.commit_ordered(None)),
-            ("map", point.map(own, 0, BLOCK as u64, 0, true)),
             ("clean_behind", point.clean_behind()),
             ("take_over", point.take_over()),
         ];

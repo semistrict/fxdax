@@ -3,7 +3,7 @@ id: doc-12
 title: The fsync durability contract
 type: other
 created_date: '2026-10-31 22:17'
-updated_date: '2026-10-31 22:17'
+updated_date: '2026-11-04 16:33'
 ---
 # What an acknowledged fsync survives (TASK-66)
 
@@ -11,6 +11,11 @@ doc-2's requirement 2 is the rule: a crash may lose a suffix of recent history, 
 recovers to a prefix of it. fsync keeps its ordering, and need not wait for durability. This says
 what that means, failure by failure. The *Tested by* column names what shows it, or says nothing
 does: a claim no test shows is a design statement, not a result.
+
+*Revised 2026-11-04 (doc-13, TASK-164):* with DAX as without it, writeback is the write path. A DAX
+file's written pages are private pages in host memory, as the page cache's are folios in guest RAM,
+and reach the store only as writeback `WRITE`s them, then commits. The window plays no part in
+recovery.
 
 ## The stages a commit goes through
 
@@ -32,7 +37,7 @@ it stays within the bound.
 
 | Failure | fsync acknowledged | sync acknowledged | Tested by |
 |---|---|---|---|
-| Guest crash or panic, VM reset | kept | kept | fxfs-guest-crash, -crash-dax, and at each evacuation step |
+| Guest crash or panic, VM reset | kept | kept | fxfs-guest-crash, -crash-dax; guest/sim's `cow_crash_between_bytes_and_commit` (a commit held after its bytes) |
 | VMM killed (SIGKILL) | kept | kept | fxfs-guest-crash-dax-killed |
 | extentd killed | up to 50 ms may go, its records unwritten; a prefix stays. The VM exits 158 | kept | fxfs-guest-crash-dax-daemon-killed (1 of 296 files told of went, GCE r342), fxfs-guest-daemon-lost |
 | Host reboot or kernel crash, disk kept | up to 50 ms may go; a prefix stays | kept | **nothing: no test loses a host's page cache (TASK-67)** |
@@ -45,11 +50,13 @@ are freed as the store is next mounted.
 
 ## What a guest sees meanwhile
 
-- **A store through a mapping** is in the page, not in a commit: it is covered by the next `msync` or
-  `fsync` of the file, and may reach the store before that, whole page by whole page.
-- **A write that fails with EIO** after its blocks moved may leave those pages zero: it is retried
-  once, and the second failure is told to the caller, who must not count on the old bytes there
-  (TASK-119.13).
+- **A store through a mapping, or a `write(2)`,** is in the page, not in a commit: a private page of
+  the VM's on DAX, a folio of the guest's page cache without. It is covered by the next `msync` or
+  `fsync` of the file, and may reach the store before that only by writeback (`sync`, the flusher
+  at ~30 s, the guest keeping its private pages under `private_max`), each page as writeback copied
+  it. Every crash, of the guest, the VMM or extentd, loses what wasn't written back: private pages
+  go with the device.
+- **A `write(2)` cut short** leaves the bytes it copied, as on ext4: nothing it writes moves.
 - **The device's store failing** fails the store: a commit that failed part way leaves it refusing
   what follows (`State::failing`), and the guest's writes and fsyncs return errors.
 

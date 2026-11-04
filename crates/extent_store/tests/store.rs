@@ -169,13 +169,12 @@ fn freed_extents_are_written_no_more() {
     error_is(store.write(extent(1), 0, &[3; BLOCK]), Spent(extent(1)));
     store.commit(None).unwrap();
     error_is(store.write(extent(1), 0, &[3; BLOCK]), Spent(extent(1)));
-    error_is(store.may_open(extent(1)), Spent(extent(1)));
-    error_is(store.may_open(extent(2)), SealedExtent(extent(2)));
+    error_is(store.write(extent(2), 0, &[3; BLOCK]), SealedExtent(extent(2)));
 
     store.write(extent(4), 0, &[4; BLOCK]).unwrap();
     store.free(extent(4)).unwrap();
     store.write(extent(4), 0, &[5; BLOCK]).unwrap();
-    store.may_open(extent(5)).unwrap();
+    store.write(extent(5), 0, &[5; BLOCK]).unwrap();
     store.commit(None).unwrap();
 
     // From its deltas; then from the checkpoint that opening wrote.

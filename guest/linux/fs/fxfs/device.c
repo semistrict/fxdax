@@ -2,11 +2,9 @@
 // Copyright 2026 The fxdax Authors.
 /*
  * The extent-store device, as the filesystem uses it (see device.h): requests of the driver's,
- * each allocated as it is submitted and freed as it completes, and the gate between stores
- * through the DAX window's writable mappings and the requests that seal what they map.
+ * each allocated as it is submitted and freed as it completes, and the count of seals.
  */
 
-#include <linux/lockdep.h>
 #include <linux/minmax.h>
 #include <linux/moduleparam.h>
 #include <linux/seq_file.h>
@@ -20,41 +18,24 @@
 #include "device.h"
 #include "hist.h"
 
-/* fxdax: the gate's class, as lockdep has it (gate_map). */
-static struct lock_class_key fxfs_device_gate_key;
-
 struct fxfs_device {
 	struct virtio_extent *vext;
-	/* Guards the gate. */
+	/* Guards the seals. */
 	spinlock_t lock;
-	/* Stores in progress. */
-	unsigned int stores;
-	/* Whether a seal is in progress, keeping stores out. */
+	/* Whether a seal is in progress. */
 	bool sealing;
 	/* How many seals have begun and ended: odd while one is in progress. */
 	u64 seals;
-	/* Woken as stores end and seals do. */
+	/* Woken as seals end. */
 	wait_queue_head_t wait;
-	/*
-	 * fxdax: the gate as lockdep sees it, a read-write semaphore's: a store holds it shared, from
-	 * fxfs_device_store_begin to fxfs_device_store_end (not recursively: a store entering it
-	 * again would wait for a seal waiting for itself), and a seal takes it whole as it waits for
-	 * the stores. So lockdep learns what the gate is taken around, a seal waiting for stores
-	 * that wait for what the sealer holds among it, and fxfs_device_assert_in_gate has something
-	 * to check (TASK-44.9). Nothing without lockdep.
-	 */
-	struct lockdep_map gate_map;
-	fxfs_device_sealer_t sealer;
 	fxfs_device_sealed_t sealed;
-	void *sealer_arg;
-	/* fxdax: what the window's requests took, and the stores seals held off (TASK-91.7). */
-	atomic64_t maps, map_ns, unmaps, unmap_ns, stores_held, stores_held_ns;
+	void *sealed_arg;
+	/* fxdax: what the window's requests took (TASK-91.7). */
+	atomic64_t maps, map_ns, unmaps, unmap_ns;
 	/* fxdax: what MAP requests took, and UNMAPs, each (TASK-111.6). */
 	struct fxfs_hist map_hist, unmap_hist;
 	/* fxdax: the requests the maps took, fewer than the maps with MAP_MANY (TASK-91.4). */
 	atomic64_t map_requests;
-	/* fxdax: the host's asks to seal answered (TASK-153.15). */
-	atomic64_t seals_asked;
 	/* fxdax: the PRIVATE requests, and the bytes they made private (doc-13). */
 	atomic64_t privates, private_bytes;
 };
@@ -88,7 +69,6 @@ struct fxfs_device *fxfs_device_find(const char *tag, size_t len, struct fxfs_de
 	dev->vext = vext;
 	spin_lock_init(&dev->lock);
 	init_waitqueue_head(&dev->wait);
-	lockdep_init_map(&dev->gate_map, "fxfs_device_gate", &fxfs_device_gate_key, 0);
 	config = virtio_extent_config(vext);
 	/* Memory not aligned to pages spans one more page than its length needs. */
 	max_io = min_t(u64, config->max_transfer, (u64)(config->max_segments - 1) * PAGE_SIZE);
@@ -146,13 +126,11 @@ int fxfs_device_submit(struct fxfs_device *dev, const struct fxfs_device_op *op,
 	return err;
 }
 
-void fxfs_device_set_sealer(struct fxfs_device *dev, fxfs_device_sealer_t sealer,
-			    fxfs_device_sealed_t sealed, void *arg)
+void fxfs_device_set_sealed(struct fxfs_device *dev, fxfs_device_sealed_t sealed, void *arg)
 {
 	spin_lock(&dev->lock);
-	dev->sealer = sealer;
 	dev->sealed = sealed;
-	dev->sealer_arg = arg;
+	dev->sealed_arg = arg;
 	spin_unlock(&dev->lock);
 }
 
@@ -171,86 +149,9 @@ u64 fxfs_device_committed(struct fxfs_device *dev)
 	return virtio_extent_committed(dev->vext);
 }
 
-u64 fxfs_device_seal_asked(struct fxfs_device *dev)
-{
-	return virtio_extent_seal_asked(dev->vext);
-}
-
-int fxfs_device_sealed(struct fxfs_device *dev, u64 asked)
-{
-	struct vext_request *req = kzalloc(sizeof(*req), GFP_NOFS);
-	int err;
-
-	if (!req)
-		return -ENOMEM;
-	req->type = VIRTIO_EXTENT_T_SEALED;
-	req->offset = asked;
-	err = virtio_extent_call(dev->vext, req);
-	kfree(req);
-	atomic64_inc(&dev->seals_asked);
-	return err;
-}
-
-u64 fxfs_device_store_begin(struct fxfs_device *dev)
-{
-	u64 seals, held = 0;
-
-	spin_lock(&dev->lock);
-	while (dev->sealing) {
-		spin_unlock(&dev->lock);
-		held = held ?: ktime_get_ns();
-		wait_event(dev->wait, !READ_ONCE(dev->sealing));
-		spin_lock(&dev->lock);
-	}
-	if (held) {
-		atomic64_inc(&dev->stores_held);
-		atomic64_add(ktime_get_ns() - held, &dev->stores_held_ns);
-	}
-	dev->stores++;
-	seals = dev->seals;
-	spin_unlock(&dev->lock);
-	rwsem_acquire_read(&dev->gate_map, 0, 0, _RET_IP_);
-	return seals;
-}
-
-bool fxfs_device_store_try_begin(struct fxfs_device *dev, u64 *seals)
-{
-	bool entered;
-
-	spin_lock(&dev->lock);
-	entered = !dev->sealing;
-	if (entered) {
-		dev->stores++;
-		*seals = dev->seals;
-	}
-	spin_unlock(&dev->lock);
-	if (entered)
-		rwsem_acquire_read(&dev->gate_map, 0, 1, _RET_IP_);
-	return entered;
-}
-
 void fxfs_device_wait_unsealed(struct fxfs_device *dev)
 {
 	wait_event(dev->wait, !READ_ONCE(dev->sealing));
-}
-
-void fxfs_device_store_end(struct fxfs_device *dev)
-{
-	bool last;
-
-	rwsem_release(&dev->gate_map, _RET_IP_);
-	spin_lock(&dev->lock);
-	last = !--dev->stores && dev->sealing;
-	spin_unlock(&dev->lock);
-	if (last)
-		wake_up_all(&dev->wait);
-}
-
-void fxfs_device_assert_in_gate(struct fxfs_device *dev)
-{
-#ifdef CONFIG_LOCKDEP
-	lockdep_assert(lock_is_held(&dev->gate_map));
-#endif
 }
 
 u64 fxfs_device_seals(struct fxfs_device *dev)
@@ -265,9 +166,6 @@ u64 fxfs_device_seals(struct fxfs_device *dev)
 
 void fxfs_device_seal_begin(struct fxfs_device *dev)
 {
-	fxfs_device_sealer_t sealer;
-	void *arg;
-
 	spin_lock(&dev->lock);
 	while (dev->sealing) {
 		spin_unlock(&dev->lock);
@@ -276,15 +174,7 @@ void fxfs_device_seal_begin(struct fxfs_device *dev)
 	}
 	dev->sealing = true;
 	dev->seals++;
-	sealer = dev->sealer;
-	arg = dev->sealer_arg;
 	spin_unlock(&dev->lock);
-	/* Whole, as a seal takes it waiting for the stores, until they have left it. */
-	rwsem_acquire(&dev->gate_map, 0, 0, _RET_IP_);
-	wait_event(dev->wait, !READ_ONCE(dev->stores));
-	rwsem_release(&dev->gate_map, _RET_IP_);
-	if (sealer)
-		sealer(arg);
 }
 
 void fxfs_device_seal_end(struct fxfs_device *dev)
@@ -296,7 +186,7 @@ void fxfs_device_seal_end(struct fxfs_device *dev)
 	dev->sealing = false;
 	dev->seals++;
 	sealed = dev->sealed;
-	arg = dev->sealer_arg;
+	arg = dev->sealed_arg;
 	spin_unlock(&dev->lock);
 	wake_up_all(&dev->wait);
 	if (sealed)
@@ -307,11 +197,7 @@ struct dax_device *fxfs_device_dax(struct fxfs_device *dev, u64 *window_len)
 {
 	const struct vext_config *config = virtio_extent_config(dev->vext);
 
-	/* A follower maps sealed extents alone, read-only; fxdax: as does a window copying on write. */
-	bool maps = virtio_extent_dax_write(dev->vext) || virtio_extent_read_only(dev->vext) ||
-		    virtio_extent_dax_cow(dev->vext);
-
-	if (!maps || config->block_size != PAGE_SIZE ||
+	if (config->block_size != PAGE_SIZE ||
 	    config->map_alignment > PAGE_SIZE || !virtio_extent_window(dev->vext, window_len))
 		return NULL;
 	return virtio_extent_dax(dev->vext);
@@ -325,12 +211,10 @@ static bool fxfs_device_maps_ahead = true;
 module_param_named(map_ahead, fxfs_device_maps_ahead, bool, 0644);
 MODULE_PARM_DESC(map_ahead, "Ask the device to map pages ahead of the guest's accesses (diagnostic)");
 
-/*
- * fxdax: the flags of `map`, writable, accessed next if `ahead`, or zeros, that the device takes.
- */
+/* fxdax: the flags of `map`, accessed next if `ahead`, or zeros, that the device takes. */
 static u32 fxfs_device_map_flags(struct fxfs_device *dev, const struct fxfs_device_map *map)
 {
-	u32 flags = map->writable ? VIRTIO_EXTENT_MAP_WRITE : 0;
+	u32 flags = 0;
 
 	if (map->zeros)
 		flags |= VIRTIO_EXTENT_MAP_ZEROS;
@@ -367,11 +251,11 @@ static int fxfs_device_map_one(struct fxfs_device *dev, const struct fxfs_device
 }
 
 int fxfs_device_map(struct fxfs_device *dev, u64 branch, u64 sequence, u64 offset, u64 len,
-		    u64 window_offset, bool writable, bool ahead)
+		    u64 window_offset, bool ahead)
 {
 	const struct fxfs_device_map map = {
 		.branch = branch, .sequence = sequence, .offset = offset, .len = len,
-		.window_offset = window_offset, .writable = writable, .ahead = ahead,
+		.window_offset = window_offset, .ahead = ahead,
 	};
 
 	return fxfs_device_map_one(dev, &map);
@@ -404,15 +288,14 @@ int fxfs_device_private(struct fxfs_device *dev, u64 window_offset, u64 len)
 	return err;
 }
 
-bool fxfs_device_dax_cow(struct fxfs_device *dev)
-{
-	/* A device writing through open extents copies nothing (asked first: guest/sim's has it). */
-	return !virtio_extent_dax_write(dev->vext) && virtio_extent_dax_cow(dev->vext);
-}
-
 u64 fxfs_device_private_max(struct fxfs_device *dev)
 {
 	return virtio_extent_private_max(dev->vext);
+}
+
+bool fxfs_device_read_only(struct fxfs_device *dev)
+{
+	return virtio_extent_read_only(dev->vext);
 }
 
 /* fxdax: the most maps one MAP_MANY request holds: its further ones a page's worth. */
@@ -518,9 +401,6 @@ void fxfs_device_show_stats(struct fxfs_device *dev, struct seq_file *m)
 	seq_printf(m, "window_unmaps %lld\nwindow_unmaps_ns %lld\n", atomic64_read(&dev->unmaps),
 		   atomic64_read(&dev->unmap_ns));
 	fxfs_hist_show(m, "window_unmaps", &dev->unmap_hist);
-	seq_printf(m, "stores_held_by_seals %lld\nstores_held_by_seals_ns %lld\n",
-		   atomic64_read(&dev->stores_held), atomic64_read(&dev->stores_held_ns));
-	seq_printf(m, "seals_asked %lld\n", atomic64_read(&dev->seals_asked));
 	seq_printf(m, "window_privates %lld\nwindow_private_bytes %lld\n",
 		   atomic64_read(&dev->privates), atomic64_read(&dev->private_bytes));
 }

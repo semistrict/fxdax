@@ -72,14 +72,11 @@ done
 [[ ${FAKE_FAIL:-} != "$(basename "$results")" ]]
 """
 
-# The cases of the single run, and of the density run, with the cases copying on write.
+# The cases of the single run, and of the density run.
 SINGLE = ("fxfs-guest-pgbench fxfs-guest-pgbench-dax pgbench-ext4-dax-pmem "
           "fxfs-guest-pgbench-forked fxfs-guest-pgbench-dax-forked "
           "fxfs-guest-bigmap fxfs-guest-bigmap-dax")
-SINGLE_COW = (" fxfs-guest-pgbench-dax-cow fxfs-guest-pgbench-dax-cow-forked "
-              "fxfs-guest-bigmap-dax-cow")
 DENSITY = "fxfs-guest-pgbench-density fxfs-guest-pgbench-dax-density"
-DENSITY_COW = " fxfs-guest-pgbench-dax-cow-density"
 
 
 class PerfGateGce(unittest.TestCase):
@@ -104,52 +101,42 @@ class PerfGateGce(unittest.TestCase):
     def test_the_cases_then_the_density_run_then_the_gate(self):
         gated = self.gate()
         self.assertEqual(self.calls.read_text().splitlines(), [
-            f"run fxdax-test-r1 {self.results}/single E2E_TEST={SINGLE}{SINGLE_COW} VMS= RUNS= "
+            f"run fxdax-test-r1 {self.results}/single E2E_TEST={SINGLE} VMS= RUNS= "
             "ROUNDS=1 WORKSPACE=0 KERNEL=release",
-            f"run fxdax-test-r1 {self.results}/density E2E_TEST={DENSITY}{DENSITY_COW} VMS=3 "
+            f"run fxdax-test-r1 {self.results}/density E2E_TEST={DENSITY} VMS=3 "
             "RUNS=2 ROUNDS=1 WORKSPACE=0 KERNEL=release",
         ])
         # Each density run's last VM at 80 tps against its first's 100.
         self.assertEqual((gated.returncode, gated.stderr), (1, "".join(
             f"failed: density of {case}: 0.8 under 0.9\n"
-            for case in ["no-dax-density", "dax-density", "dax-cow-density"])))
+            for case in ["no-dax-density", "dax-density"])))
         report = json.loads((self.results / "gate.json").read_text())
         self.assertEqual(report["host"], "nested")
         self.assertEqual(report["tps"]["dax"], [[[100.0]]])
         self.assertEqual(report["tps"]["dax-density"], [[[100.0], [80.0], [80.0]]])
         self.assertEqual(report["tps"]["ext4-dax-pmem"], [[[100.0]]])
         self.assertEqual(report["memory"]["no-dax-density"]["per_added_vm_mib"], 1000.0)
-        self.assertEqual(report["memory"]["dax-cow-density"]["per_added_vm_mib"], 300.0)
+        self.assertEqual(report["memory"]["dax-density"]["per_added_vm_mib"], 300.0)
         self.assertEqual(report["bigmap"]["bigmap-no-dax"]["guest_cache_share"], 0.25)
-        self.assertEqual(report["bigmap"]["bigmap-dax-cow"]["written_memory_per_byte"], 1.0)
+        self.assertEqual(report["bigmap"]["bigmap-dax"]["written_memory_per_byte"], 1.0)
         self.assertEqual([(each["gate"], each["case"], each["passed"])
                           for each in report["gates"]], [
             ("decay", "no-dax", True),
             ("decay", "dax", True),
-            ("decay", "dax-cow", True),
             ("decay", "no-dax-forked", True),
             ("decay", "dax-forked", True),
-            ("decay", "dax-cow-forked", True),
             ("decay", "no-dax-density", True),
             ("density", "no-dax-density", False),
             ("decay", "dax-density", True),
             ("density", "dax-density", False),
-            ("decay", "dax-cow-density", True),
-            ("density", "dax-cow-density", False),
             ("dax", "dax", True),
-            ("dax-cow", "dax-cow", True),
             ("forked-dax", "dax-forked", True),
-            ("forked-dax-cow", "dax-cow-forked", True),
             ("static-dax", "dax", True),
             ("density-memory", "dax-density", True),
             ("density-memory-mib", "dax-density", True),
-            ("density-memory", "dax-cow-density", True),
-            ("density-memory-mib", "dax-cow-density", True),
             ("bigmap-read", "bigmap-dax", True),
             ("bigmap-guest-cache", "bigmap-dax", True),
-            ("bigmap-read", "bigmap-dax-cow", True),
-            ("bigmap-guest-cache", "bigmap-dax-cow", True),
-            ("bigmap-written-memory", "bigmap-dax-cow", True),
+            ("bigmap-written-memory", "bigmap-dax", True),
         ])
 
     def test_a_bare_metal_host_with_the_gates_passing(self):
@@ -159,19 +146,6 @@ class PerfGateGce(unittest.TestCase):
         self.assertIn("VMS=2 RUNS=3 ROUNDS=1 WORKSPACE=0 KERNEL=debug",
                       self.calls.read_text().splitlines()[1])
         self.assertEqual(json.loads((self.results / "gate.json").read_text())["host"], "bare-metal")
-
-    def test_a_guest_kernel_without_copy_on_write_leaves_its_cases_out(self):
-        gated = self.gate(FXDAX_GATE_DENSITY="0.8", FXDAX_PERF_GATE_COW="0")
-        self.assertEqual((gated.returncode, gated.stderr), (0, ""))
-        calls = self.calls.read_text().splitlines()
-        self.assertIn(f" E2E_TEST={SINGLE} VMS= ", calls[0])
-        self.assertIn(f" E2E_TEST={DENSITY} VMS=3 ", calls[1])
-        report = json.loads((self.results / "gate.json").read_text())
-        self.assertEqual(sorted(report["memory"]), ["dax-density", "no-dax-density"])
-        self.assertNotIn("bigmap-dax-cow", report["bigmap"])
-        unknown = self.gate(FXDAX_PERF_GATE_COW="yes")
-        self.assertEqual((unknown.returncode, unknown.stderr),
-                         (2, "FXDAX_PERF_GATE_COW is 0 or 1\n"))
 
     def test_a_failed_run_fails_it_after_the_gate(self):
         gated = self.gate(FXDAX_GATE_DENSITY="0.8", FAKE_FAIL="single")
