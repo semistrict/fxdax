@@ -18,8 +18,8 @@ import script
 gate = script.load("pgbench-gate")
 
 THRESHOLDS = {"decay": 0.9, "dax": 0.95, "forked-dax": 0.9, "static-dax": 0.0, "density": 0.9,
-              "density-memory": 0.8, "density-memory-mib": 768.0, "bigmap-read": 1.0,
-              "bigmap-guest-cache": 0.05, "bigmap-written-memory": 2.0}
+              "density-memory": 0.9, "density-memory-mib": 2560.0, "bigmap-read": 4.0,
+              "bigmap-guest-cache": 0.05, "bigmap-written-memory": 1.5}
 MIB = 1 << 20
 
 
@@ -287,20 +287,20 @@ class PgbenchGate(unittest.TestCase):
         self.assertEqual(sorted(density), ["dax-density", "no-dax-density"])
         found = gate.gates({}, THRESHOLDS, density, {})
         self.assertEqual(found, [
-            most("density-memory", "dax-density", 0.3, 0.8, True),
-            most("density-memory-mib", "dax-density", 300.0, 768.0, True),
+            most("density-memory", "dax-density", 0.3, 0.9, True),
+            most("density-memory-mib", "dax-density", 300.0, 2560.0, True),
         ])
         dense = gate.measure_memory(self.results({
-            "fxfs-guest-pgbench-density": density_log(1000),
-            "fxfs-guest-pgbench-dax-density": density_log(900),
+            "fxfs-guest-pgbench-density": density_log(2500),
+            "fxfs-guest-pgbench-dax-density": density_log(2600),
         }))[0]
         self.assertEqual(gate.gates({}, THRESHOLDS, dense, {}), [
-            most("density-memory", "dax-density", 0.9, 0.8, False),
-            most("density-memory-mib", "dax-density", 900.0, 768.0, False),
+            most("density-memory", "dax-density", 1.04, 0.9, False),
+            most("density-memory-mib", "dax-density", 2600.0, 2560.0, False),
         ])
         without_no_dax = {name: density[name] for name in ["dax-density"]}
         self.assertEqual(gate.gates({}, THRESHOLDS, without_no_dax, {}), [
-            most("density-memory-mib", "dax-density", 300.0, 768.0, True),
+            most("density-memory-mib", "dax-density", 300.0, 2560.0, True),
         ])
 
     def test_a_bigmap_case_s_steps_are_what_they_cost(self):
@@ -337,9 +337,9 @@ class PgbenchGate(unittest.TestCase):
         }))
         self.assertEqual(bigmap["bigmap-no-dax"]["guest_cache_share"], 0.25)
         self.assertEqual(gate.gates({}, THRESHOLDS, {}, bigmap), [
-            least("bigmap-read", "bigmap-dax", 4.0, 1.0, True),
+            least("bigmap-read", "bigmap-dax", 4.0, 4.0, True),
             most("bigmap-guest-cache", "bigmap-dax", 0.002, 0.05, True),
-            most("bigmap-written-memory", "bigmap-dax", 3.0, 2.0, False),
+            most("bigmap-written-memory", "bigmap-dax", 3.0, 1.5, False),
         ])
 
     def test_a_new_threshold_is_set_from_the_environment(self):
@@ -361,13 +361,9 @@ class PgbenchGate(unittest.TestCase):
             [sys.executable, script.SCRIPTS / "pgbench-gate.py", "--json", out, results],
             capture_output=True, text=True)
         self.assertEqual((failed.returncode, failed.stderr),
-                         (1, "failed: bigmap-written-memory of bigmap-dax: 3.0 over 2.0\n"))
+                         (1, "failed: bigmap-written-memory of bigmap-dax: 3.0 over 1.5\n"))
         report = json.loads(out.read_text())
-        self.assertEqual(sorted(report), ["bigmap", "gates", "host", "memory", "provisional",
-                                          "tps"])
-        self.assertEqual(report["provisional"], ["bigmap-guest-cache", "bigmap-read",
-                                                 "bigmap-written-memory", "density-memory",
-                                                 "density-memory-mib"])
+        self.assertEqual(sorted(report), ["bigmap", "gates", "host", "memory", "tps"])
         self.assertEqual(report["memory"]["dax-density"]["per_added_vm_mib"], 300.0)
         self.assertEqual(report["bigmap"]["bigmap-dax"]["written_memory_per_byte"], 3.0)
         self.assertEqual(report["tps"]["dax-density"], [[[100.0], [95.0], [95.0]]])

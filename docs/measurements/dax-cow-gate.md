@@ -1,9 +1,8 @@
 # Copy-on-write DAX's gate: throughput and memory per VM (TASK-164.5)
 
 What `scripts/perf-gate-gce.sh` measures for copy-on-write DAX (backlog doc-13, "Performance and
-density"), how to run it, and its thresholds. The first run's numbers go under "Runs" below; the
-thresholds marked provisional are then set from them (the user, 2026-11-04: density targets come
-from measurement).
+density"), how to run it, its thresholds, and its runs: the first, r632, set the thresholds that
+were first guesses (the user, 2026-11-04: density targets come from measurement).
 
 ## Running it
 
@@ -65,23 +64,75 @@ Don't measure memory with `FXDAX_GUEST_HUGE_PAGES=2M`: a huge-page pool is never
 
 ## Thresholds
 
-`FXDAX_GATE_<NAME>` overrides each (dashes as underscores). Provisional ones are listed in
-`gate.json`'s `provisional`.
+`FXDAX_GATE_<NAME>` overrides each (dashes as underscores). Copy-on-write DAX's were first guesses,
+set from the first run, r632 (below): `dax` and `forked-dax` hold doc-13's expectations; the rest
+are r632's numbers with room for a nested host's noise (the user, 2026-11-04: density targets come
+from measurement).
 
-| Gate | Of | Bound | Default |
-|---|---|---|---|
-| `dax` | median tps of `dax` against `no-dax`, database made in the run | at least | 0.95, provisional |
-| `forked-dax` | the same, `dax-forked` against `no-dax-forked` (doc-13 expects 0.9-1.0) | at least | 0.9, provisional |
-| `density-memory` | each DAX density case's host memory per added VM against no DAX's | at most | 0.8, provisional |
-| `density-memory-mib` | each DAX density case's host memory per added VM, MiB | at most | 768, provisional |
-| `bigmap-read` | each DAX bigmap case's cold random read MiB/s against no DAX's | at least | 1.0, provisional |
-| `bigmap-guest-cache` | each DAX bigmap case's guest page cache grown over its cold reads, a share of the file | at most | 0.05, provisional |
-| `bigmap-written-memory` | `bigmap-dax`'s `host_used` grown over its writes, per byte written | at most | 2.0, provisional |
+| Gate | Of | Bound | Default | r632 |
+|---|---|---|---|---|
+| `dax` | median tps of `dax` against `no-dax`, database made in the run | at least | 0.95 | 0.995 |
+| `forked-dax` | the same, `dax-forked` against `no-dax-forked` (doc-13 expects 0.9-1.0) | at least | 0.9 | 0.573 |
+| `density-memory` | each DAX density case's host memory per added VM against no DAX's | at most | 0.9 | 0.862 |
+| `density-memory-mib` | each DAX density case's host memory per added VM, MiB | at most | 2560 | 2361 |
+| `bigmap-read` | each DAX bigmap case's cold random read MiB/s against no DAX's | at least | 4.0 | 5.76 |
+| `bigmap-guest-cache` | each DAX bigmap case's guest page cache grown over its cold reads, a share of the file | at most | 0.05 | 0.0 |
+| `bigmap-written-memory` | `bigmap-dax`'s `host_used` grown over its writes, per byte written | at most | 1.5 | 1.29 |
 
-`decay`, `static-dax` and `density` (TASK-131.5) hold as before, `decay` and `density` for every
-guest Fxfs pgbench case. `dax` held writable DAX at 0.95, which it never met (0.51-0.61x).
+`decay` and `density` (0.9) and `static-dax` (0, reported) (TASK-131.5) hold as before, `decay` and
+`density` for every guest Fxfs pgbench case. `dax` held writable DAX at 0.95, which it never met
+(0.51-0.61x).
 
 ## Runs
 
-None yet. Record the first: date, host, revision, `gate.json`'s gates, `memory` and `bigmap`, and
-the thresholds set from it.
+### r632, 2026-11-05: jailed, nested; fails `forked-dax` and `decay` of `dax-density`
+
+GCE `fxdax-test-r632`, n2-standard-4 (nested, Cascade Lake), us-east4-a. Every Firecracker in its
+jailer's jail under the production seccomp filter, its DAX window budgeting 522,240 runs as the host
+allows (TASK-172). Release guest kernel. Single run at 3309abe89 with TASK-172's change uncommitted
+(3da9444bd's tree); density run at 0e09b9389 with b902ece56's change uncommitted. Each phase its own
+command: single 2 h (its kernel build 13 min, cases 63 min, the fetch of 11 GB of results 35 min,
+8 GB of it `pgbench-ext4-dax-pmem`'s pmem image), density 30 min.
+
+The density run's first attempt failed `fxfs-guest-pgbench-density`: its three VMs, running at
+once, booted from one root image, which each VM's boot made anew under those running on it; their
+ext4 failed its checksums and PostgreSQL stopped. Each VM has an image of its own since b902ece56.
+
+pgbench, tps by run (first VM; density: each VM's median):
+
+| Case | Runs | Median |
+|---|---|---|
+| no-dax | 1430, 1433, 1467, 1484, 1499 | 1467 |
+| dax | 1445, 1415, 1460, 1484, 1469 | 1460 |
+| ext4-dax-pmem | 1156, 1126, 1159, 1177, 1169 | 1159 |
+| no-dax-forked | 1221, 1382, 1459, 1486, 1469 | 1459 |
+| dax-forked | 884, 789, 835, 797, 864 | 835 |
+| no-dax-density (3 VMs) | | 1216, 1220, 1199 |
+| dax-density (3 VMs) | | 839, 864, 844 |
+
+Gates: `dax` 0.995, `static-dax` 1.26, `decay` 0.98-1.20 but `dax-density` 0.883 (fails 0.9),
+`density` 0.987 and 1.005, **`forked-dax` 0.573 (fails 0.9)**. The same pair unjailed on the same
+host: `forked-dax` 0.570 (dax-forked 891, 778, 827, 792, 886), so the jail costs nothing here.
+Each dax-forked VMM restricted pages to reads for a KVM worker's write some 2^18 times or more
+(its log has 1,009 such lines: the first thousand, then each power of two), each costing the vCPU a
+failed `KVM_RUN` and a retry: the likeliest place the forked gap is.
+
+Density, host memory (`host_used`, MiB) after each VM's runs:
+
+| Case | Before | VM 1 | VM 2 | VM 3 | First VM | Per added VM |
+|---|---|---|---|---|---|---|
+| no-dax-density | 1683 | 5592 | 8270 | 11071 | 3908 | 2740 |
+| dax-density | 1804 | 5006 | 7397 | 9727 | 3202 | 2361 |
+
+Per VM, no DAX: the VMM 1,026 MiB (its guest's RAM), the daemon's memory +1,310 MiB (its extents'
+pages); DAX: the VMM 2,200 MiB RSS of which 790 anonymous and 700 the daemon's pages it maps, the
+daemon +820 MiB. DAX saves 14% a VM (0.862).
+
+bigmap (4 GiB file, 1 GiB guest):
+
+| | Cold read MiB/s | Warm MiB/s | Stores/s | Store p50 / p99 / max us | msync s | Guest cache share | Host bytes per byte written |
+|---|---|---|---|---|---|---|---|
+| no DAX | 16.8 | 21.8 | 5128 | 215 / 476 / 73,611 | 0.46 | 0.197 | 0.42 |
+| DAX | 96.8 | 19,996 | 3031 | 333 / 445 / 980 | 1.22 | 0.0 | 1.29 |
+
+Thresholds set from it: above.

@@ -27,29 +27,30 @@ round-K/CASE/log.txt), each directory's rounds after the last's:
   (`host_used`), the VM process's, the daemon's, the guest's.
 
 It writes them, and the gates, as JSON, and fails unless every gate passes. Each gate's value is at
-least its threshold, or at most for those marked so; those marked provisional are first guesses, to
-be set from the first runs measured (docs/measurements/dax-cow-gate.md):
+least its threshold, or at most for those marked so. Copy-on-write DAX's were set from the first
+run measured, GCE r632 (docs/measurements/dax-cow-gate.md): from its numbers, but for `dax` and
+`forked-dax`, which hold doc-13's expectations.
 
 - decay: each guest Fxfs pgbench case's last run of its first VM against its first run (the
   sandbox team saw ~21% lost over five), at least DECAY;
-- dax (provisional): DAX against no DAX, each case's median run of its first VM: a database made
+- dax: DAX against no DAX, each case's median run of its first VM: a database made
   in the run is files created in the mount, which take the page cache's path (doc-13), at least
   DAX;
-- forked-dax (provisional): DAX against no DAX on a base's database, as `dax`: a fault on the host
+- forked-dax: DAX against no DAX on a base's database, as `dax`: a fault on the host
   for each page's first store, nothing after (doc-13 expects 0.9 to 1), at least FORKED_DAX;
 - static-dax: DAX against ext4 with DAX on pmem, as `dax`: the gap to a static DAX device, at least
   STATIC_DAX, by default 0, reported and not gated;
 - density: of one daemon serving many VMs, the first round that had more than one, its last VM's
   median run against its first's, at least DENSITY;
-- density-memory (provisional): each DAX density case's host memory per added VM against no DAX's,
+- density-memory: each DAX density case's host memory per added VM against no DAX's,
   at most DENSITY_MEMORY;
-- density-memory-mib (provisional): each DAX density case's host memory per added VM, in MiB, at
+- density-memory-mib: each DAX density case's host memory per added VM, in MiB, at
   most DENSITY_MEMORY_MIB;
-- bigmap-read (provisional): each DAX bigmap case's cold random reads, MiB/s, against no DAX's, at
+- bigmap-read: each DAX bigmap case's cold random reads, MiB/s, against no DAX's, at
   least BIGMAP_READ;
-- bigmap-guest-cache (provisional): each DAX bigmap case's guest page cache grown over its cold
+- bigmap-guest-cache: each DAX bigmap case's guest page cache grown over its cold
   reads, a share of the file, at most BIGMAP_GUEST_CACHE: DAX reads cost the guest no memory;
-- bigmap-written-memory (provisional): the DAX bigmap case's host memory grown over the writes,
+- bigmap-written-memory: the DAX bigmap case's host memory grown over the writes,
   per byte written, at most BIGMAP_WRITTEN_MEMORY: only the written pages cost memory (doc-13).
 
 A density case's host memory per added VM is its first round's host_used after each VM's runs, less
@@ -125,18 +126,16 @@ DEFAULTS = {
     "forked-dax": 0.9,
     "static-dax": 0.0,
     "density": 0.9,
-    "density-memory": 0.8,
-    "density-memory-mib": 768.0,
-    "bigmap-read": 1.0,
+    # Set from r632 (0.86, 2,361 MiB, 5.76, 0.0, 1.29), with room for a nested host's noise.
+    "density-memory": 0.9,
+    "density-memory-mib": 2560.0,
+    "bigmap-read": 4.0,
     "bigmap-guest-cache": 0.05,
-    "bigmap-written-memory": 2.0,
+    "bigmap-written-memory": 1.5,
 }
 # The gates whose value is at most their threshold; every other's is at least its.
 AT_MOST = frozenset({"density-memory", "density-memory-mib", "bigmap-guest-cache",
                      "bigmap-written-memory"})
-# The gates whose thresholds are first guesses, to be set from what the first runs measure.
-PROVISIONAL = frozenset({"dax", "forked-dax", "density-memory", "density-memory-mib",
-                         "bigmap-read", "bigmap-guest-cache", "bigmap-written-memory"})
 MIB = 1 << 20
 
 
@@ -438,8 +437,6 @@ def main():
         raise SystemExit(f"no pgbench runs in {' '.join(args.results)}")
     found = gates(measured, thresholds(), density, bigmap)
     report = {"host": args.host, "tps": measured, "gates": found}
-    if provisional := sorted({gate["gate"] for gate in found} & PROVISIONAL):
-        report["provisional"] = provisional
     if latency := measure_latencies(*args.results):
         report["latency"] = latency
     if density:
