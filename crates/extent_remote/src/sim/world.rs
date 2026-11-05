@@ -8,12 +8,13 @@
 //! what its guests did and were told.
 
 use super::bucket::{Direct, Fault, SimBucket};
-use crate::batch::{Batch, Commit};
+use crate::batch::{Batch, Commit, Data, Unframed};
 use crate::collector::{self, Options};
-use crate::layout::{Child, Origin};
+use crate::layout::{Child, Footer, Origin};
 use crate::record::Kind;
+use crate::wal::Wal;
 use crate::writer::Writer;
-use crate::{Error, branch, recovery, rules};
+use crate::{Error, Recovered, branch, recovery, rules};
 use extent_frame::spent::Spent;
 use futures::executor::{LocalPool, LocalSpawner, block_on};
 use futures::future::{AbortHandle, abortable};
@@ -40,7 +41,7 @@ pub struct Weights {
     pub open: u32,
     /// A writer takes a branch from the one it has.
     pub takeover: u32,
-    /// A host crashes, sometimes losing its disk.
+    /// A host crashes, sometimes losing its disk, and its write-ahead logs with it.
     pub crash: u32,
     pub delete: u32,
     /// A branch a fork of which lives is deleted: a base whose forks live on (TASK-39.4).
@@ -84,6 +85,10 @@ pub struct Profile {
     /// The chance that a takeover holds the creates of segments of the writer it takes the branch
     /// from, each until an object at its key is deleted ([`SimBucket::hold`], TASK-79.18).
     pub hold: f64,
+    /// Whether a host that crashes, its disk kept, starts again at once, taking back the branches
+    /// it had, as extentd opens its stores at boot: while the creates its writers had in flight
+    /// land.
+    pub restarts: bool,
     pub weights: Weights,
     pub options: Options,
 }
@@ -96,6 +101,7 @@ impl Default for Profile {
             fail_before: 0.05,
             fail_after: 0.05,
             hold: 0.0,
+            restarts: false,
             weights: Weights {
                 complete: 60,
                 commit: 12,
@@ -173,8 +179,10 @@ struct Truth {
 
 #[derive(Default)]
 struct Host {
-    /// Each branch's own commits made here, durable on the host's disk, in order.
-    disk: HashMap<u64, Vec<u64>>,
+    /// Each branch's write-ahead log, on the host's disk (doc-14): the segments of its commits
+    /// made here, closed, not yet acknowledged, each with its data. Every branch a writer took
+    /// here has one, empty once all is acknowledged.
+    wals: HashMap<u64, Wal<Data>>,
     sessions: BTreeMap<u64, Session>,
 }
 
@@ -184,7 +192,9 @@ struct Session {
     writer: Option<Arc<SimWriter>>,
     tasks: Vec<AbortHandle>,
     guest: Guest,
-    /// The guest's commits since its writer last took a segment of them.
+    /// The guest's commits since its writer last took a segment of them, durable on the host's
+    /// disk: its store's open segment, which goes into the log when the session ends
+    /// ([`World::stop`]), as opening the store again closes it.
     batch: Batch,
 }
 
@@ -539,9 +549,16 @@ impl World {
                 Err(_) => self.end(host, branch, session),
             },
             Event::Acked { host, branch, session, result, head } => match result {
-                Ok(_) => {
+                Ok(through) => {
                     if let Some(head) = head.filter(|head| self.commits[head].branch == branch) {
                         self.branches.get_mut(&branch).unwrap().acked.insert(head);
+                    }
+                    // Out of the log; a session ended since leaves them for the next to find
+                    // landed.
+                    if let Some(through) = through
+                        && self.writer(host, branch, session).is_some()
+                    {
+                        self.hosts[host].wals.get_mut(&branch).unwrap().acknowledge(through);
                     }
                 }
                 Err(_) => self.end(host, branch, session),
@@ -682,53 +699,59 @@ impl World {
     fn end(&mut self, host: usize, branch: u64, session: u64) {
         let sessions = &mut self.hosts[host].sessions;
         if sessions.get(&branch).is_some_and(|found| found.id == session) {
-            for task in sessions.remove(&branch).unwrap().tasks {
-                task.abort();
-            }
+            let ended = sessions.remove(&branch).unwrap();
+            self.stop(host, branch, ended);
         }
     }
 
-    /// A writer took `branch` on `host`: its guest starts from what the branch holds, and the
-    /// commits on the host's disk past that, if the branch holds the disk's up to there, go again.
+    /// Stops `session`, of `branch` on `host`, taken out of the host's sessions: its tasks, and
+    /// its guest. The commits its writer took no segment of, on the host's disk, go into the log,
+    /// a segment closed on its writer's chain, as opening its store again closes the open segment.
+    fn stop(&mut self, host: usize, branch: u64, session: Session) {
+        for task in session.tasks {
+            task.abort();
+        }
+        let Some(writer) = session.writer.filter(|_| !session.batch.is_empty()) else { return };
+        let Unframed { footer, data } = session.batch.close(&mut writer.chain());
+        self.hosts[host].wals.get_mut(&branch).expect("an open writer's log").push(footer, data);
+    }
+
+    /// A writer took `branch` on `host`: the host's log of it is put after the branch's end
+    /// ([`Wal::rebase`]), what it holds that landed acknowledged, the rest stamped again and
+    /// uploaded; one that diverged is dropped, as `fxdaxctl take` drops it. Its guest starts from
+    /// the log's last commit.
     fn opened(&mut self, host: usize, branch: u64, session: u64, writer: Arc<SimWriter>) {
         if !self.hosts[host].sessions.get(&branch).is_some_and(|found| found.id == session) {
             return;
         }
-        let start = writer.state().last_commit;
-        let disk = self.hosts[host].disk.get(&branch).cloned().unwrap_or_default();
-        let own = start.filter(|tag| self.commits[tag].branch == branch);
-        let suffix = match own {
-            Some(tag) => disk.iter().position(|&on| on == tag).map(|at| disk[at + 1..].to_vec()),
-            None => disk
-                .first()
-                .is_none_or(|first| self.commits[first].parent == start)
-                .then(|| disk.clone()),
-        }
-        .unwrap_or_default();
-        let mut path = self.own_path(branch, start);
-        path.extend(&suffix);
-        self.hosts[host].disk.insert(branch, path);
-        let mut batch = Batch::default();
-        for &tag in &suffix {
-            let truth = &self.commits[&tag];
-            let mut commit = Commit {
-                tag,
-                frees: truth.frees.clone(),
-                root: truth.root.clone(),
-                capacity: truth.capacity,
-                ..Commit::default()
-            };
-            for (extent, bytes, own) in &truth.extents {
-                seal(&mut commit, *extent, bytes.clone(), *own);
+        let fenced = writer.fenced();
+        let wals = &mut self.hosts[host].wals;
+        let mut wal = wals.remove(&branch).unwrap_or_else(|| Wal::new(fenced.last_commit));
+        let landed = match wal.rebase(&fenced) {
+            Ok(landed) => landed,
+            Err(Error::Diverged) => {
+                wal = Wal::new(fenced.last_commit);
+                Vec::new()
             }
-            batch.commit(commit);
+            Err(error) => unreachable!("a log rebased: {error}"),
+        };
+        let acked = landed.iter().flat_map(|(footer, _)| footer.contents.commits.iter().copied());
+        self.branches.get_mut(&branch).unwrap().acked.extend(acked);
+        let head = wal.head();
+        let restamped: Vec<(Footer, Data)> = wal.segments().cloned().collect();
+        self.hosts[host].wals.insert(branch, wal);
+        self.hosts[host].sessions.get_mut(&branch).unwrap().writer = Some(writer.clone());
+        for (footer, data) in restamped {
+            // Its forks are made where it is now.
+            for child in &footer.contents.forks {
+                let found = self.branches.get_mut(&child.branch).unwrap();
+                found.origin = Some(Origin { parent: branch, at: footer.seq });
+            }
+            match writer.add_segment(data.frame(&footer)) {
+                Ok(seq) => self.upload(host, branch, session, writer.clone(), seq),
+                Err(_) => return self.end(host, branch, session),
+            }
         }
-        let found = self.hosts[host].sessions.get_mut(&branch).unwrap();
-        (found.writer, found.batch) = (Some(writer.clone()), batch);
-        if self.close_batch(host, branch, None).is_err() {
-            return self.end(host, branch, session);
-        }
-        let head = suffix.last().copied().or(start);
         let (held, _) = self.expected(head);
         let found = self.hosts[host].sessions.get_mut(&branch).unwrap();
         found.guest = Guest { head, held, next_sequence: writer.chain().next_sequence() };
@@ -815,7 +838,6 @@ impl World {
             session.guest.held.remove(extent);
         }
         session.guest.head = Some(tag);
-        self.hosts[host].disk.entry(branch).or_default().push(tag);
         self.commits.insert(
             tag,
             Truth { branch, parent, extents, frees: frees.into_iter().collect(), root, capacity },
@@ -832,9 +854,8 @@ impl World {
 
     /// Closes the batch of `branch`'s session on `host` on its writer's chain, with a fork of the
     /// branch to `child` at its end if there is one, of its owner, a point if it says so, has the
-    /// writer take
-    /// its segment, and uploads it: returns its number, if there was a segment to close, or why the
-    /// writer refused it.
+    /// writer take its segment, puts it in the host's log, and uploads it: returns its number, if
+    /// there was a segment to close, or why the writer refused it.
     fn close_batch(
         &mut self,
         host: usize,
@@ -848,11 +869,12 @@ impl World {
         let (id, writer) = (session.id, session.writer.clone().expect("an open writer"));
         let batch = std::mem::take(&mut session.batch);
         let mut chain = writer.chain();
-        let closed = match child {
+        let Unframed { footer, data } = match child {
             Some(child) => batch.fork(child, &mut chain),
             None => batch.close(&mut chain),
         };
-        let seq = writer.add_segment(closed.frame())?;
+        let seq = writer.add_segment(data.frame(&footer))?;
+        self.hosts[host].wals.get_mut(&branch).expect("an open writer's log").push(footer, data);
         self.upload(host, branch, id, writer, seq);
         Ok(Some(seq))
     }
@@ -985,11 +1007,11 @@ impl World {
         if elsewhere.is_empty() {
             return;
         }
-        // Mostly where its commits are on disk.
+        // Mostly where its log is.
         let with_disk: Vec<usize> = elsewhere
             .iter()
             .copied()
-            .filter(|&host| self.hosts[host].disk.contains_key(&branch))
+            .filter(|&host| self.hosts[host].wals.contains_key(&branch))
             .collect();
         let pool =
             if !with_disk.is_empty() && self.rng.random_bool(0.7) { with_disk } else { elsewhere };
@@ -1048,13 +1070,19 @@ impl World {
 
     fn crash(&mut self) {
         let host = self.rng.random_range(0..self.hosts.len());
-        for (_, session) in std::mem::take(&mut self.hosts[host].sessions) {
-            for task in session.tasks {
-                task.abort();
-            }
+        let sessions = std::mem::take(&mut self.hosts[host].sessions);
+        let branches: Vec<u64> = sessions.keys().copied().collect();
+        for (branch, session) in sessions {
+            self.stop(host, branch, session);
         }
         if self.rng.random_bool(0.3) {
-            self.hosts[host].disk.clear();
+            self.hosts[host].wals.clear();
+        } else if self.profile.restarts {
+            for branch in branches {
+                if !self.branches[&branch].deleting {
+                    self.start_session(host, branch, None);
+                }
+            }
         }
         // Whichever host's: what they had in flight may land still.
         for unfork in self.unforks.values_mut() {
@@ -1350,6 +1378,28 @@ impl World {
         spent
     }
 
+    /// The commits the segments of the branch `recovered` is since its newest checkpoint make, in
+    /// the order recovering it applied them: each applied segment found by the footer of the one
+    /// after it, from the last.
+    fn applied(direct: &Direct, recovered: &Recovered) -> Vec<u64> {
+        let branch = recovered.state.branch;
+        let mut footers = Vec::new();
+        let mut at = recovered.state.last_segment;
+        while let Some((seq, epoch)) = at
+            && recovered.checkpoint.is_none_or(|checkpoint| seq > checkpoint)
+        {
+            let key = crate::layout::segment(branch, seq);
+            let Some(object) = block_on(crate::bucket::get(direct, &key)) else { break };
+            let Ok(footer) = crate::layout::Segment::footer(&object.bytes) else { break };
+            if footer.epoch != epoch {
+                break;
+            }
+            at = footer.after;
+            footers.push(footer);
+        }
+        footers.iter().rev().flat_map(|footer| footer.contents.commits.iter().copied()).collect()
+    }
+
     /// Whether `ancestor` is `head` or before it.
     fn precedes(&self, ancestor: u64, head: Option<u64>) -> bool {
         let mut at = head;
@@ -1452,6 +1502,20 @@ impl World {
                 violations.push(format!("branch {id:x} holds commit {head:?}, not of its history"));
                 continue;
             }
+            // Its segments since its newest checkpoint apply each commit after its parent: each
+            // once, in order, none another writer's history put after it.
+            let mut before = recovered.checkpoint.is_none().then_some(branch.base);
+            for commit in Self::applied(&direct, &recovered) {
+                let parent = self.commits[&commit].parent;
+                if let Some(before) = before.filter(|&before| before != parent) {
+                    violations.push(format!(
+                        "branch {id:x} applies commit {commit} after {before:?}, not its parent \
+                         {parent:?}"
+                    ));
+                    break;
+                }
+                before = Some(Some(commit));
+            }
             for &acked in &branch.acked {
                 if !self.precedes(acked, head) {
                     violations.push(format!("branch {id:x} lost commit {acked}, acknowledged"));
@@ -1550,10 +1614,8 @@ impl World {
         // to an earlier writer.
         for _ in 0..2 {
             for host in 0..self.hosts.len() {
-                for (_, session) in std::mem::take(&mut self.hosts[host].sessions) {
-                    for task in session.tasks {
-                        task.abort();
-                    }
+                for (branch, session) in std::mem::take(&mut self.hosts[host].sessions) {
+                    self.stop(host, branch, session);
                 }
             }
             self.settle();
@@ -1568,7 +1630,7 @@ impl World {
                     let host = self
                         .hosts
                         .iter()
-                        .position(|host| host.disk.contains_key(&branch))
+                        .position(|host| host.wals.contains_key(&branch))
                         .unwrap_or(0);
                     self.start_session(host, branch, None);
                 }

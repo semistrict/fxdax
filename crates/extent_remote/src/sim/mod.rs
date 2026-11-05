@@ -118,6 +118,8 @@ fn one() {
             "recoveries_by_origins" => rules.recoveries_by_origins = false,
             "records_kept" => rules.records_kept = false,
             "deletions_fence" => rules.deletions_fence = false,
+            "wal_follows" => rules.wal_follows = false,
+            "wal_after_fence" => rules.wal_after_fence = false,
             other => panic!("no rule {other}"),
         }
     }
@@ -141,6 +143,8 @@ fn one() {
         "taking_ids" => restores_taking_ids(),
         "usurped" => usurped(),
         "deleted_forking" => deleted_forking(),
+        "wals" => wals(),
+        "forked_wals" => forked_wals(),
         other => panic!("no profile {other}"),
     };
     let count = std::env::var("SIM_SEEDS").map_or(1, |count| count.parse().unwrap());
@@ -336,6 +340,50 @@ fn crashes() -> Profile {
 test_holds!(crashes_anywhere, crashes());
 
 test_needs!(forks_need_records_after_acks, records_after_ack, crashes());
+
+/// Hosts crashing, keeping their write-ahead logs or losing them, and taking their branches back,
+/// at once as they start again or later, while other hosts take them over and write, and the
+/// segments of writers gone land late (doc-14): every open on a host with a log puts it after the
+/// branch's end ([`crate::Wal`]). Nothing else: the creates of writers gone land among few
+/// requests, between a recovery and its fence.
+fn wals() -> Profile {
+    let mut profile = weights(|weights| {
+        weights.crash = 4;
+        weights.open = 8;
+        weights.takeover = 3;
+        weights.close = 6;
+        weights.fork = 0;
+        weights.delete = 0;
+        weights.checkpoint = 0;
+        weights.collect = 0;
+        weights.stop_collector = 0;
+    });
+    profile.restarts = true;
+    profile
+}
+
+/// Logs as [`wals`] makes them, holding forks, which their next writers make again where they
+/// are put, while checkpoints come and collectors run.
+fn forked_wals() -> Profile {
+    let mut profile = wals();
+    profile.weights.fork = 3;
+    profile.weights.delete = 1;
+    profile.weights.checkpoint = 2;
+    profile.weights.collect = 4;
+    profile.weights.stop_collector = 1;
+    profile
+}
+
+test_holds!(logs_put_after_takeovers, wals());
+
+test_holds!(logs_of_forks_put_after_takeovers, forked_wals());
+
+// A host's log put after another host's acknowledged commit, which it loses.
+test_needs!(logs_need_to_follow, wal_follows, wals());
+
+// A host's log put after the branch's end as recovery found it, not after the fence: its own
+// segment, landed in between, applied twice.
+test_needs!(logs_need_the_end_after_the_fence, wal_after_fence, wals());
 
 /// Forks that fail and are deleted, as their hosts' cleanups delete them, those crashing partway
 /// and going on, while their segments land or not, the parents' next writers give them records,
