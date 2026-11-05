@@ -6,8 +6,9 @@
 //! of them. Unlinks are queued as the guest's VFS queues them, which nothing on the host does.
 
 use super::*;
-use fxfs::object_store::{NewChildStoreOptions, StoreOptions};
+use fxfs::lock_keys;
 use fxfs::object_store::volume::root_volume;
+use fxfs::object_store::{NewChildStoreOptions, StoreOptions};
 use storage_device::DeviceHolder;
 use storage_device::fake_device::FakeDevice;
 
@@ -49,6 +50,11 @@ async fn volume_on(device: FakeDevice) -> (Fxfs<Tested>, u64) {
 impl Fxfs<Tested> {
     fn queued(&self) -> usize {
         self.delayed.queue.lock().unwrap().ops.len()
+    }
+
+    /// Whether an unlink changing `ino` is queued.
+    fn queued_for(&self, ino: u64) -> bool {
+        self.delayed.queue.lock().unwrap().pending.contains_key(&ino)
     }
 
     /// Waits for the queue to empty by itself.
@@ -233,7 +239,8 @@ async fn an_object_freed_in_a_batch_takes_a_trim_left_in_the_graveyard() {
     let (fs, root) = volume().await;
     let ino = fs.new_file(root, b"a").await;
     let entry = ObjectKey::graveyard_entry(fs.volume.graveyard_directory_object_id(), ino);
-    let mut transaction = fs.transaction(&[ino]).await.unwrap();
+    let keys = lock_keys![LockKey::object(fs.volume.store_object_id(), ino)];
+    let mut transaction = fs.volume.new_transaction(keys, Options::default()).await.unwrap();
     transaction.add(
         fs.volume.store_object_id(),
         Mutation::replace_or_insert_object(entry, ObjectValue::Trim),
@@ -397,4 +404,127 @@ async fn a_files_last_bytes_read_back_after_a_remount() {
     let got = fs.read_into(ino, i64::MAX as u64 - (2 << 20) + 1, &mut [&mut window[..]]).await;
     assert_eq!(window[got.unwrap() - 1], b'a');
     fs.stop_delayed().await.unwrap();
+}
+
+/// Every operation of the table (`Op::rules`), as `call` asks it.
+const EVERY_OP: [Op; 23] = [
+    Op::Lookup,
+    Op::Readdir,
+    Op::AttrByHandle,
+    Op::Create,
+    Op::Symlink,
+    Op::Tmpfile,
+    Op::Link,
+    Op::Unlink,
+    Op::UnlinkLater,
+    Op::Rename,
+    Op::Exchange,
+    Op::Clone,
+    Op::Punch,
+    Op::Allocate,
+    Op::Write,
+    Op::WriteDirty,
+    Op::Cut,
+    Op::Grow,
+    Op::SetAttr,
+    Op::WriteXattrs,
+    Op::Sync,
+    Op::Fsync,
+    Op::Statfs,
+];
+
+/// What every operation of the table's tests finds: in the root, `q` and `q2` link the file `q`;
+/// `f` and `g` are files of a page each; `d` a directory, and `e` one with the file `h` in it.
+/// Nothing is queued.
+struct Objects {
+    fs: Fxfs<Tested>,
+    root: u64,
+    q: u64,
+    f: u64,
+    g: u64,
+    d: u64,
+    e: u64,
+    h: u64,
+}
+
+async fn objects() -> Objects {
+    let (fs, root) = volume().await;
+    let q = fs.new_file(root, b"q").await;
+    fs.link(q, root, b"q2", false).await.unwrap();
+    let (f, g) = (fs.new_file(root, b"f").await, fs.new_file(root, b"g").await);
+    for ino in [f, g] {
+        fs.write(ino, 0, &[b'a'; 4096]).await.unwrap();
+    }
+    let (d, e) = (fs.new_dir(root, b"d").await, fs.new_dir(root, b"e").await);
+    let h = fs.new_file(e, b"h").await;
+    Objects { fs, root, q, f, g, d, e, h }
+}
+
+/// Asks `op` of `objects` as a VFS would, naming `q`, or the root, where it names an inode.
+async fn call(objects: &Objects, op: Op) -> Result<(), Error> {
+    let Objects { ref fs, root, q, f, g, d, .. } = *objects;
+    match op {
+        Op::Lookup => fs.lookup(root, b"q2").await.map(drop),
+        Op::Readdir => fs.readdir(root, ReaddirStart::Index(0), |_, _, _| true).await,
+        Op::AttrByHandle => fs.attr_by_handle(q).await.map(drop),
+        Op::Create => fs.create(d, b"new", FILE, 0, 0, 0, &[]).await.map(drop),
+        Op::Symlink => fs.symlink(d, b"link", b"f", 0, 0).await.map(drop),
+        Op::Tmpfile => fs.tmpfile(d, FILE, 0, 0).await.map(drop),
+        Op::Link => fs.link(f, d, b"f", false).await.map(drop),
+        Op::Unlink => fs.unlink(root, b"q2", q).await.map(drop),
+        Op::UnlinkLater => fs.unlink_later(root, b"f", f).await,
+        Op::Rename => fs.rename(root, b"f", f, root, b"q2", Some(q)).await.map(drop),
+        Op::Exchange => fs.exchange(root, b"f", root, b"g").await.map(drop),
+        Op::Clone => fs.clone_range(f, 0..4096, g, 4096, 8192).await.map(drop),
+        Op::Punch => fs.punch(f, 0..4096).await,
+        Op::Allocate => fs.allocate(g, 4096..8192).await,
+        Op::Write => fs.write(f, 0, b"w").await,
+        Op::WriteDirty => {
+            fs.reserve_dirty(f, 4096)?;
+            fs.write_dirty(f, &mut [(0, &[b'w'; 4096][..])], 4096).await
+        }
+        Op::Cut => fs.setattr(f, &set_size(1, 0)).await,
+        Op::Grow => fs.setattr(f, &set_size(8192, 0)).await,
+        Op::SetAttr => {
+            fs.setattr(f, &SetAttr { valid: SET_MODE, mode: FILE, ..SetAttr::default() }).await
+        }
+        Op::WriteXattrs => {
+            fs.set_xattr(f, b"user.a", b"a", SetExtendedAttributeMode::Set).await?;
+            fs.write_inode(f, &SetAttr::default()).await
+        }
+        Op::Sync => fs.sync().await,
+        Op::Fsync => fs.fsync().await,
+        Op::Statfs => fs.statfs().await.map(drop),
+    }
+}
+
+/// Whether `op` applied the unlink of a name in a directory, linking an inode, that `unlink` says
+/// of `objects`, queued before it.
+async fn applies(op: Op, unlink: fn(&Objects) -> (u64, &'static str, u64)) -> bool {
+    let objects = objects().await;
+    let (dir, name, ino) = unlink(&objects);
+    objects.fs.queue_unlink(dir, name, ino);
+    call(&objects, op).await.unwrap_or_else(|e| panic!("{op:?}: {e:#}"));
+    let applied = !objects.fs.queued_for(ino);
+    objects.fs.stop_delayed().await.unwrap();
+    applied
+}
+
+/// Each operation comes after the queued unlinks its row says (`After`), the TASK-79.21 cases among
+/// them: those of what it names, which it reads (a lookup's link count, a directory's names), and
+/// every one queued before it, if it changes names, makes them durable or counts what they free.
+/// Not those it needn't: each applied alone, under its directory's lock (TASK-92.26).
+#[fuchsia::test]
+async fn each_operation_comes_after_the_unlinks_its_row_says() {
+    let mut wrong = Vec::new();
+    for op in EVERY_OP {
+        // An unlink of a name of the inode it names, and of one no operation names.
+        let of_named = applies(op, |objects| (objects.root, "q", objects.q)).await;
+        let of_another = applies(op, |objects| (objects.e, "h", objects.h)).await;
+        let after = op.rules().after;
+        if (of_named, of_another) != (after != After::Nothing, after == After::All) {
+            wrong.push(format!("{op:?}, {after:?}: applied {of_named} named, {of_another} other"));
+        }
+    }
+    assert_eq!(wrong, Vec::<String>::new());
 }

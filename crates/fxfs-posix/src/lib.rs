@@ -260,7 +260,7 @@ struct DelayedQueue {
     /// The inodes the batches applying unlink or free, which no other batch may meanwhile.
     applying: FxHashSet<u64>,
     /// Whether a batch failed: the filesystem may then hold what the kernel doesn't, so changes
-    /// fail from then on (`transaction_with`), and what the kernel evicts stays (`evict`).
+    /// fail from then on (`Op::rules`), and what the kernel evicts stays (`evict`).
     failed: bool,
     /// Whether the workers are to stop (`stop_delayed`).
     stopping: bool,
@@ -332,6 +332,169 @@ impl DelayedQueue {
     /// Whether the ops queued before the `before`th are all applied.
     fn applied_before(&self, before: u64) -> bool {
         self.unapplied.first().is_none_or(|&first| first >= before)
+    }
+}
+
+/// What a VFS asks of the filesystem that changes it, or reads what a queued unlink changes: each
+/// begins as its row of the table says (`Op::rules`, `Fxfs::begin`). What reads only what no queued
+/// unlink changes (a file's data, its extents, a symlink's target, extended attributes) begins
+/// nothing; nor what the kernel evicts, which frees nothing once a batch failed (`evict`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Op {
+    /// `lookup`: the attributes of the inode a name links, which the kernel takes its link count
+    /// from.
+    Lookup,
+    /// `readdir`: a directory's names.
+    Readdir,
+    /// `attr_by_handle`: an inode's attributes, by its number.
+    AttrByHandle,
+    Create,
+    Symlink,
+    /// `tmpfile`: an object no name links, in the graveyard.
+    Tmpfile,
+    Link,
+    Unlink,
+    /// `unlink_later`: an unlink queued.
+    UnlinkLater,
+    Rename,
+    Exchange,
+    /// `clone_range`.
+    Clone,
+    Punch,
+    Allocate,
+    /// `write`, `write_many`: written as the handle writes, with no room reserved before.
+    Write,
+    /// `write_dirty`: the page cache's writeback, paid for as it dirtied.
+    WriteDirty,
+    /// A truncate that shrinks the file (`setattr`).
+    Cut,
+    /// One that doesn't.
+    Grow,
+    /// `setattr`'s change of the rest of the inode's attributes.
+    SetAttr,
+    /// `write_inode`'s writeback of extended attributes.
+    WriteXattrs,
+    Sync,
+    Fsync,
+    Statfs,
+}
+
+/// What of the queued unlinks an operation comes after (`Fxfs::begin`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum After {
+    /// None: nothing it reads or changes is what one changes.
+    Nothing,
+    /// Those of the inode it names, which it reads (`drain`).
+    Named,
+    /// Every one queued before it began (`drain_all`), then those of the inode it names: it
+    /// changes names, which the journal has change in the order the syscalls did (doc-6); or makes
+    /// what's there durable, or counts what's free, which they free.
+    All,
+}
+
+/// Where the metadata space of an operation's transactions comes from: what its commits take of
+/// the journal, until a compaction frees it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Room {
+    /// It makes none.
+    NoTransactions,
+    /// Reserved as each begins: refused on a full filesystem.
+    Reserved,
+    /// Borrowed from the filesystem's metadata reservation, which compacting the journal repays:
+    /// what frees space, or rewrites a record it has, works on a full filesystem (TASK-60, TASK-82).
+    Borrowed,
+    /// The room the page cache reserved as it dirtied the data, which Fxfs's handle takes it from,
+    /// borrowing what that lacks (`DataObjectHandle::write_many_reserved`, TASK-80).
+    Dirtied,
+}
+
+impl Room {
+    /// The options of transactions whose room this is: of those fxfs-posix makes itself.
+    fn options(self) -> Options<'static> {
+        debug_assert!(matches!(self, Room::Reserved | Room::Borrowed), "no transactions: {self:?}");
+        Options { borrow_metadata_space: self == Room::Borrowed, ..Default::default() }
+    }
+}
+
+/// What an operation does before it begins: its row of the table.
+#[derive(Clone, Copy, Debug)]
+struct Rules {
+    after: After,
+    /// Whether it fails once a batch of queued unlinks failed (`UNLINK_FAILED`).
+    gated: bool,
+    room: Room,
+    /// Whether it holds the truncate guard of the inode it names until it ends, as Fxfs's
+    /// `acquire_context_for_replace` does: what it replaces or cuts can't be freed meanwhile.
+    guards: bool,
+}
+
+impl Op {
+    /// The table: what each operation comes after, whether it fails once a batch failed, where its
+    /// transactions' room comes from, and whether it guards the inode it names.
+    #[rustfmt::skip]
+    const fn rules(self) -> Rules {
+        use After::*;
+        use Room::*;
+        let (after, gated, room, guards) = match self {
+            //                 after    gated  room            guards
+            Op::Lookup =>       (Named,   false, NoTransactions, false),
+            Op::Readdir =>      (Named,   false, NoTransactions, false),
+            Op::AttrByHandle => (Named,   false, NoTransactions, false),
+            Op::Create =>       (All,     true,  Reserved,       false),
+            Op::Symlink =>      (All,     true,  Reserved,       false),
+            Op::Tmpfile =>      (Nothing, true,  Reserved,       false),
+            Op::Link =>         (All,     true,  Reserved,       false),
+            Op::Unlink =>       (All,     true,  Borrowed,       true),
+            Op::UnlinkLater =>  (Nothing, true,  NoTransactions, false),
+            Op::Rename =>       (All,     true,  Reserved,       true),
+            Op::Exchange =>     (All,     true,  Reserved,       false),
+            Op::Clone =>        (All,     false, Reserved,       false),
+            Op::Punch =>        (Nothing, true,  Reserved,       true),
+            Op::Allocate =>     (Nothing, false, Reserved,       false),
+            Op::Write =>        (Nothing, false, Reserved,       false),
+            Op::WriteDirty =>   (Nothing, false, Dirtied,        false),
+            Op::Cut =>          (Nothing, false, Borrowed,       false),
+            Op::Grow =>         (Nothing, false, Reserved,       false),
+            Op::SetAttr =>      (Nothing, true,  Borrowed,       false),
+            Op::WriteXattrs =>  (Nothing, false, Reserved,       false),
+            Op::Sync =>         (All,     false, NoTransactions, false),
+            Op::Fsync =>        (All,     false, NoTransactions, false),
+            Op::Statfs =>       (All,     false, NoTransactions, false),
+        };
+        Rules { after, gated, room, guards }
+    }
+}
+
+/// An operation begun (`Fxfs::begin`): what it comes after done, and its transactions made as its
+/// row says, while it holds what it guards.
+struct Begun<'a, P: Platform> {
+    fs: &'a Fxfs<P>,
+    op: Op,
+    /// Whether unlinks of the inode it names were queued, and applied first: what it looked up of
+    /// that inode may have changed.
+    drained: bool,
+    _guard: Option<TruncateGuard<'a>>,
+}
+
+impl<'a, P: Platform> Begun<'a, P> {
+    /// The options of its transactions, as its room says.
+    fn options(&self) -> Options<'a> {
+        self.op.rules().room.options()
+    }
+
+    /// A transaction locking the objects `inos`.
+    async fn transaction(&self, inos: &[u64]) -> Result<Transaction<'a>, Error> {
+        let store = self.fs.volume.store_object_id();
+        let mut keys = LockKeys::with_capacity(inos.len());
+        for &ino in inos {
+            keys.push(LockKey::object(store, ino));
+        }
+        self.transaction_locking(keys).await
+    }
+
+    /// A transaction locking `keys`.
+    async fn transaction_locking(&self, keys: LockKeys) -> Result<Transaction<'a>, Error> {
+        self.fs.volume.new_transaction(keys, self.options()).await
     }
 }
 
@@ -455,8 +618,8 @@ impl<P: Platform> Fxfs<P> {
     /// as many transactions as its extents take (`DataObjectHandle::zero_in_commits`).
     pub async fn punch(&self, ino: u64, range: Range<u64>) -> Result<(), Error> {
         let file = self.file(ino).await?;
-        let _guard = self.filesystem.truncate_guard(self.volume.store_object_id(), ino).await;
-        let mut transaction = self.transaction(&[ino]).await?;
+        let begun = self.begin(Op::Punch, Some(ino)).await?;
+        let mut transaction = begun.transaction(&[ino]).await?;
         file.zero_in_commits(&mut transaction, range).await?;
         transaction.commit().await.map(drop)
     }
@@ -464,13 +627,14 @@ impl<P: Platform> Fxfs<P> {
     /// Allocates the blocks of the file `ino` within `range`, growing the file if they are past
     /// its end (fallocate, with no flags).
     pub async fn allocate(&self, ino: u64, range: Range<u64>) -> Result<(), Error> {
+        self.begin(Op::Allocate, None).await?;
         self.file(ino).await?.allocate(range).await
     }
 
     /// fxdax: the attributes of the object `ino`, for a file handle (open_by_handle_at, NFS):
     /// NotFound for one no name links and nothing has open, in the graveyard.
     pub async fn attr_by_handle(&self, ino: u64) -> Result<Attr, Error> {
-        self.drain(&[ino]).await?;
+        self.begin(Op::AttrByHandle, Some(ino)).await?;
         ensure!(!self.in_graveyard(ino).await?, FxfsError::NotFound);
         self.attr(ino).await
     }
@@ -571,8 +735,7 @@ impl<P: Platform> Fxfs<P> {
         // The name may be queued to go, which changes the inode it links, as may another of its
         // names, the kernel taking its link count from here: once they are made, it is looked up
         // again. The kernel holds the directory: no other inode takes the name meanwhile.
-        if self.delayed.queue.lock().unwrap().pending.contains_key(&ino) {
-            self.drain(&[ino]).await?;
+        if self.begin(Op::Lookup, Some(ino)).await?.drained {
             (ino, _, _) = dir.lookup(name).await?.ok_or(FxfsError::NotFound)?;
         }
         self.attr(ino).await
@@ -588,7 +751,7 @@ impl<P: Platform> Fxfs<P> {
         mut emit: impl FnMut(&str, u64, u32) -> bool,
     ) -> Result<(), Error> {
         self.platform.filling()?;
-        self.drain(&[dir]).await?;
+        self.begin(Op::Readdir, Some(dir)).await?;
         let dir = self.directory(dir).await?;
         let layer_set = dir.store().tree().layer_set();
         let mut merger = layer_set.merger();
@@ -708,12 +871,14 @@ impl<P: Platform> Fxfs<P> {
         if dirty == 0 {
             return self.write_many(ino, writes).await;
         }
+        // Taken first: one refused leaves its room as one that fails does.
         let taken = self.dirty.take(ino, dirty);
         writes.sort_unstable_by_key(|(offset, _)| *offset);
-        let written = match self.file(ino).await {
-            Ok(file) => file.write_many_reserved(writes, &taken.reservation).await,
-            Err(error) => Err(error),
+        let written = async {
+            self.begin(Op::WriteDirty, None).await?;
+            self.file(ino).await?.write_many_reserved(writes, &taken.reservation).await
         };
+        let written = written.await;
         self.dirty.written(taken);
         written
     }
@@ -724,6 +889,7 @@ impl<P: Platform> Fxfs<P> {
     /// or not, which the kernel gives in order of offset, but for once around a cyclic
     /// writeback's start (TASK-92.10). No two share a block.
     pub async fn write_many(&self, ino: u64, writes: &mut [(u64, &[u8])]) -> Result<(), Error> {
+        self.begin(Op::Write, None).await?;
         writes.sort_unstable_by_key(|(offset, _)| *offset);
         self.file(ino).await?.write_many(writes).await
     }
@@ -755,9 +921,9 @@ impl<P: Platform> Fxfs<P> {
         xattrs: &[(&[u8], &[u8])],
     ) -> Result<[Attr; 2], Error> {
         let name = utf8_name(name)?;
-        self.drain_all().await?;
+        let begun = self.begin(Op::Create, None).await?;
         let dir = self.directory(dir).await?;
-        let mut transaction = self.transaction(&[dir.object_id()]).await?;
+        let mut transaction = begun.transaction(&[dir.object_id()]).await?;
         let attributes = fio::MutableNodeAttributes {
             mode: Some(mode),
             uid: Some(uid),
@@ -812,9 +978,9 @@ impl<P: Platform> Fxfs<P> {
         gid: u32,
     ) -> Result<[Attr; 2], Error> {
         let name = utf8_name(name)?;
-        self.drain_all().await?;
+        let begun = self.begin(Op::Symlink, None).await?;
         let dir = self.directory(dir).await?;
-        let mut transaction = self.transaction(&[dir.object_id()]).await?;
+        let mut transaction = begun.transaction(&[dir.object_id()]).await?;
         let ino = dir.create_symlink(&mut transaction, target, name).await?;
         // fxdax: its times too, as a file's are made: it has only an mtime of Fxfs's own, and a
         // ctime of 0 before it (xfstests generic/423).
@@ -853,8 +1019,9 @@ impl<P: Platform> Fxfs<P> {
     /// directory `dir` (O_TMPFILE), and returns its attributes: in the graveyard, which frees it
     /// once the kernel evicts it, unless `link` names it first.
     pub async fn tmpfile(&self, dir: u64, mode: u32, uid: u32, gid: u32) -> Result<Attr, Error> {
+        let begun = self.begin(Op::Tmpfile, None).await?;
         let dir = self.directory(dir).await?;
-        let mut transaction = self.transaction(&[dir.object_id()]).await?;
+        let mut transaction = begun.transaction(&[dir.object_id()]).await?;
         let child = dir.create_child_unnamed_temporary_file(&mut transaction).await?;
         let attributes = fio::MutableNodeAttributes {
             mode: Some(mode),
@@ -878,7 +1045,7 @@ impl<P: Platform> Fxfs<P> {
         unnamed: bool,
     ) -> Result<[Attr; 2], Error> {
         let name = utf8_name(name)?;
-        self.drain_all().await?;
+        let begun = self.begin(Op::Link, None).await?;
         let dir = self.directory(dir).await?;
         let object = self.volume.tree().find(&ObjectKey::object(ino)).await?;
         let descriptor = match object.map(|item| item.value) {
@@ -894,7 +1061,7 @@ impl<P: Platform> Fxfs<P> {
             }
             _ => bail!(FxfsError::NotFound),
         };
-        let mut transaction = self.transaction(&[dir.object_id(), ino]).await?;
+        let mut transaction = begun.transaction(&[dir.object_id(), ino]).await?;
         dir.insert_child(&mut transaction, name, ino, descriptor).await?;
         if unnamed {
             self.volume.remove_from_graveyard(&mut transaction, ino);
@@ -917,12 +1084,9 @@ impl<P: Platform> Fxfs<P> {
     /// the graveyard until `evict`.
     pub async fn unlink(&self, dir: u64, name: &[u8], ino: u64) -> Result<(u32, Attr), Error> {
         let name = str::from_utf8(name).map_err(|_| anyhow!(FxfsError::NotFound))?;
-        self.drain_all().await?;
+        let begun = self.begin(Op::Unlink, Some(ino)).await?;
         let dir = self.directory(dir).await?;
-        // Removing a name is what lets a full filesystem free space.
-        let options = Options { borrow_metadata_space: true, ..Default::default() };
-        let (_guard, mut transaction) =
-            self.replace_transaction(&[dir.object_id()], Some(ino), options).await?;
+        let mut transaction = begun.transaction(&[dir.object_id(), ino]).await?;
         let replaced = replace_child(&mut transaction, None, (&dir, name)).await?;
         check_replaced(&replaced, Some(ino))?;
         let dir_attr = self.attr_after(&transaction, dir.object_id()).await?;
@@ -944,14 +1108,11 @@ impl<P: Platform> Fxfs<P> {
     ) -> Result<(u32, [Attr; 3]), Error> {
         let name = str::from_utf8(name).map_err(|_| anyhow!(FxfsError::NotFound))?;
         let new_name = utf8_name(new_name)?;
-        self.drain_all().await?;
-        if let Some(new_ino) = new_ino {
-            self.drain(&[new_ino]).await?;
-        }
+        let begun = self.begin(Op::Rename, new_ino).await?;
         let src = self.directory(dir).await?;
         let dst = self.directory(new_dir).await?;
-        let (_guard, mut transaction) =
-            self.replace_transaction(&[dir, new_dir, ino], new_ino, Options::default()).await?;
+        let inos: Vec<u64> = [dir, new_dir, ino].into_iter().chain(new_ino).collect();
+        let mut transaction = begun.transaction(&inos).await?;
         let replaced =
             replace_child(&mut transaction, Some((&src, name)), (&dst, new_name)).await?;
         check_replaced(&replaced, new_ino)?;
@@ -975,12 +1136,12 @@ impl<P: Platform> Fxfs<P> {
     ) -> Result<[Attr; 4], Error> {
         let name = str::from_utf8(name).map_err(|_| anyhow!(FxfsError::NotFound))?;
         let new_name = str::from_utf8(new_name).map_err(|_| anyhow!(FxfsError::NotFound))?;
-        self.drain_all().await?;
+        let begun = self.begin(Op::Exchange, None).await?;
         let (src, dst) = (self.directory(dir).await?, self.directory(new_dir).await?);
         loop {
             let (a, a_kind, _) = src.lookup(name).await?.ok_or(FxfsError::NotFound)?;
             let (b, b_kind, _) = dst.lookup(new_name).await?.ok_or(FxfsError::NotFound)?;
-            let mut transaction = self.transaction(&[dir, new_dir, a, b]).await?;
+            let mut transaction = begun.transaction(&[dir, new_dir, a, b]).await?;
             // The names may have changed before the locks were taken: look again under them.
             let still = |found: Option<(u64, ObjectDescriptor, bool)>, ino| {
                 found.is_some_and(|(found, _, _)| found == ino)
@@ -1031,7 +1192,7 @@ impl<P: Platform> Fxfs<P> {
         dst_offset: u64,
         size: u64,
     ) -> Result<Attr, Error> {
-        self.drain_all().await?;
+        let begun = self.begin(Op::Clone, None).await?;
         let (source, target) = (self.file(src).await?, self.file(dst).await?);
         let store = self.volume.store_object_id();
         let mut keys = LockKeys::with_capacity(4);
@@ -1039,10 +1200,8 @@ impl<P: Platform> Fxfs<P> {
             keys.push(LockKey::object_attribute(store, ino, AttributeId::DATA));
             keys.push(LockKey::object(store, ino));
         }
-        let mut transaction = self.volume.new_transaction(keys, Options::default()).await?;
-        source
-            .clone_range_in_commits(&mut transaction, range, &target, dst_offset, size)
-            .await?;
+        let mut transaction = begun.transaction_locking(keys).await?;
+        source.clone_range_in_commits(&mut transaction, range, &target, dst_offset, size).await?;
         let attr = self.attr_after(&transaction, dst).await?;
         transaction.commit().await?;
         Ok(attr)
@@ -1083,6 +1242,7 @@ impl<P: Platform> Fxfs<P> {
         let Some(changes) = self.xattrs.lock().unwrap().get(&ino).cloned() else {
             return Ok(());
         };
+        self.begin(Op::WriteXattrs, None).await?;
         let handle = self.handle(ino);
         for (name, value) in changes {
             let written = match value.clone() {
@@ -1216,11 +1376,8 @@ impl<P: Platform> Fxfs<P> {
     /// but for failures of the filesystem, which make it fail later changes.
     pub async fn unlink_later(&self, dir: u64, name: &[u8], ino: u64) -> Result<(), Error> {
         let name = str::from_utf8(name).map_err(|_| anyhow!(FxfsError::NotFound))?.to_owned();
-        let queued = {
-            let mut queue = self.delayed.queue.lock().unwrap();
-            ensure!(!queue.failed, UNLINK_FAILED);
-            queue.push(DelayedOp::Unlink { dir, name, ino })
-        };
+        self.begin(Op::UnlinkLater, None).await?;
+        let queued = self.delayed.queue.lock().unwrap().push(DelayedOp::Unlink { dir, name, ino });
         // Whenever a batch's worth waits: the queue may come down to a multiple of a batch from
         // above, as the batches applied leave it, and up from there again without reaching one.
         // And as it fills, for what never makes a batch (`apply_stragglers`).
@@ -1452,8 +1609,9 @@ impl<P: Platform> Fxfs<P> {
                     .filter(|(_, directory)| !directory.names_are_keys())
                     .map(|(dir, _)| *dir),
             );
-            // Removing a name is what lets a full filesystem free space.
-            let options = Options { borrow_metadata_space: true, ..Default::default() };
+            // Removing a name is what lets a full filesystem free space. The queue's own, which no
+            // VFS asks for: no operation of the table's, as it is what they wait for.
+            let options = Room::Borrowed.options();
             let mut keys = LockKeys::with_capacity(inos.len() + evicted.len());
             for &ino in &inos {
                 keys.push(LockKey::object(store, ino));
@@ -1526,9 +1684,8 @@ impl<P: Platform> Fxfs<P> {
             // metadata space it needs: a full filesystem's files can still be cut (TASK-60).
             let file = self.file(ino).await?;
             let cut = set.size < file.get_size();
-            let options =
-                Options { borrow_metadata_space: cut, ..file.default_transaction_options() };
-            file.truncate_with_options(options, set.size).await?;
+            let begun = self.begin(if cut { Op::Cut } else { Op::Grow }, None).await?;
+            file.truncate_with_options(begun.options(), set.size).await?;
             // fxdax: once the cut has freed what it may, which only a sync makes room of, as a
             // write that finds the filesystem full makes it (`fxfs_vfs_make_room`). With no room
             // even so what the last block holds past the end stays, as the file must still be cut.
@@ -1556,8 +1713,8 @@ impl<P: Platform> Fxfs<P> {
         if attributes != fio::MutableNodeAttributes::default() || flag(SET_CTIME) {
             // fxdax: changing a record, it borrows the metadata space it needs, as Fuchsia's
             // `update_attributes` does: an inode's writeback on a full filesystem failed (TASK-82).
-            let options = Options { borrow_metadata_space: true, ..Default::default() };
-            let mut transaction = self.transaction_with(&[ino], options).await?;
+            let begun = self.begin(Op::SetAttr, None).await?;
+            let mut transaction = begun.transaction(&[ino]).await?;
             let ctime = if flag(SET_CTIME) {
                 Timestamp::from_nanos(set.ctime_ns)
             } else {
@@ -1575,7 +1732,7 @@ impl<P: Platform> Fxfs<P> {
     /// it returns: a write right after `rm` and `sync` found it full, the graveyard waiting
     /// GRAVEYARD_BATCH_DELAY still; and a write that finds it full syncs to make room (TASK-80).
     pub async fn sync(&self) -> Result<(), Error> {
-        self.drain_all().await?;
+        self.begin(Op::Sync, None).await?;
         self.filesystem.graveyard().flush().await;
         let _durable = self.platform.durable();
         self.filesystem.sync(SyncOptions { flush_device: true, ..Default::default() }).await
@@ -1592,7 +1749,7 @@ impl<P: Platform> Fxfs<P> {
     /// joined nothing and slowed each transaction.)
     pub async fn fsync(&self) -> Result<(), Error> {
         self.sync_counts.fsyncs.fetch_add(1, Ordering::Relaxed);
-        self.drain_all().await?;
+        self.begin(Op::Fsync, None).await?;
         let journal = self.filesystem.journal().clone();
         let wanted = journal.next_sync();
         let covered = Arc::new(AtomicBool::new(false));
@@ -1618,7 +1775,7 @@ impl<P: Platform> Fxfs<P> {
 
     /// The filesystem's usage, what was unlinked gone from it (TASK-79.21).
     pub async fn statfs(&self) -> Result<StatFs, Error> {
-        self.drain_all().await?;
+        self.begin(Op::Statfs, None).await?;
         let block_size = self.filesystem.block_size().get();
         let blocks = self.filesystem.device().block_count();
         let used = self.filesystem.allocator().get_used_bytes().0 / block_size;
@@ -1664,41 +1821,32 @@ impl<P: Platform> Fxfs<P> {
         Ok(self.files.lock().unwrap().entry(ino).or_insert(file).clone())
     }
 
-    /// A transaction locking the objects `inos`.
-    async fn transaction(&self, inos: &[u64]) -> Result<Transaction<'_>, Error> {
-        self.transaction_with(inos, Options::default()).await
-    }
-
-    async fn transaction_with<'a>(
-        &'a self,
-        inos: &[u64],
-        options: Options<'a>,
-    ) -> Result<Transaction<'a>, Error> {
-        ensure!(!self.delayed.queue.lock().unwrap().failed, UNLINK_FAILED);
-        let store = self.volume.store_object_id();
-        let mut keys = LockKeys::with_capacity(inos.len());
-        for &ino in inos {
-            keys.push(LockKey::object(store, ino));
+    /// Begins `op`, naming the inode `named` if it names one, as the table says (`Op::rules`): once
+    /// the queued unlinks it comes after are applied, unless a batch of them failed, if that fails
+    /// it, holding `named`'s truncate guard if it guards it. Its transactions are what it returns.
+    async fn begin(&self, op: Op, named: Option<u64>) -> Result<Begun<'_, P>, Error> {
+        let rules = op.rules();
+        if rules.after == After::All {
+            self.drain_all().await?;
         }
-        self.volume.new_transaction(keys, options).await
-    }
-
-    /// A transaction that replaces a name, locking `inos` and what it replaces, `replaced` if
-    /// anything, which can't be freed meanwhile: as Fxfs's `acquire_context_for_replace` has it,
-    /// but for the kernel knowing which inodes the names link, which its locks keep.
-    async fn replace_transaction<'a>(
-        &'a self,
-        inos: &[u64],
-        replaced: Option<u64>,
-        options: Options<'a>,
-    ) -> Result<(Option<TruncateGuard<'a>>, Transaction<'a>), Error> {
-        let store = self.volume.store_object_id();
-        let guard = match replaced {
-            Some(ino) => Some(self.filesystem.truncate_guard(store, ino).await),
-            None => None,
+        let queued = |ino| self.delayed.queue.lock().unwrap().pending.contains_key(&ino);
+        let drained = match named {
+            Some(ino) if rules.after != After::Nothing && queued(ino) => {
+                self.drain(&[ino]).await?;
+                true
+            }
+            _ => false,
         };
-        let inos: Vec<u64> = inos.iter().copied().chain(replaced).collect();
-        Ok((guard, self.transaction_with(&inos, options).await?))
+        if rules.gated {
+            ensure!(!self.delayed.queue.lock().unwrap().failed, UNLINK_FAILED);
+        }
+        let _guard = match named {
+            Some(ino) if rules.guards => {
+                Some(self.filesystem.truncate_guard(self.volume.store_object_id(), ino).await)
+            }
+            _ => None,
+        };
+        Ok(Begun { fs: self, op, drained, _guard })
     }
 }
 

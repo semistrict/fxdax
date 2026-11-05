@@ -1,12 +1,12 @@
 diff --git a/crates/fxfs-posix/src/lib.rs b/crates/fxfs-posix/src/lib.rs
-index 3797584a4..e8c8ac1d2 100644
 --- a/crates/fxfs-posix/src/lib.rs
 +++ b/crates/fxfs-posix/src/lib.rs
-@@ -1020,7 +1020,6 @@ impl<P: Platform> Fxfs<P> {
-     ) -> Result<(u32, [Attr; 3]), Error> {
-         let name = str::from_utf8(name).map_err(|_| anyhow!(FxfsError::NotFound))?;
-         let new_name = utf8_name(new_name)?;
--        self.drain_all().await?;
-         if let Some(new_ino) = new_ino {
-             self.drain(&[new_ino]).await?;
-         }
+@@ -446,7 +446,7 @@
+             Op::Link =>         (All,     true,  Reserved,       false),
+             Op::Unlink =>       (All,     true,  Borrowed,       true),
+             Op::UnlinkLater =>  (Nothing, true,  NoTransactions, false),
+-            Op::Rename =>       (All,     true,  Reserved,       true),
++            Op::Rename =>       (Named,   true,  Reserved,       true),
+             Op::Exchange =>     (All,     true,  Reserved,       false),
+             Op::Clone =>        (All,     false, Reserved,       false),
+             Op::Punch =>        (Nothing, true,  Reserved,       true),

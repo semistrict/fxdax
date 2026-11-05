@@ -1,9 +1,8 @@
 diff --git a/crates/fxfs-posix/src/lib.rs b/crates/fxfs-posix/src/lib.rs
-index 3797584a4..89a3d9d72 100644
 --- a/crates/fxfs-posix/src/lib.rs
 +++ b/crates/fxfs-posix/src/lib.rs
-@@ -973,7 +973,6 @@ impl<P: Platform> Fxfs<P> {
-         let mut transaction = self.transaction(&[dir.object_id(), ino]).await?;
+@@ -1064,7 +1064,6 @@
+         let mut transaction = begun.transaction(&[dir.object_id(), ino]).await?;
          dir.insert_child(&mut transaction, name, ino, descriptor).await?;
          if unnamed {
 -            self.volume.remove_from_graveyard(&mut transaction, ino);

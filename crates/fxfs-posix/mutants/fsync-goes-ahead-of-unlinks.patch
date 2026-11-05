@@ -1,12 +1,12 @@
 diff --git a/crates/fxfs-posix/src/lib.rs b/crates/fxfs-posix/src/lib.rs
-index 3797584a4..8fbbb5ca1 100644
 --- a/crates/fxfs-posix/src/lib.rs
 +++ b/crates/fxfs-posix/src/lib.rs
-@@ -1716,7 +1716,6 @@ impl<P: Platform> Fxfs<P> {
-     /// joined nothing and slowed each transaction.)
-     pub async fn fsync(&self) -> Result<(), Error> {
-         self.sync_counts.fsyncs.fetch_add(1, Ordering::Relaxed);
--        self.drain_all().await?;
-         let journal = self.filesystem.journal().clone();
-         let wanted = journal.next_sync();
-         let covered = Arc::new(AtomicBool::new(false));
+@@ -458,7 +458,7 @@
+             Op::SetAttr =>      (Nothing, true,  Borrowed,       false),
+             Op::WriteXattrs =>  (Nothing, false, Reserved,       false),
+             Op::Sync =>         (All,     false, NoTransactions, false),
+-            Op::Fsync =>        (All,     false, NoTransactions, false),
++            Op::Fsync =>        (Nothing, false, NoTransactions, false),
+             Op::Statfs =>       (All,     false, NoTransactions, false),
+         };
+         Rules { after, gated, room, guards }
