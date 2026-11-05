@@ -4,6 +4,7 @@ title: 'fxdax: one module for a store directory''s local records'
 status: To Do
 assignee: []
 created_date: '2026-11-03 13:08'
+updated_date: '2026-11-05 16:24'
 labels:
   - structure
 dependencies: []
@@ -31,3 +32,9 @@ remote-*, fence-*, origin-*, public-*, attached-bases and the boot profile each 
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+TASK-184 (2026-11-05): remote.rs's durable writes (markers, fences, claims) now share one helper, write_new, whose new file is the write's own ({name}.new-{random}); a shared {name}.new let two writers of one file at once truncate or remove each other's (ENOENT). The one durable write this task asks for must do the same: extents.rs's write_bases still writes {BASES_FILE}.new, which two ATTACHes of one store at once would share, and record_base reads, then writes, the list (a lost attachment); extent_store host.rs's describe has {DESCRIPTION}.new, which two deletions of one handle at once share. The read-then-write writers of a child's claim are TASK-186.
+<!-- SECTION:NOTES:END -->
