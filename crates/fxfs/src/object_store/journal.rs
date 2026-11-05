@@ -17,7 +17,10 @@
 // A sync's barrier records how far the journal was written in the store's root it sets
 // (`Root::journal_end`), and a replay that ends before there, at damage, is refused, where upstream
 // takes any checksum that fails for the journal's end (TASK-153.13). So is a journal that starts
-// within a block that doesn't verify, where upstream's reader panics (TASK-149.23).
+// within a block that doesn't verify, where upstream's reader panics (TASK-149.23). How far the
+// journal is written, flushed, synced and zeroed is one value (`JournalPosition`, position.rs),
+// which checks the orders between them as each changes, where upstream's `Inner` has a field for
+// each (TASK-160.25).
 
 //! The journal is implemented as an ever extending file which contains variable length records
 //! that describe mutations to be applied to various objects.  The journal file consists of
@@ -35,6 +38,7 @@
 
 mod bootstrap_handle;
 mod checksum_list;
+mod position;
 mod reader;
 pub mod super_block;
 mod writer;
@@ -54,6 +58,7 @@ use crate::object_store::extent_record::ExtentValue;
 use crate::object_store::graveyard::Graveyard;
 use crate::object_store::journal::bootstrap_handle::BootstrapObjectHandle;
 use crate::object_store::journal::checksum_list::ChecksumList;
+use crate::object_store::journal::position::JournalPosition;
 use crate::object_store::journal::reader::{JournalReader, ReadResult};
 use crate::object_store::journal::super_block::{
     Root, SuperBlockHeader, SuperBlockInstance, SuperBlockManager,
@@ -300,34 +305,11 @@ pub struct JournalStats {
 struct Inner {
     super_block_header: SuperBlockHeader,
 
-    // The offset that we can zero the journal up to now that it is no longer needed.
-    zero_offset: Option<u64>,
-
-    // fxdax: how far it has zeroed towards it, a slice a commit.
-    zeroed_to: u64,
-
-    // The journal offset that we most recently flushed to the device.
-    device_flushed_offset: u64,
-
-    // fxdax: how much of the journal had been written when the device was last flushed, which the
-    // flush made durable: padding written after `device_flushed_offset` too, which needs no flush.
-    device_flushed_end: u64,
-
-    // fxdax: where a sync flushing the device padded the journal to: the flush of the journal
-    // that writes as far ends with a barrier (`POST_BARRIER`), which is the sync's flush of the
-    // device, one request rather than two.
-    barrier_wanted: u64,
-
-    // fxdax: how far the journal was written when a barrier last followed its write.
-    barrier_written: u64,
-
-    // fxdax: the syncs flushing the device begun, each numbered as it begins, and the latest done
-    // (`next_sync`, `synced`): group commit, as ext4's jbd2 has it.
-    syncs_begun: u64,
-    synced: u64,
-
-    // If true, indicates a DidFlushDevice record is pending.
-    needs_did_flush_device: bool,
+    // fxdax: how far the journal has got, as written, flushed, synced, zeroed: upstream's
+    // `zero_offset`, `device_flushed_offset`, `needs_did_flush_device`, `flushed_offset`,
+    // `valid_to` and `discard_offset`, and fxdax's own, which a method each changes, checking
+    // their orders (`JournalPosition`, TASK-160.25).
+    position: JournalPosition,
 
     // fxdax: the journal goes on in extents only a super-block not yet written records
     // (`renew_tail`), so that a replay, from the last, finds nothing of what's written there.
@@ -361,20 +343,6 @@ struct Inner {
     // Waker for the sync task for when it's waiting for the flush task to finish.
     sync_waker: Option<Waker>,
 
-    // The last offset we flushed to the journal file.
-    flushed_offset: u64,
-
-    // The last offset that should be considered valid in the journal file.  Most of the time, this
-    // will be the same as `flushed_offset` but at mount time, this could be less and will only be
-    // up to the end of the last valid transaction; it won't include transactions that follow that
-    // have been discarded.
-    valid_to: u64,
-
-    // If, after replaying, we have to discard a number of mutations (because they don't validate),
-    // this offset specifies where we need to discard back to.  This is so that when we next replay,
-    // we ignore those mutations and continue with new good mutations.
-    discard_offset: Option<u64>,
-
     // In the steady state, the journal should fluctuate between being approximately half of this
     // number and this number.  New super-blocks will be written every time about half of this
     // amount is written to the journal.
@@ -400,9 +368,6 @@ struct Inner {
     // fxdax: whether a lazy flush task's timer runs for the bytes buffered, so that a transaction
     // needn't wake it, which costs scheduling it each time, unless it has more to do.
     lazy_flush_armed: bool,
-
-    // fxdax: the offset up to which something waits for the journal to be written.
-    flush_wanted: u64,
 }
 
 impl Inner {
@@ -581,15 +546,7 @@ impl Journal {
             super_block_manager: SuperBlockManager::new(),
             inner: Mutex::new(Inner {
                 super_block_header: SuperBlockHeader::default(),
-                zero_offset: None,
-                zeroed_to: 0,
-                device_flushed_offset: 0,
-                device_flushed_end: 0,
-                barrier_wanted: 0,
-                syncs_begun: 0,
-                synced: 0,
-                barrier_written: 0,
-                needs_did_flush_device: false,
+                position: JournalPosition::default(),
                 tail_unrecorded: false,
                 writer: JournalWriter::new(BLOCK_SIZE, starting_checksum),
                 output_reset_version: false,
@@ -600,9 +557,6 @@ impl Journal {
                 compactions_paused: false,
                 compaction_running: false,
                 sync_waker: None,
-                flushed_offset: 0,
-                valid_to: 0,
-                discard_offset: None,
                 reclaim_size: options.reclaim_size,
                 image_builder_mode: None,
                 barriers_enabled: options.barriers_enabled,
@@ -610,7 +564,6 @@ impl Journal {
                 forced_compaction: false,
                 lazy_flush: options.lazy_flush,
                 lazy_flush_armed: false,
-                flush_wanted: 0,
             }),
             writer_mutex: Mutex::new(()),
             sync_mutex: futures::lock::Mutex::new(()),
@@ -1080,17 +1033,12 @@ impl Journal {
             // Reset the stream to indicate that we've remounted the journal.
             writer_checkpoint.checksum ^= RESET_XOR;
             writer_checkpoint.version = LATEST_VERSION;
-            inner.flushed_offset = writer_checkpoint.file_offset;
-
-            // When we open the filesystem as writable, we flush the device.
-            inner.device_flushed_offset = inner.flushed_offset;
+            // When we open the filesystem as writable, we flush the device. fxdax: what's past the
+            // last valid transaction is discarded by the next (`JournalPosition::replayed`).
+            inner.position.replayed(writer_checkpoint.file_offset, last_checkpoint.file_offset);
 
             inner.writer.seek(writer_checkpoint);
             inner.output_reset_version = true;
-            inner.valid_to = last_checkpoint.file_offset;
-            if last_checkpoint.file_offset < inner.flushed_offset {
-                inner.discard_offset = Some(last_checkpoint.file_offset);
-            }
         }
 
         self.objects
@@ -1705,7 +1653,7 @@ impl Journal {
         let mut reader = JournalReader::new(handle, &checkpoint);
         // Record the current end offset and only read to there, so we don't accidentally read any
         // partially flushed blocks.
-        let end_offset = self.inner.lock().valid_to;
+        let end_offset = self.inner.lock().position.valid_to();
         Ok(self.read_transactions(&mut reader, Some(end_offset), object_id).await?.transactions)
     }
 
@@ -1763,16 +1711,7 @@ impl Journal {
             // (EXTENT_SIZE), and zeroing a journal of 16 MiB in one transaction, with a small
             // commit that happened on it, ran past the journal's end (xfstests generic/161,
             // TASK-139).
-            let zeroing = match inner.zero_offset {
-                Some(end) if inner.zeroed_to >= end => {
-                    inner.zero_offset = None;
-                    None
-                }
-                Some(end) => {
-                    Some(inner.zeroed_to..end.min(inner.zeroed_to + MAX_ZEROED_PER_COMMIT))
-                }
-                None => None,
-            };
+            let zeroing = inner.position.zeroing(MAX_ZEROED_PER_COMMIT);
 
             if extension.is_none()
                 && zeroing.is_none()
@@ -1854,10 +1793,7 @@ impl Journal {
         }
 
         if let Some(zeroing) = zeroing {
-            inner.zeroed_to = zeroing.end;
-            if inner.zero_offset == Some(zeroing.end) {
-                inner.zero_offset = None;
-            }
+            inner.position.zeroed(zeroing);
         }
 
         Ok(further)
@@ -1870,15 +1806,12 @@ impl Journal {
             LATEST_VERSION.serialize_into(&mut inner.writer)?;
         }
 
-        if let Some(discard_offset) = inner.discard_offset {
+        if let Some(discard_offset) = inner.position.take_discard() {
             JournalRecord::Discard(discard_offset).serialize_into(&mut inner.writer)?;
-            inner.discard_offset = None;
         }
 
-        if inner.needs_did_flush_device {
-            let offset = inner.device_flushed_offset;
+        if let Some(offset) = inner.position.take_did_flush_device() {
             JournalRecord::DidFlushDevice(offset).serialize_into(&mut inner.writer)?;
-            inner.needs_did_flush_device = false;
         }
         Ok(())
     }
@@ -1957,8 +1890,9 @@ impl Journal {
             .await?;
         {
             let mut inner = self.inner.lock();
+            let start = new_super_block_header.journal_checkpoint.file_offset;
             inner.super_block_header = new_super_block_header;
-            inner.zero_offset = Some(BLOCK_SIZE.align_down(old_super_block_offset));
+            inner.position.superseded(old_super_block_offset, start);
             inner.tail_unrecorded = false;
         }
 
@@ -1992,17 +1926,14 @@ impl Journal {
             let sync = options.flush_device.then(|| {
                 let mut inner = self.inner.lock();
                 let end = inner.writer.journal_file_checkpoint().file_offset;
-                inner.barrier_wanted = inner.barrier_wanted.max(end);
-                inner.syncs_begun += 1;
-                inner.syncs_begun
+                inner.position.begin_sync(end)
             });
             (padded, sync)
         };
 
         if let Some(sync) = sync {
             self.flush_device(checkpoint.file_offset, false).await.context("sync: flush failed")?;
-            let mut inner = self.inner.lock();
-            inner.synced = inner.synced.max(sync);
+            self.inner.lock().position.end_sync(sync);
         }
 
         Ok(Some((checkpoint, borrowed)))
@@ -2054,17 +1985,11 @@ impl Journal {
 
         // What has been written is durable once the device is flushed: the padding of a sync since
         // the last flush included, which needs no flush of its own. fxdax: a barrier that followed
-        // the journal's write as far is this sync's flush (`barrier_wanted`).
-        let (flushed, barriered, written) = {
-            let inner = self.inner.lock();
-            let flushed = inner.device_flushed_offset.max(inner.device_flushed_end);
-            let barriered = inner.barrier_written >= checkpoint_offset;
-            let written = if barriered { inner.barrier_written } else { inner.flushed_offset };
-            (flushed >= checkpoint_offset, barriered, written)
-        };
-        if !flushed || always {
+        // the journal's write as far is this sync's flush (`JournalPosition::begin_sync`).
+        let flush = self.inner.lock().position.flushing(checkpoint_offset);
+        if !flush.durable || always {
             let trace = self.trace.load(Ordering::Relaxed);
-            if !barriered {
+            if !flush.barriered {
                 if trace {
                     info!("J: start flush device");
                 }
@@ -2082,12 +2007,7 @@ impl Journal {
             // If we are shutting down, that will never happen but since the DidFlushDevice
             // message is purely advisory (it reduces the number of checksums we have to verify
             // during replay), it doesn't matter if it isn't written.
-            {
-                let mut inner = self.inner.lock();
-                inner.device_flushed_offset = checkpoint_offset;
-                inner.device_flushed_end = inner.device_flushed_end.max(written);
-                inner.needs_did_flush_device = true;
-            }
+            self.inner.lock().position.device_flushed(checkpoint_offset, flush);
 
             let allocator = self.objects.allocator();
             if self.inner.lock().tail_unrecorded {
@@ -2125,7 +2045,7 @@ impl Journal {
         let handle = self.handle.get().unwrap();
         let (tail_unrecorded, written) = {
             let inner = self.inner.lock();
-            (inner.tail_unrecorded, inner.valid_to)
+            (inner.tail_unrecorded, inner.position.valid_to())
         };
         if tail_unrecorded {
             return handle.flush_device().await;
@@ -2152,7 +2072,7 @@ impl Journal {
     pub(crate) async fn wait_for_flush(&self, offset: u64) -> Result<(), Error> {
         debug_assert_not_too_long!(poll_fn(|ctx| {
             let mut inner = self.inner.lock();
-            if inner.flushed_offset >= offset {
+            if inner.position.flushed_offset() >= offset {
                 Poll::Ready(Ok(()))
             } else if inner.terminate {
                 let context = inner
@@ -2164,11 +2084,11 @@ impl Journal {
             } else {
                 inner.sync_waker = Some(ctx.waker().clone());
                 // fxdax: a lazy flush task writes what is waited for at once.
-                if inner.flush_wanted < offset {
-                    inner.flush_wanted = offset;
-                    if let Some(waker) = inner.flush_waker.take() {
-                        waker.wake();
-                    }
+                let end = inner.writer.journal_file_checkpoint().file_offset;
+                if inner.position.want_flushed(offset, end)
+                    && let Some(waker) = inner.flush_waker.take()
+                {
+                    waker.wake();
                 }
                 Poll::Pending
             }
@@ -2341,7 +2261,7 @@ impl Journal {
                         - inner.super_block_header.journal_checkpoint.file_offset;
                     !inner.lazy_flush_armed
                         || inner.writer.flushable_bytes() >= lazy.bytes
-                        || inner.flush_wanted > inner.flushed_offset
+                        || inner.position.flush_is_wanted()
                         || (self.should_compact(&inner, journal_bytes) && !inner.compaction_running)
                 }
             };
@@ -2379,7 +2299,7 @@ impl Journal {
                                     });
                                     inner.lazy_flush_armed = true;
                                     flushable >= lazy.bytes
-                                        || inner.flush_wanted > inner.flushed_offset
+                                        || inner.position.flush_is_wanted()
                                         || inner.terminate
                                         || timer.poll_unpin(ctx).is_ready()
                                 }
@@ -2463,7 +2383,7 @@ impl Journal {
     async fn flush(&self, amount: usize) -> Result<(), Error> {
         let handle = self.handle.get().unwrap();
         let mut buf = handle.allocate_buffer(amount).await;
-        let (offset, len, barrier_on_first_write, mut barrier_after_last_write) = {
+        let (range, barrier_on_first_write, mut barrier_after_last_write) = {
             let mut inner = self.inner.lock();
             let offset = inner.writer.take_flushable(buf.as_mut());
             let barrier_on_first_write = inner.needs_barrier && inner.barriers_enabled;
@@ -2471,10 +2391,9 @@ impl Journal {
             // that contains data happens during the overwrite.
             inner.needs_barrier = false;
             // fxdax: as far as a sync flushing the device wants a barrier after.
-            let len = buf.len() as u64;
-            let barrier_after =
-                inner.barrier_wanted > inner.flushed_offset && offset + len >= inner.barrier_wanted;
-            (offset, len, barrier_on_first_write, barrier_after)
+            let range = offset..offset + buf.len() as u64;
+            let barrier_after = inner.position.wants_barrier_after(&range);
+            (range, barrier_on_first_write, barrier_after)
         };
         let handle = self.handle.get().unwrap();
         if barrier_after_last_write {
@@ -2490,7 +2409,7 @@ impl Journal {
                     root,
                     ..Default::default()
                 };
-                let Err(error) = handle.overwrite(offset, buf.as_mut(), options).await else {
+                let Err(error) = handle.overwrite(range.start, buf.as_mut(), options).await else {
                     return Ok(true);
                 };
                 // fxdax: the barrier failing, as a full store's commit does, fails the sync that
@@ -2498,13 +2417,13 @@ impl Journal {
                 // again without it. The blocks are still open: a commit that fails seals nothing.
                 warn!(error:?; "The barrier after a journal write failed");
                 let options = OverwriteOptions { barrier_on_first_write, ..Default::default() };
-                handle.overwrite(offset, buf.as_mut(), options).await?;
+                handle.overwrite(range.start, buf.as_mut(), options).await?;
                 Ok(false)
             };
             barrier_after_last_write = if self.inner.lock().tail_unrecorded {
                 barrier(None).await?
             } else {
-                let written = offset + len;
+                let written = range.end;
                 let manager = &self.super_block_manager;
                 let journal_end =
                     |root: &mut Root| root.journal_end = root.journal_end.max(written);
@@ -2512,18 +2431,14 @@ impl Journal {
             };
         } else {
             let options = OverwriteOptions { barrier_on_first_write, ..Default::default() };
-            handle.overwrite(offset, buf.as_mut(), options).await?;
+            handle.overwrite(range.start, buf.as_mut(), options).await?;
         }
 
         let mut inner = self.inner.lock();
         if let Some(waker) = inner.sync_waker.take() {
             waker.wake();
         }
-        inner.flushed_offset = offset + len;
-        inner.valid_to = inner.flushed_offset;
-        if barrier_after_last_write {
-            inner.barrier_written = inner.flushed_offset;
-        }
+        inner.position.flushed(range, barrier_after_last_write);
         Ok(())
     }
 
@@ -2632,12 +2547,12 @@ impl Journal {
     /// that was written, and stored through a DAX window, before (`synced`). Group commit, as
     /// ext4's jbd2 has it: an fsync waiting for another's covered by it needs none of its own.
     pub fn next_sync(&self) -> u64 {
-        self.inner.lock().syncs_begun + 1
+        self.inner.lock().position.next_sync()
     }
 
     /// fxdax: the number of the latest sync flushing the device that is done (`next_sync`).
     pub fn synced(&self) -> u64 {
-        self.inner.lock().synced
+        self.inner.lock().position.synced()
     }
 
     /// fxdax: what it waited for and did ([`JournalStats`]).
@@ -2726,7 +2641,7 @@ impl Journal {
                             BLOCK_SIZE.align_down(
                                 inner.super_block_header.journal_checkpoint.file_offset,
                             ),
-                            inner.flushed_offset,
+                            inner.position.flushed_offset(),
                             inner.reclaim_size,
                         )
                     };
@@ -3034,7 +2949,9 @@ mod tests {
         // The first moves the super-block past those commits, the second zeroes up to there.
         fs.journal().force_compact().await.expect("force_compact failed");
         fs.journal().force_compact().await.expect("force_compact failed");
-        assert!(fs.journal().inner.lock().zero_offset.expect("nothing to zero") > 8 << 20);
+        assert!(
+            fs.journal().inner.lock().position.zero_offset().expect("nothing to zero") > 8 << 20
+        );
         for round in 600..610 {
             commit_records(&fs, object_id, round, 76).await;
         }
@@ -4504,7 +4421,7 @@ mod tests {
         }
         let (checkpoint, _) = journal.sync(SyncOptions::default()).await.expect("sync").unwrap();
         journal.wait_for_flush(checkpoint.file_offset).await.expect("written");
-        let written = journal.inner.lock().flushed_offset;
+        let written = journal.inner.lock().position.flushed_offset();
         assert!(super_block_offset < synced_end - BLOCK_SIZE, "{super_block_offset} {synced_end}");
         assert!(synced_end < written, "{synced_end} {written}");
         let extents = journal.handle.get().unwrap().device_extents().await.expect("extents");
