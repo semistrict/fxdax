@@ -321,6 +321,13 @@ TASK-37's change, and takes no more. fxdax ran on
 libkrun before; it left it for Firecracker, which the sandboxes it serves run
 (TASK-40).
 
+The workspace builds with it checked out (`git submodule update --init`): on
+Linux, fxdax's tests compile its production seccomp filters
+(`resources/seccomp`) with its seccompiler, which links libseccomp, and run the
+VM process's side of a DAX window under them, so that a system call fxdax
+makes and the filters refuse fails CI rather than a jailed VM
+(`crates/fxdax/tests/seccomp.rs`, TASK-149.28).
+
 | Change | Why |
 |---|---|
 | The extent-store device (`devices/virtio/extent`), behind the `fxdax` feature: `PUT /extent/{id}` before boot, or the configuration file's `extent` list, names its tag, store, capacity, DAX window and the extent daemon's socket (`extentd_socket`). Its store is served by the daemon (`fxdax::RemoteExtentStore`). | The guest's own Fxfs keeps its filesystem in it (backlog doc-4). No fxdax code serves a store in the VM process: the daemon owns the stores and their cache, which the host's VMs share. |

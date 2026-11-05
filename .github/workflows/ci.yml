@@ -27,15 +27,20 @@ jobs:
     env:
       FXDAX_TEST_PARTS: ${{ matrix.parts }}
     steps:
+      # With vendor/firecracker, whose seccompiler fxdax's tests compile Firecracker's seccomp
+      # filters with, to run the VMM's side of DAX windows under them (TASK-149.28).
       - uses: actions/checkout@v7
+        with:
+          submodules: true
       - name: Install the build's tools
         # elfutils' eu-stack and sqlite3, which tests run, as on the GCE hosts
-        # (scripts/lib/linux-host-setup.sh); Coccinelle, whose rules the scripts' tests check; and
-        # xfsprogs, for the guest tests' own of reflinks.
+        # (scripts/lib/linux-host-setup.sh); Coccinelle, whose rules the scripts' tests check;
+        # xfsprogs, for the guest tests' own of reflinks; and libseccomp, which Firecracker's
+        # seccompiler links.
         run: |
           sudo apt-get update
           sudo apt-get install -y protobuf-compiler libclang-dev clang elfutils sqlite3 coccinelle \
-            xfsprogs
+            xfsprogs libseccomp-dev
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-unknown-linux-musl

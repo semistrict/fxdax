@@ -2,8 +2,9 @@
 resolver = "3"
 members = ["crates/*"]
 # The guest kernel's Rust is a workspace of its own (guest/rust), though fuchsia-async depends on
-# its runtime for the kernel's target.
-exclude = ["guest"]
+# its runtime for the kernel's target; and Firecracker is its own (vendor/firecracker), though
+# fxdax's tests compile its seccomp filters with its seccompiler (TASK-149.28).
+exclude = ["guest", "vendor"]
 
 [workspace.package]
 edition = "2024"
