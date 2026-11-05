@@ -4266,7 +4266,7 @@ mod tests {
         first.commit(None).unwrap();
         drop(first);
 
-        let cache = Arc::new(Cache::new(&dir.path().join("cache"), 1 << 30, 0).unwrap());
+        let cache = Arc::new(Cache::open(&dir.path().join("cache"), 1 << 30, 0).unwrap());
         let second = ExtentStore::create_for_branch(dir.path().join("second"), 1 << 30, branch);
         let second = second.unwrap();
         let options = super::Options { cache: Some(cache.clone()), ..idle() };

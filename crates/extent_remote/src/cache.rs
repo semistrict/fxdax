@@ -3,16 +3,23 @@
 // found in the LICENSE file.
 
 //! A host's copies of the parts of objects of its bucket it fetched (doc-7, Reading: the NVMe
-//! cache). Each object's is a sparse file of its size, at its key, holding its tail,
+//! cache; doc-14). Each object's is a sparse file of its size, at its key, holding its tail,
 //! which says where its parts are stored, and those of its parts kept, as stored, compressed or
 //! not, at their offsets, the rest holes. Those read least recently are evicted, by punching holes,
 //! an object's tail with its last part, so that they take no more than a capacity and the
 //! filesystem keeps a floor of free space. They are copies of what is in the bucket, so none is
-//! data the bucket lacks; a host starts with none. What it gives, it checks: a tail against its
-//! CRCs, a part against the one its tail gives, dropping what fails.
+//! data the bucket lacks.
+//!
+//! The files are all the cache keeps: one opened finds what an earlier one kept in them
+//! ([`Cache::open`]), so that a host's restart refetches nothing it had. Its index is rebuilt from
+//! their tails, each checked against its CRCs, a file whose tail fails going whole; an object's
+//! parts kept are those its file holds data for, not holes. And what it gives, it checks: a tail
+//! against its CRCs, a part against the one its tail gives, dropping what fails. So whatever a
+//! crash left of a write, torn or lost, reads as not kept, never as other bytes, and is fetched
+//! again by its reader. One cache at a time has a directory.
 
 use crate::object;
-use extent_frame::{Parts, Stored};
+use extent_frame::{Frame, Parts, Stored, TRAILER};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::File;
 use std::io;
@@ -21,6 +28,7 @@ use std::os::fd::AsRawFd as _;
 use std::os::unix::fs::FileExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::SystemTime;
 
 /// The number an object's tail is kept by, among its parts, which count from 0: its footer, table
 /// and trailer, after its parts, which a fetcher of another of the host's stores reads here rather
@@ -36,6 +44,8 @@ pub struct Cache {
     capacity: u64,
     floor: u64,
     kept: Mutex<Kept>,
+    /// The directory, locked, so that no other cache opens it while this one has it.
+    _lock: File,
 }
 
 #[derive(Debug, Default)]
@@ -134,6 +144,20 @@ impl Kept {
         self.by_use.insert(self.clock, (key.to_owned(), part));
     }
 
+    /// Keeps the object at `key` that `found` is, its parts read now, its tail after them.
+    fn insert(&mut self, key: &str, found: Found) {
+        let object = Object {
+            parts: found.parts,
+            kept: HashMap::new(),
+            busy: HashMap::new(),
+            forgotten: false,
+        };
+        self.objects.insert(key.to_owned(), object);
+        for part in found.kept.into_iter().chain([TAIL]) {
+            self.keep(key, part);
+        }
+    }
+
     /// Evicts what was read least recently, but tails whose objects keep or write other parts, until
     /// `len` bytes more fit in `capacity` and `free` bytes, and those evictions free, leave `floor`
     /// and `needed` more free. Returns whether they do, and what the evictions leave to do.
@@ -225,19 +249,37 @@ impl Kept {
     }
 }
 
-/// Where the cache keeps its files under the directory it is given, which it empties at start.
+/// Where the cache keeps its files under the directory it is given.
 const FILES: &str = "fxdax-parts";
 
+/// The blocks of the filesystems the cache's files are on, as the parts in them are aligned to:
+/// what punching a hole frees whole.
+const BLOCK: u64 = extent_frame::ALIGN;
+
 impl Cache {
-    /// A cache in `dir` of at most `capacity` bytes of objects, keeping `floor` bytes free there.
-    pub fn new(dir: &Path, capacity: u64, floor: u64) -> io::Result<Self> {
+    /// The cache in `dir`, keeping at most `capacity` bytes of objects, and `floor` bytes free
+    /// there: what an earlier one kept, read from its files, those that fail their checks removed,
+    /// then evicted, those read least recently first, as far as `capacity` and `floor` need. Fails
+    /// while another cache has the directory.
+    pub fn open(dir: &Path, capacity: u64, floor: u64) -> io::Result<Self> {
         let dir = dir.join(FILES);
-        match std::fs::remove_dir_all(&dir) {
-            Err(err) if err.kind() != io::ErrorKind::NotFound => return Err(err),
-            _ => {}
-        }
         std::fs::create_dir_all(&dir)?;
-        Ok(Self { files: Files { dir }, capacity, floor, kept: Mutex::default() })
+        let lock = lock(&dir)?;
+        let files = Files::new(dir)?;
+        let mut found = Vec::new();
+        files.walk(Path::new(""), &mut found)?;
+        // By when each was written last: it was read then, if not since.
+        found.sort_by_key(|(_, found)| found.modified);
+        let mut kept = Kept::default();
+        for (key, found) in found {
+            kept.bytes += found.bytes();
+            kept.insert(&key, found);
+        }
+        let cache = Self { files, capacity, floor, kept: Mutex::new(kept), _lock: lock };
+        let free = cache.files.free()?;
+        let (_, evicted) = cache.kept.lock().unwrap().make_room((capacity, floor), free, 0, 0);
+        cache.evict(evicted)?;
+        Ok(cache)
     }
 
     #[cfg(test)]
@@ -359,7 +401,8 @@ impl Cache {
     /// Keeps `bytes`, the stored bytes of part `part` of the object at `key`, which pass the CRC of
     /// `stored`, where its tail says it is stored, evicting what was read least recently to make
     /// room: unless no room can be made, or its object's tail isn't kept, as stored, or it is kept
-    /// or busy already.
+    /// or busy already. One kept torn, as a crash may leave a part, a reader finds failing its
+    /// CRC first ([`Cache::part`]), which drops it, and then keeps it anew.
     pub fn keep_part(&self, key: &str, part: u64, stored: &Stored, bytes: &[u8]) -> io::Result<()> {
         debug_assert!(stored.check(bytes).is_ok(), "part {part} of {key}, kept unchecked");
         let len = stored.len;
@@ -459,19 +502,216 @@ impl Cache {
     }
 }
 
-/// The cache's files, under its directory, each its object's at its key.
+/// Locks the directory `dir`, as a cache that has it does: fails if another has.
+fn lock(dir: &Path) -> io::Result<File> {
+    let file = File::open(dir)?;
+    // SAFETY: an flock of an open file.
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        let err = io::Error::last_os_error();
+        if err.kind() == io::ErrorKind::WouldBlock {
+            let held = format!("{}: another cache has it", dir.display());
+            return Err(io::Error::new(io::ErrorKind::WouldBlock, held));
+        }
+        return Err(err);
+    }
+    Ok(file)
+}
+
+/// An object a file of the cache holds: where its parts are stored, as its tail, checked against
+/// its CRCs, says; those the file holds data for, not holes, those shorter than a block, and all
+/// on a filesystem that doesn't find its holes, checked against their CRCs too; and when it was
+/// written last.
+#[derive(Debug)]
+struct Found {
+    parts: Parts,
+    kept: Vec<u64>,
+    modified: SystemTime,
+}
+
+impl Found {
+    /// The bytes of its tail and of the parts it holds.
+    fn bytes(&self) -> u64 {
+        let tail = self.parts.frame.tail();
+        let parts = self.kept.iter().map(|&part| self.parts.stored[part as usize].len);
+        tail.end - tail.start + parts.sum::<u64>()
+    }
+}
+
+/// The object at `key` the file at `path` holds, if its tail, at its end, passes its checks: its
+/// parts checked against their CRCs unless `holes`, the filesystem finding holes punched.
+fn found(path: &Path, key: &str, holes: bool) -> io::Result<Option<Found>> {
+    let file = File::open(path)?;
+    let metadata = file.metadata()?;
+    let size = metadata.len();
+    let Some(at) = size.checked_sub(TRAILER) else { return Ok(None) };
+    let mut trailer = vec![0; TRAILER as usize];
+    file.read_exact_at(&mut trailer, at)?;
+    let Ok(frame) = Frame::of_trailer(&trailer) else { return Ok(None) };
+    if frame.size() != size {
+        return Ok(None);
+    }
+    let tail = frame.tail();
+    let mut bytes = vec![0; (tail.end - tail.start) as usize];
+    file.read_exact_at(&mut bytes, tail.start)?;
+    let Ok(tail) = object::Tail::of(key, bytes) else { return Ok(None) };
+    let data = data(&file, size)?;
+    let mut kept = Vec::new();
+    for (part, stored) in (0..).zip(&tail.parts.stored) {
+        if !holds(&data, stored.range()) {
+            continue;
+        }
+        // A punch frees none of a part shorter than a block, whose hole none finds: what dropped
+        // it is told by its CRC.
+        if stored.len < BLOCK || !holes {
+            let mut bytes = vec![0; stored.len as usize];
+            file.read_exact_at(&mut bytes, stored.offset)?;
+            if stored.check(&bytes).is_err() {
+                continue;
+            }
+        }
+        kept.push(part);
+    }
+    Ok(Some(Found { parts: tail.parts, kept, modified: metadata.modified()? }))
+}
+
+/// The ranges of `file`, of `size` bytes, that hold data, not holes, as `SEEK_DATA` and
+/// `SEEK_HOLE` find them: all of it, on a filesystem that finds no holes.
+fn data(file: &File, size: u64) -> io::Result<Vec<Range<u64>>> {
+    let seek = |at: u64, whence| {
+        // SAFETY: an lseek of an open file.
+        match unsafe { libc::lseek(file.as_raw_fd(), at as libc::off_t, whence) } {
+            -1 => Err(io::Error::last_os_error()),
+            at => Ok(at as u64),
+        }
+    };
+    let (mut ranges, mut at) = (Vec::new(), 0);
+    while at < size {
+        let start = match seek(at, libc::SEEK_DATA) {
+            Ok(start) => start,
+            // None after it.
+            Err(err) if err.raw_os_error() == Some(libc::ENXIO) => break,
+            Err(err) if err.raw_os_error() == Some(libc::EINVAL) => {
+                let whole = 0..size;
+                return Ok(vec![whole]);
+            }
+            Err(err) => return Err(err),
+        };
+        let end = seek(start, libc::SEEK_HOLE)?.min(size);
+        if end <= start {
+            break;
+        }
+        ranges.push(start..end);
+        at = end;
+    }
+    Ok(ranges)
+}
+
+/// Whether the filesystem `dir` is on finds the holes of a file it punched a hole in, as
+/// `SEEK_DATA` finds them: a file of four blocks, the second written then punched, holding none.
+/// APFS doesn't: those a resize left read as data once a hole is punched.
+fn finds_holes(dir: &Path) -> io::Result<bool> {
+    let path = dir.join(".holes");
+    let mut options = std::fs::OpenOptions::new();
+    let file = options.create(true).truncate(true).read(true).write(true).open(&path)?;
+    let found = (|| {
+        file.set_len(4 * BLOCK)?;
+        file.write_all_at(&[1; BLOCK as usize], BLOCK)?;
+        punch(&file, BLOCK, BLOCK)?;
+        Ok(data(&file, 4 * BLOCK)?.is_empty())
+    })();
+    std::fs::remove_file(&path)?;
+    found
+}
+
+/// Whether `range` is within one of `data`, ranges in order.
+fn holds(data: &[Range<u64>], range: Range<u64>) -> bool {
+    let after = data.partition_point(|data| data.start <= range.start);
+    after > 0 && data[after - 1].end >= range.end
+}
+
+/// What changes the cache makes to its files: each a step of [`Files`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Change {
+    /// An object's file made, as long as it ever is not yet.
+    Create,
+    /// Made as long as its object.
+    Resize,
+    /// Bytes written to it.
+    Write,
+    Punch,
+    Remove,
+}
+
+/// The cache's files, under its directory, each its object's at its key: every change the cache
+/// makes to them is one of these, which the crash tests cut, as a crash would, at each.
 #[derive(Debug)]
 struct Files {
     dir: PathBuf,
+    /// Whether its filesystem finds the holes punched in its files ([`finds_holes`]).
+    holes: bool,
+    #[cfg(test)]
+    cut: Option<std::sync::Arc<tests::Cut>>,
 }
 
 impl Files {
+    fn new(dir: PathBuf) -> io::Result<Self> {
+        Ok(Self {
+            holes: finds_holes(&dir)?,
+            dir,
+            #[cfg(test)]
+            cut: None,
+        })
+    }
+
     fn path(&self, key: &str) -> PathBuf {
         self.dir.join(key)
     }
 
+    /// Finds the objects in the files under `rel`, removing files of none, and directories left
+    /// empty. Returns whether there is any.
+    fn walk(&self, rel: &Path, found: &mut Vec<(String, Found)>) -> io::Result<bool> {
+        let mut any = false;
+        for entry in std::fs::read_dir(self.dir.join(rel))? {
+            let entry = entry?;
+            let (rel, kind) = (rel.join(entry.file_name()), entry.file_type()?);
+            let path = self.dir.join(&rel);
+            if kind.is_dir() {
+                if self.walk(&rel, found)? {
+                    any = true;
+                } else if let Err(err) = std::fs::remove_dir(&path) {
+                    log::warn!("fxdax: removing {} from the cache: {err}", path.display());
+                }
+                continue;
+            }
+            let object = match rel.to_str() {
+                Some(key) if kind.is_file() => match self::found(&path, key, self.holes) {
+                    Ok(object) => object.map(|object| (key.to_owned(), object)),
+                    Err(err) => {
+                        log::warn!("fxdax: reading {} in the cache: {err}", path.display());
+                        None
+                    }
+                },
+                _ => None,
+            };
+            match object {
+                Some(object) => {
+                    found.push(object);
+                    any = true;
+                }
+                None => {
+                    log::warn!("fxdax: removing {} from the cache: no object", path.display());
+                    std::fs::remove_file(&path)?;
+                }
+            }
+        }
+        Ok(any)
+    }
+
     /// Makes the file of the object at `key`, of `size` bytes, if there is none.
     fn create(&self, key: &str, size: u64) -> io::Result<()> {
+        if !self.done(Change::Create) {
+            return Ok(());
+        }
         let path = self.path(key);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -480,7 +720,7 @@ impl Files {
             std::fs::OpenOptions::new().create(true).write(true).truncate(false).open(path)?;
         // Its file is the object's size from the first, so that what is not written to it is a
         // hole: some filesystems (APFS) fill what a write past the end skips.
-        if file.metadata()?.len() < size {
+        if file.metadata()?.len() < size && self.done(Change::Resize) {
             file.set_len(size)?;
         }
         Ok(())
@@ -488,18 +728,29 @@ impl Files {
 
     /// Writes `bytes` at `offset` in the file of the object at `key`.
     fn write(&self, key: &str, offset: u64, bytes: &[u8]) -> io::Result<()> {
-        File::options().write(true).open(self.path(key))?.write_all_at(bytes, offset)
+        let file = File::options().write(true).open(self.path(key))?;
+        for piece in self.pieces(Change::Write, offset..offset + bytes.len() as u64) {
+            let from = (piece.start - offset) as usize..(piece.end - offset) as usize;
+            file.write_all_at(&bytes[from], piece.start)?;
+        }
+        Ok(())
     }
 
     /// Frees the blocks wholly within `place` in the file of the object at `key`, which reads
     /// zeros there after.
     fn punch(&self, key: &str, place: Range<u64>) -> io::Result<()> {
         let file = File::options().write(true).open(self.path(key))?;
-        punch(&file, place.start, place.end - place.start)
+        for piece in self.pieces(Change::Punch, place) {
+            punch(&file, piece.start, piece.end - piece.start)?;
+        }
+        Ok(())
     }
 
     fn remove(&self, key: &str) -> io::Result<()> {
-        std::fs::remove_file(self.path(key))
+        match self.done(Change::Remove) {
+            true => std::fs::remove_file(self.path(key)),
+            false => Ok(()),
+        }
     }
 
     /// The bytes at `place` in the file of the object at `key`.
@@ -507,6 +758,31 @@ impl Files {
         let mut bytes = vec![0; (place.end - place.start) as usize];
         File::open(self.path(key))?.read_exact_at(&mut bytes, place.start)?;
         Ok(bytes)
+    }
+
+    /// Whether `change`, which isn't a write, is made.
+    #[cfg(not(test))]
+    fn done(&self, _: Change) -> bool {
+        true
+    }
+
+    /// The pieces of `range` that `change`, a write or a punch, changes.
+    #[cfg(not(test))]
+    fn pieces(&self, _: Change, range: Range<u64>) -> Vec<Range<u64>> {
+        vec![range]
+    }
+
+    #[cfg(test)]
+    fn done(&self, change: Change) -> bool {
+        self.cut.as_ref().is_none_or(|cut| cut.done(change))
+    }
+
+    #[cfg(test)]
+    fn pieces(&self, change: Change, range: Range<u64>) -> Vec<Range<u64>> {
+        match &self.cut {
+            Some(cut) => cut.pieces(change, range),
+            None => vec![range],
+        }
     }
 
     /// The bytes free to unprivileged users on the cache's filesystem.
@@ -539,7 +815,6 @@ fn punch(file: &File, offset: u64, len: u64) -> io::Result<()> {
 /// macOS punches whole blocks only, so a part's last partial block stays.
 #[cfg(target_os = "macos")]
 fn punch(file: &File, offset: u64, len: u64) -> io::Result<()> {
-    const BLOCK: u64 = 4096;
     let len = len / BLOCK * BLOCK;
     if len == 0 {
         return Ok(());
@@ -561,7 +836,6 @@ fn punch(file: &File, offset: u64, len: u64) -> io::Result<()> {
 mod tests {
     use super::*;
     use crate::layout::PART;
-    use extent_frame::Frame;
     use std::sync::Arc;
 
     const KEY: &str = "segments/0000000000000001/0000000000000002";
@@ -632,6 +906,19 @@ mod tests {
 
         fn keep_part(&self, cache: &Cache, part: u64) {
             cache.keep_part(&self.key, part, &self.stored(part), self.part(part)).unwrap();
+        }
+
+        /// Keeps in `cache` what it finds there not: as a reader does, which fetches and keeps
+        /// what it reads not.
+        fn fetch(&self, cache: &Cache) {
+            if cache.tail(&self.key).unwrap().is_none() {
+                self.keep_tail(cache);
+            }
+            for part in 0..self.parts() {
+                if self.read(cache, part).is_none() {
+                    self.keep_part(cache, part);
+                }
+            }
         }
 
         /// Keeps its tail and all its parts in `cache`.
@@ -729,7 +1016,7 @@ mod tests {
     fn keeps_parts_evicting_the_least_recently_read() {
         let dir = tempfile::tempdir().unwrap();
         let object = Object::noise(KEY, 6 * PART, 1);
-        let cache = Cache::new(dir.path(), 3 * PART + object.tail_len(), 0).unwrap();
+        let cache = Cache::open(dir.path(), 3 * PART + object.tail_len(), 0).unwrap();
         object.keep_tail(&cache);
         for part in 0..3 {
             object.keep_part(&cache, part);
@@ -771,7 +1058,7 @@ mod tests {
         let object = Object::noise(KEY, 64 * PART, 1);
         // Its tail takes a block, of the parts' last.
         let tail = object.tail_len().next_multiple_of(4096);
-        let cache = Cache::new(dir.path(), 3 * PART + object.tail_len(), 0).unwrap();
+        let cache = Cache::open(dir.path(), 3 * PART + object.tail_len(), 0).unwrap();
         object.keep_tail(&cache);
         for part in 0..3 {
             object.keep_part(&cache, part);
@@ -785,7 +1072,7 @@ mod tests {
     #[test]
     fn keeps_the_floor_free() {
         let dir = tempfile::tempdir().unwrap();
-        let cache = Cache::new(dir.path(), 3 * PART, u64::MAX / 2).unwrap();
+        let cache = Cache::open(dir.path(), 3 * PART, u64::MAX / 2).unwrap();
         let object = Object::noise(KEY, PART, 1);
         object.keep(&cache);
         assert_eq!((cache.tail(KEY).unwrap(), object.read(&cache, 0)), (None, None));
@@ -797,7 +1084,7 @@ mod tests {
     fn reads_order_eviction() {
         let dir = tempfile::tempdir().unwrap();
         let object = Object::noise(KEY, 6 * PART, 1);
-        let cache = Cache::new(dir.path(), 3 * PART + object.tail_len(), 0).unwrap();
+        let cache = Cache::open(dir.path(), 3 * PART + object.tail_len(), 0).unwrap();
         object.keep_tail(&cache);
         for part in 0..3 {
             object.keep_part(&cache, part);
@@ -813,7 +1100,7 @@ mod tests {
     #[test]
     fn parts_are_kept_with_their_tails() {
         let dir = tempfile::tempdir().unwrap();
-        let cache = Cache::new(dir.path(), 8 * PART, 0).unwrap();
+        let cache = Cache::open(dir.path(), 8 * PART, 0).unwrap();
         let object = Object::noise(KEY, 2 * PART, 1);
         object.keep_part(&cache, 0);
         assert_eq!((cache.bytes(), cache.keys()), (0, Vec::<String>::new()));
@@ -835,7 +1122,7 @@ mod tests {
     #[test]
     fn tails_of_objects_recreated_replace_what_is_kept() {
         let dir = tempfile::tempdir().unwrap();
-        let cache = Cache::new(dir.path(), 8 * PART, 0).unwrap();
+        let cache = Cache::open(dir.path(), 8 * PART, 0).unwrap();
         let (old, new) = (Object::noise(KEY, 2 * PART, 1), Object::noise(KEY, PART, 2));
         old.keep(&cache);
         new.keep_tail(&cache);
@@ -853,7 +1140,7 @@ mod tests {
     #[test]
     fn parts_failing_their_crcs_are_dropped() {
         let dir = tempfile::tempdir().unwrap();
-        let cache = Cache::new(dir.path(), 8 * PART, 0).unwrap();
+        let cache = Cache::open(dir.path(), 8 * PART, 0).unwrap();
         let object = Object::noise(KEY, 2 * PART, 1);
         object.keep(&cache);
         flip(&cache.path(KEY), object.stored(1).offset + 7);
@@ -872,7 +1159,7 @@ mod tests {
     #[test]
     fn parts_gone_read_as_not_kept() {
         let dir = tempfile::tempdir().unwrap();
-        let cache = Cache::new(dir.path(), 3 * PART, 0).unwrap();
+        let cache = Cache::open(dir.path(), 3 * PART, 0).unwrap();
         let object = Object::noise(KEY, PART + 100, 1);
         object.keep(&cache);
         File::options().write(true).open(cache.path(KEY)).unwrap().set_len(PART).unwrap();
@@ -894,7 +1181,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (object, other) = (Object::noise(KEY, 1000, 1), Object::noise(OTHER, PART + 100, 2));
         let capacity = 1000 + object.tail_len() + other.tail_len();
-        let cache = Cache::new(dir.path(), capacity, 0).unwrap();
+        let cache = Cache::open(dir.path(), capacity, 0).unwrap();
         other.keep_tail(&cache);
         other.keep_part(&cache, 1);
         other.keep_part(&cache, 1);
@@ -913,7 +1200,7 @@ mod tests {
     #[test]
     fn files_are_their_objects_size() {
         let dir = tempfile::tempdir().unwrap();
-        let cache = Cache::new(dir.path(), 3 * PART, 0).unwrap();
+        let cache = Cache::open(dir.path(), 3 * PART, 0).unwrap();
         let object = Object::noise(KEY, 5 * PART, 1);
         object.keep_tail(&cache);
         assert_eq!(std::fs::metadata(cache.path(KEY)).unwrap().len(), object.bytes.len() as u64);
@@ -923,7 +1210,7 @@ mod tests {
     #[test]
     fn free_bytes_are_the_free_blocks_size() {
         let dir = tempfile::tempdir().unwrap();
-        let cache = Cache::new(dir.path(), 0, 0).unwrap();
+        let cache = Cache::open(dir.path(), 0, 0).unwrap();
         let path = std::ffi::CString::new(cache.files.dir.as_os_str().as_encoded_bytes()).unwrap();
         let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
         // SAFETY: `path` is a C string and `stat` a statvfs, which the call fills.
@@ -939,7 +1226,7 @@ mod tests {
     #[test]
     fn tails_whose_writes_fail_are_not_kept() {
         let dir = tempfile::tempdir().unwrap();
-        let cache = Cache::new(dir.path(), 3 * PART, 0).unwrap();
+        let cache = Cache::open(dir.path(), 3 * PART, 0).unwrap();
         let (object, other) = (Object::noise(KEY, PART, 1), Object::noise(OTHER, PART, 2));
         std::fs::create_dir_all(cache.path(OTHER)).unwrap();
         let failed = cache.keep_tail(OTHER, &other.tail).unwrap_err();
@@ -956,7 +1243,7 @@ mod tests {
     #[test]
     fn parts_dropped_whose_files_went_are_dropped() {
         let dir = tempfile::tempdir().unwrap();
-        let cache = Cache::new(dir.path(), 3 * PART, 0).unwrap();
+        let cache = Cache::open(dir.path(), 3 * PART, 0).unwrap();
         let object = Object::noise(KEY, PART + 100, 1);
         object.keep(&cache);
         std::fs::remove_file(cache.path(KEY)).unwrap();
@@ -969,7 +1256,7 @@ mod tests {
 
     /// TASK-92.21: keeps, reads and drops of a few objects' tails and parts, in threads at once,
     /// evicting one another's, keep the cache whole: none fails, and, once they are done, what the
-    /// cache counts it keeps, each part kept read whole.
+    /// cache counts it keeps, each part kept read whole; and a cache opened after it finds the same.
     #[test]
     fn parts_kept_read_and_dropped_at_once_keep_the_cache_whole() {
         const OBJECTS: u64 = 3;
@@ -978,7 +1265,7 @@ mod tests {
         let key = |object: u64| format!("segments/0000000000000001/{object:016x}");
         let objects: Arc<Vec<_>> =
             Arc::new((0..OBJECTS).map(|at| Object::noise(&key(at), PARTS * PART, at)).collect());
-        let cache = Arc::new(Cache::new(dir.path(), 6 * PART, 0).unwrap());
+        let cache = Arc::new(Cache::open(dir.path(), 6 * PART, 0).unwrap());
         let threads: Vec<_> = (0..4u64)
             .map(|thread| {
                 let (cache, objects) = (cache.clone(), objects.clone());
@@ -1023,8 +1310,10 @@ mod tests {
             assert_eq!(cache.keys(), files(dir.path()));
             kept
         };
-        read(&cache);
+        let kept = read(&cache);
         assert!(cache.kept.lock().unwrap().removing.is_empty());
+        drop(cache);
+        assert_eq!(read(&Cache::open(dir.path(), 6 * PART, 0).unwrap()), kept);
     }
 
     /// TASK-92.21: a benchmark of reads of a part kept while others are kept, each evicting one,
@@ -1036,7 +1325,7 @@ mod tests {
     fn bench_reads_while_parts_are_kept() {
         const PUTS: u64 = 2048;
         let dir = tempfile::tempdir().unwrap();
-        let cache = Arc::new(Cache::new(dir.path(), 16 * PART, 0).unwrap());
+        let cache = Arc::new(Cache::open(dir.path(), 16 * PART, 0).unwrap());
         let read = Object::noise(KEY, PART, 1);
         read.keep(&cache);
         let objects: Vec<_> = (0..PUTS / 8)
@@ -1066,14 +1355,344 @@ mod tests {
         println!("{reads} reads while {PUTS} parts were kept: at most {most:?}, {all:?} in all");
     }
 
-    /// A cache starts empty, whatever an earlier one left.
+    /// TASK-165.4: a cache keeps what an earlier one in its directory kept: its tails, and the
+    /// parts it held, counted as they were, but not those it evicted, whose holes it finds.
     #[test]
-    fn starts_empty() {
+    fn keeps_what_an_earlier_one_kept() {
         let dir = tempfile::tempdir().unwrap();
-        let object = Object::noise(KEY, PART, 1);
-        object.keep(&Cache::new(dir.path(), 3 * PART, 0).unwrap());
-        let cache = Cache::new(dir.path(), 3 * PART, 0).unwrap();
-        assert_eq!((cache.tail(KEY).unwrap(), object.read(&cache, 0)), (None, None));
-        assert!(!cache.path(KEY).exists());
+        let object = Object::noise(KEY, 4 * PART + 100, 1);
+        let other = Object::noise(OTHER, 3000, 2);
+        let capacity = 3 * PART + 100 + object.tail_len() + other.len();
+        let cache = Cache::open(dir.path(), capacity, 0).unwrap();
+        object.keep_tail(&cache);
+        for part in [0, 1, 2, 4] {
+            object.keep_part(&cache, part);
+        }
+        object.read(&cache, 0);
+        other.keep(&cache);
+        // Part 1 goes for it.
+        object.keep_part(&cache, 3);
+        assert_eq!(object.kept(&cache), [0, 2, 3, 4]);
+        let bytes = cache.bytes();
+        drop(cache);
+
+        let cache = Cache::open(dir.path(), capacity, 0).unwrap();
+        cache.check();
+        assert_eq!(cache.bytes(), bytes);
+        assert_eq!(object.kept(&cache), [0, 2, 3, 4]);
+        assert_eq!(other.kept(&cache), [0]);
+        assert_eq!(cache.tail(KEY).unwrap(), Some(object.tail.clone()));
+        for part in [0, 2, 3, 4] {
+            assert_eq!(object.read(&cache, part).as_deref(), Some(object.part(part)));
+        }
+        assert_eq!(cache.bytes(), bytes);
+    }
+
+    /// TASK-165.4: a cache opened drops the files an earlier one left that hold no object whose
+    /// tail passes its checks, as a crash leaves one whose tail was being written, and anything
+    /// else in its directory but objects' files; and directories left empty.
+    #[test]
+    fn earlier_files_failing_their_checks_are_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let objects: Vec<_> = (0..4)
+            .map(|at| Object::noise(&format!("segments/0000000000000001/{at:016x}"), 3000, at))
+            .collect();
+        let cache = Cache::open(dir.path(), 8 * PART, 0).unwrap();
+        for object in &objects {
+            object.keep(&cache);
+        }
+        let path = |at: usize| cache.path(&objects[at].key);
+        // A byte of its table flipped.
+        flip(&path(0), objects[0].tail.parts.frame.table().start);
+        // Cut short, longer, a stray file, a link, an empty directory.
+        File::options().write(true).open(path(1)).unwrap().set_len(1000).unwrap();
+        let longer = objects[2].bytes.len() as u64 + 8;
+        File::options().write(true).open(path(2)).unwrap().set_len(longer).unwrap();
+        let stray = cache.path("segments/stray");
+        std::fs::write(&stray, b"stray").unwrap();
+        std::os::unix::fs::symlink(path(3), cache.path("segments/link")).unwrap();
+        std::fs::create_dir_all(cache.path("checkpoints/0000000000000001")).unwrap();
+        drop(cache);
+
+        let cache = Cache::open(dir.path(), 8 * PART, 0).unwrap();
+        cache.check();
+        assert_eq!(cache.keys(), [objects[3].key.clone()]);
+        assert_eq!(files(dir.path()), [objects[3].key.clone()]);
+        assert_eq!(cache.bytes(), objects[3].len());
+        assert!(!cache.path("checkpoints").exists());
+    }
+
+    /// TASK-165.4: a part an earlier cache kept whose bytes changed since, as a write torn by a
+    /// crash leaves them, is counted until read: then it fails its CRC, and is dropped. On APFS,
+    /// which finds no holes, the cache checks it as it opens.
+    #[test]
+    fn earlier_parts_failing_their_crcs_are_dropped_as_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let object = Object::noise(KEY, 2 * PART, 1);
+        let cache = Cache::open(dir.path(), 8 * PART, 0).unwrap();
+        object.keep(&cache);
+        drop(cache);
+        flip(&dir.path().join(FILES).join(KEY), object.stored(1).offset + 100);
+
+        let cache = Cache::open(dir.path(), 8 * PART, 0).unwrap();
+        let counted = object.len() - if cfg!(target_os = "linux") { 0 } else { PART };
+        assert_eq!(cache.bytes(), counted);
+        assert_eq!(object.read(&cache, 1), None);
+        assert_eq!(cache.bytes(), object.len() - PART);
+        assert_eq!(object.kept(&cache), [0]);
+    }
+
+    /// TASK-165.4: a cache opened with a smaller capacity than an earlier one evicts what that one
+    /// kept, by when each object was written last, until what is left fits; with a floor past
+    /// what the filesystem has free, it evicts all.
+    #[test]
+    fn capacity_and_floor_hold_across_restarts() {
+        let dir = tempfile::tempdir().unwrap();
+        let (object, other) = (Object::noise(KEY, 2 * PART, 1), Object::noise(OTHER, PART, 2));
+        let cache = Cache::open(dir.path(), 8 * PART, 0).unwrap();
+        object.keep(&cache);
+        other.keep(&cache);
+        let (path, written) = (cache.path(OTHER), SystemTime::now());
+        drop(cache);
+        // The other written after it, as its file says.
+        let file = File::options().write(true).open(&path).unwrap();
+        file.set_modified(written + std::time::Duration::from_secs(10)).unwrap();
+
+        let capacity = PART + object.tail_len() + other.len();
+        let cache = Cache::open(dir.path(), capacity, 0).unwrap();
+        cache.check();
+        assert!(cache.bytes() <= capacity);
+        assert_eq!((object.kept(&cache), other.kept(&cache)), (vec![1], vec![0]));
+        drop(cache);
+
+        let cache = Cache::open(dir.path(), capacity, u64::MAX / 2).unwrap();
+        assert_eq!((cache.bytes(), cache.keys(), files(dir.path())), (0, vec![], vec![]));
+    }
+
+    /// TASK-165.4: the filesystems the cache runs on find the holes punched in a file, but APFS,
+    /// whose files a cache then checks each part of as it opens: macOS is for development.
+    #[test]
+    fn filesystems_find_holes_but_apfs() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(finds_holes(dir.path()).unwrap(), cfg!(target_os = "linux"));
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    /// TASK-165.4: one cache at a time has a directory; another may once it is dropped.
+    #[test]
+    fn one_cache_has_a_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = Cache::open(dir.path(), PART, 0).unwrap();
+        let err = Cache::open(dir.path(), PART, 0).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::WouldBlock, "{err}");
+        drop(cache);
+        Cache::open(dir.path(), PART, 0).unwrap();
+    }
+
+    /// How a crash test cuts the change it crashes at, if a write or a punch: what of it is made.
+    #[derive(Clone, Copy, Debug)]
+    enum Tear {
+        Nothing,
+        FirstByte,
+        Half,
+        AllButLastByte,
+        /// Every other block, by the file's, as writes back reordered leave them.
+        OddBlocks,
+    }
+
+    const TEARS: [Tear; 5] =
+        [Tear::Nothing, Tear::FirstByte, Tear::Half, Tear::AllButLastByte, Tear::OddBlocks];
+
+    impl Tear {
+        fn pieces(self, range: Range<u64>) -> Vec<Range<u64>> {
+            const BLOCK: u64 = 4096;
+            let Range { start, end } = range;
+            let prefix = |len: u64| {
+                let piece = start..start + len;
+                vec![piece]
+            };
+            match self {
+                Tear::Nothing => vec![],
+                Tear::FirstByte => prefix(1.min(end - start)),
+                Tear::Half => prefix((end - start) / 2),
+                Tear::AllButLastByte => prefix((end - start).saturating_sub(1)),
+                Tear::OddBlocks => (start / BLOCK..end.div_ceil(BLOCK))
+                    .filter(|block| block % 2 == 1)
+                    .map(|block| (block * BLOCK).max(start)..((block + 1) * BLOCK).min(end))
+                    .collect(),
+            }
+        }
+    }
+
+    /// Where a crash test cuts the changes a cache makes to its files ([`Files`]), numbered as
+    /// made: those before `at` made, but `lost`, a write or a punch a power cut lost while later
+    /// ones landed, as nothing that syncs orders them; change `at` torn as `tear` says, if a write
+    /// or a punch, else not made; none after it.
+    #[derive(Debug)]
+    pub(super) struct Cut {
+        at: usize,
+        tear: Tear,
+        lost: Option<usize>,
+        made: Mutex<Vec<Change>>,
+    }
+
+    impl Cut {
+        fn new(at: usize, tear: Tear, lost: Option<usize>) -> Arc<Self> {
+            Arc::new(Self { at, tear, lost, made: Mutex::default() })
+        }
+
+        /// Counts `change` made, or not: its number.
+        fn next(&self, change: Change) -> usize {
+            let mut made = self.made.lock().unwrap();
+            made.push(change);
+            made.len() - 1
+        }
+
+        pub(super) fn done(&self, change: Change) -> bool {
+            let number = self.next(change);
+            number < self.at && Some(number) != self.lost
+        }
+
+        pub(super) fn pieces(&self, change: Change, range: Range<u64>) -> Vec<Range<u64>> {
+            let number = self.next(change);
+            match number.cmp(&self.at) {
+                std::cmp::Ordering::Less if Some(number) != self.lost => vec![range],
+                std::cmp::Ordering::Equal => self.tear.pieces(range),
+                _ => vec![],
+            }
+        }
+    }
+
+    /// The crash test's objects: one of two parts, its last short; one of a part shorter than a
+    /// block; one of a third of a part; and one whose part compresses.
+    fn crash_objects() -> [Object; 4] {
+        let pattern: Vec<u8> = (0..300_000u32).map(|at| (at % 251) as u8).collect();
+        [
+            Object::noise(KEY, PART + 3000, 1),
+            Object::noise(OTHER, 3000, 2),
+            Object::noise("segments/0000000000000001/0000000000000004", 300_000, 3),
+            Object::new("checkpoints/0000000000000001/0000000000000004", &pattern),
+        ]
+    }
+
+    /// The crash test's capacity: the first object, and a part's third, so that what it keeps
+    /// evicts parts, tails and objects.
+    const CRASH_CAPACITY: u64 = PART + 300_000;
+
+    /// What the crash test does with a cache in `dir`, its changes cut by `cut`: keeps objects and
+    /// reads them, evicting parts and objects to stay within its capacity, and forgets one.
+    fn crash_workload(dir: &Path, cut: Arc<Cut>) {
+        let [a, b, c, d] = crash_objects();
+        let mut cache = Cache::open(dir, CRASH_CAPACITY, 0).unwrap();
+        cache.files.cut = Some(cut);
+        // A crash past a change makes none after it: what fails then is not the cache's.
+        let keep = |object: &Object, parts: &[u64]| {
+            let _ = cache.keep_tail(&object.key, &object.tail);
+            for &part in parts {
+                let stored = object.stored(part);
+                let _ = cache.keep_part(&object.key, part, &stored, object.part(part));
+            }
+        };
+        keep(&a, &[0, 1]);
+        keep(&b, &[0]);
+        let _ = cache.part(&a.key, 0, &a.stored(0));
+        // Evicts a's part 1, b, and a's part 0.
+        keep(&c, &[0]);
+        let _ = cache.forget(&a.key);
+        keep(&d, &[0]);
+        keep(&b, &[0]);
+        let _ = cache.tail(&c.key);
+        let _ = cache.part(&c.key, 0, &c.stored(0));
+    }
+
+    /// Checks the cache in `dir` opened after a crash: its index whole, within its capacity; no file
+    /// but its objects'; and everything it keeps read back as kept, or dropped. Then a reader of
+    /// all keeps all anew, as in a cache never crashed, which one opened after it finds.
+    fn check_after_crash(dir: &Path, crashed: &str) {
+        let objects = crash_objects();
+        let cache = Cache::open(dir, CRASH_CAPACITY, 0).unwrap();
+        cache.check();
+        assert!(cache.bytes() <= CRASH_CAPACITY, "{crashed}: {} bytes", cache.bytes());
+        assert_eq!(cache.keys(), files(dir), "{crashed}");
+        let mut read = 0;
+        for object in &objects {
+            let Some(tail) = cache.tail(&object.key).unwrap() else { continue };
+            assert_eq!(tail, object.tail, "{crashed}: {}", object.key);
+            read += object.tail_len();
+            for part in 0..object.parts() {
+                let Some(bytes) = object.read(&cache, part) else { continue };
+                assert_eq!(bytes, object.part(part), "{crashed}: part {part} of {}", object.key);
+                read += object.stored(part).len;
+            }
+        }
+        assert_eq!(cache.bytes(), read, "{crashed}");
+        cache.check();
+        drop(cache);
+
+        let cache = Cache::open(dir, 8 * PART, 0).unwrap();
+        for object in &objects {
+            object.fetch(&cache);
+        }
+        drop(cache);
+        let cache = Cache::open(dir, 8 * PART, 0).unwrap();
+        for object in &objects {
+            assert_eq!(object.kept(&cache), Vec::from_iter(0..object.parts()), "{crashed}");
+        }
+        assert_eq!(cache.bytes(), objects.iter().map(Object::len).sum::<u64>(), "{crashed}");
+    }
+
+    /// TASK-165.4: a crash at any change the cache makes to its files leaves nothing a cache
+    /// opened after it reads back wrong: each change in turn the one cut, not made, or a write or
+    /// a punch torn (its first byte, half, all but its last byte, every other block), the changes
+    /// after it never made; and, as a power cut leaves them, each write or punch lost with those
+    /// after it made, the next one or all. What a cache opened then keeps reads
+    /// back as kept, or fails its check and is dropped; it holds no file but its objects', counts
+    /// what it keeps, and keeps all anew.
+    #[test]
+    fn crashes_at_each_change_leave_nothing_read_back_wrong() {
+        let changes = {
+            let dir = tempfile::tempdir().unwrap();
+            let cut = Cut::new(usize::MAX, Tear::Nothing, None);
+            crash_workload(dir.path(), cut.clone());
+            check_after_crash(dir.path(), "uncut");
+            cut.made.lock().unwrap().clone()
+        };
+        // It makes each kind of change.
+        for change in [Change::Create, Change::Resize, Change::Write, Change::Punch] {
+            assert!(changes.contains(&change), "{change:?} in {changes:?}");
+        }
+        assert!(changes.contains(&Change::Remove), "{changes:?}");
+        let mut cuts = Vec::new();
+        for (at, change) in changes.iter().enumerate() {
+            match change {
+                Change::Write | Change::Punch => cuts.extend(TEARS.map(|tear| (at, tear, None))),
+                _ => cuts.push((at, Tear::Nothing, None)),
+            }
+        }
+        for (lost, change) in changes.iter().enumerate() {
+            if matches!(change, Change::Write | Change::Punch) {
+                if lost + 2 < changes.len() {
+                    cuts.push((lost + 2, Tear::Nothing, Some(lost)));
+                }
+                cuts.push((changes.len(), Tear::Nothing, Some(lost)));
+            }
+        }
+        // Each in a directory of its own, a few at once.
+        let threads = std::thread::available_parallelism().map_or(4, usize::from);
+        let cuts = Mutex::new(cuts);
+        std::thread::scope(|scope| {
+            for _ in 0..threads {
+                scope.spawn(|| {
+                    loop {
+                        let Some((at, tear, lost)) = cuts.lock().unwrap().pop() else { break };
+                        let crashed =
+                            format!("cut at {at} of {changes:?}, {tear:?}, losing {lost:?}");
+                        let dir = tempfile::tempdir().unwrap();
+                        crash_workload(dir.path(), Cut::new(at, tear, lost));
+                        check_after_crash(dir.path(), &crashed);
+                    }
+                });
+            }
+        });
     }
 }

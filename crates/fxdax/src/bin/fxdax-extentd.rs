@@ -47,7 +47,8 @@
 //! `az://container/prefix`) each store it opens keeps its branch in (backlog doc-7), with
 //! credentials from the environment's `AWS_*`, `GOOGLE_*` or `AZURE_*` variables: durable commits are uploaded behind them, within a second. With
 //! `FXDAX_EXTENTD_CACHE` naming a directory too, what stores read from the bucket is kept there,
-//! sparse, leaving 4 GiB of its filesystem free; it starts empty.
+//! sparse, leaving 4 GiB of its filesystem free, and kept across the daemon's restarts: one daemon
+//! at a time has the directory.
 //! With `FXDAX_EXTENTD_STATS` naming a file too, the daemon keeps there what it did with the
 //! bucket, its requests by kind and its bytes up and down (`extent_remote::store::Stats::line`),
 //! what the stores' followers are, what serving the stores cost it (`fxdax::stats::Stats`), and

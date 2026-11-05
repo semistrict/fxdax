@@ -1194,7 +1194,7 @@ fn remote_cache() -> Result<Option<Arc<Cache>>, Errno> {
         return Ok(cache.clone());
     }
     let cache = match std::env::var_os("FXDAX_EXTENTD_CACHE") {
-        Some(dir) if !dir.is_empty() => match Cache::new(dir.as_ref(), u64::MAX, CACHE_FLOOR) {
+        Some(dir) if !dir.is_empty() => match Cache::open(dir.as_ref(), u64::MAX, CACHE_FLOOR) {
             Ok(cache) => Some(Arc::new(cache)),
             Err(err) => {
                 log::error!("extentd: FXDAX_EXTENTD_CACHE: {err}");
