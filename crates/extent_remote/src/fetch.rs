@@ -826,30 +826,21 @@ impl<B: Bucket> Fetching<B> {
     }
 
     /// The stored bytes of part `part` of the object at `key`, stored as `stored` says, if the
-    /// cache has them and they pass its check: those that fail are dropped from the cache.
+    /// cache has them: checked, those that fail dropped from the cache ([`Cache::part`]).
     fn kept(&self, key: &str, part: u64, stored: &extent_frame::Stored) -> Option<Vec<u8>> {
-        let bytes = match self.cached(|cache| cache.get(key, part))? {
-            Ok(bytes) => bytes?,
+        match self.cached(|cache| cache.part(key, part, stored))? {
+            Ok(bytes) => bytes,
             Err(err) => {
                 log::warn!("fxdax: reading part {part} of {key} from the cache: {err}");
-                return None;
+                None
             }
-        };
-        if stored.check(&bytes).is_ok() {
-            return Some(bytes);
         }
-        log::warn!("fxdax: part {part} of {key} in the cache failed its CRC");
-        if let Some(Err(err)) = self.cached(|cache| cache.forget(key, part)) {
-            log::warn!("fxdax: dropping part {part} of {key} from the cache: {err}");
-        }
-        None
     }
 
     /// Keeps `bytes`, part `part`'s stored bytes, checked, in the cache.
     fn keep(&self, key: &str, tail: &Tail, part: u64, bytes: &[u8]) {
-        let size = tail.parts.frame.size();
-        let offset = tail.parts.stored[part as usize].offset;
-        if let Some(Err(err)) = self.cached(|cache| cache.put(key, size, part, offset, bytes)) {
+        let stored = &tail.parts.stored[part as usize];
+        if let Some(Err(err)) = self.cached(|cache| cache.keep_part(key, part, stored, bytes)) {
             log::warn!("fxdax: keeping part {part} of {key} in the cache: {err}");
         }
     }
@@ -897,23 +888,13 @@ impl<B: Bucket> Fetching<B> {
         Ok(Some((Arc::new(tail), size)))
     }
 
-    /// The tail of the object at `key`, if the cache has it and it passes its checks: one that
-    /// fails is dropped from the cache.
+    /// The tail of the object at `key`, if the cache has it: checked, one that fails dropped from
+    /// the cache ([`Cache::tail`]).
     fn kept_tail(&self, key: &str) -> Option<object::Tail> {
-        let bytes = match self.cached(|cache| cache.get(key, Cache::TAIL))? {
-            Ok(bytes) => bytes?,
+        match self.cached(|cache| cache.tail(key))? {
+            Ok(tail) => tail,
             Err(err) => {
                 log::warn!("fxdax: reading the tail of {key} from the cache: {err}");
-                return None;
-            }
-        };
-        match object::Tail::of(key, bytes) {
-            Ok(tail) => Some(tail),
-            Err(err) => {
-                log::warn!("fxdax: the tail of {key} in the cache: {err}");
-                if let Some(Err(err)) = self.cached(|cache| cache.forget(key, Cache::TAIL)) {
-                    log::warn!("fxdax: dropping the tail of {key} from the cache: {err}");
-                }
                 None
             }
         }
@@ -921,19 +902,17 @@ impl<B: Bucket> Fetching<B> {
 
     /// Keeps `tail`, the tail of the object at `key`, as read, in the cache.
     fn keep_tail(&self, key: &str, tail: &object::Tail) {
-        let size = tail.parts.frame.size();
-        let offset = size - tail.bytes.len() as u64;
-        let kept = self.cached(|cache| cache.put(key, size, Cache::TAIL, offset, &tail.bytes));
-        if let Some(Err(err)) = kept {
+        if let Some(Err(err)) = self.cached(|cache| cache.keep_tail(key, tail)) {
             log::warn!("fxdax: keeping the tail of {key} in the cache: {err}");
         }
     }
 
     /// Forgets `tail`, kept as the tail of the object at `key`, if it still is: the object is read
-    /// by its tail fetched anew. The cache's copy goes first, so that no read after finds it there.
+    /// by its tail fetched anew. The cache's copy of the object goes first, so that no read after
+    /// finds it there.
     fn forget(&self, key: &str, tail: &Arc<Tail>) {
-        if let Some(Err(err)) = self.cached(|cache| cache.forget(key, Cache::TAIL)) {
-            log::warn!("fxdax: dropping the tail of {key} from the cache: {err}");
+        if let Some(Err(err)) = self.cached(|cache| cache.forget(key)) {
+            log::warn!("fxdax: dropping {key} from the cache: {err}");
         }
         let mut tails = self.memory.tails.lock().unwrap();
         let kept = tails.kept.get(key).map(|kept| (kept.read, kept.flight.peek()));
@@ -1366,7 +1345,8 @@ mod tests {
         let tail = format!("get {KEY} last {TAIL}");
         assert_eq!(complete_all(&bucket, &mut reads), std::slice::from_ref(&part));
         assert_eq!(reads.result(read), Some(Ok(data[..10].to_vec())));
-        assert_eq!(cache.get(KEY, 0).unwrap(), Some(data.clone()));
+        let stored = extent_frame::Parts::of(&whole(&data)).unwrap().stored[0];
+        assert_eq!(cache.part(KEY, 0, &stored).unwrap(), Some(data.clone()));
 
         // Neither is.
         let mut kept = std::fs::read(cache.path(KEY)).unwrap();
@@ -1379,7 +1359,7 @@ mod tests {
         assert_eq!(complete_all(&bucket, &mut reads), [part.clone(), tail, part]);
         let corrupt = format!("part 0 of {KEY}, by its CRC, twice");
         assert_eq!(reads.result(read), Some(Err(Error::Corrupt(corrupt))));
-        assert_eq!(cache.get(KEY, 0).unwrap(), None);
+        assert_eq!(cache.part(KEY, 0, &stored).unwrap(), None);
     }
 
     /// Reads read ahead the part after them, and twice as many each time they go on where the
@@ -1531,7 +1511,7 @@ mod tests {
         let fetcher =
             || Rc::new(Fetcher::new(bucket.clone(), limits(8), Memory::new(), Some(cache.clone())));
         assert_eq!(read_moved(&bucket, &fetcher()), Some(Ok(data[1100..1150].to_vec())));
-        cache.forget(KEY, 0).unwrap();
+        cache.forget_part(KEY, 0).unwrap();
         compacted_and_recreated(&bucket, &data);
         let fetcher = fetcher();
         let mut reads = Reads::new();
