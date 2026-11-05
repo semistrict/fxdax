@@ -804,80 +804,13 @@ impl ExtentStore {
         point: bool,
         opening: Option<Held<'_, std::sync::RwLockWriteGuard<'_, ()>>>,
     ) -> Result<(), Error> {
-        let remote = self.remote.get();
         // fxdax: the child's owner, which every record of it in object storage names, whoever
         // writes it, so that another fork to its ID, whose owner differs, is told apart
         // (TASK-79.82, TASK-153.9).
         let child = extent_remote::layout::Child { branch, owner: rand::random(), point };
-        let claimed = std::cell::Cell::new(false);
-        let taken = || {
-            let refused = format!("forking to branch {branch:x}: another branch has its ID");
-            anyhow::Error::new(Errno::EEXIST).context(refused)
-        };
-        let claim = || -> anyhow::Result<()> {
-            // fxdax: what is attached to it stays attached to the fork, a restored VM's too.
-            copy_bases(&self.path, path)?;
-            let Some(remote) = remote else { return Ok(()) };
-            if !remote.claim(child)? {
-                return Err(taken());
-            }
-            claimed.set(true);
-            Ok(())
-        };
-        let forked = extent_store::fork_host_with(&self.store, path, child, claim);
-        drop(opening);
-        let failed = match forked {
-            Ok(epoch) => match remote.map(|remote| remote.forked(epoch, branch)) {
-                None | Some(Ok(())) => return Ok(()),
-                Some(Err(crate::remote::Failure::Remote(extent_remote::Error::ChildTaken(_)))) => {
-                    taken()
-                }
-                Some(Err(crate::remote::Failure::PointDeleted)) => {
-                    anyhow::Error::new(Errno::ENOENT)
-                        .context(format!("forking to branch {branch:x}: the point was deleted"))
-                }
-                Some(Err(err)) => anyhow::anyhow!("forking branch {branch:x}: {err}"),
-            },
-            Err(err) if err.downcast_ref::<extent_store::ForkCommitted>().is_some() => {
-                err.context(format!("forking branch {branch:x}"))
-            }
-            Err(err) => {
-                // It made nothing: its claim goes with it.
-                if let Some(remote) = remote.filter(|_| claimed.get())
-                    && let Err(why) = remote.disclaim(branch)
-                {
-                    log::warn!("fxdax: keeping the claim of branch {branch:x}: {why}");
-                }
-                // A store at `path` already, or a fork's handle, as of a fork retried: `EEXIST`,
-                // as making a store there gives (TASK-79.83); but not for what else the fork found
-                // there already as it made its files. So for a child the store has: its ID is
-                // taken, here as in object storage (TASK-79.82).
-                let exists = err.downcast_ref::<extent_store::HasBranch>().is_some();
-                return Err(match err.downcast_ref::<extent_store::Taken>() {
-                    Some(_) => Error::new(err.context(Errno::EEXIST)),
-                    None if exists => {
-                        Error::new(anyhow::Error::new(Errno::EEXIST).context(err.to_string()))
-                    }
-                    None => Error::new(err),
-                });
-            }
-        };
-        // Leave no fork its branch doesn't have behind, deleted as any store is: in object storage,
-        // where its segment may have landed after all (`Remote::unfork`), then here, so that a
-        // crash or a failure in between leaves its handle, which deleting again finishes, not a
-        // branch no store holds (TASK-79.78). A child opened before the deletion found it open
-        // nowhere stays, with its branch; one opened after, while its branch is deleted in object
-        // storage, finds it deleted there (`EROFS`), and keeps its handle, and its branch here,
-        // while it is open. Its handle says it failed, first, so that a deletion stopping partway
-        // leaves no handle taken for a fork made ([`ExtentStore::fork_failed`], TASK-79.84).
-        if let Err(why) = extent_store::fail_fork(path) {
-            log::warn!("fxdax: marking the fork to {} failed: {why:#}", path.display());
-        }
-        let unfork = |_: &Path, child| remote.map_or(Ok(()), |remote| remote.unfork(child));
-        if let Err(why) = host_store::delete_with(path, unfork) {
-            log::warn!("fxdax: leaving branch {branch:x}, whose fork failed: {why:#}");
-        }
-        Err(Error::new(failed))
+        // fxdax: what is attached to it stays attached to the fork, a restored VM's too.
+        let attached = || copy_bases(&self.path, path);
+        host_store::fork(&self.store, self.remote.get(), path, child, attached, opening)
     }
 
     /// fxdax: whether `path` is the handle of a fork that failed ([`ExtentStore::fork`]), whose
