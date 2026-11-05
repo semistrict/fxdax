@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-05 07:06'
-updated_date: '2026-11-05 15:44'
+updated_date: '2026-11-05 20:46'
 labels:
   - dax
   - jail
@@ -57,6 +57,8 @@ Blind spot: the jail was never a test environment for the VMM's host reads; the 
 AC3 audit: the VMM-side DAX code (uffd.rs, extentd/client.rs, Firecracker's extent device) reads /proc only in uffd.rs's thread_name, for refusal logs; TASK-167 already classifies by the VMM's own registry. Without /proc it said 'gone' for every thread; it now says 'unnamed: no /proc'. Firecracker's vmm crate reads no /proc (a comment in regs.rs). The daemon's /proc reads (server.rs's /proc/self/fd, extent_store's) run unjailed.
 
 Verified at 3da9444bd's tree: Linux (Docker, OrbStack, privileged) the new test and every uffd test, 16/16, the new test red with the client reading /proc (129,024 against 147,952); macOS FXDAX_TEST_PARTS='workspace shuttle' scripts/test.sh --no-fail-fast, workspace 2120/2120, Shuttle all pass; GCE r631 (us-central1-a) workspace 2302/2302 and every other part green; GCE r630 (us-east4-a) jailed (FXDAX_FIRECRACKER_JAIL=1, seccomp real, log level Info): fxfs-guest-pgbench-dax-forked and fxfs-guest-checks-dax pass, unexplained-refusals empty, each VMM logging 'a DAX window of N bytes keeps at most 522240 runs of pages installed, the host letting a process make 1048576 mappings'; scripts/upstream-changes.py --check passes.
+
+2026-11-05, CI run 42089880804 (land-h on 7c175bc91): the workspace job was cancelled at 90 min a second after its suite passed, 2317/2317 (Summary 20:31:51.79, cancel 20:31:56). apt-get took 40 min of it at 57 kB/s from the Azure mirror, mostly Coccinelle and OCaml. Not a hang: handover's stores_open_whole... took 408 s there and 382 s in main's run 42084347494; takeovers_need_fences 1,217 s and 946 s. Alone in Docker (arm64), five runs each, handover 14.5-16.4 s on this branch, 11.5-20.7 s on origin/main ce9d5b2f2; takeovers_need_fences 161.4 s and 161.8 s. Fixed in CI: each part installs only its own tools (9ff0b49bc, scripts/tests/test_ci.py, red on the old workflow). Rebased onto ce9d5b2f2: fxdax and physmem in Docker 522/526, the 4 the container's (grants tests' spawned tool missing, ENOENT; the commit stamp 'unknown' without .git), as TASK-165.1 recorded.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
