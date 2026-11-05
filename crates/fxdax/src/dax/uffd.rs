@@ -1172,18 +1172,56 @@ impl<H: HostMemory> UffdSecondStage<H> {
         // here without userfaultfd. A fault on a page not mapped here may be for writing whatever
         // the guest's access (see the module docs), and resolves that page alone.
         let store = flags & UFFD_PAGEFAULT_FLAG_WP != 0;
-        // A page the window maps, left out past the budget: installed again, as it was.
-        if !store && self.reinstall(addr) {
-            self.host.wake(addr, page_size);
-            return;
-        }
-        // The page as the access found it, which a fault the window does not resolve restricts.
-        let seen = self.seen(addr);
         // fxdax: a worker's write of a page not here, on a window that copies on write, which a
         // load may have made, is resolved as a load, and the page restricted to reads here once
         // it is (see the module docs).
         let for_worker =
             !store && access == Access::Write && self.copying() && !is_guests(thread);
+        // A page the window maps, left out past the budget, is installed again, as it was, without
+        // the window; any other fault is the window's to resolve.
+        let reinstalled = !store && self.reinstall(addr);
+        if !reinstalled {
+            self.resolve_through(window, addr, access, store, for_worker, thread).await;
+        }
+        // Before the worker retries its write, however its page came to be here. fxdax: one
+        // installed again, as it was, write-protected, and left writable, took the retried write
+        // as a store, which copied the page for a load, uncounted by the guest, past its private
+        // pages: a jailed VM process, its budget the default's for want of /proc, left out pages by
+        // the thousand, 21,396 copied so, and the guest's writes were refused (GCE r582, TASK-170).
+        if for_worker {
+            self.restrict_for_worker(addr);
+        }
+        self.host.wake(addr, page_size);
+        // A write to a page not mapped here may start a run a sequential writer stores to: the pages
+        // after it are mapped read-only, the next read in if need be, so that stores to them fault
+        // as stores, which dirty runs of pages, and loads do not fault at all. Past the file, or
+        // the window, there is nothing to map. fxdax: a probe, whose page the guest may not map,
+        // which the window refuses then without telling of it as of the guest's access.
+        let next = offset + page_size as u64;
+        if !reinstalled && !store && access == Access::Write && next < window.size() {
+            match window.probe(next).await {
+                Ok(()) | Err(Errno::ENOENT | Errno::EINVAL) => {}
+                Err(err) => log::warn!("mapping DAX window offset {next:#x} ahead: {err}"),
+            }
+        }
+    }
+
+    /// Resolves the fault at `addr`, an `access`, a `store` to a page here if so, of `thread`'s,
+    /// through `window`, as [`resolve`](Self::resolve) does all but a page left out: a worker's
+    /// write as a load, `for_worker`. A fault the window refuses restricts the page as the access
+    /// found it; one it can't resolve aborts the process, as its faulting thread can't go on.
+    async fn resolve_through(
+        &self,
+        window: &dyn Faults,
+        addr: usize,
+        access: Access,
+        store: bool,
+        for_worker: bool,
+        thread: u32,
+    ) {
+        let offset = (addr - self.base) as u64;
+        // The page as the access found it, which a fault the window does not resolve restricts.
+        let seen = self.seen(addr);
         let resolved = if store {
             window.fault(offset, access).await
         } else if for_worker {
@@ -1219,23 +1257,6 @@ impl<H: HostMemory> UffdSecondStage<H> {
             // its abort said nothing else (TASK-100).
             eprintln!("fxdax: {why}");
             std::process::abort();
-        }
-        // Before the worker retries its write.
-        if for_worker {
-            self.restrict_for_worker(addr);
-        }
-        self.host.wake(addr, page_size);
-        // A write to a page not mapped here may start a run a sequential writer stores to: the pages
-        // after it are mapped read-only, the next read in if need be, so that stores to them fault
-        // as stores, which dirty runs of pages, and loads do not fault at all. Past the file, or
-        // the window, there is nothing to map. fxdax: a probe, whose page the guest may not map,
-        // which the window refuses then without telling of it as of the guest's access.
-        let next = offset + page_size as u64;
-        if !store && access == Access::Write && next < window.size() {
-            match window.probe(next).await {
-                Ok(()) | Err(Errno::ENOENT | Errno::EINVAL) => {}
-                Err(err) => log::warn!("mapping DAX window offset {next:#x} ahead: {err}"),
-            }
         }
     }
 

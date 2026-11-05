@@ -722,30 +722,74 @@ fn needs_refused_stores_read_only() {
     fails_without(rules, "never completed");
 }
 
+/// fxdax: how a page isn't here as KVM's worker writes it ([`worker_writes_copy_nothing`]).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum NotHere {
+    /// Never faulted in.
+    Never,
+    /// Faulted in, then left out past the budget, which a fault installs again as it was, without
+    /// the window ([`UffdSecondStage::reinstall`]).
+    LeftOut,
+}
+
+/// The vCPU's load at `offset`, retried as KVM retries it, until it is made.
+fn load(guest: &HostGuest, offset: u64) {
+    for _ in 0..ATTEMPTS {
+        match guest.access(offset, Access::Read, None) {
+            Outcome::Made(_) => return,
+            Outcome::Faulted(fault) => future::block_on(fault).unwrap(),
+            Outcome::Failed => panic!("the vCPU's load at {offset:#x} failed"),
+        }
+    }
+    panic!("the vCPU's load at {offset:#x} never completed");
+}
+
 /// fxdax TASK-164.1 (backlog doc-13): on a window that copies on write, KVM's worker's write of a
-/// page not here, as it makes for a vCPU's load and store alike, copies nothing: resolved as a
-/// load, the page made read-only here, the write, retried, fails. The vCPU's own access decides:
-/// a load is made, of the extent's page; a store fails, as `KVM_RUN` does with `EFAULT`, until the
-/// VMM, retrying it, says so (`guest_access_failed`), which lifts the restriction, and the store,
-/// retried, faults as one, and is made, in a private copy.
-fn worker_writes_copy_nothing(vcpu_stores: bool) {
+/// page not here, as it makes for a vCPU's load and store alike, copies nothing, whether the page
+/// was never here or was left out (`not_here`): resolved as a load, the page made read-only here,
+/// the write, retried, fails. The vCPU's own access decides: a load is made, of the extent's page;
+/// a store fails, as `KVM_RUN` does with `EFAULT`, until the VMM, retrying it, says so
+/// (`guest_access_failed`), which lifts the restriction, and the store, retried, faults as one, and
+/// is made, in a private copy. Red, left out, with the page installed again left writable here:
+/// the worker's write, retried, faulted as a store, and copied the page for a load, uncounted by
+/// the guest (GCE r582's jailed VM, its budget the default's, 21,396 pages so, TASK-170).
+fn worker_writes_copy_nothing(vcpu_stores: bool, not_here: NotHere) {
     let ps = page_size();
     let memory = ModelMemory::default();
     let base = 64 * ps as usize;
+    // Three pages, the first and the last runs of their own, of which one alone stays installed
+    // if left out at all.
+    let (pages, budget) = match not_here {
+        NotHere::Never => (1, usize::MAX),
+        NotHere::LeftOut => (3, 1),
+    };
     // SAFETY: The model changes no memory.
     let stage = unsafe {
-        UffdSecondStage::with_host(base, ps, memory.clone(), Memories::InProcess, None, usize::MAX)
+        UffdSecondStage::with_host(
+            base,
+            pages * ps,
+            memory.clone(),
+            Memories::InProcess,
+            None,
+            budget,
+        )
     }
     .unwrap();
     stage.copy_on_write().unwrap();
     guest_thread(VCPU);
     let telling = Arc::new(Telling { stage: stage.clone(), memory: memory.clone() });
-    let (mut dax, _) = super::super::tests::copying::<()>(1, 1, Some(telling));
+    let (mut dax, _) = super::super::tests::copying::<()>(pages, 1, Some(telling));
     let window = dax.window.clone();
     // Not in memory as it is mapped, and zeros as it is brought in: not here until a fault.
-    let file = TestSource::anonymous(1).source();
-    dax.map(0, (), &file, 0, ps).unwrap();
+    let file = TestSource::anonymous(pages).source();
+    dax.map(0, (), &file, 0, pages * ps).unwrap();
     let guest = HostGuest { memory, stage: stage.clone(), window: window.clone(), base };
+    if not_here == NotHere::LeftOut {
+        load(&guest, 0);
+        load(&guest, 2 * ps);
+        let mapped = stage.pages.lock().unwrap().pages[0].mapped;
+        assert!(mapped.is_some_and(|mapped| !mapped.installed), "the first page wasn't left out");
+    }
 
     // The worker's write, retried as get_user_pages retries it, until it fails or is made.
     for _ in 0..ATTEMPTS {
@@ -783,32 +827,67 @@ fn worker_writes_copy_nothing(vcpu_stores: bool) {
 
 #[test]
 fn worker_writes_before_loads_copy_nothing() {
-    Runner::new(RandomScheduler::new(1), config()).run(|| worker_writes_copy_nothing(false));
+    Runner::new(RandomScheduler::new(1), config())
+        .run(|| worker_writes_copy_nothing(false, NotHere::Never));
 }
 
 #[test]
 fn worker_writes_before_stores_copy_nothing() {
-    Runner::new(RandomScheduler::new(1), config()).run(|| worker_writes_copy_nothing(true));
+    Runner::new(RandomScheduler::new(1), config())
+        .run(|| worker_writes_copy_nothing(true, NotHere::Never));
 }
 
-/// fxdax: a worker's write of a page not here, resolved as a load, leaving the page writable here:
-/// the write, retried, faults as a store, and copies the page for a load.
 #[test]
-fn needs_worker_writes_restricted() {
+fn worker_writes_of_pages_left_out_before_loads_copy_nothing() {
+    Runner::new(RandomScheduler::new(1), config())
+        .run(|| worker_writes_copy_nothing(false, NotHere::LeftOut));
+}
+
+#[test]
+fn worker_writes_of_pages_left_out_before_stores_copy_nothing() {
+    Runner::new(RandomScheduler::new(1), config())
+        .run(|| worker_writes_copy_nothing(true, NotHere::LeftOut));
+}
+
+/// fxdax: a worker's write of a page `not_here`, resolved as a load, or installed again, left out,
+/// leaving the page writable here: the write, retried, faults as a store, and copies the page for
+/// a load.
+fn needs_worker_writes_restricted(not_here: NotHere) {
     *RULES.lock().unwrap() = Rules { worker_writes_restricted: false, ..Rules::ALL };
     fails_with("a worker's write copied the page", || {
-        Runner::new(RandomScheduler::new(1), config()).run(|| worker_writes_copy_nothing(false));
+        Runner::new(RandomScheduler::new(1), config())
+            .run(move || worker_writes_copy_nothing(false, not_here));
     });
 }
 
-/// fxdax: a page a worker's write restricted, left so as the guest's store fails: the store fails
-/// for ever.
 #[test]
-fn needs_failures_to_lift_worker_restrictions() {
+fn needs_worker_writes_restricted_of_pages_never_here() {
+    needs_worker_writes_restricted(NotHere::Never);
+}
+
+#[test]
+fn needs_worker_writes_restricted_of_pages_left_out() {
+    needs_worker_writes_restricted(NotHere::LeftOut);
+}
+
+/// fxdax: a page `not_here` a worker's write restricted, left so as the guest's store fails: the
+/// store fails for ever.
+fn needs_failures_to_lift_worker_restrictions(not_here: NotHere) {
     *RULES.lock().unwrap() = Rules { failures_lift_worker_restrictions: false, ..Rules::ALL };
     fails_with("never completed", || {
-        Runner::new(RandomScheduler::new(1), config()).run(|| worker_writes_copy_nothing(true));
+        Runner::new(RandomScheduler::new(1), config())
+            .run(move || worker_writes_copy_nothing(true, not_here));
     });
+}
+
+#[test]
+fn needs_failures_to_lift_worker_restrictions_of_pages_never_here() {
+    needs_failures_to_lift_worker_restrictions(NotHere::Never);
+}
+
+#[test]
+fn needs_failures_to_lift_worker_restrictions_of_pages_left_out() {
+    needs_failures_to_lift_worker_restrictions(NotHere::LeftOut);
 }
 
 /// fxdax TASK-164.1: on a window that copies on write, a vCPU's store to a page here, mapped
