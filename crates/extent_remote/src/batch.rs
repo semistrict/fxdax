@@ -256,28 +256,46 @@ impl Batch {
 
     fn close_forking(self, chain: &mut Chain, forks: Vec<Child>) -> Unframed {
         let footer = self.plan.close_forking(chain, forks);
-        Unframed { segment: Segment { data: self.data, footer }, own: self.own }
+        Unframed { footer, data: Data { segment: self.data, own: self.own } }
     }
 }
 
-/// A batch closed, its segment's footer stamped: its data, and that of its extents of their own,
-/// by their sequence numbers, yet to be framed.
+/// A batch closed, its segment's footer stamped, its data yet to be framed.
 pub struct Unframed {
-    segment: Segment,
-    own: BTreeMap<u64, Vec<u8>>,
+    pub footer: Footer,
+    pub data: Data,
 }
 
 impl Unframed {
     /// Its objects, framed: the segment's, and its extents of their own's, at their keys.
-    pub fn frame(mut self) -> Objects {
-        let own = (self.segment.footer.own())
+    pub fn frame(self) -> Objects {
+        self.data.frame(&self.footer)
+    }
+}
+
+/// A closed segment's data, and that of its extents stored on their own, by their sequence
+/// numbers, unframed: framed with the footer that stamps it ([`Data::frame`]), the one its writer's
+/// chain stamped, or, a takeover putting it after the branch's end, the next writer's
+/// ([`Wal::rebase`](crate::wal::Wal::rebase)), which keeps its extents of their own at that
+/// writer's keys.
+#[derive(Clone, Debug, Default)]
+pub struct Data {
+    segment: Vec<u8>,
+    own: BTreeMap<u64, Vec<u8>>,
+}
+
+impl Data {
+    /// The objects of the segment `footer` stamps, holding this data: the segment's, and its
+    /// extents of their own's, at the keys `footer` names them at.
+    pub fn frame(&self, footer: &Footer) -> Objects {
+        let own = (footer.own())
             .map(|(extent, location)| {
-                let data = self.own.remove(&extent.sequence).expect("sealed on its own");
-                (location.key.clone(), own_object(&data).into())
+                let data = self.own.get(&extent.sequence).expect("sealed on its own");
+                (location.key.clone(), own_object(data).into())
             })
             .collect();
-        let footer = self.segment.footer.clone();
-        Objects { footer, segment: self.segment.encode().into(), own }
+        let segment = Segment { data: self.segment.clone(), footer: footer.clone() };
+        Objects { footer: footer.clone(), segment: segment.encode().into(), own }
     }
 }
 
