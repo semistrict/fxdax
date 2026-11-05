@@ -44,6 +44,12 @@ The checks suites ran under one fixed 180 s limit each, near it at times. Decide
 **Instead:** suites split into more VMs, each under the old 180 s (a split that drifts as checks are added, naming no slow check); a check failing over its budget only once it ends (a hang still waits for the suite's limit).
 **Undoing it:** the budgets are numbers in the table; a check failing on its budget too often has its number raised, or `FXDAX_CHECKS_SCALE` set for a slower host.
 
+## What holds a file's data is an operations table of its inode's; fsync stays super.c's (TASK-160.2, 2026-11-04)
+
+data.c drives resize, punch and clone for both kinds of regular file, over `struct fxfs_data_ops`, which each inode points to as it points to its i_fop and a_ops: the page cache's set as the inode is allocated (super.c), the window's as fxfs_dax_set_inode makes it a DAX inode. So guest/sim links data.c with dax.c alone, no page-cache code. fsync isn't data.c's: its data half is one call, `fxfs_dax_write_back`, and the rest the VFS's metadata syncs, which guest/sim would have to fake more of than it would test. The model of Fxfs fails only growths, not cuts, as Fxfs's cut borrows the room it needs.
+**Instead:** `IS_DAX(inode) ? &dax : &cache` in data.c, which would have guest/sim link a stub of the page cache's table; fsync in data.c, with the VFS's metadata syncs faked.
+**Undoing it:** fold `fxfs_data_ops` back into `IS_DAX` branches in super.c, and guest/sim's mount.c's copies back.
+
 ## The host's copy-on-write DAX protocol once writable DAX is deleted (TASK-164.7, 2026-11-04)
 
 Writable DAX is deleted from the host (vendor/firecracker's extent device, crates/fxdax, physmem, extent_store). Decided, where the brief left it open:

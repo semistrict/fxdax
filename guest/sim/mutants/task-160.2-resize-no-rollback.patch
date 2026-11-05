@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+#
+# TASK-160.2: a resize whose growth Fxfs refused (-ENOSPC) leaves the inode at the size it asked
+# for, which Fxfs hasn't: read in again, the file is Fxfs's size, what was stored past it lost, as
+# guest/sim's copy of the resize had it. interleave's failing seeds: the growth's check.
+
+--- a/guest/linux/fs/fxfs/data.c
++++ b/guest/linux/fs/fxfs/data.c
+@@ -45,8 +45,6 @@
+ 	 * and the inode saying a size Fxfs hasn't would lose it at eviction. A cut borrows the room
+ 	 * it needs (TASK-60), and its pages are gone either way.
+ 	 */
+-	if (err && size > old_size)
+-		i_size_write(inode, old_size);
+ 	if (ops->resize_end)
+ 		ops->resize_end(inode, i_size_read(inode));
+ 	return err;

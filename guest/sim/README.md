@@ -381,6 +381,22 @@ Doc-13's "a rebind before the seal" and "writeback forgetting its set before the
 code to mutate: a rebind maps only what Fxfs says is sealed, and leaves a page private if the host
 says EPERM (`fxfs_dax_map_pages`). `specs/dax-cow` models them.
 
+## A file's changes as a whole (TASK-160.2)
+
+Resize, punch and clone were super.c's, which isn't built here, and were written again in
+`kernel/mount.c`, where they drifted from it: no size rolled back when Fxfs refused a growth, the
+size of the file after it passed to `fxfs_dax_resize_end` as asked rather than as it was, no
+rounding of a clone to blocks, no recovery of what a failed clone reached (TASK-150.9, 153.4 and
+79.53 were bugs of the same seam). They are `data.c`'s now, over each file's `fxfs_data_ops`, the
+page cache's (super.c) or the window's (dax.c), and this builds `data.c` as it is: a truncate is
+`fxfs_data_resize`, a punch the file's `fallocate`, a clone its `remap_file_range`, as the VFS calls
+them. The model of Fxfs takes `write_inode`, and fails a growth as `interleave`'s failing seeds ask
+(`fxfs_sim_fail`), as it fails room for dirty pages; a cut never fails, Fxfs's borrowing the room.
+
+| Mutant | Caught by |
+| --- | --- |
+| `task-160.2-resize-no-rollback` | `interleave`'s failing seeds: a growth that failed leaves the file as long as it was, seed 1. Without that check, the end's check of Fxfs's size, seed 233 |
+
 ## Layout
 
 - `shim/`: the kernel's headers, as `ALIASES` maps them to `shim/sim/*.h`, `-nostdinc`. Dax.c sees

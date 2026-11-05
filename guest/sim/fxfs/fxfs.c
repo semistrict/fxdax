@@ -18,7 +18,8 @@
  * - Blocks a clone shares are its source's: an extent's pieces read as open until it is sealed,
  *   whoever holds them.
  * - A transaction fails, if a test asks (fxfs_sim_fail), before it does anything, as one out of space
- *   does: room for dirty pages (fxfs_reserve_dirty) is refused.
+ *   does: room for dirty pages (fxfs_reserve_dirty) is refused, and a file's growth
+ *   (fxfs_write_inode). A cut never fails, as Fxfs's borrows the room it needs.
  * - Writeback (fxfs_write_many), the page cache's and copy-on-write DAX's (doc-13), allocates at
  *   writeback: it copies its pages, a page at a time, into its own buffer, writes them to new
  *   blocks, in one device write no seal comes into, and commits after the bytes: a crash before
@@ -477,12 +478,21 @@ int fxfs_attr_of_open(struct fxfs *fs, u64 ino, struct fxfs_attr *attr)
 	return 0;
 }
 
-/* The size alone of what the kernel keeps of the inode: the model has no mode, owner or times. */
+/*
+ * The size alone of what the kernel keeps of the inode: the model has no mode, owner or times.
+ * -ENOSPC if it grows the file as a transaction fails (fxfs_sim_fail), nothing changed.
+ */
 int fxfs_write_inode(struct fxfs *fs, u64 ino, const struct fxfs_setattr *set)
 {
 	struct stub_file *file = lock_file(fs, ino);
 	u64 page, old;
 
+	if ((set->valid & FXFS_SET_SIZE) && set->size > file->size && fail_odds &&
+	    !(sim_random() % fail_odds)) {
+		failures++;
+		mutex_unlock(&file->lock);
+		return -ENOSPC;
+	}
 	mutex_lock(&fs->lock);
 	if (set->valid & FXFS_SET_SIZE) {
 		old = file->size;

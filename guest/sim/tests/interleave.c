@@ -555,6 +555,13 @@ static void private_truncate(struct worker *worker)
 	worker->shrinks++;
 	err = sim_truncate(worker->file, size);
 	check(!err || failed_as_asked(err), "a truncate: %d", err);
+	/*
+	 * A growth that failed leaves the file as long as it was: the inode saying a size Fxfs
+	 * hasn't, read in again the file is Fxfs's size, the stores past it lost (fxfs_data_resize).
+	 */
+	check(!err || size <= worker->size || i_size_read(file_inode(worker->file)) == worker->size,
+	      "a growth to %lld that failed (%d) left the file %lld bytes long, not %lld", size, err,
+	      i_size_read(file_inode(worker->file)), worker->size);
 	if (err) {
 		private_resync(worker);
 	} else {
