@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-05 03:16'
-updated_date: '2026-11-05 17:15'
+updated_date: '2026-11-05 23:47'
 labels: []
 dependencies:
   - TASK-165.1
@@ -66,4 +66,6 @@ Tests, each red with its behaviour removed (mutated and run): storage::kept imag
 Runs: macOS FXDAX_TEST_PARTS='workspace shuttle' scripts/test.sh: green (workspace 2129/2129). Linux in Docker, cargo nextest -p fxdax -p extent_store: 694/701, the 7 environment-only (eu-stack x3, grants ENOENT x3, build stamp). GCE r620, the 22 guest cases using images: 21 pass; fxfs-guest-crash-stray-dax fails, as it does on main at 75bd872ba (r623, round 2: exited 0, not 159), also r621/r622 here: filed as TASK-187, not this change's.
 
 Overlap: TASK-165.5 (remote.rs: Remote::failed added, block_on pub(crate), 3 test lines take Opened's store). Collector work (TASK-173/174/183): Collector's public API only. TASK-165.7 must move an image's bucket out of <image>/bucket once the local lineage no longer keeps the image's directory as long as its clones.
+
+CI 42119298585 (land-l, rebased on ef8223900): control imports_images and imports_that_fail_leave_no_store failed with EIO on Linux: extentd's import opens the store an image made right after the image drops, and found its branch open ('branch 0x... is open'). Cause, this task's: the uploader's task said it stopped before it let go of its Arc of the store, so Remote::drop could return with the store open; images had no uploader before. Blind spot: nothing opened a store again in the same process the moment its uploader stopped, and the window is a few instructions wide, so only a slower host hit it. Fix 332dac890: the task drops its store before saying so; images_dropped_let_go_of_their_stores holds the task past its signal (failpoint remote::stopped), red without the fix with CI's error, green with. Looked around: fxdax's other threads signalling completion let go of what they hold first (FnOnce consumed) or hold nothing a reopen needs. Not Linux- or user-specific: a timing race. Runs: Linux in Docker non-root, TMPDIR=/mnt/tmp: both import tests and the image tests pass (15 extentd window tests need /dev/userfaultfd, which the container doesn't give a non-root user); Linux root 696/703 (eu-stack x3, grants x3, build stamp); macOS fxdax and extent_store 521/521.
 <!-- SECTION:NOTES:END -->
