@@ -178,7 +178,7 @@ enum Claim<C> {
 /// out, to close, and, past [`Rules::one_holder`], the connection holding it, which it passed:
 /// dropped once the table's lock is, as a [`Refused`]'s; or the connection writing it.
 enum Claimed<C, P> {
-    Held { point: Option<P>, passed: Option<Arc<C>> },
+    Held { point: Option<P>, _passed: Option<Arc<C>> },
     Writer(Arc<C>),
 }
 
@@ -319,7 +319,7 @@ impl<C: Writer, S, P> Inner<C, S, P> {
             Claim::Daemon | Claim::DaemonOrWriter => (Entry::Daemon(open), None),
         };
         self.entries.insert(key.to_owned(), entry);
-        Ok(Claimed::Held { point: evicted, passed })
+        Ok(Claimed::Held { point: evicted, _passed: passed })
     }
 }
 
