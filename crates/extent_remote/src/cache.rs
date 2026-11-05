@@ -2,8 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-//! A host's copies of the parts of objects of its bucket it fetched (doc-7, Reading: the NVMe
-//! cache; doc-14). Each object's is a sparse file of its size, at its key, holding its tail,
+//! A host's copies of objects of its bucket (doc-7, Reading: the NVMe cache; doc-14): of the
+//! parts it fetched, and of whole objects it wrote, adopted once the bucket has them
+//! ([`Cache::adopt`]). Each object's is a sparse file of its size, at its key, holding its tail,
 //! which says where its parts are stored, and those of its parts kept, as stored, compressed or
 //! not, at their offsets, the rest holes. Those read least recently are evicted, by punching holes,
 //! an object's tail with its last part, so that they take no more than a capacity and the
@@ -36,8 +37,9 @@ use std::time::SystemTime;
 const TAIL: u64 = u64::MAX;
 
 /// The cache's lock is held only to change what it keeps, not across its files' I/O: a part's write,
-/// or its eviction, is done outside it, the part busy meanwhile, and an object's file removed so
-/// too, the object's key removing; neither is kept or read until done (TASK-92.21).
+/// or its eviction, is done outside it, the part busy meanwhile, and an object's file removed, or
+/// replaced by one adopted, so too, the object's key removing; neither is kept or read until done
+/// (TASK-92.21).
 #[derive(Debug)]
 pub struct Cache {
     files: Files,
@@ -53,7 +55,7 @@ struct Kept {
     objects: HashMap<String, Object>,
     /// The parts kept, by when they were last read.
     by_use: BTreeMap<u64, (String, u64)>,
-    /// The objects whose files are being removed.
+    /// The objects whose files are being removed, or replaced by one adopted.
     removing: HashSet<String>,
     clock: u64,
     /// The bytes of the parts kept, and being written.
@@ -448,6 +450,61 @@ impl Cache {
         written
     }
 
+    /// Takes the object framed whole in the file at `from`, on the cache's filesystem, as the one at
+    /// `key`, by renaming it, evicting what was read least recently to make room: then it is kept as
+    /// any is, its parts evicted as fetched ones are. Returns whether it took it: not if no room can
+    /// be made, or the object it keeps at `key` is busy, and then the file is left where it is. One
+    /// it keeps at `key` already, it replaces.
+    pub fn adopt(&self, key: &str, from: &Path) -> io::Result<bool> {
+        let found = found(from, key, self.files.holes)?.ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, format!("{}: no object", from.display()))
+        })?;
+        let len = found.bytes();
+        if len > self.capacity {
+            return Ok(false);
+        }
+        let free = self.files.free()?;
+        let (fits, evicted) = {
+            let mut kept = self.kept.lock().unwrap();
+            match kept.objects.get(key) {
+                _ if kept.removing.contains(key) => return Ok(false),
+                Some(object) if !object.busy.is_empty() => return Ok(false),
+                // Its file goes with the rename, which replaces it.
+                Some(_) => {
+                    kept.forget(key);
+                }
+                None => {
+                    kept.removing.insert(key.to_owned());
+                }
+            }
+            // Its file's blocks are allocated already.
+            let (fits, mut evicted) = kept.make_room((self.capacity, self.floor), free, len, 0);
+            if fits {
+                kept.bytes += len;
+            } else {
+                evicted.push(Evicted::Remove(key.to_owned()));
+            }
+            (fits, evicted)
+        };
+        let evicting = self.evict(evicted);
+        if !fits {
+            return evicting.map(|()| false);
+        }
+        let renamed = evicting.and_then(|()| self.files.rename(from, key));
+        let mut kept = self.kept.lock().unwrap();
+        kept.removing.remove(key);
+        match renamed {
+            Ok(()) => {
+                kept.insert(key, found);
+                Ok(true)
+            }
+            Err(err) => {
+                kept.bytes -= len;
+                Err(err)
+            }
+        }
+    }
+
     /// Drops the object at `key`: one whose part, read from the bucket, failed the CRC its tail
     /// gives, as one recreated at its key's does.
     pub fn forget(&self, key: &str) -> io::Result<()> {
@@ -640,6 +697,8 @@ enum Change {
     Write,
     Punch,
     Remove,
+    /// A file adopted.
+    Rename,
 }
 
 /// The cache's files, under its directory, each its object's at its key: every change the cache
@@ -749,6 +808,18 @@ impl Files {
     fn remove(&self, key: &str) -> io::Result<()> {
         match self.done(Change::Remove) {
             true => std::fs::remove_file(self.path(key)),
+            false => Ok(()),
+        }
+    }
+
+    /// Moves the file at `from` to be that of the object at `key`, replacing any there.
+    fn rename(&self, from: &Path, key: &str) -> io::Result<()> {
+        let path = self.path(key);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        match self.done(Change::Rename) {
+            true => std::fs::rename(from, path),
             false => Ok(()),
         }
     }
@@ -941,6 +1012,13 @@ mod tests {
             }
             let parts = (0..self.parts()).filter(|&part| self.read(cache, part).is_some());
             parts.collect()
+        }
+
+        /// Writes it whole to a file in `dir`, as a store's WAL would: its path.
+        fn write_to(&self, dir: &Path) -> PathBuf {
+            let path = dir.join(self.key.replace('/', "-"));
+            std::fs::write(&path, &self.bytes).unwrap();
+            path
         }
     }
 
@@ -1489,6 +1567,70 @@ mod tests {
         Cache::open(dir.path(), PART, 0).unwrap();
     }
 
+    /// TASK-165.4: an object adopted from a file on the cache's filesystem, as a WAL segment
+    /// acknowledged is, is moved in whole, and kept as fetched parts are: read back, evicted as
+    /// they are, and kept by the cache opened next.
+    #[test]
+    fn adopts_whole_objects() {
+        let dir = tempfile::tempdir().unwrap();
+        let object = Object::noise(KEY, 2 * PART + 100, 1);
+        let other = Object::noise(OTHER, PART, 2);
+        let cache = Cache::open(dir.path(), object.len() + other.len() - PART, 0).unwrap();
+        let from = object.write_to(dir.path());
+        assert!(cache.adopt(KEY, &from).unwrap());
+        assert!(!from.exists());
+        assert_eq!(cache.bytes(), object.len());
+        assert_eq!(object.kept(&cache), [0, 1, 2]);
+        object.read(&cache, 1);
+        object.read(&cache, 2);
+        // Part 0 was read least recently.
+        other.keep(&cache);
+        assert_eq!((object.kept(&cache), other.kept(&cache)), (vec![1, 2], vec![0]));
+        cache.check();
+        drop(cache);
+        let cache = Cache::open(dir.path(), 8 * PART, 0).unwrap();
+        assert_eq!((object.kept(&cache), other.kept(&cache)), (vec![1, 2], vec![0]));
+    }
+
+    /// TASK-165.4: an object adopted replaces what is kept at its key, and is counted once.
+    #[test]
+    fn adoptions_replace_what_is_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = Cache::open(dir.path(), 8 * PART, 0).unwrap();
+        let object = Object::noise(KEY, 2 * PART, 1);
+        object.keep_tail(&cache);
+        object.keep_part(&cache, 1);
+        assert!(cache.adopt(KEY, &object.write_to(dir.path())).unwrap());
+        assert_eq!((cache.bytes(), object.kept(&cache)), (object.len(), vec![0, 1]));
+        cache.check();
+    }
+
+    /// TASK-165.4: an object that can't fit, past the capacity or the floor, isn't adopted: its
+    /// file is left where it was. One holding no object fails.
+    #[test]
+    fn adoptions_past_the_capacity_or_the_floor_are_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let object = Object::noise(KEY, 2 * PART, 1);
+        let other = Object::noise(OTHER, 100, 2);
+        let cache = Cache::open(dir.path(), object.len() - 1, 0).unwrap();
+        other.keep(&cache);
+        let from = object.write_to(dir.path());
+        assert!(!cache.adopt(KEY, &from).unwrap());
+        assert_eq!((cache.bytes(), other.kept(&cache)), (other.len(), vec![0]));
+        drop(cache);
+        let cache = Cache::open(dir.path(), 8 * PART, u64::MAX / 2).unwrap();
+        assert!(!cache.adopt(KEY, &from).unwrap());
+        assert_eq!((std::fs::read(&from).unwrap(), cache.bytes()), (object.bytes.clone(), 0));
+        assert_eq!(cache.keys(), Vec::<String>::new());
+
+        drop(cache);
+        let cache = Cache::open(dir.path(), 8 * PART, 0).unwrap();
+        std::fs::write(&from, b"no object").unwrap();
+        let err = cache.adopt(KEY, &from).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData, "{err}");
+        assert!(from.exists());
+    }
+
     /// How a crash test cuts the change it crashes at, if a write or a punch: what of it is made.
     #[derive(Clone, Copy, Debug)]
     enum Tear {
@@ -1564,14 +1706,15 @@ mod tests {
     }
 
     /// The crash test's objects: one of two parts, its last short; one of a part shorter than a
-    /// block; one of a third of a part; and one whose part compresses.
-    fn crash_objects() -> [Object; 4] {
+    /// block; one of a third of a part; one whose part compresses; and one adopted, of two parts.
+    fn crash_objects() -> [Object; 5] {
         let pattern: Vec<u8> = (0..300_000u32).map(|at| (at % 251) as u8).collect();
         [
             Object::noise(KEY, PART + 3000, 1),
             Object::noise(OTHER, 3000, 2),
             Object::noise("segments/0000000000000001/0000000000000004", 300_000, 3),
             Object::new("checkpoints/0000000000000001/0000000000000004", &pattern),
+            Object::noise("segments/0000000000000002/0000000000000001", PART + 100, 4),
         ]
     }
 
@@ -1580,9 +1723,10 @@ mod tests {
     const CRASH_CAPACITY: u64 = PART + 300_000;
 
     /// What the crash test does with a cache in `dir`, its changes cut by `cut`: keeps objects and
-    /// reads them, evicting parts and objects to stay within its capacity, and forgets one.
-    fn crash_workload(dir: &Path, cut: Arc<Cut>) {
-        let [a, b, c, d] = crash_objects();
+    /// reads them, evicting parts and objects to stay within its capacity, forgets one, and adopts
+    /// another from a file in `wal`.
+    fn crash_workload(dir: &Path, wal: &Path, cut: Arc<Cut>) {
+        let [a, b, c, d, e] = crash_objects();
         let mut cache = Cache::open(dir, CRASH_CAPACITY, 0).unwrap();
         cache.files.cut = Some(cut);
         // A crash past a change makes none after it: what fails then is not the cache's.
@@ -1600,9 +1744,11 @@ mod tests {
         keep(&c, &[0]);
         let _ = cache.forget(&a.key);
         keep(&d, &[0]);
+        // Evicts c's part.
+        let _ = cache.adopt(&e.key, &e.write_to(wal));
         keep(&b, &[0]);
-        let _ = cache.tail(&c.key);
-        let _ = cache.part(&c.key, 0, &c.stored(0));
+        let _ = cache.tail(&e.key);
+        let _ = cache.part(&e.key, 1, &e.stored(1));
     }
 
     /// Checks the cache in `dir` opened after a crash: its index whole, within its capacity; no file
@@ -1653,7 +1799,7 @@ mod tests {
         let changes = {
             let dir = tempfile::tempdir().unwrap();
             let cut = Cut::new(usize::MAX, Tear::Nothing, None);
-            crash_workload(dir.path(), cut.clone());
+            crash_workload(dir.path(), dir.path(), cut.clone());
             check_after_crash(dir.path(), "uncut");
             cut.made.lock().unwrap().clone()
         };
@@ -1661,7 +1807,7 @@ mod tests {
         for change in [Change::Create, Change::Resize, Change::Write, Change::Punch] {
             assert!(changes.contains(&change), "{change:?} in {changes:?}");
         }
-        assert!(changes.contains(&Change::Remove), "{changes:?}");
+        assert!(changes.contains(&Change::Remove) && changes.contains(&Change::Rename));
         let mut cuts = Vec::new();
         for (at, change) in changes.iter().enumerate() {
             match change {
@@ -1688,7 +1834,7 @@ mod tests {
                         let crashed =
                             format!("cut at {at} of {changes:?}, {tear:?}, losing {lost:?}");
                         let dir = tempfile::tempdir().unwrap();
-                        crash_workload(dir.path(), Cut::new(at, tear, lost));
+                        crash_workload(dir.path(), dir.path(), Cut::new(at, tear, lost));
                         check_after_crash(dir.path(), &crashed);
                     }
                 });
