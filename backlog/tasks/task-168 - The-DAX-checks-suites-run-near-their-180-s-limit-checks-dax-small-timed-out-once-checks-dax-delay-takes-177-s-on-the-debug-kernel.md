@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-04 09:18'
-updated_date: '2026-11-05 03:15'
+updated_date: '2026-11-05 05:42'
 labels: []
 dependencies: []
 priority: medium
@@ -43,3 +43,17 @@ GCE r533 (batch 2026-11-04 at 9e92e6925): fxfs-guest-checks-dax-small timed out 
 4. The runner prints each test's time of its limit; fxfs-guest-checks-overrun tests the watchdog.
 5. GCE: measure per-check times on release and debug kernels, set budgets from them, re-run both to verify no suite within 20% of its limit.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-11-05, on task-168 (d7cd44066, a3e3a99c0, rebased on 09b36991a).
+
+Design: one table of the checks, which host and guest share (test_fxfs_guest_checks.rs, an X-macro `checks!` making the host's CHECKS and the guest's bodies of them): name, the suites that run it (Suites), budget, body; it replaces the guest's hand-ordered list, its order pinned by suites_run_their_checks_in_order. The guest times each check, `PASS: name (took of budget)` in the log, and a watchdog thread, as a check runs on past its budget, dumps the guest's stacks (kernel_log::stacks, sysrq l, w, t, now shared with guest_init's watchdog), says `FAILED: <check>, still running after its budget of …` straight to the console (guest_init::complain_out, say_out) and resets the VM: a hang or a slowdown fails by name, at once. The suite's limit is its checks' budgets plus 30 s (SETUP), a backstop; timed_out names the check the guest was in. Budgets: twice the most a check took on the release kernel (r560 page cache, r563 DAX), 3 s at least; scaled by common::guest_kernel_slowness (FXDAX_GUEST_KERNEL_BUILD, exported by test-linux-host.sh: debug 1.5, measured 1.37 at most for checks of a second or more; rust-checks and coverage 1.5 and KASAN 4 guessed), by 2 for FXDAX_EXTENTD_REMOTE, and by FXDAX_CHECKS_SCALE. FXDAX_CHECKS naming no check fails (TASK-160.30's AC2). fxfs-guest-checks-overrun runs enospc on a hundredth of its budget and passes on the guest's FAILED line: the watchdog's path exercised, in test-e2e.sh's and test-guest-kernel.sh's defaults. The runner says each test's time of its limit ("OK (72 s of 373 s)"). Decision recorded in OPEN_QUESTIONS.md.
+
+GCE (n2-standard-4): r560 release us-central1-a and r561 debug us-west1-b: every DAX suite's VM killed by seccomp at its first store (pread64 in extentd client, missing from vendor/firecracker at 9f81f6018, fixed in 09b36991a); page-cache suite 62.5 s release, 65.5 s debug; overrun passed. r562 debug and r563 release, FXDAX_FIRECRACKER_SECCOMP=log, DAX suites: 84-89 s debug, 71-73 s release, one call refused (extentd client, 17, 762 times). r564 release, real filter, on 09b36991a with the budgets: checks 61 of 291 s, checks-dax 72 of 373 s, -delay 74 of 373 s, -small 73 of 368 s, overrun 4 of 30 s; every check passed; nearest a budget: enospc 17.2 of 33 s, log_writes 10.2 of 21 s (49-52%). r565 debug, real filter: checks 76 of 421 s, -dax 85 of 544 s, -delay 85 of 544 s, -small 85 of 537 s, overrun 11 of 30 s; every check passed; nearest a budget freeze 2.52 of 4.5 s (56%, an outlier: 0.6 s elsewhere), enospc 20.6 of 49.5 s. fxfs-guest-checks failed on its console: KCSAN's fxfs_vfs_read_folios / lru_add, the reviewed folio-flags race, lru_add inlined above folio_batch_move_lru: added to KCSAN_REVIEWED_PEERS (a3e3a99c0), its test red without it. The DAX suites now take about 72 s release, not the 140-177 s of the description: copy-on-write DAX, after writable DAX's deletion. The largest checks: enospc 15-17 s release, 20-22 s debug; torture 13-19 s; log_writes and writes_across_seals 10 s (fixed deadlines); faults_writes_compaction 8 s; random_ops 3.5-4 s; the rest under 2.
+
+Tests: guest/tests' unit tests in Lima: host half 60/60, guest half 57/57 as root (3 loop-device tests need root); the table's 4 tests on both halves; vm:: 11/11. macOS: FXDAX_TEST_PARTS=scripts scripts/test.sh, 151 tests and the mutant checks pass. Not run: KASAN, coverage and rust-checks kernels (their factors guessed); cargo nextest --workspace (DoD 1), unchanged code.
+
+Structure: the class of bug, a suite outrunning one limit that named no check, is gone: a limit per check, the one table owning order, suites and budgets, which host and guest can't disagree on. Left of TASK-160.30: checks still share PID 1, a crash takes the rest.
+<!-- SECTION:NOTES:END -->

@@ -38,6 +38,12 @@ The task proposed every hold of a store as a value released on drop. Decided: a 
 **Instead:** a follower's hold counted in the entry, kept beside its store in the connection's phase, and one for each fork reading through to a base, which reaches into extents.rs.
 **Undoing it:** `Phase::Following` takes a hold, `Open::Followed` counts them, and its release forgets the store once the count is 0.
 
+## A budget per guest check, its suite's limit their sum (TASK-168, 2026-11-05)
+
+The checks suites ran under one fixed 180 s limit each, near it at times. Decided: each check has a budget in one table the host and guest share (`test_fxfs_guest_checks.rs`'s `checks!`): twice the most it took on the release kernel on GCE n2-standard-4 (r560's page cache, r563's DAX), at least 3 s. A check still running past its budget makes the guest dump its stacks, say `FAILED: <check>, still running after its budget of …` and reset the VM; the suite's limit is its checks' budgets plus 30 s, a backstop for a guest too stuck to. Budgets scale by the kernel's kind (`common::guest_kernel_slowness`: debug 1.5, measured at 1.37 at most; rust-checks and coverage 1.5, and KASAN 4, guessed), by 2 for object storage, and by `FXDAX_CHECKS_SCALE`. At this, the suites run at 16-21% of their limits (r564 release, r565 debug).
+**Instead:** suites split into more VMs, each under the old 180 s (a split that drifts as checks are added, naming no slow check); a check failing over its budget only once it ends (a hang still waits for the suite's limit).
+**Undoing it:** the budgets are numbers in the table; a check failing on its budget too often has its number raised, or `FXDAX_CHECKS_SCALE` set for a slower host.
+
 ## The host's copy-on-write DAX protocol once writable DAX is deleted (TASK-164.7, 2026-11-04)
 
 Writable DAX is deleted from the host (vendor/firecracker's extent device, crates/fxdax, physmem, extent_store). Decided, where the brief left it open:
