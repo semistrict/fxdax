@@ -6,6 +6,7 @@
 //! of them. Unlinks are queued as the guest's VFS queues them, which nothing on the host does.
 
 use super::*;
+use fxfs::filesystem::FxFilesystemBuilder;
 use fxfs::lock_keys;
 use fxfs::object_store::volume::root_volume;
 use fxfs::object_store::{NewChildStoreOptions, StoreOptions};
@@ -404,6 +405,32 @@ async fn a_files_last_bytes_read_back_after_a_remount() {
     let got = fs.read_into(ino, i64::MAX as u64 - (2 << 20) + 1, &mut [&mut window[..]]).await;
     assert_eq!(window[got.unwrap() - 1], b'a');
     fs.stop_delayed().await.unwrap();
+}
+
+/// A volume is read-only if mounted so, or if its filesystem is, whatever its mount says: the
+/// filesystem owns read-only, and its volumes derive theirs from it (TASK-160.26). The guest's
+/// `flush_volume` of a volume mounted -o ro on a writable filesystem checked the filesystem's.
+#[fuchsia::test]
+async fn a_volume_is_read_only_as_it_or_its_filesystem_is() {
+    let device = DeviceHolder::new(FakeDevice::new(16384, 4096));
+    let filesystem = FxFilesystem::new_empty(device).await.expect("formatting");
+    let root = root_volume((*filesystem).clone()).await.expect("the root volume");
+    let volume = root.new_volume("test", NewChildStoreOptions::default()).await.unwrap();
+    let mounted = |read_only| Fxfs::new((*filesystem).clone(), volume.clone(), read_only, Tested);
+    assert_eq!([mounted(false).read_only(), mounted(true).read_only()], [false, true]);
+    drop((volume, root));
+    filesystem.close().await.expect("closing");
+    let device = filesystem.take_device().await;
+    device.reopen(true);
+
+    let filesystem =
+        FxFilesystemBuilder::new().read_only(true).open(device).await.expect("opening");
+    let root = root_volume((*filesystem).clone()).await.expect("the root volume");
+    let volume = root.volume("test", StoreOptions::default()).await.unwrap();
+    let mounted = |read_only| Fxfs::new((*filesystem).clone(), volume.clone(), read_only, Tested);
+    assert_eq!([mounted(false).read_only(), mounted(true).read_only()], [true, true]);
+    drop((volume, root));
+    filesystem.close().await.expect("closing");
 }
 
 /// Every operation of the table (`Op::rules`), as `call` asks it.

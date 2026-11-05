@@ -498,8 +498,6 @@ impl ExtentDevice {
         })?;
         let block_size = info.block_size as usize;
         let open: Arc<OpenExtents> = Arc::default();
-        // A follower's filesystem writes nothing.
-        let writes_nothing = info.flags & DEVICE_READ_ONLY != 0;
         let this = Self {
             device,
             info,
@@ -517,7 +515,7 @@ impl ExtentDevice {
             gate: Arc::default(),
             branch: Arc::new(AtomicU64::new(info.branch)),
             advanced: Arc::default(),
-            writes_nothing,
+            writes_nothing: false,
         };
         let info = this.info().await?;
         this.capacity.store(info.capacity, Ordering::Release);
@@ -531,7 +529,8 @@ impl ExtentDevice {
     }
 
     /// fxdax: the device, for a filesystem mounted on it read-only, which writes nothing: it
-    /// commits nothing either, as it flushes or closes.
+    /// commits nothing either, as it flushes or closes. `Filesystem::open` decides it, a
+    /// follower's device among them (TASK-160.26).
     pub fn writing_nothing(mut self) -> Self {
         self.writes_nothing = true;
         self
@@ -573,8 +572,9 @@ impl ExtentDevice {
         Durability(self.durable.clone())
     }
 
-    /// fxdax: whether it is a follower's device, which reads a store another VM writes.
-    pub fn read_only(&self) -> bool {
+    /// fxdax: whether it is a follower's device, which reads a store another VM writes
+    /// (DEVICE_READ_ONLY): its filesystem is read-only.
+    pub fn follows(&self) -> bool {
         self.info.flags & DEVICE_READ_ONLY != 0
     }
 
@@ -1190,7 +1190,7 @@ impl Device for ExtentDevice {
     }
 
     fn is_read_only(&self) -> bool {
-        self.read_only()
+        self.writes_nothing
     }
 
     async fn advance(&self) -> Result<Previous, Error> {

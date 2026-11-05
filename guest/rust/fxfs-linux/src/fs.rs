@@ -70,8 +70,6 @@ const SHRINK_HEADROOM: u64 = 16 << 20;
 pub struct Filesystem {
     /// The filesystem, which `close` closes, after the last unmount.
     filesystem: OpenFxFilesystem,
-    /// Whether it changes nothing: mounted so first, or on a follower's device.
-    read_only: bool,
     /// fxdax: on a follower's device, the epoch of the commit it last advanced to, as it
     /// advances, and the commit its state is as of at the latest.
     follower: Option<(Arc<AtomicU64>, u64)>,
@@ -136,7 +134,9 @@ impl Filesystem {
     /// bytes. A device whose store holds nothing yet is formatted, with an empty default volume,
     /// first. fxdax: read-only, if `read_only` or the device is a follower's.
     pub async fn open(device: ExtentDevice, memory: u64, read_only: bool) -> Result<Self, Error> {
-        let follows = device.read_only();
+        let follows = device.follows();
+        // Decided once, here: the filesystem owns it (`FxFilesystem::options`), whose volumes and
+        // device derive theirs from it (TASK-160.26).
         let read_only = read_only || follows;
         // A follower's state is as of a commit no later than its writer's latest.
         let follower = follows.then(|| (device.advanced(), device.commits().latest()));
@@ -176,7 +176,6 @@ impl Filesystem {
         }
         Ok(Self {
             filesystem,
-            read_only,
             follower,
             dax,
             durability,
@@ -209,7 +208,13 @@ impl Filesystem {
             Following::new(vfs, volume.store_object_id(), advanced.clone(), *latest)
         });
         let guest = Guest { filesystem: self.clone(), following };
-        Ok(Fxfs::new(filesystem, volume, read_only || self.read_only, guest))
+        Ok(Fxfs::new(filesystem, volume, read_only, guest))
+    }
+
+    /// Whether it changes nothing: mounted so first, or on a follower's device. The filesystem's
+    /// own, which it owns.
+    pub fn read_only(&self) -> bool {
+        self.filesystem.options().read_only
     }
 
     /// Whether a volume mounted on it follows its device's writer.
@@ -220,7 +225,7 @@ impl Filesystem {
     /// fxdax: makes the volume `name`, over the base `manifest` describes (backlog doc-10), which
     /// the device must read: one the host attached.
     pub async fn import(&self, name: &str, manifest: &[u8]) -> Result<(), Error> {
-        ensure!(!self.read_only, FxfsError::ReadOnlyFilesystem);
+        ensure!(!self.read_only(), FxfsError::ReadOnlyFilesystem);
         let root_volume = root_volume((*self.filesystem).clone()).await?;
         root_volume.new_volume_over_base(name, manifest).await?;
         Ok(())
@@ -406,7 +411,8 @@ impl GuestFxfs for Fxfs {
     }
 
     async fn flush_volume(&self) -> Result<(), Error> {
-        ensure!(!self.platform().filesystem.read_only, FxfsError::ReadOnlyFilesystem);
+        // The volume's, which a mount -o ro of a writable filesystem's has too.
+        ensure!(!self.read_only(), FxfsError::ReadOnlyFilesystem);
         let filesystem = self.filesystem();
         filesystem.graveyard().flush().await;
         let objects = filesystem.object_manager();

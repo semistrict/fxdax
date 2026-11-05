@@ -522,8 +522,9 @@ pub struct Fxfs<P: Platform> {
     delayed: Delayed,
     /// fxdax: fsyncs, and those another's sync covered (`fsync`).
     sync_counts: Arc<SyncCounts>,
-    /// fxdax: whether it is mounted read-only, which changes nothing: with `-o ro`, or on a
-    /// follower's device.
+    /// fxdax: whether it is mounted read-only, which changes nothing: with `-o ro`, or its
+    /// filesystem is (`FxFilesystem::options`, on a follower's device too). Derived at `new`, the
+    /// one place it is decided, from the filesystem's, which owns it (TASK-160.26).
     read_only: bool,
 }
 
@@ -543,7 +544,7 @@ impl SyncCounts {
 
 impl<P: Platform> Fxfs<P> {
     /// The volume `volume` of the mounted `filesystem`, which `platform`'s VFS calls: read-only,
-    /// which changes nothing, if `read_only`.
+    /// which changes nothing, if `read_only` or the filesystem is.
     pub fn new(
         filesystem: Arc<FxFilesystem>,
         volume: Arc<ObjectStore>,
@@ -552,7 +553,7 @@ impl<P: Platform> Fxfs<P> {
     ) -> Self {
         Self {
             dirty: DirtyReservation::new(&volume),
-            read_only,
+            read_only: read_only || filesystem.options().read_only,
             filesystem,
             volume,
             sync_counts: platform.sync_counts(),
