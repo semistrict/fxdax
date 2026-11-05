@@ -173,8 +173,9 @@ pub(crate) fn child(branch: u64) -> Child {
     Child { branch, owner: 0, point: false }
 }
 
-/// Where a branch was forked from.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Where a branch was forked from: ordered by its parent, then its segment, so that the forks made
+/// at one segment sort together.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Origin {
     pub parent: u64,
     pub at: u64,

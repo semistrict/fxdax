@@ -272,6 +272,9 @@ struct Unfork {
     /// Its child's owner.
     owner: u64,
     running: Option<AbortHandle>,
+    /// The fork whose child's ID its restore took ([`Restore::taken`]): the child's, if the fork's
+    /// record came first.
+    taken: Option<Branch>,
 }
 
 /// A fork of a point, until it is done: of which, naming what, on which host, and the task, unless
@@ -283,6 +286,9 @@ struct Restore {
     /// Its child's owner.
     owner: u64,
     running: Option<AbortHandle>,
+    /// The fork whose child's ID it took, a guest having named it, that fork's segment not yet
+    /// acknowledged: the child's, if that fork's record comes first (TASK-173).
+    taken: Option<Branch>,
 }
 
 pub struct World {
@@ -546,6 +552,14 @@ impl World {
                 Err(error) => self.violation(format!("branch {branch:x}'s stale delete: {error}")),
             },
             Event::Unforked { child, result: Ok(true) } => drop(self.unforks.remove(&child)),
+            // A restore's that took a fork's child's ID, the fork's record coming first: the
+            // fork's child, as it was.
+            Event::Unforked { child, result: Ok(false) }
+                if self.unforks[&child].taken.is_some() =>
+            {
+                let taken = self.unforks.remove(&child).unwrap().taken.unwrap();
+                self.branches.insert(child, taken);
+            }
             // A later placement took it as it was deleted, as a writer that went did: it lives on.
             Event::Unforked { child, result: Err(Error::Stale) } => {
                 self.unforks.remove(&child);
@@ -591,7 +605,7 @@ impl World {
                 "deleting a fork to branch {child:x}, which another fork took, gave {result:?}"
             )),
             Event::Restored { child, result } => {
-                let Some(restore) = self.restores.remove(&child) else { return };
+                let Some(mut restore) = self.restores.remove(&child) else { return };
                 let (point, origin, owner) = (restore.point, Some(restore.origin), restore.owner);
                 let base = self.branches[&point].base;
                 match result {
@@ -600,8 +614,13 @@ impl World {
                         let found = Branch::forked(origin, base, false, owner);
                         drop(self.branches.insert(child, found))
                     }
+                    // The fork whose child's ID it took recorded it first: the fork's child, as it
+                    // was.
+                    Err(Error::ChildTaken(_)) if restore.taken.is_some() => {
+                        drop(self.branches.insert(child, restore.taken.take().unwrap()))
+                    }
                     // The point went, or the fork was given up on: its host deletes it.
-                    Err(Error::Deleted) => self.fail_restore(child, &restore, base),
+                    Err(Error::Deleted) => self.fail_restore(child, restore, base),
                     Err(error) => self.violation(format!("forking point {point:x}: {error}")),
                 }
             }
@@ -615,13 +634,13 @@ impl World {
 
     /// `child`, a fork of a point that failed, or a crash left, goes as its host's cleanup deletes
     /// it, or an operator does what no host held: which nothing relies on.
-    fn fail_restore(&mut self, child: u64, restore: &Restore, base: Option<u64>) {
-        let Restore { point, origin, owner, .. } = *restore;
+    fn fail_restore(&mut self, child: u64, restore: Restore, base: Option<u64>) {
+        let Restore { point, origin, owner, taken, .. } = restore;
         let mut found = Branch::forked(Some(origin), base, false, owner);
         found.deleting = true;
         self.branches.insert(child, found);
         let forked = Kind::Forking { origin, point };
-        self.unforks.insert(child, Unfork { forked, owner, running: None });
+        self.unforks.insert(child, Unfork { forked, owner, running: None, taken });
         self.spawn_unfork(child);
     }
 
@@ -862,9 +881,32 @@ impl World {
         }
         let (point, origin) = points[self.rng.random_range(0..points.len())];
         let (child, owner) = (self.id(), self.id());
+        // Or, now and then, a child's ID a guest named that a fork's guest named too, its
+        // segment not yet acknowledged: whichever's record comes first takes it (TASK-173).
+        let (child, taken) = match self.pending_forks() {
+            pending if !pending.is_empty() && self.rng.random_bool(0.5) => {
+                let child = pending[self.rng.random_range(0..pending.len())];
+                (child, self.branches.remove(&child))
+            }
+            _ => (child, None),
+        };
         let host = self.rng.random_range(0..self.hosts.len());
-        self.restores.insert(child, Restore { point, origin, host, owner, running: None });
+        let restore = Restore { point, origin, host, owner, running: None, taken };
+        self.restores.insert(child, restore);
         self.spawn_restore(child);
+    }
+
+    /// The children of forks at segments, made and not yet recorded, nor acknowledged, opened or
+    /// deleted.
+    fn pending_forks(&self) -> Vec<u64> {
+        let direct = Direct(self.bucket.clone());
+        let held = |branch| self.hosts.iter().any(|host| host.sessions.contains_key(branch));
+        (self.branches.iter())
+            .filter(|(_, found)| found.origin.is_some() && !found.point && !found.deleting)
+            .filter(|(child, found)| found.acked.is_empty() && found.taken == 0 && !held(child))
+            .filter(|&(&child, _)| matches!(block_on(branch::record(&direct, child)), Ok(None)))
+            .map(|(&child, _)| child)
+            .collect()
     }
 
     /// Makes the fork `child`, or goes on with one a crash stopped, as opening its handle does.
@@ -1036,7 +1078,7 @@ impl World {
             None => Kind::Own,
         };
         let owner = found.owner;
-        self.unforks.insert(child, Unfork { forked, owner, running: None });
+        self.unforks.insert(child, Unfork { forked, owner, running: None, taken: None });
         self.spawn_unfork(child);
     }
 
@@ -1044,7 +1086,7 @@ impl World {
     fn give_up_restore(&mut self, child: u64) {
         let restore = self.restores.remove(&child).unwrap();
         let base = self.branches[&restore.point].base;
-        self.fail_restore(child, &restore, base);
+        self.fail_restore(child, restore, base);
     }
 
     /// Deletes `child`, a failed fork's, as its host does.

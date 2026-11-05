@@ -115,6 +115,7 @@ fn one() {
             "moves_taken_first" => rules.moves_taken_first = false,
             "leases_by_takings" => rules.leases_by_takings = false,
             "passes_fenced_stop" => rules.passes_fenced_stop = false,
+            "recoveries_by_origins" => rules.recoveries_by_origins = false,
             other => panic!("no rule {other}"),
         }
     }
@@ -135,6 +136,7 @@ fn one() {
         "failed" => failed_forks(),
         "restores" => restores(),
         "whole_restores" => whole_restores(),
+        "taking_ids" => restores_taking_ids(),
         other => panic!("no profile {other}"),
     };
     let count = std::env::var("SIM_SEEDS").map_or(1, |count| count.parse().unwrap());
@@ -377,6 +379,23 @@ test_needs!(restores_need_points_read_after_their_records, forks_check_points, r
 test_needs!(restores_need_records_saying_they_are_being_made, forks_pending, restores());
 
 test_needs!(collection_needs_abandoning_restores, collector_abandons, restores());
+
+/// Restores as [`restores`] makes them, fewer and among more forks, so that more take the IDs of
+/// forks' children whose segments are not yet acknowledged, as guests may name any: whichever's
+/// record comes first takes the ID, the other refused (TASK-173). Its rule,
+/// `recoveries_by_origins`, needs a pass to list the records before the point's record and read
+/// the parent's state after the restore, the point's deletion and a checkpoint, which no seed of
+/// 0..20,000 of this profile or [`restores`] does: the direct test
+/// `children_restored_from_points_keeping_their_origins_need_recoveries_by_origins` shows it.
+fn restores_taking_ids() -> Profile {
+    let mut profile = restores();
+    profile.weights.fork = 4;
+    profile.weights.restore = 2;
+    profile.weights.crash = 1;
+    profile
+}
+
+test_holds!(restores_taking_forks_ids, restores_taking_ids());
 
 /// Restores as [`restores`] makes them, but no host dying, no collector stopped and no request
 /// failing once it took effect: a pass that misses a restored branch then reclaims what it inherited,

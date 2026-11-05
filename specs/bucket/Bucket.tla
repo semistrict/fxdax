@@ -45,7 +45,7 @@
 (*                                                                         *)
 (* Each rule is a member of Rules; specs/bucket/mutations removes one      *)
 (* each, and must find the violation it prevents (each mutation's model    *)
-(* says which, and how). The first 25 are the fields of extent_remote's    *)
+(* says which, and how). The first 26 are the fields of extent_remote's    *)
 (* `Rules` (crates/extent_remote/src/lib.rs); then one the code holds      *)
 (* with no field (TASK-178), and one it lacks (TASK-183); the last two     *)
 (* doc-14's, which TASK-165.5 adds:                                        *)
@@ -110,6 +110,11 @@
 (* - passesFencedStop (NoPassesFencedStop): a pass that finds what a live  *)
 (*   branch needs lost stops, without failing, if a later pass took the    *)
 (*   collector's lease (TASK-180).                                         *)
+(* - recoveriesByOrigins (NoRecoveriesByOrigins): the collector recovers a *)
+(*   branch by each origin it is named by, its record's and its parent's   *)
+(*   state's, not once: a child recovered by the state, that fork refused, *)
+(*   may have a record of a restore's origin, found on relisting           *)
+(*   (TASK-173).                                                           *)
 (* - deletionsDoneByOthers (NoDeletionsDoneByOthers): a deletion whose     *)
 (*   recovery of the branch finds what it needs lost, the record deleted   *)
 (*   since, is done (TASK-178; branch::delete, with no field of Rules).    *)
@@ -138,9 +143,6 @@
 (*   open, its guest's commits dropped by `take`, though the branch holds  *)
 (*   them or nothing came after them. By commits, as doc-7's recovery on   *)
 (*   the same host was, neither diverges.                                  *)
-(* - The collector recovers each branch once; a child recovered by its     *)
-(*   parent's state is recovered again here by a record found after,       *)
-(*   naming another origin (TASK-173).                                     *)
 (* - No record is dropped: a deleted root's stays too, as a deleted fork's *)
 (*   does (TASK-174). What TASK-177 found lost, a fork's deleted parent's  *)
 (*   record, is here that parent's segments to the fork, which the         *)
@@ -187,8 +189,8 @@ AllRules == {"acksAfterLease", "fence", "continuity", "epochSequences", "records
              "tokens", "deleteTokens", "footers", "forkClaimsIds", "forkClaimsLanded",
              "pointsTakeNoWriter", "forksCheckPoints", "forksPending", "collectorAbandons",
              "recordsRelisted", "recordsOwned", "extentKeysNameSegments", "waysFromSeals",
-             "movesTakenFirst", "leasesByTakings", "passesFencedStop", "deletionsDoneByOthers",
-             "deletionsFence", "walFollows", "walAfterFence"}
+             "movesTakenFirst", "leasesByTakings", "passesFencedStop", "recoveriesByOrigins",
+             "deletionsDoneByOthers", "deletionsFence", "walFollows", "walAfterFence"}
 
 AllCan == {"commit", "mint", "seg", "own", "free", "fork", "point", "restore", "unfork",
            "contest", "delete", "deletePoints", "place", "checkpoint", "collect", "compact",
@@ -1014,13 +1016,19 @@ Listing ==
 \* A fork's inherited extents, which a fork with no checkpoint holds, always.
 Behind(b, ck) == R("waysFromSeals") /\ (ck < 0 \/ ckpt[b][ck].epoch # LeaseEpoch(b))
 
+\* Whether acc holds a recovery of q, <<b, origin>>: by that origin (recoveriesByOrigins), or,
+\* without the rule, by any.
+Recovered(acc, q) ==
+    IF R("recoveriesByOrigins") THEN q \in DOMAIN acc.live
+    ELSE \E k \in DOMAIN acc.live : k[1] = q[1]
+
 RECURSIVE RecoverAll(_, _, _)
-\* The live branches recovered into acc, those queued, <<b, origin>>, each once by each origin,
-\* and the children of their forks with no record read (forksFromStates): a child recovered by
-\* its parent's state is recovered again by a record found after naming another origin, a
-\* restore's that took the ID (extent_remote's collector recovers each branch once, TASK-173).
-\* A failure that loses nothing (deleted since, a claim no writer has) is skipped, the claim
-\* given up on; any other loses the pass.
+\* The live branches recovered into acc, those queued, <<b, origin>>, each once by each origin
+\* (recoveriesByOrigins), and the children of their forks with no record read (forksFromStates):
+\* a child recovered by its parent's state is recovered again by a record found after naming
+\* another origin, a restore's that took the ID (TASK-173). A failure that loses nothing
+\* (deleted since, a claim no writer has) is skipped, the claim given up on; any other loses the
+\* pass.
 RecoverAll(queue, recs, acc) ==
     IF queue = {} \/ acc.lost THEN acc
     ELSE LET q == CHOOSE q \in queue : TRUE
@@ -1029,7 +1037,7 @@ RecoverAll(queue, recs, acc) ==
              r == Recover(b, q[2])
              kids == {<<f.child, <<b, f.at>>>> :
                         f \in {f \in r.st.forks : recs[f.child] = None /\ R("forksFromStates")}}
-         IN IF q \in DOMAIN acc.live THEN RecoverAll(rest, recs, acc)
+         IN IF Recovered(acc, q) THEN RecoverAll(rest, recs, acc)
             ELSE IF r.ok THEN
                RecoverAll(rest \cup kids, recs,
                           [acc EXCEPT !.live = Put(@, q, [ext |-> r.st.ext, end |-> r.end,

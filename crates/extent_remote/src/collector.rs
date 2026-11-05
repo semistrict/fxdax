@@ -255,6 +255,11 @@ async fn listing(bucket: &impl Bucket) -> BTreeMap<String, Meta> {
 /// starting from the branch's state there, read once for them ([`Checkpoints`]); and the states are
 /// folded into what the pass needs of them as they are recovered, what forks inherited together
 /// once for them all, rather than each fork's copy of it ([`Layers`]).
+///
+/// A branch is recovered once by each origin it is named by: a child its parent's state names, that
+/// fork refused, has its record from another branch whose fork to its ID came first, a restore's,
+/// which listing the records again may find only after the child was recovered by the state; what
+/// the record's origin needs is what the child does (TASK-173).
 async fn recover_live(
     bucket: &impl Bucket,
     records: &BTreeMap<u64, Record>,
@@ -262,21 +267,20 @@ async fn recover_live(
 ) -> Result<bool, Error> {
     let checkpoints = Checkpoints::new(bucket, CHECKPOINTS_KEPT);
     let mut checkpointed = false;
-    let origin = |origin: Option<Origin>| origin.map(|origin| (origin.parent, origin.at));
     // Forks made at the same segment next to each other, in the same rounds.
-    let mut queue: BTreeSet<(Option<(u64, u64)>, u64)> = records
+    let mut queue: BTreeSet<(Option<Origin>, u64)> = records
         .iter()
-        .filter(|(branch, record)| !record.deleted && !live.taken.contains(branch))
-        .map(|(&branch, record)| (origin(record.origin()), branch))
+        .filter(|(_, record)| !record.deleted)
+        .map(|(&branch, record)| (record.origin(), branch))
+        .filter(|&(origin, branch)| !live.recovered(branch, origin))
         .collect();
     while !queue.is_empty() {
-        // Each once, queued by its record, or by its parent's state, or both.
+        // Each once by each origin, queued by its record, or by its parent's state, or both.
         let round: Vec<_> = std::iter::from_fn(|| queue.pop_first())
-            .filter(|&(_, branch)| live.taken.insert(branch))
+            .filter(|&(origin, branch)| live.take(branch, origin))
             .take(RECOVERIES_AT_ONCE)
             .collect();
         let recoveries = round.into_iter().map(|(origin, branch)| {
-            let origin = origin.map(|(parent, at)| Origin { parent, at });
             let checkpoints = &checkpoints;
             async move {
                 let recovered = match recovery::recover_layers(checkpoints, branch, origin).await {
@@ -309,11 +313,12 @@ async fn recover_live(
             // A child with a record is queued by it, as it says: one whose ID another branch took
             // as the fork was made has another origin than its parent's state says (TASK-79.82).
             for fork in &recovered.state.forks {
+                let origin = Some(Origin { parent: branch, at: fork.at });
                 let recorded = records.contains_key(&fork.child);
-                if recorded || !rules().forks_from_states || live.taken.contains(&fork.child) {
+                if recorded || !rules().forks_from_states || live.recovered(fork.child, origin) {
                     continue;
                 }
-                queue.insert((Some((branch, fork.at)), fork.child));
+                queue.insert((origin, fork.child));
             }
             checkpointed |= recovered.checkpoint.is_some();
             live.add(recovered, behind, &mut inherited);
@@ -342,9 +347,10 @@ async fn behind(
 /// What a pass needs of the live branches' states, folded in as they are recovered.
 #[derive(Default)]
 struct Live {
-    /// Those recovered, or being: each once.
-    taken: BTreeSet<u64>,
-    branches: BTreeMap<u64, Ended>,
+    /// Those recovered, or being, by the origins they were recovered from: each once by each.
+    taken: BTreeSet<(u64, Option<Origin>)>,
+    /// Where each recovery of each ended.
+    branches: BTreeMap<u64, Vec<Ended>>,
     /// What recovering them read.
     touched: BTreeSet<String>,
     /// Where the extents they name are: each place once, however many of them name it there.
@@ -362,6 +368,32 @@ struct Ended {
     next_sequence: u64,
 }
 
+impl Ended {
+    /// Whether segment `seq` of `branch`, which this recovery of it ended as it says, may land in
+    /// it; or, with `writer`, an epoch and a sequence number, the extent that writer uploaded before
+    /// that segment ([`Pass::may_land`]).
+    async fn lands(
+        &self,
+        bucket: &impl Bucket,
+        branch: u64,
+        seq: u64,
+        writer: Option<(u64, u64)>,
+    ) -> Result<bool, Error> {
+        let Some((epoch, sequence)) = writer else { return Ok(seq >= self.end) };
+        // The epoch of the writer whose segments land in the branch: of the last one in it.
+        let current = if rules().orphans_after_successor {
+            self.epoch
+        } else {
+            branch::lease_epoch(bucket, &layout::lease(branch)).await?
+        };
+        let ahead = match rules().extent_keys_name_segments {
+            true => seq >= self.end,
+            false => sequence >= self.next_sequence,
+        };
+        Ok(epoch >= current && (epoch != self.epoch || ahead))
+    }
+}
+
 /// The states forks inherited, as their recoveries read them, each with the extents of it every
 /// fork inheriting it holds no longer where it inherited it: what no fork of a round recovered
 /// needs of it.
@@ -371,6 +403,21 @@ struct Inherited {
 }
 
 impl Live {
+    /// Whether `branch` was recovered, or is being, from `origin`: or from any, without the rule
+    /// that a branch is recovered by each origin it is named by (TASK-173).
+    fn recovered(&self, branch: u64, origin: Option<Origin>) -> bool {
+        match rules().recoveries_by_origins {
+            true => self.taken.contains(&(branch, origin)),
+            false => self.taken.range((branch, None)..).next().is_some_and(|&(b, _)| b == branch),
+        }
+    }
+
+    /// Takes the recovery of `branch` from `origin`, unless it was taken: returns whether it was
+    /// not.
+    fn take(&mut self, branch: u64, origin: Option<Origin>) -> bool {
+        !self.recovered(branch, origin) && self.taken.insert((branch, origin))
+    }
+
     /// Folds in `recovered`, a live branch's, whose writer may be `behind` it: its own layer, and
     /// what it inherited into `inherited`, its round's, which [`Live::inherit`] folds in once for
     /// all its forks.
@@ -391,7 +438,7 @@ impl Live {
                 None => inherited.states.push((from, shadowed)),
             }
         }
-        self.branches.insert(branch, Ended { end, epoch, next_sequence });
+        self.branches.entry(branch).or_default().push(Ended { end, epoch, next_sequence });
     }
 
     /// Folds in what forks inherited, `inherited`: each state once, but the extents of it none of
@@ -430,7 +477,8 @@ impl Live {
 struct Pass {
     objects: BTreeMap<String, Meta>,
     records: BTreeMap<u64, Record>,
-    branches: BTreeMap<u64, Ended>,
+    /// Where each recovery of each live branch ended.
+    branches: BTreeMap<u64, Vec<Ended>>,
     /// What recovering the live branches read.
     touched: BTreeSet<String>,
     /// The objects holding the extents the live branches name, and those extents in them.
@@ -493,26 +541,20 @@ impl Pass {
     /// its key declares (TASK-153.7): a segment, at or past the end of its branch, live, which may
     /// land in it; an extent stored on its own, its key naming the writer that uploaded it before
     /// the segment that names it, if that segment may land in the branch, live, as no later writer's
-    /// is in it yet, and none is at its place. Nothing else may.
+    /// is in it yet, and none is at its place. Nothing else may. A branch recovered by several
+    /// origins may by any of its recoveries (TASK-173).
     async fn may_land(&self, bucket: &impl Bucket, kind: Kind<'_>) -> Result<bool, Error> {
         let (branch, seq, writer) = match kind {
             Kind::Segment { branch, seq } => (branch, seq, None),
             Kind::Extent { branch, epoch, seq, sequence } => (branch, seq, Some((epoch, sequence))),
             _ => return Ok(false),
         };
-        let Some(ended) = self.branches.get(&branch) else { return Ok(false) };
-        let Some((epoch, sequence)) = writer else { return Ok(seq >= ended.end) };
-        // The epoch of the writer whose segments land in the branch: of the last one in it.
-        let current = if rules().orphans_after_successor {
-            ended.epoch
-        } else {
-            branch::lease_epoch(bucket, &layout::lease(branch)).await?
-        };
-        let ahead = match rules().extent_keys_name_segments {
-            true => seq >= ended.end,
-            false => sequence >= ended.next_sequence,
-        };
-        Ok(epoch >= current && (epoch != ended.epoch || ahead))
+        for ended in self.branches.get(&branch).into_iter().flatten() {
+            if ended.lands(bucket, branch, seq, writer).await? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// Compacts the objects mostly freed: copies the live extents of each to its moves.
@@ -1159,6 +1201,77 @@ mod tests {
             assert_eq!(forked, Err(Error::Deleted));
         }));
         collect(&bucket, 1, &KEEP).await
+    }
+
+    /// TASK-173: a pass that recovers a child by its parent's state, the child having no record as
+    /// it listed them, finds on listing them again the child's record of another origin: a restore
+    /// of a point took the child's ID before the parent's writer recorded its fork, which was
+    /// refused. It recovers the child again, by its record's origin, and keeps what that needs, the
+    /// parent's segments up to the point, which its checkpoint since covers. Found by
+    /// specs/bucket's TLA+ (TASK-165.2), the model BucketPointsDeep.
+    #[test]
+    fn children_restored_from_points_keep_their_origins_though_their_ids_were_forked_to() {
+        assert_eq!(
+            block_on(pass_as_a_child_is_restored()),
+            Ok(Report { deleted: 2, compacted: 0 })
+        );
+    }
+
+    /// A pass recovering each branch once, by its parent's state: it deletes what the restore's
+    /// child needs, which fails every pass after.
+    #[test]
+    fn children_restored_from_points_keeping_their_origins_need_recoveries_by_origins() {
+        crate::set_rules(crate::Rules { recoveries_by_origins: false, ..crate::Rules::ALL });
+        let passed = block_on(pass_as_a_child_is_restored());
+        crate::set_rules(crate::Rules::ALL);
+        let lost = Error::Lost("branch 3: what its recovery starts from keeps going".into());
+        assert_eq!(passed, Err(lost));
+    }
+
+    /// What a pass gives after one that, having listed the records, recovers branch 1 as its writer
+    /// forks point 2, a restore of the point takes child 3, and the writer forks to 3, refused, the
+    /// point is deleted and the writer checkpoints, dropping it.
+    async fn pass_as_a_child_is_restored() -> Result<Report, Error> {
+        use crate::layout::{Contents, Segment};
+        use crate::writer::Objects;
+        const PARENT: u64 = 1;
+        const POINT: u64 = 2;
+        const CHILD: u64 = 3;
+        /// Forks `writer`'s branch to `child`: at the segment it returns, acknowledged.
+        async fn fork(writer: &Writer<Direct>, child: Child) -> u64 {
+            let footer =
+                writer.chain().close(Contents { forks: vec![child], ..Contents::default() });
+            let segment = Segment { data: Vec::new(), footer: footer.clone() }.encode().into();
+            let seq = writer.add_segment(Objects { footer, segment, own: Vec::new() }).unwrap();
+            writer.upload(seq).await.unwrap();
+            writer.acknowledge().await.unwrap();
+            seq
+        }
+        let direct = Arc::new(Direct(SimBucket::new()));
+        branch::create(&*direct, PARENT, 0).await.unwrap();
+        let writer = Writer::open(direct.clone(), PARENT, 10, 0).await.unwrap();
+        let restoring = direct.clone();
+        let meanwhile = move || {
+            let work = async {
+                let point = Child { branch: POINT, owner: 0x22, point: true };
+                let at = fork(&writer, point).await;
+                let origin = Origin { parent: PARENT, at };
+                branch::fork_point(&*restoring, CHILD, POINT, origin, 0x33).await.unwrap();
+                fork(&writer, Child { branch: CHILD, owner: 0x34, point: false }).await;
+                assert!(writer.refused(CHILD));
+                branch::delete(&*restoring, POINT, 20, 0).await.unwrap();
+                writer.checkpoint().await.unwrap();
+            };
+            work.now_or_never().expect("a direct bucket answers at once");
+        };
+        let during = Meanwhile {
+            bucket: direct.clone(),
+            branch: PARENT,
+            meanwhile: Mutex::new(Some(meanwhile)),
+        };
+        let now = Options { compact_below: 0.0, grace: 0 };
+        collect(&during, 1, &now).await?;
+        collect(&*direct, 2, &now).await
     }
 
     /// A bucket that runs `then` once, at the first request its hook names.

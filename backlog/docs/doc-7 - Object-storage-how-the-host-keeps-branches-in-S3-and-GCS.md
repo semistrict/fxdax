@@ -3,7 +3,7 @@ id: doc-7
 title: 'Object storage: how the host keeps branches in S3 and GCS'
 type: specification
 created_date: '2026-10-17 01:31'
-updated_date: '2026-11-05 11:03'
+updated_date: '2026-11-05 13:46'
 ---
 # Object storage: how the host keeps branches in S3 and GCS
 
@@ -447,6 +447,11 @@ one for the next pass to reclaim. A pass:
    forks in live branches' states, whose children may lack their records yet. It gives up on forks
    being made of points deleted (Points). Once it has read the states it lists the records again,
    and goes on with what it finds, while what it recovers has a checkpoint of its own (Points).
+   **A branch is recovered once by each origin it is named by**, its record's and each parent's
+   state naming a fork to it, not once: a child the pass recovered by its parent's state, that fork
+   refused, may have a record of another origin, a restore's that took the ID first, which only
+   listing the records again finds; what that origin needs is what the child does. Whether a
+   segment or an extent may yet land goes by every recovery of its branch (TASK-173).
 4. **Recovers each**, keeping what the recoveries read (checkpoints, segments to replay, records of
    parents a child's state starts from). A branch whose recovery fails because it was deleted
    meanwhile is not live; any other failure stops the pass, which never deletes what it could not
@@ -528,7 +533,9 @@ rules need a model and tests before code"): `crates/extent_remote`, its `sim` mo
   11. one point restored on several hosts at once, racing each other, passes of the collector and
      the point's deletion, on copies gone stale, hosts dying at each step (`restores`);
   12. two forks naming one child within a round trip, neither's segment landing, each taking a
-     record of its own (`failed_forks_deleted_anywhere`, its `twins`).
+     record of its own (`failed_forks_deleted_anywhere`, its `twins`);
+  13. a restore of a point naming the child of a fork whose segment is not yet acknowledged,
+     whichever's record comes first taking the ID (`restores_taking_forks_ids`, TASK-173).
 - **Each rule** has a test that turns it off and expects a seed to find what it violates: fences,
   links between segments, acknowledging after a lease read, minting from the epoch's range,
   recording forks after their acknowledgement, listing before reading states, finding forks in
@@ -540,7 +547,10 @@ rules need a model and tests before code"): `crates/extent_remote`, its `sim` mo
   (`extents_ahead_of_their_segments_need_keys_naming_them`), as are ways starting at extents'
   seals (`writers_reading_past_checkpoints_landing_after_they_took_over_need_ways_from_seals`, and
   `ways_from_seals`, found by `recreated`'s seeds) and writers naming what their checkpoints move
-  before writing them (`writers_naming_what_their_checkpoints_move_need_moves_taken_first`). These tests search seeds: a change to the simulation can move the
+  before writing them (`writers_naming_what_their_checkpoints_move_need_moves_taken_first`), and
+  the collector recovering a branch by each origin it is named by
+  (`children_restored_from_points_keeping_their_origins_need_recoveries_by_origins`: no seed
+  reaches its window). These tests search seeds: a change to the simulation can move the
   seed that finds a violation past a test's range, which then fails; widen it, or make its profile
   likelier to find the case.
 - **TLA+** *(added 2026-11-05, TASK-165.2):* `specs/bucket/Bucket.tla` models the protocol, with
@@ -559,11 +569,14 @@ rules need a model and tests before code"): `crates/extent_remote`, its `sim` mo
   (`NoRecordsRelisted`), `records_owned` (`NoRecordsOwned`), `extent_keys_name_segments`
   (`NoExtentKeysNameSegments`), `ways_from_seals` (`NoWaysFromSeals`, TASK-175's trace),
   `moves_taken_first` (`NoMovesTakenFirst`), `leases_by_takings` (`NoLeasesByTakings`),
-  `passes_fenced_stop` (`NoPassesFencedStop`), and doc-14's `wal_follows` (`NoWalFollows`) and
+  `passes_fenced_stop` (`NoPassesFencedStop`), `recoveries_by_origins` (`NoRecoveriesByOrigins`,
+  TASK-173), and doc-14's `wal_follows` (`NoWalFollows`) and
   `wal_after_fence` (`NoWalAfterFence`); `newest_checkpoint` has a second, of what a fork inherited
   (`NoNewestCheckpointInherited`, TASK-177), and branch::delete's taking a deletion done by another
   as done, which is no field of `Rules`, one of its own (`NoDeletionsDoneByOthers`, TASK-178). It
-  found TASK-173 and TASK-174 in the collector, and TASK-183: two deletions of a branch at once,
+  found TASK-173 in the collector, a child recovered once, by its parent's state, though a record
+  found on relisting names a restore's origin (fixed: `recoveries_by_origins`); TASK-174; and
+  TASK-183: two deletions of a branch at once,
   a never-acknowledged fork's segment landing between their recoveries, the second records the
   fork's child after a pass, reading the branch deleted, let go of its origin; the spec models a
   deletion fencing the end it recovered to (`deletionsFence`, `NoDeletionsFence`), which the code

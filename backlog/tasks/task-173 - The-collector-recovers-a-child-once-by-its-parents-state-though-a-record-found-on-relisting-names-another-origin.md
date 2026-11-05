@@ -3,9 +3,11 @@ id: TASK-173
 title: >-
   The collector recovers a child once, by its parent's state, though a record
   found on relisting names another origin
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-11-05 07:38'
+updated_date: '2026-11-05 13:47'
 labels: []
 dependencies: []
 priority: high
@@ -32,3 +34,22 @@ Found by specs/bucket's TLA+ (TASK-165.2), the model BucketPointsDeep, before it
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Rules::recoveries_by_origins: the collector keys what it recovered by branch and origin (Live::taken), and recovers a branch again by each origin a record or a parent's state names; may_land asks every recovery of a branch (Live::branches holds each).
+2. Direct test in collector.rs: a pass lists the records; meanwhile S forks point P, C is restored from P before S's fork to C is recorded (refused), P deleted, S checkpoints; the pass recovers C by S's state, relists, and must recover C again by its record's origin. Red with the rule off: C's recovery and the next pass fail Lost.
+3. specs/bucket: rule recoveriesByOrigins, mutation NoRecoveriesByOrigins (BucketPointsDeep's model).
+4. Simulation: restores naming a fork's child, if cheap; else noted.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Fixed in the collector as specs/bucket models it: Rules::recoveries_by_origins. Live::taken is keyed by branch and origin (Origin is now Ord), recover_live queues and skips by (origin, branch), and Live::branches keeps every recovery's Ended, Pass::may_land asking each (Ended::lands). What is named was already the union of every recovery's extents.
+Red/green: collector::tests::children_restored_from_points_keep_their_origins_though_their_ids_were_forked_to (the pass then deletes 2, the next passes) and ..._keeping_their_origins_need_recoveries_by_origins (rule off: the next pass fails Lost("branch 3: what its recovery starts from keeps going")), the trace of the task in a Meanwhile bucket at the pass's first listing of the parent's checkpoints.
+Spec: rule recoveriesByOrigins (Recovered(acc, q)), mutation NoRecoveriesByOrigins on BucketPointsDeep's model: violates NothingNeededGone in 39s; BucketPointsDeep holds (2,962,763 states, 76s). The header's TASK-173 difference is gone.
+Blind spot: the simulation's IDs are always fresh, so no restore ever named a fork's child, and the collector's tests had one origin per branch. Class test: the simulation's restore() now takes, half the time, the ID of a fork's child not yet recorded, acknowledged or opened (Restore::taken, Unfork::taken give the fork its child back when its record came first); profile restores_taking_forks_ids (more forks, fewer restores) holds 200 seeds; a probe over 400 seeds saw 158 such restores, 54 won by the restore, 9 by the fork, 2 found by a failed restore's deletion. AC #3 not met: test_needs over 0..20,000 of restores and of restores_taking_ids finds no seed needing the rule: the window needs the pass to list the records before the point's record exists and read the parent's checkpoint after the restore, the point's deletion and the checkpoint, and other restores of the point keep its origin. Noted in sim/mod.rs and doc-7.
+Look around: the other maps of the collector keyed by branch alone are records (one per key, right) and Pass::branches, now per recovery; branch::delete recovers by the record's origin alone, which is right, the record being the branch. Structure: the bug was a key too narrow; keying recoveries by (branch, origin) makes that class impossible, nothing else needed.
+<!-- SECTION:NOTES:END -->

@@ -215,6 +215,12 @@ pub(crate) struct Rules {
     /// that pass, deleting since, read (TASK-180).
     /// TLA+: `specs/bucket/mutations/NoPassesFencedStop.cfg`.
     pub passes_fenced_stop: bool,
+    /// The collector recovers a branch by every origin it finds it named by, its record's and the
+    /// parent's states naming a fork to it, not by the first alone: a child it recovered by its
+    /// parent's state, that fork refused, may have a record of another origin, a restore's that
+    /// took the ID, which listing the records again finds (TASK-173).
+    /// TLA+: `specs/bucket/mutations/NoRecoveriesByOrigins.cfg`.
+    pub recoveries_by_origins: bool,
 }
 
 impl Rules {
@@ -244,6 +250,7 @@ impl Rules {
         moves_taken_first: true,
         leases_by_takings: true,
         passes_fenced_stop: true,
+        recoveries_by_origins: true,
     };
 }
 
