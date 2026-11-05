@@ -8,6 +8,10 @@
 
 # Decisions
 
+## A PRIVATE refused with ENOMEM stays an EIO, not a wait (TASK-170, 2026-11-05)
+
+GCE r582's pgbench saw `making 2 pages ... private: -12`, then EIO. doc-13 says the guest keeps under `private_max` and sends `PRIVATE` only within it, so ENOMEM there means the guest's and host's counts differ. That is a bug, here a KVM worker's write the host copied without being asked (TASK-170), and was fixed on the host. The guest still fails the write with EIO rather than throttling. *Instead:* throttle on ENOMEM as on its own budget. That would hide the next divergence as a stall that never gets room back. *Undoing it:* one branch in `fxfs_dax_dirty`'s failure path.
+
 ## Local disk as the bucket's WAL and cache: how (TASK-165, doc-14, 2026-11-04)
 
 The user chose the direction (review of 2026-11-04, decision 2); doc-14 decides the rest, where the task left it open:
