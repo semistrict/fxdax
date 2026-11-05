@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-05 03:16'
-updated_date: '2026-11-05 08:16'
+updated_date: '2026-11-05 13:26'
 labels: []
 dependencies: []
 documentation:
@@ -64,6 +64,8 @@ Step merges (open with recovery start, the fence's last create with the lease ch
 TASK-175 (simulation, task-165-3): the model lacked moves of moves; added, and mutations/Task175.cfg reproduces its trace (expect NothingNeededGone, all rules), to become the mutation of TASK-175's rule (its plan: ways_from_seals) once fixed; the models as designed leave compactMoves out until then.
 Verification: scripts/check-tla.sh, all specs and the follower traces, alone on the machine: exit 0 in 6m15s (bucket's 10 models as designed and 24 mutations about 4 min of it; BucketCompaction since cut to 3 segments, 30s); every mutation PASS with its invariant, every model as designed holds. FXDAX_TEST_PARTS="clippy scripts" scripts/test.sh: exit 0 (151 scripts tests, mutants checks). scripts/upstream-changes.py --check: exit 0. cargo check -p extent_remote, cargo fmt --check: clean (lib.rs's change is doc comments only).
 DoD #1 not run: the only Rust change is doc comments on Rules, so the workspace and GCE runs were not repeated for it.
+
+TASK-175 to 180's rules (2026-11-05, on land-165): waysFromSeals (collector::behind: a live state not from a checkpoint of the lease's epoch keeps every moves back to the seal), movesTakenFirst (a checkpoint's create now lands in a step of its own; the writer takes its moves before it, or, without the rule, once answered), leasesByTakings (leases are [epoch, token, holder], the holder the session's gen; "staleTake" lets a taking's first record read be from before the deletion, the record read again after the lease), passesFencedStop (gc is a pass per lease epoch, "overlap" lets them run at once; a pass reads records as listings find them, GcRecords, until none is new), TASK-177 under newestCheckpoint (a deletion's recovery lists checkpoints, then goes on in a step of its own, Recovering, restarting when one came since), TASK-178 as the spec rule deletionsDoneByOthers (no Rules field). Mutations: NoWaysFromSeals (Task175.cfg's trace), NoMovesTakenFirst, NoLeasesByTakings, NoPassesFencedStop, NoNewestCheckpointInherited, NoDeletionsDoneByOthers; models as designed compact moves again (BucketCompaction), BucketForks takes stale, BucketOverlap is new. Found TASK-183 (two deletions at once, a fork segment landing between their recoveries: the second records the child after a pass let go of its origin), modelled fixed as deletionsFence, mutation NoDeletionsFence (BucketForks's first counterexample once deletions recovered in two steps). Verified: scripts/check-tla.sh, all specs and traces, exit 0 in 1035s (bucket's as designed 835s of it: BucketOverlap 313s, BucketForks 238s; mutations 2s each but NoWaysFromSeals 57s, NoRecordsRelisted 17s, NoPassesFencedStop 16s). BucketPoints with overlap was cut, past 223M states. cargo check -p extent_remote clean (doc lines only).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
