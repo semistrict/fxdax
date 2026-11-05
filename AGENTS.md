@@ -47,9 +47,9 @@ Only what you can't do yourself stays under `# Open questions`: an action only t
 
 Check the file before starting work: an answer may be there. As soon as the user answers a question or confirms or overturns a decision, wherever they say it, take its entry out of the file and act on it: the file holds only what the user hasn't seen through yet.
 
-## Nothing uses fxdax yet: formats may change
+## No migrations, ever: formats change outright
 
-Assume nothing depends on fxdax until the user says otherwise. On-disk, bucket and wire formats may change whenever that's the better design, with no migration, no compatibility shim, and nothing kept to read old data. Don't trade a design down to avoid a format change.
+The user's rule (2026-11-05), not a phase: fxdax never migrates data. On-disk, bucket and wire formats change whenever that's the better design, and the new code refuses the old format (`Error::Format` and its kind) rather than reading, converting or upgrading it: no migration code, no compatibility shim, no dual-format reader, nothing kept to read old data, and no task or plan step proposing one. Don't trade a design down to avoid a format change.
 
 ## Every bug exposes a blind spot: close it, then look around it
 
