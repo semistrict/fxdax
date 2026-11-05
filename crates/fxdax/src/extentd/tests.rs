@@ -2471,7 +2471,7 @@ fn hundreds_of_writers_flush_on_threads_they_share() {
     let theirs: Vec<_> = (paths.iter())
         .map(|path| {
             let key = super::stores::store_key(path);
-            super::stores::table().writer(&key).unwrap().store().unwrap()
+            super::stores::table().writer(&key).unwrap().store().unwrap().clone()
         })
         .collect();
     let ((probe, others), probed) = (stores.split_first().unwrap(), theirs[0].clone());

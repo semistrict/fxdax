@@ -442,7 +442,7 @@ fn open_by_connection(path: &Path) -> Option<Arc<ExtentStore>> {
     let key = store_key(path);
     match table().writer(&key) {
         Some(writer) if writer.going() => None,
-        Some(writer) => writer.store(),
+        Some(writer) => writer.store().cloned(),
         None => table().instance(&key).map(|(store, _)| store),
     }
 }
@@ -783,7 +783,7 @@ async fn fork_held(
     key: &Path,
 ) -> Result<(), Errno> {
     let live = |connection: &Connection| {
-        Some(Forked { store: Here::of(connection.store()?, None), live: true })
+        Some(Forked { store: Here::of(connection.store()?.clone(), None), live: true })
     };
     let open = |hold: Option<Hold>| async {
         if let Some((store, _)) = table().instance(key) {
