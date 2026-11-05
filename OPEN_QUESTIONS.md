@@ -27,6 +27,12 @@ The user chose the direction (review of 2026-11-04, decision 2); doc-14 decides 
 - **A fork has no claim file:** its child's ID is checked with one GET; a fork whose answer a crash lost stands if its segment landed (the parent's next writer records it) and never was if the disk went with it; a fork fenced before its acknowledgement deletes its child by its owner (`branch::delete_fork`).
 - **Images keep their branches in a file bucket named in their description**, their clones sharing it, their collector in-process (TASK-165.6).
 
+## A follower holds no entry in extentd's store table (TASK-160.8, 2026-11-04)
+
+The task proposed every hold of a store as a value released on drop. Decided: a connection writing a store, and the daemon working on one, hold it so (`store_table::Hold`); a follower holds nothing in the table. The store connections have open is in the table as a weak reference, there while anything has it: its writer, its followers (through their `ExtentStore::following`), and the forks reading through to it as a base (`ExtentStore::open_bases`, in extents.rs), which a count of followers in the table wouldn't see. The table forgets it once nothing has it. As before, a store whose last follower drops it is closing as the table finds it gone, and a writer may open it then: its files' lock orders the two (`EBUSY` once it waited), not the table.
+**Instead:** a follower's hold counted in the entry, kept beside its store in the connection's phase, and one for each fork reading through to a base, which reaches into extents.rs.
+**Undoing it:** `Phase::Following` takes a hold, `Open::Followed` counts them, and its release forgets the store once the count is 0.
+
 ## The host's copy-on-write DAX protocol once writable DAX is deleted (TASK-164.7, 2026-11-04)
 
 Writable DAX is deleted from the host (vendor/firecracker's extent device, crates/fxdax, physmem, extent_store). Decided, where the brief left it open:
