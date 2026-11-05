@@ -163,9 +163,9 @@ pub type Read = Arc<dyn Fn(ExtentId, &mut [u8]) -> std::io::Result<()> + Send + 
 /// says are stored on their own, by their keys: each read, its extents' data by `read`, and
 /// framed, only as it uploads.
 pub fn objects(footer: Footer, read: Read) -> Objects {
-    let own = (footer.own.iter())
+    let own = (footer.own())
         .map(|(extent, location)| {
-            let (extent, len, read) = (*extent, location.len, read.clone());
+            let (len, read) = (location.len, read.clone());
             let body = Body::new(len, move || {
                 let mut data = vec![0; len as usize];
                 read(extent, &mut data)?;
@@ -174,11 +174,12 @@ pub fn objects(footer: Footer, read: Read) -> Objects {
             (location.key.clone(), body)
         })
         .collect();
-    let len = footer.extents.iter().map(|&(_, offset, len)| offset + len).max().unwrap_or(0);
+    let len =
+        footer.contents.extents.iter().map(|&(_, offset, len)| offset + len).max().unwrap_or(0);
     let framed = footer.clone();
     let segment = Body::new(len, move || {
         let mut data = vec![0; len as usize];
-        for &(extent, offset, len) in &framed.extents {
+        for &(extent, offset, len) in &framed.contents.extents {
             read(extent, &mut data[offset as usize..(offset + len) as usize])?;
         }
         Ok(Segment { data, footer: framed.clone() }.encode())
@@ -258,7 +259,7 @@ pub struct Unframed {
 impl Unframed {
     /// Its objects, framed: the segment's, and its extents of their own's, at their keys.
     pub fn frame(mut self) -> Objects {
-        let own = (self.segment.footer.own.iter())
+        let own = (self.segment.footer.own())
             .map(|(extent, location)| {
                 let data = self.own.remove(&extent.sequence).expect("sealed on its own");
                 (location.key.clone(), own_object(&data).into())
@@ -277,7 +278,7 @@ mod tests {
     /// The next sequence number the footer of `commit`'s segment, closed on `chain`, names.
     fn next_sequence(commit: Commit, chain: &mut Chain) -> u64 {
         let objects = Batch::from(commit).close(chain).frame();
-        layout::footer::<Footer>(&objects.segment.read().unwrap()).unwrap().next_sequence
+        layout::footer::<Footer>(&objects.segment.read().unwrap()).unwrap().contents.next_sequence
     }
 
     /// The sequence numbers a writer mints from are past every extent its commits seal, in its
@@ -332,12 +333,15 @@ mod tests {
         let footer: Footer = layout::footer(&segment).unwrap();
         assert_eq!(footer, objects.footer);
         assert_eq!((footer.seq, footer.epoch, footer.after), (0, 2, None));
-        assert_eq!(footer.commits, [7, 8]);
-        assert_eq!(footer.extents, [(small, 0, 5)]);
+        assert_eq!(footer.contents.commits, [7, 8]);
+        assert_eq!(footer.contents.extents, [(small, 0, 5)]);
         let key = layout::extent(2, footer.seq, large);
-        assert_eq!(footer.own, [(large, layout::Location { key: key.clone(), offset: 0, len: 5 })]);
         assert_eq!(
-            (footer.frees, footer.root, footer.forks),
+            footer.own().collect::<Vec<_>>(),
+            [(large, layout::Location { key: key.clone(), offset: 0, len: 5 })]
+        );
+        assert_eq!(
+            (footer.contents.frees, footer.contents.root, footer.contents.forks),
             (vec![freed], Some(b"two".to_vec()), vec![child(9)])
         );
         assert_eq!(layout::data(&segment).unwrap(), b"small");
@@ -369,10 +373,13 @@ mod tests {
         batch.commit(Commit { tag: 8, extents, frees, ..Commit::default() });
         let objects = batch.close(&mut chain).frame();
         let footer = objects.footer;
-        assert_eq!(footer.extents, [(kept, 5, 4)]);
+        assert_eq!(footer.contents.extents, [(kept, 5, 4)]);
         let key = layout::extent(2, 0, other);
-        assert_eq!(footer.own, [(other, layout::Location { key: key.clone(), offset: 0, len: 5 })]);
-        assert_eq!(footer.frees, [small, large, inherited]);
+        assert_eq!(
+            footer.own().collect::<Vec<_>>(),
+            [(other, layout::Location { key: key.clone(), offset: 0, len: 5 })]
+        );
+        assert_eq!(footer.contents.frees, [small, large, inherited]);
         let own: Vec<_> = objects.own.iter().map(|(key, _)| key.clone()).collect();
         assert_eq!(own, [key]);
     }

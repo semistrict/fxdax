@@ -7,7 +7,7 @@
 mod common;
 
 use common::noise;
-use extent_frame::segment::{Chain, Child};
+use extent_frame::segment::{Chain, Child, Contents};
 use extent_store::{
     Closed, Description, Dir, File as _, Footprint, HostDir, Lineage, MemDir, MemFile, NoSpace,
     Options, Part, Place, RemoteData, Spent, Store, TooLong, TooSmall,
@@ -311,14 +311,14 @@ fn uploads_keep_freed_data_until_released() {
     store.flush().unwrap();
     let writing = closed_one(&store);
     let written: Vec<_> =
-        writing.footer.extents.iter().map(|&(extent, _, len)| (extent, len)).collect();
+        writing.footer.contents.extents.iter().map(|&(extent, _, len)| (extent, len)).collect();
     // The segment opened before uploading began holds what the commit before it wrote too.
     let blocks: Vec<_> = (1..=16).map(|sequence| (extent(sequence), BLOCK as u64)).collect();
     assert_eq!(written, blocks);
     let own =
         Location { key: extent_key(1, writing.footer.seq, extent(17)), offset: 0, len: 32 << 10 };
-    assert_eq!(writing.footer.own, [(extent(17), own)]);
-    let (frees, root) = (&writing.footer.frees, &writing.footer.root);
+    assert_eq!(writing.footer.own().collect::<Vec<_>>(), [(extent(17), own)]);
+    let (frees, root) = (&writing.footer.contents.frees, &writing.footer.contents.root);
     assert_eq!((frees.clone(), root.clone()), (vec![], Some(b"root".to_vec())));
     assert_eq!(store.unreleased_bytes().unwrap(), 15 * BLOCK as u64 + (32 << 10));
 
@@ -328,7 +328,7 @@ fn uploads_keep_freed_data_until_released() {
     store.commit(None).unwrap();
     assert!(store.close_now().unwrap());
     let freeing = closed_one(&store);
-    assert_eq!(freeing.footer.frees, (1..=17).map(extent).collect::<Vec<_>>());
+    assert_eq!(freeing.footer.contents.frees, (1..=17).map(extent).collect::<Vec<_>>());
     // Freed, and kept: the uploader reads them, the store's users don't.
     error_is(store.read(extent(17), 0, &mut [0; BLOCK]), NoExtent(extent(17)));
     let mut data = vec![0; 32 << 10];
@@ -366,7 +366,10 @@ fn adopted_extents_are_held_without_their_data() {
     // Not uploaded again: a checkpoint names them, no footer.
     assert!(store.close_now().unwrap());
     let adopting = closed_one(&store);
-    assert_eq!((adopting.footer.extents.len(), adopting.footer.own.len()), (0, 0));
+    assert_eq!(
+        (adopting.footer.contents.extents.len(), adopting.footer.contents.own.len()),
+        (0, 0)
+    );
     assert_eq!(store.unreleased_bytes().unwrap(), 0);
     let check = |store: &Store<MemDir>| {
         assert_eq!(store.extent(extent(5)).unwrap(), Some((3 * BLOCK as u64, false)));
@@ -384,7 +387,7 @@ fn adopted_extents_are_held_without_their_data() {
     store.free(extent(5)).unwrap();
     store.commit(None).unwrap();
     assert!(store.close_now().unwrap());
-    assert_eq!(closed_one(&store).footer.frees, [extent(5)]);
+    assert_eq!(closed_one(&store).footer.contents.frees, [extent(5)]);
     error_is(store.read(extent(5), 0, &mut [0; BLOCK]), NoExtent(extent(5)));
 }
 
@@ -1749,15 +1752,18 @@ fn segments_close_for_the_writer_of_their_chain() {
             seq: 5,
             epoch: 3,
             after: Some((4, 3)),
-            commits: vec![tag(3, 1)],
-            extents: vec![(extent(1), 0, BLOCK as u64)],
-            own: vec![(extent(2), own.clone())],
-            frees: vec![],
-            root: Some(b"one".to_vec()),
-            next_sequence: 100,
-            forks: vec![],
+            contents: Contents {
+                commits: vec![tag(3, 1)],
+                extents: vec![(extent(1), 0, BLOCK as u64)],
+                own: vec![(2, 32 << 10)],
+                frees: vec![],
+                root: Some(b"one".to_vec()),
+                next_sequence: 100,
+                forks: vec![],
+            },
         }
     );
+    assert_eq!(first.footer.own().collect::<Vec<_>>(), [(extent(2), own.clone())]);
     // Its file is the object, footer and all; its extent of its own's, the extent's object.
     let bytes = first.bytes().unwrap();
     let footer = Footer::decode(extent_frame::footer(&bytes).unwrap()).unwrap();
@@ -1773,7 +1779,7 @@ fn segments_close_for_the_writer_of_their_chain() {
     let [second] = &closed[..] else { panic!("{} segments closed", closed.len()) };
     assert_eq!((second.footer.seq, second.footer.after), (6, Some((5, 3))));
     assert_eq!(
-        (second.footer.commits.clone(), second.footer.forks.clone()),
+        (second.footer.contents.commits.clone(), second.footer.contents.forks.clone()),
         (vec![tag(3, 2)], vec![Child { branch: BRANCH + 1, owner: 0, point: false }])
     );
 
@@ -1804,14 +1810,15 @@ fn segments_closed_between_commits_hold_the_last_commits_state() {
     assert!(store.close_now().unwrap());
     let closed = store.closed(usize::MAX).unwrap();
     let [first] = &closed[..] else { panic!("{} segments closed", closed.len()) };
-    let listed: Vec<_> = first.footer.extents.iter().map(|(extent, ..)| *extent).collect();
-    assert_eq!((listed, first.footer.frees.clone()), (vec![extent(1), extent(2)], vec![]));
+    let listed: Vec<_> = first.footer.contents.extents.iter().map(|(extent, ..)| *extent).collect();
+    assert_eq!((listed, first.footer.contents.frees.clone()), (vec![extent(1), extent(2)], vec![]));
     store.commit(None).unwrap();
     assert!(store.close_now().unwrap());
     let closed = store.closed(usize::MAX).unwrap();
     let [second] = &closed[..] else { panic!("{} segments closed", closed.len()) };
-    let listed: Vec<_> = second.footer.extents.iter().map(|(extent, ..)| *extent).collect();
-    assert_eq!((listed, second.footer.frees.clone()), (vec![extent(3)], vec![extent(1)]));
+    let listed: Vec<_> =
+        second.footer.contents.extents.iter().map(|(extent, ..)| *extent).collect();
+    assert_eq!((listed, second.footer.contents.frees.clone()), (vec![extent(3)], vec![extent(1)]));
     assert_eq!(read(&store, extent(3), 0, BLOCK), pattern(3, 0, BLOCK));
 }
 
@@ -3342,7 +3349,7 @@ fn commits_list_each_extent_written_once() {
     store.commit(None).unwrap();
     assert_eq!(store.unreleased_bytes().unwrap(), 2 * BLOCK as u64);
     assert!(store.close_now().unwrap());
-    let written = closed_one(&store).footer.extents;
+    let written = closed_one(&store).footer.contents.extents;
     assert_eq!(
         written.iter().map(|&(extent, _, len)| (extent, len)).collect::<Vec<_>>(),
         [(extent(1), 2 * BLOCK as u64)]
@@ -3360,7 +3367,7 @@ fn forks_give_their_commits_epoch() {
     assert_eq!(store.epoch().unwrap(), 2);
     let forking = closed_one(&store);
     let forked = Child { branch: BRANCH + 1, owner: 0, point: false };
-    assert_eq!((forking.last(), forking.footer.forks.clone()), (2, vec![forked]));
+    assert_eq!((forking.last(), forking.footer.contents.forks.clone()), (2, vec![forked]));
 }
 
 /// fxdax: a fork to a branch the store has fails having committed nothing: no footer names the
@@ -3380,7 +3387,7 @@ fn forks_to_a_branch_the_store_has_commit_nothing() {
     let has = format!("the store has a branch {:#x}", BRANCH + 1);
     assert_eq!((again, store.epoch().unwrap()), (Err(has), 3));
     let closed = store.closed(usize::MAX).unwrap();
-    let forks = closed.into_iter().flat_map(|closed| closed.footer.forks);
+    let forks = closed.into_iter().flat_map(|closed| closed.footer.contents.forks);
     assert_eq!(forks.map(|forked| forked.branch).collect::<Vec<_>>(), [BRANCH + 1]);
 }
 

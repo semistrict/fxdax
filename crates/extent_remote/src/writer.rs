@@ -301,7 +301,7 @@ impl<B: Bucket> Writer<B> {
         }
         let chain = inner.chain.admit(&footer)?;
         let keys: BTreeSet<&String> = own.iter().map(|(key, _)| key).collect();
-        for (extent, location) in &footer.own {
+        for (extent, location) in footer.own() {
             if !keys.contains(&location.key) {
                 return Err(Error::Corrupt(format!("{extent:?} is stored at {}", location.key)));
             }
@@ -840,8 +840,8 @@ mod tests {
     }
 
     /// A writer takes a segment a store closed for it, and uploads it as it is; one numbered
-    /// otherwise, of another writer, naming its extents of their own elsewhere, or without their
-    /// objects, it refuses, and goes on as before.
+    /// otherwise, of another writer, or without the objects of its extents of their own at the
+    /// keys it names them at, it refuses, and goes on as before.
     #[test]
     fn writers_upload_segments_stores_closed() {
         futures::executor::block_on(async {
@@ -857,13 +857,15 @@ mod tests {
                 seq,
                 epoch: writer.epoch(),
                 after,
-                commits: vec![7],
-                extents: vec![(small, 0, 3)],
-                own: vec![(large, Location { key: own_key.clone(), offset: 0, len: 5 })],
-                frees: vec![],
-                root: Some(b"root".to_vec()),
-                next_sequence: 4,
-                forks: vec![],
+                contents: Contents {
+                    commits: vec![7],
+                    extents: vec![(small, 0, 3)],
+                    own: vec![(large.sequence, 5)],
+                    frees: vec![],
+                    root: Some(b"root".to_vec()),
+                    next_sequence: 4,
+                    forks: vec![],
+                },
             };
             let segment = |footer: &Footer| -> Vec<u8> {
                 Segment { data: b"abc".to_vec(), footer: footer.clone() }.encode()
@@ -875,8 +877,7 @@ mod tests {
                 segment: segment(footer).into(),
                 own,
             };
-            let key = layout::extent(writer.epoch() + 1, seq, large);
-            let elsewhere = Location { key, offset: 0, len: 5 };
+            let elsewhere = layout::extent(writer.epoch() + 1, seq, large);
             // Its chain's next place: segment 1 of epoch 1, after its fence, 0.
             assert_eq!((writer.epoch(), seq, after), (1, 1, Some((0, 1))));
             let wanted = "(1, 1, 1, Some((0, 1)))";
@@ -896,13 +897,12 @@ mod tests {
                     Footer { after: Some((seq, 99)), ..footer.clone() },
                     misplaced("number 1, epoch 1, after Some((1, 99))"),
                 ),
-                (
-                    Footer { own: vec![(large, elsewhere.clone())], ..footer.clone() },
-                    Error::Corrupt(format!("{large:?} is stored at {}", elsewhere.key)),
-                ),
             ] {
                 assert_eq!(writer.add_segment(objects(&wrong, owns())), Err(refused), "{wrong:?}");
             }
+            let elsewhere = vec![(elsewhere, own.clone().into())];
+            let missing = Error::Corrupt(format!("{large:?} is stored at {own_key}"));
+            assert_eq!(writer.add_segment(objects(&footer, elsewhere)), Err(missing));
             let missing = Error::Corrupt(format!("{large:?} is stored at {own_key}"));
             assert_eq!(writer.add_segment(objects(&footer, vec![])), Err(missing));
             assert_eq!(writer.chain(), chain);

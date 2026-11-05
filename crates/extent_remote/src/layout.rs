@@ -277,13 +277,15 @@ mod tests {
             seq: 2,
             epoch: 3,
             after: Some((1, 3)),
-            commits: vec![4],
-            extents: vec![(ExtentId::new(1, 5), 0, 3)],
-            own: vec![],
-            frees: vec![ExtentId::new(1, 1)],
-            root: Some(b"root".to_vec()),
-            next_sequence: 6,
-            forks: vec![Child { branch: 7, owner: 8, point: false }],
+            contents: Contents {
+                commits: vec![4],
+                extents: vec![(ExtentId::new(1, 5), 0, 3)],
+                own: vec![],
+                frees: vec![ExtentId::new(1, 1)],
+                root: Some(b"root".to_vec()),
+                next_sequence: 6,
+                forks: vec![Child { branch: 7, owner: 8, point: false }],
+            },
         };
         let segment = Segment { data: b"abc".to_vec(), footer: footer.clone() };
         let bytes = segment.encode();

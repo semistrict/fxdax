@@ -56,7 +56,8 @@ impl<F: File> Closed<F> {
     /// The tag of the last commit it holds, which names the commit in object storage: each segment
     /// the store closes names one, the last of its commits.
     pub fn tag(&self) -> u64 {
-        *self.footer.commits.last().expect("a segment the store closed names its last commit")
+        let commits = &self.footer.contents.commits;
+        *commits.last().expect("a segment the store closed names its last commit")
     }
 }
 

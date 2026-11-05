@@ -29,8 +29,9 @@ pub struct Child {
     pub point: bool,
 }
 
-/// What a segment holds after its data: the commits it makes. A segment with no data is a footer
-/// alone: commits that only free extents or set the root, or forks.
+/// What a segment holds after its data: its place in its writer's chain, and the commits it makes,
+/// its [`Contents`]. A segment with no data is a footer alone: commits that only free extents or
+/// set the root, or forks.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Footer {
     pub branch: u64,
@@ -40,22 +41,8 @@ pub struct Footer {
     /// The segment it follows, by its number and epoch: the last of the branch before it that is
     /// not void. It is void unless that is the one before it that is not.
     pub after: Option<(u64, u64)>,
-    /// Its commits, by tags its writer gives them, unique to each commit: a store's segment names
-    /// the last of its commits ([`tag`]).
-    pub commits: Vec<u64>,
-    /// The extents sealed in its commits that its data holds: at an offset, of a length.
-    pub extents: Vec<(ExtentId, u64, u64)>,
-    /// The extents sealed in its commits that are stored on their own, uploaded before it: its
-    /// branch's, as the key of each says, which is what tells the collector whose it is.
-    pub own: Vec<(ExtentId, Location)>,
-    /// The extents its commits free: the branch's, or inherited.
-    pub frees: Vec<ExtentId>,
-    /// The root, if its commits set one.
-    pub root: Option<Vec<u8>>,
-    /// The next sequence number of the branch's extents, as of its last commit.
-    pub next_sequence: u64,
-    /// Forks of the branch made at its end: their children.
-    pub forks: Vec<Child>,
+    /// What its commits made.
+    pub contents: Contents,
 }
 
 impl Footer {
@@ -66,16 +53,27 @@ impl Footer {
     pub fn decode(bytes: &[u8]) -> Result<Self, Corrupt> {
         bincode::deserialize(bytes).map_err(|err| Corrupt(format!("a footer: {err}")))
     }
+
+    /// The extents its commits sealed that are stored on their own, the branch's, and where each
+    /// is: the object its writer uploaded before it, at the key naming the writer's epoch and it
+    /// ([`extent_key`]), which tells the collector whose it is.
+    pub fn own(&self) -> impl Iterator<Item = (ExtentId, Location)> + '_ {
+        self.contents.own.iter().map(|&(sequence, len)| {
+            let extent = ExtentId { branch: self.branch, sequence };
+            (extent, Location { key: extent_key(self.epoch, self.seq, extent), offset: 0, len })
+        })
+    }
 }
 
-/// What a segment's commits made, which its footer records once its writer's chain stamps it
-/// ([`Chain::close`]): its commits' tags, the extents they sealed in its data, at an offset, of a
-/// length, and the branch's extents stored on their own, by their sequence numbers, of a length, at
-/// the writer's keys: an inherited extent a branch uploads goes in its data, as a key of the extents
-/// a branch uploads names that branch alone (TASK-150.1); the extents they free; the root, if they
-/// set one; the branch's next sequence number as of them, at least; and the forks made at its end,
-/// by their children.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// What a segment's commits made, which its footer holds, stamped with its place by its writer's
+/// chain ([`Chain::close`]): its commits' tags, unique to each commit (a store's segment names the
+/// last of its commits, [`tag`]); the extents they sealed in its data, at an offset, of a length;
+/// the branch's extents they sealed that are stored on their own, by their sequence numbers, of a
+/// length, at the writer's keys ([`Footer::own`]): an inherited extent a branch uploads goes in its
+/// data, as a key of the extents a branch uploads names that branch alone (TASK-150.1); the extents
+/// they free, the branch's, or inherited; the root, if they set one; the branch's next sequence
+/// number as of them, at least; and the forks made at its end, by their children.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Contents {
     pub commits: Vec<u64>,
     pub extents: Vec<(ExtentId, u64, u64)>,
@@ -148,37 +146,23 @@ impl Chain {
         tag(self.epoch, epoch)
     }
 
-    /// The footer of the next segment, which holds `contents`: stamped with the chain's place, its
-    /// extents of their own at the writer's keys, which name the segment. The chain goes on after
-    /// it.
+    /// The footer of the next segment, which holds `contents`, stamped with the chain's place,
+    /// which names its extents of their own at the writer's keys. The chain goes on after it.
     pub fn close(&mut self, contents: Contents) -> Footer {
-        let (epoch, seq) = (self.epoch, self.next_seq);
-        let own = (contents.own.into_iter())
-            .map(|(sequence, len)| {
-                let extent = ExtentId { branch: self.branch, sequence };
-                (extent, Location { key: extent_key(epoch, seq, extent), offset: 0, len })
-            })
-            .collect();
+        let next_sequence = contents.next_sequence.max(self.next_sequence);
         let footer = Footer {
             branch: self.branch,
             seq: self.next_seq,
             epoch: self.epoch,
             after: self.after,
-            commits: contents.commits,
-            extents: contents.extents,
-            own,
-            frees: contents.frees,
-            root: contents.root,
-            next_sequence: contents.next_sequence.max(self.next_sequence),
-            forks: contents.forks,
+            contents: Contents { next_sequence, ..contents },
         };
         self.follow(&footer);
         footer
     }
 
     /// The chain after `footer`, which another closed for it, if it is the next footer it would
-    /// have stamped: of its branch, number and epoch, following the segment it follows, and naming
-    /// the branch's extents of their own, none of another's, at the writer's keys.
+    /// have stamped: of its branch, number and epoch, following the segment it follows.
     pub fn admit(&self, footer: &Footer) -> Result<Self, Corrupt> {
         let wanted = (self.branch, self.next_seq, self.epoch, self.after);
         if (footer.branch, footer.seq, footer.epoch, footer.after) != wanted {
@@ -186,14 +170,6 @@ impl Chain {
                 "a segment of branch {:x}, number {}, epoch {}, after {:?}, not {wanted:?}",
                 footer.branch, footer.seq, footer.epoch, footer.after
             )));
-        }
-        for (extent, location) in &footer.own {
-            if extent.branch != self.branch {
-                return Err(Corrupt(format!("{extent:?} is another branch's, on its own")));
-            }
-            if location.key != extent_key(self.epoch, footer.seq, *extent) {
-                return Err(Corrupt(format!("{extent:?} is stored at {}", location.key)));
-            }
         }
         let mut chain = *self;
         chain.follow(footer);
@@ -204,7 +180,7 @@ impl Chain {
     fn follow(&mut self, footer: &Footer) {
         self.next_seq = footer.seq + 1;
         self.after = Some((footer.seq, footer.epoch));
-        self.next_sequence = self.next_sequence.max(footer.next_sequence);
+        self.next_sequence = self.next_sequence.max(footer.contents.next_sequence);
     }
 }
 
@@ -248,19 +224,18 @@ mod tests {
             seq: 9,
             epoch: 4,
             after: Some((7, 3)),
-            commits: vec![tag(4, 11), tag(4, 12)],
-            extents: vec![(ExtentId { branch: 2, sequence: 5 }, 0, 4096)],
-            own: vec![(
-                ExtentId { branch: 1, sequence: 6 },
-                Location { key: "extents/x".into(), offset: 8192, len: 512 },
-            )],
-            frees: vec![ExtentId { branch: 1, sequence: 1 }],
-            root: Some(b"root".to_vec()),
-            next_sequence: 13,
-            forks: vec![
-                Child { branch: 3, owner: 0x33, point: false },
-                Child { branch: 4, owner: 0x44, point: true },
-            ],
+            contents: Contents {
+                commits: vec![tag(4, 11), tag(4, 12)],
+                extents: vec![(ExtentId { branch: 2, sequence: 5 }, 0, 4096)],
+                own: vec![(6, 512)],
+                frees: vec![ExtentId { branch: 1, sequence: 1 }],
+                root: Some(b"root".to_vec()),
+                next_sequence: 13,
+                forks: vec![
+                    Child { branch: 3, owner: 0x33, point: false },
+                    Child { branch: 4, owner: 0x44, point: true },
+                ],
+            },
         };
         let bytes = footer.encode();
         assert_eq!(Footer::decode(&bytes).unwrap(), footer);
@@ -280,8 +255,8 @@ mod tests {
     }
 
     /// A chain numbers the segments it closes on from where it starts, each following the one
-    /// before, of its writer's epoch, their extents of their own at the writer's keys; the next
-    /// sequence number each names is the chain's floor at least, and never below the one before's.
+    /// before, of its writer's epoch; the next sequence number each names is the chain's floor at
+    /// least, and never below the one before's.
     #[test]
     fn chains_number_and_link_what_they_close() {
         let own = ExtentId { branch: 2, sequence: 7 };
@@ -300,40 +275,34 @@ mod tests {
                 seq: 9,
                 epoch: 4,
                 after: Some((8, 3)),
-                commits: vec![tag(4, 1)],
-                extents: vec![(ExtentId { branch: 2, sequence: 6 }, 0, 4096)],
-                own: vec![(own, Location { key: extent_key(4, 9, own), offset: 0, len: 512 })],
-                frees: vec![],
-                root: None,
-                next_sequence: 100,
-                forks: vec![],
+                contents: Contents {
+                    commits: vec![tag(4, 1)],
+                    extents: vec![(ExtentId { branch: 2, sequence: 6 }, 0, 4096)],
+                    own: vec![(own.sequence, 512)],
+                    next_sequence: 100,
+                    ..Contents::default()
+                },
             }
         );
         let second = chain.close(Contents { next_sequence: 200, ..Contents::default() });
-        assert_eq!((second.seq, second.after, second.next_sequence), (10, Some((9, 4)), 200));
+        let place = |footer: &Footer| (footer.seq, footer.after, footer.contents.next_sequence);
+        assert_eq!(place(&second), (10, Some((9, 4)), 200));
         let third = chain.close(Contents { next_sequence: 150, ..Contents::default() });
-        assert_eq!((third.seq, third.after, third.next_sequence), (11, Some((10, 4)), 200));
+        assert_eq!(place(&third), (11, Some((10, 4)), 200));
         let place = (chain.branch(), chain.epoch(), chain.next_seq(), chain.after());
         assert_eq!((place, chain.next_sequence()), ((2, 4, 12, Some((11, 4))), 200));
         assert_eq!(chain.tag(5), tag(4, 5));
     }
 
     /// A copy of a chain admits the footer the chain closed, and goes on from it as the chain did;
-    /// it refuses one of another branch, number or epoch, following another segment, or naming an
-    /// extent of its own at another key, another epoch's or segment's, or another branch's extent
-    /// as one of its own, and goes on from none.
+    /// it refuses one of another branch, number or epoch, or following another segment, and goes
+    /// on from none.
     #[test]
     fn chains_admit_only_what_they_would_close() {
-        let own = ExtentId { branch: 2, sequence: 7 };
         let start = Chain::new(2, 4, 9, Some((8, 3)), 100);
         let mut closing = start;
-        let contents = Contents { own: vec![(own.sequence, 512)], ..Contents::default() };
-        let footer = closing.close(contents);
+        let footer = closing.close(Contents { own: vec![(7, 512)], ..Contents::default() });
         assert_eq!(start.admit(&footer), Ok(closing));
-        let elsewhere = Location { key: extent_key(3, 9, own), offset: 0, len: 512 };
-        let another_segments = Location { key: extent_key(4, 8, own), offset: 0, len: 512 };
-        let inherited = ExtentId { branch: 1, sequence: 7 };
-        let inherited_at = Location { key: extent_key(4, 9, inherited), offset: 0, len: 512 };
         // A footer of another place than the next the chain closes: refused, saying both.
         let misplaced =
             |place: &str| format!("a segment of branch {place}, not (2, 9, 4, Some((8, 3)))");
@@ -351,25 +320,30 @@ mod tests {
                 misplaced("2, number 9, epoch 5, after Some((8, 3))"),
             ),
             (
-                Footer { after: Some((8, 4)), ..footer.clone() },
+                Footer { after: Some((8, 4)), ..footer },
                 misplaced("2, number 9, epoch 4, after Some((8, 4))"),
-            ),
-            (
-                Footer { own: vec![(own, another_segments.clone())], ..footer.clone() },
-                format!("{own:?} is stored at {}", another_segments.key),
-            ),
-            (
-                Footer { own: vec![(own, elsewhere.clone())], ..footer.clone() },
-                format!("{own:?} is stored at {}", elsewhere.key),
-            ),
-            (
-                Footer { own: vec![(inherited, inherited_at.clone())], ..footer },
-                format!("{inherited:?} is another branch's, on its own"),
             ),
         ] {
             assert_eq!(start.admit(&wrong), Err(Corrupt(refused)), "{wrong:?}");
         }
         assert_eq!(start, Chain::new(2, 4, 9, Some((8, 3)), 100));
+    }
+
+    /// A footer's extents of their own are the branch's, at the keys of its writer's epoch and its
+    /// number: wherever it was closed, no other.
+    #[test]
+    fn footers_name_their_own_extents_at_their_writers_keys() {
+        let mut chain = Chain::new(2, 4, 9, Some((8, 3)), 100);
+        let footer = chain.close(Contents { own: vec![(7, 512), (5, 8)], ..Contents::default() });
+        let (seven, five) =
+            (ExtentId { branch: 2, sequence: 7 }, ExtentId { branch: 2, sequence: 5 });
+        assert_eq!(
+            footer.own().collect::<Vec<_>>(),
+            [
+                (seven, Location { key: extent_key(4, 9, seven), offset: 0, len: 512 }),
+                (five, Location { key: extent_key(4, 9, five), offset: 0, len: 8 }),
+            ]
+        );
     }
 
     /// The keys of extents stored on their own: by branch, then the writer's epoch, the segment

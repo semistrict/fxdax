@@ -1634,11 +1634,11 @@ impl World {
                 text += &format!(
                     "    epoch {} commits {:?} extents [{}] own [{}] frees [{}] forks {:?}\n",
                     footer.epoch,
-                    footer.commits,
-                    short(&mut footer.extents.iter().map(|e| e.0)),
-                    short(&mut footer.own.iter().map(|e| e.0)),
-                    short(&mut footer.frees.iter().copied()),
-                    footer.forks,
+                    footer.contents.commits,
+                    short(&mut footer.contents.extents.iter().map(|e| e.0)),
+                    short(&mut footer.own().map(|e| e.0)),
+                    short(&mut footer.contents.frees.iter().copied()),
+                    footer.contents.forks,
                 );
             }
         }

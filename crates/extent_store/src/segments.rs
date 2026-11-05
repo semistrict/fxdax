@@ -1283,7 +1283,7 @@ type Places = (Vec<(ExtentId, u64, u64)>, Vec<(u64, u64)>);
 
 /// The store's epoch of the last commit of the segment whose footer is `footer`.
 pub(crate) fn footer_last(footer: &Footer) -> u64 {
-    footer.commits.last().map_or(0, |tag| epoch_of(*tag))
+    footer.contents.commits.last().map_or(0, |tag| epoch_of(*tag))
 }
 
 /// The footer of a closed segment, `bytes`: none if the segment closed with none, as one whose
@@ -1471,7 +1471,13 @@ mod tests {
         assert_eq!(segments.open_segment(), segment(2));
         let close = |segments: &mut Segments<MemFile>, epoch| {
             let footer = segments.close(&dir, epoch, 7).unwrap().footer;
-            (footer.seq, footer.epoch, footer.after, footer.commits, footer.next_sequence)
+            (
+                footer.seq,
+                footer.epoch,
+                footer.after,
+                footer.contents.commits,
+                footer.contents.next_sequence,
+            )
         };
         assert_eq!(close(&mut segments, 1), (2, 0, None, vec![tag(0, 1)], 7));
         assert_eq!(close(&mut segments, 2), (3, 0, Some((2, 0)), vec![tag(0, 2)], 7));

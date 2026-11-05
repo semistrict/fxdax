@@ -315,14 +315,14 @@ pub(crate) fn rebuild<D: Dir>(
         }
         last = Some((footer.seq, footer.epoch));
         let epoch = footer_last(&footer);
-        for (extent, offset, len) in footer.extents {
+        for &(extent, offset, len) in &footer.contents.extents {
             let piece = Piece { segment, offset, extent_offset: 0, len };
             state.extents.insert(extent, Extent { len, data: Data::Pieces(vec![piece]) });
         }
-        for (extent, location) in footer.own {
+        for (extent, location) in footer.own() {
             state.extents.insert(extent, Extent { len: location.len, data: Data::Own });
         }
-        for extent in footer.frees {
+        for &extent in &footer.contents.frees {
             // fxdax: as a delta's frees (`Recovered::apply`): a footer frees those a commit held
             // alone, which the store spent ([`held_frees`], TASK-160.15).
             if extent.branch == branch {
@@ -330,10 +330,10 @@ pub(crate) fn rebuild<D: Dir>(
             }
             state.extents.remove(&extent);
         }
-        if let Some(root) = footer.root {
+        if let Some(root) = footer.contents.root.clone() {
             state.root = root;
         }
-        state.next_sequence = footer.next_sequence;
+        state.next_sequence = footer.contents.next_sequence;
         state.epoch = state.epoch.max(epoch);
     }
     Ok(state)

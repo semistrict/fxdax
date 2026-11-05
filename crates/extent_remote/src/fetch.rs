@@ -192,7 +192,7 @@ impl Tail {
         let (footer, parts) = (tail.footer(), &tail.parts);
         let (extents, table) = match layout::kind(key) {
             Kind::Segment { .. } => (
-                (Footer::decode(footer)?.extents.into_iter())
+                (Footer::decode(footer)?.contents.extents.into_iter())
                     .map(|(extent, offset, len)| (extent, (offset, len)))
                     .collect(),
                 None,

@@ -333,12 +333,13 @@ fn run_with(Run { steps, follow, uploading, cleaning }: Run) {
                     let holds = held(last);
                     let data = extent_frame::data(&closed.bytes().unwrap()).unwrap();
                     let own: BTreeMap<_, _> = closed.own_bytes().unwrap().into_iter().collect();
-                    let in_segment = closed.footer.extents.iter().map(|&(extent, offset, len)| {
-                        (extent, len, data[offset as usize..(offset + len) as usize].to_vec())
-                    });
-                    let on_their_own = closed.footer.own.iter().map(|(extent, location)| {
+                    let in_segment =
+                        closed.footer.contents.extents.iter().map(|&(extent, offset, len)| {
+                            (extent, len, data[offset as usize..(offset + len) as usize].to_vec())
+                        });
+                    let on_their_own = closed.footer.own().map(|(extent, location)| {
                         let data = extent_frame::data(&own[&location.key]).unwrap();
-                        (*extent, location.len, data)
+                        (extent, location.len, data)
                     });
                     // Each extent its footer names, as its last commit left it: in it, or in a
                     // file of its own, and for the uploader, though freed since.
@@ -353,7 +354,7 @@ fn run_with(Run { steps, follow, uploading, cleaning }: Run) {
                         );
                     }
                     // A fork's ends at the fork, as the fork's commit closed it (doc-7, Forks).
-                    if !closed.footer.forks.is_empty() {
+                    if !closed.footer.contents.forks.is_empty() {
                         let fork = loop {
                             if let Some((epoch, _)) = *forked.lock().unwrap() {
                                 break epoch;
@@ -684,7 +685,7 @@ fn cleaning_during_a_fork() {
     store.commit(None).unwrap();
     let closed = store.closed(usize::MAX).unwrap();
     let forking = (closed.iter())
-        .find(|closed| closed.footer.forks.iter().map(|forked| forked.branch).eq([CHILD]))
+        .find(|closed| closed.footer.contents.forks.iter().map(|forked| forked.branch).eq([CHILD]))
         .unwrap();
     let last = forking.last();
     assert!(last == fork, "a fork's segment ends after the fork: at commit {last}, of {fork}");

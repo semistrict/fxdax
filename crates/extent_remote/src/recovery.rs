@@ -80,29 +80,29 @@ impl State {
         }
         self.last_segment = Some((footer.seq, footer.epoch));
         self.epoch = self.epoch.max(footer.epoch);
-        for &(extent, offset, len) in &footer.extents {
+        for &(extent, offset, len) in &footer.contents.extents {
             self.extents.insert(extent, Location { key: key.to_owned(), offset, len });
         }
-        for (extent, location) in &footer.own {
-            self.extents.insert(*extent, location.clone());
+        for (extent, location) in footer.own() {
+            self.extents.insert(extent, location);
         }
         // Every free of the branch's own extents spends it, as its store spent it: a footer frees
         // only what a commit held, not what was freed while open (TASK-160.15); and one sealed and
         // freed within the segment is no seal of its, but a free (TASK-165.3).
-        for extent in &footer.frees {
+        for extent in &footer.contents.frees {
             self.extents.remove(extent);
             if extent.branch == self.branch {
                 self.spent.insert(extent.sequence);
             }
         }
-        if let Some(root) = &footer.root {
+        if let Some(root) = &footer.contents.root {
             self.root = Some(root.clone());
         }
-        if let Some(&commit) = footer.commits.last() {
+        if let Some(&commit) = footer.contents.commits.last() {
             self.last_commit = Some(commit);
         }
-        self.next_sequence = self.next_sequence.max(footer.next_sequence);
-        self.forks.extend(footer.forks.iter().map(|child| Fork::at(footer.seq, child)));
+        self.next_sequence = self.next_sequence.max(footer.contents.next_sequence);
+        self.forks.extend(footer.contents.forks.iter().map(|child| Fork::at(footer.seq, child)));
         true
     }
 }
@@ -159,9 +159,9 @@ impl Layers {
         if self.own.apply(key, footer)
             && let Some(inherited) = &self.inherited
         {
-            let sealed = footer.extents.iter().map(|(extent, ..)| extent);
-            let sealed = sealed.chain(footer.own.iter().map(|(extent, _)| extent));
-            let changed = sealed.chain(&footer.frees);
+            let sealed = footer.contents.extents.iter().map(|&(extent, ..)| extent);
+            let sealed = sealed.chain(footer.own().map(|(extent, _)| extent));
+            let changed = sealed.chain(footer.contents.frees.iter().copied());
             let shadowed = changed.filter(|extent| inherited.extents.contains_key(extent));
             self.shadowed.extend(shadowed);
         }
@@ -505,7 +505,7 @@ mod tests {
     use super::*;
     use crate::batch::{Batch, Commit};
     use crate::branch;
-    use crate::layout::child;
+    use crate::layout::{Contents, child};
     use crate::sim::bucket::SimBucket;
     use crate::store::Store;
     use crate::writer::Writer;
@@ -515,19 +515,8 @@ mod tests {
     /// A segment's object holds the segment its key names: of its branch, of its number.
     #[test]
     fn segments_are_where_their_keys_say() {
-        let footer = Footer {
-            branch: 1,
-            seq: 2,
-            epoch: 1,
-            after: None,
-            commits: vec![],
-            extents: vec![],
-            own: vec![],
-            frees: vec![],
-            root: None,
-            next_sequence: 0,
-            forks: vec![],
-        };
+        let footer =
+            Footer { branch: 1, seq: 2, epoch: 1, after: None, contents: Contents::default() };
         let bytes = Segment { data: Vec::new(), footer: footer.clone() }.encode();
         assert_eq!(super::footer("here", &bytes, 1, 2), Ok(footer));
         for (branch, seq) in [(1, 3), (4, 2)] {

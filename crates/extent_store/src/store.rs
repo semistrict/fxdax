@@ -1756,10 +1756,10 @@ impl<D: Dir> Store<D> {
         for (number, footer) in taken {
             let segment = SegmentId { branch: self.branch, number };
             let file = self.segment_file(state, segment)?.file().clone();
-            let mut own = Vec::with_capacity(footer.own.len());
-            for (extent, location) in &footer.own {
-                let file = state.own_files.file(&self.lineage.dir, *extent)?;
-                own.push((location.key.clone(), file.file.clone()));
+            let mut own = Vec::with_capacity(footer.contents.own.len());
+            for (extent, location) in footer.own() {
+                let file = state.own_files.file(&self.lineage.dir, extent)?;
+                own.push((location.key, file.file.clone()));
             }
             closed.push(Closed { number, footer, file, own });
         }

@@ -1389,7 +1389,8 @@ impl Shared {
         let mut segments = Vec::with_capacity(closed.len());
         for closed in closed {
             let tag = closed.tag();
-            let forks = closed.footer.forks.iter().map(|forked| forked.branch).collect();
+            let forks = closed.footer.contents.forks.iter().map(|forked| forked.branch);
+            let forks = forks.collect();
             let own = closed.own.iter().map(|(key, file)| Ok((key.clone(), stored(file)?)));
             let own = own.collect::<Result<_, Failure>>()?;
             let objects = Objects { footer: closed.footer, segment: stored(&closed.file)?, own };
@@ -1823,15 +1824,16 @@ mod tests {
         let [fence, first, last] = &footers[..] else {
             panic!("{} segments: {footers:?}", footers.len())
         };
-        assert_eq!((fence.commits.len(), fence.extents.len(), fence.own.len()), (0, 0, 0));
+        assert_eq!(fence.contents, extent_remote::layout::Contents::default());
         let bytes = |footer: &extent_remote::layout::Footer| {
-            let held: u64 = footer.extents.iter().map(|(_, _, len)| len).sum();
-            held + footer.own.iter().map(|(_, location)| location.len).sum::<u64>()
+            let held: u64 = footer.contents.extents.iter().map(|(_, _, len)| len).sum();
+            held + footer.own().map(|(_, location)| location.len).sum::<u64>()
         };
         assert_eq!(bytes(first), super::BATCH);
         assert_eq!(bytes(last), 2 * super::LARGE + BLOCK as u64);
-        assert_eq!((first.commits.len(), &first.root), (0, &None));
-        assert_eq!((last.commits.len(), &last.root), (1, &Some(b"before".to_vec())));
+        assert_eq!((first.contents.commits.len(), &first.contents.root), (0, &None));
+        let before = Some(b"before".to_vec());
+        assert_eq!((last.contents.commits.len(), &last.contents.root), (1, &before));
         assert_eq!(uploaded(&bucket, branch), (written, Some(b"before".to_vec())));
     }
 
@@ -2065,7 +2067,7 @@ mod tests {
         // The branch's segments but its writer's fence, which holds no commit.
         let mut segments: Vec<_> = objects(layout::segments(branch))
             .into_iter()
-            .filter(|bytes| !layout::footer::<Footer>(bytes).unwrap().commits.is_empty())
+            .filter(|bytes| !layout::footer::<Footer>(bytes).unwrap().contents.commits.is_empty())
             .collect();
         segments.sort();
         assert_eq!(segments.len(), 2);
@@ -3196,7 +3198,9 @@ mod tests {
         let footers = footers(&bucket, branch);
         let last = footers.last().unwrap();
         let freed = storage_device::ExtentId::new(branch, sealed.sequence);
-        assert_eq!((last.commits.len(), last.extents.len(), &last.frees), (1, 0, &vec![freed]));
+        let contents = &last.contents;
+        let (commits, extents) = (contents.commits.len(), contents.extents.len());
+        assert_eq!((commits, extents, &contents.frees), (1, 0, &vec![freed]));
         let data = pattern(3, BLOCK);
         let again = [crate::VolatileSlice::from(&data[..])];
         assert_eq!(first.write(sealed, 0, &again), Err(crate::Errno::EPERM));
