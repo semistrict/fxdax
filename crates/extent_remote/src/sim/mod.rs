@@ -114,6 +114,7 @@ fn one() {
             "ways_from_seals" => rules.ways_from_seals = false,
             "moves_taken_first" => rules.moves_taken_first = false,
             "leases_by_takings" => rules.leases_by_takings = false,
+            "passes_fenced_stop" => rules.passes_fenced_stop = false,
             other => panic!("no rule {other}"),
         }
     }

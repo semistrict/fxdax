@@ -122,7 +122,17 @@ impl Collector {
             if rules().collector_abandons {
                 abandon(bucket, &mut records).await?;
             }
-            let checkpointed = recover_live(bucket, &records, &mut live).await?;
+            let checkpointed = match recover_live(bucket, &records, &mut live).await {
+                // Fenced, it read what the pass that fenced it, deleting since, may have found no
+                // live branch needs: a point deleted, read live before, and its fork being made,
+                // read after (TASK-180). It stops, as it would before deleting.
+                Err(Error::Lost(_))
+                    if rules().passes_fenced_stop && fenced(bucket, epoch).await? =>
+                {
+                    return Ok(Report::default());
+                }
+                recovered => recovered?,
+            };
             if !checkpointed || !rules().records_relisted {
                 break;
             }
@@ -141,7 +151,7 @@ impl Collector {
         pass.compact(bucket, &self.options, &mut report).await?;
         let doomed = pass.doomed(bucket, &self.options).await?;
         // A pass a later one took the lease from stops.
-        if branch::lease_epoch(bucket, layout::GC_LEASE).await? != epoch {
+        if fenced(bucket, epoch).await? {
             return Ok(report);
         }
         // Many at once, in any order: none of it is what a live branch needs, whatever else goes.
@@ -193,6 +203,11 @@ impl Collector {
             }
         }
     }
+}
+
+/// Whether a later pass took the collector's lease from the pass that took it at `epoch`.
+async fn fenced(bucket: &impl Bucket, epoch: u64) -> Result<bool, Error> {
+    Ok(branch::lease_epoch(bucket, layout::GC_LEASE).await? != epoch)
 }
 
 /// Gives up on the forks being made of points that were deleted, as `records` say, which it says
@@ -1093,11 +1108,66 @@ mod tests {
         writer.acknowledge().await
     }
 
+    /// TASK-180: a pass that read a point live, its records listed again finding a fork being made
+    /// of it after another pass took the collector's lease, the point deleted and what it named
+    /// reclaimed meanwhile, finds what the fork names lost: fenced, it stops, deleting nothing, as
+    /// it would before deleting. Found by the simulation, seed 13797 of its `restores` at
+    /// SIM_SOAK=100.
+    #[test]
+    fn passes_fenced_finding_forks_of_points_lost_stop() {
+        assert_eq!(block_on(pass_fenced_as_a_point_goes()), Ok(Report::default()));
+    }
+
+    /// A pass failing on what it finds lost, fenced or not: it fails.
+    #[test]
+    fn passes_fenced_finding_forks_of_points_lost_stopping_need_passes_fenced_stop() {
+        crate::set_rules(crate::Rules { passes_fenced_stop: false, ..crate::Rules::ALL });
+        let passed = block_on(pass_fenced_as_a_point_goes());
+        crate::set_rules(crate::Rules::ALL);
+        let lost = Error::Lost("branch 4: what its recovery starts from keeps going".into());
+        assert_eq!(passed, Err(lost));
+    }
+
+    /// What a pass gives, a point of branch 1 deleted, a later pass reclaiming what it named, and
+    /// a fork of the point being made to branch 4, as the pass lists the records a second time,
+    /// having read the point's before.
+    async fn pass_fenced_as_a_point_goes() -> Result<Report, Error> {
+        use crate::layout::{Contents, Origin, Segment};
+        use crate::writer::Objects;
+        let direct = Arc::new(Direct(SimBucket::new()));
+        branch::create(&*direct, 1, 0).await.unwrap();
+        let writer = Writer::open(direct.clone(), 1, 10, 0).await.unwrap();
+        let extent = ExtentId::new(1, writer.chain().next_sequence());
+        let extents = vec![(extent, b"held".to_vec())];
+        commit(&writer, Commit { tag: 1, extents, ..Commit::default() }).await;
+        let point = Child { branch: 3, owner: 0x33, point: true };
+        let footer = writer.chain().close(Contents { forks: vec![point], ..Contents::default() });
+        let segment = Segment { data: Vec::new(), footer: footer.clone() }.encode().into();
+        let at = writer.add_segment(Objects { footer, segment, own: Vec::new() }).unwrap();
+        writer.upload(at).await.unwrap();
+        writer.acknowledge().await.unwrap();
+        commit(&writer, Commit { tag: 2, frees: vec![extent], ..Commit::default() }).await;
+        writer.checkpoint().await.unwrap();
+        let bucket = Hooked::new(direct.clone(), Hook::Listing(layout::BRANCHES.into(), 2));
+        *bucket.then.lock().unwrap() = Some(Box::new(move || {
+            let origin = Origin { parent: 1, at };
+            branch::delete(&*direct, 3, 11, u64::MAX).now_or_never().unwrap().unwrap();
+            collect(&*direct, 2, &KEEP).now_or_never().unwrap().unwrap();
+            let left = keys(&*direct).now_or_never().unwrap();
+            assert!(!left.contains(&layout::segment(1, at)), "the point's state stayed");
+            let forked = branch::fork_point(&*direct, 4, 3, origin, 0x44).now_or_never().unwrap();
+            assert_eq!(forked, Err(Error::Deleted));
+        }));
+        collect(&bucket, 1, &KEEP).await
+    }
+
     /// A bucket that runs `then` once, at the first request its hook names.
     struct Hooked {
         bucket: Arc<Direct>,
         hook: Hook,
         then: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+        /// How many listings of [`Hook::Listing`]'s prefix it answered.
+        listed: Mutex<usize>,
     }
 
     /// Where [`Hooked`] runs what it runs.
@@ -1106,11 +1176,13 @@ mod tests {
         Checkpointed,
         /// Before a get of the object at this key.
         Getting(String),
+        /// Before the listing of this prefix of this number, from 1.
+        Listing(String, usize),
     }
 
     impl Hooked {
         fn new(bucket: Arc<Direct>, hook: Hook) -> Self {
-            Self { bucket, hook, then: Mutex::default() }
+            Self { bucket, hook, then: Mutex::default(), listed: Mutex::default() }
         }
 
         /// What it runs, if `now` and it has yet to.
@@ -1143,6 +1215,17 @@ mod tests {
             &self,
             prefix: &str,
         ) -> impl Future<Output = Result<Vec<Meta>, BucketError>> + Send {
+            if let Hook::Listing(at, nth) = &self.hook
+                && at == prefix
+            {
+                let mut listed = self.listed.lock().unwrap();
+                *listed += 1;
+                let now = *listed == *nth;
+                drop(listed);
+                if let Some(then) = self.then(now) {
+                    then();
+                }
+            }
             self.bucket.list(prefix)
         }
 

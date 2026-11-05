@@ -206,6 +206,10 @@ pub(crate) struct Rules {
     /// epoch alone: a deleted branch's lease removed and taken again restarts its epochs
     /// (TASK-179).
     pub leases_by_takings: bool,
+    /// A pass of the collector that finds what a live branch needs lost stops, without failing, if
+    /// a later pass took the collector's lease from it: what it read before may be older than what
+    /// that pass, deleting since, read (TASK-180).
+    pub passes_fenced_stop: bool,
 }
 
 impl Rules {
@@ -234,6 +238,7 @@ impl Rules {
         ways_from_seals: true,
         moves_taken_first: true,
         leases_by_takings: true,
+        passes_fenced_stop: true,
     };
 }
 
