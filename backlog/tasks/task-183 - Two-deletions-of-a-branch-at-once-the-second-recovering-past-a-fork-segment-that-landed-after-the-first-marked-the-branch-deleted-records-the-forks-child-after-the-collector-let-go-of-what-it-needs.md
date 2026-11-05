@@ -4,9 +4,11 @@ title: >-
   Two deletions of a branch at once: the second, recovering past a fork segment
   that landed after the first marked the branch deleted, records the fork's
   child after the collector let go of what it needs
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-11-05 10:53'
+updated_date: '2026-11-05 14:08'
 labels:
   - remote
   - collector
@@ -34,3 +36,23 @@ Found by specs/bucket's TLA+ (TASK-165.2, the model BucketForks), once a deletio
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Rules::deletions_fence: branch::delete, having recovered the branch, creates an empty segment of the final epoch at the end it found; a segment there first is applied (its forks recorded too) and the fence goes after it. Points and claims lost need none.
+2. Direct test: a fork segment in flight; two deletions; the first recovers to the gap and marks deleted; a pass; the segment lands (or fails, fenced); the second deletion. Red with the rule off: the child recorded after the pass let go of its origin, the next pass Lost.
+3. specs/bucket: deletionsFence becomes a field's rule; the header and doc-7 say so.
+4. Simulation, if cheap.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Fixed as the spec models it: Rules::deletions_fence. branch::delete, having recovered the branch (not a point, nor a claim found lost), fences it: fence_deleted creates an empty segment of the final epoch (Lease::FINAL) at the end it found, applying a segment landed there first and fencing after it, before it records the forks' children. The create is recovery::fence, which Writer::take's fence now uses too (one place makes and applies an empty segment at a branch's end).
+Red/green: collector::tests::deletions_at_once_fence_out_forks_landing_between_them (the fork's upload finds the fence, Err(Fenced); no child record; the next pass deletes the second deletion's fence, Ok(deleted 1)) and deletions_at_once_fencing_out_forks_landing_between_them_need_deletions_fence (rule off: the upload lands, the second deletion records Fork(1 at 2), the next pass fails Lost("branch 2: what its recovery starts from keeps going")). The second deletion waits in a Gated bucket at its checkpoints listing; the pass runs the landing and the second deletion at its second read of gc/lease, before it deletes (Hook::Getting now counts from when the hook is armed).
+Spec: deletionsFence is now a field's rule (header: 28 fields, then deletionsDoneByOthers); NoDeletionsFence violates NothingNeededGone in 1s.
+Simulation: profile deleted_forking (forks, stale and latest deletions, takeovers, collectors): branches_deleted_twice_while_forking holds 200 seeds; deletions_need_fences finds seed 4505 with the rule off (a fork's child lost: 'branch 1b does not open: lost: ... keeps going', the collector failing likewise).
+passes_read_records_and_checkpoints_once_and_delete_at_once now counts the deleted forks' fences among what a pass deletes (10, then 2, where 8 and 1).
+Blind spot: the simulation's stale deletions ran only in stale_placements, which forks little, so no fork segment was in flight across two deletions; and the collector's assumption that a deleted branch's children have records before it is marked deleted had no test with two deletions. Class: deleted_forking and the direct test. Look around: other places a branch's end is read without a fence: delete_fork's claim (recovery::holds, read once, its record a claim that lost_is_ok covers), the collector (reads, never relies on an end not moving: may_land keeps segments at or past it), points (no writer). Structure: the deletion's fence makes the deletion a writer taking the branch over for the last time, the one rule that settles a branch's end, now one function for both.
+<!-- SECTION:NOTES:END -->

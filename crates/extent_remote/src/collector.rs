@@ -1051,7 +1051,7 @@ mod tests {
         use crate::layout::{Contents, Origin, Segment};
         use crate::writer::Objects;
         let direct = Arc::new(Direct(SimBucket::new()));
-        let bucket = Arc::new(Hooked::new(direct.clone(), Hook::Getting(layout::record(1))));
+        let bucket = Arc::new(Hooked::new(direct.clone(), Hook::Getting(layout::record(1), 1)));
         branch::create(&*bucket, 1, 0).await.unwrap();
         let parent = Writer::open(bucket.clone(), 1, 10, 0).await.unwrap();
         let extent = ExtentId::new(1, parent.chain().next_sequence());
@@ -1335,6 +1335,70 @@ mod tests {
         (record, collect(&*direct, 2, &now).await)
     }
 
+    /// TASK-183: two deletions of a branch at once, a fork's segment of its writer's in flight,
+    /// never acknowledged. The first recovers the branch to the gap where the segment goes and
+    /// fences it there; a pass reads the branch deleted and no record of the fork's child; the
+    /// segment, landing, finds the fence, and the second deletion, which read the record live
+    /// before the first marked it, finds no fork either: the pass lets go of nothing the child
+    /// needs, as the child has no record. Found by specs/bucket's TLA+ (TASK-165.2), the model
+    /// BucketForks once a deletion recovered in two steps.
+    #[test]
+    fn deletions_at_once_fence_out_forks_landing_between_them() {
+        let fenced = (Err(Error::Fenced), None, Ok(Report { deleted: 1, compacted: 0 }));
+        assert_eq!(block_on(delete_twice_as_a_fork_lands()), fenced);
+    }
+
+    /// A deletion fencing nothing: the segment lands, the second deletion records the fork's
+    /// child after the first marked the branch deleted, and the pass deletes the child's origin,
+    /// which fails every pass after.
+    #[test]
+    fn deletions_at_once_fencing_out_forks_landing_between_them_need_deletions_fence() {
+        crate::set_rules(crate::Rules { deletions_fence: false, ..crate::Rules::ALL });
+        let landed = block_on(delete_twice_as_a_fork_lands());
+        crate::set_rules(crate::Rules::ALL);
+        let child = crate::record::Kind::Fork(Origin { parent: 1, at: 2 }).of(0);
+        let lost = Error::Lost("branch 2: what its recovery starts from keeps going".into());
+        assert_eq!(landed, (Ok(()), Some(child), Err(lost)));
+    }
+
+    /// What the upload of branch 1's fork to child 2 gives, landing as a pass that read 1 deleted
+    /// is about to delete, deleted twice at once; the child's record, and what a pass after gives.
+    async fn delete_twice_as_a_fork_lands()
+    -> (Result<(), Error>, Option<Record>, Result<Report, Error>) {
+        use crate::layout::{Contents, Segment};
+        use crate::writer::Objects;
+        const PARENT: u64 = 1;
+        const CHILD: u64 = 2;
+        let direct = Arc::new(Direct(SimBucket::new()));
+        branch::create(&*direct, PARENT, 0).await.unwrap();
+        let writer = Arc::new(Writer::open(direct.clone(), PARENT, 10, 0).await.unwrap());
+        commit(&writer, Commit { tag: 1, ..Commit::default() }).await;
+        let footer =
+            writer.chain().close(Contents { forks: vec![child(CHILD)], ..Contents::default() });
+        let segment = Segment { data: Vec::new(), footer: footer.clone() }.encode().into();
+        let at = writer.add_segment(Objects { footer, segment, own: Vec::new() }).unwrap();
+        // The second deletion, the lease ended and the record read live, waits to recover.
+        let (gated, open) = Gated::new(direct.clone(), Gate::List(layout::checkpoints(PARENT)));
+        let gated = Arc::new(gated);
+        let mut second = Box::pin(async move { branch::delete(&*gated, PARENT, 12, 0).await });
+        assert!((&mut second).now_or_never().is_none());
+        branch::delete(&*direct, PARENT, 11, 0).await.unwrap();
+        // Before the pass deletes, as it reads the collector's lease again.
+        let pass = Hooked::new(direct.clone(), Hook::Getting(layout::GC_LEASE.into(), 2));
+        let landed = Arc::new(Mutex::new(None));
+        let landing = landed.clone();
+        *pass.then.lock().unwrap() = Some(Box::new(move || {
+            *landing.lock().unwrap() = writer.upload(at).now_or_never();
+            open.send(()).unwrap();
+            assert_eq!((&mut second).now_or_never(), Some(Ok(())));
+        }));
+        let now = Options { compact_below: 0.0, grace: 0 };
+        collect(&pass, 1, &now).await.unwrap();
+        let landed = landed.lock().unwrap().take().expect("the pass deleted nothing");
+        let record = branch::record(&*direct, CHILD).await.unwrap();
+        (landed, record, collect(&*direct, 2, &now).await)
+    }
+
     /// A bucket whose first request its gate names waits until the gate opens: what [`Gated::new`]
     /// gives with it opens it.
     struct Gated {
@@ -1345,6 +1409,8 @@ mod tests {
 
     /// The request a [`Gated`] bucket holds.
     enum Gate {
+        /// The listing of this prefix.
+        List(String),
         /// The put of an object at this key.
         Put(String),
     }
@@ -1382,7 +1448,13 @@ mod tests {
             &self,
             prefix: &str,
         ) -> impl Future<Output = Result<Vec<Meta>, BucketError>> + Send {
-            self.bucket.list(prefix)
+            let gate = self.wait(matches!(&self.gate, Gate::List(at) if at == prefix));
+            async move {
+                if let Some(gate) = gate {
+                    gate.await.unwrap();
+                }
+                self.bucket.list(prefix).await
+            }
         }
 
         fn put(
@@ -1391,8 +1463,7 @@ mod tests {
             bytes: Vec<u8>,
             mode: PutMode,
         ) -> impl Future<Output = Result<Version, BucketError>> + Send {
-            let Gate::Put(at) = &self.gate;
-            let gate = self.wait(at == key);
+            let gate = self.wait(matches!(&self.gate, Gate::Put(at) if at == key));
             async move {
                 if let Some(gate) = gate {
                     gate.await.unwrap();
@@ -1410,39 +1481,55 @@ mod tests {
         }
     }
 
-    /// A bucket that runs `then` once, at the first request its hook names.
+    /// A bucket that runs `then` once, at the request its hook names, counted from when `then` was
+    /// set.
     struct Hooked {
         bucket: Arc<Direct>,
         hook: Hook,
         then: Mutex<Option<Box<dyn FnOnce() + Send>>>,
-        /// How many listings of [`Hook::Listing`]'s prefix it answered.
-        listed: Mutex<usize>,
+        /// How many gets of [`Hook::Getting`]'s key, or listings of [`Hook::Listing`]'s prefix, it
+        /// answered with `then` set.
+        asked: Mutex<usize>,
     }
 
     /// Where [`Hooked`] runs what it runs.
     enum Hook {
         /// As the create of a checkpoint takes effect, before it is answered.
         Checkpointed,
-        /// Before a get of the object at this key.
-        Getting(String),
+        /// Before the get of the object at this key of this number, from 1.
+        Getting(String, usize),
         /// Before the listing of this prefix of this number, from 1.
         Listing(String, usize),
     }
 
     impl Hooked {
         fn new(bucket: Arc<Direct>, hook: Hook) -> Self {
-            Self { bucket, hook, then: Mutex::default(), listed: Mutex::default() }
+            Self { bucket, hook, then: Mutex::default(), asked: Mutex::default() }
         }
 
         /// What it runs, if `now` and it has yet to.
         fn then(&self, now: bool) -> Option<Box<dyn FnOnce() + Send>> {
             now.then(|| self.then.lock().unwrap().take()).flatten()
         }
+
+        /// What it runs, if this request, one of those it counts, is the `nth` with `then` set.
+        fn nth(&self, counted: bool, nth: usize) -> Option<Box<dyn FnOnce() + Send>> {
+            if !counted || self.then.lock().unwrap().is_none() {
+                return None;
+            }
+            let mut asked = self.asked.lock().unwrap();
+            *asked += 1;
+            let now = *asked == nth;
+            drop(asked);
+            self.then(now)
+        }
     }
 
     impl Bucket for Hooked {
         fn get(&self, key: &str) -> impl Future<Output = Result<Object, BucketError>> + Send {
-            if let Some(then) = self.then(matches!(&self.hook, Hook::Getting(at) if at == key)) {
+            if let Hook::Getting(at, nth) = &self.hook
+                && let Some(then) = self.nth(at == key, *nth)
+            {
                 then();
             }
             self.bucket.get(key)
@@ -1465,15 +1552,9 @@ mod tests {
             prefix: &str,
         ) -> impl Future<Output = Result<Vec<Meta>, BucketError>> + Send {
             if let Hook::Listing(at, nth) = &self.hook
-                && at == prefix
+                && let Some(then) = self.nth(at == prefix, *nth)
             {
-                let mut listed = self.listed.lock().unwrap();
-                *listed += 1;
-                let now = *listed == *nth;
-                drop(listed);
-                if let Some(then) = self.then(now) {
-                    then();
-                }
+                then();
             }
             self.bucket.list(prefix)
         }
@@ -1606,13 +1687,14 @@ mod tests {
         }
         // Its record, its children's, the deleted ones' too; its checkpoint; the segments the
         // checkpoint covers that hold no extent its branches hold, its extents freed, and the
-        // leases of its children deleted.
-        assert_eq!(passes, [[vec![9], vec![1], vec![8]], [vec![], vec![1], vec![]]]);
+        // leases and deletions' fences of its children deleted (TASK-183).
+        assert_eq!(passes, [[vec![9], vec![1], vec![10]], [vec![], vec![1], vec![]]]);
 
+        // The fork deleted: its lease and its deletion's fence go.
         bucket.served(branch::delete(&*bucket, 2, 20, 0)).0.unwrap();
         let (report, rounds) = bucket.served_in_rounds(collector.collect(&*bucket, 3));
         report.unwrap();
-        assert_eq!(asked(&rounds), [vec![1], vec![1], vec![1]]);
+        assert_eq!(asked(&rounds), [vec![1], vec![1], vec![2]]);
     }
 
     /// TASK-92.7: what forks inherited together, taken once for them all, goes only once none of

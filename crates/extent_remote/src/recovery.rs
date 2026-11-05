@@ -18,8 +18,8 @@
 //! them. A reader that finds a segment missing checks that no checkpoint newer than the one it
 //! started from has come: if one has, the segment may be one it covers, gone, and it starts again.
 
-use crate::bucket::{self, Bucket};
-use crate::layout::{self, Contents, Footer, Fork, Location, Origin, Segment};
+use crate::bucket::{self, Bucket, Created};
+use crate::layout::{self, Chain, Contents, Footer, Fork, Location, Origin, Segment};
 use crate::record::Record;
 use crate::{Error, object, rules};
 use extent_frame::spent::Spent;
@@ -522,6 +522,29 @@ async fn segment_footer(
     let key = layout::segment(branch, seq);
     let Some(tail) = object::tail(bucket, &key).await? else { return Ok(None) };
     Ok(Some(placed(&key, layout::decode(tail.footer())?, branch, seq)?))
+}
+
+/// Puts an empty segment of the writer of lease epoch `epoch` at `seq`, the place after what
+/// `state` applied, and applies it; or, if a segment landed there first, applies that, returning its
+/// footer. A writer taking the branch over fences it so, at the end it recovered to and past the
+/// gaps after it; and so does a deletion, of the final epoch, at the end it recovered to (doc-7,
+/// Fencing; TASK-183).
+pub(crate) async fn fence(
+    bucket: &impl Bucket,
+    state: &mut State,
+    epoch: u64,
+    seq: u64,
+) -> Result<Option<Footer>, Error> {
+    let branch = state.branch;
+    let key = layout::segment(branch, seq);
+    let mut chain = Chain::new(branch, epoch, seq, state.last_segment, state.next_sequence);
+    let empty = Segment { data: Vec::new(), footer: chain.close(Contents::default()) };
+    let found = match bucket::create(bucket, &key, empty.encode()).await {
+        Created::Created => None,
+        Created::Exists(object) => Some(footer(&key, &object.bytes, branch, seq)?),
+    };
+    state.apply(found.as_ref().unwrap_or(&empty.footer));
+    Ok(found)
 }
 
 /// The footer of segment `seq` of `branch`, whose object holds `bytes`.

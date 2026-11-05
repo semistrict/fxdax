@@ -117,6 +117,7 @@ fn one() {
             "passes_fenced_stop" => rules.passes_fenced_stop = false,
             "recoveries_by_origins" => rules.recoveries_by_origins = false,
             "records_kept" => rules.records_kept = false,
+            "deletions_fence" => rules.deletions_fence = false,
             other => panic!("no rule {other}"),
         }
     }
@@ -139,6 +140,7 @@ fn one() {
         "whole_restores" => whole_restores(),
         "taking_ids" => restores_taking_ids(),
         "usurped" => usurped(),
+        "deleted_forking" => deleted_forking(),
         other => panic!("no profile {other}"),
     };
     let count = std::env::var("SIM_SEEDS").map_or(1, |count| count.parse().unwrap());
@@ -197,6 +199,23 @@ test_holds!(stale_placements_take_nothing_back, stale_placements());
 test_needs!(fencing_needs_tokens, tokens, stale_placements());
 
 test_needs!(deletes_need_tokens, delete_tokens, stale_placements());
+
+/// Branches forking, deleted twice at once, by a placement cut off and the latest one, while their
+/// writers' fork segments are in flight and collectors run (TASK-183).
+fn deleted_forking() -> Profile {
+    weights(|weights| {
+        weights.fork = 6;
+        weights.open = 6;
+        weights.takeover = 2;
+        weights.stale_delete = 4;
+        weights.delete = 3;
+        weights.collect = 8;
+    })
+}
+
+test_holds!(branches_deleted_twice_while_forking, deleted_forking());
+
+test_needs!(deletions_need_fences, deletions_fence, deleted_forking());
 
 /// Case 3: forks racing collection and compaction.
 fn collected() -> Profile {

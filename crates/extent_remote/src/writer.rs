@@ -26,7 +26,7 @@
 
 use crate::bucket::{self, Bucket, Created};
 use crate::fetch::{Budget, Limits, Priority};
-use crate::layout::{self, Chain, Child, Contents, Footer, Location, Origin, Segment};
+use crate::layout::{self, Chain, Child, Footer, Location, Origin};
 use crate::moves::MovesMaps;
 use crate::record::Record;
 use crate::recovery::{self, Recovered, State};
@@ -192,23 +192,11 @@ impl<B: Bucket> Writer<B> {
             .max();
         let mut fenced = !rules().fence;
         while !fenced || last.is_some_and(|last| seq <= last) {
-            let key = layout::segment(branch, seq);
-            let footer = chain_after(&state, epoch, seq, 0).close(Contents::default());
-            let empty = Segment { data: Vec::new(), footer };
-            let footer = match bucket::create(&*bucket, &key, empty.encode()).await {
-                Created::Created => {
-                    fenced = true;
-                    empty.footer
-                }
-                Created::Exists(object) => {
-                    let footer = recovery::footer(&key, &object.bytes, branch, seq)?;
-                    if footer.epoch > epoch {
-                        return Err(Error::Fenced);
-                    }
-                    footer
-                }
-            };
-            state.apply(&footer);
+            match recovery::fence(&*bucket, &mut state, epoch, seq).await? {
+                None => fenced = true,
+                Some(footer) if footer.epoch > epoch => return Err(Error::Fenced),
+                Some(_) => {}
+            }
             seq += 1;
         }
         let mut floor = 0;
@@ -530,7 +518,7 @@ impl<B: Bucket> Writer<B> {
 mod tests {
     use super::*;
     use crate::batch::{Batch, Commit};
-    use crate::layout::child;
+    use crate::layout::{Contents, Segment, child};
     use crate::store::{Request, Store};
     use object_store::memory::InMemory;
 

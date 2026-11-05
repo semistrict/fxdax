@@ -226,6 +226,13 @@ pub(crate) struct Rules {
     /// naming what the collector reclaimed (TASK-174).
     /// TLA+: `specs/bucket/mutations/NoRecordsKept.cfg`.
     pub records_kept: bool,
+    /// A deletion that recovered the branch puts an empty segment of the final epoch at the end it
+    /// found, as a writer taking over puts its fence, applying a segment landed there first and
+    /// fencing after it: every segment landing after follows none of the branch's, so that every
+    /// deletion of it finds the forks this one does, whose children have their records before it
+    /// is marked deleted (TASK-183).
+    /// TLA+: `specs/bucket/mutations/NoDeletionsFence.cfg`.
+    pub deletions_fence: bool,
 }
 
 impl Rules {
@@ -257,6 +264,7 @@ impl Rules {
         passes_fenced_stop: true,
         recoveries_by_origins: true,
         records_kept: true,
+        deletions_fence: true,
     };
 }
 

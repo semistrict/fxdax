@@ -45,10 +45,9 @@
 (*                                                                         *)
 (* Each rule is a member of Rules; specs/bucket/mutations removes one      *)
 (* each, and must find the violation it prevents (each mutation's model    *)
-(* says which, and how). The first 27 are the fields of extent_remote's    *)
+(* says which, and how). The first 28 are the fields of extent_remote's    *)
 (* `Rules` (crates/extent_remote/src/lib.rs); then one the code holds      *)
-(* with no field (TASK-178), and one it lacks (TASK-183); the last two     *)
-(* doc-14's, which TASK-165.5 adds:                                        *)
+(* with no field (TASK-178); the last two doc-14's, which TASK-165.5 adds: *)
 (*                                                                         *)
 (* - acksAfterLease (NoAcksAfterLease): a writer acknowledges a segment    *)
 (*   only once a read of its lease after the creates shows it still its.   *)
@@ -118,16 +117,16 @@
 (* - recordsKept (NoRecordsKept): the collector drops no record, a deleted *)
 (*   root's neither: a parent's writer slow to record a fork whose child's *)
 (*   ID a root took, and was deleted, would make it again (TASK-174).      *)
+(* - deletionsFence (NoDeletionsFence): a deletion's recovery creates an   *)
+(*   empty segment of the final epoch at the end it found, as a writer     *)
+(*   taking over does, so that every deletion of the branch finds the same *)
+(*   forks: without it, a second deletion, recovering past a fork's        *)
+(*   segment landed after the first marked the branch deleted, records the *)
+(*   child of a fork never acknowledged, whose origin a pass, reading the  *)
+(*   branch deleted and no record of the child, deletes (TASK-183).        *)
 (* - deletionsDoneByOthers (NoDeletionsDoneByOthers): a deletion whose     *)
 (*   recovery of the branch finds what it needs lost, the record deleted   *)
 (*   since, is done (TASK-178; branch::delete, with no field of Rules).    *)
-(* - deletionsFence (NoDeletionsFence): a deletion's recovery creates an   *)
-(*   empty segment at the end it found, as a writer taking over does, so   *)
-(*   that every deletion of the branch finds the same forks. Not in the    *)
-(*   code (TASK-183): a second deletion, recovering past a fork's segment  *)
-(*   landed after the first marked the branch deleted, records the child   *)
-(*   of a fork never acknowledged, whose origin a pass, reading the        *)
-(*   branch deleted and no record of the child, deletes.                   *)
 (* - walFollows (NoWalFollows): a WAL is put after the branch only if the  *)
 (*   branch's last commit is one of the WAL's or the commit the WAL        *)
 (*   started from.                                                         *)
@@ -193,7 +192,7 @@ AllRules == {"acksAfterLease", "fence", "continuity", "epochSequences", "records
              "pointsTakeNoWriter", "forksCheckPoints", "forksPending", "collectorAbandons",
              "recordsRelisted", "recordsOwned", "extentKeysNameSegments", "waysFromSeals",
              "movesTakenFirst", "leasesByTakings", "passesFencedStop", "recoveriesByOrigins",
-             "recordsKept", "deletionsDoneByOthers", "deletionsFence", "walFollows",
+             "recordsKept", "deletionsFence", "deletionsDoneByOthers", "walFollows",
              "walAfterFence"}
 
 AllCan == {"commit", "mint", "seg", "own", "free", "fork", "point", "restore", "unfork",

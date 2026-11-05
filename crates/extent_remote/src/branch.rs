@@ -14,7 +14,7 @@
 use crate::bucket::{self, Bucket, Created, Updated};
 use crate::layout::{self, Child, Kind as Key, Lease, Origin};
 use crate::record::{Kind, Record};
-use crate::recovery::{self, recover};
+use crate::recovery::{self, Recovered, State, recover};
 use crate::{Error, rules};
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -317,11 +317,11 @@ pub async fn holds_lease(
 }
 
 /// Deletes `branch`, as `holder`, of the placement whose fencing token is `token`: no writer takes
-/// it again, the one it has stops at its next acknowledgement, and the collector reclaims what no
-/// other branch inherited from it. Deleting it again does nothing, though the collector reclaimed
-/// that since. Fails for a branch a later placement took, whose token is higher
-/// ([`Error::Stale`]), leaving it as it was: a placement cut off deletes no branch from under the
-/// one after it (TASK-45.1).
+/// it again, the one it has stops at its next acknowledgement, no segment lands in it past the
+/// deletion's fence ([`fence_deleted`]), and the collector reclaims what no other branch inherited
+/// from it. Deleting it again does nothing, though the collector reclaimed that since. Fails for a
+/// branch a later placement took, whose token is higher ([`Error::Stale`]), leaving it as it was:
+/// a placement cut off deletes no branch from under the one after it (TASK-45.1).
 pub async fn delete(
     bucket: &impl Bucket,
     branch: u64,
@@ -346,6 +346,10 @@ pub async fn delete(
     // neither a writer nor a child, if it does.
     if record.forking().is_none() {
         let forks = match recover(bucket, branch, record.origin()).await {
+            // A point, which no writer has, needs no fence.
+            Ok(recovered) if rules().deletions_fence && !record.is_point() => {
+                fence_deleted(bucket, recovered).await?.forks
+            }
             Ok(recovered) => recovered.state.forks,
             // Deleted meanwhile, by another deletion, which gave its children their records: what
             // recovering it needs, the collector may have reclaimed since (TASK-178).
@@ -368,6 +372,23 @@ pub async fn delete(
     }
     failpoint!("branch::children_recorded");
     mark_deleted(bucket, branch).await
+}
+
+/// The state of a branch being deleted that `recovered` found, fenced, as [`delete`] fences it: an
+/// empty segment of the final epoch at its end, as a writer taking the branch over puts its fence
+/// ([`recovery::fence`]); a segment landed there first, of a writer that never acknowledged it,
+/// applied, and the fence after it. Every segment landing after follows none of the branch's, so
+/// that every deletion of it finds the forks this one does, and gives their children their records
+/// before the branch is marked deleted, as the collector, reading it deleted, relies on: a second
+/// deletion, of a placement cut off or the latest one's again, recovering past a fork's segment
+/// landed after this one marked the branch deleted, would record the fork's child after a pass let
+/// go of what it needs (TASK-183).
+async fn fence_deleted(bucket: &impl Bucket, recovered: Recovered) -> Result<State, Error> {
+    let Recovered { mut state, mut end, .. } = recovered;
+    while recovery::fence(bucket, &mut state, Lease::FINAL, end).await?.is_some() {
+        end += 1;
+    }
+    Ok(state)
 }
 
 /// Ends `branch`'s lease, as [`delete`] does first: its final epoch, which no writer takes, as
