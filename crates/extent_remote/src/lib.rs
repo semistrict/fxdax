@@ -189,6 +189,17 @@ pub(crate) struct Rules {
     /// are committed in no order of their sequence numbers (TASK-79.3, TASK-153.7).
     /// TLA+: `specs/bucket/mutations/NoExtentKeysNameSegments.cfg`.
     pub extent_keys_name_segments: bool,
+    /// The collector keeps every moves on the way to an extent from where it was sealed, not only
+    /// from where the branch's state says it is, unless that state's checkpoint is by the writer
+    /// holding the branch's lease, read after the checkpoint was: a checkpoint of another writer's,
+    /// landing after the writer recovered the branch, or an inherited state, may name the extent
+    /// further along its moves than the writer does (TASK-175).
+    pub ways_from_seals: bool,
+    /// A writer names the extents its checkpoint records as moved where they went before it
+    /// creates the checkpoint, not once it is created: the collector trusts a checkpoint of the
+    /// writer holding the lease to name nothing further along its way than the writer does
+    /// (TASK-175).
+    pub moves_taken_first: bool,
 }
 
 impl Rules {
@@ -214,6 +225,8 @@ impl Rules {
         records_relisted: true,
         records_owned: true,
         extent_keys_name_segments: true,
+        ways_from_seals: true,
+        moves_taken_first: true,
     };
 }
 

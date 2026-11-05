@@ -68,6 +68,19 @@ pub fn moves(key: &str) -> String {
     format!("{MOVES}{key}")
 }
 
+/// Whether the object at `later` is further along the way of an extent from the object at `key`:
+/// the moves of it, or of moves of it.
+pub fn further(key: &str, later: &str) -> bool {
+    let mut at = later;
+    while let Some(from) = at.strip_prefix(MOVES) {
+        if from == key {
+            return true;
+        }
+        at = from;
+    }
+    false
+}
+
 /// What kind of object a key names, and what its key says. fxdax: an extent's says the segment
 /// that names it, `seq`, of the writer of `epoch`, which uploaded it before: what it may yet be
 /// named by, as its writer declares it (TASK-79.3, TASK-153.7).

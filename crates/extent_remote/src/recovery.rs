@@ -210,6 +210,10 @@ pub struct Recovered<S = State> {
     pub end: u64,
     /// The newest checkpoint, if it started from one.
     pub checkpoint: Option<u64>,
+    /// The lease epoch of the writer of that checkpoint: the highest of the segments it covers.
+    /// The collector goes by it, to tell whether the branch's writer may name its extents where
+    /// they were before the moves it followed (TASK-175).
+    pub checkpointer: Option<u64>,
     /// The keys it read, which the collector keeps.
     pub touched: BTreeSet<String>,
 }
@@ -217,8 +221,9 @@ pub struct Recovered<S = State> {
 impl Recovered<Layers> {
     /// The branch's state, its layers in one.
     pub(crate) fn flatten(self) -> Recovered {
-        let Self { state, end, checkpoint, touched } = self;
-        Recovered { state: state.placed(Layered::flatten), end, checkpoint, touched }
+        let Self { state, end, checkpoint, checkpointer, touched } = self;
+        let state = state.placed(Layered::flatten);
+        Recovered { state, end, checkpoint, checkpointer, touched }
     }
 }
 
@@ -407,9 +412,9 @@ pub async fn recover_on(
     origin: Option<Origin>,
     before: Recovered,
 ) -> Result<Recovered, Error> {
-    let Recovered { state, end, checkpoint, touched } = before;
+    let Recovered { state, end, checkpoint, checkpointer, touched } = before;
     let branch = state.branch;
-    let before = Recovered { state: Layered::of(state), end, checkpoint, touched };
+    let before = Recovered { state: Layered::of(state), end, checkpoint, checkpointer, touched };
     match follow(bucket, before).await {
         Ok(recovered) => Ok(recovered.flatten()),
         Err(Attempt::Restart) => recover(bucket, branch, origin).await,
@@ -425,25 +430,26 @@ async fn attempt<B: Bucket>(
     let bucket = checkpoints.bucket;
     let mut touched = BTreeSet::new();
     let listed = bucket::list(bucket, &layout::checkpoints(branch)).await;
-    let (state, checkpoint) = match listed.last() {
+    let (state, checkpoint, checkpointer) = match listed.last() {
         Some(newest) => {
             let Some(state) = checkpoints.read(&newest.key, branch).await? else {
                 return Err(Attempt::Restart);
             };
             touched.insert(newest.key.clone());
             let seq = state.through.ok_or_else(|| Error::Corrupt(newest.key.clone()))?;
-            (Layered::of(Arc::unwrap_or_clone(state)), Some(seq))
+            let epoch = state.epoch;
+            (Layered::of(Arc::unwrap_or_clone(state)), Some(seq), Some(epoch))
         }
         None => match origin {
-            None => (Layered::of(State::new(branch)), None),
+            None => (Layered::of(State::new(branch)), None, None),
             Some(origin) => {
                 let at = state_at(checkpoints, origin.parent, origin.at, &mut touched).await?;
-                (Layered::inheriting(at, branch), None)
+                (Layered::inheriting(at, branch), None, None)
             }
         },
     };
     let end = checkpoint.map_or(0, |seq| seq + 1);
-    follow(bucket, Recovered { state, end, checkpoint, touched }).await
+    follow(bucket, Recovered { state, end, checkpoint, checkpointer, touched }).await
 }
 
 /// `recovered`, its segments from its end on applied, to the first missing: the branch's end,

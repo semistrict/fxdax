@@ -111,6 +111,8 @@ fn one() {
             "records_relisted" => rules.records_relisted = false,
             "records_owned" => rules.records_owned = false,
             "extent_keys_name_segments" => rules.extent_keys_name_segments = false,
+            "ways_from_seals" => rules.ways_from_seals = false,
+            "moves_taken_first" => rules.moves_taken_first = false,
             other => panic!("no rule {other}"),
         }
     }
@@ -267,6 +269,10 @@ fn recreated() -> Profile {
 test_holds!(stale_creates_landing_past_deletions, recreated());
 
 test_needs!(stale_creates_need_reads_by_footers, footers, recreated());
+
+// A writer taken over checkpointing late, past where the next one recovered from, the collector
+// having moved what that names (TASK-175).
+test_needs!(late_checkpoints_need_ways_from_seals, ways_from_seals, recreated());
 
 /// Takeovers while collectors run: an extent of the writer taken over, uploaded, its segment not
 /// yet.

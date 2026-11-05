@@ -453,7 +453,9 @@ impl<B: Bucket> Writer<B> {
     }
 
     /// Writes a checkpoint as of the last segment acknowledged, with the extents the collector
-    /// moved where they went.
+    /// moved where they went: where the writer names them from then on, before the checkpoint
+    /// lands, so that it never names one before where a checkpoint of its own does, which the
+    /// collector, seeing the writer hold the lease, keeps the moves from, not from before (TASK-175).
     pub async fn checkpoint(&self) -> Result<Option<u64>, Error> {
         let mut state = {
             let inner = self.inner();
@@ -476,6 +478,9 @@ impl<B: Bucket> Writer<B> {
         for (extent, _, location) in &moved {
             state.extents.insert(*extent, location.clone());
         }
+        if rules().moves_taken_first {
+            self.take_moves(&moved);
+        }
         // Forks whose children were deleted. Their records stay; their forks need not.
         let children: Vec<u64> = state.forks.iter().map(|fork| fork.child).collect();
         let gone: Vec<u64> = futures::stream::iter(children)
@@ -493,15 +498,27 @@ impl<B: Bucket> Writer<B> {
         // Another writer's of the same segment holds the same extents, perhaps elsewhere.
         bucket::create(&*self.bucket, &key, crate::checkpoint::encode(&state)).await;
         failpoint!("writer::checkpointed");
+        if !rules().moves_taken_first {
+            self.take_moves(&moved);
+        }
         let mut inner = self.inner();
         inner.state.forks.retain(|fork| !gone.contains(&fork.child));
-        for (extent, old, new) in moved {
-            if inner.state.extents.get(&extent) == Some(&old) {
-                inner.state.extents.insert(extent, new);
-            }
-        }
         inner.checkpoint = inner.checkpoint.max(Some(seq));
         Ok(inner.checkpoint)
+    }
+
+    /// Names the extents `moved` says the collector moved, from where to where, where they went,
+    /// if it names them on their way there, before: only forward along their ways, which another
+    /// checkpoint's moves may have taken further, its own since.
+    fn take_moves(&self, moved: &[(ExtentId, Location, Location)]) {
+        let mut inner = self.inner();
+        for (extent, _, to) in moved {
+            if let Some(at) = inner.state.extents.get_mut(extent)
+                && layout::further(&at.key, &to.key)
+            {
+                *at = to.clone();
+            }
+        }
     }
 }
 

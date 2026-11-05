@@ -34,6 +34,15 @@
 //! checkpoints, after which the moves go too, unless a state's way to its extents still goes through
 //! them.
 //!
+//! A branch's writer names its extents where the checkpoint it recovered from, or its own since,
+//! said, which the state a pass reads may name further along their moves: a checkpoint another
+//! writer made, landing after the writer recovered the branch (one it took the branch from, which
+//! knew nothing of it), or the state of the parent a branch inherited them from, which its writer
+//! read as it was then. So a state's way to an extent starts where the extent was sealed, its
+//! moves all kept, unless the state's checkpoint is that of the writer holding the branch's lease,
+//! read after the checkpoint was listed: a writer taking the branch after that recovers from that
+//! checkpoint or a later one, and the writer that made it took its moves first (TASK-175).
+//!
 //! A pass reads records, recovers branches and deletes objects many at once; what forks inherited
 //! together, their parent's state where they were forked, it reads once and takes once for them
 //! all; and a collector reads a record again only once it changed ([`Collector`], TASK-92.7).
@@ -254,11 +263,20 @@ async fn recover_live(
         let recoveries = round.into_iter().map(|(origin, branch)| {
             let origin = origin.map(|(parent, at)| Origin { parent, at });
             let checkpoints = &checkpoints;
-            async move { (branch, recovery::recover_layers(checkpoints, branch, origin).await) }
+            async move {
+                let recovered = match recovery::recover_layers(checkpoints, branch, origin).await {
+                    Ok(recovered) => match behind(bucket, branch, &recovered).await {
+                        Ok(behind) => Ok((recovered, behind)),
+                        Err(error) => Err(error),
+                    },
+                    Err(error) => Err(error),
+                };
+                (branch, recovered)
+            }
         });
         let mut inherited = Inherited::default();
         for (branch, recovered) in futures::future::join_all(recoveries).await {
-            let recovered = match recovered {
+            let (recovered, behind) = match recovered {
                 Ok(recovered) => recovered,
                 // Deleted since its record was read, what it needed may be gone: it is not live.
                 // Nor is a failed fork's claim no writer has: nothing ever read what it names.
@@ -283,11 +301,27 @@ async fn recover_live(
                 queue.insert((Some((branch, fork.at)), fork.child));
             }
             checkpointed |= recovered.checkpoint.is_some();
-            live.add(recovered, &mut inherited);
+            live.add(recovered, behind, &mut inherited);
         }
         live.inherit(inherited);
     }
     Ok(checkpointed)
+}
+
+/// Whether the writer of `branch` may name the extents `recovered` holds anywhere on their ways
+/// from where they were sealed, before the moves its state followed: unless its state is from a
+/// checkpoint of the writer holding its lease, read now, after the checkpoint was listed. The
+/// extents it inherited, its writer may name so whatever this says ([`Live::inherit`]).
+async fn behind(
+    bucket: &impl Bucket,
+    branch: u64,
+    recovered: &Recovered<Layers>,
+) -> Result<bool, Error> {
+    if !rules().ways_from_seals {
+        return Ok(false);
+    }
+    let Some(checkpointer) = recovered.checkpointer else { return Ok(true) };
+    Ok(branch::lease_epoch(bucket, &layout::lease(branch)).await? != checkpointer)
 }
 
 /// What a pass needs of the live branches' states, folded in as they are recovered.
@@ -300,6 +334,9 @@ struct Live {
     touched: BTreeSet<String>,
     /// Where the extents they name are: each place once, however many of them name it there.
     located: BTreeMap<ExtentId, BTreeSet<Location>>,
+    /// The moves they name extents in whose writers may name them anywhere on their ways from
+    /// where they were sealed ([`behind`]).
+    behind: BTreeSet<String>,
 }
 
 /// What deciding what goes needs of a live branch's state, its extents but: where its segments end,
@@ -319,14 +356,18 @@ struct Inherited {
 }
 
 impl Live {
-    /// Folds in `recovered`, a live branch's: its own layer, and what it inherited into
-    /// `inherited`, its round's, which [`Live::inherit`] folds in once for all its forks.
-    fn add(&mut self, recovered: Recovered<Layers>, inherited: &mut Inherited) {
+    /// Folds in `recovered`, a live branch's, whose writer may be `behind` it: its own layer, and
+    /// what it inherited into `inherited`, its round's, which [`Live::inherit`] folds in once for
+    /// all its forks.
+    fn add(&mut self, recovered: Recovered<Layers>, behind: bool, inherited: &mut Inherited) {
         let Recovered { state, end, touched, .. } = recovered;
         let State { branch, extents, epoch, next_sequence, .. } = state;
         let Layered { inherited: from, own, shadowed } = extents;
         self.touched.extend(touched);
         for (extent, location) in own {
+            if behind {
+                self.behind_at(&location);
+            }
             self.located.entry(extent).or_default().insert(location);
         }
         if let Some(from) = from {
@@ -339,18 +380,33 @@ impl Live {
     }
 
     /// Folds in what forks inherited, `inherited`: each state once, but the extents of it none of
-    /// them holds where they inherited them.
+    /// them holds where they inherited them. Their writers may name those anywhere on their ways
+    /// from where they were sealed: each recovered the parent's state as it was then.
     fn inherit(&mut self, inherited: Inherited) {
+        let behind = rules().ways_from_seals;
         for (state, unheld) in inherited.states {
             for (extent, location) in &state.extents {
                 if unheld.contains(extent) {
                     continue;
+                }
+                if behind {
+                    self.behind_at(location);
                 }
                 let located = self.located.entry(*extent).or_default();
                 if !located.contains(location) {
                     located.insert(location.clone());
                 }
             }
+        }
+    }
+
+    /// Notes that a writer may name the extent at `location` anywhere on its way there from where
+    /// it was sealed: in moves, if it is in some.
+    fn behind_at(&mut self, location: &Location) {
+        if matches!(layout::kind(&location.key), Kind::Moves { .. })
+            && !self.behind.contains(&location.key)
+        {
+            self.behind.insert(location.key.clone());
         }
     }
 }
@@ -365,7 +421,8 @@ struct Pass {
     /// The objects holding the extents the live branches name, and those extents in them.
     named: BTreeMap<String, BTreeMap<ExtentId, Location>>,
     /// The moves the way to those extents goes through, whose maps are needed even once their
-    /// data moved on.
+    /// data moved on: from where the states name them, or, where a writer may name them before
+    /// that, from where they were sealed.
     hops: BTreeSet<String>,
 }
 
@@ -376,9 +433,20 @@ impl Pass {
         records: BTreeMap<u64, Record>,
         live: Live,
     ) -> Result<Self, Error> {
-        let Live { branches, touched, located, .. } = live;
+        let Live { branches, touched, located, behind, .. } = live;
         let mut named: BTreeMap<String, BTreeMap<ExtentId, Location>> = BTreeMap::new();
+        // The moves on the ways there from where the extents were sealed, those named among them:
+        // each moves is at the key of the moves of what it is of.
         let mut hops = BTreeSet::new();
+        for key in &behind {
+            let mut key = key.as_str();
+            while let Kind::Moves { from } = layout::kind(key) {
+                if objects.contains_key(key) {
+                    hops.insert(key.to_owned());
+                }
+                key = from;
+            }
+        }
         let mut maps = MovesMaps::default();
         // Each place once, however many branches name it.
         for (&extent, locations) in &located {
@@ -545,6 +613,7 @@ mod tests {
     use object_store::memory::InMemory;
     use std::future::Future;
     use std::sync::Arc;
+    use std::sync::Mutex;
     use std::sync::atomic::{AtomicBool, Ordering};
 
     /// No compaction, and compacted objects kept long.
@@ -555,7 +624,7 @@ mod tests {
     }
 
     /// `commit` in a segment of its own, uploaded and acknowledged.
-    async fn commit(writer: &Writer<Store>, commit: Commit) {
+    async fn commit<B: Bucket>(writer: &Writer<B>, commit: Commit) {
         let objects = Batch::from(commit).close(&mut writer.chain()).frame();
         let seq = writer.add_segment(objects).unwrap();
         writer.upload(seq).await.unwrap();
@@ -754,6 +823,198 @@ mod tests {
                 let twice = format!("part 0 of {segment}, by its CRC, twice");
                 assert_eq!(read, Err(Error::Corrupt(twice)));
             });
+        }
+    }
+
+    /// TASK-175: a checkpoint landing after the branch's writer recovered it, by the writer it took
+    /// the branch from, names an extent further along its moves than the writer does; the collector
+    /// compacts the moves in turn and deletes what it can, and the writer still reads the extent,
+    /// the moves on its way from where it was sealed kept. Found by the simulation, seed 677 of its
+    /// `recreated` on task-165-3; red on main at 13db5c67c too.
+    #[test]
+    fn writers_read_past_checkpoints_landing_after_they_took_over() {
+        assert_eq!(block_on(read_past_a_late_checkpoint()), Ok(b"kept".to_vec()));
+    }
+
+    /// The collector keeping the moves only from where the state it reads names the extent: the
+    /// writer finds neither the object it names it in nor its moves.
+    #[test]
+    fn writers_reading_past_checkpoints_landing_after_they_took_over_need_ways_from_seals() {
+        crate::set_rules(crate::Rules { ways_from_seals: false, ..crate::Rules::ALL });
+        let read = block_on(read_past_a_late_checkpoint());
+        crate::set_rules(crate::Rules::ALL);
+        assert!(matches!(read, Err(Error::Lost(_))), "{read:?}");
+    }
+
+    /// What the writer reads of the extent [`writers_read_past_checkpoints_landing_after_they_took_over`]
+    /// keeps: the writer it took the branch from checkpointing it, the collector having moved it,
+    /// after the writer recovered the branch from the checkpoint before; the moves then compacted
+    /// in turn, and passes run until they delete nothing more.
+    async fn read_past_a_late_checkpoint() -> Result<Vec<u8>, Error> {
+        let bucket = store();
+        branch::create(&*bucket, 1, 0).await.unwrap();
+        let before = Writer::open(bucket.clone(), 1, 10, 0).await.unwrap();
+        let Compacted { kept, moved, sealed } = compacted(&*bucket, &before).await;
+        let later = ExtentId::new(1, before.chain().next_sequence());
+        let extents = vec![(later, b"later".to_vec())];
+        commit(&before, Commit { tag: 3, extents, ..Commit::default() }).await;
+
+        // The next writer recovers the branch from the checkpoint before the compaction.
+        let writer = Writer::open(bucket.clone(), 1, 11, 0).await.unwrap();
+        assert_eq!(writer.location(kept).unwrap().key, sealed);
+        // The writer taken over, unaware, checkpoints its last segment, past that checkpoint,
+        // following the moves.
+        before.checkpoint().await.unwrap();
+        let tag = writer.chain().tag(1);
+        commit(&writer, Commit { tag, frees: vec![moved], ..Commit::default() }).await;
+        collect_all(&*bucket).await;
+        let left = keys(&*bucket).await;
+        assert!(!left.contains(&sealed) && left.contains(&layout::moves(&layout::moves(&sealed))));
+        crate::read(&bucket, kept, &writer.location(kept).unwrap()).await
+    }
+
+    /// TASK-175: a writer names the extents its checkpoint moves where they went before the
+    /// checkpoint lands: passes of the collector running as it lands, before its create is
+    /// answered, trust the checkpoint of the writer holding the lease, compact the moves in turn
+    /// and delete the moves before, and the writer still reads the extent.
+    #[test]
+    fn writers_name_what_their_checkpoints_move_before_they_land() {
+        assert_eq!(block_on(read_as_a_checkpoint_lands()), Ok(b"kept".to_vec()));
+    }
+
+    /// A writer naming them so once its checkpoint's create is answered: as it lands, it names the
+    /// extent where neither the object nor its moves are.
+    #[test]
+    fn writers_naming_what_their_checkpoints_move_need_moves_taken_first() {
+        crate::set_rules(crate::Rules { moves_taken_first: false, ..crate::Rules::ALL });
+        let read = block_on(read_as_a_checkpoint_lands());
+        crate::set_rules(crate::Rules::ALL);
+        assert!(matches!(read, Err(Error::Lost(_))), "{read:?}");
+    }
+
+    /// What the writer reads of the extent [`writers_name_what_their_checkpoints_move_before_they_land`]
+    /// keeps, where it names it as its checkpoint recording the extent's moves lands, passes of
+    /// the collector having run until they delete nothing more.
+    async fn read_as_a_checkpoint_lands() -> Result<Vec<u8>, Error> {
+        let direct = Arc::new(Direct(SimBucket::new()));
+        let bucket = Arc::new(Landing { bucket: direct.clone(), then: Mutex::default() });
+        branch::create(&*bucket, 1, 0).await.unwrap();
+        let writer = Arc::new(Writer::open(bucket.clone(), 1, 10, 0).await.unwrap());
+        let Compacted { kept, moved, .. } = compacted(&*bucket, &writer).await;
+        commit(&writer, Commit { tag: 3, frees: vec![moved], ..Commit::default() }).await;
+        let named = Arc::new(Mutex::new(None));
+        let (passing, naming, watched) = (direct.clone(), named.clone(), Arc::downgrade(&writer));
+        *bucket.then.lock().unwrap() = Some(Box::new(move || {
+            collect_all(&*passing).now_or_never().unwrap();
+            *naming.lock().unwrap() = watched.upgrade().unwrap().location(kept);
+        }));
+        writer.checkpoint().await.unwrap();
+        let location = named.lock().unwrap().clone().unwrap();
+        crate::read(&direct, kept, &location).await
+    }
+
+    /// What [`compacted`] made.
+    struct Compacted {
+        /// An extent the collector moved, which stays.
+        kept: ExtentId,
+        /// One it moved with it, freed next.
+        moved: ExtentId,
+        /// Where they were sealed.
+        sealed: String,
+    }
+
+    /// Has `writer` seal three extents in a segment, then free one and checkpoint, and the
+    /// collector compact the segment, moving the two others.
+    async fn compacted<B: Bucket>(bucket: &B, writer: &Writer<B>) -> Compacted {
+        let first = writer.chain().next_sequence();
+        let [kept, moved, freed] = [0, 1, 2].map(|i| ExtentId::new(1, first + i));
+        // Bytes that don't compress, so that the objects' sizes are their extents'.
+        let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+        let mut noise = || -> Vec<u8> {
+            (0..20_000)
+                .map(|_| {
+                    state ^= state << 13;
+                    state ^= state >> 7;
+                    state ^= state << 17;
+                    state as u8
+                })
+                .collect()
+        };
+        let extents = vec![(kept, b"kept".to_vec()), (moved, noise()), (freed, noise())];
+        commit(writer, Commit { tag: 1, extents, ..Commit::default() }).await;
+        let sealed = writer.location(kept).unwrap().key;
+        commit(writer, Commit { tag: 2, frees: vec![freed], ..Commit::default() }).await;
+        writer.checkpoint().await.unwrap();
+        let compacting = Options { compact_below: 0.6, ..KEEP };
+        assert_eq!(collect(bucket, 1, &compacting).await.unwrap().compacted, 1);
+        Compacted { kept, moved, sealed }
+    }
+
+    /// Runs passes of the collector, compacting objects less than 60% live and deleting what they
+    /// compacted at once, until one does nothing.
+    async fn collect_all(bucket: &impl Bucket) {
+        let now = Options { compact_below: 0.6, grace: 0 };
+        let mut holder = 2;
+        while collect(bucket, holder, &now).await.unwrap() != Report::default() {
+            holder += 1;
+        }
+    }
+
+    /// A bucket that runs `then` once, as the create of a checkpoint takes effect, before it is
+    /// answered.
+    struct Landing {
+        bucket: Arc<Direct>,
+        then: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    }
+
+    impl Bucket for Landing {
+        fn get(&self, key: &str) -> impl Future<Output = Result<Object, BucketError>> + Send {
+            self.bucket.get(key)
+        }
+
+        fn get_range(
+            &self,
+            key: &str,
+            range: ByteRange,
+        ) -> impl Future<Output = Result<Vec<u8>, BucketError>> + Send {
+            self.bucket.get_range(key, range)
+        }
+
+        fn head(&self, key: &str) -> impl Future<Output = Result<Meta, BucketError>> + Send {
+            self.bucket.head(key)
+        }
+
+        fn list(
+            &self,
+            prefix: &str,
+        ) -> impl Future<Output = Result<Vec<Meta>, BucketError>> + Send {
+            self.bucket.list(prefix)
+        }
+
+        fn put(
+            &self,
+            key: &str,
+            bytes: Vec<u8>,
+            mode: PutMode,
+        ) -> impl Future<Output = Result<Version, BucketError>> + Send {
+            let checkpoint = matches!(layout::kind(key), Kind::Checkpoint { .. });
+            let then = checkpoint.then(|| self.then.lock().unwrap().take()).flatten();
+            let put = self.bucket.put(key, bytes, mode);
+            async move {
+                let put = put.await;
+                if let Some(then) = then {
+                    then();
+                }
+                put
+            }
+        }
+
+        fn delete(&self, key: &str) -> impl Future<Output = Result<(), BucketError>> + Send {
+            self.bucket.delete(key)
+        }
+
+        fn now(&self) -> u64 {
+            self.bucket.now()
         }
     }
 

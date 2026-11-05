@@ -1704,8 +1704,19 @@ impl World {
                 continue;
             };
             needed.extend(recovered.touched);
+            // Its writer may name its extents anywhere on their ways from where they were sealed,
+            // unless its state is from a checkpoint of the writer holding its lease (TASK-175).
+            let lease = block_on(branch::lease_epoch(&direct, &crate::layout::lease(branch)));
+            let behind = lease.ok() != recovered.checkpointer;
             for (extent, location) in &recovered.state.extents {
                 needed.insert(location.key.clone());
+                let mut key = location.key.as_str();
+                while let crate::layout::Kind::Moves { from } = crate::layout::kind(key)
+                    && behind
+                {
+                    needed.insert(key.to_owned());
+                    key = from;
+                }
                 if !self.branches[&branch].point {
                     continue;
                 }
