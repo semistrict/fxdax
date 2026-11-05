@@ -16,7 +16,9 @@
  *
  * Locking is dax.c's: the state is its range's file's, under the file's DAX semaphore, held for
  * writing for every transition but fxfs_dax_pages_dirty, which iomaps make holding it shared, one
- * beside another. Queries see what transitions under the semaphore as held by their caller allow.
+ * beside another. Queries see what transitions under the semaphore as held by their caller allow:
+ * holding it shared, private and dirty pages that iomaps beside them make so as they look, which
+ * they read as the race it is, each word once (pages.c), a page they find so staying so.
  */
 #ifndef _FXFS_PAGES_H
 #define _FXFS_PAGES_H

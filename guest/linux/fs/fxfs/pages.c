@@ -77,15 +77,34 @@ static bool fxfs_dax_pages_within(const struct fxfs_dax_pages *pages, unsigned l
 			  "fxfs: pages %lu+%lu of %lu", first, n, pages->nr);
 }
 
-/* How many of the `n` bits from `first` of `map` are set. */
+/*
+ * How many of the `n` bits from `first` of `map` are set, each word read once. Of `private` and
+ * `dirty`, iomaps beside the caller may be setting bits (fxfs_dax_pages_dirty, the file's semaphore
+ * held shared by both), atomically: a race, and a benign one, so read as one (READ_ONCE), not as
+ * find_next_bit's plain loads (KCSAN, GCE r611 and r613). Only a transition under the semaphore
+ * held for writing clears a bit, so what a caller holding it shared counts set stays set: a count
+ * at least what was set as it began, at most what is set by its end. fxfs_dax_pages_would_dirty's
+ * caller takes room for what it counts clear, and gives back what fxfs_dax_pages_dirty, whose
+ * test_and_set_bit is the read that decides, then finds others made private or dirty meanwhile
+ * (fxfs_dax_dirty).
+ */
 static unsigned long fxfs_dax_pages_weight(const unsigned long *map, unsigned long first,
 					   unsigned long n)
 {
-	unsigned long page, end = first + n, count = 0;
+	unsigned long word, last, count = 0;
 
-	for (page = find_next_bit(map, end, first); page < end;
-	     page = find_next_bit(map, end, page + 1))
-		count++;
+	if (!n)
+		return 0;
+	last = BIT_WORD(first + n - 1);
+	for (word = BIT_WORD(first); word <= last; word++) {
+		unsigned long bits = READ_ONCE(map[word]);
+
+		if (word == BIT_WORD(first))
+			bits &= BITMAP_FIRST_WORD_MASK(first);
+		if (word == last)
+			bits &= BITMAP_LAST_WORD_MASK(first + n);
+		count += hweight_long(bits);
+	}
 	return count;
 }
 
@@ -216,7 +235,8 @@ struct fxfs_dax_change fxfs_dax_pages_would_dirty(const struct fxfs_dax_pages *p
 
 bool fxfs_dax_pages_any_dirty(const struct fxfs_dax_pages *pages)
 {
-	return !bitmap_empty(pages->dirty, pages->nr);
+	/* Writeback sizes its batch holding the semaphore shared, as iomaps dirty pages. */
+	return fxfs_dax_pages_weight(pages->dirty, 0, pages->nr);
 }
 
 bool fxfs_dax_pages_any_mapped(const struct fxfs_dax_pages *pages, unsigned long first,
