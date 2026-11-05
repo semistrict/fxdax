@@ -109,64 +109,85 @@ impl From<extent_frame::Corrupt> for Error {
 }
 
 /// The rules doc-7's protocol relies on, each of which the simulation shows to be needed by
-/// turning it off.
+/// turning it off, and specs/bucket's TLA+ by its mutation removing it (doc-7, Testing).
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Rules {
     /// A writer acknowledges a segment only once a read of its lease that follows the segment's
     /// creation shows the lease still its.
+    /// TLA+: `specs/bucket/mutations/NoAcksAfterLease.cfg`.
     pub acks_after_lease: bool,
     /// A writer taking a branch over first creates an empty segment of its own at its end.
+    /// TLA+: `specs/bucket/mutations/NoFence.cfg`.
     pub fence: bool,
     /// Readers skip a segment that does not follow the last one they applied.
+    /// TLA+: `specs/bucket/mutations/NoContinuity.cfg`.
     pub continuity: bool,
     /// A writer mints extents from its epoch's range of sequence numbers, having checked, after
     /// recovering the branch, that the lease is still its.
+    /// TLA+: `specs/bucket/mutations/NoEpochSequences.cfg`.
     pub epoch_sequences: bool,
     /// A fork's child gets its record once the segment holding the fork is acknowledged.
+    /// TLA+: `specs/bucket/mutations/NoRecordsAfterAck.cfg`.
     #[cfg_attr(not(test), allow(dead_code))]
     pub records_after_ack: bool,
     /// The collector lists objects before it reads what branches need.
+    /// TLA+: `specs/bucket/mutations/NoCandidatesFirst.cfg`.
     pub candidates_first: bool,
     /// Readers that find a segment missing check that no checkpoint newer than theirs has come.
+    /// TLA+: `specs/bucket/mutations/NoNewestCheckpoint.cfg`.
     pub newest_checkpoint: bool,
     /// The collector finds forks in their parents' states, not only by their records.
+    /// TLA+: `specs/bucket/mutations/NoForksFromStates.cfg`.
     pub forks_from_states: bool,
     /// The collector deletes an extent of an earlier writer only once a later one's segment is in
     /// the branch, not once its lease is.
+    /// TLA+: `specs/bucket/mutations/NoOrphansAfterSuccessor.cfg`.
     pub orphans_after_successor: bool,
     /// A writer takes a branch's lease only with a fencing token as high as the lease's.
+    /// TLA+: `specs/bucket/mutations/NoTokens.cfg`.
     pub tokens: bool,
     /// A branch is deleted only with a fencing token as high as its lease's (TASK-45.1).
+    /// TLA+: `specs/bucket/mutations/NoDeleteTokens.cfg`.
     pub delete_tokens: bool,
     /// Readers read an extent where the footer of the object at its key says it is, not where
     /// their index does (TASK-79.18).
+    /// TLA+: `specs/bucket/mutations/NoFooters.cfg`.
     pub footers: bool,
     /// The deletion of a failed fork takes its child's ID with a record, before it ends the child's
     /// lease, though its fork's segment never went (TASK-79.82).
+    /// TLA+: `specs/bucket/mutations/NoForkClaimsIds.cfg`.
     pub fork_claims_ids: bool,
     /// That record says the child lives only if the branch it was forked from holds the fork's
     /// segment, which reading it needs; and that it is a claim, which that proves no more than.
+    /// TLA+: `specs/bucket/mutations/NoForkClaimsLanded.cfg`.
     pub fork_claims_landed: bool,
     /// No writer takes a point (doc-7, Points).
+    /// TLA+: `specs/bucket/mutations/NoPointsTakeNoWriter.cfg`.
     pub points_take_no_writer: bool,
     /// A fork of a point reads the point's record after it creates its own: a point deleted before
     /// that fails it, its pass of the collector not having seen the child.
+    /// TLA+: `specs/bucket/mutations/NoForksCheckPoints.cfg`.
     pub forks_check_points: bool,
     /// A fork of a point's record says it is being made until that read found the point live, so
     /// that what never was made holds up no pass of the collector, whatever it names.
+    /// TLA+: `specs/bucket/mutations/NoForksPending.cfg`.
     pub forks_pending: bool,
     /// The collector gives up on the forks being made of points deleted.
+    /// TLA+: `specs/bucket/mutations/NoCollectorAbandons.cfg`.
     pub collector_abandons: bool,
     /// The collector lists the records again after it read the branches' states: a state it read
     /// names no fork deleted since, nor that fork's children, whose records came after its listing.
+    /// TLA+: `specs/bucket/mutations/NoRecordsRelisted.cfg`.
     pub records_relisted: bool,
     /// Every record names its branch's owner, chosen by its maker, unique to that making: two
     /// makers of one branch ID, two forks naming one child, never write the same bytes, which a
     /// create reading back what it finds would take for its own (TASK-79.82, TASK-153.9).
+    /// TLA+: `specs/bucket/mutations/NoRecordsOwned.cfg`.
     pub records_owned: bool,
     /// The collector keeps an extent stored on its own, that no state names, while the segment its
     /// key names may yet land, not while the branch's next sequence number is below it: extents
     /// are committed in no order of their sequence numbers (TASK-79.3, TASK-153.7).
+    /// TLA+: `specs/bucket/mutations/NoExtentKeysNameSegments.cfg`.
     pub extent_keys_name_segments: bool,
 }
 
