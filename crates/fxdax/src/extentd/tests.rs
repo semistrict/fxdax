@@ -3187,13 +3187,30 @@ fn reopened(socket: &Path, path: &Path) -> RemoteExtentStore {
     }
 }
 
+/// Waits for the daemon to have let go of the store at `path`, whose connection went: closed, its
+/// uploader done with what closing uploads, as another connection may open it then.
+fn let_go(path: &Path) {
+    let (paths, key) = (super::stores::open_paths(), super::stores::store_key(path));
+    // `EBUSY` until the daemon sees the connection going; then the wait is for its store to go.
+    while paths.hold(&key, std::sync::Weak::new(), None) == Err(Errno::EBUSY) {
+        std::thread::yield_now();
+    }
+    paths.release(&key);
+}
+
 /// TASK-44.10: a guest's fork failing at each of its steps ([`crate::faults::FORK_STEPS`]) fails
 /// with `EIO`, leaving no handle; the store opens again, holds what it held, and forks; and
 /// another's store is served on. `remote::fork_faults` goes further, on stores alone: this is the
 /// daemon's side, its requests, connections, and errnos.
+///
+/// A step fails once, for whichever uploader passes it first, failpoints being the process's: so
+/// each fails with no other store's uploader at work, theirs uploading only when asked, and the
+/// stores of the step before closed (TASK-157). `other`'s waking on its interval took
+/// `remote::gather`'s failure, under load, its fork's own gather a while after it was set.
 #[test]
 fn guests_forks_failing_at_each_step_harm_nothing() {
     host();
+    super::stores::uploads_when_asked();
     let dir = tempfile::tempdir().unwrap();
     let socket = dir.path().join("extentd.sock");
     let listener = UnixListener::bind(&socket).unwrap();
@@ -3227,6 +3244,9 @@ fn guests_forks_failing_at_each_step_harm_nothing() {
 
         assert_eq!(read(&other, kept, 0, BLOCK), Ok(pattern(9, BLOCK)), "{step}");
         assert_eq!(other.commit(None), Ok(()), "{step}");
+        drop((forked, store));
+        let_go(&retried);
+        let_go(&path);
     }
 }
 

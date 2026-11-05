@@ -546,12 +546,23 @@ fn attached(
         log::error!("extentd: {err}");
         Errno::EINVAL
     })?;
-    let options = crate::remote::Options { cache: remote_cache()?, token, ..Default::default() };
+    let (cache, interval) = (remote_cache()?, upload_interval());
+    let options = crate::remote::Options { cache, token, interval, ..Default::default() };
     if let Err(err) = store.attach_remote(bucket, rand::random(), options) {
         log::warn!("extentd: keeping branch {:x} in object storage: {err}", store.branch());
         return Err(err.errno().unwrap_or(Errno::EIO));
     }
     Ok(store)
+}
+
+/// How long the stores' durable commits wait at most before they upload: the uploader's default;
+/// in a test that asked for it, until something waits for an upload ([`uploads_when_asked`]).
+fn upload_interval() -> std::time::Duration {
+    #[cfg(test)]
+    if UPLOADS_WHEN_ASKED.load(std::sync::atomic::Ordering::Relaxed) {
+        return std::time::Duration::MAX;
+    }
+    crate::remote::Options::default().interval
 }
 
 /// The store at `path` as the daemon opens it to work on it, not a VM: its pages of the default
@@ -1041,6 +1052,20 @@ pub(crate) fn remote_bucket() -> Result<Arc<extent_remote::store::Store>, Errno>
             bucket
         })
         .clone())
+}
+
+/// Whether the stores opened upload only when something waits for an upload ([`uploads_when_asked`]).
+#[cfg(test)]
+static UPLOADS_WHEN_ASKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Has the stores opened from now on upload only when something waits for an upload (a fork, a
+/// sync, a commit stalled at the lag's bound, the store closing), never as their interval runs
+/// out, as `remote::fork_faults`' stores do. For tests that set a failpoint to fail once for one
+/// store's work: failpoints are the process's, and another store's uploader, woken by its
+/// interval, would pass it first (TASK-157).
+#[cfg(test)]
+pub(super) fn uploads_when_asked() {
+    UPLOADS_WHEN_ASKED.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Makes `bucket` the daemon's, before any store opens: for tests that put themselves between the
