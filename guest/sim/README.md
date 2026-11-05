@@ -41,7 +41,7 @@ Compiled as they are, from the tree or the repo:
 
 | Real | From |
 | --- | --- |
-| `dax.c`, `device.c`, `hist.h`, `vfs.h`, `fxfs.h`, `device.h` | fs/fxfs: all of the window's protocol |
+| `dax.c`, `pages.c`, `device.c`, `hist.h`, `vfs.h`, `fxfs.h`, `device.h` | fs/fxfs: all of the window's protocol |
 | `fs/dax.c` | with guest/linux/patches/0007 and 0010-0012: DAX entries, their locks, shared folios |
 | `fs/iomap/iter.c`, `lib/xarray.c`, `lib/genalloc.c` | the kernel's |
 | `linux/{list,rculist,hash,hashtable,xarray,iomap,dax,genalloc,wait,wait_bit}.h` | the kernel's headers |
@@ -242,7 +242,7 @@ reserved, and no MAP of an open extent asked. The rules' mutants:
 | `task-164.4-slice-during-seal` | `cow_map_during_seal`'s read: the same, of a slice's region |
 | `task-164.4-release-stale-entries` | `cow_reclaim_after_writeback_met_a_fault`: the range is never reclaimed |
 | `task-164.4-rebind-shared` | `fxfs_dax_map_pages`' lockdep assertion, in any rebind; `cow_rebind_against_write` |
-| `task-164.4-rebind-dirty` | `cow_rebind_against_stores`: a rebind's read-only MAP under a dirty page's writable PTE; `cow_rebind_skips_dirty` |
+| `task-164.4-rebind-dirty` | `cow_rebind_against_stores`: `pages.c`'s WARN of a rebind's MAP over dirty pages; before TASK-160.4, a rebind's read-only MAP under a dirty page's writable PTE; `cow_rebind_skips_dirty` |
 | `task-164.4-commit-failure-dropped` | `cow_commit_failed` |
 | `task-164.4-private-uncounted` | `cow_rebind_against_stores`: a write fails, its `PRIVATE` refused past `private_max` |
 | `task-164.4-truncate-unwritten` | expected equivalent: a grow drops the chunk at the old end, which writes it back |
@@ -320,8 +320,8 @@ bits are the state, each changed by one function, one transition each: clean to 
 by the iomap that dirties a page (`fxfs_dax_dirty`), whose `PRIVATE` has the host make it the
 VM's own before any store can land, so that dirty implies private by construction; dirty to written
 back by writeback alone (`fxfs_dax_write_back`), from dax.c's dirty set, write-protecting by the
-page tables; written back and sealed to rebound by a rebind's MAP (`fxfs_dax_rebind`,
-`fxfs_dax_rebound`); and gone by an UNMAP or a truncate's MAP of zeros (`fxfs_dax_forget`).
+page tables; written back and sealed to rebound by a rebind's MAP (`fxfs_dax_rebind`); and gone
+by an UNMAP or a truncate's MAP of zeros (`fxfs_dax_forget`, `fxfs_dax_dropped` since).
 `fxfs_dax_cow_own`, and `fxfs.dax_private_ahead`, went: every iomap that makes a page private sends
 its `PRIVATE`. The kernel's dirty tags are cleaned for the kernel's sake alone
 (`fxfs_dax_clean_entries`), by writepages, so that the inode is clean to it, and by a range's
@@ -339,7 +339,16 @@ reintroduce, writeback making nothing private any more, written as the iomap lea
 its store, by the first store of any `cow_` scenario. `cow_private_failed` and
 `task-164.9-private-failure-ignored` check that a `PRIVATE` that fails fails its write.
 
-After it: `zloop.sh -s 3000` passed; copying on write forced, seeds 1 to 20,000 of `interleave`
+Since TASK-160.4 the bits aren't fields of a range any more, but a module's, `pages.c`, which
+dax.c sees through its transitions alone, a function each: `fill` (a range's own MAP, or a slice's
+region), `dirty` (the iomap), `swap` (writeback), `rebind` (a rebind's MAP), `cut` (a truncate's MAP
+of zeros) and `unmap`, and queries. Each says what it changed, which dax.c counts, and checks the
+rules at the end: dirty implies private, and private and zeros imply mapped. The mutants of page
+state, written again against it, are caught as before (`task-164.4-forget-before-free`,
+`-rebind-dirty`, `-writeback-unowned`, `-swap-shared`, `-private-uncounted`,
+`task-164.9-private-failure-ignored`, `unmapped-page-read-as-hole`).
+
+After TASK-164.9: `zloop.sh -s 3000` passed; copying on write forced, seeds 1 to 20,000 of `interleave`
 at 200 operations and 1 to 5,000 at 1,000, all passed; every cow mutant was caught but
 `task-164.4-truncate-unwritten`, not in 2,000 seeds, as expected.
 

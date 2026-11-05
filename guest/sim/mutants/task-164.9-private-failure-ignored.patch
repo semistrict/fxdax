@@ -8,7 +8,7 @@
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c
-@@ -2403,10 +2403,7 @@
+@@ -2413,10 +2413,7 @@
  		if (err) {
  			pr_warn_ratelimited("fxfs: making %lu pages at %llx of the window private: %d\n",
  					    pages, fxfs_dax_page_offset(range, first), err);
@@ -19,4 +19,4 @@
 +			err = 0;
  		}
  	}
- 	for (page = first; page < first + pages; page++) {
+ 	made = fxfs_dax_pages_dirty(range->state, first, pages);

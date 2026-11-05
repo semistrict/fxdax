@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
 # Copyright 2026 The fxdax Authors.
 #
-# Puts each of mutants/*.patch into a copy of dax.c, device.c or fs/dax.c, builds the tests against
-# it, and runs seeds until one fails: how many seeds a past bug takes to show, or that it doesn't.
+# Puts each of mutants/*.patch into a copy of dax.c, pages.c, device.c or fs/dax.c, builds the tests
+# against it, and runs seeds until one fails: how many seeds a past bug takes to show, or that it doesn't.
 #
 #   mutants.sh [--check] [-b BASE.patch]... [-s SEEDS] [-o OPERATIONS] [-j JOBS] [-J SEED_JOBS] [NAME...]
 #

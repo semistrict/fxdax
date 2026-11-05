@@ -10,13 +10,13 @@
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c
-@@ -1838,18 +1838,6 @@
+@@ -1817,18 +1817,6 @@
  		up_read(&file->sem);
  		fxfs_dax_put_range(dax, range);
  		return -EIO;
 -	}
 -	/* fxdax: a page of the file with no window page is no hole: mapped first. */
--	if (!dax->read_only && !test_bit(page, range->mapped)) {
+-	if (!dax->read_only && !fxfs_dax_pages_mapped(range->state, page)) {
 -		up_read(&file->sem);
 -		err = fxfs_dax_map_missing(inode, range, page,
 -					   min_t(u64, range->pages,
@@ -27,5 +27,5 @@
 -			return err;
 -		}
  	}
- 	mapped = test_bit(page, range->mapped);
- 	end_page = mapped ? find_next_zero_bit(range->mapped, range->pages, page) :
+ 	mapped = fxfs_dax_pages_mapped(range->state, page);
+ 	end_page = fxfs_dax_pages_mapped_run(range->state, page, range->pages);

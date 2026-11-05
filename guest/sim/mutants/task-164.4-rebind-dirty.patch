@@ -4,17 +4,17 @@
 # TASK-164.4, doc-13: a rebind takes dirty pages too, which no extent holds yet: the MAP of what
 # Fxfs has discards their stores. cow_rebind_skips_dirty.
 
---- a/guest/linux/fs/fxfs/dax.c
-+++ b/guest/linux/fs/fxfs/dax.c
-@@ -2133,10 +2133,7 @@
- 		for (page = find_first_bit(range->private, range->pages); page < range->pages;
- 		     page = find_next_bit(range->private, range->pages, end)) {
- 			end = page + 1;
--			if (test_bit(page, range->dirty))
--				continue;
--			while (end < range->pages && test_bit(end, range->private) &&
--			       !test_bit(end, range->dirty))
-+			while (end < range->pages && test_bit(end, range->private))
- 				end++;
- 			/* Before the MAP over them, holding what a rebind holds (pause points). */
- 			fxfs_dax_pause_file(FXFS_DAX_STEP_REBIND, file->ino);
+--- a/guest/linux/fs/fxfs/pages.c
++++ b/guest/linux/fs/fxfs/pages.c
+@@ -262,10 +262,8 @@
+ {
+ 	unsigned long page = find_next_bit(pages->private, pages->nr, from);
+ 
+-	while (page < pages->nr && test_bit(page, pages->dirty))
+-		page = find_next_bit(pages->private, pages->nr, page + 1);
+ 	*end = page;
+-	while (*end < pages->nr && test_bit(*end, pages->private) && !test_bit(*end, pages->dirty))
++	while (*end < pages->nr && test_bit(*end, pages->private))
+ 		(*end)++;
+ 	return page;
+ }

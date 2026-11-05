@@ -197,6 +197,8 @@ struct callback_head {
 #define __sim_cmp(a, b, op) ({ typeof(a) __a = (a); typeof(b) __b = (b); __a op __b ? __a : __b; })
 #define min(a, b) __sim_cmp(a, b, <)
 #define max(a, b) __sim_cmp(a, b, >)
+/* overflow.h's, without its check of the multiplication. */
+#define struct_size(p, member, count) (sizeof(*(p)) + sizeof(*(p)->member) * (count))
 #define umin(a, b) __sim_cmp((u64)(a), (u64)(b), <)
 #define umax(a, b) __sim_cmp((u64)(a), (u64)(b), >)
 #define min_not_zero(a, b) ({ typeof(a) __a = (a); typeof(b) __b = (b); \
