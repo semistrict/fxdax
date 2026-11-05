@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-03 13:08'
-updated_date: '2026-11-05 04:04'
+updated_date: '2026-11-05 04:23'
 labels:
   - structure
 dependencies: []
@@ -58,4 +58,6 @@ Done on branch task-160-8 (9e5415bc6 refactor, c9a287385 test, 8462b2145 OPEN_QU
 - AC #2: extentd::tests::opens_race_the_exit_of_the_vm_process_writing_their_store (Linux).
 - Tests: macOS FXDAX_TEST_PARTS='workspace shuttle' scripts/test.sh --no-fail-fast passed (2057/2057, and every Shuttle part). Linux (Docker arm64): clippy disallowed_methods clean, and the shuttle_tests 53/53. nextest -p fxdax: 452/460 passed. Seven failures are environment-only: eu-stack missing (stacks_name_where_threads_wait and two SIGQUIT tests), grants ENOENT (three), and the build stamp. The eighth, extentd::tests::guests_forks_failing_at_each_step_harm_nothing, failed at remote::gather (the fork succeeded where EIO was expected; a background uploader logged taking the one-shot failpoint first). Run alone it failed 2 of 3 times. A comparison on the base commit 9f81f6018 couldn't run because the disk filled. Not yet known whether this branch causes it.
 - Found, not fixed (docs/reviews/2026-10-21-main.md): stores::retire cuts the followers before it marks the store retired, so a follower can slip in between (swap the order). sync and stat don't look again for the store open under their hold, so they can open a second instance and get EBUSY after the flock wait (use hold.instance()). Short-lived Arcs taken for metrics or listing can make hold_alone return EBUSY.
+
+Update after rerunning on Linux, once disk space was back: guests_forks_failing_at_each_step_harm_nothing alone failed 2 of 5 runs on the base commit 9f81f6018 and 1 of 5 on this branch, each time at remote::gather in the same way. The flake predates this branch, isn't caused by it, and is TASK-157's. Linux nextest -p fxdax is clean apart from TASK-157's flake and the seven environment-only failures (eu-stack x3, grants ENOENT x3, build stamp).
 <!-- SECTION:NOTES:END -->
