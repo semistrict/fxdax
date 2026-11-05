@@ -38,9 +38,10 @@ class Mutants(unittest.TestCase):
         self.assertEqual(guest_mutants.check(), [])
 
     def test_one_set_of_both_kinds(self):
-        """The simulator's mutants and the real kernels' are one set, and each needs one."""
+        """The simulator's mutants, the model's and the real kernels' are one set, and each needs
+        one."""
         kernels = {each.kernel for each in guest_mutants.mutants()}
-        self.assertEqual(kernels, {"sim", "release"})
+        self.assertEqual(kernels, {"sim", "model", "release"})
 
     def test_what_the_runs_are(self):
         """What a killer may name, as the sources declare them."""
@@ -48,6 +49,7 @@ class Mutants(unittest.TestCase):
         self.assertIn("window_held_killed", KNOWN["checks"])
         self.assertIn("interleave", KNOWN["sim"])
         self.assertIn("cow_swap_during_write", KNOWN["scenarios"])
+        self.assertIn("the_models_past_drifts_from_fxfs", KNOWN["model"])
 
     def test_headers(self):
         """A header's kernel and killer, and what is wrong with one."""
@@ -56,10 +58,18 @@ class Mutants(unittest.TestCase):
                          ("a-mutant", "sim", ("scenarios", "cow_swap_during_write"), False, None))
         each, wrong = mutant("# Kernel: debug\n# Killer: fxfs-guest-checks-dax")
         self.assertEqual((each.killer, each.real, wrong), (("fxfs-guest-checks-dax",), True, None))
+        each, wrong = mutant("# Kernel: model\n# Killer: fxfs-sim-diff the_models_past_drifts_from_fxfs")
+        self.assertEqual((each.killer, each.real, wrong),
+                         (("fxfs-sim-diff", "the_models_past_drifts_from_fxfs"), False, None))
         each, wrong = mutant("# Kernel: sim\n# Killer: none")
         self.assertEqual((each.killer, wrong), ((), None))
         cases = [
-            ("# Killer: interleave", "its kernel is '', none of ['debug', 'kasan', 'release', 'sim']"),
+            ("# Killer: interleave",
+             "its kernel is '', none of ['debug', 'kasan', 'model', 'release', 'sim']"),
+            ("# Kernel: model\n# Killer: fxfs-sim-diff nope",
+             "its killer 'fxfs-sim-diff nope' is no test of crates/fxfs-sim-diff"),
+            ("# Kernel: model\n# Killer: scenarios cow_swap_during_write",
+             "its killer 'scenarios cow_swap_during_write' is no test of crates/fxfs-sim-diff"),
             ("# Kernel: sim", "its header names no killer"),
             ("# Kernel: sim\n# Killer: nope", "its killer 'nope' is no test of guest/sim's"),
             ("# Kernel: sim\n# Killer: scenarios nope",

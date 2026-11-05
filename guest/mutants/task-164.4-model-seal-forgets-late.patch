@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
+# Copyright 2026 The fxdax Authors.
+#
+# Kernel: model
+# Killer: fxfs-sim-diff the_models_past_drifts_from_fxfs
+#
+# TASK-164.4, the model of Fxfs's own: a seal forgets which extents are open after its COMMIT, at a
+# scheduling point of its own, between which the COMMIT sealed them on the device: a truncate's
+# move_tail, which takes no `writes`, found the staging extent open still, and wrote it, sealed
+# (interleave -C, seed 32826). crates/fxfs-sim-diff, its cut at a seal's end: the cut's block in
+# an extent the model says sealed, Fxfs's open. guest/sim's mutants.sh found it in none of 2,000
+# seeds.
+
+--- a/guest/sim/fxfs/fxfs.c
++++ b/guest/sim/fxfs/fxfs.c
+@@ -404,12 +404,12 @@
+ 	 * step: between the two, a truncate's move_tail, which takes no `writes`, found the staging
+ 	 * extent open still, and wrote it, sealed (interleave -C, seed 32826).
+ 	 */
+-	mutex_lock(&fs->lock);
+ 	sim_device_seal();
++	sim_point("a seal's end");
++	mutex_lock(&fs->lock);
+ 	list_for_each_entry(extent, &fs->extents, list)
+ 		extent->open = false;
+ 	mutex_unlock(&fs->lock);
+-	sim_point("a seal's end");
+ 	fxfs_device_seal_end(fs->dev);
+ 	up_write(&fs->writes);
+ 	mutex_lock(&fs->lock);

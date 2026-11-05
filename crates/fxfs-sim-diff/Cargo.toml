@@ -1,0 +1,25 @@
+# guest/sim's model of Fxfs (guest/sim/fxfs/fxfs.c), which guest/sim tests dax.c against, run beside
+# Fxfs (fxfs-posix) on the same operations, each file compared after each (TASK-149.29). The model is
+# C, built here over a shim of guest/sim's kernel, so this runs wherever the workspace's tests do.
+[package]
+name = "fxfs-sim-diff"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[build-dependencies]
+cc = "1.11.0"
+
+[dependencies]
+fxfs-posix.workspace = true
+
+[dev-dependencies]
+anyhow.workspace = true
+fuchsia-async.workspace = true
+fxfs.workspace = true
+proptest.workspace = true
+storage_device.workspace = true

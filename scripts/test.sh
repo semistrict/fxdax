@@ -62,10 +62,12 @@ if part shuttle; then
     cargo nextest run --manifest-path "$root/Cargo.toml" -p follower_sim --features shuttle
 fi
 # The scripts' own tests, and that each hand mutant's patch or edits apply as they are: one that
-# stopped applying would test nothing (guest/sim's need a kernel tree, so are CI's guest-sim job's).
+# stopped applying would test nothing (guest/sim's need a kernel tree, so are CI's guest-sim job's,
+# but for those of its model of Fxfs, which crates/fxfs-sim-diff runs).
 if part scripts; then
     python3 -m unittest discover -s "$root/scripts/tests"
     "$root/crates/fxfs-posix/mutants.sh" --check
+    "$root/crates/fxfs-sim-diff/mutants.sh" --check
     "$root/scripts/guest-mutants-gce.py" --check
 fi
 # The guest tests' own tests, the host's half and the guest's, which build on Linux alone: their

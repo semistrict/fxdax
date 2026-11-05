@@ -26,8 +26,9 @@ run. FXDAX_MUTANT_KERNEL is the kernel of every mutant, in place of each's own; 
 settings reach the host as scripts/test-gce.sh says.
 
 --check runs nothing: every mutant's header names a kernel and a killer there is, and each of these
-patches applies to the sources as they are, as CI checks; guest/sim/mutants.sh --check applies the
-simulator's, which take a kernel's tree.
+patches applies to the sources as they are, as CI checks, and those of guest/sim's model of Fxfs
+(`Kernel: model`), which crates/fxfs-sim-diff/mutants.sh runs; guest/sim/mutants.sh --check applies
+the simulator's, which take a kernel's tree.
 """
 
 import importlib.util
@@ -47,9 +48,12 @@ MUTANTS = ROOT / "guest" / "mutants"
 SIM = ROOT / "guest" / "sim"
 CASES = ROOT / "guest" / "tests" / "test_cases" / "src" / "lib.rs"
 CHECKS = ROOT / "guest" / "tests" / "test_cases" / "src" / "test_fxfs_guest_checks" / "mod.rs"
-# The kernels a mutant may need: the simulator, or a guest kernel scripts/test-gce.sh's host
-# builds (FXDAX_GUEST_KERNEL_BUILD).
-KERNELS = {"sim", "release", "debug", "kasan"}
+# The kernels a mutant may need: the simulator; guest/sim's model of Fxfs alone, beside Fxfs, as
+# crates/fxfs-sim-diff runs it (TASK-149.29); or a guest kernel scripts/test-gce.sh's host builds
+# (FXDAX_GUEST_KERNEL_BUILD).
+KERNELS = {"sim", "model", "release", "debug", "kasan"}
+# Where the model's killers are, its #[test]s.
+MODEL_TESTS = ROOT / "crates" / "fxfs-sim-diff" / "src" / "diff_tests.rs"
 
 
 @dataclass(frozen=True)
@@ -58,16 +62,17 @@ class Mutant:
 
     name: str
     path: Path
-    # Where it runs: "sim", or the guest kernel it needs.
+    # Where it runs: "sim", "model", or the guest kernel it needs.
     kernel: str
-    # Its killer's words: a test of the simulator's and its arguments, or a guest case and the
-    # check of it that fails; () if nothing kills it, its header saying why.
+    # Its killer's words: a test of the simulator's and its arguments, `fxfs-sim-diff` and a test
+    # of it, or a guest case and the check of it that fails; () if nothing kills it, its header
+    # saying why.
     killer: tuple
 
     @property
     def real(self):
         """Whether it needs a real kernel, which this runs it on."""
-        return self.kernel != "sim"
+        return self.kernel not in ("sim", "model")
 
 
 def mutant(path):
@@ -84,13 +89,14 @@ def mutants():
 
 def runs():
     """What a header may name as a killer: the guest's cases, its checks suites' checks, the
-    simulator's tests, and the scenarios of its tests/scenarios."""
+    simulator's tests, the scenarios of its tests/scenarios, and crates/fxfs-sim-diff's tests."""
     scenarios = (SIM / "tests" / "scenarios.c").read_text()
     return {
         "cases": set(re.findall(r'TestCase::new\(\s*"([a-z0-9-]+)"', CASES.read_text())),
         "checks": set(re.findall(r"^ +(\w+): \w+, \d+ =>", CHECKS.read_text(), re.MULTILINE)),
         "sim": {path.stem for path in (SIM / "tests").glob("*.c")},
         "scenarios": set(re.findall(r"^\t(?:COW_)?SCENARIO\((\w+)\),$", scenarios, re.MULTILINE)),
+        "model": set(re.findall(r"^#\[test\]\nfn (\w+)\(", MODEL_TESTS.read_text(), re.MULTILINE)),
     }
 
 
@@ -103,6 +109,10 @@ def unsound(each, known):
         has = re.search(r"^# Killer: none$", each.path.read_text(), re.MULTILINE)
         return None if has else "its header names no killer"
     test, *arguments = each.killer
+    if each.kernel == "model":
+        if test != "fxfs-sim-diff" or len(arguments) != 1 or arguments[0] not in known["model"]:
+            return f"its killer {' '.join(each.killer)!r} is no test of crates/fxfs-sim-diff"
+        return None
     if not each.real:
         if test not in known["sim"]:
             return f"its killer {test!r} is no test of guest/sim's"
@@ -118,11 +128,12 @@ def unsound(each, known):
 
 def check():
     """What is wrong with the mutants, a line for each wrong: a header naming no kernel or killer
-    there is, or a real kernel's patch that doesn't apply to the sources as they are."""
+    there is, or a patch of a real kernel's or of the model's that doesn't apply to the sources as
+    they are."""
     known, broken = runs(), []
     for each in mutants():
         wrong = unsound(each, known)
-        if wrong is None and each.real:
+        if wrong is None and each.kernel != "sim":
             applied = subprocess.run(["git", "-C", ROOT, "apply", "--check", each.path],
                                      capture_output=True, text=True)
             if applied.returncode != 0:

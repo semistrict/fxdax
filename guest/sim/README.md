@@ -104,7 +104,8 @@ It can't find:
 - **Real page tables.** TLB shootdowns, PTE races with hardware, `get_user_pages`, KVM's stage 2,
   async page faults, userfaultfd: all outside it.
 - **The host.** extentd, uffd and the VMM are fakes here.
-- **Fxfs.** Journal, compaction, crash recovery, and whatever the model gets wrong.
+- **Fxfs.** Journal, compaction, crash recovery, and whatever the model gets wrong that
+  `crates/fxfs-sim-diff`, which runs the model beside Fxfs, doesn't find ("The model against Fxfs").
 - **Lock order inversions that no seed plays out:** there is no lockdep graph.
 - **The followers and private mappings**, which the sim doesn't reach yet.
 - **Copy on write's host side**: userfaultfd, KVM's async page faults resolved as reads, a source
@@ -421,6 +422,48 @@ through one function now (`grow`, `zero_before_growth`), as Fxfs's do.
 | --- | --- |
 | `task-149.14.2-growth-keeps-tail` | `fxfs_growths_zero_past_a_cut`: a write past it |
 | `task-149.14.2-partial-write-keeps-past-end` | `fxfs_growths_zero_past_a_cut`: a write in the block |
+
+## The model against Fxfs (TASK-149.29)
+
+`crates/fxfs-sim-diff` builds `fxfs/fxfs.c` as it is, over a shim of this kernel of its own (no
+kernel tree, so on macOS too), and runs it beside Fxfs, fxfs-posix over its fake device, on random
+sequences of what dax.c and data.c call of it: writebacks of whole pages and of parts, up to the
+file's size, paid with dirty pages' room or not, and failing between their bytes and their commits;
+truncates' sizes, cuts with `FXFS_SET_KEEP_TAIL` and without, and growths; clones, of blocks and to
+the source's end; punches; seals; and remounts of Fxfs. After each, every file's size and bytes
+agree, and its blocks, whole, through the extents, past the end too, as the window maps them; holes
+and shared blocks are alike; and no extent Fxfs says open does the model say sealed, which would
+have dax.c here MAP what a host refuses. Some sequences run an operation at one of the model's
+`sim_point`s, where its locks let one in, as this simulator's tasks interleave: a seal's COMMIT and
+end, writeback's copy, write, reply and commit. A workspace crate, CI's workspace part runs it, on
+Linux and macOS, 64 sequences in 15 seconds on a quiet laptop; `FXDAX_SIM_DIFF_CASES` asks for
+more, `FXDAX_SIM_DIFF_OPS` longer ones. Its `mutants.sh` runs it against each mutant of
+`../mutants` that changes the model; those only it kills say `Kernel: model` and
+`Killer: fxfs-sim-diff TEST`.
+
+First found by it, both fixed:
+
+1. **The model moved a file's last block at every growth past an end within it**, and at every cut
+   that doesn't keep the tail, where Fxfs's `txn_zero_tail` leaves a block holding zeros past the
+   end as it is. Bytes alike, but the model's block went to a new extent, open, unshared, where
+   Fxfs's stays sealed and shared: dax.c here never met a growth that leaves its last block mapped.
+   `task-149.29-tail-moved-though-zero`.
+2. **Fxfs's: a writeback paid with its dirty pages' room failed NoSpace** on a filesystem all but
+   empty, growing a file past an end within a block a cut had kept (`FXFS_SET_KEEP_TAIL`, a DAX
+   file's): the growth writes that block again, zeroed past the end, which the room reserved for
+   the pages didn't count. fxfs-posix's
+   `a_writeback_paid_with_dirty_room_has_room_for_the_tail_its_growth_zeroes`.
+
+| Mutant | Caught by fxfs-sim-diff | By this simulator (`mutants.sh`, 2,000 seeds) |
+| --- | --- | --- |
+| `task-149.14.2-growth-keeps-tail` | a write past a kept tail: bytes from the old end read back the cut's | `fxfs_growths_zero_past_a_cut` |
+| `task-149.14.2-partial-write-keeps-past-end` | a write in a kept tail's block, past the end: the same | `fxfs_growths_zero_past_a_cut` |
+| `task-164.4-model-seal-forgets-late` | a cut at a seal's end (`sim_point`): its block in an extent the model says sealed, Fxfs's open, where dax.c here would MAP it | no: `interleave -C` seed 32826 found it once |
+| `task-149.29-tail-moved-though-zero` | a growth past a tail of zeros, its block shared by a clone: the model's no longer shared | no: dax.c is right either way |
+
+Each by `the_models_past_drifts_from_fxfs`, a sequence each, in seconds, and by CI's 64 random
+sequences alone: the second and third once the generator aimed writes at the last block past the
+end, and an operation at a seal's points at a cut near the end, which 64 didn't find before.
 
 ## Layout
 

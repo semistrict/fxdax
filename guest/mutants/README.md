@@ -16,14 +16,17 @@ mutant is run and what its fate is:
 # Killer: scenarios cow_swap_during_write
 ```
 
-- **`Kernel:`** what it runs on: `sim`, `guest/sim`'s simulator, in seconds, or the guest kernel a
-  test host builds for it, `release`, `debug` (lockdep and KCSAN) or `kasan`, in minutes on GCE. Only
-  what the simulator can't find needs a real kernel.
+- **`Kernel:`** what it runs on: `sim`, `guest/sim`'s simulator, in seconds; `model`, guest/sim's
+  model of Fxfs alone, beside Fxfs, as `crates/fxfs-sim-diff` runs it, for a drift of the model's
+  that dax.c in the simulator can't see; or the guest kernel a test host builds for it, `release`,
+  `debug` (lockdep and KCSAN) or `kasan`, in minutes on GCE. Only what the simulator can't find
+  needs a real kernel.
 - **`Killer:`** the run that must fail with the mutant in. The mutant is killed only if it does:
   another test failing doesn't count, and the run's other tests aren't run.
   - Of the simulator's, a test of `guest/sim/tests` and its arguments: one of one run
     (`hole_mapped_then_written`), a scenario (`scenarios NAME`), or a test that takes seeds
     (`interleave`, `failures`), which runs seed after seed until one fails.
+  - Of the model's, `fxfs-sim-diff` and a test of the crate's (`the_models_past_drifts_from_fxfs`).
   - Of a real kernel's, a guest case (`runner list`), and, if it is a checks suite, the check of it
     that fails, as the case's `failed_checks` say (`scripts/guest_results.py`): the case is run
     alone, of its checks that one alone. A case with no check named is killed by its failing at
@@ -38,6 +41,10 @@ The comments after say what the bug was, how it was found, and how its killer fa
 - `guest/sim/mutants.sh` runs those whose kernel is `sim` (`guest/sim/linux.sh guest/sim/mutants.sh`
   elsewhere than on Linux); `--check` applies and reverses each, with no fuzz, as CI's `guest-sim`
   job does.
-- `scripts/guest-mutants-gce.py HOST ZONE RESULTS` runs the rest on a GCE test host; `--check`
-  checks every header, and that each of these applies (`scripts/test.sh`'s scripts part).
+- `crates/fxfs-sim-diff/mutants.sh` runs every one that changes the model, `Kernel: model` or not,
+  against the model's comparison with Fxfs, and fails if one of `Kernel: model` lives; `--check`
+  applies and reverses each.
+- `scripts/guest-mutants-gce.py HOST ZONE RESULTS` runs those of a real kernel on a GCE test host;
+  `--check` checks every header, and that each of these and the model's applies (`scripts/test.sh`'s
+  scripts part).
 - `scripts/dax-gate.sh` runs the simulator's first, then the rest, on GCE: each must be killed.
