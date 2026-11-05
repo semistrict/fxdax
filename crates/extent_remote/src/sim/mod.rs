@@ -363,7 +363,7 @@ fn wals() -> Profile {
 }
 
 /// Logs as [`wals`] makes them, holding forks, which their next writers make again where they
-/// are put, while checkpoints come and collectors run.
+/// are put, while roots take their children's IDs (TASK-174), checkpoints come and collectors run.
 fn forked_wals() -> Profile {
     let mut profile = wals();
     profile.weights.fork = 3;
@@ -371,6 +371,7 @@ fn forked_wals() -> Profile {
     profile.weights.checkpoint = 2;
     profile.weights.collect = 4;
     profile.weights.stop_collector = 1;
+    profile.weights.usurp = 2;
     profile
 }
 

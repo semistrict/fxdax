@@ -273,12 +273,11 @@ enum Event {
         child: u64,
         result: Result<(), Error>,
     },
-    /// What a root of `owner` taking the ID of the child of `fork`, whose segment was not yet
-    /// acknowledged, gave, and deleting it after.
+    /// What a root of `owner` taking the ID of the child of a fork, whose segment was not yet
+    /// acknowledged ([`World::usurped`]), gave, and deleting it after.
     Usurped {
         child: u64,
         owner: u64,
-        fork: Branch,
         created: Result<(), Error>,
         deleted: Option<Result<(), Error>>,
     },
@@ -334,6 +333,9 @@ pub struct World {
     collectors: BTreeMap<u64, AbortHandle>,
     unforks: BTreeMap<u64, Unfork>,
     restores: BTreeMap<u64, Restore>,
+    /// The forks whose children's IDs a root is taking ([`World::usurp`]), until it is done: the
+    /// child's, if the fork's record comes first.
+    usurped: BTreeMap<u64, Branch>,
     /// What the footer of each segment the history check read says, by its branch, number and
     /// epoch, one writer stamping one footer at a place.
     footers: RefCell<HashMap<(u64, u64, u64), Applied>>,
@@ -363,6 +365,7 @@ impl World {
             collectors: BTreeMap::new(),
             unforks: BTreeMap::new(),
             restores: BTreeMap::new(),
+            usurped: BTreeMap::new(),
             footers: RefCell::default(),
             next_id: 1,
             faults: true,
@@ -665,15 +668,19 @@ impl World {
                     Err(error) => self.violation(format!("forking point {point:x}: {error}")),
                 }
             }
-            Event::Usurped { child, owner, fork, created, deleted } => match (created, deleted) {
+            Event::Usurped { child, owner, created, deleted } => match (created, deleted) {
                 // The root took the ID, and is gone.
                 (Ok(()), Some(Ok(()))) => {
+                    self.usurped.remove(&child);
                     let mut found = Branch::forked(None, None, false, owner);
                     found.deleting = true;
                     drop(self.branches.insert(child, found))
                 }
                 // The fork's record came first: its child, as it was.
-                (Err(Error::Corrupt(_)), None) => drop(self.branches.insert(child, fork)),
+                (Err(Error::Corrupt(_)), None) => {
+                    let fork = self.usurped.remove(&child).unwrap();
+                    drop(self.branches.insert(child, fork))
+                }
                 (created, deleted) => self.violation(format!(
                     "a root taking the ID of the fork to {child:x} gave {created:?}, deleting it \
                      {deleted:?}"
@@ -685,6 +692,18 @@ impl World {
                 result => self.violation(format!("a writer of point {point:x}: {result:?}")),
             },
         }
+    }
+
+    /// The fork's child `child` as its making's guest knows it, wherever it is: a branch, or set
+    /// aside while a restore or a root takes its ID; none once one of those took it.
+    fn fork_child(&mut self, child: &Child) -> Option<&mut Branch> {
+        let id = child.branch;
+        let restore = self.restores.get_mut(&id).and_then(|restore| restore.taken.as_mut());
+        let unfork = self.unforks.get_mut(&id).and_then(|unfork| unfork.taken.as_mut());
+        [self.branches.get_mut(&id), restore, unfork, self.usurped.get_mut(&id)]
+            .into_iter()
+            .flatten()
+            .find(|found| found.owner == child.owner)
     }
 
     /// `child`, a fork of a point that failed, or a crash left, goes as its host's cleanup deletes
@@ -753,8 +772,9 @@ impl World {
         for (footer, data) in restamped {
             // Its forks are made where it is now.
             for child in &footer.contents.forks {
-                let found = self.branches.get_mut(&child.branch).unwrap();
-                found.origin = Some(Origin { parent: branch, at: footer.seq });
+                if let Some(found) = self.fork_child(child) {
+                    found.origin = Some(Origin { parent: branch, at: footer.seq });
+                }
             }
             match writer.add_segment(data.frame(&footer)) {
                 Ok(seq) => self.upload(host, branch, session, writer.clone(), seq),
@@ -1213,6 +1233,7 @@ impl World {
         }
         let child = pending[self.rng.random_range(0..pending.len())];
         let fork = self.branches.remove(&child).unwrap();
+        self.usurped.insert(child, fork);
         let (owner, holder) = (self.id(), self.id());
         let (bucket, events) = (self.bucket.clone(), self.events.clone());
         self.spawn(async move {
@@ -1221,7 +1242,7 @@ impl World {
                 Ok(()) => Some(branch::delete(&*bucket, child, holder, 0).await),
                 Err(_) => None,
             };
-            events.borrow_mut().push(Event::Usurped { child, owner, fork, created, deleted });
+            events.borrow_mut().push(Event::Usurped { child, owner, created, deleted });
         });
     }
 
