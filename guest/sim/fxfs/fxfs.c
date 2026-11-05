@@ -451,6 +451,26 @@ static void move_tail(struct fxfs *fs, struct stub_file *file, u64 size)
 	sim_device_wrote(extent->sequence, in_extent, 1);
 }
 
+static void set_size(struct stub_file *file, u64 size)
+{
+	if (file->ino == watched_ino)
+		sim_log("sim: ino %llu size %llu -> %llu, by %s, at %llu ns\n", file->ino, file->size,
+			size, current->comm, ktime_get_ns());
+	file->size = size;
+}
+
+/*
+ * Makes `file` `size` bytes long if it is shorter, zeroing what its last block holds past the old
+ * end (move_tail): what a cut that kept the tail (FXFS_SET_KEEP_TAIL) left there is no data.
+ */
+static void grow(struct fxfs *fs, struct stub_file *file, u64 size)
+{
+	if (size <= file->size)
+		return;
+	move_tail(fs, file, file->size);
+	set_size(file, size);
+}
+
 /* What Fxfs says of `file`: its size, and the 512-byte blocks its data takes. */
 static void attr_of(const struct stub_file *file, struct fxfs_attr *attr)
 {
@@ -498,14 +518,13 @@ int fxfs_write_inode(struct fxfs *fs, u64 ino, const struct fxfs_setattr *set)
 		old = file->size;
 		for (page = DIV_ROUND_UP(set->size, PAGE_SIZE); page < file->nr_blocks; page++)
 			put_block(fs, &file->blocks[page]);
-		if (set->size > old)
-			move_tail(fs, file, old);
-		else if (set->size < old && !(set->valid & FXFS_SET_KEEP_TAIL))
-			move_tail(fs, file, set->size);
-		if (ino == watched_ino)
-			sim_log("sim: ino %llu size %llu -> %llu, by %s, at %llu ns\n", ino, file->size,
-				set->size, current->comm, ktime_get_ns());
-		file->size = set->size;
+		if (set->size > old) {
+			grow(fs, file, set->size);
+		} else {
+			if (set->size < old && !(set->valid & FXFS_SET_KEEP_TAIL))
+				move_tail(fs, file, set->size);
+			set_size(file, set->size);
+		}
 	}
 	mutex_unlock(&fs->lock);
 	mutex_unlock(&file->lock);
