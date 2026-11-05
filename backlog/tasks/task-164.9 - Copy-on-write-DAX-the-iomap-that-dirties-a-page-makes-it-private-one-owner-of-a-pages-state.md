@@ -3,9 +3,10 @@ id: TASK-164.9
 title: >-
   Copy-on-write DAX: the iomap that dirties a page makes it private, one owner
   of a page's state
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-04 14:33'
+updated_date: '2026-11-05 04:54'
 labels: []
 dependencies: []
 parent_task_id: TASK-164
@@ -22,14 +23,26 @@ Decided by the user on 2026-11-04. A page's state lives in three places that cha
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Dirty implies private by construction: one transition function, and no path marks a page dirty without it
-- [ ] #2 Writeback never depends on the kernel's DAX dirty tags or entry locks
-- [ ] #3 specs/dax-cow models the new rule; guest/sim's cow seeds and scenarios pass; the three bugs' mutants stay caught or become unbuildable
+- [x] #1 Dirty implies private by construction: one transition function, and no path marks a page dirty without it
+- [x] #2 Writeback never depends on the kernel's DAX dirty tags or entry locks
+- [x] #3 specs/dax-cow models the new rule; guest/sim's cow seeds and scenarios pass; the three bugs' mutants stay caught or become unbuildable
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Verified on main 09b36991a: macOS workspace 2052/2052 + Shuttle; CI 41917089568 (6 jobs); GCE r553 Linux workspace 2232/2232; r555 jailed with the production seccomp filter: fxfs-guest-dax, checks-dax, checks-dax-delay, crash-dax, pgbench-dax, migrate-tenant-dax pass; r554: xfstests-fxfs-guest-dax, pgbench-dax-forked, bigmap-dax, checks-dax-small pass; guest/sim zloop 3000 seeds; TLA+ 24/24; scripts/upstream-changes.py --check passes.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+One owner of a copy-on-write page's state (aa923012c): the iomap that dirties a page makes it private, so dirty implies private by construction; writeback works from dax.c's dirty set and write-protects by page tables, not the kernel's DAX dirty tags; guest/sim's host refuses a store to a page no PRIVATE made private; specs/dax-cow's DirtyImpliesPrivate. Verified on main 09b36991a: macOS workspace 2052/2052 + Shuttle; CI 41917089568 (6 jobs); GCE r553 Linux workspace 2232/2232; r555 jailed with the production seccomp filter: fxfs-guest-dax, checks-dax, checks-dax-delay, crash-dax, pgbench-dax, migrate-tenant-dax pass; r554: xfstests-fxfs-guest-dax, pgbench-dax-forked, bigmap-dax, checks-dax-small pass; guest/sim zloop 3000 seeds; TLA+ 24/24; scripts/upstream-changes.py --check passes.
+<!-- SECTION:FINAL_SUMMARY:END -->

@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-04 07:58'
-updated_date: '2026-11-04 16:35'
+updated_date: '2026-11-05 04:54'
 labels: []
 dependencies: []
 parent_task_id: TASK-164
@@ -23,7 +23,7 @@ The density gate measures memory per VM, from which the user's density targets a
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Cases in perf-gate-gce.sh and pgbench-gate.py with thresholds
+- [x] #1 Cases in perf-gate-gce.sh and pgbench-gate.py with thresholds
 - [ ] #2 A run recorded in docs/measurements
 <!-- AC:END -->
 
@@ -38,4 +38,6 @@ The density gate measures memory per VM, from which the user's density targets a
 
 <!-- SECTION:NOTES:BEGIN -->
 2026-11-04: the gate's cases landed; a recorded run in docs/measurements (AC2) waits for writable DAX's deletion (batch 2026-11-04e).
+
+Cases and thresholds are in scripts/perf-gate-gce.sh and pgbench-gate.py (docs/measurements/dax-cow-gate.md). The first run, GCE r580 on main 09b36991a, started 2026-11-05; AC2 waits for it.
 <!-- SECTION:NOTES:END -->

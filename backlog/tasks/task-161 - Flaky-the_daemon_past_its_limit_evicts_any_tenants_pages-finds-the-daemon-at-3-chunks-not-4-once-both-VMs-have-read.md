@@ -3,11 +3,11 @@ id: TASK-161
 title: >-
   Flaky: the_daemon_past_its_limit_evicts_any_tenants_pages finds the daemon at
   3 chunks, not 4, once both VMs have read
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-04 03:57'
-updated_date: '2026-11-04 21:32'
+updated_date: '2026-11-05 04:54'
 labels: []
 dependencies: []
 priority: medium
@@ -23,14 +23,14 @@ GitHub CI run 41762577720 (branch t1535-commit-after at 80cd4e16b, which changes
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The cause found, and the test passing 50 runs in a row on Linux under load
+- [x] #1 The cause found, and the test passing 50 runs in a row on Linux under load
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -57,4 +57,12 @@ Blind spot: the physmem tests let quarantined pages come back on the test's comm
 Structure: relief's 'starved still' ignored room in flight. Now the arena carries what is owed to it, so a pass can't evict for it while its earlier evictions are still coming back. Residual, not changed: a stale ask can still run a pass after the allocation that made it has found room (it checks starved, not whether anyone waits); not observed to matter.
 
 Verification: Docker (OrbStack, rust:1, aarch64) under stress -c 20 -i 4 -m 4 --vm-bytes 256M: with the fix and the old exact assertion, the_daemon_past_its_limit_evicts_any_tenants_pages 100 of 100, tenants_past_their_limits_evict_then_refuse 100 of 100; final tree, memory tests --stress-count 60: 60 of 60 iterations (120 passes). physmem 60/60 and its shuttle tests 6/6 on Linux. fxdax+physmem on Linux: 508 of 515, the 7 failures environmental (eu-stack missing, grants tests' missing binary, no git for the build stamp). macOS FXDAX_TEST_PARTS=workspace scripts/test.sh: 2053 of 2053. scripts/upstream-changes.py --check passes. GCE not run.
+
+Landed in 9f81f6018 on main. GCE r553 (Linux workspace, with the fix): 2232/2232.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A real eviction bug: relief evicted again for each ask of a page-in waiting on pages a pass had already evicted into quarantine, so under load one page-in could empty an arena's cache. Pages a pass quarantines are now owed to the arena it evicted for, and no pass evicts for it until they come back (physmem). The memory tests assert within the limit, as the design doesn't guarantee at it. Under load on Linux: 89/100 before, 60/60 (120 passes) after; a physmem test red without the owed check; macOS 2053/2053; GCE r553 2232/2232.
+<!-- SECTION:FINAL_SUMMARY:END -->
